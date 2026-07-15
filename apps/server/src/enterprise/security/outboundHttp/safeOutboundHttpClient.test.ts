@@ -43,6 +43,13 @@ describe('policy helpers', () => {
     expect(isMetadataHostname('METADATA.GOOGLE.INTERNAL')).toBe(true);
     expect(isMetadataHostname('api.example.com')).toBe(false);
   });
+
+  it('treats IPv4-mapped IPv6 encodings of IMDS as metadata', () => {
+    expect(isMetadataIp('::ffff:169.254.169.254')).toBe(true);
+    expect(isMetadataIp('::ffff:a9fe:a9fe')).toBe(true); // 169.254.169.254
+    expect(isMetadataIp('0:0:0:0:0:ffff:169.254.170.2')).toBe(true);
+    expect(isMetadataIp('::ffff:8.8.8.8')).toBe(false);
+  });
 });
 
 describe('SafeOutboundHttpClient', () => {
@@ -89,6 +96,30 @@ describe('SafeOutboundHttpClient', () => {
     await expect(client.fetch('http://[fd00:ec2::254]/latest/meta-data')).rejects.toBeInstanceOf(
       SafeOutboundHttpError,
     );
+  });
+
+  it('permanently blocks IPv4-mapped IPv6 metadata literals', async () => {
+    const transport = vi.fn();
+    const client = new SafeOutboundHttpClient({ transport });
+    await expect(
+      client.fetch('http://[::ffff:169.254.169.254]/latest/meta-data'),
+    ).rejects.toMatchObject({ code: PLATFORM_ERROR_CODES.PLATFORM_SSRF_BLOCKED });
+    await expect(client.fetch('http://[::ffff:a9fe:a9fe]/')).rejects.toMatchObject({
+      code: PLATFORM_ERROR_CODES.PLATFORM_SSRF_BLOCKED,
+    });
+    expect(transport).not.toHaveBeenCalled();
+  });
+
+  it('blocks DNS that returns IPv4-mapped metadata (rebinding)', async () => {
+    const transport = vi.fn();
+    const client = new SafeOutboundHttpClient({
+      resolve: resolveTo([{ address: '::ffff:169.254.169.254', family: 6 }]),
+      transport,
+    });
+    await expect(client.fetch('https://evil.example/imds')).rejects.toMatchObject({
+      code: PLATFORM_ERROR_CODES.PLATFORM_SSRF_BLOCKED,
+    });
+    expect(transport).not.toHaveBeenCalled();
   });
 
   it('permanently blocks metadata.google.internal hostname', async () => {

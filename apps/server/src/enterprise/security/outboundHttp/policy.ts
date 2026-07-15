@@ -56,13 +56,54 @@ export const isMetadataHostname = (hostname: string): boolean => {
   return METADATA_HOSTNAMES.has(host);
 };
 
+/**
+ * Unwrap IPv4-mapped IPv6 (::ffff:a.b.c.d / ::ffff:xxxx:yyyy) to dotted IPv4.
+ * Required so IMDS blocks cannot be bypassed via mapped encodings (G-07).
+ */
+export const extractMappedIpv4 = (ip: string): string | null => {
+  const raw = ip.toLowerCase().replaceAll(/^\[|\]$/g, '');
+
+  // ::ffff:169.254.169.254 (dotted suffix)
+  const dotted = /(?:^|:)ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(raw);
+  if (dotted?.[1] && isIP(dotted[1]) === 4) return dotted[1];
+
+  // Full hex form after expand: 0000:0000:0000:0000:0000:ffff:a9fe:a9fe
+  if (raw.includes('.')) return null;
+  const expanded = expandIpv6(raw);
+  const parts = expanded.split(':');
+  if (
+    parts.length === 8 &&
+    parts[0] === '0000' &&
+    parts[1] === '0000' &&
+    parts[2] === '0000' &&
+    parts[3] === '0000' &&
+    parts[4] === '0000' &&
+    parts[5] === 'ffff'
+  ) {
+    const hi = Number.parseInt(parts[6]!, 16);
+    const lo = Number.parseInt(parts[7]!, 16);
+    if (Number.isNaN(hi) || Number.isNaN(lo)) return null;
+    return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+  }
+
+  return null;
+};
+
 export const isMetadataIp = (ip: string): boolean => {
+  const mappedV4 = extractMappedIpv4(ip);
+  if (mappedV4 && METADATA_IPV4.has(mappedV4)) return true;
+
   const normalized = normalizeIp(ip);
   if (!normalized) return false;
   if (METADATA_IPV4.has(normalized)) return true;
-  if (METADATA_IPV6.has(normalized)) return true;
-  // AWS IPv6 IMDS is unique under fd00:ec2::/128 style — also match expanded form
-  if (normalized === expandIpv6('fd00:ec2::254')) return true;
+
+  // normalizeIp may return expanded IPv6 — re-check mapped embedding
+  const mappedFromNorm = extractMappedIpv4(normalized);
+  if (mappedFromNorm && METADATA_IPV4.has(mappedFromNorm)) return true;
+
+  for (const meta of METADATA_IPV6) {
+    if (normalized === meta || normalized === expandIpv6(meta)) return true;
+  }
   return false;
 };
 
@@ -70,7 +111,12 @@ export const normalizeIp = (ip: string): string | null => {
   const raw = ip.replaceAll(/^\[|\]$/g, '');
   const version = isIP(raw);
   if (version === 4) return raw;
-  if (version === 6) return expandIpv6(raw);
+  if (version === 6) {
+    // Prefer canonical dotted IPv4 when this is a v4-mapped address
+    const mapped = extractMappedIpv4(raw);
+    if (mapped) return mapped;
+    return expandIpv6(raw);
+  }
   return null;
 };
 
@@ -78,7 +124,14 @@ export const normalizeIp = (ip: string): string | null => {
 export const expandIpv6 = (ip: string): string => {
   const raw = ip.toLowerCase().replaceAll(/^\[|\]$/g, '');
   if (raw.includes('.')) {
-    // v4-mapped — keep as-is lowercased
+    // ::ffff:a.b.c.d — convert dotted tail to two hex hextets then expand
+    const m = /(?:^|:)ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(raw);
+    if (m?.[1] && isIP(m[1]) === 4) {
+      const [a, b, c, d] = m[1].split('.').map(Number);
+      const hi = ((a! << 8) | b!).toString(16);
+      const lo = ((c! << 8) | d!).toString(16);
+      return expandIpv6(`::ffff:${hi}:${lo}`);
+    }
     return raw;
   }
   const sides = raw.split('::');

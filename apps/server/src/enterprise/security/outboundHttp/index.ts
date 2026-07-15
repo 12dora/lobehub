@@ -5,6 +5,7 @@ export {
   assertResolvedIpAllowed,
   DEFAULT_OUTBOUND_POLICY,
   expandIpv6,
+  extractMappedIpv4,
   isAllowlistedHostOrIp,
   isLoopbackIp,
   isMetadataHostname,
