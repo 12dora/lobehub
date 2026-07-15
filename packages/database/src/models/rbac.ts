@@ -5,11 +5,21 @@ import type { LobeChatDatabase } from '@/database/type';
 
 import type { RoleItem } from '../schemas/rbac';
 import { permissions, rolePermissions, roles, userRoles } from '../schemas/rbac';
+import { users } from '../schemas/user';
 import {
   assignWorkspaceRoleToUser,
   revokeWorkspaceRolesForUser,
 } from '../utils/seedWorkspaceRoles';
 
+/** Thrown when demoting/removing the last non-banned active super_admin. */
+export class LastSuperAdminProtectionError extends Error {
+  readonly code = 'PLATFORM_LAST_SUPER_ADMIN' as const;
+
+  constructor(message = 'PLATFORM_LAST_SUPER_ADMIN') {
+    super(message);
+    this.name = 'LastSuperAdminProtectionError';
+  }
+}
 export interface UserPermissionInfo {
   category: string;
   permissionCode: string;
@@ -444,16 +454,27 @@ export class RbacModel {
   /**
    * Replace **global** role assignments for a user. Never touches workspace roles.
    *
+   * Last super_admin protection runs **inside the same transaction** (plan §6):
+   * locks the global super_admin role row, applies deletes, re-counts non-banned
+   * active super_admins, and rolls back if count would drop below 1.
+   *
    * @param roleIds Role ids that must all be global (`roles.workspace_id IS NULL`).
    * @param options.preserveRoleNames Role names whose grants are left untouched
-   *   (e.g. `super_admin` during EasyAuth sync).
+   *   (e.g. `super_admin` during EasyAuth sync / non-super actor demote attempts).
+   * @param options.protectLastSuperAdmin Default true.
    */
   replaceGlobalUserRoles = async (
     userId: string,
     roleIds: string[],
-    options?: { preserveRoleNames?: string[] },
+    options?: {
+      preserveRoleNames?: string[];
+      protectLastSuperAdmin?: boolean;
+      superAdminRoleName?: string;
+    },
   ): Promise<void> => {
     const preserveRoleNames = options?.preserveRoleNames ?? [];
+    const protectLastSuperAdmin = options?.protectLastSuperAdmin !== false;
+    const superAdminRoleName = options?.superAdminRoleName ?? 'super_admin';
 
     if (roleIds.length > 0) {
       const existingRoles = await this.db.query.roles.findMany({
@@ -474,6 +495,13 @@ export class RbacModel {
     }
 
     await this.db.transaction(async (tx) => {
+      // Serialize super_admin mutations across concurrent demotions (TOCTOU).
+      if (protectLastSuperAdmin) {
+        await tx.execute(
+          sql`SELECT id FROM rbac_roles WHERE name = ${superAdminRoleName} AND workspace_id IS NULL FOR UPDATE`,
+        );
+      }
+
       // Collect current global grants
       const current = await tx
         .select({
@@ -518,23 +546,48 @@ export class RbacModel {
           )
           .onConflictDoNothing();
       }
+
+      // Only when this mutation removes a super_admin grant, ensure ≥1 non-banned remains.
+      if (protectLastSuperAdmin && toDelete.some((row) => row.roleName === superAdminRoleName)) {
+        const countResult = await tx
+          .select({ count: sql<number>`count(distinct ${userRoles.userId})` })
+          .from(userRoles)
+          .innerJoin(roles, eq(userRoles.roleId, roles.id))
+          .innerJoin(users, eq(userRoles.userId, users.id))
+          .where(
+            and(
+              eq(roles.name, superAdminRoleName),
+              isNull(userRoles.workspaceId),
+              isNull(roles.workspaceId),
+              eq(roles.isActive, true),
+              sql`(${users.banned} IS NOT TRUE)`,
+              sql`(${userRoles.expiresAt} IS NULL OR ${userRoles.expiresAt} > NOW())`,
+            ),
+          );
+        const count = Number(countResult[0]?.count || 0);
+        if (count < 1) {
+          throw new LastSuperAdminProtectionError();
+        }
+      }
     });
   };
 
   /**
-   * Count active global super_admin grants (non-expired).
+   * Count active global super_admin grants (non-expired, user not banned).
    */
   countActiveSuperAdmins = async (superAdminRoleName = 'super_admin'): Promise<number> => {
     const result = await this.db
       .select({ count: sql<number>`count(distinct ${userRoles.userId})` })
       .from(userRoles)
       .innerJoin(roles, eq(userRoles.roleId, roles.id))
+      .innerJoin(users, eq(userRoles.userId, users.id))
       .where(
         and(
           eq(roles.name, superAdminRoleName),
           isNull(userRoles.workspaceId),
           isNull(roles.workspaceId),
           eq(roles.isActive, true),
+          sql`(${users.banned} IS NOT TRUE)`,
           sql`(${userRoles.expiresAt} IS NULL OR ${userRoles.expiresAt} > NOW())`,
         ),
       );
