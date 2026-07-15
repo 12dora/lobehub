@@ -10,6 +10,7 @@ export * from './auditLogs';
 export * from './branding';
 export * from './common';
 export * from './connectors';
+export * from './easyauth';
 export * from './identity';
 export * from './jobs';
 export * from './managedPolicy';

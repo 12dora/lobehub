@@ -6,18 +6,22 @@ import {
   MANAGED_ERROR_CODES,
   PLATFORM_ERROR_CODES,
 } from '@/const/platform/errorCodes';
+import type { EnterpriseErrorBody } from '@/types/platform/errors';
 
 export interface MappedEnterpriseError {
   /** Suggested UX action for shared handlers. */
-  action: 'signin' | 'reauth' | 'retry' | 'contact_admin' | 'none';
+  action: 'signin' | 'reauth' | 'retry' | 'contact_admin' | 'request_access' | 'none';
   code: EnterpriseErrorCode;
+  details?: EnterpriseErrorBody['details'];
   i18nKey: string;
 }
 
 const ACTION_BY_CODE: Partial<Record<EnterpriseErrorCode, MappedEnterpriseError['action']>> = {
   [PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED]: 'contact_admin',
+  [PLATFORM_ERROR_CODES.PLATFORM_ACCESS_NOT_GRANTED]: 'request_access',
   [PLATFORM_ERROR_CODES.PLATFORM_REVISION_CONFLICT]: 'retry',
   [PLATFORM_ERROR_CODES.PLATFORM_FEATURE_DISABLED]: 'none',
+  [PLATFORM_ERROR_CODES.PLATFORM_LAST_SUPER_ADMIN]: 'none',
   [ADMIN_ERROR_CODES.ADMIN_ACCESS_DENIED]: 'contact_admin',
   [ADMIN_ERROR_CODES.ADMIN_REAUTH_REQUIRED]: 'reauth',
   [ADMIN_ERROR_CODES.ADMIN_FEATURE_DISABLED]: 'none',
@@ -25,14 +29,52 @@ const ACTION_BY_CODE: Partial<Record<EnterpriseErrorCode, MappedEnterpriseError[
   [MANAGED_ERROR_CODES.MANAGED_SETTING_BY_ADMIN]: 'contact_admin',
 };
 
+const extractBody = (error: unknown): EnterpriseErrorBody | null => {
+  if (!error || typeof error !== 'object') return null;
+
+  // tRPC formatted: data.errorData
+  const data = (error as { data?: { errorData?: unknown } }).data;
+  if (data?.errorData && typeof data.errorData === 'object' && data.errorData) {
+    const body = data.errorData as EnterpriseErrorBody;
+    if (typeof body.code === 'string' && isEnterpriseErrorCode(body.code)) return body;
+  }
+
+  // Raw TRPCError cause: { data: EnterpriseErrorBody }
+  const cause = (error as { cause?: unknown }).cause;
+  if (cause && typeof cause === 'object' && 'data' in cause) {
+    const body = (cause as { data?: unknown }).data;
+    if (body && typeof body === 'object' && 'code' in body) {
+      const code = String((body as { code: unknown }).code);
+      if (isEnterpriseErrorCode(code)) return body as EnterpriseErrorBody;
+    }
+  }
+
+  // Nested shape used by some clients: error.json?.data?.errorData
+  const json = (error as { json?: { data?: { errorData?: unknown } } }).json;
+  if (json?.data?.errorData && typeof json.data.errorData === 'object') {
+    const body = json.data.errorData as EnterpriseErrorBody;
+    if (typeof body.code === 'string' && isEnterpriseErrorCode(body.code)) return body;
+  }
+
+  return null;
+};
+
 /**
- * Map free-form / tRPC error messages to stable enterprise codes for UI.
- *
- * TODO(M02): Prefer structured TRPCError `cause` / `data.errorData` carrying
- * `EnterpriseErrorBody` (`packages/types/src/platform/errors.ts`) instead of
- * parsing free-text `message`. Keep this message fallback for older callers.
+ * Map tRPC / enterprise errors to stable codes for UI.
+ * Prefers structured `errorData` / `cause.data` (EnterpriseErrorBody);
+ * falls back to free-text message matching for older callers.
  */
 export const mapEnterpriseError = (error: unknown): MappedEnterpriseError | null => {
+  const body = extractBody(error);
+  if (body && isEnterpriseErrorCode(body.code)) {
+    return {
+      action: ACTION_BY_CODE[body.code] ?? 'none',
+      code: body.code,
+      details: body.details,
+      i18nKey: `enterprise.error.${body.code}`,
+    };
+  }
+
   const message =
     typeof error === 'string'
       ? error
