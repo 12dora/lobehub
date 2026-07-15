@@ -819,6 +819,13 @@
 			"when": 1783164982287,
 			"tag": "0116_add_task_connector_message_and_verify_updates",
 			"breakpoints": true
+		},
+		{
+			"idx": 117,
+			"version": "7",
+			"when": 1784135988929,
+			"tag": "0117_add_platform_tables",
+			"breakpoints": true
 		}
 	],
 	"version": "6"
