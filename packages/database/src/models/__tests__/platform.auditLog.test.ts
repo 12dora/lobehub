@@ -50,13 +50,23 @@ describe('PlatformAuditLogModel', () => {
     const page = await auditModel.list({ limit: 1, targetType: 'branding' });
     expect(page.items).toHaveLength(1);
     expect(page.nextCursor).toBeTruthy();
+    // Composite cursor is `${iso}|${id}` — pass the string through (not new Date(...)).
+    expect(page.nextCursor).toContain('|');
 
     const page2 = await auditModel.list({
-      cursor: new Date(page.nextCursor!),
+      cursor: page.nextCursor!,
       limit: 10,
       targetType: 'branding',
     });
     expect(page2.items.length).toBeGreaterThanOrEqual(1);
+
+    // Legacy bare-ISO / valid Date still accepted as cursor input.
+    const page3 = await auditModel.list({
+      cursor: page.items[0]!.createdAt,
+      limit: 10,
+      targetType: 'branding',
+    });
+    expect(page3.items).toEqual(expect.any(Array));
   });
 
   it('does not expose an update or delete surface (append-only contract)', () => {
