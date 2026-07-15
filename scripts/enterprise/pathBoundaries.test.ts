@@ -1,0 +1,70 @@
+import { describe, expect, it } from 'vitest';
+
+import {
+  ENTERPRISE_UPSTREAM_MOUNT_POINTS,
+  extractImportSpecifiers,
+  findEnterpriseImportViolations,
+  findPackageReverseImportViolations,
+  isAllowedEnterpriseImporter,
+  isEnterpriseOwnedPath,
+} from './pathBoundaries';
+
+describe('enterprise path boundaries', () => {
+  it('lists the three M00 upstream mount points', () => {
+    expect(ENTERPRISE_UPSTREAM_MOUNT_POINTS).toEqual([
+      'src/business/client/BusinessDesktopRoutes.tsx',
+      'src/business/client/BusinessGlobalProvider.tsx',
+      'apps/server/src/routers/lambda/index.ts',
+    ]);
+  });
+
+  it('treats enterprise trees as owned', () => {
+    expect(isEnterpriseOwnedPath('src/enterprise/client/index.ts')).toBe(true);
+    expect(isEnterpriseOwnedPath('apps/server/src/enterprise/routers/platform.ts')).toBe(true);
+    expect(isEnterpriseOwnedPath('packages/const/src/platform/errorCodes.ts')).toBe(true);
+    expect(isEnterpriseOwnedPath('src/features/Chat/index.tsx')).toBe(false);
+  });
+
+  it('allows only mount points outside enterprise trees to import enterprise', () => {
+    expect(isAllowedEnterpriseImporter('src/business/client/BusinessGlobalProvider.tsx')).toBe(
+      true,
+    );
+    expect(isAllowedEnterpriseImporter('src/features/Chat/index.tsx')).toBe(false);
+  });
+
+  it('extracts import specifiers', () => {
+    const src = `
+      import x from '@/enterprise/client';
+      const y = await import('@/server/enterprise/routers/platform');
+    `;
+    expect(extractImportSpecifiers(src)).toEqual([
+      '@/enterprise/client',
+      '@/server/enterprise/routers/platform',
+    ]);
+  });
+
+  it('flags illegal enterprise imports outside allowlist', () => {
+    const violations = findEnterpriseImportViolations([
+      {
+        path: 'src/features/Foo.tsx',
+        source: `import { x } from '@/enterprise/client';`,
+      },
+      {
+        path: 'src/business/client/BusinessGlobalProvider.tsx',
+        source: `import { EnterprisePlatformProvider } from '@/enterprise/client/providers';`,
+      },
+    ]);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]?.file).toBe('src/features/Foo.tsx');
+  });
+
+  it('flags packages reverse-importing enterprise client', () => {
+    const violations = findPackageReverseImportViolations([
+      {
+        path: 'packages/utils/src/foo.ts',
+        source: `import { x } from '@/enterprise/client';`,
+      },
+    ]);
+    expect(violations).toHaveLength(1);
+  });
+});
