@@ -1,3 +1,9 @@
+export { isKnownEnterpriseErrorMessage, mapEnterpriseError } from './errors/mapEnterpriseError';
+export {
+  type EnterprisePlatformContextValue,
+  default as EnterprisePlatformProvider,
+  useEnterprisePlatform,
+} from './providers/EnterprisePlatformProvider';
 export {
   createEnterpriseModuleRegistry,
   type EnterpriseMenuItem,
@@ -10,3 +16,4 @@ export {
   EnterpriseDesktopRoutesWithoutMainLayout,
   getEnterpriseDesktopRoutesWithoutMainLayout,
 } from './routes';
+export { fetchPlatformCapabilities, fetchPlatformPublicSnapshot } from './services/platform';

@@ -1,4 +1,1 @@
-/**
- * Client services / tRPC adapters for platform APIs (PR-003+).
- */
-export {};
+export { fetchPlatformCapabilities, fetchPlatformPublicSnapshot } from './platform';
