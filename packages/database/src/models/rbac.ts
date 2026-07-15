@@ -287,6 +287,10 @@ export class RbacModel {
    * Update user roles using a transaction to ensure atomicity
    * @param userId User ID
    * @param roleIds Array of role IDs
+   *
+   * @deprecated For platform admin role assignment use `replaceGlobalUserRoles`.
+   * This method deletes *all* role grants (including workspace-scoped) and must
+   * not be reused by the enterprise admin console (M02).
    */
   updateUserRoles = async (userId: string, roleIds: string[]): Promise<void> => {
     // Validate that the roles exist
@@ -313,5 +317,254 @@ export class RbacModel {
         );
       }
     });
+  };
+
+  // ---------------------------------------------------------------------------
+  // Global platform scope (M02)
+  // Strict `roles.workspace_id IS NULL` / `user_roles.workspace_id IS NULL`.
+  // Workspace Owner/Member/Viewer grants never satisfy these methods.
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Permissions from globally-scoped role grants only
+   * (`rbac_roles.workspace_id IS NULL` and `rbac_user_roles.workspace_id IS NULL`).
+   */
+  getGlobalUserPermissions = async (userId?: string): Promise<string[]> => {
+    const targetUserId = userId || this.userId;
+
+    const result = await this.db
+      .select({
+        permissionCode: permissions.code,
+      })
+      .from(userRoles)
+      .innerJoin(roles, eq(userRoles.roleId, roles.id))
+      .innerJoin(rolePermissions, eq(roles.id, rolePermissions.roleId))
+      .innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
+      .where(
+        and(
+          eq(userRoles.userId, targetUserId),
+          isNull(userRoles.workspaceId),
+          isNull(roles.workspaceId),
+          eq(roles.isActive, true),
+          eq(permissions.isActive, true),
+          sql`(${userRoles.expiresAt} IS NULL OR ${userRoles.expiresAt} > NOW())`,
+        ),
+      );
+
+    return [...new Set(result.map((row) => row.permissionCode))];
+  };
+
+  /**
+   * True if the user has the permission via a global (platform) role only.
+   */
+  hasGlobalPermission = async (permissionCode: string, userId?: string): Promise<boolean> => {
+    const targetUserId = userId || this.userId;
+
+    const result = await this.db
+      .select({ count: sql<number>`count(*)` })
+      .from(userRoles)
+      .innerJoin(roles, eq(userRoles.roleId, roles.id))
+      .innerJoin(rolePermissions, eq(roles.id, rolePermissions.roleId))
+      .innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
+      .where(
+        and(
+          eq(userRoles.userId, targetUserId),
+          isNull(userRoles.workspaceId),
+          isNull(roles.workspaceId),
+          inArray(permissions.code, [permissionCode]),
+          eq(roles.isActive, true),
+          eq(permissions.isActive, true),
+          sql`(${userRoles.expiresAt} IS NULL OR ${userRoles.expiresAt} > NOW())`,
+        ),
+      );
+
+    return (result[0]?.count || 0) > 0;
+  };
+
+  hasAnyGlobalPermission = async (permissionCodes: string[], userId?: string): Promise<boolean> => {
+    if (permissionCodes.length === 0) return false;
+
+    const targetUserId = userId || this.userId;
+
+    const result = await this.db
+      .select({ count: sql<number>`count(*)` })
+      .from(userRoles)
+      .innerJoin(roles, eq(userRoles.roleId, roles.id))
+      .innerJoin(rolePermissions, eq(roles.id, rolePermissions.roleId))
+      .innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
+      .where(
+        and(
+          eq(userRoles.userId, targetUserId),
+          isNull(userRoles.workspaceId),
+          isNull(roles.workspaceId),
+          inArray(permissions.code, permissionCodes),
+          eq(roles.isActive, true),
+          eq(permissions.isActive, true),
+          sql`(${userRoles.expiresAt} IS NULL OR ${userRoles.expiresAt} > NOW())`,
+        ),
+      );
+
+    return (result[0]?.count || 0) > 0;
+  };
+
+  /**
+   * Active global roles for a user (`workspace_id IS NULL` on both sides).
+   */
+  getGlobalUserRoles = async (userId?: string): Promise<RoleItem[]> => {
+    const targetUserId = userId || this.userId;
+
+    return await this.db
+      .select({
+        accessedAt: roles.accessedAt,
+        createdAt: roles.createdAt,
+        description: roles.description,
+        displayName: roles.displayName,
+        id: roles.id,
+        isActive: roles.isActive,
+        isSystem: roles.isSystem,
+        metadata: roles.metadata,
+        name: roles.name,
+        updatedAt: roles.updatedAt,
+        workspaceId: roles.workspaceId,
+      })
+      .from(userRoles)
+      .innerJoin(roles, eq(userRoles.roleId, roles.id))
+      .where(
+        and(
+          eq(userRoles.userId, targetUserId),
+          isNull(userRoles.workspaceId),
+          isNull(roles.workspaceId),
+          eq(roles.isActive, true),
+          sql`(${userRoles.expiresAt} IS NULL OR ${userRoles.expiresAt} > NOW())`,
+        ),
+      )
+      .orderBy(userRoles.createdAt);
+  };
+
+  /**
+   * Replace **global** role assignments for a user. Never touches workspace roles.
+   *
+   * @param roleIds Role ids that must all be global (`roles.workspace_id IS NULL`).
+   * @param options.preserveRoleNames Role names whose grants are left untouched
+   *   (e.g. `super_admin` during EasyAuth sync).
+   */
+  replaceGlobalUserRoles = async (
+    userId: string,
+    roleIds: string[],
+    options?: { preserveRoleNames?: string[] },
+  ): Promise<void> => {
+    const preserveRoleNames = options?.preserveRoleNames ?? [];
+
+    if (roleIds.length > 0) {
+      const existingRoles = await this.db.query.roles.findMany({
+        where: inArray(roles.id, roleIds),
+      });
+      if (existingRoles.length !== roleIds.length) {
+        const missingRoleIds = roleIds.filter((id) => !existingRoles.some((r) => r.id === id));
+        throw new Error(`Roles ${missingRoleIds.join(', ')} do not exist`);
+      }
+      const nonGlobal = existingRoles.filter((r) => r.workspaceId != null);
+      if (nonGlobal.length > 0) {
+        throw new Error(
+          `replaceGlobalUserRoles only accepts global roles; got workspace-scoped: ${nonGlobal
+            .map((r) => r.name)
+            .join(', ')}`,
+        );
+      }
+    }
+
+    await this.db.transaction(async (tx) => {
+      // Collect current global grants
+      const current = await tx
+        .select({
+          id: userRoles.id,
+          roleId: userRoles.roleId,
+          roleName: roles.name,
+        })
+        .from(userRoles)
+        .innerJoin(roles, eq(userRoles.roleId, roles.id))
+        .where(
+          and(
+            eq(userRoles.userId, userId),
+            isNull(userRoles.workspaceId),
+            isNull(roles.workspaceId),
+          ),
+        );
+
+      const toDelete = current.filter((row) => !preserveRoleNames.includes(row.roleName));
+      if (toDelete.length > 0) {
+        await tx.delete(userRoles).where(
+          inArray(
+            userRoles.id,
+            toDelete.map((r) => r.id),
+          ),
+        );
+      }
+
+      // Re-insert desired roles (skip ones still preserved and already present)
+      const preservedIds = new Set(
+        current.filter((r) => preserveRoleNames.includes(r.roleName)).map((r) => r.roleId),
+      );
+      const insertIds = roleIds.filter((id) => !preservedIds.has(id));
+      if (insertIds.length > 0) {
+        await tx
+          .insert(userRoles)
+          .values(
+            insertIds.map((roleId) => ({
+              roleId,
+              userId,
+              workspaceId: null,
+            })),
+          )
+          .onConflictDoNothing();
+      }
+    });
+  };
+
+  /**
+   * Count active global super_admin grants (non-expired).
+   */
+  countActiveSuperAdmins = async (superAdminRoleName = 'super_admin'): Promise<number> => {
+    const result = await this.db
+      .select({ count: sql<number>`count(distinct ${userRoles.userId})` })
+      .from(userRoles)
+      .innerJoin(roles, eq(userRoles.roleId, roles.id))
+      .where(
+        and(
+          eq(roles.name, superAdminRoleName),
+          isNull(userRoles.workspaceId),
+          isNull(roles.workspaceId),
+          eq(roles.isActive, true),
+          sql`(${userRoles.expiresAt} IS NULL OR ${userRoles.expiresAt} > NOW())`,
+        ),
+      );
+
+    return Number(result[0]?.count || 0);
+  };
+
+  /**
+   * Whether the user currently holds an active global super_admin role.
+   */
+  isGlobalSuperAdmin = async (
+    userId?: string,
+    superAdminRoleName = 'super_admin',
+  ): Promise<boolean> => {
+    const targetUserId = userId || this.userId;
+    const result = await this.db
+      .select({ count: sql<number>`count(*)` })
+      .from(userRoles)
+      .innerJoin(roles, eq(userRoles.roleId, roles.id))
+      .where(
+        and(
+          eq(userRoles.userId, targetUserId),
+          eq(roles.name, superAdminRoleName),
+          isNull(userRoles.workspaceId),
+          isNull(roles.workspaceId),
+          eq(roles.isActive, true),
+          sql`(${userRoles.expiresAt} IS NULL OR ${userRoles.expiresAt} > NOW())`,
+        ),
+      );
+
+    return (result[0]?.count || 0) > 0;
   };
 }
