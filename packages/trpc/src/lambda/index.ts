@@ -11,6 +11,7 @@
 import { openTelemetry } from '../middleware/openTelemetry';
 import { userAuth } from '../middleware/userAuth';
 import { trpc } from './init';
+import { enterpriseAccessGate } from './middleware/enterpriseAccess';
 import { heteroOperationAuth } from './middleware/heteroOperationAuth';
 import { oidcAuth } from './middleware/oidcAuth';
 
@@ -28,10 +29,15 @@ const baseProcedure = trpc.procedure.use(openTelemetry);
 
 export const publicProcedure = baseProcedure;
 
-// procedure that asserts that the user is logged in
-export const authedProcedure = baseProcedure.use(oidcAuth).use(userAuth);
+/**
+ * Authenticated procedure + enterprise aihub.access gate (M02).
+ * Gate is no-op when ENABLE_PLATFORM_ADMIN is off.
+ * Allowlisted paths (platform.getAccessStatus, …) skip the gate.
+ */
+export const authedProcedure = baseProcedure.use(oidcAuth).use(userAuth).use(enterpriseAccessGate);
 
 // procedure for hetero-agent ingest/finish endpoints — requires a `hetero-operation` JWT
+// (no aihub.access gate — device/runtime paths are not user SPA session traffic)
 export const heteroAuthedProcedure = baseProcedure.use(heteroOperationAuth).use(userAuth);
 
 /**
