@@ -66,6 +66,13 @@ describe('withPlatformPermission', () => {
   });
 
   it('denies with structured PLATFORM_PERMISSION_DENIED', async () => {
+    // Grant base access so enterpriseAccessGate passes; permission check should still fail.
+    const accessRole = await db.query.roles.findFirst({
+      where: (t, { and, eq, isNull }) =>
+        and(eq(t.name, PLATFORM_SYSTEM_ROLES.PLATFORM_USER), isNull(t.workspaceId)),
+    });
+    await db.insert(userRoles).values({ roleId: accessRole!.id, userId, workspaceId: null });
+
     const ctx = { ...(await createContextInner({ userId })), serverDB: db } as never;
     const caller = createCaller(ctx);
     try {

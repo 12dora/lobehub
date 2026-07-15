@@ -2,24 +2,23 @@
  * aihub.access gate (M02).
  * Authenticated users without EasyAuth base access (or super_admin) get
  * PLATFORM_ACCESS_NOT_GRANTED on business APIs.
+ *
+ * Global authedProcedure gate lives in packages/trpc enterpriseAccess middleware.
+ * This module re-exports shared resolution + optional explicit middleware.
  */
 import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
-import { EasyauthGrantSnapshotModel } from '@/database/models/platform/easyauthGrantSnapshot';
-import { RbacModel } from '@/database/models/rbac';
+import { getServerDB } from '@/database/core/db-adaptor';
+import {
+  type PlatformAccessStatus,
+  resolvePlatformAccessStatus,
+} from '@/database/models/platform/accessStatus';
 import type { LobeChatDatabase } from '@/database/type';
 import { trpc } from '@/libs/trpc/lambda/init';
 
 import { parseEasyauthConfig } from '../config/easyauth';
-import { isPlatformAdminFeatureEnabled } from '../featureFlags';
 import { throwEnterpriseError } from './enterpriseErrors';
 
-export interface AccessStatus {
-  accessGranted: boolean;
-  degraded: boolean;
-  grantVersion: number | null;
-  permissionRequestUrl: string | null;
-  reason: 'granted' | 'super_admin' | 'not_granted' | 'feature_disabled';
-}
+export type AccessStatus = PlatformAccessStatus;
 
 /**
  * Resolve whether the principal may use AIHub business APIs.
@@ -29,47 +28,13 @@ export const resolveAccessStatus = async (params: {
   db: LobeChatDatabase;
   userId: string;
 }): Promise<AccessStatus> => {
-  if (!isPlatformAdminFeatureEnabled()) {
-    return {
-      accessGranted: true,
-      degraded: false,
-      grantVersion: null,
-      permissionRequestUrl: null,
-      reason: 'feature_disabled',
-    };
-  }
-
-  const rbac = new RbacModel(params.db, params.userId);
-  if (await rbac.isGlobalSuperAdmin(params.userId)) {
-    return {
-      accessGranted: true,
-      degraded: false,
-      grantVersion: null,
-      permissionRequestUrl: null,
-      reason: 'super_admin',
-    };
-  }
-
   const config = parseEasyauthConfig();
-  const snapshots = new EasyauthGrantSnapshotModel(params.db);
-  const snap = await snapshots.findByUser(params.userId, config.appKey);
-
-  // Also treat any global platform role (except empty) as access
-  const globalRoles = await rbac.getGlobalUserRoles(params.userId);
-  const hasPlatformRole = globalRoles.length > 0;
-
-  const accessGranted = Boolean(snap?.accessGranted) || hasPlatformRole;
-  const permissionRequestUrl = accessGranted
-    ? null
-    : `${config.portalUrl}/apps/${config.appKey}/request`;
-
-  return {
-    accessGranted,
-    degraded: Boolean(snap?.degraded),
-    grantVersion: snap?.grantVersion ?? null,
-    permissionRequestUrl,
-    reason: accessGranted ? 'granted' : 'not_granted',
-  };
+  return resolvePlatformAccessStatus({
+    appKey: config.appKey,
+    db: params.db,
+    portalUrl: config.portalUrl,
+    userId: params.userId,
+  });
 };
 
 export const assertAccessGranted = async (params: {
@@ -91,8 +56,8 @@ export const assertAccessGranted = async (params: {
 };
 
 /**
- * tRPC middleware requiring aihub.access (or super_admin / flag-off).
- * Compose after serverDatabase + authedProcedure.
+ * Explicit middleware (optional). Prefer global authedProcedure enterpriseAccessGate.
+ * Resolves serverDB from ctx or getServerDB().
  */
 export const withAccessGranted = trpc.middleware(async ({ ctx, next }) => {
   const rawUserId = ctx.userId;
@@ -104,13 +69,9 @@ export const withAccessGranted = trpc.middleware(async ({ ctx, next }) => {
     });
   }
 
-  const db = (ctx as { serverDB?: LobeChatDatabase }).serverDB;
-  if (!db) {
-    return throwEnterpriseError({
-      code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
-      message: 'serverDB missing',
-    });
-  }
+  const db =
+    (ctx as { serverDB?: LobeChatDatabase }).serverDB ??
+    ((await getServerDB()) as LobeChatDatabase);
 
   const accessStatus = await assertAccessGranted({
     db,
