@@ -1,0 +1,79 @@
+/**
+ * Platform permission codes (catalog only — RBAC enforcement is M02).
+ * Scope must match global platform resources (`workspace_id IS NULL`).
+ *
+ * Format: platform_<resource>:<action>:all
+ */
+export const PLATFORM_PERMISSIONS = {
+  ADMIN_ACCESS: 'platform_admin:access:all',
+
+  USER_READ: 'platform_user:read:all',
+  USER_UPDATE: 'platform_user:update:all',
+  USER_BAN: 'platform_user:ban:all',
+  USER_SESSION_REVOKE: 'platform_user:session_revoke:all',
+  USER_ROLE_MANAGE: 'platform_user:role_manage:all',
+
+  SETTINGS_READ: 'platform_settings:read:all',
+  SETTINGS_UPDATE: 'platform_settings:update:all',
+  SETTINGS_PUBLISH: 'platform_settings:publish:all',
+
+  POLICY_READ: 'platform_policy:read:all',
+  POLICY_UPDATE: 'platform_policy:update:all',
+  POLICY_PUBLISH: 'platform_policy:publish:all',
+
+  AI_PROVIDER_READ: 'platform_ai_provider:read:all',
+  AI_PROVIDER_CREATE: 'platform_ai_provider:create:all',
+  AI_PROVIDER_UPDATE: 'platform_ai_provider:update:all',
+  AI_PROVIDER_DELETE: 'platform_ai_provider:delete:all',
+  AI_PROVIDER_TEST: 'platform_ai_provider:test:all',
+  AI_PROVIDER_PUBLISH: 'platform_ai_provider:publish:all',
+
+  AI_MODEL_READ: 'platform_ai_model:read:all',
+  AI_MODEL_CREATE: 'platform_ai_model:create:all',
+  AI_MODEL_UPDATE: 'platform_ai_model:update:all',
+  AI_MODEL_DELETE: 'platform_ai_model:delete:all',
+  AI_MODEL_PUBLISH: 'platform_ai_model:publish:all',
+
+  SKILL_READ: 'platform_skill:read:all',
+  SKILL_CREATE: 'platform_skill:create:all',
+  SKILL_UPDATE: 'platform_skill:update:all',
+  SKILL_DELETE: 'platform_skill:delete:all',
+  SKILL_PUBLISH: 'platform_skill:publish:all',
+
+  CONNECTOR_READ: 'platform_connector:read:all',
+  CONNECTOR_CREATE: 'platform_connector:create:all',
+  CONNECTOR_UPDATE: 'platform_connector:update:all',
+  CONNECTOR_DELETE: 'platform_connector:delete:all',
+  CONNECTOR_TEST: 'platform_connector:test:all',
+  CONNECTOR_PUBLISH: 'platform_connector:publish:all',
+
+  AGENT_READ: 'platform_agent:read:all',
+  AGENT_CREATE: 'platform_agent:create:all',
+  AGENT_UPDATE: 'platform_agent:update:all',
+  AGENT_DELETE: 'platform_agent:delete:all',
+  AGENT_PUBLISH: 'platform_agent:publish:all',
+  AGENT_ASSIGN: 'platform_agent:assign:all',
+
+  IDENTITY_READ: 'platform_identity:read:all',
+  IDENTITY_CREATE: 'platform_identity:create:all',
+  IDENTITY_UPDATE: 'platform_identity:update:all',
+  IDENTITY_DELETE: 'platform_identity:delete:all',
+  IDENTITY_TEST: 'platform_identity:test:all',
+  IDENTITY_PUBLISH: 'platform_identity:publish:all',
+
+  BRANDING_READ: 'platform_branding:read:all',
+  BRANDING_UPDATE: 'platform_branding:update:all',
+  BRANDING_PUBLISH: 'platform_branding:publish:all',
+
+  AUDIT_READ: 'platform_audit:read:all',
+  AUDIT_EXPORT: 'platform_audit:export:all',
+
+  SYSTEM_READ: 'platform_system:read:all',
+  SYSTEM_OPERATE: 'platform_system:operate:all',
+
+  OIDC_PUBLISH: 'platform_oidc:publish:all',
+} as const;
+
+export type PlatformPermission = (typeof PLATFORM_PERMISSIONS)[keyof typeof PLATFORM_PERMISSIONS];
+
+export const PLATFORM_PERMISSION_LIST = Object.values(PLATFORM_PERMISSIONS);
