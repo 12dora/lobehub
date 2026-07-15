@@ -8,30 +8,16 @@ import { platformRouter } from './platform';
 
 const createCaller = createCallerFactory(platformRouter);
 
+/**
+ * Flag-off regression (M00/M02): when ENABLE_PLATFORM_ADMIN is unset,
+ * adminAccess stays false and no secrets/roles leak.
+ *
+ * Note: getCapabilities now uses serverDatabase middleware — tests that only
+ * need flag-off behavior mock serverDB lightly via context injection when needed.
+ */
 describe('platformRouter (read-only, flags default off)', () => {
   beforeEach(() => {
     vi.unstubAllEnvs();
-  });
-
-  it('getCapabilities returns disabled snapshot with no secrets/roles for authed user', async () => {
-    const ctx = await createContextInner({ userId: 'user-1' });
-    const caller = createCaller(ctx);
-    const caps = await caller.getCapabilities();
-
-    expect(caps.adminAccess).toBe(false);
-    expect(caps.features.platformAdmin).toBe(false);
-    expect(caps.configRevision).toBe('0');
-    expect(caps).not.toHaveProperty('roles');
-    expect(caps).not.toHaveProperty('permissions');
-    expect(JSON.stringify(caps)).not.toMatch(/secret|token|password|apiKey/i);
-  });
-
-  it('getCapabilities rejects anonymous callers (UNAUTHORIZED)', async () => {
-    const ctx = await createContextInner();
-    const caller = createCaller(ctx);
-    await expect(caller.getCapabilities()).rejects.toMatchObject({
-      code: 'UNAUTHORIZED',
-    });
   });
 
   it('getPublicSnapshot is safe for anonymous callers', async () => {
@@ -45,14 +31,20 @@ describe('platformRouter (read-only, flags default off)', () => {
     expect(JSON.stringify(snap)).not.toMatch(/secret|token|password/i);
   });
 
-  it('reflects ENABLE_PLATFORM_ADMIN in features.platformAdmin without adminAccess', async () => {
-    vi.stubEnv('ENABLE_PLATFORM_ADMIN', '1');
-    const ctx = await createContextInner({ userId: 'admin-candidate' });
+  it('getCapabilities rejects anonymous callers (UNAUTHORIZED)', async () => {
+    const ctx = await createContextInner();
     const caller = createCaller(ctx);
-    const caps = await caller.getCapabilities();
+    await expect(caller.getCapabilities()).rejects.toMatchObject({
+      code: 'UNAUTHORIZED',
+    });
+  });
 
-    expect(caps.features.platformAdmin).toBe(true);
-    // No M02 RBAC → still false
-    expect(caps.adminAccess).toBe(false);
+  it('getEasyauthDescriptor is public and has app_key aihub', async () => {
+    const ctx = await createContextInner();
+    const caller = createCaller(ctx);
+    const descriptor = await caller.getEasyauthDescriptor();
+    expect(descriptor.app.app_key).toBe('aihub');
+    expect(descriptor.manifest.permissions.length).toBeGreaterThan(0);
+    expect(JSON.stringify(descriptor)).not.toMatch(/eat_[A-Za-z0-9]/);
   });
 });

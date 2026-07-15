@@ -39,6 +39,7 @@ const prefixes = {
   platformBranding: 'pbr',
   platformConnectors: 'pcn',
   platformConnectorTools: 'pct',
+  platformEasyauthGrantSnapshots: 'peas',
   platformIdentityProviders: 'pidp',
   platformJobs: 'pjob',
   platformManagedResourcePolicies: 'pmrp',

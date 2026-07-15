@@ -1,0 +1,195 @@
+// @vitest-environment node
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { AIHUB_ACCESS_PERMISSION } from '@/const/platform/permissions';
+import { PLATFORM_SYSTEM_ROLES } from '@/const/platform/roles';
+import { getTestDB } from '@/database/core/getTestDB';
+import { RbacModel } from '@/database/models/rbac';
+import { permissions, rolePermissions, roles, userRoles, users } from '@/database/schemas';
+import { platformEasyauthGrantSnapshots } from '@/database/schemas/platform';
+import type { LobeChatDatabase } from '@/database/type';
+import { seedPlatformRoles } from '@/database/utils/seedPlatformRoles';
+
+import { EasyauthPermissionClient, type EasyauthPermissionSnapshot } from './easyauthClient';
+import {
+  deriveManagedRolesFromSnapshot,
+  EasyauthSyncService,
+  snapshotHasAccess,
+} from './easyauthSync';
+
+const db: LobeChatDatabase = await getTestDB();
+const userId = 'easyauth-sync-user';
+
+const cleanup = async () => {
+  await db.delete(platformEasyauthGrantSnapshots);
+  await db.delete(userRoles);
+  await db.delete(rolePermissions);
+  await db.delete(roles);
+  await db.delete(permissions);
+  await db.delete(users);
+};
+
+beforeEach(async () => {
+  await cleanup();
+  await db.insert(users).values({ id: userId });
+  await seedPlatformRoles(db);
+});
+
+afterEach(async () => {
+  await cleanup();
+});
+
+const sampleSnapshot = (
+  overrides: Partial<EasyauthPermissionSnapshot> = {},
+): EasyauthPermissionSnapshot => ({
+  app_key: 'aihub',
+  catalog_version: 1,
+  grant_version: 3,
+  grants: [{ permission: AIHUB_ACCESS_PERMISSION, scope: 'ALL' }],
+  groups: [{ key: 'user_admin', kind: 'role', name: 'User Admin' }],
+  snapshot_version: 'sv-1',
+  user_id: 'ak_uid_1',
+  ...overrides,
+});
+
+describe('EasyauthSyncService', () => {
+  it('maps groups and grants to managed roles', () => {
+    const rolesFromSnap = deriveManagedRolesFromSnapshot(sampleSnapshot());
+    expect(rolesFromSnap).toContain(PLATFORM_SYSTEM_ROLES.USER_ADMIN);
+    expect(rolesFromSnap).toContain(PLATFORM_SYSTEM_ROLES.PLATFORM_USER);
+    expect(snapshotHasAccess(sampleSnapshot())).toBe(true);
+  });
+
+  it('syncUser applies roles idempotently and preserves super_admin', async () => {
+    const rbac = new RbacModel(db, userId);
+    const superRole = await db.query.roles.findFirst({
+      where: (t, { and, eq, isNull }) =>
+        and(eq(t.name, PLATFORM_SYSTEM_ROLES.SUPER_ADMIN), isNull(t.workspaceId)),
+    });
+    await db.insert(userRoles).values({
+      roleId: superRole!.id,
+      userId,
+      workspaceId: null,
+    });
+
+    const fetch = vi.fn(async () => sampleSnapshot());
+    const client = new EasyauthPermissionClient({
+      config: {
+        appKey: 'aihub',
+        appToken: 'eat_fake_test_token_not_real',
+        baseUrl: 'https://easyauth.test',
+        descriptorToken: null,
+        manifestSchemaVersion: 1,
+        portalUrl: 'https://easyauth.test',
+        timeoutMs: 1000,
+      },
+      fetchImpl: async () =>
+        new Response(JSON.stringify(sampleSnapshot()), {
+          headers: { 'Content-Type': 'application/json' },
+          status: 200,
+        }),
+    });
+    // Override client method
+    client.fetchPermissionSnapshot = fetch;
+
+    const service = new EasyauthSyncService(db, { client });
+    // super_admin bypasses EasyAuth
+    const result = await service.syncUser({
+      externalUserId: 'ak_uid_1',
+      userId,
+    });
+    expect(result.source).toBe('super_admin_bypass');
+    expect(await rbac.isGlobalSuperAdmin(userId)).toBe(true);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('syncUser writes snapshot and global roles for normal user', async () => {
+    const client = new EasyauthPermissionClient({
+      config: {
+        appKey: 'aihub',
+        appToken: 'eat_fake_test_token_not_real',
+        baseUrl: 'https://easyauth.test',
+        descriptorToken: null,
+        manifestSchemaVersion: 1,
+        portalUrl: 'https://easyauth.test',
+        timeoutMs: 1000,
+      },
+    });
+    client.fetchPermissionSnapshot = vi.fn(async () => sampleSnapshot());
+
+    const service = new EasyauthSyncService(db, { client });
+    const result = await service.syncUser({
+      externalUserId: 'ak_uid_1',
+      reason: 'login',
+      userId,
+    });
+
+    expect(result.source).toBe('easyauth');
+    expect(result.accessGranted).toBe(true);
+    expect(result.rolesApplied).toContain(PLATFORM_SYSTEM_ROLES.USER_ADMIN);
+    expect(result.grantVersion).toBe(3);
+
+    // second sync is idempotent
+    const again = await service.syncUser({
+      externalUserId: 'ak_uid_1',
+      userId,
+    });
+    expect(again.rolesApplied).toContain(PLATFORM_SYSTEM_ROLES.USER_ADMIN);
+
+    const rbac = new RbacModel(db, userId);
+    expect(await rbac.hasGlobalPermission('platform_user:ban:all', userId)).toBe(true);
+  });
+
+  it('degrades to cache when EasyAuth is unreachable', async () => {
+    const client = new EasyauthPermissionClient({
+      config: {
+        appKey: 'aihub',
+        appToken: 'eat_fake_test_token_not_real',
+        baseUrl: 'https://easyauth.test',
+        descriptorToken: null,
+        manifestSchemaVersion: 1,
+        portalUrl: 'https://easyauth.test',
+        timeoutMs: 1000,
+      },
+    });
+    client.fetchPermissionSnapshot = vi
+      .fn()
+      .mockResolvedValueOnce(sampleSnapshot())
+      .mockRejectedValueOnce(new Error('network down'));
+
+    const service = new EasyauthSyncService(db, { client });
+    await service.syncUser({ externalUserId: 'ak_uid_1', userId });
+
+    const degraded = await service.syncUser({ externalUserId: 'ak_uid_1', userId });
+    expect(degraded.degraded).toBe(true);
+    expect(degraded.accessGranted).toBe(true);
+    expect(degraded.source).toBe('cache');
+  });
+
+  it('revokes managed roles when EasyAuth returns empty grants', async () => {
+    const client = new EasyauthPermissionClient({
+      config: {
+        appKey: 'aihub',
+        appToken: 'eat_fake_test_token_not_real',
+        baseUrl: 'https://easyauth.test',
+        descriptorToken: null,
+        manifestSchemaVersion: 1,
+        portalUrl: 'https://easyauth.test',
+        timeoutMs: 1000,
+      },
+    });
+    client.fetchPermissionSnapshot = vi
+      .fn()
+      .mockResolvedValueOnce(sampleSnapshot())
+      .mockResolvedValueOnce(sampleSnapshot({ grant_version: 4, grants: [], groups: [] }));
+
+    const service = new EasyauthSyncService(db, { client });
+    await service.syncUser({ externalUserId: 'ak_uid_1', userId });
+    const after = await service.syncUser({ externalUserId: 'ak_uid_1', userId });
+    expect(after.accessGranted).toBe(false);
+    expect(after.rolesApplied).toEqual([]);
+
+    const rbac = new RbacModel(db, userId);
+    expect(await rbac.hasGlobalPermission('platform_user:ban:all', userId)).toBe(false);
+  });
+});

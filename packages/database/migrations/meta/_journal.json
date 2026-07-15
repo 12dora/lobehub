@@ -826,6 +826,13 @@
 			"when": 1784135988929,
 			"tag": "0117_add_platform_tables",
 			"breakpoints": true
+		},
+		{
+			"idx": 118,
+			"version": "7",
+			"when": 1784135989929,
+			"tag": "0118_add_platform_easyauth_snapshots",
+			"breakpoints": true
 		}
 	],
 	"version": "6"
