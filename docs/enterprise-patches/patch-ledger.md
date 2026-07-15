@@ -15,18 +15,25 @@
 | `packages/types/src/serverConfig.ts`             | `EnterprisePublicServerConfig` type               | M00     | fix    | `{ enabled: boolean }` only            |
 | `package.json`                                   | `enterprise:check-paths` script                   | M00     | PR-004 | Path boundary CI entry                 |
 
+## M02 applied
+
+| Upstream file                                                     | Change                                                                 | Module | PR      | Notes                                                               |
+| ----------------------------------------------------------------- | ---------------------------------------------------------------------- | ------ | ------- | ------------------------------------------------------------------- |
+| `packages/const/src/rbac.ts`                                      | Platform scope ALL-only helper; extend SYSTEM\_DEFAULT\_ROLES          | M02    | PR-009  | Prefer new helpers; existing workspace scope unchanged              |
+| `packages/database/src/models/rbac.ts`                            | `hasGlobalPermission` / `replaceGlobalUserRoles` / super-admin helpers | M02    | PR-009  | New methods only; `updateUserRoles` marked deprecated for admin use |
+| `packages/business-server/src/trpc-middlewares/rbacPermission.ts` | Flag-aware stub keeping export shape                                   | M02    | PR-013  | Workspace no-op retained; platform uses enterprise guards           |
+| `apps/server/src/routers/lambda/index.ts`                         | Mount `admin: adminRouter`                                             | M02    | PR-010+ | Alongside existing `platform` mount                                 |
+| `packages/database/src/utils/idGenerator.ts`                      | `platformEasyauthGrantSnapshots` prefix                                | M02    | PR-013A | Append-only namespace                                               |
+| `src/app/(backend)/.well-known/easyauth-app.json/route.ts`        | HTTP EasyAuth descriptor                                               | M02    | PR-013A | Imports only `@/const/platform/*` (no enterprise import markers)    |
+
 ## Planned (do not edit until owning module)
 
-| Upstream file                                                     | Change                 | Module             | Notes                 |
-| ----------------------------------------------------------------- | ---------------------- | ------------------ | --------------------- |
-| `packages/database/src/schemas/index.ts`                          | Export platform schema | M01                | Owned by M01 worktree |
-| `packages/const/src/rbac.ts`                                      | Platform permissions   | M02                | High conflict risk    |
-| `packages/database/src/models/rbac.ts`                            | Global query scope     | M02                | Prefer new methods    |
-| `packages/business-server/src/trpc-middlewares/rbacPermission.ts` | Real platform RBAC     | M02                | Keep export shape     |
-| `apps/server/src/routers/lambda/user.ts`                          | Effective settings     | M05                | Via service wrappers  |
-| Managed guards on AI routers                                      | M06                    | Unified middleware |                       |
-| Better Auth / OIDC config                                         | M11                    | Adapter + LKG      |                       |
-| Branding metadata / auth shell                                    | M12                    | Provider/fallback  |                       |
+| Upstream file                            | Change             | Module             | Notes                |
+| ---------------------------------------- | ------------------ | ------------------ | -------------------- |
+| `apps/server/src/routers/lambda/user.ts` | Effective settings | M05                | Via service wrappers |
+| Managed guards on AI routers             | M06                | Unified middleware |                      |
+| Better Auth / OIDC config                | M11                | Adapter + LKG      |                      |
+| Branding metadata / auth shell           | M12                | Provider/fallback  |                      |
 
 ## Rules
 
