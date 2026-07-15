@@ -38,13 +38,13 @@ export class EnvKeyProvider implements KeyProvider {
       );
     }
 
-    let raw: Buffer;
-    try {
-      raw = Buffer.from(b64, 'base64');
-    } catch {
+    // Buffer.from(…, 'base64') never throws — validate alphabet + decoded length.
+    const normalized = b64.replaceAll(/\s+/g, '');
+    if (!/^[A-Z0-9+/]+={0,2}$/i.test(normalized)) {
       throw secretInvalidInput(`${PLATFORM_MASTER_KEY_ENV} is not valid base64.`);
     }
 
+    const raw = Buffer.from(normalized, 'base64');
     if (raw.length !== AES_256_KEY_BYTES) {
       throw secretInvalidInput(
         `${PLATFORM_MASTER_KEY_ENV} must decode to ${AES_256_KEY_BYTES} bytes (AES-256), got ${raw.length}. ` +
