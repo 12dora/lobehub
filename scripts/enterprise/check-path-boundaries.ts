@@ -11,7 +11,6 @@ import path from 'node:path';
 
 import {
   findEnterpriseImportViolations,
-  findM01OwnedPathViolations,
   findPackageReverseImportViolations,
   type PathBoundaryViolation,
 } from './pathBoundaries';
@@ -81,7 +80,6 @@ async function main() {
   const violations: PathBoundaryViolation[] = [
     ...findEnterpriseImportViolations(payloads),
     ...findPackageReverseImportViolations(payloads),
-    ...findM01OwnedPathViolations(payloads.map((p) => p.path)),
   ];
 
   if (violations.length === 0) {

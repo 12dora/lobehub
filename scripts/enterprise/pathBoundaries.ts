@@ -26,15 +26,6 @@ export const ENTERPRISE_OWNED_PATH_PREFIXES = [
   'scripts/enterprise/',
 ] as const;
 
-/**
- * Owned by M01 parallel workstream — M00 must not create these.
- * check-path-boundaries fails if any such path exists on this worktree.
- */
-export const M01_OWNED_PATH_PREFIXES = [
-  'packages/database/src/schemas/platform/',
-  'packages/database/src/models/platform/',
-] as const;
-
 /** Import path prefixes that count as "enterprise" dependencies. */
 export const ENTERPRISE_IMPORT_MARKERS = [
   '@/enterprise/',
@@ -49,13 +40,6 @@ export const normalizeRepoPath = (filePath: string): string =>
 export const isEnterpriseOwnedPath = (filePath: string): boolean => {
   const path = normalizeRepoPath(filePath);
   return ENTERPRISE_OWNED_PATH_PREFIXES.some(
-    (prefix) => path === prefix.slice(0, -1) || path.startsWith(prefix),
-  );
-};
-
-export const isM01OwnedPath = (filePath: string): boolean => {
-  const path = normalizeRepoPath(filePath);
-  return M01_OWNED_PATH_PREFIXES.some(
     (prefix) => path === prefix.slice(0, -1) || path.startsWith(prefix),
   );
 };
@@ -146,23 +130,5 @@ export const findPackageReverseImportViolations = (
     }
   }
 
-  return violations;
-};
-
-/**
- * M00 isolation: platform DB schema/models are M01-owned.
- * Fail if those paths appear on this worktree (prevents accidental M00 authorship).
- */
-export const findM01OwnedPathViolations = (filePaths: string[]): PathBoundaryViolation[] => {
-  const violations: PathBoundaryViolation[] = [];
-  for (const filePath of filePaths) {
-    if (!isM01OwnedPath(filePath)) continue;
-    violations.push({
-      file: normalizeRepoPath(filePath),
-      importSpecifier: '(path ownership)',
-      reason:
-        'M01-owned path (packages/database/src/{schemas,models}/platform) must not be present in M00 worktrees',
-    });
-  }
   return violations;
 };

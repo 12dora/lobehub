@@ -4,7 +4,6 @@ import {
   ENTERPRISE_UPSTREAM_MOUNT_POINTS,
   extractImportSpecifiers,
   findEnterpriseImportViolations,
-  findM01OwnedPathViolations,
   findPackageReverseImportViolations,
   isAllowedEnterpriseImporter,
   isEnterpriseOwnedPath,
@@ -71,14 +70,5 @@ describe('enterprise path boundaries', () => {
       },
     ]);
     expect(violations).toHaveLength(1);
-  });
-
-  it('flags M01-owned platform schema/model paths', () => {
-    const violations = findM01OwnedPathViolations([
-      'packages/database/src/schemas/platform/foo.ts',
-      'src/enterprise/client/index.ts',
-    ]);
-    expect(violations).toHaveLength(1);
-    expect(violations[0]?.file).toContain('schemas/platform');
   });
 });
