@@ -75,6 +75,10 @@ export class PlatformAuditLogModel {
 
   /**
    * Cursor pagination by createdAt (descending). No unbounded export path.
+   *
+   * TODO(M02/tRPC): cursor input is Date while nextCursor is ISO string — callers
+   * must parse. Same-millisecond multi-row pages can skip rows with `< createdAt`
+   * alone; switch to a composite (createdAt, id) cursor when hanging admin.audit.
    */
   list = async (
     params: ListPlatformAuditLogParams = {},

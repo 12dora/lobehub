@@ -6,36 +6,70 @@
  * - platform_audit_logs before_diff / after_diff
  */
 
-const SENSITIVE_KEY_PATTERN =
-  /(?:^|[_-])(?:api[_-]?key|client[_-]?secret|secret|token|password|passwd|authorization|auth[_-]?header|cookie|set[_-]?cookie|key[_-]?vaults?|encrypted[_-]?|private[_-]?key|access[_-]?key|refresh[_-]?token|bearer|credential)(?:$|[_-])/i;
+/** Strip non-alphanumerics and lowercase for key comparison (accessToken → accesstoken). */
+const normalizeKey = (key: string): string => key.replaceAll(/[^a-z0-9]/gi, '').toLowerCase();
 
+/**
+ * Normalized forms of known sensitive keys.
+ * Stored as normalized strings so camelCase / snake_case / kebab-case all match.
+ */
 const SENSITIVE_KEY_EXACT = new Set(
   [
     'apikey',
-    'api_key',
-    'api-key',
+    'apisecret',
+    'apitoken',
     'clientsecret',
-    'client_secret',
-    'client-secret',
     'secret',
     'token',
     'password',
+    'passwd',
     'authorization',
+    'authorizationheader',
+    'authheader',
     'cookie',
-    'set-cookie',
+    'setcookie',
+    'keyvault',
     'keyvaults',
-    'key_vaults',
     'encryptedkeyvaults',
-    'encrypted_key_vaults',
     'encryptedclientsecret',
-    'encrypted_client_secret',
-    'access_token',
-    'refresh_token',
-    'id_token',
-    'private_key',
+    'accesstoken',
+    'refreshtoken',
+    'idtoken',
+    'sessiontoken',
+    'privatekey',
+    'accesskey',
+    'accesskeyid',
+    'secretaccesskey',
+    'awssecretaccesskey',
+    'openaiapikey',
+    'xapikey',
     'bearer',
-  ].map((k) => k.toLowerCase()),
+    'credential',
+    'credentials',
+  ].map(normalizeKey),
 );
+
+/**
+ * Substring / suffix tokens on the normalized key.
+ * Catches compound names: openaiApiKey → openaiapikey, awsSecretAccessKey, xApiKey, etc.
+ */
+const SENSITIVE_NORMALIZED_TOKENS = [
+  'apikey',
+  'apisecret',
+  'apitoken',
+  'clientsecret',
+  'secret',
+  'token',
+  'password',
+  'passwd',
+  'credential',
+  'authorization',
+  'cookie',
+  'privatekey',
+  'accesskey',
+  'secretaccesskey',
+  'keyvault',
+] as const;
 
 const REDACTED = '[REDACTED]';
 
@@ -44,11 +78,19 @@ const SENSITIVE_VALUE_PATTERN =
   /bearer\s+[\w.~+/=-]+|sk-[a-z0-9]{8,}|ghp_[a-z0-9]{20,}|xox[baprs]-[a-z0-9-]{10,}/i;
 
 export const isSensitiveKey = (key: string): boolean => {
-  const normalized = key.replaceAll(/[^a-z0-9]/gi, '').toLowerCase();
-  if (SENSITIVE_KEY_EXACT.has(key.toLowerCase()) || SENSITIVE_KEY_EXACT.has(normalized)) {
-    return true;
+  const normalized = normalizeKey(key);
+  if (!normalized) return false;
+
+  if (SENSITIVE_KEY_EXACT.has(normalized)) return true;
+
+  // contains / endsWith on normalized form (accessToken, openaiApiKey, awsSecretAccessKey, …)
+  for (const token of SENSITIVE_NORMALIZED_TOKENS) {
+    if (normalized === token || normalized.endsWith(token) || normalized.includes(token)) {
+      return true;
+    }
   }
-  return SENSITIVE_KEY_PATTERN.test(key);
+
+  return false;
 };
 
 const redactString = (value: string): string => {
@@ -90,6 +132,7 @@ const redactValue = (value: unknown): unknown => {
 
 /**
  * Assert helper for tests: ensure a JSON-able structure contains no sensitive material.
+ * Flags unredacted sensitive keys (any value other than [REDACTED]) and known secret value shapes.
  */
 export const containsSensitiveMaterial = (value: unknown): boolean => {
   if (value === null || value === undefined) return false;
@@ -99,14 +142,10 @@ export const containsSensitiveMaterial = (value: unknown): boolean => {
   if (Array.isArray(value)) return value.some((v) => containsSensitiveMaterial(v));
   if (typeof value === 'object') {
     for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-      if (
-        isSensitiveKey(key) &&
-        child !== REDACTED &&
-        child !== undefined &&
-        child !== null && // Key is sensitive and value was not redacted away
-        child !== REDACTED
-      )
+      // Sensitive key still holding non-redacted content
+      if (isSensitiveKey(key) && child !== REDACTED && child !== undefined && child !== null) {
         return true;
+      }
       if (containsSensitiveMaterial(child)) return true;
     }
   }

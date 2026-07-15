@@ -67,4 +67,41 @@ describe('PlatformAuditLogModel', () => {
     expect((model as { update?: unknown }).update).toBeUndefined();
     expect((model as { delete?: unknown }).delete).toBeUndefined();
   });
+
+  it('redacts camelCase token fields before they land in the audit table', async () => {
+    const row = await auditModel.append({
+      action: 'platform.connector.bind',
+      afterDiff: {
+        accessToken: 'opaque-access-token-for-m09-oauth',
+        apiToken: 'opaque-api-token',
+        authorizationHeader: 'opaque-auth-header',
+        awsSecretAccessKey: '[REDACTED]',
+        idToken: 'opaque-id-token-for-oidc',
+        openaiApiKey: '[REDACTED]',
+        sessionToken: 'opaque-session-token',
+        status: 'connected',
+        xApiKey: 'opaque-x-api-key',
+      },
+      result: 'success',
+      targetId: 'binding_1',
+      targetType: 'connector',
+    });
+
+    expect(row.afterDiff).toMatchObject({
+      accessToken: '[REDACTED]',
+      apiToken: '[REDACTED]',
+      authorizationHeader: '[REDACTED]',
+      awsSecretAccessKey: '[REDACTED]',
+      idToken: '[REDACTED]',
+      openaiApiKey: '[REDACTED]',
+      sessionToken: '[REDACTED]',
+      status: 'connected',
+      xApiKey: '[REDACTED]',
+    });
+    expect(containsSensitiveMaterial(row.afterDiff)).toBe(false);
+    expect(JSON.stringify(row.afterDiff)).not.toMatch(/opaque-/i);
+
+    const stored = await auditModel.findById(row.id);
+    expect(JSON.stringify(stored)).not.toMatch(/opaque-/i);
+  });
 });

@@ -6005,7 +6005,7 @@
             }
           ],
           "isUnique": false,
-          "where": "\"user_connectors\".\"workspace_id\" IS NULL AND \"user_connectors\".\"agent_id\" IS NULL",
+          "where": "\"user_connectors\".\"workspace_id\" is null AND \"user_connectors\".\"agent_id\" is null",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -6033,7 +6033,7 @@
             }
           ],
           "isUnique": false,
-          "where": "\"user_connectors\".\"workspace_id\" IS NOT NULL AND \"user_connectors\".\"agent_id\" IS NULL",
+          "where": "\"user_connectors\".\"workspace_id\" is not null AND \"user_connectors\".\"agent_id\" is null",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -6055,7 +6055,7 @@
             }
           ],
           "isUnique": false,
-          "where": "\"user_connectors\".\"agent_id\" IS NOT NULL",
+          "where": "\"user_connectors\".\"agent_id\" is not null",
           "concurrently": false,
           "method": "btree",
           "with": {}

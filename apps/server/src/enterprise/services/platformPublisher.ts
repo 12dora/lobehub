@@ -16,7 +16,7 @@ import {
 
 export { PlatformRevisionConflictError, PlatformRevisionImmutableError };
 
-export type PublishResourceParams = Omit<PublishDraftParams, never> & {
+export type PublishResourceParams = PublishDraftParams & {
   /** Optional scopes to invalidate after publish (e.g. `branding`, `settings`). */
   invalidationScopes?: string[];
 };

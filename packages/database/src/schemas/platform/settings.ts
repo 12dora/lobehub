@@ -28,6 +28,8 @@ export const platformSettingPolicies = pgTable(
   },
   (t) => [
     index('platform_setting_policies_status_idx').on(t.status),
+    // path is already PK; (path, status) mirrors list/01 "path+status" guidance.
+    // Keep for doc parity until list/01 clarifies whether status-only is enough.
     index('platform_setting_policies_path_status_idx').on(t.path, t.status),
   ],
 );
