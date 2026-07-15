@@ -1,0 +1,34 @@
+# 文件清单与校验值
+
+| 文件 | 字节 | SHA-256 |
+| --- | --- | --- |
+| 00_实施总览/00_实施顺序.md | 4885 | 8698404375b3a18acc3e2dc1fc128ce8e44f7797a94dfe90068726f5a3134f89 |
+| 00_实施总览/01_模块依赖矩阵.md | 2095 | 191ab5fabaa27f93e21a6c56b7fa5159b9087d5a710079ddb3cdf25385a2c4bb |
+| 00_实施总览/02_开工门禁与业务决策.md | 6931 | 04620186e25709036772baa3d938ce62e6d23a22370e01708b418589e23ab25c |
+| 00_实施总览/03_阶段0_环境准备记录.md | 6379 | 51dc0e28836dc4877ee38daa9e94c8c9507cfaf1ecc68eb06924836f9a44debc |
+| 01_实施模块/M00_企业扩展骨架与 Feature Flags.md | 4543 | f1b7cb45415bdab3fbece2be4c4b0afe7eccaa375ceae6e21f1d47a12c2e4157 |
+| 01_实施模块/M01_平台数据库、Revision、Audit 与 Job 基础设施.md | 4724 | 7430b25dbc68a97dde265cc2b5fdf6980523768982586cd6faf2543507e7cc03 |
+| 01_实施模块/M02_Global RBAC、超级管理员与真实服务端鉴权.md | 8266 | 86d2d157e47278b657e1407cc37b7321f8661ff6434b3d868ff4c7688fa0dac9 |
+| 01_实施模块/M03_管理后台壳、独立 URL、路由与通用 UI.md | 4425 | 2c22e79fe92a9369553013479d0f4f1046656182c8393b86350084c88a2afa6a |
+| 01_实施模块/M04_用户、会话与子管理员管理.md | 4339 | e73ce8529fe3a525dedbc72968a3b9401252de99db95d77d94c6180b9bd4416e |
+| 01_实施模块/M05_管理员默认设置、用户继承、覆盖、锁定与隐藏.md | 5218 | 852b8009d8a96bab2ae30a71014f8214da31026e5185e06d35bc357442f34538 |
+| 01_实施模块/M06_Managed Resource Guard 与普通用户侧配置收口.md | 4129 | 60f9c01c7ae4f031c40797de329ce669f93103f05244eb8a068e4cfd61120bc0 |
+| 01_实施模块/M07_全局 AI Provider 与 Model 管理.md | 4740 | d484a2c30f735dccac1146f0dfc198f5cb33b8cdd5323e93bef094e4175366ec |
+| 01_实施模块/M08_平台 Skill 目录与版本管理.md | 3624 | d4e8a7bede468281916c6889c899f3b51dcf4d673e6a299730cecbe79957978d |
+| 01_实施模块/M09_平台 Connector、凭据模式与每用户 OAuth.md | 5513 | 799db3eed71c9095b5af8af697a7afd7e090e3a35fb15fcddd143dddd0fcbfbb |
+| 01_实施模块/M10_平台助理、全用户分发与默认 Lobe AI _ inbox 接管.md | 4867 | 6a7bc82769b27c27071d6a339d12beefbf643d2125328e4f0ed99cb2d7200790 |
+| 01_实施模块/M11_外部 OIDC Provider 管理（Authentik _ Generic OIDC）.md | 7713 | afdfc8d8d4f4faf84f731b39b47270d26983db8a0a8093cdcd1f3d2c22defc14 |
+| 01_实施模块/M12_平台名称、Logo 与 Runtime Branding.md | 5025 | 0a7ddaec7e0bc4b51066ae9dafd6bc7d02e1f2ca3900ce6b4e5c400d22a31f56 |
+| 01_实施模块/M13_安全、Secret、SSRF、重新认证与审计加固.md | 4233 | e1f92ba7a7e4665faf163f8ec93126761ff00d4832d2ea22c265ca6b6b352497 |
+| 01_实施模块/M14_发布一致性、缓存、可观测性与多实例运维.md | 3802 | aff854ee581f06503319d815c3ce81f1281a382b9365870f6d02c9b21f45b22b |
+| 01_实施模块/M15_测试、数据库迁移、灰度上线、回滚与上游持续同步.md | 4165 | efe09fb59599e1a82d8bb9f1d3c7fb5eba05b3b7079965b563a135e2284a0236 |
+| 02_工程清单/01_数据库表与迁移清单.md | 3338 | e3fcc76de873d0fafebff1c0fa0198a7866b0e59ca31d26f37e2bb44ebae2735 |
+| 02_工程清单/02_tRPC接口清单.md | 3112 | 25c37befa9276e6e3c9953e4ac8785b20fb8f6c1198b64b0f84b29c5b7d7569f |
+| 02_工程清单/03_前端路由与页面清单.md | 1707 | 42cca2666845f8c99c3b921bf9bab718b6641bdeaeb0be2e85fd8906021de2ca |
+| 02_工程清单/04_权限矩阵.md | 1829 | c048941481cb599098018e2641b5b029932bbb675acf3592b52fd27ecdad3af3 |
+| 02_工程清单/05_建议PR拆分.md | 1829 | 4c07169b1d3b5c976e23b9aa62973df7c954aa1774be9324594a7cdcaf6942dd |
+| 02_工程清单/06_验收与回归矩阵.md | 1461 | 7f40eb3257dc951d1f2efbbcf0fa5bf457e062740ad1a695c41ae0fffda11f74 |
+| 02_工程清单/07_上游直接修改点台账.md | 2003 | 52fb646464c408a5d9b5c83ae7a4fc3b2169e6f300396ae3f933996aaf0ace00 |
+| 03_参考资料/01_源码路径核验.md | 1750 | 5556094e6c3e8ee9884e8f8fa4df239531e0fa71550f6cb4e7a04870c6b82995 |
+| 03_参考资料/02_LobeHub_企业内部版管理后台详细设计.md | 84208 | 421313f1a94428cfcba719ae4aad081911332f8379ac99e0ed377793756a2f44 |
+| README.md | 4275 | 51a5e8d252a01dc4d895b6d69d73a121e883a25c6f10f12a1f6df61fc179af6e |
