@@ -152,15 +152,8 @@ export class PlatformJobModel {
       const candidate = candidates[0];
       if (!candidate) return null;
 
-      // Guard: do not reclaim a non-expired lease held by another worker.
-      if (
-        candidate.status === 'running' &&
-        candidate.leaseUntil &&
-        candidate.leaseUntil > now &&
-        candidate.leaseOwner !== params.workerId
-      ) {
-        return null;
-      }
+      // Active non-expired leases for other workers are already excluded by the
+      // WHERE clause (pending | running with lease_until <= now). No extra guard.
 
       const nextAttempt = candidate.attempt + 1;
       const [claimed] = await tx

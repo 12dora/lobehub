@@ -312,4 +312,33 @@ describe('redactSensitive', () => {
     });
     expect(containsSensitiveMaterial(out)).toBe(false);
   });
+
+  it('redacts camelCase OAuth / cloud secret key variants by normalized matching', () => {
+    // Synthetic opaque values only — no real credentials.
+    const input = {
+      accessToken: 'opaque-oauth-access-token-not-prefixed',
+      apiToken: 'opaque-api-token-value',
+      authorizationHeader: 'custom-auth-header-value',
+      awsSecretAccessKey: '[REDACTED]',
+      displayName: 'keep-me',
+      idToken: 'opaque-oidc-id-token-value',
+      openaiApiKey: '[REDACTED]',
+      sessionToken: 'opaque-session-token-value',
+      xApiKey: 'opaque-x-api-key-value',
+    };
+    const out = redactSensitive(input);
+    expect(out).toEqual({
+      accessToken: '[REDACTED]',
+      apiToken: '[REDACTED]',
+      authorizationHeader: '[REDACTED]',
+      awsSecretAccessKey: '[REDACTED]',
+      displayName: 'keep-me',
+      idToken: '[REDACTED]',
+      openaiApiKey: '[REDACTED]',
+      sessionToken: '[REDACTED]',
+      xApiKey: '[REDACTED]',
+    });
+    expect(containsSensitiveMaterial(out)).toBe(false);
+    expect(JSON.stringify(out)).not.toMatch(/opaque-|FAKESECRET|not-prefixed/i);
+  });
 });

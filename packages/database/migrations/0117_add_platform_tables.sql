@@ -327,9 +327,6 @@ CREATE TABLE IF NOT EXISTS "platform_branding" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-DROP INDEX "user_connectors_personal_identifier_idx";--> statement-breakpoint
-DROP INDEX "user_connectors_workspace_identifier_idx";--> statement-breakpoint
-DROP INDEX "user_connectors_agent_identifier_idx";--> statement-breakpoint
 ALTER TABLE "platform_ai_models" DROP CONSTRAINT IF EXISTS "platform_ai_models_provider_id_platform_ai_providers_id_fk";
 --> statement-breakpoint
 ALTER TABLE "platform_ai_models" ADD CONSTRAINT "platform_ai_models_provider_id_platform_ai_providers_id_fk" FOREIGN KEY ("provider_id") REFERENCES "public"."platform_ai_providers"("id") ON DELETE restrict ON UPDATE no action--> statement-breakpoint
@@ -401,6 +398,3 @@ CREATE UNIQUE INDEX IF NOT EXISTS "platform_identity_providers_provider_key_uniq
 CREATE INDEX IF NOT EXISTS "platform_identity_providers_status_idx" ON "platform_identity_providers" USING btree ("status");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "platform_branding_status_idx" ON "platform_branding" USING btree ("status");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "platform_branding_revision_idx" ON "platform_branding" USING btree ("revision");--> statement-breakpoint
-CREATE INDEX IF NOT EXISTS "user_connectors_personal_identifier_idx" ON "user_connectors" USING btree ("user_id","identifier") WHERE "user_connectors"."workspace_id" IS NULL AND "user_connectors"."agent_id" IS NULL;--> statement-breakpoint
-CREATE INDEX IF NOT EXISTS "user_connectors_workspace_identifier_idx" ON "user_connectors" USING btree ("user_id","workspace_id","identifier") WHERE "user_connectors"."workspace_id" IS NOT NULL AND "user_connectors"."agent_id" IS NULL;--> statement-breakpoint
-CREATE INDEX IF NOT EXISTS "user_connectors_agent_identifier_idx" ON "user_connectors" USING btree ("agent_id","identifier") WHERE "user_connectors"."agent_id" IS NOT NULL;

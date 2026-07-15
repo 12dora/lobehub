@@ -60,3 +60,6 @@ Dockerfile*
 # misc
 # add other ignore file below
 .next
+
+# Drizzle migration meta (drizzle-kit tab style; avoid full-file reformat noise)
+packages/database/migrations/meta/

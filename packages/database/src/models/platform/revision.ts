@@ -202,8 +202,9 @@ export class PlatformRevisionModel {
   };
 
   /**
-   * Rollback: copy a historical revision payload into a new published head.
-   * The previous published revision is marked rolled_back (append-only semantics for history).
+   * Rollback: append a new published head that copies a historical revision payload.
+   * Prior published rows stay immutable (status/payload unchanged); history is
+   * reconstructed from monotonically increasing revision numbers.
    */
   rollbackToRevision = async (params: RollbackToRevisionParams): Promise<PublishResult> => {
     return this.db.transaction(async (tx) => {
