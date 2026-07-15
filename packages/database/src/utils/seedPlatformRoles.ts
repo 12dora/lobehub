@@ -1,6 +1,8 @@
 /**
  * Idempotent seed of global platform roles + platform_* permissions (M02).
  * Roles have `workspace_id IS NULL`. Safe to re-run.
+ *
+ * Call from bootstrap / startup only — not on request hot paths (M3).
  */
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 
@@ -19,7 +21,6 @@ import type { LobeChatDatabase, Transaction } from '../type';
 type Db = LobeChatDatabase | Transaction;
 
 const codeToCategory = (code: string): string => {
-  // platform_user:read:all → platform_user
   const parts = code.split(':');
   return parts[0] || 'platform';
 };
@@ -70,6 +71,38 @@ export const ensurePlatformPermissionsExist = async (db: Db): Promise<Map<string
   return new Map(all.map((p) => [p.code, p.id] as const));
 };
 
+const syncRolePermissions = async (
+  db: Db,
+  roleId: string,
+  desiredPermissionIds: string[],
+): Promise<void> => {
+  const existing = await db
+    .select({ permissionId: rolePermissions.permissionId })
+    .from(rolePermissions)
+    .where(eq(rolePermissions.roleId, roleId));
+
+  const existingSet = new Set(existing.map((r) => r.permissionId));
+  const desiredSet = new Set(desiredPermissionIds);
+
+  const same =
+    existingSet.size === desiredSet.size && [...desiredSet].every((id) => existingSet.has(id));
+  if (same) return;
+
+  // Diff-only rewrite inside caller's transaction when provided.
+  await db.delete(rolePermissions).where(eq(rolePermissions.roleId, roleId));
+  if (desiredPermissionIds.length > 0) {
+    await db
+      .insert(rolePermissions)
+      .values(
+        desiredPermissionIds.map((permissionId) => ({
+          permissionId,
+          roleId,
+        })),
+      )
+      .onConflictDoNothing();
+  }
+};
+
 const upsertGlobalRole = async (
   db: Db,
   roleName: PlatformSystemRoleName,
@@ -82,7 +115,6 @@ const upsertGlobalRole = async (
   let roleId: string;
   if (existing) {
     roleId = existing.id;
-    // Keep display metadata in sync
     await db
       .update(roles)
       .set({
@@ -112,42 +144,40 @@ const upsertGlobalRole = async (
     .map((code) => permissionIdByCode.get(code))
     .filter((id): id is string => Boolean(id));
 
-  // Replace role-permission links for this role so packages stay authoritative.
-  await db.delete(rolePermissions).where(eq(rolePermissions.roleId, roleId));
-  if (desiredPermissionIds.length > 0) {
-    await db
-      .insert(rolePermissions)
-      .values(
-        desiredPermissionIds.map((permissionId) => ({
-          permissionId,
-          roleId,
-        })),
-      )
-      .onConflictDoNothing();
-  }
-
+  await syncRolePermissions(db, roleId, desiredPermissionIds);
   return roleId;
 };
 
 /**
  * Seed all platform system roles (global) and their permission packages.
- * Returns a map of role name → role id.
+ * Wrapped in a single transaction. Returns role name → role id.
+ *
+ * Prefer calling via `ensurePlatformRbacSeeded` at process start / bootstrap,
+ * not on every admin/sync request.
  */
 export const seedPlatformRoles = async (db: Db): Promise<Map<PlatformSystemRoleName, string>> => {
-  const permissionIdByCode = await ensurePlatformPermissionsExist(db);
-  const roleIds = new Map<PlatformSystemRoleName, string>();
+  const run = async (tx: Db) => {
+    const permissionIdByCode = await ensurePlatformPermissionsExist(tx);
+    const roleIds = new Map<PlatformSystemRoleName, string>();
 
-  for (const roleName of Object.values(PLATFORM_SYSTEM_ROLES)) {
-    const id = await upsertGlobalRole(db, roleName, permissionIdByCode);
-    roleIds.set(roleName, id);
+    for (const roleName of Object.values(PLATFORM_SYSTEM_ROLES)) {
+      const id = await upsertGlobalRole(tx, roleName, permissionIdByCode);
+      roleIds.set(roleName, id);
+    }
+
+    return roleIds;
+  };
+
+  // Prefer real transaction when available on LobeChatDatabase.
+  if (typeof (db as LobeChatDatabase).transaction === 'function') {
+    return (db as LobeChatDatabase).transaction(async (tx) => run(tx));
   }
-
-  return roleIds;
+  return run(db);
 };
 
 /**
  * Grant a global platform system role to a user (idempotent).
- * Does not touch workspace roles.
+ * Does not touch workspace roles. Seeds only if the role row is missing.
  */
 export const assignGlobalPlatformRole = async (
   db: Db,
@@ -157,11 +187,15 @@ export const assignGlobalPlatformRole = async (
     userId: string;
   },
 ): Promise<void> => {
-  await seedPlatformRoles(db);
-
-  const role = await db.query.roles.findFirst({
+  let role = await db.query.roles.findFirst({
     where: and(eq(roles.name, params.roleName), isNull(roles.workspaceId)),
   });
+  if (!role) {
+    await seedPlatformRoles(db);
+    role = await db.query.roles.findFirst({
+      where: and(eq(roles.name, params.roleName), isNull(roles.workspaceId)),
+    });
+  }
   if (!role) {
     throw new Error(`Platform role ${params.roleName} not found after seed`);
   }
@@ -178,7 +212,7 @@ export const assignGlobalPlatformRole = async (
 };
 
 /**
- * Look up global role ids by name.
+ * Look up global role ids by name (no seed).
  */
 export const getGlobalRoleIdsByName = async (
   db: Db,

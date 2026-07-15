@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { PERMISSION_ACTIONS, WORKSPACE_SYSTEM_ROLES } from '@lobechat/const/rbac';
+import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
@@ -167,5 +168,33 @@ describe('RbacModel — global platform scope (M02)', () => {
       { roleId: role!.id, userId: otherUserId, workspaceId: null },
     ]);
     expect(await rbac.countActiveSuperAdmins()).toBe(2);
+  });
+
+  it('countActiveSuperAdmins excludes banned users (M2)', async () => {
+    const rbac = new RbacModel(serverDB, userId);
+    const role = await serverDB.query.roles.findFirst({
+      where: (t, { and, eq, isNull }) =>
+        and(eq(t.name, PLATFORM_SYSTEM_ROLES.SUPER_ADMIN), isNull(t.workspaceId)),
+    });
+    await serverDB.insert(userRoles).values([
+      { roleId: role!.id, userId, workspaceId: null },
+      { roleId: role!.id, userId: otherUserId, workspaceId: null },
+    ]);
+    await serverDB.update(users).set({ banned: true }).where(eq(users.id, otherUserId));
+    expect(await rbac.countActiveSuperAdmins()).toBe(1);
+  });
+
+  it('replaceGlobalUserRoles refuses to remove the last non-banned super_admin (M1)', async () => {
+    const rbac = new RbacModel(serverDB, userId);
+    const role = await serverDB.query.roles.findFirst({
+      where: (t, { and, eq, isNull }) =>
+        and(eq(t.name, PLATFORM_SYSTEM_ROLES.SUPER_ADMIN), isNull(t.workspaceId)),
+    });
+    await serverDB.insert(userRoles).values({ roleId: role!.id, userId, workspaceId: null });
+
+    await expect(rbac.replaceGlobalUserRoles(userId, [])).rejects.toMatchObject({
+      code: 'PLATFORM_LAST_SUPER_ADMIN',
+    });
+    expect(await rbac.isGlobalSuperAdmin(userId)).toBe(true);
   });
 });

@@ -7,7 +7,7 @@
 import { WORKSPACE_SYSTEM_ROLES } from '@lobechat/const/rbac';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
+import { ADMIN_ERROR_CODES, PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { PLATFORM_SYSTEM_ROLES } from '@/const/platform/roles';
 import { getTestDB } from '@/database/core/getTestDB';
@@ -93,6 +93,10 @@ beforeEach(async () => {
   await grantGlobalRole(IDS.aiAdmin, PLATFORM_SYSTEM_ROLES.AI_ADMIN);
   await grantGlobalRole(IDS.identityAdmin, PLATFORM_SYSTEM_ROLES.IDENTITY_ADMIN);
   await grantGlobalRole(IDS.auditor, PLATFORM_SYSTEM_ROLES.AUDITOR);
+  // Base aihub.access for non-admin principals so matrix asserts PLATFORM_PERMISSION_DENIED
+  // (not ACCESS_NOT_GRANTED) on admin APIs.
+  await grantGlobalRole(IDS.normal, PLATFORM_SYSTEM_ROLES.PLATFORM_USER);
+  await grantGlobalRole(IDS.workspaceOwner, PLATFORM_SYSTEM_ROLES.PLATFORM_USER);
 
   // workspace owner only
   const { RbacModel } = await import('@/database/models/rbac');
@@ -108,13 +112,6 @@ afterEach(async () => {
   await cleanup();
   vi.unstubAllEnvs();
 });
-
-const callerFor = async (userId: string | null | undefined) => {
-  const ctx = await createContextInner(userId ? { userId } : {});
-  // inject test db
-  (ctx as { serverDB?: LobeChatDatabase }).serverDB = db;
-  return createAdminCaller(ctx as never);
-};
 
 /** Patch serverDatabase middleware by providing serverDB on context via createCaller. */
 const withDbCtx = async (userId?: string) => {
@@ -143,6 +140,7 @@ describe('permission matrix (list/04)', () => {
       ['normal_user', IDS.normal],
     ] as const) {
       it(`${label} cannot list system roles`, async () => {
+        expect.assertions(2);
         const caller = createAdminCaller(await withDbCtx(userId));
         await expect(caller.roles.listSystemRoles()).rejects.toMatchObject({
           code: 'FORBIDDEN',
@@ -201,6 +199,25 @@ describe('permission matrix (list/04)', () => {
       // audit read is allowed for user_admin
       await expect(caller.audit.list({ limit: 1 })).resolves.toBeTruthy();
     });
+
+    it('cannot demote super_admin (matrix hard gate)', async () => {
+      expect.assertions(2);
+      const caller = createAdminCaller(await withDbCtx(IDS.userAdmin));
+      // second super so last-super is not the only reason
+      await grantGlobalRole(IDS.normal, PLATFORM_SYSTEM_ROLES.SUPER_ADMIN);
+      try {
+        await caller.roles.replaceUserGlobalRoles({
+          reason: 'demote super',
+          roleNames: [PLATFORM_SYSTEM_ROLES.AUDITOR],
+          userId: IDS.superAdmin,
+        });
+      } catch (error) {
+        expect((error as { code: string }).code).toBe('FORBIDDEN');
+        expect(getEnterpriseErrorBody(error)?.code).toBe(
+          PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED,
+        );
+      }
+    });
   });
 
   describe('ai_admin', () => {
@@ -210,6 +227,7 @@ describe('permission matrix (list/04)', () => {
       expect(access.permissions).toContain(PLATFORM_PERMISSIONS.AI_MODEL_PUBLISH);
       expect(access.permissions).not.toContain(PLATFORM_PERMISSIONS.USER_BAN);
       expect(access.permissions).not.toContain(PLATFORM_PERMISSIONS.ROLE_UPDATE);
+      expect(access.permissions).not.toContain(PLATFORM_PERMISSIONS.SETTINGS_UPDATE);
 
       await expect(
         caller.roles.replaceUserGlobalRoles({
@@ -229,6 +247,12 @@ describe('permission matrix (list/04)', () => {
       expect(access.permissions).toContain(PLATFORM_PERMISSIONS.BRANDING_UPDATE);
       expect(access.permissions).not.toContain(PLATFORM_PERMISSIONS.USER_BAN);
       expect(access.permissions).not.toContain(PLATFORM_PERMISSIONS.AI_PROVIDER_CREATE);
+    });
+
+    it('cannot list system roles without ROLE_READ package', async () => {
+      // identity_admin package does not include ROLE_READ
+      const caller = createAdminCaller(await withDbCtx(IDS.identityAdmin));
+      await expect(caller.roles.listSystemRoles()).rejects.toMatchObject({ code: 'FORBIDDEN' });
     });
   });
 
@@ -254,9 +278,15 @@ describe('permission matrix (list/04)', () => {
 
   describe('flag off → ADMIN_FEATURE_DISABLED', () => {
     it('denies admin roles when ENABLE_PLATFORM_ADMIN is off', async () => {
+      expect.assertions(2);
       vi.stubEnv('ENABLE_PLATFORM_ADMIN', '0');
       const caller = createAdminCaller(await withDbCtx(IDS.superAdmin));
-      await expect(caller.roles.listSystemRoles()).rejects.toMatchObject({ code: 'FORBIDDEN' });
+      try {
+        await caller.roles.listSystemRoles();
+      } catch (error) {
+        expect((error as { code: string }).code).toBe('FORBIDDEN');
+        expect(getEnterpriseErrorBody(error)?.code).toBe(ADMIN_ERROR_CODES.ADMIN_FEATURE_DISABLED);
+      }
     });
   });
 
@@ -273,6 +303,3 @@ describe('permission matrix (list/04)', () => {
     });
   });
 });
-
-// silence unused
-void callerFor;
