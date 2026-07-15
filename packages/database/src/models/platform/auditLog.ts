@@ -1,4 +1,4 @@
-import { and, desc, eq, lt, or, sql } from 'drizzle-orm';
+import { and, desc, eq, lt, or } from 'drizzle-orm';
 
 import {
   type NewPlatformAuditLog,
@@ -27,13 +27,13 @@ export interface CreatePlatformAuditLogParams {
 
 /**
  * Composite cursor: `${createdAt.toISOString()}|${id}` (desc order).
- * Also accepts a bare ISO date for backward compatibility.
+ * Also accepts a bare ISO date string or a valid Date for backward compatibility.
  */
 export type PlatformAuditCursor = string;
 
 export interface ListPlatformAuditLogParams {
   actorUserId?: string;
-  /** Composite cursor or legacy ISO date string / Date. */
+  /** Composite cursor, legacy ISO date string, or valid Date. */
   cursor?: PlatformAuditCursor | Date;
   limit?: number;
   targetId?: string;
@@ -47,7 +47,10 @@ export const parseAuditCursor = (
   cursor: PlatformAuditCursor | Date | undefined,
 ): { createdAt: Date; id?: string } | null => {
   if (!cursor) return null;
-  if (cursor instanceof Date) return { createdAt: cursor };
+  if (cursor instanceof Date) {
+    if (Number.isNaN(cursor.getTime())) return null;
+    return { createdAt: cursor };
+  }
   if (cursor.includes('|')) {
     const [iso, id] = cursor.split('|');
     const createdAt = new Date(iso);
@@ -102,6 +105,7 @@ export class PlatformAuditLogModel {
   /**
    * Cursor pagination by (createdAt, id) descending.
    * Composite cursor prevents skipping same-millisecond rows.
+   * Callers should pass nextCursor as a string (not `new Date(nextCursor)`).
    */
   list = async (
     params: ListPlatformAuditLogParams = {},
@@ -122,8 +126,6 @@ export class PlatformAuditLogModel {
     const parsed = parseAuditCursor(params.cursor);
     if (parsed) {
       if (parsed.id) {
-        // (createdAt, id) < (cursor.createdAt, cursor.id) in desc order:
-        // createdAt < cursor OR (createdAt = cursor AND id < cursor.id)
         conditions.push(
           or(
             lt(platformAuditLogs.createdAt, parsed.createdAt),
@@ -152,6 +154,3 @@ export class PlatformAuditLogModel {
     return { items, nextCursor };
   };
 }
-
-// silence unused sql import if tree-shaken poorly
-void sql;
