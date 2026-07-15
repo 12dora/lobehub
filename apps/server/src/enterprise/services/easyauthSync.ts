@@ -1,6 +1,9 @@
 /**
  * Sync EasyAuth grants → local snapshot + global rbac_user_roles (M02).
  * Idempotent. Never modifies super_admin or workspace roles.
+ *
+ * Does **not** re-seed platform roles on the hot path (M3) — call
+ * ensurePlatformRbacSeeded / bootstrap at startup.
  */
 import { eq } from 'drizzle-orm';
 
@@ -12,10 +15,11 @@ import {
   PLATFORM_SYSTEM_ROLES,
 } from '@/const/platform/roles';
 import { EasyauthGrantSnapshotModel } from '@/database/models/platform/easyauthGrantSnapshot';
+import { PlatformJobModel } from '@/database/models/platform/job';
 import { RbacModel } from '@/database/models/rbac';
 import { account } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
-import { getGlobalRoleIdsByName, seedPlatformRoles } from '@/database/utils/seedPlatformRoles';
+import { getGlobalRoleIdsByName } from '@/database/utils/seedPlatformRoles';
 
 import { parseEasyauthConfig } from '../config/easyauth';
 import {
@@ -25,12 +29,14 @@ import {
 } from './easyauthClient';
 import { PlatformAuditService } from './platformAudit';
 
+export const EASYAUTH_SYNC_JOB_TYPE = 'platform.easyauth.sync_user';
+
 export interface SyncUserEasyauthResult {
   accessGranted: boolean;
   degraded: boolean;
   grantVersion: number | null;
   rolesApplied: string[];
-  source: 'easyauth' | 'cache' | 'super_admin_bypass' | 'skipped';
+  source: 'easyauth' | 'cache' | 'super_admin_bypass' | 'skipped' | 'unchanged';
 }
 
 const resolveExternalUserId = async (
@@ -48,13 +54,17 @@ const resolveExternalUserId = async (
     .from(account)
     .where(eq(account.userId, userId));
 
-  // Prefer oidc / authentik providers
   const preferred = rows.find((r) => /authentik|oidc|sso|dingtalk/i.test(r.providerId));
   if (preferred?.accountId) return preferred.accountId;
   if (rows[0]?.accountId) return rows[0].accountId;
   return null;
 };
 
+/**
+ * Map EasyAuth snapshot → managed local role names.
+ * Only authorization group keys and aihub.role.* / aihub.access markers —
+ * fine-grained platform_* codes are intentionally ignored (M4).
+ */
 export const deriveManagedRolesFromSnapshot = (
   snapshot: EasyauthPermissionSnapshot,
 ): EasyauthManagedRoleName[] => {
@@ -68,10 +78,6 @@ export const deriveManagedRolesFromSnapshot = (
   for (const grant of snapshot.grants) {
     const mapped = EASYAUTH_PERMISSION_TO_ROLE[grant.permission];
     if (mapped) roles.add(mapped);
-    // Any platform_* grant implies base access
-    if (grant.permission === AIHUB_ACCESS_PERMISSION) {
-      roles.add(PLATFORM_SYSTEM_ROLES.PLATFORM_USER);
-    }
   }
 
   return [...roles];
@@ -79,12 +85,7 @@ export const deriveManagedRolesFromSnapshot = (
 
 export const snapshotHasAccess = (snapshot: EasyauthPermissionSnapshot): boolean => {
   if (snapshot.grants.some((g) => g.permission === AIHUB_ACCESS_PERMISSION)) return true;
-  // Admin role packages also imply access
-  const roles = deriveManagedRolesFromSnapshot(snapshot);
-  return (
-    roles.some((r) => r !== PLATFORM_SYSTEM_ROLES.PLATFORM_USER) ||
-    roles.includes(PLATFORM_SYSTEM_ROLES.PLATFORM_USER)
-  );
+  return deriveManagedRolesFromSnapshot(snapshot).length > 0;
 };
 
 export class EasyauthSyncService {
@@ -92,6 +93,7 @@ export class EasyauthSyncService {
   private readonly rbac: RbacModel;
   private readonly audit: PlatformAuditService;
   private readonly client: EasyauthPermissionClient;
+  private readonly jobs: PlatformJobModel;
 
   constructor(
     private readonly db: LobeChatDatabase,
@@ -101,10 +103,12 @@ export class EasyauthSyncService {
     this.rbac = new RbacModel(db, 'system');
     this.audit = new PlatformAuditService(db);
     this.client = options?.client ?? new EasyauthPermissionClient();
+    this.jobs = new PlatformJobModel(db);
   }
 
   /**
    * Sync one user. Super admins skip EasyAuth (break-glass).
+   * Same grant_version + non-degraded cache short-circuits (M8/minor).
    */
   syncUser = async (params: {
     actorUserId?: string | null;
@@ -113,8 +117,6 @@ export class EasyauthSyncService {
     reason?: string;
     userId: string;
   }): Promise<SyncUserEasyauthResult> => {
-    await seedPlatformRoles(this.db);
-
     if (await this.rbac.isGlobalSuperAdmin(params.userId)) {
       return {
         accessGranted: true,
@@ -132,7 +134,6 @@ export class EasyauthSyncService {
     );
 
     if (!externalUserId) {
-      // Local-only user without IdP binding — no EasyAuth directory entry.
       const cached = await this.snapshots.findByUser(params.userId, this.client.appKey);
       return {
         accessGranted: cached?.accessGranted ?? false,
@@ -150,7 +151,6 @@ export class EasyauthSyncService {
       snapshot = await this.client.fetchPermissionSnapshot(externalUserId);
     } catch (error) {
       const message = error instanceof EasyauthClientError ? error.message : 'EasyAuth sync failed';
-      // Never include token material — message is already safe.
       const cached = await this.snapshots.markDegraded(params.userId, message, this.client.appKey);
       if (cached) {
         snapshot = {
@@ -171,6 +171,25 @@ export class EasyauthSyncService {
           grantVersion: null,
           rolesApplied: [],
           source: 'cache',
+        };
+      }
+    }
+
+    // Short-circuit when grant_version unchanged and cache is healthy (unless force).
+    if (!params.force && !degraded) {
+      const prior = await this.snapshots.findByUser(params.userId, this.client.appKey);
+      if (
+        prior &&
+        !prior.degraded &&
+        prior.grantVersion === snapshot.grant_version &&
+        prior.snapshotVersion === snapshot.snapshot_version
+      ) {
+        return {
+          accessGranted: prior.accessGranted,
+          degraded: false,
+          grantVersion: prior.grantVersion,
+          rolesApplied: (await this.rbac.getGlobalUserRoles(params.userId)).map((r) => r.name),
+          source: 'unchanged',
         };
       }
     }
@@ -203,6 +222,8 @@ export class EasyauthSyncService {
 
     await this.rbac.replaceGlobalUserRoles(params.userId, roleIds, {
       preserveRoleNames: [PLATFORM_SYSTEM_ROLES.SUPER_ADMIN],
+      // EasyAuth path never removes super_admin; last-super protect still applies.
+      protectLastSuperAdmin: true,
     });
 
     await this.audit.append({
@@ -227,6 +248,31 @@ export class EasyauthSyncService {
       rolesApplied: managedRoles,
       source: degraded ? 'cache' : 'easyauth',
     };
+  };
+
+  /**
+   * Fire-and-forget login hook entry (safe to call from Better Auth session create).
+   * Errors are swallowed after mark-degraded path inside syncUser.
+   */
+  syncUserOnLogin = async (userId: string): Promise<void> => {
+    try {
+      await this.syncUser({ reason: 'login', userId });
+    } catch {
+      // Never block login on EasyAuth failures.
+    }
+  };
+
+  /**
+   * Enqueue a platform job for periodic / batch EasyAuth sync of one user.
+   */
+  enqueueUserSyncJob = async (params: { requestedBy?: string | null; userId: string }) => {
+    return this.jobs.enqueue({
+      idempotencyKey: `easyauth-sync:${params.userId}:${Date.now()}`,
+      input: { userId: params.userId },
+      maxAttempts: 3,
+      requestedBy: params.requestedBy ?? null,
+      type: EASYAUTH_SYNC_JOB_TYPE,
+    });
   };
 
   getSyncStatus = async (userId?: string) => {
@@ -258,3 +304,15 @@ export class EasyauthSyncService {
     };
   };
 }
+
+/**
+ * Standalone login-time sync for Better Auth hooks (no TRPC).
+ * Dynamically construct service; never throws.
+ */
+export const runEasyauthSyncOnLogin = async (
+  db: LobeChatDatabase,
+  userId: string,
+): Promise<void> => {
+  const service = new EasyauthSyncService(db);
+  await service.syncUserOnLogin(userId);
+};

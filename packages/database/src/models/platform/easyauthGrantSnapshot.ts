@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 
 import {
   type NewPlatformEasyauthGrantSnapshot,
@@ -44,6 +44,9 @@ export class EasyauthGrantSnapshotModel {
     });
   };
 
+  /**
+   * Atomic upsert on (user_id, app_key) unique index — safe under concurrent first login.
+   */
   upsert = async (
     params: UpsertEasyauthGrantSnapshotParams,
   ): Promise<PlatformEasyauthGrantSnapshotItem> => {
@@ -63,11 +66,11 @@ export class EasyauthGrantSnapshotModel {
       userId: params.userId,
     };
 
-    const existing = await this.findByUser(params.userId, params.appKey);
-    if (existing) {
-      const [row] = await this.db
-        .update(platformEasyauthGrantSnapshots)
-        .set({
+    const [row] = await this.db
+      .insert(platformEasyauthGrantSnapshots)
+      .values(values)
+      .onConflictDoUpdate({
+        set: {
           accessGranted: values.accessGranted,
           catalogVersion: values.catalogVersion,
           degraded: values.degraded,
@@ -79,13 +82,12 @@ export class EasyauthGrantSnapshotModel {
           groups: values.groups,
           lastError: values.lastError,
           snapshotVersion: values.snapshotVersion,
-        })
-        .where(eq(platformEasyauthGrantSnapshots.id, existing.id))
-        .returning();
-      return row;
-    }
+          updatedAt: sql`now()`,
+        },
+        target: [platformEasyauthGrantSnapshots.userId, platformEasyauthGrantSnapshots.appKey],
+      })
+      .returning();
 
-    const [row] = await this.db.insert(platformEasyauthGrantSnapshots).values(values).returning();
     return row;
   };
 

@@ -25,4 +25,10 @@ describe('easyauth manifest', () => {
     expect(keys).toContain(PLATFORM_SYSTEM_ROLES.AUDITOR);
     expect(keys.includes('super_admin')).toBe(false);
   });
+
+  it('does not publish fine-grained platform_* permission codes (role packages only)', () => {
+    const manifest = buildEasyauthManifest();
+    const fineGrained = manifest.permissions.filter((p) => String(p.key).startsWith('platform_'));
+    expect(fineGrained).toEqual([]);
+  });
 });
