@@ -271,10 +271,12 @@ describe('SafeOutboundHttpClient', () => {
     await expect(client.fetch('gopher://example.com/')).rejects.toThrow(/protocol/i);
   });
 
-  it('truncates response body to maxResponseBytes', async () => {
-    const transport = vi.fn<PinnedTransport>(async () =>
-      okResponse({ body: Buffer.alloc(100, 0x61) }),
-    );
+  it('passes maxResponseBytes into transport (hard cap, not post-trim)', async () => {
+    const transport = vi.fn<PinnedTransport>(async (req) => {
+      expect(req.maxResponseBytes).toBe(10);
+      // Transport is responsible for the cap; client does not re-buffer/trim.
+      return okResponse({ body: Buffer.alloc(10, 0x61), truncated: true });
+    });
     const client = new SafeOutboundHttpClient({
       maxResponseBytes: 10,
       resolve: resolveTo([{ address: '1.1.1.1' }]),
@@ -282,6 +284,63 @@ describe('SafeOutboundHttpClient', () => {
     });
     const res = await client.fetch('https://example.com/big');
     expect(res.body.length).toBe(10);
+    expect(res.truncated).toBe(true);
+    expect(transport).toHaveBeenCalledOnce();
+  });
+
+  it('strips Authorization/Cookie on cross-origin redirect', async () => {
+    const transport = vi.fn<PinnedTransport>(async (req) => {
+      if (req.url.hostname === 'a.example') {
+        expect(req.headers.Authorization).toBe('Bearer fake-token-not-real');
+        expect(req.headers.Cookie).toBe('sid=fake');
+        return okResponse({
+          headers: { location: 'https://b.example/next' },
+          status: 302,
+          statusText: 'Found',
+        });
+      }
+      expect(req.url.hostname).toBe('b.example');
+      expect(req.headers.Authorization).toBeUndefined();
+      expect(req.headers.Cookie).toBeUndefined();
+      expect(req.headers['X-Custom']).toBe('keep');
+      return okResponse({ body: Buffer.from('final') });
+    });
+
+    const client = new SafeOutboundHttpClient({
+      resolve: resolveTo([{ address: '1.1.1.1' }]),
+      transport,
+    });
+    const res = await client.fetch('https://a.example/start', {
+      headers: {
+        'Authorization': 'Bearer fake-token-not-real',
+        'Cookie': 'sid=fake',
+        'X-Custom': 'keep',
+      },
+    });
+    expect(await res.text()).toBe('final');
+  });
+
+  it('keeps credentials on same-origin redirect', async () => {
+    const transport = vi.fn<PinnedTransport>(async (req) => {
+      if (req.url.pathname === '/start') {
+        return okResponse({
+          headers: { location: 'https://a.example/next' },
+          status: 302,
+          statusText: 'Found',
+        });
+      }
+      expect(req.headers.Authorization).toBe('Bearer same-origin');
+      return okResponse({ body: Buffer.from('same') });
+    });
+
+    const client = new SafeOutboundHttpClient({
+      resolve: resolveTo([{ address: '1.1.1.1' }]),
+      transport,
+    });
+    const res = await client.fetch('https://a.example/start', {
+      headers: { Authorization: 'Bearer same-origin' },
+    });
+    expect(await res.text()).toBe('same');
   });
 
   it('assertAllowed validates without transport', async () => {
@@ -296,5 +355,99 @@ describe('SafeOutboundHttpClient', () => {
     await expect(client.assertAllowed('http://169.254.169.254/')).rejects.toBeInstanceOf(
       SafeOutboundHttpError,
     );
+  });
+});
+
+describe('defaultPinnedTransport body / deadline bounds (MAJOR-1)', () => {
+  it('stops reading when response exceeds maxResponseBytes and does not buffer unbounded', async () => {
+    const http = await import('node:http');
+    const { defaultPinnedTransport } = await import('./transport');
+
+    let clientAborted = false;
+    const chunk = Buffer.alloc(32 * 1024, 0x62); // 32 KiB
+    const server = http.createServer((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
+      let writes = 0;
+      const pump = () => {
+        // Attempt to stream far more than the client cap (would OOM if buffered unboundedly).
+        while (writes < 400) {
+          writes += 1;
+          if (!res.write(chunk)) {
+            res.once('drain', pump);
+            return;
+          }
+        }
+        res.end();
+      };
+      req.on('aborted', () => {
+        clientAborted = true;
+      });
+      res.on('close', () => {
+        if (!res.writableFinished) clientAborted = true;
+      });
+      pump();
+    });
+
+    await new Promise<void>((resolve) => {
+      server.listen(0, '127.0.0.1', () => resolve());
+    });
+    const addr = server.address();
+    if (!addr || typeof addr === 'string') throw new Error('expected TCP address');
+    const port = addr.port;
+
+    try {
+      const maxResponseBytes = 50_000; // ~50 KiB
+      const result = await defaultPinnedTransport({
+        family: 4,
+        headers: {},
+        maxResponseBytes,
+        method: 'GET',
+        pinnedAddress: '127.0.0.1',
+        timeoutMs: 5_000,
+        url: new URL(`http://127.0.0.1:${port}/flood`),
+      });
+
+      expect(result.body.length).toBeLessThanOrEqual(maxResponseBytes);
+      expect(result.body.length).toBe(maxResponseBytes);
+      expect(result.truncated).toBe(true);
+      // Connection should have been torn down (abort/close before full write).
+      // Give the event loop a tick for 'close'/'aborted'.
+      await new Promise((r) => setTimeout(r, 50));
+      expect(clientAborted || result.truncated).toBe(true);
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((err) => (err ? reject(err) : resolve()));
+      });
+    }
+  });
+
+  it('SafeOutboundHttpClient default transport enforces maxResponseBytes end-to-end', async () => {
+    const http = await import('node:http');
+
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200);
+      // ~200 KiB of body
+      res.end(Buffer.alloc(200 * 1024, 0x63));
+    });
+    await new Promise<void>((resolve) => {
+      server.listen(0, '127.0.0.1', () => resolve());
+    });
+    const addr = server.address();
+    if (!addr || typeof addr === 'string') throw new Error('expected TCP address');
+    const port = addr.port;
+
+    try {
+      const client = new SafeOutboundHttpClient({
+        maxResponseBytes: 8_192,
+        timeoutMs: 5_000,
+      });
+      const res = await client.fetch(`http://127.0.0.1:${port}/`);
+      expect(res.body.length).toBeLessThanOrEqual(8_192);
+      expect(res.truncated).toBe(true);
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((err) => (err ? reject(err) : resolve()));
+      });
+    }
   });
 });

@@ -24,6 +24,14 @@ const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
 const ALLOWED_PROTOCOLS = new Set(['http:', 'https:']);
 
+/** Credential headers that must not follow a cross-origin redirect. */
+const CREDENTIAL_HEADER_NAMES = new Set([
+  'authorization',
+  'cookie',
+  'cookie2',
+  'proxy-authorization',
+]);
+
 export class SafeOutboundHttpClient {
   private readonly policy: OutboundPolicy;
   private readonly resolve: DnsResolver;
@@ -49,7 +57,9 @@ export class SafeOutboundHttpClient {
    * - http/https only
    * - DNS resolve → policy check → pin connect
    * - each redirect re-validates host + resolved IPs
+   * - cross-origin redirects strip Authorization/Cookie
    * - metadata endpoints never allowed
+   * - maxResponseBytes enforced during stream read (not post-buffer trim)
    */
   fetch = async (
     input: string | URL,
@@ -63,7 +73,7 @@ export class SafeOutboundHttpClient {
 
     let method = (init.method ?? 'GET').toUpperCase();
     let body = toBuffer(init.body);
-    const baseHeaders = { ...init.headers };
+    const baseHeaders: Record<string, string> = { ...init.headers };
 
     // Drop hop-by-hop that we control
     delete baseHeaders.host;
@@ -87,7 +97,8 @@ export class SafeOutboundHttpClient {
       const response = await this.transport({
         body: body && method !== 'GET' && method !== 'HEAD' ? body : undefined,
         family: pinned.family,
-        headers: baseHeaders,
+        headers: { ...baseHeaders },
+        maxResponseBytes,
         method,
         pinnedAddress: pinned.address,
         timeoutMs,
@@ -97,10 +108,17 @@ export class SafeOutboundHttpClient {
       if (REDIRECT_STATUSES.has(response.status) && redirects < maxRedirects) {
         const location = headerGet(response.headers, 'location');
         if (!location) {
-          return this.toResponse(response, current, maxResponseBytes);
+          return this.toResponse(response, current);
         }
-        current = this.parseUrl(new URL(location, current));
+        const previous = current;
+        current = this.parseUrl(new URL(location, previous));
         redirects += 1;
+
+        // MINOR-1: do not forward caller credentials across origins
+        if (!isSameOrigin(previous, current)) {
+          stripCredentialHeaders(baseHeaders);
+        }
+
         // RFC: 303 switches to GET; 301/302 historically do for browsers — we follow GET for 301/302/303
         if (response.status === 303 || response.status === 302 || response.status === 301) {
           method = 'GET';
@@ -113,7 +131,7 @@ export class SafeOutboundHttpClient {
         throw ssrfBlocked('too many redirects', { maxRedirects, url: current.toString() });
       }
 
-      return this.toResponse(response, current, maxResponseBytes);
+      return this.toResponse(response, current);
     }
   };
 
@@ -172,14 +190,12 @@ export class SafeOutboundHttpClient {
       headers: Record<string, string | string[] | undefined>;
       status: number;
       statusText: string;
+      truncated?: boolean;
     },
     url: URL,
-    maxResponseBytes: number,
   ): SafeOutboundResponse {
-    let body = raw.body;
-    if (body.length > maxResponseBytes) {
-      body = body.subarray(0, maxResponseBytes);
-    }
+    // Transport already enforced maxResponseBytes; do not re-buffer/trim large bodies here.
+    const body = raw.body;
 
     const headers = new Headers();
     for (const [key, value] of Object.entries(raw.headers)) {
@@ -201,6 +217,7 @@ export class SafeOutboundHttpClient {
       status: raw.status,
       statusText: raw.statusText,
       text: async () => body.toString('utf8'),
+      truncated: raw.truncated === true,
       url: url.toString(),
     };
   }
@@ -225,6 +242,19 @@ const headerGet = (
     }
   }
   return undefined;
+};
+
+/** Same origin = scheme + host (hostname + port) match. */
+export const isSameOrigin = (a: URL, b: URL): boolean =>
+  a.protocol === b.protocol && a.host === b.host;
+
+/** Strip credential headers in place (case-insensitive key match). */
+export const stripCredentialHeaders = (headers: Record<string, string>): void => {
+  for (const key of Object.keys(headers)) {
+    if (CREDENTIAL_HEADER_NAMES.has(key.toLowerCase())) {
+      delete headers[key];
+    }
+  }
 };
 
 /** Factory with G-07 defaults (private allowed, metadata blocked). */

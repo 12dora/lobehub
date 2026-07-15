@@ -14,9 +14,19 @@ export interface PinnedTransportRequest {
   body?: Buffer;
   family: 4 | 6;
   headers: Record<string, string>;
+  /**
+   * Hard cap on response body bytes while streaming.
+   * Transport must stop reading and destroy the connection once exceeded
+   * (do not buffer unbounded then truncate).
+   */
+  maxResponseBytes: number;
   method: string;
   /** Connect to this IP (DNS pin). */
   pinnedAddress: string;
+  /**
+   * Absolute wall-clock deadline for the entire request (ms), and socket
+   * idle timeout. Continuous streaming still cannot exceed this total.
+   */
   timeoutMs: number;
   url: URL;
 }
@@ -26,6 +36,8 @@ export interface PinnedTransportResponse {
   headers: Record<string, string | string[] | undefined>;
   status: number;
   statusText: string;
+  /** True when the body was cut short by maxResponseBytes. */
+  truncated?: boolean;
 }
 
 /** Injectable low-level transport that already pins to a resolved IP. */
@@ -48,7 +60,10 @@ export interface SafeOutboundHttpClientOptions {
    */
   allowlist?: string[];
   maxRedirects?: number;
-  /** Soft cap on response body bytes (default 5 MiB). */
+  /**
+   * Hard cap on response body bytes enforced during stream read (default 5 MiB).
+   * Excess data is not buffered; the connection is destroyed.
+   */
   maxResponseBytes?: number;
   mode?: OutboundPolicyMode;
   /** Inject resolver (tests / custom). Default: dns.promises.lookup all. */
@@ -67,5 +82,7 @@ export interface SafeOutboundResponse {
   status: number;
   statusText: string;
   text: () => Promise<string>;
+  /** True when body hit maxResponseBytes and the connection was cut. */
+  truncated: boolean;
   url: string;
 }

@@ -29,12 +29,14 @@ export interface EnvelopeV1 {
 
 const b64url = (buf: Buffer | Uint8Array): string => Buffer.from(buf).toString('base64url');
 
+/** base64url alphabet only — Buffer.from does not throw on garbage. */
+const BASE64URL_RE = /^[\w-]+={0,2}$/;
+
 const fromB64url = (s: string): Buffer => {
-  try {
-    return Buffer.from(s, 'base64url');
-  } catch {
+  if (typeof s !== 'string' || s.length === 0 || !BASE64URL_RE.test(s)) {
     throw secretInvalidInput('Envelope field is not valid base64url');
   }
+  return Buffer.from(s, 'base64url');
 };
 
 const aesGcmEncrypt = (
