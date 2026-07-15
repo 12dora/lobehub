@@ -13,6 +13,8 @@ import { checksumPayload } from './checksum';
 import { PlatformRevisionConflictError, PlatformRevisionImmutableError } from './errors';
 import { redactSensitive } from './redact';
 
+export type { PlatformResourceRevisionItem, PlatformResourceType, PlatformRevisionStatus };
+
 export interface ResourcePointerAdapter {
   /**
    * Lock the current resource row and return its revision.

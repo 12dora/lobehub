@@ -8,6 +8,8 @@ import {
 import type { LobeChatDatabase, Transaction } from '../../type';
 import { redactSensitive } from './redact';
 
+export type { PlatformAuditLogItem };
+
 export interface CreatePlatformAuditLogParams {
   action: string;
   actorUserId?: string | null;
