@@ -7,4 +7,5 @@
  *
  * No tRPC routes are mounted here — consumer modules wire as needed.
  */
+export * from './redaction';
 export * from './secret';
