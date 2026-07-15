@@ -1,4 +1,6 @@
-/**
- * Enterprise providers (EnterprisePlatformProvider lands in PR-003).
- */
-export {};
+export {
+  type EnterprisePlatformContextValue,
+  default as EnterprisePlatformProvider,
+  type EnterprisePlatformProviderProps,
+  useEnterprisePlatform,
+} from './EnterprisePlatformProvider';
