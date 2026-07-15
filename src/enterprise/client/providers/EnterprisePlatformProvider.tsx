@@ -10,6 +10,7 @@ import {
   useState,
 } from 'react';
 
+import { useServerConfigStore } from '@/store/serverConfig';
 import {
   DISABLED_PLATFORM_CAPABILITIES,
   type PlatformCapabilities,
@@ -42,13 +43,22 @@ export interface EnterprisePlatformProviderProps {
 
 /**
  * Initializes public platform capability context.
- * Default snapshots match closed feature flags so the UI matches upstream LobeHub
- * until server flags and RBAC grant capabilities.
+ *
+ * Network policy (M00 DoD):
+ * - Default state is DISABLED_* (no admin / managed resources).
+ * - Does **not** call platform.* until `config.getGlobalConfig` has hydrated and
+ *   `serverConfig.enterprise.enabled === true` (any enterprise env flag on).
+ * - When all flags are off, cold start adds **zero** platform.* requests.
  */
 export default function EnterprisePlatformProvider({
   children,
   disableFetch = false,
 }: EnterprisePlatformProviderProps) {
+  const serverConfigInit = useServerConfigStore((s) => s.serverConfigInit);
+  const enterpriseEnabled = useServerConfigStore(
+    (s) => s.serverConfig.enterprise?.enabled === true,
+  );
+
   const [capabilities, setCapabilities] = useState<PlatformCapabilities>(
     DISABLED_PLATFORM_CAPABILITIES,
   );
@@ -60,6 +70,8 @@ export default function EnterprisePlatformProvider({
 
   const refresh = useCallback(async () => {
     if (disableFetch) return;
+    // Gate: only hit platform.* when global config says enterprise is on.
+    if (!enterpriseEnabled) return;
 
     setLoading(true);
     setError(null);
@@ -76,11 +88,21 @@ export default function EnterprisePlatformProvider({
     } finally {
       setLoading(false);
     }
-  }, [disableFetch]);
+  }, [disableFetch, enterpriseEnabled]);
 
   useEffect(() => {
+    if (disableFetch) return;
+    if (!serverConfigInit) return;
+    if (!enterpriseEnabled) {
+      // Explicitly stay on disabled snapshots — no network.
+      setCapabilities(DISABLED_PLATFORM_CAPABILITIES);
+      setPublicSnapshot(DISABLED_PLATFORM_PUBLIC_SNAPSHOT);
+      setLoading(false);
+      setError(null);
+      return;
+    }
     void refresh();
-  }, [refresh]);
+  }, [disableFetch, serverConfigInit, enterpriseEnabled, refresh]);
 
   const value = useMemo<EnterprisePlatformContextValue>(
     () => ({

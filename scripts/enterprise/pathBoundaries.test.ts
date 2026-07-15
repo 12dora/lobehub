@@ -4,18 +4,23 @@ import {
   ENTERPRISE_UPSTREAM_MOUNT_POINTS,
   extractImportSpecifiers,
   findEnterpriseImportViolations,
+  findM01OwnedPathViolations,
   findPackageReverseImportViolations,
   isAllowedEnterpriseImporter,
   isEnterpriseOwnedPath,
 } from './pathBoundaries';
 
 describe('enterprise path boundaries', () => {
-  it('lists the three M00 upstream mount points', () => {
-    expect(ENTERPRISE_UPSTREAM_MOUNT_POINTS).toEqual([
+  it('lists M00 upstream mount points including global config gate', () => {
+    expect(ENTERPRISE_UPSTREAM_MOUNT_POINTS).toContain(
       'src/business/client/BusinessDesktopRoutes.tsx',
+    );
+    expect(ENTERPRISE_UPSTREAM_MOUNT_POINTS).toContain(
       'src/business/client/BusinessGlobalProvider.tsx',
-      'apps/server/src/routers/lambda/index.ts',
-    ]);
+    );
+    expect(ENTERPRISE_UPSTREAM_MOUNT_POINTS).toContain('apps/server/src/routers/lambda/index.ts');
+    expect(ENTERPRISE_UPSTREAM_MOUNT_POINTS).toContain('apps/server/src/globalConfig/index.ts');
+    expect(ENTERPRISE_UPSTREAM_MOUNT_POINTS).toContain('packages/types/src/serverConfig.ts');
   });
 
   it('treats enterprise trees as owned', () => {
@@ -66,5 +71,14 @@ describe('enterprise path boundaries', () => {
       },
     ]);
     expect(violations).toHaveLength(1);
+  });
+
+  it('flags M01-owned platform schema/model paths', () => {
+    const violations = findM01OwnedPathViolations([
+      'packages/database/src/schemas/platform/foo.ts',
+      'src/enterprise/client/index.ts',
+    ]);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]?.file).toContain('schemas/platform');
   });
 });

@@ -27,6 +27,10 @@ const ACTION_BY_CODE: Partial<Record<EnterpriseErrorCode, MappedEnterpriseError[
 
 /**
  * Map free-form / tRPC error messages to stable enterprise codes for UI.
+ *
+ * TODO(M02): Prefer structured TRPCError `cause` / `data.errorData` carrying
+ * `EnterpriseErrorBody` (`packages/types/src/platform/errors.ts`) instead of
+ * parsing free-text `message`. Keep this message fallback for older callers.
  */
 export const mapEnterpriseError = (error: unknown): MappedEnterpriseError | null => {
   const message =

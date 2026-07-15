@@ -4,9 +4,14 @@ import {
   isEnterpriseFlagTruthy,
 } from '@/const/platform/featureFlags';
 
-export type EnterpriseFeatureFlagEnv = Partial<
-  Record<keyof EnterpriseFeatureFlags | 'ENABLE_ENTERPRISE_ADMIN', string | undefined>
->;
+/**
+ * Env bag for enterprise flags.
+ * Accepts `process.env` (ProcessEnv) and plain maps in tests.
+ * Known keys: ENABLE_PLATFORM_ADMIN, ENABLE_ENTERPRISE_ADMIN (alias),
+ * ENABLE_PLATFORM_MANAGED_*, ENABLE_PLATFORM_SETTINGS_POLICY,
+ * ENABLE_RUNTIME_BRANDING, ENABLE_DATABASE_OIDC.
+ */
+export type EnterpriseFeatureFlagEnv = Record<string, string | undefined>;
 
 /**
  * Parse enterprise feature flags from environment (or injected map).
@@ -39,6 +44,11 @@ export const getEnterpriseFeatureFlags = (): EnterpriseFeatureFlags =>
 export const isPlatformAdminFeatureEnabled = (
   flags: EnterpriseFeatureFlags = getEnterpriseFeatureFlags(),
 ): boolean => flags.ENABLE_PLATFORM_ADMIN;
+
+/** True when any enterprise flag is on — gates client platform.* fetches. */
+export const isAnyEnterpriseFeatureEnabled = (
+  flags: EnterpriseFeatureFlags = getEnterpriseFeatureFlags(),
+): boolean => Object.values(flags).some(Boolean);
 
 /** Snapshot of defaults for regression tests (flags closed). */
 export const getDefaultEnterpriseFeatureFlags = (): EnterpriseFeatureFlags => ({

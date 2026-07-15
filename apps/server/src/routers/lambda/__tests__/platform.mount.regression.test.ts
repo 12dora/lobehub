@@ -13,7 +13,7 @@ const createCaller = createCallerFactory(lambdaRouter);
  * Default env must yield disabled snapshots without secrets/roles.
  */
 describe('lambdaRouter platform mount (flag-off)', () => {
-  it('exposes platform.getCapabilities with disabled defaults', async () => {
+  it('exposes platform.getCapabilities with disabled defaults for authed user', async () => {
     const ctx = await createContextInner({ userId: 'u1' });
     const caller = createCaller(ctx);
     const caps = await caller.platform.getCapabilities();
@@ -22,6 +22,14 @@ describe('lambdaRouter platform mount (flag-off)', () => {
     expect(caps.features.platformAdmin).toBe(false);
     expect(caps).not.toHaveProperty('roles');
     expect(caps).not.toHaveProperty('permissions');
+  });
+
+  it('rejects anonymous getCapabilities', async () => {
+    const ctx = await createContextInner();
+    const caller = createCaller(ctx);
+    await expect(caller.platform.getCapabilities()).rejects.toMatchObject({
+      code: 'UNAUTHORIZED',
+    });
   });
 
   it('exposes platform.getPublicSnapshot for anonymous', async () => {

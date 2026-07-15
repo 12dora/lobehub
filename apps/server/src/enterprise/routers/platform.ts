@@ -1,4 +1,4 @@
-import { publicProcedure, router } from '@/libs/trpc/lambda';
+import { authedProcedure, publicProcedure, router } from '@/libs/trpc/lambda';
 
 import { parseEnterpriseFeatureFlags } from '../featureFlags';
 import { buildPlatformCapabilities } from '../services/platformCapabilities';
@@ -8,11 +8,11 @@ import { buildPlatformPublicSnapshot } from '../services/platformPublicSnapshot'
  * Read-only platform router (M00).
  * Mounted on lambda root in PR-003. Does not perform mutations.
  *
- * - getCapabilities: public surface for current principal (adminAccess needs M02 RBAC).
+ * - getCapabilities: **authenticated** principal only (M00 §8 / 02 清单「本人」).
  * - getPublicSnapshot: anonymous-safe branding / login flags.
  */
 export const platformRouter = router({
-  getCapabilities: publicProcedure.query(({ ctx }) => {
+  getCapabilities: authedProcedure.query(({ ctx }) => {
     const flags = parseEnterpriseFeatureFlags(process.env);
 
     // M00: no platform RBAC yet — never grant adminAccess from client-only signals.

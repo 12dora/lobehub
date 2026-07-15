@@ -1,25 +1,8 @@
 /**
- * Enterprise feature flag state shape.
- * Canonical defaults live in `@/const/platform` (packages/const).
+ * Re-export enterprise flag types from the single runtime source of truth.
+ * Do not re-declare keys here — see `packages/const/src/platform/featureFlags.ts`.
  */
-export type EnterpriseFeatureFlagKey =
-  | 'ENABLE_PLATFORM_ADMIN'
-  | 'ENABLE_ENTERPRISE_ADMIN'
-  | 'ENABLE_PLATFORM_MANAGED_AI'
-  | 'ENABLE_PLATFORM_MANAGED_SKILLS'
-  | 'ENABLE_PLATFORM_MANAGED_CONNECTORS'
-  | 'ENABLE_PLATFORM_MANAGED_AGENTS'
-  | 'ENABLE_PLATFORM_SETTINGS_POLICY'
-  | 'ENABLE_RUNTIME_BRANDING'
-  | 'ENABLE_DATABASE_OIDC';
-
-export interface EnterpriseFeatureFlags {
-  ENABLE_DATABASE_OIDC: boolean;
-  ENABLE_PLATFORM_ADMIN: boolean;
-  ENABLE_PLATFORM_MANAGED_AGENTS: boolean;
-  ENABLE_PLATFORM_MANAGED_AI: boolean;
-  ENABLE_PLATFORM_MANAGED_CONNECTORS: boolean;
-  ENABLE_PLATFORM_MANAGED_SKILLS: boolean;
-  ENABLE_PLATFORM_SETTINGS_POLICY: boolean;
-  ENABLE_RUNTIME_BRANDING: boolean;
-}
+export type {
+  EnterpriseFeatureFlagKey,
+  EnterpriseFeatureFlags,
+} from '../../../const/src/platform/featureFlags';
