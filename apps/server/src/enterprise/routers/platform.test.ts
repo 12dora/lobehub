@@ -13,7 +13,7 @@ describe('platformRouter (read-only, flags default off)', () => {
     vi.unstubAllEnvs();
   });
 
-  it('getCapabilities returns disabled snapshot with no secrets/roles', async () => {
+  it('getCapabilities returns disabled snapshot with no secrets/roles for authed user', async () => {
     const ctx = await createContextInner({ userId: 'user-1' });
     const caller = createCaller(ctx);
     const caps = await caller.getCapabilities();
@@ -24,6 +24,14 @@ describe('platformRouter (read-only, flags default off)', () => {
     expect(caps).not.toHaveProperty('roles');
     expect(caps).not.toHaveProperty('permissions');
     expect(JSON.stringify(caps)).not.toMatch(/secret|token|password|apiKey/i);
+  });
+
+  it('getCapabilities rejects anonymous callers (UNAUTHORIZED)', async () => {
+    const ctx = await createContextInner();
+    const caller = createCaller(ctx);
+    await expect(caller.getCapabilities()).rejects.toMatchObject({
+      code: 'UNAUTHORIZED',
+    });
   });
 
   it('getPublicSnapshot is safe for anonymous callers', async () => {

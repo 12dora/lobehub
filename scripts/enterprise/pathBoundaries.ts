@@ -8,6 +8,11 @@ export const ENTERPRISE_UPSTREAM_MOUNT_POINTS = [
   'src/business/client/BusinessDesktopRoutes.tsx',
   'src/business/client/BusinessGlobalProvider.tsx',
   'apps/server/src/routers/lambda/index.ts',
+  // M00 mount #4: enterprise gate on GlobalServerConfig
+  'apps/server/src/globalConfig/index.ts',
+  'packages/types/src/serverConfig.ts',
+  // script entry only
+  'package.json',
 ] as const;
 
 /** Paths where enterprise implementation is allowed freely. */
@@ -23,7 +28,7 @@ export const ENTERPRISE_OWNED_PATH_PREFIXES = [
 
 /**
  * Owned by M01 parallel workstream — M00 must not create these.
- * CI still allows them if present (other worktree), but flags new M00 commits via policy docs.
+ * check-path-boundaries fails if any such path exists on this worktree.
  */
 export const M01_OWNED_PATH_PREFIXES = [
   'packages/database/src/schemas/platform/',
@@ -48,6 +53,13 @@ export const isEnterpriseOwnedPath = (filePath: string): boolean => {
   );
 };
 
+export const isM01OwnedPath = (filePath: string): boolean => {
+  const path = normalizeRepoPath(filePath);
+  return M01_OWNED_PATH_PREFIXES.some(
+    (prefix) => path === prefix.slice(0, -1) || path.startsWith(prefix),
+  );
+};
+
 export const isAllowedUpstreamMountPoint = (filePath: string): boolean => {
   const path = normalizeRepoPath(filePath);
   return (ENTERPRISE_UPSTREAM_MOUNT_POINTS as readonly string[]).includes(path);
@@ -56,7 +68,9 @@ export const isAllowedUpstreamMountPoint = (filePath: string): boolean => {
 export const isAllowedEnterpriseImporter = (filePath: string): boolean =>
   isEnterpriseOwnedPath(filePath) ||
   isAllowedUpstreamMountPoint(filePath) ||
-  // tests colocated with mounts
+  // TODO(M15): tighten — global *.test.* / __tests__ exemption lets non-enterprise
+  // test files import @/enterprise freely. Prefer allowlisting enterprise + mount
+  // colocated tests only once M03+ suites stabilize.
   /\/__tests__\//.test(normalizeRepoPath(filePath)) ||
   /\.test\.[cm]?[jt]sx?$/.test(normalizeRepoPath(filePath));
 
@@ -132,5 +146,23 @@ export const findPackageReverseImportViolations = (
     }
   }
 
+  return violations;
+};
+
+/**
+ * M00 isolation: platform DB schema/models are M01-owned.
+ * Fail if those paths appear on this worktree (prevents accidental M00 authorship).
+ */
+export const findM01OwnedPathViolations = (filePaths: string[]): PathBoundaryViolation[] => {
+  const violations: PathBoundaryViolation[] = [];
+  for (const filePath of filePaths) {
+    if (!isM01OwnedPath(filePath)) continue;
+    violations.push({
+      file: normalizeRepoPath(filePath),
+      importSpecifier: '(path ownership)',
+      reason:
+        'M01-owned path (packages/database/src/{schemas,models}/platform) must not be present in M00 worktrees',
+    });
+  }
   return violations;
 };

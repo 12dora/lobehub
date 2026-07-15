@@ -1,11 +1,15 @@
 /**
- * Enterprise business error code prefixes (M00).
- * Runtime const values live in `@/const/platform/errorCodes`.
+ * Error code unions from the runtime catalog (single source of truth).
+ * Prefer `@/const/platform/errorCodes` for values; types re-export for convenience.
  */
-export type PlatformErrorCode = `PLATFORM_${string}`;
-export type AdminErrorCode = `ADMIN_${string}`;
-export type ManagedErrorCode = `MANAGED_${string}`;
-export type EnterpriseErrorCode = PlatformErrorCode | AdminErrorCode | ManagedErrorCode;
+import type { EnterpriseErrorCode } from '../../../const/src/platform/errorCodes';
+
+export type {
+  AdminErrorCode,
+  EnterpriseErrorCode,
+  ManagedErrorCode,
+  PlatformErrorCode,
+} from '../../../const/src/platform/errorCodes';
 
 /**
  * Structured enterprise error payload for tRPC `cause` / client mappers.

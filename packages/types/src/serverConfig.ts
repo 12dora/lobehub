@@ -51,6 +51,19 @@ export interface ServerModelProviderConfig {
 
 export type ServerLanguageModel = Partial<Record<GlobalLLMProviderKey, ServerModelProviderConfig>>;
 
+/**
+ * Minimal enterprise surface on Global Config (M00 mount point #4).
+ * Clients must not call platform.* when `enabled` is false/undefined.
+ * Does not expose flag names, roles, or secrets.
+ */
+export interface EnterprisePublicServerConfig {
+  /**
+   * True when any enterprise feature flag is on.
+   * Gates EnterprisePlatformProvider network calls after config.getGlobalConfig.
+   */
+  enabled: boolean;
+}
+
 export interface GlobalServerConfig {
   /**
    * Agent Gateway URL for WebSocket-based agent execution.
@@ -77,6 +90,10 @@ export interface GlobalServerConfig {
   enableMarketTrustedClient?: boolean;
   enableUploadFileToServer?: boolean;
   enableVisualUnderstanding?: boolean;
+  /**
+   * AIHub enterprise gate (M00). Omitted or `{ enabled: false }` when all flags are off.
+   */
+  enterprise?: EnterprisePublicServerConfig;
   image?: PartialDeep<UserImageConfig>;
   memory?: GlobalMemoryConfig;
   oAuthSSOProviders?: string[];

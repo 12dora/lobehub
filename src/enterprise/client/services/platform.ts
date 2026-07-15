@@ -11,13 +11,11 @@ import {
 /**
  * Client adapters for platform.* procedures.
  * Fail soft to disabled snapshots so closed flags never break the SPA shell.
+ * Callers must gate on `serverConfig.enterprise.enabled` (see EnterprisePlatformProvider).
  */
 export const fetchPlatformCapabilities = async (): Promise<PlatformCapabilities> => {
   try {
-    // Optional chaining: platform router may be absent on older servers during upgrade.
-    const result = await (lambdaClient as any).platform?.getCapabilities?.query?.();
-    if (!result) return { ...DISABLED_PLATFORM_CAPABILITIES };
-    return result as PlatformCapabilities;
+    return await lambdaClient.platform.getCapabilities.query();
   } catch {
     return { ...DISABLED_PLATFORM_CAPABILITIES };
   }
@@ -25,9 +23,7 @@ export const fetchPlatformCapabilities = async (): Promise<PlatformCapabilities>
 
 export const fetchPlatformPublicSnapshot = async (): Promise<PlatformPublicSnapshot> => {
   try {
-    const result = await (lambdaClient as any).platform?.getPublicSnapshot?.query?.();
-    if (!result) return { ...DISABLED_PLATFORM_PUBLIC_SNAPSHOT };
-    return result as PlatformPublicSnapshot;
+    return await lambdaClient.platform.getPublicSnapshot.query();
   } catch {
     return { ...DISABLED_PLATFORM_PUBLIC_SNAPSHOT };
   }
