@@ -17,6 +17,7 @@ import { workspaceDataRouter } from '@/business/server/lambda-routers/workspaceD
 import { workspaceMemberRouter } from '@/business/server/lambda-routers/workspaceMember';
 import { workspaceUsageRouter } from '@/business/server/lambda-routers/workspaceUsage';
 import { publicProcedure, router } from '@/libs/trpc/lambda';
+import { platformRouter } from '@/server/enterprise/routers/platform';
 
 import { agentRouter } from './agent';
 import { agentBotProviderRouter } from './agentBotProvider';
@@ -130,6 +131,7 @@ export const lambdaRouter = router({
   notebook: notebookRouter,
   notification: notificationRouter,
   oauthDeviceFlow: oauthDeviceFlowRouter,
+  platform: platformRouter,
   plugin: pluginRouter,
   pushToken: pushTokenRouter,
   ragEval: ragEvalRouter,

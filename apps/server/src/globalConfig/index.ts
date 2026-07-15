@@ -11,6 +11,7 @@ import { knowledgeEnv } from '@/envs/knowledge';
 import { langfuseEnv } from '@/envs/langfuse';
 import { toolsEnv } from '@/envs/tools';
 import { parseSSOProviders } from '@/libs/better-auth/utils/server';
+import { isAnyEnterpriseFeatureEnabled } from '@/server/enterprise/featureFlags';
 import { parseSystemAgent } from '@/server/globalConfig/parseSystemAgent';
 import { type GlobalServerConfig } from '@/types/serverConfig';
 import { cleanObject } from '@/utils/object';
@@ -96,6 +97,9 @@ export const getServerGlobalConfig = async () => {
     }
   }
 
+  // M00 mount #4: minimal enterprise gate on global config (no flag names / secrets).
+  const enterpriseEnabled = isAnyEnterpriseFeatureEnabled();
+
   const config: GlobalServerConfig = {
     aiProvider: await genServerAiProvidersConfig(aiProviderSpecificConfig),
     defaultAgent: {
@@ -105,6 +109,8 @@ export const getServerGlobalConfig = async () => {
     enableBusinessFeatures: ENABLE_BUSINESS_FEATURES,
     enableEmailVerification: authEnv.AUTH_EMAIL_VERIFICATION,
     enableComposio: !!composioEnv.COMPOSIO_API_KEY,
+    // Always present so clients can gate without optional-field races; false when flags off.
+    enterprise: { enabled: enterpriseEnabled },
     enableGatewayMode:
       ENABLE_BUSINESS_FEATURES || (!!appEnv.ENABLE_AGENT_GATEWAY && !!appEnv.AGENT_GATEWAY_URL),
     enableLobehubSkill: !!(appEnv.MARKET_TRUSTED_CLIENT_SECRET && appEnv.MARKET_TRUSTED_CLIENT_ID),
