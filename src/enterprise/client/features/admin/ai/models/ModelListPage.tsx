@@ -38,7 +38,16 @@ const styles = createStaticStyles(({ css }) => ({
   `,
 }));
 
-const MODEL_TYPES = ['chat', 'embedding', 'image', 'video', 'tts', 'asr'] as const;
+const MODEL_TYPES = [
+  'asr',
+  'chat',
+  'embedding',
+  'image',
+  'realtime',
+  'text2music',
+  'tts',
+  'video',
+] as const;
 
 const ModelListPage = memo(() => {
   const { t } = useTranslation('admin');
@@ -54,7 +63,7 @@ const ModelListPage = memo(() => {
   const provider = searchParams.get('provider') ?? '';
   const query = searchParams.get('q') ?? '';
   const status = searchParams.get('status') as AdminAiModelListInput['status'];
-  const type = searchParams.get('type') ?? '';
+  const type = (searchParams.get('type') ?? '') as AdminAiModelListInput['type'] | '';
   const [searchFilter, setSearchFilter] = useState(() => createUrlBackedTextFilter(query));
   const [providerFilter, setProviderFilter] = useState(() => createUrlBackedTextFilter(provider));
   const [cursorStack, setCursorStack] = useState<(string | null)[]>([]);
