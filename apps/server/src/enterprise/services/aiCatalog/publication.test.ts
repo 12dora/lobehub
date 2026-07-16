@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
 import {
+  platformAgents,
   platformAiModels,
   platformAiProviders,
   platformAuditLogs,
@@ -12,7 +13,12 @@ import type { LobeChatDatabase } from '@/database/type';
 import { type KeyProvider, PlatformSecretService } from '@/server/enterprise/security/secret';
 
 import { InMemoryPlatformConfigInvalidationPublisher } from '../platformConfigInvalidation';
-import { AiCatalogAdminService, AiCatalogValidationError } from './adminService';
+import {
+  AiCatalogAdminService,
+  type AiCatalogAdminServiceOptions,
+  AiCatalogResourceInUseError,
+  AiCatalogValidationError,
+} from './adminService';
 import { AiCatalogReadService } from './catalogReadService';
 
 const db: LobeChatDatabase = await getTestDB();
@@ -24,6 +30,7 @@ const keyProvider: KeyProvider = {
 const cleanup = async () => {
   await db.delete(platformAuditLogs);
   await db.delete(platformResourceRevisions);
+  await db.delete(platformAgents);
   await db.delete(platformAiModels);
   await db.delete(platformAiProviders);
 };
@@ -31,13 +38,14 @@ const cleanup = async () => {
 beforeEach(cleanup);
 afterEach(cleanup);
 
-const createService = () => {
+const createService = (lifecycle?: AiCatalogAdminServiceOptions['lifecycle']) => {
   const invalidation = new InMemoryPlatformConfigInvalidationPublisher();
   return {
     invalidation,
     service: new AiCatalogAdminService(db, new PlatformSecretService({ keyProvider }), {
       connectionProbe: async () => {},
       invalidation,
+      lifecycle,
     }),
   };
 };
@@ -135,6 +143,59 @@ describe('AiCatalog publication transaction', () => {
     ).rejects.toBeInstanceOf(AiCatalogValidationError);
     expect(await db.select().from(platformResourceRevisions)).toHaveLength(0);
     expect((await service.getDetail(provider.id)).baseRevision).toBe(0);
+  });
+
+  it('rechecks archive dependents after the provider lock before committing', async () => {
+    const { service } = createService();
+    const provider = await service.createProviderDraft('admin', {
+      checkModel: 'chat',
+      displayName: 'Concurrent dependency provider',
+      enabled: true,
+      providerKey: 'concurrent-provider',
+      reason: 'create',
+      secret: { operation: 'replace', value: 'fake-key' },
+      source: 'custom',
+    });
+    let detail = await service.getDetail(provider.id);
+    await service.createModel('admin', {
+      enabled: true,
+      expectedDraftToken: detail.draftToken,
+      modelKey: 'chat',
+      providerId: provider.id,
+      reason: 'model',
+    });
+    await service.testProvider('admin', { id: provider.id, reason: 'test' });
+    detail = await service.getDetail(provider.id);
+    await service.publishProvider('admin', {
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: 0,
+      id: provider.id,
+      reason: 'publish',
+    });
+
+    detail = await service.getDetail(provider.id);
+    const archiveService = createService({
+      afterPublishLock: async (tx) => {
+        await tx.insert(platformAgents).values({
+          agentKey: 'concurrent-agent',
+          model: 'chat',
+          provider: 'concurrent-provider',
+          status: 'published',
+          title: 'Concurrent Agent',
+        });
+      },
+    }).service;
+    await expect(
+      archiveService.archiveProvider('admin', {
+        expectedDraftToken: detail.draftToken,
+        expectedRevision: 1,
+        id: provider.id,
+        reason: 'archive after dependency insertion',
+      }),
+    ).rejects.toBeInstanceOf(AiCatalogResourceInUseError);
+
+    expect(await db.select().from(platformResourceRevisions)).toHaveLength(1);
+    expect((await service.getDetail(provider.id)).published).toMatchObject({ revision: 1 });
   });
 
   it('publishes atomically, preserves numeric token limits, rolls back, archives and invalidates', async () => {
