@@ -1,7 +1,7 @@
 'use client';
 
 import { Alert, Flexbox, Input, Tag, Text } from '@lobehub/ui';
-import { Button, Select } from '@lobehub/ui/base-ui';
+import { Button, Select, toast } from '@lobehub/ui/base-ui';
 import type { TableColumnsType } from 'antd';
 import { createStaticStyles } from 'antd-style';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -9,12 +9,14 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router';
 
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
+import { adminSkillsService } from '@/enterprise/client/services/adminSkills';
 
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
 import DataTable from '../primitives/DataTable';
 import StatusBadge from '../primitives/StatusBadge';
 import { deriveSkillPermissions } from './controller';
-import { useFetchAdminSkills } from './hooks/useAdminSkills';
+import { refreshAdminSkillLists, useFetchAdminSkills } from './hooks/useAdminSkills';
+import { openCreateSkillModal } from './openCreateSkillModal';
 import type { AdminSkillListInput, AdminSkillListItem } from './types';
 
 const DEFAULT_LIMIT = 50;
@@ -37,8 +39,8 @@ const valueFrom = <Value extends string>(
 const SkillListPage = memo(() => {
   const { t } = useTranslation('admin');
   const navigate = useNavigate();
-  const { permissions } = useAdminAccess();
-  const { canRead } = deriveSkillPermissions(permissions);
+  const { authMethod, permissions } = useAdminAccess();
+  const { canCreate, canRead } = deriveSkillPermissions(permissions);
   const [searchParams, setSearchParams] = useSearchParams();
   const query = searchParams.get('q') ?? '';
   const normalizedQuery = query.trim();
@@ -177,6 +179,26 @@ const SkillListPage = memo(() => {
     <AdminPageTemplate
       description={t('skillCatalog.list.desc')}
       title={t('skillCatalog.list.title')}
+      actions={
+        canCreate ? (
+          <Button
+            type="primary"
+            onClick={() =>
+              openCreateSkillModal({
+                authMethod: authMethod ?? undefined,
+                onSubmit: async (input) => {
+                  const created = await adminSkillsService.create(input);
+                  await refreshAdminSkillLists();
+                  toast.success(t('skillCatalog.toast.created'));
+                  navigate(`/admin/skills/${encodeURIComponent(created.draft.id)}`);
+                },
+              })
+            }
+          >
+            {t('skillCatalog.create.submit')}
+          </Button>
+        ) : null
+      }
       toolbar={
         <Flexbox horizontal gap={8} wrap="wrap">
           <Input
