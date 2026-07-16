@@ -108,6 +108,19 @@ describe('AiCatalogAdminService model mutations', () => {
       issues: ['Provider credentials must not appear in public catalog fields'],
     });
     expect((await service.getDetail(provider.id)).draft.models[0].settings).toEqual({});
+
+    detail = await service.getDetail(provider.id);
+    await expect(
+      service.createModel('admin', {
+        config: { documentationUrl: 'https://example.test/model?sig=unrelated-signature' },
+        expectedDraftToken: detail.draftToken,
+        modelKey: 'signed-url-model',
+        providerId: provider.id,
+        reason: 'reject signed model URL',
+      }),
+    ).rejects.toMatchObject({
+      issues: ['Provider credentials must not appear in public catalog fields'],
+    });
   });
 
   it('reorder fails closed unless items exactly equal the complete locked provider collection', async () => {

@@ -69,6 +69,35 @@ describe('AiCatalogAdminService provider draft mutations', () => {
       issues: ['Provider credentials must not appear in public catalog fields'],
     });
     expect((await service.getDetail(created.id)).draft.displayName).toBe('Safe');
+
+    const fresh = await service.getDetail(created.id);
+    await expect(
+      service.updateProviderDraft('admin', {
+        expectedDraftToken: fresh.draftToken,
+        expectedRevision: 0,
+        id: created.id,
+        logo: 'https://cdn.example.test/logo?X-Amz-Signature=unrelated-signed-value',
+        reason: 'reject unrelated credential URL',
+        secret: { operation: 'keep' },
+      }),
+    ).rejects.toMatchObject({
+      issues: ['Provider credentials must not appear in public catalog fields'],
+    });
+  });
+
+  it('rejects credential-shaped strings even when no platform secret exists', async () => {
+    await expect(
+      service.createProviderDraft('admin', {
+        description: 'Bearer unrelated-public-token-value',
+        displayName: 'Rejected without secret',
+        providerKey: 'no-secret-rejected',
+        reason: 'create',
+        source: 'custom',
+      }),
+    ).rejects.toMatchObject({
+      issues: ['Provider credentials must not appear in public catalog fields'],
+    });
+    expect(await db.select().from(platformAiProviders)).toEqual([]);
   });
 
   it('persists sanitized connection state and marks it stale after any draft mutation', async () => {

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   containsSensitiveMaterial,
+  isCredentialBearingUrl,
   isSensitiveKey,
   M07_BENIGN_KEY_CANDIDATES,
   M07_REDACTION_OPTIONS,
@@ -14,6 +15,22 @@ import {
 } from './index';
 
 describe('enterprise redaction entry', () => {
+  it('detects signed URL query keys without globally classifying signature fields', () => {
+    expect(isSensitiveKey('signature')).toBe(false);
+    for (const key of [
+      'signature',
+      'SIG',
+      'X-Amz-Signature',
+      'x_amz_signature',
+      'X%2DAmz%2DSignature',
+    ]) {
+      expect(isCredentialBearingUrl(`https://example.test/file?${key}=signed-value`)).toBe(true);
+    }
+    expect(isCredentialBearingUrl('https://example.test/file?documentSignature=public')).toBe(
+      false,
+    );
+  });
+
   it('re-exports M01 fact-source helpers', () => {
     expect(REDACTED_PLACEHOLDER).toBe('[REDACTED]');
     expect(isSensitiveKey('apiKey')).toBe(true);

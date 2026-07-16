@@ -1,12 +1,19 @@
+import { containsSensitiveMaterial, isCredentialBearingUrl } from '../../security/redaction';
 import { credentialStringLeaves } from './credentialAdapter';
 import { AiCatalogValidationError } from './errors';
 
-const containsCredentialLeaf = (value: unknown, credentialLeaves: string[]): boolean => {
+const containsForbiddenPublicString = (value: unknown, credentialLeaves: string[]): boolean => {
   if (typeof value === 'string') {
-    return credentialLeaves.some((credential) => value.includes(credential));
+    return (
+      containsSensitiveMaterial(value) ||
+      isCredentialBearingUrl(value) ||
+      credentialLeaves.some((credential) => value.includes(credential))
+    );
   }
   if (!value || typeof value !== 'object') return false;
-  return Object.values(value).some((child) => containsCredentialLeaf(child, credentialLeaves));
+  return Object.values(value).some((child) =>
+    containsForbiddenPublicString(child, credentialLeaves),
+  );
 };
 
 /** Fail closed when plaintext credentials are copied into revision/public catalog fields. */
@@ -15,8 +22,7 @@ export const assertAiCatalogPublicFieldsExcludeCredentials = (
   credentials: unknown,
 ): void => {
   const credentialLeaves = [...new Set(credentialStringLeaves(credentials))].filter(Boolean);
-  if (credentialLeaves.length === 0) return;
-  if (containsCredentialLeaf(publicFields, credentialLeaves)) {
+  if (containsForbiddenPublicString(publicFields, credentialLeaves)) {
     throw new AiCatalogValidationError([
       'Provider credentials must not appear in public catalog fields',
     ]);
