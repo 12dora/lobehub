@@ -37,6 +37,17 @@
 | Better Auth / OIDC config                | M11                | Adapter + LKG      |                      |
 | Branding metadata / auth shell           | M12                | Provider/fallback  |                      |
 
+## M03 applied
+
+| Upstream file                                                             | Change                                                | Module | PR     | Notes                                       |
+| ------------------------------------------------------------------------- | ----------------------------------------------------- | ------ | ------ | ------------------------------------------- |
+| `src/business/client/BusinessDesktopRoutes.tsx`                           | Spreads boot-gated enterprise routes                  | M03    | PR-014 | Empty when `enterprise.platformAdmin` false |
+| `src/business/client/BusinessMobileRoutes.tsx`                            | Boot-gated `/admin` unsupported surface               | M03    | PR-014 | Empty when flag off                         |
+| `apps/server/src/globalConfig/index.ts`                                   | `enterprise.platformAdmin` boolean                    | M03    | PR-014 | Feature existence only                      |
+| `packages/types/src/serverConfig.ts`                                      | `platformAdmin?: boolean` on public enterprise config | M03    | PR-014 | No roles/permissions                        |
+| `src/routes/(main)/settings/stats/features/components/StatsFormGroup.tsx` | Compatibility adapter → `@/components/SectionGroup`   | M03    | PR-017 | Settings callers unchanged                  |
+| `scripts/enterprise/pathBoundaries.ts`                                    | Allow mobile business mount                           | M03    | PR-014 | Mirror desktop mount point                  |
+
 ## Rules
 
 1. Any new upstream direct edit **must** add a row here and in `07_上游直接修改点台账.md`.
