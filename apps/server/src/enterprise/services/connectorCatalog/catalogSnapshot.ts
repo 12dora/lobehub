@@ -66,9 +66,19 @@ const revisionConnectorSchema = z
 
 const snapshotCache = new Map<string, PlatformConnectorRevisionPayload>();
 
+const deepFreeze = <T>(value: T): T => {
+  if (value === null || typeof value !== 'object' || Object.isFrozen(value)) return value;
+  for (const child of Object.values(value)) deepFreeze(child);
+  return Object.freeze(value);
+};
+
+const cloneSnapshot = (
+  payload: PlatformConnectorRevisionPayload,
+): PlatformConnectorRevisionPayload => structuredClone(payload);
+
 const rememberSnapshot = (key: string, payload: PlatformConnectorRevisionPayload) => {
   snapshotCache.delete(key);
-  snapshotCache.set(key, payload);
+  snapshotCache.set(key, deepFreeze(cloneSnapshot(payload)));
   while (snapshotCache.size > MAX_SNAPSHOT_CACHE_ENTRIES) {
     const oldest = snapshotCache.keys().next().value;
     if (oldest === undefined) break;
@@ -119,17 +129,17 @@ const parseExactSnapshot = (
     snapshot.provenance.revision,
     snapshot.provenance.checksum,
   ].join(':');
-  const cached = snapshotCache.get(cacheKey);
-  if (cached) return cached;
   if (checksumPayload(snapshot.payload) !== snapshot.provenance.checksum) {
     throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_PUBLISHED');
   }
+  const cached = snapshotCache.get(cacheKey);
+  if (cached) return parseConnectorRevisionPayload(cloneSnapshot(cached));
   const payload = parseConnectorRevisionPayload(snapshot.payload);
   if (payload.connector.id !== snapshot.provenance.connectorId) {
     throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_PUBLISHED');
   }
   rememberSnapshot(cacheKey, payload);
-  return payload;
+  return parseConnectorRevisionPayload(cloneSnapshot(payload));
 };
 
 const requireSecret = async (
