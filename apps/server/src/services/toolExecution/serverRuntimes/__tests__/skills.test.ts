@@ -30,8 +30,11 @@ const mocks = vi.hoisted(() => {
     getAgentSkills: vi.fn(),
     getUserSettings: vi.fn(),
     marketService: {},
+    cleanupInlineSkillWorkspace: vi.fn(),
+    prepareInlineSkillWorkspace: vi.fn(),
     prepareSkillDirectory: vi.fn(),
     platformFindByName: vi.fn(),
+    platformResolvePinned: vi.fn(),
     preprocessLhCommand: vi.fn(),
     readResource: vi.fn(),
     resolveRunWorkspaceId: vi.fn(),
@@ -74,11 +77,15 @@ vi.mock('@/helpers/skillFilters', () => ({
 }));
 
 vi.mock('@/server/enterprise/services/skillCatalog', () => ({
-  createPlatformSkillOperationResolver: vi.fn(() => ({
+  getBuiltinSkillDefinitions: vi.fn(() => []),
+  PlatformSkillOperationResolver: vi.fn(() => ({
     findAll: vi.fn(),
     findById: vi.fn(),
     findByName: mocks.platformFindByName,
     readResource: vi.fn(),
+  })),
+  SkillCatalogReadService: vi.fn(() => ({
+    resolvePinnedForExecution: mocks.platformResolvePinned,
   })),
 }));
 
@@ -117,7 +124,9 @@ vi.mock('@/server/services/toolExecution/preprocessLhCommand', () => ({
 
 vi.mock('@/server/services/deviceGateway', () => ({
   deviceGateway: {
+    cleanupInlineSkillWorkspace: mocks.cleanupInlineSkillWorkspace,
     executeToolCall: mocks.executeToolCall,
+    prepareInlineSkillWorkspace: mocks.prepareInlineSkillWorkspace,
     prepareSkillDirectory: mocks.prepareSkillDirectory,
   },
 }));
@@ -155,6 +164,7 @@ describe('skillsRuntime', () => {
     });
     mocks.resolveRunWorkspaceId.mockResolvedValue(undefined);
     mocks.platformFindByName.mockResolvedValue(undefined);
+    mocks.platformResolvePinned.mockResolvedValue(undefined);
     mocks.sandboxService.callTool.mockResolvedValue({
       result: {
         exitCode: 0,
@@ -200,6 +210,142 @@ describe('skillsRuntime', () => {
     expect(mocks.getAgentSkills).not.toHaveBeenCalled();
     expect(mocks.findByName).not.toHaveBeenCalled();
   }, 20_000);
+
+  it('materializes exact managed resources in the sandbox and cleans the workspace', async () => {
+    const checksum = 'a'.repeat(64);
+    mocks.platformResolvePinned.mockResolvedValue({
+      allowBuiltinOverride: false,
+      checksum,
+      content: '# Managed',
+      contentRef: null,
+      description: 'Managed',
+      displayName: 'Managed',
+      distribution: 'mandatory',
+      manifest: { description: 'Managed' },
+      resources: [
+        {
+          checksum: 'b'.repeat(64),
+          content: 'print("ok")',
+          mediaType: 'text/x-python',
+          path: 'scripts/run.py',
+          sizeBytes: 11,
+        },
+      ],
+      skillId: 'skill-1',
+      skillKey: 'managed.skill',
+      source: 'uploaded',
+      version: '1.0.0',
+      versionId: 'version-1',
+    });
+    const { skillsRuntime } = await import('../skills');
+    const runtime = await skillsRuntime.factory({
+      operationId: 'operation-1',
+      operationSkillSet: {
+        enabledPluginIds: [],
+        platformCatalog: {
+          refs: [{ checksum, skillKey: 'managed.skill', version: '1.0.0' }],
+          revision: 'r1',
+        },
+        skills: [],
+      },
+      serverDB: {} as never,
+      toolManifestMap: {},
+      topicId: 'topic-1',
+      userId: 'user-1',
+    });
+
+    const result = await runtime.execScript({
+      activatedSkills: [{ name: 'managed.skill' }],
+      command: 'python scripts/run.py',
+      description: 'run exact managed script',
+    });
+
+    expect(result.success).toBe(true);
+    expect(mocks.sandboxService.callTool).toHaveBeenCalledWith(
+      'writeFile',
+      expect.objectContaining({
+        content: 'print("ok")',
+        createDirectories: true,
+        path: expect.stringMatching(/\/a{64}\/scripts\/run\.py$/),
+      }),
+    );
+    expect(mocks.sandboxService.callTool).toHaveBeenCalledWith(
+      'runCommand',
+      expect.objectContaining({ command: expect.stringContaining('rm -rf') }),
+    );
+    expect(mocks.findByName).not.toHaveBeenCalled();
+  });
+
+  it('materializes managed resources through device RPC and cleans them in finally', async () => {
+    const checksum = 'a'.repeat(64);
+    mocks.platformResolvePinned.mockResolvedValue({
+      checksum,
+      content: '# Managed',
+      contentRef: null,
+      manifest: { description: 'Managed' },
+      resources: [
+        {
+          checksum: 'b'.repeat(64),
+          content: 'print("ok")',
+          mediaType: 'text/x-python',
+          path: 'scripts/run.py',
+          sizeBytes: 11,
+        },
+      ],
+      skillKey: 'managed.skill',
+      version: '1.0.0',
+    });
+    mocks.prepareInlineSkillWorkspace.mockResolvedValue({
+      success: true,
+      workspaceDir: '/private/operation-skill',
+      workspaceId: 'workspace-1',
+    });
+    mocks.executeToolCall.mockResolvedValue({
+      content: 'ok',
+      state: { exitCode: 0, stdout: 'ok', success: true },
+      success: true,
+    });
+    const { skillsRuntime } = await import('../skills');
+    const runtime = await skillsRuntime.factory({
+      activeDeviceId: 'device-1',
+      operationId: 'operation-1',
+      operationSkillSet: {
+        enabledPluginIds: [],
+        platformCatalog: {
+          refs: [{ checksum, skillKey: 'managed.skill', version: '1.0.0' }],
+          revision: 'r1',
+        },
+        skills: [],
+      },
+      serverDB: {} as never,
+      toolManifestMap: {},
+      userId: 'user-1',
+    });
+
+    const result = await runtime.execScript({
+      activatedSkills: [{ name: 'managed.skill' }],
+      command: 'python scripts/run.py',
+      description: 'run exact managed script',
+    });
+
+    expect(result.success).toBe(true);
+    expect(mocks.prepareInlineSkillWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({ checksum, operationId: 'operation-1', skillKey: 'managed.skill' }),
+    );
+    expect(mocks.executeToolCall).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        arguments: JSON.stringify({
+          command: 'python scripts/run.py',
+          cwd: '/private/operation-skill',
+        }),
+      }),
+      undefined,
+    );
+    expect(mocks.cleanupInlineSkillWorkspace).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: 'workspace-1' }),
+    );
+  });
 
   it('executes scripts through the sandbox service and only attaches persisted skill zips', async () => {
     const { skillsRuntime } = await import('../skills');

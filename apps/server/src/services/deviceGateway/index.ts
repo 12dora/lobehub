@@ -247,6 +247,65 @@ export class DeviceGateway {
     }
   }
 
+  async prepareInlineSkillWorkspace(params: {
+    checksum: string;
+    deviceId: string;
+    operationId: string;
+    resources: Array<{
+      checksum: string;
+      content?: string;
+      contentRef?: string;
+      mediaType: string;
+      path: string;
+      sizeBytes: number;
+    }>;
+    skillContent: string;
+    skillKey: string;
+    timeout?: number;
+    userId: string;
+    version: string;
+    workspaceId?: string;
+  }): Promise<{ error?: string; success: boolean; workspaceDir?: string; workspaceId?: string }> {
+    const { deviceId, timeout = 60_000, userId, workspaceId, ...rpcParams } = params;
+    const client = this.getClient();
+    if (!client) return { error: 'Device Gateway is not configured', success: false };
+    try {
+      const result = await client.invokeRpc<{
+        error?: string;
+        success: boolean;
+        workspaceDir?: string;
+        workspaceId?: string;
+      }>(
+        { deviceId, timeout, userId, workspaceId },
+        { method: 'prepareInlineSkillWorkspace', params: rpcParams },
+      );
+      if (!result.success || !result.data) {
+        return { error: result.error || 'prepareInlineSkillWorkspace failed', success: false };
+      }
+      return result.data;
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : String(error), success: false };
+    }
+  }
+
+  async cleanupInlineSkillWorkspace(params: {
+    deviceId: string;
+    timeout?: number;
+    userId: string;
+    workspaceId: string;
+    workspacePrincipalId?: string;
+  }): Promise<void> {
+    const { deviceId, timeout = 15_000, userId, workspaceId, workspacePrincipalId } = params;
+    const client = this.getClient();
+    if (!client) return;
+    await client
+      .invokeRpc(
+        { deviceId, timeout, userId, workspaceId: workspacePrincipalId },
+        { method: 'cleanupInlineSkillWorkspace', params: { workspaceId } },
+      )
+      .catch(() => undefined);
+  }
+
   /**
    * Generic helper for the granular git read RPCs (branch / PR / working-tree /
    * ahead-behind). Returns `undefined` when the gateway is unconfigured, the
