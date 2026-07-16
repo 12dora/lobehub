@@ -382,12 +382,14 @@ export class PlatformSettingsModel {
 }
 
 export type CreateSettingsPointerAdapterOptions = {
+  assertLockedState?: ResourcePointerAdapter['assertLockedState'];
   bundleId?: string;
   /**
    * Materialize published policies (+ optional draft align) inside the publish/rollback txn.
    * Receives the same tx as pointer update.
    */
   materializePublished?: ResourcePointerAdapter['materializePublished'];
+  prepareLockedPublish?: ResourcePointerAdapter['prepareLockedPublish'];
   updatedBy?: string | null;
 };
 
@@ -403,6 +405,7 @@ export const createSettingsPointerAdapter = (
   const bundleId = opts.bundleId ?? PLATFORM_SETTINGS_BUNDLE_ID;
 
   return {
+    assertLockedState: opts.assertLockedState,
     lockAndGetRevision: async (tx) => {
       const result = await tx.execute(
         sql`SELECT "revision" FROM "platform_settings_bundle" WHERE "id" = ${bundleId} FOR UPDATE`,
@@ -417,6 +420,7 @@ export const createSettingsPointerAdapter = (
       return Number(row.revision);
     },
     materializePublished: opts.materializePublished,
+    prepareLockedPublish: opts.prepareLockedPublish,
     updatePointer: async (tx, { revision, status }) => {
       await tx
         .update(platformSettingsBundle)

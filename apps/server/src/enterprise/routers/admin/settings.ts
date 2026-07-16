@@ -145,6 +145,7 @@ export const adminSettingsRouter = router({
         return await service.publish({
           actorUserId: ctx.userId!,
           comment: input.comment,
+          expectedDraftToken: input.expectedDraftToken,
           expectedRevision: input.expectedRevision,
           reason: input.reason,
         });
@@ -181,6 +182,7 @@ export const adminSettingsRouter = router({
       try {
         return await service.rollback({
           actorUserId: ctx.userId!,
+          expectedDraftToken: input.expectedDraftToken,
           expectedRevision: input.expectedRevision,
           reason: input.reason,
           targetRevision: input.targetRevision,

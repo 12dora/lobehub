@@ -131,7 +131,12 @@ describe('M05 transaction fault injection', () => {
     });
 
     await expect(
-      admin.publish({ actorUserId: 'admin', expectedRevision: 0, reason: 'publish' }),
+      admin.publish({
+        actorUserId: 'admin',
+        expectedDraftToken: (await admin.getDraft()).draftToken,
+        expectedRevision: 0,
+        reason: 'publish',
+      }),
     ).rejects.toThrow('publish materialization fault');
 
     const [bundles, revisions, policies, audits] = await Promise.all([
@@ -159,14 +164,24 @@ describe('M05 transaction fault injection', () => {
       expectedDraftToken: (await seed.getDraft()).draftToken,
       reason: 'draft-1',
     });
-    await seed.publish({ actorUserId: 'admin', expectedRevision: 0, reason: 'publish-1' });
+    await seed.publish({
+      actorUserId: 'admin',
+      expectedDraftToken: (await seed.getDraft()).draftToken,
+      expectedRevision: 0,
+      reason: 'publish-1',
+    });
     await seed.saveDraft({
       actorUserId: 'admin',
       draft: policy(false),
       expectedDraftToken: (await seed.getDraft()).draftToken,
       reason: 'draft-2',
     });
-    await seed.publish({ actorUserId: 'admin', expectedRevision: 1, reason: 'publish-2' });
+    await seed.publish({
+      actorUserId: 'admin',
+      expectedDraftToken: (await seed.getDraft()).draftToken,
+      expectedRevision: 1,
+      reason: 'publish-2',
+    });
 
     const invalidation = new InMemoryPlatformConfigInvalidationPublisher();
     const failing = new AdminSettingsService(serverDB, {
@@ -180,6 +195,7 @@ describe('M05 transaction fault injection', () => {
     await expect(
       failing.rollback({
         actorUserId: 'admin',
+        expectedDraftToken: (await failing.getDraft()).draftToken,
         expectedRevision: 2,
         reason: 'rollback',
         targetRevision: 1,

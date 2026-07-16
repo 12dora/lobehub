@@ -168,6 +168,8 @@ const SettingsPolicyPage = memo(() => {
     totalOverrideRows: number;
   } | null>(null);
   const [validatedFingerprint, setValidatedFingerprint] = useState<string | null>(null);
+  const [validatedDraftToken, setValidatedDraftToken] = useState<string | null>(null);
+  const [validatedBaseRevision, setValidatedBaseRevision] = useState<number | null>(null);
   const [dirty, setDirty] = useState(false);
   const [activeBaseRevision, setActiveBaseRevision] = useState(0);
   const [activeDraftToken, setActiveDraftToken] = useState('');
@@ -334,6 +336,8 @@ const SettingsPolicyPage = memo(() => {
       setValidationMsg(null);
       setImpact(null);
       setValidatedFingerprint(null);
+      setValidatedDraftToken(null);
+      setValidatedBaseRevision(null);
     },
     [canUpdate, getPolicy],
   );
@@ -352,6 +356,8 @@ const SettingsPolicyPage = memo(() => {
     setDirty(true);
     setSaveState('failed');
     setValidatedFingerprint(null);
+    setValidatedDraftToken(null);
+    setValidatedBaseRevision(null);
     dispatchConflict({
       localBaseRevision: activeBaseRevision,
       localDraft: draft,
@@ -404,6 +410,8 @@ const SettingsPolicyPage = memo(() => {
     setValidationMsg(null);
     setImpact(null);
     setValidatedFingerprint(null);
+    setValidatedDraftToken(null);
+    setValidatedBaseRevision(null);
     originalBaseDraftRef.current = next.serverDraft;
     saveLocalDraft({
       baseRevision: next.serverBaseRevision,
@@ -431,6 +439,8 @@ const SettingsPolicyPage = memo(() => {
     setValidationMsg(null);
     setImpact(null);
     setValidatedFingerprint(null);
+    setValidatedDraftToken(null);
+    setValidatedBaseRevision(null);
     originalBaseDraftRef.current = next.serverDraft;
   }, [activeBaseRevision, conflictState, data]);
 
@@ -459,6 +469,8 @@ const SettingsPolicyPage = memo(() => {
       setDirty(false);
       setSaveState('saved');
       setValidatedFingerprint(null);
+      setValidatedDraftToken(null);
+      setValidatedBaseRevision(null);
       setActiveBaseRevision(result.baseRevision);
       setActiveDraftToken(result.draftToken);
       originalBaseDraftRef.current = draft;
@@ -507,8 +519,12 @@ const SettingsPolicyPage = memo(() => {
       if (result.ok) {
         setValidationMsg(t('settingsPolicy.validateOk'));
         setValidatedFingerprint(fingerprintDraft(draft));
+        setValidatedDraftToken(activeDraftToken);
+        setValidatedBaseRevision(activeBaseRevision);
       } else {
         setValidatedFingerprint(null);
+        setValidatedDraftToken(null);
+        setValidatedBaseRevision(null);
         setValidationMsg(
           t('settingsPolicy.validateFail', {
             count: result.issues.length,
@@ -518,6 +534,8 @@ const SettingsPolicyPage = memo(() => {
       }
     } catch (err) {
       setValidatedFingerprint(null);
+      setValidatedDraftToken(null);
+      setValidatedBaseRevision(null);
       const mapped = mapEnterpriseError(err);
       setValidationMsg(mapped ? mapped.code : String(err));
     }
@@ -551,13 +569,20 @@ const SettingsPolicyPage = memo(() => {
       }
       return;
     }
-    if (validatedFingerprint !== fingerprintDraft(draft)) {
+    if (
+      validatedFingerprint !== fingerprintDraft(draft) ||
+      validatedDraftToken !== activeDraftToken ||
+      validatedBaseRevision !== activeBaseRevision
+    ) {
       setValidationMsg(t('settingsPolicy.publishRequiresValidate'));
       return;
     }
+    const confirmationDraftToken = activeDraftToken;
+    const confirmationBaseRevision = activeBaseRevision;
     openReasonModal({
       buildPayload: (reason) => ({
-        expectedRevision: activeBaseRevision,
+        expectedDraftToken: confirmationDraftToken,
+        expectedRevision: confirmationBaseRevision,
         reason,
       }),
       description: t('settingsPolicy.publishDesc'),
@@ -570,7 +595,7 @@ const SettingsPolicyPage = memo(() => {
       onSubmit: async (payload) => {
         try {
           await adminSettingsService.publish(
-            payload as { expectedRevision: number; reason: string },
+            payload as { expectedDraftToken: string; expectedRevision: number; reason: string },
           );
           clearLocalDraft(data.registryVersion, data.baseRevision);
           clearConflictDraft();
@@ -604,6 +629,8 @@ const SettingsPolicyPage = memo(() => {
     revisionConflict,
     t,
     validatedFingerprint,
+    validatedDraftToken,
+    validatedBaseRevision,
   ]);
 
   const handleRollback = useCallback(() => {
@@ -620,6 +647,7 @@ const SettingsPolicyPage = memo(() => {
     }
     openReasonModal({
       buildPayload: (reason) => ({
+        expectedDraftToken: activeDraftToken,
         expectedRevision: activeBaseRevision,
         reason,
         targetRevision: Math.max(1, data.baseRevision - 1),
@@ -629,7 +657,12 @@ const SettingsPolicyPage = memo(() => {
       onSubmit: async (payload) => {
         try {
           await adminSettingsService.rollback(
-            payload as { expectedRevision: number; reason: string; targetRevision: number },
+            payload as {
+              expectedDraftToken: string;
+              expectedRevision: number;
+              reason: string;
+              targetRevision: number;
+            },
           );
           clearLocalDraft(data.registryVersion, data.baseRevision);
           setDirty(false);
@@ -726,7 +759,17 @@ const SettingsPolicyPage = memo(() => {
         {t('settingsPolicy.validate')}
       </Button>
     ) : primary === 'publish' ? (
-      <Button disabled={!canPublish} type="primary" onClick={handlePublish}>
+      <Button
+        type="primary"
+        disabled={
+          !canPublish ||
+          validatedDraftToken !== activeDraftToken ||
+          validatedBaseRevision !== activeBaseRevision ||
+          activeBaseRevision !== data.baseRevision ||
+          activeDraftToken !== data.draftToken
+        }
+        onClick={handlePublish}
+      >
         {t('settingsPolicy.publish')}
       </Button>
     ) : null;

@@ -74,7 +74,12 @@ describe('resolveEffectiveUserInterventionConfig (R3-B1)', () => {
       expectedDraftToken: (await admin.getDraft()).draftToken,
       reason: 'lock',
     });
-    await admin.publish({ actorUserId: 'admin', expectedRevision: 0, reason: 'p' });
+    await admin.publish({
+      actorUserId: 'admin',
+      expectedDraftToken: (await admin.getDraft()).draftToken,
+      expectedRevision: 0,
+      reason: 'p',
+    });
 
     const resolved = await resolveEffectiveUserInterventionConfig({
       callerConfig: { approvalMode: 'headless' },
@@ -99,7 +104,12 @@ describe('resolveEffectiveUserInterventionConfig (R3-B1)', () => {
       expectedDraftToken: (await admin.getDraft()).draftToken,
       reason: 'default',
     });
-    await admin.publish({ actorUserId: 'admin', expectedRevision: 0, reason: 'publish' });
+    await admin.publish({
+      actorUserId: 'admin',
+      expectedDraftToken: (await admin.getDraft()).draftToken,
+      expectedRevision: 0,
+      reason: 'publish',
+    });
     await new EffectiveSettingsService(serverDB).patchSettingOverride({
       client: 'web',
       path: 'tool.humanIntervention.approvalMode',
@@ -130,7 +140,12 @@ describe('resolveEffectiveUserInterventionConfig (R3-B1)', () => {
       expectedDraftToken: (await admin.getDraft()).draftToken,
       reason: 'default',
     });
-    await admin.publish({ actorUserId: 'admin', expectedRevision: 0, reason: 'publish' });
+    await admin.publish({
+      actorUserId: 'admin',
+      expectedDraftToken: (await admin.getDraft()).draftToken,
+      expectedRevision: 0,
+      reason: 'publish',
+    });
     await new EffectiveSettingsService(serverDB).patchSettingOverride({
       client: 'web',
       path: 'tool.humanIntervention.approvalMode',

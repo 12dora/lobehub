@@ -78,7 +78,12 @@ const publishDefault = async () => {
     expectedDraftToken: (await admin.getDraft()).draftToken,
     reason: 'seed',
   });
-  await admin.publish({ actorUserId: 'admin', expectedRevision: 0, reason: 'publish' });
+  await admin.publish({
+    actorUserId: 'admin',
+    expectedDraftToken: (await admin.getDraft()).draftToken,
+    expectedRevision: 0,
+    reason: 'publish',
+  });
 };
 
 describe('EffectiveSettingsService (flag ON)', () => {

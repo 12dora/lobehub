@@ -121,6 +121,7 @@ describe('AdminSettingsService', () => {
 
     const published = await service.publish({
       actorUserId: 'admin-1',
+      expectedDraftToken: (await service.getDraft()).draftToken,
       expectedRevision: 0,
       reason: 'publish v1',
     });
@@ -130,6 +131,7 @@ describe('AdminSettingsService', () => {
     await expect(
       service.publish({
         actorUserId: 'admin-1',
+        expectedDraftToken: (await service.getDraft()).draftToken,
         expectedRevision: 0,
         reason: 'stale',
       }),
@@ -155,6 +157,7 @@ describe('AdminSettingsService', () => {
     });
     const v2 = await service.publish({
       actorUserId: 'admin-1',
+      expectedDraftToken: (await service.getDraft()).draftToken,
       expectedRevision: 1,
       reason: 'publish v2',
     });
@@ -162,6 +165,7 @@ describe('AdminSettingsService', () => {
 
     const rolled = await service.rollback({
       actorUserId: 'admin-1',
+      expectedDraftToken: (await service.getDraft()).draftToken,
       expectedRevision: 2,
       reason: 'restore v1',
       targetRevision: 1,

@@ -121,7 +121,12 @@ describe('R3-B3 TOCTOU / shared lock ordering', () => {
       expectedDraftToken: initialToken,
       reason: 'seed',
     });
-    await admin.publish({ actorUserId: 'admin', expectedRevision: 0, reason: 'p1' });
+    await admin.publish({
+      actorUserId: 'admin',
+      expectedDraftToken: (await admin.getDraft()).draftToken,
+      expectedRevision: 0,
+      reason: 'p1',
+    });
 
     await admin.saveDraft({
       actorUserId: 'admin',
@@ -140,6 +145,7 @@ describe('R3-B3 TOCTOU / shared lock ordering', () => {
     holdPublish = true;
     const publish = admin.publish({
       actorUserId: 'admin',
+      expectedDraftToken: (await admin.getDraft()).draftToken,
       expectedRevision: 1,
       reason: 'p2',
     });
