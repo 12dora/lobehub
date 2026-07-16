@@ -7,10 +7,12 @@ import type { LobeChatDatabase } from '@/database/type';
 import { createCallerFactory } from '@/libs/trpc/lambda';
 import { createContextInner } from '@/libs/trpc/lambda/context';
 
-import { platformSkillsRouter } from './platformSkills';
+import { platformRouter } from './platform';
 
 const db: LobeChatDatabase = await getTestDB();
-const createCaller = createCallerFactory(platformSkillsRouter);
+const createRootCaller = createCallerFactory(platformRouter);
+const createCaller = (context: Parameters<typeof createRootCaller>[0]) =>
+  createRootCaller(context).skills;
 const userId = 'm08-platform-skill-user';
 
 vi.mock('@/database/core/db-adaptor', () => ({

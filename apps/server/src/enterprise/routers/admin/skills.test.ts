@@ -28,10 +28,12 @@ import { createContextInner } from '@/libs/trpc/lambda/context';
 import type { SkillManifest } from '../../contracts/skillCatalog';
 import { getEnterpriseErrorBody } from '../../guards/enterpriseErrors';
 import { getBuiltinSkillDefinitions } from '../../services/skillCatalog';
-import { adminSkillsRouter } from './skills';
+import { adminRouter } from '../admin';
 
 const db: LobeChatDatabase = await getTestDB();
-const createCaller = createCallerFactory(adminSkillsRouter);
+const createRootCaller = createCallerFactory(adminRouter);
+const createCaller = (context: Parameters<typeof createRootCaller>[0]) =>
+  createRootCaller(context).skills;
 const workspaceId = 'm08-router-workspace';
 const ids = {
   aiAdmin: 'm08-router-ai-admin',

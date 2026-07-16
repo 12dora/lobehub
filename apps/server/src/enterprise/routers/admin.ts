@@ -21,6 +21,7 @@ import { LastSuperAdminError, PlatformRbacService } from '../services/platformRb
 import { adminAiModelsRouter, adminAiProvidersRouter } from './admin/aiCatalog';
 import { adminManagedResourcesRouter } from './admin/managedResources';
 import { adminSettingsRouter } from './admin/settings';
+import { adminSkillsRouter } from './admin/skills';
 import { adminUsersRouter } from './admin/users';
 
 const adminBase = authedProcedure.use(serverDatabase).use(withActiveUser());
@@ -226,6 +227,7 @@ export const adminRouter = router({
   managedResources: adminManagedResourcesRouter,
   roles: adminRolesRouter,
   settings: adminSettingsRouter,
+  skills: adminSkillsRouter,
   users: adminUsersRouter,
 });
 
