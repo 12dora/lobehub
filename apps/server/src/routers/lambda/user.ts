@@ -654,7 +654,10 @@ export const userRouter = router({
         };
         // Only touch user_settings when there is something left (or keyVaults)
         if (Object.keys(nextValue).length > 0) {
-          return ctx.userModel.updateSetting(nextValue as Partial<UserSettings>);
+          // keyVaults is already encrypted string | null when present
+          return ctx.userModel.updateSetting(
+            nextValue as Parameters<typeof ctx.userModel.updateSetting>[0],
+          );
         }
         return;
       } catch (error) {

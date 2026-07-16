@@ -89,7 +89,8 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
     id: 'settings',
     labelKey: 'nav.settings',
     path: '/admin/settings',
-    placeholder: true,
+    // M05: production settings policy page
+    placeholder: false,
     requiredPermissions: [PLATFORM_PERMISSIONS.SETTINGS_READ],
   },
   {

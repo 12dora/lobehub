@@ -10,7 +10,7 @@ export const settingPolicyVisibilitySchema = z.enum(['visible', 'hidden']);
 export const settingDraftPolicySchema = z.object({
   mode: settingPolicyModeSchema,
   schemaVersion: z.number().int().positive(),
-  value: z.unknown(),
+  value: z.unknown().optional(),
   visibility: settingPolicyVisibilitySchema,
 });
 

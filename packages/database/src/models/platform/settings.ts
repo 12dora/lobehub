@@ -24,7 +24,7 @@ export type SettingsDraftPolicyMap = Record<
   {
     mode: PlatformSettingMode;
     schemaVersion: number;
-    value: unknown;
+    value?: unknown;
     visibility: PlatformSettingVisibility;
   }
 >;

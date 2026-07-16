@@ -5,6 +5,7 @@ export {
   getAdminAccessErrorCode,
   isAdminAccessErrorRetryable,
 } from './adminAuth';
+export { adminSettingsService } from './adminSettings';
 export {
   type AdminUsersBanInput,
   type AdminUsersGetOutput,
@@ -13,3 +14,4 @@ export {
   adminUsersService,
 } from './adminUsers';
 export { fetchPlatformCapabilities, fetchPlatformPublicSnapshot } from './platform';
+export { userSettingsService } from './userSettings';

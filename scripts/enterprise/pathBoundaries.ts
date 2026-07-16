@@ -15,6 +15,10 @@ export const ENTERPRISE_UPSTREAM_MOUNT_POINTS = [
   'packages/types/src/serverConfig.ts',
   // M04: block Better Auth admin plugin mutations when platform admin is on
   'src/app/(backend)/api/auth/[...all]/route.ts',
+  // M05: effective settings + updateSettings adapter
+  'apps/server/src/routers/lambda/user.ts',
+  // M05: user-facing source badge meta hook (thin SWR → enterprise service)
+  'src/features/PlatformSettingSourceBadge/usePlatformSettingMeta.ts',
   // script entry only
   'package.json',
 ] as const;
