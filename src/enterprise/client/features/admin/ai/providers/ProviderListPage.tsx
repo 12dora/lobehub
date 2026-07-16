@@ -1,7 +1,7 @@
 'use client';
 
 import { Flexbox, Input, Tag, Text } from '@lobehub/ui';
-import { Select } from '@lobehub/ui/base-ui';
+import { Button, Select, toast } from '@lobehub/ui/base-ui';
 import type { TableColumnsType } from 'antd';
 import { createStaticStyles } from 'antd-style';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -9,13 +9,15 @@ import { useTranslation } from 'react-i18next';
 import { useNavigate, useSearchParams } from 'react-router';
 
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
+import { adminAiCatalogService } from '@/enterprise/client/services/adminAiCatalog';
 
 import AdminPageTemplate from '../../primitives/AdminPageTemplate';
 import DataTable from '../../primitives/DataTable';
 import StatusBadge from '../../primitives/StatusBadge';
 import { deriveAiCatalogPermissions } from '../controller';
-import { useFetchAdminAiProviders } from '../hooks/useAdminAiCatalog';
+import { refreshAdminAiProviderLists, useFetchAdminAiProviders } from '../hooks/useAdminAiCatalog';
 import type { AdminAiProviderListInput, AdminAiProviderListItem } from '../types';
+import { openCreateProviderModal } from './openCreateProviderModal';
 
 const DEFAULT_LIMIT = 50;
 const SEARCH_DEBOUNCE_MS = 300;
@@ -32,8 +34,8 @@ const styles = createStaticStyles(({ css }) => ({
 const ProviderListPage = memo(() => {
   const { t } = useTranslation('admin');
   const navigate = useNavigate();
-  const { permissions } = useAdminAccess();
-  const { canUpdateProvider } = deriveAiCatalogPermissions(permissions);
+  const { authMethod, permissions } = useAdminAccess();
+  const { canCreateProvider, canUpdateProvider } = deriveAiCatalogPermissions(permissions);
   const [searchParams, setSearchParams] = useSearchParams();
   const status = searchParams.get('status') as AdminAiProviderListInput['status'];
   const enabledParam = searchParams.get('enabled');
@@ -146,6 +148,26 @@ const ProviderListPage = memo(() => {
     <AdminPageTemplate
       description={t('aiCatalog.providers.desc')}
       title={t('aiCatalog.providers.title')}
+      actions={
+        canCreateProvider ? (
+          <Button
+            type="primary"
+            onClick={() =>
+              openCreateProviderModal({
+                authMethod: authMethod ?? undefined,
+                onSubmit: async (input) => {
+                  const provider = await adminAiCatalogService.createProvider(input);
+                  await refreshAdminAiProviderLists();
+                  toast.success(t('aiCatalog.toast.providerCreated'));
+                  navigate(`/admin/ai/providers/${encodeURIComponent(provider.id)}`);
+                },
+              })
+            }
+          >
+            {t('aiCatalog.providers.actions.create')}
+          </Button>
+        ) : null
+      }
       toolbar={
         <Flexbox horizontal gap={8}>
           <Input
