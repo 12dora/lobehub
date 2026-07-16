@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  adminAiProviderCreateDraftInputSchema,
   aiModelDraftSchema,
   aiProviderDraftSchema,
   aiSecretMutationSchema,
@@ -84,5 +85,43 @@ describe('AI catalog contracts', () => {
         revision: 'revision',
       }).success,
     ).toBe(false);
+  });
+
+  it('rejects sensitive material in non-secret JSON while preserving numeric token metadata', () => {
+    const base = {
+      displayName: 'Alpha',
+      providerKey: 'alpha',
+      reason: 'create',
+    };
+    expect(
+      adminAiProviderCreateDraftInputSchema.safeParse({
+        ...base,
+        config: { nested: { apiKey: 'plain-secret' } },
+      }).success,
+    ).toBe(false);
+    expect(
+      adminAiProviderCreateDraftInputSchema.safeParse({
+        ...base,
+        settings: { headers: { Authorization: 'plain-secret' } },
+      }).success,
+    ).toBe(false);
+    expect(
+      adminAiProviderCreateDraftInputSchema.safeParse({
+        ...base,
+        config: { endpoint: 'https://user:password@example.test/v1' },
+      }).success,
+    ).toBe(false);
+    expect(
+      adminAiProviderCreateDraftInputSchema.safeParse({
+        ...base,
+        config: { endpoint: 'https://example.test/v1?token=plain-secret' },
+      }).success,
+    ).toBe(false);
+    expect(
+      adminAiProviderCreateDraftInputSchema.safeParse({
+        ...base,
+        config: { contextWindowTokens: 128_000, maxTokens: 4096 },
+      }).success,
+    ).toBe(true);
   });
 });

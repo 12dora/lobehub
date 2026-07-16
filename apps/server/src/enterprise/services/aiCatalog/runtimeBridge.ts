@@ -18,6 +18,20 @@ export const ensurePlatformAiRuntimeRegistered = (): void => {
   const implementation: PlatformAiRuntimeImplementation = {
     createModelAllowlistHooks: createAiCatalogModelAllowlistHooks,
     isEnabled: () => parseEnterpriseFeatureFlags(process.env).ENABLE_PLATFORM_MANAGED_AI,
+    listPublishedModels: async (db, providerKey) => {
+      const state = await resolveAiCatalogRuntimeState({
+        db,
+        upstreamState: {
+          enabledAiModels: [],
+          enabledAiProviders: [],
+          enabledChatAiProviders: [],
+          enabledImageAiProviders: [],
+          enabledVideoAiProviders: [],
+          runtimeConfig: {},
+        },
+      });
+      return state.enabledAiModels.filter((model) => model.providerId === providerKey);
+    },
     resolveExecutionConfig: async (db, providerKey) => {
       const flags = parseEnterpriseFeatureFlags(process.env);
       const secrets = PlatformSecretService.fromEnvOrThrowIfEnterprise(process.env, flags);

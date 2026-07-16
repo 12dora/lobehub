@@ -31,12 +31,14 @@ import {
 } from '../../contracts/aiCatalog';
 import type { PlatformConfigInvalidationPublisher } from '../platformConfigInvalidation';
 import { PlatformPublisherService } from '../platformPublisher';
+import { normalizeAiCatalogExecutionCredentials } from './credentialAdapter';
 import { resolveAiCatalogDependents } from './dependencies';
 import {
   AiCatalogNotFoundError,
   AiCatalogResourceInUseError,
   AiCatalogValidationError,
 } from './errors';
+import { sanitizeAiCatalogPersistedText } from './persistentText';
 import type { AiCatalogSecretManager } from './secretManager';
 import { aiCatalogDraftToken, appendAiCatalogFailureAudit } from './shared';
 
@@ -65,6 +67,17 @@ export class AiCatalogPublicationService {
     this.publisher = new PlatformPublisherService(db, options.invalidation);
     this.secrets = secrets;
   }
+
+  private sanitizeReason = async (providerId: string, reason: string): Promise<string> => {
+    const provider = await new PlatformAiCatalogRepository(this.db).getProvider(providerId);
+    if (!provider?.encryptedKeyVaults) return sanitizeAiCatalogPersistedText(reason);
+    try {
+      const keyVaults = await this.secrets.decrypt(provider.encryptedKeyVaults);
+      return sanitizeAiCatalogPersistedText(reason, [keyVaults]);
+    } catch {
+      return sanitizeAiCatalogPersistedText(reason);
+    }
+  };
 
   private validatePublishDraft = async (
     tx: Transaction,
@@ -102,15 +115,19 @@ export class AiCatalogPublicationService {
     }
     const provider = await repository.getProvider(providerId);
     if (!provider) throw new AiCatalogNotFoundError();
-    const secretOptional = draft.settings.sdkType === 'ollama';
-    if (!provider.encryptedKeyVaults && !secretOptional) {
-      issues.push('Provider secret must be configured');
-    } else if (provider.encryptedKeyVaults) {
-      try {
-        await this.secrets.decrypt(provider.encryptedKeyVaults);
-      } catch {
-        issues.push('Provider secret must be readable');
-      }
+    try {
+      const keyVaults = provider.encryptedKeyVaults
+        ? await this.secrets.decrypt(provider.encryptedKeyVaults)
+        : {};
+      normalizeAiCatalogExecutionCredentials({
+        config: draft.config,
+        keyVaults,
+        providerKey: draft.providerKey,
+        settings: draft.settings,
+      });
+    } catch (error) {
+      if (error instanceof AiCatalogValidationError) issues.push(...error.issues);
+      else issues.push('Provider secret must be readable');
     }
     if (issues.length > 0) throw new AiCatalogValidationError(issues);
     return draft;
@@ -121,6 +138,7 @@ export class AiCatalogPublicationService {
     actorUserId: string,
     expectedDraftToken: string,
     validateForPublish = true,
+    validateArchiveDependents = false,
   ): ResourcePointerAdapter => ({
     assertLockedState: async (tx) => {
       await this.lifecycle.afterPublishLock?.();
@@ -128,6 +146,18 @@ export class AiCatalogPublicationService {
       if (!draft) throw new AiCatalogNotFoundError();
       if (aiCatalogDraftToken(draft) !== expectedDraftToken) {
         throw new PlatformRevisionConflictError('Provider draft token changed');
+      }
+      if (validateArchiveDependents) {
+        const dependents = (
+          await Promise.all(
+            draft.models.map((model) =>
+              resolveAiCatalogDependents(tx, draft.providerKey, model.modelKey),
+            ),
+          )
+        ).flat();
+        if (dependents.some((item) => item.blocking)) {
+          throw new AiCatalogResourceInUseError(dependents);
+        }
       }
     },
     lockAndGetRevision: async (tx) => {
@@ -237,6 +267,7 @@ export class AiCatalogPublicationService {
   });
 
   publishProvider = async (actorUserId: string, input: PublishProviderInput) => {
+    const reason = await this.sanitizeReason(input.id, input.reason);
     try {
       const draft = await new PlatformAiCatalogModel(this.db).getProvider(input.id);
       if (!draft) throw new AiCatalogNotFoundError();
@@ -246,7 +277,7 @@ export class AiCatalogPublicationService {
         invalidationScopes: ['ai-catalog', 'model-runtime'],
         payload: {},
         pointer: this.createPointer(input.id, actorUserId, input.expectedDraftToken),
-        reason: input.reason,
+        reason,
         redactionOptions: M07_REDACTION_OPTIONS,
         resourceId: input.id,
         resourceType: 'provider',
@@ -257,7 +288,7 @@ export class AiCatalogPublicationService {
       await appendAiCatalogFailureAudit(this.db, {
         action: 'admin.aiProviders.publish',
         actorUserId,
-        reason: input.reason,
+        reason,
         targetId: input.id,
       });
       throw error;
@@ -265,26 +296,17 @@ export class AiCatalogPublicationService {
   };
 
   archiveProvider = async (actorUserId: string, input: ArchiveProviderInput) => {
-    const draft = await new PlatformAiCatalogModel(this.db).getProvider(input.id);
-    if (!draft) throw new AiCatalogNotFoundError();
-    const dependents = (
-      await Promise.all(
-        draft.models.map((model) =>
-          resolveAiCatalogDependents(this.db, draft.providerKey, model.modelKey),
-        ),
-      )
-    ).flat();
-    if (dependents.some((item) => item.blocking)) {
-      throw new AiCatalogResourceInUseError(dependents);
-    }
+    const reason = await this.sanitizeReason(input.id, input.reason);
     try {
+      const draft = await new PlatformAiCatalogModel(this.db).getProvider(input.id);
+      if (!draft) throw new AiCatalogNotFoundError();
       const result = await this.publisher.publish({
         actorUserId,
         expectedRevision: input.expectedRevision,
         invalidationScopes: ['ai-catalog', 'model-runtime'],
         payload: {},
-        pointer: this.createPointer(input.id, actorUserId, input.expectedDraftToken, false),
-        reason: input.reason,
+        pointer: this.createPointer(input.id, actorUserId, input.expectedDraftToken, false, true),
+        reason,
         redactionOptions: M07_REDACTION_OPTIONS,
         resourceId: input.id,
         resourceType: 'provider',
@@ -296,7 +318,7 @@ export class AiCatalogPublicationService {
       await appendAiCatalogFailureAudit(this.db, {
         action: 'admin.aiProviders.archive',
         actorUserId,
-        reason: input.reason,
+        reason,
         targetId: input.id,
       });
       throw error;
@@ -304,6 +326,7 @@ export class AiCatalogPublicationService {
   };
 
   rollbackProvider = async (actorUserId: string, input: RollbackProviderInput) => {
+    const reason = await this.sanitizeReason(input.id, input.reason);
     try {
       const target = await new PlatformAiCatalogRepository(this.db).getProviderRevision(
         input.id,
@@ -319,7 +342,7 @@ export class AiCatalogPublicationService {
         expectedRevision: input.expectedRevision,
         invalidationScopes: ['ai-catalog', 'model-runtime'],
         pointer: this.createPointer(input.id, actorUserId, input.expectedDraftToken),
-        reason: input.reason,
+        reason,
         resourceId: input.id,
         resourceType: 'provider',
         targetRevision: input.targetRevision,
@@ -329,7 +352,7 @@ export class AiCatalogPublicationService {
       await appendAiCatalogFailureAudit(this.db, {
         action: 'admin.aiProviders.rollback',
         actorUserId,
-        reason: input.reason,
+        reason,
         targetId: input.id,
       });
       throw error;

@@ -173,28 +173,31 @@ describe('AiCatalogAdminService provider draft mutations', () => {
   });
 
   it('creates and reads a secret-safe draft with a CAS token and success audit', async () => {
+    const credential = 'plaincredentialvalue-without-known-prefix';
     const created = await service.createProviderDraft('admin', {
       displayName: 'Alpha',
       enabled: true,
       providerKey: 'alpha',
-      reason: 'create provider',
-      secret: { operation: 'replace', value: 'fake-api-key' },
+      reason: `create provider ${credential}`,
+      secret: { operation: 'replace', value: credential },
       source: 'custom',
     });
     expect(created.secret).toMatchObject({ configured: true });
-    expect(JSON.stringify(created)).not.toContain('fake-api-key');
+    expect(JSON.stringify(created)).not.toContain(credential);
 
     const [stored] = await db.select().from(platformAiProviders);
     expect(stored.encryptedKeyVaults).toMatch(/^aihub\.secret\.v1\./);
-    expect(stored.encryptedKeyVaults).not.toContain('fake-api-key');
+    expect(stored.encryptedKeyVaults).not.toContain(credential);
 
     const detail = await service.getDetail(created.id);
     expect(detail.baseRevision).toBe(0);
     expect(detail.draftToken).toHaveLength(64);
     expect(detail.published).toBeNull();
-    expect(await db.select().from(platformAuditLogs)).toContainEqual(
+    const audits = await db.select().from(platformAuditLogs);
+    expect(audits).toContainEqual(
       expect.objectContaining({ action: 'admin.aiProviders.createDraft', result: 'success' }),
     );
+    expect(JSON.stringify(audits)).not.toContain(credential);
   });
 
   it('enforces draft token/revision CAS and preserves or clears secrets explicitly', async () => {

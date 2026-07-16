@@ -5,14 +5,19 @@ import type {
   EnabledProvider,
 } from '@lobechat/types';
 import { isRecord } from '@lobechat/utils/object';
-import type { EnabledAiModel } from 'model-bank';
+import { type EnabledAiModel, LOBE_DEFAULT_MODEL_LIST } from 'model-bank';
 
 import type { EnterpriseFeatureFlags } from '@/const/platform/featureFlags';
 import { PlatformAiCatalogRepository } from '@/database/repositories/platformAiCatalog';
+import type {
+  PlatformAiProviderConfig,
+  PlatformAiProviderSettings,
+} from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 
 import { parseEnterpriseFeatureFlags } from '../../featureFlags';
 import { type PlatformSecretService, secretNotReadable } from '../../security/secret';
+import { normalizeAiCatalogExecutionCredentials } from './credentialAdapter';
 import { AiCatalogModelNotPublishedError, AiCatalogNotFoundError } from './errors';
 import type { PlatformProviderKeyVaults } from './secretManager';
 import { AiCatalogSecretManager } from './secretManager';
@@ -27,12 +32,17 @@ const EMPTY_RUNTIME_STATE: AiProviderRuntimeState = {
 };
 
 export interface AiCatalogShadowComparison {
+  differencesTruncated: boolean;
   managedModelCount: number;
   managedProviderCount: number;
   modelOnlyInManaged: string[];
+  modelOnlyInManagedTotal: number;
   modelOnlyInUpstream: string[];
+  modelOnlyInUpstreamTotal: number;
   providerOnlyInManaged: string[];
+  providerOnlyInManagedTotal: number;
   providerOnlyInUpstream: string[];
+  providerOnlyInUpstreamTotal: number;
   upstreamModelCount: number;
   upstreamProviderCount: number;
 }
@@ -51,8 +61,12 @@ export const recordAiCatalogShadowComparison = (
 export const getLastAiCatalogShadowComparison = (): AiCatalogShadowComparison | null =>
   lastShadowComparison;
 
-const sortedDifference = (left: Set<string>, right: Set<string>): string[] =>
-  [...left].filter((item) => !right.has(item)).sort();
+const MAX_SHADOW_DIFFERENCE_ITEMS = 100;
+
+const boundedDifference = (left: Set<string>, right: Set<string>) => {
+  const all = [...left].filter((item) => !right.has(item)).sort();
+  return { items: all.slice(0, MAX_SHADOW_DIFFERENCE_ITEMS), total: all.length };
+};
 
 export const compareAiCatalogRuntimeStates = (
   upstream: AiProviderRuntimeState,
@@ -66,13 +80,27 @@ export const compareAiCatalogRuntimeStates = (
   const managedModels = new Set(
     managed.enabledAiModels.map((model) => `${model.providerId}:${model.id}`),
   );
+  const modelOnlyInManaged = boundedDifference(managedModels, upstreamModels);
+  const modelOnlyInUpstream = boundedDifference(upstreamModels, managedModels);
+  const providerOnlyInManaged = boundedDifference(managedProviders, upstreamProviders);
+  const providerOnlyInUpstream = boundedDifference(upstreamProviders, managedProviders);
   return {
+    differencesTruncated: [
+      modelOnlyInManaged,
+      modelOnlyInUpstream,
+      providerOnlyInManaged,
+      providerOnlyInUpstream,
+    ].some((difference) => difference.total > difference.items.length),
     managedModelCount: managedModels.size,
     managedProviderCount: managedProviders.size,
-    modelOnlyInManaged: sortedDifference(managedModels, upstreamModels),
-    modelOnlyInUpstream: sortedDifference(upstreamModels, managedModels),
-    providerOnlyInManaged: sortedDifference(managedProviders, upstreamProviders),
-    providerOnlyInUpstream: sortedDifference(upstreamProviders, managedProviders),
+    modelOnlyInManaged: modelOnlyInManaged.items,
+    modelOnlyInManagedTotal: modelOnlyInManaged.total,
+    modelOnlyInUpstream: modelOnlyInUpstream.items,
+    modelOnlyInUpstreamTotal: modelOnlyInUpstream.total,
+    providerOnlyInManaged: providerOnlyInManaged.items,
+    providerOnlyInManagedTotal: providerOnlyInManaged.total,
+    providerOnlyInUpstream: providerOnlyInUpstream.items,
+    providerOnlyInUpstreamTotal: providerOnlyInUpstream.total,
     upstreamModelCount: upstreamModels.size,
     upstreamProviderCount: upstreamProviders.size,
   };
@@ -80,6 +108,9 @@ export const compareAiCatalogRuntimeStates = (
 
 const runtimeCache = new Map<string, AiProviderRuntimeState>();
 const MAX_RUNTIME_CACHE_ENTRIES = 20;
+const builtinModelMap = new Map(
+  LOBE_DEFAULT_MODEL_LIST.map((model) => [`${model.providerId}:${model.id}`, model]),
+);
 
 const cacheState = (key: string, state: AiProviderRuntimeState): AiProviderRuntimeState => {
   runtimeCache.set(key, state);
@@ -161,22 +192,35 @@ export class AiCatalogRuntimeAdapter {
         ) {
           continue;
         }
+        const builtin = builtinModelMap.get(`${providerKey}:${rawModel.modelKey}`);
+        const publishedConfig = isRecord(rawModel.config) ? rawModel.config : {};
+        const deploymentName =
+          typeof publishedConfig.deploymentName === 'string'
+            ? publishedConfig.deploymentName
+            : undefined;
         models.push({
-          abilities: isRecord(rawModel.abilities) ? rawModel.abilities : {},
+          ...builtin,
+          abilities: isRecord(rawModel.abilities) ? rawModel.abilities : (builtin?.abilities ?? {}),
+          config: {
+            ...builtin?.config,
+            ...(deploymentName ? { deploymentName } : {}),
+          },
           contextWindowTokens:
             typeof rawModel.contextWindowTokens === 'number'
               ? rawModel.contextWindowTokens
-              : undefined,
-          description: typeof rawModel.description === 'string' ? rawModel.description : undefined,
-          displayName: typeof rawModel.displayName === 'string' ? rawModel.displayName : undefined,
+              : builtin?.contextWindowTokens,
+          description:
+            typeof rawModel.description === 'string' ? rawModel.description : builtin?.description,
+          displayName:
+            typeof rawModel.displayName === 'string' ? rawModel.displayName : builtin?.displayName,
           enabled: true,
           id: rawModel.modelKey,
-          parameters: isRecord(rawModel.parameters) ? rawModel.parameters : undefined,
-          pricing: isRecord(rawModel.pricing) ? rawModel.pricing : undefined,
+          parameters: isRecord(rawModel.parameters) ? rawModel.parameters : builtin?.parameters,
+          pricing: isRecord(rawModel.pricing) ? rawModel.pricing : builtin?.pricing,
           providerId: providerKey,
-          settings: isRecord(rawModel.settings) ? rawModel.settings : undefined,
+          settings: isRecord(rawModel.settings) ? rawModel.settings : builtin?.settings,
           sort: typeof rawModel.sort === 'number' ? rawModel.sort : undefined,
-          source: 'custom',
+          source: builtin ? 'builtin' : 'custom',
           type: typeof rawModel.type === 'string' ? rawModel.type : 'chat',
         } as EnabledAiModel);
       }
@@ -282,8 +326,10 @@ export class AiCatalogExecutionResolver {
             : [],
         )
       : [];
-    const config = isRecord(provider.config) ? provider.config : {};
-    const settings = isRecord(provider.settings) ? provider.settings : {};
+    const config = isRecord(provider.config) ? (provider.config as PlatformAiProviderConfig) : {};
+    const settings = isRecord(provider.settings)
+      ? (provider.settings as PlatformAiProviderSettings)
+      : {};
     let keyVaults: PlatformProviderKeyVaults = {};
     if (revision.secretFingerprint) {
       const secretVersion = await repository.getProviderSecretVersion(
@@ -293,16 +339,19 @@ export class AiCatalogExecutionResolver {
       if (!secretVersion) throw secretNotReadable();
       keyVaults = await this.secrets.decrypt(secretVersion.ciphertext);
     }
-    if (typeof config.endpoint === 'string' && !keyVaults.baseURL) {
-      keyVaults = { ...keyVaults, baseURL: config.endpoint };
-    }
-    return {
-      allowedModels,
+    const normalized = normalizeAiCatalogExecutionCredentials({
       config,
       keyVaults,
       providerKey,
+      settings,
+    });
+    return {
+      allowedModels,
+      config,
+      keyVaults: normalized.keyVaults,
+      providerKey,
       revision: revision.revision,
-      runtimeProvider: typeof settings.sdkType === 'string' ? settings.sdkType : providerKey,
+      runtimeProvider: normalized.runtimeProvider,
     };
   }
 }

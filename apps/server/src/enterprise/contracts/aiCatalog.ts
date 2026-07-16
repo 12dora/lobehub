@@ -1,6 +1,12 @@
 import { AiModelTypeSchema } from 'model-bank';
 import { z } from 'zod';
 
+import {
+  containsSensitiveMaterial,
+  isSensitiveKey,
+  M07_REDACTION_OPTIONS,
+} from '../security/redaction';
+
 const providerKeySchema = z
   .string()
   .trim()
@@ -9,7 +15,50 @@ const providerKeySchema = z
   .regex(/^[a-z0-9][a-z0-9._-]*$/);
 
 const modelKeySchema = z.string().trim().min(1).max(150);
-const boundedJsonObjectSchema = z.record(z.string(), z.unknown());
+const validateNonSecretJson = (
+  value: unknown,
+  ctx: z.RefinementCtx,
+  path: Array<number | string> = [],
+): void => {
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => validateNonSecretJson(item, ctx, [...path, index]));
+    return;
+  }
+  if (!value || typeof value !== 'object') {
+    if (typeof value === 'string') {
+      if (containsSensitiveMaterial(value)) {
+        ctx.addIssue({ code: 'custom', message: 'secret material is not allowed', path });
+      }
+      try {
+        const url = new URL(value);
+        const sensitiveQuery = [...url.searchParams.keys()].some((key) =>
+          /^(?:api_?key|access_?token|authorization|password|secret|signature|token)$/i.test(key),
+        );
+        if (url.username || url.password || sensitiveQuery) {
+          ctx.addIssue({ code: 'custom', message: 'credential-bearing URL is not allowed', path });
+        }
+      } catch {
+        // Non-URL strings are validated by value-shape checks above.
+      }
+    }
+    return;
+  }
+  for (const [key, child] of Object.entries(value)) {
+    if (isSensitiveKey(key) && !M07_REDACTION_OPTIONS.isBenignKey(key)) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'sensitive key is not allowed',
+        path: [...path, key],
+      });
+      continue;
+    }
+    validateNonSecretJson(child, ctx, [...path, key]);
+  }
+};
+
+const boundedJsonObjectSchema = z
+  .record(z.string(), z.unknown())
+  .superRefine((value, ctx) => validateNonSecretJson(value, ctx));
 
 export const aiConnectionTestStateSchema = z
   .object({
@@ -26,9 +75,35 @@ export const aiConnectionTestStateSchema = z
   })
   .strict();
 
+const aiStructuredCredentialSchema = z
+  .object({
+    accessKeyId: z.string().min(1).max(32_768).optional(),
+    apiKey: z.string().min(1).max(32_768).optional(),
+    apiVersion: z.string().min(1).max(200).optional(),
+    authType: z.enum(['none', 'basic', 'bearer', 'custom']).optional(),
+    baseURL: z.string().min(1).max(4000).optional(),
+    baseURLOrAccountID: z.string().min(1).max(4000).optional(),
+    bearerToken: z.string().min(1).max(32_768).optional(),
+    bearerTokenExpiresAt: z.string().min(1).max(200).optional(),
+    customHeaders: z.record(z.string(), z.string()).optional(),
+    oauthAccessToken: z.string().min(1).max(32_768).optional(),
+    password: z.string().min(1).max(32_768).optional(),
+    region: z.string().min(1).max(200).optional(),
+    secretAccessKey: z.string().min(1).max(32_768).optional(),
+    sessionToken: z.string().min(1).max(32_768).optional(),
+    username: z.string().min(1).max(200).optional(),
+  })
+  .strict()
+  .refine((value) => Object.keys(value).length > 0, 'credential object must not be empty');
+
 export const aiSecretMutationSchema = z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('keep') }).strict(),
-  z.object({ operation: z.literal('replace'), value: z.string().min(1).max(32_768) }).strict(),
+  z
+    .object({
+      operation: z.literal('replace'),
+      value: z.union([z.string().min(1).max(32_768), aiStructuredCredentialSchema]),
+    })
+    .strict(),
   z.object({ operation: z.literal('clear') }).strict(),
 ]);
 
