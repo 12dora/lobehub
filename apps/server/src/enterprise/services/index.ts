@@ -3,6 +3,7 @@ export * from './easyauthClient';
 export * from './easyauthManifest';
 export * from './easyauthSync';
 export * from './managedResourceCapabilities';
+export * from './managedResourceGuardMetrics';
 export * from './managedResourcePolicy';
 export * from './managedResourceReadiness';
 export * from './platformAudit';

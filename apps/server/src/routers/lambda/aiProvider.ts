@@ -10,6 +10,7 @@ import { UserModel } from '@/database/models/user';
 import { AiInfraRepos } from '@/database/repositories/aiInfra';
 import { router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
+import { withManagedResourceGuard } from '@/server/enterprise/guards/managedResource';
 import { getServerGlobalConfig } from '@/server/globalConfig';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
@@ -45,6 +46,7 @@ const aiProviderProcedure = wsCompatProcedure.use(serverDatabase).use(async (opt
 export const aiProviderRouter = router({
   checkProviderConnectivity: aiProviderProcedure
     .use(withScopedPermission('ai_provider:update'))
+    .use(withManagedResourceGuard('aiProvider.checkProviderConnectivity'))
     .input(
       z.object({
         id: z.string(),
@@ -103,6 +105,7 @@ export const aiProviderRouter = router({
 
   createAiProvider: aiProviderProcedure
     .use(withScopedPermission('ai_provider:create'))
+    .use(withManagedResourceGuard('aiProvider.createAiProvider'))
     .input(CreateAiProviderSchema)
     .mutation(async ({ input, ctx }) => {
       try {
@@ -139,6 +142,7 @@ export const aiProviderRouter = router({
 
   removeAiProvider: aiProviderProcedure
     .use(withScopedPermission('ai_provider:delete'))
+    .use(withManagedResourceGuard('aiProvider.removeAiProvider'))
     .input(z.object({ id: z.string() }))
     .mutation(async ({ input, ctx }) => {
       return ctx.aiProviderModel.delete(input.id);
@@ -146,6 +150,7 @@ export const aiProviderRouter = router({
 
   toggleProviderEnabled: aiProviderProcedure
     .use(withScopedPermission('ai_provider:update'))
+    .use(withManagedResourceGuard('aiProvider.toggleProviderEnabled'))
     .input(
       z.object({
         enabled: z.boolean(),
@@ -165,6 +170,7 @@ export const aiProviderRouter = router({
 
   updateAiProvider: aiProviderProcedure
     .use(withScopedPermission('ai_provider:update'))
+    .use(withManagedResourceGuard('aiProvider.updateAiProvider'))
     .input(
       z.object({
         id: z.string(),
@@ -177,6 +183,7 @@ export const aiProviderRouter = router({
 
   updateAiProviderConfig: aiProviderProcedure
     .use(withScopedPermission('ai_provider:update'))
+    .use(withManagedResourceGuard('aiProvider.updateAiProviderConfig'))
     .input(
       z.object({
         id: z.string(),
@@ -194,6 +201,7 @@ export const aiProviderRouter = router({
 
   updateAiProviderOrder: aiProviderProcedure
     .use(withScopedPermission('ai_provider:update'))
+    .use(withManagedResourceGuard('aiProvider.updateAiProviderOrder'))
     .input(
       z.object({
         sortMap: z.array(

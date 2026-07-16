@@ -68,6 +68,11 @@ describe('resolvePublishedManagedResourcePolicies', () => {
       aiModels: false,
       aiProviders: true,
     });
+    expect(flagsOn.effectiveModes).toMatchObject({
+      agents: 'unmanaged',
+      aiModels: 'observe',
+      aiProviders: 'ui-only',
+    });
 
     const flagsOff = await resolvePublishedManagedResourcePolicies({
       db: serverDB,
@@ -75,5 +80,6 @@ describe('resolvePublishedManagedResourcePolicies', () => {
       readiness,
     });
     expect(Object.values(flagsOff.publicCapabilities).every((managed) => !managed)).toBe(true);
+    expect(Object.values(flagsOff.effectiveModes).every((mode) => mode === 'unmanaged')).toBe(true);
   });
 });

@@ -18,6 +18,7 @@ import type {
 import { resolveManagedResourceReadiness } from './managedResourceReadiness';
 
 export interface ResolvedManagedResourcePolicies {
+  effectiveModes: Record<ManagedResourceKind, 'unmanaged' | 'observe' | 'ui-only' | 'enforced'>;
   publicCapabilities: ManagedResourcesCapabilities;
   published: ManagedResourcePolicyMap;
   readiness: ManagedResourceReadinessMap;
@@ -36,16 +37,18 @@ export const resolvePublishedManagedResourcePolicies = async (params: {
   const published =
     snapshot.status === 'published' ? snapshot.published : createUnmanagedResourcePolicyMap();
   const publicCapabilities = {} as ManagedResourcesCapabilities;
+  const effectiveModes = {} as ResolvedManagedResourcePolicies['effectiveModes'];
 
   for (const resource of MANAGED_RESOURCE_KINDS) {
     const policy = published[resource];
     const featureOn = isManagedResourceFeatureEnabled(resource, params.flags);
     const catalogSafe = policy.enforcementMode !== 'enforced' || readiness[resource];
-    publicCapabilities[resource] =
-      featureOn && policy.managed && policy.enforcementMode !== 'observe' && catalogSafe;
+    effectiveModes[resource] =
+      featureOn && policy.managed && catalogSafe ? policy.enforcementMode : 'unmanaged';
+    publicCapabilities[resource] = ['ui-only', 'enforced'].includes(effectiveModes[resource]);
   }
 
-  return { publicCapabilities, published, readiness, revision: snapshot.revision };
+  return { effectiveModes, publicCapabilities, published, readiness, revision: snapshot.revision };
 };
 
 export const isPublishedResourceManaged = (
