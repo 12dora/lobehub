@@ -42,6 +42,19 @@ export const mapEnterpriseCodeToTrpc = (code: EnterpriseErrorCode): TRPC_ERROR_C
   if (code === 'PLATFORM_INVALID_INPUT' || code === 'ADMIN_REASON_REQUIRED') {
     return 'BAD_REQUEST';
   }
+  if (code === 'MANAGED_SETTING_BY_ADMIN' || code === 'MANAGED_RESOURCE_BY_PLATFORM') {
+    return 'FORBIDDEN';
+  }
+  if (
+    code === 'MANAGED_SETTING_UNKNOWN_PATH' ||
+    code === 'MANAGED_SETTING_SECRET_PATH' ||
+    code === 'MANAGED_SETTING_INVALID_VALUE' ||
+    code === 'MANAGED_SETTING_INAPPLICABLE_CLIENT' ||
+    code === 'MANAGED_SETTING_NOT_POLICY_ELIGIBLE' ||
+    code === 'MANAGED_POLICY_ENFORCED'
+  ) {
+    return 'BAD_REQUEST';
+  }
   return 'BAD_REQUEST';
 };
 

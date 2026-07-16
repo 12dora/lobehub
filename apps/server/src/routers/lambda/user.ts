@@ -35,6 +35,18 @@ import { UserModel } from '@/database/models/user';
 import { UserPersonaModel } from '@/database/models/userMemory/persona';
 import { authedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
+import {
+  userSettingsGetEffectiveOutputSchema,
+  userSettingsPatchOverrideInputSchema,
+  userSettingsPatchOverrideOutputSchema,
+  userSettingsResetOverrideInputSchema,
+  userSettingsResetOverrideOutputSchema,
+} from '@/server/enterprise/contracts/userSettings';
+import { throwEnterpriseError } from '@/server/enterprise/guards/enterpriseErrors';
+import {
+  EffectiveSettingsService,
+  SettingsPathError,
+} from '@/server/enterprise/services/settings/effectiveSettingsService';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 import { FileS3 } from '@/server/modules/S3';
 import { AgentDocumentsService } from '@/server/services/agentDocuments';
@@ -188,8 +200,85 @@ export const userRouter = router({
   }),
 
   resetSettings: userProcedure.mutation(async ({ ctx }) => {
+    // Full legacy reset — deletes user_settings row (including keyVaults).
+    // Does NOT wipe user_setting_overrides when policy flag is on; path-level
+    // reset uses resetSettingOverride. Flag OFF: unchanged upstream behavior.
     return ctx.userModel.deleteSetting();
   }),
+
+  /**
+   * M05: server-resolved effective settings + per-path source/locked/hidden metadata.
+   * When ENABLE_PLATFORM_SETTINGS_POLICY is off, returns built-in + legacy merge only.
+   */
+  getEffectiveSettings: userProcedure
+    .output(userSettingsGetEffectiveOutputSchema)
+    .query(async ({ ctx }) => {
+      const service = new EffectiveSettingsService(ctx.serverDB);
+      const state = await ctx.userModel.getUserState(KeyVaultsGateKeeper.getUserKeyVaults);
+      // Strip keyVaults from legacy blob fed into resolver pathMeta
+      const { keyVaults: _kv, ...legacy } = (state.settings ?? {}) as Record<string, unknown> & {
+        keyVaults?: unknown;
+      };
+      return service.getEffectiveSettings({
+        legacyUserSettings: legacy,
+        userId: ctx.userId,
+      });
+    }),
+
+  patchSettingOverride: userProcedure
+    .input(userSettingsPatchOverrideInputSchema)
+    .output(userSettingsPatchOverrideOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      const service = new EffectiveSettingsService(ctx.serverDB);
+      try {
+        return await service.patchSettingOverride({
+          path: input.path,
+          userId: ctx.userId,
+          value: input.value,
+        });
+      } catch (error) {
+        if (error instanceof SettingsPathError) {
+          throwEnterpriseError({
+            code: error.code as never,
+            httpCode:
+              error.code === 'MANAGED_SETTING_BY_ADMIN'
+                ? 'FORBIDDEN'
+                : error.code === 'PLATFORM_FEATURE_DISABLED'
+                  ? 'FORBIDDEN'
+                  : 'BAD_REQUEST',
+            message: error.message,
+          });
+        }
+        throw error;
+      }
+    }),
+
+  resetSettingOverride: userProcedure
+    .input(userSettingsResetOverrideInputSchema)
+    .output(userSettingsResetOverrideOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      const service = new EffectiveSettingsService(ctx.serverDB);
+      try {
+        return await service.resetSettingOverride({
+          path: input.path,
+          userId: ctx.userId,
+        });
+      } catch (error) {
+        if (error instanceof SettingsPathError) {
+          throwEnterpriseError({
+            code: error.code as never,
+            httpCode:
+              error.code === 'MANAGED_SETTING_BY_ADMIN'
+                ? 'FORBIDDEN'
+                : error.code === 'PLATFORM_FEATURE_DISABLED'
+                  ? 'FORBIDDEN'
+                  : 'BAD_REQUEST',
+            message: error.message,
+          });
+        }
+        throw error;
+      }
+    }),
 
   updateAvatar: userProcedure.input(z.string()).mutation(async ({ ctx, input }) => {
     assertSafeAvatarInput(input, ctx.userId);
@@ -528,7 +617,7 @@ export const userRouter = router({
       }
     }
 
-    // Encrypt keyVaults
+    // Encrypt keyVaults — always outside platform policy semantics
     let encryptedKeyVaults: string | null = null;
 
     if (keyVaults) {
@@ -539,6 +628,37 @@ export const userRouter = router({
       encryptedKeyVaults = await gateKeeper.encrypt(data);
     }
 
+    const settingsService = new EffectiveSettingsService(ctx.serverDB);
+
+    // Flag ON: flatten registered paths → overrides (atomic, fail-closed); legacy remainder only
+    if (settingsService.isPolicyEnabled()) {
+      try {
+        const adapted = await settingsService.adaptLegacyUpdateSettings({
+          input: res as Record<string, unknown>,
+          userId: ctx.userId,
+        });
+        const nextValue: Record<string, unknown> = {
+          ...adapted.legacyPartial,
+          ...(encryptedKeyVaults !== null ? { keyVaults: encryptedKeyVaults } : {}),
+        };
+        // Only touch user_settings when there is something left (or keyVaults)
+        if (Object.keys(nextValue).length > 0) {
+          return ctx.userModel.updateSetting(nextValue as Partial<UserSettings>);
+        }
+        return;
+      } catch (error) {
+        if (error instanceof SettingsPathError) {
+          throwEnterpriseError({
+            code: error.code as never,
+            httpCode: error.code === 'MANAGED_SETTING_BY_ADMIN' ? 'FORBIDDEN' : 'BAD_REQUEST',
+            message: error.message,
+          });
+        }
+        throw error;
+      }
+    }
+
+    // Flag OFF: unchanged upstream behavior
     const nextValue = { ...res, keyVaults: encryptedKeyVaults };
 
     return ctx.userModel.updateSetting(nextValue);

@@ -12,6 +12,13 @@ export {
   resolveSettingPath,
 } from './effectiveResolver';
 export {
+  EffectiveSettingsService,
+  readEffectivePath,
+  MANAGED_ERROR_CODES as SETTINGS_MANAGED_ERROR_CODES,
+  PLATFORM_ERROR_CODES as SETTINGS_PLATFORM_ERROR_CODES,
+  SettingsPathError,
+} from './effectiveSettingsService';
+export {
   deleteByPath,
   flattenLeaves,
   getByPath,
