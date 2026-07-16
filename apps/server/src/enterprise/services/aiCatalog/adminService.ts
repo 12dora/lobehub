@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import type { z } from 'zod';
 
 import {
@@ -157,6 +159,17 @@ export class AiCatalogAdminService {
     });
   };
 
+  getModelDraftContext = async (providerId: string) => {
+    const draft = await new PlatformAiCatalogModel(this.db).getProvider(providerId);
+    if (!draft) throw new AiCatalogNotFoundError();
+    return {
+      baseRevision: draft.revision,
+      draftToken: aiCatalogDraftToken(draft),
+      modelIds: draft.models.map((model) => model.id),
+      providerId,
+    };
+  };
+
   createProviderDraft = async (
     actorUserId: string,
     input: CreateProviderInput,
@@ -175,6 +188,14 @@ export class AiCatalogAdminService {
           status: 'draft',
           updatedBy: actorUserId,
         });
+        if (appliedSecret.encryptedKeyVaults && appliedSecret.secretFingerprint) {
+          await repository.storeProviderSecretVersion({
+            ciphertext: appliedSecret.encryptedKeyVaults,
+            fingerprint: appliedSecret.secretFingerprint,
+            keyVersion: appliedSecret.secretKeyVersion ?? 1,
+            providerId: row.id,
+          });
+        }
         await new PlatformAuditService(tx).append({
           action: 'admin.aiProviders.createDraft',
           actorUserId,
@@ -218,6 +239,14 @@ export class AiCatalogAdminService {
           status: 'draft',
           updatedBy: actorUserId,
         });
+        if (appliedSecret.encryptedKeyVaults && appliedSecret.secretFingerprint) {
+          await repository.storeProviderSecretVersion({
+            ciphertext: appliedSecret.encryptedKeyVaults,
+            fingerprint: appliedSecret.secretFingerprint,
+            keyVersion: appliedSecret.secretKeyVersion ?? 1,
+            providerId: id,
+          });
+        }
         const after = await new PlatformAiCatalogModel(tx).getProvider(id);
         if (!after) throw new AiCatalogNotFoundError();
         await new PlatformAuditService(tx).append({
@@ -445,11 +474,29 @@ export class AiCatalogAdminService {
     actorUserId: string,
     input: { id: string; reason: string },
   ): Promise<AiConnectionTestResult> => {
-    const repository = new PlatformAiCatalogRepository(this.db);
-    const provider = await repository.getProvider(input.id);
-    if (!provider) throw new AiCatalogNotFoundError();
+    const snapshot = await this.db.transaction(async (tx) => {
+      const repository = new PlatformAiCatalogRepository(tx);
+      const provider = await repository.lockProvider(input.id);
+      if (!provider) throw new AiCatalogNotFoundError();
+      const draft = await new PlatformAiCatalogModel(tx).getProvider(input.id);
+      if (!draft) throw new AiCatalogNotFoundError();
+      const attemptId = randomUUID();
+      const testedAt = new Date();
+      const testedDraftToken = aiCatalogDraftToken(draft);
+      await repository.updateProvider(input.id, {
+        connectionTestAttemptId: attemptId,
+        connectionTestErrorCategory: null,
+        connectionTestLatencyMs: null,
+        connectionTestSanitizedMessage: 'Connection test in progress',
+        connectionTestStatus: 'pending',
+        connectionTestedAt: testedAt,
+        connectionTestedDraftToken: testedDraftToken,
+        connectionTestedRevision: draft.revision,
+      });
+      return { attemptId, provider };
+    });
     let result: AiConnectionTestResult;
-    if (!provider.encryptedKeyVaults) {
+    if (!snapshot.provider.encryptedKeyVaults) {
       result = {
         errorCategory: 'invalid_config',
         latencyMs: 0,
@@ -459,8 +506,8 @@ export class AiCatalogAdminService {
       };
     } else {
       try {
-        const keyVaults = await this.secrets.decrypt(provider.encryptedKeyVaults);
-        result = await this.connectionTests.test({ keyVaults, provider });
+        const keyVaults = await this.secrets.decrypt(snapshot.provider.encryptedKeyVaults);
+        result = await this.connectionTests.test({ keyVaults, provider: snapshot.provider });
       } catch {
         result = {
           errorCategory: 'invalid_config',
@@ -471,6 +518,17 @@ export class AiCatalogAdminService {
         };
       }
     }
+    await new PlatformAiCatalogRepository(this.db).completeProviderConnectionTest(
+      input.id,
+      snapshot.attemptId,
+      {
+        connectionTestErrorCategory: result.errorCategory,
+        connectionTestLatencyMs: result.latencyMs,
+        connectionTestSanitizedMessage: result.sanitizedMessage,
+        connectionTestStatus: result.status,
+        connectionTestedAt: result.testedAt,
+      },
+    );
     await new PlatformAuditService(this.db).append({
       action: 'admin.aiProviders.test',
       actorUserId,

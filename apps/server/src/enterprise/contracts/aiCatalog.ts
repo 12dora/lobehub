@@ -1,3 +1,4 @@
+import { AiModelTypeSchema } from 'model-bank';
 import { z } from 'zod';
 
 const providerKeySchema = z
@@ -9,6 +10,21 @@ const providerKeySchema = z
 
 const modelKeySchema = z.string().trim().min(1).max(150);
 const boundedJsonObjectSchema = z.record(z.string(), z.unknown());
+
+export const aiConnectionTestStateSchema = z
+  .object({
+    errorCategory: z
+      .enum(['auth', 'network', 'rate_limit', 'provider', 'invalid_config'])
+      .nullable(),
+    latencyMs: z.number().int().nonnegative().nullable(),
+    sanitizedMessage: z.string().max(500),
+    stale: z.boolean(),
+    status: z.enum(['pending', 'success', 'failure']),
+    testedAt: z.date(),
+    testedDraftToken: z.string().length(64),
+    testedRevision: z.number().int().nonnegative(),
+  })
+  .strict();
 
 export const aiSecretMutationSchema = z.discriminatedUnion('operation', [
   z.object({ operation: z.literal('keep') }).strict(),
@@ -41,13 +57,14 @@ export const aiModelDraftSchema = z
     settings: boundedJsonObjectSchema,
     sort: z.number().int(),
     status: z.enum(['draft', 'published', 'archived']),
-    type: z.string().min(1).max(20),
+    type: AiModelTypeSchema,
   })
   .strict();
 
 export const aiProviderDraftSchema = z
   .object({
     checkModel: z.string().nullable(),
+    connectionTest: aiConnectionTestStateSchema.nullable().default(null),
     config: boundedJsonObjectSchema,
     description: z.string().nullable(),
     displayName: z.string().min(1),
@@ -314,6 +331,19 @@ export const adminAiModelListOutputSchema = z
   .object({
     items: z.array(adminAiModelListItemSchema),
     nextCursor: z.string().min(1).max(1000).nullable(),
+  })
+  .strict();
+
+export const adminAiModelDraftContextInputSchema = z
+  .object({ providerId: z.string().min(1) })
+  .strict();
+
+export const adminAiModelDraftContextOutputSchema = z
+  .object({
+    baseRevision: z.number().int().nonnegative(),
+    draftToken: z.string().length(64),
+    modelIds: z.array(z.string().min(1)),
+    providerId: z.string().min(1),
   })
   .strict();
 
