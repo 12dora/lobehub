@@ -2,18 +2,23 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildAdminAiModelDependentsKey,
+  buildAdminAiModelListKey,
   buildAdminAiProviderGetKey,
   buildAdminAiProviderListKey,
 } from './swrKeys';
 
 describe('admin AI catalog SWR keys', () => {
   it('includes every stable provider list contract filter', () => {
-    expect(buildAdminAiProviderListKey({ cursor: 'p-1', limit: 20, status: 'published' })).toEqual([
-      'admin.aiProviders.list',
-      'p-1',
-      20,
-      'published',
-    ]);
+    expect(
+      buildAdminAiProviderListKey({
+        cursor: 'p-1',
+        enabled: true,
+        limit: 20,
+        query: 'open',
+        source: 'custom',
+        status: 'published',
+      }),
+    ).toEqual(['admin.aiProviders.list', 'p-1', true, 20, 'open', 'custom', 'published']);
   });
 
   it('scopes provider and dependent caches by identity', () => {
@@ -23,5 +28,19 @@ describe('admin AI catalog SWR keys', () => {
       'p-1',
       'm-1',
     ]);
+  });
+
+  it('includes every model list filter', () => {
+    expect(
+      buildAdminAiModelListKey({
+        cursor: 'cursor',
+        enabled: false,
+        limit: 50,
+        provider: 'openai',
+        query: 'gpt',
+        status: 'draft',
+        type: 'chat',
+      }),
+    ).toEqual(['admin.aiModels.list', 'cursor', false, 50, 'openai', 'gpt', 'draft', 'chat']);
   });
 });

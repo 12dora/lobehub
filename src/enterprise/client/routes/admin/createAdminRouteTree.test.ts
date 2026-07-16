@@ -57,6 +57,7 @@ describe('createAdminRouteTree', () => {
     const settings = children.find((c) => c.path === 'settings');
     const managedResources = children.find((c) => c.path === 'managed-resources');
     const aiProviders = children.find((c) => c.path === 'ai/providers');
+    const aiModels = children.find((c) => c.path === 'ai/models');
 
     expect((users?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder).toBe(
       false,
@@ -73,6 +74,9 @@ describe('createAdminRouteTree', () => {
     expect((aiProviders?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder).toBe(
       false,
     );
+    expect((aiModels?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder).toBe(
+      false,
+    );
 
     // Element is not the shared PlaceholderPage for users (lazy wrapper present)
     expect(users?.element).toBeTruthy();
@@ -85,7 +89,8 @@ describe('createAdminRouteTree', () => {
           i.id !== 'users' &&
           i.id !== 'users-detail' &&
           i.id !== 'managed-resources' &&
-          i.id !== 'ai-providers',
+          i.id !== 'ai-providers' &&
+          i.id !== 'ai-models',
       ),
     ).toBe(true);
   });
