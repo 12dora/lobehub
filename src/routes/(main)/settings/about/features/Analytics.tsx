@@ -8,6 +8,8 @@ import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { FORM_STYLE } from '@/const/layoutTokens';
+import PlatformSettingSourceBadge from '@/features/PlatformSettingSourceBadge';
+import { usePlatformSettingMeta } from '@/features/PlatformSettingSourceBadge/usePlatformSettingMeta';
 import { useUserStore } from '@/store/user';
 import { userGeneralSettingsSelectors } from '@/store/user/selectors';
 
@@ -15,17 +17,34 @@ const Analytics = memo(() => {
   const { t } = useTranslation('setting');
   const checked = useUserStore(userGeneralSettingsSelectors.telemetry);
   const updateGeneralConfig = useUserStore((s) => s.updateGeneralConfig);
+  const telemetryMeta = usePlatformSettingMeta('general.telemetry');
+
+  if (telemetryMeta.hidden) return null;
 
   const items: FormGroupItemType = {
     children: [
       {
         children: (
-          <Switch
-            checked={!!checked}
-            onChange={(e) => {
-              updateGeneralConfig({ telemetry: e });
-            }}
-          />
+          <div>
+            <PlatformSettingSourceBadge
+              locked={telemetryMeta.locked}
+              mode={telemetryMeta.mode}
+              source={telemetryMeta.source}
+              onReset={
+                telemetryMeta.mode === 'default' && telemetryMeta.source === 'user'
+                  ? () => void telemetryMeta.reset()
+                  : undefined
+              }
+            />
+            <Switch
+              checked={!!checked}
+              disabled={telemetryMeta.locked}
+              onChange={(e) => {
+                if (telemetryMeta.locked) return;
+                updateGeneralConfig({ telemetry: e });
+              }}
+            />
+          </div>
         ),
         desc: t('analytics.telemetry.desc', { appName: BRANDING_NAME }),
         label: t('analytics.telemetry.title'),

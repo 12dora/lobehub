@@ -3081,4 +3081,10 @@ When I am ___, I need ___
   'tools.tabs.all': 'All',
   'tools.tabs.installed': 'Enabled',
   'tools.title': 'Skills',
+
+  // M05 platform source UI
+  'platformSource.managedByOrg': 'Managed by organization',
+  'platformSource.organizationDefault': 'Organization default',
+  'platformSource.personal': 'Using my setting',
+  'platformSource.resetToOrg': 'Reset to organization default',
 };

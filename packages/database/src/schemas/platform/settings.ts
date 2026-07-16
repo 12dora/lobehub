@@ -30,7 +30,7 @@ export const platformSettingsBundle = pgTable('platform_settings_bundle', {
         {
           mode: PlatformSettingMode;
           schemaVersion: number;
-          value: unknown;
+          value?: unknown;
           visibility: PlatformSettingVisibility;
         }
       >
