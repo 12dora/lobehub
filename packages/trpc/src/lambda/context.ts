@@ -5,6 +5,7 @@ import debug from 'debug';
 import { type NextRequest } from 'next/server';
 
 import { auth } from '@/auth';
+import { isEnterpriseFlagTruthy } from '@/const/platform/featureFlags';
 import { getServerDB } from '@/database/core/db-adaptor';
 import { ApiKeyModel } from '@/database/models/apiKey';
 import { authEnv, LOBE_CHAT_OIDC_AUTH_HEADER } from '@/envs/auth';
@@ -23,6 +24,11 @@ const LOBE_CHAT_API_KEY_HEADER = 'X-API-Key';
  */
 export type AuthMethod = 'better-auth' | 'oidc' | 'api-key' | 'dev-mock';
 
+/** Flag-gated platform security checks (ban + authInvalidatedAt). Flag-off = upstream parity. */
+const isPlatformAdminSecurityOn = (): boolean =>
+  isEnterpriseFlagTruthy(process.env.ENABLE_PLATFORM_ADMIN) ||
+  isEnterpriseFlagTruthy(process.env.ENABLE_ENTERPRISE_ADMIN);
+
 const extractClientIp = (request: NextRequest): string | undefined => {
   const forwardedFor = request.headers.get('x-forwarded-for');
   if (forwardedFor) {
@@ -36,6 +42,35 @@ const extractClientIp = (request: NextRequest): string | undefined => {
   return undefined;
 };
 
+/**
+ * Trusted interactive reauth time from OIDC claims.
+ * Only `auth_time` (OIDC AuthN Time) — never access-token `iat` (refresh issues new iat).
+ * Do not log token claims.
+ */
+export const extractOidcAuthenticatedAt = (
+  tokenData: Record<string, unknown> | null | undefined,
+): Date | null => {
+  if (!tokenData) return null;
+  const authTime = tokenData.auth_time;
+  if (typeof authTime === 'number' && Number.isFinite(authTime)) {
+    return new Date(authTime * 1000);
+  }
+  // Missing auth_time → fail closed for reauth (null).
+  return null;
+};
+
+/** Token iat for authInvalidatedAt cutoff only (not reauth). */
+export const extractOidcCredentialIssuedAt = (
+  tokenData: Record<string, unknown> | null | undefined,
+): Date | null => {
+  if (!tokenData) return null;
+  const iat = tokenData.iat;
+  if (typeof iat === 'number' && Number.isFinite(iat)) {
+    return new Date(iat * 1000);
+  }
+  return null;
+};
+
 const validateApiKeyUserId = async (apiKey: string): Promise<string | null> => {
   if (!validateApiKeyFormat(apiKey)) return null;
 
@@ -47,15 +82,22 @@ const validateApiKeyUserId = async (apiKey: string): Promise<string | null> => {
     if (!apiKeyRecord.enabled) return null;
     if (isApiKeyExpired(apiKeyRecord.expiresAt)) return null;
 
-    // Ban enforcement: API keys of banned users must not authenticate.
-    try {
-      await assertUserActive(db, apiKeyRecord.userId);
-    } catch (error) {
-      if (isOIDCUserInactiveError(error)) {
-        log('API key user is banned/inactive; rejecting');
-        return null;
+    // Ban / invalidation: only when platform admin security is on.
+    if (isPlatformAdminSecurityOn()) {
+      try {
+        // API keys have no interactive credential time; ban still applies.
+        // authInvalidatedAt without credential time fails closed — API keys after revoke
+        // are rejected when cutoff is set.
+        await assertUserActive(db, apiKeyRecord.userId, {
+          credentialIssuedAt: apiKeyRecord.createdAt ?? null,
+        });
+      } catch (error) {
+        if (isOIDCUserInactiveError(error)) {
+          log('API key user is banned/inactive; rejecting');
+          return null;
+        }
+        throw error;
       }
-      throw error;
     }
 
     const userApiKeyModel = new ApiKeyModel(
@@ -87,8 +129,11 @@ export interface OIDCAuth {
 
 export interface AuthContext {
   /**
-   * Trusted interactive auth timestamp (session createdAt / OIDC iat).
-   * Never trust client-provided headers for this. Null for API keys.
+   * Trusted interactive auth timestamp:
+   * - Better Auth: session.createdAt (login / re-login)
+   * - OIDC: auth_time claim only (never access-token iat)
+   * - API key: always null (never qualifies for reauth)
+   * Never trust client-provided headers for this.
    */
   authenticatedAt?: Date | null;
   /** Authentication method for the current principal (server-trusted). */
@@ -185,6 +230,8 @@ export const createLambdaContext = async (request: NextRequest): Promise<LambdaC
     workspaceId,
   };
 
+  const securityOn = isPlatformAdminSecurityOn();
+
   const apiKeyToken = request.headers.get(LOBE_CHAT_API_KEY_HEADER)?.trim();
   log('X-API-Key header: %s', apiKeyToken ? 'exists' : 'not found');
 
@@ -235,15 +282,21 @@ export const createLambdaContext = async (request: NextRequest): Promise<LambdaC
           sub: tokenInfo.userId, // Use tokenData as payload
         };
         userId = tokenInfo.userId;
-        const db = await getServerDB();
-        await assertUserActive(db, userId);
+
+        if (securityOn) {
+          const db = await getServerDB();
+          const credentialIssuedAt = extractOidcCredentialIssuedAt(
+            tokenInfo.tokenData as Record<string, unknown>,
+          );
+          await assertUserActive(db, userId, { credentialIssuedAt });
+        }
         log('OIDC authentication successful, userId: %s', userId);
 
-        const iat = tokenInfo.tokenData?.iat;
-        const authenticatedAt =
-          typeof iat === 'number' && Number.isFinite(iat) ? new Date(iat * 1000) : null;
+        // Reauth signal: auth_time only — never iat (refresh mints new iat).
+        const authenticatedAt = extractOidcAuthenticatedAt(
+          tokenInfo.tokenData as Record<string, unknown>,
+        );
 
-        // If OIDC authentication is successful, return context immediately
         log('OIDC authentication successful, creating context and returning');
         return createContextInner({
           authenticatedAt,
@@ -284,31 +337,36 @@ export const createLambdaContext = async (request: NextRequest): Promise<LambdaC
       userId = session.user.id;
       log('Better Auth authentication successful, userId: %s', userId);
 
-      // Cookie cache can briefly return a banned user; re-check against DB.
-      const db = await getServerDB();
-      try {
-        await assertUserActive(db, userId);
-      } catch (error) {
-        if (isOIDCUserInactiveError(error)) {
-          log('Better Auth user is banned/inactive; rejecting');
-          return createContextInner({
-            ...commonContext,
-            traceContext,
-            userId: null,
-          });
-        }
-        throw error;
-      }
-
       const rawCreatedAt = session.session?.createdAt;
-      const authenticatedAt =
+      const sessionCreatedAt =
         rawCreatedAt instanceof Date ? rawCreatedAt : rawCreatedAt ? new Date(rawCreatedAt) : null;
+      const authenticatedAt =
+        sessionCreatedAt && !Number.isNaN(sessionCreatedAt.getTime()) ? sessionCreatedAt : null;
       const sessionId = typeof session.session?.id === 'string' ? session.session.id : null;
+
+      // Cookie cache can return banned/revoked sessions; re-check DB when security on.
+      if (securityOn) {
+        const db = await getServerDB();
+        try {
+          await assertUserActive(db, userId, {
+            credentialIssuedAt: authenticatedAt,
+          });
+        } catch (error) {
+          if (isOIDCUserInactiveError(error)) {
+            log('Better Auth user is banned/inactive/invalidated; rejecting');
+            return createContextInner({
+              ...commonContext,
+              traceContext,
+              userId: null,
+            });
+          }
+          throw error;
+        }
+      }
 
       return createContextInner({
         ...commonContext,
-        authenticatedAt:
-          authenticatedAt && !Number.isNaN(authenticatedAt.getTime()) ? authenticatedAt : null,
+        authenticatedAt,
         authMethod: 'better-auth',
         sessionId,
         traceContext,
