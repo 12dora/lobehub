@@ -185,7 +185,8 @@ const ModelListPage = memo(() => {
               key: 'actions',
               title: t('aiCatalog.models.columns.actions'),
               render: (_: unknown, item: AdminAiModelListItem) => {
-                const loading = modelActions.actionLoadingId === item.id;
+                const loading =
+                  modelActions.reloadRequired || modelActions.actionLoadingId === item.id;
                 return (
                   <Flexbox horizontal gap={4}>
                     {modelActions.allowed.canCreate ? (
@@ -259,6 +260,7 @@ const ModelListPage = memo(() => {
       actions={
         modelActions.allowed.canCreate ? (
           <Button
+            disabled={modelActions.reloadRequired}
             type="primary"
             onClick={() => {
               openModelProviderTargetModal({
