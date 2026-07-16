@@ -1,17 +1,22 @@
 'use client';
 
-import { Flexbox, Input, Tag, Text } from '@lobehub/ui';
-import { Select } from '@lobehub/ui/base-ui';
+import { ActionIcon, Alert, Flexbox, Input, Tag, Text, Tooltip } from '@lobehub/ui';
+import { Button, Select } from '@lobehub/ui/base-ui';
 import type { TableColumnsType } from 'antd';
 import { createStaticStyles } from 'antd-style';
+import { ArrowDownIcon, ArrowUpIcon, PencilIcon, PlusIcon, TrashIcon } from 'lucide-react';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router';
 
+import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
+
 import AdminPageTemplate from '../../primitives/AdminPageTemplate';
 import DataTable from '../../primitives/DataTable';
 import StatusBadge from '../../primitives/StatusBadge';
+import { deriveAiCatalogPermissions } from '../controller';
 import { useFetchAdminAiModels } from '../hooks/useAdminAiCatalog';
+import { useGlobalModelActions } from '../hooks/useGlobalModelActions';
 import type { AdminAiModelListInput, AdminAiModelListItem } from '../types';
 import {
   createUrlBackedTextFilter,
@@ -36,6 +41,12 @@ const MODEL_TYPES = ['chat', 'embedding', 'image', 'video', 'tts', 'asr'] as con
 
 const ModelListPage = memo(() => {
   const { t } = useTranslation('admin');
+  const { authMethod, permissions } = useAdminAccess();
+  const permission = deriveAiCatalogPermissions(permissions);
+  const modelActions = useGlobalModelActions({
+    authMethod: authMethod ?? null,
+    permissions: permission,
+  });
   const [searchParams, setSearchParams] = useSearchParams();
   const enabledParam = searchParams.get('enabled');
   const enabled = enabledParam === 'true' ? true : enabledParam === 'false' ? false : undefined;
@@ -107,6 +118,12 @@ const ModelListPage = memo(() => {
     [cursor, enabled, limit, provider, query, status, type],
   );
   const { data, error, isLoading, mutate } = useFetchAdminAiModels(input);
+  const providerTargets = useMemo(
+    () => [
+      ...new Map((data?.items ?? []).map((item) => [item.providerId, item.providerKey])).entries(),
+    ],
+    [data?.items],
+  );
 
   const columns = useMemo<TableColumnsType<AdminAiModelListItem>>(
     () => [
@@ -156,8 +173,76 @@ const ModelListPage = memo(() => {
         key: 'revision',
         title: t('aiCatalog.models.columns.revision'),
       },
+      ...(modelActions.allowed.canCreate ||
+      modelActions.allowed.canDelete ||
+      modelActions.allowed.canEdit ||
+      modelActions.allowed.canReorder
+        ? [
+            {
+              key: 'actions',
+              title: t('aiCatalog.models.columns.actions'),
+              render: (_: unknown, item: AdminAiModelListItem) => {
+                const loading = modelActions.actionLoadingId === item.id;
+                return (
+                  <Flexbox horizontal gap={4}>
+                    {modelActions.allowed.canCreate ? (
+                      <Tooltip title={t('aiCatalog.models.actions.createForProvider')}>
+                        <ActionIcon
+                          disabled={loading}
+                          icon={PlusIcon}
+                          size="small"
+                          onClick={() => void modelActions.handleCreate(item.providerId)}
+                        />
+                      </Tooltip>
+                    ) : null}
+                    {modelActions.allowed.canReorder ? (
+                      <>
+                        <Tooltip title={t('aiCatalog.models.actions.moveUp')}>
+                          <ActionIcon
+                            disabled={loading}
+                            icon={ArrowUpIcon}
+                            size="small"
+                            onClick={() => void modelActions.handleReorder(item, -1)}
+                          />
+                        </Tooltip>
+                        <Tooltip title={t('aiCatalog.models.actions.moveDown')}>
+                          <ActionIcon
+                            disabled={loading}
+                            icon={ArrowDownIcon}
+                            size="small"
+                            onClick={() => void modelActions.handleReorder(item, 1)}
+                          />
+                        </Tooltip>
+                      </>
+                    ) : null}
+                    {modelActions.allowed.canEdit ? (
+                      <Tooltip title={t('aiCatalog.models.actions.edit')}>
+                        <ActionIcon
+                          disabled={loading}
+                          icon={PencilIcon}
+                          size="small"
+                          onClick={() => void modelActions.handleEdit(item)}
+                        />
+                      </Tooltip>
+                    ) : null}
+                    {modelActions.allowed.canDelete ? (
+                      <Tooltip title={t('aiCatalog.models.actions.delete')}>
+                        <ActionIcon
+                          disabled={loading}
+                          icon={TrashIcon}
+                          size="small"
+                          onClick={() => void modelActions.handleDelete(item)}
+                        />
+                      </Tooltip>
+                    ) : null}
+                  </Flexbox>
+                );
+              },
+            },
+          ]
+        : []),
     ],
-    [t],
+    [modelActions, t],
   );
 
   const filtered = Boolean(enabledParam || provider || query || status || type);
@@ -166,6 +251,16 @@ const ModelListPage = memo(() => {
     <AdminPageTemplate
       description={t('aiCatalog.models.desc')}
       title={t('aiCatalog.models.title')}
+      actions={
+        modelActions.allowed.canCreate && providerTargets.length === 1 ? (
+          <Button
+            type="primary"
+            onClick={() => void modelActions.handleCreate(providerTargets[0]![0])}
+          >
+            {t('aiCatalog.models.actions.create')}
+          </Button>
+        ) : null
+      }
       toolbar={
         <Flexbox horizontal gap={8} style={{ flexWrap: 'wrap' }}>
           <Input
@@ -224,6 +319,22 @@ const ModelListPage = memo(() => {
         </Flexbox>
       }
     >
+      {modelActions.refreshFailed ? (
+        <Alert
+          showIcon
+          description={t('aiCatalog.refresh.committed.desc')}
+          message={t('aiCatalog.refresh.committed.title')}
+          type="warning"
+          extra={
+            <Button
+              loading={modelActions.refreshRetrying}
+              onClick={() => void modelActions.retryRefresh()}
+            >
+              {t('aiCatalog.refresh.retry')}
+            </Button>
+          }
+        />
+      ) : null}
       <DataTable<AdminAiModelListItem>
         columns={columns}
         dataSource={data?.items}
