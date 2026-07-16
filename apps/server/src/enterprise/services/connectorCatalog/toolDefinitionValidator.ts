@@ -31,16 +31,6 @@ export type ConnectorToolValidationCode =
 const VALIDATION_CODE_SET = new Set<ConnectorToolValidationCode>(
   Object.values(CONNECTOR_TOOL_VALIDATION_CODES),
 );
-const SECRET_BEARING_SCHEMA_KEYS = new Set([
-  '$comment',
-  'const',
-  'default',
-  'description',
-  'enum',
-  'example',
-  'examples',
-  'title',
-]);
 const PROPERTY_CONTAINER_KEYS = new Set([
   '$defs',
   'definitions',
@@ -92,7 +82,6 @@ interface ConnectorToolSecurityFields {
 interface SchemaFrame {
   depth: number;
   parentKeyword?: string;
-  scanAnnotationSecrets: boolean;
   value: unknown;
 }
 
@@ -136,12 +125,7 @@ const isDangerousSchemaKeyword = (key: string, value: unknown, parentKeyword?: s
   const compact = normalized.replaceAll(/[^a-z$]/g, '');
   if (
     normalized === '$ref' ||
-    /^(?:anchor|dynamicanchor|dynamicref|recursiveanchor|recursiveref|ref|reference)$/u.test(
-      compact,
-    ) ||
-    compact.startsWith('ref') ||
-    compact.endsWith('ref') ||
-    compact.endsWith('anchor') ||
+    ['anchor', 'dialect', 'ref', 'reference'].some((token) => compact.includes(token)) ||
     (normalized.startsWith('x-') && compact.includes('ref'))
   ) {
     return true;
@@ -161,8 +145,8 @@ const validateSchemaPair = (
 ) => {
   const counters: SchemaCounters = { enumValues: 0, nodes: 0, properties: 0 };
   const stack: SchemaFrame[] = [
-    { depth: 1, scanAnnotationSecrets: false, value: inputSchema },
-    { depth: 1, scanAnnotationSecrets: false, value: outputSchema },
+    { depth: 1, value: inputSchema },
+    { depth: 1, value: outputSchema },
   ];
   const seen = new WeakSet<object>();
   const emitted = new Set<ConnectorToolValidationCode>();
@@ -184,7 +168,7 @@ const validateSchemaPair = (
       continue;
     }
     if (typeof frame.value === 'string') {
-      if (frame.scanAnnotationSecrets && containsConnectorCredentialMaterial(frame.value)) {
+      if (containsConnectorCredentialMaterial(frame.value)) {
         emitOnce(CONNECTOR_TOOL_VALIDATION_CODES.schemaSecret);
       }
       continue;
@@ -196,13 +180,7 @@ const validateSchemaPair = (
     ) {
       continue;
     }
-    if (Array.isArray(frame.value)) {
-      for (const value of frame.value) {
-        stack.push({ ...frame, depth: frame.depth + 1, value });
-      }
-      continue;
-    }
-    if (!isPlainRecord(frame.value)) {
+    if (typeof frame.value !== 'object') {
       emitOnce(CONNECTOR_TOOL_VALIDATION_CODES.schemaInvalid);
       continue;
     }
@@ -211,6 +189,42 @@ const validateSchemaPair = (
       continue;
     }
     seen.add(frame.value);
+
+    if (Array.isArray(frame.value)) {
+      const arrayValue = frame.value;
+      const descriptors = Object.getOwnPropertyDescriptors(arrayValue);
+      const ownKeys = Reflect.ownKeys(arrayValue);
+      const indexKeys = Object.keys(descriptors).filter((key) => key !== 'length');
+      const invalidArray =
+        Object.getPrototypeOf(arrayValue) !== Array.prototype ||
+        ownKeys.some((key) => typeof key === 'symbol') ||
+        indexKeys.length !== arrayValue.length ||
+        indexKeys.some((key) => {
+          const descriptor = descriptors[key]!;
+          const index = Number(key);
+          return (
+            !Number.isInteger(index) ||
+            index < 0 ||
+            index >= arrayValue.length ||
+            String(index) !== key ||
+            descriptor.enumerable !== true ||
+            descriptor.get !== undefined ||
+            descriptor.set !== undefined
+          );
+        });
+      if (invalidArray) {
+        emitOnce(CONNECTOR_TOOL_VALIDATION_CODES.schemaInvalid);
+        continue;
+      }
+      for (const key of indexKeys) {
+        stack.push({ ...frame, depth: frame.depth + 1, value: descriptors[key]!.value });
+      }
+      continue;
+    }
+    if (!isPlainRecord(frame.value)) {
+      emitOnce(CONNECTOR_TOOL_VALIDATION_CODES.schemaInvalid);
+      continue;
+    }
 
     const descriptors = Object.getOwnPropertyDescriptors(frame.value);
     const ownKeys = Reflect.ownKeys(frame.value);
@@ -229,7 +243,7 @@ const validateSchemaPair = (
 
     for (const [key, value] of Object.entries(frame.value)) {
       const normalized = key.toLowerCase();
-      if (frame.scanAnnotationSecrets && containsConnectorCredentialMaterial(key)) {
+      if (containsConnectorCredentialMaterial(key)) {
         emitOnce(CONNECTOR_TOOL_VALIDATION_CODES.schemaSecret);
       }
       if (isDangerousSchemaKeyword(key, value, frame.parentKeyword)) {
@@ -251,8 +265,6 @@ const validateSchemaPair = (
       stack.push({
         depth: frame.depth + 1,
         parentKeyword: normalized,
-        scanAnnotationSecrets:
-          frame.scanAnnotationSecrets || SECRET_BEARING_SCHEMA_KEYS.has(normalized),
         value,
       });
     }

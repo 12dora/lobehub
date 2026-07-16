@@ -164,6 +164,32 @@ describe('connector tool definition validator', () => {
     }
   });
 
+  it('scans all schema strings and dynamic keys while preserving semantic field names', () => {
+    const secret = 'Authorization: Bearer schema-wide-never-echo';
+    for (const schema of [
+      { arbitraryKeyword: secret },
+      { properties: { [secret]: { type: 'string' } } },
+      { patternProperties: { [secret]: { type: 'string' } } },
+      { required: ['apiKey', secret] },
+    ]) {
+      for (const operation of bothBoundaries({ ...baseTool, inputSchema: schema })) {
+        expectBoundaryCode(operation, CONNECTOR_TOOL_VALIDATION_CODES.schemaSecret, secret);
+      }
+    }
+    for (const operation of bothBoundaries({
+      ...baseTool,
+      inputSchema: {
+        properties: {
+          apiKey: { type: 'string' },
+          password: { type: 'string' },
+        },
+        required: ['apiKey', 'password'],
+      },
+    })) {
+      expect(operation).not.toThrow();
+    }
+  });
+
   it('fails closed on external references and dangerous execution/outbound keywords', () => {
     for (const schema of [
       { $ref: 'https://attacker.example/schema.json' },
@@ -203,6 +229,9 @@ describe('connector tool definition validator', () => {
       { 'x-schema-ref': '#/$defs/value' },
       { ref: '#/$defs/value' },
       { refFamily: '#/$defs/value' },
+      { dialectRefTarget: '#/$defs/value' },
+      { otherReference: '#/$defs/value' },
+      { schemaAnchorTarget: 'value' },
     ]) {
       for (const operation of bothBoundaries({ ...baseTool, inputSchema: schema })) {
         expectBoundaryCode(operation, CONNECTOR_TOOL_VALIDATION_CODES.dangerousKeyword);
@@ -260,6 +289,58 @@ describe('connector tool definition validator', () => {
       expectBoundaryCode(operation, CONNECTOR_TOOL_VALIDATION_CODES.schemaInvalid);
     }
     expect(getterCalled).toBe(false);
+  });
+
+  it('walks arrays by descriptor and rejects sparse/accessor/exotic arrays without access', () => {
+    let getterCalls = 0;
+    const accessorArray: unknown[] = [];
+    Object.defineProperty(accessorArray, '0', {
+      enumerable: true,
+      get: () => {
+        getterCalls += 1;
+        return { type: 'string' };
+      },
+    });
+    accessorArray.length = 1;
+    const nonEnumerableArray: unknown[] = [];
+    Object.defineProperty(nonEnumerableArray, '0', {
+      enumerable: false,
+      value: { type: 'string' },
+    });
+    nonEnumerableArray.length = 1;
+    const sparseArray: unknown[] = [];
+    sparseArray.length = 2;
+    sparseArray[0] = { type: 'string' };
+    const symbolArray = [] as unknown as unknown[] & Record<PropertyKey, unknown>;
+    symbolArray[Symbol('hidden')] = 'unsafe';
+    const extraPropertyArray = [{ type: 'string' }] as unknown as unknown[] &
+      Record<PropertyKey, unknown>;
+    extraPropertyArray.extra = 'unsafe';
+    const customPrototypeArray: unknown[] = [];
+    Object.setPrototypeOf(customPrototypeArray, { custom: true });
+    const cycleArray: unknown[] = [];
+    cycleArray.push(cycleArray);
+
+    for (const value of [
+      accessorArray,
+      nonEnumerableArray,
+      sparseArray,
+      symbolArray,
+      extraPropertyArray,
+      customPrototypeArray,
+      cycleArray,
+      [undefined],
+      [() => 'unsafe'],
+      [1n],
+    ]) {
+      for (const operation of bothBoundaries({
+        ...baseTool,
+        inputSchema: { anyOf: value },
+      })) {
+        expectBoundaryCode(operation, CONNECTOR_TOOL_VALIDATION_CODES.schemaInvalid);
+      }
+    }
+    expect(getterCalls).toBe(0);
   });
 
   it('requires confirmation for high and critical tools at both boundaries', () => {
