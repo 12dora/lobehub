@@ -34,7 +34,11 @@ describe('AiCatalogReadService', () => {
       models: [
         {
           abilities: { vision: true },
-          config: { organization: 'private-runtime-field' },
+          config: {
+            deploymentName: 'safe-deployment',
+            endpoint: 'https://private-model.example.test',
+            organization: 'private-runtime-field',
+          },
           contextWindowTokens: 128_000,
           enabled: true,
           id: 'model-row',
@@ -73,7 +77,13 @@ describe('AiCatalogReadService', () => {
     const result = await service.getPublished();
     expect(result.providers).toEqual([
       expect.objectContaining({
-        models: [expect.objectContaining({ contextWindowTokens: 128_000, modelKey: 'chat' })],
+        models: [
+          expect.objectContaining({
+            config: { deploymentName: 'safe-deployment' },
+            contextWindowTokens: 128_000,
+            modelKey: 'chat',
+          }),
+        ],
         providerKey: 'alpha',
         revision: 1,
       }),
@@ -81,6 +91,8 @@ describe('AiCatalogReadService', () => {
     const serialized = JSON.stringify(result);
     expect(serialized).not.toContain('private.example.test');
     expect(serialized).not.toContain('authorization');
+    expect(serialized).not.toContain('private-model.example.test');
+    expect(serialized).not.toContain('private-runtime-field');
     expect(serialized).not.toContain('secretFingerprint');
     expect(serialized).not.toContain('disabled');
   });

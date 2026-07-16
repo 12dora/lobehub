@@ -43,6 +43,17 @@ export class AiCatalogSecretManager {
     this.secrets = secrets;
   }
 
+  resolveMutationKeyVaults = async (
+    current: Pick<PlatformAiProviderItem, 'encryptedKeyVaults'> | null,
+    mutation: AiSecretMutation | undefined,
+  ): Promise<PlatformProviderKeyVaults> => {
+    if (mutation?.operation === 'replace') {
+      return typeof mutation.value === 'string' ? { apiKey: mutation.value } : mutation.value;
+    }
+    if (mutation?.operation === 'clear') return {};
+    return current?.encryptedKeyVaults ? this.decrypt(current.encryptedKeyVaults) : {};
+  };
+
   applyMutation = async (
     current: Pick<
       PlatformAiProviderItem,

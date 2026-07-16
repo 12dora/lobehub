@@ -3,6 +3,7 @@ import { z } from 'zod';
 
 import {
   containsSensitiveMaterial,
+  isCredentialBearingUrl,
   isSensitiveKey,
   M07_REDACTION_OPTIONS,
 } from '../security/redaction';
@@ -29,16 +30,8 @@ const validateNonSecretJson = (
       if (containsSensitiveMaterial(value)) {
         ctx.addIssue({ code: 'custom', message: 'secret material is not allowed', path });
       }
-      try {
-        const url = new URL(value);
-        const sensitiveQuery = [...url.searchParams.keys()].some((key) =>
-          /^(?:api_?key|access_?token|authorization|password|secret|signature|token)$/i.test(key),
-        );
-        if (url.username || url.password || sensitiveQuery) {
-          ctx.addIssue({ code: 'custom', message: 'credential-bearing URL is not allowed', path });
-        }
-      } catch {
-        // Non-URL strings are validated by value-shape checks above.
+      if (isCredentialBearingUrl(value)) {
+        ctx.addIssue({ code: 'custom', message: 'credential-bearing URL is not allowed', path });
       }
     }
     return;
@@ -170,6 +163,9 @@ export const publishedAiModelSchema = aiModelDraftSchema
     settings: true,
     sort: true,
     type: true,
+  })
+  .extend({
+    config: z.object({ deploymentName: z.string().min(1).max(200).optional() }).strict(),
   })
   .strict();
 
@@ -406,6 +402,29 @@ export const adminAiModelListOutputSchema = z
   .object({
     items: z.array(adminAiModelListItemSchema),
     nextCursor: z.string().min(1).max(1000).nullable(),
+  })
+  .strict();
+
+export const adminAiModelCreateTargetListInputSchema = z
+  .object({
+    cursor: providerKeySchema.optional(),
+    limit: z.number().int().min(1).max(100).default(50),
+    query: z.string().trim().min(1).max(200).optional(),
+  })
+  .strict();
+
+export const adminAiModelCreateTargetListOutputSchema = z
+  .object({
+    items: z.array(
+      z
+        .object({
+          displayName: z.string().min(1),
+          id: z.string().min(1),
+          providerKey: providerKeySchema,
+        })
+        .strict(),
+    ),
+    nextCursor: providerKeySchema.nullable(),
   })
   .strict();
 
