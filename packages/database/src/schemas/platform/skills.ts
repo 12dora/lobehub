@@ -1,4 +1,5 @@
 import {
+  type AnyPgColumn,
   boolean,
   index,
   integer,
@@ -12,6 +13,58 @@ import {
 import { idGenerator } from '../../utils/idGenerator';
 import { createdAt, updatedAt } from '../_helpers';
 import type { PlatformDistribution, PlatformResourceStatus } from './common';
+
+export type PlatformSkillSource = 'builtin' | 'uploaded';
+
+export interface PlatformSkillToolDependency {
+  optional: boolean;
+  toolKey: string;
+}
+
+export interface PlatformSkillDependency {
+  optional: boolean;
+  skillKey: string;
+  version: string;
+}
+
+export interface PlatformSkillManifest {
+  description: string;
+  displayName: string;
+  localizedDescriptions: Record<string, string>;
+  localizedDisplayNames: Record<string, string>;
+  permissions: {
+    filesystem: 'none' | 'read';
+    network: { allowedHosts: string[]; enabled: boolean };
+    tools: { allow: string[] };
+  };
+  skillDependencies: PlatformSkillDependency[];
+  toolDependencies: PlatformSkillToolDependency[];
+}
+
+export type PlatformSkillValidationIssueCode =
+  | 'builtin_override_forbidden'
+  | 'checksum_mismatch'
+  | 'content_too_large'
+  | 'dangerous_instruction'
+  | 'dependency_cycle'
+  | 'manifest_invalid'
+  | 'permissions_invalid'
+  | 'unknown_skill_dependency'
+  | 'unknown_tool_dependency'
+  | 'version_conflict';
+
+export interface PlatformSkillValidationIssue {
+  code: PlatformSkillValidationIssueCode;
+  message: string;
+  path: Array<number | string>;
+  severity: 'error' | 'warning';
+}
+
+export interface PlatformSkillValidationResult {
+  issues: PlatformSkillValidationIssue[];
+  validatedAt: string;
+  validatorVersion: string;
+}
 
 /**
  * Stable Skill identity (M08). Empty shell in Migration 0.
@@ -27,19 +80,25 @@ export const platformSkills = pgTable(
     skillKey: varchar('skill_key', { length: 128 }).notNull(),
     name: text('name').notNull(),
     description: text('description'),
-    source: varchar('source', { length: 32 }).notNull().default('uploaded'),
+    source: varchar('source', { length: 32 })
+      .$type<PlatformSkillSource>()
+      .notNull()
+      .default('uploaded'),
     distribution: varchar('distribution', { length: 32 })
       .$type<PlatformDistribution>()
       .notNull()
       .default('optional'),
     enabled: boolean('enabled').notNull().default(false),
-    currentVersion: text('current_version'),
+    /** Published pointer. Explicit historical versions remain resolvable after archive. */
+    currentVersionId: text('current_version_id').references(
+      (): AnyPgColumn => platformSkillVersions.id,
+      { onDelete: 'restrict' },
+    ),
     status: varchar('status', { length: 32 })
       .$type<PlatformResourceStatus>()
       .notNull()
       .default('draft'),
     revision: integer('revision').notNull().default(0),
-    manifest: jsonb('manifest').$type<Record<string, unknown>>().default({}),
     createdBy: text('created_by'),
     updatedBy: text('updated_by'),
     createdAt: createdAt(),
@@ -49,6 +108,8 @@ export const platformSkills = pgTable(
     uniqueIndex('platform_skills_skill_key_unique').on(t.skillKey),
     index('platform_skills_status_idx').on(t.status),
     index('platform_skills_enabled_idx').on(t.enabled),
+    index('platform_skills_distribution_idx').on(t.distribution),
+    index('platform_skills_current_version_id_idx').on(t.currentVersionId),
   ],
 );
 
@@ -70,16 +131,20 @@ export const platformSkillVersions = pgTable(
       .notNull()
       .references(() => platformSkills.id, { onDelete: 'restrict' }),
     version: text('version').notNull(),
-    manifest: jsonb('manifest').$type<Record<string, unknown>>().notNull().default({}),
+    manifest: jsonb('manifest').$type<PlatformSkillManifest>().notNull(),
+    /** Canonical UTF-8 Skill markdown/prompt. Immutable after insert. */
+    content: text('content').notNull(),
     contentRef: text('content_ref'),
-    zipHash: text('zip_hash'),
-    validationResult: jsonb('validation_result').$type<Record<string, unknown>>(),
+    /** SHA-256 over the canonical manifest and content payload. */
+    checksum: text('checksum').notNull(),
+    validationResult: jsonb('validation_result').$type<PlatformSkillValidationResult>(),
     createdBy: text('created_by'),
     createdAt: createdAt(),
   },
   (t) => [
     uniqueIndex('platform_skill_versions_skill_id_version_unique').on(t.skillId, t.version),
     index('platform_skill_versions_skill_id_idx').on(t.skillId),
+    index('platform_skill_versions_checksum_idx').on(t.checksum),
   ],
 );
 
