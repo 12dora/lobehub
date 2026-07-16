@@ -7,6 +7,7 @@
 | 00_实施总览/02_开工门禁与业务决策.md | 6931 | 04620186e25709036772baa3d938ce62e6d23a22370e01708b418589e23ab25c |
 | 00_实施总览/03_阶段0_环境准备记录.md | 6379 | 51dc0e28836dc4877ee38daa9e94c8c9507cfaf1ecc68eb06924836f9a44debc |
 | 00_实施总览/04_W1实施进度记录.md | 5734 | b46f08a8d4ef12db2660156ba137627c334a90dfb443c3626e7fa10e01e61a88 |
+| 00_实施总览/05_后续交接说明.md | 8938 | b90392f631b37015240728cc09222b2d53bb1ac5e4a22edf9fd3b82cdb9dbc0d |
 | 01_实施模块/M00_企业扩展骨架与 Feature Flags.md | 4543 | f1b7cb45415bdab3fbece2be4c4b0afe7eccaa375ceae6e21f1d47a12c2e4157 |
 | 01_实施模块/M01_平台数据库、Revision、Audit 与 Job 基础设施.md | 4724 | 7430b25dbc68a97dde265cc2b5fdf6980523768982586cd6faf2543507e7cc03 |
 | 01_实施模块/M02_Global RBAC、超级管理员与真实服务端鉴权.md | 8266 | 86d2d157e47278b657e1407cc37b7321f8661ff6434b3d868ff4c7688fa0dac9 |
