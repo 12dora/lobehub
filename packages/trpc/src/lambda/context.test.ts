@@ -64,6 +64,7 @@ vi.mock('@/libs/oidc-provider/jwt', () => ({
 
 vi.mock('@/libs/oidc-provider/access-control', () => ({
   assertOIDCUserActive: mockAssertOIDCUserActive,
+  assertUserActive: mockAssertOIDCUserActive,
   isOIDCUserInactiveError: mockIsOIDCUserInactiveError,
 }));
 
@@ -168,11 +169,17 @@ describe('createLambdaContext', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockExtractTraceContext.mockReturnValue(undefined);
-    mockGetSession.mockResolvedValue({ user: { id: 'session-user' } });
+    mockGetSession.mockResolvedValue({
+      session: {
+        createdAt: new Date('2024-06-01T00:00:00.000Z'),
+        id: 'sess-ba-1',
+      },
+      user: { id: 'session-user' },
+    });
     mockAssertOIDCUserActive.mockResolvedValue(undefined);
     mockIsOIDCUserInactiveError.mockReturnValue(false);
     mockValidateOIDCJWT.mockResolvedValue({
-      tokenData: { sub: 'oidc-user' },
+      tokenData: { iat: 1_700_000_000, sub: 'oidc-user' },
       userId: 'oidc-user',
     });
     mockUpdateLastUsed.mockResolvedValue(undefined);
@@ -205,8 +212,42 @@ describe('createLambdaContext', () => {
     const context = await createLambdaContext(request);
 
     expect(context.userId).toBe('api-user');
+    expect(context.authMethod).toBe('api-key');
+    expect(context.authenticatedAt).toBeNull();
     expect(mockGetSession).not.toHaveBeenCalled();
     expect(mockValidateOIDCJWT).not.toHaveBeenCalled();
+    expect(mockAssertOIDCUserActive).toHaveBeenCalledWith(expect.any(Object), 'api-user');
+  });
+
+  it('should reject API key for banned/inactive user without fallback', async () => {
+    const apiKeyRecord = {
+      accessedAt: new Date(),
+      createdAt: new Date(),
+      enabled: true,
+      expiresAt: null,
+      id: 'key-banned',
+      key: 'encrypted-key',
+      keyHash: 'hashed-key',
+      lastUsedAt: null,
+      name: 'Banned Key',
+      updatedAt: new Date(),
+      userId: 'banned-api-user',
+      workspaceId: null,
+    } satisfies NonNullable<Awaited<ReturnType<typeof ApiKeyModel.findByKey>>>;
+
+    vi.mocked(ApiKeyModel.findByKey).mockResolvedValue(apiKeyRecord);
+    const inactiveError = new Error('OIDC user is no longer active');
+    mockAssertOIDCUserActive.mockRejectedValueOnce(inactiveError);
+    mockIsOIDCUserInactiveError.mockReturnValueOnce(true);
+
+    const request = new NextRequest('https://example.com/trpc/lambda', {
+      headers: { 'X-API-Key': 'sk-lh-aaaaaaaaaaaaaaaa' },
+    });
+
+    const context = await createLambdaContext(request);
+
+    expect(context.userId).toBeNull();
+    expect(mockGetSession).not.toHaveBeenCalled();
   });
 
   it('should reject invalid API key without falling back to OIDC or session', async () => {
@@ -232,6 +273,22 @@ describe('createLambdaContext', () => {
     const context = await createLambdaContext(request);
 
     expect(context.userId).toBe('session-user');
+    expect(context.authMethod).toBe('better-auth');
+    expect(context.sessionId).toBe('sess-ba-1');
+    expect(context.authenticatedAt).toEqual(new Date('2024-06-01T00:00:00.000Z'));
+    expect(mockGetSession).toHaveBeenCalledOnce();
+    expect(mockAssertOIDCUserActive).toHaveBeenCalledWith(expect.any(Object), 'session-user');
+  });
+
+  it('should reject banned Better Auth session without falling back', async () => {
+    const inactiveError = new Error('OIDC user is no longer active');
+    mockAssertOIDCUserActive.mockRejectedValueOnce(inactiveError);
+    mockIsOIDCUserInactiveError.mockReturnValueOnce(true);
+
+    const request = new NextRequest('https://example.com/trpc/lambda');
+    const context = await createLambdaContext(request);
+
+    expect(context.userId).toBeNull();
     expect(mockGetSession).toHaveBeenCalledOnce();
   });
 
@@ -243,6 +300,8 @@ describe('createLambdaContext', () => {
     const context = await createLambdaContext(request);
 
     expect(context.userId).toBe('oidc-user');
+    expect(context.authMethod).toBe('oidc');
+    expect(context.authenticatedAt).toEqual(new Date(1_700_000_000 * 1000));
     expect(context.oidcAuth?.sub).toBe('oidc-user');
     expect(mockAssertOIDCUserActive).toHaveBeenCalledWith(expect.any(Object), 'oidc-user');
     expect(mockGetSession).not.toHaveBeenCalled();
@@ -263,5 +322,13 @@ describe('createLambdaContext', () => {
     expect(context.oidcAuth).toBeUndefined();
     expect(mockValidateOIDCJWT).toHaveBeenCalledWith('oidc-token');
     expect(mockGetSession).not.toHaveBeenCalled();
+  });
+
+  it('should leave anonymous requests without auth metadata', async () => {
+    mockGetSession.mockResolvedValueOnce(null);
+    const request = new NextRequest('https://example.com/trpc/lambda');
+    const context = await createLambdaContext(request);
+    expect(context.userId).toBeUndefined();
+    expect(context.authMethod).toBeNull();
   });
 });
