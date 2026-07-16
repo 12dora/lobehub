@@ -111,17 +111,65 @@ describe('AI catalog contracts', () => {
         config: { endpoint: 'https://user:password@example.test/v1' },
       }).success,
     ).toBe(false);
-    expect(
-      adminAiProviderCreateDraftInputSchema.safeParse({
-        ...base,
-        config: { endpoint: 'https://example.test/v1?token=plain-secret' },
-      }).success,
-    ).toBe(false);
+    for (const key of [
+      'x-api-key',
+      'API_KEY',
+      'client_secret',
+      'refresh-token',
+      'access%2Dtoken',
+    ]) {
+      expect(
+        adminAiProviderCreateDraftInputSchema.safeParse({
+          ...base,
+          config: { endpoint: `https://example.test/v1?${key}=plain-secret` },
+        }).success,
+      ).toBe(false);
+    }
     expect(
       adminAiProviderCreateDraftInputSchema.safeParse({
         ...base,
         config: { contextWindowTokens: 128_000, maxTokens: 4096 },
       }).success,
     ).toBe(true);
+  });
+
+  it('publishes only the deploymentName model config field', () => {
+    const model = {
+      abilities: {},
+      config: { deploymentName: 'safe-deployment' },
+      contextWindowTokens: null,
+      description: null,
+      displayName: null,
+      modelKey: 'model-1',
+      parameters: {},
+      pricing: null,
+      settings: {},
+      sort: 0,
+      type: 'chat',
+    };
+    const provider = {
+      description: null,
+      displayName: 'Alpha',
+      logo: null,
+      models: [model],
+      providerKey: 'alpha',
+      revision: 1,
+      sort: 0,
+      source: 'custom',
+    };
+    expect(
+      publishedAiCatalogSchema.safeParse({ providers: [provider], revision: 'revision' }).success,
+    ).toBe(true);
+    expect(
+      publishedAiCatalogSchema.safeParse({
+        providers: [
+          {
+            ...provider,
+            models: [{ ...model, config: { endpoint: 'https://secret.example.test' } }],
+          },
+        ],
+        revision: 'revision',
+      }).success,
+    ).toBe(false);
   });
 });

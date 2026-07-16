@@ -1,5 +1,6 @@
 export {
   containsSensitiveMaterial,
+  isCredentialBearingUrl,
   isSensitiveKey,
   M07_BENIGN_KEY_CANDIDATES,
   M07_REDACTION_OPTIONS,

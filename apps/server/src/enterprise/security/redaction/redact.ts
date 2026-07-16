@@ -21,6 +21,17 @@ export { containsSensitiveMaterial, isSensitiveKey, REDACTED_PLACEHOLDER, redact
 
 export type { RedactOptions } from './types';
 
+export const isCredentialBearingUrl = (value: string): boolean => {
+  try {
+    const url = new URL(value);
+    return (
+      Boolean(url.username || url.password) || [...url.searchParams.keys()].some(isSensitiveKey)
+    );
+  } catch {
+    return false;
+  }
+};
+
 /**
  * Deep-redact with optional benign-key allowlist (wrapper over M01 rules).
  * Direction: prefer over-redaction; only skip keys explicitly marked benign.

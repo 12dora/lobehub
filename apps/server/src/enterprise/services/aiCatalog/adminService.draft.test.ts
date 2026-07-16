@@ -32,6 +32,45 @@ beforeEach(cleanup);
 afterEach(cleanup);
 
 describe('AiCatalogAdminService provider draft mutations', () => {
+  it('rejects copying replacement or kept credential leaves into public provider fields', async () => {
+    const credential = 'arbitrary-provider-credential-leaf';
+    await expect(
+      service.createProviderDraft('admin', {
+        description: `leak:${credential}`,
+        displayName: 'Rejected',
+        providerKey: 'rejected',
+        reason: 'create',
+        secret: { operation: 'replace', value: { apiKey: credential } },
+        source: 'custom',
+      }),
+    ).rejects.toMatchObject({
+      issues: ['Provider credentials must not appear in public catalog fields'],
+    });
+    expect(await db.select().from(platformAiProviders)).toEqual([]);
+
+    const created = await service.createProviderDraft('admin', {
+      displayName: 'Safe',
+      providerKey: 'safe',
+      reason: 'create',
+      secret: { operation: 'replace', value: { apiKey: credential } },
+      source: 'custom',
+    });
+    const detail = await service.getDetail(created.id);
+    await expect(
+      service.updateProviderDraft('admin', {
+        displayName: credential,
+        expectedDraftToken: detail.draftToken,
+        expectedRevision: 0,
+        id: created.id,
+        reason: 'copy kept secret',
+        secret: { operation: 'keep' },
+      }),
+    ).rejects.toMatchObject({
+      issues: ['Provider credentials must not appear in public catalog fields'],
+    });
+    expect((await service.getDetail(created.id)).draft.displayName).toBe('Safe');
+  });
+
   it('persists sanitized connection state and marks it stale after any draft mutation', async () => {
     const testedService = new AiCatalogAdminService(
       db,

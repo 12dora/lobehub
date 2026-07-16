@@ -121,6 +121,9 @@ describe('admin AI catalog permission and reauth gates', () => {
     await expect(
       caller.aiModels.getCreateDraftContext({ providerId: 'missing' }),
     ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    await expect(caller.aiModels.listCreateTargets({ limit: 10 })).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+    });
     expect(await db.select().from(platformAuditLogs)).toContainEqual(
       expect.objectContaining({ action: 'admin.permission.denied', result: 'denied' }),
     );
@@ -145,6 +148,9 @@ describe('admin AI catalog permission and reauth gates', () => {
     await expect(
       caller.aiModels.getUpdateDraftContext({ providerId: 'missing' }),
     ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    await expect(caller.aiModels.listCreateTargets({ limit: 10 })).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+    });
   });
 
   it('returns secret metadata only and denies stale publish reauth before mutation', async () => {
@@ -218,5 +224,40 @@ describe('admin AI catalog permission and reauth gates', () => {
         reason: 'model-only delete',
       }),
     ).resolves.toEqual({ deleted: true });
+  });
+
+  it('lets model creators discover empty providers through a paged secret-free target list', async () => {
+    await db.insert(platformAiProviders).values([
+      {
+        config: { endpoint: 'https://private-target.example.test' },
+        displayName: 'Alpha Empty',
+        encryptedKeyVaults: 'ciphertext-must-not-leak',
+        providerKey: 'alpha-empty',
+        settings: { sdkType: 'openai' },
+      },
+      { displayName: 'Beta Empty', providerKey: 'beta-empty' },
+    ]);
+    const caller = await callerFor(ids.modelEditor);
+
+    const first = await caller.aiModels.listCreateTargets({ limit: 1 });
+    expect(first.items).toEqual([
+      { displayName: 'Alpha Empty', id: expect.any(String), providerKey: 'alpha-empty' },
+    ]);
+    expect(first.nextCursor).toBe('alpha-empty');
+    const second = await caller.aiModels.listCreateTargets({
+      cursor: first.nextCursor!,
+      limit: 1,
+    });
+    expect(second.items).toEqual([
+      { displayName: 'Beta Empty', id: expect.any(String), providerKey: 'beta-empty' },
+    ]);
+    expect(second.nextCursor).toBeNull();
+    await expect(caller.aiModels.listCreateTargets({ limit: 10, query: 'Beta' })).resolves.toEqual({
+      items: [{ displayName: 'Beta Empty', id: expect.any(String), providerKey: 'beta-empty' }],
+      nextCursor: null,
+    });
+    expect(JSON.stringify([first, second])).not.toContain('private-target');
+    expect(JSON.stringify([first, second])).not.toContain('ciphertext');
+    expect(Object.keys(first.items[0]).sort()).toEqual(['displayName', 'id', 'providerKey']);
   });
 });
