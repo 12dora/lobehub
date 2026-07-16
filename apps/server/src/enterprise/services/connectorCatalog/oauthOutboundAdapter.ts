@@ -30,6 +30,10 @@ export class ConnectorOAuthOutboundAdapter {
     await this.outbound.preflight(authorizationEndpoint);
   };
 
+  preflightToken = async (tokenEndpoint: string): Promise<void> => {
+    await this.outbound.preflight(tokenEndpoint);
+  };
+
   exchangeCode = async (request: OAuthTokenRequest): Promise<ConnectorOutboundJsonResponse> =>
     this.outbound.requestJson({
       body: {
