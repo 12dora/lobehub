@@ -17,6 +17,13 @@ import { UserMemoryModel } from '@/database/models/userMemory';
 import { UserPersonaModel } from '@/database/models/userMemory/persona';
 import { AiInfraRepos } from '@/database/repositories/aiInfra';
 import { type LobeChatDatabase } from '@/database/type';
+import { parseEnterpriseFeatureFlags } from '@/server/enterprise/featureFlags';
+import { PlatformSecretService } from '@/server/enterprise/security/secret';
+import {
+  AiCatalogExecutionResolver,
+  getEmptyAiProviderRuntimeState,
+  resolveAiCatalogRuntimeState,
+} from '@/server/enterprise/services/aiCatalog';
 import { getEffectiveSystemAgentConfig } from '@/server/enterprise/services/settings/runtimeSettingsAdapter';
 import { type MemoryAgentConfig } from '@/server/globalConfig/parseMemoryExtractionConfig';
 import { parseMemoryExtractionConfig } from '@/server/globalConfig/parseMemoryExtractionConfig';
@@ -100,22 +107,38 @@ export class UserPersonaService {
     // purely user-level feature with no workspace concept; the payload carries no
     // workspaceId, so provider config is resolved against the user's personal scope.
     const aiInfraRepos = new AiInfraRepos(this.db, payload.userId, {});
-    const runtimeState = await aiInfraRepos.getAiProviderRuntimeState(
-      KeyVaultsGateKeeper.getUserKeyVaults,
-    );
+    const flags = parseEnterpriseFeatureFlags(process.env);
+    const runtimeState = flags.ENABLE_PLATFORM_MANAGED_AI
+      ? await resolveAiCatalogRuntimeState({
+          db: this.db,
+          flags,
+          upstreamState: getEmptyAiProviderRuntimeState(),
+        })
+      : await aiInfraRepos.getAiProviderRuntimeState(KeyVaultsGateKeeper.getUserKeyVaults);
     const providerId = await AiInfraRepos.tryMatchingProviderFrom(runtimeState, {
       fallbackProvider: agentConfig.provider,
       label: 'persona writer',
       modelId: agentConfig.model,
     });
 
-    const keyVaults: ProviderKeyVaultMap = Object.entries(runtimeState.runtimeConfig || {}).reduce(
-      (acc, [provider, config]) => {
-        acc[provider.toLowerCase()] = config?.keyVaults;
-        return acc;
-      },
-      {} as ProviderKeyVaultMap,
-    );
+    let keyVaults: ProviderKeyVaultMap;
+    if (flags.ENABLE_PLATFORM_MANAGED_AI) {
+      const secrets = PlatformSecretService.fromEnvOrThrowIfEnterprise(process.env, flags);
+      if (!secrets) throw new Error('PLATFORM_SECRET_REQUIRED');
+      const execution = await new AiCatalogExecutionResolver(
+        this.db,
+        secrets,
+      ).resolveProviderExecutionConfig(providerId);
+      keyVaults = { [providerId.toLowerCase()]: execution.keyVaults };
+    } else {
+      keyVaults = Object.entries(runtimeState.runtimeConfig || {}).reduce(
+        (acc, [provider, config]) => {
+          acc[provider.toLowerCase()] = config?.keyVaults;
+          return acc;
+        },
+        {} as ProviderKeyVaultMap,
+      );
+    }
 
     const hooks = getBusinessModelRuntimeHooks(payload.userId, 'lobehub');
 
