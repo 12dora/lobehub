@@ -1,4 +1,9 @@
 export {
+  AdminSettingsService,
+  PlatformRevisionConflictError,
+  SettingsDraftValidationError,
+} from './adminSettingsService';
+export {
   buildSettingsCacheKey,
   type ResolveAllSettingsInput,
   resolveEffectiveSettings,

@@ -7,3 +7,4 @@ export * from './errors';
 export * from './job';
 export * from './redact';
 export * from './revision';
+export * from './settings';
