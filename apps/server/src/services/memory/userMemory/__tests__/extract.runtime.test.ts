@@ -6,7 +6,7 @@ import { PlatformSecretService } from '@/server/enterprise/security/secret';
 import { AiCatalogExecutionResolver } from '@/server/enterprise/services/aiCatalog';
 import { type MemoryExtractionPrivateConfig } from '@/server/globalConfig/parseMemoryExtractionConfig';
 
-import { makeTaskErrorItem, MemoryExtractionExecutor } from '../extract';
+import { makeTaskErrorItem, MemoryExtractionExecutor, resolveRuntimeAgentConfig } from '../extract';
 
 const createRuntimeState = (models: EnabledAiModel[], keyVaults: Record<string, any>) =>
   ({
@@ -69,6 +69,37 @@ const resolveRuntimeKeyVaults = async (
 };
 
 describe('MemoryExtractionExecutor.resolveRuntimeKeyVaults', () => {
+  it('blocks unpublished managed memory models before the provider SDK', async () => {
+    const runtime = resolveRuntimeAgentConfig(
+      { model: 'allow-memory', provider: 'openai' },
+      { openai: { apiKey: 'platform-memory-secret' } },
+      {
+        managedExecutions: {
+          openai: {
+            allowedModels: [{ modelKey: 'allow-memory', type: 'chat' }],
+            config: {},
+            keyVaults: { apiKey: 'platform-memory-secret' },
+            providerKey: 'openai',
+            revision: 1,
+            runtimeProvider: 'openai',
+          },
+        },
+        userId: 'memory-user',
+      },
+    );
+    const providerChat = vi.fn().mockResolvedValue(new Response('ok'));
+    runtime['_runtime'] = { chat: providerChat } as never;
+
+    await expect(
+      runtime.chat({ messages: [], model: 'disabled-or-unknown' }),
+    ).rejects.toMatchObject({ errorType: 'PLATFORM_AI_MODEL_NOT_PUBLISHED' });
+    expect(providerChat).not.toHaveBeenCalled();
+    await expect(runtime.chat({ messages: [], model: 'allow-memory' })).resolves.toBeInstanceOf(
+      Response,
+    );
+    expect(providerChat).toHaveBeenCalledOnce();
+  });
+
   it('uses one-shot platform execution secrets without mutating the public state', async () => {
     const previousFlag = process.env.ENABLE_PLATFORM_MANAGED_AI;
     process.env.ENABLE_PLATFORM_MANAGED_AI = '1';

@@ -76,7 +76,7 @@ export const adminAiProvidersRouter = router({
     }),
 
   get: adminBase
-    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AI_PROVIDER_UPDATE))
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AI_PROVIDER_READ))
     .input(adminAiProviderGetInputSchema)
     .output(adminAiProviderGetOutputSchema)
     .query(async ({ ctx, input }) => {

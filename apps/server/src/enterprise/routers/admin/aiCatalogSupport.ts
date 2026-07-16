@@ -1,5 +1,6 @@
 import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { PlatformRevisionConflictError } from '@/database/models/platform';
+import { PlatformAiCatalogRepository } from '@/database/repositories/platformAiCatalog';
 import type { LobeChatDatabase } from '@/database/type';
 import { PlatformSecretService } from '@/server/enterprise/security/secret';
 
@@ -11,6 +12,8 @@ import {
   AiCatalogResourceInUseError,
   AiCatalogValidationError,
 } from '../../services/aiCatalog/adminService';
+import { sanitizeAiCatalogPersistedText } from '../../services/aiCatalog/persistentText';
+import { AiCatalogSecretManager } from '../../services/aiCatalog/secretManager';
 import { PlatformAuditService } from '../../services/platformAudit';
 
 export const createService = (db: LobeChatDatabase): AiCatalogAdminService => {
@@ -71,11 +74,26 @@ export const assertDangerousReauth = async (params: {
     });
   } catch (error) {
     try {
+      let reason = sanitizeAiCatalogPersistedText(params.reason);
+      const secretService = PlatformSecretService.fromEnvOrThrowIfEnterprise();
+      const provider = await new PlatformAiCatalogRepository(params.serverDB).getProvider(
+        params.targetId,
+      );
+      if (secretService && provider?.encryptedKeyVaults) {
+        try {
+          const keyVaults = await new AiCatalogSecretManager(secretService).decrypt(
+            provider.encryptedKeyVaults,
+          );
+          reason = sanitizeAiCatalogPersistedText(reason, [keyVaults]);
+        } catch {
+          // Generic redaction above still applies when the stored secret is unreadable.
+        }
+      }
       await new PlatformAuditService(params.serverDB).append({
         action: params.action,
         actorUserId: params.actorUserId,
         afterDiff: { error: 'reauth_required' },
-        reason: params.reason,
+        reason,
         result: 'denied',
         targetId: params.targetId,
         targetType: 'provider',

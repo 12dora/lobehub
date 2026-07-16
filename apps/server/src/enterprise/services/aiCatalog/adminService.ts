@@ -40,14 +40,20 @@ import {
   type AiConnectionProbe,
   type AiConnectionTestResult,
 } from './connectionTestService';
+import {
+  normalizeAiCatalogExecutionCredentials,
+  validateAiCatalogCredentialShape,
+  validateAiCatalogRuntimeProvider,
+} from './credentialAdapter';
 import { resolveAiCatalogDependents } from './dependencies';
 import {
   type AiCatalogDependent,
   AiCatalogNotFoundError,
   AiCatalogResourceInUseError,
 } from './errors';
+import { sanitizeAiCatalogPersistedText } from './persistentText';
 import { AiCatalogPublicationService } from './publication';
-import { AiCatalogSecretManager } from './secretManager';
+import { AiCatalogSecretManager, type AiSecretMutation } from './secretManager';
 import {
   aiCatalogDraftToken,
   appendAiCatalogFailureAudit,
@@ -112,6 +118,26 @@ export class AiCatalogAdminService {
     });
   }
 
+  private sanitizeReason = async (
+    reason: string,
+    providerId?: string,
+    secretMutation?: AiSecretMutation,
+  ): Promise<string> => {
+    const credentialValues: unknown[] = [];
+    if (secretMutation?.operation === 'replace') credentialValues.push(secretMutation.value);
+    if (providerId) {
+      const provider = await new PlatformAiCatalogRepository(this.db).getProvider(providerId);
+      if (provider?.encryptedKeyVaults) {
+        try {
+          credentialValues.push(await this.secrets.decrypt(provider.encryptedKeyVaults));
+        } catch {
+          // Persisted text still receives generic shape redaction below.
+        }
+      }
+    }
+    return sanitizeAiCatalogPersistedText(reason, credentialValues);
+  };
+
   private getLockedDraft = (
     tx: Parameters<typeof getLockedAiCatalogDraft>[0]['tx'],
     providerId: string,
@@ -174,8 +200,17 @@ export class AiCatalogAdminService {
     actorUserId: string,
     input: CreateProviderInput,
   ): Promise<AiProviderDraft> => {
-    const { reason, secret, ...values } = input;
+    const { reason: rawReason, secret, ...values } = input;
+    const reason = await this.sanitizeReason(rawReason, undefined, secret);
     try {
+      const settings = (values.settings ?? {}) as PlatformAiProviderSettings;
+      const runtimeProvider = validateAiCatalogRuntimeProvider(values.providerKey, settings);
+      if (secret?.operation === 'replace') {
+        validateAiCatalogCredentialShape(
+          runtimeProvider,
+          typeof secret.value === 'string' ? { apiKey: secret.value } : secret.value,
+        );
+      }
       const appliedSecret = await this.secrets.applyMutation(null, secret);
       return await this.db.transaction(async (tx) => {
         const repository = new PlatformAiCatalogRepository(tx);
@@ -184,7 +219,7 @@ export class AiCatalogAdminService {
           ...appliedSecret,
           config: values.config as PlatformAiProviderConfig | undefined,
           createdBy: actorUserId,
-          settings: values.settings as PlatformAiProviderSettings | undefined,
+          settings,
           status: 'draft',
           updatedBy: actorUserId,
         });
@@ -223,19 +258,35 @@ export class AiCatalogAdminService {
     actorUserId: string,
     input: UpdateProviderInput,
   ): Promise<AiProviderDraft> => {
-    const { expectedDraftToken, expectedRevision, id, reason, secret, ...values } = input;
+    const {
+      expectedDraftToken,
+      expectedRevision,
+      id,
+      reason: rawReason,
+      secret,
+      ...values
+    } = input;
+    const reason = await this.sanitizeReason(rawReason, id, secret);
     try {
       return await this.db.transaction(async (tx) => {
         const before = await this.getLockedDraft(tx, id, expectedDraftToken, expectedRevision);
         const repository = new PlatformAiCatalogRepository(tx);
         const current = await repository.getProvider(id);
         if (!current) throw new AiCatalogNotFoundError();
+        const settings = (values.settings ?? before.settings) as PlatformAiProviderSettings;
+        const runtimeProvider = validateAiCatalogRuntimeProvider(before.providerKey, settings);
+        if (secret?.operation === 'replace') {
+          validateAiCatalogCredentialShape(
+            runtimeProvider,
+            typeof secret.value === 'string' ? { apiKey: secret.value } : secret.value,
+          );
+        }
         const appliedSecret = await this.secrets.applyMutation(current, secret);
         await repository.updateProvider(id, {
           ...values,
           ...appliedSecret,
           config: values.config as PlatformAiProviderConfig | undefined,
-          settings: values.settings as PlatformAiProviderSettings | undefined,
+          settings,
           status: 'draft',
           updatedBy: actorUserId,
         });
@@ -274,7 +325,8 @@ export class AiCatalogAdminService {
   };
 
   createModel = async (actorUserId: string, input: CreateModelInput) => {
-    const { expectedDraftToken, providerId, reason, ...values } = input;
+    const { expectedDraftToken, providerId, reason: rawReason, ...values } = input;
+    const reason = await this.sanitizeReason(rawReason, providerId);
     try {
       return await this.db.transaction(async (tx) => {
         const draft = await this.getLockedDraft(tx, providerId, expectedDraftToken);
@@ -328,7 +380,15 @@ export class AiCatalogAdminService {
   };
 
   updateModel = async (actorUserId: string, input: UpdateModelInput) => {
-    const { expectedDraftToken, expectedRevision, id, providerId, reason, ...values } = input;
+    const {
+      expectedDraftToken,
+      expectedRevision,
+      id,
+      providerId,
+      reason: rawReason,
+      ...values
+    } = input;
+    const reason = await this.sanitizeReason(rawReason, providerId);
     try {
       return await this.db.transaction(async (tx) => {
         const draft = await this.getLockedDraft(
@@ -385,7 +445,8 @@ export class AiCatalogAdminService {
   };
 
   deleteModel = async (actorUserId: string, input: DeleteModelInput) => {
-    const { expectedDraftToken, id, providerId, reason } = input;
+    const { expectedDraftToken, id, providerId, reason: rawReason } = input;
+    const reason = await this.sanitizeReason(rawReason, providerId);
     try {
       await this.db.transaction(async (tx) => {
         const draft = await this.getLockedDraft(tx, providerId, expectedDraftToken);
@@ -425,7 +486,8 @@ export class AiCatalogAdminService {
   };
 
   reorderModels = async (actorUserId: string, input: ReorderModelsInput) => {
-    const { expectedDraftToken, items, providerId, reason } = input;
+    const { expectedDraftToken, items, providerId, reason: rawReason } = input;
+    const reason = await this.sanitizeReason(rawReason, providerId);
     try {
       return await this.db.transaction(async (tx) => {
         await this.getLockedDraft(tx, providerId, expectedDraftToken);
@@ -474,75 +536,88 @@ export class AiCatalogAdminService {
     actorUserId: string,
     input: { id: string; reason: string },
   ): Promise<AiConnectionTestResult> => {
-    const snapshot = await this.db.transaction(async (tx) => {
-      const repository = new PlatformAiCatalogRepository(tx);
-      const provider = await repository.lockProvider(input.id);
-      if (!provider) throw new AiCatalogNotFoundError();
-      const draft = await new PlatformAiCatalogModel(tx).getProvider(input.id);
-      if (!draft) throw new AiCatalogNotFoundError();
-      const attemptId = randomUUID();
-      const testedAt = new Date();
-      const testedDraftToken = aiCatalogDraftToken(draft);
-      await repository.updateProvider(input.id, {
-        connectionTestAttemptId: attemptId,
-        connectionTestErrorCategory: null,
-        connectionTestLatencyMs: null,
-        connectionTestSanitizedMessage: 'Connection test in progress',
-        connectionTestStatus: 'pending',
-        connectionTestedAt: testedAt,
-        connectionTestedDraftToken: testedDraftToken,
-        connectionTestedRevision: draft.revision,
+    const reason = await this.sanitizeReason(input.reason, input.id);
+    try {
+      const snapshot = await this.db.transaction(async (tx) => {
+        const repository = new PlatformAiCatalogRepository(tx);
+        const provider = await repository.lockProvider(input.id);
+        if (!provider) throw new AiCatalogNotFoundError();
+        const draft = await new PlatformAiCatalogModel(tx).getProvider(input.id);
+        if (!draft) throw new AiCatalogNotFoundError();
+        const attemptId = randomUUID();
+        const testedAt = new Date();
+        const testedDraftToken = aiCatalogDraftToken(draft);
+        await repository.updateProvider(input.id, {
+          connectionTestAttemptId: attemptId,
+          connectionTestErrorCategory: null,
+          connectionTestLatencyMs: null,
+          connectionTestSanitizedMessage: 'Connection test in progress',
+          connectionTestStatus: 'pending',
+          connectionTestedAt: testedAt,
+          connectionTestedDraftToken: testedDraftToken,
+          connectionTestedRevision: draft.revision,
+        });
+        return { attemptId, provider };
       });
-      return { attemptId, provider };
-    });
-    let result: AiConnectionTestResult;
-    if (!snapshot.provider.encryptedKeyVaults) {
-      result = {
-        errorCategory: 'invalid_config',
-        latencyMs: 0,
-        sanitizedMessage: 'Provider secret is not configured',
-        status: 'failure',
-        testedAt: new Date(),
-      };
-    } else {
+      let result: AiConnectionTestResult;
       try {
-        const keyVaults = await this.secrets.decrypt(snapshot.provider.encryptedKeyVaults);
-        result = await this.connectionTests.test({ keyVaults, provider: snapshot.provider });
+        const keyVaults = snapshot.provider.encryptedKeyVaults
+          ? await this.secrets.decrypt(snapshot.provider.encryptedKeyVaults)
+          : {};
+        const normalized = normalizeAiCatalogExecutionCredentials({
+          config: snapshot.provider.config,
+          keyVaults,
+          providerKey: snapshot.provider.providerKey,
+          settings: snapshot.provider.settings,
+        });
+        result = await this.connectionTests.test({
+          keyVaults: normalized.keyVaults,
+          provider: snapshot.provider,
+          runtimeProvider: normalized.runtimeProvider,
+        });
       } catch {
         result = {
           errorCategory: 'invalid_config',
           latencyMs: 0,
-          sanitizedMessage: 'Provider secret is not readable',
+          sanitizedMessage: 'Connection failed: invalid provider configuration',
           status: 'failure',
           testedAt: new Date(),
         };
       }
+      await new PlatformAiCatalogRepository(this.db).completeProviderConnectionTest(
+        input.id,
+        snapshot.attemptId,
+        {
+          connectionTestErrorCategory: result.errorCategory,
+          connectionTestLatencyMs: result.latencyMs,
+          connectionTestSanitizedMessage: result.sanitizedMessage,
+          connectionTestStatus: result.status,
+          connectionTestedAt: result.testedAt,
+        },
+      );
+      await new PlatformAuditService(this.db).append({
+        action: 'admin.aiProviders.test',
+        actorUserId,
+        afterDiff: {
+          errorCategory: result.errorCategory,
+          latencyMs: result.latencyMs,
+          status: result.status,
+        },
+        reason,
+        result: result.status === 'success' ? 'success' : 'failure',
+        targetId: input.id,
+        targetType: 'provider',
+      });
+      return result;
+    } catch (error) {
+      await this.appendFailureAudit({
+        action: 'admin.aiProviders.test',
+        actorUserId,
+        reason,
+        targetId: input.id,
+      });
+      throw error;
     }
-    await new PlatformAiCatalogRepository(this.db).completeProviderConnectionTest(
-      input.id,
-      snapshot.attemptId,
-      {
-        connectionTestErrorCategory: result.errorCategory,
-        connectionTestLatencyMs: result.latencyMs,
-        connectionTestSanitizedMessage: result.sanitizedMessage,
-        connectionTestStatus: result.status,
-        connectionTestedAt: result.testedAt,
-      },
-    );
-    await new PlatformAuditService(this.db).append({
-      action: 'admin.aiProviders.test',
-      actorUserId,
-      afterDiff: {
-        errorCategory: result.errorCategory,
-        latencyMs: result.latencyMs,
-        status: result.status,
-      },
-      reason: input.reason,
-      result: result.status === 'success' ? 'success' : 'failure',
-      targetId: input.id,
-      targetType: 'provider',
-    });
-    return result;
   };
 
   publishProvider: AiCatalogPublicationService['publishProvider'] = (actorUserId, input) =>

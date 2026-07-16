@@ -2,6 +2,7 @@
 import { type LobeChatDatabase } from '@lobechat/database';
 import { users, userSettings } from '@lobechat/database/schemas';
 import { getTestDB } from '@lobechat/database/test-utils';
+import { ModelRuntime } from '@lobechat/model-runtime';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { UserPersonaModel } from '@/database/models/userMemory/persona';
@@ -83,6 +84,7 @@ beforeEach(async () => {
   delete process.env.ENABLE_PLATFORM_MANAGED_AI;
   toolCall.mockClear();
   aiInfraMocks.getAiProviderRuntimeState.mockReset();
+  vi.mocked(resolveRuntimeAgentConfig).mockClear();
   aiInfraMocks.tryMatchingModelFrom.mockReset();
   aiInfraMocks.tryMatchingProviderFrom.mockReset();
   aiInfraMocks.tryMatchingModelFrom.mockResolvedValue('openai');
@@ -151,18 +153,25 @@ describe('UserPersonaService', () => {
       });
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const initialize = vi
+      .spyOn(ModelRuntime, 'initializeWithProvider')
+      .mockReturnValue({} as ModelRuntime);
 
     try {
       const service = new UserPersonaService(db);
       const result = await service.composeWriting({ userId, username: 'User' });
 
       expect(execution).toHaveBeenCalledWith('openai');
-      expect(resolveRuntimeAgentConfig).toHaveBeenLastCalledWith(
-        expect.any(Object),
-        { openai: { apiKey: fakeSecret } },
-        expect.any(Object),
-        undefined,
+      expect(resolveRuntimeAgentConfig).not.toHaveBeenCalled();
+      expect(initialize).toHaveBeenCalledWith(
+        'openai',
+        expect.objectContaining({ apiKey: fakeSecret }),
+        expect.objectContaining({ beforeChat: expect.any(Function) }),
       );
+      const managedHooks = initialize.mock.calls[0][2];
+      await expect(
+        managedHooks?.beforeChat?.({ messages: [], model: 'not-published' }),
+      ).rejects.toMatchObject({ errorType: 'PLATFORM_AI_MODEL_NOT_PUBLISHED' });
       expect(JSON.stringify(result)).not.toContain(fakeSecret);
       expect(JSON.stringify(aiInfraMocks.getAiProviderRuntimeState.mock.results)).not.toContain(
         fakeSecret,
@@ -173,6 +182,7 @@ describe('UserPersonaService', () => {
       execution.mockRestore();
       warn.mockRestore();
       error.mockRestore();
+      initialize.mockRestore();
     }
   });
 

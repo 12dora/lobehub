@@ -1,5 +1,4 @@
 // @vitest-environment node
-import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { getTestDB } from '../../core/getTestDB';
@@ -16,9 +15,7 @@ const serverDB: LobeChatDatabase = await getTestDB();
 const repository = new PlatformAiCatalogRepository(serverDB);
 
 const cleanup = async () => {
-  await serverDB
-    .delete(platformResourceRevisions)
-    .where(eq(platformResourceRevisions.resourceType, 'provider'));
+  await serverDB.delete(platformResourceRevisions);
   await serverDB.delete(platformAiModels);
   await serverDB.delete(platformAiProviders);
 };
@@ -161,6 +158,14 @@ describe('PlatformAiCatalogRepository', () => {
       revision: 1,
       status: 'published',
     });
+    await serverDB.insert(platformResourceRevisions).values({
+      checksum: 'settings-collision',
+      payload: { shouldNeverJoin: true },
+      resourceId: alpha.id,
+      resourceType: 'settings',
+      revision: 3,
+      status: 'published',
+    });
     await insertRevision({
       providerId: alpha.id,
       providerKey: 'alpha-draft',
@@ -182,6 +187,7 @@ describe('PlatformAiCatalogRepository', () => {
 
     const rows = await repository.listLatestPublishedProviderRevisions();
     expect(rows).toHaveLength(2);
+    expect(rows.every((row) => row.resourceType === 'provider')).toBe(true);
     expect(rows.map((row) => [row.resourceId, row.revision])).toEqual(
       expect.arrayContaining([
         [alpha.id, 3],

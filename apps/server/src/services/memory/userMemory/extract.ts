@@ -22,6 +22,7 @@ import {
   type Embeddings,
   type GenerateObjectPayload,
   type LLMRoleType,
+  mergeModelRuntimeHooks,
   type ModelRuntimeHooks,
   type OpenAIChatMessage,
 } from '@lobechat/model-runtime';
@@ -73,8 +74,14 @@ import { type MemoryAgentConfig } from '@/server/globalConfig/parseMemoryExtract
 import { parseMemoryExtractionConfig } from '@/server/globalConfig/parseMemoryExtractionConfig';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 import {
+  buildPayloadFromKeyVaults,
+  initModelRuntimeWithUserPayload,
+} from '@/server/modules/ModelRuntime';
+import {
+  createPlatformAiModelAllowlistHooks,
   getEmptyPlatformAiRuntimeState,
   isPlatformManagedAiEnabled,
+  type PlatformAiExecutionConfig,
   resolvePlatformAiExecutionConfig,
   resolvePlatformAiRuntimeState,
 } from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
@@ -259,8 +266,13 @@ export type ProviderKeyVaultMap = Record<
   AiProviderRuntimeState['runtimeConfig'][string]['keyVaults'] | undefined
 >;
 
+const MANAGED_EXECUTIONS = Symbol('platformManagedAiExecutions');
+type ManagedProviderKeyVaultMap = ProviderKeyVaultMap & {
+  [MANAGED_EXECUTIONS]?: Record<string, PlatformAiExecutionConfig>;
+};
+
 const toDefinedKeyVaults = (
-  keyVaults: Record<string, string | undefined>,
+  keyVaults: Record<string, Record<string, string> | string | undefined>,
 ): Record<string, string> =>
   Object.fromEntries(
     Object.entries(keyVaults).filter(
@@ -502,6 +514,7 @@ export type RuntimeResolveOptions = {
   preferred?: {
     providerIds?: string[];
   };
+  managedExecutions?: Record<string, PlatformAiExecutionConfig>;
   userId?: string;
 };
 
@@ -522,6 +535,21 @@ export const resolveRuntimeAgentConfig = (
       ...Object.keys(keyVaults || {}),
     ]),
   );
+
+  if (options?.managedExecutions) {
+    for (const provider of providerOrder) {
+      const execution = options.managedExecutions[provider];
+      if (!execution) continue;
+      const payload = buildPayloadFromKeyVaults(execution.keyVaults, execution.runtimeProvider);
+      return initModelRuntimeWithUserPayload(
+        execution.providerKey,
+        payload,
+        { userId: options.userId },
+        mergeModelRuntimeHooks(createPlatformAiModelAllowlistHooks(execution.allowedModels), hooks),
+      );
+    }
+    throw new Error('PLATFORM_AI_PROVIDER_NOT_PUBLISHED');
+  }
 
   for (const provider of providerOrder) {
     if (provider === 'lobehub') {
@@ -2443,13 +2471,16 @@ export class MemoryExtractionExecutor {
 
     if (managed) {
       const db = await this.db;
-      const keyVaults: ProviderKeyVaultMap = {};
+      const keyVaults: ManagedProviderKeyVaultMap = {};
+      const executions: Record<string, PlatformAiExecutionConfig> = {};
       await Promise.all(
         [...selectedProviders].map(async (providerId) => {
           const execution = await resolvePlatformAiExecutionConfig(db, providerId);
           keyVaults[providerId] = toDefinedKeyVaults(execution.keyVaults);
+          executions[providerId] = execution;
         }),
       );
+      Object.defineProperty(keyVaults, MANAGED_EXECUTIONS, { value: executions });
       return keyVaults;
     }
 
@@ -2479,6 +2510,9 @@ export class MemoryExtractionExecutor {
       memoryServiceConfig.agents.layerExtractor.provider,
     ].join(':');
     const managed = isPlatformManagedAiEnabled();
+    const managedExecutions = (keyVaults as ManagedProviderKeyVaultMap | undefined)?.[
+      MANAGED_EXECUTIONS
+    ];
     if (!managed) {
       const cached = this.runtimeCache.get(cacheKey);
       if (cached) return cached;
@@ -2494,6 +2528,7 @@ export class MemoryExtractionExecutor {
           ? undefined
           : this.embeddingPreferredProviders,
       },
+      managedExecutions,
       userId,
     };
 
@@ -2507,6 +2542,7 @@ export class MemoryExtractionExecutor {
           ? undefined
           : this.gatekeeperPreferredProviders,
       },
+      managedExecutions,
       userId,
     };
 
@@ -2520,6 +2556,7 @@ export class MemoryExtractionExecutor {
           ? undefined
           : this.layerPreferredProviders,
       },
+      managedExecutions,
       userId,
     };
 

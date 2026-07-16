@@ -126,14 +126,14 @@ describe('admin AI catalog permission and reauth gates', () => {
     );
   });
 
-  it('lets auditors list but not open update-scoped detail or mutate', async () => {
+  it('lets auditors list and open read-only detail but not mutate', async () => {
     const caller = await callerFor(ids.auditor);
     await expect(caller.aiProviders.list({ limit: 10 })).resolves.toEqual({
       items: [],
       nextCursor: null,
     });
     await expect(caller.aiProviders.get({ id: 'missing' })).rejects.toMatchObject({
-      code: 'FORBIDDEN',
+      code: 'NOT_FOUND',
     });
     await expect(
       caller.aiProviders.createDraft({
@@ -149,15 +149,16 @@ describe('admin AI catalog permission and reauth gates', () => {
 
   it('returns secret metadata only and denies stale publish reauth before mutation', async () => {
     const caller = await callerFor(ids.aiAdmin);
+    const credential = 'reauth-plain-credential-value';
     const provider = await caller.aiProviders.createDraft({
       displayName: 'Alpha',
       enabled: true,
       providerKey: 'alpha',
       reason: 'create',
-      secret: { operation: 'replace', value: 'fake-key' },
+      secret: { operation: 'replace', value: credential },
     });
     expect(provider.secret.configured).toBe(true);
-    expect(JSON.stringify(provider)).not.toContain('fake-key');
+    expect(JSON.stringify(provider)).not.toContain(credential);
     const detail = await caller.aiProviders.get({ id: provider.id });
 
     const staleCaller = await callerFor(ids.aiAdmin, new Date(Date.now() - 60 * 60 * 1000));
@@ -166,16 +167,18 @@ describe('admin AI catalog permission and reauth gates', () => {
         expectedDraftToken: detail.draftToken,
         expectedRevision: 0,
         id: provider.id,
-        reason: 'stale reauth',
+        reason: `stale reauth ${credential}`,
       }),
     ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
     expect(await db.select().from(platformResourceRevisions)).toHaveLength(0);
-    expect(await db.select().from(platformAuditLogs)).toContainEqual(
+    const audits = await db.select().from(platformAuditLogs);
+    expect(audits).toContainEqual(
       expect.objectContaining({
         action: 'admin.aiProviders.publish',
         result: 'denied',
       }),
     );
+    expect(JSON.stringify(audits)).not.toContain(credential);
   });
 
   it('lets a model-only global role obtain CAS context and mutate without provider update', async () => {
