@@ -139,6 +139,7 @@ describe('AiCatalog publication transaction', () => {
 
   it('publishes atomically, preserves numeric token limits, rolls back, archives and invalidates', async () => {
     const { invalidation, service } = createService();
+    const credential = 'publication-plain-credential-value';
     const provider = await service.createProviderDraft('admin', {
       checkModel: 'chat',
       config: { endpoint: 'https://api.example.test/v1' },
@@ -146,7 +147,7 @@ describe('AiCatalog publication transaction', () => {
       enabled: true,
       providerKey: 'alpha',
       reason: 'create',
-      secret: { operation: 'replace', value: 'fake-key' },
+      secret: { operation: 'replace', value: credential },
       source: 'custom',
     });
     let detail = await service.getDetail(provider.id);
@@ -166,14 +167,14 @@ describe('AiCatalog publication transaction', () => {
       expectedDraftToken: detail.draftToken,
       expectedRevision: 0,
       id: provider.id,
-      reason: 'publish v1',
+      reason: `publish v1 ${credential}`,
     });
     expect(first.revision).toBe(1);
     const [revisionOne] = await db.select().from(platformResourceRevisions);
     expect(revisionOne.payload).toMatchObject({
       models: [{ contextWindowTokens: 128_000, parameters: { maxTokens: 4096 } }],
     });
-    expect(JSON.stringify(revisionOne.payload)).not.toContain('fake-key');
+    expect(JSON.stringify(revisionOne)).not.toContain(credential);
     expect((await new AiCatalogReadService(db).getPublished()).providers[0]).toMatchObject({
       models: [{ contextWindowTokens: 128_000, modelKey: 'chat' }],
       providerKey: 'alpha',

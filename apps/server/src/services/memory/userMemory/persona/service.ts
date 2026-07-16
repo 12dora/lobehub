@@ -9,6 +9,7 @@ import {
   RetrievalUserMemoryIdentitiesProvider,
   UserPersonaExtractor,
 } from '@lobechat/memory-user-memory';
+import { mergeModelRuntimeHooks } from '@lobechat/model-runtime';
 import type { UserServiceModelConfig } from '@lobechat/types';
 import { desc, eq } from 'drizzle-orm';
 
@@ -17,18 +18,21 @@ import { UserMemoryModel } from '@/database/models/userMemory';
 import { UserPersonaModel } from '@/database/models/userMemory/persona';
 import { AiInfraRepos } from '@/database/repositories/aiInfra';
 import { type LobeChatDatabase } from '@/database/type';
-import { parseEnterpriseFeatureFlags } from '@/server/enterprise/featureFlags';
-import { PlatformSecretService } from '@/server/enterprise/security/secret';
-import {
-  AiCatalogExecutionResolver,
-  getEmptyAiProviderRuntimeState,
-  resolveAiCatalogRuntimeState,
-  toDefinedPlatformKeyVaults,
-} from '@/server/enterprise/services/aiCatalog';
 import { getEffectiveSystemAgentConfig } from '@/server/enterprise/services/settings/runtimeSettingsAdapter';
 import { type MemoryAgentConfig } from '@/server/globalConfig/parseMemoryExtractionConfig';
 import { parseMemoryExtractionConfig } from '@/server/globalConfig/parseMemoryExtractionConfig';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
+import {
+  buildPayloadFromKeyVaults,
+  initModelRuntimeWithUserPayload,
+} from '@/server/modules/ModelRuntime';
+import {
+  createPlatformAiModelAllowlistHooks,
+  getEmptyPlatformAiRuntimeState,
+  isPlatformManagedAiEnabled,
+  resolvePlatformAiExecutionConfig,
+  resolvePlatformAiRuntimeState,
+} from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
 import {
   type ProviderKeyVaultMap,
   type RuntimeResolveOptions,
@@ -108,12 +112,11 @@ export class UserPersonaService {
     // purely user-level feature with no workspace concept; the payload carries no
     // workspaceId, so provider config is resolved against the user's personal scope.
     const aiInfraRepos = new AiInfraRepos(this.db, payload.userId, {});
-    const flags = parseEnterpriseFeatureFlags(process.env);
-    const runtimeState = flags.ENABLE_PLATFORM_MANAGED_AI
-      ? await resolveAiCatalogRuntimeState({
+    const managed = isPlatformManagedAiEnabled();
+    const runtimeState = managed
+      ? await resolvePlatformAiRuntimeState({
           db: this.db,
-          flags,
-          upstreamState: getEmptyAiProviderRuntimeState(),
+          upstreamState: getEmptyPlatformAiRuntimeState(),
         })
       : await aiInfraRepos.getAiProviderRuntimeState(KeyVaultsGateKeeper.getUserKeyVaults);
     const providerId = await AiInfraRepos.tryMatchingProviderFrom(runtimeState, {
@@ -122,42 +125,40 @@ export class UserPersonaService {
       modelId: agentConfig.model,
     });
 
-    let keyVaults: ProviderKeyVaultMap;
-    if (flags.ENABLE_PLATFORM_MANAGED_AI) {
-      const secrets = PlatformSecretService.fromEnvOrThrowIfEnterprise(process.env, flags);
-      if (!secrets) throw new Error('PLATFORM_SECRET_REQUIRED');
-      const execution = await new AiCatalogExecutionResolver(
-        this.db,
-        secrets,
-      ).resolveProviderExecutionConfig(providerId);
-      keyVaults = {
-        [providerId.toLowerCase()]: toDefinedPlatformKeyVaults(execution.keyVaults),
-      };
-    } else {
-      keyVaults = Object.entries(runtimeState.runtimeConfig || {}).reduce(
-        (acc, [provider, config]) => {
-          acc[provider.toLowerCase()] = config?.keyVaults;
-          return acc;
-        },
-        {} as ProviderKeyVaultMap,
-      );
-    }
-
     const hooks = getBusinessModelRuntimeHooks(payload.userId, 'lobehub');
-
-    const runtime = await resolveRuntimeAgentConfig(
-      agentConfig,
-      keyVaults,
-      {
-        fallback: {
-          apiKey: agentConfig.apiKey,
-          baseURL: agentConfig.baseURL,
-        },
-        preferred: { providerIds: [providerId] },
-        userId: payload.userId,
-      } satisfies RuntimeResolveOptions,
-      hooks,
-    );
+    const runtime = managed
+      ? await (async () => {
+          const execution = await resolvePlatformAiExecutionConfig(this.db, providerId);
+          const secretPayload = buildPayloadFromKeyVaults(
+            execution.keyVaults,
+            execution.runtimeProvider,
+          );
+          return initModelRuntimeWithUserPayload(
+            providerId,
+            secretPayload,
+            { userId: payload.userId },
+            mergeModelRuntimeHooks(
+              createPlatformAiModelAllowlistHooks(execution.allowedModels),
+              hooks,
+            ),
+          );
+        })()
+      : await resolveRuntimeAgentConfig(
+          agentConfig,
+          Object.entries(runtimeState.runtimeConfig || {}).reduce((acc, [provider, config]) => {
+            acc[provider.toLowerCase()] = config?.keyVaults;
+            return acc;
+          }, {} as ProviderKeyVaultMap),
+          {
+            fallback: {
+              apiKey: agentConfig.apiKey,
+              baseURL: agentConfig.baseURL,
+            },
+            preferred: { providerIds: [providerId] },
+            userId: payload.userId,
+          } satisfies RuntimeResolveOptions,
+          hooks,
+        );
 
     const personaModel = new UserPersonaModel(this.db, payload.userId);
     const lastDocument = await personaModel.getLatestPersonaDocument();

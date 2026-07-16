@@ -22,6 +22,7 @@ import {
   clearAiCatalogRuntimeCache,
   compareAiCatalogRuntimeStates,
   createAiCatalogModelAllowlistHooks,
+  getEmptyAiProviderRuntimeState,
   recordAiCatalogShadowComparison,
 } from './runtimeAdapter';
 
@@ -246,6 +247,73 @@ describe('AiCatalogRuntimeAdapter', () => {
     ]);
   });
 
+  it('merges safe Model Bank metadata before published overrides for Azure and Spark', async () => {
+    await db.insert(platformResourceRevisions).values([
+      {
+        checksum: 'azure-safe-metadata',
+        payload: {
+          models: [
+            {
+              config: {},
+              enabled: true,
+              modelKey: 'gpt-5.4',
+              sort: 0,
+              type: 'chat',
+            },
+          ],
+          provider: {
+            config: { endpoint: 'https://private-azure.example.test' },
+            displayName: 'Azure',
+            enabled: true,
+            providerKey: 'azure',
+            sort: 0,
+            source: 'builtin',
+          },
+        },
+        resourceId: 'azure-provider',
+        resourceType: 'provider',
+        revision: 1,
+        status: 'published',
+      },
+      {
+        checksum: 'spark-safe-metadata',
+        payload: {
+          models: [
+            {
+              enabled: true,
+              modelKey: 'spark-x2-flash',
+              sort: 0,
+              type: 'chat',
+            },
+          ],
+          provider: {
+            displayName: 'Spark',
+            enabled: true,
+            providerKey: 'spark',
+            sort: 1,
+            source: 'builtin',
+          },
+        },
+        resourceId: 'spark-provider',
+        resourceType: 'provider',
+        revision: 1,
+        status: 'published',
+      },
+    ]);
+
+    const state = await new AiCatalogRuntimeAdapter(db).resolve({ flags, upstreamState });
+    expect(state.enabledAiModels.find((model) => model.id === 'gpt-5.4')).toMatchObject({
+      abilities: expect.objectContaining({ vision: true }),
+      config: { deploymentName: 'gpt-5.4' },
+      contextWindowTokens: 1_050_000,
+    });
+    expect(state.enabledAiModels.find((model) => model.id === 'spark-x2-flash')).toMatchObject({
+      abilities: expect.objectContaining({ reasoning: true }),
+      config: { deploymentName: 'spark-x' },
+    });
+    expect(JSON.stringify(state)).not.toContain('private-azure.example.test');
+  });
+
   it('rejects disabled, unknown, and wrong-operation models before the provider SDK', async () => {
     const service = new AiCatalogAdminService(db, secretService, {
       connectionProbe: async () => {},
@@ -390,5 +458,24 @@ describe('AiCatalogRuntimeAdapter', () => {
     });
     expect(recordAiCatalogShadowComparison(upstreamState, managed)).toEqual(comparison);
     expect(JSON.stringify(comparison)).not.toContain('user-key-must-not-win');
+  });
+
+  it('bounds high-cardinality shadow differences and reports exact totals', () => {
+    const highCardinality = {
+      ...upstreamState,
+      enabledAiModels: [],
+      enabledAiProviders: Array.from({ length: 150 }, (_, index) => ({
+        id: `provider-${index.toString().padStart(3, '0')}`,
+        name: `Provider ${index}`,
+        source: 'custom' as const,
+      })),
+    };
+    const comparison = compareAiCatalogRuntimeStates(
+      highCardinality,
+      getEmptyAiProviderRuntimeState(),
+    );
+    expect(comparison.providerOnlyInUpstream).toHaveLength(100);
+    expect(comparison.providerOnlyInUpstreamTotal).toBe(150);
+    expect(comparison.differencesTruncated).toBe(true);
   });
 });

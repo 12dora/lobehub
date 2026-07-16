@@ -22,7 +22,11 @@ const provider = {
 describe('AiCatalogConnectionTestService', () => {
   it('returns only bounded status metadata on success', async () => {
     const service = new AiCatalogConnectionTestService(async () => {});
-    const result = await service.test({ keyVaults: { apiKey: 'fake-key' }, provider });
+    const result = await service.test({
+      keyVaults: { apiKey: 'fake-key' },
+      provider,
+      runtimeProvider: 'openai',
+    });
     expect(result).toMatchObject({ errorCategory: null, status: 'success' });
     expect(result.testedAt).toBeInstanceOf(Date);
     expect(JSON.stringify(result)).not.toContain('fake-key');
@@ -34,11 +38,30 @@ describe('AiCatalogConnectionTestService', () => {
       Object.assign(error, { status: 401 });
       throw error;
     });
-    const result = await service.test({ keyVaults: { apiKey: 'fake-key' }, provider });
+    const result = await service.test({
+      keyVaults: { apiKey: 'fake-key' },
+      provider,
+      runtimeProvider: 'openai',
+    });
     expect(result).toMatchObject({ errorCategory: 'auth', status: 'failure' });
-    expect(result.sanitizedMessage).toContain('[REDACTED]');
-    expect(result.sanitizedMessage).toContain('[endpoint]');
+    expect(result.sanitizedMessage).toBe('Connection failed: authentication rejected');
     expect(result.sanitizedMessage).not.toContain('private.example');
     expect(result.sanitizedMessage.length).toBeLessThanOrEqual(500);
+  });
+
+  it('never reflects structured credential leaves from arbitrary provider errors', async () => {
+    const keyVaults = {
+      apiKey: 'plain-multi-field-key',
+      customHeaders: { Authorization: 'plain-header-secret' },
+      password: 'plain-password',
+    };
+    const service = new AiCatalogConnectionTestService(async () => {
+      throw new Error(JSON.stringify(keyVaults));
+    });
+    const result = await service.test({ keyVaults, provider, runtimeProvider: 'comfyui' });
+    expect(result.sanitizedMessage).toBe('Connection failed: authentication rejected');
+    expect(JSON.stringify(result)).not.toContain('plain-multi-field-key');
+    expect(JSON.stringify(result)).not.toContain('plain-header-secret');
+    expect(JSON.stringify(result)).not.toContain('plain-password');
   });
 });

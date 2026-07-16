@@ -233,7 +233,12 @@ export class PlatformAiCatalogRepository {
           eq(platformResourceRevisions.revision, latest.latestRevision),
         ),
       )
-      .where(eq(platformResourceRevisions.status, 'published'))
+      .where(
+        and(
+          eq(platformResourceRevisions.resourceType, 'provider'),
+          eq(platformResourceRevisions.status, 'published'),
+        ),
+      )
       .orderBy(asc(platformResourceRevisions.resourceId));
   };
 

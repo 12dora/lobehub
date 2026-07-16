@@ -2,7 +2,6 @@ import { RequestTrigger } from '@lobechat/types';
 import type { z } from 'zod';
 
 import type { PlatformAiProviderItem } from '@/database/schemas/platform';
-import { M07_REDACTION_OPTIONS, redactForLog } from '@/server/enterprise/security/redaction';
 import {
   buildPayloadFromKeyVaults,
   initModelRuntimeWithUserPayload,
@@ -16,6 +15,7 @@ export type AiConnectionTestResult = z.infer<typeof aiConnectionTestResultSchema
 export interface AiConnectionProbeParams {
   keyVaults: PlatformProviderKeyVaults;
   provider: PlatformAiProviderItem;
+  runtimeProvider: string;
 }
 
 export type AiConnectionProbe = (params: AiConnectionProbeParams) => Promise<void>;
@@ -35,19 +35,23 @@ const classify = (error: unknown): NonNullable<AiConnectionTestResult['errorCate
   return 'provider';
 };
 
-const sanitizedMessage = (error: unknown): string => {
-  const raw = error instanceof Error ? error.message : String(error);
-  const preRedacted = raw
-    .replaceAll(/https?:\/\/[^\s"')]+/gi, '[endpoint]')
-    .replaceAll(/\bsk-[\w-]{8,}\b/gi, '[REDACTED]')
-    .replaceAll(/(bearer\s+)[\w.~+/=-]+/gi, '$1[REDACTED]');
-  const redacted = redactForLog({ message: preRedacted }, M07_REDACTION_OPTIONS).message;
-  return redacted.slice(0, 500);
-};
+const safeFailureMessage = (
+  category: NonNullable<AiConnectionTestResult['errorCategory']>,
+): string =>
+  ({
+    auth: 'Connection failed: authentication rejected',
+    invalid_config: 'Connection failed: invalid provider configuration',
+    network: 'Connection failed: provider network unavailable',
+    provider: 'Connection failed: provider rejected the request',
+    rate_limit: 'Connection failed: provider rate limit reached',
+  })[category];
 
-export const defaultAiConnectionProbe: AiConnectionProbe = async ({ keyVaults, provider }) => {
+export const defaultAiConnectionProbe: AiConnectionProbe = async ({
+  keyVaults,
+  provider,
+  runtimeProvider,
+}) => {
   if (!provider.checkModel) throw new Error('check model is required');
-  const runtimeProvider = provider.settings.sdkType ?? provider.providerKey;
   const payload = buildPayloadFromKeyVaults(keyVaults, runtimeProvider);
   const runtime = initModelRuntimeWithUserPayload(provider.providerKey, payload);
   const response = await runtime.chat(
@@ -87,10 +91,11 @@ export class AiCatalogConnectionTestService {
         testedAt: new Date(),
       };
     } catch (error) {
+      const errorCategory = classify(error);
       return {
-        errorCategory: classify(error),
+        errorCategory,
         latencyMs: Math.max(0, Math.round(performance.now() - start)),
-        sanitizedMessage: sanitizedMessage(error),
+        sanitizedMessage: safeFailureMessage(errorCategory),
         status: 'failure',
         testedAt: new Date(),
       };

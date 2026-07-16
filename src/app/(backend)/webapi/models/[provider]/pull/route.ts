@@ -2,7 +2,9 @@ import { type ChatCompletionErrorPayload, type PullModelParams } from '@lobechat
 import { ChatErrorType } from '@lobechat/types';
 
 import { checkAuth } from '@/app/(backend)/middleware/auth';
+import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
+import { isPlatformManagedAiEnabled } from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
 import { createErrorResponse } from '@/utils/errorResponse';
 
 import { resolveValidWorkspaceIdFromRequest } from '../../../_utils/workspace';
@@ -11,6 +13,12 @@ export const POST = checkAuth(async (req, { params, userId, serverDB }) => {
   const provider = (await params)!.provider!;
 
   try {
+    if (isPlatformManagedAiEnabled()) {
+      return Response.json(
+        { errorType: PLATFORM_ERROR_CODES.PLATFORM_AI_MODEL_PULL_DISABLED },
+        { status: 403 },
+      );
+    }
     const workspaceId = await resolveValidWorkspaceIdFromRequest({ req, serverDB, userId });
 
     // Read user's provider config from database

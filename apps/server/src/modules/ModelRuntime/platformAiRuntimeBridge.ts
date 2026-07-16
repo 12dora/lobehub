@@ -1,5 +1,6 @@
 import type { ModelRuntimeHooks } from '@lobechat/model-runtime';
 import type { AiProviderRuntimeState } from '@lobechat/types';
+import type { EnabledAiModel } from 'model-bank';
 
 import type { LobeChatDatabase } from '@/database/type';
 
@@ -11,7 +12,7 @@ export interface PlatformAiExecutionModel {
 export interface PlatformAiExecutionConfig {
   allowedModels: PlatformAiExecutionModel[];
   config: Record<string, unknown>;
-  keyVaults: Record<string, string | undefined>;
+  keyVaults: Record<string, Record<string, string> | string | undefined>;
   providerKey: string;
   revision: number;
   runtimeProvider: string;
@@ -20,6 +21,7 @@ export interface PlatformAiExecutionConfig {
 export interface PlatformAiRuntimeImplementation {
   createModelAllowlistHooks: (models: PlatformAiExecutionModel[]) => ModelRuntimeHooks;
   isEnabled: () => boolean;
+  listPublishedModels: (db: LobeChatDatabase, providerKey: string) => Promise<EnabledAiModel[]>;
   resolveExecutionConfig: (
     db: LobeChatDatabase,
     providerKey: string,
@@ -66,6 +68,11 @@ export const resolvePlatformAiRuntimeState = (params: {
 export const createPlatformAiModelAllowlistHooks = (
   models: PlatformAiExecutionModel[],
 ): ModelRuntimeHooks => requireImplementation().createModelAllowlistHooks(models);
+
+export const listPlatformPublishedModels = (
+  db: LobeChatDatabase,
+  providerKey: string,
+): Promise<EnabledAiModel[]> => requireImplementation().listPublishedModels(db, providerKey);
 
 export const getEmptyPlatformAiRuntimeState = (): AiProviderRuntimeState => ({
   enabledAiModels: [],
