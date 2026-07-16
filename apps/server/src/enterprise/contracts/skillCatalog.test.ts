@@ -144,6 +144,17 @@ describe('Skill catalog contracts', () => {
       { description: 'Repository git+ssh://deploy:token@git.internal/repository' },
       { reason: 'Cache redis://default:password@redis.internal/0' },
       { reason: 'Artifact s3://bucket/key?X-Amz-Signature=plain-signature' },
+      {
+        description:
+          'Sources https://safe.example.test,postgres://admin:password@db.internal/catalog',
+      },
+      {
+        reason: 'Sources s3://safe-bucket/readme;redis://default:password@redis.internal/0',
+      },
+      {
+        description:
+          'Sources https://safe.example.test,s3://safe-bucket/key;git+ssh://deploy:token@git.internal/repo',
+      },
     ]) {
       expect(adminSkillCreateInputSchema.safeParse({ ...base, ...patch }).success).toBe(false);
     }
