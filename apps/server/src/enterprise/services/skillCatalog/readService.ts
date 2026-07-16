@@ -1,3 +1,5 @@
+import { z } from 'zod';
+
 import { checksumPayload, PlatformSkillCatalogModel } from '@/database/models/platform';
 import type { LobeChatDatabase, Transaction } from '@/database/type';
 
@@ -17,6 +19,7 @@ export interface BuiltinSkillDefinition extends PublishedSkill {
 
 export interface SkillCatalogReadOptions {
   builtinSkills?: BuiltinSkillDefinition[];
+  model?: Pick<PlatformSkillCatalogModel, 'listPublished' | 'resolvePublishedVersion'>;
 }
 
 const builtinSkillDefinitionSchema = serverResolvedSkillSchema.omit({
@@ -24,6 +27,9 @@ const builtinSkillDefinitionSchema = serverResolvedSkillSchema.omit({
   skillId: true,
   versionId: true,
 });
+const builtinSkillDefinitionsSchema = z.array(builtinSkillDefinitionSchema).max(100);
+const MAX_PUBLISHED_SKILL_PAGES = 100;
+const MAX_PUBLISHED_SKILLS = 10_000;
 
 export const getEmptyPublishedSkillCatalog = () => ({ revision: 'disabled', skills: [] });
 
@@ -32,16 +38,21 @@ const compareCodepoint = (left: string, right: string) =>
 
 export class SkillCatalogReadService {
   private readonly builtinSkills: BuiltinSkillDefinition[];
-  private readonly model: PlatformSkillCatalogModel;
+  private readonly model: Pick<
+    PlatformSkillCatalogModel,
+    'listPublished' | 'resolvePublishedVersion'
+  >;
 
   constructor(db: LobeChatDatabase | Transaction, options: SkillCatalogReadOptions = {}) {
-    this.model = new PlatformSkillCatalogModel(db);
-    this.builtinSkills = (options.builtinSkills ?? []).slice(0, 100).map((skill) => {
-      const parsed = builtinSkillDefinitionSchema.parse({
+    this.model = options.model ?? new PlatformSkillCatalogModel(db);
+    const parsedBuiltins = builtinSkillDefinitionsSchema.parse(
+      (options.builtinSkills ?? []).map((skill) => ({
         ...skill,
         contentRef: skill.contentRef ?? null,
         resources: skill.resources ?? [],
-      });
+      })),
+    );
+    this.builtinSkills = parsedBuiltins.map((parsed) => {
       if (parsed.source !== 'builtin') throw new Error('Builtin Skill source must be builtin');
       return parsed as BuiltinSkillDefinition;
     });
@@ -52,8 +63,16 @@ export class SkillCatalogReadService {
       [];
     const seenCursors = new Set<string>();
     let cursor: string | undefined;
+    let pageCount = 0;
     do {
+      if (pageCount >= MAX_PUBLISHED_SKILL_PAGES) {
+        throw new Error('Published Skill page limit was exceeded');
+      }
+      pageCount += 1;
       const page = await this.model.listPublished({ cursor, limit: 100 });
+      if (platformItems.length + page.items.length > MAX_PUBLISHED_SKILLS) {
+        throw new Error('Published Skill item limit was exceeded');
+      }
       platformItems.push(...page.items);
       if (!page.nextCursor) break;
       if (seenCursors.has(page.nextCursor))
