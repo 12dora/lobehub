@@ -110,7 +110,7 @@ const ProviderDetailContent = memo<ProviderDetailContentProps>(
       editor,
       permissions: permission,
     });
-    const collectionLocked = editor.dirty || editor.conflict;
+    const collectionLocked = editor.dirty || editor.conflict || actions.reloadRequired;
     const rebaseFieldLabels: Record<keyof EditableAiProviderDraft, string> = {
       checkModel: t('aiCatalog.editor.checkModel'),
       configText: t('aiCatalog.editor.config'),
@@ -164,7 +164,7 @@ const ProviderDetailContent = memo<ProviderDetailContentProps>(
               draftRevision={data.baseRevision}
               publishedRevision={data.published?.revision ?? null}
               status={data.draft.status}
-              onRefresh={() => void mutate()}
+              onRefresh={actions.reloadRequired ? undefined : () => void mutate()}
             />
             {editor.conflict ? (
               <Alert
@@ -224,7 +224,7 @@ const ProviderDetailContent = memo<ProviderDetailContentProps>(
         }
       >
         <ProviderEditorFields
-          disabled={!permission.canUpdateProvider || editor.conflict}
+          disabled={!permission.canUpdateProvider || editor.conflict || actions.reloadRequired}
           draft={editor.draft!}
           jsonErrors={editor.jsonErrors}
           providerKey={data.draft.providerKey}
@@ -368,17 +368,25 @@ const ProviderDetailContent = memo<ProviderDetailContentProps>(
           )}
         </section>
 
-        {actions.refreshFailed ? (
+        {actions.reloadRequired ? (
           <Alert
             showIcon
             description={t('aiCatalog.refresh.committed.desc')}
-            message={t('aiCatalog.refresh.committed.title')}
             type="warning"
             extra={
-              <Button loading={actions.refreshRetrying} onClick={() => void actions.retryRefresh()}>
+              <Button
+                disabled={actions.refreshPending}
+                loading={actions.refreshPending || actions.refreshRetrying}
+                onClick={() => void actions.retryRefresh()}
+              >
                 {t('aiCatalog.refresh.retry')}
               </Button>
             }
+            message={t(
+              actions.refreshPending
+                ? 'aiCatalog.refresh.committed.pending'
+                : 'aiCatalog.refresh.committed.title',
+            )}
           />
         ) : null}
 
