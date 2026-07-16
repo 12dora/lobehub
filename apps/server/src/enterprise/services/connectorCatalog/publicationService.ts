@@ -49,6 +49,7 @@ import type {
 import type { ConnectorOutboundClient } from './connectorOutboundClient';
 import { connectorToolInsertValues, loadConnectorDraft } from './draftService';
 import { PlatformConnectorContractError } from './errors';
+import { cleanupConnectorSecretRefs, type ConnectorSecretCleanupRef } from './secretCleanup';
 import {
   parseConnectorToolsForWrite,
   parseDiscoveredConnectorTools,
@@ -61,6 +62,7 @@ type RevokeAllInput = z.input<typeof adminConnectorRevokeAllBindingsInputSchema>
 
 interface ConnectorPublicationProof {
   afterDiff: Record<string, unknown>;
+  cleanupRefs: ConnectorSecretCleanupRef[];
   draftToken: string;
   endpoint: string;
   payload: PlatformConnectorRevisionPayload;
@@ -268,6 +270,7 @@ export class ConnectorCatalogPublicationService {
     );
     return {
       afterDiff: { connector: connectorAuditSummary(detail.draft) },
+      cleanupRefs: [],
       draftToken: detail.draftToken,
       endpoint: payload.connector.endpoint,
       payload,
@@ -318,6 +321,7 @@ export class ConnectorCatalogPublicationService {
         mode === 'archive'
           ? { connectorId, status: 'archived' }
           : { restoredFromRevision: targetRevision },
+      cleanupRefs: [],
       draftToken: detail.draftToken,
       endpoint: payload.connector.endpoint,
       payload,
@@ -329,8 +333,12 @@ export class ConnectorCatalogPublicationService {
     };
   };
 
-  private revokeBindings = async (tx: Transaction, connectorId: string): Promise<number> => {
+  private revokeBindings = async (
+    tx: Transaction,
+    connectorId: string,
+  ): Promise<{ cleanupRefs: ConnectorSecretCleanupRef[]; revoked: number }> => {
     const repository = new PlatformConnectorCatalogRepository(tx);
+    const cleanupRefs: ConnectorSecretCleanupRef[] = [];
     let cursor: string | undefined;
     let revoked = 0;
     const seenCursors = new Set<string>();
@@ -341,13 +349,21 @@ export class ConnectorCatalogPublicationService {
         limit: REVOKE_PAGE_SIZE,
       });
       revoked += page.revoked;
+      cleanupRefs.push(
+        ...page.tokenRefs.map((ref) => ({ connectorId, ref, slot: 'oauthBindingToken' as const })),
+        ...page.pkceVerifierRefs.map((ref) => ({
+          connectorId,
+          ref,
+          slot: 'oauthPkceVerifier' as const,
+        })),
+      );
       if (revoked > MAX_REVOKE_BINDINGS) {
         throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_RESOURCE_MISMATCH');
       }
       const nextCursor = page.nextCursor ?? undefined;
       if (!nextCursor) {
         await this.lifecycle.afterRevokeAll?.(connectorId, tx);
-        return revoked;
+        return { cleanupRefs, revoked };
       }
       if (nextCursor === cursor || seenCursors.has(nextCursor)) {
         throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_RESOURCE_MISMATCH');
@@ -421,7 +437,8 @@ export class ConnectorCatalogPublicationService {
         ).map((tool) => ({ ...tool, connectorId })),
       );
     }
-    await this.revokeBindings(tx, connectorId);
+    const revoked = await this.revokeBindings(tx, connectorId);
+    proof.cleanupRefs.push(...revoked.cleanupRefs);
   };
 
   private pointer = (
@@ -548,6 +565,7 @@ export class ConnectorCatalogPublicationService {
         sanitizePayload: sanitizeConnectorRevisionPayload,
         secretFingerprint: proof.secretFingerprint,
       });
+      await cleanupConnectorSecretRefs(this.secrets, proof.cleanupRefs);
       return { auditId: result.auditId, revision: result.revision.revision };
     } catch (error) {
       await appendConnectorFailureAudit(
@@ -585,6 +603,7 @@ export class ConnectorCatalogPublicationService {
         resourceType: 'connector',
         targetRevision: command.targetRevision,
       });
+      await cleanupConnectorSecretRefs(this.secrets, proof.cleanupRefs);
       return { auditId: result.auditId, revision: result.revision.revision };
     } catch (error) {
       await appendConnectorFailureAudit(
@@ -631,6 +650,7 @@ export class ConnectorCatalogPublicationService {
         secretFingerprint: proof.secretFingerprint,
         status: 'archived',
       });
+      await cleanupConnectorSecretRefs(this.secrets, proof.cleanupRefs);
       return { auditId: result.auditId, revision: result.revision.revision };
     } catch (error) {
       await appendConnectorFailureAudit(
@@ -666,17 +686,18 @@ export class ConnectorCatalogPublicationService {
         const audit = await new PlatformAuditService(tx).append({
           action: 'admin.connectors.revokeAllBindings',
           actorUserId,
-          afterDiff: { revoked },
+          afterDiff: { revoked: revoked.revoked },
           configRevision: command.expectedRevision,
           reason,
           result: 'success',
           targetId: command.id,
           targetType: 'connector',
         });
-        return { auditId: audit.id, revoked };
+        return { auditId: audit.id, ...revoked };
       });
+      await cleanupConnectorSecretRefs(this.secrets, result.cleanupRefs);
       await this.publishInvalidation(command.id, command.expectedRevision);
-      return result;
+      return { auditId: result.auditId, revoked: result.revoked };
     } catch (error) {
       await appendConnectorFailureAudit(
         this.db,

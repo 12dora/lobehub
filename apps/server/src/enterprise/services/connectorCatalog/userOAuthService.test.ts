@@ -163,6 +163,42 @@ const start = async (
 };
 
 describe('per-user connector OAuth service', () => {
+  it('cleans replaced and explicitly abandoned PKCE handles after detaching DB references', async () => {
+    const harness = createHarness();
+    const published = await publishOAuthConnector(harness);
+    const first = await start(harness, published.draft.id);
+    const [firstState] = await db.select().from(platformConnectorOAuthStates);
+    const second = await start(harness, published.draft.id);
+    await expect(
+      harness.secrets.resolveSecretRef({
+        connectorId: published.draft.id,
+        ref: firstState.pkceVerifierRef,
+        slot: 'oauthPkceVerifier',
+      }),
+    ).resolves.toBeNull();
+    const [secondState] = await db
+      .select()
+      .from(platformConnectorOAuthStates)
+      .where(
+        eq(
+          platformConnectorOAuthStates.stateHash,
+          createHash('sha256').update(second.state).digest('hex'),
+        ),
+      );
+    await harness.callback.abandonAuthorization(second.state);
+    await expect(
+      harness.secrets.resolveSecretRef({
+        connectorId: published.draft.id,
+        ref: secondState.pkceVerifierRef,
+        slot: 'oauthPkceVerifier',
+      }),
+    ).resolves.toBeNull();
+    await expect(
+      harness.callback.callback({ code: 'must-not-run', state: second.state }),
+    ).rejects.toMatchObject({ code: 'PLATFORM_CONNECTOR_OAUTH_STATE_INVALID' });
+    expect(first.state).not.toBe(second.state);
+  });
+
   it('lists only safe projections and binds authorization state exclusively to user A', async () => {
     const harness = createHarness();
     const published = await publishOAuthConnector(harness);
@@ -407,7 +443,13 @@ describe('per-user connector OAuth service', () => {
       harness.userA.startAuthorization({ connectorId: published.draft.id }),
     ).rejects.toThrow();
     expect(pkceRef).toBeDefined();
-    await expect(harness.secrets.resolveSecretRef({ ref: pkceRef! })).resolves.toBeNull();
+    await expect(
+      harness.secrets.resolveSecretRef({
+        connectorId: published.draft.id,
+        ref: pkceRef!,
+        slot: 'oauthPkceVerifier',
+      }),
+    ).resolves.toBeNull();
 
     await db
       .update(platformConnectors)
@@ -430,7 +472,13 @@ describe('per-user connector OAuth service', () => {
       harness.callback.callback({ code: 'authorization-code', state: authorization.state }),
     ).rejects.toMatchObject({ code: 'PLATFORM_CONNECTOR_OAUTH_CALLBACK_INVALID' });
     expect(tokenRef).toBeDefined();
-    await expect(harness.secrets.resolveSecretRef({ ref: tokenRef! })).resolves.toBeNull();
+    await expect(
+      harness.secrets.resolveSecretRef({
+        connectorId: published.draft.id,
+        ref: tokenRef!,
+        slot: 'oauthBindingToken',
+      }),
+    ).resolves.toBeNull();
     await expect(
       harness.callback.callback({ code: 'must-not-repeat', state: authorization.state }),
     ).rejects.toMatchObject({ code: 'PLATFORM_CONNECTOR_OAUTH_STATE_REPLAYED' });
@@ -456,7 +504,11 @@ describe('per-user connector OAuth service', () => {
       expect.objectContaining({ refreshToken: 'provider-refresh-token-v1' }),
     );
     await expect(
-      harness.secrets.resolveSecretRef({ ref: original.oauthTokenRef! }),
+      harness.secrets.resolveSecretRef({
+        connectorId: published.draft.id,
+        ref: original.oauthTokenRef!,
+        slot: 'oauthBindingToken',
+      }),
     ).resolves.toBeNull();
 
     await expect(harness.userA.disconnect({ connectorId: published.draft.id })).resolves.toEqual({
@@ -489,7 +541,13 @@ describe('per-user connector OAuth service', () => {
     const refreshed = (await db.select().from(platformUserConnectorBindings))[0]!;
     expect(refreshed).toMatchObject({ status: 'connected', userId: userA });
     expect(refreshed.oauthTokenRef).not.toBe(oldRef);
-    await expect(harness.secrets.resolveSecretRef({ ref: oldRef })).resolves.not.toBeNull();
+    await expect(
+      harness.secrets.resolveSecretRef({
+        connectorId: published.draft.id,
+        ref: oldRef,
+        slot: 'oauthBindingToken',
+      }),
+    ).resolves.not.toBeNull();
 
     await expect(harness.userA.disconnect({ connectorId: published.draft.id })).resolves.toEqual({
       disconnected: true,

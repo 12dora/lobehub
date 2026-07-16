@@ -5,13 +5,8 @@ import { type NextRequest, NextResponse } from 'next/server';
 import { ConnectorModel } from '@/database/models/connector';
 import { ConnectorToolModel } from '@/database/models/connectorTool';
 import { serverDB } from '@/database/server';
+import { handleManagedConnectorOAuthCallback } from '@/enterprise/server/connectorOAuthCallback';
 import { appEnv } from '@/envs/app';
-import { parseEnterpriseFeatureFlags } from '@/server/enterprise/featureFlags';
-import {
-  getConnectorOAuthRuntime,
-  MANAGED_CONNECTOR_OAUTH_STATE_PREFIX,
-} from '@/server/enterprise/services/connectorCatalog/oauthRuntime';
-import { ConnectorOAuthCallbackService } from '@/server/enterprise/services/connectorCatalog/userOAuthService';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 import { exchangeConnectorCode } from '@/server/services/connector/oauth';
 import { consumeConnectorOAuthState } from '@/server/services/connector/stateStore';
@@ -157,49 +152,7 @@ const legacyGET = async (req: NextRequest) => {
   }
 };
 
-const renderManagedResultPage = (success: boolean): NextResponse => {
-  const html = `<!doctype html>
-<html>
-  <head><meta charset="utf-8" /><title>Connector authorization</title></head>
-  <body style="font-family: system-ui, sans-serif; padding: 24px; text-align: center;">
-    <p>${success ? 'Authorization complete. You can close this window.' : 'Authorization failed. You can close this window and try again.'}</p>
-  </body>
-</html>`;
-  return new NextResponse(html, {
-    headers: {
-      'cache-control': 'no-store',
-      'content-security-policy':
-        "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
-      'content-type': 'text/html; charset=utf-8',
-      'referrer-policy': 'no-referrer',
-      'x-content-type-options': 'nosniff',
-    },
-  });
-};
-
-const managedGET = async (req: NextRequest): Promise<NextResponse> => {
-  const code = req.nextUrl.searchParams.get('code');
-  const state = req.nextUrl.searchParams.get('state');
-  if (req.nextUrl.searchParams.has('error') || !code || !state) {
-    return renderManagedResultPage(false);
-  }
-  try {
-    await new ConnectorOAuthCallbackService(serverDB, getConnectorOAuthRuntime()).callback({
-      code,
-      state,
-    });
-    return renderManagedResultPage(true);
-  } catch {
-    return renderManagedResultPage(false);
-  }
-};
-
 export const GET = async (req: NextRequest) => {
-  const managedEnabled = parseEnterpriseFeatureFlags(
-    process.env,
-  ).ENABLE_PLATFORM_MANAGED_CONNECTORS;
-  const state = req.nextUrl.searchParams.get('state');
-  return managedEnabled && state?.startsWith(MANAGED_CONNECTOR_OAUTH_STATE_PREFIX)
-    ? managedGET(req)
-    : legacyGET(req);
+  const managed = await handleManagedConnectorOAuthCallback(req, serverDB);
+  return managed ?? legacyGET(req);
 };

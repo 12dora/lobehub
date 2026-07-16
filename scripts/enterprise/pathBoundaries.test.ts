@@ -24,6 +24,9 @@ describe('enterprise path boundaries', () => {
     expect(ENTERPRISE_UPSTREAM_MOUNT_POINTS).toContain(
       'apps/server/src/routers/lambda/connector.ts',
     );
+    expect(ENTERPRISE_UPSTREAM_MOUNT_POINTS).toContain(
+      'src/app/(backend)/oauth/connector/callback/route.ts',
+    );
   });
 
   it('treats enterprise trees as owned', () => {

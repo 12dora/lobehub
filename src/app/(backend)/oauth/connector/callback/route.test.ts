@@ -2,9 +2,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { GET } from './route';
 
-const { mockConsume, mockFindById, mockManagedCallback, mockSync, mockUpdate } = vi.hoisted(() => ({
+const {
+  mockAbandon,
+  mockConsume,
+  mockFindById,
+  mockGetRuntime,
+  mockManagedCallback,
+  mockSync,
+  mockUpdate,
+} = vi.hoisted(() => ({
+  mockAbandon: vi.fn(),
   mockConsume: vi.fn(),
   mockFindById: vi.fn(),
+  mockGetRuntime: vi.fn(() => ({})),
   mockManagedCallback: vi.fn(),
   mockSync: vi.fn(),
   mockUpdate: vi.fn(),
@@ -41,11 +51,12 @@ vi.mock('@/database/models/connectorTool', () => ({
 }));
 vi.mock('@/server/services/connector/sync', () => ({ syncConnectorToolsById: mockSync }));
 vi.mock('@/server/enterprise/services/connectorCatalog/oauthRuntime', () => ({
-  getConnectorOAuthRuntime: vi.fn(() => ({})),
+  getConnectorOAuthRuntime: mockGetRuntime,
   MANAGED_CONNECTOR_OAUTH_STATE_PREFIX: 'aihub-m09-v1.',
 }));
 vi.mock('@/server/enterprise/services/connectorCatalog/userOAuthService', () => ({
   ConnectorOAuthCallbackService: vi.fn().mockImplementation(() => ({
+    abandonAuthorization: mockAbandon,
     callback: mockManagedCallback,
   })),
 }));
@@ -56,6 +67,7 @@ const makeReq = (query = 'code=abc&state=xyz') =>
 beforeEach(() => {
   vi.clearAllMocks();
   vi.stubEnv('ENABLE_PLATFORM_MANAGED_CONNECTORS', '0');
+  mockAbandon.mockResolvedValue(undefined);
   mockManagedCallback.mockResolvedValue({});
   mockConsume.mockResolvedValue({
     authorizationServerUrl: 'https://as',
@@ -115,6 +127,7 @@ describe('connector OAuth callback', () => {
       makeReq(`error=access_denied&error_description=${providerError}&state=${managedState}`),
     );
     expect(await denied.text()).toContain('Authorization failed');
+    expect(mockAbandon).toHaveBeenCalledWith(managedState);
     expect(
       await (
         await GET(
@@ -141,6 +154,7 @@ describe('connector OAuth callback', () => {
     );
 
     expect(await response.text()).toContain('Authorization complete');
+    expect(mockGetRuntime).toHaveBeenCalledWith(expect.anything());
     expect(mockManagedCallback).toHaveBeenCalledWith({ code: 'authorization-code', state });
     expect(JSON.stringify(mockManagedCallback.mock.calls)).not.toContain('attacker-controlled');
   });

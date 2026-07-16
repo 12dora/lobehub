@@ -1,4 +1,4 @@
-import { and, asc, eq, exists, gt, ilike, inArray, isNull, lte, or, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, ilike, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 
 import type {
   NewPlatformConnector,
@@ -47,8 +47,14 @@ export interface PlatformConnectorToolCursor {
 }
 
 export type OAuthStateReservationResult =
-  | { reservedAt: Date; state: PlatformConnectorOAuthStateItem; status: 'reserved' }
-  | { status: 'expired' | 'invalid' | 'replayed' };
+  | {
+      bindingRevision: number;
+      reservedAt: Date;
+      state: PlatformConnectorOAuthStateItem;
+      status: 'reserved';
+    }
+  | { connectorId: string; pkceVerifierRefs: string[]; status: 'expired' }
+  | { status: 'invalid' | 'replayed' };
 
 export interface PlatformConnectorRevisionPayload extends Record<string, unknown> {
   connector: {
@@ -388,53 +394,94 @@ export class PlatformConnectorCatalogRepository {
   };
 
   reserveOAuthState = async (stateHash: string): Promise<OAuthStateReservationResult> => {
-    const databaseNow = sql<Date>`CURRENT_TIMESTAMP`;
-    const validBinding = this.db
-      .select({ id: platformUserConnectorBindings.id })
-      .from(platformUserConnectorBindings)
-      .where(
-        and(
-          eq(platformUserConnectorBindings.id, platformConnectorOAuthStates.bindingId),
-          eq(platformUserConnectorBindings.userId, platformConnectorOAuthStates.userId),
-          eq(platformUserConnectorBindings.connectorId, platformConnectorOAuthStates.connectorId),
-          eq(
-            platformUserConnectorBindings.publishedRevision,
-            platformConnectorOAuthStates.publishedRevision,
+    return inTransaction(this.db, async (db) => {
+      const preview = await db.query.platformConnectorOAuthStates.findFirst({
+        where: eq(platformConnectorOAuthStates.stateHash, stateHash),
+      });
+      if (!preview) return { status: 'invalid' };
+
+      // Global order for OAuth lifecycle locks: connector -> binding -> state.
+      const [connector] = await db
+        .select({ id: platformConnectors.id })
+        .from(platformConnectors)
+        .where(eq(platformConnectors.id, preview.connectorId))
+        .limit(1)
+        .for('update');
+      if (!connector) return { status: 'invalid' };
+      const [binding] = await db
+        .select({
+          id: platformUserConnectorBindings.id,
+          revision: platformUserConnectorBindings.revision,
+          revokedAt: platformUserConnectorBindings.revokedAt,
+          status: platformUserConnectorBindings.status,
+        })
+        .from(platformUserConnectorBindings)
+        .where(
+          and(
+            eq(platformUserConnectorBindings.id, preview.bindingId),
+            eq(platformUserConnectorBindings.userId, preview.userId),
+            eq(platformUserConnectorBindings.connectorId, preview.connectorId),
           ),
-          inArray(platformUserConnectorBindings.status, [
-            'connected',
-            'error',
-            'expired',
-            'pending',
-          ]),
-          isNull(platformUserConnectorBindings.revokedAt),
-        ),
-      )
-      .for('update');
-    const [row] = await this.db
-      .update(platformConnectorOAuthStates)
-      .set({ consumedAt: databaseNow })
-      .where(
-        and(
-          eq(platformConnectorOAuthStates.stateHash, stateHash),
-          isNull(platformConnectorOAuthStates.consumedAt),
-          isNull(platformConnectorOAuthStates.revokedAt),
-          lte(platformConnectorOAuthStates.createdAt, databaseNow),
-          gt(platformConnectorOAuthStates.expiresAt, databaseNow),
-          exists(validBinding),
-        ),
-      )
-      .returning();
-    if (row?.consumedAt) {
-      return { reservedAt: row.consumedAt, state: row, status: 'reserved' };
-    }
-    const existing = await this.db.query.platformConnectorOAuthStates.findFirst({
-      where: eq(platformConnectorOAuthStates.stateHash, stateHash),
+        )
+        .limit(1)
+        .for('update');
+      const [state] = await db
+        .select()
+        .from(platformConnectorOAuthStates)
+        .where(
+          and(
+            eq(platformConnectorOAuthStates.id, preview.id),
+            eq(platformConnectorOAuthStates.stateHash, stateHash),
+          ),
+        )
+        .limit(1)
+        .for('update');
+      if (!state || state.revokedAt || !binding || binding.revokedAt) return { status: 'invalid' };
+      if (state.consumedAt) return { status: 'replayed' };
+      if (!['connected', 'error', 'expired', 'pending'].includes(binding.status)) {
+        return { status: 'invalid' };
+      }
+      const databaseNow = sql<Date>`CURRENT_TIMESTAMP`;
+      const [row] = await db
+        .update(platformConnectorOAuthStates)
+        .set({ consumedAt: databaseNow })
+        .where(
+          and(
+            eq(platformConnectorOAuthStates.id, state.id),
+            isNull(platformConnectorOAuthStates.consumedAt),
+            isNull(platformConnectorOAuthStates.revokedAt),
+            lte(platformConnectorOAuthStates.createdAt, databaseNow),
+            gt(platformConnectorOAuthStates.expiresAt, databaseNow),
+          ),
+        )
+        .returning();
+      if (row?.consumedAt) {
+        return {
+          bindingRevision: binding.revision,
+          reservedAt: row.consumedAt,
+          state: row,
+          status: 'reserved',
+        };
+      }
+      const [expired] = await db
+        .update(platformConnectorOAuthStates)
+        .set({ consumedAt: null, revokedAt: databaseNow })
+        .where(
+          and(
+            eq(platformConnectorOAuthStates.id, state.id),
+            lte(platformConnectorOAuthStates.expiresAt, databaseNow),
+            isNull(platformConnectorOAuthStates.revokedAt),
+          ),
+        )
+        .returning({ connectorId: platformConnectorOAuthStates.connectorId });
+      return expired
+        ? {
+            connectorId: expired.connectorId,
+            pkceVerifierRefs: [state.pkceVerifierRef],
+            status: 'expired',
+          }
+        : { status: 'invalid' };
     });
-    if (!existing || existing.revokedAt) return { status: 'invalid' };
-    if (existing.consumedAt) return { status: 'replayed' };
-    if (existing.expiresAt <= new Date()) return { status: 'expired' };
-    return { status: 'invalid' };
   };
 
   consumeOAuthState = async (
@@ -459,6 +506,24 @@ export class PlatformConnectorCatalogRepository {
     return row !== undefined;
   };
 
+  terminateOAuthStateReservation = async (
+    stateHash: string,
+    reservedAt: Date,
+  ): Promise<PlatformConnectorOAuthStateItem | undefined> => {
+    const [row] = await this.db
+      .update(platformConnectorOAuthStates)
+      .set({ consumedAt: null, revokedAt: sql<Date>`CURRENT_TIMESTAMP` })
+      .where(
+        and(
+          eq(platformConnectorOAuthStates.stateHash, stateHash),
+          eq(platformConnectorOAuthStates.consumedAt, reservedAt),
+          isNull(platformConnectorOAuthStates.revokedAt),
+        ),
+      )
+      .returning();
+    return row;
+  };
+
   revokeAllBindingsPage = async (params: {
     afterId?: string;
     connectorId: string;
@@ -466,13 +531,25 @@ export class PlatformConnectorCatalogRepository {
   }) => {
     return inTransaction(this.db, async (db) => {
       const limit = boundedLimit(params.limit);
+      const [connector] = await db
+        .select({ id: platformConnectors.id })
+        .from(platformConnectors)
+        .where(eq(platformConnectors.id, params.connectorId))
+        .limit(1)
+        .for('update');
+      if (!connector) {
+        return { nextCursor: null, pkceVerifierRefs: [], revoked: 0, tokenRefs: [] };
+      }
       const conditions = [
         eq(platformUserConnectorBindings.connectorId, params.connectorId),
         isNull(platformUserConnectorBindings.revokedAt),
       ];
       if (params.afterId) conditions.push(gt(platformUserConnectorBindings.id, params.afterId));
       const rows = await db
-        .select({ id: platformUserConnectorBindings.id })
+        .select({
+          id: platformUserConnectorBindings.id,
+          oauthTokenRef: platformUserConnectorBindings.oauthTokenRef,
+        })
         .from(platformUserConnectorBindings)
         .where(and(...conditions))
         .orderBy(asc(platformUserConnectorBindings.id))
@@ -481,15 +558,32 @@ export class PlatformConnectorCatalogRepository {
       const hasMore = rows.length > limit;
       const ids = (hasMore ? rows.slice(0, limit) : rows).map((row) => row.id);
       let revoked = 0;
+      const pkceVerifierRefs: string[] = [];
+      const tokenRefs = (hasMore ? rows.slice(0, limit) : rows)
+        .map((row) => row.oauthTokenRef)
+        .filter((ref): ref is string => ref !== null);
       if (ids.length > 0) {
         const databaseNow = sql<Date>`CURRENT_TIMESTAMP`;
-        await db
-          .update(platformConnectorOAuthStates)
-          .set({ revokedAt: databaseNow })
+        const states = await db
+          .select({
+            id: platformConnectorOAuthStates.id,
+            pkceVerifierRef: platformConnectorOAuthStates.pkceVerifierRef,
+          })
+          .from(platformConnectorOAuthStates)
           .where(
             and(
               inArray(platformConnectorOAuthStates.bindingId, ids),
-              isNull(platformConnectorOAuthStates.consumedAt),
+              isNull(platformConnectorOAuthStates.revokedAt),
+            ),
+          )
+          .for('update');
+        pkceVerifierRefs.push(...states.map((state) => state.pkceVerifierRef));
+        await db
+          .update(platformConnectorOAuthStates)
+          .set({ consumedAt: null, revokedAt: databaseNow })
+          .where(
+            and(
+              inArray(platformConnectorOAuthStates.bindingId, ids),
               isNull(platformConnectorOAuthStates.revokedAt),
             ),
           );
@@ -517,7 +611,9 @@ export class PlatformConnectorCatalogRepository {
       }
       return {
         nextCursor: hasMore ? (ids.at(-1) ?? null) : null,
+        pkceVerifierRefs,
         revoked,
+        tokenRefs,
       };
     });
   };
@@ -536,6 +632,13 @@ export class PlatformUserConnectorBindingRepository {
     >,
   ): Promise<PlatformConnectorOAuthStateItem> => {
     return inTransaction(this.db, async (db) => {
+      const [connector] = await db
+        .select({ id: platformConnectors.id })
+        .from(platformConnectors)
+        .where(eq(platformConnectors.id, values.connectorId))
+        .limit(1)
+        .for('update');
+      if (!connector) throw new Error('PLATFORM_CONNECTOR_NOT_FOUND');
       const owned = await db
         .select({ id: platformUserConnectorBindings.id })
         .from(platformUserConnectorBindings)
@@ -544,7 +647,6 @@ export class PlatformUserConnectorBindingRepository {
             eq(platformUserConnectorBindings.id, values.bindingId),
             eq(platformUserConnectorBindings.userId, this.userId),
             eq(platformUserConnectorBindings.connectorId, values.connectorId),
-            eq(platformUserConnectorBindings.publishedRevision, values.publishedRevision),
             inArray(platformUserConnectorBindings.status, [
               'connected',
               'error',
@@ -576,7 +678,10 @@ export class PlatformUserConnectorBindingRepository {
     scopes: string[];
     stateHash: string;
     stateId: string;
-  }): Promise<PlatformUserConnectorBindingItem> => {
+  }): Promise<{
+    binding: PlatformUserConnectorBindingItem;
+    pkceVerifierRefs: string[];
+  }> => {
     return inTransaction(this.db, async (db) => {
       const [connector] = await db
         .select({ id: platformConnectors.id })
@@ -649,14 +754,26 @@ export class PlatformUserConnectorBindingRepository {
         )
         .returning();
 
-      const databaseNow = sql<Date>`CURRENT_TIMESTAMP`;
-      await db
-        .update(platformConnectorOAuthStates)
-        .set({ revokedAt: databaseNow })
+      const previousStates = await db
+        .select({
+          id: platformConnectorOAuthStates.id,
+          pkceVerifierRef: platformConnectorOAuthStates.pkceVerifierRef,
+        })
+        .from(platformConnectorOAuthStates)
         .where(
           and(
             eq(platformConnectorOAuthStates.bindingId, binding.id),
-            isNull(platformConnectorOAuthStates.consumedAt),
+            isNull(platformConnectorOAuthStates.revokedAt),
+          ),
+        )
+        .for('update');
+      const databaseNow = sql<Date>`CURRENT_TIMESTAMP`;
+      await db
+        .update(platformConnectorOAuthStates)
+        .set({ consumedAt: null, revokedAt: databaseNow })
+        .where(
+          and(
+            eq(platformConnectorOAuthStates.bindingId, binding.id),
             isNull(platformConnectorOAuthStates.revokedAt),
           ),
         );
@@ -673,7 +790,10 @@ export class PlatformUserConnectorBindingRepository {
         stateId: params.stateId,
         userId: this.userId,
       });
-      return binding;
+      return {
+        binding,
+        pkceVerifierRefs: previousStates.map((state) => state.pkceVerifierRef),
+      };
     });
   };
 
@@ -683,6 +803,7 @@ export class PlatformUserConnectorBindingRepository {
     expiresAt: Date | null;
     oauthTokenRef: string;
     publishedRevision: number;
+    expectedBindingRevision: number;
     reservedAt: Date;
     scopes: string[];
     stateHash: string;
@@ -692,22 +813,16 @@ export class PlatformUserConnectorBindingRepository {
     previousTokenRef: string | null;
   }> => {
     return inTransaction(this.db, async (db) => {
-      const [state] = await db
-        .select()
-        .from(platformConnectorOAuthStates)
-        .where(
-          and(
-            eq(platformConnectorOAuthStates.stateHash, params.stateHash),
-            eq(platformConnectorOAuthStates.userId, this.userId),
-            eq(platformConnectorOAuthStates.connectorId, params.connectorId),
-            eq(platformConnectorOAuthStates.publishedRevision, params.publishedRevision),
-            eq(platformConnectorOAuthStates.consumedAt, params.reservedAt),
-            isNull(platformConnectorOAuthStates.revokedAt),
-          ),
-        )
-        .limit(1)
-        .for('update');
-      if (!state) throw new Error('PLATFORM_CONNECTOR_OAUTH_STATE_INVALID');
+      const preview = await db.query.platformConnectorOAuthStates.findFirst({
+        where: and(
+          eq(platformConnectorOAuthStates.stateHash, params.stateHash),
+          eq(platformConnectorOAuthStates.userId, this.userId),
+          eq(platformConnectorOAuthStates.connectorId, params.connectorId),
+        ),
+      });
+      if (!preview) throw new Error('PLATFORM_CONNECTOR_OAUTH_STATE_INVALID');
+
+      // Global order for OAuth lifecycle locks: connector -> binding -> state.
       const [connector] = await db
         .select({ id: platformConnectors.id })
         .from(platformConnectors)
@@ -728,14 +843,40 @@ export class PlatformUserConnectorBindingRepository {
         .from(platformUserConnectorBindings)
         .where(
           and(
-            eq(platformUserConnectorBindings.id, state.bindingId),
+            eq(platformUserConnectorBindings.id, preview.bindingId),
             eq(platformUserConnectorBindings.userId, this.userId),
             eq(platformUserConnectorBindings.connectorId, params.connectorId),
           ),
         )
         .limit(1)
         .for('update');
-      if (!current) throw new Error('PLATFORM_CONNECTOR_BINDING_OWNERSHIP_MISMATCH');
+      if (
+        !current ||
+        current.revokedAt ||
+        current.revision !== params.expectedBindingRevision ||
+        !['connected', 'error', 'expired', 'pending'].includes(current.status)
+      ) {
+        throw new Error('PLATFORM_CONNECTOR_BINDING_OWNERSHIP_MISMATCH');
+      }
+      const [state] = await db
+        .select()
+        .from(platformConnectorOAuthStates)
+        .where(
+          and(
+            eq(platformConnectorOAuthStates.id, preview.id),
+            eq(platformConnectorOAuthStates.stateHash, params.stateHash),
+            eq(platformConnectorOAuthStates.userId, this.userId),
+            eq(platformConnectorOAuthStates.connectorId, params.connectorId),
+            eq(platformConnectorOAuthStates.publishedRevision, params.publishedRevision),
+            eq(platformConnectorOAuthStates.consumedAt, params.reservedAt),
+            isNull(platformConnectorOAuthStates.revokedAt),
+          ),
+        )
+        .limit(1)
+        .for('update');
+      if (!state || state.bindingId !== current.id) {
+        throw new Error('PLATFORM_CONNECTOR_OAUTH_STATE_INVALID');
+      }
       const [binding] = await db
         .update(platformUserConnectorBindings)
         .set({
@@ -755,9 +896,18 @@ export class PlatformUserConnectorBindingRepository {
           and(
             eq(platformUserConnectorBindings.id, current.id),
             eq(platformUserConnectorBindings.userId, this.userId),
+            eq(platformUserConnectorBindings.revision, params.expectedBindingRevision),
+            isNull(platformUserConnectorBindings.revokedAt),
+            inArray(platformUserConnectorBindings.status, [
+              'connected',
+              'error',
+              'expired',
+              'pending',
+            ]),
           ),
         )
         .returning();
+      if (!binding) throw new Error('PLATFORM_CONNECTOR_BINDING_OWNERSHIP_MISMATCH');
       return { binding, previousTokenRef: current.oauthTokenRef };
     });
   };
@@ -802,9 +952,21 @@ export class PlatformUserConnectorBindingRepository {
   revokeBindingWithPreviousSecret = async (
     connectorId: string,
   ): Promise<
-    { binding: PlatformUserConnectorBindingItem; previousTokenRef: string | null } | undefined
+    | {
+        binding: PlatformUserConnectorBindingItem;
+        pkceVerifierRefs: string[];
+        previousTokenRef: string | null;
+      }
+    | undefined
   > => {
     return inTransaction(this.db, async (db) => {
+      const [connector] = await db
+        .select({ id: platformConnectors.id })
+        .from(platformConnectors)
+        .where(eq(platformConnectors.id, connectorId))
+        .limit(1)
+        .for('update');
+      if (!connector) return undefined;
       const owned = await db
         .select()
         .from(platformUserConnectorBindings)
@@ -821,13 +983,25 @@ export class PlatformUserConnectorBindingRepository {
       if (!current) return undefined;
       const bindingId = current.id;
       const databaseNow = sql<Date>`CURRENT_TIMESTAMP`;
-      await db
-        .update(platformConnectorOAuthStates)
-        .set({ revokedAt: databaseNow })
+      const states = await db
+        .select({
+          id: platformConnectorOAuthStates.id,
+          pkceVerifierRef: platformConnectorOAuthStates.pkceVerifierRef,
+        })
+        .from(platformConnectorOAuthStates)
         .where(
           and(
             eq(platformConnectorOAuthStates.bindingId, bindingId),
-            isNull(platformConnectorOAuthStates.consumedAt),
+            isNull(platformConnectorOAuthStates.revokedAt),
+          ),
+        )
+        .for('update');
+      await db
+        .update(platformConnectorOAuthStates)
+        .set({ consumedAt: null, revokedAt: databaseNow })
+        .where(
+          and(
+            eq(platformConnectorOAuthStates.bindingId, bindingId),
             isNull(platformConnectorOAuthStates.revokedAt),
           ),
         );
@@ -851,7 +1025,11 @@ export class PlatformUserConnectorBindingRepository {
           ),
         )
         .returning();
-      return { binding: row, previousTokenRef: current.oauthTokenRef };
+      return {
+        binding: row,
+        pkceVerifierRefs: states.map((state) => state.pkceVerifierRef),
+        previousTokenRef: current.oauthTokenRef,
+      };
     });
   };
 

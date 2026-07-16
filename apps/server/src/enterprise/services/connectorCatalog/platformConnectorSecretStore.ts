@@ -1,8 +1,13 @@
 import { createHash, randomUUID } from 'node:crypto';
 
-import { and, desc, eq, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, lt, sql } from 'drizzle-orm';
 
-import { platformConnectors, platformConnectorSecrets } from '@/database/schemas/platform';
+import {
+  platformConnectorOAuthStates,
+  platformConnectors,
+  platformConnectorSecrets,
+  platformUserConnectorBindings,
+} from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 
 import type { PlatformSecretService } from '../../security/secret';
@@ -15,6 +20,7 @@ import type {
 import { PlatformConnectorContractError } from './errors';
 
 const MAX_SECRET_JSON_BYTES = 64 * 1024;
+const ORPHAN_GRACE_MS = 15 * 60 * 1000;
 
 const serializeSecret = (value: unknown): string => {
   let serialized: string | undefined;
@@ -48,6 +54,13 @@ export class PlatformConnectorSecretStore implements ConnectorCatalogSecretStore
     slot: ConnectorSecretSlot;
     value: unknown;
   }): Promise<ConnectorStoredSecret> => {
+    try {
+      await this.garbageCollectOrphanedOAuthSecrets();
+    } catch (error) {
+      console.error('[connectorSecretStore] opportunistic orphan cleanup failed', {
+        errorClass: error instanceof Error ? error.name : 'UnknownError',
+      });
+    }
     const serialized = serializeSecret(params.value);
     const fingerprint = fingerprintSecret(serialized);
     const ciphertext = await this.secretService.encrypt(serialized);
@@ -198,6 +211,73 @@ export class PlatformConnectorSecretStore implements ConnectorCatalogSecretStore
         : null,
     ]);
     return { oauthClientSecret: oauth?.value, sharedSecret: shared?.value };
+  };
+
+  /**
+   * Retry path for a bounded cleanup that lost its DB/network race. Only
+   * terminal OAuth/PKCE handles older than the grace window are collected;
+   * platform client/shared secret versions remain available for rollback.
+   */
+  garbageCollectOrphanedOAuthSecrets = async (limit = 100): Promise<number> => {
+    const cutoff = new Date(Date.now() - ORPHAN_GRACE_MS);
+    const candidates = await this.db
+      .select({
+        connectorId: platformConnectorSecrets.connectorId,
+        id: platformConnectorSecrets.id,
+        ref: platformConnectorSecrets.ref,
+        slot: platformConnectorSecrets.slot,
+      })
+      .from(platformConnectorSecrets)
+      .where(
+        and(
+          inArray(platformConnectorSecrets.slot, ['oauthBindingToken', 'oauthPkceVerifier']),
+          isNull(platformConnectorSecrets.revokedAt),
+          lt(platformConnectorSecrets.createdAt, cutoff),
+        ),
+      )
+      .orderBy(platformConnectorSecrets.createdAt, platformConnectorSecrets.id)
+      .limit(Math.max(1, Math.min(limit, 100)));
+    let revoked = 0;
+    for (const candidate of candidates) {
+      const referenced =
+        candidate.slot === 'oauthBindingToken'
+          ? await this.db
+              .select({ id: platformUserConnectorBindings.id })
+              .from(platformUserConnectorBindings)
+              .where(
+                and(
+                  eq(platformUserConnectorBindings.connectorId, candidate.connectorId),
+                  eq(platformUserConnectorBindings.oauthTokenRef, candidate.ref),
+                  isNull(platformUserConnectorBindings.revokedAt),
+                ),
+              )
+              .limit(1)
+          : await this.db
+              .select({ id: platformConnectorOAuthStates.id })
+              .from(platformConnectorOAuthStates)
+              .where(
+                and(
+                  eq(platformConnectorOAuthStates.connectorId, candidate.connectorId),
+                  eq(platformConnectorOAuthStates.pkceVerifierRef, candidate.ref),
+                  isNull(platformConnectorOAuthStates.revokedAt),
+                  sql`${platformConnectorOAuthStates.expiresAt} > CURRENT_TIMESTAMP`,
+                ),
+              )
+              .limit(1);
+      if (referenced.length > 0) continue;
+      const result = await this.db
+        .update(platformConnectorSecrets)
+        .set({ revokedAt: sql<Date>`CURRENT_TIMESTAMP` })
+        .where(
+          and(
+            eq(platformConnectorSecrets.id, candidate.id),
+            isNull(platformConnectorSecrets.revokedAt),
+          ),
+        )
+        .returning({ id: platformConnectorSecrets.id });
+      revoked += result.length;
+    }
+    return revoked;
   };
 
   private resolveRow = async (row: typeof platformConnectorSecrets.$inferSelect) => {

@@ -510,6 +510,7 @@ describe('ConnectorCatalogPublicationService', () => {
         userId,
       })),
     );
+    const revokeSecret = vi.spyOn(harness.secrets, 'revokeSecretRef');
     await expect(
       harness.publication.revokeAllBindings('admin-user', {
         expectedRevision: 1,
@@ -517,6 +518,7 @@ describe('ConnectorCatalogPublicationService', () => {
         reason: 'revoke compromised grants',
       }),
     ).resolves.toMatchObject({ revoked: 101 });
+    expect(revokeSecret).toHaveBeenCalledTimes(101);
     const revokedBindings = await db.select().from(platformUserConnectorBindings);
     expect(revokedBindings).toHaveLength(101);
     expect(revokedBindings).toEqual(
