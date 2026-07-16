@@ -53,18 +53,12 @@ vi.mock('@/server/services/file', () => ({ FileService: vi.fn(() => ({})) }));
 
 const {
   deleteConnectedAccount,
-  getConnectedAccount,
   getRawComposioTools,
   initiateDeviceCode,
+  listConnectedAccounts,
   linkConnectedAccount,
 } = vi.hoisted(() => ({
   deleteConnectedAccount: vi.fn(async () => undefined),
-  getConnectedAccount: vi.fn(async (id: string) => ({
-    authConfig: { id: 'auth-gmail' },
-    id,
-    status: 'ACTIVE',
-    toolkit: { slug: 'GMAIL' },
-  })),
   getRawComposioTools: vi.fn(async () => ({
     items: [
       {
@@ -81,6 +75,38 @@ const {
     userCode: 'USER-CODE',
     verificationUri: 'https://example.com/device',
   })),
+  listConnectedAccounts: vi.fn(async (query: { userIds?: string[] }) => ({
+    items:
+      query.userIds?.[0] === 'm06-real-ordinary'
+        ? [
+            {
+              authConfig: { id: 'auth-gmail' },
+              id: 'binding-gmail-1',
+              status: 'ACTIVE',
+              toolkit: { slug: 'GMAIL' },
+            },
+            {
+              authConfig: { id: 'auth-gmail' },
+              id: 'binding-gmail-2',
+              status: 'ACTIVE',
+              toolkit: { slug: 'GMAIL' },
+            },
+            {
+              authConfig: { id: 'auth-airtable' },
+              id: 'trusted-owned-account',
+              status: 'ACTIVE',
+              toolkit: { slug: 'AIRTABLE' },
+            },
+          ]
+        : [
+            {
+              authConfig: { id: 'foreign-auth' },
+              id: 'foreign-legacy-binding',
+              status: 'ACTIVE',
+              toolkit: { slug: 'SLACK' },
+            },
+          ],
+  })),
   linkConnectedAccount: vi.fn(async () => ({
     id: 'binding-gmail-1',
     redirectUrl: 'https://composio.example/link',
@@ -94,7 +120,7 @@ vi.mock('@/libs/composio', () => ({
     authConfigs: { create: vi.fn(), list: vi.fn() },
     connectedAccounts: {
       delete: deleteConnectedAccount,
-      get: getConnectedAccount,
+      list: listConnectedAccounts,
       link: linkConnectedAccount,
     },
     tools: { getRawComposioTools },
@@ -259,6 +285,11 @@ describe('real legacy router callers under enforced policy', () => {
       connectedAccountId: 'binding-gmail-1',
       identifier: 'gmail',
     });
+    await expect(caller.getConnection({ identifier: 'gmail' })).resolves.toMatchObject({
+      appSlug: 'GMAIL',
+      connectedAccountId: 'binding-gmail-1',
+      status: 'ACTIVE',
+    });
     await expect(
       caller.updateComposioPlugin({
         appSlug: 'GMAIL',
@@ -267,13 +298,6 @@ describe('real legacy router callers under enforced policy', () => {
         identifier: 'gmail',
         label: 'Gmail',
         status: 'ACTIVE',
-        tools: [
-          {
-            description: 'forged client tool',
-            inputSchema: { endpoint: 'https://attacker.example' },
-            name: 'FORGED_TOOL',
-          },
-        ],
       }),
     ).resolves.toEqual({ savedCount: 1 });
 
@@ -327,6 +351,22 @@ describe('real legacy router callers under enforced policy', () => {
       status: 'connected',
       userId: superAdmin,
     });
+    await db.insert(userConnectors).values({
+      identifier: 'slack',
+      isEnabled: true,
+      metadata: {
+        composio: {
+          appSlug: 'SLACK',
+          authConfigId: 'foreign-auth',
+          connectedAccountId: 'foreign-legacy-binding',
+          status: 'ACTIVE',
+        },
+      },
+      name: 'Slack',
+      sourceType: 'marketplace',
+      status: 'connected',
+      userId: ordinary,
+    });
     const validUpdate = {
       appSlug: 'GMAIL' as const,
       authConfigId: 'auth-gmail',
@@ -334,7 +374,6 @@ describe('real legacy router callers under enforced policy', () => {
       identifier: 'gmail',
       label: 'Gmail',
       status: 'ACTIVE' as const,
-      tools: [],
     };
 
     for (const call of [
@@ -355,8 +394,12 @@ describe('real legacy router callers under enforced policy', () => {
           identifier: 'google-calendar',
           label: 'Google Calendar',
           status: 'ACTIVE',
-          tools: [],
         }),
+      () =>
+        caller.updateComposioPlugin({
+          ...validUpdate,
+          tools: [{ name: 'FORGED_TOOL' }],
+        } as never),
       () =>
         caller.updateComposioPlugin({
           ...validUpdate,
@@ -370,6 +413,27 @@ describe('real legacy router callers under enforced policy', () => {
       });
     }
 
+    const forgedLocalBinding = {
+      appSlug: 'SLACK' as const,
+      authConfigId: 'foreign-auth',
+      connectedAccountId: 'foreign-legacy-binding',
+      identifier: 'slack',
+      label: 'Slack',
+      status: 'ACTIVE' as const,
+    };
+    await expect(
+      caller.createConnection({ appSlug: 'SLACK', identifier: 'slack', label: 'Slack' }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    await expect(caller.updateComposioPlugin(forgedLocalBinding)).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+    });
+    await expect(caller.getConnection({ identifier: 'slack' })).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+    });
+    await expect(caller.deleteConnection({ identifier: 'slack' })).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+    });
+    expect(deleteConnectedAccount).not.toHaveBeenCalledWith('foreign-legacy-binding');
     expect(linkConnectedAccount).toHaveBeenCalledTimes(2);
   });
 
@@ -468,17 +532,17 @@ describe('real legacy router callers under enforced policy', () => {
     const [composioConnector] = await db
       .insert(userConnectors)
       .values({
-        identifier: 'owned-composio',
+        identifier: 'airtable',
         isEnabled: true,
         metadata: {
           composio: {
-            appSlug: 'github',
-            authConfigId: 'owned-auth',
+            appSlug: 'AIRTABLE',
+            authConfigId: 'auth-airtable',
             connectedAccountId: 'trusted-owned-account',
             status: 'ACTIVE',
           },
         },
-        name: 'Owned Composio',
+        name: 'Airtable',
         sourceType: 'marketplace',
         status: 'connected',
         userId: ordinary,

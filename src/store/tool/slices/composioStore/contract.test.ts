@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   buildComposioCreateConnectionInput,
   buildComposioOwnedDeleteInput,
+  buildComposioOwnedStatusInput,
   buildComposioPluginUpdateInput,
   createOwnedComposioConnection,
   deleteOwnedComposioConnection,
@@ -60,31 +61,34 @@ describe('Composio owner OAuth client contract', () => {
     });
   });
 
-  it('builds updateComposioPlugin only from the ACTIVE local binding and fetched tools', () => {
-    expect(
-      buildComposioPluginUpdateInput(server, [
-        { description: 'Search mail', inputSchema: { type: 'object' }, name: 'search' },
-      ]),
-    ).toEqual({
+  it('builds status polling from the local identifier without a remote account id', () => {
+    expect(buildComposioOwnedStatusInput(server)).toEqual({ identifier: 'gmail' });
+  });
+
+  it('builds updateComposioPlugin only from the ACTIVE local binding', () => {
+    expect(buildComposioPluginUpdateInput(server)).toEqual({
       appSlug: 'gmail',
       authConfigId: 'auth-local',
       connectedAccountId: 'account-local',
       identifier: 'gmail',
       label: 'Gmail',
       status: 'ACTIVE',
-      tools: [{ description: 'Search mail', inputSchema: { type: 'object' }, name: 'search' }],
     });
   });
 
-  it('calls updateComposioPlugin after ACTIVE with the fetched tool projection', async () => {
+  it('calls updateComposioPlugin after ACTIVE without client tool definitions', async () => {
     const updatePlugin = vi.fn().mockResolvedValue(undefined);
     await updateActiveComposioPlugin({
       server,
-      tools: [{ inputSchema: { type: 'object' }, name: 'search' }],
       updatePlugin,
     });
-    expect(updatePlugin).toHaveBeenCalledWith(
-      expect.objectContaining({ identifier: 'gmail', status: 'ACTIVE' }),
-    );
+    expect(updatePlugin).toHaveBeenCalledWith({
+      appSlug: 'gmail',
+      authConfigId: 'auth-local',
+      connectedAccountId: 'account-local',
+      identifier: 'gmail',
+      label: 'Gmail',
+      status: 'ACTIVE',
+    });
   });
 });

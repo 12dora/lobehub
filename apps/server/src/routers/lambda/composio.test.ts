@@ -8,7 +8,7 @@ const mocks = vi.hoisted(() => ({
   authConfigsCreate: vi.fn(),
   authConfigsList: vi.fn(),
   connectedAccountsDelete: vi.fn(),
-  connectedAccountsGet: vi.fn(),
+  connectedAccountsList: vi.fn(),
   connectedAccountsLink: vi.fn(),
   connectorCreate: vi.fn(),
   connectorDelete: vi.fn(),
@@ -64,7 +64,7 @@ vi.mock('@/libs/composio', () => ({
     authConfigs: { create: mocks.authConfigsCreate, list: mocks.authConfigsList },
     connectedAccounts: {
       delete: mocks.connectedAccountsDelete,
-      get: mocks.connectedAccountsGet,
+      list: mocks.connectedAccountsList,
       link: mocks.connectedAccountsLink,
     },
     tools: { getRawComposioTools: mocks.getRawComposioTools },
@@ -79,11 +79,15 @@ beforeEach(() => {
   mocks.connectorFindById.mockResolvedValue(null);
   mocks.connectorCreate.mockResolvedValue({ id: 'conn-new' });
   mocks.pluginFindById.mockResolvedValue(undefined);
-  mocks.connectedAccountsGet.mockResolvedValue({
-    authConfig: { id: 'ac_env' },
-    id: 'ca-1',
-    status: 'ACTIVE' as const,
-    toolkit: { slug: 'GMAIL' },
+  mocks.connectedAccountsList.mockResolvedValue({
+    items: [
+      {
+        authConfig: { id: 'ac_env' },
+        id: 'ca-1',
+        status: 'ACTIVE' as const,
+        toolkit: { slug: 'GMAIL' },
+      },
+    ],
   });
 });
 
@@ -140,6 +144,33 @@ describe('composioRouter.createConnection dual-write', () => {
     ).rejects.toMatchObject({ code: 'CONFLICT' });
     expect(mocks.connectedAccountsLink).not.toHaveBeenCalled();
   });
+
+  it('rejects reauthorize when a locally-owned projection points to a foreign remote account', async () => {
+    mocks.connectorQueryByIdentifiers.mockResolvedValue([
+      {
+        id: 'conn-forged',
+        identifier: 'gmail',
+        metadata: {
+          composio: {
+            appSlug: 'GMAIL',
+            authConfigId: 'ac_env',
+            connectedAccountId: 'foreign-ca',
+            status: 'FAILED',
+          },
+        },
+        sourceType: 'marketplace',
+      },
+    ]);
+    mocks.connectedAccountsList.mockResolvedValue({ items: [] });
+
+    await expect(
+      caller().createConnection({ appSlug: 'GMAIL', identifier: 'gmail', label: 'Gmail' }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    expect(mocks.connectedAccountsList).toHaveBeenCalledWith(
+      expect.objectContaining({ userIds: ['user-1'] }),
+    );
+    expect(mocks.connectedAccountsLink).not.toHaveBeenCalled();
+  });
 });
 
 describe('composioRouter.updateComposioPlugin dual-write', () => {
@@ -150,7 +181,6 @@ describe('composioRouter.updateComposioPlugin dual-write', () => {
     identifier: 'gmail',
     label: 'Gmail',
     status: 'ACTIVE' as const,
-    tools: [{ description: 'send', inputSchema: { type: 'object' }, name: 'GMAIL_SEND' }],
   };
   const trustedBinding = {
     appSlug: 'GMAIL',
@@ -245,7 +275,7 @@ describe('composioRouter.updateComposioPlugin dual-write', () => {
       caller().updateComposioPlugin({ ...input, connectedAccountId: 'foreign-binding' }),
     ).rejects.toMatchObject({ code: 'FORBIDDEN' });
 
-    expect(mocks.connectedAccountsGet).not.toHaveBeenCalled();
+    expect(mocks.connectedAccountsList).not.toHaveBeenCalled();
     expect(mocks.getRawComposioTools).not.toHaveBeenCalled();
     expect(mocks.connectorUpdate).not.toHaveBeenCalled();
   });
@@ -253,27 +283,111 @@ describe('composioRouter.updateComposioPlugin dual-write', () => {
   it('rejects update when no owner-scoped binding projection exists', async () => {
     await expect(caller().updateComposioPlugin(input)).rejects.toMatchObject({ code: 'NOT_FOUND' });
 
-    expect(mocks.connectedAccountsGet).not.toHaveBeenCalled();
+    expect(mocks.connectedAccountsList).not.toHaveBeenCalled();
     expect(mocks.connectorCreate).not.toHaveBeenCalled();
   });
 
-  it('ignores forged client tools and materializes only the trusted Composio response', async () => {
+  it('rejects a locally-owned projection whose remote binding is not owned by the user', async () => {
     mocks.connectorQueryByIdentifiers.mockResolvedValue([trustedConnector]);
-    mocks.getRawComposioTools.mockResolvedValue({
-      items: [{ description: 'trusted', inputParameters: {}, slug: 'GMAIL_TRUSTED' }],
+    mocks.connectedAccountsList.mockResolvedValue({ items: [] });
+
+    await expect(caller().updateComposioPlugin(input)).rejects.toMatchObject({
+      code: 'FORBIDDEN',
     });
 
-    await caller().updateComposioPlugin({
-      ...input,
-      tools: [{ description: 'forged', inputSchema: { endpoint: 'https://evil' }, name: 'EVIL' }],
+    expect(mocks.connectedAccountsList).toHaveBeenCalledWith(
+      expect.objectContaining({ userIds: ['user-1'] }),
+    );
+    expect(mocks.getRawComposioTools).not.toHaveBeenCalled();
+    expect(mocks.connectorUpdate).not.toHaveBeenCalled();
+  });
+
+  it('rejects the removed client tool definition snapshot', async () => {
+    mocks.connectorQueryByIdentifiers.mockResolvedValue([trustedConnector]);
+
+    await expect(
+      caller().updateComposioPlugin({
+        ...input,
+        tools: [{ description: 'forged', inputSchema: { endpoint: 'https://evil' }, name: 'EVIL' }],
+      } as never),
+    ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+
+    expect(mocks.connectedAccountsList).not.toHaveBeenCalled();
+    expect(mocks.connectorToolUpsertMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('composioRouter.getConnection owner-safe polling', () => {
+  const ownedConnector = {
+    id: 'conn-owned',
+    identifier: 'gmail',
+    metadata: {
+      composio: {
+        appSlug: 'GMAIL',
+        authConfigId: 'ac_env',
+        connectedAccountId: 'ca-1',
+        status: 'PENDING' as const,
+      },
+    },
+    sourceType: 'marketplace',
+  };
+
+  it('polls the exact remote account through an owner-filtered lookup', async () => {
+    mocks.connectorQueryByIdentifiers.mockResolvedValue([ownedConnector]);
+
+    await expect(caller().getConnection({ identifier: 'gmail' })).resolves.toEqual({
+      appSlug: 'GMAIL',
+      connectedAccountId: 'ca-1',
+      error: undefined,
+      status: 'ACTIVE',
+    });
+    expect(mocks.connectedAccountsList).toHaveBeenCalledWith(
+      expect.objectContaining({
+        authConfigIds: ['ac_env'],
+        toolkitSlugs: ['GMAIL'],
+        userIds: ['user-1'],
+      }),
+    );
+  });
+
+  it('rejects a client remote account id and missing local projection', async () => {
+    await expect(
+      caller().getConnection({ connectedAccountId: 'foreign-ca', identifier: 'gmail' } as never),
+    ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    await expect(caller().getConnection({ identifier: 'gmail' })).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+    });
+    expect(mocks.connectedAccountsList).not.toHaveBeenCalled();
+  });
+
+  it('rejects a locally-owned row whose remote binding is absent from the owner-filtered result', async () => {
+    mocks.connectorQueryByIdentifiers.mockResolvedValue([ownedConnector]);
+    mocks.connectedAccountsList.mockResolvedValue({ items: [] });
+
+    await expect(caller().getConnection({ identifier: 'gmail' })).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+    });
+  });
+
+  it('rejects connector/plugin projection mismatch before remote lookup', async () => {
+    mocks.connectorQueryByIdentifiers.mockResolvedValue([ownedConnector]);
+    mocks.pluginFindById.mockResolvedValue({
+      customParams: {
+        composio: {
+          appSlug: 'GMAIL',
+          authConfigId: 'ac_env',
+          connectedAccountId: 'different-ca',
+          status: 'PENDING',
+        },
+      },
+      identifier: 'gmail',
+      source: 'composio',
     });
 
-    expect(mocks.connectorToolUpsertMany).toHaveBeenCalledWith('conn-existing', [
-      expect.objectContaining({ description: 'trusted', toolName: 'GMAIL_TRUSTED' }),
-    ]);
-    expect(mocks.connectorToolDeleteToolsNotIn).toHaveBeenCalledWith('conn-existing', [
-      'GMAIL_TRUSTED',
-    ]);
+    await expect(caller().getConnection({ identifier: 'gmail' })).rejects.toMatchObject({
+      code: 'CONFLICT',
+    });
+    expect(mocks.connectedAccountsList).not.toHaveBeenCalled();
   });
 });
 
@@ -289,11 +403,28 @@ describe('composioRouter delete paths clean up the connector projection', () => 
 
   it('deleteConnection deletes both plugin and connector', async () => {
     mocks.connectedAccountsDelete.mockResolvedValue(undefined);
+    mocks.connectedAccountsList.mockResolvedValue({
+      items: [
+        {
+          authConfig: { id: 'trusted-auth' },
+          id: 'trusted-ca-1',
+          status: 'ACTIVE',
+          toolkit: { slug: 'GMAIL' },
+        },
+      ],
+    });
     mocks.connectorQueryByIdentifiers.mockResolvedValue([
       {
         id: 'conn-existing',
         identifier: 'gmail',
-        metadata: { composio: { connectedAccountId: 'trusted-ca-1' } },
+        metadata: {
+          composio: {
+            appSlug: 'GMAIL',
+            authConfigId: 'trusted-auth',
+            connectedAccountId: 'trusted-ca-1',
+            status: 'ACTIVE',
+          },
+        },
       },
     ]);
 
@@ -302,6 +433,31 @@ describe('composioRouter delete paths clean up the connector projection', () => 
     expect(mocks.connectedAccountsDelete).toHaveBeenCalledWith('trusted-ca-1');
     expect(mocks.pluginDelete).toHaveBeenCalledWith('gmail');
     expect(mocks.connectorDelete).toHaveBeenCalledWith('conn-existing');
+  });
+
+  it('rejects delete when the local projection points to a foreign remote binding', async () => {
+    mocks.connectorQueryByIdentifiers.mockResolvedValue([
+      {
+        id: 'conn-forged',
+        identifier: 'gmail',
+        metadata: {
+          composio: {
+            appSlug: 'GMAIL',
+            authConfigId: 'trusted-auth',
+            connectedAccountId: 'foreign-ca',
+            status: 'ACTIVE',
+          },
+        },
+      },
+    ]);
+    mocks.connectedAccountsList.mockResolvedValue({ items: [] });
+
+    await expect(caller().deleteConnection({ identifier: 'gmail' })).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+    });
+    expect(mocks.connectedAccountsDelete).not.toHaveBeenCalled();
+    expect(mocks.pluginDelete).not.toHaveBeenCalled();
+    expect(mocks.connectorDelete).not.toHaveBeenCalled();
   });
 
   it('rejects deleteConnection when the owned local projection is absent', async () => {
