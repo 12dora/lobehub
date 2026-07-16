@@ -1172,6 +1172,30 @@ export const connectorOperationProofSchema = z
   })
   .strict();
 
+export const connectorOwnedOperationProofSchema = connectorOperationProofSchema
+  .extend({
+    agentId: z.string().trim().min(1).max(256),
+    agentPolicyFingerprint: connectorSha256Schema,
+    managedPolicyRevision: z.number().int().nonnegative(),
+    signature: connectorSha256Schema,
+    userId: z.string().trim().min(1).max(256),
+  })
+  .strict();
+
+export const connectorApprovalReceiptSchema = z
+  .object({
+    agentPolicy: z
+      .object({
+        connectorKeys: z.array(connectorKeySchema).max(1000),
+        revision: z.number().int().nonnegative(),
+      })
+      .strict(),
+    proof: connectorOwnedOperationProofSchema,
+    signature: connectorSha256Schema,
+    toolCallId: z.string().trim().min(1).max(512),
+  })
+  .strict();
+
 const connectorRuntimeResolutionBaseSchema = z
   .object({
     connectorId: connectorIdSchema,

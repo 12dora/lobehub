@@ -10,6 +10,7 @@ import { publishedAiCatalogSchema } from '../contracts/aiCatalog';
 import { parseEnterpriseFeatureFlags } from '../featureFlags';
 import { resolveAccessStatus } from '../guards/accessGrant';
 import { AiCatalogReadService, getEmptyPublishedAiCatalog } from '../services/aiCatalog';
+import { publishConnectorRuntimeEffectiveState } from '../services/connectorCatalog/runtimeEffectiveState';
 import { buildEasyauthDescriptor } from '../services/easyauthManifest';
 import { resolvePublishedManagedResourcePolicies } from '../services/managedResourceCapabilities';
 import { buildPlatformCapabilities } from '../services/platformCapabilities';
@@ -48,6 +49,18 @@ export const platformRouter = router({
       db: ctx.serverDB,
       flags,
     });
+    const connectorPolicy = managed.published.connectors;
+    if (flags.ENABLE_PLATFORM_MANAGED_CONNECTORS) {
+      await publishConnectorRuntimeEffectiveState({
+        mode:
+          !connectorPolicy.managed || connectorPolicy.enforcementMode !== 'enforced'
+            ? 'legacy'
+            : managed.readiness.connectors
+              ? 'enforced'
+              : 'blocked',
+        revision: managed.revision,
+      });
+    }
 
     return buildPlatformCapabilities({
       adminAccess,

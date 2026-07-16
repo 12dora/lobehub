@@ -37,6 +37,7 @@ const proofCacheKey = (proof: ConnectorOperationProof): string =>
   [
     proof.operationId,
     proof.connectorId,
+    proof.connectorKey,
     proof.publishedRevision,
     proof.publishedChecksum,
     proof.toolPolicyFingerprint,
