@@ -31,7 +31,13 @@ const HEURISTIC_INSTRUCTION_PATTERNS = [
 const QUOTED_FRAGMENT_PATTERN = /"[^"]*"|'[^']*'|`[^`]*`|“[^”]*”|‘[^’]*’/gu;
 const NEGATED_COMMAND_PATTERN =
   /\b(?:do\s+not|don't|never|must\s+not)\s+(?:please\s+)?(?:ignore|disregard|override|disable|bypass)\b/gi;
-const NEGATED_COMMAND_ZH_PATTERN = /(?:不要|不得|禁止)\s*(?:忽略|无视|绕过|禁用)/g;
+const CONJOINED_NEGATED_COMMAND_PATTERN =
+  /\b(?:nor|or)\s+(?:please\s+)?(?:ignore|disregard|override|disable|bypass)\b/gi;
+const NEGATED_COMMAND_ZH_PATTERN = /(?:不要|不得|禁止|请勿)\s*(?:忽略|无视|绕过|禁用)/g;
+const CONJOINED_NEGATED_COMMAND_ZH_PATTERN =
+  /(?:也不要|也不得|也请勿|或者|或)\s*(?:忽略|无视|绕过|禁用)/g;
+const NEGATION_SCOPE_SEPARATOR_PATTERN =
+  /([,:，：]|\b(?:but|however|then|yet)\b|但是|但|然而|然后)/giu;
 const CLAUSE_SEPARATOR_PATTERN = /[.!?;。！？；]+/u;
 const PROMPT_CONTROL_ACTION_PATTERN = /\b(?:ignore|disregard|override)\b/i;
 const PROMPT_CONTROL_SOURCE_PATTERN = /\b(?:developer|previous|system)\b/i;
@@ -120,6 +126,22 @@ const hasLoneSurrogate = (value: unknown, seen = new WeakSet<object>()): boolean
   );
 };
 
+const maskNegatedActionGroups = (clause: string) =>
+  clause
+    .split(NEGATION_SCOPE_SEPARATOR_PATTERN)
+    .map((segment) => {
+      const english = segment.replaceAll(NEGATED_COMMAND_PATTERN, 'safe-command');
+      const englishGroup =
+        english === segment
+          ? english
+          : english.replaceAll(CONJOINED_NEGATED_COMMAND_PATTERN, ' safe-command');
+      const chinese = englishGroup.replaceAll(NEGATED_COMMAND_ZH_PATTERN, '安全提示');
+      return chinese === englishGroup
+        ? chinese
+        : chinese.replaceAll(CONJOINED_NEGATED_COMMAND_ZH_PATTERN, '安全提示');
+    })
+    .join('');
+
 const classifyDangerousInstructions = (content: string) => {
   let error = false;
   let warning = false;
@@ -127,13 +149,10 @@ const classifyDangerousInstructions = (content: string) => {
     .normalize('NFKC')
     .replaceAll(/\p{Cf}/gu, '')
     .split(/\r?\n/)) {
-    const line = rawLine
-      .replaceAll(QUOTED_FRAGMENT_PATTERN, '')
-      .replaceAll(NEGATED_COMMAND_PATTERN, 'safe-command')
-      .replaceAll(NEGATED_COMMAND_ZH_PATTERN, '安全提示')
-      .trim();
+    const line = rawLine.replaceAll(QUOTED_FRAGMENT_PATTERN, '').trim();
     if (!line) continue;
-    for (const clause of line.split(CLAUSE_SEPARATOR_PATTERN)) {
+    for (const rawClause of line.split(CLAUSE_SEPARATOR_PATTERN)) {
+      const clause = maskNegatedActionGroups(rawClause);
       const promptControl =
         (PROMPT_CONTROL_ACTION_PATTERN.test(clause) &&
           PROMPT_CONTROL_SOURCE_PATTERN.test(clause) &&
