@@ -1,4 +1,4 @@
-import type { ComposioServer, ComposioTool, CreateComposioServerParams } from './types';
+import type { ComposioServer, CreateComposioServerParams } from './types';
 
 export const buildComposioCreateConnectionInput = (params: CreateComposioServerParams) => ({
   appSlug: params.appSlug,
@@ -11,18 +11,17 @@ export const buildComposioOwnedDeleteInput = (server: ComposioServer) => ({
   identifier: server.identifier,
 });
 
-export const buildComposioPluginUpdateInput = (server: ComposioServer, tools: ComposioTool[]) => ({
+export const buildComposioOwnedStatusInput = (server: ComposioServer) => ({
+  identifier: server.identifier,
+});
+
+export const buildComposioPluginUpdateInput = (server: ComposioServer) => ({
   appSlug: server.appSlug,
   authConfigId: server.authConfigId,
   connectedAccountId: server.connectedAccountId,
   identifier: server.identifier,
   label: server.label,
   status: 'ACTIVE' as const,
-  tools: tools.map((tool) => ({
-    description: tool.description,
-    inputSchema: tool.inputSchema,
-    name: tool.name,
-  })),
 });
 
 export const createOwnedComposioConnection = <Result>(params: {
@@ -39,6 +38,5 @@ export const deleteOwnedComposioConnection = <Result>(params: {
 
 export const updateActiveComposioPlugin = <Result>(params: {
   server: ComposioServer;
-  tools: ComposioTool[];
   updatePlugin: (input: ReturnType<typeof buildComposioPluginUpdateInput>) => Promise<Result>;
-}) => params.updatePlugin(buildComposioPluginUpdateInput(params.server, params.tools));
+}) => params.updatePlugin(buildComposioPluginUpdateInput(params.server));

@@ -10,6 +10,7 @@ import { setNamespace } from '@/utils/storeDebug';
 
 import { type ToolStore } from '../../store';
 import {
+  buildComposioOwnedStatusInput,
   createOwnedComposioConnection,
   deleteOwnedComposioConnection,
   updateActiveComposioPlugin,
@@ -171,9 +172,9 @@ export class ComposioStoreActionImpl {
     );
 
     try {
-      const connectionStatus = await lambdaClient.composio.getConnection.query({
-        connectedAccountId: server.connectedAccountId,
-      });
+      const connectionStatus = await lambdaClient.composio.getConnection.query(
+        buildComposioOwnedStatusInput(server),
+      );
 
       if (connectionStatus.error === 'AUTH_ERROR') {
         this.#set(
@@ -221,7 +222,6 @@ export class ComposioStoreActionImpl {
 
       await updateActiveComposioPlugin({
         server,
-        tools,
         updatePlugin: lambdaClient.composio.updateComposioPlugin.mutate,
       });
     } catch (error) {

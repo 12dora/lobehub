@@ -37,20 +37,11 @@ const composioUpdatePluginInputSchema = z
     label: z.string().min(1).max(256),
     redirectUrl: z.string().optional(),
     status: z.literal('ACTIVE'),
-    // Compatibility-only snapshot. The server never uses these definitions;
-    // it fetches the authoritative tool catalog from Composio.
-    tools: z
-      .array(
-        z
-          .object({
-            description: z.string().optional(),
-            inputSchema: z.unknown().optional(),
-            name: z.string(),
-          })
-          .strict(),
-      )
-      .max(2000),
   })
+  .strict();
+
+const composioGetConnectionInputSchema = z
+  .object({ identifier: z.string().min(1).max(128) })
   .strict();
 
 const composioBindingMetadataSchema = z
@@ -67,12 +58,27 @@ const composioConnectionRequestSchema = z
   .object({ id: z.string().min(1), redirectUrl: z.string().min(1) })
   .passthrough();
 
-const composioActiveAccountSchema = z
+const composioRemoteAccountSchema = z
   .object({
     authConfig: z.object({ id: z.string().min(1) }).passthrough(),
     id: z.string().min(1),
-    status: z.literal('ACTIVE'),
+    status: z.enum([
+      'ACTIVE',
+      'EXPIRED',
+      'FAILED',
+      'INACTIVE',
+      'INITIALIZING',
+      'INITIATED',
+      'REVOKED',
+    ]),
     toolkit: z.object({ slug: z.string().min(1) }).passthrough(),
+  })
+  .passthrough();
+
+const composioOwnedAccountListSchema = z
+  .object({
+    items: z.array(composioRemoteAccountSchema),
+    nextCursor: z.string().nullish(),
   })
   .passthrough();
 
@@ -112,6 +118,11 @@ type ComposioUpdatePluginInput = z.infer<typeof composioUpdatePluginInputSchema>
 interface ComposioBindingModels {
   connectorModel: ConnectorModel;
   pluginModel: PluginModel;
+}
+
+interface ComposioRemoteOwnerContext {
+  composioClient: ReturnType<typeof getComposioClient>;
+  userId: string;
 }
 
 const getCanonicalComposioApp = (input: { appSlug: string; identifier: string; label: string }) => {
@@ -170,6 +181,73 @@ const resolveOwnedComposioBindingState = async (
   return { binding, connector, plugin };
 };
 
+const resolveOwnedCatalogBinding = async (models: ComposioBindingModels, identifier: string) => {
+  const app = getComposioAppByIdentifier(identifier);
+  if (!app) {
+    throw new TRPCError({ code: 'NOT_FOUND', message: 'Composio connection not found' });
+  }
+  const state = await resolveOwnedComposioBindingState(models, identifier, {
+    requireBinding: true,
+  });
+  const { binding } = state;
+  if (!binding) {
+    throw new TRPCError({ code: 'NOT_FOUND', message: 'Composio connection not found' });
+  }
+  if (binding.appSlug.toLowerCase() !== app.appSlug.toLowerCase()) {
+    throw new TRPCError({ code: 'CONFLICT', message: 'Composio binding toolkit mismatch' });
+  }
+
+  return { app, binding, state };
+};
+
+const resolveRemoteOwnedComposioAccount = async (
+  ctx: ComposioRemoteOwnerContext,
+  params: { appSlug: string; authConfigId: string; connectedAccountId: string },
+) => {
+  let cursor: string | undefined;
+  const seenCursors = new Set<string>();
+
+  do {
+    const response = composioOwnedAccountListSchema.safeParse(
+      await ctx.composioClient.connectedAccounts.list({
+        authConfigIds: [params.authConfigId],
+        cursor,
+        limit: 100,
+        toolkitSlugs: [params.appSlug],
+        userIds: [ctx.userId],
+      }),
+    );
+    if (!response.success) {
+      throw new TRPCError({
+        code: 'INTERNAL_SERVER_ERROR',
+        message: 'Invalid Composio owner lookup response',
+      });
+    }
+
+    const account = response.data.items.find((item) => item.id === params.connectedAccountId);
+    if (account) {
+      if (
+        account.authConfig.id !== params.authConfigId ||
+        account.toolkit.slug.toLowerCase() !== params.appSlug.toLowerCase()
+      ) {
+        throw new TRPCError({ code: 'CONFLICT', message: 'Composio remote binding mismatch' });
+      }
+      return account;
+    }
+
+    cursor = response.data.nextCursor ?? undefined;
+    if (cursor && seenCursors.has(cursor)) {
+      throw new TRPCError({
+        code: 'INTERNAL_SERVER_ERROR',
+        message: 'Composio owner lookup cursor repeated',
+      });
+    }
+    if (cursor) seenCursors.add(cursor);
+  } while (cursor);
+
+  throw new TRPCError({ code: 'FORBIDDEN', message: 'Composio binding owner mismatch' });
+};
+
 const assertCreateBindingLifecycle = async (
   input: ComposioCreateConnectionInput,
   models: ComposioBindingModels,
@@ -190,13 +268,7 @@ const assertUpdateBindingLifecycle = async (
   models: ComposioBindingModels,
 ) => {
   const app = getCanonicalComposioApp(input);
-  const state = await resolveOwnedComposioBindingState(models, input.identifier, {
-    requireBinding: true,
-  });
-  const { binding } = state;
-  if (!binding) {
-    throw new TRPCError({ code: 'NOT_FOUND', message: 'Composio connection not found' });
-  }
+  const { binding, state } = await resolveOwnedCatalogBinding(models, input.identifier);
   if (
     binding.appSlug !== app.appSlug ||
     binding.authConfigId !== input.authConfigId ||
@@ -354,26 +426,25 @@ async function deleteComposioConnector(
 const resolveOwnedComposioConnector = async (
   connectorModel: ConnectorModel,
   input: { connectorId?: string; identifier?: string },
-): Promise<{ bindingId: string; connector: DecryptedConnector }> => {
+): Promise<{ binding: ComposioConnectorMetadata; connector: DecryptedConnector }> => {
   const connector = input.connectorId
     ? await connectorModel.findById(input.connectorId)
     : input.identifier
       ? (await connectorModel.queryByIdentifiers([input.identifier]))[0]
       : undefined;
 
-  const bindingId = connector?.metadata?.composio?.connectedAccountId;
+  const binding = getComposioBindingMetadata(connector?.metadata?.composio);
   if (
     !connector ||
     (input.identifier !== undefined && connector.identifier !== input.identifier) ||
-    typeof bindingId !== 'string' ||
-    bindingId.length === 0
+    !binding
   ) {
     // Deliberately use one response for absent, foreign and malformed rows so
     // callers cannot probe another user's connector/binding relationship.
     throw new TRPCError({ code: 'NOT_FOUND', message: 'Composio connection not found' });
   }
 
-  return { bindingId, connector };
+  return { binding, connector };
 };
 
 export const composioRouter = router({
@@ -385,9 +456,13 @@ export const composioRouter = router({
     )
     .input(composioCreateConnectionInputSchema)
     .mutation(async ({ input, ctx }) => {
-      const { app } = await assertCreateBindingLifecycle(input, ctx);
+      const { app, state } = await assertCreateBindingLifecycle(input, ctx);
       const { appSlug, identifier, label } = app;
       const { userId } = ctx;
+
+      if (state.binding) {
+        await resolveRemoteOwnedComposioAccount(ctx, state.binding);
+      }
 
       const callbackUrl = `${process.env.APP_URL || process.env.NEXTAUTH_URL || ''}/api/composio/oauth/callback`;
 
@@ -509,13 +584,15 @@ export const composioRouter = router({
         }),
     )
     .mutation(async ({ input, ctx }) => {
-      const { bindingId, connector } = await resolveOwnedComposioConnector(
-        ctx.connectorModel,
-        input,
-      );
+      const { binding, connector } = await resolveOwnedComposioConnector(ctx.connectorModel, input);
+      const app = getComposioAppByIdentifier(connector.identifier);
+      if (!app || binding.appSlug.toLowerCase() !== app.appSlug.toLowerCase()) {
+        throw new TRPCError({ code: 'CONFLICT', message: 'Composio binding toolkit mismatch' });
+      }
+      await resolveRemoteOwnedComposioAccount(ctx, binding);
 
       try {
-        await (ctx.composioClient.connectedAccounts as any).delete(bindingId);
+        await (ctx.composioClient.connectedAccounts as any).delete(binding.connectedAccountId);
       } catch (error) {
         console.warn('[Composio] Failed to delete remote connection:', error);
       }
@@ -532,21 +609,16 @@ export const composioRouter = router({
   }),
 
   getConnection: composioProcedure
-    .input(
-      z.object({
-        connectedAccountId: z.string(),
-      }),
-    )
+    .input(composioGetConnectionInputSchema)
     .query(async ({ input, ctx }) => {
+      const { app, binding } = await resolveOwnedCatalogBinding(ctx, input.identifier);
       try {
-        const account = await (ctx.composioClient.connectedAccounts as any).get(
-          input.connectedAccountId,
-        );
+        const account = await resolveRemoteOwnedComposioAccount(ctx, binding);
         return {
-          appSlug: account?.toolkit?.slug || '',
-          connectedAccountId: input.connectedAccountId,
+          appSlug: app.appSlug,
+          connectedAccountId: binding.connectedAccountId,
           error: undefined as 'AUTH_ERROR' | undefined,
-          status: (account?.status || 'PENDING') as string,
+          status: account.status,
         };
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
@@ -554,8 +626,8 @@ export const composioRouter = router({
 
         if (isAuthError) {
           return {
-            appSlug: '',
-            connectedAccountId: input.connectedAccountId,
+            appSlug: app.appSlug,
+            connectedAccountId: binding.connectedAccountId,
             error: 'AUTH_ERROR' as const,
             status: 'FAILED',
           };
@@ -582,15 +654,8 @@ export const composioRouter = router({
     .input(composioUpdatePluginInputSchema)
     .mutation(async ({ input, ctx }) => {
       const { app, binding, state } = await assertUpdateBindingLifecycle(input, ctx);
-      const remoteAccount = composioActiveAccountSchema.safeParse(
-        await (ctx.composioClient.connectedAccounts as any).get(binding.connectedAccountId),
-      );
-      if (
-        !remoteAccount.success ||
-        remoteAccount.data.id !== binding.connectedAccountId ||
-        remoteAccount.data.authConfig.id !== binding.authConfigId ||
-        remoteAccount.data.toolkit.slug.toLowerCase() !== app.appSlug.toLowerCase()
-      ) {
+      const remoteAccount = await resolveRemoteOwnedComposioAccount(ctx, binding);
+      if (remoteAccount.status !== 'ACTIVE') {
         throw new TRPCError({
           code: 'CONFLICT',
           message: 'Composio did not confirm the owned binding as ACTIVE',
@@ -640,7 +705,7 @@ export const composioRouter = router({
       }
 
       // Materialize only server-confirmed binding state and Composio's trusted
-      // tool response. The compatibility input snapshot is never persisted.
+      // tool response; the client contract carries no tool definitions.
       await upsertComposioConnector(ctx.connectorModel, ctx.connectorToolModel, {
         composio: customParams.composio,
         identifier: app.identifier,
