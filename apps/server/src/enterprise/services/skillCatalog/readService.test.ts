@@ -1,9 +1,12 @@
 // @vitest-environment node
 import { sql } from 'drizzle-orm';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
-import { platformSkillVersionChecksum } from '@/database/models/platform';
+import {
+  PlatformSkillCatalogModel,
+  platformSkillVersionChecksum,
+} from '@/database/models/platform';
 import { PlatformSkillCatalogRepository } from '@/database/repositories/platformSkillCatalog';
 import {
   platformResourceRevisions,
@@ -13,7 +16,12 @@ import {
 import type { LobeChatDatabase } from '@/database/type';
 
 import type { SkillManifest } from '../../contracts/skillCatalog';
-import { type BuiltinSkillDefinition, SkillCatalogReadService } from './readService';
+import {
+  type BuiltinSkillDefinition,
+  invalidatePublishedSkillCatalogReadCache,
+  resetPublishedSkillCatalogReadCacheForTest,
+  SkillCatalogReadService,
+} from './readService';
 
 const db: LobeChatDatabase = await getTestDB();
 
@@ -32,6 +40,7 @@ const manifest = {
 } satisfies SkillManifest;
 
 const cleanup = async () => {
+  resetPublishedSkillCatalogReadCacheForTest();
   await db.execute(
     sql`TRUNCATE TABLE ${platformResourceRevisions}, ${platformSkillVersions}, ${platformSkills} CASCADE`,
   );
@@ -204,6 +213,7 @@ describe('SkillCatalogReadService', () => {
       skillKey: 'builtin.search',
       version: '3.0.0',
     });
+    invalidatePublishedSkillCatalogReadCache();
     service = new SkillCatalogReadService(db, { builtinSkills: [builtin] });
     const afterOverride = await service.getPublishedCatalog();
     expect(afterOverride.skills).toEqual([
@@ -285,5 +295,53 @@ describe('SkillCatalogReadService', () => {
     await expect(
       new SkillCatalogReadService(db, { model: oversizedModel }).getPublishedCatalog(),
     ).rejects.toThrow('item limit');
+  });
+
+  it('reuses the revision projection until explicit publication invalidation', async () => {
+    await publish({ skillKey: 'cached.skill', version: '1.0.0' });
+    const model = new PlatformSkillCatalogModel(db);
+    const listPublished = vi.spyOn(model, 'listPublished');
+
+    const first = new SkillCatalogReadService(db, { model });
+    const second = new SkillCatalogReadService(db, { model });
+    const firstCatalog = await first.getPublishedCatalog();
+    const secondCatalog = await second.getPublishedCatalog();
+    expect(secondCatalog).toEqual(firstCatalog);
+    expect(listPublished).toHaveBeenCalledTimes(1);
+
+    invalidatePublishedSkillCatalogReadCache();
+    await new SkillCatalogReadService(db, { model }).getPublishedCatalog();
+    expect(listPublished).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects a final catalog over 10,000 after builtin merging', async () => {
+    await publish({ skillKey: 'seed.skill', version: '1.0.0' });
+    const page = await new PlatformSkillCatalogModel(db).listPublished({ limit: 1 });
+    const seed = page.items[0]!;
+    const model = {
+      listPublished: vi.fn(async () => ({
+        items: Array.from({ length: 10_000 }, (_, index) => ({
+          ...seed,
+          skillKey: `uploaded-${String(index).padStart(5, '0')}`,
+        })),
+        nextCursor: null,
+      })),
+      resolvePublishedVersion: vi.fn(async () => undefined),
+    };
+    const builtin: BuiltinSkillDefinition = {
+      checksum: 'b'.repeat(64),
+      content: '# builtin',
+      description: 'Builtin',
+      displayName: 'Builtin',
+      distribution: 'default',
+      manifest,
+      skillKey: 'builtin.extra',
+      source: 'builtin',
+      version: '1.0.0',
+    };
+
+    await expect(
+      new SkillCatalogReadService(db, { builtinSkills: [builtin], model }).getPublishedCatalog(),
+    ).rejects.toThrow('after builtin merge');
   });
 });
