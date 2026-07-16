@@ -56,7 +56,7 @@ describe('DataTable server-driven list', () => {
     expect(screen.queryByText('primitives.dataTable.empty')).toBeNull();
   });
 
-  it('propagates pagination change for server lists', () => {
+  it('page change calls onPaginationChange exactly once with correct values', () => {
     const onPaginationChange = vi.fn();
     const onChange = vi.fn();
 
@@ -73,11 +73,56 @@ describe('DataTable server-driven list', () => {
       />,
     );
 
-    const page2 = screen.getByTitle('2');
-    fireEvent.click(page2);
+    fireEvent.click(screen.getByTitle('2'));
 
+    expect(onPaginationChange).toHaveBeenCalledTimes(1);
     expect(onPaginationChange).toHaveBeenCalledWith(2, 20);
-    expect(onChange).toHaveBeenCalled();
+    expect(onChange).toHaveBeenCalledTimes(1);
+  });
+
+  it('page-size change calls onPaginationChange exactly once (resets to page 1)', () => {
+    const onPaginationChange = vi.fn();
+    const onChange = vi.fn();
+
+    const { container } = render(
+      <DataTable
+        columns={columns}
+        dataSource={rows}
+        rowKey="id"
+        pagination={{
+          current: 3,
+          pageSize: 20,
+          pageSizeOptions: ['20', '50', '100'],
+          showSizeChanger: true,
+          total: 10_000,
+        }}
+        onChange={onChange}
+        onPaginationChange={onPaginationChange}
+      />,
+    );
+
+    // Ant Design 5 size changer (portal options after open)
+    const sizeChanger =
+      container.querySelector('.ant-pagination-options-size-changer .ant-select-content') ||
+      container.querySelector('.ant-pagination-options-size-changer');
+    expect(sizeChanger).toBeTruthy();
+    fireEvent.mouseDown(sizeChanger!);
+
+    const option50 = [...document.querySelectorAll('.ant-select-item')].find((el) =>
+      el.textContent?.includes('50'),
+    );
+    expect(option50).toBeTruthy();
+    fireEvent.click(option50!);
+
+    // Single callback path — not double-fired via pagination.onChange + table.onChange
+    expect(onPaginationChange).toHaveBeenCalledTimes(1);
+    // Ant Design resets to page 1 when pageSize changes
+    expect(onPaginationChange).toHaveBeenCalledWith(1, 50);
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange.mock.calls[0]![0].pagination).toMatchObject({
+      current: 1,
+      pageSize: 50,
+    });
   });
 
   it('supports row selection config without crashing', () => {
