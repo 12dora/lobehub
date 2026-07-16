@@ -7,6 +7,8 @@ import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 import {
   adminAiModelDependentsInputSchema,
   adminAiModelDependentsOutputSchema,
+  adminAiModelListInputSchema,
+  adminAiModelListOutputSchema,
   adminAiProviderGetInputSchema,
   adminAiProviderGetOutputSchema,
   adminAiProviderListInputSchema,
@@ -26,7 +28,7 @@ export const adminAiProvidersRouter = router({
     .query(async ({ ctx, input }) => {
       const provider = await new PlatformAiCatalogModel(ctx.serverDB).getProvider(input.id);
       if (!provider) {
-        throwEnterpriseError({
+        return throwEnterpriseError({
           code: PLATFORM_ERROR_CODES.PLATFORM_NOT_FOUND,
           httpCode: 'NOT_FOUND',
         });
@@ -52,4 +54,25 @@ export const adminAiModelsRouter = router({
     .input(adminAiModelDependentsInputSchema)
     .output(adminAiModelDependentsOutputSchema)
     .query(() => ({ items: [] })),
+
+  list: adminBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AI_MODEL_READ))
+    .input(adminAiModelListInputSchema)
+    .output(adminAiModelListOutputSchema)
+    .query(async ({ ctx, input }) => {
+      try {
+        return await new PlatformAiCatalogModel(ctx.serverDB).listModels(input);
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          error.message === PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT
+        ) {
+          throwEnterpriseError({
+            code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
+            httpCode: 'BAD_REQUEST',
+          });
+        }
+        throw error;
+      }
+    }),
 });

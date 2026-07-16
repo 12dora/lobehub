@@ -1,3 +1,5 @@
+import { isRecord } from '@lobechat/utils/object';
+
 import { PlatformAiCatalogRepository } from '../../repositories/platformAiCatalog';
 import type {
   PlatformAiModelAbilities,
@@ -123,7 +125,10 @@ export class PlatformAiCatalogModel {
 
   listProviders = async (params: {
     cursor?: string;
+    enabled?: boolean;
     limit?: number;
+    query?: string;
+    source?: string;
     status?: PlatformResourceStatus;
   }) => {
     const page = await this.repository.listProviders(params);
@@ -151,6 +156,57 @@ export class PlatformAiCatalogModel {
       })),
       nextCursor: page.nextCursor,
     };
+  };
+
+  listModels = async (params: {
+    cursor?: string;
+    enabled?: boolean;
+    limit?: number;
+    provider?: string;
+    query?: string;
+    status?: PlatformResourceStatus;
+    type?: string;
+  }) => {
+    const decodedCursor = params.cursor ? this.decodeModelCursor(params.cursor) : undefined;
+    const page = await this.repository.listAllModels({
+      cursor: decodedCursor,
+      enabled: params.enabled,
+      limit: params.limit,
+      providerKey: params.provider,
+      query: params.query,
+      status: params.status,
+      type: params.type,
+    });
+    return {
+      items: page.items.map(({ model, providerKey }) => ({ ...modelView(model), providerKey })),
+      nextCursor: page.nextCursor
+        ? Buffer.from(JSON.stringify(page.nextCursor)).toString('base64url')
+        : null,
+    };
+  };
+
+  private decodeModelCursor = (cursor: string) => {
+    try {
+      const value: unknown = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
+      if (
+        !isRecord(value) ||
+        typeof value.id !== 'string' ||
+        typeof value.modelKey !== 'string' ||
+        typeof value.providerKey !== 'string' ||
+        typeof value.sort !== 'number' ||
+        !Number.isInteger(value.sort)
+      ) {
+        throw new Error('invalid cursor');
+      }
+      return {
+        id: value.id,
+        modelKey: value.modelKey,
+        providerKey: value.providerKey,
+        sort: value.sort,
+      };
+    } catch {
+      throw new Error('PLATFORM_INVALID_INPUT');
+    }
   };
 
   prepareRevisionPayload = async (

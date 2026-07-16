@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 
+import { isRecord } from '@lobechat/utils/object';
+
 import { PlatformAiCatalogRepository } from '@/database/repositories/platformAiCatalog';
 import type { LobeChatDatabase } from '@/database/type';
 
@@ -34,9 +36,6 @@ interface RevisionProviderPayload {
   sort?: number;
   source?: string;
 }
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const toPublishedProvider = (
   payload: Record<string, unknown>,
@@ -103,3 +102,8 @@ export class AiCatalogReadService {
     return publishedAiCatalogSchema.parse({ providers, revision });
   };
 }
+
+export const getEmptyPublishedAiCatalog = (): PublishedAiCatalog => ({
+  providers: [],
+  revision: EMPTY_CATALOG_REVISION,
+});

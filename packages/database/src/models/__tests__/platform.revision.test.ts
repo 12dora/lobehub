@@ -47,6 +47,29 @@ afterEach(async () => {
 
 describe('PlatformRevisionModel', () => {
   describe('publishDraft', () => {
+    it('preserves explicitly benign model token limits while still redacting secrets', async () => {
+      const benign = new Set(['contextwindowtokens', 'maxtokens']);
+      const result = await revisionModel.publishDraft({
+        expectedRevision: 0,
+        payload: {
+          apiKey: 'fake-secret',
+          contextWindowTokens: 128_000,
+          parameters: { maxTokens: 4096 },
+        },
+        pointer: createBrandingPointerAdapter(brandingId),
+        redactionOptions: {
+          isBenignKey: (key) => benign.has(key.replaceAll(/[^a-z0-9]/gi, '').toLowerCase()),
+        },
+        resourceId: brandingId,
+        resourceType: 'branding',
+      });
+      expect(result.revision.payload).toEqual({
+        apiKey: '[REDACTED]',
+        contextWindowTokens: 128_000,
+        parameters: { maxTokens: 4096 },
+      });
+    });
+
     it('atomically writes revision, updates pointer, and appends audit', async () => {
       const result = await revisionModel.publishDraft({
         actorUserId: 'admin-1',

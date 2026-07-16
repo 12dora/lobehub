@@ -106,7 +106,10 @@ export const publishedAiCatalogSchema = z
 export const adminAiProviderListInputSchema = z
   .object({
     cursor: providerKeySchema.optional(),
+    enabled: z.boolean().optional(),
     limit: z.number().int().min(1).max(100).default(50),
+    query: z.string().trim().min(1).max(200).optional(),
+    source: z.string().trim().min(1).max(32).optional(),
     status: z.enum(['draft', 'published', 'archived']).optional(),
   })
   .strict();
@@ -261,6 +264,29 @@ export const adminAiModelReorderInputSchema = z
 
 export const adminAiModelDependentsInputSchema = z
   .object({ id: z.string().min(1), providerId: z.string().min(1) })
+  .strict();
+
+export const adminAiModelListInputSchema = z
+  .object({
+    cursor: z.string().min(1).max(1000).optional(),
+    enabled: z.boolean().optional(),
+    limit: z.number().int().min(1).max(100).default(50),
+    provider: providerKeySchema.optional(),
+    query: z.string().trim().min(1).max(200).optional(),
+    status: z.enum(['draft', 'published', 'archived']).optional(),
+    type: z.string().trim().min(1).max(20).optional(),
+  })
+  .strict();
+
+export const adminAiModelListItemSchema = aiModelDraftSchema
+  .extend({ providerKey: providerKeySchema })
+  .strict();
+
+export const adminAiModelListOutputSchema = z
+  .object({
+    items: z.array(adminAiModelListItemSchema),
+    nextCursor: z.string().min(1).max(1000).nullable(),
+  })
   .strict();
 
 export const adminAiModelDependentsOutputSchema = z

@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, inArray, max } from 'drizzle-orm';
+import { and, asc, eq, gt, ilike, inArray, max, or } from 'drizzle-orm';
 
 import {
   type NewPlatformAiModel,
@@ -16,6 +16,18 @@ import type { LobeChatDatabase, Transaction } from '../../type';
 export interface PlatformAiProviderPage {
   items: PlatformAiProviderItem[];
   nextCursor: string | null;
+}
+
+export interface PlatformAiModelCursor {
+  id: string;
+  modelKey: string;
+  providerKey: string;
+  sort: number;
+}
+
+export interface PlatformAiModelPage {
+  items: { model: PlatformAiModelItem; providerKey: string }[];
+  nextCursor: PlatformAiModelCursor | null;
 }
 
 /**
@@ -130,14 +142,112 @@ export class PlatformAiCatalogRepository {
       .orderBy(asc(platformAiModels.sort), asc(platformAiModels.modelKey));
   };
 
+  listAllModels = async (params: {
+    cursor?: PlatformAiModelCursor;
+    enabled?: boolean;
+    limit?: number;
+    providerKey?: string;
+    query?: string;
+    status?: PlatformResourceStatus;
+    type?: string;
+  }): Promise<PlatformAiModelPage> => {
+    const limit = Math.min(params.limit ?? 50, 100);
+    const conditions = [];
+    if (params.providerKey) {
+      conditions.push(eq(platformAiProviders.providerKey, params.providerKey));
+    }
+    if (params.type) conditions.push(eq(platformAiModels.type, params.type));
+    if (params.status) conditions.push(eq(platformAiModels.status, params.status));
+    if (params.enabled !== undefined) conditions.push(eq(platformAiModels.enabled, params.enabled));
+    if (params.query) {
+      const query = `%${params.query}%`;
+      conditions.push(
+        or(
+          ilike(platformAiModels.modelKey, query),
+          ilike(platformAiModels.displayName, query),
+          ilike(platformAiProviders.providerKey, query),
+          ilike(platformAiProviders.displayName, query),
+        )!,
+      );
+    }
+    if (params.cursor) {
+      const cursor = params.cursor;
+      conditions.push(
+        or(
+          gt(platformAiProviders.providerKey, cursor.providerKey),
+          and(
+            eq(platformAiProviders.providerKey, cursor.providerKey),
+            gt(platformAiModels.sort, cursor.sort),
+          ),
+          and(
+            eq(platformAiProviders.providerKey, cursor.providerKey),
+            eq(platformAiModels.sort, cursor.sort),
+            gt(platformAiModels.modelKey, cursor.modelKey),
+          ),
+          and(
+            eq(platformAiProviders.providerKey, cursor.providerKey),
+            eq(platformAiModels.sort, cursor.sort),
+            eq(platformAiModels.modelKey, cursor.modelKey),
+            gt(platformAiModels.id, cursor.id),
+          ),
+        )!,
+      );
+    }
+
+    const rows = await this.db
+      .select({ model: platformAiModels, providerKey: platformAiProviders.providerKey })
+      .from(platformAiModels)
+      .innerJoin(platformAiProviders, eq(platformAiModels.providerId, platformAiProviders.id))
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
+      .orderBy(
+        asc(platformAiProviders.providerKey),
+        asc(platformAiModels.sort),
+        asc(platformAiModels.modelKey),
+        asc(platformAiModels.id),
+      )
+      .limit(limit + 1);
+    const hasMore = rows.length > limit;
+    const items = hasMore ? rows.slice(0, limit) : rows;
+    const last = items.at(-1);
+    return {
+      items,
+      nextCursor:
+        hasMore && last
+          ? {
+              id: last.model.id,
+              modelKey: last.model.modelKey,
+              providerKey: last.providerKey,
+              sort: last.model.sort,
+            }
+          : null,
+    };
+  };
+
   listProviders = async (params: {
     cursor?: string;
+    enabled?: boolean;
     limit?: number;
+    query?: string;
+    source?: string;
     status?: PlatformResourceStatus;
   }): Promise<PlatformAiProviderPage> => {
     const limit = Math.min(params.limit ?? 50, 100);
     const conditions = [];
     if (params.cursor) conditions.push(gt(platformAiProviders.providerKey, params.cursor));
+    if (params.enabled !== undefined) {
+      conditions.push(eq(platformAiProviders.enabled, params.enabled));
+    }
+    if (params.query) {
+      const query = `%${params.query}%`;
+      conditions.push(
+        or(
+          ilike(platformAiProviders.providerKey, query),
+          ilike(platformAiProviders.displayName, query),
+          ilike(platformAiProviders.description, query),
+        )!,
+      );
+    }
+    if (params.source) conditions.push(eq(platformAiProviders.source, params.source));
     if (params.status) conditions.push(eq(platformAiProviders.status, params.status));
 
     const rows = await this.db

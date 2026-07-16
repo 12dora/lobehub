@@ -11,7 +11,7 @@ import type { LobeChatDatabase, Transaction } from '../../type';
 import { PlatformAuditLogModel } from './auditLog';
 import { checksumPayload } from './checksum';
 import { PlatformRevisionConflictError, PlatformRevisionImmutableError } from './errors';
-import { redactSensitive } from './redact';
+import { redactSensitive, type RedactSensitiveOptions } from './redact';
 
 export type { PlatformResourceRevisionItem, PlatformResourceType, PlatformRevisionStatus };
 
@@ -75,6 +75,7 @@ export interface PublishDraftParams {
   payload: Record<string, unknown>;
   pointer: ResourcePointerAdapter;
   reason?: string | null;
+  redactionOptions?: RedactSensitiveOptions;
   requestId?: string | null;
   resourceId: string;
   resourceType: PlatformResourceType;
@@ -201,7 +202,10 @@ export class PlatformRevisionModel {
       const prepared = await params.pointer.prepareLockedPublish?.(tx, {
         currentRevision: current,
       });
-      const redactedPayload = redactSensitive(prepared?.payload ?? params.payload);
+      const redactedPayload = redactSensitive(
+        prepared?.payload ?? params.payload,
+        params.redactionOptions,
+      );
       const checksum = checksumPayload(redactedPayload);
 
       const now = new Date();
