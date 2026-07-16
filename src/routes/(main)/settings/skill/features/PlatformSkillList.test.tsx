@@ -26,6 +26,14 @@ const mocks = vi.hoisted(() => ({
     isLoading: false,
     mutate: vi.fn(),
   },
+  toolState: {
+    platformSkillRuntimeEnforced: true,
+    platformSkillRuntimeStatus: 'ready' as 'error' | 'loading' | 'ready' | 'unmanaged',
+  },
+}));
+
+vi.mock('@/store/tool', () => ({
+  useToolStore: (selector: (state: typeof mocks.toolState) => unknown) => selector(mocks.toolState),
 }));
 
 vi.mock('@/enterprise/client/features/skills', () => ({
@@ -141,6 +149,8 @@ describe('PlatformSkillList', () => {
     mocks.catalog.error = undefined;
     mocks.catalog.isLoading = false;
     mocks.catalog.mutate.mockReset();
+    mocks.toolState.platformSkillRuntimeEnforced = true;
+    mocks.toolState.platformSkillRuntimeStatus = 'ready';
   });
 
   it('renders fetch errors before the empty state and retries', () => {
@@ -204,6 +214,20 @@ describe('PlatformSkillList', () => {
     });
     expect(screen.getByText('Skill 119')).toBeTruthy();
     expect(screen.queryByText('Skill 101')).toBeNull();
+  });
+
+  it('lets user pagination move away from the selected item without snapping back', async () => {
+    mocks.catalog.data = {
+      revision: 'revision-large',
+      skills: Array.from({ length: 120 }, (_, index) => publishedSkill(index + 1)),
+    };
+    renderList({ selectedIdentifier: 'skill.001' }, '/settings/skill?page=1');
+
+    fireEvent.click(screen.getByRole('button', { name: 'platformSkills.pagination.next' }));
+
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('page=2'));
+    expect(screen.getByText('Skill 051')).toBeTruthy();
+    expect(screen.queryByText('Skill 001')).toBeNull();
   });
 
   it('restores the page containing the URL-selected Skill', async () => {

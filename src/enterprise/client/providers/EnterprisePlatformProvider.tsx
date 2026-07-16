@@ -74,7 +74,7 @@ export default function EnterprisePlatformProvider({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
 
-  usePublishedSkillCatalog(capabilities.managedResources.skills, capabilities.configRevision);
+  usePublishedSkillCatalog(capabilities.enforcedManagedResources.skills);
 
   const refresh = useCallback(async () => {
     if (disableFetch) return;

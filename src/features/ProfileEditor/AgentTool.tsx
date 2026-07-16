@@ -16,6 +16,10 @@ import { PlusIcon } from 'lucide-react';
 import React, { memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import {
+  selectSkillRuntimeSources,
+  usePublishedSkillCatalog,
+} from '@/enterprise/client/features/skills';
 import ActionDropdown from '@/features/ChatInput/ActionBar/components/ActionDropdown';
 import ComposioServerItem from '@/features/ChatInput/ActionBar/Tools/ComposioServerItem';
 import ComposioSkillIcon, {
@@ -114,16 +118,45 @@ const AgentTool = memo<AgentToolProps>(
     const isLobehubSkillEnabled = useServerConfigStore(serverConfigSelectors.enableLobehubSkill);
 
     // Agent Skills-related state
-    const installedBuiltinSkills = useToolStore(
+    const rawInstalledBuiltinSkills = useToolStore(
       builtinToolSelectors.installedBuiltinSkills,
       isEqual,
     );
-    const marketAgentSkills = useToolStore(agentSkillsSelectors.getMarketAgentSkills, isEqual);
-    const userAgentSkills = useToolStore(agentSkillsSelectors.getUserAgentSkills, isEqual);
-    const platformSkillCatalog = useToolStore(
+    const rawMarketAgentSkills = useToolStore(agentSkillsSelectors.getMarketAgentSkills, isEqual);
+    const rawUserAgentSkills = useToolStore(agentSkillsSelectors.getUserAgentSkills, isEqual);
+    const rawPlatformSkillCatalog = useToolStore(
       agentSkillsSelectors.getPlatformSkillCatalog,
       isEqual,
     );
+    const platformSkillRuntimeEnforced = useToolStore((state) =>
+      Boolean(state.platformSkillRuntimeEnforced),
+    );
+    const platformSkillRuntimeStatus = useToolStore(
+      (state) => state.platformSkillRuntimeStatus ?? 'unmanaged',
+    );
+    const platformCatalogSWR = usePublishedSkillCatalog(platformSkillRuntimeEnforced);
+    const skillRuntimeSources = useMemo(
+      () =>
+        selectSkillRuntimeSources({
+          builtin: rawInstalledBuiltinSkills,
+          market: rawMarketAgentSkills,
+          platform: rawPlatformSkillCatalog,
+          status: platformSkillRuntimeStatus,
+          user: rawUserAgentSkills,
+        }),
+      [
+        platformSkillRuntimeStatus,
+        rawInstalledBuiltinSkills,
+        rawMarketAgentSkills,
+        rawPlatformSkillCatalog,
+        rawUserAgentSkills,
+      ],
+    );
+    const installedBuiltinSkills = skillRuntimeSources.builtin;
+    const marketAgentSkills = skillRuntimeSources.market;
+    const userAgentSkills = skillRuntimeSources.user;
+    const platformSkillCatalog = skillRuntimeSources.platform;
+    const useLegacySkills = platformSkillRuntimeStatus === 'unmanaged';
 
     const [updating, setUpdating] = useState(false);
     const [dropdownOpen, setDropdownOpen] = useState(false);
@@ -142,7 +175,7 @@ const AgentTool = memo<AgentToolProps>(
     ]);
     useFetchInstalledPlugins();
     useFetchUninstalledBuiltinTools(true);
-    useFetchAgentSkills(!platformSkillCatalog);
+    useFetchAgentSkills(useLegacySkills);
     useCheckPluginsIsInstalled(plugins);
 
     // Load user's Composio integrations via SWR (from database)
@@ -225,11 +258,11 @@ const AgentTool = memo<AgentToolProps>(
     // Get all skill identifiers (used to filter builtinList)
     const allSkillIdentifiers = useMemo(() => {
       const ids = new Set<string>();
-      for (const s of installedBuiltinSkills) ids.add(s.identifier);
-      for (const s of marketAgentSkills) ids.add(s.identifier);
-      for (const s of userAgentSkills) ids.add(s.identifier);
+      for (const s of rawInstalledBuiltinSkills) ids.add(s.identifier);
+      for (const s of rawMarketAgentSkills) ids.add(s.identifier);
+      for (const s of rawUserAgentSkills) ids.add(s.identifier);
       return ids;
-    }, [installedBuiltinSkills, marketAgentSkills, userAgentSkills]);
+    }, [rawInstalledBuiltinSkills, rawMarketAgentSkills, rawUserAgentSkills]);
 
     // Filter out Composio tools and skills from builtinList (they are displayed separately)
     // Optionally filter out tools with availableInWeb: false based on config (e.g., LocalSystem is desktop-only)
@@ -520,9 +553,41 @@ const AgentTool = memo<AgentToolProps>(
       [canEdit, config?.plugins, platformSkillCatalog, t, togglePlatformSkill],
     );
 
+    const platformSkillUnavailableItems = useMemo<ItemType[]>(() => {
+      if (!platformSkillRuntimeEnforced || platformSkillRuntimeStatus === 'ready') return [];
+      const loading = platformSkillRuntimeStatus === 'loading';
+      return [
+        {
+          disabled: loading,
+          key: 'platform-skill-runtime-unavailable',
+          label: (
+            <Flexbox horizontal align="center" gap={8} justify="space-between">
+              <span>
+                {t(
+                  loading ? 'platformSkills.runtime.loading' : 'platformSkills.runtime.unavailable',
+                )}
+              </span>
+              <Button
+                disabled={loading}
+                size="small"
+                type="text"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void platformCatalogSWR.mutate();
+                }}
+              >
+                {t('retry', { ns: 'common' })}
+              </Button>
+            </Flexbox>
+          ),
+        },
+      ];
+    }, [platformCatalogSWR, platformSkillRuntimeEnforced, platformSkillRuntimeStatus, t]);
+
     // Merge Builtin Agent Skills, builtin tools, LobeHub Skill Providers, and Composio servers
     const builtinItems = useMemo(
       () => [
+        ...platformSkillUnavailableItems,
         // 1. Builtin Agent Skills
         ...(platformSkillCatalog ? platformSkillItems : builtinAgentSkillItems),
         // 2. Original builtin tools
@@ -574,6 +639,7 @@ const AgentTool = memo<AgentToolProps>(
       ],
       [
         builtinAgentSkillItems,
+        platformSkillUnavailableItems,
         platformSkillCatalog,
         platformSkillItems,
         filteredBuiltinList,
@@ -776,19 +842,19 @@ const AgentTool = memo<AgentToolProps>(
       }
 
       // 5. Builtin skills
-      for (const skill of installedBuiltinSkills) all.add(skill.identifier);
+      for (const skill of rawInstalledBuiltinSkills) all.add(skill.identifier);
 
       // 6. Market agent skills
-      for (const skill of marketAgentSkills) all.add(skill.identifier);
+      for (const skill of rawMarketAgentSkills) all.add(skill.identifier);
 
       // 7. User agent skills
-      for (const skill of userAgentSkills) all.add(skill.identifier);
+      for (const skill of rawUserAgentSkills) all.add(skill.identifier);
 
       // 8. Custom connectors
       for (const connector of customConnectors) all.add(connector.identifier);
 
       // 9. Platform Published Catalog (stable skillKey identifiers)
-      for (const skill of platformSkillCatalog?.skills ?? []) all.add(skill.skillKey);
+      for (const skill of rawPlatformSkillCatalog?.skills ?? []) all.add(skill.skillKey);
 
       return all;
     }, [
@@ -796,11 +862,11 @@ const AgentTool = memo<AgentToolProps>(
       installedPluginList,
       isComposioEnabledInEnv,
       isLobehubSkillEnabled,
-      installedBuiltinSkills,
-      marketAgentSkills,
-      userAgentSkills,
+      rawInstalledBuiltinSkills,
+      rawMarketAgentSkills,
+      rawUserAgentSkills,
       customConnectors,
-      platformSkillCatalog?.skills,
+      rawPlatformSkillCatalog?.skills,
     ]);
 
     // Track whether initial cleanup has been performed
@@ -810,6 +876,12 @@ const AgentTool = memo<AgentToolProps>(
     // Uses a short debounce to allow async data (SWR) to complete loading
     useEffect(() => {
       if (cleanupDoneRef.current) return;
+      if (
+        platformSkillRuntimeEnforced &&
+        (platformSkillRuntimeStatus === 'loading' || platformSkillRuntimeStatus === 'error')
+      ) {
+        return;
+      }
       if (validIdentifiers.size === 0) return;
       const rawPlugins = config?.plugins ?? [];
       if (rawPlugins.length === 0) return;

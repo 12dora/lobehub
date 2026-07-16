@@ -13,13 +13,13 @@ export const PLATFORM_PUBLISHED_SKILL_CATALOG_KEY = 'platform.skills.getPublishe
  * Fetches the exact public catalog used by the server runtime. Callers must
  * keep this disabled outside managed Skill mode so feature-off adds no request.
  */
-export const usePublishedSkillCatalog = (enabled: boolean, configRevision = '0') => {
+export const usePublishedSkillCatalog = (enabled: boolean) => {
   const invalidationRevision = useToolStore((state) =>
     enabled ? state.platformSkillCatalogInvalidationRevision : 'disabled',
   );
 
   return useClientDataSWR(
-    enabled ? [PLATFORM_PUBLISHED_SKILL_CATALOG_KEY, configRevision, invalidationRevision] : null,
+    enabled ? [PLATFORM_PUBLISHED_SKILL_CATALOG_KEY, invalidationRevision] : null,
     async () => {
       const epoch = useToolStore.getState().beginPlatformSkillCatalogRequest();
       try {

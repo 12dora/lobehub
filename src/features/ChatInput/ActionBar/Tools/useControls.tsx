@@ -6,8 +6,17 @@ import {
 } from '@lobechat/const';
 import { type AgentPluginMode, getDisabledPluginIds } from '@lobechat/types';
 import type { ItemType } from '@lobehub/ui';
-import { Avatar, Icon, Popover, SearchBar, stopPropagation, Tag, Tooltip } from '@lobehub/ui';
-import { confirmModal } from '@lobehub/ui/base-ui';
+import {
+  Avatar,
+  Flexbox,
+  Icon,
+  Popover,
+  SearchBar,
+  stopPropagation,
+  Tag,
+  Tooltip,
+} from '@lobehub/ui';
+import { Button, confirmModal } from '@lobehub/ui/base-ui';
 import { McpIcon, SkillsIcon } from '@lobehub/ui/icons';
 import { Switch } from 'antd';
 import { createStaticStyles, cssVar, cx } from 'antd-style';
@@ -31,6 +40,10 @@ import type { ReactNode } from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import {
+  selectSkillRuntimeSources,
+  usePublishedSkillCatalog,
+} from '@/enterprise/client/features/skills';
 import { CustomConnectorModal } from '@/features/Connectors';
 import DevModal from '@/features/PluginDevModal';
 import { createSkillStoreModal } from '@/features/SkillStore';
@@ -807,10 +820,45 @@ export const useControls = ({ closeDropdown }: { closeDropdown?: () => void } = 
   const isLobehubSkillEnabled = useServerConfigStore(serverConfigSelectors.enableLobehubSkill);
 
   // Agent Skills related state
-  const installedBuiltinSkills = useToolStore(builtinToolSelectors.installedBuiltinSkills, isEqual);
-  const marketAgentSkills = useToolStore(agentSkillsSelectors.getMarketAgentSkills, isEqual);
-  const userAgentSkills = useToolStore(agentSkillsSelectors.getUserAgentSkills, isEqual);
-  const platformSkillCatalog = useToolStore(agentSkillsSelectors.getPlatformSkillCatalog, isEqual);
+  const rawInstalledBuiltinSkills = useToolStore(
+    builtinToolSelectors.installedBuiltinSkills,
+    isEqual,
+  );
+  const rawMarketAgentSkills = useToolStore(agentSkillsSelectors.getMarketAgentSkills, isEqual);
+  const rawUserAgentSkills = useToolStore(agentSkillsSelectors.getUserAgentSkills, isEqual);
+  const rawPlatformSkillCatalog = useToolStore(
+    agentSkillsSelectors.getPlatformSkillCatalog,
+    isEqual,
+  );
+  const platformSkillRuntimeEnforced = useToolStore((state) =>
+    Boolean(state.platformSkillRuntimeEnforced),
+  );
+  const platformSkillRuntimeStatus = useToolStore(
+    (state) => state.platformSkillRuntimeStatus ?? 'unmanaged',
+  );
+  const platformCatalogSWR = usePublishedSkillCatalog(platformSkillRuntimeEnforced);
+  const skillRuntimeSources = useMemo(
+    () =>
+      selectSkillRuntimeSources({
+        builtin: rawInstalledBuiltinSkills,
+        market: rawMarketAgentSkills,
+        platform: rawPlatformSkillCatalog,
+        status: platformSkillRuntimeStatus,
+        user: rawUserAgentSkills,
+      }),
+    [
+      platformSkillRuntimeStatus,
+      rawInstalledBuiltinSkills,
+      rawMarketAgentSkills,
+      rawPlatformSkillCatalog,
+      rawUserAgentSkills,
+    ],
+  );
+  const installedBuiltinSkills = skillRuntimeSources.builtin;
+  const marketAgentSkills = skillRuntimeSources.market;
+  const userAgentSkills = skillRuntimeSources.user;
+  const platformSkillCatalog = skillRuntimeSources.platform;
+  const useLegacySkills = platformSkillRuntimeStatus === 'unmanaged';
 
   // Custom connectors (user-added OAuth MCP servers) from the connector store
   const customConnectors = useToolStore(connectorSelectors.customConnectors, isEqual);
@@ -834,7 +882,7 @@ export const useControls = ({ closeDropdown }: { closeDropdown?: () => void } = 
 
   useFetchInstalledPlugins();
   useFetchUninstalledBuiltinTools(true);
-  useFetchAgentSkills(!platformSkillCatalog);
+  useFetchAgentSkills(useLegacySkills);
   useCheckPluginsIsInstalled(plugins);
 
   // Load user's Composio integrations via SWR (from database)
@@ -860,12 +908,17 @@ export const useControls = ({ closeDropdown }: { closeDropdown?: () => void } = 
   // Get all skill identifier sets (used for filtering builtinList)
   const allSkillIdentifiers = useMemo(() => {
     const ids = new Set<string>();
-    for (const s of installedBuiltinSkills) ids.add(s.identifier);
-    for (const s of marketAgentSkills) ids.add(s.identifier);
-    for (const s of userAgentSkills) ids.add(s.identifier);
-    for (const s of platformSkillCatalog?.skills ?? []) ids.add(s.skillKey);
+    for (const s of rawInstalledBuiltinSkills) ids.add(s.identifier);
+    for (const s of rawMarketAgentSkills) ids.add(s.identifier);
+    for (const s of rawUserAgentSkills) ids.add(s.identifier);
+    for (const s of rawPlatformSkillCatalog?.skills ?? []) ids.add(s.skillKey);
     return ids;
-  }, [installedBuiltinSkills, marketAgentSkills, platformSkillCatalog?.skills, userAgentSkills]);
+  }, [
+    rawInstalledBuiltinSkills,
+    rawMarketAgentSkills,
+    rawPlatformSkillCatalog?.skills,
+    rawUserAgentSkills,
+  ]);
 
   // Filter out Composio tools and skills from builtinList (they will be displayed separately)
   const filteredBuiltinList = useMemo(() => {
@@ -1369,6 +1422,35 @@ export const useControls = ({ closeDropdown }: { closeDropdown?: () => void } = 
     [createManagedSkillItem, platformSkillCatalog?.skills, t],
   );
 
+  const platformSkillUnavailableItems = useMemo<SkillMenuItem[]>(() => {
+    if (!platformSkillRuntimeEnforced || platformSkillRuntimeStatus === 'ready') return [];
+    const loading = platformSkillRuntimeStatus === 'loading';
+    return [
+      {
+        closeOnClick: false,
+        key: 'platform-skill-runtime-unavailable',
+        label: (
+          <Flexbox horizontal align="center" gap={8} justify="space-between">
+            <span>
+              {t(loading ? 'platformSkills.runtime.loading' : 'platformSkills.runtime.unavailable')}
+            </span>
+            <Button
+              disabled={loading}
+              size="small"
+              onClick={(event) => {
+                event.stopPropagation();
+                void platformCatalogSWR.mutate();
+              }}
+            >
+              {t('retry', { ns: 'common' })}
+            </Button>
+          </Flexbox>
+        ),
+        searchText: t('platformSkills.runtime.unavailable'),
+      },
+    ];
+  }, [platformCatalogSWR, platformSkillRuntimeEnforced, platformSkillRuntimeStatus, t]);
+
   // Custom connector list items (user-added OAuth MCP servers).
   // Toggling adds the connector identifier to agents.plugins[] — the same field
   // the runtime resolves connectors from, so they become callable immediately.
@@ -1514,6 +1596,7 @@ export const useControls = ({ closeDropdown }: { closeDropdown?: () => void } = 
   // Build LobeHub group children (including Builtin Agent Skills, builtin tools, and LobeHub Skill/Composio)
   const lobehubGroupChildren: ItemType[] = [
     // 1. Builtin Agent Skills
+    ...platformSkillUnavailableItems,
     ...(platformSkillCatalog ? platformSkillItems : builtinAgentSkillItems),
     // 2. Builtin tools
     ...builtinItems,
