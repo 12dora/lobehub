@@ -1,4 +1,5 @@
-import { type ToolManifest } from '@lobechat/types';
+import { getComposioAppByIdentifier } from '@lobechat/const';
+import type { ToolManifest } from '@lobechat/types';
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 
@@ -19,6 +20,72 @@ import { authedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 import { withManagedResourceGuard } from '@/server/enterprise/guards/managedResource';
 
+const composioCreateConnectionInputSchema = z
+  .object({
+    appSlug: z.string().min(1).max(128),
+    identifier: z.string().min(1).max(128),
+    label: z.string().min(1).max(256),
+  })
+  .strict();
+
+const composioUpdatePluginInputSchema = z
+  .object({
+    appSlug: z.string().min(1).max(128),
+    authConfigId: z.string().min(1).max(256),
+    connectedAccountId: z.string().min(1).max(256),
+    identifier: z.string().min(1).max(128),
+    label: z.string().min(1).max(256),
+    redirectUrl: z.string().optional(),
+    status: z.literal('ACTIVE'),
+    // Compatibility-only snapshot. The server never uses these definitions;
+    // it fetches the authoritative tool catalog from Composio.
+    tools: z
+      .array(
+        z
+          .object({
+            description: z.string().optional(),
+            inputSchema: z.unknown().optional(),
+            name: z.string(),
+          })
+          .strict(),
+      )
+      .max(2000),
+  })
+  .strict();
+
+const composioBindingMetadataSchema = z
+  .object({
+    appSlug: z.string().min(1),
+    authConfigId: z.string().min(1),
+    connectedAccountId: z.string().min(1),
+    redirectUrl: z.string().optional(),
+    status: z.string().min(1),
+  })
+  .passthrough();
+
+const composioConnectionRequestSchema = z
+  .object({ id: z.string().min(1), redirectUrl: z.string().min(1) })
+  .passthrough();
+
+const composioActiveAccountSchema = z
+  .object({
+    authConfig: z.object({ id: z.string().min(1) }).passthrough(),
+    id: z.string().min(1),
+    status: z.literal('ACTIVE'),
+    toolkit: z.object({ slug: z.string().min(1) }).passthrough(),
+  })
+  .passthrough();
+
+const composioServerToolSchema = z
+  .object({
+    description: z.string().optional(),
+    inputParameters: z.record(z.unknown()).optional(),
+    inputSchema: z.record(z.unknown()).optional(),
+    name: z.string().optional(),
+    slug: z.string().optional(),
+  })
+  .passthrough();
+
 const composioProcedure = authedProcedure.use(serverDatabase).use(async (opts) => {
   const client = getComposioClient();
   const pluginModel = new PluginModel(opts.ctx.serverDB, opts.ctx.userId);
@@ -37,6 +104,158 @@ type ComposioToolInput = {
   description?: string;
   inputSchema?: Record<string, unknown>;
   name: string;
+};
+
+type ComposioCreateConnectionInput = z.infer<typeof composioCreateConnectionInputSchema>;
+type ComposioUpdatePluginInput = z.infer<typeof composioUpdatePluginInputSchema>;
+
+interface ComposioBindingModels {
+  connectorModel: ConnectorModel;
+  pluginModel: PluginModel;
+}
+
+const getCanonicalComposioApp = (input: { appSlug: string; identifier: string; label: string }) => {
+  const app = getComposioAppByIdentifier(input.identifier);
+  if (!app || app.appSlug !== input.appSlug || app.label !== input.label) {
+    throw new TRPCError({ code: 'BAD_REQUEST', message: 'Invalid Composio catalog selection' });
+  }
+
+  return app;
+};
+
+const getComposioBindingMetadata = (value: unknown): ComposioConnectorMetadata | undefined => {
+  const parsed = composioBindingMetadataSchema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
+};
+
+const resolveOwnedComposioBindingState = async (
+  models: ComposioBindingModels,
+  identifier: string,
+  options: { requireBinding: boolean },
+) => {
+  const [connectorRows, plugin] = await Promise.all([
+    models.connectorModel.queryByIdentifiers([identifier]),
+    models.pluginModel.findById(identifier),
+  ]);
+  const connector = connectorRows[0];
+  const connectorBinding = getComposioBindingMetadata(connector?.metadata?.composio);
+  const pluginBinding = getComposioBindingMetadata(plugin?.customParams?.composio);
+
+  if (
+    (connector &&
+      (connector.sourceType !== ConnectorSourceType.marketplace || !connectorBinding)) ||
+    (plugin && (plugin.source !== 'composio' || !pluginBinding))
+  ) {
+    throw new TRPCError({
+      code: 'CONFLICT',
+      message: 'Identifier is already used by a non-Composio definition',
+    });
+  }
+
+  if (
+    connectorBinding &&
+    pluginBinding &&
+    (connectorBinding.appSlug !== pluginBinding.appSlug ||
+      connectorBinding.authConfigId !== pluginBinding.authConfigId ||
+      connectorBinding.connectedAccountId !== pluginBinding.connectedAccountId)
+  ) {
+    throw new TRPCError({ code: 'CONFLICT', message: 'Composio binding projections disagree' });
+  }
+
+  const binding = connectorBinding ?? pluginBinding;
+  if (options.requireBinding && !binding) {
+    throw new TRPCError({ code: 'NOT_FOUND', message: 'Composio connection not found' });
+  }
+
+  return { binding, connector, plugin };
+};
+
+const assertCreateBindingLifecycle = async (
+  input: ComposioCreateConnectionInput,
+  models: ComposioBindingModels,
+) => {
+  const app = getCanonicalComposioApp(input);
+  const state = await resolveOwnedComposioBindingState(models, input.identifier, {
+    requireBinding: false,
+  });
+  if (state.binding && state.binding.appSlug !== app.appSlug) {
+    throw new TRPCError({ code: 'CONFLICT', message: 'Composio binding toolkit mismatch' });
+  }
+
+  return { app, state };
+};
+
+const assertUpdateBindingLifecycle = async (
+  input: ComposioUpdatePluginInput,
+  models: ComposioBindingModels,
+) => {
+  const app = getCanonicalComposioApp(input);
+  const state = await resolveOwnedComposioBindingState(models, input.identifier, {
+    requireBinding: true,
+  });
+  const { binding } = state;
+  if (!binding) {
+    throw new TRPCError({ code: 'NOT_FOUND', message: 'Composio connection not found' });
+  }
+  if (
+    binding.appSlug !== app.appSlug ||
+    binding.authConfigId !== input.authConfigId ||
+    binding.connectedAccountId !== input.connectedAccountId
+  ) {
+    throw new TRPCError({ code: 'FORBIDDEN', message: 'Composio binding mismatch' });
+  }
+
+  return { app, binding, state };
+};
+
+const getComposioGuardModels = (ctx: unknown): ComposioBindingModels =>
+  ctx as ComposioBindingModels;
+
+const isManagedComposioCreateBindingInput = async (input: unknown, ctx: unknown) => {
+  const parsed = composioCreateConnectionInputSchema.safeParse(input);
+  if (!parsed.success) return false;
+
+  try {
+    await assertCreateBindingLifecycle(parsed.data, getComposioGuardModels(ctx));
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const isManagedComposioUpdateBindingInput = async (input: unknown, ctx: unknown) => {
+  const parsed = composioUpdatePluginInputSchema.safeParse(input);
+  if (!parsed.success) return false;
+
+  try {
+    await assertUpdateBindingLifecycle(parsed.data, getComposioGuardModels(ctx));
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const mapTrustedComposioTools = (response: unknown): ComposioToolInput[] => {
+  const wrapped = z
+    .object({ items: z.array(z.unknown()) })
+    .passthrough()
+    .safeParse(response);
+  const items = wrapped.success ? wrapped.data.items : Array.isArray(response) ? response : [];
+  const tools = new Map<string, ComposioToolInput>();
+
+  for (const item of items) {
+    const parsed = composioServerToolSchema.safeParse(item);
+    if (!parsed.success) continue;
+    const name = parsed.data.slug || parsed.data.name;
+    if (!name) continue;
+    tools.set(name, {
+      description: parsed.data.description,
+      inputSchema: parsed.data.inputParameters ?? parsed.data.inputSchema,
+      name,
+    });
+  }
+
+  return [...tools.values()];
 };
 
 /**
@@ -159,16 +378,15 @@ const resolveOwnedComposioConnector = async (
 
 export const composioRouter = router({
   createConnection: composioProcedure
-    .use(withManagedResourceGuard('composio.createConnection'))
-    .input(
-      z.object({
-        appSlug: z.string(),
-        identifier: z.string(),
-        label: z.string(),
+    .use(
+      withManagedResourceGuard('composio.createConnection', {
+        isExemptInput: isManagedComposioCreateBindingInput,
       }),
     )
+    .input(composioCreateConnectionInputSchema)
     .mutation(async ({ input, ctx }) => {
-      const { appSlug, identifier, label } = input;
+      const { app } = await assertCreateBindingLifecycle(input, ctx);
+      const { appSlug, identifier, label } = app;
       const { userId } = ctx;
 
       const callbackUrl = `${process.env.APP_URL || process.env.NEXTAUTH_URL || ''}/api/composio/oauth/callback`;
@@ -201,34 +419,31 @@ export const composioRouter = router({
 
       // Composio-managed OAuth auth configs no longer support `initiate`; use
       // `link` (POST /api/v3/connected_accounts/link) to get the redirect URL.
-      const connReq = await (ctx.composioClient.connectedAccounts as any).link(
-        userId,
-        authConfigId,
-        { callbackUrl },
+      const connReq = composioConnectionRequestSchema.parse(
+        await (ctx.composioClient.connectedAccounts as any).link(userId, authConfigId, {
+          callbackUrl,
+        }),
       );
 
-      let rawTools: any[] = [];
+      let tools: ComposioToolInput[] = [];
       try {
         const toolsResp = await (ctx.composioClient.tools as any).getRawComposioTools({
           toolkits: [appSlug],
         });
-        rawTools = toolsResp?.items || toolsResp || [];
-      } catch {
-        // tools may not be available before auth
+        tools = mapTrustedComposioTools(toolsResp);
+      } catch (error) {
+        // Tools may not be available before auth; ACTIVE sync fetches them again.
+        console.error('[composio:createConnection] pre-auth tool fetch failed', {
+          errorClass: error instanceof Error ? error.name : 'UnknownError',
+        });
       }
 
       const manifest: ToolManifest = {
-        api: Array.isArray(rawTools)
-          ? rawTools.map((tool: any) => ({
-              description: tool.description || '',
-              name: tool.slug || tool.name || '',
-              parameters: tool.inputParameters ||
-                tool.inputSchema || {
-                  properties: {},
-                  type: 'object',
-                },
-            }))
-          : [],
+        api: tools.map((tool) => ({
+          description: tool.description || '',
+          name: tool.name,
+          parameters: tool.inputSchema || { properties: {}, type: 'object' },
+        })),
         identifier,
         meta: {
           avatar: '🔌',
@@ -267,11 +482,7 @@ export const composioRouter = router({
         },
         identifier,
         label,
-        tools: manifest.api.map((a) => ({
-          description: a.description,
-          inputSchema: a.parameters as Record<string, unknown>,
-          name: a.name,
-        })),
+        tools,
       });
 
       return {
@@ -363,38 +574,34 @@ export const composioRouter = router({
     }),
 
   updateComposioPlugin: composioProcedure
-    .use(withManagedResourceGuard('composio.updateComposioPlugin'))
-    .input(
-      z.object({
-        appSlug: z.string(),
-        authConfigId: z.string(),
-        connectedAccountId: z.string(),
-        identifier: z.string(),
-        label: z.string(),
-        redirectUrl: z.string().optional(),
-        status: z.string(),
-        tools: z.array(
-          z.object({
-            description: z.string().optional(),
-            inputSchema: z.any().optional(),
-            name: z.string(),
-          }),
-        ),
+    .use(
+      withManagedResourceGuard('composio.updateComposioPlugin', {
+        isExemptInput: isManagedComposioUpdateBindingInput,
       }),
     )
+    .input(composioUpdatePluginInputSchema)
     .mutation(async ({ input, ctx }) => {
-      const {
-        identifier,
-        label,
-        appSlug,
-        authConfigId,
-        connectedAccountId,
-        tools,
-        status,
-        redirectUrl,
-      } = input;
+      const { app, binding, state } = await assertUpdateBindingLifecycle(input, ctx);
+      const remoteAccount = composioActiveAccountSchema.safeParse(
+        await (ctx.composioClient.connectedAccounts as any).get(binding.connectedAccountId),
+      );
+      if (
+        !remoteAccount.success ||
+        remoteAccount.data.id !== binding.connectedAccountId ||
+        remoteAccount.data.authConfig.id !== binding.authConfigId ||
+        remoteAccount.data.toolkit.slug.toLowerCase() !== app.appSlug.toLowerCase()
+      ) {
+        throw new TRPCError({
+          code: 'CONFLICT',
+          message: 'Composio did not confirm the owned binding as ACTIVE',
+        });
+      }
 
-      const existingPlugin = await ctx.pluginModel.findById(identifier);
+      const tools = mapTrustedComposioTools(
+        await (ctx.composioClient.tools as any).getRawComposioTools({
+          toolkits: [app.appSlug],
+        }),
+      );
 
       const manifest: ToolManifest = {
         api: tools.map((tool) => ({
@@ -402,38 +609,42 @@ export const composioRouter = router({
           name: tool.name,
           parameters: tool.inputSchema || { properties: {}, type: 'object' },
         })),
-        identifier,
-        meta: existingPlugin?.manifest?.meta || {
+        identifier: app.identifier,
+        meta: {
           avatar: '🔌',
-          description: `Composio: ${label}`,
-          title: label,
+          description: `Composio: ${app.label}`,
+          title: app.label,
         },
         type: 'default',
       };
 
       const customParams = {
-        composio: { appSlug, authConfigId, connectedAccountId, redirectUrl, status },
+        composio: {
+          appSlug: app.appSlug,
+          authConfigId: binding.authConfigId,
+          connectedAccountId: binding.connectedAccountId,
+          status: 'ACTIVE',
+        },
       };
 
-      if (existingPlugin) {
-        await ctx.pluginModel.update(identifier, { customParams, manifest });
+      if (state.plugin) {
+        await ctx.pluginModel.update(app.identifier, { customParams, manifest });
       } else {
         await ctx.pluginModel.create({
           customParams,
-          identifier,
+          identifier: app.identifier,
           manifest,
           source: 'composio',
           type: 'plugin',
         });
       }
 
-      // Dual-write: project the active connection + tool list into the connector
-      // tables so the runtime resolves this Composio server without the plugin
-      // table. `tools` already carries the full manifest from the client.
+      // Materialize only server-confirmed binding state and Composio's trusted
+      // tool response. The compatibility input snapshot is never persisted.
       await upsertComposioConnector(ctx.connectorModel, ctx.connectorToolModel, {
-        composio: { appSlug, authConfigId, connectedAccountId, redirectUrl, status },
-        identifier,
-        label,
+        composio: customParams.composio,
+        identifier: app.identifier,
+        label: app.label,
         replaceTools: true,
         tools,
       });

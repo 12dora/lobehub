@@ -110,15 +110,15 @@ export const aiProviderRouter = router({
       'connector.syncBuiltinTool': 'deny',
       'connector.syncPluginTools': 'deny',
       'connector.updateToolPermission': 'exempt',
-      'composio.createConnection': 'deny',
+      'composio.createConnection': 'input-sensitive',
       'composio.deleteConnection': 'exempt',
       'composio.removeComposioPlugin': 'deny',
-      'composio.updateComposioPlugin': 'deny',
+      'composio.updateComposioPlugin': 'input-sensitive',
       'oauthDeviceFlow.initiateDeviceCode': 'exempt',
       'oauthDeviceFlow.pollAuthStatus': 'deny',
       'oauthDeviceFlow.revokeAuth': 'deny',
     } as const satisfies Partial<
-      Record<ManagedResourceMutationProcedure, 'allow' | 'deny' | 'exempt'>
+      Record<ManagedResourceMutationProcedure, 'allow' | 'deny' | 'exempt' | 'input-sensitive'>
     >;
 
     for (const [procedure, classification] of Object.entries(expected)) {

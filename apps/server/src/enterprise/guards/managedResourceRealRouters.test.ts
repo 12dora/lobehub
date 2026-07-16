@@ -13,6 +13,7 @@ import {
   platformManagedResourcePolicies,
   platformResourceRevisions,
   userConnectors,
+  userConnectorTools,
   users,
 } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
@@ -50,8 +51,29 @@ vi.mock('@/server/modules/KeyVaultsEncrypt', () => ({
 }));
 vi.mock('@/server/services/file', () => ({ FileService: vi.fn(() => ({})) }));
 
-const { deleteConnectedAccount, initiateDeviceCode } = vi.hoisted(() => ({
+const {
+  deleteConnectedAccount,
+  getConnectedAccount,
+  getRawComposioTools,
+  initiateDeviceCode,
+  linkConnectedAccount,
+} = vi.hoisted(() => ({
   deleteConnectedAccount: vi.fn(async () => undefined),
+  getConnectedAccount: vi.fn(async (id: string) => ({
+    authConfig: { id: 'auth-gmail' },
+    id,
+    status: 'ACTIVE',
+    toolkit: { slug: 'GMAIL' },
+  })),
+  getRawComposioTools: vi.fn(async () => ({
+    items: [
+      {
+        description: 'trusted server tool',
+        inputParameters: { type: 'object' },
+        slug: 'GMAIL_TRUSTED_TOOL',
+      },
+    ],
+  })),
   initiateDeviceCode: vi.fn(async () => ({
     deviceCode: 'device-code',
     expiresIn: 600,
@@ -59,9 +81,24 @@ const { deleteConnectedAccount, initiateDeviceCode } = vi.hoisted(() => ({
     userCode: 'USER-CODE',
     verificationUri: 'https://example.com/device',
   })),
+  linkConnectedAccount: vi.fn(async () => ({
+    id: 'binding-gmail-1',
+    redirectUrl: 'https://composio.example/link',
+  })),
+}));
+vi.mock('@/config/composio', () => ({
+  getServerComposioAuthConfigId: vi.fn(() => 'auth-gmail'),
 }));
 vi.mock('@/libs/composio', () => ({
-  getComposioClient: () => ({ connectedAccounts: { delete: deleteConnectedAccount } }),
+  getComposioClient: () => ({
+    authConfigs: { create: vi.fn(), list: vi.fn() },
+    connectedAccounts: {
+      delete: deleteConnectedAccount,
+      get: getConnectedAccount,
+      link: linkConnectedAccount,
+    },
+    tools: { getRawComposioTools },
+  }),
 }));
 
 vi.mock('@/server/services/oauthDeviceFlow/providers/githubCopilot', () => ({
@@ -206,6 +243,134 @@ describe('real legacy router callers under enforced policy', () => {
         message: 'RESOURCE_MANAGED_BY_PLATFORM',
       });
     }
+  });
+
+  it('allows the owner-safe Composio connect, ACTIVE sync and reauthorize lifecycle', async () => {
+    const caller = composioRouter.createCaller(context(ordinary));
+    linkConnectedAccount.mockResolvedValueOnce({
+      id: 'binding-gmail-1',
+      redirectUrl: 'https://composio.example/link-1',
+    });
+
+    await expect(
+      caller.createConnection({ appSlug: 'GMAIL', identifier: 'gmail', label: 'Gmail' }),
+    ).resolves.toMatchObject({
+      authConfigId: 'auth-gmail',
+      connectedAccountId: 'binding-gmail-1',
+      identifier: 'gmail',
+    });
+    await expect(
+      caller.updateComposioPlugin({
+        appSlug: 'GMAIL',
+        authConfigId: 'auth-gmail',
+        connectedAccountId: 'binding-gmail-1',
+        identifier: 'gmail',
+        label: 'Gmail',
+        status: 'ACTIVE',
+        tools: [
+          {
+            description: 'forged client tool',
+            inputSchema: { endpoint: 'https://attacker.example' },
+            name: 'FORGED_TOOL',
+          },
+        ],
+      }),
+    ).resolves.toEqual({ savedCount: 1 });
+
+    const projection = (await db.select().from(userConnectors)).find(
+      (row) => row.userId === ordinary && row.identifier === 'gmail',
+    );
+    expect(projection).toMatchObject({
+      metadata: {
+        composio: { connectedAccountId: 'binding-gmail-1', status: 'ACTIVE' },
+      },
+      name: 'Gmail',
+      sourceType: 'marketplace',
+      status: 'connected',
+    });
+    expect(
+      (await db.select().from(userConnectorTools)).filter((row) => row.userId === ordinary),
+    ).toEqual([
+      expect.objectContaining({
+        description: 'trusted server tool',
+        toolName: 'GMAIL_TRUSTED_TOOL',
+      }),
+    ]);
+
+    await expect(caller.deleteConnection({ identifier: 'gmail' })).resolves.toEqual({
+      success: true,
+    });
+    linkConnectedAccount.mockResolvedValueOnce({
+      id: 'binding-gmail-2',
+      redirectUrl: 'https://composio.example/link-2',
+    });
+    await expect(
+      caller.createConnection({ appSlug: 'GMAIL', identifier: 'gmail', label: 'Gmail' }),
+    ).resolves.toMatchObject({ connectedAccountId: 'binding-gmail-2' });
+  });
+
+  it('rejects forged Composio targets and definition fields while uninstall stays denied', async () => {
+    const caller = composioRouter.createCaller(context(ordinary));
+    await db.insert(userConnectors).values({
+      identifier: 'google-calendar',
+      isEnabled: true,
+      metadata: {
+        composio: {
+          appSlug: 'GOOGLECALENDAR',
+          authConfigId: 'foreign-auth',
+          connectedAccountId: 'foreign-google-binding',
+          status: 'ACTIVE',
+        },
+      },
+      name: 'Google Calendar',
+      sourceType: 'marketplace',
+      status: 'connected',
+      userId: superAdmin,
+    });
+    const validUpdate = {
+      appSlug: 'GMAIL' as const,
+      authConfigId: 'auth-gmail',
+      connectedAccountId: 'binding-gmail-2',
+      identifier: 'gmail',
+      label: 'Gmail',
+      status: 'ACTIVE' as const,
+      tools: [],
+    };
+
+    for (const call of [
+      () => caller.createConnection({ appSlug: 'SLACK', identifier: 'gmail', label: 'Gmail' }),
+      () =>
+        caller.createConnection({
+          appSlug: 'GMAIL',
+          credential: 'attacker-secret',
+          identifier: 'gmail',
+          label: 'Gmail',
+        } as never),
+      () => caller.updateComposioPlugin({ ...validUpdate, connectedAccountId: 'foreign-binding' }),
+      () =>
+        caller.updateComposioPlugin({
+          appSlug: 'GOOGLECALENDAR',
+          authConfigId: 'foreign-auth',
+          connectedAccountId: 'foreign-google-binding',
+          identifier: 'google-calendar',
+          label: 'Google Calendar',
+          status: 'ACTIVE',
+          tools: [],
+        }),
+      () =>
+        caller.updateComposioPlugin({
+          ...validUpdate,
+          endpoint: 'https://attacker.example',
+        } as never),
+      () => caller.removeComposioPlugin({ identifier: 'gmail' }),
+    ]) {
+      await expect(call()).rejects.toMatchObject({
+        code: 'FORBIDDEN',
+        message: 'RESOURCE_MANAGED_BY_PLATFORM',
+      });
+    }
+
+    expect(linkConnectedAccount).toHaveBeenCalledTimes(2);
   });
 
   it('does not let a real super_admin caller bypass an ordinary Provider router', async () => {
