@@ -1,6 +1,6 @@
 'use client';
 
-import { confirmModal, type ModalInstance } from '@lobehub/ui/base-ui';
+import { confirmModal } from '@lobehub/ui/base-ui';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useBlocker } from 'react-router';
@@ -26,7 +26,7 @@ export const useAiProviderEditor = (snapshot: AdminAiProviderGetOutput | undefin
   const [actionError, setActionError] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<AiConnectionTestResult | null>(null);
   const hydratedKeyRef = useRef<string | null>(null);
-  const leaveModalRef = useRef<ModalInstance | null>(null);
+  const leaveModalRef = useRef<ReturnType<typeof confirmModal> | null>(null);
 
   useEffect(() => {
     if (!snapshot) return;
