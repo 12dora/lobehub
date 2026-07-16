@@ -243,6 +243,19 @@ describe('platform connector contracts', () => {
     } catch (error) {
       expect(error).toMatchObject({ code: 'PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED' });
     }
+    const wrongConnectorContext = await loadTrustedConnectorSecretContext(
+      { loadCurrentSecretSources: async () => ['old-random-secret'] },
+      'other-connector',
+      [],
+    );
+    expect(() =>
+      normalizeAdminConnectorUpdateInput(
+        configuredOAuthDraft,
+        basePatch,
+        'https://aihub.example.test/oauth/connector/callback',
+        wrongConnectorContext,
+      ),
+    ).toThrowError('PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED');
     expect(() =>
       normalizeAdminConnectorUpdateInput(
         draft,
