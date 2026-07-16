@@ -42,9 +42,13 @@ type DependentsInput = z.infer<typeof adminSkillGetDependentsInputSchema>;
 
 export interface SkillCatalogAdminServiceOptions {
   allowBuiltinOverride?: boolean;
+  builtinSkillKeys?: ReadonlySet<string>;
   builtinSkills?: BuiltinSkillDefinition[];
   invalidation?: PlatformConfigInvalidationPublisher;
   knownToolKeys?: ReadonlySet<string>;
+  lifecycle?: {
+    beforeSuccessAudit?: () => Promise<void>;
+  };
 }
 
 const validationView = (
@@ -124,6 +128,7 @@ const parseDependentCursor = (cursor?: string) =>
 
 export class SkillCatalogAdminService {
   private readonly modelOptions: ConstructorParameters<typeof PlatformSkillCatalogModel>[1];
+  private readonly lifecycle: NonNullable<SkillCatalogAdminServiceOptions['lifecycle']>;
   private readonly publication: SkillCatalogPublicationService;
   private readonly validation: SkillCatalogValidationService;
 
@@ -131,15 +136,22 @@ export class SkillCatalogAdminService {
     private readonly db: LobeChatDatabase,
     options: SkillCatalogAdminServiceOptions = {},
   ) {
+    const builtinSkillKeys =
+      options.builtinSkillKeys ??
+      (options.builtinSkills
+        ? new Set(options.builtinSkills.map((skill) => skill.skillKey))
+        : undefined);
     const validation = {
       allowBuiltinOverride: options.allowBuiltinOverride,
+      builtinSkillKeys,
       builtinSkills: options.builtinSkills,
       knownToolKeys: options.knownToolKeys,
     };
     this.modelOptions = {
       allowBuiltinOverride: options.allowBuiltinOverride,
-      builtinSkillKeys: new Set((options.builtinSkills ?? []).map((skill) => skill.skillKey)),
+      builtinSkillKeys,
     };
+    this.lifecycle = options.lifecycle ?? {};
     this.validation = new SkillCatalogValidationService(validation);
     const publicationOptions: SkillCatalogPublicationOptions = {
       invalidation: options.invalidation,
@@ -155,11 +167,12 @@ export class SkillCatalogAdminService {
     action: string;
     actorUserId: string;
     afterDiff?: Record<string, unknown>;
+    db?: LobeChatDatabase | Transaction;
     reason: string;
     result: 'failure' | 'success';
     targetId: string;
   }) => {
-    await new PlatformAuditService(this.db).append({
+    await new PlatformAuditService(params.db ?? this.db).append({
       action: params.action,
       actorUserId: params.actorUserId,
       afterDiff: params.afterDiff,
@@ -168,6 +181,59 @@ export class SkillCatalogAdminService {
       targetId: params.targetId,
       targetType: 'skill',
     });
+  };
+
+  private appendFailureAudit = async (params: {
+    action: string;
+    actorUserId: string;
+    reason: string;
+    targetId: string;
+  }) => {
+    try {
+      await this.appendAudit({
+        ...params,
+        afterDiff: { error: 'skill_catalog_mutation_failed' },
+        result: 'failure',
+      });
+    } catch (auditError) {
+      console.error('[admin.skills] failure audit append failed', {
+        errorClass: auditError instanceof Error ? auditError.name : 'UnknownError',
+      });
+    }
+  };
+
+  private atomicMutation = async <T>(params: {
+    action: string;
+    actorUserId: string;
+    reason: string;
+    run: (tx: Transaction) => Promise<T>;
+    summarize: (result: T) => Record<string, unknown>;
+    targetId: (result?: T) => string;
+  }): Promise<T> => {
+    try {
+      return await this.db.transaction(async (tx) => {
+        const result = await params.run(tx);
+        await this.lifecycle.beforeSuccessAudit?.();
+        await this.appendAudit({
+          action: params.action,
+          actorUserId: params.actorUserId,
+          afterDiff: params.summarize(result),
+          db: tx,
+          reason: params.reason,
+          result: 'success',
+          targetId: params.targetId(result),
+        });
+        return result;
+      });
+    } catch (error) {
+      await this.appendFailureAudit({
+        action: params.action,
+        actorUserId: params.actorUserId,
+        reason: params.reason,
+        targetId: params.targetId(),
+      });
+      throw error;
+    }
   };
 
   private mutation = async <T>(params: {
@@ -190,12 +256,10 @@ export class SkillCatalogAdminService {
       });
       return result;
     } catch (error) {
-      await this.appendAudit({
+      await this.appendFailureAudit({
         action: params.action,
         actorUserId: params.actorUserId,
-        afterDiff: { error: 'skill_catalog_mutation_failed' },
         reason: params.reason,
-        result: 'failure',
         targetId: params.targetId(),
       });
       throw error;
@@ -307,11 +371,11 @@ export class SkillCatalogAdminService {
 
   create = async (actorUserId: string, input: CreateInput) => {
     const { reason, ...values } = input;
-    const detail = await this.mutation({
+    const detail = await this.atomicMutation({
       action: 'admin.skills.create',
       actorUserId,
       reason,
-      run: () => this.model().createSkill({ actorUserId, ...values }),
+      run: (tx) => this.model(tx).createSkill({ actorUserId, ...values }),
       summarize: (result) => ({ skillId: result.draft.id, skillKey: result.draft.skillKey }),
       targetId: (result) => result?.draft.id ?? values.skillKey,
     });
@@ -320,12 +384,12 @@ export class SkillCatalogAdminService {
 
   updateDraft = async (actorUserId: string, input: UpdateInput) => {
     const { reason, ...values } = input;
-    const detail = await this.mutation({
+    const detail = await this.atomicMutation({
       action: 'admin.skills.updateDraft',
       actorUserId,
       reason,
-      run: async () => {
-        const result = await this.model().updateDraft({ actorUserId, ...values });
+      run: async (tx) => {
+        const result = await this.model(tx).updateDraft({ actorUserId, ...values });
         if (!result) throw new SkillCatalogNotFoundError();
         return result;
       },
@@ -349,12 +413,12 @@ export class SkillCatalogAdminService {
       skillKey: detail.draft.skillKey,
       version: values.version,
     });
-    const version = await this.mutation({
+    const version = await this.atomicMutation({
       action: 'admin.skills.createVersion',
       actorUserId,
       reason,
-      run: async () => {
-        const result = await this.model().createVersion({
+      run: async (tx) => {
+        const result = await this.model(tx).createVersion({
           actorUserId,
           ...values,
           validation: { ...validation, validatedAt: validation.validatedAt.toISOString() },
