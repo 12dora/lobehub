@@ -6,10 +6,16 @@ import { type LucideIcon } from 'lucide-react';
 import { memo, useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { ManagedSettingFieldContent } from '@/features/PlatformSettingSourceBadge/ManagedSettingField';
+import { usePlatformSettingMeta } from '@/features/PlatformSettingSourceBadge/usePlatformSettingMeta';
 import { usePermission } from '@/hooks/usePermission';
 import { useUserStore } from '@/store/user';
 import { toolInterventionSelectors } from '@/store/user/selectors';
-import { type ApprovalMode } from '@/store/user/slices/settings/selectors';
+import {
+  type ApprovalMode,
+  type RawApprovalMode,
+  USER_SELECTABLE_APPROVAL_MODES,
+} from '@/store/user/slices/settings/selectors';
 
 const styles = createStaticStyles(({ css, cssVar }) => ({
   desc: css`
@@ -61,113 +67,105 @@ const ModeSelector = memo(() => {
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const { allowed: canCreateContent, reason } = usePermission('create_content');
   const approvalMode = useUserStore(toolInterventionSelectors.approvalMode);
+  const rawApprovalMode = useUserStore(toolInterventionSelectors.rawApprovalMode);
   const updateHumanIntervention = useUserStore((s) => s.updateHumanIntervention);
+  const platformMeta = usePlatformSettingMeta('tool.humanIntervention.approvalMode');
+  const platformLocked = platformMeta.locked;
 
   const modeLabels = useMemo(
     () => ({
       'allow-list': t('tool.intervention.mode.allowList'),
       'auto-run': t('tool.intervention.mode.autoRun'),
+      'headless': t('tool.intervention.mode.headless'),
       'manual': t('tool.intervention.mode.manual'),
     }),
     [t],
   );
+  const displayMode: RawApprovalMode =
+    platformMeta.enabled && rawApprovalMode === 'headless' ? 'headless' : approvalMode;
 
   const handleModeChange = useCallback(
     async (mode: ApprovalMode) => {
-      if (!canCreateContent) return;
+      if (!canCreateContent || platformLocked) return;
 
       await updateHumanIntervention({ approvalMode: mode });
     },
-    [canCreateContent, updateHumanIntervention],
+    [canCreateContent, platformLocked, updateHumanIntervention],
   );
 
   const handleOpenChange = useCallback(
     (nextOpen: boolean) => {
-      if (!canCreateContent) return;
+      if (!canCreateContent || platformLocked) return;
 
       setDropdownOpen(nextOpen);
     },
-    [canCreateContent],
+    [canCreateContent, platformLocked],
   );
 
-  const menuItems = useMemo<MenuProps['items']>(
-    () => [
-      {
-        extra: approvalMode === 'auto-run' ? <Icon icon={Check} /> : undefined,
-        key: 'auto-run',
-        label: (
-          <ModeItemLabel
-            desc={t('tool.intervention.mode.autoRunDesc')}
-            icon={Zap}
-            title={modeLabels['auto-run']}
-          />
-        ),
-        onClick: () => handleModeChange('auto-run'),
-      },
-      {
-        extra: approvalMode === 'allow-list' ? <Icon icon={Check} /> : undefined,
-        key: 'allow-list',
-        label: (
-          <ModeItemLabel
-            desc={t('tool.intervention.mode.allowListDesc')}
-            icon={ListChecks}
-            title={modeLabels['allow-list']}
-          />
-        ),
-        onClick: () => handleModeChange('allow-list'),
-      },
-      {
-        extra: approvalMode === 'manual' ? <Icon icon={Check} /> : undefined,
-        key: 'manual',
-        label: (
-          <ModeItemLabel
-            desc={t('tool.intervention.mode.manualDesc')}
-            icon={Hand}
-            title={modeLabels.manual}
-          />
-        ),
-        onClick: () => handleModeChange('manual'),
-      },
-    ],
-    [approvalMode, modeLabels, handleModeChange, t],
-  );
+  const menuItems = useMemo<MenuProps['items']>(() => {
+    const definitions: Record<ApprovalMode, { desc: string; icon: LucideIcon }> = {
+      'allow-list': { desc: t('tool.intervention.mode.allowListDesc'), icon: ListChecks },
+      'auto-run': { desc: t('tool.intervention.mode.autoRunDesc'), icon: Zap },
+      'manual': { desc: t('tool.intervention.mode.manualDesc'), icon: Hand },
+    };
+
+    return USER_SELECTABLE_APPROVAL_MODES.map((mode) => ({
+      extra: approvalMode === mode ? <Icon icon={Check} /> : undefined,
+      key: mode,
+      label: (
+        <ModeItemLabel
+          desc={definitions[mode].desc}
+          icon={definitions[mode].icon}
+          title={modeLabels[mode]}
+        />
+      ),
+      onClick: () => handleModeChange(mode),
+    }));
+  }, [approvalMode, modeLabels, handleModeChange, t]);
 
   const button = (
     <Button
       className={styles.modeButton}
       color={'default'}
-      disabled={!canCreateContent}
+      disabled={!canCreateContent || platformLocked}
       icon={ChevronDown}
       iconPlacement="end"
       size="small"
       variant={'text'}
     >
-      {modeLabels[approvalMode]}
+      {modeLabels[displayMode]}
     </Button>
   );
 
-  if (!canCreateContent)
-    return (
-      <Tooltip title={reason}>
+  const selector =
+    !canCreateContent || platformLocked ? (
+      <Tooltip
+        title={displayMode === 'headless' ? t('tool.intervention.mode.headlessDesc') : reason}
+      >
         <div className={styles.modeButtonDisabled}>{button}</div>
       </Tooltip>
+    ) : (
+      <DropdownMenu
+        items={menuItems}
+        open={canCreateContent && !platformLocked && dropdownOpen}
+        placement="bottomRight"
+        onOpenChange={handleOpenChange}
+      >
+        <div className={styles.trigger}>
+          {dropdownOpen ? (
+            button
+          ) : (
+            <Tooltip title={t('tool.intervention.approvalMode')}>{button}</Tooltip>
+          )}
+        </div>
+      </DropdownMenu>
     );
 
+  if (platformMeta.hidden) return null;
+  if (!platformMeta.enabled) return selector;
+
   return (
-    <DropdownMenu
-      items={menuItems}
-      open={canCreateContent && dropdownOpen}
-      placement="bottomRight"
-      onOpenChange={handleOpenChange}
-    >
-      <div className={styles.trigger}>
-        {dropdownOpen ? (
-          button
-        ) : (
-          <Tooltip title={t('tool.intervention.approvalMode')}>{button}</Tooltip>
-        )}
-      </div>
-    </DropdownMenu>
+    <ManagedSettingFieldContent meta={platformMeta}>{() => selector}</ManagedSettingFieldContent>
   );
 });
 

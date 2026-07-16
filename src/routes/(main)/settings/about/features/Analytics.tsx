@@ -8,6 +8,8 @@ import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { FORM_STYLE } from '@/const/layoutTokens';
+import { ManagedSettingFieldContent } from '@/features/PlatformSettingSourceBadge/ManagedSettingField';
+import { usePlatformSettingMeta } from '@/features/PlatformSettingSourceBadge/usePlatformSettingMeta';
 import { useUserStore } from '@/store/user';
 import { userGeneralSettingsSelectors } from '@/store/user/selectors';
 
@@ -15,17 +17,26 @@ const Analytics = memo(() => {
   const { t } = useTranslation('setting');
   const checked = useUserStore(userGeneralSettingsSelectors.telemetry);
   const updateGeneralConfig = useUserStore((s) => s.updateGeneralConfig);
+  const telemetryMeta = usePlatformSettingMeta('general.telemetry');
+
+  if (telemetryMeta.hidden) return null;
 
   const items: FormGroupItemType = {
     children: [
       {
         children: (
-          <Switch
-            checked={!!checked}
-            onChange={(e) => {
-              updateGeneralConfig({ telemetry: e });
-            }}
-          />
+          <ManagedSettingFieldContent meta={telemetryMeta}>
+            {({ disabled }) => (
+              <Switch
+                checked={!!checked}
+                disabled={disabled}
+                onChange={(e) => {
+                  if (disabled) return;
+                  updateGeneralConfig({ telemetry: e });
+                }}
+              />
+            )}
+          </ManagedSettingFieldContent>
         ),
         desc: t('analytics.telemetry.desc', { appName: BRANDING_NAME }),
         label: t('analytics.telemetry.title'),

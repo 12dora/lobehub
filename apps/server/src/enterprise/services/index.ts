@@ -17,3 +17,4 @@ export {
 } from './platformPublicSnapshot';
 export * from './platformPublisher';
 export * from './platformRbac';
+export * from './settings';

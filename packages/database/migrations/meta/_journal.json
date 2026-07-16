@@ -840,6 +840,13 @@
       "when": 1784169497741,
       "tag": "0119_m04_users_auth_invalidated_and_search_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 120,
+      "version": "7",
+      "when": 1784178019614,
+      "tag": "0120_m05_settings_visibility_and_bundle",
+      "breakpoints": true
     }
   ],
   "version": "6"

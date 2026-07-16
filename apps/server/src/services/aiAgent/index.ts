@@ -95,6 +95,10 @@ import { shouldEnableBuiltinSkill } from '@/helpers/skillFilters';
 import { buildConnectorManifests } from '@/libs/mcp/buildConnectorManifests';
 import { patchManifestWithPermissions } from '@/libs/mcp/connectorPermissionCheck';
 import { signOperationJwt, signUserJWT } from '@/libs/trpc/utils/internalJwt';
+import {
+  getEffectiveMemorySettings,
+  resolveEffectiveUserInterventionConfig,
+} from '@/server/enterprise/services/settings/runtimeSettingsAdapter';
 import { createStreamEventManager } from '@/server/modules/AgentRuntime/factory';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 import type { EvalContext, ServerAgentToolsContext } from '@/server/modules/Mecha';
@@ -1003,7 +1007,7 @@ export class AiAgentService {
       disableLocalSystem,
       initialStepCount,
       signal,
-      userInterventionConfig = { approvalMode: 'headless' },
+      userInterventionConfig: callerUserInterventionConfig,
       queueRetries,
       queueRetryDelay,
       parentMessageId,
@@ -1016,6 +1020,16 @@ export class AiAgentService {
       suppressUserMessage,
       ephemeralUserMessage,
     } = params;
+
+    // M05 R3-B1: platform-effective approvalMode wins over request body when policy ON.
+    // Flag OFF: preserve legacy default headless when caller omits config.
+    const resolvedIntervention = await resolveEffectiveUserInterventionConfig({
+      callerConfig: callerUserInterventionConfig ?? { approvalMode: 'headless' },
+      db: this.db,
+      scope: this.workspaceId ? 'workspace' : 'personal',
+      userId: this.userId,
+    });
+    const userInterventionConfig = resolvedIntervention ?? { approvalMode: 'headless' as const };
 
     // Validate that either agentId or slug is provided
     if (!agentId && !slug) {
@@ -2186,12 +2200,18 @@ export class AiAgentService {
     // forwarded into op metadata for the per-step context engine.
     let operationAgentGroup: AgentGroupConfig | undefined;
     try {
-      const userModel = new UserModel(this.db, this.userId);
-      const settings = await userModel.getUserSettings();
-      const memorySettings = settings?.memory as { enabled?: boolean } | undefined;
+      // M05: memory.enabled through effective resolver (platform lock/default honored)
+      const memorySettings = await getEffectiveMemorySettings({
+        db: this.db,
+        scope: this.workspaceId ? 'workspace' : 'personal',
+        userId: this.userId,
+      });
 
       globalMemoryEnabled = agentMemoryEnabled ?? memorySettings?.enabled !== false;
 
+      // Timezone is not platform-policy managed — keep sparse legacy general.timezone
+      const userModel = new UserModel(this.db, this.userId);
+      const settings = await userModel.getUserSettings();
       const generalSettings = settings?.general as { timezone?: string } | undefined;
       userTimezone = generalSettings?.timezone;
     } catch (error) {

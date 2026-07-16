@@ -11,6 +11,7 @@ import { AgentGroupRepository } from '@/database/repositories/agentGroup';
 import { type ChatGroupConfig } from '@/database/types/chatGroup';
 import { router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
+import { getEffectiveDefaultAgentConfig } from '@/server/enterprise/services/settings/runtimeSettingsAdapter';
 import { AgentGroupService } from '@/server/services/agentGroup';
 import { EditLockService } from '@/server/services/editLock';
 import { publishResourceEvent } from '@/server/services/resourceEvents';
@@ -260,7 +261,7 @@ export const agentGroupRouter = router({
     .input(z.object({ id: z.string() }))
     .query(async ({ input, ctx }) => {
       const [defaultAgentConfig, detail] = await Promise.all([
-        ctx.userModel.getUserSettingsDefaultAgentConfig(),
+        getEffectiveDefaultAgentConfig({ db: ctx.serverDB, userId: ctx.userId }),
         ctx.agentGroupService.getGroupDetail(input.id),
       ]);
 
@@ -274,7 +275,7 @@ export const agentGroupRouter = router({
 
   getGroups: agentGroupProcedure.query(async ({ ctx }) => {
     const [defaultAgentConfig, groups] = await Promise.all([
-      ctx.userModel.getUserSettingsDefaultAgentConfig(),
+      getEffectiveDefaultAgentConfig({ db: ctx.serverDB, userId: ctx.userId }),
       ctx.agentGroupService.getGroups(),
     ]);
 

@@ -15,6 +15,7 @@ import debug from 'debug';
 
 import { UserModel } from '@/database/models/user';
 import type { LobeChatDatabase } from '@/database/type';
+import { getEffectiveSystemAgentConfig } from '@/server/enterprise/services/settings/runtimeSettingsAdapter';
 import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
 
 import { resolveSystemAgentModelConfig } from './modelConfig';
@@ -184,9 +185,11 @@ export class SystemAgentService {
   private async getTaskModelConfig(
     taskKey: UserSystemAgentConfigKey,
   ): Promise<{ model: string; provider: string }> {
-    const userModel = new UserModel(this.db, this.userId);
-    const settings = await userModel.getUserSettings();
-    const systemAgent = settings?.systemAgent as Partial<UserSystemAgentConfig> | undefined;
+    // M05: effective systemAgent via resolver when policy flag is ON
+    const systemAgent = (await getEffectiveSystemAgentConfig({
+      db: this.db,
+      userId: this.userId,
+    })) as Partial<UserSystemAgentConfig> | undefined;
 
     const taskConfig = systemAgent?.[taskKey];
     return resolveSystemAgentModelConfig({ taskConfig, taskKey });

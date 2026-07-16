@@ -17,10 +17,44 @@ export type { PlatformResourceRevisionItem, PlatformResourceType, PlatformRevisi
 
 export interface ResourcePointerAdapter {
   /**
+   * Optional domain CAS check after the pointer row is locked and revision is
+   * verified. Used by aggregate resources whose mutable draft is not represented
+   * by the published revision alone.
+   */
+  assertLockedState?: (
+    tx: Transaction,
+    args: { currentRevision: number; operation: 'publish' | 'rollback' },
+  ) => Promise<void>;
+  /**
    * Lock the current resource row and return its revision.
    * Must use SELECT ... FOR UPDATE (or equivalent) inside the open transaction.
    */
   lockAndGetRevision: (tx: Transaction) => Promise<number>;
+  /**
+   * Optional domain materialization inside the **same** publish/rollback transaction,
+   * after pointer update and before success audit (M05 settings path policies, etc.).
+   * Failure aborts the whole transaction so revision + pointer never commit alone.
+   */
+  materializePublished?: (
+    tx: Transaction,
+    args: {
+      payload: Record<string, unknown>;
+      revision: number;
+      status: PlatformRevisionStatus;
+    },
+  ) => Promise<void>;
+  /**
+   * Build the publish payload from domain state after lock acquisition. The
+   * returned payload, checksum, revision row, materialization and audit all use
+   * this one locked snapshot. Existing resources may continue passing `payload`.
+   */
+  prepareLockedPublish?: (
+    tx: Transaction,
+    args: { currentRevision: number },
+  ) => Promise<{
+    afterDiff?: Record<string, unknown> | null;
+    payload: Record<string, unknown>;
+  }>;
   /**
    * Advance the domain table pointer after a successful revision append.
    */
@@ -147,8 +181,6 @@ export class PlatformRevisionModel {
    */
   publishDraft = async (params: PublishDraftParams): Promise<PublishResult> => {
     const status = params.status ?? 'published';
-    const redactedPayload = redactSensitive(params.payload);
-    const checksum = checksumPayload(redactedPayload);
     const nextRevision = params.expectedRevision + 1;
 
     return this.db.transaction(async (tx) => {
@@ -161,6 +193,16 @@ export class PlatformRevisionModel {
           resourceType: params.resourceType,
         });
       }
+
+      await params.pointer.assertLockedState?.(tx, {
+        currentRevision: current,
+        operation: 'publish',
+      });
+      const prepared = await params.pointer.prepareLockedPublish?.(tx, {
+        currentRevision: current,
+      });
+      const redactedPayload = redactSensitive(prepared?.payload ?? params.payload);
+      const checksum = checksumPayload(redactedPayload);
 
       const now = new Date();
       const [revision] = await tx
@@ -182,10 +224,21 @@ export class PlatformRevisionModel {
 
       await params.pointer.updatePointer(tx, { revision: nextRevision, status });
 
+      if (params.pointer.materializePublished) {
+        await params.pointer.materializePublished(tx, {
+          payload: redactedPayload,
+          revision: nextRevision,
+          status,
+        });
+      }
+
       const audit = await new PlatformAuditLogModel(tx).append({
         action: `platform.${params.resourceType}.publish`,
         actorUserId: params.actorUserId,
-        afterDiff: params.afterDiff ?? redactedPayload,
+        afterDiff:
+          prepared?.afterDiff === undefined
+            ? (params.afterDiff ?? redactedPayload)
+            : prepared.afterDiff,
         beforeDiff: params.beforeDiff ?? null,
         configRevision: nextRevision,
         ipHash: params.ipHash,
@@ -217,6 +270,11 @@ export class PlatformRevisionModel {
           resourceType: params.resourceType,
         });
       }
+
+      await params.pointer.assertLockedState?.(tx, {
+        currentRevision: current,
+        operation: 'rollback',
+      });
 
       const target = await tx.query.platformResourceRevisions.findFirst({
         where: and(
@@ -254,6 +312,14 @@ export class PlatformRevisionModel {
         .returning();
 
       await params.pointer.updatePointer(tx, { revision: nextRevision, status: 'published' });
+
+      if (params.pointer.materializePublished) {
+        await params.pointer.materializePublished(tx, {
+          payload: (target.payload ?? {}) as Record<string, unknown>,
+          revision: nextRevision,
+          status: 'published',
+        });
+      }
 
       const audit = await new PlatformAuditLogModel(tx).append({
         action: `platform.${params.resourceType}.rollback`,

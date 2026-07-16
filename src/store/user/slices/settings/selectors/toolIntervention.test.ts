@@ -3,7 +3,7 @@ import { type UserState } from '@/store/user/initialState';
 import { initialState } from '@/store/user/initialState';
 import { merge } from '@/utils/merge';
 
-import { toolInterventionSelectors } from './toolIntervention';
+import { toolInterventionSelectors, USER_SELECTABLE_APPROVAL_MODES } from './toolIntervention';
 
 describe('toolInterventionSelectors', () => {
   describe('approvalMode', () => {
@@ -80,6 +80,17 @@ describe('toolInterventionSelectors', () => {
 
       // headless is for backend async tasks only, UI should show auto-run
       expect(result).toBe('auto-run');
+    });
+
+    it('preserves raw headless for managed read-only presentation', () => {
+      const s: UserState = merge(initialState, {
+        settings: {
+          tool: { humanIntervention: { approvalMode: 'headless' } },
+        },
+      });
+
+      expect(toolInterventionSelectors.rawApprovalMode(s as UserStore)).toBe('headless');
+      expect(USER_SELECTABLE_APPROVAL_MODES).not.toContain('headless');
     });
   });
 
