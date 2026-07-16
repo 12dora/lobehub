@@ -1,7 +1,7 @@
 import { matchRoutes } from 'react-router';
 import { describe, expect, it } from 'vitest';
 
-import { createAdminRouteTree, resolveEnterpriseDesktopRoutes } from './createAdminRouteTree';
+import { createAdminRouteTree } from './createAdminRouteTree';
 
 const collectPaths = (routes: ReturnType<typeof createAdminRouteTree>, prefix = ''): string[] => {
   const paths: string[] = [];
@@ -21,19 +21,13 @@ const collectPaths = (routes: ReturnType<typeof createAdminRouteTree>, prefix = 
 };
 
 describe('createAdminRouteTree', () => {
-  it('flag off: effective tree has no /admin routes', () => {
-    expect(resolveEnterpriseDesktopRoutes({ platformAdmin: false })).toEqual([]);
-  });
-
-  it('flag on: registers /admin and planned module paths', () => {
-    const routes = resolveEnterpriseDesktopRoutes({ platformAdmin: true });
-    const paths = collectPaths(routes);
-
+  it('registers list and dynamic detail paths from the catalog', () => {
+    const paths = collectPaths(createAdminRouteTree());
     expect(paths).toContain('/admin');
     expect(paths).toContain('/admin/users');
+    expect(paths).toContain('/admin/users/:id');
     expect(paths).toContain('/admin/ai/providers');
-    expect(paths).toContain('/admin/identity/providers');
-    expect(paths).toContain('/admin/system');
+    expect(paths).toContain('/admin/ai/providers/:id');
   });
 
   it('deep links match nested paths and nested 404', () => {
@@ -41,16 +35,11 @@ describe('createAdminRouteTree', () => {
 
     expect(matchRoutes(routes, '/admin')).toBeTruthy();
     expect(matchRoutes(routes, '/admin/users')).toBeTruthy();
-    expect(matchRoutes(routes, '/admin/ai/providers')).toBeTruthy();
+    expect(matchRoutes(routes, '/admin/users/u-1')).toBeTruthy();
+    expect(matchRoutes(routes, '/admin/ai/providers/p-1')).toBeTruthy();
 
     const nestedUnknown = matchRoutes(routes, '/admin/does-not-exist');
     expect(nestedUnknown).toBeTruthy();
     expect(nestedUnknown?.at(-1)?.route.path).toBe('*');
-  });
-
-  it('web and electron share the same factory (path parity)', () => {
-    const a = collectPaths(createAdminRouteTree()).sort();
-    const b = collectPaths(createAdminRouteTree()).sort();
-    expect(a).toEqual(b);
   });
 });

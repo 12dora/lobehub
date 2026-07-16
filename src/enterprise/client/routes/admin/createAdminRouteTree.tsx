@@ -14,6 +14,7 @@ import { ADMIN_NAV_FLAT } from '@/enterprise/client/nav/adminNavMeta';
 export const createAdminRouteTree = (): RouteObject[] => {
   const leafPaths = ADMIN_NAV_FLAT.filter((item) => item.path !== '/admin').map((item) => {
     // Convert absolute /admin/foo to relative foo under the /admin parent
+    // Preserve :param segments for React Router
     const relative = item.path.replace(/^\/admin\/?/, '');
     return {
       element: <PlaceholderPage />,
@@ -27,9 +28,6 @@ export const createAdminRouteTree = (): RouteObject[] => {
       path: relative,
     } satisfies RouteObject;
   });
-
-  // Nested AI group: register both ai and ai/* (providers/models already as flat relatives)
-  // identity/providers is already relative "identity/providers"
 
   return [
     {
@@ -59,15 +57,4 @@ export const createAdminRouteTree = (): RouteObject[] => {
       path: '/admin',
     },
   ];
-};
-
-/**
- * Effective enterprise desktop routes for a given boot-config snapshot.
- * When `platformAdmin` is false, returns [] so `/admin` is absent from the tree.
- */
-export const resolveEnterpriseDesktopRoutes = (options: {
-  platformAdmin: boolean;
-}): RouteObject[] => {
-  if (!options.platformAdmin) return [];
-  return createAdminRouteTree();
 };
