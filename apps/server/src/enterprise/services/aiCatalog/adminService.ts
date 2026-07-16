@@ -18,7 +18,7 @@ import {
   type PlatformAiProviderConfig,
   type PlatformAiProviderSettings,
 } from '@/database/schemas/platform';
-import type { LobeChatDatabase } from '@/database/type';
+import type { LobeChatDatabase, Transaction } from '@/database/type';
 
 import {
   type adminAiModelCreateInputSchema,
@@ -70,7 +70,10 @@ type ReorderModelsInput = z.infer<typeof adminAiModelReorderInputSchema>;
 export interface AiCatalogAdminServiceOptions {
   connectionProbe?: AiConnectionProbe;
   invalidation?: PlatformConfigInvalidationPublisher;
-  lifecycle?: { afterDraftLock?: () => Promise<void>; afterPublishLock?: () => Promise<void> };
+  lifecycle?: {
+    afterDraftLock?: () => Promise<void>;
+    afterPublishLock?: (tx: Transaction) => Promise<void>;
+  };
 }
 
 const toProviderDraft = (view: PlatformAiProviderDraftView): AiProviderDraft =>

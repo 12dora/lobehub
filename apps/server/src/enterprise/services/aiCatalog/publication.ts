@@ -48,7 +48,7 @@ type RollbackProviderInput = z.infer<typeof adminAiProviderRollbackInputSchema>;
 
 export interface AiCatalogPublicationOptions {
   invalidation?: PlatformConfigInvalidationPublisher;
-  lifecycle?: { afterPublishLock?: () => Promise<void> };
+  lifecycle?: { afterPublishLock?: (tx: Transaction) => Promise<void> };
 }
 
 export class AiCatalogPublicationService {
@@ -141,7 +141,7 @@ export class AiCatalogPublicationService {
     validateArchiveDependents = false,
   ): ResourcePointerAdapter => ({
     assertLockedState: async (tx) => {
-      await this.lifecycle.afterPublishLock?.();
+      await this.lifecycle.afterPublishLock?.(tx);
       const draft = await new PlatformAiCatalogModel(tx).getProvider(providerId);
       if (!draft) throw new AiCatalogNotFoundError();
       if (aiCatalogDraftToken(draft) !== expectedDraftToken) {
