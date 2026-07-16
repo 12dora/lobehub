@@ -56,10 +56,12 @@ export class PlatformRbacService {
   replaceUserGlobalRoles = async (params: {
     actorUserId: string;
     allowSuperAdmin?: boolean;
+    /** Optional assignment expiry (written to rbac_user_roles.expires_at). */
+    expiresAt?: Date | null;
     reason: string;
     roleNames: string[];
     targetUserId: string;
-  }): Promise<{ roleNames: string[] }> => {
+  }): Promise<{ expiresAt?: Date | null; roleNames: string[] }> => {
     const desired = [...new Set(params.roleNames)];
 
     const isTargetSuper = await this.rbac.isGlobalSuperAdmin(params.targetUserId);
@@ -89,6 +91,7 @@ export class PlatformRbacService {
 
     try {
       await this.rbac.replaceGlobalUserRoles(params.targetUserId, roleIds, {
+        expiresAt: params.expiresAt ?? null,
         protectLastSuperAdmin: true,
       });
     } catch (error) {
@@ -101,14 +104,17 @@ export class PlatformRbacService {
     await this.audit.append({
       action: 'platform.roles.replace',
       actorUserId: params.actorUserId,
-      afterDiff: { roleNames: desired },
+      afterDiff: {
+        expiresAt: params.expiresAt?.toISOString() ?? null,
+        roleNames: desired,
+      },
       reason: params.reason,
       result: 'success',
       targetId: params.targetUserId,
       targetType: 'user',
     });
 
-    return { roleNames: desired };
+    return { expiresAt: params.expiresAt ?? null, roleNames: desired };
   };
 
   /**

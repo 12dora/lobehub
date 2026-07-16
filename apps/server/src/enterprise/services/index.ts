@@ -1,3 +1,4 @@
+export * from './adminUserService';
 export * from './easyauthClient';
 export * from './easyauthManifest';
 export * from './easyauthSync';
