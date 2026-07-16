@@ -6,6 +6,7 @@ import {
   platformAuditLogs,
   platformConnectorOAuthStates,
   platformConnectors,
+  platformConnectorSecrets,
   platformConnectorTools,
   platformResourceRevisions,
   platformUserConnectorBindings,
@@ -72,6 +73,18 @@ export const ensurePendingM09ServiceSchema = async (db: LobeChatDatabase): Promi
       "revoked_at" timestamptz,
       "created_at" timestamptz DEFAULT now() NOT NULL
     )`,
+    `CREATE TABLE IF NOT EXISTS "platform_connector_secrets" (
+      "id" text PRIMARY KEY NOT NULL,
+      "connector_id" text NOT NULL,
+      "slot" varchar(32) NOT NULL,
+      "fingerprint" varchar(64) NOT NULL,
+      "ref" text NOT NULL UNIQUE,
+      "ciphertext" text NOT NULL,
+      "key_id" varchar(256) NOT NULL,
+      "revision" integer DEFAULT 1 NOT NULL,
+      "revoked_at" timestamptz,
+      "created_at" timestamptz DEFAULT now() NOT NULL
+    )`,
   ];
   for (const statement of statements) await db.execute(sql.raw(statement));
 };
@@ -79,6 +92,7 @@ export const ensurePendingM09ServiceSchema = async (db: LobeChatDatabase): Promi
 export const cleanupM09ServiceData = async (db: LobeChatDatabase): Promise<void> => {
   await db.delete(platformConnectorOAuthStates);
   await db.delete(platformUserConnectorBindings);
+  await db.delete(platformConnectorSecrets);
   await db.delete(platformConnectorTools);
   await db.delete(platformConnectors);
   await db
@@ -116,17 +130,38 @@ export class MemoryConnectorSecretStore implements ConnectorCatalogSecretStore {
   }) =>
     this.byFingerprint.get(`${params.connectorId}:${params.slot}:${params.fingerprint}`) ?? null;
 
-  resolveSecretRef = async ({ ref }: { ref: string }) => {
+  resolveSecretRef = async ({
+    connectorId,
+    ref,
+    slot,
+  }: {
+    connectorId: string;
+    ref: string;
+    slot: ConnectorSecretSlot;
+  }) => {
+    const stored = [...this.byFingerprint.entries()].find(
+      ([key, candidate]) => key.startsWith(`${connectorId}:${slot}:`) && candidate.ref === ref,
+    )?.[1];
+    if (!stored) return null;
     const value = this.byRef.get(ref);
     if (value === undefined) return null;
-    const stored = [...this.byFingerprint.values()].find((candidate) => candidate.ref === ref);
     return stored ? { ...stored, value } : null;
   };
 
-  revokeSecretRef = async ({ ref }: { ref: string }) => {
-    this.byRef.delete(ref);
+  revokeSecretRef = async ({
+    connectorId,
+    ref,
+    slot,
+  }: {
+    connectorId: string;
+    ref: string;
+    slot: ConnectorSecretSlot;
+  }) => {
     for (const [key, value] of this.byFingerprint) {
-      if (value.ref === ref) this.byFingerprint.delete(key);
+      if (key.startsWith(`${connectorId}:${slot}:`) && value.ref === ref) {
+        this.byFingerprint.delete(key);
+        this.byRef.delete(ref);
+      }
     }
   };
 

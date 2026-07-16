@@ -24,6 +24,8 @@ export type PlatformConnectorToolPolicy = 'allow' | 'deny';
 export type PlatformConnectorToolRiskLevel = 'low' | 'medium' | 'high' | 'critical';
 export type PlatformConnectorBindingStatus =
   'disconnected' | 'pending' | 'connected' | 'expired' | 'revoked' | 'error';
+export type PlatformConnectorSecretSlot =
+  'oauthBindingToken' | 'oauthClientSecret' | 'oauthPkceVerifier' | 'sharedSecret';
 
 export interface PlatformConnectorOAuthConfig {
   authorizationEndpoint: string;
@@ -199,6 +201,58 @@ export const platformConnectors = pgTable(
 
 export type PlatformConnectorItem = typeof platformConnectors.$inferSelect;
 export type NewPlatformConnector = typeof platformConnectors.$inferInsert;
+
+/**
+ * Envelope-encrypted Connector secret versions.
+ *
+ * `ref` is an opaque `kms://` application handle, not a remote KMS locator. It
+ * is resolved only by the ConnectorCatalogSecretStore, which decrypts the
+ * ciphertext through M13 PlatformSecretService. Plaintext never enters this
+ * table, revisions, bindings, OAuth states, or audit logs.
+ */
+export const platformConnectorSecrets = pgTable(
+  'platform_connector_secrets',
+  {
+    id: text('id')
+      .$defaultFn(() => idGenerator('platformConnectorSecrets', 16))
+      .primaryKey()
+      .notNull(),
+    connectorId: text('connector_id')
+      .notNull()
+      .references(() => platformConnectors.id, { onDelete: 'restrict' }),
+    slot: varchar('slot', { length: 32 }).$type<PlatformConnectorSecretSlot>().notNull(),
+    fingerprint: varchar('fingerprint', { length: 64 }).notNull(),
+    /** Opaque application handle; never contains ciphertext or plaintext. */
+    ref: text('ref').notNull(),
+    /** M13 PlatformSecretService envelope only. */
+    ciphertext: text('ciphertext').notNull(),
+    /** Duplicated from the envelope header to support key-rotation inventory. */
+    keyId: varchar('key_id', { length: 256 }).notNull(),
+    revision: integer('revision').notNull().default(1),
+    revokedAt: timestamptz('revoked_at'),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex('platform_connector_secrets_ref_unique').on(t.ref),
+    index('platform_connector_secrets_lookup_idx').on(
+      t.connectorId,
+      t.slot,
+      t.fingerprint,
+      t.createdAt,
+    ),
+    index('platform_connector_secrets_key_id_idx').on(t.keyId),
+    check(
+      'platform_connector_secrets_slot_check',
+      sql`${t.slot} IN ('oauthBindingToken', 'oauthClientSecret', 'oauthPkceVerifier', 'sharedSecret')`,
+    ),
+    check('platform_connector_secrets_ref_check', sql`${t.ref} LIKE 'kms://platform-connectors/%'`),
+    check('platform_connector_secrets_fingerprint_check', sql`${t.fingerprint} ~ '^[a-f0-9]{64}$'`),
+    check('platform_connector_secrets_revision_check', sql`${t.revision} > 0`),
+  ],
+);
+
+export type PlatformConnectorSecretItem = typeof platformConnectorSecrets.$inferSelect;
+export type NewPlatformConnectorSecret = typeof platformConnectorSecrets.$inferInsert;
 
 /** Current Draft tools. Published tools are embedded in the immutable revision snapshot. */
 export const platformConnectorTools = pgTable(

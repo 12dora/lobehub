@@ -30,13 +30,21 @@ export interface ConnectorCatalogSecretStore extends ConnectorCurrentSecretLoade
     slot: ConnectorSecretSlot;
     value: unknown;
   }) => Promise<ConnectorStoredSecret>;
-  resolveSecretRef: (params: { ref: string }) => Promise<ConnectorResolvedSecret | null>;
+  resolveSecretRef: (params: {
+    connectorId: string;
+    ref: string;
+    slot: ConnectorSecretSlot;
+  }) => Promise<ConnectorResolvedSecret | null>;
   resolveSecretVersion: (params: {
     connectorId: string;
     fingerprint: string;
     slot: ConnectorSecretSlot;
   }) => Promise<ConnectorResolvedSecret | null>;
-  revokeSecretRef?: (params: { ref: string }) => Promise<void>;
+  revokeSecretRef?: (params: {
+    connectorId: string;
+    ref: string;
+    slot: ConnectorSecretSlot;
+  }) => Promise<void>;
 }
 
 export interface ConnectorCatalogCredentialProvider {
