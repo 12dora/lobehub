@@ -5,10 +5,9 @@
  * Keyset pagination on (createdAt, id) DESC. Search uses escaped prefix patterns on
  * normalized email / email / username (no unbounded leading-wildcard scans).
  *
- * Index evidence (existing, no migration required):
+ * Index evidence:
  * - users_created_at_idx (createdAt) — list order / keyset
- * - users_email_idx, users_username_idx — equality / prefix filters
- * - users.normalized_email unique — normalized email lookup
+ * - users_*_lower_pattern_idx — lower(field) text_pattern_ops for prefix LIKE
  * - users_banned_true_created_at_idx — partial banned filter
  * - auth_session_userId_idx / account_userId_idx — aggregates by user
  */
@@ -18,7 +17,6 @@ import {
   desc,
   eq,
   gte,
-  ilike,
   inArray,
   isNull,
   lt,
@@ -33,6 +31,11 @@ import { account, session } from '../schemas/betterAuth';
 import { roles, userRoles } from '../schemas/rbac';
 import { users } from '../schemas/user';
 import type { LobeChatDatabase, Transaction } from '../type';
+import {
+  effectivelyActiveSql,
+  effectivelyBannedSql,
+  isEffectivelyBanned as isEffectivelyBannedShared,
+} from '../utils/userBan';
 
 export type AdminUserStatus = 'active' | 'banned';
 
@@ -134,13 +137,7 @@ export const parseAdminUserCursor = (
 export const escapeAdminUserLikePattern = (value: string): string =>
   value.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_');
 
-export const isEffectivelyBanned = (
-  user: { banExpires: Date | null; banned: boolean | null },
-  now = new Date(),
-): boolean => {
-  if (!user.banned) return false;
-  return !user.banExpires || user.banExpires > now;
-};
+export const isEffectivelyBanned = isEffectivelyBannedShared;
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;
@@ -170,16 +167,9 @@ export class AdminUserModel {
     const now = new Date();
 
     if (filters.status === 'banned') {
-      conditions.push(
-        and(eq(users.banned, true), or(isNull(users.banExpires), gte(users.banExpires, now))!)!,
-      );
+      conditions.push(effectivelyBannedSql());
     } else if (filters.status === 'active') {
-      conditions.push(
-        or(
-          sql`${users.banned} IS NOT TRUE`,
-          and(eq(users.banned, true), lt(users.banExpires, now)),
-        )!,
-      );
+      conditions.push(effectivelyActiveSql());
     }
 
     if (filters.createdFrom) {
@@ -191,14 +181,13 @@ export class AdminUserModel {
 
     if (filters.query) {
       const escaped = escapeAdminUserLikePattern(filters.query);
-      // Prefix-only pattern; `%`/`_` in the user term are escaped so they are literal.
-      // PostgreSQL ILIKE default escape is `\`.
+      // lower(field) LIKE 'prefix%' — uses users_*_lower_pattern_idx (text_pattern_ops).
       const prefix = `${escaped}%`;
       conditions.push(
         or(
-          ilike(users.normalizedEmail, prefix),
-          ilike(users.email, prefix),
-          ilike(users.username, prefix),
+          sql`lower(${users.normalizedEmail}) LIKE ${prefix} ESCAPE '\\'`,
+          sql`lower(${users.email}) LIKE ${prefix} ESCAPE '\\'`,
+          sql`lower(${users.username}) LIKE ${prefix} ESCAPE '\\'`,
         )!,
       );
     }
@@ -434,23 +423,27 @@ export class AdminUserModel {
   };
 
   /**
-   * Ban user inside an optional outer transaction. Does not perform last-super checks
-   * (service layer + RBAC lock must wrap this for super_admin targets).
+   * Ban/unban user. When banning, advances authInvalidatedAt security epoch.
+   * Does not perform last-super checks (service + RBAC lock must wrap for supers).
    */
   setBanned = async (params: {
     banExpires?: Date | null;
     banReason: string;
     banned: boolean;
+    /** When true (default on ban), set authInvalidatedAt = now. */
+    invalidateAuth?: boolean;
     userId: string;
   }): Promise<AdminUserBanState | null> => {
     if (params.banned) {
+      const now = new Date();
       const [row] = await this.db
         .update(users)
         .set({
+          ...(params.invalidateAuth === false ? {} : { authInvalidatedAt: now }),
           banExpires: params.banExpires ?? null,
           banReason: params.banReason,
           banned: true,
-          updatedAt: new Date(),
+          updatedAt: now,
         })
         .where(eq(users.id, params.userId))
         .returning({
@@ -478,6 +471,14 @@ export class AdminUserModel {
         id: users.id,
       });
     return row ?? null;
+  };
+
+  /** Advance security epoch without changing ban flags (session revoke). */
+  invalidateAuth = async (userId: string, at = new Date()): Promise<void> => {
+    await this.db
+      .update(users)
+      .set({ authInvalidatedAt: at, updatedAt: at })
+      .where(eq(users.id, userId));
   };
 
   private loadGlobalRoleNames = async (userIds: string[]): Promise<Map<string, string[]>> => {

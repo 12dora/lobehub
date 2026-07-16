@@ -10,6 +10,7 @@ import {
   assignWorkspaceRoleToUser,
   revokeWorkspaceRolesForUser,
 } from '../utils/seedWorkspaceRoles';
+import { effectivelyActiveSql } from '../utils/userBan';
 
 /** Thrown when demoting/removing the last non-banned active super_admin. */
 export class LastSuperAdminProtectionError extends Error {
@@ -495,6 +496,11 @@ export class RbacModel {
             .join(', ')}`,
         );
       }
+
+      // M04 policy: super_admin grants are permanent — finite expiresAt is rejected.
+      if (expiresAt && existingRoles.some((r) => r.name === superAdminRoleName)) {
+        throw new Error('PLATFORM_INVALID_INPUT');
+      }
     }
 
     await this.db.transaction(async (tx) => {
@@ -536,13 +542,22 @@ export class RbacModel {
       const preservedIds = new Set(
         current.filter((r) => preserveRoleNames.includes(r.roleName)).map((r) => r.roleId),
       );
+      // Resolve super role id for permanent-insert policy.
+      const superRoleRow = await tx
+        .select({ id: roles.id })
+        .from(roles)
+        .where(and(eq(roles.name, superAdminRoleName), isNull(roles.workspaceId)))
+        .limit(1);
+      const superRoleId = superRoleRow[0]?.id;
+
       const insertIds = roleIds.filter((id) => !preservedIds.has(id));
       if (insertIds.length > 0) {
         await tx
           .insert(userRoles)
           .values(
             insertIds.map((roleId) => ({
-              expiresAt: expiresAt ?? null,
+              // super_admin is always permanent (null expiresAt)
+              expiresAt: superRoleId && roleId === superRoleId ? null : (expiresAt ?? null),
               roleId,
               userId,
               workspaceId: null,
@@ -551,10 +566,12 @@ export class RbacModel {
           .onConflictDoNothing();
       }
 
-      // Apply expiry to preserved grants when callers pass expiresAt (rare; EasyAuth uses preserve).
+      // Apply expiry only to non-super preserved grants.
       if (expiresAt) {
         const preservedGrantIds = current
-          .filter((r) => preserveRoleNames.includes(r.roleName))
+          .filter(
+            (r) => preserveRoleNames.includes(r.roleName) && r.roleName !== superAdminRoleName,
+          )
           .map((r) => r.id);
         if (preservedGrantIds.length > 0) {
           await tx
@@ -564,24 +581,11 @@ export class RbacModel {
         }
       }
 
-      // Last-super under role row lock when super grant removed or reassigned with expiry.
+      // Last-super under role row lock when super grant removed.
+      // Permanent supers only (expires_at IS NULL) count toward the invariant.
       const removedSuper = toDelete.some((row) => row.roleName === superAdminRoleName);
-      const superRoleId = (
-        await tx
-          .select({ id: roles.id })
-          .from(roles)
-          .where(and(eq(roles.name, superAdminRoleName), isNull(roles.workspaceId)))
-          .limit(1)
-      )[0]?.id;
-      const wroteSuperWithExpiry =
-        Boolean(expiresAt) &&
-        Boolean(superRoleId) &&
-        (insertIds.includes(superRoleId!) ||
-          current.some(
-            (r) => r.roleName === superAdminRoleName && preserveRoleNames.includes(r.roleName),
-          ));
 
-      if (protectLastSuperAdmin && (removedSuper || wroteSuperWithExpiry)) {
+      if (protectLastSuperAdmin && removedSuper) {
         const countResult = await tx
           .select({ count: sql<number>`count(distinct ${userRoles.userId})` })
           .from(userRoles)
@@ -593,8 +597,8 @@ export class RbacModel {
               isNull(userRoles.workspaceId),
               isNull(roles.workspaceId),
               eq(roles.isActive, true),
-              sql`(${users.banned} IS NOT TRUE)`,
-              sql`(${userRoles.expiresAt} IS NULL OR ${userRoles.expiresAt} > NOW())`,
+              isNull(userRoles.expiresAt),
+              effectivelyActiveSql(),
             ),
           );
         const count = Number(countResult[0]?.count || 0);
@@ -606,7 +610,8 @@ export class RbacModel {
   };
 
   /**
-   * Count active global super_admin grants (non-expired, user not banned).
+   * Count permanent active global super_admin grants
+   * (expires_at IS NULL, user not effectively banned).
    */
   countActiveSuperAdmins = async (superAdminRoleName = 'super_admin'): Promise<number> => {
     const result = await this.db
@@ -620,8 +625,8 @@ export class RbacModel {
           isNull(userRoles.workspaceId),
           isNull(roles.workspaceId),
           eq(roles.isActive, true),
-          sql`(${users.banned} IS NOT TRUE)`,
-          sql`(${userRoles.expiresAt} IS NULL OR ${userRoles.expiresAt} > NOW())`,
+          isNull(userRoles.expiresAt),
+          effectivelyActiveSql(),
         ),
       );
 
