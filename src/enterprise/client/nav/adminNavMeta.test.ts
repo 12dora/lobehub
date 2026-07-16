@@ -23,19 +23,22 @@ describe('adminNavMeta', () => {
     expect(findAdminNavItemByPath('/admin/ai/providers')?.id).toBe('ai-providers');
     expect(findAdminNavItemByPath('/admin/ai/providers/p1')?.id).toBe('ai-provider-detail');
     expect(findAdminNavItemByPath('/admin/ai/providers/p1')?.requiredPermissions).toEqual([
-      PLATFORM_PERMISSIONS.AI_PROVIDER_UPDATE,
+      PLATFORM_PERMISSIONS.AI_PROVIDER_READ,
     ]);
     expect(findAdminNavItemByPath('/admin/managed-resources')?.requiredPermissions).toEqual([
       PLATFORM_PERMISSIONS.POLICY_READ,
     ]);
   });
 
-  it('most-specific matchPath wins — list READ does not grant provider edit', () => {
+  it('lets Provider auditors inspect detail without granting write actions', () => {
     const readOnly = [PLATFORM_PERMISSIONS.AI_PROVIDER_READ];
     expect(canAccessAdminPath('/admin/ai/providers', readOnly)).toBe(true);
-    expect(canAccessAdminPath('/admin/ai/providers/p1', readOnly)).toBe(false);
+    expect(canAccessAdminPath('/admin/ai/providers/p1', readOnly)).toBe(true);
 
-    const updater = [PLATFORM_PERMISSIONS.AI_PROVIDER_UPDATE];
+    const updater = [
+      PLATFORM_PERMISSIONS.AI_PROVIDER_READ,
+      PLATFORM_PERMISSIONS.AI_PROVIDER_UPDATE,
+    ];
     expect(canAccessAdminPath('/admin/ai/providers/p1', updater)).toBe(true);
   });
 
@@ -73,7 +76,7 @@ describe('adminNavMeta', () => {
 
     expect(canAccessAdminPath('/admin/users', granted)).toBe(true);
     expect(canAccessAdminPath('/admin/users/abc', granted)).toBe(true);
-    expect(canAccessAdminPath('/admin/ai/providers/p1', granted)).toBe(false);
+    expect(canAccessAdminPath('/admin/ai/providers/p1', granted)).toBe(true);
   });
 
   it('builds breadcrumbs for detail paths', () => {
