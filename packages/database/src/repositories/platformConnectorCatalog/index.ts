@@ -635,7 +635,9 @@ export class PlatformUserConnectorBindingRepository {
                 status: 'pending' as const,
                 tokenFingerprint: null,
               }),
-          publishedRevision: params.publishedRevision,
+          publishedRevision: preserveConnected
+            ? current.publishedRevision
+            : params.publishedRevision,
           revision: sqlIncrement(platformUserConnectorBindings.revision),
           updatedAt: new Date(),
         })

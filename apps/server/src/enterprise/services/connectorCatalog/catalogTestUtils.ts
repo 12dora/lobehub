@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import { eq, sql } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 
 import {
   platformAuditLogs,
@@ -84,7 +84,9 @@ export const cleanupM09ServiceData = async (db: LobeChatDatabase): Promise<void>
   await db
     .delete(platformResourceRevisions)
     .where(eq(platformResourceRevisions.resourceType, 'connector'));
-  await db.delete(platformAuditLogs).where(eq(platformAuditLogs.targetType, 'connector'));
+  await db
+    .delete(platformAuditLogs)
+    .where(inArray(platformAuditLogs.targetType, ['connector', 'connector_binding']));
   await db.delete(users).where(sql`${users.id} LIKE 'm09-service-user-%'`);
 };
 

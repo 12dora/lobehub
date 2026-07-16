@@ -26,6 +26,10 @@ export class ConnectorOAuthOutboundAdapter {
   discover = async (discoveryUrl: string): Promise<ConnectorOutboundJsonResponse> =>
     this.outbound.requestJson({ operation: 'discover', url: discoveryUrl });
 
+  preflightAuthorization = async (authorizationEndpoint: string): Promise<void> => {
+    await this.outbound.preflight(authorizationEndpoint);
+  };
+
   exchangeCode = async (request: OAuthTokenRequest): Promise<ConnectorOutboundJsonResponse> =>
     this.outbound.requestJson({
       body: {
