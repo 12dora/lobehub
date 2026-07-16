@@ -39,5 +39,11 @@ describe('connector secret boundary', () => {
     });
     expect(JSON.stringify(result)).not.toContain(upstream);
     expect(() => assertConnectorPersistentTextSafe(upstream, new Set())).toThrow();
+    expect(() =>
+      assertConnectorPersistentTextSafe(
+        'upstream failed at https://user:password@example.test/private',
+        new Set(),
+      ),
+    ).toThrowError('PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED');
   });
 });

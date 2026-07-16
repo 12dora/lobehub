@@ -52,10 +52,21 @@ export class ConnectorOutboundClient {
   requestJson = async (
     request: ConnectorOutboundJsonRequest,
   ): Promise<ConnectorOutboundJsonResponse> => {
-    const body = encodeBody(request.body, request.bodyEncoding ?? 'json');
+    let body: string | undefined;
+    try {
+      body = encodeBody(request.body, request.bodyEncoding ?? 'json');
+    } catch {
+      throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_TRANSPORT_UNSUPPORTED');
+    }
     if (body && Buffer.byteLength(body, 'utf8') > CONNECTOR_MAX_RESPONSE_BYTES) {
       throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_TRANSPORT_UNSUPPORTED');
     }
+    const oauthOperation = request.operation.startsWith('oauth_');
+    const secretBearing =
+      oauthOperation ||
+      request.body !== undefined ||
+      (request.headers !== undefined && Object.keys(request.headers).length > 0) ||
+      request.secretBearing === true;
 
     let response: SafeOutboundResponse;
     try {
@@ -76,7 +87,7 @@ export class ConnectorOutboundClient {
         maxRedirects: CONNECTOR_MAX_REDIRECTS,
         maxResponseBytes: CONNECTOR_MAX_RESPONSE_BYTES,
         method: request.method ?? (body ? 'POST' : 'GET'),
-        secretBearing: request.secretBearing,
+        secretBearing,
         timeoutMs: CONNECTOR_REQUEST_TIMEOUT_MS,
       });
     } catch (error) {
