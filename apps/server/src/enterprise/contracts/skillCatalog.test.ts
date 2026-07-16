@@ -155,6 +155,13 @@ describe('Skill catalog contracts', () => {
         description:
           'Sources https://safe.example.test,s3://safe-bucket/key;git+ssh://deploy:token@git.internal/repo',
       },
+      { reason: 'Safe https://safe.example.test|redis://default:password@redis.internal/0' },
+      { description: 'Safe (https://safe.example.test)(postgres://admin:password@db/catalog)' },
+      {
+        reason: 'Safe [docs](https://safe.example.test)[db](postgres://admin:password@db/catalog)',
+      },
+      { description: '安全 https://safe.example.test，redis://default:password@redis.internal/0' },
+      { reason: '安全 https://safe.example.test；s3://bucket/key?X-Amz-Signature=secret' },
     ]) {
       expect(adminSkillCreateInputSchema.safeParse({ ...base, ...patch }).success).toBe(false);
     }
@@ -173,6 +180,14 @@ describe('Skill catalog contracts', () => {
         version: '1.0.0',
       }).success,
     ).toBe(false);
+    expect(
+      adminSkillCreateInputSchema.safeParse({
+        description: 'Safe paths https://example.test/a,b;c and s3://safe-bucket/a,b;c',
+        displayName: 'Safe skill',
+        reason: 'reviewed safe URI paths',
+        skillKey: 'safe-paths',
+      }).success,
+    ).toBe(true);
   });
 
   it('persists builtin override intent in admin/server projections but hides it publicly', () => {

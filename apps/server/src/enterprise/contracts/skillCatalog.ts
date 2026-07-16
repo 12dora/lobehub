@@ -3,12 +3,21 @@ import { z } from 'zod';
 
 import { containsSensitiveMaterial, isCredentialBearingUrl } from '../security/redaction';
 
+const extractEmbeddedUris = (value: string): string[] => {
+  const starts = [...value.matchAll(/[a-z][a-z0-9+.-]*:\/\//gi)].map((match) => match.index);
+  return starts.map((start, index) => {
+    const nextScheme = starts[index + 1] ?? value.length;
+    const remainder = value.slice(start, nextScheme);
+    const boundary = remainder.search(/[\s<>"'|()[\]{}，；（）【】]/u);
+    return remainder.slice(0, boundary < 0 ? remainder.length : boundary);
+  });
+};
+
 const rejectSensitiveText = (value: string, ctx: z.RefinementCtx) => {
-  const embeddedUrls = value.match(/[a-z][a-z0-9+.-]*:\/\/[^\s<>"',;]+/gi) ?? [];
   if (
     containsSensitiveMaterial(value) ||
     isCredentialBearingUrl(value) ||
-    embeddedUrls.some(isCredentialBearingUrl)
+    extractEmbeddedUris(value).some(isCredentialBearingUrl)
   ) {
     ctx.addIssue({ code: 'custom', message: 'secret material is not allowed' });
   }
@@ -99,6 +108,9 @@ export const skillValidationIssueCodeSchema = z.enum([
   'content_too_large',
   'dangerous_instruction',
   'dependency_cycle',
+  'dependency_graph_limit',
+  'dependency_identity_mismatch',
+  'dependency_resolver_error',
   'manifest_invalid',
   'permissions_invalid',
   'secret_material_detected',
