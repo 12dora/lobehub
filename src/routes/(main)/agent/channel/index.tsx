@@ -7,7 +7,7 @@ import { useParams } from 'react-router';
 
 import AsyncBoundary from '@/components/AsyncBoundary';
 import Loading from '@/components/Loading/BrandTextLoading';
-import { ManagedResourceBoundary } from '@/features/ManagedResources';
+import { ManagedAgentConfigurationBoundary } from '@/features/ManagedResources';
 import NavHeader from '@/features/NavHeader';
 import { usePermission } from '@/hooks/usePermission';
 import { useAgentStore } from '@/store/agent';
@@ -163,9 +163,9 @@ const ChannelConfiguration = memo(() => {
 ChannelConfiguration.displayName = 'ChannelConfiguration';
 
 const ChannelPage = memo(() => (
-  <ManagedResourceBoundary resource="agents">
+  <ManagedAgentConfigurationBoundary>
     <ChannelConfiguration />
-  </ManagedResourceBoundary>
+  </ManagedAgentConfigurationBoundary>
 ));
 
 ChannelPage.displayName = 'ChannelPage';

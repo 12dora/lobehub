@@ -47,6 +47,10 @@ vi.mock('react-i18next', () => ({
 }));
 
 vi.mock('@/features/ManagedResources', () => ({
+  isManagedResourceConfigurationAvailable: (
+    resource: keyof typeof managedResourcesRef.current.capabilities,
+    snapshot: typeof managedResourcesRef.current,
+  ) => !snapshot.loading && !snapshot.error && !snapshot.capabilities[resource],
   useManagedResourceCapabilities: () => managedResourcesRef.current,
 }));
 

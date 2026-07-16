@@ -34,6 +34,8 @@ import { usePageStore } from '@/store/page';
 import { useUserStore } from '@/store/user';
 import { labPreferSelectors } from '@/store/user/selectors';
 
+import { isAgentCreationAllowed } from './agentCreationGuard';
+
 interface CreateAgentOptions {
   groupId?: string;
   isPinned?: boolean;
@@ -59,6 +61,7 @@ export const useCreateMenuItems = () => {
   const groupTemplates = useGroupTemplates();
   const { allowed: canCreate } = usePermission('create_content');
   const { blocked: agentCreationBlocked } = useManagedResource('agents');
+  const agentCreationAllowed = isAgentCreationAllowed({ agentCreationBlocked, canCreate });
 
   const [storeCreateAgent] = useAgentStore((s) => [s.createAgent]);
   const [addGroup, refreshAgentList, switchToGroup] = useHomeStore((s) => [
@@ -117,7 +120,7 @@ export const useCreateMenuItems = () => {
    */
   const createAgent = useCallback(
     async (options?: CreateAgentOptions & { prompt?: string }) => {
-      if (!canCreate || agentCreationBlocked) return;
+      if (!agentCreationAllowed) return;
 
       const config = options?.prompt ? { systemRole: options.prompt } : undefined;
       await mutateAgent({
@@ -127,7 +130,7 @@ export const useCreateMenuItems = () => {
       });
       options?.onSuccess?.();
     },
-    [agentCreationBlocked, canCreate, mutateAgent],
+    [agentCreationAllowed, mutateAgent],
   );
 
   /**
@@ -136,7 +139,7 @@ export const useCreateMenuItems = () => {
    */
   const createGroupFromTemplate = useCallback(
     async (templateId: string, selectedMemberTitles?: string[]) => {
-      if (!canCreate || agentCreationBlocked) return false;
+      if (!agentCreationAllowed) return false;
 
       setIsCreatingGroup(true);
       try {
@@ -183,16 +186,7 @@ export const useCreateMenuItems = () => {
         setIsCreatingGroup(false);
       }
     },
-    [
-      agentCreationBlocked,
-      canCreate,
-      groupTemplates,
-      refreshAgentList,
-      loadGroups,
-      switchToGroup,
-      message,
-      t,
-    ],
+    [agentCreationAllowed, groupTemplates, refreshAgentList, loadGroups, switchToGroup, message, t],
   );
 
   /**
@@ -200,7 +194,7 @@ export const useCreateMenuItems = () => {
    */
   const createGroupWithMembers = useCallback(
     async (selectedAgents: string[], groupTitle?: string) => {
-      if (!canCreate) return false;
+      if (!agentCreationAllowed) return false;
 
       setIsCreatingGroup(true);
       try {
@@ -223,7 +217,7 @@ export const useCreateMenuItems = () => {
         setIsCreatingGroup(false);
       }
     },
-    [canCreate, createGroup, message, t],
+    [agentCreationAllowed, createGroup, message, t],
   );
 
   /**
@@ -231,11 +225,11 @@ export const useCreateMenuItems = () => {
    */
   const createEmptyGroup = useCallback(
     async (options?: CreateAgentOptions & { title?: string }) => {
-      if (!canCreate) return;
+      if (!agentCreationAllowed) return;
 
       await mutateGroup(options);
     },
-    [canCreate, mutateGroup],
+    [agentCreationAllowed, mutateGroup],
   );
 
   const agentModal = useOptionalAgentModal();
@@ -247,7 +241,7 @@ export const useCreateMenuItems = () => {
    */
   const createAgentMenuItem = useCallback(
     (options?: CreateAgentOptions): ItemType | null => {
-      if (agentCreationBlocked) return null;
+      if (!agentCreationAllowed) return null;
       return {
         icon: <Icon icon={BotIcon} />,
         disabled: !canCreate,
@@ -270,14 +264,14 @@ export const useCreateMenuItems = () => {
         },
       };
     },
-    [agentCreationBlocked, canCreate, t, createAgent, openCreateModal],
+    [agentCreationAllowed, canCreate, t, createAgent, openCreateModal],
   );
 
   /**
    * Add market agent menu item
    */
   const createMarketAgentMenuItem = useCallback((): ItemType | null => {
-    if (agentCreationBlocked) return null;
+    if (!agentCreationAllowed) return null;
     return {
       icon: <Icon icon={Store} />,
       disabled: !canCreate,
@@ -290,14 +284,14 @@ export const useCreateMenuItems = () => {
         navigate('/community/agent');
       },
     };
-  }, [agentCreationBlocked, canCreate, navigate, t]);
+  }, [agentCreationAllowed, canCreate, navigate, t]);
 
   /**
    * Create heterogeneous agent menu items (Desktop only)
    */
   const createHeterogeneousAgentMenuItems = useCallback(
     (options?: CreateAgentOptions): ItemType[] => {
-      if (!isDesktop || agentCreationBlocked) return [];
+      if (!isDesktop || !agentCreationAllowed) return [];
 
       return HETEROGENEOUS_AGENT_CLIENT_CONFIGS.map((definition) => {
         const AgentIcon = definition.icon;
@@ -316,7 +310,7 @@ export const useCreateMenuItems = () => {
         };
       });
     },
-    [agentCreationBlocked, canCreate, t, createHeterogeneousAgent],
+    [agentCreationAllowed, canCreate, t, createHeterogeneousAgent],
   );
 
   /**
@@ -325,7 +319,7 @@ export const useCreateMenuItems = () => {
    */
   const createPlatformAgentMenuItem = useCallback(
     (options?: CreateAgentOptions): ItemType => {
-      if (!enablePlatformAgent || agentCreationBlocked) return null;
+      if (!enablePlatformAgent || !agentCreationAllowed) return null;
       return {
         icon: <Icon icon={MonitorSmartphone} />,
         key: 'newPlatformAgent',
@@ -340,7 +334,7 @@ export const useCreateMenuItems = () => {
         },
       };
     },
-    [agentCreationBlocked, t, agentModal, enablePlatformAgent],
+    [agentCreationAllowed, t, agentModal, enablePlatformAgent],
   );
 
   /**
@@ -348,26 +342,29 @@ export const useCreateMenuItems = () => {
    * Creates an empty group and navigates to its profile page
    */
   const createGroupChatMenuItem = useCallback(
-    (options?: CreateAgentOptions): ItemType => ({
-      icon: <Icon icon={GroupBotSquareIcon} />,
-      disabled: !canCreate,
-      key: options?.visibility === 'private' ? 'newPrivateGroupChat' : 'newGroupChat',
-      label: t('newGroupChat'),
-      onClick: async (info) => {
-        info.domEvent?.stopPropagation();
-        if (!canCreate) return;
+    (options?: CreateAgentOptions): ItemType | null => {
+      if (!agentCreationAllowed) return null;
+      return {
+        icon: <Icon icon={GroupBotSquareIcon} />,
+        disabled: !canCreate,
+        key: options?.visibility === 'private' ? 'newPrivateGroupChat' : 'newGroupChat',
+        label: t('newGroupChat'),
+        onClick: async (info) => {
+          info.domEvent?.stopPropagation();
+          if (!agentCreationAllowed) return;
 
-        if (openCreateModal) {
-          openCreateModal('group', {
-            ...(options?.groupId ? { groupId: options.groupId } : {}),
-            ...(options?.visibility ? { visibility: options.visibility } : {}),
-          });
-        } else {
-          await createEmptyGroup(options);
-        }
-      },
-    }),
-    [canCreate, t, createEmptyGroup, openCreateModal],
+          if (openCreateModal) {
+            openCreateModal('group', {
+              ...(options?.groupId ? { groupId: options.groupId } : {}),
+              ...(options?.visibility ? { visibility: options.visibility } : {}),
+            });
+          } else {
+            await createEmptyGroup(options);
+          }
+        },
+      };
+    },
+    [agentCreationAllowed, canCreate, t, createEmptyGroup, openCreateModal],
   );
 
   /**
@@ -459,7 +456,7 @@ export const useCreateMenuItems = () => {
     const marketItem = createMarketAgentMenuItem();
 
     if (!agentItem && heterogeneousItems.length === 0 && !platformItem && !marketItem) {
-      return [createGroupChatMenuItem(), createPageMenuItem()];
+      return [createGroupChatMenuItem(), createPageMenuItem()].filter(Boolean) as ItemType[];
     }
 
     return [
