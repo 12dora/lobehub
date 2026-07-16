@@ -1,26 +1,37 @@
-import { authedProcedure, publicProcedure, router } from '@/libs/trpc/lambda';
+import { z } from 'zod';
 
+import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
+import { RbacModel } from '@/database/models/rbac';
+import { authedProcedure, publicProcedure, router } from '@/libs/trpc/lambda';
+import { serverDatabase } from '@/libs/trpc/lambda/middleware';
+
+import { parseEasyauthConfig } from '../config/easyauth';
 import { parseEnterpriseFeatureFlags } from '../featureFlags';
+import { resolveAccessStatus } from '../guards/accessGrant';
+import { buildEasyauthDescriptor } from '../services/easyauthManifest';
 import { buildPlatformCapabilities } from '../services/platformCapabilities';
 import { buildPlatformPublicSnapshot } from '../services/platformPublicSnapshot';
 
 /**
- * Read-only platform router (M00).
- * Mounted on lambda root in PR-003. Does not perform mutations.
+ * Platform router (M00 read-only + M02 access status / descriptor).
  *
- * - getCapabilities: **authenticated** principal only (M00 §8 / 02 清单「本人」).
+ * - getCapabilities: **authenticated** — adminAccess from Global RBAC when flag on.
  * - getPublicSnapshot: anonymous-safe branding / login flags.
+ * - getAccessStatus: authenticated aihub.access status + permission request URL.
+ * - getEasyauthDescriptor: public EasyAuth app descriptor (manifest).
  */
 export const platformRouter = router({
-  getCapabilities: authedProcedure.query(({ ctx }) => {
+  getCapabilities: authedProcedure.use(serverDatabase).query(async ({ ctx }) => {
     const flags = parseEnterpriseFeatureFlags(process.env);
 
-    // M00: no platform RBAC yet — never grant adminAccess from client-only signals.
-    // M02 will resolve adminAccess from Global RBAC for ctx.userId.
-    void ctx.userId;
+    let adminAccess = false;
+    if (flags.ENABLE_PLATFORM_ADMIN && ctx.userId) {
+      const rbac = new RbacModel(ctx.serverDB, ctx.userId);
+      adminAccess = await rbac.hasGlobalPermission(PLATFORM_PERMISSIONS.ADMIN_ACCESS, ctx.userId);
+    }
 
     return buildPlatformCapabilities({
-      adminAccess: false,
+      adminAccess,
       flags,
     });
   }),
@@ -28,12 +39,33 @@ export const platformRouter = router({
   getPublicSnapshot: publicProcedure.query(() => {
     const flags = parseEnterpriseFeatureFlags(process.env);
 
-    // Branding / IdP payloads come from M11/M12 publishers; empty until then.
     return buildPlatformPublicSnapshot({
       flags,
       workAccountEnabled: false,
     });
   }),
+
+  /**
+   * aihub.access status for the current principal (login → "request access" page).
+   */
+  getAccessStatus: authedProcedure.use(serverDatabase).query(async ({ ctx }) => {
+    return resolveAccessStatus({
+      db: ctx.serverDB,
+      userId: ctx.userId!,
+    });
+  }),
+
+  /**
+   * EasyAuth application descriptor (also served at GET /.well-known/easyauth-app.json).
+   */
+  getEasyauthDescriptor: publicProcedure
+    .input(z.object({ schemaVersion: z.number().int().min(1).optional() }).optional())
+    .query(({ input }) => {
+      const config = parseEasyauthConfig();
+      return buildEasyauthDescriptor({
+        schemaVersion: input?.schemaVersion ?? config.manifestSchemaVersion,
+      });
+    }),
 });
 
 export type PlatformRouter = typeof platformRouter;

@@ -1,4 +1,3 @@
-/**
- * Platform guards / middleware stubs (M02 / M06).
- */
-export {};
+export * from './accessGrant';
+export * from './enterpriseErrors';
+export * from './platformPermission';

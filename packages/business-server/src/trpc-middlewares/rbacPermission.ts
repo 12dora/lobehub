@@ -10,6 +10,9 @@ import { trpc } from '@/libs/trpc/lambda/init';
  * Keep the export shape identical to the cloud version so router code that
  * imports from `@/business/server/trpc-middlewares/rbacPermission` compiles
  * and runs in both environments without conditional imports.
+ *
+ * Platform global permissions use enterprise `withPlatformPermission` (M02);
+ * this module intentionally does not enforce platform_* codes.
  */
 export const withRbacPermission = (_code: string) => trpc.middleware(async (opts) => opts.next());
 

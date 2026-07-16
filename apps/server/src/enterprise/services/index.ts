@@ -1,10 +1,13 @@
+export * from './easyauthClient';
+export * from './easyauthManifest';
+export * from './easyauthSync';
+export * from './platformAudit';
 export {
   buildPlatformCapabilities,
   type BuildPlatformCapabilitiesInput,
   findForbiddenCapabilityKeys,
   getDisabledPlatformCapabilities,
 } from './platformCapabilities';
-export * from './platformAudit';
 export * from './platformConfigInvalidation';
 export {
   buildPlatformPublicSnapshot,
@@ -12,3 +15,4 @@ export {
   getDisabledPlatformPublicSnapshot,
 } from './platformPublicSnapshot';
 export * from './platformPublisher';
+export * from './platformRbac';

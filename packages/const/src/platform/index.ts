@@ -1,4 +1,7 @@
+export * from './easyauth';
+export * from './easyauthManifest';
 export * from './errorCodes';
 export * from './featureFlags';
 export * from './managedResources';
 export * from './permissions';
+export * from './roles';

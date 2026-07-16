@@ -205,6 +205,10 @@ export const getAllowedScopesForAction = (
   const resource = value.split(':')[0];
   const action = value.split(':')[1];
 
+  // Platform global resources (M02): ALL only — never OWNER.
+  // Also accept already-scoped codes beginning with platform_.
+  if (resource.startsWith('platform_') || value.startsWith('platform_')) return ['ALL'];
+
   // RBAC resources: ALL only (system-level resource)
   if (resource === 'rbac') return ['ALL'];
 
@@ -223,6 +227,13 @@ export const getAllowedScopesForAction = (
   // Default: OWNER | ALL
   return ['ALL', 'OWNER'];
 };
+
+/**
+ * Whether a permission code is a platform-global code (`platform_*:action:all`).
+ * Platform codes must only be satisfied by roles with `workspace_id IS NULL`.
+ */
+export const isPlatformPermissionCode = (code: string): boolean =>
+  code.startsWith('platform_') && code.endsWith(':all');
 
 /**
  * RBAC System Permissions Definition
@@ -262,9 +273,15 @@ export const ALL_SCOPE = 'ALL';
 
 /**
  * RBAC Role Constants Definition
+ * Platform sub-roles live in `@/const/platform/roles` (PLATFORM_SYSTEM_ROLES).
  */
 export const SYSTEM_DEFAULT_ROLES = {
   SUPER_ADMIN: 'super_admin',
+  USER_ADMIN: 'user_admin',
+  AI_ADMIN: 'ai_admin',
+  IDENTITY_ADMIN: 'identity_admin',
+  AUDITOR: 'auditor',
+  PLATFORM_USER: 'platform_user',
 } as const;
 
 /**
@@ -272,6 +289,11 @@ export const SYSTEM_DEFAULT_ROLES = {
  */
 export const ROLE_DESCRIPTIONS = {
   [SYSTEM_DEFAULT_ROLES.SUPER_ADMIN]: 'Administrator with all system permissions',
+  [SYSTEM_DEFAULT_ROLES.USER_ADMIN]: 'Platform user administrator',
+  [SYSTEM_DEFAULT_ROLES.AI_ADMIN]: 'Platform AI / skill / connector / agent administrator',
+  [SYSTEM_DEFAULT_ROLES.IDENTITY_ADMIN]: 'Platform identity and branding administrator',
+  [SYSTEM_DEFAULT_ROLES.AUDITOR]: 'Platform read-only auditor',
+  [SYSTEM_DEFAULT_ROLES.PLATFORM_USER]: 'Base platform access (EasyAuth aihub.access)',
 } as const;
 
 /**
