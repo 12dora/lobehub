@@ -1,4 +1,16 @@
+import semver from 'semver';
 import { z } from 'zod';
+
+import { containsSensitiveMaterial, isCredentialBearingUrl } from '../security/redaction';
+
+const rejectSensitiveText = (value: string, ctx: z.RefinementCtx) => {
+  if (containsSensitiveMaterial(value) || isCredentialBearingUrl(value)) {
+    ctx.addIssue({ code: 'custom', message: 'secret material is not allowed' });
+  }
+};
+
+const boundedSafeText = (max: number) =>
+  z.string().trim().min(1).max(max).superRefine(rejectSensitiveText);
 
 const skillKeySchema = z
   .string()
@@ -12,17 +24,14 @@ const skillVersionSchema = z
   .trim()
   .min(1)
   .max(64)
-  .regex(/^\d+\.\d+\.\d+(?:-[0-9A-Z.-]+)?(?:\+[0-9A-Z.-]+)?$/i);
+  .refine((value) => semver.parse(value)?.raw === value, 'version must be valid SemVer');
 
 const checksumSchema = z.string().regex(/^[a-f0-9]{64}$/);
-const reasonSchema = z.string().trim().min(1).max(2000);
+const reasonSchema = boundedSafeText(2000);
 const draftTokenSchema = z.string().length(64);
 const revisionSchema = z.number().int().nonnegative();
 const cursorSchema = z.string().min(1).max(1000);
-const localizedTextSchema = z.record(
-  z.string().trim().min(2).max(35),
-  z.string().trim().min(1).max(4000),
-);
+const localizedTextSchema = z.record(z.string().trim().min(2).max(35), boundedSafeText(4000));
 
 export const skillToolDependencySchema = z
   .object({
@@ -39,13 +48,41 @@ export const skillSkillDependencySchema = z
   })
   .strict();
 
+export const skillPermissionsSchema = z
+  .object({
+    filesystem: z.enum(['none', 'read']).default('none'),
+    network: z
+      .object({
+        allowedHosts: z
+          .array(
+            z
+              .string()
+              .trim()
+              .min(1)
+              .max(253)
+              .regex(
+                /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i,
+              ),
+          )
+          .max(50),
+        enabled: z.boolean(),
+      })
+      .strict()
+      .default({ allowedHosts: [], enabled: false }),
+    tools: z
+      .object({ allow: z.array(z.string().trim().min(1).max(128)).max(100) })
+      .strict()
+      .default({ allow: [] }),
+  })
+  .strict();
+
 export const skillManifestSchema = z
   .object({
-    description: z.string().trim().min(1).max(4000),
-    displayName: z.string().trim().min(1).max(200),
+    description: boundedSafeText(4000),
+    displayName: boundedSafeText(200),
     localizedDescriptions: localizedTextSchema.default({}),
     localizedDisplayNames: localizedTextSchema.default({}),
-    networkAccess: z.boolean().default(false),
+    permissions: skillPermissionsSchema,
     skillDependencies: z.array(skillSkillDependencySchema).max(100).default([]),
     toolDependencies: z.array(skillToolDependencySchema).max(100).default([]),
   })
@@ -67,7 +104,7 @@ export const skillValidationIssueCodeSchema = z.enum([
 export const skillValidationIssueSchema = z
   .object({
     code: skillValidationIssueCodeSchema,
-    message: z.string().max(500),
+    message: boundedSafeText(500),
     path: z.array(z.union([z.string(), z.number().int().nonnegative()])).max(32),
     severity: z.enum(['error', 'warning']),
   })
@@ -84,8 +121,8 @@ export const skillValidationResultSchema = z
 export const skillIdentityDraftSchema = z
   .object({
     currentVersionId: z.string().min(1).nullable(),
-    description: z.string().trim().max(4000).nullable(),
-    displayName: z.string().trim().min(1).max(200),
+    description: boundedSafeText(4000).nullable(),
+    displayName: boundedSafeText(200),
     distribution: z.enum(['mandatory', 'default', 'optional']),
     enabled: z.boolean(),
     id: z.string().min(1),
@@ -100,7 +137,6 @@ export const immutableSkillVersionSchema = z
   .object({
     checksum: checksumSchema,
     content: z.string().min(1).max(1_048_576),
-    contentRef: z.string().max(2000).nullable(),
     createdAt: z.date(),
     createdBy: z.string().min(1).nullable(),
     id: z.string().min(1),
@@ -137,15 +173,30 @@ export const adminSkillGetOutputSchema = z
     baseRevision: revisionSchema,
     draft: skillIdentityDraftSchema,
     draftToken: draftTokenSchema,
+    latestVersion: immutableSkillVersionSchema.nullable(),
     publishedVersion: immutableSkillVersionSchema.nullable(),
-    versions: z.array(immutableSkillVersionSchema),
+  })
+  .strict();
+
+export const adminSkillListVersionsInputSchema = z
+  .object({
+    cursor: cursorSchema.optional(),
+    limit: z.number().int().min(1).max(100).default(50),
+    skillId: z.string().min(1),
+  })
+  .strict();
+
+export const adminSkillListVersionsOutputSchema = z
+  .object({
+    items: z.array(immutableSkillVersionSchema),
+    nextCursor: cursorSchema.nullable(),
   })
   .strict();
 
 const skillIdentityFieldsSchema = z
   .object({
-    description: z.string().trim().max(4000).nullable().optional(),
-    displayName: z.string().trim().min(1).max(200).optional(),
+    description: boundedSafeText(4000).nullable().optional(),
+    displayName: boundedSafeText(200).optional(),
     distribution: z.enum(['mandatory', 'default', 'optional']).optional(),
     enabled: z.boolean().optional(),
   })
@@ -153,10 +204,10 @@ const skillIdentityFieldsSchema = z
 
 export const adminSkillCreateInputSchema = skillIdentityFieldsSchema
   .extend({
-    displayName: z.string().trim().min(1).max(200),
+    allowBuiltinOverride: z.boolean().default(false),
+    displayName: boundedSafeText(200),
     reason: reasonSchema,
     skillKey: skillKeySchema,
-    source: z.enum(['builtin', 'uploaded']).default('uploaded'),
   })
   .strict();
 
@@ -173,7 +224,6 @@ export const adminSkillCreateVersionInputSchema = z
   .object({
     checksum: checksumSchema,
     content: z.string().min(1).max(1_048_576),
-    contentRef: z.string().trim().max(2000).nullable().default(null),
     expectedDraftToken: draftTokenSchema,
     expectedRevision: revisionSchema,
     manifest: skillManifestSchema,
@@ -213,7 +263,12 @@ export const adminSkillRollbackInputSchema = skillPublicationInputSchema
   .strict();
 
 export const adminSkillGetDependentsInputSchema = z
-  .object({ skillId: z.string().min(1), versionId: z.string().min(1).optional() })
+  .object({
+    cursor: cursorSchema.optional(),
+    limit: z.number().int().min(1).max(100).default(50),
+    skillId: z.string().min(1),
+    versionId: z.string().min(1).optional(),
+  })
   .strict();
 
 export const skillDependentSchema = z
@@ -227,7 +282,10 @@ export const skillDependentSchema = z
   .strict();
 
 export const adminSkillGetDependentsOutputSchema = z
-  .object({ items: z.array(skillDependentSchema).max(1000) })
+  .object({
+    items: z.array(skillDependentSchema).max(100),
+    nextCursor: cursorSchema.nullable(),
+  })
   .strict();
 
 export const adminSkillMutationOutputSchema = z
@@ -237,14 +295,26 @@ export const adminSkillMutationOutputSchema = z
   })
   .strict();
 
+export const adminSkillCreateVersionOutputSchema = immutableSkillVersionSchema;
+export const adminSkillValidateOutputSchema = skillValidationResultSchema;
+
+export const adminSkillPublicationOutputSchema = z
+  .object({
+    auditId: z.string().min(1),
+    catalogRevision: z.string().min(1).max(200),
+    revision: z.number().int().positive(),
+    skillId: z.string().min(1),
+    status: z.enum(['published', 'archived']),
+    versionId: z.string().min(1).nullable(),
+  })
+  .strict();
+
 export const publishedSkillSchema = z
   .object({
     checksum: checksumSchema,
-    content: z.string().min(1).max(1_048_576),
-    description: z.string().max(4000).nullable(),
-    displayName: z.string().min(1).max(200),
+    description: boundedSafeText(4000).nullable(),
+    displayName: boundedSafeText(200),
     distribution: z.enum(['mandatory', 'default', 'optional']),
-    manifest: skillManifestSchema,
     skillKey: skillKeySchema,
     source: z.enum(['builtin', 'uploaded']),
     version: skillVersionSchema,
@@ -265,7 +335,9 @@ export const serverSkillResolveInputSchema = z
 /** Server-only execution projection. Never return this schema from a public/admin router. */
 export const serverResolvedSkillSchema = publishedSkillSchema
   .extend({
+    content: z.string().min(1).max(1_048_576),
     contentRef: z.string().max(2000).nullable(),
+    manifest: skillManifestSchema,
     skillId: z.string().min(1),
     versionId: z.string().min(1),
   })
