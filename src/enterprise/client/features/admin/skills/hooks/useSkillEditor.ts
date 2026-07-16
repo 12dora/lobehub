@@ -10,6 +10,7 @@ import {
   type EditableSkillIdentityDraft,
   type EditableSkillVersionDraft,
   fingerprintSkillDraft,
+  isSkillIdentityDirty,
   rebaseSkillDraft,
   shouldConfirmSkillHydration,
   type SkillRebaseConflict,
@@ -348,6 +349,21 @@ export const useSkillEditor = (snapshot: AdminSkillGetOutput | undefined, editab
     setRebaseConflicts([]);
   }, [activeSnapshot]);
 
+  const markVersionSaved = useCallback(() => {
+    if (!activeSnapshot) return;
+    const identityDirty = isSkillIdentityDirty(draft, baseDraft);
+    setDraft((current) => (current ? { ...current, versionDraft: null } : current));
+    setDirty(identityDirty);
+    setConflict(false);
+    setSaveState(identityDirty ? 'dirty' : 'saved');
+    setActionError(null);
+    setRebaseConflicts([]);
+    if (!identityDirty) {
+      clearSkillLocalDraft(activeSnapshot.draft.id);
+      setPersistenceStatus('saved');
+    }
+  }, [activeSnapshot, baseDraft, draft]);
+
   return {
     actionError,
     activeSkillId: activeSnapshot?.draft.id ?? null,
@@ -357,6 +373,7 @@ export const useSkillEditor = (snapshot: AdminSkillGetOutput | undefined, editab
     discardLocal,
     draft,
     markSaved,
+    markVersionSaved,
     pendingSwitchId,
     persistenceStatus,
     rebaseConflicts,

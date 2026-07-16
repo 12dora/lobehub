@@ -83,6 +83,16 @@ const stableValue = (value: unknown): unknown => {
 export const fingerprintSkillDraft = (draft: EditableSkillDraft): string =>
   JSON.stringify(stableValue(draft));
 
+export const isSkillIdentityDirty = (
+  draft: EditableSkillDraft | null,
+  baseDraft: EditableSkillDraft | null,
+): boolean =>
+  Boolean(
+    draft &&
+    baseDraft &&
+    JSON.stringify(stableValue(draft.identity)) !== JSON.stringify(stableValue(baseDraft.identity)),
+  );
+
 export const fingerprintSkillSnapshot = (snapshot: AdminSkillGetOutput): string =>
   JSON.stringify(
     stableValue({
