@@ -17,20 +17,20 @@ import {
 } from '@lobechat/builtin-tool-activator/executionRuntime';
 import { ActivatorExecutor } from '@lobechat/builtin-tool-activator/executor';
 import { SkillsExecutionRuntime } from '@lobechat/builtin-tool-skills/executionRuntime';
+import type { BuiltinToolContext } from '@lobechat/types';
 
 import { filterBuiltinSkills } from '@/helpers/skillFilters';
-import { clientSkillRuntimeService } from '@/services/platformSkillRuntime';
+import { createClientSkillRuntimeService } from '@/services/platformSkillRuntime';
 import { getToolStoreState } from '@/store/tool';
 import { toolSelectors } from '@/store/tool/selectors/tool';
 import { LobehubSkillStatus } from '@/store/tool/slices/lobehubSkillStore';
 
-const skillsRuntime = new SkillsExecutionRuntime({
-  builtinSkills: filterBuiltinSkills(builtinSkills),
-  service: clientSkillRuntimeService,
-});
-
-const service: ActivatorRuntimeService = {
-  activateSkill: (args) => skillsRuntime.activateSkill(args),
+const createService = (ctx: BuiltinToolContext): ActivatorRuntimeService => ({
+  activateSkill: (args) =>
+    new SkillsExecutionRuntime({
+      builtinSkills: ctx.platformSkillSnapshot ? [] : filterBuiltinSkills(builtinSkills),
+      service: createClientSkillRuntimeService(ctx.platformSkillSnapshot),
+    }).activateSkill(args),
   getActivatedToolIds: () => [],
   getToolManifests: async (identifiers: string[]): Promise<ToolManifestInfo[]> => {
     const s = getToolStoreState();
@@ -98,8 +98,8 @@ const service: ActivatorRuntimeService = {
     return results;
   },
   markActivated: () => {},
-};
+});
 
-const runtime = new ActivatorExecutionRuntime({ service });
-
-export const activatorExecutor = new ActivatorExecutor(runtime);
+export const activatorExecutor = new ActivatorExecutor(
+  (ctx) => new ActivatorExecutionRuntime({ service: createService(ctx) }),
+);

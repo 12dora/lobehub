@@ -34,6 +34,7 @@ import type { LobeChatDatabase } from '@lobechat/database';
 import { isRemoteHeterogeneousType } from '@lobechat/heterogeneous-agents';
 import { buildTaskManagerDefaultsPrompt } from '@lobechat/prompts';
 import type {
+  AgentPluginEntry,
   ChatAudioItem,
   ChatFileItem,
   ChatTopicBotContext,
@@ -1133,6 +1134,9 @@ export class AiAgentService {
     // `disabledPluginIds` is consumed later to filter the auto-discovery
     // candidate pool (installedPlugins) so disabled plugins can't be
     // rediscovered/activated by the auto activator.
+    const persistedAgentPluginEntries = structuredClone(
+      (agentConfig.plugins ?? []) as AgentPluginEntry[],
+    );
     const disabledPluginIds = getDisabledPluginIds(agentConfig.plugins);
     let activePluginIds: string[] = getActivePluginIds(agentConfig.plugins);
 
@@ -3435,7 +3439,7 @@ export class AiAgentService {
     // agent-document Skill source. Feature-off exits inside the resolver
     // before constructing policy/catalog services.
     const platformSkillSnapshot = await resolvePlatformSkillRuntimeSnapshot({
-      agentPlugins: agentConfig.plugins,
+      agentPlugins: persistedAgentPluginEntries,
       db: this.db,
       flags: parseEnterpriseFeatureFlags(process.env),
     });
@@ -3467,7 +3471,11 @@ export class AiAgentService {
       if (platformSkillSnapshot) {
         const skillEngine = new SkillEngine({ skills: platformSkillSnapshot.skills });
         operationSkillSet = {
-          ...skillEngine.generate(agentPlugins ?? []),
+          ...skillEngine.generate(
+            platformSkillSnapshot.skills
+              .filter((skill) => skill.activated)
+              .map((skill) => skill.identifier),
+          ),
           platformCatalog: platformSkillSnapshot.catalog,
         };
       } else {

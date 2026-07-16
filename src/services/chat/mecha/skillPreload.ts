@@ -97,7 +97,10 @@ const loadSkillContent = async (
 ): Promise<PreloadedSkill | undefined> => {
   const toolState = getToolStoreState();
 
-  if (toolState.platformSkillCatalog) {
+  if (toolState.platformSkillRuntimeStatus !== 'unmanaged') {
+    if (toolState.platformSkillRuntimeStatus !== 'ready' || !toolState.platformSkillCatalog) {
+      throw new Error('Managed Skill runtime catalog is unavailable');
+    }
     const published = toolState.platformSkillCatalog.skills.find(
       (skill) => skill.skillKey === selectedSkill.identifier,
     );
@@ -188,12 +191,12 @@ export const resolveSelectedSkillsWithContent = async ({
   const resolved = resolveSelectedSkills(message, selectedSkills);
 
   if (resolved.length === 0) return [];
-  const managedCatalog = getToolStoreState().platformSkillCatalog;
+  const managedRuntime = getToolStoreState().platformSkillRuntimeStatus !== 'unmanaged';
 
   const enriched = await Promise.all(
     resolved.map(async (skill) => {
       const loaded = await loadSkillContent(skill, userCreds);
-      return loaded ? { ...skill, content: loaded.content } : managedCatalog ? undefined : skill;
+      return loaded ? { ...skill, content: loaded.content } : managedRuntime ? undefined : skill;
     }),
   );
 

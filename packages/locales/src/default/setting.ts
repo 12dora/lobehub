@@ -990,6 +990,13 @@ export default {
   'platformSkills.empty.desc':
     'Ask an administrator to publish a Skill before enabling management.',
   'platformSkills.empty.title': 'No published Skills',
+  'platformSkills.pagination.next': 'Next page',
+  'platformSkills.pagination.previous': 'Previous page',
+  'platformSkills.pagination.status': 'Page {{page}} of {{pages}}',
+  'platformSkills.search.emptyDesc': 'Try another name or clear the search.',
+  'platformSkills.search.emptyTitle': 'No matching Skills',
+  'platformSkills.search.label': 'Search published Skills',
+  'platformSkills.search.placeholder': 'Search Skills',
   'platformSkills.source.builtin': 'Built in',
   'platformSkills.source.uploaded': 'Organization',
   'skillStore.button': 'Skill Store',

@@ -42,7 +42,12 @@ export const resolvePublishedManagedResourcePolicies = async (params: {
   for (const resource of MANAGED_RESOURCE_KINDS) {
     const policy = published[resource];
     const featureOn = isManagedResourceFeatureEnabled(resource, params.flags);
-    const catalogSafe = policy.enforcementMode !== 'enforced' || readiness[resource];
+    // Skills must never fall back to legacy writes/runtime after enforcement was
+    // published. Readiness is reported separately and the runtime fails closed;
+    // silently changing the effective mode to unmanaged would reopen personal
+    // mutation and name-based execution paths during a catalog outage.
+    const catalogSafe =
+      resource === 'skills' || policy.enforcementMode !== 'enforced' || readiness[resource];
     effectiveModes[resource] =
       featureOn && policy.managed && catalogSafe ? policy.enforcementMode : 'unmanaged';
     publicCapabilities[resource] = ['ui-only', 'enforced'].includes(effectiveModes[resource]);

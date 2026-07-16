@@ -44,6 +44,84 @@ export class AgentSkillsActionImpl {
     this.#get = get;
   }
 
+  beginPlatformSkillCatalogRequest = (): number => {
+    const epoch = this.#get().platformSkillCatalogRequestEpoch + 1;
+    this.#set(
+      {
+        platformSkillCatalogRequestEpoch: epoch,
+        platformSkillRuntimeStatus: this.#get().platformSkillRuntimeEnforced
+          ? 'loading'
+          : 'unmanaged',
+      },
+      false,
+      n('beginPlatformSkillCatalogRequest'),
+    );
+    return epoch;
+  };
+
+  completePlatformSkillCatalogRequest = (
+    epoch: number,
+    catalog: PlatformPublishedSkillCatalog,
+  ): void => {
+    if (epoch !== this.#get().platformSkillCatalogRequestEpoch) return;
+    this.#set(
+      {
+        platformSkillCatalog: catalog,
+        platformSkillRuntimeStatus: this.#get().platformSkillRuntimeEnforced
+          ? catalog.skills.length > 0
+            ? 'ready'
+            : 'error'
+          : 'unmanaged',
+      },
+      false,
+      n('completePlatformSkillCatalogRequest'),
+    );
+  };
+
+  configurePlatformSkillManagement = (managed: boolean, enforced: boolean): void => {
+    const epoch = this.#get().platformSkillCatalogRequestEpoch + 1;
+    this.#set(
+      {
+        platformSkillCatalog: managed ? this.#get().platformSkillCatalog : null,
+        platformSkillCatalogRequestEpoch: epoch,
+        platformSkillRuntimeEnforced: managed && enforced,
+        platformSkillRuntimeStatus: managed && enforced ? 'loading' : 'unmanaged',
+      },
+      false,
+      n('configurePlatformSkillManagement'),
+    );
+  };
+
+  failPlatformSkillCatalogRequest = (epoch: number): void => {
+    if (epoch !== this.#get().platformSkillCatalogRequestEpoch) return;
+    this.#set(
+      {
+        platformSkillCatalog: null,
+        platformSkillRuntimeStatus: this.#get().platformSkillRuntimeEnforced
+          ? 'error'
+          : 'unmanaged',
+      },
+      false,
+      n('failPlatformSkillCatalogRequest'),
+    );
+  };
+
+  invalidatePlatformSkillCatalog = (revision: string): void => {
+    const epoch = this.#get().platformSkillCatalogRequestEpoch + 1;
+    this.#set(
+      {
+        platformSkillCatalog: null,
+        platformSkillCatalogInvalidationRevision: revision,
+        platformSkillCatalogRequestEpoch: epoch,
+        platformSkillRuntimeStatus: this.#get().platformSkillRuntimeEnforced
+          ? 'loading'
+          : 'unmanaged',
+      },
+      false,
+      n('invalidatePlatformSkillCatalog'),
+    );
+  };
+
   createAgentSkill = async (params: CreateSkillInput): Promise<SkillItem | undefined> => {
     const result = await agentSkillService.createSkill(params);
     await this.#get().refreshAgentSkills();

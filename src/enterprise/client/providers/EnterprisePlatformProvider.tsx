@@ -21,8 +21,8 @@ import {
   type PlatformPublicSnapshot,
 } from '@/types/platform/publicSnapshot';
 
+import { usePublishedSkillCatalog } from '../features/skills';
 import { fetchPlatformCapabilities, fetchPlatformPublicSnapshot } from '../services/platform';
-import { platformSkillsService } from '../services/platformSkills';
 
 export interface EnterprisePlatformContextValue {
   capabilities: PlatformCapabilities;
@@ -74,6 +74,8 @@ export default function EnterprisePlatformProvider({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
 
+  usePublishedSkillCatalog(capabilities.managedResources.skills, capabilities.configRevision);
+
   const refresh = useCallback(async () => {
     if (disableFetch) return;
     // Gate: only hit platform.* when global config says enterprise is on.
@@ -86,16 +88,16 @@ export default function EnterprisePlatformProvider({
         fetchCapabilities(),
         fetchPublicSnapshot(),
       ]);
-      useToolStore.getState().setPlatformSkillCatalog(null);
-      const platformSkillCatalog = nextCapabilities.managedResources.skills
-        ? await platformSkillsService.getPublishedCatalog()
-        : null;
-      useToolStore.getState().setPlatformSkillCatalog(platformSkillCatalog);
+      useToolStore
+        .getState()
+        .configurePlatformSkillManagement(
+          nextCapabilities.managedResources.skills,
+          nextCapabilities.enforcedManagedResources.skills,
+        );
       setCapabilities(nextCapabilities);
       setPublicSnapshot(nextPublic);
     } catch (err) {
       // Keep last-known / disabled snapshot so the app stays usable when enterprise is off.
-      useToolStore.getState().setPlatformSkillCatalog(null);
       setError(err instanceof Error ? err : new Error(String(err)));
     } finally {
       setLoading(false);
@@ -109,7 +111,7 @@ export default function EnterprisePlatformProvider({
       // Explicitly stay on disabled snapshots — no network.
       setCapabilities(DISABLED_PLATFORM_CAPABILITIES);
       setPublicSnapshot(DISABLED_PLATFORM_PUBLIC_SNAPSHOT);
-      useToolStore.getState().setPlatformSkillCatalog(null);
+      useToolStore.getState().configurePlatformSkillManagement(false, false);
       setLoading(false);
       setError(null);
       return;

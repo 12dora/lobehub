@@ -18,6 +18,20 @@ export interface PlatformPublishedSkillCatalog {
   skills: PlatformPublishedSkill[];
 }
 
+export interface PlatformSkillPinnedRef {
+  checksum: string;
+  skillKey: string;
+  version: string;
+}
+
+export interface PlatformSkillOperationSnapshot {
+  mandatorySkillIds?: string[];
+  refs: PlatformSkillPinnedRef[];
+  revision: string;
+  /** Client operations retain immutable public metadata for repeated context assembly. */
+  skills?: PlatformPublishedSkill[];
+}
+
 export interface PlatformSkillSelection {
   /** Content is injected immediately for a pinned selection. */
   activated: boolean;

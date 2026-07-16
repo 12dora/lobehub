@@ -458,11 +458,11 @@ export const useControls = ({ closeDropdown }: { closeDropdown?: () => void } = 
     pluginSelectors.getCustomPluginById(editingPluginId ?? ''),
     isEqual,
   );
-  const [checked, togglePlugin, setPluginMode] = useAgentStore((s) => [
+  const [checked, togglePlugin, setPluginModeById] = useAgentStore((s) => [
     // Pinned identifiers only (getAgentPluginsById already excludes disabled).
     agentByIdSelectors.getAgentPluginsById(agentId)(s),
     s.togglePlugin,
-    s.setPluginMode,
+    s.setPluginModeById,
   ]);
   const checkedSet = useMemo(() => new Set(checked), [checked]);
   // Disabled identifiers, read from the raw (unfiltered) plugins config —
@@ -509,9 +509,9 @@ export const useControls = ({ closeDropdown }: { closeDropdown?: () => void } = 
           : 'auto';
       if (currentMode === mode) return;
 
-      await setPluginMode(id, mode);
+      await setPluginModeById(agentId, id, mode);
     },
-    [canEdit, checkedSet, disabledIdSet, setPluginMode],
+    [agentId, canEdit, checkedSet, disabledIdSet, setPluginModeById],
   );
 
   const openSkillPolicyMenu = useCallback((id: string) => {

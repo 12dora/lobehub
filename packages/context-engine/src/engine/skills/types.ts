@@ -1,4 +1,8 @@
+import type { PlatformSkillOperationSnapshot } from '@lobechat/types';
+
 import type { SkillMeta } from '../../providers/SkillContextProvider';
+
+export type { PlatformSkillOperationSnapshot, PlatformSkillPinnedRef } from '@lobechat/types';
 
 /**
  * Application-layer checker that determines whether a skill is available
@@ -34,17 +38,6 @@ export interface OperationSkillSet {
   platformCatalog?: PlatformSkillOperationSnapshot;
   /** All available skills after enableChecker filtering */
   skills: SkillMeta[];
-}
-
-export interface PlatformSkillPinnedRef {
-  checksum: string;
-  skillKey: string;
-  version: string;
-}
-
-export interface PlatformSkillOperationSnapshot {
-  refs: PlatformSkillPinnedRef[];
-  revision: string;
 }
 
 /**

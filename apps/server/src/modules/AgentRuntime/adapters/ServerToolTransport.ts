@@ -131,6 +131,7 @@ export class ServerToolTransport implements ToolTransport {
         });
         const dispatchResult = await dispatchClientTool(chatToolPayload, {
           operationId,
+          platformSkillSnapshot: context.state.metadata?.operationSkillSet?.platformCatalog,
           streamManager,
           timeoutMs,
         });

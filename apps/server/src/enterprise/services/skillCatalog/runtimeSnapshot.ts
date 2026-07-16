@@ -1,4 +1,5 @@
 import type { PlatformSkillOperationSnapshot, SkillMeta } from '@lobechat/context-engine';
+import { resourcesTreePrompt } from '@lobechat/prompts';
 import type { AgentPluginEntry } from '@lobechat/types';
 
 import type { EnterpriseFeatureFlags } from '@/const/platform/featureFlags';
@@ -32,6 +33,29 @@ const toSkillMeta = (skill: PublishedSkill): SkillMeta => ({
   identifier: skill.skillKey,
   name: skill.skillKey,
 });
+
+const freezeOperationSnapshot = (
+  snapshot: PlatformSkillOperationSnapshot,
+): PlatformSkillOperationSnapshot => {
+  const clone = structuredClone(snapshot);
+  for (const ref of clone.refs) Object.freeze(ref);
+  Object.freeze(clone.refs);
+  Object.freeze(clone.mandatorySkillIds);
+  return Object.freeze(clone) as PlatformSkillOperationSnapshot;
+};
+
+const buildResolvedContent = (
+  resolved: NonNullable<Awaited<ReturnType<SkillCatalogReadService['resolvePinnedForExecution']>>>,
+) => {
+  if (resolved.resources.length === 0) return resolved.content;
+  const resources = Object.fromEntries(
+    resolved.resources.map((resource) => [
+      resource.path,
+      { content: resource.content, fileHash: resource.checksum, size: resource.sizeBytes },
+    ]),
+  );
+  return `${resolved.content}\n\n${resourcesTreePrompt(resolved.displayName, resources)}`;
+};
 
 /**
  * Resolve the operation-level managed Skill boundary.
@@ -72,23 +96,39 @@ export const resolvePlatformSkillRuntimeSnapshot = async (params: {
   ) {
     throw new Error('Published Skill catalog is not execution-ready');
   }
-  const selected = published.skills.filter(
-    (skill) =>
-      resolvePlatformSkillSelection(
-        skill.distribution,
-        getPluginMode(params.agentPlugins, skill.skillKey),
-      ).available,
+  const selected = published.skills.flatMap((skill) => {
+    const selection = resolvePlatformSkillSelection(
+      skill.distribution,
+      getPluginMode(params.agentPlugins, skill.skillKey),
+    );
+    return selection.available ? [{ selection, skill }] : [];
+  });
+  const skills = await Promise.all(
+    selected.map(async ({ selection, skill }) => {
+      const meta = toSkillMeta(skill);
+      if (!selection.activated) return meta;
+      const resolved = await catalogService.resolvePinnedForExecution({
+        checksum: skill.checksum,
+        skillKey: skill.skillKey,
+        version: skill.version,
+      });
+      if (!resolved) throw new Error(`Published Skill ${skill.skillKey} could not be resolved`);
+      return { ...meta, activated: true, content: buildResolvedContent(resolved) };
+    }),
   );
 
   return {
-    catalog: {
-      refs: selected.map(({ checksum, skillKey, version }) => ({
+    catalog: freezeOperationSnapshot({
+      mandatorySkillIds: selected.flatMap(({ skill }) =>
+        skill.distribution === 'mandatory' ? [skill.skillKey] : [],
+      ),
+      refs: selected.map(({ skill: { checksum, skillKey, version } }) => ({
         checksum,
         skillKey,
         version,
       })),
       revision: published.revision,
-    },
-    skills: selected.map(toSkillMeta),
+    }),
+    skills,
   };
 };

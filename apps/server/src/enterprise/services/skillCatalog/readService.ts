@@ -1,6 +1,10 @@
 import { z } from 'zod';
 
-import { checksumPayload, PlatformSkillCatalogModel } from '@/database/models/platform';
+import {
+  checksumPayload,
+  PlatformSkillCatalogModel,
+  platformSkillVersionChecksum,
+} from '@/database/models/platform';
 import type { LobeChatDatabase, Transaction } from '@/database/type';
 
 import {
@@ -35,6 +39,33 @@ export const builtinSkillDefinitionSchema = serverResolvedSkillSchema
 export const builtinSkillDefinitionsSchema = z.array(builtinSkillDefinitionSchema).max(100);
 const MAX_PUBLISHED_SKILL_PAGES = 100;
 const MAX_PUBLISHED_SKILLS = 10_000;
+const MAX_READINESS_REVISIONS = 32;
+const readinessByRevision = new Map<string, boolean>();
+
+type ResolvedSkill = z.infer<typeof serverResolvedSkillSchema>;
+
+const exactRefKey = ({ checksum, skillKey, version }: PlatformSkillPinnedRef) =>
+  `${skillKey}\0${version}\0${checksum}`;
+
+const isCanonicalExactResolution = (ref: PlatformSkillPinnedRef, resolved: ResolvedSkill) =>
+  resolved.skillKey === ref.skillKey &&
+  resolved.version === ref.version &&
+  resolved.checksum === ref.checksum &&
+  platformSkillVersionChecksum({
+    content: resolved.content,
+    contentRef: resolved.contentRef,
+    manifest: resolved.manifest,
+    resources: resolved.resources,
+  }) === ref.checksum;
+
+const cacheReadiness = (revision: string, ready: boolean) => {
+  readinessByRevision.delete(revision);
+  readinessByRevision.set(revision, ready);
+  if (readinessByRevision.size > MAX_READINESS_REVISIONS) {
+    const oldest = readinessByRevision.keys().next().value;
+    if (oldest) readinessByRevision.delete(oldest);
+  }
+};
 
 export const getEmptyPublishedSkillCatalog = () => ({ revision: 'disabled', skills: [] });
 
@@ -47,6 +78,8 @@ export class SkillCatalogReadService {
     PlatformSkillCatalogModel,
     'listPublished' | 'resolvePublishedVersion'
   >;
+  private publishedExecutionIndex = new Map<string, ResolvedSkill>();
+  private publishedExecutionRevision: string | undefined;
 
   constructor(db: LobeChatDatabase | Transaction, options: SkillCatalogReadOptions = {}) {
     this.model = options.model ?? new PlatformSkillCatalogModel(db);
@@ -84,6 +117,7 @@ export class SkillCatalogReadService {
     } while (cursor);
     const builtins = new Map(this.builtinSkills.map((skill) => [skill.skillKey, skill] as const));
     const platformSkills: PublishedSkill[] = [];
+    const platformResolvedByKey = new Map<string, ResolvedSkill>();
     for (const item of platformItems) {
       if (builtins.has(item.skillKey) && !item.allowBuiltinOverride) continue;
       platformSkills.push({
@@ -95,6 +129,25 @@ export class SkillCatalogReadService {
         source: item.source,
         version: item.version.version,
       });
+      platformResolvedByKey.set(
+        item.skillKey,
+        serverResolvedSkillSchema.parse({
+          allowBuiltinOverride: item.allowBuiltinOverride,
+          checksum: item.version.checksum,
+          content: item.version.content,
+          contentRef: item.version.contentRef,
+          description: item.description,
+          displayName: item.displayName,
+          distribution: item.distribution,
+          manifest: item.version.manifest,
+          resources: item.version.resources,
+          skillId: item.skillId,
+          skillKey: item.skillKey,
+          source: item.source,
+          version: item.version.version,
+          versionId: item.version.id,
+        }),
+      );
     }
 
     const merged = new Map<string, PublishedSkill>(builtins);
@@ -110,10 +163,59 @@ export class SkillCatalogReadService {
         version,
       }))
       .sort((left, right) => compareCodepoint(left.skillKey, right.skillKey));
+    const revision = checksumPayload({ skills });
+    const executionIndex = new Map<string, ResolvedSkill>();
+    let executionReady = skills.length > 0;
+    for (const skill of skills) {
+      const builtin = this.builtinSkills.find((item) => item.skillKey === skill.skillKey);
+      const resolved =
+        platformResolvedByKey.get(skill.skillKey) ??
+        (builtin
+          ? serverResolvedSkillSchema.parse({
+              allowBuiltinOverride: false,
+              checksum: builtin.checksum,
+              content: builtin.content,
+              contentRef: builtin.contentRef ?? null,
+              description: builtin.description,
+              displayName: builtin.displayName,
+              distribution: builtin.distribution,
+              manifest: builtin.manifest,
+              resources: builtin.resources ?? [],
+              skillId: `builtin:${builtin.skillKey}`,
+              skillKey: builtin.skillKey,
+              source: 'builtin',
+              version: builtin.version,
+              versionId: `builtin:${builtin.skillKey}@${builtin.version}`,
+            })
+          : undefined);
+      const ref = { checksum: skill.checksum, skillKey: skill.skillKey, version: skill.version };
+      if (
+        !resolved ||
+        !isCanonicalExactResolution(ref, resolved) ||
+        resolved.contentRef !== null ||
+        resolved.resources.some(
+          (resource) => resource.content === undefined || resource.contentRef !== undefined,
+        )
+      ) {
+        executionReady = false;
+        continue;
+      }
+      executionIndex.set(exactRefKey(ref), structuredClone(resolved));
+    }
+    this.publishedExecutionIndex = executionIndex;
+    this.publishedExecutionRevision = revision;
+    cacheReadiness(revision, executionReady && executionIndex.size === skills.length);
     return {
-      revision: checksumPayload({ skills }),
+      revision,
       skills,
     };
+  };
+
+  isPublishedCatalogExecutionReady = (catalog: { revision: string; skills: PublishedSkill[] }) => {
+    if (catalog.revision === this.publishedExecutionRevision) {
+      return readinessByRevision.get(catalog.revision) ?? false;
+    }
+    return readinessByRevision.get(catalog.revision) ?? false;
   };
 
   resolveForExecution = async (skillKey: string, version?: string) => {
@@ -185,8 +287,9 @@ export class SkillCatalogReadService {
    */
   resolvePinnedForExecution = async (input: PlatformSkillPinnedRef) => {
     const ref = platformSkillPinnedRefSchema.parse(input);
-    const resolved = await this.resolveForExecution(ref.skillKey, ref.version);
-    if (!resolved || resolved.checksum !== ref.checksum) return undefined;
-    return resolved;
+    const indexed = this.publishedExecutionIndex.get(exactRefKey(ref));
+    const resolved = indexed ?? (await this.resolveForExecution(ref.skillKey, ref.version));
+    if (!resolved || !isCanonicalExactResolution(ref, resolved)) return undefined;
+    return structuredClone(resolved);
   };
 }

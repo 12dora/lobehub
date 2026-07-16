@@ -11,8 +11,12 @@ let registered = false;
 
 export const isPublishedSkillCatalogExecutionReady = async (params: {
   catalog: Awaited<ReturnType<SkillCatalogReadService['getPublishedCatalog']>>;
-  service: Pick<SkillCatalogReadService, 'resolvePinnedForExecution'>;
+  service: Pick<SkillCatalogReadService, 'resolvePinnedForExecution'> &
+    Partial<Pick<SkillCatalogReadService, 'isPublishedCatalogExecutionReady'>>;
 }): Promise<boolean> => {
+  if (params.service.isPublishedCatalogExecutionReady) {
+    return params.service.isPublishedCatalogExecutionReady(params.catalog);
+  }
   if (params.catalog.skills.length === 0) return false;
   const resolved = await Promise.all(
     params.catalog.skills.map(async ({ checksum, skillKey, version }) => {

@@ -53,12 +53,19 @@ export class PlatformSkillOperationResolver {
   private readonly refsById: Map<string, PlatformSkillPinnedRef>;
   private readonly refsByKey: Map<string, PlatformSkillPinnedRef>;
 
+  private readonly snapshot: PlatformSkillOperationSnapshot;
+
   constructor(
-    private readonly snapshot: PlatformSkillOperationSnapshot,
+    snapshot: PlatformSkillOperationSnapshot,
     private readonly service: Pick<SkillCatalogReadService, 'resolvePinnedForExecution'>,
   ) {
-    this.refsByKey = new Map(snapshot.refs.map((ref) => [ref.skillKey, ref]));
-    this.refsById = new Map(snapshot.refs.map((ref) => [runtimeId(ref), ref]));
+    const clone = structuredClone(snapshot);
+    for (const ref of clone.refs) Object.freeze(ref);
+    Object.freeze(clone.refs);
+    if (clone.mandatorySkillIds) Object.freeze(clone.mandatorySkillIds);
+    this.snapshot = Object.freeze(clone) as PlatformSkillOperationSnapshot;
+    this.refsByKey = new Map(this.snapshot.refs.map((ref) => [ref.skillKey, ref]));
+    this.refsById = new Map(this.snapshot.refs.map((ref) => [runtimeId(ref), ref]));
   }
 
   findAll = async (): Promise<{ data: SkillListItem[]; total: number }> => {

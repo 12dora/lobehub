@@ -42,7 +42,7 @@ interface ToolSettingsProps {
 }
 
 export const ToolSettings = memo<ToolSettingsProps>(({ viewMode, managed = false }) => {
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const querySkillIdentifier = searchParams.get('skill');
   const [selected, setSelected] = useState<SelectedTool | null>(null);
 
@@ -50,12 +50,51 @@ export const ToolSettings = memo<ToolSettingsProps>(({ viewMode, managed = false
   const builtinSkills = useToolStore((s) => s.builtinSkills, isEqual);
   const marketAgentSkills = useToolStore(agentSkillsSelectors.getMarketAgentSkills, isEqual);
   const userAgentSkills = useToolStore(agentSkillsSelectors.getUserAgentSkills, isEqual);
+  const platformSkillCatalog = useToolStore(agentSkillsSelectors.getPlatformSkillCatalog, isEqual);
   const installedBuiltinIds = useToolStore(
     (s) => builtinToolSelectors.installedAllMetaList(s).map((tool) => tool.identifier),
     isEqual,
   );
 
   useEffect(() => {
+    if (!managed || viewMode !== 'skill') return;
+    const skills = platformSkillCatalog?.skills ?? [];
+    const requested = querySkillIdentifier
+      ? skills.find((skill) => skill.skillKey === querySkillIdentifier)
+      : undefined;
+    const initial = resolveInitialToolSelection({
+      builtinSkills,
+      builtinTools,
+      installedBuiltinIds,
+      managed,
+      platformSkills: skills,
+      viewMode,
+    });
+    const next = requested
+      ? { identifier: requested.skillKey, type: 'platform-skill' as const }
+      : initial;
+    setSelected(next);
+
+    const nextParams = new URLSearchParams(searchParams);
+    if (next) nextParams.set('skill', next.identifier);
+    else nextParams.delete('skill');
+    if (nextParams.toString() !== searchParams.toString()) {
+      setSearchParams(nextParams, { replace: true });
+    }
+  }, [
+    builtinTools,
+    builtinSkills,
+    installedBuiltinIds,
+    managed,
+    platformSkillCatalog,
+    querySkillIdentifier,
+    searchParams,
+    setSearchParams,
+    viewMode,
+  ]);
+
+  useEffect(() => {
+    if (managed) return;
     if (selected) return;
     if (viewMode === 'skill' && querySkillIdentifier) return;
     const initial = resolveInitialToolSelection({
@@ -63,6 +102,7 @@ export const ToolSettings = memo<ToolSettingsProps>(({ viewMode, managed = false
       builtinTools,
       installedBuiltinIds,
       managed,
+      platformSkills: platformSkillCatalog?.skills,
       viewMode,
     });
     if (initial) setSelected(initial);
@@ -71,22 +111,29 @@ export const ToolSettings = memo<ToolSettingsProps>(({ viewMode, managed = false
     builtinSkills,
     installedBuiltinIds,
     managed,
+    platformSkillCatalog,
     querySkillIdentifier,
     selected,
     viewMode,
   ]);
 
   useEffect(() => {
+    if (managed) return;
     if (viewMode !== 'skill' || !querySkillIdentifier) return;
 
     const skill = [...marketAgentSkills, ...userAgentSkills].find(
       (item) => item.identifier === querySkillIdentifier,
     );
     if (skill) setSelected({ identifier: skill.id, type: 'agent-skill' });
-  }, [marketAgentSkills, querySkillIdentifier, userAgentSkills, viewMode]);
+  }, [managed, marketAgentSkills, querySkillIdentifier, userAgentSkills, viewMode]);
 
   const handleSelect = (identifier: string, type: ToolDetailType) => {
     setSelected({ identifier, type });
+    if (managed && type === 'platform-skill') {
+      const nextParams = new URLSearchParams(searchParams);
+      nextParams.set('skill', identifier);
+      setSearchParams(nextParams);
+    }
   };
 
   return (

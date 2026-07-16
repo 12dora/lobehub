@@ -458,7 +458,7 @@ LegacySkillDetail.displayName = 'LegacySkillDetail';
 const SkillDetail = memo<SkillDetailProps>((props) =>
   props.type === 'platform-skill' ? (
     <PlatformSkillDetail skillKey={props.identifier} />
-  ) : (
+  ) : props.managed ? null : (
     <LegacySkillDetail {...props} />
   ),
 );

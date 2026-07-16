@@ -7,6 +7,7 @@ import { useTranslation } from 'react-i18next';
 import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
 import type { AdminReauthAuthMethod } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 import { openReasonModal } from '@/enterprise/client/features/admin/users/modals/openReasonModal';
+import { invalidatePublishedSkillCatalog } from '@/enterprise/client/features/skills';
 import { adminSkillsService } from '@/enterprise/client/services/adminSkills';
 
 import {
@@ -96,7 +97,7 @@ export const useSkillActions = ({
   const commitAndRefresh = useCallback(
     async <Result,>(params: {
       commit: () => Promise<Result>;
-      onCommitted?: (result: Result) => void;
+      onCommitted?: (result: Result) => Promise<void> | void;
       previousFingerprint: string;
       verify?: (
         latest: AdminSkillGetOutput | undefined,
@@ -105,7 +106,7 @@ export const useSkillActions = ({
     }) => {
       const result = await params.commit();
       writeGuard.lock();
-      params.onCommitted?.(result);
+      await params.onCommitted?.(result);
       const verify = async () => {
         const latest = await refreshAdminSkill(data.draft.id);
         if (params.verify) return params.verify(latest, result);
@@ -355,7 +356,10 @@ export const useSkillActions = ({
                   : kind === 'rollback'
                     ? adminSkillsService.rollback(input as AdminSkillRollbackInput)
                     : adminSkillsService.archive(input as AdminSkillArchiveInput),
-              onCommitted: () => toast.success(t(`skillCatalog.toast.${kind}` as never)),
+              onCommitted: async (result) => {
+                await invalidatePublishedSkillCatalog(result.catalogRevision);
+                toast.success(t(`skillCatalog.toast.${kind}` as never));
+              },
               previousFingerprint: operation.fingerprint,
             });
           } catch (cause) {
