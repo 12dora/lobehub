@@ -1,22 +1,17 @@
 'use client';
 
-import { Flexbox, Text } from '@lobehub/ui';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
+
+import AdminPageTemplate from '../primitives/AdminPageTemplate';
 
 const OverviewPage = memo(() => {
   const { t } = useTranslation('admin');
 
   return (
-    <Flexbox gap={12}>
-      <Text as="h1" style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>
-        {t('overview.title')}
-      </Text>
-      <Text type="secondary">{t('overview.desc')}</Text>
-      <Text style={{ fontSize: 13 }} type="secondary">
-        {t('overview.placeholderNote')}
-      </Text>
-    </Flexbox>
+    <AdminPageTemplate description={t('overview.desc')} title={t('overview.title')}>
+      <p style={{ fontSize: 13, margin: 0, opacity: 0.75 }}>{t('overview.placeholderNote')}</p>
+    </AdminPageTemplate>
   );
 });
 
