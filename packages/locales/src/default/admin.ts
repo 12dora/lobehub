@@ -125,6 +125,12 @@ export default {
   'aiCatalog.models.providerSection.desc':
     'This is the complete Provider draft set, so ordering here is safe and deterministic.',
   'aiCatalog.models.providerSection.title': 'Provider models',
+  'aiCatalog.models.providerTarget.desc':
+    'Enter the stable Provider ID. Only the minimal model draft context is loaded.',
+  'aiCatalog.models.providerTarget.error': 'Enter a valid Provider ID and try again.',
+  'aiCatalog.models.providerTarget.known': 'Providers on this page: {{providers}}',
+  'aiCatalog.models.providerTarget.placeholder': 'Provider ID',
+  'aiCatalog.models.providerTarget.title': 'Choose model Provider',
   'aiCatalog.modelEditor.abilities': 'Abilities (JSON)',
   'aiCatalog.modelEditor.availabilityBlocked':
     'Availability is locked because other resources depend on this enabled model.',
