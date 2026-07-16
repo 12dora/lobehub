@@ -1,14 +1,24 @@
 import type { z } from 'zod';
 
+import { checksumPayload } from '@/database/models/platform';
+
 import {
   connectorEffectiveToolPolicyInputSchema,
   connectorEffectiveToolPolicyOutputSchema,
+  connectorPlatformToolPolicySchema,
+  connectorRiskLevelSchema,
   connectorScopesSchema,
 } from '../../contracts/platformConnectors';
 import { PlatformConnectorContractError } from './errors';
 
 type ConnectorEffectiveToolPolicyInput = z.infer<typeof connectorEffectiveToolPolicyInputSchema>;
 type ConnectorEffectiveToolPolicyOutput = z.infer<typeof connectorEffectiveToolPolicyOutputSchema>;
+interface ConnectorToolPolicySource {
+  platformPolicy: z.infer<typeof connectorPlatformToolPolicySchema>;
+  requiresConfirmation: boolean;
+  riskLevel: z.infer<typeof connectorRiskLevelSchema>;
+  toolKey: string;
+}
 
 /** Platform deny wins; agent allow is an intersection; users can only disable. */
 export const resolveEffectiveConnectorToolPolicy = (
@@ -30,4 +40,32 @@ export const assertConnectorScopesAllowed = (allowed: string[], requested: strin
     throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_SCOPE_NOT_ALLOWED');
   }
   return requestedScopes;
+};
+
+/** Revision checksum freezes schema; this separately freezes every executable policy bit. */
+export const fingerprintConnectorToolPolicy = (tools: ConnectorToolPolicySource[]): string =>
+  checksumPayload(
+    tools
+      .map((tool) => ({
+        platformPolicy: connectorPlatformToolPolicySchema.parse(tool.platformPolicy),
+        requiresConfirmation: tool.requiresConfirmation,
+        riskLevel: connectorRiskLevelSchema.parse(tool.riskLevel),
+        toolKey: tool.toolKey,
+      }))
+      .sort((left, right) => left.toolKey.localeCompare(right.toolKey)),
+  );
+
+/** Platform confirmation is a floor: agent/user preferences may tighten but never relax it. */
+export const resolveConnectorConfirmationPolicy = (input: {
+  legacyRequiresConfirmation?: boolean;
+  requiresConfirmation: boolean;
+  riskLevel: z.infer<typeof connectorRiskLevelSchema>;
+}): 'always' | null => {
+  const riskLevel = connectorRiskLevelSchema.parse(input.riskLevel);
+  return input.requiresConfirmation ||
+    input.legacyRequiresConfirmation === true ||
+    riskLevel === 'high' ||
+    riskLevel === 'critical'
+    ? 'always'
+    : null;
 };
