@@ -43,6 +43,20 @@ const toSkillItem = (resolved: ResolvedPlatformSkill): SkillItem => ({
   updatedAt: new Date(0),
 });
 
+const toSkillListItem = (
+  ref: PlatformSkillPinnedRef,
+  metadata?: { description?: string | null; displayName?: string },
+): SkillListItem => ({
+  createdAt: new Date(0),
+  description: metadata?.description ?? '',
+  id: runtimeId(ref),
+  identifier: ref.skillKey,
+  manifest: { description: metadata?.description ?? '', name: ref.skillKey, version: ref.version },
+  name: metadata?.displayName ?? ref.skillKey,
+  source: 'user',
+  updatedAt: new Date(0),
+});
+
 /**
  * Operation-scoped resolver. Its bounded cache is keyed by catalog revision
  * and exact immutable reference; failed lookups are cached as fail-closed
@@ -52,6 +66,10 @@ export class PlatformSkillOperationResolver {
   private readonly cache = new Map<string, ResolvedPlatformSkill | undefined>();
   private readonly refsById: Map<string, PlatformSkillPinnedRef>;
   private readonly refsByKey: Map<string, PlatformSkillPinnedRef>;
+  private readonly metadataByKey: Map<
+    string,
+    { description?: string | null; displayName?: string }
+  >;
 
   private readonly snapshot: PlatformSkillOperationSnapshot;
 
@@ -61,18 +79,22 @@ export class PlatformSkillOperationResolver {
   ) {
     const clone = structuredClone(snapshot);
     for (const ref of clone.refs) Object.freeze(ref);
+    for (const skill of clone.skills ?? []) Object.freeze(skill);
     Object.freeze(clone.refs);
+    if (clone.skills) Object.freeze(clone.skills);
     if (clone.mandatorySkillIds) Object.freeze(clone.mandatorySkillIds);
     this.snapshot = Object.freeze(clone) as PlatformSkillOperationSnapshot;
     this.refsByKey = new Map(this.snapshot.refs.map((ref) => [ref.skillKey, ref]));
     this.refsById = new Map(this.snapshot.refs.map((ref) => [runtimeId(ref), ref]));
+    this.metadataByKey = new Map(
+      this.snapshot.skills?.map((skill) => [skill.skillKey, skill] as const),
+    );
   }
 
   findAll = async (): Promise<{ data: SkillListItem[]; total: number }> => {
-    const items = await Promise.all(
-      [...this.refsByKey].map(([skillKey]) => this.findByName(skillKey)),
+    const data = [...this.refsByKey.values()].map((ref) =>
+      toSkillListItem(ref, this.metadataByKey.get(ref.skillKey)),
     );
-    const data = items.filter((item): item is SkillItem => Boolean(item));
     return { data, total: data.length };
   };
 
