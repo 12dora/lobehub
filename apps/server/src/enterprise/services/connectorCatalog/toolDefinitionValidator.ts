@@ -34,8 +34,8 @@ const VALIDATION_CODE_SET = new Set<ConnectorToolValidationCode>(
 const PROPERTY_CONTAINER_KEYS = new Set([
   '$defs',
   'definitions',
-  'dependentSchemas',
-  'patternProperties',
+  'dependentschemas',
+  'patternproperties',
   'properties',
 ]);
 const DANGEROUS_SCHEMA_KEYS = new Set([
@@ -117,10 +117,13 @@ const byteLength = (value: unknown): number | null => {
 };
 
 const isDangerousSchemaKeyword = (key: string, value: unknown, parentKeyword?: string): boolean => {
-  const normalized = key.toLowerCase();
+  const normalizedKey = key.normalize('NFKC');
+  const normalized = normalizedKey.toLowerCase();
   if (PROPERTY_CONTAINER_KEYS.has(parentKeyword ?? '')) {
     return normalized === '__proto__' || normalized === 'constructor' || normalized === 'prototype';
   }
+  if (/[^\u0020-\u007E]/u.test(normalizedKey)) return true;
+  if (normalizedKey !== key) return true;
   if (key === '$ref') return typeof value !== 'string' || !LOCAL_SCHEMA_REF.test(value);
   const compact = normalized.replaceAll(/[^a-z$]/g, '');
   if (
@@ -130,7 +133,7 @@ const isDangerousSchemaKeyword = (key: string, value: unknown, parentKeyword?: s
   ) {
     return true;
   }
-  if (key.startsWith('$') && !['$comment', '$defs'].includes(key)) return true;
+  if (normalizedKey.startsWith('$') && !['$comment', '$defs'].includes(normalizedKey)) return true;
   if (DANGEROUS_SCHEMA_KEYS.has(normalized)) return true;
   return (
     DANGEROUS_OPERATION_KEYS.has(normalized) ||
