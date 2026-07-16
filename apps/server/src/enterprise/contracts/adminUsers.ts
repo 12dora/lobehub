@@ -98,6 +98,11 @@ export const adminUserListItemSchema = z
     fullName: z.string().nullable(),
     id: z.string(),
     lastActiveAt: z.date().nullable(),
+    /**
+     * Distinct Better Auth / OAuth provider ids for the user (e.g. credential, google).
+     * Never includes account id, token, password, or scope.
+     */
+    providerIds: z.array(z.string()),
     /** Global platform role names only (not workspace roles). */
     roles: z.array(z.string()),
     status: adminUserStatusSchema,

@@ -60,6 +60,8 @@ export interface AdminUserListItem {
   fullName: string | null;
   id: string;
   lastActiveAt: Date | null;
+  /** Distinct provider ids only — never account id/token/password/scope. */
+  providerIds: string[];
   roles: string[];
   status: AdminUserStatus;
   username: string | null;
@@ -240,7 +242,11 @@ export class AdminUserModel {
     const hasMore = rows.length > limit;
     const page = hasMore ? rows.slice(0, limit) : rows;
 
-    const roleMap = await this.loadGlobalRoleNames(page.map((r) => r.id));
+    const pageIds = page.map((r) => r.id);
+    const [roleMap, providerMap] = await Promise.all([
+      this.loadGlobalRoleNames(pageIds),
+      this.loadProviderIdsByUserIds(pageIds),
+    ]);
 
     const items: AdminUserListItem[] = page.map((row) => ({
       avatar: row.avatar ?? null,
@@ -249,6 +255,7 @@ export class AdminUserModel {
       fullName: row.fullName ?? null,
       id: row.id,
       lastActiveAt: row.lastActiveAt ?? null,
+      providerIds: providerMap.get(row.id) ?? [],
       roles: roleMap.get(row.id) ?? [],
       status: isEffectivelyBanned(row, now) ? 'banned' : 'active',
       username: row.username ?? null,
@@ -548,6 +555,31 @@ export class AdminUserModel {
     for (const row of rows) {
       const list = map.get(row.userId) ?? [];
       list.push(row.name);
+      map.set(row.userId, list);
+    }
+    return map;
+  };
+
+  /**
+   * Batched distinct provider ids per user — no N+1, never selects secrets.
+   */
+  private loadProviderIdsByUserIds = async (userIds: string[]): Promise<Map<string, string[]>> => {
+    const map = new Map<string, string[]>();
+    if (userIds.length === 0) return map;
+
+    const rows = await this.db
+      .select({
+        providerId: account.providerId,
+        userId: account.userId,
+      })
+      .from(account)
+      .where(inArray(account.userId, userIds));
+
+    for (const row of rows) {
+      const list = map.get(row.userId) ?? [];
+      if (!list.includes(row.providerId)) {
+        list.push(row.providerId);
+      }
       map.set(row.userId, list);
     }
     return map;

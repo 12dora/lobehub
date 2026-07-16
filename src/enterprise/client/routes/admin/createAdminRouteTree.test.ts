@@ -1,6 +1,8 @@
 import { matchRoutes } from 'react-router';
 import { describe, expect, it } from 'vitest';
 
+import { ADMIN_NAV_FLAT } from '@/enterprise/client/nav/adminNavMeta';
+
 import { createAdminRouteTree } from './createAdminRouteTree';
 
 const collectPaths = (routes: ReturnType<typeof createAdminRouteTree>, prefix = ''): string[] => {
@@ -41,5 +43,32 @@ describe('createAdminRouteTree', () => {
     const nestedUnknown = matchRoutes(routes, '/admin/does-not-exist');
     expect(nestedUnknown).toBeTruthy();
     expect(nestedUnknown?.at(-1)?.route.path).toBe('*');
+  });
+
+  it('users routes are real pages; other modules remain placeholders', () => {
+    const routes = createAdminRouteTree();
+    const admin = routes.find((r) => r.path === '/admin');
+    const children = admin?.children ?? [];
+
+    const users = children.find((c) => c.path === 'users');
+    const usersDetail = children.find((c) => c.path === 'users/:id');
+    const settings = children.find((c) => c.path === 'settings');
+
+    expect((users?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder).toBe(
+      false,
+    );
+    expect((usersDetail?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder).toBe(
+      false,
+    );
+    expect((settings?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder).toBe(
+      true,
+    );
+
+    // Element is not the shared PlaceholderPage for users (lazy wrapper present)
+    expect(users?.element).toBeTruthy();
+    expect(usersDetail?.element).toBeTruthy();
+
+    const placeholders = ADMIN_NAV_FLAT.filter((i) => i.placeholder);
+    expect(placeholders.every((i) => i.id !== 'users' && i.id !== 'users-detail')).toBe(true);
   });
 });
