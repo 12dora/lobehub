@@ -93,32 +93,50 @@ export const fingerprintAiProviderPublicDraft = (draft: AdminAiProviderDraft): s
     }),
   );
 
-export type EditableAiProviderDraft = Pick<
+type EditableAiProviderScalarDraft = Pick<
   AdminAiProviderDraft,
-  | 'checkModel'
-  | 'config'
-  | 'description'
-  | 'displayName'
-  | 'enabled'
-  | 'fetchOnClient'
-  | 'logo'
-  | 'settings'
-  | 'sort'
+  'checkModel' | 'description' | 'displayName' | 'enabled' | 'fetchOnClient' | 'logo' | 'sort'
 >;
+
+/** Public editor state keeps raw JSON so invalid in-progress input is never lost. */
+export interface EditableAiProviderDraft extends EditableAiProviderScalarDraft {
+  configText: string;
+  settingsText: string;
+}
+
+export type AiProviderJsonField = 'configText' | 'settingsText';
+
+export interface AiProviderRebaseConflict {
+  field: keyof EditableAiProviderDraft;
+  latest: EditableAiProviderDraft[keyof EditableAiProviderDraft];
+  local: EditableAiProviderDraft[keyof EditableAiProviderDraft];
+}
 
 export const toEditableAiProviderDraft = (
   draft: AdminAiProviderDraft,
 ): EditableAiProviderDraft => ({
   checkModel: draft.checkModel,
-  config: structuredClone(draft.config),
+  configText: JSON.stringify(draft.config, null, 2),
   description: draft.description,
   displayName: draft.displayName,
   enabled: draft.enabled,
   fetchOnClient: draft.fetchOnClient,
   logo: draft.logo,
-  settings: structuredClone(draft.settings),
+  settingsText: JSON.stringify(draft.settings, null, 2),
   sort: draft.sort,
 });
+
+export const validateEditableAiProviderDraft = (
+  draft: EditableAiProviderDraft,
+): {
+  config: ReturnType<typeof parseJsonObject>;
+  settings: ReturnType<typeof parseJsonObject>;
+  valid: boolean;
+} => {
+  const config = parseJsonObject(draft.configText);
+  const settings = parseJsonObject(draft.settingsText);
+  return { config, settings, valid: !config.error && !settings.error };
+};
 
 export const buildProviderUpdatePayload = (params: {
   draft: EditableAiProviderDraft;
@@ -126,14 +144,57 @@ export const buildProviderUpdatePayload = (params: {
   id: string;
   reason: string;
   revision: number;
-}): AdminAiProviderUpdateDraftInput => ({
-  ...structuredClone(params.draft),
-  expectedDraftToken: params.draftToken,
-  expectedRevision: params.revision,
-  id: params.id,
-  reason: params.reason.trim(),
-  secret: { operation: 'keep' },
-});
+}): AdminAiProviderUpdateDraftInput | null => {
+  const { config, settings, valid } = validateEditableAiProviderDraft(params.draft);
+  if (!valid || !config.value || !settings.value) return null;
+  const { configText: _configText, settingsText: _settingsText, ...fields } = params.draft;
+  return {
+    ...structuredClone(fields),
+    config: config.value,
+    expectedDraftToken: params.draftToken,
+    expectedRevision: params.revision,
+    id: params.id,
+    reason: params.reason.trim(),
+    secret: { operation: 'keep' },
+    settings: settings.value,
+  };
+};
+
+const EDITABLE_PROVIDER_FIELDS = [
+  'checkModel',
+  'configText',
+  'description',
+  'displayName',
+  'enabled',
+  'fetchOnClient',
+  'logo',
+  'settingsText',
+  'sort',
+] as const satisfies readonly (keyof EditableAiProviderDraft)[];
+
+/** Field-level three-way merge; divergent edits remain explicit and default to local. */
+export const rebaseAiProviderDraft = (params: {
+  latest: EditableAiProviderDraft;
+  local: EditableAiProviderDraft;
+  original: EditableAiProviderDraft;
+}): { conflicts: AiProviderRebaseConflict[]; draft: EditableAiProviderDraft } => {
+  const draft = structuredClone(params.latest);
+  const conflicts: AiProviderRebaseConflict[] = [];
+  for (const field of EDITABLE_PROVIDER_FIELDS) {
+    const original = params.original[field];
+    const local = params.local[field];
+    const latest = params.latest[field];
+    const localChanged = !Object.is(local, original);
+    const latestChanged = !Object.is(latest, original);
+    if (localChanged) {
+      (draft[field] as unknown) = structuredClone(local);
+    }
+    if (localChanged && latestChanged && !Object.is(local, latest)) {
+      conflicts.push({ field, latest: structuredClone(latest), local: structuredClone(local) });
+    }
+  }
+  return { conflicts, draft };
+};
 
 export const hasBlockingModelDependents = (dependents: AdminAiModelDependentsOutput): boolean =>
   dependents.items.some((item) => item.blocking);
