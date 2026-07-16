@@ -6,6 +6,7 @@ import {
   adminConnectorCreateDraftInputSchema,
   adminConnectorDraftSchema,
   adminConnectorUpdateDraftInputSchema,
+  connectorConnectionTestStateSchema,
   connectorEffectiveToolPolicyOutputSchema,
   connectorOAuthCallbackInputSchema,
   connectorOAuthClientSecretMutationSchema,
@@ -55,7 +56,10 @@ const draft = adminConnectorDraftSchema.parse({
   transport: 'http',
 });
 
-const trustedSecrets = (current: unknown[] = [], replacement: unknown[] = []) =>
+const trustedSecrets = (
+  current: { oauthClientSecret?: unknown; sharedSecret?: unknown } = {},
+  replacement: { oauthClientSecret?: unknown; sharedSecret?: unknown } = {},
+) =>
   loadTrustedConnectorSecretContext(
     { loadCurrentSecretSources: async () => current },
     'connector-1',
@@ -221,7 +225,7 @@ describe('platform connector contracts', () => {
       configuredOAuthDraft,
       { ...basePatch, oauthClientSecret: { operation: 'clear' } },
       'https://aihub.example.test/oauth/connector/callback',
-      await trustedSecrets(['old-random-secret']),
+      await trustedSecrets({ oauthClientSecret: 'old-random-secret' }),
     );
     expect(cleared.candidate.oauthClientSecret).toEqual(secretState);
     expect(() =>
@@ -244,9 +248,9 @@ describe('platform connector contracts', () => {
       expect(error).toMatchObject({ code: 'PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED' });
     }
     const wrongConnectorContext = await loadTrustedConnectorSecretContext(
-      { loadCurrentSecretSources: async () => ['old-random-secret'] },
+      { loadCurrentSecretSources: async () => ({ oauthClientSecret: 'old-random-secret' }) },
       'other-connector',
-      [],
+      {},
     );
     expect(() =>
       normalizeAdminConnectorUpdateInput(
@@ -255,7 +259,7 @@ describe('platform connector contracts', () => {
         'https://aihub.example.test/oauth/connector/callback',
         wrongConnectorContext,
       ),
-    ).toThrowError('PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED');
+    ).toThrowError('PLATFORM_CONNECTOR_RESOURCE_MISMATCH');
     expect(() =>
       normalizeAdminConnectorUpdateInput(
         draft,
@@ -266,18 +270,127 @@ describe('platform connector contracts', () => {
     ).toThrowError('PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED');
   });
 
-  it('requires create/update normalizers to reject current and replacement secrets in persisted text', async () => {
-    const currentSecret = 'old-random-secret-123';
-    const replacementSecret = 'new-random-secret-456';
-    const secretContext = await trustedSecrets([currentSecret], [replacementSecret]);
+  it('requires current, patch, and trusted Secret context connector identities to match', async () => {
     const basePatch = {
       expectedDraftToken: 'd'.repeat(64),
       expectedRevision: 0,
       id: 'connector-1',
+      reason: 'safe update',
+    };
+    const context = await trustedSecrets();
+    expect(
+      normalizeAdminConnectorUpdateInput(
+        draft,
+        basePatch,
+        'https://aihub.example.test/oauth/connector/callback',
+        context,
+      ).candidate.id,
+    ).toBe('connector-1');
+
+    const mismatches = [
+      {
+        context,
+        current: draft,
+        patch: { ...basePatch, id: 'other-connector' },
+      },
+      {
+        context: await loadTrustedConnectorSecretContext(
+          { loadCurrentSecretSources: async () => ({}) },
+          'other-connector',
+          {},
+        ),
+        current: draft,
+        patch: basePatch,
+      },
+      {
+        context,
+        current: adminConnectorDraftSchema.parse({ ...draft, id: 'other-connector' }),
+        patch: basePatch,
+      },
+    ];
+    for (const mismatch of mismatches) {
+      try {
+        normalizeAdminConnectorUpdateInput(
+          mismatch.current,
+          mismatch.patch,
+          'https://aihub.example.test/oauth/connector/callback',
+          mismatch.context,
+        );
+        expect.unreachable('resource identity mismatch must be rejected');
+      } catch (error) {
+        expect(error).toBeInstanceOf(PlatformConnectorContractError);
+        expect(error).toMatchObject({ code: 'PLATFORM_CONNECTOR_RESOURCE_MISMATCH' });
+      }
+    }
+  });
+
+  it('enforces bidirectional Secret slot consistency without cross-slot substitution', async () => {
+    const basePatch = {
+      expectedDraftToken: 'd'.repeat(64),
+      expectedRevision: 0,
+      id: 'connector-1',
+      reason: 'safe update',
+    };
+    const configuredOAuthDraft = adminConnectorDraftSchema.parse({
+      ...draft,
+      oauthClientSecret: { configured: true, fingerprint: 'fp', updatedAt: null },
+    });
+    for (const invalidContext of [
+      await trustedSecrets({ sharedSecret: 'wrong-slot-value' }),
+      await trustedSecrets({ oauthClientSecret: 'real-value', sharedSecret: 'unrelated-value' }),
+    ]) {
+      expect(() =>
+        normalizeAdminConnectorUpdateInput(
+          configuredOAuthDraft,
+          basePatch,
+          'https://aihub.example.test/oauth/connector/callback',
+          invalidContext,
+        ),
+      ).toThrowError('PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED');
+    }
+    const unexpectedCurrentContext = await trustedSecrets({
+      oauthClientSecret: 'unexpected-value',
+    });
+    expect(() =>
+      normalizeAdminConnectorUpdateInput(
+        draft,
+        basePatch,
+        'https://aihub.example.test/oauth/connector/callback',
+        unexpectedCurrentContext,
+      ),
+    ).toThrowError('PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED');
+    const wrongReplacementContext = await trustedSecrets({}, { sharedSecret: 'replacement-value' });
+    expect(() =>
+      normalizeAdminConnectorUpdateInput(
+        draft,
+        { ...basePatch, oauthClientSecret: { operation: 'replace', value: 'replacement-value' } },
+        'https://aihub.example.test/oauth/connector/callback',
+        wrongReplacementContext,
+      ),
+    ).toThrowError('PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED');
+  });
+
+  it('requires create/update normalizers to reject current and replacement secrets in persisted text', async () => {
+    const currentSecret = 'old-random-secret-123';
+    const replacementSecret = 'new-random-secret-456';
+    const secretContext = await trustedSecrets(
+      { oauthClientSecret: { [currentSecret]: 'current-secret-value' } },
+      { oauthClientSecret: replacementSecret },
+    );
+    const configuredDraft = adminConnectorDraftSchema.parse({
+      ...draft,
+      oauthClientSecret: { configured: true, fingerprint: 'fp', updatedAt: null },
+    });
+    const basePatch = {
+      expectedDraftToken: 'd'.repeat(64),
+      expectedRevision: 0,
+      id: 'connector-1',
+      oauthClientSecret: { operation: 'replace' as const, value: replacementSecret },
       reason: 'safe reason',
     };
     for (const patch of [
       { ...basePatch, description: `leak ${currentSecret}` },
+      { ...basePatch, description: 'leak current-secret-value' },
       { ...basePatch, displayName: `leak ${replacementSecret}` },
       {
         ...basePatch,
@@ -321,7 +434,7 @@ describe('platform connector contracts', () => {
     ]) {
       expect(() =>
         normalizeAdminConnectorUpdateInput(
-          draft,
+          configuredDraft,
           patch,
           'https://aihub.example.test/oauth/connector/callback',
           secretContext,
@@ -329,37 +442,40 @@ describe('platform connector contracts', () => {
       ).toThrowError('PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED');
     }
 
-    const noneDraft = adminConnectorDraftSchema.parse({
+    const sharedDraft = adminConnectorDraftSchema.parse({
       ...draft,
-      credentialMode: 'none',
+      credentialMode: 'shared_service_account',
       oauthClientSecret: secretState,
       oauthConfig: null,
-      sharedSecret: secretState,
+      sharedSecret: { configured: true, fingerprint: null, updatedAt: null },
     });
+    const createContext = await trustedSecrets({}, { sharedSecret: { apiKey: replacementSecret } });
     expect(() =>
       normalizeAdminConnectorCreateInput(
         {
-          credentialMode: 'none',
+          credentialMode: 'shared_service_account',
           displayName: 'Connector',
           endpoint: 'https://example.test',
           key: 'connector',
           reason: `reason ${replacementSecret}`,
+          sharedSecret: { operation: 'replace', value: { apiKey: replacementSecret } },
         },
-        noneDraft,
-        secretContext,
+        sharedDraft,
+        createContext,
       ),
     ).toThrowError('PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED');
     expect(() =>
       normalizeAdminConnectorCreateInput(
         {
-          credentialMode: 'none',
-          displayName: `Connector ${currentSecret}`,
+          credentialMode: 'shared_service_account',
+          displayName: `Connector ${replacementSecret}`,
           endpoint: 'https://example.test',
           key: 'connector',
           reason: 'create connector',
+          sharedSecret: { operation: 'replace', value: { apiKey: replacementSecret } },
         },
-        noneDraft,
-        secretContext,
+        sharedDraft,
+        createContext,
       ),
     ).toThrowError('PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED');
   });
@@ -411,6 +527,30 @@ describe('platform connector contracts', () => {
     ]) {
       expect(connectorSafeMessageSchema.safeParse(unsafe).success).toBe(false);
     }
+  });
+
+  it('binds connection-test status to exactly one message code', () => {
+    const base = {
+      errorCategory: null,
+      latencyMs: 1,
+      stale: false,
+      status: 'success' as const,
+      testedAt: new Date(),
+      testedDraftToken: 'd'.repeat(64),
+      testedRevision: 1,
+    };
+    expect(
+      connectorConnectionTestStateSchema.safeParse({
+        ...base,
+        messageCode: 'connector.operation_succeeded',
+      }).success,
+    ).toBe(true);
+    expect(
+      connectorConnectionTestStateSchema.safeParse({
+        ...base,
+        messageCode: 'connector.operation_failed',
+      }).success,
+    ).toBe(false);
   });
 
   it('returns only secret state in admin projections', () => {
