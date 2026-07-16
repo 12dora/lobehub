@@ -19,6 +19,7 @@ import type { PlatformConnectorCredentialMode } from '@/database/schemas/platfor
 import type { LobeChatDatabase } from '@/database/type';
 
 import { PlatformSecretService } from '../../security/secret';
+import { ConnectorCatalogReadService } from './catalogSnapshot';
 import { ensurePendingM09ServiceSchema } from './catalogTestUtils';
 import type { ConnectorOAuthRuntimeEnv } from './oauthRuntime';
 import { getConnectorOAuthRuntime } from './oauthRuntime';
@@ -183,6 +184,129 @@ describe('resolveConnectorCatalogRuntimeReadiness', () => {
         repository: listedRepository([shared.connector, oauth.connector]),
       }),
     ).resolves.toBe(true);
+  });
+
+  it('accepts strictly advancing multi-page results', async () => {
+    const first = await publish('none');
+    const second = await publish('none');
+    const repository = {
+      listConnectors: vi
+        .fn()
+        .mockResolvedValueOnce({
+          items: [first.connector],
+          nextCursor: { connectorKey: 'page-a', id: 'cursor-a' },
+        })
+        .mockResolvedValueOnce({ items: [second.connector], nextCursor: null }),
+    };
+    await expect(resolveConnectorCatalogRuntimeReadiness({ db, env, repository })).resolves.toBe(
+      true,
+    );
+    expect(repository.listConnectors).toHaveBeenCalledTimes(2);
+    expect(repository.listConnectors).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ cursor: { connectorKey: 'page-a', id: 'cursor-a' } }),
+    );
+  });
+
+  it('rejects A-to-B-to-A cursor cycles and lexicographic regression', async () => {
+    const cycleRepository = {
+      listConnectors: vi
+        .fn()
+        .mockResolvedValueOnce({
+          items: [],
+          nextCursor: { connectorKey: 'a', id: '1' },
+        })
+        .mockResolvedValueOnce({
+          items: [],
+          nextCursor: { connectorKey: 'b', id: '1' },
+        })
+        .mockResolvedValueOnce({
+          items: [],
+          nextCursor: { connectorKey: 'a', id: '1' },
+        }),
+    };
+    await expect(
+      resolveConnectorCatalogRuntimeReadiness({ db, env, repository: cycleRepository }),
+    ).resolves.toBe(false);
+    expect(cycleRepository.listConnectors).toHaveBeenCalledTimes(3);
+
+    const regressionRepository = {
+      listConnectors: vi
+        .fn()
+        .mockResolvedValueOnce({
+          items: [],
+          nextCursor: { connectorKey: 'b', id: '2' },
+        })
+        .mockResolvedValueOnce({
+          items: [],
+          nextCursor: { connectorKey: 'b', id: '1' },
+        }),
+    };
+    await expect(
+      resolveConnectorCatalogRuntimeReadiness({ db, env, repository: regressionRepository }),
+    ).resolves.toBe(false);
+    expect(regressionRepository.listConnectors).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails closed at the total page and item caps', async () => {
+    const pageCapRepository = {
+      listConnectors: vi.fn(
+        async ({ cursor }: Parameters<PlatformConnectorCatalogRepository['listConnectors']>[0]) => {
+          const page = cursor && typeof cursor !== 'string' ? Number(cursor.id) + 1 : 1;
+          return {
+            items: [],
+            nextCursor: { connectorKey: 'cap', id: String(page).padStart(3, '0') },
+          };
+        },
+      ),
+    };
+    await expect(
+      resolveConnectorCatalogRuntimeReadiness({ db, env, repository: pageCapRepository }),
+    ).resolves.toBe(false);
+    expect(pageCapRepository.listConnectors).toHaveBeenCalledTimes(100);
+
+    const fixture = await publish('none');
+    const getSnapshot = vi.fn();
+    const itemCapRepository = listedRepository(
+      Array.from({ length: 10_001 }, () => fixture.connector),
+    );
+    await expect(
+      resolveConnectorCatalogRuntimeReadiness({
+        db,
+        env,
+        readService: { getSnapshot },
+        repository: itemCapRepository,
+      }),
+    ).resolves.toBe(false);
+    expect(getSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('loads one shared snapshot and resolves its exact secret once', async () => {
+    const fixture = await publish('shared_service_account');
+    const runtime = getConnectorOAuthRuntime(db, env);
+    const validatedSnapshot = await new ConnectorCatalogReadService(
+      db,
+      runtime.secrets,
+    ).getSnapshot(fixture.connector.id);
+    const getSnapshot = vi.fn().mockResolvedValue(validatedSnapshot);
+    const resolveSecret = vi.spyOn(runtime.secrets, 'resolveSecretVersion');
+    await expect(
+      resolveConnectorCatalogRuntimeReadiness({
+        db,
+        env,
+        readService: { getSnapshot },
+        repository: listedRepository([fixture.connector]),
+        runtime,
+      }),
+    ).resolves.toBe(true);
+    expect(getSnapshot).toHaveBeenCalledTimes(1);
+    expect(resolveSecret).toHaveBeenCalledTimes(1);
+    expect(resolveSecret).toHaveBeenCalledWith({
+      connectorId: fixture.connector.id,
+      fingerprint: fixture.stored!.fingerprint,
+      slot: 'sharedSecret',
+    });
+    resolveSecret.mockRestore();
   });
 
   it('fails closed for a missing secret ref and fingerprint', async () => {
