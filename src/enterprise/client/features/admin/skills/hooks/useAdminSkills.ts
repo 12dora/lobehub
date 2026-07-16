@@ -110,6 +110,7 @@ export const refreshAdminSkill = async (id: string) => {
   const [detail] = await Promise.all([
     mutate(buildAdminSkillGetKey(id)),
     mutate((key) => Array.isArray(key) && key[0] === ADMIN_SKILL_LIST_KEY),
+    mutate((key) => Array.isArray(key) && key[0] === ADMIN_SKILL_VERSION_KEY),
     mutate((key) => Array.isArray(key) && key[0] === ADMIN_SKILL_VERSIONS_KEY),
     mutate((key) => Array.isArray(key) && key[0] === ADMIN_SKILL_DEPENDENTS_KEY),
   ]);
