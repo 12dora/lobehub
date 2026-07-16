@@ -46,6 +46,61 @@ const draftTokenSchema = z.string().length(64);
 const revisionSchema = z.number().int().nonnegative();
 const cursorSchema = z.string().min(1).max(1000);
 const localizedTextSchema = z.record(z.string().trim().min(2).max(35), boundedSafeText(4000));
+const skillContentRefSchema = z
+  .string()
+  .trim()
+  .min(8)
+  .max(520)
+  .regex(/^opaque:[a-z0-9][\w./-]*$/i);
+const skillResourcePathSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(512)
+  .refine(
+    (value) =>
+      !value.startsWith('/') &&
+      !value.includes('\\') &&
+      value
+        .split('/')
+        .every((segment) => segment.length > 0 && segment !== '.' && segment !== '..'),
+    'resource path must be a normalized relative POSIX path',
+  );
+
+export const skillResourceSchema = z
+  .object({
+    checksum: checksumSchema,
+    content: z.string().max(1_048_576).optional(),
+    contentRef: skillContentRefSchema.optional(),
+    mediaType: z
+      .string()
+      .trim()
+      .min(3)
+      .max(127)
+      .regex(/^[\w!#$&^.+-]+\/[\w!#$&^.+-]+$/),
+    path: skillResourcePathSchema,
+    sizeBytes: z.number().int().nonnegative().max(1_048_576),
+  })
+  .strict()
+  .superRefine((resource, ctx) => {
+    if ((resource.content === undefined) === (resource.contentRef === undefined)) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'resource must contain exactly one of content or contentRef',
+      });
+    }
+    if (
+      resource.content !== undefined &&
+      new TextEncoder().encode(resource.content).byteLength !== resource.sizeBytes
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'resource sizeBytes must match UTF-8 content bytes',
+      });
+    }
+  });
+
+const skillResourcesSchema = z.array(skillResourceSchema).max(100);
 
 export const skillToolDependencySchema = z
   .object({
@@ -143,6 +198,7 @@ export const skillIdentityDraftSchema = z
     description: boundedSafeText(4000).nullable(),
     displayName: boundedSafeText(200),
     distribution: z.enum(['mandatory', 'default', 'optional']),
+    draftSequence: z.number().int().nonnegative(),
     enabled: z.boolean(),
     id: z.string().min(1),
     revision: revisionSchema,
@@ -156,10 +212,12 @@ export const immutableSkillVersionSchema = z
   .object({
     checksum: checksumSchema,
     content: z.string().min(1).max(1_048_576),
+    contentRef: skillContentRefSchema.nullable(),
     createdAt: z.date(),
     createdBy: z.string().min(1).nullable(),
     id: z.string().min(1),
     manifest: skillManifestSchema,
+    resources: skillResourcesSchema,
     skillId: z.string().min(1),
     validation: skillValidationResultSchema.nullable(),
     version: skillVersionSchema,
@@ -167,7 +225,7 @@ export const immutableSkillVersionSchema = z
   .strict();
 
 export const skillVersionSummarySchema = immutableSkillVersionSchema
-  .omit({ content: true, manifest: true })
+  .omit({ content: true, contentRef: true, manifest: true, resources: true })
   .strict();
 
 export const adminSkillListInputSchema = z
@@ -253,10 +311,12 @@ export const adminSkillCreateVersionInputSchema = z
   .object({
     checksum: checksumSchema,
     content: z.string().min(1).max(1_048_576),
+    contentRef: skillContentRefSchema.nullable().default(null),
     expectedDraftToken: draftTokenSchema,
     expectedRevision: revisionSchema,
     manifest: skillManifestSchema,
     reason: reasonSchema,
+    resources: skillResourcesSchema.default([]),
     skillId: z.string().min(1),
     version: skillVersionSchema,
   })
@@ -366,8 +426,9 @@ export const serverResolvedSkillSchema = publishedSkillSchema
   .extend({
     allowBuiltinOverride: z.boolean(),
     content: z.string().min(1).max(1_048_576),
-    contentRef: z.string().max(2000).nullable(),
+    contentRef: skillContentRefSchema.nullable(),
     manifest: skillManifestSchema,
+    resources: skillResourcesSchema,
     skillId: z.string().min(1),
     versionId: z.string().min(1),
   })
@@ -378,6 +439,7 @@ export type AdminSkillCreateVersionInput = z.infer<typeof adminSkillCreateVersio
 export type AdminSkillUpdateDraftInput = z.infer<typeof adminSkillUpdateDraftInputSchema>;
 export type ImmutableSkillVersion = z.infer<typeof immutableSkillVersionSchema>;
 export type PublishedSkill = z.infer<typeof publishedSkillSchema>;
+export type SkillResource = z.infer<typeof skillResourceSchema>;
 export type SkillIdentityDraft = z.infer<typeof skillIdentityDraftSchema>;
 export type SkillManifest = z.infer<typeof skillManifestSchema>;
 export type SkillValidationIssue = z.infer<typeof skillValidationIssueSchema>;

@@ -40,6 +40,14 @@ const manifest = {
   toolDependencies: [{ optional: false, toolKey: 'builtin.search' }],
 };
 
+const resource = {
+  checksum: 'd'.repeat(64),
+  content: 'reference',
+  mediaType: 'text/plain',
+  path: 'references/source.txt',
+  sizeBytes: 9,
+};
+
 describe('Skill catalog contracts', () => {
   it('keeps identity draft edits separate from immutable versions', () => {
     expect(
@@ -66,7 +74,9 @@ describe('Skill catalog contracts', () => {
       ...concurrency,
       checksum: 'b'.repeat(64),
       content: '# Internal search',
+      contentRef: null,
       manifest,
+      resources: [],
       skillId: 'skill-1',
       version: '1.2.0',
     };
@@ -210,6 +220,7 @@ describe('Skill catalog contracts', () => {
         description: null,
         displayName: 'Reviewed override',
         distribution: 'optional',
+        draftSequence: 0,
         enabled: false,
         id: 'skill-1',
         revision: 0,
@@ -276,6 +287,7 @@ describe('Skill catalog contracts', () => {
       description: null,
       displayName: 'Skill',
       distribution: 'optional',
+      draftSequence: 0,
       enabled: false,
       id: 'skill-1',
       revision: 0,
@@ -351,26 +363,30 @@ describe('Skill catalog contracts', () => {
     const version = {
       checksum: 'c'.repeat(64),
       content: '# Internal search',
+      contentRef: 'opaque:skill-content-1',
       createdAt: new Date(),
       createdBy: 'admin-1',
       id: 'version-1',
       manifest,
+      resources: [resource],
       skillId: 'skill-1',
       validation: null,
       version: '1.0.0',
     };
     expect(adminSkillCreateVersionOutputSchema.safeParse(version).success).toBe(true);
     expect(adminSkillGetVersionOutputSchema.safeParse(version).success).toBe(true);
-    const { content: _content, manifest: _manifest, ...summary } = version;
+    const {
+      content: _content,
+      contentRef: _contentRef,
+      manifest: _manifest,
+      resources: _resources,
+      ...summary
+    } = version;
     expect(
       adminSkillListVersionsOutputSchema.safeParse({ items: [summary], nextCursor: null }).success,
     ).toBe(true);
     expect(
       adminSkillListVersionsOutputSchema.safeParse({ items: [version], nextCursor: null }).success,
-    ).toBe(false);
-    expect(
-      adminSkillCreateVersionOutputSchema.safeParse({ ...version, contentRef: '/private/path' })
-        .success,
     ).toBe(false);
     expect(
       adminSkillValidateOutputSchema.safeParse({
@@ -411,7 +427,7 @@ describe('Skill catalog contracts', () => {
     expect(
       publishedSkillCatalogSchema.safeParse({
         revision: 'revision-1',
-        skills: [{ ...published, content: '# private', manifest }],
+        skills: [{ ...published, content: '# private', manifest, resources: [resource] }],
       }).success,
     ).toBe(false);
     expect(
@@ -425,11 +441,53 @@ describe('Skill catalog contracts', () => {
         ...published,
         allowBuiltinOverride: true,
         content: '# Internal search',
-        contentRef: 's3://private/object',
+        contentRef: 'opaque:skill-content-1',
         manifest,
+        resources: [resource],
         skillId: 'skill-1',
         versionId: 'version-1',
       }).success,
     ).toBe(true);
+  });
+
+  it('bounds immutable resources and permits only opaque content references', () => {
+    const input = {
+      ...concurrency,
+      checksum: 'b'.repeat(64),
+      content: '# Internal search',
+      contentRef: 'opaque:skill-content-1',
+      manifest,
+      reason: 'create reviewed version',
+      resources: [resource],
+      skillId: 'skill-1',
+      version: '1.2.0',
+    };
+    expect(adminSkillCreateVersionInputSchema.safeParse(input).success).toBe(true);
+    for (const invalid of [
+      { ...resource, path: '../secret' },
+      { ...resource, path: '/absolute' },
+      { ...resource, path: 'nested\\windows.txt' },
+      { ...resource, sizeBytes: 8 },
+      { ...resource, contentRef: 'opaque:second-source' },
+    ]) {
+      expect(
+        adminSkillCreateVersionInputSchema.safeParse({ ...input, resources: [invalid] }).success,
+      ).toBe(false);
+    }
+    expect(
+      adminSkillCreateVersionInputSchema.safeParse({
+        ...input,
+        contentRef: 's3://bucket/private',
+      }).success,
+    ).toBe(false);
+    expect(
+      adminSkillCreateVersionInputSchema.safeParse({
+        ...input,
+        resources: Array.from({ length: 101 }, (_, index) => ({
+          ...resource,
+          path: `references/${index}.txt`,
+        })),
+      }).success,
+    ).toBe(false);
   });
 });
