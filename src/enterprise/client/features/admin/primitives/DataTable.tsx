@@ -142,6 +142,9 @@ function DataTableInner<T extends object>({
 }: DataTableProps<T>) {
   const { t } = useTranslation('admin');
 
+  // Controlled pagination only — do **not** attach pagination.onChange here.
+  // Ant Design Table fires pagination through the top-level `onChange` once;
+  // a second pagination.onChange would double-invoke onPaginationChange.
   const tablePagination = useMemo((): TablePaginationConfig | false => {
     const p = toAdminPagination(pagination);
     if (!p) return false;
@@ -151,11 +154,8 @@ function DataTableInner<T extends object>({
       pageSizeOptions: p.pageSizeOptions ?? ['20', '50', '100'],
       showSizeChanger: p.showSizeChanger ?? true,
       total: p.total,
-      onChange: (page, pageSize) => {
-        onPaginationChange?.(page, pageSize);
-      },
     };
-  }, [pagination, onPaginationChange]);
+  }, [pagination]);
 
   const handleTableChange: TableProps<T>['onChange'] = (
     pag,
@@ -164,20 +164,27 @@ function DataTableInner<T extends object>({
     _extra: TableCurrentDataSource<T>,
   ) => {
     const currentPagination = toAdminPagination(pagination);
-    const nextPagination: AdminTablePagination | false =
-      currentPagination === false
-        ? false
-        : {
-            ...currentPagination,
-            current: pag.current ?? currentPagination.current,
-            pageSize: pag.pageSize ?? currentPagination.pageSize,
-          };
 
+    let nextPagination: AdminTablePagination | false = false;
+    if (currentPagination !== false) {
+      const nextPageSize = pag.pageSize ?? currentPagination.pageSize;
+      const pageSizeChanged = nextPageSize !== currentPagination.pageSize;
+      // Server-driven lists: page-size change always resets to page 1.
+      const nextCurrent = pageSizeChanged ? 1 : (pag.current ?? currentPagination.current);
+      nextPagination = {
+        ...currentPagination,
+        current: nextCurrent,
+        pageSize: nextPageSize,
+      };
+    }
+
+    // Single path for pagination callbacks (page number or page size).
     if (
       nextPagination !== false &&
       currentPagination !== false &&
       onPaginationChange &&
-      (pag.current !== currentPagination.current || pag.pageSize !== currentPagination.pageSize)
+      (nextPagination.current !== currentPagination.current ||
+        nextPagination.pageSize !== currentPagination.pageSize)
     ) {
       onPaginationChange(nextPagination.current, nextPagination.pageSize);
     }
@@ -197,6 +204,7 @@ function DataTableInner<T extends object>({
       };
     };
 
+    // Unified meta for sort/filter/pagination (callers may use this alone).
     onChange?.({
       filters: filters as Record<string, FilterValue | null>,
       pagination: nextPagination,

@@ -97,4 +97,49 @@ describe('flag-off real Business route tree registration', () => {
     expect(spy).not.toHaveBeenCalled();
     spy.mockRestore();
   }, 20_000);
+
+  it('flag off: registry /admin/leak route is suppressed (adversarial)', async () => {
+    setBootPlatformAdmin(false);
+    vi.resetModules();
+
+    vi.resetModules();
+    const { enterpriseModuleRegistry } = await import('../registry');
+    try {
+      enterpriseModuleRegistry.register({
+        id: 'adversarial-admin-leak',
+        routes: [{ path: '/admin/leak', element: null }],
+      });
+    } catch {
+      // already registered in this worker
+    }
+
+    // Getter must return [] while flag is off (registry contents ignored).
+    const routesMod = await import('./index');
+    expect(routesMod.getEnterpriseDesktopRoutesWithoutMainLayout()).toEqual([]);
+    expect(routesMod.EnterpriseDesktopRoutesWithoutMainLayout).toEqual([]);
+
+    const { desktop } = await loadBusinessRoutes();
+    expect(desktop.BusinessDesktopRoutesWithoutMainLayout).toEqual([]);
+    expect(matchRoutes(desktop.BusinessDesktopRoutesWithoutMainLayout, '/admin/leak')).toBeNull();
+    expect(matchRoutes(desktop.BusinessDesktopRoutesWithoutMainLayout, '/admin')).toBeNull();
+    expect(matchRoutes(desktop.BusinessDesktopRoutesWithoutMainLayout, '/admin/users')).toBeNull();
+
+    // Flag on: registry routes reappear alongside shell (leak path is matchable).
+    setBootPlatformAdmin(true);
+    vi.resetModules();
+    const reg2 = await import('../registry');
+    try {
+      reg2.enterpriseModuleRegistry.register({
+        id: 'adversarial-admin-leak',
+        routes: [{ path: '/admin/leak', element: null }],
+      });
+    } catch {
+      // ignore
+    }
+    const on = await import('./index');
+    const enterpriseRoutes = on.getEnterpriseDesktopRoutesWithoutMainLayout();
+    expect(enterpriseRoutes.some((r) => r.path === '/admin')).toBe(true);
+    expect(enterpriseRoutes.some((r) => r.path === '/admin/leak')).toBe(true);
+    expect(matchRoutes(enterpriseRoutes, '/admin/leak')).toBeTruthy();
+  }, 40_000);
 });

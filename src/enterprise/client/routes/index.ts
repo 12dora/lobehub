@@ -7,22 +7,23 @@ import { createAdminRouteTree } from './admin/createAdminRouteTree';
 /**
  * Enterprise desktop routes for BusinessDesktopRoutesWithoutMainLayout.
  *
- * Flag-off (boot `enterprise.platformAdmin` false/absent): returns **no** `/admin`
- * RouteObject — the path is not registered. Flag-on: full admin tree for deep links.
+ * Flag-off (boot `enterprise.platformAdmin` false/absent): returns **[]** — no admin
+ * shell routes and **no** registry-provided platform-admin routes either.
+ * Flag-on: admin shell + registered module routes.
  *
  * Boot source: `window.__SERVER_CONFIG__` only (synchronous HTML inject).
  */
 export const getEnterpriseDesktopRoutesWithoutMainLayout = (): RouteObject[] => {
-  const moduleRoutes = enterpriseModuleRegistry.getRoutes();
+  // Fail closed: never expose shell or registry admin routes when the feature is off.
   if (!isPlatformAdminBootEnabled()) {
-    return [...moduleRoutes];
+    return [];
   }
-  return [...createAdminRouteTree(), ...moduleRoutes];
+  return [...createAdminRouteTree(), ...enterpriseModuleRegistry.getRoutes()];
 };
 
 /**
  * Static export evaluated at SPA module load (after `__SERVER_CONFIG__` inject).
- * When platform admin is off, this array does not contain `/admin`.
+ * When platform admin is off, this array is empty.
  */
 export const EnterpriseDesktopRoutesWithoutMainLayout: RouteObject[] =
   getEnterpriseDesktopRoutesWithoutMainLayout();
