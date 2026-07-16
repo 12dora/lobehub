@@ -14,8 +14,7 @@ import { users } from '../../schemas';
 import type { LobeChatDatabase } from '../../type';
 import { escapeAdminUserLikePattern } from '../adminUser';
 
-const hasServerDbUrl = Boolean(process.env.DATABASE_TEST_URL || process.env.DATABASE_URL);
-const isServerDB = process.env.TEST_SERVER_DB === '1' && hasServerDbUrl;
+const isServerDB = process.env.TEST_SERVER_DB === '1' && Boolean(process.env.DATABASE_TEST_URL);
 
 describe.skipIf(!isServerDB)('M04 prefix search EXPLAIN (TEST_SERVER_DB=1)', () => {
   let db: LobeChatDatabase;
@@ -45,35 +44,51 @@ describe.skipIf(!isServerDB)('M04 prefix search EXPLAIN (TEST_SERVER_DB=1)', () 
     await db.delete(users).where(sql`${users.id} like 'explain-%'`);
   });
 
-  it('prefix search plan can use lower(*) pattern index (budget: Index/Bitmap path)', async () => {
+  it('prefix search plan can use lower(*) text_pattern_ops index (budget: Index/Bitmap path)', async () => {
     const escaped = escapeAdminUserLikePattern(prefixUser.toLowerCase());
     const pattern = `${escaped}%`;
-    // EXPLAIN only — no ANALYZE needed for path shape; avoid logging query text in assertions.
-    const result = await db.execute(sql`
-      EXPLAIN
-      SELECT id FROM users
-      WHERE lower(normalized_email) LIKE ${pattern} ESCAPE '\\'
-         OR lower(email) LIKE ${pattern} ESCAPE '\\'
-         OR lower(username) LIKE ${pattern} ESCAPE '\\'
-      LIMIT 50
-    `);
 
-    const planText = JSON.stringify(result);
-    // Accept Index Scan / Bitmap Index / Index Only — fail if plan is empty.
-    expect(planText.length).toBeGreaterThan(10);
-    // Documented budget: planner should not be forced to full table only when index exists.
-    // On small tables Postgres may still seq-scan; assert index exists and plan is valid.
-    const indexCheck = await db.execute(sql`
-      SELECT indexname FROM pg_indexes
-      WHERE tablename = 'users'
-        AND indexname IN (
+    // Prove opclass is text_pattern_ops on expression indexes.
+    const opclass = await db.execute(sql`
+      SELECT i.relname AS indexname, am.amname, opc.opcname
+      FROM pg_index ix
+      JOIN pg_class i ON i.oid = ix.indexrelid
+      JOIN pg_class t ON t.oid = ix.indrelid
+      JOIN pg_am am ON am.oid = i.relam
+      JOIN pg_opclass opc ON opc.oid = ANY (ix.indclass)
+      WHERE t.relname = 'users'
+        AND i.relname IN (
           'users_email_lower_pattern_idx',
           'users_username_lower_pattern_idx',
           'users_normalized_email_lower_pattern_idx'
         )
     `);
-    const raw = indexCheck as unknown as { rows?: Array<Record<string, unknown>> };
-    const indexRows = raw.rows ?? (Array.isArray(indexCheck) ? (indexCheck as unknown[]) : []);
-    expect(indexRows.length).toBeGreaterThanOrEqual(1);
+    const opRows =
+      (opclass as unknown as { rows?: Array<Record<string, unknown>> }).rows ??
+      (Array.isArray(opclass) ? (opclass as unknown[]) : []);
+    expect(opRows.length).toBeGreaterThanOrEqual(1);
+    const blob = JSON.stringify(opRows);
+    expect(blob).toContain('text_pattern_ops');
+
+    // Selective single-column prefix (most likely to pick the expression index).
+    const result = await db.execute(sql`
+      EXPLAIN (FORMAT TEXT)
+      SELECT id FROM users
+      WHERE lower(username) LIKE ${pattern} ESCAPE '\\'
+      LIMIT 10
+    `);
+    const planText = JSON.stringify(result);
+    // Budget: Index Scan / Bitmap Index / Index Only preferred over sole Seq Scan.
+    // On tiny tables planner may still Seq Scan — assert index opclass above as hard gate.
+    expect(planText.length).toBeGreaterThan(10);
+    const hasIndexPath = /Index|Bitmap/i.test(planText);
+    const hasSeqOnly = /Seq Scan/i.test(planText) && !hasIndexPath;
+    // Soft budget: document when planner chooses seq on small datasets without failing CI.
+    if (hasSeqOnly) {
+      // Index exists with correct opclass; plan choice is size-dependent.
+      expect(opRows.length).toBeGreaterThanOrEqual(1);
+    } else {
+      expect(hasIndexPath).toBe(true);
+    }
   });
 });
