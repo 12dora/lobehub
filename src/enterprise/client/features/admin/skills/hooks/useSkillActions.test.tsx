@@ -8,6 +8,7 @@ import { useSkillActions } from './useSkillActions';
 const mocks = vi.hoisted(() => ({
   archive: vi.fn(),
   createVersion: vi.fn(),
+  getVersion: vi.fn(),
   openReasonModal: vi.fn(),
   openVersionEditorModal: vi.fn(),
   publish: vi.fn(),
@@ -34,6 +35,7 @@ vi.mock('@/enterprise/client/services/adminSkills', () => ({
   adminSkillsService: {
     archive: mocks.archive,
     createVersion: mocks.createVersion,
+    getVersion: mocks.getVersion,
     publish: mocks.publish,
     rollback: mocks.rollback,
     updateDraft: mocks.updateDraft,
@@ -122,6 +124,7 @@ describe('M08 Skill write actions', () => {
     vi.clearAllMocks();
     mocks.archive.mockResolvedValue({});
     mocks.publish.mockResolvedValue({});
+    mocks.getVersion.mockResolvedValue({ validation });
     mocks.refresh.mockResolvedValue(data('skill-1', 4));
     mocks.rollback.mockResolvedValue({});
     mocks.updateDraft.mockResolvedValue({});
@@ -229,5 +232,66 @@ describe('M08 Skill write actions', () => {
     });
     expect(mocks.openReasonModal).not.toHaveBeenCalled();
     expect(mocks.openVersionEditorModal).not.toHaveBeenCalled();
+  });
+
+  it('keeps committed writes locked until a refreshed snapshot actually advances', async () => {
+    const currentEditor = { ...editor(), dirty: false };
+    mocks.refresh
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(data())
+      .mockResolvedValueOnce(data('skill-1', 4));
+    const { result } = renderHook(() =>
+      useSkillActions({
+        authMethod: null,
+        data: data(),
+        editor: currentEditor as any,
+        permissions,
+        selectedValidation: validation,
+        selectedVersionId: 'version-1',
+      }),
+    );
+    act(() => result.current.openArchive());
+    const modal = mocks.openReasonModal.mock.calls[0][0];
+    await act(() => modal.onSubmit(modal.buildPayload('archive')));
+    expect(result.current.refreshFailed).toBe(true);
+    expect(currentEditor.setActionError).toHaveBeenLastCalledWith('skillCatalog.refresh.failed');
+
+    act(() => result.current.openRollback('version-1'));
+    expect(mocks.openReasonModal).toHaveBeenCalledTimes(1);
+
+    await act(() => result.current.retryRefresh());
+    expect(result.current.refreshFailed).toBe(true);
+    expect(currentEditor.setActionError).toHaveBeenLastCalledWith('skillCatalog.refresh.failed');
+
+    await act(() => result.current.retryRefresh());
+    expect(result.current.refreshFailed).toBe(false);
+    expect(currentEditor.setActionError).toHaveBeenLastCalledWith(null);
+  });
+
+  it('clears the first reauth-required error after retrying the same frozen payload successfully', async () => {
+    const currentEditor = { ...editor(), dirty: false };
+    const reauth = Object.assign(new Error('reauth'), { code: 'ADMIN_REAUTH_REQUIRED' });
+    mocks.publish.mockRejectedValueOnce(reauth).mockResolvedValueOnce({});
+    const { result } = renderHook(() =>
+      useSkillActions({
+        authMethod: 'oidc',
+        data: data(),
+        editor: currentEditor as any,
+        permissions,
+        selectedValidation: validation,
+        selectedVersionId: 'version-1',
+      }),
+    );
+    act(() => result.current.openPublish());
+    const modal = mocks.openReasonModal.mock.calls[0][0];
+    const frozen = modal.buildPayload('publish');
+    await expect(modal.onSubmit(structuredClone(frozen))).rejects.toBe(reauth);
+    expect(currentEditor.setActionError).toHaveBeenCalledWith(
+      'enterprise.error.ADMIN_REAUTH_REQUIRED',
+    );
+
+    await act(() => modal.onSubmit(structuredClone(frozen)));
+    expect(mocks.publish).toHaveBeenNthCalledWith(2, frozen);
+    expect(currentEditor.setActionError).toHaveBeenLastCalledWith(null);
   });
 });
