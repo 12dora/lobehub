@@ -40,6 +40,12 @@ export const users = pgTable(
     banReason: text('ban_reason'),
     banExpires: timestamptz('ban_expires'),
 
+    /**
+     * M04 security epoch: credentials (Better Auth session createdAt / OIDC iat)
+     * issued at or before this timestamp are rejected after ban/session revoke.
+     */
+    authInvalidatedAt: timestamptz('auth_invalidated_at'),
+
     // better-auth two-factor
     twoFactorEnabled: boolean('two_factor_enabled').default(false),
 
@@ -60,6 +66,13 @@ export const users = pgTable(
     index('users_banned_true_created_at_idx')
       .on(table.createdAt)
       .where(sql`${table.banned} = true`),
+    /**
+     * M04 admin list prefix search: lower(field) text_pattern_ops for `LIKE 'prefix%'`.
+     * Declared as expression indexes; migration SQL uses opclass explicitly.
+     */
+    index('users_email_lower_pattern_idx').on(sql`lower(${table.email})`),
+    index('users_username_lower_pattern_idx').on(sql`lower(${table.username})`),
+    index('users_normalized_email_lower_pattern_idx').on(sql`lower(${table.normalizedEmail})`),
   ],
 );
 
