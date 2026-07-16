@@ -47,7 +47,7 @@ export const resolvePlatformSkillSelection = (
   mode: AgentPluginMode,
 ): PlatformSkillSelection => {
   if (distribution === 'mandatory') {
-    return { activated: false, available: true, mutable: false };
+    return { activated: true, available: true, mutable: false };
   }
   if (distribution === 'optional') {
     const selected = mode === 'pinned';

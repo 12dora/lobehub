@@ -73,7 +73,7 @@ const PlatformSkillList = memo<PlatformSkillListProps>(({ onSelect, selectedIden
     setSearchParams(nextParams, { replace: true });
   };
 
-  if (catalog.error && !catalog.data) {
+  if (catalog.error && !catalog.data?.skills.length) {
     return (
       <Center paddingBlock={48}>
         <AsyncError error={catalog.error} variant="block" onRetry={() => void catalog.mutate()} />
