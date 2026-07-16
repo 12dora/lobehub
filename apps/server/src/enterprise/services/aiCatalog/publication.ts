@@ -60,10 +60,12 @@ export interface AiCatalogPublicationOptions {
   };
 }
 
-const enabledModelReferences = (payload: Record<string, unknown> | null) => {
-  if (!payload || !isRecord(payload.provider) || !Array.isArray(payload.models)) return new Set();
+const enabledModelReferences = (payload: Record<string, unknown> | null): Set<string> => {
+  if (!payload || !isRecord(payload.provider) || !Array.isArray(payload.models))
+    return new Set<string>();
   const providerKey = payload.provider.providerKey;
-  if (typeof providerKey !== 'string' || payload.provider.enabled !== true) return new Set();
+  if (typeof providerKey !== 'string' || payload.provider.enabled !== true)
+    return new Set<string>();
   return new Set(
     payload.models.flatMap((model) =>
       isRecord(model) && model.enabled === true && typeof model.modelKey === 'string'

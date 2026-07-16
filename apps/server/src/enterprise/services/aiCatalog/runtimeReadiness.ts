@@ -1,7 +1,8 @@
+import type { EnterpriseFeatureFlags } from '@/const/platform/featureFlags';
 import { getServerDB } from '@/database/core/db-adaptor';
 import type { LobeChatDatabase } from '@/database/type';
 
-import { type EnterpriseFeatureFlags, parseEnterpriseFeatureFlags } from '../../featureFlags';
+import { parseEnterpriseFeatureFlags } from '../../featureFlags';
 import { PlatformSecretService } from '../../security/secret';
 import { registerManagedResourceReadiness } from '../managedResourceReadiness';
 import {
