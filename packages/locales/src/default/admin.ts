@@ -361,6 +361,8 @@ export default {
   'skillCatalog.detail.dependents.empty': 'No dependent Skills or agents',
   'skillCatalog.detail.dependents.error': 'Failed to load dependents',
   'skillCatalog.detail.dependents.loading': 'Loading dependents…',
+  'skillCatalog.detail.dependents.pageError':
+    'This dependents page failed to load. Previous results are still shown.',
   'skillCatalog.detail.dependents.skillDesc': 'Resources that depend on this Skill.',
   'skillCatalog.detail.dependents.title': 'Dependents',
   'skillCatalog.detail.dependents.versionDesc': 'Resources that depend on the selected version.',
@@ -387,6 +389,8 @@ export default {
   'skillCatalog.detail.versions.empty': 'No versions have been created',
   'skillCatalog.detail.versions.error': 'Failed to load versions',
   'skillCatalog.detail.versions.loading': 'Loading versions…',
+  'skillCatalog.detail.versions.pageError':
+    'This versions page failed to load. Previous results are still shown.',
   'skillCatalog.detail.versions.neverPublished': 'Never published',
   'skillCatalog.detail.versions.notValidated': 'Not validated',
   'skillCatalog.detail.versions.publishedAtRevision': 'Published at revision #{{revision}}',
@@ -406,6 +410,7 @@ export default {
   'skillCatalog.list.desc': 'Review platform Skill identities, immutable versions, and dependents.',
   'skillCatalog.list.empty.default': 'No platform Skills have been registered',
   'skillCatalog.list.empty.filtered': 'No Skills match these server-side filters',
+  'skillCatalog.list.error.page': 'This page failed to load. Previous results are still shown.',
   'skillCatalog.list.filters.distribution': 'Distribution',
   'skillCatalog.list.filters.enabled': 'Availability',
   'skillCatalog.list.filters.query': 'Search name or internal key…',

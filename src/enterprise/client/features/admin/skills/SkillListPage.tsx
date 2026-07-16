@@ -1,7 +1,7 @@
 'use client';
 
-import { Flexbox, Input, Tag, Text } from '@lobehub/ui';
-import { Select } from '@lobehub/ui/base-ui';
+import { Alert, Flexbox, Input, Tag, Text } from '@lobehub/ui';
+import { Button, Select } from '@lobehub/ui/base-ui';
 import type { TableColumnsType } from 'antd';
 import { createStaticStyles } from 'antd-style';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -51,10 +51,21 @@ const SkillListPage = memo(() => {
   ]);
   const enabledParam = searchParams.get('enabled');
   const enabled = enabledParam === 'true' ? true : enabledParam === 'false' ? false : undefined;
+  const filterFingerprint = JSON.stringify([
+    normalizedQuery,
+    status ?? '',
+    source ?? '',
+    distribution ?? '',
+    enabledParam === 'true' || enabledParam === 'false' ? enabledParam : '',
+  ]);
   const [queryDraft, setQueryDraft] = useState(query);
-  const [cursorStack, setCursorStack] = useState<(string | null)[]>([]);
+  const [cursorState, setCursorState] = useState<{
+    fingerprint: string;
+    stack: (string | null)[];
+  }>(() => ({ fingerprint: filterFingerprint, stack: [] }));
   const [limit, setLimit] = useState(DEFAULT_LIMIT);
   const searchTimerRef = useRef<number | null>(null);
+  const cursorStack = cursorState.fingerprint === filterFingerprint ? cursorState.stack : [];
   const cursor = cursorStack.at(-1) ?? null;
   const input = useMemo<AdminSkillListInput>(
     () => ({
@@ -76,12 +87,16 @@ const SkillListPage = memo(() => {
       if (value) next.set(key, value);
       else next.delete(key);
       setSearchParams(next, { replace: true });
-      setCursorStack([]);
+      setCursorState({ fingerprint: '', stack: [] });
     },
     [searchParams, setSearchParams],
   );
 
   useEffect(() => setQueryDraft(query), [query]);
+  useEffect(() => {
+    if (cursorState.fingerprint === filterFingerprint) return;
+    setCursorState({ fingerprint: filterFingerprint, stack: [] });
+  }, [cursorState.fingerprint, filterFingerprint]);
   useEffect(() => {
     if (searchTimerRef.current) window.clearTimeout(searchTimerRef.current);
     if (queryDraft === query) return;
@@ -231,18 +246,22 @@ const SkillListPage = memo(() => {
         pagination={false}
         rowKey="id"
         cursorPagination={{
-          hasNext: Boolean(data?.nextCursor),
+          hasNext: Boolean(data?.nextCursor) && !error,
           hasPrevious: cursorStack.length > 0,
           pageSize: limit,
           onNext: () => {
             if (!data?.nextCursor) return;
-            setCursorStack((current) => [...current, data.nextCursor]);
+            setCursorState({
+              fingerprint: filterFingerprint,
+              stack: [...cursorStack, data.nextCursor],
+            });
           },
           onPageSizeChange: (pageSize) => {
             setLimit(pageSize);
-            setCursorStack([]);
+            setCursorState({ fingerprint: filterFingerprint, stack: [] });
           },
-          onPrevious: () => setCursorStack((current) => current.slice(0, -1)),
+          onPrevious: () =>
+            setCursorState({ fingerprint: filterFingerprint, stack: cursorStack.slice(0, -1) }),
         }}
         emptyDescription={
           filtered ? t('skillCatalog.list.empty.filtered') : t('skillCatalog.list.empty.default')
@@ -250,6 +269,14 @@ const SkillListPage = memo(() => {
         onRetry={() => void mutate()}
         onRowActivate={(item) => navigate(`/admin/skills/${encodeURIComponent(item.id)}`)}
       />
+      {error && data ? (
+        <Alert
+          showIcon
+          message={t('skillCatalog.list.error.page')}
+          type="error"
+          extra={<Button onClick={() => void mutate()}>{t('skillCatalog.actions.retry')}</Button>}
+        />
+      ) : null}
     </AdminPageTemplate>
   );
 });

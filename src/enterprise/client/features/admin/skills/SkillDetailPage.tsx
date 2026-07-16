@@ -10,6 +10,7 @@ import { useNavigate, useParams, useSearchParams } from 'react-router';
 import AsyncBoundary from '@/components/AsyncBoundary';
 import { formatAdminDateTime } from '@/enterprise/client/features/admin/users/utils';
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
+import SkeletonList from '@/features/NavPanel/components/SkeletonList';
 
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
 import RevisionBanner from '../primitives/RevisionBanner';
@@ -156,9 +157,9 @@ const VersionsSection = memo<VersionsSectionProps>(
             }
           />
         ) : versions.isLoading && !versions.data ? (
-          <Text role="status" type="secondary">
-            {t('skillCatalog.detail.versions.loading')}
-          </Text>
+          <div aria-label={t('skillCatalog.detail.versions.loading')} role="status">
+            <SkeletonList rows={3} />
+          </div>
         ) : versions.data?.items.length ? (
           <>
             {versions.data.items.map((version) => (
@@ -177,7 +178,7 @@ const VersionsSection = memo<VersionsSectionProps>(
                 {t('skillCatalog.pagination.previous')}
               </Button>
               <Button
-                disabled={!versions.data.nextCursor}
+                disabled={!versions.data.nextCursor || Boolean(versions.error)}
                 onClick={() => {
                   const next = versions.data?.nextCursor;
                   if (next) setCursorStack((current) => [...current, next]);
@@ -190,6 +191,18 @@ const VersionsSection = memo<VersionsSectionProps>(
         ) : (
           <Empty description={t('skillCatalog.detail.versions.empty')} />
         )}
+        {versions.error && versions.data ? (
+          <Alert
+            showIcon
+            message={t('skillCatalog.detail.versions.pageError')}
+            type="error"
+            extra={
+              <Button onClick={() => void versions.mutate()}>
+                {t('skillCatalog.actions.retry')}
+              </Button>
+            }
+          />
+        ) : null}
       </section>
     );
   },
@@ -364,9 +377,9 @@ const DependentsSection = memo<{
           }
         />
       ) : dependents.isLoading && !dependents.data ? (
-        <Text role="status" type="secondary">
-          {t('skillCatalog.detail.dependents.loading')}
-        </Text>
+        <div aria-label={t('skillCatalog.detail.dependents.loading')} role="status">
+          <SkeletonList rows={3} />
+        </div>
       ) : dependents.data?.items.length ? (
         <>
           {dependents.data.items.map((item) => (
@@ -389,7 +402,7 @@ const DependentsSection = memo<{
               {t('skillCatalog.pagination.previous')}
             </Button>
             <Button
-              disabled={!dependents.data.nextCursor}
+              disabled={!dependents.data.nextCursor || Boolean(dependents.error)}
               onClick={() => {
                 const next = dependents.data?.nextCursor;
                 if (next) setCursorStack((current) => [...current, next]);
@@ -402,6 +415,18 @@ const DependentsSection = memo<{
       ) : (
         <Empty description={t('skillCatalog.detail.dependents.empty')} />
       )}
+      {dependents.error && dependents.data ? (
+        <Alert
+          showIcon
+          message={t('skillCatalog.detail.dependents.pageError')}
+          type="error"
+          extra={
+            <Button onClick={() => void dependents.mutate()}>
+              {t('skillCatalog.actions.retry')}
+            </Button>
+          }
+        />
+      ) : null}
     </section>
   );
 });

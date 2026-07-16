@@ -44,7 +44,8 @@ export const useSkillEditor = (snapshot: AdminSkillGetOutput | undefined, editab
   const hydratedKeyRef = useRef<string | null>(null);
   const rejectedHydrationKeyRef = useRef<string | null>(null);
   const pendingSnapshotRef = useRef<AdminSkillGetOutput | null>(null);
-  const allowNextHydrationRef = useRef(false);
+  const allowedHydrationSkillIdRef = useRef<string | null>(null);
+  const pendingNavigationSkillIdRef = useRef<string | null>(null);
   const leaveModalRef = useRef<ReturnType<typeof confirmModal> | null>(null);
   const switchModalRef = useRef<ReturnType<typeof confirmModal> | null>(null);
 
@@ -100,8 +101,8 @@ export const useSkillEditor = (snapshot: AdminSkillGetOutput | undefined, editab
       rejectedHydrationKeyRef.current = null;
       return;
     }
-    if (allowNextHydrationRef.current) {
-      allowNextHydrationRef.current = false;
+    if (allowedHydrationSkillIdRef.current === snapshot.draft.id) {
+      allowedHydrationSkillIdRef.current = null;
       rejectedHydrationKeyRef.current = null;
       switchModalRef.current?.close();
       switchModalRef.current = null;
@@ -199,7 +200,16 @@ export const useSkillEditor = (snapshot: AdminSkillGetOutput | undefined, editab
 
   const blocker = useBlocker(
     editable && dirty
-      ? ({ currentLocation, nextLocation }) => currentLocation.pathname !== nextLocation.pathname
+      ? ({ currentLocation, nextLocation }) => {
+          if (currentLocation.pathname === nextLocation.pathname) return false;
+          const match = /^\/admin\/skills\/([^/]+)$/.exec(nextLocation.pathname);
+          try {
+            pendingNavigationSkillIdRef.current = match ? decodeURIComponent(match[1]) : null;
+          } catch {
+            pendingNavigationSkillIdRef.current = null;
+          }
+          return true;
+        }
       : false,
   );
   useEffect(() => {
@@ -219,7 +229,8 @@ export const useSkillEditor = (snapshot: AdminSkillGetOutput | undefined, editab
         blocker.reset?.();
       },
       onOk: () => {
-        allowNextHydrationRef.current = true;
+        allowedHydrationSkillIdRef.current = pendingNavigationSkillIdRef.current;
+        pendingNavigationSkillIdRef.current = null;
         leaveModalRef.current = null;
         blocker.proceed?.();
       },

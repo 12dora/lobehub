@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
-import { MemoryRouter } from 'react-router';
+import { MemoryRouter, useNavigate } from 'react-router';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   inputs: [] as unknown[],
   isLoading: false,
   mutate: vi.fn(),
+  pageErrorOnCursor: false,
 }));
 
 vi.mock('antd-style', () => ({
@@ -31,9 +32,10 @@ vi.mock('@/enterprise/client/providers/AdminAccessProvider', () => ({
 vi.mock('./hooks/useAdminSkills', () => ({
   useFetchAdminSkills: (input: unknown) => {
     mocks.inputs.push(structuredClone(input));
+    const cursor = (input as { cursor?: string }).cursor;
     return {
       data: mocks.data,
-      error: mocks.error,
+      error: mocks.pageErrorOnCursor && cursor ? new Error('page offline') : mocks.error,
       isLoading: mocks.isLoading,
       mutate: mocks.mutate,
     };
@@ -41,6 +43,12 @@ vi.mock('./hooks/useAdminSkills', () => ({
 }));
 
 vi.mock('@lobehub/ui', () => ({
+  Alert: ({ extra, message }: { extra?: ReactNode; message?: ReactNode }) => (
+    <div role="alert">
+      {message}
+      {extra}
+    </div>
+  ),
   Flexbox: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   Input: ({ allowClear: _allowClear, ...props }: any) => <input {...props} />,
   Tag: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
@@ -48,6 +56,7 @@ vi.mock('@lobehub/ui', () => ({
 }));
 
 vi.mock('@lobehub/ui/base-ui', () => ({
+  Button: ({ children, ...props }: any) => <button {...props}>{children}</button>,
   Select: ({ 'aria-label': ariaLabel, onChange, options, value }: any) => (
     <select
       aria-label={ariaLabel}
@@ -87,12 +96,21 @@ vi.mock('../primitives/DataTable', () => ({
     if (!dataSource?.length) return <div>{emptyDescription}</div>;
     return (
       <div>
-        <button onClick={cursorPagination.onNext}>next</button>
-        <button onClick={cursorPagination.onPrevious}>previous</button>
+        <button disabled={!cursorPagination.hasNext} onClick={cursorPagination.onNext}>
+          next
+        </button>
+        <button disabled={!cursorPagination.hasPrevious} onClick={cursorPagination.onPrevious}>
+          previous
+        </button>
       </div>
     );
   },
 }));
+
+const ExternalFilterLink = () => {
+  const navigate = useNavigate();
+  return <button onClick={() => navigate('/admin/skills?status=draft')}>external-filter</button>;
+};
 
 describe('SkillListPage', () => {
   beforeEach(() => {
@@ -101,6 +119,45 @@ describe('SkillListPage', () => {
     mocks.inputs.length = 0;
     mocks.isLoading = false;
     mocks.mutate.mockReset();
+    mocks.pageErrorOnCursor = false;
+  });
+
+  it('invalidates an old cursor before an external URL filter navigation can fetch', async () => {
+    render(
+      <MemoryRouter initialEntries={['/admin/skills']}>
+        <ExternalFilterLink />
+        <SkillListPage />
+      </MemoryRouter>,
+    );
+    fireEvent.click(screen.getByText('next'));
+    await waitFor(() => expect(mocks.inputs.at(-1)).toMatchObject({ cursor: 'next-cursor' }));
+
+    const mark = mocks.inputs.length;
+    fireEvent.click(screen.getByText('external-filter'));
+    await waitFor(() => expect(mocks.inputs.at(-1)).toMatchObject({ status: 'draft' }));
+    const externalCalls = mocks.inputs.slice(mark) as { cursor?: string; status?: string }[];
+    expect(externalCalls.some((input) => input.status === 'draft')).toBe(true);
+    expect(
+      externalCalls
+        .filter((input) => input.status === 'draft')
+        .every((input) => input.cursor === undefined),
+    ).toBe(true);
+  });
+
+  it('keeps prior rows and Previous available when a later cursor page fails', async () => {
+    mocks.pageErrorOnCursor = true;
+    render(
+      <MemoryRouter>
+        <SkillListPage />
+      </MemoryRouter>,
+    );
+    fireEvent.click(screen.getByText('next'));
+
+    await waitFor(() => expect(screen.getByText('skillCatalog.list.error.page')).toBeTruthy());
+    expect(screen.getByText('previous')).not.toHaveProperty('disabled', true);
+    expect(screen.getByText('next')).toHaveProperty('disabled', true);
+    fireEvent.click(screen.getByText('skillCatalog.actions.retry'));
+    expect(mocks.mutate).toHaveBeenCalledTimes(1);
   });
 
   it('sends every URL filter and cursor to the server hook', async () => {
