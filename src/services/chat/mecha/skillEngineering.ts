@@ -1,15 +1,54 @@
 import type { OperationSkillSet } from '@lobechat/context-engine';
 import { SkillEngine } from '@lobechat/context-engine';
 import { resourcesTreePrompt } from '@lobechat/prompts';
-import type { AgentPluginMode, SkillItem } from '@lobechat/types';
+import type { AgentPluginEntry, AgentPluginMode, SkillItem } from '@lobechat/types';
+import { getPluginMode } from '@lobechat/types';
 import debug from 'debug';
 
 import { isBuiltinSkillAvailableInCurrentEnv } from '@/helpers/toolAvailability';
 import { agentSkillService } from '@/services/skill';
 import { getToolStoreState } from '@/store/tool';
+import type { PlatformSkillOperationSnapshot } from '@/types/platform/skills';
 import { resolvePlatformSkillSelection } from '@/types/platform/skills';
 
 const log = debug('context-engine:resolveClientSkills');
+
+const freezePlatformSnapshot = (
+  snapshot: PlatformSkillOperationSnapshot,
+): PlatformSkillOperationSnapshot => {
+  const clone = structuredClone(snapshot);
+  for (const ref of clone.refs) Object.freeze(ref);
+  for (const skill of clone.skills ?? []) Object.freeze(skill);
+  Object.freeze(clone.refs);
+  if (clone.skills) Object.freeze(clone.skills);
+  if (clone.mandatorySkillIds) Object.freeze(clone.mandatorySkillIds);
+  return Object.freeze(clone) as PlatformSkillOperationSnapshot;
+};
+
+export const captureClientPlatformSkillSnapshot = (
+  pluginEntries?: AgentPluginEntry[],
+): PlatformSkillOperationSnapshot | undefined => {
+  const state = getToolStoreState();
+  if (state.platformSkillRuntimeStatus === 'unmanaged') return undefined;
+  if (state.platformSkillRuntimeStatus !== 'ready' || !state.platformSkillCatalog) {
+    throw new Error('Managed Skill runtime catalog is unavailable');
+  }
+  const skills = state.platformSkillCatalog.skills.filter(
+    (skill) =>
+      resolvePlatformSkillSelection(
+        skill.distribution,
+        getPluginMode(pluginEntries, skill.skillKey),
+      ).available,
+  );
+  return freezePlatformSnapshot({
+    mandatorySkillIds: skills.flatMap((skill) =>
+      skill.distribution === 'mandatory' ? [skill.skillKey] : [],
+    ),
+    refs: skills.map(({ checksum, skillKey, version }) => ({ checksum, skillKey, version })),
+    revision: state.platformSkillCatalog.revision,
+    skills,
+  });
+};
 
 /**
  * Build the full content payload for a DB skill detail, appending its resource
@@ -56,13 +95,24 @@ const buildPlatformSkillContent = (
 export const resolveClientSkills = async (
   pluginIds?: string[],
   disabledIds?: string[],
+  operationSnapshot?: PlatformSkillOperationSnapshot,
 ): Promise<OperationSkillSet> => {
   const toolState = getToolStoreState();
   const pinnedIds = new Set(pluginIds ?? []);
   const disabledIdSet = new Set(disabledIds ?? []);
 
-  const platformCatalog = toolState.platformSkillCatalog;
-  if (platformCatalog) {
+  const platformCatalog = operationSnapshot
+    ? operationSnapshot.skills
+      ? { revision: operationSnapshot.revision, skills: operationSnapshot.skills }
+      : undefined
+    : toolState.platformSkillCatalog;
+  if (operationSnapshot || toolState.platformSkillRuntimeStatus !== 'unmanaged') {
+    if (
+      !platformCatalog ||
+      (!operationSnapshot && toolState.platformSkillRuntimeStatus !== 'ready')
+    ) {
+      throw new Error('Managed Skill runtime catalog is unavailable');
+    }
     const platformMetas = await Promise.all(
       platformCatalog.skills.map(async (skill) => {
         const mode: AgentPluginMode = disabledIdSet.has(skill.skillKey)
@@ -101,14 +151,21 @@ export const resolveClientSkills = async (
     const skills = platformMetas.filter((skill) => skill !== undefined);
     const skillEngine = new SkillEngine({ skills });
     const operation = skillEngine.generate(pluginIds ?? []);
+    const snapshot = freezePlatformSnapshot({
+      mandatorySkillIds: platformCatalog.skills.flatMap((skill) =>
+        skill.distribution === 'mandatory' ? [skill.skillKey] : [],
+      ),
+      refs: platformCatalog.skills
+        .filter((skill) => skills.some((candidate) => candidate.identifier === skill.skillKey))
+        .map(({ checksum, skillKey, version }) => ({ checksum, skillKey, version })),
+      revision: platformCatalog.revision,
+      skills: platformCatalog.skills.filter((skill) =>
+        skills.some((candidate) => candidate.identifier === skill.skillKey),
+      ),
+    });
     return {
       ...operation,
-      platformCatalog: {
-        refs: platformCatalog.skills
-          .filter((skill) => skills.some((candidate) => candidate.identifier === skill.skillKey))
-          .map(({ checksum, skillKey, version }) => ({ checksum, skillKey, version })),
-        revision: platformCatalog.revision,
-      },
+      platformCatalog: snapshot,
     };
   }
 

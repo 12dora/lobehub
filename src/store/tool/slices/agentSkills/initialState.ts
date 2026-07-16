@@ -8,6 +8,10 @@ export interface AgentSkillsState {
   agentSkillsLoading: boolean;
   /** Exact public metadata snapshot mirrored from the server runtime catalog. */
   platformSkillCatalog: PlatformPublishedSkillCatalog | null;
+  platformSkillCatalogInvalidationRevision: string;
+  platformSkillCatalogRequestEpoch: number;
+  platformSkillRuntimeEnforced: boolean;
+  platformSkillRuntimeStatus: 'error' | 'loading' | 'ready' | 'unmanaged';
 }
 
 export const initialAgentSkillsState: AgentSkillsState = {
@@ -15,4 +19,8 @@ export const initialAgentSkillsState: AgentSkillsState = {
   agentSkills: [],
   agentSkillsLoading: false,
   platformSkillCatalog: null,
+  platformSkillCatalogInvalidationRevision: '0',
+  platformSkillCatalogRequestEpoch: 0,
+  platformSkillRuntimeEnforced: false,
+  platformSkillRuntimeStatus: 'unmanaged',
 };

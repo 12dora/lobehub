@@ -1,6 +1,7 @@
 import type { ExecScriptActivatedSkill } from '@lobechat/builtin-tool-skills';
 
 import { agentSkillService } from '@/services/skill';
+import type { PlatformSkillOperationSnapshot } from '@/types/platform/skills';
 
 import { localFileService } from './localFileService';
 
@@ -34,8 +35,12 @@ class DesktopSkillRuntimeService {
 
   async resolveExecutionDirectory(
     activatedSkills?: ExecScriptActivatedSkill[],
+    platformSkillSnapshot?: PlatformSkillOperationSnapshot,
   ): Promise<string | undefined> {
     if (!activatedSkills?.length) return undefined;
+    // Platform content/resources are materialized by the exact resolver. Never
+    // search personal ZIPs by the same name during a managed operation.
+    if (platformSkillSnapshot) return undefined;
 
     // Walk from the most recent activation and use the first one that
     // resolves to a packaged (zip-backed) DB skill — id-less filesystem/
@@ -54,9 +59,11 @@ class DesktopSkillRuntimeService {
 
   async resolveReferenceFullPath(params: {
     path: string;
+    platformSkillSnapshot?: PlatformSkillOperationSnapshot;
     skillId?: string;
     skillName?: string;
   }): Promise<string | undefined> {
+    if (params.platformSkillSnapshot) return undefined;
     const skill = await this.resolveSkill({ id: params.skillId, name: params.skillName });
     if (!skill?.zipFileHash) return undefined;
 

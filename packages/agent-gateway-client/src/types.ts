@@ -176,6 +176,12 @@ export interface ToolExecuteData {
   executionTimeoutMs: number;
   /** Tool plugin identifier (e.g. "local-system"). */
   identifier: string;
+  /** Exact server operation Skill refs for client-side execution. */
+  platformSkillSnapshot?: {
+    mandatorySkillIds?: string[];
+    refs: Array<{ checksum: string; skillKey: string; version: string }>;
+    revision: string;
+  };
   /** Unique tool call id; used as the correlation key for the returned result. */
   toolCallId: string;
 }

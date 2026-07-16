@@ -6,12 +6,18 @@ import { z } from 'zod';
 import { wsCompatProcedure } from '@/business/server/trpc-middlewares/workspaceAuth';
 import { AgentSkillModel } from '@/database/models/agentSkill';
 import { FileModel } from '@/database/models/file';
+import { PlatformManagedResourcePolicyModel } from '@/database/models/platform';
 import { UserModel } from '@/database/models/user';
 import { type ToolCallContent } from '@/libs/mcp';
 import { authedProcedure, router } from '@/libs/trpc/lambda';
 import { marketUserInfo, serverDatabase, telemetry } from '@/libs/trpc/lambda/middleware';
 import { marketSDK, requireMarketAuth } from '@/libs/trpc/lambda/middleware/marketSDK';
 import { isTrustedClientEnabled } from '@/libs/trusted-client';
+import { parseEnterpriseFeatureFlags } from '@/server/enterprise/featureFlags';
+import {
+  getBuiltinSkillDefinitions,
+  SkillCatalogReadService,
+} from '@/server/enterprise/services/skillCatalog';
 import { DiscoverService } from '@/server/services/discover';
 import { FileService } from '@/server/services/file';
 import { MarketService } from '@/server/services/market';
@@ -125,6 +131,24 @@ const execInSandboxSchema = z.object({
   userId: z.string().optional(), // Optional: fallback to ctx.userId if not provided
 });
 
+const platformSkillSnapshotSchema = z
+  .object({
+    mandatorySkillIds: z.array(z.string().min(1)).max(10_000).optional(),
+    refs: z
+      .array(
+        z
+          .object({
+            checksum: z.string().min(1).max(200),
+            skillKey: z.string().min(1).max(200),
+            version: z.string().min(1).max(200),
+          })
+          .strict(),
+      )
+      .max(10_000),
+    revision: z.string().min(1).max(200),
+  })
+  .strict();
+
 // Schema for export and upload file (combined operation)
 const exportAndUploadFileSchema = z.object({
   filename: z.string(),
@@ -215,25 +239,62 @@ const execInSandboxHandler = async ({
     // For execScript tool, look up skill zipUrls from activatedSkills
     if (toolName === 'execScript' && enhancedParams.activatedSkills?.length) {
       const wsId = ctx.workspaceId ?? undefined;
-      const agentSkillModel = new AgentSkillModel(ctx.serverDB, userId, wsId);
-      const fileModel = new FileModel(ctx.serverDB, userId, wsId);
+      const flags = parseEnterpriseFeatureFlags(process.env);
+      const policySnapshot = flags.ENABLE_PLATFORM_MANAGED_SKILLS
+        ? await new PlatformManagedResourcePolicyModel(ctx.serverDB).getSnapshot()
+        : undefined;
+      const platformEnforced =
+        policySnapshot?.status === 'published' &&
+        policySnapshot.published.skills.managed &&
+        policySnapshot.published.skills.enforcementMode === 'enforced';
 
       // Resolve zipUrls for all activated skills
       const skillZipUrls: Record<string, string> = {};
 
-      for (const activatedSkill of enhancedParams.activatedSkills) {
-        if (!activatedSkill.name) continue;
+      if (platformEnforced) {
+        const snapshot = platformSkillSnapshotSchema.safeParse(
+          enhancedParams.platformSkillSnapshot,
+        );
+        if (!snapshot.success) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: 'Managed Skill operation snapshot is required',
+          });
+        }
+        const refsByKey = new Map(snapshot.data.refs.map((ref) => [ref.skillKey, ref]));
+        const catalog = new SkillCatalogReadService(ctx.serverDB, {
+          builtinSkills: getBuiltinSkillDefinitions(),
+        });
+        for (const activatedSkill of enhancedParams.activatedSkills) {
+          const ref = refsByKey.get(activatedSkill.name);
+          if (!ref || !(await catalog.resolvePinnedForExecution(ref))) {
+            throw new TRPCError({
+              code: 'PRECONDITION_FAILED',
+              message: `Managed Skill reference is unavailable: ${activatedSkill.name}`,
+            });
+          }
+        }
+        const { platformSkillSnapshot: _snapshot, ...sandboxParams } = enhancedParams;
+        void _snapshot;
+        enhancedParams = sandboxParams;
+      } else {
+        const agentSkillModel = new AgentSkillModel(ctx.serverDB, userId, wsId);
+        const fileModel = new FileModel(ctx.serverDB, userId, wsId);
 
-        const skill = await agentSkillModel.findByName(activatedSkill.name);
-        if (!skill?.zipFileHash) continue;
+        for (const activatedSkill of enhancedParams.activatedSkills) {
+          if (!activatedSkill.name) continue;
 
-        const fileInfo = await fileModel.checkHash(skill.zipFileHash);
-        if (!fileInfo.isExist || !fileInfo.url) continue;
+          const skill = await agentSkillModel.findByName(activatedSkill.name);
+          if (!skill?.zipFileHash) continue;
 
-        const fullUrl = await ctx.fileService.getFullFileUrl(fileInfo.url);
-        if (fullUrl) {
-          skillZipUrls[activatedSkill.name] = fullUrl;
-          log('Resolved zipUrl for skill %s', activatedSkill.name);
+          const fileInfo = await fileModel.checkHash(skill.zipFileHash);
+          if (!fileInfo.isExist || !fileInfo.url) continue;
+
+          const fullUrl = await ctx.fileService.getFullFileUrl(fileInfo.url);
+          if (fullUrl) {
+            skillZipUrls[activatedSkill.name] = fullUrl;
+            log('Resolved zipUrl for skill %s', activatedSkill.name);
+          }
         }
       }
 

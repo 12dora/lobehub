@@ -57,7 +57,8 @@ const PlatformSkillDetail = memo<PlatformSkillDetailProps>(({ skillKey }) => {
   const catalog = usePublishedSkillCatalog(true);
   const [saving, setSaving] = useState(false);
   const config = useAgentStore(agentSelectors.currentAgentConfig);
-  const setPluginMode = useAgentStore((state) => state.setPluginMode);
+  const agentId = useAgentStore((state) => state.activeAgentId);
+  const setPluginModeById = useAgentStore((state) => state.setPluginModeById);
   const skill = catalog.data?.skills.find((item) => item.skillKey === skillKey);
   const mode = getPluginMode(config?.plugins, skillKey);
   const enabled = skill ? isPublishedSkillEnabled(skill.distribution, mode) : false;
@@ -76,10 +77,10 @@ const PlatformSkillDetail = memo<PlatformSkillDetailProps>(({ skillKey }) => {
 
   const toggle = async (nextEnabled: boolean) => {
     const nextMode = getPublishedSkillToggleMode(skill.distribution, nextEnabled);
-    if (!nextMode || !config) return;
+    if (!nextMode || !config || !agentId) return;
     setSaving(true);
     try {
-      await setPluginMode(skill.skillKey, nextMode);
+      await setPluginModeById(agentId, skill.skillKey, nextMode);
     } finally {
       setSaving(false);
     }

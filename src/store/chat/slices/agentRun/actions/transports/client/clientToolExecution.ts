@@ -141,6 +141,7 @@ export class ClientToolExecutionActionImpl {
           // has no local message id, so reuse toolCallId as the context key.
           messageId: toolCallId,
           operationId,
+          platformSkillSnapshot: data.platformSkillSnapshot,
           scope: operation?.context?.scope,
           signal: operation?.abortController?.signal,
           sourceMessageId: operation?.context?.messageId,

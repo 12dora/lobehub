@@ -36,6 +36,8 @@ export interface PlatformCapabilities {
    * Never carries secrets or full policy payloads.
    */
   configRevision: string;
+  /** Effective runtime enforcement after feature flags, policy and readiness are resolved. */
+  enforcedManagedResources: ManagedResourcesCapabilities;
   features: PlatformFeatureCapabilities;
   managedResources: ManagedResourcesCapabilities;
   settingsRevision: string | null;
@@ -51,6 +53,13 @@ export const DISABLED_PLATFORM_CAPABILITIES: PlatformCapabilities = {
     databaseOidc: false,
     platformAdmin: false,
     runtimeBranding: false,
+  },
+  enforcedManagedResources: {
+    agents: false,
+    aiModels: false,
+    aiProviders: false,
+    connectors: false,
+    skills: false,
   },
   managedResources: {
     agents: false,

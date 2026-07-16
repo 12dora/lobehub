@@ -19,6 +19,7 @@ import { isDesktop } from '@lobechat/const';
 import { type ToolsEngine } from '@lobechat/context-engine';
 import { buildTaskDetailPrompt, buildTaskListPrompt } from '@lobechat/prompts';
 import {
+  type AgentPluginEntry,
   type ConversationContext,
   type MessageMetadata,
   type RunSubAgentResult,
@@ -32,6 +33,7 @@ import { aiAgentService } from '@/services/aiAgent';
 import { isCanUseVideo, isCanUseVision } from '@/services/chat/helper';
 import { type ResolvedAgentConfig } from '@/services/chat/mecha';
 import { composeEnabledTools, resolveAgentConfig } from '@/services/chat/mecha';
+import { captureClientPlatformSkillSnapshot } from '@/services/chat/mecha/skillEngineering';
 import { localFileService } from '@/services/electron/localFileService';
 import { messageService } from '@/services/message';
 import { getAgentStoreState } from '@/store/agent';
@@ -551,6 +553,10 @@ export class StreamingExecutorActionImpl {
 
     // Use model/provider from resolved agentConfig
     const { agentConfig: agentConfigData } = agentConfig;
+    const platformSkillSnapshot = captureClientPlatformSkillSnapshot(
+      agentConfigData.plugins as unknown as AgentPluginEntry[],
+    );
+    this.#get().updateOperationMetadata(operationId, { platformSkillSnapshot });
     const model = agentConfigData.model;
     const provider = agentConfigData.provider;
 

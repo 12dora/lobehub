@@ -12,12 +12,18 @@ class ActivatorExecutor extends BaseExecutor<typeof ActivatorApiName> {
   readonly identifier = LobeActivatorIdentifier;
   protected readonly apiEnum = ActivatorApiName;
 
-  private runtime: ActivatorExecutionRuntime;
+  private runtime:
+    ActivatorExecutionRuntime | ((ctx: BuiltinToolContext) => ActivatorExecutionRuntime);
 
-  constructor(runtime: ActivatorExecutionRuntime) {
+  constructor(
+    runtime: ActivatorExecutionRuntime | ((ctx: BuiltinToolContext) => ActivatorExecutionRuntime),
+  ) {
     super();
     this.runtime = runtime;
   }
+
+  private getRuntime = (ctx: BuiltinToolContext) =>
+    typeof this.runtime === 'function' ? this.runtime(ctx) : this.runtime;
 
   activateSkill = async (
     params: ActivateSkillParams,
@@ -28,7 +34,7 @@ class ActivatorExecutor extends BaseExecutor<typeof ActivatorApiName> {
         return { stop: true, success: false };
       }
 
-      const result = await this.runtime.activateSkill(params);
+      const result = await this.getRuntime(ctx).activateSkill(params);
 
       if (result.success) {
         return { content: result.content, state: result.state, success: true };
@@ -57,7 +63,7 @@ class ActivatorExecutor extends BaseExecutor<typeof ActivatorApiName> {
         return { stop: true, success: false };
       }
 
-      const result = await this.runtime.activateTools(params);
+      const result = await this.getRuntime(ctx).activateTools(params);
 
       if (result.success) {
         return { content: result.content, state: result.state, success: true };
