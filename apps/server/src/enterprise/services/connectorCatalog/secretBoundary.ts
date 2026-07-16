@@ -1,4 +1,4 @@
-import { containsSensitiveMaterial, isCredentialBearingUrl } from '../../security/redaction';
+import { containsConnectorCredentialMaterial } from '../../contracts/platformConnectors';
 import { PlatformConnectorContractError } from './errors';
 
 export type ConnectorOperationErrorCategory =
@@ -33,8 +33,7 @@ export const assertConnectorPersistentTextSafe = (
   secretLeaves: ReadonlySet<string>,
 ): string => {
   if (
-    containsSensitiveMaterial(value) ||
-    isCredentialBearingUrl(value) ||
+    containsConnectorCredentialMaterial(value) ||
     [...secretLeaves].some((secret) => value.includes(secret))
   ) {
     throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED');

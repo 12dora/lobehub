@@ -61,6 +61,46 @@ describe('ConnectorOutboundClient', () => {
     );
   });
 
+  it.each([
+    ['form', 1024 * 1024 - 'value='.length],
+    ['json', 1024 * 1024 - '{"value":""}'.length],
+  ] as const)(
+    'accepts exact %s body limit and rejects one byte over',
+    async (bodyEncoding, size) => {
+      const safeClient = new SafeOutboundHttpClient();
+      const fetchSpy = vi.spyOn(safeClient, 'fetch').mockResolvedValue(response());
+      const client = new ConnectorOutboundClient(safeClient);
+      const request = {
+        bodyEncoding,
+        operation: 'test' as const,
+        url: 'https://mcp.example.test/v1',
+      };
+
+      await expect(
+        client.requestJson({ ...request, body: { value: 'x'.repeat(size) } }),
+      ).resolves.toMatchObject({ status: 200 });
+      await expect(
+        client.requestJson({ ...request, body: { value: 'x'.repeat(size + 1) } }),
+      ).rejects.toMatchObject({ code: 'PLATFORM_CONNECTOR_TRANSPORT_UNSUPPORTED' });
+      expect(fetchSpy).toHaveBeenCalledOnce();
+    },
+  );
+
+  it('automatically marks OAuth operations secret-bearing and ignores a false caller hint', async () => {
+    const safeClient = new SafeOutboundHttpClient();
+    const fetchSpy = vi.spyOn(safeClient, 'fetch').mockResolvedValue(response());
+    const client = new ConnectorOutboundClient(safeClient);
+    await client.requestJson({
+      operation: 'oauth_userinfo',
+      secretBearing: false,
+      url: 'https://identity.example.test/userinfo',
+    });
+    expect(fetchSpy).toHaveBeenCalledWith(
+      'https://identity.example.test/userinfo',
+      expect.objectContaining({ secretBearing: true }),
+    );
+  });
+
   it('rejects non-JSON, truncated, invalid JSON, and unsuccessful responses without returning bodies', async () => {
     const safeClient = new SafeOutboundHttpClient();
     const client = new ConnectorOutboundClient(safeClient);
