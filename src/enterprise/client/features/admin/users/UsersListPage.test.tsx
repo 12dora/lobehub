@@ -53,12 +53,14 @@ vi.mock('@/libs/swr', () => ({
   useClientDataSWR: (key: unknown, fetcher?: () => Promise<unknown>) => {
     if (key != null) {
       const serialized = JSON.stringify(key);
-      // Record key observations on every render (SWR key evidence).
-      evidence.swrKeys.push(Array.isArray(key) ? [...key] : key);
-      // Fetch only when key actually changes (SWR semantics).
-      if (fetcher && serialized !== evidence.lastSerializedSwrKey) {
+      // Record + fetch only when key actually changes (SWR semantics).
+      // Keys array is therefore a causal fetch-key sequence, not re-render noise.
+      if (serialized !== evidence.lastSerializedSwrKey) {
         evidence.lastSerializedSwrKey = serialized;
-        void Promise.resolve().then(() => fetcher());
+        evidence.swrKeys.push(Array.isArray(key) ? [...key] : key);
+        if (fetcher) {
+          void Promise.resolve().then(() => fetcher());
+        }
       }
     }
     return {
@@ -207,8 +209,9 @@ describe('UsersListPage real FilterBar filters (R4)', () => {
   };
 
   /**
-   * From marks, filter change must produce exactly one new list call matching pred
-   * with cursor undefined, and last SWR key in the window has empty cursor.
+   * From marks, the entire observation window must contain exactly one list call
+   * matching pred (and nothing else), with cursor undefined, and exactly one SWR key
+   * (no cursor). Hides neither transient old-query requests nor extra keys.
    */
   const assertExactlyOneNoCursor = (
     listMark: number,
@@ -216,14 +219,19 @@ describe('UsersListPage real FilterBar filters (R4)', () => {
     pred: (c: unknown) => boolean,
   ) => {
     const slice = listCalls.slice(listMark);
-    const matched = slice.filter(pred);
-    expect(matched.length).toBe(1);
-    expect((matched[0] as { cursor?: string }).cursor).toBeUndefined();
+    expect(slice.length).toBe(1);
+    expect(pred(slice[0])).toBe(true);
+    expect((slice[0] as { cursor?: string }).cursor).toBeUndefined();
 
     const keySlice = swrKeys.slice(keyMark);
-    expect(keySlice.length).toBeGreaterThanOrEqual(1);
-    const lastKey = keySlice.at(-1);
-    expect(isNoCursorKey(lastKey)).toBe(true);
+    expect(keySlice.length).toBe(1);
+    expect(isNoCursorKey(keySlice[0])).toBe(true);
+  };
+
+  /** Clear observation arrays without resetting lastSerializedSwrKey (avoids re-fetch of current key). */
+  const clearObservationWindow = () => {
+    listCalls.length = 0;
+    swrKeys.length = 0;
   };
 
   it('Clear for status-only / role-only / date-only resets payload', async () => {
@@ -371,7 +379,7 @@ describe('UsersListPage real FilterBar filters (R4)', () => {
       assertExactlyOneNoCursor(listMark, keyMark, (c) => (c as { limit?: number }).limit === 20);
     });
 
-    // debounced query from page 2
+    // debounced query from page 2 (also covered by dedicated atomic search test)
     fireEvent.click(screen.getByText('next'));
     await waitFor(() =>
       expect((listCalls.at(-1) as { cursor?: string }).cursor === 'cursor-2').toBe(true),
@@ -381,6 +389,8 @@ describe('UsersListPage real FilterBar filters (R4)', () => {
     fireEvent.change(screen.getByLabelText('users.list.searchPlaceholder'), {
       target: { value: 'alice' },
     });
+    // Keystrokes must not fetch before debounce
+    expect(listCalls.slice(listMark)).toEqual([]);
     await vi.advanceTimersByTimeAsync(350);
     await waitFor(() => {
       assertExactlyOneNoCursor(
@@ -389,5 +399,44 @@ describe('UsersListPage real FilterBar filters (R4)', () => {
         (c) => (c as { query?: string }).query === 'alice',
       );
     });
+  });
+
+  it('from page 2, search edit yields exactly one list call and one SWR key after debounce', async () => {
+    renderPage();
+    await goToSecondPage();
+
+    // Clear observation window after landing on page 2
+    clearObservationWindow();
+    expect(listCalls).toEqual([]);
+    expect(swrKeys).toEqual([]);
+
+    fireEvent.change(screen.getByLabelText('users.list.searchPlaceholder'), {
+      target: { value: 'alice' },
+    });
+
+    // Draft-only: no list request / SWR key until debounce commits query + clears cursor
+    expect(listCalls).toEqual([]);
+    expect(swrKeys).toEqual([]);
+
+    await vi.advanceTimersByTimeAsync(350);
+
+    await waitFor(() => {
+      expect(listCalls.length).toBe(1);
+      expect(swrKeys.length).toBe(1);
+    });
+
+    // Entire window: sole request has new query, no cursor
+    expect(listCalls).toHaveLength(1);
+    const sole = listCalls[0] as { cursor?: string; query?: string };
+    expect(sole.query).toBe('alice');
+    expect(sole.cursor).toBeUndefined();
+
+    // Sole SWR key: query slot 'alice', cursor slot empty
+    expect(swrKeys).toHaveLength(1);
+    const soleKey = swrKeys[0];
+    expect(Array.isArray(soleKey)).toBe(true);
+    expect((soleKey as unknown[])[1]).toBe('alice');
+    expect(isNoCursorKey(soleKey)).toBe(true);
+    expect(cursorFromKey(soleKey)).toBe('');
   });
 });
