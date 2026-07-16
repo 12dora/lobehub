@@ -26,6 +26,9 @@ const ManagedResourcesPolicyPage = lazy(
 const AiProviderListPage = lazy(
   () => import('@/enterprise/client/features/admin/ai/providers/ProviderListPage'),
 );
+const AiProviderDetailPage = lazy(
+  () => import('@/enterprise/client/features/admin/ai/providers/ProviderDetailPage'),
+);
 const AiModelListPage = lazy(
   () => import('@/enterprise/client/features/admin/ai/models/ModelListPage'),
 );
@@ -62,6 +65,9 @@ const resolveAdminLeafElement = (id: string): ReactNode => {
     }
     case 'ai-providers': {
       return withLazy(<AiProviderListPage />);
+    }
+    case 'ai-provider-detail': {
+      return withLazy(<AiProviderDetailPage />);
     }
     case 'ai-models': {
       return withLazy(<AiModelListPage />);
