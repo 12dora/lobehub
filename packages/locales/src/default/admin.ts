@@ -167,6 +167,7 @@ export default {
   'aiCatalog.providers.title': 'AI Providers',
   'aiCatalog.refresh.committed.desc':
     'Do not repeat the write. Reload the committed server state separately.',
+  'aiCatalog.refresh.committed.pending': 'Change committed; loading the latest server state',
   'aiCatalog.refresh.committed.title': 'Change committed, but the latest state could not reload',
   'aiCatalog.refresh.retry': 'Retry reload',
   'aiCatalog.revisions.desc': 'Published and rollback revisions are immutable audit history.',
