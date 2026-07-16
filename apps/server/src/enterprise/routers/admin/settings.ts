@@ -1,5 +1,6 @@
 import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
+import type { LobeChatDatabase } from '@/database/type';
 import { authedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 
@@ -18,6 +19,7 @@ import { getEnterpriseFeatureFlags } from '../../featureFlags';
 import { withActiveUser } from '../../guards/activeUser';
 import { throwEnterpriseError } from '../../guards/enterpriseErrors';
 import { withPlatformPermission } from '../../guards/platformPermission';
+import { PlatformAuditService } from '../../services/platformAudit';
 import {
   AdminSettingsService,
   PlatformRevisionConflictError,
@@ -26,8 +28,27 @@ import {
 
 const adminBase = authedProcedure.use(serverDatabase).use(withActiveUser());
 
-const assertSettingsFeature = () => {
+/** B9-R2: feature-disabled → denied audit, zero mutation. */
+const assertSettingsFeature = async (params: {
+  action: string;
+  actorUserId: string;
+  serverDB: LobeChatDatabase;
+}) => {
   if (!getEnterpriseFeatureFlags().ENABLE_PLATFORM_SETTINGS_POLICY) {
+    try {
+      await new PlatformAuditService(params.serverDB).append({
+        action: params.action,
+        actorUserId: params.actorUserId,
+        afterDiff: null,
+        beforeDiff: null,
+        reason: 'feature_disabled',
+        result: 'denied',
+        targetId: 'global',
+        targetType: 'settings',
+      });
+    } catch {
+      /* best-effort */
+    }
     throwEnterpriseError({
       code: PLATFORM_ERROR_CODES.PLATFORM_FEATURE_DISABLED,
       httpCode: 'FORBIDDEN',
@@ -39,14 +60,17 @@ const assertSettingsFeature = () => {
 /**
  * admin.settings.* — draft / validate / publish / rollback.
  * Permissions: platform_settings:read/update/publish:all exactly.
- * ai_admin has SETTINGS_READ only (catalog); mutations require update/publish.
  */
 export const adminSettingsRouter = router({
   getDraft: adminBase
     .use(withPlatformPermission(PLATFORM_PERMISSIONS.SETTINGS_READ))
     .output(adminSettingsGetDraftOutputSchema)
     .query(async ({ ctx }) => {
-      assertSettingsFeature();
+      await assertSettingsFeature({
+        action: 'admin.settings.getDraft',
+        actorUserId: ctx.userId!,
+        serverDB: ctx.serverDB,
+      });
       const service = new AdminSettingsService(ctx.serverDB);
       return service.getDraft();
     }),
@@ -56,7 +80,11 @@ export const adminSettingsRouter = router({
     .input(adminSettingsSaveDraftInputSchema)
     .output(adminSettingsSaveDraftOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      assertSettingsFeature();
+      await assertSettingsFeature({
+        action: 'admin.settings.saveDraft',
+        actorUserId: ctx.userId!,
+        serverDB: ctx.serverDB,
+      });
       const service = new AdminSettingsService(ctx.serverDB);
       try {
         return await service.saveDraft({
@@ -83,7 +111,11 @@ export const adminSettingsRouter = router({
     .input(adminSettingsValidateDraftInputSchema)
     .output(adminSettingsValidateDraftOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      assertSettingsFeature();
+      await assertSettingsFeature({
+        action: 'admin.settings.validateDraft',
+        actorUserId: ctx.userId!,
+        serverDB: ctx.serverDB,
+      });
       const service = new AdminSettingsService(ctx.serverDB);
       const draft =
         input.draft ??
@@ -96,7 +128,11 @@ export const adminSettingsRouter = router({
     .input(adminSettingsPublishInputSchema)
     .output(adminSettingsPublishOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      assertSettingsFeature();
+      await assertSettingsFeature({
+        action: 'admin.settings.publish',
+        actorUserId: ctx.userId!,
+        serverDB: ctx.serverDB,
+      });
       const service = new AdminSettingsService(ctx.serverDB);
       try {
         return await service.publish({
@@ -129,7 +165,11 @@ export const adminSettingsRouter = router({
     .input(adminSettingsRollbackInputSchema)
     .output(adminSettingsRollbackOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      assertSettingsFeature();
+      await assertSettingsFeature({
+        action: 'admin.settings.rollback',
+        actorUserId: ctx.userId!,
+        serverDB: ctx.serverDB,
+      });
       const service = new AdminSettingsService(ctx.serverDB);
       try {
         return await service.rollback({

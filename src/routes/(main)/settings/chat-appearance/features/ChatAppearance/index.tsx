@@ -14,6 +14,7 @@ import { memo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import AutoSaveHint from '@/components/Editor/AutoSaveHint';
+import ManagedSettingField from '@/features/PlatformSettingSourceBadge/ManagedSettingField';
 import { useSaveState } from '@/hooks/useSaveState';
 import { useUserStore } from '@/store/user';
 import { settingsSelectors } from '@/store/user/selectors';
@@ -55,24 +56,31 @@ const ChatAppearance = memo(() => {
         extra={
           <Flexbox horizontal align={'center'} gap={8}>
             {renderSaveHint('transitionMode')}
-            <Tabs
-              activeKey={general.transitionMode}
-              items={[
-                {
-                  key: 'none',
-                  label: t('settingChatAppearance.transitionMode.options.none.value'),
-                },
-                {
-                  key: 'fadeIn',
-                  label: t('settingChatAppearance.transitionMode.options.fadeIn'),
-                },
-                {
-                  key: 'smooth',
-                  label: t('settingChatAppearance.transitionMode.options.smooth'),
-                },
-              ]}
-              onChange={(key) => handleChange('transitionMode', key)}
-            />
+            <ManagedSettingField path="general.transitionMode">
+              {({ disabled }) => (
+                <Tabs
+                  activeKey={general.transitionMode}
+                  items={[
+                    {
+                      key: 'none',
+                      label: t('settingChatAppearance.transitionMode.options.none.value'),
+                    },
+                    {
+                      key: 'fadeIn',
+                      label: t('settingChatAppearance.transitionMode.options.fadeIn'),
+                    },
+                    {
+                      key: 'smooth',
+                      label: t('settingChatAppearance.transitionMode.options.smooth'),
+                    },
+                  ]}
+                  onChange={(key) => {
+                    if (disabled) return;
+                    handleChange('transitionMode', key);
+                  }}
+                />
+              )}
+            </ManagedSettingField>
           </Flexbox>
         }
       >
@@ -88,10 +96,18 @@ const ChatAppearance = memo(() => {
         extra={
           <Flexbox horizontal align={'center'} gap={8}>
             {renderSaveHint('enableAutoScrollOnStreaming')}
-            <Switch
-              checked={general.enableAutoScrollOnStreaming ?? true}
-              onChange={(checked) => handleChange('enableAutoScrollOnStreaming', checked)}
-            />
+            <ManagedSettingField path="general.enableAutoScrollOnStreaming">
+              {({ disabled }) => (
+                <Switch
+                  checked={general.enableAutoScrollOnStreaming ?? true}
+                  disabled={disabled}
+                  onChange={(checked) => {
+                    if (disabled) return;
+                    handleChange('enableAutoScrollOnStreaming', checked);
+                  }}
+                />
+              )}
+            </ManagedSettingField>
           </Flexbox>
         }
       >
@@ -107,10 +123,18 @@ const ChatAppearance = memo(() => {
         extra={
           <Flexbox horizontal align={'center'} gap={8}>
             {renderSaveHint('enableMessageLinkIcon')}
-            <Switch
-              checked={general.enableMessageLinkIcon ?? true}
-              onChange={(checked) => handleChange('enableMessageLinkIcon', checked)}
-            />
+            <ManagedSettingField path="general.enableMessageLinkIcon">
+              {({ disabled }) => (
+                <Switch
+                  checked={general.enableMessageLinkIcon ?? true}
+                  disabled={disabled}
+                  onChange={(checked) => {
+                    if (disabled) return;
+                    handleChange('enableMessageLinkIcon', checked);
+                  }}
+                />
+              )}
+            </ManagedSettingField>
           </Flexbox>
         }
       >

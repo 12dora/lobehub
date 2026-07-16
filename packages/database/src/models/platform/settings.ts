@@ -72,6 +72,22 @@ export class PlatformSettingsModel {
     return rows[0];
   };
 
+  /**
+   * SELECT … FOR UPDATE on the aggregate settings pointer.
+   * Used so user patch/reset and publish cannot interleave policy checks (B3-R2).
+   */
+  lockBundleForUpdate = async (): Promise<number> => {
+    await this.ensureBundle();
+    const result = await this.db.execute(
+      sql`SELECT "revision" FROM "platform_settings_bundle" WHERE "id" = ${PLATFORM_SETTINGS_BUNDLE_ID} FOR UPDATE`,
+    );
+    const rows =
+      (result as unknown as { rows?: { revision: number }[] }).rows ??
+      (result as unknown as { revision: number }[]);
+    const row = Array.isArray(rows) ? rows[0] : undefined;
+    return Number(row?.revision ?? 0);
+  };
+
   saveDraft = async (params: {
     draft: SettingsDraftPolicyMap;
     updatedBy?: string | null;

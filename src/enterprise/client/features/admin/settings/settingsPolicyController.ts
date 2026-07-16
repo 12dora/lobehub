@@ -26,10 +26,12 @@ export const deriveSettingsPermissions = (
   };
 };
 
-export type PrimaryActionKind = 'save' | 'retry' | 'publish' | 'none';
+export type PrimaryActionKind = 'save' | 'retry' | 'publish' | 'validate' | 'none';
 
 /**
- * Exactly one visually dominant primary action for the current editor state.
+ * Exactly one visually dominant primary action (U5-R2).
+ * Publish only when draft fingerprint was successfully validated.
+ * Otherwise validation is the primary when draft is clean and unvalidated.
  */
 export const resolvePrimaryAction = (params: {
   canPublish: boolean;
@@ -51,8 +53,9 @@ export const resolvePrimaryAction = (params: {
   ) {
     return 'publish';
   }
-  if (!params.dirty && params.canPublish) return 'publish';
-  if (params.canUpdate) return 'save';
+  // Clean but not validated → validate is the one primary (not enabled publish)
+  if (!params.dirty && params.canUpdate && params.canPublish) return 'validate';
+  if (!params.dirty && params.canUpdate) return 'save';
   return 'none';
 };
 

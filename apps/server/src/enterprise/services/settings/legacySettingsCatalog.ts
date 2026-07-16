@@ -135,11 +135,75 @@ const systemAgentSchema = z
   })
   .strict();
 
-/** Partial defaultAgent — keep flexible but strict (no unknown keys at each level we model). */
+/** Finite strict LobeAgent chatConfig leaves (sparse patch). */
+const lobeAgentChatConfigSchema = z
+  .object({
+    enableAgentMode: z.boolean().optional(),
+    enableCompressHistory: z.boolean().optional(),
+    enableContextCompression: z.boolean().optional(),
+    enableFollowUpChips: z.boolean().optional(),
+    enableHistoryCount: z.boolean().optional(),
+    enableStreaming: z.boolean().optional(),
+    historyCount: z.number().optional(),
+    reasoningBudgetToken: z.number().optional(),
+    searchMode: z.string().optional(),
+  })
+  .strict();
+
+const llmParamsSchema = z
+  .object({
+    frequency_penalty: z.number().optional(),
+    presence_penalty: z.number().optional(),
+    temperature: z.number().optional(),
+    top_p: z.number().optional(),
+  })
+  .strict();
+
+const lobeAgentTtsSchema = z
+  .object({
+    showAllLocaleVoice: z.boolean().optional(),
+    sttLocale: z.string().optional(),
+    ttsService: z.string().optional(),
+    voice: z.record(z.string()).optional(),
+  })
+  .strict();
+
+/** Finite strict LobeAgentConfig leaves — no z.record(z.unknown()) passthrough (B4-R2). */
+const lobeAgentConfigSchema = z
+  .object({
+    avatar: z.string().optional(),
+    backgroundColor: z.string().optional(),
+    chatConfig: lobeAgentChatConfigSchema.optional(),
+    model: z.string().optional(),
+    openingMessage: z.string().optional(),
+    openingQuestions: z.array(z.string()).optional(),
+    params: llmParamsSchema.optional(),
+    plugins: z
+      .array(z.union([z.string(), z.record(z.union([z.string(), z.boolean()]))]))
+      .optional(),
+    provider: z.string().optional(),
+    systemRole: z.string().optional(),
+    title: z.string().optional(),
+    tts: lobeAgentTtsSchema.optional(),
+    virtual: z.boolean().optional(),
+  })
+  .strict();
+
+/** Finite MetaData leaves. */
+const metaDataSchema = z
+  .object({
+    avatar: z.string().optional(),
+    backgroundColor: z.string().optional(),
+    description: z.string().optional(),
+    tags: z.array(z.string()).optional(),
+    title: z.string().optional(),
+  })
+  .strict();
+
 const defaultAgentSchema = z
   .object({
-    config: z.record(z.unknown()).optional(),
-    meta: z.record(z.unknown()).optional(),
+    config: lobeAgentConfigSchema.optional(),
+    meta: metaDataSchema.optional(),
   })
   .strict();
 

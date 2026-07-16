@@ -2186,12 +2186,19 @@ export class AiAgentService {
     // forwarded into op metadata for the per-step context engine.
     let operationAgentGroup: AgentGroupConfig | undefined;
     try {
-      const userModel = new UserModel(this.db, this.userId);
-      const settings = await userModel.getUserSettings();
-      const memorySettings = settings?.memory as { enabled?: boolean } | undefined;
+      // M05: memory.enabled through effective resolver (platform lock/default honored)
+      const { getEffectiveMemorySettings } =
+        await import('@/server/enterprise/services/settings/runtimeSettingsAdapter');
+      const memorySettings = await getEffectiveMemorySettings({
+        db: this.db,
+        userId: this.userId,
+      });
 
       globalMemoryEnabled = agentMemoryEnabled ?? memorySettings?.enabled !== false;
 
+      // Timezone is not platform-policy managed — keep sparse legacy general.timezone
+      const userModel = new UserModel(this.db, this.userId);
+      const settings = await userModel.getUserSettings();
       const generalSettings = settings?.general as { timezone?: string } | undefined;
       userTimezone = generalSettings?.timezone;
     } catch (error) {

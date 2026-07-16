@@ -27,6 +27,10 @@ import type {
 export const SETTINGS_REGISTRY_VERSION = 1;
 
 const ALL_CLIENTS: readonly SettingClientSurface[] = ['web', 'desktop', 'mobile', 'server'];
+/** Appearance / preference leaves used only in user UI clients (B6-R2). */
+const UI_CLIENTS: readonly SettingClientSurface[] = ['web', 'desktop', 'mobile'];
+/** Runtime-consumed model/agent/memory leaves (server + interactive clients). */
+const RUNTIME_CLIENTS: readonly SettingClientSurface[] = ['web', 'desktop', 'mobile', 'server'];
 
 const animationModeSchema = z.enum(['disabled', 'agile', 'elegant']);
 const transitionModeSchema = z.enum(['smooth', 'fadeIn', 'none']);
@@ -46,7 +50,7 @@ const def = <T>(entry: SettingDefinition<T>): Def => entry as Def;
 const REGISTRY_ENTRIES: readonly Def[] = [
   // ── general ──────────────────────────────────────────────
   def({
-    applicableClients: ALL_CLIENTS,
+    applicableClients: UI_CLIENTS,
     builtInDefault: DEFAULT_COMMON_SETTINGS.fontSize,
     control: 'number',
     descriptionKey: 'settingsPolicy.paths.general.fontSize.desc',
@@ -62,7 +66,7 @@ const REGISTRY_ENTRIES: readonly Def[] = [
     titleKey: 'settingsPolicy.paths.general.fontSize.title',
   }),
   def({
-    applicableClients: ALL_CLIENTS,
+    applicableClients: UI_CLIENTS,
     builtInDefault: DEFAULT_COMMON_SETTINGS.animationMode ?? 'agile',
     control: 'select',
     descriptionKey: 'settingsPolicy.paths.general.animationMode.desc',
@@ -80,7 +84,7 @@ const REGISTRY_ENTRIES: readonly Def[] = [
     titleKey: 'settingsPolicy.paths.general.animationMode.title',
   }),
   def({
-    applicableClients: ALL_CLIENTS,
+    applicableClients: UI_CLIENTS,
     builtInDefault: DEFAULT_COMMON_SETTINGS.telemetry,
     control: 'switch',
     descriptionKey: 'settingsPolicy.paths.general.telemetry.desc',
@@ -93,7 +97,7 @@ const REGISTRY_ENTRIES: readonly Def[] = [
     titleKey: 'settingsPolicy.paths.general.telemetry.title',
   }),
   def({
-    applicableClients: ALL_CLIENTS,
+    applicableClients: UI_CLIENTS,
     builtInDefault: DEFAULT_COMMON_SETTINGS.isLiteMode,
     control: 'switch',
     descriptionKey: 'settingsPolicy.paths.general.isLiteMode.desc',
@@ -106,7 +110,7 @@ const REGISTRY_ENTRIES: readonly Def[] = [
     titleKey: 'settingsPolicy.paths.general.isLiteMode.title',
   }),
   def({
-    applicableClients: ALL_CLIENTS,
+    applicableClients: UI_CLIENTS,
     builtInDefault: DEFAULT_COMMON_SETTINGS.transitionMode ?? 'fadeIn',
     control: 'select',
     descriptionKey: 'settingsPolicy.paths.general.transitionMode.desc',
@@ -124,7 +128,7 @@ const REGISTRY_ENTRIES: readonly Def[] = [
     titleKey: 'settingsPolicy.paths.general.transitionMode.title',
   }),
   def({
-    applicableClients: ALL_CLIENTS,
+    applicableClients: UI_CLIENTS,
     builtInDefault: DEFAULT_COMMON_SETTINGS.costEstimateWarningThreshold ?? 2,
     control: 'number',
     descriptionKey: 'settingsPolicy.paths.general.costEstimateWarningThreshold.desc',
@@ -139,7 +143,7 @@ const REGISTRY_ENTRIES: readonly Def[] = [
     titleKey: 'settingsPolicy.paths.general.costEstimateWarningThreshold.title',
   }),
   def({
-    applicableClients: ALL_CLIENTS,
+    applicableClients: UI_CLIENTS,
     builtInDefault: true,
     control: 'switch',
     descriptionKey: 'settingsPolicy.paths.general.enableAutoScrollOnStreaming.desc',
@@ -152,7 +156,7 @@ const REGISTRY_ENTRIES: readonly Def[] = [
     titleKey: 'settingsPolicy.paths.general.enableAutoScrollOnStreaming.title',
   }),
   def({
-    applicableClients: ALL_CLIENTS,
+    applicableClients: UI_CLIENTS,
     builtInDefault: true,
     control: 'switch',
     descriptionKey: 'settingsPolicy.paths.general.enableMessageLinkIcon.desc',
@@ -169,7 +173,7 @@ const REGISTRY_ENTRIES: readonly Def[] = [
 
   // ── memory ───────────────────────────────────────────────
   def({
-    applicableClients: ALL_CLIENTS,
+    applicableClients: RUNTIME_CLIENTS,
     builtInDefault: DEFAULT_MEMORY_SETTINGS.enabled ?? true,
     control: 'switch',
     descriptionKey: 'settingsPolicy.paths.memory.enabled.desc',
@@ -182,7 +186,7 @@ const REGISTRY_ENTRIES: readonly Def[] = [
     titleKey: 'settingsPolicy.paths.memory.enabled.title',
   }),
   def({
-    applicableClients: ALL_CLIENTS,
+    applicableClients: RUNTIME_CLIENTS,
     builtInDefault: DEFAULT_MEMORY_SETTINGS.effort ?? 'medium',
     control: 'select',
     descriptionKey: 'settingsPolicy.paths.memory.effort.desc',
@@ -202,7 +206,7 @@ const REGISTRY_ENTRIES: readonly Def[] = [
 
   // ── tool ─────────────────────────────────────────────────
   def({
-    applicableClients: ALL_CLIENTS,
+    applicableClients: RUNTIME_CLIENTS,
     builtInDefault: 'manual' as const,
     control: 'select',
     descriptionKey: 'settingsPolicy.paths.tool.humanIntervention.approvalMode.desc',
@@ -223,7 +227,7 @@ const REGISTRY_ENTRIES: readonly Def[] = [
 
   // ── image ────────────────────────────────────────────────
   def({
-    applicableClients: ALL_CLIENTS,
+    applicableClients: UI_CLIENTS,
     builtInDefault: DEFAULT_IMAGE_CONFIG.defaultImageNum,
     control: 'number',
     descriptionKey: 'settingsPolicy.paths.image.defaultImageNum.desc',
@@ -240,7 +244,7 @@ const REGISTRY_ENTRIES: readonly Def[] = [
 
   // ── tts ──────────────────────────────────────────────────
   def({
-    applicableClients: ALL_CLIENTS,
+    applicableClients: UI_CLIENTS,
     builtInDefault: DEFAULT_TTS_CONFIG.sttAutoStop,
     control: 'switch',
     descriptionKey: 'settingsPolicy.paths.tts.sttAutoStop.desc',
@@ -253,7 +257,7 @@ const REGISTRY_ENTRIES: readonly Def[] = [
     titleKey: 'settingsPolicy.paths.tts.sttAutoStop.title',
   }),
   def({
-    applicableClients: ALL_CLIENTS,
+    applicableClients: UI_CLIENTS,
     builtInDefault: DEFAULT_TTS_CONFIG.sttServer,
     control: 'select',
     descriptionKey: 'settingsPolicy.paths.tts.sttServer.desc',
@@ -270,7 +274,7 @@ const REGISTRY_ENTRIES: readonly Def[] = [
     titleKey: 'settingsPolicy.paths.tts.sttServer.title',
   }),
   def({
-    applicableClients: ALL_CLIENTS,
+    applicableClients: UI_CLIENTS,
     builtInDefault: DEFAULT_TTS_CONFIG.openAI.sttModel,
     control: 'select',
     descriptionKey: 'settingsPolicy.paths.tts.openAI.sttModel.desc',
@@ -284,7 +288,7 @@ const REGISTRY_ENTRIES: readonly Def[] = [
     titleKey: 'settingsPolicy.paths.tts.openAI.sttModel.title',
   }),
   def({
-    applicableClients: ALL_CLIENTS,
+    applicableClients: UI_CLIENTS,
     builtInDefault: DEFAULT_TTS_CONFIG.openAI.ttsModel,
     control: 'select',
     descriptionKey: 'settingsPolicy.paths.tts.openAI.ttsModel.desc',
@@ -304,7 +308,7 @@ const REGISTRY_ENTRIES: readonly Def[] = [
 
   // ── notification ─────────────────────────────────────────
   def({
-    applicableClients: ALL_CLIENTS,
+    applicableClients: UI_CLIENTS,
     builtInDefault: DEFAULT_NOTIFICATION_SETTINGS.email?.enabled ?? true,
     control: 'switch',
     descriptionKey: 'settingsPolicy.paths.notification.email.enabled.desc',
@@ -317,7 +321,7 @@ const REGISTRY_ENTRIES: readonly Def[] = [
     titleKey: 'settingsPolicy.paths.notification.email.enabled.title',
   }),
   def({
-    applicableClients: ALL_CLIENTS,
+    applicableClients: UI_CLIENTS,
     builtInDefault: DEFAULT_NOTIFICATION_SETTINGS.inbox?.enabled ?? true,
     control: 'switch',
     descriptionKey: 'settingsPolicy.paths.notification.inbox.enabled.desc',
@@ -332,7 +336,7 @@ const REGISTRY_ENTRIES: readonly Def[] = [
 
   // ── defaultAgent (non-secret leaves) ─────────────────────
   def({
-    applicableClients: ALL_CLIENTS,
+    applicableClients: RUNTIME_CLIENTS,
     builtInDefault: DEFAULT_AGENT.config.model,
     control: 'text',
     descriptionKey: 'settingsPolicy.paths.defaultAgent.config.model.desc',
@@ -345,7 +349,7 @@ const REGISTRY_ENTRIES: readonly Def[] = [
     titleKey: 'settingsPolicy.paths.defaultAgent.config.model.title',
   }),
   def({
-    applicableClients: ALL_CLIENTS,
+    applicableClients: RUNTIME_CLIENTS,
     builtInDefault: DEFAULT_AGENT.config.provider,
     control: 'text',
     descriptionKey: 'settingsPolicy.paths.defaultAgent.config.provider.desc',
@@ -358,7 +362,7 @@ const REGISTRY_ENTRIES: readonly Def[] = [
     titleKey: 'settingsPolicy.paths.defaultAgent.config.provider.title',
   }),
   def({
-    applicableClients: ALL_CLIENTS,
+    applicableClients: RUNTIME_CLIENTS,
     builtInDefault: DEFAULT_AGENT.config.systemRole ?? '',
     control: 'textarea',
     descriptionKey: 'settingsPolicy.paths.defaultAgent.config.systemRole.desc',
@@ -371,7 +375,7 @@ const REGISTRY_ENTRIES: readonly Def[] = [
     titleKey: 'settingsPolicy.paths.defaultAgent.config.systemRole.title',
   }),
   def({
-    applicableClients: ALL_CLIENTS,
+    applicableClients: RUNTIME_CLIENTS,
     builtInDefault: DEFAULT_AGENT.config.chatConfig?.enableStreaming ?? true,
     control: 'switch',
     descriptionKey: 'settingsPolicy.paths.defaultAgent.config.chatConfig.enableStreaming.desc',
@@ -384,7 +388,7 @@ const REGISTRY_ENTRIES: readonly Def[] = [
     titleKey: 'settingsPolicy.paths.defaultAgent.config.chatConfig.enableStreaming.title',
   }),
   def({
-    applicableClients: ALL_CLIENTS,
+    applicableClients: RUNTIME_CLIENTS,
     builtInDefault: DEFAULT_AGENT.config.chatConfig?.historyCount ?? 20,
     control: 'number',
     descriptionKey: 'settingsPolicy.paths.defaultAgent.config.chatConfig.historyCount.desc',
@@ -399,7 +403,7 @@ const REGISTRY_ENTRIES: readonly Def[] = [
     titleKey: 'settingsPolicy.paths.defaultAgent.config.chatConfig.historyCount.title',
   }),
   def({
-    applicableClients: ALL_CLIENTS,
+    applicableClients: RUNTIME_CLIENTS,
     builtInDefault: DEFAULT_AGENT.config.params?.temperature ?? 1,
     control: 'slider',
     descriptionKey: 'settingsPolicy.paths.defaultAgent.config.params.temperature.desc',
@@ -417,7 +421,7 @@ const REGISTRY_ENTRIES: readonly Def[] = [
 
   // ── systemAgent (model/provider only — no secrets) ───────
   def({
-    applicableClients: ALL_CLIENTS,
+    applicableClients: RUNTIME_CLIENTS,
     builtInDefault: DEFAULT_SYSTEM_AGENT_CONFIG.topic.model,
     control: 'text',
     descriptionKey: 'settingsPolicy.paths.systemAgent.topic.model.desc',
@@ -430,7 +434,7 @@ const REGISTRY_ENTRIES: readonly Def[] = [
     titleKey: 'settingsPolicy.paths.systemAgent.topic.model.title',
   }),
   def({
-    applicableClients: ALL_CLIENTS,
+    applicableClients: RUNTIME_CLIENTS,
     builtInDefault: DEFAULT_SYSTEM_AGENT_CONFIG.topic.provider,
     control: 'text',
     descriptionKey: 'settingsPolicy.paths.systemAgent.topic.provider.desc',
@@ -443,7 +447,7 @@ const REGISTRY_ENTRIES: readonly Def[] = [
     titleKey: 'settingsPolicy.paths.systemAgent.topic.provider.title',
   }),
   def({
-    applicableClients: ALL_CLIENTS,
+    applicableClients: RUNTIME_CLIENTS,
     builtInDefault: DEFAULT_SYSTEM_AGENT_CONFIG.translation.model,
     control: 'text',
     descriptionKey: 'settingsPolicy.paths.systemAgent.translation.model.desc',
@@ -456,7 +460,7 @@ const REGISTRY_ENTRIES: readonly Def[] = [
     titleKey: 'settingsPolicy.paths.systemAgent.translation.model.title',
   }),
   def({
-    applicableClients: ALL_CLIENTS,
+    applicableClients: RUNTIME_CLIENTS,
     builtInDefault: DEFAULT_SYSTEM_AGENT_CONFIG.historyCompress.model,
     control: 'text',
     descriptionKey: 'settingsPolicy.paths.systemAgent.historyCompress.model.desc',

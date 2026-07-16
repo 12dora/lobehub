@@ -78,10 +78,14 @@ export class AgentService {
    * This ensures the frontend always receives a complete config with model/provider.
    */
   async getBuiltinAgent(slug: string) {
-    // Fetch agent and effective defaultAgentConfig (M05 resolver when policy flag ON)
+    // Fetch agent + effective defaultAgent (platform-only in workspace scope)
     const [agent, defaultAgentConfig] = await Promise.all([
       this.agentModel.getBuiltinAgent(slug),
-      getEffectiveDefaultAgentConfig({ db: this.db, userId: this.userId }),
+      getEffectiveDefaultAgentConfig({
+        db: this.db,
+        scope: this.workspaceId ? 'workspace' : 'personal',
+        userId: this.userId,
+      }),
     ]);
 
     const mergedConfig = this.mergeDefaultConfig(agent, defaultAgentConfig);
@@ -115,7 +119,11 @@ export class AgentService {
   async getAgentConfig(idOrSlug: string): Promise<AgentConfigWithId | null> {
     const [agent, defaultAgentConfig] = await Promise.all([
       this.agentModel.getAgentConfig(idOrSlug),
-      getEffectiveDefaultAgentConfig({ db: this.db, userId: this.userId }),
+      getEffectiveDefaultAgentConfig({
+        db: this.db,
+        scope: this.workspaceId ? 'workspace' : 'personal',
+        userId: this.userId,
+      }),
     ]);
 
     return this.mergeDefaultConfig(agent, defaultAgentConfig) as AgentConfigWithId | null;
@@ -134,7 +142,11 @@ export class AgentService {
   async getAgentConfigById(agentId: string) {
     const [agent, defaultAgentConfig, welcomeData] = await Promise.all([
       this.agentModel.getAgentConfigById(agentId),
-      getEffectiveDefaultAgentConfig({ db: this.db, userId: this.userId }),
+      getEffectiveDefaultAgentConfig({
+        db: this.db,
+        scope: this.workspaceId ? 'workspace' : 'personal',
+        userId: this.userId,
+      }),
       this.getAgentWelcomeFromRedis(agentId),
     ]);
 
@@ -201,16 +213,13 @@ export class AgentService {
     const serverDefaultAgentConfig = getServerDefaultAgentConfig();
     const baseConfig = merge(DEFAULT_AGENT_CONFIG, serverDefaultAgentConfig);
 
-    // Skip the personal default layer for workspace-scoped agents (see above).
-    if (this.workspaceId) {
-      return merge(baseConfig, cleanObject(agent));
-    }
-
+    // Workspace: apply platform-layer defaults/locks only (no personal overrides).
+    // `defaultAgentConfig` is already platform-only when scope=workspace (B1-R2).
     const userDefaultAgentConfig =
       (defaultAgentConfig as { config?: PartialDeep<LobeAgentConfig> })?.config || {};
-    const withUserConfig = merge(baseConfig, userDefaultAgentConfig);
+    const withDefaults = merge(baseConfig, userDefaultAgentConfig);
 
-    return merge(withUserConfig, cleanObject(agent));
+    return merge(withDefaults, cleanObject(agent));
   }
 
   /**

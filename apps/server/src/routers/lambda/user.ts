@@ -244,7 +244,8 @@ export const userRouter = router({
       const service = new EffectiveSettingsService(ctx.serverDB);
       try {
         return await service.patchSettingOverride({
-          client: 'server',
+          // User lambda is interactive client; desktop/mobile share web eligibility set
+          client: 'web',
           path: input.path,
           userId: ctx.userId,
           value: input.value,
@@ -286,6 +287,7 @@ export const userRouter = router({
       const service = new EffectiveSettingsService(ctx.serverDB);
       try {
         return await service.resetSettingOverride({
+          client: 'web',
           path: input.path,
           userId: ctx.userId,
         });
