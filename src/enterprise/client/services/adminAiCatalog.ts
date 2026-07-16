@@ -2,6 +2,8 @@ import { lambdaClient } from '@/libs/trpc/client';
 
 import type {
   AdminAiModelCreateInput,
+  AdminAiModelCreateTargetListInput,
+  AdminAiModelCreateTargetListOutput,
   AdminAiModelDeleteInput,
   AdminAiModelDeleteOutput,
   AdminAiModelDependentsInput,
@@ -72,6 +74,11 @@ class AdminAiCatalogService {
 
   listModels = async (input: AdminAiModelListInput): Promise<AdminAiModelListOutput> =>
     lambdaClient.admin.aiModels.list.query(input);
+
+  listModelCreateTargets = async (
+    input: AdminAiModelCreateTargetListInput,
+  ): Promise<AdminAiModelCreateTargetListOutput> =>
+    lambdaClient.admin.aiModels.listCreateTargets.query(input);
 
   listProviderRevisions = async (
     input: AdminAiProviderRevisionHistoryInput,

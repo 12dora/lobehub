@@ -1,6 +1,7 @@
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 
 import type {
+  AdminAiModelCreateTargetListInput,
   AdminAiModelDependentsOutput,
   AdminAiProviderCreateDraftInput,
   AdminAiProviderDraft,
@@ -52,6 +53,16 @@ export const deriveGlobalModelActions = (permissions: AiCatalogPermissions) => (
   canDelete: permissions.canDeleteModel && permissions.canReadModels,
   canEdit: permissions.canUpdateModel && permissions.canReadModels,
   canReorder: permissions.canReorderModels && permissions.canReadModels,
+});
+
+export const buildModelCreateTargetListInput = (params: {
+  cursor?: string;
+  limit?: number;
+  query: string;
+}): AdminAiModelCreateTargetListInput => ({
+  cursor: params.cursor,
+  limit: params.limit ?? 20,
+  query: params.query.trim() || undefined,
 });
 
 export type AiProviderPrimaryAction = 'none' | 'publish' | 'retry' | 'save' | 'test';

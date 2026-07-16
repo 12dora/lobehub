@@ -5,6 +5,7 @@ import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import {
   buildAiSecretMutation,
   buildCompleteModelOrder,
+  buildModelCreateTargetListInput,
   buildProviderCreatePayload,
   buildProviderUpdatePayload,
   deriveAiCatalogPermissions,
@@ -74,6 +75,21 @@ describe('ai catalog controller', () => {
       canDelete: true,
       canEdit: true,
       canReorder: true,
+    });
+  });
+
+  it('normalizes model-create Provider target search and cursor input', () => {
+    expect(
+      buildModelCreateTargetListInput({
+        cursor: 'provider-before',
+        limit: 40,
+        query: '  empty provider  ',
+      }),
+    ).toEqual({ cursor: 'provider-before', limit: 40, query: 'empty provider' });
+    expect(buildModelCreateTargetListInput({ query: '   ' })).toEqual({
+      cursor: undefined,
+      limit: 20,
+      query: undefined,
     });
   });
 

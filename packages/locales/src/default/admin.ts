@@ -126,10 +126,19 @@ export default {
     'This is the complete Provider draft set, so ordering here is safe and deterministic.',
   'aiCatalog.models.providerSection.title': 'Provider models',
   'aiCatalog.models.providerTarget.desc':
-    'Enter the stable Provider ID. Only the minimal model draft context is loaded.',
-  'aiCatalog.models.providerTarget.error': 'Enter a valid Provider ID and try again.',
-  'aiCatalog.models.providerTarget.known': 'Providers on this page: {{providers}}',
-  'aiCatalog.models.providerTarget.placeholder': 'Provider ID',
+    'Search the complete Provider catalog, including Providers that do not have models yet.',
+  'aiCatalog.models.providerTarget.empty': 'No Providers are available for model creation.',
+  'aiCatalog.models.providerTarget.list': 'Available Providers',
+  'aiCatalog.models.providerTarget.loadError': 'Providers could not be loaded. Try again.',
+  'aiCatalog.models.providerTarget.loading': 'Loading Providers…',
+  'aiCatalog.models.providerTarget.next': 'Next',
+  'aiCatalog.models.providerTarget.noResults': 'No Providers match this search.',
+  'aiCatalog.models.providerTarget.page': 'Page {{page}}',
+  'aiCatalog.models.providerTarget.previous': 'Previous',
+  'aiCatalog.models.providerTarget.retry': 'Retry',
+  'aiCatalog.models.providerTarget.search': 'Search Providers…',
+  'aiCatalog.models.providerTarget.submitError':
+    'The model editor could not be opened. Your Provider selection is preserved; try again.',
   'aiCatalog.models.providerTarget.title': 'Choose model Provider',
   'aiCatalog.modelEditor.abilities': 'Abilities (JSON)',
   'aiCatalog.modelEditor.availabilityBlocked':
