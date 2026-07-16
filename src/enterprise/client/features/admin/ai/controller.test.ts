@@ -8,6 +8,8 @@ import {
   buildProviderCreatePayload,
   buildProviderUpdatePayload,
   deriveAiCatalogPermissions,
+  deriveAiProviderConnectionTestView,
+  deriveGlobalModelActions,
   fingerprintAiProviderPublicDraft,
   hasBlockingModelDependents,
   parseJsonObject,
@@ -20,6 +22,7 @@ import type { AdminAiProviderDraft } from './types';
 
 const provider = {
   checkModel: 'gpt-test',
+  connectionTest: null,
   config: { endpoint: 'https://example.com' },
   description: 'Provider',
   displayName: 'Example',
@@ -54,6 +57,22 @@ describe('ai catalog controller', () => {
     });
   });
 
+  it('enables global model actions without any Provider update permission', () => {
+    const permissions = deriveAiCatalogPermissions([
+      PLATFORM_PERMISSIONS.AI_MODEL_READ,
+      PLATFORM_PERMISSIONS.AI_MODEL_CREATE,
+      PLATFORM_PERMISSIONS.AI_MODEL_UPDATE,
+      PLATFORM_PERMISSIONS.AI_MODEL_DELETE,
+    ]);
+    expect(permissions.canUpdateProvider).toBe(false);
+    expect(deriveGlobalModelActions(permissions)).toEqual({
+      canCreate: true,
+      canDelete: true,
+      canEdit: true,
+      canReorder: true,
+    });
+  });
+
   it('keeps exactly one primary provider action', () => {
     const base = {
       canPublish: true,
@@ -69,6 +88,43 @@ describe('ai catalog controller', () => {
     expect(resolveAiProviderPrimaryAction({ ...base, saveState: 'failed' })).toBe('retry');
     expect(resolveAiProviderPrimaryAction({ ...base, testPassed: true })).toBe('publish');
     expect(resolveAiProviderPrimaryAction({ ...base, conflict: true })).toBe('none');
+  });
+
+  it('unlocks publish only for a persisted success bound to the current draft', () => {
+    const state = {
+      errorCategory: null,
+      latencyMs: 25,
+      sanitizedMessage: 'ok',
+      stale: false,
+      status: 'success' as const,
+      testedAt: new Date(0),
+      testedDraftToken: 'a'.repeat(64),
+      testedRevision: 3,
+    };
+    expect(
+      deriveAiProviderConnectionTestView({
+        baseRevision: 3,
+        draftToken: 'a'.repeat(64),
+        locallyStale: false,
+        state,
+      }).canPublish,
+    ).toBe(true);
+    expect(
+      deriveAiProviderConnectionTestView({
+        baseRevision: 4,
+        draftToken: 'a'.repeat(64),
+        locallyStale: false,
+        state,
+      }),
+    ).toMatchObject({ canPublish: false, stale: true });
+    expect(
+      deriveAiProviderConnectionTestView({
+        baseRevision: 3,
+        draftToken: 'a'.repeat(64),
+        locallyStale: true,
+        state,
+      }),
+    ).toMatchObject({ canPublish: false, stale: true });
   });
 
   it('excludes secret metadata from public draft fingerprint and payload', () => {
