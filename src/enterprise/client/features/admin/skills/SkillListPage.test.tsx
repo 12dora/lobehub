@@ -11,6 +11,7 @@ import SkillListPage from './SkillListPage';
 const mocks = vi.hoisted(() => ({
   data: { items: [{ id: 's1' }], nextCursor: 'next-cursor' } as any,
   error: undefined as unknown,
+  filterResultMode: null as 'error' | 'loading' | null,
   inputs: [] as unknown[],
   isLoading: false,
   mutate: vi.fn(),
@@ -33,10 +34,16 @@ vi.mock('./hooks/useAdminSkills', () => ({
   useFetchAdminSkills: (input: unknown) => {
     mocks.inputs.push(structuredClone(input));
     const cursor = (input as { cursor?: string }).cursor;
+    const filtered = (input as { status?: string }).status === 'draft';
     return {
-      data: mocks.data,
-      error: mocks.pageErrorOnCursor && cursor ? new Error('page offline') : mocks.error,
-      isLoading: mocks.isLoading,
+      data: filtered && mocks.filterResultMode ? undefined : mocks.data,
+      error:
+        filtered && mocks.filterResultMode === 'error'
+          ? new Error('filter offline')
+          : mocks.pageErrorOnCursor && cursor
+            ? new Error('page offline')
+            : mocks.error,
+      isLoading: filtered && mocks.filterResultMode === 'loading' ? true : mocks.isLoading,
       mutate: mocks.mutate,
     };
   },
@@ -116,6 +123,7 @@ describe('SkillListPage', () => {
   beforeEach(() => {
     mocks.data = { items: [{ id: 's1' }], nextCursor: 'next-cursor' };
     mocks.error = undefined;
+    mocks.filterResultMode = null;
     mocks.inputs.length = 0;
     mocks.isLoading = false;
     mocks.mutate.mockReset();
@@ -143,6 +151,31 @@ describe('SkillListPage', () => {
         .every((input) => input.cursor === undefined),
     ).toBe(true);
   });
+
+  it.each(['loading', 'error'] as const)(
+    'does not show previous rows while a new external filter is %s',
+    async (mode) => {
+      mocks.filterResultMode = mode;
+      render(
+        <MemoryRouter initialEntries={['/admin/skills']}>
+          <ExternalFilterLink />
+          <SkillListPage />
+        </MemoryRouter>,
+      );
+      fireEvent.click(screen.getByText('next'));
+      await waitFor(() => expect(mocks.inputs.at(-1)).toMatchObject({ cursor: 'next-cursor' }));
+      fireEvent.click(screen.getByText('external-filter'));
+
+      if (mode === 'loading') {
+        await waitFor(() => expect(screen.getByRole('status')).toBeTruthy());
+      } else {
+        await waitFor(() => expect(screen.getByRole('alert')).toBeTruthy());
+        expect(screen.queryByText('skillCatalog.list.error.page')).toBeNull();
+      }
+      expect(screen.queryByText('next')).toBeNull();
+      expect(mocks.inputs.at(-1)).toMatchObject({ cursor: undefined, status: 'draft' });
+    },
+  );
 
   it('keeps prior rows and Previous available when a later cursor page fails', async () => {
     mocks.pageErrorOnCursor = true;

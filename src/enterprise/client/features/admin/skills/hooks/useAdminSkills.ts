@@ -1,5 +1,6 @@
 'use client';
 
+import { useRef } from 'react';
 import { mutate } from 'swr';
 
 import { adminSkillsService } from '@/enterprise/client/services/adminSkills';
@@ -23,12 +24,37 @@ import type {
   AdminSkillListVersionsInput,
 } from '../types';
 
-export const useFetchAdminSkills = (input: AdminSkillListInput, enabled = true) =>
-  useClientDataSWR(
+const useKeepCursorPreviousData = (identity: string, cursor: string | undefined) => {
+  const key = `${identity}\u0000${cursor ?? ''}`;
+  const transitionRef = useRef({ cursor, identity, keepPreviousData: false, key });
+  if (transitionRef.current.key !== key) {
+    transitionRef.current = {
+      cursor,
+      identity,
+      keepPreviousData:
+        transitionRef.current.identity === identity && transitionRef.current.cursor !== cursor,
+      key,
+    };
+  }
+  return transitionRef.current.keepPreviousData;
+};
+
+export const useFetchAdminSkills = (input: AdminSkillListInput, enabled = true) => {
+  const identity = JSON.stringify([
+    input.query ?? '',
+    input.status ?? '',
+    input.source ?? '',
+    input.distribution ?? '',
+    input.enabled ?? '',
+    input.limit,
+  ]);
+  const keepPreviousData = useKeepCursorPreviousData(identity, input.cursor);
+  return useClientDataSWR(
     enabled ? buildAdminSkillListKey(input) : null,
     () => adminSkillsService.list(input),
-    { keepPreviousData: true, revalidateOnFocus: false },
+    { keepPreviousData, revalidateOnFocus: false },
   );
+};
 
 export const useFetchAdminSkill = (id: string | undefined, enabled = true) =>
   useClientDataSWR(
@@ -51,22 +77,30 @@ export const useFetchAdminSkillVersion = (
 export const useFetchAdminSkillVersions = (
   input: AdminSkillListVersionsInput | undefined,
   enabled = true,
-) =>
-  useClientDataSWR(
+) => {
+  const identity = input ? JSON.stringify([input.skillId, input.limit]) : 'disabled';
+  const keepPreviousData = useKeepCursorPreviousData(identity, input?.cursor);
+  return useClientDataSWR(
     enabled && input ? buildAdminSkillVersionsKey(input) : null,
     () => adminSkillsService.listVersions(input!),
-    { keepPreviousData: true, revalidateOnFocus: false },
+    { keepPreviousData, revalidateOnFocus: false },
   );
+};
 
 export const useFetchAdminSkillDependents = (
   input: AdminSkillGetDependentsInput | undefined,
   enabled = true,
-) =>
-  useClientDataSWR(
+) => {
+  const identity = input
+    ? JSON.stringify([input.skillId, input.versionId ?? '', input.limit])
+    : 'disabled';
+  const keepPreviousData = useKeepCursorPreviousData(identity, input?.cursor);
+  return useClientDataSWR(
     enabled && input ? buildAdminSkillDependentsKey(input) : null,
     () => adminSkillsService.getDependents(input!),
-    { keepPreviousData: true, revalidateOnFocus: false },
+    { keepPreviousData, revalidateOnFocus: false },
   );
+};
 
 export const refreshAdminSkillLists = async () => {
   await mutate((key) => Array.isArray(key) && key[0] === ADMIN_SKILL_LIST_KEY);
