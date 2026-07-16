@@ -28,9 +28,12 @@ describe('platform system roles', () => {
     expect(codes).not.toContain(PLATFORM_PERMISSIONS.AI_PROVIDER_CREATE);
   });
 
-  it('ai_admin cannot ban users', () => {
+  it('ai_admin manages resource policy but cannot ban users', () => {
     const codes = PLATFORM_ROLE_PERMISSIONS[PLATFORM_SYSTEM_ROLES.AI_ADMIN];
     expect(codes).toContain(PLATFORM_PERMISSIONS.AI_MODEL_PUBLISH);
+    expect(codes).toContain(PLATFORM_PERMISSIONS.POLICY_READ);
+    expect(codes).toContain(PLATFORM_PERMISSIONS.POLICY_UPDATE);
+    expect(codes).toContain(PLATFORM_PERMISSIONS.POLICY_PUBLISH);
     expect(codes).not.toContain(PLATFORM_PERMISSIONS.USER_BAN);
   });
 
@@ -38,6 +41,8 @@ describe('platform system roles', () => {
     const codes = PLATFORM_ROLE_PERMISSIONS[PLATFORM_SYSTEM_ROLES.AUDITOR];
     expect(codes).toContain(PLATFORM_PERMISSIONS.AUDIT_EXPORT);
     expect(codes).toContain(PLATFORM_PERMISSIONS.USER_READ);
+    expect(codes).toContain(PLATFORM_PERMISSIONS.POLICY_READ);
+    expect(codes).not.toContain(PLATFORM_PERMISSIONS.POLICY_UPDATE);
     expect(codes).not.toContain(PLATFORM_PERMISSIONS.USER_BAN);
     expect(codes).not.toContain(PLATFORM_PERMISSIONS.AI_PROVIDER_DELETE);
   });

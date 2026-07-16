@@ -9,6 +9,7 @@ import { parseEasyauthConfig } from '../config/easyauth';
 import { parseEnterpriseFeatureFlags } from '../featureFlags';
 import { resolveAccessStatus } from '../guards/accessGrant';
 import { buildEasyauthDescriptor } from '../services/easyauthManifest';
+import { resolvePublishedManagedResourcePolicies } from '../services/managedResourceCapabilities';
 import { buildPlatformCapabilities } from '../services/platformCapabilities';
 import { buildPlatformPublicSnapshot } from '../services/platformPublicSnapshot';
 
@@ -30,9 +31,16 @@ export const platformRouter = router({
       adminAccess = await rbac.hasGlobalPermission(PLATFORM_PERMISSIONS.ADMIN_ACCESS, ctx.userId);
     }
 
+    const managed = await resolvePublishedManagedResourcePolicies({
+      db: ctx.serverDB,
+      flags,
+    });
+
     return buildPlatformCapabilities({
       adminAccess,
       flags,
+      managedResources: managed.publicCapabilities,
+      revisions: { configRevision: String(managed.revision) },
     });
   }),
 

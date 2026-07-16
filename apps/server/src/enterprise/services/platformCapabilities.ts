@@ -1,8 +1,11 @@
 import type { EnterpriseFeatureFlags } from '@/const/platform/featureFlags';
+import type {
+  ManagedResourcesCapabilities,
+  PlatformCapabilities,
+} from '@/types/platform/capabilities';
 import {
   DISABLED_PLATFORM_CAPABILITIES,
   PLATFORM_CAPABILITIES_FORBIDDEN_KEYS,
-  type PlatformCapabilities,
 } from '@/types/platform/capabilities';
 
 import { getEnterpriseFeatureFlags } from '../featureFlags';
@@ -14,6 +17,8 @@ export interface BuildPlatformCapabilitiesInput {
    */
   adminAccess?: boolean;
   flags?: EnterpriseFeatureFlags;
+  /** Published, policy-resolved booleans. Draft/mode/readiness are never exposed. */
+  managedResources?: ManagedResourcesCapabilities;
   /**
    * Optional published revisions from M01 stores.
    * When absent, revisions stay null / '0'.
@@ -48,12 +53,12 @@ export const buildPlatformCapabilities = (
       platformAdmin: adminFeatureOn,
       runtimeBranding: flags.ENABLE_RUNTIME_BRANDING,
     },
-    managedResources: {
-      agents: flags.ENABLE_PLATFORM_MANAGED_AGENTS,
-      aiModels: flags.ENABLE_PLATFORM_MANAGED_AI,
-      aiProviders: flags.ENABLE_PLATFORM_MANAGED_AI,
-      connectors: flags.ENABLE_PLATFORM_MANAGED_CONNECTORS,
-      skills: flags.ENABLE_PLATFORM_MANAGED_SKILLS,
+    managedResources: input.managedResources ?? {
+      agents: false,
+      aiModels: false,
+      aiProviders: false,
+      connectors: false,
+      skills: false,
     },
     settingsRevision: input.revisions?.settingsRevision ?? null,
     userSettingsPolicyEnabled: flags.ENABLE_PLATFORM_SETTINGS_POLICY,
