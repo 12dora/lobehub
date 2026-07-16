@@ -1,24 +1,10 @@
 import semver from 'semver';
 import { z } from 'zod';
 
-import { containsSensitiveMaterial, isCredentialBearingUrl } from '../security/redaction';
-
-const extractEmbeddedUris = (value: string): string[] => {
-  const starts = [...value.matchAll(/[a-z][a-z0-9+.-]*:\/\//gi)].map((match) => match.index);
-  return starts.map((start, index) => {
-    const nextScheme = starts[index + 1] ?? value.length;
-    const remainder = value.slice(start, nextScheme);
-    const boundary = remainder.search(/[\s<>"']/u);
-    return remainder.slice(0, boundary < 0 ? remainder.length : boundary);
-  });
-};
+import { containsEnterpriseSecretMaterial } from '../security/redaction';
 
 const rejectSensitiveText = (value: string, ctx: z.RefinementCtx) => {
-  if (
-    containsSensitiveMaterial(value) ||
-    isCredentialBearingUrl(value) ||
-    extractEmbeddedUris(value).some(isCredentialBearingUrl)
-  ) {
+  if (containsEnterpriseSecretMaterial(value)) {
     ctx.addIssue({ code: 'custom', message: 'secret material is not allowed' });
   }
 };
