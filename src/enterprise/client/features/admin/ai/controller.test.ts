@@ -5,6 +5,7 @@ import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import {
   buildAiSecretMutation,
   buildCompleteModelOrder,
+  buildProviderCreatePayload,
   buildProviderUpdatePayload,
   deriveAiCatalogPermissions,
   fingerprintAiProviderPublicDraft,
@@ -124,6 +125,32 @@ describe('ai catalog controller', () => {
     expect(buildAiSecretMutation('replace', 'new-secret')).toEqual({
       operation: 'replace',
       value: 'new-secret',
+    });
+  });
+
+  it('builds create payload without inventing an empty Secret', () => {
+    const base = {
+      config: {},
+      description: '',
+      displayName: ' Example ',
+      enabled: false,
+      fetchOnClient: false,
+      providerKey: ' example ',
+      reason: ' create ',
+      secretValue: '',
+      settings: {},
+      source: 'custom',
+    };
+    expect(buildProviderCreatePayload(base)).not.toHaveProperty('secret');
+    expect(buildProviderCreatePayload(base)).toMatchObject({
+      description: null,
+      displayName: 'Example',
+      providerKey: 'example',
+      reason: 'create',
+    });
+    expect(buildProviderCreatePayload({ ...base, secretValue: 'token' }).secret).toEqual({
+      operation: 'replace',
+      value: 'token',
     });
   });
 });
