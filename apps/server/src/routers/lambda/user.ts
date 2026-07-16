@@ -46,6 +46,7 @@ import {
   EffectiveSettingsService,
   SettingsPathError,
 } from '@/server/enterprise/services/settings/effectiveSettingsService';
+import { settingsRegistry } from '@/server/enterprise/services/settings/registry';
 import { loadEffectiveUserSettings } from '@/server/enterprise/services/settings/runtimeSettingsAdapter';
 import { assertWorkspaceSettingsWritePermission } from '@/server/enterprise/services/settings/workspaceSettingsPermission';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
@@ -202,6 +203,20 @@ export const userRouter = router({
     // Full reset: Flag OFF → delete user_settings only (parent).
     // Flag ON → atomically delete all overrides + revision bump + legacy row (incl. keyVaults).
     const service = new EffectiveSettingsService(ctx.serverDB);
+    if (service.isPolicyEnabled()) {
+      const perm = await assertWorkspaceSettingsWritePermission({
+        db: ctx.serverDB,
+        paths: [...settingsRegistry.paths()],
+        userId: ctx.userId,
+        workspaceId: ctx.workspaceId,
+      });
+      if (!perm.ok) {
+        throw new TRPCError({
+          code: 'FORBIDDEN',
+          message: 'You do not have permission to perform this action.',
+        });
+      }
+    }
     return service.fullResetSettings({ userId: ctx.userId });
   }),
 

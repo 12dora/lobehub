@@ -1,9 +1,10 @@
 /**
- * Finite strict catalog for legacy `updateSettings` compatibility (M05 B4).
+ * Finite strict catalog for legacy `updateSettings` compatibility (M05 B4/R3-B4).
+ * Reuses canonical AgentChatConfigSchema + LobeMetaDataSchema for released leaves.
  * Rejects unknown nested / secret-like fields with zero writes.
- * Preserves known-but-not-platform-managed leaves (e.g. hotkey).
  */
 
+import { AgentChatConfigSchema, LobeMetaDataSchema } from '@lobechat/types';
 import { z } from 'zod';
 
 import { SETTINGS_SECRET_PATH_PREFIXES } from './registry';
@@ -135,51 +136,70 @@ const systemAgentSchema = z
   })
   .strict();
 
-/** Finite strict LobeAgent chatConfig leaves (sparse patch). */
-const lobeAgentChatConfigSchema = z
-  .object({
-    enableAgentMode: z.boolean().optional(),
-    enableCompressHistory: z.boolean().optional(),
-    enableContextCompression: z.boolean().optional(),
-    enableFollowUpChips: z.boolean().optional(),
-    enableHistoryCount: z.boolean().optional(),
-    enableStreaming: z.boolean().optional(),
-    historyCount: z.number().optional(),
-    reasoningBudgetToken: z.number().optional(),
-    searchMode: z.string().optional(),
-  })
-  .strict();
-
 const llmParamsSchema = z
   .object({
     frequency_penalty: z.number().optional(),
+    max_tokens: z.number().optional(),
     presence_penalty: z.number().optional(),
+    reasoning_effort: z.string().optional(),
     temperature: z.number().optional(),
     top_p: z.number().optional(),
   })
   .strict();
 
+/**
+ * The canonical schema owns the released leaf set. `partial()` is important:
+ * it neutralizes canonical defaults so a sparse legacy patch stays sparse.
+ * Nested object overrides make unknown keys fail recursively instead of being
+ * silently stripped by Zod's default object behaviour.
+ */
+const strictAgentChatConfigSchema = AgentChatConfigSchema.partial()
+  .strict()
+  .extend({
+    memory: z
+      .object({
+        effort: memoryEffortSchema.optional(),
+        enabled: z.boolean().optional(),
+        toolPermission: z.enum(['read-only', 'read-write']).optional(),
+      })
+      .strict()
+      .optional(),
+    runtimeEnv: z.object({ workingDirectory: z.string().optional() }).strict().optional(),
+    searchFCModel: z.object({ model: z.string(), provider: z.string() }).strict().optional(),
+    selfIteration: z.object({ enabled: z.boolean().optional() }).strict().optional(),
+  });
+
 const lobeAgentTtsSchema = z
   .object({
     showAllLocaleVoice: z.boolean().optional(),
     sttLocale: z.string().optional(),
-    ttsService: z.string().optional(),
-    voice: z.record(z.string()).optional(),
+    ttsService: z.literal('openai').optional(),
+    voice: z.object({ openai: z.string().optional() }).strict().optional(),
   })
   .strict();
 
-/** Finite strict LobeAgentConfig leaves — no z.record(z.unknown()) passthrough (B4-R2). */
+/** Canonical chatConfig + released config/meta leaves (R3-B4). */
 const lobeAgentConfigSchema = z
   .object({
     avatar: z.string().optional(),
     backgroundColor: z.string().optional(),
-    chatConfig: lobeAgentChatConfigSchema.optional(),
+    chatConfig: strictAgentChatConfigSchema.optional(),
     model: z.string().optional(),
     openingMessage: z.string().optional(),
     openingQuestions: z.array(z.string()).optional(),
     params: llmParamsSchema.optional(),
     plugins: z
-      .array(z.union([z.string(), z.record(z.union([z.string(), z.boolean()]))]))
+      .array(
+        z.union([
+          z.string(),
+          z
+            .object({
+              identifier: z.string(),
+              mode: z.enum(['pinned', 'auto', 'disabled']).optional(),
+            })
+            .strict(),
+        ]),
+      )
       .optional(),
     provider: z.string().optional(),
     systemRole: z.string().optional(),
@@ -189,21 +209,10 @@ const lobeAgentConfigSchema = z
   })
   .strict();
 
-/** Finite MetaData leaves. */
-const metaDataSchema = z
-  .object({
-    avatar: z.string().optional(),
-    backgroundColor: z.string().optional(),
-    description: z.string().optional(),
-    tags: z.array(z.string()).optional(),
-    title: z.string().optional(),
-  })
-  .strict();
-
 const defaultAgentSchema = z
   .object({
     config: lobeAgentConfigSchema.optional(),
-    meta: metaDataSchema.optional(),
+    meta: LobeMetaDataSchema.strict().optional(),
   })
   .strict();
 

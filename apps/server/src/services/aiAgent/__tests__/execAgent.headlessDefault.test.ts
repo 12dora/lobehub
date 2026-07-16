@@ -3,10 +3,21 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AiAgentService } from '../index';
 
-const { mockCreateOperation, mockGetAgentConfig, mockMessageCreate } = vi.hoisted(() => ({
+const {
+  mockCreateOperation,
+  mockGetAgentConfig,
+  mockMessageCreate,
+  mockResolveEffectiveUserInterventionConfig,
+} = vi.hoisted(() => ({
   mockCreateOperation: vi.fn(),
   mockGetAgentConfig: vi.fn(),
   mockMessageCreate: vi.fn(),
+  mockResolveEffectiveUserInterventionConfig: vi.fn(),
+}));
+
+vi.mock('@/server/enterprise/services/settings/runtimeSettingsAdapter', () => ({
+  getEffectiveMemorySettings: vi.fn().mockResolvedValue(undefined),
+  resolveEffectiveUserInterventionConfig: mockResolveEffectiveUserInterventionConfig,
 }));
 
 vi.mock('@/libs/trusted-client', () => ({
@@ -137,6 +148,9 @@ describe('AiAgentService.execAgent - headless approval default', () => {
       provider: 'openai',
       systemRole: '',
     });
+    mockResolveEffectiveUserInterventionConfig.mockImplementation(
+      async ({ callerConfig }) => callerConfig,
+    );
     service = new AiAgentService(mockDb, userId);
   });
 
@@ -175,5 +189,38 @@ describe('AiAgentService.execAgent - headless approval default', () => {
     expect(mockCreateOperation).toHaveBeenCalledTimes(1);
     const callArgs = mockCreateOperation.mock.calls[0][0];
     expect(callArgs.userInterventionConfig).toEqual(config);
+  });
+
+  it('enforces the trusted effective policy at the real execAgent boundary', async () => {
+    mockResolveEffectiveUserInterventionConfig.mockResolvedValueOnce({ approvalMode: 'manual' });
+
+    await service.execAgent({
+      agentId: 'agent-1',
+      prompt: 'Hello',
+      userInterventionConfig: { approvalMode: 'headless' },
+    });
+
+    expect(mockCreateOperation).toHaveBeenCalledTimes(1);
+    expect(mockCreateOperation.mock.calls[0][0].userInterventionConfig).toEqual({
+      approvalMode: 'manual',
+    });
+  });
+
+  it('uses platform-only policy scope for workspace execution', async () => {
+    service = new AiAgentService(mockDb, userId, { workspaceId: 'ws-1' });
+    mockResolveEffectiveUserInterventionConfig.mockResolvedValueOnce({ approvalMode: 'manual' });
+
+    await service.execAgent({
+      agentId: 'agent-1',
+      prompt: 'Hello',
+      userInterventionConfig: { approvalMode: 'auto-run' },
+    });
+
+    expect(mockResolveEffectiveUserInterventionConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ scope: 'workspace', userId }),
+    );
+    expect(mockCreateOperation.mock.calls[0][0].userInterventionConfig).toEqual({
+      approvalMode: 'manual',
+    });
   });
 });

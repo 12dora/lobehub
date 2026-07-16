@@ -42,12 +42,16 @@ describe('localDraftStorage', () => {
       draft: {
         x: { mode: 'locked', schemaVersion: 1, value: true, visibility: 'visible' },
       },
+      originalBaseDraft: {
+        x: { mode: 'user', schemaVersion: 1, value: false, visibility: 'visible' },
+      },
       previousBaseRevision: 1,
       registryVersion: 1,
       savedAt: new Date().toISOString(),
     });
     const loaded = loadConflictDraft();
     expect(loaded?.draft.x?.mode).toBe('locked');
+    expect(loaded?.originalBaseDraft.x?.value).toBe(false);
     clearConflictDraft();
     expect(loadConflictDraft()).toBeNull();
   });

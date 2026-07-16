@@ -4,7 +4,6 @@ import path from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { getTestDB } from '@/database/core/getTestDB';
 import type { LobeChatDatabase } from '@/database/type';
 
 import {
@@ -27,7 +26,14 @@ vi.mock('../../featureFlags', async (importOriginal) => {
 
 describe('runtimeSettingsAdapter', () => {
   it('flag OFF preserves sparse legacy settings including keyVaults (exact parity)', async () => {
-    const db = (await getTestDB()) as LobeChatDatabase;
+    const db = new Proxy(
+      {},
+      {
+        get() {
+          throw new Error('database accessed while feature flag is off');
+        },
+      },
+    ) as LobeChatDatabase;
     const legacy = {
       general: { fontSize: 17 },
       keyVaults: { openai: { apiKey: 'sk-test' } },
@@ -49,9 +55,11 @@ describe('runtimeSettingsAdapter', () => {
       'runtimeSettingsAdapter.getEffectiveDefaultAgentConfig',
     );
     expect(SETTINGS_RUNTIME_READ_REGISTRY).toContain('AgentService.getAgentConfig');
+    expect(SETTINGS_RUNTIME_READ_REGISTRY).toContain('AiAgentService.execAgent.approvalPolicy');
+    expect(SETTINGS_RUNTIME_READ_REGISTRY).toContain('memoryRuntime.memoryEffort');
   });
 
-  it('catches direct defaultAgent/systemAgent raw settings bypasses', () => {
+  it('catches direct defaultAgent/systemAgent/tool/memory raw settings bypasses', () => {
     const monoServer = path.join(__dirname, '../../../../../../apps/server/src');
     let root = monoServer;
     try {
@@ -115,8 +123,14 @@ describe('runtimeSettingsAdapter', () => {
             /systemAgent\s+as\s+Partial/.test(text)) &&
           !text.includes('getEffectiveSystemAgentConfig') &&
           !text.includes('runtimeSettingsAdapter');
+        const usesToolOrMemoryBypass =
+          ((/\.getUserSettings\s*\(/.test(text) || /getUserSettings\s*\(/.test(text)) &&
+            (/settings\?\.(?:memory|tool)|settings\.(?:memory|tool)/.test(text) ||
+              /(?:memory|tool)\s*=\s*settings/.test(text))) ||
+          (/query\.userSettings\.findFirst\s*\(/.test(text) &&
+            /columns:\s*\{\s*(?:memory|tool):\s*true/.test(text));
 
-        if (usesDefaultAgentBypass || usesSystemAgentBypass) {
+        if (usesDefaultAgentBypass || usesSystemAgentBypass || usesToolOrMemoryBypass) {
           offenders.push(rel);
         }
       }

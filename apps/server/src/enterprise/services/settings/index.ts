@@ -33,6 +33,7 @@ export {
   settingsRegistry,
 } from './registry';
 export {
+  type EffectiveUserInterventionConfig,
   getDefaultAgentSlice,
   getEffectiveDefaultAgentConfig,
   getEffectiveMemorySettings,
@@ -40,6 +41,7 @@ export {
   getSystemAgentSlice,
   getToolSlice,
   loadEffectiveUserSettings,
+  resolveEffectiveUserInterventionConfig,
   SETTINGS_RUNTIME_READ_REGISTRY,
   type SettingsRuntimeReadId,
 } from './runtimeSettingsAdapter';

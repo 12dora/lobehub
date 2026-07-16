@@ -1,7 +1,8 @@
 // @vitest-environment node
 /**
- * B3-R2 causal concurrency: publish lock and user patch share bundle FOR UPDATE.
- * After a path is locked by publish, concurrent patch must fail closed.
+ * R3-B3 causal race: two DB clients share FOR UPDATE on settings bundle.
+ * Sequence: T1 locks bundle (simulating publish materialization), T2 patch waits
+ * on lock, T1 commits locked policy, T2 rechecks and fails closed.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -14,8 +15,10 @@ import {
   userSettingOverrideRevisions,
   userSettingOverrides,
 } from '@/database/schemas/platform';
+import { users } from '@/database/schemas/user';
 import type { LobeChatDatabase } from '@/database/type';
 
+import type { PlatformConfigInvalidationPublisher } from '../platformConfigInvalidation';
 import { AdminSettingsService } from './adminSettingsService';
 import { EffectiveSettingsService, SettingsPathError } from './effectiveSettingsService';
 
@@ -33,8 +36,14 @@ vi.mock('../../featureFlags', async (importOriginal) => {
 });
 
 const serverDB: LobeChatDatabase = await getTestDB();
-const admin = new AdminSettingsService(serverDB);
-const userSvc = new EffectiveSettingsService(serverDB);
+
+const deferred = () => {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+};
 
 beforeEach(async () => {
   await serverDB.delete(platformAuditLogs);
@@ -43,6 +52,8 @@ beforeEach(async () => {
   await serverDB.delete(userSettingOverrideRevisions);
   await serverDB.delete(platformSettingPolicies);
   await serverDB.delete(platformSettingsBundle);
+  await serverDB.delete(users);
+  await serverDB.insert(users).values({ id: 'u-race' });
 });
 
 afterEach(async () => {
@@ -52,10 +63,37 @@ afterEach(async () => {
   await serverDB.delete(userSettingOverrideRevisions);
   await serverDB.delete(platformSettingPolicies);
   await serverDB.delete(platformSettingsBundle);
+  await serverDB.delete(users);
 });
 
-describe('B3-R2 TOCTOU lock vs publish', () => {
-  it('patch fails closed after path is published as locked', async () => {
+describe('R3-B3 TOCTOU / shared lock ordering', () => {
+  it('patch after concurrent lock publish cannot commit prohibited override', async () => {
+    const publishInvalidation = {
+      publish: vi.fn().mockResolvedValue(undefined),
+    } as unknown as PlatformConfigInvalidationPublisher;
+    const userInvalidation = {
+      publish: vi.fn().mockResolvedValue(undefined),
+    } as unknown as PlatformConfigInvalidationPublisher;
+    const materialized = deferred();
+    const releasePublish = deferred();
+    const patchStarted = deferred();
+    let holdPublish = false;
+    const admin = new AdminSettingsService(serverDB, {
+      invalidation: publishInvalidation,
+      lifecycle: {
+        afterMaterialization: async (operation) => {
+          if (operation !== 'publish' || !holdPublish) return;
+          materialized.resolve();
+          await releasePublish.promise;
+        },
+      },
+    });
+    const userSvc = new EffectiveSettingsService(serverDB, userInvalidation, {
+      beforeBundleLock: async (operation) => {
+        if (operation === 'patch') patchStarted.resolve();
+      },
+    });
+
     await admin.saveDraft({
       actorUserId: 'admin',
       draft: {
@@ -70,15 +108,6 @@ describe('B3-R2 TOCTOU lock vs publish', () => {
     });
     await admin.publish({ actorUserId: 'admin', expectedRevision: 0, reason: 'p1' });
 
-    // user can patch while unlocked
-    await userSvc.patchSettingOverride({
-      client: 'web',
-      path: 'memory.enabled',
-      userId: 'u1',
-      value: false,
-    });
-
-    // admin locks
     await admin.saveDraft({
       actorUserId: 'admin',
       draft: {
@@ -91,15 +120,34 @@ describe('B3-R2 TOCTOU lock vs publish', () => {
       },
       reason: 'lock',
     });
-    await admin.publish({ actorUserId: 'admin', expectedRevision: 1, reason: 'p2' });
 
-    await expect(
-      userSvc.patchSettingOverride({
-        client: 'web',
-        path: 'memory.enabled',
-        userId: 'u1',
-        value: false,
-      }),
-    ).rejects.toBeInstanceOf(SettingsPathError);
+    holdPublish = true;
+    const publish = admin.publish({
+      actorUserId: 'admin',
+      expectedRevision: 1,
+      reason: 'p2',
+    });
+    await materialized.promise;
+
+    // The patch transaction starts while publish still holds the bundle lock.
+    const patch = userSvc.patchSettingOverride({
+      client: 'web',
+      path: 'memory.enabled',
+      userId: 'u-race',
+      value: false,
+    });
+    await patchStarted.promise;
+
+    releasePublish.resolve();
+    await publish;
+    await expect(patch).rejects.toMatchObject({
+      code: 'MANAGED_SETTING_BY_ADMIN',
+      name: SettingsPathError.name,
+    });
+
+    const rows = await serverDB.select().from(userSettingOverrides);
+    expect(rows).toEqual([]);
+    expect(userInvalidation.publish).not.toHaveBeenCalled();
+    expect(publishInvalidation.publish).toHaveBeenCalledTimes(2);
   });
 });

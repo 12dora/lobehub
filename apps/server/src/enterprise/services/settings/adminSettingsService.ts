@@ -10,7 +10,7 @@ import {
   PlatformSettingsModel,
   type SettingsDraftPolicyMap,
 } from '@/database/models/platform';
-import type { LobeChatDatabase } from '@/database/type';
+import type { LobeChatDatabase, Transaction } from '@/database/type';
 import {
   PLATFORM_SETTINGS_RESOURCE_ID,
   PLATFORM_SETTINGS_RESOURCE_TYPE,
@@ -19,7 +19,12 @@ import {
   type SettingsValidationIssue,
 } from '@/types/platform/settings';
 
-import { PlatformAuditService } from '../platformAudit';
+import {
+  type CreatePlatformAuditLogParams,
+  type PlatformAuditLogItem,
+  PlatformAuditService,
+} from '../platformAudit';
+import type { PlatformConfigInvalidationPublisher } from '../platformConfigInvalidation';
 import { PlatformPublisherService, PlatformRevisionConflictError } from '../platformPublisher';
 import { settingsRegistry } from './registry';
 
@@ -32,6 +37,20 @@ export class SettingsDraftValidationError extends Error {
     this.name = 'SettingsDraftValidationError';
     this.issues = issues;
   }
+}
+
+/** Production-empty lifecycle seam for causal transaction fault tests. */
+export interface AdminSettingsMutationLifecycle {
+  afterMaterialization?: (operation: 'publish' | 'rollback') => Promise<void>;
+}
+
+export interface AdminSettingsServiceOptions {
+  auditAppend?: (
+    db: LobeChatDatabase | Transaction,
+    params: CreatePlatformAuditLogParams,
+  ) => Promise<PlatformAuditLogItem>;
+  invalidation?: PlatformConfigInvalidationPublisher;
+  lifecycle?: AdminSettingsMutationLifecycle;
 }
 
 const policyToMapEntry = (p: {
@@ -50,17 +69,25 @@ export class AdminSettingsService {
   private readonly db: LobeChatDatabase;
   private readonly model: PlatformSettingsModel;
   private readonly publisher: PlatformPublisherService;
-  private readonly audit: PlatformAuditService;
+  private readonly auditAppend: NonNullable<AdminSettingsServiceOptions['auditAppend']>;
+  private readonly lifecycle: AdminSettingsMutationLifecycle;
 
-  constructor(db: LobeChatDatabase) {
+  constructor(db: LobeChatDatabase, options: AdminSettingsServiceOptions = {}) {
     this.db = db;
     this.model = new PlatformSettingsModel(db);
-    this.publisher = new PlatformPublisherService(db);
-    this.audit = new PlatformAuditService(db);
+    this.publisher = new PlatformPublisherService(db, options.invalidation);
+    this.auditAppend =
+      options.auditAppend ??
+      ((auditDb, params) => new PlatformAuditService(auditDb).append(params));
+    this.lifecycle = options.lifecycle ?? {};
   }
 
   /** Build pointer that materializes path policies inside the publish/rollback transaction. */
-  private settingsPointer = (params: { alignDraft?: boolean; updatedBy?: string | null }) =>
+  private settingsPointer = (params: {
+    alignDraft?: boolean;
+    operation: 'publish' | 'rollback';
+    updatedBy?: string | null;
+  }) =>
     createSettingsPointerAdapter({
       materializePublished: async (tx, args) => {
         const model = new PlatformSettingsModel(tx);
@@ -77,6 +104,7 @@ export class AdminSettingsService {
             updatedBy: params.updatedBy,
           });
         }
+        await this.lifecycle.afterMaterialization?.(params.operation);
       },
       updatedBy: params.updatedBy,
     });
@@ -194,7 +222,7 @@ export class AdminSettingsService {
     const validation = await this.validateDraft(params.draft);
     if (!validation.ok) {
       // Best-effort failure audit after validation (no state write)
-      await this.audit.append({
+      await this.auditAppend(this.db, {
         action: 'admin.settings.saveDraft',
         actorUserId: params.actorUserId,
         afterDiff: { issueCount: validation.issues.length },
@@ -208,32 +236,43 @@ export class AdminSettingsService {
     }
 
     // Atomic: draft write + success audit in one transaction
-    const bundle = await this.db.transaction(async (tx) => {
-      const model = new PlatformSettingsModel(tx);
-      const saved = await model.saveDraft({
-        draft: params.draft,
-        updatedBy: params.actorUserId,
+    let bundle: Awaited<ReturnType<PlatformSettingsModel['saveDraft']>>;
+    try {
+      bundle = await this.db.transaction(async (tx) => {
+        const model = new PlatformSettingsModel(tx);
+        const saved = await model.saveDraft({
+          draft: params.draft,
+          updatedBy: params.actorUserId,
+        });
+        await this.auditAppend(tx, {
+          action: 'admin.settings.saveDraft',
+          actorUserId: params.actorUserId,
+          afterDiff: {
+            pathCount: Object.keys(params.draft).length,
+            paths: Object.fromEntries(
+              Object.entries(params.draft).map(([path, p]) => [
+                path,
+                { mode: p.mode, visibility: p.visibility },
+              ]),
+            ),
+          },
+          beforeDiff: null,
+          reason: params.reason,
+          result: 'success',
+          targetId: PLATFORM_SETTINGS_RESOURCE_ID,
+          targetType: PLATFORM_SETTINGS_RESOURCE_TYPE,
+        });
+        return saved;
       });
-      await new PlatformAuditService(tx).append({
+    } catch (error) {
+      await this.appendFailureAudit({
         action: 'admin.settings.saveDraft',
         actorUserId: params.actorUserId,
-        afterDiff: {
-          pathCount: Object.keys(params.draft).length,
-          paths: Object.fromEntries(
-            Object.entries(params.draft).map(([path, p]) => [
-              path,
-              { mode: p.mode, visibility: p.visibility },
-            ]),
-          ),
-        },
         beforeDiff: null,
         reason: params.reason,
-        result: 'success',
-        targetId: PLATFORM_SETTINGS_RESOURCE_ID,
-        targetType: PLATFORM_SETTINGS_RESOURCE_TYPE,
       });
-      return saved;
-    });
+      throw error;
+    }
 
     return {
       baseRevision: bundle.revision,
@@ -253,7 +292,7 @@ export class AdminSettingsService {
 
     const validation = await this.validateDraft(draft);
     if (!validation.ok) {
-      await this.audit.append({
+      await this.auditAppend(this.db, {
         action: 'admin.settings.publish',
         actorUserId: params.actorUserId,
         afterDiff: { issueCount: validation.issues.length },
@@ -290,7 +329,10 @@ export class AdminSettingsService {
         expectedRevision: params.expectedRevision,
         invalidationScopes: ['settings'],
         payload,
-        pointer: this.settingsPointer({ updatedBy: params.actorUserId }),
+        pointer: this.settingsPointer({
+          operation: 'publish',
+          updatedBy: params.actorUserId,
+        }),
         reason: params.reason,
         resourceId: PLATFORM_SETTINGS_RESOURCE_ID,
         resourceType: PLATFORM_SETTINGS_RESOURCE_TYPE,
@@ -302,18 +344,12 @@ export class AdminSettingsService {
       };
     } catch (error) {
       // Failure audit after rollback of the publish transaction
-      await this.audit
-        .append({
-          action: 'admin.settings.publish',
-          actorUserId: params.actorUserId,
-          afterDiff: null,
-          beforeDiff: { expectedRevision: params.expectedRevision },
-          reason: params.reason,
-          result: error instanceof PlatformRevisionConflictError ? 'failure' : 'failure',
-          targetId: PLATFORM_SETTINGS_RESOURCE_ID,
-          targetType: PLATFORM_SETTINGS_RESOURCE_TYPE,
-        })
-        .catch(() => undefined);
+      await this.appendFailureAudit({
+        action: 'admin.settings.publish',
+        actorUserId: params.actorUserId,
+        beforeDiff: { expectedRevision: params.expectedRevision },
+        reason: params.reason,
+      });
       throw error;
     }
   };
@@ -331,6 +367,7 @@ export class AdminSettingsService {
         invalidationScopes: ['settings'],
         pointer: this.settingsPointer({
           alignDraft: true,
+          operation: 'rollback',
           updatedBy: params.actorUserId,
         }),
         reason: params.reason,
@@ -344,22 +381,45 @@ export class AdminSettingsService {
         revision: result.revision.revision,
       };
     } catch (error) {
-      await this.audit
-        .append({
-          action: 'admin.settings.rollback',
-          actorUserId: params.actorUserId,
-          afterDiff: null,
-          beforeDiff: {
-            expectedRevision: params.expectedRevision,
-            targetRevision: params.targetRevision,
-          },
-          reason: params.reason,
-          result: 'failure',
-          targetId: PLATFORM_SETTINGS_RESOURCE_ID,
-          targetType: PLATFORM_SETTINGS_RESOURCE_TYPE,
-        })
-        .catch(() => undefined);
+      await this.appendFailureAudit({
+        action: 'admin.settings.rollback',
+        actorUserId: params.actorUserId,
+        beforeDiff: {
+          expectedRevision: params.expectedRevision,
+          targetRevision: params.targetRevision,
+        },
+        reason: params.reason,
+      });
       throw error;
+    }
+  };
+
+  /**
+   * Failure audit runs only after the state transaction has rolled back. Audit
+   * storage failure is deliberately non-recursive and never turns into success.
+   */
+  private appendFailureAudit = async (params: {
+    action: string;
+    actorUserId: string;
+    beforeDiff: Record<string, unknown> | null;
+    reason: string;
+  }): Promise<void> => {
+    try {
+      await this.auditAppend(this.db, {
+        action: params.action,
+        actorUserId: params.actorUserId,
+        afterDiff: null,
+        beforeDiff: params.beforeDiff,
+        reason: params.reason,
+        result: 'failure',
+        targetId: PLATFORM_SETTINGS_RESOURCE_ID,
+        targetType: PLATFORM_SETTINGS_RESOURCE_TYPE,
+      });
+    } catch (auditError) {
+      console.error('[admin.settings:auditFailure]', {
+        action: params.action,
+        error: auditError instanceof Error ? auditError.message : 'unknown',
+      });
     }
   };
 }

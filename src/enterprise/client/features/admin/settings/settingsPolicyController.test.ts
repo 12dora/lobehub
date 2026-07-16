@@ -59,6 +59,18 @@ describe('settingsPolicyController', () => {
         dirty: true,
         draftFingerprint: fp,
         revisionConflict: false,
+        saveState: 'saving',
+        validatedForFingerprint: null,
+      }),
+    ).toBe('save');
+
+    expect(
+      resolvePrimaryAction({
+        canPublish: true,
+        canUpdate: true,
+        dirty: true,
+        draftFingerprint: fp,
+        revisionConflict: false,
         saveState: 'failed',
         validatedForFingerprint: null,
       }),
@@ -90,12 +102,72 @@ describe('settingsPolicyController', () => {
 
     expect(
       resolvePrimaryAction({
+        canPublish: true,
+        canUpdate: true,
+        dirty: false,
+        draftFingerprint: fp,
+        revisionConflict: false,
+        saveState: 'saved',
+        validatedForFingerprint: 'stale-fingerprint',
+      }),
+    ).toBe('validate');
+
+    expect(
+      resolvePrimaryAction({
         canPublish: false,
         canUpdate: false,
         dirty: false,
         draftFingerprint: fp,
         revisionConflict: false,
         saveState: 'idle',
+        validatedForFingerprint: fp,
+      }),
+    ).toBe('none');
+
+    expect(
+      resolvePrimaryAction({
+        canPublish: false,
+        canUpdate: true,
+        dirty: false,
+        draftFingerprint: fp,
+        revisionConflict: false,
+        saveState: 'saved',
+        validatedForFingerprint: null,
+      }),
+    ).toBe('none');
+
+    expect(
+      resolvePrimaryAction({
+        canPublish: true,
+        canUpdate: false,
+        dirty: false,
+        draftFingerprint: fp,
+        revisionConflict: false,
+        saveState: 'idle',
+        validatedForFingerprint: null,
+      }),
+    ).toBe('validate');
+
+    expect(
+      resolvePrimaryAction({
+        canPublish: true,
+        canUpdate: false,
+        dirty: false,
+        draftFingerprint: fp,
+        revisionConflict: false,
+        saveState: 'saved',
+        validatedForFingerprint: fp,
+      }),
+    ).toBe('publish');
+
+    expect(
+      resolvePrimaryAction({
+        canPublish: true,
+        canUpdate: true,
+        dirty: false,
+        draftFingerprint: fp,
+        revisionConflict: true,
+        saveState: 'failed',
         validatedForFingerprint: fp,
       }),
     ).toBe('none');
@@ -135,5 +207,25 @@ describe('settingsPolicyController', () => {
       a: { mode: 'user', schemaVersion: 1, value: 2, visibility: 'visible' },
     });
     expect(a).not.toBe(b);
+  });
+
+  it('fingerprint is stable for semantically identical nested values', () => {
+    const left = fingerprintDraft({
+      a: {
+        mode: 'user',
+        schemaVersion: 1,
+        value: { first: true, second: { a: 1, b: 2 } },
+        visibility: 'visible',
+      },
+    });
+    const right = fingerprintDraft({
+      a: {
+        mode: 'user',
+        schemaVersion: 1,
+        value: { second: { b: 2, a: 1 }, first: true },
+        visibility: 'visible',
+      },
+    });
+    expect(left).toBe(right);
   });
 });

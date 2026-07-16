@@ -6,6 +6,8 @@ import { type LucideIcon } from 'lucide-react';
 import { memo, useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { ManagedSettingFieldContent } from '@/features/PlatformSettingSourceBadge/ManagedSettingField';
+import { usePlatformSettingMeta } from '@/features/PlatformSettingSourceBadge/usePlatformSettingMeta';
 import { usePermission } from '@/hooks/usePermission';
 import { useUserStore } from '@/store/user';
 import { toolInterventionSelectors } from '@/store/user/selectors';
@@ -62,6 +64,8 @@ const ModeSelector = memo(() => {
   const { allowed: canCreateContent, reason } = usePermission('create_content');
   const approvalMode = useUserStore(toolInterventionSelectors.approvalMode);
   const updateHumanIntervention = useUserStore((s) => s.updateHumanIntervention);
+  const platformMeta = usePlatformSettingMeta('tool.humanIntervention.approvalMode');
+  const platformLocked = platformMeta.locked;
 
   const modeLabels = useMemo(
     () => ({
@@ -74,20 +78,20 @@ const ModeSelector = memo(() => {
 
   const handleModeChange = useCallback(
     async (mode: ApprovalMode) => {
-      if (!canCreateContent) return;
+      if (!canCreateContent || platformLocked) return;
 
       await updateHumanIntervention({ approvalMode: mode });
     },
-    [canCreateContent, updateHumanIntervention],
+    [canCreateContent, platformLocked, updateHumanIntervention],
   );
 
   const handleOpenChange = useCallback(
     (nextOpen: boolean) => {
-      if (!canCreateContent) return;
+      if (!canCreateContent || platformLocked) return;
 
       setDropdownOpen(nextOpen);
     },
-    [canCreateContent],
+    [canCreateContent, platformLocked],
   );
 
   const menuItems = useMemo<MenuProps['items']>(
@@ -136,7 +140,7 @@ const ModeSelector = memo(() => {
     <Button
       className={styles.modeButton}
       color={'default'}
-      disabled={!canCreateContent}
+      disabled={!canCreateContent || platformLocked}
       icon={ChevronDown}
       iconPlacement="end"
       size="small"
@@ -146,28 +150,33 @@ const ModeSelector = memo(() => {
     </Button>
   );
 
-  if (!canCreateContent)
-    return (
+  const selector =
+    !canCreateContent || platformLocked ? (
       <Tooltip title={reason}>
         <div className={styles.modeButtonDisabled}>{button}</div>
       </Tooltip>
+    ) : (
+      <DropdownMenu
+        items={menuItems}
+        open={canCreateContent && !platformLocked && dropdownOpen}
+        placement="bottomRight"
+        onOpenChange={handleOpenChange}
+      >
+        <div className={styles.trigger}>
+          {dropdownOpen ? (
+            button
+          ) : (
+            <Tooltip title={t('tool.intervention.approvalMode')}>{button}</Tooltip>
+          )}
+        </div>
+      </DropdownMenu>
     );
 
+  if (platformMeta.hidden) return null;
+  if (!platformMeta.enabled) return selector;
+
   return (
-    <DropdownMenu
-      items={menuItems}
-      open={canCreateContent && dropdownOpen}
-      placement="bottomRight"
-      onOpenChange={handleOpenChange}
-    >
-      <div className={styles.trigger}>
-        {dropdownOpen ? (
-          button
-        ) : (
-          <Tooltip title={t('tool.intervention.approvalMode')}>{button}</Tooltip>
-        )}
-      </div>
-    </DropdownMenu>
+    <ManagedSettingFieldContent meta={platformMeta}>{() => selector}</ManagedSettingFieldContent>
   );
 });
 

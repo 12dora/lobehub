@@ -59,6 +59,11 @@ export interface SettingDefinition<T = unknown> {
   step?: number;
   /** i18n title key. */
   titleKey: string;
+  /**
+   * Ordinary-user control surface metadata (R3-U3).
+   * Canonical source for UI coverage assertions — not a separate escape list.
+   */
+  userControlSurface: { kind: 'surface'; surfaceFile: string } | { kind: 'none'; reason: string };
 }
 
 export type SettingGroupId =

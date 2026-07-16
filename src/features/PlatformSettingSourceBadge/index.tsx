@@ -3,7 +3,7 @@
 import { Flexbox, Text } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
-import { Building2, RotateCcw, User } from 'lucide-react';
+import { Building2, LoaderCircle, RotateCcw, User } from 'lucide-react';
 import { memo, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -20,6 +20,8 @@ export interface PlatformSettingSourceBadgeProps {
   mode?: 'user' | 'default' | 'locked';
   /** Single-path reset (delete override). */
   onReset?: () => void;
+  /** Prevent duplicate reset while the request is pending. */
+  resetting?: boolean;
   /** Effective value source. */
   source?: PlatformSettingSource;
 }
@@ -57,7 +59,7 @@ const styles = createStaticStyles(({ css }) => ({
  * UI hiding never replaces server enforcement — locked still requires server deny.
  */
 const PlatformSettingSourceBadge = memo<PlatformSettingSourceBadgeProps>(
-  ({ locked, hidden, source, mode, onReset, children }) => {
+  ({ locked, hidden, source, mode, onReset, resetting, children }) => {
     const { t } = useTranslation('setting');
 
     if (hidden) return null;
@@ -96,9 +98,13 @@ const PlatformSettingSourceBadge = memo<PlatformSettingSourceBadgeProps>(
               {t('platformSource.personal')}
             </span>
             {onReset ? (
-              <Button size="small" type="text" onClick={onReset}>
-                <RotateCcw size={12} style={{ marginInlineEnd: 4 }} />
-                {t('platformSource.resetToOrg')}
+              <Button disabled={resetting} size="small" type="text" onClick={onReset}>
+                {resetting ? (
+                  <LoaderCircle className="anticon-spin" size={12} style={{ marginInlineEnd: 4 }} />
+                ) : (
+                  <RotateCcw size={12} style={{ marginInlineEnd: 4 }} />
+                )}
+                {resetting ? t('platformSource.resetting') : t('platformSource.resetToOrg')}
               </Button>
             ) : null}
           </Flexbox>

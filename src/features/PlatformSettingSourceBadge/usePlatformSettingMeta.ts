@@ -1,32 +1,55 @@
 'use client';
 
-import { useCallback, useState } from 'react';
-import { mutate } from 'swr';
+import { useCallback, useRef, useState } from 'react';
 
 import { useEnterprisePlatform } from '@/enterprise/client/providers/EnterprisePlatformProvider';
 import { userSettingsService } from '@/enterprise/client/services/userSettings';
 import { useClientDataSWR } from '@/libs/swr';
+import type { UserSettingsGetEffectiveOutput } from '@/server/enterprise/contracts/userSettings';
 import { useUserStore } from '@/store/user';
 
 const EFFECTIVE_KEY = 'user.settings.effective' as const;
 
 export type PlatformSettingMetaStatus = 'disabled' | 'loading' | 'error' | 'ready';
 
+export interface PlatformSettingMetaState {
+  canReset: boolean;
+  enabled: boolean;
+  error: Error | undefined;
+  hidden: boolean;
+  isLoading: boolean;
+  locked: boolean;
+  meta: UserSettingsGetEffectiveOutput['pathMeta'][string] | undefined;
+  mode: 'default' | 'locked' | 'user' | undefined;
+  reset: () => Promise<boolean>;
+  resetError: Error | null;
+  resetting: boolean;
+  retry: () => Promise<UserSettingsGetEffectiveOutput | undefined>;
+  source: 'builtin' | 'environment' | 'legacy' | 'platform' | 'user' | undefined;
+  status: PlatformSettingMetaStatus;
+}
+
+export const isPlatformSettingMetaWritable = (meta: PlatformSettingMetaState): boolean =>
+  meta.status === 'disabled' || (meta.status === 'ready' && !meta.hidden && !meta.locked);
+
 /**
  * Path-level meta when platform policy is enabled.
  * Fail-closed: loading/error must not render editable unmanaged controls.
  */
-export const usePlatformSettingMeta = (path: string) => {
+export const usePlatformSettingMeta = (
+  path: string,
+  registered = true,
+): PlatformSettingMetaState => {
   const platform = useEnterprisePlatform();
-  const enabled = platform.capabilities.userSettingsPolicyEnabled === true;
+  const enabled = registered && platform.capabilities.userSettingsPolicyEnabled === true;
   const refreshUserState = useUserStore((s) => s.refreshUserState);
+  const resetInFlightRef = useRef(false);
   const [resetting, setResetting] = useState(false);
-  const [resetError, setResetError] = useState<string | null>(null);
+  const [resetError, setResetError] = useState<Error | null>(null);
 
   const {
     data,
     error,
-    isLoading,
     mutate: revalidate,
   } = useClientDataSWR(enabled ? [EFFECTIVE_KEY] : null, () => userSettingsService.getEffective());
 
@@ -34,49 +57,53 @@ export const usePlatformSettingMeta = (path: string) => {
 
   const status: PlatformSettingMetaStatus = !enabled
     ? 'disabled'
-    : isLoading && !data
-      ? 'loading'
-      : error && !data
+    : data
+      ? 'ready'
+      : error
         ? 'error'
-        : 'ready';
+        : 'loading';
+
+  const canReset =
+    status === 'ready' && meta?.mode === 'default' && meta.source === 'user' && !meta.locked;
 
   const reset = useCallback(async () => {
-    if (!enabled) return;
+    if (!canReset || resetInFlightRef.current) return false;
+
+    resetInFlightRef.current = true;
     setResetting(true);
     setResetError(null);
     try {
       await userSettingsService.resetOverride({ path });
-      await mutate((key) => Array.isArray(key) && key[0] === EFFECTIVE_KEY);
       await revalidate();
-      // Refresh main user state so visible values update to org default
-      if (typeof refreshUserState === 'function') {
-        await refreshUserState();
-      }
+      await refreshUserState();
+      return true;
     } catch (err) {
-      setResetError(err instanceof Error ? err.message : String(err));
-      throw err;
+      setResetError(err instanceof Error ? err : new Error(String(err)));
+      return false;
     } finally {
+      resetInFlightRef.current = false;
       setResetting(false);
     }
-  }, [enabled, path, refreshUserState, revalidate]);
+  }, [canReset, path, refreshUserState, revalidate]);
 
   // U1-R2: flag OFF → exact unmanaged (not locked/hidden); loading/error fail-closed for management
   const unmanaged = status === 'disabled';
   const ready = status === 'ready';
 
   return {
+    canReset,
     enabled,
-    error,
+    error: error instanceof Error ? error : error ? new Error(String(error)) : undefined,
     hidden: unmanaged ? false : ready ? (meta?.hidden ?? false) : false,
     isLoading: status === 'loading',
     // disabled: unlocked; ready: meta; loading/error: fail-closed locked for write surfaces
-    locked: unmanaged ? false : ready ? (meta?.locked ?? false) : true,
+    locked: unmanaged ? false : ready ? (meta?.locked ?? true) : true,
     meta: unmanaged ? undefined : meta,
     mode: unmanaged ? undefined : meta?.mode,
     reset,
     resetError,
     resetting,
-    retry: () => revalidate(),
+    retry: async () => revalidate(),
     source: unmanaged ? undefined : meta?.source,
     status,
   };

@@ -2,7 +2,8 @@
 
 import { type FormGroupItemType, type FormItemProps } from '@lobehub/ui';
 import { Button, Flexbox, Form, Icon, Skeleton } from '@lobehub/ui';
-import { Form as AntForm, Switch } from 'antd';
+import { Switch } from '@lobehub/ui/base-ui';
+import { Form as AntForm } from 'antd';
 import isEqual from 'fast-deep-equal';
 import { Loader2Icon, PencilIcon } from 'lucide-react';
 import { memo, useState } from 'react';
@@ -11,6 +12,11 @@ import { useTranslation } from 'react-i18next';
 import TextArea from '@/components/TextArea';
 import { FORM_STYLE } from '@/const/layoutTokens';
 import ModelSelect from '@/features/ModelSelect';
+import { ManagedCompositeSettingFieldContent } from '@/features/PlatformSettingSourceBadge/ManagedSettingField';
+import {
+  isPlatformSettingMetaWritable,
+  usePlatformSettingMeta,
+} from '@/features/PlatformSettingSourceBadge/usePlatformSettingMeta';
 import { useUserStore } from '@/store/user';
 import { settingsSelectors } from '@/store/user/selectors';
 import { type UserSystemAgentConfigKey } from '@/types/user/settings';
@@ -32,6 +38,20 @@ const SystemAgentForm = memo(
       s.isUserStateInit,
     ]);
     const [loading, setLoading] = useState(false);
+    const hasManagedModel = ['historyCompress', 'topic', 'translation'].includes(systemAgentKey);
+    const hasManagedProvider = systemAgentKey === 'topic';
+    const modelMeta = usePlatformSettingMeta(
+      `systemAgent.${systemAgentKey}.model`,
+      hasManagedModel,
+    );
+    const providerMeta = usePlatformSettingMeta(
+      `systemAgent.${systemAgentKey}.provider`,
+      hasManagedProvider,
+    );
+    const modelMetas = [
+      ...(hasManagedModel ? [modelMeta] : []),
+      ...(hasManagedProvider ? [providerMeta] : []),
+    ];
 
     if (!isUserStateInit) return <Skeleton active paragraph={{ rows: 5 }} title={false} />;
 
@@ -39,22 +59,33 @@ const SystemAgentForm = memo(
 
     const systemAgentSettings: FormGroupItemType = {
       children: [
-        {
-          children: (
-            <ModelSelect
-              showAbility={false}
-              // value={value}
-              onChange={async (props) => {
-                setLoading(true);
-                await updateSystemAgent(systemAgentKey, props);
-                setLoading(false);
-              }}
-            />
-          ),
-          desc: t(`systemAgent.${systemAgentKey}.modelDesc`),
-          label: t(`systemAgent.${systemAgentKey}.label`),
-          name: systemAgentKey,
-        },
+        ...(!modelMetas.some((meta) => meta.hidden)
+          ? [
+              {
+                children: (
+                  <ManagedCompositeSettingFieldContent metas={modelMetas}>
+                    {({ disabled }) => (
+                      <ModelSelect
+                        disabled={disabled}
+                        showAbility={false}
+                        value={value}
+                        onChange={async (props) => {
+                          if (modelMetas.some((meta) => !isPlatformSettingMetaWritable(meta)))
+                            return;
+
+                          setLoading(true);
+                          await updateSystemAgent(systemAgentKey, props);
+                          setLoading(false);
+                        }}
+                      />
+                    )}
+                  </ManagedCompositeSettingFieldContent>
+                ),
+                desc: t(`systemAgent.${systemAgentKey}.modelDesc`),
+                label: t(`systemAgent.${systemAgentKey}.label`),
+              },
+            ]
+          : []),
         (!!allowCustomPrompt && {
           children: !!value.customPrompt ? (
             <TextArea
@@ -90,7 +121,7 @@ const SystemAgentForm = memo(
           {loading && <Icon spin icon={Loader2Icon} size={16} style={{ opacity: 0.5 }} />}
           {allowDisable && (
             <Switch
-              value={value.enabled}
+              checked={value.enabled}
               onChange={async (enabled) => {
                 setLoading(true);
                 await updateSystemAgent(systemAgentKey, { enabled });

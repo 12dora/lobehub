@@ -3,8 +3,8 @@
 import { BRANDING_NAME } from '@lobechat/business-const';
 import type { FormGroupItemType } from '@lobehub/ui';
 import { Button, Form, Icon } from '@lobehub/ui';
-import { confirmModal } from '@lobehub/ui/base-ui';
-import { App, Switch } from 'antd';
+import { confirmModal, Switch } from '@lobehub/ui/base-ui';
+import { App } from 'antd';
 import { HardDriveDownload, HardDriveUpload } from 'lucide-react';
 import { useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -13,6 +13,8 @@ import AccountDeletion from '@/business/client/features/AccountDeletion';
 import { useTransferAgentsFormItem } from '@/business/client/hooks/useTransferAgentsFormItem';
 import { FORM_STYLE } from '@/const/layoutTokens';
 import DataImporter from '@/features/DataImporter';
+import { ManagedSettingFieldContent } from '@/features/PlatformSettingSourceBadge/ManagedSettingField';
+import { usePlatformSettingMeta } from '@/features/PlatformSettingSourceBadge/usePlatformSettingMeta';
 import { configService } from '@/services/config';
 import { useServerConfigStore } from '@/store/serverConfig';
 import { featureFlagsSelectors, serverConfigSelectors } from '@/store/serverConfig/selectors';
@@ -28,6 +30,7 @@ const AdvancedActions = () => {
   const transferAgentsFormItems = useTransferAgentsFormItem();
   const resetSettings = useUserStore((s) => s.resetSettings);
   const updateGeneralConfig = useUserStore((s) => s.updateGeneralConfig);
+  const telemetryMeta = usePlatformSettingMeta('general.telemetry');
 
   const handleReset = useCallback(() => {
     confirmModal({
@@ -95,12 +98,18 @@ const AdvancedActions = () => {
     children: [
       {
         children: (
-          <Switch
-            checked={!!checked}
-            onChange={(value) => {
-              updateGeneralConfig({ telemetry: value });
-            }}
-          />
+          <ManagedSettingFieldContent meta={telemetryMeta}>
+            {({ disabled }) => (
+              <Switch
+                checked={!!checked}
+                disabled={disabled}
+                onChange={(value) => {
+                  if (disabled) return;
+                  updateGeneralConfig({ telemetry: value });
+                }}
+              />
+            )}
+          </ManagedSettingFieldContent>
         ),
         desc: t('analytics.telemetry.desc', { appName: BRANDING_NAME }),
         label: t('analytics.telemetry.title'),
@@ -125,7 +134,7 @@ const AdvancedActions = () => {
         itemsType={'group'}
         variant={'filled'}
         items={[
-          ...(hideDocs ? [analytics] : []),
+          ...(hideDocs && !telemetryMeta.hidden ? [analytics] : []),
           ...(dataMigration ? [dataMigration] : []),
           system,
         ]}

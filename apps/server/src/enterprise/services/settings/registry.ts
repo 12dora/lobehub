@@ -26,7 +26,6 @@ import type {
 /** Bump when registered paths / schemas change in a breaking way for cache keys. */
 export const SETTINGS_REGISTRY_VERSION = 1;
 
-const ALL_CLIENTS: readonly SettingClientSurface[] = ['web', 'desktop', 'mobile', 'server'];
 /** Appearance / preference leaves used only in user UI clients (B6-R2). */
 const UI_CLIENTS: readonly SettingClientSurface[] = ['web', 'desktop', 'mobile'];
 /** Runtime-consumed model/agent/memory leaves (server + interactive clients). */
@@ -58,6 +57,10 @@ const REGISTRY_ENTRIES: readonly Def[] = [
     max: 24,
     min: 12,
     path: 'general.fontSize',
+    userControlSurface: {
+      kind: 'surface',
+      surfaceFile: 'src/routes/(main)/settings/chat-appearance/features/ChatAppearance/index.tsx',
+    },
     platformPolicyEligible: true,
     schema: z.number().int().min(12).max(24),
     schemaVersion: 1,
@@ -77,6 +80,10 @@ const REGISTRY_ENTRIES: readonly Def[] = [
       { labelKey: 'settingsPolicy.options.animation.elegant', value: 'elegant' },
     ],
     path: 'general.animationMode',
+    userControlSurface: {
+      kind: 'surface',
+      surfaceFile: 'src/routes/(main)/settings/common/features/Common/Common.tsx',
+    },
     platformPolicyEligible: true,
     schema: animationModeSchema,
     schemaVersion: 1,
@@ -90,6 +97,10 @@ const REGISTRY_ENTRIES: readonly Def[] = [
     descriptionKey: 'settingsPolicy.paths.general.telemetry.desc',
     group: 'general',
     path: 'general.telemetry',
+    userControlSurface: {
+      kind: 'surface',
+      surfaceFile: 'src/routes/(main)/settings/about/features/Analytics.tsx',
+    },
     platformPolicyEligible: true,
     schema: z.boolean(),
     schemaVersion: 1,
@@ -103,6 +114,7 @@ const REGISTRY_ENTRIES: readonly Def[] = [
     descriptionKey: 'settingsPolicy.paths.general.isLiteMode.desc',
     group: 'general',
     path: 'general.isLiteMode',
+    userControlSurface: { kind: 'none', reason: 'No dedicated settings control in main SPA' },
     platformPolicyEligible: true,
     schema: z.boolean(),
     schemaVersion: 1,
@@ -121,6 +133,10 @@ const REGISTRY_ENTRIES: readonly Def[] = [
       { labelKey: 'settingsPolicy.options.transition.none', value: 'none' },
     ],
     path: 'general.transitionMode',
+    userControlSurface: {
+      kind: 'surface',
+      surfaceFile: 'src/routes/(main)/settings/chat-appearance/features/ChatAppearance/index.tsx',
+    },
     platformPolicyEligible: true,
     schema: transitionModeSchema,
     schemaVersion: 1,
@@ -136,6 +152,7 @@ const REGISTRY_ENTRIES: readonly Def[] = [
     max: 100,
     min: 0,
     path: 'general.costEstimateWarningThreshold',
+    userControlSurface: { kind: 'none', reason: 'No dedicated settings control in main SPA' },
     platformPolicyEligible: true,
     schema: z.number().min(0).max(100),
     schemaVersion: 1,
@@ -149,6 +166,10 @@ const REGISTRY_ENTRIES: readonly Def[] = [
     descriptionKey: 'settingsPolicy.paths.general.enableAutoScrollOnStreaming.desc',
     group: 'general',
     path: 'general.enableAutoScrollOnStreaming',
+    userControlSurface: {
+      kind: 'surface',
+      surfaceFile: 'src/routes/(main)/settings/chat-appearance/features/ChatAppearance/index.tsx',
+    },
     platformPolicyEligible: true,
     schema: z.boolean(),
     schemaVersion: 1,
@@ -162,6 +183,10 @@ const REGISTRY_ENTRIES: readonly Def[] = [
     descriptionKey: 'settingsPolicy.paths.general.enableMessageLinkIcon.desc',
     group: 'general',
     path: 'general.enableMessageLinkIcon',
+    userControlSurface: {
+      kind: 'surface',
+      surfaceFile: 'src/routes/(main)/settings/chat-appearance/features/ChatAppearance/index.tsx',
+    },
     platformPolicyEligible: true,
     schema: z.boolean(),
     schemaVersion: 1,
@@ -179,6 +204,10 @@ const REGISTRY_ENTRIES: readonly Def[] = [
     descriptionKey: 'settingsPolicy.paths.memory.enabled.desc',
     group: 'memory',
     path: 'memory.enabled',
+    userControlSurface: {
+      kind: 'surface',
+      surfaceFile: 'src/routes/(main)/settings/memory/features/Memory.tsx',
+    },
     platformPolicyEligible: true,
     schema: z.boolean(),
     schemaVersion: 1,
@@ -197,6 +226,10 @@ const REGISTRY_ENTRIES: readonly Def[] = [
       { labelKey: 'settingsPolicy.options.memory.effort.high', value: 'high' },
     ],
     path: 'memory.effort',
+    userControlSurface: {
+      kind: 'surface',
+      surfaceFile: 'src/routes/(main)/settings/memory/features/Memory.tsx',
+    },
     platformPolicyEligible: true,
     schema: memoryEffortSchema,
     schemaVersion: 1,
@@ -218,6 +251,10 @@ const REGISTRY_ENTRIES: readonly Def[] = [
       { labelKey: 'settingsPolicy.options.approval.headless', value: 'headless' },
     ],
     path: 'tool.humanIntervention.approvalMode',
+    userControlSurface: {
+      kind: 'surface',
+      surfaceFile: 'src/features/ChatInput/ControlBar/ApprovalMode.tsx',
+    },
     platformPolicyEligible: true,
     schema: approvalModeSchema,
     schemaVersion: 1,
@@ -235,6 +272,10 @@ const REGISTRY_ENTRIES: readonly Def[] = [
     max: 20,
     min: 1,
     path: 'image.defaultImageNum',
+    userControlSurface: {
+      kind: 'surface',
+      surfaceFile: 'src/routes/(main)/settings/image/features/Image.tsx',
+    },
     platformPolicyEligible: true,
     schema: z.number().int().min(1).max(20),
     schemaVersion: 1,
@@ -250,6 +291,10 @@ const REGISTRY_ENTRIES: readonly Def[] = [
     descriptionKey: 'settingsPolicy.paths.tts.sttAutoStop.desc',
     group: 'tts',
     path: 'tts.sttAutoStop',
+    userControlSurface: {
+      kind: 'none',
+      reason: 'No ordinary-user control; TTS settings expose only the OpenAI TTS model',
+    },
     platformPolicyEligible: true,
     schema: z.boolean(),
     schemaVersion: 1,
@@ -267,6 +312,10 @@ const REGISTRY_ENTRIES: readonly Def[] = [
       { labelKey: 'settingsPolicy.options.tts.sttServer.browser', value: 'browser' },
     ],
     path: 'tts.sttServer',
+    userControlSurface: {
+      kind: 'none',
+      reason: 'No ordinary-user control; TTS settings expose only the OpenAI TTS model',
+    },
     platformPolicyEligible: true,
     schema: sttServerSchema,
     schemaVersion: 1,
@@ -281,6 +330,10 @@ const REGISTRY_ENTRIES: readonly Def[] = [
     group: 'tts',
     options: [{ labelKey: 'settingsPolicy.options.tts.sttModel.whisper1', value: 'whisper-1' }],
     path: 'tts.openAI.sttModel',
+    userControlSurface: {
+      kind: 'none',
+      reason: 'No ordinary-user control; TTS settings expose only the OpenAI TTS model',
+    },
     platformPolicyEligible: true,
     schema: sttModelSchema,
     schemaVersion: 1,
@@ -299,6 +352,10 @@ const REGISTRY_ENTRIES: readonly Def[] = [
       { labelKey: 'settingsPolicy.options.tts.ttsModel.tts1Hd', value: 'tts-1-hd' },
     ],
     path: 'tts.openAI.ttsModel',
+    userControlSurface: {
+      kind: 'surface',
+      surfaceFile: 'src/routes/(main)/settings/tts/features/OpenAI.tsx',
+    },
     platformPolicyEligible: true,
     schema: ttsModelSchema,
     schemaVersion: 1,
@@ -314,6 +371,10 @@ const REGISTRY_ENTRIES: readonly Def[] = [
     descriptionKey: 'settingsPolicy.paths.notification.email.enabled.desc',
     group: 'notification',
     path: 'notification.email.enabled',
+    userControlSurface: {
+      kind: 'none',
+      reason: 'Notification settings page is a null business stub with no user control',
+    },
     platformPolicyEligible: true,
     schema: z.boolean(),
     schemaVersion: 1,
@@ -327,6 +388,10 @@ const REGISTRY_ENTRIES: readonly Def[] = [
     descriptionKey: 'settingsPolicy.paths.notification.inbox.enabled.desc',
     group: 'notification',
     path: 'notification.inbox.enabled',
+    userControlSurface: {
+      kind: 'none',
+      reason: 'Notification settings page is a null business stub with no user control',
+    },
     platformPolicyEligible: true,
     schema: z.boolean(),
     schemaVersion: 1,
@@ -342,6 +407,10 @@ const REGISTRY_ENTRIES: readonly Def[] = [
     descriptionKey: 'settingsPolicy.paths.defaultAgent.config.model.desc',
     group: 'defaultAgent',
     path: 'defaultAgent.config.model',
+    userControlSurface: {
+      kind: 'surface',
+      surfaceFile: 'src/features/ServiceModel/ModelAssignmentsForm.tsx',
+    },
     platformPolicyEligible: true,
     schema: z.string().min(1).max(128),
     schemaVersion: 1,
@@ -355,6 +424,10 @@ const REGISTRY_ENTRIES: readonly Def[] = [
     descriptionKey: 'settingsPolicy.paths.defaultAgent.config.provider.desc',
     group: 'defaultAgent',
     path: 'defaultAgent.config.provider',
+    userControlSurface: {
+      kind: 'surface',
+      surfaceFile: 'src/features/ServiceModel/ModelAssignmentsForm.tsx',
+    },
     platformPolicyEligible: true,
     schema: z.string().min(1).max(64),
     schemaVersion: 1,
@@ -368,6 +441,10 @@ const REGISTRY_ENTRIES: readonly Def[] = [
     descriptionKey: 'settingsPolicy.paths.defaultAgent.config.systemRole.desc',
     group: 'defaultAgent',
     path: 'defaultAgent.config.systemRole',
+    userControlSurface: {
+      kind: 'none',
+      reason: 'No default-agent system-role control writes UserSettings.defaultAgent',
+    },
     platformPolicyEligible: true,
     schema: z.string().max(32_000),
     schemaVersion: 1,
@@ -381,6 +458,10 @@ const REGISTRY_ENTRIES: readonly Def[] = [
     descriptionKey: 'settingsPolicy.paths.defaultAgent.config.chatConfig.enableStreaming.desc',
     group: 'defaultAgent',
     path: 'defaultAgent.config.chatConfig.enableStreaming',
+    userControlSurface: {
+      kind: 'none',
+      reason: 'No default-agent streaming control writes UserSettings.defaultAgent',
+    },
     platformPolicyEligible: true,
     schema: z.boolean(),
     schemaVersion: 1,
@@ -396,6 +477,10 @@ const REGISTRY_ENTRIES: readonly Def[] = [
     max: 200,
     min: 0,
     path: 'defaultAgent.config.chatConfig.historyCount',
+    userControlSurface: {
+      kind: 'none',
+      reason: 'No default-agent history-count control writes UserSettings.defaultAgent',
+    },
     platformPolicyEligible: true,
     schema: z.number().int().min(0).max(200),
     schemaVersion: 1,
@@ -411,6 +496,10 @@ const REGISTRY_ENTRIES: readonly Def[] = [
     max: 2,
     min: 0,
     path: 'defaultAgent.config.params.temperature',
+    userControlSurface: {
+      kind: 'none',
+      reason: 'No default-agent temperature control writes UserSettings.defaultAgent',
+    },
     platformPolicyEligible: true,
     schema: z.number().min(0).max(2),
     schemaVersion: 1,
@@ -427,6 +516,10 @@ const REGISTRY_ENTRIES: readonly Def[] = [
     descriptionKey: 'settingsPolicy.paths.systemAgent.topic.model.desc',
     group: 'systemAgent',
     path: 'systemAgent.topic.model',
+    userControlSurface: {
+      kind: 'surface',
+      surfaceFile: 'src/features/ServiceModel/ModelAssignmentsForm.tsx',
+    },
     platformPolicyEligible: true,
     schema: z.string().min(1).max(128),
     schemaVersion: 1,
@@ -440,6 +533,10 @@ const REGISTRY_ENTRIES: readonly Def[] = [
     descriptionKey: 'settingsPolicy.paths.systemAgent.topic.provider.desc',
     group: 'systemAgent',
     path: 'systemAgent.topic.provider',
+    userControlSurface: {
+      kind: 'surface',
+      surfaceFile: 'src/features/ServiceModel/ModelAssignmentsForm.tsx',
+    },
     platformPolicyEligible: true,
     schema: z.string().min(1).max(64),
     schemaVersion: 1,
@@ -453,6 +550,10 @@ const REGISTRY_ENTRIES: readonly Def[] = [
     descriptionKey: 'settingsPolicy.paths.systemAgent.translation.model.desc',
     group: 'systemAgent',
     path: 'systemAgent.translation.model',
+    userControlSurface: {
+      kind: 'surface',
+      surfaceFile: 'src/features/ServiceModel/ModelAssignmentsForm.tsx',
+    },
     platformPolicyEligible: true,
     schema: z.string().min(1).max(128),
     schemaVersion: 1,
@@ -466,6 +567,10 @@ const REGISTRY_ENTRIES: readonly Def[] = [
     descriptionKey: 'settingsPolicy.paths.systemAgent.historyCompress.model.desc',
     group: 'systemAgent',
     path: 'systemAgent.historyCompress.model',
+    userControlSurface: {
+      kind: 'surface',
+      surfaceFile: 'src/features/ServiceModel/ModelAssignmentsForm.tsx',
+    },
     platformPolicyEligible: true,
     schema: z.string().min(1).max(128),
     schemaVersion: 1,
@@ -502,12 +607,34 @@ const assertRegistryValid = (entries: readonly Def[]) => {
     if (entry.applicableClients.length === 0) {
       throw new Error(`applicableClients empty for ${entry.path}`);
     }
+    if (
+      entry.userControlSurface.kind === 'surface' &&
+      !entry.userControlSurface.surfaceFile.startsWith('src/')
+    ) {
+      throw new Error(`Invalid user control surface for ${entry.path}`);
+    }
+    if (
+      entry.userControlSurface.kind === 'none' &&
+      entry.userControlSurface.reason.trim().length === 0
+    ) {
+      throw new Error(`Missing user control omission reason for ${entry.path}`);
+    }
   }
 };
 
 assertRegistryValid(REGISTRY_ENTRIES);
 
 const byPath = new Map<string, Def>(REGISTRY_ENTRIES.map((e) => [e.path, e]));
+
+/**
+ * Stable, side-effect-free canonical view for ordinary-user control coverage.
+ * Tests consume this instead of maintaining an independently editable path list.
+ */
+export const SETTINGS_USER_CONTROL_SURFACE_COVERAGE = Object.freeze(
+  REGISTRY_ENTRIES.map(({ path, userControlSurface }) =>
+    Object.freeze({ path, userControlSurface }),
+  ),
+);
 
 export class SettingsRegistry {
   readonly version = SETTINGS_REGISTRY_VERSION;

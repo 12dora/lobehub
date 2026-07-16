@@ -47,18 +47,33 @@ export { MANAGED_ERROR_CODES, PLATFORM_ERROR_CODES };
 const softCache = new Map<string, { at: number; value: EffectiveSettingsResult }>();
 const SOFT_CACHE_TTL_MS = 5_000;
 
+/**
+ * Narrow transaction lifecycle seam. Production leaves this empty; causal
+ * concurrency and rollback tests use promise barriers/fault injection without
+ * replacing the service or mirroring its transaction logic.
+ */
+export interface SettingsMutationLifecycle {
+  afterBundleLock?: (operation: 'fullReset' | 'legacyUpdate' | 'patch' | 'reset') => Promise<void>;
+  afterManagedWrites?: (operation: 'fullReset' | 'legacyUpdate') => Promise<void>;
+  beforeBundleLock?: (operation: 'fullReset' | 'legacyUpdate' | 'patch' | 'reset') => Promise<void>;
+  beforeLegacyWrite?: (operation: 'fullReset' | 'legacyUpdate') => Promise<void>;
+}
+
 export class EffectiveSettingsService {
   private readonly db: LobeChatDatabase;
   private readonly model: PlatformSettingsModel;
   private readonly invalidation: PlatformConfigInvalidationPublisher;
+  private readonly lifecycle: SettingsMutationLifecycle;
 
   constructor(
     db: LobeChatDatabase,
     invalidation: PlatformConfigInvalidationPublisher = getPlatformConfigInvalidationPublisher(),
+    lifecycle: SettingsMutationLifecycle = {},
   ) {
     this.db = db;
     this.model = new PlatformSettingsModel(db);
     this.invalidation = invalidation;
+    this.lifecycle = lifecycle;
   }
 
   isPolicyEnabled = (): boolean => getEnterpriseFeatureFlags().ENABLE_PLATFORM_SETTINGS_POLICY;
@@ -208,9 +223,11 @@ export class EffectiveSettingsService {
     }
 
     // B3-R2: lock aggregate pointer + recheck published policy inside same txn as write
+    await this.lifecycle.beforeBundleLock?.('patch');
     const { revision } = await this.db.transaction(async (tx) => {
       const model = new PlatformSettingsModel(tx);
       await model.lockBundleForUpdate();
+      await this.lifecycle.afterBundleLock?.('patch');
       const policy = await model.getPublishedPolicy(params.path);
       if (policy?.mode === 'locked') {
         throw new SettingsPathError(MANAGED_ERROR_CODES.MANAGED_SETTING_BY_ADMIN);
@@ -250,9 +267,11 @@ export class EffectiveSettingsService {
     });
     if (gate) throw new SettingsPathError(gate);
 
+    await this.lifecycle.beforeBundleLock?.('reset');
     const result = await this.db.transaction(async (tx) => {
       const model = new PlatformSettingsModel(tx);
       await model.lockBundleForUpdate();
+      await this.lifecycle.afterBundleLock?.('reset');
       const policy = await model.getPublishedPolicy(params.path);
       if (policy?.mode === 'locked') {
         throw new SettingsPathError(MANAGED_ERROR_CODES.MANAGED_SETTING_BY_ADMIN);
@@ -284,11 +303,19 @@ export class EffectiveSettingsService {
       return userModel.deleteSetting();
     }
 
-    await this.db.transaction(async (tx) => {
+    await this.lifecycle.beforeBundleLock?.('fullReset');
+    const revision = await this.db.transaction(async (tx) => {
       const model = new PlatformSettingsModel(tx);
-      await model.deleteAllUserOverrides(params.userId, { alreadyInTransaction: true });
+      await model.lockBundleForUpdate();
+      await this.lifecycle.afterBundleLock?.('fullReset');
+      const result = await model.deleteAllUserOverrides(params.userId, {
+        alreadyInTransaction: true,
+      });
+      await this.lifecycle.afterManagedWrites?.('fullReset');
+      await this.lifecycle.beforeLegacyWrite?.('fullReset');
       const userModel = new UserModel(tx as LobeChatDatabase, params.userId);
       await userModel.deleteSetting();
+      return result;
     });
 
     this.dropUserCache(params.userId);
@@ -296,7 +323,7 @@ export class EffectiveSettingsService {
       at: new Date().toISOString(),
       resourceId: params.userId,
       resourceType: 'settings',
-      revision: await this.model.getUserOverrideRevision(params.userId),
+      revision,
       scopes: ['settings', `user:${params.userId}`],
     });
   };
@@ -395,9 +422,11 @@ export class EffectiveSettingsService {
 
     // 2) Single transaction: re-check locks, overrides, revision, legacy write
     let revision = 0;
+    await this.lifecycle.beforeBundleLock?.('legacyUpdate');
     await this.db.transaction(async (tx) => {
       const model = new PlatformSettingsModel(tx);
       await model.lockBundleForUpdate();
+      await this.lifecycle.afterBundleLock?.('legacyUpdate');
       for (const op of ops) {
         const policy = await model.getPublishedPolicy(op.path);
         if (policy?.mode === 'locked') {
@@ -411,7 +440,9 @@ export class EffectiveSettingsService {
           userId: params.userId,
         });
       }
+      await this.lifecycle.afterManagedWrites?.('legacyUpdate');
       if (Object.keys(legacyPartial).length > 0) {
+        await this.lifecycle.beforeLegacyWrite?.('legacyUpdate');
         const userModel = new UserModel(tx as LobeChatDatabase, params.userId);
         await userModel.updateSetting(legacyPartial as Parameters<UserModel['updateSetting']>[0]);
       }
