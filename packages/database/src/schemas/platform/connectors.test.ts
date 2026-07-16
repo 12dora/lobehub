@@ -1,4 +1,4 @@
-import { getTableConfig } from 'drizzle-orm/pg-core';
+import { getTableConfig, PgDialect } from 'drizzle-orm/pg-core';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -13,6 +13,11 @@ const foreignKeyNames = (items: Array<{ getName: () => string }>) =>
   items.map((item) => item.getName());
 const indexNames = (items: Array<{ config: { name?: string } }>) =>
   items.map((item) => item.config.name);
+const checkSql = (table: Parameters<typeof getTableConfig>[0], name: string) => {
+  const check = getTableConfig(table).checks.find((item) => item.name === name);
+  if (!check) throw new Error(`Missing check: ${name}`);
+  return new PgDialect().sqlToQuery(check.value).sql;
+};
 
 describe('platform connector persistence invariants', () => {
   it('pins a published connector to an immutable revision from the same resource identity', () => {
@@ -30,6 +35,31 @@ describe('platform connector persistence invariants', () => {
         'platform_connectors_revision_check',
       ]),
     );
+    expect(checkSql(platformConnectors, 'platform_connectors_published_pointer_check')).toMatch(
+      /published_revision.*published_checksum.*published_at.*status/s,
+    );
+    expect(checkSql(platformConnectors, 'platform_connectors_credential_slot_check')).toMatch(
+      /shared_secret_ref.*shared_secret_fingerprint.*shared_secret_updated_at.*oauth_client_secret_ref/s,
+    );
+    expect(checkSql(platformConnectors, 'platform_connectors_oauth_config_check')).toMatch(
+      /jsonb_typeof.*octet_length.*client_\?secret/s,
+    );
+    const publishedForeignKey = config.foreignKeys.find(
+      (item) => item.getName() === 'platform_connectors_published_revision_fk',
+    );
+    const reference = publishedForeignKey?.reference();
+    expect(reference?.columns.map((column) => column.name)).toEqual([
+      'published_resource_type',
+      'id',
+      'published_revision',
+      'published_checksum',
+    ]);
+    expect(reference?.foreignColumns.map((column) => column.name)).toEqual([
+      'resource_type',
+      'resource_id',
+      'revision',
+      'checksum',
+    ]);
   });
 
   it('keeps tool schemas bounded and forces confirmation for high-risk tools', () => {
@@ -43,6 +73,12 @@ describe('platform connector persistence invariants', () => {
         'platform_connector_tools_confirmation_check',
         'platform_connector_tools_schema_check',
       ]),
+    );
+    expect(checkSql(platformConnectorTools, 'platform_connector_tools_schema_check')).toMatch(
+      /jsonb_typeof.*input_schema.*jsonb_typeof.*output_schema.*65536/s,
+    );
+    expect(checkSql(platformConnectorTools, 'platform_connector_tools_confirmation_check')).toMatch(
+      /risk_level.*high.*critical.*requires_confirmation/s,
     );
   });
 
@@ -60,6 +96,12 @@ describe('platform connector persistence invariants', () => {
         'platform_user_connector_bindings_token_ref_check',
       ]),
     );
+    expect(
+      checkSql(
+        platformUserConnectorBindings,
+        'platform_user_connector_bindings_state_fields_check',
+      ),
+    ).toMatch(/connected.*oauth_token_ref.*token_fingerprint.*revoked.*cardinality/s);
   });
 
   it('binds OAuth state to one binding owner and enforces a short positive TTL', () => {
@@ -75,5 +117,24 @@ describe('platform connector persistence invariants', () => {
         'platform_connector_oauth_states_ttl_check',
       ]),
     );
+    expect(
+      checkSql(platformConnectorOAuthStates, 'platform_connector_oauth_states_ttl_check'),
+    ).toMatch(/expires_at.*created_at.*10 minutes/s);
+    const ownerForeignKey = config.foreignKeys.find(
+      (item) => item.getName() === 'platform_connector_oauth_states_binding_owner_fk',
+    );
+    const reference = ownerForeignKey?.reference();
+    expect(reference?.columns.map((column) => column.name)).toEqual([
+      'binding_id',
+      'user_id',
+      'connector_id',
+      'published_revision',
+    ]);
+    expect(reference?.foreignColumns.map((column) => column.name)).toEqual([
+      'id',
+      'user_id',
+      'connector_id',
+      'published_revision',
+    ]);
   });
 });
