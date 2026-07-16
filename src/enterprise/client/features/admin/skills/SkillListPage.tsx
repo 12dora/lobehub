@@ -61,6 +61,9 @@ const SkillListPage = memo(() => {
     enabledParam === 'true' || enabledParam === 'false' ? enabledParam : '',
   ]);
   const [queryDraft, setQueryDraft] = useState(query);
+  const [committedCreateId, setCommittedCreateId] = useState<string | null>(null);
+  const [createRefreshFailed, setCreateRefreshFailed] = useState(false);
+  const [createRefreshRetrying, setCreateRefreshRetrying] = useState(false);
   const [cursorState, setCursorState] = useState<{
     fingerprint: string;
     stack: (string | null)[];
@@ -175,6 +178,22 @@ const SkillListPage = memo(() => {
     enabledParam === 'false',
   );
 
+  const retryCreatedRefresh = async () => {
+    if (!committedCreateId) return;
+    setCreateRefreshRetrying(true);
+    try {
+      await refreshAdminSkillLists();
+      const id = committedCreateId;
+      setCommittedCreateId(null);
+      setCreateRefreshFailed(false);
+      navigate(`/admin/skills/${encodeURIComponent(id)}`);
+    } catch {
+      setCreateRefreshFailed(true);
+    } finally {
+      setCreateRefreshRetrying(false);
+    }
+  };
+
   return (
     <AdminPageTemplate
       description={t('skillCatalog.list.desc')}
@@ -182,15 +201,23 @@ const SkillListPage = memo(() => {
       actions={
         canCreate ? (
           <Button
+            disabled={Boolean(committedCreateId)}
             type="primary"
             onClick={() =>
               openCreateSkillModal({
                 authMethod: authMethod ?? undefined,
                 onSubmit: async (input) => {
                   const created = await adminSkillsService.create(input);
-                  await refreshAdminSkillLists();
+                  setCommittedCreateId(created.draft.id);
                   toast.success(t('skillCatalog.toast.created'));
-                  navigate(`/admin/skills/${encodeURIComponent(created.draft.id)}`);
+                  try {
+                    await refreshAdminSkillLists();
+                    setCommittedCreateId(null);
+                    setCreateRefreshFailed(false);
+                    navigate(`/admin/skills/${encodeURIComponent(created.draft.id)}`);
+                  } catch {
+                    setCreateRefreshFailed(true);
+                  }
                 },
               })
             }
@@ -260,6 +287,18 @@ const SkillListPage = memo(() => {
         </Flexbox>
       }
     >
+      {createRefreshFailed ? (
+        <Alert
+          showIcon
+          message={t('skillCatalog.create.refreshFailed')}
+          type="warning"
+          extra={
+            <Button loading={createRefreshRetrying} onClick={() => void retryCreatedRefresh()}>
+              {t('skillCatalog.actions.retry')}
+            </Button>
+          }
+        />
+      ) : null}
       <DataTable<AdminSkillListItem>
         columns={columns}
         dataSource={data?.items}

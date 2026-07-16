@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { MemoryRouter, useNavigate } from 'react-router';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -9,13 +9,17 @@ import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import SkillListPage from './SkillListPage';
 
 const mocks = vi.hoisted(() => ({
+  create: vi.fn(),
   data: { items: [{ id: 's1' }], nextCursor: 'next-cursor' } as any,
   error: undefined as unknown,
   filterResultMode: null as 'error' | 'loading' | null,
   inputs: [] as unknown[],
   isLoading: false,
   mutate: vi.fn(),
+  openCreate: vi.fn(),
   pageErrorOnCursor: false,
+  permissions: [] as string[],
+  refreshLists: vi.fn(),
 }));
 
 vi.mock('antd-style', () => ({
@@ -27,10 +31,17 @@ vi.mock('react-i18next', () => ({
 }));
 
 vi.mock('@/enterprise/client/providers/AdminAccessProvider', () => ({
-  useAdminAccess: () => ({ permissions: [PLATFORM_PERMISSIONS.SKILL_READ] }),
+  useAdminAccess: () => ({ authMethod: null, permissions: mocks.permissions }),
 }));
 
+vi.mock('@/enterprise/client/services/adminSkills', () => ({
+  adminSkillsService: { create: mocks.create },
+}));
+
+vi.mock('./openCreateSkillModal', () => ({ openCreateSkillModal: mocks.openCreate }));
+
 vi.mock('./hooks/useAdminSkills', () => ({
+  refreshAdminSkillLists: mocks.refreshLists,
   useFetchAdminSkills: (input: unknown) => {
     mocks.inputs.push(structuredClone(input));
     const cursor = (input as { cursor?: string }).cursor;
@@ -78,11 +89,21 @@ vi.mock('@lobehub/ui/base-ui', () => ({
       ))}
     </select>
   ),
+  toast: { success: vi.fn() },
 }));
 
 vi.mock('../primitives/AdminPageTemplate', () => ({
-  default: ({ children, toolbar }: { children?: ReactNode; toolbar?: ReactNode }) => (
+  default: ({
+    actions,
+    children,
+    toolbar,
+  }: {
+    actions?: ReactNode;
+    children?: ReactNode;
+    toolbar?: ReactNode;
+  }) => (
     <main>
+      {actions}
       {toolbar}
       {children}
     </main>
@@ -122,12 +143,16 @@ const ExternalFilterLink = () => {
 describe('SkillListPage', () => {
   beforeEach(() => {
     mocks.data = { items: [{ id: 's1' }], nextCursor: 'next-cursor' };
+    mocks.create.mockReset();
     mocks.error = undefined;
     mocks.filterResultMode = null;
     mocks.inputs.length = 0;
     mocks.isLoading = false;
     mocks.mutate.mockReset();
+    mocks.openCreate.mockReset();
     mocks.pageErrorOnCursor = false;
+    mocks.permissions = [PLATFORM_PERMISSIONS.SKILL_READ];
+    mocks.refreshLists.mockReset();
   });
 
   it('invalidates an old cursor before an external URL filter navigation can fetch', async () => {
@@ -259,5 +284,28 @@ describe('SkillListPage', () => {
       </MemoryRouter>,
     );
     expect(screen.getByText('skillCatalog.list.empty.default')).toBeTruthy();
+  });
+
+  it('closes the create operation after commit and exposes independent refresh retry', async () => {
+    mocks.permissions = [PLATFORM_PERMISSIONS.SKILL_READ, PLATFORM_PERMISSIONS.SKILL_CREATE];
+    mocks.create.mockResolvedValue({ draft: { id: 'created-1' }, draftToken: 'x'.repeat(64) });
+    mocks.refreshLists.mockRejectedValueOnce(new Error('refresh offline'));
+    render(
+      <MemoryRouter initialEntries={['/admin/skills']}>
+        <SkillListPage />
+      </MemoryRouter>,
+    );
+    fireEvent.click(screen.getByText('skillCatalog.create.submit'));
+    const modal = mocks.openCreate.mock.calls[0][0];
+    await act(() => modal.onSubmit({}));
+
+    expect(mocks.create).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('skillCatalog.create.refreshFailed')).toBeTruthy();
+    expect(screen.getByText('skillCatalog.create.submit')).toHaveProperty('disabled', true);
+
+    mocks.refreshLists.mockResolvedValueOnce(undefined);
+    fireEvent.click(screen.getByText('skillCatalog.actions.retry'));
+    await waitFor(() => expect(mocks.refreshLists).toHaveBeenCalledTimes(2));
+    expect(mocks.create).toHaveBeenCalledTimes(1);
   });
 });

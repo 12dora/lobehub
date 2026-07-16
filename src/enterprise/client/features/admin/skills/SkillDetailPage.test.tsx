@@ -17,7 +17,10 @@ const mocks = vi.hoisted(() => ({
   dependentPageErrorOnCursor: false,
   detailMutate: vi.fn(),
   editor: vi.fn(),
+  permissions: [] as string[],
   skillActions: vi.fn(),
+  versionDetailData: undefined as any,
+  versionDetailError: new Error('version offline') as unknown,
   versionDetailMutate: vi.fn(),
   versionListData: undefined as any,
   versionListError: new Error('versions offline') as unknown,
@@ -69,7 +72,7 @@ vi.mock('react-i18next', () => ({
 }));
 
 vi.mock('@/enterprise/client/providers/AdminAccessProvider', () => ({
-  useAdminAccess: () => ({ authMethod: null, permissions: [PLATFORM_PERMISSIONS.SKILL_READ] }),
+  useAdminAccess: () => ({ authMethod: null, permissions: mocks.permissions }),
 }));
 
 vi.mock('@/components/AsyncBoundary', () => ({
@@ -110,8 +113,8 @@ vi.mock('./hooks/useAdminSkills', () => ({
     };
   },
   useFetchAdminSkillVersion: () => ({
-    data: undefined,
-    error: new Error('version offline'),
+    data: mocks.versionDetailData,
+    error: mocks.versionDetailError,
     isLoading: false,
     mutate: mocks.versionDetailMutate,
   }),
@@ -199,7 +202,10 @@ describe('SkillDetailPage independent async states', () => {
       refreshFailed: false,
       retryRefresh: vi.fn(),
     });
+    mocks.permissions = [PLATFORM_PERMISSIONS.SKILL_READ];
     mocks.versionDetailMutate.mockReset();
+    mocks.versionDetailData = undefined;
+    mocks.versionDetailError = new Error('version offline');
     mocks.versionListData = undefined;
     mocks.versionListError = new Error('versions offline');
     mocks.versionListInputs.length = 0;
@@ -316,5 +322,135 @@ describe('SkillDetailPage independent async states', () => {
       </MemoryRouter>,
     );
     expect(screen.getAllByText('skeleton-list')).toHaveLength(2);
+  });
+
+  it('renders every eligible write control visibly disabled during committed refresh lock', () => {
+    mocks.permissions = [
+      PLATFORM_PERMISSIONS.SKILL_READ,
+      PLATFORM_PERMISSIONS.SKILL_UPDATE,
+      PLATFORM_PERMISSIONS.SKILL_PUBLISH,
+      PLATFORM_PERMISSIONS.SKILL_DELETE,
+    ];
+    const identity = {
+      description: 'Description',
+      displayName: 'Skill One',
+      distribution: 'default' as const,
+      enabled: true,
+    };
+    mocks.editor.mockReturnValue({
+      actionError: 'skillCatalog.refresh.failed',
+      baseDraft: { identity, versionDraft: null },
+      conflict: false,
+      dirty: false,
+      draft: { identity, versionDraft: null },
+      persistenceStatus: 'saved',
+      rebaseConflicts: [],
+      saveState: 'idle',
+    });
+    mocks.skillActions.mockReturnValue({
+      actionLoading: null,
+      canPublishSelected: true,
+      openArchive: vi.fn(),
+      openCreateVersion: vi.fn(),
+      openPublish: vi.fn(),
+      openRollback: vi.fn(),
+      openSaveIdentity: vi.fn(),
+      openValidate: vi.fn(),
+      refreshFailed: true,
+      retryRefresh: vi.fn(),
+    });
+    mocks.versionListError = undefined;
+    mocks.versionListData = { items: [summary], nextCursor: null };
+    mocks.versionDetailError = undefined;
+    mocks.versionDetailData = {
+      ...summary,
+      content: '# content',
+      contentRef: null,
+      manifest: {
+        description: 'Description',
+        displayName: 'Skill One',
+        localizedDescriptions: {},
+        localizedDisplayNames: {},
+        permissions: {
+          filesystem: 'none',
+          network: { allowedHosts: [], enabled: false },
+          tools: { allow: [] },
+        },
+        skillDependencies: [],
+        toolDependencies: [],
+      },
+      resources: [],
+      validation: { issues: [], validatedAt: new Date(0), validatorVersion: 'v1' },
+    };
+    mocks.dependentError = undefined;
+    mocks.dependentData = { items: [], nextCursor: null };
+    render(
+      <MemoryRouter initialEntries={['/admin/skills/s1']}>
+        <Routes>
+          <Route element={<SkillDetailPage />} path="/admin/skills/:id" />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    for (const label of [
+      'skillCatalog.version.create',
+      'skillCatalog.actions.validate.label',
+      'skillCatalog.actions.publish.label',
+      'skillCatalog.actions.archive.label',
+      'skillCatalog.actions.rollback.label',
+    ]) {
+      expect(screen.getByText(label)).toHaveProperty('disabled', true);
+    }
+    expect(screen.getByText('skillCatalog.actions.retry')).toBeTruthy();
+  });
+
+  it('keeps the failed-save retry button visible but disabled during refresh lock', () => {
+    mocks.permissions = [PLATFORM_PERMISSIONS.SKILL_READ, PLATFORM_PERMISSIONS.SKILL_UPDATE];
+    mocks.editor.mockReturnValue({
+      actionError: 'skillCatalog.refresh.failed',
+      baseDraft: {
+        identity: {
+          description: 'Old',
+          displayName: 'Skill One',
+          distribution: 'default',
+          enabled: true,
+        },
+        versionDraft: null,
+      },
+      conflict: false,
+      dirty: true,
+      draft: {
+        identity: {
+          description: 'Local',
+          displayName: 'Skill One',
+          distribution: 'default',
+          enabled: true,
+        },
+        versionDraft: null,
+      },
+      persistenceStatus: 'saved',
+      rebaseConflicts: [],
+      saveState: 'failed',
+    });
+    mocks.skillActions.mockReturnValue({
+      actionLoading: null,
+      canPublishSelected: false,
+      openArchive: vi.fn(),
+      openCreateVersion: vi.fn(),
+      openPublish: vi.fn(),
+      openRollback: vi.fn(),
+      openSaveIdentity: vi.fn(),
+      openValidate: vi.fn(),
+      refreshFailed: true,
+      retryRefresh: vi.fn(),
+    });
+    render(
+      <MemoryRouter initialEntries={['/admin/skills/s1']}>
+        <Routes>
+          <Route element={<SkillDetailPage />} path="/admin/skills/:id" />
+        </Routes>
+      </MemoryRouter>,
+    );
+    expect(screen.getByText('skillCatalog.actions.save.retry')).toHaveProperty('disabled', true);
   });
 });

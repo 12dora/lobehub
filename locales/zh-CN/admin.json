@@ -480,6 +480,7 @@
   "skillCatalog.conflict.useLatest": "使用最新值",
   "skillCatalog.conflict.values": "本地：{{local}} · 最新：{{latest}}",
   "skillCatalog.create.desc": "先创建稳定的平台 Skill 身份，再添加版本。",
+  "skillCatalog.create.refreshFailed": "Skill 已创建，但无法确认列表刷新。请重试刷新，不要重复创建。",
   "skillCatalog.create.submit": "创建 Skill",
   "skillCatalog.create.title": "创建平台 Skill",
   "skillCatalog.dependentType.agent": "助理",
