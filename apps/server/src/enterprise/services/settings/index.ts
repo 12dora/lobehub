@@ -32,3 +32,11 @@ export {
   SettingsRegistry,
   settingsRegistry,
 } from './registry';
+export {
+  getDefaultAgentSlice,
+  getSystemAgentSlice,
+  getToolSlice,
+  loadEffectiveUserSettings,
+  SETTINGS_RUNTIME_READ_REGISTRY,
+  type SettingsRuntimeReadId,
+} from './runtimeSettingsAdapter';

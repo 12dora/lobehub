@@ -47,6 +47,7 @@ import {
   EffectiveSettingsService,
   SettingsPathError,
 } from '@/server/enterprise/services/settings/effectiveSettingsService';
+import { loadEffectiveUserSettings } from '@/server/enterprise/services/settings/runtimeSettingsAdapter';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 import { FileS3 } from '@/server/modules/S3';
 import { AgentDocumentsService } from '@/server/services/agentDocuments';
@@ -165,6 +166,16 @@ export const userRouter = router({
 
     const hasMoreThan4Messages = messageCount > 4;
     const hasAnyMessages = messageCount > 0;
+
+    // M05: when platform settings policy is enabled, return server-resolved
+    // effective settings so the client does not independently merge platform policy.
+    // Flag OFF: loadEffectiveUserSettings is a pure pass-through of legacy settings.
+    const { settings: resolvedSettings } = await loadEffectiveUserSettings({
+      db: ctx.serverDB,
+      legacySettings: state.settings as Record<string, unknown>,
+      userId: ctx.userId,
+    });
+
     return {
       avatar: state.avatar,
       canEnablePWAGuide: hasMoreThan4Messages,
@@ -184,7 +195,7 @@ export const userRouter = router({
       lastName: state.lastName,
       onboarding: state.onboarding,
       preference: state.preference as UserPreference,
-      settings: state.settings,
+      settings: resolvedSettings as UserInitializationState['settings'],
       userId: ctx.userId,
       username: state.username,
 
