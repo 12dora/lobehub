@@ -104,8 +104,12 @@ export class AiCatalogPublicationService {
     if (draft.connectionTest?.status !== 'success' || draft.connectionTest.stale) {
       issues.push('Current provider draft must pass connection testing before publish');
     }
-    if (draft.checkModel && !enabledModels.some((model) => model.modelKey === draft.checkModel)) {
-      issues.push('Check model must reference an enabled model');
+    if (draft.checkModel) {
+      const checkModel = enabledModels.find((model) => model.modelKey === draft.checkModel);
+      if (!checkModel) issues.push('Check model must reference an enabled model');
+      else if (checkModel.type !== 'chat') {
+        issues.push('Check model must reference an enabled chat model');
+      }
     }
     if (draft.config.endpoint) {
       try {
@@ -131,6 +135,7 @@ export class AiCatalogPublicationService {
         config: draft.config,
         keyVaults,
         providerKey: draft.providerKey,
+        source: draft.source,
         settings: draft.settings,
       });
     } catch (error) {

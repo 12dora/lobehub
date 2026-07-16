@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
 import { PlatformRevisionConflictError } from '@/database/models/platform';
@@ -80,6 +80,7 @@ describe('AiCatalogAdminService provider draft mutations', () => {
       },
     );
     const created = await testedService.createProviderDraft('admin', {
+      checkModel: 'chat',
       config: { endpoint: 'https://private-test-state.example.test/v1' },
       displayName: 'Tested',
       enabled: true,
@@ -87,6 +88,14 @@ describe('AiCatalogAdminService provider draft mutations', () => {
       reason: 'create',
       secret: { operation: 'replace', value: 'connection-state-secret' },
       source: 'custom',
+    });
+    await testedService.createModel('admin', {
+      enabled: true,
+      expectedDraftToken: (await testedService.getDetail(created.id)).draftToken,
+      modelKey: 'chat',
+      providerId: created.id,
+      reason: 'add check model',
+      type: 'chat',
     });
 
     const result = await testedService.testProvider('admin', {
@@ -153,12 +162,21 @@ describe('AiCatalogAdminService provider draft mutations', () => {
       },
     );
     const created = await testedService.createProviderDraft('admin', {
+      checkModel: 'chat',
       displayName: 'Concurrent',
       enabled: true,
       providerKey: 'concurrent',
       reason: 'create',
       secret: { operation: 'replace', value: 'concurrent-secret' },
       source: 'custom',
+    });
+    await testedService.createModel('admin', {
+      enabled: true,
+      expectedDraftToken: (await testedService.getDetail(created.id)).draftToken,
+      modelKey: 'chat',
+      providerId: created.id,
+      reason: 'add check model',
+      type: 'chat',
     });
 
     const oldAttempt = testedService.testProvider('admin', { id: created.id, reason: 'old' });
@@ -189,12 +207,21 @@ describe('AiCatalogAdminService provider draft mutations', () => {
       },
     );
     const created = await failingService.createProviderDraft('admin', {
+      checkModel: 'chat',
       displayName: 'Failure',
       enabled: true,
       providerKey: 'failure',
       reason: 'create',
       secret: { operation: 'replace', value: 'failure-secret' },
       source: 'custom',
+    });
+    await failingService.createModel('admin', {
+      enabled: true,
+      expectedDraftToken: (await failingService.getDetail(created.id)).draftToken,
+      modelKey: 'chat',
+      providerId: created.id,
+      reason: 'add check model',
+      type: 'chat',
     });
     await expect(
       failingService.testProvider('admin', { id: created.id, reason: 'test failure' }),
@@ -237,6 +264,48 @@ describe('AiCatalogAdminService provider draft mutations', () => {
       expect.objectContaining({ action: 'admin.aiProviders.createDraft', result: 'success' }),
     );
     expect(JSON.stringify(audits)).not.toContain(credential);
+  });
+
+  it('does not mark unsupported-only providers ready or invoke their probe', async () => {
+    const probe = vi.fn(async () => {});
+    const unsupportedService = new AiCatalogAdminService(
+      db,
+      new PlatformSecretService({ keyProvider }),
+      { connectionProbe: probe },
+    );
+    const created = await unsupportedService.createProviderDraft('admin', {
+      checkModel: 'embed-only',
+      displayName: 'Embedding only',
+      enabled: true,
+      providerKey: 'embedding-only',
+      reason: 'create',
+      secret: { operation: 'replace', value: 'embedding-secret' },
+      source: 'custom',
+    });
+    await unsupportedService.createModel('admin', {
+      enabled: true,
+      expectedDraftToken: (await unsupportedService.getDetail(created.id)).draftToken,
+      modelKey: 'embed-only',
+      providerId: created.id,
+      reason: 'embedding model',
+      type: 'embedding',
+    });
+
+    await expect(
+      unsupportedService.testProvider('admin', { id: created.id, reason: 'test unsupported' }),
+    ).resolves.toMatchObject({ errorCategory: 'invalid_config', status: 'failure' });
+    expect(probe).not.toHaveBeenCalled();
+    const detail = await unsupportedService.getDetail(created.id);
+    await expect(
+      unsupportedService.publishProvider('admin', {
+        expectedDraftToken: detail.draftToken,
+        expectedRevision: 0,
+        id: created.id,
+        reason: 'must not publish',
+      }),
+    ).rejects.toMatchObject({
+      issues: expect.arrayContaining(['Check model must reference an enabled chat model']),
+    });
   });
 
   it('enforces draft token/revision CAS and preserves or clears secrets explicitly', async () => {

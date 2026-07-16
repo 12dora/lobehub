@@ -4,6 +4,10 @@ import type {
   PlatformAiProviderConfig,
   PlatformAiProviderSettings,
 } from '@/database/schemas/platform';
+import {
+  hasModelRuntimeEnvironmentFallback,
+  resolveModelRuntimeProvider,
+} from '@/server/modules/ModelRuntime';
 
 import { AiCatalogValidationError } from './errors';
 
@@ -46,9 +50,8 @@ const SUPPORTED_RUNTIME_PROVIDERS = new Set<string>(Object.values(ModelProvider)
 export const resolveAiCatalogRuntimeProvider = (
   providerKey: string,
   settings: PlatformAiProviderSettings,
-): string =>
-  settings.sdkType ??
-  (SUPPORTED_RUNTIME_PROVIDERS.has(providerKey) ? providerKey : ModelProvider.OpenAI);
+  source: string,
+): string => resolveModelRuntimeProvider(providerKey, settings.sdkType, source);
 
 const assertSupportedRuntimeProvider = (runtimeProvider: string): void => {
   if (!SUPPORTED_RUNTIME_PROVIDERS.has(runtimeProvider)) {
@@ -75,8 +78,9 @@ export const validateAiCatalogCredentialShape = (
 export const validateAiCatalogRuntimeProvider = (
   providerKey: string,
   settings: PlatformAiProviderSettings,
+  source: string,
 ): string => {
-  const runtimeProvider = resolveAiCatalogRuntimeProvider(providerKey, settings);
+  const runtimeProvider = resolveAiCatalogRuntimeProvider(providerKey, settings, source);
   assertSupportedRuntimeProvider(runtimeProvider);
   return runtimeProvider;
 };
@@ -88,32 +92,7 @@ type CredentialEnv = Record<string, string | undefined>;
 export const hasAiCatalogEnvironmentFallback = (
   runtimeProvider: string,
   env: CredentialEnv = process.env,
-): boolean => {
-  switch (runtimeProvider) {
-    case ModelProvider.Bedrock: {
-      return Boolean(env.AWS_ACCESS_KEY_ID && env.AWS_SECRET_ACCESS_KEY && env.AWS_REGION);
-    }
-    case ModelProvider.Azure: {
-      return Boolean(env.AZURE_API_KEY && env.AZURE_ENDPOINT);
-    }
-    case ModelProvider.Cloudflare: {
-      return Boolean(env.CLOUDFLARE_API_KEY && env.CLOUDFLARE_BASE_URL_OR_ACCOUNT_ID);
-    }
-    case ModelProvider.ComfyUI: {
-      return Boolean(env.COMFYUI_BASE_URL);
-    }
-    case ModelProvider.Ollama: {
-      return Boolean(env.OLLAMA_PROXY_URL);
-    }
-    case ModelProvider.VertexAI: {
-      return Boolean(env.VERTEXAI_CREDENTIALS && env.VERTEXAI_PROJECT);
-    }
-    default: {
-      const envPrefix = runtimeProvider.toUpperCase().replaceAll(/[^A-Z0-9]/g, '_');
-      return Boolean(env[`${envPrefix}_API_KEY`]);
-    }
-  }
-};
+): boolean => hasModelRuntimeEnvironmentFallback(runtimeProvider, env);
 
 const assertRequiredCredentials = (
   runtimeProvider: string,
@@ -203,9 +182,14 @@ export const normalizeAiCatalogExecutionCredentials = (params: {
   env?: CredentialEnv;
   keyVaults: AiCatalogCredentialVault;
   providerKey: string;
+  source: string;
   settings: PlatformAiProviderSettings;
 }) => {
-  const runtimeProvider = resolveAiCatalogRuntimeProvider(params.providerKey, params.settings);
+  const runtimeProvider = resolveAiCatalogRuntimeProvider(
+    params.providerKey,
+    params.settings,
+    params.source,
+  );
   assertSupportedRuntimeProvider(runtimeProvider);
   const keyVaults: AiCatalogCredentialVault = { ...params.keyVaults };
   if (typeof params.config.endpoint === 'string') keyVaults.baseURL = params.config.endpoint;

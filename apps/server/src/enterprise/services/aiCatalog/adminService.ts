@@ -221,7 +221,11 @@ export class AiCatalogAdminService {
     const reason = await this.sanitizeReason(rawReason, undefined, secret);
     try {
       const settings = (values.settings ?? {}) as PlatformAiProviderSettings;
-      const runtimeProvider = validateAiCatalogRuntimeProvider(values.providerKey, settings);
+      const runtimeProvider = validateAiCatalogRuntimeProvider(
+        values.providerKey,
+        settings,
+        values.source,
+      );
       if (secret?.operation === 'replace') {
         validateAiCatalogCredentialShape(
           runtimeProvider,
@@ -293,7 +297,11 @@ export class AiCatalogAdminService {
         const current = await repository.getProvider(id);
         if (!current) throw new AiCatalogNotFoundError();
         const settings = (values.settings ?? before.settings) as PlatformAiProviderSettings;
-        const runtimeProvider = validateAiCatalogRuntimeProvider(before.providerKey, settings);
+        const runtimeProvider = validateAiCatalogRuntimeProvider(
+          before.providerKey,
+          settings,
+          before.source,
+        );
         if (secret?.operation === 'replace') {
           validateAiCatalogCredentialShape(
             runtimeProvider,
@@ -590,25 +598,13 @@ export class AiCatalogAdminService {
           connectionTestedDraftToken: testedDraftToken,
           connectionTestedRevision: draft.revision,
         });
-        return { attemptId, provider };
+        const checkModel = draft.models.find(
+          (model) => model.enabled && model.modelKey === provider.checkModel,
+        );
+        return { attemptId, checkModelExecutable: checkModel?.type === 'chat', provider };
       });
       let result: AiConnectionTestResult;
-      try {
-        const keyVaults = snapshot.provider.encryptedKeyVaults
-          ? await this.secrets.decrypt(snapshot.provider.encryptedKeyVaults)
-          : {};
-        const normalized = normalizeAiCatalogExecutionCredentials({
-          config: snapshot.provider.config,
-          keyVaults,
-          providerKey: snapshot.provider.providerKey,
-          settings: snapshot.provider.settings,
-        });
-        result = await this.connectionTests.test({
-          keyVaults: normalized.keyVaults,
-          provider: snapshot.provider,
-          runtimeProvider: normalized.runtimeProvider,
-        });
-      } catch {
+      if (!snapshot.checkModelExecutable) {
         result = {
           errorCategory: 'invalid_config',
           latencyMs: 0,
@@ -616,7 +612,32 @@ export class AiCatalogAdminService {
           status: 'failure',
           testedAt: new Date(),
         };
-      }
+      } else
+        try {
+          const keyVaults = snapshot.provider.encryptedKeyVaults
+            ? await this.secrets.decrypt(snapshot.provider.encryptedKeyVaults)
+            : {};
+          const normalized = normalizeAiCatalogExecutionCredentials({
+            config: snapshot.provider.config,
+            keyVaults,
+            providerKey: snapshot.provider.providerKey,
+            source: snapshot.provider.source,
+            settings: snapshot.provider.settings,
+          });
+          result = await this.connectionTests.test({
+            keyVaults: normalized.keyVaults,
+            provider: snapshot.provider,
+            runtimeProvider: normalized.runtimeProvider,
+          });
+        } catch {
+          result = {
+            errorCategory: 'invalid_config',
+            latencyMs: 0,
+            sanitizedMessage: 'Connection failed: invalid provider configuration',
+            status: 'failure',
+            testedAt: new Date(),
+          };
+        }
       await new PlatformAiCatalogRepository(this.db).completeProviderConnectionTest(
         input.id,
         snapshot.attemptId,
