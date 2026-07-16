@@ -54,7 +54,7 @@ export type ServerLanguageModel = Partial<Record<GlobalLLMProviderKey, ServerMod
 /**
  * Minimal enterprise surface on Global Config (M00 mount point #4).
  * Clients must not call platform.* when `enabled` is false/undefined.
- * Does not expose flag names, roles, or secrets.
+ * Does not expose flag names, roles, permissions, or secrets.
  */
 export interface EnterprisePublicServerConfig {
   /**
@@ -62,6 +62,12 @@ export interface EnterprisePublicServerConfig {
    * Gates EnterprisePlatformProvider network calls after config.getGlobalConfig.
    */
   enabled: boolean;
+  /**
+   * True when the platform admin shell feature is enabled (ENABLE_PLATFORM_ADMIN).
+   * Feature existence only — never authorization. Gates whether `/admin` may mount;
+   * real access still requires `admin.auth.getMyAccess` + server RBAC.
+   */
+  platformAdmin?: boolean;
 }
 
 export interface GlobalServerConfig {
