@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 
 import type { z } from 'zod';
 
@@ -24,15 +24,20 @@ interface ConnectorOAuthStateStoreOptions {
   backend: ConnectorOAuthStateBackend;
   clock?: () => number;
   createOpaqueState?: () => string;
+  createStateId?: () => string;
   ttlMs?: number;
 }
 
-type IssueConnectorOAuthStateInput = Omit<ConnectorOAuthStatePayload, 'expiresAt' | 'issuedAt'>;
+type IssueConnectorOAuthStateInput = Omit<
+  ConnectorOAuthStatePayload,
+  'expiresAt' | 'issuedAt' | 'stateHash' | 'stateId'
+>;
 
 export class ConnectorOAuthStateStore {
   private readonly backend: ConnectorOAuthStateBackend;
   private readonly clock: () => number;
   private readonly createOpaqueState: () => string;
+  private readonly createStateId: () => string;
   private readonly ttlMs: number;
 
   constructor(options: ConnectorOAuthStateStoreOptions) {
@@ -40,6 +45,7 @@ export class ConnectorOAuthStateStore {
     this.clock = options.clock ?? Date.now;
     this.createOpaqueState =
       options.createOpaqueState ?? (() => randomBytes(32).toString('base64url'));
+    this.createStateId = options.createStateId ?? (() => randomBytes(16).toString('hex'));
     this.ttlMs = options.ttlMs ?? DEFAULT_STATE_TTL_MS;
     if (!Number.isInteger(this.ttlMs) || this.ttlMs <= 0 || this.ttlMs > MAX_STATE_TTL_MS) {
       throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_OAUTH_STATE_INVALID');
@@ -48,17 +54,20 @@ export class ConnectorOAuthStateStore {
 
   issue = async (input: IssueConnectorOAuthStateInput): Promise<string> => {
     const issuedAt = this.clock();
-    const payload = connectorOAuthStatePayloadSchema.parse({
-      ...input,
-      expiresAt: issuedAt + this.ttlMs,
-      issuedAt,
-    });
-    const serialized = JSON.stringify(payload);
 
     for (let attempt = 0; attempt < MAX_ISSUE_ATTEMPTS; attempt += 1) {
       const state = this.createOpaqueState();
       if (state.length < 32 || state.length > 512) continue;
-      if (await this.backend.putIfAbsent(state, serialized, this.ttlMs)) return state;
+      const stateHash = hashState(state);
+      const payload = connectorOAuthStatePayloadSchema.parse({
+        ...input,
+        expiresAt: issuedAt + this.ttlMs,
+        issuedAt,
+        stateHash,
+        stateId: this.createStateId(),
+      });
+      if (await this.backend.putIfAbsent(stateHash, JSON.stringify(payload), this.ttlMs))
+        return state;
     }
 
     throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_OAUTH_STATE_INVALID');
@@ -69,7 +78,8 @@ export class ConnectorOAuthStateStore {
       throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_OAUTH_STATE_INVALID');
     }
 
-    const serialized = await this.backend.take(state);
+    const stateHash = hashState(state);
+    const serialized = await this.backend.take(stateHash);
     if (!serialized) {
       throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_OAUTH_STATE_INVALID');
     }
@@ -85,9 +95,14 @@ export class ConnectorOAuthStateStore {
     if (!parsed.success) {
       throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_OAUTH_STATE_INVALID');
     }
+    if (parsed.data.stateHash !== stateHash) {
+      throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_OAUTH_STATE_INVALID');
+    }
     if (parsed.data.expiresAt <= this.clock()) {
       throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_OAUTH_STATE_EXPIRED');
     }
     return parsed.data;
   };
 }
+
+const hashState = (state: string): string => createHash('sha256').update(state).digest('hex');

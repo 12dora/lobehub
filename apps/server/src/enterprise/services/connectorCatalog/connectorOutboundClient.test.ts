@@ -40,6 +40,27 @@ describe('ConnectorOutboundClient', () => {
     );
   });
 
+  it('encodes OAuth form bodies and marks them secret-bearing at the safe boundary', async () => {
+    const safeClient = new SafeOutboundHttpClient();
+    const fetchSpy = vi.spyOn(safeClient, 'fetch').mockResolvedValue(response());
+    const client = new ConnectorOutboundClient(safeClient);
+
+    await client.requestJson({
+      body: { client_id: 'client', client_secret: 'fake-secret', grant_type: 'client_credentials' },
+      bodyEncoding: 'form',
+      operation: 'oauth_token',
+      secretBearing: true,
+      url: 'https://identity.example.test/token',
+    });
+    expect(fetchSpy).toHaveBeenCalledWith(
+      'https://identity.example.test/token',
+      expect.objectContaining({
+        body: 'client_id=client&client_secret=fake-secret&grant_type=client_credentials',
+        secretBearing: true,
+      }),
+    );
+  });
+
   it('rejects non-JSON, truncated, invalid JSON, and unsuccessful responses without returning bodies', async () => {
     const safeClient = new SafeOutboundHttpClient();
     const client = new ConnectorOutboundClient(safeClient);
@@ -69,7 +90,7 @@ describe('ConnectorOutboundClient', () => {
     await expect(client.assertAllowed('http://127.0.0.1:8080/mcp')).resolves.toBeUndefined();
     await expect(
       client.assertAllowed('http://169.254.169.254/latest/meta-data'),
-    ).rejects.toMatchObject({ code: 'PLATFORM_SSRF_BLOCKED' });
+    ).rejects.toMatchObject({ code: 'PLATFORM_CONNECTOR_SSRF_BLOCKED' });
   });
 
   it('honors a tightened allowlist immediately without allowing metadata exceptions', async () => {
@@ -82,10 +103,10 @@ describe('ConnectorOutboundClient', () => {
 
     await expect(client.assertAllowed('http://10.0.0.2:8080/mcp')).resolves.toBeUndefined();
     await expect(client.assertAllowed('http://127.0.0.1:8080/mcp')).rejects.toMatchObject({
-      code: 'PLATFORM_SSRF_BLOCKED',
+      code: 'PLATFORM_CONNECTOR_SSRF_BLOCKED',
     });
     await expect(
       client.assertAllowed('http://169.254.169.254/latest/meta-data'),
-    ).rejects.toMatchObject({ code: 'PLATFORM_SSRF_BLOCKED' });
+    ).rejects.toMatchObject({ code: 'PLATFORM_CONNECTOR_SSRF_BLOCKED' });
   });
 });
