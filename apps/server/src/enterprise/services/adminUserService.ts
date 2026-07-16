@@ -342,11 +342,10 @@ export class AdminUserService {
     }
 
     /**
-     * includeCurrent=false (default when actor===target and session known):
-     * delete other BA sessions, advance authInvalidatedAt, then rotate the
-     * retained session's security issuance (createdAt) past the cutoff so only
-     * that row remains valid. Other BA rows are deleted (no refresh race);
-     * OIDC/API-key credentials issued at/before cutoff fail.
+     * includeCurrent=false (actor===target with trusted sessionId):
+     * delete other BA sessions, advance authInvalidatedAt, record retained
+     * session id as cutoff exception. Never rewrites session.createdAt
+     * (reauth clock unchanged). OIDC/API-key cannot use the exception.
      */
     const excludeSessionId =
       !input.includeCurrent && actorSessionId && input.userId === actorUserId
@@ -357,24 +356,27 @@ export class AdminUserService {
       const model = new AdminUserModel(tx);
       const cutoff = new Date();
 
+      if (excludeSessionId) {
+        const ok = await model.assertSessionBelongsToUser({
+          sessionId: excludeSessionId,
+          userId: input.userId,
+        });
+        if (!ok) {
+          throw new Error(PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT);
+        }
+      }
+
       const count = await model.revokeSessionsForUser({
         excludeSessionId,
         userId: input.userId,
       });
 
-      await model.invalidateAuth(input.userId, cutoff);
-
-      if (excludeSessionId) {
-        const rotated = await model.rotateSessionSecurityIssuedAt({
-          afterCutoff: cutoff,
-          sessionId: excludeSessionId,
-          userId: input.userId,
-        });
-        if (!rotated) {
-          // Retained session missing — treat as full revoke for safety.
-          throw new Error(PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT);
-        }
-      }
+      // Full revoke (includeCurrent or no retainable session) clears exception.
+      await model.invalidateAuth({
+        at: cutoff,
+        excludedSessionId: excludeSessionId ?? null,
+        userId: input.userId,
+      });
 
       await this.appendAuditInDb(tx, {
         action: 'admin.users.revokeSessions',

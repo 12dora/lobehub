@@ -23111,6 +23111,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "auth_invalidated_excluded_session_id": {
+          "name": "auth_invalidated_excluded_session_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "two_factor_enabled": {
           "name": "two_factor_enabled",
           "type": "boolean",
@@ -23222,7 +23228,8 @@
               "expression": "lower(\"email\")",
               "asc": true,
               "isExpression": true,
-              "nulls": "last"
+              "nulls": "last",
+              "opclass": "text_pattern_ops"
             }
           ],
           "isUnique": false,
@@ -23237,7 +23244,8 @@
               "expression": "lower(\"username\")",
               "asc": true,
               "isExpression": true,
-              "nulls": "last"
+              "nulls": "last",
+              "opclass": "text_pattern_ops"
             }
           ],
           "isUnique": false,
@@ -23252,7 +23260,8 @@
               "expression": "lower(\"normalized_email\")",
               "asc": true,
               "isExpression": true,
-              "nulls": "last"
+              "nulls": "last",
+              "opclass": "text_pattern_ops"
             }
           ],
           "isUnique": false,

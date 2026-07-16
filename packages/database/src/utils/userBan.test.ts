@@ -33,28 +33,62 @@ describe('isEffectivelyBanned', () => {
 
 describe('isCredentialInvalidated', () => {
   const cutoff = new Date('2024-06-01T12:00:00.000Z');
+  const oldIssuance = new Date(cutoff.getTime() - 60_000);
+  const newIssuance = new Date(cutoff.getTime() + 60_000);
 
   it('false when no cutoff', () => {
-    expect(isCredentialInvalidated({ authInvalidatedAt: null }, new Date('2020-01-01'))).toBe(
-      false,
-    );
+    expect(
+      isCredentialInvalidated({ authInvalidatedAt: null }, { credentialIssuedAt: oldIssuance }),
+    ).toBe(false);
   });
 
   it('true when credential at/before cutoff', () => {
-    expect(isCredentialInvalidated({ authInvalidatedAt: cutoff }, cutoff)).toBe(true);
     expect(
-      isCredentialInvalidated({ authInvalidatedAt: cutoff }, new Date(cutoff.getTime() - 1)),
+      isCredentialInvalidated({ authInvalidatedAt: cutoff }, { credentialIssuedAt: cutoff }),
+    ).toBe(true);
+    expect(
+      isCredentialInvalidated({ authInvalidatedAt: cutoff }, { credentialIssuedAt: oldIssuance }),
     ).toBe(true);
   });
 
   it('false when credential after cutoff', () => {
     expect(
-      isCredentialInvalidated({ authInvalidatedAt: cutoff }, new Date(cutoff.getTime() + 1)),
+      isCredentialInvalidated({ authInvalidatedAt: cutoff }, { credentialIssuedAt: newIssuance }),
     ).toBe(false);
   });
 
   it('fails closed when cutoff set but credential time missing', () => {
-    expect(isCredentialInvalidated({ authInvalidatedAt: cutoff }, null)).toBe(true);
-    expect(isCredentialInvalidated({ authInvalidatedAt: cutoff }, undefined)).toBe(true);
+    expect(
+      isCredentialInvalidated({ authInvalidatedAt: cutoff }, { credentialIssuedAt: null }),
+    ).toBe(true);
+    expect(isCredentialInvalidated({ authInvalidatedAt: cutoff }, {})).toBe(true);
+  });
+
+  it('session exception bypasses cutoff only for exact session id match', () => {
+    const user = {
+      authInvalidatedAt: cutoff,
+      authInvalidatedExcludedSessionId: 'keep-sess',
+    };
+    // Matching session id: old issuance still allowed
+    expect(
+      isCredentialInvalidated(user, {
+        credentialIssuedAt: oldIssuance,
+        sessionId: 'keep-sess',
+      }),
+    ).toBe(false);
+    // Different session id: fails
+    expect(
+      isCredentialInvalidated(user, {
+        credentialIssuedAt: oldIssuance,
+        sessionId: 'other-sess',
+      }),
+    ).toBe(true);
+    // No session id (OIDC/API key): fails even with same old issuance
+    expect(
+      isCredentialInvalidated(user, {
+        credentialIssuedAt: oldIssuance,
+        sessionId: null,
+      }),
+    ).toBe(true);
   });
 });

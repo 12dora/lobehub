@@ -48,9 +48,12 @@ export const withActiveUser = () =>
       ctx.credentialIssuedAt instanceof Date && !Number.isNaN(ctx.credentialIssuedAt.getTime())
         ? ctx.credentialIssuedAt
         : null;
+    // Session exception only for Better Auth path with trusted sessionId (never OIDC/API-key).
+    const sessionId =
+      ctx.authMethod === 'better-auth' && typeof ctx.sessionId === 'string' ? ctx.sessionId : null;
 
     try {
-      await assertUserActive(db, rawUserId, { credentialIssuedAt });
+      await assertUserActive(db, rawUserId, { credentialIssuedAt, sessionId });
     } catch (error) {
       if (isOIDCUserInactiveError(error)) {
         return throwEnterpriseError({

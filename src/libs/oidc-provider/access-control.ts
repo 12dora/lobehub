@@ -60,15 +60,21 @@ export const revokeOIDCArtifactsByUserId = async (db: LobeChatDatabase, userId: 
 
 export interface AssertUserActiveOptions {
   /**
-   * Session createdAt (Better Auth) or token iat (OIDC) for authInvalidatedAt cutoff.
-   * Not used for reauth — only for post-revoke credential rejection.
+   * Session createdAt (Better Auth) or token iat (OIDC) / API-key createdAt
+   * for authInvalidatedAt cutoff. Not used for reauth.
    */
   credentialIssuedAt?: Date | null;
+  /**
+   * Trusted Better Auth session id only — enables cutoff exception when it
+   * matches users.auth_invalidated_excluded_session_id. Never a token.
+   * OIDC/API-key must omit this.
+   */
+  sessionId?: string | null;
 }
 
 /**
  * Rejects auth when the user is missing, effectively banned, or credential
- * was issued at/before authInvalidatedAt (M04 security epoch).
+ * was issued at/before authInvalidatedAt (unless retained BA session exception).
  */
 export const assertUserActive = async (
   db: LobeChatDatabase,
@@ -78,6 +84,7 @@ export const assertUserActive = async (
   const [user] = await db
     .select({
       authInvalidatedAt: users.authInvalidatedAt,
+      authInvalidatedExcludedSessionId: users.authInvalidatedExcludedSessionId,
       banExpires: users.banExpires,
       banned: users.banned,
       id: users.id,
@@ -90,7 +97,12 @@ export const assertUserActive = async (
     throw new OIDCUserInactiveError();
   }
 
-  if (isCredentialInvalidated(user, options.credentialIssuedAt)) {
+  if (
+    isCredentialInvalidated(user, {
+      credentialIssuedAt: options.credentialIssuedAt,
+      sessionId: options.sessionId,
+    })
+  ) {
     throw new OIDCUserInactiveError();
   }
 };

@@ -345,13 +345,15 @@ export const createLambdaContext = async (request: NextRequest): Promise<LambdaC
         sessionCreatedAt && !Number.isNaN(sessionCreatedAt.getTime()) ? sessionCreatedAt : null;
       const sessionId = typeof session.session?.id === 'string' ? session.session.id : null;
 
-      // Security epoch uses credentialIssuedAt (= session.createdAt, rotated after preserve-revoke).
-      // Reauth uses authenticatedAt (same session.createdAt for BA login/rotation).
+      // Security epoch: credentialIssuedAt = original session.createdAt (never rewritten on revoke).
+      // Reauth: authenticatedAt = same original login time (session exception does not refresh it).
+      // Cutoff exception: trusted sessionId may match authInvalidatedExcludedSessionId.
       if (securityOn) {
         const db = await getServerDB();
         try {
           await assertUserActive(db, userId, {
             credentialIssuedAt: issuedAt,
+            sessionId,
           });
         } catch (error) {
           if (isOIDCUserInactiveError(error)) {
