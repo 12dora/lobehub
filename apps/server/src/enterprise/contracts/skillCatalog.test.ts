@@ -9,6 +9,7 @@ import {
   adminSkillGetDependentsOutputSchema,
   adminSkillGetVersionOutputSchema,
   adminSkillListInputSchema,
+  adminSkillListOutputSchema,
   adminSkillListVersionsOutputSchema,
   adminSkillPublicationOutputSchema,
   adminSkillUpdateDraftInputSchema,
@@ -139,6 +140,10 @@ describe('Skill catalog contracts', () => {
     for (const patch of [
       { description: 'Read https://user:password@example.test/docs before use' },
       { reason: 'Imported from https://example.test/archive?api_key=plain-secret' },
+      { description: 'Database postgres://admin:password@db.internal/catalog' },
+      { description: 'Repository git+ssh://deploy:token@git.internal/repository' },
+      { reason: 'Cache redis://default:password@redis.internal/0' },
+      { reason: 'Artifact s3://bucket/key?X-Amz-Signature=plain-signature' },
     ]) {
       expect(adminSkillCreateInputSchema.safeParse({ ...base, ...patch }).success).toBe(false);
     }
@@ -231,6 +236,53 @@ describe('Skill catalog contracts', () => {
     });
     expect(adminSkillListInputSchema.safeParse({ cursor: 'x'.repeat(1001) }).success).toBe(false);
     expect(adminSkillListInputSchema.safeParse({ ownedByUser: true }).success).toBe(false);
+  });
+
+  it('hard-caps admin identity and version page outputs at one hundred items', () => {
+    const identity = {
+      allowBuiltinOverride: false,
+      currentVersionId: null,
+      description: null,
+      displayName: 'Skill',
+      distribution: 'optional',
+      enabled: false,
+      id: 'skill-1',
+      revision: 0,
+      skillKey: 'skill',
+      source: 'uploaded',
+      status: 'draft',
+    } as const;
+    const summary = {
+      checksum: 'c'.repeat(64),
+      createdAt: new Date(),
+      createdBy: 'admin-1',
+      id: 'version-1',
+      skillId: 'skill-1',
+      validation: null,
+      version: '1.0.0',
+    };
+    expect(
+      adminSkillListVersionsOutputSchema.safeParse({
+        items: Array.from({ length: 100 }, (_, index) => ({ ...summary, id: `version-${index}` })),
+        nextCursor: 'cursor',
+      }).success,
+    ).toBe(true);
+    expect(
+      adminSkillListVersionsOutputSchema.safeParse({
+        items: Array.from({ length: 101 }, (_, index) => ({ ...summary, id: `version-${index}` })),
+        nextCursor: null,
+      }).success,
+    ).toBe(false);
+    expect(
+      adminSkillListOutputSchema.safeParse({
+        items: Array.from({ length: 101 }, (_, index) => ({
+          ...identity,
+          id: `skill-${index}`,
+          skillKey: `skill-${index}`,
+        })),
+        nextCursor: null,
+      }).success,
+    ).toBe(false);
   });
 
   it('bounds dependent pagination and requires the full write CAS tuple', () => {

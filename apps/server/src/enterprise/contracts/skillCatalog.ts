@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { containsSensitiveMaterial, isCredentialBearingUrl } from '../security/redaction';
 
 const rejectSensitiveText = (value: string, ctx: z.RefinementCtx) => {
-  const embeddedUrls = value.match(/https?:\/\/[^\s<>"']+/gi) ?? [];
+  const embeddedUrls = value.match(/[a-z][a-z0-9+.-]*:\/\/[^\s<>"']+/gi) ?? [];
   if (
     containsSensitiveMaterial(value) ||
     isCredentialBearingUrl(value) ||
@@ -172,7 +172,7 @@ export const adminSkillListInputSchema = z
 
 export const adminSkillListOutputSchema = z
   .object({
-    items: z.array(skillIdentityDraftSchema),
+    items: z.array(skillIdentityDraftSchema).max(100),
     nextCursor: cursorSchema.nullable(),
   })
   .strict();
@@ -199,7 +199,7 @@ export const adminSkillListVersionsInputSchema = z
 
 export const adminSkillListVersionsOutputSchema = z
   .object({
-    items: z.array(skillVersionSummarySchema),
+    items: z.array(skillVersionSummarySchema).max(100),
     nextCursor: cursorSchema.nullable(),
   })
   .strict();
