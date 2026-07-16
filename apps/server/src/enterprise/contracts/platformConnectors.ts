@@ -33,12 +33,16 @@ const publicDisplayNameSchema = z
   .min(1)
   .max(200)
   .refine((value) => !containsConnectorCredentialMaterial(value), 'secret material is not allowed');
-export const CONNECTOR_SAFE_MESSAGES = [
-  'Connector operation failed',
-  'Connector operation pending',
-  'Connector operation succeeded',
-] as const;
-export const connectorSafeMessageSchema = z.enum(CONNECTOR_SAFE_MESSAGES);
+export const CONNECTOR_OPERATION_MESSAGE_BY_STATUS = {
+  failure: 'connector.operation_failed',
+  pending: 'connector.operation_pending',
+  success: 'connector.operation_succeeded',
+} as const;
+export const connectorSafeMessageSchema = z.enum([
+  CONNECTOR_OPERATION_MESSAGE_BY_STATUS.failure,
+  CONNECTOR_OPERATION_MESSAGE_BY_STATUS.pending,
+  CONNECTOR_OPERATION_MESSAGE_BY_STATUS.success,
+]);
 
 const validateJsonSchema = (
   value: unknown,
@@ -168,6 +172,15 @@ export const platformConnectorErrorCodeSchema = z.enum([
   'PLATFORM_CONNECTOR_TOOL_DENIED',
   'PLATFORM_CONNECTOR_TRANSPORT_UNSUPPORTED',
 ]);
+
+export type PlatformConnectorErrorCode = z.infer<typeof platformConnectorErrorCodeSchema>;
+
+export class PlatformConnectorContractError extends Error {
+  constructor(public readonly code: PlatformConnectorErrorCode) {
+    super(code);
+    this.name = 'PlatformConnectorContractError';
+  }
+}
 
 const connectorScopeSchema = z
   .string()
@@ -442,12 +455,65 @@ const clearSecretMutation = { operation: 'clear' } as const;
 const emptySecretState = { configured: false, fingerprint: null, updatedAt: null } as const;
 const configuredSecretState = { configured: true, fingerprint: null, updatedAt: null } as const;
 const clearOnlySecretMutationSchema = z.object({ operation: z.literal('clear') }).strict();
-const connectorSecretLeavesInputSchema = z
+const connectorSecretLeavesSchema = z
   .object({
     current: z.array(z.string().min(1).max(32_768)).max(1000),
     replacement: z.array(z.string().min(1).max(32_768)).max(1000),
   })
   .strict();
+
+export interface ConnectorCurrentSecretLoader {
+  loadCurrentSecretSources: (connectorId: string) => Promise<unknown[]>;
+}
+
+export interface TrustedConnectorSecretContext {
+  readonly source: 'server-secret-store';
+}
+
+const trustedSecretContexts = new WeakMap<
+  TrustedConnectorSecretContext,
+  z.infer<typeof connectorSecretLeavesSchema>
+>();
+
+const collectSecretLeafValues = (value: unknown, output: Set<string>): void => {
+  if (typeof value === 'string') {
+    if (value.length > 0) output.add(value);
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectSecretLeafValues(item, output));
+    return;
+  }
+  if (!value || typeof value !== 'object') return;
+  Object.values(value).forEach((item) => collectSecretLeafValues(item, output));
+};
+
+/** Only this server-side loader path can mint a context accepted by the normalizers. */
+export const loadTrustedConnectorSecretContext = async (
+  loader: ConnectorCurrentSecretLoader,
+  connectorId: string,
+  replacementSecretSources: unknown[],
+): Promise<TrustedConnectorSecretContext> => {
+  const currentSources = await loader.loadCurrentSecretSources(connectorId);
+  const current = new Set<string>();
+  const replacement = new Set<string>();
+  currentSources.forEach((source) => collectSecretLeafValues(source, current));
+  replacementSecretSources.forEach((source) => collectSecretLeafValues(source, replacement));
+  const context = Object.freeze({ source: 'server-secret-store' as const });
+  trustedSecretContexts.set(
+    context,
+    connectorSecretLeavesSchema.parse({ current: [...current], replacement: [...replacement] }),
+  );
+  return context;
+};
+
+const resolveTrustedSecretLeaves = (context: TrustedConnectorSecretContext) => {
+  const leaves = trustedSecretContexts.get(context);
+  if (!leaves) {
+    throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED');
+  }
+  return leaves;
+};
 
 type SecretMutation =
   | z.infer<typeof connectorOAuthClientSecretMutationSchema>
@@ -470,7 +536,7 @@ const assertNoKnownSecret = (value: unknown, secretLeaves: ReadonlySet<string>):
       containsConnectorCredentialMaterial(value) ||
       [...secretLeaves].some((secret) => value.includes(secret))
     ) {
-      throw new Error('PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED');
+      throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED');
     }
     return;
   }
@@ -479,15 +545,18 @@ const assertNoKnownSecret = (value: unknown, secretLeaves: ReadonlySet<string>):
     return;
   }
   if (!value || typeof value !== 'object') return;
-  Object.values(value).forEach((item) => assertNoKnownSecret(item, secretLeaves));
+  Object.entries(value).forEach(([key, item]) => {
+    assertNoKnownSecret(key, secretLeaves);
+    assertNoKnownSecret(item, secretLeaves);
+  });
 };
 
 const assertConnectorPersistentFieldsSafe = (
   draft: z.infer<typeof adminConnectorDraftSchema>,
   reason: string,
-  leavesInput: z.input<typeof connectorSecretLeavesInputSchema>,
+  secretContext: TrustedConnectorSecretContext,
 ): void => {
-  const leaves = connectorSecretLeavesInputSchema.parse(leavesInput);
+  const leaves = resolveTrustedSecretLeaves(secretContext);
   const secretLeaves = new Set([...leaves.current, ...leaves.replacement]);
   assertNoKnownSecret(reason, secretLeaves);
   assertNoKnownSecret(
@@ -509,10 +578,8 @@ const assertConnectorPersistentFieldsSafe = (
   );
 };
 
-const getSecretLeaves = (
-  leavesInput: z.input<typeof connectorSecretLeavesInputSchema>,
-): ReadonlySet<string> => {
-  const leaves = connectorSecretLeavesInputSchema.parse(leavesInput);
+const getSecretLeaves = (secretContext: TrustedConnectorSecretContext): ReadonlySet<string> => {
+  const leaves = resolveTrustedSecretLeaves(secretContext);
   return new Set([...leaves.current, ...leaves.replacement]);
 };
 
@@ -531,33 +598,47 @@ const collectStringValues = (value: unknown, output: Set<string>): void => {
 
 const assertReplacementLeavesComplete = (
   mutations: SecretMutation[],
-  leavesInput: z.input<typeof connectorSecretLeavesInputSchema>,
+  secretContext: TrustedConnectorSecretContext,
 ): void => {
-  const provided = new Set(connectorSecretLeavesInputSchema.parse(leavesInput).replacement);
+  const provided = new Set(resolveTrustedSecretLeaves(secretContext).replacement);
   const actual = new Set<string>();
   for (const mutation of mutations) {
     if (mutation?.operation === 'replace') collectStringValues(mutation.value, actual);
   }
   if ([...actual].some((secret) => !provided.has(secret))) {
-    throw new Error('PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED');
+    throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED');
+  }
+};
+
+const assertConfiguredCurrentSecretsLoaded = (
+  draft: z.infer<typeof adminConnectorDraftSchema>,
+  secretContext: TrustedConnectorSecretContext,
+): void => {
+  const current = resolveTrustedSecretLeaves(secretContext).current;
+  const configured =
+    (draft.credentialMode === 'shared_service_account' && draft.sharedSecret.configured) ||
+    (draft.credentialMode === 'per_user_oauth' && draft.oauthClientSecret.configured);
+  if (configured && current.length === 0) {
+    throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED');
   }
 };
 
 export const normalizeAdminConnectorCreateInput = (
   input: z.input<typeof adminConnectorCreateDraftInputSchema>,
   draftInput: z.input<typeof adminConnectorDraftSchema>,
-  secretLeaves: z.input<typeof connectorSecretLeavesInputSchema>,
+  secretContext: TrustedConnectorSecretContext,
 ) => {
   const command = adminConnectorCreateDraftInputSchema.parse(input);
   const draft = adminConnectorDraftSchema.parse(draftInput);
+  assertConfiguredCurrentSecretsLoaded(draft, secretContext);
   assertReplacementLeavesComplete(
     [
       command.credentialMode === 'shared_service_account' ? command.sharedSecret : undefined,
       command.credentialMode === 'per_user_oauth' ? command.oauthClientSecret : undefined,
     ],
-    secretLeaves,
+    secretContext,
   );
-  assertConnectorPersistentFieldsSafe(draft, command.reason, secretLeaves);
+  assertConnectorPersistentFieldsSafe(draft, command.reason, secretContext);
   assertNoKnownSecret(
     {
       description: command.description,
@@ -567,7 +648,7 @@ export const normalizeAdminConnectorCreateInput = (
       oauthConfig: command.credentialMode === 'per_user_oauth' ? command.oauthConfig : null,
       tools: command.tools,
     },
-    getSecretLeaves(secretLeaves),
+    getSecretLeaves(secretContext),
   );
   return { command, draft };
 };
@@ -577,14 +658,15 @@ export const normalizeAdminConnectorUpdateInput = (
   currentInput: z.input<typeof adminConnectorDraftSchema>,
   patchInput: z.input<typeof adminConnectorUpdateDraftInputSchema>,
   serverRedirectUri: string,
-  secretLeaves: z.input<typeof connectorSecretLeavesInputSchema>,
+  secretContext: TrustedConnectorSecretContext,
 ) => {
   const current = adminConnectorDraftSchema.parse(currentInput);
   const patch = adminConnectorUpdateDraftInputSchema.parse(patchInput);
   const targetMode = patch.credentialMode ?? current.credentialMode;
   const switchingMode = targetMode !== current.credentialMode;
   const redirectUri = httpUrlSchema.parse(serverRedirectUri);
-  assertReplacementLeavesComplete([patch.sharedSecret, patch.oauthClientSecret], secretLeaves);
+  assertConfiguredCurrentSecretsLoaded(current, secretContext);
+  assertReplacementLeavesComplete([patch.sharedSecret, patch.oauthClientSecret], secretContext);
 
   if (targetMode !== 'shared_service_account' && patch.sharedSecret) {
     clearOnlySecretMutationSchema.parse(patch.sharedSecret);
@@ -648,7 +730,7 @@ export const normalizeAdminConnectorUpdateInput = (
           )
         : emptySecretState,
   });
-  assertConnectorPersistentFieldsSafe(candidate, patch.reason, secretLeaves);
+  assertConnectorPersistentFieldsSafe(candidate, patch.reason, secretContext);
 
   return {
     candidate,

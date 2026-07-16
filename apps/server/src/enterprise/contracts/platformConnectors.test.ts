@@ -16,9 +16,11 @@ import {
   connectorScopesSchema,
   connectorSharedSecretMutationSchema,
   connectorToolDraftSchema,
+  loadTrustedConnectorSecretContext,
   managedConnectorSchema,
   normalizeAdminConnectorCreateInput,
   normalizeAdminConnectorUpdateInput,
+  PlatformConnectorContractError,
   userConnectorDisconnectInputSchema,
   userConnectorGetAuthorizationStatusInputSchema,
   userConnectorListManagedInputSchema,
@@ -52,6 +54,13 @@ const draft = adminConnectorDraftSchema.parse({
   tools: [],
   transport: 'http',
 });
+
+const trustedSecrets = (current: unknown[] = [], replacement: unknown[] = []) =>
+  loadTrustedConnectorSecretContext(
+    { loadCurrentSecretSources: async () => current },
+    'connector-1',
+    replacement,
+  );
 
 describe('platform connector contracts', () => {
   it('models independent shared and OAuth client secret mutations', () => {
@@ -140,7 +149,8 @@ describe('platform connector contracts', () => {
     ).toBe(false);
   });
 
-  it('revalidates a complete Draft after patch merge and clears incompatible secrets on mode switch', () => {
+  it('revalidates a complete Draft after patch merge and clears incompatible secrets on mode switch', async () => {
+    const secretContext = await trustedSecrets();
     const update = {
       credentialMode: 'none' as const,
       expectedDraftToken: 'd'.repeat(64),
@@ -153,7 +163,7 @@ describe('platform connector contracts', () => {
       draft,
       update,
       'https://aihub.example.test/oauth/connector/callback',
-      { current: [], replacement: [] },
+      secretContext,
     );
     expect(normalized.candidate).toMatchObject({
       credentialMode: 'none',
@@ -182,12 +192,13 @@ describe('platform connector contracts', () => {
           sharedSecret: { operation: 'replace', value: { apiKey: 'fake' } },
         },
         'https://aihub.example.test/oauth/connector/callback',
-        { current: [], replacement: [] },
+        secretContext,
       ),
     ).toThrow();
   });
 
-  it('distinguishes undefined/null and reflects Secret clear in the complete candidate', () => {
+  it('distinguishes undefined/null and reflects Secret clear in the complete candidate', async () => {
+    const emptyContext = await trustedSecrets();
     const basePatch = {
       expectedDraftToken: 'd'.repeat(64),
       expectedRevision: 0,
@@ -199,7 +210,7 @@ describe('platform connector contracts', () => {
         draft,
         { ...basePatch, oauthConfig: null },
         'https://aihub.example.test/oauth/connector/callback',
-        { current: [], replacement: [] },
+        emptyContext,
       ),
     ).toThrow();
     const configuredOAuthDraft = adminConnectorDraftSchema.parse({
@@ -210,23 +221,42 @@ describe('platform connector contracts', () => {
       configuredOAuthDraft,
       { ...basePatch, oauthClientSecret: { operation: 'clear' } },
       'https://aihub.example.test/oauth/connector/callback',
-      { current: ['old-random-secret'], replacement: [] },
+      await trustedSecrets(['old-random-secret']),
     );
     expect(cleared.candidate.oauthClientSecret).toEqual(secretState);
+    expect(() =>
+      normalizeAdminConnectorUpdateInput(
+        configuredOAuthDraft,
+        basePatch,
+        'https://aihub.example.test/oauth/connector/callback',
+        emptyContext,
+      ),
+    ).toThrowError(PlatformConnectorContractError);
+    try {
+      normalizeAdminConnectorUpdateInput(
+        configuredOAuthDraft,
+        basePatch,
+        'https://aihub.example.test/oauth/connector/callback',
+        { source: 'server-secret-store' },
+      );
+      expect.unreachable('forged Secret context must be rejected');
+    } catch (error) {
+      expect(error).toMatchObject({ code: 'PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED' });
+    }
     expect(() =>
       normalizeAdminConnectorUpdateInput(
         draft,
         { ...basePatch, oauthClientSecret: { operation: 'replace', value: 'replacement-value' } },
         'https://aihub.example.test/oauth/connector/callback',
-        { current: [], replacement: [] },
+        emptyContext,
       ),
     ).toThrowError('PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED');
   });
 
-  it('requires create/update normalizers to reject current and replacement secrets in persisted text', () => {
+  it('requires create/update normalizers to reject current and replacement secrets in persisted text', async () => {
     const currentSecret = 'old-random-secret-123';
     const replacementSecret = 'new-random-secret-456';
-    const leaves = { current: [currentSecret], replacement: [replacementSecret] };
+    const secretContext = await trustedSecrets([currentSecret], [replacementSecret]);
     const basePatch = {
       expectedDraftToken: 'd'.repeat(64),
       expectedRevision: 0,
@@ -253,13 +283,35 @@ describe('platform connector contracts', () => {
           },
         ],
       },
+      {
+        ...basePatch,
+        tools: [
+          {
+            description: null,
+            displayName: 'Tool',
+            enabled: true,
+            id: 'tool-key-1',
+            inputSchema: {
+              properties: {
+                [currentSecret]: { type: 'string' },
+                nested: { [replacementSecret]: { type: 'string' } },
+              },
+            },
+            platformPolicy: 'allow' as const,
+            requiresConfirmation: false,
+            riskLevel: 'low' as const,
+            sort: 0,
+            toolKey: 'tool-key',
+          },
+        ],
+      },
     ]) {
       expect(() =>
         normalizeAdminConnectorUpdateInput(
           draft,
           patch,
           'https://aihub.example.test/oauth/connector/callback',
-          leaves,
+          secretContext,
         ),
       ).toThrowError('PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED');
     }
@@ -281,7 +333,7 @@ describe('platform connector contracts', () => {
           reason: `reason ${replacementSecret}`,
         },
         noneDraft,
-        leaves,
+        secretContext,
       ),
     ).toThrowError('PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED');
     expect(() =>
@@ -294,7 +346,7 @@ describe('platform connector contracts', () => {
           reason: 'create connector',
         },
         noneDraft,
-        leaves,
+        secretContext,
       ),
     ).toThrowError('PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED');
   });
@@ -335,8 +387,8 @@ describe('platform connector contracts', () => {
   });
 
   it('rejects secret-bearing discover/test messages at the output contract', () => {
-    expect(connectorSafeMessageSchema.parse('Connector operation failed')).toBe(
-      'Connector operation failed',
+    expect(connectorSafeMessageSchema.parse('connector.operation_failed')).toBe(
+      'connector.operation_failed',
     );
     for (const unsafe of [
       'Discovery complete',
