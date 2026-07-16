@@ -265,8 +265,22 @@ export const useSignIn = () => {
 
       const callbackUrl = searchParams.get('callbackUrl') || '/';
       // First-time OAuth users are signups — land them on onboarding first
-      const newUserCallbackURL = buildOnboardingRedirectUrl(callbackUrl);
-      const additionalData = await getAdditionalData();
+      // (skipped for admin reauth — keep the reauth-complete callback intact).
+      const isAdminReauth = searchParams.get('reauth') === '1';
+      const newUserCallbackURL = isAdminReauth
+        ? callbackUrl
+        : buildOnboardingRedirectUrl(callbackUrl);
+      const businessAdditionalData = await getAdditionalData();
+      // Narrow reauth=1 → additionalData so generic OAuth applies prompt=login/max_age=0.
+      // Normal sign-in is unchanged (no reauth flag).
+      const additionalData = isAdminReauth
+        ? {
+            ...businessAdditionalData,
+            max_age: '0',
+            prompt: 'login',
+            reauth: true,
+          }
+        : businessAdditionalData;
       const signInWithAdditionalData = async () =>
         isBuiltinProvider(normalizedProvider)
           ? await signIn.social({

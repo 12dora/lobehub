@@ -3,11 +3,12 @@
 import { Text, TextArea } from '@lobehub/ui';
 import { Button, createModal, type ModalInstance, useModalContext } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
-import { memo, type ReactNode, useCallback, useState } from 'react';
+import { memo, type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
 import {
+  type AdminReauthAuthMethod,
   AdminReauthBlockedError,
   AdminReauthCancelledError,
   withAdminReauthRetry,
@@ -42,29 +43,38 @@ const styles = createStaticStyles(({ css }) => ({
 }));
 
 export interface ReasonModalContentProps {
+  /** Trusted server auth method for reauth routing. */
+  authMethod?: AdminReauthAuthMethod;
+  /**
+   * Build the frozen mutation snapshot after validation (reason already trimmed).
+   * Snapshot is immutable for reauth retry.
+   */
+  buildPayload: (reason: string) => unknown;
   danger?: boolean;
   description?: string;
-  /** Controlled extra fields rendered between reason and errors. */
-  extra?: ReactNode;
+  /**
+   * Controlled extra fields. Receives `locked` when reauth/pending freezes UI.
+   */
+  extra?: ReactNode | ((api: { locked: boolean }) => ReactNode);
   impact?: string;
   /**
-   * Submit handler. Receives trimmed reason. Should throw on failure.
-   * ADMIN_REAUTH_REQUIRED triggers popup reauth + exactly one retry.
+   * Execute mutation with frozen payload. Throws on failure.
    */
-  onSubmit: (reason: string) => Promise<void>;
+  onSubmit: (payload: unknown) => Promise<void>;
   submitLabel: string;
   targetLabel: string;
   title: string;
-  /** Return i18n key or null. */
   validateExtra?: () => string | null;
 }
 
 export const ReasonModalContent = memo<ReasonModalContentProps>(
   ({
+    authMethod,
     danger,
     description,
     extra,
     impact,
+    buildPayload,
     onSubmit,
     submitLabel,
     targetLabel,
@@ -75,9 +85,27 @@ export const ReasonModalContent = memo<ReasonModalContentProps>(
     const { close } = useModalContext();
     const [reason, setReason] = useState('');
     const [loading, setLoading] = useState(false);
+    const [locked, setLocked] = useState(false);
     const [errorKey, setErrorKey] = useState<string | null>(null);
+    const abortRef = useRef<AbortController | null>(null);
+    // Frozen complete mutation input — never re-read live form fields on retry.
+    const snapshotRef = useRef<unknown>(null);
+
+    useEffect(() => {
+      return () => {
+        abortRef.current?.abort();
+        abortRef.current = null;
+        snapshotRef.current = null;
+      };
+    }, []);
 
     const canSubmit = reason.trim().length > 0 && !loading;
+
+    const handleClose = useCallback(() => {
+      abortRef.current?.abort();
+      abortRef.current = null;
+      close();
+    }, [close]);
 
     const handleSubmit = useCallback(async () => {
       if (loading) return;
@@ -92,16 +120,35 @@ export const ReasonModalContent = memo<ReasonModalContentProps>(
         return;
       }
 
+      // Freeze complete payload before any reauth / network work.
+      const frozen = buildPayload(trimmed);
+      snapshotRef.current = frozen;
+
       setLoading(true);
+      setLocked(true);
       setErrorKey(null);
+
+      const ac = new AbortController();
+      abortRef.current = ac;
+
       try {
-        // Pending reason stays only in React state (in memory) across reauth.
-        await withAdminReauthRetry(() => onSubmit(trimmed));
+        await withAdminReauthRetry(
+          async () => {
+            // Always use immutable snapshot — never re-sample live fields.
+            const payload = snapshotRef.current;
+            if (payload === null) throw new AdminReauthCancelledError();
+            await onSubmit(payload);
+          },
+          {
+            authMethod: authMethod ?? null,
+            signal: ac.signal,
+          },
+        );
+        snapshotRef.current = null;
         close();
       } catch (error) {
         if (error instanceof AdminReauthCancelledError) {
           setErrorKey('users.errors.reauthCancelled');
-          // Keep modal open with reason intact
         } else if (error instanceof AdminReauthBlockedError) {
           setErrorKey('users.errors.reauthBlocked');
         } else {
@@ -112,10 +159,15 @@ export const ReasonModalContent = memo<ReasonModalContentProps>(
             setErrorKey(getAdminUsersMutationErrorKey(error));
           }
         }
+        // Unlock fields after failure so user can fix/retry; snapshot cleared only on success.
+        setLocked(false);
       } finally {
         setLoading(false);
+        abortRef.current = null;
       }
-    }, [close, loading, onSubmit, reason, validateExtra]);
+    }, [authMethod, buildPayload, close, loading, onSubmit, reason, validateExtra]);
+
+    const extraNode = typeof extra === 'function' ? extra({ locked }) : extra;
 
     return (
       <div className={styles.body}>
@@ -130,6 +182,7 @@ export const ReasonModalContent = memo<ReasonModalContentProps>(
         <div className={styles.field}>
           <Text>{t('users.modals.reasonLabel')}</Text>
           <TextArea
+            disabled={locked}
             maxLength={2000}
             placeholder={t('users.modals.reasonPlaceholder')}
             rows={3}
@@ -137,14 +190,14 @@ export const ReasonModalContent = memo<ReasonModalContentProps>(
             onChange={(e) => setReason(e.target.value)}
           />
         </div>
-        {extra}
+        {extraNode}
         {errorKey ? (
           <Text className={styles.error} role="alert">
             {t(errorKey as never)}
           </Text>
         ) : null}
         <div className={styles.footer}>
-          <Button disabled={loading} onClick={close}>
+          <Button disabled={loading} onClick={handleClose}>
             {t('users.modals.cancel')}
           </Button>
           <Button

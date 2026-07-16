@@ -1,19 +1,24 @@
 /**
- * Admin high-risk re-authentication controller (Better Auth path).
+ * Admin high-risk re-authentication controller.
  *
- * Opens a real sign-in flow in a popup, keeps the pending mutation callback only
- * in memory (never localStorage / sessionStorage / URL / logs), and resolves
- * only after a same-origin success signal or cancel/block.
- *
- * OIDC adapter seam is reserved for M11 — this implementation does not claim OIDC.
+ * - Cryptographic one-time state bound to the exact popup (source + origin + state).
+ * - AbortSignal/cancel cleans listeners and ignores late success messages.
+ * - Better Auth sign-in popup with `reauth=1` so OAuth can force prompt=login/max_age=0.
+ * - OIDC/Authentik uses the existing Better Auth OAuth2 additionalData path.
+ * - M11 adapter seam: authMethod selects strategy; only BA/OIDC-via-BA is implemented.
  */
 
 export const ADMIN_REAUTH_MESSAGE_TYPE = 'lobehub.admin.reauth' as const;
 export const ADMIN_REAUTH_COMPLETE_PATH = '/admin/reauth-complete';
 
-export type AdminReauthMessage =
-  | { type: typeof ADMIN_REAUTH_MESSAGE_TYPE; status: 'success' }
-  | { type: typeof ADMIN_REAUTH_MESSAGE_TYPE; status: 'cancel' };
+export type AdminReauthAuthMethod = 'better-auth' | 'oidc' | 'api-key' | 'dev-mock' | null;
+
+export type AdminReauthMessage = {
+  status: 'success' | 'cancel';
+  /** Cryptographic state echoed from the callback URL — never a secret payload. */
+  state: string;
+  type: typeof ADMIN_REAUTH_MESSAGE_TYPE;
+};
 
 export class AdminReauthCancelledError extends Error {
   readonly code = 'ADMIN_REAUTH_CANCELLED';
@@ -31,36 +36,58 @@ export class AdminReauthBlockedError extends Error {
   }
 }
 
+/** Generate URL-safe crypto state (no Math.random). */
+export const createAdminReauthState = (
+  randomSource: { getRandomValues: (a: Uint8Array) => Uint8Array } = crypto,
+): string => {
+  const bytes = new Uint8Array(32);
+  randomSource.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+};
+
 export interface RequestAdminReauthOptions {
   /**
-   * Injectable window open (tests). Defaults to window.open.
+   * Trusted server auth method from getMyAccess (not a client guess).
+   * api-key cannot reauth interactively.
    */
+  authMethod?: AdminReauthAuthMethod;
+  /** Injectable crypto for tests. */
+  createState?: () => string;
   openWindow?: (url: string, target: string, features: string) => Window | null;
-  /**
-   * Injectable origin (tests). Defaults to window.location.origin.
-   */
   origin?: string;
-  /**
-   * Poll interval while waiting for popup close without success message.
-   */
   pollMs?: number;
+  /** Abort cancels the flow; late success must not resolve. */
+  signal?: AbortSignal;
 }
 
 /**
- * Launch Better Auth sign-in in a popup and wait for same-origin success.
- * Rejects with AdminReauthCancelledError / AdminReauthBlockedError.
+ * Launch sign-in popup with reauth=1 + cryptographic state.
+ * Accepts completion only when origin, event.source, type, status, and state match.
  */
 export const requestAdminReauth = (options: RequestAdminReauthOptions = {}): Promise<void> => {
   if (typeof window === 'undefined') {
     return Promise.reject(new AdminReauthBlockedError('No window'));
   }
 
+  if (options.authMethod === 'api-key') {
+    return Promise.reject(
+      new AdminReauthBlockedError('API key sessions cannot complete interactive reauth'),
+    );
+  }
+
+  if (options.signal?.aborted) {
+    return Promise.reject(new AdminReauthCancelledError());
+  }
+
   const origin = options.origin ?? window.location.origin;
   const openWindow = options.openWindow ?? window.open.bind(window);
   const pollMs = options.pollMs ?? 400;
+  const state = (options.createState ?? createAdminReauthState)();
 
-  const callbackUrl = `${origin}${ADMIN_REAUTH_COMPLETE_PATH}`;
-  const signInUrl = `${origin}/signin?callbackUrl=${encodeURIComponent(callbackUrl)}`;
+  // Only non-secret state in the callback URL — never reason/payload/token.
+  const callbackUrl = `${origin}${ADMIN_REAUTH_COMPLETE_PATH}?state=${encodeURIComponent(state)}`;
+  // reauth=1 enables prompt=login / max_age=0 on OAuth providers via additionalData.
+  const signInUrl = `${origin}/signin?reauth=1&callbackUrl=${encodeURIComponent(callbackUrl)}`;
 
   const popup = openWindow(signInUrl, 'lobehub-admin-reauth', 'width=480,height=720');
   if (!popup) {
@@ -69,24 +96,41 @@ export const requestAdminReauth = (options: RequestAdminReauthOptions = {}): Pro
 
   return new Promise<void>((resolve, reject) => {
     let settled = false;
+    let expectedState: string | null = state;
 
     const cleanup = () => {
       window.removeEventListener('message', onMessage);
       window.clearInterval(timer);
+      options.signal?.removeEventListener('abort', onAbort);
     };
 
     const settle = (fn: () => void) => {
       if (settled) return;
       settled = true;
+      expectedState = null; // one-time consume
       cleanup();
       fn();
     };
 
+    const onAbort = () => {
+      settle(() => {
+        try {
+          popup.close();
+        } catch {
+          // ignore
+        }
+        reject(new AdminReauthCancelledError());
+      });
+    };
+
     const onMessage = (event: MessageEvent) => {
-      // Never trust unverified origins.
+      if (settled) return;
+      // Cryptographic binding: origin + exact popup source + type + state.
       if (event.origin !== origin) return;
+      if (event.source !== popup) return;
       const data = event.data as AdminReauthMessage | null;
       if (!data || data.type !== ADMIN_REAUTH_MESSAGE_TYPE) return;
+      if (!expectedState || data.state !== expectedState) return;
 
       if (data.status === 'success') {
         settle(() => {
@@ -113,18 +157,31 @@ export const requestAdminReauth = (options: RequestAdminReauthOptions = {}): Pro
     };
 
     window.addEventListener('message', onMessage);
+    options.signal?.addEventListener('abort', onAbort);
 
     const timer = window.setInterval(() => {
       if (!popup.closed) return;
-      // Closed without success message → cancel (do not invent success).
       settle(() => reject(new AdminReauthCancelledError()));
     }, pollMs);
   });
 };
 
+export const isAdminReauthRequiredError = (error: unknown): boolean => {
+  const message =
+    typeof error === 'string'
+      ? error
+      : error && typeof error === 'object' && 'message' in error
+        ? String((error as { message?: unknown }).message ?? '')
+        : '';
+  if (message.includes('ADMIN_REAUTH_REQUIRED')) return true;
+  const data = (error as { data?: { errorData?: { code?: string }; code?: string } })?.data;
+  const code = data?.errorData?.code ?? data?.code;
+  return code === 'ADMIN_REAUTH_REQUIRED';
+};
+
 /**
  * Run `fn`; on ADMIN_REAUTH_REQUIRED, launch reauth then retry exactly once.
- * Cancel / blocked leaves the original error path to the caller (rethrow cancel).
+ * Abort/cancel never retries.
  */
 export const withAdminReauthRetry = async <T>(
   fn: () => Promise<T>,
@@ -133,29 +190,16 @@ export const withAdminReauthRetry = async <T>(
     requestReauth?: () => Promise<void>;
   },
 ): Promise<T> => {
-  const isReauthError =
-    options?.isReauthError ??
-    ((error: unknown) => {
-      const message =
-        typeof error === 'string'
-          ? error
-          : error && typeof error === 'object' && 'message' in error
-            ? String((error as { message?: unknown }).message ?? '')
-            : '';
-      if (message.includes('ADMIN_REAUTH_REQUIRED')) return true;
-      const data = (error as { data?: { errorData?: { code?: string }; code?: string } })?.data;
-      const code = data?.errorData?.code ?? data?.code;
-      return code === 'ADMIN_REAUTH_REQUIRED';
-    });
-
+  const isReauthError = options?.isReauthError ?? isAdminReauthRequiredError;
   const requestReauth = options?.requestReauth ?? (() => requestAdminReauth(options));
 
   try {
     return await fn();
   } catch (error) {
     if (!isReauthError(error)) throw error;
+    if (options?.signal?.aborted) throw new AdminReauthCancelledError();
     await requestReauth();
-    // Exactly one retry after successful reauth.
+    if (options?.signal?.aborted) throw new AdminReauthCancelledError();
     return await fn();
   }
 };

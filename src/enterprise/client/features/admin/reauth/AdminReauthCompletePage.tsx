@@ -4,6 +4,7 @@ import { Text } from '@lobehub/ui';
 import { createStaticStyles } from 'antd-style';
 import { memo, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useSearchParams } from 'react-router';
 
 import { ADMIN_REAUTH_MESSAGE_TYPE } from './requestAdminReauth';
 
@@ -21,25 +22,33 @@ const styles = createStaticStyles(({ css }) => ({
 }));
 
 /**
- * Popup landing page after Better Auth sign-in for admin reauth.
- * Posts a same-origin success message to the opener and closes.
- * Never stores mutation payloads or reasons.
+ * Popup landing after reauth sign-in.
+ * Echoes only the validated `state` query param to window.opener — never reasons/tokens.
  */
 const AdminReauthCompletePage = memo(() => {
   const { t } = useTranslation('admin');
+  const [params] = useSearchParams();
 
   useEffect(() => {
+    const state = params.get('state');
+    // Only echo state when present and well-formed (hex from createAdminReauthState).
+    const safeState = state && /^[a-f0-9]{32,128}$/i.test(state) ? state : null;
+
     try {
-      if (window.opener && window.opener !== window) {
+      if (window.opener && window.opener !== window && safeState) {
         window.opener.postMessage(
-          { status: 'success', type: ADMIN_REAUTH_MESSAGE_TYPE },
+          {
+            status: 'success',
+            state: safeState,
+            type: ADMIN_REAUTH_MESSAGE_TYPE,
+          },
           window.location.origin,
         );
       }
     } catch {
-      // opener may be inaccessible cross-origin; ignore
+      // ignore
     }
-    // Close popup after signaling; parent also resolves on message.
+
     const handle = window.setTimeout(() => {
       try {
         window.close();
@@ -48,7 +57,7 @@ const AdminReauthCompletePage = memo(() => {
       }
     }, 100);
     return () => window.clearTimeout(handle);
-  }, []);
+  }, [params]);
 
   return (
     <div className={styles.root} role="status">

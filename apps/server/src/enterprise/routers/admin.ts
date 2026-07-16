@@ -31,12 +31,17 @@ export const adminAuthRouter = router({
     const permissions = await service.getUserGlobalPermissions(ctx.userId!);
     const roles = await service.listUserGlobalRoles(ctx.userId!);
     return {
+      /**
+       * Server-authenticated method for admin reauth routing (never invent client-side).
+       * oidc → Better Auth OAuth2 popup with prompt=login; better-auth → credential/session.
+       */
+      authMethod: ctx.authMethod ?? null,
+      hasAdminAccess: permissions.includes(PLATFORM_PERMISSIONS.ADMIN_ACCESS),
       permissions,
       roles: roles.map((r) => ({
         displayName: r.displayName,
         name: r.name,
       })),
-      hasAdminAccess: permissions.includes(PLATFORM_PERMISSIONS.ADMIN_ACCESS),
     };
   }),
 });

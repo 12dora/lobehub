@@ -6,11 +6,6 @@ import { createStaticStyles, cssVar } from 'antd-style';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import {
-  PLATFORM_ROLE_DESCRIPTIONS,
-  PLATFORM_ROLE_PERMISSIONS,
-  type PlatformSystemRoleName,
-} from '@/const/platform/roles';
 import type { AdminUsersGetOutput } from '@/enterprise/client/services/adminUsers';
 
 import { formatAdminDateTime } from '../utils';
@@ -63,36 +58,29 @@ const AccessTab = memo<AccessTabProps>(({ user, canManageRoles, onReplaceRoles }
         <Text type="secondary">{t('users.access.noRoles')}</Text>
       ) : (
         <Flexbox gap={8}>
-          {user.roles.map((role) => {
-            const name = role.name as PlatformSystemRoleName;
-            const desc =
-              name in PLATFORM_ROLE_DESCRIPTIONS
-                ? PLATFORM_ROLE_DESCRIPTIONS[name]
-                : role.displayName || role.name;
-            const permCount =
-              name in PLATFORM_ROLE_PERMISSIONS ? PLATFORM_ROLE_PERMISSIONS[name].length : 0;
-            return (
-              <div className={styles.roleCard} key={role.id}>
-                <Flexbox horizontal align="center" gap={8}>
-                  <Tag>
-                    {role.displayName ||
-                      t(`users.roles.${role.name}` as never, { defaultValue: role.name })}
-                  </Tag>
-                  <Text type="secondary">
-                    {role.expiresAt
-                      ? t('users.access.expires', { date: formatAdminDateTime(role.expiresAt) })
-                      : t('users.access.noExpiry')}
-                  </Text>
-                </Flexbox>
-                <Text type="secondary">{desc}</Text>
-                {permCount > 0 ? (
-                  <Text type="secondary">
-                    {t('users.modals.roles.permissionCount', { count: permCount })}
-                  </Text>
-                ) : null}
-              </div>
-            );
-          })}
+          {user.roles.map((role) => (
+            <div className={styles.roleCard} key={role.id}>
+              <Flexbox horizontal align="center" gap={8}>
+                <Tag>
+                  {role.displayName ||
+                    t(`users.roles.${role.name}` as never, { defaultValue: role.name })}
+                </Tag>
+                <Text type="secondary">
+                  {role.expiresAt
+                    ? t('users.access.expires', { date: formatAdminDateTime(role.expiresAt) })
+                    : t('users.access.noExpiry')}
+                </Text>
+              </Flexbox>
+              <Text type="secondary">
+                {t(`users.roles.desc.${role.name}` as never, {
+                  defaultValue: role.displayName || role.name,
+                })}
+              </Text>
+              <Text type="secondary">
+                {t(`users.roles.impact.${role.name}` as never, { defaultValue: '' })}
+              </Text>
+            </div>
+          ))}
         </Flexbox>
       )}
       {canManageRoles ? (

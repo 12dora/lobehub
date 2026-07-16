@@ -1,7 +1,7 @@
 /**
  * @vitest-environment happy-dom
  */
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -96,9 +96,11 @@ vi.mock('../primitives/StatusBadge', () => ({
 
 const permissionsRef = { current: [PLATFORM_PERMISSIONS.USER_READ] as string[] };
 const rolesRef = { current: [{ displayName: 'User Admin', name: 'user_admin' }] };
+const authMethodRef = { current: 'better-auth' as const };
 
 vi.mock('@/enterprise/client/providers/AdminAccessProvider', () => ({
   useAdminAccess: () => ({
+    authMethod: authMethodRef.current,
     error: null,
     permissions: permissionsRef.current,
     refresh: async () => undefined,
@@ -223,7 +225,7 @@ describe('UserDetailPage', () => {
   it('renders overview heading and does not expose secrets', () => {
     renderDetail();
     expect(screen.getByRole('heading', { level: 1, name: 'Bob' })).toBeTruthy();
-    expect(screen.getByText('bob@example.com')).toBeTruthy();
+    expect(within(screen.getByTestId('description')).getByText('bob@example.com')).toBeTruthy();
     expect(document.body.textContent).not.toMatch(/secret-hash|session-token-leak/);
   });
 
