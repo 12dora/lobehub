@@ -17,6 +17,12 @@ export const ENTERPRISE_UPSTREAM_MOUNT_POINTS = [
   'src/app/(backend)/api/auth/[...all]/route.ts',
   // M05: effective settings + updateSettings adapter
   'apps/server/src/routers/lambda/user.ts',
+  // M05: agent / systemAgent / agentGroup runtime reads through resolver adapter
+  'apps/server/src/services/agent/index.ts',
+  'apps/server/src/services/systemAgent/index.ts',
+  'apps/server/src/services/taskReview/index.ts',
+  'apps/server/src/services/memory/userMemory/persona/service.ts',
+  'apps/server/src/routers/lambda/agentGroup.ts',
   // M05: user-facing source badge meta hook (thin SWR → enterprise service)
   'src/features/PlatformSettingSourceBadge/usePlatformSettingMeta.ts',
   // script entry only

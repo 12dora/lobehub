@@ -7,12 +7,14 @@ import { z } from 'zod';
 export const settingPolicyModeSchema = z.enum(['user', 'default', 'locked']);
 export const settingPolicyVisibilitySchema = z.enum(['visible', 'hidden']);
 
-export const settingDraftPolicySchema = z.object({
-  mode: settingPolicyModeSchema,
-  schemaVersion: z.number().int().positive(),
-  value: z.unknown().optional(),
-  visibility: settingPolicyVisibilitySchema,
-});
+export const settingDraftPolicySchema = z
+  .object({
+    mode: settingPolicyModeSchema,
+    schemaVersion: z.number().int().positive(),
+    value: z.unknown().optional(),
+    visibility: settingPolicyVisibilitySchema,
+  })
+  .strict();
 
 export const adminSettingsGetDraftOutputSchema = z.object({
   baseRevision: z.number().int().nonnegative(),
@@ -40,10 +42,12 @@ export const adminSettingsGetDraftOutputSchema = z.object({
   status: z.enum(['draft', 'published', 'archived']),
 });
 
-export const adminSettingsSaveDraftInputSchema = z.object({
-  draft: z.record(settingDraftPolicySchema),
-  reason: z.string().min(1).max(2000),
-});
+export const adminSettingsSaveDraftInputSchema = z
+  .object({
+    draft: z.record(settingDraftPolicySchema),
+    reason: z.string().min(1).max(2000),
+  })
+  .strict();
 
 export const adminSettingsSaveDraftOutputSchema = z.object({
   baseRevision: z.number().int().nonnegative(),
@@ -51,9 +55,11 @@ export const adminSettingsSaveDraftOutputSchema = z.object({
   registryVersion: z.number().int(),
 });
 
-export const adminSettingsValidateDraftInputSchema = z.object({
-  draft: z.record(settingDraftPolicySchema).optional(),
-});
+export const adminSettingsValidateDraftInputSchema = z
+  .object({
+    draft: z.record(settingDraftPolicySchema).optional(),
+  })
+  .strict();
 
 export const adminSettingsValidateDraftOutputSchema = z.object({
   impactEstimate: z.object({
@@ -70,22 +76,26 @@ export const adminSettingsValidateDraftOutputSchema = z.object({
   ok: z.boolean(),
 });
 
-export const adminSettingsPublishInputSchema = z.object({
-  expectedRevision: z.number().int().nonnegative(),
-  reason: z.string().min(1).max(2000),
-  comment: z.string().max(2000).optional(),
-});
+export const adminSettingsPublishInputSchema = z
+  .object({
+    expectedRevision: z.number().int().nonnegative(),
+    reason: z.string().min(1).max(2000),
+    comment: z.string().max(2000).optional(),
+  })
+  .strict();
 
 export const adminSettingsPublishOutputSchema = z.object({
   auditId: z.string(),
   revision: z.number().int().positive(),
 });
 
-export const adminSettingsRollbackInputSchema = z.object({
-  expectedRevision: z.number().int().nonnegative(),
-  reason: z.string().min(1).max(2000),
-  targetRevision: z.number().int().positive(),
-});
+export const adminSettingsRollbackInputSchema = z
+  .object({
+    expectedRevision: z.number().int().nonnegative(),
+    reason: z.string().min(1).max(2000),
+    targetRevision: z.number().int().positive(),
+  })
+  .strict();
 
 export const adminSettingsRollbackOutputSchema = z.object({
   auditId: z.string(),

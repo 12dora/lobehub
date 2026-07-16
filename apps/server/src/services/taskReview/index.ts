@@ -3,8 +3,8 @@ import { evaluate } from '@lobechat/eval-rubric';
 import type { EvalBenchmarkRubric, UserSystemAgentConfig } from '@lobechat/types';
 import debug from 'debug';
 
-import { UserModel } from '@/database/models/user';
 import type { LobeChatDatabase } from '@/database/type';
+import { getEffectiveSystemAgentConfig } from '@/server/enterprise/services/settings/runtimeSettingsAdapter';
 import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
 
 import { resolveSystemAgentModelConfig } from '../systemAgent/modelConfig';
@@ -119,9 +119,10 @@ export class TaskReviewService {
       });
     }
 
-    const userModel = new UserModel(this.db, this.userId);
-    const settings = await userModel.getUserSettings();
-    const systemAgent = settings?.systemAgent as Partial<UserSystemAgentConfig> | undefined;
+    const systemAgent = (await getEffectiveSystemAgentConfig({
+      db: this.db,
+      userId: this.userId,
+    })) as Partial<UserSystemAgentConfig> | undefined;
     const topicConfig = systemAgent?.topic;
 
     return resolveSystemAgentModelConfig({

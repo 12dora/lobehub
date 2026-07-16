@@ -213,84 +213,126 @@ export class PlatformSettingsModel {
   };
 
   /**
-   * Upsert override + bump user override revision (monotonic, survives last-delete).
+   * Upsert override + bump user override revision in one transaction
+   * (monotonic, survives last-delete).
    */
   upsertUserOverride = async (params: {
     path: string;
     source?: string;
     userId: string;
     value: unknown;
+    /** When true, caller already holds a transaction on `this.db`. */
+    alreadyInTransaction?: boolean;
   }): Promise<{ override: UserSettingOverrideItem; revision: number }> => {
-    const now = new Date();
-    const [override] = await this.db
-      .insert(userSettingOverrides)
-      .values({
-        path: params.path,
-        source: params.source ?? 'user',
-        updatedAt: now,
-        userId: params.userId,
-        value: params.value,
-      })
-      .onConflictDoUpdate({
-        set: {
-          source: params.source ?? 'user',
-          updatedAt: now,
-          value: params.value,
-        },
-        target: [userSettingOverrides.userId, userSettingOverrides.path],
-      })
-      .returning();
-
-    const revision = await this.bumpUserOverrideRevision(params.userId);
-    return { override, revision };
-  };
-
-  /**
-   * Delete exactly one path override for the user; bump revision even if last row.
-   * Returns whether a row was deleted.
-   */
-  deleteUserOverride = async (
-    userId: string,
-    path: string,
-  ): Promise<{ deleted: boolean; revision: number }> => {
-    const deleted = await this.db
-      .delete(userSettingOverrides)
-      .where(and(eq(userSettingOverrides.userId, userId), eq(userSettingOverrides.path, path)))
-      .returning({ path: userSettingOverrides.path });
-
-    const revision = await this.bumpUserOverrideRevision(userId);
-    return { deleted: deleted.length > 0, revision };
-  };
-
-  /**
-   * Atomic multi-path upsert for legacy adapter (all-or-nothing caller transaction).
-   */
-  upsertUserOverridesBatch = async (params: {
-    ops: Array<{ path: string; value: unknown }>;
-    source?: string;
-    userId: string;
-  }): Promise<number> => {
-    const now = new Date();
-    for (const op of params.ops) {
-      await this.db
+    const run = async (db: LobeChatDatabase | Transaction) => {
+      const model = new PlatformSettingsModel(db);
+      const now = new Date();
+      const [override] = await db
         .insert(userSettingOverrides)
         .values({
-          path: op.path,
+          path: params.path,
           source: params.source ?? 'user',
           updatedAt: now,
           userId: params.userId,
-          value: op.value,
+          value: params.value,
         })
         .onConflictDoUpdate({
           set: {
             source: params.source ?? 'user',
             updatedAt: now,
-            value: op.value,
+            value: params.value,
           },
           target: [userSettingOverrides.userId, userSettingOverrides.path],
-        });
+        })
+        .returning();
+      const revision = await model.bumpUserOverrideRevision(params.userId);
+      return { override, revision };
+    };
+
+    if (params.alreadyInTransaction || !('transaction' in this.db)) {
+      return run(this.db);
     }
-    return this.bumpUserOverrideRevision(params.userId);
+    return (this.db as LobeChatDatabase).transaction(async (tx) => run(tx));
+  };
+
+  /**
+   * Delete exactly one path override + bump revision in one transaction.
+   */
+  deleteUserOverride = async (
+    userId: string,
+    path: string,
+    opts?: { alreadyInTransaction?: boolean },
+  ): Promise<{ deleted: boolean; revision: number }> => {
+    const run = async (db: LobeChatDatabase | Transaction) => {
+      const model = new PlatformSettingsModel(db);
+      const deleted = await db
+        .delete(userSettingOverrides)
+        .where(and(eq(userSettingOverrides.userId, userId), eq(userSettingOverrides.path, path)))
+        .returning({ path: userSettingOverrides.path });
+      const revision = await model.bumpUserOverrideRevision(userId);
+      return { deleted: deleted.length > 0, revision };
+    };
+
+    if (opts?.alreadyInTransaction || !('transaction' in this.db)) {
+      return run(this.db);
+    }
+    return (this.db as LobeChatDatabase).transaction(async (tx) => run(tx));
+  };
+
+  /**
+   * Multi-path upsert + single revision bump inside one transaction.
+   */
+  upsertUserOverridesBatch = async (params: {
+    ops: Array<{ path: string; value: unknown }>;
+    source?: string;
+    userId: string;
+    alreadyInTransaction?: boolean;
+  }): Promise<number> => {
+    const run = async (db: LobeChatDatabase | Transaction) => {
+      const model = new PlatformSettingsModel(db);
+      const now = new Date();
+      for (const op of params.ops) {
+        await db
+          .insert(userSettingOverrides)
+          .values({
+            path: op.path,
+            source: params.source ?? 'user',
+            updatedAt: now,
+            userId: params.userId,
+            value: op.value,
+          })
+          .onConflictDoUpdate({
+            set: {
+              source: params.source ?? 'user',
+              updatedAt: now,
+              value: op.value,
+            },
+            target: [userSettingOverrides.userId, userSettingOverrides.path],
+          });
+      }
+      return model.bumpUserOverrideRevision(params.userId);
+    };
+
+    if (params.alreadyInTransaction || !('transaction' in this.db)) {
+      return run(this.db);
+    }
+    return (this.db as LobeChatDatabase).transaction(async (tx) => run(tx));
+  };
+
+  /** Delete all overrides for a user + bump revision once (full reset). */
+  deleteAllUserOverrides = async (
+    userId: string,
+    opts?: { alreadyInTransaction?: boolean },
+  ): Promise<number> => {
+    const run = async (db: LobeChatDatabase | Transaction) => {
+      const model = new PlatformSettingsModel(db);
+      await db.delete(userSettingOverrides).where(eq(userSettingOverrides.userId, userId));
+      return model.bumpUserOverrideRevision(userId);
+    };
+    if (opts?.alreadyInTransaction || !('transaction' in this.db)) {
+      return run(this.db);
+    }
+    return (this.db as LobeChatDatabase).transaction(async (tx) => run(tx));
   };
 
   getUserOverrideRevision = async (userId: string): Promise<number> => {
@@ -302,7 +344,7 @@ export class PlatformSettingsModel {
     return rows[0]?.revision ?? 0;
   };
 
-  private bumpUserOverrideRevision = async (userId: string): Promise<number> => {
+  bumpUserOverrideRevision = async (userId: string): Promise<number> => {
     const now = new Date();
     const [row] = await this.db
       .insert(userSettingOverrideRevisions)
@@ -319,36 +361,54 @@ export class PlatformSettingsModel {
   };
 }
 
+export type CreateSettingsPointerAdapterOptions = {
+  bundleId?: string;
+  /**
+   * Materialize published policies (+ optional draft align) inside the publish/rollback txn.
+   * Receives the same tx as pointer update.
+   */
+  materializePublished?: ResourcePointerAdapter['materializePublished'];
+  updatedBy?: string | null;
+};
+
 /**
  * FOR UPDATE pointer adapter for aggregate settings bundle.
+ * Pass `materializePublished` so path policies commit atomically with the revision head.
  */
 export const createSettingsPointerAdapter = (
-  bundleId: string = PLATFORM_SETTINGS_BUNDLE_ID,
-): ResourcePointerAdapter => ({
-  lockAndGetRevision: async (tx) => {
-    const result = await tx.execute(
-      sql`SELECT "revision" FROM "platform_settings_bundle" WHERE "id" = ${bundleId} FOR UPDATE`,
-    );
-    const rows =
-      (result as unknown as { rows?: { revision: number }[] }).rows ??
-      (result as unknown as { revision: number }[]);
-    const row = Array.isArray(rows) ? rows[0] : undefined;
-    if (!row) {
-      throw new Error(`Settings bundle not found: ${bundleId}`);
-    }
-    return Number(row.revision);
-  },
-  updatePointer: async (tx, { revision, status }) => {
-    await tx
-      .update(platformSettingsBundle)
-      .set({
-        revision,
-        status: status as Extract<PlatformRevisionStatus, 'draft' | 'published' | 'archived'>,
-        updatedAt: new Date(),
-      })
-      .where(eq(platformSettingsBundle.id, bundleId));
-  },
-});
+  options: CreateSettingsPointerAdapterOptions | string = {},
+): ResourcePointerAdapter => {
+  const opts: CreateSettingsPointerAdapterOptions =
+    typeof options === 'string' ? { bundleId: options } : options;
+  const bundleId = opts.bundleId ?? PLATFORM_SETTINGS_BUNDLE_ID;
+
+  return {
+    lockAndGetRevision: async (tx) => {
+      const result = await tx.execute(
+        sql`SELECT "revision" FROM "platform_settings_bundle" WHERE "id" = ${bundleId} FOR UPDATE`,
+      );
+      const rows =
+        (result as unknown as { rows?: { revision: number }[] }).rows ??
+        (result as unknown as { revision: number }[]);
+      const row = Array.isArray(rows) ? rows[0] : undefined;
+      if (!row) {
+        throw new Error(`Settings bundle not found: ${bundleId}`);
+      }
+      return Number(row.revision);
+    },
+    materializePublished: opts.materializePublished,
+    updatePointer: async (tx, { revision, status }) => {
+      await tx
+        .update(platformSettingsBundle)
+        .set({
+          revision,
+          status: status as Extract<PlatformRevisionStatus, 'draft' | 'published' | 'archived'>,
+          updatedAt: new Date(),
+        })
+        .where(eq(platformSettingsBundle.id, bundleId));
+    },
+  };
+};
 
 export type {
   PlatformSettingsBundleItem,

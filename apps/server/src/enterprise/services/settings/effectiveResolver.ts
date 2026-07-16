@@ -180,10 +180,40 @@ export const resolveEffectiveSettings = (
   const envDefaults = input.environmentDefaults ?? {};
   const flagOn = input.platformPolicyEnabled;
 
+  /**
+   * Flag OFF: exact sparse legacy pass-through — do NOT expand built-in registry defaults
+   * into the settings object (parent getUserState / runtime parity).
+   */
+  if (!flagOn) {
+    const effectiveValues: Record<string, unknown> = {};
+    const pathMeta: Record<string, EffectiveSettingPathMeta> = {};
+    for (const entry of registry.list()) {
+      const leaf = getByPath(legacy, entry.path);
+      if (leaf === undefined) continue;
+      effectiveValues[entry.path] = leaf;
+      pathMeta[entry.path] = {
+        canOverride: true,
+        hidden: false,
+        locked: false,
+        mode: 'user',
+        path: entry.path,
+        schemaVersion: entry.schemaVersion,
+        source: 'legacy',
+        visibility: 'visible',
+      };
+    }
+    return {
+      effectiveSettings: { ...legacy },
+      effectiveValues,
+      pathMeta,
+      platformRevision: 0,
+      registryVersion: registry.version ?? SETTINGS_REGISTRY_VERSION,
+      userOverrideRevision: 0,
+    };
+  }
+
   // Start from legacy blob (shallow clone of top-level) so unregistered keys pass through
   let effectiveSettings: Record<string, unknown> = { ...legacy };
-  // Strip secrets from client-visible effective settings pathMeta; keyVaults stay only if legacy had them
-  // Callers that need keyVaults must load them via the dedicated encrypted path.
 
   const effectiveValues: Record<string, unknown> = {};
   const pathMeta: Record<string, EffectiveSettingPathMeta> = {};
@@ -193,35 +223,18 @@ export const resolveEffectiveSettings = (
     const policy = policies[path];
     const override = overrides[path];
 
-    // When flag ON: registered paths use override table, not legacy blob leaf
-    // When flag OFF: treat legacy leaf as the "user" layer (legacy source)
-    let userOverride: { value: unknown } | null = null;
-    let forceLegacySource = false;
-
-    if (flagOn) {
-      userOverride = override ? { value: override.value } : null;
-    } else {
-      const legacyLeaf = getByPath(legacy, path);
-      if (legacyLeaf !== undefined) {
-        userOverride = { value: legacyLeaf };
-        forceLegacySource = true;
-      }
-    }
+    const userOverride = override ? { value: override.value } : null;
 
     const resolved = resolveSettingPath({
       builtInDefault: entry.builtInDefault,
       environmentDefault: envDefaults[path],
       path,
-      platformPolicyEnabled: flagOn,
+      platformPolicyEnabled: true,
       policy: policy ?? null,
       userOverride,
     });
 
-    const source: SettingValueSource = forceLegacySource
-      ? resolved.source === 'user'
-        ? 'legacy'
-        : resolved.source
-      : resolved.source;
+    const source: SettingValueSource = resolved.source;
 
     effectiveValues[path] = resolved.effectiveValue;
     pathMeta[path] = {

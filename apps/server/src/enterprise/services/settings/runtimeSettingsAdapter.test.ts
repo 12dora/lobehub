@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import path from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
@@ -26,72 +26,52 @@ vi.mock('../../featureFlags', async (importOriginal) => {
 });
 
 describe('runtimeSettingsAdapter', () => {
-  it('flag OFF preserves legacy settings including keyVaults', async () => {
+  it('flag OFF preserves sparse legacy settings including keyVaults (exact parity)', async () => {
     const db = (await getTestDB()) as LobeChatDatabase;
+    const legacy = {
+      general: { fontSize: 17 },
+      keyVaults: { openai: { apiKey: 'sk-test' } },
+    };
     const { settings, effective } = await loadEffectiveUserSettings({
       db,
-      legacySettings: {
-        general: { fontSize: 17 },
-        keyVaults: { openai: { apiKey: 'sk-test' } },
-      },
+      legacySettings: legacy,
       userId: 'u-runtime',
     });
 
-    expect(settings.keyVaults).toEqual({ openai: { apiKey: 'sk-test' } });
-    expect(effective.pathMeta['keyVaults']).toBeUndefined();
+    expect(settings).toEqual(legacy);
     expect(effective.platformRevision).toBe(0);
+    expect(Object.keys(effective.pathMeta)).toHaveLength(0);
   });
 
   it('registry lists known runtime read entry points', () => {
     expect(SETTINGS_RUNTIME_READ_REGISTRY).toContain('userRouter.getUserState');
     expect(SETTINGS_RUNTIME_READ_REGISTRY).toContain(
-      'runtimeSettingsAdapter.loadEffectiveUserSettings',
+      'runtimeSettingsAdapter.getEffectiveDefaultAgentConfig',
     );
+    expect(SETTINGS_RUNTIME_READ_REGISTRY).toContain('AgentService.getAgentConfig');
   });
 
-  /**
-   * Static registration test: any new apps/server file that reads user settings
-   * via getUserState().settings and also touches defaultAgent/systemAgent/tool
-   * without importing the runtime adapter is flagged.
-   *
-   * This is intentionally narrow — does not rewrite all unrelated code.
-   */
-  it('catches new registered-style runtime reads that bypass the adapter', () => {
-    const serverRoot = join(process.cwd(), 'apps/server/src');
-    // When running from monorepo root or package, resolve both
-    const candidates = [serverRoot, join(process.cwd(), 'src'), join(__dirname, '../../../..')];
-
-    let root = serverRoot;
-    for (const c of candidates) {
-      try {
-        if (statSync(c).isDirectory()) {
-          root = c;
-          break;
-        }
-      } catch {
-        /* try next */
-      }
-    }
-
-    // Prefer absolute monorepo path
-    const monoServer = join(__dirname, '../../../../../../apps/server/src');
+  it('catches direct defaultAgent/systemAgent raw settings bypasses', () => {
+    const monoServer = path.join(__dirname, '../../../../../../apps/server/src');
+    let root = monoServer;
     try {
-      if (statSync(monoServer).isDirectory()) root = monoServer;
+      if (!statSync(monoServer).isDirectory()) {
+        root = path.join(process.cwd(), 'apps/server/src');
+      }
     } catch {
-      /* keep root */
+      root = path.join(process.cwd(), 'apps/server/src');
     }
 
-    const offenders: string[] = [];
-    const adapterMarker = 'runtimeSettingsAdapter';
-    const allowlist = new Set([
-      // This adapter itself and its tests
+    const allowlist = [
       'enterprise/services/settings/runtimeSettingsAdapter.ts',
       'enterprise/services/settings/runtimeSettingsAdapter.test.ts',
       'enterprise/services/settings/effectiveSettingsService.ts',
       'enterprise/services/settings/effectiveSettingsService.test.ts',
-      // user router is the mount point and must import the adapter
-      'routers/lambda/user.ts',
-    ]);
+      // UserModel itself owns the raw columns
+      'models/user.ts',
+    ];
+
+    const offenders: string[] = [];
 
     const walk = (dir: string) => {
       let entries: string[];
@@ -102,7 +82,7 @@ describe('runtimeSettingsAdapter', () => {
       }
       for (const name of entries) {
         if (name === 'node_modules' || name === 'dist') continue;
-        const full = join(dir, name);
+        const full = path.join(dir, name);
         let st;
         try {
           st = statSync(full);
@@ -122,26 +102,23 @@ describe('runtimeSettingsAdapter', () => {
           continue;
         }
 
-        // Narrow heuristic: reads getUserState and then accesses settings for
-        // defaultAgent / systemAgent / tool without importing the adapter.
-        const touchesAgentSettings =
-          /settings\s*\.\s*defaultAgent|settings\s*\.\s*systemAgent|settings\s*\.\s*tool/.test(
-            text,
-          );
-        const callsGetUserState = /getUserState\s*\(/.test(text);
-        if (!touchesAgentSettings || !callsGetUserState) continue;
+        const rel = path.relative(root, full).replaceAll('\\', '/');
+        if (allowlist.some((a) => rel.endsWith(a))) continue;
 
-        if (text.includes(adapterMarker)) continue;
+        const usesDefaultAgentBypass =
+          /\.getUserSettingsDefaultAgentConfig\s*\(/.test(text) &&
+          !text.includes('getEffectiveDefaultAgentConfig');
+        // Property access / destructure of systemAgent from settings (not class name imports)
+        const usesSystemAgentBypass =
+          (/\.getUserSettings\s*\(/.test(text) || /getUserSettings\s*\(/.test(text)) &&
+          (/settings\?\.systemAgent|settings\.systemAgent|systemAgent\s*=\s*settings/.test(text) ||
+            /systemAgent\s+as\s+Partial/.test(text)) &&
+          !text.includes('getEffectiveSystemAgentConfig') &&
+          !text.includes('runtimeSettingsAdapter');
 
-        const rel = relative(root, full).replaceAll('\\', '/');
-        if ([...allowlist].some((a) => rel.endsWith(a))) continue;
-
-        // Only flag files under enterprise or routers that look like new runtime reads
-        if (!rel.includes('enterprise') && !rel.includes('routers') && !rel.includes('services')) {
-          continue;
+        if (usesDefaultAgentBypass || usesSystemAgentBypass) {
+          offenders.push(rel);
         }
-
-        offenders.push(rel);
       }
     };
 
@@ -149,7 +126,7 @@ describe('runtimeSettingsAdapter', () => {
 
     expect(
       offenders,
-      `New server-side settings reads must import runtimeSettingsAdapter. Offenders: ${offenders.join(', ')}`,
+      `Runtime settings bypasses must use runtimeSettingsAdapter. Offenders: ${offenders.join(', ')}`,
     ).toEqual([]);
   });
 });

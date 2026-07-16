@@ -11,6 +11,7 @@
 
 import { MANAGED_ERROR_CODES, PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { PlatformSettingsModel, type SettingsDraftPolicyMap } from '@/database/models/platform';
+import { UserModel } from '@/database/models/user';
 import type { LobeChatDatabase } from '@/database/type';
 import type {
   EffectiveSettingsResult,
@@ -25,6 +26,7 @@ import {
   type PlatformConfigInvalidationPublisher,
 } from '../platformConfigInvalidation';
 import { buildSettingsCacheKey, resolveEffectiveSettings } from './effectiveResolver';
+import { validateLegacySettingsUpdate } from './legacySettingsCatalog';
 import { flattenLeaves, getByPath } from './pathUtils';
 import { settingsRegistry } from './registry';
 
@@ -46,6 +48,7 @@ const softCache = new Map<string, { at: number; value: EffectiveSettingsResult }
 const SOFT_CACHE_TTL_MS = 5_000;
 
 export class EffectiveSettingsService {
+  private readonly db: LobeChatDatabase;
   private readonly model: PlatformSettingsModel;
   private readonly invalidation: PlatformConfigInvalidationPublisher;
 
@@ -53,6 +56,7 @@ export class EffectiveSettingsService {
     db: LobeChatDatabase,
     invalidation: PlatformConfigInvalidationPublisher = getPlatformConfigInvalidationPublisher(),
   ) {
+    this.db = db;
     this.model = new PlatformSettingsModel(db);
     this.invalidation = invalidation;
   }
@@ -133,6 +137,7 @@ export class EffectiveSettingsService {
   };
 
   patchSettingOverride = async (params: {
+    /** Server-trusted surface (never client-asserted alone). */
     client?: SettingClientSurface;
     path: string;
     userId: string;
@@ -143,7 +148,7 @@ export class EffectiveSettingsService {
     }
 
     const gate = settingsRegistry.assertPathWritable({
-      client: params.client,
+      client: params.client ?? 'server',
       path: params.path,
     });
     if (gate) throw new SettingsPathError(gate);
@@ -160,8 +165,8 @@ export class EffectiveSettingsService {
     if (policy?.mode === 'locked') {
       throw new SettingsPathError(MANAGED_ERROR_CODES.MANAGED_SETTING_BY_ADMIN);
     }
-    // visibility=hidden does NOT reject by itself
 
+    // Atomic: override upsert + revision bump in one transaction; invalidate after commit
     const { revision } = await this.model.upsertUserOverride({
       path: params.path,
       userId: params.userId,
@@ -185,7 +190,10 @@ export class EffectiveSettingsService {
       throw new SettingsPathError(PLATFORM_ERROR_CODES.PLATFORM_FEATURE_DISABLED);
     }
 
-    const gate = settingsRegistry.assertPathWritable({ path: params.path });
+    const gate = settingsRegistry.assertPathWritable({
+      client: 'server',
+      path: params.path,
+    });
     if (gate) throw new SettingsPathError(gate);
 
     const policy = await this.model.getPublishedPolicy(params.path);
@@ -193,7 +201,6 @@ export class EffectiveSettingsService {
       throw new SettingsPathError(MANAGED_ERROR_CODES.MANAGED_SETTING_BY_ADMIN);
     }
 
-    // Delete exactly this path — no other settings
     const { deleted, revision } = await this.model.deleteUserOverride(params.userId, params.path);
 
     this.dropUserCache(params.userId);
@@ -209,108 +216,88 @@ export class EffectiveSettingsService {
   };
 
   /**
-   * Legacy updateSettings adapter when flag is ON.
-   *
-   * 1. Flatten only registered non-secret paths from the request
-   * 2. Validate the entire request first
-   * 3. Reject locked / unknown / wrong-type before any write
-   * 4. Apply all registered path overrides atomically
-   * 5. Return remaining unregistered non-secret partial for legacy user_settings merge
-   *
-   * keyVaults is never copied into overrides — caller handles encrypted path separately.
+   * Full settings reset (old-client compatibility when flag ON).
+   * Atomically: delete all overrides + bump revision + delete legacy user_settings (incl. keyVaults).
    */
-  adaptLegacyUpdateSettings = async (params: {
-    input: Record<string, unknown>;
-    userId: string;
-  }): Promise<{
-    /** Registered path overrides applied (or would apply). */
-    appliedPaths: string[];
-    /** Partial to still write to legacy user_settings (unregistered + non-secret). */
-    legacyPartial: Record<string, unknown>;
-  }> => {
+  fullResetSettings = async (params: { userId: string }) => {
     if (!this.isPolicyEnabled()) {
-      // Flag OFF: no adaptation — caller keeps full input for legacy path
-      const { keyVaults: _kv, ...rest } = params.input;
-      return { appliedPaths: [], legacyPartial: rest };
+      const userModel = new UserModel(this.db, params.userId);
+      return userModel.deleteSetting();
     }
 
-    const leaves = flattenLeaves(params.input);
+    await this.db.transaction(async (tx) => {
+      const model = new PlatformSettingsModel(tx);
+      await model.deleteAllUserOverrides(params.userId, { alreadyInTransaction: true });
+      const userModel = new UserModel(tx as LobeChatDatabase, params.userId);
+      await userModel.deleteSetting();
+    });
+
+    this.dropUserCache(params.userId);
+    await this.invalidation.publish({
+      at: new Date().toISOString(),
+      resourceId: params.userId,
+      resourceType: 'settings',
+      revision: await this.model.getUserOverrideRevision(params.userId),
+      scopes: ['settings', `user:${params.userId}`],
+    });
+  };
+
+  /**
+   * Legacy updateSettings when flag is ON — validate entire request first, then
+   * one transaction: re-check locks, write all overrides, bump revision once,
+   * write legacy remainder + encrypted keyVaults. Invalidate only after commit.
+   */
+  applyLegacyUpdateSettings = async (params: {
+    /** Pre-encrypted keyVaults string, or null to skip, or undefined if absent. */
+    encryptedKeyVaults?: string | null;
+    input: Record<string, unknown>;
+    userId: string;
+  }): Promise<{ appliedPaths: string[] }> => {
+    if (!this.isPolicyEnabled()) {
+      throw new SettingsPathError(PLATFORM_ERROR_CODES.PLATFORM_FEATURE_DISABLED);
+    }
+
+    // 1) Strict catalog validation — zero writes on failure
+    const catalog = validateLegacySettingsUpdate(params.input);
+    if (!catalog.ok) {
+      throw new SettingsPathError(catalog.error.code, catalog.error.message);
+    }
+
+    const validatedInput = catalog.value as Record<string, unknown>;
+    const leaves = flattenLeaves(validatedInput).filter((l) => !l.path.startsWith('keyVaults'));
     const ops: Array<{ path: string; value: unknown }> = [];
-    const rejected: SettingsPathError[] = [];
 
     for (const leaf of leaves) {
       const { path, value } = leaf;
-
-      // keyVaults / secrets never enter override table
       if (settingsRegistry.isSecretPath(path)) {
-        continue;
+        throw new SettingsPathError(
+          MANAGED_ERROR_CODES.MANAGED_SETTING_SECRET_PATH,
+          `Secret path not allowed: ${path}`,
+        );
       }
-
       if (!settingsRegistry.has(path)) {
-        // Unregistered non-secret leaves stay in legacy blob (compat)
+        // known catalog leaf not in platform registry → stays in legacy partial
         continue;
       }
-
-      const gate = settingsRegistry.assertPathWritable({ path });
-      if (gate) {
-        rejected.push(new SettingsPathError(gate));
-        continue;
-      }
+      const gate = settingsRegistry.assertPathWritable({ client: 'server', path });
+      if (gate) throw new SettingsPathError(gate);
 
       const validated = settingsRegistry.validateValue(path, value);
       if (!validated.ok) {
-        rejected.push(
-          new SettingsPathError(
-            MANAGED_ERROR_CODES.MANAGED_SETTING_INVALID_VALUE,
-            validated.message,
-          ),
+        throw new SettingsPathError(
+          MANAGED_ERROR_CODES.MANAGED_SETTING_INVALID_VALUE,
+          validated.message,
         );
-        continue;
       }
-
-      const policy = await this.model.getPublishedPolicy(path);
-      if (policy?.mode === 'locked') {
-        rejected.push(new SettingsPathError(MANAGED_ERROR_CODES.MANAGED_SETTING_BY_ADMIN));
-        continue;
-      }
-
       ops.push({ path, value: validated.value });
     }
 
-    // Fail closed — no partial writes
-    if (rejected.length > 0) {
-      throw rejected[0];
-    }
-
-    if (ops.length > 0) {
-      const revision = await this.model.upsertUserOverridesBatch({
-        ops,
-        userId: params.userId,
-      });
-      this.dropUserCache(params.userId);
-      await this.invalidation.publish({
-        at: new Date().toISOString(),
-        resourceId: params.userId,
-        resourceType: 'settings',
-        revision,
-        scopes: ['settings', `user:${params.userId}`],
-      });
-    }
-
-    // Legacy partial: only unregistered top-level keys (minus secrets handled by caller)
-    // Registered leaves are already in overrides; strip them from legacy write to avoid dual source.
-    // For simplicity keep non-registered top-level groups intact if they have no registered leaves
-    // actually applied — but strip keyVaults (caller encrypts).
-    const registeredPaths = new Set(ops.map((o) => o.path));
+    // Build legacy partial (non-registered known leaves + hotkey etc.)
     const legacyPartial: Record<string, unknown> = {};
-
-    for (const [topKey, topVal] of Object.entries(params.input)) {
+    for (const [topKey, topVal] of Object.entries(validatedInput)) {
       if (topKey === 'keyVaults') continue;
       if (settingsRegistry.isSecretPath(topKey)) continue;
 
-      // If any registered leaf under this top key was applied, rebuild without those leaves
-      // is expensive; for compat we still write unregistered-only leaf leftovers via omit.
-      // Strategy: if top-level is entirely unregistered, keep as-is; else omit registered leaves.
       const topRegistered = settingsRegistry
         .paths()
         .some((p) => p === topKey || p.startsWith(`${topKey}.`));
@@ -318,17 +305,11 @@ export class EffectiveSettingsService {
         legacyPartial[topKey] = topVal;
         continue;
       }
-
-      // Drop registered leaves from nested object by not including pure registered subtrees
-      // Unregistered siblings under same parent (rare) preserved via flatten/rebuild:
       const nestedLeaves = flattenLeaves(topVal, topKey);
       const unregistered = nestedLeaves.filter((l) => !settingsRegistry.has(l.path));
       if (unregistered.length === 0) continue;
-
-      // Rebuild a partial tree for unregistered leaves only
       let partial: Record<string, unknown> = {};
       for (const leaf of unregistered) {
-        // relative path under topKey
         const rel = leaf.path.startsWith(`${topKey}.`)
           ? leaf.path.slice(topKey.length + 1)
           : leaf.path;
@@ -345,13 +326,57 @@ export class EffectiveSettingsService {
           cur[parts.at(-1)!] = leaf.value;
         }
       }
-      if (Object.keys(partial).length > 0) {
-        legacyPartial[topKey] = partial;
-      }
+      if (Object.keys(partial).length > 0) legacyPartial[topKey] = partial;
     }
 
-    void registeredPaths; // used for clarity / future
-    return { appliedPaths: ops.map((o) => o.path), legacyPartial };
+    if (params.encryptedKeyVaults !== undefined && params.encryptedKeyVaults !== null) {
+      legacyPartial.keyVaults = params.encryptedKeyVaults;
+    }
+
+    // 2) Single transaction: re-check locks, overrides, revision, legacy write
+    let revision = 0;
+    await this.db.transaction(async (tx) => {
+      const model = new PlatformSettingsModel(tx);
+      for (const op of ops) {
+        const policy = await model.getPublishedPolicy(op.path);
+        if (policy?.mode === 'locked') {
+          throw new SettingsPathError(MANAGED_ERROR_CODES.MANAGED_SETTING_BY_ADMIN);
+        }
+      }
+      if (ops.length > 0) {
+        revision = await model.upsertUserOverridesBatch({
+          alreadyInTransaction: true,
+          ops,
+          userId: params.userId,
+        });
+      }
+      if (Object.keys(legacyPartial).length > 0) {
+        const userModel = new UserModel(tx as LobeChatDatabase, params.userId);
+        await userModel.updateSetting(legacyPartial as Parameters<UserModel['updateSetting']>[0]);
+      }
+    });
+
+    this.dropUserCache(params.userId);
+    if (ops.length > 0 || Object.keys(legacyPartial).length > 0) {
+      await this.invalidation.publish({
+        at: new Date().toISOString(),
+        resourceId: params.userId,
+        resourceType: 'settings',
+        revision,
+        scopes: ['settings', `user:${params.userId}`],
+      });
+    }
+
+    return { appliedPaths: ops.map((o) => o.path) };
+  };
+
+  /** @deprecated use applyLegacyUpdateSettings */
+  adaptLegacyUpdateSettings = async (params: {
+    input: Record<string, unknown>;
+    userId: string;
+  }) => {
+    const result = await this.applyLegacyUpdateSettings(params);
+    return { appliedPaths: result.appliedPaths, legacyPartial: {} };
   };
 
   /**
