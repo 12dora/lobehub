@@ -1,9 +1,7 @@
 /**
  * SafeOutboundHttpClient — SSRF-safe outbound HTTP (G-07).
  *
- * Known residuals (see RESIDUAL.md): NAT64/SIIT IMDS encodings not decoded,
- * no port allowlist, no content-type validation. Consumers must not assume
- * those are covered.
+ * Connector consumers add protocol content-type validation at their adapter.
  */
 export { SafeOutboundHttpError, ssrfBlocked } from './errors';
 export {
@@ -13,6 +11,7 @@ export {
   DEFAULT_OUTBOUND_POLICY,
   expandIpv6,
   extractMappedIpv4,
+  extractRfc6052Ipv4Candidates,
   isAllowlistedHostOrIp,
   isLoopbackIp,
   isMetadataHostname,
@@ -30,6 +29,7 @@ export {
 } from './safeOutboundHttpClient';
 export type {
   DnsResolver,
+  OutboundPolicySnapshot,
   PinnedTransport,
   PinnedTransportRequest,
   PinnedTransportResponse,

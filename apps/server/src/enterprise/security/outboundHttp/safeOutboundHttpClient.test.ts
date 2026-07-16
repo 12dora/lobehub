@@ -9,6 +9,7 @@ import {
   isPrivateIp,
   SafeOutboundHttpClient,
   SafeOutboundHttpError,
+  stripCredentialHeaders,
 } from './index';
 import type { DnsResolver, PinnedTransport, PinnedTransportResponse } from './types';
 
@@ -49,6 +50,12 @@ describe('policy helpers', () => {
     expect(isMetadataIp('::ffff:a9fe:a9fe')).toBe(true); // 169.254.169.254
     expect(isMetadataIp('0:0:0:0:0:ffff:169.254.170.2')).toBe(true);
     expect(isMetadataIp('::ffff:8.8.8.8')).toBe(false);
+  });
+
+  it('decodes RFC 6052 NAT64/SIIT layouts before metadata classification', () => {
+    expect(isMetadataIp('64:ff9b::a9fe:a9fe')).toBe(true);
+    expect(isMetadataIp('64:ff9b:1:a9fe:a9:fe00::')).toBe(true);
+    expect(isMetadataIp('64:ff9b::808:808')).toBe(false);
   });
 });
 
@@ -120,6 +127,35 @@ describe('SafeOutboundHttpClient', () => {
       code: PLATFORM_ERROR_CODES.PLATFORM_SSRF_BLOCKED,
     });
     expect(transport).not.toHaveBeenCalled();
+  });
+
+  it('blocks NAT64 metadata in literal, DNS, and redirect hops', async () => {
+    const nat64Metadata = '64:ff9b::a9fe:a9fe';
+    const transport = vi.fn<PinnedTransport>(async () =>
+      okResponse({
+        headers: { location: `http://[${nat64Metadata}]/latest/meta-data` },
+        status: 302,
+        statusText: 'Found',
+      }),
+    );
+    const client = new SafeOutboundHttpClient({
+      resolve: resolveTo([{ address: '93.184.216.34' }]),
+      transport,
+    });
+    await expect(client.fetch(`http://[${nat64Metadata}]/`)).rejects.toMatchObject({
+      code: PLATFORM_ERROR_CODES.PLATFORM_SSRF_BLOCKED,
+    });
+
+    const dnsClient = new SafeOutboundHttpClient({
+      resolve: resolveTo([{ address: nat64Metadata, family: 6 }]),
+      transport,
+    });
+    await expect(dnsClient.fetch('https://evil.example/imds')).rejects.toMatchObject({
+      code: PLATFORM_ERROR_CODES.PLATFORM_SSRF_BLOCKED,
+    });
+    await expect(client.fetch('https://safe.example/start')).rejects.toMatchObject({
+      code: PLATFORM_ERROR_CODES.PLATFORM_SSRF_BLOCKED,
+    });
   });
 
   it('permanently blocks metadata.google.internal hostname', async () => {
@@ -271,6 +307,63 @@ describe('SafeOutboundHttpClient', () => {
     await expect(client.fetch('gopher://example.com/')).rejects.toThrow(/protocol/i);
   });
 
+  it.each(['key', 'api_key', 'access-token', 'signature', 'X-Amz-Signature'])(
+    'rejects sensitive query key %s again at the final outbound boundary',
+    async (key) => {
+      const transport = vi.fn();
+      const client = new SafeOutboundHttpClient({ transport });
+      await expect(
+        client.fetch(`https://example.test/mcp?${key}=fake-secret`),
+      ).rejects.toMatchObject({ code: PLATFORM_ERROR_CODES.PLATFORM_SSRF_BLOCKED });
+      expect(transport).not.toHaveBeenCalled();
+    },
+  );
+
+  it('re-reads a versioned policy after DNS and fails closed when it tightens', async () => {
+    let reads = 0;
+    const transport = vi.fn();
+    const client = new SafeOutboundHttpClient({
+      policyProvider: () => {
+        reads += 1;
+        return reads === 1
+          ? { policy: { allowlist: [], mode: 'allow-private' }, version: 1 }
+          : { policy: { allowlist: ['allowed.example'], mode: 'allowlist' }, version: 2 };
+      },
+      resolve: resolveTo([{ address: '1.1.1.1' }]),
+      transport,
+    });
+
+    await expect(client.fetch('https://blocked.example/mcp')).rejects.toMatchObject({
+      code: PLATFORM_ERROR_CODES.PLATFORM_SSRF_BLOCKED,
+    });
+    expect(reads).toBeGreaterThanOrEqual(2);
+    expect(transport).not.toHaveBeenCalled();
+  });
+
+  it('uses one absolute deadline across DNS, redirects, transport, and body', async () => {
+    const transport = vi.fn<PinnedTransport>(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 12));
+      return okResponse({
+        headers: { location: 'https://b.example/next' },
+        status: 302,
+        statusText: 'Found',
+      });
+    });
+    const client = new SafeOutboundHttpClient({
+      resolve: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 12));
+        return [{ address: '1.1.1.1', family: 4 }];
+      },
+      timeoutMs: 30,
+      transport,
+    });
+
+    await expect(client.fetch('https://a.example/start')).rejects.toMatchObject({
+      code: PLATFORM_ERROR_CODES.PLATFORM_SSRF_BLOCKED,
+    });
+    expect(transport.mock.calls.length).toBeLessThanOrEqual(1);
+  });
+
   it('passes maxResponseBytes into transport (hard cap, not post-trim)', async () => {
     const transport = vi.fn<PinnedTransport>(async (req) => {
       expect(req.maxResponseBytes).toBe(10);
@@ -288,7 +381,7 @@ describe('SafeOutboundHttpClient', () => {
     expect(transport).toHaveBeenCalledOnce();
   });
 
-  it('strips Authorization/Cookie on cross-origin redirect', async () => {
+  it('rejects cross-origin redirects for secret-bearing requests', async () => {
     const transport = vi.fn<PinnedTransport>(async (req) => {
       if (req.url.hostname === 'a.example') {
         expect(req.headers.Authorization).toBe('Bearer fake-token-not-real');
@@ -299,25 +392,57 @@ describe('SafeOutboundHttpClient', () => {
           statusText: 'Found',
         });
       }
-      expect(req.url.hostname).toBe('b.example');
-      expect(req.headers.Authorization).toBeUndefined();
-      expect(req.headers.Cookie).toBeUndefined();
-      expect(req.headers['X-Custom']).toBe('keep');
-      return okResponse({ body: Buffer.from('final') });
+      throw new Error('cross-origin transport must not execute');
     });
 
     const client = new SafeOutboundHttpClient({
       resolve: resolveTo([{ address: '1.1.1.1' }]),
       transport,
     });
-    const res = await client.fetch('https://a.example/start', {
-      headers: {
-        'Authorization': 'Bearer fake-token-not-real',
-        'Cookie': 'sid=fake',
-        'X-Custom': 'keep',
-      },
+    await expect(
+      client.fetch('https://a.example/start', {
+        headers: {
+          'Authorization': 'Bearer fake-token-not-real',
+          'Cookie': 'sid=fake',
+          'X-Custom': 'keep',
+        },
+      }),
+    ).rejects.toMatchObject({ code: PLATFORM_ERROR_CODES.PLATFORM_SSRF_BLOCKED });
+    expect(transport).toHaveBeenCalledOnce();
+  });
+
+  it('strips built-in and custom credential headers while retaining benign headers', () => {
+    const headers = {
+      'Authorization': 'Bearer fake',
+      'Cookie': 'sid=fake',
+      'X-Api-Key': 'fake-key',
+      'X-Custom': 'keep',
+      'X-Service-Secret': 'fake-secret',
+    };
+    stripCredentialHeaders(headers);
+    expect(headers).toEqual({ 'X-Custom': 'keep' });
+  });
+
+  it.each([307, 308])('rejects secret POST body on cross-origin %s redirect', async (status) => {
+    const transport = vi.fn<PinnedTransport>(async () =>
+      okResponse({
+        headers: { location: 'https://b.example/token' },
+        status,
+        statusText: 'Redirect',
+      }),
+    );
+    const client = new SafeOutboundHttpClient({
+      resolve: resolveTo([{ address: '1.1.1.1' }]),
+      transport,
     });
-    expect(await res.text()).toBe('final');
+    await expect(
+      client.fetch('https://a.example/token', {
+        body: 'client_secret=fake-secret',
+        method: 'POST',
+        secretBearing: true,
+      }),
+    ).rejects.toMatchObject({ code: PLATFORM_ERROR_CODES.PLATFORM_SSRF_BLOCKED });
+    expect(transport).toHaveBeenCalledOnce();
   });
 
   it('keeps credentials on same-origin redirect', async () => {

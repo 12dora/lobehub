@@ -21,7 +21,7 @@ export { containsSensitiveMaterial, isSensitiveKey, REDACTED_PLACEHOLDER, redact
 
 export type { RedactOptions } from './types';
 
-const SIGNED_URL_QUERY_KEYS = new Set(['sig', 'signature', 'xamzsignature']);
+const SIGNED_URL_QUERY_KEYS = new Set(['key', 'sig', 'signature', 'xamzsignature']);
 
 const isSensitiveUrlQueryKey = (key: string): boolean => {
   const normalized = key.toLowerCase().replaceAll(/[^a-z0-9]/g, '');
