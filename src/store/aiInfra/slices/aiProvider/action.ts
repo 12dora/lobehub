@@ -277,12 +277,42 @@ enum AiProviderSwrKey {
   fetchAiProviderRuntimeState = 'FETCH_AI_PROVIDER_RUNTIME_STATE',
 }
 
-type AiProviderRuntimeStateWithBuiltinModels = AiProviderRuntimeState & {
+export type AiProviderRuntimeStateWithBuiltinModels = AiProviderRuntimeState & {
   builtinAiModelList: LobeDefaultAiModelListItem[];
   enabledChatModelList?: EnabledProviderWithModels[];
   enabledEmbeddingModelList?: EnabledProviderWithModels[];
   enabledImageModelList?: EnabledProviderWithModels[];
   enabledVideoModelList?: EnabledProviderWithModels[];
+};
+
+export const buildAiProviderRuntimeStoreState = async (
+  data: AiProviderRuntimeState,
+  builtinAiModelList: LobeDefaultAiModelListItem[],
+): Promise<AiProviderRuntimeStateWithBuiltinModels> => {
+  const enabledEmbeddingAiProviders = data.enabledAiProviders.filter((provider) =>
+    data.enabledAiModels.some(
+      (model) => model.providerId === provider.id && model.type === 'embedding',
+    ),
+  );
+  const [
+    enabledChatModelList,
+    enabledEmbeddingModelList,
+    enabledImageModelList,
+    enabledVideoModelList,
+  ] = await Promise.all([
+    buildChatProviderModelLists(data.enabledChatAiProviders, data.enabledAiModels),
+    buildEmbeddingProviderModelLists(enabledEmbeddingAiProviders, data.enabledAiModels),
+    buildImageProviderModelLists(data.enabledImageAiProviders, data.enabledAiModels),
+    buildVideoProviderModelLists(data.enabledVideoAiProviders, data.enabledAiModels),
+  ]);
+  return {
+    ...data,
+    builtinAiModelList,
+    enabledChatModelList,
+    enabledEmbeddingModelList,
+    enabledImageModelList,
+    enabledVideoModelList,
+  };
 };
 
 type Setter = StoreSetter<AiInfraStore>;
@@ -547,34 +577,7 @@ export class AiProviderActionImpl {
 
         if (isLogin) {
           const data = await aiProviderService.getAiProviderRuntimeState();
-
-          const enabledEmbeddingAiProviders = data.enabledAiProviders.filter((provider) => {
-            return data.enabledAiModels.some(
-              (model) => model.providerId === provider.id && model.type === 'embedding',
-            );
-          });
-
-          // Build model lists with proper async handling
-          const [
-            enabledChatModelList,
-            enabledEmbeddingModelList,
-            enabledImageModelList,
-            enabledVideoModelList,
-          ] = await Promise.all([
-            buildChatProviderModelLists(data.enabledChatAiProviders, data.enabledAiModels),
-            buildEmbeddingProviderModelLists(enabledEmbeddingAiProviders, data.enabledAiModels),
-            buildImageProviderModelLists(data.enabledImageAiProviders, data.enabledAiModels),
-            buildVideoProviderModelLists(data.enabledVideoAiProviders, data.enabledAiModels),
-          ]);
-
-          return {
-            ...data,
-            builtinAiModelList,
-            enabledChatModelList,
-            enabledEmbeddingModelList,
-            enabledImageModelList,
-            enabledVideoModelList,
-          };
+          return buildAiProviderRuntimeStoreState(data, builtinAiModelList);
         }
 
         const enabledAiProviders: EnabledProvider[] = DEFAULT_MODEL_PROVIDER_LIST.filter(
