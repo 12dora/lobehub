@@ -71,6 +71,7 @@ describe('resolveEffectiveUserInterventionConfig (R3-B1)', () => {
           visibility: 'visible',
         },
       },
+      expectedDraftToken: (await admin.getDraft()).draftToken,
       reason: 'lock',
     });
     await admin.publish({ actorUserId: 'admin', expectedRevision: 0, reason: 'p' });
@@ -95,6 +96,7 @@ describe('resolveEffectiveUserInterventionConfig (R3-B1)', () => {
           visibility: 'visible',
         },
       },
+      expectedDraftToken: (await admin.getDraft()).draftToken,
       reason: 'default',
     });
     await admin.publish({ actorUserId: 'admin', expectedRevision: 0, reason: 'publish' });
@@ -125,6 +127,7 @@ describe('resolveEffectiveUserInterventionConfig (R3-B1)', () => {
           visibility: 'visible',
         },
       },
+      expectedDraftToken: (await admin.getDraft()).draftToken,
       reason: 'default',
     });
     await admin.publish({ actorUserId: 'admin', expectedRevision: 0, reason: 'publish' });

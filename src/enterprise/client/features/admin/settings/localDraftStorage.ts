@@ -6,6 +6,16 @@
 const PREFIX = 'aihub.admin.settings.draft';
 
 export type LocalDraftPayload = {
+  /** Server draft snapshot this local work started from (three-way CAS rebase). */
+  originalBaseDraft: Record<
+    string,
+    {
+      mode: 'user' | 'default' | 'locked';
+      schemaVersion: number;
+      value?: unknown;
+      visibility: 'visible' | 'hidden';
+    }
+  >;
   draft: Record<
     string,
     {
@@ -17,6 +27,7 @@ export type LocalDraftPayload = {
   >;
   registryVersion: number;
   baseRevision: number;
+  draftToken: string;
   savedAt: string;
 };
 
@@ -31,7 +42,7 @@ export const loadLocalDraft = (
   try {
     const raw = window.localStorage.getItem(buildLocalDraftKey(registryVersion, baseRevision));
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as LocalDraftPayload;
+    const parsed = JSON.parse(raw) as Partial<LocalDraftPayload>;
     if (
       parsed.registryVersion !== registryVersion ||
       parsed.baseRevision !== baseRevision ||
@@ -39,7 +50,14 @@ export const loadLocalDraft = (
     ) {
       return null;
     }
-    return parsed;
+    return {
+      baseRevision: parsed.baseRevision,
+      draft: parsed.draft,
+      draftToken: parsed.draftToken ?? '',
+      originalBaseDraft: parsed.originalBaseDraft ?? {},
+      registryVersion: parsed.registryVersion,
+      savedAt: parsed.savedAt ?? '',
+    };
   } catch {
     return null;
   }

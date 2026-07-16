@@ -299,15 +299,17 @@ export class PlatformSettingsModel {
    * Multi-path upsert + single revision bump inside one transaction.
    */
   upsertUserOverridesBatch = async (params: {
+    afterOverrideWrite?: (index: number) => Promise<void>;
     ops: Array<{ path: string; value: unknown }>;
     source?: string;
     userId: string;
     alreadyInTransaction?: boolean;
+    beforeRevisionBump?: () => Promise<void>;
   }): Promise<number> => {
     const run = async (db: LobeChatDatabase | Transaction) => {
       const model = new PlatformSettingsModel(db);
       const now = new Date();
-      for (const op of params.ops) {
+      for (const [index, op] of params.ops.entries()) {
         await db
           .insert(userSettingOverrides)
           .values({
@@ -325,7 +327,9 @@ export class PlatformSettingsModel {
             },
             target: [userSettingOverrides.userId, userSettingOverrides.path],
           });
+        await params.afterOverrideWrite?.(index);
       }
+      await params.beforeRevisionBump?.();
       return model.bumpUserOverrideRevision(params.userId);
     };
 

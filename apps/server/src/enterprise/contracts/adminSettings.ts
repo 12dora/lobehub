@@ -19,6 +19,7 @@ export const settingDraftPolicySchema = z
 export const adminSettingsGetDraftOutputSchema = z.object({
   baseRevision: z.number().int().nonnegative(),
   draft: z.record(settingDraftPolicySchema),
+  draftToken: z.string().length(64),
   publishedPolicies: z.record(settingDraftPolicySchema),
   registry: z.array(
     z.object({
@@ -45,12 +46,14 @@ export const adminSettingsGetDraftOutputSchema = z.object({
 export const adminSettingsSaveDraftInputSchema = z
   .object({
     draft: z.record(settingDraftPolicySchema),
+    expectedDraftToken: z.string().length(64),
     reason: z.string().min(1).max(2000),
   })
   .strict();
 
 export const adminSettingsSaveDraftOutputSchema = z.object({
   baseRevision: z.number().int().nonnegative(),
+  draftToken: z.string().length(64),
   ok: z.literal(true),
   registryVersion: z.number().int(),
 });

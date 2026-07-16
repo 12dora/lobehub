@@ -3,6 +3,39 @@ import { describe, expect, it } from 'vitest';
 
 import { validateLegacySettingsUpdate } from './legacySettingsCatalog';
 
+const validReasoningGraph = {
+  edges: [
+    {
+      condition: {
+        properties: { prompt: { type: 'string' } },
+        type: 'object',
+      },
+      from: '__root__',
+      input: { fields: [{ field: 'answer', from: '__root__', required: true }] },
+      instruction: 'Answer the prompt',
+      output: { fields: [{ field: 'answer', required: true }], instruction: 'Return answer' },
+      to: 'answer-node',
+    },
+  ],
+  fields: {
+    answer: {
+      desc: 'Final answer',
+      schema: {
+        properties: { value: { type: 'string' } },
+        required: ['value'],
+        type: 'object',
+      },
+    },
+  },
+  name: 'answer graph',
+  nodes: { 'answer-node': { type: 'llm' } },
+  terminal: 'answer-node',
+};
+
+const graphPayload = (graph: unknown) => ({
+  defaultAgent: { config: { chatConfig: { graph } } },
+});
+
 describe('strict legacy settings catalog (B4-R2)', () => {
   it.each([
     [
@@ -46,6 +79,10 @@ describe('strict legacy settings catalog (B4-R2)', () => {
           },
         },
       },
+    ],
+    [
+      'strict reasoning graph with intentional JSON Schema records',
+      graphPayload(validReasoningGraph),
     ],
     [
       'released config and metadata presentation fields',
@@ -144,6 +181,94 @@ describe('strict legacy settings catalog (B4-R2)', () => {
       { defaultAgent: { config: { tts: { voice: { openai: 'alloy', unknown: 'voice' } } } } },
     ],
   ])('rejects unknown nested fields in %s', (_name, payload) => {
+    const result = validateLegacySettingsUpdate(payload);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toMatch(/UNKNOWN|INVALID/);
+  });
+
+  it.each([
+    ['graph root', graphPayload({ ...validReasoningGraph, unknownRoot: true })],
+    [
+      'graph node',
+      graphPayload({
+        ...validReasoningGraph,
+        nodes: { 'answer-node': { type: 'llm', unknownNode: true } },
+      }),
+    ],
+    [
+      'graph field',
+      graphPayload({
+        ...validReasoningGraph,
+        fields: {
+          answer: { ...validReasoningGraph.fields.answer, unknownField: true },
+        },
+      }),
+    ],
+    [
+      'graph edge',
+      graphPayload({
+        ...validReasoningGraph,
+        edges: [{ ...validReasoningGraph.edges[0], unknownEdge: true }],
+      }),
+    ],
+    [
+      'graph input',
+      graphPayload({
+        ...validReasoningGraph,
+        edges: [
+          {
+            ...validReasoningGraph.edges[0],
+            input: { ...validReasoningGraph.edges[0].input, unknownInput: true },
+          },
+        ],
+      }),
+    ],
+    [
+      'graph input field',
+      graphPayload({
+        ...validReasoningGraph,
+        edges: [
+          {
+            ...validReasoningGraph.edges[0],
+            input: {
+              fields: [
+                { ...validReasoningGraph.edges[0].input.fields[0], unknownInputField: true },
+              ],
+            },
+          },
+        ],
+      }),
+    ],
+    [
+      'graph output',
+      graphPayload({
+        ...validReasoningGraph,
+        edges: [
+          {
+            ...validReasoningGraph.edges[0],
+            output: { ...validReasoningGraph.edges[0].output, unknownOutput: true },
+          },
+        ],
+      }),
+    ],
+    [
+      'graph output field',
+      graphPayload({
+        ...validReasoningGraph,
+        edges: [
+          {
+            ...validReasoningGraph.edges[0],
+            output: {
+              ...validReasoningGraph.edges[0].output,
+              fields: [
+                { ...validReasoningGraph.edges[0].output.fields[0], unknownOutputField: true },
+              ],
+            },
+          },
+        ],
+      }),
+    ],
+  ])('rejects unknown fields recursively in %s', (_name, payload) => {
     const result = validateLegacySettingsUpdate(payload);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toMatch(/UNKNOWN|INVALID/);

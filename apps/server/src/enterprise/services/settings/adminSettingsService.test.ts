@@ -55,6 +55,23 @@ const validDraft = {
   },
 };
 
+const deferred = () => {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+};
+
+const saveCurrentDraft = async (
+  target: AdminSettingsService,
+  params: Omit<Parameters<AdminSettingsService['saveDraft']>[0], 'expectedDraftToken'>,
+) =>
+  target.saveDraft({
+    ...params,
+    expectedDraftToken: (await target.getDraft()).draftToken,
+  });
+
 describe('AdminSettingsService', () => {
   it('getDraft returns registry + empty draft for new bundle', async () => {
     const draft = await service.getDraft();
@@ -62,11 +79,12 @@ describe('AdminSettingsService', () => {
     expect(draft.registryVersion).toBe(settingsRegistry.version);
     expect(draft.registry.length).toBeGreaterThan(10);
     expect(draft.draft).toEqual({});
+    expect(draft.draftToken).toMatch(/^[\da-f]{64}$/);
   });
 
   it('saveDraft validates whole bundle before write; rejects unknown path', async () => {
     await expect(
-      service.saveDraft({
+      saveCurrentDraft(service, {
         actorUserId: 'admin-1',
         draft: {
           'not.registered': {
@@ -95,7 +113,7 @@ describe('AdminSettingsService', () => {
   });
 
   it('saveDraft + publish + rollback append-only flow', async () => {
-    await service.saveDraft({
+    await saveCurrentDraft(service, {
       actorUserId: 'admin-1',
       draft: validDraft,
       reason: 'set defaults',
@@ -122,7 +140,7 @@ describe('AdminSettingsService', () => {
     );
 
     // change draft and publish v2
-    await service.saveDraft({
+    await saveCurrentDraft(service, {
       actorUserId: 'admin-1',
       draft: {
         ...validDraft,
@@ -197,7 +215,7 @@ describe('AdminSettingsService', () => {
     const auditAppend = vi.fn().mockRejectedValue(new Error('audit unavailable'));
 
     await expect(
-      new AdminSettingsService(serverDB, { auditAppend }).saveDraft({
+      saveCurrentDraft(new AdminSettingsService(serverDB, { auditAppend }), {
         actorUserId: 'admin-1',
         draft: validDraft,
         reason: 'must be audited',
@@ -211,5 +229,55 @@ describe('AdminSettingsService', () => {
     ]);
     expect(bundle.draft).toEqual({});
     expect(audits).toEqual([]);
+  });
+
+  it('uses a locked draft CAS so two admins with one token cannot silently overwrite', async () => {
+    const firstLocked = deferred();
+    const releaseFirst = deferred();
+    const first = new AdminSettingsService(serverDB, {
+      lifecycle: {
+        afterDraftLock: async () => {
+          firstLocked.resolve();
+          await releaseFirst.promise;
+        },
+      },
+    });
+    const second = new AdminSettingsService(serverDB);
+    const sharedToken = (await first.getDraft()).draftToken;
+    const firstDraft = validDraft;
+    const secondDraft = {
+      ...validDraft,
+      'general.fontSize': { ...validDraft['general.fontSize'], value: 22 },
+    };
+
+    const firstSave = first.saveDraft({
+      actorUserId: 'admin-1',
+      draft: firstDraft,
+      expectedDraftToken: sharedToken,
+      reason: 'first writer',
+    });
+    await firstLocked.promise;
+    const secondSave = second.saveDraft({
+      actorUserId: 'admin-2',
+      draft: secondDraft,
+      expectedDraftToken: sharedToken,
+      reason: 'second writer',
+    });
+
+    releaseFirst.resolve();
+    const firstResult = await firstSave;
+    await expect(secondSave).rejects.toBeInstanceOf(PlatformRevisionConflictError);
+
+    const [current, audits] = await Promise.all([
+      second.getDraft(),
+      serverDB.select().from(platformAuditLogs),
+    ]);
+    expect(current.draft).toEqual(firstDraft);
+    expect(current.draftToken).toBe(firstResult.draftToken);
+    expect(current.draftToken).not.toBe(sharedToken);
+    expect(audits.filter((row) => row.action === 'admin.settings.saveDraft')).toMatchObject([
+      { actorUserId: 'admin-1', result: 'success' },
+      { actorUserId: 'admin-2', result: 'failure' },
+    ]);
   });
 });

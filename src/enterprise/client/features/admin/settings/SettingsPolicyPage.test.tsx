@@ -151,10 +151,14 @@ const oldPolicy = {
   value: 'old',
   visibility: 'visible' as const,
 };
+const draftToken = 'a'.repeat(64);
+const latestDraftToken = 'b'.repeat(64);
+const savedDraftToken = 'c'.repeat(64);
 
-const makeData = (baseRevision: number, value = 'old') => ({
+const makeData = (baseRevision: number, value = 'old', token = draftToken) => ({
   baseRevision,
   draft: { 'general.fontSize': { ...oldPolicy, value } },
+  draftToken: token,
   publishedPolicies: { 'general.fontSize': { ...oldPolicy, value } },
   registry: [
     {
@@ -236,13 +240,27 @@ describe('SettingsPolicyPage', () => {
     const revisionError = Object.assign(new Error('stale'), {
       code: 'PLATFORM_REVISION_CONFLICT',
     });
-    mocks.saveDraft.mockRejectedValueOnce(revisionError).mockResolvedValueOnce({
-      baseRevision: 2,
-      ok: true,
-      registryVersion: 1,
-    });
+    mocks.saveDraft
+      .mockRejectedValueOnce(revisionError)
+      .mockResolvedValueOnce({
+        baseRevision: 2,
+        draftToken: savedDraftToken,
+        ok: true,
+        registryVersion: 1,
+      })
+      .mockResolvedValueOnce({
+        baseRevision: 2,
+        draftToken: 'd'.repeat(64),
+        ok: true,
+        registryVersion: 1,
+      });
+    let refreshCount = 0;
     mocks.mutate.mockImplementation(async () => {
-      mocks.data = makeData(2, 'server');
+      refreshCount += 1;
+      mocks.data =
+        refreshCount === 1
+          ? makeData(2, 'server', latestDraftToken)
+          : makeData(2, 'local', savedDraftToken);
       return mocks.data;
     });
 
@@ -254,6 +272,7 @@ describe('SettingsPolicyPage', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent('settingsPolicy.conflict.title');
     expect(mocks.saveDraft).toHaveBeenCalledTimes(1);
+    expect(mocks.saveDraft.mock.calls[0]?.[0].expectedDraftToken).toBe(draftToken);
     expect(window.localStorage.getItem(CONFLICT_DRAFT_KEY)).toContain('"previousBaseRevision":1');
     expect(screen.queryByRole('button', { name: 'settingsPolicy.saveDraft' })).toBeNull();
 
@@ -262,7 +281,45 @@ describe('SettingsPolicyPage', () => {
     const save = await screen.findByRole('button', { name: 'settingsPolicy.saveDraft' });
     fireEvent.click(save);
     await waitFor(() => expect(mocks.saveDraft).toHaveBeenCalledTimes(2));
+    expect(mocks.saveDraft.mock.calls[1]?.[0].expectedDraftToken).toBe(latestDraftToken);
     expect(window.localStorage.getItem(CONFLICT_DRAFT_KEY)).toBeNull();
+
+    await waitFor(() => expect(mocks.data.draftToken).toBe(savedDraftToken));
+    fireEvent.change(screen.getByLabelText('editor-font.title:general.fontSize'), {
+      target: { value: 'local-again' },
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'settingsPolicy.saveDraft' }));
+    await waitFor(() => expect(mocks.saveDraft).toHaveBeenCalledTimes(3));
+    expect(mocks.saveDraft.mock.calls[2]?.[0].expectedDraftToken).toBe(savedDraftToken);
+  });
+
+  it('keeps rebase and discard blocked when latest refresh fails, then retries without a loop', async () => {
+    mocks.permissions = [PLATFORM_PERMISSIONS.SETTINGS_READ, PLATFORM_PERMISSIONS.SETTINGS_UPDATE];
+    mocks.saveDraft.mockRejectedValueOnce(
+      Object.assign(new Error('stale token'), { code: 'PLATFORM_REVISION_CONFLICT' }),
+    );
+    mocks.mutate.mockRejectedValueOnce(new Error('offline')).mockImplementationOnce(async () => {
+      mocks.data = makeData(1, 'server', latestDraftToken);
+      return mocks.data;
+    });
+
+    render(<SettingsPolicyPage />);
+    fireEvent.change(await screen.findByLabelText('editor-font.title:general.fontSize'), {
+      target: { value: 'local' },
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'settingsPolicy.saveDraft' }));
+
+    expect(await screen.findByText('settingsPolicy.conflict.latestUnavailable')).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'settingsPolicy.conflict.rebase' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'settingsPolicy.conflict.discard' })).toBeNull();
+    expect(mocks.saveDraft).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'settingsPolicy.conflict.retryRefresh' }));
+    expect(
+      await screen.findByRole('button', { name: 'settingsPolicy.conflict.rebase' }),
+    ).toBeEnabled();
+    expect(mocks.mutate).toHaveBeenCalledTimes(2);
+    expect(mocks.saveDraft).toHaveBeenCalledTimes(1);
   });
 
   it('protects dirty drafts from SPA navigation', async () => {

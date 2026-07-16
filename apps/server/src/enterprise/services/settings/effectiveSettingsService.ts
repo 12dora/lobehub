@@ -54,9 +54,11 @@ const SOFT_CACHE_TTL_MS = 5_000;
  */
 export interface SettingsMutationLifecycle {
   afterBundleLock?: (operation: 'fullReset' | 'legacyUpdate' | 'patch' | 'reset') => Promise<void>;
+  afterManagedOverrideWrite?: (operation: 'legacyUpdate', index: number) => Promise<void>;
   afterManagedWrites?: (operation: 'fullReset' | 'legacyUpdate') => Promise<void>;
   beforeBundleLock?: (operation: 'fullReset' | 'legacyUpdate' | 'patch' | 'reset') => Promise<void>;
   beforeLegacyWrite?: (operation: 'fullReset' | 'legacyUpdate') => Promise<void>;
+  beforeOverrideRevisionBump?: (operation: 'legacyUpdate') => Promise<void>;
 }
 
 export class EffectiveSettingsService {
@@ -223,9 +225,9 @@ export class EffectiveSettingsService {
     }
 
     // B3-R2: lock aggregate pointer + recheck published policy inside same txn as write
-    await this.lifecycle.beforeBundleLock?.('patch');
     const { revision } = await this.db.transaction(async (tx) => {
       const model = new PlatformSettingsModel(tx);
+      await this.lifecycle.beforeBundleLock?.('patch');
       await model.lockBundleForUpdate();
       await this.lifecycle.afterBundleLock?.('patch');
       const policy = await model.getPublishedPolicy(params.path);
@@ -267,9 +269,9 @@ export class EffectiveSettingsService {
     });
     if (gate) throw new SettingsPathError(gate);
 
-    await this.lifecycle.beforeBundleLock?.('reset');
     const result = await this.db.transaction(async (tx) => {
       const model = new PlatformSettingsModel(tx);
+      await this.lifecycle.beforeBundleLock?.('reset');
       await model.lockBundleForUpdate();
       await this.lifecycle.afterBundleLock?.('reset');
       const policy = await model.getPublishedPolicy(params.path);
@@ -303,9 +305,9 @@ export class EffectiveSettingsService {
       return userModel.deleteSetting();
     }
 
-    await this.lifecycle.beforeBundleLock?.('fullReset');
     const revision = await this.db.transaction(async (tx) => {
       const model = new PlatformSettingsModel(tx);
+      await this.lifecycle.beforeBundleLock?.('fullReset');
       await model.lockBundleForUpdate();
       await this.lifecycle.afterBundleLock?.('fullReset');
       const result = await model.deleteAllUserOverrides(params.userId, {
@@ -422,9 +424,9 @@ export class EffectiveSettingsService {
 
     // 2) Single transaction: re-check locks, overrides, revision, legacy write
     let revision = 0;
-    await this.lifecycle.beforeBundleLock?.('legacyUpdate');
     await this.db.transaction(async (tx) => {
       const model = new PlatformSettingsModel(tx);
+      await this.lifecycle.beforeBundleLock?.('legacyUpdate');
       await model.lockBundleForUpdate();
       await this.lifecycle.afterBundleLock?.('legacyUpdate');
       for (const op of ops) {
@@ -435,7 +437,11 @@ export class EffectiveSettingsService {
       }
       if (ops.length > 0) {
         revision = await model.upsertUserOverridesBatch({
+          afterOverrideWrite: async (index) =>
+            this.lifecycle.afterManagedOverrideWrite?.('legacyUpdate', index),
           alreadyInTransaction: true,
+          beforeRevisionBump: async () =>
+            this.lifecycle.beforeOverrideRevisionBump?.('legacyUpdate'),
           ops,
           userId: params.userId,
         });

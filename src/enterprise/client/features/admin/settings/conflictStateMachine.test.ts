@@ -29,15 +29,24 @@ const server = {
   'general.fontSize': policy(20, 'locked'),
   'memory.enabled': policy(2),
 };
+const localToken = 'a'.repeat(64);
+const serverToken = 'b'.repeat(64);
 
-const detect = () =>
+const detectAwaiting = () =>
   reduceConflict(initialConflictState(), {
     localBaseRevision: 1,
     localDraft: local,
+    localDraftToken: localToken,
     originalBaseDraft: original,
+    type: 'CONFLICT_DETECTED',
+  });
+
+const detect = () =>
+  reduceConflict(detectAwaiting(), {
     serverBaseRevision: 2,
     serverDraft: server,
-    type: 'CONFLICT_DETECTED',
+    serverDraftToken: serverToken,
+    type: 'REFRESH_SERVER_SUCCEEDED',
   });
 
 describe('conflictStateMachine', () => {
@@ -48,10 +57,18 @@ describe('conflictStateMachine', () => {
   });
 
   it('blocks mutation while a conflict is unresolved', () => {
+    const awaiting = detectAwaiting();
+    expect(awaiting.phase).toBe('awaitingServer');
+    expect(canMutateAgainstBase(awaiting, 1, localToken)).toBe(false);
+    const unavailable = reduceConflict(awaiting, { type: 'REFRESH_SERVER_FAILED' });
+    expect(unavailable.phase).toBe('latestUnavailable');
+    expect(canMutateAgainstBase(unavailable, 1, localToken)).toBe(false);
+    expect(reduceConflict(unavailable, { type: 'REBASE' })).toBe(unavailable);
+    expect(reduceConflict(unavailable, { type: 'DISCARD' })).toBe(unavailable);
+
     const state = detect();
     expect(state.phase).toBe('conflict');
-    expect(canMutateAgainstBase(state, 1)).toBe(false);
-    expect(canMutateAgainstBase(state, 2)).toBe(false);
+    expect(canMutateAgainstBase(state, 1, localToken)).toBe(false);
   });
 
   it('rebases local changes onto the latest server base without overwriting server-only changes', () => {
@@ -67,21 +84,25 @@ describe('conflictStateMachine', () => {
     expect(state.phase).toBe('rebased');
     expect(state.localBaseRevision).toBe(2);
     expect(state.conflictingPaths).toEqual(['general.fontSize']);
-    expect(canMutateAgainstBase(state, 1)).toBe(false);
-    expect(canMutateAgainstBase(state, 2)).toBe(true);
+    expect(state.localDraftToken).toBe(serverToken);
+    expect(canMutateAgainstBase(state, 1, localToken)).toBe(false);
+    expect(canMutateAgainstBase(state, 2, localToken)).toBe(false);
+    expect(canMutateAgainstBase(state, 2, serverToken)).toBe(true);
   });
 
   it('refreshes the server snapshot repeatedly without replacing local work', () => {
     const latest = { ...server, 'memory.enabled': policy(3) };
-    const once = reduceConflict(detect(), {
+    const once = reduceConflict(reduceConflict(detect(), { type: 'REFRESH_SERVER_STARTED' }), {
       serverBaseRevision: 3,
       serverDraft: latest,
-      type: 'REFRESH_SERVER',
+      serverDraftToken: 'c'.repeat(64),
+      type: 'REFRESH_SERVER_SUCCEEDED',
     });
-    const twice = reduceConflict(once, {
+    const twice = reduceConflict(reduceConflict(once, { type: 'REFRESH_SERVER_STARTED' }), {
       serverBaseRevision: 4,
       serverDraft: { ...latest, 'memory.enabled': policy(4) },
-      type: 'REFRESH_SERVER',
+      serverDraftToken: 'd'.repeat(64),
+      type: 'REFRESH_SERVER_SUCCEEDED',
     });
     expect(twice.serverBaseRevision).toBe(4);
     expect(twice.localDraft['general.fontSize']?.value).toBe(18);
@@ -93,6 +114,7 @@ describe('conflictStateMachine', () => {
     expect(state.phase).toBe('discarded');
     expect(state.localDraft).toEqual(server);
     expect(state.localBaseRevision).toBe(2);
-    expect(canMutateAgainstBase(state, 2)).toBe(true);
+    expect(state.localDraftToken).toBe(serverToken);
+    expect(canMutateAgainstBase(state, 2, serverToken)).toBe(true);
   });
 });
