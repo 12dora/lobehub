@@ -187,6 +187,25 @@ describe('admin AI catalog permission and reauth gates', () => {
     expect(JSON.stringify(audits)).not.toContain(credential);
   });
 
+  it('returns a fixed validation error without reflecting arbitrary credentials', async () => {
+    const caller = await callerFor(ids.aiAdmin);
+    const credential = 'router-arbitrary-credential-leaf';
+    let thrown: unknown;
+    try {
+      await caller.aiProviders.createDraft({
+        displayName: `copied:${credential}`,
+        providerKey: 'router-rejected',
+        reason: 'create rejected',
+        secret: { operation: 'replace', value: credential },
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toMatchObject({ code: 'PRECONDITION_FAILED' });
+    expect(JSON.stringify(thrown)).not.toContain(credential);
+    expect(await db.select().from(platformAiProviders)).toEqual([]);
+  });
+
   it('lets a model-only global role obtain CAS context and mutate without provider update', async () => {
     const [provider] = await db
       .insert(platformAiProviders)

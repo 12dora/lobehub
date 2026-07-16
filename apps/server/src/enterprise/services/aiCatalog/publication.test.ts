@@ -1,7 +1,9 @@
 // @vitest-environment node
+import { and, eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
+import { platformAiCatalogDraftToken, PlatformAiCatalogModel } from '@/database/models/platform';
 import {
   platformAgents,
   platformAiModels,
@@ -185,6 +187,154 @@ describe('AiCatalog publication transaction', () => {
     ).resolves.toMatchObject({ revision: 1 });
     expect((await service.getDetail(provider.id)).published?.providerKey).toBe(
       'environment-provider',
+    );
+  });
+
+  it('rejects direct DB credential and sensitive-endpoint pollution before revision/public output', async () => {
+    const { service } = createService();
+    const credential = 'direct-db-pollution-credential';
+    const provider = await service.createProviderDraft('admin', {
+      checkModel: 'chat',
+      displayName: 'Direct pollution target',
+      enabled: true,
+      providerKey: 'direct-pollution',
+      reason: 'create',
+      secret: { operation: 'replace', value: credential },
+      source: 'custom',
+    });
+    const detail = await service.getDetail(provider.id);
+    const model = await service.createModel('admin', {
+      enabled: true,
+      expectedDraftToken: detail.draftToken,
+      modelKey: 'chat',
+      providerId: provider.id,
+      reason: 'model',
+      type: 'chat',
+    });
+    await db
+      .update(platformAiModels)
+      .set({ description: `copied:${credential}` })
+      .where(eq(platformAiModels.id, model.id));
+    await service.testProvider('admin', { id: provider.id, reason: 'test polluted draft' });
+    let rawDraft = await new PlatformAiCatalogModel(db).getProvider(provider.id);
+    if (!rawDraft) throw new Error('provider draft missing');
+    await expect(
+      service.publishProvider('admin', {
+        expectedDraftToken: platformAiCatalogDraftToken(rawDraft),
+        expectedRevision: 0,
+        id: provider.id,
+        reason: 'reject credential reflection',
+      }),
+    ).rejects.toMatchObject({
+      issues: expect.arrayContaining([
+        'Provider credentials must not appear in public catalog fields',
+      ]),
+    });
+
+    await db
+      .update(platformAiModels)
+      .set({ description: null })
+      .where(eq(platformAiModels.id, model.id));
+    await db
+      .update(platformAiProviders)
+      .set({ config: { endpoint: 'https://example.test/v1?X%2DAPI%2DKEY=smuggled' } })
+      .where(eq(platformAiProviders.id, provider.id));
+    await service.testProvider('admin', { id: provider.id, reason: 'test endpoint pollution' });
+    rawDraft = await new PlatformAiCatalogModel(db).getProvider(provider.id);
+    if (!rawDraft) throw new Error('provider draft missing');
+    await expect(
+      service.publishProvider('admin', {
+        expectedDraftToken: platformAiCatalogDraftToken(rawDraft),
+        expectedRevision: 0,
+        id: provider.id,
+        reason: 'reject endpoint credential',
+      }),
+    ).rejects.toMatchObject({
+      issues: expect.arrayContaining(['Endpoint must be an HTTP(S) URL without credentials']),
+    });
+    expect(await db.select().from(platformResourceRevisions)).toEqual([]);
+    expect((await new AiCatalogReadService(db).getPublished()).providers).toEqual([]);
+  });
+
+  it('rejects credential-reflecting historical revision materialization without moving head', async () => {
+    const { service } = createService();
+    const credential = 'historical-revision-credential';
+    const provider = await service.createProviderDraft('admin', {
+      checkModel: 'chat',
+      displayName: 'Historical target',
+      enabled: true,
+      providerKey: 'historical-target',
+      reason: 'create',
+      secret: { operation: 'replace', value: credential },
+      source: 'custom',
+    });
+    let detail = await service.getDetail(provider.id);
+    const model = await service.createModel('admin', {
+      displayName: 'Version One',
+      enabled: true,
+      expectedDraftToken: detail.draftToken,
+      modelKey: 'chat',
+      providerId: provider.id,
+      reason: 'model',
+      type: 'chat',
+    });
+    await service.testProvider('admin', { id: provider.id, reason: 'test v1' });
+    detail = await service.getDetail(provider.id);
+    await service.publishProvider('admin', {
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: 0,
+      id: provider.id,
+      reason: 'publish v1',
+    });
+    detail = await service.getDetail(provider.id);
+    await service.updateModel('admin', {
+      displayName: 'Version Two',
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: 1,
+      id: model.id,
+      providerId: provider.id,
+      reason: 'update v2',
+    });
+    await service.testProvider('admin', { id: provider.id, reason: 'test v2' });
+    detail = await service.getDetail(provider.id);
+    await service.publishProvider('admin', {
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: 1,
+      id: provider.id,
+      reason: 'publish v2',
+    });
+
+    const [revisionOne] = await db
+      .select()
+      .from(platformResourceRevisions)
+      .where(
+        and(
+          eq(platformResourceRevisions.resourceId, provider.id),
+          eq(platformResourceRevisions.revision, 1),
+        ),
+      );
+    const pollutedPayload = structuredClone(revisionOne.payload);
+    (pollutedPayload.models as Array<Record<string, unknown>>)[0].description = credential;
+    await db
+      .update(platformResourceRevisions)
+      .set({ payload: pollutedPayload })
+      .where(eq(platformResourceRevisions.id, revisionOne.id));
+
+    detail = await service.getDetail(provider.id);
+    await expect(
+      service.rollbackProvider('admin', {
+        expectedDraftToken: detail.draftToken,
+        expectedRevision: 2,
+        id: provider.id,
+        reason: 'reject polluted rollback',
+        targetRevision: 1,
+      }),
+    ).rejects.toMatchObject({
+      issues: ['Provider credentials must not appear in public catalog fields'],
+    });
+    expect(await db.select().from(platformResourceRevisions)).toHaveLength(2);
+    expect((await service.getDetail(provider.id)).published?.models[0].displayName).toBe(
+      'Version Two',
     );
   });
 
