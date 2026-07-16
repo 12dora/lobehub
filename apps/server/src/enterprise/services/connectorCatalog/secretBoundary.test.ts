@@ -34,7 +34,7 @@ describe('connector secret boundary', () => {
     const result = fixedConnectorOperationResult('failure', 'auth');
     expect(result).toEqual({
       errorCategory: 'auth',
-      sanitizedMessage: 'connector.operation_failed',
+      messageCode: 'connector.operation_failed',
       status: 'failure',
     });
     expect(JSON.stringify(result)).not.toContain(upstream);

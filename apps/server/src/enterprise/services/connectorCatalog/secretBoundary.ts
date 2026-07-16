@@ -42,4 +42,4 @@ export const assertConnectorPersistentTextSafe = (
 export const fixedConnectorOperationResult = (
   status: keyof typeof CONNECTOR_OPERATION_MESSAGE_BY_STATUS,
   errorCategory: ConnectorOperationErrorCategory | null,
-) => ({ errorCategory, sanitizedMessage: CONNECTOR_OPERATION_MESSAGE_BY_STATUS[status], status });
+) => ({ errorCategory, messageCode: CONNECTOR_OPERATION_MESSAGE_BY_STATUS[status], status });

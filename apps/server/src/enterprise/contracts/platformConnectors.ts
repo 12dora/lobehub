@@ -165,6 +165,7 @@ export const platformConnectorErrorCodeSchema = z.enum([
   'PLATFORM_CONNECTOR_OAUTH_STATE_INVALID',
   'PLATFORM_CONNECTOR_OAUTH_STATE_REPLAYED',
   'PLATFORM_CONNECTOR_RETURN_TO_INVALID',
+  'PLATFORM_CONNECTOR_RESOURCE_MISMATCH',
   'PLATFORM_CONNECTOR_SCOPE_NOT_ALLOWED',
   'PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED',
   'PLATFORM_CONNECTOR_SSRF_BLOCKED',
@@ -280,14 +281,19 @@ export const connectorConnectionTestStateSchema = z
   .object({
     errorCategory: z.enum(['auth', 'network', 'protocol', 'invalid_config', 'policy']).nullable(),
     latencyMs: z.number().int().nonnegative().nullable(),
-    sanitizedMessage: connectorSafeMessageSchema,
+    messageCode: connectorSafeMessageSchema,
     stale: z.boolean(),
     status: z.enum(['pending', 'success', 'failure']),
     testedAt: z.date(),
     testedDraftToken: z.string().length(64),
     testedRevision: z.number().int().nonnegative(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.messageCode !== CONNECTOR_OPERATION_MESSAGE_BY_STATUS[value.status]) {
+      ctx.addIssue({ code: 'custom', message: 'status and messageCode must match' });
+    }
+  });
 
 const adminConnectorDraftBaseSchema = z
   .object({
@@ -455,15 +461,20 @@ const clearSecretMutation = { operation: 'clear' } as const;
 const emptySecretState = { configured: false, fingerprint: null, updatedAt: null } as const;
 const configuredSecretState = { configured: true, fingerprint: null, updatedAt: null } as const;
 const clearOnlySecretMutationSchema = z.object({ operation: z.literal('clear') }).strict();
-const connectorSecretLeavesSchema = z
+const connectorSecretSlotLeavesSchema = z
   .object({
-    current: z.array(z.string().min(1).max(32_768)).max(1000),
-    replacement: z.array(z.string().min(1).max(32_768)).max(1000),
+    oauthClientSecret: z.array(z.string().min(1).max(32_768)).max(1000),
+    sharedSecret: z.array(z.string().min(1).max(32_768)).max(1000),
   })
   .strict();
 
+export interface ConnectorSecretSlotSources {
+  oauthClientSecret?: unknown;
+  sharedSecret?: unknown;
+}
+
 export interface ConnectorCurrentSecretLoader {
-  loadCurrentSecretSources: (connectorId: string) => Promise<unknown[]>;
+  loadCurrentSecretSources: (connectorId: string) => Promise<ConnectorSecretSlotSources>;
 }
 
 export interface TrustedConnectorSecretContext {
@@ -472,7 +483,11 @@ export interface TrustedConnectorSecretContext {
 
 const trustedSecretContexts = new WeakMap<
   TrustedConnectorSecretContext,
-  { connectorId: string; leaves: z.infer<typeof connectorSecretLeavesSchema> }
+  {
+    connectorId: string;
+    current: z.infer<typeof connectorSecretSlotLeavesSchema>;
+    replacement: z.infer<typeof connectorSecretSlotLeavesSchema>;
+  }
 >();
 
 const collectSecretLeafValues = (value: unknown, output: Set<string>): void => {
@@ -485,27 +500,35 @@ const collectSecretLeafValues = (value: unknown, output: Set<string>): void => {
     return;
   }
   if (!value || typeof value !== 'object') return;
-  Object.values(value).forEach((item) => collectSecretLeafValues(item, output));
+  Object.entries(value).forEach(([key, item]) => {
+    collectSecretLeafValues(key, output);
+    collectSecretLeafValues(item, output);
+  });
+};
+
+const collectSecretSlots = (sources: ConnectorSecretSlotSources) => {
+  const oauthClientSecret = new Set<string>();
+  const sharedSecret = new Set<string>();
+  collectSecretLeafValues(sources.oauthClientSecret, oauthClientSecret);
+  collectSecretLeafValues(sources.sharedSecret, sharedSecret);
+  return connectorSecretSlotLeavesSchema.parse({
+    oauthClientSecret: [...oauthClientSecret],
+    sharedSecret: [...sharedSecret],
+  });
 };
 
 /** Only this server-side loader path can mint a context accepted by the normalizers. */
 export const loadTrustedConnectorSecretContext = async (
   loader: ConnectorCurrentSecretLoader,
   connectorId: string,
-  replacementSecretSources: unknown[],
+  replacementSecretSources: ConnectorSecretSlotSources,
 ): Promise<TrustedConnectorSecretContext> => {
   const currentSources = await loader.loadCurrentSecretSources(connectorId);
-  const current = new Set<string>();
-  const replacement = new Set<string>();
-  currentSources.forEach((source) => collectSecretLeafValues(source, current));
-  replacementSecretSources.forEach((source) => collectSecretLeafValues(source, replacement));
   const context = Object.freeze({ source: 'server-secret-store' as const });
   trustedSecretContexts.set(context, {
     connectorId: connectorIdSchema.parse(connectorId),
-    leaves: connectorSecretLeavesSchema.parse({
-      current: [...current],
-      replacement: [...replacement],
-    }),
+    current: collectSecretSlots(currentSources),
+    replacement: collectSecretSlots(replacementSecretSources),
   });
   return context;
 };
@@ -515,7 +538,7 @@ const resolveTrustedSecretLeaves = (context: TrustedConnectorSecretContext) => {
   if (!trusted) {
     throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED');
   }
-  return trusted.leaves;
+  return trusted;
 };
 
 type SecretMutation =
@@ -559,12 +582,17 @@ const assertConnectorPersistentFieldsSafe = (
   reason: string,
   secretContext: TrustedConnectorSecretContext,
 ): void => {
-  const leaves = resolveTrustedSecretLeaves(secretContext);
-  const secretLeaves = new Set([...leaves.current, ...leaves.replacement]);
+  const trusted = resolveTrustedSecretLeaves(secretContext);
+  const secretLeaves = new Set([
+    ...trusted.current.oauthClientSecret,
+    ...trusted.current.sharedSecret,
+    ...trusted.replacement.oauthClientSecret,
+    ...trusted.replacement.sharedSecret,
+  ]);
   assertNoKnownSecret(reason, secretLeaves);
   assertNoKnownSecret(
     {
-      connectionTestMessage: draft.connectionTest?.sanitizedMessage,
+      connectionTestMessage: draft.connectionTest?.messageCode,
       description: draft.description,
       displayName: draft.displayName,
       endpoint: draft.endpoint,
@@ -582,8 +610,13 @@ const assertConnectorPersistentFieldsSafe = (
 };
 
 const getSecretLeaves = (secretContext: TrustedConnectorSecretContext): ReadonlySet<string> => {
-  const leaves = resolveTrustedSecretLeaves(secretContext);
-  return new Set([...leaves.current, ...leaves.replacement]);
+  const trusted = resolveTrustedSecretLeaves(secretContext);
+  return new Set([
+    ...trusted.current.oauthClientSecret,
+    ...trusted.current.sharedSecret,
+    ...trusted.replacement.oauthClientSecret,
+    ...trusted.replacement.sharedSecret,
+  ]);
 };
 
 const collectStringValues = (value: unknown, output: Set<string>): void => {
@@ -596,36 +629,86 @@ const collectStringValues = (value: unknown, output: Set<string>): void => {
     return;
   }
   if (!value || typeof value !== 'object') return;
-  Object.values(value).forEach((item) => collectStringValues(item, output));
+  Object.entries(value).forEach(([key, item]) => {
+    collectStringValues(key, output);
+    collectStringValues(item, output);
+  });
 };
 
 const assertReplacementLeavesComplete = (
-  mutations: SecretMutation[],
+  mutations: { oauthClientSecret: SecretMutation; sharedSecret: SecretMutation },
   secretContext: TrustedConnectorSecretContext,
 ): void => {
-  const provided = new Set(resolveTrustedSecretLeaves(secretContext).replacement);
-  const actual = new Set<string>();
-  for (const mutation of mutations) {
+  const provided = resolveTrustedSecretLeaves(secretContext).replacement;
+  for (const slot of ['oauthClientSecret', 'sharedSecret'] as const) {
+    const actual = new Set<string>();
+    const mutation = mutations[slot];
     if (mutation?.operation === 'replace') collectStringValues(mutation.value, actual);
-  }
-  if ([...actual].some((secret) => !provided.has(secret))) {
-    throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED');
+    if (
+      actual.size !== provided[slot].length ||
+      [...actual].some((secret) => !provided[slot].includes(secret))
+    ) {
+      throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED');
+    }
   }
 };
+
+const isConfiguredSlotConsistent = (configured: boolean, leaves: string[]): boolean =>
+  configured ? leaves.length > 0 : leaves.length === 0;
 
 const assertConfiguredCurrentSecretsLoaded = (
   draft: z.infer<typeof adminConnectorDraftSchema>,
   secretContext: TrustedConnectorSecretContext,
 ): void => {
   const trusted = trustedSecretContexts.get(secretContext);
-  if (!trusted || trusted.connectorId !== draft.id) {
+  if (!trusted) {
     throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED');
   }
-  const current = trusted.leaves.current;
-  const configured =
-    (draft.credentialMode === 'shared_service_account' && draft.sharedSecret.configured) ||
-    (draft.credentialMode === 'per_user_oauth' && draft.oauthClientSecret.configured);
-  if (configured && current.length === 0) {
+  if (trusted.connectorId !== draft.id) {
+    throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_RESOURCE_MISMATCH');
+  }
+  const valid =
+    draft.credentialMode === 'none'
+      ? trusted.current.sharedSecret.length === 0 && trusted.current.oauthClientSecret.length === 0
+      : draft.credentialMode === 'shared_service_account'
+        ? isConfiguredSlotConsistent(draft.sharedSecret.configured, trusted.current.sharedSecret) &&
+          trusted.current.oauthClientSecret.length === 0
+        : isConfiguredSlotConsistent(
+            draft.oauthClientSecret.configured,
+            trusted.current.oauthClientSecret,
+          ) && trusted.current.sharedSecret.length === 0;
+  if (!valid) {
+    throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED');
+  }
+};
+
+const assertCreateSecretSlots = (
+  draft: z.infer<typeof adminConnectorDraftSchema>,
+  secretContext: TrustedConnectorSecretContext,
+): void => {
+  const trusted = resolveTrustedSecretLeaves(secretContext);
+  if (trusted.connectorId !== draft.id) {
+    throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_RESOURCE_MISMATCH');
+  }
+  if (trusted.current.oauthClientSecret.length > 0 || trusted.current.sharedSecret.length > 0) {
+    throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED');
+  }
+  assertDraftMatchesSecretSlots(draft, trusted.replacement);
+};
+
+const assertDraftMatchesSecretSlots = (
+  draft: z.infer<typeof adminConnectorDraftSchema>,
+  slots: z.infer<typeof connectorSecretSlotLeavesSchema>,
+): void => {
+  const valid =
+    draft.credentialMode === 'none'
+      ? slots.sharedSecret.length === 0 && slots.oauthClientSecret.length === 0
+      : draft.credentialMode === 'shared_service_account'
+        ? isConfiguredSlotConsistent(draft.sharedSecret.configured, slots.sharedSecret) &&
+          slots.oauthClientSecret.length === 0
+        : isConfiguredSlotConsistent(draft.oauthClientSecret.configured, slots.oauthClientSecret) &&
+          slots.sharedSecret.length === 0;
+  if (!valid) {
     throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED');
   }
 };
@@ -637,12 +720,14 @@ export const normalizeAdminConnectorCreateInput = (
 ) => {
   const command = adminConnectorCreateDraftInputSchema.parse(input);
   const draft = adminConnectorDraftSchema.parse(draftInput);
-  assertConfiguredCurrentSecretsLoaded(draft, secretContext);
+  assertCreateSecretSlots(draft, secretContext);
   assertReplacementLeavesComplete(
-    [
-      command.credentialMode === 'shared_service_account' ? command.sharedSecret : undefined,
-      command.credentialMode === 'per_user_oauth' ? command.oauthClientSecret : undefined,
-    ],
+    {
+      oauthClientSecret:
+        command.credentialMode === 'per_user_oauth' ? command.oauthClientSecret : undefined,
+      sharedSecret:
+        command.credentialMode === 'shared_service_account' ? command.sharedSecret : undefined,
+    },
     secretContext,
   );
   assertConnectorPersistentFieldsSafe(draft, command.reason, secretContext);
@@ -669,11 +754,17 @@ export const normalizeAdminConnectorUpdateInput = (
 ) => {
   const current = adminConnectorDraftSchema.parse(currentInput);
   const patch = adminConnectorUpdateDraftInputSchema.parse(patchInput);
+  if (patch.id !== current.id) {
+    throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_RESOURCE_MISMATCH');
+  }
   const targetMode = patch.credentialMode ?? current.credentialMode;
   const switchingMode = targetMode !== current.credentialMode;
   const redirectUri = httpUrlSchema.parse(serverRedirectUri);
   assertConfiguredCurrentSecretsLoaded(current, secretContext);
-  assertReplacementLeavesComplete([patch.sharedSecret, patch.oauthClientSecret], secretContext);
+  assertReplacementLeavesComplete(
+    { oauthClientSecret: patch.oauthClientSecret, sharedSecret: patch.sharedSecret },
+    secretContext,
+  );
 
   if (targetMode !== 'shared_service_account' && patch.sharedSecret) {
     clearOnlySecretMutationSchema.parse(patch.sharedSecret);
@@ -737,6 +828,25 @@ export const normalizeAdminConnectorUpdateInput = (
           )
         : emptySecretState,
   });
+  const trusted = resolveTrustedSecretLeaves(secretContext);
+  assertDraftMatchesSecretSlots(candidate, {
+    oauthClientSecret:
+      targetMode !== 'per_user_oauth' || patch.oauthClientSecret?.operation === 'clear'
+        ? []
+        : patch.oauthClientSecret?.operation === 'replace'
+          ? trusted.replacement.oauthClientSecret
+          : current.credentialMode === 'per_user_oauth'
+            ? trusted.current.oauthClientSecret
+            : [],
+    sharedSecret:
+      targetMode !== 'shared_service_account' || patch.sharedSecret?.operation === 'clear'
+        ? []
+        : patch.sharedSecret?.operation === 'replace'
+          ? trusted.replacement.sharedSecret
+          : current.credentialMode === 'shared_service_account'
+            ? trusted.current.sharedSecret
+            : [],
+  });
   assertConnectorPersistentFieldsSafe(candidate, patch.reason, secretContext);
 
   return {
@@ -768,17 +878,26 @@ export const adminConnectorTestInputSchema = adminConnectorDraftActionInputSchem
 
 export const adminConnectorDiscoverOutputSchema = z
   .object({
+    messageCode: connectorSafeMessageSchema,
     oauthConfig: adminConnectorOAuthConfigSchema.nullable(),
-    sanitizedMessage: connectorSafeMessageSchema,
     tools: z.array(connectorToolDraftSchema.omit({ id: true })).max(1000),
   })
   .strict();
 
-export const adminConnectorTestOutputSchema = connectorConnectionTestStateSchema.omit({
-  stale: true,
-  testedDraftToken: true,
-  testedRevision: true,
-});
+export const adminConnectorTestOutputSchema = z
+  .object({
+    errorCategory: z.enum(['auth', 'network', 'protocol', 'invalid_config', 'policy']).nullable(),
+    latencyMs: z.number().int().nonnegative().nullable(),
+    messageCode: connectorSafeMessageSchema,
+    status: z.enum(['pending', 'success', 'failure']),
+    testedAt: z.date(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.messageCode !== CONNECTOR_OPERATION_MESSAGE_BY_STATUS[value.status]) {
+      ctx.addIssue({ code: 'custom', message: 'status and messageCode must match' });
+    }
+  });
 
 const adminConnectorPublicationInputSchema = z
   .object({
