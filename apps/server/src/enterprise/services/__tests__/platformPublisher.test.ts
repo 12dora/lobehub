@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
 import { createBrandingPointerAdapter } from '@/database/models/platform';
@@ -91,6 +91,35 @@ describe('PlatformPublisherService', () => {
     ).rejects.toBeInstanceOf(PlatformRevisionConflictError);
 
     expect(invalidation.events).toHaveLength(0);
+  });
+
+  it('returns committed success when best-effort invalidation delivery fails', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const failingPublisher = new PlatformPublisherService(serverDB, {
+      publish: async () => {
+        throw new Error('redis unavailable');
+      },
+    });
+
+    const result = await failingPublisher.publish({
+      actorUserId: 'admin-1',
+      expectedRevision: 0,
+      payload: { displayName: 'committed' },
+      pointer: createBrandingPointerAdapter(brandingId),
+      resourceId: brandingId,
+      resourceType: 'branding',
+    });
+
+    expect(result.revision.revision).toBe(1);
+    expect(await serverDB.select().from(platformResourceRevisions)).toHaveLength(1);
+    expect(await serverDB.select().from(platformAuditLogs)).toContainEqual(
+      expect.objectContaining({ result: 'success' }),
+    );
+    expect(error).toHaveBeenCalledWith(
+      '[platformPublisher] invalidation delivery failed',
+      expect.objectContaining({ revision: 1 }),
+    );
+    error.mockRestore();
   });
 
   it('rolls back to a prior revision and invalidates caches', async () => {

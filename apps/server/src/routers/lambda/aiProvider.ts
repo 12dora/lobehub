@@ -28,6 +28,9 @@ import {
 } from '@/types/aiProvider';
 import { type ProviderConfig } from '@/types/user/settings';
 
+const MAX_AI_CATALOG_SHADOW_PROVIDERS = 20;
+const MAX_AI_CATALOG_SHADOW_MODELS_PER_PROVIDER = 200;
+
 const aiProviderProcedure = wsCompatProcedure.use(serverDatabase).use(async (opts) => {
   const { ctx } = opts;
 
@@ -147,20 +150,20 @@ export const aiProviderRouter = router({
       let upstreamState: AiProviderRuntimeState;
       if (flags.ENABLE_PLATFORM_MANAGED_AI) {
         // Shadow comparison needs only provider/model metadata. Never decrypt user vaults here.
-        const providers = (await ctx.aiInfraRepos.getAiProviderList()).filter(
-          (provider) => provider.enabled,
-        );
+        const providers = (await ctx.aiInfraRepos.getAiProviderList())
+          .filter((provider) => provider.enabled)
+          .slice(0, MAX_AI_CATALOG_SHADOW_PROVIDERS);
         const models = (
           await Promise.all(
             providers.map(async (provider) =>
-              (await ctx.aiInfraRepos.getAiProviderModelList(provider.id, { enabled: true })).map(
-                (model) => ({
+              (await ctx.aiInfraRepos.getAiProviderModelList(provider.id, { enabled: true }))
+                .slice(0, MAX_AI_CATALOG_SHADOW_MODELS_PER_PROVIDER)
+                .map((model) => ({
                   ...model,
                   abilities: model.abilities ?? {},
                   enabled: true,
                   providerId: provider.id,
-                }),
-              ),
+                })),
             ),
           )
         ).flat();

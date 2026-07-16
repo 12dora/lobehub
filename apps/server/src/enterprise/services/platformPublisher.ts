@@ -50,7 +50,7 @@ export class PlatformPublisherService {
     const { invalidationScopes, ...publishParams } = params;
     const result = await this.revisions.publishDraft(publishParams);
 
-    await this.invalidation.publish({
+    await this.publishInvalidation({
       at: new Date().toISOString(),
       resourceId: params.resourceId,
       resourceType: params.resourceType,
@@ -65,7 +65,7 @@ export class PlatformPublisherService {
     const { invalidationScopes, ...rollbackParams } = params;
     const result = await this.revisions.rollbackToRevision(rollbackParams);
 
-    await this.invalidation.publish({
+    await this.publishInvalidation({
       at: new Date().toISOString(),
       resourceId: params.resourceId,
       resourceType: params.resourceType,
@@ -74,6 +74,23 @@ export class PlatformPublisherService {
     });
 
     return result;
+  };
+
+  private publishInvalidation = async (
+    event: Parameters<PlatformConfigInvalidationPublisher['publish']>[0],
+  ): Promise<void> => {
+    try {
+      await this.invalidation.publish(event);
+    } catch (error) {
+      // The database revision is already committed. Cache invalidation is recoverable
+      // from the DB/version probes and must never turn a committed publish into failure.
+      console.error('[platformPublisher] invalidation delivery failed', {
+        errorClass: error instanceof Error ? error.name : 'UnknownError',
+        resourceId: event.resourceId,
+        resourceType: event.resourceType,
+        revision: event.revision,
+      });
+    }
   };
 
   getPublishedSnapshot = async (resourceType: PlatformResourceType, resourceId: string) => {

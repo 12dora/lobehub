@@ -17,9 +17,10 @@ export interface AppliedAiSecret {
 }
 
 export interface PlatformProviderKeyVaults {
-  [key: string]: string | undefined;
+  [key: string]: Record<string, string> | string | undefined;
   apiKey?: string;
   baseURL?: string;
+  customHeaders?: Record<string, string>;
 }
 
 export const toDefinedPlatformKeyVaults = (
@@ -67,7 +68,9 @@ export class AiCatalogSecretManager {
       };
     }
 
-    const serialized = JSON.stringify({ apiKey: mutation.value });
+    const keyVaults =
+      typeof mutation.value === 'string' ? { apiKey: mutation.value } : mutation.value;
+    const serialized = JSON.stringify(keyVaults);
     const encryptedKeyVaults = await this.secrets.encrypt(serialized);
     return {
       encryptedKeyVaults,
@@ -83,8 +86,14 @@ export class AiCatalogSecretManager {
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
       throw new Error('PLATFORM_SECRET_NOT_READABLE');
     }
-    for (const value of Object.values(parsed)) {
-      if (value !== undefined && typeof value !== 'string') {
+    for (const [key, value] of Object.entries(parsed)) {
+      const validNestedHeaders =
+        key === 'customHeaders' &&
+        value !== null &&
+        typeof value === 'object' &&
+        !Array.isArray(value) &&
+        Object.values(value).every((item) => typeof item === 'string');
+      if (value !== undefined && typeof value !== 'string' && !validNestedHeaders) {
         throw new Error('PLATFORM_SECRET_NOT_READABLE');
       }
     }
