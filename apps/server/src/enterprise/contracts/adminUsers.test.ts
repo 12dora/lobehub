@@ -89,6 +89,7 @@ describe('adminUsersListOutputSchema', () => {
           fullName: 'A',
           id: 'u1',
           lastActiveAt: null,
+          providerIds: ['credential', 'google'],
           roles: ['user_admin'],
           status: 'active',
           username: 'a',
@@ -97,9 +98,10 @@ describe('adminUsersListOutputSchema', () => {
       nextCursor: null,
     });
     expect(ok.items).toHaveLength(1);
+    expect(ok.items[0]!.providerIds).toEqual(['credential', 'google']);
   });
 
-  it('strict list output rejects secret-like fields (password/token)', () => {
+  it('strict list output rejects secret-like fields (password/token/accountId)', () => {
     expect(() =>
       adminUsersListOutputSchema.parse({
         items: [
@@ -111,6 +113,7 @@ describe('adminUsersListOutputSchema', () => {
             id: 'u1',
             lastActiveAt: null,
             password: 'secret',
+            providerIds: [],
             roles: [],
             status: 'active',
             token: 'tok',
@@ -120,6 +123,27 @@ describe('adminUsersListOutputSchema', () => {
         nextCursor: null,
       }),
     ).toThrow(/password|token|Unrecognized/);
+
+    expect(() =>
+      adminUsersListOutputSchema.parse({
+        items: [
+          {
+            accountId: 'acct-1',
+            avatar: null,
+            createdAt: new Date(),
+            email: null,
+            fullName: null,
+            id: 'u1',
+            lastActiveAt: null,
+            providerIds: ['google'],
+            roles: [],
+            status: 'active',
+            username: null,
+          } as never,
+        ],
+        nextCursor: null,
+      }),
+    ).toThrow(/accountId|Unrecognized/);
   });
 });
 

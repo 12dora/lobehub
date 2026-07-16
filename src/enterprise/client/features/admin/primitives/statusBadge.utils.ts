@@ -1,5 +1,13 @@
 export type AdminResourceStatus =
-  'draft' | 'published' | 'pending' | 'disabled' | 'archived' | 'error' | 'unknown';
+  | 'draft'
+  | 'published'
+  | 'pending'
+  | 'disabled'
+  | 'archived'
+  | 'error'
+  | 'active'
+  | 'banned'
+  | 'unknown';
 
 export type AdminStatusLabelKey =
   | 'primitives.status.archived'
@@ -8,6 +16,8 @@ export type AdminStatusLabelKey =
   | 'primitives.status.error'
   | 'primitives.status.pending'
   | 'primitives.status.published'
+  | 'primitives.status.active'
+  | 'primitives.status.banned'
   | 'primitives.status.unknown';
 
 export interface AdminStatusPresentation {
@@ -21,7 +31,9 @@ export interface AdminStatusPresentation {
 }
 
 const STATUS_MAP: Record<AdminResourceStatus, Omit<AdminStatusPresentation, 'status'>> = {
+  active: { color: 'success', icon: 'check', labelKey: 'primitives.status.active' },
   archived: { color: 'default', icon: 'archive', labelKey: 'primitives.status.archived' },
+  banned: { color: 'error', icon: 'ban', labelKey: 'primitives.status.banned' },
   disabled: { color: 'default', icon: 'ban', labelKey: 'primitives.status.disabled' },
   draft: { color: 'warning', icon: 'file', labelKey: 'primitives.status.draft' },
   error: { color: 'error', icon: 'alert', labelKey: 'primitives.status.error' },
