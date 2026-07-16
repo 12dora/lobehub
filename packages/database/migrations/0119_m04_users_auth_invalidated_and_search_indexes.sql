@@ -13,6 +13,7 @@
 -- migration replay (same pattern as 0116). Never DROP these indexes on replay —
 -- that would create a no-index write-blocking window.
 ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "auth_invalidated_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "auth_invalidated_excluded_session_id" text;--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "users_email_lower_pattern_idx" ON "users" USING btree (lower("email") text_pattern_ops);--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "users_username_lower_pattern_idx" ON "users" USING btree (lower("username") text_pattern_ops);--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "users_normalized_email_lower_pattern_idx" ON "users" USING btree (lower("normalized_email") text_pattern_ops);

@@ -423,36 +423,30 @@ export class AdminUserModel {
   };
 
   /**
-   * Rotate security issuance timestamp on a retained Better Auth session so it
-   * remains valid after users.auth_invalidated_at advances (R2-01).
-   * Sets createdAt strictly after `afterCutoff` so cutoff check is `issuedAt > cutoff`.
+   * Assert a Better Auth session row exists and belongs to the user.
+   * Returns true if valid; never returns tokens.
    */
-  rotateSessionSecurityIssuedAt = async (params: {
-    afterCutoff: Date;
+  assertSessionBelongsToUser = async (params: {
     sessionId: string;
     userId: string;
-  }): Promise<Date | null> => {
-    const issuedAt = new Date(params.afterCutoff.getTime() + 1);
+  }): Promise<boolean> => {
     const [row] = await this.db
-      .update(session)
-      .set({
-        createdAt: issuedAt,
-        updatedAt: issuedAt,
-      })
+      .select({ id: session.id })
+      .from(session)
       .where(and(eq(session.id, params.sessionId), eq(session.userId, params.userId)))
-      .returning({ createdAt: session.createdAt, id: session.id });
-    return row?.createdAt ?? null;
+      .limit(1);
+    return Boolean(row);
   };
 
   /**
-   * Ban/unban user. When banning, advances authInvalidatedAt security epoch.
-   * Does not perform last-super checks (service + RBAC lock must wrap for supers).
+   * Ban/unban user. When banning, advances authInvalidatedAt and clears any
+   * retained-session cutoff exception. Does not perform last-super checks.
    */
   setBanned = async (params: {
     banExpires?: Date | null;
     banReason: string;
     banned: boolean;
-    /** When true (default on ban), set authInvalidatedAt = now. */
+    /** When true (default on ban), set authInvalidatedAt = now and clear exception. */
     invalidateAuth?: boolean;
     userId: string;
   }): Promise<AdminUserBanState | null> => {
@@ -461,7 +455,12 @@ export class AdminUserModel {
       const [row] = await this.db
         .update(users)
         .set({
-          ...(params.invalidateAuth === false ? {} : { authInvalidatedAt: now }),
+          ...(params.invalidateAuth === false
+            ? {}
+            : {
+                authInvalidatedAt: now,
+                authInvalidatedExcludedSessionId: null,
+              }),
           banExpires: params.banExpires ?? null,
           banReason: params.banReason,
           banned: true,
@@ -495,12 +494,26 @@ export class AdminUserModel {
     return row ?? null;
   };
 
-  /** Advance security epoch without changing ban flags (session revoke). */
-  invalidateAuth = async (userId: string, at = new Date()): Promise<void> => {
+  /**
+   * Advance security epoch. Optionally record a single Better Auth session id
+   * exempt from the cutoff (includeCurrent=false). Full revoke passes null.
+   * Never rewrites session.createdAt (reauth clock stays original login time).
+   */
+  invalidateAuth = async (params: {
+    at?: Date;
+    /** Retained BA session id, or null to clear exception (full revoke / ban). */
+    excludedSessionId?: string | null;
+    userId: string;
+  }): Promise<void> => {
+    const at = params.at ?? new Date();
     await this.db
       .update(users)
-      .set({ authInvalidatedAt: at, updatedAt: at })
-      .where(eq(users.id, userId));
+      .set({
+        authInvalidatedAt: at,
+        authInvalidatedExcludedSessionId: params.excludedSessionId ?? null,
+        updatedAt: at,
+      })
+      .where(eq(users.id, params.userId));
   };
 
   private loadGlobalRoleNames = async (userIds: string[]): Promise<Map<string, string[]>> => {

@@ -8,6 +8,8 @@ import { users } from '../schemas/user';
 
 export interface UserBanFields {
   authInvalidatedAt?: Date | null;
+  /** Better Auth session id exempt from cutoff (never a token). */
+  authInvalidatedExcludedSessionId?: string | null;
   banExpires: Date | null;
   banned: boolean | null;
 }
@@ -29,15 +31,49 @@ export const effectivelyBannedSql = (): SQL =>
 export const effectivelyActiveSql = (): SQL =>
   sql`(${users.banned} IS NOT TRUE OR (${users.banExpires} IS NOT NULL AND ${users.banExpires} <= NOW()))`;
 
+export interface CredentialInvalidationCheck {
+  /**
+   * Trusted credential issuance time (session.createdAt / OIDC iat / API-key createdAt).
+   * Not reauth time.
+   */
+  credentialIssuedAt?: Date | null;
+  /**
+   * Trusted Better Auth session id only. When it exactly matches
+   * `authInvalidatedExcludedSessionId`, the cutoff comparison is skipped.
+   * OIDC/API-key must leave this undefined/null.
+   */
+  sessionId?: string | null;
+}
+
 /**
- * Credential is invalid when issued at/before the user's authInvalidatedAt cutoff.
- * `credentialIssuedAt` is session.createdAt (Better Auth) or token `iat` (OIDC).
+ * Credential is invalid when issued at/before the user's authInvalidatedAt cutoff,
+ * unless this is the retained Better Auth session recorded as a cutoff exception.
+ * Ban state is checked separately — this only covers the security epoch.
  */
 export const isCredentialInvalidated = (
-  user: Pick<UserBanFields, 'authInvalidatedAt'>,
-  credentialIssuedAt: Date | null | undefined,
+  user: Pick<UserBanFields, 'authInvalidatedAt' | 'authInvalidatedExcludedSessionId'>,
+  check: CredentialInvalidationCheck | Date | null | undefined,
 ): boolean => {
+  // Back-compat: older call sites passed credentialIssuedAt as the second arg.
+  const opts: CredentialInvalidationCheck =
+    check instanceof Date || check === null || check === undefined
+      ? { credentialIssuedAt: check as Date | null | undefined }
+      : check;
+
   if (!user.authInvalidatedAt) return false;
+
+  const excluded = user.authInvalidatedExcludedSessionId;
+  if (
+    excluded &&
+    typeof opts.sessionId === 'string' &&
+    opts.sessionId.length > 0 &&
+    opts.sessionId === excluded
+  ) {
+    // Retained Better Auth session exception only — never OIDC/API-key.
+    return false;
+  }
+
+  const credentialIssuedAt = opts.credentialIssuedAt;
   if (!credentialIssuedAt || Number.isNaN(credentialIssuedAt.getTime())) {
     // Fail closed when we cannot prove the credential is post-cutoff.
     return true;
