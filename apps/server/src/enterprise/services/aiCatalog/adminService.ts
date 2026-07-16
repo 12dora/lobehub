@@ -73,6 +73,7 @@ export interface AiCatalogAdminServiceOptions {
   invalidation?: PlatformConfigInvalidationPublisher;
   lifecycle?: {
     afterDraftLock?: () => Promise<void>;
+    afterArchiveDependencyCheck?: () => Promise<void>;
     afterPublishLock?: (tx: Transaction) => Promise<void>;
   };
 }

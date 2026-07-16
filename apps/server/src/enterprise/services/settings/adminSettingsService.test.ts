@@ -12,6 +12,7 @@ import {
 } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 
+import { PlatformDependencyTargetNotPublishedError } from '../platformDependencyLock';
 import {
   AdminSettingsService,
   PlatformRevisionConflictError,
@@ -110,6 +111,37 @@ describe('AdminSettingsService', () => {
       },
     ]);
     expect(JSON.stringify(audits)).not.toContain('not.registered');
+  });
+
+  it('rejects publishing AI references whose target is not currently published', async () => {
+    await saveCurrentDraft(service, {
+      actorUserId: 'admin-1',
+      draft: {
+        'systemAgent.topic.model': {
+          mode: 'default',
+          schemaVersion: 1,
+          value: 'missing-model',
+          visibility: 'visible',
+        },
+        'systemAgent.topic.provider': {
+          mode: 'default',
+          schemaVersion: 1,
+          value: 'missing-provider',
+          visibility: 'visible',
+        },
+      },
+      reason: 'reference missing target',
+    });
+
+    await expect(
+      service.publish({
+        actorUserId: 'admin-1',
+        expectedDraftToken: (await service.getDraft()).draftToken,
+        expectedRevision: 0,
+        reason: 'must fail closed',
+      }),
+    ).rejects.toBeInstanceOf(PlatformDependencyTargetNotPublishedError);
+    expect(await serverDB.select().from(platformSettingPolicies)).toEqual([]);
   });
 
   it('saveDraft + publish + rollback append-only flow', async () => {

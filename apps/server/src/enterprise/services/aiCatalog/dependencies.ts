@@ -42,6 +42,16 @@ export const resolveAiCatalogDependents = async (
       .from(platformSettingPolicies)
       .where(eq(platformSettingPolicies.status, 'published')),
   ]);
+  const pathValues = new Map(settings.map((setting) => [setting.path, setting.value]));
+  const pairedSettingPaths = settings.flatMap((setting) => {
+    if (!setting.path.endsWith('.provider') || setting.value !== providerKey) return [];
+    const prefix = setting.path.slice(0, -'.provider'.length);
+    return pathValues.get(`${prefix}.model`) === modelKey ? [prefix] : [];
+  });
+  const nestedSettingPaths = settings
+    .filter((setting) => jsonContainsModelReference(setting.value, providerKey, modelKey))
+    .map((setting) => setting.path);
+  const dependentSettingPaths = [...new Set([...nestedSettingPaths, ...pairedSettingPaths])];
   return [
     ...agents.map((agent) => ({
       blocking: true,
@@ -49,13 +59,11 @@ export const resolveAiCatalogDependents = async (
       resourceId: agent.id,
       resourceType: 'agent',
     })),
-    ...settings
-      .filter((setting) => jsonContainsModelReference(setting.value, providerKey, modelKey))
-      .map((setting) => ({
-        blocking: true,
-        label: setting.path,
-        resourceId: setting.path,
-        resourceType: 'setting',
-      })),
+    ...dependentSettingPaths.map((path) => ({
+      blocking: true,
+      label: path,
+      resourceId: path,
+      resourceType: 'setting',
+    })),
   ];
 };

@@ -155,19 +155,36 @@ describe('AiCatalogAdminService model mutations', () => {
       status: 'published',
       title: 'Default agent',
     });
-    await db.insert(platformSettingPolicies).values({
-      mode: 'locked',
-      path: 'defaultAgent.config.model',
-      status: 'published',
-      value: { model: first.modelKey, provider: provider.providerKey },
-      visibility: 'visible',
-    });
+    await db.insert(platformSettingPolicies).values([
+      {
+        mode: 'locked',
+        path: 'defaultAgent.config.model',
+        status: 'published',
+        value: { model: first.modelKey, provider: provider.providerKey },
+        visibility: 'visible',
+      },
+      {
+        mode: 'locked',
+        path: 'systemAgent.topic.model',
+        status: 'published',
+        value: first.modelKey,
+        visibility: 'visible',
+      },
+      {
+        mode: 'locked',
+        path: 'systemAgent.topic.provider',
+        status: 'published',
+        value: provider.providerKey,
+        visibility: 'visible',
+      },
+    ]);
 
     const dependents = await service.getDependents(provider.id, first.id);
     expect(dependents).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ resourceType: 'agent' }),
         expect.objectContaining({ resourceType: 'setting' }),
+        expect.objectContaining({ label: 'systemAgent.topic', resourceType: 'setting' }),
       ]),
     );
     const detail = await service.getDetail(provider.id);
