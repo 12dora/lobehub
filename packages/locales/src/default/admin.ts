@@ -10,6 +10,10 @@ export default {
   'access.signInRedirect': 'Redirecting to sign in…',
   'aiCatalog.common.boolean.false': 'Disabled',
   'aiCatalog.common.boolean.true': 'Enabled',
+  'aiCatalog.create.desc':
+    'Create an isolated Provider draft. Nothing becomes available to users until it is tested and published.',
+  'aiCatalog.create.jsonInvalid': 'Config and settings must both be valid JSON objects.',
+  'aiCatalog.create.required': 'Provider key, display name, and change reason are required.',
   'aiCatalog.editor.checkModel': 'Connection test model',
   'aiCatalog.editor.conflict.desc':
     'The Provider changed after this local public-field draft was saved. Refresh to inspect the latest version, or discard the local draft.',

@@ -2,6 +2,7 @@ import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 
 import type {
   AdminAiModelDependentsOutput,
+  AdminAiProviderCreateDraftInput,
   AdminAiProviderDraft,
   AdminAiProviderUpdateDraftInput,
   AiSecretMutation,
@@ -173,3 +174,29 @@ export const buildAiSecretMutation = (
   }
   return { operation };
 };
+
+export const buildProviderCreatePayload = (params: {
+  config: Record<string, unknown>;
+  description: string;
+  displayName: string;
+  enabled: boolean;
+  fetchOnClient: boolean;
+  providerKey: string;
+  reason: string;
+  secretValue: string;
+  settings: Record<string, unknown>;
+  source: string;
+}): AdminAiProviderCreateDraftInput => ({
+  config: structuredClone(params.config),
+  description: params.description.trim() || null,
+  displayName: params.displayName.trim(),
+  enabled: params.enabled,
+  fetchOnClient: params.fetchOnClient,
+  providerKey: params.providerKey.trim(),
+  reason: params.reason.trim(),
+  ...(params.secretValue
+    ? { secret: { operation: 'replace' as const, value: params.secretValue } }
+    : {}),
+  settings: structuredClone(params.settings),
+  source: params.source.trim() || 'custom',
+});
