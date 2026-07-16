@@ -6,6 +6,8 @@ import type {
   adminAiModelDeleteOutputSchema,
   adminAiModelDependentsInputSchema,
   adminAiModelDependentsOutputSchema,
+  adminAiModelDraftContextInputSchema,
+  adminAiModelDraftContextOutputSchema,
   adminAiModelListInputSchema,
   adminAiModelListOutputSchema,
   adminAiModelMutationOutputSchema,
@@ -27,12 +29,15 @@ import type {
   adminAiProviderTestInputSchema,
   adminAiProviderUpdateDraftInputSchema,
   aiConnectionTestResultSchema,
+  aiConnectionTestStateSchema,
   aiSecretMutationSchema,
 } from '@/server/enterprise/contracts/aiCatalog';
 
 export type AdminAiModelCreateInput = z.infer<typeof adminAiModelCreateInputSchema>;
 export type AdminAiModelDeleteInput = z.infer<typeof adminAiModelDeleteInputSchema>;
 export type AdminAiModelDeleteOutput = z.infer<typeof adminAiModelDeleteOutputSchema>;
+export type AdminAiModelDraftContextInput = z.infer<typeof adminAiModelDraftContextInputSchema>;
+export type AdminAiModelDraftContextOutput = z.infer<typeof adminAiModelDraftContextOutputSchema>;
 export type AdminAiModelDependentsInput = z.infer<typeof adminAiModelDependentsInputSchema>;
 export type AdminAiModelDependentsOutput = z.infer<typeof adminAiModelDependentsOutputSchema>;
 export type AdminAiModelListInput = z.infer<typeof adminAiModelListInputSchema>;
@@ -60,6 +65,7 @@ export type AdminAiProviderRollbackInput = z.infer<typeof adminAiProviderRollbac
 export type AdminAiProviderTestInput = z.infer<typeof adminAiProviderTestInputSchema>;
 export type AdminAiProviderUpdateDraftInput = z.infer<typeof adminAiProviderUpdateDraftInputSchema>;
 export type AiConnectionTestResult = z.infer<typeof aiConnectionTestResultSchema>;
+export type AiConnectionTestState = z.infer<typeof aiConnectionTestStateSchema>;
 export type AiSecretMutation = z.infer<typeof aiSecretMutationSchema>;
 
 export type AdminAiProviderListItem = AdminAiProviderListOutput['items'][number];

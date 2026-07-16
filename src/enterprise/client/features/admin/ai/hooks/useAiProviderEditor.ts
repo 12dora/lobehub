@@ -8,6 +8,7 @@ import { useBlocker } from 'react-router';
 import {
   type AiCatalogSaveState,
   type AiProviderRebaseConflict,
+  deriveAiProviderConnectionTestView,
   type EditableAiProviderDraft,
   rebaseAiProviderDraft,
   toEditableAiProviderDraft,
@@ -18,7 +19,7 @@ import {
   loadAiProviderPublicDraft,
   saveAiProviderPublicDraft,
 } from '../localDraftStorage';
-import type { AdminAiProviderGetOutput, AiConnectionTestResult } from '../types';
+import type { AdminAiProviderGetOutput } from '../types';
 
 export const useAiProviderEditor = (snapshot: AdminAiProviderGetOutput | undefined) => {
   const { t } = useTranslation('admin');
@@ -28,7 +29,7 @@ export const useAiProviderEditor = (snapshot: AdminAiProviderGetOutput | undefin
   const [conflict, setConflict] = useState(false);
   const [saveState, setSaveState] = useState<AiCatalogSaveState>('idle');
   const [actionError, setActionError] = useState<string | null>(null);
-  const [testResult, setTestResult] = useState<AiConnectionTestResult | null>(null);
+  const [testLocallyStale, setTestLocallyStale] = useState(false);
   const [rebaseConflicts, setRebaseConflicts] = useState<AiProviderRebaseConflict[]>([]);
   const hydratedKeyRef = useRef<string | null>(null);
   const leaveModalRef = useRef<ReturnType<typeof confirmModal> | null>(null);
@@ -45,6 +46,7 @@ export const useAiProviderEditor = (snapshot: AdminAiProviderGetOutput | undefin
       setDraft(local.draft);
       setRebaseConflicts([]);
       setDirty(true);
+      setTestLocallyStale(true);
       setSaveState('dirty');
       setConflict(
         local.baseRevision !== snapshot.baseRevision || local.draftToken !== snapshot.draftToken,
@@ -59,7 +61,7 @@ export const useAiProviderEditor = (snapshot: AdminAiProviderGetOutput | undefin
     setConflict(false);
     setSaveState('idle');
     setActionError(null);
-    setTestResult(null);
+    setTestLocallyStale(false);
     setRebaseConflicts([]);
   }, [snapshot]);
 
@@ -122,7 +124,7 @@ export const useAiProviderEditor = (snapshot: AdminAiProviderGetOutput | undefin
       setDirty(true);
       setSaveState('dirty');
       setActionError(null);
-      setTestResult(null);
+      setTestLocallyStale(true);
     },
     [],
   );
@@ -137,7 +139,7 @@ export const useAiProviderEditor = (snapshot: AdminAiProviderGetOutput | undefin
     setConflict(false);
     setSaveState('idle');
     setActionError(null);
-    setTestResult(null);
+    setTestLocallyStale(false);
     setRebaseConflicts([]);
   }, [snapshot]);
 
@@ -152,7 +154,7 @@ export const useAiProviderEditor = (snapshot: AdminAiProviderGetOutput | undefin
       setDirty(true);
       setSaveState('dirty');
       setActionError(null);
-      setTestResult(null);
+      setTestLocallyStale(true);
       setRebaseConflicts(result.conflicts);
       setConflict(result.conflicts.length > 0);
     },
@@ -173,7 +175,7 @@ export const useAiProviderEditor = (snapshot: AdminAiProviderGetOutput | undefin
       });
       setDirty(true);
       setSaveState('dirty');
-      setTestResult(null);
+      setTestLocallyStale(true);
     },
     [rebaseConflicts],
   );
@@ -189,15 +191,25 @@ export const useAiProviderEditor = (snapshot: AdminAiProviderGetOutput | undefin
   }, [snapshot]);
 
   const validation = draft ? validateEditableAiProviderDraft(draft) : null;
+  const connectionTest = snapshot
+    ? deriveAiProviderConnectionTestView({
+        baseRevision: snapshot.baseRevision,
+        draftToken: snapshot.draftToken,
+        locallyStale: testLocallyStale,
+        state: snapshot.draft.connectionTest,
+      })
+    : { canPublish: false, stale: false, state: null };
 
   return {
     actionError,
     baseDraft,
     conflict,
+    connectionTest,
     dirty,
     discardLocal,
     draft,
     markSaved,
+    invalidateTest: () => setTestLocallyStale(true),
     jsonErrors: {
       configText: validation?.config.error ?? null,
       settingsText: validation?.settings.error ?? null,
@@ -209,8 +221,6 @@ export const useAiProviderEditor = (snapshot: AdminAiProviderGetOutput | undefin
     setActionError,
     setConflict,
     setSaveState,
-    setTestResult,
-    testResult,
     updateDraft,
     valid: validation?.valid ?? false,
   };
