@@ -134,6 +134,7 @@ export type ConflictDraftPayload = {
   originalBaseDraft: DraftMap;
   draft: DraftMap;
   previousBaseRevision: number;
+  previousDraftToken: string;
   registryVersion: number;
   savedAt: string;
 };
@@ -165,6 +166,7 @@ export const loadConflictDraft = (): ConflictDraftPayload | null => {
       draft: parsed.draft,
       originalBaseDraft: parsed.originalBaseDraft ?? {},
       previousBaseRevision: parsed.previousBaseRevision,
+      previousDraftToken: parsed.previousDraftToken ?? '',
       registryVersion: parsed.registryVersion,
       savedAt: parsed.savedAt,
     };

@@ -29,11 +29,14 @@ describe('localDraftStorage', () => {
           visibility: 'visible',
         },
       },
+      draftToken: 'a'.repeat(64),
+      originalBaseDraft: {},
       registryVersion: 1,
       savedAt: new Date().toISOString(),
     });
     const loaded = loadLocalDraft(1, 2);
     expect(loaded?.draft['general.fontSize']?.value).toBe(18);
+    expect(loaded?.draftToken).toBe('a'.repeat(64));
     expect(loadLocalDraft(1, 3)).toBeNull();
   });
 
@@ -46,12 +49,14 @@ describe('localDraftStorage', () => {
         x: { mode: 'user', schemaVersion: 1, value: false, visibility: 'visible' },
       },
       previousBaseRevision: 1,
+      previousDraftToken: 'a'.repeat(64),
       registryVersion: 1,
       savedAt: new Date().toISOString(),
     });
     const loaded = loadConflictDraft();
     expect(loaded?.draft.x?.mode).toBe('locked');
     expect(loaded?.originalBaseDraft.x?.value).toBe(false);
+    expect(loaded?.previousDraftToken).toBe('a'.repeat(64));
     clearConflictDraft();
     expect(loadConflictDraft()).toBeNull();
   });

@@ -62,6 +62,57 @@ const policy = (value: boolean) => ({
 });
 
 describe('M05 transaction fault injection', () => {
+  it('rejects an unknown ReasoningGraph field before any persistence or invalidation', async () => {
+    const user = new UserModel(serverDB, 'u-fault');
+    await user.updateSetting({ hotkey: { search: 'keep' }, keyVaults: 'encrypted-keep' });
+    const invalidation = new InMemoryPlatformConfigInvalidationPublisher();
+    const service = new EffectiveSettingsService(serverDB, invalidation);
+
+    await expect(
+      service.applyLegacyUpdateSettings({
+        input: {
+          defaultAgent: {
+            config: {
+              chatConfig: {
+                graph: {
+                  edges: [
+                    {
+                      from: '__root__',
+                      instruction: 'Run',
+                      to: 'node-1',
+                    },
+                  ],
+                  fields: {},
+                  name: 'invalid graph',
+                  nodes: { 'node-1': { type: 'llm', unknownNode: true } },
+                  terminal: 'node-1',
+                },
+              },
+            },
+          },
+        },
+        userId: 'u-fault',
+      }),
+    ).rejects.toMatchObject({ code: 'MANAGED_SETTING_UNKNOWN_PATH' });
+
+    const [settings, overrides, overrideRevisions, bundles, audits] = await Promise.all([
+      user.getUserSettings(),
+      serverDB.select().from(userSettingOverrides),
+      serverDB.select().from(userSettingOverrideRevisions),
+      serverDB.select().from(platformSettingsBundle),
+      serverDB.select().from(platformAuditLogs),
+    ]);
+    expect(settings).toMatchObject({
+      hotkey: { search: 'keep' },
+      keyVaults: 'encrypted-keep',
+    });
+    expect(overrides).toEqual([]);
+    expect(overrideRevisions).toEqual([]);
+    expect(bundles).toEqual([]);
+    expect(audits.filter((row) => row.result === 'success')).toEqual([]);
+    expect(invalidation.events).toEqual([]);
+  });
+
   it('rolls back revision, pointer, materialized policies and success audit on publish fault', async () => {
     const invalidation = new InMemoryPlatformConfigInvalidationPublisher();
     const admin = new AdminSettingsService(serverDB, {
@@ -72,7 +123,12 @@ describe('M05 transaction fault injection', () => {
         },
       },
     });
-    await admin.saveDraft({ actorUserId: 'admin', draft: policy(true), reason: 'draft' });
+    await admin.saveDraft({
+      actorUserId: 'admin',
+      draft: policy(true),
+      expectedDraftToken: (await admin.getDraft()).draftToken,
+      reason: 'draft',
+    });
 
     await expect(
       admin.publish({ actorUserId: 'admin', expectedRevision: 0, reason: 'publish' }),
@@ -97,9 +153,19 @@ describe('M05 transaction fault injection', () => {
   it('rolls back a failed rollback head, pointer, draft and materialized policies', async () => {
     const seedInvalidation = new InMemoryPlatformConfigInvalidationPublisher();
     const seed = new AdminSettingsService(serverDB, { invalidation: seedInvalidation });
-    await seed.saveDraft({ actorUserId: 'admin', draft: policy(true), reason: 'draft-1' });
+    await seed.saveDraft({
+      actorUserId: 'admin',
+      draft: policy(true),
+      expectedDraftToken: (await seed.getDraft()).draftToken,
+      reason: 'draft-1',
+    });
     await seed.publish({ actorUserId: 'admin', expectedRevision: 0, reason: 'publish-1' });
-    await seed.saveDraft({ actorUserId: 'admin', draft: policy(false), reason: 'draft-2' });
+    await seed.saveDraft({
+      actorUserId: 'admin',
+      draft: policy(false),
+      expectedDraftToken: (await seed.getDraft()).draftToken,
+      reason: 'draft-2',
+    });
     await seed.publish({ actorUserId: 'admin', expectedRevision: 1, reason: 'publish-2' });
 
     const invalidation = new InMemoryPlatformConfigInvalidationPublisher();
@@ -177,6 +243,116 @@ describe('M05 transaction fault injection', () => {
     expect(overrides).toEqual([]);
     expect(revisions).toEqual([]);
     expect(invalidation.events).toEqual([]);
+  });
+
+  it('rolls back both managed overrides when faulted after the second override write', async () => {
+    const user = new UserModel(serverDB, 'u-fault');
+    await user.updateSetting({ hotkey: { search: 'old' }, keyVaults: 'encrypted-old' });
+    const invalidation = new InMemoryPlatformConfigInvalidationPublisher();
+    const service = new EffectiveSettingsService(serverDB, invalidation, {
+      afterManagedOverrideWrite: async (operation, index) => {
+        if (operation === 'legacyUpdate' && index === 1) throw new Error('second override fault');
+      },
+    });
+
+    await expect(
+      service.applyLegacyUpdateSettings({
+        input: {
+          general: { fontSize: 18 },
+          hotkey: { search: 'new' },
+          memory: { enabled: true },
+        },
+        userId: 'u-fault',
+      }),
+    ).rejects.toThrow('second override fault');
+
+    const [settings, overrides, revisions, successAudits] = await Promise.all([
+      user.getUserSettings(),
+      serverDB.select().from(userSettingOverrides),
+      serverDB.select().from(userSettingOverrideRevisions),
+      serverDB.select().from(platformAuditLogs),
+    ]);
+    expect(settings).toMatchObject({
+      hotkey: { search: 'old' },
+      keyVaults: 'encrypted-old',
+    });
+    expect(overrides).toEqual([]);
+    expect(revisions).toEqual([]);
+    expect(successAudits.filter((row) => row.result === 'success')).toEqual([]);
+    expect(invalidation.events).toEqual([]);
+  });
+
+  it('rolls back both managed overrides when faulted immediately before revision bump', async () => {
+    const user = new UserModel(serverDB, 'u-fault');
+    await user.updateSetting({ hotkey: { search: 'old' }, keyVaults: 'encrypted-old' });
+    const invalidation = new InMemoryPlatformConfigInvalidationPublisher();
+    const service = new EffectiveSettingsService(serverDB, invalidation, {
+      beforeOverrideRevisionBump: async () => {
+        throw new Error('revision bump fault');
+      },
+    });
+
+    await expect(
+      service.applyLegacyUpdateSettings({
+        input: {
+          general: { fontSize: 18 },
+          hotkey: { search: 'new' },
+          memory: { enabled: true },
+        },
+        userId: 'u-fault',
+      }),
+    ).rejects.toThrow('revision bump fault');
+
+    const [settings, overrides, revisions] = await Promise.all([
+      user.getUserSettings(),
+      serverDB.select().from(userSettingOverrides),
+      serverDB.select().from(userSettingOverrideRevisions),
+    ]);
+    expect(settings).toMatchObject({
+      hotkey: { search: 'old' },
+      keyVaults: 'encrypted-old',
+    });
+    expect(overrides).toEqual([]);
+    expect(revisions).toEqual([]);
+    expect(invalidation.events).toEqual([]);
+  });
+
+  it('single reset deletes only its target and preserves legacy, encrypted keyVault and other override', async () => {
+    const user = new UserModel(serverDB, 'u-fault');
+    await user.updateSetting({
+      general: { fontSize: 13 },
+      hotkey: { search: 'keep' },
+      keyVaults: 'encrypted-keep',
+    });
+    const model = new PlatformSettingsModel(serverDB);
+    await model.upsertUserOverride({ path: 'general.fontSize', userId: 'u-fault', value: 17 });
+    await model.upsertUserOverride({ path: 'memory.enabled', userId: 'u-fault', value: true });
+    const revisionBefore = await model.getUserOverrideRevision('u-fault');
+    const invalidation = new InMemoryPlatformConfigInvalidationPublisher();
+    const service = new EffectiveSettingsService(serverDB, invalidation);
+
+    const result = await service.resetSettingOverride({
+      client: 'web',
+      path: 'general.fontSize',
+      userId: 'u-fault',
+    });
+
+    const [settings, target, unrelated, revisionAfter] = await Promise.all([
+      user.getUserSettings(),
+      model.getUserOverride('u-fault', 'general.fontSize'),
+      model.getUserOverride('u-fault', 'memory.enabled'),
+      model.getUserOverrideRevision('u-fault'),
+    ]);
+    expect(result.deleted).toBe(true);
+    expect(target).toBeUndefined();
+    expect(unrelated?.value).toBe(true);
+    expect(settings).toMatchObject({
+      general: { fontSize: 13 },
+      hotkey: { search: 'keep' },
+      keyVaults: 'encrypted-keep',
+    });
+    expect(revisionAfter).toBe(revisionBefore + 1);
+    expect(invalidation.events).toHaveLength(1);
   });
 
   it('rolls back full reset override deletion, revision bump and legacy/keyVault deletion', async () => {

@@ -75,6 +75,7 @@ const publishDefault = async () => {
         visibility: 'hidden',
       },
     },
+    expectedDraftToken: (await admin.getDraft()).draftToken,
     reason: 'seed',
   });
   await admin.publish({ actorUserId: 'admin', expectedRevision: 0, reason: 'publish' });

@@ -296,6 +296,11 @@ export default {
   'settingsPolicy.conflict.noCollisions':
     'No path-level collisions were found. Rebase will preserve your local changes on the latest server draft.',
   'settingsPolicy.conflict.refresh': 'Refresh latest revision',
+  'settingsPolicy.conflict.retryRefresh': 'Retry latest revision',
+  'settingsPolicy.conflict.awaitingServer':
+    'Fetching the latest server draft. Editing actions remain blocked until it is available.',
+  'settingsPolicy.conflict.latestUnavailable':
+    'The latest server draft could not be loaded. Your local changes are safe; retry before rebasing or discarding.',
   'settingsPolicy.conflict.rebase': 'Rebase and merge',
   'settingsPolicy.conflict.discard': 'Discard local changes',
   'settingsPolicy.revision': 'Revision {{revision}}',

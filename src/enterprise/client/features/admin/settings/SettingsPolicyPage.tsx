@@ -170,6 +170,7 @@ const SettingsPolicyPage = memo(() => {
   const [validatedFingerprint, setValidatedFingerprint] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
   const [activeBaseRevision, setActiveBaseRevision] = useState(0);
+  const [activeDraftToken, setActiveDraftToken] = useState('');
   const [conflictState, dispatchConflict] = useReducer(
     reduceConflict,
     undefined,
@@ -178,7 +179,10 @@ const SettingsPolicyPage = memo(() => {
   const hydratedRef = useRef(false);
   const originalBaseDraftRef = useRef<DraftMap>({});
 
-  const revisionConflict = conflictState.phase === 'conflict';
+  const revisionConflict =
+    conflictState.phase === 'awaitingServer' ||
+    conflictState.phase === 'latestUnavailable' ||
+    conflictState.phase === 'conflict';
 
   const draftFingerprint = useMemo(() => fingerprintDraft(draft), [draft]);
   const primary = resolvePrimaryAction({
@@ -209,24 +213,51 @@ const SettingsPolicyPage = memo(() => {
       setDraft(conflict.draft);
       setDirty(true);
       setActiveBaseRevision(conflict.previousBaseRevision);
+      setActiveDraftToken(conflict.previousDraftToken);
       dispatchConflict({
         localBaseRevision: conflict.previousBaseRevision,
         localDraft: conflict.draft,
+        localDraftToken: conflict.previousDraftToken,
         originalBaseDraft: conflict.originalBaseDraft,
+        type: 'CONFLICT_DETECTED',
+      });
+      dispatchConflict({
         serverBaseRevision: data.baseRevision,
         serverDraft: data.draft,
-        type: 'CONFLICT_DETECTED',
+        serverDraftToken: data.draftToken,
+        type: 'REFRESH_SERVER_SUCCEEDED',
       });
       return;
     }
     const local = loadLocalDraft(data.registryVersion, data.baseRevision);
-    originalBaseDraftRef.current = data.draft;
-    setActiveBaseRevision(data.baseRevision);
-    dispatchConflict({ type: 'CLEAR' });
     if (local) {
+      originalBaseDraftRef.current = local.originalBaseDraft;
       setDraft(local.draft);
       setDirty(true);
+      setActiveBaseRevision(local.baseRevision);
+      setActiveDraftToken(local.draftToken);
+      if (local.draftToken !== data.draftToken) {
+        dispatchConflict({
+          localBaseRevision: local.baseRevision,
+          localDraft: local.draft,
+          localDraftToken: local.draftToken,
+          originalBaseDraft: local.originalBaseDraft,
+          type: 'CONFLICT_DETECTED',
+        });
+        dispatchConflict({
+          serverBaseRevision: data.baseRevision,
+          serverDraft: data.draft,
+          serverDraftToken: data.draftToken,
+          type: 'REFRESH_SERVER_SUCCEEDED',
+        });
+      } else {
+        dispatchConflict({ type: 'CLEAR' });
+      }
     } else {
+      originalBaseDraftRef.current = data.draft;
+      setActiveBaseRevision(data.baseRevision);
+      setActiveDraftToken(data.draftToken);
+      dispatchConflict({ type: 'CLEAR' });
       setDraft(data.draft ?? {});
       setDirty(false);
     }
@@ -238,10 +269,12 @@ const SettingsPolicyPage = memo(() => {
     saveLocalDraft({
       baseRevision: activeBaseRevision,
       draft,
+      draftToken: activeDraftToken,
+      originalBaseDraft: originalBaseDraftRef.current,
       registryVersion: data.registryVersion,
       savedAt: new Date().toISOString(),
     });
-  }, [activeBaseRevision, data, dirty, draft, revisionConflict]);
+  }, [activeBaseRevision, activeDraftToken, data, dirty, draft, revisionConflict]);
 
   // Warn before unload when dirty
   useEffect(() => {
@@ -311,6 +344,7 @@ const SettingsPolicyPage = memo(() => {
       draft,
       originalBaseDraft: originalBaseDraftRef.current,
       previousBaseRevision: activeBaseRevision,
+      previousDraftToken: activeDraftToken,
       registryVersion: data.registryVersion,
       savedAt: new Date().toISOString(),
     };
@@ -318,33 +352,41 @@ const SettingsPolicyPage = memo(() => {
     setDirty(true);
     setSaveState('failed');
     setValidatedFingerprint(null);
-
-    let latest: AdminSettingsGetDraftOutput | undefined;
-    try {
-      latest = await mutate();
-    } catch {
-      // Keep the durable local draft and block mutations. The conflict panel
-      // exposes an explicit retry for fetching the latest server base.
-    }
-    const server = latest ?? data;
     dispatchConflict({
       localBaseRevision: activeBaseRevision,
       localDraft: draft,
+      localDraftToken: activeDraftToken,
       originalBaseDraft: originalBaseDraftRef.current,
-      serverBaseRevision: server.baseRevision,
-      serverDraft: server.draft,
       type: 'CONFLICT_DETECTED',
     });
-  }, [activeBaseRevision, data, draft, mutate]);
+    try {
+      const latest = await mutate();
+      if (!latest) throw new Error('LATEST_SETTINGS_DRAFT_UNAVAILABLE');
+      dispatchConflict({
+        serverBaseRevision: latest.baseRevision,
+        serverDraft: latest.draft,
+        serverDraftToken: latest.draftToken,
+        type: 'REFRESH_SERVER_SUCCEEDED',
+      });
+    } catch {
+      dispatchConflict({ type: 'REFRESH_SERVER_FAILED' });
+    }
+  }, [activeBaseRevision, activeDraftToken, data, draft, mutate]);
 
   const refreshConflictServer = useCallback(async () => {
-    const latest = await mutate();
-    if (!latest) return;
-    dispatchConflict({
-      serverBaseRevision: latest.baseRevision,
-      serverDraft: latest.draft,
-      type: 'REFRESH_SERVER',
-    });
+    dispatchConflict({ type: 'REFRESH_SERVER_STARTED' });
+    try {
+      const latest = await mutate();
+      if (!latest) throw new Error('LATEST_SETTINGS_DRAFT_UNAVAILABLE');
+      dispatchConflict({
+        serverBaseRevision: latest.baseRevision,
+        serverDraft: latest.draft,
+        serverDraftToken: latest.draftToken,
+        type: 'REFRESH_SERVER_SUCCEEDED',
+      });
+    } catch {
+      dispatchConflict({ type: 'REFRESH_SERVER_FAILED' });
+    }
   }, [mutate]);
 
   const handleRebase = useCallback(() => {
@@ -354,6 +396,7 @@ const SettingsPolicyPage = memo(() => {
     clearConflictDraft();
     clearLocalDraft(data.registryVersion, activeBaseRevision);
     setActiveBaseRevision(next.serverBaseRevision);
+    setActiveDraftToken(next.serverDraftToken ?? '');
     setDraft(next.localDraft);
     setDirty(true);
     setSaveState('idle');
@@ -365,6 +408,8 @@ const SettingsPolicyPage = memo(() => {
     saveLocalDraft({
       baseRevision: next.serverBaseRevision,
       draft: next.localDraft,
+      draftToken: next.serverDraftToken ?? '',
+      originalBaseDraft: next.serverDraft,
       registryVersion: data.registryVersion,
       savedAt: new Date().toISOString(),
     });
@@ -378,6 +423,7 @@ const SettingsPolicyPage = memo(() => {
     clearLocalDraft(data.registryVersion, activeBaseRevision);
     clearLocalDraft(data.registryVersion, next.serverBaseRevision);
     setActiveBaseRevision(next.serverBaseRevision);
+    setActiveDraftToken(next.serverDraftToken ?? '');
     setDraft(next.serverDraft);
     setDirty(false);
     setSaveState('idle');
@@ -394,7 +440,8 @@ const SettingsPolicyPage = memo(() => {
       !canUpdate ||
       revisionConflict ||
       activeBaseRevision !== data.baseRevision ||
-      !canMutateAgainstBase(conflictState, activeBaseRevision)
+      activeDraftToken !== data.draftToken ||
+      !canMutateAgainstBase(conflictState, activeBaseRevision, activeDraftToken)
     ) {
       if (data && !revisionConflict) await enterRevisionConflict();
       return;
@@ -404,6 +451,7 @@ const SettingsPolicyPage = memo(() => {
     try {
       const result = await adminSettingsService.saveDraft({
         draft,
+        expectedDraftToken: activeDraftToken,
         reason: t('settingsPolicy.saveReason'),
       });
       clearLocalDraft(data.registryVersion, activeBaseRevision);
@@ -412,6 +460,7 @@ const SettingsPolicyPage = memo(() => {
       setSaveState('saved');
       setValidatedFingerprint(null);
       setActiveBaseRevision(result.baseRevision);
+      setActiveDraftToken(result.draftToken);
       originalBaseDraftRef.current = draft;
       dispatchConflict({ type: 'CLEAR' });
       hydratedRef.current = false;
@@ -430,6 +479,7 @@ const SettingsPolicyPage = memo(() => {
     }
   }, [
     activeBaseRevision,
+    activeDraftToken,
     canUpdate,
     conflictState,
     data,
@@ -441,7 +491,12 @@ const SettingsPolicyPage = memo(() => {
   ]);
 
   const handleValidate = useCallback(async () => {
-    if (dirty || revisionConflict || activeBaseRevision !== data?.baseRevision) {
+    if (
+      dirty ||
+      revisionConflict ||
+      activeBaseRevision !== data?.baseRevision ||
+      activeDraftToken !== data?.draftToken
+    ) {
       setValidationMsg(t('settingsPolicy.validateRequiresSaved'));
       return;
     }
@@ -466,7 +521,16 @@ const SettingsPolicyPage = memo(() => {
       const mapped = mapEnterpriseError(err);
       setValidationMsg(mapped ? mapped.code : String(err));
     }
-  }, [activeBaseRevision, data?.baseRevision, dirty, draft, revisionConflict, t]);
+  }, [
+    activeBaseRevision,
+    activeDraftToken,
+    data?.baseRevision,
+    data?.draftToken,
+    dirty,
+    draft,
+    revisionConflict,
+    t,
+  ]);
 
   const handlePublish = useCallback(() => {
     if (
@@ -475,9 +539,14 @@ const SettingsPolicyPage = memo(() => {
       dirty ||
       revisionConflict ||
       activeBaseRevision !== data.baseRevision ||
-      !canMutateAgainstBase(conflictState, activeBaseRevision)
+      activeDraftToken !== data.draftToken ||
+      !canMutateAgainstBase(conflictState, activeBaseRevision, activeDraftToken)
     ) {
-      if (data && !revisionConflict && activeBaseRevision !== data.baseRevision) {
+      if (
+        data &&
+        !revisionConflict &&
+        (activeBaseRevision !== data.baseRevision || activeDraftToken !== data.draftToken)
+      ) {
         void enterRevisionConflict();
       }
       return;
@@ -523,6 +592,7 @@ const SettingsPolicyPage = memo(() => {
     });
   }, [
     activeBaseRevision,
+    activeDraftToken,
     canPublish,
     conflictState,
     data,
@@ -543,6 +613,7 @@ const SettingsPolicyPage = memo(() => {
       dirty ||
       revisionConflict ||
       activeBaseRevision !== data.baseRevision ||
+      activeDraftToken !== data.draftToken ||
       data.baseRevision < 1
     ) {
       return;
@@ -578,6 +649,7 @@ const SettingsPolicyPage = memo(() => {
     });
   }, [
     activeBaseRevision,
+    activeDraftToken,
     canPublish,
     data,
     dirty,
@@ -670,7 +742,8 @@ const SettingsPolicyPage = memo(() => {
                 data.baseRevision < 1 ||
                 dirty ||
                 revisionConflict ||
-                activeBaseRevision !== data.baseRevision
+                activeBaseRevision !== data.baseRevision ||
+                activeDraftToken !== data.draftToken
               }
               onClick={handleRollback}
             >
@@ -688,62 +761,87 @@ const SettingsPolicyPage = memo(() => {
             type="warning"
             description={
               <div>
-                <Text as="div" type="secondary">
-                  {t('settingsPolicy.conflict.revisions', {
-                    local: conflictState.localBaseRevision,
-                    server: conflictState.serverBaseRevision,
-                  })}
-                </Text>
-                {conflictState.conflictingPaths.length > 0 ? (
-                  <div className={styles.conflictGrid}>
-                    {conflictState.conflictingPaths.map((path) => {
-                      const entry = registryByPath.get(path);
-                      if (!entry) return <Text key={path}>{path}</Text>;
-                      return (
-                        <div key={path} style={{ gridColumn: '1 / -1' }}>
-                          <Text strong>{t(entry.titleKey as never, { defaultValue: path })}</Text>
-                          <div className={styles.conflictGrid}>
-                            <Text type="secondary">
-                              {t('settingsPolicy.conflict.localValue', {
-                                value: formatSettingValue({
-                                  entry,
-                                  t,
-                                  value: conflictState.localDraft[path]?.value,
-                                }),
-                              })}
-                            </Text>
-                            <Text type="secondary">
-                              {t('settingsPolicy.conflict.serverValue', {
-                                value: formatSettingValue({
-                                  entry,
-                                  t,
-                                  value: conflictState.serverDraft[path]?.value,
-                                }),
-                              })}
-                            </Text>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
+                {conflictState.phase === 'conflict' ? (
+                  <>
+                    <Text as="div" type="secondary">
+                      {t('settingsPolicy.conflict.revisions', {
+                        local: conflictState.localBaseRevision,
+                        server: conflictState.serverBaseRevision,
+                      })}
+                    </Text>
+                    {conflictState.conflictingPaths.length > 0 ? (
+                      <div className={styles.conflictGrid}>
+                        {conflictState.conflictingPaths.map((path) => {
+                          const entry = registryByPath.get(path);
+                          if (!entry) return <Text key={path}>{path}</Text>;
+                          return (
+                            <div key={path} style={{ gridColumn: '1 / -1' }}>
+                              <Text strong>
+                                {t(entry.titleKey as never, { defaultValue: path })}
+                              </Text>
+                              <div className={styles.conflictGrid}>
+                                <Text type="secondary">
+                                  {t('settingsPolicy.conflict.localValue', {
+                                    value: formatSettingValue({
+                                      entry,
+                                      t,
+                                      value: conflictState.localDraft[path]?.value,
+                                    }),
+                                  })}
+                                </Text>
+                                <Text type="secondary">
+                                  {t('settingsPolicy.conflict.serverValue', {
+                                    value: formatSettingValue({
+                                      entry,
+                                      t,
+                                      value: conflictState.serverDraft[path]?.value,
+                                    }),
+                                  })}
+                                </Text>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <Text as="div" type="secondary">
+                        {t('settingsPolicy.conflict.noCollisions')}
+                      </Text>
+                    )}
+                    <div className={styles.conflictActions}>
+                      <Button onClick={() => void refreshConflictServer()}>
+                        {t('settingsPolicy.conflict.refresh')}
+                      </Button>
+                      {canUpdate ? (
+                        <Button type="primary" onClick={handleRebase}>
+                          {t('settingsPolicy.conflict.rebase')}
+                        </Button>
+                      ) : null}
+                      <Button onClick={handleDiscardConflict}>
+                        {t('settingsPolicy.conflict.discard')}
+                      </Button>
+                    </div>
+                  </>
                 ) : (
-                  <Text as="div" type="secondary">
-                    {t('settingsPolicy.conflict.noCollisions')}
-                  </Text>
+                  <>
+                    <Text as="div" type="secondary">
+                      {t(
+                        conflictState.phase === 'awaitingServer'
+                          ? 'settingsPolicy.conflict.awaitingServer'
+                          : 'settingsPolicy.conflict.latestUnavailable',
+                      )}
+                    </Text>
+                    <div className={styles.conflictActions}>
+                      <Button
+                        disabled={conflictState.phase === 'awaitingServer'}
+                        loading={conflictState.phase === 'awaitingServer'}
+                        onClick={() => void refreshConflictServer()}
+                      >
+                        {t('settingsPolicy.conflict.retryRefresh')}
+                      </Button>
+                    </div>
+                  </>
                 )}
-                <div className={styles.conflictActions}>
-                  <Button onClick={() => void refreshConflictServer()}>
-                    {t('settingsPolicy.conflict.refresh')}
-                  </Button>
-                  {canUpdate ? (
-                    <Button type="primary" onClick={handleRebase}>
-                      {t('settingsPolicy.conflict.rebase')}
-                    </Button>
-                  ) : null}
-                  <Button onClick={handleDiscardConflict}>
-                    {t('settingsPolicy.conflict.discard')}
-                  </Button>
-                </div>
               </div>
             }
           />

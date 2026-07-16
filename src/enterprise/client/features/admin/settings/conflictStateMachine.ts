@@ -11,28 +11,37 @@ import type { AdminSettingsGetDraftOutput } from '@/server/enterprise/contracts/
 
 export type DraftMap = AdminSettingsGetDraftOutput['draft'];
 
-export type ConflictPhase = 'idle' | 'conflict' | 'rebased' | 'discarded';
+export type ConflictPhase =
+  'idle' | 'awaitingServer' | 'latestUnavailable' | 'conflict' | 'rebased' | 'discarded';
 
 export interface ConflictState {
   conflictingPaths: string[];
   localBaseRevision: number;
   localDraft: DraftMap;
+  localDraftToken: string;
   originalBaseDraft: DraftMap;
   phase: ConflictPhase;
   serverBaseRevision: number;
   serverDraft: DraftMap;
+  serverDraftToken: string | null;
 }
 
 export type ConflictEvent =
   | {
       localBaseRevision: number;
       localDraft: DraftMap;
+      localDraftToken: string;
       originalBaseDraft: DraftMap;
-      serverBaseRevision: number;
-      serverDraft: DraftMap;
       type: 'CONFLICT_DETECTED';
     }
-  | { serverBaseRevision: number; serverDraft: DraftMap; type: 'REFRESH_SERVER' }
+  | { type: 'REFRESH_SERVER_STARTED' }
+  | { type: 'REFRESH_SERVER_FAILED' }
+  | {
+      serverBaseRevision: number;
+      serverDraft: DraftMap;
+      serverDraftToken: string;
+      type: 'REFRESH_SERVER_SUCCEEDED';
+    }
   | { type: 'REBASE' }
   | { type: 'DISCARD' }
   | { type: 'CLEAR' };
@@ -84,27 +93,45 @@ export const initialConflictState = (): ConflictState => ({
   conflictingPaths: [],
   localBaseRevision: 0,
   localDraft: {},
+  localDraftToken: '',
   originalBaseDraft: {},
   phase: 'idle',
   serverBaseRevision: 0,
   serverDraft: {},
+  serverDraftToken: null,
 });
 
 export const reduceConflict = (state: ConflictState, event: ConflictEvent): ConflictState => {
   switch (event.type) {
     case 'CONFLICT_DETECTED': {
       return {
-        conflictingPaths: getConflictingPaths(event),
+        conflictingPaths: [],
         localBaseRevision: event.localBaseRevision,
         localDraft: event.localDraft,
+        localDraftToken: event.localDraftToken,
         originalBaseDraft: event.originalBaseDraft,
-        phase: 'conflict',
-        serverBaseRevision: event.serverBaseRevision,
-        serverDraft: event.serverDraft,
+        phase: 'awaitingServer',
+        serverBaseRevision: 0,
+        serverDraft: {},
+        serverDraftToken: null,
       };
     }
-    case 'REFRESH_SERVER': {
-      if (state.phase !== 'conflict') return state;
+    case 'REFRESH_SERVER_STARTED': {
+      if (
+        state.phase !== 'awaitingServer' &&
+        state.phase !== 'latestUnavailable' &&
+        state.phase !== 'conflict'
+      ) {
+        return state;
+      }
+      return { ...state, phase: 'awaitingServer' };
+    }
+    case 'REFRESH_SERVER_FAILED': {
+      if (state.phase !== 'awaitingServer') return state;
+      return { ...state, phase: 'latestUnavailable' };
+    }
+    case 'REFRESH_SERVER_SUCCEEDED': {
+      if (state.phase !== 'awaitingServer' && state.phase !== 'latestUnavailable') return state;
       return {
         ...state,
         conflictingPaths: getConflictingPaths({
@@ -114,27 +141,32 @@ export const reduceConflict = (state: ConflictState, event: ConflictEvent): Conf
         }),
         serverBaseRevision: event.serverBaseRevision,
         serverDraft: event.serverDraft,
+        serverDraftToken: event.serverDraftToken,
+        phase: 'conflict',
       };
     }
     case 'REBASE': {
-      if (state.phase !== 'conflict') return state;
+      if (state.phase !== 'conflict' || !state.serverDraftToken) return state;
       return {
         ...state,
         localBaseRevision: state.serverBaseRevision,
         localDraft: rebaseDraft(state),
+        localDraftToken: state.serverDraftToken,
         phase: 'rebased',
       };
     }
     case 'DISCARD': {
-      if (state.phase !== 'conflict') return state;
+      if (state.phase !== 'conflict' || !state.serverDraftToken) return state;
       return {
         conflictingPaths: [],
         localBaseRevision: state.serverBaseRevision,
         localDraft: { ...state.serverDraft },
+        localDraftToken: state.serverDraftToken,
         originalBaseDraft: { ...state.serverDraft },
         phase: 'discarded',
         serverBaseRevision: state.serverBaseRevision,
         serverDraft: state.serverDraft,
+        serverDraftToken: state.serverDraftToken,
       };
     }
     case 'CLEAR': {
@@ -144,10 +176,22 @@ export const reduceConflict = (state: ConflictState, event: ConflictEvent): Conf
 };
 
 /** Never mutate while the editor is based on a stale or unresolved revision. */
-export const canMutateAgainstBase = (state: ConflictState, expectedRevision: number): boolean => {
-  if (state.phase === 'conflict') return false;
+export const canMutateAgainstBase = (
+  state: ConflictState,
+  expectedRevision: number,
+  expectedDraftToken: string,
+): boolean => {
+  if (
+    state.phase === 'awaitingServer' ||
+    state.phase === 'latestUnavailable' ||
+    state.phase === 'conflict'
+  ) {
+    return false;
+  }
   if (state.phase === 'rebased' || state.phase === 'discarded') {
-    return expectedRevision === state.serverBaseRevision;
+    return (
+      expectedRevision === state.serverBaseRevision && expectedDraftToken === state.serverDraftToken
+    );
   }
   return true;
 };

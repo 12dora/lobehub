@@ -1167,6 +1167,9 @@ export default {
   'tool.intervention.mode.allowListDesc': 'Only automatically execute approved tools',
   'tool.intervention.mode.autoRun': 'Auto Approve',
   'tool.intervention.mode.autoRunDesc': 'Automatically approve all tool executions',
+  'tool.intervention.mode.headless': 'Headless',
+  'tool.intervention.mode.headlessDesc':
+    'Organization-managed unattended execution; unsafe tools are skipped automatically',
   'tool.intervention.mode.manual': 'Manual',
   'tool.intervention.mode.manualDesc': 'Manual approval required for each invocation',
   'tool.intervention.onboarding.agentIdentity.editHint':

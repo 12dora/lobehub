@@ -4,7 +4,7 @@
  * Rejects unknown nested / secret-like fields with zero writes.
  */
 
-import { AgentChatConfigSchema, LobeMetaDataSchema } from '@lobechat/types';
+import { AgentChatConfigSchema, LobeMetaDataSchema, ReasoningGraphSchema } from '@lobechat/types';
 import { z } from 'zod';
 
 import { SETTINGS_SECRET_PATH_PREFIXES } from './registry';
@@ -147,6 +147,72 @@ const llmParamsSchema = z
   })
   .strict();
 
+const strictGraphFieldRefSchema = z
+  .object({
+    desc: z.string().min(1).optional(),
+    field: z.string().min(1),
+    required: z.boolean().optional(),
+  })
+  .strict();
+
+const strictGraphInputFieldSchema = strictGraphFieldRefSchema
+  .extend({ from: z.string().min(1) })
+  .strict();
+
+const strictReasoningGraphSchema = z
+  .object({
+    description: z.string().optional(),
+    edges: z.array(
+      z
+        .object({
+          // Intentional JSON Schema record: arbitrary JSON-Schema keywords remain valid.
+          condition: z.record(z.unknown()).optional(),
+          from: z.string(),
+          input: z
+            .object({ fields: z.array(strictGraphInputFieldSchema).optional() })
+            .strict()
+            .optional(),
+          instruction: z.string().min(1),
+          maxTraversals: z.number().int().nonnegative().optional(),
+          output: z
+            .object({
+              fields: z.array(strictGraphFieldRefSchema).optional(),
+              instruction: z.string().min(1).optional(),
+            })
+            .strict()
+            .optional(),
+          to: z.string(),
+        })
+        .strict(),
+    ),
+    fields: z.record(
+      z
+        .object({
+          desc: z.string().min(1),
+          // Intentional JSON Schema record: do not make schema keywords finite.
+          schema: z.record(z.unknown()),
+        })
+        .strict(),
+    ),
+    maxInstructionCount: z.number().int().positive().optional(),
+    name: z.string().min(1),
+    nodes: z.record(
+      z.discriminatedUnion('type', [
+        z
+          .object({
+            allowedToolApiNames: z.array(z.string().min(1)).optional(),
+            maxAgentSteps: z.number().int().positive().optional(),
+            type: z.literal('agent'),
+          })
+          .strict(),
+        z.object({ type: z.literal('llm') }).strict(),
+      ]),
+    ),
+    terminal: z.string().min(1),
+  })
+  .strict()
+  .pipe(ReasoningGraphSchema);
+
 /**
  * The canonical schema owns the released leaf set. `partial()` is important:
  * it neutralizes canonical defaults so a sparse legacy patch stays sparse.
@@ -156,6 +222,7 @@ const llmParamsSchema = z
 const strictAgentChatConfigSchema = AgentChatConfigSchema.partial()
   .strict()
   .extend({
+    graph: strictReasoningGraphSchema.nullish(),
     memory: z
       .object({
         effort: memoryEffortSchema.optional(),

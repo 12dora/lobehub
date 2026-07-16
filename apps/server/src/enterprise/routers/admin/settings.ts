@@ -90,6 +90,7 @@ export const adminSettingsRouter = router({
         return await service.saveDraft({
           actorUserId: ctx.userId!,
           draft: input.draft,
+          expectedDraftToken: input.expectedDraftToken,
           reason: input.reason,
         });
       } catch (error) {
@@ -100,6 +101,12 @@ export const adminSettingsRouter = router({
             httpCode: 'BAD_REQUEST',
             message:
               error.issues[0]?.message ?? PLATFORM_ERROR_CODES.PLATFORM_CONFIG_VALIDATION_FAILED,
+          });
+        }
+        if (error instanceof PlatformRevisionConflictError) {
+          throwEnterpriseError({
+            code: PLATFORM_ERROR_CODES.PLATFORM_REVISION_CONFLICT,
+            httpCode: 'CONFLICT',
           });
         }
         throw error;

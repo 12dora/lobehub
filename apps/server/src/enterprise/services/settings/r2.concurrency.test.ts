@@ -76,7 +76,11 @@ describe('R3-B3 TOCTOU / shared lock ordering', () => {
     } as unknown as PlatformConfigInvalidationPublisher;
     const materialized = deferred();
     const releasePublish = deferred();
-    const patchStarted = deferred();
+    const beforePatchLock = deferred();
+    const releaseBeforePatchLock = deferred();
+    const patchLockAcquired = deferred();
+    const events: string[] = [];
+    let acquired = false;
     let holdPublish = false;
     const admin = new AdminSettingsService(serverDB, {
       invalidation: publishInvalidation,
@@ -90,10 +94,20 @@ describe('R3-B3 TOCTOU / shared lock ordering', () => {
     });
     const userSvc = new EffectiveSettingsService(serverDB, userInvalidation, {
       beforeBundleLock: async (operation) => {
-        if (operation === 'patch') patchStarted.resolve();
+        if (operation !== 'patch') return;
+        events.push('before-patch-lock');
+        beforePatchLock.resolve();
+        await releaseBeforePatchLock.promise;
+      },
+      afterBundleLock: async (operation) => {
+        if (operation !== 'patch') return;
+        acquired = true;
+        events.push('patch-lock-acquired');
+        patchLockAcquired.resolve();
       },
     });
 
+    const initialToken = (await admin.getDraft()).draftToken;
     await admin.saveDraft({
       actorUserId: 'admin',
       draft: {
@@ -104,6 +118,7 @@ describe('R3-B3 TOCTOU / shared lock ordering', () => {
           visibility: 'visible',
         },
       },
+      expectedDraftToken: initialToken,
       reason: 'seed',
     });
     await admin.publish({ actorUserId: 'admin', expectedRevision: 0, reason: 'p1' });
@@ -118,6 +133,7 @@ describe('R3-B3 TOCTOU / shared lock ordering', () => {
           visibility: 'visible',
         },
       },
+      expectedDraftToken: (await admin.getDraft()).draftToken,
       reason: 'lock',
     });
 
@@ -136,10 +152,21 @@ describe('R3-B3 TOCTOU / shared lock ordering', () => {
       userId: 'u-race',
       value: false,
     });
-    await patchStarted.promise;
 
+    events.push('release-publish');
     releasePublish.resolve();
     await publish;
+    await beforePatchLock.promise;
+
+    // The hook is now inside the checked-out transaction. The old placement
+    // outside db.transaction records `before-patch-lock` before `release-publish`
+    // and fails this causal assertion.
+    expect(events).toEqual(['release-publish', 'before-patch-lock']);
+    expect(acquired).toBe(false);
+
+    releaseBeforePatchLock.resolve();
+    await patchLockAcquired.promise;
+    expect(events).toEqual(['release-publish', 'before-patch-lock', 'patch-lock-acquired']);
     await expect(patch).rejects.toMatchObject({
       code: 'MANAGED_SETTING_BY_ADMIN',
       name: SettingsPathError.name,

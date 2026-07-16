@@ -6,6 +6,7 @@
  */
 
 import {
+  checksumPayload,
   createSettingsPointerAdapter,
   PlatformSettingsModel,
   type SettingsDraftPolicyMap,
@@ -41,6 +42,7 @@ export class SettingsDraftValidationError extends Error {
 
 /** Production-empty lifecycle seam for causal transaction fault tests. */
 export interface AdminSettingsMutationLifecycle {
+  afterDraftLock?: () => Promise<void>;
   afterMaterialization?: (operation: 'publish' | 'rollback') => Promise<void>;
 }
 
@@ -71,6 +73,9 @@ export class AdminSettingsService {
   private readonly publisher: PlatformPublisherService;
   private readonly auditAppend: NonNullable<AdminSettingsServiceOptions['auditAppend']>;
   private readonly lifecycle: AdminSettingsMutationLifecycle;
+
+  private draftToken = (bundle: { draft: unknown; revision: number }): string =>
+    checksumPayload({ draft: bundle.draft ?? {}, revision: bundle.revision });
 
   constructor(db: LobeChatDatabase, options: AdminSettingsServiceOptions = {}) {
     this.db = db;
@@ -120,6 +125,7 @@ export class AdminSettingsService {
     return {
       baseRevision: bundle.revision,
       draft: (bundle.draft ?? {}) as SettingsDraftPolicyMap,
+      draftToken: this.draftToken(bundle),
       publishedPolicies,
       registry: settingsRegistry.list().map((e) => ({
         control: e.control,
@@ -217,6 +223,7 @@ export class AdminSettingsService {
   saveDraft = async (params: {
     actorUserId: string;
     draft: SettingsDraftPolicyMap;
+    expectedDraftToken: string;
     reason: string;
   }) => {
     const validation = await this.validateDraft(params.draft);
@@ -240,6 +247,15 @@ export class AdminSettingsService {
     try {
       bundle = await this.db.transaction(async (tx) => {
         const model = new PlatformSettingsModel(tx);
+        await model.lockBundleForUpdate();
+        await this.lifecycle.afterDraftLock?.();
+        const current = await model.getBundle();
+        if (!current) throw new Error('Failed to load locked platform settings bundle');
+        if (this.draftToken(current) !== params.expectedDraftToken) {
+          throw new PlatformRevisionConflictError(
+            'Platform settings draft conflict: expectedDraftToken does not match current draft',
+          );
+        }
         const saved = await model.saveDraft({
           draft: params.draft,
           updatedBy: params.actorUserId,
@@ -276,6 +292,7 @@ export class AdminSettingsService {
 
     return {
       baseRevision: bundle.revision,
+      draftToken: this.draftToken(bundle),
       ok: true as const,
       registryVersion: settingsRegistry.version,
     };
