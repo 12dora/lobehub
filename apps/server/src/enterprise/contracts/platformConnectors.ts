@@ -1,10 +1,6 @@
 import { z } from 'zod';
 
-import {
-  containsSensitiveMaterial,
-  isCredentialBearingUrl,
-  isSensitiveKey,
-} from '../security/redaction';
+import { containsSensitiveMaterial, isCredentialBearingUrl } from '../security/redaction';
 
 const connectorIdSchema = z.string().trim().min(1).max(128);
 const connectorKeySchema = z
@@ -21,17 +17,39 @@ const reasonSchema = z
   .max(2000)
   .refine((value) => !containsSensitiveMaterial(value), 'secret material is not allowed');
 
-const validateNonSecretJson = (
+const publicTextSchema = z
+  .string()
+  .trim()
+  .max(4000)
+  .refine(
+    (value) => !containsSensitiveMaterial(value) && !isCredentialBearingUrl(value),
+    'secret material is not allowed',
+  );
+const publicDisplayNameSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(200)
+  .refine(
+    (value) => !containsSensitiveMaterial(value) && !isCredentialBearingUrl(value),
+    'secret material is not allowed',
+  );
+
+const validateJsonSchema = (
   value: unknown,
   ctx: z.RefinementCtx,
   path: Array<number | string> = [],
+  secretBearingKeyword = false,
 ): void => {
   if (Array.isArray(value)) {
-    value.forEach((item, index) => validateNonSecretJson(item, ctx, [...path, index]));
+    value.forEach((item, index) =>
+      validateJsonSchema(item, ctx, [...path, index], secretBearingKeyword),
+    );
     return;
   }
   if (!value || typeof value !== 'object') {
     if (
+      secretBearingKeyword &&
       typeof value === 'string' &&
       (containsSensitiveMaterial(value) || isCredentialBearingUrl(value))
     ) {
@@ -40,20 +58,16 @@ const validateNonSecretJson = (
     return;
   }
   for (const [key, child] of Object.entries(value)) {
-    if (isSensitiveKey(key)) {
-      ctx.addIssue({
-        code: 'custom',
-        message: 'sensitive key is not allowed',
-        path: [...path, key],
-      });
-      continue;
-    }
-    validateNonSecretJson(child, ctx, [...path, key]);
+    const normalizedKey = key.toLowerCase();
+    const isSecretBearingKeyword = new Set(['const', 'default', 'enum', 'example', 'examples']).has(
+      normalizedKey,
+    );
+    validateJsonSchema(child, ctx, [...path, key], secretBearingKeyword || isSecretBearingKeyword);
   }
 };
 
 const boundedNonSecretJsonSchema = z.record(z.string(), z.unknown()).superRefine((value, ctx) => {
-  validateNonSecretJson(value, ctx);
+  validateJsonSchema(value, ctx);
   if (JSON.stringify(value).length > 64 * 1024) {
     ctx.addIssue({ code: 'custom', message: 'JSON payload is too large' });
   }
@@ -89,6 +103,12 @@ const normalizeReturnToForValidation = (value: string): string => {
   return current;
 };
 
+const containsControlCharacter = (value: string): boolean =>
+  [...value].some((character) => {
+    const codePoint = character.codePointAt(0)!;
+    return codePoint <= 0x1f || codePoint === 0x7f;
+  });
+
 export const connectorReturnToSchema = z
   .string()
   .trim()
@@ -96,7 +116,12 @@ export const connectorReturnToSchema = z
   .max(2048)
   .refine((value) => {
     const normalized = normalizeReturnToForValidation(value);
-    return normalized.startsWith('/') && !normalized.startsWith('//') && !normalized.includes('\\');
+    return (
+      normalized.startsWith('/') &&
+      !normalized.startsWith('//') &&
+      !normalized.includes('\\') &&
+      !containsControlCharacter(normalized)
+    );
   }, 'returnTo must be a site-relative path');
 
 export const connectorCredentialModeSchema = z.enum([
@@ -154,7 +179,7 @@ export const connectorScopesSchema = z
     }
   });
 
-const connectorSharedCredentialSchema = z
+export const connectorSharedCredentialSchema = z
   .object({
     apiKey: z.string().min(1).max(32_768).optional(),
     bearerToken: z.string().min(1).max(32_768).optional(),
@@ -183,6 +208,10 @@ export const connectorSecretStateSchema = z
     fingerprint: z.string().min(1).max(256).nullable(),
     updatedAt: z.date().nullable(),
   })
+  .strict();
+
+const emptyConnectorSecretStateSchema = z
+  .object({ configured: z.literal(false), fingerprint: z.null(), updatedAt: z.null() })
   .strict();
 
 export const adminConnectorOAuthConfigSchema = z
@@ -241,20 +270,16 @@ export const connectorConnectionTestStateSchema = z
   })
   .strict();
 
-export const adminConnectorDraftSchema = z
+const adminConnectorDraftBaseSchema = z
   .object({
     connectionTest: connectorConnectionTestStateSchema.nullable(),
-    credentialMode: connectorCredentialModeSchema,
     description: z.string().trim().max(4000).nullable(),
     displayName: z.string().trim().min(1).max(200),
     enabled: z.boolean(),
     endpoint: httpUrlSchema,
     id: connectorIdSchema,
     key: connectorKeySchema,
-    oauthClientSecret: connectorSecretStateSchema,
-    oauthConfig: adminConnectorOAuthConfigSchema.nullable(),
     revision: z.number().int().nonnegative(),
-    sharedSecret: connectorSecretStateSchema,
     sort: z.number().int(),
     status: connectorLifecycleStatusSchema,
     tools: z.array(connectorToolDraftSchema).max(1000),
@@ -262,14 +287,63 @@ export const adminConnectorDraftSchema = z
   })
   .strict();
 
-export const adminPublishedConnectorSchema = adminConnectorDraftSchema
-  .omit({ connectionTest: true, revision: true, status: true, tools: true })
+const adminConnectorNoneDraftSchema = adminConnectorDraftBaseSchema
   .extend({
-    publishedAt: z.date(),
-    publishedRevision: z.number().int().positive(),
-    tools: z.array(publishedConnectorToolSchema).max(1000),
+    credentialMode: z.literal('none'),
+    oauthClientSecret: emptyConnectorSecretStateSchema,
+    oauthConfig: z.null(),
+    sharedSecret: emptyConnectorSecretStateSchema,
   })
   .strict();
+const adminConnectorSharedDraftSchema = adminConnectorDraftBaseSchema
+  .extend({
+    credentialMode: z.literal('shared_service_account'),
+    oauthClientSecret: emptyConnectorSecretStateSchema,
+    oauthConfig: z.null(),
+    sharedSecret: connectorSecretStateSchema,
+  })
+  .strict();
+const adminConnectorOAuthDraftSchema = adminConnectorDraftBaseSchema
+  .extend({
+    credentialMode: z.literal('per_user_oauth'),
+    oauthClientSecret: connectorSecretStateSchema,
+    oauthConfig: adminConnectorOAuthConfigSchema,
+    sharedSecret: emptyConnectorSecretStateSchema,
+  })
+  .strict();
+
+export const adminConnectorDraftSchema = z.discriminatedUnion('credentialMode', [
+  adminConnectorNoneDraftSchema,
+  adminConnectorSharedDraftSchema,
+  adminConnectorOAuthDraftSchema,
+]);
+
+const publishedConnectorFields = {
+  publishedAt: z.date(),
+  publishedRevision: z.number().int().positive(),
+  tools: z.array(publishedConnectorToolSchema).max(1000),
+};
+
+export const adminPublishedConnectorSchema = z.discriminatedUnion('credentialMode', [
+  adminConnectorNoneDraftSchema
+    .omit({ connectionTest: true, revision: true, status: true, tools: true })
+    .extend(publishedConnectorFields)
+    .strict(),
+  adminConnectorSharedDraftSchema
+    .omit({ connectionTest: true, revision: true, status: true, tools: true })
+    .extend(publishedConnectorFields)
+    .strict(),
+  adminConnectorOAuthDraftSchema
+    .omit({ connectionTest: true, revision: true, status: true, tools: true })
+    .extend(publishedConnectorFields)
+    .strict(),
+]);
+
+const adminConnectorListItemSchema = z.discriminatedUnion('credentialMode', [
+  adminConnectorNoneDraftSchema.omit({ tools: true }),
+  adminConnectorSharedDraftSchema.omit({ tools: true }),
+  adminConnectorOAuthDraftSchema.omit({ tools: true }),
+]);
 
 const connectorDraftFieldsSchema = z
   .object({
@@ -282,39 +356,53 @@ const connectorDraftFieldsSchema = z
     oauthConfig: adminConnectorOAuthConfigInputSchema.nullable().optional(),
     sharedSecret: connectorSharedSecretMutationSchema.optional(),
     sort: z.number().int().optional(),
-    tools: z
-      .array(connectorToolDraftSchema.omit({ id: true }))
-      .max(1000)
-      .optional(),
+    tools: z.array(connectorToolDraftSchema).max(1000).optional(),
     transport: webConnectorTransportSchema.optional(),
   })
   .strict();
 
-const validateConnectorCredentialFields = (
-  value: z.infer<typeof connectorDraftFieldsSchema>,
-  ctx: z.RefinementCtx,
-): void => {
-  if (value.credentialMode === 'none' && (value.sharedSecret || value.oauthClientSecret)) {
-    ctx.addIssue({ code: 'custom', message: 'none credential mode cannot accept secrets' });
-  }
-  if (value.credentialMode === 'shared_service_account') {
-    if (value.oauthConfig) {
-      ctx.addIssue({
-        code: 'custom',
-        message: 'shared credential mode cannot accept OAuth config',
-      });
-    }
-    if (value.oauthClientSecret) {
-      ctx.addIssue({
-        code: 'custom',
-        message: 'shared credential mode cannot accept OAuth secret',
-      });
-    }
-  }
-  if (value.credentialMode === 'per_user_oauth' && value.sharedSecret) {
-    ctx.addIssue({ code: 'custom', message: 'per-user OAuth cannot accept a shared secret' });
-  }
-};
+const connectorCreateBaseSchema = z
+  .object({
+    description: z.string().trim().max(4000).nullable().optional(),
+    displayName: z.string().trim().min(1).max(200),
+    enabled: z.boolean().optional(),
+    endpoint: httpUrlSchema,
+    key: connectorKeySchema,
+    reason: reasonSchema,
+    sort: z.number().int().optional(),
+    tools: z
+      .array(connectorToolDraftSchema.omit({ id: true }))
+      .max(1000)
+      .optional(),
+    transport: webConnectorTransportSchema.default('http'),
+  })
+  .strict();
+
+export const adminConnectorCreateDraftInputSchema = z.discriminatedUnion('credentialMode', [
+  connectorCreateBaseSchema.extend({ credentialMode: z.literal('none') }).strict(),
+  connectorCreateBaseSchema
+    .extend({
+      credentialMode: z.literal('shared_service_account'),
+      sharedSecret: connectorSharedSecretMutationSchema.optional(),
+    })
+    .strict(),
+  connectorCreateBaseSchema
+    .extend({
+      credentialMode: z.literal('per_user_oauth'),
+      oauthClientSecret: connectorOAuthClientSecretMutationSchema.optional(),
+      oauthConfig: adminConnectorOAuthConfigInputSchema,
+    })
+    .strict(),
+]);
+
+export const adminConnectorUpdateDraftInputSchema = connectorDraftFieldsSchema
+  .extend({
+    expectedDraftToken: z.string().length(64),
+    expectedRevision: z.number().int().nonnegative(),
+    id: connectorIdSchema,
+    reason: reasonSchema,
+  })
+  .strict();
 
 export const adminConnectorListInputSchema = z
   .object({
@@ -329,7 +417,7 @@ export const adminConnectorListInputSchema = z
 
 export const adminConnectorListOutputSchema = z
   .object({
-    items: z.array(adminConnectorDraftSchema.omit({ tools: true })),
+    items: z.array(adminConnectorListItemSchema),
     nextCursor: connectorKeySchema.nullable(),
   })
   .strict();
@@ -344,27 +432,89 @@ export const adminConnectorGetOutputSchema = z
   })
   .strict();
 
-export const adminConnectorCreateDraftInputSchema = connectorDraftFieldsSchema
-  .extend({
-    credentialMode: connectorCredentialModeSchema,
-    displayName: z.string().trim().min(1).max(200),
-    endpoint: httpUrlSchema,
-    key: connectorKeySchema,
-    reason: reasonSchema,
-    transport: webConnectorTransportSchema.default('http'),
-  })
-  .strict()
-  .superRefine(validateConnectorCredentialFields);
+const clearSecretMutation = { operation: 'clear' } as const;
+const emptySecretState = { configured: false, fingerprint: null, updatedAt: null } as const;
+const clearOnlySecretMutationSchema = z.object({ operation: z.literal('clear') }).strict();
 
-export const adminConnectorUpdateDraftInputSchema = connectorDraftFieldsSchema
-  .extend({
-    expectedDraftToken: z.string().length(64),
-    expectedRevision: z.number().int().nonnegative(),
-    id: connectorIdSchema,
-    reason: reasonSchema,
-  })
-  .strict()
-  .superRefine(validateConnectorCredentialFields);
+/** Merge a patch with the current complete Draft and re-validate the credential discriminant. */
+export const normalizeAdminConnectorUpdateInput = (
+  currentInput: z.input<typeof adminConnectorDraftSchema>,
+  patchInput: z.input<typeof adminConnectorUpdateDraftInputSchema>,
+  serverRedirectUri: string,
+) => {
+  const current = adminConnectorDraftSchema.parse(currentInput);
+  const patch = adminConnectorUpdateDraftInputSchema.parse(patchInput);
+  const targetMode = patch.credentialMode ?? current.credentialMode;
+  const switchingMode = targetMode !== current.credentialMode;
+  const redirectUri = httpUrlSchema.parse(serverRedirectUri);
+
+  if (targetMode !== 'shared_service_account' && patch.sharedSecret) {
+    clearOnlySecretMutationSchema.parse(patch.sharedSecret);
+  }
+  if (targetMode !== 'per_user_oauth' && patch.oauthClientSecret) {
+    clearOnlySecretMutationSchema.parse(patch.oauthClientSecret);
+  }
+  if (targetMode !== 'per_user_oauth') z.null().optional().parse(patch.oauthConfig);
+
+  const oauthConfig =
+    targetMode === 'per_user_oauth'
+      ? patch.oauthConfig
+        ? { ...patch.oauthConfig, redirectUri }
+        : current.credentialMode === 'per_user_oauth'
+          ? current.oauthConfig
+          : null
+      : null;
+  const currentOauthInput =
+    current.credentialMode === 'per_user_oauth'
+      ? {
+          authorizationEndpoint: current.oauthConfig.authorizationEndpoint,
+          clientId: current.oauthConfig.clientId,
+          issuer: current.oauthConfig.issuer,
+          scopes: current.oauthConfig.scopes,
+          tokenEndpoint: current.oauthConfig.tokenEndpoint,
+        }
+      : undefined;
+
+  const candidate = adminConnectorDraftSchema.parse({
+    ...current,
+    ...(patch.description !== undefined && { description: patch.description }),
+    ...(patch.displayName !== undefined && { displayName: patch.displayName }),
+    ...(patch.enabled !== undefined && { enabled: patch.enabled }),
+    ...(patch.endpoint !== undefined && { endpoint: patch.endpoint }),
+    ...(patch.sort !== undefined && { sort: patch.sort }),
+    ...(patch.tools !== undefined && { tools: patch.tools }),
+    ...(patch.transport !== undefined && { transport: patch.transport }),
+    credentialMode: targetMode,
+    oauthClientSecret:
+      targetMode === 'per_user_oauth' && !switchingMode
+        ? current.oauthClientSecret
+        : emptySecretState,
+    oauthConfig,
+    sharedSecret:
+      targetMode === 'shared_service_account' && !switchingMode
+        ? current.sharedSecret
+        : emptySecretState,
+  });
+
+  return {
+    candidate,
+    patch: {
+      ...patch,
+      credentialMode: targetMode,
+      oauthClientSecret:
+        targetMode === 'per_user_oauth' ? patch.oauthClientSecret : clearSecretMutation,
+      oauthConfig:
+        targetMode === 'per_user_oauth'
+          ? (patch.oauthConfig ??
+            (currentOauthInput
+              ? adminConnectorOAuthConfigInputSchema.parse(currentOauthInput)
+              : undefined))
+          : null,
+      sharedSecret:
+        targetMode === 'shared_service_account' ? patch.sharedSecret : clearSecretMutation,
+    },
+  };
+};
 
 const adminConnectorDraftActionInputSchema = z
   .object({ id: connectorIdSchema, reason: reasonSchema })
@@ -397,6 +547,7 @@ const adminConnectorPublicationInputSchema = z
   .strict();
 
 export const adminConnectorPublishInputSchema = adminConnectorPublicationInputSchema;
+export const adminConnectorArchiveInputSchema = adminConnectorPublicationInputSchema;
 export const adminConnectorRollbackInputSchema = adminConnectorPublicationInputSchema
   .extend({ targetRevision: z.number().int().positive() })
   .strict();
@@ -425,8 +576,12 @@ export const connectorBindingSchema = z
   .strict();
 
 export const managedConnectorToolSchema = publishedConnectorToolSchema
-  .omit({ inputSchema: true, platformPolicy: true })
-  .extend({ available: z.boolean() })
+  .omit({ description: true, displayName: true, inputSchema: true, platformPolicy: true })
+  .extend({
+    available: z.boolean(),
+    description: publicTextSchema.nullable(),
+    displayName: publicDisplayNameSchema,
+  })
   .strict();
 
 /** User projection intentionally omits endpoint, transport, OAuth client/config, and secret state. */
@@ -434,8 +589,8 @@ export const managedConnectorSchema = z
   .object({
     binding: connectorBindingSchema.nullable(),
     credentialMode: connectorCredentialModeSchema,
-    description: z.string().trim().max(4000).nullable(),
-    displayName: z.string().trim().min(1).max(200),
+    description: publicTextSchema.nullable(),
+    displayName: publicDisplayNameSchema,
     id: connectorIdSchema,
     key: connectorKeySchema,
     publishedRevision: z.number().int().positive(),
@@ -507,4 +662,63 @@ export const connectorEffectiveToolPolicyInputSchema = z
 
 export const connectorEffectiveToolPolicyOutputSchema = z
   .object({ allowed: z.boolean(), deniedBy: z.enum(['platform', 'agent', 'user']).nullable() })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.allowed !== (value.deniedBy === null)) {
+      ctx.addIssue({ code: 'custom', message: 'allowed and deniedBy must describe one outcome' });
+    }
+  });
+
+export const connectorRuntimeResolveInputSchema = z
+  .object({
+    agentAllowed: z.boolean(),
+    connectorId: connectorIdSchema,
+    expectedPublishedRevision: z.number().int().positive(),
+    toolKey: connectorToolKeySchema,
+    userEnabled: z.boolean(),
+    userId: connectorIdSchema,
+  })
   .strict();
+
+const connectorRuntimeResolutionBaseSchema = z
+  .object({
+    connectorId: connectorIdSchema,
+    endpoint: httpUrlSchema,
+    publishedRevision: z.number().int().positive(),
+    tool: publishedConnectorToolSchema,
+    transport: webConnectorTransportSchema,
+  })
+  .strict();
+
+export const connectorRuntimeResolutionSchema = z.discriminatedUnion('credentialMode', [
+  connectorRuntimeResolutionBaseSchema.extend({ credentialMode: z.literal('none') }).strict(),
+  connectorRuntimeResolutionBaseSchema
+    .extend({
+      credentialMode: z.literal('shared_service_account'),
+      credentials: connectorSharedCredentialSchema,
+    })
+    .strict(),
+  connectorRuntimeResolutionBaseSchema
+    .extend({
+      accessToken: z.string().min(1).max(32_768),
+      bindingId: connectorIdSchema,
+      credentialMode: z.literal('per_user_oauth'),
+      expiresAt: z.date().nullable(),
+      scopes: connectorScopesSchema,
+      userId: connectorIdSchema,
+    })
+    .strict(),
+]);
+
+export const ADMIN_CONNECTOR_PROCEDURE_PERMISSIONS = {
+  archive: 'platform_connector:delete:all',
+  create: 'platform_connector:create:all',
+  discover: 'platform_connector:test:all',
+  get: 'platform_connector:read:all',
+  list: 'platform_connector:read:all',
+  publish: 'platform_connector:publish:all',
+  revokeAllBindings: 'platform_connector:delete:all',
+  rollback: 'platform_connector:publish:all',
+  test: 'platform_connector:test:all',
+  update: 'platform_connector:update:all',
+} as const;
