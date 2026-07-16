@@ -1,5 +1,7 @@
+import { sql } from 'drizzle-orm';
 import {
   boolean,
+  check,
   index,
   integer,
   jsonb,
@@ -11,11 +13,47 @@ import {
 
 import { idGenerator } from '../../utils/idGenerator';
 import { createdAt, timestamptz, updatedAt } from '../_helpers';
+import { users } from '../user';
 import type { PlatformResourceStatus } from './common';
 
+export type PlatformConnectorCredentialMode = 'none' | 'shared_service_account' | 'per_user_oauth';
+export type PlatformConnectorTransport = 'http';
+export type PlatformConnectorToolPolicy = 'allow' | 'deny';
+export type PlatformConnectorToolRiskLevel = 'low' | 'medium' | 'high' | 'critical';
+export type PlatformConnectorBindingStatus =
+  'disconnected' | 'pending' | 'connected' | 'expired' | 'revoked' | 'error';
+
+export interface PlatformConnectorOAuthConfig {
+  authorizationEndpoint: string;
+  clientId: string;
+  issuer: string;
+  redirectUri: string;
+  scopes: string[];
+  tokenEndpoint: string;
+  userInfoEndpoint?: string;
+}
+
+export interface PlatformConnectorToolJsonSchema {
+  additionalProperties?: boolean | PlatformConnectorToolJsonSchema;
+  allOf?: PlatformConnectorToolJsonSchema[];
+  anyOf?: PlatformConnectorToolJsonSchema[];
+  const?: unknown;
+  default?: unknown;
+  description?: string;
+  enum?: unknown[];
+  examples?: unknown[];
+  items?: PlatformConnectorToolJsonSchema | PlatformConnectorToolJsonSchema[];
+  oneOf?: PlatformConnectorToolJsonSchema[];
+  properties?: Record<string, PlatformConnectorToolJsonSchema>;
+  required?: string[];
+  title?: string;
+  type?: string | string[];
+}
+
 /**
- * Platform Connector definitions (M09). Empty shell in Migration 0.
- * Shared credentials are envelope-encrypted; OAuth secrets never appear in revision JSON.
+ * Mutable Connector Draft identity. Published runtime data is read from the
+ * immutable `platform_resource_revisions` row referenced by publishedRevision.
+ * Secret columns contain only Vault/KMS references and fingerprints.
  */
 export const platformConnectors = pgTable(
   'platform_connectors',
@@ -24,26 +62,37 @@ export const platformConnectors = pgTable(
       .$defaultFn(() => idGenerator('platformConnectors', 16))
       .primaryKey()
       .notNull(),
-
-    connectorKey: varchar('connector_key', { length: 128 }).notNull(),
-    name: text('name').notNull(),
+    connectorKey: varchar('connector_key', { length: 64 }).notNull(),
+    displayName: varchar('display_name', { length: 200 }).notNull(),
     description: text('description'),
-    sourceType: varchar('source_type', { length: 32 }).notNull().default('custom'),
-    connectionType: varchar('connection_type', { length: 32 }).notNull().default('http'),
-    mcpServerUrl: text('mcp_server_url'),
-    mcpStdioConfig: jsonb('mcp_stdio_config').$type<Record<string, unknown>>(),
-    credentialMode: varchar('credential_mode', { length: 64 }).notNull().default('per_user_oauth'),
-    /** OAuth client config with secrets stripped / referenced by secret_ref. */
-    oidcConfig: jsonb('oidc_config').$type<Record<string, unknown>>(),
-    encryptedSharedCredentials: text('encrypted_shared_credentials'),
-    secretFingerprint: text('secret_fingerprint'),
-    isRequired: boolean('is_required').notNull().default(false),
+    endpoint: text('endpoint').notNull(),
+    transport: varchar('transport', { length: 16 })
+      .$type<PlatformConnectorTransport>()
+      .notNull()
+      .default('http'),
+    credentialMode: varchar('credential_mode', { length: 32 })
+      .$type<PlatformConnectorCredentialMode>()
+      .notNull(),
+    /** Secret-free OAuth metadata. Client secret lives behind oauthClientSecretRef. */
+    oauthConfig: jsonb('oauth_config').$type<PlatformConnectorOAuthConfig>(),
+    sharedSecretRef: text('shared_secret_ref'),
+    sharedSecretFingerprint: varchar('shared_secret_fingerprint', { length: 256 }),
+    sharedSecretUpdatedAt: timestamptz('shared_secret_updated_at'),
+    oauthClientSecretRef: text('oauth_client_secret_ref'),
+    oauthClientSecretFingerprint: varchar('oauth_client_secret_fingerprint', { length: 256 }),
+    oauthClientSecretUpdatedAt: timestamptz('oauth_client_secret_updated_at'),
     enabled: boolean('enabled').notNull().default(false),
+    sort: integer('sort').notNull().default(0),
     status: varchar('status', { length: 32 })
       .$type<PlatformResourceStatus>()
       .notNull()
       .default('draft'),
+    /** CAS version for Draft mutations. */
     revision: integer('revision').notNull().default(0),
+    /** Exact immutable revision used by runtime; null until first publish. */
+    publishedRevision: integer('published_revision'),
+    publishedChecksum: varchar('published_checksum', { length: 64 }),
+    publishedAt: timestamptz('published_at'),
     createdBy: text('created_by'),
     updatedBy: text('updated_by'),
     createdAt: createdAt(),
@@ -51,16 +100,38 @@ export const platformConnectors = pgTable(
   },
   (t) => [
     uniqueIndex('platform_connectors_connector_key_unique').on(t.connectorKey),
-    index('platform_connectors_status_idx').on(t.status),
+    index('platform_connectors_status_key_id_idx').on(t.status, t.connectorKey, t.id),
+    index('platform_connectors_enabled_sort_id_idx').on(t.enabled, t.sort, t.id),
+    check('platform_connectors_transport_http_check', sql`${t.transport} = 'http'`),
+    check(
+      'platform_connectors_credential_mode_check',
+      sql`${t.credentialMode} IN ('none', 'shared_service_account', 'per_user_oauth')`,
+    ),
+    check(
+      'platform_connectors_credential_slot_check',
+      sql`(
+        (${t.credentialMode} = 'none' AND ${t.sharedSecretRef} IS NULL AND ${t.oauthClientSecretRef} IS NULL AND ${t.oauthConfig} IS NULL)
+        OR (${t.credentialMode} = 'shared_service_account' AND ${t.oauthClientSecretRef} IS NULL AND ${t.oauthConfig} IS NULL)
+        OR (${t.credentialMode} = 'per_user_oauth' AND ${t.sharedSecretRef} IS NULL AND ${t.oauthConfig} IS NOT NULL)
+      )`,
+    ),
+    check(
+      'platform_connectors_published_pointer_check',
+      sql`(${t.publishedRevision} IS NULL AND ${t.publishedChecksum} IS NULL AND ${t.publishedAt} IS NULL)
+        OR (${t.publishedRevision} > 0 AND ${t.publishedChecksum} IS NOT NULL AND ${t.publishedAt} IS NOT NULL)`,
+    ),
+    check(
+      'platform_connectors_secret_ref_check',
+      sql`(${t.sharedSecretRef} IS NULL OR ${t.sharedSecretRef} LIKE 'vault://%' OR ${t.sharedSecretRef} LIKE 'kms://%')
+        AND (${t.oauthClientSecretRef} IS NULL OR ${t.oauthClientSecretRef} LIKE 'vault://%' OR ${t.oauthClientSecretRef} LIKE 'kms://%')`,
+    ),
   ],
 );
 
 export type PlatformConnectorItem = typeof platformConnectors.$inferSelect;
 export type NewPlatformConnector = typeof platformConnectors.$inferInsert;
 
-/**
- * Tools exposed by a platform connector (M09). Empty shell in Migration 0.
- */
+/** Current Draft tools. Published tools are embedded in the immutable revision snapshot. */
 export const platformConnectorTools = pgTable(
   'platform_connector_tools',
   {
@@ -68,17 +139,27 @@ export const platformConnectorTools = pgTable(
       .$defaultFn(() => idGenerator('platformConnectorTools', 16))
       .primaryKey()
       .notNull(),
-
     connectorId: text('connector_id')
       .notNull()
       .references(() => platformConnectors.id, { onDelete: 'restrict' }),
-    toolKey: varchar('tool_key', { length: 128 }).notNull(),
-    manifest: jsonb('manifest').$type<Record<string, unknown>>().notNull().default({}),
-    permissionPolicy: varchar('permission_policy', { length: 32 })
+    toolKey: varchar('tool_key', { length: 200 }).notNull(),
+    displayName: varchar('display_name', { length: 200 }).notNull(),
+    description: text('description'),
+    inputSchema: jsonb('input_schema')
+      .$type<PlatformConnectorToolJsonSchema>()
       .notNull()
-      .default('needs_approval'),
-    allowUserStricterPolicy: boolean('allow_user_stricter_policy').notNull().default(true),
-    limitConfig: jsonb('limit_config').$type<Record<string, unknown>>(),
+      .default({}),
+    enabled: boolean('enabled').notNull().default(true),
+    platformPolicy: varchar('platform_policy', { length: 16 })
+      .$type<PlatformConnectorToolPolicy>()
+      .notNull()
+      .default('deny'),
+    riskLevel: varchar('risk_level', { length: 16 })
+      .$type<PlatformConnectorToolRiskLevel>()
+      .notNull()
+      .default('high'),
+    requiresConfirmation: boolean('requires_confirmation').notNull().default(true),
+    sort: integer('sort').notNull().default(0),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -87,16 +168,24 @@ export const platformConnectorTools = pgTable(
       t.connectorId,
       t.toolKey,
     ),
-    index('platform_connector_tools_connector_id_idx').on(t.connectorId),
+    index('platform_connector_tools_connector_sort_key_id_idx').on(
+      t.connectorId,
+      t.sort,
+      t.toolKey,
+      t.id,
+    ),
+    check('platform_connector_tools_policy_check', sql`${t.platformPolicy} IN ('allow', 'deny')`),
+    check(
+      'platform_connector_tools_risk_check',
+      sql`${t.riskLevel} IN ('low', 'medium', 'high', 'critical')`,
+    ),
   ],
 );
 
 export type PlatformConnectorToolItem = typeof platformConnectorTools.$inferSelect;
 export type NewPlatformConnectorTool = typeof platformConnectorTools.$inferInsert;
 
-/**
- * Per-user OAuth / token bindings for platform connectors (M09). Empty shell in Migration 0.
- */
+/** User-owned OAuth binding. Token columns contain opaque Vault/KMS references only. */
 export const platformUserConnectorBindings = pgTable(
   'platform_user_connector_bindings',
   {
@@ -104,17 +193,28 @@ export const platformUserConnectorBindings = pgTable(
       .$defaultFn(() => idGenerator('platformUserConnectorBindings', 16))
       .primaryKey()
       .notNull(),
-
-    userId: text('user_id').notNull(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
     connectorId: text('connector_id')
       .notNull()
       .references(() => platformConnectors.id, { onDelete: 'restrict' }),
-    authStatus: varchar('auth_status', { length: 32 }).notNull().default('disconnected'),
-    encryptedCredentials: text('encrypted_credentials'),
+    publishedRevision: integer('published_revision').notNull(),
+    status: varchar('status', { length: 32 })
+      .$type<PlatformConnectorBindingStatus>()
+      .notNull()
+      .default('disconnected'),
+    oauthTokenRef: text('oauth_token_ref'),
+    tokenFingerprint: varchar('token_fingerprint', { length: 256 }),
+    scopes: varchar('scopes', { length: 200 })
+      .array()
+      .notNull()
+      .default(sql`ARRAY[]::varchar[]`),
     expiresAt: timestamptz('expires_at'),
-    lastError: text('last_error'),
     connectedAt: timestamptz('connected_at'),
-    status: varchar('status', { length: 32 }).notNull().default('active'),
+    revokedAt: timestamptz('revoked_at'),
+    lastErrorCategory: varchar('last_error_category', { length: 32 }),
+    revision: integer('revision').notNull().default(0),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -123,11 +223,77 @@ export const platformUserConnectorBindings = pgTable(
       t.userId,
       t.connectorId,
     ),
-    index('platform_user_connector_bindings_user_id_idx').on(t.userId),
-    index('platform_user_connector_bindings_connector_id_idx').on(t.connectorId),
-    index('platform_user_connector_bindings_status_idx').on(t.status),
+    index('platform_user_connector_bindings_user_id_id_idx').on(t.userId, t.id),
+    index('platform_user_connector_bindings_connector_id_id_idx').on(t.connectorId, t.id),
+    index('platform_user_connector_bindings_status_expires_idx').on(t.status, t.expiresAt),
+    check(
+      'platform_user_connector_bindings_status_check',
+      sql`${t.status} IN ('disconnected', 'pending', 'connected', 'expired', 'revoked', 'error')`,
+    ),
+    check(
+      'platform_user_connector_bindings_token_ref_check',
+      sql`(${t.status} = 'connected' AND ${t.oauthTokenRef} IS NOT NULL AND ${t.revokedAt} IS NULL)
+        OR (${t.status} <> 'connected')`,
+    ),
+    check(
+      'platform_user_connector_bindings_token_ref_format_check',
+      sql`${t.oauthTokenRef} IS NULL OR ${t.oauthTokenRef} LIKE 'vault://%' OR ${t.oauthTokenRef} LIKE 'kms://%'`,
+    ),
   ],
 );
 
 export type PlatformUserConnectorBindingItem = typeof platformUserConnectorBindings.$inferSelect;
 export type NewPlatformUserConnectorBinding = typeof platformUserConnectorBindings.$inferInsert;
+
+/** Single-use OAuth state. Raw state, PKCE verifier, and tokens never enter PostgreSQL. */
+export const platformConnectorOAuthStates = pgTable(
+  'platform_connector_oauth_states',
+  {
+    id: text('id')
+      .$defaultFn(() => idGenerator('platformConnectorOAuthStates', 16))
+      .primaryKey()
+      .notNull(),
+    stateId: varchar('state_id', { length: 32 }).notNull(),
+    stateHash: varchar('state_hash', { length: 64 }).notNull(),
+    bindingId: text('binding_id')
+      .notNull()
+      .references(() => platformUserConnectorBindings.id, { onDelete: 'restrict' }),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    connectorId: text('connector_id')
+      .notNull()
+      .references(() => platformConnectors.id, { onDelete: 'restrict' }),
+    publishedRevision: integer('published_revision').notNull(),
+    pkceVerifierRef: text('pkce_verifier_ref').notNull(),
+    redirectUri: text('redirect_uri').notNull(),
+    returnTo: text('return_to'),
+    scopes: varchar('scopes', { length: 200 })
+      .array()
+      .notNull()
+      .default(sql`ARRAY[]::varchar[]`),
+    expiresAt: timestamptz('expires_at').notNull(),
+    consumedAt: timestamptz('consumed_at'),
+    revokedAt: timestamptz('revoked_at'),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex('platform_connector_oauth_states_state_id_unique').on(t.stateId),
+    uniqueIndex('platform_connector_oauth_states_state_hash_unique').on(t.stateHash),
+    index('platform_connector_oauth_states_binding_created_idx').on(t.bindingId, t.createdAt),
+    index('platform_connector_oauth_states_user_connector_idx').on(t.userId, t.connectorId),
+    index('platform_connector_oauth_states_expires_idx').on(t.expiresAt),
+    check(
+      'platform_connector_oauth_states_terminal_check',
+      sql`${t.consumedAt} IS NULL OR ${t.revokedAt} IS NULL`,
+    ),
+    check(
+      'platform_connector_oauth_states_pkce_ref_check',
+      sql`${t.pkceVerifierRef} LIKE 'vault://%' OR ${t.pkceVerifierRef} LIKE 'kms://%'`,
+    ),
+    check('platform_connector_oauth_states_hash_check', sql`${t.stateHash} ~ '^[a-f0-9]{64}$'`),
+  ],
+);
+
+export type PlatformConnectorOAuthStateItem = typeof platformConnectorOAuthStates.$inferSelect;
+export type NewPlatformConnectorOAuthState = typeof platformConnectorOAuthStates.$inferInsert;

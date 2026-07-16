@@ -1767,37 +1767,46 @@ table platform_branding {
 table platform_connector_tools {
   id text [pk, not null]
   connector_id text [not null]
-  tool_key varchar(128) [not null]
-  manifest jsonb [not null, default: `{}`]
-  permission_policy varchar(32) [not null, default: 'needs_approval']
-  allow_user_stricter_policy boolean [not null, default: true]
-  limit_config jsonb
+  tool_key varchar(200) [not null]
+  display_name varchar(200) [not null]
+  description text
+  input_schema jsonb [not null, default: `{}`]
+  enabled boolean [not null, default: true]
+  platform_policy varchar(16) [not null, default: 'deny']
+  risk_level varchar(16) [not null, default: 'high']
+  requires_confirmation boolean [not null, default: true]
+  sort integer [not null, default: 0]
   created_at "timestamp with time zone" [not null, default: `now()`]
   updated_at "timestamp with time zone" [not null, default: `now()`]
 
   indexes {
     (connector_id, tool_key) [name: 'platform_connector_tools_connector_id_tool_key_unique', unique]
-    connector_id [name: 'platform_connector_tools_connector_id_idx']
+    (connector_id, sort, tool_key, id) [name: 'platform_connector_tools_connector_sort_key_id_idx']
   }
 }
 
 table platform_connectors {
   id text [pk, not null]
-  connector_key varchar(128) [not null]
-  name text [not null]
+  connector_key varchar(64) [not null]
+  display_name varchar(200) [not null]
   description text
-  source_type varchar(32) [not null, default: 'custom']
-  connection_type varchar(32) [not null, default: 'http']
-  mcp_server_url text
-  mcp_stdio_config jsonb
-  credential_mode varchar(64) [not null, default: 'per_user_oauth']
-  oidc_config jsonb
-  encrypted_shared_credentials text
-  secret_fingerprint text
-  is_required boolean [not null, default: false]
+  endpoint text [not null]
+  transport varchar(16) [not null, default: 'http']
+  credential_mode varchar(32) [not null]
+  oauth_config jsonb
+  shared_secret_ref text
+  shared_secret_fingerprint varchar(256)
+  shared_secret_updated_at "timestamp with time zone"
+  oauth_client_secret_ref text
+  oauth_client_secret_fingerprint varchar(256)
+  oauth_client_secret_updated_at "timestamp with time zone"
   enabled boolean [not null, default: false]
+  sort integer [not null, default: 0]
   status varchar(32) [not null, default: 'draft']
   revision integer [not null, default: 0]
+  published_revision integer
+  published_checksum varchar(64)
+  published_at "timestamp with time zone"
   created_by text
   updated_by text
   created_at "timestamp with time zone" [not null, default: `now()`]
@@ -1805,7 +1814,8 @@ table platform_connectors {
 
   indexes {
     connector_key [name: 'platform_connectors_connector_key_unique', unique]
-    status [name: 'platform_connectors_status_idx']
+    (status, connector_key, id) [name: 'platform_connectors_status_key_id_idx']
+    (enabled, sort, id) [name: 'platform_connectors_enabled_sort_id_idx']
   }
 }
 
@@ -1813,20 +1823,50 @@ table platform_user_connector_bindings {
   id text [pk, not null]
   user_id text [not null]
   connector_id text [not null]
-  auth_status varchar(32) [not null, default: 'disconnected']
-  encrypted_credentials text
+  published_revision integer [not null]
+  status varchar(32) [not null, default: 'disconnected']
+  oauth_token_ref text
+  token_fingerprint varchar(256)
+  scopes varchar(200)[] [not null, default: `ARRAY[]::varchar[]`]
   expires_at "timestamp with time zone"
-  last_error text
   connected_at "timestamp with time zone"
-  status varchar(32) [not null, default: 'active']
+  revoked_at "timestamp with time zone"
+  last_error_category varchar(32)
+  revision integer [not null, default: 0]
   created_at "timestamp with time zone" [not null, default: `now()`]
   updated_at "timestamp with time zone" [not null, default: `now()`]
 
   indexes {
     (user_id, connector_id) [name: 'platform_user_connector_bindings_user_connector_unique', unique]
-    user_id [name: 'platform_user_connector_bindings_user_id_idx']
-    connector_id [name: 'platform_user_connector_bindings_connector_id_idx']
-    status [name: 'platform_user_connector_bindings_status_idx']
+    (user_id, id) [name: 'platform_user_connector_bindings_user_id_id_idx']
+    (connector_id, id) [name: 'platform_user_connector_bindings_connector_id_id_idx']
+    (status, expires_at) [name: 'platform_user_connector_bindings_status_expires_idx']
+  }
+}
+
+table platform_connector_oauth_states {
+  id text [pk, not null]
+  state_id varchar(32) [not null]
+  state_hash varchar(64) [not null]
+  binding_id text [not null]
+  user_id text [not null]
+  connector_id text [not null]
+  published_revision integer [not null]
+  pkce_verifier_ref text [not null]
+  redirect_uri text [not null]
+  return_to text
+  scopes varchar(200)[] [not null, default: `ARRAY[]::varchar[]`]
+  expires_at "timestamp with time zone" [not null]
+  consumed_at "timestamp with time zone"
+  revoked_at "timestamp with time zone"
+  created_at "timestamp with time zone" [not null, default: `now()`]
+
+  indexes {
+    state_id [name: 'platform_connector_oauth_states_state_id_unique', unique]
+    state_hash [name: 'platform_connector_oauth_states_state_hash_unique', unique]
+    (binding_id, created_at) [name: 'platform_connector_oauth_states_binding_created_idx']
+    (user_id, connector_id) [name: 'platform_connector_oauth_states_user_connector_idx']
+    expires_at [name: 'platform_connector_oauth_states_expires_idx']
   }
 }
 
