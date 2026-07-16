@@ -1,3 +1,4 @@
+export { ManagedAgentConfigurationBoundary } from './ManagedAgentConfigurationBoundary';
 export { ManagedResourceBoundary } from './ManagedResourceBoundary';
 export { ManagedResourceNotice } from './ManagedResourceNotice';
 export {

@@ -13,11 +13,7 @@ import { agentSkillsSelectors, builtinToolSelectors } from '@/store/tool/selecto
 import LeftPanel from './features/LeftPanel';
 import SkillDetail, { type ToolDetailType } from './features/SkillDetail';
 import { type SkillViewMode } from './features/SkillList';
-
-export interface SelectedTool {
-  identifier: string;
-  type: ToolDetailType;
-}
+import { resolveInitialToolSelection, type SelectedTool } from './initialSelection';
 
 const styles = createStaticStyles(({ css }) => ({
   detail: css`
@@ -60,19 +56,14 @@ export const ToolSettings = memo<ToolSettingsProps>(({ viewMode, managed = false
   useEffect(() => {
     if (selected) return;
     if (viewMode === 'skill' && querySkillIdentifier) return;
-    if (viewMode === 'connector' && !managed) {
-      const firstTool = builtinTools.find(
-        (tool) => !tool.hidden && installedBuiltinIds.includes(tool.identifier),
-      );
-      if (firstTool) {
-        setSelected({ identifier: firstTool.identifier, type: 'builtin' });
-      }
-    } else {
-      const firstSkill = builtinSkills[0];
-      if (firstSkill) {
-        setSelected({ identifier: firstSkill.identifier, type: 'builtin-skill' });
-      }
-    }
+    const initial = resolveInitialToolSelection({
+      builtinSkills,
+      builtinTools,
+      installedBuiltinIds,
+      managed,
+      viewMode,
+    });
+    if (initial) setSelected(initial);
   }, [
     builtinTools,
     builtinSkills,

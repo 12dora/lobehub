@@ -7,7 +7,7 @@ import { memo, Suspense } from 'react';
 import AsyncBoundary from '@/components/AsyncBoundary';
 import Loading from '@/components/Loading/BrandTextLoading';
 import AgentBuilder from '@/features/AgentBuilder';
-import { ManagedResourceBoundary } from '@/features/ManagedResources';
+import { ManagedAgentConfigurationBoundary } from '@/features/ManagedResources';
 import WideScreenContainer from '@/features/WideScreenContainer';
 import { usePermission } from '@/hooks/usePermission';
 import { useAgentStore } from '@/store/agent';
@@ -105,7 +105,7 @@ const AgentBuilderSlot = memo(() => {
 
 const AgentProfile: FC = () => {
   return (
-    <ManagedResourceBoundary resource="agents">
+    <ManagedAgentConfigurationBoundary>
       <Suspense fallback={<Loading debugId="AgentProfile" />}>
         <ProfileProvider>
           <Flexbox horizontal height={'100%'} width={'100%'}>
@@ -114,7 +114,7 @@ const AgentProfile: FC = () => {
           </Flexbox>
         </ProfileProvider>
       </Suspense>
-    </ManagedResourceBoundary>
+    </ManagedAgentConfigurationBoundary>
   );
 };
 

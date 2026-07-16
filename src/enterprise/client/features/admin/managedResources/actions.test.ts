@@ -57,4 +57,30 @@ describe('managed resource policy actions', () => {
     expect(Object.isFrozen(publish.mock.calls[0][0])).toBe(true);
     expect(refreshCapabilities).toHaveBeenCalledTimes(1);
   });
+
+  it.each(['reauth cancelled', 'reauth failed'])(
+    'does not publish success or refresh capabilities when %s',
+    async (message) => {
+      const publish = vi.fn();
+      const refreshCapabilities = vi.fn();
+      const withReauthRetry = vi.fn().mockRejectedValue(new Error(message));
+
+      await expect(
+        publishManagedResourcePolicy({
+          authMethod: 'better-auth',
+          input: {
+            expectedDraftToken: 'draft-3',
+            expectedRevision: 3,
+            reason: 'publish policy',
+          },
+          publish,
+          refreshCapabilities,
+          withReauthRetry,
+        }),
+      ).rejects.toThrow(message);
+
+      expect(publish).not.toHaveBeenCalled();
+      expect(refreshCapabilities).not.toHaveBeenCalled();
+    },
+  );
 });
