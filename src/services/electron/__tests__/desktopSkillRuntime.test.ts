@@ -166,6 +166,41 @@ describe('desktopSkillRuntimeService', () => {
     expect(result).toBeUndefined();
   });
 
+  it('should never resolve personal names or ZIPs during a managed operation', async () => {
+    const platformSkillSnapshot = {
+      mandatorySkillIds: ['managed.skill'],
+      refs: [
+        {
+          checksum: 'a'.repeat(64),
+          skillKey: 'managed.skill',
+          version: '1.0.0',
+        },
+      ],
+      revision: 'catalog-r1',
+    };
+
+    await expect(
+      desktopSkillRuntimeService.resolveExecutionDirectory(
+        [{ id: 'personal-id', name: 'managed.skill' }],
+        platformSkillSnapshot,
+      ),
+    ).resolves.toBeUndefined();
+    await expect(
+      desktopSkillRuntimeService.resolveReferenceFullPath({
+        path: 'scripts/run.py',
+        platformSkillSnapshot,
+        skillId: 'personal-id',
+        skillName: 'managed.skill',
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(getByIdMock).not.toHaveBeenCalled();
+    expect(getByNameMock).not.toHaveBeenCalled();
+    expect(getZipUrlMock).not.toHaveBeenCalled();
+    expect(prepareSkillDirectoryMock).not.toHaveBeenCalled();
+    expect(resolveSkillResourcePathMock).not.toHaveBeenCalled();
+  });
+
   it('should resolve the full local path for a referenced skill resource', async () => {
     getByNameMock.mockResolvedValue({
       id: 'skill-1',

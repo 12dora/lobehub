@@ -166,6 +166,8 @@ describe('skillsRuntime', () => {
     });
   });
 
+  // The first dynamic import pays the real transform cost for this large module.
+  // Keep the timeout local to the cold-import test instead of relaxing the suite.
   it('short-circuits all user-owned sources for a managed operation snapshot', async () => {
     mocks.platformFindByName.mockResolvedValue({
       content: '# Managed',
@@ -197,11 +199,8 @@ describe('skillsRuntime', () => {
     expect(mocks.getAgentConfigById).not.toHaveBeenCalled();
     expect(mocks.getAgentSkills).not.toHaveBeenCalled();
     expect(mocks.findByName).not.toHaveBeenCalled();
-  });
+  }, 20_000);
 
-  // First dynamic `import('../skills')` in the file pays the real transform
-  // cost for this (now larger) module — default 5s timeout is marginal for
-  // that cold cost alone, independent of test logic.
   it('executes scripts through the sandbox service and only attaches persisted skill zips', async () => {
     const { skillsRuntime } = await import('../skills');
     const runtime = await skillsRuntime.factory({

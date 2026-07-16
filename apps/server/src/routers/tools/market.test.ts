@@ -17,6 +17,38 @@ const mockMarketSDK = vi.hoisted(() => ({
     listTools: vi.fn(),
   },
 }));
+const managedSkillMocks = vi.hoisted(() => ({
+  AgentSkillModel: vi.fn(() => ({ findByName: vi.fn() })),
+  FileModel: vi.fn(() => ({ checkHash: vi.fn() })),
+  PlatformManagedResourcePolicyModel: vi.fn(() => ({
+    getSnapshot: vi.fn(),
+  })),
+  SkillCatalogReadService: vi.fn(() => ({
+    resolvePinnedForExecution: vi.fn(),
+  })),
+  parseEnterpriseFeatureFlags: vi.fn(() => ({ ENABLE_PLATFORM_MANAGED_SKILLS: false })),
+}));
+
+vi.mock('@/database/models/agentSkill', () => ({
+  AgentSkillModel: managedSkillMocks.AgentSkillModel,
+}));
+
+vi.mock('@/database/models/file', () => ({
+  FileModel: managedSkillMocks.FileModel,
+}));
+
+vi.mock('@/database/models/platform', () => ({
+  PlatformManagedResourcePolicyModel: managedSkillMocks.PlatformManagedResourcePolicyModel,
+}));
+
+vi.mock('@/server/enterprise/featureFlags', () => ({
+  parseEnterpriseFeatureFlags: managedSkillMocks.parseEnterpriseFeatureFlags,
+}));
+
+vi.mock('@/server/enterprise/services/skillCatalog', () => ({
+  getBuiltinSkillDefinitions: vi.fn(() => []),
+  SkillCatalogReadService: managedSkillMocks.SkillCatalogReadService,
+}));
 
 vi.mock('@/libs/trpc/lambda/middleware', () => ({
   marketUserInfo: vi.fn((opts: any) => opts.next({ ctx: opts.ctx })),
@@ -55,6 +87,9 @@ vi.mock('debug', () => ({
 describe('tools marketRouter', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    managedSkillMocks.parseEnterpriseFeatureFlags.mockReturnValue({
+      ENABLE_PLATFORM_MANAGED_SKILLS: false,
+    });
   });
 
   it('should pass workspace scope when preprocessing sandbox lh commands', async () => {
@@ -84,6 +119,71 @@ describe('tools marketRouter', () => {
     expect(mockSandboxCallTool).toHaveBeenCalledWith('runCommand', {
       command: 'LOBEHUB_WORKSPACE_ID=workspace-1 npx -y @lobehub/cli agent view agt_1',
     });
+  });
+
+  it('validates exact managed refs without consulting personal Skill ZIP storage', async () => {
+    const checksum = 'a'.repeat(64);
+    const getSnapshot = vi.fn().mockResolvedValue({
+      published: { skills: { enforcementMode: 'enforced', managed: true } },
+      status: 'published',
+    });
+    const resolvePinnedForExecution = vi.fn().mockResolvedValue({
+      checksum,
+      content: '# exact managed content',
+      contentRef: null,
+      resources: [],
+      skillKey: 'managed.skill',
+      version: '1.0.0',
+    });
+    managedSkillMocks.parseEnterpriseFeatureFlags.mockReturnValue({
+      ENABLE_PLATFORM_MANAGED_SKILLS: true,
+    });
+    managedSkillMocks.PlatformManagedResourcePolicyModel.mockImplementation(
+      () => ({ getSnapshot }) as never,
+    );
+    managedSkillMocks.SkillCatalogReadService.mockImplementation(
+      () => ({ resolvePinnedForExecution }) as never,
+    );
+    mockPreprocessLhCommand.mockResolvedValue({
+      command: 'python scripts/run.py',
+      isLhCommand: false,
+      skipSkillLookup: false,
+    });
+    mockSandboxCallTool.mockResolvedValue({ result: { ok: true }, success: true });
+
+    const caller = marketRouter.createCaller({
+      serverDB: {},
+      userId: 'user-1',
+      workspaceId: 'workspace-1',
+    } as any);
+    await caller.execInSandbox({
+      params: {
+        activatedSkills: [{ name: 'managed.skill' }],
+        command: 'python scripts/run.py',
+        platformSkillSnapshot: {
+          mandatorySkillIds: ['managed.skill'],
+          refs: [{ checksum, skillKey: 'managed.skill', version: '1.0.0' }],
+          revision: 'catalog-r1',
+        },
+      },
+      toolName: 'execScript',
+      topicId: 'topic-1',
+    });
+
+    expect(resolvePinnedForExecution).toHaveBeenCalledWith({
+      checksum,
+      skillKey: 'managed.skill',
+      version: '1.0.0',
+    });
+    expect(managedSkillMocks.AgentSkillModel).not.toHaveBeenCalled();
+    expect(managedSkillMocks.FileModel).not.toHaveBeenCalled();
+    const sandboxParams = mockSandboxCallTool.mock.calls[0][1];
+    expect(sandboxParams).toEqual({
+      activatedSkills: [{ name: 'managed.skill' }],
+      command: 'python scripts/run.py',
+    });
+    expect(sandboxParams).not.toHaveProperty('platformSkillSnapshot');
+    expect(sandboxParams).not.toHaveProperty('skillZipUrls');
   });
 
   it('should fall back to static tools when live discovery fails', async () => {

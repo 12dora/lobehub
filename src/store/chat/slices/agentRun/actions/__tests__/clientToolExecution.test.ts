@@ -157,6 +157,34 @@ describe('internal_executeClientTool', () => {
         expect.anything(),
       );
     });
+
+    it('forwards the opaque platform snapshot into the operation-scoped executor context', async () => {
+      hasExecutorMock.mockReturnValue(true);
+      invokeExecutorMock.mockResolvedValue({ content: 'ok', success: true });
+      const { action } = setup();
+      const platformSkillSnapshot = {
+        mandatorySkillIds: ['managed.skill'],
+        refs: [
+          {
+            checksum: 'a'.repeat(64),
+            skillKey: 'managed.skill',
+            version: '1.0.0',
+          },
+        ],
+        revision: 'catalog-r1',
+      };
+
+      await action.internal_executeClientTool(makeData({ platformSkillSnapshot }), {
+        operationId: 'op-1',
+      });
+
+      expect(invokeExecutorMock).toHaveBeenCalledWith(
+        'local-system',
+        'readFile',
+        { path: '/tmp/a.txt' },
+        expect.objectContaining({ platformSkillSnapshot }),
+      );
+    });
   });
 
   describe('error paths never block the server', () => {
