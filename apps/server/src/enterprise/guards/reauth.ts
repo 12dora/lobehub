@@ -33,8 +33,8 @@ export const assertRecentReauth = (
   }
 
   const at = ctx.authenticatedAt;
-  if (!at || !(at instanceof Date) || Number.isNaN(at.getTime())) {
-    throwEnterpriseError({
+  if (!(at instanceof Date) || Number.isNaN(at.getTime())) {
+    return throwEnterpriseError({
       code: ADMIN_ERROR_CODES.ADMIN_REAUTH_REQUIRED,
       details: { reason: 'missing_authenticated_at' },
       httpCode: 'UNAUTHORIZED',
@@ -43,7 +43,7 @@ export const assertRecentReauth = (
 
   const age = Date.now() - at.getTime();
   if (age < 0 || age > maxAgeMs) {
-    throwEnterpriseError({
+    return throwEnterpriseError({
       code: ADMIN_ERROR_CODES.ADMIN_REAUTH_REQUIRED,
       details: { reason: 'stale_authenticated_at' },
       httpCode: 'UNAUTHORIZED',
