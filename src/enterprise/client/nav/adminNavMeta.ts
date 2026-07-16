@@ -123,7 +123,7 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
         id: 'ai-models',
         labelKey: 'nav.aiModels',
         path: '/admin/ai/models',
-        placeholder: true,
+        placeholder: false,
         requiredPermissions: [PLATFORM_PERMISSIONS.AI_MODEL_READ],
       },
     ],
