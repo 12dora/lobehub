@@ -35,4 +35,30 @@ describe('ToolSettings initial selection', () => {
       }),
     ).toEqual({ identifier: 'artifact', type: 'builtin-skill' });
   });
+
+  it('selects only a published platform Skill in managed mode', () => {
+    expect(
+      resolveInitialToolSelection({
+        builtinSkills: [{ identifier: 'legacy-artifact' }],
+        builtinTools: [],
+        installedBuiltinIds: [],
+        managed: true,
+        platformSkills: [{ skillKey: 'approved.skill' }],
+        viewMode: 'skill',
+      }),
+    ).toEqual({ identifier: 'approved.skill', type: 'platform-skill' });
+  });
+
+  it('leaves managed Skill selection empty when the platform catalog is empty', () => {
+    expect(
+      resolveInitialToolSelection({
+        builtinSkills: [{ identifier: 'legacy-artifact' }],
+        builtinTools: [],
+        installedBuiltinIds: [],
+        managed: true,
+        platformSkills: [],
+        viewMode: 'skill',
+      }),
+    ).toBeNull();
+  });
 });
