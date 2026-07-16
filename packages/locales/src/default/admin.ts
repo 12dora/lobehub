@@ -386,6 +386,8 @@ export default {
   'skillCatalog.conflict.useLatest': 'Use latest',
   'skillCatalog.conflict.values': 'Local: {{local}} · Latest: {{latest}}',
   'skillCatalog.create.desc': 'Create a stable platform Skill identity before adding versions.',
+  'skillCatalog.create.refreshFailed':
+    'The Skill was created, but the list refresh could not be confirmed. Retry refresh; do not create it again.',
   'skillCatalog.create.submit': 'Create Skill',
   'skillCatalog.create.title': 'Create platform Skill',
   'skillCatalog.detail.back': 'Back to Skills',

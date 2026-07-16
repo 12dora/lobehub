@@ -495,7 +495,7 @@ const DetailContent = memo<{
           <Button onClick={() => navigate('/admin/skills')}>{t('skillCatalog.detail.back')}</Button>
           {permission.canUpdate ? (
             <Button
-              disabled={Boolean(actions.actionLoading) || editor.conflict}
+              disabled={Boolean(actions.actionLoading) || editor.conflict || actions.refreshFailed}
               onClick={actions.openCreateVersion}
             >
               {t('skillCatalog.version.create')}
@@ -503,7 +503,7 @@ const DetailContent = memo<{
           ) : null}
           {permission.canUpdate && identityDirty ? (
             <Button
-              disabled={Boolean(actions.actionLoading) || editor.conflict}
+              disabled={Boolean(actions.actionLoading) || editor.conflict || actions.refreshFailed}
               type="primary"
               onClick={actions.openSaveIdentity}
             >
@@ -514,7 +514,7 @@ const DetailContent = memo<{
           ) : null}
           {permission.canUpdate && selectedVersionId && !editor.dirty ? (
             <Button
-              disabled={Boolean(actions.actionLoading) || editor.conflict}
+              disabled={Boolean(actions.actionLoading) || editor.conflict || actions.refreshFailed}
               onClick={actions.openValidate}
             >
               {t('skillCatalog.actions.validate.label')}
@@ -525,7 +525,7 @@ const DetailContent = memo<{
           actions.canPublishSelected &&
           !editor.dirty ? (
             <Button
-              disabled={Boolean(actions.actionLoading) || editor.conflict}
+              disabled={Boolean(actions.actionLoading) || editor.conflict || actions.refreshFailed}
               type="primary"
               onClick={actions.openPublish}
             >
@@ -535,7 +535,12 @@ const DetailContent = memo<{
           {permission.canArchive && data.draft.status !== 'archived' ? (
             <Button
               danger
-              disabled={Boolean(actions.actionLoading) || editor.dirty || editor.conflict}
+              disabled={
+                Boolean(actions.actionLoading) ||
+                editor.dirty ||
+                editor.conflict ||
+                actions.refreshFailed
+              }
               onClick={actions.openArchive}
             >
               {t('skillCatalog.actions.archive.label')}
@@ -661,7 +666,7 @@ const DetailContent = memo<{
         </section>
       )}
       <VersionsSection
-        actionLoading={Boolean(actions.actionLoading)}
+        actionLoading={Boolean(actions.actionLoading) || actions.refreshFailed}
         canRead={canRead}
         canRollback={permission.canPublish && !editor.dirty && !editor.conflict}
         key={data.draft.id}
