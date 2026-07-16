@@ -97,7 +97,7 @@ const ProviderModelsSection = memo<ProviderModelsSectionProps>(
           <div className={styles.empty}>{t('aiCatalog.models.empty.provider')}</div>
         ) : (
           sorted.map((model, index) => {
-            const loading = actionLoadingId === model.id;
+            const loading = actionLoadingId === 'models' || actionLoadingId === model.id;
             return (
               <div className={styles.item} key={model.id}>
                 <Flexbox gap={2}>
