@@ -38,6 +38,7 @@ export const resolveConnectorRuntime = (options: ResolveConnectorRuntimeOptions)
     throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_PUBLISHED');
   }
   if (
+    policyRecord.agentId !== input.agentId ||
     policyRecord.connectorId !== input.connectorId ||
     policyRecord.publishedRevision !== catalog.publishedRevision ||
     policyRecord.toolKey !== input.toolKey ||

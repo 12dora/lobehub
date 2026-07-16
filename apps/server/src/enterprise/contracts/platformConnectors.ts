@@ -915,6 +915,7 @@ export const connectorEffectiveToolPolicyOutputSchema = z
 
 export const connectorRuntimeResolveInputSchema = z
   .object({
+    agentId: connectorIdSchema,
     connectorId: connectorIdSchema,
     expectedPublishedRevision: z.number().int().positive(),
     toolKey: connectorToolKeySchema,
@@ -983,6 +984,7 @@ export const trustedPublishedConnectorSchema = z.discriminatedUnion('credentialM
 export const trustedConnectorToolPolicyRecordSchema = z
   .object({
     agentAllowed: z.boolean(),
+    agentId: connectorIdSchema,
     connectorId: connectorIdSchema,
     publishedRevision: z.number().int().positive(),
     toolKey: connectorToolKeySchema,
