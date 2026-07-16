@@ -553,9 +553,12 @@ export class StreamingExecutorActionImpl {
 
     // Use model/provider from resolved agentConfig
     const { agentConfig: agentConfigData } = agentConfig;
-    const platformSkillSnapshot = captureClientPlatformSkillSnapshot(
-      agentConfigData.plugins as unknown as AgentPluginEntry[],
-    );
+    const inheritedPlatformSkillSnapshot = params.parentOperationId
+      ? this.#get().operations[params.parentOperationId]?.metadata?.platformSkillSnapshot
+      : undefined;
+    const platformSkillSnapshot =
+      inheritedPlatformSkillSnapshot ??
+      captureClientPlatformSkillSnapshot(agentConfigData.plugins as unknown as AgentPluginEntry[]);
     this.#get().updateOperationMetadata(operationId, { platformSkillSnapshot });
     const model = agentConfigData.model;
     const provider = agentConfigData.provider;
