@@ -1,23 +1,25 @@
 import type { RouteObject } from 'react-router';
 
 import { enterpriseModuleRegistry } from '../registry';
+import { createAdminRouteTree } from './admin/createAdminRouteTree';
 
 /**
- * Dynamic routes from the module registry.
+ * Dynamic routes from the module registry + admin shell.
  *
- * M03 wiring plan:
- * 1. Admin shell module calls `enterpriseModuleRegistry.register({ id, routes })`.
- * 2. When `ENABLE_PLATFORM_ADMIN` is on, replace the static empty export below
- *    (or BusinessDesktopRoutes mount) with `getEnterpriseDesktopRoutesWithoutMainLayout()`
- *    so registered routes enter `BusinessDesktopRoutesWithoutMainLayout`.
- * 3. Until then this getter is unused; the **static** empty array is the real mount payload
- *    so flag-off route trees stay identical to upstream.
+ * Flag-off effective tree: use `resolveEnterpriseDesktopRoutes({ platformAdmin: false })`
+ * which returns []. Production mount uses a gated tree: routes exist so deep links resolve
+ * after SPA boot, but the gate never calls `admin.*` when boot config says platformAdmin is off.
  */
-export const getEnterpriseDesktopRoutesWithoutMainLayout = (): RouteObject[] =>
-  enterpriseModuleRegistry.getRoutes();
+export const getEnterpriseDesktopRoutesWithoutMainLayout = (): RouteObject[] => [
+  ...createAdminRouteTree(),
+  ...enterpriseModuleRegistry.getRoutes(),
+];
 
 /**
  * Static export used by BusinessDesktopRoutes mount.
- * Intentionally empty in M00: spreading this array must not change the upstream route tree.
+ * Admin shell is included; feature + RBAC gates keep flag-off and unauthorized users safe.
  */
-export const EnterpriseDesktopRoutesWithoutMainLayout: RouteObject[] = [];
+export const EnterpriseDesktopRoutesWithoutMainLayout: RouteObject[] =
+  getEnterpriseDesktopRoutesWithoutMainLayout();
+
+export { createAdminRouteTree, resolveEnterpriseDesktopRoutes } from './admin/createAdminRouteTree';

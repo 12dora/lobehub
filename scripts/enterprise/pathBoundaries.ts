@@ -7,6 +7,8 @@
 export const ENTERPRISE_UPSTREAM_MOUNT_POINTS = [
   'src/business/client/BusinessDesktopRoutes.tsx',
   'src/business/client/BusinessGlobalProvider.tsx',
+  // M03: mobile /admin deep-link unsupported surface
+  'src/business/client/BusinessMobileRoutes.tsx',
   'apps/server/src/routers/lambda/index.ts',
   // M00 mount #4: enterprise gate on GlobalServerConfig
   'apps/server/src/globalConfig/index.ts',
