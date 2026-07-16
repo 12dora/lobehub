@@ -1771,6 +1771,7 @@ table platform_connector_tools {
   display_name varchar(200) [not null]
   description text
   input_schema jsonb [not null, default: `{}`]
+  output_schema jsonb [not null, default: `{}`]
   enabled boolean [not null, default: true]
   platform_policy varchar(16) [not null, default: 'deny']
   risk_level varchar(16) [not null, default: 'high']
@@ -1804,6 +1805,7 @@ table platform_connectors {
   sort integer [not null, default: 0]
   status varchar(32) [not null, default: 'draft']
   revision integer [not null, default: 0]
+  published_resource_type varchar(64) [not null, default: 'connector']
   published_revision integer
   published_checksum varchar(64)
   published_at "timestamp with time zone"
@@ -1838,6 +1840,7 @@ table platform_user_connector_bindings {
 
   indexes {
     (user_id, connector_id) [name: 'platform_user_connector_bindings_user_connector_unique', unique]
+    (id, user_id, connector_id, published_revision) [name: 'platform_user_connector_bindings_oauth_state_owner_unique', unique]
     (user_id, id) [name: 'platform_user_connector_bindings_user_id_id_idx']
     (connector_id, id) [name: 'platform_user_connector_bindings_connector_id_id_idx']
     (status, expires_at) [name: 'platform_user_connector_bindings_status_expires_idx']
@@ -1992,6 +1995,7 @@ table platform_resource_revisions {
 
   indexes {
     (resource_type, resource_id, revision) [name: 'platform_resource_revisions_type_id_revision_unique', unique]
+    (resource_type, resource_id, revision, checksum) [name: 'platform_resource_revisions_type_id_revision_checksum_unique', unique]
     created_at [name: 'platform_resource_revisions_created_at_idx']
     (resource_type, resource_id) [name: 'platform_resource_revisions_type_id_idx']
     status [name: 'platform_resource_revisions_status_idx']
