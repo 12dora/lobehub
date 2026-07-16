@@ -1,4 +1,8 @@
-import { platformSkillVersionChecksum } from '@/database/models/platform';
+import {
+  canonicalizePlatformSkillContent,
+  canonicalizePlatformSkillManifest,
+  platformSkillVersionChecksum,
+} from '@/database/models/platform';
 
 import type {
   SkillManifest,
@@ -6,20 +10,37 @@ import type {
   SkillValidationResult,
 } from '../../contracts/skillCatalog';
 import { skillManifestSchema } from '../../contracts/skillCatalog';
-import { containsSensitiveMaterial } from '../../security/redaction';
+import { containsEnterpriseSecretMaterial } from '../../security/redaction';
 
 const DEFAULT_MAX_CONTENT_BYTES = 1024 * 1024;
-const MAX_DEPENDENCY_DEPTH = 32;
-const VALIDATOR_VERSION = 'm08-v1';
+const DEFAULT_MAX_MANIFEST_BYTES = 256 * 1024;
+const DEFAULT_MAX_LOCALIZED_ENTRIES = 50;
+const DEFAULT_MAX_DEPENDENCY_DEPTH = 10;
+const DEFAULT_MAX_DEPENDENCY_EDGES = 512;
+const DEFAULT_MAX_DEPENDENCY_NODES = 256;
+const DEFAULT_MAX_ISSUES = 100;
+const DEFAULT_MAX_RESOLVER_CALLS = 256;
+const VALIDATOR_VERSION = 'm08-v2';
 
-const DANGEROUS_INSTRUCTION_PATTERNS = [
-  /ignore\s+(?:all\s+)?(?:previous|system)\s+instructions?/i,
-  /(?:reveal|print|return|exfiltrate)\s+(?:all\s+)?(?:api\s+keys?|credentials?|secrets?|tokens?)/i,
-  /(?:disable|bypass)\s+(?:the\s+)?(?:tool|permission|security)\s+(?:checks?|policy|guard)/i,
+const HIGH_CONFIDENCE_INSTRUCTION_PATTERNS = [
+  /^(?:please\s+)?(?:ignore|disregard|override)[^\n]*(?:previous|system|developer)[^\n]*(?:instruction|message|prompt)s?/i,
+  /^(?:please\s+)?(?:disable|bypass)[^\n]*(?:tool|permission|security)[^\n]*(?:check|policy|guard)s?/i,
+  /^请?(?:忽略|无视).*(?:系统|之前).*(?:指令|提示)/,
+  /^请?(?:绕过|禁用).*(?:工具|权限|安全).*(?:检查|策略|防护)/,
 ] as const;
 
+const HEURISTIC_INSTRUCTION_PATTERNS = [
+  /\b(?:jailbreak|prompt\s+injection|system\s+prompt)\b/i,
+  /(?:越狱|提示词注入|系统提示词)/,
+] as const;
+
+const NEGATION_PATTERN = /\b(?:do\s+not|don't|never|must\s+not)\b|不要|不得|禁止/i;
+const QUOTED_LINE_PATTERN = /^[>"'`]/;
+const LONE_SURROGATE_PATTERN =
+  /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u;
+
 export interface SkillDependencyDefinition {
-  manifest: SkillManifest;
+  manifest: unknown;
   skillKey: string;
   version: string;
 }
@@ -34,9 +55,18 @@ export interface SkillCatalogValidationInput {
 }
 
 export interface SkillCatalogValidatorOptions {
+  /** Server capability/policy gate. Persisted intent alone never enables an override. */
+  allowBuiltinOverride?: boolean;
   builtinSkillKeys?: ReadonlySet<string>;
   knownToolKeys?: ReadonlySet<string>;
   maxContentBytes?: number;
+  maxDependencyDepth?: number;
+  maxDependencyEdges?: number;
+  maxDependencyNodes?: number;
+  maxIssues?: number;
+  maxLocalizedEntries?: number;
+  maxManifestBytes?: number;
+  maxResolverCalls?: number;
   resolveSkillDependency?: (
     skillKey: string,
     version: string,
@@ -50,18 +80,103 @@ const issue = (
   severity: SkillValidationIssue['severity'] = 'error',
 ): SkillValidationIssue => ({ code, message, path, severity });
 
+const compareCodepoint = (left: string, right: string) =>
+  left < right ? -1 : left > right ? 1 : 0;
+
+const compareIssues = (left: SkillValidationIssue, right: SkillValidationIssue) =>
+  compareCodepoint(left.severity, right.severity) ||
+  compareCodepoint(left.code, right.code) ||
+  compareCodepoint(JSON.stringify(left.path), JSON.stringify(right.path));
+
 const issueKey = (item: SkillValidationIssue) =>
   `${item.severity}:${item.code}:${JSON.stringify(item.path)}`;
 
+const hasNonCanonicalString = (value: unknown, seen = new WeakSet<object>()): boolean => {
+  if (typeof value === 'string') return canonicalizePlatformSkillContent(value) !== value;
+  if (!value || typeof value !== 'object' || seen.has(value)) return false;
+  seen.add(value);
+  return (Array.isArray(value) ? value : Object.values(value)).some((item) =>
+    hasNonCanonicalString(item, seen),
+  );
+};
+
+const hasLoneSurrogate = (value: unknown, seen = new WeakSet<object>()): boolean => {
+  if (typeof value === 'string') return LONE_SURROGATE_PATTERN.test(value);
+  if (!value || typeof value !== 'object' || seen.has(value)) return false;
+  seen.add(value);
+  return (Array.isArray(value) ? value : Object.values(value)).some((item) =>
+    hasLoneSurrogate(item, seen),
+  );
+};
+
+const classifyDangerousInstructions = (content: string) => {
+  let error = false;
+  let warning = false;
+  for (const rawLine of content
+    .normalize('NFKC')
+    .replaceAll(/\p{Cf}/gu, '')
+    .split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || QUOTED_LINE_PATTERN.test(line) || NEGATION_PATTERN.test(line)) continue;
+    if (HIGH_CONFIDENCE_INSTRUCTION_PATTERNS.some((pattern) => pattern.test(line))) error = true;
+    else if (HEURISTIC_INSTRUCTION_PATTERNS.some((pattern) => pattern.test(line))) warning = true;
+  }
+  return { error, warning };
+};
+
 /** Deterministic pre-publication validation. Runtime Tool authorization remains a separate guard. */
 export class SkillCatalogValidator {
+  private readonly issues: SkillValidationIssue[] = [];
+  private issueOverflow = false;
+
   constructor(private readonly options: SkillCatalogValidatorOptions = {}) {}
 
-  private validatePermissions = (manifest: SkillManifest): SkillValidationIssue[] => {
-    const issues: SkillValidationIssue[] = [];
+  private pushIssue = (item: SkillValidationIssue) => {
+    const maxIssues = Math.max(1, this.options.maxIssues ?? DEFAULT_MAX_ISSUES);
+    if (this.issues.length < maxIssues) {
+      this.issues.push(item);
+      return;
+    }
+    if (!this.issueOverflow) {
+      this.issueOverflow = true;
+      this.issues[maxIssues - 1] = issue(
+        'dependency_graph_limit',
+        ['validation'],
+        'Validation issue limit was reached',
+      );
+    }
+  };
+
+  private validateBuiltinOverride = (input: SkillCatalogValidationInput) => {
+    if (!this.options.builtinSkillKeys) {
+      this.pushIssue(
+        issue(
+          'builtin_override_forbidden',
+          ['skillKey'],
+          'Builtin Skill catalog is unavailable; collision checks fail closed',
+        ),
+      );
+      return;
+    }
+    const collides = this.options.builtinSkillKeys.has(input.skillKey);
+    if (
+      (collides && !(input.allowBuiltinOverride && this.options.allowBuiltinOverride)) ||
+      (!collides && input.allowBuiltinOverride)
+    ) {
+      this.pushIssue(
+        issue(
+          'builtin_override_forbidden',
+          ['allowBuiltinOverride'],
+          'Builtin override requires a real collision, persisted intent, and server policy',
+        ),
+      );
+    }
+  };
+
+  private validatePermissions = (manifest: SkillManifest) => {
     const { network, tools } = manifest.permissions;
     if (network.enabled !== network.allowedHosts.length > 0) {
-      issues.push(
+      this.pushIssue(
         issue(
           'permissions_invalid',
           ['manifest', 'permissions', 'network'],
@@ -69,10 +184,36 @@ export class SkillCatalogValidator {
         ),
       );
     }
-    const dependencyKeys = new Set(manifest.toolDependencies.map((item) => item.toolKey));
+
+    const dependencyByKey = new Map<string, { index: number; optional: boolean }>();
+    for (const [index, dependency] of manifest.toolDependencies.entries()) {
+      if (dependencyByKey.has(dependency.toolKey)) {
+        this.pushIssue(
+          issue(
+            'manifest_invalid',
+            ['manifest', 'toolDependencies', index],
+            'Tool dependency is declared more than once',
+          ),
+        );
+      } else {
+        dependencyByKey.set(dependency.toolKey, { index, optional: dependency.optional });
+      }
+    }
+
+    const allowed = new Set<string>();
     for (const [index, toolKey] of tools.allow.entries()) {
-      if (!dependencyKeys.has(toolKey)) {
-        issues.push(
+      if (allowed.has(toolKey)) {
+        this.pushIssue(
+          issue(
+            'permissions_invalid',
+            ['manifest', 'permissions', 'tools', 'allow', index],
+            'Allowed Tool is declared more than once',
+          ),
+        );
+      }
+      allowed.add(toolKey);
+      if (!dependencyByKey.has(toolKey)) {
+        this.pushIssue(
           issue(
             'permissions_invalid',
             ['manifest', 'permissions', 'tools', 'allow', index],
@@ -81,162 +222,294 @@ export class SkillCatalogValidator {
         );
       }
     }
-    return issues;
+
+    for (const [toolKey, dependency] of dependencyByKey) {
+      const known = this.options.knownToolKeys?.has(toolKey) === true;
+      if (!dependency.optional && !allowed.has(toolKey)) {
+        this.pushIssue(
+          issue(
+            'permissions_invalid',
+            ['manifest', 'toolDependencies', dependency.index],
+            'Required Tool dependency must be present in the Tool allowlist',
+          ),
+        );
+      }
+      if (!known && !dependency.optional) {
+        this.pushIssue(
+          issue(
+            'unknown_tool_dependency',
+            ['manifest', 'toolDependencies', dependency.index],
+            'Required Tool dependency is unavailable',
+          ),
+        );
+      } else if (!known && dependency.optional && allowed.has(toolKey)) {
+        this.pushIssue(
+          issue(
+            'unknown_tool_dependency',
+            ['manifest', 'toolDependencies', dependency.index],
+            'Optional allowed Tool dependency is currently unavailable',
+            'warning',
+          ),
+        );
+      }
+    }
   };
 
   private validateDependencyGraph = async (root: {
     manifest: SkillManifest;
     skillKey: string;
     version: string;
-  }): Promise<SkillValidationIssue[]> => {
-    const issues: SkillValidationIssue[] = [];
+  }) => {
     const resolver = this.options.resolveSkillDependency;
-    const visited = new Set<string>();
+    const maxDepth = this.options.maxDependencyDepth ?? DEFAULT_MAX_DEPENDENCY_DEPTH;
+    const maxEdges = this.options.maxDependencyEdges ?? DEFAULT_MAX_DEPENDENCY_EDGES;
+    const maxNodes = this.options.maxDependencyNodes ?? DEFAULT_MAX_DEPENDENCY_NODES;
+    const maxResolverCalls = this.options.maxResolverCalls ?? DEFAULT_MAX_RESOLVER_CALLS;
+    const cache = new Map<string, SkillDependencyDefinition | undefined>();
+    const expanded = new Set<string>();
+    const active = new Set<string>();
+    let edges = 0;
+    let resolverCalls = 0;
+
+    const graphLimit = (path: SkillValidationIssue['path']) => {
+      this.pushIssue(
+        issue('dependency_graph_limit', path, 'Skill dependency graph exceeds validation limits'),
+      );
+    };
+
+    const resolve = async (
+      skillKey: string,
+      version: string,
+      path: SkillValidationIssue['path'],
+    ) => {
+      const key = `${skillKey}@${version}`;
+      if (cache.has(key)) return cache.get(key);
+      if (cache.size >= maxNodes || resolverCalls >= maxResolverCalls) {
+        graphLimit(path);
+        return undefined;
+      }
+      resolverCalls += 1;
+      try {
+        const result = await resolver?.(skillKey, version);
+        cache.set(key, result);
+        return result;
+      } catch {
+        this.pushIssue(
+          issue('dependency_resolver_error', path, 'Skill dependency resolver failed safely'),
+        );
+        cache.set(key, undefined);
+        return undefined;
+      }
+    };
 
     const walk = async (
       node: { manifest: SkillManifest; skillKey: string; version: string },
-      stack: string[],
+      nodePath: SkillValidationIssue['path'],
       depth: number,
     ): Promise<void> => {
       const nodeKey = `${node.skillKey}@${node.version}`;
-      if (depth > MAX_DEPENDENCY_DEPTH || stack.includes(nodeKey)) {
-        issues.push(
-          issue(
-            'dependency_cycle',
-            ['manifest', 'skillDependencies'],
-            'Skill dependency graph contains a cycle or exceeds the maximum depth',
-          ),
-        );
+      if (active.has(nodeKey)) {
+        this.pushIssue(issue('dependency_cycle', nodePath, 'Skill dependency graph has a cycle'));
         return;
       }
-      if (visited.has(nodeKey)) return;
-      visited.add(nodeKey);
-      const nextStack = [...stack, nodeKey];
+      if (expanded.has(nodeKey)) return;
+      if (depth > maxDepth) {
+        graphLimit(nodePath);
+        return;
+      }
+      active.add(nodeKey);
       for (const [index, dependency] of node.manifest.skillDependencies.entries()) {
+        const dependencyPath = [...nodePath, 'skillDependencies', index];
+        edges += 1;
+        if (edges > maxEdges || dependencyPath.length > 30) {
+          graphLimit(dependencyPath.slice(0, 30));
+          break;
+        }
         const dependencyKey = `${dependency.skillKey}@${dependency.version}`;
-        if (nextStack.includes(dependencyKey)) {
-          issues.push(
-            issue(
-              'dependency_cycle',
-              ['manifest', 'skillDependencies', index],
-              'Skill dependency graph contains a cycle',
-            ),
+        if (active.has(dependencyKey)) {
+          this.pushIssue(
+            issue('dependency_cycle', dependencyPath, 'Skill dependency graph has a cycle'),
           );
           continue;
         }
-        const resolved = await resolver?.(dependency.skillKey, dependency.version);
+        const resolved = await resolve(dependency.skillKey, dependency.version, dependencyPath);
         if (!resolved) {
           if (!dependency.optional) {
-            issues.push(
+            this.pushIssue(
               issue(
                 'unknown_skill_dependency',
-                ['manifest', 'skillDependencies', index],
+                dependencyPath,
                 'Required Skill dependency is not published',
               ),
             );
           }
           continue;
         }
-        await walk(resolved, nextStack, depth + 1);
+        if (resolved.skillKey !== dependency.skillKey || resolved.version !== dependency.version) {
+          this.pushIssue(
+            issue(
+              'dependency_identity_mismatch',
+              dependencyPath,
+              'Resolved Skill dependency identity does not match the request',
+            ),
+          );
+          continue;
+        }
+        const parsed = skillManifestSchema.safeParse(resolved.manifest);
+        if (!parsed.success) {
+          for (const schemaIssue of parsed.error.issues) {
+            this.pushIssue(
+              issue(
+                'manifest_invalid',
+                [...dependencyPath, 'resolvedManifest', ...schemaIssue.path].slice(0, 30),
+                'Resolved Skill dependency manifest is invalid',
+              ),
+            );
+          }
+          continue;
+        }
+        await walk(
+          { manifest: parsed.data, skillKey: resolved.skillKey, version: resolved.version },
+          [...dependencyPath, 'resolvedManifest'],
+          depth + 1,
+        );
       }
+      active.delete(nodeKey);
+      expanded.add(nodeKey);
     };
 
-    await walk(root, [], 0);
-    return issues;
+    await walk(root, ['manifest'], 0);
   };
 
   validate = async (input: SkillCatalogValidationInput): Promise<SkillValidationResult> => {
-    const issues: SkillValidationIssue[] = [];
+    const run = new SkillCatalogValidator(this.options);
+    return run.validateIsolated(input);
+  };
+
+  private validateIsolated = async (
+    input: SkillCatalogValidationInput,
+  ): Promise<SkillValidationResult> => {
+    this.issues.length = 0;
+    this.issueOverflow = false;
     const parsedManifest = skillManifestSchema.safeParse(input.manifest);
     if (!parsedManifest.success) {
-      for (const schemaIssue of parsedManifest.error.issues.slice(0, 100)) {
-        issues.push(
+      for (const schemaIssue of parsedManifest.error.issues) {
+        this.pushIssue(
           issue(
             'manifest_invalid',
-            ['manifest', ...schemaIssue.path],
+            ['manifest', ...schemaIssue.path].slice(0, 30),
             'Skill manifest does not match the required schema',
           ),
         );
       }
     }
 
-    if (
-      new TextEncoder().encode(input.content).byteLength >
-      (this.options.maxContentBytes ?? DEFAULT_MAX_CONTENT_BYTES)
-    ) {
-      issues.push(issue('content_too_large', ['content'], 'Skill content exceeds the size limit'));
+    const contentBytes = new TextEncoder().encode(input.content).byteLength;
+    if (contentBytes > (this.options.maxContentBytes ?? DEFAULT_MAX_CONTENT_BYTES)) {
+      this.pushIssue(
+        issue('content_too_large', ['content'], 'Skill content exceeds the UTF-8 byte limit'),
+      );
     }
-    if (containsSensitiveMaterial(input.content) || containsSensitiveMaterial(input.manifest)) {
-      issues.push(
+    if (hasLoneSurrogate(input.content) || hasLoneSurrogate(input.manifest)) {
+      this.pushIssue(
+        issue('manifest_invalid', ['content'], 'Skill payload contains invalid Unicode'),
+      );
+    }
+    if (hasNonCanonicalString(input.content)) {
+      this.pushIssue(
+        issue('manifest_invalid', ['content'], 'Skill content must use NFC and LF line endings'),
+      );
+    }
+    if (hasNonCanonicalString(input.manifest)) {
+      this.pushIssue(
+        issue(
+          'manifest_invalid',
+          ['manifest'],
+          'Skill manifest text must use NFC and LF line endings',
+        ),
+      );
+    }
+    if (containsEnterpriseSecretMaterial(input.content)) {
+      this.pushIssue(
         issue(
           'secret_material_detected',
           ['content'],
-          'Skill payload contains secret-shaped material',
+          'Skill payload contains credential-shaped material',
         ),
       );
     }
-    if (DANGEROUS_INSTRUCTION_PATTERNS.some((pattern) => pattern.test(input.content))) {
-      issues.push(
+    if (containsEnterpriseSecretMaterial(input.manifest)) {
+      this.pushIssue(
+        issue(
+          'secret_material_detected',
+          ['manifest'],
+          'Skill manifest contains credential-shaped material',
+        ),
+      );
+    }
+
+    const dangerous = classifyDangerousInstructions(input.content);
+    if (dangerous.error) {
+      this.pushIssue(
         issue(
           'dangerous_instruction',
           ['content'],
-          'Skill content contains a dangerous instruction pattern',
+          'Skill content contains a high-confidence dangerous instruction',
         ),
       );
     }
-    if (this.options.builtinSkillKeys?.has(input.skillKey) && !input.allowBuiltinOverride) {
-      issues.push(
+    if (dangerous.warning) {
+      this.pushIssue(
         issue(
-          'builtin_override_forbidden',
-          ['skillKey'],
-          'Builtin Skill override requires explicit approval',
+          'dangerous_instruction',
+          ['content'],
+          'Skill content contains a heuristic instruction-risk signal',
+          'warning',
         ),
       );
     }
+    this.validateBuiltinOverride(input);
 
     if (parsedManifest.success) {
       const manifest = parsedManifest.data;
+      const canonicalManifest = canonicalizePlatformSkillManifest(manifest);
+      const manifestBytes = new TextEncoder().encode(JSON.stringify(canonicalManifest)).byteLength;
+      if (manifestBytes > (this.options.maxManifestBytes ?? DEFAULT_MAX_MANIFEST_BYTES)) {
+        this.pushIssue(
+          issue('manifest_invalid', ['manifest'], 'Skill manifest exceeds the UTF-8 byte limit'),
+        );
+      }
+      for (const field of ['localizedDescriptions', 'localizedDisplayNames'] as const) {
+        if (
+          Object.keys(manifest[field]).length >
+          (this.options.maxLocalizedEntries ?? DEFAULT_MAX_LOCALIZED_ENTRIES)
+        ) {
+          this.pushIssue(
+            issue(
+              'manifest_invalid',
+              ['manifest', field],
+              'Localized text entry limit is exceeded',
+            ),
+          );
+        }
+      }
       const canonicalChecksum = platformSkillVersionChecksum({ content: input.content, manifest });
       if (canonicalChecksum !== input.checksum) {
-        issues.push(
+        this.pushIssue(
           issue('checksum_mismatch', ['checksum'], 'Skill payload checksum does not match'),
         );
       }
-      issues.push(...this.validatePermissions(manifest));
-      const seenTools = new Set<string>();
-      for (const [index, dependency] of manifest.toolDependencies.entries()) {
-        if (seenTools.has(dependency.toolKey)) {
-          issues.push(
-            issue(
-              'manifest_invalid',
-              ['manifest', 'toolDependencies', index],
-              'Tool dependency is declared more than once',
-            ),
-          );
-        }
-        seenTools.add(dependency.toolKey);
-        if (!dependency.optional && !this.options.knownToolKeys?.has(dependency.toolKey)) {
-          issues.push(
-            issue(
-              'unknown_tool_dependency',
-              ['manifest', 'toolDependencies', index],
-              'Required Tool dependency is unavailable',
-            ),
-          );
-        }
-      }
-      issues.push(
-        ...(await this.validateDependencyGraph({
-          manifest,
-          skillKey: input.skillKey,
-          version: input.version,
-        })),
-      );
+      this.validatePermissions(manifest);
+      await this.validateDependencyGraph({
+        manifest,
+        skillKey: input.skillKey,
+        version: input.version,
+      });
     }
 
-    const deduplicated = [...new Map(issues.map((item) => [issueKey(item), item])).values()].sort(
-      (left, right) => issueKey(left).localeCompare(issueKey(right)),
-    );
+    const deduplicated = [...new Map(this.issues.map((item) => [issueKey(item), item])).values()]
+      .sort(compareIssues)
+      .slice(0, Math.max(1, this.options.maxIssues ?? DEFAULT_MAX_ISSUES));
     return { issues: deduplicated, validatedAt: new Date(), validatorVersion: VALIDATOR_VERSION };
   };
 }

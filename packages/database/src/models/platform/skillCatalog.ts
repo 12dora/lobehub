@@ -100,40 +100,54 @@ const versionView = (
   version: row.version,
 });
 
-const canonicalText = (value: string) =>
+export const canonicalizePlatformSkillContent = (value: string) =>
   value.replaceAll('\r\n', '\n').replaceAll('\r', '\n').normalize('NFC');
 
 export const canonicalizePlatformSkillManifest = (
   manifest: PlatformSkillManifest,
 ): PlatformSkillManifest => ({
-  description: canonicalText(manifest.description),
-  displayName: canonicalText(manifest.displayName),
+  description: canonicalizePlatformSkillContent(manifest.description),
+  displayName: canonicalizePlatformSkillContent(manifest.displayName),
   localizedDescriptions: Object.fromEntries(
     Object.entries(manifest.localizedDescriptions)
-      .map(([locale, value]) => [canonicalText(locale), canonicalText(value)] as const)
+      .map(
+        ([locale, value]) =>
+          [
+            canonicalizePlatformSkillContent(locale),
+            canonicalizePlatformSkillContent(value),
+          ] as const,
+      )
       .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)),
   ),
   localizedDisplayNames: Object.fromEntries(
     Object.entries(manifest.localizedDisplayNames)
-      .map(([locale, value]) => [canonicalText(locale), canonicalText(value)] as const)
+      .map(
+        ([locale, value]) =>
+          [
+            canonicalizePlatformSkillContent(locale),
+            canonicalizePlatformSkillContent(value),
+          ] as const,
+      )
       .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)),
   ),
   permissions: {
     filesystem: manifest.permissions.filesystem,
     network: {
-      allowedHosts: manifest.permissions.network.allowedHosts.map(canonicalText).sort(),
+      allowedHosts: manifest.permissions.network.allowedHosts
+        .map(canonicalizePlatformSkillContent)
+        .sort(),
       enabled: manifest.permissions.network.enabled,
     },
-    tools: { allow: manifest.permissions.tools.allow.map(canonicalText).sort() },
+    tools: { allow: manifest.permissions.tools.allow.map(canonicalizePlatformSkillContent).sort() },
   },
   skillDependencies: manifest.skillDependencies.map((dependency) => ({
     ...dependency,
-    skillKey: canonicalText(dependency.skillKey),
-    version: canonicalText(dependency.version),
+    skillKey: canonicalizePlatformSkillContent(dependency.skillKey),
+    version: canonicalizePlatformSkillContent(dependency.version),
   })),
   toolDependencies: manifest.toolDependencies.map((dependency) => ({
     ...dependency,
-    toolKey: canonicalText(dependency.toolKey),
+    toolKey: canonicalizePlatformSkillContent(dependency.toolKey),
   })),
 });
 
@@ -143,11 +157,16 @@ export const canonicalizePlatformSkillResources = (
   resources
     .map((resource) => ({
       ...resource,
-      content: resource.content === undefined ? undefined : canonicalText(resource.content),
+      content:
+        resource.content === undefined
+          ? undefined
+          : canonicalizePlatformSkillContent(resource.content),
       contentRef:
-        resource.contentRef === undefined ? undefined : canonicalText(resource.contentRef),
-      mediaType: canonicalText(resource.mediaType),
-      path: canonicalText(resource.path),
+        resource.contentRef === undefined
+          ? undefined
+          : canonicalizePlatformSkillContent(resource.contentRef),
+      mediaType: canonicalizePlatformSkillContent(resource.mediaType),
+      path: canonicalizePlatformSkillContent(resource.path),
     }))
     .sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
 
@@ -158,8 +177,8 @@ export const platformSkillVersionChecksum = (params: {
   resources?: PlatformSkillResource[];
 }) => {
   const canonical = {
-    content: canonicalText(params.content),
-    contentRef: params.contentRef ? canonicalText(params.contentRef) : null,
+    content: canonicalizePlatformSkillContent(params.content),
+    contentRef: params.contentRef ? canonicalizePlatformSkillContent(params.contentRef) : null,
     manifest: canonicalizePlatformSkillManifest(params.manifest),
     resources: canonicalizePlatformSkillResources(params.resources ?? []),
   };
@@ -269,8 +288,8 @@ export class PlatformSkillCatalogModel {
       const canonicalResources = canonicalizePlatformSkillResources(params.resources ?? []);
       const row = await repository.createVersion({
         checksum: params.checksum,
-        content: canonicalText(params.content),
-        contentRef: params.contentRef ? canonicalText(params.contentRef) : null,
+        content: canonicalizePlatformSkillContent(params.content),
+        contentRef: params.contentRef ? canonicalizePlatformSkillContent(params.contentRef) : null,
         createdBy: params.actorUserId,
         manifest: canonicalManifest,
         resources: canonicalResources,
