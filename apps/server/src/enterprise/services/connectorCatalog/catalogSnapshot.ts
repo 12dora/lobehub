@@ -25,7 +25,10 @@ import type {
   ConnectorSecretSlot,
 } from './catalogTypes';
 import { PlatformConnectorContractError } from './errors';
-import { parseDiscoveredConnectorTools } from './toolDefinitionValidator';
+import {
+  containsConnectorCredentialMaterial,
+  parseDiscoveredConnectorTools,
+} from './toolDefinitionValidator';
 
 const MAX_SNAPSHOT_CACHE_ENTRIES = 256;
 
@@ -89,9 +92,28 @@ const rememberSnapshot = (key: string, payload: PlatformConnectorRevisionPayload
 
 export const clearConnectorCatalogRuntimeCache = (): void => snapshotCache.clear();
 
+const assertRevisionContainsNoCredentialReferences = (value: unknown): void => {
+  if (typeof value === 'string') {
+    if (containsConnectorCredentialMaterial(value)) {
+      throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_PUBLISHED');
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach(assertRevisionContainsNoCredentialReferences);
+    return;
+  }
+  if (!isPlainRecord(value)) return;
+  for (const [key, child] of Object.entries(value)) {
+    assertRevisionContainsNoCredentialReferences(key);
+    assertRevisionContainsNoCredentialReferences(child);
+  }
+};
+
 export const parseConnectorRevisionPayload = (
   payload: Record<string, unknown>,
 ): PlatformConnectorRevisionPayload => {
+  assertRevisionContainsNoCredentialReferences(payload);
   if (
     payload.schemaVersion !== 'm09-v1' ||
     !isPlainRecord(payload.connector) ||

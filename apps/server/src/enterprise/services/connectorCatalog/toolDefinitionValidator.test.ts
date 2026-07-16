@@ -46,6 +46,12 @@ const bothBoundaries = (tool: Record<string, unknown>) => [
   () => parseConnectorToolsForWrite([{ ...tool, id: 'tool-1' }]),
 ];
 
+const encodePercentRounds = (value: string, rounds: number): string => {
+  let encoded = value;
+  for (let index = 0; index < rounds; index += 1) encoded = encodeURIComponent(encoded);
+  return encoded;
+};
+
 describe('connector tool definition validator', () => {
   it('normalizes discovery and write through the same strict object boundary', () => {
     const withoutOutput = { ...baseTool, outputSchema: undefined };
@@ -171,6 +177,12 @@ describe('connector tool definition validator', () => {
       'ｖａｕｌｔ：／／connectors/private',
       '%76ault%3A%2F%2Fconnectors%2Fprivate',
       '%2576ault%253A%252F%252Fconnectors%252Fprivate',
+      encodePercentRounds('vault://connectors/private', 5),
+      encodePercentRounds('vault://connectors/private', 10),
+      encodeURIComponent('ｖａｕｌｔ：／／connectors/private'),
+      'malformed percent %',
+      'malformed percent %G0',
+      'malformed UTF-8 %E0%A4%A',
     ];
     for (const reference of references) {
       for (const schema of [
