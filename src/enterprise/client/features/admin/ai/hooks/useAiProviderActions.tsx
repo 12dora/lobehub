@@ -14,7 +14,10 @@ import {
   type AiCatalogPermissions,
   buildCompleteModelOrder,
   buildProviderUpdatePayload,
+  fingerprintAiProviderSnapshot,
   hasBlockingModelDependents,
+  isAiProviderSnapshotAdvanced,
+  isAiProviderWriteLocked,
   resolveAiProviderPrimaryAction,
 } from '../controller';
 import { openModelEditorModal } from '../models/openModelEditorModal';
@@ -55,8 +58,11 @@ export const useAiProviderActions = ({
   const { t } = useTranslation('admin');
   const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
   const [refreshFailed, setRefreshFailed] = useState(false);
+  const [refreshPending, setRefreshPending] = useState(false);
   const [refreshRetrying, setRefreshRetrying] = useState(false);
   const refreshGenerationRef = useRef(0);
+  const committedBaseFingerprintRef = useRef<string | null>(null);
+  const reloadRequired = isAiProviderWriteLocked({ refreshFailed, refreshPending });
 
   const errorText = useCallback(
     (cause: unknown) => {
@@ -91,34 +97,61 @@ export const useAiProviderActions = ({
       onCommitted?: (result: Result) => void;
     }) => {
       const generation = ++refreshGenerationRef.current;
+      const previousFingerprint = fingerprintAiProviderSnapshot(data);
       return commitThenScheduleRefresh({
         commit: params.commit,
-        refresh: () => refreshAdminAiProvider(data.draft.id),
+        refresh: async () => {
+          const latest = await refreshAdminAiProvider(data.draft.id);
+          if (!isAiProviderSnapshotAdvanced(previousFingerprint, latest)) {
+            throw new Error('Committed Provider snapshot has not advanced');
+          }
+        },
         onCommitted: (result) => {
+          committedBaseFingerprintRef.current = previousFingerprint;
           if (params.clearTest !== false) editor.invalidateTest();
           editor.setActionError(null);
           setRefreshFailed(false);
+          setRefreshPending(true);
           params.onCommitted?.(result);
         },
         onRefreshed: () => {
-          if (refreshGenerationRef.current === generation) setRefreshFailed(false);
+          if (refreshGenerationRef.current === generation) {
+            committedBaseFingerprintRef.current = null;
+            setRefreshFailed(false);
+            setRefreshPending(false);
+          }
         },
         onRefreshFailed: () => {
-          if (refreshGenerationRef.current === generation) setRefreshFailed(true);
+          if (refreshGenerationRef.current === generation) {
+            setRefreshFailed(true);
+            setRefreshPending(false);
+          }
         },
       });
     },
-    [data.draft.id, editor],
+    [data, editor],
   );
 
   const retryRefresh = useCallback(async () => {
     const generation = ++refreshGenerationRef.current;
     setRefreshRetrying(true);
+    setRefreshPending(true);
     try {
-      await refreshAdminAiProvider(data.draft.id);
-      if (refreshGenerationRef.current === generation) setRefreshFailed(false);
+      const latest = await refreshAdminAiProvider(data.draft.id);
+      const previousFingerprint = committedBaseFingerprintRef.current;
+      if (!previousFingerprint || !isAiProviderSnapshotAdvanced(previousFingerprint, latest)) {
+        throw new Error('Committed Provider snapshot has not advanced');
+      }
+      if (refreshGenerationRef.current === generation) {
+        committedBaseFingerprintRef.current = null;
+        setRefreshFailed(false);
+        setRefreshPending(false);
+      }
     } catch {
-      if (refreshGenerationRef.current === generation) setRefreshFailed(true);
+      if (refreshGenerationRef.current === generation) {
+        setRefreshFailed(true);
+        setRefreshPending(false);
+      }
     } finally {
       if (refreshGenerationRef.current === generation) setRefreshRetrying(false);
     }
@@ -127,6 +160,7 @@ export const useAiProviderActions = ({
   const openSave = useCallback(() => {
     if (
       !editor.draft ||
+      reloadRequired ||
       editor.conflict ||
       !editor.dirty ||
       !editor.valid ||
@@ -167,10 +201,27 @@ export const useAiProviderActions = ({
       targetLabel: data.draft.displayName,
       title: t('aiCatalog.actions.save.title'),
     });
-  }, [authMethod, commitAndRefresh, data, editor, handleMutationError, permissions, t]);
+  }, [
+    authMethod,
+    commitAndRefresh,
+    data,
+    editor,
+    handleMutationError,
+    permissions,
+    reloadRequired,
+    t,
+  ]);
 
   const openTest = useCallback(() => {
-    if (editor.dirty || editor.conflict || !editor.valid || !permissions.canTestProvider) return;
+    if (
+      reloadRequired ||
+      editor.dirty ||
+      editor.conflict ||
+      !editor.valid ||
+      !permissions.canTestProvider
+    ) {
+      return;
+    }
     openReasonModal({
       authMethod: authMethod ?? undefined,
       buildPayload: (reason) => ({ id: data.draft.id, reason }),
@@ -195,11 +246,21 @@ export const useAiProviderActions = ({
       targetLabel: data.draft.displayName,
       title: t('aiCatalog.actions.test.title'),
     });
-  }, [authMethod, commitAndRefresh, data.draft, editor, handleMutationError, permissions, t]);
+  }, [
+    authMethod,
+    commitAndRefresh,
+    data.draft,
+    editor,
+    handleMutationError,
+    permissions,
+    reloadRequired,
+    t,
+  ]);
 
   const openPublish = useCallback(() => {
     if (
       editor.dirty ||
+      reloadRequired ||
       editor.conflict ||
       !editor.valid ||
       !editor.connectionTest.canPublish ||
@@ -233,23 +294,32 @@ export const useAiProviderActions = ({
       targetLabel: data.draft.displayName,
       title: t('aiCatalog.actions.publish.title'),
     });
-  }, [authMethod, commitAndRefresh, data, editor, handleMutationError, permissions, t]);
+  }, [
+    authMethod,
+    commitAndRefresh,
+    data,
+    editor,
+    handleMutationError,
+    permissions,
+    reloadRequired,
+    t,
+  ]);
 
-  const primaryAction = resolveAiProviderPrimaryAction({
-    canPublish: permissions.canPublishProvider && data.draft.status !== 'archived',
-    canSave: permissions.canUpdateProvider && editor.valid,
-    canTest:
-      permissions.canTestProvider &&
-      editor.valid &&
-      data.draft.status !== 'archived' &&
-      !(
-        editor.connectionTest.state?.status === 'pending' && !editor.connectionTest.stale
-      ),
-    conflict: editor.conflict,
-    dirty: editor.dirty,
-    saveState: editor.saveState,
-    testPassed: editor.connectionTest.canPublish,
-  });
+  const primaryAction = reloadRequired
+    ? 'none'
+    : resolveAiProviderPrimaryAction({
+        canPublish: permissions.canPublishProvider && data.draft.status !== 'archived',
+        canSave: permissions.canUpdateProvider && editor.valid,
+        canTest:
+          permissions.canTestProvider &&
+          editor.valid &&
+          data.draft.status !== 'archived' &&
+          !(editor.connectionTest.state?.status === 'pending' && !editor.connectionTest.stale),
+        conflict: editor.conflict,
+        dirty: editor.dirty,
+        saveState: editor.saveState,
+        testPassed: editor.connectionTest.canPublish,
+      });
 
   const handlePrimary = useCallback(() => {
     if (primaryAction === 'save' || primaryAction === 'retry') openSave();
@@ -258,7 +328,7 @@ export const useAiProviderActions = ({
   }, [openPublish, openSave, openTest, primaryAction]);
 
   const handleSecret = useCallback(() => {
-    if (editor.dirty || editor.conflict || !permissions.canUpdateProvider) return;
+    if (reloadRequired || editor.dirty || editor.conflict || !permissions.canUpdateProvider) return;
     const snapshot = {
       expectedDraftToken: data.draftToken,
       expectedRevision: data.baseRevision,
@@ -283,11 +353,21 @@ export const useAiProviderActions = ({
         }
       },
     });
-  }, [authMethod, commitAndRefresh, data, editor, handleMutationError, permissions, t]);
+  }, [
+    authMethod,
+    commitAndRefresh,
+    data,
+    editor,
+    handleMutationError,
+    permissions,
+    reloadRequired,
+    t,
+  ]);
 
   const handleArchive = useCallback(() => {
     if (
       editor.dirty ||
+      reloadRequired ||
       editor.conflict ||
       data.draft.status === 'archived' ||
       !permissions.canArchiveProvider
@@ -320,11 +400,22 @@ export const useAiProviderActions = ({
       targetLabel: data.draft.displayName,
       title: t('aiCatalog.actions.archive.title'),
     });
-  }, [authMethod, commitAndRefresh, data, editor, handleMutationError, permissions, t]);
+  }, [
+    authMethod,
+    commitAndRefresh,
+    data,
+    editor,
+    handleMutationError,
+    permissions,
+    reloadRequired,
+    t,
+  ]);
 
   const handleRollback = useCallback(
     (targetRevision: number) => {
-      if (editor.dirty || editor.conflict || !permissions.canPublishProvider) return;
+      if (reloadRequired || editor.dirty || editor.conflict || !permissions.canPublishProvider) {
+        return;
+      }
       const snapshot = {
         expectedDraftToken: data.draftToken,
         expectedRevision: data.baseRevision,
@@ -353,11 +444,20 @@ export const useAiProviderActions = ({
         title: t('aiCatalog.actions.rollback.title'),
       });
     },
-    [authMethod, commitAndRefresh, data, editor, handleMutationError, permissions, t],
+    [
+      authMethod,
+      commitAndRefresh,
+      data,
+      editor,
+      handleMutationError,
+      permissions,
+      reloadRequired,
+      t,
+    ],
   );
 
   const handleCreateModel = useCallback(() => {
-    if (editor.dirty || editor.conflict || !permissions.canCreateModel) return;
+    if (reloadRequired || editor.dirty || editor.conflict || !permissions.canCreateModel) return;
     const draftToken = data.draftToken;
     openModelEditorModal({
       authMethod: authMethod ?? undefined,
@@ -383,12 +483,22 @@ export const useAiProviderActions = ({
         }
       },
     });
-  }, [authMethod, commitAndRefresh, data, editor, handleMutationError, permissions, t]);
+  }, [
+    authMethod,
+    commitAndRefresh,
+    data,
+    editor,
+    handleMutationError,
+    permissions,
+    reloadRequired,
+    t,
+  ]);
 
   const handleEditModel = useCallback(
     async (model: AdminAiModelDraft) => {
       if (
         editor.dirty ||
+        reloadRequired ||
         editor.conflict ||
         !permissions.canReadModels ||
         !permissions.canUpdateModel
@@ -445,6 +555,7 @@ export const useAiProviderActions = ({
       permissions.canReadModels,
       permissions.canUpdateModel,
       commitAndRefresh,
+      reloadRequired,
       t,
     ],
   );
@@ -453,6 +564,7 @@ export const useAiProviderActions = ({
     async (model: AdminAiModelDraft) => {
       if (
         editor.dirty ||
+        reloadRequired ||
         editor.conflict ||
         !permissions.canDeleteModel ||
         !permissions.canReadModels
@@ -527,13 +639,15 @@ export const useAiProviderActions = ({
       permissions.canDeleteModel,
       permissions.canReadModels,
       commitAndRefresh,
+      reloadRequired,
       t,
     ],
   );
 
   const handleReorderModels = useCallback(
     (orderedIds: string[]) => {
-      if (editor.dirty || editor.conflict || !permissions.canReorderModels) return;
+      if (reloadRequired || editor.dirty || editor.conflict || !permissions.canReorderModels)
+        return;
       const items = buildCompleteModelOrder(
         data.draft.models.map((model) => model.id),
         orderedIds,
@@ -571,7 +685,16 @@ export const useAiProviderActions = ({
         title: t('aiCatalog.actions.reorder.title'),
       });
     },
-    [authMethod, commitAndRefresh, data, editor, handleMutationError, permissions, t],
+    [
+      authMethod,
+      commitAndRefresh,
+      data,
+      editor,
+      handleMutationError,
+      permissions,
+      reloadRequired,
+      t,
+    ],
   );
 
   return {
@@ -586,7 +709,9 @@ export const useAiProviderActions = ({
     handleSecret,
     primaryAction,
     refreshFailed,
+    refreshPending,
     refreshRetrying,
+    reloadRequired,
     retryRefresh,
   };
 };

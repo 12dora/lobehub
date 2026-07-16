@@ -4,6 +4,7 @@ import type {
   AdminAiModelDependentsOutput,
   AdminAiProviderCreateDraftInput,
   AdminAiProviderDraft,
+  AdminAiProviderGetOutput,
   AdminAiProviderUpdateDraftInput,
   AiConnectionTestState,
   AiSecretMutation,
@@ -126,6 +127,30 @@ export const fingerprintAiProviderPublicDraft = (draft: AdminAiProviderDraft): s
       sort: draft.sort,
     }),
   );
+
+export const fingerprintAiProviderSnapshot = (snapshot: AdminAiProviderGetOutput): string =>
+  JSON.stringify(
+    canonicalize({
+      baseRevision: snapshot.baseRevision,
+      connectionTest: snapshot.draft.connectionTest,
+      draft: fingerprintAiProviderPublicDraft(snapshot.draft),
+      draftRevision: snapshot.draft.revision,
+      draftToken: snapshot.draftToken,
+      models: snapshot.draft.models,
+      secret: snapshot.draft.secret,
+      status: snapshot.draft.status,
+    }),
+  );
+
+export const isAiProviderSnapshotAdvanced = (
+  previousFingerprint: string,
+  latest: AdminAiProviderGetOutput | undefined,
+): boolean => Boolean(latest && fingerprintAiProviderSnapshot(latest) !== previousFingerprint);
+
+export const isAiProviderWriteLocked = (params: {
+  refreshFailed: boolean;
+  refreshPending: boolean;
+}): boolean => params.refreshFailed || params.refreshPending;
 
 type EditableAiProviderScalarDraft = Pick<
   AdminAiProviderDraft,
