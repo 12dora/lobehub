@@ -1,5 +1,5 @@
 {
-  "id": "81e568e0-a5fb-4ec1-97ce-a522b51077a0",
+  "id": "92e015c4-0129-49e1-967c-a79770866f1c",
   "prevId": "aa71727c-9e5b-4e30-8362-1fb740407149",
   "version": "7",
   "dialect": "postgresql",
@@ -16649,6 +16649,13 @@
           "primaryKey": false,
           "notNull": false
         },
+        "resources": {
+          "name": "resources",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
         "checksum": {
           "name": "checksum",
           "type": "text",
@@ -16687,6 +16694,27 @@
             },
             {
               "expression": "version",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "platform_skill_versions_skill_id_id_unique": {
+          "name": "platform_skill_versions_skill_id_id_unique",
+          "columns": [
+            {
+              "expression": "skill_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -16825,6 +16853,13 @@
           "notNull": true,
           "default": 0
         },
+        "draft_sequence": {
+          "name": "draft_sequence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
         "created_by": {
           "name": "created_by",
           "type": "text",
@@ -16930,14 +16965,16 @@
         }
       },
       "foreignKeys": {
-        "platform_skills_current_version_id_platform_skill_versions_id_fk": {
-          "name": "platform_skills_current_version_id_platform_skill_versions_id_fk",
+        "platform_skills_current_version_same_skill_fk": {
+          "name": "platform_skills_current_version_same_skill_fk",
           "tableFrom": "platform_skills",
           "tableTo": "platform_skill_versions",
           "columnsFrom": [
+            "id",
             "current_version_id"
           ],
           "columnsTo": [
+            "skill_id",
             "id"
           ],
           "onDelete": "restrict",
@@ -16947,7 +16984,12 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "platform_skills_published_version_required": {
+          "name": "platform_skills_published_version_required",
+          "value": "\"platform_skills\".\"status\" <> 'published' OR \"platform_skills\".\"current_version_id\" IS NOT NULL"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.push_tokens": {

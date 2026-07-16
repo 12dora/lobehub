@@ -1,6 +1,9 @@
+import { sql } from 'drizzle-orm';
 import {
   type AnyPgColumn,
   boolean,
+  check,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -39,6 +42,15 @@ export interface PlatformSkillManifest {
   };
   skillDependencies: PlatformSkillDependency[];
   toolDependencies: PlatformSkillToolDependency[];
+}
+
+export interface PlatformSkillResource {
+  checksum: string;
+  content?: string;
+  contentRef?: string;
+  mediaType: string;
+  path: string;
+  sizeBytes: number;
 }
 
 export type PlatformSkillValidationIssueCode =
@@ -93,15 +105,14 @@ export const platformSkills = pgTable(
     allowBuiltinOverride: boolean('allow_builtin_override').notNull().default(false),
     enabled: boolean('enabled').notNull().default(false),
     /** Published pointer. Explicit historical versions remain resolvable after archive. */
-    currentVersionId: text('current_version_id').references(
-      (): AnyPgColumn => platformSkillVersions.id,
-      { onDelete: 'restrict' },
-    ),
+    currentVersionId: text('current_version_id'),
     status: varchar('status', { length: 32 })
       .$type<PlatformResourceStatus>()
       .notNull()
       .default('draft'),
     revision: integer('revision').notNull().default(0),
+    /** Monotonic draft CAS sequence, independent from the published revision. */
+    draftSequence: integer('draft_sequence').notNull().default(0),
     createdBy: text('created_by'),
     updatedBy: text('updated_by'),
     createdAt: createdAt(),
@@ -113,6 +124,15 @@ export const platformSkills = pgTable(
     index('platform_skills_enabled_idx').on(t.enabled),
     index('platform_skills_distribution_idx').on(t.distribution),
     index('platform_skills_current_version_id_idx').on(t.currentVersionId),
+    foreignKey({
+      columns: [t.id, t.currentVersionId],
+      foreignColumns: [platformSkillVersions.skillId, platformSkillVersions.id],
+      name: 'platform_skills_current_version_same_skill_fk',
+    }).onDelete('restrict'),
+    check(
+      'platform_skills_published_version_required',
+      sql`${t.status} <> 'published' OR ${t.currentVersionId} IS NOT NULL`,
+    ),
   ],
 );
 
@@ -132,12 +152,14 @@ export const platformSkillVersions = pgTable(
 
     skillId: text('skill_id')
       .notNull()
-      .references(() => platformSkills.id, { onDelete: 'restrict' }),
+      .references((): AnyPgColumn => platformSkills.id, { onDelete: 'restrict' }),
     version: text('version').notNull(),
     manifest: jsonb('manifest').$type<PlatformSkillManifest>().notNull(),
     /** Canonical UTF-8 Skill markdown/prompt. Immutable after insert. */
     content: text('content').notNull(),
     contentRef: text('content_ref'),
+    /** Immutable executable resources included in the canonical checksum. */
+    resources: jsonb('resources').$type<PlatformSkillResource[]>().notNull().default([]),
     /** SHA-256 over the canonical manifest and content payload. */
     checksum: text('checksum').notNull(),
     validationResult: jsonb('validation_result').$type<PlatformSkillValidationResult>(),
@@ -146,6 +168,7 @@ export const platformSkillVersions = pgTable(
   },
   (t) => [
     uniqueIndex('platform_skill_versions_skill_id_version_unique').on(t.skillId, t.version),
+    uniqueIndex('platform_skill_versions_skill_id_id_unique').on(t.skillId, t.id),
     index('platform_skill_versions_skill_id_idx').on(t.skillId),
     index('platform_skill_versions_checksum_idx').on(t.checksum),
   ],
