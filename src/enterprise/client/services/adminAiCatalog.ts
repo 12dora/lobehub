@@ -3,6 +3,8 @@ import { lambdaClient } from '@/libs/trpc/client';
 import type {
   AdminAiModelDependentsInput,
   AdminAiModelDependentsOutput,
+  AdminAiModelListInput,
+  AdminAiModelListOutput,
   AdminAiProviderGetInput,
   AdminAiProviderGetOutput,
   AdminAiProviderListInput,
@@ -17,6 +19,9 @@ class AdminAiCatalogService {
   getModelDependents = async (
     input: AdminAiModelDependentsInput,
   ): Promise<AdminAiModelDependentsOutput> => lambdaClient.admin.aiModels.dependents.query(input);
+
+  listModels = async (input: AdminAiModelListInput): Promise<AdminAiModelListOutput> =>
+    lambdaClient.admin.aiModels.list.query(input);
 
   listProviders = async (input: AdminAiProviderListInput): Promise<AdminAiProviderListOutput> =>
     lambdaClient.admin.aiProviders.list.query(input);
