@@ -91,4 +91,28 @@ describe('AI provider public draft storage', () => {
     expect(loadAiProviderPublicDraft('p-1')?.draft.configText).toBe('{');
     expect([...values.values()][0]).not.toContain('secret');
   });
+
+  it('runtime-whitelists public fields even when a caller supplies extra credential keys', () => {
+    const draft = {
+      checkModel: null,
+      configText: '{}',
+      description: null,
+      displayName: 'Example',
+      enabled: true,
+      fetchOnClient: false,
+      logo: null,
+      secret: { apiKey: 'must-never-persist' },
+      settingsText: '{}',
+      sort: 0,
+    };
+    saveAiProviderPublicDraft('p-1', {
+      baseDraft: draft,
+      baseRevision: 1,
+      draft,
+      draftToken: 'a'.repeat(64),
+      savedAt: new Date(0).toISOString(),
+    });
+    expect([...values.values()][0]).not.toContain('must-never-persist');
+    expect(loadAiProviderPublicDraft('p-1')).not.toHaveProperty('draft.secret');
+  });
 });

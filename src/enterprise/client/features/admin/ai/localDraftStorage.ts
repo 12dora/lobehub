@@ -12,11 +12,35 @@ export interface StoredAiProviderPublicDraft {
 
 const storageKey = (id: string) => `${STORAGE_PREFIX}${id}`;
 
+const pickPublicDraft = (draft: Record<string, unknown>): EditableAiProviderDraft | null => {
+  if (
+    typeof draft.configText !== 'string' ||
+    typeof draft.displayName !== 'string' ||
+    typeof draft.enabled !== 'boolean' ||
+    typeof draft.fetchOnClient !== 'boolean' ||
+    typeof draft.settingsText !== 'string' ||
+    typeof draft.sort !== 'number'
+  ) {
+    return null;
+  }
+  return {
+    checkModel: typeof draft.checkModel === 'string' ? draft.checkModel : null,
+    configText: draft.configText,
+    description: typeof draft.description === 'string' ? draft.description : null,
+    displayName: draft.displayName,
+    enabled: draft.enabled,
+    fetchOnClient: draft.fetchOnClient,
+    logo: typeof draft.logo === 'string' ? draft.logo : null,
+    settingsText: draft.settingsText,
+    sort: draft.sort,
+  };
+};
+
 const normalizeDraft = (value: unknown): EditableAiProviderDraft | null => {
   if (!value || typeof value !== 'object') return null;
   const draft = value as Record<string, unknown>;
   if (typeof draft.configText === 'string' && typeof draft.settingsText === 'string') {
-    return draft as unknown as EditableAiProviderDraft;
+    return pickPublicDraft(draft);
   }
   // Migrate the first M07 UI draft shape without ever accepting Secret metadata.
   if (
@@ -26,11 +50,11 @@ const normalizeDraft = (value: unknown): EditableAiProviderDraft | null => {
     typeof draft.settings === 'object'
   ) {
     const { config, settings, ...fields } = draft;
-    return {
+    return pickPublicDraft({
       ...(fields as unknown as Omit<EditableAiProviderDraft, 'configText' | 'settingsText'>),
       configText: JSON.stringify(config, null, 2),
       settingsText: JSON.stringify(settings, null, 2),
-    };
+    });
   }
   return null;
 };
@@ -42,7 +66,19 @@ export const saveAiProviderPublicDraft = (
 ): void => {
   if (typeof window === 'undefined') return;
   try {
-    window.localStorage.setItem(storageKey(id), JSON.stringify(payload));
+    const baseDraft = pickPublicDraft(payload.baseDraft as unknown as Record<string, unknown>);
+    const draft = pickPublicDraft(payload.draft as unknown as Record<string, unknown>);
+    if (!baseDraft || !draft) return;
+    window.localStorage.setItem(
+      storageKey(id),
+      JSON.stringify({
+        baseDraft,
+        baseRevision: payload.baseRevision,
+        draft,
+        draftToken: payload.draftToken,
+        savedAt: payload.savedAt,
+      } satisfies StoredAiProviderPublicDraft),
+    );
   } catch {
     // Local recovery is best effort; server draft remains authoritative.
   }
