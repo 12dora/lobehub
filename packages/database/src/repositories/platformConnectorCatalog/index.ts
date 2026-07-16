@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, inArray, isNull, or, sql } from 'drizzle-orm';
+import { and, asc, eq, exists, gt, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 
 import type {
   NewPlatformConnector,
@@ -29,6 +29,11 @@ const boundedLimit = (limit?: number): number =>
 
 const isRootDatabase = (db: LobeChatDatabase | Transaction): db is LobeChatDatabase =>
   'transaction' in db;
+
+const inTransaction = async <T>(
+  db: LobeChatDatabase | Transaction,
+  operation: (transaction: Transaction) => Promise<T>,
+): Promise<T> => (isRootDatabase(db) ? db.transaction(operation) : operation(db));
 
 export interface PlatformConnectorCursor {
   connectorKey: string;
@@ -284,6 +289,13 @@ export class PlatformConnectorCatalogRepository {
       throw new Error('PLATFORM_CONNECTOR_TOOL_LIMIT_EXCEEDED');
     }
     const replace = async (db: LobeChatDatabase | Transaction) => {
+      const locked = await db
+        .select({ id: platformConnectors.id })
+        .from(platformConnectors)
+        .where(eq(platformConnectors.id, connectorId))
+        .limit(1)
+        .for('update');
+      if (!locked[0]) throw new Error('PLATFORM_CONNECTOR_NOT_FOUND');
       await db
         .delete(platformConnectorTools)
         .where(eq(platformConnectorTools.connectorId, connectorId));
@@ -293,7 +305,7 @@ export class PlatformConnectorCatalogRepository {
         .values(tools.map((tool) => ({ ...tool, connectorId })))
         .returning();
     };
-    return isRootDatabase(this.db) ? this.db.transaction(replace) : replace(this.db);
+    return inTransaction(this.db, replace);
   };
 
   setPublishedPointerCas = async (params: {
@@ -348,17 +360,41 @@ export class PlatformConnectorCatalogRepository {
 
   consumeOAuthState = async (
     stateHash: string,
-    consumedAt: Date,
   ): Promise<PlatformConnectorOAuthStateItem | undefined> => {
+    const databaseNow = sql<Date>`CURRENT_TIMESTAMP`;
+    const validBinding = this.db
+      .select({ id: platformUserConnectorBindings.id })
+      .from(platformUserConnectorBindings)
+      .where(
+        and(
+          eq(platformUserConnectorBindings.id, platformConnectorOAuthStates.bindingId),
+          eq(platformUserConnectorBindings.userId, platformConnectorOAuthStates.userId),
+          eq(platformUserConnectorBindings.connectorId, platformConnectorOAuthStates.connectorId),
+          eq(
+            platformUserConnectorBindings.publishedRevision,
+            platformConnectorOAuthStates.publishedRevision,
+          ),
+          inArray(platformUserConnectorBindings.status, [
+            'connected',
+            'error',
+            'expired',
+            'pending',
+          ]),
+          isNull(platformUserConnectorBindings.revokedAt),
+        ),
+      )
+      .for('update');
     const [row] = await this.db
       .update(platformConnectorOAuthStates)
-      .set({ consumedAt })
+      .set({ consumedAt: databaseNow })
       .where(
         and(
           eq(platformConnectorOAuthStates.stateHash, stateHash),
           isNull(platformConnectorOAuthStates.consumedAt),
           isNull(platformConnectorOAuthStates.revokedAt),
-          gt(platformConnectorOAuthStates.expiresAt, consumedAt),
+          lte(platformConnectorOAuthStates.createdAt, databaseNow),
+          gt(platformConnectorOAuthStates.expiresAt, databaseNow),
+          exists(validBinding),
         ),
       )
       .returning();
@@ -369,50 +405,63 @@ export class PlatformConnectorCatalogRepository {
     afterId?: string;
     connectorId: string;
     limit?: number;
-    revokedAt: Date;
   }) => {
-    const limit = boundedLimit(params.limit);
-    const conditions = [
-      eq(platformUserConnectorBindings.connectorId, params.connectorId),
-      isNull(platformUserConnectorBindings.revokedAt),
-    ];
-    if (params.afterId) conditions.push(gt(platformUserConnectorBindings.id, params.afterId));
-    const rows = await this.db
-      .select({ id: platformUserConnectorBindings.id })
-      .from(platformUserConnectorBindings)
-      .where(and(...conditions))
-      .orderBy(asc(platformUserConnectorBindings.id))
-      .limit(limit + 1);
-    const hasMore = rows.length > limit;
-    const ids = (hasMore ? rows.slice(0, limit) : rows).map((row) => row.id);
-    let revoked = 0;
-    if (ids.length > 0) {
-      const updated = await this.db
-        .update(platformUserConnectorBindings)
-        .set({
-          expiresAt: null,
-          oauthTokenRef: null,
-          revision: sqlIncrement(platformUserConnectorBindings.revision),
-          revokedAt: params.revokedAt,
-          scopes: [],
-          status: 'revoked',
-          tokenFingerprint: null,
-          updatedAt: params.revokedAt,
-        })
-        .where(
-          and(
-            eq(platformUserConnectorBindings.connectorId, params.connectorId),
-            inArray(platformUserConnectorBindings.id, ids),
-            isNull(platformUserConnectorBindings.revokedAt),
-          ),
-        )
-        .returning({ id: platformUserConnectorBindings.id });
-      revoked = updated.length;
-    }
-    return {
-      nextCursor: hasMore ? (ids.at(-1) ?? null) : null,
-      revoked,
-    };
+    return inTransaction(this.db, async (db) => {
+      const limit = boundedLimit(params.limit);
+      const conditions = [
+        eq(platformUserConnectorBindings.connectorId, params.connectorId),
+        isNull(platformUserConnectorBindings.revokedAt),
+      ];
+      if (params.afterId) conditions.push(gt(platformUserConnectorBindings.id, params.afterId));
+      const rows = await db
+        .select({ id: platformUserConnectorBindings.id })
+        .from(platformUserConnectorBindings)
+        .where(and(...conditions))
+        .orderBy(asc(platformUserConnectorBindings.id))
+        .limit(limit + 1)
+        .for('update');
+      const hasMore = rows.length > limit;
+      const ids = (hasMore ? rows.slice(0, limit) : rows).map((row) => row.id);
+      let revoked = 0;
+      if (ids.length > 0) {
+        const databaseNow = sql<Date>`CURRENT_TIMESTAMP`;
+        await db
+          .update(platformConnectorOAuthStates)
+          .set({ revokedAt: databaseNow })
+          .where(
+            and(
+              inArray(platformConnectorOAuthStates.bindingId, ids),
+              isNull(platformConnectorOAuthStates.consumedAt),
+              isNull(platformConnectorOAuthStates.revokedAt),
+            ),
+          );
+        const updated = await db
+          .update(platformUserConnectorBindings)
+          .set({
+            expiresAt: null,
+            oauthTokenRef: null,
+            revision: sqlIncrement(platformUserConnectorBindings.revision),
+            revokedAt: databaseNow,
+            scopes: [],
+            status: 'revoked',
+            tokenFingerprint: null,
+            updatedAt: databaseNow,
+          })
+          .where(
+            and(
+              eq(platformUserConnectorBindings.connectorId, params.connectorId),
+              inArray(platformUserConnectorBindings.id, ids),
+              isNull(platformUserConnectorBindings.revokedAt),
+            ),
+          )
+          .returning({ id: platformUserConnectorBindings.id });
+        revoked = updated.length;
+      }
+      return {
+        nextCursor: hasMore ? (ids.at(-1) ?? null) : null,
+        revoked,
+      };
+    });
   };
 }
 
@@ -423,27 +472,39 @@ export class PlatformUserConnectorBindingRepository {
   ) {}
 
   createOAuthState = async (
-    values: Omit<NewPlatformConnectorOAuthState, 'userId'>,
+    values: Omit<
+      NewPlatformConnectorOAuthState,
+      'consumedAt' | 'createdAt' | 'revisionResourceType' | 'revokedAt' | 'userId'
+    >,
   ): Promise<PlatformConnectorOAuthStateItem> => {
-    const owned = await this.db
-      .select({ id: platformUserConnectorBindings.id })
-      .from(platformUserConnectorBindings)
-      .where(
-        and(
-          eq(platformUserConnectorBindings.id, values.bindingId),
-          eq(platformUserConnectorBindings.userId, this.userId),
-          eq(platformUserConnectorBindings.connectorId, values.connectorId),
-          eq(platformUserConnectorBindings.publishedRevision, values.publishedRevision),
-          isNull(platformUserConnectorBindings.revokedAt),
-        ),
-      )
-      .limit(1);
-    if (!owned[0]) throw new Error('PLATFORM_CONNECTOR_BINDING_OWNERSHIP_MISMATCH');
-    const [row] = await this.db
-      .insert(platformConnectorOAuthStates)
-      .values({ ...values, userId: this.userId })
-      .returning();
-    return row;
+    return inTransaction(this.db, async (db) => {
+      const owned = await db
+        .select({ id: platformUserConnectorBindings.id })
+        .from(platformUserConnectorBindings)
+        .where(
+          and(
+            eq(platformUserConnectorBindings.id, values.bindingId),
+            eq(platformUserConnectorBindings.userId, this.userId),
+            eq(platformUserConnectorBindings.connectorId, values.connectorId),
+            eq(platformUserConnectorBindings.publishedRevision, values.publishedRevision),
+            inArray(platformUserConnectorBindings.status, [
+              'connected',
+              'error',
+              'expired',
+              'pending',
+            ]),
+            isNull(platformUserConnectorBindings.revokedAt),
+          ),
+        )
+        .limit(1)
+        .for('update');
+      if (!owned[0]) throw new Error('PLATFORM_CONNECTOR_BINDING_OWNERSHIP_MISMATCH');
+      const [row] = await db
+        .insert(platformConnectorOAuthStates)
+        .values({ ...values, userId: this.userId })
+        .returning();
+      return row;
+    });
   };
 
   getBinding = async (
@@ -479,29 +540,55 @@ export class PlatformUserConnectorBindingRepository {
 
   revokeBinding = async (
     connectorId: string,
-    revokedAt: Date,
   ): Promise<PlatformUserConnectorBindingItem | undefined> => {
-    const [row] = await this.db
-      .update(platformUserConnectorBindings)
-      .set({
-        expiresAt: null,
-        oauthTokenRef: null,
-        revision: sqlIncrement(platformUserConnectorBindings.revision),
-        revokedAt,
-        scopes: [],
-        status: 'revoked',
-        tokenFingerprint: null,
-        updatedAt: revokedAt,
-      })
-      .where(
-        and(
-          eq(platformUserConnectorBindings.userId, this.userId),
-          eq(platformUserConnectorBindings.connectorId, connectorId),
-          isNull(platformUserConnectorBindings.revokedAt),
-        ),
-      )
-      .returning();
-    return row;
+    return inTransaction(this.db, async (db) => {
+      const owned = await db
+        .select({ id: platformUserConnectorBindings.id })
+        .from(platformUserConnectorBindings)
+        .where(
+          and(
+            eq(platformUserConnectorBindings.userId, this.userId),
+            eq(platformUserConnectorBindings.connectorId, connectorId),
+            isNull(platformUserConnectorBindings.revokedAt),
+          ),
+        )
+        .limit(1)
+        .for('update');
+      const bindingId = owned[0]?.id;
+      if (!bindingId) return undefined;
+      const databaseNow = sql<Date>`CURRENT_TIMESTAMP`;
+      await db
+        .update(platformConnectorOAuthStates)
+        .set({ revokedAt: databaseNow })
+        .where(
+          and(
+            eq(platformConnectorOAuthStates.bindingId, bindingId),
+            isNull(platformConnectorOAuthStates.consumedAt),
+            isNull(platformConnectorOAuthStates.revokedAt),
+          ),
+        );
+      const [row] = await db
+        .update(platformUserConnectorBindings)
+        .set({
+          expiresAt: null,
+          oauthTokenRef: null,
+          revision: sqlIncrement(platformUserConnectorBindings.revision),
+          revokedAt: databaseNow,
+          scopes: [],
+          status: 'revoked',
+          tokenFingerprint: null,
+          updatedAt: databaseNow,
+        })
+        .where(
+          and(
+            eq(platformUserConnectorBindings.id, bindingId),
+            eq(platformUserConnectorBindings.userId, this.userId),
+            isNull(platformUserConnectorBindings.revokedAt),
+          ),
+        )
+        .returning();
+      return row;
+    });
   };
 
   updateBindingCas = async (
