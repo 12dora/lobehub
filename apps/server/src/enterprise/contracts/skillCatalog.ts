@@ -4,7 +4,12 @@ import { z } from 'zod';
 import { containsSensitiveMaterial, isCredentialBearingUrl } from '../security/redaction';
 
 const rejectSensitiveText = (value: string, ctx: z.RefinementCtx) => {
-  if (containsSensitiveMaterial(value) || isCredentialBearingUrl(value)) {
+  const embeddedUrls = value.match(/https?:\/\/[^\s<>"']+/gi) ?? [];
+  if (
+    containsSensitiveMaterial(value) ||
+    isCredentialBearingUrl(value) ||
+    embeddedUrls.some(isCredentialBearingUrl)
+  ) {
     ctx.addIssue({ code: 'custom', message: 'secret material is not allowed' });
   }
 };
@@ -24,7 +29,7 @@ const skillVersionSchema = z
   .trim()
   .min(1)
   .max(64)
-  .refine((value) => semver.parse(value)?.raw === value, 'version must be valid SemVer');
+  .refine((value) => semver.valid(value) === value, 'version must be valid SemVer');
 
 const checksumSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const reasonSchema = boundedSafeText(2000);
@@ -96,6 +101,7 @@ export const skillValidationIssueCodeSchema = z.enum([
   'dependency_cycle',
   'manifest_invalid',
   'permissions_invalid',
+  'secret_material_detected',
   'unknown_skill_dependency',
   'unknown_tool_dependency',
   'version_conflict',
@@ -120,6 +126,7 @@ export const skillValidationResultSchema = z
 
 export const skillIdentityDraftSchema = z
   .object({
+    allowBuiltinOverride: z.boolean(),
     currentVersionId: z.string().min(1).nullable(),
     description: boundedSafeText(4000).nullable(),
     displayName: boundedSafeText(200),
@@ -145,6 +152,10 @@ export const immutableSkillVersionSchema = z
     validation: skillValidationResultSchema.nullable(),
     version: skillVersionSchema,
   })
+  .strict();
+
+export const skillVersionSummarySchema = immutableSkillVersionSchema
+  .omit({ content: true, manifest: true })
   .strict();
 
 export const adminSkillListInputSchema = z
@@ -173,8 +184,8 @@ export const adminSkillGetOutputSchema = z
     baseRevision: revisionSchema,
     draft: skillIdentityDraftSchema,
     draftToken: draftTokenSchema,
-    latestVersion: immutableSkillVersionSchema.nullable(),
-    publishedVersion: immutableSkillVersionSchema.nullable(),
+    latestVersion: skillVersionSummarySchema.nullable(),
+    publishedVersion: skillVersionSummarySchema.nullable(),
   })
   .strict();
 
@@ -188,10 +199,16 @@ export const adminSkillListVersionsInputSchema = z
 
 export const adminSkillListVersionsOutputSchema = z
   .object({
-    items: z.array(immutableSkillVersionSchema),
+    items: z.array(skillVersionSummarySchema),
     nextCursor: cursorSchema.nullable(),
   })
   .strict();
+
+export const adminSkillGetVersionInputSchema = z
+  .object({ skillId: z.string().min(1), versionId: z.string().min(1) })
+  .strict();
+
+export const adminSkillGetVersionOutputSchema = immutableSkillVersionSchema;
 
 const skillIdentityFieldsSchema = z
   .object({
@@ -335,6 +352,7 @@ export const serverSkillResolveInputSchema = z
 /** Server-only execution projection. Never return this schema from a public/admin router. */
 export const serverResolvedSkillSchema = publishedSkillSchema
   .extend({
+    allowBuiltinOverride: z.boolean(),
     content: z.string().min(1).max(1_048_576),
     contentRef: z.string().max(2000).nullable(),
     manifest: skillManifestSchema,

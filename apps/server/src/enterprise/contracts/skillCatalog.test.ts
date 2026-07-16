@@ -7,12 +7,15 @@ import {
   adminSkillCreateVersionOutputSchema,
   adminSkillGetDependentsInputSchema,
   adminSkillGetDependentsOutputSchema,
+  adminSkillGetVersionOutputSchema,
   adminSkillListInputSchema,
+  adminSkillListVersionsOutputSchema,
   adminSkillPublicationOutputSchema,
   adminSkillUpdateDraftInputSchema,
   adminSkillValidateOutputSchema,
   publishedSkillCatalogSchema,
   serverResolvedSkillSchema,
+  skillIdentityDraftSchema,
   skillValidationIssueSchema,
 } from './skillCatalog';
 
@@ -88,10 +91,18 @@ describe('Skill catalog contracts', () => {
       content: '# Internal search',
       manifest,
       skillId: 'skill-1',
-      version: '1.2.3-alpha.1+build.5',
+      version: '1.2.3-alpha.1',
     };
     expect(adminSkillCreateVersionInputSchema.safeParse(input).success).toBe(true);
-    for (const version of ['01.2.3', '1.02.3', '1.2.03', '1.2.3-', '1.2.3-alpha..1']) {
+    for (const version of [
+      '01.2.3',
+      '1.02.3',
+      '1.2.03',
+      '1.2.3-',
+      '1.2.3-alpha..1',
+      '1.2.3+build.5',
+      'v1.2.3',
+    ]) {
       expect(adminSkillCreateVersionInputSchema.safeParse({ ...input, version }).success).toBe(
         false,
       );
@@ -121,6 +132,56 @@ describe('Skill catalog contracts', () => {
         version: '1.0.0',
       }).success,
     ).toBe(false);
+  });
+
+  it('rejects credential-bearing and signed URLs embedded anywhere in public-safe text', () => {
+    const base = { displayName: 'Safe skill', reason: 'create reviewed skill', skillKey: 'safe' };
+    for (const patch of [
+      { description: 'Read https://user:password@example.test/docs before use' },
+      { reason: 'Imported from https://example.test/archive?api_key=plain-secret' },
+    ]) {
+      expect(adminSkillCreateInputSchema.safeParse({ ...base, ...patch }).success).toBe(false);
+    }
+    expect(
+      adminSkillCreateVersionInputSchema.safeParse({
+        ...concurrency,
+        checksum: 'b'.repeat(64),
+        content: '# Internal search',
+        manifest: {
+          ...manifest,
+          localizedDescriptions: {
+            'zh-CN': '参考 https://example.test/file?X-Amz-Signature=plain-signature',
+          },
+        },
+        skillId: 'skill-1',
+        version: '1.0.0',
+      }).success,
+    ).toBe(false);
+  });
+
+  it('persists builtin override intent in admin/server projections but hides it publicly', () => {
+    expect(
+      adminSkillCreateInputSchema.parse({
+        displayName: 'Reviewed override',
+        reason: 'explicit builtin override review',
+        skillKey: 'builtin.search',
+      }).allowBuiltinOverride,
+    ).toBe(false);
+    expect(
+      skillIdentityDraftSchema.safeParse({
+        allowBuiltinOverride: true,
+        currentVersionId: null,
+        description: null,
+        displayName: 'Reviewed override',
+        distribution: 'optional',
+        enabled: false,
+        id: 'skill-1',
+        revision: 0,
+        skillKey: 'builtin.search',
+        source: 'uploaded',
+        status: 'draft',
+      }).success,
+    ).toBe(true);
   });
 
   it('strictly models bounded permissions and the permissions_invalid validation code', () => {
@@ -216,6 +277,14 @@ describe('Skill catalog contracts', () => {
       version: '1.0.0',
     };
     expect(adminSkillCreateVersionOutputSchema.safeParse(version).success).toBe(true);
+    expect(adminSkillGetVersionOutputSchema.safeParse(version).success).toBe(true);
+    const { content: _content, manifest: _manifest, ...summary } = version;
+    expect(
+      adminSkillListVersionsOutputSchema.safeParse({ items: [summary], nextCursor: null }).success,
+    ).toBe(true);
+    expect(
+      adminSkillListVersionsOutputSchema.safeParse({ items: [version], nextCursor: null }).success,
+    ).toBe(false);
     expect(
       adminSkillCreateVersionOutputSchema.safeParse({ ...version, contentRef: '/private/path' })
         .success,
@@ -263,8 +332,15 @@ describe('Skill catalog contracts', () => {
       }).success,
     ).toBe(false);
     expect(
+      publishedSkillCatalogSchema.safeParse({
+        revision: 'revision-1',
+        skills: [{ ...published, allowBuiltinOverride: true }],
+      }).success,
+    ).toBe(false);
+    expect(
       serverResolvedSkillSchema.safeParse({
         ...published,
+        allowBuiltinOverride: true,
         content: '# Internal search',
         contentRef: 's3://private/object',
         manifest,
