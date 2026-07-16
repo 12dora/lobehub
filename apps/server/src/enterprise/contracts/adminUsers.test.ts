@@ -99,28 +99,27 @@ describe('adminUsersListOutputSchema', () => {
     expect(ok.items).toHaveLength(1);
   });
 
-  it('rejects secret-like fields if someone adds them to items (strict object fails extra via parse of known shape only)', () => {
-    // Zod object strips unknown keys by default; ensure password is not retained.
-    const parsed = adminUsersListOutputSchema.parse({
-      items: [
-        {
-          avatar: null,
-          createdAt: new Date(),
-          email: null,
-          fullName: null,
-          id: 'u1',
-          lastActiveAt: null,
-          password: 'secret',
-          roles: [],
-          status: 'active',
-          token: 'tok',
-          username: null,
-        } as never,
-      ],
-      nextCursor: null,
-    });
-    expect(parsed.items[0]).not.toHaveProperty('password');
-    expect(parsed.items[0]).not.toHaveProperty('token');
+  it('strict list output rejects secret-like fields (password/token)', () => {
+    expect(() =>
+      adminUsersListOutputSchema.parse({
+        items: [
+          {
+            avatar: null,
+            createdAt: new Date(),
+            email: null,
+            fullName: null,
+            id: 'u1',
+            lastActiveAt: null,
+            password: 'secret',
+            roles: [],
+            status: 'active',
+            token: 'tok',
+            username: null,
+          } as never,
+        ],
+        nextCursor: null,
+      }),
+    ).toThrow(/password|token|Unrecognized/);
   });
 });
 

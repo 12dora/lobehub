@@ -5,14 +5,21 @@ import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { authedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 
+import {
+  adminUsersReplaceGlobalRolesInputSchema,
+  adminUsersReplaceGlobalRolesOutputSchema,
+} from '../contracts/adminUsers';
+import { withActiveUser } from '../guards/activeUser';
 import { throwEnterpriseError } from '../guards/enterpriseErrors';
 import { withAnyPlatformPermission, withPlatformPermission } from '../guards/platformPermission';
+import { assertRecentReauth } from '../guards/reauth';
+import { AdminUserNotFoundError, AdminUserService } from '../services/adminUserService';
 import { EasyauthSyncService } from '../services/easyauthSync';
 import { PlatformAuditService } from '../services/platformAudit';
 import { LastSuperAdminError, PlatformRbacService } from '../services/platformRbac';
 import { adminUsersRouter } from './admin/users';
 
-const adminBase = authedProcedure.use(serverDatabase);
+const adminBase = authedProcedure.use(serverDatabase).use(withActiveUser());
 
 export const adminAuthRouter = router({
   /**
@@ -58,29 +65,48 @@ export const adminRolesRouter = router({
       };
     }),
 
+  /**
+   * Compatibility alias → M04 AdminUserService.replaceGlobalRoles.
+   * Same fixed roles, reauth, audit, super rules, last-super as admin.users.replaceGlobalRoles.
+   */
   replaceUserGlobalRoles: adminBase
     .use(withPlatformPermission(PLATFORM_PERMISSIONS.ROLE_UPDATE))
-    .input(
-      z.object({
-        reason: z.string().min(1),
-        roleNames: z.array(z.string().min(1)),
-        userId: z.string().min(1),
-      }),
-    )
+    .input(adminUsersReplaceGlobalRolesInputSchema)
+    .output(adminUsersReplaceGlobalRolesOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      const service = new PlatformRbacService(ctx.serverDB);
       try {
-        return await service.replaceUserGlobalRoles({
+        assertRecentReauth({
+          authenticatedAt: ctx.authenticatedAt,
+          authMethod: ctx.authMethod,
+        });
+      } catch (error) {
+        const service = new AdminUserService(ctx.serverDB);
+        await service.recordReauthDenied({
+          action: 'admin.roles.replaceUserGlobalRoles',
           actorUserId: ctx.userId!,
           reason: input.reason,
-          roleNames: input.roleNames,
-          targetUserId: input.userId,
+          targetId: input.userId,
+        });
+        throw error;
+      }
+
+      const service = new AdminUserService(ctx.serverDB);
+      try {
+        return await service.replaceGlobalRoles({
+          actorUserId: ctx.userId!,
+          input,
         });
       } catch (error) {
         if (error instanceof LastSuperAdminError) {
           throwEnterpriseError({
             code: PLATFORM_ERROR_CODES.PLATFORM_LAST_SUPER_ADMIN,
             httpCode: 'PRECONDITION_FAILED',
+          });
+        }
+        if (error instanceof AdminUserNotFoundError) {
+          throwEnterpriseError({
+            code: PLATFORM_ERROR_CODES.PLATFORM_NOT_FOUND,
+            httpCode: 'NOT_FOUND',
           });
         }
         if (
@@ -90,6 +116,15 @@ export const adminRolesRouter = router({
           throwEnterpriseError({
             code: PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED,
             httpCode: 'FORBIDDEN',
+          });
+        }
+        if (
+          error instanceof Error &&
+          error.message === PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT
+        ) {
+          throwEnterpriseError({
+            code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
+            httpCode: 'BAD_REQUEST',
           });
         }
         throw error;
