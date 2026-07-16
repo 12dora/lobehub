@@ -1,3 +1,4 @@
+export { isPlatformAdminBootEnabled } from './boot/isPlatformAdminBootEnabled';
 export { isKnownEnterpriseErrorMessage, mapEnterpriseError } from './errors/mapEnterpriseError';
 export * from './features/admin';
 export {
@@ -34,7 +35,6 @@ export {
   createAdminRouteTree,
   EnterpriseDesktopRoutesWithoutMainLayout,
   getEnterpriseDesktopRoutesWithoutMainLayout,
-  resolveEnterpriseDesktopRoutes,
 } from './routes';
 export {
   type AdminAccessSnapshot,

@@ -1,12 +1,16 @@
+import { matchPath } from 'react-router';
+
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 
 /** i18n keys used by the admin nav catalog (`admin` namespace). */
 export type AdminNavLabelKey =
   | 'nav.overview'
   | 'nav.users'
+  | 'nav.userDetail'
   | 'nav.settings'
   | 'nav.ai'
   | 'nav.aiProviders'
+  | 'nav.aiProviderDetail'
   | 'nav.aiModels'
   | 'nav.skills'
   | 'nav.connectors'
@@ -29,8 +33,8 @@ export interface AdminNavItem {
   /** i18n key under the `admin` namespace. */
   labelKey: AdminNavLabelKey;
   /**
-   * Absolute path under `/admin` (e.g. `/admin/users`).
-   * Nested children use full paths for Link targets.
+   * Absolute path pattern under `/admin` (e.g. `/admin/users` or `/admin/users/:id`).
+   * Use React Router path patterns; matching uses `matchPath` (most specific wins).
    */
   path: string;
   /**
@@ -62,6 +66,14 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
     requiredPermissions: [PLATFORM_PERMISSIONS.USER_READ],
   },
   {
+    hideFromNav: true,
+    id: 'users-detail',
+    labelKey: 'nav.userDetail',
+    path: '/admin/users/:id',
+    placeholder: true,
+    requiredPermissions: [PLATFORM_PERMISSIONS.USER_READ],
+  },
+  {
     id: 'settings',
     labelKey: 'nav.settings',
     path: '/admin/settings',
@@ -76,6 +88,15 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
         path: '/admin/ai/providers',
         placeholder: true,
         requiredPermissions: [PLATFORM_PERMISSIONS.AI_PROVIDER_READ],
+      },
+      {
+        hideFromNav: true,
+        id: 'ai-provider-detail',
+        labelKey: 'nav.aiProviderDetail',
+        path: '/admin/ai/providers/:id',
+        placeholder: true,
+        // Edit surface requires update (list/03 provider 编辑)
+        requiredPermissions: [PLATFORM_PERMISSIONS.AI_PROVIDER_UPDATE],
       },
       {
         id: 'ai-models',
@@ -151,18 +172,35 @@ const flattenNav = (items: readonly AdminNavItem[]): AdminNavItem[] => {
   return out;
 };
 
-/** Flat catalog of every registered admin path (including nested). */
+/** Flat catalog of every registered admin path (including nested + hidden details). */
 export const ADMIN_NAV_FLAT: readonly AdminNavItem[] = flattenNav(ADMIN_NAV_ITEMS);
 
+/** Specificity score: more segments + static (non-param) segments rank higher. */
+const pathSpecificity = (pattern: string): number => {
+  const parts = pattern.split('/').filter(Boolean);
+  let score = parts.length * 100;
+  for (const part of parts) {
+    if (!part.startsWith(':')) score += 10;
+  }
+  return score;
+};
+
+/**
+ * Resolve the catalog entry for a pathname using React Router `matchPath`.
+ * Most-specific pattern wins (static beats param; longer beats shorter).
+ * Never uses unsafe string-prefix matching alone.
+ */
 export const findAdminNavItemByPath = (pathname: string): AdminNavItem | undefined => {
   const normalized = pathname.replace(/\/+$/, '') || '/admin';
-  // Prefer longest path match so /admin/ai/providers wins over /admin/ai
-  const sorted = [...ADMIN_NAV_FLAT].sort((a, b) => b.path.length - a.path.length);
-  return sorted.find(
-    (item) =>
-      normalized === item.path ||
-      (item.path !== '/admin' && normalized.startsWith(`${item.path}/`)),
+
+  const matches = ADMIN_NAV_FLAT.filter((item) =>
+    Boolean(matchPath({ end: true, path: item.path }, normalized)),
   );
+
+  if (matches.length === 0) return undefined;
+
+  matches.sort((a, b) => pathSpecificity(b.path) - pathSpecificity(a.path));
+  return matches[0];
 };
 
 export const hasAllPermissions = (
@@ -177,6 +215,7 @@ export const hasAllPermissions = (
 /**
  * Filter nav tree by granted permissions.
  * Parent groups without a direct permission stay when any child is visible.
+ * Hidden detail routes are never shown in the menu.
  */
 export const filterAdminNavByPermissions = (
   items: readonly AdminNavItem[],
@@ -200,7 +239,6 @@ export const filterAdminNavByPermissions = (
       } else if (selfAllowed && item.requiredPermissions.length > 0) {
         result.push({ ...item, children: [] });
       }
-      // Parent with empty requiredPermissions and no visible children is omitted
       continue;
     }
 
@@ -219,7 +257,7 @@ export const canAccessAdminPath = (pathname: string, granted: readonly string[])
   return hasAllPermissions(granted, item.requiredPermissions);
 };
 
-/** Breadcrumb chain from overview to the current path. */
+/** Breadcrumb chain from overview to the current path (exact + ancestor patterns). */
 export const getAdminBreadcrumbs = (pathname: string): AdminNavItem[] => {
   const normalized = pathname.replace(/\/+$/, '') || '/admin';
   const crumbs: AdminNavItem[] = [];
@@ -229,14 +267,17 @@ export const getAdminBreadcrumbs = (pathname: string): AdminNavItem[] => {
 
   if (normalized === '/admin') return crumbs;
 
-  // Collect matching ancestors by path prefix, longest last
-  const matches = ADMIN_NAV_FLAT.filter(
-    (item) =>
-      item.path !== '/admin' &&
-      (normalized === item.path || normalized.startsWith(`${item.path}/`)),
-  ).sort((a, b) => a.path.length - b.path.length);
+  // Ancestors: patterns that match as prefix (end:false) excluding pure overview
+  const ancestors = ADMIN_NAV_FLAT.filter((item) => {
+    if (item.path === '/admin') return false;
+    // Skip detail-only crumbs that match the full path; add them once at end via exact match
+    if (item.path.includes(':')) {
+      return Boolean(matchPath({ end: true, path: item.path }, normalized));
+    }
+    return Boolean(matchPath({ end: false, path: item.path }, normalized));
+  }).sort((a, b) => pathSpecificity(a.path) - pathSpecificity(b.path));
 
-  for (const match of matches) {
+  for (const match of ancestors) {
     if (!crumbs.some((c) => c.id === match.id)) crumbs.push(match);
   }
 

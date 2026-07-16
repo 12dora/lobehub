@@ -4,8 +4,15 @@ import { Empty, Flexbox } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import type { TableColumnsType, TableProps } from 'antd';
 import { Table } from 'antd';
+import type {
+  FilterValue,
+  SorterResult,
+  TableCurrentDataSource,
+  TablePaginationConfig,
+  TableRowSelection,
+} from 'antd/es/table/interface';
 import { createStaticStyles, cssVar, cx } from 'antd-style';
-import { memo, type ReactNode } from 'react';
+import { memo, type ReactNode, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import NeuralNetworkLoading from '@/components/NeuralNetworkLoading';
@@ -56,21 +63,66 @@ const styles = createStaticStyles(({ css }) => ({
   `,
 }));
 
+/** Server-driven pagination state for large lists (10k+). */
+export interface AdminTablePagination {
+  current: number;
+  pageSize: number;
+  pageSizeOptions?: string[];
+  showSizeChanger?: boolean;
+  total: number;
+}
+
+export type AdminTableSortOrder = 'ascend' | 'descend' | null;
+
+export interface AdminTableSort {
+  field?: string | number;
+  order?: AdminTableSortOrder;
+}
+
+export interface AdminTableChangeMeta {
+  filters: Record<string, FilterValue | null>;
+  pagination: AdminTablePagination | false;
+  sorter: AdminTableSort | AdminTableSort[];
+}
+
 export interface DataTableProps<T extends object = Record<string, unknown>> {
   columns: TableColumnsType<T>;
   dataSource?: T[];
   emptyDescription?: ReactNode;
   error?: boolean;
   loading?: boolean;
+  /** Unified change callback (pagination / sort / filter) for server-driven lists. */
+  onChange?: (meta: AdminTableChangeMeta) => void;
+  onPaginationChange?: (page: number, pageSize: number) => void;
   onRetry?: () => void;
-  /** Optional pagination; omit for client-only short lists. */
-  pagination?: TableProps<T>['pagination'];
+  /**
+   * Controlled server pagination. Pass `false` for short client lists.
+   * When an object is provided, Table stays controlled (no local page state).
+   */
+  pagination?: false | AdminTablePagination;
   rowKey: TableProps<T>['rowKey'];
+  rowSelection?: TableRowSelection<T>;
+  /**
+   * Scroll / virtualization for large datasets.
+   * Prefer `scroll.y` + `virtual` for 10k-scale server pages.
+   */
+  scroll?: TableProps<T>['scroll'];
+  /** Optional whitelist pass-through for advanced Table needs. */
+  size?: TableProps<T>['size'];
+  virtual?: boolean;
 }
+
+const toAdminPagination = (
+  pagination: false | AdminTablePagination | undefined,
+): false | AdminTablePagination => {
+  if (pagination === false || pagination === undefined) return false;
+  return pagination;
+};
 
 /**
  * Admin list table with explicit loading / empty / error states.
- * Uses antd Table (no base-ui equivalent) + project loaders / Empty.
+ * Error wins over empty. Supports controlled server pagination, sort/filter
+ * propagation, row selection, and scroll/virtual for large lists.
  */
 function DataTableInner<T extends object>({
   columns,
@@ -81,8 +133,76 @@ function DataTableInner<T extends object>({
   onRetry,
   rowKey,
   pagination = false,
+  onPaginationChange,
+  onChange,
+  rowSelection,
+  scroll,
+  virtual,
+  size = 'middle',
 }: DataTableProps<T>) {
   const { t } = useTranslation('admin');
+
+  const tablePagination = useMemo((): TablePaginationConfig | false => {
+    const p = toAdminPagination(pagination);
+    if (!p) return false;
+    return {
+      current: p.current,
+      pageSize: p.pageSize,
+      pageSizeOptions: p.pageSizeOptions ?? ['20', '50', '100'],
+      showSizeChanger: p.showSizeChanger ?? true,
+      total: p.total,
+      onChange: (page, pageSize) => {
+        onPaginationChange?.(page, pageSize);
+      },
+    };
+  }, [pagination, onPaginationChange]);
+
+  const handleTableChange: TableProps<T>['onChange'] = (
+    pag,
+    filters,
+    sorter,
+    _extra: TableCurrentDataSource<T>,
+  ) => {
+    const currentPagination = toAdminPagination(pagination);
+    const nextPagination: AdminTablePagination | false =
+      currentPagination === false
+        ? false
+        : {
+            ...currentPagination,
+            current: pag.current ?? currentPagination.current,
+            pageSize: pag.pageSize ?? currentPagination.pageSize,
+          };
+
+    if (
+      nextPagination !== false &&
+      currentPagination !== false &&
+      onPaginationChange &&
+      (pag.current !== currentPagination.current || pag.pageSize !== currentPagination.pageSize)
+    ) {
+      onPaginationChange(nextPagination.current, nextPagination.pageSize);
+    }
+
+    const normalizeSorter = (
+      value: SorterResult<T> | SorterResult<T>[],
+    ): AdminTableSort | AdminTableSort[] => {
+      if (Array.isArray(value)) {
+        return value.map((s) => ({
+          field: s.field as string | number | undefined,
+          order: (s.order ?? null) as AdminTableSortOrder,
+        }));
+      }
+      return {
+        field: value.field as string | number | undefined,
+        order: (value.order ?? null) as AdminTableSortOrder,
+      };
+    };
+
+    onChange?.({
+      filters: filters as Record<string, FilterValue | null>,
+      pagination: nextPagination,
+      sorter: normalizeSorter(sorter),
+    });
+  };
 
   if (loading) {
     return (
@@ -93,6 +213,7 @@ function DataTableInner<T extends object>({
     );
   }
 
+  // Error before empty — honest failure surface even if dataSource is empty
   if (error) {
     return (
       <div className={cx(styles.root, styles.error)} role="alert">
@@ -119,9 +240,13 @@ function DataTableInner<T extends object>({
       <Table<T>
         columns={columns}
         dataSource={dataSource}
-        pagination={pagination}
+        pagination={tablePagination}
         rowKey={rowKey}
-        size="middle"
+        rowSelection={rowSelection}
+        scroll={scroll}
+        size={size}
+        virtual={virtual}
+        onChange={handleTableChange}
       />
     </div>
   );
@@ -132,5 +257,4 @@ DataTable.displayName = 'AdminDataTable';
 
 export default DataTable;
 
-// re-export Flexbox for layout composition in callers
 export { Flexbox };
