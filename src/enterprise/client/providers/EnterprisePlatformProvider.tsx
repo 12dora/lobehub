@@ -39,6 +39,8 @@ export interface EnterprisePlatformProviderProps {
    * Flag-off server responses still match DISABLED_* snapshots.
    */
   disableFetch?: boolean;
+  fetchCapabilities?: typeof fetchPlatformCapabilities;
+  fetchPublicSnapshot?: typeof fetchPlatformPublicSnapshot;
 }
 
 /**
@@ -53,6 +55,8 @@ export interface EnterprisePlatformProviderProps {
 export default function EnterprisePlatformProvider({
   children,
   disableFetch = false,
+  fetchCapabilities = fetchPlatformCapabilities,
+  fetchPublicSnapshot = fetchPlatformPublicSnapshot,
 }: EnterprisePlatformProviderProps) {
   const serverConfigInit = useServerConfigStore((s) => s.serverConfigInit);
   const enterpriseEnabled = useServerConfigStore(
@@ -77,8 +81,8 @@ export default function EnterprisePlatformProvider({
     setError(null);
     try {
       const [nextCapabilities, nextPublic] = await Promise.all([
-        fetchPlatformCapabilities(),
-        fetchPlatformPublicSnapshot(),
+        fetchCapabilities(),
+        fetchPublicSnapshot(),
       ]);
       setCapabilities(nextCapabilities);
       setPublicSnapshot(nextPublic);
@@ -88,7 +92,7 @@ export default function EnterprisePlatformProvider({
     } finally {
       setLoading(false);
     }
-  }, [disableFetch, enterpriseEnabled]);
+  }, [disableFetch, enterpriseEnabled, fetchCapabilities, fetchPublicSnapshot]);
 
   useEffect(() => {
     if (disableFetch) return;

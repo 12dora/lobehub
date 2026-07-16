@@ -3,8 +3,14 @@
  */
 import { act, renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type * as ZodModule from 'zod';
 
 import { useCreateMenuItems } from './useCreateMenuItems';
+
+vi.mock('zod', async (importOriginal) => {
+  const actual = await importOriginal<typeof ZodModule>();
+  return { ...actual, z: actual.z ?? actual.default };
+});
 
 const createAgentMock = vi.hoisted(() => vi.fn().mockResolvedValue({ agentId: 'agent-codex' }));
 const refreshAgentListMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
@@ -86,6 +92,7 @@ vi.mock('@/components/ChatGroupWizard/templates', () => ({
 
 vi.mock('@/features/ManagedResources', () => ({
   useManagedResource: () => ({
+    blocked: managedAgentsRef.current,
     error: null,
     loading: false,
     managed: managedAgentsRef.current,

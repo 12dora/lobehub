@@ -2,10 +2,17 @@
  * @vitest-environment happy-dom
  */
 import { fireEvent, render, screen } from '@testing-library/react';
+import type * as LucideReact from 'lucide-react';
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type * as ZodModule from 'zod';
 
 import Nav from './Nav';
+
+vi.mock('zod', async (importOriginal) => {
+  const actual = await importOriginal<typeof ZodModule>();
+  return { ...actual, z: actual.z ?? actual.default };
+});
 
 const mutateMock = vi.hoisted(() => vi.fn());
 const openNewTopicOrSaveTopicMock = vi.hoisted(() => vi.fn());
@@ -17,6 +24,7 @@ const usePathnameMock = vi.hoisted(() => vi.fn());
 const permissionMock = vi.hoisted(() => ({
   create_content: true,
 }));
+const managedResourceMock = vi.hoisted(() => ({ blocked: false }));
 
 vi.mock('@lobehub/ui', () => ({
   Flexbox: ({ children, ...props }: { children?: ReactNode; [key: string]: unknown }) => (
@@ -28,12 +36,16 @@ vi.mock('@lobehub/ui/icons', () => ({
   BotPromptIcon: () => null,
 }));
 
-vi.mock('lucide-react', () => ({
-  MessageSquarePlusIcon: () => null,
-  MessagesSquareIcon: () => null,
-  RadioTowerIcon: () => null,
-  SearchIcon: () => null,
-}));
+vi.mock('lucide-react', async (importOriginal) => {
+  const actual = await importOriginal<typeof LucideReact>();
+  return {
+    ...actual,
+    MessageSquarePlusIcon: () => null,
+    MessagesSquareIcon: () => null,
+    RadioTowerIcon: () => null,
+    SearchIcon: () => null,
+  };
+});
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -67,6 +79,10 @@ vi.mock('@/features/NavPanel/components/NavItem', () => ({
       {title}
     </button>
   ),
+}));
+
+vi.mock('@/features/ManagedResources', () => ({
+  useManagedResource: () => managedResourceMock,
 }));
 
 vi.mock('@/hooks/useQueryRoute', () => ({
@@ -138,6 +154,7 @@ describe('Agent sidebar header nav', () => {
     useParamsMock.mockReset();
     usePathnameMock.mockReset();
     permissionMock.create_content = true;
+    managedResourceMock.blocked = false;
 
     useParamsMock.mockReturnValue({ aid: 'agt_eH4zL98zBx5u', topicId: 'tpc_2FCHvjS7d4CA' });
   });
@@ -179,5 +196,26 @@ describe('Agent sidebar header nav', () => {
 
     expect(pushMock).not.toHaveBeenCalled();
     expect(mutateMock).not.toHaveBeenCalled();
+  });
+
+  it('hides Profile and Channel configuration while agents are managed or capability is unavailable', () => {
+    managedResourceMock.blocked = true;
+    usePathnameMock.mockReturnValue('/agent/agt_eH4zL98zBx5u');
+
+    render(<Nav />);
+
+    expect(screen.queryByRole('button', { name: 'tab.profile' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'tab.integration' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'actions.addNewTopic' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'management.sidebarEntry' })).toBeInTheDocument();
+  });
+
+  it('keeps Profile and Channel navigation when agent configuration is unmanaged', () => {
+    usePathnameMock.mockReturnValue('/agent/agt_eH4zL98zBx5u');
+
+    render(<Nav />);
+
+    expect(screen.getByRole('button', { name: 'tab.profile' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'tab.integration' })).toBeInTheDocument();
   });
 });

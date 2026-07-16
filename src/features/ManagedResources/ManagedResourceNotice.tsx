@@ -9,6 +9,8 @@ import { useNavigate } from 'react-router';
 
 import type { ManagedResourceKind } from '@/const/platform/managedResources';
 
+import { getManagedResourceBrowseRoute } from './managedResourcePresentation';
+
 const styles = createStaticStyles(({ css }) => ({
   root: css`
     flex: 1;
@@ -39,8 +41,8 @@ export const ManagedResourceNotice = memo<ManagedResourceNoticeProps>(({ resourc
     return (
       <Alert
         showIcon
-        message={t('managedResources.inline.title', { resource: resourceName })}
         description={t('managedResources.inline.connectorDesc')}
+        message={t('managedResources.inline.title', { resource: resourceName })}
         type="info"
       />
     );
@@ -62,7 +64,7 @@ export const ManagedResourceNotice = memo<ManagedResourceNoticeProps>(({ resourc
           <Button type="primary" onClick={() => navigate('/')}>
             {t('managedResources.notice.back')}
           </Button>
-          <Button onClick={() => navigate('/community')}>
+          <Button onClick={() => navigate(getManagedResourceBrowseRoute(resource))}>
             {t('managedResources.notice.browse')}
           </Button>
         </Flexbox>

@@ -67,6 +67,7 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
 
 interface SkillDetailProps {
   identifier: string;
+  managed?: boolean;
   onDelete?: () => void;
   type: ToolDetailType;
 }
@@ -144,7 +145,7 @@ LobehubConnectorAction.displayName = 'LobehubConnectorAction';
  * - 'builtin-skill': renders BuiltinSkill description panel (Artifacts, Task, etc.)
  * - 'builtin'/'plugin'/'mcp-connector': syncs connector entry, renders permission editor
  */
-const SkillDetail = memo<SkillDetailProps>(({ identifier, type, onDelete }) => {
+const SkillDetail = memo<SkillDetailProps>(({ identifier, managed = false, type, onDelete }) => {
   const { t } = useTranslation('plugin');
   const { t: ts } = useTranslation('setting');
   const [syncing, setSyncing] = useState(false);
@@ -378,6 +379,7 @@ const SkillDetail = memo<SkillDetailProps>(({ identifier, type, onDelete }) => {
     <ConnectorDetail
       connectorId={connector.id}
       lifecycleActions={renderLobehubConnectorAction(() => setNoManifest(true))}
+      managed={managed}
       onDelete={onDelete}
     />
   );

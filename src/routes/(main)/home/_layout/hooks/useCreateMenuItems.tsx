@@ -58,7 +58,7 @@ export const useCreateMenuItems = () => {
   const activeWorkspaceId = useActiveWorkspaceId();
   const groupTemplates = useGroupTemplates();
   const { allowed: canCreate } = usePermission('create_content');
-  const { managed: agentsManaged } = useManagedResource('agents');
+  const { blocked: agentCreationBlocked } = useManagedResource('agents');
 
   const [storeCreateAgent] = useAgentStore((s) => [s.createAgent]);
   const [addGroup, refreshAgentList, switchToGroup] = useHomeStore((s) => [
@@ -117,7 +117,7 @@ export const useCreateMenuItems = () => {
    */
   const createAgent = useCallback(
     async (options?: CreateAgentOptions & { prompt?: string }) => {
-      if (!canCreate || agentsManaged) return;
+      if (!canCreate || agentCreationBlocked) return;
 
       const config = options?.prompt ? { systemRole: options.prompt } : undefined;
       await mutateAgent({
@@ -127,7 +127,7 @@ export const useCreateMenuItems = () => {
       });
       options?.onSuccess?.();
     },
-    [agentsManaged, canCreate, mutateAgent],
+    [agentCreationBlocked, canCreate, mutateAgent],
   );
 
   /**
@@ -136,7 +136,7 @@ export const useCreateMenuItems = () => {
    */
   const createGroupFromTemplate = useCallback(
     async (templateId: string, selectedMemberTitles?: string[]) => {
-      if (!canCreate || agentsManaged) return false;
+      if (!canCreate || agentCreationBlocked) return false;
 
       setIsCreatingGroup(true);
       try {
@@ -184,7 +184,7 @@ export const useCreateMenuItems = () => {
       }
     },
     [
-      agentsManaged,
+      agentCreationBlocked,
       canCreate,
       groupTemplates,
       refreshAgentList,
@@ -247,7 +247,7 @@ export const useCreateMenuItems = () => {
    */
   const createAgentMenuItem = useCallback(
     (options?: CreateAgentOptions): ItemType | null => {
-      if (agentsManaged) return null;
+      if (agentCreationBlocked) return null;
       return {
         icon: <Icon icon={BotIcon} />,
         disabled: !canCreate,
@@ -270,14 +270,14 @@ export const useCreateMenuItems = () => {
         },
       };
     },
-    [agentsManaged, canCreate, t, createAgent, openCreateModal],
+    [agentCreationBlocked, canCreate, t, createAgent, openCreateModal],
   );
 
   /**
    * Add market agent menu item
    */
   const createMarketAgentMenuItem = useCallback((): ItemType | null => {
-    if (agentsManaged) return null;
+    if (agentCreationBlocked) return null;
     return {
       icon: <Icon icon={Store} />,
       disabled: !canCreate,
@@ -290,14 +290,14 @@ export const useCreateMenuItems = () => {
         navigate('/community/agent');
       },
     };
-  }, [agentsManaged, canCreate, navigate, t]);
+  }, [agentCreationBlocked, canCreate, navigate, t]);
 
   /**
    * Create heterogeneous agent menu items (Desktop only)
    */
   const createHeterogeneousAgentMenuItems = useCallback(
     (options?: CreateAgentOptions): ItemType[] => {
-      if (!isDesktop || agentsManaged) return [];
+      if (!isDesktop || agentCreationBlocked) return [];
 
       return HETEROGENEOUS_AGENT_CLIENT_CONFIGS.map((definition) => {
         const AgentIcon = definition.icon;
@@ -316,7 +316,7 @@ export const useCreateMenuItems = () => {
         };
       });
     },
-    [agentsManaged, canCreate, t, createHeterogeneousAgent],
+    [agentCreationBlocked, canCreate, t, createHeterogeneousAgent],
   );
 
   /**
@@ -325,7 +325,7 @@ export const useCreateMenuItems = () => {
    */
   const createPlatformAgentMenuItem = useCallback(
     (options?: CreateAgentOptions): ItemType => {
-      if (!enablePlatformAgent || agentsManaged) return null;
+      if (!enablePlatformAgent || agentCreationBlocked) return null;
       return {
         icon: <Icon icon={MonitorSmartphone} />,
         key: 'newPlatformAgent',
@@ -340,7 +340,7 @@ export const useCreateMenuItems = () => {
         },
       };
     },
-    [agentsManaged, t, agentModal, enablePlatformAgent],
+    [agentCreationBlocked, t, agentModal, enablePlatformAgent],
   );
 
   /**

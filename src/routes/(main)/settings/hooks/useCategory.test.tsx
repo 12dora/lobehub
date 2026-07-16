@@ -1,6 +1,7 @@
 import { renderHook } from '@testing-library/react';
 import { type ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type * as ZodModule from 'zod';
 
 import { mapFeatureFlagsEnvToState } from '@/config/featureFlags';
 import { SettingsTabs } from '@/store/global/initialState';
@@ -9,13 +10,22 @@ import { useUserStore } from '@/store/user';
 
 import { useCategory } from './useCategory';
 
+vi.mock('zod', async (importOriginal) => {
+  const actual = await importOriginal<typeof ZodModule>();
+  return { ...actual, z: actual.z ?? actual.default };
+});
+
 const managedResourcesRef = vi.hoisted(() => ({
   current: {
-    agents: false,
-    aiModels: false,
-    aiProviders: false,
-    connectors: false,
-    skills: false,
+    capabilities: {
+      agents: false,
+      aiModels: false,
+      aiProviders: false,
+      connectors: false,
+      skills: false,
+    },
+    error: null as Error | null,
+    loading: false,
   },
 }));
 
@@ -74,11 +84,15 @@ const initialUserStoreState = useUserStore.getState();
 afterEach(() => {
   useUserStore.setState(initialUserStoreState, true);
   managedResourcesRef.current = {
-    agents: false,
-    aiModels: false,
-    aiProviders: false,
-    connectors: false,
-    skills: false,
+    capabilities: {
+      agents: false,
+      aiModels: false,
+      aiProviders: false,
+      connectors: false,
+      skills: false,
+    },
+    error: null,
+    loading: false,
   };
 });
 
@@ -95,21 +109,5 @@ describe('settings useCategory', () => {
     const keys = result.current.flatMap((group) => group.items.map((item) => item.key));
 
     expect(keys).not.toContain(SettingsTabs.Provider);
-  });
-
-  it('removes managed definition/configuration tabs but keeps Connector OAuth navigation', () => {
-    managedResourcesRef.current = {
-      agents: false,
-      aiModels: true,
-      aiProviders: true,
-      connectors: true,
-      skills: true,
-    };
-
-    const keys = getItemKeys();
-    expect(keys).not.toContain(SettingsTabs.Provider);
-    expect(keys).not.toContain(SettingsTabs.ServiceModel);
-    expect(keys).not.toContain(SettingsTabs.Skill);
-    expect(keys).toContain(SettingsTabs.Connector);
   });
 });

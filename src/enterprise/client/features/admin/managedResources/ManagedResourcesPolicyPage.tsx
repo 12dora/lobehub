@@ -9,28 +9,30 @@ import { useBlocker } from 'react-router';
 
 import AsyncBoundary from '@/components/AsyncBoundary';
 import Loading from '@/components/Loading/BrandTextLoading';
+import type {
+  ManagedResourceEnforcementMode,
+  ManagedResourceKind,
+} from '@/const/platform/managedResources';
 import { MANAGED_RESOURCE_KINDS } from '@/const/platform/managedResources';
 import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
 import { useEnterprisePlatform } from '@/enterprise/client/providers/EnterprisePlatformProvider';
 import { adminManagedResourcesService } from '@/enterprise/client/services/adminManagedResources';
 import type { AdminManagedResourcesGetOutput } from '@/server/enterprise/contracts/adminManagedResources';
-import type {
-  ManagedResourceEnforcementMode,
-  ManagedResourceKind,
-} from '@/const/platform/managedResources';
 import type { ManagedResourcePolicyMap } from '@/types/platform/managedResources';
 
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
 import RevisionBanner from '../primitives/RevisionBanner';
+import { publishManagedResourcePolicy, saveManagedResourceDraft } from './actions';
 import {
   buildManagedResourceDiff,
   deriveManagedResourcePermissions,
   fingerprintManagedResourcePolicy,
   getUnreadyEnforcedResources,
+  type ManagedResourceRebaseConflict,
+  type ManagedResourceSaveState,
   rebaseManagedResourceDraft,
   resolveManagedResourcePrimaryAction,
-  type ManagedResourceSaveState,
 } from './controller';
 import { useFetchAdminManagedResources } from './hooks/useAdminManagedResources';
 import {
@@ -110,7 +112,7 @@ const MODE_VALUES = ['observe', 'ui-only', 'enforced'] as const;
 
 const ManagedResourcesPolicyPage = memo(() => {
   const { t } = useTranslation('admin');
-  const { permissions } = useAdminAccess();
+  const { authMethod, permissions } = useAdminAccess();
   const platform = useEnterprisePlatform();
   const { canPublish, canUpdate, canView } = deriveManagedResourcePermissions(permissions);
   const { data, error, isLoading, mutate } = useFetchAdminManagedResources(canView);
@@ -122,6 +124,7 @@ const ManagedResourcesPolicyPage = memo(() => {
   const [reason, setReason] = useState('');
   const [reasonError, setReasonError] = useState(false);
   const [conflict, setConflict] = useState(false);
+  const [rebaseConflicts, setRebaseConflicts] = useState<ManagedResourceRebaseConflict[]>([]);
   const [activeBaseRevision, setActiveBaseRevision] = useState(0);
   const [activeDraftToken, setActiveDraftToken] = useState('');
   const hydratedRef = useRef(false);
@@ -186,9 +189,7 @@ const ManagedResourcesPolicyPage = memo(() => {
       setSaveState('dirty');
       setActiveBaseRevision(local.baseRevision);
       setActiveDraftToken(local.draftToken);
-      setConflict(
-        local.baseRevision !== data.baseRevision || local.draftToken !== data.draftToken,
-      );
+      setConflict(local.baseRevision !== data.baseRevision || local.draftToken !== data.draftToken);
       return;
     }
     originalRef.current = data.draft;
@@ -218,9 +219,7 @@ const ManagedResourcesPolicyPage = memo(() => {
     ) => {
       if (!canUpdate || conflict) return;
       setDraft((current) =>
-        current
-          ? { ...current, [resource]: { ...current[resource], ...patch } }
-          : current,
+        current ? { ...current, [resource]: { ...current[resource], ...patch } } : current,
       );
       setDirty(true);
       setSaveState('dirty');
@@ -264,10 +263,13 @@ const ManagedResourcesPolicyPage = memo(() => {
     setSaveState('saving');
     setActionError(null);
     try {
-      const result = await adminManagedResourcesService.saveDraft({
-        draft,
-        expectedDraftToken: activeDraftToken,
-        reason: reason.trim(),
+      const result = await saveManagedResourceDraft({
+        input: {
+          draft,
+          expectedDraftToken: activeDraftToken,
+          reason: reason.trim(),
+        },
+        saveDraft: adminManagedResourcesService.saveDraft,
       });
       clearManagedResourceLocalDraft();
       originalRef.current = draft;
@@ -318,17 +320,21 @@ const ManagedResourcesPolicyPage = memo(() => {
     setSaveState('saving');
     setActionError(null);
     try {
-      await adminManagedResourcesService.publish({
-        expectedDraftToken: activeDraftToken,
-        expectedRevision: activeBaseRevision,
-        reason: reason.trim(),
+      await publishManagedResourcePolicy({
+        authMethod: authMethod ?? null,
+        input: {
+          expectedDraftToken: activeDraftToken,
+          expectedRevision: activeBaseRevision,
+          reason: reason.trim(),
+        },
+        publish: adminManagedResourcesService.publish,
+        refreshCapabilities: platform.refresh,
       });
       clearManagedResourceLocalDraft();
       setSaveState('saved');
       setReason('');
       hydratedRef.current = false;
       await mutate();
-      await platform.refresh();
     } catch (cause) {
       const mapped = mapEnterpriseError(cause);
       if (mapped?.code === 'PLATFORM_REVISION_CONFLICT') {
@@ -345,6 +351,7 @@ const ManagedResourcesPolicyPage = memo(() => {
   }, [
     activeBaseRevision,
     activeDraftToken,
+    authMethod,
     canPublish,
     conflict,
     data,
@@ -365,25 +372,53 @@ const ManagedResourcesPolicyPage = memo(() => {
     try {
       const latest = await mutate();
       if (!latest) throw new Error('LATEST_MANAGED_POLICY_UNAVAILABLE');
-      const merged = rebaseManagedResourceDraft({
+      const result = rebaseManagedResourceDraft({
         latest: latest.draft,
         local: draft,
         original: originalRef.current,
       });
       originalRef.current = latest.draft;
-      setDraft(merged);
+      setDraft(result.draft);
       setActiveBaseRevision(latest.baseRevision);
       setActiveDraftToken(latest.draftToken);
       setDirty(
-        fingerprintManagedResourcePolicy(merged) !==
+        fingerprintManagedResourcePolicy(result.draft) !==
           fingerprintManagedResourcePolicy(latest.draft),
       );
-      setSaveState('dirty');
-      setConflict(false);
+      setRebaseConflicts(result.conflicts);
+      setSaveState(result.conflicts.length > 0 ? 'failed' : 'dirty');
+      setConflict(result.conflicts.length > 0);
+      setActionError(result.conflicts.length > 0 ? t('managedResources.conflict.fields') : null);
     } catch {
       setActionError(t('managedResources.errors.refresh'));
     }
   }, [draft, mutate, t]);
+
+  const resolveRebaseConflicts = useCallback(
+    (resolution: 'latest' | 'local') => {
+      if (!draft || rebaseConflicts.length === 0) return;
+      const next = structuredClone(draft);
+      if (resolution === 'latest') {
+        for (const item of rebaseConflicts) {
+          const resource = next[item.resource];
+          if (item.field === 'managed') resource.managed = item.latestValue as boolean;
+          else resource.enforcementMode = item.latestValue as ManagedResourceEnforcementMode;
+        }
+      }
+      setDraft(next);
+      setDirty(
+        originalRef.current
+          ? fingerprintManagedResourcePolicy(next) !==
+              fingerprintManagedResourcePolicy(originalRef.current)
+          : true,
+      );
+      setRebaseConflicts([]);
+      setConflict(false);
+      setSaveState('dirty');
+      setActionError(null);
+    },
+    [draft, rebaseConflicts],
+  );
 
   const handleDiscard = useCallback(async () => {
     setActionError(null);
@@ -397,6 +432,7 @@ const ManagedResourcesPolicyPage = memo(() => {
       setActiveDraftToken(latest.draftToken);
       setDirty(false);
       setSaveState('idle');
+      setRebaseConflicts([]);
       setConflict(false);
     } catch {
       setActionError(t('managedResources.errors.refresh'));
@@ -408,6 +444,8 @@ const ManagedResourcesPolicyPage = memo(() => {
 
     return (
       <AdminPageTemplate
+        description={t('managedResources.desc')}
+        title={t('managedResources.title')}
         banner={
           <>
             <RevisionBanner
@@ -420,13 +458,28 @@ const ManagedResourcesPolicyPage = memo(() => {
               <Alert
                 showIcon
                 message={t('managedResources.conflict.title')}
-                description={t('managedResources.conflict.desc')}
                 type="warning"
+                description={t(
+                  rebaseConflicts.length > 0
+                    ? 'managedResources.conflict.fields'
+                    : 'managedResources.conflict.desc',
+                )}
                 extra={
                   <Flexbox horizontal gap={8}>
-                    <Button type="primary" onClick={() => void handleRebase()}>
-                      {t('managedResources.conflict.rebase')}
-                    </Button>
+                    {rebaseConflicts.length > 0 ? (
+                      <>
+                        <Button type="primary" onClick={() => resolveRebaseConflicts('local')}>
+                          {t('managedResources.conflict.keepLocal')}
+                        </Button>
+                        <Button onClick={() => resolveRebaseConflicts('latest')}>
+                          {t('managedResources.conflict.useLatest')}
+                        </Button>
+                      </>
+                    ) : (
+                      <Button type="primary" onClick={() => void handleRebase()}>
+                        {t('managedResources.conflict.rebase')}
+                      </Button>
+                    )}
                     <Button onClick={() => void handleDiscard()}>
                       {t('managedResources.conflict.discard')}
                     </Button>
@@ -436,10 +489,10 @@ const ManagedResourcesPolicyPage = memo(() => {
             ) : null}
           </>
         }
-        description={t('managedResources.desc')}
-        title={t('managedResources.title')}
       >
-        {!canUpdate ? <Alert showIcon message={t('managedResources.readOnly')} type="info" /> : null}
+        {!canUpdate ? (
+          <Alert showIcon message={t('managedResources.readOnly')} type="info" />
+        ) : null}
 
         <div className={styles.grid}>
           {MANAGED_RESOURCE_KINDS.map((resource) => {
@@ -469,11 +522,11 @@ const ManagedResourcesPolicyPage = memo(() => {
                   <Text>{t('managedResources.managed')}</Text>
                   <Select
                     disabled={!canUpdate || conflict}
+                    value={item.enforcementMode}
                     options={MODE_VALUES.map((mode) => ({
                       label: t(`managedResources.mode.${mode}` as never),
                       value: mode,
                     }))}
-                    value={item.enforcementMode}
                     onChange={(mode) =>
                       updatePolicy(resource, {
                         enforcementMode: mode as ManagedResourceEnforcementMode,
@@ -508,12 +561,12 @@ const ManagedResourcesPolicyPage = memo(() => {
           {unready.length > 0 ? (
             <Alert
               showIcon
+              type="warning"
               message={t('managedResources.readiness.blocked', {
                 resources: unready
                   .map((resource) => t(`managedResources.resource.${resource}` as never))
                   .join(', '),
               })}
-              type="warning"
             />
           ) : null}
         </Flexbox>
@@ -534,7 +587,9 @@ const ManagedResourcesPolicyPage = memo(() => {
             {reasonError ? (
               <Text type="danger">{t('managedResources.reason.required')}</Text>
             ) : null}
-            <span className={styles.status}>{t(`managedResources.saveState.${saveState}` as never)}</span>
+            <span className={styles.status}>
+              {t(`managedResources.saveState.${saveState}` as never)}
+            </span>
             {actionError ? <Text type="danger">{actionError}</Text> : null}
           </Flexbox>
           {primary === 'save' || primary === 'retry' ? (

@@ -117,6 +117,7 @@ export const ToolSettings = memo<ToolSettingsProps>(({ viewMode, managed = false
           <div className={styles.detail}>
             <SkillDetail
               identifier={selected.identifier}
+              managed={managed}
               type={selected.type}
               onDelete={() => setSelected(null)}
             />
