@@ -104,6 +104,72 @@ export const MANAGED_RESOURCE_MUTATION_REGISTRY = {
     resource: 'agents',
   },
 
+  'agentGroup.acquireGroupLock': {
+    classification: 'allow',
+    reason: 'Edit-lock coordination does not change an agent or group definition.',
+    resource: 'agents',
+  },
+  'agentGroup.addAgentsToGroup': {
+    classification: 'deny',
+    reason: 'Changes agent membership and assignment outside the platform publish flow.',
+    resource: 'agents',
+  },
+  'agentGroup.batchCreateAgentsInGroup': {
+    classification: 'deny',
+    reason: 'Creates virtual agent definitions outside the platform publish flow.',
+    resource: 'agents',
+  },
+  'agentGroup.createGroup': {
+    classification: 'deny',
+    reason: 'Creates a group and supervisor agent outside the platform publish flow.',
+    resource: 'agents',
+  },
+  'agentGroup.createGroupWithMembers': {
+    classification: 'deny',
+    reason: 'Creates group, supervisor and member agent definitions outside platform publishing.',
+    resource: 'agents',
+  },
+  'agentGroup.deleteGroup': {
+    classification: 'deny',
+    reason: 'Deletes a group and associated agent definitions outside platform publishing.',
+    resource: 'agents',
+  },
+  'agentGroup.duplicateGroup': {
+    classification: 'deny',
+    reason: 'Duplicates a group and virtual agent definitions outside platform publishing.',
+    resource: 'agents',
+  },
+  'agentGroup.publishGroupToWorkspace': {
+    classification: 'deny',
+    reason: 'Changes group and agent distribution outside the platform publish flow.',
+    resource: 'agents',
+  },
+  'agentGroup.releaseGroupLock': {
+    classification: 'allow',
+    reason: 'Edit-lock cleanup does not change an agent or group definition.',
+    resource: 'agents',
+  },
+  'agentGroup.removeAgentsFromGroup': {
+    classification: 'deny',
+    reason: 'Changes membership and may delete virtual agent definitions.',
+    resource: 'agents',
+  },
+  'agentGroup.transferGroup': {
+    classification: 'deny',
+    reason: 'Moves a group and its agent assignments between ownership scopes.',
+    resource: 'agents',
+  },
+  'agentGroup.updateAgentInGroup': {
+    classification: 'deny',
+    reason: 'Changes per-group agent role, order or enabled configuration.',
+    resource: 'agents',
+  },
+  'agentGroup.updateGroup': {
+    classification: 'deny',
+    reason: 'Edits a group and supervisor configuration outside platform publishing.',
+    resource: 'agents',
+  },
+
   'agentSkills.create': {
     classification: 'deny',
     reason: 'Creates a user skill outside the platform catalog publish flow.',
@@ -249,13 +315,13 @@ export const MANAGED_RESOURCE_MUTATION_REGISTRY = {
     resource: 'connectors',
   },
   'connector.syncBuiltinTool': {
-    classification: 'allow',
-    reason: 'Materializes derived tool metadata for runtime use of a builtin connector.',
+    classification: 'deny',
+    reason: 'Upserts a complete builtin connector definition outside platform publishing.',
     resource: 'connectors',
   },
   'connector.syncPluginTools': {
-    classification: 'allow',
-    reason: 'Materializes derived tool metadata for runtime use of an installed plugin.',
+    classification: 'deny',
+    reason: 'Upserts a complete plugin connector definition outside platform publishing.',
     resource: 'connectors',
   },
   'connector.syncTools': {
@@ -278,6 +344,49 @@ export const MANAGED_RESOURCE_MUTATION_REGISTRY = {
     classification: 'exempt',
     reason: 'Changes a per-user tool permission choice, which remains available when managed.',
     resource: 'connectors',
+  },
+
+  'composio.createConnection': {
+    classification: 'deny',
+    reason: 'Creates OAuth binding plus a complete connector definition from client metadata.',
+    resource: 'connectors',
+  },
+  'composio.deleteConnection': {
+    classification: 'exempt',
+    reason: 'Disconnects and deletes an owned per-user OAuth binding and its projection.',
+    resource: 'connectors',
+  },
+  'composio.removeComposioPlugin': {
+    classification: 'deny',
+    reason: 'Deletes a connector definition without the narrow remote-binding disconnect contract.',
+    resource: 'connectors',
+  },
+  'composio.updateComposioPlugin': {
+    classification: 'deny',
+    reason: 'Accepts client tool metadata and upserts a complete connector definition.',
+    resource: 'connectors',
+  },
+
+  'home.updateAgentSessionGroupId': {
+    classification: 'deny',
+    reason: 'Changes agent ownership grouping outside the platform publish flow.',
+    resource: 'agents',
+  },
+
+  'oauthDeviceFlow.initiateDeviceCode': {
+    classification: 'exempt',
+    reason: 'Starts a fixed provider per-user OAuth flow without writing provider definition.',
+    resource: 'aiProviders',
+  },
+  'oauthDeviceFlow.pollAuthStatus': {
+    classification: 'deny',
+    reason: 'Writes OAuth credentials into the legacy user Provider configuration.',
+    resource: 'aiProviders',
+  },
+  'oauthDeviceFlow.revokeAuth': {
+    classification: 'deny',
+    reason: 'Mutates OAuth credentials in the legacy user Provider configuration.',
+    resource: 'aiProviders',
   },
 } as const satisfies Record<string, ManagedResourceMutationDefinition>;
 

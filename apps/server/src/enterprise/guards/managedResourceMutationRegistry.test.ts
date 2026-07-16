@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
@@ -9,7 +9,17 @@ import {
   type ManagedResourceMutationProcedure,
 } from './managedResourceMutationRegistry';
 
-const ROUTERS = ['agent', 'agentSkills', 'aiModel', 'aiProvider', 'connector'] as const;
+const ROUTERS = [
+  'agent',
+  'agentGroup',
+  'agentSkills',
+  'aiModel',
+  'aiProvider',
+  'composio',
+  'connector',
+  'home',
+  'oauthDeviceFlow',
+] as const;
 
 const extractMutationNames = (router: string, source: string): string[] => {
   const routerStart = source.indexOf('Router = router({');
@@ -25,7 +35,7 @@ const extractMutationNames = (router: string, source: string): string[] => {
 };
 
 describe('managed-resource legacy mutation registry', () => {
-  it('classifies and wires every mutation in all five source routers exactly once', async () => {
+  it('classifies and wires every mutation in all registered source routers exactly once', async () => {
     const discovered: string[] = [];
 
     for (const router of ROUTERS) {
@@ -43,7 +53,7 @@ describe('managed-resource legacy mutation registry', () => {
       }
     }
 
-    expect(discovered).toHaveLength(51);
+    expect(discovered).toHaveLength(72);
     expect([...discovered].sort()).toEqual(Object.keys(MANAGED_RESOURCE_MUTATION_REGISTRY).sort());
     for (const definition of Object.values(MANAGED_RESOURCE_MUTATION_REGISTRY)) {
       expect(['deny', 'allow', 'exempt']).toContain(definition.classification);
@@ -73,7 +83,16 @@ export const aiProviderRouter = router({
       'connector.delete': 'deny',
       'connector.resetPermissions': 'exempt',
       'connector.startOAuth': 'exempt',
+      'connector.syncBuiltinTool': 'deny',
+      'connector.syncPluginTools': 'deny',
       'connector.updateToolPermission': 'exempt',
+      'composio.createConnection': 'deny',
+      'composio.deleteConnection': 'exempt',
+      'composio.removeComposioPlugin': 'deny',
+      'composio.updateComposioPlugin': 'deny',
+      'oauthDeviceFlow.initiateDeviceCode': 'exempt',
+      'oauthDeviceFlow.pollAuthStatus': 'deny',
+      'oauthDeviceFlow.revokeAuth': 'deny',
     } as const satisfies Partial<
       Record<ManagedResourceMutationProcedure, 'allow' | 'deny' | 'exempt'>
     >;
@@ -84,5 +103,37 @@ export const aiProviderRouter = router({
           .classification,
       ).toBe(classification);
     }
+  });
+
+  it('whole-router write scan finds no unregistered model-definition write surface', async () => {
+    const routerDir = path.resolve(process.cwd(), 'apps/server/src/routers/lambda');
+    const files = (await readdir(routerDir, { recursive: true }))
+      .filter(
+        (file) =>
+          file.endsWith('.ts') &&
+          !file.includes('__tests__') &&
+          !file.endsWith('.test.ts') &&
+          !file.endsWith('.d.ts'),
+      )
+      .sort();
+    const writePattern =
+      /agentModel\.(?:batchCreate|create|delete|duplicate|publish|setVisibility|toggle|transfer|update)|connectorModel\.(?:create|delete|update)|aiProviderModel\.(?:create|delete|toggle|update)|aiModelModel\.(?:batch|clear|create|delete|toggle|update)|skillModel\.(?:create|delete|update)/;
+    const discovered = [];
+    for (const file of files) {
+      const source = await readFile(path.join(routerDir, file), 'utf8');
+      const code = source.replaceAll(/\/\*[\S\s]*?\*\/|\/\/.*$/gm, '');
+      if (writePattern.test(code)) discovered.push(file.replace(/\.ts$/, ''));
+    }
+    expect(discovered).toEqual([
+      'agent',
+      'agentGroup',
+      'agentSkills',
+      'aiModel',
+      'aiProvider',
+      'composio',
+      'connector',
+      'home',
+      'oauthDeviceFlow',
+    ]);
   });
 });

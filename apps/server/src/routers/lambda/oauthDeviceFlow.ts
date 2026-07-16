@@ -7,6 +7,7 @@ import { wsCompatProcedure } from '@/business/server/trpc-middlewares/workspaceA
 import { AiProviderModel } from '@/database/models/aiProvider';
 import { router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
+import { withManagedResourceGuard } from '@/server/enterprise/guards/managedResource';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 import {
   getOAuthService,
@@ -15,7 +16,6 @@ import {
 
 const oauthProcedure = wsCompatProcedure.use(serverDatabase).use(async (opts) => {
   const { ctx } = opts;
-  const wsId = ctx.workspaceId ?? undefined;
   const gateKeeper = await KeyVaultsGateKeeper.initWithEnvKey();
 
   return opts.next({
@@ -75,6 +75,7 @@ export const oauthDeviceFlowRouter = router({
    * Initiate OAuth Device Flow - request a device code
    */
   initiateDeviceCode: oauthWriteProcedure
+    .use(withManagedResourceGuard('oauthDeviceFlow.initiateDeviceCode'))
     .input(z.object({ providerId: z.string() }))
     .mutation(async ({ input }) => {
       const config = getOAuthConfig(input.providerId);
@@ -102,6 +103,7 @@ export const oauthDeviceFlowRouter = router({
    * Poll for authorization status and exchange tokens if authorized
    */
   pollAuthStatus: oauthWriteProcedure
+    .use(withManagedResourceGuard('oauthDeviceFlow.pollAuthStatus'))
     .input(
       z.object({
         deviceCode: z.string(),
@@ -182,6 +184,7 @@ export const oauthDeviceFlowRouter = router({
    * Revoke OAuth authorization for a provider
    */
   revokeAuth: oauthWriteProcedure
+    .use(withManagedResourceGuard('oauthDeviceFlow.revokeAuth'))
     .input(z.object({ providerId: z.string() }))
     .mutation(async ({ input, ctx }) => {
       // Clear OAuth tokens and user info from keyVaults

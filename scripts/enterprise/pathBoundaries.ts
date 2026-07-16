@@ -36,10 +36,14 @@ export const ENTERPRISE_UPSTREAM_MOUNT_POINTS = [
   'src/features/ManagedResources/useManagedResource.ts',
   // M06: stable server enforcement seams for the five legacy mutation routers.
   'apps/server/src/routers/lambda/agent.ts',
+  'apps/server/src/routers/lambda/agentGroup.ts',
   'apps/server/src/routers/lambda/agentSkills.ts',
   'apps/server/src/routers/lambda/aiModel.ts',
   'apps/server/src/routers/lambda/aiProvider.ts',
+  'apps/server/src/routers/lambda/composio.ts',
   'apps/server/src/routers/lambda/connector.ts',
+  'apps/server/src/routers/lambda/home.ts',
+  'apps/server/src/routers/lambda/oauthDeviceFlow.ts',
   // script entry only
   'package.json',
 ] as const;
