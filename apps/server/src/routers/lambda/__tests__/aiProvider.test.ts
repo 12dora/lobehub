@@ -6,6 +6,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AiProviderModel } from '@/database/models/aiProvider';
 import { AiInfraRepos } from '@/database/repositories/aiInfra';
+import { type KeyProvider, PlatformSecretService } from '@/server/enterprise/security/secret';
+import {
+  AiCatalogExecutionResolver,
+  clearAiCatalogRuntimeCache,
+} from '@/server/enterprise/services/aiCatalog';
 import { getServerGlobalConfig } from '@/server/globalConfig';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
@@ -18,6 +23,13 @@ vi.mock('@/server/modules/KeyVaultsEncrypt');
 vi.mock('@/database/repositories/aiInfra');
 vi.mock('@/database/models/aiProvider');
 vi.mock('@/database/models/user');
+const catalogRepositoryMocks = vi.hoisted(() => ({
+  getProviderSecretVersion: vi.fn(),
+  listLatestPublishedProviderRevisions: vi.fn(),
+}));
+vi.mock('@/database/repositories/platformAiCatalog', () => ({
+  PlatformAiCatalogRepository: vi.fn(() => catalogRepositoryMocks),
+}));
 vi.mock('@/server/modules/ModelRuntime', () => ({
   initModelRuntimeFromDB: vi.fn(),
 }));
@@ -62,6 +74,8 @@ describe('aiProviderRouter', () => {
   };
 
   beforeEach(() => {
+    delete process.env.ENABLE_PLATFORM_MANAGED_AI;
+    clearAiCatalogRuntimeCache();
     vi.clearAllMocks();
 
     vi.mocked(getServerGlobalConfig).mockReturnValue({
@@ -166,6 +180,86 @@ describe('aiProviderRouter', () => {
 
       expect(result).toEqual(mockRuntimeState);
       expect(mockGetState).toHaveBeenCalledWith(KeyVaultsGateKeeper.getUserKeyVaults);
+    });
+
+    it('never exposes execution secret material in either caller/execution order', async () => {
+      process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
+      const plaintext = 'platform-caller-secret-not-for-client';
+      const privateEndpoint = 'https://private-caller-endpoint.example.test/v1';
+      const fingerprint = 'sha256:caller-secret-fingerprint';
+      const keyProvider: KeyProvider = {
+        getKek: async () => ({ key: new Uint8Array(32).fill(17), keyId: 'caller-test' }),
+        providerId: 'test',
+      };
+      const secrets = new PlatformSecretService({ keyProvider });
+      const ciphertext = await secrets.encrypt(JSON.stringify({ apiKey: plaintext }));
+      const revision = {
+        checksum: 'safe-checksum',
+        payload: {
+          models: [
+            {
+              abilities: {},
+              enabled: true,
+              modelKey: 'managed-model',
+              providerId: 'provider-row-id',
+              sort: 0,
+              type: 'chat',
+            },
+          ],
+          provider: {
+            config: { endpoint: privateEndpoint },
+            displayName: 'Managed Provider',
+            enabled: true,
+            providerKey: 'managed-provider',
+            sort: 0,
+            source: 'custom',
+          },
+        },
+        resourceId: 'provider-row-id',
+        revision: 1,
+        secretFingerprint: fingerprint,
+      };
+      catalogRepositoryMocks.listLatestPublishedProviderRevisions.mockResolvedValue([revision]);
+      catalogRepositoryMocks.getProviderSecretVersion.mockResolvedValue({
+        ciphertext,
+        fingerprint,
+      });
+      const mockGetState = vi.fn().mockResolvedValue({
+        ...mockRuntimeState,
+        runtimeConfig: {
+          'managed-provider': {
+            config: { endpoint: 'https://user-endpoint.example.test' },
+            keyVaults: { apiKey: 'user-secret-must-not-win' },
+            settings: {},
+          },
+        },
+      });
+      vi.mocked(AiInfraRepos).prototype.getAiProviderRuntimeState = mockGetState;
+      vi.mocked(AiInfraRepos).prototype.getAiProviderList = vi.fn().mockResolvedValue([]);
+      vi.mocked(AiInfraRepos).prototype.getAiProviderModelList = vi.fn().mockResolvedValue([]);
+      const caller = aiProviderRouter.createCaller(createMockContext());
+      const execution = new AiCatalogExecutionResolver({} as never, secrets);
+
+      const serverFirst = await execution.resolveProviderExecutionConfig('managed-provider');
+      expect(serverFirst.keyVaults).toEqual({ apiKey: plaintext, baseURL: privateEndpoint });
+      const clientAfterServer = await caller.getAiProviderRuntimeState({});
+      const clientAfterServerJson = JSON.stringify(clientAfterServer);
+
+      clearAiCatalogRuntimeCache();
+      const clientFirst = await caller.getAiProviderRuntimeState({});
+      const serverAfterClient = await execution.resolveProviderExecutionConfig('managed-provider');
+      expect(serverAfterClient.keyVaults.apiKey).toBe(plaintext);
+      const clientFirstJson = JSON.stringify(clientFirst);
+
+      for (const response of [clientAfterServerJson, clientFirstJson]) {
+        expect(response).not.toContain(plaintext);
+        expect(response).not.toContain(ciphertext);
+        expect(response).not.toContain(privateEndpoint);
+        expect(response).not.toContain(fingerprint);
+        expect(response).not.toContain('user-secret-must-not-win');
+        expect(response).not.toContain('user-endpoint.example.test');
+      }
+      expect(mockGetState).not.toHaveBeenCalled();
     });
   });
 
