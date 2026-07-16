@@ -1,7 +1,7 @@
 'use client';
 
 import { Input, Text, TextArea } from '@lobehub/ui';
-import { Button, createModal, Switch, useModalContext } from '@lobehub/ui/base-ui';
+import { Button, createModal, Select, Switch, useModalContext } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
 import i18next from 'i18next';
 import { memo, useReducer } from 'react';
@@ -56,7 +56,7 @@ export interface AiModelEditorFields {
   parameters: Record<string, unknown>;
   pricing: Record<string, unknown> | null;
   settings: Record<string, unknown>;
-  type: string;
+  type: AdminAiModelDraft['type'];
 }
 
 export interface AiModelEditorSubmission {
@@ -79,11 +79,12 @@ interface ModelEditorState {
   pricingText: string;
   reason: string;
   settingsText: string;
-  type: string;
+  type: AdminAiModelDraft['type'];
 }
 
 type ModelEditorAction =
-  | { field: keyof Omit<ModelEditorState, 'enabled'>; type: 'text'; value: string }
+  | { field: keyof Omit<ModelEditorState, 'enabled' | 'type'>; type: 'text'; value: string }
+  | { type: 'modelType'; value: AdminAiModelDraft['type'] }
   | { phase: ModelEditorState['phase']; type: 'phase' }
   | { type: 'toggle'; value: boolean };
 
@@ -107,6 +108,7 @@ const toState = (model?: AdminAiModelDraft): ModelEditorState => ({
 const reducer = (state: ModelEditorState, action: ModelEditorAction): ModelEditorState => {
   if (action.type === 'phase') return { ...state, phase: action.phase };
   if (action.type === 'toggle') return { ...state, enabled: action.value, error: null };
+  if (action.type === 'modelType') return { ...state, error: null, type: action.value };
   return { ...state, [action.field]: action.value, error: null };
 };
 
@@ -165,7 +167,7 @@ const ModelEditorContent = memo<ModelEditorContentProps>(
             parameters: parsed[2]!.value!,
             pricing: parsed[3]!.value,
             settings: parsed[4]!.value!,
-            type: state.type.trim(),
+            type: state.type,
           },
           modelKey: state.modelKey.trim(),
           reason: state.reason.trim(),
@@ -220,12 +222,21 @@ const ModelEditorContent = memo<ModelEditorContentProps>(
           </div>
           <div className={styles.field}>
             <Text strong>{t('aiCatalog.modelEditor.type')}</Text>
-            <Input
+            <Select
               disabled={locked}
-              maxLength={20}
               value={state.type}
-              onChange={(event) =>
-                dispatch({ field: 'type', type: 'text', value: event.target.value })
+              options={[
+                'asr',
+                'chat',
+                'embedding',
+                'image',
+                'realtime',
+                'text2music',
+                'tts',
+                'video',
+              ].map((value) => ({ label: value, value }))}
+              onChange={(value) =>
+                dispatch({ type: 'modelType', value: value as AdminAiModelDraft['type'] })
               }
             />
           </div>
