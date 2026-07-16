@@ -5,6 +5,7 @@ import {
   containsSensitiveMaterial,
   isSensitiveKey,
   M07_BENIGN_KEY_CANDIDATES,
+  M07_REDACTION_OPTIONS,
   redactDeep,
   REDACTED_PLACEHOLDER,
   redactForAudit,
@@ -84,5 +85,14 @@ describe('enterprise redaction entry', () => {
     );
     expect(out.note).toBe('[REDACTED]');
     expect(out.token).toBe('[REDACTED]');
+  });
+
+  it('exports the narrow M07 numeric token-key allowlist', () => {
+    expect(
+      redactForAudit(
+        { apiKey: 'fake', contextWindowTokens: 128_000, maxTokens: 4096 },
+        M07_REDACTION_OPTIONS,
+      ),
+    ).toEqual({ apiKey: '[REDACTED]', contextWindowTokens: 128_000, maxTokens: 4096 });
   });
 });
