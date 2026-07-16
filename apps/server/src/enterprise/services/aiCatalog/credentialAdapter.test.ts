@@ -144,4 +144,21 @@ describe('AI catalog credential adapter', () => {
       }),
     ).not.toThrow();
   });
+
+  it.each([ModelProvider.GithubCopilot, ModelProvider.LobeHub])(
+    'does not invent a %s API-key environment fallback',
+    (providerKey) => {
+      const envPrefix = providerKey.toUpperCase().replaceAll(/[^A-Z0-9]/g, '_');
+      expect(() =>
+        normalizeAiCatalogExecutionCredentials({
+          config: {},
+          env: { [`${envPrefix}_API_KEY`]: 'false-ready-key' },
+          keyVaults: {},
+          providerKey,
+          settings: {},
+          source: 'builtin',
+        }),
+      ).toThrow('PLATFORM_CONFIG_VALIDATION_FAILED');
+    },
+  );
 });
