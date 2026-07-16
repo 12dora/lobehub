@@ -35,7 +35,8 @@ export const resolveSkillCatalogRuntimeReadiness = async (
   params: {
     db?: LobeChatDatabase;
     flags?: EnterpriseFeatureFlags;
-    service?: Pick<SkillCatalogReadService, 'getPublishedCatalog' | 'resolvePinnedForExecution'>;
+    service?: Pick<SkillCatalogReadService, 'getPublishedCatalog' | 'resolvePinnedForExecution'> &
+      Partial<Pick<SkillCatalogReadService, 'isPublishedCatalogExecutionReady'>>;
   } = {},
 ): Promise<boolean> => {
   const flags = params.flags ?? parseEnterpriseFeatureFlags(process.env);

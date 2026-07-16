@@ -24,7 +24,8 @@ export interface ResolvePlatformSkillRuntimeSnapshotOptions {
   catalogService?: Pick<
     SkillCatalogReadService,
     'getPublishedCatalog' | 'resolvePinnedForExecution'
-  >;
+  > &
+    Partial<Pick<SkillCatalogReadService, 'isPublishedCatalogExecutionReady'>>;
   policyModel?: Pick<PlatformManagedResourcePolicyModel, 'getSnapshot'>;
 }
 

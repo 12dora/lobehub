@@ -7,6 +7,7 @@ import { withScopedPermission } from '@/business/server/trpc-middlewares/rbacPer
 import { wsCompatProcedure } from '@/business/server/trpc-middlewares/workspaceAuth';
 import { AgentSkillModel } from '@/database/models/agentSkill';
 import { FileModel } from '@/database/models/file';
+import { PlatformManagedResourcePolicyModel } from '@/database/models/platform';
 import { router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 import { platformSkillPinnedRefSchema } from '@/server/enterprise/contracts/skillCatalog';
@@ -14,7 +15,6 @@ import { parseEnterpriseFeatureFlags } from '@/server/enterprise/featureFlags';
 import { withManagedResourceGuard } from '@/server/enterprise/guards/managedResource';
 import {
   getBuiltinSkillDefinitions,
-  resolvePlatformSkillRuntimeSnapshot,
   SkillCatalogReadService,
 } from '@/server/enterprise/services/skillCatalog';
 import { FileService } from '@/server/services/file';
@@ -327,19 +327,25 @@ export const agentSkillsRouter = router({
     .input(platformSkillPinnedRefSchema)
     .output(platformSkillExecutionProjectionSchema)
     .query(async ({ ctx, input }) => {
-      const runtimeSnapshot = await resolvePlatformSkillRuntimeSnapshot({
-        agentPlugins: [{ identifier: input.skillKey, mode: 'pinned' }],
-        db: ctx.serverDB,
-        flags: parseEnterpriseFeatureFlags(process.env),
-      });
-      const selected = runtimeSnapshot?.catalog.refs.some(
-        (ref) =>
-          ref.skillKey === input.skillKey &&
-          ref.version === input.version &&
-          ref.checksum === input.checksum,
-      );
-      if (!selected) throw new TRPCError({ code: 'NOT_FOUND', message: 'Skill not found' });
+      const flags = parseEnterpriseFeatureFlags(process.env);
+      if (!flags.ENABLE_PLATFORM_MANAGED_SKILLS) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Skill not found' });
+      }
+      const policySnapshot = await new PlatformManagedResourcePolicyModel(
+        ctx.serverDB,
+      ).getSnapshot();
+      const policy = policySnapshot.published.skills;
+      if (
+        policySnapshot.status !== 'published' ||
+        !policy.managed ||
+        policy.enforcementMode !== 'enforced'
+      ) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Skill not found' });
+      }
 
+      // Resolve the immutable published revision directly. Re-reading the moving
+      // catalog head here would break an operation that captured v1 before v2
+      // was published or the current head was archived.
       const skill = await new SkillCatalogReadService(ctx.serverDB, {
         builtinSkills: getBuiltinSkillDefinitions(),
       }).resolvePinnedForExecution(input);
