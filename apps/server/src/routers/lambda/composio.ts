@@ -16,6 +16,7 @@ import { getComposioClient } from '@/libs/composio';
 import { inferCrudType } from '@/libs/mcp/utils';
 import { authedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
+import { withManagedResourceGuard } from '@/server/enterprise/guards/managedResource';
 
 const composioProcedure = authedProcedure.use(serverDatabase).use(async (opts) => {
   const client = getComposioClient();
@@ -132,6 +133,7 @@ async function deleteComposioConnector(
 
 export const composioRouter = router({
   createConnection: composioProcedure
+    .use(withManagedResourceGuard('composio.createConnection'))
     .input(
       z.object({
         appSlug: z.string(),
@@ -255,6 +257,7 @@ export const composioRouter = router({
     }),
 
   deleteConnection: composioProcedure
+    .use(withManagedResourceGuard('composio.deleteConnection'))
     .input(
       z.object({
         connectedAccountId: z.string(),
@@ -313,6 +316,7 @@ export const composioRouter = router({
     }),
 
   removeComposioPlugin: composioProcedure
+    .use(withManagedResourceGuard('composio.removeComposioPlugin'))
     .input(z.object({ identifier: z.string() }))
     .mutation(async ({ input, ctx }) => {
       await ctx.pluginModel.delete(input.identifier);
@@ -321,6 +325,7 @@ export const composioRouter = router({
     }),
 
   updateComposioPlugin: composioProcedure
+    .use(withManagedResourceGuard('composio.updateComposioPlugin'))
     .input(
       z.object({
         appSlug: z.string(),

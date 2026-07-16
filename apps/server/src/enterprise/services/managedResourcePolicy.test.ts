@@ -33,6 +33,14 @@ const noneReady = async () => ({
   skills: false,
 });
 
+const deferred = () => {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+};
+
 beforeEach(async () => {
   await serverDB.delete(platformAuditLogs);
   await serverDB.delete(platformResourceRevisions);
@@ -222,6 +230,167 @@ describe('ManagedResourcePolicyService', () => {
         action: 'admin.managedResources.publish',
         result: 'failure',
       }),
+    );
+  });
+
+  it('save-vs-save locked CAS permits exactly one writer', async () => {
+    const locked = deferred();
+    const release = deferred();
+    const first = new ManagedResourcePolicyService(serverDB, {
+      lifecycle: {
+        afterDraftLock: async () => {
+          locked.resolve();
+          await release.promise;
+        },
+      },
+      readiness: allReady,
+    });
+    const second = new ManagedResourcePolicyService(serverDB, { readiness: allReady });
+    const shared = (await first.get()).draftToken;
+    const firstDraft = createUnmanagedResourcePolicyMap();
+    firstDraft.agents = { enforcementMode: 'ui-only', managed: true };
+    const secondDraft = createUnmanagedResourcePolicyMap();
+    secondDraft.skills = { enforcementMode: 'ui-only', managed: true };
+
+    const firstSave = first.saveDraft({
+      actorUserId: 'admin-1',
+      draft: firstDraft,
+      expectedDraftToken: shared,
+      reason: 'first save',
+    });
+    await locked.promise;
+    const secondSave = second.saveDraft({
+      actorUserId: 'admin-2',
+      draft: secondDraft,
+      expectedDraftToken: shared,
+      reason: 'second save',
+    });
+    release.resolve();
+
+    await expect(firstSave).resolves.toMatchObject({ ok: true });
+    await expect(secondSave).rejects.toBeInstanceOf(PlatformRevisionConflictError);
+    expect((await second.get()).draft).toEqual(firstDraft);
+    const audits = await serverDB.select().from(platformAuditLogs);
+    expect(audits.filter((row) => row.action === 'admin.managedResources.saveDraft')).toMatchObject(
+      [
+        { actorUserId: 'admin-1', result: 'success' },
+        { actorUserId: 'admin-2', result: 'failure' },
+      ],
+    );
+  });
+
+  it('save-vs-publish locked CAS prevents publishing a stale draft token', async () => {
+    const locked = deferred();
+    const release = deferred();
+    const saver = new ManagedResourcePolicyService(serverDB, {
+      lifecycle: {
+        afterDraftLock: async () => {
+          locked.resolve();
+          await release.promise;
+        },
+      },
+      readiness: allReady,
+    });
+    const publisher = new ManagedResourcePolicyService(serverDB, { readiness: allReady });
+    const initial = await saver.get();
+    const draft = createUnmanagedResourcePolicyMap();
+    draft.connectors = { enforcementMode: 'ui-only', managed: true };
+    const save = saver.saveDraft({
+      actorUserId: 'admin-1',
+      draft,
+      expectedDraftToken: initial.draftToken,
+      reason: 'save wins',
+    });
+    await locked.promise;
+    const publish = publisher.publish({
+      actorUserId: 'admin-2',
+      expectedDraftToken: initial.draftToken,
+      expectedRevision: 0,
+      reason: 'stale publish',
+    });
+    release.resolve();
+
+    await expect(save).resolves.toMatchObject({ ok: true });
+    await expect(publish).rejects.toBeInstanceOf(PlatformRevisionConflictError);
+    expect(await serverDB.select().from(platformResourceRevisions)).toHaveLength(0);
+    expect((await publisher.get()).published).toEqual(createUnmanagedResourcePolicyMap());
+    expect(await serverDB.select().from(platformAuditLogs)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: 'admin.managedResources.saveDraft',
+          actorUserId: 'admin-1',
+          result: 'success',
+        }),
+        expect.objectContaining({
+          action: 'admin.managedResources.publish',
+          actorUserId: 'admin-2',
+          result: 'failure',
+        }),
+      ]),
+    );
+  });
+
+  it('publish-vs-publish permits one revision and one materialized snapshot', async () => {
+    const locked = deferred();
+    const release = deferred();
+    const first = new ManagedResourcePolicyService(serverDB, {
+      lifecycle: {
+        afterPublishLock: async () => {
+          locked.resolve();
+          await release.promise;
+        },
+      },
+      readiness: allReady,
+    });
+    const second = new ManagedResourcePolicyService(serverDB, { readiness: allReady });
+    const initial = await first.get();
+    const draft = createUnmanagedResourcePolicyMap();
+    draft.aiModels = { enforcementMode: 'ui-only', managed: true };
+    await first.saveDraft({
+      actorUserId: 'admin-1',
+      draft,
+      expectedDraftToken: initial.draftToken,
+      reason: 'seed',
+    });
+    const shared = await first.get();
+    const firstPublish = first.publish({
+      actorUserId: 'admin-1',
+      expectedDraftToken: shared.draftToken,
+      expectedRevision: 0,
+      reason: 'first publish',
+    });
+    await locked.promise;
+    const secondPublish = second.publish({
+      actorUserId: 'admin-2',
+      expectedDraftToken: shared.draftToken,
+      expectedRevision: 0,
+      reason: 'second publish',
+    });
+    release.resolve();
+
+    await expect(firstPublish).resolves.toMatchObject({ revision: 1 });
+    await expect(secondPublish).rejects.toBeInstanceOf(PlatformRevisionConflictError);
+    expect(await serverDB.select().from(platformResourceRevisions)).toHaveLength(1);
+    const rows = await serverDB.select().from(platformManagedResourcePolicies);
+    expect(rows).toHaveLength(5);
+    expect(new Set(rows.map((row) => row.revision))).toEqual(new Set([1]));
+    expect(rows.map((row) => row.config.published)).toEqual(
+      expect.arrayContaining(Object.values(draft)),
+    );
+    expect(await serverDB.select().from(platformAuditLogs)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: 'platform.managed_policy.publish',
+          actorUserId: 'admin-1',
+          configRevision: 1,
+          result: 'success',
+        }),
+        expect.objectContaining({
+          action: 'admin.managedResources.publish',
+          actorUserId: 'admin-2',
+          result: 'failure',
+        }),
+      ]),
     );
   });
 });

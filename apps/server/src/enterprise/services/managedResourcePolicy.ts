@@ -42,7 +42,9 @@ export interface ManagedResourcePolicyServiceOptions {
   ) => Promise<PlatformAuditLogItem>;
   invalidation?: PlatformConfigInvalidationPublisher;
   lifecycle?: {
+    afterDraftLock?: () => Promise<void>;
     afterMaterialization?: () => Promise<void>;
+    afterPublishLock?: () => Promise<void>;
   };
   readiness?: () => Promise<ManagedResourceReadinessMap>;
 }
@@ -93,6 +95,7 @@ export class ManagedResourcePolicyService {
       const result = await this.db.transaction(async (tx) => {
         const model = new PlatformManagedResourcePolicyModel(tx);
         const revision = await model.lockAndGetRevision();
+        await this.lifecycle.afterDraftLock?.();
         const current = await model.getSnapshot();
         if (this.draftToken(current.draft, revision) !== params.expectedDraftToken) {
           throw new PlatformRevisionConflictError(
@@ -139,6 +142,7 @@ export class ManagedResourcePolicyService {
     const pointer = createManagedResourcePolicyPointerAdapter({
       afterMaterialization: this.lifecycle.afterMaterialization,
       assertLockedState: async (tx) => {
+        await this.lifecycle.afterPublishLock?.();
         const model = new PlatformManagedResourcePolicyModel(tx);
         const snapshot = await model.getSnapshot();
         if (this.draftToken(snapshot.draft, snapshot.revision) !== params.expectedDraftToken) {
