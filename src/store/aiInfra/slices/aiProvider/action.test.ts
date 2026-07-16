@@ -13,14 +13,10 @@ describe('AiProviderAction', () => {
           enabledAiModels: [
             {
               abilities: {},
-              description: 'Managed model',
               displayName: 'Managed Model',
               enabled: true,
               id: 'managed-model',
-              knowledgeCutoff: '2026-01-01',
-              pricing: { units: [] },
               providerId: 'managed-provider',
-              source: 'custom',
               type: 'chat',
             },
           ],
