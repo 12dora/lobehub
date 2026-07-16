@@ -5,6 +5,7 @@ import { getTestDB } from '@/database/core/getTestDB';
 import { platformAuditLogs } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 
+import type { ConnectorFailureAuditWriter } from './catalogAudit';
 import {
   cleanupM09ServiceData,
   ensurePendingM09ServiceSchema,
@@ -20,9 +21,12 @@ const db: LobeChatDatabase = await getTestDB();
 
 beforeAll(() => ensurePendingM09ServiceSchema(db));
 beforeEach(() => cleanupM09ServiceData(db));
-afterEach(() => cleanupM09ServiceData(db));
+afterEach(async () => {
+  vi.restoreAllMocks();
+  await cleanupM09ServiceData(db);
+});
 
-const createHarness = async () => {
+const createHarness = async (failureAuditWriter?: ConnectorFailureAuditWriter) => {
   const secrets = new MemoryConnectorSecretStore(db);
   const draft = await new ConnectorCatalogDraftService(
     db,
@@ -38,9 +42,15 @@ const createHarness = async () => {
   });
   const requestJson = vi.fn();
   const outbound = { requestJson } as unknown as ConnectorOutboundClient;
-  const service = new ConnectorCatalogDiscoveryService(db, outbound, secrets, {
-    getHeaders: async () => ({}),
-  });
+  const service = new ConnectorCatalogDiscoveryService(
+    db,
+    outbound,
+    secrets,
+    {
+      getHeaders: async () => ({}),
+    },
+    failureAuditWriter,
+  );
   return { connectorId: draft.draft.id, requestJson, service };
 };
 
@@ -132,6 +142,24 @@ describe('ConnectorCatalogDiscoveryService', () => {
     });
     expect(JSON.stringify(await db.select().from(platformAuditLogs))).not.toContain(
       'upstream-body-with-private-token',
+    );
+  });
+
+  it('preserves SSRF denial when failure-audit persistence also fails', async () => {
+    const failureAuditWriter = vi.fn(async () => {
+      throw new Error('audit-backend-private-response');
+    });
+    const { connectorId, requestJson, service } = await createHarness(failureAuditWriter);
+    requestJson.mockRejectedValue(
+      new PlatformConnectorContractError('PLATFORM_CONNECTOR_SSRF_BLOCKED'),
+    );
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    await expect(
+      service.testConnection('admin-user', { id: connectorId, reason: 'safe SSRF reason' }),
+    ).rejects.toMatchObject({ code: 'PLATFORM_CONNECTOR_SSRF_BLOCKED' });
+    expect(failureAuditWriter).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ reason: 'safe SSRF reason' }),
     );
   });
 });

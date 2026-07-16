@@ -10,6 +10,7 @@ import {
   platformResourceRevisions,
   platformUserConnectorBindings,
 } from '@/database/schemas/platform';
+import { users } from '@/database/schemas/user';
 import type { LobeChatDatabase } from '@/database/type';
 
 import type {
@@ -84,6 +85,7 @@ export const cleanupM09ServiceData = async (db: LobeChatDatabase): Promise<void>
     .delete(platformResourceRevisions)
     .where(eq(platformResourceRevisions.resourceType, 'connector'));
   await db.delete(platformAuditLogs).where(eq(platformAuditLogs.targetType, 'connector'));
+  await db.delete(users).where(sql`${users.id} LIKE 'm09-service-user-%'`);
 };
 
 export class MemoryConnectorSecretStore implements ConnectorCatalogSecretStore {

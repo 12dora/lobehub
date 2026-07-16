@@ -2,7 +2,6 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
-import { PlatformUserConnectorBindingRepository } from '@/database/repositories/platformConnectorCatalog';
 import {
   platformConnectors,
   platformResourceRevisions,
@@ -19,8 +18,10 @@ import {
   ensurePendingM09ServiceSchema,
   MemoryConnectorSecretStore,
 } from './catalogTestUtils';
+import type { ConnectorCatalogSecretStore } from './catalogTypes';
 import type { ConnectorOutboundClient } from './connectorOutboundClient';
 import { ConnectorCatalogDraftService } from './draftService';
+import { PlatformConnectorContractError } from './errors';
 import { ConnectorCatalogPublicationService } from './publicationService';
 
 const db: LobeChatDatabase = await getTestDB();
@@ -32,7 +33,7 @@ afterEach(() => cleanupM09ServiceData(db));
 const createHarness = () => {
   const secrets = new MemoryConnectorSecretStore(db);
   const invalidation = new InMemoryPlatformConfigInvalidationPublisher();
-  const assertAllowed = vi.fn(async () => {});
+  const assertAllowed = vi.fn(async (_url: string) => {});
   const outbound = { assertAllowed } as unknown as ConnectorOutboundClient;
   return {
     assertAllowed,
@@ -105,6 +106,51 @@ describe('ConnectorCatalogPublicationService', () => {
     );
   });
 
+  it('preserves semantic apiKey/password property names while redacting non-schema credential fields', async () => {
+    const secret = 'schema-aware-shared-secret';
+    const harness = createHarness();
+    const draft = await harness.drafts.createDraft('admin-user', {
+      credentialMode: 'shared_service_account',
+      displayName: 'Schema-aware Connector',
+      enabled: true,
+      endpoint: 'https://connector.example.test/mcp',
+      key: 'schema-aware-connector',
+      reason: 'create schema-aware connector',
+      sharedSecret: { operation: 'replace', value: { apiKey: secret } },
+      tools: [
+        connectorToolFixture({
+          inputSchema: {
+            examples: [{ password: 'annotation-credential-value' }],
+            properties: {
+              apiKey: { type: 'string' },
+              password: { type: 'string' },
+            },
+            required: ['apiKey', 'password'],
+            type: 'object',
+          },
+        }),
+      ],
+      transport: 'http',
+    });
+    await harness.publication.publish('admin-user', {
+      expectedDraftToken: draft.draftToken,
+      expectedRevision: 0,
+      id: draft.draft.id,
+      reason: 'publish schema-aware connector',
+    });
+
+    const [revision] = await db.select().from(platformResourceRevisions);
+    const inputSchema = (
+      revision.payload as { tools: Array<{ inputSchema: Record<string, unknown> }> }
+    ).tools[0]!.inputSchema;
+    expect(inputSchema).toMatchObject({
+      examples: [{ password: '[REDACTED]' }],
+      properties: { apiKey: { type: 'string' }, password: { type: 'string' } },
+      required: ['apiKey', 'password'],
+    });
+    expect(JSON.stringify(revision.payload)).not.toContain(secret);
+  });
+
   it('rolls back endpoint, tools, and the exact historical Secret fingerprint', async () => {
     const harness = createHarness();
     const first = await createSharedDraft(harness, 'historical-secret-v1', 'rollback-connector');
@@ -130,6 +176,25 @@ describe('ConnectorCatalogPublicationService', () => {
       reason: 'publish v2',
     });
     const publishedV2 = await harness.drafts.getDraft(first.draft.id);
+    harness.assertAllowed.mockImplementation(async (url: string) => {
+      if (url.includes('connector-v1')) {
+        throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_SSRF_BLOCKED');
+      }
+    });
+    await expect(
+      harness.publication.rollback('admin-user', {
+        expectedDraftToken: publishedV2.draftToken,
+        expectedRevision: 3,
+        id: first.draft.id,
+        reason: 'blocked restore v1',
+        targetRevision: 1,
+      }),
+    ).rejects.toMatchObject({ code: 'PLATFORM_CONNECTOR_SSRF_BLOCKED' });
+    await expect(harness.read.getTrustedPublished(first.draft.id)).resolves.toMatchObject({
+      endpoint: 'https://connector-v2.example.test/mcp',
+      publishedRevision: 3,
+    });
+    harness.assertAllowed.mockImplementation(async () => {});
     await expect(
       harness.publication.rollback('admin-user', {
         expectedDraftToken: publishedV2.draftToken,
@@ -149,6 +214,64 @@ describe('ConnectorCatalogPublicationService', () => {
     expect(connector.sharedSecretFingerprint).toBe(first.draft.sharedSecret.fingerprint);
   });
 
+  it('archives with the Published Secret fingerprint after the mutable Draft rotates', async () => {
+    const harness = createHarness();
+    const first = await createSharedDraft(harness, 'archive-secret-v1', 'archive-connector');
+    await harness.publication.publish('admin-user', {
+      expectedDraftToken: first.draftToken,
+      expectedRevision: 0,
+      id: first.draft.id,
+      reason: 'publish archive v1',
+    });
+    const published = await harness.drafts.getDraft(first.draft.id);
+    const rotated = await harness.drafts.updateDraft('admin-user', {
+      expectedDraftToken: published.draftToken,
+      expectedRevision: 1,
+      id: first.draft.id,
+      reason: 'rotate draft secret',
+      sharedSecret: { operation: 'replace', value: { apiKey: 'archive-secret-v2' } },
+    });
+    await expect(
+      harness.publication.archive('admin-user', {
+        expectedDraftToken: rotated.draftToken,
+        expectedRevision: 2,
+        id: first.draft.id,
+        reason: 'archive published v1',
+      }),
+    ).resolves.toMatchObject({ revision: 3 });
+    const [connector] = await db.select().from(platformConnectors);
+    expect(connector).toMatchObject({
+      sharedSecretFingerprint: first.draft.sharedSecret.fingerprint,
+      status: 'archived',
+    });
+  });
+
+  it('maps Secret version resolver failures to one stable non-echo code', async () => {
+    const harness = createHarness();
+    const draft = await createSharedDraft(harness, 'resolver-secret', 'resolver-connector');
+    await harness.publication.publish('admin-user', {
+      expectedDraftToken: draft.draftToken,
+      expectedRevision: 0,
+      id: draft.draft.id,
+      reason: 'publish connector',
+    });
+    const rawError = 'vault-backend-private-response';
+    const failingSecrets: ConnectorCatalogSecretStore = {
+      loadCurrentSecretSources: harness.secrets.loadCurrentSecretSources,
+      persistSecret: harness.secrets.persistSecret,
+      resolveSecretVersion: async () => {
+        throw new Error(rawError);
+      },
+    };
+    try {
+      await new ConnectorCatalogReadService(db, failingSecrets).getTrustedPublished(draft.draft.id);
+      expect.unreachable('Secret resolver failure must reject');
+    } catch (error) {
+      expect(error).toMatchObject({ code: 'PLATFORM_CONNECTOR_CREDENTIAL_NOT_CONFIGURED' });
+      expect(JSON.stringify(error)).not.toContain(rawError);
+    }
+  });
+
   it('revokes every binding with CAS/invalidation and archive removes the runtime snapshot', async () => {
     const harness = createHarness();
     const draft = await createSharedDraft(harness, 'revoke-secret', 'revoke-connector');
@@ -158,26 +281,37 @@ describe('ConnectorCatalogPublicationService', () => {
       id: draft.draft.id,
       reason: 'publish connector',
     });
-    await db.insert(users).values({ id: 'm09-service-user' }).onConflictDoNothing();
-    await new PlatformUserConnectorBindingRepository(db, 'm09-service-user').upsertBinding({
-      connectedAt: new Date(),
-      connectorId: draft.draft.id,
-      id: 'm09-service-binding',
-      oauthTokenRef: 'vault://users/m09-service-user/token',
-      publishedRevision: 1,
-      scopes: ['read'],
-      status: 'connected',
-      tokenFingerprint: 'binding-fingerprint',
-    });
+    const userIds = Array.from({ length: 101 }, (_, index) => `m09-service-user-${index}`);
+    await db
+      .insert(users)
+      .values(userIds.map((id) => ({ id })))
+      .onConflictDoNothing();
+    await db.insert(platformUserConnectorBindings).values(
+      userIds.map((userId, index) => ({
+        connectedAt: new Date(),
+        connectorId: draft.draft.id,
+        id: `m09-service-binding-${index}`,
+        oauthTokenRef: `vault://users/${userId}/token`,
+        publishedRevision: 1,
+        scopes: ['read'],
+        status: 'connected' as const,
+        tokenFingerprint: `binding-fingerprint-${index}`,
+        userId,
+      })),
+    );
     await expect(
       harness.publication.revokeAllBindings('admin-user', {
         expectedRevision: 1,
         id: draft.draft.id,
         reason: 'revoke compromised grants',
       }),
-    ).resolves.toMatchObject({ revoked: 1 });
-    expect(await db.select().from(platformUserConnectorBindings)).toContainEqual(
-      expect.objectContaining({ oauthTokenRef: null, scopes: [], status: 'revoked' }),
+    ).resolves.toMatchObject({ revoked: 101 });
+    const revokedBindings = await db.select().from(platformUserConnectorBindings);
+    expect(revokedBindings).toHaveLength(101);
+    expect(revokedBindings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ oauthTokenRef: null, scopes: [], status: 'revoked' }),
+      ]),
     );
     expect(harness.invalidation.events.at(-1)).toMatchObject({
       revision: 1,
