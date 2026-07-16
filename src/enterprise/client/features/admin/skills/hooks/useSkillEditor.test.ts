@@ -183,11 +183,16 @@ describe('useSkillEditor durable drafts', () => {
     expect(result.current.pendingSwitchId).toBeNull();
     expect(result.current.draft?.versionDraft?.content).toContain('PRIVATE KEY');
 
-    rerender({ current: 'skill-3' });
-    expect(result.current.pendingSwitchId).toBe('skill-3');
+    rerender({ current: 'skill-1' });
+    expect(result.current.activeSkillId).toBe('skill-1');
+    expect(result.current.draft?.versionDraft?.content).toContain('PRIVATE KEY');
+
+    rerender({ current: 'skill-2' });
+    expect(result.current.pendingSwitchId).toBe('skill-2');
+    expect(mocks.confirmModal).toHaveBeenCalledTimes(2);
     const discardOptions = mocks.confirmModal.mock.calls[1][0];
     act(() => discardOptions.onOk());
-    expect(result.current.activeSkillId).toBe('skill-3');
+    expect(result.current.activeSkillId).toBe('skill-2');
     expect(result.current.pendingSwitchId).toBeNull();
     expect(result.current.draft?.versionDraft).toBeNull();
   });
