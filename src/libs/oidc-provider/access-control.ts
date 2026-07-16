@@ -6,11 +6,16 @@ import {
   oidcGrants,
   oidcRefreshTokens,
   oidcSessions,
+  session,
   users,
 } from '@lobechat/database/schemas';
-import { eq } from 'drizzle-orm';
+import { and, eq, gt } from 'drizzle-orm';
 
-import { isCredentialInvalidated, isEffectivelyBanned } from '@/database/utils/userBan';
+import {
+  type CredentialInvalidationCheck,
+  isCredentialInvalidated,
+  isEffectivelyBanned,
+} from '@/database/utils/userBan';
 
 export const OIDC_USER_INACTIVE_ERROR_MESSAGE = 'OIDC user is no longer active';
 
@@ -65,16 +70,53 @@ export interface AssertUserActiveOptions {
    */
   credentialIssuedAt?: Date | null;
   /**
-   * Trusted Better Auth session id only — enables cutoff exception when it
-   * matches users.auth_invalidated_excluded_session_id. Never a token.
-   * OIDC/API-key must omit this.
+   * Trusted Better Auth session id only. Candidate for cutoff exception when it
+   * matches users.auth_invalidated_excluded_session_id — still requires a live
+   * auth_sessions row (R3-01). Never a token. OIDC/API-key must omit this.
    */
   sessionId?: string | null;
 }
 
 /**
+ * Live-validate a retained-session exception against Better Auth session table.
+ * Requires: same id + userId + expiresAt > now. Does not select tokens.
+ */
+export const isLiveRetainedSessionException = async (
+  db: LobeChatDatabase,
+  params: {
+    excludedSessionId: string | null | undefined;
+    sessionId: string | null | undefined;
+    userId: string;
+  },
+): Promise<boolean> => {
+  if (
+    !params.excludedSessionId ||
+    !params.sessionId ||
+    params.sessionId !== params.excludedSessionId
+  ) {
+    return false;
+  }
+
+  const now = new Date();
+  const [row] = await db
+    .select({ id: session.id })
+    .from(session)
+    .where(
+      and(
+        eq(session.id, params.sessionId),
+        eq(session.userId, params.userId),
+        gt(session.expiresAt, now),
+      ),
+    )
+    .limit(1);
+
+  return Boolean(row);
+};
+
+/**
  * Rejects auth when the user is missing, effectively banned, or credential
- * was issued at/before authInvalidatedAt (unless retained BA session exception).
+ * was issued at/before authInvalidatedAt — unless a *live* retained BA session
+ * exception applies (R3-01: cookie-cache ghost ids are rejected).
  */
 export const assertUserActive = async (
   db: LobeChatDatabase,
@@ -97,12 +139,33 @@ export const assertUserActive = async (
     throw new OIDCUserInactiveError();
   }
 
-  if (
-    isCredentialInvalidated(user, {
-      credentialIssuedAt: options.credentialIssuedAt,
+  // Pure helper only identifies a candidate; live DB check is required before accept.
+  const check: CredentialInvalidationCheck = {
+    credentialIssuedAt: options.credentialIssuedAt,
+    // Do not pass sessionId into pure helper as auto-bypass — we validate live first.
+    sessionId: null,
+  };
+
+  const candidateException =
+    Boolean(user.authInvalidatedExcludedSessionId) &&
+    typeof options.sessionId === 'string' &&
+    options.sessionId.length > 0 &&
+    options.sessionId === user.authInvalidatedExcludedSessionId;
+
+  if (candidateException) {
+    const live = await isLiveRetainedSessionException(db, {
+      excludedSessionId: user.authInvalidatedExcludedSessionId,
       sessionId: options.sessionId,
-    })
-  ) {
+      userId,
+    });
+    if (live) {
+      // Live retained BA session: skip cutoff only (ban already checked above).
+      return;
+    }
+    // Stale cookie / deleted / expired / wrong-owner: fall through to cutoff rejection.
+  }
+
+  if (isCredentialInvalidated(user, check)) {
     throw new OIDCUserInactiveError();
   }
 };

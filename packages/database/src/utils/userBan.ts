@@ -38,8 +38,9 @@ export interface CredentialInvalidationCheck {
    */
   credentialIssuedAt?: Date | null;
   /**
-   * Trusted Better Auth session id only. When it exactly matches
-   * `authInvalidatedExcludedSessionId`, the cutoff comparison is skipped.
+   * Candidate retained Better Auth session id only (never a token).
+   * A pure match only identifies a *candidate* exception — production auth
+   * paths must live-validate against auth_sessions via assertUserActive.
    * OIDC/API-key must leave this undefined/null.
    */
   sessionId?: string | null;
@@ -47,8 +48,9 @@ export interface CredentialInvalidationCheck {
 
 /**
  * Credential is invalid when issued at/before the user's authInvalidatedAt cutoff,
- * unless this is the retained Better Auth session recorded as a cutoff exception.
- * Ban state is checked separately — this only covers the security epoch.
+ * unless the supplied sessionId is a candidate retained-session exception.
+ * Ban state is checked separately. Live DB validation of the exception is
+ * assertUserActive's responsibility (R3-01) — do not trust this helper alone.
  */
 export const isCredentialInvalidated = (
   user: Pick<UserBanFields, 'authInvalidatedAt' | 'authInvalidatedExcludedSessionId'>,

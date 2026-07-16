@@ -32,6 +32,7 @@ import {
   AdminUserNotFoundError,
   AdminUserSelfBanError,
   AdminUserService,
+  InvalidRetainedSessionError,
 } from '../../services/adminUserService';
 import { LastSuperAdminError } from '../../services/platformRbac';
 
@@ -48,6 +49,14 @@ const mapServiceError = (error: unknown): never => {
     throwEnterpriseError({
       code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
       details: { reason: 'self_ban' },
+      httpCode: 'BAD_REQUEST',
+    });
+  }
+  if (error instanceof InvalidRetainedSessionError) {
+    // Public error does not disclose whether a foreign/missing session exists.
+    throwEnterpriseError({
+      code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
+      details: { reason: 'retained_session_invalid' },
       httpCode: 'BAD_REQUEST',
     });
   }

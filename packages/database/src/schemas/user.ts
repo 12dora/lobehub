@@ -76,13 +76,19 @@ export const users = pgTable(
       .where(sql`${table.banned} = true`),
     /**
      * M04 admin list prefix search: lower(field) text_pattern_ops for `LIKE 'prefix%'`.
-     * Opclass is applied in migration SQL + snapshot metadata (expression form).
+     * Opclass is part of the expression so drizzle-kit serializes it into SQL + snapshot.
      */
-    index('users_email_lower_pattern_idx').using('btree', sql`lower(${table.email})`),
-    index('users_username_lower_pattern_idx').using('btree', sql`lower(${table.username})`),
+    index('users_email_lower_pattern_idx').using(
+      'btree',
+      sql`lower(${table.email}) text_pattern_ops`,
+    ),
+    index('users_username_lower_pattern_idx').using(
+      'btree',
+      sql`lower(${table.username}) text_pattern_ops`,
+    ),
     index('users_normalized_email_lower_pattern_idx').using(
       'btree',
-      sql`lower(${table.normalizedEmail})`,
+      sql`lower(${table.normalizedEmail}) text_pattern_ops`,
     ),
   ],
 );
