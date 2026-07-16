@@ -19,6 +19,7 @@ import { SkillCatalogReadService } from './readService';
 
 const db: LobeChatDatabase = await getTestDB();
 const invalidation = { publish: vi.fn(async () => {}) };
+const serviceOptions = { builtinSkillKeys: new Set<string>(), invalidation };
 
 const manifest = {
   description: 'Search approved sources',
@@ -96,7 +97,7 @@ const createVersion = async (
 
 describe('SkillCatalogAdminService', () => {
   it('creates, validates and publishes an exact server-only runtime projection', async () => {
-    const service = new SkillCatalogAdminService(db, { invalidation });
+    const service = new SkillCatalogAdminService(db, serviceOptions);
     const draft = await createDraft(service);
     const version = await createVersion(service, draft, '# approved v1', '1.0.0');
     const afterVersion = await service.getDetail(draft.draft.id);
@@ -138,7 +139,7 @@ describe('SkillCatalogAdminService', () => {
   });
 
   it('keeps runtime on the immutable snapshot after mutable draft edits', async () => {
-    const service = new SkillCatalogAdminService(db, { invalidation });
+    const service = new SkillCatalogAdminService(db, serviceOptions);
     const draft = await createDraft(service, 'stable.runtime');
     const version = await createVersion(service, draft, '# stable', '1.0.0');
     const ready = await service.getDetail(draft.draft.id);
@@ -170,7 +171,7 @@ describe('SkillCatalogAdminService', () => {
   });
 
   it('revalidates under the publication lock and refuses unpublished dependencies', async () => {
-    const service = new SkillCatalogAdminService(db, { invalidation });
+    const service = new SkillCatalogAdminService(db, serviceOptions);
     const draft = await createDraft(service, 'blocked.dependency');
     const invalidManifest: SkillManifest = {
       ...manifest,
@@ -193,7 +194,7 @@ describe('SkillCatalogAdminService', () => {
   });
 
   it('rolls back and archives through immutable published revisions', async () => {
-    const service = new SkillCatalogAdminService(db, { invalidation });
+    const service = new SkillCatalogAdminService(db, serviceOptions);
     const draft = await createDraft(service, 'rollback.skill');
     const first = await createVersion(service, draft, '# first', '1.0.0');
     let detail = await service.getDetail(draft.draft.id);
@@ -249,7 +250,7 @@ describe('SkillCatalogAdminService', () => {
   });
 
   it('records mutation reasons and rejects stale draft tokens', async () => {
-    const service = new SkillCatalogAdminService(db, { invalidation });
+    const service = new SkillCatalogAdminService(db, serviceOptions);
     const draft = await createDraft(service, 'audited.skill');
     await service.updateDraft('admin-1', {
       displayName: 'Updated once',
@@ -274,5 +275,57 @@ describe('SkillCatalogAdminService', () => {
         expect.objectContaining({ reason: 'stale audited update', result: 'failure' }),
       ]),
     );
+  });
+
+  it('fails closed when the builtin catalog was not supplied', async () => {
+    const service = new SkillCatalogAdminService(db, { invalidation });
+    const draft = await createDraft(service, 'catalog.unavailable');
+    const version = await createVersion(service, draft, '# unavailable', '1.0.0');
+    expect(version.validation?.issues).toContainEqual(
+      expect.objectContaining({ code: 'builtin_override_forbidden' }),
+    );
+    const detail = await service.getDetail(draft.draft.id);
+    await expect(
+      service.publish('admin-1', {
+        expectedDraftToken: detail.draftToken,
+        expectedRevision: detail.baseRevision,
+        id: draft.draft.id,
+        reason: 'must fail closed without builtin catalog',
+        versionId: version.id,
+      }),
+    ).rejects.toBeInstanceOf(SkillCatalogValidationError);
+  });
+
+  it('rolls back create, update and createVersion when success audit insertion fails', async () => {
+    const beforeSuccessAudit = vi.fn(async () => {
+      throw new Error('injected audit failure');
+    });
+    const failing = new SkillCatalogAdminService(db, {
+      ...serviceOptions,
+      lifecycle: { beforeSuccessAudit },
+    });
+    await expect(createDraft(failing, 'atomic.create')).rejects.toThrow('injected audit failure');
+    expect((await failing.list({ limit: 100 })).items).toEqual([]);
+
+    const normal = new SkillCatalogAdminService(db, serviceOptions);
+    const draft = await createDraft(normal, 'atomic.existing');
+    await expect(
+      failing.updateDraft('admin-1', {
+        displayName: 'Must roll back',
+        expectedDraftToken: draft.draftToken,
+        expectedRevision: draft.draft.revision,
+        id: draft.draft.id,
+        reason: 'inject update audit failure',
+      }),
+    ).rejects.toThrow('injected audit failure');
+    expect((await normal.getDetail(draft.draft.id)).draft.displayName).toBe('Approved search');
+
+    await expect(createVersion(failing, draft, '# must roll back', '1.0.0')).rejects.toThrow(
+      'injected audit failure',
+    );
+    const afterVersionFailure = await normal.getDetail(draft.draft.id);
+    expect(afterVersionFailure.latestVersion).toBeNull();
+    expect(afterVersionFailure.draft.draftSequence).toBe(draft.draft.draftSequence);
+    expect(beforeSuccessAudit).toHaveBeenCalledTimes(3);
   });
 });

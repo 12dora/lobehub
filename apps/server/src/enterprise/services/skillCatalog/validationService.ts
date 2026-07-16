@@ -10,6 +10,7 @@ import { SkillCatalogValidator } from './validator';
 
 export interface SkillCatalogValidationOptions {
   allowBuiltinOverride?: boolean;
+  builtinSkillKeys?: ReadonlySet<string>;
   builtinSkills?: BuiltinSkillDefinition[];
   knownToolKeys?: ReadonlySet<string>;
 }
@@ -37,7 +38,11 @@ export class SkillCatalogValidationService {
     });
     const validator = new SkillCatalogValidator({
       allowBuiltinOverride: this.options.allowBuiltinOverride,
-      builtinSkillKeys: new Set((this.options.builtinSkills ?? []).map((skill) => skill.skillKey)),
+      builtinSkillKeys:
+        this.options.builtinSkillKeys ??
+        (this.options.builtinSkills
+          ? new Set(this.options.builtinSkills.map((skill) => skill.skillKey))
+          : undefined),
       knownToolKeys: this.options.knownToolKeys ?? new Set(),
       resolveSkillDependency: async (skillKey, version) => {
         const resolved = await readService.resolveForExecution(skillKey, version);
