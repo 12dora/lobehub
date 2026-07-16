@@ -20,6 +20,7 @@ describe('AI catalog credential adapter', () => {
         },
         providerKey: ModelProvider.Bedrock,
         settings: {},
+        source: 'builtin',
       }),
     ).not.toThrow();
     expect(() =>
@@ -29,6 +30,7 @@ describe('AI catalog credential adapter', () => {
         keyVaults: { apiKey: 'only-one-field' },
         providerKey: ModelProvider.Cloudflare,
         settings: {},
+        source: 'builtin',
       }),
     ).toThrow('PLATFORM_CONFIG_VALIDATION_FAILED');
   });
@@ -41,6 +43,7 @@ describe('AI catalog credential adapter', () => {
         keyVaults: { apiKey: 'key', baseURL: 'https://legacy.example.test/v1' },
         providerKey: 'custom-openai',
         settings: { sdkType: ModelProvider.OpenAI },
+        source: 'custom',
       }).keyVaults.baseURL,
     ).toBe('https://published.example.test/v1');
   });
@@ -52,12 +55,13 @@ describe('AI catalog credential adapter', () => {
         keyVaults: {},
         providerKey: ModelProvider.Ollama,
         settings: {},
+        source: 'builtin',
         env: {},
       }),
     ).toThrow('PLATFORM_CONFIG_VALIDATION_FAILED');
-    expect(() => validateAiCatalogRuntimeProvider('custom', { sdkType: 'unknown-sdk' })).toThrow(
-      'PLATFORM_CONFIG_VALIDATION_FAILED',
-    );
+    expect(() =>
+      validateAiCatalogRuntimeProvider('custom', { sdkType: 'unknown-sdk' }, 'custom'),
+    ).toThrow('PLATFORM_CONFIG_VALIDATION_FAILED');
     expect(() =>
       validateAiCatalogCredentialShape(ModelProvider.Bedrock, { apiKey: 'key', username: 'bad' }),
     ).toThrow('PLATFORM_CONFIG_VALIDATION_FAILED');
@@ -71,6 +75,7 @@ describe('AI catalog credential adapter', () => {
         keyVaults: {},
         providerKey: ModelProvider.OpenAI,
         settings: {},
+        source: 'builtin',
       }),
     ).not.toThrow();
     expect(
@@ -80,7 +85,63 @@ describe('AI catalog credential adapter', () => {
         keyVaults: { apiKey: 'published-key' },
         providerKey: ModelProvider.OpenAI,
         settings: {},
+        source: 'builtin',
       }).keyVaults,
     ).toEqual({ apiKey: 'published-key', baseURL: 'https://published.example.test/v1' });
+  });
+
+  it('uses one canonical runtime provider rule for builtin and custom providers', () => {
+    expect(
+      normalizeAiCatalogExecutionCredentials({
+        config: {},
+        env: { AZURE_API_KEY: 'env-key', AZURE_ENDPOINT: 'https://azure.example.test' },
+        keyVaults: {},
+        providerKey: ModelProvider.Azure,
+        settings: { sdkType: ModelProvider.OpenAI },
+        source: 'builtin',
+      }).runtimeProvider,
+    ).toBe(ModelProvider.Azure);
+    expect(
+      normalizeAiCatalogExecutionCredentials({
+        config: {},
+        env: { OPENAI_API_KEY: 'env-key' },
+        keyVaults: {},
+        providerKey: ModelProvider.Azure,
+        settings: {},
+        source: 'custom',
+      }).runtimeProvider,
+    ).toBe(ModelProvider.OpenAI);
+    expect(
+      normalizeAiCatalogExecutionCredentials({
+        config: {},
+        env: { AZURE_API_KEY: 'env-key', AZURE_ENDPOINT: 'https://azure.example.test' },
+        keyVaults: {},
+        providerKey: 'custom-azure',
+        settings: { sdkType: ModelProvider.Azure },
+        source: 'custom',
+      }).runtimeProvider,
+    ).toBe(ModelProvider.Azure);
+  });
+
+  it.each([
+    [
+      ModelProvider.AzureAI,
+      { AZUREAI_ENDPOINT: 'https://azure-ai.example.test', AZUREAI_ENDPOINT_KEY: 'key' },
+    ],
+    [ModelProvider.GiteeAI, { GITEE_AI_API_KEY: 'key' }],
+    [ModelProvider.Github, { GITHUB_TOKEN: 'key' }],
+    [ModelProvider.OllamaCloud, { OLLAMA_CLOUD_API_KEY: 'key' }],
+    [ModelProvider.TencentCloud, { TENCENT_CLOUD_API_KEY: 'key' }],
+  ])('accepts the real %s ModelRuntime environment fallback', (providerKey, env) => {
+    expect(() =>
+      normalizeAiCatalogExecutionCredentials({
+        config: {},
+        env,
+        keyVaults: {},
+        providerKey,
+        settings: {},
+        source: 'builtin',
+      }),
+    ).not.toThrow();
   });
 });

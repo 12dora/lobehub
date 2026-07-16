@@ -85,7 +85,7 @@ const createPublishedProvider = async () => {
     providerKey: 'alpha',
     reason: 'create',
     secret: { operation: 'replace', value: 'published-key-v1' },
-    source: 'builtin',
+    source: 'custom',
   });
   let detail = await service.getDetail(provider.id);
   await service.createModel('admin', {

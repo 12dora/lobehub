@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
 import {
@@ -35,8 +35,14 @@ const cleanup = async () => {
   await db.delete(platformAiProviders);
 };
 
-beforeEach(cleanup);
-afterEach(cleanup);
+beforeEach(async () => {
+  vi.unstubAllEnvs();
+  await cleanup();
+});
+afterEach(async () => {
+  vi.unstubAllEnvs();
+  await cleanup();
+});
 
 const createService = (lifecycle?: AiCatalogAdminServiceOptions['lifecycle']) => {
   const invalidation = new InMemoryPlatformConfigInvalidationPublisher();
@@ -143,6 +149,43 @@ describe('AiCatalog publication transaction', () => {
     ).rejects.toBeInstanceOf(AiCatalogValidationError);
     expect(await db.select().from(platformResourceRevisions)).toHaveLength(0);
     expect((await service.getDetail(provider.id)).baseRevision).toBe(0);
+  });
+
+  it('publishes a chat-ready provider backed only by the ModelRuntime environment', async () => {
+    vi.stubEnv('OPENAI_API_KEY', 'environment-only-key');
+    const { service } = createService();
+    const provider = await service.createProviderDraft('admin', {
+      checkModel: 'chat',
+      displayName: 'Environment provider',
+      enabled: true,
+      providerKey: 'environment-provider',
+      reason: 'create',
+      source: 'custom',
+    });
+    let detail = await service.getDetail(provider.id);
+    await service.createModel('admin', {
+      enabled: true,
+      expectedDraftToken: detail.draftToken,
+      modelKey: 'chat',
+      providerId: provider.id,
+      reason: 'model',
+      type: 'chat',
+    });
+    await expect(
+      service.testProvider('admin', { id: provider.id, reason: 'environment readiness' }),
+    ).resolves.toMatchObject({ status: 'success' });
+    detail = await service.getDetail(provider.id);
+    await expect(
+      service.publishProvider('admin', {
+        expectedDraftToken: detail.draftToken,
+        expectedRevision: 0,
+        id: provider.id,
+        reason: 'publish environment provider',
+      }),
+    ).resolves.toMatchObject({ revision: 1 });
+    expect((await service.getDetail(provider.id)).published?.providerKey).toBe(
+      'environment-provider',
+    );
   });
 
   it('rechecks archive dependents after the provider lock before committing', async () => {

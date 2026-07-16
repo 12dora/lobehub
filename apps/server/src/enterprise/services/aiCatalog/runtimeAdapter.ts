@@ -350,6 +350,7 @@ export class AiCatalogExecutionResolver {
       config,
       keyVaults,
       providerKey,
+      source: typeof provider.source === 'string' ? provider.source : 'custom',
       settings,
     });
     return {

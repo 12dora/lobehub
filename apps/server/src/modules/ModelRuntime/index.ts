@@ -58,11 +58,65 @@ type ProviderKeyVaults = OpenAICompatibleKeyVault &
  * @param sdkType - The sdkType from provider settings
  * @returns The resolved runtime provider
  */
-const resolveRuntimeProvider = (provider: string, sdkType?: string): string => {
-  const isBuiltin = Object.values(ModelProvider).includes(provider as ModelProvider);
+export const resolveModelRuntimeProvider = (
+  provider: string,
+  sdkType?: string,
+  source?: string,
+): string => {
+  const isBuiltin = source
+    ? source === 'builtin'
+    : Object.values(ModelProvider).includes(provider as ModelProvider);
   if (isBuiltin) return provider;
 
-  return sdkType || 'openai';
+  return sdkType || ModelProvider.OpenAI;
+};
+
+type ModelRuntimeEnvironment = Record<string, string | undefined>;
+
+/** Mirrors the environment branches consumed by getParamsFromPayload/buildVertexOptions. */
+export const hasModelRuntimeEnvironmentFallback = (
+  provider: string,
+  env: ModelRuntimeEnvironment = process.env,
+): boolean => {
+  switch (provider) {
+    case ModelProvider.Azure: {
+      return Boolean(env.AZURE_API_KEY && env.AZURE_ENDPOINT);
+    }
+    case ModelProvider.AzureAI: {
+      return Boolean(env.AZUREAI_ENDPOINT_KEY && env.AZUREAI_ENDPOINT);
+    }
+    case ModelProvider.Bedrock: {
+      return Boolean(env.AWS_ACCESS_KEY_ID && env.AWS_SECRET_ACCESS_KEY && env.AWS_REGION);
+    }
+    case ModelProvider.Cloudflare: {
+      return Boolean(env.CLOUDFLARE_API_KEY && env.CLOUDFLARE_BASE_URL_OR_ACCOUNT_ID);
+    }
+    case ModelProvider.ComfyUI: {
+      return Boolean(env.COMFYUI_BASE_URL);
+    }
+    case ModelProvider.GiteeAI: {
+      return Boolean(env.GITEE_AI_API_KEY);
+    }
+    case ModelProvider.Github: {
+      return Boolean(env.GITHUB_TOKEN);
+    }
+    case ModelProvider.Ollama: {
+      return Boolean(env.OLLAMA_PROXY_URL);
+    }
+    case ModelProvider.OllamaCloud: {
+      return Boolean(env.OLLAMA_CLOUD_API_KEY);
+    }
+    case ModelProvider.TencentCloud: {
+      return Boolean(env.TENCENT_CLOUD_API_KEY);
+    }
+    case ModelProvider.VertexAI: {
+      return Boolean(env.VERTEXAI_CREDENTIALS && env.VERTEXAI_PROJECT);
+    }
+    default: {
+      const envPrefix = provider.toUpperCase().replaceAll(/[^A-Z0-9]/g, '_');
+      return Boolean(env[`${envPrefix}_API_KEY`]);
+    }
+  }
 };
 
 /**
@@ -425,7 +479,7 @@ export const initModelRuntimeFromDB = async (
 ): Promise<ModelRuntime> => {
   if (isPlatformManagedAiEnabled()) {
     const providerConfig = await resolvePlatformAiExecutionConfig(db, provider);
-    const runtimeProvider = resolveRuntimeProvider(provider, providerConfig.runtimeProvider);
+    const runtimeProvider = resolveModelRuntimeProvider(provider, providerConfig.runtimeProvider);
     const payload = buildPayloadFromKeyVaults(
       providerConfig.keyVaults as ProviderKeyVaults,
       runtimeProvider,
@@ -451,7 +505,7 @@ export const initModelRuntimeFromDB = async (
   // 2. Resolve the runtime provider for custom providers
   // For custom providers, use sdkType from settings (defaults to 'openai')
   const sdkType = providerConfig?.settings?.sdkType;
-  const runtimeProvider = resolveRuntimeProvider(provider, sdkType);
+  const runtimeProvider = resolveModelRuntimeProvider(provider, sdkType);
 
   // 3. Build ClientSecretPayload from keyVaults based on runtimeProvider
   // This ensures provider-specific fields (e.g., cloudflareBaseURLOrAccountID) are included
