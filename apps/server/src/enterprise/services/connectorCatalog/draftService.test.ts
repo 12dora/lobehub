@@ -55,6 +55,34 @@ describe('ConnectorCatalogDraftService', () => {
     );
   });
 
+  it('applies filters before pagination and advances the key cursor without N+1 detail reads', async () => {
+    const service = createService();
+    for (const [key, enabled] of [
+      ['alpha-hidden', false],
+      ['beta-visible', true],
+      ['gamma-visible', true],
+    ] as const) {
+      await service.createDraft('admin-user', {
+        credentialMode: 'none',
+        displayName: key,
+        enabled,
+        endpoint: 'https://connector.example.test/mcp',
+        key,
+        reason: `create ${key}`,
+        transport: 'http',
+      });
+    }
+
+    const first = await service.listDrafts({ enabled: true, limit: 1, query: 'visible' });
+    expect(first).toMatchObject({
+      items: [{ key: 'beta-visible' }],
+      nextCursor: 'beta-visible',
+    });
+    await expect(
+      service.listDrafts({ cursor: first.nextCursor!, enabled: true, limit: 1, query: 'visible' }),
+    ).resolves.toMatchObject({ items: [{ key: 'gamma-visible' }], nextCursor: null });
+  });
+
   it('applies secret replace/keep without echo and rejects stale revision or Draft token', async () => {
     const secret = 'shared-service-account-value-never-echo';
     const service = createService();

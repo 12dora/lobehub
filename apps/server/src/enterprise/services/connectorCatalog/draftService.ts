@@ -279,25 +279,17 @@ export class ConnectorCatalogDraftService {
   listDrafts = async (input: z.input<typeof adminConnectorListInputSchema>) => {
     const command = adminConnectorListInputSchema.parse(input);
     const page = await new PlatformConnectorCatalogRepository(this.db).listConnectors({
-      cursor: command.cursor ? { connectorKey: command.cursor, id: '' } : undefined,
+      credentialMode: command.credentialMode,
+      cursor: command.cursor,
+      enabled: command.enabled,
       limit: command.limit,
+      query: command.query,
+      status: command.status,
     });
-    const query = command.query?.toLocaleLowerCase();
-    const filtered = page.items.filter(
-      (item) =>
-        (command.credentialMode === undefined || item.credentialMode === command.credentialMode) &&
-        (command.enabled === undefined || item.enabled === command.enabled) &&
-        (command.status === undefined || item.status === command.status) &&
-        (query === undefined ||
-          item.connectorKey.toLocaleLowerCase().includes(query) ||
-          item.displayName.toLocaleLowerCase().includes(query)),
-    );
-    const items = await Promise.all(
-      filtered.map(async (item) => {
-        const { tools: _tools, ...draft } = (await loadConnectorDraft(this.db, item.id)).draft;
-        return draft;
-      }),
-    );
+    const items = page.items.map((item) => {
+      const { tools: _tools, ...draft } = toDraft(item, []);
+      return draft;
+    });
     return adminConnectorListOutputSchema.parse({
       items,
       nextCursor: page.nextCursor?.connectorKey ?? null,
