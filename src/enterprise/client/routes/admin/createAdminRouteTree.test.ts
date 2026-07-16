@@ -28,6 +28,7 @@ describe('createAdminRouteTree', () => {
     expect(paths).toContain('/admin');
     expect(paths).toContain('/admin/users');
     expect(paths).toContain('/admin/users/:id');
+    expect(paths).toContain('/admin/managed-resources');
     expect(paths).toContain('/admin/ai/providers');
     expect(paths).toContain('/admin/ai/providers/:id');
   });
@@ -38,6 +39,7 @@ describe('createAdminRouteTree', () => {
     expect(matchRoutes(routes, '/admin')).toBeTruthy();
     expect(matchRoutes(routes, '/admin/users')).toBeTruthy();
     expect(matchRoutes(routes, '/admin/users/u-1')).toBeTruthy();
+    expect(matchRoutes(routes, '/admin/managed-resources')).toBeTruthy();
     expect(matchRoutes(routes, '/admin/ai/providers/p-1')).toBeTruthy();
 
     const nestedUnknown = matchRoutes(routes, '/admin/does-not-exist');
@@ -53,6 +55,7 @@ describe('createAdminRouteTree', () => {
     const users = children.find((c) => c.path === 'users');
     const usersDetail = children.find((c) => c.path === 'users/:id');
     const settings = children.find((c) => c.path === 'settings');
+    const managedResources = children.find((c) => c.path === 'managed-resources');
 
     expect((users?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder).toBe(
       false,
@@ -63,12 +66,19 @@ describe('createAdminRouteTree', () => {
     expect((settings?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder).toBe(
       false,
     );
+    expect(
+      (managedResources?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder,
+    ).toBe(false);
 
     // Element is not the shared PlaceholderPage for users (lazy wrapper present)
     expect(users?.element).toBeTruthy();
     expect(usersDetail?.element).toBeTruthy();
 
     const placeholders = ADMIN_NAV_FLAT.filter((i) => i.placeholder);
-    expect(placeholders.every((i) => i.id !== 'users' && i.id !== 'users-detail')).toBe(true);
+    expect(
+      placeholders.every(
+        (i) => i.id !== 'users' && i.id !== 'users-detail' && i.id !== 'managed-resources',
+      ),
+    ).toBe(true);
   });
 });

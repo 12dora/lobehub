@@ -9,6 +9,7 @@ export type AdminNavLabelKey =
   | 'nav.userDetail'
   | 'nav.reauthComplete'
   | 'nav.settings'
+  | 'nav.managedResources'
   | 'nav.ai'
   | 'nav.aiProviders'
   | 'nav.aiProviderDetail'
@@ -92,6 +93,13 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
     // M05: production settings policy page
     placeholder: false,
     requiredPermissions: [PLATFORM_PERMISSIONS.SETTINGS_READ],
+  },
+  {
+    id: 'managed-resources',
+    labelKey: 'nav.managedResources',
+    path: '/admin/managed-resources',
+    placeholder: false,
+    requiredPermissions: [PLATFORM_PERMISSIONS.POLICY_READ],
   },
   {
     children: [

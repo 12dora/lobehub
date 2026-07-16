@@ -29,6 +29,12 @@ const ACTION_BY_CODE: Partial<Record<EnterpriseErrorCode, MappedEnterpriseError[
   [MANAGED_ERROR_CODES.MANAGED_SETTING_BY_ADMIN]: 'contact_admin',
 };
 
+/** M06 contract spelling; normalize to the legacy catalog entry for compatible UI copy/actions. */
+const RESOURCE_MANAGED_BY_PLATFORM = 'RESOURCE_MANAGED_BY_PLATFORM';
+
+const normalizeEnterpriseErrorCode = (code: string): string =>
+  code === RESOURCE_MANAGED_BY_PLATFORM ? MANAGED_ERROR_CODES.MANAGED_RESOURCE_BY_PLATFORM : code;
+
 const extractBody = (error: unknown): EnterpriseErrorBody | null => {
   if (!error || typeof error !== 'object') return null;
 
@@ -36,7 +42,10 @@ const extractBody = (error: unknown): EnterpriseErrorBody | null => {
   const data = (error as { data?: { errorData?: unknown } }).data;
   if (data?.errorData && typeof data.errorData === 'object' && data.errorData) {
     const body = data.errorData as EnterpriseErrorBody;
-    if (typeof body.code === 'string' && isEnterpriseErrorCode(body.code)) return body;
+    if (typeof body.code === 'string') {
+      const code = normalizeEnterpriseErrorCode(body.code);
+      if (isEnterpriseErrorCode(code)) return { ...body, code };
+    }
   }
 
   // Raw TRPCError cause: { data: EnterpriseErrorBody }
@@ -44,7 +53,7 @@ const extractBody = (error: unknown): EnterpriseErrorBody | null => {
   if (cause && typeof cause === 'object' && 'data' in cause) {
     const body = (cause as { data?: unknown }).data;
     if (body && typeof body === 'object' && 'code' in body) {
-      const code = String((body as { code: unknown }).code);
+      const code = normalizeEnterpriseErrorCode(String((body as { code: unknown }).code));
       if (isEnterpriseErrorCode(code)) return body as EnterpriseErrorBody;
     }
   }
@@ -53,7 +62,10 @@ const extractBody = (error: unknown): EnterpriseErrorBody | null => {
   const json = (error as { json?: { data?: { errorData?: unknown } } }).json;
   if (json?.data?.errorData && typeof json.data.errorData === 'object') {
     const body = json.data.errorData as EnterpriseErrorBody;
-    if (typeof body.code === 'string' && isEnterpriseErrorCode(body.code)) return body;
+    if (typeof body.code === 'string') {
+      const code = normalizeEnterpriseErrorCode(body.code);
+      if (isEnterpriseErrorCode(code)) return { ...body, code };
+    }
   }
 
   return null;
@@ -82,7 +94,7 @@ export const mapEnterpriseError = (error: unknown): MappedEnterpriseError | null
         ? String((error as { message?: unknown }).message ?? '')
         : '';
 
-  const codeCandidate = message.trim();
+  const codeCandidate = normalizeEnterpriseErrorCode(message.trim());
   if (!isEnterpriseErrorCode(codeCandidate)) return null;
 
   return {

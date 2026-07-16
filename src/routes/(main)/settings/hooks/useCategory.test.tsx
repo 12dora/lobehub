@@ -9,6 +9,16 @@ import { useUserStore } from '@/store/user';
 
 import { useCategory } from './useCategory';
 
+const managedResourcesRef = vi.hoisted(() => ({
+  current: {
+    agents: false,
+    aiModels: false,
+    aiProviders: false,
+    connectors: false,
+    skills: false,
+  },
+}));
+
 vi.hoisted(() => {
   Object.defineProperty(globalThis, 'localStorage', {
     configurable: true,
@@ -24,6 +34,10 @@ vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string) => key,
   }),
+}));
+
+vi.mock('@/features/ManagedResources', () => ({
+  useManagedResourceCapabilities: () => managedResourcesRef.current,
 }));
 
 const createWrapper = (showProvider: boolean) => {
@@ -59,6 +73,13 @@ const initialUserStoreState = useUserStore.getState();
 
 afterEach(() => {
   useUserStore.setState(initialUserStoreState, true);
+  managedResourcesRef.current = {
+    agents: false,
+    aiModels: false,
+    aiProviders: false,
+    connectors: false,
+    skills: false,
+  };
 });
 
 describe('settings useCategory', () => {
@@ -74,5 +95,21 @@ describe('settings useCategory', () => {
     const keys = result.current.flatMap((group) => group.items.map((item) => item.key));
 
     expect(keys).not.toContain(SettingsTabs.Provider);
+  });
+
+  it('removes managed definition/configuration tabs but keeps Connector OAuth navigation', () => {
+    managedResourcesRef.current = {
+      agents: false,
+      aiModels: true,
+      aiProviders: true,
+      connectors: true,
+      skills: true,
+    };
+
+    const keys = getItemKeys();
+    expect(keys).not.toContain(SettingsTabs.Provider);
+    expect(keys).not.toContain(SettingsTabs.ServiceModel);
+    expect(keys).not.toContain(SettingsTabs.Skill);
+    expect(keys).toContain(SettingsTabs.Connector);
   });
 });

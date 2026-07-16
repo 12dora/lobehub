@@ -54,7 +54,7 @@ const Private = memo<PrivateProps>(({ itemKey }) => {
         ? [{ type: 'divider' as const }, ...heterogeneousItems]
         : []),
       ...(platformItem ? [{ type: 'divider' as const }, platformItem] : []),
-    ];
+    ].filter(Boolean);
   }, [
     createAgentMenuItem,
     createGroupChatMenuItem,
