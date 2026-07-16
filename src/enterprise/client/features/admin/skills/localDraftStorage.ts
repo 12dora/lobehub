@@ -20,6 +20,7 @@ export type SkillDraftPersistenceStatus =
 
 export interface StoredSkillDraft {
   baseDraft: EditableSkillDraft;
+  baseDraftSequence: number;
   baseRevision: number;
   draft: EditableSkillDraft;
   savedAt: string;
@@ -27,11 +28,17 @@ export interface StoredSkillDraft {
 
 const storageKey = (id: string) => `${STORAGE_PREFIX}${id}`;
 const byteLength = (value: string) => new TextEncoder().encode(value).byteLength;
+const hasOnlyKeys = (value: Record<string, unknown>, keys: readonly string[]) => {
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
+};
 
 const normalizeIdentity = (value: unknown): EditableSkillIdentityDraft | null => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const identity = value as Record<string, unknown>;
   if (
+    !hasOnlyKeys(identity, ['description', 'displayName', 'distribution', 'enabled']) ||
     typeof identity.description !== 'string' ||
     identity.description.length > 4000 ||
     typeof identity.displayName !== 'string' ||
@@ -55,6 +62,7 @@ const normalizeVersionDraft = (value: unknown): EditableSkillVersionDraft | null
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const draft = value as Record<string, unknown>;
   if (
+    !hasOnlyKeys(draft, ['content', 'contentRef', 'manifestText', 'resourcesText', 'version']) ||
     typeof draft.content !== 'string' ||
     byteLength(draft.content) > 1_048_576 ||
     typeof draft.contentRef !== 'string' ||
@@ -87,6 +95,7 @@ const normalizeVersionDraft = (value: unknown): EditableSkillVersionDraft | null
 const normalizeDraft = (value: unknown): EditableSkillDraft | null => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const draft = value as Record<string, unknown>;
+  if (!hasOnlyKeys(draft, ['identity', 'versionDraft'])) return null;
   const identity = normalizeIdentity(draft.identity);
   const versionDraft = normalizeVersionDraft(draft.versionDraft);
   if (!identity || (draft.versionDraft !== null && !versionDraft)) return null;
@@ -106,6 +115,17 @@ export const saveSkillLocalDraft = (
   payload: StoredSkillDraft,
 ): SkillDraftPersistenceStatus => {
   if (typeof window === 'undefined') return 'unavailable';
+  if (
+    !Number.isInteger(payload.baseDraftSequence) ||
+    payload.baseDraftSequence < 0 ||
+    !Number.isInteger(payload.baseRevision) ||
+    payload.baseRevision < 0 ||
+    typeof payload.savedAt !== 'string' ||
+    !Number.isFinite(Date.parse(payload.savedAt))
+  ) {
+    removeStoredDraft(id);
+    return 'invalid';
+  }
   const rawPayload = JSON.stringify(payload);
   if (byteLength(rawPayload) > MAX_LOCAL_DRAFT_BYTES) {
     removeStoredDraft(id);
@@ -119,6 +139,7 @@ export const saveSkillLocalDraft = (
   }
   const safePayload = {
     baseDraft: normalizedBase,
+    baseDraftSequence: payload.baseDraftSequence,
     baseRevision: payload.baseRevision,
     draft: normalizedDraft,
     savedAt: payload.savedAt,
@@ -144,15 +165,40 @@ export const loadSkillLocalDraft = (id: string): StoredSkillDraft | null => {
   if (typeof window === 'undefined') return null;
   try {
     const raw = window.localStorage.getItem(storageKey(id));
-    if (!raw || byteLength(raw) > MAX_LOCAL_DRAFT_BYTES) return null;
+    if (!raw) return null;
+    if (byteLength(raw) > MAX_LOCAL_DRAFT_BYTES) {
+      removeStoredDraft(id);
+      return null;
+    }
     const parsed = JSON.parse(raw) as Partial<StoredSkillDraft>;
+    if (
+      !parsed ||
+      typeof parsed !== 'object' ||
+      Array.isArray(parsed) ||
+      !hasOnlyKeys(parsed as Record<string, unknown>, [
+        'baseDraft',
+        'baseDraftSequence',
+        'baseRevision',
+        'draft',
+        'savedAt',
+      ])
+    ) {
+      removeStoredDraft(id);
+      return null;
+    }
     const baseDraft = normalizeDraft(parsed.baseDraft);
     const draft = normalizeDraft(parsed.draft);
     if (
       !baseDraft ||
       !draft ||
+      typeof parsed.baseDraftSequence !== 'number' ||
+      !Number.isInteger(parsed.baseDraftSequence) ||
+      parsed.baseDraftSequence < 0 ||
       typeof parsed.baseRevision !== 'number' ||
+      !Number.isInteger(parsed.baseRevision) ||
+      parsed.baseRevision < 0 ||
       typeof parsed.savedAt !== 'string' ||
+      !Number.isFinite(Date.parse(parsed.savedAt)) ||
       containsEnterpriseSecretMaterial(parsed)
     ) {
       removeStoredDraft(id);
@@ -160,11 +206,13 @@ export const loadSkillLocalDraft = (id: string): StoredSkillDraft | null => {
     }
     return {
       baseDraft,
+      baseDraftSequence: parsed.baseDraftSequence,
       baseRevision: parsed.baseRevision,
       draft,
       savedAt: parsed.savedAt,
     };
   } catch {
+    removeStoredDraft(id);
     return null;
   }
 };

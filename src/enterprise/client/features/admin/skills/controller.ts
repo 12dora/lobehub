@@ -94,6 +94,19 @@ export const fingerprintSkillSnapshot = (snapshot: AdminSkillGetOutput): string 
     }),
   );
 
+export const shouldConfirmSkillHydration = (params: {
+  currentHydrationKey: string | null;
+  dirty: boolean;
+  hasSafeRecovery: boolean;
+  nextHydrationKey: string;
+}): boolean =>
+  Boolean(
+    params.currentHydrationKey &&
+    params.currentHydrationKey !== params.nextHydrationKey &&
+    params.dirty &&
+    !params.hasSafeRecovery,
+  );
+
 export const buildSkillUpdatePayload = (params: {
   draft: EditableSkillIdentityDraft;
   draftToken: string;

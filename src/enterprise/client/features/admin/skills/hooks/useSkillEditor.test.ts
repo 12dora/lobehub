@@ -1,29 +1,42 @@
 import { act, renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { saveSkillLocalDraft } from '../localDraftStorage';
+import { loadSkillLocalDraft, saveSkillLocalDraft } from '../localDraftStorage';
 import type { AdminSkillGetOutput } from '../types';
 import { useSkillEditor } from './useSkillEditor';
 
-const mocks = vi.hoisted(() => ({ useBlocker: vi.fn(() => ({ state: 'unblocked' })) }));
+interface ConfirmOptions {
+  onCancel: () => void;
+  onOk: () => void;
+}
+
+const mocks = vi.hoisted(() => ({
+  confirmModal: vi.fn((_options: ConfirmOptions) => ({ close: vi.fn(), destroy: vi.fn() })),
+  useBlocker: vi.fn(() => ({ state: 'unblocked' })),
+}));
 
 vi.mock('react-router', () => ({
   useBlocker: mocks.useBlocker,
 }));
 
 vi.mock('@lobehub/ui/base-ui', () => ({
-  confirmModal: vi.fn(),
+  confirmModal: mocks.confirmModal,
 }));
 
-const snapshot = (id = 'skill-1', revision = 3): AdminSkillGetOutput => ({
+const snapshot = (
+  id = 'skill-1',
+  revision = 3,
+  draftSequence = revision,
+  displayName = `Skill ${id}`,
+): AdminSkillGetOutput => ({
   baseRevision: revision,
   draft: {
     allowBuiltinOverride: false,
     currentVersionId: null,
     description: 'Safe description',
-    displayName: `Skill ${id}`,
+    displayName,
     distribution: 'default',
-    draftSequence: revision,
+    draftSequence,
     enabled: true,
     id,
     revision,
@@ -55,6 +68,7 @@ describe('useSkillEditor durable drafts', () => {
   it('restores a safe per-Skill draft and marks stale revision recovery as conflict', () => {
     saveSkillLocalDraft('skill-1', {
       baseDraft: editable(),
+      baseDraftSequence: 2,
       baseRevision: 2,
       draft: {
         ...editable(),
@@ -67,6 +81,28 @@ describe('useSkillEditor durable drafts', () => {
     expect(result.current.draft?.identity.displayName).toBe('Recovered local name');
     expect(result.current.dirty).toBe(true);
     expect(result.current.conflict).toBe(true);
+  });
+
+  it.each([
+    ['draft sequence', snapshot('skill-1', 3, 4), editable()],
+    ['safe base fingerprint', snapshot('skill-1', 3, 3, 'Server changed the name'), editable()],
+  ])('marks recovery conflict when the same revision has a changed %s', (_case, next, base) => {
+    saveSkillLocalDraft('skill-1', {
+      baseDraft: base,
+      baseDraftSequence: 3,
+      baseRevision: 3,
+      draft: {
+        ...editable(),
+        identity: { ...editable().identity, description: 'Local change' },
+      },
+      savedAt: new Date(0).toISOString(),
+    });
+
+    const { result } = renderHook(() => useSkillEditor(next));
+    expect(result.current.conflict).toBe(true);
+    expect(result.current.dirty).toBe(true);
+    expect(loadSkillLocalDraft('skill-1')?.baseDraftSequence).toBe(3);
+    expect(loadSkillLocalDraft('skill-1')?.baseDraft).toEqual(base);
   });
 
   it('keeps unsaved drafts isolated while switching between Skill ids', () => {
@@ -108,9 +144,58 @@ describe('useSkillEditor durable drafts', () => {
     expect(localStorage.getItem('aihub.admin.skills.draft.skill-1')).toBeNull();
   });
 
+  it('blocks same-page Skill hydration when an unsafe dirty draft has no durable copy', () => {
+    const { rerender, result } = renderHook(({ current }) => useSkillEditor(snapshot(current)), {
+      initialProps: { current: 'skill-1' },
+    });
+    act(() =>
+      result.current.updateVersionDraft({
+        content: '-----BEGIN PRIVATE KEY----- fake material',
+        contentRef: '',
+        manifestText: JSON.stringify({
+          description: 'Safe Skill',
+          displayName: 'Safe Skill',
+          localizedDescriptions: {},
+          localizedDisplayNames: {},
+          permissions: {
+            filesystem: 'none',
+            network: { allowedHosts: [], enabled: false },
+            tools: { allow: [] },
+          },
+          skillDependencies: [],
+          toolDependencies: [],
+        }),
+        resourcesText: '[]',
+        version: '1.0.0',
+      }),
+    );
+    expect(result.current.persistenceStatus).toBe('sensitive');
+
+    rerender({ current: 'skill-2' });
+    expect(result.current.activeSkillId).toBe('skill-1');
+    expect(result.current.pendingSwitchId).toBe('skill-2');
+    expect(result.current.draft?.versionDraft?.content).toContain('PRIVATE KEY');
+    expect(mocks.confirmModal).toHaveBeenCalledTimes(1);
+
+    const options = mocks.confirmModal.mock.calls[0][0];
+    act(() => options.onCancel());
+    expect(result.current.activeSkillId).toBe('skill-1');
+    expect(result.current.pendingSwitchId).toBeNull();
+    expect(result.current.draft?.versionDraft?.content).toContain('PRIVATE KEY');
+
+    rerender({ current: 'skill-3' });
+    expect(result.current.pendingSwitchId).toBe('skill-3');
+    const discardOptions = mocks.confirmModal.mock.calls[1][0];
+    act(() => discardOptions.onOk());
+    expect(result.current.activeSkillId).toBe('skill-3');
+    expect(result.current.pendingSwitchId).toBeNull();
+    expect(result.current.draft?.versionDraft).toBeNull();
+  });
+
   it('ignores recovery drafts and mutations for read-only auditors', () => {
     saveSkillLocalDraft('skill-1', {
       baseDraft: editable(),
+      baseDraftSequence: 3,
       baseRevision: 3,
       draft: {
         ...editable(),
