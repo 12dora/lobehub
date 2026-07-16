@@ -18,6 +18,7 @@ import {
   trustedPublishedConnectorSchema,
   webConnectorTransportSchema,
 } from '../../contracts/platformConnectors';
+import { throwStableConnectorSecretError } from './catalogAudit';
 import type {
   ConnectorCatalogSecretStore,
   ConnectorResolvedSecret,
@@ -151,7 +152,13 @@ const requireSecret = async (
   if (!fingerprint) {
     throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_CREDENTIAL_NOT_CONFIGURED');
   }
-  const resolved = await secrets.resolveSecretVersion({ connectorId, fingerprint, slot });
+  const resolved = await (async (): Promise<ConnectorResolvedSecret | null> => {
+    try {
+      return await secrets.resolveSecretVersion({ connectorId, fingerprint, slot });
+    } catch (error) {
+      return throwStableConnectorSecretError(error);
+    }
+  })();
   if (
     !resolved ||
     resolved.fingerprint !== fingerprint ||
@@ -281,11 +288,15 @@ export class ConnectorCatalogReadService {
         'sharedSecret',
         connector.sharedSecretFingerprint,
       );
-      return trustedPublishedConnectorSchema.parse({
-        ...base,
-        credentialMode: 'shared_service_account',
-        credentials: connectorSharedCredentialSchema.parse(secret.value),
-      });
+      try {
+        return trustedPublishedConnectorSchema.parse({
+          ...base,
+          credentialMode: 'shared_service_account',
+          credentials: connectorSharedCredentialSchema.parse(secret.value),
+        });
+      } catch (error) {
+        throwStableConnectorSecretError(error);
+      }
     }
     return trustedPublishedConnectorSchema.parse({
       ...base,

@@ -10,7 +10,12 @@ import {
   adminConnectorTestOutputSchema,
 } from '../../contracts/platformConnectors';
 import { PlatformAuditService } from '../platformAudit';
-import { appendConnectorFailureAudit, sanitizeConnectorReason } from './catalogAudit';
+import type { ConnectorFailureAuditWriter } from './catalogAudit';
+import {
+  appendConnectorFailureAudit,
+  sanitizeConnectorReason,
+  throwStableConnectorSecretError,
+} from './catalogAudit';
 import type {
   ConnectorCatalogCredentialProvider,
   ConnectorCatalogSecretStore,
@@ -28,13 +33,19 @@ export class ConnectorCatalogDiscoveryService {
     private readonly outbound: ConnectorOutboundClient,
     private readonly secrets: ConnectorCatalogSecretStore,
     private readonly credentials: ConnectorCatalogCredentialProvider,
+    private readonly failureAuditWriter?: ConnectorFailureAuditWriter,
   ) {}
 
-  private requestHeaders = async (draft: ConnectorDraft): Promise<Record<string, string>> =>
-    this.credentials.getHeaders({
-      connectorId: draft.id,
-      credentialMode: draft.credentialMode,
-    });
+  private requestHeaders = async (draft: ConnectorDraft): Promise<Record<string, string>> => {
+    try {
+      return await this.credentials.getHeaders({
+        connectorId: draft.id,
+        credentialMode: draft.credentialMode,
+      });
+    } catch (error) {
+      return throwStableConnectorSecretError(error);
+    }
+  };
 
   private discoverRemoteTools = async (draft: ConnectorDraft) => {
     const response = await this.outbound.requestJson({
@@ -96,12 +107,16 @@ export class ConnectorCatalogDiscoveryService {
         tools,
       });
     } catch (error) {
-      await appendConnectorFailureAudit(this.db, {
-        action: 'admin.connectors.discover',
-        actorUserId,
-        reason,
-        targetId: command.id,
-      });
+      await appendConnectorFailureAudit(
+        this.db,
+        {
+          action: 'admin.connectors.discover',
+          actorUserId,
+          reason,
+          targetId: command.id,
+        },
+        this.failureAuditWriter,
+      );
       throw error;
     }
   };
@@ -136,12 +151,16 @@ export class ConnectorCatalogDiscoveryService {
         error instanceof PlatformConnectorContractError &&
         error.code === 'PLATFORM_CONNECTOR_SSRF_BLOCKED'
       ) {
-        await appendConnectorFailureAudit(this.db, {
-          action: 'admin.connectors.test',
-          actorUserId,
-          reason,
-          targetId: command.id,
-        });
+        await appendConnectorFailureAudit(
+          this.db,
+          {
+            action: 'admin.connectors.test',
+            actorUserId,
+            reason,
+            targetId: command.id,
+          },
+          this.failureAuditWriter,
+        );
         throw error;
       }
       const errorCategory =

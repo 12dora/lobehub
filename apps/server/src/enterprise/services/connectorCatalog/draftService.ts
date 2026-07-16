@@ -15,6 +15,11 @@ import {
 } from '@/database/schemas/platform';
 import type { LobeChatDatabase, Transaction } from '@/database/type';
 
+import type {
+  ConnectorCurrentSecretLoader,
+  ConnectorSecretSlotSources,
+  TrustedConnectorSecretContext,
+} from '../../contracts/platformConnectors';
 import {
   adminConnectorCreateDraftInputSchema,
   adminConnectorDraftSchema,
@@ -27,6 +32,14 @@ import {
   normalizeAdminConnectorUpdateInput,
 } from '../../contracts/platformConnectors';
 import { PlatformAuditService } from '../platformAudit';
+import type { ConnectorFailureAuditWriter } from './catalogAudit';
+import {
+  appendConnectorFailureAudit,
+  connectorAuditSummary,
+  loadConnectorSecretSourcesSafe,
+  sanitizeConnectorReason,
+  throwStableConnectorSecretError,
+} from './catalogAudit';
 import type {
   ConnectorCatalogSecretStore,
   ConnectorDraft,
@@ -39,6 +52,18 @@ import { assertConnectorPersistentTextSafe } from './secretBoundary';
 
 type CreateDraftInput = z.input<typeof adminConnectorCreateDraftInputSchema>;
 type UpdateDraftInput = z.input<typeof adminConnectorUpdateDraftInputSchema>;
+
+const loadTrustedSecretContextSafe = async (
+  loader: ConnectorCurrentSecretLoader,
+  connectorId: string,
+  replacement: ConnectorSecretSlotSources,
+): Promise<TrustedConnectorSecretContext> => {
+  try {
+    return await loadTrustedConnectorSecretContext(loader, connectorId, replacement);
+  } catch (error) {
+    return throwStableConnectorSecretError(error);
+  }
+};
 
 interface PersistedSecretSlots {
   oauthClientSecretFingerprint: string | null;
@@ -215,18 +240,8 @@ export class ConnectorCatalogDraftService {
     private readonly db: LobeChatDatabase,
     private readonly secrets: ConnectorCatalogSecretStore,
     private readonly redirectUri: string,
+    private readonly failureAuditWriter?: ConnectorFailureAuditWriter,
   ) {}
-
-  private appendFailureAudit = async (action: string, actorUserId: string, targetId?: string) => {
-    await new PlatformAuditService(this.db).append({
-      action,
-      actorUserId,
-      reason: null,
-      result: 'failure',
-      targetId: targetId ?? null,
-      targetType: 'connector',
-    });
-  };
 
   private persistSlot = async (
     connectorId: string,
@@ -237,9 +252,13 @@ export class ConnectorCatalogDraftService {
   ): Promise<ConnectorStoredSecret | null> => {
     if (!configured || mutation?.operation === 'clear') return null;
     if (mutation?.operation === 'replace') {
-      return assertStoredSecret(
-        await this.secrets.persistSecret({ connectorId, slot, value: mutation.value }),
-      );
+      try {
+        return assertStoredSecret(
+          await this.secrets.persistSecret({ connectorId, slot, value: mutation.value }),
+        );
+      } catch (error) {
+        return throwStableConnectorSecretError(error);
+      }
     }
     if (!current) {
       throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_CREDENTIAL_NOT_CONFIGURED');
@@ -302,8 +321,9 @@ export class ConnectorCatalogDraftService {
   ): Promise<ConnectorDraftDetail> => {
     const command = adminConnectorCreateDraftInputSchema.parse(input);
     const connectorId = randomUUID();
+    let safeReason: string | null = null;
     try {
-      const secretContext = await loadTrustedConnectorSecretContext(this.secrets, connectorId, {
+      const secretContext = await loadTrustedSecretContextSafe(this.secrets, connectorId, {
         oauthClientSecret:
           command.credentialMode === 'per_user_oauth' &&
           command.oauthClientSecret?.operation === 'replace'
@@ -324,6 +344,7 @@ export class ConnectorCatalogDraftService {
         },
         secretContext,
       );
+      safeReason = normalized.command.reason;
       const mutations = {
         oauthClientSecret:
           normalized.command.credentialMode === 'per_user_oauth'
@@ -366,7 +387,20 @@ export class ConnectorCatalogDraftService {
         await new PlatformAuditService(tx).append({
           action: 'admin.connectors.createDraft',
           actorUserId,
-          afterDiff: { draft: after.draft },
+          afterDiff: {
+            connector: connectorAuditSummary(after.draft, [
+              'credentialMode',
+              'description',
+              'displayName',
+              'enabled',
+              'endpoint',
+              'key',
+              'oauthConfig',
+              'sort',
+              'tools',
+              'transport',
+            ]),
+          },
           reason: normalized.command.reason,
           result: 'success',
           targetId: connectorId,
@@ -375,7 +409,16 @@ export class ConnectorCatalogDraftService {
         return after;
       });
     } catch (error) {
-      await this.appendFailureAudit('admin.connectors.createDraft', actorUserId, connectorId);
+      await appendConnectorFailureAudit(
+        this.db,
+        {
+          action: 'admin.connectors.createDraft',
+          actorUserId,
+          reason: safeReason,
+          targetId: connectorId,
+        },
+        this.failureAuditWriter,
+      );
       throw error;
     }
   };
@@ -385,8 +428,26 @@ export class ConnectorCatalogDraftService {
     input: UpdateDraftInput,
   ): Promise<ConnectorDraftDetail> => {
     const patch = adminConnectorUpdateDraftInputSchema.parse(input);
+    let safeReason: string | null = null;
     try {
-      const secretContext = await loadTrustedConnectorSecretContext(this.secrets, patch.id, {
+      const currentSources = await loadConnectorSecretSourcesSafe(this.secrets, patch.id);
+      const replacementLeaves = collectConnectorSecretLeaves(
+        patch.oauthClientSecret?.operation === 'replace'
+          ? patch.oauthClientSecret.value
+          : undefined,
+        patch.sharedSecret?.operation === 'replace' ? patch.sharedSecret.value : undefined,
+      );
+      safeReason = assertConnectorPersistentTextSafe(
+        patch.reason,
+        new Set([
+          ...collectConnectorSecretLeaves(
+            currentSources.oauthClientSecret,
+            currentSources.sharedSecret,
+          ),
+          ...replacementLeaves,
+        ]),
+      );
+      const secretContext = await loadTrustedSecretContextSafe(this.secrets, patch.id, {
         oauthClientSecret:
           patch.oauthClientSecret?.operation === 'replace'
             ? patch.oauthClientSecret.value
@@ -444,8 +505,15 @@ export class ConnectorCatalogDraftService {
         await new PlatformAuditService(tx).append({
           action: 'admin.connectors.updateDraft',
           actorUserId,
-          afterDiff: { draft: after.draft },
-          beforeDiff: { draft: current.draft },
+          afterDiff: {
+            connector: connectorAuditSummary(
+              after.draft,
+              Object.keys(normalized.patch).filter(
+                (key) => !['expectedDraftToken', 'expectedRevision', 'id', 'reason'].includes(key),
+              ),
+            ),
+          },
+          beforeDiff: { connector: connectorAuditSummary(current.draft) },
           configRevision: after.draft.revision,
           reason: normalized.patch.reason,
           result: 'success',
@@ -455,19 +523,25 @@ export class ConnectorCatalogDraftService {
         return after;
       });
     } catch (error) {
-      await this.appendFailureAudit('admin.connectors.updateDraft', actorUserId, patch.id);
+      await appendConnectorFailureAudit(
+        this.db,
+        {
+          action: 'admin.connectors.updateDraft',
+          actorUserId,
+          reason: safeReason,
+          targetId: patch.id,
+        },
+        this.failureAuditWriter,
+      );
       throw error;
     }
   };
 
   deleteDraft = async (actorUserId: string, input: z.input<typeof deleteDraftInputSchema>) => {
     const command = deleteDraftInputSchema.parse(input);
+    let safeReason: string | null = null;
     try {
-      const sources = await this.secrets.loadCurrentSecretSources(command.id);
-      const reason = assertConnectorPersistentTextSafe(
-        command.reason,
-        collectConnectorSecretLeaves(sources.oauthClientSecret, sources.sharedSecret),
-      );
+      safeReason = await sanitizeConnectorReason(this.secrets, command.id, command.reason);
       return await this.db.transaction(async (tx) => {
         const [locked] = await tx
           .select()
@@ -491,8 +565,8 @@ export class ConnectorCatalogDraftService {
         const audit = await new PlatformAuditService(tx).append({
           action: 'admin.connectors.deleteDraft',
           actorUserId,
-          beforeDiff: { draft: current.draft },
-          reason,
+          beforeDiff: { connector: connectorAuditSummary(current.draft) },
+          reason: safeReason,
           result: 'success',
           targetId: command.id,
           targetType: 'connector',
@@ -500,7 +574,16 @@ export class ConnectorCatalogDraftService {
         return { auditId: audit.id };
       });
     } catch (error) {
-      await this.appendFailureAudit('admin.connectors.deleteDraft', actorUserId, command.id);
+      await appendConnectorFailureAudit(
+        this.db,
+        {
+          action: 'admin.connectors.deleteDraft',
+          actorUserId,
+          reason: safeReason,
+          targetId: command.id,
+        },
+        this.failureAuditWriter,
+      );
       throw error;
     }
   };

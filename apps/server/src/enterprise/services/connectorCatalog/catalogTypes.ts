@@ -7,6 +7,7 @@ import type {
   ConnectorCurrentSecretLoader,
 } from '../../contracts/platformConnectors';
 import type { PlatformConfigInvalidationPublisher } from '../platformConfigInvalidation';
+import type { ConnectorFailureAuditWriter } from './catalogAudit';
 import { PlatformConnectorContractError } from './errors';
 
 export type ConnectorDraft = z.infer<typeof adminConnectorDraftSchema>;
@@ -49,6 +50,7 @@ export interface ConnectorCatalogLifecycle {
 
 export interface ConnectorCatalogServiceOptions {
   credentials?: ConnectorCatalogCredentialProvider;
+  failureAuditWriter?: ConnectorFailureAuditWriter;
   invalidation?: PlatformConfigInvalidationPublisher;
   lifecycle?: ConnectorCatalogLifecycle;
   redirectUri: string;
