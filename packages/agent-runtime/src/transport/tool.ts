@@ -34,8 +34,6 @@ export interface ToolRunContext {
   callIndex: number;
   effectiveManifestMap: Record<string, any>;
   groupId?: string;
-  /** True only when this single call is resuming from an explicit human approval. */
-  humanApproved?: boolean;
   messageId?: string;
   mode: 'batch' | 'single';
   operationId: string;

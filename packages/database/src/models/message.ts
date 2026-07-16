@@ -2340,6 +2340,22 @@ export class MessageModel {
       .where(and(eq(messagePlugins.id, id), this.pluginsOwnership()));
   };
 
+  /** Single-winner approval transition; stale/double-click approvals return false. */
+  approvePendingMessagePlugin = async (id: string): Promise<boolean> => {
+    const rows = await this.db
+      .update(messagePlugins)
+      .set({ intervention: { status: 'approved' } })
+      .where(
+        and(
+          eq(messagePlugins.id, id),
+          this.pluginsOwnership(),
+          sql`${messagePlugins.intervention}->>'status' = 'pending'`,
+        ),
+      )
+      .returning({ id: messagePlugins.id });
+    return rows.length === 1;
+  };
+
   /**
    * Fetch the `message_plugins` row associated with a tool message. Tool-call
    * metadata (identifier / apiName / arguments / type / toolCallId /

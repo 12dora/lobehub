@@ -6,6 +6,7 @@ import { AiAgentService } from '../index';
 
 const {
   mockCreateOperation,
+  mockApprovePendingMessagePlugin,
   mockFindById,
   mockFindMessagePlugin,
   mockMessageCreate,
@@ -14,6 +15,7 @@ const {
   mockUpdateToolMessage,
 } = vi.hoisted(() => ({
   mockCreateOperation: vi.fn(),
+  mockApprovePendingMessagePlugin: vi.fn(),
   mockFindById: vi.fn(),
   mockFindMessagePlugin: vi.fn(),
   mockMessageCreate: vi.fn(),
@@ -30,6 +32,7 @@ vi.mock('@/libs/trusted-client', () => ({
 
 vi.mock('@/database/models/message', () => ({
   MessageModel: vi.fn().mockImplementation(() => ({
+    approvePendingMessagePlugin: mockApprovePendingMessagePlugin,
     create: mockMessageCreate,
     getLatestNonToolMessageId: vi.fn().mockResolvedValue(undefined),
     getLatestSpineMessageId: vi.fn().mockResolvedValue(undefined),
@@ -176,6 +179,7 @@ describe('AiAgentService.execAgent - resumeApproval', () => {
     mockMessageQuery.mockResolvedValue([{ content: 'hi', id: 'history-1', role: 'user' }]);
     mockMessageCreate.mockResolvedValue({ id: 'assistant-msg-new' });
     mockUpdateMessagePlugin.mockResolvedValue(undefined);
+    mockApprovePendingMessagePlugin.mockResolvedValue(true);
     mockUpdateToolMessage.mockResolvedValue(undefined);
     // `MessageModel` is fully mocked above, so the service never touches the
     // raw `db` arg — cast an empty stub through `unknown` to satisfy the
@@ -201,9 +205,7 @@ describe('AiAgentService.execAgent - resumeApproval', () => {
         },
       });
 
-      expect(mockUpdateMessagePlugin).toHaveBeenCalledWith('tool-msg-1', {
-        intervention: { status: 'approved' },
-      });
+      expect(mockApprovePendingMessagePlugin).toHaveBeenCalledWith('tool-msg-1');
       // `approved` decision never writes tool content — the content arrives
       // when the approved tool actually executes.
       expect(mockUpdateToolMessage).not.toHaveBeenCalled();

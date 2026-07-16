@@ -75,9 +75,13 @@ export class HumanInterventionHandler {
       return { newState: state, nextContext: undefined };
     }
 
-    await this.messageModel.updateMessagePlugin(toolMessageId, {
-      intervention: { status: 'approved' },
-    });
+    const plugin = await this.messageModel.findMessagePlugin(toolMessageId);
+    if (!plugin || (plugin.toolCallId && plugin.toolCallId !== approvedToolCall.id)) {
+      log('approve tool receipt mismatch');
+      return { newState: state, nextContext: undefined };
+    }
+    const approved = await this.messageModel.approvePendingMessagePlugin(toolMessageId);
+    if (!approved) return { newState: state, nextContext: undefined };
 
     const newState = structuredClone(state);
     newState.lastModified = new Date().toISOString();
@@ -87,6 +91,11 @@ export class HumanInterventionHandler {
     // Keep waiting_for_human while other tools remain pending; resume to
     // running when this was the last one.
     newState.status = newState.pendingToolsCalling.length > 0 ? 'waiting_for_human' : 'running';
+    const connectorApprovalReceipt = (plugin.state as Record<string, unknown> | undefined)
+      ?.platformConnectorApprovalReceipt;
+    if (connectorApprovalReceipt) {
+      newState.metadata = { ...newState.metadata, connectorApprovalReceipt };
+    }
 
     hookDispatcher
       .dispatch(

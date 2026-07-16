@@ -95,6 +95,10 @@ import { shouldEnableBuiltinSkill } from '@/helpers/skillFilters';
 import { buildConnectorManifests } from '@/libs/mcp/buildConnectorManifests';
 import { patchManifestWithPermissions } from '@/libs/mcp/connectorPermissionCheck';
 import { signOperationJwt, signUserJWT } from '@/libs/trpc/utils/internalJwt';
+import {
+  type ConnectorApprovalReceipt,
+  ConnectorOperationProofSigner,
+} from '@/server/enterprise/services/connectorCatalog/operationProofSigner';
 import { buildManagedConnectorManifests } from '@/server/enterprise/services/connectorCatalog/runtimeIntegration';
 import {
   getEffectiveMemorySettings,
@@ -1297,6 +1301,7 @@ export class AiAgentService {
     // tool_call_id / apiName / identifier / arguments / type fields live on
     // the plugin row and must be fetched separately.
     let resumeApprovalPlugin: MessagePluginItem | undefined;
+    let trustedConnectorApprovalReceipt: ConnectorApprovalReceipt | undefined;
 
     if (resumeApproval) {
       if (!resumeParentMessage) {
@@ -1328,9 +1333,28 @@ export class AiAgentService {
 
       const { decision, rejectionReason } = resumeApproval;
       if (decision === 'approved') {
-        await this.messageModel.updateMessagePlugin(resumeApproval.parentMessageId, {
-          intervention: { status: 'approved' },
-        });
+        const rawReceipt = (resumeApprovalPlugin.state as Record<string, unknown> | undefined)
+          ?.platformConnectorApprovalReceipt;
+        if (rawReceipt) {
+          const receipt = new ConnectorOperationProofSigner().verifyApprovalReceipt(rawReceipt);
+          const owner = await this.agentOperationModel.findById(receipt.proof.operationId);
+          if (
+            receipt.toolCallId !== resumeApproval.toolCallId ||
+            receipt.proof.userId !== this.userId ||
+            receipt.proof.agentId !== resolvedAgentId ||
+            receipt.proof.connectorKey !== resumeApprovalPlugin.identifier ||
+            owner?.userId !== this.userId ||
+            owner.agentId !== resolvedAgentId ||
+            owner.status !== 'waiting_for_human'
+          ) {
+            throw new Error('resumeApproval connector receipt ownership mismatch');
+          }
+          trustedConnectorApprovalReceipt = receipt;
+        }
+        const approved = await this.messageModel.approvePendingMessagePlugin(
+          resumeApproval.parentMessageId,
+        );
+        if (!approved) throw new Error('resumeApproval is stale or already consumed');
       } else {
         // rejected / rejected_continue both write the same rejection content
         // + intervention state. The difference surfaces later in how the new
@@ -2375,6 +2399,8 @@ export class AiAgentService {
       // are never read or used. Feature-off/non-enforced keeps the exact legacy path.
       let connectorsMcp: DecryptedConnector[] = [];
       const managedConnectors = await buildManagedConnectorManifests({
+        agentId: resolvedAgentId,
+        approvedReceipt: trustedConnectorApprovalReceipt,
         connectorKeys: agentPlugins,
         db: this.db,
         operationId,
@@ -2906,14 +2932,16 @@ export class AiAgentService {
             toolExecutorMap[id] = 'client';
           }
         }
-        for (const plugin of installedPlugins) {
-          if (plugin.customParams?.mcp?.type === 'stdio' && manifestMap.has(plugin.identifier)) {
-            toolExecutorMap[plugin.identifier] = 'client';
+        if (managedConnectors.mode !== 'enforced') {
+          for (const plugin of installedPlugins) {
+            if (plugin.customParams?.mcp?.type === 'stdio' && manifestMap.has(plugin.identifier)) {
+              toolExecutorMap[plugin.identifier] = 'client';
+            }
           }
-        }
-        for (const connector of connectorsMcp) {
-          if (connector.mcpConnectionType === 'stdio' && manifestMap.has(connector.identifier)) {
-            toolExecutorMap[connector.identifier] = 'client';
+          for (const connector of connectorsMcp) {
+            if (connector.mcpConnectionType === 'stdio' && manifestMap.has(connector.identifier)) {
+              toolExecutorMap[connector.identifier] = 'client';
+            }
           }
         }
       }
@@ -3629,6 +3657,7 @@ export class AiAgentService {
           topicId,
           trigger,
         },
+        connectorApprovalReceipt: trustedConnectorApprovalReceipt,
         autoStart,
         botContext,
         botPlatformContext,

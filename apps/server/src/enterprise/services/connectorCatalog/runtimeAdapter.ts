@@ -51,7 +51,7 @@ export interface ConnectorRuntimeAuditWriter {
   appendSharedCall: (params: {
     connectorId: string;
     operationId: string;
-    outcome: 'allowed' | 'denied' | 'failed' | 'rate_limited';
+    outcome: 'admitted' | 'allowed' | 'denied' | 'failed' | 'rate_limited';
     toolKey: string;
     userId: string;
   }) => Promise<void>;
@@ -185,6 +185,7 @@ export class PlatformConnectorRuntimeAdapter {
     try {
       const args = parseArguments(invocation.arguments);
       let headers: Record<string, string> | undefined;
+      const taintedValues: string[] = [];
       if (connector.credentialMode === 'shared_service_account') {
         const allowed = await this.dependencies.rateLimiter.consume(
           `${connector.id}:${invocation.userId}`,
@@ -193,6 +194,7 @@ export class PlatformConnectorRuntimeAdapter {
           await this.auditShared(invocation, connector.id, 'rate_limited');
           throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_RATE_LIMITED');
         }
+        await this.auditShared(invocation, connector.id, 'admitted');
         await this.dependencies.outbound.preflight(connector.endpoint);
         const secret = await resolveConnectorSecretVersion(
           this.dependencies.secrets,
@@ -200,7 +202,9 @@ export class PlatformConnectorRuntimeAdapter {
           'sharedSecret',
           connector.sharedSecretFingerprint,
         );
-        headers = sharedCredentialHeaders(connectorSharedCredentialSchema.parse(secret.value));
+        const credential = connectorSharedCredentialSchema.parse(secret.value);
+        headers = sharedCredentialHeaders(credential);
+        taintedValues.push(...collectSecretStrings(credential), ...Object.values(headers));
       } else if (connector.credentialMode === 'per_user_oauth') {
         const allowedScopes = connector.oauthConfig?.scopes ?? [];
         let binding = await this.loadBinding(
@@ -210,6 +214,7 @@ export class PlatformConnectorRuntimeAdapter {
           allowedScopes,
         );
         await this.dependencies.outbound.preflight(connector.endpoint);
+        binding = await this.reloadExactBinding(invocation, binding, allowedScopes);
         const now = (this.dependencies.clock ?? (() => new Date()))();
         const tokenExpiresAt = binding.expiresAt;
         if (
@@ -217,17 +222,13 @@ export class PlatformConnectorRuntimeAdapter {
           tokenExpiresAt.getTime() - now.getTime() <= DEFAULT_REFRESH_WINDOW_MS &&
           this.dependencies.refreshBinding
         ) {
-          try {
-            await this.dependencies.refreshBinding(invocation.userId, connector.id);
-            binding = await this.loadBinding(
-              invocation,
-              connector.id,
-              snapshot.proof.publishedRevision,
-              allowedScopes,
-            );
-          } catch (error) {
-            if (tokenExpiresAt <= now) throw error;
-          }
+          await this.dependencies.refreshBinding(invocation.userId, connector.id);
+          binding = await this.loadBinding(
+            invocation,
+            connector.id,
+            snapshot.proof.publishedRevision,
+            allowedScopes,
+          );
         }
         if (binding.expiresAt && binding.expiresAt <= now) {
           throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_BINDING_NOT_FOUND');
@@ -246,7 +247,13 @@ export class PlatformConnectorRuntimeAdapter {
         ) {
           throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_CREDENTIAL_NOT_CONFIGURED');
         }
+        await this.reloadExactBinding(invocation, binding, allowedScopes);
         headers = { Authorization: `Bearer ${token.data.accessToken}` };
+        taintedValues.push(
+          token.data.accessToken,
+          ...(token.data.refreshToken ? [token.data.refreshToken] : []),
+          ...Object.values(headers),
+        );
       } else {
         await this.dependencies.outbound.preflight(connector.endpoint);
       }
@@ -263,7 +270,7 @@ export class PlatformConnectorRuntimeAdapter {
         secretBearing: headers !== undefined,
         url: connector.endpoint,
       });
-      const result = parseRuntimeResponse(response.body);
+      const result = parseRuntimeResponse(response.body, taintedValues);
       if (connector.credentialMode === 'shared_service_account') {
         await this.auditShared(invocation, connector.id, 'allowed');
       }
@@ -286,7 +293,7 @@ export class PlatformConnectorRuntimeAdapter {
   private auditShared = async (
     invocation: PlatformConnectorRuntimeInvocation,
     connectorId: string,
-    outcome: 'allowed' | 'denied' | 'failed' | 'rate_limited',
+    outcome: 'admitted' | 'allowed' | 'denied' | 'failed' | 'rate_limited',
   ): Promise<void> => {
     await this.dependencies.audit.appendSharedCall({
       connectorId,
@@ -318,6 +325,30 @@ export class PlatformConnectorRuntimeAdapter {
     }
     assertConnectorScopesAllowed(allowedScopes, binding.scopes);
     return binding;
+  };
+
+  private reloadExactBinding = async (
+    invocation: PlatformConnectorRuntimeInvocation,
+    expected: PlatformUserConnectorBindingItem,
+    allowedScopes: string[],
+  ): Promise<PlatformUserConnectorBindingItem> => {
+    const current = await this.loadBinding(
+      invocation,
+      expected.connectorId,
+      expected.publishedRevision,
+      allowedScopes,
+    );
+    if (
+      current.id !== expected.id ||
+      current.revision !== expected.revision ||
+      current.status !== expected.status ||
+      current.oauthTokenRef !== expected.oauthTokenRef ||
+      current.tokenFingerprint !== expected.tokenFingerprint ||
+      current.revokedAt?.getTime() !== expected.revokedAt?.getTime()
+    ) {
+      throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_BINDING_OWNERSHIP_MISMATCH');
+    }
+    return current;
   };
 }
 
@@ -352,14 +383,48 @@ const sharedCredentialHeaders = (
     : {}),
 });
 
+const collectSecretStrings = (value: unknown): string[] => {
+  if (typeof value === 'string') return value.length > 0 ? [value] : [];
+  if (Array.isArray(value)) return value.flatMap(collectSecretStrings);
+  if (!isPlainRecord(value)) return [];
+  return Object.values(value).flatMap(collectSecretStrings);
+};
+
+const redactTaintedString = (value: string, taintedValues: string[]): string => {
+  let redacted = value;
+  for (const taint of new Set(taintedValues.filter(Boolean))) {
+    const variants = new Set([
+      taint,
+      encodeURIComponent(taint),
+      Buffer.from(taint).toString('base64'),
+      Buffer.from(taint).toString('base64url'),
+    ]);
+    for (const variant of variants) redacted = redacted.split(variant).join('[REDACTED]');
+  }
+  return redacted;
+};
+
+const redactTaintedDeep = (value: unknown, taintedValues: string[]): unknown => {
+  if (typeof value === 'string') return redactTaintedString(value, taintedValues);
+  if (Array.isArray(value)) return value.map((item) => redactTaintedDeep(item, taintedValues));
+  if (!isPlainRecord(value)) return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, child]) => [
+      redactTaintedString(key, taintedValues),
+      redactTaintedDeep(child, taintedValues),
+    ]),
+  );
+};
+
 const parseRuntimeResponse = (
   body: unknown,
+  taintedValues: string[],
 ): { content: string; state?: Record<string, unknown> } => {
   if (!isPlainRecord(body) || 'error' in body) {
     throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_TRANSPORT_UNSUPPORTED');
   }
   const value = 'result' in body ? body.result : body;
-  const redacted = redactDeep(value);
+  const redacted = redactDeep(redactTaintedDeep(value, taintedValues));
   const content = typeof redacted === 'string' ? redacted : JSON.stringify(redacted);
   return {
     content,
