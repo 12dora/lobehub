@@ -41,6 +41,11 @@ const schemaAtDepth = (depth: number) => {
   return schema;
 };
 
+const bothBoundaries = (tool: Record<string, unknown>) => [
+  () => parseDiscoveredConnectorTools([tool]),
+  () => parseConnectorToolsForWrite([{ ...tool, id: 'tool-1' }]),
+];
+
 describe('connector tool definition validator', () => {
   it('normalizes discovery and write through the same strict object boundary', () => {
     const withoutOutput = { ...baseTool, outputSchema: undefined };
@@ -132,6 +137,33 @@ describe('connector tool definition validator', () => {
     }
   });
 
+  it('scans every annotation string leaf and dynamic annotation object key', () => {
+    const secret = 'Authorization: Bearer annotation-never-echo-this-token';
+    const schemas = [
+      { description: secret },
+      { title: secret },
+      { $comment: secret },
+      { examples: [{ nested: { value: secret } }] },
+      { examples: [{ [secret]: 'safe-value' }] },
+    ];
+    for (const schema of schemas) {
+      for (const operation of bothBoundaries({ ...baseTool, outputSchema: schema })) {
+        expectBoundaryCode(operation, CONNECTOR_TOOL_VALIDATION_CODES.schemaSecret, secret);
+      }
+    }
+    for (const operation of bothBoundaries({
+      ...baseTool,
+      inputSchema: {
+        properties: {
+          apiKey: { description: 'User-provided API key', type: 'string' },
+          password: { type: 'string' },
+        },
+      },
+    })) {
+      expect(operation).not.toThrow();
+    }
+  });
+
   it('fails closed on external references and dangerous execution/outbound keywords', () => {
     for (const schema of [
       { $ref: 'https://attacker.example/schema.json' },
@@ -157,6 +189,77 @@ describe('connector tool definition validator', () => {
         },
       ]),
     ).not.toThrow();
+  });
+
+  it('allows only exact local $ref and rejects the complete mixed-case ref family', () => {
+    for (const schema of [
+      { $ref: 'https://attacker.example/schema.json' },
+      { $dynamicRef: '#/$defs/value' },
+      { $recursiveRef: '#' },
+      { $recursiveAnchor: true },
+      { $DynamicRef: '#/$defs/value' },
+      { $REF: '#/$defs/value' },
+      { $unknownDialect: 'value' },
+      { 'x-schema-ref': '#/$defs/value' },
+      { ref: '#/$defs/value' },
+      { refFamily: '#/$defs/value' },
+    ]) {
+      for (const operation of bothBoundaries({ ...baseTool, inputSchema: schema })) {
+        expectBoundaryCode(operation, CONNECTOR_TOOL_VALIDATION_CODES.dangerousKeyword);
+      }
+    }
+    for (const operation of bothBoundaries({
+      ...baseTool,
+      inputSchema: { $defs: { value: { type: 'string' } }, $ref: '#/$defs/value' },
+    })) {
+      expect(operation).not.toThrow();
+    }
+  });
+
+  it('rejects every nested non-JSON domain value instead of relying on JSON.stringify', () => {
+    const customPrototype = Object.assign(Object.create({ inherited: true }), { type: 'object' });
+    let getterCalled = false;
+    const getterObject = {};
+    Object.defineProperty(getterObject, 'value', {
+      enumerable: true,
+      get: () => {
+        getterCalled = true;
+        return 'unsafe';
+      },
+    });
+    const nonEnumerable = { type: 'object' };
+    Object.defineProperty(nonEnumerable, 'hidden', { enumerable: false, value: 'unsafe' });
+    const symbolKey = { type: 'object' } as Record<PropertyKey, unknown>;
+    symbolKey[Symbol('hidden')] = 'unsafe';
+    const cycle: Record<string, unknown> = {};
+    cycle.self = cycle;
+    const invalidValues: unknown[] = [
+      new Date(),
+      customPrototype,
+      getterObject,
+      nonEnumerable,
+      symbolKey,
+      () => 'unsafe',
+      undefined,
+      Symbol('unsafe'),
+      1n,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      cycle,
+    ];
+
+    for (const value of invalidValues) {
+      for (const operation of bothBoundaries({
+        ...baseTool,
+        inputSchema: { properties: { value: { default: value } } },
+      })) {
+        expectBoundaryCode(operation, CONNECTOR_TOOL_VALIDATION_CODES.schemaInvalid);
+      }
+    }
+    for (const operation of bothBoundaries({ ...baseTool, inputSchema: getterObject })) {
+      expectBoundaryCode(operation, CONNECTOR_TOOL_VALIDATION_CODES.schemaInvalid);
+    }
+    expect(getterCalled).toBe(false);
   });
 
   it('requires confirmation for high and critical tools at both boundaries', () => {

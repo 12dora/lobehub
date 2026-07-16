@@ -31,7 +31,16 @@ export type ConnectorToolValidationCode =
 const VALIDATION_CODE_SET = new Set<ConnectorToolValidationCode>(
   Object.values(CONNECTOR_TOOL_VALIDATION_CODES),
 );
-const SECRET_BEARING_SCHEMA_KEYS = new Set(['const', 'default', 'enum', 'example', 'examples']);
+const SECRET_BEARING_SCHEMA_KEYS = new Set([
+  '$comment',
+  'const',
+  'default',
+  'description',
+  'enum',
+  'example',
+  'examples',
+  'title',
+]);
 const PROPERTY_CONTAINER_KEYS = new Set([
   '$defs',
   'definitions',
@@ -42,6 +51,8 @@ const PROPERTY_CONTAINER_KEYS = new Set([
 const DANGEROUS_SCHEMA_KEYS = new Set([
   '$dynamicanchor',
   '$dynamicref',
+  '$recursiveanchor',
+  '$recursiveref',
   '$id',
   '$schema',
   '__proto__',
@@ -81,7 +92,7 @@ interface ConnectorToolSecurityFields {
 interface SchemaFrame {
   depth: number;
   parentKeyword?: string;
-  secretBearing: boolean;
+  scanAnnotationSecrets: boolean;
   value: unknown;
 }
 
@@ -118,11 +129,25 @@ const byteLength = (value: unknown): number | null => {
 
 const isDangerousSchemaKeyword = (key: string, value: unknown, parentKeyword?: string): boolean => {
   const normalized = key.toLowerCase();
-  if (normalized === '$ref') return typeof value !== 'string' || !LOCAL_SCHEMA_REF.test(value);
-  if (DANGEROUS_SCHEMA_KEYS.has(normalized)) return true;
   if (PROPERTY_CONTAINER_KEYS.has(parentKeyword ?? '')) {
     return normalized === '__proto__' || normalized === 'constructor' || normalized === 'prototype';
   }
+  if (key === '$ref') return typeof value !== 'string' || !LOCAL_SCHEMA_REF.test(value);
+  const compact = normalized.replaceAll(/[^a-z$]/g, '');
+  if (
+    normalized === '$ref' ||
+    /^(?:anchor|dynamicanchor|dynamicref|recursiveanchor|recursiveref|ref|reference)$/u.test(
+      compact,
+    ) ||
+    compact.startsWith('ref') ||
+    compact.endsWith('ref') ||
+    compact.endsWith('anchor') ||
+    (normalized.startsWith('x-') && compact.includes('ref'))
+  ) {
+    return true;
+  }
+  if (key.startsWith('$') && !['$comment', '$defs'].includes(key)) return true;
+  if (DANGEROUS_SCHEMA_KEYS.has(normalized)) return true;
   return (
     DANGEROUS_OPERATION_KEYS.has(normalized) ||
     (normalized.startsWith('x-') && DANGEROUS_EXTENSION_TOKEN.test(normalized))
@@ -134,16 +159,10 @@ const validateSchemaPair = (
   outputSchema: Record<string, unknown>,
   ctx: z.RefinementCtx,
 ) => {
-  for (const schema of [inputSchema, outputSchema]) {
-    const bytes = byteLength(schema);
-    if (bytes === null) addIssue(ctx, CONNECTOR_TOOL_VALIDATION_CODES.schemaInvalid);
-    else if (bytes > MAX_SCHEMA_BYTES) addIssue(ctx, CONNECTOR_TOOL_VALIDATION_CODES.schemaSize);
-  }
-
   const counters: SchemaCounters = { enumValues: 0, nodes: 0, properties: 0 };
   const stack: SchemaFrame[] = [
-    { depth: 1, secretBearing: false, value: inputSchema },
-    { depth: 1, secretBearing: false, value: outputSchema },
+    { depth: 1, scanAnnotationSecrets: false, value: inputSchema },
+    { depth: 1, scanAnnotationSecrets: false, value: outputSchema },
   ];
   const seen = new WeakSet<object>();
   const emitted = new Set<ConnectorToolValidationCode>();
@@ -164,9 +183,17 @@ const validateSchemaPair = (
       emitOnce(CONNECTOR_TOOL_VALIDATION_CODES.schemaDepth);
       continue;
     }
-    if (typeof frame.value === 'string' && frame.secretBearing) {
-      if (containsConnectorCredentialMaterial(frame.value))
+    if (typeof frame.value === 'string') {
+      if (frame.scanAnnotationSecrets && containsConnectorCredentialMaterial(frame.value)) {
         emitOnce(CONNECTOR_TOOL_VALIDATION_CODES.schemaSecret);
+      }
+      continue;
+    }
+    if (
+      frame.value === null ||
+      typeof frame.value === 'boolean' ||
+      (typeof frame.value === 'number' && Number.isFinite(frame.value))
+    ) {
       continue;
     }
     if (Array.isArray(frame.value)) {
@@ -175,15 +202,36 @@ const validateSchemaPair = (
       }
       continue;
     }
-    if (!isPlainRecord(frame.value)) continue;
+    if (!isPlainRecord(frame.value)) {
+      emitOnce(CONNECTOR_TOOL_VALIDATION_CODES.schemaInvalid);
+      continue;
+    }
     if (seen.has(frame.value)) {
       emitOnce(CONNECTOR_TOOL_VALIDATION_CODES.schemaInvalid);
       continue;
     }
     seen.add(frame.value);
 
+    const descriptors = Object.getOwnPropertyDescriptors(frame.value);
+    const ownKeys = Reflect.ownKeys(frame.value);
+    if (
+      ownKeys.some((key) => typeof key === 'symbol') ||
+      Object.values(descriptors).some(
+        (descriptor) =>
+          descriptor.enumerable !== true ||
+          descriptor.get !== undefined ||
+          descriptor.set !== undefined,
+      )
+    ) {
+      emitOnce(CONNECTOR_TOOL_VALIDATION_CODES.schemaInvalid);
+      continue;
+    }
+
     for (const [key, value] of Object.entries(frame.value)) {
       const normalized = key.toLowerCase();
+      if (frame.scanAnnotationSecrets && containsConnectorCredentialMaterial(key)) {
+        emitOnce(CONNECTOR_TOOL_VALIDATION_CODES.schemaSecret);
+      }
       if (isDangerousSchemaKeyword(key, value, frame.parentKeyword)) {
         emitOnce(CONNECTOR_TOOL_VALIDATION_CODES.dangerousKeyword);
       }
@@ -203,18 +251,25 @@ const validateSchemaPair = (
       stack.push({
         depth: frame.depth + 1,
         parentKeyword: normalized,
-        secretBearing: frame.secretBearing || SECRET_BEARING_SCHEMA_KEYS.has(normalized),
+        scanAnnotationSecrets:
+          frame.scanAnnotationSecrets || SECRET_BEARING_SCHEMA_KEYS.has(normalized),
         value,
       });
     }
   }
+
+  if (!emitted.has(CONNECTOR_TOOL_VALIDATION_CODES.schemaInvalid)) {
+    for (const schema of [inputSchema, outputSchema]) {
+      const bytes = byteLength(schema);
+      if (bytes === null) emitOnce(CONNECTOR_TOOL_VALIDATION_CODES.schemaInvalid);
+      else if (bytes > MAX_SCHEMA_BYTES) emitOnce(CONNECTOR_TOOL_VALIDATION_CODES.schemaSize);
+    }
+  }
 };
 
-export const connectorJsonObjectSchema = z
-  .custom<Record<string, unknown>>(isPlainRecord, {
-    message: CONNECTOR_TOOL_VALIDATION_CODES.schemaInvalid,
-  })
-  .pipe(z.record(z.string(), z.unknown()));
+export const connectorJsonObjectSchema = z.custom<Record<string, unknown>>(isPlainRecord, {
+  message: CONNECTOR_TOOL_VALIDATION_CODES.schemaInvalid,
+});
 
 export const addConnectorToolSecurityIssues = (
   tool: ConnectorToolSecurityFields,
