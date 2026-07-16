@@ -472,7 +472,7 @@ export interface TrustedConnectorSecretContext {
 
 const trustedSecretContexts = new WeakMap<
   TrustedConnectorSecretContext,
-  z.infer<typeof connectorSecretLeavesSchema>
+  { connectorId: string; leaves: z.infer<typeof connectorSecretLeavesSchema> }
 >();
 
 const collectSecretLeafValues = (value: unknown, output: Set<string>): void => {
@@ -500,19 +500,22 @@ export const loadTrustedConnectorSecretContext = async (
   currentSources.forEach((source) => collectSecretLeafValues(source, current));
   replacementSecretSources.forEach((source) => collectSecretLeafValues(source, replacement));
   const context = Object.freeze({ source: 'server-secret-store' as const });
-  trustedSecretContexts.set(
-    context,
-    connectorSecretLeavesSchema.parse({ current: [...current], replacement: [...replacement] }),
-  );
+  trustedSecretContexts.set(context, {
+    connectorId: connectorIdSchema.parse(connectorId),
+    leaves: connectorSecretLeavesSchema.parse({
+      current: [...current],
+      replacement: [...replacement],
+    }),
+  });
   return context;
 };
 
 const resolveTrustedSecretLeaves = (context: TrustedConnectorSecretContext) => {
-  const leaves = trustedSecretContexts.get(context);
-  if (!leaves) {
+  const trusted = trustedSecretContexts.get(context);
+  if (!trusted) {
     throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED');
   }
-  return leaves;
+  return trusted.leaves;
 };
 
 type SecretMutation =
@@ -614,7 +617,11 @@ const assertConfiguredCurrentSecretsLoaded = (
   draft: z.infer<typeof adminConnectorDraftSchema>,
   secretContext: TrustedConnectorSecretContext,
 ): void => {
-  const current = resolveTrustedSecretLeaves(secretContext).current;
+  const trusted = trustedSecretContexts.get(secretContext);
+  if (!trusted || trusted.connectorId !== draft.id) {
+    throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED');
+  }
+  const current = trusted.leaves.current;
   const configured =
     (draft.credentialMode === 'shared_service_account' && draft.sharedSecret.configured) ||
     (draft.credentialMode === 'per_user_oauth' && draft.oauthClientSecret.configured);
