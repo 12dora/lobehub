@@ -44,21 +44,35 @@
 
 ## M06 applied
 
-| Upstream file / area | Change | Module | PR | Notes |
-| --- | --- | --- | --- | --- |
-| `apps/server/src/routers/lambda/{aiProvider,aiModel,agentSkills,connector,agent,agentGroup,composio,home,oauthDeviceFlow,agentDocument}.ts` | Managed Guard and narrow personal-use exceptions | M06 | PR-028–030 | 99 mutation registry; flag-off no-op; Composio requires local and remote owner proof |
-| `apps/server/src/services/agentDocumentVfs/{index,path}.ts` | Shared canonical VFS path normalizer | M06 | PR-030 | Skill source/target and ambiguous paths fail closed |
-| `src/routes/(main)/settings/**`, `src/routes/(main)/agent/**`, `src/routes/(main)/home/**` | Close managed definition/configuration entry points | M06 | PR-029–030 | Retain runtime use, conversations, Tool permissions and personal OAuth |
-| `src/store/tool/slices/composioStore/**` | Narrow managed Composio OAuth contract | M06 | PR-030 | No client Tool snapshot or arbitrary remote account id |
-| `packages/{const,types,locales}/**` + `locales/{en-US,zh-CN}/**` | Managed types, error codes, role grant and copy | M06 | PR-027–030 | Hand-authored EN/ZH only |
-| `scripts/enterprise/pathBoundaries.ts` | Register M06 upstream mount points | M06 | PR-029–030 | Boundary tests cover the new allowlist |
+| Upstream file / area                                                                                                                        | Change                                              | Module | PR         | Notes                                                                                |
+| ------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- | ------ | ---------- | ------------------------------------------------------------------------------------ |
+| `apps/server/src/routers/lambda/{aiProvider,aiModel,agentSkills,connector,agent,agentGroup,composio,home,oauthDeviceFlow,agentDocument}.ts` | Managed Guard and narrow personal-use exceptions    | M06    | PR-028–030 | 99 mutation registry; flag-off no-op; Composio requires local and remote owner proof |
+| `apps/server/src/services/agentDocumentVfs/{index,path}.ts`                                                                                 | Shared canonical VFS path normalizer                | M06    | PR-030     | Skill source/target and ambiguous paths fail closed                                  |
+| `src/routes/(main)/settings/**`, `src/routes/(main)/agent/**`, `src/routes/(main)/home/**`                                                  | Close managed definition/configuration entry points | M06    | PR-029–030 | Retain runtime use, conversations, Tool permissions and personal OAuth               |
+| `src/store/tool/slices/composioStore/**`                                                                                                    | Narrow managed Composio OAuth contract              | M06    | PR-030     | No client Tool snapshot or arbitrary remote account id                               |
+| `packages/{const,types,locales}/**` + `locales/{en-US,zh-CN}/**`                                                                            | Managed types, error codes, role grant and copy     | M06    | PR-027–030 | Hand-authored EN/ZH only                                                             |
+| `scripts/enterprise/pathBoundaries.ts`                                                                                                      | Register M06 upstream mount points                  | M06    | PR-029–030 | Boundary tests cover the new allowlist                                               |
+
+## M07 applied
+
+| Upstream file / area                                                                                                                               | Change                                                                                            | Module | PR         | Notes                                                                              |
+| -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | ------ | ---------- | ---------------------------------------------------------------------------------- |
+| `packages/database/src/schemas/platform/ai.ts`, `packages/database/src/models/platform/{aiCatalog,redact,revision,index}.ts`                       | AI Catalog, immutable Secret history, connection-test state, narrow Revision/Redaction extensions | M07    | PR-031–034 | Secret-free Revision/Audit and resourceType isolation                              |
+| `packages/database/src/repositories/platformAiCatalog/**`, `packages/database/src/utils/idGenerator.ts`                                            | Catalog repository and ID namespace                                                               | M07    | PR-031–034 | Cursor, uniqueness and resourceType collision regression                           |
+| `packages/database/migrations/0121*`, `packages/database/migrations/meta/**`, `docs/development/database-schema.dbml`                              | M07 migration, snapshot and DBML                                                                  | M07    | PR-031–034 | Journal/snapshot 122/122                                                           |
+| `apps/server/src/globalConfig/index.ts` + `apps/server/src/modules/ModelRuntime/{index,platformAiRuntimeBridge}.ts`                                | Register Published execution resolver and model preflight bridge                                  | M07    | PR-034–036 | Flag-off no-op; builtin/custom runtime normalization; no public Secret             |
+| `packages/model-runtime/src/core/ModelRuntime.ts`                                                                                                  | TTS/ASR preflight hooks                                                                           | M07    | PR-036     | Existing behavior and signatures remain compatible when hooks are absent           |
+| `apps/server/src/routers/lambda/aiProvider.ts`, `src/app/(backend)/webapi/models/[provider]/{route,pull/route}.ts`                                 | Secret-free runtime state and managed model discovery/pull guard                                  | M07    | PR-034–036 | Published-only; fail closed before Secret/SDK initialization; bounded shadow state |
+| `apps/server/src/services/memory/userMemory/{extract,persona/service}.ts`, `apps/server/src/services/toolExecution/serverRuntimes/agentBuilder.ts` | Route system workloads through the same Published Catalog and preflight                           | M07    | PR-036     | Unpublished or wrong-type models do not decrypt Secret or initialize SDK           |
+| `src/store/aiInfra/slices/aiProvider/action.ts`                                                                                                    | Build picker groups from one Published runtime state                                              | M07    | PR-035–036 | No second client-side platform Catalog merge                                       |
+| `packages/const/src/platform/errorCodes.ts`, `packages/locales`, `locales/{en-US,zh-CN}`                                                           | Stable managed-AI errors and admin copy                                                           | M07    | PR-031–036 | Hand-authored EN/ZH only                                                           |
 
 ## Planned (do not edit until owning module)
 
-| Upstream file                  | Change | Module             | Notes |
-| ------------------------------ | ------ | ------------------ | ----- |
-| Better Auth / OIDC config      | M11    | Adapter + LKG      |       |
-| Branding metadata / auth shell | M12    | Provider/fallback  |       |
+| Upstream file                  | Change | Module            | Notes |
+| ------------------------------ | ------ | ----------------- | ----- |
+| Better Auth / OIDC config      | M11    | Adapter + LKG     |       |
+| Branding metadata / auth shell | M12    | Provider/fallback |       |
 
 ## M04 applied
 
