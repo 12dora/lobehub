@@ -31,6 +31,20 @@ const manifest = {
   toolDependencies: [{ optional: false, toolKey: 'builtin.search' }],
 };
 
+const publishedPayload = (versionId: string, overrides: Record<string, unknown> = {}) => ({
+  skill: {
+    allowBuiltinOverride: false,
+    description: 'Published description',
+    displayName: 'Published name',
+    distribution: 'default',
+    enabled: true,
+    skillKey: 'search',
+    source: 'uploaded',
+    ...overrides,
+  },
+  versionId,
+});
+
 const cleanup = async () => {
   await serverDB.execute(sql`
     TRUNCATE TABLE
@@ -144,23 +158,110 @@ describe('PlatformSkillCatalogRepository', () => {
     });
     await serverDB.insert(platformResourceRevisions).values({
       checksum: 'published-v1',
-      payload: { versionId: v1.id },
+      payload: publishedPayload(v1.id),
       resourceId: skill.id,
       resourceType: 'skill',
       revision: 1,
       status: 'published',
     });
+    await serverDB.insert(platformResourceRevisions).values({
+      checksum: 'published-v2',
+      payload: publishedPayload(v2.id),
+      resourceId: skill.id,
+      resourceType: 'skill',
+      revision: 2,
+      status: 'published',
+    });
     await repository.updateSkill(skill.id, {
       currentVersionId: v2.id,
       enabled: true,
+      revision: 2,
       status: 'published',
     });
 
     expect((await repository.resolveVersion('search'))?.version.version).toBe('2.0.0');
-    await repository.updateSkill(skill.id, { status: 'archived' });
+    await serverDB.insert(platformResourceRevisions).values({
+      checksum: 'archived-v2',
+      payload: publishedPayload(v2.id),
+      resourceId: skill.id,
+      resourceType: 'skill',
+      revision: 3,
+      status: 'archived',
+    });
+    await repository.updateSkill(skill.id, { revision: 3, status: 'archived' });
     expect(await repository.resolveVersion('search')).toBeUndefined();
     expect((await repository.resolveVersion('search', '1.0.0'))?.version.id).toBe(v1.id);
     expect(await repository.resolveVersion('search', unpublished.version)).toBeUndefined();
+  });
+
+  it('cursor-paginates only current immutable published snapshots with same-Skill versions', async () => {
+    let foreignVersionId = '';
+    for (const [index, skillKey] of ['alpha', 'bravo', 'charlie'].entries()) {
+      const skill = await repository.createSkill({
+        enabled: false,
+        name: `Mutable ${skillKey}`,
+        skillKey,
+        status: 'draft',
+      });
+      const version = await repository.createVersion({
+        checksum: checksumPayload({ content: `# ${skillKey}`, manifest }),
+        content: `# ${skillKey}`,
+        manifest,
+        skillId: skill.id,
+        version: '1.0.0',
+      });
+      if (skillKey === 'alpha') foreignVersionId = version.id;
+      await serverDB.insert(platformResourceRevisions).values({
+        checksum: `published-${skillKey}`,
+        payload: publishedPayload(version.id, {
+          displayName: `Published ${skillKey}`,
+          enabled: index !== 2,
+          skillKey,
+        }),
+        resourceId: skill.id,
+        resourceType: 'skill',
+        revision: 1,
+        status: 'published',
+      });
+      await repository.updateSkill(skill.id, {
+        currentVersionId: version.id,
+        revision: 1,
+        status: 'published',
+      });
+    }
+    const mismatched = await repository.createSkill({ name: 'Mismatched', skillKey: 'mismatched' });
+    const ownVersion = await repository.createVersion({
+      checksum: checksumPayload({ content: '# own', manifest }),
+      content: '# own',
+      manifest,
+      skillId: mismatched.id,
+      version: '1.0.0',
+    });
+    await serverDB.insert(platformResourceRevisions).values({
+      checksum: 'mismatched-version',
+      payload: publishedPayload(foreignVersionId, { skillKey: 'mismatched' }),
+      resourceId: mismatched.id,
+      resourceType: 'skill',
+      revision: 1,
+      status: 'published',
+    });
+    await repository.updateSkill(mismatched.id, {
+      currentVersionId: ownVersion.id,
+      revision: 1,
+      status: 'published',
+    });
+
+    const first = await repository.listPublished({ limit: 1 });
+    expect(first.items).toHaveLength(1);
+    expect(first.items[0]?.payload.skill).toMatchObject({
+      displayName: 'Published alpha',
+      enabled: true,
+      skillKey: 'alpha',
+    });
+    expect(first.nextCursor).toBe('alpha');
+    const second = await repository.listPublished({ cursor: first.nextCursor!, limit: 1 });
+    expect(second.items[0]?.payload.skill.skillKey).toBe('bravo');
+    expect(second.nextCursor).toBeNull();
   });
 
   it('enforces same-Skill published pointers and a non-null published version', async () => {
@@ -234,7 +335,12 @@ describe('PlatformSkillCatalogRepository', () => {
     });
     const [agent] = await serverDB
       .insert(platformAgents)
-      .values({ agentKey: 'helper', status: 'published', title: 'Helper' })
+      .values({
+        agentKey: 'helper',
+        currentVersion: '3.0.0',
+        status: 'published',
+        title: 'Helper',
+      })
       .returning();
     await serverDB.insert(platformAgentVersions).values({
       agentId: agent.id,
@@ -251,13 +357,58 @@ describe('PlatformSkillCatalogRepository', () => {
     expect(
       (await repository.getDependentsPage({ skillKey: 'base', version: '9.0.0' })).items,
     ).toEqual([]);
+
+    const unpublishedSkillVersion = await repository.createVersion({
+      checksum: checksumPayload({ content: '# unpublished', manifest: dependentManifest }),
+      content: '# unpublished',
+      manifest: dependentManifest,
+      skillId: dependent.id,
+      version: '2.1.0',
+    });
+    const [unpublishedAgentVersion] = await serverDB
+      .insert(platformAgentVersions)
+      .values({
+        agentId: agent.id,
+        config: { skills: [{ skillKey: 'base', version: '1.0.0' }] },
+        version: '3.1.0',
+      })
+      .returning();
+    expect(
+      (await repository.getDependentsPage({ skillKey: 'base', version: '1.0.0' })).items.map(
+        (item) => item.id,
+      ),
+    ).not.toEqual(expect.arrayContaining([unpublishedSkillVersion.id, unpublishedAgentVersion.id]));
+
+    await serverDB.insert(platformResourceRevisions).values([
+      {
+        checksum: 'dependent-provenance',
+        payload: { versionId: unpublishedSkillVersion.id },
+        resourceId: dependent.id,
+        resourceType: 'skill',
+        revision: 1,
+        status: 'published',
+      },
+      {
+        checksum: 'agent-provenance',
+        payload: { versionId: unpublishedAgentVersion.id },
+        resourceId: agent.id,
+        resourceType: 'agent',
+        revision: 1,
+        status: 'published',
+      },
+    ]);
+    expect(
+      (await repository.getDependentsPage({ skillKey: 'base', version: '1.0.0' })).items.map(
+        (item) => item.id,
+      ),
+    ).toEqual(expect.arrayContaining([unpublishedSkillVersion.id, unpublishedAgentVersion.id]));
   });
 
   it('cursor-paginates dependents after filtering in the database', async () => {
     for (const key of ['agent-a', 'agent-b', 'agent-c']) {
       const [agent] = await serverDB
         .insert(platformAgents)
-        .values({ agentKey: key, status: 'published', title: key })
+        .values({ agentKey: key, currentVersion: '1.0.0', status: 'published', title: key })
         .returning();
       await serverDB.insert(platformAgentVersions).values({
         agentId: agent.id,

@@ -30,8 +30,28 @@ export interface PlatformSkillDependent {
 }
 
 export interface PlatformPublishedSkillRow {
-  skill: PlatformSkillItem;
+  payload: PlatformPublishedSkillSnapshot;
+  revision: number;
+  skillId: string;
   version: PlatformSkillVersionItem;
+}
+
+export interface PlatformPublishedSkillSnapshot {
+  skill: {
+    allowBuiltinOverride: boolean;
+    description: string | null;
+    displayName: string;
+    distribution: PlatformDistribution;
+    enabled: boolean;
+    skillKey: string;
+    source: PlatformSkillSource;
+  };
+  versionId: string;
+}
+
+export interface PlatformPublishedSkillPage {
+  items: PlatformPublishedSkillRow[];
+  nextCursor: string | null;
 }
 
 export interface PlatformSkillVersionCursor {
@@ -124,7 +144,7 @@ export class PlatformSkillCatalogRepository {
     source?: PlatformSkillSource;
     status?: PlatformResourceStatus;
   }): Promise<PlatformSkillPage> => {
-    const limit = Math.min(params.limit ?? 50, 100);
+    const limit = Math.max(1, Math.min(params.limit ?? 50, 100));
     const conditions = [];
     if (params.cursor) conditions.push(gt(platformSkills.skillKey, params.cursor));
     if (params.distribution) {
@@ -173,7 +193,7 @@ export class PlatformSkillCatalogRepository {
     limit?: number;
     skillId: string;
   }) => {
-    const limit = Math.min(params.limit ?? 50, 100);
+    const limit = Math.max(1, Math.min(params.limit ?? 50, 100));
     const conditions = [eq(platformSkillVersions.skillId, params.skillId)];
     if (params.cursor) {
       conditions.push(
@@ -201,16 +221,58 @@ export class PlatformSkillCatalogRepository {
     };
   };
 
-  listPublished = async (): Promise<PlatformPublishedSkillRow[]> => {
-    return this.db
-      .select({ skill: platformSkills, version: platformSkillVersions })
+  listPublished = async (
+    params: {
+      cursor?: string;
+      limit?: number;
+    } = {},
+  ): Promise<PlatformPublishedSkillPage> => {
+    const limit = Math.max(1, Math.min(params.limit ?? 50, 100));
+    const snapshotSkillKey = sql<string>`${platformResourceRevisions.payload}->'skill'->>'skillKey'`;
+    const conditions = [
+      eq(platformResourceRevisions.resourceType, 'skill'),
+      eq(platformResourceRevisions.status, 'published'),
+      sql`COALESCE((${platformResourceRevisions.payload}->'skill'->>'enabled')::boolean, false)`,
+    ];
+    if (params.cursor) conditions.push(gt(snapshotSkillKey, params.cursor));
+    const rows = await this.db
+      .select({
+        payload: platformResourceRevisions.payload,
+        revision: platformResourceRevisions.revision,
+        skillId: platformSkills.id,
+        version: platformSkillVersions,
+      })
       .from(platformSkills)
       .innerJoin(
-        platformSkillVersions,
-        eq(platformSkills.currentVersionId, platformSkillVersions.id),
+        platformResourceRevisions,
+        and(
+          eq(platformResourceRevisions.resourceType, 'skill'),
+          eq(platformResourceRevisions.resourceId, platformSkills.id),
+          eq(platformResourceRevisions.revision, platformSkills.revision),
+        ),
       )
-      .where(and(eq(platformSkills.status, 'published'), eq(platformSkills.enabled, true)))
-      .orderBy(asc(platformSkills.skillKey));
+      .innerJoin(
+        platformSkillVersions,
+        and(
+          eq(
+            platformSkillVersions.id,
+            sql<string>`${platformResourceRevisions.payload}->>'versionId'`,
+          ),
+          eq(platformSkillVersions.skillId, platformSkills.id),
+        ),
+      )
+      .where(and(...conditions))
+      .orderBy(asc(snapshotSkillKey))
+      .limit(limit + 1);
+    const hasMore = rows.length > limit;
+    const items = (hasMore ? rows.slice(0, limit) : rows).map((row) => ({
+      ...row,
+      payload: row.payload as unknown as PlatformPublishedSkillSnapshot,
+    }));
+    return {
+      items,
+      nextCursor: hasMore ? (items.at(-1)?.payload.skill.skillKey ?? null) : null,
+    };
   };
 
   lockSkill = async (id: string): Promise<PlatformSkillItem | undefined> => {
@@ -283,30 +345,51 @@ export class PlatformSkillCatalogRepository {
     skillKey: string,
     version?: string,
   ): Promise<PlatformPublishedSkillRow | undefined> => {
-    const conditions = [eq(platformSkills.skillKey, skillKey)];
+    const conditions = [
+      eq(platformSkills.skillKey, skillKey),
+      eq(platformResourceRevisions.resourceType, 'skill'),
+      eq(platformResourceRevisions.resourceId, platformSkills.id),
+      eq(platformResourceRevisions.status, 'published'),
+      eq(platformSkillVersions.id, sql<string>`${platformResourceRevisions.payload}->>'versionId'`),
+    ];
     if (version) {
       conditions.push(eq(platformSkillVersions.version, version));
     } else {
       conditions.push(
-        eq(platformSkills.status, 'published'),
-        eq(platformSkills.enabled, true),
-        eq(platformSkills.currentVersionId, platformSkillVersions.id),
+        eq(platformResourceRevisions.revision, platformSkills.revision),
+        sql`COALESCE((${platformResourceRevisions.payload}->'skill'->>'enabled')::boolean, false)`,
       );
     }
     const [row] = await this.db
-      .select({ skill: platformSkills, version: platformSkillVersions })
+      .select({
+        payload: platformResourceRevisions.payload,
+        revision: platformResourceRevisions.revision,
+        skillId: platformSkills.id,
+        version: platformSkillVersions,
+      })
       .from(platformSkills)
-      .innerJoin(platformSkillVersions, eq(platformSkillVersions.skillId, platformSkills.id))
+      .innerJoin(
+        platformResourceRevisions,
+        and(
+          eq(platformResourceRevisions.resourceType, 'skill'),
+          eq(platformResourceRevisions.resourceId, platformSkills.id),
+        ),
+      )
+      .innerJoin(
+        platformSkillVersions,
+        and(
+          eq(platformSkillVersions.skillId, platformSkills.id),
+          eq(
+            platformSkillVersions.id,
+            sql<string>`${platformResourceRevisions.payload}->>'versionId'`,
+          ),
+        ),
+      )
       .where(and(...conditions))
+      .orderBy(desc(platformResourceRevisions.revision))
       .limit(1);
     if (!row) return undefined;
-    if (!version) {
-      return row.skill.id === row.version.skillId ? row : undefined;
-    }
-    if (row.skill.status === 'published' && row.skill.currentVersionId === row.version.id) {
-      return row;
-    }
-    return (await this.wasVersionPublished(row.skill.id, row.version.id)) ? row : undefined;
+    return { ...row, payload: row.payload as unknown as PlatformPublishedSkillSnapshot };
   };
 
   getDependentsPage = async (params: {
@@ -315,7 +398,7 @@ export class PlatformSkillCatalogRepository {
     skillKey: string;
     version?: string;
   }) => {
-    const limit = Math.min(params.limit ?? 50, 100);
+    const limit = Math.max(1, Math.min(params.limit ?? 50, 100));
     const agentCursorCondition = params.cursor
       ? params.cursor.type === 'skill'
         ? sql`false`
@@ -340,7 +423,19 @@ export class PlatformSkillCatalogRepository {
       .innerJoin(platformSkills, eq(platformSkillVersions.skillId, platformSkills.id))
       .where(
         and(
-          eq(platformSkills.status, 'published'),
+          or(
+            and(
+              eq(platformSkills.status, 'published'),
+              eq(platformSkills.currentVersionId, platformSkillVersions.id),
+            ),
+            sql`EXISTS (
+              SELECT 1 FROM ${platformResourceRevisions} skill_revision
+              WHERE skill_revision.resource_type = 'skill'
+                AND skill_revision.resource_id = ${platformSkills.id}
+                AND skill_revision.status = 'published'
+                AND skill_revision.payload->>'versionId' = ${platformSkillVersions.id}
+            )`,
+          )!,
           skillCursorCondition,
           sql`EXISTS (
             SELECT 1
@@ -366,7 +461,19 @@ export class PlatformSkillCatalogRepository {
       .innerJoin(platformAgents, eq(platformAgentVersions.agentId, platformAgents.id))
       .where(
         and(
-          eq(platformAgents.status, 'published'),
+          or(
+            and(
+              eq(platformAgents.status, 'published'),
+              eq(platformAgents.currentVersion, platformAgentVersions.version),
+            ),
+            sql`EXISTS (
+              SELECT 1 FROM ${platformResourceRevisions} agent_revision
+              WHERE agent_revision.resource_type = 'agent'
+                AND agent_revision.resource_id = ${platformAgents.id}
+                AND agent_revision.status = 'published'
+                AND agent_revision.payload->>'versionId' = ${platformAgentVersions.id}
+            )`,
+          )!,
           agentCursorCondition,
           sql`EXISTS (
             SELECT 1
