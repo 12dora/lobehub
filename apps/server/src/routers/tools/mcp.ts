@@ -83,6 +83,7 @@ export const mcpRouter = router({
   getStreamableMcpServerManifest: mcpProcedure
     .input(GetStreamableMcpServerManifestInputSchema)
     .query(async ({ input }) => {
+      await assertLegacyConnectorRuntimeAllowed({});
       return await mcpService.getStreamableMcpServerManifest(
         input.identifier,
         input.url,
@@ -96,6 +97,7 @@ export const mcpRouter = router({
   listTools: mcpProcedure
     .input(mcpClientParamsSchema) // Use the unified schema
     .query(async ({ input }) => {
+      await assertLegacyConnectorRuntimeAllowed({});
       // Stdio check can be done here or rely on the service/client layer
       checkStdioEnvironment(input);
 
@@ -107,6 +109,7 @@ export const mcpRouter = router({
   listResources: mcpProcedure
     .input(mcpClientParamsSchema) // Use the unified schema
     .query(async ({ input }) => {
+      await assertLegacyConnectorRuntimeAllowed({});
       // Stdio check can be done here or rely on the service/client layer
       checkStdioEnvironment(input);
 
@@ -118,6 +121,7 @@ export const mcpRouter = router({
   listPrompts: mcpProcedure
     .input(mcpClientParamsSchema) // Use the unified schema
     .query(async ({ input }) => {
+      await assertLegacyConnectorRuntimeAllowed({});
       // Stdio check can be done here or rely on the service/client layer
       checkStdioEnvironment(input);
 
@@ -136,14 +140,7 @@ export const mcpRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      if (input.params.name && ctx.userId) {
-        await assertLegacyConnectorRuntimeAllowed({
-          db: ctx.serverDB,
-          identifier: input.params.name,
-          userId: ctx.userId,
-          workspaceId: ctx.workspaceId ?? undefined,
-        });
-      }
+      await assertLegacyConnectorRuntimeAllowed({});
       // Stdio check can be done here or rely on the service/client layer
       checkStdioEnvironment(input.params);
 

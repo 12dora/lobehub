@@ -371,12 +371,7 @@ export const connectorRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       try {
-        await assertLegacyConnectorRuntimeAllowed({
-          db: ctx.serverDB,
-          identifier: input.identifier,
-          userId: ctx.userId,
-          workspaceId: ctx.workspaceId ?? undefined,
-        });
+        await assertLegacyConnectorRuntimeAllowed({});
         return await callConnectorToolById(input, ctx);
       } catch (err: any) {
         if (err instanceof ConnectorToolCallError) {

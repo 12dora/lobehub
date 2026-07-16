@@ -22,6 +22,9 @@ export class ServerMessageTransport implements MessageTransport {
   constructor(
     private readonly messageModel: MessageModel,
     private readonly options: {
+      createToolPluginState?: (
+        params: CreateMessageParams,
+      ) => Promise<Record<string, unknown> | undefined>;
       postProcessUrl?: (
         path: string | null,
         file: { fileType: string; id?: string | null },
@@ -35,7 +38,11 @@ export class ServerMessageTransport implements MessageTransport {
 
   async createToolMessage(params: CreateMessageParams): Promise<RuntimeMessageRef> {
     try {
-      return await this.messageModel.create(params);
+      const serverPluginState = await this.options.createToolPluginState?.(params);
+      return await this.messageModel.create({
+        ...params,
+        pluginState: { ...params.pluginState, ...serverPluginState },
+      });
     } catch (error) {
       if (typeof params.parentId === 'string' && isMidOperationReferenceMissingError(error)) {
         throw createConversationParentMissingError(params.parentId, error);

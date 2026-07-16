@@ -87,12 +87,13 @@ export class ToolExecutionService {
         ? await executeManagedConnectorTool({
             agentId: context.agentId,
             apiName,
+            approvalReceipt: context.connectorApprovalReceipt,
             arguments: payload.arguments,
             db: context.serverDB,
-            humanApproved: context.humanApproved,
             identifier,
             manifest: context.toolManifestMap[identifier],
             operationId: context.operationId,
+            toolCallId: context.toolCallId,
             userId: context.userId,
             workspaceId: context.workspaceId,
           })
@@ -133,7 +134,6 @@ export class ToolExecutionService {
           break;
         }
 
-        case 'builtin':
         default: {
           data = await this.builtinToolsExecutor.execute(payload, context);
           break;

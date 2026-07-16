@@ -153,6 +153,8 @@ export interface ToolExecutionContext {
    * `messageId`.
    */
   assistantMessageId?: string;
+  /** Server-signed receipt restored from the persisted pending tool row. */
+  connectorApprovalReceipt?: Record<string, unknown>;
   /**
    * Whether the run's execution plan is device-capable (`device` or
    * `device-unrouted`) — derived from `state.metadata.executionPlan` by the
@@ -181,8 +183,6 @@ export interface ToolExecutionContext {
   executionTimeoutMs?: number;
   /** Current group ID for group chat context */
   groupId?: string | null;
-  /** Server-owned proof that AgentRuntime resumed this call after human approval. */
-  humanApproved?: boolean;
   /** Whether this tool call is executing inside an isolated sub-agent run. */
   isSubAgent?: boolean;
   /**

@@ -199,13 +199,26 @@ describe('PlatformConnectorRuntimeAdapter', () => {
 
   it('preflights before a shared secret, audits caller identity, rate limits, and redacts output', async () => {
     const harness = createHarness('shared_service_account');
+    vi.mocked(harness.dependencies.outbound.requestJson).mockResolvedValueOnce({
+      body: {
+        result: {
+          arbitrary: `prefix shared-token ${Buffer.from('shared-token').toString('base64')} suffix`,
+          value: 'ok',
+        },
+      },
+      status: 200,
+      url: 'https://connector.example.test/mcp',
+    });
     await expect(harness.adapter.execute(invocation)).resolves.toEqual({
       confirmation: null,
-      content: JSON.stringify({ accessToken: '[REDACTED]', value: 'ok' }),
-      state: { accessToken: '[REDACTED]', value: 'ok' },
+      content: JSON.stringify({
+        arbitrary: 'prefix [REDACTED] [REDACTED] suffix',
+        value: 'ok',
+      }),
+      state: { arbitrary: 'prefix [REDACTED] [REDACTED] suffix', value: 'ok' },
       success: true,
     });
-    expect(harness.order).toEqual(['policy', 'preflight', 'secret-version', 'outbound']);
+    expect(harness.order).toEqual(['policy', 'preflight', 'secret-version']);
     expect(harness.dependencies.audit.appendSharedCall).toHaveBeenCalledWith({
       connectorId: 'connector-1',
       operationId: 'operation-1',
@@ -218,6 +231,9 @@ describe('PlatformConnectorRuntimeAdapter', () => {
       fingerprint: 'c'.repeat(64),
       slot: 'sharedSecret',
     });
+    expect(harness.dependencies.audit.appendSharedCall).toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: 'admitted' }),
+    );
 
     vi.mocked(harness.dependencies.rateLimiter.consume).mockResolvedValueOnce(false);
     await expect(harness.adapter.execute(invocation)).rejects.toThrow(
@@ -254,7 +270,32 @@ describe('PlatformConnectorRuntimeAdapter', () => {
     );
   });
 
-  it('preserves an old still-valid token on refresh failure but never uses an expired one', async () => {
+  it('scrubs OAuth access and refresh tokens from arbitrary response keys and encodings', async () => {
+    const harness = createHarness('per_user_oauth');
+    vi.mocked(harness.dependencies.outbound.requestJson).mockResolvedValueOnce({
+      body: {
+        result: {
+          [`key-${encodeURIComponent('user-token')}`]:
+            Buffer.from('refresh-token').toString('base64url'),
+          nested: ['prefix user-token suffix'],
+        },
+      },
+      status: 200,
+      url: 'https://connector.example.test/mcp',
+    });
+
+    const result = await harness.adapter.execute(invocation);
+
+    expect(result.content).not.toContain('user-token');
+    expect(result.content).not.toContain('refresh-token');
+    expect(result.content).not.toContain(Buffer.from('refresh-token').toString('base64url'));
+    expect(result.state).toEqual({
+      'key-[REDACTED]': '[REDACTED]',
+      'nested': ['prefix [REDACTED] suffix'],
+    });
+  });
+
+  it('fails closed on refresh failure even when the old token has not expired', async () => {
     const harness = createHarness('per_user_oauth');
     vi.mocked(harness.dependencies.bindingLoader).mockResolvedValue(
       binding({ expiresAt: new Date('2029-01-01T00:00:30Z') }),
@@ -262,7 +303,9 @@ describe('PlatformConnectorRuntimeAdapter', () => {
     vi.mocked(harness.dependencies.refreshBinding!).mockRejectedValueOnce(
       new Error('refresh race'),
     );
-    await expect(harness.adapter.execute(invocation)).resolves.toMatchObject({ success: true });
+    await expect(harness.adapter.execute(invocation)).rejects.toThrow(
+      'PLATFORM_CONNECTOR_TRANSPORT_UNSUPPORTED',
+    );
 
     vi.mocked(harness.dependencies.bindingLoader).mockResolvedValue(
       binding({ expiresAt: new Date('2028-12-31T23:59:59Z') }),
@@ -273,7 +316,40 @@ describe('PlatformConnectorRuntimeAdapter', () => {
     await expect(harness.adapter.execute(invocation)).rejects.toThrow(
       'PLATFORM_CONNECTOR_TRANSPORT_UNSUPPORTED',
     );
-    expect(harness.dependencies.outbound.requestJson).toHaveBeenCalledTimes(1);
+    expect(harness.dependencies.outbound.requestJson).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when a binding is revoked after preflight or token resolution', async () => {
+    const afterPreflight = createHarness('per_user_oauth');
+    vi.mocked(afterPreflight.dependencies.bindingLoader)
+      .mockResolvedValueOnce(binding())
+      .mockResolvedValueOnce(binding({ revokedAt: new Date(), status: 'revoked' }));
+    await expect(afterPreflight.adapter.execute(invocation)).rejects.toThrow(
+      'PLATFORM_CONNECTOR_BINDING_OWNERSHIP_MISMATCH',
+    );
+    expect(afterPreflight.resolveSecretRef).not.toHaveBeenCalled();
+    expect(afterPreflight.dependencies.outbound.requestJson).not.toHaveBeenCalled();
+
+    const afterSecret = createHarness('per_user_oauth');
+    vi.mocked(afterSecret.dependencies.bindingLoader)
+      .mockResolvedValueOnce(binding())
+      .mockResolvedValueOnce(binding())
+      .mockResolvedValueOnce(binding({ revision: 2 }));
+    await expect(afterSecret.adapter.execute(invocation)).rejects.toThrow(
+      'PLATFORM_CONNECTOR_BINDING_OWNERSHIP_MISMATCH',
+    );
+    expect(afterSecret.dependencies.outbound.requestJson).not.toHaveBeenCalled();
+  });
+
+  it('does not resolve a shared secret or call outbound when admission audit fails', async () => {
+    const harness = createHarness('shared_service_account');
+    vi.mocked(harness.dependencies.audit.appendSharedCall).mockRejectedValue(
+      new Error('audit unavailable'),
+    );
+    await expect(harness.adapter.execute(invocation)).rejects.toThrow();
+    expect(harness.dependencies.outbound.preflight).not.toHaveBeenCalled();
+    expect(harness.resolveSecretVersion).not.toHaveBeenCalled();
+    expect(harness.dependencies.outbound.requestJson).not.toHaveBeenCalled();
   });
 
   it('never touches secrets or runtime outbound when SSRF preflight fails', async () => {

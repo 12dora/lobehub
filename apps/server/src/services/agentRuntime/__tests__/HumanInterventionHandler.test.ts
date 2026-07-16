@@ -5,14 +5,24 @@ import { HumanInterventionHandler } from '../HumanInterventionHandler';
 
 const buildHandler = (
   pluginQuery: ReturnType<typeof vi.fn>,
-  messageModel: { updateMessagePlugin: any; updateToolMessage: any },
+  messageModel: {
+    approvePendingMessagePlugin: any;
+    findMessagePlugin: any;
+    updateMessagePlugin: any;
+    updateToolMessage: any;
+  },
 ) => {
   const serverDB = { query: { messagePlugins: { findFirst: pluginQuery } } } as any;
   return new HumanInterventionHandler(serverDB, messageModel as any);
 };
 
 describe('HumanInterventionHandler.process', () => {
-  let mockMessageModel: { updateMessagePlugin: any; updateToolMessage: any };
+  let mockMessageModel: {
+    approvePendingMessagePlugin: any;
+    findMessagePlugin: any;
+    updateMessagePlugin: any;
+    updateToolMessage: any;
+  };
   let mockDBPluginQuery: ReturnType<typeof vi.fn>;
   let handler: HumanInterventionHandler;
 
@@ -30,6 +40,8 @@ describe('HumanInterventionHandler.process', () => {
     vi.clearAllMocks();
     mockDBPluginQuery = vi.fn().mockResolvedValue({ toolCallId: 'tool-call-1' });
     mockMessageModel = {
+      approvePendingMessagePlugin: vi.fn().mockResolvedValue(true),
+      findMessagePlugin: vi.fn().mockResolvedValue({ toolCallId: 'tool-call-1' }),
       updateMessagePlugin: vi.fn().mockResolvedValue(undefined),
       updateToolMessage: vi.fn().mockResolvedValue({ success: true }),
     };
@@ -45,9 +57,7 @@ describe('HumanInterventionHandler.process', () => {
         toolMessageId: 'tool-msg-1',
       });
 
-      expect(mockMessageModel.updateMessagePlugin).toHaveBeenCalledWith('tool-msg-1', {
-        intervention: { status: 'approved' },
-      });
+      expect(mockMessageModel.approvePendingMessagePlugin).toHaveBeenCalledWith('tool-msg-1');
     });
 
     it('returns nextContext with phase=human_approved_tool and skipCreateToolMessage=true', async () => {
@@ -113,7 +123,7 @@ describe('HumanInterventionHandler.process', () => {
         approvedToolCall: { id: 'tool-call-1' },
       });
 
-      expect(mockMessageModel.updateMessagePlugin).not.toHaveBeenCalled();
+      expect(mockMessageModel.approvePendingMessagePlugin).not.toHaveBeenCalled();
       expect(result.nextContext).toBeUndefined();
     });
   });

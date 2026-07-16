@@ -26,6 +26,7 @@ export const ENTERPRISE_UPSTREAM_MOUNT_POINTS = [
   'apps/server/src/services/memory/userMemory/persona/service.ts',
   'apps/server/src/services/aiAgent/index.ts',
   'apps/server/src/services/toolExecution/index.ts',
+  'apps/server/src/modules/AgentRuntime/buildHost.ts',
   'apps/server/src/routers/tools/mcp.ts',
   'apps/server/src/routers/lambda/agentGroup.ts',
   // M05: memory runtime reads through the effective settings resolver
