@@ -548,6 +548,14 @@ describe('platform connector contracts', () => {
         endpoint: 'file:///etc/passwd',
       }).success,
     ).toBe(false);
+    const invalidSecretUrl = 'https://[Authorization:Bearer-invalid-url-never-echo';
+    const invalidResult = adminConnectorCreateDraftInputSchema.safeParse({
+      ...base,
+      endpoint: invalidSecretUrl,
+    });
+    expect(invalidResult.success).toBe(false);
+    if (!invalidResult.success)
+      expect(JSON.stringify(invalidResult.error)).not.toContain(invalidSecretUrl);
   });
 
   it('rejects secret-bearing discover/test messages at the output contract', () => {

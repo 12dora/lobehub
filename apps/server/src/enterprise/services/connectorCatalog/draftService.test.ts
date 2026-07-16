@@ -1,11 +1,12 @@
 // @vitest-environment node
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
 import { PlatformRevisionConflictError } from '@/database/models/platform';
 import { platformAuditLogs, platformConnectors } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 
+import type { ConnectorFailureAuditWriter } from './catalogAudit';
 import {
   cleanupM09ServiceData,
   connectorToolFixture,
@@ -19,10 +20,18 @@ const redirectUri = 'https://aihub.example.test/oauth/callback';
 
 beforeAll(() => ensurePendingM09ServiceSchema(db));
 beforeEach(() => cleanupM09ServiceData(db));
-afterEach(() => cleanupM09ServiceData(db));
+afterEach(async () => {
+  vi.restoreAllMocks();
+  await cleanupM09ServiceData(db);
+});
 
-const createService = () =>
-  new ConnectorCatalogDraftService(db, new MemoryConnectorSecretStore(db), redirectUri);
+const createService = (failureAuditWriter?: ConnectorFailureAuditWriter) =>
+  new ConnectorCatalogDraftService(
+    db,
+    new MemoryConnectorSecretStore(db),
+    redirectUri,
+    failureAuditWriter,
+  );
 
 describe('ConnectorCatalogDraftService', () => {
   it('creates, reads, and filters a strict connector Draft with an audit record', async () => {
@@ -53,6 +62,7 @@ describe('ConnectorCatalogDraftService', () => {
     expect(await db.select().from(platformAuditLogs)).toContainEqual(
       expect.objectContaining({ action: 'admin.connectors.createDraft', result: 'success' }),
     );
+    expect(JSON.stringify(await db.select().from(platformAuditLogs))).not.toContain('inputSchema');
   });
 
   it('applies filters before pagination and advances the key cursor without N+1 detail reads', async () => {
@@ -122,6 +132,37 @@ describe('ConnectorCatalogDraftService', () => {
       }),
     ).rejects.toBeInstanceOf(PlatformRevisionConflictError);
     expect(JSON.stringify(await db.select().from(platformAuditLogs))).not.toContain(secret);
+  });
+
+  it('preserves the original CAS error when best-effort failure audit persistence is down', async () => {
+    const service = createService();
+    const created = await service.createDraft('admin-user', {
+      credentialMode: 'none',
+      displayName: 'CAS Connector',
+      endpoint: 'https://connector.example.test/mcp',
+      key: 'cas-connector',
+      reason: 'create connector',
+      transport: 'http',
+    });
+    const failureAuditWriter = vi.fn(async () => {
+      throw new Error('audit-backend-private-response');
+    });
+    const failingService = createService(failureAuditWriter);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(
+      failingService.updateDraft('admin-user', {
+        displayName: 'stale update',
+        expectedDraftToken: '0'.repeat(64),
+        expectedRevision: 0,
+        id: created.draft.id,
+        reason: 'safe stale update reason',
+      }),
+    ).rejects.toBeInstanceOf(PlatformRevisionConflictError);
+    expect(failureAuditWriter).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ reason: 'safe stale update reason' }),
+    );
   });
 
   it('physically deletes only an unpublished Draft with both CAS values', async () => {
