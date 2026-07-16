@@ -3,11 +3,14 @@ import type { z } from 'zod';
 import type {
   adminAiModelCreateInputSchema,
   adminAiModelDeleteInputSchema,
+  adminAiModelDeleteOutputSchema,
   adminAiModelDependentsInputSchema,
   adminAiModelDependentsOutputSchema,
   adminAiModelListInputSchema,
   adminAiModelListOutputSchema,
+  adminAiModelMutationOutputSchema,
   adminAiModelReorderInputSchema,
+  adminAiModelReorderOutputSchema,
   adminAiModelUpdateInputSchema,
   adminAiProviderArchiveInputSchema,
   adminAiProviderCreateDraftInputSchema,
@@ -15,7 +18,10 @@ import type {
   adminAiProviderGetOutputSchema,
   adminAiProviderListInputSchema,
   adminAiProviderListOutputSchema,
+  adminAiProviderMutationOutputSchema,
   adminAiProviderPublishInputSchema,
+  adminAiProviderRevisionHistoryInputSchema,
+  adminAiProviderRevisionHistoryOutputSchema,
   adminAiProviderRevisionOutputSchema,
   adminAiProviderRollbackInputSchema,
   adminAiProviderTestInputSchema,
@@ -26,11 +32,14 @@ import type {
 
 export type AdminAiModelCreateInput = z.infer<typeof adminAiModelCreateInputSchema>;
 export type AdminAiModelDeleteInput = z.infer<typeof adminAiModelDeleteInputSchema>;
+export type AdminAiModelDeleteOutput = z.infer<typeof adminAiModelDeleteOutputSchema>;
 export type AdminAiModelDependentsInput = z.infer<typeof adminAiModelDependentsInputSchema>;
 export type AdminAiModelDependentsOutput = z.infer<typeof adminAiModelDependentsOutputSchema>;
 export type AdminAiModelListInput = z.infer<typeof adminAiModelListInputSchema>;
 export type AdminAiModelListOutput = z.infer<typeof adminAiModelListOutputSchema>;
+export type AdminAiModelMutationOutput = z.infer<typeof adminAiModelMutationOutputSchema>;
 export type AdminAiModelReorderInput = z.infer<typeof adminAiModelReorderInputSchema>;
+export type AdminAiModelReorderOutput = z.infer<typeof adminAiModelReorderOutputSchema>;
 export type AdminAiModelUpdateInput = z.infer<typeof adminAiModelUpdateInputSchema>;
 export type AdminAiProviderArchiveInput = z.infer<typeof adminAiProviderArchiveInputSchema>;
 export type AdminAiProviderCreateDraftInput = z.infer<typeof adminAiProviderCreateDraftInputSchema>;
@@ -38,8 +47,15 @@ export type AdminAiProviderGetInput = z.infer<typeof adminAiProviderGetInputSche
 export type AdminAiProviderGetOutput = z.infer<typeof adminAiProviderGetOutputSchema>;
 export type AdminAiProviderListInput = z.infer<typeof adminAiProviderListInputSchema>;
 export type AdminAiProviderListOutput = z.infer<typeof adminAiProviderListOutputSchema>;
+export type AdminAiProviderMutationOutput = z.infer<typeof adminAiProviderMutationOutputSchema>;
 export type AdminAiProviderPublishInput = z.infer<typeof adminAiProviderPublishInputSchema>;
 export type AdminAiProviderRevisionOutput = z.infer<typeof adminAiProviderRevisionOutputSchema>;
+export type AdminAiProviderRevisionHistoryInput = z.infer<
+  typeof adminAiProviderRevisionHistoryInputSchema
+>;
+export type AdminAiProviderRevisionHistoryOutput = z.infer<
+  typeof adminAiProviderRevisionHistoryOutputSchema
+>;
 export type AdminAiProviderRollbackInput = z.infer<typeof adminAiProviderRollbackInputSchema>;
 export type AdminAiProviderTestInput = z.infer<typeof adminAiProviderTestInputSchema>;
 export type AdminAiProviderUpdateDraftInput = z.infer<typeof adminAiProviderUpdateDraftInputSchema>;
