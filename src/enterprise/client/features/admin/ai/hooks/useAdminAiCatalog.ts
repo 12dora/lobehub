@@ -66,6 +66,10 @@ export const refreshAdminAiProviderLists = async () => {
   await mutate((key) => Array.isArray(key) && key[0] === ADMIN_AI_PROVIDER_LIST_KEY);
 };
 
+export const refreshAdminAiModelLists = async () => {
+  await mutate((key) => Array.isArray(key) && key[0] === ADMIN_AI_MODEL_LIST_KEY);
+};
+
 export const refreshAdminAiProvider = async (id: string) => {
   await Promise.all([
     mutate(buildAdminAiProviderGetKey(id)),
