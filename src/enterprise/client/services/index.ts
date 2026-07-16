@@ -5,6 +5,7 @@ export {
   getAdminAccessErrorCode,
   isAdminAccessErrorRetryable,
 } from './adminAuth';
+export { adminManagedResourcesService } from './adminManagedResources';
 export { adminSettingsService } from './adminSettings';
 export {
   type AdminUsersBanInput,

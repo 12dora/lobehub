@@ -5,6 +5,7 @@ import { memo } from 'react';
 import { Outlet, useParams } from 'react-router';
 
 import { isCustomBranding } from '@/const/version';
+import { ManagedResourceBoundary } from '@/features/ManagedResources';
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
 
 import DesktopLayoutContainer from './_layout/Desktop/Container';
@@ -21,19 +22,21 @@ export const ProviderLayout = memo(() => {
   };
 
   return (
-    <Flexbox
-      horizontal
-      width={'100%'}
-      style={{
-        maxHeight: '100%',
-      }}
-    >
-      <ProviderMenu mobile={false} onProviderSelect={handleProviderSelect} />
-      <DesktopLayoutContainer>
-        <Outlet />
-        {!isCustomBranding && <Footer />}
-      </DesktopLayoutContainer>
-    </Flexbox>
+    <ManagedResourceBoundary resource="aiProviders">
+      <Flexbox
+        horizontal
+        width={'100%'}
+        style={{
+          maxHeight: '100%',
+        }}
+      >
+        <ProviderMenu mobile={false} onProviderSelect={handleProviderSelect} />
+        <DesktopLayoutContainer>
+          <Outlet />
+          {!isCustomBranding && <Footer />}
+        </DesktopLayoutContainer>
+      </Flexbox>
+    </ManagedResourceBoundary>
   );
 });
 

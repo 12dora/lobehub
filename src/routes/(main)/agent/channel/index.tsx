@@ -7,6 +7,7 @@ import { useParams } from 'react-router';
 
 import AsyncBoundary from '@/components/AsyncBoundary';
 import Loading from '@/components/Loading/BrandTextLoading';
+import { ManagedAgentConfigurationBoundary } from '@/features/ManagedResources';
 import NavHeader from '@/features/NavHeader';
 import { usePermission } from '@/hooks/usePermission';
 import { useAgentStore } from '@/store/agent';
@@ -30,7 +31,7 @@ const styles = createStaticStyles(({ css }) => ({
   `,
 }));
 
-const ChannelPage = memo(() => {
+const ChannelConfiguration = memo(() => {
   const { aid } = useParams<{ aid?: string }>();
   const [activeProviderId, setActiveProviderId] = useState<string>('');
   const { allowed: canEdit } = usePermission('edit_own_content');
@@ -158,5 +159,15 @@ const ChannelPage = memo(() => {
     </Flexbox>
   );
 });
+
+ChannelConfiguration.displayName = 'ChannelConfiguration';
+
+const ChannelPage = memo(() => (
+  <ManagedAgentConfigurationBoundary>
+    <ChannelConfiguration />
+  </ManagedAgentConfigurationBoundary>
+));
+
+ChannelPage.displayName = 'ChannelPage';
 
 export default ChannelPage;

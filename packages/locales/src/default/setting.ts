@@ -3092,4 +3092,19 @@ When I am ___, I need ___
   'platformSource.retryMeta': 'Retry loading organization policy',
   'platformSource.retryReset': 'Retry reset',
   'platformSource.resetToOrg': 'Reset to organization default',
+
+  // M06 managed resource user surfaces
+  'managedResources.inline.connectorDesc':
+    'Connector definitions and configuration are controlled by your organization. You can still connect or disconnect your own OAuth account below.',
+  'managedResources.inline.title': '{{resource}} are managed by your organization',
+  'managedResources.notice.back': 'Back to chat',
+  'managedResources.notice.browse': 'Browse available resources',
+  'managedResources.notice.desc':
+    'Your organization controls which resources are available. Existing personal configuration is retained and will return if management is disabled.',
+  'managedResources.notice.title': '{{resource}} are managed by your organization',
+  'managedResources.resource.agents': 'Agents',
+  'managedResources.resource.aiModels': 'Models',
+  'managedResources.resource.aiProviders': 'Providers',
+  'managedResources.resource.connectors': 'Connectors',
+  'managedResources.resource.skills': 'Skills',
 };

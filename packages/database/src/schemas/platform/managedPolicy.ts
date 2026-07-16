@@ -1,10 +1,13 @@
 import { index, integer, jsonb, pgTable, text, uniqueIndex, varchar } from 'drizzle-orm/pg-core';
 
+import type { ManagedResourceEnforcementMode } from '@/const/platform/managedResources';
+import type { PlatformManagedResourcePolicyConfig } from '@/types/platform/managedResources';
+
 import { idGenerator } from '../../utils/idGenerator';
 import { createdAt, updatedAt } from '../_helpers';
 import type { PlatformResourceStatus } from './common';
 
-export type PlatformManagedEnforcement = 'observe' | 'enforced' | 'disabled';
+export type PlatformManagedEnforcement = ManagedResourceEnforcementMode;
 
 /**
  * Managed resource policies (M06). Empty shell in Migration 0.
@@ -24,7 +27,11 @@ export const platformManagedResourcePolicies = pgTable(
       .$type<PlatformManagedEnforcement>()
       .notNull()
       .default('observe'),
-    config: jsonb('config').$type<Record<string, unknown>>().notNull().default({}),
+    config: jsonb('config')
+      .$type<PlatformManagedResourcePolicyConfig>()
+      .notNull()
+      // Keep the M01 physical default unchanged; model normalization closes legacy `{}` rows.
+      .default({} as PlatformManagedResourcePolicyConfig),
     revision: integer('revision').notNull().default(0),
     status: varchar('status', { length: 32 })
       .$type<PlatformResourceStatus>()

@@ -11,6 +11,7 @@ import { AgentGroupRepository } from '@/database/repositories/agentGroup';
 import { type ChatGroupConfig } from '@/database/types/chatGroup';
 import { router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
+import { withManagedResourceGuard } from '@/server/enterprise/guards/managedResource';
 import { getEffectiveDefaultAgentConfig } from '@/server/enterprise/services/settings/runtimeSettingsAdapter';
 import { AgentGroupService } from '@/server/services/agentGroup';
 import { EditLockService } from '@/server/services/editLock';
@@ -69,6 +70,7 @@ const agentGroupProcedureWrite = agentGroupProcedure.use(withScopedPermission('a
 
 export const agentGroupRouter = router({
   addAgentsToGroup: agentGroupProcedureWrite
+    .use(withManagedResourceGuard('agentGroup.addAgentsToGroup'))
     .input(
       z.object({
         agentIds: z.array(z.string()),
@@ -84,6 +86,7 @@ export const agentGroupRouter = router({
    * This is more efficient than calling createAgentOnly multiple times.
    */
   batchCreateAgentsInGroup: agentGroupProcedureWrite
+    .use(withManagedResourceGuard('agentGroup.batchCreateAgentsInGroup'))
     .input(
       z.object({
         agents: z.array(agentMemberInputSchema),
@@ -132,6 +135,7 @@ export const agentGroupRouter = router({
    * Returns the groupId and supervisorAgentId.
    */
   createGroup: agentGroupProcedureWrite
+    .use(withManagedResourceGuard('agentGroup.createGroup'))
     .input(InsertChatGroupSchema)
     .mutation(async ({ input, ctx }) => {
       const { group, supervisorAgentId } = await ctx.agentGroupRepo.createGroupWithSupervisor({
@@ -152,6 +156,7 @@ export const agentGroupRouter = router({
    * Returns the groupId, supervisorAgentId, and created member agentIds.
    */
   createGroupWithMembers: agentGroupProcedureWrite
+    .use(withManagedResourceGuard('agentGroup.createGroupWithMembers'))
     .input(
       z.object({
         groupConfig: InsertChatGroupSchema,
@@ -210,6 +215,7 @@ export const agentGroupRouter = router({
     }),
 
   deleteGroup: agentGroupProcedureWrite
+    .use(withManagedResourceGuard('agentGroup.deleteGroup'))
     .input(z.object({ id: z.string() }))
     .mutation(async ({ input, ctx }) => {
       return ctx.agentGroupService.deleteGroup(input.id);
@@ -221,6 +227,7 @@ export const agentGroupRouter = router({
    * Non-virtual members are referenced (not copied).
    */
   duplicateGroup: agentGroupProcedureWrite
+    .use(withManagedResourceGuard('agentGroup.duplicateGroup'))
     .input(
       z.object({
         groupId: z.string(),
@@ -295,6 +302,7 @@ export const agentGroupRouter = router({
    * @param deleteVirtualAgents - Whether to delete virtual agents (default: true)
    */
   removeAgentsFromGroup: agentGroupProcedureWrite
+    .use(withManagedResourceGuard('agentGroup.removeAgentsFromGroup'))
     .input(
       z.object({
         agentIds: z.array(z.string()),
@@ -311,6 +319,7 @@ export const agentGroupRouter = router({
     }),
 
   transferGroup: agentGroupProcedureWrite
+    .use(withManagedResourceGuard('agentGroup.transferGroup'))
     .input(
       z.object({
         groupId: z.string(),
@@ -380,6 +389,7 @@ export const agentGroupRouter = router({
     }),
 
   updateAgentInGroup: agentGroupProcedureWrite
+    .use(withManagedResourceGuard('agentGroup.updateAgentInGroup'))
     .input(
       z.object({
         agentId: z.string(),
@@ -401,12 +411,14 @@ export const agentGroupRouter = router({
    * back to `private`. Restricted to the creator's own still-private group.
    */
   publishGroupToWorkspace: agentGroupProcedureWrite
+    .use(withManagedResourceGuard('agentGroup.publishGroupToWorkspace'))
     .input(z.object({ id: z.string() }))
     .mutation(async ({ input, ctx }) => {
       return ctx.chatGroupModel.publishToWorkspace(input.id);
     }),
 
   updateGroup: agentGroupProcedureWrite
+    .use(withManagedResourceGuard('agentGroup.updateGroup'))
     .input(
       z.object({
         id: z.string(),
@@ -436,6 +448,7 @@ export const agentGroupRouter = router({
     }),
 
   acquireGroupLock: agentGroupProcedureWrite
+    .use(withManagedResourceGuard('agentGroup.acquireGroupLock'))
     .input(z.object({ id: z.string() }))
     .mutation(async ({ ctx, input }) => {
       if (!ctx.workspaceId) return { expiresAt: null, holderId: null, lockedByOther: false };
@@ -463,6 +476,7 @@ export const agentGroupRouter = router({
     }),
 
   releaseGroupLock: agentGroupProcedureWrite
+    .use(withManagedResourceGuard('agentGroup.releaseGroupLock'))
     .input(z.object({ id: z.string() }))
     .mutation(async ({ ctx, input }) => {
       if (!ctx.workspaceId) return;

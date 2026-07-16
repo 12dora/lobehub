@@ -20,6 +20,7 @@ import {
 } from './mounts/skills/path';
 import type { SkillMount } from './mounts/skills/SkillMount';
 import type { SkillMountNode } from './mounts/skills/types';
+import { normalizeAgentDocumentPath } from './path';
 import type {
   AgentDocumentListOptions,
   AgentDocumentNode,
@@ -1141,20 +1142,6 @@ export class AgentDocumentVfsService {
     return entries.find((entry) => entry.path === normalizedPath);
   }
 }
-
-const normalizeAgentDocumentPath = (path: string) => {
-  const raw = path.trim();
-  const withDot =
-    raw === '/' ? './' : raw.startsWith('./') ? raw : raw.startsWith('/') ? `.${raw}` : `./${raw}`;
-  const collapsed = withDot.replaceAll(/\/+/g, '/');
-
-  if (collapsed.includes('/./') || collapsed.includes('/../') || collapsed.endsWith('/..')) {
-    throw new AgentDocumentVfsError(`Invalid VFS path: ${path}`, 'BAD_REQUEST');
-  }
-
-  const normalized = collapsed === './' ? './' : collapsed.replace(/\/$/, '');
-  return normalized;
-};
 
 const splitAgentDocumentPath = (path: string) =>
   path.replace(/^\.\//, '').split('/').filter(Boolean);

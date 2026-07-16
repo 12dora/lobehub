@@ -15,6 +15,10 @@ import {
 import { inferCrudType } from '@/libs/mcp/utils';
 import { router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
+import {
+  isConnectorDisconnectInput,
+  withManagedResourceGuard,
+} from '@/server/enterprise/guards/managedResource';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 import { callConnectorToolById, ConnectorToolCallError } from '@/server/services/connector/exec';
 import {
@@ -150,49 +154,52 @@ export const connectorRouter = router({
 
   // ── Mutations ─────────────────────────────────────────────────────────────
 
-  create: connectorProcedure.input(createConnectorSchema).mutation(async ({ input, ctx }) => {
-    const fields = {
-      // The model expects the decrypted JSON string and encrypts it at rest.
-      credentials: input.credentials ? JSON.stringify(input.credentials) : null,
-      mcpConnectionType: input.mcpConnectionType ?? null,
-      mcpServerUrl: input.mcpServerUrl ?? null,
-      mcpStdioConfig: input.mcpStdioConfig ?? null,
-      metadata: input.metadata ?? null,
-      name: input.name,
-      oidcConfig: input.oidcConfig ?? null,
-    };
+  create: connectorProcedure
+    .use(withManagedResourceGuard('connector.create'))
+    .input(createConnectorSchema)
+    .mutation(async ({ input, ctx }) => {
+      const fields = {
+        // The model expects the decrypted JSON string and encrypts it at rest.
+        credentials: input.credentials ? JSON.stringify(input.credentials) : null,
+        mcpConnectionType: input.mcpConnectionType ?? null,
+        mcpServerUrl: input.mcpServerUrl ?? null,
+        mcpStdioConfig: input.mcpStdioConfig ?? null,
+        metadata: input.metadata ?? null,
+        name: input.name,
+        oidcConfig: input.oidcConfig ?? null,
+      };
 
-    // Idempotent on (user_id, identifier): re-adding or re-authorizing the same
-    // connector updates the existing row instead of violating the unique index.
-    // Status resets to `disconnected` — the OAuth callback / tool sync promotes
-    // it back to `connected` on success.
-    //
-    // `sourceType` is honored on update so the legacy customPlugin → connector
-    // migration can promote a half-baked `marketplace` row left behind by the
-    // older `syncPluginTools` code path into a proper `custom` row. Without
-    // this the connector would land but never appear in custom-connector
-    // listings (selector filters on sourceType === 'custom'). Safe because the
-    // other callers (`AddConnectorModal`, marketplace bootstrap) always pass
-    // the same sourceType they originally created the row with.
-    const [existing] = await ctx.connectorModel.queryByIdentifiers([input.identifier]);
-    if (existing) {
-      await ctx.connectorModel.update(existing.id, {
+      // Idempotent on (user_id, identifier): re-adding or re-authorizing the same
+      // connector updates the existing row instead of violating the unique index.
+      // Status resets to `disconnected` — the OAuth callback / tool sync promotes
+      // it back to `connected` on success.
+      //
+      // `sourceType` is honored on update so the legacy customPlugin → connector
+      // migration can promote a half-baked `marketplace` row left behind by the
+      // older `syncPluginTools` code path into a proper `custom` row. Without
+      // this the connector would land but never appear in custom-connector
+      // listings (selector filters on sourceType === 'custom'). Safe because the
+      // other callers (`AddConnectorModal`, marketplace bootstrap) always pass
+      // the same sourceType they originally created the row with.
+      const [existing] = await ctx.connectorModel.queryByIdentifiers([input.identifier]);
+      if (existing) {
+        await ctx.connectorModel.update(existing.id, {
+          ...fields,
+          isEnabled: input.isEnabled ?? true,
+          sourceType: input.sourceType,
+          status: ConnectorStatus.disconnected,
+        });
+        return { id: existing.id };
+      }
+
+      return ctx.connectorModel.create({
         ...fields,
+        identifier: input.identifier,
         isEnabled: input.isEnabled ?? true,
         sourceType: input.sourceType,
         status: ConnectorStatus.disconnected,
       });
-      return { id: existing.id };
-    }
-
-    return ctx.connectorModel.create({
-      ...fields,
-      identifier: input.identifier,
-      isEnabled: input.isEnabled ?? true,
-      sourceType: input.sourceType,
-      status: ConnectorStatus.disconnected,
-    });
-  }),
+    }),
 
   /**
    * Begin the OAuth authorization-code flow for a custom MCP connector.
@@ -204,6 +211,7 @@ export const connectorRouter = router({
    * keyed by `state`; the callback route completes the exchange.
    */
   startOAuth: connectorProcedure
+    .use(withManagedResourceGuard('connector.startOAuth'))
     .input(z.object({ id: z.string().uuid(), returnTo: z.string().optional() }))
     .mutation(async ({ input, ctx }) => {
       const connector = await ctx.connectorModel.findById(input.id);
@@ -288,6 +296,11 @@ export const connectorRouter = router({
     }),
 
   update: connectorProcedure
+    .use(
+      withManagedResourceGuard('connector.update', {
+        isExemptInput: isConnectorDisconnectInput,
+      }),
+    )
     .input(
       z.object({
         id: z.string().uuid(),
@@ -315,6 +328,7 @@ export const connectorRouter = router({
     }),
 
   delete: connectorProcedure
+    .use(withManagedResourceGuard('connector.delete'))
     .input(z.object({ id: z.string().uuid() }))
     .mutation(async ({ input, ctx }) => {
       await ctx.connectorModel.delete(input.id);
@@ -326,6 +340,7 @@ export const connectorRouter = router({
    * user permission settings are preserved.
    */
   syncTools: connectorProcedure
+    .use(withManagedResourceGuard('connector.syncTools'))
     .input(z.object({ id: z.string().uuid() }))
     .mutation(async ({ input, ctx }) => {
       try {
@@ -345,6 +360,7 @@ export const connectorRouter = router({
    * needed, and calls the remote MCP server with the decrypted credentials.
    */
   callTool: connectorProcedure
+    .use(withManagedResourceGuard('connector.callTool'))
     .input(
       z.object({
         args: z.string().optional(),
@@ -371,6 +387,7 @@ export const connectorRouter = router({
    * Reset all tool permissions for a connector back to 'auto' (fully open).
    */
   resetPermissions: connectorProcedure
+    .use(withManagedResourceGuard('connector.resetPermissions'))
     .input(z.object({ id: z.string().uuid() }))
     .mutation(async ({ input, ctx }) => {
       const tools = await ctx.connectorToolModel.queryByConnector(input.id);
@@ -383,6 +400,7 @@ export const connectorRouter = router({
     }),
 
   updateToolPermission: connectorProcedure
+    .use(withManagedResourceGuard('connector.updateToolPermission'))
     .input(
       z.object({
         permission: z.enum([
@@ -403,6 +421,7 @@ export const connectorRouter = router({
    * Idempotent — safe to call whenever the detail panel opens.
    */
   syncToolsFromClient: connectorProcedure
+    .use(withManagedResourceGuard('connector.syncToolsFromClient'))
     .input(
       z.object({
         identifier: z.string().min(1),
@@ -445,6 +464,7 @@ export const connectorRouter = router({
    * Idempotent — safe to call on every open of the detail panel.
    */
   syncBuiltinTool: connectorProcedure
+    .use(withManagedResourceGuard('connector.syncBuiltinTool'))
     .input(z.object({ identifier: z.string().min(1) }))
     .mutation(async ({ input, ctx }) => {
       const { builtinTools } = await import('@lobechat/builtin-tools');
@@ -492,6 +512,7 @@ export const connectorRouter = router({
    * identifier)` index when the migration later tries to upsert.
    */
   syncPluginTools: connectorProcedure
+    .use(withManagedResourceGuard('connector.syncPluginTools'))
     .input(z.object({ identifier: z.string().min(1) }))
     .mutation(async ({ input, ctx }) => {
       const plugin = await ctx.pluginModel.findById(input.identifier);

@@ -42,7 +42,11 @@ export const mapEnterpriseCodeToTrpc = (code: EnterpriseErrorCode): TRPC_ERROR_C
   if (code === 'PLATFORM_INVALID_INPUT' || code === 'ADMIN_REASON_REQUIRED') {
     return 'BAD_REQUEST';
   }
-  if (code === 'MANAGED_SETTING_BY_ADMIN' || code === 'MANAGED_RESOURCE_BY_PLATFORM') {
+  if (
+    code === 'MANAGED_SETTING_BY_ADMIN' ||
+    code === 'MANAGED_RESOURCE_BY_PLATFORM' ||
+    code === 'RESOURCE_MANAGED_BY_PLATFORM'
+  ) {
     return 'FORBIDDEN';
   }
   if (

@@ -9,6 +9,12 @@ import { type StoreSetter } from '@/store/types';
 import { setNamespace } from '@/utils/storeDebug';
 
 import { type ToolStore } from '../../store';
+import {
+  buildComposioOwnedStatusInput,
+  createOwnedComposioConnection,
+  deleteOwnedComposioConnection,
+  updateActiveComposioPlugin,
+} from './contract';
 import { type ComposioStoreState } from './initialState';
 import {
   type CallComposioToolParams,
@@ -102,10 +108,9 @@ export class ComposioStoreActionImpl {
     );
 
     try {
-      const response = await lambdaClient.composio.createConnection.mutate({
-        appSlug,
-        identifier,
-        label,
+      const response = await createOwnedComposioConnection({
+        createConnection: lambdaClient.composio.createConnection.mutate,
+        input: params,
       });
 
       const server: ComposioServer = {
@@ -167,9 +172,9 @@ export class ComposioStoreActionImpl {
     );
 
     try {
-      const connectionStatus = await lambdaClient.composio.getConnection.query({
-        connectedAccountId: server.connectedAccountId,
-      });
+      const connectionStatus = await lambdaClient.composio.getConnection.query(
+        buildComposioOwnedStatusInput(server),
+      );
 
       if (connectionStatus.error === 'AUTH_ERROR') {
         this.#set(
@@ -215,18 +220,9 @@ export class ComposioStoreActionImpl {
         n('refreshComposioConnectionStatus/success'),
       );
 
-      await lambdaClient.composio.updateComposioPlugin.mutate({
-        appSlug: server.appSlug,
-        authConfigId: server.authConfigId,
-        connectedAccountId: server.connectedAccountId,
-        identifier,
-        label: server.label,
-        status: 'ACTIVE',
-        tools: tools.map((t) => ({
-          description: t.description,
-          inputSchema: t.inputSchema,
-          name: t.name,
-        })),
+      await updateActiveComposioPlugin({
+        server,
+        updatePlugin: lambdaClient.composio.updateComposioPlugin.mutate,
       });
     } catch (error) {
       console.error('[Composio] Failed to refresh connection status:', error);
@@ -257,9 +253,9 @@ export class ComposioStoreActionImpl {
     // Clean up the stale connection on Composio's side (the prior link likely
     // expired). Best-effort — if it's already gone we still mint a fresh one.
     try {
-      await lambdaClient.composio.deleteConnection.mutate({
-        connectedAccountId: existing.connectedAccountId,
-        identifier,
+      await deleteOwnedComposioConnection({
+        deleteConnection: lambdaClient.composio.deleteConnection.mutate,
+        server: existing,
       });
     } catch (error) {
       console.error('[Composio] Failed to clean up stale connection:', error);
@@ -288,9 +284,9 @@ export class ComposioStoreActionImpl {
 
     if (server) {
       try {
-        await lambdaClient.composio.deleteConnection.mutate({
-          connectedAccountId: server.connectedAccountId,
-          identifier,
+        await deleteOwnedComposioConnection({
+          deleteConnection: lambdaClient.composio.deleteConnection.mutate,
+          server,
         });
       } catch (error) {
         console.error('[Composio] Failed to delete connection:', error);

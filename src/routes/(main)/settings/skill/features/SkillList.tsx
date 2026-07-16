@@ -40,6 +40,7 @@ import AgentSkillItem from './AgentSkillItem';
 import BuiltinSkillItem from './BuiltinSkillItem';
 import ComposioSkillItem from './ComposioSkillItem';
 import LobehubSkillItem from './LobehubSkillItem';
+import { isConnectorSectionVisible } from './managedConnectorPresentation';
 import McpSkillItem from './McpSkillItem';
 import type { ToolDetailType } from './SkillDetail';
 
@@ -82,6 +83,7 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
 export type SkillViewMode = 'connector' | 'skill';
 
 interface SkillListProps {
+  managed?: boolean;
   onDeleteSelected?: () => void;
   onSelect?: (identifier: string, type: ToolDetailType) => void;
   selectedIdentifier?: string;
@@ -89,7 +91,7 @@ interface SkillListProps {
 }
 
 const SkillList = memo<SkillListProps>(
-  ({ onSelect, onDeleteSelected, selectedIdentifier, viewMode = 'connector' }) => {
+  ({ managed = false, onSelect, onDeleteSelected, selectedIdentifier, viewMode = 'connector' }) => {
     const { t } = useTranslation('setting');
     const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
 
@@ -329,12 +331,14 @@ const SkillList = memo<SkillListProps>(
     ]);
 
     const hasAnySkills =
-      builtinSkills.length > 0 ||
-      integrations.length > 0 ||
-      marketAgentSkills.length > 0 ||
-      userAgentSkills.length > 0 ||
-      communityMCPs.length > 0 ||
-      customMCPs.length > 0;
+      managed && viewMode === 'connector'
+        ? integrations.some((item) => item.type === 'lobehub' || item.type === 'composio')
+        : builtinSkills.length > 0 ||
+          integrations.length > 0 ||
+          marketAgentSkills.length > 0 ||
+          userAgentSkills.length > 0 ||
+          communityMCPs.length > 0 ||
+          customMCPs.length > 0;
 
     // A failed fetch must read as a failure with Retry, never as the "no skills"
     // empty (error gated ahead of empty).
@@ -451,19 +455,30 @@ const SkillList = memo<SkillListProps>(
 
     // Connectors tab: tools/MCP items (provide API-level permissions)
     // Skills tab: prompt/agent-based skills (show description/content)
-    const hasBuiltinTools = builtinToolItems.length > 0 && isConnectorView;
+    const hasBuiltinTools =
+      builtinToolItems.length > 0 &&
+      isConnectorView &&
+      isConnectorSectionVisible('builtinTools', managed);
     const hasBuiltinSkills = builtinSkillItems.length > 0 && !isConnectorView;
     // Skills tab only shows agent-based community skills; Lobehub/Composio OAuth
     // connectors live exclusively in the Connectors view (hasCommunityConnectors).
     const hasCommunitySkills = !isConnectorView && marketAgentSkills.length > 0;
-    const hasCommunityTools = communityMCPs.length > 0 && isConnectorView;
+    const hasCommunityTools =
+      communityMCPs.length > 0 &&
+      isConnectorView &&
+      isConnectorSectionVisible('communityTools', managed);
     // In connector view: custom MCPs (old plugins) + custom connectors (new store).
     // In skill view: user agent skills
     const hasCustomConnectors =
-      isConnectorView && (customMCPs.length > 0 || customConnectors.length > 0);
+      isConnectorView &&
+      isConnectorSectionVisible('customConnectors', managed) &&
+      (customMCPs.length > 0 || customConnectors.length > 0);
     const hasCustomSkills = userAgentSkills.length > 0 && !isConnectorView;
     // Lobehub/Composio OAuth skills go in Connectors tab (they provide tools)
-    const hasCommunityConnectors = communitySkillItems.length > 0 && isConnectorView;
+    const hasCommunityConnectors =
+      communitySkillItems.length > 0 &&
+      isConnectorView &&
+      isConnectorSectionVisible('communityConnectors', managed);
 
     return (
       <div className={styles.container}>

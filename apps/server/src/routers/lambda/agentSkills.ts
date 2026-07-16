@@ -9,6 +9,7 @@ import { AgentSkillModel } from '@/database/models/agentSkill';
 import { FileModel } from '@/database/models/file';
 import { router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
+import { withManagedResourceGuard } from '@/server/enterprise/guards/managedResource';
 import { FileService } from '@/server/services/file';
 import { MarketService } from '@/server/services/market';
 import {
@@ -115,17 +116,21 @@ const updateSkillSchema = z.object({
 export const agentSkillsRouter = router({
   // ===== Create =====
 
-  create: skillWriteProcedure.input(createSkillSchema).mutation(async ({ ctx, input }) => {
-    try {
-      return await ctx.skillImporter.createUserSkill(input);
-    } catch (error) {
-      handleSkillImportError(error);
-    }
-  }),
+  create: skillWriteProcedure
+    .use(withManagedResourceGuard('agentSkills.create'))
+    .input(createSkillSchema)
+    .mutation(async ({ ctx, input }) => {
+      try {
+        return await ctx.skillImporter.createUserSkill(input);
+      } catch (error) {
+        handleSkillImportError(error);
+      }
+    }),
 
   // ===== Delete =====
 
   delete: skillWriteProcedure
+    .use(withManagedResourceGuard('agentSkills.delete'))
     .input(z.object({ id: z.string() }))
     .mutation(async ({ ctx, input }) => {
       return ctx.skillModel.delete(input.id);
@@ -169,6 +174,7 @@ export const agentSkillsRouter = router({
   }),
 
   importFromGitHub: skillWriteProcedure
+    .use(withManagedResourceGuard('agentSkills.importFromGitHub'))
     .input(
       z.object({
         branch: z.string().optional(),
@@ -184,6 +190,7 @@ export const agentSkillsRouter = router({
     }),
 
   importFromUrl: skillWriteProcedure
+    .use(withManagedResourceGuard('agentSkills.importFromUrl'))
     .input(z.object({ url: z.string().url() }))
     .mutation(async ({ ctx, input }) => {
       try {
@@ -194,6 +201,7 @@ export const agentSkillsRouter = router({
     }),
 
   importFromZip: skillWriteProcedure
+    .use(withManagedResourceGuard('agentSkills.importFromZip'))
     .input(z.object({ zipFileId: z.string() }))
     .mutation(async ({ ctx, input }) => {
       try {
@@ -204,6 +212,7 @@ export const agentSkillsRouter = router({
     }),
 
   importFromMarket: skillWriteProcedure
+    .use(withManagedResourceGuard('agentSkills.importFromMarket'))
     .input(z.object({ identifier: z.string() }))
     .mutation(async ({ ctx, input }) => {
       try {
@@ -284,16 +293,19 @@ export const agentSkillsRouter = router({
 
   // ===== Update =====
 
-  update: skillWriteProcedure.input(updateSkillSchema).mutation(async ({ ctx, input }) => {
-    const { id, content, manifest } = input;
-    return ctx.skillModel.update(id, {
-      content,
-      // Sync name/description from manifest to top-level fields
-      description: manifest?.description,
-      manifest: manifest as SkillManifest | undefined,
-      name: manifest?.name,
-    });
-  }),
+  update: skillWriteProcedure
+    .use(withManagedResourceGuard('agentSkills.update'))
+    .input(updateSkillSchema)
+    .mutation(async ({ ctx, input }) => {
+      const { id, content, manifest } = input;
+      return ctx.skillModel.update(id, {
+        content,
+        // Sync name/description from manifest to top-level fields
+        description: manifest?.description,
+        manifest: manifest as SkillManifest | undefined,
+        name: manifest?.name,
+      });
+    }),
 });
 
 export type AgentSkillsRouter = typeof agentSkillsRouter;

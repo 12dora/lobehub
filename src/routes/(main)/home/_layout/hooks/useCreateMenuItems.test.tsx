@@ -3,8 +3,14 @@
  */
 import { act, renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type * as ZodModule from 'zod';
 
 import { useCreateMenuItems } from './useCreateMenuItems';
+
+vi.mock('zod', async (importOriginal) => {
+  const actual = await importOriginal<typeof ZodModule>();
+  return { ...actual, z: actual.z ?? actual.default };
+});
 
 const createAgentMock = vi.hoisted(() => vi.fn().mockResolvedValue({ agentId: 'agent-codex' }));
 const refreshAgentListMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
@@ -15,10 +21,47 @@ const loadGroupsMock = vi.hoisted(() => vi.fn());
 const createNewPageMock = vi.hoisted(() => vi.fn());
 const messageErrorMock = vi.hoisted(() => vi.fn());
 const navigateMock = vi.hoisted(() => vi.fn());
+const managedAgentsRef = vi.hoisted(() => ({ current: false }));
 
-vi.mock('@lobechat/const', () => ({
-  isDesktop: true,
-}));
+vi.mock(
+  '@lobechat/const',
+  () =>
+    new Proxy(
+      {
+        COMPOSIO_APP_TYPES: [],
+        DEFAULT_AGENT: {},
+        DEFAULT_COMMON_SETTINGS: {},
+        DEFAULT_HOTKEY_CONFIG: {},
+        DEFAULT_IMAGE_CONFIG: {},
+        DEFAULT_MEMORY_SETTINGS: {},
+        DEFAULT_MINI_MODEL: 'mini-model',
+        DEFAULT_MINI_PROVIDER: 'mini-provider',
+        DEFAULT_MODEL: 'model',
+        DEFAULT_NOTIFICATION_SETTINGS: {},
+        DEFAULT_PROVIDER: 'provider',
+        DEFAULT_SYSTEM_AGENT_CONFIG: {},
+        DEFAULT_TOOL_CONFIG: {},
+        DEFAULT_TTS_CONFIG: {},
+        EDITOR_DEBOUNCE_TIME: 0,
+        EDITOR_MAX_WAIT: 0,
+        INTEREST_AREA_KEYS: [],
+        LOBEHUB_SKILL_PROVIDERS: [],
+        MARKDOWN_MIME_TYPES: [],
+        RECOMMENDED_SKILLS: [],
+        RecommendedSkillType: { Builtin: 'builtin', Composio: 'composio', Lobehub: 'lobehub' },
+        isDesktop: true,
+      },
+      {
+        get: (target, property: string) => {
+          if (property in target) return target[property as keyof typeof target];
+          if (/(?:KEYS|MIME_TYPES|SKILLS|TYPES)$/.test(property)) return [];
+          if (property.startsWith('DEFAULT_')) return {};
+          return undefined;
+        },
+        has: () => true,
+      },
+    ),
+);
 
 vi.mock('@lobechat/heterogeneous-agents/client', () => ({
   HETEROGENEOUS_AGENT_CLIENT_CONFIGS: [
@@ -45,11 +88,23 @@ vi.mock('@lobechat/heterogeneous-agents/client', () => ({
   ],
 }));
 
-vi.mock('@lobehub/ui', () => ({
-  Icon: () => null,
-}));
+vi.mock(
+  '@lobehub/ui',
+  () =>
+    new Proxy(
+      { Icon: () => null },
+      {
+        get: (target, property: string) => {
+          if (property in target) return target[property as keyof typeof target];
+          return ({ children }: { children?: unknown }) => children;
+        },
+        has: () => true,
+      },
+    ),
+);
 
 vi.mock('@lobehub/ui/icons', () => ({
+  GroupBotIcon: () => null,
   GroupBotSquareIcon: () => null,
 }));
 
@@ -81,6 +136,16 @@ vi.mock('swr/mutation', () => ({
 
 vi.mock('@/components/ChatGroupWizard/templates', () => ({
   useGroupTemplates: () => [],
+}));
+
+vi.mock('@/features/ManagedResources', () => ({
+  useManagedResource: () => ({
+    blocked: managedAgentsRef.current,
+    error: null,
+    loading: false,
+    managed: managedAgentsRef.current,
+    refresh: vi.fn(),
+  }),
 }));
 
 vi.mock('@/routes/(main)/home/_layout/Body/Agent/ModalProvider', () => ({
@@ -146,6 +211,21 @@ const isActionItem = (
 describe('useCreateMenuItems', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    managedAgentsRef.current = false;
+  });
+
+  it('removes every agent definition creation entry while keeping non-agent actions', () => {
+    managedAgentsRef.current = true;
+    const { result } = renderHook(() => useCreateMenuItems());
+
+    expect(result.current.createAgentMenuItem()).toBeNull();
+    expect(result.current.createMarketAgentMenuItem()).toBeNull();
+    expect(result.current.createHeterogeneousAgentMenuItems()).toEqual([]);
+    expect(
+      result.current
+        .createTopLevelMenuItems()
+        .flatMap((item) => (isActionItem(item) ? [item.key] : [])),
+    ).toEqual(['newGroupChat', 'newPage']);
   });
 
   it('adds the market agent entry to the top-level create menu', async () => {

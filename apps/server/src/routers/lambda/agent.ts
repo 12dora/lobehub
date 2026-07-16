@@ -16,6 +16,7 @@ import { TaskModel } from '@/database/models/task';
 import { UserModel } from '@/database/models/user';
 import { router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
+import { withManagedResourceGuard } from '@/server/enterprise/guards/managedResource';
 import { AgentService } from '@/server/services/agent';
 import { EditLockService } from '@/server/services/editLock';
 import { publishResourceEvent } from '@/server/services/resourceEvents';
@@ -78,6 +79,7 @@ export const agentRouter = router({
    */
   createAgent: agentProcedure
     .use(withScopedPermission('agent:create'))
+    .use(withManagedResourceGuard('agent.createAgent'))
     .input(
       z.object({
         config: CreateAgentSchema.optional(),
@@ -111,6 +113,7 @@ export const agentRouter = router({
    */
   publishAgentToWorkspace: agentProcedure
     .use(withScopedPermission('agent:update'))
+    .use(withManagedResourceGuard('agent.publishAgentToWorkspace'))
     .input(z.object({ id: z.string() }))
     .mutation(async ({ input, ctx }) => {
       return ctx.agentModel.publishToWorkspace(input.id);
@@ -126,6 +129,7 @@ export const agentRouter = router({
    */
   setAgentVisibility: agentProcedure
     .use(withScopedPermission('agent:update'))
+    .use(withManagedResourceGuard('agent.setAgentVisibility'))
     .input(z.object({ id: z.string(), visibility: z.enum(['private', 'public']) }))
     .mutation(async ({ input, ctx }) => {
       const meta = await ctx.agentModel.getAgentVisibilityMeta(input.id);
@@ -186,6 +190,7 @@ export const agentRouter = router({
 
   createAgentFiles: agentProcedure
     .use(withScopedPermission('agent:update'))
+    .use(withManagedResourceGuard('agent.createAgentFiles'))
     .input(
       z.object({
         agentId: z.string(),
@@ -199,6 +204,7 @@ export const agentRouter = router({
 
   createAgentKnowledgeBase: agentProcedure
     .use(withScopedPermission('agent:update'))
+    .use(withManagedResourceGuard('agent.createAgentKnowledgeBase'))
     .input(
       z.object({
         agentId: z.string(),
@@ -221,6 +227,7 @@ export const agentRouter = router({
    */
   createAgentOnly: agentProcedure
     .use(withScopedPermission('agent:create'))
+    .use(withManagedResourceGuard('agent.createAgentOnly'))
     .input(
       z.object({
         config: z.object({}).passthrough().optional(),
@@ -239,6 +246,7 @@ export const agentRouter = router({
 
   deleteAgentFile: agentProcedure
     .use(withScopedPermission('agent:update'))
+    .use(withManagedResourceGuard('agent.deleteAgentFile'))
     .input(
       z.object({
         agentId: z.string(),
@@ -251,6 +259,7 @@ export const agentRouter = router({
 
   deleteAgentKnowledgeBase: agentProcedure
     .use(withScopedPermission('agent:update'))
+    .use(withManagedResourceGuard('agent.deleteAgentKnowledgeBase'))
     .input(
       z.object({
         agentId: z.string(),
@@ -267,6 +276,7 @@ export const agentRouter = router({
    */
   duplicateAgent: agentProcedure
     .use(withScopedPermission('agent:fork'))
+    .use(withManagedResourceGuard('agent.duplicateAgent'))
     .input(
       z.object({
         agentId: z.string(),
@@ -440,6 +450,7 @@ export const agentRouter = router({
    */
   removeAgent: agentProcedure
     .use(withScopedPermission('agent:delete'))
+    .use(withManagedResourceGuard('agent.removeAgent'))
     .input(z.object({ agentId: z.string() }))
     .mutation(async ({ input, ctx }) => {
       return ctx.agentModel.delete(input.agentId);
@@ -447,6 +458,7 @@ export const agentRouter = router({
 
   toggleFile: agentProcedure
     .use(withScopedPermission('agent:update'))
+    .use(withManagedResourceGuard('agent.toggleFile'))
     .input(
       z.object({
         agentId: z.string(),
@@ -460,6 +472,7 @@ export const agentRouter = router({
 
   toggleKnowledgeBase: agentProcedure
     .use(withScopedPermission('agent:update'))
+    .use(withManagedResourceGuard('agent.toggleKnowledgeBase'))
     .input(
       z.object({
         agentId: z.string(),
@@ -477,6 +490,7 @@ export const agentRouter = router({
 
   transferAgent: agentProcedure
     .use(withScopedPermission('agent:update'))
+    .use(withManagedResourceGuard('agent.transferAgent'))
     .input(
       z.object({
         agentId: z.string(),
@@ -552,6 +566,7 @@ export const agentRouter = router({
 
   updateAgentConfig: agentProcedure
     .use(withScopedPermission('agent:update'))
+    .use(withManagedResourceGuard('agent.updateAgentConfig'))
     .input(
       z.object({
         agentId: z.string(),
@@ -581,6 +596,7 @@ export const agentRouter = router({
    */
   updateAgentPinned: agentProcedure
     .use(withScopedPermission('agent:update'))
+    .use(withManagedResourceGuard('agent.updateAgentPinned'))
     .input(
       z.object({
         id: z.string(),
@@ -593,6 +609,7 @@ export const agentRouter = router({
 
   acquireAgentLock: agentProcedure
     .use(withScopedPermission('agent:update'))
+    .use(withManagedResourceGuard('agent.acquireAgentLock'))
     .input(z.object({ agentId: z.string() }))
     .mutation(async ({ ctx, input }) => {
       if (!ctx.workspaceId) return { expiresAt: null, holderId: null, lockedByOther: false };
@@ -622,6 +639,7 @@ export const agentRouter = router({
 
   releaseAgentLock: agentProcedure
     .use(withScopedPermission('agent:update'))
+    .use(withManagedResourceGuard('agent.releaseAgentLock'))
     .input(z.object({ agentId: z.string() }))
     .mutation(async ({ ctx, input }) => {
       if (!ctx.workspaceId) return;

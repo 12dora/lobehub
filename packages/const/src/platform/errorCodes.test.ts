@@ -10,7 +10,7 @@ import {
 } from './errorCodes';
 
 describe('enterprise error codes', () => {
-  it('uses only PLATFORM_ / ADMIN_ / MANAGED_ prefixes', () => {
+  it('uses only approved enterprise prefixes', () => {
     for (const code of Object.values(ENTERPRISE_ERROR_CODES)) {
       expect(hasEnterpriseErrorPrefix(code)).toBe(true);
     }
@@ -27,6 +27,7 @@ describe('enterprise error codes', () => {
   it('exposes admin and managed codes', () => {
     expect(ADMIN_ERROR_CODES.ADMIN_REAUTH_REQUIRED).toBe('ADMIN_REAUTH_REQUIRED');
     expect(MANAGED_ERROR_CODES.MANAGED_RESOURCE_BY_PLATFORM).toBe('MANAGED_RESOURCE_BY_PLATFORM');
+    expect(MANAGED_ERROR_CODES.RESOURCE_MANAGED_BY_PLATFORM).toBe('RESOURCE_MANAGED_BY_PLATFORM');
   });
 
   it('type-guards known codes only', () => {

@@ -27,6 +27,10 @@ import {
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import {
+  isManagedResourceConfigurationAvailable,
+  useManagedResourceCapabilities,
+} from '@/features/ManagedResources';
 import { useElectronStore } from '@/store/electron';
 import { electronSyncSelectors } from '@/store/electron/selectors';
 import { SettingsTabs } from '@/store/global/initialState';
@@ -65,6 +69,14 @@ export const useCategory = () => {
   const { t: tAuth } = useTranslation('auth');
   const { t: tSubscription } = useTranslation('subscription');
   const mobile = useServerConfigStore((s) => s.isMobile);
+  const managedResources = useManagedResourceCapabilities();
+  const canConfigureProvider = isManagedResourceConfigurationAvailable(
+    'aiProviders',
+    managedResources,
+  );
+  const canConfigureModel = isManagedResourceConfigurationAvailable('aiModels', managedResources);
+  const canConfigureSkill = isManagedResourceConfigurationAvailable('skills', managedResources);
+  const canOpenConnector = !managedResources.loading && !managedResources.error;
   const { hideDocs, showApiKeyManage, showProvider } = useServerConfigStore(featureFlagsSelectors);
   const [avatar, username] = useUserStore((s) => [
     userProfileSelectors.userAvatar(s),
@@ -147,22 +159,23 @@ export const useCategory = () => {
     const agentItems: CategoryItem[] = [
       // Provider settings should not depend on Advanced tools: new users may need
       // non-LobeHub providers, and desktop users often bring their own API keys.
-      showProvider && {
-        icon: Brain,
-        key: SettingsTabs.Provider,
-        label: t('tab.provider'),
-      },
-      {
+      showProvider &&
+        canConfigureProvider && {
+          icon: Brain,
+          key: SettingsTabs.Provider,
+          label: t('tab.provider'),
+        },
+      canConfigureModel && {
         icon: Sparkles,
         key: SettingsTabs.ServiceModel,
         label: t('tab.serviceModel'),
       },
-      {
+      canConfigureSkill && {
         icon: SkillsIcon,
         key: SettingsTabs.Skill,
         label: t('tab.skill'),
       },
-      {
+      canOpenConnector && {
         icon: Blocks,
         key: SettingsTabs.Connector,
         label: t('tab.connector'),
@@ -245,6 +258,10 @@ export const useCategory = () => {
     mobile,
     showApiKeyManage,
     showProvider,
+    canOpenConnector,
+    canConfigureModel,
+    canConfigureProvider,
+    canConfigureSkill,
     isDevMode,
     avatarUrl,
     username,

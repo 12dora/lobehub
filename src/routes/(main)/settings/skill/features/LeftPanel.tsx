@@ -46,6 +46,7 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
 }));
 
 interface LeftPanelProps {
+  managed?: boolean;
   onDeleteSelected: () => void;
   onSelect: (identifier: string, type: ToolDetailType) => void;
   selectedIdentifier?: string;
@@ -53,7 +54,7 @@ interface LeftPanelProps {
 }
 
 const LeftPanel = memo<LeftPanelProps>(
-  ({ onDeleteSelected, onSelect, selectedIdentifier, viewMode }) => {
+  ({ managed = false, onDeleteSelected, onSelect, selectedIdentifier, viewMode }) => {
     const { t } = useTranslation('setting');
     const [showAddConnector, setShowAddConnector] = useState(false);
 
@@ -73,74 +74,77 @@ const LeftPanel = memo<LeftPanelProps>(
                 : t('skillView.skills', 'Skills')}
             </Text>
 
-            <div style={{ display: 'flex', gap: 6 }} onClick={(e) => e.stopPropagation()}>
-              {isConnectorView ? (
-                // Connector view: single action to add a custom OAuth connector.
-                <Button
-                  icon={Grid2x2Plus}
-                  size="small"
-                  title={t('connector.add.title', {
-                    defaultValue: 'Add Custom Connector',
-                    ns: 'tool',
-                  })}
-                  onClick={() => setShowAddConnector(true)}
-                />
-              ) : (
-                // Skill view: import a skill from a URL, GitHub, or a zip upload.
-                <DropdownMenu
-                  nativeButton={false}
-                  placement="bottomRight"
-                  items={[
-                    {
-                      icon: <Icon icon={Link} />,
-                      key: 'importUrl',
-                      label: (
-                        <Flexbox gap={2}>
-                          <span>{t('tab.importFromUrl')}</span>
-                          <Text style={{ fontSize: 12 }} type="secondary">
-                            {t('tab.importFromUrl.desc')}
-                          </Text>
-                        </Flexbox>
-                      ),
-                      onClick: () => openImportFromUrlModal(),
-                    },
-                    {
-                      icon: <Icon icon={GithubIcon} />,
-                      key: 'importGithub',
-                      label: (
-                        <Flexbox gap={2}>
-                          <span>{t('tab.importFromGithub')}</span>
-                          <Text style={{ fontSize: 12 }} type="secondary">
-                            {t('tab.importFromGithub.desc')}
-                          </Text>
-                        </Flexbox>
-                      ),
-                      onClick: () => openImportFromGithubModal(),
-                    },
-                    {
-                      icon: <Icon icon={FileArchive} />,
-                      key: 'uploadZip',
-                      label: (
-                        <Flexbox gap={2}>
-                          <span>{t('tab.uploadZip')}</span>
-                          <Text style={{ fontSize: 12 }} type="secondary">
-                            {t('tab.uploadZip.desc')}
-                          </Text>
-                        </Flexbox>
-                      ),
-                      onClick: () => openUploadSkillModal(),
-                    },
-                  ]}
-                >
-                  <Button icon={Grid2x2Plus} size="small" />
-                </DropdownMenu>
-              )}
-              <Button icon={<Icon icon={Store} />} size="small" onClick={handleOpenStore} />
-            </div>
+            {!managed ? (
+              <div style={{ display: 'flex', gap: 6 }} onClick={(e) => e.stopPropagation()}>
+                {isConnectorView ? (
+                  // Connector view: single action to add a custom OAuth connector.
+                  <Button
+                    icon={Grid2x2Plus}
+                    size="small"
+                    title={t('connector.add.title', {
+                      defaultValue: 'Add Custom Connector',
+                      ns: 'tool',
+                    })}
+                    onClick={() => setShowAddConnector(true)}
+                  />
+                ) : (
+                  // Skill view: import a skill from a URL, GitHub, or a zip upload.
+                  <DropdownMenu
+                    nativeButton={false}
+                    placement="bottomRight"
+                    items={[
+                      {
+                        icon: <Icon icon={Link} />,
+                        key: 'importUrl',
+                        label: (
+                          <Flexbox gap={2}>
+                            <span>{t('tab.importFromUrl')}</span>
+                            <Text style={{ fontSize: 12 }} type="secondary">
+                              {t('tab.importFromUrl.desc')}
+                            </Text>
+                          </Flexbox>
+                        ),
+                        onClick: () => openImportFromUrlModal(),
+                      },
+                      {
+                        icon: <Icon icon={GithubIcon} />,
+                        key: 'importGithub',
+                        label: (
+                          <Flexbox gap={2}>
+                            <span>{t('tab.importFromGithub')}</span>
+                            <Text style={{ fontSize: 12 }} type="secondary">
+                              {t('tab.importFromGithub.desc')}
+                            </Text>
+                          </Flexbox>
+                        ),
+                        onClick: () => openImportFromGithubModal(),
+                      },
+                      {
+                        icon: <Icon icon={FileArchive} />,
+                        key: 'uploadZip',
+                        label: (
+                          <Flexbox gap={2}>
+                            <span>{t('tab.uploadZip')}</span>
+                            <Text style={{ fontSize: 12 }} type="secondary">
+                              {t('tab.uploadZip.desc')}
+                            </Text>
+                          </Flexbox>
+                        ),
+                        onClick: () => openUploadSkillModal(),
+                      },
+                    ]}
+                  >
+                    <Button icon={Grid2x2Plus} size="small" />
+                  </DropdownMenu>
+                )}
+                <Button icon={<Icon icon={Store} />} size="small" onClick={handleOpenStore} />
+              </div>
+            ) : null}
           </div>
 
           <div className={styles.body}>
             <SkillList
+              managed={managed}
               selectedIdentifier={selectedIdentifier}
               viewMode={viewMode}
               onDeleteSelected={onDeleteSelected}
@@ -148,7 +152,12 @@ const LeftPanel = memo<LeftPanelProps>(
             />
           </div>
         </div>
-        <CustomConnectorModal open={showAddConnector} onClose={() => setShowAddConnector(false)} />
+        {!managed ? (
+          <CustomConnectorModal
+            open={showAddConnector}
+            onClose={() => setShowAddConnector(false)}
+          />
+        ) : null}
       </>
     );
   },

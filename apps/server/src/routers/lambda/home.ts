@@ -8,6 +8,7 @@ import { AgentMigrationRepo } from '@/database/repositories/agentMigration';
 import { HomeRepository } from '@/database/repositories/home';
 import { router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
+import { withManagedResourceGuard } from '@/server/enterprise/guards/managedResource';
 import { type HomeBriefData, HomeService } from '@/server/services/home';
 
 const homeProcedure = wsCompatProcedure.use(serverDatabase).use(async (opts) => {
@@ -25,8 +26,8 @@ const homeProcedure = wsCompatProcedure.use(serverDatabase).use(async (opts) => 
 });
 
 export const homeRouter = router({
-  getDailyBrief: homeProcedure.query(
-    ({ ctx }): Promise<HomeBriefData> => ctx.homeService.getDailyBrief(),
+  getDailyBrief: homeProcedure.query(({ ctx }): Promise<HomeBriefData> =>
+    ctx.homeService.getDailyBrief(),
   ),
 
   getSidebarAgentList: homeProcedure.query(async ({ ctx }) => {
@@ -55,6 +56,7 @@ export const homeRouter = router({
 
   updateAgentSessionGroupId: homeProcedure
     .use(withScopedPermission('agent:update'))
+    .use(withManagedResourceGuard('home.updateAgentSessionGroupId'))
     .input(
       z.object({
         agentId: z.string(),

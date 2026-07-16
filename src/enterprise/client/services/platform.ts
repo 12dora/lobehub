@@ -1,8 +1,5 @@
 import { lambdaClient } from '@/libs/trpc/client';
-import {
-  DISABLED_PLATFORM_CAPABILITIES,
-  type PlatformCapabilities,
-} from '@/types/platform/capabilities';
+import { type PlatformCapabilities } from '@/types/platform/capabilities';
 import {
   DISABLED_PLATFORM_PUBLIC_SNAPSHOT,
   type PlatformPublicSnapshot,
@@ -10,20 +7,19 @@ import {
 
 /**
  * Client adapters for platform.* procedures.
- * Fail soft to disabled snapshots so closed flags never break the SPA shell.
  * Callers must gate on `serverConfig.enterprise.enabled` (see EnterprisePlatformProvider).
+ * Capability errors intentionally propagate: enabled enterprise policy must not fail open.
  */
-export const fetchPlatformCapabilities = async (): Promise<PlatformCapabilities> => {
-  try {
-    return await lambdaClient.platform.getCapabilities.query();
-  } catch {
-    return { ...DISABLED_PLATFORM_CAPABILITIES };
-  }
-};
+export const fetchPlatformCapabilities = async (
+  query: () => Promise<PlatformCapabilities> = () => lambdaClient.platform.getCapabilities.query(),
+): Promise<PlatformCapabilities> => query();
 
-export const fetchPlatformPublicSnapshot = async (): Promise<PlatformPublicSnapshot> => {
+export const fetchPlatformPublicSnapshot = async (
+  query: () => Promise<PlatformPublicSnapshot> = () =>
+    lambdaClient.platform.getPublicSnapshot.query(),
+): Promise<PlatformPublicSnapshot> => {
   try {
-    return await lambdaClient.platform.getPublicSnapshot.query();
+    return await query();
   } catch {
     return { ...DISABLED_PLATFORM_PUBLIC_SNAPSHOT };
   }

@@ -13,6 +13,7 @@ import { useTranslation } from 'react-i18next';
 import { useParams } from 'react-router';
 import urlJoin from 'url-join';
 
+import { useManagedResource } from '@/features/ManagedResources';
 import NavItem from '@/features/NavPanel/components/NavItem';
 import { usePermission } from '@/hooks/usePermission';
 import { useQueryRoute } from '@/hooks/useQueryRoute';
@@ -40,11 +41,12 @@ const Nav = memo(() => {
   const router = useQueryRoute();
   const { allowed: canCreateTopic } = usePermission('create_content');
   const { isAgentEditable } = useServerConfigStore(featureFlagsSelectors);
+  const { blocked: agentConfigurationBlocked } = useManagedResource('agents');
   const toggleCommandMenu = useGlobalStore((s) => s.toggleCommandMenu);
   const heterogeneousProviderType = useAgentStore(
     agentSelectors.currentAgentHeterogeneousProviderType,
   );
-  const hideProfile = !isAgentEditable;
+  const hideProfile = !isAgentEditable || agentConfigurationBlocked;
   // Claude Code agents can use message channels; other hetero providers (e.g. codex) still hide it.
   const hideChannel =
     hideProfile || (!!heterogeneousProviderType && heterogeneousProviderType !== 'claude-code');

@@ -2,6 +2,10 @@
 
 import { Fragment, useEffect } from 'react';
 
+import {
+  getManagedResourceForSettingsTab,
+  ManagedResourceBoundary,
+} from '@/features/ManagedResources';
 import NavHeader from '@/features/NavHeader';
 import SettingContainer from '@/features/Setting/SettingContainer';
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
@@ -58,7 +62,16 @@ const SettingsContent = ({ mobile, activeTab }: SettingsContentProps) => {
       componentProps.mobile = mobile;
     }
 
-    return <Component {...componentProps} />;
+    const content = <Component {...componentProps} />;
+    const managedResource = getManagedResourceForSettingsTab(tab);
+    // Connector keeps its personal OAuth authorization surface while its route
+    // component removes definition/configuration mutations.
+    if (managedResource && managedResource !== 'connectors') {
+      return (
+        <ManagedResourceBoundary resource={managedResource}>{content}</ManagedResourceBoundary>
+      );
+    }
+    return content;
   };
 
   if (activeTab && REDIRECT_MAP[activeTab]) return null;
