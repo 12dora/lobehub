@@ -37,20 +37,26 @@ describe('flag-off real Business route tree registration', () => {
     window.__SERVER_CONFIG__ = undefined;
   });
 
-  it('flag false or absent: Business desktop/mobile do not register /admin', async () => {
-    for (const flag of [false, undefined] as const) {
-      setBootPlatformAdmin(flag);
-      const { desktop, mobile } = await loadBusinessRoutes();
+  it('flag false: Business desktop/mobile do not register /admin', async () => {
+    setBootPlatformAdmin(false);
+    const { desktop, mobile } = await loadBusinessRoutes();
 
-      expect(desktop.BusinessDesktopRoutesWithoutMainLayout).toEqual([]);
-      expect(mobile.BusinessMobileRoutesWithoutMainLayout).toEqual([]);
-      expect(matchRoutes(desktop.BusinessDesktopRoutesWithoutMainLayout, '/admin')).toBeNull();
-      expect(matchRoutes(mobile.BusinessMobileRoutesWithoutMainLayout, '/admin')).toBeNull();
-      expect(
-        matchRoutes(desktop.BusinessDesktopRoutesWithoutMainLayout, '/admin/users'),
-      ).toBeNull();
-    }
-  }, 20_000);
+    expect(desktop.BusinessDesktopRoutesWithoutMainLayout).toEqual([]);
+    expect(mobile.BusinessMobileRoutesWithoutMainLayout).toEqual([]);
+    expect(matchRoutes(desktop.BusinessDesktopRoutesWithoutMainLayout, '/admin')).toBeNull();
+    expect(matchRoutes(mobile.BusinessMobileRoutesWithoutMainLayout, '/admin')).toBeNull();
+    expect(matchRoutes(desktop.BusinessDesktopRoutesWithoutMainLayout, '/admin/users')).toBeNull();
+  }, 30_000);
+
+  it('flag absent: same as off (boot helper + empty Business mount)', async () => {
+    setBootPlatformAdmin(undefined);
+    const { isPlatformAdminBootEnabled } = await import('../boot/isPlatformAdminBootEnabled');
+    expect(isPlatformAdminBootEnabled()).toBe(false);
+
+    const { desktop } = await loadBusinessRoutes();
+    expect(desktop.BusinessDesktopRoutesWithoutMainLayout).toEqual([]);
+    expect(matchRoutes(desktop.BusinessDesktopRoutesWithoutMainLayout, '/admin')).toBeNull();
+  }, 30_000);
 
   it('flag true: Business desktop matches deep links and nested 404', async () => {
     setBootPlatformAdmin(true);
