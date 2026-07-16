@@ -31,6 +31,7 @@ const mocks = vi.hoisted(() => {
     getUserSettings: vi.fn(),
     marketService: {},
     prepareSkillDirectory: vi.fn(),
+    platformFindByName: vi.fn(),
     preprocessLhCommand: vi.fn(),
     readResource: vi.fn(),
     resolveRunWorkspaceId: vi.fn(),
@@ -70,6 +71,15 @@ vi.mock('@/database/models/user', () => ({
 
 vi.mock('@/helpers/skillFilters', () => ({
   filterBuiltinSkills: vi.fn((skills: unknown) => skills),
+}));
+
+vi.mock('@/server/enterprise/services/skillCatalog', () => ({
+  createPlatformSkillOperationResolver: vi.fn(() => ({
+    findAll: vi.fn(),
+    findById: vi.fn(),
+    findByName: mocks.platformFindByName,
+    readResource: vi.fn(),
+  })),
 }));
 
 vi.mock('@/server/services/agentDocuments', () => ({
@@ -144,6 +154,7 @@ describe('skillsRuntime', () => {
       skipSkillLookup: false,
     });
     mocks.resolveRunWorkspaceId.mockResolvedValue(undefined);
+    mocks.platformFindByName.mockResolvedValue(undefined);
     mocks.sandboxService.callTool.mockResolvedValue({
       result: {
         exitCode: 0,
@@ -153,6 +164,39 @@ describe('skillsRuntime', () => {
       },
       success: true,
     });
+  });
+
+  it('short-circuits all user-owned sources for a managed operation snapshot', async () => {
+    mocks.platformFindByName.mockResolvedValue({
+      content: '# Managed',
+      id: 'platform-skill:managed.skill',
+      identifier: 'managed.skill',
+      name: 'managed.skill',
+      resources: {},
+    });
+    const { skillsRuntime } = await import('../skills');
+    const runtime = await skillsRuntime.factory({
+      operationSkillSet: {
+        enabledPluginIds: [],
+        platformCatalog: {
+          refs: [{ checksum: 'a'.repeat(64), skillKey: 'managed.skill', version: '1.0.0' }],
+          revision: 'r1',
+        },
+        skills: [],
+      },
+      serverDB: {} as never,
+      toolManifestMap: {},
+      userId: 'user-1',
+    });
+
+    await expect(runtime.activateSkill({ name: 'managed.skill' })).resolves.toMatchObject({
+      content: '# Managed',
+      success: true,
+    });
+    expect(mocks.getUserSettings).not.toHaveBeenCalled();
+    expect(mocks.getAgentConfigById).not.toHaveBeenCalled();
+    expect(mocks.getAgentSkills).not.toHaveBeenCalled();
+    expect(mocks.findByName).not.toHaveBeenCalled();
   });
 
   // First dynamic `import('../skills')` in the file pays the real transform

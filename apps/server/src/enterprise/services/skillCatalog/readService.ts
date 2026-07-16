@@ -4,6 +4,8 @@ import { checksumPayload, PlatformSkillCatalogModel } from '@/database/models/pl
 import type { LobeChatDatabase, Transaction } from '@/database/type';
 
 import {
+  type PlatformSkillPinnedRef,
+  platformSkillPinnedRefSchema,
   type PublishedSkill,
   serverResolvedSkillSchema,
   type SkillManifest,
@@ -174,5 +176,17 @@ export class SkillCatalogReadService {
       version: builtin.version,
       versionId: `builtin:${builtin.skillKey}@${builtin.version}`,
     });
+  };
+
+  /**
+   * Resolve the immutable operation reference and verify both coordinates.
+   * A version-only lookup is insufficient: a corrupted or replaced immutable
+   * row must never execute under a checksum captured by an older operation.
+   */
+  resolvePinnedForExecution = async (input: PlatformSkillPinnedRef) => {
+    const ref = platformSkillPinnedRefSchema.parse(input);
+    const resolved = await this.resolveForExecution(ref.skillKey, ref.version);
+    if (!resolved || resolved.checksum !== ref.checksum) return undefined;
+    return resolved;
   };
 }

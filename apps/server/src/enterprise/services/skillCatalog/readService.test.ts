@@ -145,6 +145,35 @@ describe('SkillCatalogReadService', () => {
     await expect(service.resolveForExecution('historical', '1.0.0')).resolves.toMatchObject({
       content: '# 1.0.0',
     });
+    const exact = await service.resolveForExecution('historical', '1.0.0');
+    await expect(
+      service.resolvePinnedForExecution({
+        checksum: exact!.checksum,
+        skillKey: 'historical',
+        version: '1.0.0',
+      }),
+    ).resolves.toMatchObject({ content: '# 1.0.0' });
+  });
+
+  it('fails closed when either coordinate of a pinned execution ref does not match', async () => {
+    const service = new SkillCatalogReadService(db);
+    await publish({ skillKey: 'pinned', version: '1.0.0' });
+    const exact = await service.resolveForExecution('pinned', '1.0.0');
+
+    await expect(
+      service.resolvePinnedForExecution({
+        checksum: 'f'.repeat(64),
+        skillKey: 'pinned',
+        version: '1.0.0',
+      }),
+    ).resolves.toBeUndefined();
+    await expect(
+      service.resolvePinnedForExecution({
+        checksum: exact!.checksum,
+        skillKey: 'pinned',
+        version: '2.0.0',
+      }),
+    ).resolves.toBeUndefined();
   });
 
   it('requires explicit published override intent before replacing a builtin key', async () => {

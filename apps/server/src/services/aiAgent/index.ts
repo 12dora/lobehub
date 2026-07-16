@@ -95,10 +95,12 @@ import { shouldEnableBuiltinSkill } from '@/helpers/skillFilters';
 import { buildConnectorManifests } from '@/libs/mcp/buildConnectorManifests';
 import { patchManifestWithPermissions } from '@/libs/mcp/connectorPermissionCheck';
 import { signOperationJwt, signUserJWT } from '@/libs/trpc/utils/internalJwt';
+import { parseEnterpriseFeatureFlags } from '@/server/enterprise/featureFlags';
 import {
   getEffectiveMemorySettings,
   resolveEffectiveUserInterventionConfig,
 } from '@/server/enterprise/services/settings/runtimeSettingsAdapter';
+import { resolvePlatformSkillRuntimeSnapshot } from '@/server/enterprise/services/skillCatalog';
 import { createStreamEventManager } from '@/server/modules/AgentRuntime/factory';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 import type { EvalContext, ServerAgentToolsContext } from '@/server/modules/Mecha';
@@ -3429,140 +3431,131 @@ export class AiAgentService {
       Object.keys(toolManifestMap).length,
     );
 
-    // 18. Build OperationSkillSet via SkillEngine
-    // Combines builtin skills + user DB skills + agent-document skill bundles,
-    // filters by platform via enableChecker, and pairs with agent's enabled
-    // plugin IDs for downstream SkillResolver consumption.
+    // Resolve the platform boundary before touching any personal, project or
+    // agent-document Skill source. Feature-off exits inside the resolver
+    // before constructing policy/catalog services.
+    const platformSkillSnapshot = await resolvePlatformSkillRuntimeSnapshot({
+      agentPlugins: agentConfig.plugins,
+      db: this.db,
+      flags: parseEnterpriseFeatureFlags(process.env),
+    });
+
+    // Project discovery also supplies operation-wide instructions and working
+    // directory metadata. Keep it independent of Skill catalog enforcement:
+    // managed Skills replace only the Skill pool, not project instructions.
+    const workspaceInit = await this.resolveWorkspaceInit({
+      activeDeviceId,
+      agencyConfig: agentConfig.agencyConfig ?? undefined,
+      topicId,
+    });
+    if (workspaceInit.boundCwd) deviceSystemInfo.workingDirectory = workspaceInit.boundCwd;
+    if (workspaceInit.workspace.instructions.length) {
+      const block = workspaceInit.workspace.instructions
+        .map(
+          ({ content, source }) =>
+            `<project_instructions source="${source}">\n${content}\n</project_instructions>`,
+        )
+        .join('\n\n');
+      agentConfig.systemRole = agentConfig.systemRole
+        ? `${agentConfig.systemRole}\n\n${block}`
+        : block;
+    }
+
+    // 18. Build OperationSkillSet via SkillEngine.
     let operationSkillSet;
     try {
-      const builtinMetas = builtinSkills.map((s) => ({
-        content: s.content,
-        description: s.description,
-        identifier: s.identifier,
-        name: s.name,
-      }));
-      const skillModel = new AgentSkillModel(this.db, this.userId, this.workspaceId);
-      const { data: dbSkills } = await skillModel.findAll();
-      const dbMetas = dbSkills.map((s) => ({
-        description: s.description ?? '',
-        identifier: s.identifier,
-        name: s.name,
-      }));
+      if (platformSkillSnapshot) {
+        const skillEngine = new SkillEngine({ skills: platformSkillSnapshot.skills });
+        operationSkillSet = {
+          ...skillEngine.generate(agentPlugins ?? []),
+          platformCatalog: platformSkillSnapshot.catalog,
+        };
+      } else {
+        const builtinMetas = builtinSkills.map((s) => ({
+          content: s.content,
+          description: s.description,
+          identifier: s.identifier,
+          name: s.name,
+        }));
+        const skillModel = new AgentSkillModel(this.db, this.userId, this.workspaceId);
+        const { data: dbSkills } = await skillModel.findAll();
+        const dbMetas = dbSkills.map((s) => ({
+          description: s.description ?? '',
+          identifier: s.identifier,
+          name: s.name,
+        }));
 
-      // Agent-document skill bundles surfaced as runtime skills via the shared
-      // `getAgentSkills` source of truth (prefix + index-child resolution lives
-      // there; see `AgentDocumentsService.getAgentSkills`). Identifier is
-      // prefixed (`agent-skills:<filename>`) so it can't collide with builtin
-      // / DB skill names, and we re-use it as `name` so the prompt's
-      // `<skill name="...">` line and the model's `activateSkill(name)` call
-      // carry the same value.
-      const agentSkills = await this.agentDocumentsService.getAgentSkills(resolvedAgentId);
-      const agentSkillMetas = agentSkills.map((skill) => ({
-        description: skill.description,
-        identifier: skill.identifier,
-        name: skill.name,
-      }));
+        // Agent-document skill bundles surfaced as runtime skills via the shared
+        // `getAgentSkills` source of truth (prefix + index-child resolution lives
+        // there; see `AgentDocumentsService.getAgentSkills`). Identifier is
+        // prefixed (`agent-skills:<filename>`) so it can't collide with builtin
+        // / DB skill names, and we re-use it as `name` so the prompt's
+        // `<skill name="...">` line and the model's `activateSkill(name)` call
+        // carry the same value.
+        const agentSkills = await this.agentDocumentsService.getAgentSkills(resolvedAgentId);
+        const agentSkillMetas = agentSkills.map((skill) => ({
+          description: skill.description,
+          identifier: skill.identifier,
+          name: skill.name,
+        }));
 
-      // Project skills + the root AGENTS.md are discovered server-side by
-      // scanning the device's bound project directory ("workspace init"), cached
-      // on `devices.workingDirs` and reused within the TTL. Skills surface in
-      // `<available_skills>` (metadata only — SKILL.md bodies are read lazily at
-      // activation via `local-system` readFile, which `serverRuntimes/skills.ts`
-      // re-gates on `activeDeviceId`). Only `location` (the absolute SKILL.md
-      // path) flows through; the directory tree is enumerated lazily, keeping the
-      // op-param payload small.
-      const workspaceInit = await this.resolveWorkspaceInit({
-        activeDeviceId,
-        agencyConfig: agentConfig.agencyConfig ?? undefined,
-        topicId,
-      });
+        const projectMetas = workspaceInit.workspace.skills.map((s) => ({
+          description: s.description ?? '',
+          identifier: `${s.scope === 'device' ? 'device' : 'project'}:${s.name}`,
+          location: s.path,
+          name: s.name,
+          source: s.scope === 'device' ? ('device' as const) : ('project' as const),
+        }));
 
-      // Feed the bound directory (resolved from the persisted device row) into
-      // the local-system tool's {{workingDirectory}} placeholder — the channel
-      // the model uses to know where it is and reach for absolute paths — and,
-      // downstream, the runCommand cwd / search scope (RuntimeExecutors reads
-      // state.metadata.deviceSystemInfo.workingDirectory). Resume-safe via the
-      // existing deviceSystemInfo plumbing (computeDeviceContext).
-      if (workspaceInit.boundCwd) {
-        deviceSystemInfo.workingDirectory = workspaceInit.boundCwd;
-      }
+        if (projectMetas.length) {
+          log(
+            'execAgent: workspace skills merged: %d (activeDeviceId=%s)',
+            projectMetas.length,
+            activeDeviceId ?? 'none',
+          );
+        }
 
-      const projectMetas = workspaceInit.workspace.skills.map((s) => ({
-        description: s.description ?? '',
-        identifier: `${s.scope === 'device' ? 'device' : 'project'}:${s.name}`,
-        location: s.path,
-        name: s.name,
-        source: s.scope === 'device' ? ('device' as const) : ('project' as const),
-      }));
-
-      if (projectMetas.length) {
-        log(
-          'execAgent: workspace skills merged: %d (activeDeviceId=%s)',
-          projectMetas.length,
-          activeDeviceId ?? 'none',
+        // Precedence on name collision: project > db > agent-skills > builtin.
+        // Agent-skills carry the `agent-skills:` prefix in their `name`, so they
+        // can only collide with each other — but we still dedupe by name to keep
+        // a single shape for the SkillEngine input.
+        //
+        // Disabled skills are dropped here, not just rule-gated later: this
+        // `skills` array is the sole candidate pool SkillEngine/SkillResolver
+        // build `<available_skills>` from AND the pool `activateSkill` resolves
+        // against, so a disabled identifier absent here is neither listed nor
+        // activatable — mirrors the tool-manifest treatment above (installedPlugins/
+        // additionalManifests), which this array had never received.
+        const seenNames = new Set<string>();
+        const skills = [...projectMetas, ...dbMetas, ...agentSkillMetas, ...builtinMetas].filter(
+          (skill) => {
+            if (disabledPluginIds.includes(skill.identifier)) return false;
+            if (seenNames.has(skill.name)) return false;
+            seenNames.add(skill.name);
+            return true;
+          },
         );
+
+        // Device-only builtin skills (agent-browser) are gated on the run's
+        // execution plan, not the compile-time `isDesktop` constant (always false
+        // on the server). Gate the static `<available_skills>` listing on the
+        // device-CAPABLE plan rather than `activeDeviceId`: `device-unrouted`
+        // runs let the model pick a device mid-run, and this skill set is built
+        // once per operation — gating on `activeDeviceId` would hide the skill
+        // forever in those runs. Activation/loading apply the same plan gate via
+        // `ToolExecutionContext.deviceCapable`; only actual command execution is
+        // gated at the device tool layer.
+        const skillEngine = new SkillEngine({
+          enableChecker: (skill) =>
+            shouldEnableBuiltinSkill(skill.identifier, {
+              canExecuteOnDevice: executionPlan ? isDeviceCapablePlan(executionPlan) : false,
+            }),
+          skills,
+        });
+        operationSkillSet = skillEngine.generate(agentPlugins ?? []);
       }
-
-      // Inject the project-root agent instructions (AGENTS.md / CLAUDE.md) as
-      // trailing blocks on the system role — after the agent's persona and any
-      // page/task/additional instructions. `agentConfig` is read by
-      // `createOperation` below, so appending here still reaches the LLM.
-      if (workspaceInit.workspace.instructions.length) {
-        const block = workspaceInit.workspace.instructions
-          .map(
-            ({ content, source }) =>
-              `<project_instructions source="${source}">\n${content}\n</project_instructions>`,
-          )
-          .join('\n\n');
-        agentConfig.systemRole = agentConfig.systemRole
-          ? `${agentConfig.systemRole}\n\n${block}`
-          : block;
-        log(
-          'execAgent: injected %d project instruction file(s): %s',
-          workspaceInit.workspace.instructions.length,
-          workspaceInit.workspace.instructions.map((i) => i.source).join(', '),
-        );
-      }
-
-      // Precedence on name collision: project > db > agent-skills > builtin.
-      // Agent-skills carry the `agent-skills:` prefix in their `name`, so they
-      // can only collide with each other — but we still dedupe by name to keep
-      // a single shape for the SkillEngine input.
-      //
-      // Disabled skills are dropped here, not just rule-gated later: this
-      // `skills` array is the sole candidate pool SkillEngine/SkillResolver
-      // build `<available_skills>` from AND the pool `activateSkill` resolves
-      // against, so a disabled identifier absent here is neither listed nor
-      // activatable — mirrors the tool-manifest treatment above (installedPlugins/
-      // additionalManifests), which this array had never received.
-      const seenNames = new Set<string>();
-      const skills = [...projectMetas, ...dbMetas, ...agentSkillMetas, ...builtinMetas].filter(
-        (skill) => {
-          if (disabledPluginIds.includes(skill.identifier)) return false;
-          if (seenNames.has(skill.name)) return false;
-          seenNames.add(skill.name);
-          return true;
-        },
-      );
-
-      // Device-only builtin skills (agent-browser) are gated on the run's
-      // execution plan, not the compile-time `isDesktop` constant (always false
-      // on the server). Gate the static `<available_skills>` listing on the
-      // device-CAPABLE plan rather than `activeDeviceId`: `device-unrouted`
-      // runs let the model pick a device mid-run, and this skill set is built
-      // once per operation — gating on `activeDeviceId` would hide the skill
-      // forever in those runs. Activation/loading apply the same plan gate via
-      // `ToolExecutionContext.deviceCapable`; only actual command execution is
-      // gated at the device tool layer.
-      const skillEngine = new SkillEngine({
-        enableChecker: (skill) =>
-          shouldEnableBuiltinSkill(skill.identifier, {
-            canExecuteOnDevice: executionPlan ? isDeviceCapablePlan(executionPlan) : false,
-          }),
-        skills,
-      });
-      operationSkillSet = skillEngine.generate(agentPlugins ?? []);
     } catch (error) {
+      if (platformSkillSnapshot) throw error;
       log('execAgent: failed to build operationSkillSet: %O', error);
     }
 

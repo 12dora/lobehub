@@ -29,6 +29,7 @@ import { FileModel } from '@/database/models/file';
 import { UserModel } from '@/database/models/user';
 import type { LobeChatDatabase } from '@/database/type';
 import { filterBuiltinSkills } from '@/helpers/skillFilters';
+import { createPlatformSkillOperationResolver } from '@/server/enterprise/services/skillCatalog';
 import { AgentDocumentsService } from '@/server/services/agentDocuments';
 import { deviceGateway } from '@/server/services/deviceGateway';
 import { FileService } from '@/server/services/file';
@@ -606,6 +607,21 @@ export const skillsRuntime: ServerRuntimeRegistration = {
     }
     if (!context.userId) {
       throw new Error('userId is required for Skills execution');
+    }
+
+    // Enforced managed operations carry the exact published catalog selected
+    // when the operation was created. Resolve only those pins and return
+    // before reading user settings, user Skill rows, agent documents, project
+    // directories or the market. This is both the isolation boundary and the
+    // feature's no-user-owned-I/O guarantee.
+    const platformCatalog = context.operationSkillSet?.platformCatalog;
+    if (platformCatalog) {
+      return new SkillsExecutionRuntime({
+        activatedSkills: context.activatedSkills,
+        builtinSkills: [],
+        projectSkills: [],
+        service: createPlatformSkillOperationResolver(context.serverDB, platformCatalog),
+      });
     }
 
     // Fetch market access token from user settings

@@ -403,6 +403,14 @@ export const publishedSkillCatalogSchema = z
   })
   .strict();
 
+export const platformSkillPinnedRefSchema = z
+  .object({
+    checksum: checksumSchema,
+    skillKey: skillKeySchema,
+    version: skillVersionSchema,
+  })
+  .strict();
+
 export const serverSkillResolveInputSchema = z
   .object({ skillKey: skillKeySchema, version: skillVersionSchema.optional() })
   .strict();
@@ -424,6 +432,7 @@ export type AdminSkillCreateInput = z.infer<typeof adminSkillCreateInputSchema>;
 export type AdminSkillCreateVersionInput = z.infer<typeof adminSkillCreateVersionInputSchema>;
 export type AdminSkillUpdateDraftInput = z.infer<typeof adminSkillUpdateDraftInputSchema>;
 export type ImmutableSkillVersion = z.infer<typeof immutableSkillVersionSchema>;
+export type PlatformSkillPinnedRef = z.infer<typeof platformSkillPinnedRefSchema>;
 export type PublishedSkill = z.infer<typeof publishedSkillSchema>;
 export type SkillResource = z.infer<typeof skillResourceSchema>;
 export type SkillIdentityDraft = z.infer<typeof skillIdentityDraftSchema>;

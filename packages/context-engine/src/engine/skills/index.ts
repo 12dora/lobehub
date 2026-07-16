@@ -4,6 +4,8 @@ export { SkillResolver } from './SkillResolver';
 export type {
   ActivatedStepSkill,
   OperationSkillSet,
+  PlatformSkillOperationSnapshot,
+  PlatformSkillPinnedRef,
   ResolvedSkillSet,
   SkillEnableChecker,
   SkillEngineOptions,
