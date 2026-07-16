@@ -47,7 +47,7 @@ describe('createAdminRouteTree', () => {
     expect(nestedUnknown?.at(-1)?.route.path).toBe('*');
   });
 
-  it('users routes are real pages; other modules remain placeholders', () => {
+  it('implemented admin routes are real pages; later modules remain placeholders', () => {
     const routes = createAdminRouteTree();
     const admin = routes.find((r) => r.path === '/admin');
     const children = admin?.children ?? [];
@@ -56,6 +56,7 @@ describe('createAdminRouteTree', () => {
     const usersDetail = children.find((c) => c.path === 'users/:id');
     const settings = children.find((c) => c.path === 'settings');
     const managedResources = children.find((c) => c.path === 'managed-resources');
+    const aiProviders = children.find((c) => c.path === 'ai/providers');
 
     expect((users?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder).toBe(
       false,
@@ -69,6 +70,9 @@ describe('createAdminRouteTree', () => {
     expect(
       (managedResources?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder,
     ).toBe(false);
+    expect((aiProviders?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder).toBe(
+      false,
+    );
 
     // Element is not the shared PlaceholderPage for users (lazy wrapper present)
     expect(users?.element).toBeTruthy();
@@ -77,7 +81,11 @@ describe('createAdminRouteTree', () => {
     const placeholders = ADMIN_NAV_FLAT.filter((i) => i.placeholder);
     expect(
       placeholders.every(
-        (i) => i.id !== 'users' && i.id !== 'users-detail' && i.id !== 'managed-resources',
+        (i) =>
+          i.id !== 'users' &&
+          i.id !== 'users-detail' &&
+          i.id !== 'managed-resources' &&
+          i.id !== 'ai-providers',
       ),
     ).toBe(true);
   });
