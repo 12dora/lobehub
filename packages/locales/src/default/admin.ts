@@ -346,6 +346,11 @@ export default {
   'primitives.dataTable.previous': 'Previous',
   'shell.brand': 'Platform admin',
   'shell.exit': 'Exit admin',
+  'skillCatalog.editor.unsaved.desc':
+    'You have unsaved Skill identity or version changes. Safe drafts are restored after reload; sensitive material stays only in this session.',
+  'skillCatalog.editor.unsaved.leave': 'Leave without saving',
+  'skillCatalog.editor.unsaved.stay': 'Keep editing',
+  'skillCatalog.editor.unsaved.title': 'Unsaved Skill changes',
   'users.list.title': 'Users',
   'users.list.desc': 'Search and manage platform users, bans, sessions, and global roles.',
   'users.list.searchPlaceholder': 'Search email or username…',

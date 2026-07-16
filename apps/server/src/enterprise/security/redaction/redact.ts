@@ -13,7 +13,7 @@ import {
   isSensitiveKey,
   REDACTED_PLACEHOLDER,
   redactSensitive,
-} from '@/database/models/platform';
+} from '@/database/models/platform/redact';
 
 import type { RedactOptions } from './types';
 
