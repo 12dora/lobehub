@@ -19,7 +19,7 @@ const Analytics = memo(() => {
   const updateGeneralConfig = useUserStore((s) => s.updateGeneralConfig);
   const telemetryMeta = usePlatformSettingMeta('general.telemetry');
 
-  // Fail-closed while metadata is unknown (loading/error)
+  // U1-R2: flag OFF renders exact unmanaged control; only hide when policy says hidden
   if (telemetryMeta.status === 'loading') return null;
   if (telemetryMeta.status === 'error') {
     return (
@@ -35,20 +35,25 @@ const Analytics = memo(() => {
       {
         children: (
           <div>
-            <PlatformSettingSourceBadge
-              locked={telemetryMeta.locked}
-              mode={telemetryMeta.mode}
-              source={telemetryMeta.source}
-              onReset={
-                telemetryMeta.mode === 'default' && telemetryMeta.source === 'user'
-                  ? () => {
-                      void telemetryMeta.reset().catch(() => {
-                        /* resetError exposed on meta */
-                      });
-                    }
-                  : undefined
-              }
-            />
+            {telemetryMeta.enabled ? (
+              <PlatformSettingSourceBadge
+                locked={telemetryMeta.locked}
+                mode={telemetryMeta.mode}
+                source={telemetryMeta.source}
+                onReset={
+                  telemetryMeta.mode === 'default' && telemetryMeta.source === 'user'
+                    ? () => {
+                        void telemetryMeta.reset().catch(() => {});
+                      }
+                    : undefined
+                }
+              />
+            ) : null}
+            {telemetryMeta.resetError ? (
+              <button type="button" onClick={() => void telemetryMeta.reset().catch(() => {})}>
+                {t('platformSource.retryReset', { defaultValue: 'Retry reset' })}
+              </button>
+            ) : null}
             <Switch
               checked={!!checked}
               disabled={telemetryMeta.locked || telemetryMeta.resetting}

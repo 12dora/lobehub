@@ -10,6 +10,7 @@ import { useTranslation } from 'react-i18next';
 import { FormSliderWithInput } from '@/components/FormInput';
 import { FORM_STYLE } from '@/const/layoutTokens';
 import { MAX_DEFAULT_IMAGE_NUM, MIN_DEFAULT_IMAGE_NUM } from '@/const/settings';
+import ManagedSettingField from '@/features/PlatformSettingSourceBadge/ManagedSettingField';
 import { usePermission } from '@/hooks/usePermission';
 import { useUserStore } from '@/store/user';
 import { settingsSelectors } from '@/store/user/slices/settings/selectors';
@@ -32,14 +33,18 @@ const ImageSettings = memo(() => {
       children: [
         {
           children: (
-            <Tooltip title={reason}>
-              <FormSliderWithInput
-                disabled={isUpdating || !canManageServiceModel}
-                max={MAX_DEFAULT_IMAGE_NUM}
-                min={MIN_DEFAULT_IMAGE_NUM}
-                step={1}
-              />
-            </Tooltip>
+            <ManagedSettingField path="image.defaultImageNum">
+              {({ disabled }) => (
+                <Tooltip title={reason}>
+                  <FormSliderWithInput
+                    disabled={isUpdating || !canManageServiceModel || disabled}
+                    max={MAX_DEFAULT_IMAGE_NUM}
+                    min={MIN_DEFAULT_IMAGE_NUM}
+                    step={1}
+                  />
+                </Tooltip>
+              )}
+            </ManagedSettingField>
           ),
           desc: t('settingImage.defaultCount.desc'),
           label: t('settingImage.defaultCount.label'),

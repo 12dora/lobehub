@@ -34,6 +34,9 @@ export {
 } from './registry';
 export {
   getDefaultAgentSlice,
+  getEffectiveDefaultAgentConfig,
+  getEffectiveMemorySettings,
+  getEffectiveSystemAgentConfig,
   getSystemAgentSlice,
   getToolSlice,
   loadEffectiveUserSettings,

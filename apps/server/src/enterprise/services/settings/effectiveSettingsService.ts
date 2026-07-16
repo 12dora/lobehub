@@ -64,6 +64,52 @@ export class EffectiveSettingsService {
   isPolicyEnabled = (): boolean => getEnterpriseFeatureFlags().ENABLE_PLATFORM_SETTINGS_POLICY;
 
   /**
+   * Platform layer only (builtin + published policies, no personal overrides/legacy).
+   * Used for workspace-scoped agent merges so org locks/defaults apply without
+   * leaking personal settings (B1-R2).
+   */
+  getPlatformLayerEffectiveSettings = async (): Promise<EffectiveSettingsResult> => {
+    if (!this.isPolicyEnabled()) {
+      return resolveEffectiveSettings({
+        legacyUserSettings: {},
+        platformPolicyEnabled: false,
+        platformRevision: 0,
+        userOverrideRevision: 0,
+      });
+    }
+
+    const bundle = await this.model.getBundle();
+    const platformRevision = bundle?.revision ?? 0;
+    const published = await this.model.listPublishedPolicies();
+    const policies: Record<
+      string,
+      {
+        mode: SettingPolicyMode;
+        schemaVersion: number;
+        value: unknown;
+        visibility: SettingPolicyVisibility;
+      }
+    > = {};
+    for (const row of published) {
+      policies[row.path] = {
+        mode: row.mode as SettingPolicyMode,
+        schemaVersion: row.schemaVersion,
+        value: row.value,
+        visibility: (row.visibility ?? 'visible') as SettingPolicyVisibility,
+      };
+    }
+
+    return resolveEffectiveSettings({
+      legacyUserSettings: {},
+      overrides: {},
+      platformPolicyEnabled: true,
+      platformRevision,
+      policies,
+      userOverrideRevision: 0,
+    });
+  };
+
+  /**
    * Resolve effective settings for a user.
    * Flag OFF: pure legacy blob + built-ins (no platform table reads required).
    */
@@ -148,7 +194,7 @@ export class EffectiveSettingsService {
     }
 
     const gate = settingsRegistry.assertPathWritable({
-      client: params.client ?? 'server',
+      client: params.client ?? 'web',
       path: params.path,
     });
     if (gate) throw new SettingsPathError(gate);
@@ -161,16 +207,20 @@ export class EffectiveSettingsService {
       );
     }
 
-    const policy = await this.model.getPublishedPolicy(params.path);
-    if (policy?.mode === 'locked') {
-      throw new SettingsPathError(MANAGED_ERROR_CODES.MANAGED_SETTING_BY_ADMIN);
-    }
-
-    // Atomic: override upsert + revision bump in one transaction; invalidate after commit
-    const { revision } = await this.model.upsertUserOverride({
-      path: params.path,
-      userId: params.userId,
-      value: validated.value,
+    // B3-R2: lock aggregate pointer + recheck published policy inside same txn as write
+    const { revision } = await this.db.transaction(async (tx) => {
+      const model = new PlatformSettingsModel(tx);
+      await model.lockBundleForUpdate();
+      const policy = await model.getPublishedPolicy(params.path);
+      if (policy?.mode === 'locked') {
+        throw new SettingsPathError(MANAGED_ERROR_CODES.MANAGED_SETTING_BY_ADMIN);
+      }
+      return model.upsertUserOverride({
+        alreadyInTransaction: true,
+        path: params.path,
+        userId: params.userId,
+        value: validated.value,
+      });
     });
 
     this.dropUserCache(params.userId);
@@ -185,34 +235,43 @@ export class EffectiveSettingsService {
     return { path: params.path, revision, value: validated.value };
   };
 
-  resetSettingOverride = async (params: { path: string; userId: string }) => {
+  resetSettingOverride = async (params: {
+    client?: SettingClientSurface;
+    path: string;
+    userId: string;
+  }) => {
     if (!this.isPolicyEnabled()) {
       throw new SettingsPathError(PLATFORM_ERROR_CODES.PLATFORM_FEATURE_DISABLED);
     }
 
     const gate = settingsRegistry.assertPathWritable({
-      client: 'server',
+      client: params.client ?? 'web',
       path: params.path,
     });
     if (gate) throw new SettingsPathError(gate);
 
-    const policy = await this.model.getPublishedPolicy(params.path);
-    if (policy?.mode === 'locked') {
-      throw new SettingsPathError(MANAGED_ERROR_CODES.MANAGED_SETTING_BY_ADMIN);
-    }
-
-    const { deleted, revision } = await this.model.deleteUserOverride(params.userId, params.path);
+    const result = await this.db.transaction(async (tx) => {
+      const model = new PlatformSettingsModel(tx);
+      await model.lockBundleForUpdate();
+      const policy = await model.getPublishedPolicy(params.path);
+      if (policy?.mode === 'locked') {
+        throw new SettingsPathError(MANAGED_ERROR_CODES.MANAGED_SETTING_BY_ADMIN);
+      }
+      return model.deleteUserOverride(params.userId, params.path, {
+        alreadyInTransaction: true,
+      });
+    });
 
     this.dropUserCache(params.userId);
     await this.invalidation.publish({
       at: new Date().toISOString(),
       resourceId: params.userId,
       resourceType: 'settings',
-      revision,
+      revision: result.revision,
       scopes: ['settings', `user:${params.userId}`],
     });
 
-    return { deleted, path: params.path, revision };
+    return { deleted: result.deleted, path: params.path, revision: result.revision };
   };
 
   /**
@@ -279,7 +338,8 @@ export class EffectiveSettingsService {
         // known catalog leaf not in platform registry → stays in legacy partial
         continue;
       }
-      const gate = settingsRegistry.assertPathWritable({ client: 'server', path });
+      // Legacy updateSettings is a user-facing client API (web/desktop/mobile)
+      const gate = settingsRegistry.assertPathWritable({ client: 'web', path });
       if (gate) throw new SettingsPathError(gate);
 
       const validated = settingsRegistry.validateValue(path, value);
@@ -337,6 +397,7 @@ export class EffectiveSettingsService {
     let revision = 0;
     await this.db.transaction(async (tx) => {
       const model = new PlatformSettingsModel(tx);
+      await model.lockBundleForUpdate();
       for (const op of ops) {
         const policy = await model.getPublishedPolicy(op.path);
         if (policy?.mode === 'locked') {

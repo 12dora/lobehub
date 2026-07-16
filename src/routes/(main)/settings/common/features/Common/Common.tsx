@@ -13,6 +13,7 @@ import AutoSaveHint from '@/components/Editor/AutoSaveHint';
 import { FORM_STYLE } from '@/const/layoutTokens';
 import { imageUrl } from '@/const/url';
 import { isDesktop } from '@/const/version';
+import ManagedSettingField from '@/features/PlatformSettingSourceBadge/ManagedSettingField';
 import { useSaveState } from '@/hooks/useSaveState';
 import { localeOptions } from '@/locales/resources';
 import { useGlobalStore } from '@/store/global';
@@ -96,25 +97,36 @@ const Common = memo(() => {
       },
       {
         children: (
-          <Tabs
-            items={[
-              {
-                icon: <Icon icon={Ban} size={16} />,
-                key: 'disabled',
-                label: t('settingAppearance.animationMode.disabled'),
-              },
-              {
-                icon: <Icon icon={Gauge} size={16} />,
-                key: 'agile',
-                label: t('settingAppearance.animationMode.agile'),
-              },
-              {
-                icon: <Icon icon={Waves} size={16} />,
-                key: 'elegant',
-                label: t('settingAppearance.animationMode.elegant'),
-              },
-            ]}
-          />
+          <ManagedSettingField path="general.animationMode">
+            {({ disabled }) => (
+              <div
+                style={{
+                  opacity: disabled ? 0.6 : 1,
+                  pointerEvents: disabled ? 'none' : undefined,
+                }}
+              >
+                <Tabs
+                  items={[
+                    {
+                      icon: <Icon icon={Ban} size={16} />,
+                      key: 'disabled',
+                      label: t('settingAppearance.animationMode.disabled'),
+                    },
+                    {
+                      icon: <Icon icon={Gauge} size={16} />,
+                      key: 'agile',
+                      label: t('settingAppearance.animationMode.agile'),
+                    },
+                    {
+                      icon: <Icon icon={Waves} size={16} />,
+                      key: 'elegant',
+                      label: t('settingAppearance.animationMode.elegant'),
+                    },
+                  ]}
+                />
+              </div>
+            )}
+          </ManagedSettingField>
         ),
         desc: t('settingAppearance.animationMode.desc'),
         label: t('settingAppearance.animationMode.title'),

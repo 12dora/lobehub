@@ -99,16 +99,34 @@ export const loadEffectiveUserSettings = async (
 };
 
 /**
- * Effective defaultAgent row shape for AgentService merge (flag ON uses resolver).
- * Flag OFF: identical to UserModel.getUserSettingsDefaultAgentConfig().
+ * Effective defaultAgent for AgentService merge.
+ *
+ * - Flag OFF: identical to UserModel.getUserSettingsDefaultAgentConfig()
+ * - Flag ON personal: platform + personal override/legacy
+ * - Flag ON workspace: **platform layer only** (builtin + published policies) —
+ *   no personal overrides/legacy leak into workspace agents (B1-R2)
  */
 export const getEffectiveDefaultAgentConfig = async (params: {
   db: LobeChatDatabase;
   userId: string;
+  /**
+   * `workspace` applies platform defaults/locks without personal settings.
+   * `personal` (default) includes personal overrides.
+   */
+  scope?: 'personal' | 'workspace';
 }): Promise<unknown> => {
+  const scope = params.scope ?? 'personal';
+
   if (!isPolicyEnabled()) {
+    if (scope === 'workspace') return null;
     const userModel = new UserModel(params.db, params.userId);
     return userModel.getUserSettingsDefaultAgentConfig();
+  }
+
+  if (scope === 'workspace') {
+    const service = new EffectiveSettingsService(params.db);
+    const platformOnly = await service.getPlatformLayerEffectiveSettings();
+    return platformOnly.effectiveSettings.defaultAgent ?? null;
   }
 
   const userModel = new UserModel(params.db, params.userId);
@@ -118,6 +136,7 @@ export const getEffectiveDefaultAgentConfig = async (params: {
     general: row?.general,
     systemAgent: row?.systemAgent,
     tool: row?.tool,
+    memory: row?.memory,
   };
   const { settings } = await loadEffectiveUserSettings({
     db: params.db,
@@ -125,6 +144,30 @@ export const getEffectiveDefaultAgentConfig = async (params: {
     userId: params.userId,
   });
   return settings.defaultAgent ?? null;
+};
+
+/**
+ * Effective memory settings slice (aiAgent exec path).
+ * Flag OFF: raw user_settings.memory (parent parity).
+ */
+export const getEffectiveMemorySettings = async (params: {
+  db: LobeChatDatabase;
+  userId: string;
+}): Promise<{ enabled?: boolean; effort?: string } | undefined> => {
+  if (!isPolicyEnabled()) {
+    const userModel = new UserModel(params.db, params.userId);
+    const settings = await userModel.getUserSettings();
+    return settings?.memory as { enabled?: boolean; effort?: string } | undefined;
+  }
+
+  const userModel = new UserModel(params.db, params.userId);
+  const row = await userModel.getUserSettings();
+  const { settings } = await loadEffectiveUserSettings({
+    db: params.db,
+    legacySettings: { memory: row?.memory } as Record<string, unknown>,
+    userId: params.userId,
+  });
+  return settings.memory as { enabled?: boolean; effort?: string } | undefined;
 };
 
 /**

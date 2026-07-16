@@ -78,6 +78,18 @@ describe('settingsPolicyController', () => {
 
     expect(
       resolvePrimaryAction({
+        canPublish: true,
+        canUpdate: true,
+        dirty: false,
+        draftFingerprint: fp,
+        revisionConflict: false,
+        saveState: 'idle',
+        validatedForFingerprint: null,
+      }),
+    ).toBe('validate');
+
+    expect(
+      resolvePrimaryAction({
         canPublish: false,
         canUpdate: false,
         dirty: false,

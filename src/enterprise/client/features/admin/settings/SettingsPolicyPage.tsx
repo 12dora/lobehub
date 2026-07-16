@@ -443,6 +443,10 @@ const SettingsPolicyPage = memo(() => {
       >
         {primary === 'retry' ? t('settingsPolicy.retrySave') : t('settingsPolicy.saveDraft')}
       </Button>
+    ) : primary === 'validate' ? (
+      <Button disabled={!canUpdate} type="primary" onClick={() => void handleValidate()}>
+        {t('settingsPolicy.validate')}
+      </Button>
     ) : primary === 'publish' ? (
       <Button disabled={!canPublish} type="primary" onClick={handlePublish}>
         {t('settingsPolicy.publish')}
@@ -658,7 +662,25 @@ const PolicyValueEditor = memo<{
     );
   }
 
-  if (control === 'number' || control === 'slider') {
+  if (control === 'slider') {
+    // Prefer slider primitive with min/max/step (U6-R2) — number input only for pure number
+    return (
+      <Input
+        disabled={disabled}
+        max={max}
+        min={min}
+        step={step}
+        type="range"
+        value={value === undefined || value === null ? String(min ?? 0) : String(value)}
+        onChange={(e) => {
+          const n = Number(e.target.value);
+          onChange(Number.isFinite(n) ? n : e.target.value);
+        }}
+      />
+    );
+  }
+
+  if (control === 'number') {
     return (
       <Input
         disabled={disabled}

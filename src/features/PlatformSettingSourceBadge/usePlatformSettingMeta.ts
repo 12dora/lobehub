@@ -60,19 +60,24 @@ export const usePlatformSettingMeta = (path: string) => {
     }
   }, [enabled, path, refreshUserState, revalidate]);
 
+  // U1-R2: flag OFF → exact unmanaged (not locked/hidden); loading/error fail-closed for management
+  const unmanaged = status === 'disabled';
+  const ready = status === 'ready';
+
   return {
     enabled,
     error,
-    hidden: status === 'ready' ? (meta?.hidden ?? false) : false,
+    hidden: unmanaged ? false : ready ? (meta?.hidden ?? false) : false,
     isLoading: status === 'loading',
-    locked: status === 'ready' ? (meta?.locked ?? false) : true, // fail-closed while unknown
-    meta,
-    mode: meta?.mode,
+    // disabled: unlocked; ready: meta; loading/error: fail-closed locked for write surfaces
+    locked: unmanaged ? false : ready ? (meta?.locked ?? false) : true,
+    meta: unmanaged ? undefined : meta,
+    mode: unmanaged ? undefined : meta?.mode,
     reset,
     resetError,
     resetting,
     retry: () => revalidate(),
-    source: meta?.source,
+    source: unmanaged ? undefined : meta?.source,
     status,
   };
 };

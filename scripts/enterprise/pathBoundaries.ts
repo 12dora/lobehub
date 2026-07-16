@@ -22,6 +22,7 @@ export const ENTERPRISE_UPSTREAM_MOUNT_POINTS = [
   'apps/server/src/services/systemAgent/index.ts',
   'apps/server/src/services/taskReview/index.ts',
   'apps/server/src/services/memory/userMemory/persona/service.ts',
+  'apps/server/src/services/aiAgent/index.ts',
   'apps/server/src/routers/lambda/agentGroup.ts',
   // M05: user-facing source badge meta hook (thin SWR → enterprise service)
   'src/features/PlatformSettingSourceBadge/usePlatformSettingMeta.ts',
