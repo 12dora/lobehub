@@ -25,6 +25,7 @@ import type {
   AdminAiModelReorderInput,
   AdminAiModelUpdateInput,
 } from '../types';
+import { createAiCatalogWriteEpochGuard } from '../writeEpochGuard';
 import { refreshAdminAiModelLists } from './useAdminAiCatalog';
 
 export const useGlobalModelActions = (params: {
@@ -35,8 +36,12 @@ export const useGlobalModelActions = (params: {
   const allowed = deriveGlobalModelActions(params.permissions);
   const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
   const [refreshFailed, setRefreshFailed] = useState(false);
+  const [refreshPending, setRefreshPending] = useState(false);
   const [refreshRetrying, setRefreshRetrying] = useState(false);
   const refreshGenerationRef = useRef(0);
+  const writeGuardRef = useRef(createAiCatalogWriteEpochGuard());
+  const writeGuard = writeGuardRef.current;
+  const reloadRequired = refreshFailed || refreshPending;
 
   const errorText = useCallback(
     (cause: unknown) => {
@@ -55,42 +60,64 @@ export const useGlobalModelActions = (params: {
         commit,
         refresh: refreshAdminAiModelLists,
         onCommitted: () => {
+          writeGuard.lock();
           setRefreshFailed(false);
+          setRefreshPending(true);
           toast.success(t(successKey as never));
         },
         onRefreshed: () => {
-          if (refreshGenerationRef.current === generation) setRefreshFailed(false);
+          if (refreshGenerationRef.current === generation) {
+            writeGuard.unlock();
+            setRefreshFailed(false);
+            setRefreshPending(false);
+          }
         },
         onRefreshFailed: () => {
-          if (refreshGenerationRef.current === generation) setRefreshFailed(true);
+          if (refreshGenerationRef.current === generation) {
+            setRefreshFailed(true);
+            setRefreshPending(false);
+          }
         },
       });
     },
-    [t],
+    [t, writeGuard],
   );
 
   const retryRefresh = useCallback(async () => {
     const generation = ++refreshGenerationRef.current;
+    writeGuard.lock();
     setRefreshRetrying(true);
+    setRefreshPending(true);
     try {
       await refreshAdminAiModelLists();
-      if (refreshGenerationRef.current === generation) setRefreshFailed(false);
+      if (refreshGenerationRef.current === generation) {
+        writeGuard.unlock();
+        setRefreshFailed(false);
+        setRefreshPending(false);
+      }
     } catch {
-      if (refreshGenerationRef.current === generation) setRefreshFailed(true);
+      if (refreshGenerationRef.current === generation) {
+        setRefreshFailed(true);
+        setRefreshPending(false);
+      }
     } finally {
       if (refreshGenerationRef.current === generation) setRefreshRetrying(false);
     }
-  }, []);
+  }, [writeGuard]);
 
   const handleCreate = useCallback(
     async (providerId: string) => {
       if (!allowed.canCreate) return;
+      const epoch = writeGuard.begin();
+      if (epoch === null) throw new Error('PLATFORM_REVISION_CONFLICT');
       setActionLoadingId(`provider:${providerId}`);
       try {
         const context = await adminAiCatalogService.getModelCreateDraftContext({ providerId });
+        writeGuard.assertCurrent(epoch);
         openModelEditorModal({
           authMethod: params.authMethod ?? undefined,
           onSubmit: async ({ fields, modelKey, reason }) => {
+            writeGuard.assertCurrent(epoch);
             setActionLoadingId(`provider:${providerId}`);
             try {
               const input: AdminAiModelCreateInput = {
@@ -116,12 +143,14 @@ export const useGlobalModelActions = (params: {
         setActionLoadingId(null);
       }
     },
-    [allowed.canCreate, commitAndRefresh, errorText, params.authMethod],
+    [allowed.canCreate, commitAndRefresh, errorText, params.authMethod, writeGuard],
   );
 
   const handleEdit = useCallback(
     async (model: AdminAiModelListItem) => {
       if (!allowed.canEdit) return;
+      const epoch = writeGuard.begin();
+      if (epoch === null) return;
       setActionLoadingId(model.id);
       try {
         const [context, dependents] = await Promise.all([
@@ -131,11 +160,13 @@ export const useGlobalModelActions = (params: {
             providerId: model.providerId,
           }),
         ]);
+        if (!writeGuard.isCurrent(epoch)) return;
         openModelEditorModal({
           authMethod: params.authMethod ?? undefined,
           disableAvailability: model.enabled && hasBlockingModelDependents(dependents),
           model,
           onSubmit: async ({ fields, reason }) => {
+            writeGuard.assertCurrent(epoch);
             setActionLoadingId(model.id);
             try {
               const input: AdminAiModelUpdateInput = {
@@ -156,17 +187,20 @@ export const useGlobalModelActions = (params: {
           },
         });
       } catch (cause) {
+        if (!writeGuard.isCurrent(epoch)) return;
         toast.error(errorText(cause));
       } finally {
         setActionLoadingId(null);
       }
     },
-    [allowed.canEdit, commitAndRefresh, errorText, params.authMethod],
+    [allowed.canEdit, commitAndRefresh, errorText, params.authMethod, writeGuard],
   );
 
   const handleDelete = useCallback(
     async (model: AdminAiModelListItem) => {
       if (!allowed.canDelete) return;
+      const epoch = writeGuard.begin();
+      if (epoch === null) return;
       setActionLoadingId(model.id);
       try {
         const [context, dependents] = await Promise.all([
@@ -176,6 +210,7 @@ export const useGlobalModelActions = (params: {
             providerId: model.providerId,
           }),
         ]);
+        if (!writeGuard.isCurrent(epoch)) return;
         const blockers = dependents.items.filter((item) => item.blocking);
         if (blockers.length > 0) {
           confirmModal({
@@ -204,6 +239,7 @@ export const useGlobalModelActions = (params: {
           danger: true,
           description: t('aiCatalog.actions.deleteModel.desc'),
           onSubmit: async (input) => {
+            writeGuard.assertCurrent(epoch);
             setActionLoadingId(model.id);
             try {
               await commitAndRefresh(
@@ -219,22 +255,26 @@ export const useGlobalModelActions = (params: {
           title: t('aiCatalog.actions.deleteModel.title'),
         });
       } catch (cause) {
+        if (!writeGuard.isCurrent(epoch)) return;
         toast.error(errorText(cause));
       } finally {
         setActionLoadingId(null);
       }
     },
-    [allowed.canDelete, commitAndRefresh, errorText, params.authMethod, t],
+    [allowed.canDelete, commitAndRefresh, errorText, params.authMethod, t, writeGuard],
   );
 
   const handleReorder = useCallback(
     async (model: AdminAiModelListItem, offset: -1 | 1) => {
       if (!allowed.canReorder) return;
+      const epoch = writeGuard.begin();
+      if (epoch === null) return;
       setActionLoadingId(model.id);
       try {
         const context = await adminAiCatalogService.getModelUpdateDraftContext({
           providerId: model.providerId,
         });
+        if (!writeGuard.isCurrent(epoch)) return;
         const index = context.modelIds.indexOf(model.id);
         const target = index + offset;
         if (index < 0 || target < 0 || target >= context.modelIds.length) return;
@@ -252,6 +292,7 @@ export const useGlobalModelActions = (params: {
           }),
           description: t('aiCatalog.actions.reorder.desc'),
           onSubmit: async (input) => {
+            writeGuard.assertCurrent(epoch);
             setActionLoadingId(model.id);
             try {
               await commitAndRefresh(
@@ -267,12 +308,13 @@ export const useGlobalModelActions = (params: {
           title: t('aiCatalog.actions.reorder.title'),
         });
       } catch (cause) {
+        if (!writeGuard.isCurrent(epoch)) return;
         toast.error(errorText(cause));
       } finally {
         setActionLoadingId(null);
       }
     },
-    [allowed.canReorder, commitAndRefresh, errorText, params.authMethod, t],
+    [allowed.canReorder, commitAndRefresh, errorText, params.authMethod, t, writeGuard],
   );
 
   return {
@@ -283,7 +325,9 @@ export const useGlobalModelActions = (params: {
     handleEdit,
     handleReorder,
     refreshFailed,
+    refreshPending,
     refreshRetrying,
+    reloadRequired,
     retryRefresh,
   };
 };

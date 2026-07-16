@@ -6,13 +6,20 @@ import type { AdminAiModelDraft, AdminAiProviderGetOutput } from '../types';
 import { useAiProviderActions } from './useAiProviderActions';
 
 const mocks = vi.hoisted(() => ({
+  createModel: vi.fn(),
+  deleteModel: vi.fn(),
   dependents: vi.fn(),
+  modelProps: null as null | { onSubmit: (input: never) => Promise<void> },
   openModel: vi.fn(),
   openReason: vi.fn(),
   openSecret: vi.fn(),
   reasonProps: null as null | { onSubmit: (input: unknown) => Promise<void> },
+  reorderModels: vi.fn(),
   refresh: vi.fn(),
+  secretProps: null as null | { onSubmit: (input: never) => Promise<void> },
   testProvider: vi.fn(),
+  updateModel: vi.fn(),
+  updateProvider: vi.fn(),
 }));
 
 vi.mock('react-i18next', () => ({
@@ -33,14 +40,27 @@ vi.mock('@/enterprise/client/features/admin/users/modals/openReasonModal', () =>
 
 vi.mock('@/enterprise/client/services/adminAiCatalog', () => ({
   adminAiCatalogService: {
+    createModel: mocks.createModel,
+    deleteModel: mocks.deleteModel,
     getModelDependents: mocks.dependents,
+    reorderModels: mocks.reorderModels,
     testProvider: mocks.testProvider,
+    updateModel: mocks.updateModel,
+    updateProvider: mocks.updateProvider,
   },
 }));
 
-vi.mock('../models/openModelEditorModal', () => ({ openModelEditorModal: mocks.openModel }));
+vi.mock('../models/openModelEditorModal', () => ({
+  openModelEditorModal: (props: unknown) => {
+    mocks.modelProps = props as typeof mocks.modelProps;
+    mocks.openModel(props);
+  },
+}));
 vi.mock('../providers/openSecretMutationModal', () => ({
-  openSecretMutationModal: mocks.openSecret,
+  openSecretMutationModal: (props: unknown) => {
+    mocks.secretProps = props as typeof mocks.secretProps;
+    mocks.openSecret(props);
+  },
 }));
 vi.mock('./useAdminAiCatalog', () => ({ refreshAdminAiProvider: mocks.refresh }));
 
@@ -133,7 +153,14 @@ const editor = {
 describe('useAiProviderActions committed reload lock', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.modelProps = null;
     mocks.reasonProps = null;
+    mocks.secretProps = null;
+    mocks.createModel.mockResolvedValue({});
+    mocks.deleteModel.mockResolvedValue({});
+    mocks.reorderModels.mockResolvedValue({});
+    mocks.updateModel.mockResolvedValue({});
+    mocks.updateProvider.mockResolvedValue({});
     mocks.testProvider.mockResolvedValue({
       errorCategory: null,
       latencyMs: 1,
@@ -182,5 +209,72 @@ describe('useAiProviderActions committed reload lock', () => {
 
     finishRefresh({ ...data, draftToken: 'b'.repeat(64) });
     await waitFor(() => expect(result.current.reloadRequired).toBe(false));
+  });
+
+  it('invalidates create, update, delete, and reorder modal submissions after another commit', async () => {
+    mocks.dependents.mockResolvedValue({ items: [] });
+    mocks.refresh.mockImplementation(() => new Promise(() => {}));
+    const { result } = renderHook(() =>
+      useAiProviderActions({ authMethod: null, data, editor, permissions }),
+    );
+
+    act(() => result.current.handleCreateModel());
+    const submitCreate = mocks.modelProps!.onSubmit;
+
+    await act(async () => result.current.handleEditModel(model));
+    const submitUpdate = mocks.modelProps!.onSubmit;
+
+    await act(async () => result.current.handleDeleteModel(model));
+    const submitDelete = mocks.reasonProps!.onSubmit;
+
+    act(() => result.current.handleReorderModels(['model-1']));
+    const submitReorder = mocks.reasonProps!.onSubmit;
+
+    act(() => result.current.handleSecret());
+    await act(async () =>
+      mocks.secretProps!.onSubmit({ reason: 'rotate', secret: { operation: 'clear' } } as never),
+    );
+    await waitFor(() => expect(result.current.reloadRequired).toBe(true));
+
+    await expect(submitCreate({} as never)).rejects.toThrow('PLATFORM_REVISION_CONFLICT');
+    await expect(submitUpdate({} as never)).rejects.toThrow('PLATFORM_REVISION_CONFLICT');
+    await expect(submitDelete({})).rejects.toThrow('PLATFORM_REVISION_CONFLICT');
+    await expect(submitReorder({})).rejects.toThrow('PLATFORM_REVISION_CONFLICT');
+    expect(mocks.createModel).not.toHaveBeenCalled();
+    expect(mocks.updateModel).not.toHaveBeenCalled();
+    expect(mocks.deleteModel).not.toHaveBeenCalled();
+    expect(mocks.reorderModels).not.toHaveBeenCalled();
+  });
+
+  it('does not open update or delete modals when another write commits during dependents queries', async () => {
+    const dependentsResolvers: Array<(value: { items: [] }) => void> = [];
+    mocks.dependents.mockImplementation(
+      () =>
+        new Promise<{ items: [] }>((resolve) => {
+          dependentsResolvers.push(resolve);
+        }),
+    );
+    mocks.refresh.mockImplementation(() => new Promise(() => {}));
+    const { result } = renderHook(() =>
+      useAiProviderActions({ authMethod: null, data, editor, permissions }),
+    );
+
+    let editPromise!: Promise<void>;
+    let deletePromise!: Promise<void>;
+    act(() => {
+      editPromise = result.current.handleEditModel(model);
+      deletePromise = result.current.handleDeleteModel(model);
+    });
+    await waitFor(() => expect(mocks.dependents).toHaveBeenCalledTimes(2));
+
+    act(() => result.current.handleSecret());
+    await act(async () =>
+      mocks.secretProps!.onSubmit({ reason: 'rotate', secret: { operation: 'clear' } } as never),
+    );
+    dependentsResolvers.forEach((resolve) => resolve({ items: [] }));
+    await act(async () => Promise.all([editPromise, deletePromise]));
+
+    expect(mocks.openModel).not.toHaveBeenCalled();
+    expect(mocks.openReason).not.toHaveBeenCalled();
   });
 });
