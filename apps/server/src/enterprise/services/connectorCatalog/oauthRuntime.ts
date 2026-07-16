@@ -1,6 +1,13 @@
+import type { LobeChatDatabase } from '@/database/type';
+
+import { parseEnterpriseFeatureFlags } from '../../featureFlags';
+import { SafeOutboundHttpClient } from '../../security/outboundHttp';
+import { PlatformSecretService } from '../../security/secret';
 import type { ConnectorCatalogSecretStore } from './catalogTypes';
+import { ConnectorOutboundClient } from './connectorOutboundClient';
 import { PlatformConnectorContractError } from './errors';
-import type { ConnectorOAuthOutboundAdapter } from './oauthOutboundAdapter';
+import { ConnectorOAuthOutboundAdapter } from './oauthOutboundAdapter';
+import { PlatformConnectorSecretStore } from './platformConnectorSecretStore';
 
 export interface ConnectorOAuthRuntimeDependencies {
   callbackRedirectUri: string;
@@ -12,22 +19,42 @@ export interface ConnectorOAuthRuntimeDependencies {
 
 export const MANAGED_CONNECTOR_OAUTH_STATE_PREFIX = 'aihub-m09-v1.';
 
-type ConnectorOAuthRuntimeProvider = () => ConnectorOAuthRuntimeDependencies;
+export type ConnectorOAuthRuntimeEnv = Record<string, string | undefined>;
 
-let runtimeProvider: ConnectorOAuthRuntimeProvider | undefined;
-
-/** M13 registers the production Secret Store + outbound runtime at bootstrap. */
-export const registerConnectorOAuthRuntime = (provider: ConnectorOAuthRuntimeProvider): void => {
-  runtimeProvider = provider;
-};
-
-export const resetConnectorOAuthRuntimeForTests = (): void => {
-  runtimeProvider = undefined;
-};
-
-export const getConnectorOAuthRuntime = (): ConnectorOAuthRuntimeDependencies => {
-  if (!runtimeProvider) {
+const resolveCallbackRedirectUri = (env: ConnectorOAuthRuntimeEnv): string => {
+  const appUrl = env.APP_URL?.trim();
+  if (!appUrl) {
     throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_CREDENTIAL_NOT_CONFIGURED');
   }
-  return runtimeProvider();
+  try {
+    return new URL('/oauth/connector/callback', appUrl).toString();
+  } catch {
+    throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_CREDENTIAL_NOT_CONFIGURED');
+  }
+};
+
+/**
+ * Cold-start-safe production factory. Both the standalone server router and
+ * the Next callback construct their own dependencies from shared DB + M13
+ * primitives; no cross-process module registration is required.
+ */
+export const getConnectorOAuthRuntime = (
+  db: LobeChatDatabase,
+  env: ConnectorOAuthRuntimeEnv = process.env,
+): ConnectorOAuthRuntimeDependencies => {
+  const flags = parseEnterpriseFeatureFlags(env);
+  if (!flags.ENABLE_PLATFORM_MANAGED_CONNECTORS) {
+    throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_CREDENTIAL_NOT_CONFIGURED');
+  }
+  const secretService = PlatformSecretService.fromEnvOrThrowIfEnterprise(env, flags);
+  if (!secretService) {
+    throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_CREDENTIAL_NOT_CONFIGURED');
+  }
+  return {
+    callbackRedirectUri: resolveCallbackRedirectUri(env),
+    outbound: new ConnectorOAuthOutboundAdapter(
+      new ConnectorOutboundClient(new SafeOutboundHttpClient()),
+    ),
+    secrets: new PlatformConnectorSecretStore(db, secretService),
+  };
 };

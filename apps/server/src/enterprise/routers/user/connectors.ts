@@ -22,7 +22,11 @@ const userConnectorProcedure = authedProcedure.use(serverDatabase).use(async ({ 
   next({
     ctx: {
       getUserConnectorOAuthService: () =>
-        new UserConnectorOAuthService(ctx.serverDB, ctx.userId!, getConnectorOAuthRuntime()),
+        new UserConnectorOAuthService(
+          ctx.serverDB,
+          ctx.userId!,
+          getConnectorOAuthRuntime(ctx.serverDB),
+        ),
     },
   }),
 );
