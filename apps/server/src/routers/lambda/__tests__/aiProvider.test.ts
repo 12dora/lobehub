@@ -30,7 +30,8 @@ const catalogRepositoryMocks = vi.hoisted(() => ({
 vi.mock('@/database/repositories/platformAiCatalog', () => ({
   PlatformAiCatalogRepository: vi.fn(() => catalogRepositoryMocks),
 }));
-vi.mock('@/server/modules/ModelRuntime', () => ({
+vi.mock('@/server/modules/ModelRuntime', async (importOriginal) => ({
+  ...(await importOriginal()),
   initModelRuntimeFromDB: vi.fn(),
 }));
 vi.mock('@lobechat/business-const', async () => {
