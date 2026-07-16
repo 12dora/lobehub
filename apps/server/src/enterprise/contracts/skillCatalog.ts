@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { containsSensitiveMaterial, isCredentialBearingUrl } from '../security/redaction';
 
 const rejectSensitiveText = (value: string, ctx: z.RefinementCtx) => {
-  const embeddedUrls = value.match(/[a-z][a-z0-9+.-]*:\/\/[^\s<>"']+/gi) ?? [];
+  const embeddedUrls = value.match(/[a-z][a-z0-9+.-]*:\/\/[^\s<>"',;]+/gi) ?? [];
   if (
     containsSensitiveMaterial(value) ||
     isCredentialBearingUrl(value) ||
