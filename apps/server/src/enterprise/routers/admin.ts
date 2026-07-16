@@ -10,6 +10,7 @@ import { withAnyPlatformPermission, withPlatformPermission } from '../guards/pla
 import { EasyauthSyncService } from '../services/easyauthSync';
 import { PlatformAuditService } from '../services/platformAudit';
 import { LastSuperAdminError, PlatformRbacService } from '../services/platformRbac';
+import { adminUsersRouter } from './admin/users';
 
 const adminBase = authedProcedure.use(serverDatabase);
 
@@ -167,7 +168,7 @@ export const adminAuditRouter = router({
 });
 
 /**
- * Admin root router (M02 surface).
+ * Admin root router (M02 + M04 surface).
  * Mounted as `admin` on lambda root when wired.
  */
 export const adminRouter = router({
@@ -175,6 +176,7 @@ export const adminRouter = router({
   auth: adminAuthRouter,
   easyauth: adminEasyauthRouter,
   roles: adminRolesRouter,
+  users: adminUsersRouter,
 });
 
 export type AdminRouter = typeof adminRouter;

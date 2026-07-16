@@ -467,6 +467,8 @@ export class RbacModel {
     userId: string,
     roleIds: string[],
     options?: {
+      /** Optional assignment expiry applied to newly inserted global grants. */
+      expiresAt?: Date | null;
       preserveRoleNames?: string[];
       protectLastSuperAdmin?: boolean;
       superAdminRoleName?: string;
@@ -475,6 +477,7 @@ export class RbacModel {
     const preserveRoleNames = options?.preserveRoleNames ?? [];
     const protectLastSuperAdmin = options?.protectLastSuperAdmin !== false;
     const superAdminRoleName = options?.superAdminRoleName ?? 'super_admin';
+    const expiresAt = options?.expiresAt ?? null;
 
     if (roleIds.length > 0) {
       const existingRoles = await this.db.query.roles.findMany({
@@ -539,6 +542,7 @@ export class RbacModel {
           .insert(userRoles)
           .values(
             insertIds.map((roleId) => ({
+              expiresAt: expiresAt ?? null,
               roleId,
               userId,
               workspaceId: null,
@@ -547,8 +551,37 @@ export class RbacModel {
           .onConflictDoNothing();
       }
 
-      // Only when this mutation removes a super_admin grant, ensure ≥1 non-banned remains.
-      if (protectLastSuperAdmin && toDelete.some((row) => row.roleName === superAdminRoleName)) {
+      // Apply expiry to preserved grants when callers pass expiresAt (rare; EasyAuth uses preserve).
+      if (expiresAt) {
+        const preservedGrantIds = current
+          .filter((r) => preserveRoleNames.includes(r.roleName))
+          .map((r) => r.id);
+        if (preservedGrantIds.length > 0) {
+          await tx
+            .update(userRoles)
+            .set({ expiresAt })
+            .where(inArray(userRoles.id, preservedGrantIds));
+        }
+      }
+
+      // Last-super under role row lock when super grant removed or reassigned with expiry.
+      const removedSuper = toDelete.some((row) => row.roleName === superAdminRoleName);
+      const superRoleId = (
+        await tx
+          .select({ id: roles.id })
+          .from(roles)
+          .where(and(eq(roles.name, superAdminRoleName), isNull(roles.workspaceId)))
+          .limit(1)
+      )[0]?.id;
+      const wroteSuperWithExpiry =
+        Boolean(expiresAt) &&
+        Boolean(superRoleId) &&
+        (insertIds.includes(superRoleId!) ||
+          current.some(
+            (r) => r.roleName === superAdminRoleName && preserveRoleNames.includes(r.roleName),
+          ));
+
+      if (protectLastSuperAdmin && (removedSuper || wroteSuperWithExpiry)) {
         const countResult = await tx
           .select({ count: sql<number>`count(distinct ${userRoles.userId})` })
           .from(userRoles)
