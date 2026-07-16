@@ -6,6 +6,7 @@ import { getTestDB } from '../../core/getTestDB';
 import {
   platformAgents,
   platformAgentVersions,
+  platformResourceRevisions,
   platformSkills,
   platformSkillVersions,
 } from '../../schemas/platform';
@@ -41,6 +42,7 @@ const cleanup = async () => {
     TRUNCATE TABLE
       ${platformAgentVersions},
       ${platformAgents},
+      ${platformResourceRevisions},
       ${platformSkillVersions},
       ${platformSkills}
     CASCADE
@@ -94,7 +96,181 @@ describe('PlatformSkillCatalogModel', () => {
       id: created.draft.id,
     });
     expect(updated?.draft.displayName).toBe('Renamed search');
-    expect(updated?.versions).toEqual([expect.objectContaining({ content: '# v1' })]);
+    expect(updated?.latestVersion).toEqual(expect.objectContaining({ content: '# v1' }));
+    expect(updated?.draft.draftSequence).toBe(2);
+  });
+
+  it('checksums every immutable execution field', async () => {
+    const created = await model.createSkill({ displayName: 'Search', skillKey: 'search' });
+    const resources = [
+      {
+        checksum: 'a'.repeat(64),
+        content: 'resource',
+        mediaType: 'text/plain',
+        path: 'references/source.txt',
+        sizeBytes: 8,
+      },
+    ];
+    const payload = {
+      content: '# v1',
+      contentRef: 'opaque:skill-content-1',
+      manifest,
+      resources,
+    };
+    const checksum = platformSkillVersionChecksum(payload);
+    await expect(
+      model.createVersion({
+        ...payload,
+        checksum,
+        expectedDraftToken: created.draftToken,
+        expectedRevision: created.baseRevision,
+        skillId: created.draft.id,
+        version: '1.0.0',
+      }),
+    ).resolves.toMatchObject({ checksum, resources });
+
+    const fresh = await model.getDetail(created.draft.id);
+    const mutations = [
+      { ...payload, content: '# tampered' },
+      { ...payload, contentRef: 'opaque:tampered' },
+      { ...payload, manifest: { ...manifest, displayName: 'Tampered' } },
+      { ...payload, resources: [{ ...resources[0]!, content: 'tampered' }] },
+    ];
+    for (const [index, mutation] of mutations.entries()) {
+      await expect(
+        model.createVersion({
+          ...mutation,
+          checksum,
+          expectedDraftToken: fresh!.draftToken,
+          expectedRevision: fresh!.baseRevision,
+          skillId: created.draft.id,
+          version: `2.0.${index}`,
+        }),
+      ).rejects.toBeInstanceOf(PlatformSkillChecksumMismatchError);
+    }
+  });
+
+  it('canonicalizes Unicode, line endings, locale maps, permission sets and resource order', async () => {
+    const nfd = 'Cafe\u0301';
+    const nfc = 'Café';
+    const left = {
+      content: `${nfd}\r\nline`,
+      manifest: {
+        ...manifest,
+        displayName: nfd,
+        localizedDescriptions: { 'zh-CN': '中文', 'en-US': nfd },
+        permissions: {
+          ...manifest.permissions,
+          network: { allowedHosts: ['b.example', 'a.example'], enabled: true },
+        },
+      },
+      resources: [
+        {
+          checksum: 'b'.repeat(64),
+          content: 'B\r\n',
+          mediaType: 'text/plain',
+          path: 'b.txt',
+          sizeBytes: 3,
+        },
+        {
+          checksum: 'a'.repeat(64),
+          content: `${nfd}\r`,
+          mediaType: 'text/plain',
+          path: 'a.txt',
+          sizeBytes: 6,
+        },
+      ],
+    };
+    const right = {
+      content: `${nfc}\nline`,
+      manifest: {
+        ...left.manifest,
+        displayName: nfc,
+        localizedDescriptions: { 'en-US': nfc, 'zh-CN': '中文' },
+        permissions: {
+          ...left.manifest.permissions,
+          network: { allowedHosts: ['a.example', 'b.example'], enabled: true },
+        },
+      },
+      resources: [
+        { ...left.resources[1]!, content: `${nfc}\n` },
+        { ...left.resources[0]!, content: 'B\n' },
+      ],
+    };
+    expect(platformSkillVersionChecksum(left)).toBe(platformSkillVersionChecksum(right));
+
+    const created = await model.createSkill({ displayName: 'Canonical', skillKey: 'canonical' });
+    const version = await model.createVersion({
+      ...left,
+      checksum: platformSkillVersionChecksum(left),
+      expectedDraftToken: created.draftToken,
+      expectedRevision: 0,
+      skillId: created.draft.id,
+      version: '1.0.0',
+    });
+    expect(version?.content).toBe(`${nfc}\nline`);
+    expect(version?.resources.map((resource) => resource.path)).toEqual(['a.txt', 'b.txt']);
+  });
+
+  it('edits the draft projection without changing the published pointer or snapshot', async () => {
+    const created = await model.createSkill({
+      displayName: 'Published name',
+      distribution: 'default',
+      enabled: true,
+      skillKey: 'published',
+    });
+    const checksum = platformSkillVersionChecksum({ content: '# v1', manifest });
+    const version = await model.createVersion({
+      checksum,
+      content: '# v1',
+      expectedDraftToken: created.draftToken,
+      expectedRevision: 0,
+      manifest,
+      skillId: created.draft.id,
+      version: '1.0.0',
+    });
+    await serverDB
+      .update(platformSkills)
+      .set({ currentVersionId: version!.id, revision: 1, status: 'published' })
+      .where(sql`${platformSkills.id} = ${created.draft.id}`);
+    const publishedPayload = {
+      skill: {
+        displayName: 'Published name',
+        distribution: 'default',
+        enabled: true,
+      },
+      versionId: version!.id,
+    };
+    await serverDB.insert(platformResourceRevisions).values({
+      checksum: 'published-snapshot',
+      payload: publishedPayload,
+      resourceId: created.draft.id,
+      resourceType: 'skill',
+      revision: 1,
+      status: 'published',
+    });
+    const beforeEdit = await model.getDetail(created.draft.id);
+    const edited = await model.updateDraft({
+      displayName: 'Draft name',
+      distribution: 'mandatory',
+      enabled: false,
+      expectedDraftToken: beforeEdit!.draftToken,
+      expectedRevision: 1,
+      id: created.draft.id,
+    });
+
+    expect(edited?.draft).toMatchObject({
+      currentVersionId: version!.id,
+      displayName: 'Draft name',
+      distribution: 'mandatory',
+      enabled: false,
+      revision: 1,
+      status: 'published',
+    });
+    const [published] = await serverDB
+      .select({ payload: platformResourceRevisions.payload })
+      .from(platformResourceRevisions);
+    expect(published.payload).toEqual(publishedPayload);
   });
 
   it('rejects stale draft tokens and client checksums before inserting a version', async () => {

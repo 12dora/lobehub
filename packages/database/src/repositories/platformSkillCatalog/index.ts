@@ -1,5 +1,4 @@
-import { isRecord } from '@lobechat/utils/object';
-import { and, asc, eq, gt, ilike, or } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, ilike, lt, or, sql } from 'drizzle-orm';
 
 import {
   type NewPlatformSkill,
@@ -7,6 +6,7 @@ import {
   platformAgents,
   platformAgentVersions,
   type PlatformDistribution,
+  platformResourceRevisions,
   type PlatformResourceStatus,
   type PlatformSkillItem,
   platformSkills,
@@ -34,15 +34,26 @@ export interface PlatformPublishedSkillRow {
   version: PlatformSkillVersionItem;
 }
 
-const agentSkillReferences = (config: unknown): Array<{ skillKey: string; version: string }> => {
-  if (!isRecord(config) || !Array.isArray(config.skills)) return [];
-  return config.skills.flatMap((item) => {
-    if (!isRecord(item) || typeof item.skillKey !== 'string' || typeof item.version !== 'string') {
-      return [];
-    }
-    return [{ skillKey: item.skillKey, version: item.version }];
-  });
-};
+export interface PlatformSkillVersionCursor {
+  createdAt: Date;
+  id: string;
+}
+
+export interface PlatformSkillDependentCursor {
+  id: string;
+  key: string;
+  type: 'agent' | 'skill';
+  version: string;
+}
+
+const compareCodepoint = (left: string, right: string) =>
+  left < right ? -1 : left > right ? 1 : 0;
+
+const compareDependent = (left: PlatformSkillDependent, right: PlatformSkillDependent) =>
+  compareCodepoint(left.type, right.type) ||
+  compareCodepoint(left.key, right.key) ||
+  compareCodepoint(left.version, right.version) ||
+  compareCodepoint(left.id, right.id);
 
 /** Persistence boundary for stable Skill identities and append-only Skill versions. */
 export class PlatformSkillCatalogRepository {
@@ -147,12 +158,47 @@ export class PlatformSkillCatalogRepository {
     };
   };
 
-  listVersions = async (skillId: string): Promise<PlatformSkillVersionItem[]> => {
-    return this.db
+  getLatestVersion = async (skillId: string): Promise<PlatformSkillVersionItem | undefined> => {
+    const [row] = await this.db
       .select()
       .from(platformSkillVersions)
       .where(eq(platformSkillVersions.skillId, skillId))
-      .orderBy(asc(platformSkillVersions.createdAt), asc(platformSkillVersions.id));
+      .orderBy(desc(platformSkillVersions.createdAt), desc(platformSkillVersions.id))
+      .limit(1);
+    return row;
+  };
+
+  listVersionPage = async (params: {
+    cursor?: PlatformSkillVersionCursor;
+    limit?: number;
+    skillId: string;
+  }) => {
+    const limit = Math.min(params.limit ?? 50, 100);
+    const conditions = [eq(platformSkillVersions.skillId, params.skillId)];
+    if (params.cursor) {
+      conditions.push(
+        or(
+          lt(platformSkillVersions.createdAt, params.cursor.createdAt),
+          and(
+            eq(platformSkillVersions.createdAt, params.cursor.createdAt),
+            lt(platformSkillVersions.id, params.cursor.id),
+          ),
+        )!,
+      );
+    }
+    const rows = await this.db
+      .select()
+      .from(platformSkillVersions)
+      .where(and(...conditions))
+      .orderBy(desc(platformSkillVersions.createdAt), desc(platformSkillVersions.id))
+      .limit(limit + 1);
+    const hasMore = rows.length > limit;
+    const items = hasMore ? rows.slice(0, limit) : rows;
+    const last = items.at(-1);
+    return {
+      items,
+      nextCursor: hasMore && last ? { createdAt: last.createdAt, id: last.id } : null,
+    };
   };
 
   listPublished = async (): Promise<PlatformPublishedSkillRow[]> => {
@@ -189,6 +235,50 @@ export class PlatformSkillCatalogRepository {
     return row;
   };
 
+  updateSkillDraft = async (
+    id: string,
+    values: Partial<Omit<NewPlatformSkill, 'draftSequence' | 'id' | 'skillKey'>>,
+  ): Promise<PlatformSkillItem | undefined> => {
+    const [row] = await this.db
+      .update(platformSkills)
+      .set({
+        ...values,
+        draftSequence: sql`${platformSkills.draftSequence} + 1`,
+        updatedAt: new Date(),
+      })
+      .where(eq(platformSkills.id, id))
+      .returning();
+    return row;
+  };
+
+  bumpDraftSequence = async (id: string): Promise<number | undefined> => {
+    const [row] = await this.db
+      .update(platformSkills)
+      .set({
+        draftSequence: sql`${platformSkills.draftSequence} + 1`,
+        updatedAt: new Date(),
+      })
+      .where(eq(platformSkills.id, id))
+      .returning({ draftSequence: platformSkills.draftSequence });
+    return row?.draftSequence;
+  };
+
+  wasVersionPublished = async (skillId: string, versionId: string): Promise<boolean> => {
+    const [row] = await this.db
+      .select({ id: platformResourceRevisions.id })
+      .from(platformResourceRevisions)
+      .where(
+        and(
+          eq(platformResourceRevisions.resourceType, 'skill'),
+          eq(platformResourceRevisions.resourceId, skillId),
+          eq(platformResourceRevisions.status, 'published'),
+          sql`${platformResourceRevisions.payload}->>'versionId' = ${versionId}`,
+        ),
+      )
+      .limit(1);
+    return Boolean(row);
+  };
+
   resolveVersion = async (
     skillKey: string,
     version?: string,
@@ -209,57 +299,102 @@ export class PlatformSkillCatalogRepository {
       .innerJoin(platformSkillVersions, eq(platformSkillVersions.skillId, platformSkills.id))
       .where(and(...conditions))
       .limit(1);
-    return row;
+    if (!row) return undefined;
+    if (!version) {
+      return row.skill.id === row.version.skillId ? row : undefined;
+    }
+    if (row.skill.status === 'published' && row.skill.currentVersionId === row.version.id) {
+      return row;
+    }
+    return (await this.wasVersionPublished(row.skill.id, row.version.id)) ? row : undefined;
   };
 
-  getDependents = async (skillKey: string, version?: string): Promise<PlatformSkillDependent[]> => {
+  getDependentsPage = async (params: {
+    cursor?: PlatformSkillDependentCursor;
+    limit?: number;
+    skillKey: string;
+    version?: string;
+  }) => {
+    const limit = Math.min(params.limit ?? 50, 100);
+    const agentCursorCondition = params.cursor
+      ? params.cursor.type === 'skill'
+        ? sql`false`
+        : sql`(${platformAgents.agentKey}, ${platformAgentVersions.version}, ${platformAgentVersions.id}) > (${params.cursor.key}, ${params.cursor.version}, ${params.cursor.id})`
+      : undefined;
+    const skillCursorCondition = params.cursor
+      ? params.cursor.type === 'agent'
+        ? undefined
+        : sql`(${platformSkills.skillKey}, ${platformSkillVersions.version}, ${platformSkillVersions.id}) > (${params.cursor.key}, ${params.cursor.version}, ${params.cursor.id})`
+      : undefined;
+    const versionCondition = params.version
+      ? sql`dependency->>'version' = ${params.version}`
+      : sql`true`;
     const skillRows = await this.db
       .select({
         id: platformSkillVersions.id,
-        manifest: platformSkillVersions.manifest,
         name: platformSkills.name,
-        skillKey: platformSkills.skillKey,
-        status: platformSkills.status,
+        key: platformSkills.skillKey,
         version: platformSkillVersions.version,
       })
       .from(platformSkillVersions)
-      .innerJoin(platformSkills, eq(platformSkillVersions.skillId, platformSkills.id));
+      .innerJoin(platformSkills, eq(platformSkillVersions.skillId, platformSkills.id))
+      .where(
+        and(
+          eq(platformSkills.status, 'published'),
+          skillCursorCondition,
+          sql`EXISTS (
+            SELECT 1
+            FROM jsonb_array_elements(${platformSkillVersions.manifest}->'skillDependencies') dependency
+            WHERE dependency->>'skillKey' = ${params.skillKey} AND ${versionCondition}
+          )`,
+        ),
+      )
+      .orderBy(
+        asc(platformSkills.skillKey),
+        asc(platformSkillVersions.version),
+        asc(platformSkillVersions.id),
+      )
+      .limit(limit + 1);
     const agentRows = await this.db
       .select({
-        agentKey: platformAgents.agentKey,
-        config: platformAgentVersions.config,
         id: platformAgentVersions.id,
+        key: platformAgents.agentKey,
         name: platformAgents.title,
-        status: platformAgents.status,
         version: platformAgentVersions.version,
       })
       .from(platformAgentVersions)
-      .innerJoin(platformAgents, eq(platformAgentVersions.agentId, platformAgents.id));
+      .innerJoin(platformAgents, eq(platformAgentVersions.agentId, platformAgents.id))
+      .where(
+        and(
+          eq(platformAgents.status, 'published'),
+          agentCursorCondition,
+          sql`EXISTS (
+            SELECT 1
+            FROM jsonb_array_elements(${platformAgentVersions.config}->'skills') dependency
+            WHERE dependency->>'skillKey' = ${params.skillKey} AND ${versionCondition}
+          )`,
+        ),
+      )
+      .orderBy(
+        asc(platformAgents.agentKey),
+        asc(platformAgentVersions.version),
+        asc(platformAgentVersions.id),
+      )
+      .limit(limit + 1);
 
-    const skillDependents = skillRows.flatMap((row): PlatformSkillDependent[] => {
-      if (row.status !== 'published') return [];
-      const matches = row.manifest.skillDependencies.some(
-        (dependency) =>
-          dependency.skillKey === skillKey && (!version || dependency.version === version),
-      );
-      return matches
-        ? [{ id: row.id, key: row.skillKey, name: row.name, type: 'skill', version: row.version }]
-        : [];
-    });
-    const agentDependents = agentRows.flatMap((row): PlatformSkillDependent[] => {
-      if (row.status !== 'published') return [];
-      const matches = agentSkillReferences(row.config).some(
-        (dependency) =>
-          dependency.skillKey === skillKey && (!version || dependency.version === version),
-      );
-      return matches
-        ? [{ id: row.id, key: row.agentKey, name: row.name, type: 'agent', version: row.version }]
-        : [];
-    });
-    return [...skillDependents, ...agentDependents].sort((left, right) =>
-      `${left.type}:${left.key}:${left.version}`.localeCompare(
-        `${right.type}:${right.key}:${right.version}`,
-      ),
-    );
+    const merged: PlatformSkillDependent[] = [
+      ...agentRows.map((row) => ({ ...row, type: 'agent' as const })),
+      ...skillRows.map((row) => ({ ...row, type: 'skill' as const })),
+    ].sort(compareDependent);
+    const hasMore = merged.length > limit;
+    const items = hasMore ? merged.slice(0, limit) : merged;
+    const last = items.at(-1);
+    return {
+      items,
+      nextCursor:
+        hasMore && last
+          ? { id: last.id, key: last.key, type: last.type, version: last.version }
+          : null,
+    };
   };
 }

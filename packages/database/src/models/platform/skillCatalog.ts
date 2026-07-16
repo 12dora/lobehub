@@ -3,6 +3,7 @@ import type {
   PlatformDistribution,
   PlatformResourceStatus,
   PlatformSkillManifest,
+  PlatformSkillResource,
   PlatformSkillSource,
   PlatformSkillValidationResult,
 } from '../../schemas/platform';
@@ -16,6 +17,7 @@ export interface PlatformSkillDraftView {
   description: string | null;
   displayName: string;
   distribution: PlatformDistribution;
+  draftSequence: number;
   enabled: boolean;
   id: string;
   revision: number;
@@ -32,6 +34,7 @@ export interface PlatformSkillVersionView {
   createdBy: string | null;
   id: string;
   manifest: PlatformSkillManifest;
+  resources: PlatformSkillResource[];
   skillId: string;
   validation: PlatformSkillValidationResult | null;
   version: string;
@@ -41,8 +44,8 @@ export interface PlatformSkillDetailView {
   baseRevision: number;
   draft: PlatformSkillDraftView;
   draftToken: string;
+  latestVersion: PlatformSkillVersionView | null;
   publishedVersion: PlatformSkillVersionView | null;
-  versions: PlatformSkillVersionView[];
 }
 
 export class PlatformSkillBuiltinOverrideError extends Error {
@@ -58,7 +61,7 @@ export class PlatformSkillChecksumMismatchError extends Error {
   readonly code = 'PLATFORM_SKILL_CHECKSUM_MISMATCH' as const;
 
   constructor() {
-    super('Skill version checksum does not match its canonical manifest and content');
+    super('Skill version checksum does not match its canonical immutable execution payload');
     this.name = 'PlatformSkillChecksumMismatchError';
   }
 }
@@ -71,6 +74,7 @@ const draftView = (row: Awaited<ReturnType<PlatformSkillCatalogRepository['getSk
     description: row.description ?? null,
     displayName: row.name,
     distribution: row.distribution,
+    draftSequence: row.draftSequence,
     enabled: row.enabled,
     id: row.id,
     revision: row.revision,
@@ -81,7 +85,7 @@ const draftView = (row: Awaited<ReturnType<PlatformSkillCatalogRepository['getSk
 };
 
 const versionView = (
-  row: Awaited<ReturnType<PlatformSkillCatalogRepository['listVersions']>>[number],
+  row: NonNullable<Awaited<ReturnType<PlatformSkillCatalogRepository['getVersion']>>>,
 ): PlatformSkillVersionView => ({
   checksum: row.checksum,
   content: row.content,
@@ -90,24 +94,80 @@ const versionView = (
   createdBy: row.createdBy ?? null,
   id: row.id,
   manifest: row.manifest,
+  resources: row.resources,
   skillId: row.skillId,
   validation: row.validationResult ?? null,
   version: row.version,
 });
 
+const canonicalText = (value: string) =>
+  value.replaceAll('\r\n', '\n').replaceAll('\r', '\n').normalize('NFC');
+
+export const canonicalizePlatformSkillManifest = (
+  manifest: PlatformSkillManifest,
+): PlatformSkillManifest => ({
+  description: canonicalText(manifest.description),
+  displayName: canonicalText(manifest.displayName),
+  localizedDescriptions: Object.fromEntries(
+    Object.entries(manifest.localizedDescriptions)
+      .map(([locale, value]) => [canonicalText(locale), canonicalText(value)] as const)
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)),
+  ),
+  localizedDisplayNames: Object.fromEntries(
+    Object.entries(manifest.localizedDisplayNames)
+      .map(([locale, value]) => [canonicalText(locale), canonicalText(value)] as const)
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)),
+  ),
+  permissions: {
+    filesystem: manifest.permissions.filesystem,
+    network: {
+      allowedHosts: manifest.permissions.network.allowedHosts.map(canonicalText).sort(),
+      enabled: manifest.permissions.network.enabled,
+    },
+    tools: { allow: manifest.permissions.tools.allow.map(canonicalText).sort() },
+  },
+  skillDependencies: manifest.skillDependencies.map((dependency) => ({
+    ...dependency,
+    skillKey: canonicalText(dependency.skillKey),
+    version: canonicalText(dependency.version),
+  })),
+  toolDependencies: manifest.toolDependencies.map((dependency) => ({
+    ...dependency,
+    toolKey: canonicalText(dependency.toolKey),
+  })),
+});
+
+export const canonicalizePlatformSkillResources = (
+  resources: PlatformSkillResource[],
+): PlatformSkillResource[] =>
+  resources
+    .map((resource) => ({
+      ...resource,
+      content: resource.content === undefined ? undefined : canonicalText(resource.content),
+      contentRef:
+        resource.contentRef === undefined ? undefined : canonicalText(resource.contentRef),
+      mediaType: canonicalText(resource.mediaType),
+      path: canonicalText(resource.path),
+    }))
+    .sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
+
 export const platformSkillVersionChecksum = (params: {
   content: string;
+  contentRef?: string | null;
   manifest: PlatformSkillManifest;
-}) => checksumPayload({ content: params.content, manifest: params.manifest });
+  resources?: PlatformSkillResource[];
+}) => {
+  const canonical = {
+    content: canonicalText(params.content),
+    contentRef: params.contentRef ? canonicalText(params.contentRef) : null,
+    manifest: canonicalizePlatformSkillManifest(params.manifest),
+    resources: canonicalizePlatformSkillResources(params.resources ?? []),
+  };
+  return checksumPayload(canonical);
+};
 
-export const platformSkillDraftToken = (
-  draft: PlatformSkillDraftView,
-  versions: PlatformSkillVersionView[],
-) =>
-  checksumPayload({
-    draft,
-    versions: versions.map(({ checksum, id, version }) => ({ checksum, id, version })),
-  });
+export const platformSkillDraftToken = (draft: PlatformSkillDraftView) =>
+  checksumPayload({ draft });
 
 interface PlatformSkillCatalogModelOptions {
   allowBuiltinOverride?: boolean;
@@ -135,10 +195,9 @@ export class PlatformSkillCatalogModel {
     const row = await repository.lockSkill(id);
     const draft = draftView(row);
     if (!draft) return undefined;
-    const versions = (await repository.listVersions(id)).map(versionView);
     if (
       draft.revision !== expectedRevision ||
-      platformSkillDraftToken(draft, versions) !== expectedDraftToken
+      platformSkillDraftToken(draft) !== expectedDraftToken
     ) {
       throw new PlatformRevisionConflictError('Skill draft changed', {
         currentRevision: draft.revision,
@@ -147,7 +206,7 @@ export class PlatformSkillCatalogModel {
         resourceType: 'skill',
       });
     }
-    return { draft, versions };
+    return draft;
   };
 
   createSkill = async (params: {
@@ -189,6 +248,7 @@ export class PlatformSkillCatalogModel {
     expectedDraftToken: string;
     expectedRevision: number;
     manifest: PlatformSkillManifest;
+    resources?: PlatformSkillResource[];
     skillId: string;
     validation?: PlatformSkillValidationResult | null;
     version: string;
@@ -205,16 +265,20 @@ export class PlatformSkillCatalogModel {
         params.expectedRevision,
       );
       if (!current) return undefined;
+      const canonicalManifest = canonicalizePlatformSkillManifest(params.manifest);
+      const canonicalResources = canonicalizePlatformSkillResources(params.resources ?? []);
       const row = await repository.createVersion({
         checksum: params.checksum,
-        content: params.content,
-        contentRef: params.contentRef,
+        content: canonicalText(params.content),
+        contentRef: params.contentRef ? canonicalText(params.contentRef) : null,
         createdBy: params.actorUserId,
-        manifest: params.manifest,
+        manifest: canonicalManifest,
+        resources: canonicalResources,
         skillId: params.skillId,
         validationResult: params.validation,
         version: params.version,
       });
+      await repository.bumpDraftSequence(params.skillId);
       return versionView(row);
     });
   };
@@ -223,13 +287,16 @@ export class PlatformSkillCatalogModel {
     const repository = new PlatformSkillCatalogRepository(this.db);
     const draft = draftView(await repository.getSkill(id));
     if (!draft) return undefined;
-    const versions = (await repository.listVersions(id)).map(versionView);
+    const latest = await repository.getLatestVersion(id);
+    const published = draft.currentVersionId
+      ? await repository.getVersion(id, draft.currentVersionId)
+      : undefined;
     return {
       baseRevision: draft.revision,
       draft,
-      draftToken: platformSkillDraftToken(draft, versions),
-      publishedVersion: versions.find((version) => version.id === draft.currentVersionId) ?? null,
-      versions,
+      draftToken: platformSkillDraftToken(draft),
+      latestVersion: latest ? versionView(latest) : null,
+      publishedVersion: published ? versionView(published) : null,
     };
   };
 
@@ -260,12 +327,11 @@ export class PlatformSkillCatalogModel {
         params.expectedRevision,
       );
       if (!current) return undefined;
-      await repository.updateSkill(params.id, {
+      await repository.updateSkillDraft(params.id, {
         description: params.description,
         distribution: params.distribution,
         enabled: params.enabled,
         name: params.displayName,
-        status: 'draft',
         updatedBy: params.actorUserId,
       });
       return new PlatformSkillCatalogModel(tx, this.options).getDetail(params.id);

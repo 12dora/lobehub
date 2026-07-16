@@ -2014,6 +2014,7 @@ table platform_skill_versions {
   manifest jsonb [not null]
   content text [not null]
   content_ref text
+  resources jsonb [not null, default: `[]`]
   checksum text [not null]
   validation_result jsonb
   created_by text
@@ -2021,6 +2022,7 @@ table platform_skill_versions {
 
   indexes {
     (skill_id, version) [name: 'platform_skill_versions_skill_id_version_unique', unique]
+    (skill_id, id) [name: 'platform_skill_versions_skill_id_id_unique', unique]
     skill_id [name: 'platform_skill_versions_skill_id_idx']
     checksum [name: 'platform_skill_versions_checksum_idx']
   }
@@ -2038,6 +2040,7 @@ table platform_skills {
   current_version_id text
   status varchar(32) [not null, default: 'draft']
   revision integer [not null, default: 0]
+  draft_sequence integer [not null, default: 0]
   created_by text
   updated_by text
   created_at "timestamp with time zone" [not null, default: `now()`]
@@ -2049,6 +2052,8 @@ table platform_skills {
     enabled [name: 'platform_skills_enabled_idx']
     distribution [name: 'platform_skills_distribution_idx']
     current_version_id [name: 'platform_skills_current_version_id_idx']
+
+
   }
 }
 
