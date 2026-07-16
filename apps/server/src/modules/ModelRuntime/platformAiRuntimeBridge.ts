@@ -18,6 +18,30 @@ export interface PlatformAiExecutionConfig {
   runtimeProvider: string;
 }
 
+export const assertPlatformPublishedModel = (
+  state: AiProviderRuntimeState,
+  providerKey: string,
+  modelKey: string,
+  type: string,
+): void => {
+  const published = state.enabledAiModels.some(
+    (model) =>
+      model.enabled &&
+      model.providerId === providerKey &&
+      model.id === modelKey &&
+      model.type === type,
+  );
+  if (!published) {
+    const error = new Error('PLATFORM_AI_MODEL_NOT_PUBLISHED') as Error & {
+      code: string;
+      errorType: string;
+    };
+    error.code = 'PLATFORM_AI_MODEL_NOT_PUBLISHED';
+    error.errorType = 'PLATFORM_AI_MODEL_NOT_PUBLISHED';
+    throw error;
+  }
+};
+
 export interface PlatformAiRuntimeImplementation {
   createModelAllowlistHooks: (models: PlatformAiExecutionModel[]) => ModelRuntimeHooks;
   isEnabled: () => boolean;

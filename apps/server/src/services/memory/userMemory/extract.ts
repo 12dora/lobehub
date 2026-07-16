@@ -78,6 +78,7 @@ import {
   initModelRuntimeWithUserPayload,
 } from '@/server/modules/ModelRuntime';
 import {
+  assertPlatformPublishedModel,
   createPlatformAiModelAllowlistHooks,
   getEmptyPlatformAiRuntimeState,
   isPlatformManagedAiEnabled,
@@ -2426,6 +2427,11 @@ export class MemoryExtractionExecutor {
     );
 
     const selectedProviders = new Set<string>();
+    const managedRequirements: Array<{
+      modelKey: string;
+      providerKey: string;
+      type: 'chat' | 'embedding';
+    }> = [];
 
     const gatekeeperProvider = await AiInfraRepos.tryMatchingProviderFrom(runtimeState, {
       fallbackProvider: memoryServiceConfig.agents.gatekeeper.provider,
@@ -2439,6 +2445,11 @@ export class MemoryExtractionExecutor {
         : this.gatekeeperPreferredProviders,
     });
     selectedProviders.add(gatekeeperProvider);
+    managedRequirements.push({
+      modelKey: memoryServiceConfig.modelConfig.gateModel,
+      providerKey: gatekeeperProvider,
+      type: 'chat',
+    });
 
     const embeddingProvider = await AiInfraRepos.tryMatchingProviderFrom(runtimeState, {
       fallbackProvider: memoryServiceConfig.agents.embedding.provider,
@@ -2452,6 +2463,11 @@ export class MemoryExtractionExecutor {
         : this.embeddingPreferredProviders,
     });
     selectedProviders.add(embeddingProvider);
+    managedRequirements.push({
+      modelKey: memoryServiceConfig.modelConfig.embeddingsModel,
+      providerKey: embeddingProvider,
+      type: 'embedding',
+    });
 
     for (const model of Object.values(memoryServiceConfig.modelConfig.layerModels)) {
       if (!model) continue;
@@ -2467,10 +2483,19 @@ export class MemoryExtractionExecutor {
           : this.layerPreferredProviders,
       });
       selectedProviders.add(providerId);
+      managedRequirements.push({ modelKey: model, providerKey: providerId, type: 'chat' });
     }
 
     if (managed) {
       const db = await this.db;
+      for (const requirement of managedRequirements) {
+        assertPlatformPublishedModel(
+          runtimeState,
+          requirement.providerKey,
+          requirement.modelKey,
+          requirement.type,
+        );
+      }
       const keyVaults: ManagedProviderKeyVaultMap = {};
       const executions: Record<string, PlatformAiExecutionConfig> = {};
       await Promise.all(
