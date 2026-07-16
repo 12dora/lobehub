@@ -13,6 +13,8 @@ export const ENTERPRISE_UPSTREAM_MOUNT_POINTS = [
   // M00 mount #4: enterprise gate on GlobalServerConfig
   'apps/server/src/globalConfig/index.ts',
   'packages/types/src/serverConfig.ts',
+  // M04: block Better Auth admin plugin mutations when platform admin is on
+  'src/app/(backend)/api/auth/[...all]/route.ts',
   // script entry only
   'package.json',
 ] as const;
