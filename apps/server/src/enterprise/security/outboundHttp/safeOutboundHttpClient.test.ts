@@ -307,17 +307,39 @@ describe('SafeOutboundHttpClient', () => {
     await expect(client.fetch('gopher://example.com/')).rejects.toThrow(/protocol/i);
   });
 
-  it.each(['key', 'api_key', 'access-token', 'signature', 'X-Amz-Signature'])(
-    'rejects sensitive query key %s again at the final outbound boundary',
-    async (key) => {
-      const transport = vi.fn();
-      const client = new SafeOutboundHttpClient({ transport });
-      await expect(
-        client.fetch(`https://example.test/mcp?${key}=fake-secret`),
-      ).rejects.toMatchObject({ code: PLATFORM_ERROR_CODES.PLATFORM_SSRF_BLOCKED });
-      expect(transport).not.toHaveBeenCalled();
-    },
-  );
+  it.each([
+    'key',
+    'api_key',
+    'access-token',
+    'signature',
+    'subscription-key',
+    'Ocp-Apim-Subscription-Key',
+    'X-Amz-Signature',
+  ])('rejects sensitive query key %s again at the final outbound boundary', async (key) => {
+    const transport = vi.fn();
+    const client = new SafeOutboundHttpClient({ transport });
+    await expect(client.fetch(`https://example.test/mcp?${key}=fake-secret`)).rejects.toMatchObject(
+      { code: PLATFORM_ERROR_CODES.PLATFORM_SSRF_BLOCKED },
+    );
+    expect(transport).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    '?subscription-key=fake-secret',
+    'https://other.example/next?Ocp-Apim-Subscription-Key=fake-secret',
+  ])('rejects sensitive query keys introduced by redirect: %s', async (location) => {
+    const transport = vi.fn<PinnedTransport>(async () =>
+      okResponse({ headers: { location }, status: 302, statusText: 'Found' }),
+    );
+    const client = new SafeOutboundHttpClient({
+      resolve: resolveTo([{ address: '1.1.1.1' }]),
+      transport,
+    });
+    await expect(client.fetch('https://safe.example/start')).rejects.toMatchObject({
+      code: PLATFORM_ERROR_CODES.PLATFORM_SSRF_BLOCKED,
+    });
+    expect(transport).toHaveBeenCalledOnce();
+  });
 
   it('re-reads a versioned policy after DNS and fails closed when it tightens', async () => {
     let reads = 0;
@@ -338,6 +360,36 @@ describe('SafeOutboundHttpClient', () => {
     });
     expect(reads).toBeGreaterThanOrEqual(2);
     expect(transport).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { policy: { allowlist: [], mode: 'invalid' }, version: 1 },
+    { policy: { allowlist: 'example.test', mode: 'allowlist' }, version: 1 },
+    { policy: { allowlist: [], mode: 'allow-private' }, version: '' },
+    { extra: true, policy: { allowlist: [], mode: 'allow-private' }, version: 1 },
+  ])('fails closed for malformed dynamic policy snapshot %#', async (snapshot) => {
+    const transport = vi.fn();
+    const client = new SafeOutboundHttpClient({
+      policyProvider: () => snapshot as never,
+      transport,
+    });
+    await expect(client.fetch('https://example.test/mcp')).rejects.toMatchObject({
+      code: PLATFORM_ERROR_CODES.PLATFORM_SSRF_BLOCKED,
+    });
+    expect(transport).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when a dynamic policy provider throws', async () => {
+    const client = new SafeOutboundHttpClient({
+      policyProvider: () => {
+        throw new Error('backend unavailable with sensitive details');
+      },
+      transport: vi.fn(),
+    });
+    await expect(client.fetch('https://example.test/mcp')).rejects.toMatchObject({
+      code: PLATFORM_ERROR_CODES.PLATFORM_SSRF_BLOCKED,
+      message: expect.not.stringContaining('sensitive details'),
+    });
   });
 
   it('uses one absolute deadline across DNS, redirects, transport, and body', async () => {
@@ -444,6 +496,29 @@ describe('SafeOutboundHttpClient', () => {
     ).rejects.toMatchObject({ code: PLATFORM_ERROR_CODES.PLATFORM_SSRF_BLOCKED });
     expect(transport).toHaveBeenCalledOnce();
   });
+
+  it.each([301, 302, 303, 307, 308])(
+    'rejects arbitrary caller headers on cross-origin %s redirects',
+    async (status) => {
+      const transport = vi.fn<PinnedTransport>(async () =>
+        okResponse({
+          headers: { location: 'https://b.example/next' },
+          status,
+          statusText: 'Redirect',
+        }),
+      );
+      const client = new SafeOutboundHttpClient({
+        resolve: resolveTo([{ address: '1.1.1.1' }]),
+        transport,
+      });
+      await expect(
+        client.fetch('https://a.example/start', {
+          headers: { 'X-Random': 'ordinary-random-secret-with-no-known-shape' },
+        }),
+      ).rejects.toMatchObject({ code: PLATFORM_ERROR_CODES.PLATFORM_SSRF_BLOCKED });
+      expect(transport).toHaveBeenCalledOnce();
+    },
+  );
 
   it('keeps credentials on same-origin redirect', async () => {
     const transport = vi.fn<PinnedTransport>(async (req) => {
