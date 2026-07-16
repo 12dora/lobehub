@@ -16,11 +16,17 @@ import { TopicModel } from '@/database/models/topic';
 import { TopicDocumentModel } from '@/database/models/topicDocument';
 import { router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
+import {
+  isOrdinaryAgentDocumentPathInput,
+  isOrdinaryAgentDocumentPathPairInput,
+  withManagedResourceGuard,
+} from '@/server/enterprise/guards/managedResource';
 import { AgentDocumentsService } from '@/server/services/agentDocuments';
 import { emitAgentDocumentToolOutcomeSafely } from '@/server/services/agentDocuments/toolOutcome';
 import { AgentDocumentVfsService } from '@/server/services/agentDocumentVfs';
 import { AgentDocumentVfsError } from '@/server/services/agentDocumentVfs/errors';
 import { getUnifiedSkillNamespaceRootPath } from '@/server/services/agentDocumentVfs/mounts/skills/path';
+import { isManagedSkillDocument } from '@/server/services/agentDocumentVfs/mounts/skills/providers/providerSkillsAgentDocumentUtils';
 import { SkillManagementDocumentService } from '@/server/services/skillManagement';
 import { SystemAgentService } from '@/server/services/systemAgent';
 
@@ -178,6 +184,48 @@ const agentDocumentProcedure = wsCompatProcedure.use(serverDatabase).use(async (
 const agentDocumentProcedureWrite = agentDocumentProcedure.use(
   withScopedPermission('document:update'),
 );
+
+const agentDocumentIdGuardSchema = z.object({ agentId: z.string(), id: z.string() }).passthrough();
+const agentDocumentFilenameGuardSchema = z
+  .object({ agentId: z.string(), filename: z.string() })
+  .passthrough();
+const agentDocumentAggregateGuardSchema = z.object({ agentId: z.string() }).passthrough();
+const sourceAgentDocumentAggregateGuardSchema = z
+  .object({ sourceAgentId: z.string() })
+  .passthrough();
+
+const getGuardDocumentService = (ctx: unknown): AgentDocumentsService | undefined =>
+  (ctx as { agentDocumentService?: AgentDocumentsService }).agentDocumentService;
+
+const isOrdinaryAgentDocumentIdInput = async (input: unknown, ctx: unknown): Promise<boolean> => {
+  const parsed = agentDocumentIdGuardSchema.safeParse(input);
+  const service = getGuardDocumentService(ctx);
+  if (!parsed.success || !service) return false;
+
+  const document = await service.getDocumentById(parsed.data.id, parsed.data.agentId);
+  return Boolean(document && !isManagedSkillDocument(document));
+};
+
+const isOrdinaryAgentDocumentFilenameInput = async (
+  input: unknown,
+  ctx: unknown,
+): Promise<boolean> => {
+  const parsed = agentDocumentFilenameGuardSchema.safeParse(input);
+  const service = getGuardDocumentService(ctx);
+  if (!parsed.success || !service) return false;
+
+  const document = await service.getDocument(parsed.data.agentId, parsed.data.filename);
+  return !document || !isManagedSkillDocument(document);
+};
+
+const hasOnlyOrdinaryAgentDocuments = async (input: unknown, ctx: unknown): Promise<boolean> => {
+  const parsed = agentDocumentAggregateGuardSchema.safeParse(input);
+  const service = getGuardDocumentService(ctx);
+  if (!parsed.success || !service) return false;
+
+  const documents = await service.getAgentDocuments(parsed.data.agentId);
+  return documents.every((document) => !isManagedSkillDocument(document));
+};
 
 const emitCreateDocumentToolOutcome = async (input: {
   agentDocumentId?: string;
@@ -341,6 +389,7 @@ export const agentDocumentRouter = router({
    * resolve the same topic id.
    */
   getOrCreateChatTopic: agentDocumentProcedure
+    .use(withManagedResourceGuard('agentDocument.getOrCreateChatTopic'))
     .input(
       z.object({
         agentId: z.string(),
@@ -385,6 +434,11 @@ export const agentDocumentRouter = router({
    * Create or update a document
    */
   upsertDocument: agentDocumentProcedureWrite
+    .use(
+      withManagedResourceGuard('agentDocument.upsertDocument', {
+        isExemptInput: isOrdinaryAgentDocumentFilenameInput,
+      }),
+    )
     .input(
       z.object({
         agentId: z.string(),
@@ -410,6 +464,11 @@ export const agentDocumentRouter = router({
    * Delete a specific document
    */
   deleteDocument: agentDocumentProcedureWrite
+    .use(
+      withManagedResourceGuard('agentDocument.deleteDocument', {
+        isExemptInput: isOrdinaryAgentDocumentFilenameInput,
+      }),
+    )
     .input(
       z.object({
         agentId: z.string(),
@@ -427,6 +486,11 @@ export const agentDocumentRouter = router({
    * Delete all documents for an agent
    */
   deleteAllDocuments: agentDocumentProcedureWrite
+    .use(
+      withManagedResourceGuard('agentDocument.deleteAllDocuments', {
+        isExemptInput: hasOnlyOrdinaryAgentDocuments,
+      }),
+    )
     .input(z.object({ agentId: z.string() }))
     .mutation(async ({ ctx, input }) => {
       return ctx.agentDocumentService.deleteAllDocuments(input.agentId);
@@ -436,6 +500,7 @@ export const agentDocumentRouter = router({
    * Initialize documents from a template set
    */
   initializeFromTemplate: agentDocumentProcedureWrite
+    .use(withManagedResourceGuard('agentDocument.initializeFromTemplate'))
     .input(
       z.object({
         agentId: z.string(),
@@ -473,6 +538,17 @@ export const agentDocumentRouter = router({
    * Clone documents from one agent to another
    */
   cloneDocuments: agentDocumentProcedureWrite
+    .use(
+      withManagedResourceGuard('agentDocument.cloneDocuments', {
+        isExemptInput: async (input, ctx) => {
+          const parsed = sourceAgentDocumentAggregateGuardSchema.safeParse(input);
+          return hasOnlyOrdinaryAgentDocuments(
+            parsed.success ? { agentId: parsed.data.sourceAgentId } : input,
+            ctx,
+          );
+        },
+      }),
+    )
     .input(
       z.object({
         sourceAgentId: z.string(),
@@ -624,6 +700,11 @@ export const agentDocumentRouter = router({
    * Tool-oriented: write document by VFS path
    */
   writeDocumentByPath: agentDocumentProcedureWrite
+    .use(
+      withManagedResourceGuard('agentDocument.writeDocumentByPath', {
+        isExemptInput: isOrdinaryAgentDocumentPathInput,
+      }),
+    )
     .input(
       z.object({
         agentId: z.string(),
@@ -650,6 +731,7 @@ export const agentDocumentRouter = router({
     }),
 
   createSkillByPath: agentDocumentProcedureWrite
+    .use(withManagedResourceGuard('agentDocument.createSkillByPath'))
     .input(createMountedSkillSchema)
     .mutation(async ({ ctx, input }) => {
       try {
@@ -677,6 +759,7 @@ export const agentDocumentRouter = router({
    * document no longer appears at its previous location in the tree.
    */
   convertDocumentToSkill: agentDocumentProcedureWrite
+    .use(withManagedResourceGuard('agentDocument.convertDocumentToSkill'))
     .input(
       z.object({
         agentId: z.string(),
@@ -714,6 +797,7 @@ export const agentDocumentRouter = router({
    * to its own defaults.
    */
   generateSkillMeta: agentDocumentProcedureWrite
+    .use(withManagedResourceGuard('agentDocument.generateSkillMeta'))
     .input(
       z.object({
         agentId: z.string(),
@@ -734,6 +818,7 @@ export const agentDocumentRouter = router({
     }),
 
   updateSkillByPath: agentDocumentProcedureWrite
+    .use(withManagedResourceGuard('agentDocument.updateSkillByPath'))
     .input(updateMountedSkillSchema)
     .mutation(async ({ ctx, input }) => {
       try {
@@ -751,6 +836,7 @@ export const agentDocumentRouter = router({
     }),
 
   deleteSkillByPath: agentDocumentProcedureWrite
+    .use(withManagedResourceGuard('agentDocument.deleteSkillByPath'))
     .input(deleteMountedSkillSchema)
     .mutation(async ({ ctx, input }) => {
       try {
@@ -766,6 +852,11 @@ export const agentDocumentRouter = router({
    * Tool-oriented: create a VFS directory
    */
   mkdirDocumentByPath: agentDocumentProcedureWrite
+    .use(
+      withManagedResourceGuard('agentDocument.mkdirDocumentByPath', {
+        isExemptInput: isOrdinaryAgentDocumentPathInput,
+      }),
+    )
     .input(
       z.object({
         agentId: z.string(),
@@ -793,6 +884,11 @@ export const agentDocumentRouter = router({
    * Tool-oriented: rename or move a VFS path
    */
   renameDocumentByPath: agentDocumentProcedureWrite
+    .use(
+      withManagedResourceGuard('agentDocument.renameDocumentByPath', {
+        isExemptInput: isOrdinaryAgentDocumentPathPairInput,
+      }),
+    )
     .input(
       z.object({
         agentId: z.string(),
@@ -822,6 +918,11 @@ export const agentDocumentRouter = router({
    * Tool-oriented: copy a VFS path
    */
   copyDocumentByPath: agentDocumentProcedureWrite
+    .use(
+      withManagedResourceGuard('agentDocument.copyDocumentByPath', {
+        isExemptInput: isOrdinaryAgentDocumentPathPairInput,
+      }),
+    )
     .input(
       z.object({
         agentId: z.string(),
@@ -851,6 +952,11 @@ export const agentDocumentRouter = router({
    * Tool-oriented: soft-delete a VFS path
    */
   deleteDocumentByPath: agentDocumentProcedureWrite
+    .use(
+      withManagedResourceGuard('agentDocument.deleteDocumentByPath', {
+        isExemptInput: isOrdinaryAgentDocumentPathInput,
+      }),
+    )
     .input(
       z.object({
         agentId: z.string(),
@@ -904,6 +1010,11 @@ export const agentDocumentRouter = router({
    * Tool-oriented: restore a trash entry
    */
   restoreDocumentFromTrashByPath: agentDocumentProcedureWrite
+    .use(
+      withManagedResourceGuard('agentDocument.restoreDocumentFromTrashByPath', {
+        isExemptInput: isOrdinaryAgentDocumentPathInput,
+      }),
+    )
     .input(
       z.object({
         agentId: z.string(),
@@ -926,6 +1037,11 @@ export const agentDocumentRouter = router({
    * Tool-oriented: permanently remove a trash entry
    */
   deleteDocumentPermanentlyByPath: agentDocumentProcedureWrite
+    .use(
+      withManagedResourceGuard('agentDocument.deleteDocumentPermanentlyByPath', {
+        isExemptInput: isOrdinaryAgentDocumentPathInput,
+      }),
+    )
     .input(
       z.object({
         agentId: z.string(),
@@ -950,6 +1066,7 @@ export const agentDocumentRouter = router({
    * Tool-oriented: associate an existing document with an agent
    */
   associateDocument: agentDocumentProcedureWrite
+    .use(withManagedResourceGuard('agentDocument.associateDocument'))
     .input(
       z.object({
         agentId: z.string(),
@@ -964,6 +1081,7 @@ export const agentDocumentRouter = router({
    * Tool-oriented: create document
    */
   createDocument: agentDocumentProcedureWrite
+    .use(withManagedResourceGuard('agentDocument.createDocument'))
     .input(
       z
         .object({
@@ -1020,6 +1138,7 @@ export const agentDocumentRouter = router({
    * Used by the topic → page flow to create an agent document.
    */
   createForTopic: agentDocumentProcedureWrite
+    .use(withManagedResourceGuard('agentDocument.createForTopic'))
     .input(
       z
         .object({
@@ -1096,6 +1215,11 @@ export const agentDocumentRouter = router({
    * Tool-oriented: modify document nodes by id through LiteXML.
    */
   modifyNodes: agentDocumentProcedureWrite
+    .use(
+      withManagedResourceGuard('agentDocument.modifyNodes', {
+        isExemptInput: isOrdinaryAgentDocumentIdInput,
+      }),
+    )
     .input(
       z.object({
         agentId: z.string(),
@@ -1115,6 +1239,11 @@ export const agentDocumentRouter = router({
    * Tool-oriented: replace document content by id
    */
   replaceDocumentContent: agentDocumentProcedureWrite
+    .use(
+      withManagedResourceGuard('agentDocument.replaceDocumentContent', {
+        isExemptInput: isOrdinaryAgentDocumentIdInput,
+      }),
+    )
     .input(
       z.object({
         agentId: z.string(),
@@ -1134,6 +1263,11 @@ export const agentDocumentRouter = router({
    * Tool-oriented: remove document by id
    */
   removeDocument: agentDocumentProcedureWrite
+    .use(
+      withManagedResourceGuard('agentDocument.removeDocument', {
+        isExemptInput: isOrdinaryAgentDocumentIdInput,
+      }),
+    )
     .input(
       z.object({
         agentId: z.string(),
@@ -1149,6 +1283,11 @@ export const agentDocumentRouter = router({
    * Tool-oriented: copy document by id
    */
   copyDocument: agentDocumentProcedureWrite
+    .use(
+      withManagedResourceGuard('agentDocument.copyDocument', {
+        isExemptInput: isOrdinaryAgentDocumentIdInput,
+      }),
+    )
     .input(
       z.object({
         agentId: z.string(),
@@ -1172,6 +1311,11 @@ export const agentDocumentRouter = router({
    * Tool-oriented: rename document by id
    */
   renameDocument: agentDocumentProcedureWrite
+    .use(
+      withManagedResourceGuard('agentDocument.renameDocument', {
+        isExemptInput: isOrdinaryAgentDocumentIdInput,
+      }),
+    )
     .input(
       z.object({
         agentId: z.string(),
@@ -1195,6 +1339,11 @@ export const agentDocumentRouter = router({
    * Tool-oriented: update document load rule by id
    */
   updateLoadRule: agentDocumentProcedureWrite
+    .use(
+      withManagedResourceGuard('agentDocument.updateLoadRule', {
+        isExemptInput: isOrdinaryAgentDocumentIdInput,
+      }),
+    )
     .input(
       z.object({
         agentId: z.string(),

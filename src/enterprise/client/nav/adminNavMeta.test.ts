@@ -25,6 +25,9 @@ describe('adminNavMeta', () => {
     expect(findAdminNavItemByPath('/admin/ai/providers/p1')?.requiredPermissions).toEqual([
       PLATFORM_PERMISSIONS.AI_PROVIDER_UPDATE,
     ]);
+    expect(findAdminNavItemByPath('/admin/managed-resources')?.requiredPermissions).toEqual([
+      PLATFORM_PERMISSIONS.POLICY_READ,
+    ]);
   });
 
   it('most-specific matchPath wins — list READ does not grant provider edit', () => {
@@ -34,6 +37,15 @@ describe('adminNavMeta', () => {
 
     const updater = [PLATFORM_PERMISSIONS.AI_PROVIDER_UPDATE];
     expect(canAccessAdminPath('/admin/ai/providers/p1', updater)).toBe(true);
+  });
+
+  it('shows and guards managed resources with policy read permission only', () => {
+    expect(canAccessAdminPath('/admin/managed-resources', [])).toBe(false);
+    expect(canAccessAdminPath('/admin/managed-resources', [PLATFORM_PERMISSIONS.POLICY_READ])).toBe(
+      true,
+    );
+    const nav = filterAdminNavByPermissions(ADMIN_NAV_ITEMS, [PLATFORM_PERMISSIONS.POLICY_READ]);
+    expect(nav.map((item) => item.id)).toContain('managed-resources');
   });
 
   it('unknown nested path has no catalog entry (admin 404)', () => {

@@ -20,6 +20,9 @@ const AdminReauthCompletePage = lazy(
 const SettingsPolicyPage = lazy(
   () => import('@/enterprise/client/features/admin/settings/SettingsPolicyPage'),
 );
+const ManagedResourcesPolicyPage = lazy(
+  () => import('@/enterprise/client/features/admin/managedResources/ManagedResourcesPolicyPage'),
+);
 
 /** Honest localized loading surface for lazy admin pages (no blank frame). */
 const AdminLazyFallback = () => {
@@ -47,6 +50,9 @@ const resolveAdminLeafElement = (id: string): ReactNode => {
     }
     case 'settings': {
       return withLazy(<SettingsPolicyPage />);
+    }
+    case 'managed-resources': {
+      return withLazy(<ManagedResourcesPolicyPage />);
     }
     default: {
       return <PlaceholderPage />;

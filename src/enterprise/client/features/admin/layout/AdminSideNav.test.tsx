@@ -26,6 +26,7 @@ vi.mock('@/enterprise/client/providers/AdminAccessProvider', () => ({
       PLATFORM_PERMISSIONS.ADMIN_ACCESS,
       PLATFORM_PERMISSIONS.USER_READ,
       PLATFORM_PERMISSIONS.AI_PROVIDER_READ,
+      PLATFORM_PERMISSIONS.POLICY_READ,
     ],
     status: 'allowed',
   }),
@@ -69,6 +70,7 @@ describe('AdminSideNav (canonical NavItem)', () => {
     expect(screen.getByText('nav.overview')).toBeTruthy();
     expect(screen.getByText('nav.users')).toBeTruthy();
     expect(screen.getByText('nav.aiProviders')).toBeTruthy();
+    expect(screen.getByText('nav.managedResources')).toBeTruthy();
     expect(screen.queryByText('nav.userDetail')).toBeNull();
     expect(screen.queryByText('nav.audit')).toBeNull();
   });

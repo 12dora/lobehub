@@ -7,6 +7,7 @@ import { memo, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import NeuralNetworkLoading from '@/components/NeuralNetworkLoading';
+import { useManagedResource } from '@/features/ManagedResources';
 import { usePermission } from '@/hooks/usePermission';
 import { SessionDefaultGroup } from '@/types/session';
 
@@ -46,6 +47,7 @@ interface CreateAgentButtonProps {
 const CreateAgentButton = memo<CreateAgentButtonProps>(({ groupId, className, visibility }) => {
   const { t } = useTranslation('chat');
   const { allowed: canCreate, reason } = usePermission('create_content');
+  const { blocked: agentCreationBlocked } = useManagedResource('agents');
   const {
     createAgent,
     createAgentMenuItem,
@@ -77,7 +79,7 @@ const CreateAgentButton = memo<CreateAgentButtonProps>(({ groupId, className, vi
       createGroupChatMenuItem(menuOptions),
       ...(heteroItems.length > 0 ? [{ type: 'divider' as const }, ...heteroItems] : []),
       ...(platformItem ? [{ type: 'divider' as const }, platformItem] : []),
-    ];
+    ].filter(Boolean);
   }, [
     createAgentMenuItem,
     createGroupChatMenuItem,
@@ -94,6 +96,8 @@ const CreateAgentButton = memo<CreateAgentButtonProps>(({ groupId, className, vi
       createAgent(menuOptions);
     }
   };
+
+  if (agentCreationBlocked) return null;
 
   const content = (
     <Block

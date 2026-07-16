@@ -22,6 +22,10 @@ import { useToolStore } from '@/store/tool';
 import { type ComposioServer } from '@/store/tool/slices/composioStore';
 import { ComposioServerStatus } from '@/store/tool/slices/composioStore';
 
+import {
+  createPersonalComposioConnection,
+  reauthorizePersonalComposioConnection,
+} from './composioOAuthActions';
 import { styles } from './style';
 
 const POLL_INTERVAL_MS = 1000;
@@ -152,10 +156,9 @@ const ComposioSkillItem = memo<ComposioSkillItemProps>(
 
       setIsConnecting(true);
       try {
-        const newServer = await createComposioConnection({
-          appSlug: serverType.appSlug,
-          identifier: serverType.identifier,
-          label: serverType.label,
+        const newServer = await createPersonalComposioConnection({
+          createConnection: createComposioConnection,
+          serverType,
         });
 
         if (newServer) {
@@ -176,7 +179,10 @@ const ComposioSkillItem = memo<ComposioSkillItemProps>(
       if (!canCreate || !canEdit || !server) return;
       setIsConnecting(true);
       try {
-        const newServer = await reauthorizeComposioConnection(server.identifier);
+        const newServer = await reauthorizePersonalComposioConnection({
+          identifier: server.identifier,
+          reauthorizeConnection: reauthorizeComposioConnection,
+        });
         if (newServer?.redirectUrl) {
           openOAuthWindow(newServer.redirectUrl, newServer.identifier);
         }

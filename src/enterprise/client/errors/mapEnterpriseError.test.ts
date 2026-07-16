@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
+import { MANAGED_ERROR_CODES, PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 
 import { mapEnterpriseError } from './mapEnterpriseError';
 
@@ -35,6 +35,17 @@ describe('mapEnterpriseError (structured)', () => {
     const mapped = mapEnterpriseError(PLATFORM_ERROR_CODES.PLATFORM_REVISION_CONFLICT);
     expect(mapped?.code).toBe(PLATFORM_ERROR_CODES.PLATFORM_REVISION_CONFLICT);
     expect(mapped?.action).toBe('retry');
+  });
+
+  it('normalizes the M06 RESOURCE_MANAGED_BY_PLATFORM spelling without removing legacy support', () => {
+    expect(mapEnterpriseError('RESOURCE_MANAGED_BY_PLATFORM')).toMatchObject({
+      action: 'contact_admin',
+      code: MANAGED_ERROR_CODES.MANAGED_RESOURCE_BY_PLATFORM,
+    });
+    expect(mapEnterpriseError(MANAGED_ERROR_CODES.MANAGED_RESOURCE_BY_PLATFORM)).toMatchObject({
+      action: 'contact_admin',
+      code: MANAGED_ERROR_CODES.MANAGED_RESOURCE_BY_PLATFORM,
+    });
   });
 
   it('returns null for unknown errors', () => {

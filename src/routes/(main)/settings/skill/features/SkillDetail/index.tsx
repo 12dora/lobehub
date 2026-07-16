@@ -1,6 +1,6 @@
 'use client';
 
-import { getLobehubSkillProviderById } from '@lobechat/const';
+import { getComposioAppByIdentifier, getLobehubSkillProviderById } from '@lobechat/const';
 import { Avatar, Markdown, Skeleton } from '@lobehub/ui';
 import { Button, confirmModal } from '@lobehub/ui/base-ui';
 import { createStaticStyles } from 'antd-style';
@@ -13,10 +13,19 @@ import { ConnectorDetail } from '@/features/Connectors';
 import { useSkillConnect } from '@/features/SkillStore/SkillList/LobeHub/useSkillConnect';
 import { usePermission } from '@/hooks/usePermission';
 import { useToolStore } from '@/store/tool';
-import { builtinToolSelectors, lobehubSkillStoreSelectors } from '@/store/tool/selectors';
+import {
+  builtinToolSelectors,
+  composioStoreSelectors,
+  lobehubSkillStoreSelectors,
+} from '@/store/tool/selectors';
+import { ComposioServerStatus } from '@/store/tool/slices/composioStore';
 import { connectorSelectors } from '@/store/tool/slices/connector';
 
 import { getLocalizedBuiltinSkillDetail, getNoPermissionsTitle } from './localization';
+import {
+  ManagedComposioDisconnectButton,
+  shouldSyncConnectorDefinition,
+} from './managedConnectorBehavior';
 
 const AgentSkillDetail = lazy(() => import('@/features/AgentSkillDetail'));
 
@@ -67,6 +76,7 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
 
 interface SkillDetailProps {
   identifier: string;
+  managed?: boolean;
   onDelete?: () => void;
   type: ToolDetailType;
 }
@@ -137,6 +147,34 @@ const LobehubConnectorAction = memo<LobehubConnectorActionProps>(
 
 LobehubConnectorAction.displayName = 'LobehubConnectorAction';
 
+interface ComposioConnectorActionProps {
+  identifier: string;
+  label: string;
+  onDisconnected?: () => void;
+}
+
+const ComposioConnectorAction = memo<ComposioConnectorActionProps>(
+  ({ identifier, label, onDisconnected }) => {
+    const { allowed: canEdit } = usePermission('edit_own_content');
+    const server = useToolStore(composioStoreSelectors.getServerByIdentifier(identifier));
+    const removeComposioConnection = useToolStore((s) => s.removeComposioConnection);
+
+    if (!server || server.status !== ComposioServerStatus.ACTIVE) return null;
+
+    return (
+      <ManagedComposioDisconnectButton
+        canEdit={canEdit}
+        identifier={identifier}
+        label={label}
+        onDisconnect={removeComposioConnection}
+        onDisconnected={onDisconnected}
+      />
+    );
+  },
+);
+
+ComposioConnectorAction.displayName = 'ComposioConnectorAction';
+
 /**
  * Right panel for the Settings > Skill master-detail layout.
  *
@@ -144,7 +182,7 @@ LobehubConnectorAction.displayName = 'LobehubConnectorAction';
  * - 'builtin-skill': renders BuiltinSkill description panel (Artifacts, Task, etc.)
  * - 'builtin'/'plugin'/'mcp-connector': syncs connector entry, renders permission editor
  */
-const SkillDetail = memo<SkillDetailProps>(({ identifier, type, onDelete }) => {
+const SkillDetail = memo<SkillDetailProps>(({ identifier, managed = false, type, onDelete }) => {
   const { t } = useTranslation('plugin');
   const { t: ts } = useTranslation('setting');
   const [syncing, setSyncing] = useState(false);
@@ -170,6 +208,7 @@ const SkillDetail = memo<SkillDetailProps>(({ identifier, type, onDelete }) => {
     type === 'lobehub-connector'
       ? lobehubProvider?.label || lobehubServer?.name || identifier
       : identifier;
+  const composioApp = type === 'plugin' ? getComposioAppByIdentifier(identifier) : undefined;
 
   // For builtin-skill: look up from store
   const builtinSkill = useToolStore(
@@ -188,20 +227,34 @@ const SkillDetail = memo<SkillDetailProps>(({ identifier, type, onDelete }) => {
     getLocalizedBuiltinSkillDetail(builtinSkill, identifier, ts);
   const noPermissionsTitle = getNoPermissionsTitle(identifier, type, ts);
 
-  const renderLobehubConnectorAction = (onDisconnected?: () => void) => {
-    if (type !== 'lobehub-connector') return undefined;
-
-    return (
-      <LobehubConnectorAction
-        identifier={identifier}
-        label={lobehubLabel}
-        onDisconnected={onDisconnected}
-      />
-    );
+  const renderConnectorLifecycleAction = (onDisconnected?: () => void) => {
+    if (type === 'lobehub-connector') {
+      return (
+        <LobehubConnectorAction
+          identifier={identifier}
+          label={lobehubLabel}
+          onDisconnected={onDisconnected}
+        />
+      );
+    }
+    if (composioApp) {
+      return (
+        <ComposioConnectorAction
+          identifier={identifier}
+          label={composioApp.label}
+          onDisconnected={onDisconnected}
+        />
+      );
+    }
+    return undefined;
   };
 
   useEffect(() => {
-    if (!isConnectorType) return;
+    if (!shouldSyncConnectorDefinition({ isConnectorType, managed })) {
+      setNoManifest(false);
+      setSyncing(false);
+      return;
+    }
 
     setNoManifest(false);
     const ensureConnector = async () => {
@@ -243,6 +296,7 @@ const SkillDetail = memo<SkillDetailProps>(({ identifier, type, onDelete }) => {
     fetchConnectors,
     identifier,
     isConnectorType,
+    managed,
     lobehubServer?.name,
     lobehubServer?.tools,
     syncBuiltinTool,
@@ -367,7 +421,7 @@ const SkillDetail = memo<SkillDetailProps>(({ identifier, type, onDelete }) => {
           <div className={styles.noPermissionsTitle}>
             {type === 'lobehub-connector' ? lobehubLabel : noPermissionsTitle}
           </div>
-          {renderLobehubConnectorAction()}
+          {renderConnectorLifecycleAction()}
         </div>
         {ts('tools.noConfigurablePermissions')}
       </div>
@@ -377,7 +431,8 @@ const SkillDetail = memo<SkillDetailProps>(({ identifier, type, onDelete }) => {
   return (
     <ConnectorDetail
       connectorId={connector.id}
-      lifecycleActions={renderLobehubConnectorAction(() => setNoManifest(true))}
+      lifecycleActions={renderConnectorLifecycleAction(() => setNoManifest(true))}
+      managed={managed}
       onDelete={onDelete}
     />
   );

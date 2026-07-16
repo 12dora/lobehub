@@ -5,10 +5,16 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type * as ZodModule from 'zod';
 
 import { LobehubSkillStatus } from '@/store/tool/slices/lobehubSkillStore/types';
 
 import SkillDetail from './index';
+
+vi.mock('zod', async (importOriginal) => {
+  const actual = await importOriginal<typeof ZodModule>();
+  return { ...actual, z: actual.z ?? actual.default };
+});
 
 const mocks = vi.hoisted(() => {
   const toolState = {
@@ -143,11 +149,13 @@ vi.mock('@/features/Connectors', () => ({
   ConnectorDetail: ({
     connectorId,
     lifecycleActions,
+    managed,
   }: {
     connectorId: string;
     lifecycleActions?: ReactNode;
+    managed?: boolean;
   }) => (
-    <div data-testid="connector-detail">
+    <div data-managed={String(managed)} data-testid="connector-detail">
       <span>{connectorId}</span>
       {lifecycleActions}
     </div>
@@ -275,6 +283,21 @@ describe('SkillDetail', () => {
         ],
       }),
     );
+  });
+
+  it('propagates managed-safe mode into connected connector permission detail', async () => {
+    mocks.toolState.connectors = [{ id: 'connector-1', identifier: 'notion' }];
+    mocks.toolState.lobehubSkillServers = [
+      {
+        ...connectedNotionServer(),
+        tools: [{ inputSchema: { type: 'object' }, name: 'search' }],
+      },
+    ];
+
+    render(<SkillDetail managed identifier="notion" type="lobehub-connector" />);
+
+    expect(await screen.findByTestId('connector-detail')).toHaveAttribute('data-managed', 'true');
+    expect(screen.getByRole('button', { name: 'Disconnect' })).toBeInTheDocument();
   });
 
   it('only leaves connector permissions detail after disconnect actually succeeds', async () => {

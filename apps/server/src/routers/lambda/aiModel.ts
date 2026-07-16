@@ -15,6 +15,7 @@ import { UserModel } from '@/database/models/user';
 import { AiInfraRepos } from '@/database/repositories/aiInfra';
 import { router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
+import { withManagedResourceGuard } from '@/server/enterprise/guards/managedResource';
 import { getServerGlobalConfig } from '@/server/globalConfig';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 import { type ProviderConfig } from '@/types/user/settings';
@@ -68,6 +69,7 @@ const aiModelProcedure = wsCompatProcedure.use(serverDatabase).use(async (opts) 
 export const aiModelRouter = router({
   batchToggleAiModels: aiModelProcedure
     .use(withScopedPermission('ai_model:update'))
+    .use(withManagedResourceGuard('aiModel.batchToggleAiModels'))
     .input(
       z.object({
         enabled: z.boolean(),
@@ -80,6 +82,7 @@ export const aiModelRouter = router({
     }),
   batchUpdateAiModels: aiModelProcedure
     .use(withScopedPermission('ai_model:update'))
+    .use(withManagedResourceGuard('aiModel.batchUpdateAiModels'))
     .input(
       z.object({
         id: z.string(),
@@ -93,12 +96,14 @@ export const aiModelRouter = router({
 
   clearModelsByProvider: aiModelProcedure
     .use(withScopedPermission('ai_model:delete'))
+    .use(withManagedResourceGuard('aiModel.clearModelsByProvider'))
     .input(z.object({ providerId: z.string() }))
     .mutation(async ({ input, ctx }) => {
       return ctx.aiModelModel.clearModelsByProvider(input.providerId);
     }),
   clearRemoteModels: aiModelProcedure
     .use(withScopedPermission('ai_model:delete'))
+    .use(withManagedResourceGuard('aiModel.clearRemoteModels'))
     .input(z.object({ providerId: z.string() }))
     .mutation(async ({ input, ctx }) => {
       return ctx.aiModelModel.clearRemoteModels(input.providerId);
@@ -106,6 +111,7 @@ export const aiModelRouter = router({
 
   createAiModel: aiModelProcedure
     .use(withScopedPermission('ai_model:create'))
+    .use(withManagedResourceGuard('aiModel.createAiModel'))
     .input(CreateAiModelSchema)
     .mutation(async ({ input, ctx }) => {
       const existingModel = await ctx.aiModelModel.findByIdAndProvider(input.id, input.providerId);
@@ -150,6 +156,7 @@ export const aiModelRouter = router({
 
   removeAiModel: aiModelProcedure
     .use(withScopedPermission('ai_model:delete'))
+    .use(withManagedResourceGuard('aiModel.removeAiModel'))
     .input(z.object({ id: z.string(), providerId: z.string() }))
     .mutation(async ({ input, ctx }) => {
       return ctx.aiModelModel.delete(input.id, input.providerId);
@@ -157,6 +164,7 @@ export const aiModelRouter = router({
 
   toggleModelEnabled: aiModelProcedure
     .use(withScopedPermission('ai_model:update'))
+    .use(withManagedResourceGuard('aiModel.toggleModelEnabled'))
     .input(ToggleAiModelEnableSchema)
     .mutation(async ({ input, ctx }) => {
       return ctx.aiModelModel.toggleModelEnabled(input);
@@ -164,6 +172,7 @@ export const aiModelRouter = router({
 
   updateAiModel: aiModelProcedure
     .use(withScopedPermission('ai_model:update'))
+    .use(withManagedResourceGuard('aiModel.updateAiModel'))
     .input(
       z.object({
         id: z.string(),
@@ -177,6 +186,7 @@ export const aiModelRouter = router({
 
   updateAiModelOrder: aiModelProcedure
     .use(withScopedPermission('ai_model:update'))
+    .use(withManagedResourceGuard('aiModel.updateAiModelOrder'))
     .input(
       z.object({
         providerId: z.string(),

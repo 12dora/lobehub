@@ -1,6 +1,7 @@
 import { renderHook } from '@testing-library/react';
 import { type ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type * as ZodModule from 'zod';
 
 import { mapFeatureFlagsEnvToState } from '@/config/featureFlags';
 import { SettingsTabs } from '@/store/global/initialState';
@@ -8,6 +9,25 @@ import { initServerConfigStore, Provider } from '@/store/serverConfig/store';
 import { useUserStore } from '@/store/user';
 
 import { useCategory } from './useCategory';
+
+vi.mock('zod', async (importOriginal) => {
+  const actual = await importOriginal<typeof ZodModule>();
+  return { ...actual, z: actual.z ?? actual.default };
+});
+
+const managedResourcesRef = vi.hoisted(() => ({
+  current: {
+    capabilities: {
+      agents: false,
+      aiModels: false,
+      aiProviders: false,
+      connectors: false,
+      skills: false,
+    },
+    error: null as Error | null,
+    loading: false,
+  },
+}));
 
 vi.hoisted(() => {
   Object.defineProperty(globalThis, 'localStorage', {
@@ -24,6 +44,14 @@ vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string) => key,
   }),
+}));
+
+vi.mock('@/features/ManagedResources', () => ({
+  isManagedResourceConfigurationAvailable: (
+    resource: keyof typeof managedResourcesRef.current.capabilities,
+    snapshot: typeof managedResourcesRef.current,
+  ) => !snapshot.loading && !snapshot.error && !snapshot.capabilities[resource],
+  useManagedResourceCapabilities: () => managedResourcesRef.current,
 }));
 
 const createWrapper = (showProvider: boolean) => {
@@ -59,6 +87,17 @@ const initialUserStoreState = useUserStore.getState();
 
 afterEach(() => {
   useUserStore.setState(initialUserStoreState, true);
+  managedResourcesRef.current = {
+    capabilities: {
+      agents: false,
+      aiModels: false,
+      aiProviders: false,
+      connectors: false,
+      skills: false,
+    },
+    error: null,
+    loading: false,
+  };
 });
 
 describe('settings useCategory', () => {

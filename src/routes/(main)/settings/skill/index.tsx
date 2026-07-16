@@ -5,6 +5,7 @@ import isEqual from 'fast-deep-equal';
 import { memo, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router';
 
+import { ManagedResourceNotice } from '@/features/ManagedResources';
 import NavHeader from '@/features/NavHeader';
 import { useToolStore } from '@/store/tool';
 import { agentSkillsSelectors, builtinToolSelectors } from '@/store/tool/selectors';
@@ -12,11 +13,7 @@ import { agentSkillsSelectors, builtinToolSelectors } from '@/store/tool/selecto
 import LeftPanel from './features/LeftPanel';
 import SkillDetail, { type ToolDetailType } from './features/SkillDetail';
 import { type SkillViewMode } from './features/SkillList';
-
-export interface SelectedTool {
-  identifier: string;
-  type: ToolDetailType;
-}
+import { resolveInitialToolSelection, type SelectedTool } from './initialSelection';
 
 const styles = createStaticStyles(({ css }) => ({
   detail: css`
@@ -32,6 +29,8 @@ const styles = createStaticStyles(({ css }) => ({
 }));
 
 interface ToolSettingsProps {
+  /** Organization-managed connector mode keeps only per-user OAuth binding. */
+  managed?: boolean;
   /**
    * Which surface to manage. Fixed per-route now that skills and connectors
    * each own a dedicated settings page (`/settings/skill` and
@@ -40,7 +39,7 @@ interface ToolSettingsProps {
   viewMode: SkillViewMode;
 }
 
-export const ToolSettings = memo<ToolSettingsProps>(({ viewMode }) => {
+export const ToolSettings = memo<ToolSettingsProps>(({ viewMode, managed = false }) => {
   const [searchParams] = useSearchParams();
   const querySkillIdentifier = searchParams.get('skill');
   const [selected, setSelected] = useState<SelectedTool | null>(null);
@@ -57,20 +56,23 @@ export const ToolSettings = memo<ToolSettingsProps>(({ viewMode }) => {
   useEffect(() => {
     if (selected) return;
     if (viewMode === 'skill' && querySkillIdentifier) return;
-    if (viewMode === 'connector') {
-      const firstTool = builtinTools.find(
-        (tool) => !tool.hidden && installedBuiltinIds.includes(tool.identifier),
-      );
-      if (firstTool) {
-        setSelected({ identifier: firstTool.identifier, type: 'builtin' });
-      }
-    } else {
-      const firstSkill = builtinSkills[0];
-      if (firstSkill) {
-        setSelected({ identifier: firstSkill.identifier, type: 'builtin-skill' });
-      }
-    }
-  }, [builtinTools, builtinSkills, installedBuiltinIds, querySkillIdentifier, selected, viewMode]);
+    const initial = resolveInitialToolSelection({
+      builtinSkills,
+      builtinTools,
+      installedBuiltinIds,
+      managed,
+      viewMode,
+    });
+    if (initial) setSelected(initial);
+  }, [
+    builtinTools,
+    builtinSkills,
+    installedBuiltinIds,
+    managed,
+    querySkillIdentifier,
+    selected,
+    viewMode,
+  ]);
 
   useEffect(() => {
     if (viewMode !== 'skill' || !querySkillIdentifier) return;
@@ -88,8 +90,14 @@ export const ToolSettings = memo<ToolSettingsProps>(({ viewMode }) => {
   return (
     <>
       <NavHeader />
+      {managed && viewMode === 'connector' ? (
+        <div style={{ padding: '12px 16px 0' }}>
+          <ManagedResourceNotice inline resource="connectors" />
+        </div>
+      ) : null}
       <div className={styles.root}>
         <LeftPanel
+          managed={managed}
           selectedIdentifier={selected?.identifier}
           viewMode={viewMode}
           onDeleteSelected={() => setSelected(null)}
@@ -100,6 +108,7 @@ export const ToolSettings = memo<ToolSettingsProps>(({ viewMode }) => {
           <div className={styles.detail}>
             <SkillDetail
               identifier={selected.identifier}
+              managed={managed}
               type={selected.type}
               onDelete={() => setSelected(null)}
             />

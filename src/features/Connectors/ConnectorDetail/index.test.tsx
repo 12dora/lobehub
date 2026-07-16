@@ -4,18 +4,24 @@
 import { render, screen } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type * as ZodModule from 'zod';
 
 import { ConnectorSourceType } from '@/database/schemas';
 
 import ConnectorDetail from './index';
 
+vi.mock('zod', async (importOriginal) => {
+  const actual = await importOriginal<typeof ZodModule>();
+  return { ...actual, z: actual.z ?? actual.default };
+});
+
 const mocks = vi.hoisted(() => ({
   toolState: {
     connectorTools: {
-      createTools: [],
-      deleteTools: [],
-      readTools: [],
-      updateTools: [],
+      createTools: [] as Array<{ id: string }>,
+      deleteTools: [] as Array<{ id: string }>,
+      readTools: [] as Array<{ id: string }>,
+      updateTools: [] as Array<{ id: string }>,
     },
     connectors: [] as Array<{
       id: string;
@@ -92,7 +98,24 @@ vi.mock('../CustomConnectorModal', () => ({
 }));
 
 vi.mock('./ToolPermissionGroup', () => ({
-  default: ({ label }: { label: string }) => <div data-testid="permission-group">{label}</div>,
+  default: ({
+    label,
+    onPermissionChange,
+    tools,
+  }: {
+    label: string;
+    onPermissionChange: (id: string, permission: string) => void;
+    tools: Array<{ id: string }>;
+  }) => (
+    <div data-testid="permission-group">
+      {label}
+      {tools.map((tool) => (
+        <button key={tool.id} type="button" onClick={() => onPermissionChange(tool.id, 'always')}>
+          allow {tool.id}
+        </button>
+      ))}
+    </div>
+  ),
 }));
 
 describe('ConnectorDetail', () => {
@@ -134,5 +157,26 @@ describe('ConnectorDetail', () => {
     render(<ConnectorDetail connectorId="connector-1" />);
 
     expect(screen.getByRole('button', { name: 'Uninstall' })).toBeInTheDocument();
+  });
+
+  it('keeps OAuth lifecycle and tool permissions editable in managed-safe detail', () => {
+    mocks.toolState.connectorTools.readTools = [{ id: 'search-pages' }];
+
+    render(
+      <ConnectorDetail
+        managed
+        connectorId="connector-1"
+        lifecycleActions={<button>Disconnect Notion</button>}
+      />,
+    );
+
+    screen.getByRole('button', { name: 'Reset permissions' }).click();
+    screen.getByRole('button', { name: 'allow search-pages' }).click();
+
+    expect(mocks.toolState.resetConnectorPermissions).toHaveBeenCalledWith('connector-1');
+    expect(mocks.toolState.updateToolPermission).toHaveBeenCalledWith('search-pages', 'always');
+    expect(screen.getByRole('button', { name: 'Disconnect Notion' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Refresh' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Uninstall' })).not.toBeInTheDocument();
   });
 });
