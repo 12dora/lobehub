@@ -9,6 +9,7 @@ import type { RuntimeSelectedSkill, UserCredSummary } from '@lobechat/types';
 
 import { agentSkillService } from '@/services/skill';
 import { getToolStoreState } from '@/store/tool';
+import type { PlatformSkillOperationSnapshot } from '@/types/platform/skills';
 
 interface PreloadedSkill {
   content: string;
@@ -18,6 +19,7 @@ interface PreloadedSkill {
 
 interface PrepareSelectedSkillPreloadParams {
   message: string;
+  platformSkillSnapshot?: PlatformSkillOperationSnapshot;
   selectedSkills?: RuntimeSelectedSkill[];
   /**
    * User credentials for creds skill injection
@@ -94,29 +96,29 @@ const buildCredsContext = (userCreds?: UserCredSummary[]): UserCredsContext => (
 const loadSkillContent = async (
   selectedSkill: RuntimeSelectedSkill,
   userCreds?: UserCredSummary[],
+  platformSkillSnapshot?: PlatformSkillOperationSnapshot,
 ): Promise<PreloadedSkill | undefined> => {
   const toolState = getToolStoreState();
 
-  if (toolState.platformSkillRuntimeStatus !== 'unmanaged') {
-    if (toolState.platformSkillRuntimeStatus !== 'ready' || !toolState.platformSkillCatalog) {
+  if (platformSkillSnapshot || toolState.platformSkillRuntimeStatus !== 'unmanaged') {
+    if (!platformSkillSnapshot) {
       throw new Error('Managed Skill runtime catalog is unavailable');
     }
-    const published = toolState.platformSkillCatalog.skills.find(
-      (skill) => skill.skillKey === selectedSkill.identifier,
+    const ref = platformSkillSnapshot.refs.find(
+      (item) => item.skillKey === selectedSkill.identifier,
     );
-    if (!published) return undefined;
+    if (!ref) return undefined;
+    const published = platformSkillSnapshot.skills?.find(
+      (item) => item.skillKey === selectedSkill.identifier,
+    );
 
-    const resolved = await agentSkillService.resolvePlatformPinned({
-      checksum: published.checksum,
-      skillKey: published.skillKey,
-      version: published.version,
-    });
+    const resolved = await agentSkillService.resolvePlatformPinned(ref);
     if (
-      resolved.identifier !== published.skillKey ||
-      resolved.version !== published.version ||
-      resolved.checksum !== published.checksum
+      resolved.identifier !== ref.skillKey ||
+      resolved.version !== ref.version ||
+      resolved.checksum !== ref.checksum
     ) {
-      throw new Error(`Published Skill ${published.skillKey} could not be resolved exactly`);
+      throw new Error(`Published Skill ${ref.skillKey} could not be resolved exactly`);
     }
     const resources = Object.fromEntries(
       resolved.resources.map((resource) => [
@@ -129,8 +131,8 @@ const loadSkillContent = async (
         resolved.resources.length > 0
           ? `${resolved.content}\n\n${resourcesTreePrompt(resolved.name, resources)}`
           : resolved.content,
-      identifier: published.skillKey,
-      name: published.displayName,
+      identifier: ref.skillKey,
+      name: published?.displayName ?? resolved.name,
     };
   }
 
@@ -185,17 +187,19 @@ const loadSkillContent = async (
  */
 export const resolveSelectedSkillsWithContent = async ({
   message,
+  platformSkillSnapshot,
   selectedSkills,
   userCreds,
 }: PrepareSelectedSkillPreloadParams): Promise<RuntimeSelectedSkill[]> => {
   const resolved = resolveSelectedSkills(message, selectedSkills);
 
   if (resolved.length === 0) return [];
-  const managedRuntime = getToolStoreState().platformSkillRuntimeStatus !== 'unmanaged';
+  const managedRuntime =
+    !!platformSkillSnapshot || getToolStoreState().platformSkillRuntimeStatus !== 'unmanaged';
 
   const enriched = await Promise.all(
     resolved.map(async (skill) => {
-      const loaded = await loadSkillContent(skill, userCreds);
+      const loaded = await loadSkillContent(skill, userCreds, platformSkillSnapshot);
       return loaded ? { ...skill, content: loaded.content } : managedRuntime ? undefined : skill;
     }),
   );

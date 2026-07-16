@@ -9,6 +9,7 @@ import { isDesktop, LOADING_FLAT } from '@lobechat/const';
 import { formatSelectedSkillsContext, formatSelectedToolsContext } from '@lobechat/context-engine';
 import { chainCompressContext } from '@lobechat/prompts';
 import type {
+  AgentPluginEntry,
   ChatImageItem,
   ChatThreadType,
   ChatToolPayload,
@@ -30,6 +31,7 @@ import { resolveAgentWorkingDirectoryConfig } from '@/helpers/agentWorkingDirect
 import { agentService } from '@/services/agent';
 import { aiChatService } from '@/services/aiChat';
 import { chatService } from '@/services/chat';
+import { captureClientPlatformSkillSnapshot } from '@/services/chat/mecha/skillEngineering';
 import { resolveSelectedSkillsWithContent } from '@/services/chat/mecha/skillPreload';
 import { resolveSelectedToolsWithContent } from '@/services/chat/mecha/toolPreload';
 import { messageService } from '@/services/message';
@@ -396,8 +398,13 @@ export class ConversationLifecycleActionImpl {
 
     // Enrich selected skills/tools with preloaded content, injected directly
     // via SelectedSkillInjector/SelectedToolInjector — no fake tool-call preload messages
+    const operationPlatformSkillSnapshot = captureClientPlatformSkillSnapshot(
+      agentSelectors.getAgentConfigById(agentId)(getAgentStoreState())
+        .plugins as unknown as AgentPluginEntry[],
+    );
     const enrichedSelectedSkills = await resolveSelectedSkillsWithContent({
       message,
+      platformSkillSnapshot: operationPlatformSkillSnapshot,
       selectedSkills,
     });
     const enrichedSelectedTools = resolveSelectedToolsWithContent({
@@ -497,6 +504,7 @@ export class ConversationLifecycleActionImpl {
       metadata: {
         // Mark this as thread operation if threadId exists
         inThread: !!operationContext.threadId,
+        platformSkillSnapshot: operationPlatformSkillSnapshot,
       },
     });
 
