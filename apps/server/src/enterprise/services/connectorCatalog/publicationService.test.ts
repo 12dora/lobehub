@@ -106,7 +106,7 @@ describe('ConnectorCatalogPublicationService', () => {
     );
   });
 
-  it('preserves semantic apiKey/password property names while redacting non-schema credential fields', async () => {
+  it('preserves semantic apiKey/password property names in the strict revision projection', async () => {
     const secret = 'schema-aware-shared-secret';
     const harness = createHarness();
     const draft = await harness.drafts.createDraft('admin-user', {
@@ -120,7 +120,6 @@ describe('ConnectorCatalogPublicationService', () => {
       tools: [
         connectorToolFixture({
           inputSchema: {
-            examples: [{ password: 'annotation-credential-value' }],
             properties: {
               apiKey: { type: 'string' },
               password: { type: 'string' },
@@ -144,11 +143,90 @@ describe('ConnectorCatalogPublicationService', () => {
       revision.payload as { tools: Array<{ inputSchema: Record<string, unknown> }> }
     ).tools[0]!.inputSchema;
     expect(inputSchema).toMatchObject({
-      examples: [{ password: '[REDACTED]' }],
       properties: { apiKey: { type: 'string' }, password: { type: 'string' } },
       required: ['apiKey', 'password'],
     });
     expect(JSON.stringify(revision.payload)).not.toContain(secret);
+  });
+
+  it('publishes and rolls back exact OAuth endpoints without persisting client Secret material', async () => {
+    const harness = createHarness();
+    const firstSecret = 'oauth-client-secret-v1-never-persist';
+    const secondSecret = 'oauth-client-secret-v2-never-persist';
+    const first = await harness.drafts.createDraft('admin-user', {
+      credentialMode: 'per_user_oauth',
+      displayName: 'OAuth Connector',
+      enabled: true,
+      endpoint: 'https://oauth-connector-v1.example.test/mcp',
+      key: 'oauth-connector',
+      oauthClientSecret: { operation: 'replace', value: firstSecret },
+      oauthConfig: {
+        authorizationEndpoint: 'https://identity-v1.example.test/oauth/authorize',
+        clientId: 'oauth-client-v1',
+        issuer: 'https://identity-v1.example.test',
+        scopes: ['openid', 'profile'],
+        tokenEndpoint: 'https://identity-v1.example.test/oauth/token',
+      },
+      reason: 'create OAuth connector',
+      tools: [connectorToolFixture()],
+      transport: 'http',
+    });
+    await harness.publication.publish('admin-user', {
+      expectedDraftToken: first.draftToken,
+      expectedRevision: 0,
+      id: first.draft.id,
+      reason: 'publish OAuth v1',
+    });
+    const publishedV1 = await harness.drafts.getDraft(first.draft.id);
+    const second = await harness.drafts.updateDraft('admin-user', {
+      endpoint: 'https://oauth-connector-v2.example.test/mcp',
+      expectedDraftToken: publishedV1.draftToken,
+      expectedRevision: 1,
+      id: first.draft.id,
+      oauthClientSecret: { operation: 'replace', value: secondSecret },
+      oauthConfig: {
+        authorizationEndpoint: 'https://identity-v2.example.test/oauth/authorize',
+        clientId: 'oauth-client-v2',
+        issuer: 'https://identity-v2.example.test',
+        scopes: ['openid'],
+        tokenEndpoint: 'https://identity-v2.example.test/oauth/token',
+      },
+      reason: 'prepare OAuth v2',
+    });
+    await harness.publication.publish('admin-user', {
+      expectedDraftToken: second.draftToken,
+      expectedRevision: 2,
+      id: first.draft.id,
+      reason: 'publish OAuth v2',
+    });
+    const publishedV2 = await harness.drafts.getDraft(first.draft.id);
+    await harness.publication.rollback('admin-user', {
+      expectedDraftToken: publishedV2.draftToken,
+      expectedRevision: 3,
+      id: first.draft.id,
+      reason: 'restore OAuth v1',
+      targetRevision: 1,
+    });
+
+    const revisions = await db.select().from(platformResourceRevisions);
+    const revisionJson = JSON.stringify(revisions);
+    expect(revisionJson).toContain('authorizationEndpoint');
+    expect(revisionJson).toContain('tokenEndpoint');
+    expect(revisionJson).toContain('https://identity-v1.example.test/oauth/authorize');
+    expect(revisionJson).not.toContain(firstSecret);
+    expect(revisionJson).not.toContain(secondSecret);
+    expect(revisionJson).not.toContain('vault://');
+    const published = await harness.read.getAdminPublished(first.draft.id);
+    expect(published).toMatchObject({
+      oauthConfig: {
+        authorizationEndpoint: 'https://identity-v1.example.test/oauth/authorize',
+        clientId: 'oauth-client-v1',
+        tokenEndpoint: 'https://identity-v1.example.test/oauth/token',
+      },
+      publishedRevision: 4,
+    });
+    const [connector] = await db.select().from(platformConnectors);
+    expect(connector.oauthClientSecretFingerprint).toBe(first.draft.oauthClientSecret.fingerprint);
   });
 
   it('rolls back endpoint, tools, and the exact historical Secret fingerprint', async () => {

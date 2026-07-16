@@ -529,6 +529,28 @@ describe('platform connector contracts', () => {
         endpoint: 'https://user:password@example.test',
       }).success,
     ).toBe(false);
+    for (const reference of [
+      'prefix VAULT://connectors/private suffix',
+      'reason KmS://tenant/key/version',
+      'ｖａｕｌｔ：／／connectors/private',
+      '%76ault%3A%2F%2Fconnectors%2Fprivate',
+      '%2576ault%253A%252F%252Fconnectors%252Fprivate',
+    ]) {
+      expect(
+        adminConnectorCreateDraftInputSchema.safeParse({
+          ...base,
+          endpoint: 'https://example.test',
+          reason: reference,
+        }).success,
+      ).toBe(false);
+      expect(
+        adminConnectorCreateDraftInputSchema.safeParse({
+          ...base,
+          description: reference,
+          endpoint: 'https://example.test',
+        }).success,
+      ).toBe(false);
+    }
     expect(
       adminConnectorCreateDraftInputSchema.safeParse({
         ...base,

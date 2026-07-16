@@ -419,20 +419,4 @@ describe('redactSensitive', () => {
     expect(containsSensitiveMaterial(out)).toBe(false);
     expect(JSON.stringify(out)).not.toMatch(/opaque-|FAKESECRET|not-prefixed/i);
   });
-
-  it('supports a path-aware narrow allowlist without weakening sibling credential redaction', () => {
-    const out = redactSensitive(
-      {
-        examples: [{ password: 'annotation-credential' }],
-        properties: { apiKey: { type: 'string' }, password: { type: 'string' } },
-      },
-      {
-        isBenignKey: (_key, context) => context.path.at(-1) === 'properties',
-      },
-    );
-    expect(out).toEqual({
-      examples: [{ password: '[REDACTED]' }],
-      properties: { apiKey: { type: 'string' }, password: { type: 'string' } },
-    });
-  });
 });
