@@ -81,6 +81,7 @@ export const adminSettingsValidateDraftOutputSchema = z.object({
 
 export const adminSettingsPublishInputSchema = z
   .object({
+    expectedDraftToken: z.string().length(64),
     expectedRevision: z.number().int().nonnegative(),
     reason: z.string().min(1).max(2000),
     comment: z.string().max(2000).optional(),
@@ -94,6 +95,7 @@ export const adminSettingsPublishOutputSchema = z.object({
 
 export const adminSettingsRollbackInputSchema = z
   .object({
+    expectedDraftToken: z.string().length(64),
     expectedRevision: z.number().int().nonnegative(),
     reason: z.string().min(1).max(2000),
     targetRevision: z.number().int().positive(),

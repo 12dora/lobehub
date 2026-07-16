@@ -13,7 +13,10 @@ const mocks = vi.hoisted(() => ({
   capability: true,
   data: undefined as any,
   mutate: vi.fn(),
+  openReasonModal: vi.fn(),
   permissions: [] as string[],
+  publish: vi.fn(),
+  rollback: vi.fn(),
   saveDraft: vi.fn(),
 }));
 
@@ -93,8 +96,8 @@ vi.mock('@/enterprise/client/providers/EnterprisePlatformProvider', () => ({
 
 vi.mock('@/enterprise/client/services/adminSettings', () => ({
   adminSettingsService: {
-    publish: vi.fn(),
-    rollback: vi.fn(),
+    publish: mocks.publish,
+    rollback: mocks.rollback,
     saveDraft: mocks.saveDraft,
     validateDraft: vi.fn().mockResolvedValue({
       impactEstimate: { pathsWithOverrides: 0, totalOverrideRows: 0 },
@@ -143,7 +146,7 @@ vi.mock('../primitives/AdminPageTemplate', () => ({
   ),
 }));
 
-vi.mock('../users/modals/openReasonModal', () => ({ openReasonModal: vi.fn() }));
+vi.mock('../users/modals/openReasonModal', () => ({ openReasonModal: mocks.openReasonModal }));
 
 const oldPolicy = {
   mode: 'default' as const,
@@ -180,7 +183,10 @@ describe('SettingsPolicyPage', () => {
     mocks.capability = true;
     mocks.data = makeData(1);
     mocks.mutate.mockReset();
+    mocks.openReasonModal.mockReset();
     mocks.permissions = [];
+    mocks.publish.mockReset();
+    mocks.rollback.mockReset();
     mocks.saveDraft.mockReset();
     mocks.blocker.state = 'unblocked';
     mocks.blocker.proceed.mockReset();
@@ -320,6 +326,89 @@ describe('SettingsPolicyPage', () => {
     ).toBeEnabled();
     expect(mocks.mutate).toHaveBeenCalledTimes(2);
     expect(mocks.saveDraft).toHaveBeenCalledTimes(1);
+  });
+
+  it('binds publish to the validated token captured when the modal opens and enters conflict on submit', async () => {
+    mocks.permissions = [
+      PLATFORM_PERMISSIONS.SETTINGS_READ,
+      PLATFORM_PERMISSIONS.SETTINGS_UPDATE,
+      PLATFORM_PERMISSIONS.SETTINGS_PUBLISH,
+    ];
+    mocks.publish.mockRejectedValueOnce(
+      Object.assign(new Error('publish token conflict'), {
+        code: 'PLATFORM_REVISION_CONFLICT',
+      }),
+    );
+    mocks.mutate.mockImplementation(async () => mocks.data);
+
+    const { rerender } = render(<SettingsPolicyPage />);
+    fireEvent.click(await screen.findByRole('button', { name: 'settingsPolicy.validate' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'settingsPolicy.publish' }));
+    const modal = mocks.openReasonModal.mock.calls[0]?.[0];
+    expect(modal).toBeDefined();
+
+    // Another administrator saves after this modal opened. Its callback must
+    // keep the token captured at open instead of silently adopting new data.
+    mocks.data = makeData(1, 'server', latestDraftToken);
+    rerender(<SettingsPolicyPage />);
+    const payload = modal.buildPayload('publish reason');
+    expect(payload).toMatchObject({
+      expectedDraftToken: draftToken,
+      expectedRevision: 1,
+      reason: 'publish reason',
+    });
+
+    await expect(modal.onSubmit(payload)).rejects.toThrow('publish token conflict');
+    expect(mocks.publish).toHaveBeenCalledWith(payload);
+    expect(await screen.findByRole('alert')).toHaveTextContent('settingsPolicy.conflict.title');
+  });
+
+  it('includes the captured token in rollback and never reports a token-conflicted submit as success', async () => {
+    mocks.permissions = [PLATFORM_PERMISSIONS.SETTINGS_READ, PLATFORM_PERMISSIONS.SETTINGS_PUBLISH];
+    mocks.rollback.mockRejectedValueOnce(
+      Object.assign(new Error('rollback token conflict'), {
+        code: 'PLATFORM_REVISION_CONFLICT',
+      }),
+    );
+    mocks.mutate.mockImplementation(async () => {
+      mocks.data = makeData(1, 'server', latestDraftToken);
+      return mocks.data;
+    });
+
+    render(<SettingsPolicyPage />);
+    fireEvent.click(await screen.findByRole('button', { name: 'settingsPolicy.rollback' }));
+    const modal = mocks.openReasonModal.mock.calls[0]?.[0];
+    const payload = modal.buildPayload('rollback reason');
+    expect(payload).toMatchObject({
+      expectedDraftToken: draftToken,
+      expectedRevision: 1,
+      reason: 'rollback reason',
+      targetRevision: 1,
+    });
+
+    await expect(modal.onSubmit(payload)).rejects.toThrow('rollback token conflict');
+    expect(mocks.rollback).toHaveBeenCalledWith(payload);
+    expect(await screen.findByRole('alert')).toHaveTextContent('settingsPolicy.conflict.title');
+  });
+
+  it('disables publish and rollback when the active token is stale', async () => {
+    mocks.permissions = [
+      PLATFORM_PERMISSIONS.SETTINGS_READ,
+      PLATFORM_PERMISSIONS.SETTINGS_UPDATE,
+      PLATFORM_PERMISSIONS.SETTINGS_PUBLISH,
+    ];
+    const { rerender } = render(<SettingsPolicyPage />);
+    fireEvent.click(await screen.findByRole('button', { name: 'settingsPolicy.validate' }));
+    expect(await screen.findByRole('button', { name: 'settingsPolicy.publish' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'settingsPolicy.rollback' })).toBeEnabled();
+
+    mocks.data = makeData(1, 'server', latestDraftToken);
+    rerender(<SettingsPolicyPage />);
+    fireEvent.change(screen.getByPlaceholderText('settingsPolicy.searchPlaceholder'), {
+      target: { value: 'font' },
+    });
+    expect(screen.getByRole('button', { name: 'settingsPolicy.publish' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'settingsPolicy.rollback' })).toBeDisabled();
   });
 
   it('protects dirty drafts from SPA navigation', async () => {

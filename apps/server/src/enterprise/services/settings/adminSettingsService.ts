@@ -90,10 +90,21 @@ export class AdminSettingsService {
   /** Build pointer that materializes path policies inside the publish/rollback transaction. */
   private settingsPointer = (params: {
     alignDraft?: boolean;
+    expectedDraftToken: string;
     operation: 'publish' | 'rollback';
     updatedBy?: string | null;
   }) =>
     createSettingsPointerAdapter({
+      assertLockedState: async (tx) => {
+        const model = new PlatformSettingsModel(tx);
+        const bundle = await model.getBundle();
+        if (!bundle) throw new Error('Failed to load locked platform settings bundle');
+        if (this.draftToken(bundle) !== params.expectedDraftToken) {
+          throw new PlatformRevisionConflictError(
+            'Platform settings draft conflict: expectedDraftToken does not match locked draft',
+          );
+        }
+      },
       materializePublished: async (tx, args) => {
         const model = new PlatformSettingsModel(tx);
         const policies = ((args.payload as { policies?: SettingsDraftPolicyMap }).policies ??
@@ -110,6 +121,30 @@ export class AdminSettingsService {
           });
         }
         await this.lifecycle.afterMaterialization?.(params.operation);
+      },
+      prepareLockedPublish: async (tx) => {
+        const model = new PlatformSettingsModel(tx);
+        const bundle = await model.getBundle();
+        if (!bundle) throw new Error('Failed to load locked platform settings bundle');
+        const draft = (bundle.draft ?? {}) as SettingsDraftPolicyMap;
+        const validation = await this.validateDraftWithModel(draft, model);
+        if (!validation.ok) throw new SettingsDraftValidationError(validation.issues);
+
+        return {
+          afterDiff: {
+            pathCount: Object.keys(draft).length,
+            paths: Object.fromEntries(
+              Object.entries(draft).map(([path, policy]) => [
+                path,
+                { mode: policy.mode, visibility: policy.visibility },
+              ]),
+            ),
+          },
+          payload: {
+            policies: draft,
+            registryVersion: settingsRegistry.version,
+          },
+        };
       },
       updatedBy: params.updatedBy,
     });
@@ -147,8 +182,9 @@ export class AdminSettingsService {
   /**
    * Validate entire draft bundle. Fail-closed on unknown/secret/wrong-type paths.
    */
-  validateDraft = async (
+  private validateDraftWithModel = async (
     draft: SettingsDraftPolicyMap,
+    model: PlatformSettingsModel,
   ): Promise<{
     impactEstimate: { pathsWithOverrides: number; totalOverrideRows: number };
     issues: SettingsValidationIssue[];
@@ -215,10 +251,13 @@ export class AdminSettingsService {
     const impactPaths = Object.entries(draft)
       .filter(([, p]) => p.mode === 'locked' || p.mode === 'default')
       .map(([path]) => path);
-    const impactEstimate = await this.model.countOverridesByPaths(impactPaths);
+    const impactEstimate = await model.countOverridesByPaths(impactPaths);
 
     return { impactEstimate, issues, ok: issues.length === 0 };
   };
+
+  validateDraft = async (draft: SettingsDraftPolicyMap) =>
+    this.validateDraftWithModel(draft, this.model);
 
   saveDraft = async (params: {
     actorUserId: string;
@@ -301,52 +340,25 @@ export class AdminSettingsService {
   publish = async (params: {
     actorUserId: string;
     comment?: string;
+    expectedDraftToken: string;
     expectedRevision: number;
     reason: string;
   }) => {
-    const bundle = await this.model.ensureBundle();
-    const draft = (bundle.draft ?? {}) as SettingsDraftPolicyMap;
-
-    const validation = await this.validateDraft(draft);
-    if (!validation.ok) {
-      await this.auditAppend(this.db, {
-        action: 'admin.settings.publish',
-        actorUserId: params.actorUserId,
-        afterDiff: { issueCount: validation.issues.length },
-        beforeDiff: { revision: bundle.revision },
-        reason: params.reason,
-        result: 'failure',
-        targetId: PLATFORM_SETTINGS_RESOURCE_ID,
-        targetType: PLATFORM_SETTINGS_RESOURCE_TYPE,
-      });
-      throw new SettingsDraftValidationError(validation.issues);
-    }
-
-    const payload = {
-      policies: draft,
-      registryVersion: settingsRegistry.version,
-    };
+    await this.model.ensureBundle();
 
     try {
       // Single transaction: revision + pointer + materialize policies + success audit;
       // invalidation only after commit (publisher already does this).
       const result = await this.publisher.publish({
         actorUserId: params.actorUserId,
-        afterDiff: {
-          pathCount: Object.keys(draft).length,
-          paths: Object.fromEntries(
-            Object.entries(draft).map(([path, p]) => [
-              path,
-              { mode: p.mode, visibility: p.visibility },
-            ]),
-          ),
-        },
         beforeDiff: { revision: params.expectedRevision },
         comment: params.comment ?? params.reason,
         expectedRevision: params.expectedRevision,
         invalidationScopes: ['settings'],
-        payload,
+        // Replaced by prepareLockedPublish after the settings bundle lock.
+        payload: {},
         pointer: this.settingsPointer({
+          expectedDraftToken: params.expectedDraftToken,
           operation: 'publish',
           updatedBy: params.actorUserId,
         }),
@@ -373,6 +385,7 @@ export class AdminSettingsService {
 
   rollback = async (params: {
     actorUserId: string;
+    expectedDraftToken: string;
     expectedRevision: number;
     reason: string;
     targetRevision: number;
@@ -384,6 +397,7 @@ export class AdminSettingsService {
         invalidationScopes: ['settings'],
         pointer: this.settingsPointer({
           alignDraft: true,
+          expectedDraftToken: params.expectedDraftToken,
           operation: 'rollback',
           updatedBy: params.actorUserId,
         }),

@@ -84,6 +84,61 @@ describe('PlatformRevisionModel', () => {
       });
     });
 
+    it('uses payload prepared after pointer lock while preserving legacy pointer adapters', async () => {
+      const basePointer = createBrandingPointerAdapter(brandingId);
+      const result = await revisionModel.publishDraft({
+        expectedRevision: 0,
+        payload: { displayName: 'stale caller snapshot' },
+        pointer: {
+          ...basePointer,
+          prepareLockedPublish: async (_tx, { currentRevision }) => ({
+            afterDiff: { source: 'locked-state' },
+            payload: { displayName: 'locked payload', observedRevision: currentRevision },
+          }),
+        },
+        resourceId: brandingId,
+        resourceType: 'branding',
+      });
+
+      expect(result.revision.payload).toEqual({
+        displayName: 'locked payload',
+        observedRevision: 0,
+      });
+      const audit = await serverDB.query.platformAuditLogs.findFirst({
+        where: eq(platformAuditLogs.id, result.auditId),
+      });
+      expect(audit?.afterDiff).toEqual({ source: 'locked-state' });
+    });
+
+    it('rolls back revision, pointer and audit when locked-state assertion rejects', async () => {
+      const basePointer = createBrandingPointerAdapter(brandingId);
+      await expect(
+        revisionModel.publishDraft({
+          expectedRevision: 0,
+          payload: { displayName: 'must not publish' },
+          pointer: {
+            ...basePointer,
+            assertLockedState: async () => {
+              throw new PlatformRevisionConflictError('locked state changed');
+            },
+          },
+          resourceId: brandingId,
+          resourceType: 'branding',
+        }),
+      ).rejects.toBeInstanceOf(PlatformRevisionConflictError);
+
+      const [head, revisions, audits] = await Promise.all([
+        serverDB.query.platformBranding.findFirst({
+          where: eq(platformBranding.id, brandingId),
+        }),
+        serverDB.query.platformResourceRevisions.findMany(),
+        serverDB.query.platformAuditLogs.findMany(),
+      ]);
+      expect(head?.revision).toBe(0);
+      expect(revisions).toEqual([]);
+      expect(audits).toEqual([]);
+    });
+
     it('returns PLATFORM_REVISION_CONFLICT when expectedRevision mismatches', async () => {
       await revisionModel.publishDraft({
         expectedRevision: 0,
