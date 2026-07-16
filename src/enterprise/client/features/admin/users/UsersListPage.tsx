@@ -206,23 +206,15 @@ const UsersListPage = memo(() => {
   }, []);
 
   const handleFilterBarChange = useCallback((next: AdminFilterValues) => {
-    // Clear button → empty all fields
+    // Clear button → empty all fields (draft + committed filters + cursor) in one shot.
     if (!hasActiveAdminFiltersHelper(next) || isClearPayload(next)) {
       setSearchDraft('');
       setQueryState(emptyQuery());
       return;
     }
+    // Search keystrokes only update the draft. Committed query + cursor reset happen
+    // together in the debounce effect — never clear cursor while keeping the old query.
     setSearchDraft(next.query);
-    setQueryState((prev) => ({
-      cursorStack: [],
-      filters: {
-        ...prev.filters,
-        ...next,
-        // Keep committed query until debounce settles; draft drives searchDraft
-        query: prev.filters.query,
-      },
-      limit: prev.limit,
-    }));
   }, []);
 
   const goNext = useCallback(() => {
