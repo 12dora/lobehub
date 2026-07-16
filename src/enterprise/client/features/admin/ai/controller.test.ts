@@ -11,6 +11,7 @@ import {
   fingerprintAiProviderPublicDraft,
   hasBlockingModelDependents,
   parseJsonObject,
+  parseNullableJsonObject,
   resolveAiProviderPrimaryAction,
   toEditableAiProviderDraft,
 } from './controller';
@@ -116,6 +117,15 @@ describe('ai catalog controller', () => {
     expect(parseJsonObject('{"a":1}')).toEqual({ error: null, value: { a: 1 } });
     expect(parseJsonObject('[]')).toEqual({ error: 'object', value: null });
     expect(parseJsonObject('{')).toEqual({ error: 'syntax', value: null });
+  });
+
+  it('preserves explicit null for nullable model JSON fields', () => {
+    expect(parseNullableJsonObject('null')).toEqual({ error: null, value: null });
+    expect(parseNullableJsonObject('{"currency":"USD"}')).toEqual({
+      error: null,
+      value: { currency: 'USD' },
+    });
+    expect(parseNullableJsonObject('[]')).toEqual({ error: 'object', value: null });
   });
 
   it('never carries a value for keep or clear Secret operations', () => {

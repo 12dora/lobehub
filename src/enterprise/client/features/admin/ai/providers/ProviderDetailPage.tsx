@@ -3,20 +3,29 @@
 import { Alert, Flexbox, Tag, Text } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
-import { memo } from 'react';
+import { memo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useParams } from 'react-router';
 
 import AsyncBoundary from '@/components/AsyncBoundary';
 import Loading from '@/components/Loading/BrandTextLoading';
+import { formatAdminDateTime } from '@/enterprise/client/features/admin/users/utils';
+import type { AdminAccessContextValue } from '@/enterprise/client/providers/AdminAccessProvider';
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
 
 import AdminPageTemplate from '../../primitives/AdminPageTemplate';
 import RevisionBanner from '../../primitives/RevisionBanner';
+import StatusBadge from '../../primitives/StatusBadge';
+import type { AiCatalogPermissions } from '../controller';
 import { deriveAiCatalogPermissions } from '../controller';
-import { useFetchAdminAiProvider } from '../hooks/useAdminAiCatalog';
+import {
+  useFetchAdminAiProvider,
+  useFetchAdminAiProviderRevisions,
+} from '../hooks/useAdminAiCatalog';
+import { useAiProviderActions } from '../hooks/useAiProviderActions';
 import { useAiProviderEditor } from '../hooks/useAiProviderEditor';
 import ProviderModelsSection from '../models/ProviderModelsSection';
+import type { AdminAiProviderGetOutput } from '../types';
 import ProviderEditorFields from './ProviderEditorFields';
 
 const styles = createStaticStyles(({ css }) => ({
@@ -35,6 +44,25 @@ const styles = createStaticStyles(({ css }) => ({
     border-block-start: 1px solid ${cssVar.colorBorderSecondary};
 
     background: ${cssVar.colorBgLayout};
+  `,
+  revision: css`
+    display: grid;
+    grid-template-columns: 100px 120px minmax(180px, 1fr) auto;
+    gap: 12px;
+    align-items: center;
+
+    padding-block: 10px;
+    border-block-start: 1px solid ${cssVar.colorBorderSecondary};
+
+    @media (width <= 800px) {
+      grid-template-columns: 1fr;
+    }
+  `,
+  revisions: css`
+    padding: 16px;
+    border: 1px solid ${cssVar.colorBorderSecondary};
+    border-radius: ${cssVar.borderRadiusLG};
+    background: ${cssVar.colorBgContainer};
   `,
   secret: css`
     display: flex;
@@ -56,31 +84,47 @@ const styles = createStaticStyles(({ css }) => ({
   `,
 }));
 
-const ProviderDetailPage = memo(() => {
-  const { t } = useTranslation('admin');
-  const navigate = useNavigate();
-  const { id } = useParams<{ id: string }>();
-  const { permissions } = useAdminAccess();
-  const permission = deriveAiCatalogPermissions(permissions);
-  const { data, error, isLoading, mutate } = useFetchAdminAiProvider(
-    id,
-    Boolean(id && permission.canUpdateProvider),
-  );
-  const editor = useAiProviderEditor(data);
+interface ProviderDetailContentProps {
+  authMethod: AdminAccessContextValue['authMethod'];
+  data: AdminAiProviderGetOutput;
+  editor: ReturnType<typeof useAiProviderEditor>;
+  mutate: () => Promise<AdminAiProviderGetOutput | undefined>;
+  permission: AiCatalogPermissions;
+}
 
-  const content =
-    data && editor.draft ? (
+const ProviderDetailContent = memo<ProviderDetailContentProps>(
+  ({ authMethod, data, editor, mutate, permission }) => {
+    const { t } = useTranslation('admin');
+    const navigate = useNavigate();
+    const [revisionCursorStack, setRevisionCursorStack] = useState<number[]>([]);
+    const revisionCursor = revisionCursorStack.at(-1);
+    const revisions = useFetchAdminAiProviderRevisions(
+      data.draft.id,
+      permission.canReadProviders,
+      revisionCursor,
+    );
+    const actions = useAiProviderActions({ authMethod, data, editor, permissions: permission });
+    const collectionLocked = editor.dirty || editor.conflict;
+
+    return (
       <AdminPageTemplate
         description={t('aiCatalog.editor.desc')}
         title={data.draft.displayName}
         actions={
-          <Button
-            onClick={() =>
-              navigate(`/admin/ai/models?provider=${encodeURIComponent(data.draft.providerKey)}`)
-            }
-          >
-            {t('aiCatalog.providers.actions.viewModels')}
-          </Button>
+          <>
+            <Button
+              onClick={() =>
+                navigate(`/admin/ai/models?provider=${encodeURIComponent(data.draft.providerKey)}`)
+              }
+            >
+              {t('aiCatalog.providers.actions.viewModels')}
+            </Button>
+            {permission.canArchiveProvider && data.draft.status !== 'archived' ? (
+              <Button danger disabled={collectionLocked} onClick={actions.handleArchive}>
+                {t('aiCatalog.actions.archive.label')}
+              </Button>
+            ) : null}
+          </>
         }
         banner={
           <>
@@ -114,12 +158,28 @@ const ProviderDetailPage = memo(() => {
       >
         <ProviderEditorFields
           disabled={!permission.canUpdateProvider || editor.conflict}
-          draft={editor.draft}
+          draft={editor.draft!}
           providerKey={data.draft.providerKey}
           updateDraft={editor.updateDraft}
         />
 
-        <ProviderModelsSection models={data.draft.models} permissions={permission} />
+        <ProviderModelsSection
+          actionLoadingId={actions.actionLoadingId}
+          models={data.draft.models}
+          permissions={permission}
+          onCreate={collectionLocked ? undefined : actions.handleCreateModel}
+          onReorder={collectionLocked ? undefined : actions.handleReorderModels}
+          onDelete={
+            collectionLocked || !permission.canReadModels
+              ? undefined
+              : (model) => void actions.handleDeleteModel(model)
+          }
+          onEdit={
+            collectionLocked || !permission.canReadModels
+              ? undefined
+              : (model) => void actions.handleEditModel(model)
+          }
+        />
 
         <section className={styles.secret}>
           <Flexbox gap={4}>
@@ -140,6 +200,11 @@ const ProviderDetailPage = memo(() => {
               </Text>
             ) : null}
           </Flexbox>
+          {permission.canUpdateProvider ? (
+            <Button disabled={collectionLocked} onClick={actions.handleSecret}>
+              {t('aiCatalog.secret.apply')}
+            </Button>
+          ) : null}
         </section>
 
         {editor.testResult ? (
@@ -156,6 +221,70 @@ const ProviderDetailPage = memo(() => {
           </section>
         ) : null}
 
+        <section className={styles.revisions}>
+          <Flexbox gap={4}>
+            <Text strong>{t('aiCatalog.revisions.title')}</Text>
+            <Text type="secondary">{t('aiCatalog.revisions.desc')}</Text>
+          </Flexbox>
+          {revisions.error ? (
+            <Alert
+              showIcon
+              message={t('aiCatalog.revisions.error')}
+              type="error"
+              extra={
+                <Button onClick={() => void revisions.mutate()}>
+                  {t('aiCatalog.revisions.retry')}
+                </Button>
+              }
+            />
+          ) : revisions.isLoading && !revisions.data ? (
+            <Text type="secondary">{t('aiCatalog.revisions.loading')}</Text>
+          ) : revisions.data?.items.length ? (
+            <>
+              {revisions.data.items.map((revision) => (
+                <div className={styles.revision} key={revision.revision}>
+                  <Text>#{revision.revision}</Text>
+                  <StatusBadge status={revision.status} />
+                  <Flexbox gap={2}>
+                    <Text>{revision.comment || t('aiCatalog.revisions.noComment')}</Text>
+                    <Text type="secondary">{formatAdminDateTime(revision.publishedAt)}</Text>
+                  </Flexbox>
+                  {permission.canPublishProvider &&
+                  revision.status === 'published' &&
+                  revision.revision !== data.baseRevision ? (
+                    <Button
+                      danger
+                      disabled={collectionLocked}
+                      onClick={() => actions.handleRollback(revision.revision)}
+                    >
+                      {t('aiCatalog.actions.rollback.label')}
+                    </Button>
+                  ) : null}
+                </div>
+              ))}
+              <Flexbox horizontal gap={8} justify="flex-end">
+                <Button
+                  disabled={revisionCursorStack.length === 0}
+                  onClick={() => setRevisionCursorStack((current) => current.slice(0, -1))}
+                >
+                  {t('aiCatalog.revisions.previous')}
+                </Button>
+                <Button
+                  disabled={!revisions.data.nextCursor}
+                  onClick={() => {
+                    if (!revisions.data?.nextCursor) return;
+                    setRevisionCursorStack((current) => [...current, revisions.data.nextCursor!]);
+                  }}
+                >
+                  {t('aiCatalog.revisions.next')}
+                </Button>
+              </Flexbox>
+            </>
+          ) : (
+            <Text type="secondary">{t('aiCatalog.revisions.empty')}</Text>
+          )}
+        </section>
+
         <div className={styles.footer}>
           <Flexbox gap={4}>
             <Text type="secondary">
@@ -167,8 +296,38 @@ const ProviderDetailPage = memo(() => {
               </Text>
             ) : null}
           </Flexbox>
+          {actions.primaryAction !== 'none' ? (
+            <Button type="primary" onClick={actions.handlePrimary}>
+              {t(`aiCatalog.actions.${actions.primaryAction}.label` as never)}
+            </Button>
+          ) : null}
         </div>
       </AdminPageTemplate>
+    );
+  },
+);
+
+ProviderDetailContent.displayName = 'AdminAiProviderDetailContent';
+
+const ProviderDetailPage = memo(() => {
+  const { id } = useParams<{ id: string }>();
+  const { authMethod, permissions } = useAdminAccess();
+  const permission = deriveAiCatalogPermissions(permissions);
+  const { data, error, isLoading, mutate } = useFetchAdminAiProvider(
+    id,
+    Boolean(id && permission.canUpdateProvider),
+  );
+  const editor = useAiProviderEditor(data);
+
+  const content =
+    data && editor.draft ? (
+      <ProviderDetailContent
+        authMethod={authMethod}
+        data={data}
+        editor={editor}
+        mutate={mutate}
+        permission={permission}
+      />
     ) : null;
 
   return (

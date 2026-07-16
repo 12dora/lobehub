@@ -165,6 +165,21 @@ export const parseJsonObject = (
   }
 };
 
+export const parseNullableJsonObject = (
+  value: string,
+): { error: string | null; value: Record<string, unknown> | null } => {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (parsed === null) return { error: null, value: null };
+    if (typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { error: 'object', value: null };
+    }
+    return { error: null, value: parsed as Record<string, unknown> };
+  } catch {
+    return { error: 'syntax', value: null };
+  }
+};
+
 export const buildAiSecretMutation = (
   operation: AiSecretMutation['operation'],
   value: string,
