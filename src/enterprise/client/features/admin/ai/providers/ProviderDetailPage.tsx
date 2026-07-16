@@ -16,6 +16,7 @@ import RevisionBanner from '../../primitives/RevisionBanner';
 import { deriveAiCatalogPermissions } from '../controller';
 import { useFetchAdminAiProvider } from '../hooks/useAdminAiCatalog';
 import { useAiProviderEditor } from '../hooks/useAiProviderEditor';
+import ProviderModelsSection from '../models/ProviderModelsSection';
 import ProviderEditorFields from './ProviderEditorFields';
 
 const styles = createStaticStyles(({ css }) => ({
@@ -117,6 +118,8 @@ const ProviderDetailPage = memo(() => {
           providerKey={data.draft.providerKey}
           updateDraft={editor.updateDraft}
         />
+
+        <ProviderModelsSection models={data.draft.models} permissions={permission} />
 
         <section className={styles.secret}>
           <Flexbox gap={4}>
