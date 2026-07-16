@@ -45,10 +45,10 @@ const styles = createStaticStyles(({ css }) => ({
 }));
 
 export interface AdminPageTemplateProps {
+  /** Primary page actions (Create, Publish, …) */
   actions?: ReactNode;
   /** Optional banner (revision conflict, managed resource, …) */
   banner?: ReactNode;
-  /** Primary page actions (Create, Publish, …) */
   children: ReactNode;
   description?: ReactNode;
   title: ReactNode;
