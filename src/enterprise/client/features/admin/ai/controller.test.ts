@@ -12,6 +12,7 @@ import {
   deriveGlobalModelActions,
   fingerprintAiProviderPublicDraft,
   hasBlockingModelDependents,
+  parseAiSecretReplacement,
   parseJsonObject,
   parseNullableJsonObject,
   rebaseAiProviderDraft,
@@ -221,6 +222,33 @@ describe('ai catalog controller', () => {
       operation: 'replace',
       value: 'new-secret',
     });
+  });
+
+  it('validates structured credential replacements without echoing rejected input', () => {
+    const raw = JSON.stringify({
+      accessKeyId: 'access-id',
+      region: 'us-east-1',
+      secretAccessKey: 'secret-value',
+    });
+    expect(parseAiSecretReplacement(raw, 'json')).toEqual({
+      error: null,
+      value: {
+        accessKeyId: 'access-id',
+        region: 'us-east-1',
+        secretAccessKey: 'secret-value',
+      },
+    });
+    expect(buildAiSecretMutation('replace', raw, 'json')).toEqual({
+      operation: 'replace',
+      value: expect.objectContaining({ accessKeyId: 'access-id' }),
+    });
+    expect(parseAiSecretReplacement('{"unknownSecret":"do-not-echo"}', 'json')).toEqual({
+      error: 'shape',
+      value: null,
+    });
+    expect(
+      JSON.stringify(parseAiSecretReplacement('secret-syntax-marker-{', 'json')),
+    ).not.toContain('secret-syntax-marker');
   });
 
   it('builds create payload without inventing an empty Secret', () => {
