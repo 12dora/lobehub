@@ -83,4 +83,21 @@ describe('PlatformSkillOperationResolver', () => {
     await expect(resolver.findByName('attacker.skill')).resolves.toBeUndefined();
     expect(resolvePinnedForExecution).toHaveBeenCalledWith(ref);
   });
+
+  it('lists a 10,000-item operation index without resolving any immutable payload', async () => {
+    const refs = Array.from({ length: 10_000 }, (_, index) => ({
+      checksum,
+      skillKey: `managed.skill.${index}`,
+      version: '1.0.0',
+    }));
+    const resolvePinnedForExecution = vi.fn();
+    const resolver = new PlatformSkillOperationResolver(
+      { mandatorySkillIds: [], refs, revision: 'catalog-large' },
+      { resolvePinnedForExecution },
+    );
+
+    await expect(resolver.findAll()).resolves.toMatchObject({ total: 10_000 });
+    await expect(resolver.findByName('missing.skill')).resolves.toBeUndefined();
+    expect(resolvePinnedForExecution).not.toHaveBeenCalled();
+  });
 });

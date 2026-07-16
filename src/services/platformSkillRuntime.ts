@@ -22,6 +22,29 @@ const getRuntimeCatalog = () => {
 const runtimeId = (ref: { checksum: string; skillKey: string; version: string }) =>
   `${PLATFORM_SKILL_ID_PREFIX}${ref.skillKey}@${ref.version}#${ref.checksum}`;
 
+const toOperationSkillListItem = (
+  ref: PlatformSkillPinnedRef,
+  metadata?: { description?: string | null; displayName?: string },
+): SkillListItem => ({
+  createdAt: new Date(0),
+  description: metadata?.description ?? '',
+  id: runtimeId(ref),
+  identifier: ref.skillKey,
+  manifest: { description: metadata?.description ?? '', name: ref.skillKey, version: ref.version },
+  name: metadata?.displayName ?? ref.skillKey,
+  source: 'user',
+  updatedAt: new Date(0),
+});
+
+const freezeCanonicalSkillItem = (skill: SkillItem): Readonly<SkillItem> => {
+  if (skill.resources) {
+    for (const resource of Object.values(skill.resources)) Object.freeze(resource);
+    Object.freeze(skill.resources);
+  }
+  if (skill.manifest) Object.freeze(skill.manifest);
+  return Object.freeze(skill);
+};
+
 const getPublishedRef = (identifier: string) => {
   const catalog = getRuntimeCatalog();
   if (!catalog) return undefined;
@@ -167,22 +190,26 @@ export const createClientSkillRuntimeService = (snapshot?: PlatformSkillOperatio
   const refsByKey = new Map(frozen.refs.map((ref) => [ref.skillKey, ref]));
   const refsById = new Map(frozen.refs.map((ref) => [runtimeId(ref), ref]));
   const metadataByKey = new Map(frozen.skills?.map((skill) => [skill.skillKey, skill]));
-  const cache = new Map<string, Promise<SkillItem>>();
+  const cache = new Map<string, Promise<Readonly<SkillItem>>>();
   const resolve = (ref: PlatformSkillPinnedRef) => {
     const key = runtimeId(ref);
     const existing = cache.get(key);
-    if (existing) return existing;
+    if (existing) return existing.then((skill) => structuredClone(skill) as SkillItem);
     if (cache.size >= 128) {
       const oldest = cache.keys().next().value;
       if (oldest) cache.delete(oldest);
     }
-    const pending = resolveExactRef(ref, metadataByKey.get(ref.skillKey));
+    const pending = resolveExactRef(ref, metadataByKey.get(ref.skillKey)).then((skill) =>
+      freezeCanonicalSkillItem(structuredClone(skill)),
+    );
     cache.set(key, pending);
-    return pending;
+    return pending.then((skill) => structuredClone(skill) as SkillItem);
   };
   return {
     findAll: async (): Promise<{ data: SkillListItem[]; total: number }> => {
-      const data = await Promise.all([...refsByKey.values()].map(resolve));
+      const data = [...refsByKey.values()].map((ref) =>
+        toOperationSkillListItem(ref, metadataByKey.get(ref.skillKey)),
+      );
       return { data, total: data.length };
     },
     findById: async (id: string) => {

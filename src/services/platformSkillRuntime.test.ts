@@ -132,4 +132,41 @@ describe('clientSkillRuntimeService', () => {
       version: '1.0.0',
     });
   });
+
+  it('lists a 10,000-item operation index without concurrent resolution requests', async () => {
+    const runtime = createClientSkillRuntimeService({
+      mandatorySkillIds: [],
+      refs: Array.from({ length: 10_000 }, (_, index) => ({
+        checksum: published.checksum,
+        skillKey: `approved.skill.${index}`,
+        version: '1.0.0',
+      })),
+      revision: 'catalog-large',
+    });
+
+    await expect(runtime.findAll()).resolves.toMatchObject({ total: 10_000 });
+    await expect(runtime.findByName('missing.skill')).resolves.toBeUndefined();
+    expect(resolvePinned).not.toHaveBeenCalled();
+  });
+
+  it('returns independent clones from the exact operation cache', async () => {
+    const runtime = createClientSkillRuntimeService({
+      mandatorySkillIds: [],
+      refs: [{ checksum: published.checksum, skillKey: published.skillKey, version: '1.0.0' }],
+      revision: 'catalog-v1',
+    });
+
+    const first = await runtime.findByName('approved.skill');
+    first!.content = 'attacker mutation';
+    first!.manifest!.name = 'attacker.skill';
+    first!.resources!['empty.txt']!.content = 'attacker resource';
+    const second = await runtime.findByName('approved.skill');
+
+    expect(second).toMatchObject({
+      content: 'approved body',
+      manifest: { name: 'approved.skill' },
+      resources: { 'empty.txt': { content: '' } },
+    });
+    expect(resolvePinned).toHaveBeenCalledTimes(1);
+  });
 });
