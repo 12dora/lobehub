@@ -75,7 +75,9 @@ export const useCategory = () => {
     managedResources,
   );
   const canConfigureModel = isManagedResourceConfigurationAvailable('aiModels', managedResources);
-  const canConfigureSkill = isManagedResourceConfigurationAvailable('skills', managedResources);
+  // Managed Skills remain navigable as a read-only Published Catalog. Only a
+  // failed/pending capability snapshot hides the entry fail-closed.
+  const canOpenSkill = !managedResources.loading && !managedResources.error;
   const canOpenConnector = !managedResources.loading && !managedResources.error;
   const { hideDocs, showApiKeyManage, showProvider } = useServerConfigStore(featureFlagsSelectors);
   const [avatar, username] = useUserStore((s) => [
@@ -170,7 +172,7 @@ export const useCategory = () => {
         key: SettingsTabs.ServiceModel,
         label: t('tab.serviceModel'),
       },
-      canConfigureSkill && {
+      canOpenSkill && {
         icon: SkillsIcon,
         key: SettingsTabs.Skill,
         label: t('tab.skill'),
@@ -261,7 +263,7 @@ export const useCategory = () => {
     canOpenConnector,
     canConfigureModel,
     canConfigureProvider,
-    canConfigureSkill,
+    canOpenSkill,
     isDevMode,
     avatarUrl,
     username,

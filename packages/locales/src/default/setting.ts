@@ -975,6 +975,23 @@ export default {
   'skillGroup.communityTools': 'Community Tools',
   'skillGroup.customConnectors': 'Custom Connectors',
   'skillGroup.customSkills': 'Custom Skills',
+  'platformSkills.detail.checksum': 'Content checksum',
+  'platformSkills.detail.distribution': 'Distribution',
+  'platformSkills.detail.mandatoryManaged': 'Always available · managed by your organization',
+  'platformSkills.detail.noDescription': 'No description provided',
+  'platformSkills.detail.notFound': 'This published Skill is no longer available.',
+  'platformSkills.detail.source': 'Source',
+  'platformSkills.detail.use': 'Use with current assistant',
+  'platformSkills.detail.useHint': 'This changes only your current assistant selection.',
+  'platformSkills.detail.version': 'Published version',
+  'platformSkills.distribution.default': 'Default',
+  'platformSkills.distribution.mandatory': 'Mandatory',
+  'platformSkills.distribution.optional': 'Optional',
+  'platformSkills.empty.desc':
+    'Ask an administrator to publish a Skill before enabling management.',
+  'platformSkills.empty.title': 'No published Skills',
+  'platformSkills.source.builtin': 'Built in',
+  'platformSkills.source.uploaded': 'Organization',
   'skillStore.button': 'Skill Store',
   'skillStore.empty': 'Browse the Skill Store. Install one to get started, add more later.',
   'skillStore.emptySearch': 'No matching Skills',
@@ -3096,6 +3113,8 @@ When I am ___, I need ___
   // M06 managed resource user surfaces
   'managedResources.inline.connectorDesc':
     'Connector definitions and configuration are controlled by your organization. You can still connect or disconnect your own OAuth account below.',
+  'managedResources.inline.skillDesc':
+    'Skill definitions are controlled by your organization. You can view the published catalog and choose allowed Skills for the current assistant.',
   'managedResources.inline.title': '{{resource}} are managed by your organization',
   'managedResources.notice.back': 'Back to chat',
   'managedResources.notice.browse': 'Browse available resources',
