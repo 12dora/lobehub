@@ -133,6 +133,7 @@ export const connectorBindingStatusSchema = z.enum([
 export const platformConnectorErrorCodeSchema = z.enum([
   'PLATFORM_CONNECTOR_BINDING_NOT_FOUND',
   'PLATFORM_CONNECTOR_BINDING_OWNERSHIP_MISMATCH',
+  'PLATFORM_CONNECTOR_CONFIRMATION_REQUIRED',
   'PLATFORM_CONNECTOR_CREDENTIAL_NOT_CONFIGURED',
   'PLATFORM_CONNECTOR_NOT_FOUND',
   'PLATFORM_CONNECTOR_NOT_PUBLISHED',
@@ -141,6 +142,7 @@ export const platformConnectorErrorCodeSchema = z.enum([
   'PLATFORM_CONNECTOR_OAUTH_STATE_INVALID',
   'PLATFORM_CONNECTOR_OAUTH_STATE_REPLAYED',
   'PLATFORM_CONNECTOR_RETURN_TO_INVALID',
+  'PLATFORM_CONNECTOR_RATE_LIMITED',
   'PLATFORM_CONNECTOR_RESOURCE_MISMATCH',
   'PLATFORM_CONNECTOR_SCOPE_NOT_ALLOWED',
   'PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED',
@@ -1150,6 +1152,23 @@ export const connectorRuntimeResolveInputSchema = z
     expectedPublishedRevision: z.number().int().positive(),
     toolKey: connectorToolKeySchema,
     userId: connectorIdSchema,
+  })
+  .strict();
+
+const connectorSha256Schema = z
+  .string()
+  .length(64)
+  .regex(/^[a-f0-9]{64}$/);
+
+/** Server-owned immutable operation binding. Never accept this from a browser request. */
+export const connectorOperationProofSchema = z
+  .object({
+    connectorId: connectorIdSchema,
+    connectorKey: connectorKeySchema,
+    operationId: z.string().trim().min(1).max(256),
+    publishedChecksum: connectorSha256Schema,
+    publishedRevision: z.number().int().positive(),
+    toolPolicyFingerprint: connectorSha256Schema,
   })
   .strict();
 

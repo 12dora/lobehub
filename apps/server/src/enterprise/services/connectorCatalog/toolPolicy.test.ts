@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { assertConnectorScopesAllowed, resolveEffectiveConnectorToolPolicy } from './toolPolicy';
+import {
+  assertConnectorScopesAllowed,
+  fingerprintConnectorToolPolicy,
+  resolveConnectorConfirmationPolicy,
+  resolveEffectiveConnectorToolPolicy,
+} from './toolPolicy';
 
 describe('connector tool policy', () => {
   it.each([
@@ -65,5 +70,48 @@ describe('connector tool policy', () => {
     expect(() =>
       assertConnectorScopesAllowed(['issues:read'], ['issues:read', 'issues:write']),
     ).toThrowError('PLATFORM_CONNECTOR_SCOPE_NOT_ALLOWED');
+  });
+
+  it('fingerprints policy canonically without depending on tool order or schema fields', () => {
+    const tool = {
+      description: null,
+      displayName: 'Search',
+      inputSchema: { type: 'object' },
+      outputSchema: {},
+      platformPolicy: 'allow' as const,
+      requiresConfirmation: false,
+      riskLevel: 'low' as const,
+      sort: 0,
+      toolKey: 'search',
+    };
+    const second = { ...tool, displayName: 'Write', toolKey: 'write' };
+    expect(fingerprintConnectorToolPolicy([tool, second])).toBe(
+      fingerprintConnectorToolPolicy([second, tool]),
+    );
+    const schemaChanged = { ...tool, inputSchema: { properties: { q: {} } } };
+    expect(fingerprintConnectorToolPolicy([schemaChanged])).toBe(
+      fingerprintConnectorToolPolicy([tool]),
+    );
+    expect(fingerprintConnectorToolPolicy([{ ...tool, platformPolicy: 'deny' }])).not.toBe(
+      fingerprintConnectorToolPolicy([tool]),
+    );
+  });
+
+  it('makes high-risk and platform confirmation impossible to relax', () => {
+    expect(
+      resolveConnectorConfirmationPolicy({ requiresConfirmation: false, riskLevel: 'low' }),
+    ).toBeNull();
+    for (const policy of [
+      { requiresConfirmation: true, riskLevel: 'low' as const },
+      { requiresConfirmation: false, riskLevel: 'high' as const },
+      { requiresConfirmation: false, riskLevel: 'critical' as const },
+      {
+        legacyRequiresConfirmation: true,
+        requiresConfirmation: false,
+        riskLevel: 'medium' as const,
+      },
+    ]) {
+      expect(resolveConnectorConfirmationPolicy(policy)).toBe('always');
+    }
   });
 });
