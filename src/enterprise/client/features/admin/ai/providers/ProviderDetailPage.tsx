@@ -354,6 +354,20 @@ const ProviderDetailContent = memo<ProviderDetailContentProps>(
           )}
         </section>
 
+        {actions.refreshFailed ? (
+          <Alert
+            showIcon
+            description={t('aiCatalog.refresh.committed.desc')}
+            message={t('aiCatalog.refresh.committed.title')}
+            type="warning"
+            extra={
+              <Button loading={actions.refreshRetrying} onClick={() => void actions.retryRefresh()}>
+                {t('aiCatalog.refresh.retry')}
+              </Button>
+            }
+          />
+        ) : null}
+
         <div className={styles.footer}>
           <Flexbox gap={4}>
             <Text type="secondary">
