@@ -412,9 +412,9 @@ const ProviderDetailPage = memo(() => {
   const permission = deriveAiCatalogPermissions(permissions);
   const { data, error, isLoading, mutate } = useFetchAdminAiProvider(
     id,
-    Boolean(id && permission.canUpdateProvider),
+    Boolean(id && permission.canReadProviders),
   );
-  const editor = useAiProviderEditor(data);
+  const editor = useAiProviderEditor(data, permission.canUpdateProvider);
 
   const content =
     data && editor.draft ? (

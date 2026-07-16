@@ -21,7 +21,10 @@ import {
 } from '../localDraftStorage';
 import type { AdminAiProviderGetOutput } from '../types';
 
-export const useAiProviderEditor = (snapshot: AdminAiProviderGetOutput | undefined) => {
+export const useAiProviderEditor = (
+  snapshot: AdminAiProviderGetOutput | undefined,
+  editable = true,
+) => {
   const { t } = useTranslation('admin');
   const [draft, setDraft] = useState<EditableAiProviderDraft | null>(null);
   const [baseDraft, setBaseDraft] = useState<EditableAiProviderDraft | null>(null);
@@ -36,11 +39,11 @@ export const useAiProviderEditor = (snapshot: AdminAiProviderGetOutput | undefin
 
   useEffect(() => {
     if (!snapshot) return;
-    const hydrationKey = `${snapshot.draft.id}:${snapshot.baseRevision}:${snapshot.draftToken}`;
+    const hydrationKey = `${snapshot.draft.id}:${snapshot.baseRevision}:${snapshot.draftToken}:${editable}`;
     if (hydratedKeyRef.current === hydrationKey) return;
     hydratedKeyRef.current = hydrationKey;
 
-    const local = loadAiProviderPublicDraft(snapshot.draft.id);
+    const local = editable ? loadAiProviderPublicDraft(snapshot.draft.id) : null;
     if (local) {
       setBaseDraft(local.baseDraft);
       setDraft(local.draft);
@@ -63,10 +66,10 @@ export const useAiProviderEditor = (snapshot: AdminAiProviderGetOutput | undefin
     setActionError(null);
     setTestLocallyStale(false);
     setRebaseConflicts([]);
-  }, [snapshot]);
+  }, [editable, snapshot]);
 
   useEffect(() => {
-    if (!snapshot || !draft || !dirty) return;
+    if (!editable || !snapshot || !draft || !dirty) return;
     saveAiProviderPublicDraft(snapshot.draft.id, {
       baseDraft: baseDraft ?? toEditableAiProviderDraft(snapshot.draft),
       baseRevision: snapshot.baseRevision,
@@ -74,19 +77,19 @@ export const useAiProviderEditor = (snapshot: AdminAiProviderGetOutput | undefin
       draftToken: snapshot.draftToken,
       savedAt: new Date().toISOString(),
     });
-  }, [baseDraft, dirty, draft, snapshot]);
+  }, [baseDraft, dirty, draft, editable, snapshot]);
 
   useEffect(() => {
-    if (!dirty) return;
+    if (!editable || !dirty) return;
     const handleBeforeUnload = (event: BeforeUnloadEvent) => {
       event.preventDefault();
       event.returnValue = '';
     };
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [dirty]);
+  }, [dirty, editable]);
 
-  const blocker = useBlocker(dirty);
+  const blocker = useBlocker(editable && dirty);
   useEffect(() => {
     if (blocker.state !== 'blocked') {
       leaveModalRef.current?.close();
@@ -120,13 +123,14 @@ export const useAiProviderEditor = (snapshot: AdminAiProviderGetOutput | undefin
 
   const updateDraft = useCallback(
     <Key extends keyof EditableAiProviderDraft>(key: Key, value: EditableAiProviderDraft[Key]) => {
+      if (!editable) return;
       setDraft((current) => (current ? { ...current, [key]: value } : current));
       setDirty(true);
       setSaveState('dirty');
       setActionError(null);
       setTestLocallyStale(true);
     },
-    [],
+    [editable],
   );
 
   const discardLocal = useCallback(() => {

@@ -116,8 +116,7 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
         labelKey: 'nav.aiProviderDetail',
         path: '/admin/ai/providers/:id',
         placeholder: false,
-        // Edit surface requires update (list/03 provider 编辑)
-        requiredPermissions: [PLATFORM_PERMISSIONS.AI_PROVIDER_UPDATE],
+        requiredPermissions: [PLATFORM_PERMISSIONS.AI_PROVIDER_READ],
       },
       {
         id: 'ai-models',
