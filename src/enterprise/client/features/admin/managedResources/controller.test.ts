@@ -79,9 +79,9 @@ describe('managed resource policy controller', () => {
       saveState: 'dirty' as const,
     };
     expect(resolveManagedResourcePrimaryAction(base)).toBe('save');
-    expect(
-      resolveManagedResourcePrimaryAction({ ...base, dirty: false, saveState: 'saved' }),
-    ).toBe('publish');
+    expect(resolveManagedResourcePrimaryAction({ ...base, dirty: false, saveState: 'saved' })).toBe(
+      'publish',
+    );
     expect(
       resolveManagedResourcePrimaryAction({
         ...base,
@@ -101,7 +101,44 @@ describe('managed resource policy controller', () => {
     latest.aiModels = { enforcementMode: 'observe', managed: true };
 
     const rebased = rebaseManagedResourceDraft({ latest, local, original });
-    expect(rebased.skills).toEqual(local.skills);
-    expect(rebased.aiModels).toEqual(latest.aiModels);
+    expect(rebased.draft.skills).toEqual(local.skills);
+    expect(rebased.draft.aiModels).toEqual(latest.aiModels);
+    expect(rebased.conflicts).toEqual([]);
+  });
+
+  it('merges non-conflicting local and remote edits to different fields of one resource', () => {
+    const original = policy();
+    const local = policy();
+    const latest = policy();
+    local.connectors.managed = true;
+    latest.connectors.enforcementMode = 'enforced';
+
+    expect(rebaseManagedResourceDraft({ latest, local, original })).toEqual({
+      conflicts: [],
+      draft: {
+        ...latest,
+        connectors: { enforcementMode: 'enforced', managed: true },
+      },
+    });
+  });
+
+  it('reports divergent edits to the same field instead of silently choosing one', () => {
+    const original = policy();
+    const local = policy();
+    const latest = policy();
+    local.connectors.enforcementMode = 'ui-only';
+    latest.connectors.enforcementMode = 'enforced';
+
+    const rebased = rebaseManagedResourceDraft({ latest, local, original });
+    expect(rebased.draft.connectors.enforcementMode).toBe('ui-only');
+    expect(rebased.conflicts).toEqual([
+      {
+        field: 'enforcementMode',
+        latestValue: 'enforced',
+        localValue: 'ui-only',
+        originalValue: 'observe',
+        resource: 'connectors',
+      },
+    ]);
   });
 });

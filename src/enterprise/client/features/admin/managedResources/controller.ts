@@ -1,4 +1,7 @@
-import { MANAGED_RESOURCE_KINDS } from '@/const/platform/managedResources';
+import {
+  MANAGED_RESOURCE_KINDS,
+  type ManagedResourceKind,
+} from '@/const/platform/managedResources';
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import type {
   ManagedResourcePolicyMap,
@@ -45,10 +48,7 @@ export const buildManagedResourceDiff = (
   MANAGED_RESOURCE_KINDS.flatMap((resource) => {
     const before = published[resource];
     const after = draft[resource];
-    if (
-      before.managed === after.managed &&
-      before.enforcementMode === after.enforcementMode
-    ) {
+    if (before.managed === after.managed && before.enforcementMode === after.enforcementMode) {
       return [];
     }
     return [{ after, before, resource }];
@@ -81,31 +81,89 @@ export const resolveManagedResourcePrimaryAction = (params: {
   if (params.conflict) return 'none';
   if (params.saveState === 'failed' && params.canUpdate) return 'retry';
   if (params.dirty && params.canUpdate) return 'save';
-  if (
-    !params.dirty &&
-    params.hasChanges &&
-    params.publishReady &&
-    params.canPublish
-  ) {
+  if (!params.dirty && params.hasChanges && params.publishReady && params.canPublish) {
     return 'publish';
   }
   return 'none';
 };
 
-/** Three-way merge: local edits win only for resources changed from their original base. */
+export type ManagedResourcePolicyField = 'enforcementMode' | 'managed';
+
+export interface ManagedResourceRebaseConflict {
+  field: ManagedResourcePolicyField;
+  latestValue: ManagedResourcePolicyMap[ManagedResourceKind][ManagedResourcePolicyField];
+  localValue: ManagedResourcePolicyMap[ManagedResourceKind][ManagedResourcePolicyField];
+  originalValue: ManagedResourcePolicyMap[ManagedResourceKind][ManagedResourcePolicyField];
+  resource: ManagedResourceKind;
+}
+
+export interface ManagedResourceRebaseResult {
+  conflicts: ManagedResourceRebaseConflict[];
+  draft: ManagedResourcePolicyMap;
+}
+
+const mergePolicyField = <Field extends ManagedResourcePolicyField>(params: {
+  conflicts: ManagedResourceRebaseConflict[];
+  field: Field;
+  latest: ManagedResourcePolicyMap[ManagedResourceKind];
+  local: ManagedResourcePolicyMap[ManagedResourceKind];
+  original: ManagedResourcePolicyMap[ManagedResourceKind];
+  resource: ManagedResourceKind;
+}): ManagedResourcePolicyMap[ManagedResourceKind][Field] => {
+  const originalValue = params.original[params.field];
+  const localValue = params.local[params.field];
+  const latestValue = params.latest[params.field];
+  const localChanged = localValue !== originalValue;
+  const latestChanged = latestValue !== originalValue;
+
+  if (localChanged && latestChanged && localValue !== latestValue) {
+    params.conflicts.push({
+      field: params.field,
+      latestValue,
+      localValue,
+      originalValue,
+      resource: params.resource,
+    });
+  }
+
+  return localChanged ? localValue : latestValue;
+};
+
+/** Field-level three-way merge. Divergent edits to one field remain explicit conflicts. */
 export const rebaseManagedResourceDraft = (params: {
   latest: ManagedResourcePolicyMap;
   local: ManagedResourcePolicyMap;
   original: ManagedResourcePolicyMap;
-}): ManagedResourcePolicyMap => {
-  return Object.fromEntries(
+}): ManagedResourceRebaseResult => {
+  const conflicts: ManagedResourceRebaseConflict[] = [];
+  const draft = Object.fromEntries(
     MANAGED_RESOURCE_KINDS.map((resource) => {
       const original = params.original[resource];
       const local = params.local[resource];
-      const changedLocally =
-        original.managed !== local.managed ||
-        original.enforcementMode !== local.enforcementMode;
-      return [resource, changedLocally ? local : params.latest[resource]];
+      const latest = params.latest[resource];
+      return [
+        resource,
+        {
+          enforcementMode: mergePolicyField({
+            conflicts,
+            field: 'enforcementMode',
+            latest,
+            local,
+            original,
+            resource,
+          }),
+          managed: mergePolicyField({
+            conflicts,
+            field: 'managed',
+            latest,
+            local,
+            original,
+            resource,
+          }),
+        },
+      ];
     }),
   ) as ManagedResourcePolicyMap;
+
+  return { conflicts, draft };
 };

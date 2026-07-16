@@ -542,9 +542,7 @@ const SkillList = memo<SkillListProps>(
                     server={getLobehubSkillServerByProvider(item.provider.id)}
                     onDelete={onDeleteSelected}
                     onSelect={
-                      !managed && onSelect
-                        ? () => onSelect(item.provider.id, 'lobehub-connector')
-                        : undefined
+                      onSelect ? () => onSelect(item.provider.id, 'lobehub-connector') : undefined
                     }
                   />
                 );
@@ -557,9 +555,7 @@ const SkillList = memo<SkillListProps>(
                   serverType={item.serverType}
                   onDelete={onDeleteSelected}
                   onSelect={
-                    !managed && onSelect
-                      ? () => onSelect(item.serverType.identifier, 'plugin')
-                      : undefined
+                    onSelect ? () => onSelect(item.serverType.identifier, 'plugin') : undefined
                   }
                 />
               );

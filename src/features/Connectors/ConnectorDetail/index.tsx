@@ -17,11 +17,12 @@ import ToolPermissionGroup from './ToolPermissionGroup';
 interface ConnectorDetailProps {
   connectorId: string;
   lifecycleActions?: ReactNode;
+  managed?: boolean;
   onDelete?: () => void;
 }
 
 const ConnectorDetail = memo<ConnectorDetailProps>(
-  ({ connectorId, lifecycleActions, onDelete }) => {
+  ({ connectorId, lifecycleActions, managed = false, onDelete }) => {
     const { t } = useTranslation('tool');
     const { t: ts } = useTranslation('setting');
     const [customModalOpen, setCustomModalOpen] = useState(false);
@@ -131,16 +132,18 @@ const ConnectorDetail = memo<ConnectorDetailProps>(
               {t('connector.resetPermissions', 'Reset permissions')}
             </Button>
             {/* Sync/Refresh: re-sync tool list from manifest */}
-            <Button
-              icon={<RefreshCwIcon size={14} />}
-              loading={syncing}
-              size="small"
-              onClick={handleSync}
-            >
-              {syncLabel}
-            </Button>
+            {!managed ? (
+              <Button
+                icon={<RefreshCwIcon size={14} />}
+                loading={syncing}
+                size="small"
+                onClick={handleSync}
+              >
+                {syncLabel}
+              </Button>
+            ) : null}
             {/* Edit button for custom MCP connectors — only http type has a server URL to edit */}
-            {isMcpConnector && connector?.mcpConnectionType === 'http' && (
+            {!managed && isMcpConnector && connector?.mcpConnectionType === 'http' && (
               <Button
                 icon={<PencilIcon size={14} />}
                 size="small"
@@ -151,7 +154,7 @@ const ConnectorDetail = memo<ConnectorDetailProps>(
             )}
             {lifecycleActions !== undefined ? (
               lifecycleActions
-            ) : (
+            ) : !managed ? (
               <>
                 {/* Disconnect / Delete for custom MCP connectors */}
                 {isMcpConnector && (
@@ -185,7 +188,7 @@ const ConnectorDetail = memo<ConnectorDetailProps>(
                   </Button>
                 )}
               </>
-            )}
+            ) : null}
           </div>
         </div>
 
@@ -247,7 +250,7 @@ const ConnectorDetail = memo<ConnectorDetailProps>(
           )}
 
           {/* Edit modal — only http connectors have a server URL to edit */}
-          {isMcpConnector && connector?.mcpConnectionType === 'http' && (
+          {!managed && isMcpConnector && connector?.mcpConnectionType === 'http' && (
             <CustomConnectorModal
               connectorId={connectorId}
               open={customModalOpen}

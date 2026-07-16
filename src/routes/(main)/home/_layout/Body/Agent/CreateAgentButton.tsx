@@ -47,7 +47,7 @@ interface CreateAgentButtonProps {
 const CreateAgentButton = memo<CreateAgentButtonProps>(({ groupId, className, visibility }) => {
   const { t } = useTranslation('chat');
   const { allowed: canCreate, reason } = usePermission('create_content');
-  const { managed: agentsManaged } = useManagedResource('agents');
+  const { blocked: agentCreationBlocked } = useManagedResource('agents');
   const {
     createAgent,
     createAgentMenuItem,
@@ -97,7 +97,7 @@ const CreateAgentButton = memo<CreateAgentButtonProps>(({ groupId, className, vi
     }
   };
 
-  if (agentsManaged) return null;
+  if (agentCreationBlocked) return null;
 
   const content = (
     <Block
