@@ -22,6 +22,15 @@ export interface PlatformProviderKeyVaults {
   baseURL?: string;
 }
 
+export const toDefinedPlatformKeyVaults = (
+  keyVaults: PlatformProviderKeyVaults,
+): Record<string, string> =>
+  Object.fromEntries(
+    Object.entries(keyVaults).filter(
+      (entry): entry is [string, string] => typeof entry[1] === 'string',
+    ),
+  );
+
 const fingerprintSecret = (plaintext: string): string =>
   `sha256:${createHash('sha256').update(plaintext).digest('hex').slice(0, 16)}`;
 

@@ -80,7 +80,7 @@ export const platformAiCatalogDraftToken = (draft: PlatformAiProviderDraftView):
 /** Snapshot persisted in `platform_resource_revisions`; never contains ciphertext. */
 export interface PlatformAiProviderRevisionPayload {
   models: PlatformAiModelDraftView[];
-  provider: Omit<PlatformAiProviderDraftView, 'models' | 'secret'> & {
+  provider: Omit<PlatformAiProviderDraftView, 'connectionTest' | 'models' | 'secret'> & {
     secretConfigured: boolean;
     secretFingerprint: string | null;
   };
@@ -207,7 +207,7 @@ export class PlatformAiCatalogModel {
     provider?: string;
     query?: string;
     status?: PlatformResourceStatus;
-    type?: string;
+    type?: AiModelType;
   }) => {
     const decodedCursor = params.cursor ? this.decodeModelCursor(params.cursor) : undefined;
     const page = await this.repository.listAllModels({
