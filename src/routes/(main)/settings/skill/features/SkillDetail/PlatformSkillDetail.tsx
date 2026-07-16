@@ -16,6 +16,7 @@ import {
 } from '@/enterprise/client/features/skills';
 import { useAgentStore } from '@/store/agent';
 import { agentSelectors } from '@/store/agent/selectors';
+import { useToolStore } from '@/store/tool';
 
 const styles = createStaticStyles(({ css, cssVar }) => ({
   body: css`
@@ -54,7 +55,9 @@ interface PlatformSkillDetailProps {
 
 const PlatformSkillDetail = memo<PlatformSkillDetailProps>(({ skillKey }) => {
   const { t } = useTranslation('setting');
-  const catalog = usePublishedSkillCatalog(true);
+  const runtimeEnforced = useToolStore((state) => state.platformSkillRuntimeEnforced);
+  const runtimeStatus = useToolStore((state) => state.platformSkillRuntimeStatus);
+  const catalog = usePublishedSkillCatalog(runtimeEnforced);
   const [saving, setSaving] = useState(false);
   const config = useAgentStore(agentSelectors.currentAgentConfig);
   const agentId = useAgentStore((state) => state.activeAgentId);
@@ -63,15 +66,15 @@ const PlatformSkillDetail = memo<PlatformSkillDetailProps>(({ skillKey }) => {
   const mode = getPluginMode(config?.plugins, skillKey);
   const enabled = skill ? isPublishedSkillEnabled(skill.distribution, mode) : false;
 
-  if (catalog.error && !catalog.data) {
+  if (runtimeStatus === 'error' || (catalog.error && !catalog.data)) {
     return (
       <AsyncError error={catalog.error} variant="page" onRetry={() => void catalog.mutate()} />
     );
   }
-  if (catalog.isLoading && !catalog.data) {
+  if (runtimeStatus === 'loading' || (catalog.isLoading && !catalog.data)) {
     return <Loading debugId="Settings > Skill > Published detail" />;
   }
-  if (!skill) {
+  if (runtimeStatus !== 'ready' || !skill) {
     return <div className={styles.body}>{t('platformSkills.detail.notFound')}</div>;
   }
 

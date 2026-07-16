@@ -571,6 +571,8 @@
   "platformSkills.pagination.next": "下一页",
   "platformSkills.pagination.previous": "上一页",
   "platformSkills.pagination.status": "第 {{page}} / {{pages}} 页",
+  "platformSkills.runtime.loading": "正在加载组织技能…",
+  "platformSkills.runtime.unavailable": "组织技能暂时不可用。",
   "platformSkills.search.emptyDesc": "请尝试其他名称或清除搜索条件。",
   "platformSkills.search.emptyTitle": "没有匹配的 Skill",
   "platformSkills.search.label": "搜索已发布 Skill",

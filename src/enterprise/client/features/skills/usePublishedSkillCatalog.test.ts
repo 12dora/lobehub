@@ -70,15 +70,14 @@ describe('usePublishedSkillCatalog', () => {
     expect(mocks.getPublishedCatalog).not.toHaveBeenCalled();
   });
 
-  it('keys the catalog by config and invalidation revisions', async () => {
+  it('uses one catalog key shared by every subscriber and invalidation revision', async () => {
     useToolStore.setState({ platformSkillCatalogInvalidationRevision: 'catalog-9' });
     mocks.getPublishedCatalog.mockResolvedValue(catalog('catalog-9'));
 
-    renderHook(() => usePublishedSkillCatalog(true, 'config-7'));
+    renderHook(() => usePublishedSkillCatalog(true));
 
     expect(mocks.swr.mock.calls[0]?.[0]).toEqual([
       PLATFORM_PUBLISHED_SKILL_CATALOG_KEY,
-      'config-7',
       'catalog-9',
     ]);
     await mocks.fetchers[0]();

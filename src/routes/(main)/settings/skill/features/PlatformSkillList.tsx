@@ -3,13 +3,14 @@
 import { Center, Empty, Flexbox, SearchBar, Text } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import { SkillsIcon } from '@lobehub/ui/icons';
-import { memo, useEffect, useMemo } from 'react';
+import { memo, useEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams } from 'react-router';
 
 import AsyncError from '@/components/AsyncError';
 import Loading from '@/components/Loading/BrandTextLoading';
 import { usePublishedSkillCatalog } from '@/enterprise/client/features/skills';
+import { useToolStore } from '@/store/tool';
 
 import PlatformSkillItem from './PlatformSkillItem';
 import type { ToolDetailType } from './SkillDetail';
@@ -28,7 +29,9 @@ const parsePage = (value: string | null) => {
 
 const PlatformSkillList = memo<PlatformSkillListProps>(({ onSelect, selectedIdentifier }) => {
   const { t } = useTranslation('setting');
-  const catalog = usePublishedSkillCatalog(true);
+  const runtimeEnforced = useToolStore((state) => state.platformSkillRuntimeEnforced);
+  const runtimeStatus = useToolStore((state) => state.platformSkillRuntimeStatus);
+  const catalog = usePublishedSkillCatalog(runtimeEnforced);
   const [searchParams, setSearchParams] = useSearchParams();
   const query = searchParams.get('q')?.trim() ?? '';
   const requestedPage = parsePage(searchParams.get('page'));
@@ -45,7 +48,12 @@ const PlatformSkillList = memo<PlatformSkillListProps>(({ onSelect, selectedIden
   const page = Math.min(requestedPage, pageCount);
   const pageSkills = filteredSkills.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
+  const locatedSelectionRef = useRef<string | undefined>(undefined);
   useEffect(() => {
+    if (runtimeStatus !== 'ready' || !catalog.data) return;
+    const locationKey = `${catalog.data.revision}\0${query}\0${selectedIdentifier ?? ''}`;
+    if (locatedSelectionRef.current === locationKey) return;
+    locatedSelectionRef.current = locationKey;
     let nextPage = page;
     if (selectedIdentifier) {
       const selectedIndex = filteredSkills.findIndex(
@@ -57,7 +65,24 @@ const PlatformSkillList = memo<PlatformSkillListProps>(({ onSelect, selectedIden
     const nextParams = new URLSearchParams(searchParams);
     nextParams.set('page', String(nextPage));
     setSearchParams(nextParams, { replace: true });
-  }, [filteredSkills, page, requestedPage, searchParams, selectedIdentifier, setSearchParams]);
+  }, [
+    catalog.data,
+    filteredSkills,
+    page,
+    query,
+    requestedPage,
+    runtimeStatus,
+    searchParams,
+    selectedIdentifier,
+    setSearchParams,
+  ]);
+
+  useEffect(() => {
+    if (runtimeStatus !== 'ready' || !catalog.data || requestedPage <= pageCount) return;
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.set('page', String(pageCount));
+    setSearchParams(nextParams, { replace: true });
+  }, [catalog.data, pageCount, requestedPage, runtimeStatus, searchParams, setSearchParams]);
 
   const setPage = (nextPage: number) => {
     const nextParams = new URLSearchParams(searchParams);
@@ -73,17 +98,17 @@ const PlatformSkillList = memo<PlatformSkillListProps>(({ onSelect, selectedIden
     setSearchParams(nextParams, { replace: true });
   };
 
-  if (catalog.error && !catalog.data?.skills.length) {
+  if (runtimeStatus === 'error' || (catalog.error && !catalog.data?.skills.length)) {
     return (
       <Center paddingBlock={48}>
         <AsyncError error={catalog.error} variant="block" onRetry={() => void catalog.mutate()} />
       </Center>
     );
   }
-  if (catalog.isLoading && !catalog.data) {
+  if (runtimeStatus === 'loading' || (catalog.isLoading && !catalog.data)) {
     return <Loading debugId="Settings > Skill > Published catalog" />;
   }
-  if (!catalog.data?.skills.length) {
+  if (runtimeStatus !== 'ready' || !catalog.data?.skills.length) {
     return (
       <Center paddingBlock={48}>
         <Empty

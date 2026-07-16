@@ -25,6 +25,10 @@ const mocks = vi.hoisted(() => ({
   },
   config: { plugins: [] as Array<string | { identifier: string; mode: string }> },
   setPluginModeById: vi.fn(),
+  toolState: {
+    platformSkillRuntimeEnforced: true,
+    platformSkillRuntimeStatus: 'ready' as 'error' | 'loading' | 'ready' | 'unmanaged',
+  },
 }));
 
 vi.mock('@/enterprise/client/features/skills', () => ({
@@ -50,6 +54,10 @@ vi.mock('@/store/agent', () => ({
 
 vi.mock('@/store/agent/selectors', () => ({
   agentSelectors: { currentAgentConfig: () => mocks.config },
+}));
+
+vi.mock('@/store/tool', () => ({
+  useToolStore: (selector: (state: typeof mocks.toolState) => unknown) => selector(mocks.toolState),
 }));
 
 vi.mock('@/components/AsyncError', () => ({ default: () => <div>catalog-error</div> }));
@@ -106,6 +114,8 @@ describe('PlatformSkillDetail', () => {
     mocks.config.plugins = [];
     mocks.setPluginModeById.mockReset();
     mocks.setPluginModeById.mockResolvedValue(undefined);
+    mocks.toolState.platformSkillRuntimeEnforced = true;
+    mocks.toolState.platformSkillRuntimeStatus = 'ready';
   });
 
   it('shows mandatory Skills as enabled without a mutation control', () => {

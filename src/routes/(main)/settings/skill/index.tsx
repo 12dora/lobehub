@@ -51,6 +51,7 @@ export const ToolSettings = memo<ToolSettingsProps>(({ viewMode, managed = false
   const marketAgentSkills = useToolStore(agentSkillsSelectors.getMarketAgentSkills, isEqual);
   const userAgentSkills = useToolStore(agentSkillsSelectors.getUserAgentSkills, isEqual);
   const platformSkillCatalog = useToolStore(agentSkillsSelectors.getPlatformSkillCatalog, isEqual);
+  const platformSkillRuntimeStatus = useToolStore((s) => s.platformSkillRuntimeStatus);
   const installedBuiltinIds = useToolStore(
     (s) => builtinToolSelectors.installedAllMetaList(s).map((tool) => tool.identifier),
     isEqual,
@@ -58,6 +59,7 @@ export const ToolSettings = memo<ToolSettingsProps>(({ viewMode, managed = false
 
   useEffect(() => {
     if (!managed || viewMode !== 'skill') return;
+    if (platformSkillRuntimeStatus !== 'ready') return;
     const skills = platformSkillCatalog?.skills ?? [];
     const requested = querySkillIdentifier
       ? skills.find((skill) => skill.skillKey === querySkillIdentifier)
@@ -87,6 +89,7 @@ export const ToolSettings = memo<ToolSettingsProps>(({ viewMode, managed = false
     installedBuiltinIds,
     managed,
     platformSkillCatalog,
+    platformSkillRuntimeStatus,
     querySkillIdentifier,
     searchParams,
     setSearchParams,
