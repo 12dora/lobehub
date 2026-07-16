@@ -49,6 +49,7 @@ import type {
 import type { ConnectorOutboundClient } from './connectorOutboundClient';
 import { connectorToolInsertValues, loadConnectorDraft } from './draftService';
 import { PlatformConnectorContractError } from './errors';
+import { invalidateConnectorPublishedIndex } from './publishedIndex';
 import { cleanupConnectorSecretRefs, type ConnectorSecretCleanupRef } from './secretCleanup';
 import {
   parseConnectorToolsForWrite,
@@ -565,6 +566,7 @@ export class ConnectorCatalogPublicationService {
         sanitizePayload: sanitizeConnectorRevisionPayload,
         secretFingerprint: proof.secretFingerprint,
       });
+      invalidateConnectorPublishedIndex(this.db, command.id);
       await cleanupConnectorSecretRefs(this.secrets, proof.cleanupRefs);
       return { auditId: result.auditId, revision: result.revision.revision };
     } catch (error) {
@@ -603,6 +605,7 @@ export class ConnectorCatalogPublicationService {
         resourceType: 'connector',
         targetRevision: command.targetRevision,
       });
+      invalidateConnectorPublishedIndex(this.db, command.id);
       await cleanupConnectorSecretRefs(this.secrets, proof.cleanupRefs);
       return { auditId: result.auditId, revision: result.revision.revision };
     } catch (error) {
@@ -650,6 +653,7 @@ export class ConnectorCatalogPublicationService {
         secretFingerprint: proof.secretFingerprint,
         status: 'archived',
       });
+      invalidateConnectorPublishedIndex(this.db, command.id);
       await cleanupConnectorSecretRefs(this.secrets, proof.cleanupRefs);
       return { auditId: result.auditId, revision: result.revision.revision };
     } catch (error) {
