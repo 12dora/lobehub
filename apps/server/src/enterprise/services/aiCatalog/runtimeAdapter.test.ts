@@ -254,9 +254,12 @@ describe('AiCatalogRuntimeAdapter', () => {
         payload: {
           models: [
             {
+              abilities: {},
               config: {},
               enabled: true,
               modelKey: 'gpt-5.4',
+              pricing: {},
+              settings: {},
               sort: 0,
               type: 'chat',
             },
@@ -306,6 +309,8 @@ describe('AiCatalogRuntimeAdapter', () => {
       abilities: expect.objectContaining({ vision: true }),
       config: { deploymentName: 'gpt-5.4' },
       contextWindowTokens: 1_050_000,
+      pricing: expect.objectContaining({ units: expect.any(Array) }),
+      settings: expect.objectContaining({ searchImpl: 'params' }),
     });
     expect(state.enabledAiModels.find((model) => model.id === 'spark-x2-flash')).toMatchObject({
       abilities: expect.objectContaining({ reasoning: true }),
