@@ -107,7 +107,7 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
         id: 'ai-providers',
         labelKey: 'nav.aiProviders',
         path: '/admin/ai/providers',
-        placeholder: true,
+        placeholder: false,
         requiredPermissions: [PLATFORM_PERMISSIONS.AI_PROVIDER_READ],
       },
       {
