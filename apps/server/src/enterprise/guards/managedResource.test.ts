@@ -351,6 +351,57 @@ describe('ManagedResourceGuard compatibility and bypass resistance', () => {
     expect(isExemptInput).not.toHaveBeenCalled();
   });
 
+  it('Composio binding lifecycle honors flag-off, observe and narrow enforced exemptions', async () => {
+    const procedures = [
+      'composio.createConnection',
+      'composio.updateComposioPlugin',
+    ] as const satisfies readonly ManagedResourceMutationProcedure[];
+    const flagOffPredicate = vi.fn(() => {
+      throw new Error('flag-off must not classify binding input');
+    });
+    for (const procedure of procedures) {
+      await expect(
+        enforceManagedResourceMutation({
+          db: serverDB,
+          isExemptInput: flagOffPredicate,
+          options: { flags: flagsFor('connectors', false) },
+          procedure,
+        }),
+      ).resolves.toBeUndefined();
+    }
+    expect(flagOffPredicate).not.toHaveBeenCalled();
+
+    await materialize('connectors', { enforcementMode: 'observe', managed: true });
+    for (const procedure of procedures) {
+      await expect(
+        enforceManagedResourceMutation({
+          db: serverDB,
+          isExemptInput: () => false,
+          options: {
+            flags: flagsFor('connectors', true),
+            readiness: readinessFor('connectors', true),
+          },
+          procedure,
+        }),
+      ).resolves.toBeUndefined();
+    }
+
+    await materialize('connectors', { enforcementMode: 'enforced', managed: true }, 2);
+    for (const procedure of procedures) {
+      await expect(
+        enforceManagedResourceMutation({
+          db: serverDB,
+          isExemptInput: () => true,
+          options: {
+            flags: flagsFor('connectors', true),
+            readiness: readinessFor('connectors', true),
+          },
+          procedure,
+        }),
+      ).resolves.toBeUndefined();
+    }
+  });
+
   it('draft never takes effect, and publishing managed=false restores mutations without data loss', async () => {
     await serverDB.insert(users).values({ id: 'legacy-user' });
     await serverDB.insert(aiProviders).values({

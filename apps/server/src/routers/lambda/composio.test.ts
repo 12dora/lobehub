@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   authConfigsCreate: vi.fn(),
   authConfigsList: vi.fn(),
   connectedAccountsDelete: vi.fn(),
+  connectedAccountsGet: vi.fn(),
   connectedAccountsLink: vi.fn(),
   connectorCreate: vi.fn(),
   connectorDelete: vi.fn(),
@@ -61,7 +62,11 @@ vi.mock('@/database/models/connectorTool', () => ({
 vi.mock('@/libs/composio', () => ({
   getComposioClient: () => ({
     authConfigs: { create: mocks.authConfigsCreate, list: mocks.authConfigsList },
-    connectedAccounts: { delete: mocks.connectedAccountsDelete, link: mocks.connectedAccountsLink },
+    connectedAccounts: {
+      delete: mocks.connectedAccountsDelete,
+      get: mocks.connectedAccountsGet,
+      link: mocks.connectedAccountsLink,
+    },
     tools: { getRawComposioTools: mocks.getRawComposioTools },
   }),
 }));
@@ -74,6 +79,12 @@ beforeEach(() => {
   mocks.connectorFindById.mockResolvedValue(null);
   mocks.connectorCreate.mockResolvedValue({ id: 'conn-new' });
   mocks.pluginFindById.mockResolvedValue(undefined);
+  mocks.connectedAccountsGet.mockResolvedValue({
+    authConfig: { id: 'ac_env' },
+    id: 'ca-1',
+    status: 'ACTIVE' as const,
+    toolkit: { slug: 'GMAIL' },
+  });
 });
 
 describe('composioRouter.createConnection dual-write', () => {
@@ -102,6 +113,33 @@ describe('composioRouter.createConnection dual-write', () => {
     // pre-auth seed must NOT prune (tool list may be incomplete before auth)
     expect(mocks.connectorToolDeleteToolsNotIn).not.toHaveBeenCalled();
   });
+
+  it('rejects catalog mismatches and unknown definition fields before linking', async () => {
+    await expect(
+      caller().createConnection({ appSlug: 'SLACK', identifier: 'gmail', label: 'Gmail' }),
+    ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    await expect(
+      caller().createConnection({
+        appSlug: 'GMAIL',
+        credentials: { token: 'attacker' },
+        identifier: 'gmail',
+        label: 'Gmail',
+      } as never),
+    ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+
+    expect(mocks.connectedAccountsLink).not.toHaveBeenCalled();
+  });
+
+  it('refuses to overwrite a non-Composio connector definition', async () => {
+    mocks.connectorQueryByIdentifiers.mockResolvedValue([
+      { id: 'custom', identifier: 'gmail', sourceType: 'custom' },
+    ]);
+
+    await expect(
+      caller().createConnection({ appSlug: 'GMAIL', identifier: 'gmail', label: 'Gmail' }),
+    ).rejects.toMatchObject({ code: 'CONFLICT' });
+    expect(mocks.connectedAccountsLink).not.toHaveBeenCalled();
+  });
 });
 
 describe('composioRouter.updateComposioPlugin dual-write', () => {
@@ -111,12 +149,39 @@ describe('composioRouter.updateComposioPlugin dual-write', () => {
     connectedAccountId: 'ca-1',
     identifier: 'gmail',
     label: 'Gmail',
-    status: 'ACTIVE',
+    status: 'ACTIVE' as const,
     tools: [{ description: 'send', inputSchema: { type: 'object' }, name: 'GMAIL_SEND' }],
   };
+  const trustedBinding = {
+    appSlug: 'GMAIL',
+    authConfigId: 'ac_env',
+    connectedAccountId: 'ca-1',
+    status: 'PENDING' as const,
+  };
+  const trustedPlugin = {
+    customParams: { composio: trustedBinding },
+    identifier: 'gmail',
+    source: 'composio',
+  };
+  const trustedConnector = {
+    id: 'conn-existing',
+    identifier: 'gmail',
+    metadata: { composio: trustedBinding },
+    sourceType: 'marketplace',
+  };
 
-  it('creates the connector projection (ACTIVE) + tools when none exists', async () => {
+  it('creates a missing connector projection from an owned legacy plugin and server tools', async () => {
     mocks.connectorQueryByIdentifiers.mockResolvedValue([]);
+    mocks.pluginFindById.mockResolvedValue(trustedPlugin);
+    mocks.getRawComposioTools.mockResolvedValue({
+      items: [
+        {
+          description: 'trusted send',
+          inputParameters: { type: 'object' },
+          slug: 'GMAIL_TRUSTED_SEND',
+        },
+      ],
+    });
 
     const res = await caller().updateComposioPlugin(input);
 
@@ -127,14 +192,22 @@ describe('composioRouter.updateComposioPlugin dual-write', () => {
       status: 'connected',
     });
     expect(mocks.connectorToolUpsertMany).toHaveBeenCalledWith('conn-new', [
-      expect.objectContaining({ toolName: 'GMAIL_SEND' }),
+      expect.objectContaining({
+        description: 'trusted send',
+        toolName: 'GMAIL_TRUSTED_SEND',
+      }),
     ]);
     // authoritative refresh prunes to exactly the provided set
-    expect(mocks.connectorToolDeleteToolsNotIn).toHaveBeenCalledWith('conn-new', ['GMAIL_SEND']);
+    expect(mocks.connectorToolDeleteToolsNotIn).toHaveBeenCalledWith('conn-new', [
+      'GMAIL_TRUSTED_SEND',
+    ]);
   });
 
   it('updates an existing connector projection instead of duplicating it', async () => {
-    mocks.connectorQueryByIdentifiers.mockResolvedValue([{ id: 'conn-existing' }]);
+    mocks.connectorQueryByIdentifiers.mockResolvedValue([trustedConnector]);
+    mocks.getRawComposioTools.mockResolvedValue({
+      items: [{ description: 'send', inputParameters: {}, slug: 'GMAIL_SEND' }],
+    });
 
     await caller().updateComposioPlugin(input);
 
@@ -155,13 +228,52 @@ describe('composioRouter.updateComposioPlugin dual-write', () => {
   });
 
   it('prunes all connector tools when the refreshed list is empty', async () => {
-    mocks.connectorQueryByIdentifiers.mockResolvedValue([{ id: 'conn-existing' }]);
+    mocks.connectorQueryByIdentifiers.mockResolvedValue([trustedConnector]);
+    mocks.getRawComposioTools.mockResolvedValue({ items: [] });
 
-    await caller().updateComposioPlugin({ ...input, tools: [] });
+    await caller().updateComposioPlugin(input);
 
     // nothing to upsert, but the stale set is fully cleared
     expect(mocks.connectorToolUpsertMany).not.toHaveBeenCalled();
     expect(mocks.connectorToolDeleteToolsNotIn).toHaveBeenCalledWith('conn-existing', []);
+  });
+
+  it('rejects a forged binding and never reads tools or updates projections', async () => {
+    mocks.connectorQueryByIdentifiers.mockResolvedValue([trustedConnector]);
+
+    await expect(
+      caller().updateComposioPlugin({ ...input, connectedAccountId: 'foreign-binding' }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+
+    expect(mocks.connectedAccountsGet).not.toHaveBeenCalled();
+    expect(mocks.getRawComposioTools).not.toHaveBeenCalled();
+    expect(mocks.connectorUpdate).not.toHaveBeenCalled();
+  });
+
+  it('rejects update when no owner-scoped binding projection exists', async () => {
+    await expect(caller().updateComposioPlugin(input)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+
+    expect(mocks.connectedAccountsGet).not.toHaveBeenCalled();
+    expect(mocks.connectorCreate).not.toHaveBeenCalled();
+  });
+
+  it('ignores forged client tools and materializes only the trusted Composio response', async () => {
+    mocks.connectorQueryByIdentifiers.mockResolvedValue([trustedConnector]);
+    mocks.getRawComposioTools.mockResolvedValue({
+      items: [{ description: 'trusted', inputParameters: {}, slug: 'GMAIL_TRUSTED' }],
+    });
+
+    await caller().updateComposioPlugin({
+      ...input,
+      tools: [{ description: 'forged', inputSchema: { endpoint: 'https://evil' }, name: 'EVIL' }],
+    });
+
+    expect(mocks.connectorToolUpsertMany).toHaveBeenCalledWith('conn-existing', [
+      expect.objectContaining({ description: 'trusted', toolName: 'GMAIL_TRUSTED' }),
+    ]);
+    expect(mocks.connectorToolDeleteToolsNotIn).toHaveBeenCalledWith('conn-existing', [
+      'GMAIL_TRUSTED',
+    ]);
   });
 });
 

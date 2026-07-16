@@ -517,8 +517,9 @@ export const MANAGED_RESOURCE_MUTATION_REGISTRY = {
   },
 
   'composio.createConnection': {
-    classification: 'deny',
-    reason: 'Creates OAuth binding plus a complete connector definition from client metadata.',
+    classification: 'input-sensitive',
+    reason:
+      'Starts an owned personal OAuth binding and materializes only the fixed server Composio catalog.',
     resource: 'connectors',
   },
   'composio.deleteConnection': {
@@ -532,8 +533,9 @@ export const MANAGED_RESOURCE_MUTATION_REGISTRY = {
     resource: 'connectors',
   },
   'composio.updateComposioPlugin': {
-    classification: 'deny',
-    reason: 'Accepts client tool metadata and upserts a complete connector definition.',
+    classification: 'input-sensitive',
+    reason:
+      'Synchronizes an owned binding from server-confirmed ACTIVE state and trusted Composio tools.',
     resource: 'connectors',
   },
 
