@@ -1,4 +1,5 @@
 import { isRecord } from '@lobechat/utils/object';
+import type { AiModelType } from 'model-bank';
 
 import { PlatformAiCatalogRepository } from '../../repositories/platformAiCatalog';
 import type {
@@ -12,6 +13,7 @@ import type {
   PlatformResourceStatus,
 } from '../../schemas/platform';
 import type { LobeChatDatabase, Transaction } from '../../type';
+import { checksumPayload } from './checksum';
 
 export interface PlatformAiSecretState {
   configured: boolean;
@@ -35,12 +37,13 @@ export interface PlatformAiModelDraftView {
   settings: PlatformAiModelSettings;
   sort: number;
   status: PlatformResourceStatus;
-  type: string;
+  type: AiModelType;
 }
 
 export interface PlatformAiProviderDraftView {
   checkModel: string | null;
   config: PlatformAiProviderConfig;
+  connectionTest: PlatformAiConnectionTestView | null;
   description: string | null;
   displayName: string;
   enabled: boolean;
@@ -56,6 +59,23 @@ export interface PlatformAiProviderDraftView {
   source: string;
   status: PlatformResourceStatus;
 }
+
+export interface PlatformAiConnectionTestView {
+  errorCategory: 'auth' | 'network' | 'rate_limit' | 'provider' | 'invalid_config' | null;
+  latencyMs: number | null;
+  sanitizedMessage: string;
+  stale: boolean;
+  status: 'pending' | 'success' | 'failure';
+  testedAt: Date;
+  testedDraftToken: string;
+  testedRevision: number;
+}
+
+/** Connection-test bookkeeping never changes the catalog draft identity. */
+export const platformAiCatalogDraftToken = (draft: PlatformAiProviderDraftView): string => {
+  const { connectionTest: _connectionTest, ...catalogDraft } = draft;
+  return checksumPayload({ draft: catalogDraft, revision: draft.revision });
+};
 
 /** Snapshot persisted in `platform_resource_revisions`; never contains ciphertext. */
 export interface PlatformAiProviderRevisionPayload {
@@ -99,8 +119,24 @@ export class PlatformAiCatalogModel {
     const provider = await this.repository.getProvider(id);
     if (!provider) return undefined;
     const models = await this.repository.listModels(provider.id);
-    return {
+    const draft: PlatformAiProviderDraftView = {
       checkModel: provider.checkModel ?? null,
+      connectionTest:
+        provider.connectionTestStatus &&
+        provider.connectionTestedAt &&
+        provider.connectionTestedDraftToken &&
+        provider.connectionTestedRevision !== null
+          ? {
+              errorCategory: provider.connectionTestErrorCategory ?? null,
+              latencyMs: provider.connectionTestLatencyMs ?? null,
+              sanitizedMessage: provider.connectionTestSanitizedMessage ?? '',
+              stale: false,
+              status: provider.connectionTestStatus,
+              testedAt: provider.connectionTestedAt,
+              testedDraftToken: provider.connectionTestedDraftToken,
+              testedRevision: provider.connectionTestedRevision,
+            }
+          : null,
       config: provider.config,
       description: provider.description ?? null,
       displayName: provider.displayName,
@@ -121,6 +157,11 @@ export class PlatformAiCatalogModel {
       source: provider.source,
       status: provider.status,
     };
+    if (draft.connectionTest) {
+      draft.connectionTest.stale =
+        draft.connectionTest.testedDraftToken !== platformAiCatalogDraftToken(draft);
+    }
+    return draft;
   };
 
   listProviders = async (params: {
@@ -135,6 +176,7 @@ export class PlatformAiCatalogModel {
     return {
       items: page.items.map((provider) => ({
         checkModel: provider.checkModel ?? null,
+        connectionTest: null,
         config: provider.config,
         description: provider.description ?? null,
         displayName: provider.displayName,
@@ -214,7 +256,7 @@ export class PlatformAiCatalogModel {
   ): Promise<PlatformAiProviderRevisionPayload | null> => {
     const view = await this.getProvider(id);
     if (!view) return null;
-    const { models, secret, ...provider } = view;
+    const { connectionTest: _connectionTest, models, secret, ...provider } = view;
     return {
       models,
       provider: {

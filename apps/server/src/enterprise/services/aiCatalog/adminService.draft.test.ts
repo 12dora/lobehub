@@ -32,6 +32,146 @@ beforeEach(cleanup);
 afterEach(cleanup);
 
 describe('AiCatalogAdminService provider draft mutations', () => {
+  it('persists sanitized connection state and marks it stale after any draft mutation', async () => {
+    const testedService = new AiCatalogAdminService(
+      db,
+      new PlatformSecretService({ keyProvider }),
+      {
+        connectionProbe: async () => {},
+      },
+    );
+    const created = await testedService.createProviderDraft('admin', {
+      config: { endpoint: 'https://private-test-state.example.test/v1' },
+      displayName: 'Tested',
+      enabled: true,
+      providerKey: 'tested',
+      reason: 'create',
+      secret: { operation: 'replace', value: 'connection-state-secret' },
+      source: 'custom',
+    });
+
+    const result = await testedService.testProvider('admin', {
+      id: created.id,
+      reason: 'test current draft',
+    });
+    expect(result.status).toBe('success');
+    let detail = await testedService.getDetail(created.id);
+    expect(detail.draft.connectionTest).toMatchObject({
+      stale: false,
+      status: 'success',
+      testedRevision: 0,
+    });
+    const stateJson = JSON.stringify(detail.draft.connectionTest);
+    expect(stateJson).not.toContain('connection-state-secret');
+    expect(stateJson).not.toContain('private-test-state.example.test');
+    expect(stateJson).not.toContain(created.secret.fingerprint!);
+
+    await testedService.updateProviderDraft('admin', {
+      displayName: 'Mutated after test',
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: 0,
+      id: created.id,
+      reason: 'mutate',
+    });
+    detail = await testedService.getDetail(created.id);
+    expect(detail.draft.connectionTest).toMatchObject({ stale: true, status: 'success' });
+  });
+
+  it('uses an attempt CAS so a slower old probe cannot overwrite a newer result', async () => {
+    const probes: Array<{
+      entered: () => void;
+      enteredPromise: Promise<void>;
+      promise: Promise<void>;
+      reject: (error: Error) => void;
+      resolve: () => void;
+    }> = [];
+    const createProbe = () => {
+      let entered!: () => void;
+      let reject!: (error: Error) => void;
+      let resolve!: () => void;
+      const enteredPromise = new Promise<void>((done) => {
+        entered = done;
+      });
+      const promise = new Promise<void>((done, fail) => {
+        resolve = done;
+        reject = fail;
+      });
+      return { entered, enteredPromise, promise, reject, resolve };
+    };
+    const first = createProbe();
+    const second = createProbe();
+    probes.push(first, second);
+    let probeIndex = 0;
+    const testedService = new AiCatalogAdminService(
+      db,
+      new PlatformSecretService({ keyProvider }),
+      {
+        connectionProbe: async () => {
+          const probe = probes[probeIndex++];
+          probe.entered();
+          await probe.promise;
+        },
+      },
+    );
+    const created = await testedService.createProviderDraft('admin', {
+      displayName: 'Concurrent',
+      enabled: true,
+      providerKey: 'concurrent',
+      reason: 'create',
+      secret: { operation: 'replace', value: 'concurrent-secret' },
+      source: 'custom',
+    });
+
+    const oldAttempt = testedService.testProvider('admin', { id: created.id, reason: 'old' });
+    await first.enteredPromise;
+    const newAttempt = testedService.testProvider('admin', { id: created.id, reason: 'new' });
+    await second.enteredPromise;
+    second.resolve();
+    await expect(newAttempt).resolves.toMatchObject({ status: 'success' });
+    first.reject(new Error('older probe failed'));
+    await expect(oldAttempt).resolves.toMatchObject({ status: 'failure' });
+
+    expect((await testedService.getDetail(created.id)).draft.connectionTest).toMatchObject({
+      stale: false,
+      status: 'success',
+    });
+  });
+
+  it('persists only sanitized failure metadata', async () => {
+    const failingService = new AiCatalogAdminService(
+      db,
+      new PlatformSecretService({ keyProvider }),
+      {
+        connectionProbe: async () => {
+          throw new Error(
+            'Unauthorized sk-private-connection-value at https://private-failure.example/v1',
+          );
+        },
+      },
+    );
+    const created = await failingService.createProviderDraft('admin', {
+      displayName: 'Failure',
+      enabled: true,
+      providerKey: 'failure',
+      reason: 'create',
+      secret: { operation: 'replace', value: 'failure-secret' },
+      source: 'custom',
+    });
+    await expect(
+      failingService.testProvider('admin', { id: created.id, reason: 'test failure' }),
+    ).resolves.toMatchObject({ status: 'failure' });
+    const connectionTest = (await failingService.getDetail(created.id)).draft.connectionTest;
+    expect(connectionTest).toMatchObject({
+      errorCategory: 'auth',
+      stale: false,
+      status: 'failure',
+    });
+    const json = JSON.stringify(connectionTest);
+    expect(json).not.toContain('private-failure.example');
+    expect(json).not.toContain('sk-private-connection-value');
+    expect(json).not.toContain('failure-secret');
+  });
+
   it('creates and reads a secret-safe draft with a CAS token and success audit', async () => {
     const created = await service.createProviderDraft('admin', {
       displayName: 'Alpha',

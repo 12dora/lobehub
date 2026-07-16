@@ -14,6 +14,7 @@ import { throwEnterpriseError } from '../guards/enterpriseErrors';
 import { withAnyPlatformPermission, withPlatformPermission } from '../guards/platformPermission';
 import { assertRecentReauth } from '../guards/reauth';
 import { AdminUserNotFoundError, AdminUserService } from '../services/adminUserService';
+import { ensureAiCatalogReadinessRegistered } from '../services/aiCatalog';
 import { EasyauthSyncService } from '../services/easyauthSync';
 import { PlatformAuditService } from '../services/platformAudit';
 import { LastSuperAdminError, PlatformRbacService } from '../services/platformRbac';
@@ -23,6 +24,8 @@ import { adminSettingsRouter } from './admin/settings';
 import { adminUsersRouter } from './admin/users';
 
 const adminBase = authedProcedure.use(serverDatabase).use(withActiveUser());
+
+ensureAiCatalogReadinessRegistered();
 
 export const adminAuthRouter = router({
   /**

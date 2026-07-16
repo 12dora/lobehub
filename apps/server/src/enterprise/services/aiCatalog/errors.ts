@@ -1,3 +1,5 @@
+import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
+
 export interface AiCatalogDependent {
   blocking: boolean;
   label: string;
@@ -5,7 +7,27 @@ export interface AiCatalogDependent {
   resourceType: string;
 }
 
-export class AiCatalogNotFoundError extends Error {}
+export class AiCatalogNotFoundError extends Error {
+  readonly code = PLATFORM_ERROR_CODES.PLATFORM_NOT_FOUND;
+
+  constructor() {
+    super(PLATFORM_ERROR_CODES.PLATFORM_NOT_FOUND);
+  }
+}
+
+export class AiCatalogModelNotPublishedError extends Error {
+  readonly code = PLATFORM_ERROR_CODES.PLATFORM_AI_MODEL_NOT_PUBLISHED;
+  readonly errorType = PLATFORM_ERROR_CODES.PLATFORM_AI_MODEL_NOT_PUBLISHED;
+
+  constructor(model: string, operation: string) {
+    super(PLATFORM_ERROR_CODES.PLATFORM_AI_MODEL_NOT_PUBLISHED);
+    this.name = 'AiCatalogModelNotPublishedError';
+    Object.defineProperties(this, {
+      model: { enumerable: false, value: model },
+      operation: { enumerable: false, value: operation },
+    });
+  }
+}
 
 export class AiCatalogValidationError extends Error {
   readonly issues: string[];
