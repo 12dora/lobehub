@@ -27,6 +27,9 @@ export const MAX_PLATFORM_CONNECTOR_TOOLS = 1000;
 const boundedLimit = (limit?: number): number =>
   Math.max(1, Math.min(limit ?? DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE));
 
+const isRootDatabase = (db: LobeChatDatabase | Transaction): db is LobeChatDatabase =>
+  'transaction' in db;
+
 export interface PlatformConnectorCursor {
   connectorKey: string;
   id: string;
@@ -62,6 +65,7 @@ export interface PlatformConnectorRevisionPayload extends Record<string, unknown
       | 'description'
       | 'displayName'
       | 'inputSchema'
+      | 'outputSchema'
       | 'platformPolicy'
       | 'requiresConfirmation'
       | 'riskLevel'
@@ -279,14 +283,17 @@ export class PlatformConnectorCatalogRepository {
     if (tools.length > MAX_PLATFORM_CONNECTOR_TOOLS) {
       throw new Error('PLATFORM_CONNECTOR_TOOL_LIMIT_EXCEEDED');
     }
-    await this.db
-      .delete(platformConnectorTools)
-      .where(eq(platformConnectorTools.connectorId, connectorId));
-    if (tools.length === 0) return [];
-    return this.db
-      .insert(platformConnectorTools)
-      .values(tools.map((tool) => ({ ...tool, connectorId })))
-      .returning();
+    const replace = async (db: LobeChatDatabase | Transaction) => {
+      await db
+        .delete(platformConnectorTools)
+        .where(eq(platformConnectorTools.connectorId, connectorId));
+      if (tools.length === 0) return [];
+      return db
+        .insert(platformConnectorTools)
+        .values(tools.map((tool) => ({ ...tool, connectorId })))
+        .returning();
+    };
+    return isRootDatabase(this.db) ? this.db.transaction(replace) : replace(this.db);
   };
 
   setPublishedPointerCas = async (params: {
@@ -375,18 +382,21 @@ export class PlatformConnectorCatalogRepository {
       .from(platformUserConnectorBindings)
       .where(and(...conditions))
       .orderBy(asc(platformUserConnectorBindings.id))
-      .limit(limit);
-    const ids = rows.map((row) => row.id);
+      .limit(limit + 1);
+    const hasMore = rows.length > limit;
+    const ids = (hasMore ? rows.slice(0, limit) : rows).map((row) => row.id);
     let revoked = 0;
     if (ids.length > 0) {
       const updated = await this.db
         .update(platformUserConnectorBindings)
         .set({
+          expiresAt: null,
           oauthTokenRef: null,
           revision: sqlIncrement(platformUserConnectorBindings.revision),
           revokedAt: params.revokedAt,
           scopes: [],
           status: 'revoked',
+          tokenFingerprint: null,
           updatedAt: params.revokedAt,
         })
         .where(
@@ -400,7 +410,7 @@ export class PlatformConnectorCatalogRepository {
       revoked = updated.length;
     }
     return {
-      nextCursor: ids.length === limit ? (ids.at(-1) ?? null) : null,
+      nextCursor: hasMore ? (ids.at(-1) ?? null) : null,
       revoked,
     };
   };
@@ -474,11 +484,13 @@ export class PlatformUserConnectorBindingRepository {
     const [row] = await this.db
       .update(platformUserConnectorBindings)
       .set({
+        expiresAt: null,
         oauthTokenRef: null,
         revision: sqlIncrement(platformUserConnectorBindings.revision),
         revokedAt,
         scopes: [],
         status: 'revoked',
+        tokenFingerprint: null,
         updatedAt: revokedAt,
       })
       .where(
