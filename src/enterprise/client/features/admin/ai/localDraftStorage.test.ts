@@ -64,7 +64,7 @@ describe('AI provider public draft storage', () => {
     expect(loadAiProviderPublicDraft('p-1')).toBeNull();
   });
 
-  it('preserves invalid public raw JSON and migrates the original object shape', () => {
+  it('drops invalid public raw JSON and migrates the original object shape', () => {
     values.set(
       'aihub.admin.ai.provider.public-draft.p-1',
       JSON.stringify({
@@ -91,7 +91,8 @@ describe('AI provider public draft storage', () => {
       ...migrated,
       draft: { ...migrated.draft, configText: '{' },
     });
-    expect(loadAiProviderPublicDraft('p-1')?.draft.configText).toBe('{');
+    expect(loadAiProviderPublicDraft('p-1')?.draft.configText).toContain('endpoint');
+    expect(isPublicRawJsonSafeForStorage('{')).toBe(false);
     expect([...values.values()][0]).not.toContain('secret');
   });
 
@@ -176,4 +177,53 @@ describe('AI provider public draft storage', () => {
       ),
     ).toBe(false);
   });
+
+  it.each([
+    ['configText', '{"SESSION-token":"session-marker"'],
+    ['configText', '{"Bearer_Token":"bearer-marker",'],
+    ['settingsText', "{'Set-Cookie':'cookie-marker'}"],
+    ['settingsText', '{"client.credentials":"credential-marker"'],
+    ['settingsText', '{"Authorization_Header":"authorization-marker"'],
+  ] as const)(
+    'never persists or reports sensitive material from malformed %s',
+    (field, malformedRaw) => {
+      const marker = malformedRaw.match(/[a-z]+-marker/i)?.[0] ?? 'sensitive-marker';
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const consoleLog = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const baseDraft = {
+        checkModel: null,
+        configText: '{"safeConfig":true}',
+        description: null,
+        displayName: 'Original',
+        enabled: true,
+        fetchOnClient: false,
+        logo: null,
+        settingsText: '{"safeSettings":true}',
+        sort: 0,
+      };
+
+      expect(isPublicRawJsonSafeForStorage(malformedRaw)).toBe(false);
+      expect(() =>
+        saveAiProviderPublicDraft('p-malformed', {
+          baseDraft,
+          baseRevision: 1,
+          draft: { ...baseDraft, [field]: malformedRaw, displayName: 'Recover public name' },
+          draftToken: 'a'.repeat(64),
+          savedAt: new Date(0).toISOString(),
+        }),
+      ).not.toThrow();
+
+      const stored = [...values.values()][0]!;
+      expect(stored).not.toContain(marker);
+      expect(stored).not.toContain(malformedRaw);
+      expect(loadAiProviderPublicDraft('p-malformed')?.draft).toMatchObject({
+        [field]: baseDraft[field],
+        displayName: 'Recover public name',
+      });
+      expect(consoleError).not.toHaveBeenCalled();
+      expect(consoleLog).not.toHaveBeenCalled();
+      expect(consoleWarn).not.toHaveBeenCalled();
+    },
+  );
 });
