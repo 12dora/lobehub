@@ -60,6 +60,7 @@ const createHarness = () => {
     preflight: vi.fn(async () => ({ policyVersion: 1 })),
   } as unknown as ConnectorOutboundClient;
   const preflightAuthorization = vi.fn(async () => {});
+  const preflightToken = vi.fn(async () => {});
   const exchangeCode = vi.fn(
     async (_request: {
       clientId: string;
@@ -101,6 +102,7 @@ const createHarness = () => {
   const outbound = {
     exchangeCode,
     preflightAuthorization,
+    preflightToken,
     refresh,
   } as unknown as ConnectorOAuthOutboundAdapter;
   const dependencies: ConnectorOAuthRuntimeDependencies = {

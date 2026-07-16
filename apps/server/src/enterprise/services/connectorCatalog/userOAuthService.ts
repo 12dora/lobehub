@@ -287,6 +287,7 @@ export class UserConnectorOAuthService {
     ) {
       throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_BINDING_NOT_FOUND');
     }
+    await this.dependencies.outbound.preflightToken(oauth.tokenEndpoint);
     const currentSecret = await this.dependencies.secrets.resolveSecretRef({
       connectorId,
       ref: binding.oauthTokenRef,
@@ -485,6 +486,7 @@ export class ConnectorOAuthCallbackService {
       ) {
         throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_OAUTH_CALLBACK_INVALID');
       }
+      await this.dependencies.outbound.preflightToken(oauth.tokenEndpoint);
       const pkce = await this.dependencies.secrets.resolveSecretRef({
         connectorId: state.connectorId,
         ref: state.pkceVerifierRef,
