@@ -20,6 +20,10 @@ describe('enterprise path boundaries', () => {
     expect(ENTERPRISE_UPSTREAM_MOUNT_POINTS).toContain('apps/server/src/routers/lambda/index.ts');
     expect(ENTERPRISE_UPSTREAM_MOUNT_POINTS).toContain('apps/server/src/globalConfig/index.ts');
     expect(ENTERPRISE_UPSTREAM_MOUNT_POINTS).toContain('packages/types/src/serverConfig.ts');
+    expect(ENTERPRISE_UPSTREAM_MOUNT_POINTS).toContain('apps/server/src/routers/lambda/agent.ts');
+    expect(ENTERPRISE_UPSTREAM_MOUNT_POINTS).toContain(
+      'apps/server/src/routers/lambda/connector.ts',
+    );
   });
 
   it('treats enterprise trees as owned', () => {

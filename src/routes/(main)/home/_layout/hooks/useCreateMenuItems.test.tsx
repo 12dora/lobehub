@@ -15,6 +15,7 @@ const loadGroupsMock = vi.hoisted(() => vi.fn());
 const createNewPageMock = vi.hoisted(() => vi.fn());
 const messageErrorMock = vi.hoisted(() => vi.fn());
 const navigateMock = vi.hoisted(() => vi.fn());
+const managedAgentsRef = vi.hoisted(() => ({ current: false }));
 
 vi.mock('@lobechat/const', () => ({
   isDesktop: true,
@@ -83,6 +84,15 @@ vi.mock('@/components/ChatGroupWizard/templates', () => ({
   useGroupTemplates: () => [],
 }));
 
+vi.mock('@/features/ManagedResources', () => ({
+  useManagedResource: () => ({
+    error: null,
+    loading: false,
+    managed: managedAgentsRef.current,
+    refresh: vi.fn(),
+  }),
+}));
+
 vi.mock('@/routes/(main)/home/_layout/Body/Agent/ModalProvider', () => ({
   useOptionalAgentModal: () => undefined,
 }));
@@ -146,6 +156,21 @@ const isActionItem = (
 describe('useCreateMenuItems', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    managedAgentsRef.current = false;
+  });
+
+  it('removes every agent definition creation entry while keeping non-agent actions', () => {
+    managedAgentsRef.current = true;
+    const { result } = renderHook(() => useCreateMenuItems());
+
+    expect(result.current.createAgentMenuItem()).toBeNull();
+    expect(result.current.createMarketAgentMenuItem()).toBeNull();
+    expect(result.current.createHeterogeneousAgentMenuItems()).toEqual([]);
+    expect(
+      result.current
+        .createTopLevelMenuItems()
+        .flatMap((item) => (isActionItem(item) ? [item.key] : [])),
+    ).toEqual(['newGroupChat', 'newPage']);
   });
 
   it('adds the market agent entry to the top-level create menu', async () => {

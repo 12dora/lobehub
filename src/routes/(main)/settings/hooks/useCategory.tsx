@@ -27,6 +27,7 @@ import {
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { useManagedResourceCapabilities } from '@/features/ManagedResources';
 import { useElectronStore } from '@/store/electron';
 import { electronSyncSelectors } from '@/store/electron/selectors';
 import { SettingsTabs } from '@/store/global/initialState';
@@ -65,6 +66,7 @@ export const useCategory = () => {
   const { t: tAuth } = useTranslation('auth');
   const { t: tSubscription } = useTranslation('subscription');
   const mobile = useServerConfigStore((s) => s.isMobile);
+  const managedResources = useManagedResourceCapabilities();
   const { hideDocs, showApiKeyManage, showProvider } = useServerConfigStore(featureFlagsSelectors);
   const [avatar, username] = useUserStore((s) => [
     userProfileSelectors.userAvatar(s),
@@ -147,17 +149,18 @@ export const useCategory = () => {
     const agentItems: CategoryItem[] = [
       // Provider settings should not depend on Advanced tools: new users may need
       // non-LobeHub providers, and desktop users often bring their own API keys.
-      showProvider && {
-        icon: Brain,
-        key: SettingsTabs.Provider,
-        label: t('tab.provider'),
-      },
-      {
+      showProvider &&
+        !managedResources.aiProviders && {
+          icon: Brain,
+          key: SettingsTabs.Provider,
+          label: t('tab.provider'),
+        },
+      !managedResources.aiModels && {
         icon: Sparkles,
         key: SettingsTabs.ServiceModel,
         label: t('tab.serviceModel'),
       },
-      {
+      !managedResources.skills && {
         icon: SkillsIcon,
         key: SettingsTabs.Skill,
         label: t('tab.skill'),
@@ -245,6 +248,9 @@ export const useCategory = () => {
     mobile,
     showApiKeyManage,
     showProvider,
+    managedResources.aiModels,
+    managedResources.aiProviders,
+    managedResources.skills,
     isDevMode,
     avatarUrl,
     username,
