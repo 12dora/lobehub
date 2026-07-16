@@ -1,7 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   clearAiProviderPublicDraft,
+  isPublicRawJsonSafeForStorage,
   loadAiProviderPublicDraft,
   saveAiProviderPublicDraft,
 } from './localDraftStorage';
@@ -19,6 +20,8 @@ describe('AI provider public draft storage', () => {
       },
     });
   });
+
+  afterEach(() => vi.restoreAllMocks());
 
   it('persists public fields without accepting a secret field', () => {
     const payload = {
@@ -114,5 +117,63 @@ describe('AI provider public draft storage', () => {
     });
     expect([...values.values()][0]).not.toContain('must-never-persist');
     expect(loadAiProviderPublicDraft('p-1')).not.toHaveProperty('draft.secret');
+  });
+
+  it.each([
+    ['apiKey', '{"apiKey":"api-key-marker"}'],
+    ['token', '{"nested":{"accessToken":"token-marker"}}'],
+    ['password', '{"password":"password-marker"}'],
+    [
+      'customHeaders.Authorization',
+      '{"customHeaders":{"Authorization":"Bearer authorization-marker"}}',
+    ],
+    ['credential URL', '{"endpoint":"https://user:password@example.test/v1"}'],
+    ['credential query', '{"endpoint":"https://example.test/v1?api_key=query-marker"}'],
+    ['known value marker', '{"note":"sk-12345678marker"}'],
+  ])('drops sensitive %s raw JSON while preserving other public fields', (_label, configText) => {
+    const marker = configText.match(/[\w-]+marker/)?.[0] ?? 'password';
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const consoleLog = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const baseDraft = {
+      checkModel: null,
+      configText: '{"safe":true}',
+      description: null,
+      displayName: 'Original',
+      enabled: true,
+      fetchOnClient: false,
+      logo: null,
+      settingsText: '{}',
+      sort: 0,
+    };
+
+    saveAiProviderPublicDraft('p-1', {
+      baseDraft,
+      baseRevision: 1,
+      draft: { ...baseDraft, configText, displayName: 'Recover this name' },
+      draftToken: 'a'.repeat(64),
+      savedAt: new Date(0).toISOString(),
+    });
+
+    const stored = [...values.values()][0]!;
+    expect(stored).not.toContain(marker);
+    expect(loadAiProviderPublicDraft('p-1')?.draft).toMatchObject({
+      configText: '{"safe":true}',
+      displayName: 'Recover this name',
+    });
+    expect(consoleError).not.toHaveBeenCalled();
+    expect(consoleLog).not.toHaveBeenCalled();
+    expect(consoleWarn).not.toHaveBeenCalled();
+  });
+
+  it('allows benign custom headers but rejects Authorization inside customHeaders', () => {
+    expect(isPublicRawJsonSafeForStorage('{"customHeaders":{"X-Request-ID":"public-value"}}')).toBe(
+      true,
+    );
+    expect(
+      isPublicRawJsonSafeForStorage(
+        '{"customHeaders":{"Authorization":"Bearer authorization-marker"}}',
+      ),
+    ).toBe(false);
   });
 });
