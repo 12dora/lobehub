@@ -37,6 +37,7 @@ import type {
   AdminAiProviderUpdateDraftInput,
   AiSecretMutation,
 } from '../types';
+import { createAiCatalogWriteEpochGuard } from '../writeEpochGuard';
 import { refreshAdminAiProvider } from './useAdminAiCatalog';
 import type { useAiProviderEditor } from './useAiProviderEditor';
 
@@ -62,6 +63,8 @@ export const useAiProviderActions = ({
   const [refreshRetrying, setRefreshRetrying] = useState(false);
   const refreshGenerationRef = useRef(0);
   const committedBaseFingerprintRef = useRef<string | null>(null);
+  const writeGuardRef = useRef(createAiCatalogWriteEpochGuard());
+  const writeGuard = writeGuardRef.current;
   const reloadRequired = isAiProviderWriteLocked({ refreshFailed, refreshPending });
 
   const errorText = useCallback(
@@ -78,6 +81,7 @@ export const useAiProviderActions = ({
     async (cause: unknown) => {
       const mapped = mapEnterpriseError(cause);
       if (mapped?.code === 'PLATFORM_REVISION_CONFLICT') {
+        writeGuard.invalidate();
         editor.setConflict(true);
         try {
           await refreshAdminAiProvider(data.draft.id);
@@ -87,7 +91,7 @@ export const useAiProviderActions = ({
       }
       editor.setActionError(errorText(cause));
     },
-    [data.draft.id, editor, errorText],
+    [data.draft.id, editor, errorText, writeGuard],
   );
 
   const commitAndRefresh = useCallback(
@@ -107,6 +111,7 @@ export const useAiProviderActions = ({
           }
         },
         onCommitted: (result) => {
+          writeGuard.lock();
           committedBaseFingerprintRef.current = previousFingerprint;
           if (params.clearTest !== false) editor.invalidateTest();
           editor.setActionError(null);
@@ -116,6 +121,7 @@ export const useAiProviderActions = ({
         },
         onRefreshed: () => {
           if (refreshGenerationRef.current === generation) {
+            writeGuard.unlock();
             committedBaseFingerprintRef.current = null;
             setRefreshFailed(false);
             setRefreshPending(false);
@@ -129,11 +135,12 @@ export const useAiProviderActions = ({
         },
       });
     },
-    [data, editor],
+    [data, editor, writeGuard],
   );
 
   const retryRefresh = useCallback(async () => {
     const generation = ++refreshGenerationRef.current;
+    writeGuard.lock();
     setRefreshRetrying(true);
     setRefreshPending(true);
     try {
@@ -143,6 +150,7 @@ export const useAiProviderActions = ({
         throw new Error('Committed Provider snapshot has not advanced');
       }
       if (refreshGenerationRef.current === generation) {
+        writeGuard.unlock();
         committedBaseFingerprintRef.current = null;
         setRefreshFailed(false);
         setRefreshPending(false);
@@ -155,7 +163,7 @@ export const useAiProviderActions = ({
     } finally {
       if (refreshGenerationRef.current === generation) setRefreshRetrying(false);
     }
-  }, [data.draft.id]);
+  }, [data.draft.id, writeGuard]);
 
   const openSave = useCallback(() => {
     if (
@@ -168,6 +176,8 @@ export const useAiProviderActions = ({
     ) {
       return;
     }
+    const epoch = writeGuard.begin();
+    if (epoch === null) return;
     const draftSnapshot = structuredClone(editor.draft);
     openReasonModal({
       authMethod: authMethod ?? undefined,
@@ -181,6 +191,7 @@ export const useAiProviderActions = ({
         }),
       description: t('aiCatalog.actions.save.desc'),
       onSubmit: async (input) => {
+        writeGuard.assertCurrent(epoch);
         editor.setSaveState('saving');
         try {
           await commitAndRefresh({
@@ -210,6 +221,7 @@ export const useAiProviderActions = ({
     permissions,
     reloadRequired,
     t,
+    writeGuard,
   ]);
 
   const openTest = useCallback(() => {
@@ -222,11 +234,14 @@ export const useAiProviderActions = ({
     ) {
       return;
     }
+    const epoch = writeGuard.begin();
+    if (epoch === null) return;
     openReasonModal({
       authMethod: authMethod ?? undefined,
       buildPayload: (reason) => ({ id: data.draft.id, reason }),
       description: t('aiCatalog.actions.test.desc'),
       onSubmit: async (input) => {
+        writeGuard.assertCurrent(epoch);
         try {
           await commitAndRefresh({
             clearTest: false,
@@ -255,6 +270,7 @@ export const useAiProviderActions = ({
     permissions,
     reloadRequired,
     t,
+    writeGuard,
   ]);
 
   const openPublish = useCallback(() => {
@@ -268,6 +284,8 @@ export const useAiProviderActions = ({
     ) {
       return;
     }
+    const epoch = writeGuard.begin();
+    if (epoch === null) return;
     const snapshot = {
       expectedDraftToken: data.draftToken,
       expectedRevision: data.baseRevision,
@@ -279,6 +297,7 @@ export const useAiProviderActions = ({
       description: t('aiCatalog.actions.publish.desc'),
       impact: t('aiCatalog.actions.publish.impact'),
       onSubmit: async (input) => {
+        writeGuard.assertCurrent(epoch);
         try {
           await commitAndRefresh({
             commit: () =>
@@ -303,6 +322,7 @@ export const useAiProviderActions = ({
     permissions,
     reloadRequired,
     t,
+    writeGuard,
   ]);
 
   const primaryAction = reloadRequired
@@ -329,6 +349,8 @@ export const useAiProviderActions = ({
 
   const handleSecret = useCallback(() => {
     if (reloadRequired || editor.dirty || editor.conflict || !permissions.canUpdateProvider) return;
+    const epoch = writeGuard.begin();
+    if (epoch === null) return;
     const snapshot = {
       expectedDraftToken: data.draftToken,
       expectedRevision: data.baseRevision,
@@ -339,6 +361,7 @@ export const useAiProviderActions = ({
       configured: data.draft.secret.configured,
       providerName: data.draft.displayName,
       onSubmit: async ({ reason, secret }: { reason: string; secret: AiSecretMutation }) => {
+        writeGuard.assertCurrent(epoch);
         try {
           await commitAndRefresh({
             commit: () => adminAiCatalogService.updateProvider({ ...snapshot, reason, secret }),
@@ -362,6 +385,7 @@ export const useAiProviderActions = ({
     permissions,
     reloadRequired,
     t,
+    writeGuard,
   ]);
 
   const handleArchive = useCallback(() => {
@@ -374,6 +398,8 @@ export const useAiProviderActions = ({
     ) {
       return;
     }
+    const epoch = writeGuard.begin();
+    if (epoch === null) return;
     const snapshot = {
       expectedDraftToken: data.draftToken,
       expectedRevision: data.baseRevision,
@@ -385,6 +411,7 @@ export const useAiProviderActions = ({
       danger: true,
       description: t('aiCatalog.actions.archive.desc'),
       onSubmit: async (input) => {
+        writeGuard.assertCurrent(epoch);
         try {
           await commitAndRefresh({
             commit: () =>
@@ -409,6 +436,7 @@ export const useAiProviderActions = ({
     permissions,
     reloadRequired,
     t,
+    writeGuard,
   ]);
 
   const handleRollback = useCallback(
@@ -416,6 +444,8 @@ export const useAiProviderActions = ({
       if (reloadRequired || editor.dirty || editor.conflict || !permissions.canPublishProvider) {
         return;
       }
+      const epoch = writeGuard.begin();
+      if (epoch === null) return;
       const snapshot = {
         expectedDraftToken: data.draftToken,
         expectedRevision: data.baseRevision,
@@ -428,6 +458,7 @@ export const useAiProviderActions = ({
         danger: true,
         description: t('aiCatalog.actions.rollback.desc', { revision: targetRevision }),
         onSubmit: async (input) => {
+          writeGuard.assertCurrent(epoch);
           try {
             await commitAndRefresh({
               commit: () =>
@@ -453,15 +484,19 @@ export const useAiProviderActions = ({
       permissions,
       reloadRequired,
       t,
+      writeGuard,
     ],
   );
 
   const handleCreateModel = useCallback(() => {
     if (reloadRequired || editor.dirty || editor.conflict || !permissions.canCreateModel) return;
+    const epoch = writeGuard.begin();
+    if (epoch === null) return;
     const draftToken = data.draftToken;
     openModelEditorModal({
       authMethod: authMethod ?? undefined,
       onSubmit: async ({ fields, modelKey, reason }) => {
+        writeGuard.assertCurrent(epoch);
         setActionLoadingId('models');
         try {
           const input: AdminAiModelCreateInput = {
@@ -492,6 +527,7 @@ export const useAiProviderActions = ({
     permissions,
     reloadRequired,
     t,
+    writeGuard,
   ]);
 
   const handleEditModel = useCallback(
@@ -505,18 +541,22 @@ export const useAiProviderActions = ({
       ) {
         return;
       }
+      const epoch = writeGuard.begin();
+      if (epoch === null) return;
       setActionLoadingId(model.id);
       try {
         const dependents = await adminAiCatalogService.getModelDependents({
           id: model.id,
           providerId: data.draft.id,
         });
+        if (!writeGuard.isCurrent(epoch)) return;
         const draftToken = data.draftToken;
         openModelEditorModal({
           authMethod: authMethod ?? undefined,
           disableAvailability: model.enabled && hasBlockingModelDependents(dependents),
           model,
           onSubmit: async ({ fields, reason }) => {
+            writeGuard.assertCurrent(epoch);
             setActionLoadingId(model.id);
             try {
               const input: AdminAiModelUpdateInput = {
@@ -540,6 +580,7 @@ export const useAiProviderActions = ({
           },
         });
       } catch (cause) {
+        if (!writeGuard.isCurrent(epoch)) return;
         editor.setActionError(errorText(cause));
         toast.error(errorText(cause));
       } finally {
@@ -557,6 +598,7 @@ export const useAiProviderActions = ({
       commitAndRefresh,
       reloadRequired,
       t,
+      writeGuard,
     ],
   );
 
@@ -571,12 +613,15 @@ export const useAiProviderActions = ({
       ) {
         return;
       }
+      const epoch = writeGuard.begin();
+      if (epoch === null) return;
       setActionLoadingId(model.id);
       try {
         const dependents = await adminAiCatalogService.getModelDependents({
           id: model.id,
           providerId: data.draft.id,
         });
+        if (!writeGuard.isCurrent(epoch)) return;
         const blockers = dependents.items.filter((item) => item.blocking);
         if (blockers.length > 0) {
           confirmModal({
@@ -606,6 +651,7 @@ export const useAiProviderActions = ({
           danger: true,
           description: t('aiCatalog.actions.deleteModel.desc'),
           onSubmit: async (input) => {
+            writeGuard.assertCurrent(epoch);
             setActionLoadingId(model.id);
             try {
               await commitAndRefresh({
@@ -624,6 +670,7 @@ export const useAiProviderActions = ({
           title: t('aiCatalog.actions.deleteModel.title'),
         });
       } catch (cause) {
+        if (!writeGuard.isCurrent(epoch)) return;
         editor.setActionError(errorText(cause));
         toast.error(errorText(cause));
       } finally {
@@ -641,6 +688,7 @@ export const useAiProviderActions = ({
       commitAndRefresh,
       reloadRequired,
       t,
+      writeGuard,
     ],
   );
 
@@ -648,6 +696,8 @@ export const useAiProviderActions = ({
     (orderedIds: string[]) => {
       if (reloadRequired || editor.dirty || editor.conflict || !permissions.canReorderModels)
         return;
+      const epoch = writeGuard.begin();
+      if (epoch === null) return;
       const items = buildCompleteModelOrder(
         data.draft.models.map((model) => model.id),
         orderedIds,
@@ -667,6 +717,7 @@ export const useAiProviderActions = ({
         }),
         description: t('aiCatalog.actions.reorder.desc'),
         onSubmit: async (input) => {
+          writeGuard.assertCurrent(epoch);
           setActionLoadingId('models');
           try {
             await commitAndRefresh({
@@ -694,6 +745,7 @@ export const useAiProviderActions = ({
       permissions,
       reloadRequired,
       t,
+      writeGuard,
     ],
   );
 
