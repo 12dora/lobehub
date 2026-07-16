@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, ilike, lt, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, ilike, inArray, lt, or, sql } from 'drizzle-orm';
 
 import {
   type NewPlatformSkill,
@@ -219,6 +219,30 @@ export class PlatformSkillCatalogRepository {
       items,
       nextCursor: hasMore && last ? { createdAt: last.createdAt, id: last.id } : null,
     };
+  };
+
+  getLastPublishedRevisions = async (
+    skillId: string,
+    versionIds: string[],
+  ): Promise<Map<string, number>> => {
+    if (versionIds.length === 0) return new Map();
+    const versionId = sql<string>`${platformResourceRevisions.payload}->>'versionId'`;
+    const rows = await this.db
+      .select({
+        lastPublishedRevision: sql<number>`MAX(${platformResourceRevisions.revision})`,
+        versionId,
+      })
+      .from(platformResourceRevisions)
+      .where(
+        and(
+          eq(platformResourceRevisions.resourceType, 'skill'),
+          eq(platformResourceRevisions.resourceId, skillId),
+          eq(platformResourceRevisions.status, 'published'),
+          inArray(versionId, versionIds),
+        ),
+      )
+      .groupBy(versionId);
+    return new Map(rows.map((row) => [row.versionId, Number(row.lastPublishedRevision)]));
   };
 
   listPublished = async (

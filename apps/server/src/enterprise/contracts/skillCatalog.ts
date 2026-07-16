@@ -212,6 +212,7 @@ export const immutableSkillVersionSchema = z
 
 export const skillVersionSummarySchema = immutableSkillVersionSchema
   .omit({ content: true, contentRef: true, manifest: true, resources: true })
+  .extend({ lastPublishedRevision: z.number().int().positive().nullable() })
   .strict();
 
 export const adminSkillListInputSchema = z
@@ -295,7 +296,6 @@ export const adminSkillUpdateDraftInputSchema = skillIdentityFieldsSchema
 
 export const adminSkillCreateVersionInputSchema = z
   .object({
-    checksum: checksumSchema,
     content: z.string().min(1).max(1_048_576),
     contentRef: skillContentRefSchema.nullable().default(null),
     expectedDraftToken: draftTokenSchema,
