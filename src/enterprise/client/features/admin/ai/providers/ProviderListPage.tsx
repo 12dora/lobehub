@@ -18,6 +18,12 @@ import { deriveAiCatalogPermissions } from '../controller';
 import { refreshAdminAiProviderLists, useFetchAdminAiProviders } from '../hooks/useAdminAiCatalog';
 import { commitThenScheduleRefresh } from '../mutationRefresh';
 import type { AdminAiProviderListInput, AdminAiProviderListItem } from '../types';
+import {
+  createUrlBackedTextFilter,
+  editUrlBackedTextFilter,
+  resolveUrlBackedTextCommit,
+  syncUrlBackedTextFilter,
+} from '../urlFilterController';
 import { openCreateProviderModal } from './openCreateProviderModal';
 
 const DEFAULT_LIMIT = 50;
@@ -43,7 +49,7 @@ const ProviderListPage = memo(() => {
   const enabled = enabledParam === 'true' ? true : enabledParam === 'false' ? false : undefined;
   const query = searchParams.get('q') ?? '';
   const source = searchParams.get('source') ?? '';
-  const [searchDraft, setSearchDraft] = useState(query);
+  const [searchFilter, setSearchFilter] = useState(() => createUrlBackedTextFilter(query));
   const [cursorStack, setCursorStack] = useState<(string | null)[]>([]);
   const [committedProviderId, setCommittedProviderId] = useState<string | null>(null);
   const [committedRefreshFailed, setCommittedRefreshFailed] = useState(false);
@@ -136,15 +142,20 @@ const ProviderListPage = memo(() => {
   );
 
   useEffect(() => {
+    setSearchFilter((current) => syncUrlBackedTextFilter(current, query));
+  }, [query]);
+
+  useEffect(() => {
     if (searchTimerRef.current) window.clearTimeout(searchTimerRef.current);
     searchTimerRef.current = window.setTimeout(() => {
-      if (searchDraft.trim() === query) return;
-      patchFilter('q', searchDraft.trim() || undefined);
+      const next = resolveUrlBackedTextCommit(searchFilter, query);
+      if (next === null) return;
+      patchFilter('q', next);
     }, SEARCH_DEBOUNCE_MS);
     return () => {
       if (searchTimerRef.current) window.clearTimeout(searchTimerRef.current);
     };
-  }, [patchFilter, query, searchDraft]);
+  }, [patchFilter, query, searchFilter]);
 
   const filtered = Boolean(status || enabledParam || query || source);
 
@@ -207,8 +218,10 @@ const ProviderListPage = memo(() => {
             aria-label={t('aiCatalog.providers.filters.query')}
             placeholder={t('aiCatalog.providers.filters.query')}
             style={{ minWidth: 240 }}
-            value={searchDraft}
-            onChange={(event) => setSearchDraft(event.target.value)}
+            value={searchFilter.draft}
+            onChange={(event) =>
+              setSearchFilter(editUrlBackedTextFilter(event.target.value, query))
+            }
           />
           <Select
             allowClear

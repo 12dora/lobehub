@@ -13,6 +13,12 @@ import DataTable from '../../primitives/DataTable';
 import StatusBadge from '../../primitives/StatusBadge';
 import { useFetchAdminAiModels } from '../hooks/useAdminAiCatalog';
 import type { AdminAiModelListInput, AdminAiModelListItem } from '../types';
+import {
+  createUrlBackedTextFilter,
+  editUrlBackedTextFilter,
+  resolveUrlBackedTextCommit,
+  syncUrlBackedTextFilter,
+} from '../urlFilterController';
 
 const DEFAULT_LIMIT = 50;
 const SEARCH_DEBOUNCE_MS = 300;
@@ -37,8 +43,8 @@ const ModelListPage = memo(() => {
   const query = searchParams.get('q') ?? '';
   const status = searchParams.get('status') as AdminAiModelListInput['status'];
   const type = searchParams.get('type') ?? '';
-  const [searchDraft, setSearchDraft] = useState(query);
-  const [providerDraft, setProviderDraft] = useState(provider);
+  const [searchFilter, setSearchFilter] = useState(() => createUrlBackedTextFilter(query));
+  const [providerFilter, setProviderFilter] = useState(() => createUrlBackedTextFilter(provider));
   const [cursorStack, setCursorStack] = useState<(string | null)[]>([]);
   const [limit, setLimit] = useState(DEFAULT_LIMIT);
   const timerRef = useRef<number | null>(null);
@@ -57,26 +63,36 @@ const ModelListPage = memo(() => {
   );
 
   useEffect(() => {
+    setSearchFilter((current) => syncUrlBackedTextFilter(current, query));
+  }, [query]);
+
+  useEffect(() => {
+    setProviderFilter((current) => syncUrlBackedTextFilter(current, provider));
+  }, [provider]);
+
+  useEffect(() => {
     if (timerRef.current) window.clearTimeout(timerRef.current);
     timerRef.current = window.setTimeout(() => {
-      if (searchDraft.trim() === query) return;
-      patchFilter('q', searchDraft.trim() || undefined);
+      const next = resolveUrlBackedTextCommit(searchFilter, query);
+      if (next === null) return;
+      patchFilter('q', next);
     }, SEARCH_DEBOUNCE_MS);
     return () => {
       if (timerRef.current) window.clearTimeout(timerRef.current);
     };
-  }, [patchFilter, query, searchDraft]);
+  }, [patchFilter, query, searchFilter]);
 
   useEffect(() => {
     if (providerTimerRef.current) window.clearTimeout(providerTimerRef.current);
     providerTimerRef.current = window.setTimeout(() => {
-      if (providerDraft.trim() === provider) return;
-      patchFilter('provider', providerDraft.trim() || undefined);
+      const next = resolveUrlBackedTextCommit(providerFilter, provider);
+      if (next === null) return;
+      patchFilter('provider', next);
     }, SEARCH_DEBOUNCE_MS);
     return () => {
       if (providerTimerRef.current) window.clearTimeout(providerTimerRef.current);
     };
-  }, [patchFilter, provider, providerDraft]);
+  }, [patchFilter, provider, providerFilter]);
 
   const input = useMemo<AdminAiModelListInput>(
     () => ({
@@ -157,16 +173,20 @@ const ModelListPage = memo(() => {
             aria-label={t('aiCatalog.models.filters.query')}
             placeholder={t('aiCatalog.models.filters.query')}
             style={{ minWidth: 220 }}
-            value={searchDraft}
-            onChange={(event) => setSearchDraft(event.target.value)}
+            value={searchFilter.draft}
+            onChange={(event) =>
+              setSearchFilter(editUrlBackedTextFilter(event.target.value, query))
+            }
           />
           <Input
             allowClear
             aria-label={t('aiCatalog.models.filters.provider')}
             placeholder={t('aiCatalog.models.filters.provider')}
             style={{ minWidth: 180 }}
-            value={providerDraft}
-            onChange={(event) => setProviderDraft(event.target.value)}
+            value={providerFilter.draft}
+            onChange={(event) =>
+              setProviderFilter(editUrlBackedTextFilter(event.target.value, provider))
+            }
           />
           <Select
             allowClear
