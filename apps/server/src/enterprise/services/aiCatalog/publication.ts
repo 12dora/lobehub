@@ -55,9 +55,50 @@ export interface AiCatalogPublicationOptions {
   invalidation?: PlatformConfigInvalidationPublisher;
   lifecycle?: {
     afterArchiveDependencyCheck?: () => Promise<void>;
+    afterModelDependencyCheck?: () => Promise<void>;
     afterPublishLock?: (tx: Transaction) => Promise<void>;
   };
 }
+
+const enabledModelReferences = (payload: Record<string, unknown> | null) => {
+  if (!payload || !isRecord(payload.provider) || !Array.isArray(payload.models)) return new Set();
+  const providerKey = payload.provider.providerKey;
+  if (typeof providerKey !== 'string' || payload.provider.enabled !== true) return new Set();
+  return new Set(
+    payload.models.flatMap((model) =>
+      isRecord(model) && model.enabled === true && typeof model.modelKey === 'string'
+        ? [`${providerKey}:${model.modelKey}`]
+        : [],
+    ),
+  );
+};
+
+const assertRemovedModelsUnused = async (
+  tx: Transaction,
+  currentPayload: Record<string, unknown> | null,
+  targetPayload: Record<string, unknown> | null,
+): Promise<boolean> => {
+  const current = enabledModelReferences(currentPayload);
+  const target = enabledModelReferences(targetPayload);
+  const removed = [...current].filter((reference) => !target.has(reference));
+  if (removed.length === 0) return false;
+  const dependents = (
+    await Promise.all(
+      removed.map((reference) => {
+        const separator = reference.indexOf(':');
+        return resolveAiCatalogDependents(
+          tx,
+          reference.slice(0, separator),
+          reference.slice(separator + 1),
+        );
+      }),
+    )
+  ).flat();
+  if (dependents.some((item) => item.blocking)) {
+    throw new AiCatalogResourceInUseError(dependents);
+  }
+  return true;
+};
 
 export class AiCatalogPublicationService {
   private readonly db: LobeChatDatabase;
@@ -152,136 +193,149 @@ export class AiCatalogPublicationService {
     expectedDraftToken: string,
     validateForPublish = true,
     validateArchiveDependents = false,
-  ): ResourcePointerAdapter => ({
-    assertLockedState: async (tx) => {
-      await this.lifecycle.afterPublishLock?.(tx);
-      if (validateArchiveDependents) await acquirePlatformDependencyPublicationLock(tx);
-      const draft = await new PlatformAiCatalogModel(tx).getProvider(providerId);
-      if (!draft) throw new AiCatalogNotFoundError();
-      if (aiCatalogDraftToken(draft) !== expectedDraftToken) {
-        throw new PlatformRevisionConflictError('Provider draft token changed');
-      }
-      if (validateArchiveDependents) {
-        const dependents = (
-          await Promise.all(
-            draft.models.map((model) =>
-              resolveAiCatalogDependents(tx, draft.providerKey, model.modelKey),
-            ),
-          )
-        ).flat();
-        if (dependents.some((item) => item.blocking)) {
-          throw new AiCatalogResourceInUseError(dependents);
+  ): ResourcePointerAdapter => {
+    let currentPublishedPayload: Record<string, unknown> | null = null;
+    return {
+      assertLockedState: async (tx, { currentRevision }) => {
+        await this.lifecycle.afterPublishLock?.(tx);
+        await acquirePlatformDependencyPublicationLock(tx);
+        const draft = await new PlatformAiCatalogModel(tx).getProvider(providerId);
+        if (!draft) throw new AiCatalogNotFoundError();
+        if (aiCatalogDraftToken(draft) !== expectedDraftToken) {
+          throw new PlatformRevisionConflictError('Provider draft token changed');
         }
-        await this.lifecycle.afterArchiveDependencyCheck?.();
-      }
-    },
-    lockAndGetRevision: async (tx) => {
-      const provider = await new PlatformAiCatalogRepository(tx).lockProvider(providerId);
-      if (!provider) throw new AiCatalogNotFoundError();
-      return provider.revision;
-    },
-    materializePublished: async (
-      tx,
-      { operation, payload, revision, secretFingerprint, status },
-    ) => {
-      if (!isRecord(payload.provider) || !Array.isArray(payload.models)) {
-        throw new AiCatalogValidationError(['Revision payload is invalid']);
-      }
-      const provider = payload.provider;
-      const models = payload.models.map((model) => aiModelDraftSchema.parse(model));
-      const repository = new PlatformAiCatalogRepository(tx);
-      const secretVersion = secretFingerprint
-        ? await repository.getProviderSecretVersion(providerId, secretFingerprint)
-        : undefined;
-      if (secretFingerprint && !secretVersion) {
-        throw new AiCatalogValidationError(['Referenced provider secret version is unavailable']);
-      }
-      const keyVaults = secretVersion ? await this.secrets.decrypt(secretVersion.ciphertext) : {};
-      assertAiCatalogPublicFieldsExcludeCredentials(payload, keyVaults);
-      await repository.updateProvider(providerId, {
-        checkModel: typeof provider.checkModel === 'string' ? provider.checkModel : null,
-        config: isRecord(provider.config) ? (provider.config as PlatformAiProviderConfig) : {},
-        description: typeof provider.description === 'string' ? provider.description : null,
-        displayName:
-          typeof provider.displayName === 'string' ? provider.displayName : 'Unnamed provider',
-        enabled: provider.enabled === true,
-        encryptedKeyVaults: secretVersion?.ciphertext ?? null,
-        fetchOnClient: provider.fetchOnClient === true,
-        logo: typeof provider.logo === 'string' ? provider.logo : null,
-        revision,
-        secretFingerprint: secretVersion?.fingerprint ?? null,
-        secretKeyVersion: secretVersion?.keyVersion ?? null,
-        secretUpdatedAt: secretVersion?.createdAt ?? null,
-        settings: isRecord(provider.settings)
-          ? (provider.settings as PlatformAiProviderSettings)
-          : {},
-        sort: typeof provider.sort === 'number' ? provider.sort : 0,
-        source: typeof provider.source === 'string' ? provider.source : 'custom',
-        status: status === 'archived' ? 'archived' : 'published',
-        updatedBy: actorUserId,
-      });
-      await tx.delete(platformAiModels).where(eq(platformAiModels.providerId, providerId));
-      if (models.length > 0) {
-        const rows: NewPlatformAiModel[] = models.map((model) => ({
-          ...model,
-          abilities: model.abilities as PlatformAiModelAbilities,
-          config: model.config as PlatformAiModelConfig | null,
-          parameters: model.parameters as PlatformAiModelParameters,
-          pricing: model.pricing as PlatformAiModelPricing | null,
-          providerId,
-          publishedAt: status === 'published' ? new Date() : null,
+        if (currentRevision > 0) {
+          const current = await new PlatformAiCatalogRepository(tx).getProviderRevision(
+            providerId,
+            currentRevision,
+          );
+          currentPublishedPayload = current?.status === 'published' ? current.payload : null;
+        }
+        if (validateArchiveDependents) {
+          await assertRemovedModelsUnused(tx, currentPublishedPayload, null);
+          await this.lifecycle.afterArchiveDependencyCheck?.();
+        }
+      },
+      lockAndGetRevision: async (tx) => {
+        const provider = await new PlatformAiCatalogRepository(tx).lockProvider(providerId);
+        if (!provider) throw new AiCatalogNotFoundError();
+        return provider.revision;
+      },
+      materializePublished: async (
+        tx,
+        { operation, payload, revision, secretFingerprint, status },
+      ) => {
+        if (!isRecord(payload.provider) || !Array.isArray(payload.models)) {
+          throw new AiCatalogValidationError(['Revision payload is invalid']);
+        }
+        const provider = payload.provider;
+        const models = payload.models.map((model) => aiModelDraftSchema.parse(model));
+        const repository = new PlatformAiCatalogRepository(tx);
+        const secretVersion = secretFingerprint
+          ? await repository.getProviderSecretVersion(providerId, secretFingerprint)
+          : undefined;
+        if (secretFingerprint && !secretVersion) {
+          throw new AiCatalogValidationError(['Referenced provider secret version is unavailable']);
+        }
+        const keyVaults = secretVersion ? await this.secrets.decrypt(secretVersion.ciphertext) : {};
+        assertAiCatalogPublicFieldsExcludeCredentials(payload, keyVaults);
+        if (operation === 'rollback') {
+          const removed = await assertRemovedModelsUnused(tx, currentPublishedPayload, payload);
+          if (removed) await this.lifecycle.afterModelDependencyCheck?.();
+        }
+        await repository.updateProvider(providerId, {
+          checkModel: typeof provider.checkModel === 'string' ? provider.checkModel : null,
+          config: isRecord(provider.config) ? (provider.config as PlatformAiProviderConfig) : {},
+          description: typeof provider.description === 'string' ? provider.description : null,
+          displayName:
+            typeof provider.displayName === 'string' ? provider.displayName : 'Unnamed provider',
+          enabled: provider.enabled === true,
+          encryptedKeyVaults: secretVersion?.ciphertext ?? null,
+          fetchOnClient: provider.fetchOnClient === true,
+          logo: typeof provider.logo === 'string' ? provider.logo : null,
           revision,
-          settings: model.settings as PlatformAiModelSettings,
+          secretFingerprint: secretVersion?.fingerprint ?? null,
+          secretKeyVersion: secretVersion?.keyVersion ?? null,
+          secretUpdatedAt: secretVersion?.createdAt ?? null,
+          settings: isRecord(provider.settings)
+            ? (provider.settings as PlatformAiProviderSettings)
+            : {},
+          sort: typeof provider.sort === 'number' ? provider.sort : 0,
+          source: typeof provider.source === 'string' ? provider.source : 'custom',
           status: status === 'archived' ? 'archived' : 'published',
           updatedBy: actorUserId,
-        }));
-        await tx.insert(platformAiModels).values(rows);
-      }
-      if (operation === 'publish' && status === 'published') {
-        const publishedDraft = await new PlatformAiCatalogModel(tx).getProvider(providerId);
-        if (publishedDraft?.connectionTest?.status === 'success') {
-          await repository.updateProvider(providerId, {
-            connectionTestedDraftToken: aiCatalogDraftToken(publishedDraft),
-            connectionTestedRevision: revision,
-          });
+        });
+        await tx.delete(platformAiModels).where(eq(platformAiModels.providerId, providerId));
+        if (models.length > 0) {
+          const rows: NewPlatformAiModel[] = models.map((model) => ({
+            ...model,
+            abilities: model.abilities as PlatformAiModelAbilities,
+            config: model.config as PlatformAiModelConfig | null,
+            parameters: model.parameters as PlatformAiModelParameters,
+            pricing: model.pricing as PlatformAiModelPricing | null,
+            providerId,
+            publishedAt: status === 'published' ? new Date() : null,
+            revision,
+            settings: model.settings as PlatformAiModelSettings,
+            status: status === 'archived' ? 'archived' : 'published',
+            updatedBy: actorUserId,
+          }));
+          await tx.insert(platformAiModels).values(rows);
         }
-      }
-    },
-    prepareLockedPublish: async (tx) => {
-      const draft = validateForPublish
-        ? await this.validatePublishDraft(tx, providerId)
-        : await new PlatformAiCatalogModel(tx).getProvider(providerId);
-      if (!draft) throw new AiCatalogNotFoundError();
-      const payload = await new PlatformAiCatalogModel(tx).prepareRevisionPayload(providerId);
-      if (!payload) throw new AiCatalogNotFoundError();
-      return {
-        afterDiff: {
-          modelCount: draft.models.length,
-          providerId,
-          secretFingerprint: draft.secret.fingerprint,
-        },
-        payload: payload as unknown as Record<string, unknown>,
-      };
-    },
-    updatePointer: async (tx, { revision, status }) => {
-      const repository = new PlatformAiCatalogRepository(tx);
-      await repository.updateProvider(providerId, {
-        revision,
-        status: status === 'archived' ? 'archived' : 'published',
-        updatedBy: actorUserId,
-      });
-      await tx
-        .update(platformAiModels)
-        .set({
-          publishedAt: status === 'published' ? new Date() : null,
+        if (operation === 'publish' && status === 'published') {
+          const publishedDraft = await new PlatformAiCatalogModel(tx).getProvider(providerId);
+          if (publishedDraft?.connectionTest?.status === 'success') {
+            await repository.updateProvider(providerId, {
+              connectionTestedDraftToken: aiCatalogDraftToken(publishedDraft),
+              connectionTestedRevision: revision,
+            });
+          }
+        }
+      },
+      prepareLockedPublish: async (tx) => {
+        const draft = validateForPublish
+          ? await this.validatePublishDraft(tx, providerId)
+          : await new PlatformAiCatalogModel(tx).getProvider(providerId);
+        if (!draft) throw new AiCatalogNotFoundError();
+        const payload = await new PlatformAiCatalogModel(tx).prepareRevisionPayload(providerId);
+        if (!payload) throw new AiCatalogNotFoundError();
+        if (!validateArchiveDependents) {
+          const removed = await assertRemovedModelsUnused(
+            tx,
+            currentPublishedPayload,
+            payload as unknown as Record<string, unknown>,
+          );
+          if (removed) await this.lifecycle.afterModelDependencyCheck?.();
+        }
+        return {
+          afterDiff: {
+            modelCount: draft.models.length,
+            providerId,
+            secretFingerprint: draft.secret.fingerprint,
+          },
+          payload: payload as unknown as Record<string, unknown>,
+        };
+      },
+      updatePointer: async (tx, { revision, status }) => {
+        const repository = new PlatformAiCatalogRepository(tx);
+        await repository.updateProvider(providerId, {
           revision,
           status: status === 'archived' ? 'archived' : 'published',
-          updatedAt: new Date(),
           updatedBy: actorUserId,
-        })
-        .where(eq(platformAiModels.providerId, providerId));
-    },
-  });
+        });
+        await tx
+          .update(platformAiModels)
+          .set({
+            publishedAt: status === 'published' ? new Date() : null,
+            revision,
+            status: status === 'archived' ? 'archived' : 'published',
+            updatedAt: new Date(),
+            updatedBy: actorUserId,
+          })
+          .where(eq(platformAiModels.providerId, providerId));
+      },
+    };
+  };
 
   publishProvider = async (actorUserId: string, input: PublishProviderInput) => {
     const reason = await this.sanitizeReason(input.id, input.reason);

@@ -74,6 +74,7 @@ export interface AiCatalogAdminServiceOptions {
   lifecycle?: {
     afterDraftLock?: () => Promise<void>;
     afterArchiveDependencyCheck?: () => Promise<void>;
+    afterModelDependencyCheck?: () => Promise<void>;
     afterPublishLock?: (tx: Transaction) => Promise<void>;
   };
 }
