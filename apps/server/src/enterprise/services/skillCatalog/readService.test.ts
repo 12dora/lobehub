@@ -59,6 +59,7 @@ const publish = async (params: {
         skillKey: params.skillKey,
       });
   const content = `# ${params.version}`;
+  const contentRef = 'opaque:skill-content-1';
   const resources = [
     {
       checksum: 'a'.repeat(64),
@@ -69,9 +70,9 @@ const publish = async (params: {
     },
   ];
   const version = await repository.createVersion({
-    checksum: platformSkillVersionChecksum({ content, manifest, resources }),
+    checksum: platformSkillVersionChecksum({ content, contentRef, manifest, resources }),
     content,
-    contentRef: 'opaque:skill-content-1',
+    contentRef,
     manifest,
     resources,
     skillId: skill.id,

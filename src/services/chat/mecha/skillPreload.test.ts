@@ -34,6 +34,7 @@ describe('managed platform Skill preload', () => {
           },
         ],
       },
+      platformSkillRuntimeStatus: 'ready',
     } as never);
   });
 

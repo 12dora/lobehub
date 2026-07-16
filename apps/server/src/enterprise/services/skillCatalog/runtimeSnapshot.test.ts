@@ -91,11 +91,14 @@ describe('resolvePlatformSkillRuntimeSnapshot', () => {
       }),
     ).resolves.toEqual({
       catalog: {
+        mandatorySkillIds: ['managed.skill'],
         refs: [{ checksum, skillKey: 'managed.skill', version: '1.2.3' }],
         revision: 'catalog-r1',
       },
       skills: [
         {
+          activated: true,
+          content: '# Managed',
           description: 'Managed instructions',
           identifier: 'managed.skill',
           name: 'managed.skill',
@@ -153,5 +156,10 @@ describe('resolvePlatformSkillRuntimeSnapshot', () => {
       'default.auto',
       'optional.pinned',
     ]);
+    expect(result?.catalog.mandatorySkillIds).toEqual(['mandatory.disabled']);
+    expect(result?.skills.find((item) => item.identifier === 'mandatory.disabled')).toMatchObject({
+      activated: true,
+      content: '# inline',
+    });
   });
 });

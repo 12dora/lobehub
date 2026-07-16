@@ -31,6 +31,7 @@ const setToolState = (state: any) => {
     agentSkills: [],
     builtinSkills: [],
     platformSkillCatalog: null,
+    platformSkillRuntimeStatus: 'unmanaged',
     ...state,
   } as any);
 };
@@ -263,16 +264,20 @@ describe('resolveClientSkills', () => {
             catalogSkill('optional', 'optional'),
           ],
         },
+        platformSkillRuntimeStatus: 'ready',
       });
-      mockedResolvePlatformPinned.mockResolvedValue({
-        checksum: catalogSkill('optional', 'optional').checksum,
-        content: 'optional body',
-        description: 'optional description',
-        identifier: 'optional',
-        name: 'optional',
-        resources: [],
-        version: '1.0.0',
-      } as any);
+      mockedResolvePlatformPinned.mockImplementation(
+        async (ref) =>
+          ({
+            checksum: ref.checksum,
+            content: `${ref.skillKey} body`,
+            description: `${ref.skillKey} description`,
+            identifier: ref.skillKey,
+            name: ref.skillKey,
+            resources: [],
+            version: ref.version,
+          }) as any,
+      );
 
       const result = await resolveClientSkills(['optional'], ['mandatory', 'default']);
 
@@ -281,7 +286,8 @@ describe('resolveClientSkills', () => {
         activated: true,
         content: 'optional body',
       });
-      expect(result.platformCatalog).toEqual({
+      expect(result.platformCatalog).toMatchObject({
+        mandatorySkillIds: ['mandatory'],
         refs: [
           expect.objectContaining({ skillKey: 'mandatory', version: '1.0.0' }),
           expect.objectContaining({ skillKey: 'optional', version: '1.0.0' }),
@@ -298,10 +304,38 @@ describe('resolveClientSkills', () => {
           revision: 'catalog-1',
           skills: [catalogSkill('optional', 'optional')],
         },
+        platformSkillRuntimeStatus: 'ready',
       });
       mockedResolvePlatformPinned.mockRejectedValue(new Error('not found'));
 
       await expect(resolveClientSkills(['optional'])).rejects.toThrow('not found');
+    });
+
+    it('keeps mandatory Skills available and activated in manual mode', async () => {
+      setToolState({
+        platformSkillCatalog: {
+          revision: 'catalog-1',
+          skills: [catalogSkill('mandatory', 'mandatory')],
+        },
+        platformSkillRuntimeStatus: 'ready',
+      });
+      mockedResolvePlatformPinned.mockResolvedValue({
+        checksum: catalogSkill('mandatory', 'mandatory').checksum,
+        content: 'mandatory body',
+        description: 'mandatory description',
+        identifier: 'mandatory',
+        name: 'mandatory',
+        resources: [],
+        version: '1.0.0',
+      } as any);
+
+      const result = await resolveClientSkills([], ['mandatory']);
+
+      expect(findSkill(result.skills, 'mandatory')).toMatchObject({
+        activated: true,
+        content: 'mandatory body',
+      });
+      expect(result.platformCatalog?.mandatorySkillIds).toEqual(['mandatory']);
     });
   });
 });

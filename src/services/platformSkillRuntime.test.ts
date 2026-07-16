@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getToolStoreState } from '@/store/tool';
 
-import { clientSkillRuntimeService } from './platformSkillRuntime';
+import { clientSkillRuntimeService, createClientSkillRuntimeService } from './platformSkillRuntime';
 import { agentSkillService } from './skill';
 
 vi.mock('@/store/tool', () => ({ getToolStoreState: vi.fn() }));
@@ -33,6 +33,7 @@ describe('clientSkillRuntimeService', () => {
     vi.clearAllMocks();
     state.mockReturnValue({
       platformSkillCatalog: { revision: 'catalog-1', skills: [published] },
+      platformSkillRuntimeStatus: 'ready',
     } as never);
     resolvePinned.mockResolvedValue({
       checksum: published.checksum,
@@ -82,12 +83,53 @@ describe('clientSkillRuntimeService', () => {
   });
 
   it('uses the unchanged legacy path when no managed catalog is present', async () => {
-    state.mockReturnValue({ platformSkillCatalog: null } as never);
+    state.mockReturnValue({
+      platformSkillCatalog: null,
+      platformSkillRuntimeStatus: 'unmanaged',
+    } as never);
     vi.mocked(agentSkillService.getByName).mockResolvedValue(undefined);
 
     await clientSkillRuntimeService.findByName('personal.skill');
 
     expect(agentSkillService.getByName).toHaveBeenCalledWith('personal.skill');
     expect(resolvePinned).not.toHaveBeenCalled();
+  });
+
+  it.each(['loading', 'error'] as const)(
+    'fails closed while managed runtime is %s',
+    async (status) => {
+      state.mockReturnValue({
+        platformSkillCatalog: null,
+        platformSkillRuntimeStatus: status,
+      } as never);
+
+      await expect(clientSkillRuntimeService.findAll()).rejects.toThrow(
+        'Managed Skill runtime catalog is unavailable',
+      );
+      expect(agentSkillService.list).not.toHaveBeenCalled();
+    },
+  );
+
+  it('keeps an operation on its captured v1 ref after the global catalog moves to v2', async () => {
+    const runtime = createClientSkillRuntimeService({
+      mandatorySkillIds: [],
+      refs: [{ checksum: published.checksum, skillKey: published.skillKey, version: '1.0.0' }],
+      revision: 'catalog-v1',
+    });
+    state.mockReturnValue({
+      platformSkillCatalog: {
+        revision: 'catalog-v2',
+        skills: [{ ...published, checksum: 'b'.repeat(64), version: '2.0.0' }],
+      },
+      platformSkillRuntimeStatus: 'ready',
+    } as never);
+
+    await runtime.findByName('approved.skill');
+
+    expect(resolvePinned).toHaveBeenCalledWith({
+      checksum: published.checksum,
+      skillKey: published.skillKey,
+      version: '1.0.0',
+    });
   });
 });
