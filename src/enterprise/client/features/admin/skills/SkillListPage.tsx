@@ -272,9 +272,9 @@ const SkillListPage = memo(() => {
       {error && data ? (
         <Alert
           showIcon
+          extra={<Button onClick={() => void mutate()}>{t('skillCatalog.actions.retry')}</Button>}
           message={t('skillCatalog.list.error.page')}
           type="error"
-          extra={<Button onClick={() => void mutate()}>{t('skillCatalog.actions.retry')}</Button>}
         />
       ) : null}
     </AdminPageTemplate>
