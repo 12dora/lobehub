@@ -44,6 +44,7 @@ export const useSkillEditor = (snapshot: AdminSkillGetOutput | undefined, editab
   const hydratedKeyRef = useRef<string | null>(null);
   const rejectedHydrationKeyRef = useRef<string | null>(null);
   const pendingSnapshotRef = useRef<AdminSkillGetOutput | null>(null);
+  const allowNextHydrationRef = useRef(false);
   const leaveModalRef = useRef<ReturnType<typeof confirmModal> | null>(null);
   const switchModalRef = useRef<ReturnType<typeof confirmModal> | null>(null);
 
@@ -97,6 +98,14 @@ export const useSkillEditor = (snapshot: AdminSkillGetOutput | undefined, editab
       // previously rejected target. A later request for that target must ask
       // again instead of being permanently ignored.
       rejectedHydrationKeyRef.current = null;
+      return;
+    }
+    if (allowNextHydrationRef.current) {
+      allowNextHydrationRef.current = false;
+      rejectedHydrationKeyRef.current = null;
+      switchModalRef.current?.close();
+      switchModalRef.current = null;
+      hydrateSnapshot(snapshot);
       return;
     }
     if (rejectedHydrationKeyRef.current === hydrationKey) {
@@ -188,7 +197,11 @@ export const useSkillEditor = (snapshot: AdminSkillGetOutput | undefined, editab
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, [dirty, editable]);
 
-  const blocker = useBlocker(editable && dirty);
+  const blocker = useBlocker(
+    editable && dirty
+      ? ({ currentLocation, nextLocation }) => currentLocation.pathname !== nextLocation.pathname
+      : false,
+  );
   useEffect(() => {
     if (blocker.state !== 'blocked') {
       leaveModalRef.current?.close();
@@ -206,6 +219,7 @@ export const useSkillEditor = (snapshot: AdminSkillGetOutput | undefined, editab
         blocker.reset?.();
       },
       onOk: () => {
+        allowNextHydrationRef.current = true;
         leaveModalRef.current = null;
         blocker.proceed?.();
       },
