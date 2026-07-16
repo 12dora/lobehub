@@ -1,7 +1,9 @@
 // @vitest-environment node
+import { eq } from 'drizzle-orm';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
+import { PlatformRevisionConflictError } from '@/database/models/platform';
 import {
   platformConnectors,
   platformResourceRevisions,
@@ -18,7 +20,7 @@ import {
   ensurePendingM09ServiceSchema,
   MemoryConnectorSecretStore,
 } from './catalogTestUtils';
-import type { ConnectorCatalogSecretStore } from './catalogTypes';
+import type { ConnectorCatalogLifecycle, ConnectorCatalogSecretStore } from './catalogTypes';
 import type { ConnectorOutboundClient } from './connectorOutboundClient';
 import { ConnectorCatalogDraftService } from './draftService';
 import { PlatformConnectorContractError } from './errors';
@@ -30,11 +32,21 @@ beforeAll(() => ensurePendingM09ServiceSchema(db));
 beforeEach(() => cleanupM09ServiceData(db));
 afterEach(() => cleanupM09ServiceData(db));
 
-const createHarness = () => {
+const createHarness = (lifecycle: ConnectorCatalogLifecycle = {}) => {
   const secrets = new MemoryConnectorSecretStore(db);
   const invalidation = new InMemoryPlatformConfigInvalidationPublisher();
   const assertAllowed = vi.fn(async (_url: string) => {});
-  const outbound = { assertAllowed } as unknown as ConnectorOutboundClient;
+  let policyVersion = 1;
+  const preflight = vi.fn(async (url: string) => {
+    await assertAllowed(url);
+    return { policyVersion };
+  });
+  const getPolicyVersion = vi.fn(() => policyVersion);
+  const outbound = {
+    assertAllowed,
+    getPolicyVersion,
+    preflight,
+  } as unknown as ConnectorOutboundClient;
   return {
     assertAllowed,
     drafts: new ConnectorCatalogDraftService(
@@ -43,9 +55,18 @@ const createHarness = () => {
       'https://aihub.example.test/oauth/callback',
     ),
     invalidation,
-    publication: new ConnectorCatalogPublicationService(db, outbound, secrets, {}, invalidation),
+    publication: new ConnectorCatalogPublicationService(
+      db,
+      outbound,
+      secrets,
+      lifecycle,
+      invalidation,
+    ),
     read: new ConnectorCatalogReadService(db, secrets),
     secrets,
+    setPolicyVersion: (version: number) => {
+      policyVersion = version;
+    },
   };
 };
 
@@ -67,6 +88,82 @@ const createSharedDraft = async (
   });
 
 describe('ConnectorCatalogPublicationService', () => {
+  it('completes DNS and Secret resolution before locking with no external I/O afterward', async () => {
+    const lifecycle: ConnectorCatalogLifecycle = {};
+    const harness = createHarness(lifecycle);
+    const resolve = vi.spyOn(harness.secrets, 'resolveSecretVersion');
+    const draft = await createSharedDraft(harness, 'lock-scope-secret', 'lock-scope-connector');
+    let callsAtLock: { preflight: number; resolve: number } | undefined;
+    lifecycle.afterPublicationPreflight = async () => {
+      callsAtLock = {
+        preflight: harness.assertAllowed.mock.calls.length,
+        resolve: resolve.mock.calls.length,
+      };
+    };
+
+    await harness.publication.publish('admin-user', {
+      expectedDraftToken: draft.draftToken,
+      expectedRevision: 0,
+      id: draft.draft.id,
+      reason: 'publish connector',
+    });
+    expect(callsAtLock).toEqual({ preflight: 1, resolve: 1 });
+    expect(harness.assertAllowed).toHaveBeenCalledTimes(callsAtLock!.preflight);
+    expect(resolve).toHaveBeenCalledTimes(callsAtLock!.resolve);
+  });
+
+  it('fails with a stable conflict when outbound policy changes after preflight', async () => {
+    const lifecycle: ConnectorCatalogLifecycle = {};
+    const harness = createHarness(lifecycle);
+    const draft = await createSharedDraft(harness, 'policy-proof-secret', 'policy-proof-connector');
+    lifecycle.afterPublicationPreflight = async () => harness.setPolicyVersion(2);
+
+    await expect(
+      harness.publication.publish('admin-user', {
+        expectedDraftToken: draft.draftToken,
+        expectedRevision: 0,
+        id: draft.draft.id,
+        reason: 'publish connector',
+      }),
+    ).rejects.toBeInstanceOf(PlatformRevisionConflictError);
+    expect(await db.select().from(platformResourceRevisions)).toHaveLength(0);
+  });
+
+  it('rejects a rollback when the target checksum changes after preflight', async () => {
+    const lifecycle: ConnectorCatalogLifecycle = {};
+    const harness = createHarness(lifecycle);
+    const draft = await createSharedDraft(harness, 'target-proof-secret', 'target-proof-connector');
+    await harness.publication.publish('admin-user', {
+      expectedDraftToken: draft.draftToken,
+      expectedRevision: 0,
+      id: draft.draft.id,
+      reason: 'publish connector',
+    });
+    const published = await harness.drafts.getDraft(draft.draft.id);
+    lifecycle.afterPublicationPreflight = async () => {
+      await db
+        .update(platformResourceRevisions)
+        .set({ checksum: '0'.repeat(64) })
+        .where(
+          eq(
+            platformResourceRevisions.id,
+            (await db.select().from(platformResourceRevisions))[0]!.id,
+          ),
+        );
+    };
+
+    await expect(
+      harness.publication.rollback('admin-user', {
+        expectedDraftToken: published.draftToken,
+        expectedRevision: 1,
+        id: draft.draft.id,
+        reason: 'restore connector',
+        targetRevision: 1,
+      }),
+    ).rejects.toBeInstanceOf(PlatformRevisionConflictError);
+    expect(await db.select().from(platformResourceRevisions)).toHaveLength(1);
+  });
+
   it('publishes a secret-free immutable payload and exposes separate public/trusted projections', async () => {
     const secret = 'published-shared-secret-v1';
     const harness = createHarness();

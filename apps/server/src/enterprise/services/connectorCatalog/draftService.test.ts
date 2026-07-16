@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { eq } from 'drizzle-orm';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
@@ -13,6 +14,7 @@ import {
   ensurePendingM09ServiceSchema,
   MemoryConnectorSecretStore,
 } from './catalogTestUtils';
+import type { ConnectorCatalogLifecycle, ConnectorStoredSecret } from './catalogTypes';
 import { ConnectorCatalogDraftService } from './draftService';
 
 const db: LobeChatDatabase = await getTestDB();
@@ -25,13 +27,11 @@ afterEach(async () => {
   await cleanupM09ServiceData(db);
 });
 
-const createService = (failureAuditWriter?: ConnectorFailureAuditWriter) =>
-  new ConnectorCatalogDraftService(
-    db,
-    new MemoryConnectorSecretStore(db),
-    redirectUri,
-    failureAuditWriter,
-  );
+const createService = (
+  failureAuditWriter?: ConnectorFailureAuditWriter,
+  secrets = new MemoryConnectorSecretStore(db),
+  lifecycle: ConnectorCatalogLifecycle = {},
+) => new ConnectorCatalogDraftService(db, secrets, redirectUri, failureAuditWriter, lifecycle);
 
 describe('ConnectorCatalogDraftService', () => {
   it('creates, reads, and filters a strict connector Draft with an audit record', async () => {
@@ -132,6 +132,53 @@ describe('ConnectorCatalogDraftService', () => {
       }),
     ).rejects.toBeInstanceOf(PlatformRevisionConflictError);
     expect(JSON.stringify(await db.select().from(platformAuditLogs))).not.toContain(secret);
+  });
+
+  it('persists replacement handles before locking and leaves a safe orphan after a losing CAS', async () => {
+    const secrets = new MemoryConnectorSecretStore(db);
+    const lifecycle: ConnectorCatalogLifecycle = {};
+    const service = createService(undefined, secrets, lifecycle);
+    const created = await service.createDraft('admin-user', {
+      credentialMode: 'shared_service_account',
+      displayName: 'Orphan Handle Connector',
+      endpoint: 'https://connector.example.test/mcp',
+      key: 'orphan-handle-connector',
+      reason: 'create connector',
+      sharedSecret: { operation: 'replace', value: { apiKey: 'original-secret' } },
+      transport: 'http',
+    });
+    let orphan: ConnectorStoredSecret | undefined;
+    const persist = secrets.persistSecret;
+    vi.spyOn(secrets, 'persistSecret').mockImplementation(async (params) => {
+      orphan = await persist(params);
+      return orphan;
+    });
+    lifecycle.afterDraftSecretPersist = async (connectorId) => {
+      await db
+        .update(platformConnectors)
+        .set({ revision: 1 })
+        .where(eq(platformConnectors.id, connectorId));
+    };
+
+    await expect(
+      service.updateDraft('admin-user', {
+        expectedDraftToken: created.draftToken,
+        expectedRevision: 0,
+        id: created.draft.id,
+        reason: 'rotate connector secret',
+        sharedSecret: { operation: 'replace', value: { apiKey: 'orphaned-secret' } },
+      }),
+    ).rejects.toBeInstanceOf(PlatformRevisionConflictError);
+    expect(orphan).toBeDefined();
+    await expect(
+      secrets.resolveSecretVersion({
+        connectorId: created.draft.id,
+        fingerprint: orphan!.fingerprint,
+        slot: 'sharedSecret',
+      }),
+    ).resolves.toMatchObject({ ref: orphan!.ref });
+    const [connector] = await db.select().from(platformConnectors);
+    expect(connector.sharedSecretFingerprint).toBe(created.draft.sharedSecret.fingerprint);
   });
 
   it('preserves the original CAS error when best-effort failure audit persistence is down', async () => {

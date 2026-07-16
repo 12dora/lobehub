@@ -13,6 +13,7 @@ import {
 import { defaultDnsResolve, defaultPinnedTransport } from './transport';
 import type {
   DnsResolver,
+  OutboundPolicySnapshot,
   PinnedTransport,
   ResolvedAddress,
   SafeOutboundHttpClientOptions,
@@ -150,13 +151,31 @@ export class SafeOutboundHttpClient {
 
   /** Policy check without performing a network request (admin URL validation). */
   assertAllowed = async (input: string | URL): Promise<void> => {
+    await this.preflight(input);
+  };
+
+  /**
+   * DNS + dynamic-policy preflight that returns the exact policy version used.
+   * Callers can bind this version into a proof and compare it synchronously
+   * while holding their database lock.
+   */
+  preflight = async (input: string | URL): Promise<number | string> => {
     const deadlineAt = Date.now() + this.timeoutMs;
     const url = this.parseUrl(input);
-    this.assertUrlPolicy(url, this.getPolicy());
+    const before = this.getPolicySnapshot();
+    this.assertUrlPolicy(url, before.policy);
     const hostname = url.hostname;
     const addresses = await this.resolveHost(hostname, deadlineAt);
-    this.assertResolvedAddresses(url, addresses, this.getPolicy());
+    const after = this.getPolicySnapshot();
+    if (after.version !== before.version) {
+      throw ssrfBlocked('outbound policy changed during preflight');
+    }
+    this.assertResolvedAddresses(url, addresses, after.policy);
+    return after.version;
   };
+
+  /** No DNS or external I/O; safe for a short database lock comparison. */
+  getPolicyVersion = (): number | string => this.getPolicySnapshot().version;
 
   private parseUrl(input: string | URL): URL {
     let url: URL;
@@ -211,8 +230,12 @@ export class SafeOutboundHttpClient {
   }
 
   private getPolicy(): OutboundPolicy {
+    return this.getPolicySnapshot().policy;
+  }
+
+  private getPolicySnapshot(): OutboundPolicySnapshot {
     try {
-      return outboundPolicySnapshotSchema.parse(this.policyProvider()).policy;
+      return outboundPolicySnapshotSchema.parse(this.policyProvider());
     } catch {
       throw ssrfBlocked('outbound policy snapshot unavailable');
     }

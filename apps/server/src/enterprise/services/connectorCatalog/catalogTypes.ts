@@ -44,7 +44,8 @@ export interface ConnectorCatalogCredentialProvider {
 }
 
 export interface ConnectorCatalogLifecycle {
-  afterPublishLock?: (tx: Transaction) => Promise<void>;
+  afterDraftSecretPersist?: (connectorId: string) => Promise<void>;
+  afterPublicationPreflight?: (connectorId: string) => Promise<void>;
   afterRevokeAll?: (connectorId: string, tx: Transaction) => Promise<void>;
 }
 
