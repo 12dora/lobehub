@@ -25,6 +25,7 @@ export interface ConnectorResolvedSecret extends ConnectorStoredSecret {
 }
 
 export interface ConnectorCatalogSecretStore extends ConnectorCurrentSecretLoader {
+  assertReady?: () => Promise<void>;
   persistSecret: (params: {
     connectorId: string;
     slot: ConnectorSecretSlot;

@@ -7,12 +7,14 @@ import type {
   NewPlatformUserConnectorBinding,
   PlatformConnectorItem,
   PlatformConnectorOAuthStateItem,
+  PlatformConnectorSecretSlot,
   PlatformConnectorToolItem,
   PlatformUserConnectorBindingItem,
 } from '../../schemas/platform/connectors';
 import {
   platformConnectorOAuthStates,
   platformConnectors,
+  platformConnectorSecrets,
   platformConnectorTools,
   platformUserConnectorBindings,
 } from '../../schemas/platform/connectors';
@@ -34,6 +36,29 @@ const inTransaction = async <T>(
   db: LobeChatDatabase | Transaction,
   operation: (transaction: Transaction) => Promise<T>,
 ): Promise<T> => (isRootDatabase(db) ? db.transaction(operation) : operation(db));
+
+const MANAGED_CONNECTOR_SECRET_REF_PREFIX = 'kms://platform-connectors/';
+
+const lockManagedConnectorSecret = async (
+  db: Transaction,
+  params: { connectorId: string; ref: string; slot: PlatformConnectorSecretSlot },
+): Promise<void> => {
+  if (!params.ref.startsWith(MANAGED_CONNECTOR_SECRET_REF_PREFIX)) return;
+  const [secret] = await db
+    .select({ id: platformConnectorSecrets.id })
+    .from(platformConnectorSecrets)
+    .where(
+      and(
+        eq(platformConnectorSecrets.connectorId, params.connectorId),
+        eq(platformConnectorSecrets.ref, params.ref),
+        eq(platformConnectorSecrets.slot, params.slot),
+        isNull(platformConnectorSecrets.revokedAt),
+      ),
+    )
+    .limit(1)
+    .for('update');
+  if (!secret) throw new Error('PLATFORM_CONNECTOR_CREDENTIAL_NOT_CONFIGURED');
+};
 
 export interface PlatformConnectorCursor {
   connectorKey: string;
@@ -400,7 +425,7 @@ export class PlatformConnectorCatalogRepository {
       });
       if (!preview) return { status: 'invalid' };
 
-      // Global order for OAuth lifecycle locks: connector -> binding -> state.
+      // Global order: connector -> managed secret (when attaching) -> binding -> state.
       const [connector] = await db
         .select({ id: platformConnectors.id })
         .from(platformConnectors)
@@ -639,6 +664,11 @@ export class PlatformUserConnectorBindingRepository {
         .limit(1)
         .for('update');
       if (!connector) throw new Error('PLATFORM_CONNECTOR_NOT_FOUND');
+      await lockManagedConnectorSecret(db, {
+        connectorId: values.connectorId,
+        ref: values.pkceVerifierRef,
+        slot: 'oauthPkceVerifier',
+      });
       const owned = await db
         .select({ id: platformUserConnectorBindings.id })
         .from(platformUserConnectorBindings)
@@ -698,6 +728,12 @@ export class PlatformUserConnectorBindingRepository {
         .limit(1)
         .for('update');
       if (!connector) throw new Error('PLATFORM_CONNECTOR_NOT_PUBLISHED');
+
+      await lockManagedConnectorSecret(db, {
+        connectorId: params.connectorId,
+        ref: params.pkceVerifierRef,
+        slot: 'oauthPkceVerifier',
+      });
 
       await db
         .insert(platformUserConnectorBindings)
@@ -822,7 +858,7 @@ export class PlatformUserConnectorBindingRepository {
       });
       if (!preview) throw new Error('PLATFORM_CONNECTOR_OAUTH_STATE_INVALID');
 
-      // Global order for OAuth lifecycle locks: connector -> binding -> state.
+      // Global order: connector -> managed secret (when attaching) -> binding -> state.
       const [connector] = await db
         .select({ id: platformConnectors.id })
         .from(platformConnectors)
@@ -838,6 +874,11 @@ export class PlatformUserConnectorBindingRepository {
         .limit(1)
         .for('update');
       if (!connector) throw new Error('PLATFORM_CONNECTOR_NOT_PUBLISHED');
+      await lockManagedConnectorSecret(db, {
+        connectorId: params.connectorId,
+        ref: params.oauthTokenRef,
+        slot: 'oauthBindingToken',
+      });
       const [current] = await db
         .select()
         .from(platformUserConnectorBindings)
@@ -1043,44 +1084,76 @@ export class PlatformUserConnectorBindingRepository {
       >
     >,
   ): Promise<PlatformUserConnectorBindingItem | undefined> => {
-    const [row] = await this.db
-      .update(platformUserConnectorBindings)
-      .set({ ...values, revision: expectedRevision + 1, updatedAt: new Date() })
-      .where(
-        and(
-          eq(platformUserConnectorBindings.userId, this.userId),
-          eq(platformUserConnectorBindings.connectorId, connectorId),
-          eq(platformUserConnectorBindings.revision, expectedRevision),
-        ),
-      )
-      .returning();
-    return row;
+    return inTransaction(this.db, async (db) => {
+      const [connector] = await db
+        .select({ id: platformConnectors.id })
+        .from(platformConnectors)
+        .where(eq(platformConnectors.id, connectorId))
+        .limit(1)
+        .for('update');
+      if (!connector) return undefined;
+      if (values.oauthTokenRef) {
+        await lockManagedConnectorSecret(db, {
+          connectorId,
+          ref: values.oauthTokenRef,
+          slot: 'oauthBindingToken',
+        });
+      }
+      const [row] = await db
+        .update(platformUserConnectorBindings)
+        .set({ ...values, revision: expectedRevision + 1, updatedAt: new Date() })
+        .where(
+          and(
+            eq(platformUserConnectorBindings.userId, this.userId),
+            eq(platformUserConnectorBindings.connectorId, connectorId),
+            eq(platformUserConnectorBindings.revision, expectedRevision),
+          ),
+        )
+        .returning();
+      return row;
+    });
   };
 
   upsertBinding = async (
     values: Omit<NewPlatformUserConnectorBinding, 'userId'>,
   ): Promise<PlatformUserConnectorBindingItem> => {
-    const [row] = await this.db
-      .insert(platformUserConnectorBindings)
-      .values({ ...values, userId: this.userId })
-      .onConflictDoUpdate({
-        set: {
-          connectedAt: values.connectedAt,
-          expiresAt: values.expiresAt,
-          lastErrorCategory: values.lastErrorCategory,
-          oauthTokenRef: values.oauthTokenRef,
-          publishedRevision: values.publishedRevision,
-          revision: sqlIncrement(platformUserConnectorBindings.revision),
-          revokedAt: values.revokedAt,
-          scopes: values.scopes,
-          status: values.status,
-          tokenFingerprint: values.tokenFingerprint,
-          updatedAt: new Date(),
-        },
-        target: [platformUserConnectorBindings.userId, platformUserConnectorBindings.connectorId],
-      })
-      .returning();
-    return row;
+    return inTransaction(this.db, async (db) => {
+      const [connector] = await db
+        .select({ id: platformConnectors.id })
+        .from(platformConnectors)
+        .where(eq(platformConnectors.id, values.connectorId))
+        .limit(1)
+        .for('update');
+      if (!connector) throw new Error('PLATFORM_CONNECTOR_NOT_FOUND');
+      if (values.oauthTokenRef) {
+        await lockManagedConnectorSecret(db, {
+          connectorId: values.connectorId,
+          ref: values.oauthTokenRef,
+          slot: 'oauthBindingToken',
+        });
+      }
+      const [row] = await db
+        .insert(platformUserConnectorBindings)
+        .values({ ...values, userId: this.userId })
+        .onConflictDoUpdate({
+          set: {
+            connectedAt: values.connectedAt,
+            expiresAt: values.expiresAt,
+            lastErrorCategory: values.lastErrorCategory,
+            oauthTokenRef: values.oauthTokenRef,
+            publishedRevision: values.publishedRevision,
+            revision: sqlIncrement(platformUserConnectorBindings.revision),
+            revokedAt: values.revokedAt,
+            scopes: values.scopes,
+            status: values.status,
+            tokenFingerprint: values.tokenFingerprint,
+            updatedAt: new Date(),
+          },
+          target: [platformUserConnectorBindings.userId, platformUserConnectorBindings.connectorId],
+        })
+        .returning();
+      return row;
+    });
   };
 }
 

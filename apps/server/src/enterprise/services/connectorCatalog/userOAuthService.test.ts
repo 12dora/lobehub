@@ -9,12 +9,14 @@ import {
   platformAuditLogs,
   platformConnectorOAuthStates,
   platformConnectors,
+  platformConnectorSecrets,
   platformResourceRevisions,
   platformUserConnectorBindings,
 } from '@/database/schemas/platform';
 import { users } from '@/database/schemas/user';
 import type { LobeChatDatabase } from '@/database/type';
 
+import { type KeyProvider, PlatformSecretService } from '../../security/secret';
 import {
   cleanupM09ServiceData,
   connectorToolFixture,
@@ -29,6 +31,7 @@ import { ConnectorCatalogDraftService } from './draftService';
 import type { ConnectorOAuthOutboundAdapter } from './oauthOutboundAdapter';
 import type { ConnectorOAuthRuntimeDependencies } from './oauthRuntime';
 import { MANAGED_CONNECTOR_OAUTH_STATE_PREFIX } from './oauthRuntime';
+import { PlatformConnectorSecretStore } from './platformConnectorSecretStore';
 import { ConnectorCatalogPublicationService } from './publicationService';
 import { ConnectorOAuthCallbackService, UserConnectorOAuthService } from './userOAuthService';
 
@@ -163,6 +166,110 @@ const start = async (
 };
 
 describe('per-user connector OAuth service', () => {
+  it('keeps token and PKCE handles live when they attach after GC candidate selection', async () => {
+    const harness = createHarness();
+    const published = await publishOAuthConnector(harness);
+    const keyProvider: KeyProvider = {
+      getKek: async () => ({ key: new Uint8Array(32).fill(5), keyId: 'gc:test' }),
+      providerId: 'test',
+    };
+    const baseStore = new PlatformConnectorSecretStore(
+      db,
+      new PlatformSecretService({ keyProvider }),
+    );
+    const runBarrierGc = async (attach: () => Promise<void>) => {
+      let candidatesSelected!: () => void;
+      let release!: () => void;
+      const selected = new Promise<void>((resolve) => {
+        candidatesSelected = resolve;
+      });
+      const waitForRelease = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const gcStore = new PlatformConnectorSecretStore(
+        db,
+        new PlatformSecretService({ keyProvider }),
+        {
+          beforeGcAtomicRevoke: async () => {
+            candidatesSelected();
+            await waitForRelease;
+          },
+        },
+      );
+      const gc = gcStore.garbageCollectOrphanedOAuthSecrets();
+      await selected;
+      await attach();
+      release();
+      return gc;
+    };
+
+    const token = await baseStore.persistSecret({
+      connectorId: published.draft.id,
+      slot: 'oauthBindingToken',
+      value: { accessToken: 'barrier-token' },
+    });
+    await db
+      .update(platformConnectorSecrets)
+      .set({ createdAt: new Date('2020-01-01T00:00:00Z') })
+      .where(eq(platformConnectorSecrets.ref, token.ref));
+    const bindingId = 'm09-gc-barrier-binding';
+    await expect(
+      runBarrierGc(async () => {
+        await db.insert(platformUserConnectorBindings).values({
+          connectedAt: new Date(),
+          connectorId: published.draft.id,
+          id: bindingId,
+          oauthTokenRef: token.ref,
+          publishedRevision: 1,
+          scopes: ['issues:read'],
+          status: 'connected',
+          tokenFingerprint: token.fingerprint,
+          userId: userA,
+        });
+      }),
+    ).resolves.toBe(0);
+    await expect(
+      baseStore.resolveSecretRef({
+        connectorId: published.draft.id,
+        ref: token.ref,
+        slot: 'oauthBindingToken',
+      }),
+    ).resolves.not.toBeNull();
+
+    const pkce = await baseStore.persistSecret({
+      connectorId: published.draft.id,
+      slot: 'oauthPkceVerifier',
+      value: 'v'.repeat(64),
+    });
+    await db
+      .update(platformConnectorSecrets)
+      .set({ createdAt: new Date('2020-01-01T00:00:00Z') })
+      .where(eq(platformConnectorSecrets.ref, pkce.ref));
+    await expect(
+      runBarrierGc(async () => {
+        await db.insert(platformConnectorOAuthStates).values({
+          bindingId,
+          connectorId: published.draft.id,
+          expiresAt: new Date(Date.now() + 5 * 60 * 1000),
+          id: 'm09-gc-barrier-state',
+          pkceVerifierRef: pkce.ref,
+          publishedRevision: 1,
+          redirectUri: callbackRedirectUri,
+          stateHash: '7'.repeat(64),
+          stateId: 'm09-gc-barrier-state',
+          userId: userA,
+        });
+      }),
+    ).resolves.toBe(0);
+    await expect(
+      baseStore.resolveSecretRef({
+        connectorId: published.draft.id,
+        ref: pkce.ref,
+        slot: 'oauthPkceVerifier',
+      }),
+    ).resolves.not.toBeNull();
+  });
+
   it('cleans replaced and explicitly abandoned PKCE handles after detaching DB references', async () => {
     const harness = createHarness();
     const published = await publishOAuthConnector(harness);

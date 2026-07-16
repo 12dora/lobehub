@@ -38,6 +38,11 @@ const serializeSecret = (value: unknown): string => {
 const fingerprintSecret = (serialized: string): string =>
   createHash('sha256').update(serialized).digest('hex');
 
+export interface PlatformConnectorSecretStoreOptions {
+  /** Scheduling seam used by the GC worker; never receives refs or secret values. */
+  beforeGcAtomicRevoke?: () => Promise<void>;
+}
+
 /**
  * Process-independent Connector secret store backed by encrypted PostgreSQL
  * rows. The `kms://` value is only an opaque application handle; all key
@@ -47,7 +52,22 @@ export class PlatformConnectorSecretStore implements ConnectorCatalogSecretStore
   constructor(
     private readonly db: LobeChatDatabase,
     private readonly secretService: PlatformSecretService,
+    private readonly options: PlatformConnectorSecretStoreOptions = {},
   ) {}
+
+  assertReady = async (): Promise<void> => {
+    // A real query detects a missing/unmigrated table without mutating state.
+    await this.db
+      .select({ id: platformConnectorSecrets.id })
+      .from(platformConnectorSecrets)
+      .limit(1);
+    const marker = `connector-readiness:${randomUUID()}`;
+    const ciphertext = await this.secretService.encrypt(marker);
+    const plaintext = await this.secretService.decrypt(ciphertext);
+    if (plaintext !== marker) {
+      throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_CREDENTIAL_NOT_CONFIGURED');
+    }
+  };
 
   persistSecret = async (params: {
     connectorId: string;
@@ -239,42 +259,55 @@ export class PlatformConnectorSecretStore implements ConnectorCatalogSecretStore
       .limit(Math.max(1, Math.min(limit, 100)));
     let revoked = 0;
     for (const candidate of candidates) {
-      const referenced =
+      const hasNoLiveReference =
         candidate.slot === 'oauthBindingToken'
-          ? await this.db
-              .select({ id: platformUserConnectorBindings.id })
-              .from(platformUserConnectorBindings)
-              .where(
-                and(
-                  eq(platformUserConnectorBindings.connectorId, candidate.connectorId),
-                  eq(platformUserConnectorBindings.oauthTokenRef, candidate.ref),
-                  isNull(platformUserConnectorBindings.revokedAt),
-                ),
-              )
-              .limit(1)
-          : await this.db
-              .select({ id: platformConnectorOAuthStates.id })
-              .from(platformConnectorOAuthStates)
-              .where(
-                and(
-                  eq(platformConnectorOAuthStates.connectorId, candidate.connectorId),
-                  eq(platformConnectorOAuthStates.pkceVerifierRef, candidate.ref),
-                  isNull(platformConnectorOAuthStates.revokedAt),
-                  sql`${platformConnectorOAuthStates.expiresAt} > CURRENT_TIMESTAMP`,
-                ),
-              )
-              .limit(1);
-      if (referenced.length > 0) continue;
-      const result = await this.db
-        .update(platformConnectorSecrets)
-        .set({ revokedAt: sql<Date>`CURRENT_TIMESTAMP` })
-        .where(
-          and(
-            eq(platformConnectorSecrets.id, candidate.id),
-            isNull(platformConnectorSecrets.revokedAt),
-          ),
-        )
-        .returning({ id: platformConnectorSecrets.id });
+          ? sql`NOT EXISTS (
+              SELECT 1 FROM ${platformUserConnectorBindings}
+              WHERE ${platformUserConnectorBindings.connectorId} = ${platformConnectorSecrets.connectorId}
+                AND ${platformUserConnectorBindings.oauthTokenRef} = ${platformConnectorSecrets.ref}
+                AND ${platformUserConnectorBindings.revokedAt} IS NULL
+            )`
+          : sql`NOT EXISTS (
+              SELECT 1 FROM ${platformConnectorOAuthStates}
+              WHERE ${platformConnectorOAuthStates.connectorId} = ${platformConnectorSecrets.connectorId}
+                AND ${platformConnectorOAuthStates.pkceVerifierRef} = ${platformConnectorSecrets.ref}
+                AND ${platformConnectorOAuthStates.revokedAt} IS NULL
+              AND ${platformConnectorOAuthStates.expiresAt} > CURRENT_TIMESTAMP
+            )`;
+      await this.options.beforeGcAtomicRevoke?.();
+      const result = await this.db.transaction(async (db) => {
+        const [locked] = await db
+          .select({ id: platformConnectorSecrets.id })
+          .from(platformConnectorSecrets)
+          .where(
+            and(
+              eq(platformConnectorSecrets.id, candidate.id),
+              eq(platformConnectorSecrets.connectorId, candidate.connectorId),
+              eq(platformConnectorSecrets.ref, candidate.ref),
+              eq(platformConnectorSecrets.slot, candidate.slot),
+              isNull(platformConnectorSecrets.revokedAt),
+              lt(platformConnectorSecrets.createdAt, cutoff),
+            ),
+          )
+          .limit(1)
+          .for('update');
+        if (!locked) return [];
+        return db
+          .update(platformConnectorSecrets)
+          .set({ revokedAt: sql<Date>`CURRENT_TIMESTAMP` })
+          .where(
+            and(
+              eq(platformConnectorSecrets.id, candidate.id),
+              eq(platformConnectorSecrets.connectorId, candidate.connectorId),
+              eq(platformConnectorSecrets.ref, candidate.ref),
+              eq(platformConnectorSecrets.slot, candidate.slot),
+              isNull(platformConnectorSecrets.revokedAt),
+              lt(platformConnectorSecrets.createdAt, cutoff),
+              hasNoLiveReference,
+            ),
+          )
+          .returning({ id: platformConnectorSecrets.id });
+      });
       revoked += result.length;
     }
     return revoked;
@@ -283,6 +316,9 @@ export class PlatformConnectorSecretStore implements ConnectorCatalogSecretStore
   private resolveRow = async (row: typeof platformConnectorSecrets.$inferSelect) => {
     try {
       const plaintext = await this.secretService.decrypt(row.ciphertext);
+      if (fingerprintSecret(plaintext) !== row.fingerprint) {
+        throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_CREDENTIAL_NOT_CONFIGURED');
+      }
       return {
         fingerprint: row.fingerprint,
         ref: row.ref,
