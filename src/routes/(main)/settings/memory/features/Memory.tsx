@@ -3,7 +3,7 @@
 import { type UserMemoryEffort } from '@lobechat/types';
 import { type FormGroupItemType } from '@lobehub/ui';
 import { Form, Skeleton, Tooltip } from '@lobehub/ui';
-import { Switch } from 'antd';
+import { Switch } from '@lobehub/ui/base-ui';
 import isEqual from 'fast-deep-equal';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -11,7 +11,8 @@ import { useTranslation } from 'react-i18next';
 import AutoSaveHint from '@/components/Editor/AutoSaveHint';
 import { FORM_STYLE } from '@/const/layoutTokens';
 import LevelSlider from '@/features/ModelSwitchPanel/components/ControlsForm/LevelSlider';
-import PlatformSettingSourceBadge from '@/features/PlatformSettingSourceBadge';
+import { ManagedFormControlContent } from '@/features/PlatformSettingSourceBadge/ManagedFormControl';
+import { ManagedSettingFieldContent } from '@/features/PlatformSettingSourceBadge/ManagedSettingField';
 import { usePlatformSettingMeta } from '@/features/PlatformSettingSourceBadge/usePlatformSettingMeta';
 import { usePermission } from '@/hooks/usePermission';
 import { useSaveState } from '@/hooks/useSaveState';
@@ -32,14 +33,10 @@ const MemorySetting = memo(() => {
 
   if (!isUserStateInit) return <Skeleton active paragraph={{ rows: 3 }} title={false} />;
 
-  // Fail-closed while policy metadata loads
-  if (enabledMeta.status === 'loading' || effortMeta.status === 'loading') {
-    return <Skeleton active paragraph={{ rows: 3 }} title={false} />;
-  }
-
-  // Server-hidden paths do not render (UI hide never replaces server enforcement)
-  const showEnabled = enabledMeta.status === 'ready' && !enabledMeta.hidden;
-  const showEffort = effortMeta.status === 'ready' && !effortMeta.hidden;
+  // R3-U1: flag OFF (disabled) and ready/loading/error all keep rows unless policy-hidden
+  const showEnabled = !enabledMeta.hidden;
+  const showEffort = !effortMeta.hidden;
+  if (!showEnabled && !showEffort) return null;
 
   const memorySettings: FormGroupItemType = {
     children: [
@@ -47,21 +44,13 @@ const MemorySetting = memo(() => {
         ? [
             {
               children: (
-                <Tooltip title={enabledMeta.locked ? t('platformSource.managedByOrg') : reason}>
-                  <div>
-                    <PlatformSettingSourceBadge
-                      locked={enabledMeta.locked}
-                      mode={enabledMeta.mode}
-                      source={enabledMeta.source}
-                      onReset={
-                        enabledMeta.mode === 'default' && enabledMeta.source === 'user'
-                          ? () => void enabledMeta.reset()
-                          : undefined
-                      }
-                    />
-                    <Switch disabled={!canManageMemory || enabledMeta.locked} />
-                  </div>
-                </Tooltip>
+                <ManagedFormControlContent
+                  disabledReason={reason}
+                  extraDisabled={!canManageMemory}
+                  meta={enabledMeta}
+                >
+                  <Switch />
+                </ManagedFormControlContent>
               ),
               desc: t('memory.enabled.desc'),
               label: t('memory.enabled.title'),
@@ -77,35 +66,26 @@ const MemorySetting = memo(() => {
             {
               children: (
                 <Tooltip title={effortMeta.locked ? t('platformSource.managedByOrg') : reason}>
-                  <div>
-                    <PlatformSettingSourceBadge
-                      locked={effortMeta.locked}
-                      mode={effortMeta.mode}
-                      source={effortMeta.source}
-                      onReset={
-                        effortMeta.mode === 'default' && effortMeta.source === 'user'
-                          ? () => void effortMeta.reset()
-                          : undefined
-                      }
-                    />
-                    <LevelSlider<UserMemoryEffort>
-                      defaultValue="medium"
-                      disabled={!canManageMemory || effortMeta.locked}
-                      levels={MEMORY_EFFORT_LEVELS}
-                      style={{ minWidth: 160 }}
-                      value={memory?.effort ?? 'medium'}
-                      marks={{
-                        0: t('memory.effort.level.low'),
-                        1: t('memory.effort.level.medium'),
-                        2: t('memory.effort.level.high'),
-                      }}
-                      onChange={(value) => {
-                        if (!canManageMemory || effortMeta.locked) return;
-
-                        save(() => setSettings({ memory: { effort: value } }));
-                      }}
-                    />
-                  </div>
+                  <ManagedSettingFieldContent meta={effortMeta}>
+                    {({ disabled }) => (
+                      <LevelSlider<UserMemoryEffort>
+                        defaultValue="medium"
+                        disabled={disabled || !canManageMemory}
+                        levels={MEMORY_EFFORT_LEVELS}
+                        style={{ minWidth: 160 }}
+                        value={memory?.effort ?? 'medium'}
+                        marks={{
+                          0: t('memory.effort.level.low'),
+                          1: t('memory.effort.level.medium'),
+                          2: t('memory.effort.level.high'),
+                        }}
+                        onChange={(value) => {
+                          if (disabled || !canManageMemory) return;
+                          save(() => setSettings({ memory: { effort: value } }));
+                        }}
+                      />
+                    )}
+                  </ManagedSettingFieldContent>
                 </Tooltip>
               ),
               desc: t('memory.effort.desc'),
@@ -129,7 +109,13 @@ const MemorySetting = memo(() => {
       itemsType={'group'}
       variant={'filled'}
       onValuesChange={(values) => {
-        if (!canManageMemory || enabledMeta.locked) return;
+        if (
+          !canManageMemory ||
+          enabledMeta.locked ||
+          enabledMeta.status === 'loading' ||
+          enabledMeta.status === 'error'
+        )
+          return;
 
         save(() => setSettings({ memory: values }));
       }}

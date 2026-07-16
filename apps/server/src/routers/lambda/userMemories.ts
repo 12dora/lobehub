@@ -40,10 +40,10 @@ import {
   userMemoriesExperiences,
   userMemoriesIdentities,
   userMemoriesPreferences,
-  userSettings,
 } from '@/database/schemas';
 import { authedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
+import { getEffectiveMemorySettings } from '@/server/enterprise/services/settings/runtimeSettingsAdapter';
 import { getServerDefaultFilesConfig } from '@/server/globalConfig';
 import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
 import type { UserMemoryEmbeddingRuntime } from '@/server/services/memory/userMemory/embedding';
@@ -236,14 +236,11 @@ const normalizeEmbeddable = (value?: string | null): string | undefined => {
 
 const memoryProcedure = authedProcedure.use(serverDatabase).use(async (opts) => {
   const { ctx } = opts;
-  const userSettingsRow = await ctx.serverDB.query.userSettings.findFirst({
-    columns: { memory: true },
-    where: eq(userSettings.id, ctx.userId),
+  const memoryConfig = await getEffectiveMemorySettings({
+    db: ctx.serverDB,
+    scope: ctx.workspaceId ? 'workspace' : 'personal',
+    userId: ctx.userId,
   });
-  const memoryConfig =
-    typeof userSettingsRow?.memory === 'object' && userSettingsRow?.memory !== null
-      ? (userSettingsRow.memory as { effort?: unknown })
-      : undefined;
   const memoryEffort = normalizeMemoryEffort(memoryConfig?.effort);
 
   return opts.next({

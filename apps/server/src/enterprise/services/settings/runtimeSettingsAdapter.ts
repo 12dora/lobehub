@@ -10,12 +10,15 @@
  * keyVaults / market secrets stay on dedicated encrypted paths.
  */
 
+import type { UserInterventionConfig } from '@lobechat/types';
+
 import { UserModel } from '@/database/models/user';
 import type { LobeChatDatabase } from '@/database/type';
 import type { EffectiveSettingsResult } from '@/types/platform/settings';
 
 import { getEnterpriseFeatureFlags } from '../../featureFlags';
 import { EffectiveSettingsService } from './effectiveSettingsService';
+import { settingsRegistry } from './registry';
 
 /**
  * Registered runtime read entry points that must use this adapter when the flag is ON.
@@ -28,11 +31,16 @@ export const SETTINGS_RUNTIME_READ_REGISTRY = [
   'runtimeSettingsAdapter.loadEffectiveUserSettings',
   'runtimeSettingsAdapter.getEffectiveDefaultAgentConfig',
   'runtimeSettingsAdapter.getEffectiveSystemAgentConfig',
+  'runtimeSettingsAdapter.getEffectiveMemorySettings',
   'runtimeSettingsAdapter.getDefaultAgentSlice',
   'runtimeSettingsAdapter.getSystemAgentSlice',
   'runtimeSettingsAdapter.getToolSlice',
+  'runtimeSettingsAdapter.resolveEffectiveUserInterventionConfig',
   'AgentService.getBuiltinAgent',
   'AgentService.getAgentConfig',
+  'AiAgentService.execAgent.approvalPolicy',
+  'memoryRuntime.memoryEffort',
+  'userMemoriesRouter.memoryEffort',
   'SystemAgentService.getTaskModelConfig',
 ] as const;
 
@@ -152,12 +160,21 @@ export const getEffectiveDefaultAgentConfig = async (params: {
  */
 export const getEffectiveMemorySettings = async (params: {
   db: LobeChatDatabase;
+  scope?: 'personal' | 'workspace';
   userId: string;
 }): Promise<{ enabled?: boolean; effort?: string } | undefined> => {
+  const scope = params.scope ?? 'personal';
   if (!isPolicyEnabled()) {
     const userModel = new UserModel(params.db, params.userId);
     const settings = await userModel.getUserSettings();
     return settings?.memory as { enabled?: boolean; effort?: string } | undefined;
+  }
+
+  if (scope === 'workspace') {
+    const service = new EffectiveSettingsService(params.db);
+    const platformOnly = await service.getPlatformLayerEffectiveSettings();
+    return platformOnly.effectiveSettings.memory as
+      { enabled?: boolean; effort?: string } | undefined;
   }
 
   const userModel = new UserModel(params.db, params.userId);
@@ -224,4 +241,61 @@ export const getToolSlice = async (params: LoadEffectiveUserSettingsParams): Pro
   }
   const { settings } = await loadEffectiveUserSettings(params);
   return settings.tool;
+};
+
+export type EffectiveUserInterventionConfig = UserInterventionConfig;
+
+/**
+ * Resolve tool.humanIntervention for execAgent (R3-B1).
+ *
+ * Flag OFF: return caller config unchanged (legacy / headless default).
+ * Flag ON: force approvalMode from effective settings so request body cannot
+ * override locked/default/effective platform policy. allowList may still come
+ * from the caller when mode is allow-list and not platform-locked-only.
+ */
+export const resolveEffectiveUserInterventionConfig = async (params: {
+  callerConfig?: UserInterventionConfig | null;
+  db: LobeChatDatabase;
+  scope?: 'personal' | 'workspace';
+  userId: string;
+}): Promise<EffectiveUserInterventionConfig | undefined> => {
+  const caller = params.callerConfig ?? undefined;
+
+  if (!isPolicyEnabled()) {
+    // Exact legacy: pass through (including undefined → caller default)
+    return caller;
+  }
+
+  const service = new EffectiveSettingsService(params.db);
+  let effectiveApproval: string | undefined;
+
+  if (params.scope === 'workspace') {
+    const platform = await service.getPlatformLayerEffectiveSettings();
+    effectiveApproval = platform.effectiveValues['tool.humanIntervention.approvalMode'] as
+      string | undefined;
+  } else {
+    const userModel = new UserModel(params.db, params.userId);
+    const row = await userModel.getUserSettings();
+    const { settings } = await loadEffectiveUserSettings({
+      db: params.db,
+      legacySettings: { tool: row?.tool } as Record<string, unknown>,
+      userId: params.userId,
+    });
+    const tool = settings.tool as
+      { humanIntervention?: { allowList?: string[]; approvalMode?: string } } | undefined;
+    effectiveApproval = tool?.humanIntervention?.approvalMode;
+  }
+
+  const approvalMode = settingsRegistry.validateValue(
+    'tool.humanIntervention.approvalMode',
+    effectiveApproval ?? caller?.approvalMode ?? 'headless',
+  );
+  if (!approvalMode.ok) {
+    throw new Error(`Invalid effective intervention policy: ${approvalMode.message}`);
+  }
+
+  return {
+    allowList: caller?.allowList,
+    approvalMode: approvalMode.value as EffectiveUserInterventionConfig['approvalMode'],
+  };
 };

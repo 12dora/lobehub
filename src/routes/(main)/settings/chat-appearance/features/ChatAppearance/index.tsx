@@ -14,7 +14,8 @@ import { memo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import AutoSaveHint from '@/components/Editor/AutoSaveHint';
-import ManagedSettingField from '@/features/PlatformSettingSourceBadge/ManagedSettingField';
+import { ManagedSettingFieldContent } from '@/features/PlatformSettingSourceBadge/ManagedSettingField';
+import { usePlatformSettingMeta } from '@/features/PlatformSettingSourceBadge/usePlatformSettingMeta';
 import { useSaveState } from '@/hooks/useSaveState';
 import { useUserStore } from '@/store/user';
 import { settingsSelectors } from '@/store/user/selectors';
@@ -31,6 +32,10 @@ const ChatAppearance = memo(() => {
   const [setSettings, isUserStateInit] = useUserStore((s) => [s.setSettings, s.isUserStateInit]);
   const { status: saveStatus, lastSavedAt, save, retry } = useSaveState();
   const [savingKey, setSavingKey] = useState<string>();
+  const transitionModeMeta = usePlatformSettingMeta('general.transitionMode');
+  const autoScrollMeta = usePlatformSettingMeta('general.enableAutoScrollOnStreaming');
+  const linkIconMeta = usePlatformSettingMeta('general.enableMessageLinkIcon');
+  const fontSizeMeta = usePlatformSettingMeta('general.fontSize');
 
   if (!isUserStateInit) return <Skeleton active paragraph={{ rows: 5 }} title={false} />;
 
@@ -47,147 +52,163 @@ const ChatAppearance = memo(() => {
 
   return (
     <>
-      <FormGroup
-        collapsible={false}
-        desc={t('settingChatAppearance.transitionMode.desc')}
-        gap={16}
-        title={t('settingChatAppearance.transitionMode.title')}
-        variant={'filled'}
-        extra={
-          <Flexbox horizontal align={'center'} gap={8}>
-            {renderSaveHint('transitionMode')}
-            <ManagedSettingField path="general.transitionMode">
-              {({ disabled }) => (
-                <Tabs
-                  activeKey={general.transitionMode}
-                  items={[
-                    {
-                      key: 'none',
-                      label: t('settingChatAppearance.transitionMode.options.none.value'),
-                    },
-                    {
-                      key: 'fadeIn',
-                      label: t('settingChatAppearance.transitionMode.options.fadeIn'),
-                    },
-                    {
-                      key: 'smooth',
-                      label: t('settingChatAppearance.transitionMode.options.smooth'),
-                    },
-                  ]}
-                  onChange={(key) => {
-                    if (disabled) return;
-                    handleChange('transitionMode', key);
-                  }}
-                />
-              )}
-            </ManagedSettingField>
-          </Flexbox>
-        }
-      >
-        <ChatTransitionPreview key={general.transitionMode} mode={general.transitionMode} />
-      </FormGroup>
+      {!transitionModeMeta.hidden ? (
+        <FormGroup
+          collapsible={false}
+          desc={t('settingChatAppearance.transitionMode.desc')}
+          gap={16}
+          title={t('settingChatAppearance.transitionMode.title')}
+          variant={'filled'}
+          extra={
+            <Flexbox horizontal align={'center'} gap={8}>
+              {renderSaveHint('transitionMode')}
+              <ManagedSettingFieldContent meta={transitionModeMeta}>
+                {({ disabled }) => (
+                  <Tabs
+                    activeKey={general.transitionMode}
+                    items={[
+                      {
+                        key: 'none',
+                        label: t('settingChatAppearance.transitionMode.options.none.value'),
+                      },
+                      {
+                        key: 'fadeIn',
+                        label: t('settingChatAppearance.transitionMode.options.fadeIn'),
+                      },
+                      {
+                        key: 'smooth',
+                        label: t('settingChatAppearance.transitionMode.options.smooth'),
+                      },
+                    ]}
+                    onChange={(key) => {
+                      if (disabled) return;
+                      handleChange('transitionMode', key);
+                    }}
+                  />
+                )}
+              </ManagedSettingFieldContent>
+            </Flexbox>
+          }
+        >
+          <ChatTransitionPreview key={general.transitionMode} mode={general.transitionMode} />
+        </FormGroup>
+      ) : null}
 
-      <FormGroup
-        active={false}
-        collapsible={false}
-        desc={t('settingChatAppearance.autoScrollOnStreaming.desc')}
-        title={t('settingChatAppearance.autoScrollOnStreaming.title')}
-        variant={'filled'}
-        extra={
-          <Flexbox horizontal align={'center'} gap={8}>
-            {renderSaveHint('enableAutoScrollOnStreaming')}
-            <ManagedSettingField path="general.enableAutoScrollOnStreaming">
-              {({ disabled }) => (
-                <Switch
-                  checked={general.enableAutoScrollOnStreaming ?? true}
-                  disabled={disabled}
-                  onChange={(checked) => {
-                    if (disabled) return;
-                    handleChange('enableAutoScrollOnStreaming', checked);
-                  }}
-                />
-              )}
-            </ManagedSettingField>
-          </Flexbox>
-        }
-      >
-        {null}
-      </FormGroup>
+      {!autoScrollMeta.hidden ? (
+        <FormGroup
+          active={false}
+          collapsible={false}
+          desc={t('settingChatAppearance.autoScrollOnStreaming.desc')}
+          title={t('settingChatAppearance.autoScrollOnStreaming.title')}
+          variant={'filled'}
+          extra={
+            <Flexbox horizontal align={'center'} gap={8}>
+              {renderSaveHint('enableAutoScrollOnStreaming')}
+              <ManagedSettingFieldContent meta={autoScrollMeta}>
+                {({ disabled }) => (
+                  <Switch
+                    checked={general.enableAutoScrollOnStreaming ?? true}
+                    disabled={disabled}
+                    onChange={(checked) => {
+                      if (disabled) return;
+                      handleChange('enableAutoScrollOnStreaming', checked);
+                    }}
+                  />
+                )}
+              </ManagedSettingFieldContent>
+            </Flexbox>
+          }
+        >
+          {null}
+        </FormGroup>
+      ) : null}
 
-      <FormGroup
-        collapsible={false}
-        desc={t('settingChatAppearance.linkIcon.desc')}
-        gap={16}
-        title={t('settingChatAppearance.linkIcon.title')}
-        variant={'filled'}
-        extra={
-          <Flexbox horizontal align={'center'} gap={8}>
-            {renderSaveHint('enableMessageLinkIcon')}
-            <ManagedSettingField path="general.enableMessageLinkIcon">
-              {({ disabled }) => (
-                <Switch
-                  checked={general.enableMessageLinkIcon ?? true}
-                  disabled={disabled}
-                  onChange={(checked) => {
-                    if (disabled) return;
-                    handleChange('enableMessageLinkIcon', checked);
-                  }}
-                />
-              )}
-            </ManagedSettingField>
-          </Flexbox>
-        }
-      >
-        <LinkIconPreview />
-      </FormGroup>
+      {!linkIconMeta.hidden ? (
+        <FormGroup
+          collapsible={false}
+          desc={t('settingChatAppearance.linkIcon.desc')}
+          gap={16}
+          title={t('settingChatAppearance.linkIcon.title')}
+          variant={'filled'}
+          extra={
+            <Flexbox horizontal align={'center'} gap={8}>
+              {renderSaveHint('enableMessageLinkIcon')}
+              <ManagedSettingFieldContent meta={linkIconMeta}>
+                {({ disabled }) => (
+                  <Switch
+                    checked={general.enableMessageLinkIcon ?? true}
+                    disabled={disabled}
+                    onChange={(checked) => {
+                      if (disabled) return;
+                      handleChange('enableMessageLinkIcon', checked);
+                    }}
+                  />
+                )}
+              </ManagedSettingFieldContent>
+            </Flexbox>
+          }
+        >
+          <LinkIconPreview />
+        </FormGroup>
+      ) : null}
 
-      <FormGroup
-        collapsible={false}
-        desc={t('settingChatAppearance.fontSize.desc')}
-        gap={16}
-        title={t('settingChatAppearance.fontSize.title')}
-        variant={'filled'}
-        extra={
-          <Flexbox horizontal align={'center'} gap={8}>
-            {renderSaveHint('fontSize')}
-            <SliderWithInput
-              max={18}
-              min={12}
-              step={1}
-              value={general.fontSize}
-              marks={{
-                12: {
-                  label: 'A',
-                  style: {
-                    fontSize: 12,
-                    marginTop: 4,
-                  },
-                },
-                14: {
-                  label: t('settingChatAppearance.fontSize.marks.normal'),
-                  style: {
-                    fontSize: 14,
-                    marginTop: 4,
-                  },
-                },
-                18: {
-                  label: 'A',
-                  style: {
-                    fontSize: 18,
-                    marginTop: 4,
-                  },
-                },
-              }}
-              style={{
-                width: 240,
-              }}
-              onChange={(value) => handleChange('fontSize', value)}
-            />
-          </Flexbox>
-        }
-      >
-        <ChatPreview fontSize={general.fontSize} />
-      </FormGroup>
+      {!fontSizeMeta.hidden ? (
+        <FormGroup
+          collapsible={false}
+          desc={t('settingChatAppearance.fontSize.desc')}
+          gap={16}
+          title={t('settingChatAppearance.fontSize.title')}
+          variant={'filled'}
+          extra={
+            <Flexbox horizontal align={'center'} gap={8}>
+              {renderSaveHint('fontSize')}
+              <ManagedSettingFieldContent meta={fontSizeMeta}>
+                {({ disabled }) => (
+                  <SliderWithInput
+                    disabled={disabled}
+                    max={18}
+                    min={12}
+                    step={1}
+                    value={general.fontSize}
+                    marks={{
+                      12: {
+                        label: 'A',
+                        style: {
+                          fontSize: 12,
+                          marginTop: 4,
+                        },
+                      },
+                      14: {
+                        label: t('settingChatAppearance.fontSize.marks.normal'),
+                        style: {
+                          fontSize: 14,
+                          marginTop: 4,
+                        },
+                      },
+                      18: {
+                        label: 'A',
+                        style: {
+                          fontSize: 18,
+                          marginTop: 4,
+                        },
+                      },
+                    }}
+                    style={{
+                      width: 240,
+                    }}
+                    onChange={(value) => {
+                      if (disabled) return;
+                      handleChange('fontSize', value);
+                    }}
+                  />
+                )}
+              </ManagedSettingFieldContent>
+            </Flexbox>
+          }
+        >
+          <ChatPreview fontSize={general.fontSize} />
+        </FormGroup>
+      ) : null}
 
       <FormGroup
         collapsible={false}

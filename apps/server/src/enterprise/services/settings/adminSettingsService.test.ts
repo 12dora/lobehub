@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
 import {
@@ -83,6 +83,15 @@ describe('AdminSettingsService', () => {
     // nothing persisted
     const draft = await service.getDraft();
     expect(draft.draft).toEqual({});
+    const audits = await serverDB.select().from(platformAuditLogs);
+    expect(audits).toMatchObject([
+      {
+        action: 'admin.settings.saveDraft',
+        afterDiff: { issueCount: 1 },
+        result: 'failure',
+      },
+    ]);
+    expect(JSON.stringify(audits)).not.toContain('not.registered');
   });
 
   it('saveDraft + publish + rollback append-only flow', async () => {
@@ -107,6 +116,10 @@ describe('AdminSettingsService', () => {
         reason: 'stale',
       }),
     ).rejects.toBeInstanceOf(PlatformRevisionConflictError);
+    const conflictAudits = await serverDB.select().from(platformAuditLogs);
+    expect(conflictAudits).toContainEqual(
+      expect.objectContaining({ action: 'admin.settings.publish', result: 'failure' }),
+    );
 
     // change draft and publish v2
     await service.saveDraft({
@@ -177,5 +190,26 @@ describe('AdminSettingsService', () => {
     });
     expect(badType.ok).toBe(false);
     expect(badType.issues[0]?.code).toBe('MANAGED_SETTING_INVALID_VALUE');
+  });
+
+  it('audit append failure rolls back the settings write and never emits false success', async () => {
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const auditAppend = vi.fn().mockRejectedValue(new Error('audit unavailable'));
+
+    await expect(
+      new AdminSettingsService(serverDB, { auditAppend }).saveDraft({
+        actorUserId: 'admin-1',
+        draft: validDraft,
+        reason: 'must be audited',
+      }),
+    ).rejects.toThrow('audit unavailable');
+    consoleSpy.mockRestore();
+
+    const [bundle, audits] = await Promise.all([
+      new AdminSettingsService(serverDB).getDraft(),
+      serverDB.select().from(platformAuditLogs),
+    ]);
+    expect(bundle.draft).toEqual({});
+    expect(audits).toEqual([]);
   });
 });

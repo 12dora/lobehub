@@ -12,6 +12,12 @@ import AsyncError from '@/components/AsyncError';
 import AutoSaveHint from '@/components/Editor/AutoSaveHint';
 import { FORM_STYLE } from '@/const/layoutTokens';
 import ModelSelect from '@/features/ModelSelect';
+import { ManagedCompositeSettingFieldContent } from '@/features/PlatformSettingSourceBadge/ManagedSettingField';
+import {
+  isPlatformSettingMetaWritable,
+  type PlatformSettingMetaState,
+  usePlatformSettingMeta,
+} from '@/features/PlatformSettingSourceBadge/usePlatformSettingMeta';
 import { usePermission } from '@/hooks/usePermission';
 import { useSaveState } from '@/hooks/useSaveState';
 import { useUserStore } from '@/store/user';
@@ -73,6 +79,21 @@ const ModelAssignmentsForm = memo(() => {
   // shared save-state — the write-side counterpart to the read-side AsyncError above.
   const [savingGroup, setSavingGroup] = useState<SavingGroup>();
   const { status: saveStatus, lastSavedAt, save, retry } = useSaveState();
+  const defaultAgentModelMeta = usePlatformSettingMeta('defaultAgent.config.model');
+  const defaultAgentProviderMeta = usePlatformSettingMeta('defaultAgent.config.provider');
+  const topicModelMeta = usePlatformSettingMeta('systemAgent.topic.model');
+  const topicProviderMeta = usePlatformSettingMeta('systemAgent.topic.provider');
+  const translationModelMeta = usePlatformSettingMeta('systemAgent.translation.model');
+  const historyCompressModelMeta = usePlatformSettingMeta('systemAgent.historyCompress.model');
+
+  const defaultAgentMetas = [defaultAgentModelMeta, defaultAgentProviderMeta] as const;
+  const systemAgentMetas: Partial<
+    Record<UserServiceModelConfigKey, readonly PlatformSettingMetaState[]>
+  > = {
+    historyCompress: [historyCompressModelMeta],
+    topic: [topicModelMeta, topicProviderMeta],
+    translation: [translationModelMeta],
+  };
 
   useEffect(() => {
     if (loadingKey === 'defaultAgent') setLoadingKey(undefined);
@@ -104,7 +125,11 @@ const ModelAssignmentsForm = memo(() => {
     model: string;
     provider: string;
   }) => {
-    if (!canManageServiceModel) return;
+    if (
+      !canManageServiceModel ||
+      defaultAgentMetas.some((meta) => !isPlatformSettingMetaWritable(meta))
+    )
+      return;
 
     setSavingGroup('assignments');
     setLoadingKey('defaultAgent');
@@ -119,7 +144,9 @@ const ModelAssignmentsForm = memo(() => {
     key: UserServiceModelConfigKey,
     value: Partial<SystemAgentItem>,
   ) => {
-    if (!canManageServiceModel) return;
+    const managedMetas = systemAgentMetas[key] ?? [];
+    if (!canManageServiceModel || managedMetas.some((meta) => !isPlatformSettingMetaWritable(meta)))
+      return;
 
     setSavingGroup(groupOfKey(key));
     setLoadingKey(key);
@@ -130,8 +157,42 @@ const ModelAssignmentsForm = memo(() => {
     }
   };
 
-  const defaultAgentItem: FormItemProps = {
-    children: (
+  const defaultAgentItem: FormItemProps | undefined = defaultAgentMetas.some((meta) => meta.hidden)
+    ? undefined
+    : {
+        children: (
+          <ManagedCompositeSettingFieldContent metas={defaultAgentMetas}>
+            {({ disabled }) => (
+              <Tooltip title={reason}>
+                <Flexbox
+                  align="center"
+                  direction="horizontal"
+                  gap={12}
+                  style={{ width: 'min(100%, 448px)' }}
+                >
+                  <ModelSelect
+                    disabled={disabled || !canManageServiceModel}
+                    showAbility={false}
+                    style={{ minWidth: 0, width: '100%' }}
+                    value={defaultAgent.config}
+                    onChange={updateDefaultAgentModel}
+                  />
+                </Flexbox>
+              </Tooltip>
+            )}
+          </ManagedCompositeSettingFieldContent>
+        ),
+        desc: t('defaultAgent.model.desc'),
+        label: t('defaultAgent.title'),
+      };
+
+  const systemModelItems: FormItemProps[] = SYSTEM_AGENT_MODEL_ITEMS.map(({ key }) => {
+    const value = systemAgentSettings[key];
+    const managedMetas = systemAgentMetas[key] ?? [];
+
+    if (managedMetas.some((meta) => meta.hidden)) return null;
+
+    const control = (
       <Tooltip title={reason}>
         <Flexbox
           align="center"
@@ -143,42 +204,43 @@ const ModelAssignmentsForm = memo(() => {
             disabled={!canManageServiceModel}
             showAbility={false}
             style={{ minWidth: 0, width: '100%' }}
-            value={defaultAgent.config}
-            onChange={updateDefaultAgentModel}
+            value={value}
+            onChange={(props) => updateSystemAgentModel(key, props)}
           />
         </Flexbox>
       </Tooltip>
-    ),
-    desc: t('defaultAgent.model.desc'),
-    label: t('defaultAgent.title'),
-  };
-
-  const systemModelItems: FormItemProps[] = SYSTEM_AGENT_MODEL_ITEMS.map(({ key }) => {
-    const value = systemAgentSettings[key];
+    );
 
     return {
-      children: (
-        <Tooltip title={reason}>
-          <Flexbox
-            align="center"
-            direction="horizontal"
-            gap={12}
-            style={{ width: 'min(100%, 448px)' }}
-          >
-            <ModelSelect
-              disabled={!canManageServiceModel}
-              showAbility={false}
-              style={{ minWidth: 0, width: '100%' }}
-              value={value}
-              onChange={(props) => updateSystemAgentModel(key, props)}
-            />
-          </Flexbox>
-        </Tooltip>
-      ),
+      children:
+        managedMetas.length > 0 ? (
+          <ManagedCompositeSettingFieldContent metas={managedMetas}>
+            {({ disabled }) => (
+              <Tooltip title={reason}>
+                <Flexbox
+                  align="center"
+                  direction="horizontal"
+                  gap={12}
+                  style={{ width: 'min(100%, 448px)' }}
+                >
+                  <ModelSelect
+                    disabled={disabled || !canManageServiceModel}
+                    showAbility={false}
+                    style={{ minWidth: 0, width: '100%' }}
+                    value={value}
+                    onChange={(props) => updateSystemAgentModel(key, props)}
+                  />
+                </Flexbox>
+              </Tooltip>
+            )}
+          </ManagedCompositeSettingFieldContent>
+        ) : (
+          control
+        ),
       desc: t(`systemAgent.${key}.modelDesc`),
       label: t(`systemAgent.${key}.title`),
     } satisfies FormItemProps;
-  });
+  }).filter(Boolean) as FormItemProps[];
 
   const memoryModelItems: FormItemProps[] = MEMORY_MODEL_ITEMS.map(
     ({ contextLimit, key, modelType }) => {
@@ -268,7 +330,7 @@ const ModelAssignmentsForm = memo(() => {
     );
 
   const modelAssignments: FormGroupItemType = {
-    children: [defaultAgentItem, ...systemModelItems],
+    children: [...(defaultAgentItem ? [defaultAgentItem] : []), ...systemModelItems],
     extra: renderSaveHint('assignments'),
     title: t('serviceModel.modelAssignments.title'),
   };

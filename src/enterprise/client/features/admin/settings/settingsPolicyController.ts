@@ -43,7 +43,7 @@ export const resolvePrimaryAction = (params: {
   draftFingerprint: string;
 }): PrimaryActionKind => {
   if (!params.canUpdate && !params.canPublish) return 'none';
-  if (params.revisionConflict) return params.canUpdate ? 'retry' : 'none';
+  if (params.revisionConflict) return 'none';
   if (params.saveState === 'failed' && params.canUpdate) return 'retry';
   if (params.dirty && params.canUpdate) return 'save';
   if (
@@ -54,9 +54,20 @@ export const resolvePrimaryAction = (params: {
     return 'publish';
   }
   // Clean but not validated → validate is the one primary (not enabled publish)
-  if (!params.dirty && params.canUpdate && params.canPublish) return 'validate';
-  if (!params.dirty && params.canUpdate) return 'save';
+  if (!params.dirty && params.canPublish) return 'validate';
   return 'none';
+};
+
+const canonicalize = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (!value || typeof value !== 'object') return value;
+
+  const record = value as Record<string, unknown>;
+  return Object.fromEntries(
+    Object.keys(record)
+      .sort()
+      .map((key) => [key, canonicalize(record[key])]),
+  );
 };
 
 export const fingerprintDraft = (draft: DraftMap): string => {
@@ -64,7 +75,7 @@ export const fingerprintDraft = (draft: DraftMap): string => {
   return JSON.stringify(
     keys.map((k) => {
       const p = draft[k]!;
-      return [k, p.mode, p.visibility, p.schemaVersion, p.value];
+      return [k, p.mode, p.visibility, p.schemaVersion, canonicalize(p.value)];
     }),
   );
 };
@@ -119,6 +130,8 @@ export const buildChangePreview = (params: {
 export const CONFLICT_DRAFT_KEY = 'aihub.admin.settings.conflictDraft';
 
 export type ConflictDraftPayload = {
+  /** Server draft the local work was originally based on (for three-way merge). */
+  originalBaseDraft: DraftMap;
   draft: DraftMap;
   previousBaseRevision: number;
   registryVersion: number;
@@ -139,7 +152,22 @@ export const loadConflictDraft = (): ConflictDraftPayload | null => {
   try {
     const raw = window.localStorage.getItem(CONFLICT_DRAFT_KEY);
     if (!raw) return null;
-    return JSON.parse(raw) as ConflictDraftPayload;
+    const parsed = JSON.parse(raw) as Partial<ConflictDraftPayload>;
+    if (
+      !parsed.draft ||
+      typeof parsed.previousBaseRevision !== 'number' ||
+      typeof parsed.registryVersion !== 'number' ||
+      typeof parsed.savedAt !== 'string'
+    ) {
+      return null;
+    }
+    return {
+      draft: parsed.draft,
+      originalBaseDraft: parsed.originalBaseDraft ?? {},
+      previousBaseRevision: parsed.previousBaseRevision,
+      registryVersion: parsed.registryVersion,
+      savedAt: parsed.savedAt,
+    };
   } catch {
     return null;
   }

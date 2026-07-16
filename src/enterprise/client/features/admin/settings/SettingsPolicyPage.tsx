@@ -1,9 +1,9 @@
 'use client';
 
-import { Flexbox, Input, Text } from '@lobehub/ui';
+import { Alert, Flexbox, Input, Text } from '@lobehub/ui';
 import { Button, Select, Switch } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useBlocker } from 'react-router';
 
@@ -14,10 +14,12 @@ import { adminSettingsService } from '@/enterprise/client/services/adminSettings
 import type { AdminSettingsGetDraftOutput } from '@/server/enterprise/contracts/adminSettings';
 
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
-import RevisionBanner from '../primitives/RevisionBanner';
 import { openReasonModal } from '../users/modals/openReasonModal';
+import { canMutateAgainstBase, initialConflictState, reduceConflict } from './conflictStateMachine';
 import { refreshAdminSettingsDraft, useFetchAdminSettingsDraft } from './hooks/useAdminSettings';
 import { clearLocalDraft, loadLocalDraft, saveLocalDraft } from './localDraftStorage';
+import { formatPolicySummary, formatSettingValue } from './policyPresentation';
+import { PolicyValueEditor } from './PolicyValueEditor';
 import {
   buildChangePreview,
   clearConflictDraft,
@@ -104,6 +106,34 @@ const styles = createStaticStyles(({ css }) => ({
     font-size: 13px;
     color: ${cssVar.colorTextSecondary};
   `,
+  conflictActions: css`
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-block-start: 8px;
+  `,
+  conflictGrid: css`
+    display: grid;
+    grid-template-columns: minmax(160px, 1fr) minmax(160px, 1fr);
+    gap: 8px 16px;
+    margin-block-start: 8px;
+
+    @media (width <= 640px) {
+      grid-template-columns: 1fr;
+    }
+  `,
+  previewRow: css`
+    display: grid;
+    grid-template-columns: minmax(180px, 0.8fr) minmax(220px, 1fr) minmax(220px, 1fr);
+    gap: 8px;
+
+    padding-block: 6px;
+    border-block-end: 1px solid ${cssVar.colorBorderSecondary};
+
+    @media (width <= 760px) {
+      grid-template-columns: 1fr;
+    }
+  `,
 }));
 
 const MODE_VALUES = ['user', 'default', 'locked'] as const;
@@ -139,8 +169,16 @@ const SettingsPolicyPage = memo(() => {
   } | null>(null);
   const [validatedFingerprint, setValidatedFingerprint] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
-  const [revisionConflict, setRevisionConflict] = useState(false);
+  const [activeBaseRevision, setActiveBaseRevision] = useState(0);
+  const [conflictState, dispatchConflict] = useReducer(
+    reduceConflict,
+    undefined,
+    initialConflictState,
+  );
   const hydratedRef = useRef(false);
+  const originalBaseDraftRef = useRef<DraftMap>({});
+
+  const revisionConflict = conflictState.phase === 'conflict';
 
   const draftFingerprint = useMemo(() => fingerprintDraft(draft), [draft]);
   const primary = resolvePrimaryAction({
@@ -167,12 +205,24 @@ const SettingsPolicyPage = memo(() => {
     hydratedRef.current = true;
     const conflict = loadConflictDraft();
     if (conflict && conflict.registryVersion === data.registryVersion) {
+      originalBaseDraftRef.current = conflict.originalBaseDraft;
       setDraft(conflict.draft);
       setDirty(true);
-      setRevisionConflict(true);
+      setActiveBaseRevision(conflict.previousBaseRevision);
+      dispatchConflict({
+        localBaseRevision: conflict.previousBaseRevision,
+        localDraft: conflict.draft,
+        originalBaseDraft: conflict.originalBaseDraft,
+        serverBaseRevision: data.baseRevision,
+        serverDraft: data.draft,
+        type: 'CONFLICT_DETECTED',
+      });
       return;
     }
     const local = loadLocalDraft(data.registryVersion, data.baseRevision);
+    originalBaseDraftRef.current = data.draft;
+    setActiveBaseRevision(data.baseRevision);
+    dispatchConflict({ type: 'CLEAR' });
     if (local) {
       setDraft(local.draft);
       setDirty(true);
@@ -184,14 +234,14 @@ const SettingsPolicyPage = memo(() => {
 
   // Persist dirty draft locally
   useEffect(() => {
-    if (!data || !dirty) return;
+    if (!data || !dirty || revisionConflict) return;
     saveLocalDraft({
-      baseRevision: data.baseRevision,
+      baseRevision: activeBaseRevision,
       draft,
       registryVersion: data.registryVersion,
       savedAt: new Date().toISOString(),
     });
-  }, [data, dirty, draft]);
+  }, [activeBaseRevision, data, dirty, draft, revisionConflict]);
 
   // Warn before unload when dirty
   useEffect(() => {
@@ -255,31 +305,146 @@ const SettingsPolicyPage = memo(() => {
     [canUpdate, getPolicy],
   );
 
-  const handleSaveDraft = useCallback(async () => {
+  const enterRevisionConflict = useCallback(async () => {
     if (!data) return;
+    const payload = {
+      draft,
+      originalBaseDraft: originalBaseDraftRef.current,
+      previousBaseRevision: activeBaseRevision,
+      registryVersion: data.registryVersion,
+      savedAt: new Date().toISOString(),
+    };
+    saveConflictDraft(payload);
+    setDirty(true);
+    setSaveState('failed');
+    setValidatedFingerprint(null);
+
+    let latest: AdminSettingsGetDraftOutput | undefined;
+    try {
+      latest = await mutate();
+    } catch {
+      // Keep the durable local draft and block mutations. The conflict panel
+      // exposes an explicit retry for fetching the latest server base.
+    }
+    const server = latest ?? data;
+    dispatchConflict({
+      localBaseRevision: activeBaseRevision,
+      localDraft: draft,
+      originalBaseDraft: originalBaseDraftRef.current,
+      serverBaseRevision: server.baseRevision,
+      serverDraft: server.draft,
+      type: 'CONFLICT_DETECTED',
+    });
+  }, [activeBaseRevision, data, draft, mutate]);
+
+  const refreshConflictServer = useCallback(async () => {
+    const latest = await mutate();
+    if (!latest) return;
+    dispatchConflict({
+      serverBaseRevision: latest.baseRevision,
+      serverDraft: latest.draft,
+      type: 'REFRESH_SERVER',
+    });
+  }, [mutate]);
+
+  const handleRebase = useCallback(() => {
+    if (!data || conflictState.phase !== 'conflict') return;
+    const next = reduceConflict(conflictState, { type: 'REBASE' });
+    dispatchConflict({ type: 'REBASE' });
+    clearConflictDraft();
+    clearLocalDraft(data.registryVersion, activeBaseRevision);
+    setActiveBaseRevision(next.serverBaseRevision);
+    setDraft(next.localDraft);
+    setDirty(true);
+    setSaveState('idle');
+    setSaveError(null);
+    setValidationMsg(null);
+    setImpact(null);
+    setValidatedFingerprint(null);
+    originalBaseDraftRef.current = next.serverDraft;
+    saveLocalDraft({
+      baseRevision: next.serverBaseRevision,
+      draft: next.localDraft,
+      registryVersion: data.registryVersion,
+      savedAt: new Date().toISOString(),
+    });
+  }, [activeBaseRevision, conflictState, data]);
+
+  const handleDiscardConflict = useCallback(() => {
+    if (!data || conflictState.phase !== 'conflict') return;
+    const next = reduceConflict(conflictState, { type: 'DISCARD' });
+    dispatchConflict({ type: 'DISCARD' });
+    clearConflictDraft();
+    clearLocalDraft(data.registryVersion, activeBaseRevision);
+    clearLocalDraft(data.registryVersion, next.serverBaseRevision);
+    setActiveBaseRevision(next.serverBaseRevision);
+    setDraft(next.serverDraft);
+    setDirty(false);
+    setSaveState('idle');
+    setSaveError(null);
+    setValidationMsg(null);
+    setImpact(null);
+    setValidatedFingerprint(null);
+    originalBaseDraftRef.current = next.serverDraft;
+  }, [activeBaseRevision, conflictState, data]);
+
+  const handleSaveDraft = useCallback(async () => {
+    if (
+      !data ||
+      !canUpdate ||
+      revisionConflict ||
+      activeBaseRevision !== data.baseRevision ||
+      !canMutateAgainstBase(conflictState, activeBaseRevision)
+    ) {
+      if (data && !revisionConflict) await enterRevisionConflict();
+      return;
+    }
     setSaveState('saving');
     setSaveError(null);
     try {
-      await adminSettingsService.saveDraft({
+      const result = await adminSettingsService.saveDraft({
         draft,
         reason: t('settingsPolicy.saveReason'),
       });
-      clearLocalDraft(data.registryVersion, data.baseRevision);
+      clearLocalDraft(data.registryVersion, activeBaseRevision);
+      clearConflictDraft();
       setDirty(false);
       setSaveState('saved');
+      setValidatedFingerprint(null);
+      setActiveBaseRevision(result.baseRevision);
+      originalBaseDraftRef.current = draft;
+      dispatchConflict({ type: 'CLEAR' });
       hydratedRef.current = false;
       await mutate();
       await refreshAdminSettingsDraft();
     } catch (err) {
-      setSaveState('failed');
       const mapped = mapEnterpriseError(err);
+      if (mapped?.code === 'PLATFORM_REVISION_CONFLICT') {
+        await enterRevisionConflict();
+        return;
+      }
+      setSaveState('failed');
       setSaveError(
         mapped ? t(mapped.i18nKey as never, { defaultValue: mapped.code }) : String(err),
       );
     }
-  }, [data, draft, mutate, t]);
+  }, [
+    activeBaseRevision,
+    canUpdate,
+    conflictState,
+    data,
+    draft,
+    enterRevisionConflict,
+    mutate,
+    revisionConflict,
+    t,
+  ]);
 
   const handleValidate = useCallback(async () => {
+    if (dirty || revisionConflict || activeBaseRevision !== data?.baseRevision) {
+      setValidationMsg(t('settingsPolicy.validateRequiresSaved'));
+      return;
+    }
     setValidationMsg(null);
     try {
       const result = await adminSettingsService.validateDraft({ draft });
@@ -301,17 +466,29 @@ const SettingsPolicyPage = memo(() => {
       const mapped = mapEnterpriseError(err);
       setValidationMsg(mapped ? mapped.code : String(err));
     }
-  }, [draft, t]);
+  }, [activeBaseRevision, data?.baseRevision, dirty, draft, revisionConflict, t]);
 
   const handlePublish = useCallback(() => {
-    if (!data || !canPublish) return;
+    if (
+      !data ||
+      !canPublish ||
+      dirty ||
+      revisionConflict ||
+      activeBaseRevision !== data.baseRevision ||
+      !canMutateAgainstBase(conflictState, activeBaseRevision)
+    ) {
+      if (data && !revisionConflict && activeBaseRevision !== data.baseRevision) {
+        void enterRevisionConflict();
+      }
+      return;
+    }
     if (validatedFingerprint !== fingerprintDraft(draft)) {
       setValidationMsg(t('settingsPolicy.publishRequiresValidate'));
       return;
     }
     openReasonModal({
       buildPayload: (reason) => ({
-        expectedRevision: data.baseRevision,
+        expectedRevision: activeBaseRevision,
         reason,
       }),
       description: t('settingsPolicy.publishDesc'),
@@ -329,19 +506,13 @@ const SettingsPolicyPage = memo(() => {
           clearLocalDraft(data.registryVersion, data.baseRevision);
           clearConflictDraft();
           setDirty(false);
-          setRevisionConflict(false);
+          dispatchConflict({ type: 'CLEAR' });
           hydratedRef.current = false;
           await mutate();
         } catch (err) {
           const mapped = mapEnterpriseError(err);
           if (mapped?.code === 'PLATFORM_REVISION_CONFLICT') {
-            saveConflictDraft({
-              draft,
-              previousBaseRevision: data.baseRevision,
-              registryVersion: data.registryVersion,
-              savedAt: new Date().toISOString(),
-            });
-            setRevisionConflict(true);
+            await enterRevisionConflict();
           }
           throw err;
         }
@@ -350,13 +521,35 @@ const SettingsPolicyPage = memo(() => {
       targetLabel: t('settingsPolicy.title'),
       title: t('settingsPolicy.publish'),
     });
-  }, [canPublish, data, draft, impact, mutate, t, validatedFingerprint]);
+  }, [
+    activeBaseRevision,
+    canPublish,
+    conflictState,
+    data,
+    dirty,
+    draft,
+    enterRevisionConflict,
+    impact,
+    mutate,
+    revisionConflict,
+    t,
+    validatedFingerprint,
+  ]);
 
   const handleRollback = useCallback(() => {
-    if (!data || data.baseRevision < 1) return;
+    if (
+      !data ||
+      !canPublish ||
+      dirty ||
+      revisionConflict ||
+      activeBaseRevision !== data.baseRevision ||
+      data.baseRevision < 1
+    ) {
+      return;
+    }
     openReasonModal({
       buildPayload: (reason) => ({
-        expectedRevision: data.baseRevision,
+        expectedRevision: activeBaseRevision,
         reason,
         targetRevision: Math.max(1, data.baseRevision - 1),
       }),
@@ -374,7 +567,7 @@ const SettingsPolicyPage = memo(() => {
         } catch (err) {
           const mapped = mapEnterpriseError(err);
           if (mapped?.code === 'PLATFORM_REVISION_CONFLICT') {
-            setRevisionConflict(true);
+            await enterRevisionConflict();
           }
           throw err;
         }
@@ -383,7 +576,16 @@ const SettingsPolicyPage = memo(() => {
       targetLabel: t('settingsPolicy.title'),
       title: t('settingsPolicy.rollback'),
     });
-  }, [data, mutate, t]);
+  }, [
+    activeBaseRevision,
+    canPublish,
+    data,
+    dirty,
+    enterRevisionConflict,
+    mutate,
+    revisionConflict,
+    t,
+  ]);
 
   // U1: policy flag off → disabled surface, zero getDraft
   if (!policyEnabled) {
@@ -444,7 +646,11 @@ const SettingsPolicyPage = memo(() => {
         {primary === 'retry' ? t('settingsPolicy.retrySave') : t('settingsPolicy.saveDraft')}
       </Button>
     ) : primary === 'validate' ? (
-      <Button disabled={!canUpdate} type="primary" onClick={() => void handleValidate()}>
+      <Button
+        disabled={!canUpdate && !canPublish}
+        type="primary"
+        onClick={() => void handleValidate()}
+      >
         {t('settingsPolicy.validate')}
       </Button>
     ) : primary === 'publish' ? (
@@ -458,11 +664,16 @@ const SettingsPolicyPage = memo(() => {
       title={t('settingsPolicy.title')}
       actions={
         <Flexbox horizontal gap={8}>
-          {canUpdate ? (
-            <Button onClick={() => void handleValidate()}>{t('settingsPolicy.validate')}</Button>
-          ) : null}
           {canPublish ? (
-            <Button disabled={data.baseRevision < 1} onClick={handleRollback}>
+            <Button
+              disabled={
+                data.baseRevision < 1 ||
+                dirty ||
+                revisionConflict ||
+                activeBaseRevision !== data.baseRevision
+              }
+              onClick={handleRollback}
+            >
               {t('settingsPolicy.rollback')}
             </Button>
           ) : null}
@@ -470,16 +681,71 @@ const SettingsPolicyPage = memo(() => {
       }
       banner={
         revisionConflict ? (
-          <RevisionBanner
-            conflict
-            publishedRevision={data.baseRevision}
-            onRefresh={() => {
-              const conflict = loadConflictDraft();
-              if (conflict) setDraft(conflict.draft);
-              setRevisionConflict(false);
-              hydratedRef.current = false;
-              void mutate();
-            }}
+          <Alert
+            showIcon
+            closable={false}
+            message={t('settingsPolicy.conflict.title')}
+            type="warning"
+            description={
+              <div>
+                <Text as="div" type="secondary">
+                  {t('settingsPolicy.conflict.revisions', {
+                    local: conflictState.localBaseRevision,
+                    server: conflictState.serverBaseRevision,
+                  })}
+                </Text>
+                {conflictState.conflictingPaths.length > 0 ? (
+                  <div className={styles.conflictGrid}>
+                    {conflictState.conflictingPaths.map((path) => {
+                      const entry = registryByPath.get(path);
+                      if (!entry) return <Text key={path}>{path}</Text>;
+                      return (
+                        <div key={path} style={{ gridColumn: '1 / -1' }}>
+                          <Text strong>{t(entry.titleKey as never, { defaultValue: path })}</Text>
+                          <div className={styles.conflictGrid}>
+                            <Text type="secondary">
+                              {t('settingsPolicy.conflict.localValue', {
+                                value: formatSettingValue({
+                                  entry,
+                                  t,
+                                  value: conflictState.localDraft[path]?.value,
+                                }),
+                              })}
+                            </Text>
+                            <Text type="secondary">
+                              {t('settingsPolicy.conflict.serverValue', {
+                                value: formatSettingValue({
+                                  entry,
+                                  t,
+                                  value: conflictState.serverDraft[path]?.value,
+                                }),
+                              })}
+                            </Text>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <Text as="div" type="secondary">
+                    {t('settingsPolicy.conflict.noCollisions')}
+                  </Text>
+                )}
+                <div className={styles.conflictActions}>
+                  <Button onClick={() => void refreshConflictServer()}>
+                    {t('settingsPolicy.conflict.refresh')}
+                  </Button>
+                  {canUpdate ? (
+                    <Button type="primary" onClick={handleRebase}>
+                      {t('settingsPolicy.conflict.rebase')}
+                    </Button>
+                  ) : null}
+                  <Button onClick={handleDiscardConflict}>
+                    {t('settingsPolicy.conflict.discard')}
+                  </Button>
+                </div>
+              </div>
+            }
           />
         ) : null
       }
@@ -510,12 +776,42 @@ const SettingsPolicyPage = memo(() => {
         {preview.length > 0 ? (
           <div>
             <Text strong>{t('settingsPolicy.changePreview')}</Text>
-            {preview.map((row) => (
-              <Text as="div" key={row.path} type="secondary">
-                {row.path}: {row.beforeMode}/{String(row.beforeValue)} → {row.afterMode}/
-                {String(row.afterValue)} ({row.beforeVisibility}→{row.afterVisibility})
-              </Text>
-            ))}
+            {preview.map((row) => {
+              const entry = registryByPath.get(row.path);
+              return (
+                <div className={styles.previewRow} key={row.path}>
+                  <Text strong>
+                    {entry ? t(entry.titleKey as never, { defaultValue: row.path }) : row.path}
+                  </Text>
+                  {entry ? (
+                    <>
+                      <Text type="secondary">
+                        {t('settingsPolicy.preview.before', {
+                          summary: formatPolicySummary({
+                            entry,
+                            mode: row.beforeMode,
+                            t,
+                            value: row.beforeValue,
+                            visibility: row.beforeVisibility,
+                          }),
+                        })}
+                      </Text>
+                      <Text type="secondary">
+                        {t('settingsPolicy.preview.after', {
+                          summary: formatPolicySummary({
+                            entry,
+                            mode: row.afterMode,
+                            t,
+                            value: row.afterValue,
+                            visibility: row.afterVisibility,
+                          }),
+                        })}
+                      </Text>
+                    </>
+                  ) : null}
+                </div>
+              );
+            })}
           </div>
         ) : null}
 
@@ -553,6 +849,7 @@ const SettingsPolicyPage = memo(() => {
                           <Text type="secondary">{t('settingsPolicy.hidden')}</Text>
                           <Switch
                             checked={policy.visibility === 'hidden'}
+                            disabled={!canUpdate}
                             onChange={(checked: boolean) =>
                               updatePolicy(entry.path, {
                                 visibility: checked ? 'hidden' : 'visible',
@@ -568,6 +865,7 @@ const SettingsPolicyPage = memo(() => {
                     <PolicyValueEditor
                       control={entry.control}
                       disabled={!canUpdate}
+                      label={t(entry.titleKey as never, { defaultValue: entry.path })}
                       max={entry.max}
                       min={entry.min}
                       options={entry.options}
@@ -578,7 +876,11 @@ const SettingsPolicyPage = memo(() => {
                     {data.publishedPolicies[entry.path] ? (
                       <Text type="secondary">
                         {t('settingsPolicy.publishedValue')}:{' '}
-                        {JSON.stringify(data.publishedPolicies[entry.path]?.value)}
+                        {formatSettingValue({
+                          entry,
+                          t,
+                          value: data.publishedPolicies[entry.path]?.value,
+                        })}
                       </Text>
                     ) : null}
                   </div>
@@ -601,7 +903,7 @@ const SettingsPolicyPage = memo(() => {
           {saveState === 'idle' &&
             (dirty ? t('settingsPolicy.saveState.dirty') : t('settingsPolicy.saveState.idle'))}
           {' · '}
-          {t('settingsPolicy.revision', { revision: data.baseRevision })}
+          {t('settingsPolicy.revision', { revision: activeBaseRevision })}
         </span>
         <Flexbox horizontal gap={8}>
           {primaryButton}
@@ -612,99 +914,5 @@ const SettingsPolicyPage = memo(() => {
 });
 
 SettingsPolicyPage.displayName = 'SettingsPolicyPage';
-
-const PolicyValueEditor = memo<{
-  control: string;
-  disabled?: boolean;
-  max?: number;
-  min?: number;
-  onChange: (value: unknown) => void;
-  options?: ReadonlyArray<{ labelKey: string; value: string | number | boolean }>;
-  step?: number;
-  value: unknown;
-}>(({ control, value, onChange, options, min, max, step, disabled }) => {
-  const { t } = useTranslation('admin');
-
-  if (control === 'switch') {
-    return (
-      <Switch
-        checked={Boolean(value)}
-        disabled={disabled}
-        onChange={(checked: boolean) => onChange(checked)}
-      />
-    );
-  }
-
-  if (control === 'select' && options?.length) {
-    return (
-      <Select
-        disabled={disabled}
-        style={{ minWidth: 180 }}
-        value={value as string | number | boolean | undefined}
-        options={options.map((o) => ({
-          label: t(o.labelKey as never, { defaultValue: String(o.value) }),
-          value: o.value,
-        }))}
-        onChange={(v) => onChange(v)}
-      />
-    );
-  }
-
-  if (control === 'textarea') {
-    return (
-      <textarea
-        disabled={disabled}
-        rows={4}
-        style={{ width: '100%' }}
-        value={value === undefined || value === null ? '' : String(value)}
-        onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => onChange(e.target.value)}
-      />
-    );
-  }
-
-  if (control === 'slider') {
-    // Prefer slider primitive with min/max/step (U6-R2) — number input only for pure number
-    return (
-      <Input
-        disabled={disabled}
-        max={max}
-        min={min}
-        step={step}
-        type="range"
-        value={value === undefined || value === null ? String(min ?? 0) : String(value)}
-        onChange={(e) => {
-          const n = Number(e.target.value);
-          onChange(Number.isFinite(n) ? n : e.target.value);
-        }}
-      />
-    );
-  }
-
-  if (control === 'number') {
-    return (
-      <Input
-        disabled={disabled}
-        max={max}
-        min={min}
-        step={step}
-        type="number"
-        value={value === undefined || value === null ? '' : String(value)}
-        onChange={(e) => {
-          const n = Number(e.target.value);
-          onChange(Number.isFinite(n) ? n : e.target.value);
-        }}
-      />
-    );
-  }
-
-  return (
-    <Input
-      value={value === undefined || value === null ? '' : String(value)}
-      onChange={(e) => onChange(e.target.value)}
-    />
-  );
-});
-
-PolicyValueEditor.displayName = 'PolicyValueEditor';
 
 export default SettingsPolicyPage;

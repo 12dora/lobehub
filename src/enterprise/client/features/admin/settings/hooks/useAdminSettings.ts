@@ -15,7 +15,12 @@ import { ADMIN_SETTINGS_DRAFT_KEY, buildAdminSettingsDraftKey } from '../swrKeys
 export const useFetchAdminSettingsDraft = (enabled = true) => {
   const platform = useEnterprisePlatform();
   const policyOn = platform.capabilities.userSettingsPolicyEnabled === true;
-  const key = enabled && policyOn ? buildAdminSettingsDraftKey() : null;
+  const key = shouldFetchAdminSettingsDraft({
+    enabled,
+    userSettingsPolicyEnabled: policyOn,
+  })
+    ? buildAdminSettingsDraftKey()
+    : null;
   return useClientDataSWR(key, () => adminSettingsService.getDraft());
 };
 
