@@ -11,6 +11,7 @@ import { adminSkillsService } from '@/enterprise/client/services/adminSkills';
 
 import {
   buildSkillUpdatePayload,
+  fingerprintSkillSnapshot,
   isSkillIdentityDirty,
   type SkillPermissions,
   summarizeSkillValidation,
@@ -53,6 +54,7 @@ export const useSkillActions = ({
   const [validation, setValidation] = useState<AdminSkillValidateOutput | null>(selectedValidation);
   const [refreshFailed, setRefreshFailed] = useState(false);
   const writeGuardRef = useRef(createSkillWriteEpochGuard());
+  const committedVerifierRef = useRef<(() => Promise<boolean>) | null>(null);
   const resourceIdRef = useRef(data.draft.id);
   const writeGuard = writeGuardRef.current;
   if (resourceIdRef.current !== data.draft.id) {
@@ -95,13 +97,26 @@ export const useSkillActions = ({
     async <Result,>(params: {
       commit: () => Promise<Result>;
       onCommitted?: (result: Result) => void;
+      previousFingerprint: string;
+      verify?: (
+        latest: AdminSkillGetOutput | undefined,
+        result: Result,
+      ) => boolean | Promise<boolean>;
     }) => {
       const result = await params.commit();
       writeGuard.lock();
       params.onCommitted?.(result);
+      const verify = async () => {
+        const latest = await refreshAdminSkill(data.draft.id);
+        if (params.verify) return params.verify(latest, result);
+        return Boolean(latest && fingerprintSkillSnapshot(latest) !== params.previousFingerprint);
+      };
+      committedVerifierRef.current = verify;
       try {
-        await refreshAdminSkill(data.draft.id);
+        if (!(await verify())) throw new Error('Committed Skill snapshot has not advanced');
+        committedVerifierRef.current = null;
         setRefreshFailed(false);
+        editor.setActionError(null);
         writeGuard.unlock();
       } catch {
         setRefreshFailed(true);
@@ -115,7 +130,11 @@ export const useSkillActions = ({
   const retryRefresh = useCallback(async () => {
     setActionLoading('refresh');
     try {
-      await refreshAdminSkill(data.draft.id);
+      const verify = committedVerifierRef.current;
+      if (!verify || !(await verify())) {
+        throw new Error('Committed Skill snapshot has not advanced');
+      }
+      committedVerifierRef.current = null;
       setRefreshFailed(false);
       editor.setActionError(null);
       writeGuard.unlock();
@@ -125,7 +144,7 @@ export const useSkillActions = ({
     } finally {
       setActionLoading(null);
     }
-  }, [data.draft.id, editor, t, writeGuard]);
+  }, [editor, t, writeGuard]);
 
   const openSaveIdentity = useCallback(() => {
     if (
@@ -163,6 +182,7 @@ export const useSkillActions = ({
               editor.markSaved();
               toast.success(t('skillCatalog.toast.saved'));
             },
+            previousFingerprint: operation.fingerprint,
           });
         } catch (cause) {
           editor.setSaveState('failed');
@@ -211,6 +231,7 @@ export const useSkillActions = ({
               editor.markVersionSaved();
               toast.success(t('skillCatalog.toast.versionCreated'));
             },
+            previousFingerprint: operation.fingerprint,
           });
         } catch (cause) {
           await handleMutationError(cause);
@@ -264,6 +285,14 @@ export const useSkillActions = ({
               toast[
                 result.issues.some((issue) => issue.severity === 'error') ? 'warning' : 'success'
               ](t('skillCatalog.toast.validated'));
+            },
+            previousFingerprint: operation.fingerprint,
+            verify: async (_latest, result) => {
+              const version = await adminSkillsService.getVersion({
+                skillId: operation.id,
+                versionId: operation.versionId!,
+              });
+              return JSON.stringify(version.validation) === JSON.stringify(result);
             },
           });
         } catch (cause) {
@@ -327,6 +356,7 @@ export const useSkillActions = ({
                     ? adminSkillsService.rollback(input as AdminSkillRollbackInput)
                     : adminSkillsService.archive(input as AdminSkillArchiveInput),
               onCommitted: () => toast.success(t(`skillCatalog.toast.${kind}` as never)),
+              previousFingerprint: operation.fingerprint,
             });
           } catch (cause) {
             await handleMutationError(cause);
