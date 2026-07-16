@@ -62,9 +62,11 @@ export const revokeOIDCArtifactsByUserId = async (db: LobeChatDatabase, userId: 
 };
 
 /**
- * Rejects stateless OIDC access tokens once their subject is no longer active.
+ * Rejects auth when the user is missing or effectively banned.
+ * Shared by OIDC, Better Auth session, and API-key lambda context paths (M04).
+ * Throws OIDCUserInactiveError for backward-compatible inactive detection.
  */
-export const assertOIDCUserActive = async (db: LobeChatDatabase, userId: string) => {
+export const assertUserActive = async (db: LobeChatDatabase, userId: string) => {
   const [user] = await db
     .select({ banExpires: users.banExpires, banned: users.banned, id: users.id })
     .from(users)
@@ -75,3 +77,9 @@ export const assertOIDCUserActive = async (db: LobeChatDatabase, userId: string)
     throw new OIDCUserInactiveError();
   }
 };
+
+/**
+ * Rejects stateless OIDC access tokens once their subject is no longer active.
+ * @deprecated Prefer assertUserActive — same behavior, shared across auth methods.
+ */
+export const assertOIDCUserActive = assertUserActive;

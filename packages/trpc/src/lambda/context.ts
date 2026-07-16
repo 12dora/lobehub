@@ -9,13 +9,19 @@ import { getServerDB } from '@/database/core/db-adaptor';
 import { ApiKeyModel } from '@/database/models/apiKey';
 import { authEnv, LOBE_CHAT_OIDC_AUTH_HEADER } from '@/envs/auth';
 import { extractTraceContext } from '@/libs/observability/traceparent';
-import { assertOIDCUserActive, isOIDCUserInactiveError } from '@/libs/oidc-provider/access-control';
+import { assertUserActive, isOIDCUserInactiveError } from '@/libs/oidc-provider/access-control';
 import { validateOIDCJWT } from '@/libs/oidc-provider/jwt';
 import { isApiKeyExpired, validateApiKeyFormat } from '@/utils/apiKey';
 
 // Create context logger namespace
 const log = debug('lobe-trpc:lambda:context');
 const LOBE_CHAT_API_KEY_HEADER = 'X-API-Key';
+
+/**
+ * How the principal authenticated. Used for M04 reauth gates:
+ * API keys never satisfy recent interactive reauthentication.
+ */
+export type AuthMethod = 'better-auth' | 'oidc' | 'api-key' | 'dev-mock';
 
 const extractClientIp = (request: NextRequest): string | undefined => {
   const forwardedFor = request.headers.get('x-forwarded-for');
@@ -40,6 +46,17 @@ const validateApiKeyUserId = async (apiKey: string): Promise<string | null> => {
     if (!apiKeyRecord) return null;
     if (!apiKeyRecord.enabled) return null;
     if (isApiKeyExpired(apiKeyRecord.expiresAt)) return null;
+
+    // Ban enforcement: API keys of banned users must not authenticate.
+    try {
+      await assertUserActive(db, apiKeyRecord.userId);
+    } catch (error) {
+      if (isOIDCUserInactiveError(error)) {
+        log('API key user is banned/inactive; rejecting');
+        return null;
+      }
+      throw error;
+    }
 
     const userApiKeyModel = new ApiKeyModel(
       db,
@@ -69,12 +86,21 @@ export interface OIDCAuth {
 }
 
 export interface AuthContext {
+  /**
+   * Trusted interactive auth timestamp (session createdAt / OIDC iat).
+   * Never trust client-provided headers for this. Null for API keys.
+   */
+  authenticatedAt?: Date | null;
+  /** Authentication method for the current principal (server-trusted). */
+  authMethod?: AuthMethod | null;
   clientIp?: string | null;
   jwtPayload?: ClientSecretPayload | null;
   marketAccessToken?: string;
   // Add OIDC authentication information
   oidcAuth?: OIDCAuth | null;
   resHeaders?: Headers;
+  /** Better Auth session id only — never the session token. */
+  sessionId?: string | null;
   traceContext?: OtContext;
   userAgent?: string;
   userId?: string | null;
@@ -86,9 +112,12 @@ export interface AuthContext {
  * This is useful for testing when we don't want to mock Next.js' request/response
  */
 export const createContextInner = async (params?: {
+  authenticatedAt?: Date | null;
+  authMethod?: AuthMethod | null;
   clientIp?: string | null;
   marketAccessToken?: string;
   oidcAuth?: OIDCAuth | null;
+  sessionId?: string | null;
   traceContext?: OtContext;
   userAgent?: string;
   userId?: string | null;
@@ -98,10 +127,13 @@ export const createContextInner = async (params?: {
   const responseHeaders = new Headers();
 
   return {
+    authenticatedAt: params?.authenticatedAt ?? null,
+    authMethod: params?.authMethod ?? null,
     clientIp: params?.clientIp,
     marketAccessToken: params?.marketAccessToken,
     oidcAuth: params?.oidcAuth,
     resHeaders: responseHeaders,
+    sessionId: params?.sessionId ?? null,
     traceContext: params?.traceContext,
     userAgent: params?.userAgent,
     userId: params?.userId,
@@ -123,6 +155,9 @@ export const createLambdaContext = async (request: NextRequest): Promise<LambdaC
 
   if (process.env.NODE_ENV === 'development' && (isDebugApi || isMockUser)) {
     return createContextInner({
+      // Dev mock is treated as freshly authenticated so local admin mutations work.
+      authenticatedAt: new Date(),
+      authMethod: 'dev-mock',
       userId: process.env.MOCK_DEV_USER_ID,
     });
   }
@@ -161,6 +196,7 @@ export const createLambdaContext = async (request: NextRequest): Promise<LambdaC
 
       return createContextInner({
         ...commonContext,
+        authMethod: null,
         traceContext,
         userId: null,
       });
@@ -170,6 +206,9 @@ export const createLambdaContext = async (request: NextRequest): Promise<LambdaC
 
     return createContextInner({
       ...commonContext,
+      // API keys never qualify as recent interactive reauthentication.
+      authenticatedAt: null,
+      authMethod: 'api-key',
       traceContext,
       userId: apiKeyUserId,
     });
@@ -197,12 +236,18 @@ export const createLambdaContext = async (request: NextRequest): Promise<LambdaC
         };
         userId = tokenInfo.userId;
         const db = await getServerDB();
-        await assertOIDCUserActive(db, userId);
+        await assertUserActive(db, userId);
         log('OIDC authentication successful, userId: %s', userId);
+
+        const iat = tokenInfo.tokenData?.iat;
+        const authenticatedAt =
+          typeof iat === 'number' && Number.isFinite(iat) ? new Date(iat * 1000) : null;
 
         // If OIDC authentication is successful, return context immediately
         log('OIDC authentication successful, creating context and returning');
         return createContextInner({
+          authenticatedAt,
+          authMethod: 'oidc',
           oidcAuth,
           ...commonContext,
           traceContext,
@@ -238,6 +283,37 @@ export const createLambdaContext = async (request: NextRequest): Promise<LambdaC
     if (session && session?.user?.id) {
       userId = session.user.id;
       log('Better Auth authentication successful, userId: %s', userId);
+
+      // Cookie cache can briefly return a banned user; re-check against DB.
+      const db = await getServerDB();
+      try {
+        await assertUserActive(db, userId);
+      } catch (error) {
+        if (isOIDCUserInactiveError(error)) {
+          log('Better Auth user is banned/inactive; rejecting');
+          return createContextInner({
+            ...commonContext,
+            traceContext,
+            userId: null,
+          });
+        }
+        throw error;
+      }
+
+      const rawCreatedAt = session.session?.createdAt;
+      const authenticatedAt =
+        rawCreatedAt instanceof Date ? rawCreatedAt : rawCreatedAt ? new Date(rawCreatedAt) : null;
+      const sessionId = typeof session.session?.id === 'string' ? session.session.id : null;
+
+      return createContextInner({
+        ...commonContext,
+        authenticatedAt:
+          authenticatedAt && !Number.isNaN(authenticatedAt.getTime()) ? authenticatedAt : null,
+        authMethod: 'better-auth',
+        sessionId,
+        traceContext,
+        userId,
+      });
     } else {
       log('Better Auth authentication failed, no valid session');
     }
