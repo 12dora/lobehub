@@ -14,7 +14,7 @@ import {
   ensurePendingM09ServiceSchema,
   MemoryConnectorSecretStore,
 } from './catalogTestUtils';
-import type { ConnectorCatalogLifecycle, ConnectorStoredSecret } from './catalogTypes';
+import type { ConnectorCatalogLifecycle } from './catalogTypes';
 import { ConnectorCatalogDraftService } from './draftService';
 
 const db: LobeChatDatabase = await getTestDB();
@@ -147,8 +147,8 @@ describe('ConnectorCatalogDraftService', () => {
       sharedSecret: { operation: 'replace', value: { apiKey: 'original-secret' } },
       transport: 'http',
     });
-    let orphan: ConnectorStoredSecret | undefined;
     const persist = secrets.persistSecret;
+    let orphan: Awaited<ReturnType<typeof persist>> | undefined;
     vi.spyOn(secrets, 'persistSecret').mockImplementation(async (params) => {
       orphan = await persist(params);
       return orphan;
