@@ -162,6 +162,10 @@ describe('Skill catalog contracts', () => {
       },
       { description: '安全 https://safe.example.test，redis://default:password@redis.internal/0' },
       { reason: '安全 https://safe.example.test；s3://bucket/key?X-Amz-Signature=secret' },
+      { description: 'URI https://example.test/path(foo)?api_key=plain-secret' },
+      { description: 'URI https://example.test/path|segment?api_key=plain-secret' },
+      { description: 'URI https://example.test/path[part]?api_key=plain-secret' },
+      { description: 'URI https://example.test/path，part?api_key=plain-secret' },
     ]) {
       expect(adminSkillCreateInputSchema.safeParse({ ...base, ...patch }).success).toBe(false);
     }
@@ -182,7 +186,8 @@ describe('Skill catalog contracts', () => {
     ).toBe(false);
     expect(
       adminSkillCreateInputSchema.safeParse({
-        description: 'Safe paths https://example.test/a,b;c and s3://safe-bucket/a,b;c',
+        description:
+          'Safe paths https://example.test/a,b;c https://example.test/path(foo) https://example.test/path|segment https://example.test/path[part] https://example.test/path，part',
         displayName: 'Safe skill',
         reason: 'reviewed safe URI paths',
         skillKey: 'safe-paths',

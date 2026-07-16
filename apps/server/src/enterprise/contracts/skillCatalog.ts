@@ -8,7 +8,7 @@ const extractEmbeddedUris = (value: string): string[] => {
   return starts.map((start, index) => {
     const nextScheme = starts[index + 1] ?? value.length;
     const remainder = value.slice(start, nextScheme);
-    const boundary = remainder.search(/[\s<>"'|()[\]{}，；（）【】]/u);
+    const boundary = remainder.search(/[\s<>"']/u);
     return remainder.slice(0, boundary < 0 ? remainder.length : boundary);
   });
 };
