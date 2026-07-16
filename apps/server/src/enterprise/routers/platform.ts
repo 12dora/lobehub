@@ -14,6 +14,7 @@ import { buildEasyauthDescriptor } from '../services/easyauthManifest';
 import { resolvePublishedManagedResourcePolicies } from '../services/managedResourceCapabilities';
 import { buildPlatformCapabilities } from '../services/platformCapabilities';
 import { buildPlatformPublicSnapshot } from '../services/platformPublicSnapshot';
+import { platformSkillsRouter } from './platformSkills';
 
 /**
  * Platform router (M00 read-only + M02 access status / descriptor).
@@ -34,6 +35,8 @@ export const platformRouter = router({
         return new AiCatalogReadService(ctx.serverDB).getPublished();
       }),
   }),
+
+  skills: platformSkillsRouter,
 
   getCapabilities: authedProcedure.use(serverDatabase).query(async ({ ctx }) => {
     const flags = parseEnterpriseFeatureFlags(process.env);
