@@ -22,16 +22,27 @@ describe('AI provider public draft storage', () => {
 
   it('persists public fields without accepting a secret field', () => {
     const payload = {
-      baseRevision: 1,
-      draft: {
+      baseDraft: {
         checkModel: null,
-        config: { endpoint: 'https://example.com' },
+        configText: '{"endpoint":"https://example.com"}',
         description: null,
         displayName: 'Example',
         enabled: true,
         fetchOnClient: false,
         logo: null,
-        settings: {},
+        settingsText: '{}',
+        sort: 0,
+      },
+      baseRevision: 1,
+      draft: {
+        checkModel: null,
+        configText: '{"endpoint":"https://example.com"}',
+        description: null,
+        displayName: 'Example',
+        enabled: true,
+        fetchOnClient: false,
+        logo: null,
+        settingsText: '{}',
         sort: 0,
       },
       draftToken: 'a'.repeat(64),
@@ -48,5 +59,36 @@ describe('AI provider public draft storage', () => {
     expect(loadAiProviderPublicDraft('p-1')).toBeNull();
     clearAiProviderPublicDraft('p-1');
     expect(loadAiProviderPublicDraft('p-1')).toBeNull();
+  });
+
+  it('preserves invalid public raw JSON and migrates the original object shape', () => {
+    values.set(
+      'aihub.admin.ai.provider.public-draft.p-1',
+      JSON.stringify({
+        baseRevision: 1,
+        draft: {
+          checkModel: null,
+          config: { endpoint: 'https://example.com' },
+          description: null,
+          displayName: 'Example',
+          enabled: true,
+          fetchOnClient: false,
+          logo: null,
+          settings: {},
+          sort: 0,
+        },
+        draftToken: 'a'.repeat(64),
+        savedAt: new Date(0).toISOString(),
+      }),
+    );
+    expect(loadAiProviderPublicDraft('p-1')?.draft.configText).toContain('endpoint');
+
+    const migrated = loadAiProviderPublicDraft('p-1')!;
+    saveAiProviderPublicDraft('p-1', {
+      ...migrated,
+      draft: { ...migrated.draft, configText: '{' },
+    });
+    expect(loadAiProviderPublicDraft('p-1')?.draft.configText).toBe('{');
+    expect([...values.values()][0]).not.toContain('secret');
   });
 });

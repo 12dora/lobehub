@@ -65,14 +65,19 @@ export const useAiProviderActions = ({
   );
 
   const handleMutationError = useCallback(
-    (cause: unknown) => {
+    async (cause: unknown) => {
       const mapped = mapEnterpriseError(cause);
       if (mapped?.code === 'PLATFORM_REVISION_CONFLICT') {
         editor.setConflict(true);
+        try {
+          await refreshAdminAiProvider(data.draft.id);
+        } catch {
+          // The local public draft remains persisted; the conflict banner offers another retry.
+        }
       }
       editor.setActionError(errorText(cause));
     },
-    [editor, errorText],
+    [data.draft.id, editor, errorText],
   );
 
   const refresh = useCallback(
@@ -84,7 +89,15 @@ export const useAiProviderActions = ({
   );
 
   const openSave = useCallback(() => {
-    if (!editor.draft || editor.conflict || !editor.dirty || !permissions.canUpdateProvider) return;
+    if (
+      !editor.draft ||
+      editor.conflict ||
+      !editor.dirty ||
+      !editor.valid ||
+      !permissions.canUpdateProvider
+    ) {
+      return;
+    }
     const draftSnapshot = structuredClone(editor.draft);
     openReasonModal({
       authMethod: authMethod ?? undefined,
@@ -106,7 +119,7 @@ export const useAiProviderActions = ({
           toast.success(t('aiCatalog.toast.draftSaved'));
         } catch (cause) {
           editor.setSaveState('failed');
-          handleMutationError(cause);
+          await handleMutationError(cause);
           throw cause;
         }
       },
@@ -117,7 +130,7 @@ export const useAiProviderActions = ({
   }, [authMethod, data, editor, handleMutationError, permissions.canUpdateProvider, refresh, t]);
 
   const openTest = useCallback(() => {
-    if (editor.dirty || editor.conflict || !permissions.canTestProvider) return;
+    if (editor.dirty || editor.conflict || !editor.valid || !permissions.canTestProvider) return;
     openReasonModal({
       authMethod: authMethod ?? undefined,
       buildPayload: (reason) => ({ id: data.draft.id, reason }),
@@ -133,7 +146,7 @@ export const useAiProviderActions = ({
             t(`aiCatalog.toast.test.${result.status}` as never),
           );
         } catch (cause) {
-          handleMutationError(cause);
+          await handleMutationError(cause);
           throw cause;
         }
       },
@@ -147,6 +160,7 @@ export const useAiProviderActions = ({
     if (
       editor.dirty ||
       editor.conflict ||
+      !editor.valid ||
       editor.testResult?.status !== 'success' ||
       !permissions.canPublishProvider
     ) {
@@ -169,7 +183,7 @@ export const useAiProviderActions = ({
           await refresh();
           toast.success(t('aiCatalog.toast.published'));
         } catch (cause) {
-          handleMutationError(cause);
+          await handleMutationError(cause);
           throw cause;
         }
       },
@@ -181,8 +195,8 @@ export const useAiProviderActions = ({
 
   const primaryAction = resolveAiProviderPrimaryAction({
     canPublish: permissions.canPublishProvider && data.draft.status !== 'archived',
-    canSave: permissions.canUpdateProvider,
-    canTest: permissions.canTestProvider && data.draft.status !== 'archived',
+    canSave: permissions.canUpdateProvider && editor.valid,
+    canTest: permissions.canTestProvider && editor.valid && data.draft.status !== 'archived',
     conflict: editor.conflict,
     dirty: editor.dirty,
     saveState: editor.saveState,
@@ -213,7 +227,7 @@ export const useAiProviderActions = ({
           await refresh();
           toast.success(t('aiCatalog.toast.secretUpdated'));
         } catch (cause) {
-          handleMutationError(cause);
+          await handleMutationError(cause);
           throw cause;
         }
       },
@@ -246,7 +260,7 @@ export const useAiProviderActions = ({
           await refresh();
           toast.success(t('aiCatalog.toast.archived'));
         } catch (cause) {
-          handleMutationError(cause);
+          await handleMutationError(cause);
           throw cause;
         }
       },
@@ -277,7 +291,7 @@ export const useAiProviderActions = ({
             await refresh();
             toast.success(t('aiCatalog.toast.rolledBack'));
           } catch (cause) {
-            handleMutationError(cause);
+            await handleMutationError(cause);
             throw cause;
           }
         },
@@ -309,7 +323,7 @@ export const useAiProviderActions = ({
           await refresh();
           toast.success(t('aiCatalog.toast.modelCreated'));
         } catch (cause) {
-          handleMutationError(cause);
+          await handleMutationError(cause);
           throw cause;
         } finally {
           setActionLoadingId(null);
@@ -355,7 +369,7 @@ export const useAiProviderActions = ({
               await refresh();
               toast.success(t('aiCatalog.toast.modelUpdated'));
             } catch (cause) {
-              handleMutationError(cause);
+              await handleMutationError(cause);
               throw cause;
             } finally {
               setActionLoadingId(null);
@@ -434,7 +448,7 @@ export const useAiProviderActions = ({
               await refresh();
               toast.success(t('aiCatalog.toast.modelDeleted'));
             } catch (cause) {
-              handleMutationError(cause);
+              await handleMutationError(cause);
               throw cause;
             } finally {
               setActionLoadingId(null);
@@ -493,7 +507,7 @@ export const useAiProviderActions = ({
             await refresh();
             toast.success(t('aiCatalog.toast.modelsReordered'));
           } catch (cause) {
-            handleMutationError(cause);
+            await handleMutationError(cause);
             throw cause;
           } finally {
             setActionLoadingId(null);

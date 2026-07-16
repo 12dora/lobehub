@@ -7,8 +7,11 @@ import { useBlocker } from 'react-router';
 
 import {
   type AiCatalogSaveState,
+  type AiProviderRebaseConflict,
   type EditableAiProviderDraft,
+  rebaseAiProviderDraft,
   toEditableAiProviderDraft,
+  validateEditableAiProviderDraft,
 } from '../controller';
 import {
   clearAiProviderPublicDraft,
@@ -20,11 +23,13 @@ import type { AdminAiProviderGetOutput, AiConnectionTestResult } from '../types'
 export const useAiProviderEditor = (snapshot: AdminAiProviderGetOutput | undefined) => {
   const { t } = useTranslation('admin');
   const [draft, setDraft] = useState<EditableAiProviderDraft | null>(null);
+  const [baseDraft, setBaseDraft] = useState<EditableAiProviderDraft | null>(null);
   const [dirty, setDirty] = useState(false);
   const [conflict, setConflict] = useState(false);
   const [saveState, setSaveState] = useState<AiCatalogSaveState>('idle');
   const [actionError, setActionError] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<AiConnectionTestResult | null>(null);
+  const [rebaseConflicts, setRebaseConflicts] = useState<AiProviderRebaseConflict[]>([]);
   const hydratedKeyRef = useRef<string | null>(null);
   const leaveModalRef = useRef<ReturnType<typeof confirmModal> | null>(null);
 
@@ -36,7 +41,9 @@ export const useAiProviderEditor = (snapshot: AdminAiProviderGetOutput | undefin
 
     const local = loadAiProviderPublicDraft(snapshot.draft.id);
     if (local) {
+      setBaseDraft(local.baseDraft);
       setDraft(local.draft);
+      setRebaseConflicts([]);
       setDirty(true);
       setSaveState('dirty');
       setConflict(
@@ -45,23 +52,27 @@ export const useAiProviderEditor = (snapshot: AdminAiProviderGetOutput | undefin
       return;
     }
 
-    setDraft(toEditableAiProviderDraft(snapshot.draft));
+    const latest = toEditableAiProviderDraft(snapshot.draft);
+    setBaseDraft(latest);
+    setDraft(latest);
     setDirty(false);
     setConflict(false);
     setSaveState('idle');
     setActionError(null);
     setTestResult(null);
+    setRebaseConflicts([]);
   }, [snapshot]);
 
   useEffect(() => {
     if (!snapshot || !draft || !dirty) return;
     saveAiProviderPublicDraft(snapshot.draft.id, {
+      baseDraft: baseDraft ?? toEditableAiProviderDraft(snapshot.draft),
       baseRevision: snapshot.baseRevision,
       draft,
       draftToken: snapshot.draftToken,
       savedAt: new Date().toISOString(),
     });
-  }, [dirty, draft, snapshot]);
+  }, [baseDraft, dirty, draft, snapshot]);
 
   useEffect(() => {
     if (!dirty) return;
@@ -119,13 +130,53 @@ export const useAiProviderEditor = (snapshot: AdminAiProviderGetOutput | undefin
   const discardLocal = useCallback(() => {
     if (!snapshot) return;
     clearAiProviderPublicDraft(snapshot.draft.id);
-    setDraft(toEditableAiProviderDraft(snapshot.draft));
+    const latest = toEditableAiProviderDraft(snapshot.draft);
+    setBaseDraft(latest);
+    setDraft(latest);
     setDirty(false);
     setConflict(false);
     setSaveState('idle');
     setActionError(null);
     setTestResult(null);
+    setRebaseConflicts([]);
   }, [snapshot]);
+
+  const rebaseLocal = useCallback(
+    (latestSnapshot?: AdminAiProviderGetOutput) => {
+      const source = latestSnapshot ?? snapshot;
+      if (!source || !draft || !baseDraft) return;
+      const latest = toEditableAiProviderDraft(source.draft);
+      const result = rebaseAiProviderDraft({ latest, local: draft, original: baseDraft });
+      setBaseDraft(latest);
+      setDraft(result.draft);
+      setDirty(true);
+      setSaveState('dirty');
+      setActionError(null);
+      setTestResult(null);
+      setRebaseConflicts(result.conflicts);
+      setConflict(result.conflicts.length > 0);
+    },
+    [baseDraft, draft, snapshot],
+  );
+
+  const resolveRebaseConflict = useCallback(
+    (field: keyof EditableAiProviderDraft, choice: 'latest' | 'local') => {
+      const conflictItem = rebaseConflicts.find((item) => item.field === field);
+      if (!conflictItem) return;
+      setDraft((current) =>
+        current ? { ...current, [field]: structuredClone(conflictItem[choice]) } : current,
+      );
+      setRebaseConflicts((current) => {
+        const next = current.filter((item) => item.field !== field);
+        if (next.length === 0) setConflict(false);
+        return next;
+      });
+      setDirty(true);
+      setSaveState('dirty');
+      setTestResult(null);
+    },
+    [rebaseConflicts],
+  );
 
   const markSaved = useCallback(() => {
     if (!snapshot) return;
@@ -134,15 +185,26 @@ export const useAiProviderEditor = (snapshot: AdminAiProviderGetOutput | undefin
     setConflict(false);
     setSaveState('saved');
     setActionError(null);
+    setRebaseConflicts([]);
   }, [snapshot]);
+
+  const validation = draft ? validateEditableAiProviderDraft(draft) : null;
 
   return {
     actionError,
+    baseDraft,
     conflict,
     dirty,
     discardLocal,
     draft,
     markSaved,
+    jsonErrors: {
+      configText: validation?.config.error ?? null,
+      settingsText: validation?.settings.error ?? null,
+    },
+    rebaseConflicts,
+    rebaseLocal,
+    resolveRebaseConflict,
     saveState,
     setActionError,
     setConflict,
@@ -150,5 +212,6 @@ export const useAiProviderEditor = (snapshot: AdminAiProviderGetOutput | undefin
     setTestResult,
     testResult,
     updateDraft,
+    valid: validation?.valid ?? false,
   };
 };
