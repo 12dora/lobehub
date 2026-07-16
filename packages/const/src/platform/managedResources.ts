@@ -12,6 +12,11 @@ export const MANAGED_RESOURCE_KINDS = [
 
 export type ManagedResourceKind = (typeof MANAGED_RESOURCE_KINDS)[number];
 
+/** Progressive rollout modes. Only `enforced` is a server-side deny mode. */
+export const MANAGED_RESOURCE_ENFORCEMENT_MODES = ['observe', 'ui-only', 'enforced'] as const;
+
+export type ManagedResourceEnforcementMode = (typeof MANAGED_RESOURCE_ENFORCEMENT_MODES)[number];
+
 /** Default: nothing is platform-managed until corresponding flags + policies enable it. */
 export const DEFAULT_MANAGED_RESOURCES: Readonly<Record<ManagedResourceKind, boolean>> = {
   aiProviders: false,

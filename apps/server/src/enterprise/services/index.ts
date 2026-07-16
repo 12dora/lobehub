@@ -2,6 +2,9 @@ export * from './adminUserService';
 export * from './easyauthClient';
 export * from './easyauthManifest';
 export * from './easyauthSync';
+export * from './managedResourceCapabilities';
+export * from './managedResourcePolicy';
+export * from './managedResourceReadiness';
 export * from './platformAudit';
 export {
   buildPlatformCapabilities,
