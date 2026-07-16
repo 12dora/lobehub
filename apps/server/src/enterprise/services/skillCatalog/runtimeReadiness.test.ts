@@ -134,4 +134,26 @@ describe('Skill catalog runtime readiness', () => {
       }),
     ).resolves.toBe(true);
   });
+
+  it('uses the bounded revision readiness index instead of resolving 10,000 entries', async () => {
+    const catalog = {
+      revision: 'large-r1',
+      skills: Array.from({ length: 10_000 }, (_, index) => ({
+        ...published,
+        checksum: index.toString(16).padStart(64, '0'),
+        skillKey: `skill-${index}`,
+      })),
+    };
+    const service = {
+      getPublishedCatalog: vi.fn().mockResolvedValue(catalog),
+      isPublishedCatalogExecutionReady: vi.fn().mockReturnValue(true),
+      resolvePinnedForExecution: vi.fn(),
+    };
+
+    await expect(
+      resolveSkillCatalogRuntimeReadiness({ db: {} as never, flags: managedFlags, service }),
+    ).resolves.toBe(true);
+    expect(service.isPublishedCatalogExecutionReady).toHaveBeenCalledWith(catalog);
+    expect(service.resolvePinnedForExecution).not.toHaveBeenCalled();
+  });
 });

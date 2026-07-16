@@ -4,8 +4,8 @@ import { getPlatformSkillToggleMode, resolvePlatformSkillSelection } from './ski
 
 describe('platform Skill distribution selection', () => {
   it.each([
-    ['mandatory', 'auto', true, false, false],
-    ['mandatory', 'disabled', true, false, false],
+    ['mandatory', 'auto', true, true, false],
+    ['mandatory', 'disabled', true, true, false],
     ['default', 'auto', true, false, true],
     ['default', 'pinned', true, true, true],
     ['default', 'disabled', false, false, true],
