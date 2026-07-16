@@ -5,8 +5,11 @@ import { Button, Select, Switch } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useBlocker } from 'react-router';
 
 import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
+import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
+import { useEnterprisePlatform } from '@/enterprise/client/providers/EnterprisePlatformProvider';
 import { adminSettingsService } from '@/enterprise/client/services/adminSettings';
 import type { AdminSettingsGetDraftOutput } from '@/server/enterprise/contracts/adminSettings';
 
@@ -15,10 +18,19 @@ import RevisionBanner from '../primitives/RevisionBanner';
 import { openReasonModal } from '../users/modals/openReasonModal';
 import { refreshAdminSettingsDraft, useFetchAdminSettingsDraft } from './hooks/useAdminSettings';
 import { clearLocalDraft, loadLocalDraft, saveLocalDraft } from './localDraftStorage';
+import {
+  buildChangePreview,
+  clearConflictDraft,
+  deriveSettingsPermissions,
+  fingerprintDraft,
+  loadConflictDraft,
+  resolvePrimaryAction,
+  saveConflictDraft,
+  type SaveState,
+} from './settingsPolicyController';
 
 type DraftMap = AdminSettingsGetDraftOutput['draft'];
 type DraftPolicy = DraftMap[string];
-type SaveState = 'idle' | 'saving' | 'saved' | 'failed';
 
 const styles = createStaticStyles(({ css }) => ({
   empty: css`
@@ -94,11 +106,7 @@ const styles = createStaticStyles(({ css }) => ({
   `,
 }));
 
-const MODE_OPTIONS = [
-  { label: 'User', value: 'user' },
-  { label: 'Default', value: 'default' },
-  { label: 'Locked', value: 'locked' },
-] as const;
+const MODE_VALUES = ['user', 'default', 'locked'] as const;
 
 const GROUPS = [
   'general',
@@ -113,7 +121,12 @@ const GROUPS = [
 
 const SettingsPolicyPage = memo(() => {
   const { t } = useTranslation('admin');
-  const { data, error, isLoading, mutate } = useFetchAdminSettingsDraft(true);
+  const platform = useEnterprisePlatform();
+  const policyEnabled = platform.capabilities.userSettingsPolicyEnabled === true;
+  const { permissions } = useAdminAccess();
+  const { canUpdate, canPublish } = deriveSettingsPermissions(permissions);
+
+  const { data, error, isLoading, mutate } = useFetchAdminSettingsDraft(policyEnabled);
 
   const [draft, setDraft] = useState<DraftMap>({});
   const [search, setSearch] = useState('');
@@ -124,14 +137,41 @@ const SettingsPolicyPage = memo(() => {
     pathsWithOverrides: number;
     totalOverrideRows: number;
   } | null>(null);
+  const [validatedFingerprint, setValidatedFingerprint] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
   const [revisionConflict, setRevisionConflict] = useState(false);
   const hydratedRef = useRef(false);
 
-  // Hydrate editor from server + local durable draft
+  const draftFingerprint = useMemo(() => fingerprintDraft(draft), [draft]);
+  const primary = resolvePrimaryAction({
+    canPublish,
+    canUpdate,
+    dirty,
+    draftFingerprint,
+    revisionConflict,
+    saveState,
+    validatedForFingerprint: validatedFingerprint,
+  });
+
+  const blocker = useBlocker(dirty);
+  useEffect(() => {
+    if (blocker.state !== 'blocked') return;
+    const leave = window.confirm(t('settingsPolicy.unsavedLeave'));
+    if (leave) blocker.proceed?.();
+    else blocker.reset?.();
+  }, [blocker, t]);
+
+  // Hydrate editor from server + local durable draft / conflict draft
   useEffect(() => {
     if (!data || hydratedRef.current) return;
     hydratedRef.current = true;
+    const conflict = loadConflictDraft();
+    if (conflict && conflict.registryVersion === data.registryVersion) {
+      setDraft(conflict.draft);
+      setDirty(true);
+      setRevisionConflict(true);
+      return;
+    }
     const local = loadLocalDraft(data.registryVersion, data.baseRevision);
     if (local) {
       setDraft(local.draft);
@@ -200,6 +240,7 @@ const SettingsPolicyPage = memo(() => {
 
   const updatePolicy = useCallback(
     (path: string, patch: Partial<DraftPolicy>) => {
+      if (!canUpdate) return;
       setDraft((prev) => {
         const base = prev[path] ?? getPolicy(path);
         return { ...prev, [path]: { ...base, ...patch } };
@@ -207,8 +248,11 @@ const SettingsPolicyPage = memo(() => {
       setDirty(true);
       setSaveState('idle');
       setSaveError(null);
+      setValidationMsg(null);
+      setImpact(null);
+      setValidatedFingerprint(null);
     },
-    [getPolicy],
+    [canUpdate, getPolicy],
   );
 
   const handleSaveDraft = useCallback(async () => {
@@ -242,7 +286,9 @@ const SettingsPolicyPage = memo(() => {
       setImpact(result.impactEstimate);
       if (result.ok) {
         setValidationMsg(t('settingsPolicy.validateOk'));
+        setValidatedFingerprint(fingerprintDraft(draft));
       } else {
+        setValidatedFingerprint(null);
         setValidationMsg(
           t('settingsPolicy.validateFail', {
             count: result.issues.length,
@@ -251,13 +297,18 @@ const SettingsPolicyPage = memo(() => {
         );
       }
     } catch (err) {
+      setValidatedFingerprint(null);
       const mapped = mapEnterpriseError(err);
       setValidationMsg(mapped ? mapped.code : String(err));
     }
   }, [draft, t]);
 
   const handlePublish = useCallback(() => {
-    if (!data) return;
+    if (!data || !canPublish) return;
+    if (validatedFingerprint !== fingerprintDraft(draft)) {
+      setValidationMsg(t('settingsPolicy.publishRequiresValidate'));
+      return;
+    }
     openReasonModal({
       buildPayload: (reason) => ({
         expectedRevision: data.baseRevision,
@@ -276,6 +327,7 @@ const SettingsPolicyPage = memo(() => {
             payload as { expectedRevision: number; reason: string },
           );
           clearLocalDraft(data.registryVersion, data.baseRevision);
+          clearConflictDraft();
           setDirty(false);
           setRevisionConflict(false);
           hydratedRef.current = false;
@@ -283,6 +335,12 @@ const SettingsPolicyPage = memo(() => {
         } catch (err) {
           const mapped = mapEnterpriseError(err);
           if (mapped?.code === 'PLATFORM_REVISION_CONFLICT') {
+            saveConflictDraft({
+              draft,
+              previousBaseRevision: data.baseRevision,
+              registryVersion: data.registryVersion,
+              savedAt: new Date().toISOString(),
+            });
             setRevisionConflict(true);
           }
           throw err;
@@ -292,7 +350,7 @@ const SettingsPolicyPage = memo(() => {
       targetLabel: t('settingsPolicy.title'),
       title: t('settingsPolicy.publish'),
     });
-  }, [data, impact, mutate, t]);
+  }, [canPublish, data, draft, impact, mutate, t, validatedFingerprint]);
 
   const handleRollback = useCallback(() => {
     if (!data || data.baseRevision < 1) return;
@@ -327,6 +385,15 @@ const SettingsPolicyPage = memo(() => {
     });
   }, [data, mutate, t]);
 
+  // U1: policy flag off → disabled surface, zero getDraft
+  if (!policyEnabled) {
+    return (
+      <AdminPageTemplate description={t('settingsPolicy.desc')} title={t('settingsPolicy.title')}>
+        <Text type="secondary">{t('settingsPolicy.featureDisabled')}</Text>
+      </AdminPageTemplate>
+    );
+  }
+
   // Error before empty
   if (error) {
     const mapped = mapEnterpriseError(error);
@@ -359,32 +426,42 @@ const SettingsPolicyPage = memo(() => {
     );
   }
 
-  const primaryAction =
-    dirty || saveState === 'failed' ? (
+  const preview = buildChangePreview({
+    draft,
+    published: data.publishedPolicies,
+    registryPaths: data.registry.map((r) => r.path),
+  });
+
+  // Exactly one primary action — sticky footer only (U5)
+  const primaryButton =
+    primary === 'save' || primary === 'retry' ? (
       <Button
+        disabled={!canUpdate}
         loading={saveState === 'saving'}
         type="primary"
         onClick={() => void handleSaveDraft()}
       >
-        {saveState === 'failed' ? t('settingsPolicy.retrySave') : t('settingsPolicy.saveDraft')}
+        {primary === 'retry' ? t('settingsPolicy.retrySave') : t('settingsPolicy.saveDraft')}
       </Button>
-    ) : (
-      <Button type="primary" onClick={handlePublish}>
+    ) : primary === 'publish' ? (
+      <Button disabled={!canPublish} type="primary" onClick={handlePublish}>
         {t('settingsPolicy.publish')}
       </Button>
-    );
+    ) : null;
 
   return (
     <AdminPageTemplate
-      description={t('settingsPolicy.desc')}
       title={t('settingsPolicy.title')}
       actions={
         <Flexbox horizontal gap={8}>
-          <Button onClick={() => void handleValidate()}>{t('settingsPolicy.validate')}</Button>
-          <Button disabled={data.baseRevision < 1} onClick={handleRollback}>
-            {t('settingsPolicy.rollback')}
-          </Button>
-          {primaryAction}
+          {canUpdate ? (
+            <Button onClick={() => void handleValidate()}>{t('settingsPolicy.validate')}</Button>
+          ) : null}
+          {canPublish ? (
+            <Button disabled={data.baseRevision < 1} onClick={handleRollback}>
+              {t('settingsPolicy.rollback')}
+            </Button>
+          ) : null}
         </Flexbox>
       }
       banner={
@@ -393,12 +470,19 @@ const SettingsPolicyPage = memo(() => {
             conflict
             publishedRevision={data.baseRevision}
             onRefresh={() => {
+              const conflict = loadConflictDraft();
+              if (conflict) setDraft(conflict.draft);
               setRevisionConflict(false);
               hydratedRef.current = false;
               void mutate();
             }}
           />
         ) : null
+      }
+      description={
+        canUpdate
+          ? t('settingsPolicy.desc')
+          : `${t('settingsPolicy.desc')} ${t('settingsPolicy.readOnlyHint')}`
       }
       toolbar={
         <Input
@@ -418,6 +502,17 @@ const SettingsPolicyPage = memo(() => {
               rows: impact.totalOverrideRows,
             })}
           </Text>
+        ) : null}
+        {preview.length > 0 ? (
+          <div>
+            <Text strong>{t('settingsPolicy.changePreview')}</Text>
+            {preview.map((row) => (
+              <Text as="div" key={row.path} type="secondary">
+                {row.path}: {row.beforeMode}/{String(row.beforeValue)} → {row.afterMode}/
+                {String(row.afterValue)} ({row.beforeVisibility}→{row.afterVisibility})
+              </Text>
+            ))}
+          </div>
         ) : null}
 
         {GROUPS.map((group) => {
@@ -439,11 +534,12 @@ const SettingsPolicyPage = memo(() => {
                       </div>
                       <div className={styles.row}>
                         <Select
+                          disabled={!canUpdate}
                           style={{ minWidth: 120 }}
                           value={policy.mode}
-                          options={MODE_OPTIONS.map((o) => ({
-                            label: t(`settingsPolicy.mode.${o.value}` as never),
-                            value: o.value,
+                          options={MODE_VALUES.map((value) => ({
+                            label: t(`settingsPolicy.mode.${value}` as never),
+                            value,
                           }))}
                           onChange={(v) =>
                             updatePolicy(entry.path, { mode: v as DraftPolicy['mode'] })
@@ -467,7 +563,11 @@ const SettingsPolicyPage = memo(() => {
                     </Text>
                     <PolicyValueEditor
                       control={entry.control}
+                      disabled={!canUpdate}
+                      max={entry.max}
+                      min={entry.min}
                       options={entry.options}
+                      step={entry.step}
                       value={policy.value}
                       onChange={(value) => updatePolicy(entry.path, { value })}
                     />
@@ -500,24 +600,7 @@ const SettingsPolicyPage = memo(() => {
           {t('settingsPolicy.revision', { revision: data.baseRevision })}
         </span>
         <Flexbox horizontal gap={8}>
-          {saveState === 'failed' ? (
-            <Button type="primary" onClick={() => void handleSaveDraft()}>
-              {t('settingsPolicy.retrySave')}
-            </Button>
-          ) : null}
-          {dirty ? (
-            <Button
-              loading={saveState === 'saving'}
-              type="primary"
-              onClick={() => void handleSaveDraft()}
-            >
-              {t('settingsPolicy.saveDraft')}
-            </Button>
-          ) : (
-            <Button type="primary" onClick={handlePublish}>
-              {t('settingsPolicy.publish')}
-            </Button>
-          )}
+          {primaryButton}
         </Flexbox>
       </div>
     </AdminPageTemplate>
@@ -528,19 +611,30 @@ SettingsPolicyPage.displayName = 'SettingsPolicyPage';
 
 const PolicyValueEditor = memo<{
   control: string;
+  disabled?: boolean;
+  max?: number;
+  min?: number;
   onChange: (value: unknown) => void;
   options?: ReadonlyArray<{ labelKey: string; value: string | number | boolean }>;
+  step?: number;
   value: unknown;
-}>(({ control, value, onChange, options }) => {
+}>(({ control, value, onChange, options, min, max, step, disabled }) => {
   const { t } = useTranslation('admin');
 
   if (control === 'switch') {
-    return <Switch checked={Boolean(value)} onChange={(checked: boolean) => onChange(checked)} />;
+    return (
+      <Switch
+        checked={Boolean(value)}
+        disabled={disabled}
+        onChange={(checked: boolean) => onChange(checked)}
+      />
+    );
   }
 
   if (control === 'select' && options?.length) {
     return (
       <Select
+        disabled={disabled}
         style={{ minWidth: 180 }}
         value={value as string | number | boolean | undefined}
         options={options.map((o) => ({
@@ -552,9 +646,25 @@ const PolicyValueEditor = memo<{
     );
   }
 
+  if (control === 'textarea') {
+    return (
+      <textarea
+        disabled={disabled}
+        rows={4}
+        style={{ width: '100%' }}
+        value={value === undefined || value === null ? '' : String(value)}
+        onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => onChange(e.target.value)}
+      />
+    );
+  }
+
   if (control === 'number' || control === 'slider') {
     return (
       <Input
+        disabled={disabled}
+        max={max}
+        min={min}
+        step={step}
         type="number"
         value={value === undefined || value === null ? '' : String(value)}
         onChange={(e) => {

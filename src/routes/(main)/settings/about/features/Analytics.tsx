@@ -19,6 +19,15 @@ const Analytics = memo(() => {
   const updateGeneralConfig = useUserStore((s) => s.updateGeneralConfig);
   const telemetryMeta = usePlatformSettingMeta('general.telemetry');
 
+  // Fail-closed while metadata is unknown (loading/error)
+  if (telemetryMeta.status === 'loading') return null;
+  if (telemetryMeta.status === 'error') {
+    return (
+      <button type="button" onClick={() => telemetryMeta.retry()}>
+        {t('platformSource.retryMeta', { defaultValue: 'Retry loading settings policy' })}
+      </button>
+    );
+  }
   if (telemetryMeta.hidden) return null;
 
   const items: FormGroupItemType = {
@@ -32,13 +41,17 @@ const Analytics = memo(() => {
               source={telemetryMeta.source}
               onReset={
                 telemetryMeta.mode === 'default' && telemetryMeta.source === 'user'
-                  ? () => void telemetryMeta.reset()
+                  ? () => {
+                      void telemetryMeta.reset().catch(() => {
+                        /* resetError exposed on meta */
+                      });
+                    }
                   : undefined
               }
             />
             <Switch
               checked={!!checked}
-              disabled={telemetryMeta.locked}
+              disabled={telemetryMeta.locked || telemetryMeta.resetting}
               onChange={(e) => {
                 if (telemetryMeta.locked) return;
                 updateGeneralConfig({ telemetry: e });

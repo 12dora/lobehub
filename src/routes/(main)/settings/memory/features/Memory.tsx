@@ -32,9 +32,14 @@ const MemorySetting = memo(() => {
 
   if (!isUserStateInit) return <Skeleton active paragraph={{ rows: 3 }} title={false} />;
 
+  // Fail-closed while policy metadata loads
+  if (enabledMeta.status === 'loading' || effortMeta.status === 'loading') {
+    return <Skeleton active paragraph={{ rows: 3 }} title={false} />;
+  }
+
   // Server-hidden paths do not render (UI hide never replaces server enforcement)
-  const showEnabled = !enabledMeta.hidden;
-  const showEffort = !effortMeta.hidden;
+  const showEnabled = enabledMeta.status === 'ready' && !enabledMeta.hidden;
+  const showEffort = effortMeta.status === 'ready' && !effortMeta.hidden;
 
   const memorySettings: FormGroupItemType = {
     children: [

@@ -251,6 +251,13 @@ export default {
   'settingsPolicy.title': 'Settings policy',
   'settingsPolicy.desc':
     'Configure organization defaults, locks, and visibility for registered user settings. Publish applies to all users without rewriting their data.',
+  'settingsPolicy.featureDisabled':
+    'Platform settings policy is not enabled on this deployment. No draft requests are made.',
+  'settingsPolicy.readOnlyHint': 'You have read-only access.',
+  'settingsPolicy.unsavedLeave': 'You have unsaved settings policy changes. Leave anyway?',
+  'settingsPolicy.publishRequiresValidate':
+    'Validate the current draft (and review impact) before publishing.',
+  'settingsPolicy.changePreview': 'Change preview',
   'settingsPolicy.searchPlaceholder': 'Search settings by name or path…',
   'settingsPolicy.saveDraft': 'Save draft',
   'settingsPolicy.retrySave': 'Retry save',
