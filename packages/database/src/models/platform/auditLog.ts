@@ -1,4 +1,4 @@
-import { and, desc, eq, lt } from 'drizzle-orm';
+import { and, desc, eq, lt, or } from 'drizzle-orm';
 
 import {
   type NewPlatformAuditLog,
@@ -25,13 +25,42 @@ export interface CreatePlatformAuditLogParams {
   userAgent?: string | null;
 }
 
+/**
+ * Composite cursor: `${createdAt.toISOString()}|${id}` (desc order).
+ * Also accepts a bare ISO date string or a valid Date for backward compatibility.
+ */
+export type PlatformAuditCursor = string;
+
 export interface ListPlatformAuditLogParams {
   actorUserId?: string;
-  cursor?: Date;
+  /** Composite cursor, legacy ISO date string, or valid Date. */
+  cursor?: PlatformAuditCursor | Date;
   limit?: number;
   targetId?: string;
   targetType?: string;
 }
+
+export const encodeAuditCursor = (row: Pick<PlatformAuditLogItem, 'createdAt' | 'id'>): string =>
+  `${row.createdAt.toISOString()}|${row.id}`;
+
+export const parseAuditCursor = (
+  cursor: PlatformAuditCursor | Date | undefined,
+): { createdAt: Date; id?: string } | null => {
+  if (!cursor) return null;
+  if (cursor instanceof Date) {
+    if (Number.isNaN(cursor.getTime())) return null;
+    return { createdAt: cursor };
+  }
+  if (cursor.includes('|')) {
+    const [iso, id] = cursor.split('|');
+    const createdAt = new Date(iso);
+    if (Number.isNaN(createdAt.getTime()) || !id) return null;
+    return { createdAt, id };
+  }
+  const createdAt = new Date(cursor);
+  if (Number.isNaN(createdAt.getTime())) return null;
+  return { createdAt };
+};
 
 /**
  * Append-only platform audit log repository.
@@ -74,11 +103,9 @@ export class PlatformAuditLogModel {
   };
 
   /**
-   * Cursor pagination by createdAt (descending). No unbounded export path.
-   *
-   * TODO(M02/tRPC): cursor input is Date while nextCursor is ISO string — callers
-   * must parse. Same-millisecond multi-row pages can skip rows with `< createdAt`
-   * alone; switch to a composite (createdAt, id) cursor when hanging admin.audit.
+   * Cursor pagination by (createdAt, id) descending.
+   * Composite cursor prevents skipping same-millisecond rows.
+   * Callers should pass nextCursor as a string (not `new Date(nextCursor)`).
    */
   list = async (
     params: ListPlatformAuditLogParams = {},
@@ -95,19 +122,34 @@ export class PlatformAuditLogModel {
     if (params.targetId) {
       conditions.push(eq(platformAuditLogs.targetId, params.targetId));
     }
-    if (params.cursor) {
-      conditions.push(lt(platformAuditLogs.createdAt, params.cursor));
+
+    const parsed = parseAuditCursor(params.cursor);
+    if (parsed) {
+      if (parsed.id) {
+        conditions.push(
+          or(
+            lt(platformAuditLogs.createdAt, parsed.createdAt),
+            and(
+              eq(platformAuditLogs.createdAt, parsed.createdAt),
+              lt(platformAuditLogs.id, parsed.id),
+            ),
+          )!,
+        );
+      } else {
+        conditions.push(lt(platformAuditLogs.createdAt, parsed.createdAt));
+      }
     }
 
     const rows = await this.db.query.platformAuditLogs.findMany({
       limit: limit + 1,
-      orderBy: [desc(platformAuditLogs.createdAt)],
+      orderBy: [desc(platformAuditLogs.createdAt), desc(platformAuditLogs.id)],
       where: conditions.length > 0 ? and(...conditions) : undefined,
     });
 
     const hasMore = rows.length > limit;
     const items = hasMore ? rows.slice(0, limit) : rows;
-    const nextCursor = hasMore ? (items.at(-1)?.createdAt?.toISOString() ?? null) : null;
+    const last = items.at(-1);
+    const nextCursor = hasMore && last ? encodeAuditCursor(last) : null;
 
     return { items, nextCursor };
   };

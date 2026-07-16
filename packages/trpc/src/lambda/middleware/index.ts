@@ -1,3 +1,4 @@
+export * from './enterpriseAccess';
 export * from './heteroOperationAuth';
 export * from './marketSDK';
 export * from './marketUserInfo';

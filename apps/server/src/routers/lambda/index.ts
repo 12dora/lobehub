@@ -17,6 +17,7 @@ import { workspaceDataRouter } from '@/business/server/lambda-routers/workspaceD
 import { workspaceMemberRouter } from '@/business/server/lambda-routers/workspaceMember';
 import { workspaceUsageRouter } from '@/business/server/lambda-routers/workspaceUsage';
 import { publicProcedure, router } from '@/libs/trpc/lambda';
+import { adminRouter } from '@/server/enterprise/routers/admin';
 import { platformRouter } from '@/server/enterprise/routers/platform';
 
 import { agentRouter } from './agent';
@@ -84,6 +85,7 @@ import { videoRouter } from './video';
 import { webBrowsingRouter } from './webBrowsing';
 
 export const lambdaRouter = router({
+  admin: adminRouter,
   agent: agentRouter,
   agentBotProvider: agentBotProviderRouter,
   agentNotify: agentNotifyRouter,

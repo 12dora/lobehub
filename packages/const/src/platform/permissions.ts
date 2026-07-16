@@ -72,8 +72,18 @@ export const PLATFORM_PERMISSIONS = {
   SYSTEM_OPERATE: 'platform_system:operate:all',
 
   OIDC_PUBLISH: 'platform_oidc:publish:all',
+
+  /** Role assignment / EasyAuth sync status (admin.roles / admin.easyauth). */
+  ROLE_READ: 'platform_role:read:all',
+  ROLE_UPDATE: 'platform_role:update:all',
 } as const;
 
 export type PlatformPermission = (typeof PLATFORM_PERMISSIONS)[keyof typeof PLATFORM_PERMISSIONS];
 
 export const PLATFORM_PERMISSION_LIST = Object.values(PLATFORM_PERMISSIONS);
+
+/**
+ * EasyAuth base access permission (not a platform_* RBAC code).
+ * Granted via EasyAuth; synced into local access state / platform_user role.
+ */
+export const AIHUB_ACCESS_PERMISSION = 'aihub.access' as const;

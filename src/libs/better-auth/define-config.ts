@@ -229,6 +229,20 @@ export function defineConfig(customOptions: CustomBetterAuthOptions) {
           },
         },
       },
+      // M02: EasyAuth grants sync on session create (login). Never blocks auth.
+      session: {
+        create: {
+          after: async (session) => {
+            try {
+              const { syncEasyauthOnLogin } =
+                await import('@/database/models/platform/easyauthLoginSync');
+              await syncEasyauthOnLogin(serverDB, session.userId);
+            } catch {
+              // ignore — login must succeed even if EasyAuth is down
+            }
+          },
+        },
+      },
     },
     user: {
       changeEmail: {
