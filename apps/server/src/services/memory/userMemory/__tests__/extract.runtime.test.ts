@@ -114,7 +114,7 @@ describe('MemoryExtractionExecutor.resolveRuntimeKeyVaults', () => {
       });
       expect(execution).toHaveBeenCalledTimes(3);
       expect(JSON.stringify(runtimeState)).not.toContain('platform-secret');
-      expect(secretFactory).toHaveBeenCalledOnce();
+      expect(secretFactory).toHaveBeenCalledTimes(3);
     } finally {
       process.env.ENABLE_PLATFORM_MANAGED_AI = previousFlag;
       vi.restoreAllMocks();

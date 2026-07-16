@@ -152,8 +152,15 @@ export const aiProviderRouter = router({
         );
         const models = (
           await Promise.all(
-            providers.map((provider) =>
-              ctx.aiInfraRepos.getAiProviderModelList(provider.id, { enabled: true }),
+            providers.map(async (provider) =>
+              (await ctx.aiInfraRepos.getAiProviderModelList(provider.id, { enabled: true })).map(
+                (model) => ({
+                  ...model,
+                  abilities: model.abilities ?? {},
+                  enabled: true,
+                  providerId: provider.id,
+                }),
+              ),
             ),
           )
         ).flat();

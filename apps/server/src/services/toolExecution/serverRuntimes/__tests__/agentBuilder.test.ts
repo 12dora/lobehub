@@ -9,6 +9,7 @@ const {
   mockGetAiProviderList,
   mockGetAiProviderModelList,
   mockGetAiProviderRuntimeState,
+  mockIsPlatformManagedAiEnabled,
   mockResolveAiCatalogRuntimeState,
   mockUpdateConfig,
 } = vi.hoisted(() => ({
@@ -18,6 +19,7 @@ const {
   mockGetAiProviderList: vi.fn(),
   mockGetAiProviderModelList: vi.fn(),
   mockGetAiProviderRuntimeState: vi.fn(),
+  mockIsPlatformManagedAiEnabled: vi.fn(),
   mockResolveAiCatalogRuntimeState: vi.fn(),
   mockUpdateConfig: vi.fn(),
 }));
@@ -44,8 +46,10 @@ vi.mock('@/database/repositories/aiInfra', () => ({
   })),
 }));
 
-vi.mock('@/server/enterprise/services/aiCatalog', () => ({
-  getEmptyAiProviderRuntimeState: () => ({
+vi.mock('@/server/globalConfig', () => ({}));
+
+vi.mock('@/server/modules/ModelRuntime/platformAiRuntimeBridge', () => ({
+  getEmptyPlatformAiRuntimeState: () => ({
     enabledAiModels: [],
     enabledAiProviders: [],
     enabledChatAiProviders: [],
@@ -53,7 +57,8 @@ vi.mock('@/server/enterprise/services/aiCatalog', () => ({
     enabledVideoAiProviders: [],
     runtimeConfig: {},
   }),
-  resolveAiCatalogRuntimeState: mockResolveAiCatalogRuntimeState,
+  isPlatformManagedAiEnabled: mockIsPlatformManagedAiEnabled,
+  resolvePlatformAiRuntimeState: mockResolveAiCatalogRuntimeState,
 }));
 
 vi.mock('@/server/services/discover', () => ({
@@ -79,6 +84,7 @@ describe('agentBuilderRuntime', () => {
   beforeEach(() => {
     delete process.env.ENABLE_PLATFORM_MANAGED_AI;
     vi.clearAllMocks();
+    mockIsPlatformManagedAiEnabled.mockReturnValue(false);
   });
 
   describe('getAvailableModels', () => {
@@ -110,6 +116,7 @@ describe('agentBuilderRuntime', () => {
 
     it('preserves catalog provider order when managed AI is enabled', async () => {
       process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
+      mockIsPlatformManagedAiEnabled.mockReturnValue(true);
       mockResolveAiCatalogRuntimeState.mockResolvedValue({
         enabledAiModels: [
           { enabled: true, id: 'beta-model', providerId: 'beta', type: 'chat' },

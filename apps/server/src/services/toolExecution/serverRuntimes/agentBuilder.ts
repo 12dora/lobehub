@@ -1,3 +1,5 @@
+import '@/server/globalConfig';
+
 import {
   AgentBuilderIdentifier,
   type GetAvailableModelsParams,
@@ -14,11 +16,11 @@ import { getPluginMode, upsertPluginMode } from '@lobechat/types';
 import { AgentModel } from '@/database/models/agent';
 import { PluginModel } from '@/database/models/plugin';
 import { AiInfraRepos } from '@/database/repositories/aiInfra';
-import { parseEnterpriseFeatureFlags } from '@/server/enterprise/featureFlags';
 import {
-  getEmptyAiProviderRuntimeState,
-  resolveAiCatalogRuntimeState,
-} from '@/server/enterprise/services/aiCatalog';
+  getEmptyPlatformAiRuntimeState,
+  isPlatformManagedAiEnabled,
+  resolvePlatformAiRuntimeState,
+} from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
 import { DiscoverService } from '@/server/services/discover';
 
 import { type ToolExecutionContext, type ToolExecutionResult } from '../types';
@@ -52,7 +54,7 @@ export const agentBuilderRuntime: ServerRuntimeRegistration = {
         params: GetAvailableModelsParams,
       ): Promise<ToolExecutionResult> => {
         try {
-          const flags = parseEnterpriseFeatureFlags(process.env);
+          const managed = isPlatformManagedAiEnabled();
           let enabledProviders: Array<{ id: string; name?: string; sort?: number | null }>;
           let getEnabledChatModels: (providerId: string) => Promise<
             Array<{
@@ -62,11 +64,10 @@ export const agentBuilderRuntime: ServerRuntimeRegistration = {
             }>
           >;
 
-          if (flags.ENABLE_PLATFORM_MANAGED_AI) {
-            const runtimeState = await resolveAiCatalogRuntimeState({
+          if (managed) {
+            const runtimeState = await resolvePlatformAiRuntimeState({
               db: context.serverDB!,
-              flags,
-              upstreamState: getEmptyAiProviderRuntimeState(),
+              upstreamState: getEmptyPlatformAiRuntimeState(),
             });
             // The catalog adapter already applies provider.sort; preserve it exactly.
             enabledProviders = runtimeState.enabledAiProviders;

@@ -68,17 +68,16 @@ import { AiInfraRepos } from '@/database/repositories/aiInfra';
 import { getServerDB } from '@/database/server';
 import { buildWorkspaceWhere } from '@/database/utils/workspace';
 import { OtelWorkflowClient } from '@/libs/qstash';
-import { parseEnterpriseFeatureFlags } from '@/server/enterprise/featureFlags';
-import { PlatformSecretService } from '@/server/enterprise/security/secret';
-import {
-  AiCatalogExecutionResolver,
-  getEmptyAiProviderRuntimeState,
-  resolveAiCatalogRuntimeState,
-} from '@/server/enterprise/services/aiCatalog';
 import { getServerGlobalConfig } from '@/server/globalConfig';
 import { type MemoryAgentConfig } from '@/server/globalConfig/parseMemoryExtractionConfig';
 import { parseMemoryExtractionConfig } from '@/server/globalConfig/parseMemoryExtractionConfig';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
+import {
+  getEmptyPlatformAiRuntimeState,
+  isPlatformManagedAiEnabled,
+  resolvePlatformAiExecutionConfig,
+  resolvePlatformAiRuntimeState,
+} from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
 import { S3 } from '@/server/modules/S3';
 import {
   AsyncTaskError,
@@ -259,6 +258,15 @@ export type ProviderKeyVaultMap = Record<
   string,
   AiProviderRuntimeState['runtimeConfig'][string]['keyVaults'] | undefined
 >;
+
+const toDefinedKeyVaults = (
+  keyVaults: Record<string, string | undefined>,
+): Record<string, string> =>
+  Object.fromEntries(
+    Object.entries(keyVaults).filter(
+      (entry): entry is [string, string] => typeof entry[1] === 'string',
+    ),
+  );
 
 export const buildWorkflowPayloadInput = (
   payload: MemoryExtractionNormalizedPayload,
@@ -2368,12 +2376,10 @@ export class MemoryExtractionExecutor {
   ): Promise<AiProviderRuntimeState> {
     const db = await this.db;
     const aiInfraRepos = new AiInfraRepos(db, userId, this.aiProviderConfig, workspaceId);
-    const flags = parseEnterpriseFeatureFlags(process.env);
-    if (flags.ENABLE_PLATFORM_MANAGED_AI) {
-      return resolveAiCatalogRuntimeState({
+    if (isPlatformManagedAiEnabled()) {
+      return resolvePlatformAiRuntimeState({
         db,
-        flags,
-        upstreamState: getEmptyAiProviderRuntimeState(),
+        upstreamState: getEmptyPlatformAiRuntimeState(),
       });
     }
     return aiInfraRepos.getAiProviderRuntimeState(KeyVaultsGateKeeper.getUserKeyVaults);
@@ -2383,7 +2389,7 @@ export class MemoryExtractionExecutor {
     runtimeState: AiProviderRuntimeState,
     memoryServiceConfig: ResolvedMemoryServiceConfig,
   ): Promise<ProviderKeyVaultMap> {
-    const flags = parseEnterpriseFeatureFlags(process.env);
+    const managed = isPlatformManagedAiEnabled();
     const normalizedRuntimeConfig = Object.fromEntries(
       Object.entries(runtimeState.runtimeConfig || {}).map(([providerId, config]) => [
         normalizeProvider(providerId),
@@ -2435,15 +2441,13 @@ export class MemoryExtractionExecutor {
       selectedProviders.add(providerId);
     }
 
-    if (flags.ENABLE_PLATFORM_MANAGED_AI) {
-      const secrets = PlatformSecretService.fromEnvOrThrowIfEnterprise(process.env, flags);
-      if (!secrets) throw new Error('PLATFORM_SECRET_REQUIRED');
-      const resolver = new AiCatalogExecutionResolver(await this.db, secrets);
+    if (managed) {
+      const db = await this.db;
       const keyVaults: ProviderKeyVaultMap = {};
       await Promise.all(
         [...selectedProviders].map(async (providerId) => {
-          const execution = await resolver.resolveProviderExecutionConfig(providerId);
-          keyVaults[providerId] = execution.keyVaults;
+          const execution = await resolvePlatformAiExecutionConfig(db, providerId);
+          keyVaults[providerId] = toDefinedKeyVaults(execution.keyVaults);
         }),
       );
       return keyVaults;
@@ -2474,7 +2478,7 @@ export class MemoryExtractionExecutor {
       memoryServiceConfig.agents.gatekeeper.provider,
       memoryServiceConfig.agents.layerExtractor.provider,
     ].join(':');
-    const managed = parseEnterpriseFeatureFlags(process.env).ENABLE_PLATFORM_MANAGED_AI;
+    const managed = isPlatformManagedAiEnabled();
     if (!managed) {
       const cached = this.runtimeCache.get(cacheKey);
       if (cached) return cached;

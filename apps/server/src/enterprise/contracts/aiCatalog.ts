@@ -263,7 +263,7 @@ const modelDraftFieldsSchema = z
     pricing: boundedJsonObjectSchema.nullable().optional(),
     settings: boundedJsonObjectSchema.optional(),
     sort: z.number().int().optional(),
-    type: z.string().trim().min(1).max(20).optional(),
+    type: AiModelTypeSchema.optional(),
   })
   .strict();
 
@@ -319,7 +319,7 @@ export const adminAiModelListInputSchema = z
     provider: providerKeySchema.optional(),
     query: z.string().trim().min(1).max(200).optional(),
     status: z.enum(['draft', 'published', 'archived']).optional(),
-    type: z.string().trim().min(1).max(20).optional(),
+    type: AiModelTypeSchema.optional(),
   })
   .strict();
 

@@ -1,4 +1,5 @@
 import { and, asc, desc, eq, gt, ilike, inArray, lt, max, or } from 'drizzle-orm';
+import type { AiModelType } from 'model-bank';
 
 import {
   type NewPlatformAiModel,
@@ -251,7 +252,7 @@ export class PlatformAiCatalogRepository {
     providerKey?: string;
     query?: string;
     status?: PlatformResourceStatus;
-    type?: string;
+    type?: AiModelType;
   }): Promise<PlatformAiModelPage> => {
     const limit = Math.min(params.limit ?? 50, 100);
     const conditions = [];
