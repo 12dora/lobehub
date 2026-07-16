@@ -5,6 +5,7 @@ import {
   ADMIN_CONNECTOR_PROCEDURE_PERMISSIONS,
   adminConnectorArchiveInputSchema,
   adminConnectorCreateDraftInputSchema,
+  adminConnectorDiscoverOutputSchema,
   adminConnectorDraftSchema,
   adminConnectorUpdateDraftInputSchema,
   collectConnectorSecretLeaves,
@@ -651,6 +652,33 @@ describe('platform connector contracts', () => {
       expect(unconfirmed.error.issues[0]?.message).toBe(
         CONNECTOR_TOOL_VALIDATION_CODES.confirmationRequired,
       );
+    }
+  });
+
+  it('rejects secret-bearing discovery output without echoing the schema leaf', () => {
+    const secret = 'Authorization: Bearer discovery-output-never-echo';
+    const result = adminConnectorDiscoverOutputSchema.safeParse({
+      messageCode: 'connector.operation_succeeded',
+      oauthConfig: null,
+      tools: [
+        {
+          description: null,
+          displayName: 'Search',
+          enabled: true,
+          inputSchema: { type: 'object' },
+          outputSchema: { examples: [{ [secret]: 'safe' }] },
+          platformPolicy: 'deny',
+          requiresConfirmation: true,
+          riskLevel: 'high',
+          sort: 0,
+          toolKey: 'search',
+        },
+      ],
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0]?.message).toBe(CONNECTOR_TOOL_VALIDATION_CODES.schemaSecret);
+      expect(JSON.stringify(result.error.issues)).not.toContain(secret);
     }
   });
 
