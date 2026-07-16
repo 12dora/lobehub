@@ -383,28 +383,46 @@ export class AdminUserService {
     }
 
     try {
-      // PlatformRbacService already appends platform.roles.replace audit on success.
-      // Use a wrapping txn for denied paths only when needed — replaceUserGlobalRoles
-      // has its own txn for last-super. Append admin.users action for M04 surface.
-      const result = await this.rbacService.replaceUserGlobalRoles({
-        actorUserId,
-        expiresAt: input.expiresAt,
-        reason: input.reason,
-        roleNames: input.roleNames,
-        targetUserId: input.userId,
-      });
+      // Role replace (inner txn/savepoint) + both audit rows in one outer transaction.
+      // If either audit append fails, the whole unit rolls back.
+      const result = await this.db.transaction(async (tx) => {
+        const rbacService = new PlatformRbacService(tx as LobeChatDatabase);
+        const replaced = await rbacService.replaceUserGlobalRoles({
+          actorUserId,
+          expiresAt: input.expiresAt,
+          reason: input.reason,
+          roleNames: input.roleNames,
+          skipAudit: true,
+          targetUserId: input.userId,
+        });
 
-      await this.appendAuditBestEffort({
-        action: 'admin.users.replaceGlobalRoles',
-        actorUserId,
-        afterDiff: {
-          expiresAt: input.expiresAt?.toISOString() ?? null,
-          roleNames: result.roleNames,
-        },
-        reason: input.reason,
-        result: 'success',
-        targetId: input.userId,
-        targetType: 'user',
+        await this.appendAuditInDb(tx, {
+          action: 'platform.roles.replace',
+          actorUserId,
+          afterDiff: {
+            expiresAt: input.expiresAt?.toISOString() ?? null,
+            roleNames: replaced.roleNames,
+          },
+          reason: input.reason,
+          result: 'success',
+          targetId: input.userId,
+          targetType: 'user',
+        });
+
+        await this.appendAuditInDb(tx, {
+          action: 'admin.users.replaceGlobalRoles',
+          actorUserId,
+          afterDiff: {
+            expiresAt: input.expiresAt?.toISOString() ?? null,
+            roleNames: replaced.roleNames,
+          },
+          reason: input.reason,
+          result: 'success',
+          targetId: input.userId,
+          targetType: 'user',
+        });
+
+        return replaced;
       });
 
       return {

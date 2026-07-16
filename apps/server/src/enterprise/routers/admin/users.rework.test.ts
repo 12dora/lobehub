@@ -4,7 +4,7 @@
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { ADMIN_ERROR_CODES } from '@/const/platform/errorCodes';
+import { ADMIN_ERROR_CODES, PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { PLATFORM_SYSTEM_ROLES } from '@/const/platform/roles';
 import { getTestDB } from '@/database/core/getTestDB';
 import {
@@ -253,5 +253,58 @@ describe('M04 R1 — banned direct caller blocked by withActiveUser', () => {
           (error as { code?: string }).code === 'UNAUTHORIZED',
       ).toBe(true);
     }
+  });
+});
+
+describe('M04 R1 — identity_admin matrix', () => {
+  it('identity_admin can list/get but cannot ban or replace roles', async () => {
+    const id = 'r1-identity-admin';
+    await db.insert(users).values({ id });
+    await grant(id, PLATFORM_SYSTEM_ROLES.IDENTITY_ADMIN);
+    const caller = createAdminCaller(await ctx(id));
+    await expect(caller.users.list({ limit: 5 })).resolves.toBeTruthy();
+    await expect(caller.users.get({ userId: IDS.target })).resolves.toMatchObject({
+      id: IDS.target,
+    });
+    try {
+      await caller.users.ban({ reason: 'nope', userId: IDS.target });
+      expect.fail('expected deny');
+    } catch (error) {
+      expect(getEnterpriseErrorBody(error)?.code).toBe(
+        PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED,
+      );
+    }
+    try {
+      await caller.users.replaceGlobalRoles({
+        reason: 'nope',
+        roleNames: [PLATFORM_SYSTEM_ROLES.PLATFORM_USER],
+        userId: IDS.target,
+      });
+      expect.fail('expected deny');
+    } catch (error) {
+      expect(getEnterpriseErrorBody(error)?.code).toBe(
+        PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED,
+      );
+    }
+  });
+});
+
+describe('M04 R1 — replaceGlobalRoles audit atomicity', () => {
+  it('success writes platform.roles.replace + admin.users.replaceGlobalRoles', async () => {
+    const caller = createAdminCaller(await ctx(IDS.userAdmin));
+    await caller.users.replaceGlobalRoles({
+      reason: 'atomic roles',
+      roleNames: [PLATFORM_SYSTEM_ROLES.AUDITOR],
+      userId: IDS.target,
+    });
+    const rows = await db.query.platformAuditLogs.findMany({
+      where: (t, { eq }) => eq(t.targetId, IDS.target),
+    });
+    expect(rows.some((r) => r.action === 'platform.roles.replace' && r.result === 'success')).toBe(
+      true,
+    );
+    expect(
+      rows.some((r) => r.action === 'admin.users.replaceGlobalRoles' && r.result === 'success'),
+    ).toBe(true);
   });
 });

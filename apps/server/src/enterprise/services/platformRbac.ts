@@ -60,6 +60,11 @@ export class PlatformRbacService {
     expiresAt?: Date | null;
     reason: string;
     roleNames: string[];
+    /**
+     * When true, skip platform.roles.replace audit (caller writes both audits
+     * in the same outer transaction — M04 AdminUserService).
+     */
+    skipAudit?: boolean;
     targetUserId: string;
   }): Promise<{ expiresAt?: Date | null; roleNames: string[] }> => {
     const desired = [...new Set(params.roleNames)];
@@ -106,18 +111,20 @@ export class PlatformRbacService {
       throw error;
     }
 
-    await this.audit.append({
-      action: 'platform.roles.replace',
-      actorUserId: params.actorUserId,
-      afterDiff: {
-        expiresAt: params.expiresAt?.toISOString() ?? null,
-        roleNames: desired,
-      },
-      reason: params.reason,
-      result: 'success',
-      targetId: params.targetUserId,
-      targetType: 'user',
-    });
+    if (!params.skipAudit) {
+      await this.audit.append({
+        action: 'platform.roles.replace',
+        actorUserId: params.actorUserId,
+        afterDiff: {
+          expiresAt: params.expiresAt?.toISOString() ?? null,
+          roleNames: desired,
+        },
+        reason: params.reason,
+        result: 'success',
+        targetId: params.targetUserId,
+        targetType: 'user',
+      });
+    }
 
     return { expiresAt: params.expiresAt ?? null, roleNames: desired };
   };

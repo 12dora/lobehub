@@ -15,8 +15,8 @@ import { seedPlatformRoles } from '../../utils/seedPlatformRoles';
 import { AdminUserModel } from '../adminUser';
 import { LastSuperAdminProtectionError, RbacModel } from '../rbac';
 
-const hasServerDbUrl = Boolean(process.env.DATABASE_TEST_URL || process.env.DATABASE_URL);
-const isServerDB = process.env.TEST_SERVER_DB === '1' && hasServerDbUrl;
+// getTestDB requires DATABASE_TEST_URL specifically (not DATABASE_URL).
+const isServerDB = process.env.TEST_SERVER_DB === '1' && Boolean(process.env.DATABASE_TEST_URL);
 
 describe.skipIf(!isServerDB)('M04 last-super concurrency (TEST_SERVER_DB=1)', () => {
   let db: LobeChatDatabase;
