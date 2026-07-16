@@ -1,6 +1,6 @@
 'use client';
 
-import { Flexbox, Input, Tag, Text } from '@lobehub/ui';
+import { Alert, Flexbox, Input, Tag, Text } from '@lobehub/ui';
 import { Button, Select, toast } from '@lobehub/ui/base-ui';
 import type { TableColumnsType } from 'antd';
 import { createStaticStyles } from 'antd-style';
@@ -16,6 +16,7 @@ import DataTable from '../../primitives/DataTable';
 import StatusBadge from '../../primitives/StatusBadge';
 import { deriveAiCatalogPermissions } from '../controller';
 import { refreshAdminAiProviderLists, useFetchAdminAiProviders } from '../hooks/useAdminAiCatalog';
+import { commitThenScheduleRefresh } from '../mutationRefresh';
 import type { AdminAiProviderListInput, AdminAiProviderListItem } from '../types';
 import { openCreateProviderModal } from './openCreateProviderModal';
 
@@ -44,6 +45,9 @@ const ProviderListPage = memo(() => {
   const source = searchParams.get('source') ?? '';
   const [searchDraft, setSearchDraft] = useState(query);
   const [cursorStack, setCursorStack] = useState<(string | null)[]>([]);
+  const [committedProviderId, setCommittedProviderId] = useState<string | null>(null);
+  const [committedRefreshFailed, setCommittedRefreshFailed] = useState(false);
+  const [committedRefreshRetrying, setCommittedRefreshRetrying] = useState(false);
   const [limit, setLimit] = useState(DEFAULT_LIMIT);
   const searchTimerRef = useRef<number | null>(null);
   const cursor = cursorStack.at(-1) ?? null;
@@ -144,6 +148,22 @@ const ProviderListPage = memo(() => {
 
   const filtered = Boolean(status || enabledParam || query || source);
 
+  const retryCommittedRefresh = async () => {
+    if (!committedProviderId) return;
+    setCommittedRefreshRetrying(true);
+    try {
+      await refreshAdminAiProviderLists();
+      const id = committedProviderId;
+      setCommittedProviderId(null);
+      setCommittedRefreshFailed(false);
+      navigate(`/admin/ai/providers/${encodeURIComponent(id)}`);
+    } catch {
+      setCommittedRefreshFailed(true);
+    } finally {
+      setCommittedRefreshRetrying(false);
+    }
+  };
+
   return (
     <AdminPageTemplate
       description={t('aiCatalog.providers.desc')}
@@ -156,10 +176,22 @@ const ProviderListPage = memo(() => {
               openCreateProviderModal({
                 authMethod: authMethod ?? undefined,
                 onSubmit: async (input) => {
-                  const provider = await adminAiCatalogService.createProvider(input);
-                  await refreshAdminAiProviderLists();
-                  toast.success(t('aiCatalog.toast.providerCreated'));
-                  navigate(`/admin/ai/providers/${encodeURIComponent(provider.id)}`);
+                  let providerId = '';
+                  await commitThenScheduleRefresh({
+                    commit: () => adminAiCatalogService.createProvider(input),
+                    refresh: refreshAdminAiProviderLists,
+                    onCommitted: (provider) => {
+                      providerId = provider.id;
+                      setCommittedProviderId(provider.id);
+                      setCommittedRefreshFailed(false);
+                      toast.success(t('aiCatalog.toast.providerCreated'));
+                    },
+                    onRefreshed: () => {
+                      setCommittedProviderId(null);
+                      navigate(`/admin/ai/providers/${encodeURIComponent(providerId)}`);
+                    },
+                    onRefreshFailed: () => setCommittedRefreshFailed(true),
+                  });
                 },
               })
             }
@@ -205,6 +237,19 @@ const ProviderListPage = memo(() => {
         </Flexbox>
       }
     >
+      {committedRefreshFailed ? (
+        <Alert
+          showIcon
+          description={t('aiCatalog.refresh.committed.desc')}
+          message={t('aiCatalog.refresh.committed.title')}
+          type="warning"
+          extra={
+            <Button loading={committedRefreshRetrying} onClick={() => void retryCommittedRefresh()}>
+              {t('aiCatalog.refresh.retry')}
+            </Button>
+          }
+        />
+      ) : null}
       <DataTable<AdminAiProviderListItem>
         columns={columns}
         dataSource={data?.items}
