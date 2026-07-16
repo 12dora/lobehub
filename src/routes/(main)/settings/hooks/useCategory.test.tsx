@@ -114,4 +114,16 @@ describe('settings useCategory', () => {
 
     expect(keys).not.toContain(SettingsTabs.Provider);
   });
+
+  it('keeps Skill navigation visible as a read-only catalog when managed', () => {
+    managedResourcesRef.current.capabilities.skills = true;
+
+    expect(getItemKeys()).toContain(SettingsTabs.Skill);
+  });
+
+  it('hides Skill navigation while the capability snapshot is unavailable', () => {
+    managedResourcesRef.current.loading = true;
+
+    expect(getItemKeys()).not.toContain(SettingsTabs.Skill);
+  });
 });

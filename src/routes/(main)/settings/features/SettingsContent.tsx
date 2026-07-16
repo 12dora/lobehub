@@ -64,9 +64,10 @@ const SettingsContent = ({ mobile, activeTab }: SettingsContentProps) => {
 
     const content = <Component {...componentProps} />;
     const managedResource = getManagedResourceForSettingsTab(tab);
-    // Connector keeps its personal OAuth authorization surface while its route
-    // component removes definition/configuration mutations.
-    if (managedResource && managedResource !== 'connectors') {
+    // Connectors keep personal OAuth authorization. Skills keep the read-only
+    // Published Catalog and per-agent use controls. Their route components
+    // remove definition/configuration mutations themselves.
+    if (managedResource && !['connectors', 'skills'].includes(managedResource)) {
       return (
         <ManagedResourceBoundary resource={managedResource}>{content}</ManagedResourceBoundary>
       );

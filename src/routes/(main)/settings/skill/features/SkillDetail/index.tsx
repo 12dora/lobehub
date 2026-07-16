@@ -26,11 +26,18 @@ import {
   ManagedComposioDisconnectButton,
   shouldSyncConnectorDefinition,
 } from './managedConnectorBehavior';
+import PlatformSkillDetail from './PlatformSkillDetail';
 
 const AgentSkillDetail = lazy(() => import('@/features/AgentSkillDetail'));
 
 export type ToolDetailType =
-  'agent-skill' | 'builtin' | 'builtin-skill' | 'lobehub-connector' | 'mcp-connector' | 'plugin';
+  | 'agent-skill'
+  | 'builtin'
+  | 'builtin-skill'
+  | 'lobehub-connector'
+  | 'mcp-connector'
+  | 'platform-skill'
+  | 'plugin';
 
 const styles = createStaticStyles(({ css, cssVar }) => ({
   description: css`
@@ -182,261 +189,279 @@ ComposioConnectorAction.displayName = 'ComposioConnectorAction';
  * - 'builtin-skill': renders BuiltinSkill description panel (Artifacts, Task, etc.)
  * - 'builtin'/'plugin'/'mcp-connector': syncs connector entry, renders permission editor
  */
-const SkillDetail = memo<SkillDetailProps>(({ identifier, managed = false, type, onDelete }) => {
-  const { t } = useTranslation('plugin');
-  const { t: ts } = useTranslation('setting');
-  const [syncing, setSyncing] = useState(false);
-  const [noManifest, setNoManifest] = useState(false);
+const LegacySkillDetail = memo<SkillDetailProps>(
+  ({ identifier, managed = false, type, onDelete }) => {
+    const { t } = useTranslation('plugin');
+    const { t: ts } = useTranslation('setting');
+    const [syncing, setSyncing] = useState(false);
+    const [noManifest, setNoManifest] = useState(false);
 
-  const { allowed: canCreate } = usePermission('create_content');
-  const { allowed: canEdit } = usePermission('edit_own_content');
+    const { allowed: canCreate } = usePermission('create_content');
+    const { allowed: canEdit } = usePermission('edit_own_content');
 
-  const syncBuiltinTool = useToolStore((s) => s.syncBuiltinTool);
-  const syncPluginTools = useToolStore((s) => s.syncPluginTools);
-  const syncToolsFromClient = useToolStore((s) => s.syncToolsFromClient);
-  const fetchConnectors = useToolStore((s) => s.fetchConnectors);
-  const installBuiltinTool = useToolStore((s) => s.installBuiltinTool);
-  const uninstallBuiltinTool = useToolStore((s) => s.uninstallBuiltinTool);
-  const deleteAgentSkill = useToolStore((s) => s.deleteAgentSkill);
-  const connector = useToolStore(connectorSelectors.connectorByIdentifier(identifier));
+    const syncBuiltinTool = useToolStore((s) => s.syncBuiltinTool);
+    const syncPluginTools = useToolStore((s) => s.syncPluginTools);
+    const syncToolsFromClient = useToolStore((s) => s.syncToolsFromClient);
+    const fetchConnectors = useToolStore((s) => s.fetchConnectors);
+    const installBuiltinTool = useToolStore((s) => s.installBuiltinTool);
+    const uninstallBuiltinTool = useToolStore((s) => s.uninstallBuiltinTool);
+    const deleteAgentSkill = useToolStore((s) => s.deleteAgentSkill);
+    const connector = useToolStore(connectorSelectors.connectorByIdentifier(identifier));
 
-  // For lobehub-connector: get the server's tool list from the store
-  const lobehubServer = useToolStore(lobehubSkillStoreSelectors.getServerByIdentifier(identifier));
-  const lobehubProvider =
-    type === 'lobehub-connector' ? getLobehubSkillProviderById(identifier) : undefined;
-  const lobehubLabel =
-    type === 'lobehub-connector'
-      ? lobehubProvider?.label || lobehubServer?.name || identifier
-      : identifier;
-  const composioApp = type === 'plugin' ? getComposioAppByIdentifier(identifier) : undefined;
+    // For lobehub-connector: get the server's tool list from the store
+    const lobehubServer = useToolStore(
+      lobehubSkillStoreSelectors.getServerByIdentifier(identifier),
+    );
+    const lobehubProvider =
+      type === 'lobehub-connector' ? getLobehubSkillProviderById(identifier) : undefined;
+    const lobehubLabel =
+      type === 'lobehub-connector'
+        ? lobehubProvider?.label || lobehubServer?.name || identifier
+        : identifier;
+    const composioApp = type === 'plugin' ? getComposioAppByIdentifier(identifier) : undefined;
 
-  // For builtin-skill: look up from store
-  const builtinSkill = useToolStore(
-    (s) => s.builtinSkills?.find((sk) => sk.identifier === identifier),
-    isEqual,
-  );
-  const isBuiltinInstalled = useToolStore(builtinToolSelectors.isBuiltinToolInstalled(identifier));
+    // For builtin-skill: look up from store
+    const builtinSkill = useToolStore(
+      (s) => s.builtinSkills?.find((sk) => sk.identifier === identifier),
+      isEqual,
+    );
+    const isBuiltinInstalled = useToolStore(
+      builtinToolSelectors.isBuiltinToolInstalled(identifier),
+    );
 
-  const isConnectorType =
-    type === 'builtin' ||
-    type === 'plugin' ||
-    type === 'mcp-connector' ||
-    type === 'lobehub-connector';
+    const isConnectorType =
+      type === 'builtin' ||
+      type === 'plugin' ||
+      type === 'mcp-connector' ||
+      type === 'lobehub-connector';
 
-  const { title: builtinSkillTitle, description: builtinSkillDescription } =
-    getLocalizedBuiltinSkillDetail(builtinSkill, identifier, ts);
-  const noPermissionsTitle = getNoPermissionsTitle(identifier, type, ts);
+    const { title: builtinSkillTitle, description: builtinSkillDescription } =
+      getLocalizedBuiltinSkillDetail(builtinSkill, identifier, ts);
+    const noPermissionsTitle = getNoPermissionsTitle(identifier, type, ts);
 
-  const renderConnectorLifecycleAction = (onDisconnected?: () => void) => {
-    if (type === 'lobehub-connector') {
-      return (
-        <LobehubConnectorAction
-          identifier={identifier}
-          label={lobehubLabel}
-          onDisconnected={onDisconnected}
-        />
-      );
-    }
-    if (composioApp) {
-      return (
-        <ComposioConnectorAction
-          identifier={identifier}
-          label={composioApp.label}
-          onDisconnected={onDisconnected}
-        />
-      );
-    }
-    return undefined;
-  };
-
-  useEffect(() => {
-    if (!shouldSyncConnectorDefinition({ isConnectorType, managed })) {
-      setNoManifest(false);
-      setSyncing(false);
-      return;
-    }
-
-    setNoManifest(false);
-    const ensureConnector = async () => {
-      setSyncing(true);
-      try {
-        if (type === 'builtin') {
-          await syncBuiltinTool(identifier);
-        } else if (type === 'lobehub-connector') {
-          // Use tools from the lobehub skill server (already fetched via OAuth flow)
-          const tools = (lobehubServer?.tools ?? []).map((t) => ({
-            description: t.description,
-            inputSchema: t.inputSchema as Record<string, unknown>,
-            toolName: t.name,
-          }));
-          if (tools.length === 0) {
-            setNoManifest(true);
-          } else {
-            await syncToolsFromClient({
-              identifier,
-              name: lobehubServer?.name || identifier,
-              sourceType: 'marketplace',
-              tools,
-            });
-          }
-        } else if (type === 'plugin') {
-          await syncPluginTools(identifier);
-        } else {
-          await fetchConnectors();
-        }
-      } catch {
-        setNoManifest(true);
-      } finally {
-        setSyncing(false);
+    const renderConnectorLifecycleAction = (onDisconnected?: () => void) => {
+      if (type === 'lobehub-connector') {
+        return (
+          <LobehubConnectorAction
+            identifier={identifier}
+            label={lobehubLabel}
+            onDisconnected={onDisconnected}
+          />
+        );
       }
+      if (composioApp) {
+        return (
+          <ComposioConnectorAction
+            identifier={identifier}
+            label={composioApp.label}
+            onDisconnected={onDisconnected}
+          />
+        );
+      }
+      return undefined;
     };
 
-    ensureConnector();
-  }, [
-    fetchConnectors,
-    identifier,
-    isConnectorType,
-    managed,
-    lobehubServer?.name,
-    lobehubServer?.tools,
-    syncBuiltinTool,
-    syncPluginTools,
-    syncToolsFromClient,
-    type,
-  ]);
+    useEffect(() => {
+      if (!shouldSyncConnectorDefinition({ isConnectorType, managed })) {
+        setNoManifest(false);
+        setSyncing(false);
+        return;
+      }
 
-  const handleUninstallBuiltin = () => {
-    confirmModal({
-      okButtonProps: { danger: true },
-      onOk: async () => {
-        await uninstallBuiltinTool(identifier);
-      },
-      title: t('store.actions.confirmUninstall'),
-    });
-  };
-
-  const handleDeleteAgentSkill = () => {
-    confirmModal({
-      okButtonProps: { danger: true },
-      onOk: async () => {
-        await deleteAgentSkill(identifier);
-        onDelete?.();
-      },
-      title: t('store.actions.confirmUninstall'),
-    });
-  };
-
-  // ── Render by type ──────────────────────────────────────────────────────────
-
-  if (type === 'agent-skill') {
-    return (
-      <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
-        <div
-          style={{
-            alignItems: 'center',
-            borderBlockEnd: '1px solid var(--ant-color-border-secondary)',
-            display: 'flex',
-            flexShrink: 0,
-            justifyContent: 'flex-end',
-            padding: '8px 16px',
-          }}
-        >
-          <Button
-            danger
-            disabled={!canEdit}
-            icon={<Trash2 size={14} />}
-            size="small"
-            onClick={handleDeleteAgentSkill}
-          >
-            {t('store.actions.uninstall')}
-          </Button>
-        </div>
-        <div style={{ flex: 1, overflow: 'hidden' }}>
-          <Suspense
-            fallback={
-              <div style={{ padding: 24 }}>
-                <Skeleton active paragraph={{ rows: 6 }} title={false} />
-              </div>
+      setNoManifest(false);
+      const ensureConnector = async () => {
+        setSyncing(true);
+        try {
+          if (type === 'builtin') {
+            await syncBuiltinTool(identifier);
+          } else if (type === 'lobehub-connector') {
+            // Use tools from the lobehub skill server (already fetched via OAuth flow)
+            const tools = (lobehubServer?.tools ?? []).map((t) => ({
+              description: t.description,
+              inputSchema: t.inputSchema as Record<string, unknown>,
+              toolName: t.name,
+            }));
+            if (tools.length === 0) {
+              setNoManifest(true);
+            } else {
+              await syncToolsFromClient({
+                identifier,
+                name: lobehubServer?.name || identifier,
+                sourceType: 'marketplace',
+                tools,
+              });
             }
-          >
-            <AgentSkillDetail skillId={identifier} />
-          </Suspense>
-        </div>
-      </div>
-    );
-  }
+          } else if (type === 'plugin') {
+            await syncPluginTools(identifier);
+          } else {
+            await fetchConnectors();
+          }
+        } catch {
+          setNoManifest(true);
+        } finally {
+          setSyncing(false);
+        }
+      };
 
-  if (type === 'builtin-skill') {
-    return (
-      <div style={{ flex: 1, overflow: 'auto' }}>
-        <div className={styles.header}>
-          <div style={{ alignItems: 'flex-start', display: 'flex', gap: 12 }}>
-            {builtinSkill?.avatar && <Avatar avatar={builtinSkill.avatar} size={40} />}
-            <div>
-              <div className={styles.name}>{builtinSkillTitle}</div>
-              {builtinSkillDescription && (
-                <div className={styles.description}>{builtinSkillDescription}</div>
+      ensureConnector();
+    }, [
+      fetchConnectors,
+      identifier,
+      isConnectorType,
+      managed,
+      lobehubServer?.name,
+      lobehubServer?.tools,
+      syncBuiltinTool,
+      syncPluginTools,
+      syncToolsFromClient,
+      type,
+    ]);
+
+    const handleUninstallBuiltin = () => {
+      confirmModal({
+        okButtonProps: { danger: true },
+        onOk: async () => {
+          await uninstallBuiltinTool(identifier);
+        },
+        title: t('store.actions.confirmUninstall'),
+      });
+    };
+
+    const handleDeleteAgentSkill = () => {
+      confirmModal({
+        okButtonProps: { danger: true },
+        onOk: async () => {
+          await deleteAgentSkill(identifier);
+          onDelete?.();
+        },
+        title: t('store.actions.confirmUninstall'),
+      });
+    };
+
+    // ── Render by type ──────────────────────────────────────────────────────────
+
+    if (type === 'agent-skill') {
+      return (
+        <div
+          style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}
+        >
+          <div
+            style={{
+              alignItems: 'center',
+              borderBlockEnd: '1px solid var(--ant-color-border-secondary)',
+              display: 'flex',
+              flexShrink: 0,
+              justifyContent: 'flex-end',
+              padding: '8px 16px',
+            }}
+          >
+            <Button
+              danger
+              disabled={!canEdit}
+              icon={<Trash2 size={14} />}
+              size="small"
+              onClick={handleDeleteAgentSkill}
+            >
+              {t('store.actions.uninstall')}
+            </Button>
+          </div>
+          <div style={{ flex: 1, overflow: 'hidden' }}>
+            <Suspense
+              fallback={
+                <div style={{ padding: 24 }}>
+                  <Skeleton active paragraph={{ rows: 6 }} title={false} />
+                </div>
+              }
+            >
+              <AgentSkillDetail skillId={identifier} />
+            </Suspense>
+          </div>
+        </div>
+      );
+    }
+
+    if (type === 'builtin-skill') {
+      return (
+        <div style={{ flex: 1, overflow: 'auto' }}>
+          <div className={styles.header}>
+            <div style={{ alignItems: 'flex-start', display: 'flex', gap: 12 }}>
+              {builtinSkill?.avatar && <Avatar avatar={builtinSkill.avatar} size={40} />}
+              <div>
+                <div className={styles.name}>{builtinSkillTitle}</div>
+                {builtinSkillDescription && (
+                  <div className={styles.description}>{builtinSkillDescription}</div>
+                )}
+              </div>
+            </div>
+            <div style={{ display: 'flex', flexShrink: 0, gap: 8 }}>
+              {isBuiltinInstalled ? (
+                <Button danger disabled={!canEdit} size="small" onClick={handleUninstallBuiltin}>
+                  {t('store.actions.uninstall')}
+                </Button>
+              ) : (
+                <Button
+                  disabled={!canCreate}
+                  icon={<Plus size={14} />}
+                  size="small"
+                  onClick={() => installBuiltinTool(identifier)}
+                >
+                  {t('store.actions.install')}
+                </Button>
               )}
             </div>
           </div>
-          <div style={{ display: 'flex', flexShrink: 0, gap: 8 }}>
-            {isBuiltinInstalled ? (
-              <Button danger disabled={!canEdit} size="small" onClick={handleUninstallBuiltin}>
-                {t('store.actions.uninstall')}
-              </Button>
-            ) : (
-              <Button
-                disabled={!canCreate}
-                icon={<Plus size={14} />}
-                size="small"
-                onClick={() => installBuiltinTool(identifier)}
-              >
-                {t('store.actions.install')}
-              </Button>
-            )}
-          </div>
+          {builtinSkill?.content && (
+            <div style={{ padding: '16px 24px' }}>
+              <Markdown variant="chat">{builtinSkill.content}</Markdown>
+            </div>
+          )}
         </div>
-        {builtinSkill?.content && (
-          <div style={{ padding: '16px 24px' }}>
-            <Markdown variant="chat">{builtinSkill.content}</Markdown>
-          </div>
-        )}
-      </div>
-    );
-  }
+      );
+    }
 
-  // Connector types: builtin tool / plugin / mcp-connector
-  if (syncing) {
-    return (
-      <div style={{ padding: 24 }}>
-        <Skeleton active paragraph={{ rows: 6 }} title={false} />
-      </div>
-    );
-  }
-
-  if (noManifest || !connector) {
-    return (
-      <div className={styles.noPermissions}>
-        <div className={styles.noPermissionsHeader}>
-          <div className={styles.noPermissionsTitle}>
-            {type === 'lobehub-connector' ? lobehubLabel : noPermissionsTitle}
-          </div>
-          {renderConnectorLifecycleAction()}
+    // Connector types: builtin tool / plugin / mcp-connector
+    if (syncing) {
+      return (
+        <div style={{ padding: 24 }}>
+          <Skeleton active paragraph={{ rows: 6 }} title={false} />
         </div>
-        {ts('tools.noConfigurablePermissions')}
-      </div>
-    );
-  }
+      );
+    }
 
-  return (
-    <ConnectorDetail
-      connectorId={connector.id}
-      lifecycleActions={renderConnectorLifecycleAction(() => setNoManifest(true))}
-      managed={managed}
-      onDelete={onDelete}
-    />
-  );
-});
+    if (noManifest || !connector) {
+      return (
+        <div className={styles.noPermissions}>
+          <div className={styles.noPermissionsHeader}>
+            <div className={styles.noPermissionsTitle}>
+              {type === 'lobehub-connector' ? lobehubLabel : noPermissionsTitle}
+            </div>
+            {renderConnectorLifecycleAction()}
+          </div>
+          {ts('tools.noConfigurablePermissions')}
+        </div>
+      );
+    }
+
+    return (
+      <ConnectorDetail
+        connectorId={connector.id}
+        lifecycleActions={renderConnectorLifecycleAction(() => setNoManifest(true))}
+        managed={managed}
+        onDelete={onDelete}
+      />
+    );
+  },
+);
+
+LegacySkillDetail.displayName = 'LegacySkillDetail';
+
+const SkillDetail = memo<SkillDetailProps>((props) =>
+  props.type === 'platform-skill' ? (
+    <PlatformSkillDetail skillKey={props.identifier} />
+  ) : (
+    <LegacySkillDetail {...props} />
+  ),
+);
 
 SkillDetail.displayName = 'SkillDetail';
 

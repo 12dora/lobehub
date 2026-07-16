@@ -42,6 +42,7 @@ import ComposioSkillItem from './ComposioSkillItem';
 import LobehubSkillItem from './LobehubSkillItem';
 import { isConnectorSectionVisible } from './managedConnectorPresentation';
 import McpSkillItem from './McpSkillItem';
+import PlatformSkillList from './PlatformSkillList';
 import type { ToolDetailType } from './SkillDetail';
 
 const styles = createStaticStyles(({ css, cssVar }) => ({
@@ -90,7 +91,7 @@ interface SkillListProps {
   viewMode?: SkillViewMode;
 }
 
-const SkillList = memo<SkillListProps>(
+const LegacySkillList = memo<SkillListProps>(
   ({ managed = false, onSelect, onDeleteSelected, selectedIdentifier, viewMode = 'connector' }) => {
     const { t } = useTranslation('setting');
     const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
@@ -597,6 +598,18 @@ const SkillList = memo<SkillListProps>(
     );
   },
 );
+
+LegacySkillList.displayName = 'LegacySkillList';
+
+const SkillList = memo<SkillListProps>((props) => {
+  if (props.managed && props.viewMode === 'skill') {
+    return (
+      <PlatformSkillList selectedIdentifier={props.selectedIdentifier} onSelect={props.onSelect} />
+    );
+  }
+
+  return <LegacySkillList {...props} />;
+});
 
 SkillList.displayName = 'SkillList';
 

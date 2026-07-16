@@ -5,7 +5,9 @@ import isEqual from 'fast-deep-equal';
 import { memo, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router';
 
-import { ManagedResourceNotice } from '@/features/ManagedResources';
+import AsyncError from '@/components/AsyncError';
+import Loading from '@/components/Loading/BrandTextLoading';
+import { ManagedResourceNotice, useManagedResource } from '@/features/ManagedResources';
 import NavHeader from '@/features/NavHeader';
 import { useToolStore } from '@/store/tool';
 import { agentSkillsSelectors, builtinToolSelectors } from '@/store/tool/selectors';
@@ -90,9 +92,12 @@ export const ToolSettings = memo<ToolSettingsProps>(({ viewMode, managed = false
   return (
     <>
       <NavHeader />
-      {managed && viewMode === 'connector' ? (
+      {managed ? (
         <div style={{ padding: '12px 16px 0' }}>
-          <ManagedResourceNotice inline resource="connectors" />
+          <ManagedResourceNotice
+            inline
+            resource={viewMode === 'connector' ? 'connectors' : 'skills'}
+          />
         </div>
       ) : null}
       <div className={styles.root}>
@@ -121,7 +126,14 @@ export const ToolSettings = memo<ToolSettingsProps>(({ viewMode, managed = false
 
 ToolSettings.displayName = 'ToolSettings';
 
-const Page = memo(() => <ToolSettings viewMode="skill" />);
+const Page = memo(() => {
+  const { error, loading, managed, refresh } = useManagedResource('skills');
+
+  if (error) return <AsyncError error={error} variant="page" onRetry={() => void refresh()} />;
+  if (loading) return <Loading debugId="Settings > Skill > Managed policy" />;
+
+  return <ToolSettings managed={managed} viewMode="skill" />;
+});
 
 Page.displayName = 'SkillSettings';
 

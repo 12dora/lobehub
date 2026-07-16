@@ -41,9 +41,13 @@ export const ManagedResourceNotice = memo<ManagedResourceNoticeProps>(({ resourc
     return (
       <Alert
         showIcon
-        description={t('managedResources.inline.connectorDesc')}
         message={t('managedResources.inline.title', { resource: resourceName })}
         type="info"
+        description={t(
+          resource === 'skills'
+            ? 'managedResources.inline.skillDesc'
+            : 'managedResources.inline.connectorDesc',
+        )}
       />
     );
   }
