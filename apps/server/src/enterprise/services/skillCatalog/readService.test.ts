@@ -38,7 +38,9 @@ const cleanup = async () => {
 };
 
 beforeEach(cleanup);
-afterEach(cleanup);
+afterEach(async () => {
+  await cleanup();
+});
 
 const publish = async (params: {
   allowBuiltinOverride?: boolean;
@@ -221,5 +223,37 @@ describe('SkillCatalogReadService', () => {
           builtinSkills: [{ ...builtin, secret: 'must-not-enter-runtime' } as never],
         }),
     ).toThrow();
+    expect(
+      () =>
+        new SkillCatalogReadService(db, {
+          builtinSkills: [
+            ...Array.from({ length: 100 }, () => builtin),
+            { ...builtin, secret: 'secret-in-item-101' } as never,
+          ],
+        }),
+    ).toThrow();
+  });
+
+  it('fails closed on unique-cursor pagination and aggregate item growth attacks', async () => {
+    let page = 0;
+    const uniqueCursorModel = {
+      listPublished: async () => ({ items: [], nextCursor: `unique-${page++}` }),
+      resolvePublishedVersion: async () => undefined,
+    };
+    await expect(
+      new SkillCatalogReadService(db, { model: uniqueCursorModel }).getPublishedCatalog(),
+    ).rejects.toThrow('page limit');
+    expect(page).toBe(100);
+
+    const oversizedModel = {
+      listPublished: async () => ({
+        items: Array.from({ length: 10_001 }, () => ({}) as never),
+        nextCursor: null,
+      }),
+      resolvePublishedVersion: async () => undefined,
+    };
+    await expect(
+      new SkillCatalogReadService(db, { model: oversizedModel }).getPublishedCatalog(),
+    ).rejects.toThrow('item limit');
   });
 });
