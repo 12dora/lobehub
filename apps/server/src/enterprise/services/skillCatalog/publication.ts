@@ -10,6 +10,7 @@ import type { PlatformConfigInvalidationPublisher } from '../platformConfigInval
 import { acquirePlatformDependencyPublicationLock } from '../platformDependencyLock';
 import { PlatformPublisherService } from '../platformPublisher';
 import { SkillCatalogNotFoundError, SkillCatalogValidationError } from './errors';
+import { invalidatePublishedSkillCatalogReadCache } from './readService';
 import { SkillCatalogValidationService } from './validationService';
 
 interface PublicationInput {
@@ -111,6 +112,7 @@ export class SkillCatalogPublicationService {
         resourceId: input.id,
         resourceType: 'skill',
       });
+      invalidatePublishedSkillCatalogReadCache();
       return {
         auditId: result.auditId,
         catalogRevision: catalogRevision(input.id, result.revision.revision),
@@ -150,6 +152,7 @@ export class SkillCatalogPublicationService {
         resourceType: 'skill',
         status: 'archived',
       });
+      invalidatePublishedSkillCatalogReadCache();
       return {
         auditId: result.auditId,
         catalogRevision: catalogRevision(input.id, result.revision.revision),
@@ -193,6 +196,7 @@ export class SkillCatalogPublicationService {
         resourceType: 'skill',
         targetRevision,
       });
+      invalidatePublishedSkillCatalogReadCache();
       return {
         auditId: result.auditId,
         catalogRevision: catalogRevision(input.id, result.revision.revision),
