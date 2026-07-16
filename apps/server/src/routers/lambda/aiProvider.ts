@@ -10,7 +10,13 @@ import { UserModel } from '@/database/models/user';
 import { AiInfraRepos } from '@/database/repositories/aiInfra';
 import { router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
+import { parseEnterpriseFeatureFlags } from '@/server/enterprise/featureFlags';
 import { withManagedResourceGuard } from '@/server/enterprise/guards/managedResource';
+import {
+  getEmptyAiProviderRuntimeState,
+  recordAiCatalogShadowComparison,
+  resolveAiCatalogRuntimeState,
+} from '@/server/enterprise/services/aiCatalog';
 import { getServerGlobalConfig } from '@/server/globalConfig';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
@@ -137,7 +143,51 @@ export const aiProviderRouter = router({
   getAiProviderRuntimeState: aiProviderProcedure
     .input(z.object({ isLogin: z.boolean().optional() }))
     .query(async ({ ctx }): Promise<AiProviderRuntimeState> => {
-      return ctx.aiInfraRepos.getAiProviderRuntimeState(KeyVaultsGateKeeper.getUserKeyVaults);
+      const flags = parseEnterpriseFeatureFlags(process.env);
+      let upstreamState: AiProviderRuntimeState;
+      if (flags.ENABLE_PLATFORM_MANAGED_AI) {
+        // Shadow comparison needs only provider/model metadata. Never decrypt user vaults here.
+        const providers = (await ctx.aiInfraRepos.getAiProviderList()).filter(
+          (provider) => provider.enabled,
+        );
+        const models = (
+          await Promise.all(
+            providers.map((provider) =>
+              ctx.aiInfraRepos.getAiProviderModelList(provider.id, { enabled: true }),
+            ),
+          )
+        ).flat();
+        const providerMetadata = providers.map(({ id, name, source }) => ({ id, name, source }));
+        const hasType = (providerId: string, type: string) =>
+          models.some((model) => model.providerId === providerId && model.type === type);
+        upstreamState = {
+          ...getEmptyAiProviderRuntimeState(),
+          enabledAiModels: models,
+          enabledAiProviders: providerMetadata,
+          enabledChatAiProviders: providerMetadata.filter((provider) =>
+            hasType(provider.id, 'chat'),
+          ),
+          enabledImageAiProviders: providerMetadata.filter((provider) =>
+            hasType(provider.id, 'image'),
+          ),
+          enabledVideoAiProviders: providerMetadata.filter((provider) =>
+            hasType(provider.id, 'video'),
+          ),
+        };
+      } else {
+        upstreamState = await ctx.aiInfraRepos.getAiProviderRuntimeState(
+          KeyVaultsGateKeeper.getUserKeyVaults,
+        );
+      }
+      const effectiveState = await resolveAiCatalogRuntimeState({
+        db: ctx.serverDB,
+        flags,
+        upstreamState,
+      });
+      if (effectiveState !== upstreamState) {
+        recordAiCatalogShadowComparison(upstreamState, effectiveState);
+      }
+      return effectiveState;
     }),
 
   removeAiProvider: aiProviderProcedure

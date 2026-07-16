@@ -2,6 +2,8 @@ import { type AiProviderRuntimeState } from '@lobechat/types';
 import { type EnabledAiModel } from 'model-bank';
 import { describe, expect, it, vi } from 'vitest';
 
+import { PlatformSecretService } from '@/server/enterprise/security/secret';
+import { AiCatalogExecutionResolver } from '@/server/enterprise/services/aiCatalog';
 import { type MemoryExtractionPrivateConfig } from '@/server/globalConfig/parseMemoryExtractionConfig';
 
 import { makeTaskErrorItem, MemoryExtractionExecutor } from '../extract';
@@ -67,6 +69,95 @@ const resolveRuntimeKeyVaults = async (
 };
 
 describe('MemoryExtractionExecutor.resolveRuntimeKeyVaults', () => {
+  it('uses one-shot platform execution secrets without mutating the public state', async () => {
+    const previousFlag = process.env.ENABLE_PLATFORM_MANAGED_AI;
+    process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
+    const secretFactory = vi
+      .spyOn(PlatformSecretService, 'fromEnvOrThrowIfEnterprise')
+      .mockReturnValue({} as PlatformSecretService);
+    const execution = vi
+      .spyOn(AiCatalogExecutionResolver.prototype, 'resolveProviderExecutionConfig')
+      .mockImplementation(async (providerKey) => ({
+        allowedModels: [],
+        config: {},
+        keyVaults: { apiKey: `platform-secret-${providerKey}` },
+        providerKey,
+        revision: 1,
+        runtimeProvider: providerKey,
+      }));
+    const executor = createExecutor();
+    const runtimeState = createRuntimeState(
+      [
+        { abilities: {}, enabled: true, id: 'gate-2', providerId: 'provider-b', type: 'chat' },
+        {
+          abilities: {},
+          enabled: true,
+          id: 'embed-1',
+          providerId: 'provider-e',
+          type: 'embedding',
+        },
+        { abilities: {}, enabled: true, id: 'layer-1', providerId: 'provider-l', type: 'chat' },
+      ],
+      {
+        'provider-b': { apiKey: 'public-state-must-not-win' },
+        'provider-e': {},
+        'provider-l': {},
+      },
+    );
+
+    try {
+      const keyVaults = await resolveRuntimeKeyVaults(executor, runtimeState);
+      expect(keyVaults).toEqual({
+        'provider-b': { apiKey: 'platform-secret-provider-b' },
+        'provider-e': { apiKey: 'platform-secret-provider-e' },
+        'provider-l': { apiKey: 'platform-secret-provider-l' },
+      });
+      expect(execution).toHaveBeenCalledTimes(3);
+      expect(JSON.stringify(runtimeState)).not.toContain('platform-secret');
+      expect(secretFactory).toHaveBeenCalledOnce();
+    } finally {
+      process.env.ENABLE_PLATFORM_MANAGED_AI = previousFlag;
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('keeps the upstream vault path exact while managed AI is disabled', async () => {
+    const previousFlag = process.env.ENABLE_PLATFORM_MANAGED_AI;
+    delete process.env.ENABLE_PLATFORM_MANAGED_AI;
+    const secretFactory = vi.spyOn(PlatformSecretService, 'fromEnvOrThrowIfEnterprise');
+    const executor = createExecutor();
+    const runtimeState = createRuntimeState(
+      [
+        { abilities: {}, enabled: true, id: 'gate-2', providerId: 'provider-b', type: 'chat' },
+        {
+          abilities: {},
+          enabled: true,
+          id: 'embed-1',
+          providerId: 'provider-e',
+          type: 'embedding',
+        },
+        { abilities: {}, enabled: true, id: 'layer-1', providerId: 'provider-l', type: 'chat' },
+      ],
+      {
+        'provider-b': { apiKey: 'user-gate-key' },
+        'provider-e': { apiKey: 'user-embedding-key' },
+        'provider-l': { apiKey: 'user-layer-key' },
+      },
+    );
+
+    try {
+      expect(await resolveRuntimeKeyVaults(executor, runtimeState)).toEqual({
+        'provider-b': { apiKey: 'user-gate-key' },
+        'provider-e': { apiKey: 'user-embedding-key' },
+        'provider-l': { apiKey: 'user-layer-key' },
+      });
+      expect(secretFactory).not.toHaveBeenCalled();
+    } finally {
+      process.env.ENABLE_PLATFORM_MANAGED_AI = previousFlag;
+      vi.restoreAllMocks();
+    }
+  });
+
   it('drops fallback credentials when user memory provider is overridden', () => {
     const executor = createExecutor({
       embedding: {
