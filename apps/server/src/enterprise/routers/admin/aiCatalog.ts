@@ -6,6 +6,8 @@ import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 
 import {
   adminAiModelCreateInputSchema,
+  adminAiModelCreateTargetListInputSchema,
+  adminAiModelCreateTargetListOutputSchema,
   adminAiModelDeleteInputSchema,
   adminAiModelDeleteOutputSchema,
   adminAiModelDependentsInputSchema,
@@ -266,6 +268,12 @@ export const adminAiModelsRouter = router({
         throw error;
       }
     }),
+
+  listCreateTargets: adminBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AI_MODEL_CREATE))
+    .input(adminAiModelCreateTargetListInputSchema)
+    .output(adminAiModelCreateTargetListOutputSchema)
+    .query(async ({ ctx, input }) => createService(ctx.serverDB).listModelCreateTargets(input)),
 
   reorder: adminBase
     .use(withPlatformPermission(PLATFORM_PERMISSIONS.AI_MODEL_UPDATE))

@@ -21,7 +21,10 @@ import {
   type PlatformAiProviderSettings,
 } from '@/database/schemas/platform';
 import type { LobeChatDatabase, Transaction } from '@/database/type';
-import { M07_REDACTION_OPTIONS } from '@/server/enterprise/security/redaction';
+import {
+  isCredentialBearingUrl,
+  M07_REDACTION_OPTIONS,
+} from '@/server/enterprise/security/redaction';
 
 import {
   type adminAiProviderArchiveInputSchema,
@@ -32,6 +35,7 @@ import {
 import type { PlatformConfigInvalidationPublisher } from '../platformConfigInvalidation';
 import { PlatformPublisherService } from '../platformPublisher';
 import { normalizeAiCatalogExecutionCredentials } from './credentialAdapter';
+import { assertAiCatalogPublicFieldsExcludeCredentials } from './credentialBoundary';
 import { resolveAiCatalogDependents } from './dependencies';
 import {
   AiCatalogNotFoundError,
@@ -104,8 +108,7 @@ export class AiCatalogPublicationService {
         const endpoint = new URL(draft.config.endpoint);
         if (
           !['http:', 'https:'].includes(endpoint.protocol) ||
-          endpoint.username ||
-          endpoint.password
+          isCredentialBearingUrl(endpoint.href)
         ) {
           issues.push('Endpoint must be an HTTP(S) URL without credentials');
         }
@@ -119,6 +122,7 @@ export class AiCatalogPublicationService {
       const keyVaults = provider.encryptedKeyVaults
         ? await this.secrets.decrypt(provider.encryptedKeyVaults)
         : {};
+      assertAiCatalogPublicFieldsExcludeCredentials(draft, keyVaults);
       normalizeAiCatalogExecutionCredentials({
         config: draft.config,
         keyVaults,
@@ -181,6 +185,8 @@ export class AiCatalogPublicationService {
       if (secretFingerprint && !secretVersion) {
         throw new AiCatalogValidationError(['Referenced provider secret version is unavailable']);
       }
+      const keyVaults = secretVersion ? await this.secrets.decrypt(secretVersion.ciphertext) : {};
+      assertAiCatalogPublicFieldsExcludeCredentials(payload, keyVaults);
       await repository.updateProvider(providerId, {
         checkModel: typeof provider.checkModel === 'string' ? provider.checkModel : null,
         config: isRecord(provider.config) ? (provider.config as PlatformAiProviderConfig) : {},

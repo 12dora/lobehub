@@ -45,6 +45,7 @@ import {
   validateAiCatalogCredentialShape,
   validateAiCatalogRuntimeProvider,
 } from './credentialAdapter';
+import { assertAiCatalogPublicFieldsExcludeCredentials } from './credentialBoundary';
 import { resolveAiCatalogDependents } from './dependencies';
 import {
   type AiCatalogDependent,
@@ -199,6 +200,18 @@ export class AiCatalogAdminService {
     };
   };
 
+  listModelCreateTargets = async (params: { cursor?: string; limit?: number; query?: string }) => {
+    const page = await new PlatformAiCatalogModel(this.db).listProviders(params);
+    return {
+      items: page.items.map(({ displayName, id, providerKey }) => ({
+        displayName,
+        id,
+        providerKey,
+      })),
+      nextCursor: page.nextCursor,
+    };
+  };
+
   createProviderDraft = async (
     actorUserId: string,
     input: CreateProviderInput,
@@ -214,6 +227,8 @@ export class AiCatalogAdminService {
           typeof secret.value === 'string' ? { apiKey: secret.value } : secret.value,
         );
       }
+      const keyVaults = await this.secrets.resolveMutationKeyVaults(null, secret);
+      assertAiCatalogPublicFieldsExcludeCredentials(values, keyVaults);
       const appliedSecret = await this.secrets.applyMutation(null, secret);
       return await this.db.transaction(async (tx) => {
         const repository = new PlatformAiCatalogRepository(tx);
@@ -284,6 +299,11 @@ export class AiCatalogAdminService {
             typeof secret.value === 'string' ? { apiKey: secret.value } : secret.value,
           );
         }
+        const keyVaults = await this.secrets.resolveMutationKeyVaults(current, secret);
+        assertAiCatalogPublicFieldsExcludeCredentials(
+          { ...before, ...values, models: before.models },
+          keyVaults,
+        );
         const appliedSecret = await this.secrets.applyMutation(current, secret);
         await repository.updateProvider(id, {
           ...values,
@@ -333,7 +353,12 @@ export class AiCatalogAdminService {
     try {
       return await this.db.transaction(async (tx) => {
         const draft = await this.getLockedDraft(tx, providerId, expectedDraftToken);
-        const row = await new PlatformAiCatalogRepository(tx).createModel({
+        const repository = new PlatformAiCatalogRepository(tx);
+        const provider = await repository.getProvider(providerId);
+        if (!provider) throw new AiCatalogNotFoundError();
+        const keyVaults = await this.secrets.resolveMutationKeyVaults(provider, undefined);
+        assertAiCatalogPublicFieldsExcludeCredentials(values, keyVaults);
+        const row = await repository.createModel({
           ...values,
           abilities: values.abilities as PlatformAiModelAbilities | undefined,
           config: values.config as PlatformAiModelConfig | null | undefined,
@@ -346,7 +371,7 @@ export class AiCatalogAdminService {
           status: 'draft',
           updatedBy: actorUserId,
         });
-        await new PlatformAiCatalogRepository(tx).updateProvider(providerId, {
+        await repository.updateProvider(providerId, {
           status: 'draft',
           updatedBy: actorUserId,
         });
@@ -401,8 +426,12 @@ export class AiCatalogAdminService {
           expectedRevision,
         );
         const repository = new PlatformAiCatalogRepository(tx);
+        const provider = await repository.getProvider(providerId);
+        if (!provider) throw new AiCatalogNotFoundError();
         const current = await repository.getModel(providerId, id);
         if (!current) throw new AiCatalogNotFoundError();
+        const keyVaults = await this.secrets.resolveMutationKeyVaults(provider, undefined);
+        assertAiCatalogPublicFieldsExcludeCredentials({ ...current, ...values }, keyVaults);
         if (current.enabled && values.enabled === false) {
           const dependents = await resolveAiCatalogDependents(
             tx,
