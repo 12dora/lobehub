@@ -244,4 +244,6 @@ export default {
   'users.roles.impact.auditor': 'Impact: read and export audit trails without write rights.',
   'users.roles.impact.platform_user':
     'Impact: application access only; no admin console mutations.',
+  'users.reauth.cancel': 'Cancel re-authentication',
+  'users.reauth.inProgress': 'Complete sign-in in the popup window…',
 };

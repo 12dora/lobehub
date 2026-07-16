@@ -23,6 +23,7 @@ import Microsoft from './providers/microsoft';
 import Okta from './providers/okta';
 import Wechat from './providers/wechat';
 import Zitadel from './providers/zitadel';
+import { mergeReauthAuthorizationParams } from './reauthAuthorizationParams';
 
 const providerDefinitions = [
   Apple,
@@ -118,15 +119,7 @@ export const initBetterAuthSSOProviders = () => {
           typeof existingParams === 'function'
             ? (existingParams as (c: any) => Record<string, string>)(ctx)
             : ((existingParams as Record<string, string> | undefined) ?? {});
-        const data = ctx?.body?.additionalData;
-        if (data?.reauth === true || data?.prompt === 'login') {
-          return {
-            ...base,
-            max_age: '0',
-            prompt: 'login',
-          };
-        }
-        return base;
+        return mergeReauthAuthorizationParams(base, ctx?.body?.additionalData);
       };
       genericOAuthProviders.push(config);
     }
