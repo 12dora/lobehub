@@ -1,4 +1,8 @@
-import { PlatformSkillCatalogRepository } from '../../repositories/platformSkillCatalog';
+import {
+  type PlatformPublishedSkillRow,
+  type PlatformPublishedSkillSnapshot,
+  PlatformSkillCatalogRepository,
+} from '../../repositories/platformSkillCatalog';
 import type {
   PlatformDistribution,
   PlatformResourceStatus,
@@ -10,6 +14,7 @@ import type {
 import type { LobeChatDatabase, Transaction } from '../../type';
 import { checksumPayload } from './checksum';
 import { PlatformRevisionConflictError } from './errors';
+import type { ResourcePointerAdapter } from './revision';
 
 export interface PlatformSkillDraftView {
   allowBuiltinOverride: boolean;
@@ -46,6 +51,23 @@ export interface PlatformSkillDetailView {
   draftToken: string;
   latestVersion: PlatformSkillVersionView | null;
   publishedVersion: PlatformSkillVersionView | null;
+}
+
+export interface PlatformPublishedSkillView {
+  allowBuiltinOverride: boolean;
+  description: string | null;
+  displayName: string;
+  distribution: PlatformDistribution;
+  revision: number;
+  skillId: string;
+  skillKey: string;
+  source: PlatformSkillSource;
+  version: PlatformSkillVersionView;
+}
+
+export interface PlatformPublishedSkillPageView {
+  items: PlatformPublishedSkillView[];
+  nextCursor: string | null;
 }
 
 export class PlatformSkillBuiltinOverrideError extends Error {
@@ -98,6 +120,67 @@ const versionView = (
   skillId: row.skillId,
   validation: row.validationResult ?? null,
   version: row.version,
+});
+
+const publishedSnapshot = (value: unknown): PlatformPublishedSkillSnapshot | undefined => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const candidate = value as Partial<PlatformPublishedSkillSnapshot>;
+  if (!candidate.skill || typeof candidate.skill !== 'object' || Array.isArray(candidate.skill)) {
+    return undefined;
+  }
+  const skill = candidate.skill as Partial<PlatformPublishedSkillSnapshot['skill']>;
+  if (
+    typeof candidate.versionId !== 'string' ||
+    typeof skill.allowBuiltinOverride !== 'boolean' ||
+    (skill.description !== null && typeof skill.description !== 'string') ||
+    typeof skill.displayName !== 'string' ||
+    !['default', 'mandatory', 'optional'].includes(skill.distribution ?? '') ||
+    typeof skill.enabled !== 'boolean' ||
+    typeof skill.skillKey !== 'string' ||
+    !['builtin', 'uploaded'].includes(skill.source ?? '')
+  ) {
+    return undefined;
+  }
+  return candidate as PlatformPublishedSkillSnapshot;
+};
+
+const publishedView = (row: PlatformPublishedSkillRow): PlatformPublishedSkillView | undefined => {
+  const payload = publishedSnapshot(row.payload);
+  if (
+    !payload ||
+    payload.versionId !== row.version.id ||
+    row.skillId !== row.version.skillId ||
+    !payload.skill.enabled
+  ) {
+    return undefined;
+  }
+  return {
+    allowBuiltinOverride: payload.skill.allowBuiltinOverride,
+    description: payload.skill.description,
+    displayName: payload.skill.displayName,
+    distribution: payload.skill.distribution,
+    revision: row.revision,
+    skillId: row.skillId,
+    skillKey: payload.skill.skillKey,
+    source: payload.skill.source,
+    version: versionView(row.version),
+  };
+};
+
+const buildPublishedSnapshot = (
+  draft: PlatformSkillDraftView,
+  versionId: string,
+): PlatformPublishedSkillSnapshot => ({
+  skill: {
+    allowBuiltinOverride: draft.allowBuiltinOverride,
+    description: draft.description,
+    displayName: draft.displayName,
+    distribution: draft.distribution,
+    enabled: draft.enabled,
+    skillKey: draft.skillKey,
+    source: draft.source,
+  },
+  versionId,
 });
 
 export const canonicalizePlatformSkillContent = (value: string) =>
@@ -327,6 +410,27 @@ export class PlatformSkillCatalogModel {
     };
   };
 
+  listPublished = async (
+    params: Parameters<PlatformSkillCatalogRepository['listPublished']>[0] = {},
+  ): Promise<PlatformPublishedSkillPageView> => {
+    const page = await new PlatformSkillCatalogRepository(this.db).listPublished(params);
+    return {
+      items: page.items.flatMap((row) => {
+        const view = publishedView(row);
+        return view ? [view] : [];
+      }),
+      nextCursor: page.nextCursor,
+    };
+  };
+
+  resolvePublishedVersion = async (
+    skillKey: string,
+    version?: string,
+  ): Promise<PlatformPublishedSkillView | undefined> => {
+    const row = await new PlatformSkillCatalogRepository(this.db).resolveVersion(skillKey, version);
+    return row ? publishedView(row) : undefined;
+  };
+
   updateDraft = async (params: {
     actorUserId?: string;
     description?: string | null;
@@ -357,3 +461,68 @@ export class PlatformSkillCatalogModel {
     });
   };
 }
+
+export interface PlatformSkillPointerAdapterParams {
+  actorUserId?: string;
+  expectedDraftToken: string;
+  skillId: string;
+  versionId: string;
+}
+
+/**
+ * Atomic revision adapter for Skill publish/rollback. Published identity fields are
+ * immutable revision payload; mutable draft columns are never used by runtime reads.
+ */
+export const createPlatformSkillPointerAdapter = (
+  params: PlatformSkillPointerAdapterParams,
+): ResourcePointerAdapter => {
+  let lockedDraft: PlatformSkillDraftView | undefined;
+  return {
+    assertLockedState: async () => {
+      if (!lockedDraft || platformSkillDraftToken(lockedDraft) !== params.expectedDraftToken) {
+        throw new PlatformRevisionConflictError('Skill draft token changed');
+      }
+    },
+    lockAndGetRevision: async (tx) => {
+      lockedDraft = draftView(
+        await new PlatformSkillCatalogRepository(tx).lockSkill(params.skillId),
+      );
+      if (!lockedDraft) throw new Error('Skill not found');
+      return lockedDraft.revision;
+    },
+    materializePublished: async (tx, { payload, revision, status }) => {
+      const snapshot = publishedSnapshot(payload);
+      if (!lockedDraft || !snapshot || snapshot.skill.skillKey !== lockedDraft.skillKey) {
+        throw new Error('Published Skill snapshot is invalid');
+      }
+      const repository = new PlatformSkillCatalogRepository(tx);
+      const version = await repository.getVersion(params.skillId, snapshot.versionId);
+      if (!version) throw new Error('Published Skill version is unavailable');
+      await repository.updateSkill(params.skillId, {
+        currentVersionId: version.id,
+        revision,
+        status: status as PlatformResourceStatus,
+        updatedBy: params.actorUserId,
+      });
+    },
+    prepareLockedPublish: async (tx) => {
+      if (!lockedDraft) throw new Error('Skill must be locked before publishing');
+      const version = await new PlatformSkillCatalogRepository(tx).getVersion(
+        params.skillId,
+        params.versionId,
+      );
+      if (!version) throw new Error('Published Skill version is unavailable');
+      const payload = buildPublishedSnapshot(lockedDraft, version.id);
+      return {
+        afterDiff: payload as unknown as Record<string, unknown>,
+        payload: payload as unknown as Record<string, unknown>,
+      };
+    },
+    updatePointer: async (tx, { revision }) => {
+      await new PlatformSkillCatalogRepository(tx).updateSkill(params.skillId, {
+        revision,
+        updatedBy: params.actorUserId,
+      });
+    },
+  };
+};

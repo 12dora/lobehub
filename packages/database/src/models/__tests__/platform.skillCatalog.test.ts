@@ -6,12 +6,15 @@ import { getTestDB } from '../../core/getTestDB';
 import {
   platformAgents,
   platformAgentVersions,
+  platformAuditLogs,
   platformResourceRevisions,
   platformSkills,
   platformSkillVersions,
 } from '../../schemas/platform';
 import type { LobeChatDatabase } from '../../type';
+import { PlatformRevisionModel } from '../platform/revision';
 import {
+  createPlatformSkillPointerAdapter,
   PlatformSkillBuiltinOverrideError,
   PlatformSkillCatalogModel,
   PlatformSkillChecksumMismatchError,
@@ -42,6 +45,7 @@ const cleanup = async () => {
     TRUNCATE TABLE
       ${platformAgentVersions},
       ${platformAgents},
+      ${platformAuditLogs},
       ${platformResourceRevisions},
       ${platformSkillVersions},
       ${platformSkills}
@@ -212,7 +216,7 @@ describe('PlatformSkillCatalogModel', () => {
     expect(version?.resources.map((resource) => resource.path)).toEqual(['a.txt', 'b.txt']);
   });
 
-  it('edits the draft projection without changing the published pointer or snapshot', async () => {
+  it('atomically publishes immutable projection and isolates it from later draft edits', async () => {
     const created = await model.createSkill({
       displayName: 'Published name',
       distribution: 'default',
@@ -229,25 +233,25 @@ describe('PlatformSkillCatalogModel', () => {
       skillId: created.draft.id,
       version: '1.0.0',
     });
-    await serverDB
-      .update(platformSkills)
-      .set({ currentVersionId: version!.id, revision: 1, status: 'published' })
-      .where(sql`${platformSkills.id} = ${created.draft.id}`);
-    const publishedPayload = {
-      skill: {
-        displayName: 'Published name',
-        distribution: 'default',
-        enabled: true,
-      },
-      versionId: version!.id,
-    };
-    await serverDB.insert(platformResourceRevisions).values({
-      checksum: 'published-snapshot',
-      payload: publishedPayload,
+    await new PlatformRevisionModel(serverDB).publishDraft({
+      actorUserId: 'admin-1',
+      expectedRevision: 0,
+      payload: {},
+      pointer: createPlatformSkillPointerAdapter({
+        actorUserId: 'admin-1',
+        expectedDraftToken: (await model.getDetail(created.draft.id))!.draftToken,
+        skillId: created.draft.id,
+        versionId: version!.id,
+      }),
+      reason: 'publish reviewed skill',
       resourceId: created.draft.id,
       resourceType: 'skill',
+    });
+    expect((await model.listPublished()).items[0]).toMatchObject({
+      displayName: 'Published name',
+      distribution: 'default',
       revision: 1,
-      status: 'published',
+      version: { id: version!.id },
     });
     const beforeEdit = await model.getDetail(created.draft.id);
     const edited = await model.updateDraft({
@@ -267,10 +271,89 @@ describe('PlatformSkillCatalogModel', () => {
       revision: 1,
       status: 'published',
     });
-    const [published] = await serverDB
-      .select({ payload: platformResourceRevisions.payload })
-      .from(platformResourceRevisions);
-    expect(published.payload).toEqual(publishedPayload);
+    expect((await model.listPublished()).items[0]).toMatchObject({
+      displayName: 'Published name',
+      distribution: 'default',
+      revision: 1,
+      version: { id: version!.id },
+    });
+    expect(await model.resolvePublishedVersion('published')).toMatchObject({
+      displayName: 'Published name',
+      distribution: 'default',
+      version: { id: version!.id },
+    });
+  });
+
+  it('atomically rolls the pointer and published projection back to a prior revision', async () => {
+    const created = await model.createSkill({
+      displayName: 'First name',
+      enabled: true,
+      skillKey: 'rollback',
+    });
+    const createVersion = async (content: string, version: string) => {
+      const detail = (await model.getDetail(created.draft.id))!;
+      return model.createVersion({
+        checksum: platformSkillVersionChecksum({ content, manifest }),
+        content,
+        expectedDraftToken: detail.draftToken,
+        expectedRevision: detail.baseRevision,
+        manifest,
+        skillId: created.draft.id,
+        version,
+      });
+    };
+    const publish = async (versionId: string, reason: string) => {
+      const detail = (await model.getDetail(created.draft.id))!;
+      return new PlatformRevisionModel(serverDB).publishDraft({
+        expectedRevision: detail.baseRevision,
+        payload: {},
+        pointer: createPlatformSkillPointerAdapter({
+          expectedDraftToken: detail.draftToken,
+          skillId: created.draft.id,
+          versionId,
+        }),
+        reason,
+        resourceId: created.draft.id,
+        resourceType: 'skill',
+      });
+    };
+
+    const first = (await createVersion('# first', '1.0.0'))!;
+    await publish(first.id, 'publish first');
+    const beforeEdit = (await model.getDetail(created.draft.id))!;
+    await model.updateDraft({
+      displayName: 'Second name',
+      enabled: true,
+      expectedDraftToken: beforeEdit.draftToken,
+      expectedRevision: beforeEdit.baseRevision,
+      id: created.draft.id,
+    });
+    const second = (await createVersion('# second', '2.0.0'))!;
+    await publish(second.id, 'publish second');
+    const beforeRollback = (await model.getDetail(created.draft.id))!;
+    await new PlatformRevisionModel(serverDB).rollbackToRevision({
+      expectedRevision: 2,
+      pointer: createPlatformSkillPointerAdapter({
+        expectedDraftToken: beforeRollback.draftToken,
+        skillId: created.draft.id,
+        versionId: second.id,
+      }),
+      reason: 'rollback reviewed skill',
+      resourceId: created.draft.id,
+      resourceType: 'skill',
+      targetRevision: 1,
+    });
+
+    expect(await model.getDetail(created.draft.id)).toMatchObject({
+      baseRevision: 3,
+      draft: { currentVersionId: first.id },
+    });
+    expect((await model.listPublished()).items).toEqual([
+      expect.objectContaining({
+        displayName: 'First name',
+        version: expect.objectContaining({ id: first.id }),
+      }),
+    ]);
   });
 
   it('rejects stale draft tokens and client checksums before inserting a version', async () => {
