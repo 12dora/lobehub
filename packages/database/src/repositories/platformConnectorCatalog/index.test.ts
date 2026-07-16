@@ -87,6 +87,18 @@ const ensurePendingM09Schema = async () => {
       "revoked_at" timestamptz,
       "created_at" timestamptz DEFAULT now() NOT NULL
     )`,
+    `CREATE TABLE IF NOT EXISTS "platform_connector_secrets" (
+      "id" text PRIMARY KEY NOT NULL,
+      "connector_id" text NOT NULL,
+      "slot" varchar(32) NOT NULL,
+      "fingerprint" varchar(64) NOT NULL,
+      "ref" text NOT NULL UNIQUE,
+      "ciphertext" text NOT NULL,
+      "key_id" varchar(256) NOT NULL,
+      "revision" integer DEFAULT 1 NOT NULL,
+      "revoked_at" timestamptz,
+      "created_at" timestamptz DEFAULT now() NOT NULL
+    )`,
     `CREATE UNIQUE INDEX IF NOT EXISTS "m09_test_revision_provenance_unique"
       ON "platform_resource_revisions" ("resource_type", "resource_id", "revision", "checksum")`,
     `ALTER TABLE "platform_connector_oauth_states" DROP CONSTRAINT IF EXISTS "m09_test_oauth_owner_fk"`,
@@ -1351,6 +1363,67 @@ describe('PlatformUserConnectorBindingRepository', () => {
       .from(platformConnectorOAuthStates)
       .where(eq(platformConnectorOAuthStates.id, 'm09-isolation-owned-state'));
     expect(state).toMatchObject({ consumedAt: null, revokedAt: expect.any(Date) });
+  });
+
+  it('fails closed when direct attach entry points receive unknown managed secret handles', async () => {
+    const connector = await createPublishedOAuthConnector('managed-attach-proof');
+    const repository = new PlatformUserConnectorBindingRepository(serverDB, userIds[0]);
+    const missingTokenRef = `kms://platform-connectors/${connector.id}/oauthBindingToken/missing`;
+    const missingPkceRef = `kms://platform-connectors/${connector.id}/oauthPkceVerifier/missing`;
+
+    await expect(
+      repository.upsertBinding({
+        connectedAt: new Date(),
+        connectorId: connector.id,
+        id: 'm09-managed-attach-binding',
+        oauthTokenRef: missingTokenRef,
+        publishedRevision: 1,
+        scopes: ['read'],
+        status: 'connected',
+        tokenFingerprint: 'sha256:missing',
+      }),
+    ).rejects.toThrow('PLATFORM_CONNECTOR_CREDENTIAL_NOT_CONFIGURED');
+
+    const binding = await repository.upsertBinding({
+      connectorId: connector.id,
+      id: 'm09-managed-attach-binding',
+      publishedRevision: 1,
+      status: 'pending',
+    });
+    await expect(
+      repository.updateBindingCas(connector.id, binding.revision, {
+        connectedAt: new Date(),
+        oauthTokenRef: missingTokenRef,
+        scopes: ['read'],
+        status: 'connected',
+        tokenFingerprint: 'sha256:missing',
+      }),
+    ).rejects.toThrow('PLATFORM_CONNECTOR_CREDENTIAL_NOT_CONFIGURED');
+    await expect(
+      repository.createOAuthState({
+        bindingId: binding.id,
+        connectorId: connector.id,
+        expiresAt: new Date(Date.now() + 5 * 60 * 1000),
+        pkceVerifierRef: missingPkceRef,
+        publishedRevision: 1,
+        redirectUri: 'https://aihub.example.test/oauth/callback',
+        stateHash: 'c'.repeat(64),
+        stateId: 'm09-managed-attach-state',
+      }),
+    ).rejects.toThrow('PLATFORM_CONNECTOR_CREDENTIAL_NOT_CONFIGURED');
+    await expect(
+      repository.prepareOAuthAuthorization({
+        bindingId: binding.id,
+        connectorId: connector.id,
+        expiresAt: new Date(Date.now() + 5 * 60 * 1000),
+        pkceVerifierRef: missingPkceRef,
+        publishedRevision: 1,
+        redirectUri: 'https://aihub.example.test/oauth/callback',
+        scopes: ['read'],
+        stateHash: 'b'.repeat(64),
+        stateId: 'm09-managed-prepare-state',
+      }),
+    ).rejects.toThrow('PLATFORM_CONNECTOR_CREDENTIAL_NOT_CONFIGURED');
   });
 
   it('applies binding CAS and keeps list pagination bounded and user-scoped', async () => {
