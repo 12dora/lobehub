@@ -341,6 +341,26 @@ export class PlatformSkillCatalogRepository {
     return Boolean(row);
   };
 
+  getPublishedRevisionForVersion = async (
+    skillId: string,
+    versionId: string,
+  ): Promise<number | undefined> => {
+    const [row] = await this.db
+      .select({ revision: platformResourceRevisions.revision })
+      .from(platformResourceRevisions)
+      .where(
+        and(
+          eq(platformResourceRevisions.resourceType, 'skill'),
+          eq(platformResourceRevisions.resourceId, skillId),
+          eq(platformResourceRevisions.status, 'published'),
+          sql`${platformResourceRevisions.payload}->>'versionId' = ${versionId}`,
+        ),
+      )
+      .orderBy(desc(platformResourceRevisions.revision))
+      .limit(1);
+    return row?.revision;
+  };
+
   resolveVersion = async (
     skillKey: string,
     version?: string,
