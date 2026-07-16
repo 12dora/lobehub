@@ -1114,12 +1114,20 @@ describe('PlatformUserConnectorBindingRepository', () => {
       previousTokenRef: null,
     });
 
+    await ensurePublishedRevision(connector.id, 2);
+    await catalog.setPublishedPointerCas({
+      checksum: '2'.padStart(64, '0'),
+      connectorId: connector.id,
+      expectedRevision: 1,
+      publishedAt: new Date(),
+      publishedRevision: 2,
+    });
     const reauthorization = await repository.prepareOAuthAuthorization({
       bindingId: 'ignored-new-binding-id',
       connectorId: connector.id,
       expiresAt: new Date(Date.now() + 5 * 60 * 1000),
       pkceVerifierRef: 'vault://oauth/lifecycle/pkce-v2',
-      publishedRevision: 1,
+      publishedRevision: 2,
       redirectUri: 'https://aihub.example.test/oauth/callback',
       scopes: ['read'],
       stateHash: '8'.repeat(64),
@@ -1128,8 +1136,14 @@ describe('PlatformUserConnectorBindingRepository', () => {
     expect(reauthorization).toMatchObject({
       id: binding.id,
       oauthTokenRef: 'vault://oauth/lifecycle/token-v1',
+      publishedRevision: 1,
       status: 'connected',
     });
+    const [reauthorizationState] = await serverDB
+      .select()
+      .from(platformConnectorOAuthStates)
+      .where(eq(platformConnectorOAuthStates.stateHash, '8'.repeat(64)));
+    expect(reauthorizationState.publishedRevision).toBe(2);
 
     await expect(repository.revokeBindingWithPreviousSecret(connector.id)).resolves.toMatchObject({
       binding: { oauthTokenRef: null, status: 'revoked' },
