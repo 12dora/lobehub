@@ -14,7 +14,10 @@ import { buildEasyauthDescriptor } from '../services/easyauthManifest';
 import { resolvePublishedManagedResourcePolicies } from '../services/managedResourceCapabilities';
 import { buildPlatformCapabilities } from '../services/platformCapabilities';
 import { buildPlatformPublicSnapshot } from '../services/platformPublicSnapshot';
+import { ensureSkillCatalogReadinessRegistered } from '../services/skillCatalog';
 import { platformSkillsRouter } from './platformSkills';
+
+ensureSkillCatalogReadinessRegistered();
 
 /**
  * Platform router (M00 read-only + M02 access status / descriptor).

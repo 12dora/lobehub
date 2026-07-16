@@ -4,6 +4,8 @@ import type { ToolStoreState } from '../../initialState';
 
 const getAgentSkills = (s: ToolStoreState): SkillListItem[] => s.agentSkills || [];
 
+const getPlatformSkillCatalog = (s: ToolStoreState) => s.platformSkillCatalog;
+
 const getMarketAgentSkills = (s: ToolStoreState): SkillListItem[] =>
   (s.agentSkills || []).filter((skill) => skill.source === 'market');
 
@@ -48,6 +50,7 @@ export const agentSkillsSelectors = {
   getAgentSkillDetail,
   getAgentSkills,
   getMarketAgentSkills,
+  getPlatformSkillCatalog,
   getUserAgentSkills,
   isAgentSkill,
 };

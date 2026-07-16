@@ -10,13 +10,14 @@ import { SkillsExecutor } from '@lobechat/builtin-tool-skills/executor';
 
 import { filterBuiltinSkills } from '@/helpers/skillFilters';
 import { cloudSandboxService } from '@/services/cloudSandbox';
-import { agentSkillService } from '@/services/skill';
+import { clientSkillRuntimeService } from '@/services/platformSkillRuntime';
 import { useChatStore } from '@/store/chat';
 
 // Create runtime with client-side service
 const runtime = new SkillsExecutionRuntime({
   builtinSkills: filterBuiltinSkills(builtinSkills),
   service: {
+    ...clientSkillRuntimeService,
     execScript: async (command, options) => {
       const { activatedSkills, description } = options;
 
@@ -89,10 +90,6 @@ const runtime = new SkillsExecutionRuntime({
         };
       }
     },
-    findAll: () => agentSkillService.list(),
-    findById: (id) => agentSkillService.getById(id),
-    findByName: (name) => agentSkillService.getByName(name),
-    readResource: (id, path) => agentSkillService.readResource(id, path),
     runCommand: async ({ command, timeout }) => {
       // Cloud: execute via Cloud Sandbox
       // Get current session context for sandbox isolation

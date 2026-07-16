@@ -11,11 +11,12 @@ import { SkillsExecutor } from '@lobechat/builtin-tool-skills/executor';
 import { filterBuiltinSkills } from '@/helpers/skillFilters';
 import { desktopSkillRuntimeService } from '@/services/electron/desktopSkillRuntime';
 import { localFileService } from '@/services/electron/localFileService';
-import { agentSkillService } from '@/services/skill';
+import { clientSkillRuntimeService } from '@/services/platformSkillRuntime';
 
 const runtime = new SkillsExecutionRuntime({
   builtinSkills: filterBuiltinSkills(builtinSkills),
   service: {
+    ...clientSkillRuntimeService,
     execScript: async (command, options) => {
       const cwd = await desktopSkillRuntimeService.resolveExecutionDirectory(
         options.activatedSkills,
@@ -33,11 +34,8 @@ const runtime = new SkillsExecutionRuntime({
         success: result.success,
       };
     },
-    findAll: () => agentSkillService.list(),
-    findById: (id) => agentSkillService.getById(id),
-    findByName: (name) => agentSkillService.getByName(name),
     readResource: async (id, path) => {
-      const resource = await agentSkillService.readResource(id, path);
+      const resource = await clientSkillRuntimeService.readResource(id, path);
       const fullPath = await desktopSkillRuntimeService.resolveReferenceFullPath({
         path,
         skillId: id,

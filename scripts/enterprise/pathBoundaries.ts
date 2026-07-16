@@ -27,11 +27,17 @@ export const ENTERPRISE_UPSTREAM_MOUNT_POINTS = [
   // M05: memory runtime reads through the effective settings resolver
   'apps/server/src/routers/lambda/userMemories.ts',
   'apps/server/src/services/toolExecution/serverRuntimes/memory.ts',
+  // M08: server execution seams consume the operation-pinned Skill Catalog.
+  'apps/server/src/services/toolExecution/serverRuntimes/skills.ts',
+  'apps/server/src/services/toolExecution/serverRuntimes/activator.ts',
   // M05: user-facing source badge meta hook (thin SWR → enterprise service)
   'src/features/PlatformSettingSourceBadge/usePlatformSettingMeta.ts',
   'src/features/PlatformSettingSourceBadge/ManagedFormControl.tsx',
   'src/features/PlatformSettingSourceBadge/ManagedSettingField.tsx',
   'src/features/ChatInput/ControlBar/ApprovalMode.tsx',
+  // M08: managed Skill settings mount the public catalog hook at read-only surfaces.
+  'src/routes/(main)/settings/skill/features/PlatformSkillList.tsx',
+  'src/routes/(main)/settings/skill/features/SkillDetail/PlatformSkillDetail.tsx',
   // M06: public managed-resource capability adapter; ordinary surfaces import this adapter only.
   'src/features/ManagedResources/useManagedResource.ts',
   // M06: stable server enforcement seams for the five legacy mutation routers.

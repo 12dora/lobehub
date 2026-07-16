@@ -1,12 +1,13 @@
 import type { OperationSkillSet } from '@lobechat/context-engine';
 import { SkillEngine } from '@lobechat/context-engine';
 import { resourcesTreePrompt } from '@lobechat/prompts';
-import type { SkillItem } from '@lobechat/types';
+import type { AgentPluginMode, SkillItem } from '@lobechat/types';
 import debug from 'debug';
 
 import { isBuiltinSkillAvailableInCurrentEnv } from '@/helpers/toolAvailability';
 import { agentSkillService } from '@/services/skill';
 import { getToolStoreState } from '@/store/tool';
+import { resolvePlatformSkillSelection } from '@/types/platform/skills';
 
 const log = debug('context-engine:resolveClientSkills');
 
@@ -21,6 +22,19 @@ const buildDbSkillContent = (detail: SkillItem): string | undefined => {
   return hasResources
     ? detail.content + '\n\n' + resourcesTreePrompt(detail.name, detail.resources!)
     : detail.content;
+};
+
+const buildPlatformSkillContent = (
+  projection: Awaited<ReturnType<typeof agentSkillService.resolvePlatformPinned>>,
+): string => {
+  if (projection.resources.length === 0) return projection.content;
+  const resources = Object.fromEntries(
+    projection.resources.map((resource) => [
+      resource.path,
+      { content: resource.content, fileHash: resource.checksum, size: resource.sizeBytes },
+    ]),
+  );
+  return `${projection.content}\n\n${resourcesTreePrompt(projection.name, resources)}`;
 };
 
 /**
@@ -46,6 +60,57 @@ export const resolveClientSkills = async (
   const toolState = getToolStoreState();
   const pinnedIds = new Set(pluginIds ?? []);
   const disabledIdSet = new Set(disabledIds ?? []);
+
+  const platformCatalog = toolState.platformSkillCatalog;
+  if (platformCatalog) {
+    const platformMetas = await Promise.all(
+      platformCatalog.skills.map(async (skill) => {
+        const mode: AgentPluginMode = disabledIdSet.has(skill.skillKey)
+          ? 'disabled'
+          : pinnedIds.has(skill.skillKey)
+            ? 'pinned'
+            : 'auto';
+        const selection = resolvePlatformSkillSelection(skill.distribution, mode);
+        if (!selection.available) return undefined;
+
+        const meta = {
+          description: skill.description ?? '',
+          identifier: skill.skillKey,
+          name: skill.displayName,
+        };
+        if (!selection.activated) return meta;
+
+        // The authenticated legacy read projection is adapted server-side to
+        // the same exact published resolver. Never fall back to personal data
+        // when a managed catalog snapshot exists.
+        const resolved = await agentSkillService.resolvePlatformPinned({
+          checksum: skill.checksum,
+          skillKey: skill.skillKey,
+          version: skill.version,
+        });
+        if (
+          resolved.identifier !== skill.skillKey ||
+          resolved.version !== skill.version ||
+          resolved.checksum !== skill.checksum
+        ) {
+          throw new Error(`Published Skill ${skill.skillKey} could not be resolved exactly`);
+        }
+        return { ...meta, activated: true, content: buildPlatformSkillContent(resolved) };
+      }),
+    );
+    const skills = platformMetas.filter((skill) => skill !== undefined);
+    const skillEngine = new SkillEngine({ skills });
+    const operation = skillEngine.generate(pluginIds ?? []);
+    return {
+      ...operation,
+      platformCatalog: {
+        refs: platformCatalog.skills
+          .filter((skill) => skills.some((candidate) => candidate.identifier === skill.skillKey))
+          .map(({ checksum, skillKey, version }) => ({ checksum, skillKey, version })),
+        revision: platformCatalog.revision,
+      },
+    };
+  }
 
   // Builtin skills keep their full content in the store, so it is always cheap
   // to carry along. Pinned skills are marked `activated` so SkillContextProvider
