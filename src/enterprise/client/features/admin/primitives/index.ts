@@ -1,3 +1,4 @@
+export { default as AdminPageTemplate, type AdminPageTemplateProps } from './AdminPageTemplate';
 export { type DangerConfirmOptions, openDangerConfirm } from './DangerConfirm';
 export { default as DataTable, type DataTableProps } from './DataTable';
 export { default as FilterBar, type FilterBarProps } from './FilterBar';
