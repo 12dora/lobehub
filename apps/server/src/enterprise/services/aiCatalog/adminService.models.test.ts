@@ -65,6 +65,51 @@ const createProviderAndModels = async () => {
 };
 
 describe('AiCatalogAdminService model mutations', () => {
+  it('rejects copying kept provider credential leaves into model fields', async () => {
+    const credential = 'arbitrary-model-credential-leaf';
+    const provider = await service.createProviderDraft('admin', {
+      displayName: 'Credential boundary',
+      providerKey: 'credential-boundary',
+      reason: 'create',
+      secret: { operation: 'replace', value: { apiKey: credential } },
+      source: 'custom',
+    });
+    let detail = await service.getDetail(provider.id);
+    await expect(
+      service.createModel('admin', {
+        description: `copied ${credential}`,
+        expectedDraftToken: detail.draftToken,
+        modelKey: 'rejected',
+        providerId: provider.id,
+        reason: 'create rejected model',
+      }),
+    ).rejects.toMatchObject({
+      issues: ['Provider credentials must not appear in public catalog fields'],
+    });
+    expect(await db.select().from(platformAiModels)).toEqual([]);
+
+    const model = await service.createModel('admin', {
+      expectedDraftToken: detail.draftToken,
+      modelKey: 'safe-model',
+      providerId: provider.id,
+      reason: 'create safe model',
+    });
+    detail = await service.getDetail(provider.id);
+    await expect(
+      service.updateModel('admin', {
+        expectedDraftToken: detail.draftToken,
+        expectedRevision: 0,
+        id: model.id,
+        providerId: provider.id,
+        reason: 'update rejected model',
+        settings: { publicNote: credential },
+      }),
+    ).rejects.toMatchObject({
+      issues: ['Provider credentials must not appear in public catalog fields'],
+    });
+    expect((await service.getDetail(provider.id)).draft.models[0].settings).toEqual({});
+  });
+
   it('reorder fails closed unless items exactly equal the complete locked provider collection', async () => {
     const { first, provider, second } = await createProviderAndModels();
     const detail = await service.getDetail(provider.id);

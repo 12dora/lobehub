@@ -16,6 +16,7 @@ const EMPTY_CATALOG_REVISION = createHash('sha256').update('[]').digest('hex');
 
 interface RevisionModelPayload {
   abilities?: Record<string, unknown>;
+  config?: Record<string, unknown> | null;
   contextWindowTokens?: number | null;
   description?: string | null;
   displayName?: string | null;
@@ -57,6 +58,11 @@ const toPublishedProvider = (
       return [
         {
           abilities: model.abilities ?? {},
+          config: {
+            ...(typeof model.config?.deploymentName === 'string'
+              ? { deploymentName: model.config.deploymentName }
+              : {}),
+          },
           contextWindowTokens: model.contextWindowTokens ?? null,
           description: model.description ?? null,
           displayName: model.displayName ?? null,
