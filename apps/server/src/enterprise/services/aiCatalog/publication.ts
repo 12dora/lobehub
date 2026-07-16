@@ -33,6 +33,7 @@ import {
   aiModelDraftSchema,
 } from '../../contracts/aiCatalog';
 import type { PlatformConfigInvalidationPublisher } from '../platformConfigInvalidation';
+import { acquirePlatformDependencyPublicationLock } from '../platformDependencyLock';
 import { PlatformPublisherService } from '../platformPublisher';
 import { normalizeAiCatalogExecutionCredentials } from './credentialAdapter';
 import { assertAiCatalogPublicFieldsExcludeCredentials } from './credentialBoundary';
@@ -52,7 +53,10 @@ type RollbackProviderInput = z.infer<typeof adminAiProviderRollbackInputSchema>;
 
 export interface AiCatalogPublicationOptions {
   invalidation?: PlatformConfigInvalidationPublisher;
-  lifecycle?: { afterPublishLock?: (tx: Transaction) => Promise<void> };
+  lifecycle?: {
+    afterArchiveDependencyCheck?: () => Promise<void>;
+    afterPublishLock?: (tx: Transaction) => Promise<void>;
+  };
 }
 
 export class AiCatalogPublicationService {
@@ -146,6 +150,7 @@ export class AiCatalogPublicationService {
   ): ResourcePointerAdapter => ({
     assertLockedState: async (tx) => {
       await this.lifecycle.afterPublishLock?.(tx);
+      if (validateArchiveDependents) await acquirePlatformDependencyPublicationLock(tx);
       const draft = await new PlatformAiCatalogModel(tx).getProvider(providerId);
       if (!draft) throw new AiCatalogNotFoundError();
       if (aiCatalogDraftToken(draft) !== expectedDraftToken) {
@@ -162,6 +167,7 @@ export class AiCatalogPublicationService {
         if (dependents.some((item) => item.blocking)) {
           throw new AiCatalogResourceInUseError(dependents);
         }
+        await this.lifecycle.afterArchiveDependencyCheck?.();
       }
     },
     lockAndGetRevision: async (tx) => {

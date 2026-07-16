@@ -26,6 +26,10 @@ import {
   PlatformAuditService,
 } from '../platformAudit';
 import type { PlatformConfigInvalidationPublisher } from '../platformConfigInvalidation';
+import {
+  acquirePlatformDependencyPublicationLock,
+  assertPublishedPlatformAiReferences,
+} from '../platformDependencyLock';
 import { PlatformPublisherService, PlatformRevisionConflictError } from '../platformPublisher';
 import { settingsRegistry } from './registry';
 
@@ -96,6 +100,7 @@ export class AdminSettingsService {
   }) =>
     createSettingsPointerAdapter({
       assertLockedState: async (tx) => {
+        await acquirePlatformDependencyPublicationLock(tx);
         const model = new PlatformSettingsModel(tx);
         const bundle = await model.getBundle();
         if (!bundle) throw new Error('Failed to load locked platform settings bundle');
@@ -104,11 +109,13 @@ export class AdminSettingsService {
             'Platform settings draft conflict: expectedDraftToken does not match locked draft',
           );
         }
+        await assertPublishedPlatformAiReferences(tx, bundle.draft);
       },
       materializePublished: async (tx, args) => {
         const model = new PlatformSettingsModel(tx);
         const policies = ((args.payload as { policies?: SettingsDraftPolicyMap }).policies ??
           {}) as SettingsDraftPolicyMap;
+        await assertPublishedPlatformAiReferences(tx, policies);
         await model.replacePublishedPolicies({
           draft: policies,
           revision: args.revision,
