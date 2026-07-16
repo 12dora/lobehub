@@ -8,6 +8,10 @@ import { memo, useReducer } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
+import {
+  type AdminReauthAuthMethod,
+  withAdminReauthRetry,
+} from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 
 import { buildAiSecretMutation } from '../controller';
 import type { AiSecretMutation } from '../types';
@@ -77,13 +81,14 @@ const reducer = (state: SecretModalState, action: SecretModalAction): SecretModa
 };
 
 export interface SecretMutationContentProps {
+  authMethod?: AdminReauthAuthMethod;
   configured: boolean;
   onSubmit: (params: { reason: string; secret: AiSecretMutation }) => Promise<void>;
   providerName: string;
 }
 
 export const SecretMutationContent = memo<SecretMutationContentProps>(
-  ({ configured, onSubmit, providerName }) => {
+  ({ authMethod, configured, onSubmit, providerName }) => {
     const { t } = useTranslation('admin');
     const { close } = useModalContext();
     const [state, dispatch] = useReducer(reducer, initialState);
@@ -104,7 +109,10 @@ export const SecretMutationContent = memo<SecretMutationContentProps>(
       if (!secret) return;
       dispatch({ phase: 'submitting', type: 'phase' });
       try {
-        await onSubmit({ reason, secret });
+        const canonical = { reason, secret };
+        await withAdminReauthRetry(() => onSubmit(structuredClone(canonical)), {
+          authMethod: authMethod ?? null,
+        });
         close();
       } catch (cause) {
         const mapped = mapEnterpriseError(cause);
