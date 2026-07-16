@@ -3,7 +3,7 @@
 import { Text, TextArea } from '@lobehub/ui';
 import { Button, createModal, type ModalInstance, useModalContext } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
-import { memo, type ReactNode, useCallback, useRef, useState } from 'react';
+import { memo, type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
@@ -43,7 +43,7 @@ const styles = createStaticStyles(({ css }) => ({
   `,
 }));
 
-/** idle | validating/building | waiting on reauth popup | server mutation in flight */
+/** idle | waiting on reauth popup | server mutation in flight */
 export type ReasonModalPhase = 'idle' | 'reauthing' | 'mutating';
 
 export interface ReasonModalContentProps {
@@ -92,22 +92,40 @@ export const ReasonModalContent = memo<ReasonModalContentProps>(
     const canonicalRef = useRef<unknown>(null);
     const localAbortRef = useRef<AbortController | null>(null);
     const abortRef = abortControllerRef ?? localAbortRef;
+    const mountedRef = useRef(true);
 
     const setPhaseBoth = useCallback(
       (next: ReasonModalPhase) => {
+        if (!mountedRef.current) return;
         setPhase(next);
         onPhaseChange?.(next);
       },
       [onPhaseChange],
     );
 
-    const locked = phase !== 'idle';
-    const canSubmit = reason.trim().length > 0 && phase === 'idle';
+    const setErrorKeySafe = useCallback((key: string | null) => {
+      if (!mountedRef.current) return;
+      setErrorKey(key);
+    }, []);
 
     const abortActive = useCallback(() => {
       abortRef.current?.abort();
       abortRef.current = null;
     }, [abortRef]);
+
+    // Complements onOpenChange(false) / Cancel: unmount must still abort + clear snapshot.
+    useEffect(() => {
+      mountedRef.current = true;
+      return () => {
+        mountedRef.current = false;
+        abortRef.current?.abort();
+        abortRef.current = null;
+        canonicalRef.current = null;
+      };
+    }, [abortRef]);
+
+    const locked = phase !== 'idle';
+    const canSubmit = reason.trim().length > 0 && phase === 'idle';
 
     const handleClose = useCallback(() => {
       // Immediate abort — Escape/close must not wait for unmount cleanup.
@@ -121,19 +139,19 @@ export const ReasonModalContent = memo<ReasonModalContentProps>(
       if (phase !== 'reauthing') return;
       abortActive();
       setPhaseBoth('idle');
-      setErrorKey('users.errors.reauthCancelled');
-    }, [abortActive, phase, setPhaseBoth]);
+      setErrorKeySafe('users.errors.reauthCancelled');
+    }, [abortActive, phase, setErrorKeySafe, setPhaseBoth]);
 
     const handleSubmit = useCallback(async () => {
       if (phase !== 'idle') return;
       const trimmed = reason.trim();
       if (!trimmed) {
-        setErrorKey('users.modals.reasonRequired');
+        setErrorKeySafe('users.modals.reasonRequired');
         return;
       }
       const extraError = validateExtra?.() ?? null;
       if (extraError) {
-        setErrorKey(extraError);
+        setErrorKeySafe(extraError);
         return;
       }
 
@@ -141,7 +159,7 @@ export const ReasonModalContent = memo<ReasonModalContentProps>(
       const built = buildPayload(trimmed);
       canonicalRef.current = createCanonicalSnapshot(built);
 
-      setErrorKey(null);
+      setErrorKeySafe(null);
       const ac = new AbortController();
       abortRef.current = ac;
 
@@ -150,7 +168,7 @@ export const ReasonModalContent = memo<ReasonModalContentProps>(
           async () => {
             setPhaseBoth('mutating');
             const canonical = canonicalRef.current;
-            if (canonical === null || ac.signal.aborted) {
+            if (canonical === null || ac.signal.aborted || !mountedRef.current) {
               throw new AdminReauthCancelledError();
             }
             // Fresh clone per attempt — first call mutation cannot poison retry.
@@ -165,19 +183,21 @@ export const ReasonModalContent = memo<ReasonModalContentProps>(
             },
           },
         );
+        if (!mountedRef.current) return;
         canonicalRef.current = null;
         close();
       } catch (error) {
+        if (!mountedRef.current) return;
         if (error instanceof AdminReauthCancelledError) {
-          setErrorKey('users.errors.reauthCancelled');
+          setErrorKeySafe('users.errors.reauthCancelled');
         } else if (error instanceof AdminReauthBlockedError) {
-          setErrorKey('users.errors.reauthBlocked');
+          setErrorKeySafe('users.errors.reauthBlocked');
         } else {
           const mapped = mapEnterpriseError(error);
           if (mapped?.action === 'reauth') {
-            setErrorKey('users.errors.reauthRequired');
+            setErrorKeySafe('users.errors.reauthRequired');
           } else {
-            setErrorKey(getAdminUsersMutationErrorKey(error));
+            setErrorKeySafe(getAdminUsersMutationErrorKey(error));
           }
         }
         setPhaseBoth('idle');
@@ -185,8 +205,9 @@ export const ReasonModalContent = memo<ReasonModalContentProps>(
         if (abortRef.current === ac) {
           abortRef.current = null;
         }
-        // Leave phase idle if still not closed
-        setPhase((p) => (p === 'mutating' || p === 'reauthing' ? 'idle' : p));
+        if (mountedRef.current) {
+          setPhase((p) => (p === 'mutating' || p === 'reauthing' ? 'idle' : p));
+        }
       }
     }, [
       abortRef,
@@ -196,6 +217,7 @@ export const ReasonModalContent = memo<ReasonModalContentProps>(
       onSubmit,
       phase,
       reason,
+      setErrorKeySafe,
       setPhaseBoth,
       validateExtra,
     ]);
