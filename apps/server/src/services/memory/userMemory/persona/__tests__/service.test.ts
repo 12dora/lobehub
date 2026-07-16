@@ -2,7 +2,7 @@
 import { type LobeChatDatabase } from '@lobechat/database';
 import { users, userSettings } from '@lobechat/database/schemas';
 import { getTestDB } from '@lobechat/database/test-utils';
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { UserPersonaModel } from '@/database/models/userMemory/persona';
 import type * as AiInfraReposModule from '@/database/repositories/aiInfra';
@@ -109,10 +109,6 @@ afterAll(() => {
   else process.env.ENABLE_PLATFORM_MANAGED_AI = originalManagedAiFlag;
 });
 
-afterEach(() => {
-  vi.restoreAllMocks();
-});
-
 describe('UserPersonaService', () => {
   it('composes and persists persona via agent', async () => {
     const service = new UserPersonaService(db);
@@ -140,9 +136,9 @@ describe('UserPersonaService', () => {
   it('passes a one-shot platform secret to the runtime without exposing it', async () => {
     process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
     const fakeSecret = 'platform-persona-secret-not-for-output';
-    vi.spyOn(PlatformSecretService, 'fromEnvOrThrowIfEnterprise').mockReturnValue(
-      {} as PlatformSecretService,
-    );
+    const secretFactory = vi
+      .spyOn(PlatformSecretService, 'fromEnvOrThrowIfEnterprise')
+      .mockReturnValue({} as PlatformSecretService);
     const execution = vi
       .spyOn(AiCatalogExecutionResolver.prototype, 'resolveProviderExecutionConfig')
       .mockResolvedValue({
@@ -156,21 +152,28 @@ describe('UserPersonaService', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
 
-    const service = new UserPersonaService(db);
-    const result = await service.composeWriting({ userId, username: 'User' });
+    try {
+      const service = new UserPersonaService(db);
+      const result = await service.composeWriting({ userId, username: 'User' });
 
-    expect(execution).toHaveBeenCalledWith('openai');
-    expect(resolveRuntimeAgentConfig).toHaveBeenLastCalledWith(
-      expect.any(Object),
-      { openai: { apiKey: fakeSecret } },
-      expect.any(Object),
-      undefined,
-    );
-    expect(JSON.stringify(result)).not.toContain(fakeSecret);
-    expect(JSON.stringify(aiInfraMocks.getAiProviderRuntimeState.mock.results)).not.toContain(
-      fakeSecret,
-    );
-    expect(JSON.stringify([...warn.mock.calls, ...error.mock.calls])).not.toContain(fakeSecret);
+      expect(execution).toHaveBeenCalledWith('openai');
+      expect(resolveRuntimeAgentConfig).toHaveBeenLastCalledWith(
+        expect.any(Object),
+        { openai: { apiKey: fakeSecret } },
+        expect.any(Object),
+        undefined,
+      );
+      expect(JSON.stringify(result)).not.toContain(fakeSecret);
+      expect(JSON.stringify(aiInfraMocks.getAiProviderRuntimeState.mock.results)).not.toContain(
+        fakeSecret,
+      );
+      expect(JSON.stringify([...warn.mock.calls, ...error.mock.calls])).not.toContain(fakeSecret);
+    } finally {
+      secretFactory.mockRestore();
+      execution.mockRestore();
+      warn.mockRestore();
+      error.mockRestore();
+    }
   });
 
   it('passes existing persona baseline on subsequent runs', async () => {

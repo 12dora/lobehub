@@ -15,6 +15,7 @@ import {
   isAnyEnterpriseFeatureEnabled,
   isPlatformAdminFeatureEnabled,
 } from '@/server/enterprise/featureFlags';
+import { ensurePlatformAiRuntimeRegistered } from '@/server/enterprise/services/aiCatalog/runtimeBridge';
 import { parseSystemAgent } from '@/server/globalConfig/parseSystemAgent';
 import { type GlobalServerConfig } from '@/types/serverConfig';
 import { cleanObject } from '@/utils/object';
@@ -26,6 +27,8 @@ import {
 import { parseAgentConfig } from './parseDefaultAgent';
 import { parseFilesConfig } from './parseFilesConfig';
 import { getPublicMemoryExtractionConfig } from './parseMemoryExtractionConfig';
+
+ensurePlatformAiRuntimeRegistered();
 
 /**
  * Get Better-Auth SSO providers list

@@ -23,6 +23,7 @@ import {
   AiCatalogExecutionResolver,
   getEmptyAiProviderRuntimeState,
   resolveAiCatalogRuntimeState,
+  toDefinedPlatformKeyVaults,
 } from '@/server/enterprise/services/aiCatalog';
 import { getEffectiveSystemAgentConfig } from '@/server/enterprise/services/settings/runtimeSettingsAdapter';
 import { type MemoryAgentConfig } from '@/server/globalConfig/parseMemoryExtractionConfig';
@@ -129,7 +130,9 @@ export class UserPersonaService {
         this.db,
         secrets,
       ).resolveProviderExecutionConfig(providerId);
-      keyVaults = { [providerId.toLowerCase()]: execution.keyVaults };
+      keyVaults = {
+        [providerId.toLowerCase()]: toDefinedPlatformKeyVaults(execution.keyVaults),
+      };
     } else {
       keyVaults = Object.entries(runtimeState.runtimeConfig || {}).reduce(
         (acc, [provider, config]) => {

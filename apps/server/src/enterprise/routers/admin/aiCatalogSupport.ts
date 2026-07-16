@@ -16,7 +16,7 @@ import { PlatformAuditService } from '../../services/platformAudit';
 export const createService = (db: LobeChatDatabase): AiCatalogAdminService => {
   const secrets = PlatformSecretService.fromEnvOrThrowIfEnterprise();
   if (!secrets) {
-    throwEnterpriseError({
+    return throwEnterpriseError({
       code: PLATFORM_ERROR_CODES.PLATFORM_SECRET_REQUIRED,
       httpCode: 'PRECONDITION_FAILED',
     });
