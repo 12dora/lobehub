@@ -8,6 +8,10 @@ import { memo, useReducer } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
+import {
+  type AdminReauthAuthMethod,
+  withAdminReauthRetry,
+} from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 
 import { buildProviderCreatePayload, parseJsonObject } from '../controller';
 import type { AdminAiProviderCreateDraftInput } from '../types';
@@ -92,10 +96,11 @@ const reducer = (state: CreateProviderState, action: CreateProviderAction): Crea
 };
 
 export interface CreateProviderContentProps {
+  authMethod?: AdminReauthAuthMethod;
   onSubmit: (input: AdminAiProviderCreateDraftInput) => Promise<void>;
 }
 
-const CreateProviderContent = memo<CreateProviderContentProps>(({ onSubmit }) => {
+const CreateProviderContent = memo<CreateProviderContentProps>(({ authMethod, onSubmit }) => {
   const { t } = useTranslation('admin');
   const { close } = useModalContext();
   const [state, dispatch] = useReducer(reducer, initialState);
@@ -130,7 +135,9 @@ const CreateProviderContent = memo<CreateProviderContentProps>(({ onSubmit }) =>
 
     dispatch({ phase: 'submitting', type: 'phase' });
     try {
-      await onSubmit(input);
+      await withAdminReauthRetry(() => onSubmit(structuredClone(input)), {
+        authMethod: authMethod ?? null,
+      });
       close();
     } catch (cause) {
       const mapped = mapEnterpriseError(cause);
