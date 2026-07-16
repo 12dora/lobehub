@@ -90,9 +90,21 @@ describe('enterprise redaction entry', () => {
   it('exports the narrow M07 numeric token-key allowlist', () => {
     expect(
       redactForAudit(
-        { apiKey: 'fake', contextWindowTokens: 128_000, maxTokens: 4096 },
+        {
+          apiKey: 'fake',
+          contextWindowTokens: 128_000,
+          maxTokens: 4096,
+          secretConfigured: true,
+          secretFingerprint: 'sha256:safe-metadata',
+        },
         M07_REDACTION_OPTIONS,
       ),
-    ).toEqual({ apiKey: '[REDACTED]', contextWindowTokens: 128_000, maxTokens: 4096 });
+    ).toEqual({
+      apiKey: '[REDACTED]',
+      contextWindowTokens: 128_000,
+      maxTokens: 4096,
+      secretConfigured: '[REDACTED]',
+      secretFingerprint: '[REDACTED]',
+    });
   });
 });

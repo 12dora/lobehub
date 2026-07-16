@@ -38,8 +38,10 @@ export interface ResourcePointerAdapter {
   materializePublished?: (
     tx: Transaction,
     args: {
+      operation: 'publish' | 'rollback';
       payload: Record<string, unknown>;
       revision: number;
+      secretFingerprint?: string | null;
       status: PlatformRevisionStatus;
     },
   ) => Promise<void>;
@@ -230,8 +232,10 @@ export class PlatformRevisionModel {
 
       if (params.pointer.materializePublished) {
         await params.pointer.materializePublished(tx, {
+          operation: 'publish',
           payload: redactedPayload,
           revision: nextRevision,
+          secretFingerprint: params.secretFingerprint ?? null,
           status,
         });
       }
@@ -319,8 +323,10 @@ export class PlatformRevisionModel {
 
       if (params.pointer.materializePublished) {
         await params.pointer.materializePublished(tx, {
+          operation: 'rollback',
           payload: (target.payload ?? {}) as Record<string, unknown>,
           revision: nextRevision,
+          secretFingerprint: target.secretFingerprint,
           status: 'published',
         });
       }

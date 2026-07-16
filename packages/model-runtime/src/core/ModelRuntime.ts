@@ -19,6 +19,7 @@ import type {
   ModelRequestOptions,
   OnFinishData,
   PullModelParams,
+  TextToSpeechOptions,
   TextToSpeechPayload,
 } from '../types';
 import { AgentRuntimeErrorType } from '../types/error';
@@ -80,6 +81,11 @@ export interface ModelRuntimeHooks {
     payload: GenerateObjectPayload,
     options?: GenerateObjectOptions,
   ) => Promise<void>;
+  beforeTextToSpeech?: (
+    payload: TextToSpeechPayload,
+    options?: TextToSpeechOptions,
+  ) => Promise<void>;
+  beforeTranscribe?: (payload: ASRPayload, options?: ASROptions) => Promise<void>;
   /**
    * Called when chat() throws. Handle side effects (sanitize, log, DB record).
    * The error is re-thrown after the hook completes — callers still handle response formatting.
@@ -465,12 +471,16 @@ export class ModelRuntime {
       throw error;
     }
   }
-  async textToSpeech(payload: TextToSpeechPayload, options?: EmbeddingsOptions) {
-    return this._runtime.textToSpeech?.(payload, options);
+  async textToSpeech(payload: TextToSpeechPayload, options?: TextToSpeechOptions) {
+    const finalOptions = this._hooks?.beforeTextToSpeech && !options ? {} : options;
+    await this._hooks?.beforeTextToSpeech?.(payload, finalOptions);
+    return this._runtime.textToSpeech?.(payload, finalOptions);
   }
 
   async transcribe(payload: ASRPayload, options?: ASROptions) {
-    return this._runtime.transcribe?.(payload, options);
+    const finalOptions = this._hooks?.beforeTranscribe && !options ? {} : options;
+    await this._hooks?.beforeTranscribe?.(payload, finalOptions);
+    return this._runtime.transcribe?.(payload, finalOptions);
   }
 
   async pullModel(params: PullModelParams, options?: ModelRequestOptions) {

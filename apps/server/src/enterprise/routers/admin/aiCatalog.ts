@@ -10,6 +10,8 @@ import {
   adminAiModelDeleteOutputSchema,
   adminAiModelDependentsInputSchema,
   adminAiModelDependentsOutputSchema,
+  adminAiModelDraftContextInputSchema,
+  adminAiModelDraftContextOutputSchema,
   adminAiModelListInputSchema,
   adminAiModelListOutputSchema,
   adminAiModelMutationOutputSchema,
@@ -203,6 +205,42 @@ export const adminAiModelsRouter = router({
       try {
         const items = await createService(ctx.serverDB).getDependents(input.providerId, input.id);
         return { items };
+      } catch (error) {
+        return mapServiceError(error);
+      }
+    }),
+
+  getCreateDraftContext: adminBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AI_MODEL_CREATE))
+    .input(adminAiModelDraftContextInputSchema)
+    .output(adminAiModelDraftContextOutputSchema)
+    .query(async ({ ctx, input }) => {
+      try {
+        return await createService(ctx.serverDB).getModelDraftContext(input.providerId);
+      } catch (error) {
+        return mapServiceError(error);
+      }
+    }),
+
+  getDeleteDraftContext: adminBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AI_MODEL_DELETE))
+    .input(adminAiModelDraftContextInputSchema)
+    .output(adminAiModelDraftContextOutputSchema)
+    .query(async ({ ctx, input }) => {
+      try {
+        return await createService(ctx.serverDB).getModelDraftContext(input.providerId);
+      } catch (error) {
+        return mapServiceError(error);
+      }
+    }),
+
+  getUpdateDraftContext: adminBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AI_MODEL_UPDATE))
+    .input(adminAiModelDraftContextInputSchema)
+    .output(adminAiModelDraftContextOutputSchema)
+    .query(async ({ ctx, input }) => {
+      try {
+        return await createService(ctx.serverDB).getModelDraftContext(input.providerId);
       } catch (error) {
         return mapServiceError(error);
       }

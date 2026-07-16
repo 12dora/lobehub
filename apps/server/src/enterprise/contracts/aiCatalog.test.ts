@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  aiModelDraftSchema,
   aiProviderDraftSchema,
   aiSecretMutationSchema,
   publishedAiCatalogSchema,
@@ -15,6 +16,32 @@ describe('AI catalog contracts', () => {
       value: 'fake-value',
     });
     expect(() => aiSecretMutationSchema.parse({ operation: 'keep', value: 'smuggled' })).toThrow();
+  });
+
+  it('accepts only shared Model Bank types and retains non-executable metadata types', () => {
+    const model = {
+      abilities: {},
+      config: null,
+      contextWindowTokens: null,
+      description: null,
+      displayName: null,
+      enabled: true,
+      id: 'model-1',
+      modelKey: 'model-1',
+      parameters: {},
+      pricing: null,
+      providerId: 'provider-1',
+      revision: 0,
+      settings: {},
+      sort: 0,
+      status: 'draft',
+    } as const;
+
+    expect(aiModelDraftSchema.safeParse({ ...model, type: 'unknown-runtime-type' }).success).toBe(
+      false,
+    );
+    expect(aiModelDraftSchema.parse({ ...model, type: 'text2music' }).type).toBe('text2music');
+    expect(aiModelDraftSchema.parse({ ...model, type: 'realtime' }).type).toBe('realtime');
   });
 
   it('rejects ciphertext and secret references from admin and public outputs', () => {
