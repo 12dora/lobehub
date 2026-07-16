@@ -30,6 +30,7 @@ export const ENTERPRISE_UPSTREAM_MOUNT_POINTS = [
   // M08: server execution seams consume the operation-pinned Skill Catalog.
   'apps/server/src/services/toolExecution/serverRuntimes/skills.ts',
   'apps/server/src/services/toolExecution/serverRuntimes/activator.ts',
+  'apps/server/src/routers/tools/market.ts',
   // M05: user-facing source badge meta hook (thin SWR → enterprise service)
   'src/features/PlatformSettingSourceBadge/usePlatformSettingMeta.ts',
   'src/features/PlatformSettingSourceBadge/ManagedFormControl.tsx',
