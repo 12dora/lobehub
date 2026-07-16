@@ -1,6 +1,13 @@
 import { z } from 'zod';
 
-import { containsSensitiveMaterial, isCredentialBearingUrl } from '../security/redaction';
+import { isCredentialBearingUrl } from '../security/redaction';
+import {
+  addConnectorToolListIssues,
+  addConnectorToolSecurityIssues,
+  CONNECTOR_TOOL_VALIDATION_CODES,
+  connectorJsonObjectSchema,
+  containsConnectorCredentialMaterial,
+} from '../services/connectorCatalog/toolDefinitionValidator';
 
 const connectorIdSchema = z.string().trim().min(1).max(128);
 const connectorKeySchema = z
@@ -9,12 +16,13 @@ const connectorKeySchema = z
   .min(1)
   .max(64)
   .regex(/^[a-z0-9][a-z0-9._-]*$/);
-const connectorToolKeySchema = z.string().trim().min(1).max(200);
-export const containsConnectorCredentialMaterial = (value: string): boolean => {
-  if (containsSensitiveMaterial(value)) return true;
-  if (isCredentialBearingUrl(value)) return true;
-  return (value.match(/https?:\/\/\S+/giu) ?? []).some(isCredentialBearingUrl);
-};
+const connectorToolKeySchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(200)
+  .regex(/^[A-Za-z0-9][\w.:/-]{0,199}$/u, CONNECTOR_TOOL_VALIDATION_CODES.invalidOperation);
+export { containsConnectorCredentialMaterial };
 const reasonSchema = z
   .string()
   .trim()
@@ -43,44 +51,6 @@ export const connectorSafeMessageSchema = z.enum([
   CONNECTOR_OPERATION_MESSAGE_BY_STATUS.pending,
   CONNECTOR_OPERATION_MESSAGE_BY_STATUS.success,
 ]);
-
-const validateJsonSchema = (
-  value: unknown,
-  ctx: z.RefinementCtx,
-  path: Array<number | string> = [],
-  secretBearingKeyword = false,
-): void => {
-  if (Array.isArray(value)) {
-    value.forEach((item, index) =>
-      validateJsonSchema(item, ctx, [...path, index], secretBearingKeyword),
-    );
-    return;
-  }
-  if (!value || typeof value !== 'object') {
-    if (
-      secretBearingKeyword &&
-      typeof value === 'string' &&
-      containsConnectorCredentialMaterial(value)
-    ) {
-      ctx.addIssue({ code: 'custom', message: 'secret material is not allowed', path });
-    }
-    return;
-  }
-  for (const [key, child] of Object.entries(value)) {
-    const normalizedKey = key.toLowerCase();
-    const isSecretBearingKeyword = new Set(['const', 'default', 'enum', 'example', 'examples']).has(
-      normalizedKey,
-    );
-    validateJsonSchema(child, ctx, [...path, key], secretBearingKeyword || isSecretBearingKeyword);
-  }
-};
-
-const boundedNonSecretJsonSchema = z.record(z.string(), z.unknown()).superRefine((value, ctx) => {
-  validateJsonSchema(value, ctx);
-  if (JSON.stringify(value).length > 64 * 1024) {
-    ctx.addIssue({ code: 'custom', message: 'JSON payload is too large' });
-  }
-});
 
 const httpUrlSchema = z
   .string()
@@ -249,13 +219,14 @@ const adminConnectorOAuthConfigInputSchema = adminConnectorOAuthConfigSchema.omi
   redirectUri: true,
 });
 
-export const connectorToolDraftSchema = z
+const connectorToolDraftObjectSchema = z
   .object({
     description: z.string().trim().max(4000).nullable(),
     displayName: z.string().trim().min(1).max(200),
     enabled: z.boolean(),
     id: connectorIdSchema,
-    inputSchema: boundedNonSecretJsonSchema,
+    inputSchema: connectorJsonObjectSchema,
+    outputSchema: connectorJsonObjectSchema.default({}),
     platformPolicy: connectorPlatformToolPolicySchema,
     requiresConfirmation: z.boolean(),
     riskLevel: connectorRiskLevelSchema,
@@ -264,11 +235,16 @@ export const connectorToolDraftSchema = z
   })
   .strict();
 
-export const publishedConnectorToolSchema = connectorToolDraftSchema
+export const connectorToolDraftSchema = connectorToolDraftObjectSchema.superRefine(
+  addConnectorToolSecurityIssues,
+);
+
+const publishedConnectorToolObjectSchema = connectorToolDraftObjectSchema
   .pick({
     description: true,
     displayName: true,
     inputSchema: true,
+    outputSchema: true,
     platformPolicy: true,
     requiresConfirmation: true,
     riskLevel: true,
@@ -276,6 +252,27 @@ export const publishedConnectorToolSchema = connectorToolDraftSchema
     toolKey: true,
   })
   .strict();
+
+export const publishedConnectorToolSchema = publishedConnectorToolObjectSchema.superRefine(
+  addConnectorToolSecurityIssues,
+);
+
+const connectorToolWithoutIdSchema = connectorToolDraftObjectSchema
+  .omit({ id: true })
+  .strict()
+  .superRefine(addConnectorToolSecurityIssues);
+const connectorToolDraftListSchema = z
+  .array(connectorToolDraftSchema)
+  .max(1000, CONNECTOR_TOOL_VALIDATION_CODES.toolCount)
+  .superRefine(addConnectorToolListIssues);
+const connectorToolWithoutIdListSchema = z
+  .array(connectorToolWithoutIdSchema)
+  .max(1000, CONNECTOR_TOOL_VALIDATION_CODES.toolCount)
+  .superRefine(addConnectorToolListIssues);
+const publishedConnectorToolListSchema = z
+  .array(publishedConnectorToolSchema)
+  .max(1000, CONNECTOR_TOOL_VALIDATION_CODES.toolCount)
+  .superRefine(addConnectorToolListIssues);
 
 export const connectorConnectionTestStateSchema = z
   .object({
@@ -307,7 +304,7 @@ const adminConnectorDraftBaseSchema = z
     revision: z.number().int().nonnegative(),
     sort: z.number().int(),
     status: connectorLifecycleStatusSchema,
-    tools: z.array(connectorToolDraftSchema).max(1000),
+    tools: connectorToolDraftListSchema,
     transport: webConnectorTransportSchema,
   })
   .strict();
@@ -346,7 +343,7 @@ export const adminConnectorDraftSchema = z.discriminatedUnion('credentialMode', 
 const publishedConnectorFields = {
   publishedAt: z.date(),
   publishedRevision: z.number().int().positive(),
-  tools: z.array(publishedConnectorToolSchema).max(1000),
+  tools: publishedConnectorToolListSchema,
 };
 
 export const adminPublishedConnectorSchema = z.discriminatedUnion('credentialMode', [
@@ -381,7 +378,7 @@ const connectorDraftFieldsSchema = z
     oauthConfig: adminConnectorOAuthConfigInputSchema.nullable().optional(),
     sharedSecret: connectorSharedSecretMutationSchema.optional(),
     sort: z.number().int().optional(),
-    tools: z.array(connectorToolDraftSchema).max(1000).optional(),
+    tools: connectorToolDraftListSchema.optional(),
     transport: webConnectorTransportSchema.optional(),
   })
   .strict();
@@ -395,10 +392,7 @@ const connectorCreateBaseSchema = z
     key: connectorKeySchema,
     reason: reasonSchema,
     sort: z.number().int().optional(),
-    tools: z
-      .array(connectorToolDraftSchema.omit({ id: true }))
-      .max(1000)
-      .optional(),
+    tools: connectorToolWithoutIdListSchema.optional(),
     transport: webConnectorTransportSchema.default('http'),
   })
   .strict();
@@ -631,6 +625,7 @@ const assertConnectorPersistentFieldsSafe = (
         description: tool.description,
         displayName: tool.displayName,
         inputSchema: tool.inputSchema,
+        outputSchema: tool.outputSchema,
         toolKey: tool.toolKey,
       })),
     },
@@ -954,7 +949,7 @@ export const adminConnectorDiscoverOutputSchema = z
   .object({
     messageCode: connectorSafeMessageSchema,
     oauthConfig: adminConnectorOAuthConfigSchema.nullable(),
-    tools: z.array(connectorToolDraftSchema.omit({ id: true })).max(1000),
+    tools: connectorToolWithoutIdListSchema,
   })
   .strict();
 
@@ -1011,8 +1006,14 @@ export const connectorBindingSchema = z
   })
   .strict();
 
-export const managedConnectorToolSchema = publishedConnectorToolSchema
-  .omit({ description: true, displayName: true, inputSchema: true, platformPolicy: true })
+export const managedConnectorToolSchema = publishedConnectorToolObjectSchema
+  .omit({
+    description: true,
+    displayName: true,
+    inputSchema: true,
+    outputSchema: true,
+    platformPolicy: true,
+  })
   .extend({
     available: z.boolean(),
     description: publicTextSchema.nullable(),
@@ -1158,7 +1159,7 @@ const trustedPublishedConnectorBaseSchema = z
     connectorId: connectorIdSchema,
     endpoint: httpUrlSchema,
     publishedRevision: z.number().int().positive(),
-    tools: z.array(connectorToolDraftSchema).max(1000),
+    tools: connectorToolDraftListSchema,
     transport: webConnectorTransportSchema,
   })
   .strict();

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { CONNECTOR_TOOL_VALIDATION_CODES } from '../services/connectorCatalog/toolDefinitionValidator';
 import {
   ADMIN_CONNECTOR_PROCEDURE_PERMISSIONS,
   adminConnectorArchiveInputSchema,
@@ -600,7 +601,7 @@ describe('platform connector contracts', () => {
     ).toBe(false);
   });
 
-  it('treats tool input as JSON Schema rather than rejecting sensitive property names', () => {
+  it('validates input/output JSON Schema without rejecting sensitive property names', () => {
     const baseTool = {
       description: null,
       displayName: 'Login',
@@ -628,6 +629,28 @@ describe('platform connector contracts', () => {
       { properties: { token: { const: 'https://user:password@example.test' } } },
     ]) {
       expect(connectorToolDraftSchema.safeParse({ ...baseTool, inputSchema }).success).toBe(false);
+    }
+    const secretOutput = connectorToolDraftSchema.safeParse({
+      ...baseTool,
+      inputSchema: {},
+      outputSchema: { example: 'Authorization: Bearer output-token' },
+    });
+    expect(secretOutput.success).toBe(false);
+    if (!secretOutput.success) {
+      expect(secretOutput.error.issues[0]?.message).toBe(
+        CONNECTOR_TOOL_VALIDATION_CODES.schemaSecret,
+      );
+    }
+    const unconfirmed = connectorToolDraftSchema.safeParse({
+      ...baseTool,
+      inputSchema: {},
+      requiresConfirmation: false,
+    });
+    expect(unconfirmed.success).toBe(false);
+    if (!unconfirmed.success) {
+      expect(unconfirmed.error.issues[0]?.message).toBe(
+        CONNECTOR_TOOL_VALIDATION_CODES.confirmationRequired,
+      );
     }
   });
 
@@ -787,6 +810,7 @@ describe('platform connector contracts', () => {
         description: null,
         displayName: 'Search',
         inputSchema: { type: 'object' },
+        outputSchema: {},
         platformPolicy: 'allow',
         requiresConfirmation: false,
         riskLevel: 'low',

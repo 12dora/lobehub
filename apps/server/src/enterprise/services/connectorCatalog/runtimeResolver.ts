@@ -63,6 +63,7 @@ export const resolveConnectorRuntime = (options: ResolveConnectorRuntimeOptions)
     description: tool.description,
     displayName: tool.displayName,
     inputSchema: tool.inputSchema,
+    outputSchema: tool.outputSchema,
     platformPolicy: tool.platformPolicy,
     requiresConfirmation: tool.requiresConfirmation,
     riskLevel: tool.riskLevel,
