@@ -5,6 +5,7 @@ import type {
   AdminAiProviderCreateDraftInput,
   AdminAiProviderDraft,
   AdminAiProviderUpdateDraftInput,
+  AiConnectionTestState,
   AiSecretMutation,
 } from './types';
 
@@ -45,6 +46,13 @@ export const deriveAiCatalogPermissions = (
   };
 };
 
+export const deriveGlobalModelActions = (permissions: AiCatalogPermissions) => ({
+  canCreate: permissions.canCreateModel,
+  canDelete: permissions.canDeleteModel && permissions.canReadModels,
+  canEdit: permissions.canUpdateModel && permissions.canReadModels,
+  canReorder: permissions.canReorderModels && permissions.canReadModels,
+});
+
 export type AiProviderPrimaryAction = 'none' | 'publish' | 'retry' | 'save' | 'test';
 
 /** Keep one dominant action in the sticky footer. */
@@ -63,6 +71,32 @@ export const resolveAiProviderPrimaryAction = (params: {
   if (params.canTest && !params.testPassed) return 'test';
   if (params.canPublish && params.testPassed) return 'publish';
   return 'none';
+};
+
+export interface AiProviderConnectionTestView {
+  canPublish: boolean;
+  stale: boolean;
+  state: AiConnectionTestState | null;
+}
+
+/** Publish eligibility is derived only from a persisted test bound to the current draft. */
+export const deriveAiProviderConnectionTestView = (params: {
+  baseRevision: number;
+  draftToken: string;
+  locallyStale: boolean;
+  state: AiConnectionTestState | null;
+}): AiProviderConnectionTestView => {
+  if (!params.state) return { canPublish: false, stale: params.locallyStale, state: null };
+  const stale =
+    params.locallyStale ||
+    params.state.stale ||
+    params.state.testedDraftToken !== params.draftToken ||
+    params.state.testedRevision !== params.baseRevision;
+  return {
+    canPublish: params.state.status === 'success' && !stale,
+    stale,
+    state: params.state,
+  };
 };
 
 const canonicalize = (value: unknown): unknown => {

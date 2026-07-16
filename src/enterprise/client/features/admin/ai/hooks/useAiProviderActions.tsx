@@ -95,7 +95,7 @@ export const useAiProviderActions = ({
         commit: params.commit,
         refresh: () => refreshAdminAiProvider(data.draft.id),
         onCommitted: (result) => {
-          if (params.clearTest !== false) editor.setTestResult(null);
+          if (params.clearTest !== false) editor.invalidateTest();
           editor.setActionError(null);
           setRefreshFailed(false);
           params.onCommitted?.(result);
@@ -181,7 +181,6 @@ export const useAiProviderActions = ({
             clearTest: false,
             commit: () => adminAiCatalogService.testProvider(input as AdminAiProviderTestInput),
             onCommitted: (result) => {
-              editor.setTestResult(result);
               toast[result.status === 'success' ? 'success' : 'warning'](
                 t(`aiCatalog.toast.test.${result.status}` as never),
               );
@@ -203,7 +202,7 @@ export const useAiProviderActions = ({
       editor.dirty ||
       editor.conflict ||
       !editor.valid ||
-      editor.testResult?.status !== 'success' ||
+      !editor.connectionTest.canPublish ||
       !permissions.canPublishProvider
     ) {
       return;
@@ -239,11 +238,17 @@ export const useAiProviderActions = ({
   const primaryAction = resolveAiProviderPrimaryAction({
     canPublish: permissions.canPublishProvider && data.draft.status !== 'archived',
     canSave: permissions.canUpdateProvider && editor.valid,
-    canTest: permissions.canTestProvider && editor.valid && data.draft.status !== 'archived',
+    canTest:
+      permissions.canTestProvider &&
+      editor.valid &&
+      data.draft.status !== 'archived' &&
+      !(
+        editor.connectionTest.state?.status === 'pending' && !editor.connectionTest.stale
+      ),
     conflict: editor.conflict,
     dirty: editor.dirty,
     saveState: editor.saveState,
-    testPassed: editor.testResult?.status === 'success',
+    testPassed: editor.connectionTest.canPublish,
   });
 
   const handlePrimary = useCallback(() => {
