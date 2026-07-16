@@ -1825,6 +1825,7 @@ table platform_user_connector_bindings {
   id text [pk, not null]
   user_id text [not null]
   connector_id text [not null]
+  revision_resource_type varchar(64) [not null, default: 'connector']
   published_revision integer [not null]
   status varchar(32) [not null, default: 'disconnected']
   oauth_token_ref text
@@ -1840,7 +1841,7 @@ table platform_user_connector_bindings {
 
   indexes {
     (user_id, connector_id) [name: 'platform_user_connector_bindings_user_connector_unique', unique]
-    (id, user_id, connector_id, published_revision) [name: 'platform_user_connector_bindings_oauth_state_owner_unique', unique]
+    (id, user_id, connector_id) [name: 'platform_user_connector_bindings_oauth_state_owner_unique', unique]
     (user_id, id) [name: 'platform_user_connector_bindings_user_id_id_idx']
     (connector_id, id) [name: 'platform_user_connector_bindings_connector_id_id_idx']
     (status, expires_at) [name: 'platform_user_connector_bindings_status_expires_idx']
@@ -1854,6 +1855,7 @@ table platform_connector_oauth_states {
   binding_id text [not null]
   user_id text [not null]
   connector_id text [not null]
+  revision_resource_type varchar(64) [not null, default: 'connector']
   published_revision integer [not null]
   pkce_verifier_ref text [not null]
   redirect_uri text [not null]
