@@ -833,6 +833,13 @@
       "when": 1784158174121,
       "tag": "0118_add_platform_easyauth_snapshots",
       "breakpoints": true
+    },
+    {
+      "idx": 119,
+      "version": "7",
+      "when": 1784166171737,
+      "tag": "0119_m04_users_auth_invalidated_and_search_indexes",
+      "breakpoints": true
     }
   ],
   "version": "6"
