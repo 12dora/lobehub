@@ -2,7 +2,66 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { useAiInfraStore } from '@/store/aiInfra';
 
+import { buildAiProviderRuntimeStoreState } from './action';
+
 describe('AiProviderAction', () => {
+  it.each(['ui-only', 'enforced'])(
+    'hydrates a new-user picker from the secret-free managed runtime state in %s mode',
+    async () => {
+      const state = await buildAiProviderRuntimeStoreState(
+        {
+          enabledAiModels: [
+            {
+              abilities: {},
+              description: 'Managed model',
+              displayName: 'Managed Model',
+              enabled: true,
+              id: 'managed-model',
+              knowledgeCutoff: '2026-01-01',
+              pricing: { units: [] },
+              providerId: 'managed-provider',
+              source: 'custom',
+              type: 'chat',
+            },
+          ],
+          enabledAiProviders: [
+            { id: 'managed-provider', name: 'Managed Provider', source: 'custom' },
+          ],
+          enabledChatAiProviders: [
+            { id: 'managed-provider', name: 'Managed Provider', source: 'custom' },
+          ],
+          enabledImageAiProviders: [],
+          enabledVideoAiProviders: [],
+          runtimeConfig: {
+            'managed-provider': {
+              config: {},
+              fetchOnClient: false,
+              keyVaults: {},
+              settings: {},
+            },
+          },
+        },
+        [],
+      );
+
+      expect(state.enabledAiProviders.map((item) => item.id)).toEqual(['managed-provider']);
+      expect(state.enabledAiModels.map((item) => item.id)).toEqual(['managed-model']);
+      expect(state.enabledChatModelList?.[0]).toMatchObject({
+        children: [expect.objectContaining({ id: 'managed-model' })],
+        id: 'managed-provider',
+      });
+      expect(state.runtimeConfig['managed-provider']).toEqual({
+        config: {},
+        fetchOnClient: false,
+        keyVaults: {},
+        settings: {},
+      });
+      expect(JSON.stringify(state)).not.toMatch(
+        /endpoint|plaintext|ciphertext|fingerprint|api[-_]?key/i,
+      );
+    },
+  );
+
   describe('ensureAiProviderRuntimeStateReady', () => {
     afterEach(() => {
       vi.restoreAllMocks();
