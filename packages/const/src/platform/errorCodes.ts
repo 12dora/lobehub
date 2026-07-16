@@ -6,6 +6,7 @@
  * - PLATFORM_* — platform / revision / config / infra
  * - ADMIN_*    — admin console / reauth / reason gates
  * - MANAGED_*  — managed resource / setting enforcement
+ * - RESOURCE_* — M06 canonical compatibility spelling for legacy mutation denial
  */
 
 export const PLATFORM_ERROR_CODES = {
@@ -50,6 +51,8 @@ export const ADMIN_ERROR_CODES = {
 export type AdminErrorCode = (typeof ADMIN_ERROR_CODES)[keyof typeof ADMIN_ERROR_CODES];
 
 export const MANAGED_ERROR_CODES = {
+  /** M06 canonical legacy-mutation denial returned by ManagedResourceGuard. */
+  RESOURCE_MANAGED_BY_PLATFORM: 'RESOURCE_MANAGED_BY_PLATFORM',
   MANAGED_RESOURCE_BY_PLATFORM: 'MANAGED_RESOURCE_BY_PLATFORM',
   MANAGED_SETTING_BY_ADMIN: 'MANAGED_SETTING_BY_ADMIN',
   MANAGED_POLICY_ENFORCED: 'MANAGED_POLICY_ENFORCED',
@@ -81,7 +84,13 @@ export const isEnterpriseErrorCode = (value: string): value is EnterpriseErrorCo
   ALL_CODE_VALUES.has(value);
 
 /** Required prefixes for every enterprise business error code. */
-export const ENTERPRISE_ERROR_CODE_PREFIXES = ['PLATFORM_', 'ADMIN_', 'MANAGED_'] as const;
+export const ENTERPRISE_ERROR_CODE_PREFIXES = [
+  'PLATFORM_',
+  'ADMIN_',
+  'MANAGED_',
+  // M06 public contract spelling retained for legacy-router compatibility.
+  'RESOURCE_',
+] as const;
 
 export const hasEnterpriseErrorPrefix = (code: string): boolean =>
   ENTERPRISE_ERROR_CODE_PREFIXES.some((prefix) => code.startsWith(prefix));
