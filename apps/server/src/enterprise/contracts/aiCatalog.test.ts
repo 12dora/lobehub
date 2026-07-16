@@ -117,6 +117,11 @@ describe('AI catalog contracts', () => {
       'client_secret',
       'refresh-token',
       'access%2Dtoken',
+      'signature',
+      'SIG',
+      'X-Amz-Signature',
+      'x_amz_signature',
+      'X%2DAmz%2DSignature',
     ]) {
       expect(
         adminAiProviderCreateDraftInputSchema.safeParse({

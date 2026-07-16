@@ -315,6 +315,9 @@ describe('AiCatalog publication transaction', () => {
       );
     const pollutedPayload = structuredClone(revisionOne.payload);
     (pollutedPayload.models as Array<Record<string, unknown>>)[0].description = credential;
+    (pollutedPayload.models as Array<Record<string, unknown>>)[0].settings = {
+      publicUrl: 'https://history.example.test/model?X-Amz-Signature=unrelated-signature',
+    };
     await db
       .update(platformResourceRevisions)
       .set({ payload: pollutedPayload })
@@ -327,6 +330,23 @@ describe('AiCatalog publication transaction', () => {
         expectedRevision: 2,
         id: provider.id,
         reason: 'reject polluted rollback',
+        targetRevision: 1,
+      }),
+    ).rejects.toMatchObject({
+      issues: [expect.objectContaining({ message: 'credential-bearing URL is not allowed' })],
+    });
+
+    (pollutedPayload.models as Array<Record<string, unknown>>)[0].settings = {};
+    await db
+      .update(platformResourceRevisions)
+      .set({ payload: pollutedPayload })
+      .where(eq(platformResourceRevisions.id, revisionOne.id));
+    await expect(
+      service.rollbackProvider('admin', {
+        expectedDraftToken: detail.draftToken,
+        expectedRevision: 2,
+        id: provider.id,
+        reason: 'reject credential-reflecting materialization',
         targetRevision: 1,
       }),
     ).rejects.toMatchObject({
