@@ -4,6 +4,7 @@ import type {
   AdminAiModelDependentsOutput,
   AdminAiProviderDraft,
   AdminAiProviderUpdateDraftInput,
+  AiSecretMutation,
 } from './types';
 
 export type AiCatalogSaveState = 'idle' | 'dirty' | 'saving' | 'saved' | 'failed';
@@ -161,4 +162,14 @@ export const parseJsonObject = (
   } catch {
     return { error: 'syntax', value: null };
   }
+};
+
+export const buildAiSecretMutation = (
+  operation: AiSecretMutation['operation'],
+  value: string,
+): AiSecretMutation | null => {
+  if (operation === 'replace') {
+    return value ? { operation, value } : null;
+  }
+  return { operation };
 };

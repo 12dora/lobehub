@@ -21,6 +21,7 @@ import type {
   adminAiProviderTestInputSchema,
   adminAiProviderUpdateDraftInputSchema,
   aiConnectionTestResultSchema,
+  aiSecretMutationSchema,
 } from '@/server/enterprise/contracts/aiCatalog';
 
 export type AdminAiModelCreateInput = z.infer<typeof adminAiModelCreateInputSchema>;
@@ -43,6 +44,7 @@ export type AdminAiProviderRollbackInput = z.infer<typeof adminAiProviderRollbac
 export type AdminAiProviderTestInput = z.infer<typeof adminAiProviderTestInputSchema>;
 export type AdminAiProviderUpdateDraftInput = z.infer<typeof adminAiProviderUpdateDraftInputSchema>;
 export type AiConnectionTestResult = z.infer<typeof aiConnectionTestResultSchema>;
+export type AiSecretMutation = z.infer<typeof aiSecretMutationSchema>;
 
 export type AdminAiProviderListItem = AdminAiProviderListOutput['items'][number];
 export type AdminAiProviderDraft = AdminAiProviderGetOutput['draft'];
