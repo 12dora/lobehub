@@ -2,6 +2,7 @@ export {
   containsSensitiveMaterial,
   isSensitiveKey,
   M07_BENIGN_KEY_CANDIDATES,
+  M07_REDACTION_OPTIONS,
   redactDeep,
   REDACTED_PLACEHOLDER,
   redactForAudit,

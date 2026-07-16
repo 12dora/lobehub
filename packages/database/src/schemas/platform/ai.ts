@@ -14,6 +14,7 @@ import { createdAt, timestamptz, updatedAt } from '../_helpers';
 import type { PlatformResourceStatus } from './common';
 
 export interface PlatformAiProviderConfig {
+  [key: string]: unknown;
   apiStyle?: string;
   endpoint?: string;
   headers?: Record<string, string>;
@@ -21,12 +22,14 @@ export interface PlatformAiProviderConfig {
 }
 
 export interface PlatformAiProviderSettings {
+  [key: string]: unknown;
   proxyUrl?: string;
   responseAnimation?: string;
   sdkType?: string;
 }
 
 export interface PlatformAiModelAbilities {
+  [key: string]: unknown;
   files?: boolean;
   functionCall?: boolean;
   imageOutput?: boolean;
@@ -36,11 +39,13 @@ export interface PlatformAiModelAbilities {
 }
 
 export interface PlatformAiModelConfig {
+  [key: string]: unknown;
   deploymentName?: string;
   organization?: string;
 }
 
 export interface PlatformAiModelParameters {
+  [key: string]: unknown;
   frequencyPenalty?: number;
   maxTokens?: number;
   presencePenalty?: number;
@@ -49,6 +54,7 @@ export interface PlatformAiModelParameters {
 }
 
 export interface PlatformAiModelPricing {
+  [key: string]: unknown;
   cachedInput?: number;
   currency?: string;
   input?: number;
@@ -57,6 +63,7 @@ export interface PlatformAiModelPricing {
 }
 
 export interface PlatformAiModelSettings {
+  [key: string]: unknown;
   extendParams?: string[];
   searchImpl?: string;
 }

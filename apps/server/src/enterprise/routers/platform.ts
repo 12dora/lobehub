@@ -9,7 +9,7 @@ import { parseEasyauthConfig } from '../config/easyauth';
 import { publishedAiCatalogSchema } from '../contracts/aiCatalog';
 import { parseEnterpriseFeatureFlags } from '../featureFlags';
 import { resolveAccessStatus } from '../guards/accessGrant';
-import { AiCatalogReadService } from '../services/aiCatalog';
+import { AiCatalogReadService, getEmptyPublishedAiCatalog } from '../services/aiCatalog';
 import { buildEasyauthDescriptor } from '../services/easyauthManifest';
 import { resolvePublishedManagedResourcePolicies } from '../services/managedResourceCapabilities';
 import { buildPlatformCapabilities } from '../services/platformCapabilities';
@@ -28,7 +28,11 @@ export const platformRouter = router({
     getPublished: authedProcedure
       .use(serverDatabase)
       .output(publishedAiCatalogSchema)
-      .query(async ({ ctx }) => new AiCatalogReadService(ctx.serverDB).getPublished()),
+      .query(async ({ ctx }) => {
+        const flags = parseEnterpriseFeatureFlags(process.env);
+        if (!flags.ENABLE_PLATFORM_MANAGED_AI) return getEmptyPublishedAiCatalog();
+        return new AiCatalogReadService(ctx.serverDB).getPublished();
+      }),
   }),
 
   getCapabilities: authedProcedure.use(serverDatabase).query(async ({ ctx }) => {
