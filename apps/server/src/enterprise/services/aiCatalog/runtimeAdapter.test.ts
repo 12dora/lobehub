@@ -42,7 +42,7 @@ const upstreamState: AiProviderRuntimeState = {
       providerId: 'alpha',
       type: 'chat',
     },
-    { enabled: true, id: 'user-only', providerId: 'user-provider', type: 'chat' },
+    { abilities: {}, enabled: true, id: 'user-only', providerId: 'user-provider', type: 'chat' },
   ],
   enabledAiProviders: [
     { id: 'alpha', name: 'Built-in Alpha', source: 'builtin' },
@@ -266,7 +266,7 @@ describe('AiCatalogRuntimeAdapter', () => {
       { enabled: true, modelKey: 'allow-tts', type: 'tts' },
       { enabled: true, modelKey: 'allow-asr', type: 'asr' },
       { enabled: false, modelKey: 'deny-1', type: 'chat' },
-    ]) {
+    ] as const) {
       await service.createModel('admin', {
         ...model,
         expectedDraftToken: detail.draftToken,

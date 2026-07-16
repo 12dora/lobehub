@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import { isRecord } from '@lobechat/utils/object';
+import { AiModelTypeSchema } from 'model-bank';
 
 import { PlatformAiCatalogRepository } from '@/database/repositories/platformAiCatalog';
 import type { LobeChatDatabase } from '@/database/type';
@@ -50,18 +51,24 @@ const toPublishedProvider = (
     .filter(isRecord)
     .map((model) => model as RevisionModelPayload)
     .filter((model) => model.enabled && model.modelKey)
-    .map((model) => ({
-      abilities: model.abilities ?? {},
-      contextWindowTokens: model.contextWindowTokens ?? null,
-      description: model.description ?? null,
-      displayName: model.displayName ?? null,
-      modelKey: model.modelKey!,
-      parameters: model.parameters ?? {},
-      pricing: model.pricing ?? null,
-      settings: model.settings ?? {},
-      sort: model.sort ?? 0,
-      type: model.type ?? 'chat',
-    }))
+    .flatMap((model) => {
+      const type = AiModelTypeSchema.safeParse(model.type ?? 'chat');
+      if (!type.success) return [];
+      return [
+        {
+          abilities: model.abilities ?? {},
+          contextWindowTokens: model.contextWindowTokens ?? null,
+          description: model.description ?? null,
+          displayName: model.displayName ?? null,
+          modelKey: model.modelKey!,
+          parameters: model.parameters ?? {},
+          pricing: model.pricing ?? null,
+          settings: model.settings ?? {},
+          sort: model.sort ?? 0,
+          type: type.data,
+        },
+      ];
+    })
     .sort((a, b) => a.sort - b.sort || a.modelKey.localeCompare(b.modelKey));
 
   if (models.length === 0) return null;
