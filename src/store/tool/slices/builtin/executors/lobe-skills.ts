@@ -43,6 +43,7 @@ const createRuntime = (ctx: BuiltinToolContext) =>
                     revision: ctx.platformSkillSnapshot.revision,
                   }
                 : undefined,
+              operationId: ctx.operationId,
             },
             { topicId },
           );

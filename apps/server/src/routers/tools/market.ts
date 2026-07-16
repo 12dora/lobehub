@@ -1,4 +1,11 @@
+import { createHash, randomUUID } from 'node:crypto';
+
 import { MARKET_AUTH_REQUIRED_MESSAGE } from '@lobechat/desktop-bridge';
+import {
+  MAX_INLINE_SKILL_FILES,
+  MAX_INLINE_SKILL_TOTAL_BYTES,
+  validateInlineSkillResources,
+} from '@lobechat/device-control';
 import { TRPCError } from '@trpc/server';
 import debug from 'debug';
 import { z } from 'zod';
@@ -37,6 +44,7 @@ import {
 } from './_helpers/marketConnections';
 
 const log = debug('lobe-server:tools:market');
+const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
 const isSandboxAuthError = (error?: { message?: string; name?: string }) => {
   const code = error?.name;
@@ -213,6 +221,13 @@ const execInSandboxHandler = async ({
 
   try {
     let enhancedParams = params;
+    let managedInlineSkills:
+      | Array<{
+          ref: { checksum: string; skillKey: string; version: string };
+          resources: ReturnType<typeof validateInlineSkillResources>;
+          skillContent: string;
+        }>
+      | undefined;
 
     // Preprocess lh commands: rewrite to npx @lobehub/cli + inject auth env vars
     if ((toolName === 'execScript' || toolName === 'runCommand') && params.command) {
@@ -265,16 +280,47 @@ const execInSandboxHandler = async ({
         const catalog = new SkillCatalogReadService(ctx.serverDB, {
           builtinSkills: getBuiltinSkillDefinitions(),
         });
+        managedInlineSkills = [];
+        let totalFiles = 0;
+        let totalBytes = 0;
         for (const activatedSkill of enhancedParams.activatedSkills) {
           const ref = refsByKey.get(activatedSkill.name);
-          if (!ref || !(await catalog.resolvePinnedForExecution(ref))) {
+          const resolved = ref ? await catalog.resolvePinnedForExecution(ref) : undefined;
+          if (!ref || !resolved) {
             throw new TRPCError({
               code: 'PRECONDITION_FAILED',
               message: `Managed Skill reference is unavailable: ${activatedSkill.name}`,
             });
           }
+          const resources = validateInlineSkillResources(resolved.resources);
+          totalFiles += resources.length + 1;
+          totalBytes +=
+            new TextEncoder().encode(resolved.content).byteLength +
+            resources.reduce((sum, resource) => sum + resource.sizeBytes, 0);
+          if (totalFiles > MAX_INLINE_SKILL_FILES || totalBytes > MAX_INLINE_SKILL_TOTAL_BYTES) {
+            throw new TRPCError({
+              code: 'PRECONDITION_FAILED',
+              message: 'Managed Skill operation workspace exceeds its aggregate limit',
+            });
+          }
+          managedInlineSkills.push({ ref, resources, skillContent: resolved.content });
         }
-        const { platformSkillSnapshot: _snapshot, ...sandboxParams } = enhancedParams;
+        if (
+          typeof enhancedParams.operationId !== 'string' ||
+          !enhancedParams.operationId ||
+          enhancedParams.operationId.length > 256
+        ) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: 'Managed Skill operationId is required',
+          });
+        }
+        const {
+          operationId: _operationId,
+          platformSkillSnapshot: _snapshot,
+          ...sandboxParams
+        } = enhancedParams;
+        void _operationId;
         void _snapshot;
         enhancedParams = sandboxParams;
       } else {
@@ -316,7 +362,49 @@ const execInSandboxHandler = async ({
       userId,
     });
 
-    const response = await sandboxService.callTool(toolName, enhancedParams);
+    let response: CallToolResult;
+    if (managedInlineSkills) {
+      const operationHash = createHash('sha256')
+        .update(String(params.operationId))
+        .digest('hex')
+        .slice(0, 24);
+      const root = `/tmp/lobe-managed-skills/${operationHash}-${randomUUID()}`;
+      try {
+        const init = await sandboxService.callTool('runCommand', {
+          command: `umask 077 && mkdir -p ${shellQuote(root)} && chmod 700 ${shellQuote(root)}`,
+        });
+        if (!init.success) throw new Error(init.error?.message || 'Failed to create workspace');
+        let runDir: string | undefined;
+        for (const { ref, resources, skillContent } of managedInlineSkills) {
+          const skillDir = `${root}/${ref.checksum}`;
+          runDir = skillDir;
+          for (const resource of [{ content: skillContent, path: 'SKILL.md' }, ...resources]) {
+            const write = await sandboxService.callTool('writeFile', {
+              content: resource.content,
+              createDirectories: true,
+              path: `${skillDir}/${resource.path}`,
+            });
+            if (!write.success)
+              throw new Error(write.error?.message || 'Failed to write workspace');
+          }
+          const protect = await sandboxService.callTool('runCommand', {
+            command: `find ${shellQuote(skillDir)} -type d -exec chmod 700 {} + && find ${shellQuote(skillDir)} -type f -exec chmod 600 {} +`,
+          });
+          if (!protect.success)
+            throw new Error(protect.error?.message || 'Failed to protect workspace');
+        }
+        response = await sandboxService.callTool('runCommand', {
+          ...enhancedParams,
+          command: `cd ${shellQuote(runDir!)} && ${String(enhancedParams.command ?? '')}`,
+        });
+      } finally {
+        await sandboxService
+          .callTool('runCommand', { command: `rm -rf ${shellQuote(root)}` })
+          .catch(() => undefined);
+      }
+    } else {
+      response = await sandboxService.callTool(toolName, enhancedParams);
+    }
 
     log('execInSandbox response for %s: %O', toolName, response);
 

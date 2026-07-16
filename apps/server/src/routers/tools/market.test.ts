@@ -131,7 +131,15 @@ describe('tools marketRouter', () => {
       checksum,
       content: '# exact managed content',
       contentRef: null,
-      resources: [],
+      resources: [
+        {
+          checksum: 'b'.repeat(64),
+          content: 'print("ok")',
+          mediaType: 'text/x-python',
+          path: 'scripts/run.py',
+          sizeBytes: 11,
+        },
+      ],
       skillKey: 'managed.skill',
       version: '1.0.0',
     });
@@ -160,6 +168,7 @@ describe('tools marketRouter', () => {
       params: {
         activatedSkills: [{ name: 'managed.skill' }],
         command: 'python scripts/run.py',
+        operationId: 'operation-1',
         platformSkillSnapshot: {
           mandatorySkillIds: ['managed.skill'],
           refs: [{ checksum, skillKey: 'managed.skill', version: '1.0.0' }],
@@ -177,13 +186,24 @@ describe('tools marketRouter', () => {
     });
     expect(managedSkillMocks.AgentSkillModel).not.toHaveBeenCalled();
     expect(managedSkillMocks.FileModel).not.toHaveBeenCalled();
-    const sandboxParams = mockSandboxCallTool.mock.calls[0][1];
-    expect(sandboxParams).toEqual({
-      activatedSkills: [{ name: 'managed.skill' }],
-      command: 'python scripts/run.py',
-    });
-    expect(sandboxParams).not.toHaveProperty('platformSkillSnapshot');
-    expect(sandboxParams).not.toHaveProperty('skillZipUrls');
+    expect(mockSandboxCallTool).toHaveBeenCalledWith(
+      'writeFile',
+      expect.objectContaining({
+        content: 'print("ok")',
+        path: expect.stringMatching(/\/a{64}\/scripts\/run\.py$/),
+      }),
+    );
+    const execution = mockSandboxCallTool.mock.calls.find(
+      ([toolName, callParams]) =>
+        toolName === 'runCommand' && String(callParams.command).includes('python scripts/run.py'),
+    );
+    expect(execution?.[1]).not.toHaveProperty('platformSkillSnapshot');
+    expect(execution?.[1]).not.toHaveProperty('operationId');
+    expect(execution?.[1]).not.toHaveProperty('skillZipUrls');
+    expect(mockSandboxCallTool).toHaveBeenCalledWith(
+      'runCommand',
+      expect.objectContaining({ command: expect.stringContaining('rm -rf') }),
+    );
   });
 
   it('should fall back to static tools when live discovery fails', async () => {
