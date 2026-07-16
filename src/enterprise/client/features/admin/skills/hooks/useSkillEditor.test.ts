@@ -202,11 +202,11 @@ describe('useSkillEditor durable drafts', () => {
     expect(result.current.draft?.versionDraft).toBeNull();
   });
 
-  it('guards pathname selection once, allows version search, and avoids a second hydration prompt', () => {
+  it('binds Leave allowance to the target Skill without consuming it on an active-Skill refresh', () => {
     const proceed = vi.fn();
     const reset = vi.fn();
-    const { rerender, result } = renderHook(({ current }) => useSkillEditor(snapshot(current)), {
-      initialProps: { current: 'skill-1' },
+    const { rerender, result } = renderHook(({ current }) => useSkillEditor(current), {
+      initialProps: { current: snapshot('skill-1') },
     });
     act(() =>
       result.current.updateVersionDraft({
@@ -246,16 +246,26 @@ describe('useSkillEditor durable drafts', () => {
     ).toBe(true);
 
     mocks.useBlocker.mockReturnValue({ proceed, reset, state: 'blocked' });
-    rerender({ current: 'skill-1' });
+    rerender({ current: snapshot('skill-1') });
     expect(mocks.confirmModal).toHaveBeenCalledTimes(1);
     act(() => mocks.confirmModal.mock.calls[0][0].onOk());
     expect(proceed).toHaveBeenCalledTimes(1);
 
     mocks.useBlocker.mockReturnValue({ state: 'unblocked' });
-    rerender({ current: 'skill-2' });
+    rerender({
+      current: {
+        ...snapshot('skill-1', 4, 4),
+        draftToken: 'b'.repeat(64),
+      },
+    });
+    expect(result.current.activeSkillId).toBe('skill-1');
+    expect(result.current.draft?.versionDraft?.content).toContain('PRIVATE KEY');
+    expect(mocks.confirmModal).toHaveBeenCalledTimes(2);
+
+    rerender({ current: snapshot('skill-2') });
     expect(result.current.activeSkillId).toBe('skill-2');
     expect(result.current.draft?.versionDraft).toBeNull();
-    expect(mocks.confirmModal).toHaveBeenCalledTimes(1);
+    expect(mocks.confirmModal).toHaveBeenCalledTimes(2);
   });
 
   it('ignores recovery drafts and mutations for read-only auditors', () => {

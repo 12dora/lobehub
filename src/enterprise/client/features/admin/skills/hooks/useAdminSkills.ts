@@ -27,7 +27,7 @@ export const useFetchAdminSkills = (input: AdminSkillListInput, enabled = true) 
   useClientDataSWR(
     enabled ? buildAdminSkillListKey(input) : null,
     () => adminSkillsService.list(input),
-    { revalidateOnFocus: false },
+    { keepPreviousData: true, revalidateOnFocus: false },
   );
 
 export const useFetchAdminSkill = (id: string | undefined, enabled = true) =>
@@ -55,7 +55,7 @@ export const useFetchAdminSkillVersions = (
   useClientDataSWR(
     enabled && input ? buildAdminSkillVersionsKey(input) : null,
     () => adminSkillsService.listVersions(input!),
-    { revalidateOnFocus: false },
+    { keepPreviousData: true, revalidateOnFocus: false },
   );
 
 export const useFetchAdminSkillDependents = (
@@ -65,7 +65,7 @@ export const useFetchAdminSkillDependents = (
   useClientDataSWR(
     enabled && input ? buildAdminSkillDependentsKey(input) : null,
     () => adminSkillsService.getDependents(input!),
-    { revalidateOnFocus: false },
+    { keepPreviousData: true, revalidateOnFocus: false },
   );
 
 export const refreshAdminSkillLists = async () => {

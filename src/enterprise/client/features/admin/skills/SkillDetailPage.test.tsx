@@ -12,14 +12,18 @@ const mocks = vi.hoisted(() => ({
   dependentData: undefined as any,
   dependentError: new Error('dependents offline') as unknown,
   dependentInputs: [] as unknown[],
+  dependentLoading: false,
   dependentMutate: vi.fn(),
+  dependentPageErrorOnCursor: false,
   detailMutate: vi.fn(),
   editor: vi.fn(),
   versionDetailMutate: vi.fn(),
   versionListData: undefined as any,
   versionListError: new Error('versions offline') as unknown,
   versionListInputs: [] as unknown[],
+  versionListLoading: false,
   versionsMutate: vi.fn(),
+  versionPageErrorOnCursor: false,
 }));
 
 const summary = {
@@ -80,6 +84,10 @@ vi.mock('@/components/AsyncBoundary', () => ({
   },
 }));
 
+vi.mock('@/features/NavPanel/components/SkeletonList', () => ({
+  default: () => <div>skeleton-list</div>,
+}));
+
 vi.mock('./hooks/useAdminSkills', () => ({
   useFetchAdminSkill: () => ({
     data: detail,
@@ -89,10 +97,14 @@ vi.mock('./hooks/useAdminSkills', () => ({
   }),
   useFetchAdminSkillDependents: (input: unknown) => {
     mocks.dependentInputs.push(structuredClone(input));
+    const cursor = (input as { cursor?: string }).cursor;
     return {
       data: mocks.dependentData,
-      error: mocks.dependentError,
-      isLoading: false,
+      error:
+        mocks.dependentPageErrorOnCursor && cursor
+          ? new Error('dependent page offline')
+          : mocks.dependentError,
+      isLoading: mocks.dependentLoading,
       mutate: mocks.dependentMutate,
     };
   },
@@ -104,10 +116,14 @@ vi.mock('./hooks/useAdminSkills', () => ({
   }),
   useFetchAdminSkillVersions: (input: unknown) => {
     mocks.versionListInputs.push(structuredClone(input));
+    const cursor = (input as { cursor?: string }).cursor;
     return {
       data: mocks.versionListData,
-      error: mocks.versionListError,
-      isLoading: false,
+      error:
+        mocks.versionPageErrorOnCursor && cursor
+          ? new Error('version page offline')
+          : mocks.versionListError,
+      isLoading: mocks.versionListLoading,
       mutate: mocks.versionsMutate,
     };
   },
@@ -152,12 +168,16 @@ describe('SkillDetailPage independent async states', () => {
     mocks.dependentData = undefined;
     mocks.dependentError = new Error('dependents offline');
     mocks.dependentInputs.length = 0;
+    mocks.dependentLoading = false;
+    mocks.dependentPageErrorOnCursor = false;
     mocks.detailMutate.mockReset();
     mocks.editor.mockReset();
     mocks.versionDetailMutate.mockReset();
     mocks.versionListData = undefined;
     mocks.versionListError = new Error('versions offline');
     mocks.versionListInputs.length = 0;
+    mocks.versionListLoading = false;
+    mocks.versionPageErrorOnCursor = false;
     mocks.versionsMutate.mockReset();
   });
 
@@ -209,5 +229,63 @@ describe('SkillDetailPage independent async states', () => {
       expect(mocks.versionListInputs.at(-1)).toMatchObject({ cursor: 'version-cursor-2' });
       expect(mocks.dependentInputs.at(-1)).toMatchObject({ cursor: 'dependent-cursor-2' });
     });
+  });
+
+  it('keeps prior sub-list results and Previous when later cursor pages fail', async () => {
+    mocks.versionListError = undefined;
+    mocks.versionListData = { items: [summary], nextCursor: 'version-cursor-2' };
+    mocks.versionPageErrorOnCursor = true;
+    mocks.dependentError = undefined;
+    mocks.dependentData = {
+      items: [{ id: 'agent-1', key: 'agent.one', name: 'Agent One', type: 'agent', version: '1' }],
+      nextCursor: 'dependent-cursor-2',
+    };
+    mocks.dependentPageErrorOnCursor = true;
+    render(
+      <MemoryRouter initialEntries={['/admin/skills/s1']}>
+        <Routes>
+          <Route element={<SkillDetailPage />} path="/admin/skills/:id" />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    const nextButtons = screen.getAllByText('skillCatalog.pagination.next');
+    fireEvent.click(nextButtons[0]);
+    fireEvent.click(nextButtons[1]);
+
+    await waitFor(() => {
+      expect(screen.getByText('skillCatalog.detail.versions.pageError')).toBeTruthy();
+      expect(screen.getByText('skillCatalog.detail.dependents.pageError')).toBeTruthy();
+    });
+    expect(
+      screen
+        .getAllByText('skillCatalog.pagination.previous')
+        .every((button) => !(button as HTMLButtonElement).disabled),
+    ).toBe(true);
+    expect(
+      screen
+        .getAllByText('skillCatalog.pagination.next')
+        .every((button) => (button as HTMLButtonElement).disabled),
+    ).toBe(true);
+    const retryButtons = screen.getAllByText('skillCatalog.actions.retry');
+    fireEvent.click(retryButtons[0]);
+    fireEvent.click(retryButtons[1]);
+    expect(mocks.versionsMutate).toHaveBeenCalledTimes(1);
+    expect(mocks.dependentMutate).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses shape-matched skeleton lists for both sub-resource first loads', () => {
+    mocks.versionListError = undefined;
+    mocks.versionListLoading = true;
+    mocks.dependentError = undefined;
+    mocks.dependentLoading = true;
+    render(
+      <MemoryRouter initialEntries={['/admin/skills/s1']}>
+        <Routes>
+          <Route element={<SkillDetailPage />} path="/admin/skills/:id" />
+        </Routes>
+      </MemoryRouter>,
+    );
+    expect(screen.getAllByText('skeleton-list')).toHaveLength(2);
   });
 });
