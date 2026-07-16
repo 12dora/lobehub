@@ -9,7 +9,9 @@ import {
   type EditableSkillDraft,
   type EditableSkillIdentityDraft,
   type EditableSkillVersionDraft,
+  fingerprintSkillDraft,
   rebaseSkillDraft,
+  shouldConfirmSkillHydration,
   type SkillRebaseConflict,
   type SkillSaveState,
   toEditableSkillDraft,
@@ -22,59 +24,155 @@ import {
 } from '../localDraftStorage';
 import type { AdminSkillGetOutput } from '../types';
 
+const hydrationKeyOf = (snapshot: AdminSkillGetOutput, editable: boolean) =>
+  `${snapshot.draft.id}:${snapshot.baseRevision}:${snapshot.draftToken}:${editable}`;
+
 export const useSkillEditor = (snapshot: AdminSkillGetOutput | undefined, editable = true) => {
   const { t } = useTranslation('admin');
   const [draft, setDraft] = useState<EditableSkillDraft | null>(null);
   const [baseDraft, setBaseDraft] = useState<EditableSkillDraft | null>(null);
+  const [recoveryBaseRevision, setRecoveryBaseRevision] = useState<number>();
+  const [recoveryBaseDraftSequence, setRecoveryBaseDraftSequence] = useState<number>();
   const [dirty, setDirty] = useState(false);
   const [conflict, setConflict] = useState(false);
   const [saveState, setSaveState] = useState<SkillSaveState>('idle');
   const [actionError, setActionError] = useState<string | null>(null);
   const [persistenceStatus, setPersistenceStatus] = useState<SkillDraftPersistenceStatus>('saved');
   const [rebaseConflicts, setRebaseConflicts] = useState<SkillRebaseConflict[]>([]);
+  const [activeSnapshot, setActiveSnapshot] = useState<AdminSkillGetOutput>();
+  const [pendingSwitchId, setPendingSwitchId] = useState<string | null>(null);
   const hydratedKeyRef = useRef<string | null>(null);
+  const rejectedHydrationKeyRef = useRef<string | null>(null);
+  const pendingSnapshotRef = useRef<AdminSkillGetOutput | null>(null);
   const leaveModalRef = useRef<ReturnType<typeof confirmModal> | null>(null);
+  const switchModalRef = useRef<ReturnType<typeof confirmModal> | null>(null);
 
-  useEffect(() => {
-    if (!snapshot) return;
-    const hydrationKey = `${snapshot.draft.id}:${snapshot.baseRevision}:${snapshot.draftToken}:${editable}`;
-    if (hydratedKeyRef.current === hydrationKey) return;
-    hydratedKeyRef.current = hydrationKey;
+  const hydrateSnapshot = useCallback(
+    (nextSnapshot: AdminSkillGetOutput) => {
+      hydratedKeyRef.current = hydrationKeyOf(nextSnapshot, editable);
+      rejectedHydrationKeyRef.current = null;
+      pendingSnapshotRef.current = null;
+      setPendingSwitchId(null);
+      setActiveSnapshot(nextSnapshot);
 
-    const local = editable ? loadSkillLocalDraft(snapshot.draft.id) : null;
-    if (local) {
-      setBaseDraft(local.baseDraft);
-      setDraft(local.draft);
-      setDirty(true);
-      setConflict(local.baseRevision !== snapshot.baseRevision);
-      setSaveState('dirty');
+      const latest = toEditableSkillDraft(nextSnapshot);
+      const local = editable ? loadSkillLocalDraft(nextSnapshot.draft.id) : null;
+      if (local) {
+        const staleBase =
+          local.baseRevision !== nextSnapshot.baseRevision ||
+          local.baseDraftSequence !== nextSnapshot.draft.draftSequence ||
+          fingerprintSkillDraft(local.baseDraft) !== fingerprintSkillDraft(latest);
+        setBaseDraft(local.baseDraft);
+        setRecoveryBaseRevision(local.baseRevision);
+        setRecoveryBaseDraftSequence(local.baseDraftSequence);
+        setDraft(local.draft);
+        setDirty(true);
+        setConflict(staleBase);
+        setSaveState('dirty');
+        setActionError(null);
+        setPersistenceStatus('saved');
+        setRebaseConflicts([]);
+        return;
+      }
+
+      setBaseDraft(latest);
+      setRecoveryBaseRevision(nextSnapshot.baseRevision);
+      setRecoveryBaseDraftSequence(nextSnapshot.draft.draftSequence);
+      setDraft(latest);
+      setDirty(false);
+      setConflict(false);
+      setSaveState('idle');
       setActionError(null);
       setPersistenceStatus('saved');
       setRebaseConflicts([]);
+    },
+    [editable],
+  );
+
+  useEffect(() => {
+    if (!snapshot) return;
+    const hydrationKey = hydrationKeyOf(snapshot, editable);
+    if (
+      hydratedKeyRef.current === hydrationKey ||
+      rejectedHydrationKeyRef.current === hydrationKey
+    ) {
       return;
     }
 
-    const latest = toEditableSkillDraft(snapshot);
-    setBaseDraft(latest);
-    setDraft(latest);
-    setDirty(false);
-    setConflict(false);
-    setSaveState('idle');
-    setActionError(null);
-    setPersistenceStatus('saved');
-    setRebaseConflicts([]);
-  }, [editable, snapshot]);
+    const storedCurrent =
+      dirty && activeSnapshot && draft && persistenceStatus === 'saved'
+        ? loadSkillLocalDraft(activeSnapshot.draft.id)
+        : null;
+    const hasSafeRecovery = Boolean(
+      storedCurrent &&
+      draft &&
+      fingerprintSkillDraft(storedCurrent.draft) === fingerprintSkillDraft(draft),
+    );
+
+    if (
+      shouldConfirmSkillHydration({
+        currentHydrationKey: hydratedKeyRef.current,
+        dirty,
+        hasSafeRecovery,
+        nextHydrationKey: hydrationKey,
+      })
+    ) {
+      pendingSnapshotRef.current = snapshot;
+      setPendingSwitchId(snapshot.draft.id);
+      if (switchModalRef.current) return;
+      switchModalRef.current = confirmModal({
+        cancelText: t('skillCatalog.editor.unsaved.stay'),
+        content: t('skillCatalog.editor.unsaved.desc'),
+        okText: t('skillCatalog.editor.unsaved.leave'),
+        title: t('skillCatalog.editor.unsaved.title'),
+        onCancel: () => {
+          rejectedHydrationKeyRef.current = hydrationKey;
+          pendingSnapshotRef.current = null;
+          setPendingSwitchId(null);
+          switchModalRef.current = null;
+        },
+        onOk: () => {
+          const pending = pendingSnapshotRef.current;
+          switchModalRef.current = null;
+          if (pending) hydrateSnapshot(pending);
+        },
+      });
+      return;
+    }
+
+    switchModalRef.current?.close();
+    switchModalRef.current = null;
+    hydrateSnapshot(snapshot);
+  }, [activeSnapshot, dirty, draft, editable, hydrateSnapshot, persistenceStatus, snapshot, t]);
 
   useEffect(() => {
-    if (!editable || !snapshot || !draft || !dirty) return;
-    const status = saveSkillLocalDraft(snapshot.draft.id, {
-      baseDraft: baseDraft ?? toEditableSkillDraft(snapshot),
-      baseRevision: snapshot.baseRevision,
+    if (
+      !editable ||
+      !activeSnapshot ||
+      !draft ||
+      !dirty ||
+      recoveryBaseRevision === undefined ||
+      recoveryBaseDraftSequence === undefined
+    ) {
+      return;
+    }
+    const status = saveSkillLocalDraft(activeSnapshot.draft.id, {
+      baseDraft: baseDraft ?? toEditableSkillDraft(activeSnapshot),
+      baseDraftSequence: recoveryBaseDraftSequence,
+      baseRevision: recoveryBaseRevision,
       draft,
       savedAt: new Date().toISOString(),
     });
     setPersistenceStatus(status);
-  }, [baseDraft, dirty, draft, editable, snapshot]);
+  }, [
+    activeSnapshot,
+    baseDraft,
+    dirty,
+    draft,
+    editable,
+    recoveryBaseDraftSequence,
+    recoveryBaseRevision,
+  ]);
 
   useEffect(() => {
     if (!editable || !dirty) return;
@@ -114,6 +212,8 @@ export const useSkillEditor = (snapshot: AdminSkillGetOutput | undefined, editab
     () => () => {
       leaveModalRef.current?.destroy();
       leaveModalRef.current = null;
+      switchModalRef.current?.destroy();
+      switchModalRef.current = null;
     },
     [],
   );
@@ -146,10 +246,12 @@ export const useSkillEditor = (snapshot: AdminSkillGetOutput | undefined, editab
   );
 
   const discardLocal = useCallback(() => {
-    if (!snapshot) return;
-    clearSkillLocalDraft(snapshot.draft.id);
-    const latest = toEditableSkillDraft(snapshot);
+    if (!activeSnapshot) return;
+    clearSkillLocalDraft(activeSnapshot.draft.id);
+    const latest = toEditableSkillDraft(activeSnapshot);
     setBaseDraft(latest);
+    setRecoveryBaseRevision(activeSnapshot.baseRevision);
+    setRecoveryBaseDraftSequence(activeSnapshot.draft.draftSequence);
     setDraft(latest);
     setDirty(false);
     setConflict(false);
@@ -157,23 +259,27 @@ export const useSkillEditor = (snapshot: AdminSkillGetOutput | undefined, editab
     setActionError(null);
     setPersistenceStatus('saved');
     setRebaseConflicts([]);
-  }, [snapshot]);
+  }, [activeSnapshot]);
 
   const rebaseLocal = useCallback(
     (latestSnapshot?: AdminSkillGetOutput) => {
-      const source = latestSnapshot ?? snapshot;
+      const source = latestSnapshot ?? activeSnapshot;
       if (!source || !draft || !baseDraft) return;
       const latest = toEditableSkillDraft(source);
       const result = rebaseSkillDraft({ latest, local: draft, original: baseDraft });
       setBaseDraft(latest);
+      setRecoveryBaseRevision(source.baseRevision);
+      setRecoveryBaseDraftSequence(source.draft.draftSequence);
       setDraft(result.draft);
       setDirty(true);
       setSaveState('dirty');
       setActionError(null);
       setRebaseConflicts(result.conflicts);
       setConflict(result.conflicts.length > 0);
+      setActiveSnapshot(source);
+      hydratedKeyRef.current = hydrationKeyOf(source, editable);
     },
-    [baseDraft, draft, snapshot],
+    [activeSnapshot, baseDraft, draft, editable],
   );
 
   const resolveRebaseConflict = useCallback(
@@ -203,24 +309,26 @@ export const useSkillEditor = (snapshot: AdminSkillGetOutput | undefined, editab
   );
 
   const markSaved = useCallback(() => {
-    if (!snapshot) return;
-    clearSkillLocalDraft(snapshot.draft.id);
+    if (!activeSnapshot) return;
+    clearSkillLocalDraft(activeSnapshot.draft.id);
     setDirty(false);
     setConflict(false);
     setSaveState('saved');
     setActionError(null);
     setPersistenceStatus('saved');
     setRebaseConflicts([]);
-  }, [snapshot]);
+  }, [activeSnapshot]);
 
   return {
     actionError,
+    activeSkillId: activeSnapshot?.draft.id ?? null,
     baseDraft,
     conflict,
     dirty,
     discardLocal,
     draft,
     markSaved,
+    pendingSwitchId,
     persistenceStatus,
     rebaseConflicts,
     rebaseLocal,

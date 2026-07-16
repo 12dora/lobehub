@@ -10,6 +10,7 @@ import {
   parseEditableSkillVersionDraft,
   rebaseSkillDraft,
   resolveSkillPrimaryAction,
+  shouldConfirmSkillHydration,
   summarizeSkillValidation,
   toEditableSkillDraft,
 } from './controller';
@@ -60,6 +61,27 @@ const snapshot = (): AdminSkillGetOutput => ({
 });
 
 describe('M08 Skill UI controller', () => {
+  it('requires confirmation for every dirty hydration without a safe recovery copy', () => {
+    for (const persistenceStatus of ['sensitive', 'invalid', 'too_large', 'unavailable']) {
+      expect(
+        shouldConfirmSkillHydration({
+          currentHydrationKey: 'skill-1:3:old:true',
+          dirty: true,
+          hasSafeRecovery: persistenceStatus === 'saved',
+          nextHydrationKey: 'skill-2:1:new:true',
+        }),
+      ).toBe(true);
+    }
+    expect(
+      shouldConfirmSkillHydration({
+        currentHydrationKey: 'skill-1:3:old:true',
+        dirty: true,
+        hasSafeRecovery: true,
+        nextHydrationKey: 'skill-2:1:new:true',
+      }),
+    ).toBe(false);
+  });
+
   it('derives granular read/create/update/publish/archive capabilities', () => {
     expect(deriveSkillPermissions([PLATFORM_PERMISSIONS.SKILL_READ])).toEqual({
       canArchive: false,

@@ -41,6 +41,7 @@ const editableDraft = (content = '# Safe content'): EditableSkillDraft => ({
 
 const payload = (draft = editableDraft()): StoredSkillDraft => ({
   baseDraft: editableDraft(),
+  baseDraftSequence: 3,
   baseRevision: 3,
   draft,
   savedAt: '2026-07-17T00:00:00.000Z',
@@ -76,6 +77,19 @@ describe('M08 Skill local draft storage', () => {
     draft.versionDraft = { ...draft.versionDraft!, manifestText: '{invalid' };
     expect(saveSkillLocalDraft('skill-1', payload(draft))).toBe('invalid');
     expect(loadSkillLocalDraft('skill-1')).toBeNull();
+  });
+
+  it.each([
+    ['oversized payload', 'x'.repeat(1_900_001)],
+    ['malformed JSON', '{malformed'],
+    [
+      'strict-invalid payload',
+      JSON.stringify({ ...payload(), unexpectedCredential: 'must-not-survive' }),
+    ],
+  ])('removes an unusable recovery entry immediately: %s', (_name, raw) => {
+    localStorage.setItem('aihub.admin.skills.draft.skill-1', raw);
+    expect(loadSkillLocalDraft('skill-1')).toBeNull();
+    expect(localStorage.getItem('aihub.admin.skills.draft.skill-1')).toBeNull();
   });
 
   it('clears only the selected Skill recovery slot', () => {
