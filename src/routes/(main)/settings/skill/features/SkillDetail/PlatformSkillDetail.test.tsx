@@ -24,7 +24,7 @@ const mocks = vi.hoisted(() => ({
     mutate: vi.fn(),
   },
   config: { plugins: [] as Array<string | { identifier: string; mode: string }> },
-  setPluginMode: vi.fn(),
+  setPluginModeById: vi.fn(),
 }));
 
 vi.mock('@/enterprise/client/features/skills', () => ({
@@ -40,8 +40,12 @@ vi.mock('@/enterprise/client/features/skills', () => ({
 }));
 
 vi.mock('@/store/agent', () => ({
-  useAgentStore: (selector: (state: { setPluginMode: typeof mocks.setPluginMode }) => unknown) =>
-    selector({ setPluginMode: mocks.setPluginMode }),
+  useAgentStore: (
+    selector: (state: {
+      activeAgentId: string;
+      setPluginModeById: typeof mocks.setPluginModeById;
+    }) => unknown,
+  ) => selector({ activeAgentId: 'agent-a', setPluginModeById: mocks.setPluginModeById }),
 }));
 
 vi.mock('@/store/agent/selectors', () => ({
@@ -100,8 +104,8 @@ describe('PlatformSkillDetail', () => {
   beforeEach(() => {
     mocks.catalog.data.skills = [];
     mocks.config.plugins = [];
-    mocks.setPluginMode.mockReset();
-    mocks.setPluginMode.mockResolvedValue(undefined);
+    mocks.setPluginModeById.mockReset();
+    mocks.setPluginModeById.mockResolvedValue(undefined);
   });
 
   it('shows mandatory Skills as enabled without a mutation control', () => {
@@ -121,7 +125,7 @@ describe('PlatformSkillDetail', () => {
     fireEvent.click(screen.getByLabelText('use-skill'));
 
     await waitFor(() =>
-      expect(mocks.setPluginMode).toHaveBeenCalledWith('approved.skill', 'pinned'),
+      expect(mocks.setPluginModeById).toHaveBeenCalledWith('agent-a', 'approved.skill', 'pinned'),
     );
   });
 });

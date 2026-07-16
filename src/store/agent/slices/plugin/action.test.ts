@@ -362,5 +362,72 @@ describe('PluginSlice Actions', () => {
         expect.any(AbortSignal),
       );
     });
+
+    it('updates the explicit owner instead of the globally active assistant', async () => {
+      const { result } = renderHook(() => useAgentStore());
+      vi.mocked(agentService.updateAgentConfig).mockResolvedValue({
+        success: false,
+      });
+      act(() => {
+        useAgentStore.setState({
+          activeAgentId: 'agent-b',
+          agentMap: {
+            'agent-a': { plugins: ['skill-a'] } as any,
+            'agent-b': { plugins: ['skill-b'] } as any,
+          },
+        });
+      });
+
+      await act(async () => {
+        await result.current.setPluginModeById('agent-a', 'skill-a', 'disabled');
+      });
+
+      expect(agentService.updateAgentConfig).toHaveBeenCalledWith(
+        'agent-a',
+        expect.objectContaining({
+          plugins: [{ identifier: 'skill-a', mode: 'disabled' }],
+        }),
+        expect.any(AbortSignal),
+      );
+      expect(useAgentStore.getState().agentMap['agent-b']?.plugins).toEqual(['skill-b']);
+    });
+
+    it('keeps an in-flight mutation bound to its owner after the active assistant switches', async () => {
+      const { result } = renderHook(() => useAgentStore());
+      let resolveRequest!: (value: { success: false }) => void;
+      const request = new Promise<{ success: false }>((resolve) => {
+        resolveRequest = resolve;
+      });
+      vi.mocked(agentService.updateAgentConfig).mockReturnValue(request);
+      act(() => {
+        useAgentStore.setState({
+          activeAgentId: 'agent-a',
+          agentMap: {
+            'agent-a': { plugins: ['skill-a'] } as any,
+            'agent-b': { plugins: ['skill-b'] } as any,
+          },
+        });
+      });
+
+      let updatePromise!: Promise<void>;
+      act(() => {
+        updatePromise = result.current.setPluginModeById('agent-a', 'skill-a', 'pinned');
+      });
+      act(() => {
+        useAgentStore.setState({ activeAgentId: 'agent-b' });
+      });
+      await act(async () => {
+        resolveRequest({ success: false });
+        await updatePromise;
+      });
+
+      expect(agentService.updateAgentConfig).toHaveBeenCalledWith(
+        'agent-a',
+        expect.objectContaining({ plugins: [{ identifier: 'skill-a', mode: 'pinned' }] }),
+        expect.any(AbortSignal),
+      );
+      expect(useAgentStore.getState().activeAgentId).toBe('agent-b');
+      expect(useAgentStore.getState().agentMap['agent-b']?.plugins).toEqual(['skill-b']);
+    });
   });
 });

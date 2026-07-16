@@ -18,8 +18,14 @@ const serverConfigState = vi.hoisted(() => ({
 }));
 
 const platformSkillMocks = vi.hoisted(() => ({
+  beginPlatformSkillCatalogRequest: vi.fn(),
+  completePlatformSkillCatalogRequest: vi.fn(),
+  configurePlatformSkillManagement: vi.fn(),
+  failPlatformSkillCatalogRequest: vi.fn(),
   getPublishedCatalog: vi.fn(),
-  setPlatformSkillCatalog: vi.fn(),
+  state: {
+    platformSkillCatalogInvalidationRevision: '0',
+  },
 }));
 
 vi.mock('../services/platformSkills', () => ({
@@ -27,9 +33,18 @@ vi.mock('../services/platformSkills', () => ({
 }));
 
 vi.mock('@/store/tool', () => ({
-  useToolStore: {
-    getState: () => ({ setPlatformSkillCatalog: platformSkillMocks.setPlatformSkillCatalog }),
-  },
+  useToolStore: Object.assign(
+    (selector: (state: typeof platformSkillMocks.state) => unknown) =>
+      selector(platformSkillMocks.state),
+    {
+      getState: () => ({
+        beginPlatformSkillCatalogRequest: platformSkillMocks.beginPlatformSkillCatalogRequest,
+        completePlatformSkillCatalogRequest: platformSkillMocks.completePlatformSkillCatalogRequest,
+        configurePlatformSkillManagement: platformSkillMocks.configurePlatformSkillManagement,
+        failPlatformSkillCatalogRequest: platformSkillMocks.failPlatformSkillCatalogRequest,
+      }),
+    },
+  ),
 }));
 
 const fetchCapabilities = vi.fn(async () => DISABLED_PLATFORM_CAPABILITIES);
@@ -91,7 +106,10 @@ describe('EnterprisePlatformProvider', () => {
       revision: 'catalog-1',
       skills: [],
     });
-    platformSkillMocks.setPlatformSkillCatalog.mockReset();
+    platformSkillMocks.beginPlatformSkillCatalogRequest.mockReset().mockReturnValue(1);
+    platformSkillMocks.completePlatformSkillCatalogRequest.mockReset();
+    platformSkillMocks.configurePlatformSkillManagement.mockReset();
+    platformSkillMocks.failPlatformSkillCatalogRequest.mockReset();
     fetchPublicSnapshot.mockReset().mockResolvedValue({
       brandingRevision: null,
       configRevision: '0',
@@ -120,6 +138,7 @@ describe('EnterprisePlatformProvider', () => {
     expect(fetchCapabilities).not.toHaveBeenCalled();
     expect(fetchPublicSnapshot).not.toHaveBeenCalled();
     expect(platformSkillMocks.getPublishedCatalog).not.toHaveBeenCalled();
+    expect(platformSkillMocks.configurePlatformSkillManagement).toHaveBeenCalledWith(false, false);
   });
 
   it('enterprise enabled: loads platform snapshots once config is ready', async () => {
@@ -135,7 +154,7 @@ describe('EnterprisePlatformProvider', () => {
     expect(platformSkillMocks.getPublishedCatalog).not.toHaveBeenCalled();
   });
 
-  it('loads and mirrors the catalog only when managed Skills are effective', async () => {
+  it('configures management and loads the catalog only when managed Skills are effective', async () => {
     serverConfigState.enterpriseEnabled = true;
     fetchCapabilities.mockResolvedValue({
       ...DISABLED_PLATFORM_CAPABILITIES,
@@ -145,7 +164,11 @@ describe('EnterprisePlatformProvider', () => {
     renderProvider();
 
     await waitFor(() => expect(platformSkillMocks.getPublishedCatalog).toHaveBeenCalledOnce());
-    expect(platformSkillMocks.setPlatformSkillCatalog).toHaveBeenLastCalledWith({
+    expect(platformSkillMocks.configurePlatformSkillManagement).toHaveBeenLastCalledWith(
+      true,
+      false,
+    );
+    expect(platformSkillMocks.completePlatformSkillCatalogRequest).toHaveBeenCalledWith(1, {
       revision: 'catalog-1',
       skills: [],
     });
