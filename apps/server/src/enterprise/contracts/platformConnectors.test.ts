@@ -1,21 +1,31 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  ADMIN_CONNECTOR_PROCEDURE_PERMISSIONS,
+  adminConnectorArchiveInputSchema,
   adminConnectorCreateDraftInputSchema,
   adminConnectorDraftSchema,
+  adminConnectorUpdateDraftInputSchema,
+  connectorEffectiveToolPolicyOutputSchema,
   connectorOAuthCallbackInputSchema,
   connectorOAuthClientSecretMutationSchema,
   connectorOAuthStatePayloadSchema,
   connectorReturnToSchema,
+  connectorRuntimeResolutionSchema,
   connectorScopesSchema,
   connectorSharedSecretMutationSchema,
+  connectorToolDraftSchema,
   managedConnectorSchema,
+  normalizeAdminConnectorUpdateInput,
+  userConnectorDisconnectInputSchema,
+  userConnectorGetAuthorizationStatusInputSchema,
+  userConnectorListManagedInputSchema,
   userConnectorStartAuthorizationInputSchema,
   webConnectorTransportSchema,
 } from './platformConnectors';
 
-const secretState = { configured: false, fingerprint: null, updatedAt: null };
-const draft = {
+const secretState = { configured: false, fingerprint: null, updatedAt: null } as const;
+const draft = adminConnectorDraftSchema.parse({
   connectionTest: null,
   credentialMode: 'per_user_oauth',
   description: 'Issue tracker',
@@ -39,7 +49,7 @@ const draft = {
   status: 'draft',
   tools: [],
   transport: 'http',
-} as const;
+});
 
 describe('platform connector contracts', () => {
   it('models independent shared and OAuth client secret mutations', () => {
@@ -110,9 +120,67 @@ describe('platform connector contracts', () => {
       adminConnectorCreateDraftInputSchema.safeParse({
         ...base,
         credentialMode: 'per_user_oauth',
+        oauthConfig: {
+          authorizationEndpoint: 'https://identity.example.test/authorize',
+          clientId: 'client-id',
+          issuer: 'https://identity.example.test',
+          scopes: ['issues:read'],
+          tokenEndpoint: 'https://identity.example.test/token',
+        },
         sharedSecret: { operation: 'replace', value: { apiKey: 'fake' } },
       }).success,
     ).toBe(false);
+    expect(
+      adminConnectorCreateDraftInputSchema.safeParse({
+        ...base,
+        credentialMode: 'per_user_oauth',
+      }).success,
+    ).toBe(false);
+  });
+
+  it('revalidates a complete Draft after patch merge and clears incompatible secrets on mode switch', () => {
+    const update = {
+      credentialMode: 'none' as const,
+      expectedDraftToken: 'd'.repeat(64),
+      expectedRevision: 0,
+      id: 'connector-1',
+      reason: 'disable credentials',
+    };
+    expect(adminConnectorUpdateDraftInputSchema.parse(update)).toEqual(update);
+    const normalized = normalizeAdminConnectorUpdateInput(
+      draft,
+      update,
+      'https://aihub.example.test/oauth/connector/callback',
+    );
+    expect(normalized.candidate).toMatchObject({
+      credentialMode: 'none',
+      oauthClientSecret: secretState,
+      oauthConfig: null,
+      sharedSecret: secretState,
+    });
+    expect(normalized.patch).toMatchObject({
+      oauthClientSecret: { operation: 'clear' },
+      oauthConfig: null,
+      sharedSecret: { operation: 'clear' },
+    });
+    const noneDraft = adminConnectorDraftSchema.parse({
+      ...draft,
+      credentialMode: 'none',
+      oauthClientSecret: secretState,
+      oauthConfig: null,
+      sharedSecret: secretState,
+    });
+    expect(() =>
+      normalizeAdminConnectorUpdateInput(
+        noneDraft,
+        {
+          ...update,
+          credentialMode: 'per_user_oauth',
+          sharedSecret: { operation: 'replace', value: { apiKey: 'fake' } },
+        },
+        'https://aihub.example.test/oauth/connector/callback',
+      ),
+    ).toThrow();
   });
 
   it('rejects credential-bearing endpoints, sensitive JSON, and secret-bearing reason text', () => {
@@ -164,6 +232,37 @@ describe('platform connector contracts', () => {
     ).toBe(false);
   });
 
+  it('treats tool input as JSON Schema rather than rejecting sensitive property names', () => {
+    const baseTool = {
+      description: null,
+      displayName: 'Login',
+      enabled: true,
+      id: 'tool-1',
+      platformPolicy: 'allow',
+      requiresConfirmation: true,
+      riskLevel: 'high',
+      sort: 0,
+      toolKey: 'login',
+    } as const;
+    expect(
+      connectorToolDraftSchema.safeParse({
+        ...baseTool,
+        inputSchema: {
+          properties: { apiKey: { type: 'string' }, password: { type: 'string' } },
+          required: ['apiKey', 'password'],
+          type: 'object',
+        },
+      }).success,
+    ).toBe(true);
+    for (const inputSchema of [
+      { properties: { apiKey: { default: 'Authorization: Bearer fake-token-value' } } },
+      { properties: { password: { example: 'Authorization: Bearer fake-token-value' } } },
+      { properties: { token: { const: 'https://user:password@example.test' } } },
+    ]) {
+      expect(connectorToolDraftSchema.safeParse({ ...baseTool, inputSchema }).success).toBe(false);
+    }
+  });
+
   it('never exposes endpoint, OAuth client, or secret metadata to ordinary users', () => {
     const managed = {
       binding: null,
@@ -185,6 +284,12 @@ describe('platform connector contracts', () => {
     ]) {
       expect(managedConnectorSchema.safeParse({ ...managed, ...leaked }).success).toBe(false);
     }
+    expect(
+      managedConnectorSchema.safeParse({
+        ...managed,
+        description: 'Authorization: Bearer fake-token-value',
+      }).success,
+    ).toBe(false);
   });
 
   it('binds callback authority exclusively to server-side state', () => {
@@ -237,6 +342,9 @@ describe('platform connector contracts', () => {
       '/%2f%2fevil.example/path',
       '/%255c%255cevil.example/path',
       '/%25252525252525252525252f%25252525252525252525252fevil.example/path',
+      '/settings%0d%0aLocation:%20https://evil.example',
+      '/settings%00/connectors',
+      '/settings%7f/connectors',
       '/\\evil.example',
     ]) {
       expect(connectorReturnToSchema.safeParse(invalid).success).toBe(false);
@@ -247,5 +355,66 @@ describe('platform connector contracts', () => {
     ]);
     expect(connectorScopesSchema.safeParse(['openid', 'openid']).success).toBe(false);
     expect(connectorScopesSchema.safeParse(['openid profile']).success).toBe(false);
+  });
+
+  it('defines archive and minimal admin permissions while user inputs never accept userId', () => {
+    const publication = {
+      expectedDraftToken: 'd'.repeat(64),
+      expectedRevision: 2,
+      id: 'connector-1',
+      reason: 'archive unused connector',
+    };
+    expect(adminConnectorArchiveInputSchema.parse(publication)).toEqual(publication);
+    expect(ADMIN_CONNECTOR_PROCEDURE_PERMISSIONS).toMatchObject({
+      archive: 'platform_connector:delete:all',
+      create: 'platform_connector:create:all',
+      get: 'platform_connector:read:all',
+      list: 'platform_connector:read:all',
+      test: 'platform_connector:test:all',
+      update: 'platform_connector:update:all',
+    });
+    const userInputs = [
+      [userConnectorListManagedInputSchema, { userId: 'other-user' }],
+      [userConnectorStartAuthorizationInputSchema, { connectorId: 'connector-1', userId: 'other' }],
+      [
+        userConnectorGetAuthorizationStatusInputSchema,
+        { connectorId: 'connector-1', userId: 'other' },
+      ],
+      [userConnectorDisconnectInputSchema, { connectorId: 'connector-1', userId: 'other' }],
+    ] as const;
+    for (const [schema, value] of userInputs) expect(schema.safeParse(value).success).toBe(false);
+  });
+
+  it('keeps server-only runtime credentials discriminated and policy outputs relational', () => {
+    const runtime = {
+      connectorId: 'connector-1',
+      credentialMode: 'none',
+      endpoint: 'https://mcp.example.test/v1',
+      publishedRevision: 2,
+      tool: {
+        description: null,
+        displayName: 'Search',
+        inputSchema: { type: 'object' },
+        platformPolicy: 'allow',
+        requiresConfirmation: false,
+        riskLevel: 'low',
+        sort: 0,
+        toolKey: 'search',
+      },
+      transport: 'http',
+    };
+    expect(connectorRuntimeResolutionSchema.parse(runtime)).toEqual(runtime);
+    expect(
+      connectorRuntimeResolutionSchema.safeParse({ ...runtime, credentials: { apiKey: 'fake' } })
+        .success,
+    ).toBe(false);
+    expect(
+      connectorEffectiveToolPolicyOutputSchema.safeParse({ allowed: true, deniedBy: 'platform' })
+        .success,
+    ).toBe(false);
+    expect(
+      connectorEffectiveToolPolicyOutputSchema.safeParse({ allowed: false, deniedBy: null })
+        .success,
+    ).toBe(false);
   });
 });
