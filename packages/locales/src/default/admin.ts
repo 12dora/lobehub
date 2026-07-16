@@ -83,8 +83,12 @@ export default {
   'aiCatalog.editor.settings': 'Provider settings (JSON)',
   'aiCatalog.editor.sort': 'Sort order',
   'aiCatalog.editor.test.failure': 'Connection test failed',
+  'aiCatalog.editor.test.notRun': 'No persisted connection test result yet.',
+  'aiCatalog.editor.test.pending': 'Connection test pending',
+  'aiCatalog.editor.test.stale': 'Stale — test again',
   'aiCatalog.editor.test.success': 'Connection test passed',
   'aiCatalog.editor.test.summary': '{{latency}} ms · {{message}}',
+  'aiCatalog.editor.test.testedAt': 'Tested {{time}}',
   'aiCatalog.editor.unsaved.desc':
     'You have unsaved public Provider changes. Secret values are never stored in this recovery draft.',
   'aiCatalog.editor.unsaved.leave': 'Leave without saving',
@@ -93,6 +97,7 @@ export default {
   'aiCatalog.errors.generic': 'The AI catalog action failed. Check the form and try again.',
   'aiCatalog.errors.incompleteModelOrder':
     'The model collection changed. Refresh before saving a new order.',
+  'aiCatalog.models.columns.actions': 'Actions',
   'aiCatalog.models.columns.context': 'Context window',
   'aiCatalog.models.columns.enabled': 'Availability',
   'aiCatalog.models.columns.model': 'Model',
@@ -100,6 +105,7 @@ export default {
   'aiCatalog.models.columns.status': 'Status',
   'aiCatalog.models.columns.type': 'Type',
   'aiCatalog.models.actions.create': 'Add model',
+  'aiCatalog.models.actions.createForProvider': 'Add model to this Provider',
   'aiCatalog.models.actions.delete': 'Delete model',
   'aiCatalog.models.actions.edit': 'Edit model',
   'aiCatalog.models.actions.moveDown': 'Move down',

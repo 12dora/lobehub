@@ -275,19 +275,33 @@ const ProviderDetailContent = memo<ProviderDetailContentProps>(
           ) : null}
         </section>
 
-        {editor.testResult ? (
-          <section aria-live="polite" className={styles.testResult}>
+        <section aria-live="polite" className={styles.testResult}>
+          {editor.connectionTest.state ? (
             <Flexbox gap={4}>
-              <Text strong>{t(`aiCatalog.editor.test.${editor.testResult.status}` as never)}</Text>
+              <Flexbox horizontal align="center" gap={8}>
+                <Text strong>
+                  {t(`aiCatalog.editor.test.${editor.connectionTest.state.status}` as never)}
+                </Text>
+                {editor.connectionTest.stale ? (
+                  <Tag color="warning">{t('aiCatalog.editor.test.stale')}</Tag>
+                ) : null}
+              </Flexbox>
               <Text type="secondary">
                 {t('aiCatalog.editor.test.summary', {
-                  latency: editor.testResult.latencyMs,
-                  message: editor.testResult.sanitizedMessage,
+                  latency: editor.connectionTest.state.latencyMs ?? '—',
+                  message: editor.connectionTest.state.sanitizedMessage,
+                })}
+              </Text>
+              <Text type="secondary">
+                {t('aiCatalog.editor.test.testedAt', {
+                  time: formatAdminDateTime(editor.connectionTest.state.testedAt),
                 })}
               </Text>
             </Flexbox>
-          </section>
-        ) : null}
+          ) : (
+            <Text type="secondary">{t('aiCatalog.editor.test.notRun')}</Text>
+          )}
+        </section>
 
         <section className={styles.revisions}>
           <Flexbox gap={4}>
