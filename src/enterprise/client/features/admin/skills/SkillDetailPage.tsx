@@ -15,14 +15,16 @@ import SkeletonList from '@/features/NavPanel/components/SkeletonList';
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
 import RevisionBanner from '../primitives/RevisionBanner';
 import StatusBadge from '../primitives/StatusBadge';
-import { deriveSkillPermissions } from './controller';
+import { deriveSkillPermissions, isSkillIdentityDirty } from './controller';
 import {
   useFetchAdminSkill,
   useFetchAdminSkillDependents,
   useFetchAdminSkillVersion,
   useFetchAdminSkillVersions,
 } from './hooks/useAdminSkills';
+import { useSkillActions } from './hooks/useSkillActions';
 import { useSkillEditor } from './hooks/useSkillEditor';
+import SkillIdentityEditor from './SkillIdentityEditor';
 import type {
   AdminSkillGetOutput,
   AdminSkillGetVersionOutput,
@@ -121,14 +123,17 @@ const Field = memo<{ label: string; value: React.ReactNode }>(({ label, value })
 Field.displayName = 'AdminSkillField';
 
 interface VersionsSectionProps {
+  actionLoading: boolean;
   canRead: boolean;
+  canRollback: boolean;
+  onRollback: (versionId: string) => void;
   onSelect: (versionId: string) => void;
   selectedVersionId?: string;
   skillId: string;
 }
 
 const VersionsSection = memo<VersionsSectionProps>(
-  ({ canRead, selectedVersionId, skillId, onSelect }) => {
+  ({ actionLoading, canRead, canRollback, onRollback, selectedVersionId, skillId, onSelect }) => {
     const { t } = useTranslation('admin');
     const [cursorStack, setCursorStack] = useState<(string | null)[]>([]);
     const cursor = cursorStack.at(-1) ?? null;
@@ -164,9 +169,12 @@ const VersionsSection = memo<VersionsSectionProps>(
           <>
             {versions.data.items.map((version) => (
               <VersionRow
+                actionLoading={actionLoading}
+                canRollback={canRollback}
                 key={version.id}
                 selected={version.id === selectedVersionId}
                 version={version}
+                onRollback={onRollback}
                 onSelect={onSelect}
               />
             ))}
@@ -211,10 +219,13 @@ const VersionsSection = memo<VersionsSectionProps>(
 VersionsSection.displayName = 'AdminSkillVersionsSection';
 
 const VersionRow = memo<{
+  actionLoading: boolean;
+  canRollback: boolean;
+  onRollback: (versionId: string) => void;
   onSelect: (versionId: string) => void;
   selected: boolean;
   version: AdminSkillVersionSummary;
-}>(({ onSelect, selected, version }) => {
+}>(({ actionLoading, canRollback, onRollback, onSelect, selected, version }) => {
   const { t } = useTranslation('admin');
   const errors = version.validation?.issues.filter((issue) => issue.severity === 'error').length;
   const warnings = version.validation?.issues.filter(
@@ -248,6 +259,11 @@ const VersionRow = memo<{
           ? t('skillCatalog.detail.versions.selected')
           : t('skillCatalog.detail.versions.view')}
       </Button>
+      {canRollback && version.lastPublishedRevision !== null ? (
+        <Button danger disabled={actionLoading} onClick={() => onRollback(version.id)}>
+          {t('skillCatalog.actions.rollback.label')}
+        </Button>
+      ) : null}
     </div>
   );
 });
@@ -441,17 +457,28 @@ const DetailContent = memo<{
 }>(({ canRead, canUpdate, data, mutate }) => {
   const { t } = useTranslation('admin');
   const navigate = useNavigate();
+  const { authMethod, permissions } = useAdminAccess();
+  const permission = deriveSkillPermissions(permissions);
   const [searchParams, setSearchParams] = useSearchParams();
   // The lifecycle guard is mounted before edit fields arrive in batch C so
   // recovered drafts already protect detail-to-detail/list navigation.
   // Version selection only changes search params and remains non-destructive.
-  useSkillEditor(data, canUpdate);
+  const editor = useSkillEditor(data, canUpdate);
   const selectedVersionId =
     searchParams.get('version')?.trim() ||
     data.publishedVersion?.id ||
     data.latestVersion?.id ||
     undefined;
   const selectedVersion = useFetchAdminSkillVersion(data.draft.id, selectedVersionId, canRead);
+  const actions = useSkillActions({
+    authMethod: authMethod ?? null,
+    data,
+    editor,
+    permissions: permission,
+    selectedValidation: selectedVersion.data?.validation ?? null,
+    selectedVersionId,
+  });
+  const identityDirty = isSkillIdentityDirty(editor.draft, editor.baseDraft);
 
   const selectVersion = (versionId: string) => {
     const next = new URLSearchParams(searchParams);
@@ -464,7 +491,57 @@ const DetailContent = memo<{
       description={data.draft.description || t('skillCatalog.detail.noDescription')}
       title={data.draft.displayName}
       actions={
-        <Button onClick={() => navigate('/admin/skills')}>{t('skillCatalog.detail.back')}</Button>
+        <>
+          <Button onClick={() => navigate('/admin/skills')}>{t('skillCatalog.detail.back')}</Button>
+          {permission.canUpdate ? (
+            <Button
+              disabled={Boolean(actions.actionLoading) || editor.conflict}
+              onClick={actions.openCreateVersion}
+            >
+              {t('skillCatalog.version.create')}
+            </Button>
+          ) : null}
+          {permission.canUpdate && identityDirty ? (
+            <Button
+              disabled={Boolean(actions.actionLoading) || editor.conflict}
+              type="primary"
+              onClick={actions.openSaveIdentity}
+            >
+              {editor.saveState === 'failed'
+                ? t('skillCatalog.actions.save.retry')
+                : t('skillCatalog.actions.save.label')}
+            </Button>
+          ) : null}
+          {permission.canUpdate && selectedVersionId && !editor.dirty ? (
+            <Button
+              disabled={Boolean(actions.actionLoading) || editor.conflict}
+              onClick={actions.openValidate}
+            >
+              {t('skillCatalog.actions.validate.label')}
+            </Button>
+          ) : null}
+          {permission.canPublish &&
+          selectedVersionId &&
+          actions.canPublishSelected &&
+          !editor.dirty ? (
+            <Button
+              disabled={Boolean(actions.actionLoading) || editor.conflict}
+              type="primary"
+              onClick={actions.openPublish}
+            >
+              {t('skillCatalog.actions.publish.label')}
+            </Button>
+          ) : null}
+          {permission.canArchive && data.draft.status !== 'archived' ? (
+            <Button
+              danger
+              disabled={Boolean(actions.actionLoading) || editor.dirty || editor.conflict}
+              onClick={actions.openArchive}
+            >
+              {t('skillCatalog.actions.archive.label')}
+            </Button>
+          ) : null}
+        </>
       }
       banner={
         <RevisionBanner
@@ -475,36 +552,122 @@ const DetailContent = memo<{
         />
       }
     >
-      <section className={styles.section}>
-        <Text strong as="h2">
-          {t('skillCatalog.detail.identity.title')}
-        </Text>
-        <div className={styles.identityGrid}>
-          <Field label={t('skillCatalog.detail.identity.key')} value={data.draft.skillKey} />
-          <Field
-            label={t('skillCatalog.detail.identity.status')}
-            value={<StatusBadge status={data.draft.status} />}
-          />
-          <Field
-            label={t('skillCatalog.detail.identity.source')}
-            value={t(`skillCatalog.source.${data.draft.source}` as never)}
-          />
-          <Field
-            label={t('skillCatalog.detail.identity.distribution')}
-            value={t(`skillCatalog.distribution.${data.draft.distribution}` as never)}
-          />
-          <Field
-            label={t('skillCatalog.detail.identity.enabled')}
-            value={t(`skillCatalog.boolean.${data.draft.enabled}` as never)}
-          />
-          <Field label={t('skillCatalog.detail.identity.revision')} value={data.draft.revision} />
-        </div>
-      </section>
+      {editor.actionError ? (
+        <Alert
+          showIcon
+          message={editor.actionError}
+          type="error"
+          extra={
+            actions.refreshFailed ? (
+              <Button
+                loading={actions.actionLoading === 'refresh'}
+                onClick={() => void actions.retryRefresh()}
+              >
+                {t('skillCatalog.actions.retry')}
+              </Button>
+            ) : null
+          }
+        />
+      ) : null}
+      {editor.conflict ? (
+        <Alert
+          showIcon
+          description={t('skillCatalog.conflict.desc')}
+          message={t('skillCatalog.conflict.title')}
+          type="warning"
+          extra={
+            <Flexbox horizontal gap={8}>
+              <Button
+                onClick={async () => {
+                  const latest = await mutate();
+                  if (latest) editor.rebaseLocal(latest);
+                }}
+              >
+                {t('skillCatalog.conflict.rebase')}
+              </Button>
+              <Button onClick={editor.discardLocal}>{t('skillCatalog.conflict.discard')}</Button>
+            </Flexbox>
+          }
+        />
+      ) : null}
+      {editor.rebaseConflicts.length ? (
+        <Alert
+          showIcon
+          message={t('skillCatalog.conflict.fields')}
+          type="warning"
+          description={
+            <Flexbox gap={8}>
+              {editor.rebaseConflicts.map((item) => (
+                <Flexbox gap={4} key={item.field}>
+                  <Text strong>{item.field}</Text>
+                  <Text type="secondary">
+                    {t('skillCatalog.conflict.values', {
+                      latest: String(item.latest),
+                      local: String(item.local),
+                    })}
+                  </Text>
+                  <Flexbox horizontal gap={8}>
+                    <Button onClick={() => editor.resolveRebaseConflict(item.field, 'local')}>
+                      {t('skillCatalog.conflict.keepLocal')}
+                    </Button>
+                    <Button onClick={() => editor.resolveRebaseConflict(item.field, 'latest')}>
+                      {t('skillCatalog.conflict.useLatest')}
+                    </Button>
+                  </Flexbox>
+                </Flexbox>
+              ))}
+            </Flexbox>
+          }
+        />
+      ) : null}
+      {editor.persistenceStatus !== 'saved' ? (
+        <Alert
+          showIcon
+          message={t(`skillCatalog.persistence.${editor.persistenceStatus}` as never)}
+          type="warning"
+        />
+      ) : null}
+      {permission.canUpdate && editor.draft ? (
+        <SkillIdentityEditor
+          disabled={Boolean(actions.actionLoading) || editor.conflict || actions.refreshFailed}
+          draft={editor.draft.identity}
+          onChange={editor.updateIdentity}
+        />
+      ) : (
+        <section className={styles.section}>
+          <Text strong as="h2">
+            {t('skillCatalog.detail.identity.title')}
+          </Text>
+          <div className={styles.identityGrid}>
+            <Field label={t('skillCatalog.detail.identity.key')} value={data.draft.skillKey} />
+            <Field
+              label={t('skillCatalog.detail.identity.status')}
+              value={<StatusBadge status={data.draft.status} />}
+            />
+            <Field
+              label={t('skillCatalog.detail.identity.source')}
+              value={t(`skillCatalog.source.${data.draft.source}` as never)}
+            />
+            <Field
+              label={t('skillCatalog.detail.identity.distribution')}
+              value={t(`skillCatalog.distribution.${data.draft.distribution}` as never)}
+            />
+            <Field
+              label={t('skillCatalog.detail.identity.enabled')}
+              value={t(`skillCatalog.boolean.${data.draft.enabled}` as never)}
+            />
+            <Field label={t('skillCatalog.detail.identity.revision')} value={data.draft.revision} />
+          </div>
+        </section>
+      )}
       <VersionsSection
+        actionLoading={Boolean(actions.actionLoading)}
         canRead={canRead}
+        canRollback={permission.canPublish && !editor.dirty && !editor.conflict}
         key={data.draft.id}
         selectedVersionId={selectedVersionId}
         skillId={data.draft.id}
+        onRollback={actions.openRollback}
         onSelect={selectVersion}
       />
       <VersionDetail

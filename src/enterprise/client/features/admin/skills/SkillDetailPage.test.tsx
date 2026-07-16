@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   dependentPageErrorOnCursor: false,
   detailMutate: vi.fn(),
   editor: vi.fn(),
+  skillActions: vi.fn(),
   versionDetailMutate: vi.fn(),
   versionListData: undefined as any,
   versionListError: new Error('versions offline') as unknown,
@@ -68,7 +69,7 @@ vi.mock('react-i18next', () => ({
 }));
 
 vi.mock('@/enterprise/client/providers/AdminAccessProvider', () => ({
-  useAdminAccess: () => ({ permissions: [PLATFORM_PERMISSIONS.SKILL_READ] }),
+  useAdminAccess: () => ({ authMethod: null, permissions: [PLATFORM_PERMISSIONS.SKILL_READ] }),
 }));
 
 vi.mock('@/components/AsyncBoundary', () => ({
@@ -130,6 +131,8 @@ vi.mock('./hooks/useAdminSkills', () => ({
 }));
 
 vi.mock('./hooks/useSkillEditor', () => ({ useSkillEditor: mocks.editor }));
+vi.mock('./hooks/useSkillActions', () => ({ useSkillActions: mocks.skillActions }));
+vi.mock('./SkillIdentityEditor', () => ({ default: () => <div>identity-editor</div> }));
 
 vi.mock('@lobehub/ui', () => ({
   Alert: ({ extra, message }: { extra?: ReactNode; message?: ReactNode }) => (
@@ -151,9 +154,10 @@ vi.mock('@lobehub/ui/base-ui', () => ({
 }));
 
 vi.mock('../primitives/AdminPageTemplate', () => ({
-  default: ({ banner, children, title }: any) => (
+  default: ({ actions, banner, children, title }: any) => (
     <main>
       <h1>{title}</h1>
+      {actions}
       {banner}
       {children}
     </main>
@@ -172,6 +176,29 @@ describe('SkillDetailPage independent async states', () => {
     mocks.dependentPageErrorOnCursor = false;
     mocks.detailMutate.mockReset();
     mocks.editor.mockReset();
+    mocks.editor.mockReturnValue({
+      actionError: null,
+      baseDraft: null,
+      conflict: false,
+      dirty: false,
+      draft: null,
+      persistenceStatus: 'saved',
+      rebaseConflicts: [],
+      saveState: 'idle',
+    });
+    mocks.skillActions.mockReset();
+    mocks.skillActions.mockReturnValue({
+      actionLoading: null,
+      canPublishSelected: false,
+      openArchive: vi.fn(),
+      openCreateVersion: vi.fn(),
+      openPublish: vi.fn(),
+      openRollback: vi.fn(),
+      openSaveIdentity: vi.fn(),
+      openValidate: vi.fn(),
+      refreshFailed: false,
+      retryRefresh: vi.fn(),
+    });
     mocks.versionDetailMutate.mockReset();
     mocks.versionListData = undefined;
     mocks.versionListError = new Error('versions offline');
@@ -194,6 +221,8 @@ describe('SkillDetailPage independent async states', () => {
     expect(screen.getByText('skillCatalog.detail.dependents.error')).toBeTruthy();
     expect(screen.getByText('async-error')).toBeTruthy();
     expect(mocks.editor).toHaveBeenCalledWith(detail, false);
+    expect(screen.queryByText('skillCatalog.version.create')).toBeNull();
+    expect(screen.queryByText('skillCatalog.actions.archive.label')).toBeNull();
 
     const retryButtons = screen.getAllByText('skillCatalog.actions.retry');
     fireEvent.click(retryButtons[0]);
