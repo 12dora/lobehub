@@ -9,7 +9,14 @@ import { AgentSkillModel } from '@/database/models/agentSkill';
 import { FileModel } from '@/database/models/file';
 import { router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
+import { platformSkillPinnedRefSchema } from '@/server/enterprise/contracts/skillCatalog';
+import { parseEnterpriseFeatureFlags } from '@/server/enterprise/featureFlags';
 import { withManagedResourceGuard } from '@/server/enterprise/guards/managedResource';
+import {
+  getBuiltinSkillDefinitions,
+  resolvePlatformSkillRuntimeSnapshot,
+  SkillCatalogReadService,
+} from '@/server/enterprise/services/skillCatalog';
 import { FileService } from '@/server/services/file';
 import { MarketService } from '@/server/services/market';
 import {
@@ -110,6 +117,28 @@ const updateSkillSchema = z.object({
   // All metadata should be passed through manifest
   manifest: skillManifestSchema.partial().optional(),
 });
+
+const platformSkillExecutionProjectionSchema = z
+  .object({
+    checksum: z.string().regex(/^[a-f0-9]{64}$/),
+    content: z.string(),
+    description: z.string().nullable(),
+    identifier: z.string(),
+    name: z.string(),
+    resources: z.array(
+      z
+        .object({
+          checksum: z.string().regex(/^[a-f0-9]{64}$/),
+          content: z.string(),
+          mediaType: z.string(),
+          path: z.string(),
+          sizeBytes: z.number().int().nonnegative(),
+        })
+        .strict(),
+    ),
+    version: z.string(),
+  })
+  .strict();
 
 // ===== Router =====
 
@@ -285,6 +314,59 @@ export const agentSkillsRouter = router({
 
         throw error;
       }
+    }),
+
+  /**
+   * Authenticated browser/client execution projection for an explicit catalog
+   * pin. It is deliberately separate from the public platform catalog and
+   * legacy user-Skill reads, so flag-off/non-enforced callers retain their
+   * original path with no additional policy/catalog I/O.
+   */
+  resolvePlatformPinned: wsCompatProcedure
+    .use(serverDatabase)
+    .input(platformSkillPinnedRefSchema)
+    .output(platformSkillExecutionProjectionSchema)
+    .query(async ({ ctx, input }) => {
+      const runtimeSnapshot = await resolvePlatformSkillRuntimeSnapshot({
+        agentPlugins: [{ identifier: input.skillKey, mode: 'pinned' }],
+        db: ctx.serverDB,
+        flags: parseEnterpriseFeatureFlags(process.env),
+      });
+      const selected = runtimeSnapshot?.catalog.refs.some(
+        (ref) =>
+          ref.skillKey === input.skillKey &&
+          ref.version === input.version &&
+          ref.checksum === input.checksum,
+      );
+      if (!selected) throw new TRPCError({ code: 'NOT_FOUND', message: 'Skill not found' });
+
+      const skill = await new SkillCatalogReadService(ctx.serverDB, {
+        builtinSkills: getBuiltinSkillDefinitions(),
+      }).resolvePinnedForExecution(input);
+      if (
+        !skill ||
+        skill.contentRef !== null ||
+        skill.resources.some(
+          (resource) => resource.content === undefined || resource.contentRef !== undefined,
+        )
+      ) {
+        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Skill is not executable' });
+      }
+      return {
+        checksum: skill.checksum,
+        content: skill.content,
+        description: skill.description,
+        identifier: skill.skillKey,
+        name: skill.displayName,
+        resources: skill.resources.map((resource) => ({
+          checksum: resource.checksum,
+          content: resource.content!,
+          mediaType: resource.mediaType,
+          path: resource.path,
+          sizeBytes: resource.sizeBytes,
+        })),
+        version: skill.version,
+      };
     }),
 
   search: skillProcedure.input(z.object({ query: z.string() })).query(async ({ ctx, input }) => {

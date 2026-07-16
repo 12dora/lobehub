@@ -46,6 +46,7 @@ describe('platformSkillsRouter', () => {
   it('denies anonymous access and exposes no server-only resolver procedure', async () => {
     const anonymous = createCaller({ ...(await createContextInner()), serverDB: db } as never);
     await expect(anonymous.getPublished()).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    await expect(anonymous.getPublishedCatalog()).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
     expect('resolveForExecution' in anonymous).toBe(false);
   });
 
@@ -56,6 +57,10 @@ describe('platformSkillsRouter', () => {
       serverDB: db,
     } as never);
     await expect(caller.getPublished()).resolves.toEqual({ revision: 'disabled', skills: [] });
+    await expect(caller.getPublishedCatalog()).resolves.toEqual({
+      revision: 'disabled',
+      skills: [],
+    });
   });
 
   it('returns strict builtin public metadata without execution content', async () => {
