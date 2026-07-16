@@ -49,6 +49,7 @@ export type PlatformSkillValidationIssueCode =
   | 'dependency_cycle'
   | 'manifest_invalid'
   | 'permissions_invalid'
+  | 'secret_material_detected'
   | 'unknown_skill_dependency'
   | 'unknown_tool_dependency'
   | 'version_conflict';
@@ -88,6 +89,8 @@ export const platformSkills = pgTable(
       .$type<PlatformDistribution>()
       .notNull()
       .default('optional'),
+    /** Explicitly reviewed collision with a built-in Skill key. Hidden from public metadata. */
+    allowBuiltinOverride: boolean('allow_builtin_override').notNull().default(false),
     enabled: boolean('enabled').notNull().default(false),
     /** Published pointer. Explicit historical versions remain resolvable after archive. */
     currentVersionId: text('current_version_id').references(
