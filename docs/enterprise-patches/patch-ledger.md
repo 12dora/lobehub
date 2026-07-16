@@ -30,12 +30,17 @@
 
 ## M05 applied
 
-| Upstream file                                | Change                                                                                      | Module | PR         | Notes                                                               |
-| -------------------------------------------- | ------------------------------------------------------------------------------------------- | ------ | ---------- | ------------------------------------------------------------------- |
-| `apps/server/src/routers/lambda/user.ts`     | getEffectiveSettings / patchSettingOverride / resetSettingOverride + updateSettings adapter | M05    | PR-024–025 | Flag OFF preserves legacy; keyVaults never enter platform overrides |
-| `packages/const/src/platform/errorCodes.ts`  | MANAGED\_SETTING\_\* path/value codes                                                       | M05    | PR-022     | Fail-closed registry errors                                         |
-| `packages/types/src/platform/settings.ts`    | Settings policy types                                                                       | M05    | PR-022     | Mode/visibility split                                               |
-| `packages/locales` + `locales/{en-US,zh-CN}` | Admin settings policy + user source badge copy                                              | M05    | PR-026     | Hand-authored EN/ZH only                                            |
+| Upstream file                                             | Change                                                                               | Module | PR         | Notes                                                               |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------ | ------ | ---------- | ------------------------------------------------------------------- |
+| `apps/server/src/routers/lambda/user.ts`                  | getEffectiveSettings / patch/reset + updateSettings adapter + getUserState effective | M05    | PR-024–025 | Flag OFF preserves legacy; keyVaults never enter platform overrides |
+| `packages/const/src/platform/errorCodes.ts`               | MANAGED\_SETTING\_\* path/value codes                                                | M05    | PR-022     | Fail-closed registry errors                                         |
+| `packages/types/src/platform/settings.ts`                 | Settings policy types                                                                | M05    | PR-022     | Mode/visibility split                                               |
+| `packages/locales` + `locales/{en-US,zh-CN}`              | Admin settings policy + user source badge copy                                       | M05    | PR-026     | Hand-authored EN/ZH only                                            |
+| `scripts/enterprise/pathBoundaries.ts`                    | Allowlist user router + PlatformSettingSourceBadge meta hook                         | M05    | PR-026     | Stable M05 mount points                                             |
+| `src/routes/(main)/settings/memory/features/Memory.tsx`   | Wire PlatformSettingSourceBadge for memory.enabled / effort                          | M05    | PR-026     | Hidden paths unmount; locked disables control                       |
+| `src/routes/(main)/settings/about/features/Analytics.tsx` | Wire PlatformSettingSourceBadge for general.telemetry                                | M05    | PR-026     | Same pattern                                                        |
+| `src/features/PlatformSettingSourceBadge/**`              | Reusable source / managed control badge                                              | M05    | PR-026     | Presentation only; server enforces                                  |
+| `packages/database` migration 0120 + settings models      | visibility column, settings bundle pointer, override revisions                       | M05    | PR-023     | Idempotent; mode separated from visibility                          |
 
 ## Planned (do not edit until owning module)
 
