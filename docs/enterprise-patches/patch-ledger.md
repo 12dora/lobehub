@@ -42,11 +42,21 @@
 | `src/features/PlatformSettingSourceBadge/**`              | Reusable source / managed control badge                                              | M05    | PR-026     | Presentation only; server enforces                                  |
 | `packages/database` migration 0120 + settings models      | visibility column, settings bundle pointer, override revisions                       | M05    | PR-023     | Idempotent; mode separated from visibility                          |
 
+## M06 applied
+
+| Upstream file / area | Change | Module | PR | Notes |
+| --- | --- | --- | --- | --- |
+| `apps/server/src/routers/lambda/{aiProvider,aiModel,agentSkills,connector,agent,agentGroup,composio,home,oauthDeviceFlow,agentDocument}.ts` | Managed Guard and narrow personal-use exceptions | M06 | PR-028–030 | 99 mutation registry; flag-off no-op; Composio requires local and remote owner proof |
+| `apps/server/src/services/agentDocumentVfs/{index,path}.ts` | Shared canonical VFS path normalizer | M06 | PR-030 | Skill source/target and ambiguous paths fail closed |
+| `src/routes/(main)/settings/**`, `src/routes/(main)/agent/**`, `src/routes/(main)/home/**` | Close managed definition/configuration entry points | M06 | PR-029–030 | Retain runtime use, conversations, Tool permissions and personal OAuth |
+| `src/store/tool/slices/composioStore/**` | Narrow managed Composio OAuth contract | M06 | PR-030 | No client Tool snapshot or arbitrary remote account id |
+| `packages/{const,types,locales}/**` + `locales/{en-US,zh-CN}/**` | Managed types, error codes, role grant and copy | M06 | PR-027–030 | Hand-authored EN/ZH only |
+| `scripts/enterprise/pathBoundaries.ts` | Register M06 upstream mount points | M06 | PR-029–030 | Boundary tests cover the new allowlist |
+
 ## Planned (do not edit until owning module)
 
 | Upstream file                  | Change | Module             | Notes |
 | ------------------------------ | ------ | ------------------ | ----- |
-| Managed guards on AI routers   | M06    | Unified middleware |       |
 | Better Auth / OIDC config      | M11    | Adapter + LKG      |       |
 | Branding metadata / auth shell | M12    | Provider/fallback  |       |
 
