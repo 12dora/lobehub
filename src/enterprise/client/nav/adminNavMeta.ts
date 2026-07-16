@@ -7,6 +7,7 @@ export type AdminNavLabelKey =
   | 'nav.overview'
   | 'nav.users'
   | 'nav.userDetail'
+  | 'nav.reauthComplete'
   | 'nav.settings'
   | 'nav.ai'
   | 'nav.aiProviders'
@@ -74,6 +75,15 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
     // M04: real detail page
     placeholder: false,
     requiredPermissions: [PLATFORM_PERMISSIONS.USER_READ],
+  },
+  {
+    hideFromNav: true,
+    id: 'reauth-complete',
+    labelKey: 'nav.reauthComplete',
+    path: '/admin/reauth-complete',
+    // Popup landing after Better Auth reauth — no extra permission
+    placeholder: false,
+    requiredPermissions: [],
   },
   {
     id: 'settings',

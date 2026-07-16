@@ -1,25 +1,65 @@
 'use client';
 
-import { Flexbox, Text, TextArea } from '@lobehub/ui';
+import { Text, TextArea } from '@lobehub/ui';
 import { Button, createModal, type ModalInstance, useModalContext } from '@lobehub/ui/base-ui';
+import { createStaticStyles, cssVar } from 'antd-style';
 import { memo, type ReactNode, useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
+import {
+  AdminReauthBlockedError,
+  AdminReauthCancelledError,
+  withAdminReauthRetry,
+} from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
+
 import { getAdminUsersMutationErrorKey } from '../utils';
 
-interface ReasonModalContentProps {
+const styles = createStaticStyles(({ css }) => ({
+  body: css`
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  `,
+  error: css`
+    color: ${cssVar.colorError};
+  `,
+  field: css`
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  `,
+  footer: css`
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+  `,
+  title: css`
+    margin: 0;
+    font-size: ${cssVar.fontSizeLG};
+    font-weight: 600;
+  `,
+}));
+
+export interface ReasonModalContentProps {
   danger?: boolean;
   description?: string;
+  /** Controlled extra fields rendered between reason and errors. */
   extra?: ReactNode;
   impact?: string;
+  /**
+   * Submit handler. Receives trimmed reason. Should throw on failure.
+   * ADMIN_REAUTH_REQUIRED triggers popup reauth + exactly one retry.
+   */
   onSubmit: (reason: string) => Promise<void>;
   submitLabel: string;
   targetLabel: string;
   title: string;
+  /** Return i18n key or null. */
   validateExtra?: () => string | null;
 }
 
-const ReasonModalContent = memo<ReasonModalContentProps>(
+export const ReasonModalContent = memo<ReasonModalContentProps>(
   ({
     danger,
     description,
@@ -55,19 +95,31 @@ const ReasonModalContent = memo<ReasonModalContentProps>(
       setLoading(true);
       setErrorKey(null);
       try {
-        await onSubmit(trimmed);
+        // Pending reason stays only in React state (in memory) across reauth.
+        await withAdminReauthRetry(() => onSubmit(trimmed));
         close();
       } catch (error) {
-        setErrorKey(getAdminUsersMutationErrorKey(error));
-        // Keep modal open on failure
+        if (error instanceof AdminReauthCancelledError) {
+          setErrorKey('users.errors.reauthCancelled');
+          // Keep modal open with reason intact
+        } else if (error instanceof AdminReauthBlockedError) {
+          setErrorKey('users.errors.reauthBlocked');
+        } else {
+          const mapped = mapEnterpriseError(error);
+          if (mapped?.action === 'reauth') {
+            setErrorKey('users.errors.reauthRequired');
+          } else {
+            setErrorKey(getAdminUsersMutationErrorKey(error));
+          }
+        }
       } finally {
         setLoading(false);
       }
     }, [close, loading, onSubmit, reason, validateExtra]);
 
     return (
-      <Flexbox gap={16}>
-        <Text as="h2" style={{ fontSize: 16, fontWeight: 600, margin: 0 }}>
+      <div className={styles.body}>
+        <Text as="h2" className={styles.title}>
           {title}
         </Text>
         {description ? <Text type="secondary">{description}</Text> : null}
@@ -75,8 +127,8 @@ const ReasonModalContent = memo<ReasonModalContentProps>(
           <strong>{t('users.modals.target')}</strong> {targetLabel}
         </Text>
         {impact ? <Text type="secondary">{impact}</Text> : null}
-        <Flexbox gap={6}>
-          <Text style={{ fontSize: 13 }}>{t('users.modals.reasonLabel')}</Text>
+        <div className={styles.field}>
+          <Text>{t('users.modals.reasonLabel')}</Text>
           <TextArea
             maxLength={2000}
             placeholder={t('users.modals.reasonPlaceholder')}
@@ -84,14 +136,14 @@ const ReasonModalContent = memo<ReasonModalContentProps>(
             value={reason}
             onChange={(e) => setReason(e.target.value)}
           />
-        </Flexbox>
+        </div>
         {extra}
         {errorKey ? (
-          <Text role="alert" type="danger">
+          <Text className={styles.error} role="alert">
             {t(errorKey as never)}
           </Text>
         ) : null}
-        <Flexbox horizontal gap={8} justify="flex-end">
+        <div className={styles.footer}>
           <Button disabled={loading} onClick={close}>
             {t('users.modals.cancel')}
           </Button>
@@ -104,8 +156,8 @@ const ReasonModalContent = memo<ReasonModalContentProps>(
           >
             {submitLabel}
           </Button>
-        </Flexbox>
-      </Flexbox>
+        </div>
+      </div>
     );
   },
 );

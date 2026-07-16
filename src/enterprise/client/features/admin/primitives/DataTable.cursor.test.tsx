@@ -22,6 +22,18 @@ vi.mock('@lobehub/ui/base-ui', async () => {
   const React = await import('react');
   return {
     Button: ({ children, ...rest }: any) => React.createElement('button', rest, children),
+    Select: ({ value, onChange, options, 'aria-label': aria }: any) =>
+      React.createElement(
+        'select',
+        {
+          'aria-label': aria,
+          value,
+          'onChange': (e: any) => onChange?.(e.target.value),
+        },
+        (options ?? []).map((o: any) =>
+          React.createElement('option', { key: o.value, value: o.value }, o.label),
+        ),
+      ),
   };
 });
 

@@ -200,4 +200,24 @@ export default {
   'users.providers.github': 'GitHub',
   'users.providers.microsoft': 'Microsoft',
   'users.providers.oidc': 'OIDC',
+  'nav.reauthComplete': 'Re-authentication complete',
+  'users.reauth.complete': 'Re-authentication complete. You can close this window.',
+  'users.errors.reauthCancelled': 'Re-authentication was cancelled. Your form is still open.',
+  'users.errors.reauthBlocked': 'Could not open the sign-in window. Allow popups and try again.',
+  'users.detail.youBadge': 'You',
+  'users.danger.title': 'Danger zone',
+  'users.danger.desc': 'Irreversible or high-impact account actions. Server reauth is required.',
+  'users.danger.selfBanHidden': 'You cannot ban your own account from this console.',
+  'users.danger.selfRevokeNote':
+    'Revoking your own sessions defaults to keeping the current session unless you explicitly choose otherwise.',
+  'users.sessions.openRevoke': 'Open revoke action',
+  'users.sessions.selfRetainNote':
+    'For your own account, revoke defaults to retaining the current session.',
+  'users.modals.revoke.impactSelfDefault':
+    'Other sessions will be revoked. Your current session is retained unless you opt in below.',
+  'users.modals.revoke.includeCurrentWarning':
+    'This will sign you out after confirm. You will need to sign in again.',
+  'users.modals.roles.permissionCount': '{{count}} permissions',
+  'users.modals.roles.superAdminForbidden': 'Only a super admin may assign the super admin role.',
+  'users.list.filters.createdRange': 'Registered range',
 };

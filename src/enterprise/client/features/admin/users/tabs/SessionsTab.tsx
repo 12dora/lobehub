@@ -13,37 +13,39 @@ import { formatAdminDateTime } from '../utils';
 const styles = createStaticStyles(({ css }) => ({
   row: css`
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: minmax(100px, 140px) 1fr;
     gap: 4px 12px;
 
     padding: 12px;
     border: 1px solid ${cssVar.colorBorderSecondary};
-    border-radius: 8px;
+    border-radius: ${cssVar.borderRadius};
   `,
 }));
 
 interface SessionsTabProps {
   canRevoke: boolean;
-  onRevoke?: () => void;
+  /** Focus / open the danger-zone revoke action (no divergent logic). */
+  onOpenRevoke?: () => void;
   user: AdminUsersGetOutput;
 }
 
-const SessionsTab = memo<SessionsTabProps>(({ user, canRevoke, onRevoke }) => {
+const SessionsTab = memo<SessionsTabProps>(({ user, canRevoke, onOpenRevoke }) => {
   const { t } = useTranslation('admin');
 
   return (
     <Flexbox gap={16}>
       <Flexbox horizontal align="center" justify="space-between">
-        <Text as="h3" style={{ fontSize: 15, fontWeight: 600, margin: 0 }}>
+        <Text as="h3" style={{ fontWeight: 600, margin: 0 }}>
           {t('users.sessions.title', { count: user.sessionCount })}
         </Text>
-        {canRevoke && onRevoke ? (
-          <Button danger size="small" onClick={onRevoke}>
-            {t('users.actions.revokeSessions')}
+        {canRevoke && onOpenRevoke ? (
+          <Button size="small" type="default" onClick={onOpenRevoke}>
+            {t('users.sessions.openRevoke')}
           </Button>
         ) : null}
       </Flexbox>
       <Text type="secondary">{t('users.sessions.tokenNote')}</Text>
+      {user.isSelf ? <Text type="secondary">{t('users.sessions.selfRetainNote')}</Text> : null}
       {user.sessions.length === 0 ? (
         <Text type="secondary">{t('users.sessions.empty')}</Text>
       ) : (

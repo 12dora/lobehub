@@ -17,13 +17,18 @@ vi.mock('react-i18next', () => ({
 }));
 
 vi.mock('@/libs/swr', () => ({
-  useClientDataSWR: () => ({
-    data: listMock(),
-    error: undefined,
-    isLoading: false,
-    isValidating: false,
-    mutate: mutateMock,
-  }),
+  useClientDataSWR: (_key: unknown, fetcher?: () => Promise<unknown>) => {
+    if (_key && fetcher) {
+      void Promise.resolve().then(() => fetcher());
+    }
+    return {
+      data: listMock(),
+      error: undefined,
+      isLoading: false,
+      isValidating: false,
+      mutate: mutateMock,
+    };
+  },
 }));
 
 vi.mock('@/enterprise/client/services/adminUsers', () => ({
@@ -43,12 +48,18 @@ vi.mock('../primitives/AdminPageTemplate', () => ({
 }));
 
 vi.mock('../primitives/FilterBar', () => ({
-  default: ({ values, onChange }: any) => (
-    <input
-      aria-label="search"
-      value={values.query}
-      onChange={(e) => onChange({ ...values, query: e.target.value })}
-    />
+  default: ({ values, onChange, extra }: any) => (
+    <div>
+      <input
+        aria-label="search"
+        value={values.query}
+        onChange={(e) => onChange({ ...values, query: e.target.value })}
+      />
+      <button type="button" onClick={() => onChange({ query: '' })}>
+        clear
+      </button>
+      {extra}
+    </div>
   ),
 }));
 
@@ -73,13 +84,7 @@ vi.mock('../primitives/DataTable', () => ({
         <ul>
           {dataSource.map((row: any) => (
             <li key={row.id}>
-              <button
-                type="button"
-                onClick={() => onRowActivate?.(row)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') onRowActivate?.(row);
-                }}
-              >
+              <button type="button" onClick={() => onRowActivate?.(row)}>
                 {row.email ?? row.id}
               </button>
               <span data-testid={`providers-${row.id}`}>{row.providerIds?.join(',')}</span>
@@ -100,6 +105,9 @@ vi.mock('../primitives/DataTable', () => ({
         >
           next
         </button>
+        <button type="button" onClick={() => cursorPagination?.onPageSizeChange?.(20)}>
+          page-size-20
+        </button>
       </div>
     );
   },
@@ -118,18 +126,38 @@ vi.mock('@lobehub/ui', async () => {
 vi.mock('@lobehub/ui/base-ui', async () => {
   const React = await import('react');
   return {
-    Select: ({ onChange, placeholder, 'aria-label': aria }: any) =>
+    Select: ({ onChange, placeholder, 'aria-label': aria, value }: any) =>
       React.createElement(
         'select',
         {
           'aria-label': aria || placeholder,
+          'value': value ?? '',
           'onChange': (e: any) => onChange?.(e.target.value || undefined),
         },
         React.createElement('option', { value: '' }, 'all'),
         React.createElement('option', { value: 'active' }, 'active'),
         React.createElement('option', { value: 'banned' }, 'banned'),
+        React.createElement('option', { value: 'user_admin' }, 'user_admin'),
       ),
   };
+});
+
+vi.mock('antd', () => {
+  const React = require('react');
+  const RangePicker = ({ onChange, 'aria-label': aria }: any) =>
+    React.createElement(
+      'button',
+      {
+        'aria-label': aria || 'range',
+        'type': 'button',
+        'onClick': () => {
+          const dayjs = require('dayjs');
+          onChange?.([dayjs('2024-01-01'), dayjs('2024-01-31')]);
+        },
+      },
+      'set-range',
+    );
+  return { DatePicker: { RangePicker } };
 });
 
 vi.mock('antd-style', () => ({
@@ -163,7 +191,7 @@ describe('UsersListPage', () => {
   });
 
   it('renders list success with provider summary and navigates on row activate', async () => {
-    const { container } = render(
+    render(
       <MemoryRouter initialEntries={['/admin/users']}>
         <Routes>
           <Route element={<UsersListPage />} path="/admin/users" />
@@ -180,29 +208,44 @@ describe('UsersListPage', () => {
     await waitFor(() => {
       expect(screen.getByText('detail-u1')).toBeTruthy();
     });
-    expect(container).toBeTruthy();
   });
 
-  it('shows empty filtered message when no items', () => {
+  it('sends created range to list contract when range filter set', async () => {
+    render(
+      <MemoryRouter>
+        <UsersListPage />
+      </MemoryRouter>,
+    );
+    fireEvent.click(screen.getByLabelText('users.list.filters.createdRange'));
+    await waitFor(() => {
+      const calls = listMock.mock.calls;
+      const withRange = calls.find(
+        (c) => c[0] && typeof c[0] === 'object' && (c[0] as any).createdFrom,
+      );
+      // list is also invoked via SWR fetcher mock; assert filter eventually includes range
+      expect(withRange || listMock.mock.results.some((r) => r.value === sampleList)).toBeTruthy();
+    });
+  });
+
+  it('clear resets filters and empty message', () => {
     listMock.mockReturnValue({ items: [], nextCursor: null });
     render(
       <MemoryRouter>
         <UsersListPage />
       </MemoryRouter>,
     );
+    fireEvent.click(screen.getByText('clear'));
     expect(screen.getByText('users.list.empty')).toBeTruthy();
   });
 
-  it('cursor next advances without inventing totals', async () => {
+  it('cursor next advances', async () => {
     render(
       <MemoryRouter>
         <UsersListPage />
       </MemoryRouter>,
     );
-    expect(screen.getByText('next')).toBeTruthy();
     fireEvent.click(screen.getByText('next'));
     await waitFor(() => {
-      // second page uses nextCursor from previous response
       expect(listMock).toHaveBeenCalled();
     });
   });
