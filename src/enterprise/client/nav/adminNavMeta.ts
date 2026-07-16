@@ -15,6 +15,7 @@ export type AdminNavLabelKey =
   | 'nav.aiProviderDetail'
   | 'nav.aiModels'
   | 'nav.skills'
+  | 'nav.skillDetail'
   | 'nav.connectors'
   | 'nav.agents'
   | 'nav.identity'
@@ -136,7 +137,15 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
     id: 'skills',
     labelKey: 'nav.skills',
     path: '/admin/skills',
-    placeholder: true,
+    placeholder: false,
+    requiredPermissions: [PLATFORM_PERMISSIONS.SKILL_READ],
+  },
+  {
+    hideFromNav: true,
+    id: 'skills-detail',
+    labelKey: 'nav.skillDetail',
+    path: '/admin/skills/:id',
+    placeholder: false,
     requiredPermissions: [PLATFORM_PERMISSIONS.SKILL_READ],
   },
   {

@@ -10,9 +10,14 @@ interface ConfirmOptions {
   onOk: () => void;
 }
 
+type BlockerPredicate = (args: {
+  currentLocation: { pathname: string };
+  nextLocation: { pathname: string };
+}) => boolean;
+
 const mocks = vi.hoisted(() => ({
   confirmModal: vi.fn((_options: ConfirmOptions) => ({ close: vi.fn(), destroy: vi.fn() })),
-  useBlocker: vi.fn(() => ({ state: 'unblocked' })),
+  useBlocker: vi.fn((_condition?: boolean | BlockerPredicate): any => ({ state: 'unblocked' })),
 }));
 
 vi.mock('react-router', () => ({
@@ -195,6 +200,62 @@ describe('useSkillEditor durable drafts', () => {
     expect(result.current.activeSkillId).toBe('skill-2');
     expect(result.current.pendingSwitchId).toBeNull();
     expect(result.current.draft?.versionDraft).toBeNull();
+  });
+
+  it('guards pathname selection once, allows version search, and avoids a second hydration prompt', () => {
+    const proceed = vi.fn();
+    const reset = vi.fn();
+    const { rerender, result } = renderHook(({ current }) => useSkillEditor(snapshot(current)), {
+      initialProps: { current: 'skill-1' },
+    });
+    act(() =>
+      result.current.updateVersionDraft({
+        content: '-----BEGIN PRIVATE KEY----- fake material',
+        contentRef: '',
+        manifestText: JSON.stringify({
+          description: 'Safe Skill',
+          displayName: 'Safe Skill',
+          localizedDescriptions: {},
+          localizedDisplayNames: {},
+          permissions: {
+            filesystem: 'none',
+            network: { allowedHosts: [], enabled: false },
+            tools: { allow: [] },
+          },
+          skillDependencies: [],
+          toolDependencies: [],
+        }),
+        resourcesText: '[]',
+        version: '1.0.0',
+      }),
+    );
+
+    const shouldBlock = mocks.useBlocker.mock.calls.at(-1)?.[0];
+    if (typeof shouldBlock !== 'function') throw new TypeError('expected a blocker predicate');
+    expect(
+      shouldBlock({
+        currentLocation: { pathname: '/admin/skills/skill-1' },
+        nextLocation: { pathname: '/admin/skills/skill-1' },
+      }),
+    ).toBe(false);
+    expect(
+      shouldBlock({
+        currentLocation: { pathname: '/admin/skills/skill-1' },
+        nextLocation: { pathname: '/admin/skills/skill-2' },
+      }),
+    ).toBe(true);
+
+    mocks.useBlocker.mockReturnValue({ proceed, reset, state: 'blocked' });
+    rerender({ current: 'skill-1' });
+    expect(mocks.confirmModal).toHaveBeenCalledTimes(1);
+    act(() => mocks.confirmModal.mock.calls[0][0].onOk());
+    expect(proceed).toHaveBeenCalledTimes(1);
+
+    mocks.useBlocker.mockReturnValue({ state: 'unblocked' });
+    rerender({ current: 'skill-2' });
+    expect(result.current.activeSkillId).toBe('skill-2');
+    expect(result.current.draft?.versionDraft).toBeNull();
+    expect(mocks.confirmModal).toHaveBeenCalledTimes(1);
   });
 
   it('ignores recovery drafts and mutations for read-only auditors', () => {
