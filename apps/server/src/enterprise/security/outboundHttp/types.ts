@@ -50,7 +50,14 @@ export interface SafeOutboundRequestInit {
   maxRedirects?: number;
   maxResponseBytes?: number;
   method?: string;
+  /** Secret body/custom headers present: cross-origin redirects fail closed. */
+  secretBearing?: boolean;
   timeoutMs?: number;
+}
+
+export interface OutboundPolicySnapshot {
+  policy: OutboundPolicy;
+  version: number | string;
 }
 
 export interface SafeOutboundHttpClientOptions {
@@ -66,6 +73,8 @@ export interface SafeOutboundHttpClientOptions {
    */
   maxResponseBytes?: number;
   mode?: OutboundPolicyMode;
+  /** Re-read before DNS, after DNS, and before every redirect transport hop. */
+  policyProvider?: () => OutboundPolicySnapshot;
   /** Inject resolver (tests / custom). Default: dns.promises.lookup all. */
   resolve?: DnsResolver;
   timeoutMs?: number;

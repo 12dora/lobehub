@@ -1,5 +1,6 @@
 import { isIP } from 'node:net';
 
+import { containsSensitiveMaterial, isCredentialBearingUrl, isSensitiveKey } from '../redaction';
 import { ssrfBlocked } from './errors';
 import {
   assertHostnamePolicy,
@@ -12,6 +13,7 @@ import { defaultDnsResolve, defaultPinnedTransport } from './transport';
 import type {
   DnsResolver,
   PinnedTransport,
+  ResolvedAddress,
   SafeOutboundHttpClientOptions,
   SafeOutboundRequestInit,
   SafeOutboundResponse,
@@ -33,7 +35,7 @@ const CREDENTIAL_HEADER_NAMES = new Set([
 ]);
 
 export class SafeOutboundHttpClient {
-  private readonly policy: OutboundPolicy;
+  private readonly policyProvider: () => { policy: OutboundPolicy; version: number | string };
   private readonly resolve: DnsResolver;
   private readonly transport: PinnedTransport;
   private readonly timeoutMs: number;
@@ -41,10 +43,12 @@ export class SafeOutboundHttpClient {
   private readonly maxResponseBytes: number;
 
   constructor(options: SafeOutboundHttpClientOptions = {}) {
-    this.policy = {
+    const configuredPolicy = {
       allowlist: options.allowlist ?? DEFAULT_OUTBOUND_POLICY.allowlist,
       mode: options.mode ?? DEFAULT_OUTBOUND_POLICY.mode,
     };
+    this.policyProvider =
+      options.policyProvider ?? (() => ({ policy: configuredPolicy, version: 'static' }));
     this.resolve = options.resolve ?? defaultDnsResolve;
     this.transport = options.transport ?? defaultPinnedTransport;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -70,40 +74,43 @@ export class SafeOutboundHttpClient {
     const maxRedirects = init.maxRedirects ?? this.maxRedirects;
     const timeoutMs = init.timeoutMs ?? this.timeoutMs;
     const maxResponseBytes = init.maxResponseBytes ?? this.maxResponseBytes;
+    const deadlineAt = Date.now() + timeoutMs;
 
     let method = (init.method ?? 'GET').toUpperCase();
     let body = toBuffer(init.body);
     const baseHeaders: Record<string, string> = { ...init.headers };
+    const secretBearing =
+      init.secretBearing === true || hasSensitiveHeaders(baseHeaders) || hasSensitiveBody(body);
 
     // Drop hop-by-hop that we control
     delete baseHeaders.host;
     delete baseHeaders.Host;
 
     while (true) {
-      this.assertUrlPolicy(current);
+      this.assertUrlPolicy(current, this.getPolicy());
 
       const hostname = current.hostname;
-      const hostnameAllowListed =
-        this.policy.mode === 'allowlist' && isAllowlistedHostOrIp(hostname, this.policy.allowlist);
-
-      const addresses = await this.resolveHost(hostname);
-      for (const addr of addresses) {
-        assertResolvedIpAllowed(addr.address, this.policy, hostnameAllowListed);
-      }
+      const addresses = await this.resolveHost(hostname, deadlineAt);
+      this.assertResolvedAddresses(current, addresses, this.getPolicy());
+      this.assertResolvedAddresses(current, addresses, this.getPolicy());
 
       // Pin to first allowed address (all were validated)
       const pinned = addresses[0]!;
+      const remainingMs = this.remainingMs(deadlineAt);
 
-      const response = await this.transport({
-        body: body && method !== 'GET' && method !== 'HEAD' ? body : undefined,
-        family: pinned.family,
-        headers: { ...baseHeaders },
-        maxResponseBytes,
-        method,
-        pinnedAddress: pinned.address,
-        timeoutMs,
-        url: current,
-      });
+      const response = await this.withDeadline(
+        this.transport({
+          body: body && method !== 'GET' && method !== 'HEAD' ? body : undefined,
+          family: pinned.family,
+          headers: { ...baseHeaders },
+          maxResponseBytes,
+          method,
+          pinnedAddress: pinned.address,
+          timeoutMs: remainingMs,
+          url: current,
+        }),
+        deadlineAt,
+      );
 
       if (REDIRECT_STATUSES.has(response.status) && redirects < maxRedirects) {
         const location = headerGet(response.headers, 'location');
@@ -114,8 +121,10 @@ export class SafeOutboundHttpClient {
         current = this.parseUrl(new URL(location, previous));
         redirects += 1;
 
-        // MINOR-1: do not forward caller credentials across origins
         if (!isSameOrigin(previous, current)) {
+          if (secretBearing) {
+            throw ssrfBlocked('cross-origin redirect rejected for secret-bearing request');
+          }
           stripCredentialHeaders(baseHeaders);
         }
 
@@ -137,15 +146,12 @@ export class SafeOutboundHttpClient {
 
   /** Policy check without performing a network request (admin URL validation). */
   assertAllowed = async (input: string | URL): Promise<void> => {
+    const deadlineAt = Date.now() + this.timeoutMs;
     const url = this.parseUrl(input);
-    this.assertUrlPolicy(url);
+    this.assertUrlPolicy(url, this.getPolicy());
     const hostname = url.hostname;
-    const hostnameAllowListed =
-      this.policy.mode === 'allowlist' && isAllowlistedHostOrIp(hostname, this.policy.allowlist);
-    const addresses = await this.resolveHost(hostname);
-    for (const addr of addresses) {
-      assertResolvedIpAllowed(addr.address, this.policy, hostnameAllowListed);
-    }
+    const addresses = await this.resolveHost(hostname, deadlineAt);
+    this.assertResolvedAddresses(url, addresses, this.getPolicy());
   };
 
   private parseUrl(input: string | URL): URL {
@@ -153,7 +159,7 @@ export class SafeOutboundHttpClient {
     try {
       url = typeof input === 'string' ? new URL(input) : new URL(input.toString());
     } catch {
-      throw ssrfBlocked('invalid URL', { input: String(input) });
+      throw ssrfBlocked('invalid URL');
     }
     if (!ALLOWED_PROTOCOLS.has(url.protocol)) {
       throw ssrfBlocked(`protocol not allowed: ${url.protocol}`, {
@@ -166,23 +172,68 @@ export class SafeOutboundHttpClient {
     return url;
   }
 
-  private assertUrlPolicy(url: URL): void {
-    assertHostnamePolicy(url.hostname, this.policy);
+  private assertUrlPolicy(url: URL, policy: OutboundPolicy): void {
+    if (isCredentialBearingUrl(url.toString())) {
+      throw ssrfBlocked('credential-bearing URL rejected');
+    }
+    assertHostnamePolicy(url.hostname, policy);
   }
 
-  private async resolveHost(hostname: string) {
+  private async resolveHost(hostname: string, deadlineAt: number) {
     const host = hostname.replaceAll(/^\[|\]$/g, '');
     if (isIP(host)) {
       const family = (isIP(host) === 6 ? 6 : 4) as 4 | 6;
       return [{ address: host, family }];
     }
 
-    const addresses = await this.resolve(host);
+    const addresses = await this.withDeadline(this.resolve(host), deadlineAt);
     if (!addresses.length) {
       throw ssrfBlocked('DNS resolution returned no addresses', { hostname: host });
     }
     return addresses;
   }
+
+  private assertResolvedAddresses(
+    url: URL,
+    addresses: ResolvedAddress[],
+    policy: OutboundPolicy,
+  ): void {
+    this.assertUrlPolicy(url, policy);
+    const hostnameAllowListed =
+      policy.mode === 'allowlist' && isAllowlistedHostOrIp(url.hostname, policy.allowlist);
+    for (const address of addresses) {
+      assertResolvedIpAllowed(address.address, policy, hostnameAllowListed);
+    }
+  }
+
+  private getPolicy(): OutboundPolicy {
+    const snapshot = this.policyProvider();
+    if (!snapshot || !snapshot.policy || snapshot.version === undefined) {
+      throw ssrfBlocked('outbound policy snapshot unavailable');
+    }
+    return snapshot.policy;
+  }
+
+  private remainingMs(deadlineAt: number): number {
+    const remaining = deadlineAt - Date.now();
+    if (remaining <= 0) throw ssrfBlocked('absolute deadline exceeded');
+    return remaining;
+  }
+
+  private withDeadline = async <T>(operation: Promise<T>, deadlineAt: number): Promise<T> => {
+    const remaining = this.remainingMs(deadlineAt);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        operation,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(ssrfBlocked('absolute deadline exceeded')), remaining);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
 
   private toResponse(
     raw: {
@@ -251,10 +302,27 @@ export const isSameOrigin = (a: URL, b: URL): boolean =>
 /** Strip credential headers in place (case-insensitive key match). */
 export const stripCredentialHeaders = (headers: Record<string, string>): void => {
   for (const key of Object.keys(headers)) {
-    if (CREDENTIAL_HEADER_NAMES.has(key.toLowerCase())) {
+    if (
+      CREDENTIAL_HEADER_NAMES.has(key.toLowerCase()) ||
+      isSensitiveKey(key) ||
+      containsSensitiveMaterial(headers[key])
+    ) {
       delete headers[key];
     }
   }
+};
+
+const hasSensitiveHeaders = (headers: Record<string, string>): boolean =>
+  Object.entries(headers).some(
+    ([key, value]) =>
+      CREDENTIAL_HEADER_NAMES.has(key.toLowerCase()) ||
+      isSensitiveKey(key) ||
+      containsSensitiveMaterial(value),
+  );
+
+const hasSensitiveBody = (body: Buffer | undefined): boolean => {
+  if (!body || body.length === 0 || body.length > 64 * 1024) return false;
+  return containsSensitiveMaterial(body.toString('utf8'));
 };
 
 /** Factory with G-07 defaults (private allowed, metadata blocked). */

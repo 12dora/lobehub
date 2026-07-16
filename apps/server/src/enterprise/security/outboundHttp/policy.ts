@@ -89,6 +89,41 @@ export const extractMappedIpv4 = (ip: string): string | null => {
   return null;
 };
 
+const ipv6Bytes = (ip: string): number[] | null => {
+  const expanded = expandIpv6(ip);
+  if (isIP(expanded) !== 6) return null;
+  return expanded.split(':').flatMap((part) => {
+    const value = Number.parseInt(part, 16);
+    return [(value >> 8) & 0xff, value & 0xff];
+  });
+};
+
+/**
+ * Decode RFC 6052 IPv4-embedded IPv6 layouts (/32,/40,/48,/56,/64,/96).
+ * We inspect every standards-defined layout so network-specific NAT64/SIIT
+ * prefixes cannot disguise a permanently blocked IPv4 metadata endpoint.
+ */
+export const extractRfc6052Ipv4Candidates = (ip: string): string[] => {
+  const bytes = ipv6Bytes(ip);
+  if (!bytes) return [];
+  const layouts = [
+    { indexes: [4, 5, 6, 7], requiresZeroUOctet: true },
+    { indexes: [5, 6, 7, 9], requiresZeroUOctet: true },
+    { indexes: [6, 7, 9, 10], requiresZeroUOctet: true },
+    { indexes: [7, 9, 10, 11], requiresZeroUOctet: true },
+    { indexes: [9, 10, 11, 12], requiresZeroUOctet: true },
+    { indexes: [12, 13, 14, 15], requiresZeroUOctet: false },
+  ] as const;
+
+  const candidates = new Set<string>();
+  for (const layout of layouts) {
+    if (layout.requiresZeroUOctet && bytes[8] !== 0) continue;
+    const candidate = layout.indexes.map((index) => bytes[index]).join('.');
+    if (isIP(candidate) === 4) candidates.add(candidate);
+  }
+  return [...candidates];
+};
+
 export const isMetadataIp = (ip: string): boolean => {
   const mappedV4 = extractMappedIpv4(ip);
   if (mappedV4 && METADATA_IPV4.has(mappedV4)) return true;
@@ -100,6 +135,9 @@ export const isMetadataIp = (ip: string): boolean => {
   // normalizeIp may return expanded IPv6 — re-check mapped embedding
   const mappedFromNorm = extractMappedIpv4(normalized);
   if (mappedFromNorm && METADATA_IPV4.has(mappedFromNorm)) return true;
+  if (extractRfc6052Ipv4Candidates(normalized).some((candidate) => METADATA_IPV4.has(candidate))) {
+    return true;
+  }
 
   for (const meta of METADATA_IPV6) {
     if (normalized === meta || normalized === expandIpv6(meta)) return true;
