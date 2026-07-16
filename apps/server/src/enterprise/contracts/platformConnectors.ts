@@ -213,7 +213,15 @@ const emptyConnectorSecretStateSchema = z
 export const adminConnectorOAuthConfigSchema = z
   .object({
     authorizationEndpoint: httpUrlSchema,
-    clientId: z.string().trim().min(1).max(1000),
+    clientId: z
+      .string()
+      .trim()
+      .min(1)
+      .max(1000)
+      .refine(
+        (value) => !containsConnectorCredentialMaterial(value),
+        'secret material is not allowed',
+      ),
     issuer: httpUrlSchema,
     redirectUri: httpUrlSchema,
     scopes: connectorScopesSchema,
@@ -301,8 +309,8 @@ export const connectorConnectionTestStateSchema = z
 const adminConnectorDraftBaseSchema = z
   .object({
     connectionTest: connectorConnectionTestStateSchema.nullable(),
-    description: z.string().trim().max(4000).nullable(),
-    displayName: z.string().trim().min(1).max(200),
+    description: publicTextSchema.nullable(),
+    displayName: publicDisplayNameSchema,
     enabled: z.boolean(),
     endpoint: httpUrlSchema,
     id: connectorIdSchema,
@@ -376,8 +384,8 @@ const adminConnectorListItemSchema = z.discriminatedUnion('credentialMode', [
 const connectorDraftFieldsSchema = z
   .object({
     credentialMode: connectorCredentialModeSchema.optional(),
-    description: z.string().trim().max(4000).nullable().optional(),
-    displayName: z.string().trim().min(1).max(200).optional(),
+    description: publicTextSchema.nullable().optional(),
+    displayName: publicDisplayNameSchema.optional(),
     enabled: z.boolean().optional(),
     endpoint: httpUrlSchema.optional(),
     oauthClientSecret: connectorOAuthClientSecretMutationSchema.optional(),
@@ -391,8 +399,8 @@ const connectorDraftFieldsSchema = z
 
 const connectorCreateBaseSchema = z
   .object({
-    description: z.string().trim().max(4000).nullable().optional(),
-    displayName: z.string().trim().min(1).max(200),
+    description: publicTextSchema.nullable().optional(),
+    displayName: publicDisplayNameSchema,
     enabled: z.boolean().optional(),
     endpoint: httpUrlSchema,
     key: connectorKeySchema,

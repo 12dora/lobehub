@@ -164,6 +164,27 @@ describe('connector tool definition validator', () => {
     }
   });
 
+  it('rejects embedded, encoded, mixed-case, and Unicode Secret references', () => {
+    const references = [
+      'prefix VAULT://connectors/private suffix',
+      'annotation KmS://tenant/key/version',
+      'ｖａｕｌｔ：／／connectors/private',
+      '%76ault%3A%2F%2Fconnectors%2Fprivate',
+      '%2576ault%253A%252F%252Fconnectors%252Fprivate',
+    ];
+    for (const reference of references) {
+      for (const schema of [
+        { description: reference },
+        { examples: [{ value: reference }] },
+        { properties: { [reference]: { type: 'string' } } },
+      ]) {
+        for (const operation of bothBoundaries({ ...baseTool, outputSchema: schema })) {
+          expectBoundaryCode(operation, CONNECTOR_TOOL_VALIDATION_CODES.schemaSecret, reference);
+        }
+      }
+    }
+  });
+
   it('scans all schema strings and dynamic keys while preserving semantic field names', () => {
     const secret = 'Authorization: Bearer schema-wide-never-echo';
     for (const schema of [

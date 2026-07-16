@@ -99,9 +99,25 @@ export class ConnectorToolDefinitionValidationError extends Error {
 }
 
 export const containsConnectorCredentialMaterial = (value: string): boolean => {
-  if (containsSensitiveMaterial(value)) return true;
-  if (isCredentialBearingUrl(value)) return true;
-  return (value.match(/https?:\/\/\S+/giu) ?? []).some(isCredentialBearingUrl);
+  const candidates = [value];
+  let decoded = value;
+  for (let index = 0; index < 3; index += 1) {
+    try {
+      const next = decodeURIComponent(decoded);
+      if (next === decoded) break;
+      decoded = next;
+      candidates.push(decoded);
+    } catch {
+      break;
+    }
+  }
+  return candidates.some((candidate) => {
+    const normalized = candidate.normalize('NFKC');
+    if (/(?:vault|kms):\/\//iu.test(normalized)) return true;
+    if (containsSensitiveMaterial(normalized)) return true;
+    if (isCredentialBearingUrl(normalized)) return true;
+    return (normalized.match(/https?:\/\/\S+/giu) ?? []).some(isCredentialBearingUrl);
+  });
 };
 
 const addIssue = (ctx: z.RefinementCtx, code: ConnectorToolValidationCode) =>

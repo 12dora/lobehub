@@ -7,7 +7,6 @@ import type { z } from 'zod';
 import {
   checksumPayload,
   PlatformRevisionConflictError,
-  type RedactSensitiveOptions,
   type ResourcePointerAdapter,
 } from '@/database/models/platform';
 import {
@@ -67,33 +66,6 @@ type RevokeAllInput = z.input<typeof adminConnectorRevokeAllBindingsInputSchema>
 const MAX_REVOKE_BINDINGS = 10_000;
 const MAX_REVOKE_PAGES = 100;
 const REVOKE_PAGE_SIZE = 100;
-const SCHEMA_DYNAMIC_KEY_CONTAINERS = new Set([
-  '$defs',
-  'definitions',
-  'dependentschemas',
-  'patternproperties',
-  'properties',
-]);
-const REVISION_BENIGN_KEYS = new Set([
-  'credentialmode',
-  'oauthclientsecretconfigured',
-  'oauthclientsecretfingerprint',
-  'sharedsecretconfigured',
-  'sharedsecretfingerprint',
-]);
-
-const M09_REVISION_REDACTION_OPTIONS: RedactSensitiveOptions = {
-  isBenignKey: (key, context) => {
-    const normalized = key.replaceAll(/[^a-z0-9]/gi, '').toLowerCase();
-    if (REVISION_BENIGN_KEYS.has(normalized)) return true;
-    const schemaIndex = context.path.findIndex(
-      (part) => part === 'inputSchema' || part === 'outputSchema',
-    );
-    const parent = context.path.at(-1)?.toLowerCase();
-    return schemaIndex >= 0 && parent !== undefined && SCHEMA_DYNAMIC_KEY_CONTAINERS.has(parent);
-  },
-};
-
 const activeSecretFingerprint = (draft: ConnectorDraft): string | null =>
   draft.credentialMode === 'shared_service_account'
     ? draft.sharedSecret.fingerprint
@@ -168,6 +140,57 @@ const revisionPayload = (
         toolKey: tool.toolKey,
       })),
   });
+
+/**
+ * Strict persisted projection. Do not use the generic key-name redactor here:
+ * OAuth and JSON Schema deliberately contain semantic names such as
+ * `authorizationEndpoint`, `apiKey`, and `password`.
+ */
+const sanitizeConnectorRevisionPayload = (
+  rawPayload: Record<string, unknown>,
+): PlatformConnectorRevisionPayload => {
+  const payload = parseConnectorRevisionPayload(rawPayload);
+  const connector = payload.connector;
+  return {
+    connector: {
+      credentialMode: connector.credentialMode,
+      description: connector.description,
+      displayName: connector.displayName,
+      enabled: connector.enabled,
+      endpoint: connector.endpoint,
+      id: connector.id,
+      key: connector.key,
+      oauthClientSecretConfigured: connector.oauthClientSecretConfigured,
+      oauthClientSecretFingerprint: connector.oauthClientSecretFingerprint,
+      oauthConfig: connector.oauthConfig
+        ? {
+            authorizationEndpoint: connector.oauthConfig.authorizationEndpoint,
+            clientId: connector.oauthConfig.clientId,
+            issuer: connector.oauthConfig.issuer,
+            redirectUri: connector.oauthConfig.redirectUri,
+            scopes: [...connector.oauthConfig.scopes],
+            tokenEndpoint: connector.oauthConfig.tokenEndpoint,
+          }
+        : null,
+      sharedSecretConfigured: connector.sharedSecretConfigured,
+      sharedSecretFingerprint: connector.sharedSecretFingerprint,
+      sort: connector.sort,
+      transport: connector.transport,
+    },
+    schemaVersion: 'm09-v1',
+    tools: payload.tools.map((tool) => ({
+      description: tool.description,
+      displayName: tool.displayName,
+      inputSchema: structuredClone(tool.inputSchema),
+      outputSchema: structuredClone(tool.outputSchema),
+      platformPolicy: tool.platformPolicy,
+      requiresConfirmation: tool.requiresConfirmation,
+      riskLevel: tool.riskLevel,
+      sort: tool.sort,
+      toolKey: tool.toolKey,
+    })),
+  };
+};
 
 export class ConnectorCatalogPublicationService {
   private readonly publisher: PlatformPublisherService;
@@ -488,9 +511,9 @@ export class ConnectorCatalogPublicationService {
           secretLeaves,
         ),
         reason,
-        redactionOptions: M09_REVISION_REDACTION_OPTIONS,
         resourceId: command.id,
         resourceType: 'connector',
+        sanitizePayload: sanitizeConnectorRevisionPayload,
         secretFingerprint: activeSecretFingerprint(current.draft),
       });
       return { auditId: result.auditId, revision: result.revision.revision };
@@ -557,9 +580,9 @@ export class ConnectorCatalogPublicationService {
         payload: {},
         pointer: this.pointer(command.id, actorUserId, command.expectedDraftToken, 'archive'),
         reason,
-        redactionOptions: M09_REVISION_REDACTION_OPTIONS,
         resourceId: command.id,
         resourceType: 'connector',
+        sanitizePayload: sanitizeConnectorRevisionPayload,
         secretFingerprint: revisionSecretFingerprint(published.payload),
         status: 'archived',
       });

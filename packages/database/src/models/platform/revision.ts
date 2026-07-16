@@ -81,6 +81,12 @@ export interface PublishDraftParams {
   requestId?: string | null;
   resourceId: string;
   resourceType: PlatformResourceType;
+  /**
+   * Domain-owned strict projection for payloads whose semantic schema contains
+   * credential-like property names. The callback must return the only fields
+   * that are legal to persist.
+   */
+  sanitizePayload?: (payload: Record<string, unknown>) => Record<string, unknown>;
   secretFingerprint?: string | null;
   /** Target lifecycle status for the published revision (default: published). */
   status?: Extract<PlatformRevisionStatus, 'published' | 'archived'>;
@@ -204,10 +210,10 @@ export class PlatformRevisionModel {
       const prepared = await params.pointer.prepareLockedPublish?.(tx, {
         currentRevision: current,
       });
-      const redactedPayload = redactSensitive(
-        prepared?.payload ?? params.payload,
-        params.redactionOptions,
-      );
+      const rawPayload = prepared?.payload ?? params.payload;
+      const redactedPayload = params.sanitizePayload
+        ? params.sanitizePayload(rawPayload)
+        : redactSensitive(rawPayload, params.redactionOptions);
       const checksum = checksumPayload(redactedPayload);
 
       const now = new Date();
