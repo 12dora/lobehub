@@ -61,6 +61,65 @@ describe('PlatformAiCatalogRepository', () => {
     expect(second.nextCursor).toBeNull();
   });
 
+  it('filters providers before pagination and globally paginates filtered models', async () => {
+    const alpha = await repository.createProvider({
+      displayName: 'Alpha Cloud',
+      enabled: true,
+      providerKey: 'alpha',
+      source: 'custom',
+    });
+    const beta = await repository.createProvider({
+      displayName: 'Beta Cloud',
+      enabled: false,
+      providerKey: 'beta',
+      source: 'builtin',
+    });
+    await repository.createModel({
+      displayName: 'Alpha Chat',
+      enabled: true,
+      modelKey: 'chat-a',
+      providerId: alpha.id,
+      sort: 1,
+      type: 'chat',
+    });
+    await repository.createModel({
+      displayName: 'Alpha Image',
+      enabled: false,
+      modelKey: 'image-a',
+      providerId: alpha.id,
+      sort: 2,
+      type: 'image',
+    });
+    await repository.createModel({
+      enabled: true,
+      modelKey: 'chat-b',
+      providerId: beta.id,
+      sort: 1,
+      type: 'chat',
+    });
+
+    const providers = await repository.listProviders({
+      enabled: true,
+      query: 'cloud',
+      source: 'custom',
+    });
+    expect(providers.items.map((item) => item.providerKey)).toEqual(['alpha']);
+
+    const first = await repository.listAllModels({ enabled: true, limit: 1, type: 'chat' });
+    expect(first.items[0]).toMatchObject({ model: { modelKey: 'chat-a' }, providerKey: 'alpha' });
+    expect(first.nextCursor).not.toBeNull();
+    const second = await repository.listAllModels({
+      cursor: first.nextCursor!,
+      enabled: true,
+      limit: 1,
+      type: 'chat',
+    });
+    expect(second.items[0]).toMatchObject({ model: { modelKey: 'chat-b' }, providerKey: 'beta' });
+
+    const queried = await repository.listAllModels({ query: 'image', type: 'image' });
+    expect(queried.items.map((item) => item.model.modelKey)).toEqual(['image-a']);
+  });
+
   it('scopes model read/update/delete/reorder to its provider', async () => {
     const alpha = await repository.createProvider({ displayName: 'Alpha', providerKey: 'alpha' });
     const beta = await repository.createProvider({ displayName: 'Beta', providerKey: 'beta' });

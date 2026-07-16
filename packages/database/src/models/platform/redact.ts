@@ -73,6 +73,11 @@ const SENSITIVE_NORMALIZED_TOKENS = [
 
 const REDACTED = '[REDACTED]';
 
+export interface RedactSensitiveOptions {
+  /** Narrow allowlist for known-safe key false positives; value-shape checks still apply. */
+  isBenignKey?: (key: string) => boolean;
+}
+
 /** Known fake placeholders used only in tests — never real material. */
 const SENSITIVE_VALUE_PATTERN =
   /bearer\s+[\w.~+/=-]+|sk-[a-z0-9]{8,}|ghp_[a-z0-9]{20,}|xox[baprs]-[a-z0-9-]{10,}/i;
@@ -102,27 +107,27 @@ const redactString = (value: string): string => {
  * Deep-redact a value for safe persistence in revision payloads / audit diffs.
  * Returns a new structure; does not mutate the input.
  */
-export const redactSensitive = <T>(input: T): T => {
-  return redactValue(input) as T;
+export const redactSensitive = <T>(input: T, options: RedactSensitiveOptions = {}): T => {
+  return redactValue(input, options) as T;
 };
 
-const redactValue = (value: unknown): unknown => {
+const redactValue = (value: unknown, options: RedactSensitiveOptions): unknown => {
   if (value === null || value === undefined) return value;
 
   if (typeof value === 'string') return redactString(value);
 
   if (typeof value === 'number' || typeof value === 'boolean') return value;
 
-  if (Array.isArray(value)) return value.map((item) => redactValue(item));
+  if (Array.isArray(value)) return value.map((item) => redactValue(item, options));
 
   if (typeof value === 'object') {
     const out: Record<string, unknown> = {};
     for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-      if (isSensitiveKey(key)) {
+      if (isSensitiveKey(key) && !options.isBenignKey?.(key)) {
         out[key] = REDACTED;
         continue;
       }
-      out[key] = redactValue(child);
+      out[key] = redactValue(child, options);
     }
     return out;
   }
