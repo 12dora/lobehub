@@ -9,10 +9,11 @@ import {
   ADMIN_AI_PROVIDER_GET_KEY,
   ADMIN_AI_PROVIDER_LIST_KEY,
   buildAdminAiModelDependentsKey,
+  buildAdminAiModelListKey,
   buildAdminAiProviderGetKey,
   buildAdminAiProviderListKey,
 } from '../swrKeys';
-import type { AdminAiProviderListInput } from '../types';
+import type { AdminAiModelListInput, AdminAiProviderListInput } from '../types';
 
 export const useFetchAdminAiProviders = (input: AdminAiProviderListInput, enabled = true) =>
   useClientDataSWR(
@@ -25,6 +26,13 @@ export const useFetchAdminAiProvider = (id: string | undefined, enabled = true) 
   useClientDataSWR(
     enabled && id ? buildAdminAiProviderGetKey(id) : null,
     () => adminAiCatalogService.getProvider({ id: id! }),
+    { revalidateOnFocus: false },
+  );
+
+export const useFetchAdminAiModels = (input: AdminAiModelListInput, enabled = true) =>
+  useClientDataSWR(
+    enabled ? buildAdminAiModelListKey(input) : null,
+    () => adminAiCatalogService.listModels(input),
     { revalidateOnFocus: false },
   );
 
