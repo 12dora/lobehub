@@ -28,14 +28,22 @@
 | `packages/trpc/src/lambda/index.ts` + `middleware/enterpriseAccess.ts` | Global `authedProcedure` aihub.access gate                             | M02    | rework B3 | Flag-off no-op; allowlist getAccessStatus / getMyAccess             |
 | `src/libs/better-auth/define-config.ts`                                | session.create → EasyAuth login sync                                   | M02    | rework B3 | Dynamic import of `@/database/.../easyauthLoginSync` only           |
 
+## M05 applied
+
+| Upstream file                                | Change                                                                                      | Module | PR         | Notes                                                               |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------- | ------ | ---------- | ------------------------------------------------------------------- |
+| `apps/server/src/routers/lambda/user.ts`     | getEffectiveSettings / patchSettingOverride / resetSettingOverride + updateSettings adapter | M05    | PR-024–025 | Flag OFF preserves legacy; keyVaults never enter platform overrides |
+| `packages/const/src/platform/errorCodes.ts`  | MANAGED\_SETTING\_\* path/value codes                                                       | M05    | PR-022     | Fail-closed registry errors                                         |
+| `packages/types/src/platform/settings.ts`    | Settings policy types                                                                       | M05    | PR-022     | Mode/visibility split                                               |
+| `packages/locales` + `locales/{en-US,zh-CN}` | Admin settings policy + user source badge copy                                              | M05    | PR-026     | Hand-authored EN/ZH only                                            |
+
 ## Planned (do not edit until owning module)
 
-| Upstream file                            | Change             | Module             | Notes                |
-| ---------------------------------------- | ------------------ | ------------------ | -------------------- |
-| `apps/server/src/routers/lambda/user.ts` | Effective settings | M05                | Via service wrappers |
-| Managed guards on AI routers             | M06                | Unified middleware |                      |
-| Better Auth / OIDC config                | M11                | Adapter + LKG      |                      |
-| Branding metadata / auth shell           | M12                | Provider/fallback  |                      |
+| Upstream file                  | Change | Module             | Notes |
+| ------------------------------ | ------ | ------------------ | ----- |
+| Managed guards on AI routers   | M06    | Unified middleware |       |
+| Better Auth / OIDC config      | M11    | Adapter + LKG      |       |
+| Branding metadata / auth shell | M12    | Provider/fallback  |       |
 
 ## M04 applied
 
