@@ -19,6 +19,7 @@ import {
   isConnectorDisconnectInput,
   withManagedResourceGuard,
 } from '@/server/enterprise/guards/managedResource';
+import { assertLegacyConnectorRuntimeAllowed } from '@/server/enterprise/services/connectorCatalog/runtimeIntegration';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 import { callConnectorToolById, ConnectorToolCallError } from '@/server/services/connector/exec';
 import {
@@ -370,6 +371,12 @@ export const connectorRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       try {
+        await assertLegacyConnectorRuntimeAllowed({
+          db: ctx.serverDB,
+          identifier: input.identifier,
+          userId: ctx.userId,
+          workspaceId: ctx.workspaceId ?? undefined,
+        });
         return await callConnectorToolById(input, ctx);
       } catch (err: any) {
         if (err instanceof ConnectorToolCallError) {

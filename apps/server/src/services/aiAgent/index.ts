@@ -72,7 +72,7 @@ import { AgentOperationModel } from '@/database/models/agentOperation';
 import { AgentSkillModel } from '@/database/models/agentSkill';
 import { AiModelModel } from '@/database/models/aiModel';
 import { ChatGroupModel } from '@/database/models/chatGroup';
-import { ConnectorModel } from '@/database/models/connector';
+import { ConnectorModel, type DecryptedConnector } from '@/database/models/connector';
 import { ConnectorToolModel } from '@/database/models/connectorTool';
 import { DeviceModel } from '@/database/models/device';
 import { FileModel } from '@/database/models/file';
@@ -95,6 +95,7 @@ import { shouldEnableBuiltinSkill } from '@/helpers/skillFilters';
 import { buildConnectorManifests } from '@/libs/mcp/buildConnectorManifests';
 import { patchManifestWithPermissions } from '@/libs/mcp/connectorPermissionCheck';
 import { signOperationJwt, signUserJWT } from '@/libs/trpc/utils/internalJwt';
+import { buildManagedConnectorManifests } from '@/server/enterprise/services/connectorCatalog/runtimeIntegration';
 import {
   getEffectiveMemorySettings,
   resolveEffectiveUserInterventionConfig,
@@ -2223,6 +2224,11 @@ export class AiAgentService {
       userTimezone ?? 'default',
     );
 
+    // Freeze managed Connector revisions before tool discovery so the exact
+    // proof is persisted in this operation's server-owned manifest map.
+    const timestamp = Date.now();
+    const operationId = `op_${timestamp}_${resolvedAgentId}_${topicId}_${nanoid(8)}`;
+
     // 5. Tool discovery — short-circuit when disableTools is set
     let tools: any[] | undefined;
     let toolsResult: { enabledToolIds: string[]; tools?: any[] | undefined } = {
@@ -2247,7 +2253,7 @@ export class AiAgentService {
     // These are needed outside the tools block (for agent management context, skill engine, etc.)
     let lobehubSkillManifests: LobeToolManifest[] = [];
     let composioManifests: LobeToolManifest[] = [];
-    let connectorManifests: ReturnType<typeof buildConnectorManifests> = [];
+    let connectorManifests: LobeToolManifest[] = [];
     // When the user @-mentions agents (multi-mention, non-group), enable the
     // agent-management tool for this run so the supervisor can `callAgent` to
     // delegate. Mirrors the client runtime, which injects a callAgent manifest.
@@ -2364,37 +2370,44 @@ export class AiAgentService {
         disabledPluginIdSet.size,
       );
 
-      // 5a-1. Resolve connectors — connector identifier takes priority over plugin.
-      // Credentials (OAuth tokens) are encrypted at rest, so decrypt them with a
-      // gatekeeper; otherwise buildConnectorManifests gets no auth and tool calls 401.
-      let connectorGateKeeper: KeyVaultsGateKeeper | undefined;
-      try {
-        connectorGateKeeper = await KeyVaultsGateKeeper.initWithEnvKey();
-      } catch (err) {
-        log('execAgent: failed to init gatekeeper for connector credentials: %O', err);
+      // 5a-1. Resolve Connectors. Enforced mode builds manifests exclusively
+      // from immutable Published revisions; personal endpoint/schema/credentials
+      // are never read or used. Feature-off/non-enforced keeps the exact legacy path.
+      let connectorsMcp: DecryptedConnector[] = [];
+      const managedConnectors = await buildManagedConnectorManifests({
+        connectorKeys: agentPlugins,
+        db: this.db,
+        operationId,
+        userId: this.userId,
+        workspaceId: this.workspaceId,
+      });
+      if (managedConnectors.mode === 'blocked') {
+        throw new Error('PLATFORM_CONNECTOR_NOT_PUBLISHED');
       }
-      const connectors =
-        agentPlugins.length > 0
-          ? await this.connectorModel.queryByIdentifiers(agentPlugins, connectorGateKeeper)
-          : [];
-
-      // Only connectors WITH a real MCP endpoint (mcpServerUrl or stdio) can replace plugins in the
-      // manifest. Connectors WITHOUT an endpoint (e.g. Lobehub/Composio OAuth skills synced via
-      // syncToolsFromClient) must continue using their original plugin executor path — otherwise
-      // after humanIntervention approval the runtime tries to call mcpServerUrl='' and returns empty.
-      const connectorsMcp = connectors.filter(
-        (c) => c.mcpServerUrl || c.mcpConnectionType === 'stdio',
-      );
-
-      // Fetch ALL tools for all real-MCP connectors (including disabled tools) so that
-      // buildConnectorManifests can show blocking descriptions for disabled tools.
-      // The runtime hot-path still uses queryByConnectorIds (non-disabled only) elsewhere.
-      const connectorTools =
-        connectorsMcp.length > 0
-          ? await this.connectorToolModel.queryAllByConnectorIds(connectorsMcp.map((c) => c.id))
-          : [];
-
-      connectorManifests = buildConnectorManifests(connectorsMcp, connectorTools);
+      if (managedConnectors.mode === 'enforced') {
+        connectorManifests = managedConnectors.manifests as LobeToolManifest[];
+      } else {
+        let connectorGateKeeper: KeyVaultsGateKeeper | undefined;
+        try {
+          connectorGateKeeper = await KeyVaultsGateKeeper.initWithEnvKey();
+        } catch (err) {
+          log('execAgent: failed to init gatekeeper for connector credentials: %O', err);
+        }
+        const connectors =
+          agentPlugins.length > 0
+            ? await this.connectorModel.queryByIdentifiers(agentPlugins, connectorGateKeeper)
+            : [];
+        connectorsMcp = connectors.filter(
+          (connector) => connector.mcpServerUrl || connector.mcpConnectionType === 'stdio',
+        );
+        const connectorTools =
+          connectorsMcp.length > 0
+            ? await this.connectorToolModel.queryAllByConnectorIds(
+                connectorsMcp.map(({ id }) => id),
+              )
+            : [];
+        connectorManifests = buildConnectorManifests(connectorsMcp, connectorTools);
+      }
 
       // Only connectors that ACTUALLY produced a manifest (enabled + with synced
       // tools) replace a same-named plugin. Deriving the set from connectorsMcp
@@ -3247,10 +3260,6 @@ export class AiAgentService {
     log('execAgent: prepared evalContext for executor');
 
     await throwIfExecutionAborted('operation preparation');
-
-    // 15. Generate operation ID: agt_{timestamp}_{agentId}_{topicId}_{random}
-    const timestamp = Date.now();
-    const operationId = `op_${timestamp}_${resolvedAgentId}_${topicId}_${nanoid(8)}`;
 
     // 16. Create initial context
     let initialContext: AgentRuntimeContext = {
