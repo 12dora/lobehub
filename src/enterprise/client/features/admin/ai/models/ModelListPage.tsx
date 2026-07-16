@@ -24,6 +24,7 @@ import {
   resolveUrlBackedTextCommit,
   syncUrlBackedTextFilter,
 } from '../urlFilterController';
+import { openModelProviderTargetModal } from './openModelProviderTargetModal';
 
 const DEFAULT_LIMIT = 50;
 const SEARCH_DEBOUNCE_MS = 300;
@@ -252,10 +253,19 @@ const ModelListPage = memo(() => {
       description={t('aiCatalog.models.desc')}
       title={t('aiCatalog.models.title')}
       actions={
-        modelActions.allowed.canCreate && providerTargets.length === 1 ? (
+        modelActions.allowed.canCreate ? (
           <Button
             type="primary"
-            onClick={() => void modelActions.handleCreate(providerTargets[0]![0])}
+            onClick={() => {
+              if (providerTargets.length === 1) {
+                void modelActions.handleCreate(providerTargets[0]![0]);
+                return;
+              }
+              openModelProviderTargetModal({
+                candidates: providerTargets.map(([id, key]) => ({ id, key })),
+                onSubmit: modelActions.handleCreate,
+              });
+            }}
           >
             {t('aiCatalog.models.actions.create')}
           </Button>
