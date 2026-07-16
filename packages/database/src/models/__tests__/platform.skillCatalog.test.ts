@@ -61,8 +61,14 @@ describe('PlatformSkillCatalogModel', () => {
       builtinSkillKeys: new Set(['builtin.search']),
     });
     await expect(
-      allowed.createSkill({ displayName: 'Override', skillKey: 'builtin.search' }),
-    ).resolves.toMatchObject({ draft: { skillKey: 'builtin.search' } });
+      allowed.createSkill({
+        allowBuiltinOverride: true,
+        displayName: 'Override',
+        skillKey: 'builtin.search',
+      }),
+    ).resolves.toMatchObject({
+      draft: { allowBuiltinOverride: true, skillKey: 'builtin.search', source: 'uploaded' },
+    });
   });
 
   it('appends checksummed versions and never changes existing version content via updateDraft', async () => {

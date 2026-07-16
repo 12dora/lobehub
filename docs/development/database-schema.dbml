@@ -2033,6 +2033,7 @@ table platform_skills {
   description text
   source varchar(32) [not null, default: 'uploaded']
   distribution varchar(32) [not null, default: 'optional']
+  allow_builtin_override boolean [not null, default: false]
   enabled boolean [not null, default: false]
   current_version_id text
   status varchar(32) [not null, default: 'draft']

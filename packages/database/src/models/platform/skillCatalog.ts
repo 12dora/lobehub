@@ -11,6 +11,7 @@ import { checksumPayload } from './checksum';
 import { PlatformRevisionConflictError } from './errors';
 
 export interface PlatformSkillDraftView {
+  allowBuiltinOverride: boolean;
   currentVersionId: string | null;
   description: string | null;
   displayName: string;
@@ -65,6 +66,7 @@ export class PlatformSkillChecksumMismatchError extends Error {
 const draftView = (row: Awaited<ReturnType<PlatformSkillCatalogRepository['getSkill']>>) => {
   if (!row) return undefined;
   return {
+    allowBuiltinOverride: row.allowBuiltinOverride,
     currentVersionId: row.currentVersionId ?? null,
     description: row.description ?? null,
     displayName: row.name,
@@ -150,28 +152,28 @@ export class PlatformSkillCatalogModel {
 
   createSkill = async (params: {
     actorUserId?: string;
+    allowBuiltinOverride?: boolean;
     description?: string | null;
     displayName: string;
     distribution?: PlatformDistribution;
     enabled?: boolean;
     skillKey: string;
-    source?: PlatformSkillSource;
   }): Promise<PlatformSkillDetailView> => {
     if (
-      params.source !== 'builtin' &&
       this.options.builtinSkillKeys?.has(params.skillKey) &&
-      !this.options.allowBuiltinOverride
+      !(params.allowBuiltinOverride && this.options.allowBuiltinOverride)
     ) {
       throw new PlatformSkillBuiltinOverrideError();
     }
     const row = await new PlatformSkillCatalogRepository(this.db).createSkill({
+      allowBuiltinOverride: params.allowBuiltinOverride ?? false,
       createdBy: params.actorUserId,
       description: params.description,
       distribution: params.distribution,
       enabled: params.enabled,
       name: params.displayName,
       skillKey: params.skillKey,
-      source: params.source,
+      source: 'uploaded',
       updatedBy: params.actorUserId,
     });
     const detail = await this.getDetail(row.id);

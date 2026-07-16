@@ -1,5 +1,5 @@
 {
-  "id": "9a655276-d650-46a6-9ca0-4e3eb23e2777",
+  "id": "81e568e0-a5fb-4ec1-97ce-a522b51077a0",
   "prevId": "aa71727c-9e5b-4e30-8362-1fb740407149",
   "version": "7",
   "dialect": "postgresql",
@@ -16790,6 +16790,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'optional'"
+        },
+        "allow_builtin_override": {
+          "name": "allow_builtin_override",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         },
         "enabled": {
           "name": "enabled",
