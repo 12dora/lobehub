@@ -15,6 +15,8 @@ export const ENTERPRISE_UPSTREAM_MOUNT_POINTS = [
   'packages/types/src/serverConfig.ts',
   // M04: block Better Auth admin plugin mutations when platform admin is on
   'src/app/(backend)/api/auth/[...all]/route.ts',
+  // M09: exact thin mount into the enterprise-owned OAuth callback adapter
+  'src/app/(backend)/oauth/connector/callback/route.ts',
   // M05: effective settings + updateSettings adapter
   'apps/server/src/routers/lambda/user.ts',
   // M05: agent / systemAgent / agentGroup runtime reads through resolver adapter

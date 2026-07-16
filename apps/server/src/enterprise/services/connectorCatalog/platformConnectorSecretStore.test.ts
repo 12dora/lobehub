@@ -1,6 +1,6 @@
 // @vitest-environment node
-import { eq } from 'drizzle-orm';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { eq, inArray } from 'drizzle-orm';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
 import { PlatformConnectorCatalogRepository } from '@/database/repositories/platformConnectorCatalog';
@@ -171,5 +171,90 @@ describe('PlatformConnectorSecretStore', () => {
         slot: 'oauthClientSecret',
       }),
     ).resolves.toBeNull();
+  });
+
+  it('retries orphan cleanup after the grace window without touching live references', async () => {
+    const keyProvider: KeyProvider = {
+      getKek: async () => ({ key: keyA, keyId: 'test:key-a' }),
+      providerId: 'test',
+    };
+    const store = new PlatformConnectorSecretStore(db, new PlatformSecretService({ keyProvider }));
+    const orphan = await store.persistSecret({
+      connectorId: connectorIds[0],
+      slot: 'oauthBindingToken',
+      value: { accessToken: 'orphan-token' },
+    });
+    await db
+      .update(platformConnectorSecrets)
+      .set({ createdAt: new Date('2020-01-01T00:00:00Z') })
+      .where(eq(platformConnectorSecrets.ref, orphan.ref));
+
+    await expect(store.garbageCollectOrphanedOAuthSecrets()).resolves.toBeGreaterThanOrEqual(1);
+    await expect(
+      store.resolveSecretRef({
+        connectorId: connectorIds[0],
+        ref: orphan.ref,
+        slot: 'oauthBindingToken',
+      }),
+    ).resolves.toBeNull();
+  });
+
+  it('keeps opportunistic GC bounded and retries remaining rows on later calls', async () => {
+    const keyProvider: KeyProvider = {
+      getKek: async () => ({ key: keyA, keyId: 'test:key-a' }),
+      providerId: 'test',
+    };
+    const store = new PlatformConnectorSecretStore(db, new PlatformSecretService({ keyProvider }));
+    const refs: string[] = [];
+    for (let index = 0; index < 3; index += 1) {
+      const stored = await store.persistSecret({
+        connectorId: connectorIds[0],
+        slot: 'oauthPkceVerifier',
+        value: `orphan-verifier-${index}`,
+      });
+      refs.push(stored.ref);
+    }
+    await db
+      .update(platformConnectorSecrets)
+      .set({ createdAt: new Date('2020-01-01T00:00:00Z') })
+      .where(inArray(platformConnectorSecrets.ref, refs));
+
+    await expect(store.garbageCollectOrphanedOAuthSecrets(1)).resolves.toBe(1);
+    await expect(store.garbageCollectOrphanedOAuthSecrets(1)).resolves.toBe(1);
+    await expect(store.garbageCollectOrphanedOAuthSecrets(1)).resolves.toBe(1);
+    for (const ref of refs) {
+      await expect(
+        store.resolveSecretRef({
+          connectorId: connectorIds[0],
+          ref,
+          slot: 'oauthPkceVerifier',
+        }),
+      ).resolves.toBeNull();
+    }
+  });
+
+  it('does not block a new secret when opportunistic GC fails or log secret material', async () => {
+    const keyProvider: KeyProvider = {
+      getKek: async () => ({ key: keyA, keyId: 'test:key-a' }),
+      providerId: 'test',
+    };
+    const store = new PlatformConnectorSecretStore(db, new PlatformSecretService({ keyProvider }));
+    const privateFailure = 'private-gc-backend-response';
+    vi.spyOn(store, 'garbageCollectOrphanedOAuthSecrets').mockRejectedValueOnce(
+      new Error(privateFailure),
+    );
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(
+      store.persistSecret({
+        connectorId: connectorIds[1],
+        slot: 'oauthBindingToken',
+        value: { accessToken: 'must-never-enter-log' },
+      }),
+    ).resolves.toMatchObject({ ref: expect.stringMatching(/^kms:\/\/platform-connectors\//) });
+    expect(JSON.stringify(consoleError.mock.calls)).not.toMatch(
+      /private-gc-backend-response|must-never-enter-log/,
+    );
+    vi.restoreAllMocks();
   });
 });

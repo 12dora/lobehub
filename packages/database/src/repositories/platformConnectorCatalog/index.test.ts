@@ -314,6 +314,23 @@ const createBinding = async (userId: string, connectorId: string, id: string) =>
   });
 };
 
+const createPublishedOAuthConnector = async (suffix: string) => {
+  const connector = await createConnector(suffix, 'per_user_oauth');
+  await ensurePublishedRevision(connector.id);
+  await catalog.setPublishedPointerCas({
+    checksum: '1'.padStart(64, '0'),
+    connectorId: connector.id,
+    expectedRevision: 0,
+    publishedAt: new Date(),
+    publishedRevision: 1,
+  });
+  await serverDB
+    .update(platformConnectors)
+    .set({ enabled: true })
+    .where(eq(platformConnectors.id, connector.id));
+  return connector;
+};
+
 beforeAll(async () => {
   await ensurePendingM09Schema();
   await cleanup();
@@ -818,15 +835,15 @@ describe('PlatformConnectorCatalogRepository', () => {
     await expect(catalog.consumeOAuthState(stateHash)).resolves.toBeUndefined();
   });
 
-  it('rejects expired and revoked OAuth states without mutating terminal timestamps', async () => {
+  it('terminates expired OAuth states and rejects already revoked states', async () => {
     const connector = await createConnector('oauth-terminal', 'per_user_oauth');
     const binding = await createBinding(userIds[0], connector.id, 'm09-binding-terminal');
-    const createdAt = new Date('2026-07-17T00:00:00Z');
+    const createdAt = new Date(Date.now() - 10 * 60 * 1000);
     await serverDB.insert(platformConnectorOAuthStates).values({
       bindingId: binding.id,
       connectorId: connector.id,
       createdAt,
-      expiresAt: new Date('2026-07-17T00:05:00Z'),
+      expiresAt: new Date(createdAt.getTime() + 5 * 60 * 1000),
       id: 'm09-expired-state',
       pkceVerifierRef: 'vault://oauth/expired/pkce',
       publishedRevision: 1,
@@ -839,12 +856,12 @@ describe('PlatformConnectorCatalogRepository', () => {
       bindingId: binding.id,
       connectorId: connector.id,
       createdAt,
-      expiresAt: new Date('2026-07-17T00:10:00Z'),
+      expiresAt: new Date(createdAt.getTime() + 6 * 60 * 1000),
       id: 'm09-revoked-state',
       pkceVerifierRef: 'kms://oauth/revoked/pkce',
       publishedRevision: 1,
       redirectUri: 'https://aihub.example.test/oauth/callback',
-      revokedAt: new Date('2026-07-17T00:01:00Z'),
+      revokedAt: new Date(createdAt.getTime() + 60_000),
       stateHash: 'f'.repeat(64),
       stateId: 'm09-revoked-state-id',
       userId: userIds[0],
@@ -856,10 +873,12 @@ describe('PlatformConnectorCatalogRepository', () => {
       .select()
       .from(platformConnectorOAuthStates)
       .where(inArray(platformConnectorOAuthStates.id, ['m09-expired-state', 'm09-revoked-state']));
-    expect(rows.every((row) => row.consumedAt === null)).toBe(true);
+    expect(rows.every((row) => row.consumedAt === null && row.revokedAt instanceof Date)).toBe(
+      true,
+    );
   });
 
-  it('keeps historical state immutable while a binding upgrades and starts re-authorization', async () => {
+  it('keeps OAuth state target revision independent while a binding upgrades', async () => {
     const connector = await createConnector('oauth-revision-upgrade', 'per_user_oauth');
     const binding = await createBinding(userIds[0], connector.id, 'm09-binding-revision-upgrade');
     const repository = new PlatformUserConnectorBindingRepository(serverDB, userIds[0]);
@@ -887,7 +906,9 @@ describe('PlatformConnectorCatalogRepository', () => {
         tokenFingerprint: null,
       }),
     ).resolves.toMatchObject({ publishedRevision: 2, revision: 1, status: 'pending' });
-    await expect(catalog.consumeOAuthState('b'.repeat(64))).resolves.toBeUndefined();
+    await expect(catalog.consumeOAuthState('b'.repeat(64))).resolves.toMatchObject({
+      publishedRevision: 1,
+    });
     await expect(
       repository.createOAuthState({
         bindingId: binding.id,
@@ -907,7 +928,7 @@ describe('PlatformConnectorCatalogRepository', () => {
       .from(platformConnectorOAuthStates)
       .where(eq(platformConnectorOAuthStates.id, 'm09-state-revision-one'));
     expect(historical[0]).toMatchObject({
-      consumedAt: null,
+      consumedAt: expect.any(Date),
       publishedRevision: 1,
       revokedAt: null,
     });
@@ -938,8 +959,8 @@ describe('PlatformConnectorCatalogRepository', () => {
       .select()
       .from(platformConnectorOAuthStates)
       .where(eq(platformConnectorOAuthStates.id, 'm09-state-consume-revoke'));
-    expect(Boolean(state.consumedAt) !== Boolean(state.revokedAt)).toBe(true);
-    expect(Boolean(consumed)).toBe(Boolean(state.consumedAt));
+    expect(state).toMatchObject({ consumedAt: null, revokedAt: expect.any(Date) });
+    expect(consumed === undefined || consumed.id === state.id).toBe(true);
     await expect(catalog.consumeOAuthState(stateHash)).resolves.toBeUndefined();
     await expect(repository.getBinding(connector.id)).resolves.toMatchObject({ status: 'revoked' });
   });
@@ -1015,16 +1036,30 @@ describe('PlatformConnectorCatalogRepository', () => {
       connectorId: connector.id,
       limit: 2,
     });
-    expect(first).toEqual({ nextCursor: 'm09-binding-1', revoked: 2 });
+    expect(first).toEqual({
+      nextCursor: 'm09-binding-1',
+      pkceVerifierRefs: ['vault://oauth/revoke-all/0', 'vault://oauth/revoke-all/1'],
+      revoked: 2,
+      tokenRefs: userIds
+        .slice(0, 2)
+        .map((userId) => `vault://users/${userId}/connectors/${connector.id}/token`),
+    });
     const second = await catalog.revokeAllBindingsPage({
       afterId: first.nextCursor!,
       connectorId: connector.id,
       limit: 2,
     });
-    expect(second).toEqual({ nextCursor: null, revoked: 2 });
+    expect(second).toEqual({
+      nextCursor: null,
+      pkceVerifierRefs: ['vault://oauth/revoke-all/2', 'vault://oauth/revoke-all/3'],
+      revoked: 2,
+      tokenRefs: userIds
+        .slice(2)
+        .map((userId) => `vault://users/${userId}/connectors/${connector.id}/token`),
+    });
     await expect(
       catalog.revokeAllBindingsPage({ connectorId: connector.id, limit: 100 }),
-    ).resolves.toEqual({ nextCursor: null, revoked: 0 });
+    ).resolves.toEqual({ nextCursor: null, pkceVerifierRefs: [], revoked: 0, tokenRefs: [] });
 
     const rows = await serverDB
       .select()
@@ -1053,6 +1088,98 @@ describe('PlatformConnectorCatalogRepository', () => {
 });
 
 describe('PlatformUserConnectorBindingRepository', () => {
+  it('never finalizes after a reserved state is disconnected', async () => {
+    const connector = await createPublishedOAuthConnector('oauth-reserve-disconnect');
+    const repository = new PlatformUserConnectorBindingRepository(serverDB, userIds[0]);
+    const stateHash = 'b'.repeat(64);
+    await repository.prepareOAuthAuthorization({
+      bindingId: 'm09-oauth-reserve-disconnect-binding',
+      connectorId: connector.id,
+      expiresAt: new Date(Date.now() + 5 * 60 * 1000),
+      pkceVerifierRef: 'vault://oauth/reserve-disconnect/pkce',
+      publishedRevision: 1,
+      redirectUri: 'https://aihub.example.test/oauth/callback',
+      scopes: ['read'],
+      stateHash,
+      stateId: 'b'.repeat(32),
+    });
+    const reservation = await catalog.reserveOAuthState(stateHash);
+    if (reservation.status !== 'reserved') throw new Error('state was not reserved');
+    const revoked = await repository.revokeBindingWithPreviousSecret(connector.id);
+    expect(revoked?.pkceVerifierRefs).toEqual(['vault://oauth/reserve-disconnect/pkce']);
+
+    await expect(
+      repository.finalizeOAuthAuthorization({
+        connectedAt: new Date(),
+        connectorId: connector.id,
+        expiresAt: null,
+        expectedBindingRevision: reservation.bindingRevision,
+        oauthTokenRef: 'vault://oauth/reserve-disconnect/token',
+        publishedRevision: 1,
+        reservedAt: reservation.reservedAt,
+        scopes: ['read'],
+        stateHash,
+        tokenFingerprint: 'sha256:reserve-disconnect',
+      }),
+    ).rejects.toThrow();
+    await expect(repository.getBinding(connector.id)).resolves.toMatchObject({
+      oauthTokenRef: null,
+      status: 'revoked',
+    });
+    const [state] = await serverDB
+      .select()
+      .from(platformConnectorOAuthStates)
+      .where(eq(platformConnectorOAuthStates.stateHash, stateHash));
+    expect(state).toMatchObject({ consumedAt: null, revokedAt: expect.any(Date) });
+  });
+
+  it('never finalizes after admin revokeAll and keeps the shared lock order terminating', async () => {
+    const connector = await createPublishedOAuthConnector('oauth-reserve-admin-revoke');
+    const repository = new PlatformUserConnectorBindingRepository(serverDB, userIds[1]);
+    const stateHash = 'c'.repeat(64);
+    await repository.prepareOAuthAuthorization({
+      bindingId: 'm09-oauth-reserve-admin-binding',
+      connectorId: connector.id,
+      expiresAt: new Date(Date.now() + 5 * 60 * 1000),
+      pkceVerifierRef: 'vault://oauth/reserve-admin/pkce',
+      publishedRevision: 1,
+      redirectUri: 'https://aihub.example.test/oauth/callback',
+      scopes: ['read'],
+      stateHash,
+      stateId: 'c'.repeat(32),
+    });
+    const reservation = await catalog.reserveOAuthState(stateHash);
+    if (reservation.status !== 'reserved') throw new Error('state was not reserved');
+    const revoked = await catalog.revokeAllBindingsPage({ connectorId: connector.id, limit: 100 });
+    expect(revoked).toMatchObject({
+      pkceVerifierRefs: ['vault://oauth/reserve-admin/pkce'],
+      revoked: 1,
+    });
+
+    const finalize = repository.finalizeOAuthAuthorization({
+      connectedAt: new Date(),
+      connectorId: connector.id,
+      expiresAt: null,
+      expectedBindingRevision: reservation.bindingRevision,
+      oauthTokenRef: 'vault://oauth/reserve-admin/token',
+      publishedRevision: 1,
+      reservedAt: reservation.reservedAt,
+      scopes: ['read'],
+      stateHash,
+      tokenFingerprint: 'sha256:reserve-admin',
+    });
+    await expect(
+      Promise.race([
+        finalize.then(
+          () => 'finalized',
+          () => 'rejected',
+        ),
+        new Promise<string>((resolve) => setTimeout(() => resolve('deadlock'), 2000)),
+      ]),
+    ).resolves.toBe('rejected');
+    await expect(repository.getBinding(connector.id)).resolves.toMatchObject({ status: 'revoked' });
+  });
+
   it('prepares, reserves, releases, finalizes, and revokes one owner-scoped OAuth binding', async () => {
     const connector = await createConnector('oauth-lifecycle', 'per_user_oauth');
     await ensurePublishedRevision(connector.id);
@@ -1069,7 +1196,7 @@ describe('PlatformUserConnectorBindingRepository', () => {
       .where(eq(platformConnectors.id, connector.id));
     const repository = new PlatformUserConnectorBindingRepository(serverDB, userIds[0]);
     const stateHash = '9'.repeat(64);
-    const binding = await repository.prepareOAuthAuthorization({
+    const prepared = await repository.prepareOAuthAuthorization({
       bindingId: 'm09-oauth-lifecycle-binding',
       connectorId: connector.id,
       expiresAt: new Date(Date.now() + 5 * 60 * 1000),
@@ -1080,6 +1207,7 @@ describe('PlatformUserConnectorBindingRepository', () => {
       stateHash,
       stateId: '9'.repeat(32),
     });
+    const binding = prepared.binding;
     expect(binding).toMatchObject({ status: 'pending', userId: userIds[0] });
     await expect(
       new PlatformUserConnectorBindingRepository(serverDB, userIds[1]).getBinding(connector.id),
@@ -1104,6 +1232,7 @@ describe('PlatformUserConnectorBindingRepository', () => {
       expiresAt: new Date(Date.now() + 60_000),
       oauthTokenRef: 'vault://oauth/lifecycle/token-v1',
       publishedRevision: 1,
+      expectedBindingRevision: retried.bindingRevision,
       reservedAt: retried.reservedAt,
       scopes: ['read'],
       stateHash,
@@ -1133,7 +1262,7 @@ describe('PlatformUserConnectorBindingRepository', () => {
       stateHash: '8'.repeat(64),
       stateId: '8'.repeat(32),
     });
-    expect(reauthorization).toMatchObject({
+    expect(reauthorization.binding).toMatchObject({
       id: binding.id,
       oauthTokenRef: 'vault://oauth/lifecycle/token-v1',
       publishedRevision: 1,
@@ -1145,9 +1274,31 @@ describe('PlatformUserConnectorBindingRepository', () => {
       .where(eq(platformConnectorOAuthStates.stateHash, '8'.repeat(64)));
     expect(reauthorizationState.publishedRevision).toBe(2);
 
+    const revisionTwoReservation = await catalog.reserveOAuthState('8'.repeat(64));
+    if (revisionTwoReservation.status !== 'reserved') {
+      throw new Error('revision two state was not reservable');
+    }
+    await expect(
+      repository.finalizeOAuthAuthorization({
+        connectedAt: new Date(),
+        connectorId: connector.id,
+        expiresAt: new Date(Date.now() + 60_000),
+        expectedBindingRevision: revisionTwoReservation.bindingRevision,
+        oauthTokenRef: 'vault://oauth/lifecycle/token-v2',
+        publishedRevision: 2,
+        reservedAt: revisionTwoReservation.reservedAt,
+        scopes: ['read'],
+        stateHash: '8'.repeat(64),
+        tokenFingerprint: 'sha256:token-v2',
+      }),
+    ).resolves.toMatchObject({
+      binding: { oauthTokenRef: 'vault://oauth/lifecycle/token-v2', publishedRevision: 2 },
+      previousTokenRef: 'vault://oauth/lifecycle/token-v1',
+    });
+
     await expect(repository.revokeBindingWithPreviousSecret(connector.id)).resolves.toMatchObject({
       binding: { oauthTokenRef: null, status: 'revoked' },
-      previousTokenRef: 'vault://oauth/lifecycle/token-v1',
+      previousTokenRef: 'vault://oauth/lifecycle/token-v2',
     });
     await expect(repository.revokeBindingWithPreviousSecret(connector.id)).resolves.toBeUndefined();
   });

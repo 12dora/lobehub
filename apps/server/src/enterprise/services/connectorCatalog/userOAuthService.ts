@@ -29,9 +29,9 @@ import { ConnectorCatalogReadService, resolveConnectorSecretVersion } from './ca
 import { PlatformConnectorContractError } from './errors';
 import type { ConnectorOAuthRuntimeDependencies } from './oauthRuntime';
 import { MANAGED_CONNECTOR_OAUTH_STATE_PREFIX } from './oauthRuntime';
+import { cleanupConnectorSecretRefs } from './secretCleanup';
 
 const AUTHORIZATION_TTL_MS = 9 * 60 * 1000;
-const SECRET_REVOKE_TIMEOUT_MS = 1000;
 const storedOAuthTokenSchema = z
   .object({
     accessToken: z.string().min(1).max(32_768),
@@ -100,30 +100,15 @@ const parseGrantedScopes = (scope: string | undefined, requested: string[]): str
   return scopes;
 };
 
-const bestEffortRevokeSecret = async (
+const bestEffortRevokeSecret = (
   dependencies: ConnectorOAuthRuntimeDependencies,
+  connectorId: string,
+  slot: 'oauthBindingToken' | 'oauthPkceVerifier',
   ref: string | null | undefined,
-): Promise<void> => {
-  if (!ref || !dependencies.secrets.revokeSecretRef) return;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    await Promise.race([
-      dependencies.secrets.revokeSecretRef({ ref }),
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(
-          () => reject(new Error('secret revoke timeout')),
-          SECRET_REVOKE_TIMEOUT_MS,
-        );
-      }),
-    ]);
-  } catch (error) {
-    console.error('[connectorOAuth] best-effort secret revoke failed', {
-      errorClass: error instanceof Error ? error.name : 'UnknownError',
-    });
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-};
+): Promise<void> =>
+  ref
+    ? cleanupConnectorSecretRefs(dependencies.secrets, [{ connectorId, ref, slot }])
+    : Promise.resolve();
 
 const appendOAuthAuditBestEffort = async (
   db: LobeChatDatabase,
@@ -238,9 +223,9 @@ export class UserConnectorOAuthService {
       }),
     );
     const now = (this.dependencies.clock ?? (() => new Date()))();
-    let binding: PlatformUserConnectorBindingItem;
+    let prepared: Awaited<ReturnType<typeof this.bindings.prepareOAuthAuthorization>>;
     try {
-      binding = await this.bindings.prepareOAuthAuthorization({
+      prepared = await this.bindings.prepareOAuthAuthorization({
         bindingId: randomUUID(),
         connectorId: connector.id,
         expiresAt: new Date(now.getTime() + AUTHORIZATION_TTL_MS),
@@ -253,9 +238,19 @@ export class UserConnectorOAuthService {
         stateId,
       });
     } catch (error) {
-      await bestEffortRevokeSecret(this.dependencies, storedVerifier.ref);
+      await bestEffortRevokeSecret(
+        this.dependencies,
+        connector.id,
+        'oauthPkceVerifier',
+        storedVerifier.ref,
+      );
       throw error;
     }
+    await Promise.all(
+      prepared.pkceVerifierRefs.map((ref) =>
+        bestEffortRevokeSecret(this.dependencies, connector.id, 'oauthPkceVerifier', ref),
+      ),
+    );
     authorizationUrl.searchParams.set('client_id', oauth.clientId);
     authorizationUrl.searchParams.set('code_challenge', createPkceChallenge(verifier));
     authorizationUrl.searchParams.set('code_challenge_method', 'S256');
@@ -265,7 +260,7 @@ export class UserConnectorOAuthService {
     authorizationUrl.searchParams.set('state', state);
     return userConnectorStartAuthorizationOutputSchema.parse({
       authorizationUrl: authorizationUrl.toString(),
-      bindingId: binding.id,
+      bindingId: prepared.binding.id,
     });
   };
 
@@ -293,7 +288,9 @@ export class UserConnectorOAuthService {
       throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_BINDING_NOT_FOUND');
     }
     const currentSecret = await this.dependencies.secrets.resolveSecretRef({
+      connectorId,
       ref: binding.oauthTokenRef,
+      slot: 'oauthBindingToken',
     });
     const currentToken = storedOAuthTokenSchema.safeParse(currentSecret?.value);
     if (!currentSecret || currentSecret.ref !== binding.oauthTokenRef || !currentToken.success) {
@@ -349,10 +346,20 @@ export class UserConnectorOAuthService {
       tokenFingerprint: storedToken.fingerprint,
     });
     if (!updated) {
-      await bestEffortRevokeSecret(this.dependencies, storedToken.ref);
+      await bestEffortRevokeSecret(
+        this.dependencies,
+        connectorId,
+        'oauthBindingToken',
+        storedToken.ref,
+      );
       throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_RESOURCE_MISMATCH');
     }
-    await bestEffortRevokeSecret(this.dependencies, binding.oauthTokenRef);
+    await bestEffortRevokeSecret(
+      this.dependencies,
+      connectorId,
+      'oauthBindingToken',
+      binding.oauthTokenRef,
+    );
   };
 
   disconnect = async (input: DisconnectInput) => {
@@ -373,7 +380,17 @@ export class UserConnectorOAuthService {
       });
       return revoked;
     });
-    await bestEffortRevokeSecret(this.dependencies, result?.previousTokenRef);
+    await Promise.all([
+      bestEffortRevokeSecret(
+        this.dependencies,
+        command.connectorId,
+        'oauthBindingToken',
+        result?.previousTokenRef,
+      ),
+      ...(result?.pkceVerifierRefs ?? []).map((ref) =>
+        bestEffortRevokeSecret(this.dependencies, command.connectorId, 'oauthPkceVerifier', ref),
+      ),
+    ]);
     return userConnectorDisconnectOutputSchema.parse({ disconnected: true });
   };
 }
@@ -390,11 +407,50 @@ export class ConnectorOAuthCallbackService {
     this.read = new ConnectorCatalogReadService(db, dependencies.secrets);
   }
 
+  abandonAuthorization = async (rawState: string): Promise<void> => {
+    const stateHash = hash(rawState);
+    const reservation = await this.catalog.reserveOAuthState(stateHash);
+    if (reservation.status === 'expired') {
+      await cleanupConnectorSecretRefs(
+        this.dependencies.secrets,
+        reservation.pkceVerifierRefs.map((ref) => ({
+          connectorId: reservation.connectorId,
+          ref,
+          slot: 'oauthPkceVerifier',
+        })),
+      );
+      return;
+    }
+    if (reservation.status !== 'reserved') return;
+    const terminated = await this.catalog.terminateOAuthStateReservation(
+      stateHash,
+      reservation.reservedAt,
+    );
+    if (terminated) {
+      await bestEffortRevokeSecret(
+        this.dependencies,
+        terminated.connectorId,
+        'oauthPkceVerifier',
+        terminated.pkceVerifierRef,
+      );
+    }
+  };
+
   callback = async (input: CallbackInput): Promise<{ returnTo?: string }> => {
     const command = connectorOAuthCallbackInputSchema.parse(input);
     const stateHash = hash(command.state);
     const reservation = await this.catalog.reserveOAuthState(stateHash);
     if (reservation.status === 'expired') {
+      await Promise.all(
+        reservation.pkceVerifierRefs.map((ref) =>
+          bestEffortRevokeSecret(
+            this.dependencies,
+            reservation.connectorId,
+            'oauthPkceVerifier',
+            ref,
+          ),
+        ),
+      );
       throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_OAUTH_STATE_EXPIRED');
     }
     if (reservation.status === 'replayed') {
@@ -429,7 +485,11 @@ export class ConnectorOAuthCallbackService {
       ) {
         throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_OAUTH_CALLBACK_INVALID');
       }
-      const pkce = await this.dependencies.secrets.resolveSecretRef({ ref: state.pkceVerifierRef });
+      const pkce = await this.dependencies.secrets.resolveSecretRef({
+        connectorId: state.connectorId,
+        ref: state.pkceVerifierRef,
+        slot: 'oauthPkceVerifier',
+      });
       if (
         !pkce ||
         pkce.ref !== state.pkceVerifierRef ||
@@ -490,6 +550,7 @@ export class ConnectorOAuthCallbackService {
         expiresAt,
         oauthTokenRef: storedToken.ref,
         publishedRevision: state.publishedRevision,
+        expectedBindingRevision: reservation.bindingRevision,
         reservedAt: reservation.reservedAt,
         scopes,
         stateHash,
@@ -497,8 +558,18 @@ export class ConnectorOAuthCallbackService {
       });
       unboundTokenRef = undefined;
       await Promise.all([
-        bestEffortRevokeSecret(this.dependencies, finalized.previousTokenRef),
-        bestEffortRevokeSecret(this.dependencies, state.pkceVerifierRef),
+        bestEffortRevokeSecret(
+          this.dependencies,
+          connector.id,
+          'oauthBindingToken',
+          finalized.previousTokenRef,
+        ),
+        bestEffortRevokeSecret(
+          this.dependencies,
+          connector.id,
+          'oauthPkceVerifier',
+          state.pkceVerifierRef,
+        ),
       ]);
       await appendOAuthAuditBestEffort(this.db, {
         action: 'user.connectors.oauthCallback',
@@ -508,9 +579,19 @@ export class ConnectorOAuthCallbackService {
       });
       return state.returnTo ? { returnTo: state.returnTo } : {};
     } catch (error) {
-      await bestEffortRevokeSecret(this.dependencies, unboundTokenRef);
+      await bestEffortRevokeSecret(
+        this.dependencies,
+        state.connectorId,
+        'oauthBindingToken',
+        unboundTokenRef,
+      );
       if (exchangeAttempted) {
-        await bestEffortRevokeSecret(this.dependencies, state.pkceVerifierRef);
+        await bestEffortRevokeSecret(
+          this.dependencies,
+          state.connectorId,
+          'oauthPkceVerifier',
+          state.pkceVerifierRef,
+        );
       } else {
         await this.catalog.releaseOAuthStateReservation(stateHash, reservation.reservedAt);
       }
