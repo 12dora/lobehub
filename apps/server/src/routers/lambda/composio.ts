@@ -3,6 +3,7 @@ import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 
 import { getServerComposioAuthConfigId } from '@/config/composio';
+import type { DecryptedConnector } from '@/database/models/connector';
 import { ConnectorModel } from '@/database/models/connector';
 import { ConnectorToolModel } from '@/database/models/connectorTool';
 import { PluginModel } from '@/database/models/plugin';
@@ -130,6 +131,31 @@ async function deleteComposioConnector(
   const [existing] = await connectorModel.queryByIdentifiers([identifier]);
   if (existing) await connectorModel.delete(existing.id);
 }
+
+const resolveOwnedComposioConnector = async (
+  connectorModel: ConnectorModel,
+  input: { connectorId?: string; identifier?: string },
+): Promise<{ bindingId: string; connector: DecryptedConnector }> => {
+  const connector = input.connectorId
+    ? await connectorModel.findById(input.connectorId)
+    : input.identifier
+      ? (await connectorModel.queryByIdentifiers([input.identifier]))[0]
+      : undefined;
+
+  const bindingId = connector?.metadata?.composio?.connectedAccountId;
+  if (
+    !connector ||
+    (input.identifier !== undefined && connector.identifier !== input.identifier) ||
+    typeof bindingId !== 'string' ||
+    bindingId.length === 0
+  ) {
+    // Deliberately use one response for absent, foreign and malformed rows so
+    // callers cannot probe another user's connector/binding relationship.
+    throw new TRPCError({ code: 'NOT_FOUND', message: 'Composio connection not found' });
+  }
+
+  return { bindingId, connector };
+};
 
 export const composioRouter = router({
   createConnection: composioProcedure
@@ -259,20 +285,32 @@ export const composioRouter = router({
   deleteConnection: composioProcedure
     .use(withManagedResourceGuard('composio.deleteConnection'))
     .input(
-      z.object({
-        connectedAccountId: z.string(),
-        identifier: z.string(),
-      }),
+      z
+        .object({
+          // Legacy clients may still send the remote id. It is never trusted or
+          // used; the server resolves the binding from the owned local row.
+          connectedAccountId: z.string().optional(),
+          connectorId: z.string().uuid().optional(),
+          identifier: z.string().min(1).optional(),
+        })
+        .refine((input) => input.connectorId !== undefined || input.identifier !== undefined, {
+          message: 'connectorId or identifier is required',
+        }),
     )
     .mutation(async ({ input, ctx }) => {
+      const { bindingId, connector } = await resolveOwnedComposioConnector(
+        ctx.connectorModel,
+        input,
+      );
+
       try {
-        await (ctx.composioClient.connectedAccounts as any).delete(input.connectedAccountId);
+        await (ctx.composioClient.connectedAccounts as any).delete(bindingId);
       } catch (error) {
         console.warn('[Composio] Failed to delete remote connection:', error);
       }
 
-      await ctx.pluginModel.delete(input.identifier);
-      await deleteComposioConnector(ctx.connectorModel, input.identifier);
+      await ctx.pluginModel.delete(connector.identifier);
+      await ctx.connectorModel.delete(connector.id);
 
       return { success: true };
     }),

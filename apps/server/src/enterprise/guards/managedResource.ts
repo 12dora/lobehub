@@ -5,6 +5,8 @@ import type { EnterpriseFeatureFlags } from '@/const/platform/featureFlags';
 import { isManagedResourceFeatureEnabled } from '@/database/models/platform';
 import type { LobeChatDatabase } from '@/database/type';
 import { trpc } from '@/libs/trpc/lambda/init';
+import { isUnifiedSkillPath } from '@/server/services/agentDocumentVfs/mounts/skills/path';
+import { normalizeAgentDocumentPath } from '@/server/services/agentDocumentVfs/path';
 import type { ManagedResourceReadinessMap } from '@/types/platform/managedResources';
 
 import { parseEnterpriseFeatureFlags } from '../featureFlags';
@@ -97,6 +99,7 @@ const recordGuardMetricBestEffort = (
  */
 export const enforceManagedResourceMutation = async (params: {
   db: LobeChatDatabase;
+  isExemptInput?: () => boolean | Promise<boolean>;
   options?: EnforceManagedResourceMutationOptions;
   /** Deliberately ignored for authorization: no ordinary-router role may bypass the guard. */
   principal?: { userId: string };
@@ -141,6 +144,10 @@ export const enforceManagedResourceMutation = async (params: {
 
   if (mode === 'unmanaged') return;
 
+  // Resolve input-sensitive exemptions only after feature and policy checks so
+  // rollback/off mode preserves the legacy path without extra parsing or I/O.
+  if (params.isExemptInput && (await params.isExemptInput())) return;
+
   if (mode === 'observe' || mode === 'ui-only') {
     recordGuardMetricBestEffort(metricSink, {
       classification: definition.classification,
@@ -184,8 +191,8 @@ export const enforceManagedResourceMutation = async (params: {
 };
 
 export interface ManagedResourceGuardMiddlewareOptions {
-  /** Narrow input-only exemption. The raw input is never logged or retained. */
-  isExemptInput?: (input: unknown) => boolean;
+  /** Narrow exemption. Raw input and context are never logged or retained. */
+  isExemptInput?: (input: unknown, ctx: unknown) => boolean | Promise<boolean>;
 }
 
 const connectorDisconnectInputSchema = z
@@ -199,18 +206,53 @@ const connectorDisconnectInputSchema = z
 export const isConnectorDisconnectInput = (input: unknown): boolean =>
   connectorDisconnectInputSchema.safeParse(input).success;
 
+const singleAgentDocumentPathSchema = z.object({ path: z.string() }).passthrough();
+const pairedAgentDocumentPathSchema = z
+  .object({ fromPath: z.string(), toPath: z.string() })
+  .passthrough();
+
+const isOrdinaryAgentDocumentPath = (path: string): boolean => {
+  try {
+    return !isUnifiedSkillPath(normalizeAgentDocumentPath(path));
+  } catch {
+    // Missing, invalid and traversal-ambiguous paths never receive an exemption.
+    return false;
+  }
+};
+
+/** A validated non-Skill VFS path. Missing or ambiguous input fails closed. */
+export const isOrdinaryAgentDocumentPathInput = (input: unknown): boolean => {
+  const parsed = singleAgentDocumentPathSchema.safeParse(input);
+  return parsed.success && isOrdinaryAgentDocumentPath(parsed.data.path);
+};
+
+/** Both source and target must be validated non-Skill VFS paths. */
+export const isOrdinaryAgentDocumentPathPairInput = (input: unknown): boolean => {
+  const parsed = pairedAgentDocumentPathSchema.safeParse(input);
+  return (
+    parsed.success &&
+    isOrdinaryAgentDocumentPath(parsed.data.fromPath) &&
+    isOrdinaryAgentDocumentPath(parsed.data.toPath)
+  );
+};
+
 export const withManagedResourceGuard = (
   procedure: ManagedResourceMutationProcedure,
   options: ManagedResourceGuardMiddlewareOptions = {},
-) =>
-  trpc.middleware(async ({ ctx, getRawInput, next }) => {
+) => {
+  const { isExemptInput } = options;
+
+  return trpc.middleware(async ({ ctx, getRawInput, next }) => {
     const db = (ctx as { serverDB?: LobeChatDatabase }).serverDB;
     if (!db) throw new Error('ManagedResourceGuard requires serverDatabase middleware');
-    if (options.isExemptInput?.(await getRawInput())) return next();
     await enforceManagedResourceMutation({
       db,
+      isExemptInput: isExemptInput
+        ? async () => isExemptInput(await getRawInput(), ctx)
+        : undefined,
       principal: typeof ctx.userId === 'string' ? { userId: ctx.userId } : undefined,
       procedure,
     });
     return next();
   });
+};

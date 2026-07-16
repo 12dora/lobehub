@@ -5,12 +5,14 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
+  AGENT_DOCUMENT_SKILL_MUTATION_RISKS,
   MANAGED_RESOURCE_MUTATION_REGISTRY,
   type ManagedResourceMutationProcedure,
 } from './managedResourceMutationRegistry';
 
 const ROUTERS = [
   'agent',
+  'agentDocument',
   'agentGroup',
   'agentSkills',
   'aiModel',
@@ -53,12 +55,34 @@ describe('managed-resource legacy mutation registry', () => {
       }
     }
 
-    expect(discovered).toHaveLength(72);
+    expect(discovered).toHaveLength(99);
     expect([...discovered].sort()).toEqual(Object.keys(MANAGED_RESOURCE_MUTATION_REGISTRY).sort());
     for (const definition of Object.values(MANAGED_RESOURCE_MUTATION_REGISTRY)) {
-      expect(['deny', 'allow', 'exempt']).toContain(definition.classification);
+      expect(['deny', 'allow', 'exempt', 'input-sensitive']).toContain(definition.classification);
       expect(definition.reason.length).toBeGreaterThan(20);
     }
+  });
+
+  it('keeps an explicit service/VFS risk inventory for every guarded agentDocument Skill write', () => {
+    const guardedAgentDocumentMutations = Object.entries(MANAGED_RESOURCE_MUTATION_REGISTRY)
+      .filter(
+        ([procedure, definition]) =>
+          procedure.startsWith('agentDocument.') &&
+          (definition.classification === 'deny' || definition.classification === 'input-sensitive'),
+      )
+      .map(([procedure]) => procedure)
+      .sort();
+
+    expect(Object.keys(AGENT_DOCUMENT_SKILL_MUTATION_RISKS).sort()).toEqual(
+      guardedAgentDocumentMutations,
+    );
+    expect(AGENT_DOCUMENT_SKILL_MUTATION_RISKS).toMatchObject({
+      'agentDocument.copyDocumentByPath': 'path-pair',
+      'agentDocument.createSkillByPath': 'direct-skill',
+      'agentDocument.deleteDocumentByPath': 'path',
+      'agentDocument.renameDocumentByPath': 'path-pair',
+      'agentDocument.writeDocumentByPath': 'path',
+    });
   });
 
   it('negative control detects an upstream mutation that has no classification', () => {
@@ -117,7 +141,7 @@ export const aiProviderRouter = router({
       )
       .sort();
     const writePattern =
-      /agentModel\.(?:batchCreate|create|delete|duplicate|publish|setVisibility|toggle|transfer|update)|connectorModel\.(?:create|delete|update)|aiProviderModel\.(?:create|delete|toggle|update)|aiModelModel\.(?:batch|clear|create|delete|toggle|update)|skillModel\.(?:create|delete|update)/;
+      /agentDocumentService\.(?:associate|clone|copy|create|delete|modify|remove|rename|replace|update|upsert)|agentDocumentVfsService\.(?:copy|delete|mkdir|rename|restore|write)|skillManagementService\.createSkill|agentModel\.(?:batchCreate|create|delete|duplicate|publish|setVisibility|toggle|transfer|update)|connectorModel\.(?:create|delete|update)|aiProviderModel\.(?:create|delete|toggle|update)|aiModelModel\.(?:batch|clear|create|delete|toggle|update)|skillModel\.(?:create|delete|update)/;
     const discovered = [];
     for (const file of files) {
       const source = await readFile(path.join(routerDir, file), 'utf8');
@@ -126,6 +150,7 @@ export const aiProviderRouter = router({
     }
     expect(discovered).toEqual([
       'agent',
+      'agentDocument',
       'agentGroup',
       'agentSkills',
       'aiModel',
