@@ -245,6 +245,34 @@ describe('connector tool definition validator', () => {
     }
   });
 
+  it('normalizes Unicode keyword confusables while preserving dynamic user keys', () => {
+    const confusableKeywords = [
+      { $ｒｅｆ: '#/$defs/value' },
+      { 'x-schema-Ｒｅｆ': '#/$defs/value' },
+      { schemaＲｅｆTarget: '#/$defs/value' },
+      { schemaAnchοrTarget: 'value' },
+      { schemaReｆerence: '#/$defs/value' },
+    ];
+    for (const schema of confusableKeywords) {
+      for (const operation of bothBoundaries({ ...baseTool, inputSchema: schema })) {
+        expectBoundaryCode(operation, CONNECTOR_TOOL_VALIDATION_CODES.dangerousKeyword);
+      }
+    }
+    for (const container of ['patternProperties', 'properties'] as const) {
+      const dynamicKeys = Object.fromEntries(
+        confusableKeywords.flatMap((schema) =>
+          Object.keys(schema).map((key) => [key, { type: 'string' }]),
+        ),
+      );
+      for (const operation of bothBoundaries({
+        ...baseTool,
+        inputSchema: { [container]: dynamicKeys },
+      })) {
+        expect(operation).not.toThrow();
+      }
+    }
+  });
+
   it('rejects every nested non-JSON domain value instead of relying on JSON.stringify', () => {
     const customPrototype = Object.assign(Object.create({ inherited: true }), { type: 'object' });
     let getterCalled = false;
