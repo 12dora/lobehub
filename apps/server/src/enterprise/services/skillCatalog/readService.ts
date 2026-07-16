@@ -22,12 +22,15 @@ export interface SkillCatalogReadOptions {
   model?: Pick<PlatformSkillCatalogModel, 'listPublished' | 'resolvePublishedVersion'>;
 }
 
-const builtinSkillDefinitionSchema = serverResolvedSkillSchema.omit({
-  allowBuiltinOverride: true,
-  skillId: true,
-  versionId: true,
-});
-const builtinSkillDefinitionsSchema = z.array(builtinSkillDefinitionSchema).max(100);
+export const builtinSkillDefinitionSchema = serverResolvedSkillSchema
+  .omit({
+    allowBuiltinOverride: true,
+    skillId: true,
+    versionId: true,
+  })
+  .extend({ source: z.literal('builtin') })
+  .strict();
+export const builtinSkillDefinitionsSchema = z.array(builtinSkillDefinitionSchema).max(100);
 const MAX_PUBLISHED_SKILL_PAGES = 100;
 const MAX_PUBLISHED_SKILLS = 10_000;
 
@@ -52,10 +55,7 @@ export class SkillCatalogReadService {
         resources: skill.resources ?? [],
       })),
     );
-    this.builtinSkills = parsedBuiltins.map((parsed) => {
-      if (parsed.source !== 'builtin') throw new Error('Builtin Skill source must be builtin');
-      return parsed as BuiltinSkillDefinition;
-    });
+    this.builtinSkills = parsedBuiltins as BuiltinSkillDefinition[];
   }
 
   getPublishedCatalog = async () => {
