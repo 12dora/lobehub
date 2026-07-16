@@ -25,6 +25,10 @@ import {
 export type AdminAccessStatus = 'loading' | 'allowed' | 'forbidden' | 'error';
 
 export interface AdminAccessContextValue {
+  /**
+   * Server-authenticated method for reauth routing. Null when unknown / not allowed.
+   */
+  authMethod: AdminAccessSnapshot['authMethod'];
   error: Error | null;
   /** Granted permission codes when allowed; empty otherwise. */
   permissions: readonly string[];
@@ -62,6 +66,7 @@ export default function AdminAccessProvider({
   const [status, setStatus] = useState<AdminAccessStatus>('loading');
   const [permissions, setPermissions] = useState<readonly string[]>([]);
   const [roles, setRoles] = useState<AdminAccessSnapshot['roles']>([]);
+  const [authMethod, setAuthMethod] = useState<AdminAccessSnapshot['authMethod']>(null);
   const [error, setError] = useState<Error | null>(null);
   const [retryable, setRetryable] = useState(false);
   const fetchRef = useRef(fetchAccess);
@@ -72,6 +77,7 @@ export default function AdminAccessProvider({
       setStatus('forbidden');
       setPermissions([]);
       setRoles([]);
+      setAuthMethod(null);
       setError(null);
       setRetryable(false);
       return;
@@ -83,6 +89,7 @@ export default function AdminAccessProvider({
 
     try {
       const snapshot = await fetchRef.current();
+      setAuthMethod(snapshot.authMethod ?? null);
       if (snapshot.hasAdminAccess) {
         setStatus('allowed');
         setPermissions(snapshot.permissions);
@@ -97,6 +104,7 @@ export default function AdminAccessProvider({
       setError(nextError);
       setPermissions([]);
       setRoles([]);
+      setAuthMethod(null);
       setRetryable(isAdminAccessErrorRetryable(err));
       setStatus('error');
     }
@@ -108,6 +116,7 @@ export default function AdminAccessProvider({
 
   const value = useMemo<AdminAccessContextValue>(
     () => ({
+      authMethod,
       error,
       permissions,
       refresh: load,
@@ -115,7 +124,7 @@ export default function AdminAccessProvider({
       roles,
       status,
     }),
-    [error, permissions, load, retryable, roles, status],
+    [authMethod, error, permissions, load, retryable, roles, status],
   );
 
   return <AdminAccessContext value={value}>{children}</AdminAccessContext>;

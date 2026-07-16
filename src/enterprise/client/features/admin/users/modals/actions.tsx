@@ -1,8 +1,7 @@
 'use client';
 
-import { Text } from '@lobehub/ui';
+import { DatePicker, Text } from '@lobehub/ui';
 import { Checkbox, toast } from '@lobehub/ui/base-ui';
-import { DatePicker } from 'antd';
 import { createStaticStyles, cssVar } from 'antd-style';
 import dayjs, { type Dayjs } from 'dayjs';
 import i18n from 'i18next';
@@ -10,11 +9,11 @@ import { memo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import {
-  PLATFORM_ROLE_DESCRIPTIONS,
   PLATFORM_ROLE_PERMISSIONS,
   PLATFORM_SYSTEM_ROLES,
   type PlatformSystemRoleName,
 } from '@/const/platform/roles';
+import type { AdminReauthAuthMethod } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 import type {
   AdminUsersBanInput,
   AdminUsersReplaceGlobalRolesInput,
@@ -50,7 +49,6 @@ const styles = createStaticStyles(({ css }) => ({
   `,
 }));
 
-/** Roles assignable via replaceGlobalRoles (server mirror). */
 const ALL_ASSIGNABLE: PlatformSystemRoleName[] = [
   PLATFORM_SYSTEM_ROLES.SUPER_ADMIN,
   PLATFORM_SYSTEM_ROLES.USER_ADMIN,
@@ -60,7 +58,8 @@ const ALL_ASSIGNABLE: PlatformSystemRoleName[] = [
   PLATFORM_SYSTEM_ROLES.PLATFORM_USER,
 ];
 
-const t = (key: string) => String(i18n.t(key as never, { ns: 'admin' }));
+const t = (key: string, opts?: Record<string, unknown>) =>
+  String(i18n.t(key as never, { ns: 'admin', ...opts }));
 
 export const getEligibleAssignableRoles = (
   actorRoles: readonly { name: string }[],
@@ -76,16 +75,18 @@ type BanMode = 'permanent' | 'temporary';
 
 const BanExtraFields = memo<{
   expiresAt: Dayjs | null;
+  locked: boolean;
   mode: BanMode;
   onExpiresAtChange: (v: Dayjs | null) => void;
   onModeChange: (mode: BanMode) => void;
-}>(({ mode, expiresAt, onModeChange, onExpiresAtChange }) => {
+}>(({ mode, expiresAt, locked, onModeChange, onExpiresAtChange }) => {
   const { t: tr } = useTranslation('admin');
   return (
     <div className={styles.field}>
       <label className={styles.option}>
         <Checkbox
           checked={mode === 'permanent'}
+          disabled={locked}
           onChange={(checked) => {
             if (checked) onModeChange('permanent');
           }}
@@ -95,6 +96,7 @@ const BanExtraFields = memo<{
       <label className={styles.option}>
         <Checkbox
           checked={mode === 'temporary'}
+          disabled={locked}
           onChange={(checked) => {
             if (checked) onModeChange('temporary');
           }}
@@ -105,9 +107,10 @@ const BanExtraFields = memo<{
         <DatePicker
           showTime
           aria-label={tr('users.modals.ban.expiryLabel')}
+          disabled={locked}
           disabledDate={(d) => d.isBefore(dayjs())}
           value={expiresAt}
-          onChange={(v) => onExpiresAtChange(v)}
+          onChange={(v) => onExpiresAtChange(v as Dayjs | null)}
         />
       ) : null}
     </div>
@@ -116,15 +119,15 @@ const BanExtraFields = memo<{
 BanExtraFields.displayName = 'BanExtraFields';
 
 export const openBanUserModal = (params: {
+  authMethod?: AdminReauthAuthMethod;
   onConfirm: (input: Omit<AdminUsersBanInput, 'userId'>) => Promise<void>;
   targetLabel: string;
   userId: string;
 }) => {
-  // Controlled state lives inside a small wrapper mounted as modal content extra.
   let mode: BanMode = 'permanent';
   let expiresAt: Dayjs | null = null;
 
-  const ControlledBan = memo(() => {
+  const ControlledBan = memo<{ locked: boolean }>(({ locked }) => {
     const [m, setM] = useState<BanMode>('permanent');
     const [exp, setExp] = useState<Dayjs | null>(null);
     mode = m;
@@ -132,6 +135,7 @@ export const openBanUserModal = (params: {
     return (
       <BanExtraFields
         expiresAt={exp}
+        locked={locked}
         mode={m}
         onExpiresAtChange={setExp}
         onModeChange={(next) => {
@@ -144,25 +148,29 @@ export const openBanUserModal = (params: {
   ControlledBan.displayName = 'ControlledBan';
 
   openReasonModal({
+    authMethod: params.authMethod,
     danger: true,
     description: t('users.modals.ban.desc'),
     impact: t('users.modals.ban.impact'),
     submitLabel: t('users.modals.ban.confirm'),
     targetLabel: params.targetLabel,
     title: t('users.modals.ban.title'),
-    extra: <ControlledBan />,
+    extra: ({ locked }) => <ControlledBan locked={locked} />,
     validateExtra: () => {
       if (mode === 'permanent') return null;
       if (!expiresAt) return 'users.modals.ban.expiryRequired';
       if (!expiresAt.isAfter(dayjs())) return 'users.modals.ban.expiryFuture';
       return null;
     },
-    onSubmit: async (reason) => {
+    buildPayload: (reason) => {
       const payload: Omit<AdminUsersBanInput, 'userId'> = { reason };
       if (mode === 'temporary' && expiresAt) {
         payload.expiresAt = expiresAt.toDate();
       }
-      await params.onConfirm(payload);
+      return payload;
+    },
+    onSubmit: async (payload) => {
+      await params.onConfirm(payload as Omit<AdminUsersBanInput, 'userId'>);
       toast.success(t('users.toast.banSuccess'));
     },
   });
@@ -171,18 +179,21 @@ export const openBanUserModal = (params: {
 // ── Unban ───────────────────────────────────────────────────────────────────
 
 export const openUnbanUserModal = (params: {
+  authMethod?: AdminReauthAuthMethod;
   onConfirm: (input: Omit<AdminUsersUnbanInput, 'userId'>) => Promise<void>;
   targetLabel: string;
   userId: string;
 }) => {
   openReasonModal({
+    authMethod: params.authMethod,
     description: t('users.modals.unban.desc'),
     impact: t('users.modals.unban.impact'),
     submitLabel: t('users.modals.unban.confirm'),
     targetLabel: params.targetLabel,
     title: t('users.modals.unban.title'),
-    onSubmit: async (reason) => {
-      await params.onConfirm({ reason });
+    buildPayload: (reason) => ({ reason }),
+    onSubmit: async (payload) => {
+      await params.onConfirm(payload as Omit<AdminUsersUnbanInput, 'userId'>);
       toast.success(t('users.toast.unbanSuccess'));
     },
   });
@@ -192,8 +203,9 @@ export const openUnbanUserModal = (params: {
 
 const RevokeSelfExtra = memo<{
   includeCurrent: boolean;
+  locked: boolean;
   onIncludeCurrentChange: (v: boolean) => void;
-}>(({ includeCurrent, onIncludeCurrentChange }) => {
+}>(({ includeCurrent, locked, onIncludeCurrentChange }) => {
   const { t: tr } = useTranslation('admin');
   return (
     <div className={styles.field}>
@@ -201,6 +213,7 @@ const RevokeSelfExtra = memo<{
       <label className={styles.option}>
         <Checkbox
           checked={includeCurrent}
+          disabled={locked}
           onChange={(checked) => onIncludeCurrentChange(Boolean(checked))}
         />
         <span>{tr('users.modals.revoke.includeCurrent')}</span>
@@ -214,6 +227,7 @@ const RevokeSelfExtra = memo<{
 RevokeSelfExtra.displayName = 'RevokeSelfExtra';
 
 export const openRevokeSessionsModal = (params: {
+  authMethod?: AdminReauthAuthMethod;
   isSelf: boolean;
   onConfirm: (input: Omit<AdminUsersRevokeSessionsInput, 'userId'>) => Promise<void>;
   targetLabel: string;
@@ -221,14 +235,15 @@ export const openRevokeSessionsModal = (params: {
 }) => {
   let includeCurrent = false;
 
-  const ControlledRevoke = memo(() => {
+  const ControlledRevoke = memo<{ locked: boolean }>(({ locked }) => {
     const [inc, setInc] = useState(false);
     includeCurrent = inc;
-    return <RevokeSelfExtra includeCurrent={inc} onIncludeCurrentChange={setInc} />;
+    return <RevokeSelfExtra includeCurrent={inc} locked={locked} onIncludeCurrentChange={setInc} />;
   });
   ControlledRevoke.displayName = 'ControlledRevoke';
 
   openReasonModal({
+    authMethod: params.authMethod,
     danger: true,
     description: t('users.modals.revoke.desc'),
     impact: params.isSelf
@@ -237,13 +252,13 @@ export const openRevokeSessionsModal = (params: {
     submitLabel: t('users.modals.revoke.confirm'),
     targetLabel: params.targetLabel,
     title: t('users.modals.revoke.title'),
-    extra: params.isSelf ? <ControlledRevoke /> : undefined,
-    onSubmit: async (reason) => {
-      await params.onConfirm({
-        // Self: default retain current (includeCurrent=false); other: revoke all.
-        includeCurrent: params.isSelf ? includeCurrent : true,
-        reason,
-      });
+    extra: params.isSelf ? ({ locked }) => <ControlledRevoke locked={locked} /> : undefined,
+    buildPayload: (reason) => ({
+      includeCurrent: params.isSelf ? includeCurrent : true,
+      reason,
+    }),
+    onSubmit: async (payload) => {
+      await params.onConfirm(payload as Omit<AdminUsersRevokeSessionsInput, 'userId'>);
       toast.success(t('users.toast.revokeSuccess'));
     },
   });
@@ -254,11 +269,13 @@ export const openRevokeSessionsModal = (params: {
 const RolesExtra = memo<{
   eligible: PlatformSystemRoleName[];
   expiresAt: Dayjs | null;
+  locked: boolean;
   onExpiresAtChange: (v: Dayjs | null) => void;
   onToggle: (role: PlatformSystemRoleName, checked: boolean) => void;
   selected: ReadonlySet<string>;
-}>(({ eligible, selected, expiresAt, onToggle, onExpiresAtChange }) => {
+}>(({ eligible, selected, expiresAt, locked, onToggle, onExpiresAtChange }) => {
   const { t: tr } = useTranslation('admin');
+  const hasSuper = selected.has(PLATFORM_SYSTEM_ROLES.SUPER_ADMIN);
   return (
     <div className={styles.field}>
       <Text>{tr('users.modals.roles.selectLabel')}</Text>
@@ -267,29 +284,35 @@ const RolesExtra = memo<{
           <label className={styles.option}>
             <Checkbox
               checked={selected.has(role)}
+              disabled={locked}
               onChange={(checked) => onToggle(role, Boolean(checked))}
             />
             <span>{tr(`users.roles.${role}` as never)}</span>
           </label>
           <Text className={styles.roleDesc}>
-            {PLATFORM_ROLE_DESCRIPTIONS[role]}
+            {tr(`users.roles.desc.${role}` as never)}
             {' · '}
-            {tr('users.modals.roles.permissionCount', {
-              count: PLATFORM_ROLE_PERMISSIONS[role].length,
-            })}
+            {tr(`users.roles.impact.${role}` as never)}
           </Text>
         </div>
       ))}
       <Text className={styles.hint}>{tr('users.modals.roles.lastSuperNote')}</Text>
-      <Text>{tr('users.modals.roles.expiryOptional')}</Text>
-      <DatePicker
-        allowClear
-        showTime
-        aria-label={tr('users.modals.roles.expiryOptional')}
-        disabledDate={(d) => d.isBefore(dayjs())}
-        value={expiresAt}
-        onChange={(v) => onExpiresAtChange(v)}
-      />
+      {hasSuper ? (
+        <Text className={styles.hint}>{tr('users.modals.roles.superAdminNoExpiry')}</Text>
+      ) : (
+        <>
+          <Text>{tr('users.modals.roles.expiryOptional')}</Text>
+          <DatePicker
+            allowClear
+            showTime
+            aria-label={tr('users.modals.roles.expiryOptional')}
+            disabled={locked}
+            disabledDate={(d) => d.isBefore(dayjs())}
+            value={expiresAt}
+            onChange={(v) => onExpiresAtChange(v as Dayjs | null)}
+          />
+        </>
+      )}
     </div>
   );
 });
@@ -297,6 +320,7 @@ RolesExtra.displayName = 'RolesExtra';
 
 export const openReplaceRolesModal = (params: {
   actorRoles: readonly { name: string }[];
+  authMethod?: AdminReauthAuthMethod;
   currentRoles: string[];
   onConfirm: (input: Omit<AdminUsersReplaceGlobalRolesInput, 'userId'>) => Promise<void>;
   targetLabel: string;
@@ -310,7 +334,7 @@ export const openReplaceRolesModal = (params: {
   let selected = new Set(initial);
   let expiresAt: Dayjs | null = null;
 
-  const ControlledRoles = memo(() => {
+  const ControlledRoles = memo<{ locked: boolean }>(({ locked }) => {
     const [sel, setSel] = useState(() => new Set(initial));
     const [exp, setExp] = useState<Dayjs | null>(null);
     selected = sel;
@@ -319,6 +343,7 @@ export const openReplaceRolesModal = (params: {
       <RolesExtra
         eligible={eligible}
         expiresAt={exp}
+        locked={locked}
         selected={sel}
         onExpiresAtChange={setExp}
         onToggle={(role, checked) => {
@@ -326,6 +351,10 @@ export const openReplaceRolesModal = (params: {
             const next = new Set(prev);
             if (checked) next.add(role);
             else next.delete(role);
+            // Super admin cannot be temporary — clear expiry when selecting super.
+            if (role === PLATFORM_SYSTEM_ROLES.SUPER_ADMIN && checked) {
+              setExp(null);
+            }
             return next;
           });
         }}
@@ -335,26 +364,29 @@ export const openReplaceRolesModal = (params: {
   ControlledRoles.displayName = 'ControlledRoles';
 
   openReasonModal({
+    authMethod: params.authMethod,
     description: t('users.modals.roles.desc'),
     impact: t('users.modals.roles.impact'),
     submitLabel: t('users.modals.roles.confirm'),
     targetLabel: params.targetLabel,
     title: t('users.modals.roles.title'),
-    extra: <ControlledRoles />,
+    extra: ({ locked }) => <ControlledRoles locked={locked} />,
     validateExtra: () => {
-      if (expiresAt && !expiresAt.isAfter(dayjs())) {
-        return 'users.modals.roles.expiryFuture';
-      }
-      // Reject if super_admin slipped in without eligibility
       if (
         selected.has(PLATFORM_SYSTEM_ROLES.SUPER_ADMIN) &&
         !eligible.includes(PLATFORM_SYSTEM_ROLES.SUPER_ADMIN)
       ) {
         return 'users.modals.roles.superAdminForbidden';
       }
+      if (selected.has(PLATFORM_SYSTEM_ROLES.SUPER_ADMIN) && expiresAt) {
+        return 'users.modals.roles.superAdminNoExpiry';
+      }
+      if (expiresAt && !expiresAt.isAfter(dayjs())) {
+        return 'users.modals.roles.expiryFuture';
+      }
       return null;
     },
-    onSubmit: async (reason) => {
+    buildPayload: (reason) => {
       const roleNames = [...selected].filter((r) =>
         (eligible as readonly string[]).includes(r),
       ) as PlatformSystemRoleName[];
@@ -362,11 +394,19 @@ export const openReplaceRolesModal = (params: {
         reason,
         roleNames,
       };
-      if (expiresAt) {
+      // Never pair super_admin with finite expiry.
+      if (expiresAt && !roleNames.includes(PLATFORM_SYSTEM_ROLES.SUPER_ADMIN)) {
         payload.expiresAt = expiresAt.toDate();
       }
-      await params.onConfirm(payload);
+      return payload;
+    },
+    onSubmit: async (payload) => {
+      await params.onConfirm(payload as Omit<AdminUsersReplaceGlobalRolesInput, 'userId'>);
       toast.success(t('users.toast.rolesSuccess'));
     },
   });
 };
+
+// Re-export permission map for tests that assert localization keys map to packages.
+export const rolePermissionCount = (role: PlatformSystemRoleName) =>
+  PLATFORM_ROLE_PERMISSIONS[role].length;

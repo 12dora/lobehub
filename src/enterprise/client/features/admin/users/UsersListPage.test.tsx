@@ -9,6 +9,7 @@ import UsersListPage from './UsersListPage';
 
 const listMock = vi.fn();
 const mutateMock = vi.fn();
+const swrKeys: unknown[] = [];
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -17,8 +18,9 @@ vi.mock('react-i18next', () => ({
 }));
 
 vi.mock('@/libs/swr', () => ({
-  useClientDataSWR: (_key: unknown, fetcher?: () => Promise<unknown>) => {
-    if (_key && fetcher) {
+  useClientDataSWR: (key: unknown, fetcher?: () => Promise<unknown>) => {
+    swrKeys.push(key);
+    if (key && fetcher) {
       void Promise.resolve().then(() => fetcher());
     }
     return {
@@ -33,32 +35,20 @@ vi.mock('@/libs/swr', () => ({
 
 vi.mock('@/enterprise/client/services/adminUsers', () => ({
   adminUsersService: {
-    list: (...args: unknown[]) => listMock(...args),
+    list: (...args: unknown[]) => {
+      listMock(...args);
+      return listMock();
+    },
   },
 }));
 
+// Real FilterBar — do not mock (UI-R2-03)
 vi.mock('../primitives/AdminPageTemplate', () => ({
   default: ({ children, title, toolbar }: any) => (
     <div>
       <h1>{title}</h1>
       <div data-testid="toolbar">{toolbar}</div>
       {children}
-    </div>
-  ),
-}));
-
-vi.mock('../primitives/FilterBar', () => ({
-  default: ({ values, onChange, extra }: any) => (
-    <div>
-      <input
-        aria-label="search"
-        value={values.query}
-        onChange={(e) => onChange({ ...values, query: e.target.value })}
-      />
-      <button type="button" onClick={() => onChange({ query: '' })}>
-        clear
-      </button>
-      {extra}
     </div>
   ),
 }));
@@ -84,20 +74,17 @@ vi.mock('../primitives/DataTable', () => ({
         <ul>
           {dataSource.map((row: any) => (
             <li key={row.id}>
-              <button type="button" onClick={() => onRowActivate?.(row)}>
+              <button
+                aria-label={`user-row-${row.id}`}
+                type="button"
+                onClick={() => onRowActivate?.(row)}
+              >
                 {row.email ?? row.id}
               </button>
               <span data-testid={`providers-${row.id}`}>{row.providerIds?.join(',')}</span>
             </li>
           ))}
         </ul>
-        <button
-          disabled={!cursorPagination?.hasPrevious}
-          type="button"
-          onClick={cursorPagination?.onPrevious}
-        >
-          prev
-        </button>
         <button
           disabled={!cursorPagination?.hasNext}
           type="button"
@@ -117,7 +104,26 @@ vi.mock('@lobehub/ui', async () => {
   const React = await import('react');
   return {
     Avatar: () => null,
+    DatePicker: ({ onChange, 'aria-label': aria, placeholder }: any) =>
+      React.createElement(
+        'button',
+        {
+          'type': 'button',
+          'aria-label': aria || placeholder,
+          'onClick': () => {
+            const dayjs = require('dayjs');
+            onChange?.(dayjs('2024-01-15'));
+          },
+        },
+        aria || placeholder,
+      ),
     Flexbox: ({ children }: any) => React.createElement('div', null, children),
+    SearchBar: ({ value, onInputChange, placeholder }: any) =>
+      React.createElement('input', {
+        'aria-label': placeholder || 'search',
+        'value': value ?? '',
+        'onChange': (e: any) => onInputChange?.(e.target.value),
+      }),
     Tag: ({ children }: any) => React.createElement('span', null, children),
     Text: ({ children }: any) => React.createElement('span', null, children),
   };
@@ -126,6 +132,8 @@ vi.mock('@lobehub/ui', async () => {
 vi.mock('@lobehub/ui/base-ui', async () => {
   const React = await import('react');
   return {
+    Button: ({ children, onClick, ...rest }: any) =>
+      React.createElement('button', { type: 'button', onClick, ...rest }, children),
     Select: ({ onChange, placeholder, 'aria-label': aria, value }: any) =>
       React.createElement(
         'select',
@@ -140,24 +148,6 @@ vi.mock('@lobehub/ui/base-ui', async () => {
         React.createElement('option', { value: 'user_admin' }, 'user_admin'),
       ),
   };
-});
-
-vi.mock('antd', () => {
-  const React = require('react');
-  const RangePicker = ({ onChange, 'aria-label': aria }: any) =>
-    React.createElement(
-      'button',
-      {
-        'aria-label': aria || 'range',
-        'type': 'button',
-        'onClick': () => {
-          const dayjs = require('dayjs');
-          onChange?.([dayjs('2024-01-01'), dayjs('2024-01-31')]);
-        },
-      },
-      'set-range',
-    );
-  return { DatePicker: { RangePicker } };
 });
 
 vi.mock('antd-style', () => ({
@@ -183,14 +173,15 @@ const sampleList = {
   nextCursor: 'cursor-2',
 };
 
-describe('UsersListPage', () => {
+describe('UsersListPage filters', () => {
   beforeEach(() => {
     listMock.mockReset();
     mutateMock.mockReset();
+    swrKeys.length = 0;
     listMock.mockReturnValue(sampleList);
   });
 
-  it('renders list success with provider summary and navigates on row activate', async () => {
+  it('renders list and navigates via labeled row', async () => {
     render(
       <MemoryRouter initialEntries={['/admin/users']}>
         <Routes>
@@ -200,53 +191,82 @@ describe('UsersListPage', () => {
       </MemoryRouter>,
     );
 
-    expect(screen.getByText('users.list.title')).toBeTruthy();
-    expect(screen.getByText('alice@example.com')).toBeTruthy();
-    expect(screen.getByTestId('providers-u1').textContent).toContain('credential');
-
-    fireEvent.click(screen.getByText('alice@example.com'));
-    await waitFor(() => {
-      expect(screen.getByText('detail-u1')).toBeTruthy();
-    });
+    expect(screen.getByRole('heading', { name: 'users.list.title' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'user-row-u1' }));
+    await waitFor(() => expect(screen.getByText('detail-u1')).toBeTruthy());
   });
 
-  it('sends created range to list contract when range filter set', async () => {
+  it('shows Clear for status-only filter and clear-all resets payload', async () => {
     render(
       <MemoryRouter>
         <UsersListPage />
       </MemoryRouter>,
     );
-    fireEvent.click(screen.getByLabelText('users.list.filters.createdRange'));
+
+    fireEvent.change(screen.getByLabelText('users.list.filters.status'), {
+      target: { value: 'banned' },
+    });
+
     await waitFor(() => {
-      const calls = listMock.mock.calls;
-      const withRange = calls.find(
-        (c) => c[0] && typeof c[0] === 'object' && (c[0] as any).createdFrom,
+      expect(screen.getByText('primitives.filterBar.clear')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByText('primitives.filterBar.clear'));
+
+    await waitFor(() => {
+      const last = [...listMock.mock.calls].reverse().find((c) => c[0]);
+      expect(last?.[0]).toMatchObject({
+        status: undefined,
+      });
+    });
+  });
+
+  it('createdFrom DatePicker sends ISO createdFrom to list service', async () => {
+    render(
+      <MemoryRouter>
+        <UsersListPage />
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(screen.getByLabelText('users.list.filters.createdFrom'));
+
+    await waitFor(() => {
+      const withFrom = listMock.mock.calls.find(
+        (c) => c[0] && (c[0] as { createdFrom?: Date }).createdFrom instanceof Date,
       );
-      // list is also invoked via SWR fetcher mock; assert filter eventually includes range
-      expect(withRange || listMock.mock.results.some((r) => r.value === sampleList)).toBeTruthy();
+      expect(withFrom).toBeTruthy();
+      const from = (withFrom![0] as { createdFrom: Date }).createdFrom;
+      // dayjs startOf('day') is local; assert calendar day in local zone
+      expect(from.getFullYear()).toBe(2024);
+      expect(from.getMonth()).toBe(0);
+      expect(from.getDate()).toBe(15);
     });
   });
 
-  it('clear resets filters and empty message', () => {
-    listMock.mockReturnValue({ items: [], nextCursor: null });
+  it('second-page then filter change issues request without cursor', async () => {
     render(
       <MemoryRouter>
         <UsersListPage />
       </MemoryRouter>,
     );
-    fireEvent.click(screen.getByText('clear'));
-    expect(screen.getByText('users.list.empty')).toBeTruthy();
-  });
 
-  it('cursor next advances', async () => {
-    render(
-      <MemoryRouter>
-        <UsersListPage />
-      </MemoryRouter>,
-    );
     fireEvent.click(screen.getByText('next'));
     await waitFor(() => {
-      expect(listMock).toHaveBeenCalled();
+      expect(
+        listMock.mock.calls.some((c) => (c[0] as { cursor?: string })?.cursor === 'cursor-2'),
+      ).toBe(true);
+    });
+
+    fireEvent.change(screen.getByLabelText('users.list.filters.role'), {
+      target: { value: 'user_admin' },
+    });
+
+    await waitFor(() => {
+      const after = [...listMock.mock.calls]
+        .reverse()
+        .find((c) => (c[0] as { role?: string })?.role === 'user_admin');
+      expect(after?.[0]).toMatchObject({ role: 'user_admin' });
+      expect((after?.[0] as { cursor?: string }).cursor).toBeUndefined();
     });
   });
 });

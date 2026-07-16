@@ -69,7 +69,7 @@ const UserDetailPage = memo(() => {
   const { t } = useTranslation('admin');
   const navigate = useNavigate();
   const { id: userId } = useParams<{ id: string }>();
-  const { permissions, roles: actorRoles } = useAdminAccess();
+  const { permissions, roles: actorRoles, authMethod } = useAdminAccess();
   const [tab, setTab] = useState<DetailTab>('overview');
 
   const canBan = hasPermission(permissions, PLATFORM_PERMISSIONS.USER_BAN);
@@ -83,6 +83,7 @@ const UserDetailPage = memo(() => {
   const openBan = useCallback(() => {
     if (!data || !userId || data.isSelf) return;
     openBanUserModal({
+      authMethod,
       targetLabel: displayUserName(data),
       userId,
       onConfirm: async (input) => {
@@ -90,11 +91,12 @@ const UserDetailPage = memo(() => {
         await mutate();
       },
     });
-  }, [banUser, data, mutate, userId]);
+  }, [authMethod, banUser, data, mutate, userId]);
 
   const openUnban = useCallback(() => {
     if (!data || !userId || data.isSelf) return;
     openUnbanUserModal({
+      authMethod,
       targetLabel: displayUserName(data),
       userId,
       onConfirm: async (input) => {
@@ -102,11 +104,12 @@ const UserDetailPage = memo(() => {
         await mutate();
       },
     });
-  }, [data, mutate, unbanUser, userId]);
+  }, [authMethod, data, mutate, unbanUser, userId]);
 
   const openRevoke = useCallback(() => {
     if (!data || !userId) return;
     openRevokeSessionsModal({
+      authMethod,
       isSelf: data.isSelf,
       targetLabel: displayUserName(data),
       userId,
@@ -115,12 +118,13 @@ const UserDetailPage = memo(() => {
         await mutate();
       },
     });
-  }, [data, mutate, revokeSessions, userId]);
+  }, [authMethod, data, mutate, revokeSessions, userId]);
 
   const openRoles = useCallback(() => {
     if (!data || !userId) return;
     openReplaceRolesModal({
       actorRoles,
+      authMethod,
       currentRoles: data.roles.map((r) => r.name),
       targetLabel: displayUserName(data),
       userId,
@@ -129,7 +133,7 @@ const UserDetailPage = memo(() => {
         await mutate();
       },
     });
-  }, [actorRoles, data, mutate, replaceGlobalRoles, userId]);
+  }, [actorRoles, authMethod, data, mutate, replaceGlobalRoles, userId]);
 
   // ── State ordering (UI-R1-03) ────────────────────────────────────────────
   // 1) Loading (no settled data)

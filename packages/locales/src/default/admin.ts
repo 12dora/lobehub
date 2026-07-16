@@ -220,4 +220,28 @@ export default {
   'users.modals.roles.permissionCount': '{{count}} permissions',
   'users.modals.roles.superAdminForbidden': 'Only a super admin may assign the super admin role.',
   'users.list.filters.createdRange': 'Registered range',
+  'users.list.filters.createdFrom': 'Registered from',
+  'users.list.filters.createdTo': 'Registered to',
+  'users.modals.roles.superAdminNoExpiry':
+    'Super admin is permanent — expiry cannot be set with this role.',
+  'users.roles.desc.super_admin':
+    'Local break-glass administrator with all platform permissions. Not managed by EasyAuth.',
+  'users.roles.desc.user_admin':
+    'Manage users, sessions, and global role packages (except super admin).',
+  'users.roles.desc.ai_admin':
+    'Manage AI providers, models, skills, connectors, and platform agents.',
+  'users.roles.desc.identity_admin':
+    'Manage OIDC identity providers, branding, and related audit views.',
+  'users.roles.desc.auditor': 'Read-only access to admin resources and audit export.',
+  'users.roles.desc.platform_user': 'Base platform access without admin APIs.',
+  'users.roles.impact.super_admin':
+    'Impact: full platform control including break-glass operations.',
+  'users.roles.impact.user_admin':
+    'Impact: user lifecycle, bans, session revoke, and non-super role packages.',
+  'users.roles.impact.ai_admin':
+    'Impact: AI infrastructure create/update/publish and related audits.',
+  'users.roles.impact.identity_admin': 'Impact: identity provider and branding configuration.',
+  'users.roles.impact.auditor': 'Impact: read and export audit trails without write rights.',
+  'users.roles.impact.platform_user':
+    'Impact: application access only; no admin console mutations.',
 };

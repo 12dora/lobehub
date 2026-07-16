@@ -1,12 +1,11 @@
 'use client';
 
-import { Avatar, Flexbox, Tag, Text } from '@lobehub/ui';
+import { Avatar, DatePicker, Flexbox, Tag, Text } from '@lobehub/ui';
 import { Select } from '@lobehub/ui/base-ui';
 import type { TableColumnsType } from 'antd';
-import { DatePicker } from 'antd';
 import { createStaticStyles } from 'antd-style';
-import type { Dayjs } from 'dayjs';
-import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import dayjs from 'dayjs';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router';
 
@@ -42,69 +41,63 @@ const styles = createStaticStyles(({ css }) => ({
 
 const ROLE_OPTIONS = Object.values(PLATFORM_SYSTEM_ROLES);
 
-export interface UsersListFilters {
-  createdFrom?: Date;
-  createdTo?: Date;
-  query: string;
-  role?: string;
-  status?: 'active' | 'banned';
+/** Atomic list query state: filters + cursor stack + limit (never combine new filters with old cursor). */
+interface ListQueryState {
+  cursorStack: (string | null)[];
+  filters: AdminFilterValues;
+  limit: number;
 }
 
-const emptyFilters = (): UsersListFilters => ({ query: '' });
+const emptyQuery = (): ListQueryState => ({
+  cursorStack: [],
+  filters: createEmptyAdminFilters(),
+  limit: DEFAULT_LIST_LIMIT,
+});
 
 const UsersListPage = memo(() => {
   const { t } = useTranslation('admin');
   const navigate = useNavigate();
 
-  const [filters, setFilters] = useState<UsersListFilters>(emptyFilters);
-  const [filterBarValues, setFilterBarValues] = useState<AdminFilterValues>(() =>
-    createEmptyAdminFilters(),
-  );
-  const [dateRange, setDateRange] = useState<[Dayjs | null, Dayjs | null] | null>(null);
-  const [limit, setLimit] = useState(DEFAULT_LIST_LIMIT);
-  const [debouncedQuery, setDebouncedQuery] = useState('');
-  const [cursorStack, setCursorStack] = useState<(string | null)[]>([]);
+  const [queryState, setQueryState] = useState<ListQueryState>(emptyQuery);
+  // Local search draft for debounce — committed query lives in queryState.filters.query
+  const [searchDraft, setSearchDraft] = useState('');
+  const debounceRef = useRef<number | null>(null);
+
+  const { filters, cursorStack, limit } = queryState;
   const currentCursor = cursorStack.at(-1) ?? null;
 
-  // Debounce search text only.
+  // Debounce search: commit query + reset cursor in the same setState.
   useEffect(() => {
-    const handle = window.setTimeout(() => {
-      setDebouncedQuery(filterBarValues.query.trim());
+    if (debounceRef.current) window.clearTimeout(debounceRef.current);
+    debounceRef.current = window.setTimeout(() => {
+      const nextQuery = searchDraft.trim();
+      setQueryState((prev) => {
+        if (prev.filters.query === nextQuery) return prev;
+        return {
+          ...prev,
+          cursorStack: [],
+          filters: { ...prev.filters, query: nextQuery },
+        };
+      });
     }, DEBOUNCE_MS);
-    return () => window.clearTimeout(handle);
-  }, [filterBarValues.query]);
+    return () => {
+      if (debounceRef.current) window.clearTimeout(debounceRef.current);
+    };
+  }, [searchDraft]);
 
-  // Sync debounced query into filters.
-  useEffect(() => {
-    setFilters((prev) =>
-      prev.query === debouncedQuery ? prev : { ...prev, query: debouncedQuery },
-    );
-  }, [debouncedQuery]);
-
-  // Reset keyset stack when filters or page size change.
-  useEffect(() => {
-    setCursorStack([]);
-  }, [
-    filters.query,
-    filters.status,
-    filters.role,
-    filters.createdFrom?.getTime(),
-    filters.createdTo?.getTime(),
-    limit,
-  ]);
-
-  const listFilters = useMemo(
-    () => ({
-      createdFrom: filters.createdFrom,
-      createdTo: filters.createdTo,
+  const listFilters = useMemo(() => {
+    const createdFrom = filters.createdFrom ? new Date(filters.createdFrom) : undefined;
+    const createdTo = filters.createdTo ? new Date(filters.createdTo) : undefined;
+    return {
+      createdFrom: createdFrom && !Number.isNaN(createdFrom.getTime()) ? createdFrom : undefined,
+      createdTo: createdTo && !Number.isNaN(createdTo.getTime()) ? createdTo : undefined,
       cursor: currentCursor ?? undefined,
       limit,
       query: filters.query || undefined,
-      role: filters.role,
-      status: filters.status,
-    }),
-    [currentCursor, filters, limit],
-  );
+      role: filters.role || undefined,
+      status: (filters.status as 'active' | 'banned' | undefined) || undefined,
+    };
+  }, [currentCursor, filters, limit]);
 
   const { data, error, isLoading, isValidating, mutate } = useFetchAdminUsersList(listFilters);
 
@@ -112,8 +105,21 @@ const UsersListPage = memo(() => {
   const nextCursor = data?.nextCursor ?? null;
   const showLoading = isLoading && !data;
   const showError = Boolean(error) && !data;
-  const hasFilters = Boolean(
-    filters.query || filters.status || filters.role || filters.createdFrom || filters.createdTo,
+  const hasFilters = [
+    filters.query,
+    filters.status,
+    filters.role,
+    filters.createdFrom,
+    filters.createdTo,
+  ].some((v) => Boolean(v && String(v).trim()));
+
+  // FilterBar values must include all filter fields so Clear is visible for status/role/date-only.
+  const filterBarValues: AdminFilterValues = useMemo(
+    () => ({
+      ...filters,
+      query: searchDraft,
+    }),
+    [filters, searchDraft],
   );
 
   const columns: TableColumnsType<AdminUserListItem> = useMemo(
@@ -191,22 +197,47 @@ const UsersListPage = memo(() => {
     [t],
   );
 
+  const patchFilters = useCallback((patch: Partial<AdminFilterValues>) => {
+    setQueryState((prev) => ({
+      cursorStack: [],
+      filters: { ...prev.filters, ...patch },
+      limit: prev.limit,
+    }));
+  }, []);
+
   const handleFilterBarChange = useCallback((next: AdminFilterValues) => {
-    setFilterBarValues(next);
-    // Clear all extra filters when FilterBar clears
-    if (!next.query && Object.values(next).every((v) => !v || !String(v).trim())) {
-      setFilters(emptyFilters());
-      setDateRange(null);
+    // Clear button → empty all fields
+    if (!hasActiveAdminFiltersHelper(next) || isClearPayload(next)) {
+      setSearchDraft('');
+      setQueryState(emptyQuery());
+      return;
     }
+    setSearchDraft(next.query);
+    setQueryState((prev) => ({
+      cursorStack: [],
+      filters: {
+        ...prev.filters,
+        ...next,
+        // Keep committed query until debounce settles; draft drives searchDraft
+        query: prev.filters.query,
+      },
+      limit: prev.limit,
+    }));
   }, []);
 
   const goNext = useCallback(() => {
     if (!nextCursor) return;
-    setCursorStack((stack) => [...stack, nextCursor]);
+    setQueryState((prev) => ({
+      ...prev,
+      cursorStack: [...prev.cursorStack, nextCursor],
+    }));
   }, [nextCursor]);
 
   const goPrevious = useCallback(() => {
-    setCursorStack((stack) => (stack.length === 0 ? stack : stack.slice(0, -1)));
+    setQueryState((prev) => ({
+      ...prev,
+      cursorStack: prev.cursorStack.length === 0 ? prev.cursorStack : prev.cursorStack.slice(0, -1),
+    }));
   }, []);
 
   return (
@@ -224,47 +255,58 @@ const UsersListPage = memo(() => {
                 aria-label={t('users.list.filters.status')}
                 placeholder={t('users.list.filters.status')}
                 style={{ minWidth: 140 }}
-                value={filters.status}
+                value={filters.status || undefined}
                 options={[
                   { label: t('users.status.active'), value: 'active' },
                   { label: t('users.status.banned'), value: 'banned' },
                 ]}
-                onChange={(v) =>
-                  setFilters((prev) => ({
-                    ...prev,
-                    status: (v as 'active' | 'banned' | undefined) || undefined,
-                  }))
-                }
+                onChange={(v) => patchFilters({ status: (v as string | undefined) || '' })}
               />
               <Select
                 allowClear
                 aria-label={t('users.list.filters.role')}
                 placeholder={t('users.list.filters.role')}
                 style={{ minWidth: 160 }}
-                value={filters.role}
+                value={filters.role || undefined}
                 options={ROLE_OPTIONS.map((r) => ({
                   label: t(`users.roles.${r}` as never, { defaultValue: r }),
                   value: r,
                 }))}
-                onChange={(v) =>
-                  setFilters((prev) => ({
-                    ...prev,
-                    role: (v as string | undefined) || undefined,
-                  }))
-                }
+                onChange={(v) => patchFilters({ role: (v as string | undefined) || '' })}
               />
-              <DatePicker.RangePicker
+              <DatePicker
                 allowClear
-                aria-label={t('users.list.filters.createdRange')}
-                value={dateRange}
-                onChange={(range) => {
-                  setDateRange(range as [Dayjs | null, Dayjs | null] | null);
-                  const from = range?.[0]?.startOf('day').toDate();
-                  const to = range?.[1]?.endOf('day').toDate();
-                  setFilters((prev) => ({
-                    ...prev,
-                    createdFrom: from,
-                    createdTo: to,
+                aria-label={t('users.list.filters.createdFrom')}
+                placeholder={t('users.list.filters.createdFrom')}
+                value={filters.createdFrom ? dayjs(filters.createdFrom) : null}
+                onChange={(d) => {
+                  const raw = Array.isArray(d) ? d[0] : d;
+                  const from = raw ? dayjs(raw).startOf('day') : null;
+                  setQueryState((prev) => ({
+                    cursorStack: [],
+                    filters: {
+                      ...prev.filters,
+                      createdFrom: from ? from.toISOString() : '',
+                    },
+                    limit: prev.limit,
+                  }));
+                }}
+              />
+              <DatePicker
+                allowClear
+                aria-label={t('users.list.filters.createdTo')}
+                placeholder={t('users.list.filters.createdTo')}
+                value={filters.createdTo ? dayjs(filters.createdTo) : null}
+                onChange={(d) => {
+                  const raw = Array.isArray(d) ? d[0] : d;
+                  const to = raw ? dayjs(raw).endOf('day') : null;
+                  setQueryState((prev) => ({
+                    cursorStack: [],
+                    filters: {
+                      ...prev.filters,
+                      createdTo: to ? to.toISOString() : '',
+                    },
+                    limit: prev.limit,
                   }));
                 }}
               />
@@ -278,6 +320,7 @@ const UsersListPage = memo(() => {
         virtual
         columns={columns}
         dataSource={items}
+        emptyDescription={hasFilters ? t('users.list.emptyFiltered') : t('users.list.empty')}
         error={showError}
         loading={showLoading || (isValidating && !data)}
         pagination={false}
@@ -289,12 +332,15 @@ const UsersListPage = memo(() => {
           onNext: goNext,
           onPrevious: goPrevious,
           onPageSizeChange: (size) => {
-            setLimit(Math.min(100, Math.max(1, size)));
+            setQueryState((prev) => ({
+              cursorStack: [],
+              filters: prev.filters,
+              limit: Math.min(100, Math.max(1, size)),
+            }));
           },
           pageSize: limit,
           pageSizeOptions: ['20', '50', '100'],
         }}
-        emptyDescription={hasFilters ? t('users.list.emptyFiltered') : t('users.list.empty')}
         onRetry={() => {
           void mutate();
         }}
@@ -305,6 +351,14 @@ const UsersListPage = memo(() => {
     </AdminPageTemplate>
   );
 });
+
+const hasActiveAdminFiltersHelper = (values: AdminFilterValues) =>
+  Object.values(values).some((v) => Boolean(v && String(v).trim()));
+
+const isClearPayload = (next: AdminFilterValues) => {
+  // clearAdminFilters sets every key to ''
+  return Object.values(next).every((v) => !v || !String(v).trim());
+};
 
 UsersListPage.displayName = 'AdminUsersListPage';
 
