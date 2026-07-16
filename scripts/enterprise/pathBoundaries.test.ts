@@ -27,6 +27,7 @@ describe('enterprise path boundaries', () => {
     expect(ENTERPRISE_UPSTREAM_MOUNT_POINTS).toContain(
       'apps/server/src/services/toolExecution/serverRuntimes/skills.ts',
     );
+    expect(ENTERPRISE_UPSTREAM_MOUNT_POINTS).toContain('apps/server/src/routers/tools/market.ts');
     expect(ENTERPRISE_UPSTREAM_MOUNT_POINTS).toContain(
       'src/routes/(main)/settings/skill/features/PlatformSkillList.tsx',
     );
