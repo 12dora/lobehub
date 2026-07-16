@@ -127,6 +127,10 @@ describe('Skill catalog contracts', () => {
       { displayName: 'Bearer sk-fake-not-real-display' },
       { description: 'ghp_abcdefghijklmnopqrstuvwxyz123456' },
       { reason: 'xoxb-fake-token-in-audit-reason' },
+      { description: '-----BEGIN PRIVATE KEY----- fake material' },
+      { reason: 'Imported credential AKIAABCDEFGHIJKLMNOP' },
+      { description: 'GCP key AIzaSyA12345678901234567890123456789012' },
+      { reason: '{"type":"service_account","project_id":"example"}' },
     ]) {
       expect(adminSkillCreateInputSchema.safeParse({ ...base, ...patch }).success).toBe(false);
     }

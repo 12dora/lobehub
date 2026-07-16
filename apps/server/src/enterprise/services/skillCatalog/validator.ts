@@ -3,6 +3,7 @@ import {
   canonicalizePlatformSkillManifest,
   platformSkillVersionChecksum,
 } from '@/database/models/platform';
+import type { PlatformSkillResource } from '@/database/schemas/platform';
 
 import type {
   SkillManifest,
@@ -23,10 +24,10 @@ const DEFAULT_MAX_RESOLVER_CALLS = 256;
 const VALIDATOR_VERSION = 'm08-v2';
 
 const HIGH_CONFIDENCE_INSTRUCTION_PATTERNS = [
-  /^(?:please\s+)?(?:ignore|disregard|override)[^\n]*(?:previous|system|developer)[^\n]*(?:instruction|message|prompt)s?/i,
-  /^(?:please\s+)?(?:disable|bypass)[^\n]*(?:tool|permission|security)[^\n]*(?:check|policy|guard)s?/i,
-  /^请?(?:忽略|无视).*(?:系统|之前).*(?:指令|提示)/,
-  /^请?(?:绕过|禁用).*(?:工具|权限|安全).*(?:检查|策略|防护)/,
+  /(?:please\s+)?(?:ignore|disregard|override)[^\n]*(?:previous|system|developer)[^\n]*(?:instruction|message|prompt)s?/i,
+  /(?:please\s+)?(?:disable|bypass)[^\n]*(?:tool|permission|security)[^\n]*(?:check|policy|guard)s?/i,
+  /(?:请\s*)?(?:忽略|无视).*(?:系统|之前).*(?:指令|提示)/,
+  /(?:请\s*)?(?:绕过|禁用).*(?:工具|权限|安全).*(?:检查|策略|防护)/,
 ] as const;
 
 const HEURISTIC_INSTRUCTION_PATTERNS = [
@@ -34,8 +35,10 @@ const HEURISTIC_INSTRUCTION_PATTERNS = [
   /(?:越狱|提示词注入|系统提示词)/,
 ] as const;
 
-const NEGATION_PATTERN = /\b(?:do\s+not|don't|never|must\s+not)\b|不要|不得|禁止/i;
-const QUOTED_LINE_PATTERN = /^[>"'`]/;
+const QUOTED_FRAGMENT_PATTERN = /"[^"]*"|'[^']*'|`[^`]*`|“[^”]*”|‘[^’]*’/gu;
+const NEGATED_COMMAND_PATTERN =
+  /\b(?:do\s+not|don't|never|must\s+not)\s+(?:please\s+)?(?:ignore|disregard|override|disable|bypass)\b/gi;
+const NEGATED_COMMAND_ZH_PATTERN = /(?:不要|不得|禁止)\s*(?:忽略|无视|绕过|禁用)/g;
 const LONE_SURROGATE_PATTERN =
   /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u;
 
@@ -49,7 +52,9 @@ export interface SkillCatalogValidationInput {
   allowBuiltinOverride: boolean;
   checksum: string;
   content: string;
+  contentRef?: string | null;
   manifest: unknown;
+  resources?: PlatformSkillResource[];
   skillKey: string;
   version: string;
 }
@@ -116,8 +121,12 @@ const classifyDangerousInstructions = (content: string) => {
     .normalize('NFKC')
     .replaceAll(/\p{Cf}/gu, '')
     .split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line || QUOTED_LINE_PATTERN.test(line) || NEGATION_PATTERN.test(line)) continue;
+    const line = rawLine
+      .replaceAll(QUOTED_FRAGMENT_PATTERN, '')
+      .replaceAll(NEGATED_COMMAND_PATTERN, 'safe-command')
+      .replaceAll(NEGATED_COMMAND_ZH_PATTERN, '安全提示')
+      .trim();
+    if (!line) continue;
     if (HIGH_CONFIDENCE_INSTRUCTION_PATTERNS.some((pattern) => pattern.test(line))) error = true;
     else if (HEURISTIC_INSTRUCTION_PATTERNS.some((pattern) => pattern.test(line))) warning = true;
   }
@@ -429,6 +438,20 @@ export class SkillCatalogValidator {
         ),
       );
     }
+    if (
+      hasLoneSurrogate(input.contentRef) ||
+      hasLoneSurrogate(input.resources) ||
+      hasNonCanonicalString(input.contentRef) ||
+      hasNonCanonicalString(input.resources)
+    ) {
+      this.pushIssue(
+        issue(
+          'manifest_invalid',
+          ['resources'],
+          'Skill resources must contain valid canonical Unicode text',
+        ),
+      );
+    }
     if (containsEnterpriseSecretMaterial(input.content)) {
       this.pushIssue(
         issue(
@@ -444,6 +467,18 @@ export class SkillCatalogValidator {
           'secret_material_detected',
           ['manifest'],
           'Skill manifest contains credential-shaped material',
+        ),
+      );
+    }
+    if (
+      containsEnterpriseSecretMaterial(input.contentRef) ||
+      containsEnterpriseSecretMaterial(input.resources)
+    ) {
+      this.pushIssue(
+        issue(
+          'secret_material_detected',
+          ['resources'],
+          'Skill resources contain credential-shaped material',
         ),
       );
     }
@@ -493,7 +528,12 @@ export class SkillCatalogValidator {
           );
         }
       }
-      const canonicalChecksum = platformSkillVersionChecksum({ content: input.content, manifest });
+      const canonicalChecksum = platformSkillVersionChecksum({
+        content: input.content,
+        contentRef: input.contentRef,
+        manifest,
+        resources: input.resources,
+      });
       if (canonicalChecksum !== input.checksum) {
         this.pushIssue(
           issue('checksum_mismatch', ['checksum'], 'Skill payload checksum does not match'),
