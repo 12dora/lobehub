@@ -1,11 +1,14 @@
 import { act, renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { saveAiProviderPublicDraft } from '../localDraftStorage';
 import type { AdminAiProviderGetOutput } from '../types';
 import { useAiProviderEditor } from './useAiProviderEditor';
 
+const mocks = vi.hoisted(() => ({ useBlocker: vi.fn(() => ({ state: 'unblocked' })) }));
+
 vi.mock('react-router', () => ({
-  useBlocker: () => ({ state: 'unblocked' }),
+  useBlocker: mocks.useBlocker,
 }));
 
 vi.mock('@lobehub/ui/base-ui', () => ({
@@ -48,6 +51,7 @@ const snapshot = {
 
 describe('useAiProviderEditor persisted connection test', () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     window.localStorage.clear();
   });
 
@@ -68,5 +72,35 @@ describe('useAiProviderEditor persisted connection test', () => {
     };
     const { result } = renderHook(() => useAiProviderEditor(staleSnapshot));
     expect(result.current.connectionTest).toMatchObject({ canPublish: false, stale: true });
+  });
+
+  it('ignores recovery drafts and never blocks navigation for a read-only auditor', () => {
+    const serverDraft = {
+      checkModel: 'model-1',
+      configText: '{}',
+      description: null,
+      displayName: 'Provider',
+      enabled: true,
+      fetchOnClient: false,
+      logo: null,
+      settingsText: '{}',
+      sort: 0,
+    };
+    saveAiProviderPublicDraft('provider-1', {
+      baseDraft: serverDraft,
+      baseRevision: 3,
+      draft: { ...serverDraft, displayName: 'Unsaved local name' },
+      draftToken: 'a'.repeat(64),
+      savedAt: new Date(0).toISOString(),
+    });
+
+    const { result } = renderHook(() => useAiProviderEditor(snapshot, false));
+    expect(result.current.draft?.displayName).toBe('Provider');
+    expect(result.current.dirty).toBe(false);
+    expect(mocks.useBlocker).toHaveBeenLastCalledWith(false);
+
+    act(() => result.current.updateDraft('displayName', 'Cannot write'));
+    expect(result.current.draft?.displayName).toBe('Provider');
+    expect(result.current.dirty).toBe(false);
   });
 });

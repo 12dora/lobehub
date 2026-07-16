@@ -42,7 +42,7 @@ const ProviderListPage = memo(() => {
   const { t } = useTranslation('admin');
   const navigate = useNavigate();
   const { authMethod, permissions } = useAdminAccess();
-  const { canCreateProvider, canUpdateProvider } = deriveAiCatalogPermissions(permissions);
+  const { canCreateProvider, canReadProviders } = deriveAiCatalogPermissions(permissions);
   const [searchParams, setSearchParams] = useSearchParams();
   const status = searchParams.get('status') as AdminAiProviderListInput['status'];
   const enabledParam = searchParams.get('enabled');
@@ -291,7 +291,7 @@ const ProviderListPage = memo(() => {
         }
         onRetry={() => void mutate()}
         onRowActivate={
-          canUpdateProvider
+          canReadProviders
             ? (item) => navigate(`/admin/ai/providers/${encodeURIComponent(item.id)}`)
             : undefined
         }
