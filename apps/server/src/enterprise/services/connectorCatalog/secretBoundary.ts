@@ -1,14 +1,11 @@
-import { containsConnectorCredentialMaterial } from '../../contracts/platformConnectors';
+import {
+  CONNECTOR_OPERATION_MESSAGE_BY_STATUS,
+  containsConnectorCredentialMaterial,
+} from '../../contracts/platformConnectors';
 import { PlatformConnectorContractError } from './errors';
 
 export type ConnectorOperationErrorCategory =
   'auth' | 'invalid_config' | 'network' | 'policy' | 'protocol';
-
-const FIXED_OPERATION_MESSAGES = {
-  failure: 'Connector operation failed',
-  pending: 'Connector operation pending',
-  success: 'Connector operation succeeded',
-} as const;
 
 export const collectConnectorSecretLeaves = (...secretSources: unknown[]): Set<string> => {
   const leaves = new Set<string>();
@@ -43,6 +40,6 @@ export const assertConnectorPersistentTextSafe = (
 
 /** Never persist or return an upstream exception/body; emit only fixed product copy. */
 export const fixedConnectorOperationResult = (
-  status: keyof typeof FIXED_OPERATION_MESSAGES,
+  status: keyof typeof CONNECTOR_OPERATION_MESSAGE_BY_STATUS,
   errorCategory: ConnectorOperationErrorCategory | null,
-) => ({ errorCategory, sanitizedMessage: FIXED_OPERATION_MESSAGES[status], status });
+) => ({ errorCategory, sanitizedMessage: CONNECTOR_OPERATION_MESSAGE_BY_STATUS[status], status });
