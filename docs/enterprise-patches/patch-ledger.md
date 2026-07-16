@@ -37,6 +37,20 @@
 | Better Auth / OIDC config                | M11                | Adapter + LKG      |                      |
 | Branding metadata / auth shell           | M12                | Provider/fallback  |                      |
 
+## M04 applied
+
+| Upstream file                                                                | Change                                                       | Module | PR         | Notes                                                                     |
+| ---------------------------------------------------------------------------- | ------------------------------------------------------------ | ------ | ---------- | ------------------------------------------------------------------------- |
+| `packages/database/src/schemas/user.ts`                                      | Auth invalidation epoch + retained-session exception id      | M04    | PR-018–021 | Nullable expand migration 0119; disabled mode remains upstream-compatible |
+| `packages/database/src/models/rbac.ts`                                       | Harden global-role replacement / last-super transaction      | M04    | PR-021     | Workspace roles are untouched and regression-tested                       |
+| `packages/trpc/src/lambda/context.ts`                                        | Live ban/session-epoch validation and trusted auth metadata  | M04    | PR-020     | Retained current session is validated against Better Auth on every check  |
+| `src/app/(backend)/api/auth/[...all]/route.ts`                               | Reject banned or invalidated sessions at auth boundary       | M04    | PR-020     | Feature-flagged; focused route tests                                      |
+| `src/features/Auth/SignIn/useSignIn.ts`                                      | Reauth-only OIDC `prompt=login,max_age=0`                    | M04    | PR-020     | Normal sign-in remains unchanged                                          |
+| `src/libs/better-auth/sso/index.ts`                                          | Forward reauth authorization parameters to Authentik/generic | M04    | PR-020     | Server-trusted auth method; no client self-assertion                      |
+| `src/libs/oidc-provider/access-control.ts`                                   | Enforce auth time and platform session invalidation          | M04    | PR-020     | Credential issue time is distinct from authenticated-at                   |
+| `docs/development/database-schema.dbml`                                      | Document the two M04 users columns                           | M04    | PR-018     | Mirrors migration 0119                                                    |
+| `packages/locales/src/default/admin.ts` + `locales/{en-US,zh-CN}/admin.json` | Admin users / reauth copy                                    | M04    | PR-019–021 | Hand-authored EN/ZH preview; full i18n generation deferred                |
+
 ## M03 applied
 
 | Upstream file                                                             | Change                                                | Module | PR     | Notes                                       |
