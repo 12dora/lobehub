@@ -277,7 +277,7 @@ describe('session exception model (includeCurrent=false)', () => {
     expect(await db.query.session.findFirst({ where: eq(session.id, 's-full') })).toBeUndefined();
   });
 
-  it('rejects preserve when session does not belong to target', async () => {
+  it('rejects preserve when session does not belong to target + persists denied audit', async () => {
     await db.insert(session).values({
       createdAt: new Date(),
       expiresAt: new Date(Date.now() + 3600_000),
@@ -286,15 +286,206 @@ describe('session exception model (includeCurrent=false)', () => {
       updatedAt: new Date(),
       userId: IDS.target,
     });
-    // Actor claims foreign session id for includeCurrent=false on self — session not owned
+    const beforeSessions = await db.query.session.findMany({
+      where: eq(session.userId, IDS.userAdmin),
+    });
+    const beforeUser = await db.query.users.findFirst({ where: eq(users.id, IDS.userAdmin) });
+    const beforeDenied = (
+      await db.query.platformAuditLogs.findMany({
+        where: eq(platformAuditLogs.action, 'admin.users.revokeSessions'),
+      })
+    ).filter((a) => a.result === 'denied').length;
+
     const caller = createAdminCaller(await ctx(IDS.userAdmin, { sessionId: 'foreign-sess' }));
     await expect(
       caller.users.revokeSessions({
         includeCurrent: false,
-        reason: 'bad',
+        reason: 'bad foreign',
         userId: IDS.userAdmin,
       }),
-    ).rejects.toBeTruthy();
+    ).rejects.toMatchObject({
+      code: 'BAD_REQUEST',
+      cause: {
+        data: { code: 'PLATFORM_INVALID_INPUT', details: { reason: 'retained_session_invalid' } },
+      },
+    });
+
+    // No mutation
+    const afterUser = await db.query.users.findFirst({ where: eq(users.id, IDS.userAdmin) });
+    expect(afterUser?.authInvalidatedAt?.getTime() ?? null).toBe(
+      beforeUser?.authInvalidatedAt?.getTime() ?? null,
+    );
+    expect(afterUser?.authInvalidatedExcludedSessionId ?? null).toBe(
+      beforeUser?.authInvalidatedExcludedSessionId ?? null,
+    );
+    const afterSessions = await db.query.session.findMany({
+      where: eq(session.userId, IDS.userAdmin),
+    });
+    expect(afterSessions).toHaveLength(beforeSessions.length);
+    // Foreign session row itself must not be deleted either
+    expect(
+      await db.query.session.findFirst({ where: eq(session.id, 'foreign-sess') }),
+    ).toBeTruthy();
+
+    const audits = await db.query.platformAuditLogs.findMany({
+      where: eq(platformAuditLogs.action, 'admin.users.revokeSessions'),
+    });
+    const denied = audits.filter((a) => a.result === 'denied');
+    expect(denied).toHaveLength(beforeDenied + 1);
+    const latest = denied.at(-1)!;
+    expect(latest.afterDiff).toMatchObject({
+      error: 'retained_session_invalid',
+      retainedSessionAttempt: true,
+    });
+    // Never persist tokens / raw credentials
+    expect(JSON.stringify(audits)).not.toMatch(/tf2|token/i);
+  });
+
+  it('rejects missing/expired retained session + persists denied audit; no epoch mutation', async () => {
+    const beforeUser = await db.query.users.findFirst({ where: eq(users.id, IDS.userAdmin) });
+    const countDenied = async () =>
+      (
+        await db.query.platformAuditLogs.findMany({
+          where: eq(platformAuditLogs.action, 'admin.users.revokeSessions'),
+        })
+      ).filter((a) => a.result === 'denied').length;
+
+    const beforeMissing = await countDenied();
+    const caller = createAdminCaller(await ctx(IDS.userAdmin, { sessionId: 'ghost-sess' }));
+    await expect(
+      caller.users.revokeSessions({
+        includeCurrent: false,
+        reason: 'missing',
+        userId: IDS.userAdmin,
+      }),
+    ).rejects.toMatchObject({
+      code: 'BAD_REQUEST',
+      cause: {
+        data: { code: 'PLATFORM_INVALID_INPUT', details: { reason: 'retained_session_invalid' } },
+      },
+    });
+    const u = await db.query.users.findFirst({ where: eq(users.id, IDS.userAdmin) });
+    expect(u?.authInvalidatedExcludedSessionId ?? null).toBe(
+      beforeUser?.authInvalidatedExcludedSessionId ?? null,
+    );
+    expect(u?.authInvalidatedAt?.getTime() ?? null).toBe(
+      beforeUser?.authInvalidatedAt?.getTime() ?? null,
+    );
+    expect(await countDenied()).toBe(beforeMissing + 1);
+
+    // Expired session (row exists but expiresAt <= now)
+    await db.insert(session).values({
+      createdAt: new Date('2024-01-01'),
+      expiresAt: new Date(Date.now() - 1000),
+      id: 'expired-sess',
+      token: 'texp',
+      updatedAt: new Date(),
+      userId: IDS.userAdmin,
+    });
+    const beforeExpired = await countDenied();
+    const caller2 = createAdminCaller(await ctx(IDS.userAdmin, { sessionId: 'expired-sess' }));
+    await expect(
+      caller2.users.revokeSessions({
+        includeCurrent: false,
+        reason: 'expired',
+        userId: IDS.userAdmin,
+      }),
+    ).rejects.toMatchObject({
+      code: 'BAD_REQUEST',
+      cause: {
+        data: { code: 'PLATFORM_INVALID_INPUT', details: { reason: 'retained_session_invalid' } },
+      },
+    });
+    const u2 = await db.query.users.findFirst({ where: eq(users.id, IDS.userAdmin) });
+    expect(u2?.authInvalidatedExcludedSessionId ?? null).toBe(
+      beforeUser?.authInvalidatedExcludedSessionId ?? null,
+    );
+    expect(u2?.authInvalidatedAt?.getTime() ?? null).toBe(
+      beforeUser?.authInvalidatedAt?.getTime() ?? null,
+    );
+    // Expired row still present (no partial revoke)
+    expect(
+      await db.query.session.findFirst({ where: eq(session.id, 'expired-sess') }),
+    ).toBeTruthy();
+    expect(await countDenied()).toBe(beforeExpired + 1);
+    const audits = await db.query.platformAuditLogs.findMany({
+      where: eq(platformAuditLogs.action, 'admin.users.revokeSessions'),
+    });
+    expect(JSON.stringify(audits)).not.toMatch(/texp|token/i);
+  });
+
+  it('cookie-cache ghost: matching exception id without live session row is rejected', async () => {
+    const login = new Date('2024-04-01T00:00:00.000Z');
+    // Exception points at deleted session id (cookie cache still presents it)
+    await db
+      .update(users)
+      .set({
+        authInvalidatedAt: new Date(),
+        authInvalidatedExcludedSessionId: 'ghost-keep',
+      })
+      .where(eq(users.id, IDS.userAdmin));
+
+    // No auth_sessions row for ghost-keep
+    const ghost = createAdminCaller(
+      await ctx(IDS.userAdmin, {
+        authenticatedAt: login,
+        credentialIssuedAt: login,
+        sessionId: 'ghost-keep',
+      }),
+    );
+    await expect(ghost.users.list({ limit: 1 })).rejects.toBeTruthy();
+
+    // Live unexpired row with exception id passes
+    await db.insert(session).values({
+      createdAt: login,
+      expiresAt: new Date(Date.now() + 3600_000),
+      id: 'ghost-keep',
+      token: 'tlive',
+      updatedAt: login,
+      userId: IDS.userAdmin,
+    });
+    await expect(ghost.users.list({ limit: 1 })).resolves.toBeTruthy();
+
+    // Expired live row rejects
+    await db
+      .update(session)
+      .set({ expiresAt: new Date(Date.now() - 1000) })
+      .where(eq(session.id, 'ghost-keep'));
+    await expect(ghost.users.list({ limit: 1 })).rejects.toBeTruthy();
+
+    // Wrong owner rejects
+    await db
+      .update(session)
+      .set({ expiresAt: new Date(Date.now() + 3600_000), userId: IDS.target })
+      .where(eq(session.id, 'ghost-keep'));
+    await expect(ghost.users.list({ limit: 1 })).rejects.toBeTruthy();
+  });
+
+  it('banned user with valid exception still rejected', async () => {
+    const login = new Date('2024-05-01T00:00:00.000Z');
+    await db.insert(session).values({
+      createdAt: login,
+      expiresAt: new Date(Date.now() + 3600_000),
+      id: 'ban-keep',
+      token: 'tb',
+      updatedAt: login,
+      userId: IDS.userAdmin,
+    });
+    await db
+      .update(users)
+      .set({
+        authInvalidatedAt: new Date(),
+        authInvalidatedExcludedSessionId: 'ban-keep',
+        banned: true,
+      })
+      .where(eq(users.id, IDS.userAdmin));
+    const caller = createAdminCaller(
+      await ctx(IDS.userAdmin, {
+        credentialIssuedAt: login,
+        sessionId: 'ban-keep',
+      }),
+    );
+    await expect(caller.users.list({})).rejects.toBeTruthy();
   });
 });
 

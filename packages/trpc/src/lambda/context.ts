@@ -132,7 +132,7 @@ export interface OIDCAuth {
 export interface AuthContext {
   /**
    * Trusted interactive auth timestamp (reauth gates only):
-   * - Better Auth: session.createdAt (login / security rotation after includeCurrent preserve)
+   * - Better Auth: original session.createdAt (login time; never rewritten by revoke)
    * - OIDC: auth_time claim only
    * - API key: always null
    */
@@ -142,7 +142,7 @@ export interface AuthContext {
   clientIp?: string | null;
   /**
    * Trusted credential issuance time for ban / authInvalidatedAt cutoff (R2-02):
-   * - Better Auth: session.createdAt (security issuance; rotated past cutoff when preserved)
+   * - Better Auth: original session.createdAt (unchanged by revoke; exception uses sessionId)
    * - OIDC: token iat
    * - API key: api key createdAt
    * Never substitute authenticatedAt / auth_time here.
@@ -345,9 +345,9 @@ export const createLambdaContext = async (request: NextRequest): Promise<LambdaC
         sessionCreatedAt && !Number.isNaN(sessionCreatedAt.getTime()) ? sessionCreatedAt : null;
       const sessionId = typeof session.session?.id === 'string' ? session.session.id : null;
 
-      // Security epoch: credentialIssuedAt = original session.createdAt (never rewritten on revoke).
-      // Reauth: authenticatedAt = same original login time (session exception does not refresh it).
-      // Cutoff exception: trusted sessionId may match authInvalidatedExcludedSessionId.
+      // Security epoch: credentialIssuedAt = original session.createdAt (never rewritten).
+      // Reauth: authenticatedAt = same original login time (exception does not refresh it).
+      // Cutoff exception: trusted sessionId + live auth_sessions row (assertUserActive).
       if (securityOn) {
         const db = await getServerDB();
         try {

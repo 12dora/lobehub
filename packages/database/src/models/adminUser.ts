@@ -423,17 +423,25 @@ export class AdminUserModel {
   };
 
   /**
-   * Assert a Better Auth session row exists and belongs to the user.
-   * Returns true if valid; never returns tokens.
+   * Assert a Better Auth session row exists, belongs to the user, and is unexpired.
+   * Returns true if valid; never selects tokens.
    */
   assertSessionBelongsToUser = async (params: {
     sessionId: string;
     userId: string;
   }): Promise<boolean> => {
+    const now = new Date();
     const [row] = await this.db
       .select({ id: session.id })
       .from(session)
-      .where(and(eq(session.id, params.sessionId), eq(session.userId, params.userId)))
+      .where(
+        and(
+          eq(session.id, params.sessionId),
+          eq(session.userId, params.userId),
+          // unexpired
+          sql`${session.expiresAt} > ${now}`,
+        ),
+      )
       .limit(1);
     return Boolean(row);
   };

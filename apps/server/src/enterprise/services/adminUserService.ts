@@ -50,6 +50,27 @@ export class AdminUserSelfBanError extends Error {
   }
 }
 
+/**
+ * Invalid retained-session candidate on revokeSessions (missing / expired / foreign).
+ * Maps to public PLATFORM_INVALID_INPUT without leaking whether a foreign session exists.
+ */
+export class InvalidRetainedSessionError extends Error {
+  readonly code = PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT;
+  readonly reasonCode:
+    'retained_session_missing' | 'retained_session_expired' | 'retained_session_invalid';
+
+  constructor(
+    reasonCode:
+      | 'retained_session_missing'
+      | 'retained_session_expired'
+      | 'retained_session_invalid' = 'retained_session_invalid',
+  ) {
+    super(PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT);
+    this.name = 'InvalidRetainedSessionError';
+    this.reasonCode = reasonCode;
+  }
+}
+
 /** One-way fingerprint of search text — never store full query. */
 export const fingerprintQuery = (query: string | undefined): string | null => {
   if (!query) return null;
@@ -352,58 +373,80 @@ export class AdminUserService {
         ? actorSessionId
         : undefined;
 
-    const revokedCount = await this.db.transaction(async (tx) => {
-      const model = new AdminUserModel(tx);
-      const cutoff = new Date();
+    try {
+      const revokedCount = await this.db.transaction(async (tx) => {
+        const model = new AdminUserModel(tx);
+        const cutoff = new Date();
 
-      if (excludeSessionId) {
-        const ok = await model.assertSessionBelongsToUser({
-          sessionId: excludeSessionId,
+        if (excludeSessionId) {
+          const ok = await model.assertSessionBelongsToUser({
+            sessionId: excludeSessionId,
+            userId: input.userId,
+          });
+          if (!ok) {
+            // Distinct internal error so outer path can audit without leaking ownership.
+            throw new InvalidRetainedSessionError('retained_session_invalid');
+          }
+        }
+
+        const count = await model.revokeSessionsForUser({
+          excludeSessionId,
           userId: input.userId,
         });
-        if (!ok) {
-          throw new Error(PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT);
-        }
+
+        // Full revoke (includeCurrent or no retainable session) clears exception.
+        await model.invalidateAuth({
+          at: cutoff,
+          excludedSessionId: excludeSessionId ?? null,
+          userId: input.userId,
+        });
+
+        await this.appendAuditInDb(tx, {
+          action: 'admin.users.revokeSessions',
+          actorUserId,
+          afterDiff: {
+            includeCurrent: Boolean(input.includeCurrent),
+            preservedSession: Boolean(excludeSessionId),
+            revokedCount: count,
+          },
+          reason: input.reason,
+          result: 'success',
+          targetId: input.userId,
+          targetType: 'user',
+        });
+
+        return count;
+      });
+
+      try {
+        await revokeOIDCArtifactsByUserId(this.db, input.userId);
+      } catch {
+        // best-effort; authInvalidatedAt already advanced
       }
 
-      const count = await model.revokeSessionsForUser({
-        excludeSessionId,
-        userId: input.userId,
-      });
+      await this.publishUserSecurityInvalidation(input.userId);
 
-      // Full revoke (includeCurrent or no retainable session) clears exception.
-      await model.invalidateAuth({
-        at: cutoff,
-        excludedSessionId: excludeSessionId ?? null,
-        userId: input.userId,
-      });
-
-      await this.appendAuditInDb(tx, {
-        action: 'admin.users.revokeSessions',
-        actorUserId,
-        afterDiff: {
-          includeCurrent: Boolean(input.includeCurrent),
-          preservedSession: Boolean(excludeSessionId),
-          revokedCount: count,
-        },
-        reason: input.reason,
-        result: 'success',
-        targetId: input.userId,
-        targetType: 'user',
-      });
-
-      return count;
-    });
-
-    try {
-      await revokeOIDCArtifactsByUserId(this.db, input.userId);
-    } catch {
-      // best-effort; authInvalidatedAt already advanced
+      return { revokedCount, userId: input.userId };
+    } catch (error) {
+      if (error instanceof InvalidRetainedSessionError) {
+        // Mutation rolled back; persist sanitized denial outside the txn (R3-03).
+        await this.appendAuditBestEffort({
+          action: 'admin.users.revokeSessions',
+          actorUserId,
+          afterDiff: {
+            error: error.reasonCode,
+            // Never log session tokens.
+            retainedSessionAttempt: true,
+          },
+          reason: input.reason,
+          result: 'denied',
+          targetId: input.userId,
+          targetType: 'user',
+        });
+        throw error;
+      }
+      throw error;
     }
-
-    await this.publishUserSecurityInvalidation(input.userId);
-
-    return { revokedCount, userId: input.userId };
   };
 
   replaceGlobalRoles = async (params: {

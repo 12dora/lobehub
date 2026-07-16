@@ -1,5 +1,5 @@
 {
-  "id": "edd6d6d1-7790-4214-89be-b242ef2bf8d1",
+  "id": "77ae1038-21e9-4f5b-9e1c-5d9a9b16de11",
   "prevId": "eed84745-e34c-4790-99b8-1c1d9581f618",
   "version": "7",
   "dialect": "postgresql",
@@ -23225,11 +23225,10 @@
           "name": "users_email_lower_pattern_idx",
           "columns": [
             {
-              "expression": "lower(\"email\")",
+              "expression": "lower(\"email\") text_pattern_ops",
               "asc": true,
               "isExpression": true,
-              "nulls": "last",
-              "opclass": "text_pattern_ops"
+              "nulls": "last"
             }
           ],
           "isUnique": false,
@@ -23241,11 +23240,10 @@
           "name": "users_username_lower_pattern_idx",
           "columns": [
             {
-              "expression": "lower(\"username\")",
+              "expression": "lower(\"username\") text_pattern_ops",
               "asc": true,
               "isExpression": true,
-              "nulls": "last",
-              "opclass": "text_pattern_ops"
+              "nulls": "last"
             }
           ],
           "isUnique": false,
@@ -23257,11 +23255,10 @@
           "name": "users_normalized_email_lower_pattern_idx",
           "columns": [
             {
-              "expression": "lower(\"normalized_email\")",
+              "expression": "lower(\"normalized_email\") text_pattern_ops",
               "asc": true,
               "isExpression": true,
-              "nulls": "last",
-              "opclass": "text_pattern_ops"
+              "nulls": "last"
             }
           ],
           "isUnique": false,
