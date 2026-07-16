@@ -114,6 +114,20 @@ export class MemoryConnectorSecretStore implements ConnectorCatalogSecretStore {
   }) =>
     this.byFingerprint.get(`${params.connectorId}:${params.slot}:${params.fingerprint}`) ?? null;
 
+  resolveSecretRef = async ({ ref }: { ref: string }) => {
+    const value = this.byRef.get(ref);
+    if (value === undefined) return null;
+    const stored = [...this.byFingerprint.values()].find((candidate) => candidate.ref === ref);
+    return stored ? { ...stored, value } : null;
+  };
+
+  revokeSecretRef = async ({ ref }: { ref: string }) => {
+    this.byRef.delete(ref);
+    for (const [key, value] of this.byFingerprint) {
+      if (value.ref === ref) this.byFingerprint.delete(key);
+    }
+  };
+
   loadCurrentSecretSources = async (connectorId: string) => {
     const [connector] = await this.db
       .select({

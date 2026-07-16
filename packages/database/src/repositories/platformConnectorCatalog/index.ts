@@ -46,6 +46,10 @@ export interface PlatformConnectorToolCursor {
   toolKey: string;
 }
 
+export type OAuthStateReservationResult =
+  | { reservedAt: Date; state: PlatformConnectorOAuthStateItem; status: 'reserved' }
+  | { status: 'expired' | 'invalid' | 'replayed' };
+
 export interface PlatformConnectorRevisionPayload extends Record<string, unknown> {
   connector: {
     credentialMode: PlatformConnectorItem['credentialMode'];
@@ -383,9 +387,7 @@ export class PlatformConnectorCatalogRepository {
     return row;
   };
 
-  consumeOAuthState = async (
-    stateHash: string,
-  ): Promise<PlatformConnectorOAuthStateItem | undefined> => {
+  reserveOAuthState = async (stateHash: string): Promise<OAuthStateReservationResult> => {
     const databaseNow = sql<Date>`CURRENT_TIMESTAMP`;
     const validBinding = this.db
       .select({ id: platformUserConnectorBindings.id })
@@ -423,7 +425,38 @@ export class PlatformConnectorCatalogRepository {
         ),
       )
       .returning();
-    return row;
+    if (row?.consumedAt) {
+      return { reservedAt: row.consumedAt, state: row, status: 'reserved' };
+    }
+    const existing = await this.db.query.platformConnectorOAuthStates.findFirst({
+      where: eq(platformConnectorOAuthStates.stateHash, stateHash),
+    });
+    if (!existing || existing.revokedAt) return { status: 'invalid' };
+    if (existing.consumedAt) return { status: 'replayed' };
+    if (existing.expiresAt <= new Date()) return { status: 'expired' };
+    return { status: 'invalid' };
+  };
+
+  consumeOAuthState = async (
+    stateHash: string,
+  ): Promise<PlatformConnectorOAuthStateItem | undefined> => {
+    const reservation = await this.reserveOAuthState(stateHash);
+    return reservation.status === 'reserved' ? reservation.state : undefined;
+  };
+
+  releaseOAuthStateReservation = async (stateHash: string, reservedAt: Date): Promise<boolean> => {
+    const [row] = await this.db
+      .update(platformConnectorOAuthStates)
+      .set({ consumedAt: null })
+      .where(
+        and(
+          eq(platformConnectorOAuthStates.stateHash, stateHash),
+          eq(platformConnectorOAuthStates.consumedAt, reservedAt),
+          isNull(platformConnectorOAuthStates.revokedAt),
+        ),
+      )
+      .returning({ id: platformConnectorOAuthStates.id });
+    return row !== undefined;
   };
 
   revokeAllBindingsPage = async (params: {
@@ -532,6 +565,201 @@ export class PlatformUserConnectorBindingRepository {
     });
   };
 
+  prepareOAuthAuthorization = async (params: {
+    bindingId: string;
+    connectorId: string;
+    expiresAt: Date;
+    pkceVerifierRef: string;
+    publishedRevision: number;
+    redirectUri: string;
+    returnTo?: string;
+    scopes: string[];
+    stateHash: string;
+    stateId: string;
+  }): Promise<PlatformUserConnectorBindingItem> => {
+    return inTransaction(this.db, async (db) => {
+      const [connector] = await db
+        .select({ id: platformConnectors.id })
+        .from(platformConnectors)
+        .where(
+          and(
+            eq(platformConnectors.id, params.connectorId),
+            eq(platformConnectors.credentialMode, 'per_user_oauth'),
+            eq(platformConnectors.enabled, true),
+            eq(platformConnectors.status, 'published'),
+            eq(platformConnectors.publishedRevision, params.publishedRevision),
+          ),
+        )
+        .limit(1)
+        .for('update');
+      if (!connector) throw new Error('PLATFORM_CONNECTOR_NOT_PUBLISHED');
+
+      await db
+        .insert(platformUserConnectorBindings)
+        .values({
+          connectorId: params.connectorId,
+          id: params.bindingId,
+          publishedRevision: params.publishedRevision,
+          status: 'pending',
+          userId: this.userId,
+        })
+        .onConflictDoNothing({
+          target: [platformUserConnectorBindings.userId, platformUserConnectorBindings.connectorId],
+        });
+      const [current] = await db
+        .select()
+        .from(platformUserConnectorBindings)
+        .where(
+          and(
+            eq(platformUserConnectorBindings.userId, this.userId),
+            eq(platformUserConnectorBindings.connectorId, params.connectorId),
+          ),
+        )
+        .limit(1)
+        .for('update');
+      if (!current) throw new Error('PLATFORM_CONNECTOR_BINDING_OWNERSHIP_MISMATCH');
+
+      const preserveConnected = current.status === 'connected';
+      const [binding] = await db
+        .update(platformUserConnectorBindings)
+        .set({
+          ...(preserveConnected
+            ? {}
+            : {
+                connectedAt: null,
+                expiresAt: null,
+                lastErrorCategory: null,
+                oauthTokenRef: null,
+                revokedAt: null,
+                scopes: [],
+                status: 'pending' as const,
+                tokenFingerprint: null,
+              }),
+          publishedRevision: params.publishedRevision,
+          revision: sqlIncrement(platformUserConnectorBindings.revision),
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(platformUserConnectorBindings.id, current.id),
+            eq(platformUserConnectorBindings.userId, this.userId),
+          ),
+        )
+        .returning();
+
+      const databaseNow = sql<Date>`CURRENT_TIMESTAMP`;
+      await db
+        .update(platformConnectorOAuthStates)
+        .set({ revokedAt: databaseNow })
+        .where(
+          and(
+            eq(platformConnectorOAuthStates.bindingId, binding.id),
+            isNull(platformConnectorOAuthStates.consumedAt),
+            isNull(platformConnectorOAuthStates.revokedAt),
+          ),
+        );
+      await db.insert(platformConnectorOAuthStates).values({
+        bindingId: binding.id,
+        connectorId: params.connectorId,
+        expiresAt: params.expiresAt,
+        pkceVerifierRef: params.pkceVerifierRef,
+        publishedRevision: params.publishedRevision,
+        redirectUri: params.redirectUri,
+        returnTo: params.returnTo,
+        scopes: params.scopes,
+        stateHash: params.stateHash,
+        stateId: params.stateId,
+        userId: this.userId,
+      });
+      return binding;
+    });
+  };
+
+  finalizeOAuthAuthorization = async (params: {
+    connectedAt: Date;
+    connectorId: string;
+    expiresAt: Date | null;
+    oauthTokenRef: string;
+    publishedRevision: number;
+    reservedAt: Date;
+    scopes: string[];
+    stateHash: string;
+    tokenFingerprint: string;
+  }): Promise<{
+    binding: PlatformUserConnectorBindingItem;
+    previousTokenRef: string | null;
+  }> => {
+    return inTransaction(this.db, async (db) => {
+      const [state] = await db
+        .select()
+        .from(platformConnectorOAuthStates)
+        .where(
+          and(
+            eq(platformConnectorOAuthStates.stateHash, params.stateHash),
+            eq(platformConnectorOAuthStates.userId, this.userId),
+            eq(platformConnectorOAuthStates.connectorId, params.connectorId),
+            eq(platformConnectorOAuthStates.publishedRevision, params.publishedRevision),
+            eq(platformConnectorOAuthStates.consumedAt, params.reservedAt),
+            isNull(platformConnectorOAuthStates.revokedAt),
+          ),
+        )
+        .limit(1)
+        .for('update');
+      if (!state) throw new Error('PLATFORM_CONNECTOR_OAUTH_STATE_INVALID');
+      const [connector] = await db
+        .select({ id: platformConnectors.id })
+        .from(platformConnectors)
+        .where(
+          and(
+            eq(platformConnectors.id, params.connectorId),
+            eq(platformConnectors.credentialMode, 'per_user_oauth'),
+            eq(platformConnectors.enabled, true),
+            eq(platformConnectors.status, 'published'),
+            eq(platformConnectors.publishedRevision, params.publishedRevision),
+          ),
+        )
+        .limit(1)
+        .for('update');
+      if (!connector) throw new Error('PLATFORM_CONNECTOR_NOT_PUBLISHED');
+      const [current] = await db
+        .select()
+        .from(platformUserConnectorBindings)
+        .where(
+          and(
+            eq(platformUserConnectorBindings.id, state.bindingId),
+            eq(platformUserConnectorBindings.userId, this.userId),
+            eq(platformUserConnectorBindings.connectorId, params.connectorId),
+          ),
+        )
+        .limit(1)
+        .for('update');
+      if (!current) throw new Error('PLATFORM_CONNECTOR_BINDING_OWNERSHIP_MISMATCH');
+      const [binding] = await db
+        .update(platformUserConnectorBindings)
+        .set({
+          connectedAt: params.connectedAt,
+          expiresAt: params.expiresAt,
+          lastErrorCategory: null,
+          oauthTokenRef: params.oauthTokenRef,
+          publishedRevision: params.publishedRevision,
+          revision: sqlIncrement(platformUserConnectorBindings.revision),
+          revokedAt: null,
+          scopes: params.scopes,
+          status: 'connected',
+          tokenFingerprint: params.tokenFingerprint,
+          updatedAt: params.connectedAt,
+        })
+        .where(
+          and(
+            eq(platformUserConnectorBindings.id, current.id),
+            eq(platformUserConnectorBindings.userId, this.userId),
+          ),
+        )
+        .returning();
+      return { binding, previousTokenRef: current.oauthTokenRef };
+    });
+  };
+
   getBinding = async (
     connectorId: string,
   ): Promise<PlatformUserConnectorBindingItem | undefined> => {
@@ -566,9 +794,17 @@ export class PlatformUserConnectorBindingRepository {
   revokeBinding = async (
     connectorId: string,
   ): Promise<PlatformUserConnectorBindingItem | undefined> => {
+    return (await this.revokeBindingWithPreviousSecret(connectorId))?.binding;
+  };
+
+  revokeBindingWithPreviousSecret = async (
+    connectorId: string,
+  ): Promise<
+    { binding: PlatformUserConnectorBindingItem; previousTokenRef: string | null } | undefined
+  > => {
     return inTransaction(this.db, async (db) => {
       const owned = await db
-        .select({ id: platformUserConnectorBindings.id })
+        .select()
         .from(platformUserConnectorBindings)
         .where(
           and(
@@ -579,8 +815,9 @@ export class PlatformUserConnectorBindingRepository {
         )
         .limit(1)
         .for('update');
-      const bindingId = owned[0]?.id;
-      if (!bindingId) return undefined;
+      const current = owned[0];
+      if (!current) return undefined;
+      const bindingId = current.id;
       const databaseNow = sql<Date>`CURRENT_TIMESTAMP`;
       await db
         .update(platformConnectorOAuthStates)
@@ -612,7 +849,7 @@ export class PlatformUserConnectorBindingRepository {
           ),
         )
         .returning();
-      return row;
+      return { binding: row, previousTokenRef: current.oauthTokenRef };
     });
   };
 

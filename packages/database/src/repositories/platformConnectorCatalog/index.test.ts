@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { getTestDB } from '../../core/getTestDB';
@@ -208,7 +208,12 @@ const ensurePendingM09Constraints = async () => {
 const cleanup = async () => {
   await serverDB
     .delete(platformConnectorOAuthStates)
-    .where(sql`${platformConnectorOAuthStates.id} LIKE 'm09-%'`);
+    .where(
+      or(
+        sql`${platformConnectorOAuthStates.id} LIKE 'm09-%'`,
+        inArray(platformConnectorOAuthStates.userId, userIds),
+      ),
+    );
   await serverDB
     .delete(platformUserConnectorBindings)
     .where(inArray(platformUserConnectorBindings.userId, userIds));
@@ -1048,6 +1053,91 @@ describe('PlatformConnectorCatalogRepository', () => {
 });
 
 describe('PlatformUserConnectorBindingRepository', () => {
+  it('prepares, reserves, releases, finalizes, and revokes one owner-scoped OAuth binding', async () => {
+    const connector = await createConnector('oauth-lifecycle', 'per_user_oauth');
+    await ensurePublishedRevision(connector.id);
+    await catalog.setPublishedPointerCas({
+      checksum: '1'.padStart(64, '0'),
+      connectorId: connector.id,
+      expectedRevision: 0,
+      publishedAt: new Date(),
+      publishedRevision: 1,
+    });
+    await serverDB
+      .update(platformConnectors)
+      .set({ enabled: true })
+      .where(eq(platformConnectors.id, connector.id));
+    const repository = new PlatformUserConnectorBindingRepository(serverDB, userIds[0]);
+    const stateHash = '9'.repeat(64);
+    const binding = await repository.prepareOAuthAuthorization({
+      bindingId: 'm09-oauth-lifecycle-binding',
+      connectorId: connector.id,
+      expiresAt: new Date(Date.now() + 5 * 60 * 1000),
+      pkceVerifierRef: 'vault://oauth/lifecycle/pkce',
+      publishedRevision: 1,
+      redirectUri: 'https://aihub.example.test/oauth/callback',
+      scopes: ['read'],
+      stateHash,
+      stateId: '9'.repeat(32),
+    });
+    expect(binding).toMatchObject({ status: 'pending', userId: userIds[0] });
+    await expect(
+      new PlatformUserConnectorBindingRepository(serverDB, userIds[1]).getBinding(connector.id),
+    ).resolves.toBeUndefined();
+
+    const reservations = await Promise.all([
+      catalog.reserveOAuthState(stateHash),
+      catalog.reserveOAuthState(stateHash),
+    ]);
+    const winner = reservations.find((result) => result.status === 'reserved');
+    expect(reservations.filter((result) => result.status === 'reserved')).toHaveLength(1);
+    expect(reservations.filter((result) => result.status === 'replayed')).toHaveLength(1);
+    if (!winner || winner.status !== 'reserved') throw new Error('missing reservation winner');
+    await expect(catalog.releaseOAuthStateReservation(stateHash, winner.reservedAt)).resolves.toBe(
+      true,
+    );
+    const retried = await catalog.reserveOAuthState(stateHash);
+    if (retried.status !== 'reserved') throw new Error('state was not retryable after release');
+    const finalized = await repository.finalizeOAuthAuthorization({
+      connectedAt: new Date(),
+      connectorId: connector.id,
+      expiresAt: new Date(Date.now() + 60_000),
+      oauthTokenRef: 'vault://oauth/lifecycle/token-v1',
+      publishedRevision: 1,
+      reservedAt: retried.reservedAt,
+      scopes: ['read'],
+      stateHash,
+      tokenFingerprint: 'sha256:token-v1',
+    });
+    expect(finalized).toMatchObject({
+      binding: { status: 'connected', userId: userIds[0] },
+      previousTokenRef: null,
+    });
+
+    const reauthorization = await repository.prepareOAuthAuthorization({
+      bindingId: 'ignored-new-binding-id',
+      connectorId: connector.id,
+      expiresAt: new Date(Date.now() + 5 * 60 * 1000),
+      pkceVerifierRef: 'vault://oauth/lifecycle/pkce-v2',
+      publishedRevision: 1,
+      redirectUri: 'https://aihub.example.test/oauth/callback',
+      scopes: ['read'],
+      stateHash: '8'.repeat(64),
+      stateId: '8'.repeat(32),
+    });
+    expect(reauthorization).toMatchObject({
+      id: binding.id,
+      oauthTokenRef: 'vault://oauth/lifecycle/token-v1',
+      status: 'connected',
+    });
+
+    await expect(repository.revokeBindingWithPreviousSecret(connector.id)).resolves.toMatchObject({
+      binding: { oauthTokenRef: null, status: 'revoked' },
+      previousTokenRef: 'vault://oauth/lifecycle/token-v1',
+    });
+    await expect(repository.revokeBindingWithPreviousSecret(connector.id)).resolves.toBeUndefined();
+  });
+
   it('isolates bindings and OAuth state creation by user ownership', async () => {
     const connector = await createConnector('isolation', 'per_user_oauth');
     const bindingA = await createBinding(userIds[0], connector.id, 'm09-binding-user-a');

@@ -1111,6 +1111,21 @@ export const connectorOAuthCallbackInputSchema = z
   .object({ code: z.string().trim().min(1).max(8192), state: z.string().trim().min(32).max(512) })
   .strict();
 
+/** Strict provider response boundary; unknown/oversized token fields fail closed. */
+export const connectorOAuthTokenResponseSchema = z
+  .object({
+    access_token: z.string().min(1).max(32_768),
+    expires_in: z.number().int().nonnegative().max(31_536_000).optional(),
+    refresh_token: z.string().min(1).max(32_768).optional(),
+    scope: z.string().trim().min(1).max(10_000).optional(),
+    token_type: z.string().trim().min(1).max(64).optional(),
+  })
+  .strict()
+  .refine(
+    (value) => value.token_type === undefined || value.token_type.toLowerCase() === 'bearer',
+    'unsupported OAuth token type',
+  );
+
 export const connectorEffectiveToolPolicyInputSchema = z
   .object({
     agentAllowed: z.boolean(),

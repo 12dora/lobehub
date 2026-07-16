@@ -11,7 +11,8 @@ import type { ConnectorFailureAuditWriter } from './catalogAudit';
 import { PlatformConnectorContractError } from './errors';
 
 export type ConnectorDraft = z.infer<typeof adminConnectorDraftSchema>;
-export type ConnectorSecretSlot = 'oauthClientSecret' | 'sharedSecret';
+export type ConnectorSecretSlot =
+  'oauthBindingToken' | 'oauthClientSecret' | 'oauthPkceVerifier' | 'sharedSecret';
 
 export interface ConnectorStoredSecret {
   fingerprint: string;
@@ -29,11 +30,13 @@ export interface ConnectorCatalogSecretStore extends ConnectorCurrentSecretLoade
     slot: ConnectorSecretSlot;
     value: unknown;
   }) => Promise<ConnectorStoredSecret>;
+  resolveSecretRef: (params: { ref: string }) => Promise<ConnectorResolvedSecret | null>;
   resolveSecretVersion: (params: {
     connectorId: string;
     fingerprint: string;
     slot: ConnectorSecretSlot;
   }) => Promise<ConnectorResolvedSecret | null>;
+  revokeSecretRef?: (params: { ref: string }) => Promise<void>;
 }
 
 export interface ConnectorCatalogCredentialProvider {

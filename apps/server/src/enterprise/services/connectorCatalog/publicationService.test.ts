@@ -469,6 +469,7 @@ describe('ConnectorCatalogPublicationService', () => {
     const failingSecrets: ConnectorCatalogSecretStore = {
       loadCurrentSecretSources: harness.secrets.loadCurrentSecretSources,
       persistSecret: harness.secrets.persistSecret,
+      resolveSecretRef: harness.secrets.resolveSecretRef,
       resolveSecretVersion: async () => {
         throw new Error(rawError);
       },
