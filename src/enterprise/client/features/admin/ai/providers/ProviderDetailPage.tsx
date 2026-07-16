@@ -103,7 +103,12 @@ const ProviderDetailContent = memo<ProviderDetailContentProps>(
       permission.canReadProviders,
       revisionCursor,
     );
-    const actions = useAiProviderActions({ authMethod, data, editor, permissions: permission });
+    const actions = useAiProviderActions({
+      authMethod: authMethod ?? null,
+      data,
+      editor,
+      permissions: permission,
+    });
     const collectionLocked = editor.dirty || editor.conflict;
 
     return (
@@ -272,8 +277,9 @@ const ProviderDetailContent = memo<ProviderDetailContentProps>(
                 <Button
                   disabled={!revisions.data.nextCursor}
                   onClick={() => {
-                    if (!revisions.data?.nextCursor) return;
-                    setRevisionCursorStack((current) => [...current, revisions.data.nextCursor!]);
+                    const nextCursor = revisions.data?.nextCursor;
+                    if (!nextCursor) return;
+                    setRevisionCursorStack((current) => [...current, nextCursor]);
                   }}
                 >
                   {t('aiCatalog.revisions.next')}
