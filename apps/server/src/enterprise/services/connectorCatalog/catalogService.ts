@@ -51,6 +51,7 @@ export class ConnectorCatalogService {
       secrets,
       options.redirectUri,
       options.failureAuditWriter,
+      options.lifecycle,
     );
     this.publication = new ConnectorCatalogPublicationService(
       db,

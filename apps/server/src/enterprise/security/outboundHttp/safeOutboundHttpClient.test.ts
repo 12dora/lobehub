@@ -362,6 +362,22 @@ describe('SafeOutboundHttpClient', () => {
     expect(transport).not.toHaveBeenCalled();
   });
 
+  it('returns the exact stable policy version used by DNS preflight', async () => {
+    const policyProvider = vi.fn(() => ({
+      policy: { allowlist: [], mode: 'allow-private' as const },
+      version: 'policy-v7',
+    }));
+    const client = new SafeOutboundHttpClient({
+      policyProvider,
+      resolve: resolveTo([{ address: '1.1.1.1' }]),
+      transport: vi.fn(),
+    });
+
+    await expect(client.preflight('https://connector.example/mcp')).resolves.toBe('policy-v7');
+    expect(client.getPolicyVersion()).toBe('policy-v7');
+    expect(policyProvider).toHaveBeenCalledTimes(3);
+  });
+
   it.each([
     { policy: { allowlist: [], mode: 'invalid' }, version: 1 },
     { policy: { allowlist: 'example.test', mode: 'allowlist' }, version: 1 },

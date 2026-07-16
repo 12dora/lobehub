@@ -25,6 +25,10 @@ export interface ConnectorOutboundJsonResponse {
   url: string;
 }
 
+export interface ConnectorOutboundPreflightProof {
+  policyVersion: number | string;
+}
+
 const isJsonContentType = (value: string | null): boolean => {
   if (!value) return false;
   const mediaType = value.split(';', 1)[0]?.trim().toLowerCase();
@@ -41,6 +45,28 @@ export class ConnectorOutboundClient {
   assertAllowed = async (url: string | URL): Promise<void> => {
     try {
       await this.client.assertAllowed(url);
+    } catch (error) {
+      if (error instanceof SafeOutboundHttpError) {
+        throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_SSRF_BLOCKED');
+      }
+      throw error;
+    }
+  };
+
+  preflight = async (url: string | URL): Promise<ConnectorOutboundPreflightProof> => {
+    try {
+      return { policyVersion: await this.client.preflight(url) };
+    } catch (error) {
+      if (error instanceof SafeOutboundHttpError) {
+        throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_SSRF_BLOCKED');
+      }
+      throw error;
+    }
+  };
+
+  getPolicyVersion = (): number | string => {
+    try {
+      return this.client.getPolicyVersion();
     } catch (error) {
       if (error instanceof SafeOutboundHttpError) {
         throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_SSRF_BLOCKED');

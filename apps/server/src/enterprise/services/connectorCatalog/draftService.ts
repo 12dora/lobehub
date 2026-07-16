@@ -41,6 +41,7 @@ import {
   throwStableConnectorSecretError,
 } from './catalogAudit';
 import type {
+  ConnectorCatalogLifecycle,
   ConnectorCatalogSecretStore,
   ConnectorDraft,
   ConnectorDraftDetail,
@@ -241,6 +242,7 @@ export class ConnectorCatalogDraftService {
     private readonly secrets: ConnectorCatalogSecretStore,
     private readonly redirectUri: string,
     private readonly failureAuditWriter?: ConnectorFailureAuditWriter,
+    private readonly lifecycle: ConnectorCatalogLifecycle = {},
   ) {}
 
   private persistSlot = async (
@@ -455,33 +457,49 @@ export class ConnectorCatalogDraftService {
         sharedSecret:
           patch.sharedSecret?.operation === 'replace' ? patch.sharedSecret.value : undefined,
       });
+      const connector = await new PlatformConnectorCatalogRepository(this.db).getConnector(
+        patch.id,
+      );
+      if (!connector) throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_FOUND');
+      const current = await loadConnectorDraft(this.db, patch.id);
+      if (
+        current.draft.revision !== patch.expectedRevision ||
+        current.draftToken !== patch.expectedDraftToken
+      ) {
+        throw new PlatformRevisionConflictError();
+      }
+      const normalized = normalizeAdminConnectorUpdateInput(
+        current.draft,
+        patch,
+        this.redirectUri,
+        secretContext,
+      );
+      // Persist immutable Secret handles before acquiring the database row lock.
+      // A losing CAS may leave an unreachable handle, which is safe to garbage collect.
+      const secretSlots = await this.persistDraftSecrets(
+        patch.id,
+        normalized.candidate,
+        connector,
+        normalized.patch,
+      );
+      await this.lifecycle.afterDraftSecretPersist?.(patch.id);
       return await this.db.transaction(async (tx) => {
-        const [connector] = await tx
+        const [lockedConnector] = await tx
           .select()
           .from(platformConnectors)
           .where(eq(platformConnectors.id, patch.id))
           .limit(1)
           .for('update');
-        if (!connector) throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_FOUND');
-        const current = await loadConnectorDraft(tx, patch.id);
+        if (!lockedConnector) {
+          throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_FOUND');
+        }
+        const lockedCurrent = await loadConnectorDraft(tx, patch.id);
         if (
-          current.draft.revision !== patch.expectedRevision ||
-          current.draftToken !== patch.expectedDraftToken
+          lockedCurrent.draft.revision !== patch.expectedRevision ||
+          lockedCurrent.draftToken !== patch.expectedDraftToken
         ) {
           throw new PlatformRevisionConflictError();
         }
-        const normalized = normalizeAdminConnectorUpdateInput(
-          current.draft,
-          patch,
-          this.redirectUri,
-          secretContext,
-        );
-        const secretSlots = await this.persistDraftSecrets(
-          patch.id,
-          normalized.candidate,
-          connector,
-          normalized.patch,
-        );
         const repository = new PlatformConnectorCatalogRepository(tx);
         const updated = await repository.updateConnectorDraftCas(patch.id, patch.expectedRevision, {
           ...secretSlots,
@@ -513,7 +531,7 @@ export class ConnectorCatalogDraftService {
               ),
             ),
           },
-          beforeDiff: { connector: connectorAuditSummary(current.draft) },
+          beforeDiff: { connector: connectorAuditSummary(lockedCurrent.draft) },
           configRevision: after.draft.revision,
           reason: normalized.patch.reason,
           result: 'success',
