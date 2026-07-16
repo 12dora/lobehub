@@ -75,7 +75,7 @@ const REDACTED = '[REDACTED]';
 
 export interface RedactSensitiveOptions {
   /** Narrow allowlist for known-safe key false positives; value-shape checks still apply. */
-  isBenignKey?: (key: string) => boolean;
+  isBenignKey?: (key: string, context: { path: readonly string[]; value: unknown }) => boolean;
 }
 
 /** Known fake placeholders used only in tests — never real material. */
@@ -108,26 +108,32 @@ const redactString = (value: string): string => {
  * Returns a new structure; does not mutate the input.
  */
 export const redactSensitive = <T>(input: T, options: RedactSensitiveOptions = {}): T => {
-  return redactValue(input, options) as T;
+  return redactValue(input, options, []) as T;
 };
 
-const redactValue = (value: unknown, options: RedactSensitiveOptions): unknown => {
+const redactValue = (
+  value: unknown,
+  options: RedactSensitiveOptions,
+  path: readonly string[],
+): unknown => {
   if (value === null || value === undefined) return value;
 
   if (typeof value === 'string') return redactString(value);
 
   if (typeof value === 'number' || typeof value === 'boolean') return value;
 
-  if (Array.isArray(value)) return value.map((item) => redactValue(item, options));
+  if (Array.isArray(value)) {
+    return value.map((item, index) => redactValue(item, options, [...path, String(index)]));
+  }
 
   if (typeof value === 'object') {
     const out: Record<string, unknown> = {};
     for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-      if (isSensitiveKey(key) && !options.isBenignKey?.(key)) {
+      if (isSensitiveKey(key) && !options.isBenignKey?.(key, { path, value: child })) {
         out[key] = REDACTED;
         continue;
       }
-      out[key] = redactValue(child, options);
+      out[key] = redactValue(child, options, [...path, key]);
     }
     return out;
   }

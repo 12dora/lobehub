@@ -59,7 +59,13 @@ const httpUrlSchema = z
   .max(4096)
   .url()
   .superRefine((value, ctx) => {
-    const url = new URL(value);
+    let url: URL;
+    try {
+      url = new URL(value);
+    } catch {
+      ctx.addIssue({ code: 'custom', message: 'invalid HTTP(S) URL' });
+      return;
+    }
     if (url.protocol !== 'http:' && url.protocol !== 'https:') {
       ctx.addIssue({ code: 'custom', message: 'only HTTP(S) URLs are supported' });
     }

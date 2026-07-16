@@ -39,14 +39,26 @@ export class ConnectorCatalogService {
     options: ConnectorCatalogServiceOptions,
   ) {
     const credentials = options.credentials ?? noCredentialHeaders;
-    this.discovery = new ConnectorCatalogDiscoveryService(db, outbound, secrets, credentials);
-    this.drafts = new ConnectorCatalogDraftService(db, secrets, options.redirectUri);
+    this.discovery = new ConnectorCatalogDiscoveryService(
+      db,
+      outbound,
+      secrets,
+      credentials,
+      options.failureAuditWriter,
+    );
+    this.drafts = new ConnectorCatalogDraftService(
+      db,
+      secrets,
+      options.redirectUri,
+      options.failureAuditWriter,
+    );
     this.publication = new ConnectorCatalogPublicationService(
       db,
       outbound,
       secrets,
       options.lifecycle ?? {},
       options.invalidation,
+      options.failureAuditWriter,
     );
     this.read = new ConnectorCatalogReadService(db, secrets);
   }

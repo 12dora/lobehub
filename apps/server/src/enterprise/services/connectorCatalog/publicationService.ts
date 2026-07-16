@@ -1,9 +1,11 @@
 import { randomUUID } from 'node:crypto';
 
+import { isPlainRecord } from '@lobechat/utils/object';
 import { and, eq } from 'drizzle-orm';
 import type { z } from 'zod';
 
 import {
+  checksumPayload,
   PlatformRevisionConflictError,
   type RedactSensitiveOptions,
   type ResourcePointerAdapter,
@@ -25,12 +27,24 @@ import {
   adminConnectorPublishInputSchema,
   adminConnectorRevokeAllBindingsInputSchema,
   adminConnectorRollbackInputSchema,
+  collectConnectorSecretLeaves,
+  containsConnectorCredentialMaterial,
 } from '../../contracts/platformConnectors';
 import { PlatformAuditService } from '../platformAudit';
 import type { PlatformConfigInvalidationPublisher } from '../platformConfigInvalidation';
 import { PlatformPublisherService } from '../platformPublisher';
-import { appendConnectorFailureAudit, sanitizeConnectorReason } from './catalogAudit';
-import { parseConnectorRevisionPayload, resolveConnectorSecretVersion } from './catalogSnapshot';
+import type { ConnectorFailureAuditWriter } from './catalogAudit';
+import {
+  appendConnectorFailureAudit,
+  connectorAuditSummary,
+  loadConnectorSecretSourcesSafe,
+  sanitizeConnectorReason,
+} from './catalogAudit';
+import {
+  ConnectorCatalogReadService,
+  parseConnectorRevisionPayload,
+  resolveConnectorSecretVersion,
+} from './catalogSnapshot';
 import type {
   ConnectorCatalogLifecycle,
   ConnectorCatalogSecretStore,
@@ -50,15 +64,34 @@ type RollbackInput = z.input<typeof adminConnectorRollbackInputSchema>;
 type ArchiveInput = z.input<typeof adminConnectorArchiveInputSchema>;
 type RevokeAllInput = z.input<typeof adminConnectorRevokeAllBindingsInputSchema>;
 
+const MAX_REVOKE_BINDINGS = 10_000;
+const MAX_REVOKE_PAGES = 100;
+const REVOKE_PAGE_SIZE = 100;
+const SCHEMA_DYNAMIC_KEY_CONTAINERS = new Set([
+  '$defs',
+  'definitions',
+  'dependentschemas',
+  'patternproperties',
+  'properties',
+]);
+const REVISION_BENIGN_KEYS = new Set([
+  'credentialmode',
+  'oauthclientsecretconfigured',
+  'oauthclientsecretfingerprint',
+  'sharedsecretconfigured',
+  'sharedsecretfingerprint',
+]);
+
 const M09_REVISION_REDACTION_OPTIONS: RedactSensitiveOptions = {
-  isBenignKey: (key) =>
-    [
-      'credentialmode',
-      'oauthclientsecretconfigured',
-      'oauthclientsecretfingerprint',
-      'sharedsecretconfigured',
-      'sharedsecretfingerprint',
-    ].includes(key.replaceAll(/[^a-z0-9]/gi, '').toLowerCase()),
+  isBenignKey: (key, context) => {
+    const normalized = key.replaceAll(/[^a-z0-9]/gi, '').toLowerCase();
+    if (REVISION_BENIGN_KEYS.has(normalized)) return true;
+    const schemaIndex = context.path.findIndex(
+      (part) => part === 'inputSchema' || part === 'outputSchema',
+    );
+    const parent = context.path.at(-1)?.toLowerCase();
+    return schemaIndex >= 0 && parent !== undefined && SCHEMA_DYNAMIC_KEY_CONTAINERS.has(parent);
+  },
 };
 
 const activeSecretFingerprint = (draft: ConnectorDraft): string | null =>
@@ -67,6 +100,37 @@ const activeSecretFingerprint = (draft: ConnectorDraft): string | null =>
     : draft.credentialMode === 'per_user_oauth'
       ? draft.oauthClientSecret.fingerprint
       : null;
+
+const revisionSecretFingerprint = (payload: PlatformConnectorRevisionPayload): string | null =>
+  payload.connector.credentialMode === 'shared_service_account'
+    ? payload.connector.sharedSecretFingerprint
+    : payload.connector.credentialMode === 'per_user_oauth'
+      ? payload.connector.oauthClientSecretFingerprint
+      : null;
+
+const assertNoRevisionCredentialMaterial = (
+  value: unknown,
+  secretLeaves: ReadonlySet<string>,
+): void => {
+  if (typeof value === 'string') {
+    if (
+      containsConnectorCredentialMaterial(value) ||
+      [...secretLeaves].some((secret) => value.includes(secret))
+    ) {
+      throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED');
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item) => assertNoRevisionCredentialMaterial(item, secretLeaves));
+    return;
+  }
+  if (!isPlainRecord(value)) return;
+  Object.entries(value).forEach(([key, child]) => {
+    assertNoRevisionCredentialMaterial(key, secretLeaves);
+    assertNoRevisionCredentialMaterial(child, secretLeaves);
+  });
+};
 
 const revisionPayload = (
   connector: PlatformConnectorItem,
@@ -114,6 +178,7 @@ export class ConnectorCatalogPublicationService {
     private readonly secrets: ConnectorCatalogSecretStore,
     private readonly lifecycle: ConnectorCatalogLifecycle,
     private readonly invalidation?: PlatformConfigInvalidationPublisher,
+    private readonly failureAuditWriter?: ConnectorFailureAuditWriter,
   ) {
     this.publisher = new PlatformPublisherService(db, invalidation);
   }
@@ -158,6 +223,16 @@ export class ConnectorCatalogPublicationService {
     return { connector, draft: detail.draft };
   };
 
+  private prepareRevisionPayload = (
+    connector: PlatformConnectorItem,
+    draft: ConnectorDraft,
+    secretLeaves: ReadonlySet<string>,
+  ): PlatformConnectorRevisionPayload => {
+    const payload = revisionPayload(connector, draft);
+    assertNoRevisionCredentialMaterial(payload, secretLeaves);
+    return payload;
+  };
+
   private resolvePayloadSecrets = async (
     payload: PlatformConnectorRevisionPayload,
   ): Promise<{
@@ -188,17 +263,29 @@ export class ConnectorCatalogPublicationService {
     const repository = new PlatformConnectorCatalogRepository(tx);
     let cursor: string | undefined;
     let revoked = 0;
-    do {
+    const seenCursors = new Set<string>();
+    for (let pageIndex = 0; pageIndex < MAX_REVOKE_PAGES; pageIndex += 1) {
       const page = await repository.revokeAllBindingsPage({
         afterId: cursor,
         connectorId,
-        limit: 100,
+        limit: REVOKE_PAGE_SIZE,
       });
       revoked += page.revoked;
-      cursor = page.nextCursor ?? undefined;
-    } while (cursor);
-    await this.lifecycle.afterRevokeAll?.(connectorId, tx);
-    return revoked;
+      if (revoked > MAX_REVOKE_BINDINGS) {
+        throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_RESOURCE_MISMATCH');
+      }
+      const nextCursor = page.nextCursor ?? undefined;
+      if (!nextCursor) {
+        await this.lifecycle.afterRevokeAll?.(connectorId, tx);
+        return revoked;
+      }
+      if (nextCursor === cursor || seenCursors.has(nextCursor)) {
+        throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_RESOURCE_MISMATCH');
+      }
+      seenCursors.add(nextCursor);
+      cursor = nextCursor;
+    }
+    throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_RESOURCE_MISMATCH');
   };
 
   private materializeRevision = async (
@@ -208,21 +295,23 @@ export class ConnectorCatalogPublicationService {
     revision: number,
     status: 'archived' | 'published',
     actorUserId: string,
-    revisionSecretFingerprint: string | null,
+    storedSecretFingerprint: string | null,
+    operation: 'publish' | 'rollback',
   ): Promise<void> => {
     const payload = parseConnectorRevisionPayload(rawPayload);
     if (payload.connector.id !== connectorId) {
       throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_PUBLISHED');
     }
     const connector = payload.connector;
-    const payloadSecretFingerprint =
-      connector.credentialMode === 'shared_service_account'
-        ? connector.sharedSecretFingerprint
-        : connector.credentialMode === 'per_user_oauth'
-          ? connector.oauthClientSecretFingerprint
-          : null;
-    if (payloadSecretFingerprint !== revisionSecretFingerprint) {
+    if (revisionSecretFingerprint(payload) !== storedSecretFingerprint) {
       throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_PUBLISHED');
+    }
+    if (operation === 'rollback') {
+      await this.outbound.assertAllowed(connector.endpoint);
+      parseDiscoveredConnectorTools(payload.tools.map((tool) => ({ ...tool, enabled: true })));
+      if (!connector.enabled || payload.tools.length === 0) {
+        throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_PUBLISHED');
+      }
     }
     const { oauth, shared } = await this.resolvePayloadSecrets(payload);
     await tx
@@ -273,6 +362,7 @@ export class ConnectorCatalogPublicationService {
     actorUserId: string,
     expectedDraftToken: string,
     mode: 'archive' | 'publish' | 'rollback',
+    revisionSecretLeaves: ReadonlySet<string> = new Set(),
   ): ResourcePointerAdapter => ({
     assertLockedState: async (tx) => {
       await this.lifecycle.afterPublishLock?.(tx);
@@ -289,7 +379,10 @@ export class ConnectorCatalogPublicationService {
       if (!row) throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_FOUND');
       return row.revision;
     },
-    materializePublished: async (tx, { payload, revision, secretFingerprint, status }) => {
+    materializePublished: async (
+      tx,
+      { operation, payload, revision, secretFingerprint, status },
+    ) => {
       await this.materializeRevision(
         tx,
         connectorId,
@@ -298,6 +391,7 @@ export class ConnectorCatalogPublicationService {
         status === 'archived' ? 'archived' : 'published',
         actorUserId,
         secretFingerprint ?? null,
+        operation,
       );
     },
     prepareLockedPublish: async (tx) => {
@@ -308,6 +402,10 @@ export class ConnectorCatalogPublicationService {
         if (!current) {
           throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_PUBLISHED');
         }
+        if (checksumPayload(current.payload) !== current.provenance.checksum) {
+          throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_PUBLISHED');
+        }
+        parseConnectorRevisionPayload(current.payload);
         return { afterDiff: { connectorId, status: 'archived' }, payload: current.payload };
       }
       const { connector, draft } = await this.assertPublishable(
@@ -316,12 +414,8 @@ export class ConnectorCatalogPublicationService {
         expectedDraftToken,
       );
       return {
-        afterDiff: {
-          connectorId,
-          credentialMode: draft.credentialMode,
-          toolCount: draft.tools.filter((tool) => tool.enabled).length,
-        },
-        payload: revisionPayload(connector, draft),
+        afterDiff: { connector: connectorAuditSummary(draft) },
+        payload: this.prepareRevisionPayload(connector, draft, revisionSecretLeaves),
       };
     },
     updatePointer: async (tx, { revision, status }) => {
@@ -373,12 +467,26 @@ export class ConnectorCatalogPublicationService {
     const reason = await sanitizeConnectorReason(this.secrets, command.id, command.reason);
     try {
       const current = await loadConnectorDraft(this.db, command.id);
+      if (current.draftToken !== command.expectedDraftToken) {
+        throw new PlatformRevisionConflictError();
+      }
+      const sources = await loadConnectorSecretSourcesSafe(this.secrets, command.id);
+      const secretLeaves = collectConnectorSecretLeaves(
+        sources.oauthClientSecret,
+        sources.sharedSecret,
+      );
       const result = await this.publisher.publish({
         actorUserId,
         expectedRevision: command.expectedRevision,
         invalidationScopes: ['connector-catalog', 'connector-runtime'],
         payload: {},
-        pointer: this.pointer(command.id, actorUserId, command.expectedDraftToken, 'publish'),
+        pointer: this.pointer(
+          command.id,
+          actorUserId,
+          command.expectedDraftToken,
+          'publish',
+          secretLeaves,
+        ),
         reason,
         redactionOptions: M09_REVISION_REDACTION_OPTIONS,
         resourceId: command.id,
@@ -387,12 +495,16 @@ export class ConnectorCatalogPublicationService {
       });
       return { auditId: result.auditId, revision: result.revision.revision };
     } catch (error) {
-      await appendConnectorFailureAudit(this.db, {
-        action: 'admin.connectors.publish',
-        actorUserId,
-        reason,
-        targetId: command.id,
-      });
+      await appendConnectorFailureAudit(
+        this.db,
+        {
+          action: 'admin.connectors.publish',
+          actorUserId,
+          reason,
+          targetId: command.id,
+        },
+        this.failureAuditWriter,
+      );
       throw error;
     }
   };
@@ -417,12 +529,16 @@ export class ConnectorCatalogPublicationService {
       });
       return { auditId: result.auditId, revision: result.revision.revision };
     } catch (error) {
-      await appendConnectorFailureAudit(this.db, {
-        action: 'admin.connectors.rollback',
-        actorUserId,
-        reason,
-        targetId: command.id,
-      });
+      await appendConnectorFailureAudit(
+        this.db,
+        {
+          action: 'admin.connectors.rollback',
+          actorUserId,
+          reason,
+          targetId: command.id,
+        },
+        this.failureAuditWriter,
+      );
       throw error;
     }
   };
@@ -431,7 +547,9 @@ export class ConnectorCatalogPublicationService {
     const command = adminConnectorArchiveInputSchema.parse(input);
     const reason = await sanitizeConnectorReason(this.secrets, command.id, command.reason);
     try {
-      const current = await loadConnectorDraft(this.db, command.id);
+      const published = await new ConnectorCatalogReadService(this.db, this.secrets).getSnapshot(
+        command.id,
+      );
       const result = await this.publisher.publish({
         actorUserId,
         expectedRevision: command.expectedRevision,
@@ -442,17 +560,21 @@ export class ConnectorCatalogPublicationService {
         redactionOptions: M09_REVISION_REDACTION_OPTIONS,
         resourceId: command.id,
         resourceType: 'connector',
-        secretFingerprint: activeSecretFingerprint(current.draft),
+        secretFingerprint: revisionSecretFingerprint(published.payload),
         status: 'archived',
       });
       return { auditId: result.auditId, revision: result.revision.revision };
     } catch (error) {
-      await appendConnectorFailureAudit(this.db, {
-        action: 'admin.connectors.archive',
-        actorUserId,
-        reason,
-        targetId: command.id,
-      });
+      await appendConnectorFailureAudit(
+        this.db,
+        {
+          action: 'admin.connectors.archive',
+          actorUserId,
+          reason,
+          targetId: command.id,
+        },
+        this.failureAuditWriter,
+      );
       throw error;
     }
   };
@@ -488,12 +610,16 @@ export class ConnectorCatalogPublicationService {
       await this.publishInvalidation(command.id, command.expectedRevision);
       return result;
     } catch (error) {
-      await appendConnectorFailureAudit(this.db, {
-        action: 'admin.connectors.revokeAllBindings',
-        actorUserId,
-        reason,
-        targetId: command.id,
-      });
+      await appendConnectorFailureAudit(
+        this.db,
+        {
+          action: 'admin.connectors.revokeAllBindings',
+          actorUserId,
+          reason,
+          targetId: command.id,
+        },
+        this.failureAuditWriter,
+      );
       throw error;
     }
   };
