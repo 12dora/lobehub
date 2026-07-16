@@ -68,6 +68,13 @@ import { AiInfraRepos } from '@/database/repositories/aiInfra';
 import { getServerDB } from '@/database/server';
 import { buildWorkspaceWhere } from '@/database/utils/workspace';
 import { OtelWorkflowClient } from '@/libs/qstash';
+import { parseEnterpriseFeatureFlags } from '@/server/enterprise/featureFlags';
+import { PlatformSecretService } from '@/server/enterprise/security/secret';
+import {
+  AiCatalogExecutionResolver,
+  getEmptyAiProviderRuntimeState,
+  resolveAiCatalogRuntimeState,
+} from '@/server/enterprise/services/aiCatalog';
 import { getServerGlobalConfig } from '@/server/globalConfig';
 import { type MemoryAgentConfig } from '@/server/globalConfig/parseMemoryExtractionConfig';
 import { parseMemoryExtractionConfig } from '@/server/globalConfig/parseMemoryExtractionConfig';
@@ -2361,7 +2368,14 @@ export class MemoryExtractionExecutor {
   ): Promise<AiProviderRuntimeState> {
     const db = await this.db;
     const aiInfraRepos = new AiInfraRepos(db, userId, this.aiProviderConfig, workspaceId);
-
+    const flags = parseEnterpriseFeatureFlags(process.env);
+    if (flags.ENABLE_PLATFORM_MANAGED_AI) {
+      return resolveAiCatalogRuntimeState({
+        db,
+        flags,
+        upstreamState: getEmptyAiProviderRuntimeState(),
+      });
+    }
     return aiInfraRepos.getAiProviderRuntimeState(KeyVaultsGateKeeper.getUserKeyVaults);
   }
 
@@ -2369,6 +2383,7 @@ export class MemoryExtractionExecutor {
     runtimeState: AiProviderRuntimeState,
     memoryServiceConfig: ResolvedMemoryServiceConfig,
   ): Promise<ProviderKeyVaultMap> {
+    const flags = parseEnterpriseFeatureFlags(process.env);
     const normalizedRuntimeConfig = Object.fromEntries(
       Object.entries(runtimeState.runtimeConfig || {}).map(([providerId, config]) => [
         normalizeProvider(providerId),
@@ -2376,7 +2391,7 @@ export class MemoryExtractionExecutor {
       ]),
     );
 
-    const keyVaults: ProviderKeyVaultMap = {};
+    const selectedProviders = new Set<string>();
 
     const gatekeeperProvider = await AiInfraRepos.tryMatchingProviderFrom(runtimeState, {
       fallbackProvider: memoryServiceConfig.agents.gatekeeper.provider,
@@ -2389,10 +2404,7 @@ export class MemoryExtractionExecutor {
         ? undefined
         : this.gatekeeperPreferredProviders,
     });
-    const gatekeeperRuntime = normalizedRuntimeConfig[gatekeeperProvider];
-    if (gatekeeperRuntime?.keyVaults) {
-      keyVaults[gatekeeperProvider] = gatekeeperRuntime.keyVaults;
-    }
+    selectedProviders.add(gatekeeperProvider);
 
     const embeddingProvider = await AiInfraRepos.tryMatchingProviderFrom(runtimeState, {
       fallbackProvider: memoryServiceConfig.agents.embedding.provider,
@@ -2405,10 +2417,7 @@ export class MemoryExtractionExecutor {
         ? undefined
         : this.embeddingPreferredProviders,
     });
-    const embeddingRuntime = normalizedRuntimeConfig[embeddingProvider];
-    if (embeddingRuntime?.keyVaults) {
-      keyVaults[embeddingProvider] = embeddingRuntime.keyVaults;
-    }
+    selectedProviders.add(embeddingProvider);
 
     for (const model of Object.values(memoryServiceConfig.modelConfig.layerModels)) {
       if (!model) continue;
@@ -2423,12 +2432,28 @@ export class MemoryExtractionExecutor {
           ? undefined
           : this.layerPreferredProviders,
       });
-      const runtime = normalizedRuntimeConfig[providerId];
-      if (runtime?.keyVaults) {
-        keyVaults[providerId] = runtime.keyVaults;
-      }
+      selectedProviders.add(providerId);
     }
 
+    if (flags.ENABLE_PLATFORM_MANAGED_AI) {
+      const secrets = PlatformSecretService.fromEnvOrThrowIfEnterprise(process.env, flags);
+      if (!secrets) throw new Error('PLATFORM_SECRET_REQUIRED');
+      const resolver = new AiCatalogExecutionResolver(await this.db, secrets);
+      const keyVaults: ProviderKeyVaultMap = {};
+      await Promise.all(
+        [...selectedProviders].map(async (providerId) => {
+          const execution = await resolver.resolveProviderExecutionConfig(providerId);
+          keyVaults[providerId] = execution.keyVaults;
+        }),
+      );
+      return keyVaults;
+    }
+
+    const keyVaults: ProviderKeyVaultMap = {};
+    for (const providerId of selectedProviders) {
+      const runtime = normalizedRuntimeConfig[providerId];
+      if (runtime?.keyVaults) keyVaults[providerId] = runtime.keyVaults;
+    }
     return keyVaults;
   }
 
@@ -2449,8 +2474,11 @@ export class MemoryExtractionExecutor {
       memoryServiceConfig.agents.gatekeeper.provider,
       memoryServiceConfig.agents.layerExtractor.provider,
     ].join(':');
-    const cached = this.runtimeCache.get(cacheKey);
-    if (cached) return cached;
+    const managed = parseEnterpriseFeatureFlags(process.env).ENABLE_PLATFORM_MANAGED_AI;
+    if (!managed) {
+      const cached = this.runtimeCache.get(cacheKey);
+      if (cached) return cached;
+    }
 
     const embeddingOptions: RuntimeResolveOptions = {
       fallback: {
@@ -2514,7 +2542,7 @@ export class MemoryExtractionExecutor {
       ),
     };
 
-    this.runtimeCache.set(cacheKey, runtimes);
+    if (!managed) this.runtimeCache.set(cacheKey, runtimes);
 
     return runtimes;
   }

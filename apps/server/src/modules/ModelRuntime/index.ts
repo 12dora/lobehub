@@ -22,6 +22,12 @@ import { getBusinessModelRuntimeHooks } from '@/business/server/model-runtime';
 import { AiProviderModel } from '@/database/models/aiProvider';
 import { type LobeChatDatabase } from '@/database/type';
 import { getLLMConfig } from '@/envs/llm';
+import { parseEnterpriseFeatureFlags } from '@/server/enterprise/featureFlags';
+import { PlatformSecretService } from '@/server/enterprise/security/secret';
+import {
+  AiCatalogExecutionResolver,
+  createAiCatalogModelAllowlistHooks,
+} from '@/server/enterprise/services/aiCatalog';
 import { createLLMGenerationTracingHook } from '@/server/services/llmGenerationTracing/hook';
 
 import { KeyVaultsGateKeeper } from '../KeyVaultsEncrypt';
@@ -416,6 +422,28 @@ export const initModelRuntimeFromDB = async (
   provider: string,
   workspaceId?: string,
 ): Promise<ModelRuntime> => {
+  const flags = parseEnterpriseFeatureFlags(process.env);
+  if (flags.ENABLE_PLATFORM_MANAGED_AI) {
+    const secrets = PlatformSecretService.fromEnvOrThrowIfEnterprise(process.env, flags);
+    if (!secrets) throw new Error('PLATFORM_SECRET_REQUIRED');
+    const providerConfig = await new AiCatalogExecutionResolver(
+      db,
+      secrets,
+    ).resolveProviderExecutionConfig(provider);
+    const runtimeProvider = resolveRuntimeProvider(provider, providerConfig.runtimeProvider);
+    const payload = buildPayloadFromKeyVaults(
+      providerConfig.keyVaults as ProviderKeyVaults,
+      runtimeProvider,
+    );
+    const businessHooks = getBusinessModelRuntimeHooks(userId, provider, workspaceId);
+    const tracingHooks = createLLMGenerationTracingHook(userId, provider, workspaceId);
+    const hooks = mergeModelRuntimeHooks(
+      createAiCatalogModelAllowlistHooks(providerConfig.allowedModels),
+      mergeModelRuntimeHooks(businessHooks, tracingHooks),
+    );
+    return initModelRuntimeWithUserPayload(provider, payload, { userId }, hooks);
+  }
+
   // 1. Get user's provider configuration from database
   const aiProviderModel = new AiProviderModel(db, userId, workspaceId);
 

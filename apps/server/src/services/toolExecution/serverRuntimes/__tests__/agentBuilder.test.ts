@@ -1,15 +1,26 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { agentBuilderRuntime } from '../agentBuilder';
 
-const { mockGetAgentConfigById, mockUpdateConfig, mockFindById, mockCreatePlugin } = vi.hoisted(
-  () => ({
-    mockCreatePlugin: vi.fn(),
-    mockFindById: vi.fn(),
-    mockGetAgentConfigById: vi.fn(),
-    mockUpdateConfig: vi.fn(),
-  }),
-);
+const {
+  mockCreatePlugin,
+  mockFindById,
+  mockGetAgentConfigById,
+  mockGetAiProviderList,
+  mockGetAiProviderModelList,
+  mockGetAiProviderRuntimeState,
+  mockResolveAiCatalogRuntimeState,
+  mockUpdateConfig,
+} = vi.hoisted(() => ({
+  mockCreatePlugin: vi.fn(),
+  mockFindById: vi.fn(),
+  mockGetAgentConfigById: vi.fn(),
+  mockGetAiProviderList: vi.fn(),
+  mockGetAiProviderModelList: vi.fn(),
+  mockGetAiProviderRuntimeState: vi.fn(),
+  mockResolveAiCatalogRuntimeState: vi.fn(),
+  mockUpdateConfig: vi.fn(),
+}));
 
 vi.mock('@/database/models/agent', () => ({
   AgentModel: vi.fn(() => ({
@@ -26,7 +37,23 @@ vi.mock('@/database/models/plugin', () => ({
 }));
 
 vi.mock('@/database/repositories/aiInfra', () => ({
-  AiInfraRepos: vi.fn(() => ({})),
+  AiInfraRepos: vi.fn(() => ({
+    getAiProviderList: mockGetAiProviderList,
+    getAiProviderModelList: mockGetAiProviderModelList,
+    getAiProviderRuntimeState: mockGetAiProviderRuntimeState,
+  })),
+}));
+
+vi.mock('@/server/enterprise/services/aiCatalog', () => ({
+  getEmptyAiProviderRuntimeState: () => ({
+    enabledAiModels: [],
+    enabledAiProviders: [],
+    enabledChatAiProviders: [],
+    enabledImageAiProviders: [],
+    enabledVideoAiProviders: [],
+    runtimeConfig: {},
+  }),
+  resolveAiCatalogRuntimeState: mockResolveAiCatalogRuntimeState,
 }));
 
 vi.mock('@/server/services/discover', () => ({
@@ -41,9 +68,67 @@ const createRuntime = () =>
     userId: 'user-1',
   });
 
+const originalManagedAiFlag = process.env.ENABLE_PLATFORM_MANAGED_AI;
+
+afterAll(() => {
+  if (originalManagedAiFlag === undefined) delete process.env.ENABLE_PLATFORM_MANAGED_AI;
+  else process.env.ENABLE_PLATFORM_MANAGED_AI = originalManagedAiFlag;
+});
+
 describe('agentBuilderRuntime', () => {
   beforeEach(() => {
+    delete process.env.ENABLE_PLATFORM_MANAGED_AI;
     vi.clearAllMocks();
+  });
+
+  describe('getAvailableModels', () => {
+    it('preserves the upstream repositories and sort order when managed AI is disabled', async () => {
+      mockGetAiProviderList.mockResolvedValue([
+        { enabled: true, id: 'provider-z', name: 'Z', sort: 2 },
+        { enabled: true, id: 'lobehub', name: 'LobeHub', sort: 99 },
+        { enabled: false, id: 'disabled', name: 'Disabled', sort: 0 },
+        { enabled: true, id: 'provider-a', name: 'A', sort: 1 },
+      ]);
+      mockGetAiProviderModelList.mockImplementation(async (providerId: string) => [
+        { abilities: {}, displayName: `${providerId} model`, id: `${providerId}-model` },
+      ]);
+
+      const result = await createRuntime().getAvailableModels({});
+
+      expect(result.success).toBe(true);
+      expect(result.state).toMatchObject({
+        providers: [{ id: 'lobehub' }, { id: 'provider-a' }, { id: 'provider-z' }],
+      });
+      expect(mockGetAiProviderRuntimeState).not.toHaveBeenCalled();
+      expect(mockResolveAiCatalogRuntimeState).not.toHaveBeenCalled();
+      expect(mockGetAiProviderModelList.mock.calls).toEqual([
+        ['lobehub', { enabled: true, type: 'chat' }],
+        ['provider-a', { enabled: true, type: 'chat' }],
+        ['provider-z', { enabled: true, type: 'chat' }],
+      ]);
+    });
+
+    it('preserves catalog provider order when managed AI is enabled', async () => {
+      process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
+      mockResolveAiCatalogRuntimeState.mockResolvedValue({
+        enabledAiModels: [
+          { enabled: true, id: 'beta-model', providerId: 'beta', type: 'chat' },
+          { enabled: true, id: 'alpha-model', providerId: 'alpha', type: 'chat' },
+        ],
+        enabledAiProviders: [
+          { id: 'beta', name: 'Beta' },
+          { id: 'alpha', name: 'Alpha' },
+        ],
+      });
+
+      const result = await createRuntime().getAvailableModels({});
+
+      expect(result.success).toBe(true);
+      expect(result.state).toMatchObject({ providers: [{ id: 'beta' }, { id: 'alpha' }] });
+      expect(mockGetAiProviderRuntimeState).not.toHaveBeenCalled();
+      expect(mockGetAiProviderList).not.toHaveBeenCalled();
+      expect(mockGetAiProviderModelList).not.toHaveBeenCalled();
+    });
   });
 
   describe('updateConfig - togglePlugin', () => {
