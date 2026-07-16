@@ -380,6 +380,39 @@ describe('useSignIn', () => {
       expect(mockSignInOauth2).toHaveBeenCalledWith(
         expect.objectContaining({ newUserCallbackURL: '/onboarding', providerId: 'custom-oidc' }),
       );
+      // Ordinary OAuth must not inject reauth prompt flags
+      const arg = mockSignInOauth2.mock.calls[0]![0];
+      expect(arg.additionalData?.reauth).toBeUndefined();
+      expect(arg.additionalData?.prompt).toBeUndefined();
+    });
+
+    it('reauth=1 injects prompt=login/max_age=0/reauth and keeps callback for oauth2', async () => {
+      mockSearchParamsGet.mockImplementation((key: string) => {
+        if (key === 'reauth') return '1';
+        if (key === 'callbackUrl') return '/admin/reauth-complete?state=abc';
+        return null;
+      });
+      mockSignInOauth2.mockResolvedValue({ url: 'https://authentik.example/auth' });
+
+      const { result } = renderHook(() => useSignIn());
+
+      await act(async () => {
+        await result.current.handleSocialSignIn('authentik');
+      });
+
+      expect(mockSignInOauth2).toHaveBeenCalledWith(
+        expect.objectContaining({
+          additionalData: expect.objectContaining({
+            max_age: '0',
+            prompt: 'login',
+            reauth: true,
+          }),
+          callbackURL: '/admin/reauth-complete?state=abc',
+          // reauth must not rewrite to onboarding
+          newUserCallbackURL: '/admin/reauth-complete?state=abc',
+          providerId: 'authentik',
+        }),
+      );
     });
 
     it('should NOT throw when result has error: null (redirect case)', async () => {

@@ -40,6 +40,20 @@ export const users = pgTable(
     banReason: text('ban_reason'),
     banExpires: timestamptz('ban_expires'),
 
+    /**
+     * M04 security epoch: credentials (Better Auth session createdAt / OIDC iat /
+     * API-key createdAt) issued at or before this timestamp are rejected after
+     * ban / session revoke — unless the trusted Better Auth session id matches
+     * `authInvalidatedExcludedSessionId`.
+     */
+    authInvalidatedAt: timestamptz('auth_invalidated_at'),
+    /**
+     * Optional single Better Auth session id exempt from the authInvalidatedAt
+     * cutoff (includeCurrent=false revoke). Never a token. Cleared on ban /
+     * full revoke. OIDC/API-key cannot use this exception.
+     */
+    authInvalidatedExcludedSessionId: text('auth_invalidated_excluded_session_id'),
+
     // better-auth two-factor
     twoFactorEnabled: boolean('two_factor_enabled').default(false),
 
@@ -60,6 +74,22 @@ export const users = pgTable(
     index('users_banned_true_created_at_idx')
       .on(table.createdAt)
       .where(sql`${table.banned} = true`),
+    /**
+     * M04 admin list prefix search: lower(field) text_pattern_ops for `LIKE 'prefix%'`.
+     * Opclass is part of the expression so drizzle-kit serializes it into SQL + snapshot.
+     */
+    index('users_email_lower_pattern_idx').using(
+      'btree',
+      sql`lower(${table.email}) text_pattern_ops`,
+    ),
+    index('users_username_lower_pattern_idx').using(
+      'btree',
+      sql`lower(${table.username}) text_pattern_ops`,
+    ),
+    index('users_normalized_email_lower_pattern_idx').using(
+      'btree',
+      sql`lower(${table.normalizedEmail}) text_pattern_ops`,
+    ),
   ],
 );
 

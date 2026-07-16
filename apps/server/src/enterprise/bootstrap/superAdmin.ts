@@ -54,12 +54,14 @@ export const bootstrapSuperAdmin = async (
     const id = `breakglass_${Date.now().toString(36)}`;
     const email = params.email?.trim() || `breakglass+${id}@localhost`;
     const username = params.username?.trim() || `breakglass`;
+    // Do not set users.role='admin' — that unlocks Better Auth admin plugin bypasses.
+    // Platform super_admin is granted solely via rbac_user_roles below.
     await db.insert(users).values({
       email,
       emailVerified: true,
       fullName: 'Break-glass Super Admin',
       id,
-      role: 'admin',
+      role: null,
       username,
     });
     userId = id;

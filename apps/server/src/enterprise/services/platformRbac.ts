@@ -56,11 +56,23 @@ export class PlatformRbacService {
   replaceUserGlobalRoles = async (params: {
     actorUserId: string;
     allowSuperAdmin?: boolean;
+    /** Optional assignment expiry (written to rbac_user_roles.expires_at). */
+    expiresAt?: Date | null;
     reason: string;
     roleNames: string[];
+    /**
+     * When true, skip platform.roles.replace audit (caller writes both audits
+     * in the same outer transaction — M04 AdminUserService).
+     */
+    skipAudit?: boolean;
     targetUserId: string;
-  }): Promise<{ roleNames: string[] }> => {
+  }): Promise<{ expiresAt?: Date | null; roleNames: string[] }> => {
     const desired = [...new Set(params.roleNames)];
+
+    // M04: super_admin is permanent — reject finite expiresAt with super_admin.
+    if (params.expiresAt && desired.includes(PLATFORM_SYSTEM_ROLES.SUPER_ADMIN)) {
+      throw new Error(PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT);
+    }
 
     const isTargetSuper = await this.rbac.isGlobalSuperAdmin(params.targetUserId);
     const actorIsSuper = await this.rbac.isGlobalSuperAdmin(params.actorUserId);
@@ -89,6 +101,7 @@ export class PlatformRbacService {
 
     try {
       await this.rbac.replaceGlobalUserRoles(params.targetUserId, roleIds, {
+        expiresAt: params.expiresAt ?? null,
         protectLastSuperAdmin: true,
       });
     } catch (error) {
@@ -98,17 +111,22 @@ export class PlatformRbacService {
       throw error;
     }
 
-    await this.audit.append({
-      action: 'platform.roles.replace',
-      actorUserId: params.actorUserId,
-      afterDiff: { roleNames: desired },
-      reason: params.reason,
-      result: 'success',
-      targetId: params.targetUserId,
-      targetType: 'user',
-    });
+    if (!params.skipAudit) {
+      await this.audit.append({
+        action: 'platform.roles.replace',
+        actorUserId: params.actorUserId,
+        afterDiff: {
+          expiresAt: params.expiresAt?.toISOString() ?? null,
+          roleNames: desired,
+        },
+        reason: params.reason,
+        result: 'success',
+        targetId: params.targetUserId,
+        targetType: 'user',
+      });
+    }
 
-    return { roleNames: desired };
+    return { expiresAt: params.expiresAt ?? null, roleNames: desired };
   };
 
   /**

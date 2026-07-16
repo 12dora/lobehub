@@ -2681,6 +2681,8 @@ table users {
   banned boolean [default: false]
   ban_reason text
   ban_expires "timestamp with time zone"
+  auth_invalidated_at "timestamp with time zone"
+  auth_invalidated_excluded_session_id text
   two_factor_enabled boolean [default: false]
   phone_number_verified boolean
   last_active_at "timestamp with time zone" [not null, default: `now()`]
@@ -2693,6 +2695,9 @@ table users {
     username [name: 'users_username_idx']
     created_at [name: 'users_created_at_idx']
     created_at [name: 'users_banned_true_created_at_idx']
+    (lower(email)) [name: 'users_email_lower_pattern_idx', type: btree]
+    (lower(username)) [name: 'users_username_lower_pattern_idx', type: btree]
+    (lower(normalized_email)) [name: 'users_normalized_email_lower_pattern_idx', type: btree]
   }
 }
 

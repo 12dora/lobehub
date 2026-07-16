@@ -5,6 +5,11 @@ import { lambdaClient } from '@/libs/trpc/client';
  * Permissions are session-scoped and must not be persisted client-side.
  */
 export interface AdminAccessSnapshot {
+  /**
+   * Server-authenticated method (from lambda context). Used to choose reauth strategy.
+   * Clients must not invent this — trust the server only.
+   */
+  authMethod?: 'better-auth' | 'oidc' | 'api-key' | 'dev-mock' | null;
   hasAdminAccess: boolean;
   permissions: string[];
   roles: Array<{ displayName: string | null; name: string }>;

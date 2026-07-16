@@ -1,3 +1,6 @@
+import { Text } from '@lobehub/ui';
+import { lazy, type ReactNode, Suspense } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { RouteObject } from 'react-router';
 
 import AdminErrorBoundary from '@/enterprise/client/features/admin/gates/AdminErrorBoundary';
@@ -6,6 +9,44 @@ import NotFoundPage from '@/enterprise/client/features/admin/pages/NotFoundPage'
 import OverviewPage from '@/enterprise/client/features/admin/pages/OverviewPage';
 import PlaceholderPage from '@/enterprise/client/features/admin/pages/PlaceholderPage';
 import { ADMIN_NAV_FLAT } from '@/enterprise/client/nav/adminNavMeta';
+
+const UsersListPage = lazy(() => import('@/enterprise/client/features/admin/users/UsersListPage'));
+const UserDetailPage = lazy(
+  () => import('@/enterprise/client/features/admin/users/UserDetailPage'),
+);
+const AdminReauthCompletePage = lazy(
+  () => import('@/enterprise/client/features/admin/reauth/AdminReauthCompletePage'),
+);
+
+/** Honest localized loading surface for lazy admin pages (no blank frame). */
+const AdminLazyFallback = () => {
+  const { t } = useTranslation('admin');
+  return (
+    <div role="status" style={{ padding: 24 }}>
+      <Text type="secondary">{t('primitives.dataTable.loading')}</Text>
+    </div>
+  );
+};
+
+const withLazy = (node: ReactNode) => <Suspense fallback={<AdminLazyFallback />}>{node}</Suspense>;
+
+/** Resolve the page element for a catalog item (M04 users are real; others stay placeholders). */
+const resolveAdminLeafElement = (id: string): ReactNode => {
+  switch (id) {
+    case 'users': {
+      return withLazy(<UsersListPage />);
+    }
+    case 'users-detail': {
+      return withLazy(<UserDetailPage />);
+    }
+    case 'reauth-complete': {
+      return withLazy(<AdminReauthCompletePage />);
+    }
+    default: {
+      return <PlaceholderPage />;
+    }
+  }
+};
 
 /**
  * Build the independent `/admin` route tree (no main-app layout nesting).
@@ -17,7 +58,7 @@ export const createAdminRouteTree = (): RouteObject[] => {
     // Preserve :param segments for React Router
     const relative = item.path.replace(/^\/admin\/?/, '');
     return {
-      element: <PlaceholderPage />,
+      element: resolveAdminLeafElement(item.id),
       handle: {
         admin: {
           id: item.id,
