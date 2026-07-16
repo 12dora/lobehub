@@ -6,12 +6,16 @@ const {
   getByIdMock,
   getByNameMock,
   getZipUrlMock,
+  cleanupInlineSkillWorkspaceMock,
+  prepareInlineSkillWorkspaceMock,
   prepareSkillDirectoryMock,
   resolveSkillResourcePathMock,
 } = vi.hoisted(() => ({
   getByIdMock: vi.fn(),
   getByNameMock: vi.fn(),
   getZipUrlMock: vi.fn(),
+  cleanupInlineSkillWorkspaceMock: vi.fn(),
+  prepareInlineSkillWorkspaceMock: vi.fn(),
   prepareSkillDirectoryMock: vi.fn(),
   resolveSkillResourcePathMock: vi.fn(),
 }));
@@ -21,11 +25,14 @@ vi.mock('@/services/skill', () => ({
     getById: getByIdMock,
     getByName: getByNameMock,
     getZipUrl: getZipUrlMock,
+    resolvePlatformPinned: vi.fn(),
   },
 }));
 
 vi.mock('@/services/electron/localFileService', () => ({
   localFileService: {
+    cleanupInlineSkillWorkspace: cleanupInlineSkillWorkspaceMock,
+    prepareInlineSkillWorkspace: prepareInlineSkillWorkspaceMock,
     prepareSkillDirectory: prepareSkillDirectoryMock,
     resolveSkillResourcePath: resolveSkillResourcePathMock,
   },
@@ -199,6 +206,58 @@ describe('desktopSkillRuntimeService', () => {
     expect(getZipUrlMock).not.toHaveBeenCalled();
     expect(prepareSkillDirectoryMock).not.toHaveBeenCalled();
     expect(resolveSkillResourcePathMock).not.toHaveBeenCalled();
+  });
+
+  it('materializes exact managed resources and cleans the operation workspace', async () => {
+    const { agentSkillService } = await import('@/services/skill');
+    const ref = {
+      checksum: 'a'.repeat(64),
+      skillKey: 'managed.skill',
+      version: '1.0.0',
+    };
+    vi.mocked(agentSkillService.resolvePlatformPinned).mockResolvedValue({
+      checksum: ref.checksum,
+      content: '# Managed',
+      description: 'Managed',
+      identifier: ref.skillKey,
+      name: 'Managed',
+      resources: [
+        {
+          checksum: 'b'.repeat(64),
+          content: 'print("ok")',
+          mediaType: 'text/x-python',
+          path: 'scripts/run.py',
+          sizeBytes: 11,
+        },
+      ],
+      version: ref.version,
+    } as never);
+    prepareInlineSkillWorkspaceMock.mockResolvedValue({
+      success: true,
+      workspaceDir: '/private/managed-operation',
+      workspaceId: 'workspace-1',
+    });
+
+    const workspace = await desktopSkillRuntimeService.prepareExecutionWorkspace(
+      [{ name: ref.skillKey }],
+      { mandatorySkillIds: [], refs: [ref], revision: 'catalog-r1' },
+      'operation-1',
+    );
+    expect(workspace).toEqual({
+      cwd: '/private/managed-operation',
+      workspaceIds: ['workspace-1'],
+    });
+    expect(prepareInlineSkillWorkspaceMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        checksum: ref.checksum,
+        operationId: 'operation-1',
+        skillKey: ref.skillKey,
+      }),
+    );
+    expect(getByNameMock).not.toHaveBeenCalled();
+
+    await desktopSkillRuntimeService.cleanupExecutionWorkspace(workspace);
+    expect(cleanupInlineSkillWorkspaceMock).toHaveBeenCalledWith({ workspaceId: 'workspace-1' });
   });
 
   it('should resolve the full local path for a referenced skill resource', async () => {

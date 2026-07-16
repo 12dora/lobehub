@@ -26,6 +26,8 @@ import {
   type MoveLocalFilesParams,
   type OpenLocalFileParams,
   type OpenLocalFolderParams,
+  type PrepareInlineSkillWorkspaceParams,
+  type PrepareInlineSkillWorkspaceResult,
   type PrepareSkillDirectoryParams,
   type PrepareSkillDirectoryResult,
   type ProjectFileIndexParams,
@@ -73,9 +75,7 @@ export interface TextLocalFilePreview {
 }
 
 export type LocalFilePreview =
-  | BinaryLocalFilePreview
-  | ImageLocalFilePreview
-  | TextLocalFilePreview;
+  BinaryLocalFilePreview | ImageLocalFilePreview | TextLocalFilePreview;
 
 const normalizeContentType = (contentType: string | null): string =>
   contentType?.split(';')[0].trim().toLowerCase() ?? '';
@@ -189,6 +189,16 @@ class LocalFileService {
     params: PrepareSkillDirectoryParams,
   ): Promise<PrepareSkillDirectoryResult> {
     return ensureElectronIpc().localSystem.handlePrepareSkillDirectory(params);
+  }
+
+  async prepareInlineSkillWorkspace(
+    params: PrepareInlineSkillWorkspaceParams,
+  ): Promise<PrepareInlineSkillWorkspaceResult> {
+    return ensureElectronIpc().localSystem.handlePrepareInlineSkillWorkspace(params);
+  }
+
+  async cleanupInlineSkillWorkspace(params: { workspaceId: string }) {
+    return ensureElectronIpc().localSystem.handleCleanupInlineSkillWorkspace(params);
   }
 
   async resolveSkillResourcePath(

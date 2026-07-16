@@ -5,6 +5,11 @@ import type { PlatformSkillOperationSnapshot } from '@/types/platform/skills';
 
 import { localFileService } from './localFileService';
 
+export interface DesktopSkillExecutionWorkspace {
+  cwd?: string;
+  workspaceIds: string[];
+}
+
 class DesktopSkillRuntimeService {
   private async prepareSkillDirectoryForSkill(skill?: {
     id: string;
@@ -55,6 +60,64 @@ class DesktopSkillRuntimeService {
     }
 
     return undefined;
+  }
+
+  async prepareExecutionWorkspace(
+    activatedSkills?: ExecScriptActivatedSkill[],
+    platformSkillSnapshot?: PlatformSkillOperationSnapshot,
+    operationId?: string,
+  ): Promise<DesktopSkillExecutionWorkspace> {
+    if (!platformSkillSnapshot) {
+      return {
+        cwd: await this.resolveExecutionDirectory(activatedSkills),
+        workspaceIds: [],
+      };
+    }
+    if (!operationId) throw new Error('Managed Skill execution requires an operationId');
+
+    const refsByKey = new Map(platformSkillSnapshot.refs.map((ref) => [ref.skillKey, ref]));
+    const workspaceIds: string[] = [];
+    let cwd: string | undefined;
+    try {
+      for (const activated of activatedSkills ?? []) {
+        const ref = refsByKey.get(activated.name);
+        if (!ref)
+          throw new Error(`Managed Skill is not in the operation snapshot: ${activated.name}`);
+        const resolved = await agentSkillService.resolvePlatformPinned(ref);
+        if (
+          resolved.identifier !== ref.skillKey ||
+          resolved.version !== ref.version ||
+          resolved.checksum !== ref.checksum
+        ) {
+          throw new Error(`Managed Skill could not be resolved exactly: ${ref.skillKey}`);
+        }
+        const prepared = await localFileService.prepareInlineSkillWorkspace({
+          checksum: ref.checksum,
+          operationId,
+          resources: resolved.resources,
+          skillContent: resolved.content,
+          skillKey: ref.skillKey,
+          version: ref.version,
+        });
+        if (!prepared.success || !prepared.workspaceDir || !prepared.workspaceId) {
+          throw new Error(prepared.error || `Failed to materialize managed Skill: ${ref.skillKey}`);
+        }
+        cwd = prepared.workspaceDir;
+        workspaceIds.push(prepared.workspaceId);
+      }
+      return { cwd, workspaceIds };
+    } catch (error) {
+      await this.cleanupExecutionWorkspace({ workspaceIds });
+      throw error;
+    }
+  }
+
+  async cleanupExecutionWorkspace(workspace: DesktopSkillExecutionWorkspace): Promise<void> {
+    await Promise.all(
+      workspace.workspaceIds.map((workspaceId) =>
+        localFileService.cleanupInlineSkillWorkspace({ workspaceId }),
+      ),
+    );
   }
 
   async resolveReferenceFullPath(params: {
