@@ -3,6 +3,24 @@ import { describe, expect, it } from 'vitest';
 import { assertConnectorScopesAllowed, resolveEffectiveConnectorToolPolicy } from './toolPolicy';
 
 describe('connector tool policy', () => {
+  it.each([
+    ['allow', false, false, false, 'agent'],
+    ['allow', false, true, false, 'agent'],
+    ['allow', true, false, false, 'user'],
+    ['allow', true, true, true, null],
+    ['deny', false, false, false, 'platform'],
+    ['deny', false, true, false, 'platform'],
+    ['deny', true, false, false, 'platform'],
+    ['deny', true, true, false, 'platform'],
+  ] as const)(
+    'resolves the full truth table (%s, agent=%s, user=%s)',
+    (platformPolicy, agentAllowed, userEnabled, allowed, deniedBy) => {
+      expect(
+        resolveEffectiveConnectorToolPolicy({ agentAllowed, platformPolicy, userEnabled }),
+      ).toEqual({ allowed, deniedBy });
+    },
+  );
+
   it('gives platform deny absolute priority', () => {
     expect(
       resolveEffectiveConnectorToolPolicy({

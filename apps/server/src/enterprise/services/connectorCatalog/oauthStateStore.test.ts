@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { describe, expect, it } from 'vitest';
 
 import type { ConnectorOAuthStateBackend } from './oauthStateStore';
@@ -38,6 +40,7 @@ describe('ConnectorOAuthStateStore', () => {
       backend,
       clock: () => 1_000,
       createOpaqueState: () => 's'.repeat(43),
+      createStateId: () => 'a'.repeat(32),
     });
 
     const state = await store.issue(stateInput);
@@ -45,6 +48,8 @@ describe('ConnectorOAuthStateStore', () => {
       ...stateInput,
       expiresAt: 601_000,
       issuedAt: 1_000,
+      stateHash: createHash('sha256').update(state).digest('hex'),
+      stateId: 'a'.repeat(32),
     });
     await expect(store.consume(state)).rejects.toMatchObject({
       code: 'PLATFORM_CONNECTOR_OAUTH_STATE_INVALID',
@@ -58,6 +63,8 @@ describe('ConnectorOAuthStateStore', () => {
       createOpaqueState: () => 'r'.repeat(43),
     });
     const state = await store.issue(stateInput);
+    expect(backend.values.has(state)).toBe(false);
+    expect(backend.values.has(createHash('sha256').update(state).digest('hex'))).toBe(true);
 
     const results = await Promise.allSettled([store.consume(state), store.consume(state)]);
     expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
@@ -68,19 +75,29 @@ describe('ConnectorOAuthStateStore', () => {
     const backend = new MemoryAtomicStateBackend();
     const store = new ConnectorOAuthStateStore({ backend, clock: () => 10_000 });
     backend.values.set(
-      'e'.repeat(32),
-      JSON.stringify({ ...stateInput, expiresAt: 9_999, issuedAt: 1 }),
+      createHash('sha256').update('e'.repeat(32)).digest('hex'),
+      JSON.stringify({
+        ...stateInput,
+        expiresAt: 9_999,
+        issuedAt: 1,
+        stateHash: createHash('sha256').update('e'.repeat(32)).digest('hex'),
+        stateId: 'b'.repeat(32),
+      }),
     );
     await expect(store.consume('e'.repeat(32))).rejects.toMatchObject({
       code: 'PLATFORM_CONNECTOR_OAUTH_STATE_EXPIRED',
     });
-    expect(backend.values.has('e'.repeat(32))).toBe(false);
+    expect(backend.values.has(createHash('sha256').update('e'.repeat(32)).digest('hex'))).toBe(
+      false,
+    );
 
-    backend.values.set('m'.repeat(32), '{invalid');
+    backend.values.set(createHash('sha256').update('m'.repeat(32)).digest('hex'), '{invalid');
     await expect(store.consume('m'.repeat(32))).rejects.toMatchObject({
       code: 'PLATFORM_CONNECTOR_OAUTH_STATE_INVALID',
     });
-    expect(backend.values.has('m'.repeat(32))).toBe(false);
+    expect(backend.values.has(createHash('sha256').update('m'.repeat(32)).digest('hex'))).toBe(
+      false,
+    );
   });
 
   it('rejects TTLs that exceed the ten-minute authorization window', () => {
