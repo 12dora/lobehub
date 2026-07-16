@@ -17,6 +17,7 @@ import { AdminUserNotFoundError, AdminUserService } from '../services/adminUserS
 import { EasyauthSyncService } from '../services/easyauthSync';
 import { PlatformAuditService } from '../services/platformAudit';
 import { LastSuperAdminError, PlatformRbacService } from '../services/platformRbac';
+import { adminSettingsRouter } from './admin/settings';
 import { adminUsersRouter } from './admin/users';
 
 const adminBase = authedProcedure.use(serverDatabase).use(withActiveUser());
@@ -216,6 +217,7 @@ export const adminRouter = router({
   auth: adminAuthRouter,
   easyauth: adminEasyauthRouter,
   roles: adminRolesRouter,
+  settings: adminSettingsRouter,
   users: adminUsersRouter,
 });
 

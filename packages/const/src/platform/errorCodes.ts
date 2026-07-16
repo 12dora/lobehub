@@ -53,6 +53,16 @@ export const MANAGED_ERROR_CODES = {
   MANAGED_RESOURCE_BY_PLATFORM: 'MANAGED_RESOURCE_BY_PLATFORM',
   MANAGED_SETTING_BY_ADMIN: 'MANAGED_SETTING_BY_ADMIN',
   MANAGED_POLICY_ENFORCED: 'MANAGED_POLICY_ENFORCED',
+  /** Path is not in the finite settings registry. */
+  MANAGED_SETTING_UNKNOWN_PATH: 'MANAGED_SETTING_UNKNOWN_PATH',
+  /** Path is secret / sensitive and never policy-eligible. */
+  MANAGED_SETTING_SECRET_PATH: 'MANAGED_SETTING_SECRET_PATH',
+  /** Path is not applicable to the requested client surface. */
+  MANAGED_SETTING_INAPPLICABLE_CLIENT: 'MANAGED_SETTING_INAPPLICABLE_CLIENT',
+  /** Path is registered but not platform-policy eligible. */
+  MANAGED_SETTING_NOT_POLICY_ELIGIBLE: 'MANAGED_SETTING_NOT_POLICY_ELIGIBLE',
+  /** Value failed the registry Zod schema. */
+  MANAGED_SETTING_INVALID_VALUE: 'MANAGED_SETTING_INVALID_VALUE',
 } as const;
 
 export type ManagedErrorCode = (typeof MANAGED_ERROR_CODES)[keyof typeof MANAGED_ERROR_CODES];

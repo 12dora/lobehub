@@ -15,6 +15,23 @@ export const ENTERPRISE_UPSTREAM_MOUNT_POINTS = [
   'packages/types/src/serverConfig.ts',
   // M04: block Better Auth admin plugin mutations when platform admin is on
   'src/app/(backend)/api/auth/[...all]/route.ts',
+  // M05: effective settings + updateSettings adapter
+  'apps/server/src/routers/lambda/user.ts',
+  // M05: agent / systemAgent / agentGroup runtime reads through resolver adapter
+  'apps/server/src/services/agent/index.ts',
+  'apps/server/src/services/systemAgent/index.ts',
+  'apps/server/src/services/taskReview/index.ts',
+  'apps/server/src/services/memory/userMemory/persona/service.ts',
+  'apps/server/src/services/aiAgent/index.ts',
+  'apps/server/src/routers/lambda/agentGroup.ts',
+  // M05: memory runtime reads through the effective settings resolver
+  'apps/server/src/routers/lambda/userMemories.ts',
+  'apps/server/src/services/toolExecution/serverRuntimes/memory.ts',
+  // M05: user-facing source badge meta hook (thin SWR → enterprise service)
+  'src/features/PlatformSettingSourceBadge/usePlatformSettingMeta.ts',
+  'src/features/PlatformSettingSourceBadge/ManagedFormControl.tsx',
+  'src/features/PlatformSettingSourceBadge/ManagedSettingField.tsx',
+  'src/features/ChatInput/ControlBar/ApprovalMode.tsx',
   // script entry only
   'package.json',
 ] as const;

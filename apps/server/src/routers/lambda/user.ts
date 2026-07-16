@@ -29,12 +29,26 @@ import {
   onUserActivityForBusiness,
 } from '@/business/server/user';
 import { MessageModel } from '@/database/models/message';
-import { RbacModel } from '@/database/models/rbac';
 import { SessionModel } from '@/database/models/session';
 import { UserModel } from '@/database/models/user';
 import { UserPersonaModel } from '@/database/models/userMemory/persona';
 import { authedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
+import {
+  userSettingsGetEffectiveOutputSchema,
+  userSettingsPatchOverrideInputSchema,
+  userSettingsPatchOverrideOutputSchema,
+  userSettingsResetOverrideInputSchema,
+  userSettingsResetOverrideOutputSchema,
+} from '@/server/enterprise/contracts/userSettings';
+import { throwEnterpriseError } from '@/server/enterprise/guards/enterpriseErrors';
+import {
+  EffectiveSettingsService,
+  SettingsPathError,
+} from '@/server/enterprise/services/settings/effectiveSettingsService';
+import { settingsRegistry } from '@/server/enterprise/services/settings/registry';
+import { loadEffectiveUserSettings } from '@/server/enterprise/services/settings/runtimeSettingsAdapter';
+import { assertWorkspaceSettingsWritePermission } from '@/server/enterprise/services/settings/workspaceSettingsPermission';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 import { FileS3 } from '@/server/modules/S3';
 import { AgentDocumentsService } from '@/server/services/agentDocuments';
@@ -49,10 +63,6 @@ const usernameSchema = z
   .regex(/^\w+$/, { message: 'USERNAME_INVALID' });
 
 const AVATAR_WEBAPI_PREFIX = '/webapi/';
-const OWNER_SETTING_KEYS = ['defaultAgent', 'image', 'memory', 'systemAgent', 'tts'] as const;
-const MEMBER_SETTING_KEYS = ['tool'] as const;
-const WORKSPACE_UPDATE_PERMISSION = 'workspace:update:all';
-const WORKSPACE_CONTENT_PERMISSIONS = ['agent:update:all', 'agent:update:owner'] as const;
 
 // Accept only: base64 data URL, absolute http(s) URL, empty string,
 // or an internal /webapi/user/avatar/<userId>/... path scoped to the caller.
@@ -75,12 +85,6 @@ const assertSafeAvatarInput = (input: string, userId: string) => {
 
   throw new TRPCError({ code: 'BAD_REQUEST', message: 'INVALID_AVATAR_URL' });
 };
-
-const hasOwnerSettingChange = (input: Partial<UserSettings>) =>
-  OWNER_SETTING_KEYS.some((key) => input[key] !== undefined);
-
-const hasMemberSettingChange = (input: Partial<UserSettings>) =>
-  MEMBER_SETTING_KEYS.some((key) => input[key] !== undefined);
 
 const userProcedure = authedProcedure.use(serverDatabase).use(async ({ ctx, next }) => {
   return next({
@@ -153,6 +157,14 @@ export const userRouter = router({
 
     const hasMoreThan4Messages = messageCount > 4;
     const hasAnyMessages = messageCount > 0;
+
+    // M05: Flag ON → server-resolved effective settings; Flag OFF → exact parent sparse settings
+    const { settings: resolvedSettings } = await loadEffectiveUserSettings({
+      db: ctx.serverDB,
+      legacySettings: state.settings as Record<string, unknown>,
+      userId: ctx.userId,
+    });
+
     return {
       avatar: state.avatar,
       canEnablePWAGuide: hasMoreThan4Messages,
@@ -172,7 +184,7 @@ export const userRouter = router({
       lastName: state.lastName,
       onboarding: state.onboarding,
       preference: state.preference as UserPreference,
-      settings: state.settings,
+      settings: resolvedSettings as UserInitializationState['settings'],
       userId: ctx.userId,
       username: state.username,
 
@@ -188,8 +200,128 @@ export const userRouter = router({
   }),
 
   resetSettings: userProcedure.mutation(async ({ ctx }) => {
-    return ctx.userModel.deleteSetting();
+    // Full reset: Flag OFF → delete user_settings only (parent).
+    // Flag ON → atomically delete all overrides + revision bump + legacy row (incl. keyVaults).
+    const service = new EffectiveSettingsService(ctx.serverDB);
+    if (service.isPolicyEnabled()) {
+      const perm = await assertWorkspaceSettingsWritePermission({
+        db: ctx.serverDB,
+        paths: [...settingsRegistry.paths()],
+        userId: ctx.userId,
+        workspaceId: ctx.workspaceId,
+      });
+      if (!perm.ok) {
+        throw new TRPCError({
+          code: 'FORBIDDEN',
+          message: 'You do not have permission to perform this action.',
+        });
+      }
+    }
+    return service.fullResetSettings({ userId: ctx.userId });
   }),
+
+  /**
+   * M05: server-resolved effective settings + per-path source/locked/hidden metadata.
+   * When ENABLE_PLATFORM_SETTINGS_POLICY is off, returns built-in + legacy merge only.
+   */
+  getEffectiveSettings: userProcedure
+    .output(userSettingsGetEffectiveOutputSchema)
+    .query(async ({ ctx }) => {
+      const service = new EffectiveSettingsService(ctx.serverDB);
+      const state = await ctx.userModel.getUserState(KeyVaultsGateKeeper.getUserKeyVaults);
+      // Strip keyVaults from legacy blob fed into resolver pathMeta
+      const { keyVaults: _kv, ...legacy } = (state.settings ?? {}) as Record<string, unknown> & {
+        keyVaults?: unknown;
+      };
+      return service.getEffectiveSettings({
+        legacyUserSettings: legacy,
+        userId: ctx.userId,
+      });
+    }),
+
+  patchSettingOverride: userProcedure
+    .input(userSettingsPatchOverrideInputSchema)
+    .output(userSettingsPatchOverrideOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      const perm = await assertWorkspaceSettingsWritePermission({
+        db: ctx.serverDB,
+        paths: [input.path],
+        userId: ctx.userId,
+        workspaceId: ctx.workspaceId,
+      });
+      if (!perm.ok) {
+        throw new TRPCError({
+          code: 'FORBIDDEN',
+          message: 'You do not have permission to perform this action.',
+        });
+      }
+
+      const service = new EffectiveSettingsService(ctx.serverDB);
+      try {
+        return await service.patchSettingOverride({
+          // User lambda is interactive client; desktop/mobile share web eligibility set
+          client: 'web',
+          path: input.path,
+          userId: ctx.userId,
+          value: input.value,
+        });
+      } catch (error) {
+        if (error instanceof SettingsPathError) {
+          throwEnterpriseError({
+            code: error.code as never,
+            httpCode:
+              error.code === 'MANAGED_SETTING_BY_ADMIN'
+                ? 'FORBIDDEN'
+                : error.code === 'PLATFORM_FEATURE_DISABLED'
+                  ? 'FORBIDDEN'
+                  : 'BAD_REQUEST',
+            message: error.message,
+          });
+        }
+        throw error;
+      }
+    }),
+
+  resetSettingOverride: userProcedure
+    .input(userSettingsResetOverrideInputSchema)
+    .output(userSettingsResetOverrideOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      const perm = await assertWorkspaceSettingsWritePermission({
+        db: ctx.serverDB,
+        paths: [input.path],
+        userId: ctx.userId,
+        workspaceId: ctx.workspaceId,
+      });
+      if (!perm.ok) {
+        throw new TRPCError({
+          code: 'FORBIDDEN',
+          message: 'You do not have permission to perform this action.',
+        });
+      }
+
+      const service = new EffectiveSettingsService(ctx.serverDB);
+      try {
+        return await service.resetSettingOverride({
+          client: 'web',
+          path: input.path,
+          userId: ctx.userId,
+        });
+      } catch (error) {
+        if (error instanceof SettingsPathError) {
+          throwEnterpriseError({
+            code: error.code as never,
+            httpCode:
+              error.code === 'MANAGED_SETTING_BY_ADMIN'
+                ? 'FORBIDDEN'
+                : error.code === 'PLATFORM_FEATURE_DISABLED'
+                  ? 'FORBIDDEN'
+                  : 'BAD_REQUEST',
+            message: error.message,
+          });
+        }
+        throw error;
+      }
+    }),
 
   updateAvatar: userProcedure.input(z.string()).mutation(async ({ ctx, input }) => {
     assertSafeAvatarInput(input, ctx.userId);
@@ -510,36 +642,57 @@ export const userRouter = router({
   updateSettings: userProcedure.input(UserSettingsSchema).mutation(async ({ ctx, input }) => {
     const { keyVaults, ...res } = input as Partial<UserSettings>;
 
-    if (ctx.workspaceId && (hasOwnerSettingChange(res) || hasMemberSettingChange(res))) {
-      const rbac = new RbacModel(ctx.serverDB, ctx.userId);
-      const allowed = hasOwnerSettingChange(res)
-        ? await rbac.hasPermission(WORKSPACE_UPDATE_PERMISSION, {
-            workspaceId: ctx.workspaceId,
-          })
-        : await rbac.hasAnyPermission([...WORKSPACE_CONTENT_PERMISSIONS], {
-            workspaceId: ctx.workspaceId,
-          });
-
-      if (!allowed) {
-        throw new TRPCError({
-          code: 'FORBIDDEN',
-          message: 'You do not have permission to perform this action.',
-        });
-      }
+    // Shared workspace permission (same rules for legacy + path patch/reset)
+    const topKeys = Object.keys(res);
+    const perm = await assertWorkspaceSettingsWritePermission({
+      db: ctx.serverDB,
+      paths: topKeys,
+      userId: ctx.userId,
+      workspaceId: ctx.workspaceId,
+    });
+    if (!perm.ok) {
+      throw new TRPCError({
+        code: 'FORBIDDEN',
+        message: 'You do not have permission to perform this action.',
+      });
     }
 
-    // Encrypt keyVaults
-    let encryptedKeyVaults: string | null = null;
+    // Encrypt keyVaults before any txn — always outside platform policy semantics
+    let encryptedKeyVaults: string | null | undefined = undefined;
 
     if (keyVaults) {
-      // TODO: better to add a validation
       const data = JSON.stringify(keyVaults);
       const gateKeeper = await KeyVaultsGateKeeper.initWithEnvKey();
-
       encryptedKeyVaults = await gateKeeper.encrypt(data);
     }
 
-    const nextValue = { ...res, keyVaults: encryptedKeyVaults };
+    const settingsService = new EffectiveSettingsService(ctx.serverDB);
+
+    // Flag ON: strict catalog + atomic overrides + legacy remainder in one transaction
+    if (settingsService.isPolicyEnabled()) {
+      try {
+        return await settingsService.applyLegacyUpdateSettings({
+          encryptedKeyVaults,
+          input: { ...res, ...(keyVaults ? { keyVaults } : {}) } as Record<string, unknown>,
+          userId: ctx.userId,
+        });
+      } catch (error) {
+        if (error instanceof SettingsPathError) {
+          throwEnterpriseError({
+            code: error.code as never,
+            httpCode: error.code === 'MANAGED_SETTING_BY_ADMIN' ? 'FORBIDDEN' : 'BAD_REQUEST',
+            message: error.message,
+          });
+        }
+        throw error;
+      }
+    }
+
+    // Flag OFF: unchanged upstream behavior
+    const nextValue = {
+      ...res,
+      ...(encryptedKeyVaults !== undefined ? { keyVaults: encryptedKeyVaults } : {}),
+    };
 
     return ctx.userModel.updateSetting(nextValue);
   }),

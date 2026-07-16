@@ -1050,6 +1050,8 @@
   "tool.intervention.mode.allowListDesc": "仅自动执行已批准的技能",
   "tool.intervention.mode.autoRun": "自动批准",
   "tool.intervention.mode.autoRunDesc": "自动批准所有技能调用",
+  "tool.intervention.mode.headless": "无人值守",
+  "tool.intervention.mode.headlessDesc": "由组织管理的无人值守执行；不安全的工具会被自动跳过",
   "tool.intervention.mode.manual": "手动批准",
   "tool.intervention.mode.manualDesc": "每次调用都需要你确认",
   "tool.intervention.onboarding.agentIdentity.editHint": "你可以直接在下方修改名字或头像",

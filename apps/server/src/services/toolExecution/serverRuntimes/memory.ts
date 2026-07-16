@@ -32,7 +32,6 @@ import type {
   UpdateIdentityMemoryResult,
 } from '@lobechat/types';
 import { LayersEnum } from '@lobechat/types';
-import { eq } from 'drizzle-orm';
 import type { z } from 'zod';
 
 import {
@@ -40,7 +39,7 @@ import {
   type IdentityEntryPayload,
   UserMemoryModel,
 } from '@/database/models/userMemory';
-import { userSettings } from '@/database/schemas';
+import { getEffectiveMemorySettings } from '@/server/enterprise/services/settings/runtimeSettingsAdapter';
 import { getServerDefaultFilesConfig } from '@/server/globalConfig';
 import {
   initModelRuntimeFromDB,
@@ -864,16 +863,14 @@ export const memoryRuntime: ServerRuntimeRegistration = {
     // Resolve memoryEffort from user settings
     let memoryEffort: MemoryEffort = 'medium';
     try {
-      const userSettingsRow = await context.serverDB.query.userSettings.findFirst({
-        columns: { memory: true },
-        where: eq(userSettings.id, context.userId),
+      const memoryConfig = await getEffectiveMemorySettings({
+        db: context.serverDB,
+        scope: context.workspaceId ? 'workspace' : 'personal',
+        userId: context.userId,
       });
-      const memoryConfig =
-        typeof userSettingsRow?.memory === 'object' && userSettingsRow?.memory !== null
-          ? (userSettingsRow.memory as { effort?: unknown })
-          : undefined;
       memoryEffort = normalizeMemoryEffort(memoryConfig?.effort);
-    } catch {
+    } catch (error) {
+      console.error('[memoryRuntime:resolveEffectiveMemorySettings]', error);
       // fallback to medium
     }
 

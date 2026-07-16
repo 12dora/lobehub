@@ -1,7 +1,7 @@
 'use client';
 
 import { type FormGroupItemType } from '@lobehub/ui';
-import { Form, Icon, Skeleton, Tooltip } from '@lobehub/ui';
+import { Form, Icon, Skeleton } from '@lobehub/ui';
 import { Select } from '@lobehub/ui/base-ui';
 import isEqual from 'fast-deep-equal';
 import { Loader2Icon } from 'lucide-react';
@@ -9,6 +9,8 @@ import { memo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { FORM_STYLE } from '@/const/layoutTokens';
+import { ManagedFormControlContent } from '@/features/PlatformSettingSourceBadge/ManagedFormControl';
+import { usePlatformSettingMeta } from '@/features/PlatformSettingSourceBadge/usePlatformSettingMeta';
 import { usePermission } from '@/hooks/usePermission';
 import { useUserStore } from '@/store/user';
 import { settingsSelectors } from '@/store/user/selectors';
@@ -22,20 +24,22 @@ const OpenAI = memo(() => {
   const { tts } = useUserStore(settingsSelectors.currentSettings, isEqual);
   const [setSettings, isUserStateInit] = useUserStore((s) => [s.setSettings, s.isUserStateInit]);
   const [loading, setLoading] = useState(false);
+  const ttsModelMeta = usePlatformSettingMeta('tts.openAI.ttsModel');
 
   if (!isUserStateInit) return <Skeleton active paragraph={{ rows: 5 }} title={false} />;
+  if (ttsModelMeta.hidden) return null;
 
   const openai: FormGroupItemType = {
     children: [
       {
         children: (
-          <Tooltip title={reason}>
-            <Select
-              disabled={!canManageServiceModel}
-              options={opeanaiTTSOptions}
-              style={{ width: 448 }}
-            />
-          </Tooltip>
+          <ManagedFormControlContent
+            disabledReason={reason}
+            extraDisabled={!canManageServiceModel}
+            meta={ttsModelMeta}
+          >
+            <Select options={opeanaiTTSOptions} style={{ width: 448 }} />
+          </ManagedFormControlContent>
         ),
         label: t('settingTTS.openai.ttsModel'),
         name: ['openAI', 'ttsModel'],

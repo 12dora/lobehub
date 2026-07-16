@@ -13,6 +13,8 @@ import AutoSaveHint from '@/components/Editor/AutoSaveHint';
 import { FORM_STYLE } from '@/const/layoutTokens';
 import { imageUrl } from '@/const/url';
 import { isDesktop } from '@/const/version';
+import { ManagedFormControlContent } from '@/features/PlatformSettingSourceBadge/ManagedFormControl';
+import { usePlatformSettingMeta } from '@/features/PlatformSettingSourceBadge/usePlatformSettingMeta';
 import { useSaveState } from '@/hooks/useSaveState';
 import { localeOptions } from '@/locales/resources';
 import { useGlobalStore } from '@/store/global';
@@ -30,6 +32,7 @@ const Common = memo(() => {
   const [setSettings, isUserStateInit] = useUserStore((s) => [s.setSettings, s.isUserStateInit]);
   const [switchLocale, isStatusInit] = useGlobalStore((s) => [s.switchLocale, s.isStatusInit]);
   const { status: saveStatus, lastSavedAt, save, retry } = useSaveState();
+  const animationModeMeta = usePlatformSettingMeta('general.animationMode');
 
   // Use the theme value from next-themes, default to 'system'
   const currentTheme = theme || 'system';
@@ -94,34 +97,40 @@ const Common = memo(() => {
         ),
         label: t('settingCommon.lang.title'),
       },
-      {
-        children: (
-          <Tabs
-            items={[
-              {
-                icon: <Icon icon={Ban} size={16} />,
-                key: 'disabled',
-                label: t('settingAppearance.animationMode.disabled'),
-              },
-              {
-                icon: <Icon icon={Gauge} size={16} />,
-                key: 'agile',
-                label: t('settingAppearance.animationMode.agile'),
-              },
-              {
-                icon: <Icon icon={Waves} size={16} />,
-                key: 'elegant',
-                label: t('settingAppearance.animationMode.elegant'),
-              },
-            ]}
-          />
-        ),
-        desc: t('settingAppearance.animationMode.desc'),
-        label: t('settingAppearance.animationMode.title'),
-        minWidth: undefined,
-        name: 'animationMode',
-        valuePropName: 'activeKey',
-      },
+      ...(!animationModeMeta.hidden
+        ? [
+            {
+              children: (
+                <ManagedFormControlContent meta={animationModeMeta}>
+                  <Tabs
+                    items={[
+                      {
+                        icon: <Icon icon={Ban} size={16} />,
+                        key: 'disabled',
+                        label: t('settingAppearance.animationMode.disabled'),
+                      },
+                      {
+                        icon: <Icon icon={Gauge} size={16} />,
+                        key: 'agile',
+                        label: t('settingAppearance.animationMode.agile'),
+                      },
+                      {
+                        icon: <Icon icon={Waves} size={16} />,
+                        key: 'elegant',
+                        label: t('settingAppearance.animationMode.elegant'),
+                      },
+                    ]}
+                  />
+                </ManagedFormControlContent>
+              ),
+              desc: t('settingAppearance.animationMode.desc'),
+              label: t('settingAppearance.animationMode.title'),
+              minWidth: undefined,
+              name: 'animationMode',
+              valuePropName: 'activeKey',
+            },
+          ]
+        : []),
       {
         children: (
           <Tabs

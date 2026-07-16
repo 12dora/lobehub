@@ -61,7 +61,7 @@ describe('createAdminRouteTree', () => {
       false,
     );
     expect((settings?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder).toBe(
-      true,
+      false,
     );
 
     // Element is not the shared PlaceholderPage for users (lazy wrapper present)
