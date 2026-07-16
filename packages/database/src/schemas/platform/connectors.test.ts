@@ -88,6 +88,9 @@ describe('platform connector persistence invariants', () => {
     expect(indexNames(config.indexes)).toContain(
       'platform_user_connector_bindings_oauth_state_owner_unique',
     );
+    expect(foreignKeyNames(config.foreignKeys)).toContain(
+      'platform_user_connector_bindings_revision_fk',
+    );
     expect(checkNames(config.checks)).toEqual(
       expect.arrayContaining([
         'platform_user_connector_bindings_revision_check',
@@ -110,6 +113,9 @@ describe('platform connector persistence invariants', () => {
     expect(foreignKeyNames(config.foreignKeys)).toContain(
       'platform_connector_oauth_states_binding_owner_fk',
     );
+    expect(foreignKeyNames(config.foreignKeys)).toContain(
+      'platform_connector_oauth_states_revision_fk',
+    );
     expect(checkNames(config.checks)).toEqual(
       expect.arrayContaining([
         'platform_connector_oauth_states_revision_check',
@@ -128,13 +134,25 @@ describe('platform connector persistence invariants', () => {
       'binding_id',
       'user_id',
       'connector_id',
-      'published_revision',
     ]);
     expect(reference?.foreignColumns.map((column) => column.name)).toEqual([
       'id',
       'user_id',
       'connector_id',
+    ]);
+    const revisionForeignKey = config.foreignKeys.find(
+      (item) => item.getName() === 'platform_connector_oauth_states_revision_fk',
+    );
+    const revisionReference = revisionForeignKey?.reference();
+    expect(revisionReference?.columns.map((column) => column.name)).toEqual([
+      'revision_resource_type',
+      'connector_id',
       'published_revision',
+    ]);
+    expect(revisionReference?.foreignColumns.map((column) => column.name)).toEqual([
+      'resource_type',
+      'resource_id',
+      'revision',
     ]);
   });
 });

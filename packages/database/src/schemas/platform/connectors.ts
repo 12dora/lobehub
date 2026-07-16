@@ -283,6 +283,10 @@ export const platformUserConnectorBindings = pgTable(
     connectorId: text('connector_id')
       .notNull()
       .references(() => platformConnectors.id, { onDelete: 'restrict' }),
+    revisionResourceType: varchar('revision_resource_type', { length: 64 })
+      .$type<'connector'>()
+      .notNull()
+      .default('connector'),
     publishedRevision: integer('published_revision').notNull(),
     status: varchar('status', { length: 32 })
       .$type<PlatformConnectorBindingStatus>()
@@ -311,8 +315,16 @@ export const platformUserConnectorBindings = pgTable(
       t.id,
       t.userId,
       t.connectorId,
-      t.publishedRevision,
     ),
+    foreignKey({
+      columns: [t.revisionResourceType, t.connectorId, t.publishedRevision],
+      foreignColumns: [
+        platformResourceRevisions.resourceType,
+        platformResourceRevisions.resourceId,
+        platformResourceRevisions.revision,
+      ],
+      name: 'platform_user_connector_bindings_revision_fk',
+    }).onDelete('restrict'),
     index('platform_user_connector_bindings_user_id_id_idx').on(t.userId, t.id),
     index('platform_user_connector_bindings_connector_id_id_idx').on(t.connectorId, t.id),
     index('platform_user_connector_bindings_status_expires_idx').on(t.status, t.expiresAt),
@@ -322,7 +334,9 @@ export const platformUserConnectorBindings = pgTable(
     ),
     check(
       'platform_user_connector_bindings_revision_check',
-      sql`${t.publishedRevision} > 0 AND ${t.revision} >= 0`,
+      sql`${t.publishedRevision} > 0
+        AND ${t.revision} >= 0
+        AND ${t.revisionResourceType} = 'connector'`,
     ),
     check(
       'platform_user_connector_bindings_token_ref_check',
@@ -380,6 +394,10 @@ export const platformConnectorOAuthStates = pgTable(
     connectorId: text('connector_id')
       .notNull()
       .references(() => platformConnectors.id, { onDelete: 'restrict' }),
+    revisionResourceType: varchar('revision_resource_type', { length: 64 })
+      .$type<'connector'>()
+      .notNull()
+      .default('connector'),
     publishedRevision: integer('published_revision').notNull(),
     pkceVerifierRef: text('pkce_verifier_ref').notNull(),
     redirectUri: text('redirect_uri').notNull(),
@@ -397,14 +415,22 @@ export const platformConnectorOAuthStates = pgTable(
     uniqueIndex('platform_connector_oauth_states_state_id_unique').on(t.stateId),
     uniqueIndex('platform_connector_oauth_states_state_hash_unique').on(t.stateHash),
     foreignKey({
-      columns: [t.bindingId, t.userId, t.connectorId, t.publishedRevision],
+      columns: [t.bindingId, t.userId, t.connectorId],
       foreignColumns: [
         platformUserConnectorBindings.id,
         platformUserConnectorBindings.userId,
         platformUserConnectorBindings.connectorId,
-        platformUserConnectorBindings.publishedRevision,
       ],
       name: 'platform_connector_oauth_states_binding_owner_fk',
+    }).onDelete('restrict'),
+    foreignKey({
+      columns: [t.revisionResourceType, t.connectorId, t.publishedRevision],
+      foreignColumns: [
+        platformResourceRevisions.resourceType,
+        platformResourceRevisions.resourceId,
+        platformResourceRevisions.revision,
+      ],
+      name: 'platform_connector_oauth_states_revision_fk',
     }).onDelete('restrict'),
     index('platform_connector_oauth_states_binding_created_idx').on(t.bindingId, t.createdAt),
     index('platform_connector_oauth_states_user_connector_idx').on(t.userId, t.connectorId),
@@ -418,7 +444,10 @@ export const platformConnectorOAuthStates = pgTable(
       sql`${t.pkceVerifierRef} LIKE 'vault://%' OR ${t.pkceVerifierRef} LIKE 'kms://%'`,
     ),
     check('platform_connector_oauth_states_hash_check', sql`${t.stateHash} ~ '^[a-f0-9]{64}$'`),
-    check('platform_connector_oauth_states_revision_check', sql`${t.publishedRevision} > 0`),
+    check(
+      'platform_connector_oauth_states_revision_check',
+      sql`${t.publishedRevision} > 0 AND ${t.revisionResourceType} = 'connector'`,
+    ),
     check(
       'platform_connector_oauth_states_ttl_check',
       sql`${t.expiresAt} > ${t.createdAt}
