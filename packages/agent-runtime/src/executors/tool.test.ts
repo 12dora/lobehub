@@ -147,6 +147,24 @@ describe('tool executors', () => {
     expect(result.newState.usage.tools.totalCalls).toBe(1);
   });
 
+  it('marks only a resumed human-approved single call as approved', async () => {
+    const instruction: Extract<AgentInstruction, { type: 'call_tool' }> = {
+      payload: {
+        parentMessageId: 'assistant-msg-1',
+        skipCreateToolMessage: true,
+        toolCalling: createToolCall(),
+      },
+      type: 'call_tool',
+    };
+
+    await callTool(host)(instruction, createState());
+
+    expect(runTool).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ humanApproved: true, mode: 'single' }),
+    );
+  });
+
   it('parks single client-source tools without invoking the transport runner', async () => {
     const instruction: Extract<AgentInstruction, { type: 'call_tool' }> = {
       payload: {

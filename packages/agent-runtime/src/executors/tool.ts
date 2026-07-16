@@ -105,12 +105,14 @@ const resolveCallIndex = (state: AgentState, toolName: string) => {
 
 const createRunContext = ({
   host,
+  humanApproved,
   mode,
   parentMessageId,
   state,
   tool,
 }: {
   host: AgentRuntimeHost;
+  humanApproved?: boolean;
   mode: ToolRunContext['mode'];
   parentMessageId: string;
   state: AgentState;
@@ -128,6 +130,7 @@ const createRunContext = ({
     callIndex: resolveCallIndex(state, toolName),
     effectiveManifestMap: buildEffectiveManifestMap(state),
     groupId: state.metadata?.groupId,
+    humanApproved,
     messageId: state.metadata?.sourceMessageId,
     mode,
     operationId: host.operation.operationId,
@@ -307,6 +310,7 @@ export const callTool =
     const events: AgentEvent[] = [];
     const runContext = createRunContext({
       host,
+      humanApproved: payload.skipCreateToolMessage === true,
       mode: 'single',
       parentMessageId: payload.parentMessageId,
       state,

@@ -181,6 +181,8 @@ export interface ToolExecutionContext {
   executionTimeoutMs?: number;
   /** Current group ID for group chat context */
   groupId?: string | null;
+  /** Server-owned proof that AgentRuntime resumed this call after human approval. */
+  humanApproved?: boolean;
   /** Whether this tool call is executing inside an isolated sub-agent run. */
   isSubAgent?: boolean;
   /**

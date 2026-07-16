@@ -8,6 +8,7 @@ import {
   buildBlockedToolResponse,
   getConnectorToolPermission,
 } from '@/libs/mcp/connectorPermissionCheck';
+import { executeManagedConnectorTool } from '@/server/enterprise/services/connectorCatalog/runtimeIntegration';
 import { deviceGateway } from '@/server/services/deviceGateway';
 import { contentBlocksToString } from '@/server/services/mcp/contentProcessor';
 import {
@@ -79,6 +80,26 @@ export class ToolExecutionService {
     const { identifier, apiName, type } = payload;
 
     log('Executing tool: %s:%s (type: %s)', identifier, apiName, type);
+
+    const managedStartedAt = Date.now();
+    const managed =
+      type === 'mcp'
+        ? await executeManagedConnectorTool({
+            agentId: context.agentId,
+            apiName,
+            arguments: payload.arguments,
+            db: context.serverDB,
+            humanApproved: context.humanApproved,
+            identifier,
+            manifest: context.toolManifestMap[identifier],
+            operationId: context.operationId,
+            userId: context.userId,
+            workspaceId: context.workspaceId,
+          })
+        : { handled: false };
+    if (managed.handled && managed.result) {
+      return { ...managed.result, executionTime: Date.now() - managedStartedAt };
+    }
 
     // ── Connector tool permission gate (covers ALL paths + qstash) ────────
     // Check before any execution so that disabled tools are blocked universally:

@@ -13,6 +13,7 @@ import { ConnectorToolPermission } from '@/database/schemas';
 import { type ToolCallContent } from '@/libs/mcp';
 import { router } from '@/libs/trpc/lambda';
 import { serverDatabase, telemetry } from '@/libs/trpc/lambda/middleware';
+import { assertLegacyConnectorRuntimeAllowed } from '@/server/enterprise/services/connectorCatalog/runtimeIntegration';
 import { FileService } from '@/server/services/file';
 import { mcpService } from '@/server/services/mcp';
 import { processContentBlocks } from '@/server/services/mcp/contentProcessor';
@@ -135,6 +136,14 @@ export const mcpRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
+      if (input.params.name && ctx.userId) {
+        await assertLegacyConnectorRuntimeAllowed({
+          db: ctx.serverDB,
+          identifier: input.params.name,
+          userId: ctx.userId,
+          workspaceId: ctx.workspaceId ?? undefined,
+        });
+      }
       // Stdio check can be done here or rely on the service/client layer
       checkStdioEnvironment(input.params);
 
