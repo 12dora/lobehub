@@ -107,7 +107,17 @@ export class AdminUserService {
 
   get = async (userId: string, meta?: { actorUserId?: string }) => {
     const detail = await this.users.findDetailById(userId);
-    if (!detail) throw new AdminUserNotFoundError();
+    if (!detail) {
+      await this.appendAuditBestEffort({
+        action: 'admin.users.get',
+        actorUserId: meta?.actorUserId,
+        afterDiff: { error: 'not_found' },
+        result: 'failure',
+        targetId: userId,
+        targetType: 'user',
+      });
+      throw new AdminUserNotFoundError();
+    }
 
     await this.appendAuditBestEffort({
       action: 'admin.users.get',
@@ -120,14 +130,36 @@ export class AdminUserService {
     return detail;
   };
 
-  getAuditTrail = async (input: AdminUsersGetAuditTrailInputParsed) => {
+  getAuditTrail = async (
+    input: AdminUsersGetAuditTrailInputParsed,
+    meta?: { actorUserId?: string },
+  ) => {
     const exists = await this.users.findBanState(input.userId);
-    if (!exists) throw new AdminUserNotFoundError();
+    if (!exists) {
+      await this.appendAuditBestEffort({
+        action: 'admin.users.getAuditTrail',
+        actorUserId: meta?.actorUserId,
+        afterDiff: { error: 'not_found' },
+        result: 'failure',
+        targetId: input.userId,
+        targetType: 'user',
+      });
+      throw new AdminUserNotFoundError();
+    }
 
     const model = new PlatformAuditLogModel(this.db);
     const result = await model.list({
       cursor: input.cursor,
       limit: input.limit,
+      targetId: input.userId,
+      targetType: 'user',
+    });
+
+    await this.appendAuditBestEffort({
+      action: 'admin.users.getAuditTrail',
+      actorUserId: meta?.actorUserId,
+      afterDiff: { itemCount: result.items.length },
+      result: 'success',
       targetId: input.userId,
       targetType: 'user',
     });
@@ -151,7 +183,8 @@ export class AdminUserService {
     const { actorUserId, input } = params;
 
     if (input.userId === actorUserId) {
-      await this.appendAuditInDb(this.db, {
+      // Denied audit outside any mutation txn (R2-03).
+      await this.appendAuditBestEffort({
         action: 'admin.users.ban',
         actorUserId,
         afterDiff: { error: 'self_ban' },
@@ -163,6 +196,20 @@ export class AdminUserService {
       throw new AdminUserSelfBanError();
     }
 
+    const pre = await this.users.findBanState(input.userId);
+    if (!pre) {
+      await this.appendAuditBestEffort({
+        action: 'admin.users.ban',
+        actorUserId,
+        afterDiff: { error: 'not_found' },
+        reason: input.reason,
+        result: 'failure',
+        targetId: input.userId,
+        targetType: 'user',
+      });
+      throw new AdminUserNotFoundError();
+    }
+
     try {
       const result = await this.db.transaction(async (tx) => {
         await tx.execute(
@@ -170,9 +217,6 @@ export class AdminUserService {
         );
 
         const model = new AdminUserModel(tx);
-        const target = await model.findBanState(input.userId);
-        if (!target) throw new AdminUserNotFoundError();
-
         const rbac = new RbacModel(tx as LobeChatDatabase, actorUserId);
         if (await rbac.isGlobalSuperAdmin(input.userId)) {
           const count = await rbac.countActiveSuperAdmins();
@@ -232,17 +276,6 @@ export class AdminUserService {
         });
         throw error instanceof LastSuperAdminError ? error : new LastSuperAdminError();
       }
-      if (error instanceof AdminUserNotFoundError) {
-        await this.appendAuditBestEffort({
-          action: 'admin.users.ban',
-          actorUserId,
-          afterDiff: { error: 'not_found' },
-          reason: input.reason,
-          result: 'failure',
-          targetId: input.userId,
-          targetType: 'user',
-        });
-      }
       throw error;
     }
   };
@@ -250,22 +283,22 @@ export class AdminUserService {
   unban = async (params: { actorUserId: string; input: AdminUsersUnbanInput }) => {
     const { actorUserId, input } = params;
 
+    const pre = await this.users.findBanState(input.userId);
+    if (!pre) {
+      await this.appendAuditBestEffort({
+        action: 'admin.users.unban',
+        actorUserId,
+        afterDiff: { error: 'not_found' },
+        reason: input.reason,
+        result: 'failure',
+        targetId: input.userId,
+        targetType: 'user',
+      });
+      throw new AdminUserNotFoundError();
+    }
+
     await this.db.transaction(async (tx) => {
       const model = new AdminUserModel(tx);
-      const target = await model.findBanState(input.userId);
-      if (!target) {
-        await this.appendAuditInDb(tx, {
-          action: 'admin.users.unban',
-          actorUserId,
-          afterDiff: { error: 'not_found' },
-          reason: input.reason,
-          result: 'failure',
-          targetId: input.userId,
-          targetType: 'user',
-        });
-        throw new AdminUserNotFoundError();
-      }
-
       await model.setBanned({
         banReason: input.reason,
         banned: false,
@@ -293,39 +326,62 @@ export class AdminUserService {
   }) => {
     const { actorUserId, actorSessionId, input } = params;
 
+    // Not-found audit must persist even when mutation aborts (R2-03).
+    const exists = await this.users.findBanState(input.userId);
+    if (!exists) {
+      await this.appendAuditBestEffort({
+        action: 'admin.users.revokeSessions',
+        actorUserId,
+        afterDiff: { error: 'not_found' },
+        reason: input.reason,
+        result: 'failure',
+        targetId: input.userId,
+        targetType: 'user',
+      });
+      throw new AdminUserNotFoundError();
+    }
+
+    /**
+     * includeCurrent=false (default when actor===target and session known):
+     * delete other BA sessions, advance authInvalidatedAt, then rotate the
+     * retained session's security issuance (createdAt) past the cutoff so only
+     * that row remains valid. Other BA rows are deleted (no refresh race);
+     * OIDC/API-key credentials issued at/before cutoff fail.
+     */
+    const excludeSessionId =
+      !input.includeCurrent && actorSessionId && input.userId === actorUserId
+        ? actorSessionId
+        : undefined;
+
     const revokedCount = await this.db.transaction(async (tx) => {
       const model = new AdminUserModel(tx);
-      const target = await model.findBanState(input.userId);
-      if (!target) {
-        await this.appendAuditInDb(tx, {
-          action: 'admin.users.revokeSessions',
-          actorUserId,
-          afterDiff: { error: 'not_found' },
-          reason: input.reason,
-          result: 'failure',
-          targetId: input.userId,
-          targetType: 'user',
-        });
-        throw new AdminUserNotFoundError();
-      }
-
-      const excludeSessionId =
-        !input.includeCurrent && actorSessionId && input.userId === actorUserId
-          ? actorSessionId
-          : undefined;
+      const cutoff = new Date();
 
       const count = await model.revokeSessionsForUser({
         excludeSessionId,
         userId: input.userId,
       });
 
-      await model.invalidateAuth(input.userId);
+      await model.invalidateAuth(input.userId, cutoff);
+
+      if (excludeSessionId) {
+        const rotated = await model.rotateSessionSecurityIssuedAt({
+          afterCutoff: cutoff,
+          sessionId: excludeSessionId,
+          userId: input.userId,
+        });
+        if (!rotated) {
+          // Retained session missing — treat as full revoke for safety.
+          throw new Error(PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT);
+        }
+      }
 
       await this.appendAuditInDb(tx, {
         action: 'admin.users.revokeSessions',
         actorUserId,
         afterDiff: {
           includeCurrent: Boolean(input.includeCurrent),
+          preservedSession: Boolean(excludeSessionId),
           revokedCount: count,
         },
         reason: input.reason,
@@ -383,8 +439,7 @@ export class AdminUserService {
     }
 
     try {
-      // Role replace (inner txn/savepoint) + both audit rows in one outer transaction.
-      // If either audit append fails, the whole unit rolls back.
+      // Role replace + both success audit rows in one outer transaction (R2-03 success atomicity).
       const result = await this.db.transaction(async (tx) => {
         const rbacService = new PlatformRbacService(tx as LobeChatDatabase);
         const replaced = await rbacService.replaceUserGlobalRoles({

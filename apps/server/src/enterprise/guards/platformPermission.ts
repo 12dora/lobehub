@@ -80,8 +80,35 @@ export const assertAnyPlatformPermission = (
  * tRPC middleware: require a single platform permission on a global role.
  * Flag-gated: when ENABLE_PLATFORM_ADMIN is off → ADMIN_FEATURE_DISABLED.
  */
+/** Sanitized permission-denied audit (R2-03) — never logs raw input or secrets. */
+const auditPermissionDenied = async (params: {
+  actorUserId: string;
+  db: LobeChatDatabase;
+  path?: string;
+  permission: string;
+}) => {
+  try {
+    const { PlatformAuditLogModel } = await import('@/database/models/platform');
+    await new PlatformAuditLogModel(params.db).append({
+      action: 'admin.permission.denied',
+      actorUserId: params.actorUserId,
+      afterDiff: {
+        error: 'permission_denied',
+        path: params.path ?? null,
+        permission: params.permission,
+      },
+      result: 'denied',
+      targetType: 'permission',
+    });
+  } catch {
+    console.error('[platform-audit] permission denied append failed', {
+      permission: params.permission,
+    });
+  }
+};
+
 export const withPlatformPermission = (code: string) =>
-  trpc.middleware(async ({ ctx, next }) => {
+  trpc.middleware(async ({ ctx, next, path }) => {
     const rawUserId = ctx.userId;
     if (typeof rawUserId !== 'string' || rawUserId.length === 0) {
       return throwEnterpriseError({
@@ -103,7 +130,20 @@ export const withPlatformPermission = (code: string) =>
       db,
       userId: rawUserId,
     });
-    assertPlatformPermission(platformAuth, code);
+    if (!platformAuth.permissions.includes(code)) {
+      await auditPermissionDenied({
+        actorUserId: rawUserId,
+        db,
+        path,
+        permission: code,
+      });
+      throwEnterpriseError({
+        code: PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED,
+        details: { permission: code },
+        httpCode: 'FORBIDDEN',
+        message: PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED,
+      });
+    }
 
     return next({
       ctx: {
@@ -113,7 +153,7 @@ export const withPlatformPermission = (code: string) =>
   });
 
 export const withAnyPlatformPermission = (codes: string[]) =>
-  trpc.middleware(async ({ ctx, next }) => {
+  trpc.middleware(async ({ ctx, next, path }) => {
     const rawUserId = ctx.userId;
     if (typeof rawUserId !== 'string' || rawUserId.length === 0) {
       return throwEnterpriseError({
@@ -135,7 +175,20 @@ export const withAnyPlatformPermission = (codes: string[]) =>
       db,
       userId: rawUserId,
     });
-    assertAnyPlatformPermission(platformAuth, codes);
+    if (!codes.some((code) => platformAuth.permissions.includes(code))) {
+      await auditPermissionDenied({
+        actorUserId: rawUserId,
+        db,
+        path,
+        permission: codes.join('|'),
+      });
+      throwEnterpriseError({
+        code: PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED,
+        details: { permission: codes.join('|') },
+        httpCode: 'FORBIDDEN',
+        message: PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED,
+      });
+    }
 
     return next({
       ctx: {

@@ -2,6 +2,8 @@
  * Shared active-user guard for critical admin procedures (M04).
  * Ensures createContextInner({ userId }) callers cannot bypass ban/invalidation
  * when platform admin is enabled. Flag-off: no-op (upstream parity).
+ *
+ * R2-02: ban/security-cutoff uses credentialIssuedAt only — never authenticatedAt/auth_time.
  */
 import { ADMIN_ERROR_CODES, PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import type { LobeChatDatabase } from '@/database/type';
@@ -41,20 +43,14 @@ export const withActiveUser = () =>
     }
 
     const db = resolveServerDb(ctx as { serverDB?: LobeChatDatabase });
+    // Trusted security-epoch timestamp only (session issuance / OIDC iat / API-key createdAt).
     const credentialIssuedAt =
-      ctx.authenticatedAt instanceof Date
-        ? ctx.authenticatedAt
-        : ctx.authMethod === 'api-key'
-          ? null
-          : (ctx.authenticatedAt ?? null);
+      ctx.credentialIssuedAt instanceof Date && !Number.isNaN(ctx.credentialIssuedAt.getTime())
+        ? ctx.credentialIssuedAt
+        : null;
 
     try {
-      await assertUserActive(db, rawUserId, {
-        // For BA/OIDC, authenticatedAt is session createdAt / auth_time — usable as lower bound.
-        // API keys: null credential time fails closed when authInvalidatedAt is set.
-        credentialIssuedAt:
-          ctx.authMethod === 'api-key' ? null : (credentialIssuedAt as Date | null),
-      });
+      await assertUserActive(db, rawUserId, { credentialIssuedAt });
     } catch (error) {
       if (isOIDCUserInactiveError(error)) {
         return throwEnterpriseError({
@@ -70,4 +66,4 @@ export const withActiveUser = () =>
   });
 
 /** Admin base: authed + serverDB + active user (when platform admin on). */
-export const adminProcedureBase = () => serverDatabase; // composed at call sites
+export const adminProcedureBase = () => serverDatabase;

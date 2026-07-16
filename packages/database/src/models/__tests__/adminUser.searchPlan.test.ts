@@ -1,10 +1,9 @@
 // @vitest-environment node
 /**
- * EXPLAIN plan evidence that admin prefix search uses lower(field) pattern indexes.
- * Budget: plan must reference Index Scan / Bitmap Index Scan (not sole Seq Scan on large set).
- * Never logs real user query text — only plan node types.
+ * EXPLAIN plan evidence that admin prefix search uses lower(field) text_pattern_ops indexes.
+ * Fails on pure Seq Scan at representative cardinality.
  *
- * Run: TEST_SERVER_DB=1 bunx vitest run src/models/__tests__/adminUser.searchPlan.test.ts
+ * Run: TEST_SERVER_DB=1 DATABASE_TEST_URL=... bunx vitest run src/models/__tests__/adminUser.searchPlan.test.ts
  */
 import { sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -18,25 +17,29 @@ const isServerDB = process.env.TEST_SERVER_DB === '1' && Boolean(process.env.DAT
 
 describe.skipIf(!isServerDB)('M04 prefix search EXPLAIN (TEST_SERVER_DB=1)', () => {
   let db: LobeChatDatabase;
-  const prefixUser = 'explain-prefix-user';
+  const prefixUser = 'explain_prefix_user_unique';
 
   beforeEach(async () => {
     db = await getTestDB();
     await db.delete(users).where(sql`${users.id} like 'explain-%'`);
-    // Seed enough rows so planner prefers index when selective
-    const rows = Array.from({ length: 50 }, (_, i) => ({
-      email: `explain-user-${i}@example.com`,
-      id: `explain-user-${i}`,
-      normalizedEmail: `explain-user-${i}@example.com`,
-      username: `explain_user_${i}`,
+    // Representative cardinality so planner prefers expression index for selective prefix.
+    const rows = Array.from({ length: 800 }, (_, i) => ({
+      email: `explain-bulk-${i}@example.com`,
+      id: `explain-bulk-${i}`,
+      normalizedEmail: `explain-bulk-${i}@example.com`,
+      username: `explain_bulk_${i}`,
     }));
     rows.push({
       email: `${prefixUser}@example.com`,
-      id: prefixUser,
+      id: 'explain-hit',
       normalizedEmail: `${prefixUser}@example.com`,
       username: prefixUser,
     });
-    await db.insert(users).values(rows);
+    // Insert in chunks
+    for (let i = 0; i < rows.length; i += 100) {
+      await db.insert(users).values(rows.slice(i, i + 100));
+    }
+    await db.execute(sql`ANALYZE users`);
   });
 
   afterEach(async () => {
@@ -44,17 +47,15 @@ describe.skipIf(!isServerDB)('M04 prefix search EXPLAIN (TEST_SERVER_DB=1)', () 
     await db.delete(users).where(sql`${users.id} like 'explain-%'`);
   });
 
-  it('prefix search plan can use lower(*) text_pattern_ops index (budget: Index/Bitmap path)', async () => {
+  it('prefix search uses text_pattern_ops index path (fail on pure Seq Scan)', async () => {
     const escaped = escapeAdminUserLikePattern(prefixUser.toLowerCase());
     const pattern = `${escaped}%`;
 
-    // Prove opclass is text_pattern_ops on expression indexes.
     const opclass = await db.execute(sql`
-      SELECT i.relname AS indexname, am.amname, opc.opcname
+      SELECT i.relname AS indexname, opc.opcname
       FROM pg_index ix
       JOIN pg_class i ON i.oid = ix.indexrelid
       JOIN pg_class t ON t.oid = ix.indrelid
-      JOIN pg_am am ON am.oid = i.relam
       JOIN pg_opclass opc ON opc.oid = ANY (ix.indclass)
       WHERE t.relname = 'users'
         AND i.relname IN (
@@ -67,28 +68,22 @@ describe.skipIf(!isServerDB)('M04 prefix search EXPLAIN (TEST_SERVER_DB=1)', () 
       (opclass as unknown as { rows?: Array<Record<string, unknown>> }).rows ??
       (Array.isArray(opclass) ? (opclass as unknown[]) : []);
     expect(opRows.length).toBeGreaterThanOrEqual(1);
-    const blob = JSON.stringify(opRows);
-    expect(blob).toContain('text_pattern_ops');
+    expect(JSON.stringify(opRows)).toContain('text_pattern_ops');
 
-    // Selective single-column prefix (most likely to pick the expression index).
     const result = await db.execute(sql`
       EXPLAIN (FORMAT TEXT)
       SELECT id FROM users
       WHERE lower(username) LIKE ${pattern} ESCAPE '\\'
       LIMIT 10
     `);
+    // Assert plan shape only (do not print planText — may embed the bound pattern).
     const planText = JSON.stringify(result);
-    // Budget: Index Scan / Bitmap Index / Index Only preferred over sole Seq Scan.
-    // On tiny tables planner may still Seq Scan — assert index opclass above as hard gate.
-    expect(planText.length).toBeGreaterThan(10);
-    const hasIndexPath = /Index|Bitmap/i.test(planText);
-    const hasSeqOnly = /Seq Scan/i.test(planText) && !hasIndexPath;
-    // Soft budget: document when planner chooses seq on small datasets without failing CI.
-    if (hasSeqOnly) {
-      // Index exists with correct opclass; plan choice is size-dependent.
-      expect(opRows.length).toBeGreaterThanOrEqual(1);
-    } else {
-      expect(hasIndexPath).toBe(true);
-    }
+    const hasIndexPath = /Index Scan|Bitmap Index Scan|Index Only Scan/i.test(planText);
+    const pureSeq =
+      /Seq Scan/i.test(planText) && !/Index Scan|Bitmap Index Scan|Index Only Scan/i.test(planText);
+
+    // Hard gate: pure Seq Scan is a failure at this cardinality/selectivity.
+    expect(pureSeq).toBe(false);
+    expect(hasIndexPath).toBe(true);
   });
 });

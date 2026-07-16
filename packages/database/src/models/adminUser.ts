@@ -423,6 +423,28 @@ export class AdminUserModel {
   };
 
   /**
+   * Rotate security issuance timestamp on a retained Better Auth session so it
+   * remains valid after users.auth_invalidated_at advances (R2-01).
+   * Sets createdAt strictly after `afterCutoff` so cutoff check is `issuedAt > cutoff`.
+   */
+  rotateSessionSecurityIssuedAt = async (params: {
+    afterCutoff: Date;
+    sessionId: string;
+    userId: string;
+  }): Promise<Date | null> => {
+    const issuedAt = new Date(params.afterCutoff.getTime() + 1);
+    const [row] = await this.db
+      .update(session)
+      .set({
+        createdAt: issuedAt,
+        updatedAt: issuedAt,
+      })
+      .where(and(eq(session.id, params.sessionId), eq(session.userId, params.userId)))
+      .returning({ createdAt: session.createdAt, id: session.id });
+    return row?.createdAt ?? null;
+  };
+
+  /**
    * Ban/unban user. When banning, advances authInvalidatedAt security epoch.
    * Does not perform last-super checks (service + RBAC lock must wrap for supers).
    */
