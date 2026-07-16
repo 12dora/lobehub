@@ -77,6 +77,12 @@ export class AiCatalogPublicationService {
     if (!draft.enabled) issues.push('Provider must be enabled');
     const enabledModels = draft.models.filter((model) => model.enabled);
     if (enabledModels.length === 0) issues.push('At least one model must be enabled');
+    if (draft.secret.configured && draft.fetchOnClient) {
+      issues.push('Secret-configured providers must disable fetchOnClient');
+    }
+    if (draft.connectionTest?.status !== 'success' || draft.connectionTest.stale) {
+      issues.push('Current provider draft must pass connection testing before publish');
+    }
     if (draft.checkModel && !enabledModels.some((model) => model.modelKey === draft.checkModel)) {
       issues.push('Check model must reference an enabled model');
     }
@@ -129,13 +135,22 @@ export class AiCatalogPublicationService {
       if (!provider) throw new AiCatalogNotFoundError();
       return provider.revision;
     },
-    materializePublished: async (tx, { payload, revision, status }) => {
+    materializePublished: async (
+      tx,
+      { operation, payload, revision, secretFingerprint, status },
+    ) => {
       if (!isRecord(payload.provider) || !Array.isArray(payload.models)) {
         throw new AiCatalogValidationError(['Revision payload is invalid']);
       }
       const provider = payload.provider;
       const models = payload.models.map((model) => aiModelDraftSchema.parse(model));
       const repository = new PlatformAiCatalogRepository(tx);
+      const secretVersion = secretFingerprint
+        ? await repository.getProviderSecretVersion(providerId, secretFingerprint)
+        : undefined;
+      if (secretFingerprint && !secretVersion) {
+        throw new AiCatalogValidationError(['Referenced provider secret version is unavailable']);
+      }
       await repository.updateProvider(providerId, {
         checkModel: typeof provider.checkModel === 'string' ? provider.checkModel : null,
         config: isRecord(provider.config) ? (provider.config as PlatformAiProviderConfig) : {},
@@ -143,9 +158,13 @@ export class AiCatalogPublicationService {
         displayName:
           typeof provider.displayName === 'string' ? provider.displayName : 'Unnamed provider',
         enabled: provider.enabled === true,
+        encryptedKeyVaults: secretVersion?.ciphertext ?? null,
         fetchOnClient: provider.fetchOnClient === true,
         logo: typeof provider.logo === 'string' ? provider.logo : null,
         revision,
+        secretFingerprint: secretVersion?.fingerprint ?? null,
+        secretKeyVersion: secretVersion?.keyVersion ?? null,
+        secretUpdatedAt: secretVersion?.createdAt ?? null,
         settings: isRecord(provider.settings)
           ? (provider.settings as PlatformAiProviderSettings)
           : {},
@@ -170,6 +189,15 @@ export class AiCatalogPublicationService {
           updatedBy: actorUserId,
         }));
         await tx.insert(platformAiModels).values(rows);
+      }
+      if (operation === 'publish' && status === 'published') {
+        const publishedDraft = await new PlatformAiCatalogModel(tx).getProvider(providerId);
+        if (publishedDraft?.connectionTest?.status === 'success') {
+          await repository.updateProvider(providerId, {
+            connectionTestedDraftToken: aiCatalogDraftToken(publishedDraft),
+            connectionTestedRevision: revision,
+          });
+        }
       }
     },
     prepareLockedPublish: async (tx) => {
@@ -210,6 +238,8 @@ export class AiCatalogPublicationService {
 
   publishProvider = async (actorUserId: string, input: PublishProviderInput) => {
     try {
+      const draft = await new PlatformAiCatalogModel(this.db).getProvider(input.id);
+      if (!draft) throw new AiCatalogNotFoundError();
       const result = await this.publisher.publish({
         actorUserId,
         expectedRevision: input.expectedRevision,
@@ -220,6 +250,7 @@ export class AiCatalogPublicationService {
         redactionOptions: M07_REDACTION_OPTIONS,
         resourceId: input.id,
         resourceType: 'provider',
+        secretFingerprint: draft.secret.fingerprint,
       });
       return { auditId: result.auditId, revision: result.revision.revision };
     } catch (error) {
@@ -257,6 +288,7 @@ export class AiCatalogPublicationService {
         redactionOptions: M07_REDACTION_OPTIONS,
         resourceId: input.id,
         resourceType: 'provider',
+        secretFingerprint: draft.secret.fingerprint,
         status: 'archived',
       });
       return { auditId: result.auditId, revision: result.revision.revision };

@@ -36,12 +36,84 @@ const createService = () => {
   return {
     invalidation,
     service: new AiCatalogAdminService(db, new PlatformSecretService({ keyProvider }), {
+      connectionProbe: async () => {},
       invalidation,
     }),
   };
 };
 
 describe('AiCatalog publication transaction', () => {
+  it('requires a successful connection test bound to the current draft', async () => {
+    const { service } = createService();
+    const provider = await service.createProviderDraft('admin', {
+      checkModel: 'chat',
+      displayName: 'Connection gated',
+      enabled: true,
+      providerKey: 'connection-gated',
+      reason: 'create',
+      secret: { operation: 'replace', value: 'fake-key' },
+      source: 'custom',
+    });
+    let detail = await service.getDetail(provider.id);
+    const model = await service.createModel('admin', {
+      enabled: true,
+      expectedDraftToken: detail.draftToken,
+      modelKey: 'chat',
+      providerId: provider.id,
+      reason: 'model',
+    });
+    detail = await service.getDetail(provider.id);
+    await expect(
+      service.publishProvider('admin', {
+        expectedDraftToken: detail.draftToken,
+        expectedRevision: 0,
+        id: provider.id,
+        reason: 'untested publish',
+      }),
+    ).rejects.toMatchObject({
+      issues: expect.arrayContaining([
+        'Current provider draft must pass connection testing before publish',
+      ]),
+    });
+
+    await service.testProvider('admin', { id: provider.id, reason: 'test' });
+    detail = await service.getDetail(provider.id);
+    await service.updateModel('admin', {
+      displayName: 'changed after test',
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: 0,
+      id: model.id,
+      providerId: provider.id,
+      reason: 'mutate',
+    });
+    detail = await service.getDetail(provider.id);
+    expect(detail.draft.connectionTest?.stale).toBe(true);
+    await expect(
+      service.publishProvider('admin', {
+        expectedDraftToken: detail.draftToken,
+        expectedRevision: 0,
+        id: provider.id,
+        reason: 'stale test publish',
+      }),
+    ).rejects.toBeInstanceOf(AiCatalogValidationError);
+
+    await service.testProvider('admin', { id: provider.id, reason: 'retest' });
+    detail = await service.getDetail(provider.id);
+    await expect(
+      service.publishProvider('admin', {
+        expectedDraftToken: detail.draftToken,
+        expectedRevision: 0,
+        id: provider.id,
+        reason: 'tested publish',
+      }),
+    ).resolves.toMatchObject({ revision: 1 });
+    expect((await service.getDetail(provider.id)).draft.connectionTest).toMatchObject({
+      stale: false,
+      status: 'success',
+      testedRevision: 1,
+    });
+  });
+
   it('validation failure leaves the current published revision unchanged', async () => {
     const { service } = createService();
     const provider = await service.createProviderDraft('admin', {
@@ -88,6 +160,7 @@ describe('AiCatalog publication transaction', () => {
       providerId: provider.id,
       reason: 'add model',
     });
+    await service.testProvider('admin', { id: provider.id, reason: 'test v1' });
     detail = await service.getDetail(provider.id);
     const first = await service.publishProvider('admin', {
       expectedDraftToken: detail.draftToken,
@@ -116,6 +189,7 @@ describe('AiCatalog publication transaction', () => {
       providerId: provider.id,
       reason: 'edit model',
     });
+    await service.testProvider('admin', { id: provider.id, reason: 'test v2' });
     detail = await service.getDetail(provider.id);
     await service.publishProvider('admin', {
       expectedDraftToken: detail.draftToken,

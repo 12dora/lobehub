@@ -1,6 +1,8 @@
 // @vitest-environment node
+import { inArray } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { PLATFORM_SYSTEM_ROLES } from '@/const/platform/roles';
 import { getTestDB } from '@/database/core/getTestDB';
 import {
@@ -26,6 +28,7 @@ const createCaller = createCallerFactory(adminRouter);
 const ids = {
   aiAdmin: 'm07-ai-admin',
   auditor: 'm07-auditor',
+  modelEditor: 'm07-model-editor',
   normal: 'm07-normal',
 };
 
@@ -64,6 +67,38 @@ beforeEach(async () => {
     roleName: PLATFORM_SYSTEM_ROLES.PLATFORM_USER,
     userId: ids.normal,
   });
+  await assignGlobalPlatformRole(db, {
+    roleName: PLATFORM_SYSTEM_ROLES.PLATFORM_USER,
+    userId: ids.modelEditor,
+  });
+  const [modelEditorRole] = await db
+    .insert(roles)
+    .values({
+      displayName: 'Model editor',
+      id: 'm07-model-editor-role',
+      name: 'm07_model_editor',
+      workspaceId: null,
+    })
+    .returning();
+  const modelPermissions = await db
+    .select({ id: permissions.id })
+    .from(permissions)
+    .where(
+      inArray(permissions.code, [
+        PLATFORM_PERMISSIONS.AI_MODEL_CREATE,
+        PLATFORM_PERMISSIONS.AI_MODEL_DELETE,
+        PLATFORM_PERMISSIONS.AI_MODEL_READ,
+        PLATFORM_PERMISSIONS.AI_MODEL_UPDATE,
+      ]),
+    );
+  await db
+    .insert(rolePermissions)
+    .values(modelPermissions.map(({ id }) => ({ permissionId: id, roleId: modelEditorRole.id })));
+  await db.insert(userRoles).values({
+    roleId: modelEditorRole.id,
+    userId: ids.modelEditor,
+    workspaceId: null,
+  });
 });
 
 afterEach(async () => {
@@ -83,6 +118,9 @@ describe('admin AI catalog permission and reauth gates', () => {
     await expect(caller.aiProviders.list({ limit: 10 })).rejects.toMatchObject({
       code: 'FORBIDDEN',
     });
+    await expect(
+      caller.aiModels.getCreateDraftContext({ providerId: 'missing' }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
     expect(await db.select().from(platformAuditLogs)).toContainEqual(
       expect.objectContaining({ action: 'admin.permission.denied', result: 'denied' }),
     );
@@ -103,6 +141,9 @@ describe('admin AI catalog permission and reauth gates', () => {
         providerKey: 'denied',
         reason: 'auditor cannot create',
       }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    await expect(
+      caller.aiModels.getUpdateDraftContext({ providerId: 'missing' }),
     ).rejects.toMatchObject({ code: 'FORBIDDEN' });
   });
 
@@ -135,5 +176,44 @@ describe('admin AI catalog permission and reauth gates', () => {
         result: 'denied',
       }),
     );
+  });
+
+  it('lets a model-only global role obtain CAS context and mutate without provider update', async () => {
+    const [provider] = await db
+      .insert(platformAiProviders)
+      .values({ displayName: 'Model-only target', providerKey: 'model-only' })
+      .returning();
+    const caller = await callerFor(ids.modelEditor);
+    await expect(caller.aiProviders.get({ id: provider.id })).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+    });
+
+    let context = await caller.aiModels.getCreateDraftContext({ providerId: provider.id });
+    const model = await caller.aiModels.create({
+      enabled: true,
+      expectedDraftToken: context.draftToken,
+      modelKey: 'chat',
+      providerId: provider.id,
+      reason: 'model-only create',
+    });
+    context = await caller.aiModels.getUpdateDraftContext({ providerId: provider.id });
+    const updated = await caller.aiModels.update({
+      displayName: 'Updated',
+      expectedDraftToken: context.draftToken,
+      expectedRevision: context.baseRevision,
+      id: model.id,
+      providerId: provider.id,
+      reason: 'model-only update',
+    });
+    expect(updated.displayName).toBe('Updated');
+    context = await caller.aiModels.getDeleteDraftContext({ providerId: provider.id });
+    await expect(
+      caller.aiModels.deleteFromDraft({
+        expectedDraftToken: context.draftToken,
+        id: model.id,
+        providerId: provider.id,
+        reason: 'model-only delete',
+      }),
+    ).resolves.toEqual({ deleted: true });
   });
 });

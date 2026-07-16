@@ -34,6 +34,7 @@ const prefixes = {
   platformAgentAssignments: 'paas',
   platformAgentVersions: 'pav',
   platformAiModels: 'pam',
+  platformAiProviderSecrets: 'paps',
   platformAiProviders: 'pap',
   platformAuditLogs: 'paud',
   platformBranding: 'pbr',

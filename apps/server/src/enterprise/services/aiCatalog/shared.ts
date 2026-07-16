@@ -1,5 +1,5 @@
 import {
-  checksumPayload,
+  platformAiCatalogDraftToken,
   PlatformAiCatalogModel,
   type PlatformAiProviderDraftView,
   PlatformRevisionConflictError,
@@ -10,8 +10,7 @@ import type { LobeChatDatabase, Transaction } from '@/database/type';
 import { PlatformAuditService } from '../platformAudit';
 import { AiCatalogNotFoundError } from './errors';
 
-export const aiCatalogDraftToken = (draft: PlatformAiProviderDraftView): string =>
-  checksumPayload({ draft, revision: draft.revision });
+export const aiCatalogDraftToken = platformAiCatalogDraftToken;
 
 export const getLockedAiCatalogDraft = async (params: {
   afterLock?: () => Promise<void>;

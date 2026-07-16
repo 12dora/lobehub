@@ -7,6 +7,8 @@ import {
   platformAiModels,
   type PlatformAiProviderItem,
   platformAiProviders,
+  type PlatformAiProviderSecretItem,
+  platformAiProviderSecrets,
   type PlatformResourceRevisionItem,
   platformResourceRevisions,
   type PlatformResourceStatus,
@@ -88,6 +90,40 @@ export class PlatformAiCatalogRepository {
       .from(platformAiProviders)
       .where(eq(platformAiProviders.providerKey, providerKey))
       .limit(1);
+    return row;
+  };
+
+  getProviderSecretVersion = async (
+    providerId: string,
+    fingerprint: string,
+  ): Promise<PlatformAiProviderSecretItem | undefined> => {
+    const rows = await this.db
+      .select()
+      .from(platformAiProviderSecrets)
+      .where(
+        and(
+          eq(platformAiProviderSecrets.providerId, providerId),
+          eq(platformAiProviderSecrets.fingerprint, fingerprint),
+        ),
+      )
+      .limit(1);
+    return rows[0];
+  };
+
+  storeProviderSecretVersion = async (params: {
+    ciphertext: string;
+    fingerprint: string;
+    keyVersion: number;
+    providerId: string;
+  }): Promise<PlatformAiProviderSecretItem> => {
+    const [row] = await this.db
+      .insert(platformAiProviderSecrets)
+      .values(params)
+      .onConflictDoUpdate({
+        set: { ciphertext: params.ciphertext, keyVersion: params.keyVersion },
+        target: [platformAiProviderSecrets.providerId, platformAiProviderSecrets.fingerprint],
+      })
+      .returning();
     return row;
   };
 
@@ -391,5 +427,30 @@ export class PlatformAiCatalogRepository {
       .where(eq(platformAiProviders.id, id))
       .returning();
     return row;
+  };
+
+  completeProviderConnectionTest = async (
+    id: string,
+    attemptId: string,
+    values: Pick<
+      NewPlatformAiProvider,
+      | 'connectionTestErrorCategory'
+      | 'connectionTestLatencyMs'
+      | 'connectionTestSanitizedMessage'
+      | 'connectionTestStatus'
+      | 'connectionTestedAt'
+    >,
+  ): Promise<boolean> => {
+    const rows = await this.db
+      .update(platformAiProviders)
+      .set({ ...values, updatedAt: new Date() })
+      .where(
+        and(
+          eq(platformAiProviders.id, id),
+          eq(platformAiProviders.connectionTestAttemptId, attemptId),
+        ),
+      )
+      .returning({ id: platformAiProviders.id });
+    return rows.length === 1;
   };
 }
