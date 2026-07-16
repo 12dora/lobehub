@@ -8,6 +8,7 @@ import {
   DEFAULT_OUTBOUND_POLICY,
   isAllowlistedHostOrIp,
   type OutboundPolicy,
+  outboundPolicySnapshotSchema,
 } from './policy';
 import { defaultDnsResolve, defaultPinnedTransport } from './transport';
 import type {
@@ -80,7 +81,11 @@ export class SafeOutboundHttpClient {
     let body = toBuffer(init.body);
     const baseHeaders: Record<string, string> = { ...init.headers };
     const secretBearing =
-      init.secretBearing === true || hasSensitiveHeaders(baseHeaders) || hasSensitiveBody(body);
+      init.secretBearing === true ||
+      Object.keys(baseHeaders).length > 0 ||
+      body !== undefined ||
+      hasSensitiveHeaders(baseHeaders) ||
+      hasSensitiveBody(body);
 
     // Drop hop-by-hop that we control
     delete baseHeaders.host;
@@ -91,7 +96,6 @@ export class SafeOutboundHttpClient {
 
       const hostname = current.hostname;
       const addresses = await this.resolveHost(hostname, deadlineAt);
-      this.assertResolvedAddresses(current, addresses, this.getPolicy());
       this.assertResolvedAddresses(current, addresses, this.getPolicy());
 
       // Pin to first allowed address (all were validated)
@@ -207,11 +211,11 @@ export class SafeOutboundHttpClient {
   }
 
   private getPolicy(): OutboundPolicy {
-    const snapshot = this.policyProvider();
-    if (!snapshot || !snapshot.policy || snapshot.version === undefined) {
+    try {
+      return outboundPolicySnapshotSchema.parse(this.policyProvider()).policy;
+    } catch {
       throw ssrfBlocked('outbound policy snapshot unavailable');
     }
-    return snapshot.policy;
   }
 
   private remainingMs(deadlineAt: number): number {

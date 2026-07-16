@@ -20,6 +20,8 @@ export {
   normalizeIp,
   type OutboundPolicy,
   type OutboundPolicyMode,
+  outboundPolicySchema,
+  outboundPolicySnapshotSchema,
 } from './policy';
 export {
   createSafeOutboundHttpClient,

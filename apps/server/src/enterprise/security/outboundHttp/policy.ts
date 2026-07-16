@@ -1,5 +1,7 @@
 import { isIP } from 'node:net';
 
+import { z } from 'zod';
+
 import { ssrfBlocked } from './errors';
 
 /**
@@ -22,6 +24,20 @@ export interface OutboundPolicy {
   allowlist: string[];
   mode: OutboundPolicyMode;
 }
+
+export const outboundPolicySchema = z
+  .object({
+    allowlist: z.array(z.string().trim().min(1).max(255)).max(256),
+    mode: z.enum(['allow-private', 'allowlist']),
+  })
+  .strict();
+
+export const outboundPolicySnapshotSchema = z
+  .object({
+    policy: outboundPolicySchema,
+    version: z.union([z.string().trim().min(1).max(128), z.number().int().nonnegative().finite()]),
+  })
+  .strict();
 
 export const DEFAULT_OUTBOUND_POLICY: OutboundPolicy = {
   allowlist: [],
@@ -83,7 +99,7 @@ export const extractMappedIpv4 = (ip: string): string | null => {
     const hi = Number.parseInt(parts[6]!, 16);
     const lo = Number.parseInt(parts[7]!, 16);
     if (Number.isNaN(hi) || Number.isNaN(lo)) return null;
-    return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+    return `${(hi >> 8) & 255}.${hi & 255}.${(lo >> 8) & 255}.${lo & 255}`;
   }
 
   return null;
@@ -94,7 +110,7 @@ const ipv6Bytes = (ip: string): number[] | null => {
   if (isIP(expanded) !== 6) return null;
   return expanded.split(':').flatMap((part) => {
     const value = Number.parseInt(part, 16);
-    return [(value >> 8) & 0xff, value & 0xff];
+    return [(value >> 8) & 255, value & 255];
   });
 };
 
