@@ -21,7 +21,10 @@ import {
   ensurePendingM09ServiceSchema,
   MemoryConnectorSecretStore,
 } from './catalogTestUtils';
-import type { ConnectorOutboundClient } from './connectorOutboundClient';
+import type {
+  ConnectorOutboundClient,
+  ConnectorOutboundJsonResponse,
+} from './connectorOutboundClient';
 import { ConnectorCatalogDraftService } from './draftService';
 import type { ConnectorOAuthOutboundAdapter } from './oauthOutboundAdapter';
 import type { ConnectorOAuthRuntimeDependencies } from './oauthRuntime';
@@ -54,28 +57,44 @@ const createHarness = () => {
     preflight: vi.fn(async () => ({ policyVersion: 1 })),
   } as unknown as ConnectorOutboundClient;
   const preflightAuthorization = vi.fn(async () => {});
-  const exchangeCode = vi.fn(async () => ({
-    body: {
-      access_token: 'provider-access-token-v1',
-      expires_in: 3600,
-      refresh_token: 'provider-refresh-token-v1',
-      scope: 'issues:read',
-      token_type: 'Bearer',
-    },
-    status: 200,
-    url: 'https://identity.example.test/oauth/token',
-  }));
-  const refresh = vi.fn(async () => ({
-    body: {
-      access_token: 'provider-access-token-v2',
-      expires_in: 7200,
-      refresh_token: 'provider-refresh-token-v2',
-      scope: 'issues:read',
-      token_type: 'Bearer',
-    },
-    status: 200,
-    url: 'https://identity.example.test/oauth/token',
-  }));
+  const exchangeCode = vi.fn(
+    async (_request: {
+      clientId: string;
+      clientSecret?: string;
+      code: string;
+      codeVerifier: string;
+      redirectUri: string;
+      tokenEndpoint: string;
+    }): Promise<ConnectorOutboundJsonResponse> => ({
+      body: {
+        access_token: 'provider-access-token-v1',
+        expires_in: 3600,
+        refresh_token: 'provider-refresh-token-v1',
+        scope: 'issues:read',
+        token_type: 'Bearer',
+      },
+      status: 200,
+      url: 'https://identity.example.test/oauth/token',
+    }),
+  );
+  const refresh = vi.fn(
+    async (_request: {
+      clientId: string;
+      clientSecret?: string;
+      refreshToken: string;
+      tokenEndpoint: string;
+    }): Promise<ConnectorOutboundJsonResponse> => ({
+      body: {
+        access_token: 'provider-access-token-v2',
+        expires_in: 7200,
+        refresh_token: 'provider-refresh-token-v2',
+        scope: 'issues:read',
+        token_type: 'Bearer',
+      },
+      status: 200,
+      url: 'https://identity.example.test/oauth/token',
+    }),
+  );
   const outbound = {
     exchangeCode,
     preflightAuthorization,
@@ -201,6 +220,7 @@ describe('per-user connector OAuth service', () => {
     expect(callbacks.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
     expect(callbacks.filter((result) => result.status === 'rejected')).toHaveLength(1);
     const exchange = harness.exchangeCode.mock.calls[0]![0];
+    expect(exchange).toBeDefined();
     expect(createHash('sha256').update(exchange.codeVerifier).digest('base64url')).toBe(
       authorization.challenge,
     );
@@ -452,5 +472,31 @@ describe('per-user connector OAuth service', () => {
     expect(revoked).toMatchObject({ oauthTokenRef: null, scopes: [], status: 'revoked' });
     const auditJson = JSON.stringify(await db.select().from(platformAuditLogs));
     expect(auditJson).not.toMatch(/provider-(access|refresh|client)-token|vault:\/\//i);
+  });
+
+  it('keeps the new binding valid when bounded old-secret cleanup fails', async () => {
+    const harness = createHarness();
+    const published = await publishOAuthConnector(harness);
+    const authorization = await start(harness, published.draft.id);
+    await harness.callback.callback({ code: 'connect', state: authorization.state });
+    const oldRef = (await db.select().from(platformUserConnectorBindings))[0]!.oauthTokenRef!;
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(harness.secrets, 'revokeSecretRef').mockRejectedValue(
+      new Error('secret-store-delete-private-failure'),
+    );
+
+    await expect(harness.userA.refreshBinding(published.draft.id)).resolves.toBeUndefined();
+    const refreshed = (await db.select().from(platformUserConnectorBindings))[0]!;
+    expect(refreshed).toMatchObject({ status: 'connected', userId: userA });
+    expect(refreshed.oauthTokenRef).not.toBe(oldRef);
+    await expect(harness.secrets.resolveSecretRef({ ref: oldRef })).resolves.not.toBeNull();
+
+    await expect(harness.userA.disconnect({ connectorId: published.draft.id })).resolves.toEqual({
+      disconnected: true,
+    });
+    expect((await db.select().from(platformUserConnectorBindings))[0]).toMatchObject({
+      oauthTokenRef: null,
+      status: 'revoked',
+    });
   });
 });

@@ -95,6 +95,18 @@ describe('connector OAuth callback', () => {
     expect(body).toContain('"synced":true');
   });
 
+  it('does not reflect provider or internal errors on the legacy-compatible path', async () => {
+    const providerError = 'legacy-provider-private-description';
+    const denied = await GET(
+      makeReq(`error=access_denied&error_description=${providerError}&state=legacy-state`),
+    );
+    expect(await denied.text()).not.toContain(providerError);
+
+    mockFindById.mockRejectedValueOnce(new Error('legacy-vault-private-response'));
+    const failed = await GET(makeReq('code=code&state=legacy-state'));
+    expect(await failed.text()).not.toContain('legacy-vault-private-response');
+  });
+
   it('uses the managed callback without reflecting provider errors or private failures', async () => {
     vi.stubEnv('ENABLE_PLATFORM_MANAGED_CONNECTORS', '1');
     const providerError = 'provider-private-error-description';

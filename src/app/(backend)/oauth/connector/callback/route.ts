@@ -80,8 +80,8 @@ const legacyGET = async (req: NextRequest) => {
   const oauthError = searchParams.get('error');
 
   if (oauthError) {
-    log('authorization server returned error: %s', oauthError);
-    return renderResultPage({ error: oauthError, success: false });
+    log('authorization server returned an error');
+    return renderResultPage({ error: 'authorization_failed', success: false });
   }
 
   if (!code || !state) {
@@ -152,9 +152,8 @@ const legacyGET = async (req: NextRequest) => {
 
     return renderResultPage({ connectorId: payload.connectorId, success: true, synced });
   } catch (err) {
-    log('connector OAuth callback error: %O', err);
-    const message = err instanceof Error ? err.message : 'internal_error';
-    return renderResultPage({ error: message, success: false });
+    log('connector OAuth callback failed: %s', err instanceof Error ? err.name : 'UnknownError');
+    return renderResultPage({ error: 'internal_error', success: false });
   }
 };
 
