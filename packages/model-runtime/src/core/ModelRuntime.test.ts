@@ -538,7 +538,13 @@ describe('ModelRuntime', () => {
 
   describe('hooks', () => {
     const createMockRuntime = (hooks?: ModelRuntimeHooks) => {
-      const mockRuntimeAI = { chat: vi.fn(), embeddings: vi.fn(), generateObject: vi.fn() } as any;
+      const mockRuntimeAI = {
+        chat: vi.fn(),
+        embeddings: vi.fn(),
+        generateObject: vi.fn(),
+        textToSpeech: vi.fn(),
+        transcribe: vi.fn(),
+      } as any;
       return { runtime: new ModelRuntime(mockRuntimeAI, hooks), mockRuntimeAI };
     };
 
@@ -865,6 +871,28 @@ describe('ModelRuntime', () => {
           options: undefined,
           payload: embeddingsPayload,
         });
+      });
+    });
+
+    describe('speech hooks', () => {
+      it('beforeTextToSpeech throwing aborts the provider call', async () => {
+        const beforeTextToSpeech = vi.fn().mockRejectedValue(new Error('model blocked'));
+        const { runtime, mockRuntimeAI } = createMockRuntime({ beforeTextToSpeech });
+
+        await expect(
+          runtime.textToSpeech({ input: 'hello', model: 'tts-1', voice: 'alloy' }),
+        ).rejects.toThrow('model blocked');
+        expect(mockRuntimeAI.textToSpeech).not.toHaveBeenCalled();
+      });
+
+      it('beforeTranscribe throwing aborts the provider call', async () => {
+        const beforeTranscribe = vi.fn().mockRejectedValue(new Error('model blocked'));
+        const { runtime, mockRuntimeAI } = createMockRuntime({ beforeTranscribe });
+
+        await expect(runtime.transcribe({ file: new Blob(), model: 'asr-1' })).rejects.toThrow(
+          'model blocked',
+        );
+        expect(mockRuntimeAI.transcribe).not.toHaveBeenCalled();
       });
     });
   });

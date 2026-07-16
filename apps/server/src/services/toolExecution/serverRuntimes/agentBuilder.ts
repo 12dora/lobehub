@@ -1,3 +1,5 @@
+import '@/server/globalConfig';
+
 import {
   AgentBuilderIdentifier,
   type GetAvailableModelsParams,
@@ -14,6 +16,11 @@ import { getPluginMode, upsertPluginMode } from '@lobechat/types';
 import { AgentModel } from '@/database/models/agent';
 import { PluginModel } from '@/database/models/plugin';
 import { AiInfraRepos } from '@/database/repositories/aiInfra';
+import {
+  getEmptyPlatformAiRuntimeState,
+  isPlatformManagedAiEnabled,
+  resolvePlatformAiRuntimeState,
+} from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
 import { DiscoverService } from '@/server/services/discover';
 
 import { type ToolExecutionContext, type ToolExecutionResult } from '../types';
@@ -47,15 +54,45 @@ export const agentBuilderRuntime: ServerRuntimeRegistration = {
         params: GetAvailableModelsParams,
       ): Promise<ToolExecutionResult> => {
         try {
-          const allProviders = await aiInfraRepos.getAiProviderList();
-          const enabledProviders = allProviders.filter((p) => p.enabled);
+          const managed = isPlatformManagedAiEnabled();
+          let enabledProviders: Array<{ id: string; name?: string; sort?: number | null }>;
+          let getEnabledChatModels: (providerId: string) => Promise<
+            Array<{
+              abilities?: unknown;
+              displayName?: string | null;
+              id: string;
+            }>
+          >;
 
-          // LobeHub provider first, then by sort order
-          enabledProviders.sort((a, b) => {
-            if (a.id === BRANDING_PROVIDER) return -1;
-            if (b.id === BRANDING_PROVIDER) return 1;
-            return (a.sort ?? 999) - (b.sort ?? 999);
-          });
+          if (managed) {
+            const runtimeState = await resolvePlatformAiRuntimeState({
+              db: context.serverDB!,
+              upstreamState: getEmptyPlatformAiRuntimeState(),
+            });
+            // The catalog adapter already applies provider.sort; preserve it exactly.
+            enabledProviders = runtimeState.enabledAiProviders;
+            getEnabledChatModels = async (providerId) =>
+              runtimeState.enabledAiModels.filter(
+                (model) =>
+                  model.enabled !== false &&
+                  model.providerId === providerId &&
+                  model.type === 'chat',
+              );
+          } else {
+            // Exact upstream path for instant rollback: preserve data source and ordering.
+            const allProviders = await aiInfraRepos.getAiProviderList();
+            enabledProviders = allProviders.filter((provider) => provider.enabled);
+            enabledProviders.sort((a, b) => {
+              if (a.id === BRANDING_PROVIDER) return -1;
+              if (b.id === BRANDING_PROVIDER) return 1;
+              return (a.sort ?? 999) - (b.sort ?? 999);
+            });
+            getEnabledChatModels = (providerId) =>
+              aiInfraRepos.getAiProviderModelList(providerId, {
+                enabled: true,
+                type: 'chat',
+              });
+          }
 
           // Apply optional provider filter
           const filteredProviders = params.providerId
@@ -83,10 +120,7 @@ export const agentBuilderRuntime: ServerRuntimeRegistration = {
           for (const provider of filteredProviders) {
             if (totalModels >= MAX_MODELS) break;
 
-            const enabledChatModels = await aiInfraRepos.getAiProviderModelList(provider.id, {
-              enabled: true,
-              type: 'chat',
-            });
+            const enabledChatModels = await getEnabledChatModels(provider.id);
 
             const remaining = MAX_MODELS - totalModels;
             const sliced = enabledChatModels.slice(0, remaining);
@@ -96,7 +130,15 @@ export const agentBuilderRuntime: ServerRuntimeRegistration = {
             providerResults.push({
               id: provider.id,
               models: sliced.map((m) => ({
-                abilities: (m.abilities as any) ?? undefined,
+                abilities:
+                  (m.abilities as
+                    | {
+                        files?: boolean;
+                        functionCall?: boolean;
+                        reasoning?: boolean;
+                        vision?: boolean;
+                      }
+                    | undefined) ?? undefined,
                 id: m.id,
                 name: m.displayName || m.id,
               })),

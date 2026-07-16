@@ -21,6 +21,25 @@ export { containsSensitiveMaterial, isSensitiveKey, REDACTED_PLACEHOLDER, redact
 
 export type { RedactOptions } from './types';
 
+const SIGNED_URL_QUERY_KEYS = new Set(['sig', 'signature', 'xamzsignature']);
+
+const isSensitiveUrlQueryKey = (key: string): boolean => {
+  const normalized = key.toLowerCase().replaceAll(/[^a-z0-9]/g, '');
+  return isSensitiveKey(key) || SIGNED_URL_QUERY_KEYS.has(normalized);
+};
+
+export const isCredentialBearingUrl = (value: string): boolean => {
+  try {
+    const url = new URL(value);
+    return (
+      Boolean(url.username || url.password) ||
+      [...url.searchParams.keys()].some(isSensitiveUrlQueryKey)
+    );
+  } catch {
+    return false;
+  }
+};
+
 /**
  * Deep-redact with optional benign-key allowlist (wrapper over M01 rules).
  * Direction: prefer over-redaction; only skip keys explicitly marked benign.
@@ -82,3 +101,10 @@ export const M07_BENIGN_KEY_CANDIDATES = [
   'max_tokens',
   'context_window_tokens',
 ] as const;
+
+const M07_BENIGN_KEYS = new Set(M07_BENIGN_KEY_CANDIDATES.map((key) => key.toLowerCase()));
+
+/** M07-only redaction option. Never use it for arbitrary user-selected keys. */
+export const M07_REDACTION_OPTIONS = {
+  isBenignKey: (key: string): boolean => M07_BENIGN_KEYS.has(key.toLowerCase()),
+};

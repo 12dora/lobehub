@@ -14,14 +14,18 @@ import { throwEnterpriseError } from '../guards/enterpriseErrors';
 import { withAnyPlatformPermission, withPlatformPermission } from '../guards/platformPermission';
 import { assertRecentReauth } from '../guards/reauth';
 import { AdminUserNotFoundError, AdminUserService } from '../services/adminUserService';
+import { ensureAiCatalogReadinessRegistered } from '../services/aiCatalog';
 import { EasyauthSyncService } from '../services/easyauthSync';
 import { PlatformAuditService } from '../services/platformAudit';
 import { LastSuperAdminError, PlatformRbacService } from '../services/platformRbac';
+import { adminAiModelsRouter, adminAiProvidersRouter } from './admin/aiCatalog';
 import { adminManagedResourcesRouter } from './admin/managedResources';
 import { adminSettingsRouter } from './admin/settings';
 import { adminUsersRouter } from './admin/users';
 
 const adminBase = authedProcedure.use(serverDatabase).use(withActiveUser());
+
+ensureAiCatalogReadinessRegistered();
 
 export const adminAuthRouter = router({
   /**
@@ -214,6 +218,8 @@ export const adminAuditRouter = router({
  * Mounted as `admin` on lambda root when wired.
  */
 export const adminRouter = router({
+  aiModels: adminAiModelsRouter,
+  aiProviders: adminAiProvidersRouter,
   audit: adminAuditRouter,
   auth: adminAuthRouter,
   easyauth: adminEasyauthRouter,

@@ -1654,6 +1654,20 @@ table platform_ai_models {
   }
 }
 
+table platform_ai_provider_secrets {
+  id text [pk, not null]
+  provider_id text [not null]
+  fingerprint text [not null]
+  ciphertext text [not null]
+  key_version integer [not null, default: 1]
+  created_at "timestamp with time zone" [not null, default: `now()`]
+
+  indexes {
+    (provider_id, fingerprint) [name: 'platform_ai_provider_secrets_provider_fingerprint_unique', unique]
+    provider_id [name: 'platform_ai_provider_secrets_provider_id_idx']
+  }
+}
+
 table platform_ai_providers {
   id text [pk, not null]
   provider_key varchar(64) [not null]
@@ -1670,6 +1684,14 @@ table platform_ai_providers {
   secret_key_version integer
   secret_updated_at "timestamp with time zone"
   secret_fingerprint text
+  connection_test_status varchar(16)
+  connection_test_latency_ms integer
+  connection_test_error_category varchar(32)
+  connection_test_sanitized_message varchar(500)
+  connection_tested_at "timestamp with time zone"
+  connection_tested_draft_token varchar(64)
+  connection_tested_revision integer
+  connection_test_attempt_id text
   sort integer [not null, default: 0]
   status varchar(32) [not null, default: 'draft']
   revision integer [not null, default: 0]

@@ -26,7 +26,14 @@ import { type ClientSecretPayload } from '@lobechat/types';
 import { ModelProvider } from 'model-bank';
 import { describe, expect, it, vi } from 'vitest';
 
-import { buildPayloadFromKeyVaults, initModelRuntimeWithUserPayload } from './index';
+import { PlatformSecretService } from '@/server/enterprise/security/secret';
+import { AiCatalogExecutionResolver } from '@/server/enterprise/services/aiCatalog';
+
+import {
+  buildPayloadFromKeyVaults,
+  initModelRuntimeFromDB,
+  initModelRuntimeWithUserPayload,
+} from './index';
 
 interface InspectableBedrockRuntime {
   client: {
@@ -552,6 +559,118 @@ describe('initModelRuntimeWithUserPayload method', () => {
       // 例如，如果默认使用 OpenAI:
       expect(runtime['_runtime']).toBeInstanceOf(LobeOpenAI);
     });
+  });
+});
+
+describe('initModelRuntimeFromDB managed model guard', () => {
+  it("trusts a custom provider's normalized runtimeProvider even when its key is builtin-shaped", async () => {
+    const previousFlag = process.env.ENABLE_PLATFORM_MANAGED_AI;
+    process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
+    vi.spyOn(PlatformSecretService, 'fromEnvOrThrowIfEnterprise').mockReturnValue(
+      {} as PlatformSecretService,
+    );
+    vi.spyOn(
+      AiCatalogExecutionResolver.prototype,
+      'resolveProviderExecutionConfig',
+    ).mockResolvedValue({
+      allowedModels: [{ modelKey: 'custom-chat', type: 'chat' }],
+      config: {},
+      keyVaults: { apiKey: 'custom-openai-secret' },
+      providerKey: 'azure',
+      revision: 1,
+      runtimeProvider: 'openai',
+    });
+
+    try {
+      const runtime = await initModelRuntimeFromDB({} as never, 'user-1', 'azure');
+      expect(runtime['_runtime']).toBeInstanceOf(LobeOpenAI);
+      expect(runtime['_runtime']).not.toBeInstanceOf(LobeAzureOpenAI);
+    } finally {
+      vi.restoreAllMocks();
+      if (previousFlag === undefined) delete process.env.ENABLE_PLATFORM_MANAGED_AI;
+      else process.env.ENABLE_PLATFORM_MANAGED_AI = previousFlag;
+    }
+  });
+
+  it('wires the published-model guard before chat and embeddings provider calls', async () => {
+    const previousFlag = process.env.ENABLE_PLATFORM_MANAGED_AI;
+    process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
+    vi.spyOn(PlatformSecretService, 'fromEnvOrThrowIfEnterprise').mockReturnValue(
+      {} as PlatformSecretService,
+    );
+    vi.spyOn(
+      AiCatalogExecutionResolver.prototype,
+      'resolveProviderExecutionConfig',
+    ).mockResolvedValue({
+      allowedModels: [
+        { modelKey: 'allow-chat', type: 'chat' },
+        { modelKey: 'allow-embedding', type: 'embedding' },
+      ],
+      config: {},
+      keyVaults: { apiKey: 'managed-runtime-secret' },
+      providerKey: 'openai',
+      revision: 1,
+      runtimeProvider: 'openai',
+    });
+
+    try {
+      const runtime = await initModelRuntimeFromDB({} as never, 'user-1', 'openai');
+      const providerChat = vi.fn().mockResolvedValue(new Response('ok'));
+      const providerEmbeddings = vi.fn().mockResolvedValue([[1]]);
+      runtime['_runtime'] = { chat: providerChat, embeddings: providerEmbeddings } as never;
+
+      await expect(runtime.chat({ messages: [], model: 'deny-chat' })).rejects.toMatchObject({
+        errorType: 'PLATFORM_AI_MODEL_NOT_PUBLISHED',
+      });
+      await expect(
+        runtime.embeddings({ input: 'blocked', model: 'deny-embedding' }),
+      ).rejects.toMatchObject({ errorType: 'PLATFORM_AI_MODEL_NOT_PUBLISHED' });
+      expect(providerChat).not.toHaveBeenCalled();
+      expect(providerEmbeddings).not.toHaveBeenCalled();
+
+      await runtime.chat({ messages: [], model: 'allow-chat' });
+      await runtime.embeddings({ input: 'allowed', model: 'allow-embedding' });
+      expect(providerChat).toHaveBeenCalledOnce();
+      expect(providerEmbeddings).toHaveBeenCalledOnce();
+    } finally {
+      vi.restoreAllMocks();
+      if (previousFlag === undefined) delete process.env.ENABLE_PLATFORM_MANAGED_AI;
+      else process.env.ENABLE_PLATFORM_MANAGED_AI = previousFlag;
+    }
+  });
+
+  it('preserves the exact upstream no-allowlist path while managed AI is disabled', async () => {
+    const previousFlag = process.env.ENABLE_PLATFORM_MANAGED_AI;
+    delete process.env.ENABLE_PLATFORM_MANAGED_AI;
+    const providerRow = {
+      enabled: true,
+      fetchOnClient: false,
+      id: 'openai',
+      keyVaults: null,
+      settings: {},
+      source: 'builtin',
+    };
+    const db = {
+      select: () => ({
+        from: () => ({
+          where: () => ({ limit: async () => [providerRow] }),
+        }),
+      }),
+    };
+
+    try {
+      const runtime = await initModelRuntimeFromDB(db as never, 'user-1', 'openai');
+      const providerChat = vi.fn().mockResolvedValue(new Response('ok'));
+      runtime['_runtime'] = { chat: providerChat } as never;
+
+      await expect(
+        runtime.chat({ messages: [], model: 'not-in-platform-catalog' }),
+      ).resolves.toBeInstanceOf(Response);
+      expect(providerChat).toHaveBeenCalledOnce();
+    } finally {
+      if (previousFlag === undefined) delete process.env.ENABLE_PLATFORM_MANAGED_AI;
+      else process.env.ENABLE_PLATFORM_MANAGED_AI = previousFlag;
+    }
   });
 });
 

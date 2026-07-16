@@ -3,8 +3,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   containsSensitiveMaterial,
+  isCredentialBearingUrl,
   isSensitiveKey,
   M07_BENIGN_KEY_CANDIDATES,
+  M07_REDACTION_OPTIONS,
   redactDeep,
   REDACTED_PLACEHOLDER,
   redactForAudit,
@@ -13,6 +15,22 @@ import {
 } from './index';
 
 describe('enterprise redaction entry', () => {
+  it('detects signed URL query keys without globally classifying signature fields', () => {
+    expect(isSensitiveKey('signature')).toBe(false);
+    for (const key of [
+      'signature',
+      'SIG',
+      'X-Amz-Signature',
+      'x_amz_signature',
+      'X%2DAmz%2DSignature',
+    ]) {
+      expect(isCredentialBearingUrl(`https://example.test/file?${key}=signed-value`)).toBe(true);
+    }
+    expect(isCredentialBearingUrl('https://example.test/file?documentSignature=public')).toBe(
+      false,
+    );
+  });
+
   it('re-exports M01 fact-source helpers', () => {
     expect(REDACTED_PLACEHOLDER).toBe('[REDACTED]');
     expect(isSensitiveKey('apiKey')).toBe(true);
@@ -84,5 +102,26 @@ describe('enterprise redaction entry', () => {
     );
     expect(out.note).toBe('[REDACTED]');
     expect(out.token).toBe('[REDACTED]');
+  });
+
+  it('exports the narrow M07 numeric token-key allowlist', () => {
+    expect(
+      redactForAudit(
+        {
+          apiKey: 'fake',
+          contextWindowTokens: 128_000,
+          maxTokens: 4096,
+          secretConfigured: true,
+          secretFingerprint: 'sha256:safe-metadata',
+        },
+        M07_REDACTION_OPTIONS,
+      ),
+    ).toEqual({
+      apiKey: '[REDACTED]',
+      contextWindowTokens: 128_000,
+      maxTokens: 4096,
+      secretConfigured: '[REDACTED]',
+      secretFingerprint: '[REDACTED]',
+    });
   });
 });

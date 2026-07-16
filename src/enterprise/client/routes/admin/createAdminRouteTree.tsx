@@ -23,6 +23,15 @@ const SettingsPolicyPage = lazy(
 const ManagedResourcesPolicyPage = lazy(
   () => import('@/enterprise/client/features/admin/managedResources/ManagedResourcesPolicyPage'),
 );
+const AiProviderListPage = lazy(
+  () => import('@/enterprise/client/features/admin/ai/providers/ProviderListPage'),
+);
+const AiProviderDetailPage = lazy(
+  () => import('@/enterprise/client/features/admin/ai/providers/ProviderDetailPage'),
+);
+const AiModelListPage = lazy(
+  () => import('@/enterprise/client/features/admin/ai/models/ModelListPage'),
+);
 
 /** Honest localized loading surface for lazy admin pages (no blank frame). */
 const AdminLazyFallback = () => {
@@ -53,6 +62,15 @@ const resolveAdminLeafElement = (id: string): ReactNode => {
     }
     case 'managed-resources': {
       return withLazy(<ManagedResourcesPolicyPage />);
+    }
+    case 'ai-providers': {
+      return withLazy(<AiProviderListPage />);
+    }
+    case 'ai-provider-detail': {
+      return withLazy(<AiProviderDetailPage />);
+    }
+    case 'ai-models': {
+      return withLazy(<AiModelListPage />);
     }
     default: {
       return <PlaceholderPage />;

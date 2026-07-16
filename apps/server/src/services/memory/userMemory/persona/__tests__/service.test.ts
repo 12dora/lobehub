@@ -2,10 +2,14 @@
 import { type LobeChatDatabase } from '@lobechat/database';
 import { users, userSettings } from '@lobechat/database/schemas';
 import { getTestDB } from '@lobechat/database/test-utils';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { ModelRuntime } from '@lobechat/model-runtime';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { UserPersonaModel } from '@/database/models/userMemory/persona';
 import type * as AiInfraReposModule from '@/database/repositories/aiInfra';
+import { platformResourceRevisions } from '@/database/schemas';
+import { PlatformSecretService } from '@/server/enterprise/security/secret';
+import { AiCatalogExecutionResolver } from '@/server/enterprise/services/aiCatalog';
 import { resolveRuntimeAgentConfig } from '@/server/services/memory/userMemory/extract';
 
 import { UserPersonaService } from '../service';
@@ -75,10 +79,13 @@ vi.mock('@/server/services/memory/userMemory/extract', () => ({
 
 let db: LobeChatDatabase;
 const userId = 'user-persona-service';
+const originalManagedAiFlag = process.env.ENABLE_PLATFORM_MANAGED_AI;
 
 beforeEach(async () => {
+  delete process.env.ENABLE_PLATFORM_MANAGED_AI;
   toolCall.mockClear();
   aiInfraMocks.getAiProviderRuntimeState.mockReset();
+  vi.mocked(resolveRuntimeAgentConfig).mockClear();
   aiInfraMocks.tryMatchingModelFrom.mockReset();
   aiInfraMocks.tryMatchingProviderFrom.mockReset();
   aiInfraMocks.tryMatchingModelFrom.mockResolvedValue('openai');
@@ -96,8 +103,14 @@ beforeEach(async () => {
   });
   db = await getTestDB();
 
+  await db.delete(platformResourceRevisions);
   await db.delete(users);
   await db.insert(users).values({ id: userId });
+});
+
+afterAll(() => {
+  if (originalManagedAiFlag === undefined) delete process.env.ENABLE_PLATFORM_MANAGED_AI;
+  else process.env.ENABLE_PLATFORM_MANAGED_AI = originalManagedAiFlag;
 });
 
 describe('UserPersonaService', () => {
@@ -122,6 +135,115 @@ describe('UserPersonaService', () => {
     const model = new UserPersonaModel(db, userId);
     const latest = await model.getLatestPersonaDocument();
     expect(latest?.version).toBe(1);
+  });
+
+  it('passes a one-shot platform secret to the runtime without exposing it', async () => {
+    process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
+    await db.insert(platformResourceRevisions).values({
+      checksum: 'persona-published-model',
+      payload: {
+        models: [{ enabled: true, modelKey: 'gpt-mock', type: 'chat' }],
+        provider: {
+          displayName: 'OpenAI',
+          enabled: true,
+          providerKey: 'openai',
+          source: 'builtin',
+        },
+      },
+      resourceId: 'persona-provider',
+      resourceType: 'provider',
+      revision: 1,
+      status: 'published',
+    });
+    const fakeSecret = 'platform-persona-secret-not-for-output';
+    const secretFactory = vi
+      .spyOn(PlatformSecretService, 'fromEnvOrThrowIfEnterprise')
+      .mockReturnValue({} as PlatformSecretService);
+    const execution = vi
+      .spyOn(AiCatalogExecutionResolver.prototype, 'resolveProviderExecutionConfig')
+      .mockResolvedValue({
+        allowedModels: [{ modelKey: 'gpt-mock', type: 'chat' }],
+        config: {},
+        keyVaults: { apiKey: fakeSecret },
+        providerKey: 'openai',
+        revision: 1,
+        runtimeProvider: 'openai',
+      });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const initialize = vi
+      .spyOn(ModelRuntime, 'initializeWithProvider')
+      .mockReturnValue({} as ModelRuntime);
+
+    try {
+      const service = new UserPersonaService(db);
+      const result = await service.composeWriting({ userId, username: 'User' });
+
+      expect(execution).toHaveBeenCalledWith('openai');
+      expect(resolveRuntimeAgentConfig).not.toHaveBeenCalled();
+      expect(initialize).toHaveBeenCalledWith(
+        'openai',
+        expect.objectContaining({ apiKey: fakeSecret }),
+        expect.objectContaining({ beforeChat: expect.any(Function) }),
+      );
+      const managedHooks = initialize.mock.calls[0][2];
+      await expect(
+        managedHooks?.beforeChat?.({ messages: [], model: 'not-published' }),
+      ).rejects.toMatchObject({ errorType: 'PLATFORM_AI_MODEL_NOT_PUBLISHED' });
+      expect(JSON.stringify(result)).not.toContain(fakeSecret);
+      expect(JSON.stringify(aiInfraMocks.getAiProviderRuntimeState.mock.results)).not.toContain(
+        fakeSecret,
+      );
+      expect(JSON.stringify([...warn.mock.calls, ...error.mock.calls])).not.toContain(fakeSecret);
+    } finally {
+      secretFactory.mockRestore();
+      execution.mockRestore();
+      warn.mockRestore();
+      error.mockRestore();
+      initialize.mockRestore();
+    }
+  });
+
+  it('rejects an unpublished persona model before secret resolution or SDK initialization', async () => {
+    const previousFlag = process.env.ENABLE_PLATFORM_MANAGED_AI;
+    process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
+    await db.insert(platformResourceRevisions).values({
+      checksum: 'persona-wrong-type-model',
+      payload: {
+        models: [{ enabled: true, modelKey: 'gpt-mock', type: 'image' }],
+        provider: {
+          displayName: 'OpenAI',
+          enabled: true,
+          providerKey: 'openai',
+          source: 'builtin',
+        },
+      },
+      resourceId: 'persona-provider',
+      resourceType: 'provider',
+      revision: 1,
+      status: 'published',
+    });
+    const secretFactory = vi.spyOn(PlatformSecretService, 'fromEnvOrThrowIfEnterprise');
+    const execution = vi.spyOn(
+      AiCatalogExecutionResolver.prototype,
+      'resolveProviderExecutionConfig',
+    );
+    const initialize = vi.spyOn(ModelRuntime, 'initializeWithProvider');
+
+    try {
+      await expect(
+        new UserPersonaService(db).composeWriting({ userId, username: 'User' }),
+      ).rejects.toMatchObject({ code: 'PLATFORM_AI_MODEL_NOT_PUBLISHED' });
+      expect(secretFactory).not.toHaveBeenCalled();
+      expect(execution).not.toHaveBeenCalled();
+      expect(initialize).not.toHaveBeenCalled();
+    } finally {
+      if (previousFlag === undefined) delete process.env.ENABLE_PLATFORM_MANAGED_AI;
+      else process.env.ENABLE_PLATFORM_MANAGED_AI = previousFlag;
+      secretFactory.mockRestore();
+      execution.mockRestore();
+      initialize.mockRestore();
+    }
   });
 
   it('passes existing persona baseline on subsequent runs', async () => {

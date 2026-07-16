@@ -9,6 +9,11 @@ import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
 
 import { GET } from './route';
 
+const bridgeMocks = vi.hoisted(() => ({
+  isPlatformManagedAiEnabled: vi.fn(),
+  listPlatformPublishedModels: vi.fn(),
+}));
+
 vi.mock('@/app/(backend)/middleware/auth/utils', () => ({
   checkAuthMethod: vi.fn(),
 }));
@@ -24,6 +29,7 @@ vi.mock('@/auth', () => ({
 vi.mock('@/server/modules/ModelRuntime', () => ({
   initModelRuntimeFromDB: vi.fn(),
 }));
+vi.mock('@/server/modules/ModelRuntime/platformAiRuntimeBridge', () => bridgeMocks);
 
 let request: Request;
 
@@ -33,6 +39,7 @@ beforeEach(() => {
   request = new Request(new URL('https://test.com'), {
     method: 'GET',
   });
+  bridgeMocks.isPlatformManagedAiEnabled.mockReturnValue(false);
 
   // Default: valid session
   vi.mocked(auth.api.getSession).mockResolvedValue({
@@ -218,6 +225,31 @@ describe('GET handler', () => {
   });
 
   describe('success cases', () => {
+    it('returns only published catalog models without initializing a provider runtime', async () => {
+      bridgeMocks.isPlatformManagedAiEnabled.mockReturnValue(true);
+      bridgeMocks.listPlatformPublishedModels.mockResolvedValue([
+        {
+          abilities: {},
+          enabled: true,
+          id: 'published-only',
+          providerId: 'openai',
+          type: 'chat',
+        },
+      ]);
+
+      const response = await GET(request, { params: Promise.resolve({ provider: 'openai' }) });
+
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual([
+        expect.objectContaining({ id: 'published-only', providerId: 'openai' }),
+      ]);
+      expect(initModelRuntimeFromDB).not.toHaveBeenCalled();
+      expect(bridgeMocks.listPlatformPublishedModels).toHaveBeenCalledWith(
+        expect.any(Object),
+        'openai',
+      );
+    });
+
     it('should return model list on success', async () => {
       const mockParams = Promise.resolve({ provider: 'openai' });
 

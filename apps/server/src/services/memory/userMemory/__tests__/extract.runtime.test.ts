@@ -1,10 +1,13 @@
+import { ModelRuntime } from '@lobechat/model-runtime';
 import { type AiProviderRuntimeState } from '@lobechat/types';
 import { type EnabledAiModel } from 'model-bank';
 import { describe, expect, it, vi } from 'vitest';
 
+import { PlatformSecretService } from '@/server/enterprise/security/secret';
+import { AiCatalogExecutionResolver } from '@/server/enterprise/services/aiCatalog';
 import { type MemoryExtractionPrivateConfig } from '@/server/globalConfig/parseMemoryExtractionConfig';
 
-import { makeTaskErrorItem, MemoryExtractionExecutor } from '../extract';
+import { makeTaskErrorItem, MemoryExtractionExecutor, resolveRuntimeAgentConfig } from '../extract';
 
 const createRuntimeState = (models: EnabledAiModel[], keyVaults: Record<string, any>) =>
   ({
@@ -67,6 +70,170 @@ const resolveRuntimeKeyVaults = async (
 };
 
 describe('MemoryExtractionExecutor.resolveRuntimeKeyVaults', () => {
+  it('blocks unpublished managed memory models before the provider SDK', async () => {
+    const runtime = resolveRuntimeAgentConfig(
+      { model: 'allow-memory', provider: 'openai' },
+      { openai: { apiKey: 'platform-memory-secret' } },
+      {
+        managedExecutions: {
+          openai: {
+            allowedModels: [{ modelKey: 'allow-memory', type: 'chat' }],
+            config: {},
+            keyVaults: { apiKey: 'platform-memory-secret' },
+            providerKey: 'openai',
+            revision: 1,
+            runtimeProvider: 'openai',
+          },
+        },
+        userId: 'memory-user',
+      },
+    );
+    const providerChat = vi.fn().mockResolvedValue(new Response('ok'));
+    runtime['_runtime'] = { chat: providerChat } as never;
+
+    await expect(
+      runtime.chat({ messages: [], model: 'disabled-or-unknown' }),
+    ).rejects.toMatchObject({ errorType: 'PLATFORM_AI_MODEL_NOT_PUBLISHED' });
+    expect(providerChat).not.toHaveBeenCalled();
+    await expect(runtime.chat({ messages: [], model: 'allow-memory' })).resolves.toBeInstanceOf(
+      Response,
+    );
+    expect(providerChat).toHaveBeenCalledOnce();
+  });
+
+  it('uses one-shot platform execution secrets without mutating the public state', async () => {
+    const previousFlag = process.env.ENABLE_PLATFORM_MANAGED_AI;
+    process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
+    const secretFactory = vi
+      .spyOn(PlatformSecretService, 'fromEnvOrThrowIfEnterprise')
+      .mockReturnValue({} as PlatformSecretService);
+    const execution = vi
+      .spyOn(AiCatalogExecutionResolver.prototype, 'resolveProviderExecutionConfig')
+      .mockImplementation(async (providerKey) => ({
+        allowedModels: [],
+        config: {},
+        keyVaults: { apiKey: `platform-secret-${providerKey}` },
+        providerKey,
+        revision: 1,
+        runtimeProvider: providerKey,
+      }));
+    const executor = createExecutor();
+    const runtimeState = createRuntimeState(
+      [
+        { abilities: {}, enabled: true, id: 'gate-2', providerId: 'provider-b', type: 'chat' },
+        {
+          abilities: {},
+          enabled: true,
+          id: 'embed-1',
+          providerId: 'provider-e',
+          type: 'embedding',
+        },
+        ...['layer-act', 'layer-ctx', 'layer-exp', 'layer-id', 'layer-pref'].map((id) => ({
+          abilities: {},
+          enabled: true,
+          id,
+          providerId: 'provider-l',
+          type: 'chat' as const,
+        })),
+      ],
+      {
+        'provider-b': { apiKey: 'public-state-must-not-win' },
+        'provider-e': {},
+        'provider-l': {},
+      },
+    );
+
+    try {
+      const keyVaults = await resolveRuntimeKeyVaults(executor, runtimeState);
+      expect(keyVaults).toEqual({
+        'provider-b': { apiKey: 'platform-secret-provider-b' },
+        'provider-e': { apiKey: 'platform-secret-provider-e' },
+        'provider-l': { apiKey: 'platform-secret-provider-l' },
+      });
+      expect(execution).toHaveBeenCalledTimes(3);
+      expect(JSON.stringify(runtimeState)).not.toContain('platform-secret');
+      expect(secretFactory).toHaveBeenCalledTimes(3);
+    } finally {
+      process.env.ENABLE_PLATFORM_MANAGED_AI = previousFlag;
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('rejects an unpublished managed model before secret resolution or SDK initialization', async () => {
+    const previousFlag = process.env.ENABLE_PLATFORM_MANAGED_AI;
+    process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
+    const secretFactory = vi.spyOn(PlatformSecretService, 'fromEnvOrThrowIfEnterprise');
+    const execution = vi.spyOn(
+      AiCatalogExecutionResolver.prototype,
+      'resolveProviderExecutionConfig',
+    );
+    const initialize = vi.spyOn(ModelRuntime, 'initializeWithProvider');
+    const executor = createExecutor();
+    const runtimeState = createRuntimeState(
+      [
+        { abilities: {}, enabled: true, id: 'gate-2', providerId: 'provider-b', type: 'image' },
+        {
+          abilities: {},
+          enabled: true,
+          id: 'embed-1',
+          providerId: 'provider-e',
+          type: 'embedding',
+        },
+        { abilities: {}, enabled: true, id: 'layer-1', providerId: 'provider-l', type: 'chat' },
+      ],
+      {},
+    );
+
+    try {
+      await expect(resolveRuntimeKeyVaults(executor, runtimeState)).rejects.toMatchObject({
+        code: 'PLATFORM_AI_MODEL_NOT_PUBLISHED',
+      });
+      expect(secretFactory).not.toHaveBeenCalled();
+      expect(execution).not.toHaveBeenCalled();
+      expect(initialize).not.toHaveBeenCalled();
+    } finally {
+      process.env.ENABLE_PLATFORM_MANAGED_AI = previousFlag;
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('keeps the upstream vault path exact while managed AI is disabled', async () => {
+    const previousFlag = process.env.ENABLE_PLATFORM_MANAGED_AI;
+    delete process.env.ENABLE_PLATFORM_MANAGED_AI;
+    const secretFactory = vi.spyOn(PlatformSecretService, 'fromEnvOrThrowIfEnterprise');
+    const executor = createExecutor();
+    const runtimeState = createRuntimeState(
+      [
+        { abilities: {}, enabled: true, id: 'gate-2', providerId: 'provider-b', type: 'chat' },
+        {
+          abilities: {},
+          enabled: true,
+          id: 'embed-1',
+          providerId: 'provider-e',
+          type: 'embedding',
+        },
+        { abilities: {}, enabled: true, id: 'layer-1', providerId: 'provider-l', type: 'chat' },
+      ],
+      {
+        'provider-b': { apiKey: 'user-gate-key' },
+        'provider-e': { apiKey: 'user-embedding-key' },
+        'provider-l': { apiKey: 'user-layer-key' },
+      },
+    );
+
+    try {
+      expect(await resolveRuntimeKeyVaults(executor, runtimeState)).toEqual({
+        'provider-b': { apiKey: 'user-gate-key' },
+        'provider-e': { apiKey: 'user-embedding-key' },
+        'provider-l': { apiKey: 'user-layer-key' },
+      });
+      expect(secretFactory).not.toHaveBeenCalled();
+    } finally {
+      process.env.ENABLE_PLATFORM_MANAGED_AI = previousFlag;
+      vi.restoreAllMocks();
+    }
+  });
+
   it('drops fallback credentials when user memory provider is overridden', () => {
     const executor = createExecutor({
       embedding: {
