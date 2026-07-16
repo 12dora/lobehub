@@ -1,4 +1,4 @@
-import { and, asc, eq, gt, ilike, inArray, max, or } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, ilike, inArray, lt, max, or } from 'drizzle-orm';
 
 import {
   type NewPlatformAiModel,
@@ -91,6 +91,76 @@ export class PlatformAiCatalogRepository {
     return row;
   };
 
+  getLatestPublishedProviderRevision = async (
+    providerId: string,
+  ): Promise<PlatformResourceRevisionItem | undefined> => {
+    const rows = await this.db
+      .select()
+      .from(platformResourceRevisions)
+      .where(
+        and(
+          eq(platformResourceRevisions.resourceType, 'provider'),
+          eq(platformResourceRevisions.resourceId, providerId),
+          eq(platformResourceRevisions.status, 'published'),
+        ),
+      )
+      .orderBy(desc(platformResourceRevisions.revision))
+      .limit(1);
+    return rows[0];
+  };
+
+  getProviderRevision = async (
+    providerId: string,
+    revision: number,
+  ): Promise<PlatformResourceRevisionItem | undefined> => {
+    const rows = await this.db
+      .select()
+      .from(platformResourceRevisions)
+      .where(
+        and(
+          eq(platformResourceRevisions.resourceType, 'provider'),
+          eq(platformResourceRevisions.resourceId, providerId),
+          eq(platformResourceRevisions.revision, revision),
+        ),
+      )
+      .limit(1);
+    return rows[0];
+  };
+
+  listProviderRevisionMetadata = async (params: {
+    beforeRevision?: number;
+    limit?: number;
+    providerId: string;
+  }) => {
+    const limit = Math.min(params.limit ?? 50, 100);
+    const conditions = [
+      eq(platformResourceRevisions.resourceType, 'provider'),
+      eq(platformResourceRevisions.resourceId, params.providerId),
+    ];
+    if (params.beforeRevision) {
+      conditions.push(lt(platformResourceRevisions.revision, params.beforeRevision));
+    }
+    const rows = await this.db
+      .select({
+        checksum: platformResourceRevisions.checksum,
+        comment: platformResourceRevisions.comment,
+        publishedAt: platformResourceRevisions.publishedAt,
+        publishedBy: platformResourceRevisions.publishedBy,
+        revision: platformResourceRevisions.revision,
+        status: platformResourceRevisions.status,
+      })
+      .from(platformResourceRevisions)
+      .where(and(...conditions))
+      .orderBy(desc(platformResourceRevisions.revision))
+      .limit(limit + 1);
+    const hasMore = rows.length > limit;
+    const items = hasMore ? rows.slice(0, limit) : rows;
+    return {
+      items,
+      nextCursor: hasMore ? (items.at(-1)?.revision ?? null) : null,
+    };
+  };
+
   listLatestPublishedProviderRevisions = async (): Promise<PlatformResourceRevisionItem[]> => {
     const latest = this.db
       .select({
@@ -98,12 +168,7 @@ export class PlatformAiCatalogRepository {
         latestRevision: max(platformResourceRevisions.revision).as('latest_revision'),
       })
       .from(platformResourceRevisions)
-      .where(
-        and(
-          eq(platformResourceRevisions.resourceType, 'provider'),
-          eq(platformResourceRevisions.status, 'published'),
-        ),
-      )
+      .where(and(eq(platformResourceRevisions.resourceType, 'provider')))
       .groupBy(platformResourceRevisions.resourceId)
       .as('latest_provider_revision');
 
@@ -131,6 +196,7 @@ export class PlatformAiCatalogRepository {
           eq(platformResourceRevisions.revision, latest.latestRevision),
         ),
       )
+      .where(eq(platformResourceRevisions.status, 'published'))
       .orderBy(asc(platformResourceRevisions.resourceId));
   };
 

@@ -206,6 +206,34 @@ export const adminAiProviderRevisionOutputSchema = z
   })
   .strict();
 
+export const adminAiProviderRevisionHistoryInputSchema = z
+  .object({
+    beforeRevision: z.number().int().positive().optional(),
+    id: z.string().min(1),
+    limit: z.number().int().min(1).max(100).default(50),
+  })
+  .strict();
+
+export const adminAiProviderRevisionHistoryOutputSchema = z
+  .object({
+    items: z.array(
+      z
+        .object({
+          checksum: z.string().length(64),
+          comment: z.string().nullable(),
+          publishedAt: z.date().nullable(),
+          publishedBy: z.string().nullable(),
+          revision: z.number().int().positive(),
+          status: z.enum(['draft', 'published', 'archived', 'rolled_back']),
+        })
+        .strict(),
+    ),
+    nextCursor: z.number().int().positive().nullable(),
+  })
+  .strict();
+
+export const adminAiProviderMutationOutputSchema = aiProviderDraftSchema;
+
 const modelDraftFieldsSchema = z
   .object({
     abilities: boundedJsonObjectSchema.optional(),
@@ -302,6 +330,14 @@ export const adminAiModelDependentsOutputSchema = z
         .strict(),
     ),
   })
+  .strict();
+
+export const adminAiModelMutationOutputSchema = aiModelDraftSchema;
+
+export const adminAiModelDeleteOutputSchema = z.object({ deleted: z.literal(true) }).strict();
+
+export const adminAiModelReorderOutputSchema = z
+  .object({ draftToken: z.string().length(64), updated: z.number().int().nonnegative() })
   .strict();
 
 export type AiModelDraft = z.infer<typeof aiModelDraftSchema>;
