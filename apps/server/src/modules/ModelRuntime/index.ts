@@ -100,6 +100,10 @@ export const hasModelRuntimeEnvironmentFallback = (
     case ModelProvider.Github: {
       return Boolean(env.GITHUB_TOKEN);
     }
+    case ModelProvider.GithubCopilot:
+    case ModelProvider.LobeHub: {
+      return false;
+    }
     case ModelProvider.Ollama: {
       return Boolean(env.OLLAMA_PROXY_URL);
     }
@@ -479,7 +483,7 @@ export const initModelRuntimeFromDB = async (
 ): Promise<ModelRuntime> => {
   if (isPlatformManagedAiEnabled()) {
     const providerConfig = await resolvePlatformAiExecutionConfig(db, provider);
-    const runtimeProvider = resolveModelRuntimeProvider(provider, providerConfig.runtimeProvider);
+    const runtimeProvider = providerConfig.runtimeProvider;
     const payload = buildPayloadFromKeyVaults(
       providerConfig.keyVaults as ProviderKeyVaults,
       runtimeProvider,

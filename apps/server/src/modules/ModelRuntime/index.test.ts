@@ -563,6 +563,35 @@ describe('initModelRuntimeWithUserPayload method', () => {
 });
 
 describe('initModelRuntimeFromDB managed model guard', () => {
+  it("trusts a custom provider's normalized runtimeProvider even when its key is builtin-shaped", async () => {
+    const previousFlag = process.env.ENABLE_PLATFORM_MANAGED_AI;
+    process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
+    vi.spyOn(PlatformSecretService, 'fromEnvOrThrowIfEnterprise').mockReturnValue(
+      {} as PlatformSecretService,
+    );
+    vi.spyOn(
+      AiCatalogExecutionResolver.prototype,
+      'resolveProviderExecutionConfig',
+    ).mockResolvedValue({
+      allowedModels: [{ modelKey: 'custom-chat', type: 'chat' }],
+      config: {},
+      keyVaults: { apiKey: 'custom-openai-secret' },
+      providerKey: 'azure',
+      revision: 1,
+      runtimeProvider: 'openai',
+    });
+
+    try {
+      const runtime = await initModelRuntimeFromDB({} as never, 'user-1', 'azure');
+      expect(runtime['_runtime']).toBeInstanceOf(LobeOpenAI);
+      expect(runtime['_runtime']).not.toBeInstanceOf(LobeAzureOpenAI);
+    } finally {
+      vi.restoreAllMocks();
+      if (previousFlag === undefined) delete process.env.ENABLE_PLATFORM_MANAGED_AI;
+      else process.env.ENABLE_PLATFORM_MANAGED_AI = previousFlag;
+    }
+  });
+
   it('wires the published-model guard before chat and embeddings provider calls', async () => {
     const previousFlag = process.env.ENABLE_PLATFORM_MANAGED_AI;
     process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
