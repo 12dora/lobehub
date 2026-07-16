@@ -2,7 +2,7 @@
 
 import { Flexbox, Text } from '@lobehub/ui';
 import { confirmModal, toast } from '@lobehub/ui/base-ui';
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
@@ -18,6 +18,7 @@ import {
   resolveAiProviderPrimaryAction,
 } from '../controller';
 import { openModelEditorModal } from '../models/openModelEditorModal';
+import { commitThenScheduleRefresh } from '../mutationRefresh';
 import { openSecretMutationModal } from '../providers/openSecretMutationModal';
 import type {
   AdminAiModelCreateInput,
@@ -53,6 +54,9 @@ export const useAiProviderActions = ({
 }: UseAiProviderActionsParams) => {
   const { t } = useTranslation('admin');
   const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
+  const [refreshFailed, setRefreshFailed] = useState(false);
+  const [refreshRetrying, setRefreshRetrying] = useState(false);
+  const refreshGenerationRef = useRef(0);
 
   const errorText = useCallback(
     (cause: unknown) => {
@@ -80,13 +84,45 @@ export const useAiProviderActions = ({
     [data.draft.id, editor, errorText],
   );
 
-  const refresh = useCallback(
-    async (clearTest = true) => {
-      if (clearTest) editor.setTestResult(null);
-      await refreshAdminAiProvider(data.draft.id);
+  const commitAndRefresh = useCallback(
+    async <Result,>(params: {
+      clearTest?: boolean;
+      commit: () => Promise<Result>;
+      onCommitted?: (result: Result) => void;
+    }) => {
+      const generation = ++refreshGenerationRef.current;
+      return commitThenScheduleRefresh({
+        commit: params.commit,
+        refresh: () => refreshAdminAiProvider(data.draft.id),
+        onCommitted: (result) => {
+          if (params.clearTest !== false) editor.setTestResult(null);
+          editor.setActionError(null);
+          setRefreshFailed(false);
+          params.onCommitted?.(result);
+        },
+        onRefreshed: () => {
+          if (refreshGenerationRef.current === generation) setRefreshFailed(false);
+        },
+        onRefreshFailed: () => {
+          if (refreshGenerationRef.current === generation) setRefreshFailed(true);
+        },
+      });
     },
     [data.draft.id, editor],
   );
+
+  const retryRefresh = useCallback(async () => {
+    const generation = ++refreshGenerationRef.current;
+    setRefreshRetrying(true);
+    try {
+      await refreshAdminAiProvider(data.draft.id);
+      if (refreshGenerationRef.current === generation) setRefreshFailed(false);
+    } catch {
+      if (refreshGenerationRef.current === generation) setRefreshFailed(true);
+    } finally {
+      if (refreshGenerationRef.current === generation) setRefreshRetrying(false);
+    }
+  }, [data.draft.id]);
 
   const openSave = useCallback(() => {
     if (
@@ -113,10 +149,14 @@ export const useAiProviderActions = ({
       onSubmit: async (input) => {
         editor.setSaveState('saving');
         try {
-          await adminAiCatalogService.updateProvider(input as AdminAiProviderUpdateDraftInput);
-          editor.markSaved();
-          await refresh(false);
-          toast.success(t('aiCatalog.toast.draftSaved'));
+          await commitAndRefresh({
+            commit: () =>
+              adminAiCatalogService.updateProvider(input as AdminAiProviderUpdateDraftInput),
+            onCommitted: () => {
+              editor.markSaved();
+              toast.success(t('aiCatalog.toast.draftSaved'));
+            },
+          });
         } catch (cause) {
           editor.setSaveState('failed');
           await handleMutationError(cause);
@@ -127,7 +167,7 @@ export const useAiProviderActions = ({
       targetLabel: data.draft.displayName,
       title: t('aiCatalog.actions.save.title'),
     });
-  }, [authMethod, data, editor, handleMutationError, permissions.canUpdateProvider, refresh, t]);
+  }, [authMethod, commitAndRefresh, data, editor, handleMutationError, permissions, t]);
 
   const openTest = useCallback(() => {
     if (editor.dirty || editor.conflict || !editor.valid || !permissions.canTestProvider) return;
@@ -137,14 +177,16 @@ export const useAiProviderActions = ({
       description: t('aiCatalog.actions.test.desc'),
       onSubmit: async (input) => {
         try {
-          const result = await adminAiCatalogService.testProvider(
-            input as AdminAiProviderTestInput,
-          );
-          editor.setActionError(null);
-          editor.setTestResult(result);
-          toast[result.status === 'success' ? 'success' : 'warning'](
-            t(`aiCatalog.toast.test.${result.status}` as never),
-          );
+          await commitAndRefresh({
+            clearTest: false,
+            commit: () => adminAiCatalogService.testProvider(input as AdminAiProviderTestInput),
+            onCommitted: (result) => {
+              editor.setTestResult(result);
+              toast[result.status === 'success' ? 'success' : 'warning'](
+                t(`aiCatalog.toast.test.${result.status}` as never),
+              );
+            },
+          });
         } catch (cause) {
           await handleMutationError(cause);
           throw cause;
@@ -154,7 +196,7 @@ export const useAiProviderActions = ({
       targetLabel: data.draft.displayName,
       title: t('aiCatalog.actions.test.title'),
     });
-  }, [authMethod, data.draft, editor, handleMutationError, permissions.canTestProvider, t]);
+  }, [authMethod, commitAndRefresh, data.draft, editor, handleMutationError, permissions, t]);
 
   const openPublish = useCallback(() => {
     if (
@@ -178,10 +220,11 @@ export const useAiProviderActions = ({
       impact: t('aiCatalog.actions.publish.impact'),
       onSubmit: async (input) => {
         try {
-          await adminAiCatalogService.publishProvider(input as AdminAiProviderPublishInput);
-          editor.setActionError(null);
-          await refresh();
-          toast.success(t('aiCatalog.toast.published'));
+          await commitAndRefresh({
+            commit: () =>
+              adminAiCatalogService.publishProvider(input as AdminAiProviderPublishInput),
+            onCommitted: () => toast.success(t('aiCatalog.toast.published')),
+          });
         } catch (cause) {
           await handleMutationError(cause);
           throw cause;
@@ -191,7 +234,7 @@ export const useAiProviderActions = ({
       targetLabel: data.draft.displayName,
       title: t('aiCatalog.actions.publish.title'),
     });
-  }, [authMethod, data, editor, handleMutationError, permissions.canPublishProvider, refresh, t]);
+  }, [authMethod, commitAndRefresh, data, editor, handleMutationError, permissions, t]);
 
   const primaryAction = resolveAiProviderPrimaryAction({
     canPublish: permissions.canPublishProvider && data.draft.status !== 'archived',
@@ -222,17 +265,20 @@ export const useAiProviderActions = ({
       providerName: data.draft.displayName,
       onSubmit: async ({ reason, secret }: { reason: string; secret: AiSecretMutation }) => {
         try {
-          await adminAiCatalogService.updateProvider({ ...snapshot, reason, secret });
-          editor.markSaved();
-          await refresh();
-          toast.success(t('aiCatalog.toast.secretUpdated'));
+          await commitAndRefresh({
+            commit: () => adminAiCatalogService.updateProvider({ ...snapshot, reason, secret }),
+            onCommitted: () => {
+              editor.markSaved();
+              toast.success(t('aiCatalog.toast.secretUpdated'));
+            },
+          });
         } catch (cause) {
           await handleMutationError(cause);
           throw cause;
         }
       },
     });
-  }, [authMethod, data, editor, handleMutationError, permissions.canUpdateProvider, refresh, t]);
+  }, [authMethod, commitAndRefresh, data, editor, handleMutationError, permissions, t]);
 
   const handleArchive = useCallback(() => {
     if (
@@ -255,10 +301,11 @@ export const useAiProviderActions = ({
       description: t('aiCatalog.actions.archive.desc'),
       onSubmit: async (input) => {
         try {
-          await adminAiCatalogService.archiveProvider(input as AdminAiProviderArchiveInput);
-          editor.setActionError(null);
-          await refresh();
-          toast.success(t('aiCatalog.toast.archived'));
+          await commitAndRefresh({
+            commit: () =>
+              adminAiCatalogService.archiveProvider(input as AdminAiProviderArchiveInput),
+            onCommitted: () => toast.success(t('aiCatalog.toast.archived')),
+          });
         } catch (cause) {
           await handleMutationError(cause);
           throw cause;
@@ -268,7 +315,7 @@ export const useAiProviderActions = ({
       targetLabel: data.draft.displayName,
       title: t('aiCatalog.actions.archive.title'),
     });
-  }, [authMethod, data, editor, handleMutationError, permissions.canArchiveProvider, refresh, t]);
+  }, [authMethod, commitAndRefresh, data, editor, handleMutationError, permissions, t]);
 
   const handleRollback = useCallback(
     (targetRevision: number) => {
@@ -286,10 +333,11 @@ export const useAiProviderActions = ({
         description: t('aiCatalog.actions.rollback.desc', { revision: targetRevision }),
         onSubmit: async (input) => {
           try {
-            await adminAiCatalogService.rollbackProvider(input as AdminAiProviderRollbackInput);
-            editor.setActionError(null);
-            await refresh();
-            toast.success(t('aiCatalog.toast.rolledBack'));
+            await commitAndRefresh({
+              commit: () =>
+                adminAiCatalogService.rollbackProvider(input as AdminAiProviderRollbackInput),
+              onCommitted: () => toast.success(t('aiCatalog.toast.rolledBack')),
+            });
           } catch (cause) {
             await handleMutationError(cause);
             throw cause;
@@ -300,7 +348,7 @@ export const useAiProviderActions = ({
         title: t('aiCatalog.actions.rollback.title'),
       });
     },
-    [authMethod, data, editor, handleMutationError, permissions.canPublishProvider, refresh, t],
+    [authMethod, commitAndRefresh, data, editor, handleMutationError, permissions, t],
   );
 
   const handleCreateModel = useCallback(() => {
@@ -318,10 +366,10 @@ export const useAiProviderActions = ({
             providerId: data.draft.id,
             reason,
           };
-          await adminAiCatalogService.createModel(input);
-          editor.setActionError(null);
-          await refresh();
-          toast.success(t('aiCatalog.toast.modelCreated'));
+          await commitAndRefresh({
+            commit: () => adminAiCatalogService.createModel(input),
+            onCommitted: () => toast.success(t('aiCatalog.toast.modelCreated')),
+          });
         } catch (cause) {
           await handleMutationError(cause);
           throw cause;
@@ -330,7 +378,7 @@ export const useAiProviderActions = ({
         }
       },
     });
-  }, [authMethod, data, editor, handleMutationError, permissions.canCreateModel, refresh, t]);
+  }, [authMethod, commitAndRefresh, data, editor, handleMutationError, permissions, t]);
 
   const handleEditModel = useCallback(
     async (model: AdminAiModelDraft) => {
@@ -364,10 +412,10 @@ export const useAiProviderActions = ({
                 providerId: data.draft.id,
                 reason,
               };
-              await adminAiCatalogService.updateModel(input);
-              editor.setActionError(null);
-              await refresh();
-              toast.success(t('aiCatalog.toast.modelUpdated'));
+              await commitAndRefresh({
+                commit: () => adminAiCatalogService.updateModel(input),
+                onCommitted: () => toast.success(t('aiCatalog.toast.modelUpdated')),
+              });
             } catch (cause) {
               await handleMutationError(cause);
               throw cause;
@@ -391,7 +439,7 @@ export const useAiProviderActions = ({
       handleMutationError,
       permissions.canReadModels,
       permissions.canUpdateModel,
-      refresh,
+      commitAndRefresh,
       t,
     ],
   );
@@ -443,10 +491,10 @@ export const useAiProviderActions = ({
           onSubmit: async (input) => {
             setActionLoadingId(model.id);
             try {
-              await adminAiCatalogService.deleteModel(input as AdminAiModelDeleteInput);
-              editor.setActionError(null);
-              await refresh();
-              toast.success(t('aiCatalog.toast.modelDeleted'));
+              await commitAndRefresh({
+                commit: () => adminAiCatalogService.deleteModel(input as AdminAiModelDeleteInput),
+                onCommitted: () => toast.success(t('aiCatalog.toast.modelDeleted')),
+              });
             } catch (cause) {
               await handleMutationError(cause);
               throw cause;
@@ -473,7 +521,7 @@ export const useAiProviderActions = ({
       handleMutationError,
       permissions.canDeleteModel,
       permissions.canReadModels,
-      refresh,
+      commitAndRefresh,
       t,
     ],
   );
@@ -502,10 +550,10 @@ export const useAiProviderActions = ({
         onSubmit: async (input) => {
           setActionLoadingId('models');
           try {
-            await adminAiCatalogService.reorderModels(input as AdminAiModelReorderInput);
-            editor.setActionError(null);
-            await refresh();
-            toast.success(t('aiCatalog.toast.modelsReordered'));
+            await commitAndRefresh({
+              commit: () => adminAiCatalogService.reorderModels(input as AdminAiModelReorderInput),
+              onCommitted: () => toast.success(t('aiCatalog.toast.modelsReordered')),
+            });
           } catch (cause) {
             await handleMutationError(cause);
             throw cause;
@@ -518,7 +566,7 @@ export const useAiProviderActions = ({
         title: t('aiCatalog.actions.reorder.title'),
       });
     },
-    [authMethod, data, editor, handleMutationError, permissions.canReorderModels, refresh, t],
+    [authMethod, commitAndRefresh, data, editor, handleMutationError, permissions, t],
   );
 
   return {
@@ -532,5 +580,8 @@ export const useAiProviderActions = ({
     handleRollback,
     handleSecret,
     primaryAction,
+    refreshFailed,
+    refreshRetrying,
+    retryRefresh,
   };
 };
