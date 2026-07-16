@@ -1,0 +1,577 @@
+/**
+ * Finite server-owned settings registry (M05).
+ *
+ * Only non-secret UserSettings leaf paths are eligible.
+ * Explicitly excluded: keyVaults, market tokens, languageModel provider credentials,
+ * and any secret-like path.
+ */
+
+import {
+  DEFAULT_AGENT,
+  DEFAULT_COMMON_SETTINGS,
+  DEFAULT_IMAGE_CONFIG,
+  DEFAULT_MEMORY_SETTINGS,
+  DEFAULT_NOTIFICATION_SETTINGS,
+  DEFAULT_SYSTEM_AGENT_CONFIG,
+  DEFAULT_TTS_CONFIG,
+} from '@lobechat/const';
+import { z } from 'zod';
+
+import type {
+  SettingClientSurface,
+  SettingDefinition,
+  SettingGroupId,
+} from '@/types/platform/settings';
+
+/** Bump when registered paths / schemas change in a breaking way for cache keys. */
+export const SETTINGS_REGISTRY_VERSION = 1;
+
+const ALL_CLIENTS: readonly SettingClientSurface[] = ['web', 'desktop', 'mobile', 'server'];
+
+const animationModeSchema = z.enum(['disabled', 'agile', 'elegant']);
+const transitionModeSchema = z.enum(['smooth', 'fadeIn', 'none']);
+const memoryEffortSchema = z.enum(['high', 'low', 'medium']);
+const approvalModeSchema = z.enum(['auto-run', 'allow-list', 'manual', 'headless']);
+const sttServerSchema = z.enum(['openai', 'browser']);
+const sttModelSchema = z.literal('whisper-1');
+const ttsModelSchema = z.enum(['gpt-4o-mini-tts', 'tts-1', 'tts-1-hd']);
+
+type Def = SettingDefinition;
+
+const def = <T>(entry: SettingDefinition<T>): Def => entry as Def;
+
+/**
+ * Ordered registry entries. Keep leaf paths only; no secret / credential paths.
+ */
+const REGISTRY_ENTRIES: readonly Def[] = [
+  // ── general ──────────────────────────────────────────────
+  def({
+    applicableClients: ALL_CLIENTS,
+    builtInDefault: DEFAULT_COMMON_SETTINGS.fontSize,
+    control: 'number',
+    descriptionKey: 'settingsPolicy.paths.general.fontSize.desc',
+    group: 'general',
+    max: 24,
+    min: 12,
+    path: 'general.fontSize',
+    platformPolicyEligible: true,
+    schema: z.number().int().min(12).max(24),
+    schemaVersion: 1,
+    sensitivity: 'public',
+    step: 1,
+    titleKey: 'settingsPolicy.paths.general.fontSize.title',
+  }),
+  def({
+    applicableClients: ALL_CLIENTS,
+    builtInDefault: DEFAULT_COMMON_SETTINGS.animationMode ?? 'agile',
+    control: 'select',
+    descriptionKey: 'settingsPolicy.paths.general.animationMode.desc',
+    group: 'general',
+    options: [
+      { labelKey: 'settingsPolicy.options.animation.disabled', value: 'disabled' },
+      { labelKey: 'settingsPolicy.options.animation.agile', value: 'agile' },
+      { labelKey: 'settingsPolicy.options.animation.elegant', value: 'elegant' },
+    ],
+    path: 'general.animationMode',
+    platformPolicyEligible: true,
+    schema: animationModeSchema,
+    schemaVersion: 1,
+    sensitivity: 'public',
+    titleKey: 'settingsPolicy.paths.general.animationMode.title',
+  }),
+  def({
+    applicableClients: ALL_CLIENTS,
+    builtInDefault: DEFAULT_COMMON_SETTINGS.telemetry,
+    control: 'switch',
+    descriptionKey: 'settingsPolicy.paths.general.telemetry.desc',
+    group: 'general',
+    path: 'general.telemetry',
+    platformPolicyEligible: true,
+    schema: z.boolean(),
+    schemaVersion: 1,
+    sensitivity: 'public',
+    titleKey: 'settingsPolicy.paths.general.telemetry.title',
+  }),
+  def({
+    applicableClients: ALL_CLIENTS,
+    builtInDefault: DEFAULT_COMMON_SETTINGS.isLiteMode,
+    control: 'switch',
+    descriptionKey: 'settingsPolicy.paths.general.isLiteMode.desc',
+    group: 'general',
+    path: 'general.isLiteMode',
+    platformPolicyEligible: true,
+    schema: z.boolean(),
+    schemaVersion: 1,
+    sensitivity: 'public',
+    titleKey: 'settingsPolicy.paths.general.isLiteMode.title',
+  }),
+  def({
+    applicableClients: ALL_CLIENTS,
+    builtInDefault: DEFAULT_COMMON_SETTINGS.transitionMode ?? 'fadeIn',
+    control: 'select',
+    descriptionKey: 'settingsPolicy.paths.general.transitionMode.desc',
+    group: 'general',
+    options: [
+      { labelKey: 'settingsPolicy.options.transition.smooth', value: 'smooth' },
+      { labelKey: 'settingsPolicy.options.transition.fadeIn', value: 'fadeIn' },
+      { labelKey: 'settingsPolicy.options.transition.none', value: 'none' },
+    ],
+    path: 'general.transitionMode',
+    platformPolicyEligible: true,
+    schema: transitionModeSchema,
+    schemaVersion: 1,
+    sensitivity: 'public',
+    titleKey: 'settingsPolicy.paths.general.transitionMode.title',
+  }),
+  def({
+    applicableClients: ALL_CLIENTS,
+    builtInDefault: DEFAULT_COMMON_SETTINGS.costEstimateWarningThreshold ?? 2,
+    control: 'number',
+    descriptionKey: 'settingsPolicy.paths.general.costEstimateWarningThreshold.desc',
+    group: 'general',
+    max: 100,
+    min: 0,
+    path: 'general.costEstimateWarningThreshold',
+    platformPolicyEligible: true,
+    schema: z.number().min(0).max(100),
+    schemaVersion: 1,
+    sensitivity: 'public',
+    titleKey: 'settingsPolicy.paths.general.costEstimateWarningThreshold.title',
+  }),
+  def({
+    applicableClients: ALL_CLIENTS,
+    builtInDefault: true,
+    control: 'switch',
+    descriptionKey: 'settingsPolicy.paths.general.enableAutoScrollOnStreaming.desc',
+    group: 'general',
+    path: 'general.enableAutoScrollOnStreaming',
+    platformPolicyEligible: true,
+    schema: z.boolean(),
+    schemaVersion: 1,
+    sensitivity: 'public',
+    titleKey: 'settingsPolicy.paths.general.enableAutoScrollOnStreaming.title',
+  }),
+  def({
+    applicableClients: ALL_CLIENTS,
+    builtInDefault: true,
+    control: 'switch',
+    descriptionKey: 'settingsPolicy.paths.general.enableMessageLinkIcon.desc',
+    group: 'general',
+    path: 'general.enableMessageLinkIcon',
+    platformPolicyEligible: true,
+    schema: z.boolean(),
+    schemaVersion: 1,
+    sensitivity: 'public',
+    titleKey: 'settingsPolicy.paths.general.enableMessageLinkIcon.title',
+  }),
+  def({
+    applicableClients: ALL_CLIENTS,
+    builtInDefault: undefined as unknown as string,
+    control: 'text',
+    descriptionKey: 'settingsPolicy.paths.general.responseLanguage.desc',
+    group: 'general',
+    path: 'general.responseLanguage',
+    platformPolicyEligible: true,
+    schema: z.string().min(1).max(32),
+    schemaVersion: 1,
+    sensitivity: 'public',
+    titleKey: 'settingsPolicy.paths.general.responseLanguage.title',
+  }),
+  def({
+    applicableClients: ALL_CLIENTS,
+    builtInDefault: undefined as unknown as string,
+    control: 'text',
+    descriptionKey: 'settingsPolicy.paths.general.timezone.desc',
+    group: 'general',
+    path: 'general.timezone',
+    platformPolicyEligible: true,
+    schema: z.string().min(1).max(64),
+    schemaVersion: 1,
+    sensitivity: 'public',
+    titleKey: 'settingsPolicy.paths.general.timezone.title',
+  }),
+
+  // ── memory ───────────────────────────────────────────────
+  def({
+    applicableClients: ALL_CLIENTS,
+    builtInDefault: DEFAULT_MEMORY_SETTINGS.enabled ?? true,
+    control: 'switch',
+    descriptionKey: 'settingsPolicy.paths.memory.enabled.desc',
+    group: 'memory',
+    path: 'memory.enabled',
+    platformPolicyEligible: true,
+    schema: z.boolean(),
+    schemaVersion: 1,
+    sensitivity: 'public',
+    titleKey: 'settingsPolicy.paths.memory.enabled.title',
+  }),
+  def({
+    applicableClients: ALL_CLIENTS,
+    builtInDefault: DEFAULT_MEMORY_SETTINGS.effort ?? 'medium',
+    control: 'select',
+    descriptionKey: 'settingsPolicy.paths.memory.effort.desc',
+    group: 'memory',
+    options: [
+      { labelKey: 'settingsPolicy.options.memory.effort.low', value: 'low' },
+      { labelKey: 'settingsPolicy.options.memory.effort.medium', value: 'medium' },
+      { labelKey: 'settingsPolicy.options.memory.effort.high', value: 'high' },
+    ],
+    path: 'memory.effort',
+    platformPolicyEligible: true,
+    schema: memoryEffortSchema,
+    schemaVersion: 1,
+    sensitivity: 'public',
+    titleKey: 'settingsPolicy.paths.memory.effort.title',
+  }),
+
+  // ── tool ─────────────────────────────────────────────────
+  def({
+    applicableClients: ALL_CLIENTS,
+    builtInDefault: 'manual' as const,
+    control: 'select',
+    descriptionKey: 'settingsPolicy.paths.tool.humanIntervention.approvalMode.desc',
+    group: 'tool',
+    options: [
+      { labelKey: 'settingsPolicy.options.approval.autoRun', value: 'auto-run' },
+      { labelKey: 'settingsPolicy.options.approval.allowList', value: 'allow-list' },
+      { labelKey: 'settingsPolicy.options.approval.manual', value: 'manual' },
+      { labelKey: 'settingsPolicy.options.approval.headless', value: 'headless' },
+    ],
+    path: 'tool.humanIntervention.approvalMode',
+    platformPolicyEligible: true,
+    schema: approvalModeSchema,
+    schemaVersion: 1,
+    sensitivity: 'public',
+    titleKey: 'settingsPolicy.paths.tool.humanIntervention.approvalMode.title',
+  }),
+
+  // ── image ────────────────────────────────────────────────
+  def({
+    applicableClients: ALL_CLIENTS,
+    builtInDefault: DEFAULT_IMAGE_CONFIG.defaultImageNum,
+    control: 'number',
+    descriptionKey: 'settingsPolicy.paths.image.defaultImageNum.desc',
+    group: 'image',
+    max: 20,
+    min: 1,
+    path: 'image.defaultImageNum',
+    platformPolicyEligible: true,
+    schema: z.number().int().min(1).max(20),
+    schemaVersion: 1,
+    sensitivity: 'public',
+    titleKey: 'settingsPolicy.paths.image.defaultImageNum.title',
+  }),
+
+  // ── tts ──────────────────────────────────────────────────
+  def({
+    applicableClients: ALL_CLIENTS,
+    builtInDefault: DEFAULT_TTS_CONFIG.sttAutoStop,
+    control: 'switch',
+    descriptionKey: 'settingsPolicy.paths.tts.sttAutoStop.desc',
+    group: 'tts',
+    path: 'tts.sttAutoStop',
+    platformPolicyEligible: true,
+    schema: z.boolean(),
+    schemaVersion: 1,
+    sensitivity: 'public',
+    titleKey: 'settingsPolicy.paths.tts.sttAutoStop.title',
+  }),
+  def({
+    applicableClients: ALL_CLIENTS,
+    builtInDefault: DEFAULT_TTS_CONFIG.sttServer,
+    control: 'select',
+    descriptionKey: 'settingsPolicy.paths.tts.sttServer.desc',
+    group: 'tts',
+    options: [
+      { labelKey: 'settingsPolicy.options.tts.sttServer.openai', value: 'openai' },
+      { labelKey: 'settingsPolicy.options.tts.sttServer.browser', value: 'browser' },
+    ],
+    path: 'tts.sttServer',
+    platformPolicyEligible: true,
+    schema: sttServerSchema,
+    schemaVersion: 1,
+    sensitivity: 'public',
+    titleKey: 'settingsPolicy.paths.tts.sttServer.title',
+  }),
+  def({
+    applicableClients: ALL_CLIENTS,
+    builtInDefault: DEFAULT_TTS_CONFIG.openAI.sttModel,
+    control: 'select',
+    descriptionKey: 'settingsPolicy.paths.tts.openAI.sttModel.desc',
+    group: 'tts',
+    options: [{ labelKey: 'settingsPolicy.options.tts.sttModel.whisper1', value: 'whisper-1' }],
+    path: 'tts.openAI.sttModel',
+    platformPolicyEligible: true,
+    schema: sttModelSchema,
+    schemaVersion: 1,
+    sensitivity: 'public',
+    titleKey: 'settingsPolicy.paths.tts.openAI.sttModel.title',
+  }),
+  def({
+    applicableClients: ALL_CLIENTS,
+    builtInDefault: DEFAULT_TTS_CONFIG.openAI.ttsModel,
+    control: 'select',
+    descriptionKey: 'settingsPolicy.paths.tts.openAI.ttsModel.desc',
+    group: 'tts',
+    options: [
+      { labelKey: 'settingsPolicy.options.tts.ttsModel.gpt4oMini', value: 'gpt-4o-mini-tts' },
+      { labelKey: 'settingsPolicy.options.tts.ttsModel.tts1', value: 'tts-1' },
+      { labelKey: 'settingsPolicy.options.tts.ttsModel.tts1Hd', value: 'tts-1-hd' },
+    ],
+    path: 'tts.openAI.ttsModel',
+    platformPolicyEligible: true,
+    schema: ttsModelSchema,
+    schemaVersion: 1,
+    sensitivity: 'public',
+    titleKey: 'settingsPolicy.paths.tts.openAI.ttsModel.title',
+  }),
+
+  // ── notification ─────────────────────────────────────────
+  def({
+    applicableClients: ALL_CLIENTS,
+    builtInDefault: DEFAULT_NOTIFICATION_SETTINGS.email?.enabled ?? true,
+    control: 'switch',
+    descriptionKey: 'settingsPolicy.paths.notification.email.enabled.desc',
+    group: 'notification',
+    path: 'notification.email.enabled',
+    platformPolicyEligible: true,
+    schema: z.boolean(),
+    schemaVersion: 1,
+    sensitivity: 'public',
+    titleKey: 'settingsPolicy.paths.notification.email.enabled.title',
+  }),
+  def({
+    applicableClients: ALL_CLIENTS,
+    builtInDefault: DEFAULT_NOTIFICATION_SETTINGS.inbox?.enabled ?? true,
+    control: 'switch',
+    descriptionKey: 'settingsPolicy.paths.notification.inbox.enabled.desc',
+    group: 'notification',
+    path: 'notification.inbox.enabled',
+    platformPolicyEligible: true,
+    schema: z.boolean(),
+    schemaVersion: 1,
+    sensitivity: 'public',
+    titleKey: 'settingsPolicy.paths.notification.inbox.enabled.title',
+  }),
+
+  // ── defaultAgent (non-secret leaves) ─────────────────────
+  def({
+    applicableClients: ALL_CLIENTS,
+    builtInDefault: DEFAULT_AGENT.config.model,
+    control: 'text',
+    descriptionKey: 'settingsPolicy.paths.defaultAgent.config.model.desc',
+    group: 'defaultAgent',
+    path: 'defaultAgent.config.model',
+    platformPolicyEligible: true,
+    schema: z.string().min(1).max(128),
+    schemaVersion: 1,
+    sensitivity: 'public',
+    titleKey: 'settingsPolicy.paths.defaultAgent.config.model.title',
+  }),
+  def({
+    applicableClients: ALL_CLIENTS,
+    builtInDefault: DEFAULT_AGENT.config.provider,
+    control: 'text',
+    descriptionKey: 'settingsPolicy.paths.defaultAgent.config.provider.desc',
+    group: 'defaultAgent',
+    path: 'defaultAgent.config.provider',
+    platformPolicyEligible: true,
+    schema: z.string().min(1).max(64),
+    schemaVersion: 1,
+    sensitivity: 'public',
+    titleKey: 'settingsPolicy.paths.defaultAgent.config.provider.title',
+  }),
+  def({
+    applicableClients: ALL_CLIENTS,
+    builtInDefault: DEFAULT_AGENT.config.systemRole ?? '',
+    control: 'textarea',
+    descriptionKey: 'settingsPolicy.paths.defaultAgent.config.systemRole.desc',
+    group: 'defaultAgent',
+    path: 'defaultAgent.config.systemRole',
+    platformPolicyEligible: true,
+    schema: z.string().max(32_000),
+    schemaVersion: 1,
+    sensitivity: 'public',
+    titleKey: 'settingsPolicy.paths.defaultAgent.config.systemRole.title',
+  }),
+  def({
+    applicableClients: ALL_CLIENTS,
+    builtInDefault: DEFAULT_AGENT.config.chatConfig?.enableStreaming ?? true,
+    control: 'switch',
+    descriptionKey: 'settingsPolicy.paths.defaultAgent.config.chatConfig.enableStreaming.desc',
+    group: 'defaultAgent',
+    path: 'defaultAgent.config.chatConfig.enableStreaming',
+    platformPolicyEligible: true,
+    schema: z.boolean(),
+    schemaVersion: 1,
+    sensitivity: 'public',
+    titleKey: 'settingsPolicy.paths.defaultAgent.config.chatConfig.enableStreaming.title',
+  }),
+  def({
+    applicableClients: ALL_CLIENTS,
+    builtInDefault: DEFAULT_AGENT.config.chatConfig?.historyCount ?? 20,
+    control: 'number',
+    descriptionKey: 'settingsPolicy.paths.defaultAgent.config.chatConfig.historyCount.desc',
+    group: 'defaultAgent',
+    max: 200,
+    min: 0,
+    path: 'defaultAgent.config.chatConfig.historyCount',
+    platformPolicyEligible: true,
+    schema: z.number().int().min(0).max(200),
+    schemaVersion: 1,
+    sensitivity: 'public',
+    titleKey: 'settingsPolicy.paths.defaultAgent.config.chatConfig.historyCount.title',
+  }),
+  def({
+    applicableClients: ALL_CLIENTS,
+    builtInDefault: DEFAULT_AGENT.config.params?.temperature ?? 1,
+    control: 'slider',
+    descriptionKey: 'settingsPolicy.paths.defaultAgent.config.params.temperature.desc',
+    group: 'defaultAgent',
+    max: 2,
+    min: 0,
+    path: 'defaultAgent.config.params.temperature',
+    platformPolicyEligible: true,
+    schema: z.number().min(0).max(2),
+    schemaVersion: 1,
+    sensitivity: 'public',
+    step: 0.1,
+    titleKey: 'settingsPolicy.paths.defaultAgent.config.params.temperature.title',
+  }),
+
+  // ── systemAgent (model/provider only — no secrets) ───────
+  def({
+    applicableClients: ALL_CLIENTS,
+    builtInDefault: DEFAULT_SYSTEM_AGENT_CONFIG.topic.model,
+    control: 'text',
+    descriptionKey: 'settingsPolicy.paths.systemAgent.topic.model.desc',
+    group: 'systemAgent',
+    path: 'systemAgent.topic.model',
+    platformPolicyEligible: true,
+    schema: z.string().min(1).max(128),
+    schemaVersion: 1,
+    sensitivity: 'public',
+    titleKey: 'settingsPolicy.paths.systemAgent.topic.model.title',
+  }),
+  def({
+    applicableClients: ALL_CLIENTS,
+    builtInDefault: DEFAULT_SYSTEM_AGENT_CONFIG.topic.provider,
+    control: 'text',
+    descriptionKey: 'settingsPolicy.paths.systemAgent.topic.provider.desc',
+    group: 'systemAgent',
+    path: 'systemAgent.topic.provider',
+    platformPolicyEligible: true,
+    schema: z.string().min(1).max(64),
+    schemaVersion: 1,
+    sensitivity: 'public',
+    titleKey: 'settingsPolicy.paths.systemAgent.topic.provider.title',
+  }),
+  def({
+    applicableClients: ALL_CLIENTS,
+    builtInDefault: DEFAULT_SYSTEM_AGENT_CONFIG.translation.model,
+    control: 'text',
+    descriptionKey: 'settingsPolicy.paths.systemAgent.translation.model.desc',
+    group: 'systemAgent',
+    path: 'systemAgent.translation.model',
+    platformPolicyEligible: true,
+    schema: z.string().min(1).max(128),
+    schemaVersion: 1,
+    sensitivity: 'public',
+    titleKey: 'settingsPolicy.paths.systemAgent.translation.model.title',
+  }),
+  def({
+    applicableClients: ALL_CLIENTS,
+    builtInDefault: DEFAULT_SYSTEM_AGENT_CONFIG.historyCompress.model,
+    control: 'text',
+    descriptionKey: 'settingsPolicy.paths.systemAgent.historyCompress.model.desc',
+    group: 'systemAgent',
+    path: 'systemAgent.historyCompress.model',
+    platformPolicyEligible: true,
+    schema: z.string().min(1).max(128),
+    schemaVersion: 1,
+    sensitivity: 'public',
+    titleKey: 'settingsPolicy.paths.systemAgent.historyCompress.model.title',
+  }),
+];
+
+/** Paths that must never enter the registry (defense-in-depth denylist). */
+export const SETTINGS_SECRET_PATH_PREFIXES = ['keyVaults', 'market', 'languageModel'] as const;
+
+const byPath = new Map<string, Def>(REGISTRY_ENTRIES.map((e) => [e.path, e]));
+
+export class SettingsRegistry {
+  readonly version = SETTINGS_REGISTRY_VERSION;
+
+  list = (): readonly Def[] => REGISTRY_ENTRIES;
+
+  listByGroup = (group: SettingGroupId): readonly Def[] =>
+    REGISTRY_ENTRIES.filter((e) => e.group === group);
+
+  get = (path: string): Def | undefined => byPath.get(path);
+
+  has = (path: string): boolean => byPath.has(path);
+
+  isSecretPath = (path: string): boolean => {
+    if (!path) return true;
+    return SETTINGS_SECRET_PATH_PREFIXES.some(
+      (prefix) => path === prefix || path.startsWith(`${prefix}.`),
+    );
+  };
+
+  /**
+   * Fail-closed path gate. Returns a stable business code string or null when ok.
+   */
+  assertPathWritable = (params: {
+    path: string;
+    client?: SettingClientSurface;
+    requirePlatformEligible?: boolean;
+  }):
+    | 'MANAGED_SETTING_UNKNOWN_PATH'
+    | 'MANAGED_SETTING_SECRET_PATH'
+    | 'MANAGED_SETTING_INAPPLICABLE_CLIENT'
+    | 'MANAGED_SETTING_NOT_POLICY_ELIGIBLE'
+    | null => {
+    const { path, client, requirePlatformEligible } = params;
+
+    if (this.isSecretPath(path)) return 'MANAGED_SETTING_SECRET_PATH';
+
+    const entry = this.get(path);
+    if (!entry) return 'MANAGED_SETTING_UNKNOWN_PATH';
+
+    if (entry.sensitivity === 'secret' || entry.sensitivity === 'sensitive') {
+      return 'MANAGED_SETTING_SECRET_PATH';
+    }
+
+    if (requirePlatformEligible && !entry.platformPolicyEligible) {
+      return 'MANAGED_SETTING_NOT_POLICY_ELIGIBLE';
+    }
+
+    if (client && entry.applicableClients.length > 0 && !entry.applicableClients.includes(client)) {
+      return 'MANAGED_SETTING_INAPPLICABLE_CLIENT';
+    }
+
+    return null;
+  };
+
+  validateValue = (
+    path: string,
+    value: unknown,
+  ): { ok: true; value: unknown } | { ok: false; message: string } => {
+    const entry = this.get(path);
+    if (!entry) return { ok: false, message: 'Unknown path' };
+    const parsed = entry.schema.safeParse(value);
+    if (!parsed.success) {
+      return {
+        ok: false,
+        message: parsed.error.issues.map((i) => i.message).join('; ') || 'Invalid value',
+      };
+    }
+    return { ok: true, value: parsed.data };
+  };
+
+  /** All registered paths (stable order). */
+  paths = (): readonly string[] => REGISTRY_ENTRIES.map((e) => e.path);
+}
+
+/** Singleton registry instance. */
+export const settingsRegistry = new SettingsRegistry();
