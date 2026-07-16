@@ -10,19 +10,26 @@ const connectorKeySchema = z
   .max(64)
   .regex(/^[a-z0-9][a-z0-9._-]*$/);
 const connectorToolKeySchema = z.string().trim().min(1).max(200);
+const containsCredentialBearingUrl = (value: string): boolean => {
+  if (isCredentialBearingUrl(value)) return true;
+  return (value.match(/https?:\/\/\S+/giu) ?? []).some(isCredentialBearingUrl);
+};
 const reasonSchema = z
   .string()
   .trim()
   .min(1)
   .max(2000)
-  .refine((value) => !containsSensitiveMaterial(value), 'secret material is not allowed');
+  .refine(
+    (value) => !containsSensitiveMaterial(value) && !containsCredentialBearingUrl(value),
+    'secret material is not allowed',
+  );
 
 const publicTextSchema = z
   .string()
   .trim()
   .max(4000)
   .refine(
-    (value) => !containsSensitiveMaterial(value) && !isCredentialBearingUrl(value),
+    (value) => !containsSensitiveMaterial(value) && !containsCredentialBearingUrl(value),
     'secret material is not allowed',
   );
 const publicDisplayNameSchema = z
@@ -31,7 +38,14 @@ const publicDisplayNameSchema = z
   .min(1)
   .max(200)
   .refine(
-    (value) => !containsSensitiveMaterial(value) && !isCredentialBearingUrl(value),
+    (value) => !containsSensitiveMaterial(value) && !containsCredentialBearingUrl(value),
+    'secret material is not allowed',
+  );
+export const connectorSafeMessageSchema = z
+  .string()
+  .max(500)
+  .refine(
+    (value) => !containsSensitiveMaterial(value) && !containsCredentialBearingUrl(value),
     'secret material is not allowed',
   );
 
@@ -51,7 +65,7 @@ const validateJsonSchema = (
     if (
       secretBearingKeyword &&
       typeof value === 'string' &&
-      (containsSensitiveMaterial(value) || isCredentialBearingUrl(value))
+      (containsSensitiveMaterial(value) || containsCredentialBearingUrl(value))
     ) {
       ctx.addIssue({ code: 'custom', message: 'secret material is not allowed', path });
     }
@@ -157,6 +171,7 @@ export const platformConnectorErrorCodeSchema = z.enum([
   'PLATFORM_CONNECTOR_OAUTH_STATE_REPLAYED',
   'PLATFORM_CONNECTOR_RETURN_TO_INVALID',
   'PLATFORM_CONNECTOR_SCOPE_NOT_ALLOWED',
+  'PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED',
   'PLATFORM_CONNECTOR_SSRF_BLOCKED',
   'PLATFORM_CONNECTOR_STDIO_UNSUPPORTED',
   'PLATFORM_CONNECTOR_TOOL_DENIED',
@@ -261,7 +276,7 @@ export const connectorConnectionTestStateSchema = z
   .object({
     errorCategory: z.enum(['auth', 'network', 'protocol', 'invalid_config', 'policy']).nullable(),
     latencyMs: z.number().int().nonnegative().nullable(),
-    sanitizedMessage: z.string().max(500),
+    sanitizedMessage: connectorSafeMessageSchema,
     stale: z.boolean(),
     status: z.enum(['pending', 'success', 'failure']),
     testedAt: z.date(),
@@ -526,7 +541,7 @@ export const adminConnectorTestInputSchema = adminConnectorDraftActionInputSchem
 export const adminConnectorDiscoverOutputSchema = z
   .object({
     oauthConfig: adminConnectorOAuthConfigSchema.nullable(),
-    sanitizedMessage: z.string().max(500),
+    sanitizedMessage: connectorSafeMessageSchema,
     tools: z.array(connectorToolDraftSchema.omit({ id: true })).max(1000),
   })
   .strict();
@@ -643,6 +658,14 @@ export const connectorOAuthStatePayloadSchema = z
     redirectUri: httpUrlSchema,
     returnTo: connectorReturnToSchema.optional(),
     scopes: connectorScopesSchema,
+    stateHash: z
+      .string()
+      .length(64)
+      .regex(/^[a-f0-9]+$/),
+    stateId: z
+      .string()
+      .length(32)
+      .regex(/^[a-f0-9]+$/),
     userId: connectorIdSchema,
   })
   .strict()
@@ -709,6 +732,43 @@ export const connectorRuntimeResolutionSchema = z.discriminatedUnion('credential
     })
     .strict(),
 ]);
+
+const trustedPublishedConnectorBaseSchema = z
+  .object({
+    connectorId: connectorIdSchema,
+    endpoint: httpUrlSchema,
+    publishedRevision: z.number().int().positive(),
+    tools: z.array(connectorToolDraftSchema).max(1000),
+    transport: webConnectorTransportSchema,
+  })
+  .strict();
+
+/** Server-only trusted catalog projection; never return this schema to a client. */
+export const trustedPublishedConnectorSchema = z.discriminatedUnion('credentialMode', [
+  trustedPublishedConnectorBaseSchema.extend({ credentialMode: z.literal('none') }).strict(),
+  trustedPublishedConnectorBaseSchema
+    .extend({
+      credentialMode: z.literal('shared_service_account'),
+      credentials: connectorSharedCredentialSchema,
+    })
+    .strict(),
+  trustedPublishedConnectorBaseSchema
+    .extend({ credentialMode: z.literal('per_user_oauth') })
+    .strict(),
+]);
+
+export const trustedConnectorOAuthBindingSchema = z
+  .object({
+    accessToken: z.string().min(1).max(32_768),
+    bindingId: connectorIdSchema,
+    connectorId: connectorIdSchema,
+    expiresAt: z.date().nullable(),
+    publishedRevision: z.number().int().positive(),
+    scopes: connectorScopesSchema,
+    status: z.literal('connected'),
+    userId: connectorIdSchema,
+  })
+  .strict();
 
 export const ADMIN_CONNECTOR_PROCEDURE_PERMISSIONS = {
   archive: 'platform_connector:delete:all',

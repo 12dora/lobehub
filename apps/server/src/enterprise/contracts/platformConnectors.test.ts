@@ -12,6 +12,7 @@ import {
   connectorOAuthStatePayloadSchema,
   connectorReturnToSchema,
   connectorRuntimeResolutionSchema,
+  connectorSafeMessageSchema,
   connectorScopesSchema,
   connectorSharedSecretMutationSchema,
   connectorToolDraftSchema,
@@ -218,6 +219,19 @@ describe('platform connector contracts', () => {
     ).toBe(false);
   });
 
+  it('rejects secret-bearing discover/test messages at the output contract', () => {
+    expect(connectorSafeMessageSchema.parse('Connector operation failed')).toBe(
+      'Connector operation failed',
+    );
+    for (const unsafe of [
+      'Authorization: Bearer fake-token-value',
+      'request failed with sk-abcdefghijklmnopqrstuvwxyz123456',
+      'request failed at https://user:password@example.test/path',
+    ]) {
+      expect(connectorSafeMessageSchema.safeParse(unsafe).success).toBe(false);
+    }
+  });
+
   it('returns only secret state in admin projections', () => {
     expect(adminConnectorDraftSchema.parse(draft)).toEqual(draft);
     expect(
@@ -305,6 +319,8 @@ describe('platform connector contracts', () => {
       redirectUri: 'https://aihub.example.test/oauth/connector/callback',
       returnTo: '/settings/connectors?connected=1',
       scopes: ['issues:read'],
+      stateHash: 'a'.repeat(64),
+      stateId: 'b'.repeat(32),
       userId: 'user-1',
     };
     expect(connectorOAuthStatePayloadSchema.parse(state)).toEqual(state);
