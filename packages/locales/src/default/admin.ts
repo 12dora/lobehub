@@ -181,6 +181,9 @@ export default {
   'aiCatalog.secret.apply': 'Apply Secret change',
   'aiCatalog.secret.desc':
     'Choose how to handle the Secret for {{provider}}. The current value is never returned.',
+  'aiCatalog.secret.format': 'Credential format',
+  'aiCatalog.secret.format.json': 'Structured credential JSON',
+  'aiCatalog.secret.format.string': 'Single Secret string',
   'aiCatalog.secret.neverStoredClient':
     'This value stays in this modal only and is cleared when the modal closes.',
   'aiCatalog.secret.newValue': 'New Secret value',
@@ -190,6 +193,10 @@ export default {
   'aiCatalog.secret.operation.replace': 'Replace the Secret',
   'aiCatalog.secret.reason': 'Change reason',
   'aiCatalog.secret.reasonRequired': 'Enter a reason for this Secret change.',
+  'aiCatalog.secret.structuredInvalid':
+    'Enter a non-empty credential object using only supported fields and string values.',
+  'aiCatalog.secret.structuredPlaceholder':
+    '{"apiKey":"…"} or {"accessKeyId":"…","secretAccessKey":"…","region":"…"}',
   'aiCatalog.secret.valueRequired': 'Enter the replacement Secret value.',
   'aiCatalog.status.archived': 'Archived',
   'aiCatalog.status.draft': 'Draft',

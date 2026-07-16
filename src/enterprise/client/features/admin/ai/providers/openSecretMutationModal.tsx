@@ -39,6 +39,7 @@ const styles = createStaticStyles(({ css }) => ({
 
 interface SecretModalState {
   error: string | null;
+  format: 'json' | 'string';
   operation: AiSecretMutation['operation'];
   phase: 'idle' | 'submitting';
   reason: string;
@@ -47,6 +48,7 @@ interface SecretModalState {
 
 type SecretModalAction =
   | { error: string | null; type: 'error' }
+  | { format: SecretModalState['format']; type: 'format' }
   | { operation: AiSecretMutation['operation']; type: 'operation' }
   | { phase: SecretModalState['phase']; type: 'phase' }
   | { reason: string; type: 'reason' }
@@ -54,6 +56,7 @@ type SecretModalAction =
 
 const initialState: SecretModalState = {
   error: null,
+  format: 'string',
   operation: 'keep',
   phase: 'idle',
   reason: '',
@@ -64,6 +67,9 @@ const reducer = (state: SecretModalState, action: SecretModalAction): SecretModa
   switch (action.type) {
     case 'error': {
       return { ...state, error: action.error };
+    }
+    case 'format': {
+      return { ...state, error: null, format: action.format, value: '' };
     }
     case 'operation': {
       return { ...state, error: null, operation: action.operation, value: '' };
@@ -100,13 +106,18 @@ export const SecretMutationContent = memo<SecretMutationContentProps>(
         dispatch({ error: t('aiCatalog.secret.reasonRequired'), type: 'error' });
         return;
       }
-      if (state.operation === 'replace' && !state.value) {
-        dispatch({ error: t('aiCatalog.secret.valueRequired'), type: 'error' });
+      const secret = buildAiSecretMutation(state.operation, state.value, state.format);
+      if (!secret) {
+        dispatch({
+          error: t(
+            state.format === 'json'
+              ? 'aiCatalog.secret.structuredInvalid'
+              : 'aiCatalog.secret.valueRequired',
+          ),
+          type: 'error',
+        });
         return;
       }
-
-      const secret = buildAiSecretMutation(state.operation, state.value);
-      if (!secret) return;
       dispatch({ phase: 'submitting', type: 'phase' });
       try {
         const canonical = { reason, secret };
@@ -146,12 +157,27 @@ export const SecretMutationContent = memo<SecretMutationContentProps>(
         </div>
         {state.operation === 'replace' ? (
           <div className={styles.field}>
+            <Text strong>{t('aiCatalog.secret.format')}</Text>
+            <Select
+              disabled={locked}
+              value={state.format}
+              options={(['string', 'json'] as const).map((format) => ({
+                label: t(`aiCatalog.secret.format.${format}` as never),
+                value: format,
+              }))}
+              onChange={(format) =>
+                dispatch({ format: format as SecretModalState['format'], type: 'format' })
+              }
+            />
             <Text strong>{t('aiCatalog.secret.newValue')}</Text>
             <InputPassword
               autoComplete="new-password"
               disabled={locked}
               maxLength={32_768}
               value={state.value}
+              placeholder={
+                state.format === 'json' ? t('aiCatalog.secret.structuredPlaceholder') : undefined
+              }
               onChange={(event) => dispatch({ type: 'value', value: event.target.value })}
             />
             <Text type="secondary">{t('aiCatalog.secret.neverStoredClient')}</Text>

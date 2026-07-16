@@ -278,11 +278,75 @@ export const parseNullableJsonObject = (
 export const buildAiSecretMutation = (
   operation: AiSecretMutation['operation'],
   value: string,
+  format: 'json' | 'string' = 'string',
 ): AiSecretMutation | null => {
   if (operation === 'replace') {
-    return value ? { operation, value } : null;
+    const replacement = parseAiSecretReplacement(value, format);
+    return replacement.value ? { operation, value: replacement.value } : null;
   }
   return { operation };
+};
+
+const STRUCTURED_CREDENTIAL_KEYS = new Set([
+  'accessKeyId',
+  'apiKey',
+  'apiVersion',
+  'authType',
+  'baseURL',
+  'baseURLOrAccountID',
+  'bearerToken',
+  'bearerTokenExpiresAt',
+  'customHeaders',
+  'oauthAccessToken',
+  'password',
+  'region',
+  'secretAccessKey',
+  'sessionToken',
+  'username',
+]);
+
+type StructuredCredential = Extract<AiSecretMutation, { operation: 'replace' }>['value'];
+
+export const parseAiSecretReplacement = (
+  raw: string,
+  format: 'json' | 'string',
+): { error: 'empty' | 'json' | 'shape' | null; value: StructuredCredential | null } => {
+  if (!raw) return { error: 'empty', value: null };
+  if (format === 'string') {
+    return raw.length <= 32_768 ? { error: null, value: raw } : { error: 'shape', value: null };
+  }
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { error: 'shape', value: null };
+    }
+    const entries = Object.entries(parsed);
+    if (entries.length === 0 || entries.some(([key]) => !STRUCTURED_CREDENTIAL_KEYS.has(key))) {
+      return { error: 'shape', value: null };
+    }
+    for (const [key, value] of entries) {
+      if (key === 'customHeaders') {
+        if (
+          !value ||
+          typeof value !== 'object' ||
+          Array.isArray(value) ||
+          Object.values(value).some((item) => typeof item !== 'string')
+        ) {
+          return { error: 'shape', value: null };
+        }
+      } else if (
+        typeof value !== 'string' ||
+        value.length === 0 ||
+        value.length > 32_768 ||
+        (key === 'authType' && !['none', 'basic', 'bearer', 'custom'].includes(value))
+      ) {
+        return { error: 'shape', value: null };
+      }
+    }
+    return { error: null, value: parsed as StructuredCredential };
+  } catch {
+    return { error: 'json', value: null };
+  }
 };
 
 export const buildProviderCreatePayload = (params: {
