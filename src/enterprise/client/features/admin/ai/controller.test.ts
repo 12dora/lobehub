@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 
 import {
+  buildAiSecretMutation,
   buildCompleteModelOrder,
   buildProviderUpdatePayload,
   deriveAiCatalogPermissions,
@@ -114,5 +115,15 @@ describe('ai catalog controller', () => {
     expect(parseJsonObject('{"a":1}')).toEqual({ error: null, value: { a: 1 } });
     expect(parseJsonObject('[]')).toEqual({ error: 'object', value: null });
     expect(parseJsonObject('{')).toEqual({ error: 'syntax', value: null });
+  });
+
+  it('never carries a value for keep or clear Secret operations', () => {
+    expect(buildAiSecretMutation('keep', 'must-not-leak')).toEqual({ operation: 'keep' });
+    expect(buildAiSecretMutation('clear', 'must-not-leak')).toEqual({ operation: 'clear' });
+    expect(buildAiSecretMutation('replace', '')).toBeNull();
+    expect(buildAiSecretMutation('replace', 'new-secret')).toEqual({
+      operation: 'replace',
+      value: 'new-secret',
+    });
   });
 });
