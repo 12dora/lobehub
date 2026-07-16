@@ -2,6 +2,7 @@ import { sql } from 'drizzle-orm';
 import {
   boolean,
   check,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -15,6 +16,7 @@ import { idGenerator } from '../../utils/idGenerator';
 import { createdAt, timestamptz, updatedAt } from '../_helpers';
 import { users } from '../user';
 import type { PlatformResourceStatus } from './common';
+import { platformResourceRevisions } from './revisions';
 
 export type PlatformConnectorCredentialMode = 'none' | 'shared_service_account' | 'per_user_oauth';
 export type PlatformConnectorTransport = 'http';
@@ -89,6 +91,11 @@ export const platformConnectors = pgTable(
       .default('draft'),
     /** CAS version for Draft mutations. */
     revision: integer('revision').notNull().default(0),
+    /** Constant discriminator used by the composite immutable-revision FK. */
+    publishedResourceType: varchar('published_resource_type', { length: 64 })
+      .$type<'connector'>()
+      .notNull()
+      .default('connector'),
     /** Exact immutable revision used by runtime; null until first publish. */
     publishedRevision: integer('published_revision'),
     publishedChecksum: varchar('published_checksum', { length: 64 }),
@@ -102,6 +109,16 @@ export const platformConnectors = pgTable(
     uniqueIndex('platform_connectors_connector_key_unique').on(t.connectorKey),
     index('platform_connectors_status_key_id_idx').on(t.status, t.connectorKey, t.id),
     index('platform_connectors_enabled_sort_id_idx').on(t.enabled, t.sort, t.id),
+    foreignKey({
+      columns: [t.publishedResourceType, t.id, t.publishedRevision, t.publishedChecksum],
+      foreignColumns: [
+        platformResourceRevisions.resourceType,
+        platformResourceRevisions.resourceId,
+        platformResourceRevisions.revision,
+        platformResourceRevisions.checksum,
+      ],
+      name: 'platform_connectors_published_revision_fk',
+    }).onDelete('restrict'),
     check('platform_connectors_transport_http_check', sql`${t.transport} = 'http'`),
     check(
       'platform_connectors_credential_mode_check',
@@ -110,20 +127,72 @@ export const platformConnectors = pgTable(
     check(
       'platform_connectors_credential_slot_check',
       sql`(
-        (${t.credentialMode} = 'none' AND ${t.sharedSecretRef} IS NULL AND ${t.oauthClientSecretRef} IS NULL AND ${t.oauthConfig} IS NULL)
-        OR (${t.credentialMode} = 'shared_service_account' AND ${t.oauthClientSecretRef} IS NULL AND ${t.oauthConfig} IS NULL)
-        OR (${t.credentialMode} = 'per_user_oauth' AND ${t.sharedSecretRef} IS NULL AND ${t.oauthConfig} IS NOT NULL)
+        (${t.credentialMode} = 'none'
+          AND ${t.sharedSecretRef} IS NULL
+          AND ${t.sharedSecretFingerprint} IS NULL
+          AND ${t.sharedSecretUpdatedAt} IS NULL
+          AND ${t.oauthClientSecretRef} IS NULL
+          AND ${t.oauthClientSecretFingerprint} IS NULL
+          AND ${t.oauthClientSecretUpdatedAt} IS NULL
+          AND ${t.oauthConfig} IS NULL)
+        OR (${t.credentialMode} = 'shared_service_account'
+          AND ${t.oauthClientSecretRef} IS NULL
+          AND ${t.oauthClientSecretFingerprint} IS NULL
+          AND ${t.oauthClientSecretUpdatedAt} IS NULL
+          AND ${t.oauthConfig} IS NULL
+          AND ((${t.sharedSecretRef} IS NULL
+              AND ${t.sharedSecretFingerprint} IS NULL
+              AND ${t.sharedSecretUpdatedAt} IS NULL)
+            OR (${t.sharedSecretRef} IS NOT NULL
+              AND ${t.sharedSecretFingerprint} IS NOT NULL
+              AND ${t.sharedSecretUpdatedAt} IS NOT NULL)))
+        OR (${t.credentialMode} = 'per_user_oauth'
+          AND ${t.sharedSecretRef} IS NULL
+          AND ${t.sharedSecretFingerprint} IS NULL
+          AND ${t.sharedSecretUpdatedAt} IS NULL
+          AND ${t.oauthConfig} IS NOT NULL
+          AND ((${t.oauthClientSecretRef} IS NULL
+              AND ${t.oauthClientSecretFingerprint} IS NULL
+              AND ${t.oauthClientSecretUpdatedAt} IS NULL)
+            OR (${t.oauthClientSecretRef} IS NOT NULL
+              AND ${t.oauthClientSecretFingerprint} IS NOT NULL
+              AND ${t.oauthClientSecretUpdatedAt} IS NOT NULL)))
       )`,
     ),
     check(
       'platform_connectors_published_pointer_check',
-      sql`(${t.publishedRevision} IS NULL AND ${t.publishedChecksum} IS NULL AND ${t.publishedAt} IS NULL)
-        OR (${t.publishedRevision} > 0 AND ${t.publishedChecksum} IS NOT NULL AND ${t.publishedAt} IS NOT NULL)`,
+      sql`((
+        (${t.publishedRevision} IS NULL
+          AND ${t.publishedChecksum} IS NULL
+          AND ${t.publishedAt} IS NULL)
+        OR (${t.publishedRevision} > 0
+          AND ${t.publishedChecksum} ~ '^[a-f0-9]{64}$'
+          AND ${t.publishedAt} IS NOT NULL)
+        ) AND (${t.status} <> 'published' OR ${t.publishedRevision} IS NOT NULL))`,
+    ),
+    check(
+      'platform_connectors_revision_check',
+      sql`${t.revision} >= 0 AND ${t.publishedResourceType} = 'connector'`,
     ),
     check(
       'platform_connectors_secret_ref_check',
       sql`(${t.sharedSecretRef} IS NULL OR ${t.sharedSecretRef} LIKE 'vault://%' OR ${t.sharedSecretRef} LIKE 'kms://%')
         AND (${t.oauthClientSecretRef} IS NULL OR ${t.oauthClientSecretRef} LIKE 'vault://%' OR ${t.oauthClientSecretRef} LIKE 'kms://%')`,
+    ),
+    check(
+      'platform_connectors_oauth_config_check',
+      sql`${t.oauthConfig} IS NULL
+        OR (jsonb_typeof(${t.oauthConfig}) = 'object'
+          AND octet_length(${t.oauthConfig}::text) <= 16384
+          AND ${t.oauthConfig}::text !~* '"(client_?secret|secret|access_?token|refresh_?token|token|password|authorization)"[[:space:]]*:')`,
+    ),
+    check(
+      'platform_connectors_published_shared_secret_check',
+      sql`${t.status} <> 'published'
+        OR ${t.credentialMode} <> 'shared_service_account'
+        OR (${t.sharedSecretRef} IS NOT NULL
+          AND ${t.sharedSecretFingerprint} IS NOT NULL
+          AND ${t.sharedSecretUpdatedAt} IS NOT NULL)`,
     ),
   ],
 );
@@ -146,6 +215,10 @@ export const platformConnectorTools = pgTable(
     displayName: varchar('display_name', { length: 200 }).notNull(),
     description: text('description'),
     inputSchema: jsonb('input_schema')
+      .$type<PlatformConnectorToolJsonSchema>()
+      .notNull()
+      .default({}),
+    outputSchema: jsonb('output_schema')
       .$type<PlatformConnectorToolJsonSchema>()
       .notNull()
       .default({}),
@@ -178,6 +251,17 @@ export const platformConnectorTools = pgTable(
     check(
       'platform_connector_tools_risk_check',
       sql`${t.riskLevel} IN ('low', 'medium', 'high', 'critical')`,
+    ),
+    check(
+      'platform_connector_tools_schema_check',
+      sql`jsonb_typeof(${t.inputSchema}) = 'object'
+        AND jsonb_typeof(${t.outputSchema}) = 'object'
+        AND octet_length(${t.inputSchema}::text) <= 65536
+        AND octet_length(${t.outputSchema}::text) <= 65536`,
+    ),
+    check(
+      'platform_connector_tools_confirmation_check',
+      sql`${t.riskLevel} NOT IN ('high', 'critical') OR ${t.requiresConfirmation} = true`,
     ),
   ],
 );
@@ -223,6 +307,12 @@ export const platformUserConnectorBindings = pgTable(
       t.userId,
       t.connectorId,
     ),
+    uniqueIndex('platform_user_connector_bindings_oauth_state_owner_unique').on(
+      t.id,
+      t.userId,
+      t.connectorId,
+      t.publishedRevision,
+    ),
     index('platform_user_connector_bindings_user_id_id_idx').on(t.userId, t.id),
     index('platform_user_connector_bindings_connector_id_id_idx').on(t.connectorId, t.id),
     index('platform_user_connector_bindings_status_expires_idx').on(t.status, t.expiresAt),
@@ -231,9 +321,37 @@ export const platformUserConnectorBindings = pgTable(
       sql`${t.status} IN ('disconnected', 'pending', 'connected', 'expired', 'revoked', 'error')`,
     ),
     check(
+      'platform_user_connector_bindings_revision_check',
+      sql`${t.publishedRevision} > 0 AND ${t.revision} >= 0`,
+    ),
+    check(
       'platform_user_connector_bindings_token_ref_check',
-      sql`(${t.status} = 'connected' AND ${t.oauthTokenRef} IS NOT NULL AND ${t.revokedAt} IS NULL)
-        OR (${t.status} <> 'connected')`,
+      sql`(${t.oauthTokenRef} IS NULL AND ${t.tokenFingerprint} IS NULL)
+        OR (${t.oauthTokenRef} IS NOT NULL AND ${t.tokenFingerprint} IS NOT NULL)`,
+    ),
+    check(
+      'platform_user_connector_bindings_state_fields_check',
+      sql`(${t.status} = 'connected'
+          AND ${t.oauthTokenRef} IS NOT NULL
+          AND ${t.tokenFingerprint} IS NOT NULL
+          AND ${t.connectedAt} IS NOT NULL
+          AND ${t.revokedAt} IS NULL)
+        OR (${t.status} = 'revoked'
+          AND ${t.oauthTokenRef} IS NULL
+          AND ${t.tokenFingerprint} IS NULL
+          AND cardinality(${t.scopes}) = 0
+          AND ${t.revokedAt} IS NOT NULL)
+        OR (${t.status} IN ('disconnected', 'pending')
+          AND ${t.oauthTokenRef} IS NULL
+          AND ${t.tokenFingerprint} IS NULL
+          AND cardinality(${t.scopes}) = 0
+          AND ${t.revokedAt} IS NULL)
+        OR (${t.status} IN ('expired', 'error') AND ${t.revokedAt} IS NULL)`,
+    ),
+    check(
+      'platform_user_connector_bindings_revoked_check',
+      sql`(${t.status} = 'revoked' AND ${t.revokedAt} IS NOT NULL)
+        OR (${t.status} <> 'revoked' AND ${t.revokedAt} IS NULL)`,
     ),
     check(
       'platform_user_connector_bindings_token_ref_format_check',
@@ -255,9 +373,7 @@ export const platformConnectorOAuthStates = pgTable(
       .notNull(),
     stateId: varchar('state_id', { length: 32 }).notNull(),
     stateHash: varchar('state_hash', { length: 64 }).notNull(),
-    bindingId: text('binding_id')
-      .notNull()
-      .references(() => platformUserConnectorBindings.id, { onDelete: 'restrict' }),
+    bindingId: text('binding_id').notNull(),
     userId: text('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
@@ -280,6 +396,16 @@ export const platformConnectorOAuthStates = pgTable(
   (t) => [
     uniqueIndex('platform_connector_oauth_states_state_id_unique').on(t.stateId),
     uniqueIndex('platform_connector_oauth_states_state_hash_unique').on(t.stateHash),
+    foreignKey({
+      columns: [t.bindingId, t.userId, t.connectorId, t.publishedRevision],
+      foreignColumns: [
+        platformUserConnectorBindings.id,
+        platformUserConnectorBindings.userId,
+        platformUserConnectorBindings.connectorId,
+        platformUserConnectorBindings.publishedRevision,
+      ],
+      name: 'platform_connector_oauth_states_binding_owner_fk',
+    }).onDelete('restrict'),
     index('platform_connector_oauth_states_binding_created_idx').on(t.bindingId, t.createdAt),
     index('platform_connector_oauth_states_user_connector_idx').on(t.userId, t.connectorId),
     index('platform_connector_oauth_states_expires_idx').on(t.expiresAt),
@@ -292,6 +418,12 @@ export const platformConnectorOAuthStates = pgTable(
       sql`${t.pkceVerifierRef} LIKE 'vault://%' OR ${t.pkceVerifierRef} LIKE 'kms://%'`,
     ),
     check('platform_connector_oauth_states_hash_check', sql`${t.stateHash} ~ '^[a-f0-9]{64}$'`),
+    check('platform_connector_oauth_states_revision_check', sql`${t.publishedRevision} > 0`),
+    check(
+      'platform_connector_oauth_states_ttl_check',
+      sql`${t.expiresAt} > ${t.createdAt}
+        AND ${t.expiresAt} <= ${t.createdAt} + interval '10 minutes'`,
+    ),
   ],
 );
 
