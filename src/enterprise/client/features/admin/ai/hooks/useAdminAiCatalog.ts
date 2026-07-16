@@ -6,12 +6,15 @@ import { adminAiCatalogService } from '@/enterprise/client/services/adminAiCatal
 import { useClientDataSWR } from '@/libs/swr';
 
 import {
+  ADMIN_AI_MODEL_LIST_KEY,
   ADMIN_AI_PROVIDER_GET_KEY,
   ADMIN_AI_PROVIDER_LIST_KEY,
+  ADMIN_AI_PROVIDER_REVISIONS_KEY,
   buildAdminAiModelDependentsKey,
   buildAdminAiModelListKey,
   buildAdminAiProviderGetKey,
   buildAdminAiProviderListKey,
+  buildAdminAiProviderRevisionsKey,
 } from '../swrKeys';
 import type { AdminAiModelListInput, AdminAiProviderListInput } from '../types';
 
@@ -36,6 +39,18 @@ export const useFetchAdminAiModels = (input: AdminAiModelListInput, enabled = tr
     { revalidateOnFocus: false },
   );
 
+export const useFetchAdminAiProviderRevisions = (
+  id: string | undefined,
+  enabled = true,
+  beforeRevision?: number,
+  limit = 50,
+) =>
+  useClientDataSWR(
+    enabled && id ? buildAdminAiProviderRevisionsKey(id, beforeRevision, limit) : null,
+    () => adminAiCatalogService.listProviderRevisions({ beforeRevision, id: id!, limit }),
+    { revalidateOnFocus: false },
+  );
+
 export const useFetchAdminAiModelDependents = (
   providerId: string | undefined,
   id: string | undefined,
@@ -55,6 +70,8 @@ export const refreshAdminAiProvider = async (id: string) => {
   await Promise.all([
     mutate(buildAdminAiProviderGetKey(id)),
     mutate((key) => Array.isArray(key) && key[0] === ADMIN_AI_PROVIDER_LIST_KEY),
+    mutate((key) => Array.isArray(key) && key[0] === ADMIN_AI_PROVIDER_REVISIONS_KEY),
+    mutate((key) => Array.isArray(key) && key[0] === ADMIN_AI_MODEL_LIST_KEY),
   ]);
 };
 

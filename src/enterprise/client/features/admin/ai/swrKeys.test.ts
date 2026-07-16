@@ -5,6 +5,7 @@ import {
   buildAdminAiModelListKey,
   buildAdminAiProviderGetKey,
   buildAdminAiProviderListKey,
+  buildAdminAiProviderRevisionsKey,
 } from './swrKeys';
 
 describe('admin AI catalog SWR keys', () => {
@@ -27,6 +28,12 @@ describe('admin AI catalog SWR keys', () => {
       'admin.aiModels.dependents',
       'p-1',
       'm-1',
+    ]);
+    expect(buildAdminAiProviderRevisionsKey('p-1', 7, 20)).toEqual([
+      'admin.aiProviders.listRevisions',
+      'p-1',
+      7,
+      20,
     ]);
   });
 
