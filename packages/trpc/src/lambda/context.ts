@@ -44,7 +44,7 @@ const extractClientIp = (request: NextRequest): string | undefined => {
 
 /**
  * Trusted interactive reauth time from OIDC claims.
- * Only `auth_time` (OIDC AuthN Time) — never access-token `iat` (refresh issues new iat).
+ * Only `auth_time` — never access-token `iat` (refresh mints a new iat).
  * Do not log token claims.
  */
 export const extractOidcAuthenticatedAt = (
@@ -55,11 +55,10 @@ export const extractOidcAuthenticatedAt = (
   if (typeof authTime === 'number' && Number.isFinite(authTime)) {
     return new Date(authTime * 1000);
   }
-  // Missing auth_time → fail closed for reauth (null).
   return null;
 };
 
-/** Token iat for authInvalidatedAt cutoff only (not reauth). */
+/** Token iat for security-epoch / authInvalidatedAt cutoff only (not reauth). */
 export const extractOidcCredentialIssuedAt = (
   tokenData: Record<string, unknown> | null | undefined,
 ): Date | null => {
@@ -71,7 +70,9 @@ export const extractOidcCredentialIssuedAt = (
   return null;
 };
 
-const validateApiKeyUserId = async (apiKey: string): Promise<string | null> => {
+const validateApiKeyAuth = async (
+  apiKey: string,
+): Promise<{ credentialIssuedAt: Date | null; userId: string } | null> => {
   if (!validateApiKeyFormat(apiKey)) return null;
 
   try {
@@ -82,15 +83,16 @@ const validateApiKeyUserId = async (apiKey: string): Promise<string | null> => {
     if (!apiKeyRecord.enabled) return null;
     if (isApiKeyExpired(apiKeyRecord.expiresAt)) return null;
 
-    // Ban / invalidation: only when platform admin security is on.
+    const credentialIssuedAt =
+      apiKeyRecord.createdAt instanceof Date
+        ? apiKeyRecord.createdAt
+        : apiKeyRecord.createdAt
+          ? new Date(apiKeyRecord.createdAt)
+          : null;
+
     if (isPlatformAdminSecurityOn()) {
       try {
-        // API keys have no interactive credential time; ban still applies.
-        // authInvalidatedAt without credential time fails closed — API keys after revoke
-        // are rejected when cutoff is set.
-        await assertUserActive(db, apiKeyRecord.userId, {
-          credentialIssuedAt: apiKeyRecord.createdAt ?? null,
-        });
+        await assertUserActive(db, apiKeyRecord.userId, { credentialIssuedAt });
       } catch (error) {
         if (isOIDCUserInactiveError(error)) {
           log('API key user is banned/inactive; rejecting');
@@ -110,7 +112,7 @@ const validateApiKeyUserId = async (apiKey: string): Promise<string | null> => {
       console.error('Failed to update API key last used timestamp:', error);
     });
 
-    return apiKeyRecord.userId;
+    return { credentialIssuedAt, userId: apiKeyRecord.userId };
   } catch (error) {
     log('API key authentication failed: %O', error);
     console.error('API key authentication failed, trying other methods:', error);
@@ -129,19 +131,25 @@ export interface OIDCAuth {
 
 export interface AuthContext {
   /**
-   * Trusted interactive auth timestamp:
-   * - Better Auth: session.createdAt (login / re-login)
-   * - OIDC: auth_time claim only (never access-token iat)
-   * - API key: always null (never qualifies for reauth)
-   * Never trust client-provided headers for this.
+   * Trusted interactive auth timestamp (reauth gates only):
+   * - Better Auth: session.createdAt (login / security rotation after includeCurrent preserve)
+   * - OIDC: auth_time claim only
+   * - API key: always null
    */
   authenticatedAt?: Date | null;
   /** Authentication method for the current principal (server-trusted). */
   authMethod?: AuthMethod | null;
   clientIp?: string | null;
+  /**
+   * Trusted credential issuance time for ban / authInvalidatedAt cutoff (R2-02):
+   * - Better Auth: session.createdAt (security issuance; rotated past cutoff when preserved)
+   * - OIDC: token iat
+   * - API key: api key createdAt
+   * Never substitute authenticatedAt / auth_time here.
+   */
+  credentialIssuedAt?: Date | null;
   jwtPayload?: ClientSecretPayload | null;
   marketAccessToken?: string;
-  // Add OIDC authentication information
   oidcAuth?: OIDCAuth | null;
   resHeaders?: Headers;
   /** Better Auth session id only — never the session token. */
@@ -160,6 +168,7 @@ export const createContextInner = async (params?: {
   authenticatedAt?: Date | null;
   authMethod?: AuthMethod | null;
   clientIp?: string | null;
+  credentialIssuedAt?: Date | null;
   marketAccessToken?: string;
   oidcAuth?: OIDCAuth | null;
   sessionId?: string | null;
@@ -175,6 +184,7 @@ export const createContextInner = async (params?: {
     authenticatedAt: params?.authenticatedAt ?? null,
     authMethod: params?.authMethod ?? null,
     clientIp: params?.clientIp,
+    credentialIssuedAt: params?.credentialIssuedAt ?? null,
     marketAccessToken: params?.marketAccessToken,
     oidcAuth: params?.oidcAuth,
     resHeaders: responseHeaders,
@@ -193,31 +203,27 @@ export type LambdaContext = Awaited<ReturnType<typeof createContextInner>>;
  * @link https://trpc.io/docs/v11/context
  */
 export const createLambdaContext = async (request: NextRequest): Promise<LambdaContext> => {
-  // we have a special header to debug the api endpoint in development mode
-  // IT WON'T GO INTO PRODUCTION ANYMORE
   const isDebugApi = request.headers.get('lobe-auth-dev-backend-api') === '1';
   const isMockUser = process.env.ENABLE_MOCK_DEV_USER === '1';
 
   if (process.env.NODE_ENV === 'development' && (isDebugApi || isMockUser)) {
+    const now = new Date();
     return createContextInner({
-      // Dev mock is treated as freshly authenticated so local admin mutations work.
-      authenticatedAt: new Date(),
+      authenticatedAt: now,
       authMethod: 'dev-mock',
+      credentialIssuedAt: now,
       userId: process.env.MOCK_DEV_USER_ID,
     });
   }
 
   log('createLambdaContext called for request');
-  // for API-response caching see https://trpc.io/docs/v11/caching
 
   const userAgent = request.headers.get('user-agent') || undefined;
   const clientIp = extractClientIp(request);
 
-  // get marketAccessToken from cookies
   const cookieHeader = request.headers.get('cookie');
   const cookies = cookieHeader ? parse(cookieHeader) : {};
   const marketAccessToken = cookies['mp_token'];
-  // Extract upstream trace context for parent linking
   const traceContext = extractTraceContext(request.headers);
 
   log('marketAccessToken from cookie:', marketAccessToken ? '[HIDDEN]' : 'undefined');
@@ -236,9 +242,9 @@ export const createLambdaContext = async (request: NextRequest): Promise<LambdaC
   log('X-API-Key header: %s', apiKeyToken ? 'exists' : 'not found');
 
   if (apiKeyToken) {
-    const apiKeyUserId = await validateApiKeyUserId(apiKeyToken);
+    const apiKeyAuth = await validateApiKeyAuth(apiKeyToken);
 
-    if (!apiKeyUserId) {
+    if (!apiKeyAuth) {
       log('API key authentication failed; rejecting request without fallback auth');
 
       return createContextInner({
@@ -249,22 +255,21 @@ export const createLambdaContext = async (request: NextRequest): Promise<LambdaC
       });
     }
 
-    log('API key authentication successful, userId: %s', apiKeyUserId);
+    log('API key authentication successful, userId: %s', apiKeyAuth.userId);
 
     return createContextInner({
       ...commonContext,
-      // API keys never qualify as recent interactive reauthentication.
       authenticatedAt: null,
       authMethod: 'api-key',
+      credentialIssuedAt: apiKeyAuth.credentialIssuedAt,
       traceContext,
-      userId: apiKeyUserId,
+      userId: apiKeyAuth.userId,
     });
   }
 
   let userId;
   let oidcAuth;
 
-  // Prioritize checking for OIDC authentication (both standard Authorization and custom Oidc-Auth headers)
   if (authEnv.ENABLE_OIDC) {
     log('OIDC enabled, attempting OIDC authentication');
     const oidcAuthToken = request.headers.get(LOBE_CHAT_OIDC_AUTH_HEADER);
@@ -272,35 +277,33 @@ export const createLambdaContext = async (request: NextRequest): Promise<LambdaC
 
     try {
       if (oidcAuthToken) {
-        // Validate the stateless JWT first, then check the current user state
-        // so banned/deleted accounts cannot keep using an already-issued token.
         const tokenInfo = await validateOIDCJWT(oidcAuthToken);
 
         oidcAuth = {
           payload: tokenInfo.tokenData,
-          ...tokenInfo.tokenData, // Spread payload into oidcAuth
-          sub: tokenInfo.userId, // Use tokenData as payload
+          ...tokenInfo.tokenData,
+          sub: tokenInfo.userId,
         };
         userId = tokenInfo.userId;
 
+        const credentialIssuedAt = extractOidcCredentialIssuedAt(
+          tokenInfo.tokenData as Record<string, unknown>,
+        );
+
         if (securityOn) {
           const db = await getServerDB();
-          const credentialIssuedAt = extractOidcCredentialIssuedAt(
-            tokenInfo.tokenData as Record<string, unknown>,
-          );
           await assertUserActive(db, userId, { credentialIssuedAt });
         }
         log('OIDC authentication successful, userId: %s', userId);
 
-        // Reauth signal: auth_time only — never iat (refresh mints new iat).
         const authenticatedAt = extractOidcAuthenticatedAt(
           tokenInfo.tokenData as Record<string, unknown>,
         );
 
-        log('OIDC authentication successful, creating context and returning');
         return createContextInner({
           authenticatedAt,
           authMethod: 'oidc',
+          credentialIssuedAt,
           oidcAuth,
           ...commonContext,
           traceContext,
@@ -318,7 +321,6 @@ export const createLambdaContext = async (request: NextRequest): Promise<LambdaC
         });
       }
 
-      // If OIDC authentication fails, log error and continue with other authentication methods
       if (oidcAuthToken) {
         log('OIDC authentication failed, error: %O', error);
         console.error('OIDC authentication failed, trying other methods:', error);
@@ -326,7 +328,6 @@ export const createLambdaContext = async (request: NextRequest): Promise<LambdaC
     }
   }
 
-  // If OIDC is not enabled or validation fails, try Better Auth authentication
   log('Attempting Better Auth authentication');
   try {
     const session = await auth.api.getSession({
@@ -340,16 +341,17 @@ export const createLambdaContext = async (request: NextRequest): Promise<LambdaC
       const rawCreatedAt = session.session?.createdAt;
       const sessionCreatedAt =
         rawCreatedAt instanceof Date ? rawCreatedAt : rawCreatedAt ? new Date(rawCreatedAt) : null;
-      const authenticatedAt =
+      const issuedAt =
         sessionCreatedAt && !Number.isNaN(sessionCreatedAt.getTime()) ? sessionCreatedAt : null;
       const sessionId = typeof session.session?.id === 'string' ? session.session.id : null;
 
-      // Cookie cache can return banned/revoked sessions; re-check DB when security on.
+      // Security epoch uses credentialIssuedAt (= session.createdAt, rotated after preserve-revoke).
+      // Reauth uses authenticatedAt (same session.createdAt for BA login/rotation).
       if (securityOn) {
         const db = await getServerDB();
         try {
           await assertUserActive(db, userId, {
-            credentialIssuedAt: authenticatedAt,
+            credentialIssuedAt: issuedAt,
           });
         } catch (error) {
           if (isOIDCUserInactiveError(error)) {
@@ -366,8 +368,9 @@ export const createLambdaContext = async (request: NextRequest): Promise<LambdaC
 
       return createContextInner({
         ...commonContext,
-        authenticatedAt,
+        authenticatedAt: issuedAt,
         authMethod: 'better-auth',
+        credentialIssuedAt: issuedAt,
         sessionId,
         traceContext,
         userId,
@@ -386,7 +389,6 @@ export const createLambdaContext = async (request: NextRequest): Promise<LambdaC
     console.error('better auth err', e);
   }
 
-  // Final return, userId may be undefined
   log(
     'All authentication methods attempted, returning final context, userId: %s',
     userId || 'not authenticated',

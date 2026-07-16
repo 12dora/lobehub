@@ -134,7 +134,7 @@ export const adminUsersRouter = router({
     .query(async ({ ctx, input }) => {
       const service = new AdminUserService(ctx.serverDB);
       try {
-        return await service.getAuditTrail(input);
+        return await service.getAuditTrail(input, { actorUserId: ctx.userId! });
       } catch (error) {
         return mapServiceError(error);
       }

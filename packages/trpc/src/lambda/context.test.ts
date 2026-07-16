@@ -220,6 +220,7 @@ describe('createLambdaContext', () => {
     expect(context.authenticatedAt).toBeNull();
     expect(mockGetSession).not.toHaveBeenCalled();
     expect(mockValidateOIDCJWT).not.toHaveBeenCalled();
+    expect(context.credentialIssuedAt).toBeInstanceOf(Date);
     expect(mockAssertOIDCUserActive).toHaveBeenCalledWith(
       expect.any(Object),
       'api-user',
@@ -310,6 +311,7 @@ describe('createLambdaContext', () => {
     expect(context.authMethod).toBe('better-auth');
     expect(context.sessionId).toBe('sess-ba-1');
     expect(context.authenticatedAt).toEqual(new Date('2024-06-01T00:00:00.000Z'));
+    expect(context.credentialIssuedAt).toEqual(new Date('2024-06-01T00:00:00.000Z'));
     expect(mockGetSession).toHaveBeenCalledOnce();
     expect(mockAssertOIDCUserActive).toHaveBeenCalledWith(
       expect.any(Object),
@@ -341,8 +343,9 @@ describe('createLambdaContext', () => {
 
     expect(context.userId).toBe('oidc-user');
     expect(context.authMethod).toBe('oidc');
-    // auth_time = 1700000000, NOT iat 1700000100
+    // auth_time for reauth; iat for credentialIssuedAt only
     expect(context.authenticatedAt).toEqual(new Date(1_700_000_000 * 1000));
+    expect(context.credentialIssuedAt).toEqual(new Date(1_700_000_100 * 1000));
     expect(context.oidcAuth?.sub).toBe('oidc-user');
     expect(mockAssertOIDCUserActive).toHaveBeenCalledWith(
       expect.any(Object),

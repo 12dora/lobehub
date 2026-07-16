@@ -107,10 +107,12 @@ export const adminUserListItemSchema = z
 
 export type AdminUserListItem = z.infer<typeof adminUserListItemSchema>;
 
-export const adminUsersListOutputSchema = z.object({
-  items: z.array(adminUserListItemSchema),
-  nextCursor: z.string().nullable(),
-});
+export const adminUsersListOutputSchema = z
+  .object({
+    items: z.array(adminUserListItemSchema),
+    nextCursor: z.string().nullable(),
+  })
+  .strict();
 
 export type AdminUsersListOutput = z.infer<typeof adminUsersListOutputSchema>;
 
@@ -125,32 +127,38 @@ export const adminUsersGetInputSchema = z
 export type AdminUsersGetInput = z.infer<typeof adminUsersGetInputSchema>;
 
 /** Provider summary only — never password, tokens, or scope. */
-export const adminUserProviderSummarySchema = z.object({
-  accountIdHint: z.string().nullable().optional(),
-  createdAt: z.date().nullable().optional(),
-  providerId: z.string(),
-});
+export const adminUserProviderSummarySchema = z
+  .object({
+    accountIdHint: z.string().nullable().optional(),
+    createdAt: z.date().nullable().optional(),
+    providerId: z.string(),
+  })
+  .strict();
 
 export type AdminUserProviderSummary = z.infer<typeof adminUserProviderSummarySchema>;
 
-export const adminUserGlobalRoleSchema = z.object({
-  displayName: z.string().nullable().optional(),
-  expiresAt: z.date().nullable().optional(),
-  id: z.string(),
-  name: z.string(),
-});
+export const adminUserGlobalRoleSchema = z
+  .object({
+    displayName: z.string().nullable().optional(),
+    expiresAt: z.date().nullable().optional(),
+    id: z.string(),
+    name: z.string(),
+  })
+  .strict();
 
 export type AdminUserGlobalRole = z.infer<typeof adminUserGlobalRoleSchema>;
 
 /** Safe session metadata for admin detail — never session token. */
-export const adminUserSessionSummarySchema = z.object({
-  createdAt: z.date(),
-  expiresAt: z.date(),
-  id: z.string(),
-  ipAddress: z.string().nullable().optional(),
-  updatedAt: z.date().nullable().optional(),
-  userAgent: z.string().nullable().optional(),
-});
+export const adminUserSessionSummarySchema = z
+  .object({
+    createdAt: z.date(),
+    expiresAt: z.date(),
+    id: z.string(),
+    ipAddress: z.string().nullable().optional(),
+    updatedAt: z.date().nullable().optional(),
+    userAgent: z.string().nullable().optional(),
+  })
+  .strict();
 
 export type AdminUserSessionSummary = z.infer<typeof adminUserSessionSummarySchema>;
 
@@ -166,11 +174,11 @@ export const adminUsersGetOutputSchema = z
     fullName: z.string().nullable(),
     id: z.string(),
     lastActiveAt: z.date().nullable(),
-    providers: z.array(adminUserProviderSummarySchema.strict()),
-    roles: z.array(adminUserGlobalRoleSchema.strict()),
+    providers: z.array(adminUserProviderSummarySchema),
+    roles: z.array(adminUserGlobalRoleSchema),
     sessionCount: z.number().int().nonnegative(),
     /** Bounded recent sessions for the detail page (tokens never included). */
-    sessions: z.array(adminUserSessionSummarySchema.strict()),
+    sessions: z.array(adminUserSessionSummarySchema),
     status: adminUserStatusSchema,
     username: z.string().nullable(),
   })
@@ -199,11 +207,13 @@ export const adminUsersBanInputSchema = z
 
 export type AdminUsersBanInput = z.infer<typeof adminUsersBanInputSchema>;
 
-export const adminUsersBanOutputSchema = z.object({
-  banExpires: z.date().nullable(),
-  banned: z.literal(true),
-  userId: z.string(),
-});
+export const adminUsersBanOutputSchema = z
+  .object({
+    banExpires: z.date().nullable(),
+    banned: z.literal(true),
+    userId: z.string(),
+  })
+  .strict();
 
 export type AdminUsersBanOutput = z.infer<typeof adminUsersBanOutputSchema>;
 
@@ -216,10 +226,12 @@ export const adminUsersUnbanInputSchema = z
 
 export type AdminUsersUnbanInput = z.infer<typeof adminUsersUnbanInputSchema>;
 
-export const adminUsersUnbanOutputSchema = z.object({
-  banned: z.literal(false),
-  userId: z.string(),
-});
+export const adminUsersUnbanOutputSchema = z
+  .object({
+    banned: z.literal(false),
+    userId: z.string(),
+  })
+  .strict();
 
 export type AdminUsersUnbanOutput = z.infer<typeof adminUsersUnbanOutputSchema>;
 
@@ -236,10 +248,12 @@ export const adminUsersRevokeSessionsInputSchema = z
 
 export type AdminUsersRevokeSessionsInput = z.infer<typeof adminUsersRevokeSessionsInputSchema>;
 
-export const adminUsersRevokeSessionsOutputSchema = z.object({
-  revokedCount: z.number().int().nonnegative(),
-  userId: z.string(),
-});
+export const adminUsersRevokeSessionsOutputSchema = z
+  .object({
+    revokedCount: z.number().int().nonnegative(),
+    userId: z.string(),
+  })
+  .strict();
 
 export type AdminUsersRevokeSessionsOutput = z.infer<typeof adminUsersRevokeSessionsOutputSchema>;
 
@@ -267,11 +281,13 @@ export type AdminUsersReplaceGlobalRolesInput = z.infer<
   typeof adminUsersReplaceGlobalRolesInputSchema
 >;
 
-export const adminUsersReplaceGlobalRolesOutputSchema = z.object({
-  expiresAt: z.date().nullable().optional(),
-  roleNames: z.array(z.string()),
-  userId: z.string(),
-});
+export const adminUsersReplaceGlobalRolesOutputSchema = z
+  .object({
+    expiresAt: z.date().nullable().optional(),
+    roleNames: z.array(z.string()),
+    userId: z.string(),
+  })
+  .strict();
 
 export type AdminUsersReplaceGlobalRolesOutput = z.infer<
   typeof adminUsersReplaceGlobalRolesOutputSchema
@@ -297,22 +313,26 @@ export type AdminUsersGetAuditTrailInputParsed = z.output<
 >;
 
 /** Redacted audit row subset for the user detail page. */
-export const adminUserAuditItemSchema = z.object({
-  action: z.string(),
-  actorUserId: z.string().nullable().optional(),
-  createdAt: z.date(),
-  id: z.string(),
-  reason: z.string().nullable().optional(),
-  result: z.enum(['success', 'failure', 'denied']),
-  targetId: z.string().nullable().optional(),
-  targetType: z.string(),
-});
+export const adminUserAuditItemSchema = z
+  .object({
+    action: z.string(),
+    actorUserId: z.string().nullable().optional(),
+    createdAt: z.date(),
+    id: z.string(),
+    reason: z.string().nullable().optional(),
+    result: z.enum(['success', 'failure', 'denied']),
+    targetId: z.string().nullable().optional(),
+    targetType: z.string(),
+  })
+  .strict();
 
 export type AdminUserAuditItem = z.infer<typeof adminUserAuditItemSchema>;
 
-export const adminUsersGetAuditTrailOutputSchema = z.object({
-  items: z.array(adminUserAuditItemSchema),
-  nextCursor: z.string().nullable(),
-});
+export const adminUsersGetAuditTrailOutputSchema = z
+  .object({
+    items: z.array(adminUserAuditItemSchema),
+    nextCursor: z.string().nullable(),
+  })
+  .strict();
 
 export type AdminUsersGetAuditTrailOutput = z.infer<typeof adminUsersGetAuditTrailOutputSchema>;
