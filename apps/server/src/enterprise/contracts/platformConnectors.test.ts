@@ -17,6 +17,7 @@ import {
   connectorSharedSecretMutationSchema,
   connectorToolDraftSchema,
   managedConnectorSchema,
+  normalizeAdminConnectorCreateInput,
   normalizeAdminConnectorUpdateInput,
   userConnectorDisconnectInputSchema,
   userConnectorGetAuthorizationStatusInputSchema,
@@ -152,6 +153,7 @@ describe('platform connector contracts', () => {
       draft,
       update,
       'https://aihub.example.test/oauth/connector/callback',
+      { current: [], replacement: [] },
     );
     expect(normalized.candidate).toMatchObject({
       credentialMode: 'none',
@@ -180,8 +182,121 @@ describe('platform connector contracts', () => {
           sharedSecret: { operation: 'replace', value: { apiKey: 'fake' } },
         },
         'https://aihub.example.test/oauth/connector/callback',
+        { current: [], replacement: [] },
       ),
     ).toThrow();
+  });
+
+  it('distinguishes undefined/null and reflects Secret clear in the complete candidate', () => {
+    const basePatch = {
+      expectedDraftToken: 'd'.repeat(64),
+      expectedRevision: 0,
+      id: 'connector-1',
+      reason: 'rotate credentials',
+    };
+    expect(() =>
+      normalizeAdminConnectorUpdateInput(
+        draft,
+        { ...basePatch, oauthConfig: null },
+        'https://aihub.example.test/oauth/connector/callback',
+        { current: [], replacement: [] },
+      ),
+    ).toThrow();
+    const configuredOAuthDraft = adminConnectorDraftSchema.parse({
+      ...draft,
+      oauthClientSecret: { configured: true, fingerprint: 'fp', updatedAt: null },
+    });
+    const cleared = normalizeAdminConnectorUpdateInput(
+      configuredOAuthDraft,
+      { ...basePatch, oauthClientSecret: { operation: 'clear' } },
+      'https://aihub.example.test/oauth/connector/callback',
+      { current: ['old-random-secret'], replacement: [] },
+    );
+    expect(cleared.candidate.oauthClientSecret).toEqual(secretState);
+    expect(() =>
+      normalizeAdminConnectorUpdateInput(
+        draft,
+        { ...basePatch, oauthClientSecret: { operation: 'replace', value: 'replacement-value' } },
+        'https://aihub.example.test/oauth/connector/callback',
+        { current: [], replacement: [] },
+      ),
+    ).toThrowError('PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED');
+  });
+
+  it('requires create/update normalizers to reject current and replacement secrets in persisted text', () => {
+    const currentSecret = 'old-random-secret-123';
+    const replacementSecret = 'new-random-secret-456';
+    const leaves = { current: [currentSecret], replacement: [replacementSecret] };
+    const basePatch = {
+      expectedDraftToken: 'd'.repeat(64),
+      expectedRevision: 0,
+      id: 'connector-1',
+      reason: 'safe reason',
+    };
+    for (const patch of [
+      { ...basePatch, description: `leak ${currentSecret}` },
+      { ...basePatch, displayName: `leak ${replacementSecret}` },
+      {
+        ...basePatch,
+        tools: [
+          {
+            description: `leak ${currentSecret}`,
+            displayName: 'Tool',
+            enabled: true,
+            id: 'tool-1',
+            inputSchema: { properties: { value: { example: replacementSecret } } },
+            platformPolicy: 'allow' as const,
+            requiresConfirmation: false,
+            riskLevel: 'low' as const,
+            sort: 0,
+            toolKey: 'tool',
+          },
+        ],
+      },
+    ]) {
+      expect(() =>
+        normalizeAdminConnectorUpdateInput(
+          draft,
+          patch,
+          'https://aihub.example.test/oauth/connector/callback',
+          leaves,
+        ),
+      ).toThrowError('PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED');
+    }
+
+    const noneDraft = adminConnectorDraftSchema.parse({
+      ...draft,
+      credentialMode: 'none',
+      oauthClientSecret: secretState,
+      oauthConfig: null,
+      sharedSecret: secretState,
+    });
+    expect(() =>
+      normalizeAdminConnectorCreateInput(
+        {
+          credentialMode: 'none',
+          displayName: 'Connector',
+          endpoint: 'https://example.test',
+          key: 'connector',
+          reason: `reason ${replacementSecret}`,
+        },
+        noneDraft,
+        leaves,
+      ),
+    ).toThrowError('PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED');
+    expect(() =>
+      normalizeAdminConnectorCreateInput(
+        {
+          credentialMode: 'none',
+          displayName: `Connector ${currentSecret}`,
+          endpoint: 'https://example.test',
+          key: 'connector',
+          reason: 'create connector',
+        },
+        noneDraft,
+        leaves,
+      ),
+    ).toThrowError('PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED');
   });
 
   it('rejects credential-bearing endpoints, sensitive JSON, and secret-bearing reason text', () => {
@@ -224,6 +339,7 @@ describe('platform connector contracts', () => {
       'Connector operation failed',
     );
     for (const unsafe of [
+      'Discovery complete',
       'Authorization: Bearer fake-token-value',
       'request failed with sk-abcdefghijklmnopqrstuvwxyz123456',
       'request failed at https://user:password@example.test/path',

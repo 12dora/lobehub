@@ -5,6 +5,7 @@ import {
   connectorRuntimeResolveInputSchema,
   publishedConnectorToolSchema,
   trustedConnectorOAuthBindingSchema,
+  trustedConnectorToolPolicyRecordSchema,
   trustedPublishedConnectorSchema,
 } from '../../contracts/platformConnectors';
 import { PlatformConnectorContractError } from './errors';
@@ -13,18 +14,21 @@ import { resolveEffectiveConnectorToolPolicy } from './toolPolicy';
 type RuntimeResolveInput = z.input<typeof connectorRuntimeResolveInputSchema>;
 type TrustedPublishedConnector = z.input<typeof trustedPublishedConnectorSchema>;
 type TrustedOAuthBinding = z.input<typeof trustedConnectorOAuthBindingSchema>;
+type TrustedToolPolicyRecord = z.input<typeof trustedConnectorToolPolicyRecordSchema>;
 
 interface ResolveConnectorRuntimeOptions {
   binding?: TrustedOAuthBinding | null;
   catalog: TrustedPublishedConnector;
   input: RuntimeResolveInput;
   now?: Date;
+  policy: TrustedToolPolicyRecord;
 }
 
 /** Resolve only from a trusted Published catalog snapshot and a caller-owned binding. */
 export const resolveConnectorRuntime = (options: ResolveConnectorRuntimeOptions) => {
   const input = connectorRuntimeResolveInputSchema.parse(options.input);
   const catalog = trustedPublishedConnectorSchema.parse(options.catalog);
+  const policyRecord = trustedConnectorToolPolicyRecordSchema.parse(options.policy);
   const now = options.now ?? new Date();
 
   if (
@@ -33,15 +37,23 @@ export const resolveConnectorRuntime = (options: ResolveConnectorRuntimeOptions)
   ) {
     throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_PUBLISHED');
   }
+  if (
+    policyRecord.connectorId !== input.connectorId ||
+    policyRecord.publishedRevision !== catalog.publishedRevision ||
+    policyRecord.toolKey !== input.toolKey ||
+    policyRecord.userId !== input.userId
+  ) {
+    throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_TOOL_DENIED');
+  }
 
   const tool = catalog.tools.find((candidate) => candidate.toolKey === input.toolKey);
   if (!tool || !tool.enabled) {
     throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_TOOL_DENIED');
   }
   const policy = resolveEffectiveConnectorToolPolicy({
-    agentAllowed: input.agentAllowed,
+    agentAllowed: policyRecord.agentAllowed,
     platformPolicy: tool.platformPolicy,
-    userEnabled: input.userEnabled,
+    userEnabled: policyRecord.userEnabled,
   });
   if (!policy.allowed) {
     throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_TOOL_DENIED');
@@ -84,6 +96,10 @@ export const resolveConnectorRuntime = (options: ResolveConnectorRuntimeOptions)
     (binding.data.expiresAt !== null && binding.data.expiresAt <= now)
   ) {
     throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_BINDING_OWNERSHIP_MISMATCH');
+  }
+  const allowedScopes = new Set(catalog.allowedScopes);
+  if (binding.data.scopes.some((scope) => !allowedScopes.has(scope))) {
+    throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_SCOPE_NOT_ALLOWED');
   }
   return connectorRuntimeResolutionSchema.parse({
     ...base,

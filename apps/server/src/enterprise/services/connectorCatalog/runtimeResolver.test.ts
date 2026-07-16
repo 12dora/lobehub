@@ -15,9 +15,15 @@ const tool = {
   toolKey: 'search',
 };
 const input = {
-  agentAllowed: true,
   connectorId: 'connector-1',
   expectedPublishedRevision: 4,
+  toolKey: 'search',
+  userId: 'user-1',
+};
+const policy = {
+  agentAllowed: true,
+  connectorId: 'connector-1',
+  publishedRevision: 4,
   toolKey: 'search',
   userEnabled: true,
   userId: 'user-1',
@@ -33,7 +39,11 @@ const catalogBase = {
 describe('resolveConnectorRuntime', () => {
   it('returns a discriminated no-credential resolution from the trusted Published revision', () => {
     expect(
-      resolveConnectorRuntime({ catalog: { ...catalogBase, credentialMode: 'none' }, input }),
+      resolveConnectorRuntime({
+        catalog: { ...catalogBase, credentialMode: 'none' },
+        input,
+        policy,
+      }),
     ).toMatchObject({
       connectorId: 'connector-1',
       credentialMode: 'none',
@@ -51,6 +61,7 @@ describe('resolveConnectorRuntime', () => {
           credentials: { apiKey: 'fake-shared-key' },
         },
         input,
+        policy,
       }),
     ).toMatchObject({
       credentialMode: 'shared_service_account',
@@ -72,9 +83,14 @@ describe('resolveConnectorRuntime', () => {
     expect(
       resolveConnectorRuntime({
         binding,
-        catalog: { ...catalogBase, credentialMode: 'per_user_oauth' },
+        catalog: {
+          ...catalogBase,
+          allowedScopes: ['issues:read'],
+          credentialMode: 'per_user_oauth',
+        },
         input,
         now: new Date('2029-01-01T00:00:00Z'),
+        policy,
       }),
     ).toMatchObject({ bindingId: 'binding-1', credentialMode: 'per_user_oauth', userId: 'user-1' });
 
@@ -87,9 +103,14 @@ describe('resolveConnectorRuntime', () => {
       expect(() =>
         resolveConnectorRuntime({
           binding: staleBinding,
-          catalog: { ...catalogBase, credentialMode: 'per_user_oauth' },
+          catalog: {
+            ...catalogBase,
+            allowedScopes: ['issues:read'],
+            credentialMode: 'per_user_oauth',
+          },
           input,
           now: new Date('2029-01-01T00:00:00Z'),
+          policy,
         }),
       ).toThrowError('PLATFORM_CONNECTOR_BINDING_OWNERSHIP_MISMATCH');
     }
@@ -122,6 +143,51 @@ describe('resolveConnectorRuntime', () => {
         input,
       },
     ];
-    for (const item of cases) expect(() => resolveConnectorRuntime(item)).toThrow();
+    for (const item of cases) expect(() => resolveConnectorRuntime({ ...item, policy })).toThrow();
+  });
+
+  it('rejects untrusted policy booleans, forged trusted policy identity, and scope expansion', () => {
+    expect(() =>
+      resolveConnectorRuntime({
+        catalog: { ...catalogBase, credentialMode: 'none' },
+        input: { ...input, agentAllowed: true } as never,
+        policy,
+      }),
+    ).toThrow();
+    for (const forgedPolicy of [
+      { ...policy, connectorId: 'other-connector' },
+      { ...policy, publishedRevision: 3 },
+      { ...policy, toolKey: 'other-tool' },
+      { ...policy, userId: 'other-user' },
+    ]) {
+      expect(() =>
+        resolveConnectorRuntime({
+          catalog: { ...catalogBase, credentialMode: 'none' },
+          input,
+          policy: forgedPolicy,
+        }),
+      ).toThrowError('PLATFORM_CONNECTOR_TOOL_DENIED');
+    }
+    expect(() =>
+      resolveConnectorRuntime({
+        binding: {
+          accessToken: 'fake-access-token',
+          bindingId: 'binding-1',
+          connectorId: 'connector-1',
+          expiresAt: null,
+          publishedRevision: 4,
+          scopes: ['issues:write'],
+          status: 'connected',
+          userId: 'user-1',
+        },
+        catalog: {
+          ...catalogBase,
+          allowedScopes: ['issues:read'],
+          credentialMode: 'per_user_oauth',
+        },
+        input,
+        policy,
+      }),
+    ).toThrowError('PLATFORM_CONNECTOR_SCOPE_NOT_ALLOWED');
   });
 });

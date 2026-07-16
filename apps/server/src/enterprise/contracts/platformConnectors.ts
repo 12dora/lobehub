@@ -10,7 +10,8 @@ const connectorKeySchema = z
   .max(64)
   .regex(/^[a-z0-9][a-z0-9._-]*$/);
 const connectorToolKeySchema = z.string().trim().min(1).max(200);
-const containsCredentialBearingUrl = (value: string): boolean => {
+export const containsConnectorCredentialMaterial = (value: string): boolean => {
+  if (containsSensitiveMaterial(value)) return true;
   if (isCredentialBearingUrl(value)) return true;
   return (value.match(/https?:\/\/\S+/giu) ?? []).some(isCredentialBearingUrl);
 };
@@ -19,35 +20,25 @@ const reasonSchema = z
   .trim()
   .min(1)
   .max(2000)
-  .refine(
-    (value) => !containsSensitiveMaterial(value) && !containsCredentialBearingUrl(value),
-    'secret material is not allowed',
-  );
+  .refine((value) => !containsConnectorCredentialMaterial(value), 'secret material is not allowed');
 
 const publicTextSchema = z
   .string()
   .trim()
   .max(4000)
-  .refine(
-    (value) => !containsSensitiveMaterial(value) && !containsCredentialBearingUrl(value),
-    'secret material is not allowed',
-  );
+  .refine((value) => !containsConnectorCredentialMaterial(value), 'secret material is not allowed');
 const publicDisplayNameSchema = z
   .string()
   .trim()
   .min(1)
   .max(200)
-  .refine(
-    (value) => !containsSensitiveMaterial(value) && !containsCredentialBearingUrl(value),
-    'secret material is not allowed',
-  );
-export const connectorSafeMessageSchema = z
-  .string()
-  .max(500)
-  .refine(
-    (value) => !containsSensitiveMaterial(value) && !containsCredentialBearingUrl(value),
-    'secret material is not allowed',
-  );
+  .refine((value) => !containsConnectorCredentialMaterial(value), 'secret material is not allowed');
+export const CONNECTOR_SAFE_MESSAGES = [
+  'Connector operation failed',
+  'Connector operation pending',
+  'Connector operation succeeded',
+] as const;
+export const connectorSafeMessageSchema = z.enum(CONNECTOR_SAFE_MESSAGES);
 
 const validateJsonSchema = (
   value: unknown,
@@ -65,7 +56,7 @@ const validateJsonSchema = (
     if (
       secretBearingKeyword &&
       typeof value === 'string' &&
-      (containsSensitiveMaterial(value) || containsCredentialBearingUrl(value))
+      containsConnectorCredentialMaterial(value)
     ) {
       ctx.addIssue({ code: 'custom', message: 'secret material is not allowed', path });
     }
@@ -120,7 +111,7 @@ const normalizeReturnToForValidation = (value: string): string => {
 const containsControlCharacter = (value: string): boolean =>
   [...value].some((character) => {
     const codePoint = character.codePointAt(0)!;
-    return codePoint <= 0x1f || codePoint === 0x7f;
+    return codePoint <= 31 || codePoint === 127;
   });
 
 export const connectorReturnToSchema = z
@@ -449,19 +440,151 @@ export const adminConnectorGetOutputSchema = z
 
 const clearSecretMutation = { operation: 'clear' } as const;
 const emptySecretState = { configured: false, fingerprint: null, updatedAt: null } as const;
+const configuredSecretState = { configured: true, fingerprint: null, updatedAt: null } as const;
 const clearOnlySecretMutationSchema = z.object({ operation: z.literal('clear') }).strict();
+const connectorSecretLeavesInputSchema = z
+  .object({
+    current: z.array(z.string().min(1).max(32_768)).max(1000),
+    replacement: z.array(z.string().min(1).max(32_768)).max(1000),
+  })
+  .strict();
+
+type SecretMutation =
+  | z.infer<typeof connectorOAuthClientSecretMutationSchema>
+  | z.infer<typeof connectorSharedSecretMutationSchema>
+  | undefined;
+
+const applySecretMutationState = (
+  current: z.infer<typeof connectorSecretStateSchema>,
+  mutation: SecretMutation,
+  switchingMode: boolean,
+) => {
+  if (mutation?.operation === 'clear') return emptySecretState;
+  if (mutation?.operation === 'replace') return configuredSecretState;
+  return switchingMode ? emptySecretState : current;
+};
+
+const assertNoKnownSecret = (value: unknown, secretLeaves: ReadonlySet<string>): void => {
+  if (typeof value === 'string') {
+    if (
+      containsConnectorCredentialMaterial(value) ||
+      [...secretLeaves].some((secret) => value.includes(secret))
+    ) {
+      throw new Error('PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED');
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item) => assertNoKnownSecret(item, secretLeaves));
+    return;
+  }
+  if (!value || typeof value !== 'object') return;
+  Object.values(value).forEach((item) => assertNoKnownSecret(item, secretLeaves));
+};
+
+const assertConnectorPersistentFieldsSafe = (
+  draft: z.infer<typeof adminConnectorDraftSchema>,
+  reason: string,
+  leavesInput: z.input<typeof connectorSecretLeavesInputSchema>,
+): void => {
+  const leaves = connectorSecretLeavesInputSchema.parse(leavesInput);
+  const secretLeaves = new Set([...leaves.current, ...leaves.replacement]);
+  assertNoKnownSecret(reason, secretLeaves);
+  assertNoKnownSecret(
+    {
+      connectionTestMessage: draft.connectionTest?.sanitizedMessage,
+      description: draft.description,
+      displayName: draft.displayName,
+      endpoint: draft.endpoint,
+      key: draft.key,
+      oauthConfig: draft.oauthConfig,
+      tools: draft.tools.map((tool) => ({
+        description: tool.description,
+        displayName: tool.displayName,
+        inputSchema: tool.inputSchema,
+        toolKey: tool.toolKey,
+      })),
+    },
+    secretLeaves,
+  );
+};
+
+const getSecretLeaves = (
+  leavesInput: z.input<typeof connectorSecretLeavesInputSchema>,
+): ReadonlySet<string> => {
+  const leaves = connectorSecretLeavesInputSchema.parse(leavesInput);
+  return new Set([...leaves.current, ...leaves.replacement]);
+};
+
+const collectStringValues = (value: unknown, output: Set<string>): void => {
+  if (typeof value === 'string') {
+    if (value.length > 0) output.add(value);
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectStringValues(item, output));
+    return;
+  }
+  if (!value || typeof value !== 'object') return;
+  Object.values(value).forEach((item) => collectStringValues(item, output));
+};
+
+const assertReplacementLeavesComplete = (
+  mutations: SecretMutation[],
+  leavesInput: z.input<typeof connectorSecretLeavesInputSchema>,
+): void => {
+  const provided = new Set(connectorSecretLeavesInputSchema.parse(leavesInput).replacement);
+  const actual = new Set<string>();
+  for (const mutation of mutations) {
+    if (mutation?.operation === 'replace') collectStringValues(mutation.value, actual);
+  }
+  if ([...actual].some((secret) => !provided.has(secret))) {
+    throw new Error('PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED');
+  }
+};
+
+export const normalizeAdminConnectorCreateInput = (
+  input: z.input<typeof adminConnectorCreateDraftInputSchema>,
+  draftInput: z.input<typeof adminConnectorDraftSchema>,
+  secretLeaves: z.input<typeof connectorSecretLeavesInputSchema>,
+) => {
+  const command = adminConnectorCreateDraftInputSchema.parse(input);
+  const draft = adminConnectorDraftSchema.parse(draftInput);
+  assertReplacementLeavesComplete(
+    [
+      command.credentialMode === 'shared_service_account' ? command.sharedSecret : undefined,
+      command.credentialMode === 'per_user_oauth' ? command.oauthClientSecret : undefined,
+    ],
+    secretLeaves,
+  );
+  assertConnectorPersistentFieldsSafe(draft, command.reason, secretLeaves);
+  assertNoKnownSecret(
+    {
+      description: command.description,
+      displayName: command.displayName,
+      endpoint: command.endpoint,
+      key: command.key,
+      oauthConfig: command.credentialMode === 'per_user_oauth' ? command.oauthConfig : null,
+      tools: command.tools,
+    },
+    getSecretLeaves(secretLeaves),
+  );
+  return { command, draft };
+};
 
 /** Merge a patch with the current complete Draft and re-validate the credential discriminant. */
 export const normalizeAdminConnectorUpdateInput = (
   currentInput: z.input<typeof adminConnectorDraftSchema>,
   patchInput: z.input<typeof adminConnectorUpdateDraftInputSchema>,
   serverRedirectUri: string,
+  secretLeaves: z.input<typeof connectorSecretLeavesInputSchema>,
 ) => {
   const current = adminConnectorDraftSchema.parse(currentInput);
   const patch = adminConnectorUpdateDraftInputSchema.parse(patchInput);
   const targetMode = patch.credentialMode ?? current.credentialMode;
   const switchingMode = targetMode !== current.credentialMode;
   const redirectUri = httpUrlSchema.parse(serverRedirectUri);
+  assertReplacementLeavesComplete([patch.sharedSecret, patch.oauthClientSecret], secretLeaves);
 
   if (targetMode !== 'shared_service_account' && patch.sharedSecret) {
     clearOnlySecretMutationSchema.parse(patch.sharedSecret);
@@ -470,6 +593,9 @@ export const normalizeAdminConnectorUpdateInput = (
     clearOnlySecretMutationSchema.parse(patch.oauthClientSecret);
   }
   if (targetMode !== 'per_user_oauth') z.null().optional().parse(patch.oauthConfig);
+  if (targetMode === 'per_user_oauth' && patch.oauthConfig === null) {
+    adminConnectorOAuthConfigInputSchema.parse(patch.oauthConfig);
+  }
 
   const oauthConfig =
     targetMode === 'per_user_oauth'
@@ -501,15 +627,28 @@ export const normalizeAdminConnectorUpdateInput = (
     ...(patch.transport !== undefined && { transport: patch.transport }),
     credentialMode: targetMode,
     oauthClientSecret:
-      targetMode === 'per_user_oauth' && !switchingMode
-        ? current.oauthClientSecret
+      targetMode === 'per_user_oauth'
+        ? applySecretMutationState(
+            current.credentialMode === 'per_user_oauth'
+              ? current.oauthClientSecret
+              : emptySecretState,
+            patch.oauthClientSecret,
+            switchingMode,
+          )
         : emptySecretState,
     oauthConfig,
     sharedSecret:
-      targetMode === 'shared_service_account' && !switchingMode
-        ? current.sharedSecret
+      targetMode === 'shared_service_account'
+        ? applySecretMutationState(
+            current.credentialMode === 'shared_service_account'
+              ? current.sharedSecret
+              : emptySecretState,
+            patch.sharedSecret,
+            switchingMode,
+          )
         : emptySecretState,
   });
+  assertConnectorPersistentFieldsSafe(candidate, patch.reason, secretLeaves);
 
   return {
     candidate,
@@ -694,11 +833,9 @@ export const connectorEffectiveToolPolicyOutputSchema = z
 
 export const connectorRuntimeResolveInputSchema = z
   .object({
-    agentAllowed: z.boolean(),
     connectorId: connectorIdSchema,
     expectedPublishedRevision: z.number().int().positive(),
     toolKey: connectorToolKeySchema,
-    userEnabled: z.boolean(),
     userId: connectorIdSchema,
   })
   .strict();
@@ -753,9 +890,24 @@ export const trustedPublishedConnectorSchema = z.discriminatedUnion('credentialM
     })
     .strict(),
   trustedPublishedConnectorBaseSchema
-    .extend({ credentialMode: z.literal('per_user_oauth') })
+    .extend({
+      allowedScopes: connectorScopesSchema,
+      credentialMode: z.literal('per_user_oauth'),
+    })
     .strict(),
 ]);
+
+/** Trusted server record; policy booleans never come from the request identity payload. */
+export const trustedConnectorToolPolicyRecordSchema = z
+  .object({
+    agentAllowed: z.boolean(),
+    connectorId: connectorIdSchema,
+    publishedRevision: z.number().int().positive(),
+    toolKey: connectorToolKeySchema,
+    userEnabled: z.boolean(),
+    userId: connectorIdSchema,
+  })
+  .strict();
 
 export const trustedConnectorOAuthBindingSchema = z
   .object({
