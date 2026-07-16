@@ -92,10 +92,14 @@ export const useSkillEditor = (snapshot: AdminSkillGetOutput | undefined, editab
   useEffect(() => {
     if (!snapshot) return;
     const hydrationKey = hydrationKeyOf(snapshot, editable);
-    if (
-      hydratedKeyRef.current === hydrationKey ||
-      rejectedHydrationKeyRef.current === hydrationKey
-    ) {
+    if (hydratedKeyRef.current === hydrationKey) {
+      // Returning to the still-active Skill is an explicit reset boundary for a
+      // previously rejected target. A later request for that target must ask
+      // again instead of being permanently ignored.
+      rejectedHydrationKeyRef.current = null;
+      return;
+    }
+    if (rejectedHydrationKeyRef.current === hydrationKey) {
       return;
     }
 
