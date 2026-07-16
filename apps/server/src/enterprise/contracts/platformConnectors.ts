@@ -490,27 +490,56 @@ const trustedSecretContexts = new WeakMap<
   }
 >();
 
-const collectSecretLeafValues = (value: unknown, output: Set<string>): void => {
+const KNOWN_SECRET_STRUCTURE_KEYS = new Set([
+  'accesstoken',
+  'apikey',
+  'bearertoken',
+  'clientsecret',
+  'oauthaccesstoken',
+  'password',
+  'refreshtoken',
+  'secretaccesskey',
+  'sessiontoken',
+  'username',
+]);
+const DYNAMIC_SECRET_CONTAINER_KEYS = new Set(['customheaders', 'headers']);
+const normalizeSecretStructureKey = (key: string): string =>
+  key.toLowerCase().replaceAll(/[^a-z0-9]/g, '');
+
+const collectSecretLeafValues = (
+  value: unknown,
+  output: Set<string>,
+  dynamicKeys = false,
+): void => {
   if (typeof value === 'string') {
     if (value.length > 0) output.add(value);
     return;
   }
   if (Array.isArray(value)) {
-    value.forEach((item) => collectSecretLeafValues(item, output));
+    value.forEach((item) => collectSecretLeafValues(item, output, dynamicKeys));
     return;
   }
   if (!value || typeof value !== 'object') return;
   Object.entries(value).forEach(([key, item]) => {
-    collectSecretLeafValues(key, output);
-    collectSecretLeafValues(item, output);
+    const normalizedKey = normalizeSecretStructureKey(key);
+    const childHasDynamicKeys = DYNAMIC_SECRET_CONTAINER_KEYS.has(normalizedKey);
+    if (dynamicKeys || (!KNOWN_SECRET_STRUCTURE_KEYS.has(normalizedKey) && !childHasDynamicKeys)) {
+      collectSecretLeafValues(key, output, true);
+    }
+    collectSecretLeafValues(item, output, dynamicKeys || childHasDynamicKeys);
   });
 };
 
+/** Canonical schema-aware collector shared by contracts and services. */
+export const collectConnectorSecretLeaves = (...secretSources: unknown[]): Set<string> => {
+  const leaves = new Set<string>();
+  secretSources.forEach((source) => collectSecretLeafValues(source, leaves));
+  return leaves;
+};
+
 const collectSecretSlots = (sources: ConnectorSecretSlotSources) => {
-  const oauthClientSecret = new Set<string>();
-  const sharedSecret = new Set<string>();
-  collectSecretLeafValues(sources.oauthClientSecret, oauthClientSecret);
-  collectSecretLeafValues(sources.sharedSecret, sharedSecret);
+  const oauthClientSecret = collectConnectorSecretLeaves(sources.oauthClientSecret);
+  const sharedSecret = collectConnectorSecretLeaves(sources.sharedSecret);
   return connectorSecretSlotLeavesSchema.parse({
     oauthClientSecret: [...oauthClientSecret],
     sharedSecret: [...sharedSecret],
@@ -619,31 +648,17 @@ const getSecretLeaves = (secretContext: TrustedConnectorSecretContext): Readonly
   ]);
 };
 
-const collectStringValues = (value: unknown, output: Set<string>): void => {
-  if (typeof value === 'string') {
-    if (value.length > 0) output.add(value);
-    return;
-  }
-  if (Array.isArray(value)) {
-    value.forEach((item) => collectStringValues(item, output));
-    return;
-  }
-  if (!value || typeof value !== 'object') return;
-  Object.entries(value).forEach(([key, item]) => {
-    collectStringValues(key, output);
-    collectStringValues(item, output);
-  });
-};
-
 const assertReplacementLeavesComplete = (
   mutations: { oauthClientSecret: SecretMutation; sharedSecret: SecretMutation },
   secretContext: TrustedConnectorSecretContext,
 ): void => {
   const provided = resolveTrustedSecretLeaves(secretContext).replacement;
   for (const slot of ['oauthClientSecret', 'sharedSecret'] as const) {
-    const actual = new Set<string>();
     const mutation = mutations[slot];
-    if (mutation?.operation === 'replace') collectStringValues(mutation.value, actual);
+    const actual =
+      mutation?.operation === 'replace'
+        ? collectConnectorSecretLeaves(mutation.value)
+        : new Set<string>();
     if (
       actual.size !== provided[slot].length ||
       [...actual].some((secret) => !provided[slot].includes(secret))
@@ -713,13 +728,72 @@ const assertDraftMatchesSecretSlots = (
   }
 };
 
+export const adminConnectorCreateDerivedInputSchema = z
+  .object({
+    id: connectorIdSchema,
+    serverRedirectUri: httpUrlSchema,
+    toolIds: z.array(connectorIdSchema).max(1000),
+  })
+  .strict();
+
 export const normalizeAdminConnectorCreateInput = (
   input: z.input<typeof adminConnectorCreateDraftInputSchema>,
-  draftInput: z.input<typeof adminConnectorDraftSchema>,
+  derivedInput: z.input<typeof adminConnectorCreateDerivedInputSchema>,
   secretContext: TrustedConnectorSecretContext,
 ) => {
   const command = adminConnectorCreateDraftInputSchema.parse(input);
-  const draft = adminConnectorDraftSchema.parse(draftInput);
+  const derivedResult = adminConnectorCreateDerivedInputSchema.safeParse(derivedInput);
+  if (!derivedResult.success) {
+    throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_RESOURCE_MISMATCH');
+  }
+  const derived = derivedResult.data;
+  const tools = command.tools ?? [];
+  if (tools.length !== derived.toolIds.length) {
+    throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_RESOURCE_MISMATCH');
+  }
+  const common = {
+    connectionTest: null,
+    description: command.description ?? null,
+    displayName: command.displayName,
+    enabled: command.enabled ?? true,
+    endpoint: command.endpoint,
+    id: derived.id,
+    key: command.key,
+    revision: 0,
+    sort: command.sort ?? 0,
+    status: 'draft',
+    tools: tools.map((tool, index) => ({ ...tool, id: derived.toolIds[index] })),
+    transport: command.transport,
+  } as const;
+  const draft = adminConnectorDraftSchema.parse(
+    command.credentialMode === 'none'
+      ? {
+          ...common,
+          credentialMode: 'none',
+          oauthClientSecret: emptySecretState,
+          oauthConfig: null,
+          sharedSecret: emptySecretState,
+        }
+      : command.credentialMode === 'shared_service_account'
+        ? {
+            ...common,
+            credentialMode: 'shared_service_account',
+            oauthClientSecret: emptySecretState,
+            oauthConfig: null,
+            sharedSecret: applySecretMutationState(emptySecretState, command.sharedSecret, true),
+          }
+        : {
+            ...common,
+            credentialMode: 'per_user_oauth',
+            oauthClientSecret: applySecretMutationState(
+              emptySecretState,
+              command.oauthClientSecret,
+              true,
+            ),
+            oauthConfig: { ...command.oauthConfig, redirectUri: derived.serverRedirectUri },
+            sharedSecret: emptySecretState,
+          },
+  );
   assertCreateSecretSlots(draft, secretContext);
   assertReplacementLeavesComplete(
     {

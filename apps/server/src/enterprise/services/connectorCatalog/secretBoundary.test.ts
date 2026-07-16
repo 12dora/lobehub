@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { collectConnectorSecretLeaves as collectContractSecretLeaves } from '../../contracts/platformConnectors';
 import {
   assertConnectorPersistentTextSafe,
   collectConnectorSecretLeaves,
@@ -16,12 +17,14 @@ describe('connector secret boundary', () => {
     expect(leaves).toEqual(
       new Set([
         'old-arbitrary-value',
+        'X-Service-Key',
         'old-header-value',
         'new-client-value',
         'user-access-value',
         'user-refresh-value',
       ]),
     );
+    expect(collectConnectorSecretLeaves).toBe(collectContractSecretLeaves);
     for (const secret of leaves) {
       expect(() =>
         assertConnectorPersistentTextSafe(`reason contains ${secret}`, leaves),

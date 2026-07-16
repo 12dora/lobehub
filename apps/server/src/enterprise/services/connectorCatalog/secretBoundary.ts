@@ -1,4 +1,5 @@
 import {
+  collectConnectorSecretLeaves,
   CONNECTOR_OPERATION_MESSAGE_BY_STATUS,
   containsConnectorCredentialMaterial,
 } from '../../contracts/platformConnectors';
@@ -7,23 +8,7 @@ import { PlatformConnectorContractError } from './errors';
 export type ConnectorOperationErrorCategory =
   'auth' | 'invalid_config' | 'network' | 'policy' | 'protocol';
 
-export const collectConnectorSecretLeaves = (...secretSources: unknown[]): Set<string> => {
-  const leaves = new Set<string>();
-  const visit = (value: unknown): void => {
-    if (typeof value === 'string') {
-      if (value.length > 0) leaves.add(value);
-      return;
-    }
-    if (Array.isArray(value)) {
-      value.forEach(visit);
-      return;
-    }
-    if (!value || typeof value !== 'object') return;
-    Object.values(value).forEach(visit);
-  };
-  secretSources.forEach(visit);
-  return leaves;
-};
+export { collectConnectorSecretLeaves };
 
 export const assertConnectorPersistentTextSafe = (
   value: string,

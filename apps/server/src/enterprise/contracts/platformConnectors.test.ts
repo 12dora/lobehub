@@ -6,6 +6,7 @@ import {
   adminConnectorCreateDraftInputSchema,
   adminConnectorDraftSchema,
   adminConnectorUpdateDraftInputSchema,
+  collectConnectorSecretLeaves,
   connectorConnectionTestStateSchema,
   connectorEffectiveToolPolicyOutputSchema,
   connectorOAuthCallbackInputSchema,
@@ -65,6 +66,11 @@ const trustedSecrets = (
     'connector-1',
     replacement,
   );
+const createDerived = {
+  id: 'connector-1',
+  serverRedirectUri: 'https://aihub.example.test/oauth/connector/callback',
+  toolIds: [],
+};
 
 describe('platform connector contracts', () => {
   it('models independent shared and OAuth client secret mutations', () => {
@@ -442,13 +448,6 @@ describe('platform connector contracts', () => {
       ).toThrowError('PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED');
     }
 
-    const sharedDraft = adminConnectorDraftSchema.parse({
-      ...draft,
-      credentialMode: 'shared_service_account',
-      oauthClientSecret: secretState,
-      oauthConfig: null,
-      sharedSecret: { configured: true, fingerprint: null, updatedAt: null },
-    });
     const createContext = await trustedSecrets({}, { sharedSecret: { apiKey: replacementSecret } });
     expect(() =>
       normalizeAdminConnectorCreateInput(
@@ -460,7 +459,7 @@ describe('platform connector contracts', () => {
           reason: `reason ${replacementSecret}`,
           sharedSecret: { operation: 'replace', value: { apiKey: replacementSecret } },
         },
-        sharedDraft,
+        createDerived,
         createContext,
       ),
     ).toThrowError('PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED');
@@ -474,10 +473,44 @@ describe('platform connector contracts', () => {
           reason: 'create connector',
           sharedSecret: { operation: 'replace', value: { apiKey: replacementSecret } },
         },
-        sharedDraft,
+        createDerived,
         createContext,
       ),
     ).toThrowError('PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED');
+  });
+
+  it('constructs create Draft only from the command and server-derived identity', async () => {
+    const context = await trustedSecrets();
+    const command = {
+      credentialMode: 'none' as const,
+      displayName: 'None Connector',
+      endpoint: 'https://none.example.test/mcp',
+      key: 'none-connector',
+      reason: 'create connector',
+    };
+    const normalized = normalizeAdminConnectorCreateInput(command, createDerived, context);
+    expect(normalized.draft).toMatchObject({
+      credentialMode: 'none',
+      displayName: 'None Connector',
+      endpoint: 'https://none.example.test/mcp',
+      id: 'connector-1',
+      key: 'none-connector',
+      oauthConfig: null,
+      status: 'draft',
+    });
+    for (const untrustedDerived of [
+      draft as never,
+      { ...createDerived, extraMetadata: 'attacker-controlled' } as never,
+      { ...createDerived, toolIds: ['unexpected-tool-id'] },
+    ]) {
+      try {
+        normalizeAdminConnectorCreateInput(command, untrustedDerived, context);
+        expect.unreachable('untrusted create Draft metadata must be rejected');
+      } catch (error) {
+        expect(error).toBeInstanceOf(PlatformConnectorContractError);
+        expect(error).toMatchObject({ code: 'PLATFORM_CONNECTOR_RESOURCE_MISMATCH' });
+      }
+    }
   });
 
   it('rejects credential-bearing endpoints, sensitive JSON, and secret-bearing reason text', () => {
@@ -596,6 +629,28 @@ describe('platform connector contracts', () => {
     ]) {
       expect(connectorToolDraftSchema.safeParse({ ...baseTool, inputSchema }).success).toBe(false);
     }
+  });
+
+  it('collects Secret leaves schema-aware while preserving known structured field names', () => {
+    const dynamicSecretKey = 'dynamic-real-secret-key';
+    const leaves = collectConnectorSecretLeaves({
+      apiKey: 'api-key-value',
+      headers: { [dynamicSecretKey]: 'header-secret-value' },
+      nestedDynamicSecret: 'nested-secret-value',
+      password: 'password-value',
+    });
+    expect(leaves).toEqual(
+      new Set([
+        'api-key-value',
+        dynamicSecretKey,
+        'header-secret-value',
+        'nestedDynamicSecret',
+        'nested-secret-value',
+        'password-value',
+      ]),
+    );
+    expect(leaves.has('apiKey')).toBe(false);
+    expect(leaves.has('password')).toBe(false);
   });
 
   it('never exposes endpoint, OAuth client, or secret metadata to ordinary users', () => {
