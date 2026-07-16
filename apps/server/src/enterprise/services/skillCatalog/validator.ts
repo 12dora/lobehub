@@ -148,6 +148,7 @@ const classifyDangerousInstructions = (content: string) => {
   for (const rawLine of content
     .normalize('NFKC')
     .replaceAll(/\p{Cf}/gu, '')
+    .replaceAll(/[‘’‛ʼꞌ]/gu, "'")
     .split(/\r?\n/)) {
     const line = rawLine.replaceAll(QUOTED_FRAGMENT_PATTERN, '').trim();
     if (!line) continue;
