@@ -112,6 +112,9 @@ const builtinModelMap = new Map(
   LOBE_DEFAULT_MODEL_LIST.map((model) => [`${model.providerId}:${model.id}`, model]),
 );
 
+const hasPublishedMetadata = (value: unknown): value is Record<string, unknown> =>
+  isRecord(value) && Object.keys(value).length > 0;
+
 const cacheState = (key: string, state: AiProviderRuntimeState): AiProviderRuntimeState => {
   runtimeCache.set(key, state);
   while (runtimeCache.size > MAX_RUNTIME_CACHE_ENTRIES) {
@@ -200,7 +203,9 @@ export class AiCatalogRuntimeAdapter {
             : undefined;
         models.push({
           ...builtin,
-          abilities: isRecord(rawModel.abilities) ? rawModel.abilities : (builtin?.abilities ?? {}),
+          abilities: hasPublishedMetadata(rawModel.abilities)
+            ? rawModel.abilities
+            : (builtin?.abilities ?? {}),
           config: {
             ...builtin?.config,
             ...(deploymentName ? { deploymentName } : {}),
@@ -215,10 +220,12 @@ export class AiCatalogRuntimeAdapter {
             typeof rawModel.displayName === 'string' ? rawModel.displayName : builtin?.displayName,
           enabled: true,
           id: rawModel.modelKey,
-          parameters: isRecord(rawModel.parameters) ? rawModel.parameters : builtin?.parameters,
-          pricing: isRecord(rawModel.pricing) ? rawModel.pricing : builtin?.pricing,
+          parameters: hasPublishedMetadata(rawModel.parameters)
+            ? rawModel.parameters
+            : builtin?.parameters,
+          pricing: hasPublishedMetadata(rawModel.pricing) ? rawModel.pricing : builtin?.pricing,
           providerId: providerKey,
-          settings: isRecord(rawModel.settings) ? rawModel.settings : builtin?.settings,
+          settings: hasPublishedMetadata(rawModel.settings) ? rawModel.settings : builtin?.settings,
           sort: typeof rawModel.sort === 'number' ? rawModel.sort : undefined,
           source: builtin ? 'builtin' : 'custom',
           type: typeof rawModel.type === 'string' ? rawModel.type : 'chat',
