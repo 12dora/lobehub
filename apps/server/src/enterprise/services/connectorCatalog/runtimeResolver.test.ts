@@ -15,6 +15,7 @@ const tool = {
   toolKey: 'search',
 };
 const input = {
+  agentId: 'agent-1',
   connectorId: 'connector-1',
   expectedPublishedRevision: 4,
   toolKey: 'search',
@@ -22,6 +23,7 @@ const input = {
 };
 const policy = {
   agentAllowed: true,
+  agentId: 'agent-1',
   connectorId: 'connector-1',
   publishedRevision: 4,
   toolKey: 'search',
@@ -155,6 +157,7 @@ describe('resolveConnectorRuntime', () => {
       }),
     ).toThrow();
     for (const forgedPolicy of [
+      { ...policy, agentId: 'other-agent' },
       { ...policy, connectorId: 'other-connector' },
       { ...policy, publishedRevision: 3 },
       { ...policy, toolKey: 'other-tool' },
@@ -168,6 +171,13 @@ describe('resolveConnectorRuntime', () => {
         }),
       ).toThrowError('PLATFORM_CONNECTOR_TOOL_DENIED');
     }
+    expect(() =>
+      resolveConnectorRuntime({
+        catalog: { ...catalogBase, credentialMode: 'none' },
+        input: { ...input, agentId: 'other-agent' },
+        policy,
+      }),
+    ).toThrowError('PLATFORM_CONNECTOR_TOOL_DENIED');
     expect(() =>
       resolveConnectorRuntime({
         binding: {
