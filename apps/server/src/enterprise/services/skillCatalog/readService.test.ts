@@ -159,7 +159,8 @@ describe('SkillCatalogReadService', () => {
     };
     const first = await publish({ skillKey: 'builtin.search', version: '2.0.0' });
     let service = new SkillCatalogReadService(db, { builtinSkills: [builtin] });
-    expect((await service.getPublishedCatalog()).skills).toEqual([
+    const beforeOverride = await service.getPublishedCatalog();
+    expect(beforeOverride.skills).toEqual([
       expect.objectContaining({ source: 'builtin', version: '1.0.0' }),
     ]);
     expect(await service.resolveForExecution('builtin.search', '2.0.0')).toBeUndefined();
@@ -172,8 +173,53 @@ describe('SkillCatalogReadService', () => {
       version: '3.0.0',
     });
     service = new SkillCatalogReadService(db, { builtinSkills: [builtin] });
-    expect((await service.getPublishedCatalog()).skills).toEqual([
+    const afterOverride = await service.getPublishedCatalog();
+    expect(afterOverride.skills).toEqual([
       expect.objectContaining({ source: 'uploaded', version: '3.0.0' }),
     ]);
+    expect(afterOverride.revision).not.toBe(beforeOverride.revision);
+  });
+
+  it('reads every bounded repository page and preserves global codepoint ordering', async () => {
+    for (let index = 100; index >= 0; index -= 1) {
+      await publish({ skillKey: `paged-${String(index).padStart(3, '0')}`, version: '1.0.0' });
+    }
+    const catalog = await new SkillCatalogReadService(db).getPublishedCatalog();
+    expect(catalog.skills).toHaveLength(101);
+    expect(catalog.skills[0]?.skillKey).toBe('paged-000');
+    expect(catalog.skills.at(-1)?.skillKey).toBe('paged-100');
+  });
+
+  it('derives revision from final builtin projection and rejects injected builtin fields', async () => {
+    const builtin: BuiltinSkillDefinition = {
+      checksum: 'b'.repeat(64),
+      content: '# builtin',
+      description: 'Builtin',
+      displayName: 'Builtin',
+      distribution: 'default',
+      manifest,
+      skillKey: 'builtin.strict',
+      source: 'builtin',
+      version: '1.0.0',
+    };
+    const first = await new SkillCatalogReadService(db, {
+      builtinSkills: [builtin],
+    }).getPublishedCatalog();
+    const second = await new SkillCatalogReadService(db, {
+      builtinSkills: [{ ...builtin, checksum: 'c'.repeat(64), content: '# changed builtin' }],
+    }).getPublishedCatalog();
+    expect(second.revision).not.toBe(first.revision);
+    expect(
+      () =>
+        new SkillCatalogReadService(db, {
+          builtinSkills: [{ ...builtin, draftOnly: true } as never],
+        }),
+    ).toThrow();
+    expect(
+      () =>
+        new SkillCatalogReadService(db, {
+          builtinSkills: [{ ...builtin, secret: 'must-not-enter-runtime' } as never],
+        }),
+    ).toThrow();
   });
 });
