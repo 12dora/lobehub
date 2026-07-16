@@ -11,7 +11,11 @@ import {
 import { platformConnectors, platformResourceRevisions } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 
-import { clearConnectorCatalogRuntimeCache, ConnectorCatalogReadService } from './catalogSnapshot';
+import {
+  clearConnectorCatalogRuntimeCache,
+  ConnectorCatalogReadService,
+  parseConnectorRevisionPayload,
+} from './catalogSnapshot';
 import {
   cleanupM09ServiceData,
   ensurePendingM09ServiceSchema,
@@ -78,6 +82,76 @@ const seedConnector = async () => {
 };
 
 describe('ConnectorCatalogReadService exact snapshot boundary', () => {
+  it('recursively rejects Secret references in every revision metadata region', () => {
+    const mutations: Array<(candidate: PlatformConnectorRevisionPayload) => void> = [
+      (candidate) => {
+        candidate.connector.description = 'embedded vault://connector/description';
+      },
+      (candidate) => {
+        candidate.tools[0]!.description = 'embedded KMS://connector/tool';
+      },
+      (candidate) => {
+        candidate.connector.sharedSecretFingerprint = 'vault://connector/fingerprint';
+      },
+      (candidate) => {
+        candidate.connector.oauthConfig = {
+          authorizationEndpoint: 'https://identity.example.test/authorize',
+          clientId: 'client',
+          issuer: 'https://identity.example.test',
+          redirectUri: 'https://aihub.example.test/oauth/callback',
+          scopes: ['vault://connector/scope'],
+          tokenEndpoint: 'https://identity.example.test/token',
+        };
+      },
+      (candidate) => {
+        candidate.tools[0]!.inputSchema = {
+          properties: { query: { description: '%76ault%3A%2F%2Fschema', type: 'string' } },
+        };
+      },
+    ];
+    for (const mutate of mutations) {
+      const candidate = structuredClone(payload('https://safe.example.test/mcp'));
+      mutate(candidate);
+      expect(() => parseConnectorRevisionPayload(candidate)).toThrowError(
+        'PLATFORM_CONNECTOR_NOT_PUBLISHED',
+      );
+    }
+  });
+
+  it('fails closed for checksum-valid malicious revisions across cache and all projections', async () => {
+    const repository = await seedConnector();
+    const malicious = payload('https://malicious-snapshot.example.test/mcp');
+    malicious.connector.description = 'hidden vault://connector/revision';
+    const checksum = checksumPayload(malicious);
+    await repository.createPublishedRevision({
+      checksum,
+      connectorId,
+      payload: malicious,
+      publishedAt: new Date(),
+      publishedBy: 'admin-user',
+      revision: 1,
+    });
+    await repository.setPublishedPointerCas({
+      checksum,
+      connectorId,
+      expectedRevision: 0,
+      publishedAt: new Date(),
+      publishedRevision: 1,
+    });
+    const read = new ConnectorCatalogReadService(db, new MemoryConnectorSecretStore(db));
+
+    for (const operation of [
+      () => read.getSnapshot(connectorId),
+      () => read.getAdminPublished(connectorId),
+      () => read.getPublicPublished(connectorId),
+      () => read.getTrustedPublished(connectorId),
+    ]) {
+      await expect(operation()).rejects.toMatchObject({
+        code: 'PLATFORM_CONNECTOR_NOT_PUBLISHED',
+      });
+    }
+  });
+
   it('reads only the checksum-bound pointer revision and ignores mutable Draft drift', async () => {
     const repository = await seedConnector();
     const revisionOne = payload('https://revision-one.example.test/mcp');

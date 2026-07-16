@@ -98,26 +98,33 @@ export class ConnectorToolDefinitionValidationError extends Error {
   }
 }
 
+const MAX_CREDENTIAL_SCAN_LENGTH = 128 * 1024;
+const MAX_PERCENT_DECODE_ROUNDS = 8;
+const MALFORMED_PERCENT_ESCAPE = /%(?![0-9a-f]{2})/iu;
+const PERCENT_ESCAPE = /%[0-9a-f]{2}/iu;
+
 export const containsConnectorCredentialMaterial = (value: string): boolean => {
-  const candidates = [value];
-  let decoded = value;
-  for (let index = 0; index < 3; index += 1) {
-    try {
-      const next = decodeURIComponent(decoded);
-      if (next === decoded) break;
-      decoded = next;
-      candidates.push(decoded);
-    } catch {
-      break;
-    }
-  }
-  return candidates.some((candidate) => {
+  let candidate = value;
+  for (let round = 0; round <= MAX_PERCENT_DECODE_ROUNDS; round += 1) {
+    if (candidate.length > MAX_CREDENTIAL_SCAN_LENGTH) return true;
     const normalized = candidate.normalize('NFKC');
+    if (normalized.length > MAX_CREDENTIAL_SCAN_LENGTH) return true;
     if (/(?:vault|kms):\/\//iu.test(normalized)) return true;
     if (containsSensitiveMaterial(normalized)) return true;
     if (isCredentialBearingUrl(normalized)) return true;
-    return (normalized.match(/https?:\/\/\S+/giu) ?? []).some(isCredentialBearingUrl);
-  });
+    if ((normalized.match(/https?:\/\/\S+/giu) ?? []).some(isCredentialBearingUrl)) return true;
+    if (!normalized.includes('%')) return false;
+    if (MALFORMED_PERCENT_ESCAPE.test(normalized)) return true;
+    if (round === MAX_PERCENT_DECODE_ROUNDS && PERCENT_ESCAPE.test(normalized)) return true;
+    try {
+      const decoded = decodeURIComponent(normalized);
+      if (decoded === normalized) return false;
+      candidate = decoded;
+    } catch {
+      return true;
+    }
+  }
+  return true;
 };
 
 const addIssue = (ctx: z.RefinementCtx, code: ConnectorToolValidationCode) =>

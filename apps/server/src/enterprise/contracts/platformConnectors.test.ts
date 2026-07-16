@@ -33,6 +33,11 @@ import {
 } from './platformConnectors';
 
 const secretState = { configured: false, fingerprint: null, updatedAt: null } as const;
+const encodePercentRounds = (value: string, rounds: number): string => {
+  let encoded = value;
+  for (let index = 0; index < rounds; index += 1) encoded = encodeURIComponent(encoded);
+  return encoded;
+};
 const draft = adminConnectorDraftSchema.parse({
   connectionTest: null,
   credentialMode: 'per_user_oauth',
@@ -535,6 +540,11 @@ describe('platform connector contracts', () => {
       'ｖａｕｌｔ：／／connectors/private',
       '%76ault%3A%2F%2Fconnectors%2Fprivate',
       '%2576ault%253A%252F%252Fconnectors%252Fprivate',
+      encodePercentRounds('vault://connectors/private', 5),
+      encodePercentRounds('vault://connectors/private', 10),
+      encodeURIComponent('ｖａｕｌｔ：／／connectors/private'),
+      'malformed percent %',
+      'malformed percent %G0',
     ]) {
       expect(
         adminConnectorCreateDraftInputSchema.safeParse({

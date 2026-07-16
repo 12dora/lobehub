@@ -3,7 +3,7 @@ import { eq } from 'drizzle-orm';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
-import { PlatformRevisionConflictError } from '@/database/models/platform';
+import { checksumPayload, PlatformRevisionConflictError } from '@/database/models/platform';
 import {
   platformConnectors,
   platformResourceRevisions,
@@ -161,6 +161,41 @@ describe('ConnectorCatalogPublicationService', () => {
         targetRevision: 1,
       }),
     ).rejects.toBeInstanceOf(PlatformRevisionConflictError);
+    expect(await db.select().from(platformResourceRevisions)).toHaveLength(1);
+  });
+
+  it('rejects a checksum-valid historical revision containing a Secret reference', async () => {
+    const harness = createHarness();
+    const draft = await createSharedDraft(
+      harness,
+      'malicious-history-secret',
+      'malicious-history-connector',
+    );
+    await harness.publication.publish('admin-user', {
+      expectedDraftToken: draft.draftToken,
+      expectedRevision: 0,
+      id: draft.draft.id,
+      reason: 'publish connector',
+    });
+    const published = await harness.drafts.getDraft(draft.draft.id);
+    const [row] = await db.select().from(platformResourceRevisions);
+    const malicious = structuredClone(row.payload) as Record<string, unknown>;
+    (malicious.connector as Record<string, unknown>).description =
+      'hidden vault://historical/revision';
+    await db
+      .update(platformResourceRevisions)
+      .set({ checksum: checksumPayload(malicious), payload: malicious })
+      .where(eq(platformResourceRevisions.id, row.id));
+
+    await expect(
+      harness.publication.rollback('admin-user', {
+        expectedDraftToken: published.draftToken,
+        expectedRevision: 1,
+        id: draft.draft.id,
+        reason: 'restore connector',
+        targetRevision: 1,
+      }),
+    ).rejects.toMatchObject({ code: 'PLATFORM_CONNECTOR_NOT_PUBLISHED' });
     expect(await db.select().from(platformResourceRevisions)).toHaveLength(1);
   });
 
