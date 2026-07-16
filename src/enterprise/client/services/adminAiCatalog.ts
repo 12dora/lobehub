@@ -6,6 +6,8 @@ import type {
   AdminAiModelDeleteOutput,
   AdminAiModelDependentsInput,
   AdminAiModelDependentsOutput,
+  AdminAiModelDraftContextInput,
+  AdminAiModelDraftContextOutput,
   AdminAiModelListInput,
   AdminAiModelListOutput,
   AdminAiModelMutationOutput,
@@ -52,6 +54,21 @@ class AdminAiCatalogService {
   getModelDependents = async (
     input: AdminAiModelDependentsInput,
   ): Promise<AdminAiModelDependentsOutput> => lambdaClient.admin.aiModels.dependents.query(input);
+
+  getModelCreateDraftContext = async (
+    input: AdminAiModelDraftContextInput,
+  ): Promise<AdminAiModelDraftContextOutput> =>
+    lambdaClient.admin.aiModels.getCreateDraftContext.query(input);
+
+  getModelDeleteDraftContext = async (
+    input: AdminAiModelDraftContextInput,
+  ): Promise<AdminAiModelDraftContextOutput> =>
+    lambdaClient.admin.aiModels.getDeleteDraftContext.query(input);
+
+  getModelUpdateDraftContext = async (
+    input: AdminAiModelDraftContextInput,
+  ): Promise<AdminAiModelDraftContextOutput> =>
+    lambdaClient.admin.aiModels.getUpdateDraftContext.query(input);
 
   listModels = async (input: AdminAiModelListInput): Promise<AdminAiModelListOutput> =>
     lambdaClient.admin.aiModels.list.query(input);
