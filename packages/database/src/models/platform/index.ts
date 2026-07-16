@@ -1,4 +1,5 @@
 export * from './accessStatus';
+export * from './aiCatalog';
 export * from './auditLog';
 export * from './checksum';
 export * from './easyauthGrantSnapshot';

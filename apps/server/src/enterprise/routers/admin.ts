@@ -17,6 +17,7 @@ import { AdminUserNotFoundError, AdminUserService } from '../services/adminUserS
 import { EasyauthSyncService } from '../services/easyauthSync';
 import { PlatformAuditService } from '../services/platformAudit';
 import { LastSuperAdminError, PlatformRbacService } from '../services/platformRbac';
+import { adminAiModelsRouter, adminAiProvidersRouter } from './admin/aiCatalog';
 import { adminManagedResourcesRouter } from './admin/managedResources';
 import { adminSettingsRouter } from './admin/settings';
 import { adminUsersRouter } from './admin/users';
@@ -214,6 +215,8 @@ export const adminAuditRouter = router({
  * Mounted as `admin` on lambda root when wired.
  */
 export const adminRouter = router({
+  aiModels: adminAiModelsRouter,
+  aiProviders: adminAiProvidersRouter,
   audit: adminAuditRouter,
   auth: adminAuthRouter,
   easyauth: adminEasyauthRouter,

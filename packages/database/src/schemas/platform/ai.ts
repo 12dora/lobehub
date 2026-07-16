@@ -13,6 +13,54 @@ import { idGenerator } from '../../utils/idGenerator';
 import { createdAt, timestamptz, updatedAt } from '../_helpers';
 import type { PlatformResourceStatus } from './common';
 
+export interface PlatformAiProviderConfig {
+  apiStyle?: string;
+  endpoint?: string;
+  headers?: Record<string, string>;
+  timeoutMs?: number;
+}
+
+export interface PlatformAiProviderSettings {
+  proxyUrl?: string;
+  responseAnimation?: string;
+  sdkType?: string;
+}
+
+export interface PlatformAiModelAbilities {
+  files?: boolean;
+  functionCall?: boolean;
+  imageOutput?: boolean;
+  reasoning?: boolean;
+  search?: boolean;
+  vision?: boolean;
+}
+
+export interface PlatformAiModelConfig {
+  deploymentName?: string;
+  organization?: string;
+}
+
+export interface PlatformAiModelParameters {
+  frequencyPenalty?: number;
+  maxTokens?: number;
+  presencePenalty?: number;
+  temperature?: number;
+  topP?: number;
+}
+
+export interface PlatformAiModelPricing {
+  cachedInput?: number;
+  currency?: string;
+  input?: number;
+  output?: number;
+  unit?: string;
+}
+
+export interface PlatformAiModelSettings {
+  extendParams?: string[];
+  searchImpl?: string;
+}
+
 /**
  * Global AI Provider definitions (M07). Empty shell in Migration 0.
  * Secrets live in encrypted_key_vaults; API responses expose only fingerprint metadata.
@@ -33,8 +81,8 @@ export const platformAiProviders = pgTable(
     enabled: boolean('enabled').notNull().default(false),
     fetchOnClient: boolean('fetch_on_client').notNull().default(false),
     checkModel: text('check_model'),
-    settings: jsonb('settings').$type<Record<string, unknown>>().notNull().default({}),
-    config: jsonb('config').$type<Record<string, unknown>>().notNull().default({}),
+    settings: jsonb('settings').$type<PlatformAiProviderSettings>().notNull().default({}),
+    config: jsonb('config').$type<PlatformAiProviderConfig>().notNull().default({}),
     /** Envelope-encrypted credentials; never returned via API. */
     encryptedKeyVaults: text('encrypted_key_vaults'),
     secretKeyVersion: integer('secret_key_version'),
@@ -81,12 +129,12 @@ export const platformAiModels = pgTable(
     enabled: boolean('enabled').notNull().default(false),
     type: varchar('type', { length: 20 }).notNull().default('chat'),
     sort: integer('sort').notNull().default(0),
-    pricing: jsonb('pricing').$type<Record<string, unknown>>(),
-    parameters: jsonb('parameters').$type<Record<string, unknown>>().default({}),
-    config: jsonb('config').$type<Record<string, unknown>>(),
-    abilities: jsonb('abilities').$type<Record<string, unknown>>().default({}),
+    pricing: jsonb('pricing').$type<PlatformAiModelPricing>(),
+    parameters: jsonb('parameters').$type<PlatformAiModelParameters>().default({}),
+    config: jsonb('config').$type<PlatformAiModelConfig>(),
+    abilities: jsonb('abilities').$type<PlatformAiModelAbilities>().default({}),
     contextWindowTokens: integer('context_window_tokens'),
-    settings: jsonb('settings').$type<Record<string, unknown>>().default({}),
+    settings: jsonb('settings').$type<PlatformAiModelSettings>().default({}),
     status: varchar('status', { length: 32 })
       .$type<PlatformResourceStatus>()
       .notNull()
