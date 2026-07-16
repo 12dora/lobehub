@@ -168,15 +168,14 @@ describe('resolveEffectiveSettings truth table', () => {
     expect(result.platformRevision).toBe(0);
   });
 
-  it('flag OFF: no legacy → built-in', () => {
+  it('flag OFF: no legacy → sparse empty (no built-in expansion)', () => {
     const result = resolveEffectiveSettings({
       legacyUserSettings: {},
       platformPolicyEnabled: false,
     });
-    expect(result.effectiveValues['general.fontSize']).toBe(
-      settingsRegistry.get('general.fontSize')!.builtInDefault,
-    );
-    expect(result.pathMeta['general.fontSize']?.source).toBe('builtin');
+    expect(result.effectiveSettings).toEqual({});
+    expect(result.effectiveValues['general.fontSize']).toBeUndefined();
+    expect(result.pathMeta['general.fontSize']).toBeUndefined();
   });
 
   it('flag ON: no override + platform default → platform value', () => {

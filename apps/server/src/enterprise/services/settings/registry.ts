@@ -164,32 +164,8 @@ const REGISTRY_ENTRIES: readonly Def[] = [
     sensitivity: 'public',
     titleKey: 'settingsPolicy.paths.general.enableMessageLinkIcon.title',
   }),
-  def({
-    applicableClients: ALL_CLIENTS,
-    builtInDefault: undefined as unknown as string,
-    control: 'text',
-    descriptionKey: 'settingsPolicy.paths.general.responseLanguage.desc',
-    group: 'general',
-    path: 'general.responseLanguage',
-    platformPolicyEligible: true,
-    schema: z.string().min(1).max(32),
-    schemaVersion: 1,
-    sensitivity: 'public',
-    titleKey: 'settingsPolicy.paths.general.responseLanguage.title',
-  }),
-  def({
-    applicableClients: ALL_CLIENTS,
-    builtInDefault: undefined as unknown as string,
-    control: 'text',
-    descriptionKey: 'settingsPolicy.paths.general.timezone.desc',
-    group: 'general',
-    path: 'general.timezone',
-    platformPolicyEligible: true,
-    schema: z.string().min(1).max(64),
-    schemaVersion: 1,
-    sensitivity: 'public',
-    titleKey: 'settingsPolicy.paths.general.timezone.title',
-  }),
+  // responseLanguage / timezone intentionally omitted: no schema-valid built-in default
+  // and optional absence is not modeled as a forced string leaf.
 
   // ── memory ───────────────────────────────────────────────
   def({
@@ -496,6 +472,36 @@ const REGISTRY_ENTRIES: readonly Def[] = [
 
 /** Paths that must never enter the registry (defense-in-depth denylist). */
 export const SETTINGS_SECRET_PATH_PREFIXES = ['keyVaults', 'market', 'languageModel'] as const;
+
+/** Fail closed at module load on bad registry metadata. */
+const assertRegistryValid = (entries: readonly Def[]) => {
+  const seen = new Set<string>();
+  for (const entry of entries) {
+    if (seen.has(entry.path)) {
+      throw new Error(`Duplicate settings registry path: ${entry.path}`);
+    }
+    seen.add(entry.path);
+    if (entry.sensitivity === 'secret') {
+      throw new Error(`Secret path must not be registered: ${entry.path}`);
+    }
+    if (!entry.path || entry.path.includes('..')) {
+      throw new Error(`Invalid settings path: ${entry.path}`);
+    }
+    if (entry.builtInDefault !== undefined) {
+      const parsed = entry.schema.safeParse(entry.builtInDefault);
+      if (!parsed.success) {
+        throw new Error(
+          `Invalid built-in default for ${entry.path}: ${parsed.error.issues[0]?.message ?? 'invalid'}`,
+        );
+      }
+    }
+    if (entry.applicableClients.length === 0) {
+      throw new Error(`applicableClients empty for ${entry.path}`);
+    }
+  }
+};
+
+assertRegistryValid(REGISTRY_ENTRIES);
 
 const byPath = new Map<string, Def>(REGISTRY_ENTRIES.map((e) => [e.path, e]));
 

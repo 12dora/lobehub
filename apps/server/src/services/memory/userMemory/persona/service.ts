@@ -13,11 +13,11 @@ import type { UserServiceModelConfig } from '@lobechat/types';
 import { desc, eq } from 'drizzle-orm';
 
 import { getBusinessModelRuntimeHooks } from '@/business/server/model-runtime';
-import { UserModel } from '@/database/models/user';
 import { UserMemoryModel } from '@/database/models/userMemory';
 import { UserPersonaModel } from '@/database/models/userMemory/persona';
 import { AiInfraRepos } from '@/database/repositories/aiInfra';
 import { type LobeChatDatabase } from '@/database/type';
+import { getEffectiveSystemAgentConfig } from '@/server/enterprise/services/settings/runtimeSettingsAdapter';
 import { type MemoryAgentConfig } from '@/server/globalConfig/parseMemoryExtractionConfig';
 import { parseMemoryExtractionConfig } from '@/server/globalConfig/parseMemoryExtractionConfig';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
@@ -71,11 +71,11 @@ export class UserPersonaService {
   }
 
   private async resolveAgentConfig(userId: string): Promise<MemoryAgentConfig> {
-    const userModel = new UserModel(this.db, userId);
-    const settings = await userModel.getUserSettings();
-    const userMemoryPersonaWriter = (
-      settings?.systemAgent as Partial<UserServiceModelConfig> | undefined
-    )?.userMemoryPersonaWriter;
+    const systemAgent = (await getEffectiveSystemAgentConfig({
+      db: this.db,
+      userId,
+    })) as Partial<UserServiceModelConfig> | undefined;
+    const userMemoryPersonaWriter = systemAgent?.userMemoryPersonaWriter;
     const provider = userMemoryPersonaWriter?.provider || this.agentConfig.provider;
     const shouldInheritCredentials =
       !userMemoryPersonaWriter?.provider ||
@@ -174,11 +174,11 @@ export const buildUserPersonaJobInput = async (db: LobeChatDatabase, userId: str
   const personaModel = new UserPersonaModel(db, userId);
   const latestPersona = await personaModel.getLatestPersonaDocument();
   const { agentPersonaWriter } = parseMemoryExtractionConfig();
-  const userModel = new UserModel(db, userId);
-  const settings = await userModel.getUserSettings();
-  const userMemoryPersonaWriter = (
-    settings?.systemAgent as Partial<UserServiceModelConfig> | undefined
-  )?.userMemoryPersonaWriter;
+  const systemAgent = (await getEffectiveSystemAgentConfig({
+    db,
+    userId,
+  })) as Partial<UserServiceModelConfig> | undefined;
+  const userMemoryPersonaWriter = systemAgent?.userMemoryPersonaWriter;
   const personaContextLimit =
     resolvePositiveInteger(userMemoryPersonaWriter?.contextLimit) ??
     agentPersonaWriter.contextLimit;

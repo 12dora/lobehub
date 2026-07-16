@@ -129,7 +129,7 @@ describe('EffectiveSettingsService (flag ON)', () => {
     await publishDefault();
 
     await expect(
-      service.adaptLegacyUpdateSettings({
+      service.applyLegacyUpdateSettings({
         input: { general: { fontSize: 'nope' } },
         userId: 'u1',
       }),
@@ -139,16 +139,19 @@ describe('EffectiveSettingsService (flag ON)', () => {
     const effective = await service.getEffectiveSettings({ userId: 'u1' });
     expect(effective.pathMeta['general.fontSize']?.source).toBe('platform');
 
-    // secret paths never land in overrides
-    const adapted = await service.adaptLegacyUpdateSettings({
-      input: {
-        general: { fontSize: 16 },
-        keyVaults: { openai: { apiKey: 'sk-x' } },
-      },
+    // unknown nested secret-like fails closed with zero writes
+    await expect(
+      service.applyLegacyUpdateSettings({
+        input: { general: { fontSize: 16, apiKey: 'sk-x' } },
+        userId: 'u1',
+      }),
+    ).rejects.toBeInstanceOf(SettingsPathError);
+
+    const adapted = await service.applyLegacyUpdateSettings({
+      input: { general: { fontSize: 16 } },
       userId: 'u1',
     });
     expect(adapted.appliedPaths).toContain('general.fontSize');
-    expect(adapted.legacyPartial.keyVaults).toBeUndefined();
 
     const effective2 = await service.getEffectiveSettings({ userId: 'u1' });
     expect(effective2.effectiveValues['general.fontSize']).toBe(16);

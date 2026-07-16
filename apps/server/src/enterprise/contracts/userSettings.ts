@@ -24,10 +24,12 @@ export const userSettingsGetEffectiveOutputSchema = z.object({
   userOverrideRevision: z.number().int().nonnegative(),
 });
 
-export const userSettingsPatchOverrideInputSchema = z.object({
-  path: z.string().min(1).max(256),
-  value: z.unknown(),
-});
+export const userSettingsPatchOverrideInputSchema = z
+  .object({
+    path: z.string().min(1).max(256),
+    value: z.unknown(),
+  })
+  .strict();
 
 export const userSettingsPatchOverrideOutputSchema = z.object({
   path: z.string(),
@@ -35,9 +37,11 @@ export const userSettingsPatchOverrideOutputSchema = z.object({
   value: z.unknown(),
 });
 
-export const userSettingsResetOverrideInputSchema = z.object({
-  path: z.string().min(1).max(256),
-});
+export const userSettingsResetOverrideInputSchema = z
+  .object({
+    path: z.string().min(1).max(256),
+  })
+  .strict();
 
 export const userSettingsResetOverrideOutputSchema = z.object({
   deleted: z.boolean(),

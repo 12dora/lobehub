@@ -20,6 +20,7 @@ import {
   RedisKeyNamespace,
   RedisKeys,
 } from '@/libs/redis';
+import { getEffectiveDefaultAgentConfig } from '@/server/enterprise/services/settings/runtimeSettingsAdapter';
 import { getServerDefaultAgentConfig } from '@/server/globalConfig';
 
 import { type UpdateAgentResult } from './type';
@@ -77,10 +78,10 @@ export class AgentService {
    * This ensures the frontend always receives a complete config with model/provider.
    */
   async getBuiltinAgent(slug: string) {
-    // Fetch agent and defaultAgentConfig in parallel
+    // Fetch agent and effective defaultAgentConfig (M05 resolver when policy flag ON)
     const [agent, defaultAgentConfig] = await Promise.all([
       this.agentModel.getBuiltinAgent(slug),
-      this.userModel.getUserSettingsDefaultAgentConfig(),
+      getEffectiveDefaultAgentConfig({ db: this.db, userId: this.userId }),
     ]);
 
     const mergedConfig = this.mergeDefaultConfig(agent, defaultAgentConfig);
@@ -114,7 +115,7 @@ export class AgentService {
   async getAgentConfig(idOrSlug: string): Promise<AgentConfigWithId | null> {
     const [agent, defaultAgentConfig] = await Promise.all([
       this.agentModel.getAgentConfig(idOrSlug),
-      this.userModel.getUserSettingsDefaultAgentConfig(),
+      getEffectiveDefaultAgentConfig({ db: this.db, userId: this.userId }),
     ]);
 
     return this.mergeDefaultConfig(agent, defaultAgentConfig) as AgentConfigWithId | null;
@@ -133,7 +134,7 @@ export class AgentService {
   async getAgentConfigById(agentId: string) {
     const [agent, defaultAgentConfig, welcomeData] = await Promise.all([
       this.agentModel.getAgentConfigById(agentId),
-      this.userModel.getUserSettingsDefaultAgentConfig(),
+      getEffectiveDefaultAgentConfig({ db: this.db, userId: this.userId }),
       this.getAgentWelcomeFromRedis(agentId),
     ]);
 

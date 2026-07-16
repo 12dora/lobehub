@@ -22,6 +22,19 @@ export interface ResourcePointerAdapter {
    */
   lockAndGetRevision: (tx: Transaction) => Promise<number>;
   /**
+   * Optional domain materialization inside the **same** publish/rollback transaction,
+   * after pointer update and before success audit (M05 settings path policies, etc.).
+   * Failure aborts the whole transaction so revision + pointer never commit alone.
+   */
+  materializePublished?: (
+    tx: Transaction,
+    args: {
+      payload: Record<string, unknown>;
+      revision: number;
+      status: PlatformRevisionStatus;
+    },
+  ) => Promise<void>;
+  /**
    * Advance the domain table pointer after a successful revision append.
    */
   updatePointer: (
@@ -182,6 +195,14 @@ export class PlatformRevisionModel {
 
       await params.pointer.updatePointer(tx, { revision: nextRevision, status });
 
+      if (params.pointer.materializePublished) {
+        await params.pointer.materializePublished(tx, {
+          payload: redactedPayload,
+          revision: nextRevision,
+          status,
+        });
+      }
+
       const audit = await new PlatformAuditLogModel(tx).append({
         action: `platform.${params.resourceType}.publish`,
         actorUserId: params.actorUserId,
@@ -254,6 +275,14 @@ export class PlatformRevisionModel {
         .returning();
 
       await params.pointer.updatePointer(tx, { revision: nextRevision, status: 'published' });
+
+      if (params.pointer.materializePublished) {
+        await params.pointer.materializePublished(tx, {
+          payload: (target.payload ?? {}) as Record<string, unknown>,
+          revision: nextRevision,
+          status: 'published',
+        });
+      }
 
       const audit = await new PlatformAuditLogModel(tx).append({
         action: `platform.${params.resourceType}.rollback`,
