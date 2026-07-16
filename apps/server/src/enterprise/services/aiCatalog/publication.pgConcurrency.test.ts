@@ -34,7 +34,7 @@ const deferred = () => {
 };
 
 describe.skipIf(!runPostgresConcurrency)('AI catalog dependency advisory lock (PostgreSQL)', () => {
-  it('prevents settings T2 from publishing a reference after archive T1 checked dependencies', async () => {
+  it('prevents settings T2 from referencing a model after publish T1 checked its removal', async () => {
     await getTestDB(); // Ensure the shared test database is migrated before opening two pools.
     const connectionString = serverDBEnv.DATABASE_TEST_URL;
     if (!connectionString) throw new Error('DATABASE_TEST_URL is required');
@@ -56,7 +56,7 @@ describe.skipIf(!runPostgresConcurrency)('AI catalog dependency advisory lock (P
       providerId: 'test',
     };
     const checked = deferred();
-    const releaseArchive = deferred();
+    const releasePublish = deferred();
 
     try {
       await cleanup();
@@ -86,6 +86,15 @@ describe.skipIf(!runPostgresConcurrency)('AI catalog dependency advisory lock (P
         reason: 'model',
         type: 'chat',
       });
+      detail = await seedService.getDetail(provider.id);
+      const retiredModel = await seedService.createModel('admin', {
+        enabled: true,
+        expectedDraftToken: detail.draftToken,
+        modelKey: 'retired-chat',
+        providerId: provider.id,
+        reason: 'retired model',
+        type: 'chat',
+      });
       await seedService.testProvider('admin', { id: provider.id, reason: 'test' });
       detail = await seedService.getDetail(provider.id);
       await seedService.publishProvider('admin', {
@@ -94,6 +103,15 @@ describe.skipIf(!runPostgresConcurrency)('AI catalog dependency advisory lock (P
         id: provider.id,
         reason: 'publish',
       });
+      detail = await seedService.getDetail(provider.id);
+      await seedService.deleteModel('admin', {
+        expectedDraftToken: detail.draftToken,
+        id: retiredModel.id,
+        providerId: provider.id,
+        reason: 'remove retired model in next revision',
+      });
+      await seedService.testProvider('admin', { id: provider.id, reason: 'retest after removal' });
+      detail = await seedService.getDetail(provider.id);
 
       const settings = new AdminSettingsService(secondDb, {
         invalidation: new InMemoryPlatformConfigInvalidationPublisher(),
@@ -104,7 +122,7 @@ describe.skipIf(!runPostgresConcurrency)('AI catalog dependency advisory lock (P
           'systemAgent.topic.model': {
             mode: 'default',
             schemaVersion: 1,
-            value: 'chat',
+            value: 'retired-chat',
             visibility: 'visible',
           },
           'systemAgent.topic.provider': {
@@ -119,25 +137,25 @@ describe.skipIf(!runPostgresConcurrency)('AI catalog dependency advisory lock (P
       });
 
       detail = await seedService.getDetail(provider.id);
-      const archiveService = new AiCatalogAdminService(
+      const publishService = new AiCatalogAdminService(
         firstDb,
         new PlatformSecretService({ keyProvider }),
         {
           connectionProbe: async () => {},
           invalidation: new InMemoryPlatformConfigInvalidationPublisher(),
           lifecycle: {
-            afterArchiveDependencyCheck: async () => {
+            afterModelDependencyCheck: async () => {
               checked.resolve();
-              await releaseArchive.promise;
+              await releasePublish.promise;
             },
           },
         },
       );
-      const archive = archiveService.archiveProvider('admin', {
+      const publish = publishService.publishProvider('admin', {
         expectedDraftToken: detail.draftToken,
         expectedRevision: 1,
         id: provider.id,
-        reason: 'archive',
+        reason: 'publish model removal',
       });
       await checked.promise;
 
@@ -155,14 +173,14 @@ describe.skipIf(!runPostgresConcurrency)('AI catalog dependency advisory lock (P
       await new Promise((resolve) => setTimeout(resolve, 50));
       expect(settingsSettled).toBe(false);
 
-      releaseArchive.resolve();
-      await expect(archive).resolves.toMatchObject({ revision: 2 });
+      releasePublish.resolve();
+      await expect(publish).resolves.toMatchObject({ revision: 2 });
       await expect(settingsPublish).rejects.toBeInstanceOf(
         PlatformDependencyTargetNotPublishedError,
       );
       expect(await firstDb.select().from(platformSettingPolicies)).toEqual([]);
     } finally {
-      releaseArchive.resolve();
+      releasePublish.resolve();
       await cleanup();
       await Promise.all([firstPool.end(), secondPool.end()]);
     }

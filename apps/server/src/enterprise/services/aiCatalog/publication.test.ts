@@ -358,6 +358,137 @@ describe('AiCatalog publication transaction', () => {
     );
   });
 
+  it('blocks publish and rollback when their target removes a newly referenced model', async () => {
+    const { service } = createService();
+    const publishTarget = await service.createProviderDraft('admin', {
+      checkModel: 'chat',
+      displayName: 'Publish removal target',
+      enabled: true,
+      providerKey: 'publish-removal',
+      reason: 'create',
+      secret: { operation: 'replace', value: 'publish-removal-key' },
+      source: 'custom',
+    });
+    let detail = await service.getDetail(publishTarget.id);
+    await service.createModel('admin', {
+      enabled: true,
+      expectedDraftToken: detail.draftToken,
+      modelKey: 'chat',
+      providerId: publishTarget.id,
+      reason: 'chat model',
+      type: 'chat',
+    });
+    detail = await service.getDetail(publishTarget.id);
+    const removed = await service.createModel('admin', {
+      enabled: true,
+      expectedDraftToken: detail.draftToken,
+      modelKey: 'removed-chat',
+      providerId: publishTarget.id,
+      reason: 'removable model',
+      type: 'chat',
+    });
+    await service.testProvider('admin', { id: publishTarget.id, reason: 'test v1' });
+    detail = await service.getDetail(publishTarget.id);
+    await service.publishProvider('admin', {
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: 0,
+      id: publishTarget.id,
+      reason: 'publish v1',
+    });
+    detail = await service.getDetail(publishTarget.id);
+    await service.deleteModel('admin', {
+      expectedDraftToken: detail.draftToken,
+      id: removed.id,
+      providerId: publishTarget.id,
+      reason: 'remove in draft before dependency exists',
+    });
+    await db.insert(platformAgents).values({
+      agentKey: 'publish-removal-agent',
+      model: 'removed-chat',
+      provider: 'publish-removal',
+      status: 'published',
+      title: 'Publish removal agent',
+    });
+    await service.testProvider('admin', { id: publishTarget.id, reason: 'retest removal' });
+    detail = await service.getDetail(publishTarget.id);
+    await expect(
+      service.publishProvider('admin', {
+        expectedDraftToken: detail.draftToken,
+        expectedRevision: 1,
+        id: publishTarget.id,
+        reason: 'must preserve referenced model',
+      }),
+    ).rejects.toBeInstanceOf(AiCatalogResourceInUseError);
+    expect((await service.getDetail(publishTarget.id)).published?.models).toEqual(
+      expect.arrayContaining([expect.objectContaining({ modelKey: 'removed-chat' })]),
+    );
+
+    await db.delete(platformAgents);
+    const rollbackTarget = await service.createProviderDraft('admin', {
+      checkModel: 'chat',
+      displayName: 'Rollback removal target',
+      enabled: true,
+      providerKey: 'rollback-removal',
+      reason: 'create',
+      secret: { operation: 'replace', value: 'rollback-removal-key' },
+      source: 'custom',
+    });
+    detail = await service.getDetail(rollbackTarget.id);
+    await service.createModel('admin', {
+      enabled: true,
+      expectedDraftToken: detail.draftToken,
+      modelKey: 'chat',
+      providerId: rollbackTarget.id,
+      reason: 'chat model',
+      type: 'chat',
+    });
+    await service.testProvider('admin', { id: rollbackTarget.id, reason: 'test v1' });
+    detail = await service.getDetail(rollbackTarget.id);
+    await service.publishProvider('admin', {
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: 0,
+      id: rollbackTarget.id,
+      reason: 'publish v1',
+    });
+    detail = await service.getDetail(rollbackTarget.id);
+    await service.createModel('admin', {
+      enabled: true,
+      expectedDraftToken: detail.draftToken,
+      modelKey: 'v2-only',
+      providerId: rollbackTarget.id,
+      reason: 'v2 model',
+      type: 'chat',
+    });
+    await service.testProvider('admin', { id: rollbackTarget.id, reason: 'test v2' });
+    detail = await service.getDetail(rollbackTarget.id);
+    await service.publishProvider('admin', {
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: 1,
+      id: rollbackTarget.id,
+      reason: 'publish v2',
+    });
+    await db.insert(platformAgents).values({
+      agentKey: 'rollback-removal-agent',
+      model: 'v2-only',
+      provider: 'rollback-removal',
+      status: 'published',
+      title: 'Rollback removal agent',
+    });
+    detail = await service.getDetail(rollbackTarget.id);
+    await expect(
+      service.rollbackProvider('admin', {
+        expectedDraftToken: detail.draftToken,
+        expectedRevision: 2,
+        id: rollbackTarget.id,
+        reason: 'must preserve rollback dependency',
+        targetRevision: 1,
+      }),
+    ).rejects.toBeInstanceOf(AiCatalogResourceInUseError);
+    expect((await service.getDetail(rollbackTarget.id)).published?.models).toEqual(
+      expect.arrayContaining([expect.objectContaining({ modelKey: 'v2-only' })]),
+    );
+  });
+
   it('rechecks archive dependents after the provider lock before committing', async () => {
     const { service } = createService();
     const provider = await service.createProviderDraft('admin', {
