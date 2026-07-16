@@ -2,6 +2,7 @@ import { toNextJsHandler } from 'better-auth/next-js';
 import type { NextRequest } from 'next/server';
 
 import { auth } from '@/auth';
+import { maybeBlockBetterAuthAdminMutation } from '@/server/enterprise/security/betterAuthAdminBlock';
 
 const jsonContentTypeRegex = /^application\/(?:[a-z0-9.+-]*\+)?json/i;
 
@@ -26,9 +27,16 @@ const validateJsonBody = async (request: Request) => {
   }
 };
 
-export const GET = handler.GET;
+export const GET = async (request: NextRequest) => {
+  const blocked = maybeBlockBetterAuthAdminMutation(request.url);
+  if (blocked) return blocked;
+  return handler.GET(request);
+};
 
 export const POST = async (request: NextRequest) => {
+  const blocked = maybeBlockBetterAuthAdminMutation(request.url);
+  if (blocked) return blocked;
+
   const invalidJsonResponse = await validateJsonBody(request);
   if (invalidJsonResponse) return invalidJsonResponse;
 

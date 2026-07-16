@@ -1,0 +1,120 @@
+'use client';
+
+import { Flexbox, Text } from '@lobehub/ui';
+import { Button } from '@lobehub/ui/base-ui';
+import { createStaticStyles, cssVar } from 'antd-style';
+import { memo, useCallback, useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+
+import { useFetchAdminUserAuditTrail } from '../hooks/useAdminUsers';
+import { formatAdminDateTime } from '../utils';
+
+const styles = createStaticStyles(({ css }) => ({
+  row: css`
+    display: grid;
+    grid-template-columns: 140px 1fr 100px;
+    gap: 8px;
+
+    padding-block: 10px;
+    border-block-end: 1px solid ${cssVar.colorBorderSecondary};
+  `,
+}));
+
+interface AuditTabProps {
+  canReadAudit: boolean;
+  enabled: boolean;
+  userId: string;
+}
+
+const AuditTab = memo<AuditTabProps>(({ userId, canReadAudit, enabled }) => {
+  const { t } = useTranslation('admin');
+  const [cursorStack, setCursorStack] = useState<(string | null)[]>([]);
+  const currentCursor = cursorStack.at(-1) ?? null;
+
+  useEffect(() => {
+    setCursorStack([]);
+  }, [userId]);
+
+  const shouldFetch = enabled && canReadAudit;
+  const { data, error, isLoading, mutate } = useFetchAdminUserAuditTrail(
+    { cursor: currentCursor ?? undefined, limit: 50, userId },
+    shouldFetch,
+  );
+
+  const goNext = useCallback(() => {
+    if (!data?.nextCursor) return;
+    setCursorStack((s) => [...s, data.nextCursor]);
+  }, [data?.nextCursor]);
+
+  const goPrevious = useCallback(() => {
+    setCursorStack((s) => (s.length === 0 ? s : s.slice(0, -1)));
+  }, []);
+
+  if (!canReadAudit) {
+    return (
+      <Flexbox gap={8}>
+        <Text as="h3" style={{ fontSize: 15, fontWeight: 600, margin: 0 }}>
+          {t('users.audit.title')}
+        </Text>
+        <Text type="secondary">{t('users.audit.noPermission')}</Text>
+      </Flexbox>
+    );
+  }
+
+  if (isLoading && !data) {
+    return <Text type="secondary">{t('primitives.dataTable.loading')}</Text>;
+  }
+
+  if (error && !data) {
+    return (
+      <Flexbox gap={8} role="alert">
+        <Text>{t('primitives.dataTable.error')}</Text>
+        <Button size="small" type="primary" onClick={() => void mutate()}>
+          {t('primitives.dataTable.retry')}
+        </Button>
+      </Flexbox>
+    );
+  }
+
+  const items = data?.items ?? [];
+
+  return (
+    <Flexbox gap={12}>
+      <Text as="h3" style={{ fontSize: 15, fontWeight: 600, margin: 0 }}>
+        {t('users.audit.title')}
+      </Text>
+      {items.length === 0 ? (
+        <Text type="secondary">{t('users.audit.empty')}</Text>
+      ) : (
+        items.map((row) => (
+          <div className={styles.row} key={row.id}>
+            <Text type="secondary">{formatAdminDateTime(row.createdAt)}</Text>
+            <div>
+              <Text style={{ fontWeight: 500 }}>{row.action}</Text>
+              {row.reason ? (
+                <Text style={{ display: 'block', fontSize: 12 }} type="secondary">
+                  {row.reason}
+                </Text>
+              ) : null}
+            </div>
+            <Text>
+              {t(`users.audit.result.${row.result}` as never, { defaultValue: row.result })}
+            </Text>
+          </div>
+        ))
+      )}
+      <Flexbox horizontal gap={8} justify="flex-end">
+        <Button disabled={cursorStack.length === 0} size="small" onClick={goPrevious}>
+          {t('primitives.dataTable.previous')}
+        </Button>
+        <Button disabled={!data?.nextCursor} size="small" onClick={goNext}>
+          {t('primitives.dataTable.next')}
+        </Button>
+      </Flexbox>
+    </Flexbox>
+  );
+});
+
+AuditTab.displayName = 'AdminUserAuditTab';
+
+export default AuditTab;

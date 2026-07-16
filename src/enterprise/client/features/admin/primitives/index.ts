@@ -1,6 +1,7 @@
 export { default as AdminPageTemplate, type AdminPageTemplateProps } from './AdminPageTemplate';
 export { type DangerConfirmOptions, openDangerConfirm } from './DangerConfirm';
 export {
+  type AdminCursorPagination,
   type AdminTableChangeMeta,
   type AdminTablePagination,
   type AdminTableSort,

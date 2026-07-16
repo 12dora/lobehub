@@ -1,6 +1,6 @@
 // @vitest-environment node
 import type { NextRequest } from 'next/server';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { GET, POST } from './route';
 
@@ -32,8 +32,13 @@ const createPostRequest = (body: string, contentType = 'application/json') =>
 describe('/api/auth/[...all] route', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
     mocks.get.mockResolvedValue(Response.json({ ok: true }));
     mocks.post.mockResolvedValue(Response.json({ ok: true }));
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it('returns 400 for malformed JSON auth requests before Better Auth handles them', async () => {
@@ -84,5 +89,42 @@ describe('/api/auth/[...all] route', () => {
 
     expect(response.status).toBe(200);
     expect(mocks.get).toHaveBeenCalledWith(request);
+  });
+
+  it('blocks Better Auth admin mutations when platform admin is on', async () => {
+    vi.stubEnv('ENABLE_PLATFORM_ADMIN', '1');
+    for (const path of [
+      '/admin/ban-user',
+      '/admin/unban-user',
+      '/admin/revoke-user-sessions',
+      '/admin/set-role',
+      '/admin/remove-user',
+      '/admin/impersonate-user',
+      '/admin/set-user-password',
+    ]) {
+      const response = await POST(
+        new Request(`https://localhost/api/auth${path}`, {
+          body: '{}',
+          headers: { 'Content-Type': 'application/json' },
+          method: 'POST',
+        }) as NextRequest,
+      );
+      expect(response.status).toBe(403);
+      expect(mocks.post).not.toHaveBeenCalled();
+      mocks.post.mockClear();
+    }
+  });
+
+  it('allows Better Auth admin paths when platform admin is off', async () => {
+    vi.stubEnv('ENABLE_PLATFORM_ADMIN', '0');
+    const response = await POST(
+      new Request('https://localhost/api/auth/admin/ban-user', {
+        body: '{}',
+        headers: { 'Content-Type': 'application/json' },
+        method: 'POST',
+      }) as NextRequest,
+    );
+    expect(response.status).toBe(200);
+    expect(mocks.post).toHaveBeenCalled();
   });
 });

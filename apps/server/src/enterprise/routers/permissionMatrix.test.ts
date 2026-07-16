@@ -115,7 +115,16 @@ afterEach(async () => {
 
 /** Patch serverDatabase middleware by providing serverDB on context via createCaller. */
 const withDbCtx = async (userId?: string) => {
-  const base = await createContextInner(userId ? { userId } : {});
+  const base = await createContextInner(
+    userId
+      ? {
+          // Recent reauth for high-risk mutations (M04 roles alias + admin.users).
+          authenticatedAt: new Date(),
+          authMethod: 'better-auth',
+          userId,
+        }
+      : {},
+  );
   return { ...base, serverDB: db } as never;
 };
 

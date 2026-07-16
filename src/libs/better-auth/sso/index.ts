@@ -23,6 +23,7 @@ import Microsoft from './providers/microsoft';
 import Okta from './providers/okta';
 import Wechat from './providers/wechat';
 import Zitadel from './providers/zitadel';
+import { mergeReauthAuthorizationParams } from './reauthAuthorizationParams';
 
 const providerDefinitions = [
   Apple,
@@ -108,6 +109,18 @@ export const initBetterAuthSSOProviders = () => {
       // the generic oidc callback url is /api/auth/oauth2/callback/{providerId}
       // different from builtin providers' /api/auth/callback/{providerId}
       config.redirectURI = `${appEnv.APP_URL}/api/auth/callback/${definition.id}`;
+      // Admin reauth: when client passes additionalData.reauth, force fresh IdP login.
+      // Normal sign-in remains unchanged (no prompt/max_age unless reauth).
+      const existingParams = config.authorizationUrlParams;
+      config.authorizationUrlParams = (ctx: {
+        body?: { additionalData?: Record<string, unknown> };
+      }) => {
+        const base =
+          typeof existingParams === 'function'
+            ? (existingParams as (c: any) => Record<string, string>)(ctx)
+            : ((existingParams as Record<string, string> | undefined) ?? {});
+        return mergeReauthAuthorizationParams(base, ctx?.body?.additionalData);
+      };
       genericOAuthProviders.push(config);
     }
   }
