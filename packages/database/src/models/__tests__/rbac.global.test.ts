@@ -197,4 +197,53 @@ describe('RbacModel — global platform scope (M02)', () => {
     });
     expect(await rbac.isGlobalSuperAdmin(userId)).toBe(true);
   });
+
+  it('M04: rejects finite expiresAt with super_admin (permanent only)', async () => {
+    const rbac = new RbacModel(serverDB, userId);
+    const role = await serverDB.query.roles.findFirst({
+      where: (t, { and, eq, isNull }) =>
+        and(eq(t.name, PLATFORM_SYSTEM_ROLES.SUPER_ADMIN), isNull(t.workspaceId)),
+    });
+    await expect(
+      rbac.replaceGlobalUserRoles(userId, [role!.id], {
+        expiresAt: new Date(Date.now() + 86_400_000),
+      }),
+    ).rejects.toThrow(/PLATFORM_INVALID_INPUT/);
+  });
+
+  it('M04: countActiveSuperAdmins treats expired temporary ban as active', async () => {
+    const rbac = new RbacModel(serverDB, userId);
+    const role = await serverDB.query.roles.findFirst({
+      where: (t, { and, eq, isNull }) =>
+        and(eq(t.name, PLATFORM_SYSTEM_ROLES.SUPER_ADMIN), isNull(t.workspaceId)),
+    });
+    await serverDB.insert(userRoles).values([
+      { roleId: role!.id, userId, workspaceId: null },
+      { roleId: role!.id, userId: otherUserId, workspaceId: null },
+    ]);
+    await serverDB
+      .update(users)
+      .set({ banExpires: new Date(Date.now() - 1000), banned: true })
+      .where(eq(users.id, otherUserId));
+    // expired temp ban → effectively active → still counted
+    expect(await rbac.countActiveSuperAdmins()).toBe(2);
+  });
+
+  it('M04: expiring-only super grants do not count as permanent active supers', async () => {
+    const rbac = new RbacModel(serverDB, userId);
+    const role = await serverDB.query.roles.findFirst({
+      where: (t, { and, eq, isNull }) =>
+        and(eq(t.name, PLATFORM_SYSTEM_ROLES.SUPER_ADMIN), isNull(t.workspaceId)),
+    });
+    // Permanent super on userId
+    await serverDB.insert(userRoles).values({ roleId: role!.id, userId, workspaceId: null });
+    // Simulated legacy row with expiresAt (should not count)
+    await serverDB.insert(userRoles).values({
+      expiresAt: new Date(Date.now() + 86_400_000),
+      roleId: role!.id,
+      userId: otherUserId,
+      workspaceId: null,
+    });
+    expect(await rbac.countActiveSuperAdmins()).toBe(1);
+  });
 });
