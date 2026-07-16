@@ -84,15 +84,16 @@ const createVersion = async (
     manifest: selectedManifest,
     resources,
   };
-  return service.createVersion('admin-1', {
+  const result = await service.createVersion('admin-1', {
     ...payload,
-    checksum: platformSkillVersionChecksum(payload),
     expectedDraftToken: draft.draftToken,
     expectedRevision: draft.draft.revision,
     reason: 'create reviewed immutable version',
     skillId: draft.draft.id,
     version,
   });
+  expect(result.checksum).toBe(platformSkillVersionChecksum(payload));
+  return result;
 };
 
 describe('SkillCatalogAdminService', () => {
@@ -197,6 +198,11 @@ describe('SkillCatalogAdminService', () => {
     const service = new SkillCatalogAdminService(db, serviceOptions);
     const draft = await createDraft(service, 'rollback.skill');
     const first = await createVersion(service, draft, '# first', '1.0.0');
+    expect(
+      (await service.listVersions({ skillId: draft.draft.id })).items.find(
+        (item) => item.id === first.id,
+      )?.lastPublishedRevision,
+    ).toBeNull();
     let detail = await service.getDetail(draft.draft.id);
     await service.publish('admin-1', {
       expectedDraftToken: detail.draftToken,
@@ -205,6 +211,11 @@ describe('SkillCatalogAdminService', () => {
       reason: 'publish first',
       versionId: first.id,
     });
+    expect(
+      (await service.listVersions({ skillId: draft.draft.id })).items.find(
+        (item) => item.id === first.id,
+      )?.lastPublishedRevision,
+    ).toBe(1);
     detail = await service.getDetail(draft.draft.id);
     const second = await createVersion(
       service,
@@ -212,6 +223,11 @@ describe('SkillCatalogAdminService', () => {
       '# second',
       '2.0.0',
     );
+    expect(
+      (await service.listVersions({ skillId: draft.draft.id })).items.find(
+        (item) => item.id === second.id,
+      )?.lastPublishedRevision,
+    ).toBeNull();
     detail = await service.getDetail(draft.draft.id);
     await service.publish('admin-1', {
       expectedDraftToken: detail.draftToken,
@@ -220,6 +236,11 @@ describe('SkillCatalogAdminService', () => {
       reason: 'publish second',
       versionId: second.id,
     });
+    expect(
+      (await service.listVersions({ skillId: draft.draft.id })).items.find(
+        (item) => item.id === second.id,
+      )?.lastPublishedRevision,
+    ).toBe(2);
     detail = await service.getDetail(draft.draft.id);
     await service.rollback('admin-1', {
       expectedDraftToken: detail.draftToken,
@@ -227,6 +248,22 @@ describe('SkillCatalogAdminService', () => {
       id: draft.draft.id,
       reason: 'rollback to reviewed first',
       targetVersionId: first.id,
+    });
+    const versionsAfterRollback = await service.listVersions({ skillId: draft.draft.id });
+    expect(
+      versionsAfterRollback.items.find((item) => item.id === first.id)?.lastPublishedRevision,
+    ).toBe(3);
+    expect(
+      versionsAfterRollback.items.find((item) => item.id === second.id)?.lastPublishedRevision,
+    ).toBe(2);
+    const detailAfterRollback = await service.getDetail(draft.draft.id);
+    expect(detailAfterRollback.latestVersion).toMatchObject({
+      id: second.id,
+      lastPublishedRevision: 2,
+    });
+    expect(detailAfterRollback.publishedVersion).toMatchObject({
+      id: first.id,
+      lastPublishedRevision: 3,
     });
     await expect(
       new SkillCatalogReadService(db).resolveForExecution('rollback.skill'),

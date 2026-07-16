@@ -5,6 +5,7 @@ import {
   PlatformSkillCatalogModel,
   type PlatformSkillDetailView,
   platformSkillDraftToken,
+  platformSkillVersionChecksum,
   type PlatformSkillVersionView,
 } from '@/database/models/platform';
 import { PlatformSkillCatalogRepository } from '@/database/repositories/platformSkillCatalog';
@@ -66,11 +67,15 @@ const versionView = (version: PlatformSkillVersionView): ImmutableSkillVersion =
   validation: validationView(version.validation),
 });
 
-const versionSummary = (version: PlatformSkillVersionView) => ({
+const versionSummary = (
+  version: PlatformSkillVersionView,
+  lastPublishedRevision: number | null = null,
+) => ({
   checksum: version.checksum,
   createdAt: version.createdAt,
   createdBy: version.createdBy,
   id: version.id,
+  lastPublishedRevision,
   skillId: version.skillId,
   validation: validationView(version.validation),
   version: version.version,
@@ -293,18 +298,37 @@ export class SkillCatalogAdminService {
     return detail;
   };
 
-  private detailOutput = (detail: PlatformSkillDetailView) => ({
+  private detailOutput = (
+    detail: PlatformSkillDetailView,
+    publishedRevisions: ReadonlyMap<string, number>,
+  ) => ({
     baseRevision: detail.baseRevision,
     draft: detail.draft,
     draftToken: detail.draftToken,
-    latestVersion: detail.latestVersion ? versionSummary(detail.latestVersion) : null,
-    publishedVersion: detail.publishedVersion ? versionSummary(detail.publishedVersion) : null,
+    latestVersion: detail.latestVersion
+      ? versionSummary(
+          detail.latestVersion,
+          publishedRevisions.get(detail.latestVersion.id) ?? null,
+        )
+      : null,
+    publishedVersion: detail.publishedVersion
+      ? versionSummary(
+          detail.publishedVersion,
+          publishedRevisions.get(detail.publishedVersion.id) ?? null,
+        )
+      : null,
   });
 
   getDetail = async (id: string) => {
     const detail = await this.model().getDetail(id);
     if (!detail) throw new SkillCatalogNotFoundError();
-    return this.detailOutput(detail);
+    const versionIds = [detail.latestVersion?.id, detail.publishedVersion?.id].filter(
+      (versionId): versionId is string => Boolean(versionId),
+    );
+    const publishedRevisions = await new PlatformSkillCatalogRepository(
+      this.db,
+    ).getLastPublishedRevisions(id, versionIds);
+    return this.detailOutput(detail, publishedRevisions);
   };
 
   getVersion = async (skillId: string, versionId: string) => {
@@ -324,21 +348,29 @@ export class SkillCatalogAdminService {
     this.model().listSkills(params);
 
   listVersions = async (params: { cursor?: string; limit?: number; skillId: string }) => {
-    if (!(await new PlatformSkillCatalogRepository(this.db).getSkill(params.skillId))) {
+    const repository = new PlatformSkillCatalogRepository(this.db);
+    if (!(await repository.getSkill(params.skillId))) {
       throw new SkillCatalogNotFoundError();
     }
-    const page = await new PlatformSkillCatalogRepository(this.db).listVersionPage({
+    const page = await repository.listVersionPage({
       cursor: parseVersionCursor(params.cursor),
       limit: params.limit,
       skillId: params.skillId,
     });
+    const publishedRevisions = await repository.getLastPublishedRevisions(
+      params.skillId,
+      page.items.map((item) => item.id),
+    );
     return {
       items: page.items.map((row) =>
-        versionSummary({
-          ...row,
-          contentRef: row.contentRef ?? null,
-          validation: row.validationResult ?? null,
-        }),
+        versionSummary(
+          {
+            ...row,
+            contentRef: row.contentRef ?? null,
+            validation: row.validationResult ?? null,
+          },
+          publishedRevisions.get(row.id) ?? null,
+        ),
       ),
       nextCursor: page.nextCursor
         ? encodeCursor({
@@ -401,11 +433,12 @@ export class SkillCatalogAdminService {
 
   createVersion = async (actorUserId: string, input: CreateVersionInput) => {
     const { reason, ...values } = input;
+    const checksum = platformSkillVersionChecksum(values);
     const detail = await this.model().getDetail(input.skillId);
     if (!detail) throw new SkillCatalogNotFoundError();
     const validation = await this.validation.validatePayload(this.db, {
       allowBuiltinOverride: detail.draft.allowBuiltinOverride,
-      checksum: values.checksum,
+      checksum,
       content: values.content,
       contentRef: values.contentRef,
       manifest: values.manifest,
@@ -421,6 +454,7 @@ export class SkillCatalogAdminService {
         const result = await this.model(tx).createVersion({
           actorUserId,
           ...values,
+          checksum,
           validation: { ...validation, validatedAt: validation.validatedAt.toISOString() },
         });
         if (!result) throw new SkillCatalogNotFoundError();

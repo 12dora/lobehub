@@ -6,7 +6,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { PLATFORM_SYSTEM_ROLES } from '@/const/platform/roles';
 import { getTestDB } from '@/database/core/getTestDB';
-import { platformSkillVersionChecksum } from '@/database/models/platform';
 import {
   permissions,
   platformAuditLogs,
@@ -190,7 +189,6 @@ const createVersion = async (
   const caller = await callerFor({ authenticatedAt: new Date(), userId });
   const content = '# router skill';
   return caller.createVersion({
-    checksum: platformSkillVersionChecksum({ content, manifest }),
     content,
     contentRef: null,
     expectedDraftToken: draft.draftToken,
@@ -288,6 +286,28 @@ describe('adminSkillsRouter RBAC and contract gates', () => {
         reason: 'archive with narrow permission',
       }),
     ).resolves.toMatchObject({ status: 'archived' });
+  });
+
+  it('rejects a client-supplied checksum before the createVersion service runs', async () => {
+    const draft = await createDraft(ids.creator);
+    const updater = await callerFor({ authenticatedAt: new Date(), userId: ids.updater });
+    const input = {
+      checksum: 'b'.repeat(64),
+      content: '# client checksum must not be trusted',
+      contentRef: null,
+      expectedDraftToken: draft.draftToken,
+      expectedRevision: draft.draft.revision,
+      manifest,
+      reason: 'server must compute canonical checksum',
+      resources: [],
+      skillId: draft.draft.id,
+      version: '1.0.0',
+    };
+
+    await expect(updater.createVersion(input as never)).rejects.toMatchObject({
+      code: 'BAD_REQUEST',
+    });
+    expect(await db.select().from(platformSkillVersions)).toEqual([]);
   });
 
   it('allows AI admins and super admins while feature-off fails closed', async () => {

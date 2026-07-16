@@ -69,10 +69,9 @@ describe('Skill catalog contracts', () => {
     }
   });
 
-  it('requires a checksummed semantic version and explicit dependencies when creating a version', () => {
+  it('requires a semantic version and rejects client-supplied checksums', () => {
     const input = {
       ...concurrency,
-      checksum: 'b'.repeat(64),
       content: '# Internal search',
       contentRef: null,
       manifest,
@@ -85,7 +84,7 @@ describe('Skill catalog contracts', () => {
       adminSkillCreateVersionInputSchema.safeParse({ ...input, version: 'latest' }).success,
     ).toBe(false);
     expect(
-      adminSkillCreateVersionInputSchema.safeParse({ ...input, checksum: 'not-sha256' }).success,
+      adminSkillCreateVersionInputSchema.safeParse({ ...input, checksum: 'b'.repeat(64) }).success,
     ).toBe(false);
     expect(
       adminSkillCreateVersionInputSchema.safeParse({
@@ -98,7 +97,6 @@ describe('Skill catalog contracts', () => {
   it('uses complete SemVer validation instead of a permissive regex', () => {
     const input = {
       ...concurrency,
-      checksum: 'b'.repeat(64),
       content: '# Internal search',
       manifest,
       skillId: 'skill-1',
@@ -137,7 +135,6 @@ describe('Skill catalog contracts', () => {
     expect(
       adminSkillCreateVersionInputSchema.safeParse({
         ...concurrency,
-        checksum: 'b'.repeat(64),
         content: '# Internal search',
         manifest: {
           ...manifest,
@@ -186,7 +183,6 @@ describe('Skill catalog contracts', () => {
     expect(
       adminSkillCreateVersionInputSchema.safeParse({
         ...concurrency,
-        checksum: 'b'.repeat(64),
         content: '# Internal search',
         manifest: {
           ...manifest,
@@ -239,7 +235,6 @@ describe('Skill catalog contracts', () => {
     expect(
       adminSkillCreateVersionInputSchema.safeParse({
         ...concurrency,
-        checksum: 'b'.repeat(64),
         content: '# Internal search',
         manifest: { ...manifest, permissions: { network: { enabled: true } } },
         skillId: 'skill-1',
@@ -304,6 +299,7 @@ describe('Skill catalog contracts', () => {
       createdAt: new Date(),
       createdBy: 'admin-1',
       id: 'version-1',
+      lastPublishedRevision: null,
       skillId: 'skill-1',
       validation: null,
       version: '1.0.0',
@@ -387,7 +383,10 @@ describe('Skill catalog contracts', () => {
       ...summary
     } = version;
     expect(
-      adminSkillListVersionsOutputSchema.safeParse({ items: [summary], nextCursor: null }).success,
+      adminSkillListVersionsOutputSchema.safeParse({
+        items: [{ ...summary, lastPublishedRevision: 2 }],
+        nextCursor: null,
+      }).success,
     ).toBe(true);
     expect(
       adminSkillListVersionsOutputSchema.safeParse({ items: [version], nextCursor: null }).success,
@@ -457,7 +456,6 @@ describe('Skill catalog contracts', () => {
   it('bounds immutable resources and permits only opaque content references', () => {
     const input = {
       ...concurrency,
-      checksum: 'b'.repeat(64),
       content: '# Internal search',
       contentRef: 'opaque:skill-content-1',
       manifest,
