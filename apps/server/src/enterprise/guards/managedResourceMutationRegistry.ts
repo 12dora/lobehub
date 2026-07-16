@@ -1,14 +1,42 @@
 import type { ManagedResourceKind } from '@/const/platform/managedResources';
 
-export type ManagedMutationClassification = 'deny' | 'allow' | 'exempt';
+export type ManagedMutationClassification = 'deny' | 'allow' | 'exempt' | 'input-sensitive';
 
 export interface ManagedResourceMutationDefinition {
-  /** `deny` means deny only when the effective policy mode is enforced. */
+  /** `deny` and non-exempt `input-sensitive` entries deny only in enforced mode. */
   classification: ManagedMutationClassification;
   /** Reviewable explanation for why this mutation is guarded or preserved. */
   reason: string;
   resource: ManagedResourceKind;
 }
+
+/**
+ * Explicit inventory of agentDocument mutations that can reach Skill storage
+ * through service/VFS abstractions rather than a directly-scannable SkillModel.
+ */
+export const AGENT_DOCUMENT_SKILL_MUTATION_RISKS = {
+  'agentDocument.cloneDocuments': 'agent-aggregate',
+  'agentDocument.convertDocumentToSkill': 'direct-skill',
+  'agentDocument.copyDocument': 'document-id',
+  'agentDocument.copyDocumentByPath': 'path-pair',
+  'agentDocument.createSkillByPath': 'direct-skill',
+  'agentDocument.deleteAllDocuments': 'agent-aggregate',
+  'agentDocument.deleteDocument': 'filename',
+  'agentDocument.deleteDocumentByPath': 'path',
+  'agentDocument.deleteDocumentPermanentlyByPath': 'path',
+  'agentDocument.deleteSkillByPath': 'direct-skill',
+  'agentDocument.mkdirDocumentByPath': 'path',
+  'agentDocument.modifyNodes': 'document-id',
+  'agentDocument.removeDocument': 'document-id',
+  'agentDocument.renameDocument': 'document-id',
+  'agentDocument.renameDocumentByPath': 'path-pair',
+  'agentDocument.replaceDocumentContent': 'document-id',
+  'agentDocument.restoreDocumentFromTrashByPath': 'path',
+  'agentDocument.updateLoadRule': 'document-id',
+  'agentDocument.updateSkillByPath': 'direct-skill',
+  'agentDocument.upsertDocument': 'filename-or-create',
+  'agentDocument.writeDocumentByPath': 'path',
+} as const;
 
 /**
  * Exhaustive registry for legacy mutations covered by M06.
@@ -102,6 +130,148 @@ export const MANAGED_RESOURCE_MUTATION_REGISTRY = {
     classification: 'exempt',
     reason: 'Pinning is a per-user presentation preference, not an agent definition edit.',
     resource: 'agents',
+  },
+
+  'agentDocument.associateDocument': {
+    classification: 'allow',
+    reason: 'Associates an existing document without editing its Skill definition.',
+    resource: 'skills',
+  },
+  'agentDocument.cloneDocuments': {
+    classification: 'input-sensitive',
+    reason: 'Clones ordinary documents only when the source agent contains no Skill documents.',
+    resource: 'skills',
+  },
+  'agentDocument.convertDocumentToSkill': {
+    classification: 'deny',
+    reason: 'Converts an ordinary document into a user Skill outside platform publishing.',
+    resource: 'skills',
+  },
+  'agentDocument.copyDocument': {
+    classification: 'input-sensitive',
+    reason:
+      'Copies by document id and must resolve the owned row before excluding Skill documents.',
+    resource: 'skills',
+  },
+  'agentDocument.copyDocumentByPath': {
+    classification: 'input-sensitive',
+    reason: 'Can copy into or out of the mounted Skill namespace through generic VFS paths.',
+    resource: 'skills',
+  },
+  'agentDocument.createDocument': {
+    classification: 'allow',
+    reason:
+      'Creates an ordinary agent document; hintIsSkill is metadata and not a Skill definition.',
+    resource: 'skills',
+  },
+  'agentDocument.createForTopic': {
+    classification: 'allow',
+    reason: 'Creates an ordinary topic document and does not write the mounted Skill namespace.',
+    resource: 'skills',
+  },
+  'agentDocument.createSkillByPath': {
+    classification: 'deny',
+    reason: 'Creates a user Skill definition through the mounted Skill VFS namespace.',
+    resource: 'skills',
+  },
+  'agentDocument.deleteAllDocuments': {
+    classification: 'input-sensitive',
+    reason: 'Bulk deletion is safe only when the target agent contains no Skill documents.',
+    resource: 'skills',
+  },
+  'agentDocument.deleteDocument': {
+    classification: 'input-sensitive',
+    reason:
+      'Filename lookup can resolve a Skill document and therefore requires owned-row classification.',
+    resource: 'skills',
+  },
+  'agentDocument.deleteDocumentByPath': {
+    classification: 'input-sensitive',
+    reason: 'Generic VFS deletion can delete a mounted Skill when its path targets that namespace.',
+    resource: 'skills',
+  },
+  'agentDocument.deleteDocumentPermanentlyByPath': {
+    classification: 'input-sensitive',
+    reason: 'Path-based permanent deletion must not accept a mounted Skill namespace path.',
+    resource: 'skills',
+  },
+  'agentDocument.deleteSkillByPath': {
+    classification: 'deny',
+    reason: 'Deletes a user Skill definition through the mounted Skill VFS namespace.',
+    resource: 'skills',
+  },
+  'agentDocument.generateSkillMeta': {
+    classification: 'allow',
+    reason: 'Generates suggested metadata without persisting or changing a Skill definition.',
+    resource: 'skills',
+  },
+  'agentDocument.getOrCreateChatTopic': {
+    classification: 'allow',
+    reason: 'Creates a document chat topic but does not change the document or Skill definition.',
+    resource: 'skills',
+  },
+  'agentDocument.initializeFromTemplate': {
+    classification: 'allow',
+    reason: 'Creates ordinary template documents and does not target the mounted Skill namespace.',
+    resource: 'skills',
+  },
+  'agentDocument.mkdirDocumentByPath': {
+    classification: 'input-sensitive',
+    reason: 'Generic directory creation requires an explicitly ordinary non-Skill VFS path.',
+    resource: 'skills',
+  },
+  'agentDocument.modifyNodes': {
+    classification: 'input-sensitive',
+    reason: 'Edits content by document id and must resolve the owned row before excluding Skills.',
+    resource: 'skills',
+  },
+  'agentDocument.removeDocument': {
+    classification: 'input-sensitive',
+    reason: 'Deletes by document id and must resolve the owned row before excluding Skills.',
+    resource: 'skills',
+  },
+  'agentDocument.renameDocument': {
+    classification: 'input-sensitive',
+    reason: 'Renames by document id and must resolve the owned row before excluding Skills.',
+    resource: 'skills',
+  },
+  'agentDocument.renameDocumentByPath': {
+    classification: 'input-sensitive',
+    reason: 'Generic VFS rename can move data into or out of the mounted Skill namespace.',
+    resource: 'skills',
+  },
+  'agentDocument.replaceDocumentContent': {
+    classification: 'input-sensitive',
+    reason:
+      'Replaces content by document id and must resolve the owned row before excluding Skills.',
+    resource: 'skills',
+  },
+  'agentDocument.restoreDocumentFromTrashByPath': {
+    classification: 'input-sensitive',
+    reason: 'Path-based restore must reject mounted Skill namespace paths before VFS dispatch.',
+    resource: 'skills',
+  },
+  'agentDocument.updateLoadRule': {
+    classification: 'input-sensitive',
+    reason:
+      'Updates metadata by document id and must resolve the owned row before excluding Skills.',
+    resource: 'skills',
+  },
+  'agentDocument.updateSkillByPath': {
+    classification: 'deny',
+    reason: 'Edits a user Skill definition through the mounted Skill VFS namespace.',
+    resource: 'skills',
+  },
+  'agentDocument.upsertDocument': {
+    classification: 'input-sensitive',
+    reason:
+      'Upsert remains ordinary unless its owned filename resolves an existing Skill document.',
+    resource: 'skills',
+  },
+  'agentDocument.writeDocumentByPath': {
+    classification: 'input-sensitive',
+    reason: 'Generic VFS writes can create or edit a Skill when the path targets its namespace.',
+    resource: 'skills',
   },
 
   'agentGroup.acquireGroupLock': {

@@ -8,6 +8,7 @@ import {
   PlatformManagedResourcePolicyModel,
 } from '@/database/models/platform';
 import {
+  agents,
   platformAuditLogs,
   platformManagedResourcePolicies,
   platformResourceRevisions,
@@ -18,6 +19,7 @@ import type { LobeChatDatabase } from '@/database/type';
 import { assignGlobalPlatformRole, seedPlatformRoles } from '@/database/utils/seedPlatformRoles';
 
 import { agentRouter } from '../../routers/lambda/agent';
+import { agentDocumentRouter } from '../../routers/lambda/agentDocument';
 import { agentGroupRouter } from '../../routers/lambda/agentGroup';
 import { agentSkillsRouter } from '../../routers/lambda/agentSkills';
 import { aiModelRouter } from '../../routers/lambda/aiModel';
@@ -82,6 +84,10 @@ beforeAll(async () => {
   await db.delete(platformManagedResourcePolicies);
   await db.delete(users);
   await db.insert(users).values([{ id: ordinary }, { id: superAdmin }]);
+  await db.insert(agents).values([
+    { id: 'm06-ordinary-agent', slug: 'm06-ordinary-agent', userId: ordinary },
+    { id: 'm06-super-agent', slug: 'm06-super-agent', userId: superAdmin },
+  ]);
   await seedPlatformRoles(db);
   await assignGlobalPlatformRole(db, {
     roleName: PLATFORM_SYSTEM_ROLES.PLATFORM_USER,
@@ -161,6 +167,38 @@ describe('real legacy router callers under enforced policy', () => {
           deviceCode: 'device-code',
           providerId: 'githubcopilot',
         }),
+      () =>
+        agentDocumentRouter.createCaller(context(ordinary)).createSkillByPath({
+          agentId: 'm06-ordinary-agent',
+          content: '# Managed skill',
+          skillName: 'managed-skill',
+          targetNamespace: 'agent',
+        }),
+      () =>
+        agentDocumentRouter.createCaller(context(ordinary)).writeDocumentByPath({
+          agentId: 'm06-ordinary-agent',
+          content: '# Managed skill',
+          path: './lobe/skills/agent/skills/managed-skill/SKILL.md',
+        }),
+      () =>
+        agentDocumentRouter.createCaller(context(ordinary)).convertDocumentToSkill({
+          agentId: 'm06-ordinary-agent',
+          description: 'Managed skill',
+          name: 'managed-skill',
+          sourceAgentDocumentId: 'source-document',
+          title: 'Managed skill',
+        }),
+      () =>
+        agentDocumentRouter.createCaller(context(ordinary)).updateSkillByPath({
+          agentId: 'm06-ordinary-agent',
+          content: '# Updated',
+          path: './lobe/skills/agent/skills/managed-skill/SKILL.md',
+        }),
+      () =>
+        agentDocumentRouter.createCaller(context(ordinary)).deleteSkillByPath({
+          agentId: 'm06-ordinary-agent',
+          path: './lobe/skills/agent/skills/managed-skill/SKILL.md',
+        }),
     ];
     for (const call of calls) {
       await expect(call()).rejects.toMatchObject({
@@ -178,9 +216,73 @@ describe('real legacy router callers under enforced policy', () => {
         source: 'custom',
       }),
     ).rejects.toMatchObject({ code: 'FORBIDDEN', message: 'RESOURCE_MANAGED_BY_PLATFORM' });
+    await expect(
+      agentDocumentRouter.createCaller(context(superAdmin)).createSkillByPath({
+        agentId: 'm06-super-agent',
+        content: '# Super skill',
+        skillName: 'super-skill',
+        targetNamespace: 'agent',
+      }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN', message: 'RESOURCE_MANAGED_BY_PLATFORM' });
   });
 
-  it('allows exact Connector disconnect and narrow OAuth/binding operations', async () => {
+  it('allows ordinary VFS writes but denies every Skill source/target path transition', async () => {
+    const caller = agentDocumentRouter.createCaller(context(ordinary));
+    await expect(
+      caller.writeDocumentByPath({
+        agentId: 'm06-ordinary-agent',
+        content: '# Ordinary',
+        path: './ordinary.md',
+      }),
+    ).resolves.toMatchObject({ path: './ordinary.md' });
+    await expect(
+      caller.renameDocumentByPath({
+        agentId: 'm06-ordinary-agent',
+        fromPath: './ordinary.md',
+        toPath: './renamed.md',
+      }),
+    ).resolves.toMatchObject({ path: './renamed.md' });
+
+    const skillPath = './lobe/skills/agent/skills/blocked/SKILL.md';
+    for (const call of [
+      () =>
+        caller.renameDocumentByPath({
+          agentId: 'm06-ordinary-agent',
+          fromPath: './renamed.md',
+          toPath: skillPath,
+        }),
+      () =>
+        caller.renameDocumentByPath({
+          agentId: 'm06-ordinary-agent',
+          fromPath: skillPath,
+          toPath: './renamed.md',
+        }),
+      () =>
+        caller.copyDocumentByPath({
+          agentId: 'm06-ordinary-agent',
+          fromPath: './renamed.md',
+          toPath: skillPath,
+        }),
+      () =>
+        caller.copyDocumentByPath({
+          agentId: 'm06-ordinary-agent',
+          fromPath: skillPath,
+          toPath: './copied.md',
+        }),
+      () =>
+        caller.deleteDocumentByPath({
+          agentId: 'm06-ordinary-agent',
+          path: skillPath,
+        }),
+    ]) {
+      await expect(call()).rejects.toMatchObject({
+        code: 'FORBIDDEN',
+        message: 'RESOURCE_MANAGED_BY_PLATFORM',
+      });
+    }
+  });
+
+  it('allows exact Connector disconnect and owner-scoped OAuth/binding operations', async () => {
     const [connector] = await db
       .insert(userConnectors)
       .values({
@@ -198,16 +300,71 @@ describe('real legacy router callers under enforced policy', () => {
         patch: { isEnabled: false },
       }),
     ).resolves.toBeUndefined();
+    const [composioConnector] = await db
+      .insert(userConnectors)
+      .values({
+        identifier: 'owned-composio',
+        isEnabled: true,
+        metadata: {
+          composio: {
+            appSlug: 'github',
+            authConfigId: 'owned-auth',
+            connectedAccountId: 'trusted-owned-account',
+            status: 'ACTIVE',
+          },
+        },
+        name: 'Owned Composio',
+        sourceType: 'marketplace',
+        status: 'connected',
+        userId: ordinary,
+      })
+      .returning();
     await expect(
       composioRouter.createCaller(context(ordinary)).deleteConnection({
-        connectedAccountId: 'owned-account',
-        identifier: 'missing-projection-is-idempotent',
+        connectedAccountId: 'attacker-controlled-id-is-ignored',
+        connectorId: composioConnector.id,
       }),
     ).resolves.toEqual({ success: true });
+    expect(deleteConnectedAccount).toHaveBeenCalledWith('trusted-owned-account');
     await expect(
       oauthDeviceFlowRouter
         .createCaller(context(ordinary))
         .initiateDeviceCode({ providerId: 'githubcopilot' }),
     ).resolves.toMatchObject({ deviceCode: 'device-code', userCode: 'USER-CODE' });
+  });
+
+  it("rejects missing projections and another user's Composio binding without remote deletion", async () => {
+    const [foreign] = await db
+      .insert(userConnectors)
+      .values({
+        identifier: 'foreign-composio',
+        isEnabled: true,
+        metadata: {
+          composio: {
+            appSlug: 'slack',
+            authConfigId: 'foreign-auth',
+            connectedAccountId: 'foreign-binding',
+            status: 'ACTIVE',
+          },
+        },
+        name: 'Foreign Composio',
+        sourceType: 'marketplace',
+        status: 'connected',
+        userId: superAdmin,
+      })
+      .returning();
+    deleteConnectedAccount.mockClear();
+    const caller = composioRouter.createCaller(context(ordinary));
+
+    await expect(
+      caller.deleteConnection({ connectorId: '00000000-0000-4000-8000-000000000001' }),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await expect(
+      caller.deleteConnection({
+        connectedAccountId: 'foreign-binding',
+        connectorId: foreign.id,
+      }),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    expect(deleteConnectedAccount).not.toHaveBeenCalled();
   });
 });

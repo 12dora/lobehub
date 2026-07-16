@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   connectedAccountsLink: vi.fn(),
   connectorCreate: vi.fn(),
   connectorDelete: vi.fn(),
+  connectorFindById: vi.fn(),
   connectorQueryByIdentifiers: vi.fn(),
   connectorToolDeleteToolsNotIn: vi.fn(),
   connectorToolUpsertMany: vi.fn(),
@@ -44,6 +45,7 @@ vi.mock('@/database/models/connector', () => ({
   ConnectorModel: vi.fn().mockImplementation(() => ({
     create: mocks.connectorCreate,
     delete: mocks.connectorDelete,
+    findById: mocks.connectorFindById,
     queryByIdentifiers: mocks.connectorQueryByIdentifiers,
     update: mocks.connectorUpdate,
   })),
@@ -69,6 +71,7 @@ const caller = () => composioRouter.createCaller({ userId: 'user-1' } as any);
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.connectorQueryByIdentifiers.mockResolvedValue([]);
+  mocks.connectorFindById.mockResolvedValue(null);
   mocks.connectorCreate.mockResolvedValue({ id: 'conn-new' });
   mocks.pluginFindById.mockResolvedValue(undefined);
 });
@@ -174,12 +177,29 @@ describe('composioRouter delete paths clean up the connector projection', () => 
 
   it('deleteConnection deletes both plugin and connector', async () => {
     mocks.connectedAccountsDelete.mockResolvedValue(undefined);
-    mocks.connectorQueryByIdentifiers.mockResolvedValue([{ id: 'conn-existing' }]);
+    mocks.connectorQueryByIdentifiers.mockResolvedValue([
+      {
+        id: 'conn-existing',
+        identifier: 'gmail',
+        metadata: { composio: { connectedAccountId: 'trusted-ca-1' } },
+      },
+    ]);
 
-    await caller().deleteConnection({ connectedAccountId: 'ca-1', identifier: 'gmail' });
+    await caller().deleteConnection({ connectedAccountId: 'attacker-ca', identifier: 'gmail' });
 
+    expect(mocks.connectedAccountsDelete).toHaveBeenCalledWith('trusted-ca-1');
     expect(mocks.pluginDelete).toHaveBeenCalledWith('gmail');
     expect(mocks.connectorDelete).toHaveBeenCalledWith('conn-existing');
+  });
+
+  it('rejects deleteConnection when the owned local projection is absent', async () => {
+    await expect(caller().deleteConnection({ identifier: 'missing' })).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+    });
+
+    expect(mocks.connectedAccountsDelete).not.toHaveBeenCalled();
+    expect(mocks.pluginDelete).not.toHaveBeenCalled();
+    expect(mocks.connectorDelete).not.toHaveBeenCalled();
   });
 
   it('does not call connector delete when no projection exists', async () => {

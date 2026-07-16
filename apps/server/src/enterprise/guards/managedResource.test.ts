@@ -37,6 +37,8 @@ import { getEnterpriseErrorBody } from './enterpriseErrors';
 import {
   enforceManagedResourceMutation,
   isConnectorDisconnectInput,
+  isOrdinaryAgentDocumentPathInput,
+  isOrdinaryAgentDocumentPathPairInput,
   withManagedResourceGuard,
 } from './managedResource';
 import type { ManagedResourceMutationProcedure } from './managedResourceMutationRegistry';
@@ -287,12 +289,50 @@ describe('ManagedResourceGuard compatibility and bypass resistance', () => {
     ).toBe(false);
   });
 
+  it('agent-document path exemptions allow only unambiguous ordinary paths', () => {
+    expect(isOrdinaryAgentDocumentPathInput({ path: './notes/design.md' })).toBe(true);
+    expect(isOrdinaryAgentDocumentPathInput({ path: '/documents/design.md' })).toBe(true);
+    expect(
+      isOrdinaryAgentDocumentPathInput({
+        path: 'lobe//skills/agent/skills/reviewer/SKILL.md',
+      }),
+    ).toBe(false);
+    expect(isOrdinaryAgentDocumentPathInput({ path: './lobe/skills' })).toBe(false);
+    expect(isOrdinaryAgentDocumentPathInput({})).toBe(false);
+    expect(isOrdinaryAgentDocumentPathInput({ path: '' })).toBe(false);
+    expect(isOrdinaryAgentDocumentPathInput({ path: './notes/../skills' })).toBe(false);
+    expect(isOrdinaryAgentDocumentPathInput({ path: '.\\lobe\\skills\\agent' })).toBe(false);
+
+    expect(
+      isOrdinaryAgentDocumentPathPairInput({
+        fromPath: './notes/a.md',
+        toPath: './archive/a.md',
+      }),
+    ).toBe(true);
+    expect(
+      isOrdinaryAgentDocumentPathPairInput({
+        fromPath: './lobe/skills/agent/skills/a/SKILL.md',
+        toPath: './archive/a.md',
+      }),
+    ).toBe(false);
+    expect(
+      isOrdinaryAgentDocumentPathPairInput({
+        fromPath: './notes/a.md',
+        toPath: './lobe/skills/agent/skills/a/SKILL.md',
+      }),
+    ).toBe(false);
+    expect(isOrdinaryAgentDocumentPathPairInput({ fromPath: './notes/a.md' })).toBe(false);
+  });
+
   it('feature flag off is exact legacy behavior and does not read policy or readiness', async () => {
     const resolvePolicies = vi.fn(async () => {
       throw new Error('policy must not be read');
     });
     const readiness = vi.fn(async () => {
       throw new Error('readiness must not be read');
+    });
+    const isExemptInput = vi.fn(() => {
+      throw new Error('input must not be classified');
     });
     await expect(
       enforceManagedResourceMutation({
@@ -302,11 +342,13 @@ describe('ManagedResourceGuard compatibility and bypass resistance', () => {
           readiness,
           resolvePolicies,
         },
+        isExemptInput,
         procedure: 'aiProvider.createAiProvider',
       }),
     ).resolves.toBeUndefined();
     expect(resolvePolicies).not.toHaveBeenCalled();
     expect(readiness).not.toHaveBeenCalled();
+    expect(isExemptInput).not.toHaveBeenCalled();
   });
 
   it('draft never takes effect, and publishing managed=false restores mutations without data loss', async () => {

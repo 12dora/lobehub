@@ -265,10 +265,13 @@ describe('ManagedResourcePolicyService', () => {
       expectedDraftToken: shared,
       reason: 'second save',
     });
+    const secondSaveRejection = expect(secondSave).rejects.toBeInstanceOf(
+      PlatformRevisionConflictError,
+    );
     release.resolve();
 
     await expect(firstSave).resolves.toMatchObject({ ok: true });
-    await expect(secondSave).rejects.toBeInstanceOf(PlatformRevisionConflictError);
+    await secondSaveRejection;
     expect((await second.get()).draft).toEqual(firstDraft);
     const audits = await serverDB.select().from(platformAuditLogs);
     expect(audits.filter((row) => row.action === 'admin.managedResources.saveDraft')).toMatchObject(
@@ -308,10 +311,11 @@ describe('ManagedResourcePolicyService', () => {
       expectedRevision: 0,
       reason: 'stale publish',
     });
+    const publishRejection = expect(publish).rejects.toBeInstanceOf(PlatformRevisionConflictError);
     release.resolve();
 
     await expect(save).resolves.toMatchObject({ ok: true });
-    await expect(publish).rejects.toBeInstanceOf(PlatformRevisionConflictError);
+    await publishRejection;
     expect(await serverDB.select().from(platformResourceRevisions)).toHaveLength(0);
     expect((await publisher.get()).published).toEqual(createUnmanagedResourcePolicyMap());
     expect(await serverDB.select().from(platformAuditLogs)).toEqual(
@@ -366,10 +370,13 @@ describe('ManagedResourcePolicyService', () => {
       expectedRevision: 0,
       reason: 'second publish',
     });
+    const secondPublishRejection = expect(secondPublish).rejects.toBeInstanceOf(
+      PlatformRevisionConflictError,
+    );
     release.resolve();
 
     await expect(firstPublish).resolves.toMatchObject({ revision: 1 });
-    await expect(secondPublish).rejects.toBeInstanceOf(PlatformRevisionConflictError);
+    await secondPublishRejection;
     expect(await serverDB.select().from(platformResourceRevisions)).toHaveLength(1);
     const rows = await serverDB.select().from(platformManagedResourcePolicies);
     expect(rows).toHaveLength(5);
