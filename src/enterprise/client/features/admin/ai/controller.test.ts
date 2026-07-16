@@ -12,6 +12,7 @@ import {
   hasBlockingModelDependents,
   parseJsonObject,
   parseNullableJsonObject,
+  rebaseAiProviderDraft,
   resolveAiProviderPrimaryAction,
   toEditableAiProviderDraft,
 } from './controller';
@@ -86,9 +87,9 @@ describe('ai catalog controller', () => {
       reason: ' rotate model ',
       revision: provider.revision,
     });
-    expect(payload.secret).toEqual({ operation: 'keep' });
+    expect(payload?.secret).toEqual({ operation: 'keep' });
     expect(JSON.stringify(payload)).not.toContain('sha256:abc');
-    expect(payload.reason).toBe('rotate model');
+    expect(payload?.reason).toBe('rotate model');
   });
 
   it('requires the complete unique model set for reorder', () => {
@@ -126,6 +127,34 @@ describe('ai catalog controller', () => {
       value: { currency: 'USD' },
     });
     expect(parseNullableJsonObject('[]')).toEqual({ error: 'object', value: null });
+  });
+
+  it('blocks Provider payload creation while raw JSON is invalid', () => {
+    expect(
+      buildProviderUpdatePayload({
+        draft: { ...toEditableAiProviderDraft(provider), configText: '{' },
+        draftToken: 'a'.repeat(64),
+        id: provider.id,
+        reason: 'invalid config',
+        revision: provider.revision,
+      }),
+    ).toBeNull();
+  });
+
+  it('three-way rebases distinct fields and exposes divergent same-field edits', () => {
+    const original = toEditableAiProviderDraft(provider);
+    const result = rebaseAiProviderDraft({
+      latest: { ...original, description: 'remote', displayName: 'Remote name' },
+      local: { ...original, configText: '{\n  "local": true\n}', displayName: 'Local name' },
+      original,
+    });
+    expect(result.draft.description).toBe('remote');
+    expect(result.draft.configText).toContain('local');
+    expect(result.draft.displayName).toBe('Local name');
+    expect(result.conflicts).toEqual([
+      { field: 'displayName', latest: 'Remote name', local: 'Local name' },
+    ]);
+    expect(JSON.stringify(result)).not.toContain('sha256:abc');
   });
 
   it('never carries a value for keep or clear Secret operations', () => {

@@ -3,10 +3,10 @@
 import { Flexbox, Input, InputNumber, Text, TextArea } from '@lobehub/ui';
 import { Switch } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
-import { memo, useState } from 'react';
+import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { type EditableAiProviderDraft, parseJsonObject } from '../controller';
+import type { AiProviderJsonField, EditableAiProviderDraft } from '../controller';
 
 const styles = createStaticStyles(({ css }) => ({
   card: css`
@@ -38,45 +38,42 @@ const styles = createStaticStyles(({ css }) => ({
 
 interface JsonObjectFieldProps {
   disabled?: boolean;
+  error: string | null;
+  field: AiProviderJsonField;
   label: string;
-  onChange: (value: Record<string, unknown>) => void;
-  value: Record<string, unknown>;
+  onChange: (field: AiProviderJsonField, value: string) => void;
+  value: string;
 }
 
-const JsonObjectField = memo<JsonObjectFieldProps>(({ disabled, label, onChange, value }) => {
-  const { t } = useTranslation('admin');
-  const [text, setText] = useState(() => JSON.stringify(value, null, 2));
-  const [error, setError] = useState<string | null>(null);
+const JsonObjectField = memo<JsonObjectFieldProps>(
+  ({ disabled, error, field, label, onChange, value }) => {
+    const { t } = useTranslation('admin');
 
-  return (
-    <div className={styles.field}>
-      <Text strong>{label}</Text>
-      <TextArea
-        disabled={disabled}
-        rows={6}
-        value={text}
-        onChange={(event) => {
-          const next = event.target.value;
-          setText(next);
-          const parsed = parseJsonObject(next);
-          setError(parsed.error);
-          if (parsed.value) onChange(parsed.value);
-        }}
-      />
-      {error ? (
-        <Text role="alert" type="danger">
-          {t(`aiCatalog.editor.json.${error}` as never)}
-        </Text>
-      ) : null}
-    </div>
-  );
-});
+    return (
+      <div className={styles.field}>
+        <Text strong>{label}</Text>
+        <TextArea
+          disabled={disabled}
+          rows={6}
+          value={value}
+          onChange={(event) => onChange(field, event.target.value)}
+        />
+        {error ? (
+          <Text role="alert" type="danger">
+            {t(`aiCatalog.editor.json.${error}` as never)}
+          </Text>
+        ) : null}
+      </div>
+    );
+  },
+);
 
 JsonObjectField.displayName = 'AdminAiJsonObjectField';
 
 interface ProviderEditorFieldsProps {
   disabled?: boolean;
   draft: EditableAiProviderDraft;
+  jsonErrors: Record<AiProviderJsonField, string | null>;
   providerKey: string;
   updateDraft: <Key extends keyof EditableAiProviderDraft>(
     key: Key,
@@ -85,7 +82,7 @@ interface ProviderEditorFieldsProps {
 }
 
 const ProviderEditorFields = memo<ProviderEditorFieldsProps>(
-  ({ disabled, draft, providerKey, updateDraft }) => {
+  ({ disabled, draft, jsonErrors, providerKey, updateDraft }) => {
     const { t } = useTranslation('admin');
 
     return (
@@ -164,15 +161,19 @@ const ProviderEditorFields = memo<ProviderEditorFieldsProps>(
         <div className={styles.grid}>
           <JsonObjectField
             disabled={disabled}
+            error={jsonErrors.configText}
+            field="configText"
             label={t('aiCatalog.editor.config')}
-            value={draft.config}
-            onChange={(value) => updateDraft('config', value)}
+            value={draft.configText}
+            onChange={updateDraft}
           />
           <JsonObjectField
             disabled={disabled}
+            error={jsonErrors.settingsText}
+            field="settingsText"
             label={t('aiCatalog.editor.settings')}
-            value={draft.settings}
-            onChange={(value) => updateDraft('settings', value)}
+            value={draft.settingsText}
+            onChange={updateDraft}
           />
         </div>
       </div>

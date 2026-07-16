@@ -49,8 +49,17 @@ export default {
   'aiCatalog.editor.conflict.desc':
     'The Provider changed after this local public-field draft was saved. Refresh to inspect the latest version, or discard the local draft.',
   'aiCatalog.editor.conflict.discard': 'Discard local draft',
+  'aiCatalog.editor.conflict.fields':
+    'Local and latest drafts changed the same public field. Resolve each conflict before saving.',
+  'aiCatalog.editor.conflict.keepLocal': 'Keep local',
+  'aiCatalog.editor.conflict.latestValue': 'Latest: {{value}}',
+  'aiCatalog.editor.conflict.localValue': 'Local: {{value}}',
+  'aiCatalog.editor.conflict.rebase': 'Refresh and rebase',
   'aiCatalog.editor.conflict.refresh': 'Refresh latest',
+  'aiCatalog.editor.conflict.refreshFailed':
+    'Could not load the latest draft. Your local public fields remain safe; retry rebase.',
   'aiCatalog.editor.conflict.title': 'Provider revision conflict',
+  'aiCatalog.editor.conflict.useLatest': 'Use latest',
   'aiCatalog.editor.config': 'Provider config (JSON)',
   'aiCatalog.editor.desc':
     'Edit the draft, replace credentials without revealing the current value, test the connection, then publish.',

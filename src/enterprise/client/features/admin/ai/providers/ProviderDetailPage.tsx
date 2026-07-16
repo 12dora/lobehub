@@ -16,7 +16,7 @@ import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvide
 import AdminPageTemplate from '../../primitives/AdminPageTemplate';
 import RevisionBanner from '../../primitives/RevisionBanner';
 import StatusBadge from '../../primitives/StatusBadge';
-import type { AiCatalogPermissions } from '../controller';
+import type { AiCatalogPermissions, EditableAiProviderDraft } from '../controller';
 import { deriveAiCatalogPermissions } from '../controller';
 import {
   useFetchAdminAiProvider,
@@ -96,6 +96,7 @@ const ProviderDetailContent = memo<ProviderDetailContentProps>(
   ({ authMethod, data, editor, mutate, permission }) => {
     const { t } = useTranslation('admin');
     const navigate = useNavigate();
+    const [rebaseLoading, setRebaseLoading] = useState(false);
     const [revisionCursorStack, setRevisionCursorStack] = useState<number[]>([]);
     const revisionCursor = revisionCursorStack.at(-1);
     const revisions = useFetchAdminAiProviderRevisions(
@@ -110,6 +111,31 @@ const ProviderDetailContent = memo<ProviderDetailContentProps>(
       permissions: permission,
     });
     const collectionLocked = editor.dirty || editor.conflict;
+    const rebaseFieldLabels: Record<keyof EditableAiProviderDraft, string> = {
+      checkModel: t('aiCatalog.editor.checkModel'),
+      configText: t('aiCatalog.editor.config'),
+      description: t('aiCatalog.editor.description'),
+      displayName: t('aiCatalog.editor.displayName'),
+      enabled: t('aiCatalog.editor.enabled'),
+      fetchOnClient: t('aiCatalog.editor.fetchOnClient'),
+      logo: t('aiCatalog.editor.logo'),
+      settingsText: t('aiCatalog.editor.settings'),
+      sort: t('aiCatalog.editor.sort'),
+    };
+
+    const handleRebase = async () => {
+      setRebaseLoading(true);
+      editor.setActionError(null);
+      try {
+        const latest = await mutate();
+        if (latest) editor.rebaseLocal(latest);
+        else editor.setActionError(t('aiCatalog.editor.conflict.refreshFailed'));
+      } catch {
+        editor.setActionError(t('aiCatalog.editor.conflict.refreshFailed'));
+      } finally {
+        setRebaseLoading(false);
+      }
+    };
 
     return (
       <AdminPageTemplate
@@ -148,12 +174,48 @@ const ProviderDetailContent = memo<ProviderDetailContentProps>(
                 type="warning"
                 extra={
                   <Flexbox horizontal gap={8}>
-                    <Button onClick={() => void mutate()}>
-                      {t('aiCatalog.editor.conflict.refresh')}
+                    <Button loading={rebaseLoading} onClick={() => void handleRebase()}>
+                      {t('aiCatalog.editor.conflict.rebase')}
                     </Button>
                     <Button onClick={editor.discardLocal}>
                       {t('aiCatalog.editor.conflict.discard')}
                     </Button>
+                  </Flexbox>
+                }
+              />
+            ) : null}
+            {editor.rebaseConflicts.length > 0 ? (
+              <Alert
+                showIcon
+                message={t('aiCatalog.editor.conflict.fields')}
+                type="warning"
+                description={
+                  <Flexbox gap={12}>
+                    {editor.rebaseConflicts.map((item) => (
+                      <Flexbox gap={6} key={item.field}>
+                        <Text strong>{rebaseFieldLabels[item.field]}</Text>
+                        <Text code type="secondary">
+                          {t('aiCatalog.editor.conflict.localValue', {
+                            value: String(item.local),
+                          })}
+                        </Text>
+                        <Text code type="secondary">
+                          {t('aiCatalog.editor.conflict.latestValue', {
+                            value: String(item.latest),
+                          })}
+                        </Text>
+                        <Flexbox horizontal gap={8}>
+                          <Button onClick={() => editor.resolveRebaseConflict(item.field, 'local')}>
+                            {t('aiCatalog.editor.conflict.keepLocal')}
+                          </Button>
+                          <Button
+                            onClick={() => editor.resolveRebaseConflict(item.field, 'latest')}
+                          >
+                            {t('aiCatalog.editor.conflict.useLatest')}
+                          </Button>
+                        </Flexbox>
+                      </Flexbox>
+                    ))}
                   </Flexbox>
                 }
               />
@@ -164,6 +226,7 @@ const ProviderDetailContent = memo<ProviderDetailContentProps>(
         <ProviderEditorFields
           disabled={!permission.canUpdateProvider || editor.conflict}
           draft={editor.draft!}
+          jsonErrors={editor.jsonErrors}
           providerKey={data.draft.providerKey}
           updateDraft={editor.updateDraft}
         />
