@@ -175,8 +175,7 @@ export const useSkillActions = ({
       submitLabel: t('skillCatalog.actions.save.label'),
       targetLabel: data.draft.displayName,
       title: t('skillCatalog.actions.save.title'),
-      validateExtra: () =>
-        identity.displayName.trim() ? null : 'skillCatalog.form.required',
+      validateExtra: () => (identity.displayName.trim() ? null : 'skillCatalog.form.required'),
     });
   }, [
     authMethod,
