@@ -27,6 +27,7 @@ import {
   initModelRuntimeWithUserPayload,
 } from '@/server/modules/ModelRuntime';
 import {
+  assertPlatformPublishedModel,
   createPlatformAiModelAllowlistHooks,
   getEmptyPlatformAiRuntimeState,
   isPlatformManagedAiEnabled,
@@ -128,6 +129,7 @@ export class UserPersonaService {
     const hooks = getBusinessModelRuntimeHooks(payload.userId, 'lobehub');
     const runtime = managed
       ? await (async () => {
+          assertPlatformPublishedModel(runtimeState, providerId, agentConfig.model, 'chat');
           const execution = await resolvePlatformAiExecutionConfig(this.db, providerId);
           const secretPayload = buildPayloadFromKeyVaults(
             execution.keyVaults,

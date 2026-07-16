@@ -1,3 +1,4 @@
+import { ModelRuntime } from '@lobechat/model-runtime';
 import { type AiProviderRuntimeState } from '@lobechat/types';
 import { type EnabledAiModel } from 'model-bank';
 import { describe, expect, it, vi } from 'vitest';
@@ -127,7 +128,13 @@ describe('MemoryExtractionExecutor.resolveRuntimeKeyVaults', () => {
           providerId: 'provider-e',
           type: 'embedding',
         },
-        { abilities: {}, enabled: true, id: 'layer-1', providerId: 'provider-l', type: 'chat' },
+        ...['layer-act', 'layer-ctx', 'layer-exp', 'layer-id', 'layer-pref'].map((id) => ({
+          abilities: {},
+          enabled: true,
+          id,
+          providerId: 'provider-l',
+          type: 'chat' as const,
+        })),
       ],
       {
         'provider-b': { apiKey: 'public-state-must-not-win' },
@@ -146,6 +153,44 @@ describe('MemoryExtractionExecutor.resolveRuntimeKeyVaults', () => {
       expect(execution).toHaveBeenCalledTimes(3);
       expect(JSON.stringify(runtimeState)).not.toContain('platform-secret');
       expect(secretFactory).toHaveBeenCalledTimes(3);
+    } finally {
+      process.env.ENABLE_PLATFORM_MANAGED_AI = previousFlag;
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('rejects an unpublished managed model before secret resolution or SDK initialization', async () => {
+    const previousFlag = process.env.ENABLE_PLATFORM_MANAGED_AI;
+    process.env.ENABLE_PLATFORM_MANAGED_AI = '1';
+    const secretFactory = vi.spyOn(PlatformSecretService, 'fromEnvOrThrowIfEnterprise');
+    const execution = vi.spyOn(
+      AiCatalogExecutionResolver.prototype,
+      'resolveProviderExecutionConfig',
+    );
+    const initialize = vi.spyOn(ModelRuntime, 'initializeWithProvider');
+    const executor = createExecutor();
+    const runtimeState = createRuntimeState(
+      [
+        { abilities: {}, enabled: true, id: 'gate-2', providerId: 'provider-b', type: 'image' },
+        {
+          abilities: {},
+          enabled: true,
+          id: 'embed-1',
+          providerId: 'provider-e',
+          type: 'embedding',
+        },
+        { abilities: {}, enabled: true, id: 'layer-1', providerId: 'provider-l', type: 'chat' },
+      ],
+      {},
+    );
+
+    try {
+      await expect(resolveRuntimeKeyVaults(executor, runtimeState)).rejects.toMatchObject({
+        code: 'PLATFORM_AI_MODEL_NOT_PUBLISHED',
+      });
+      expect(secretFactory).not.toHaveBeenCalled();
+      expect(execution).not.toHaveBeenCalled();
+      expect(initialize).not.toHaveBeenCalled();
     } finally {
       process.env.ENABLE_PLATFORM_MANAGED_AI = previousFlag;
       vi.restoreAllMocks();
