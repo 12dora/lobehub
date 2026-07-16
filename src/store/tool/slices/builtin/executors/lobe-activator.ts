@@ -19,19 +19,14 @@ import { ActivatorExecutor } from '@lobechat/builtin-tool-activator/executor';
 import { SkillsExecutionRuntime } from '@lobechat/builtin-tool-skills/executionRuntime';
 
 import { filterBuiltinSkills } from '@/helpers/skillFilters';
-import { agentSkillService } from '@/services/skill';
+import { clientSkillRuntimeService } from '@/services/platformSkillRuntime';
 import { getToolStoreState } from '@/store/tool';
 import { toolSelectors } from '@/store/tool/selectors/tool';
 import { LobehubSkillStatus } from '@/store/tool/slices/lobehubSkillStore';
 
 const skillsRuntime = new SkillsExecutionRuntime({
   builtinSkills: filterBuiltinSkills(builtinSkills),
-  service: {
-    findAll: () => agentSkillService.list(),
-    findById: (id) => agentSkillService.getById(id),
-    findByName: (name) => agentSkillService.getByName(name),
-    readResource: (id, path) => agentSkillService.readResource(id, path),
-  },
+  service: clientSkillRuntimeService,
 });
 
 const service: ActivatorRuntimeService = {

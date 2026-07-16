@@ -11,6 +11,7 @@ import {
 } from 'react';
 
 import { useServerConfigStore } from '@/store/serverConfig';
+import { useToolStore } from '@/store/tool';
 import {
   DISABLED_PLATFORM_CAPABILITIES,
   type PlatformCapabilities,
@@ -21,6 +22,7 @@ import {
 } from '@/types/platform/publicSnapshot';
 
 import { fetchPlatformCapabilities, fetchPlatformPublicSnapshot } from '../services/platform';
+import { platformSkillsService } from '../services/platformSkills';
 
 export interface EnterprisePlatformContextValue {
   capabilities: PlatformCapabilities;
@@ -84,10 +86,16 @@ export default function EnterprisePlatformProvider({
         fetchCapabilities(),
         fetchPublicSnapshot(),
       ]);
+      useToolStore.getState().setPlatformSkillCatalog(null);
+      const platformSkillCatalog = nextCapabilities.managedResources.skills
+        ? await platformSkillsService.getPublishedCatalog()
+        : null;
+      useToolStore.getState().setPlatformSkillCatalog(platformSkillCatalog);
       setCapabilities(nextCapabilities);
       setPublicSnapshot(nextPublic);
     } catch (err) {
       // Keep last-known / disabled snapshot so the app stays usable when enterprise is off.
+      useToolStore.getState().setPlatformSkillCatalog(null);
       setError(err instanceof Error ? err : new Error(String(err)));
     } finally {
       setLoading(false);
@@ -101,6 +109,7 @@ export default function EnterprisePlatformProvider({
       // Explicitly stay on disabled snapshots — no network.
       setCapabilities(DISABLED_PLATFORM_CAPABILITIES);
       setPublicSnapshot(DISABLED_PLATFORM_PUBLIC_SNAPSHOT);
+      useToolStore.getState().setPlatformSkillCatalog(null);
       setLoading(false);
       setError(null);
       return;

@@ -1,3 +1,4 @@
+import type { PlatformSkillPinnedRef } from '@lobechat/context-engine';
 import type {
   CreateSkillInput,
   ImportGitHubInput,
@@ -73,6 +74,10 @@ class AgentSkillService {
 
   async readResource(id: string, path: string): Promise<SkillResourceContent> {
     return lambdaClient.agentSkills.readResource.query({ id, path });
+  }
+
+  async resolvePlatformPinned(ref: PlatformSkillPinnedRef) {
+    return lambdaClient.agentSkills.resolvePlatformPinned.query(ref);
   }
 
   // ===== Update =====

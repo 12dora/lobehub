@@ -16,6 +16,7 @@ import { useClientDataSWR } from '@/libs/swr';
 import { toolKeys } from '@/libs/swr/keys';
 import { agentSkillService } from '@/services/skill';
 import { type StoreSetter } from '@/store/types';
+import type { PlatformPublishedSkillCatalog } from '@/types/platform/skills';
 import { setNamespace } from '@/utils/storeDebug';
 
 import { type ToolStore } from '../../store';
@@ -109,6 +110,10 @@ export class AgentSkillsActionImpl {
   refreshAgentSkills = async (): Promise<void> => {
     const { data } = await agentSkillService.list();
     this.#set({ agentSkills: data }, false, n('refreshAgentSkills'));
+  };
+
+  setPlatformSkillCatalog = (catalog: PlatformPublishedSkillCatalog | null): void => {
+    this.#set({ platformSkillCatalog: catalog }, false, n('setPlatformSkillCatalog'));
   };
 
   updateAgentSkill = async (params: UpdateSkillInput): Promise<SkillItem | undefined> => {

@@ -3,6 +3,21 @@ import type { AgentPluginMode } from '../agent/pluginConfig';
 export const PLATFORM_SKILL_DISTRIBUTIONS = ['mandatory', 'default', 'optional'] as const;
 export type PlatformSkillDistribution = (typeof PLATFORM_SKILL_DISTRIBUTIONS)[number];
 
+export interface PlatformPublishedSkill {
+  checksum: string;
+  description: string | null;
+  displayName: string;
+  distribution: PlatformSkillDistribution;
+  skillKey: string;
+  source: 'builtin' | 'uploaded';
+  version: string;
+}
+
+export interface PlatformPublishedSkillCatalog {
+  revision: string;
+  skills: PlatformPublishedSkill[];
+}
+
 export interface PlatformSkillSelection {
   /** Content is injected immediately for a pinned selection. */
   activated: boolean;

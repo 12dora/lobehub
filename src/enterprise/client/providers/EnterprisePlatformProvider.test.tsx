@@ -17,6 +17,21 @@ const serverConfigState = vi.hoisted(() => ({
   serverConfigInit: true,
 }));
 
+const platformSkillMocks = vi.hoisted(() => ({
+  getPublishedCatalog: vi.fn(),
+  setPlatformSkillCatalog: vi.fn(),
+}));
+
+vi.mock('../services/platformSkills', () => ({
+  platformSkillsService: { getPublishedCatalog: platformSkillMocks.getPublishedCatalog },
+}));
+
+vi.mock('@/store/tool', () => ({
+  useToolStore: {
+    getState: () => ({ setPlatformSkillCatalog: platformSkillMocks.setPlatformSkillCatalog }),
+  },
+}));
+
 const fetchCapabilities = vi.fn(async () => DISABLED_PLATFORM_CAPABILITIES);
 const fetchPublicSnapshot = vi.fn(async () => ({
   brandingRevision: null,
@@ -72,6 +87,11 @@ describe('EnterprisePlatformProvider', () => {
     serverConfigState.enterpriseEnabled = false;
     serverConfigState.serverConfigInit = true;
     fetchCapabilities.mockReset().mockResolvedValue(DISABLED_PLATFORM_CAPABILITIES);
+    platformSkillMocks.getPublishedCatalog.mockReset().mockResolvedValue({
+      revision: 'catalog-1',
+      skills: [],
+    });
+    platformSkillMocks.setPlatformSkillCatalog.mockReset();
     fetchPublicSnapshot.mockReset().mockResolvedValue({
       brandingRevision: null,
       configRevision: '0',
@@ -99,6 +119,7 @@ describe('EnterprisePlatformProvider', () => {
 
     expect(fetchCapabilities).not.toHaveBeenCalled();
     expect(fetchPublicSnapshot).not.toHaveBeenCalled();
+    expect(platformSkillMocks.getPublishedCatalog).not.toHaveBeenCalled();
   });
 
   it('enterprise enabled: loads platform snapshots once config is ready', async () => {
@@ -110,6 +131,23 @@ describe('EnterprisePlatformProvider', () => {
     await waitFor(() => {
       expect(fetchCapabilities).toHaveBeenCalledTimes(1);
       expect(fetchPublicSnapshot).toHaveBeenCalledTimes(1);
+    });
+    expect(platformSkillMocks.getPublishedCatalog).not.toHaveBeenCalled();
+  });
+
+  it('loads and mirrors the catalog only when managed Skills are effective', async () => {
+    serverConfigState.enterpriseEnabled = true;
+    fetchCapabilities.mockResolvedValue({
+      ...DISABLED_PLATFORM_CAPABILITIES,
+      managedResources: { ...DISABLED_PLATFORM_CAPABILITIES.managedResources, skills: true },
+    });
+
+    renderProvider();
+
+    await waitFor(() => expect(platformSkillMocks.getPublishedCatalog).toHaveBeenCalledOnce());
+    expect(platformSkillMocks.setPlatformSkillCatalog).toHaveBeenLastCalledWith({
+      revision: 'catalog-1',
+      skills: [],
     });
   });
 

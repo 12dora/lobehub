@@ -97,6 +97,40 @@ const loadSkillContent = async (
 ): Promise<PreloadedSkill | undefined> => {
   const toolState = getToolStoreState();
 
+  if (toolState.platformSkillCatalog) {
+    const published = toolState.platformSkillCatalog.skills.find(
+      (skill) => skill.skillKey === selectedSkill.identifier,
+    );
+    if (!published) return undefined;
+
+    const resolved = await agentSkillService.resolvePlatformPinned({
+      checksum: published.checksum,
+      skillKey: published.skillKey,
+      version: published.version,
+    });
+    if (
+      resolved.identifier !== published.skillKey ||
+      resolved.version !== published.version ||
+      resolved.checksum !== published.checksum
+    ) {
+      throw new Error(`Published Skill ${published.skillKey} could not be resolved exactly`);
+    }
+    const resources = Object.fromEntries(
+      resolved.resources.map((resource) => [
+        resource.path,
+        { content: resource.content, fileHash: resource.checksum, size: resource.sizeBytes },
+      ]),
+    );
+    return {
+      content:
+        resolved.resources.length > 0
+          ? `${resolved.content}\n\n${resourcesTreePrompt(resolved.name, resources)}`
+          : resolved.content,
+      identifier: published.skillKey,
+      name: published.displayName,
+    };
+  }
+
   const builtinSkill = (toolState.builtinSkills || []).find(
     (skill) => skill.identifier === selectedSkill.identifier,
   );
@@ -154,13 +188,14 @@ export const resolveSelectedSkillsWithContent = async ({
   const resolved = resolveSelectedSkills(message, selectedSkills);
 
   if (resolved.length === 0) return [];
+  const managedCatalog = getToolStoreState().platformSkillCatalog;
 
   const enriched = await Promise.all(
     resolved.map(async (skill) => {
       const loaded = await loadSkillContent(skill, userCreds);
-      return loaded ? { ...skill, content: loaded.content } : skill;
+      return loaded ? { ...skill, content: loaded.content } : managedCatalog ? undefined : skill;
     }),
   );
 
-  return enriched;
+  return enriched.filter((skill) => skill !== undefined);
 };

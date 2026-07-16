@@ -1,0 +1,93 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { getToolStoreState } from '@/store/tool';
+
+import { clientSkillRuntimeService } from './platformSkillRuntime';
+import { agentSkillService } from './skill';
+
+vi.mock('@/store/tool', () => ({ getToolStoreState: vi.fn() }));
+vi.mock('./skill', () => ({
+  agentSkillService: {
+    getById: vi.fn(),
+    getByName: vi.fn(),
+    list: vi.fn(),
+    readResource: vi.fn(),
+    resolvePlatformPinned: vi.fn(),
+  },
+}));
+
+const state = vi.mocked(getToolStoreState);
+const resolvePinned = vi.mocked(agentSkillService.resolvePlatformPinned);
+const published = {
+  checksum: 'a'.repeat(64),
+  description: 'Approved',
+  displayName: 'Approved Skill',
+  distribution: 'default' as const,
+  skillKey: 'approved.skill',
+  source: 'uploaded' as const,
+  version: '1.0.0',
+};
+
+describe('clientSkillRuntimeService', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.mockReturnValue({
+      platformSkillCatalog: { revision: 'catalog-1', skills: [published] },
+    } as never);
+    resolvePinned.mockResolvedValue({
+      checksum: published.checksum,
+      content: 'approved body',
+      description: published.description,
+      identifier: published.skillKey,
+      name: published.displayName,
+      resources: [
+        {
+          checksum: 'b'.repeat(64),
+          content: '',
+          mediaType: 'text/plain',
+          path: 'empty.txt',
+          sizeBytes: 0,
+        },
+      ],
+      version: published.version,
+    } as never);
+  });
+
+  it('resolves by stable key using the exact published pin', async () => {
+    await expect(clientSkillRuntimeService.findByName('approved.skill')).resolves.toMatchObject({
+      content: 'approved body',
+      identifier: 'approved.skill',
+    });
+    expect(resolvePinned).toHaveBeenCalledWith({
+      checksum: published.checksum,
+      skillKey: published.skillKey,
+      version: published.version,
+    });
+  });
+
+  it('fails closed instead of falling back to personal or static builtin Skills', async () => {
+    await expect(clientSkillRuntimeService.findByName('personal.skill')).rejects.toThrow(
+      'Managed Skill is not published',
+    );
+    expect(agentSkillService.getByName).not.toHaveBeenCalled();
+  });
+
+  it('preserves a valid empty resource body', async () => {
+    const listed = await clientSkillRuntimeService.findAll();
+    const id = listed.data[0]!.id;
+    await expect(clientSkillRuntimeService.readResource(id, 'empty.txt')).resolves.toMatchObject({
+      content: '',
+      path: 'empty.txt',
+    });
+  });
+
+  it('uses the unchanged legacy path when no managed catalog is present', async () => {
+    state.mockReturnValue({ platformSkillCatalog: null } as never);
+    vi.mocked(agentSkillService.getByName).mockResolvedValue(undefined);
+
+    await clientSkillRuntimeService.findByName('personal.skill');
+
+    expect(agentSkillService.getByName).toHaveBeenCalledWith('personal.skill');
+    expect(resolvePinned).not.toHaveBeenCalled();
+  });
+});
