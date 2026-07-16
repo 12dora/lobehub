@@ -1,13 +1,14 @@
 'use client';
 
-import { Avatar, Flexbox, Text } from '@lobehub/ui';
+import { Avatar, Text } from '@lobehub/ui';
 import { Button, Tabs } from '@lobehub/ui/base-ui';
-import { createStaticStyles, cssVar } from 'antd-style';
-import { memo, useMemo, useState } from 'react';
+import { createStaticStyles } from 'antd-style';
+import { memo, useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate, useParams } from 'react-router';
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
+import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
 
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
@@ -21,6 +22,7 @@ import {
 } from './modals/actions';
 import AccessTab from './tabs/AccessTab';
 import AuditTab from './tabs/AuditTab';
+import DangerZone from './tabs/DangerZone';
 import OverviewTab from './tabs/OverviewTab';
 import SessionsTab from './tabs/SessionsTab';
 import { displayUserName, hasPermission } from './utils';
@@ -32,7 +34,13 @@ const styles = createStaticStyles(({ css }) => ({
     gap: 12px;
     align-items: center;
   `,
-  notFound: css`
+  panel: css`
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+    padding-block-start: 8px;
+  `,
+  state: css`
     display: flex;
     flex-direction: column;
     gap: 12px;
@@ -40,18 +48,28 @@ const styles = createStaticStyles(({ css }) => ({
 
     padding-block: 32px;
   `,
-  panel: css`
-    padding-block-start: 8px;
-  `,
 }));
 
 type DetailTab = 'overview' | 'access' | 'sessions' | 'audit';
+
+const isNotFoundError = (error: unknown): boolean => {
+  if (!error) return false;
+  const mapped = mapEnterpriseError(error);
+  if (mapped?.code === 'PLATFORM_NOT_FOUND') return true;
+  const message = String((error as { message?: string })?.message ?? '');
+  const dataCode = String(
+    (error as { data?: { code?: string; errorData?: { code?: string } } })?.data?.errorData?.code ??
+      (error as { data?: { code?: string } })?.data?.code ??
+      '',
+  );
+  return /PLATFORM_NOT_FOUND/.test(message) || dataCode === 'PLATFORM_NOT_FOUND';
+};
 
 const UserDetailPage = memo(() => {
   const { t } = useTranslation('admin');
   const navigate = useNavigate();
   const { id: userId } = useParams<{ id: string }>();
-  const { permissions } = useAdminAccess();
+  const { permissions, roles: actorRoles } = useAdminAccess();
   const [tab, setTab] = useState<DetailTab>('overview');
 
   const canBan = hasPermission(permissions, PLATFORM_PERMISSIONS.USER_BAN);
@@ -62,122 +80,74 @@ const UserDetailPage = memo(() => {
   const { data, error, isLoading, mutate } = useFetchAdminUserDetail(userId);
   const { banUser, unbanUser, revokeSessions, replaceGlobalRoles } = useAdminUserMutations();
 
-  // Prefer structured not-found over generic empty when server returns PLATFORM_NOT_FOUND
-  const isNotFoundError =
-    Boolean(error) &&
-    /PLATFORM_NOT_FOUND|NOT_FOUND/i.test(
-      String((error as { message?: string })?.message ?? '') +
-        JSON.stringify((error as { data?: unknown })?.data ?? {}),
-    );
+  const openBan = useCallback(() => {
+    if (!data || !userId || data.isSelf) return;
+    openBanUserModal({
+      targetLabel: displayUserName(data),
+      userId,
+      onConfirm: async (input) => {
+        await banUser({ ...input, userId });
+        await mutate();
+      },
+    });
+  }, [banUser, data, mutate, userId]);
 
-  const titleName = data ? displayUserName(data) : t('users.detail.title');
+  const openUnban = useCallback(() => {
+    if (!data || !userId || data.isSelf) return;
+    openUnbanUserModal({
+      targetLabel: displayUserName(data),
+      userId,
+      onConfirm: async (input) => {
+        await unbanUser({ ...input, userId });
+        await mutate();
+      },
+    });
+  }, [data, mutate, unbanUser, userId]);
 
-  const actions = useMemo(() => {
-    if (!data || !userId) return null;
-    const targetLabel = displayUserName(data);
-    return (
-      <Flexbox horizontal gap={8} style={{ flexWrap: 'wrap' }}>
-        {canBan && data.status !== 'banned' ? (
-          <Button
-            danger
-            size="small"
-            onClick={() =>
-              openBanUserModal({
-                targetLabel,
-                userId,
-                onConfirm: async (input) => {
-                  await banUser({ ...input, userId });
-                  await mutate();
-                },
-              })
-            }
-          >
-            {t('users.actions.ban')}
-          </Button>
-        ) : null}
-        {canBan && data.status === 'banned' ? (
-          <Button
-            size="small"
-            onClick={() =>
-              openUnbanUserModal({
-                targetLabel,
-                userId,
-                onConfirm: async (input) => {
-                  await unbanUser({ ...input, userId });
-                  await mutate();
-                },
-              })
-            }
-          >
-            {t('users.actions.unban')}
-          </Button>
-        ) : null}
-        {canRevoke ? (
-          <Button
-            danger
-            size="small"
-            onClick={() =>
-              openRevokeSessionsModal({
-                selfTarget: false,
-                targetLabel,
-                userId,
-                onConfirm: async (input) => {
-                  await revokeSessions({ ...input, userId });
-                  await mutate();
-                },
-              })
-            }
-          >
-            {t('users.actions.revokeSessions')}
-          </Button>
-        ) : null}
-        {canManageRoles ? (
-          <Button
-            size="small"
-            type="primary"
-            onClick={() =>
-              openReplaceRolesModal({
-                currentRoles: data.roles.map((r) => r.name),
-                targetLabel,
-                userId,
-                onConfirm: async (input) => {
-                  await replaceGlobalRoles({ ...input, userId });
-                  await mutate();
-                },
-              })
-            }
-          >
-            {t('users.actions.replaceRoles')}
-          </Button>
-        ) : null}
-      </Flexbox>
-    );
-  }, [
-    banUser,
-    canBan,
-    canManageRoles,
-    canRevoke,
-    data,
-    mutate,
-    replaceGlobalRoles,
-    revokeSessions,
-    t,
-    unbanUser,
-    userId,
-  ]);
+  const openRevoke = useCallback(() => {
+    if (!data || !userId) return;
+    openRevokeSessionsModal({
+      isSelf: data.isSelf,
+      targetLabel: displayUserName(data),
+      userId,
+      onConfirm: async (input) => {
+        await revokeSessions({ ...input, userId });
+        await mutate();
+      },
+    });
+  }, [data, mutate, revokeSessions, userId]);
 
-  if (isLoading && !data) {
+  const openRoles = useCallback(() => {
+    if (!data || !userId) return;
+    openReplaceRolesModal({
+      actorRoles,
+      currentRoles: data.roles.map((r) => r.name),
+      targetLabel: displayUserName(data),
+      userId,
+      onConfirm: async (input) => {
+        await replaceGlobalRoles({ ...input, userId });
+        await mutate();
+      },
+    });
+  }, [actorRoles, data, mutate, replaceGlobalRoles, userId]);
+
+  // ── State ordering (UI-R1-03) ────────────────────────────────────────────
+  // 1) Loading (no settled data)
+  if (isLoading && !data && !error) {
     return (
       <AdminPageTemplate title={t('users.detail.loading')}>
-        <Text type="secondary">{t('primitives.dataTable.loading')}</Text>
+        <div className={styles.state} role="status">
+          <Text type="secondary">{t('primitives.dataTable.loading')}</Text>
+        </div>
       </AdminPageTemplate>
     );
   }
 
-  if (isNotFoundError || (!data && !isLoading)) {
+  // 2) Structured not-found only
+  if (isNotFoundError(error)) {
     return (
       <AdminPageTemplate title={t('users.detail.notFoundTitle')}>
-        <div className={styles.notFound}>
+        <div className={styles.state}>
           <Text>{t('users.detail.notFoundDesc')}</Text>
           <Button type="default" onClick={() => navigate('/admin/users')}>
             {t('users.detail.backToList')}
@@ -187,10 +157,11 @@ const UserDetailPage = memo(() => {
     );
   }
 
+  // 3) Generic network/server error + retry (must be reachable)
   if (error && !data) {
     return (
       <AdminPageTemplate title={t('users.detail.title')}>
-        <div className={styles.notFound} role="alert">
+        <div className={styles.state} role="alert">
           <Text>{t('primitives.dataTable.error')}</Text>
           <Button type="primary" onClick={() => void mutate()}>
             {t('primitives.dataTable.retry')}
@@ -200,17 +171,31 @@ const UserDetailPage = memo(() => {
     );
   }
 
-  if (!data || !userId) return null;
+  // 4) No-data fallback (should be rare after loading/error)
+  if (!data || !userId) {
+    return (
+      <AdminPageTemplate title={t('users.detail.notFoundTitle')}>
+        <div className={styles.state}>
+          <Text>{t('users.detail.notFoundDesc')}</Text>
+          <Button type="default" onClick={() => navigate('/admin/users')}>
+            {t('users.detail.backToList')}
+          </Button>
+        </div>
+      </AdminPageTemplate>
+    );
+  }
+
+  const titleName = displayUserName(data);
 
   return (
     <AdminPageTemplate
-      actions={actions}
       title={titleName}
       description={
         <div className={styles.headerMeta}>
           <Avatar avatar={data.avatar ?? undefined} size={40} />
           <Text type="secondary">{data.email ?? data.id}</Text>
           <StatusBadge status={data.status} />
+          {data.isSelf ? <Text type="secondary">{t('users.detail.youBadge')}</Text> : null}
         </div>
       }
       toolbar={
@@ -226,50 +211,35 @@ const UserDetailPage = memo(() => {
         />
       }
     >
-      <div className={styles.panel} style={{ borderColor: cssVar.colorBorderSecondary }}>
+      <div className={styles.panel}>
         {tab === 'overview' ? <OverviewTab user={data} /> : null}
         {tab === 'access' ? (
           <AccessTab
             canManageRoles={canManageRoles}
             user={data}
-            onReplaceRoles={
-              canManageRoles
-                ? () =>
-                    openReplaceRolesModal({
-                      currentRoles: data.roles.map((r) => r.name),
-                      targetLabel: displayUserName(data),
-                      userId,
-                      onConfirm: async (input) => {
-                        await replaceGlobalRoles({ ...input, userId });
-                        await mutate();
-                      },
-                    })
-                : undefined
-            }
+            onReplaceRoles={canManageRoles ? openRoles : undefined}
           />
         ) : null}
         {tab === 'sessions' ? (
           <SessionsTab
             canRevoke={canRevoke}
             user={data}
-            onRevoke={
-              canRevoke
-                ? () =>
-                    openRevokeSessionsModal({
-                      selfTarget: false,
-                      targetLabel: displayUserName(data),
-                      userId,
-                      onConfirm: async (input) => {
-                        await revokeSessions({ ...input, userId });
-                        await mutate();
-                      },
-                    })
-                : undefined
-            }
+            onOpenRevoke={canRevoke ? openRevoke : undefined}
           />
         ) : null}
         {tab === 'audit' ? (
           <AuditTab canReadAudit={canReadAudit} enabled={tab === 'audit'} userId={userId} />
+        ) : null}
+
+        {(canBan || canRevoke) && (tab === 'overview' || tab === 'sessions') ? (
+          <DangerZone
+            canBan={canBan}
+            canRevoke={canRevoke}
+            user={data}
+            onBan={canBan && !data.isSelf && data.status !== 'banned' ? openBan : undefined}
+            onRevoke={canRevoke ? openRevoke : undefined}
+            onUnban={canBan && !data.isSelf && data.status === 'banned' ? openUnban : undefined}
+          />
         ) : null}
       </div>
     </AdminPageTemplate>

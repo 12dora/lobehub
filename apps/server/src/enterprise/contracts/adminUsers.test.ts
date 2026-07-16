@@ -12,6 +12,7 @@ import {
   adminUsersBanInputSchema,
   adminUsersGetAuditTrailInputSchema,
   adminUsersGetInputSchema,
+  adminUsersGetOutputSchema,
   adminUsersListInputSchema,
   adminUsersListOutputSchema,
   adminUsersReplaceGlobalRolesInputSchema,
@@ -151,6 +152,35 @@ describe('adminUsersGetInputSchema', () => {
   it('requires userId', () => {
     expect(() => adminUsersGetInputSchema.parse({})).toThrow();
     expect(adminUsersGetInputSchema.parse({ userId: 'u1' }).userId).toBe('u1');
+  });
+});
+
+describe('adminUsersGetOutputSchema isSelf', () => {
+  const base = {
+    avatar: null,
+    banExpires: null,
+    banReason: null,
+    banned: false,
+    createdAt: new Date(),
+    email: null,
+    fullName: null,
+    id: 'u1',
+    lastActiveAt: null,
+    providers: [],
+    roles: [],
+    sessionCount: 0,
+    sessions: [],
+    status: 'active' as const,
+    username: null,
+  };
+
+  it('accepts isSelf true/false and rejects unexpected fields', () => {
+    expect(adminUsersGetOutputSchema.parse({ ...base, isSelf: true }).isSelf).toBe(true);
+    expect(adminUsersGetOutputSchema.parse({ ...base, isSelf: false }).isSelf).toBe(false);
+    expect(() => adminUsersGetOutputSchema.parse({ ...base } as never)).toThrow();
+    expect(() =>
+      adminUsersGetOutputSchema.parse({ ...base, isSelf: true, password: 'x' } as never),
+    ).toThrow();
   });
 });
 

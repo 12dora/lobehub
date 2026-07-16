@@ -148,7 +148,10 @@ export class AdminUserService {
       targetType: 'user',
     });
 
-    return detail;
+    return {
+      ...detail,
+      isSelf: Boolean(meta?.actorUserId) && meta!.actorUserId === userId,
+    };
   };
 
   getAuditTrail = async (

@@ -1,7 +1,7 @@
 'use client';
 
 import { Empty, Flexbox } from '@lobehub/ui';
-import { Button } from '@lobehub/ui/base-ui';
+import { Button, Select } from '@lobehub/ui/base-ui';
 import type { TableColumnsType, TableProps } from 'antd';
 import { Table } from 'antd';
 import type {
@@ -317,19 +317,18 @@ function DataTableInner<T extends object>({
           role="navigation"
         >
           {cursorPagination.onPageSizeChange && cursorPagination.pageSize ? (
-            <select
+            <Select
               aria-label={t('primitives.dataTable.pageSize')}
-              value={cursorPagination.pageSize}
-              onChange={(e) => {
-                cursorPagination.onPageSizeChange?.(Number(e.target.value));
+              style={{ minWidth: 88 }}
+              value={String(cursorPagination.pageSize)}
+              options={(cursorPagination.pageSizeOptions ?? ['20', '50', '100']).map((opt) => ({
+                label: opt,
+                value: opt,
+              }))}
+              onChange={(value) => {
+                cursorPagination.onPageSizeChange?.(Number(value));
               }}
-            >
-              {(cursorPagination.pageSizeOptions ?? ['20', '50', '100']).map((opt) => (
-                <option key={opt} value={opt}>
-                  {opt}
-                </option>
-              ))}
-            </select>
+            />
           ) : null}
           <Button
             disabled={!cursorPagination.hasPrevious}

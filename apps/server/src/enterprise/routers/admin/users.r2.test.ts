@@ -557,6 +557,7 @@ describe('R2-04 strict recursive output schemas', () => {
         email: null,
         fullName: null,
         id: 'x',
+        isSelf: false,
         lastActiveAt: null,
         providers: [],
         roles: [],

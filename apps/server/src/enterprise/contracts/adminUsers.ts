@@ -178,6 +178,11 @@ export const adminUsersGetOutputSchema = z
     emailVerified: z.boolean().optional(),
     fullName: z.string().nullable(),
     id: z.string(),
+    /**
+     * Server-computed: target user id equals the authenticated actor.
+     * Clients must not invent self state — always trust this field.
+     */
+    isSelf: z.boolean(),
     lastActiveAt: z.date().nullable(),
     providers: z.array(adminUserProviderSummarySchema),
     roles: z.array(adminUserGlobalRoleSchema),

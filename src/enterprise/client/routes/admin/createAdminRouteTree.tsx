@@ -1,4 +1,6 @@
+import { Text } from '@lobehub/ui';
 import { lazy, type ReactNode, Suspense } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { RouteObject } from 'react-router';
 
 import AdminErrorBoundary from '@/enterprise/client/features/admin/gates/AdminErrorBoundary';
@@ -12,10 +14,21 @@ const UsersListPage = lazy(() => import('@/enterprise/client/features/admin/user
 const UserDetailPage = lazy(
   () => import('@/enterprise/client/features/admin/users/UserDetailPage'),
 );
+const AdminReauthCompletePage = lazy(
+  () => import('@/enterprise/client/features/admin/reauth/AdminReauthCompletePage'),
+);
 
-const LazyFallback = () => null;
+/** Honest localized loading surface for lazy admin pages (no blank frame). */
+const AdminLazyFallback = () => {
+  const { t } = useTranslation('admin');
+  return (
+    <div role="status" style={{ padding: 24 }}>
+      <Text type="secondary">{t('primitives.dataTable.loading')}</Text>
+    </div>
+  );
+};
 
-const withLazy = (node: ReactNode) => <Suspense fallback={<LazyFallback />}>{node}</Suspense>;
+const withLazy = (node: ReactNode) => <Suspense fallback={<AdminLazyFallback />}>{node}</Suspense>;
 
 /** Resolve the page element for a catalog item (M04 users are real; others stay placeholders). */
 const resolveAdminLeafElement = (id: string): ReactNode => {
@@ -25,6 +38,9 @@ const resolveAdminLeafElement = (id: string): ReactNode => {
     }
     case 'users-detail': {
       return withLazy(<UserDetailPage />);
+    }
+    case 'reauth-complete': {
+      return withLazy(<AdminReauthCompletePage />);
     }
     default: {
       return <PlaceholderPage />;

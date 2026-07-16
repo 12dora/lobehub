@@ -198,6 +198,7 @@ describe('M04 R1 — output schemas reject secrets', () => {
         email: null,
         fullName: null,
         id: 'x',
+        isSelf: false,
         lastActiveAt: null,
         password: 'x',
         providers: [],

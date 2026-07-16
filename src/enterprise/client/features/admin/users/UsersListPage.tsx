@@ -3,7 +3,9 @@
 import { Avatar, Flexbox, Tag, Text } from '@lobehub/ui';
 import { Select } from '@lobehub/ui/base-ui';
 import type { TableColumnsType } from 'antd';
+import { DatePicker } from 'antd';
 import { createStaticStyles } from 'antd-style';
+import type { Dayjs } from 'dayjs';
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router';
@@ -21,6 +23,7 @@ import { displayUserName, formatAdminDateTime } from './utils';
 
 type AdminUserListItem = AdminUsersListOutput['items'][number];
 const DEFAULT_LIST_LIMIT = 50;
+const DEBOUNCE_MS = 300;
 
 const styles = createStaticStyles(({ css }) => ({
   identity: css`
@@ -39,54 +42,79 @@ const styles = createStaticStyles(({ css }) => ({
 
 const ROLE_OPTIONS = Object.values(PLATFORM_SYSTEM_ROLES);
 
-const DEBOUNCE_MS = 300;
+export interface UsersListFilters {
+  createdFrom?: Date;
+  createdTo?: Date;
+  query: string;
+  role?: string;
+  status?: 'active' | 'banned';
+}
+
+const emptyFilters = (): UsersListFilters => ({ query: '' });
 
 const UsersListPage = memo(() => {
   const { t } = useTranslation('admin');
   const navigate = useNavigate();
 
-  const [filterValues, setFilterValues] = useState<AdminFilterValues>(() =>
+  const [filters, setFilters] = useState<UsersListFilters>(emptyFilters);
+  const [filterBarValues, setFilterBarValues] = useState<AdminFilterValues>(() =>
     createEmptyAdminFilters(),
   );
-  const [status, setStatus] = useState<'active' | 'banned' | undefined>();
-  const [role, setRole] = useState<string | undefined>();
+  const [dateRange, setDateRange] = useState<[Dayjs | null, Dayjs | null] | null>(null);
   const [limit, setLimit] = useState(DEFAULT_LIST_LIMIT);
   const [debouncedQuery, setDebouncedQuery] = useState('');
-  /** Stack of cursors used to reach the current page (empty = first page). */
   const [cursorStack, setCursorStack] = useState<(string | null)[]>([]);
   const currentCursor = cursorStack.at(-1) ?? null;
 
-  // Debounce search only — status/role apply immediately.
+  // Debounce search text only.
   useEffect(() => {
     const handle = window.setTimeout(() => {
-      setDebouncedQuery(filterValues.query.trim());
+      setDebouncedQuery(filterBarValues.query.trim());
     }, DEBOUNCE_MS);
     return () => window.clearTimeout(handle);
-  }, [filterValues.query]);
+  }, [filterBarValues.query]);
+
+  // Sync debounced query into filters.
+  useEffect(() => {
+    setFilters((prev) =>
+      prev.query === debouncedQuery ? prev : { ...prev, query: debouncedQuery },
+    );
+  }, [debouncedQuery]);
 
   // Reset keyset stack when filters or page size change.
   useEffect(() => {
     setCursorStack([]);
-  }, [debouncedQuery, status, role, limit]);
+  }, [
+    filters.query,
+    filters.status,
+    filters.role,
+    filters.createdFrom?.getTime(),
+    filters.createdTo?.getTime(),
+    limit,
+  ]);
 
   const listFilters = useMemo(
     () => ({
+      createdFrom: filters.createdFrom,
+      createdTo: filters.createdTo,
       cursor: currentCursor ?? undefined,
       limit,
-      query: debouncedQuery || undefined,
-      role,
-      status,
+      query: filters.query || undefined,
+      role: filters.role,
+      status: filters.status,
     }),
-    [currentCursor, debouncedQuery, limit, role, status],
+    [currentCursor, filters, limit],
   );
 
   const { data, error, isLoading, isValidating, mutate } = useFetchAdminUsersList(listFilters);
 
   const items = data?.items ?? [];
   const nextCursor = data?.nextCursor ?? null;
-  // Show loading on first settle only; keep rows during background revalidate.
   const showLoading = isLoading && !data;
   const showError = Boolean(error) && !data;
+  const hasFilters = Boolean(
+    filters.query || filters.status || filters.role || filters.createdFrom || filters.createdTo,
+  );
 
   const columns: TableColumnsType<AdminUserListItem> = useMemo(
     () => [
@@ -101,7 +129,7 @@ const UsersListPage = memo(() => {
                 {displayUserName(row)}
               </Text>
               {row.username ? (
-                <Text ellipsis style={{ fontSize: 12, margin: 0 }} type="secondary">
+                <Text ellipsis style={{ margin: 0 }} type="secondary">
                   @{row.username}
                 </Text>
               ) : null}
@@ -163,8 +191,13 @@ const UsersListPage = memo(() => {
     [t],
   );
 
-  const handleFiltersChange = useCallback((next: AdminFilterValues) => {
-    setFilterValues(next);
+  const handleFilterBarChange = useCallback((next: AdminFilterValues) => {
+    setFilterBarValues(next);
+    // Clear all extra filters when FilterBar clears
+    if (!next.query && Object.values(next).every((v) => !v || !String(v).trim())) {
+      setFilters(emptyFilters());
+      setDateRange(null);
+    }
   }, []);
 
   const goNext = useCallback(() => {
@@ -183,7 +216,7 @@ const UsersListPage = memo(() => {
       toolbar={
         <FilterBar
           searchPlaceholder={t('users.list.searchPlaceholder')}
-          values={filterValues}
+          values={filterBarValues}
           extra={
             <>
               <Select
@@ -191,28 +224,53 @@ const UsersListPage = memo(() => {
                 aria-label={t('users.list.filters.status')}
                 placeholder={t('users.list.filters.status')}
                 style={{ minWidth: 140 }}
-                value={status}
+                value={filters.status}
                 options={[
                   { label: t('users.status.active'), value: 'active' },
                   { label: t('users.status.banned'), value: 'banned' },
                 ]}
-                onChange={(v) => setStatus(v as 'active' | 'banned' | undefined)}
+                onChange={(v) =>
+                  setFilters((prev) => ({
+                    ...prev,
+                    status: (v as 'active' | 'banned' | undefined) || undefined,
+                  }))
+                }
               />
               <Select
                 allowClear
                 aria-label={t('users.list.filters.role')}
                 placeholder={t('users.list.filters.role')}
                 style={{ minWidth: 160 }}
-                value={role}
+                value={filters.role}
                 options={ROLE_OPTIONS.map((r) => ({
                   label: t(`users.roles.${r}` as never, { defaultValue: r }),
                   value: r,
                 }))}
-                onChange={(v) => setRole(v as string | undefined)}
+                onChange={(v) =>
+                  setFilters((prev) => ({
+                    ...prev,
+                    role: (v as string | undefined) || undefined,
+                  }))
+                }
+              />
+              <DatePicker.RangePicker
+                allowClear
+                aria-label={t('users.list.filters.createdRange')}
+                value={dateRange}
+                onChange={(range) => {
+                  setDateRange(range as [Dayjs | null, Dayjs | null] | null);
+                  const from = range?.[0]?.startOf('day').toDate();
+                  const to = range?.[1]?.endOf('day').toDate();
+                  setFilters((prev) => ({
+                    ...prev,
+                    createdFrom: from,
+                    createdTo: to,
+                  }));
+                }}
               />
             </>
           }
-          onChange={handleFiltersChange}
+          onChange={handleFilterBarChange}
         />
       }
     >
@@ -236,9 +294,7 @@ const UsersListPage = memo(() => {
           pageSize: limit,
           pageSizeOptions: ['20', '50', '100'],
         }}
-        emptyDescription={
-          debouncedQuery || status || role ? t('users.list.emptyFiltered') : t('users.list.empty')
-        }
+        emptyDescription={hasFilters ? t('users.list.emptyFiltered') : t('users.list.empty')}
         onRetry={() => {
           void mutate();
         }}
