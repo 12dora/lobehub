@@ -187,6 +187,8 @@ export const withAdminReauthRetry = async <T>(
   fn: () => Promise<T>,
   options?: RequestAdminReauthOptions & {
     isReauthError?: (error: unknown) => boolean;
+    /** Invoked after reauth is required, before the popup opens. */
+    onReauthStart?: () => void;
     requestReauth?: () => Promise<void>;
   },
 ): Promise<T> => {
@@ -198,6 +200,7 @@ export const withAdminReauthRetry = async <T>(
   } catch (error) {
     if (!isReauthError(error)) throw error;
     if (options?.signal?.aborted) throw new AdminReauthCancelledError();
+    options?.onReauthStart?.();
     await requestReauth();
     if (options?.signal?.aborted) throw new AdminReauthCancelledError();
     return await fn();
