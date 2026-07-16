@@ -111,6 +111,7 @@ export const useGlobalModelActions = (params: {
         });
       } catch (cause) {
         toast.error(errorText(cause));
+        throw cause;
       } finally {
         setActionLoadingId(null);
       }

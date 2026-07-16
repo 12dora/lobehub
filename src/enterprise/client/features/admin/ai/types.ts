@@ -2,6 +2,8 @@ import type { z } from 'zod';
 
 import type {
   adminAiModelCreateInputSchema,
+  adminAiModelCreateTargetListInputSchema,
+  adminAiModelCreateTargetListOutputSchema,
   adminAiModelDeleteInputSchema,
   adminAiModelDeleteOutputSchema,
   adminAiModelDependentsInputSchema,
@@ -34,6 +36,12 @@ import type {
 } from '@/server/enterprise/contracts/aiCatalog';
 
 export type AdminAiModelCreateInput = z.infer<typeof adminAiModelCreateInputSchema>;
+export type AdminAiModelCreateTargetListInput = z.infer<
+  typeof adminAiModelCreateTargetListInputSchema
+>;
+export type AdminAiModelCreateTargetListOutput = z.infer<
+  typeof adminAiModelCreateTargetListOutputSchema
+>;
 export type AdminAiModelDeleteInput = z.infer<typeof adminAiModelDeleteInputSchema>;
 export type AdminAiModelDeleteOutput = z.infer<typeof adminAiModelDeleteOutputSchema>;
 export type AdminAiModelDraftContextInput = z.infer<typeof adminAiModelDraftContextInputSchema>;
