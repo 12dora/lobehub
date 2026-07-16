@@ -128,13 +128,6 @@ const ModelListPage = memo(() => {
     [cursor, enabled, limit, provider, query, status, type],
   );
   const { data, error, isLoading, mutate } = useFetchAdminAiModels(input);
-  const providerTargets = useMemo(
-    () => [
-      ...new Map((data?.items ?? []).map((item) => [item.providerId, item.providerKey])).entries(),
-    ],
-    [data?.items],
-  );
-
   const columns = useMemo<TableColumnsType<AdminAiModelListItem>>(
     () => [
       {
@@ -201,7 +194,9 @@ const ModelListPage = memo(() => {
                           disabled={loading}
                           icon={PlusIcon}
                           size="small"
-                          onClick={() => void modelActions.handleCreate(item.providerId)}
+                          onClick={() => {
+                            void modelActions.handleCreate(item.providerId).catch(() => undefined);
+                          }}
                         />
                       </Tooltip>
                     ) : null}
@@ -266,12 +261,7 @@ const ModelListPage = memo(() => {
           <Button
             type="primary"
             onClick={() => {
-              if (providerTargets.length === 1) {
-                void modelActions.handleCreate(providerTargets[0]![0]);
-                return;
-              }
               openModelProviderTargetModal({
-                candidates: providerTargets.map(([id, key]) => ({ id, key })),
                 onSubmit: modelActions.handleCreate,
               });
             }}

@@ -1,11 +1,16 @@
 'use client';
 
-import { Input, Text } from '@lobehub/ui';
+import { Flexbox, Input, Text } from '@lobehub/ui';
 import { Button, createModal, useModalContext } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
 import i18next from 'i18next';
-import { memo, useState } from 'react';
+import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
+
+import NeuralNetworkLoading from '@/components/NeuralNetworkLoading';
+import { adminAiCatalogService } from '@/enterprise/client/services/adminAiCatalog';
+
+import { useModelProviderTargetPicker } from '../hooks/useModelProviderTargetPicker';
 
 const styles = createStaticStyles(({ css }) => ({
   body: css`
@@ -19,75 +24,166 @@ const styles = createStaticStyles(({ css }) => ({
   footer: css`
     display: flex;
     gap: 8px;
-    justify-content: flex-end;
+    justify-content: space-between;
+  `,
+  list: css`
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+
+    max-height: 320px;
+  `,
+  state: css`
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    align-items: center;
+    justify-content: center;
+
+    min-height: 160px;
+
+    text-align: center;
+  `,
+  target: css`
+    justify-content: flex-start;
+
+    width: 100%;
+    height: auto;
+    padding-block: 10px;
+
+    text-align: start;
+
+    &[data-selected='true'] {
+      outline: 2px solid ${cssVar.colorPrimary};
+      outline-offset: -2px;
+    }
+  `,
+  targetIdentity: css`
+    align-items: flex-start;
+    min-width: 0;
   `,
 }));
 
 export interface ModelProviderTargetContentProps {
-  candidates: Array<{ id: string; key: string }>;
   onSubmit: (providerId: string) => Promise<void>;
 }
 
-const ModelProviderTargetContent = memo<ModelProviderTargetContentProps>(
-  ({ candidates, onSubmit }) => {
-    const { t } = useTranslation('admin');
-    const { close } = useModalContext();
-    const [providerId, setProviderId] = useState(candidates.length === 1 ? candidates[0]!.id : '');
-    const [submitting, setSubmitting] = useState(false);
-    const [error, setError] = useState(false);
+const ModelProviderTargetContent = memo<ModelProviderTargetContentProps>(({ onSubmit }) => {
+  const { t } = useTranslation('admin');
+  const { close } = useModalContext();
+  const picker = useModelProviderTargetPicker({
+    loadTargets: adminAiCatalogService.listModelCreateTargets,
+    onSubmit,
+  });
+  const isTargetLoading = picker.isLoading || picker.isSearchPending;
 
-    const submit = async () => {
-      const id = providerId.trim();
-      if (!id) {
-        setError(true);
-        return;
-      }
-      setSubmitting(true);
-      try {
-        await onSubmit(id);
-        close();
-      } catch {
-        setError(true);
-        setSubmitting(false);
-      }
-    };
+  return (
+    <div className={styles.body}>
+      <Text type="secondary">{t('aiCatalog.models.providerTarget.desc')}</Text>
+      <Input
+        allowClear
+        aria-label={t('aiCatalog.models.providerTarget.search')}
+        disabled={picker.isSubmitting}
+        placeholder={t('aiCatalog.models.providerTarget.search')}
+        value={picker.query}
+        onChange={(event) => picker.setQuery(event.target.value)}
+      />
 
-    return (
-      <div className={styles.body}>
-        <Text type="secondary">{t('aiCatalog.models.providerTarget.desc')}</Text>
-        <Input
-          disabled={submitting}
-          placeholder={t('aiCatalog.models.providerTarget.placeholder')}
-          value={providerId}
-          onChange={(event) => {
-            setError(false);
-            setProviderId(event.target.value);
-          }}
-        />
-        {candidates.length > 0 ? (
+      {isTargetLoading ? (
+        <div className={styles.state}>
+          <NeuralNetworkLoading size={28} />
+          <Text type="secondary">{t('aiCatalog.models.providerTarget.loading')}</Text>
+        </div>
+      ) : picker.loadFailed ? (
+        <div className={styles.state} role="alert">
+          <Text type="secondary">{t('aiCatalog.models.providerTarget.loadError')}</Text>
+          <Button onClick={picker.retryLoad}>{t('aiCatalog.models.providerTarget.retry')}</Button>
+        </div>
+      ) : picker.items.length === 0 ? (
+        <div className={styles.state}>
           <Text type="secondary">
-            {t('aiCatalog.models.providerTarget.known', {
-              providers: candidates.map((item) => `${item.key} (${item.id})`).join(', '),
-            })}
+            {picker.query.trim()
+              ? t('aiCatalog.models.providerTarget.noResults')
+              : t('aiCatalog.models.providerTarget.empty')}
           </Text>
-        ) : null}
-        {error ? (
-          <Text className={styles.error} role="alert">
-            {t('aiCatalog.models.providerTarget.error')}
+        </div>
+      ) : (
+        <div
+          aria-label={t('aiCatalog.models.providerTarget.list')}
+          className={styles.list}
+          role="group"
+        >
+          {picker.items.map((item) => {
+            const selected = picker.selectedProviderId === item.id;
+            return (
+              <Button
+                aria-pressed={selected}
+                className={styles.target}
+                data-selected={selected}
+                disabled={picker.isSubmitting}
+                key={item.id}
+                type="default"
+                onClick={() => picker.selectProvider(item.id)}
+              >
+                <Flexbox className={styles.targetIdentity} gap={2}>
+                  <Text ellipsis strong>
+                    {item.displayName}
+                  </Text>
+                  <Text ellipsis type="secondary">
+                    {item.providerKey}
+                  </Text>
+                </Flexbox>
+              </Button>
+            );
+          })}
+        </div>
+      )}
+
+      {picker.submitFailed ? (
+        <Text className={styles.error} role="alert">
+          {t('aiCatalog.models.providerTarget.submitError')}
+        </Text>
+      ) : null}
+      <div className={styles.footer}>
+        <Flexbox horizontal gap={8}>
+          <Button
+            disabled={!picker.canGoPrevious || isTargetLoading || picker.isSubmitting}
+            onClick={picker.goToPreviousPage}
+          >
+            {t('aiCatalog.models.providerTarget.previous')}
+          </Button>
+          <Button
+            disabled={!picker.canGoNext || isTargetLoading || picker.isSubmitting}
+            onClick={picker.goToNextPage}
+          >
+            {t('aiCatalog.models.providerTarget.next')}
+          </Button>
+          <Text type="secondary">
+            {t('aiCatalog.models.providerTarget.page', { page: picker.page })}
           </Text>
-        ) : null}
-        <div className={styles.footer}>
-          <Button disabled={submitting} onClick={close}>
+        </Flexbox>
+        <Flexbox horizontal gap={8}>
+          <Button disabled={picker.isSubmitting} onClick={close}>
             {t('users.modals.cancel')}
           </Button>
-          <Button loading={submitting} type="primary" onClick={() => void submit()}>
+          <Button
+            disabled={!picker.selectedProviderId || isTargetLoading || picker.loadFailed}
+            loading={picker.isSubmitting}
+            type="primary"
+            onClick={() => {
+              void picker.submit().then((succeeded) => {
+                if (succeeded) close();
+              });
+            }}
+          >
             {t('aiCatalog.models.actions.create')}
           </Button>
-        </div>
+        </Flexbox>
       </div>
-    );
-  },
-);
+    </div>
+  );
+});
 
 ModelProviderTargetContent.displayName = 'AdminAiModelProviderTargetContent';
 
