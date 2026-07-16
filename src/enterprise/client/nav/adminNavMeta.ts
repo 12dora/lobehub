@@ -107,7 +107,7 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
         id: 'ai-providers',
         labelKey: 'nav.aiProviders',
         path: '/admin/ai/providers',
-        placeholder: true,
+        placeholder: false,
         requiredPermissions: [PLATFORM_PERMISSIONS.AI_PROVIDER_READ],
       },
       {
@@ -115,15 +115,14 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
         id: 'ai-provider-detail',
         labelKey: 'nav.aiProviderDetail',
         path: '/admin/ai/providers/:id',
-        placeholder: true,
-        // Edit surface requires update (list/03 provider 编辑)
-        requiredPermissions: [PLATFORM_PERMISSIONS.AI_PROVIDER_UPDATE],
+        placeholder: false,
+        requiredPermissions: [PLATFORM_PERMISSIONS.AI_PROVIDER_READ],
       },
       {
         id: 'ai-models',
         labelKey: 'nav.aiModels',
         path: '/admin/ai/models',
-        placeholder: true,
+        placeholder: false,
         requiredPermissions: [PLATFORM_PERMISSIONS.AI_MODEL_READ],
       },
     ],

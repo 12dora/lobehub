@@ -4,6 +4,10 @@ import { NextResponse } from 'next/server';
 
 import { checkAuth } from '@/app/(backend)/middleware/auth';
 import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
+import {
+  isPlatformManagedAiEnabled,
+  listPlatformPublishedModels,
+} from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
 import { createErrorResponse } from '@/utils/errorResponse';
 
 import { resolveValidWorkspaceIdFromRequest } from '../../_utils/workspace';
@@ -54,6 +58,9 @@ export const GET = checkAuth(async (req, { params, userId, serverDB }) => {
   const provider = (await params)!.provider!;
 
   try {
+    if (isPlatformManagedAiEnabled()) {
+      return NextResponse.json(await listPlatformPublishedModels(serverDB, provider));
+    }
     const workspaceId = await resolveValidWorkspaceIdFromRequest({ req, serverDB, userId });
 
     // Read user's provider config from database

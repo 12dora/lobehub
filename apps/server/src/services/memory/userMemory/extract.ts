@@ -22,6 +22,7 @@ import {
   type Embeddings,
   type GenerateObjectPayload,
   type LLMRoleType,
+  mergeModelRuntimeHooks,
   type ModelRuntimeHooks,
   type OpenAIChatMessage,
 } from '@lobechat/model-runtime';
@@ -72,6 +73,19 @@ import { getServerGlobalConfig } from '@/server/globalConfig';
 import { type MemoryAgentConfig } from '@/server/globalConfig/parseMemoryExtractionConfig';
 import { parseMemoryExtractionConfig } from '@/server/globalConfig/parseMemoryExtractionConfig';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
+import {
+  buildPayloadFromKeyVaults,
+  initModelRuntimeWithUserPayload,
+} from '@/server/modules/ModelRuntime';
+import {
+  assertPlatformPublishedModel,
+  createPlatformAiModelAllowlistHooks,
+  getEmptyPlatformAiRuntimeState,
+  isPlatformManagedAiEnabled,
+  type PlatformAiExecutionConfig,
+  resolvePlatformAiExecutionConfig,
+  resolvePlatformAiRuntimeState,
+} from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
 import { S3 } from '@/server/modules/S3';
 import {
   AsyncTaskError,
@@ -252,6 +266,20 @@ export type ProviderKeyVaultMap = Record<
   string,
   AiProviderRuntimeState['runtimeConfig'][string]['keyVaults'] | undefined
 >;
+
+const MANAGED_EXECUTIONS = Symbol('platformManagedAiExecutions');
+type ManagedProviderKeyVaultMap = ProviderKeyVaultMap & {
+  [MANAGED_EXECUTIONS]?: Record<string, PlatformAiExecutionConfig>;
+};
+
+const toDefinedKeyVaults = (
+  keyVaults: Record<string, Record<string, string> | string | undefined>,
+): Record<string, string> =>
+  Object.fromEntries(
+    Object.entries(keyVaults).filter(
+      (entry): entry is [string, string] => typeof entry[1] === 'string',
+    ),
+  );
 
 export const buildWorkflowPayloadInput = (
   payload: MemoryExtractionNormalizedPayload,
@@ -487,6 +515,7 @@ export type RuntimeResolveOptions = {
   preferred?: {
     providerIds?: string[];
   };
+  managedExecutions?: Record<string, PlatformAiExecutionConfig>;
   userId?: string;
 };
 
@@ -507,6 +536,21 @@ export const resolveRuntimeAgentConfig = (
       ...Object.keys(keyVaults || {}),
     ]),
   );
+
+  if (options?.managedExecutions) {
+    for (const provider of providerOrder) {
+      const execution = options.managedExecutions[provider];
+      if (!execution) continue;
+      const payload = buildPayloadFromKeyVaults(execution.keyVaults, execution.runtimeProvider);
+      return initModelRuntimeWithUserPayload(
+        execution.providerKey,
+        payload,
+        { userId: options.userId },
+        mergeModelRuntimeHooks(createPlatformAiModelAllowlistHooks(execution.allowedModels), hooks),
+      );
+    }
+    throw new Error('PLATFORM_AI_PROVIDER_NOT_PUBLISHED');
+  }
 
   for (const provider of providerOrder) {
     if (provider === 'lobehub') {
@@ -2361,7 +2405,12 @@ export class MemoryExtractionExecutor {
   ): Promise<AiProviderRuntimeState> {
     const db = await this.db;
     const aiInfraRepos = new AiInfraRepos(db, userId, this.aiProviderConfig, workspaceId);
-
+    if (isPlatformManagedAiEnabled()) {
+      return resolvePlatformAiRuntimeState({
+        db,
+        upstreamState: getEmptyPlatformAiRuntimeState(),
+      });
+    }
     return aiInfraRepos.getAiProviderRuntimeState(KeyVaultsGateKeeper.getUserKeyVaults);
   }
 
@@ -2369,6 +2418,7 @@ export class MemoryExtractionExecutor {
     runtimeState: AiProviderRuntimeState,
     memoryServiceConfig: ResolvedMemoryServiceConfig,
   ): Promise<ProviderKeyVaultMap> {
+    const managed = isPlatformManagedAiEnabled();
     const normalizedRuntimeConfig = Object.fromEntries(
       Object.entries(runtimeState.runtimeConfig || {}).map(([providerId, config]) => [
         normalizeProvider(providerId),
@@ -2376,7 +2426,12 @@ export class MemoryExtractionExecutor {
       ]),
     );
 
-    const keyVaults: ProviderKeyVaultMap = {};
+    const selectedProviders = new Set<string>();
+    const managedRequirements: Array<{
+      modelKey: string;
+      providerKey: string;
+      type: 'chat' | 'embedding';
+    }> = [];
 
     const gatekeeperProvider = await AiInfraRepos.tryMatchingProviderFrom(runtimeState, {
       fallbackProvider: memoryServiceConfig.agents.gatekeeper.provider,
@@ -2389,10 +2444,12 @@ export class MemoryExtractionExecutor {
         ? undefined
         : this.gatekeeperPreferredProviders,
     });
-    const gatekeeperRuntime = normalizedRuntimeConfig[gatekeeperProvider];
-    if (gatekeeperRuntime?.keyVaults) {
-      keyVaults[gatekeeperProvider] = gatekeeperRuntime.keyVaults;
-    }
+    selectedProviders.add(gatekeeperProvider);
+    managedRequirements.push({
+      modelKey: memoryServiceConfig.modelConfig.gateModel,
+      providerKey: gatekeeperProvider,
+      type: 'chat',
+    });
 
     const embeddingProvider = await AiInfraRepos.tryMatchingProviderFrom(runtimeState, {
       fallbackProvider: memoryServiceConfig.agents.embedding.provider,
@@ -2405,10 +2462,12 @@ export class MemoryExtractionExecutor {
         ? undefined
         : this.embeddingPreferredProviders,
     });
-    const embeddingRuntime = normalizedRuntimeConfig[embeddingProvider];
-    if (embeddingRuntime?.keyVaults) {
-      keyVaults[embeddingProvider] = embeddingRuntime.keyVaults;
-    }
+    selectedProviders.add(embeddingProvider);
+    managedRequirements.push({
+      modelKey: memoryServiceConfig.modelConfig.embeddingsModel,
+      providerKey: embeddingProvider,
+      type: 'embedding',
+    });
 
     for (const model of Object.values(memoryServiceConfig.modelConfig.layerModels)) {
       if (!model) continue;
@@ -2423,12 +2482,38 @@ export class MemoryExtractionExecutor {
           ? undefined
           : this.layerPreferredProviders,
       });
-      const runtime = normalizedRuntimeConfig[providerId];
-      if (runtime?.keyVaults) {
-        keyVaults[providerId] = runtime.keyVaults;
-      }
+      selectedProviders.add(providerId);
+      managedRequirements.push({ modelKey: model, providerKey: providerId, type: 'chat' });
     }
 
+    if (managed) {
+      const db = await this.db;
+      for (const requirement of managedRequirements) {
+        assertPlatformPublishedModel(
+          runtimeState,
+          requirement.providerKey,
+          requirement.modelKey,
+          requirement.type,
+        );
+      }
+      const keyVaults: ManagedProviderKeyVaultMap = {};
+      const executions: Record<string, PlatformAiExecutionConfig> = {};
+      await Promise.all(
+        [...selectedProviders].map(async (providerId) => {
+          const execution = await resolvePlatformAiExecutionConfig(db, providerId);
+          keyVaults[providerId] = toDefinedKeyVaults(execution.keyVaults);
+          executions[providerId] = execution;
+        }),
+      );
+      Object.defineProperty(keyVaults, MANAGED_EXECUTIONS, { value: executions });
+      return keyVaults;
+    }
+
+    const keyVaults: ProviderKeyVaultMap = {};
+    for (const providerId of selectedProviders) {
+      const runtime = normalizedRuntimeConfig[providerId];
+      if (runtime?.keyVaults) keyVaults[providerId] = runtime.keyVaults;
+    }
     return keyVaults;
   }
 
@@ -2449,8 +2534,14 @@ export class MemoryExtractionExecutor {
       memoryServiceConfig.agents.gatekeeper.provider,
       memoryServiceConfig.agents.layerExtractor.provider,
     ].join(':');
-    const cached = this.runtimeCache.get(cacheKey);
-    if (cached) return cached;
+    const managed = isPlatformManagedAiEnabled();
+    const managedExecutions = (keyVaults as ManagedProviderKeyVaultMap | undefined)?.[
+      MANAGED_EXECUTIONS
+    ];
+    if (!managed) {
+      const cached = this.runtimeCache.get(cacheKey);
+      if (cached) return cached;
+    }
 
     const embeddingOptions: RuntimeResolveOptions = {
       fallback: {
@@ -2462,6 +2553,7 @@ export class MemoryExtractionExecutor {
           ? undefined
           : this.embeddingPreferredProviders,
       },
+      managedExecutions,
       userId,
     };
 
@@ -2475,6 +2567,7 @@ export class MemoryExtractionExecutor {
           ? undefined
           : this.gatekeeperPreferredProviders,
       },
+      managedExecutions,
       userId,
     };
 
@@ -2488,6 +2581,7 @@ export class MemoryExtractionExecutor {
           ? undefined
           : this.layerPreferredProviders,
       },
+      managedExecutions,
       userId,
     };
 
@@ -2514,7 +2608,7 @@ export class MemoryExtractionExecutor {
       ),
     };
 
-    this.runtimeCache.set(cacheKey, runtimes);
+    if (!managed) this.runtimeCache.set(cacheKey, runtimes);
 
     return runtimes;
   }

@@ -6,8 +6,10 @@ import { authedProcedure, publicProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 
 import { parseEasyauthConfig } from '../config/easyauth';
+import { publishedAiCatalogSchema } from '../contracts/aiCatalog';
 import { parseEnterpriseFeatureFlags } from '../featureFlags';
 import { resolveAccessStatus } from '../guards/accessGrant';
+import { AiCatalogReadService, getEmptyPublishedAiCatalog } from '../services/aiCatalog';
 import { buildEasyauthDescriptor } from '../services/easyauthManifest';
 import { resolvePublishedManagedResourcePolicies } from '../services/managedResourceCapabilities';
 import { buildPlatformCapabilities } from '../services/platformCapabilities';
@@ -22,6 +24,17 @@ import { buildPlatformPublicSnapshot } from '../services/platformPublicSnapshot'
  * - getEasyauthDescriptor: public EasyAuth app descriptor (manifest).
  */
 export const platformRouter = router({
+  aiCatalog: router({
+    getPublished: authedProcedure
+      .use(serverDatabase)
+      .output(publishedAiCatalogSchema)
+      .query(async ({ ctx }) => {
+        const flags = parseEnterpriseFeatureFlags(process.env);
+        if (!flags.ENABLE_PLATFORM_MANAGED_AI) return getEmptyPublishedAiCatalog();
+        return new AiCatalogReadService(ctx.serverDB).getPublished();
+      }),
+  }),
+
   getCapabilities: authedProcedure.use(serverDatabase).query(async ({ ctx }) => {
     const flags = parseEnterpriseFeatureFlags(process.env);
 

@@ -9,6 +9,7 @@ import {
   RetrievalUserMemoryIdentitiesProvider,
   UserPersonaExtractor,
 } from '@lobechat/memory-user-memory';
+import { mergeModelRuntimeHooks } from '@lobechat/model-runtime';
 import type { UserServiceModelConfig } from '@lobechat/types';
 import { desc, eq } from 'drizzle-orm';
 
@@ -21,6 +22,18 @@ import { getEffectiveSystemAgentConfig } from '@/server/enterprise/services/sett
 import { type MemoryAgentConfig } from '@/server/globalConfig/parseMemoryExtractionConfig';
 import { parseMemoryExtractionConfig } from '@/server/globalConfig/parseMemoryExtractionConfig';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
+import {
+  buildPayloadFromKeyVaults,
+  initModelRuntimeWithUserPayload,
+} from '@/server/modules/ModelRuntime';
+import {
+  assertPlatformPublishedModel,
+  createPlatformAiModelAllowlistHooks,
+  getEmptyPlatformAiRuntimeState,
+  isPlatformManagedAiEnabled,
+  resolvePlatformAiExecutionConfig,
+  resolvePlatformAiRuntimeState,
+} from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
 import {
   type ProviderKeyVaultMap,
   type RuntimeResolveOptions,
@@ -100,38 +113,54 @@ export class UserPersonaService {
     // purely user-level feature with no workspace concept; the payload carries no
     // workspaceId, so provider config is resolved against the user's personal scope.
     const aiInfraRepos = new AiInfraRepos(this.db, payload.userId, {});
-    const runtimeState = await aiInfraRepos.getAiProviderRuntimeState(
-      KeyVaultsGateKeeper.getUserKeyVaults,
-    );
+    const managed = isPlatformManagedAiEnabled();
+    const runtimeState = managed
+      ? await resolvePlatformAiRuntimeState({
+          db: this.db,
+          upstreamState: getEmptyPlatformAiRuntimeState(),
+        })
+      : await aiInfraRepos.getAiProviderRuntimeState(KeyVaultsGateKeeper.getUserKeyVaults);
     const providerId = await AiInfraRepos.tryMatchingProviderFrom(runtimeState, {
       fallbackProvider: agentConfig.provider,
       label: 'persona writer',
       modelId: agentConfig.model,
     });
 
-    const keyVaults: ProviderKeyVaultMap = Object.entries(runtimeState.runtimeConfig || {}).reduce(
-      (acc, [provider, config]) => {
-        acc[provider.toLowerCase()] = config?.keyVaults;
-        return acc;
-      },
-      {} as ProviderKeyVaultMap,
-    );
-
     const hooks = getBusinessModelRuntimeHooks(payload.userId, 'lobehub');
-
-    const runtime = await resolveRuntimeAgentConfig(
-      agentConfig,
-      keyVaults,
-      {
-        fallback: {
-          apiKey: agentConfig.apiKey,
-          baseURL: agentConfig.baseURL,
-        },
-        preferred: { providerIds: [providerId] },
-        userId: payload.userId,
-      } satisfies RuntimeResolveOptions,
-      hooks,
-    );
+    const runtime = managed
+      ? await (async () => {
+          assertPlatformPublishedModel(runtimeState, providerId, agentConfig.model, 'chat');
+          const execution = await resolvePlatformAiExecutionConfig(this.db, providerId);
+          const secretPayload = buildPayloadFromKeyVaults(
+            execution.keyVaults,
+            execution.runtimeProvider,
+          );
+          return initModelRuntimeWithUserPayload(
+            providerId,
+            secretPayload,
+            { userId: payload.userId },
+            mergeModelRuntimeHooks(
+              createPlatformAiModelAllowlistHooks(execution.allowedModels),
+              hooks,
+            ),
+          );
+        })()
+      : await resolveRuntimeAgentConfig(
+          agentConfig,
+          Object.entries(runtimeState.runtimeConfig || {}).reduce((acc, [provider, config]) => {
+            acc[provider.toLowerCase()] = config?.keyVaults;
+            return acc;
+          }, {} as ProviderKeyVaultMap),
+          {
+            fallback: {
+              apiKey: agentConfig.apiKey,
+              baseURL: agentConfig.baseURL,
+            },
+            preferred: { providerIds: [providerId] },
+            userId: payload.userId,
+          } satisfies RuntimeResolveOptions,
+          hooks,
+        );
 
     const personaModel = new UserPersonaModel(this.db, payload.userId);
     const lastDocument = await personaModel.getLatestPersonaDocument();

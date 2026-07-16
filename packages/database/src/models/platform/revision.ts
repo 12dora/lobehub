@@ -11,7 +11,7 @@ import type { LobeChatDatabase, Transaction } from '../../type';
 import { PlatformAuditLogModel } from './auditLog';
 import { checksumPayload } from './checksum';
 import { PlatformRevisionConflictError, PlatformRevisionImmutableError } from './errors';
-import { redactSensitive } from './redact';
+import { redactSensitive, type RedactSensitiveOptions } from './redact';
 
 export type { PlatformResourceRevisionItem, PlatformResourceType, PlatformRevisionStatus };
 
@@ -38,8 +38,10 @@ export interface ResourcePointerAdapter {
   materializePublished?: (
     tx: Transaction,
     args: {
+      operation: 'publish' | 'rollback';
       payload: Record<string, unknown>;
       revision: number;
+      secretFingerprint?: string | null;
       status: PlatformRevisionStatus;
     },
   ) => Promise<void>;
@@ -75,6 +77,7 @@ export interface PublishDraftParams {
   payload: Record<string, unknown>;
   pointer: ResourcePointerAdapter;
   reason?: string | null;
+  redactionOptions?: RedactSensitiveOptions;
   requestId?: string | null;
   resourceId: string;
   resourceType: PlatformResourceType;
@@ -201,7 +204,10 @@ export class PlatformRevisionModel {
       const prepared = await params.pointer.prepareLockedPublish?.(tx, {
         currentRevision: current,
       });
-      const redactedPayload = redactSensitive(prepared?.payload ?? params.payload);
+      const redactedPayload = redactSensitive(
+        prepared?.payload ?? params.payload,
+        params.redactionOptions,
+      );
       const checksum = checksumPayload(redactedPayload);
 
       const now = new Date();
@@ -226,8 +232,10 @@ export class PlatformRevisionModel {
 
       if (params.pointer.materializePublished) {
         await params.pointer.materializePublished(tx, {
+          operation: 'publish',
           payload: redactedPayload,
           revision: nextRevision,
+          secretFingerprint: params.secretFingerprint ?? null,
           status,
         });
       }
@@ -315,8 +323,10 @@ export class PlatformRevisionModel {
 
       if (params.pointer.materializePublished) {
         await params.pointer.materializePublished(tx, {
+          operation: 'rollback',
           payload: (target.payload ?? {}) as Record<string, unknown>,
           revision: nextRevision,
+          secretFingerprint: target.secretFingerprint,
           status: 'published',
         });
       }

@@ -1,0 +1,318 @@
+import { describe, expect, it } from 'vitest';
+
+import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
+
+import {
+  buildAiSecretMutation,
+  buildCompleteModelOrder,
+  buildModelCreateTargetListInput,
+  buildProviderCreatePayload,
+  buildProviderUpdatePayload,
+  deriveAiCatalogPermissions,
+  deriveAiProviderConnectionTestView,
+  deriveGlobalModelActions,
+  fingerprintAiProviderPublicDraft,
+  fingerprintAiProviderSnapshot,
+  hasBlockingModelDependents,
+  isAiProviderSnapshotAdvanced,
+  isAiProviderWriteLocked,
+  parseAiSecretReplacement,
+  parseJsonObject,
+  parseNullableJsonObject,
+  rebaseAiProviderDraft,
+  resolveAiProviderPrimaryAction,
+  toEditableAiProviderDraft,
+} from './controller';
+import type { AdminAiProviderDraft } from './types';
+
+const provider = {
+  checkModel: 'gpt-test',
+  connectionTest: null,
+  config: { endpoint: 'https://example.com' },
+  description: 'Provider',
+  displayName: 'Example',
+  enabled: true,
+  fetchOnClient: false,
+  id: 'p-1',
+  logo: null,
+  models: [],
+  providerKey: 'example',
+  revision: 3,
+  secret: { configured: true, fingerprint: 'sha256:abc', updatedAt: null },
+  settings: { sdkType: 'openai' },
+  sort: 0,
+  source: 'custom',
+  status: 'draft',
+} satisfies AdminAiProviderDraft;
+
+describe('ai catalog controller', () => {
+  it('derives action permissions independently', () => {
+    const permissions = deriveAiCatalogPermissions([
+      PLATFORM_PERMISSIONS.AI_PROVIDER_READ,
+      PLATFORM_PERMISSIONS.AI_PROVIDER_TEST,
+      PLATFORM_PERMISSIONS.AI_MODEL_UPDATE,
+    ]);
+
+    expect(permissions).toMatchObject({
+      canCreateProvider: false,
+      canReadProviders: true,
+      canReorderModels: true,
+      canTestProvider: true,
+      canUpdateProvider: false,
+    });
+  });
+
+  it('enables global model actions without any Provider update permission', () => {
+    const permissions = deriveAiCatalogPermissions([
+      PLATFORM_PERMISSIONS.AI_MODEL_READ,
+      PLATFORM_PERMISSIONS.AI_MODEL_CREATE,
+      PLATFORM_PERMISSIONS.AI_MODEL_UPDATE,
+      PLATFORM_PERMISSIONS.AI_MODEL_DELETE,
+    ]);
+    expect(permissions.canUpdateProvider).toBe(false);
+    expect(deriveGlobalModelActions(permissions)).toEqual({
+      canCreate: true,
+      canDelete: true,
+      canEdit: true,
+      canReorder: true,
+    });
+  });
+
+  it('normalizes model-create Provider target search and cursor input', () => {
+    expect(
+      buildModelCreateTargetListInput({
+        cursor: 'provider-before',
+        limit: 40,
+        query: '  empty provider  ',
+      }),
+    ).toEqual({ cursor: 'provider-before', limit: 40, query: 'empty provider' });
+    expect(buildModelCreateTargetListInput({ query: '   ' })).toEqual({
+      cursor: undefined,
+      limit: 20,
+      query: undefined,
+    });
+  });
+
+  it('keeps exactly one primary provider action', () => {
+    const base = {
+      canPublish: true,
+      canSave: true,
+      canTest: true,
+      conflict: false,
+      dirty: false,
+      saveState: 'idle' as const,
+      testPassed: false,
+    };
+    expect(resolveAiProviderPrimaryAction(base)).toBe('test');
+    expect(resolveAiProviderPrimaryAction({ ...base, dirty: true })).toBe('save');
+    expect(resolveAiProviderPrimaryAction({ ...base, saveState: 'failed' })).toBe('retry');
+    expect(resolveAiProviderPrimaryAction({ ...base, testPassed: true })).toBe('publish');
+    expect(resolveAiProviderPrimaryAction({ ...base, conflict: true })).toBe('none');
+  });
+
+  it('unlocks publish only for a persisted success bound to the current draft', () => {
+    const state = {
+      errorCategory: null,
+      latencyMs: 25,
+      sanitizedMessage: 'ok',
+      stale: false,
+      status: 'success' as const,
+      testedAt: new Date(0),
+      testedDraftToken: 'a'.repeat(64),
+      testedRevision: 3,
+    };
+    expect(
+      deriveAiProviderConnectionTestView({
+        baseRevision: 3,
+        draftToken: 'a'.repeat(64),
+        locallyStale: false,
+        state,
+      }).canPublish,
+    ).toBe(true);
+    expect(
+      deriveAiProviderConnectionTestView({
+        baseRevision: 4,
+        draftToken: 'a'.repeat(64),
+        locallyStale: false,
+        state,
+      }),
+    ).toMatchObject({ canPublish: false, stale: true });
+    expect(
+      deriveAiProviderConnectionTestView({
+        baseRevision: 3,
+        draftToken: 'a'.repeat(64),
+        locallyStale: true,
+        state,
+      }),
+    ).toMatchObject({ canPublish: false, stale: true });
+  });
+
+  it('excludes secret metadata from public draft fingerprint and payload', () => {
+    const changedSecret = {
+      ...provider,
+      secret: { configured: false, fingerprint: null, updatedAt: null },
+    } satisfies AdminAiProviderDraft;
+    expect(fingerprintAiProviderPublicDraft(changedSecret)).toBe(
+      fingerprintAiProviderPublicDraft(provider),
+    );
+
+    const payload = buildProviderUpdatePayload({
+      draft: toEditableAiProviderDraft(provider),
+      draftToken: 'a'.repeat(64),
+      id: provider.id,
+      reason: ' rotate model ',
+      revision: provider.revision,
+    });
+    expect(payload?.secret).toEqual({ operation: 'keep' });
+    expect(JSON.stringify(payload)).not.toContain('sha256:abc');
+    expect(payload?.reason).toBe('rotate model');
+  });
+
+  it('keeps writes locked until a committed snapshot actually advances', () => {
+    const snapshot = {
+      baseRevision: provider.revision,
+      draft: provider,
+      draftToken: 'a'.repeat(64),
+      published: null,
+    };
+    const fingerprint = fingerprintAiProviderSnapshot(snapshot);
+    expect(isAiProviderSnapshotAdvanced(fingerprint, snapshot)).toBe(false);
+    expect(
+      isAiProviderSnapshotAdvanced(fingerprint, {
+        ...snapshot,
+        draftToken: 'b'.repeat(64),
+      }),
+    ).toBe(true);
+    expect(isAiProviderWriteLocked({ refreshFailed: false, refreshPending: true })).toBe(true);
+    expect(isAiProviderWriteLocked({ refreshFailed: true, refreshPending: false })).toBe(true);
+    expect(isAiProviderWriteLocked({ refreshFailed: false, refreshPending: false })).toBe(false);
+  });
+
+  it('requires the complete unique model set for reorder', () => {
+    expect(buildCompleteModelOrder(['a', 'b'], ['b', 'a'])).toEqual([
+      { id: 'b', sort: 0 },
+      { id: 'a', sort: 1 },
+    ]);
+    expect(buildCompleteModelOrder(['a', 'b'], ['a'])).toBeNull();
+    expect(buildCompleteModelOrder(['a', 'b'], ['a', 'c'])).toBeNull();
+    expect(buildCompleteModelOrder(['a', 'a'], ['a', 'a'])).toBeNull();
+  });
+
+  it('blocks model removal when any dependent is blocking', () => {
+    expect(
+      hasBlockingModelDependents({
+        items: [
+          { blocking: false, label: 'Draft', resourceId: 'a', resourceType: 'agent' },
+          { blocking: true, label: 'Inbox', resourceId: 'b', resourceType: 'agent' },
+        ],
+      }),
+    ).toBe(true);
+    expect(hasBlockingModelDependents({ items: [] })).toBe(false);
+  });
+
+  it('accepts JSON objects and rejects arrays or invalid JSON', () => {
+    expect(parseJsonObject('{"a":1}')).toEqual({ error: null, value: { a: 1 } });
+    expect(parseJsonObject('[]')).toEqual({ error: 'object', value: null });
+    expect(parseJsonObject('{')).toEqual({ error: 'syntax', value: null });
+  });
+
+  it('preserves explicit null for nullable model JSON fields', () => {
+    expect(parseNullableJsonObject('null')).toEqual({ error: null, value: null });
+    expect(parseNullableJsonObject('{"currency":"USD"}')).toEqual({
+      error: null,
+      value: { currency: 'USD' },
+    });
+    expect(parseNullableJsonObject('[]')).toEqual({ error: 'object', value: null });
+  });
+
+  it('blocks Provider payload creation while raw JSON is invalid', () => {
+    expect(
+      buildProviderUpdatePayload({
+        draft: { ...toEditableAiProviderDraft(provider), configText: '{' },
+        draftToken: 'a'.repeat(64),
+        id: provider.id,
+        reason: 'invalid config',
+        revision: provider.revision,
+      }),
+    ).toBeNull();
+  });
+
+  it('three-way rebases distinct fields and exposes divergent same-field edits', () => {
+    const original = toEditableAiProviderDraft(provider);
+    const result = rebaseAiProviderDraft({
+      latest: { ...original, description: 'remote', displayName: 'Remote name' },
+      local: { ...original, configText: '{\n  "local": true\n}', displayName: 'Local name' },
+      original,
+    });
+    expect(result.draft.description).toBe('remote');
+    expect(result.draft.configText).toContain('local');
+    expect(result.draft.displayName).toBe('Local name');
+    expect(result.conflicts).toEqual([
+      { field: 'displayName', latest: 'Remote name', local: 'Local name' },
+    ]);
+    expect(JSON.stringify(result)).not.toContain('sha256:abc');
+  });
+
+  it('never carries a value for keep or clear Secret operations', () => {
+    expect(buildAiSecretMutation('keep', 'must-not-leak')).toEqual({ operation: 'keep' });
+    expect(buildAiSecretMutation('clear', 'must-not-leak')).toEqual({ operation: 'clear' });
+    expect(buildAiSecretMutation('replace', '')).toBeNull();
+    expect(buildAiSecretMutation('replace', 'new-secret')).toEqual({
+      operation: 'replace',
+      value: 'new-secret',
+    });
+  });
+
+  it('validates structured credential replacements without echoing rejected input', () => {
+    const raw = JSON.stringify({
+      accessKeyId: 'access-id',
+      region: 'us-east-1',
+      secretAccessKey: 'secret-value',
+    });
+    expect(parseAiSecretReplacement(raw, 'json')).toEqual({
+      error: null,
+      value: {
+        accessKeyId: 'access-id',
+        region: 'us-east-1',
+        secretAccessKey: 'secret-value',
+      },
+    });
+    expect(buildAiSecretMutation('replace', raw, 'json')).toEqual({
+      operation: 'replace',
+      value: expect.objectContaining({ accessKeyId: 'access-id' }),
+    });
+    expect(parseAiSecretReplacement('{"unknownSecret":"do-not-echo"}', 'json')).toEqual({
+      error: 'shape',
+      value: null,
+    });
+    expect(
+      JSON.stringify(parseAiSecretReplacement('secret-syntax-marker-{', 'json')),
+    ).not.toContain('secret-syntax-marker');
+  });
+
+  it('builds create payload without inventing an empty Secret', () => {
+    const base = {
+      config: {},
+      description: '',
+      displayName: ' Example ',
+      enabled: false,
+      fetchOnClient: false,
+      providerKey: ' example ',
+      reason: ' create ',
+      secretValue: '',
+      settings: {},
+      source: 'custom',
+    };
+    expect(buildProviderCreatePayload(base)).not.toHaveProperty('secret');
+    expect(buildProviderCreatePayload(base)).toMatchObject({
+      description: null,
+      displayName: 'Example',
+      providerKey: 'example',
+      reason: 'create',
+    });
+    expect(buildProviderCreatePayload({ ...base, secretValue: 'token' }).secret).toEqual({
+      operation: 'replace',
+      value: 'token',
+    });
+  });
+});
