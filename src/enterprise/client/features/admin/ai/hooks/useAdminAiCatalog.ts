@@ -71,12 +71,13 @@ export const refreshAdminAiModelLists = async () => {
 };
 
 export const refreshAdminAiProvider = async (id: string) => {
-  await Promise.all([
+  const [detail] = await Promise.all([
     mutate(buildAdminAiProviderGetKey(id)),
     mutate((key) => Array.isArray(key) && key[0] === ADMIN_AI_PROVIDER_LIST_KEY),
     mutate((key) => Array.isArray(key) && key[0] === ADMIN_AI_PROVIDER_REVISIONS_KEY),
     mutate((key) => Array.isArray(key) && key[0] === ADMIN_AI_MODEL_LIST_KEY),
   ]);
+  return detail;
 };
 
 export const clearAdminAiProviderCache = async () => {

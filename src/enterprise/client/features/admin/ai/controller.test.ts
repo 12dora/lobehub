@@ -11,7 +11,10 @@ import {
   deriveAiProviderConnectionTestView,
   deriveGlobalModelActions,
   fingerprintAiProviderPublicDraft,
+  fingerprintAiProviderSnapshot,
   hasBlockingModelDependents,
+  isAiProviderSnapshotAdvanced,
+  isAiProviderWriteLocked,
   parseAiSecretReplacement,
   parseJsonObject,
   parseNullableJsonObject,
@@ -147,6 +150,26 @@ describe('ai catalog controller', () => {
     expect(payload?.secret).toEqual({ operation: 'keep' });
     expect(JSON.stringify(payload)).not.toContain('sha256:abc');
     expect(payload?.reason).toBe('rotate model');
+  });
+
+  it('keeps writes locked until a committed snapshot actually advances', () => {
+    const snapshot = {
+      baseRevision: provider.revision,
+      draft: provider,
+      draftToken: 'a'.repeat(64),
+      published: null,
+    };
+    const fingerprint = fingerprintAiProviderSnapshot(snapshot);
+    expect(isAiProviderSnapshotAdvanced(fingerprint, snapshot)).toBe(false);
+    expect(
+      isAiProviderSnapshotAdvanced(fingerprint, {
+        ...snapshot,
+        draftToken: 'b'.repeat(64),
+      }),
+    ).toBe(true);
+    expect(isAiProviderWriteLocked({ refreshFailed: false, refreshPending: true })).toBe(true);
+    expect(isAiProviderWriteLocked({ refreshFailed: true, refreshPending: false })).toBe(true);
+    expect(isAiProviderWriteLocked({ refreshFailed: false, refreshPending: false })).toBe(false);
   });
 
   it('requires the complete unique model set for reorder', () => {
