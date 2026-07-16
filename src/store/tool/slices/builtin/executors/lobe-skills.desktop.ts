@@ -20,22 +20,27 @@ const createRuntime = (ctx: BuiltinToolContext) =>
     service: {
       ...createClientSkillRuntimeService(ctx.platformSkillSnapshot),
       execScript: async (command, options) => {
-        const cwd = await desktopSkillRuntimeService.resolveExecutionDirectory(
+        const workspace = await desktopSkillRuntimeService.prepareExecutionWorkspace(
           options.activatedSkills,
           ctx.platformSkillSnapshot,
+          ctx.operationId,
         );
-        const result = await localFileService.runCommand({
-          command,
-          cwd,
-          description: options.description,
-          timeout: undefined,
-        });
-        return {
-          exitCode: result.exit_code ?? 1,
-          output: result.stdout || result.output || '',
-          stderr: result.stderr,
-          success: result.success,
-        };
+        try {
+          const result = await localFileService.runCommand({
+            command,
+            cwd: workspace.cwd,
+            description: options.description,
+            timeout: undefined,
+          });
+          return {
+            exitCode: result.exit_code ?? 1,
+            output: result.stdout || result.output || '',
+            stderr: result.stderr,
+            success: result.success,
+          };
+        } finally {
+          await desktopSkillRuntimeService.cleanupExecutionWorkspace(workspace);
+        }
       },
       readResource: async (id, path) => {
         const resource = await createClientSkillRuntimeService(
