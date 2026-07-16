@@ -1,0 +1,546 @@
+import { and, asc, eq, gt, inArray, isNull, or, sql } from 'drizzle-orm';
+
+import type {
+  NewPlatformConnector,
+  NewPlatformConnectorOAuthState,
+  NewPlatformConnectorTool,
+  NewPlatformUserConnectorBinding,
+  PlatformConnectorItem,
+  PlatformConnectorOAuthStateItem,
+  PlatformConnectorToolItem,
+  PlatformUserConnectorBindingItem,
+} from '../../schemas/platform/connectors';
+import {
+  platformConnectorOAuthStates,
+  platformConnectors,
+  platformConnectorTools,
+  platformUserConnectorBindings,
+} from '../../schemas/platform/connectors';
+import type { PlatformResourceRevisionItem } from '../../schemas/platform/revisions';
+import { platformResourceRevisions } from '../../schemas/platform/revisions';
+import type { LobeChatDatabase, Transaction } from '../../type';
+
+const DEFAULT_PAGE_SIZE = 50;
+const MAX_PAGE_SIZE = 100;
+export const MAX_PLATFORM_CONNECTOR_TOOLS = 1000;
+
+const boundedLimit = (limit?: number): number =>
+  Math.max(1, Math.min(limit ?? DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE));
+
+export interface PlatformConnectorCursor {
+  connectorKey: string;
+  id: string;
+}
+
+export interface PlatformConnectorToolCursor {
+  id: string;
+  sort: number;
+  toolKey: string;
+}
+
+export interface PlatformConnectorRevisionPayload extends Record<string, unknown> {
+  connector: {
+    credentialMode: PlatformConnectorItem['credentialMode'];
+    description: string | null;
+    displayName: string;
+    enabled: boolean;
+    endpoint: string;
+    id: string;
+    key: string;
+    oauthClientSecretConfigured: boolean;
+    oauthClientSecretFingerprint: string | null;
+    oauthConfig: PlatformConnectorItem['oauthConfig'];
+    sharedSecretConfigured: boolean;
+    sharedSecretFingerprint: string | null;
+    sort: number;
+    transport: PlatformConnectorItem['transport'];
+  };
+  schemaVersion: 'm09-v1';
+  tools: Array<
+    Pick<
+      PlatformConnectorToolItem,
+      | 'description'
+      | 'displayName'
+      | 'inputSchema'
+      | 'platformPolicy'
+      | 'requiresConfirmation'
+      | 'riskLevel'
+      | 'sort'
+      | 'toolKey'
+    >
+  >;
+}
+
+export interface PlatformConnectorRuntimeRevision {
+  payload: PlatformConnectorRevisionPayload;
+  provenance: {
+    checksum: string;
+    connectorId: string;
+    publishedAt: Date;
+    revision: number;
+    revisionId: string;
+  };
+}
+
+export class PlatformConnectorCatalogRepository {
+  constructor(private readonly db: LobeChatDatabase | Transaction) {}
+
+  createConnector = async (values: NewPlatformConnector): Promise<PlatformConnectorItem> => {
+    const [row] = await this.db.insert(platformConnectors).values(values).returning();
+    return row;
+  };
+
+  createPublishedRevision = async (params: {
+    checksum: string;
+    connectorId: string;
+    payload: PlatformConnectorRevisionPayload;
+    publishedAt: Date;
+    publishedBy: string;
+    revision: number;
+  }): Promise<PlatformResourceRevisionItem> => {
+    const [row] = await this.db
+      .insert(platformResourceRevisions)
+      .values({
+        checksum: params.checksum,
+        payload: params.payload,
+        publishedAt: params.publishedAt,
+        publishedBy: params.publishedBy,
+        resourceId: params.connectorId,
+        resourceType: 'connector',
+        revision: params.revision,
+        status: 'published',
+      })
+      .returning();
+    return row;
+  };
+
+  getConnector = async (id: string): Promise<PlatformConnectorItem | undefined> => {
+    const rows = await this.db
+      .select()
+      .from(platformConnectors)
+      .where(eq(platformConnectors.id, id))
+      .limit(1);
+    return rows[0];
+  };
+
+  getConnectorByKey = async (connectorKey: string): Promise<PlatformConnectorItem | undefined> => {
+    const rows = await this.db
+      .select()
+      .from(platformConnectors)
+      .where(eq(platformConnectors.connectorKey, connectorKey))
+      .limit(1);
+    return rows[0];
+  };
+
+  getCurrentPublishedRuntime = async (
+    connectorId: string,
+  ): Promise<PlatformConnectorRuntimeRevision | undefined> => {
+    const rows = await this.db
+      .select({
+        checksum: platformResourceRevisions.checksum,
+        connectorId: platformConnectors.id,
+        payload: platformResourceRevisions.payload,
+        publishedAt: platformResourceRevisions.publishedAt,
+        revision: platformResourceRevisions.revision,
+        revisionId: platformResourceRevisions.id,
+      })
+      .from(platformConnectors)
+      .innerJoin(
+        platformResourceRevisions,
+        and(
+          eq(platformResourceRevisions.resourceType, 'connector'),
+          eq(platformResourceRevisions.resourceId, platformConnectors.id),
+          eq(platformResourceRevisions.revision, platformConnectors.publishedRevision),
+          eq(platformResourceRevisions.checksum, platformConnectors.publishedChecksum),
+          eq(platformResourceRevisions.status, 'published'),
+        ),
+      )
+      .where(eq(platformConnectors.id, connectorId))
+      .limit(1);
+    const row = rows[0];
+    if (!row?.publishedAt) return undefined;
+    return {
+      payload: row.payload as unknown as PlatformConnectorRevisionPayload,
+      provenance: {
+        checksum: row.checksum,
+        connectorId: row.connectorId,
+        publishedAt: row.publishedAt,
+        revision: row.revision,
+        revisionId: row.revisionId,
+      },
+    };
+  };
+
+  getPublishedRuntimeRevision = async (
+    connectorId: string,
+    revision: number,
+  ): Promise<PlatformConnectorRuntimeRevision | undefined> => {
+    const rows = await this.db
+      .select()
+      .from(platformResourceRevisions)
+      .where(
+        and(
+          eq(platformResourceRevisions.resourceType, 'connector'),
+          eq(platformResourceRevisions.resourceId, connectorId),
+          eq(platformResourceRevisions.revision, revision),
+          eq(platformResourceRevisions.status, 'published'),
+        ),
+      )
+      .limit(1);
+    const row = rows[0];
+    if (!row?.publishedAt) return undefined;
+    return {
+      payload: row.payload as unknown as PlatformConnectorRevisionPayload,
+      provenance: {
+        checksum: row.checksum,
+        connectorId,
+        publishedAt: row.publishedAt,
+        revision: row.revision,
+        revisionId: row.id,
+      },
+    };
+  };
+
+  listConnectors = async (params: { cursor?: PlatformConnectorCursor; limit?: number }) => {
+    const limit = boundedLimit(params.limit);
+    const cursor = params.cursor;
+    const rows = await this.db
+      .select()
+      .from(platformConnectors)
+      .where(
+        cursor
+          ? or(
+              gt(platformConnectors.connectorKey, cursor.connectorKey),
+              and(
+                eq(platformConnectors.connectorKey, cursor.connectorKey),
+                gt(platformConnectors.id, cursor.id),
+              ),
+            )
+          : undefined,
+      )
+      .orderBy(asc(platformConnectors.connectorKey), asc(platformConnectors.id))
+      .limit(limit + 1);
+    const hasMore = rows.length > limit;
+    const items = hasMore ? rows.slice(0, limit) : rows;
+    const last = items.at(-1);
+    return {
+      items,
+      nextCursor: hasMore && last ? { connectorKey: last.connectorKey, id: last.id } : null,
+    };
+  };
+
+  listTools = async (params: {
+    connectorId: string;
+    cursor?: PlatformConnectorToolCursor;
+    limit?: number;
+  }) => {
+    const limit = boundedLimit(params.limit);
+    const cursor = params.cursor;
+    const conditions = [eq(platformConnectorTools.connectorId, params.connectorId)];
+    if (cursor) {
+      conditions.push(
+        or(
+          gt(platformConnectorTools.sort, cursor.sort),
+          and(
+            eq(platformConnectorTools.sort, cursor.sort),
+            gt(platformConnectorTools.toolKey, cursor.toolKey),
+          ),
+          and(
+            eq(platformConnectorTools.sort, cursor.sort),
+            eq(platformConnectorTools.toolKey, cursor.toolKey),
+            gt(platformConnectorTools.id, cursor.id),
+          ),
+        )!,
+      );
+    }
+    const rows = await this.db
+      .select()
+      .from(platformConnectorTools)
+      .where(and(...conditions))
+      .orderBy(
+        asc(platformConnectorTools.sort),
+        asc(platformConnectorTools.toolKey),
+        asc(platformConnectorTools.id),
+      )
+      .limit(limit + 1);
+    const hasMore = rows.length > limit;
+    const items = hasMore ? rows.slice(0, limit) : rows;
+    const last = items.at(-1);
+    return {
+      items,
+      nextCursor: hasMore && last ? { id: last.id, sort: last.sort, toolKey: last.toolKey } : null,
+    };
+  };
+
+  replaceTools = async (
+    connectorId: string,
+    tools: Array<Omit<NewPlatformConnectorTool, 'connectorId'>>,
+  ): Promise<PlatformConnectorToolItem[]> => {
+    if (tools.length > MAX_PLATFORM_CONNECTOR_TOOLS) {
+      throw new Error('PLATFORM_CONNECTOR_TOOL_LIMIT_EXCEEDED');
+    }
+    await this.db
+      .delete(platformConnectorTools)
+      .where(eq(platformConnectorTools.connectorId, connectorId));
+    if (tools.length === 0) return [];
+    return this.db
+      .insert(platformConnectorTools)
+      .values(tools.map((tool) => ({ ...tool, connectorId })))
+      .returning();
+  };
+
+  setPublishedPointerCas = async (params: {
+    checksum: string;
+    connectorId: string;
+    expectedRevision: number;
+    publishedAt: Date;
+    publishedRevision: number;
+  }): Promise<PlatformConnectorItem | undefined> => {
+    const [row] = await this.db
+      .update(platformConnectors)
+      .set({
+        publishedAt: params.publishedAt,
+        publishedChecksum: params.checksum,
+        publishedRevision: params.publishedRevision,
+        revision: params.expectedRevision + 1,
+        status: 'published',
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(platformConnectors.id, params.connectorId),
+          eq(platformConnectors.revision, params.expectedRevision),
+        ),
+      )
+      .returning();
+    return row;
+  };
+
+  updateConnectorDraftCas = async (
+    id: string,
+    expectedRevision: number,
+    values: Partial<
+      Omit<
+        NewPlatformConnector,
+        'createdAt' | 'id' | 'publishedAt' | 'publishedChecksum' | 'publishedRevision' | 'revision'
+      >
+    >,
+  ): Promise<PlatformConnectorItem | undefined> => {
+    const [row] = await this.db
+      .update(platformConnectors)
+      .set({
+        ...values,
+        revision: expectedRevision + 1,
+        status: 'draft',
+        updatedAt: new Date(),
+      })
+      .where(and(eq(platformConnectors.id, id), eq(platformConnectors.revision, expectedRevision)))
+      .returning();
+    return row;
+  };
+
+  consumeOAuthState = async (
+    stateHash: string,
+    consumedAt: Date,
+  ): Promise<PlatformConnectorOAuthStateItem | undefined> => {
+    const [row] = await this.db
+      .update(platformConnectorOAuthStates)
+      .set({ consumedAt })
+      .where(
+        and(
+          eq(platformConnectorOAuthStates.stateHash, stateHash),
+          isNull(platformConnectorOAuthStates.consumedAt),
+          isNull(platformConnectorOAuthStates.revokedAt),
+          gt(platformConnectorOAuthStates.expiresAt, consumedAt),
+        ),
+      )
+      .returning();
+    return row;
+  };
+
+  revokeAllBindingsPage = async (params: {
+    afterId?: string;
+    connectorId: string;
+    limit?: number;
+    revokedAt: Date;
+  }) => {
+    const limit = boundedLimit(params.limit);
+    const conditions = [
+      eq(platformUserConnectorBindings.connectorId, params.connectorId),
+      isNull(platformUserConnectorBindings.revokedAt),
+    ];
+    if (params.afterId) conditions.push(gt(platformUserConnectorBindings.id, params.afterId));
+    const rows = await this.db
+      .select({ id: platformUserConnectorBindings.id })
+      .from(platformUserConnectorBindings)
+      .where(and(...conditions))
+      .orderBy(asc(platformUserConnectorBindings.id))
+      .limit(limit);
+    const ids = rows.map((row) => row.id);
+    let revoked = 0;
+    if (ids.length > 0) {
+      const updated = await this.db
+        .update(platformUserConnectorBindings)
+        .set({
+          oauthTokenRef: null,
+          revision: sqlIncrement(platformUserConnectorBindings.revision),
+          revokedAt: params.revokedAt,
+          scopes: [],
+          status: 'revoked',
+          updatedAt: params.revokedAt,
+        })
+        .where(
+          and(
+            eq(platformUserConnectorBindings.connectorId, params.connectorId),
+            inArray(platformUserConnectorBindings.id, ids),
+            isNull(platformUserConnectorBindings.revokedAt),
+          ),
+        )
+        .returning({ id: platformUserConnectorBindings.id });
+      revoked = updated.length;
+    }
+    return {
+      nextCursor: ids.length === limit ? (ids.at(-1) ?? null) : null,
+      revoked,
+    };
+  };
+}
+
+export class PlatformUserConnectorBindingRepository {
+  constructor(
+    private readonly db: LobeChatDatabase | Transaction,
+    private readonly userId: string,
+  ) {}
+
+  createOAuthState = async (
+    values: Omit<NewPlatformConnectorOAuthState, 'userId'>,
+  ): Promise<PlatformConnectorOAuthStateItem> => {
+    const owned = await this.db
+      .select({ id: platformUserConnectorBindings.id })
+      .from(platformUserConnectorBindings)
+      .where(
+        and(
+          eq(platformUserConnectorBindings.id, values.bindingId),
+          eq(platformUserConnectorBindings.userId, this.userId),
+          eq(platformUserConnectorBindings.connectorId, values.connectorId),
+          eq(platformUserConnectorBindings.publishedRevision, values.publishedRevision),
+          isNull(platformUserConnectorBindings.revokedAt),
+        ),
+      )
+      .limit(1);
+    if (!owned[0]) throw new Error('PLATFORM_CONNECTOR_BINDING_OWNERSHIP_MISMATCH');
+    const [row] = await this.db
+      .insert(platformConnectorOAuthStates)
+      .values({ ...values, userId: this.userId })
+      .returning();
+    return row;
+  };
+
+  getBinding = async (
+    connectorId: string,
+  ): Promise<PlatformUserConnectorBindingItem | undefined> => {
+    const rows = await this.db
+      .select()
+      .from(platformUserConnectorBindings)
+      .where(
+        and(
+          eq(platformUserConnectorBindings.userId, this.userId),
+          eq(platformUserConnectorBindings.connectorId, connectorId),
+        ),
+      )
+      .limit(1);
+    return rows[0];
+  };
+
+  listBindings = async (params: { cursor?: string; limit?: number }) => {
+    const limit = boundedLimit(params.limit);
+    const conditions = [eq(platformUserConnectorBindings.userId, this.userId)];
+    if (params.cursor) conditions.push(gt(platformUserConnectorBindings.id, params.cursor));
+    const rows = await this.db
+      .select()
+      .from(platformUserConnectorBindings)
+      .where(and(...conditions))
+      .orderBy(asc(platformUserConnectorBindings.id))
+      .limit(limit + 1);
+    const hasMore = rows.length > limit;
+    const items = hasMore ? rows.slice(0, limit) : rows;
+    return { items, nextCursor: hasMore ? (items.at(-1)?.id ?? null) : null };
+  };
+
+  revokeBinding = async (
+    connectorId: string,
+    revokedAt: Date,
+  ): Promise<PlatformUserConnectorBindingItem | undefined> => {
+    const [row] = await this.db
+      .update(platformUserConnectorBindings)
+      .set({
+        oauthTokenRef: null,
+        revision: sqlIncrement(platformUserConnectorBindings.revision),
+        revokedAt,
+        scopes: [],
+        status: 'revoked',
+        updatedAt: revokedAt,
+      })
+      .where(
+        and(
+          eq(platformUserConnectorBindings.userId, this.userId),
+          eq(platformUserConnectorBindings.connectorId, connectorId),
+          isNull(platformUserConnectorBindings.revokedAt),
+        ),
+      )
+      .returning();
+    return row;
+  };
+
+  updateBindingCas = async (
+    connectorId: string,
+    expectedRevision: number,
+    values: Partial<
+      Omit<
+        NewPlatformUserConnectorBinding,
+        'connectorId' | 'createdAt' | 'id' | 'revision' | 'userId'
+      >
+    >,
+  ): Promise<PlatformUserConnectorBindingItem | undefined> => {
+    const [row] = await this.db
+      .update(platformUserConnectorBindings)
+      .set({ ...values, revision: expectedRevision + 1, updatedAt: new Date() })
+      .where(
+        and(
+          eq(platformUserConnectorBindings.userId, this.userId),
+          eq(platformUserConnectorBindings.connectorId, connectorId),
+          eq(platformUserConnectorBindings.revision, expectedRevision),
+        ),
+      )
+      .returning();
+    return row;
+  };
+
+  upsertBinding = async (
+    values: Omit<NewPlatformUserConnectorBinding, 'userId'>,
+  ): Promise<PlatformUserConnectorBindingItem> => {
+    const [row] = await this.db
+      .insert(platformUserConnectorBindings)
+      .values({ ...values, userId: this.userId })
+      .onConflictDoUpdate({
+        set: {
+          connectedAt: values.connectedAt,
+          expiresAt: values.expiresAt,
+          lastErrorCategory: values.lastErrorCategory,
+          oauthTokenRef: values.oauthTokenRef,
+          publishedRevision: values.publishedRevision,
+          revision: sqlIncrement(platformUserConnectorBindings.revision),
+          revokedAt: values.revokedAt,
+          scopes: values.scopes,
+          status: values.status,
+          tokenFingerprint: values.tokenFingerprint,
+          updatedAt: new Date(),
+        },
+        target: [platformUserConnectorBindings.userId, platformUserConnectorBindings.connectorId],
+      })
+      .returning();
+    return row;
+  };
+}
+
+const sqlIncrement = (column: typeof platformUserConnectorBindings.revision) => sql`${column} + 1`;
