@@ -90,18 +90,20 @@ export const adminUsersListInputSchema = z
 export type AdminUsersListInput = z.input<typeof adminUsersListInputSchema>;
 export type AdminUsersListInputParsed = z.output<typeof adminUsersListInputSchema>;
 
-export const adminUserListItemSchema = z.object({
-  avatar: z.string().nullable(),
-  createdAt: z.date(),
-  email: z.string().nullable(),
-  fullName: z.string().nullable(),
-  id: z.string(),
-  lastActiveAt: z.date().nullable(),
-  /** Global platform role names only (not workspace roles). */
-  roles: z.array(z.string()),
-  status: adminUserStatusSchema,
-  username: z.string().nullable(),
-});
+export const adminUserListItemSchema = z
+  .object({
+    avatar: z.string().nullable(),
+    createdAt: z.date(),
+    email: z.string().nullable(),
+    fullName: z.string().nullable(),
+    id: z.string(),
+    lastActiveAt: z.date().nullable(),
+    /** Global platform role names only (not workspace roles). */
+    roles: z.array(z.string()),
+    status: adminUserStatusSchema,
+    username: z.string().nullable(),
+  })
+  .strict();
 
 export type AdminUserListItem = z.infer<typeof adminUserListItemSchema>;
 
@@ -152,25 +154,27 @@ export const adminUserSessionSummarySchema = z.object({
 
 export type AdminUserSessionSummary = z.infer<typeof adminUserSessionSummarySchema>;
 
-export const adminUsersGetOutputSchema = z.object({
-  avatar: z.string().nullable(),
-  banExpires: z.date().nullable(),
-  banReason: z.string().nullable(),
-  banned: z.boolean(),
-  createdAt: z.date(),
-  email: z.string().nullable(),
-  emailVerified: z.boolean().optional(),
-  fullName: z.string().nullable(),
-  id: z.string(),
-  lastActiveAt: z.date().nullable(),
-  providers: z.array(adminUserProviderSummarySchema),
-  roles: z.array(adminUserGlobalRoleSchema),
-  sessionCount: z.number().int().nonnegative(),
-  /** Bounded recent sessions for the detail page (tokens never included). */
-  sessions: z.array(adminUserSessionSummarySchema),
-  status: adminUserStatusSchema,
-  username: z.string().nullable(),
-});
+export const adminUsersGetOutputSchema = z
+  .object({
+    avatar: z.string().nullable(),
+    banExpires: z.date().nullable(),
+    banReason: z.string().nullable(),
+    banned: z.boolean(),
+    createdAt: z.date(),
+    email: z.string().nullable(),
+    emailVerified: z.boolean().optional(),
+    fullName: z.string().nullable(),
+    id: z.string(),
+    lastActiveAt: z.date().nullable(),
+    providers: z.array(adminUserProviderSummarySchema.strict()),
+    roles: z.array(adminUserGlobalRoleSchema.strict()),
+    sessionCount: z.number().int().nonnegative(),
+    /** Bounded recent sessions for the detail page (tokens never included). */
+    sessions: z.array(adminUserSessionSummarySchema.strict()),
+    status: adminUserStatusSchema,
+    username: z.string().nullable(),
+  })
+  .strict();
 
 export type AdminUsersGetOutput = z.infer<typeof adminUsersGetOutputSchema>;
 

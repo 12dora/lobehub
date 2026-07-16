@@ -64,6 +64,11 @@ export class PlatformRbacService {
   }): Promise<{ expiresAt?: Date | null; roleNames: string[] }> => {
     const desired = [...new Set(params.roleNames)];
 
+    // M04: super_admin is permanent — reject finite expiresAt with super_admin.
+    if (params.expiresAt && desired.includes(PLATFORM_SYSTEM_ROLES.SUPER_ADMIN)) {
+      throw new Error(PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT);
+    }
+
     const isTargetSuper = await this.rbac.isGlobalSuperAdmin(params.targetUserId);
     const actorIsSuper = await this.rbac.isGlobalSuperAdmin(params.actorUserId);
     const wantsSuper = desired.includes(PLATFORM_SYSTEM_ROLES.SUPER_ADMIN);
