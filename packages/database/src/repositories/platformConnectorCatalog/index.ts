@@ -1,4 +1,4 @@
-import { and, asc, eq, exists, gt, inArray, isNull, lte, or, sql } from 'drizzle-orm';
+import { and, asc, eq, exists, gt, ilike, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 
 import type {
   NewPlatformConnector,
@@ -210,23 +210,48 @@ export class PlatformConnectorCatalogRepository {
     };
   };
 
-  listConnectors = async (params: { cursor?: PlatformConnectorCursor; limit?: number }) => {
+  listConnectors = async (params: {
+    credentialMode?: PlatformConnectorItem['credentialMode'];
+    cursor?: PlatformConnectorCursor | string;
+    enabled?: boolean;
+    limit?: number;
+    query?: string;
+    status?: PlatformConnectorItem['status'];
+  }) => {
     const limit = boundedLimit(params.limit);
     const cursor = params.cursor;
+    const conditions = [
+      ...(params.credentialMode
+        ? [eq(platformConnectors.credentialMode, params.credentialMode)]
+        : []),
+      ...(params.enabled === undefined ? [] : [eq(platformConnectors.enabled, params.enabled)]),
+      ...(params.status ? [eq(platformConnectors.status, params.status)] : []),
+      ...(params.query
+        ? [
+            or(
+              ilike(platformConnectors.connectorKey, `%${escapeLike(params.query)}%`),
+              ilike(platformConnectors.displayName, `%${escapeLike(params.query)}%`),
+            )!,
+          ]
+        : []),
+    ];
+    if (typeof cursor === 'string') {
+      conditions.push(gt(platformConnectors.connectorKey, cursor));
+    } else if (cursor) {
+      conditions.push(
+        or(
+          gt(platformConnectors.connectorKey, cursor.connectorKey),
+          and(
+            eq(platformConnectors.connectorKey, cursor.connectorKey),
+            gt(platformConnectors.id, cursor.id),
+          ),
+        )!,
+      );
+    }
     const rows = await this.db
       .select()
       .from(platformConnectors)
-      .where(
-        cursor
-          ? or(
-              gt(platformConnectors.connectorKey, cursor.connectorKey),
-              and(
-                eq(platformConnectors.connectorKey, cursor.connectorKey),
-                gt(platformConnectors.id, cursor.id),
-              ),
-            )
-          : undefined,
-      )
+      .where(conditions.length > 0 ? and(...conditions) : undefined)
       .orderBy(asc(platformConnectors.connectorKey), asc(platformConnectors.id))
       .limit(limit + 1);
     const hasMore = rows.length > limit;
@@ -643,3 +668,6 @@ export class PlatformUserConnectorBindingRepository {
 }
 
 const sqlIncrement = (column: typeof platformUserConnectorBindings.revision) => sql`${column} + 1`;
+
+const escapeLike = (value: string): string =>
+  value.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_');
