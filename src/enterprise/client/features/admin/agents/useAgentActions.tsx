@@ -139,10 +139,18 @@ export const useAgentActions = ({
             editor.setConflict(true);
           throw cause;
         }
-        // Committed: clear recovery, advance CAS from the authoritative output (no stale CAS).
+        // Committed on the server — mark synchronously BEFORE any cache apply, so an idle/finally can
+        // never abort a committed write.
+        lock.markCommitted(writeToken);
         editor.markSaved();
-        await mutate(applyAppendVersion(output), { revalidate: false });
-        lock.resolveWrite(writeToken); // output carries the advanced CAS → end the cycle, no refresh
+        try {
+          await mutate(applyAppendVersion(output), { revalidate: false });
+          lock.resolveWrite(writeToken); // output carries the advanced CAS → end the cycle, no refresh
+        } catch {
+          // The local cache apply failed AFTER the commit → stay locked and refresh the authoritative
+          // aggregate against the frozen baseline; only a complete fresh aggregate unlocks.
+          await lock.commitWrite(writeToken);
+        }
         toast.success(t('agentCatalog.toast.saved'));
       },
       submitLabel: t('agentCatalog.action.saveVersion'),
@@ -180,6 +188,7 @@ export const useAgentActions = ({
             throw cause;
           }
           // publish output carries no draftToken → refresh; stays locked on a non-advanced refresh.
+          lock.markCommitted(writeToken);
           await lock.commitWrite(writeToken);
           toast.success(t('agentCatalog.toast.published'));
         },
@@ -220,6 +229,7 @@ export const useAgentActions = ({
             lock.abortWrite(writeToken);
             throw cause;
           }
+          lock.markCommitted(writeToken);
           await lock.commitWrite(writeToken);
           toast.success(t('agentCatalog.toast.rolledBack'));
         },
@@ -276,9 +286,15 @@ export const useAgentActions = ({
           lock.abortWrite(writeToken);
           throw cause;
         }
-        // nextDefault carries the authoritative CAS for this agent → advance locally, end the cycle.
-        await mutate(applyIdentity(output.nextDefault), { revalidate: false });
-        lock.resolveWrite(writeToken);
+        // Committed on the server → mark synchronously before any cache apply.
+        lock.markCommitted(writeToken);
+        try {
+          // nextDefault carries the authoritative CAS for this agent → advance locally, end the cycle.
+          await mutate(applyIdentity(output.nextDefault), { revalidate: false });
+          lock.resolveWrite(writeToken);
+        } catch {
+          await lock.commitWrite(writeToken); // cache apply failed after commit → refresh-required
+        }
         toast.success(t('agentCatalog.defaultSwitch.success'));
       },
       submitLabel: t('agentCatalog.defaultSwitch.submit'),
@@ -332,8 +348,13 @@ export const useAgentActions = ({
           lock.abortWrite(writeToken);
           throw cause;
         }
-        await mutate(applyIdentity(output), { revalidate: false });
-        lock.resolveWrite(writeToken);
+        lock.markCommitted(writeToken); // committed on the server → mark before any cache apply
+        try {
+          await mutate(applyIdentity(output), { revalidate: false });
+          lock.resolveWrite(writeToken);
+        } catch {
+          await lock.commitWrite(writeToken); // cache apply failed after commit → refresh-required
+        }
         toast.success(t('agentCatalog.toast.archived'));
       },
       submitLabel: t('agentCatalog.archive.submit'),

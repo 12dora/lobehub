@@ -111,12 +111,19 @@ const editor = {
   setSaveState: vi.fn(),
 } as never;
 
-// The shared SWR mutate: an updater arg = optimistic local apply (returns nothing); a bare call =
-// a refresh, resolving to whatever `freshRef` currently holds.
+// The shared SWR mutate: an updater arg = optimistic local cache apply; a bare call = a refresh,
+// resolving to whatever `freshRef` currently holds. `cacheApply` lets a test force the optimistic
+// cache apply to REJECT (simulating a post-commit local cache failure) while the bare refresh works.
 const freshRef: { current: AdminAgentDetailOutput | undefined } = { current: undefined };
-const mutate = vi.fn((updater?: unknown) =>
-  updater ? Promise.resolve(undefined) : Promise.resolve(freshRef.current),
-);
+const cacheApply: { current: 'ok' | 'throw' } = { current: 'ok' };
+const mutate = vi.fn((updater?: unknown) => {
+  if (updater) {
+    return cacheApply.current === 'throw'
+      ? Promise.reject(new Error('cache-apply-failed'))
+      : Promise.resolve(undefined);
+  }
+  return Promise.resolve(freshRef.current);
+});
 
 const lastConfig = () => mocks.openReasonModal.mock.calls.at(-1)![0];
 
@@ -157,6 +164,7 @@ beforeEach(() => {
   mocks.service.rollback.mockResolvedValue({ agentId: 'agent-1', revision: 8 });
   mocks.service.upsertAssignment.mockResolvedValue({ id: 'as-1' });
   mocks.service.removeAssignment.mockResolvedValue({ removed: true });
+  cacheApply.current = 'ok';
 });
 
 // ---- The write matrix: how to trigger each real write and how its committed output resolves. ----
@@ -219,15 +227,9 @@ const ASSIGNMENT_WRITES: WriteCase[] = [
     name: 'assignment create',
     trigger: (h) => h.result.current.assignment.submit(),
   },
-  {
-    cas: false,
-    method: 'upsertAssignment',
-    name: 'assignment update',
-    trigger: (h) => {
-      h.result.current.assignment.edit(editableAssignment);
-      h.result.current.assignment.submit();
-    },
-  },
+  // 'assignment update' is exercised as a dedicated REAL test below (edit in one act, rerender,
+  // submit in a separate act) so its edited state actually commits — a single-act edit+submit would
+  // silently fall back to the create shape.
   {
     cas: false,
     method: 'removeAssignment',
@@ -418,5 +420,129 @@ describe('write-lock chain: shared-reauth is one logical write', () => {
     });
     expect(mocks.service.publish).toHaveBeenCalledTimes(2);
     expect(h.result.current.lock.isLocked()).toBe(false);
+  });
+});
+
+describe('write-lock chain: a committed write survives a local cache-apply failure', () => {
+  it.each(CAS_WRITES)(
+    '$name: service commits then the local cache apply throws → stays locked (refresh-required), never aborts',
+    async (w) => {
+      const h = renderHarness(complete(4, 'b'));
+      // The service commits, but the optimistic local cache apply rejects, and the authoritative
+      // refresh has nothing fresh yet → the committed write must stay LOCKED, not abort/unlock.
+      cacheApply.current = 'throw';
+      freshRef.current = undefined;
+      await fire(h, w);
+      const first = lastConfig();
+      await act(async () => {
+        await first.onSubmit(first.buildPayload('reason'));
+      });
+      expect(mocks.service[w.method]).toHaveBeenCalledTimes(1);
+      expect(h.result.current.lock.isLocked()).toBe(true);
+      expect(h.result.current.lock.refreshFailed).toBe(true);
+
+      // A modal idle/finally after a COMMITTED write must NOT unlock it.
+      act(() => {
+        first.onPhaseChange?.('idle');
+      });
+      expect(h.result.current.lock.isLocked()).toBe(true);
+
+      // A second write while locked reaches no service.
+      const calls = mocks.service[w.method].mock.calls.length;
+      await fire(h, w);
+      expect(mocks.service[w.method].mock.calls.length).toBe(calls);
+
+      // The authoritative aggregate refresh (fresh, strictly advanced) unlocks.
+      cacheApply.current = 'ok';
+      freshRef.current = complete(5, 'c');
+      await act(async () => {
+        await h.result.current.lock.retryRefresh();
+      });
+      expect(h.result.current.lock.isLocked()).toBe(false);
+
+      // The next write authors from the NEW CAS (setDefaultInbox nests it under `nextDefault`).
+      h.rerender({ snap: complete(5, 'c') });
+      await fire(h, w);
+      const raw = lastConfig().buildPayload('again') as Record<string, unknown>;
+      const built = (raw.nextDefault ?? raw) as {
+        expectedDraftToken: string;
+        expectedRevision: number;
+      };
+      expect(built.expectedRevision).toBe(5);
+      expect(built.expectedDraftToken).toBe('c'.repeat(64));
+    },
+  );
+});
+
+describe('write-lock chain: assignment UPDATE is a real edit→commit chain', () => {
+  const upsertCalls = () => mocks.service.upsertAssignment.mock.calls.map(([arg]) => arg);
+
+  it('sends the existing assignmentId + edited normalized fields, blocks a stale second update, and reuses the new CAS', async () => {
+    const h = renderHarness(complete(4, 'b'));
+
+    // Edit an existing assignment in one act; let the hook rerender so editingId commits...
+    act(() => {
+      h.result.current.assignment.edit(editableAssignment);
+    });
+    expect(h.result.current.assignment.editingId).toBe('as-1');
+    // ...then change a field and submit in a SEPARATE act (the real user sequence).
+    act(() => {
+      h.result.current.assignment.setEnabled(false);
+    });
+    act(() => {
+      h.result.current.assignment.submit();
+    });
+
+    // Commit; refresh fails → stays locked.
+    freshRef.current = undefined;
+    const first = lastConfig();
+    const built = first.buildPayload('reason') as Record<string, unknown>;
+    // The UPDATE payload carries the EXISTING assignmentId and the edited normalized fields.
+    expect(built.assignmentId).toBe('as-1');
+    expect(built.enabled).toBe(false);
+    expect(built.targetType).toBe('global');
+    expect(built.targetId).toBe(PLATFORM_AGENT_GLOBAL_TARGET_ID);
+    expect(built.expectedRevision).toBe(4);
+
+    await act(async () => {
+      await first.onSubmit(built);
+    });
+    expect(mocks.service.upsertAssignment).toHaveBeenCalledTimes(1);
+    expect(upsertCalls()[0]).toMatchObject({ assignmentId: 'as-1', enabled: false });
+    expect(h.result.current.lock.isLocked()).toBe(true);
+
+    // A second UPDATE while locked reaches no service (re-edit + submit → still blocked).
+    act(() => {
+      h.result.current.assignment.edit(editableAssignment);
+    });
+    act(() => {
+      h.result.current.assignment.submit();
+    });
+    expect(mocks.service.upsertAssignment).toHaveBeenCalledTimes(1);
+
+    // Refresh with a fresh advanced aggregate unlocks.
+    freshRef.current = complete(5, 'c');
+    await act(async () => {
+      await h.result.current.lock.retryRefresh();
+    });
+    expect(h.result.current.lock.isLocked()).toBe(false);
+
+    // Next UPDATE on the refreshed surface still carries the assignmentId + the NEW CAS.
+    h.rerender({ snap: complete(5, 'c') });
+    act(() => {
+      h.result.current.assignment.edit(editableAssignment);
+    });
+    act(() => {
+      h.result.current.assignment.submit();
+    });
+    const next = lastConfig().buildPayload('again') as Record<string, unknown>;
+    expect(next.assignmentId).toBe('as-1');
+    expect(next.expectedRevision).toBe(5);
+    expect(next.expectedDraftToken).toBe('c'.repeat(64));
+
+    // NEGATIVE: the create shape (missing assignmentId) is NEVER used in the update case.
+    expect(
+      upsertCalls().every((arg) => Boolean((arg as { assignmentId?: string }).assignmentId)),
+    ).toBe(true);
   });
 });

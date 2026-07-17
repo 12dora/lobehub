@@ -101,6 +101,7 @@ const makeLock = (refresh: 'ok' | 'fail'): RefreshLock => {
     }),
     isLocked: () => locked,
     locked: false,
+    markCommitted: vi.fn(),
     refreshFailed: false,
     resolveWrite: vi.fn(() => {
       locked = false;
