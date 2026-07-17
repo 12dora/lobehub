@@ -20,6 +20,7 @@ import { EasyauthSyncService } from '../services/easyauthSync';
 import { PlatformAuditService } from '../services/platformAudit';
 import { LastSuperAdminError, PlatformRbacService } from '../services/platformRbac';
 import { ensureSkillCatalogReadinessRegistered } from '../services/skillCatalog';
+import { adminAgentsRouter } from './admin/agents';
 import { adminAiModelsRouter, adminAiProvidersRouter } from './admin/aiCatalog';
 import { adminConnectorsRouter } from './admin/connectors';
 import { adminManagedResourcesRouter } from './admin/managedResources';
@@ -224,6 +225,7 @@ export const adminAuditRouter = router({
  * Mounted as `admin` on lambda root when wired.
  */
 export const adminRouter = router({
+  agents: adminAgentsRouter,
   aiModels: adminAiModelsRouter,
   aiProviders: adminAiProvidersRouter,
   audit: adminAuditRouter,
