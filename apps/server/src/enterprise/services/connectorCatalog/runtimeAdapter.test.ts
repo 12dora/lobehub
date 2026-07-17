@@ -319,6 +319,21 @@ describe('PlatformConnectorRuntimeAdapter', () => {
     expect(harness.dependencies.outbound.requestJson).not.toHaveBeenCalled();
   });
 
+  it('refreshes against the exact published revision frozen in the operation proof', async () => {
+    const harness = createHarness('per_user_oauth');
+    vi.mocked(harness.dependencies.bindingLoader).mockResolvedValue(
+      binding({ expiresAt: new Date('2029-01-01T00:00:30Z') }),
+    );
+
+    await expect(harness.adapter.execute(invocation)).resolves.toMatchObject({ success: true });
+
+    expect(harness.dependencies.refreshBinding).toHaveBeenCalledWith(
+      'user-1',
+      'connector-1',
+      proof.publishedRevision,
+    );
+  });
+
   it('fails closed when a binding is revoked after preflight or token resolution', async () => {
     const afterPreflight = createHarness('per_user_oauth');
     vi.mocked(afterPreflight.dependencies.bindingLoader)

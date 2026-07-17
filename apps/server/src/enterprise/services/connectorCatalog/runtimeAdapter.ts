@@ -114,7 +114,11 @@ export interface PlatformConnectorRuntimeAdapterDependencies {
   outbound: Pick<ConnectorOutboundClient, 'preflight' | 'requestJson'>;
   policy: ConnectorRuntimePolicyResolver;
   rateLimiter: ConnectorRuntimeRateLimiter;
-  refreshBinding?: (userId: string, connectorId: string) => Promise<void>;
+  refreshBinding?: (
+    userId: string,
+    connectorId: string,
+    publishedRevision: number,
+  ) => Promise<void>;
   secrets: ConnectorCatalogSecretStore;
   snapshots: Pick<ConnectorOperationSnapshotService, 'resolveExact'>;
 }
@@ -222,7 +226,11 @@ export class PlatformConnectorRuntimeAdapter {
           tokenExpiresAt.getTime() - now.getTime() <= DEFAULT_REFRESH_WINDOW_MS &&
           this.dependencies.refreshBinding
         ) {
-          await this.dependencies.refreshBinding(invocation.userId, connector.id);
+          await this.dependencies.refreshBinding(
+            invocation.userId,
+            connector.id,
+            snapshot.proof.publishedRevision,
+          );
           binding = await this.loadBinding(
             invocation,
             connector.id,

@@ -398,10 +398,11 @@ export const executeManagedConnectorTool = async (params: {
         },
       },
       rateLimiter: createSharedRateLimiter(),
-      refreshBinding: async (userId, connectorId) => {
+      refreshBinding: async (userId, connectorId, publishedRevision) => {
         const runtime = getConnectorOAuthRuntime(params.db!, params.env ?? process.env);
         await new UserConnectorOAuthService(params.db!, userId, runtime).refreshBinding(
           connectorId,
+          publishedRevision,
         );
       },
       secrets,

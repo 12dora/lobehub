@@ -211,6 +211,16 @@ export class ConnectorCatalogReadService {
     return { payload, provenance: snapshot.provenance };
   };
 
+  getSnapshotRevision = async (connectorId: string, revision: number) => {
+    const snapshot = await this.repository.getPublishedRuntimeRevision(connectorId, revision);
+    if (!snapshot) throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_PUBLISHED');
+    const payload = parseExactSnapshot(snapshot);
+    if (!payload.connector.enabled || snapshot.provenance.revision !== revision) {
+      throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_PUBLISHED');
+    }
+    return { payload, provenance: snapshot.provenance };
+  };
+
   getAdminPublished = async (connectorId: string) => {
     const { payload, provenance } = await this.getSnapshot(connectorId);
     const connector = payload.connector;
