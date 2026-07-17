@@ -139,6 +139,7 @@ const createHarness = (
         status: 'acquired' as const,
         token: { jobId: 'journal-1', owner: 'owner-1' },
       })),
+      cancel: vi.fn(async () => {}),
       complete: vi.fn(async () => {}),
       deliverAudit: vi.fn(async (_token, delivery) => {
         await delivery({
@@ -463,6 +464,29 @@ describe('PlatformConnectorRuntimeAdapter', () => {
       'PLATFORM_CONNECTOR_NOT_PUBLISHED',
     );
     expect(harness.dependencies.journal.begin).not.toHaveBeenCalled();
+    expect(harness.dependencies.outbound.requestJson).not.toHaveBeenCalled();
+    expect(harness.dependencies.audit.appendSharedCall).not.toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: 'failed' }),
+    );
+  });
+
+  it('cancels the journal when archive wins the post-reservation race', async () => {
+    const harness = createHarness('shared_service_account');
+    harness.dependencies.assertCurrentPublished = vi
+      .fn<() => Promise<void>>()
+      .mockResolvedValueOnce()
+      .mockRejectedValueOnce(
+        new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_PUBLISHED'),
+      );
+
+    await expect(harness.adapter.execute(invocation)).rejects.toThrow(
+      'PLATFORM_CONNECTOR_NOT_PUBLISHED',
+    );
+    expect(harness.dependencies.journal.begin).toHaveBeenCalledOnce();
+    expect(harness.dependencies.journal.cancel).toHaveBeenCalledWith({
+      jobId: 'journal-1',
+      owner: 'owner-1',
+    });
     expect(harness.dependencies.outbound.requestJson).not.toHaveBeenCalled();
     expect(harness.dependencies.audit.appendSharedCall).not.toHaveBeenCalledWith(
       expect.objectContaining({ outcome: 'failed' }),

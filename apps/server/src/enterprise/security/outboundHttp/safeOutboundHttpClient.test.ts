@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { createServer } from 'node:http';
+import { createServer as createNetServer } from 'node:net';
 
 import { describe, expect, it, vi } from 'vitest';
 
@@ -168,6 +169,40 @@ describe('SafeOutboundHttpClient', () => {
       server.close();
     }
   });
+
+  it.each([204, 205, 304])(
+    'constructs bodyless %s responses and terminates a peer that advertises a body',
+    async (status) => {
+      let closed = false;
+      const server = createNetServer((socket) => {
+        socket.once('data', () => {
+          socket.write(
+            `HTTP/1.1 ${status} Test\r\nContent-Length: 999999\r\nContent-Type: text/event-stream\r\nX-Untrusted-Header: preserved\r\nConnection: keep-alive\r\n\r\nmalicious-body`,
+          );
+          const interval = setInterval(() => socket.write('still-malicious'), 5);
+          socket.on('close', () => clearInterval(interval));
+        });
+        socket.on('close', () => {
+          closed = true;
+        });
+      });
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        throw new Error('test server address unavailable');
+      }
+      try {
+        const client = new SafeOutboundHttpClient({ timeoutMs: 5000 });
+        const response = await client.streamFetch(`http://127.0.0.1:${address.port}/bodyless`);
+        expect(response.status).toBe(status);
+        expect(response.body).toBeNull();
+        expect(response.headers.get('x-untrusted-header')).toBe('preserved');
+        await vi.waitFor(() => expect(closed).toBe(true));
+      } finally {
+        server.close();
+      }
+    },
+  );
 
   it('allows private/localhost by default (G-07) and pins DNS', async () => {
     const transport = vi.fn<PinnedTransport>(async (req) => {

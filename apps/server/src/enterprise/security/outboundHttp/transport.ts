@@ -11,6 +11,8 @@ import type {
   ResolvedAddress,
 } from './types';
 
+const NO_BODY_RESPONSE_STATUSES = new Set([204, 205, 304]);
+
 export const defaultDnsResolve: DnsResolver = async (
   hostname: string,
 ): Promise<ResolvedAddress[]> => {
@@ -242,84 +244,101 @@ export const defaultPinnedStreamingTransport = (
         timeout: timeoutMs,
       },
       (incoming) => {
-        response = incoming;
-        let total = 0;
-        limiter = new Transform({
-          transform(chunk: Buffer | string, _encoding, callback) {
-            const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-            total += bytes.length;
-            if (total > maxResponseBytes) {
-              const error = new Error('Outbound streaming response exceeded byte limit');
-              callback(error);
-              destroyAll(error);
-              return;
+        try {
+          response = incoming;
+          const status = incoming.statusCode ?? 500;
+          const responseHeaders = new Headers();
+          for (const [key, value] of Object.entries(incoming.headers)) {
+            if (value === undefined) continue;
+            if (Array.isArray(value)) {
+              for (const item of value) responseHeaders.append(key, item);
+            } else {
+              responseHeaders.set(key, value);
             }
-            callback(null, bytes);
-          },
-        });
-        incoming.pipe(limiter);
-        incoming.once('error', (error) => limiter?.destroy(error));
-        limiter.once('end', cleanup);
-        limiter.once('error', (error) => {
-          if (!terminated) destroyAll(error);
-        });
-        limiter.once('close', () => {
-          // ReadableStream.cancel() destroys the Transform. Explicitly tear down
-          // the upstream IncomingMessage and ClientRequest as well, including
-          // redirect and SDK early-cancel paths.
-          if (!incoming.complete && !terminated) destroyAll();
-          else cleanup();
-        });
-        const responseHeaders = new Headers();
-        for (const [key, value] of Object.entries(incoming.headers)) {
-          if (value === undefined) continue;
-          if (Array.isArray(value)) {
-            for (const item of value) responseHeaders.append(key, item);
-          } else {
-            responseHeaders.set(key, value);
           }
-        }
-        const responseBody = new ReadableStream<Uint8Array>({
-          cancel(reason) {
-            bodyClosed = true;
-            destroyAll(reason instanceof Error ? reason : abortError(), true);
-          },
-          pull() {
-            limiter?.resume();
-          },
-          start(controller) {
-            bodyController = controller;
-            const onData = (chunk: Buffer | string) => {
-              if (bodyClosed) return;
+          if (NO_BODY_RESPONSE_STATUSES.has(status)) {
+            // Undici rejects a non-null body for these statuses. Cut off even a
+            // malicious peer that keeps sending bytes, then return a bodyless response.
+            destroyAll();
+            const bodyless = new Response(null, {
+              headers: responseHeaders,
+              status,
+              statusText: incoming.statusMessage,
+            });
+            responseDelivered = true;
+            resolve(bodyless);
+            return;
+          }
+          let total = 0;
+          limiter = new Transform({
+            transform(chunk: Buffer | string, _encoding, callback) {
               const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-              controller.enqueue(new Uint8Array(bytes));
-              if ((controller.desiredSize ?? 1) <= 0) limiter?.pause();
-            };
-            const onEnd = () => {
-              if (bodyClosed) return;
+              total += bytes.length;
+              if (total > maxResponseBytes) {
+                const error = new Error('Outbound streaming response exceeded byte limit');
+                callback(error);
+                destroyAll(error);
+                return;
+              }
+              callback(null, bytes);
+            },
+          });
+          incoming.pipe(limiter);
+          incoming.once('error', (error) => limiter?.destroy(error));
+          limiter.once('end', cleanup);
+          limiter.once('error', (error) => {
+            if (!terminated) destroyAll(error);
+          });
+          limiter.once('close', () => {
+            // ReadableStream.cancel() destroys the Transform. Explicitly tear down
+            // the upstream IncomingMessage and ClientRequest as well, including
+            // redirect and SDK early-cancel paths.
+            if (!incoming.complete && !terminated) destroyAll();
+            else cleanup();
+          });
+          const responseBody = new ReadableStream<Uint8Array>({
+            cancel(reason) {
               bodyClosed = true;
-              controller.close();
-              cleanup();
-            };
-            const onError = (error: Error) => destroyAll(error);
-            limiter!.on('data', onData);
-            limiter!.once('end', onEnd);
-            limiter!.once('error', onError);
-            detachBodyListeners = () => {
-              limiter?.off('data', onData);
-              limiter?.off('end', onEnd);
-              limiter?.off('error', onError);
-            };
-          },
-        });
-        responseDelivered = true;
-        resolve(
-          new Response(responseBody, {
+              destroyAll(reason instanceof Error ? reason : abortError(), true);
+            },
+            pull() {
+              limiter?.resume();
+            },
+            start(controller) {
+              bodyController = controller;
+              const onData = (chunk: Buffer | string) => {
+                if (bodyClosed) return;
+                const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+                controller.enqueue(new Uint8Array(bytes));
+                if ((controller.desiredSize ?? 1) <= 0) limiter?.pause();
+              };
+              const onEnd = () => {
+                if (bodyClosed) return;
+                bodyClosed = true;
+                controller.close();
+                cleanup();
+              };
+              const onError = (error: Error) => destroyAll(error);
+              limiter!.on('data', onData);
+              limiter!.once('end', onEnd);
+              limiter!.once('error', onError);
+              detachBodyListeners = () => {
+                limiter?.off('data', onData);
+                limiter?.off('end', onEnd);
+                limiter?.off('error', onError);
+              };
+            },
+          });
+          const streamed = new Response(responseBody, {
             headers: responseHeaders,
-            status: incoming.statusCode ?? 500,
+            status,
             statusText: incoming.statusMessage,
-          }),
-        );
+          });
+          responseDelivered = true;
+          resolve(streamed);
+        } catch (error) {
+          fail(error instanceof Error ? error : new Error('Outbound response construction failed'));
+        }
       },
     );
     request.once('error', (error) => {

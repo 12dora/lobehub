@@ -56,10 +56,11 @@ redis.call('SET', KEYS[1], state)
 return state
 `;
 const CAPABILITY_SCRIPT = `
+if redis.call('EXISTS', KEYS[3]) == 1 then
+  return redis.call('GET', KEYS[1])
+end
 local epoch = redis.call('INCR', KEYS[2])
-local mode = ARGV[1]
-if redis.call('EXISTS', KEYS[3]) == 1 then mode = 'blocked' end
-local state = cjson.encode({ epoch = epoch, mode = mode, revision = tonumber(ARGV[2]) })
+local state = cjson.encode({ epoch = epoch, mode = ARGV[1], revision = tonumber(ARGV[2]) })
 redis.call('SET', KEYS[1], state)
 return state
 `;
@@ -87,21 +88,6 @@ local state = cjson.encode({
 })
 redis.call('SET', KEYS[1], state)
 redis.call('DEL', KEYS[3])
-return state
-`;
-const RECOVER_EXPIRED_TRANSITION_SCRIPT = `
-if redis.call('EXISTS', KEYS[3]) == 1 then return redis.call('GET', KEYS[1]) end
-local current = redis.call('GET', KEYS[1])
-if not current then return nil end
-local decoded = cjson.decode(current)
-if decoded.mode ~= 'blocked' or not decoded.transitionToken then return current end
-local epoch = redis.call('INCR', KEYS[2])
-local state = cjson.encode({
-  epoch = epoch,
-  mode = decoded.previousMode or 'blocked',
-  revision = tonumber(decoded.previousRevision or 0)
-})
-redis.call('SET', KEYS[1], state)
 return state
 `;
 
@@ -291,14 +277,10 @@ export const getConnectorRuntimeEffectiveState = async (
     const config = getRedisConfig();
     if (config.enabled) {
       const redis = await initializeRedis(config);
-      const recovered = await redis?.eval(
-        RECOVER_EXPIRED_TRANSITION_SCRIPT,
-        3,
-        REDIS_KEY,
-        REDIS_EPOCH_KEY,
-        REDIS_TRANSITION_KEY,
-      );
-      const shared = parseState(typeof recovered === 'string' ? recovered : null);
+      // An expired owner is commit-unknown: the database transaction may have
+      // committed before the process died. Preserve blocked until a DB-backed
+      // capability publisher resolves and replaces it; never restore legacy.
+      const shared = parseState((await redis?.get(REDIS_KEY)) ?? null);
       if (shared) {
         localState = shared;
         return { ...shared };

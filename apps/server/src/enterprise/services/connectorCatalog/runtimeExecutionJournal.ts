@@ -67,6 +67,7 @@ export interface ConnectorRuntimeExecutionJournal {
     toolKey: string;
     userId: string;
   }) => Promise<ConnectorRuntimeJournalBegin>;
+  cancel: (token: ConnectorRuntimeJournalToken) => Promise<void>;
   complete: (
     token: ConnectorRuntimeJournalToken,
     result: ConnectorRuntimeJournalResult,
@@ -145,6 +146,20 @@ export class DatabaseConnectorRuntimeExecutionJournal implements ConnectorRuntim
       status: 'replay',
       token: { jobId: existing.id, owner: existing.leaseOwner ?? owner },
     };
+  };
+
+  cancel: ConnectorRuntimeExecutionJournal['cancel'] = async (token) => {
+    const [removed] = await this.db
+      .delete(platformJobs)
+      .where(
+        and(
+          eq(platformJobs.id, token.jobId),
+          eq(platformJobs.leaseOwner, token.owner),
+          eq(platformJobs.status, 'running'),
+        ),
+      )
+      .returning({ id: platformJobs.id });
+    if (!removed) throw new Error('Connector runtime journal cancellation conflict');
   };
 
   complete: ConnectorRuntimeExecutionJournal['complete'] = async (token, result) => {
