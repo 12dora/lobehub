@@ -1,0 +1,311 @@
+import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
+import { authedProcedure, router } from '@/libs/trpc/lambda';
+import { serverDatabase } from '@/libs/trpc/lambda/middleware';
+
+import {
+  adminPlatformAgentAppendVersionInputSchema,
+  adminPlatformAgentAppendVersionOutputSchema,
+  adminPlatformAgentArchiveInputSchema,
+  adminPlatformAgentArchiveOutputSchema,
+  adminPlatformAgentAssignmentListInputSchema,
+  adminPlatformAgentAssignmentListOutputSchema,
+  adminPlatformAgentAssignmentPreviewInputSchema,
+  adminPlatformAgentAssignmentPreviewOutputSchema,
+  adminPlatformAgentAssignmentRemoveInputSchema,
+  adminPlatformAgentAssignmentRemoveOutputSchema,
+  adminPlatformAgentAssignmentUpsertInputSchema,
+  adminPlatformAgentAssignmentUpsertOutputSchema,
+  adminPlatformAgentCreateInputSchema,
+  adminPlatformAgentCreateOutputSchema,
+  adminPlatformAgentDependentsInputSchema,
+  adminPlatformAgentDependentsOutputSchema,
+  adminPlatformAgentGetInputSchema,
+  adminPlatformAgentGetOutputSchema,
+  adminPlatformAgentListInputSchema,
+  adminPlatformAgentListOutputSchema,
+  adminPlatformAgentPublishInputSchema,
+  adminPlatformAgentPublishOutputSchema,
+  adminPlatformAgentRollbackInputSchema,
+  adminPlatformAgentRollbackOutputSchema,
+  adminPlatformAgentSetDefaultInboxInputSchema,
+  adminPlatformAgentSetDefaultInboxOutputSchema,
+  adminPlatformAgentUpdateDraftInputSchema,
+  adminPlatformAgentUpdateDraftOutputSchema,
+  adminPlatformAgentValidateDependenciesInputSchema,
+  adminPlatformAgentValidateDependenciesOutputSchema,
+  adminPlatformAgentVersionsListInputSchema,
+  adminPlatformAgentVersionsListOutputSchema,
+} from '../../contracts/platformAgents';
+import { withActiveUser } from '../../guards/activeUser';
+import { withPlatformPermission } from '../../guards/platformPermission';
+import {
+  PlatformAgentAdminService,
+  PlatformAgentPublicationService,
+  validateExactPlatformAgentDependencies,
+} from '../../services/agentCatalog';
+import {
+  assertAgentDangerousReauth,
+  assertAgentFeatureEnabled,
+  mapAgentServiceError,
+} from './agentsSupport';
+
+const adminBase = authedProcedure.use(serverDatabase).use(withActiveUser());
+
+const assignmentsRouter = router({
+  list: adminBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AGENT_READ))
+    .input(adminPlatformAgentAssignmentListInputSchema)
+    .output(adminPlatformAgentAssignmentListOutputSchema)
+    .query(async ({ ctx, input }) => {
+      assertAgentFeatureEnabled();
+      try {
+        return await new PlatformAgentAdminService(ctx.serverDB).listAssignments(input);
+      } catch (error) {
+        return mapAgentServiceError(error);
+      }
+    }),
+
+  preview: adminBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AGENT_ASSIGN))
+    .input(adminPlatformAgentAssignmentPreviewInputSchema)
+    .output(adminPlatformAgentAssignmentPreviewOutputSchema)
+    .query(async ({ ctx, input }) => {
+      assertAgentFeatureEnabled();
+      try {
+        return await new PlatformAgentAdminService(ctx.serverDB).previewAssignment(input);
+      } catch (error) {
+        return mapAgentServiceError(error);
+      }
+    }),
+
+  remove: adminBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AGENT_ASSIGN))
+    .input(adminPlatformAgentAssignmentRemoveInputSchema)
+    .output(adminPlatformAgentAssignmentRemoveOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      assertAgentFeatureEnabled();
+      try {
+        return await new PlatformAgentAdminService(ctx.serverDB).removeAssignment(
+          ctx.userId!,
+          input,
+        );
+      } catch (error) {
+        return mapAgentServiceError(error);
+      }
+    }),
+
+  upsert: adminBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AGENT_ASSIGN))
+    .input(adminPlatformAgentAssignmentUpsertInputSchema)
+    .output(adminPlatformAgentAssignmentUpsertOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      assertAgentFeatureEnabled();
+      try {
+        return await new PlatformAgentAdminService(ctx.serverDB).upsertAssignment(
+          ctx.userId!,
+          input,
+        );
+      } catch (error) {
+        return mapAgentServiceError(error);
+      }
+    }),
+});
+
+export const adminAgentsRouter = router({
+  appendVersion: adminBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AGENT_UPDATE))
+    .input(adminPlatformAgentAppendVersionInputSchema)
+    .output(adminPlatformAgentAppendVersionOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      assertAgentFeatureEnabled();
+      try {
+        return await new PlatformAgentAdminService(ctx.serverDB).appendVersion(ctx.userId!, input);
+      } catch (error) {
+        return mapAgentServiceError(error);
+      }
+    }),
+
+  archive: adminBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AGENT_DELETE))
+    .input(adminPlatformAgentArchiveInputSchema)
+    .output(adminPlatformAgentArchiveOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      assertAgentFeatureEnabled();
+      await assertAgentDangerousReauth({
+        action: 'admin.agents.archive',
+        actorUserId: ctx.userId!,
+        authenticatedAt: ctx.authenticatedAt,
+        authMethod: ctx.authMethod,
+        reason: input.reason,
+        serverDB: ctx.serverDB,
+        targetId: input.agentId,
+      });
+      try {
+        return await new PlatformAgentAdminService(ctx.serverDB).archive(ctx.userId!, input);
+      } catch (error) {
+        return mapAgentServiceError(error);
+      }
+    }),
+
+  assignments: assignmentsRouter,
+
+  create: adminBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AGENT_CREATE))
+    .input(adminPlatformAgentCreateInputSchema)
+    .output(adminPlatformAgentCreateOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      assertAgentFeatureEnabled();
+      try {
+        return await new PlatformAgentAdminService(ctx.serverDB).create(ctx.userId!, input);
+      } catch (error) {
+        return mapAgentServiceError(error);
+      }
+    }),
+
+  get: adminBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AGENT_READ))
+    .input(adminPlatformAgentGetInputSchema)
+    .output(adminPlatformAgentGetOutputSchema)
+    .query(async ({ ctx, input }) => {
+      assertAgentFeatureEnabled();
+      try {
+        return await new PlatformAgentAdminService(ctx.serverDB).get(input.id);
+      } catch (error) {
+        return mapAgentServiceError(error);
+      }
+    }),
+
+  getDependents: adminBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AGENT_READ))
+    .input(adminPlatformAgentDependentsInputSchema)
+    .output(adminPlatformAgentDependentsOutputSchema)
+    .query(async ({ ctx, input }) => {
+      assertAgentFeatureEnabled();
+      try {
+        return await new PlatformAgentAdminService(ctx.serverDB).getDependents(input);
+      } catch (error) {
+        return mapAgentServiceError(error);
+      }
+    }),
+
+  list: adminBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AGENT_READ))
+    .input(adminPlatformAgentListInputSchema)
+    .output(adminPlatformAgentListOutputSchema)
+    .query(async ({ ctx, input }) => {
+      assertAgentFeatureEnabled();
+      try {
+        return await new PlatformAgentAdminService(ctx.serverDB).list(input);
+      } catch (error) {
+        return mapAgentServiceError(error);
+      }
+    }),
+
+  listVersions: adminBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AGENT_READ))
+    .input(adminPlatformAgentVersionsListInputSchema)
+    .output(adminPlatformAgentVersionsListOutputSchema)
+    .query(async ({ ctx, input }) => {
+      assertAgentFeatureEnabled();
+      try {
+        return await new PlatformAgentAdminService(ctx.serverDB).listVersions(input);
+      } catch (error) {
+        return mapAgentServiceError(error);
+      }
+    }),
+
+  publish: adminBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AGENT_PUBLISH))
+    .input(adminPlatformAgentPublishInputSchema)
+    .output(adminPlatformAgentPublishOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      assertAgentFeatureEnabled();
+      await assertAgentDangerousReauth({
+        action: 'admin.agents.publish',
+        actorUserId: ctx.userId!,
+        authenticatedAt: ctx.authenticatedAt,
+        authMethod: ctx.authMethod,
+        reason: input.reason,
+        serverDB: ctx.serverDB,
+        targetId: input.agentId,
+      });
+      try {
+        return await new PlatformAgentPublicationService(ctx.serverDB).publish(ctx.userId!, input);
+      } catch (error) {
+        return mapAgentServiceError(error);
+      }
+    }),
+
+  rollback: adminBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AGENT_PUBLISH))
+    .input(adminPlatformAgentRollbackInputSchema)
+    .output(adminPlatformAgentRollbackOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      assertAgentFeatureEnabled();
+      await assertAgentDangerousReauth({
+        action: 'admin.agents.rollback',
+        actorUserId: ctx.userId!,
+        authenticatedAt: ctx.authenticatedAt,
+        authMethod: ctx.authMethod,
+        reason: input.reason,
+        serverDB: ctx.serverDB,
+        targetId: input.agentId,
+      });
+      try {
+        return await new PlatformAgentPublicationService(ctx.serverDB).rollback(ctx.userId!, input);
+      } catch (error) {
+        return mapAgentServiceError(error);
+      }
+    }),
+
+  setDefaultInbox: adminBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AGENT_PUBLISH))
+    .input(adminPlatformAgentSetDefaultInboxInputSchema)
+    .output(adminPlatformAgentSetDefaultInboxOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      assertAgentFeatureEnabled();
+      await assertAgentDangerousReauth({
+        action: 'admin.agents.setDefaultInbox',
+        actorUserId: ctx.userId!,
+        authenticatedAt: ctx.authenticatedAt,
+        authMethod: ctx.authMethod,
+        reason: input.reason,
+        serverDB: ctx.serverDB,
+        targetId: input.nextDefault.agentId,
+      });
+      try {
+        return await new PlatformAgentAdminService(ctx.serverDB).setDefaultInbox(
+          ctx.userId!,
+          input,
+        );
+      } catch (error) {
+        return mapAgentServiceError(error);
+      }
+    }),
+
+  updateDraft: adminBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AGENT_UPDATE))
+    .input(adminPlatformAgentUpdateDraftInputSchema)
+    .output(adminPlatformAgentUpdateDraftOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      assertAgentFeatureEnabled();
+      try {
+        return await new PlatformAgentAdminService(ctx.serverDB).updateDraft(ctx.userId!, input);
+      } catch (error) {
+        return mapAgentServiceError(error);
+      }
+    }),
+
+  validateDependencies: adminBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AGENT_UPDATE))
+    .input(adminPlatformAgentValidateDependenciesInputSchema)
+    .output(adminPlatformAgentValidateDependenciesOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      assertAgentFeatureEnabled();
+      try {
+        return await validateExactPlatformAgentDependencies(ctx.serverDB, input.dependencySnapshot);
+      } catch (error) {
+        return mapAgentServiceError(error);
+      }
+    }),
+});
