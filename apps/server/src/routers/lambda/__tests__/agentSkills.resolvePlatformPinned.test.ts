@@ -8,6 +8,7 @@ import { agentSkillsRouter } from '../agentSkills';
 
 const mocks = vi.hoisted(() => ({
   getPublishedCatalog: vi.fn(),
+  findOperation: vi.fn(),
   resolvePinnedForExecution: vi.fn(),
   resolvePolicies: vi.fn(),
   verifyProof: vi.fn(),
@@ -25,8 +26,8 @@ vi.mock('@/libs/trpc/utils/internalJwt', () => ({
   hashPlatformSkillOperationRefs: vi.fn(() => 'refs-hash'),
   verifyPlatformSkillOperationProof: mocks.verifyProof,
 }));
-vi.mock('@/database/models/agent', () => ({
-  AgentModel: vi.fn(() => ({ getAgentConfigById: vi.fn(async () => ({ id: 'agent-1' })) })),
+vi.mock('@/database/models/agentOperation', () => ({
+  AgentOperationModel: vi.fn(() => ({ findById: mocks.findOperation })),
 }));
 vi.mock('@/server/enterprise/featureFlags', () => ({
   parseEnterpriseFeatureFlags: () => ({ ENABLE_PLATFORM_MANAGED_SKILLS: true }),
@@ -62,6 +63,11 @@ describe('agentSkills.resolvePlatformPinned', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.getPublishedCatalog.mockResolvedValue({ revision: 'current', skills: [ref] });
+    mocks.findOperation.mockResolvedValue({
+      agentId: 'agent-1',
+      id: 'operation-1',
+      status: 'running',
+    });
     mocks.resolvePolicies.mockResolvedValue({ publicCapabilities: { skills: true } });
     mocks.verifyProof.mockResolvedValue({
       agentId: 'agent-1',
@@ -132,6 +138,28 @@ describe('agentSkills.resolvePlatformPinned', () => {
       caller().resolvePlatformPinned({
         operation: {
           agentId: 'agent-2',
+          operationId: 'operation-1',
+          proof: 'signed-proof',
+          refs: [ref],
+          revision: 'historical-revision',
+        },
+        ref,
+      }),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    expect(mocks.resolvePinnedForExecution).not.toHaveBeenCalled();
+  });
+
+  it('rejects proof A when the persisted operation belongs to agent B', async () => {
+    mocks.findOperation.mockResolvedValue({
+      agentId: 'agent-2',
+      id: 'operation-1',
+      status: 'running',
+    });
+
+    await expect(
+      caller().resolvePlatformPinned({
+        operation: {
+          agentId: 'agent-1',
           operationId: 'operation-1',
           proof: 'signed-proof',
           refs: [ref],
