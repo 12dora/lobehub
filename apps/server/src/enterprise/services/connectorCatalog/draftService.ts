@@ -129,6 +129,14 @@ export const connectorToolInsertValues = (
     enabled: tool.enabled,
     id: tool.id,
     inputSchema: tool.inputSchema,
+    legacyAllowUserStricterPolicy: true,
+    legacyManifest: {
+      description: tool.description ?? undefined,
+      inputSchema: tool.inputSchema,
+      name: tool.toolKey,
+      outputSchema: tool.outputSchema,
+    },
+    legacyPermissionPolicy: 'needs_approval',
     outputSchema: tool.outputSchema,
     platformPolicy: tool.platformPolicy,
     requiresConfirmation: tool.requiresConfirmation,
@@ -141,6 +149,9 @@ const toDraft = (
   connector: PlatformConnectorItem,
   tools: PlatformConnectorToolItem[],
 ): ConnectorDraft => {
+  if (!connector.endpoint) {
+    throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_PUBLISHED');
+  }
   const common = {
     connectionTest: null,
     description: connector.description,

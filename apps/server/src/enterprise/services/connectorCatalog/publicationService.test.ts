@@ -142,6 +142,15 @@ describe('ConnectorCatalogPublicationService', () => {
     const published = await harness.drafts.getDraft(draft.draft.id);
     lifecycle.afterPublicationPreflight = async () => {
       await db
+        .update(platformConnectors)
+        .set({
+          publishedAt: null,
+          publishedChecksum: null,
+          publishedRevision: null,
+          status: 'draft',
+        })
+        .where(eq(platformConnectors.id, draft.draft.id));
+      await db
         .update(platformResourceRevisions)
         .set({ checksum: '0'.repeat(64) })
         .where(
@@ -177,6 +186,15 @@ describe('ConnectorCatalogPublicationService', () => {
       id: draft.draft.id,
       reason: 'publish connector',
     });
+    await db
+      .update(platformConnectors)
+      .set({
+        publishedAt: null,
+        publishedChecksum: null,
+        publishedRevision: null,
+        status: 'draft',
+      })
+      .where(eq(platformConnectors.id, draft.draft.id));
     const published = await harness.drafts.getDraft(draft.draft.id);
     const [row] = await db.select().from(platformResourceRevisions);
     const malicious = structuredClone(row.payload) as Record<string, unknown>;

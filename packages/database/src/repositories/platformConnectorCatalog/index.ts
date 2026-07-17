@@ -26,6 +26,29 @@ const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 100;
 export const MAX_PLATFORM_CONNECTOR_TOOLS = 1000;
 
+type ManagedConnectorCreate = Omit<
+  NewPlatformConnector,
+  | 'legacyConnectionType'
+  | 'legacyEncryptedSharedCredentials'
+  | 'legacyIsRequired'
+  | 'legacyMcpServerUrl'
+  | 'legacyMcpStdioConfig'
+  | 'legacyName'
+  | 'legacyOidcConfig'
+  | 'legacySecretFingerprint'
+  | 'legacySourceType'
+  | 'endpoint'
+> & { endpoint: string };
+
+type ManagedConnectorToolWrite = Omit<
+  NewPlatformConnectorTool,
+  | 'connectorId'
+  | 'legacyAllowUserStricterPolicy'
+  | 'legacyLimitConfig'
+  | 'legacyManifest'
+  | 'legacyPermissionPolicy'
+>;
+
 const boundedLimit = (limit?: number): number =>
   Math.max(1, Math.min(limit ?? DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE));
 
@@ -129,8 +152,18 @@ export interface PlatformConnectorRuntimeRevision {
 export class PlatformConnectorCatalogRepository {
   constructor(private readonly db: LobeChatDatabase | Transaction) {}
 
-  createConnector = async (values: NewPlatformConnector): Promise<PlatformConnectorItem> => {
-    const [row] = await this.db.insert(platformConnectors).values(values).returning();
+  createConnector = async (values: ManagedConnectorCreate): Promise<PlatformConnectorItem> => {
+    const [row] = await this.db
+      .insert(platformConnectors)
+      .values({
+        ...values,
+        legacyConnectionType: 'http',
+        legacyIsRequired: false,
+        legacyMcpServerUrl: values.endpoint,
+        legacyName: values.displayName,
+        legacySourceType: 'custom',
+      })
+      .returning();
     return row;
   };
 
@@ -343,7 +376,7 @@ export class PlatformConnectorCatalogRepository {
 
   replaceTools = async (
     connectorId: string,
-    tools: Array<Omit<NewPlatformConnectorTool, 'connectorId'>>,
+    tools: ManagedConnectorToolWrite[],
   ): Promise<PlatformConnectorToolItem[]> => {
     if (tools.length > MAX_PLATFORM_CONNECTOR_TOOLS) {
       throw new Error('PLATFORM_CONNECTOR_TOOL_LIMIT_EXCEEDED');
@@ -362,7 +395,20 @@ export class PlatformConnectorCatalogRepository {
       if (tools.length === 0) return [];
       return db
         .insert(platformConnectorTools)
-        .values(tools.map((tool) => ({ ...tool, connectorId })))
+        .values(
+          tools.map((tool) => ({
+            ...tool,
+            connectorId,
+            legacyAllowUserStricterPolicy: true,
+            legacyManifest: {
+              description: tool.description ?? undefined,
+              inputSchema: tool.inputSchema,
+              name: tool.toolKey,
+              outputSchema: tool.outputSchema,
+            },
+            legacyPermissionPolicy: 'needs_approval',
+          })),
+        )
         .returning();
     };
     return inTransaction(this.db, replace);
@@ -400,7 +446,7 @@ export class PlatformConnectorCatalogRepository {
     expectedRevision: number,
     values: Partial<
       Omit<
-        NewPlatformConnector,
+        ManagedConnectorCreate,
         'createdAt' | 'id' | 'publishedAt' | 'publishedChecksum' | 'publishedRevision' | 'revision'
       >
     >,
@@ -409,6 +455,8 @@ export class PlatformConnectorCatalogRepository {
       .update(platformConnectors)
       .set({
         ...values,
+        ...(values.displayName === undefined ? {} : { legacyName: values.displayName }),
+        ...(values.endpoint === undefined ? {} : { legacyMcpServerUrl: values.endpoint }),
         revision: expectedRevision + 1,
         status: 'draft',
         updatedAt: new Date(),

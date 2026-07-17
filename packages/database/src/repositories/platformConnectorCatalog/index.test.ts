@@ -63,6 +63,7 @@ const ensurePendingM09Schema = async () => {
     `ALTER TABLE "platform_connector_tools" ADD COLUMN IF NOT EXISTS "sort" integer DEFAULT 0 NOT NULL`,
     `ALTER TABLE "platform_user_connector_bindings" ADD COLUMN IF NOT EXISTS "published_revision" integer`,
     `ALTER TABLE "platform_user_connector_bindings" ADD COLUMN IF NOT EXISTS "revision_resource_type" varchar(64) DEFAULT 'connector' NOT NULL`,
+    `ALTER TABLE "platform_user_connector_bindings" ADD COLUMN IF NOT EXISTS "binding_status" varchar(32) DEFAULT 'disconnected' NOT NULL`,
     `ALTER TABLE "platform_user_connector_bindings" ADD COLUMN IF NOT EXISTS "oauth_token_ref" text`,
     `ALTER TABLE "platform_user_connector_bindings" ADD COLUMN IF NOT EXISTS "token_fingerprint" varchar(256)`,
     `ALTER TABLE "platform_user_connector_bindings" ADD COLUMN IF NOT EXISTS "scopes" varchar(200)[] DEFAULT ARRAY[]::varchar[] NOT NULL`,
@@ -174,18 +175,18 @@ const ensurePendingM09Constraints = async () => {
     )`,
     `ALTER TABLE "platform_user_connector_bindings" DROP CONSTRAINT IF EXISTS "m09_test_binding_state_check"`,
     `ALTER TABLE "platform_user_connector_bindings" ADD CONSTRAINT "m09_test_binding_state_check" CHECK (
-      ("status" = 'connected' AND "oauth_token_ref" IS NOT NULL AND "token_fingerprint" IS NOT NULL
+      ("binding_status" = 'connected' AND "oauth_token_ref" IS NOT NULL AND "token_fingerprint" IS NOT NULL
         AND "connected_at" IS NOT NULL AND "revoked_at" IS NULL)
-      OR ("status" = 'revoked' AND "oauth_token_ref" IS NULL AND "token_fingerprint" IS NULL
+      OR ("binding_status" = 'revoked' AND "oauth_token_ref" IS NULL AND "token_fingerprint" IS NULL
         AND cardinality("scopes") = 0 AND "revoked_at" IS NOT NULL)
-      OR ("status" IN ('disconnected', 'pending') AND "oauth_token_ref" IS NULL
+      OR ("binding_status" IN ('disconnected', 'pending') AND "oauth_token_ref" IS NULL
         AND "token_fingerprint" IS NULL AND cardinality("scopes") = 0 AND "revoked_at" IS NULL)
-      OR ("status" IN ('expired', 'error') AND "revoked_at" IS NULL)
+      OR ("binding_status" IN ('expired', 'error') AND "revoked_at" IS NULL)
     )`,
     `ALTER TABLE "platform_user_connector_bindings" DROP CONSTRAINT IF EXISTS "m09_test_binding_revoked_check"`,
     `ALTER TABLE "platform_user_connector_bindings" ADD CONSTRAINT "m09_test_binding_revoked_check" CHECK (
-      ("status" = 'revoked' AND "revoked_at" IS NOT NULL)
-      OR ("status" <> 'revoked' AND "revoked_at" IS NULL)
+      ("binding_status" = 'revoked' AND "revoked_at" IS NOT NULL)
+      OR ("binding_status" <> 'revoked' AND "revoked_at" IS NULL)
     )`,
     `ALTER TABLE "platform_connector_oauth_states" DROP CONSTRAINT IF EXISTS "m09_test_oauth_owner_fk"`,
     `ALTER TABLE "platform_connector_oauth_states" ADD CONSTRAINT "m09_test_oauth_owner_fk"
@@ -673,6 +674,35 @@ describe('pending M09 database constraints', () => {
 });
 
 describe('PlatformConnectorCatalogRepository', () => {
+  it('dual-writes non-secret M01 shadows while keeping legacy secret columns empty', async () => {
+    const connector = await createConnector('legacy-shadow');
+    expect(connector).toMatchObject({
+      legacyConnectionType: 'http',
+      legacyEncryptedSharedCredentials: null,
+      legacyIsRequired: false,
+      legacyMcpServerUrl: connector.endpoint,
+      legacyName: connector.displayName,
+      legacyOidcConfig: null,
+      legacySecretFingerprint: null,
+      legacySourceType: 'custom',
+    });
+
+    const [tool] = await catalog.replaceTools(connector.id, [
+      {
+        description: 'Compatibility tool',
+        displayName: 'Compatibility tool',
+        inputSchema: { type: 'object' },
+        outputSchema: { type: 'object' },
+        toolKey: 'compatibility',
+      },
+    ]);
+    expect(tool).toMatchObject({
+      legacyAllowUserStricterPolicy: true,
+      legacyManifest: expect.objectContaining({ name: 'compatibility' }),
+      legacyPermissionPolicy: 'needs_approval',
+    });
+  });
+
   it('bounds connector pagination and uses a stable composite cursor', async () => {
     await serverDB.insert(platformConnectors).values(
       Array.from({ length: 101 }, (_, index) => ({
@@ -681,6 +711,7 @@ describe('PlatformConnectorCatalogRepository', () => {
         displayName: `Page ${index}`,
         endpoint: 'https://connector.example.test/mcp',
         id: `${connectorPrefix}page-${String(index).padStart(3, '0')}`,
+        legacyName: `Page ${index}`,
       })),
     );
 

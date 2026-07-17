@@ -1,0 +1,43 @@
+// @vitest-environment node
+import { readdirSync, readFileSync } from 'node:fs';
+import path from 'node:path';
+
+import { describe, expect, it } from 'vitest';
+
+const migrations = path.join(import.meta.dirname, '../../../migrations');
+const migrationName = '0123_m09_connector_catalog_expand';
+const sql = readFileSync(path.join(migrations, `${migrationName}.sql`), 'utf8');
+const journal = JSON.parse(readFileSync(path.join(migrations, 'meta/_journal.json'), 'utf8')) as {
+  entries: Array<{ idx: number; tag: string }>;
+};
+
+describe('M09 connector expand migration', () => {
+  it('is expand-only and leaves every M01 compatibility column and index intact', () => {
+    expect(sql).not.toMatch(/\b(?:DROP|RENAME)\b/i);
+    expect(sql).not.toContain('platform_skills');
+    expect(sql).not.toContain('platform_skill_versions');
+    expect(sql).toContain(
+      'ALTER TABLE "platform_connectors" ADD COLUMN IF NOT EXISTS "endpoint" text',
+    );
+    expect(sql).toContain(
+      'ALTER TABLE "platform_user_connector_bindings" ADD COLUMN IF NOT EXISTS "binding_status"',
+    );
+  });
+
+  it('backfills only non-secret display fields before adding not-null constraints', () => {
+    expect(sql).toContain('SET "display_name" = LEFT("name", 200)');
+    expect(sql).toContain('SET "display_name" = LEFT("tool_key", 200)');
+    expect(sql).not.toMatch(/SET\s+"?(?:oauth_config|shared_secret_ref|oauth_token_ref)"?/i);
+    expect(sql.indexOf('SET "display_name" = LEFT("name", 200)')).toBeLessThan(
+      sql.indexOf('ALTER COLUMN "display_name" SET NOT NULL', sql.indexOf('platform_connectors')),
+    );
+  });
+
+  it('keeps journal and snapshots at the coordinated 124 entries', () => {
+    expect(journal.entries).toHaveLength(124);
+    expect(journal.entries.at(-1)).toMatchObject({ idx: 123, tag: migrationName });
+    expect(
+      readdirSync(path.join(migrations, 'meta')).filter((file) => file.endsWith('_snapshot.json')),
+    ).toHaveLength(124);
+  });
+});
