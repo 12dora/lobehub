@@ -9,47 +9,51 @@ const flags = (enabled: boolean) => ({
   ...DEFAULT_ENTERPRISE_FEATURE_FLAGS,
   ENABLE_PLATFORM_MANAGED_SKILLS: enabled,
 });
+const identity = { agentId: 'agent-1', operationId: 'operation-1', userId: 'user-1' };
+const signProof = vi.fn().mockResolvedValue('signed-proof');
 
 describe('resolvePlatformSkillRuntimeSnapshot', () => {
   it('performs zero policy and catalog I/O when the feature is disabled', async () => {
-    const getSnapshot = vi.fn();
     const getPublishedCatalog = vi.fn();
     const resolvePinnedForExecution = vi.fn();
 
     await expect(
       resolvePlatformSkillRuntimeSnapshot({
         db: {} as never,
+        effectiveMode: 'enforced',
         flags: flags(false),
+        identity,
         options: {
           catalogService: { getPublishedCatalog, resolvePinnedForExecution },
-          policyModel: { getSnapshot },
-        },
-      }),
-    ).resolves.toBeUndefined();
-    expect(getSnapshot).not.toHaveBeenCalled();
-    expect(getPublishedCatalog).not.toHaveBeenCalled();
-  });
-
-  it('retains the legacy pool outside final enforced mode without reading the catalog', async () => {
-    const getPublishedCatalog = vi.fn();
-    const resolvePinnedForExecution = vi.fn();
-    const getSnapshot = vi.fn().mockResolvedValue({
-      published: { skills: { enforcementMode: 'ui-only', managed: true } },
-      status: 'published',
-    });
-
-    await expect(
-      resolvePlatformSkillRuntimeSnapshot({
-        db: {} as never,
-        flags: flags(true),
-        options: {
-          catalogService: { getPublishedCatalog, resolvePinnedForExecution },
-          policyModel: { getSnapshot },
+          signProof,
         },
       }),
     ).resolves.toBeUndefined();
     expect(getPublishedCatalog).not.toHaveBeenCalled();
   });
+
+  it.each(['observe', 'ui-only', 'unmanaged'] as const)(
+    'retains the legacy pool in %s mode without policy or catalog I/O',
+    async (effectiveMode) => {
+      const getPublishedCatalog = vi.fn();
+      const resolvePinnedForExecution = vi.fn();
+
+      await expect(
+        resolvePlatformSkillRuntimeSnapshot({
+          db: {} as never,
+          effectiveMode,
+          flags: flags(true),
+          identity,
+          options: {
+            catalogService: { getPublishedCatalog, resolvePinnedForExecution },
+            signProof,
+          },
+        }),
+      ).resolves.toBeUndefined();
+      expect(getPublishedCatalog).not.toHaveBeenCalled();
+      expect(signProof).not.toHaveBeenCalled();
+    },
+  );
 
   it('freezes the same published metadata into refs and operation Skill metas', async () => {
     const checksum = 'a'.repeat(64);
@@ -75,23 +79,23 @@ describe('resolvePlatformSkillRuntimeSnapshot', () => {
       skillKey: 'managed.skill',
       version: '1.2.3',
     });
-    const getSnapshot = vi.fn().mockResolvedValue({
-      published: { skills: { enforcementMode: 'enforced', managed: true } },
-      status: 'published',
-    });
-
     await expect(
       resolvePlatformSkillRuntimeSnapshot({
         db: {} as never,
+        effectiveMode: 'enforced',
         flags: flags(true),
+        identity,
         options: {
           catalogService: { getPublishedCatalog, resolvePinnedForExecution },
-          policyModel: { getSnapshot },
+          signProof,
         },
       }),
     ).resolves.toEqual({
       catalog: {
+        agentId: 'agent-1',
         mandatorySkillIds: ['managed.skill'],
+        operationId: 'operation-1',
+        proof: 'signed-proof',
         refs: [{ checksum, skillKey: 'managed.skill', version: '1.2.3' }],
         revision: 'catalog-r1',
       },
@@ -131,7 +135,9 @@ describe('resolvePlatformSkillRuntimeSnapshot', () => {
         { identifier: 'optional.pinned', mode: 'pinned' },
       ],
       db: {} as never,
+      effectiveMode: 'enforced',
       flags: flags(true),
+      identity,
       options: {
         catalogService: {
           getPublishedCatalog: vi.fn().mockResolvedValue({ revision: 'r1', skills }),
@@ -142,12 +148,7 @@ describe('resolvePlatformSkillRuntimeSnapshot', () => {
             resources: [],
           })),
         },
-        policyModel: {
-          getSnapshot: vi.fn().mockResolvedValue({
-            published: { skills: { enforcementMode: 'enforced', managed: true } },
-            status: 'published',
-          }),
-        },
+        signProof,
       },
     });
 

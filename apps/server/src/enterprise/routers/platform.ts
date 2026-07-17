@@ -57,13 +57,6 @@ export const platformRouter = router({
 
     return buildPlatformCapabilities({
       adminAccess,
-      enforcedManagedResources: {
-        agents: managed.effectiveModes.agents === 'enforced',
-        aiModels: managed.effectiveModes.aiModels === 'enforced',
-        aiProviders: managed.effectiveModes.aiProviders === 'enforced',
-        connectors: managed.effectiveModes.connectors === 'enforced',
-        skills: managed.effectiveModes.skills === 'enforced',
-      },
       flags,
       managedResources: managed.publicCapabilities,
       revisions: { configRevision: String(managed.revision) },

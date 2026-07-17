@@ -7,12 +7,13 @@ import { withScopedPermission } from '@/business/server/trpc-middlewares/rbacPer
 import { wsCompatProcedure } from '@/business/server/trpc-middlewares/workspaceAuth';
 import { AgentSkillModel } from '@/database/models/agentSkill';
 import { FileModel } from '@/database/models/file';
-import { PlatformManagedResourcePolicyModel } from '@/database/models/platform';
 import { router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
-import { platformSkillPinnedRefSchema } from '@/server/enterprise/contracts/skillCatalog';
+import { validatePlatformSkillOperationProof } from '@/libs/trpc/utils/internalJwt';
+import { resolvePlatformSkillPinnedInputSchema } from '@/server/enterprise/contracts/skillCatalog';
 import { parseEnterpriseFeatureFlags } from '@/server/enterprise/featureFlags';
 import { withManagedResourceGuard } from '@/server/enterprise/guards/managedResource';
+import { resolvePublishedManagedResourcePolicies } from '@/server/enterprise/services/managedResourceCapabilities';
 import {
   getBuiltinSkillDefinitions,
   SkillCatalogReadService,
@@ -324,31 +325,52 @@ export const agentSkillsRouter = router({
    */
   resolvePlatformPinned: wsCompatProcedure
     .use(serverDatabase)
-    .input(platformSkillPinnedRefSchema)
+    .input(resolvePlatformSkillPinnedInputSchema)
     .output(platformSkillExecutionProjectionSchema)
     .query(async ({ ctx, input }) => {
       const flags = parseEnterpriseFeatureFlags(process.env);
       if (!flags.ENABLE_PLATFORM_MANAGED_SKILLS) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Skill not found' });
       }
-      const policySnapshot = await new PlatformManagedResourcePolicyModel(
-        ctx.serverDB,
-      ).getSnapshot();
-      const policy = policySnapshot.published.skills;
-      if (
-        policySnapshot.status !== 'published' ||
-        !policy.managed ||
-        policy.enforcementMode !== 'enforced'
-      ) {
-        throw new TRPCError({ code: 'NOT_FOUND', message: 'Skill not found' });
+
+      const catalogService = new SkillCatalogReadService(ctx.serverDB, {
+        builtinSkills: getBuiltinSkillDefinitions(),
+      });
+      if (input.operation) {
+        const authorized =
+          input.operation.refs.some(
+            (ref) =>
+              ref.skillKey === input.ref.skillKey &&
+              ref.version === input.ref.version &&
+              ref.checksum === input.ref.checksum,
+          ) &&
+          (await validatePlatformSkillOperationProof(input.operation.proof, {
+            agentId: input.operation.agentId,
+            operationId: input.operation.operationId,
+            refs: input.operation.refs,
+            revision: input.operation.revision,
+            userId: ctx.userId,
+          }));
+        if (!authorized) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'Skill not found' });
+        }
+      } else {
+        const managed = await resolvePublishedManagedResourcePolicies({ db: ctx.serverDB, flags });
+        if (!managed.publicCapabilities.skills) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'Skill not found' });
+        }
+        const current = (await catalogService.getPublishedCatalog()).skills.find(
+          (skill) => skill.skillKey === input.ref.skillKey,
+        );
+        if (current?.version !== input.ref.version || current.checksum !== input.ref.checksum) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'Skill not found' });
+        }
       }
 
       // Resolve the immutable published revision directly. Re-reading the moving
       // catalog head here would break an operation that captured v1 before v2
       // was published or the current head was archived.
-      const skill = await new SkillCatalogReadService(ctx.serverDB, {
-        builtinSkills: getBuiltinSkillDefinitions(),
-      }).resolvePinnedForExecution(input);
+      const skill = await catalogService.resolvePinnedForExecution(input.ref);
       if (
         !skill ||
         skill.contentRef !== null ||

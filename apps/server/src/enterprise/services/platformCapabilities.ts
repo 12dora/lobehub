@@ -16,8 +16,6 @@ export interface BuildPlatformCapabilitiesInput {
    * M00 has no real RBAC yet — always false until M02.
    */
   adminAccess?: boolean;
-  /** Effective runtime enforcement booleans; no draft policy detail is exposed. */
-  enforcedManagedResources?: ManagedResourcesCapabilities;
   flags?: EnterpriseFeatureFlags;
   /** Published, policy-resolved booleans. Draft/mode/readiness are never exposed. */
   managedResources?: ManagedResourcesCapabilities;
@@ -55,13 +53,6 @@ export const buildPlatformCapabilities = (
       platformAdmin: adminFeatureOn,
       runtimeBranding: flags.ENABLE_RUNTIME_BRANDING,
     },
-    enforcedManagedResources: input.enforcedManagedResources ?? {
-      agents: false,
-      aiModels: false,
-      aiProviders: false,
-      connectors: false,
-      skills: false,
-    },
     managedResources: input.managedResources ?? {
       agents: false,
       aiModels: false,
@@ -78,7 +69,6 @@ export const buildPlatformCapabilities = (
 export const getDisabledPlatformCapabilities = (): PlatformCapabilities => ({
   ...DISABLED_PLATFORM_CAPABILITIES,
   features: { ...DISABLED_PLATFORM_CAPABILITIES.features },
-  enforcedManagedResources: { ...DISABLED_PLATFORM_CAPABILITIES.enforcedManagedResources },
   managedResources: { ...DISABLED_PLATFORM_CAPABILITIES.managedResources },
 });
 

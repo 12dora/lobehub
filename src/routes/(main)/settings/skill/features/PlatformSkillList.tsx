@@ -29,9 +29,9 @@ const parsePage = (value: string | null) => {
 
 const PlatformSkillList = memo<PlatformSkillListProps>(({ onSelect, selectedIdentifier }) => {
   const { t } = useTranslation('setting');
-  const runtimeEnforced = useToolStore((state) => state.platformSkillRuntimeEnforced);
+  const runtimeManaged = useToolStore((state) => state.platformSkillRuntimeManaged);
   const runtimeStatus = useToolStore((state) => state.platformSkillRuntimeStatus);
-  const catalog = usePublishedSkillCatalog(runtimeEnforced);
+  const catalog = usePublishedSkillCatalog(runtimeManaged);
   const [searchParams, setSearchParams] = useSearchParams();
   const query = searchParams.get('q')?.trim() ?? '';
   const requestedPage = parsePage(searchParams.get('page'));

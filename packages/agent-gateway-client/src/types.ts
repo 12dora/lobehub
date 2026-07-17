@@ -178,7 +178,10 @@ export interface ToolExecuteData {
   identifier: string;
   /** Exact server operation Skill refs for client-side execution. */
   platformSkillSnapshot?: {
+    agentId?: string;
     mandatorySkillIds?: string[];
+    operationId?: string;
+    proof?: string;
     refs: Array<{ checksum: string; skillKey: string; version: string }>;
     revision: string;
   };

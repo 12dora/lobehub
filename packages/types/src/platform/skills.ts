@@ -25,7 +25,13 @@ export interface PlatformSkillPinnedRef {
 }
 
 export interface PlatformSkillOperationSnapshot {
+  /** Agent identity bound into the server-signed operation proof. */
+  agentId?: string;
   mandatorySkillIds?: string[];
+  /** Operation identity bound into the server-signed operation proof. */
+  operationId?: string;
+  /** Short-lived server signature authorizing exact historical resolution. */
+  proof?: string;
   refs: PlatformSkillPinnedRef[];
   revision: string;
   /** Client operations retain immutable public metadata for repeated context assembly. */

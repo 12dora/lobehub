@@ -14,6 +14,18 @@ const createRootCaller = createCallerFactory(platformRouter);
 const createCaller = (context: Parameters<typeof createRootCaller>[0]) =>
   createRootCaller(context).skills;
 const userId = 'm08-platform-skill-user';
+const operationMocks = vi.hoisted(() => ({
+  resolvePolicies: vi.fn(),
+  signProof: vi.fn(),
+}));
+
+vi.mock('@/libs/trpc/utils/internalJwt', () => ({
+  signPlatformSkillOperationProof: operationMocks.signProof,
+}));
+
+vi.mock('../services/managedResourceCapabilities', () => ({
+  resolvePublishedManagedResourcePolicies: operationMocks.resolvePolicies,
+}));
 
 vi.mock('@/database/core/db-adaptor', () => ({
   getServerDB: vi.fn(async () => db),
@@ -35,6 +47,8 @@ beforeEach(async () => {
   vi.unstubAllEnvs();
   await db.delete(users);
   await db.insert(users).values({ id: userId });
+  operationMocks.resolvePolicies.mockResolvedValue({ publicCapabilities: { skills: true } });
+  operationMocks.signProof.mockResolvedValue('signed-proof');
 });
 
 afterEach(async () => {
@@ -47,6 +61,14 @@ describe('platformSkillsRouter', () => {
     const anonymous = createCaller({ ...(await createContextInner()), serverDB: db } as never);
     await expect(anonymous.getPublished()).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
     await expect(anonymous.getPublishedCatalog()).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    await expect(
+      anonymous.beginOperation({
+        agentId: 'agent-1',
+        operationId: 'operation-1',
+        refs: [],
+        revision: 'revision-1',
+      }),
+    ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
     expect('resolveForExecution' in anonymous).toBe(false);
   });
 
@@ -83,5 +105,34 @@ describe('platformSkillsRouter', () => {
     expect(JSON.stringify(catalog)).not.toContain('contentRef');
     expect(JSON.stringify(catalog)).not.toContain('manifest');
     expect(JSON.stringify(catalog)).not.toContain('resources');
+  });
+
+  it('signs only exact refs from the current published head', async () => {
+    vi.stubEnv('ENABLE_PLATFORM_MANAGED_SKILLS', '1');
+    const caller = createCaller({
+      ...(await createContextInner({ userId })),
+      serverDB: db,
+    } as never);
+    const catalog = await caller.getPublishedCatalog();
+    const refs = catalog.skills.map(({ checksum, skillKey, version }) => ({
+      checksum,
+      skillKey,
+      version,
+    }));
+
+    await expect(
+      caller.beginOperation({
+        agentId: 'agent-1',
+        operationId: 'operation-1',
+        refs,
+        revision: catalog.revision,
+      }),
+    ).resolves.toEqual({
+      agentId: 'agent-1',
+      operationId: 'operation-1',
+      proof: 'signed-proof',
+      refs,
+      revision: catalog.revision,
+    });
   });
 });

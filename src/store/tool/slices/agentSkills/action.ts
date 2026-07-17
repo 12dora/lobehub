@@ -49,7 +49,7 @@ export class AgentSkillsActionImpl {
     this.#set(
       {
         platformSkillCatalogRequestEpoch: epoch,
-        platformSkillRuntimeStatus: this.#get().platformSkillRuntimeEnforced
+        platformSkillRuntimeStatus: this.#get().platformSkillRuntimeManaged
           ? 'loading'
           : 'unmanaged',
       },
@@ -67,7 +67,7 @@ export class AgentSkillsActionImpl {
     this.#set(
       {
         platformSkillCatalog: catalog,
-        platformSkillRuntimeStatus: this.#get().platformSkillRuntimeEnforced
+        platformSkillRuntimeStatus: this.#get().platformSkillRuntimeManaged
           ? catalog.skills.length > 0
             ? 'ready'
             : 'error'
@@ -78,14 +78,14 @@ export class AgentSkillsActionImpl {
     );
   };
 
-  configurePlatformSkillManagement = (managed: boolean, enforced: boolean): void => {
+  configurePlatformSkillManagement = (managed: boolean): void => {
     const epoch = this.#get().platformSkillCatalogRequestEpoch + 1;
     this.#set(
       {
         platformSkillCatalog: managed ? this.#get().platformSkillCatalog : null,
         platformSkillCatalogRequestEpoch: epoch,
-        platformSkillRuntimeEnforced: managed && enforced,
-        platformSkillRuntimeStatus: managed && enforced ? 'loading' : 'unmanaged',
+        platformSkillRuntimeManaged: managed,
+        platformSkillRuntimeStatus: managed ? 'loading' : 'unmanaged',
       },
       false,
       n('configurePlatformSkillManagement'),
@@ -97,9 +97,7 @@ export class AgentSkillsActionImpl {
     this.#set(
       {
         platformSkillCatalog: null,
-        platformSkillRuntimeStatus: this.#get().platformSkillRuntimeEnforced
-          ? 'error'
-          : 'unmanaged',
+        platformSkillRuntimeStatus: this.#get().platformSkillRuntimeManaged ? 'error' : 'unmanaged',
       },
       false,
       n('failPlatformSkillCatalogRequest'),
@@ -113,7 +111,7 @@ export class AgentSkillsActionImpl {
         platformSkillCatalog: null,
         platformSkillCatalogInvalidationRevision: revision,
         platformSkillCatalogRequestEpoch: epoch,
-        platformSkillRuntimeStatus: this.#get().platformSkillRuntimeEnforced
+        platformSkillRuntimeStatus: this.#get().platformSkillRuntimeManaged
           ? 'loading'
           : 'unmanaged',
       },

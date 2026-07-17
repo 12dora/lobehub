@@ -55,9 +55,9 @@ interface PlatformSkillDetailProps {
 
 const PlatformSkillDetail = memo<PlatformSkillDetailProps>(({ skillKey }) => {
   const { t } = useTranslation('setting');
-  const runtimeEnforced = useToolStore((state) => state.platformSkillRuntimeEnforced);
+  const runtimeManaged = useToolStore((state) => state.platformSkillRuntimeManaged);
   const runtimeStatus = useToolStore((state) => state.platformSkillRuntimeStatus);
-  const catalog = usePublishedSkillCatalog(runtimeEnforced);
+  const catalog = usePublishedSkillCatalog(runtimeManaged);
   const [saving, setSaving] = useState(false);
   const config = useAgentStore(agentSelectors.currentAgentConfig);
   const agentId = useAgentStore((state) => state.activeAgentId);

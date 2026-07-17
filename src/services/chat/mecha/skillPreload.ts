@@ -112,7 +112,7 @@ const loadSkillContent = async (
       (item) => item.skillKey === selectedSkill.identifier,
     );
 
-    const resolved = await agentSkillService.resolvePlatformPinned(ref);
+    const resolved = await agentSkillService.resolvePlatformPinned(ref, platformSkillSnapshot);
     if (
       resolved.identifier !== ref.skillKey ||
       resolved.version !== ref.version ||

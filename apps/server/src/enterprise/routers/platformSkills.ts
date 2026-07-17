@@ -1,10 +1,16 @@
 import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { authedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
+import { signPlatformSkillOperationProof } from '@/libs/trpc/utils/internalJwt';
 
-import { publishedSkillCatalogSchema } from '../contracts/skillCatalog';
+import {
+  beginPlatformSkillOperationInputSchema,
+  platformSkillOperationProofSchema,
+  publishedSkillCatalogSchema,
+} from '../contracts/skillCatalog';
 import { parseEnterpriseFeatureFlags } from '../featureFlags';
 import { throwEnterpriseError } from '../guards/enterpriseErrors';
+import { resolvePublishedManagedResourcePolicies } from '../services/managedResourceCapabilities';
 import {
   getBuiltinSkillDefinitions,
   getEmptyPublishedSkillCatalog,
@@ -31,6 +37,43 @@ const getPublishedCatalog = authedProcedure
   });
 
 export const platformSkillsRouter = router({
+  /** Freeze the current published refs into a short-lived, user/agent/operation-bound proof. */
+  beginOperation: authedProcedure
+    .use(serverDatabase)
+    .input(beginPlatformSkillOperationInputSchema)
+    .output(platformSkillOperationProofSchema)
+    .mutation(async ({ ctx, input }) => {
+      const flags = parseEnterpriseFeatureFlags(process.env);
+      const managed = await resolvePublishedManagedResourcePolicies({ db: ctx.serverDB, flags });
+      if (!managed.publicCapabilities.skills) {
+        return throwEnterpriseError({
+          code: PLATFORM_ERROR_CODES.PLATFORM_FEATURE_DISABLED,
+          details: { resource: 'skills' },
+          httpCode: 'PRECONDITION_FAILED',
+        });
+      }
+      const catalog = await new SkillCatalogReadService(ctx.serverDB, {
+        builtinSkills: getBuiltinSkillDefinitions(),
+      }).getPublishedCatalog();
+      const currentByKey = new Map(catalog.skills.map((skill) => [skill.skillKey, skill]));
+      const exactCurrent =
+        input.revision === catalog.revision &&
+        input.refs.every((ref) => {
+          const current = currentByKey.get(ref.skillKey);
+          return current?.version === ref.version && current.checksum === ref.checksum;
+        });
+      if (!exactCurrent) {
+        return throwEnterpriseError({
+          code: PLATFORM_ERROR_CODES.PLATFORM_CONFIG_VALIDATION_FAILED,
+          details: { issueCount: 1 },
+          httpCode: 'PRECONDITION_FAILED',
+        });
+      }
+      return {
+        ...input,
+        proof: await signPlatformSkillOperationProof({ ...input, userId: ctx.userId! }),
+      };
+    }),
   /** Canonical public catalog name. */
   getPublishedCatalog,
   /** Compatibility alias retained for the PR040-A client. */

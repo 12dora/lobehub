@@ -27,7 +27,7 @@ const mocks = vi.hoisted(() => ({
     mutate: vi.fn(),
   },
   toolState: {
-    platformSkillRuntimeEnforced: true,
+    platformSkillRuntimeManaged: true,
     platformSkillRuntimeStatus: 'ready' as 'error' | 'loading' | 'ready' | 'unmanaged',
   },
 }));
@@ -149,7 +149,7 @@ describe('PlatformSkillList', () => {
     mocks.catalog.error = undefined;
     mocks.catalog.isLoading = false;
     mocks.catalog.mutate.mockReset();
-    mocks.toolState.platformSkillRuntimeEnforced = true;
+    mocks.toolState.platformSkillRuntimeManaged = true;
     mocks.toolState.platformSkillRuntimeStatus = 'ready';
   });
 

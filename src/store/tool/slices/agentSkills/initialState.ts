@@ -10,7 +10,7 @@ export interface AgentSkillsState {
   platformSkillCatalog: PlatformPublishedSkillCatalog | null;
   platformSkillCatalogInvalidationRevision: string;
   platformSkillCatalogRequestEpoch: number;
-  platformSkillRuntimeEnforced: boolean;
+  platformSkillRuntimeManaged: boolean;
   platformSkillRuntimeStatus: 'error' | 'loading' | 'ready' | 'unmanaged';
 }
 
@@ -21,6 +21,6 @@ export const initialAgentSkillsState: AgentSkillsState = {
   platformSkillCatalog: null,
   platformSkillCatalogInvalidationRevision: '0',
   platformSkillCatalogRequestEpoch: 0,
-  platformSkillRuntimeEnforced: false,
+  platformSkillRuntimeManaged: false,
   platformSkillRuntimeStatus: 'unmanaged',
 };

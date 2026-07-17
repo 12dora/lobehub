@@ -26,7 +26,7 @@ const mocks = vi.hoisted(() => ({
   config: { plugins: [] as Array<string | { identifier: string; mode: string }> },
   setPluginModeById: vi.fn(),
   toolState: {
-    platformSkillRuntimeEnforced: true,
+    platformSkillRuntimeManaged: true,
     platformSkillRuntimeStatus: 'ready' as 'error' | 'loading' | 'ready' | 'unmanaged',
   },
 }));
@@ -114,7 +114,7 @@ describe('PlatformSkillDetail', () => {
     mocks.config.plugins = [];
     mocks.setPluginModeById.mockReset();
     mocks.setPluginModeById.mockResolvedValue(undefined);
-    mocks.toolState.platformSkillRuntimeEnforced = true;
+    mocks.toolState.platformSkillRuntimeManaged = true;
     mocks.toolState.platformSkillRuntimeStatus = 'ready';
   });
 

@@ -138,7 +138,7 @@ describe('EnterprisePlatformProvider', () => {
     expect(fetchCapabilities).not.toHaveBeenCalled();
     expect(fetchPublicSnapshot).not.toHaveBeenCalled();
     expect(platformSkillMocks.getPublishedCatalog).not.toHaveBeenCalled();
-    expect(platformSkillMocks.configurePlatformSkillManagement).toHaveBeenCalledWith(false, false);
+    expect(platformSkillMocks.configurePlatformSkillManagement).toHaveBeenCalledWith(false);
   });
 
   it('enterprise enabled: loads platform snapshots once config is ready', async () => {
@@ -154,7 +154,7 @@ describe('EnterprisePlatformProvider', () => {
     expect(platformSkillMocks.getPublishedCatalog).not.toHaveBeenCalled();
   });
 
-  it('configures ui-only management without loading or replacing the runtime catalog', async () => {
+  it('loads the single platform catalog authority in ui-only managed mode', async () => {
     serverConfigState.enterpriseEnabled = true;
     fetchCapabilities.mockResolvedValue({
       ...DISABLED_PLATFORM_CAPABILITIES,
@@ -164,31 +164,21 @@ describe('EnterprisePlatformProvider', () => {
     renderProvider();
 
     await waitFor(() => expect(fetchCapabilities).toHaveBeenCalledOnce());
-    expect(platformSkillMocks.getPublishedCatalog).not.toHaveBeenCalled();
-    expect(platformSkillMocks.configurePlatformSkillManagement).toHaveBeenLastCalledWith(
-      true,
-      false,
-    );
+    await waitFor(() => expect(platformSkillMocks.getPublishedCatalog).toHaveBeenCalledOnce());
+    expect(platformSkillMocks.configurePlatformSkillManagement).toHaveBeenLastCalledWith(true);
   });
 
-  it('loads the catalog only when managed Skills are explicitly enforced', async () => {
+  it('uses the same catalog path for every public managed Skill capability', async () => {
     serverConfigState.enterpriseEnabled = true;
     fetchCapabilities.mockResolvedValue({
       ...DISABLED_PLATFORM_CAPABILITIES,
-      enforcedManagedResources: {
-        ...DISABLED_PLATFORM_CAPABILITIES.enforcedManagedResources,
-        skills: true,
-      },
       managedResources: { ...DISABLED_PLATFORM_CAPABILITIES.managedResources, skills: true },
     });
 
     renderProvider();
 
     await waitFor(() => expect(platformSkillMocks.getPublishedCatalog).toHaveBeenCalledOnce());
-    expect(platformSkillMocks.configurePlatformSkillManagement).toHaveBeenLastCalledWith(
-      true,
-      true,
-    );
+    expect(platformSkillMocks.configurePlatformSkillManagement).toHaveBeenLastCalledWith(true);
   });
 
   it('retains last-known capabilities with an error, then reactively refreshes after retry', async () => {
