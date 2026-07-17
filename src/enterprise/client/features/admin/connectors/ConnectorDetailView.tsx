@@ -8,6 +8,7 @@ import { useTranslation } from 'react-i18next';
 
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
 import RevisionBanner from '../primitives/RevisionBanner';
+import ConnectorAuditPanel from './ConnectorAuditPanel';
 import ConnectorEditorFields from './ConnectorEditorFields';
 import type {
   AdminConnectorDraftValidation,
@@ -173,6 +174,10 @@ const ConnectorDetailView = memo<ConnectorDetailViewProps>(
             disabled={readOnly || conflict || Boolean(busyAction)}
             tools={draft.tools}
             onChange={onToolChange}
+          />
+          <ConnectorAuditPanel
+            canReadAudit={permissions.canReadAudit}
+            connectorId={snapshot.draft.id}
           />
           <div className={styles.footer}>
             <Text type={saveState === 'failed' ? 'danger' : 'secondary'}>
