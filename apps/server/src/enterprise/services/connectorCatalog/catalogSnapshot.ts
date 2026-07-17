@@ -232,6 +232,8 @@ export class ConnectorCatalogReadService {
       id: connector.id,
       key: connector.key,
       publishedAt: provenance.publishedAt,
+      // Already computed for this published revision; surfaced read-only (see contract note).
+      publishedChecksum: provenance.checksum,
       publishedRevision: provenance.revision,
       sort: connector.sort,
       tools: payload.tools,
