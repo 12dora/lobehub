@@ -6,7 +6,7 @@ import type {
   PlatformAgentVersionConfig,
   PlatformAgentVersionPolicy,
 } from '@lobechat/types';
-import { and, desc, eq, isNotNull, isNull, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, ilike, isNotNull, isNull, or, sql } from 'drizzle-orm';
 
 import { checksumPayload } from '../../models/platform/checksum';
 import {
@@ -23,9 +23,10 @@ import {
   type PlatformUserAgentMaterializationStatus,
 } from '../../schemas/platform';
 import { roles, userRoles } from '../../schemas/rbac';
+import { users } from '../../schemas/user';
 import type { LobeChatDatabase, Transaction } from '../../type';
 
-type ExactPlatformAgentVersion = Omit<
+export type ExactPlatformAgentVersion = Omit<
   PlatformAgentVersionItem,
   'checksum' | 'config' | 'dependencySnapshot'
 > & {
@@ -60,6 +61,26 @@ export interface PlatformAgentDraftPatch {
   isDefault?: boolean;
   systemKey?: PlatformAgentSystemKey | null;
   updatedBy?: string | null;
+}
+
+export interface PlatformAgentIdentityPage {
+  items: PlatformAgentItem[];
+  nextCursor: string | null;
+}
+
+export interface PlatformAgentVersionPage {
+  items: ExactPlatformAgentVersion[];
+  nextCursor: string | null;
+}
+
+export interface PlatformAgentAssignmentPage {
+  items: PlatformAgentAssignmentSafeItem[];
+  nextCursor: string | null;
+}
+
+export interface PlatformAgentMaterializationDependentPage {
+  items: Array<{ id: string; userId: string; versionId: string }>;
+  nextCursor: string | null;
 }
 
 export interface PlatformAgentAssignmentWrite {
@@ -127,6 +148,31 @@ export class PlatformAgentCatalogRepository {
       .where(eq(platformAgents.id, id))
       .limit(1);
     return row;
+  };
+
+  listIdentities = async (params: {
+    cursor?: string;
+    limit?: number;
+    query?: string;
+    status?: PlatformAgentItem['status'];
+  }): Promise<PlatformAgentIdentityPage> => {
+    const limit = Math.max(1, Math.min(params.limit ?? 50, 100));
+    const rows = await this.db
+      .select()
+      .from(platformAgents)
+      .where(
+        and(
+          eq(platformAgents.migrationRequired, false),
+          params.cursor ? gt(platformAgents.agentKey, params.cursor) : undefined,
+          params.query ? ilike(platformAgents.agentKey, `%${params.query}%`) : undefined,
+          params.status ? eq(platformAgents.status, params.status) : undefined,
+        ),
+      )
+      .orderBy(asc(platformAgents.agentKey))
+      .limit(limit + 1);
+    const hasMore = rows.length > limit;
+    const items = hasMore ? rows.slice(0, limit) : rows;
+    return { items, nextCursor: hasMore ? (items.at(-1)?.agentKey ?? null) : null };
   };
 
   /** Lock the mutable Agent identity before publication CAS and dependency revalidation. */
@@ -229,6 +275,59 @@ export class PlatformAgentCatalogRepository {
     return row as ExactPlatformAgentVersion | undefined;
   };
 
+  listExactVersions = async (params: {
+    agentId: string;
+    cursor?: string;
+    limit?: number;
+  }): Promise<PlatformAgentVersionPage> => {
+    const limit = Math.max(1, Math.min(params.limit ?? 50, 100));
+    const rows = await this.db
+      .select()
+      .from(platformAgentVersions)
+      .where(
+        and(
+          eq(platformAgentVersions.agentId, params.agentId),
+          params.cursor ? gt(platformAgentVersions.id, params.cursor) : undefined,
+          isNotNull(platformAgentVersions.checksum),
+          isNotNull(platformAgentVersions.dependencySnapshot),
+        ),
+      )
+      .orderBy(asc(platformAgentVersions.id))
+      .limit(limit + 1);
+    const hasMore = rows.length > limit;
+    const items = (hasMore ? rows.slice(0, limit) : rows) as ExactPlatformAgentVersion[];
+    return { items, nextCursor: hasMore ? (items.at(-1)?.id ?? null) : null };
+  };
+
+  archiveIdentityCas = async (params: {
+    expectedDraftSequence: number;
+    expectedRevision: number;
+    id: string;
+    updatedBy?: string | null;
+  }): Promise<PlatformAgentItem | undefined> => {
+    const [row] = await this.db
+      .update(platformAgents)
+      .set({
+        draftSequence: params.expectedDraftSequence + 1,
+        isDefault: false,
+        revision: params.expectedRevision + 1,
+        status: 'archived',
+        systemKey: null,
+        updatedAt: new Date(),
+        updatedBy: params.updatedBy,
+      })
+      .where(
+        and(
+          eq(platformAgents.id, params.id),
+          eq(platformAgents.revision, params.expectedRevision),
+          eq(platformAgents.draftSequence, params.expectedDraftSequence),
+          eq(platformAgents.migrationRequired, false),
+        ),
+      )
+      .returning();
+    return row;
+  };
+
   pointToVersionCas = async (params: {
     agentId: string;
     expectedDraftSequence: number;
@@ -284,30 +383,141 @@ export class PlatformAgentCatalogRepository {
   };
 
   updateAssignment = async (
+    agentId: string,
     id: string,
     values: Omit<PlatformAgentAssignmentWrite, 'agentId'>,
   ): Promise<PlatformAgentAssignmentSafeItem | undefined> => {
     const [row] = await this.db
       .update(platformAgentAssignments)
       .set({ ...values, updatedAt: new Date() })
-      .where(eq(platformAgentAssignments.id, id))
+      .where(
+        and(eq(platformAgentAssignments.id, id), eq(platformAgentAssignments.agentId, agentId)),
+      )
       .returning(safeAssignmentColumns);
     return row;
   };
 
-  deleteAssignment = async (id: string): Promise<PlatformAgentAssignmentSafeItem | undefined> => {
+  deleteAssignment = async (
+    agentId: string,
+    id: string,
+  ): Promise<PlatformAgentAssignmentSafeItem | undefined> => {
     const [row] = await this.db
       .delete(platformAgentAssignments)
-      .where(eq(platformAgentAssignments.id, id))
+      .where(
+        and(eq(platformAgentAssignments.id, id), eq(platformAgentAssignments.agentId, agentId)),
+      )
       .returning(safeAssignmentColumns);
     return row;
   };
 
-  getAssignment = async (id: string): Promise<PlatformAgentAssignmentSafeItem | undefined> => {
+  getAssignment = async (
+    agentId: string,
+    id: string,
+  ): Promise<PlatformAgentAssignmentSafeItem | undefined> => {
     const [row] = await this.db
       .select(safeAssignmentColumns)
       .from(platformAgentAssignments)
-      .where(eq(platformAgentAssignments.id, id))
+      .where(
+        and(eq(platformAgentAssignments.id, id), eq(platformAgentAssignments.agentId, agentId)),
+      )
+      .limit(1);
+    return row;
+  };
+
+  listAssignments = async (params: {
+    agentId: string;
+    cursor?: string;
+    limit?: number;
+  }): Promise<PlatformAgentAssignmentPage> => {
+    const limit = Math.max(1, Math.min(params.limit ?? 50, 100));
+    const rows = await this.db
+      .select(safeAssignmentColumns)
+      .from(platformAgentAssignments)
+      .where(
+        and(
+          eq(platformAgentAssignments.agentId, params.agentId),
+          params.cursor ? gt(platformAgentAssignments.id, params.cursor) : undefined,
+        ),
+      )
+      .orderBy(asc(platformAgentAssignments.id))
+      .limit(limit + 1);
+    const hasMore = rows.length > limit;
+    const items = hasMore ? rows.slice(0, limit) : rows;
+    return { items, nextCursor: hasMore ? (items.at(-1)?.id ?? null) : null };
+  };
+
+  listDependentMaterializations = async (params: {
+    agentId: string;
+    cursor?: string;
+    limit?: number;
+  }): Promise<PlatformAgentMaterializationDependentPage> => {
+    const limit = Math.max(1, Math.min(params.limit ?? 50, 100));
+    const rows = await this.db
+      .select({
+        id: platformUserAgentMaterializations.id,
+        userId: platformUserAgentMaterializations.userId,
+        versionId: platformUserAgentMaterializations.platformAgentVersionId,
+      })
+      .from(platformUserAgentMaterializations)
+      .where(
+        and(
+          eq(platformUserAgentMaterializations.platformAgentId, params.agentId),
+          params.cursor ? gt(platformUserAgentMaterializations.id, params.cursor) : undefined,
+        ),
+      )
+      .orderBy(asc(platformUserAgentMaterializations.id))
+      .limit(limit + 1);
+    const hasMore = rows.length > limit;
+    const items = hasMore ? rows.slice(0, limit) : rows;
+    return { items, nextCursor: hasMore ? (items.at(-1)?.id ?? null) : null };
+  };
+
+  countAssignments = async (agentId: string): Promise<number> => {
+    const [row] = await this.db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(platformAgentAssignments)
+      .where(eq(platformAgentAssignments.agentId, agentId));
+    return row?.count ?? 0;
+  };
+
+  countAssignmentTargets = async (params: {
+    targetId: string;
+    targetType: PlatformAgentAssignmentTargetType;
+  }): Promise<number> => {
+    if (params.targetType === 'global') {
+      const [row] = await this.db.select({ count: sql<number>`count(*)::int` }).from(users);
+      return row?.count ?? 0;
+    }
+    if (params.targetType === 'user') {
+      const [row] = await this.db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(users)
+        .where(eq(users.id, params.targetId));
+      return row?.count ?? 0;
+    }
+    const [row] = await this.db
+      .select({ count: sql<number>`count(distinct ${userRoles.userId})::int` })
+      .from(userRoles)
+      .innerJoin(
+        roles,
+        and(eq(roles.id, userRoles.roleId), isNull(roles.workspaceId), eq(roles.isActive, true)),
+      )
+      .where(
+        and(
+          eq(userRoles.roleId, params.targetId),
+          isNull(userRoles.workspaceId),
+          or(isNull(userRoles.expiresAt), sql`${userRoles.expiresAt} > CURRENT_TIMESTAMP`),
+        ),
+      );
+    return row?.count ?? 0;
+  };
+
+  getDefaultIdentityForUpdate = async (): Promise<PlatformAgentItem | undefined> => {
+    const [row] = await this.db
+      .select()
+      .from(platformAgents)
+      .where(eq(platformAgents.isDefault, true))
+      .for('update')
       .limit(1);
     return row;
   };

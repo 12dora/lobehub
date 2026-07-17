@@ -8,7 +8,6 @@ import { platformAgentDraftToken, PlatformAgentPublicationService } from './publ
 const mocks = vi.hoisted(() => ({
   acquireLock: vi.fn(),
   appendAudit: vi.fn(),
-  appendVersionCas: vi.fn(),
   assertDependencies: vi.fn(),
   getExactVersion: vi.fn(),
   lockIdentity: vi.fn(),
@@ -17,7 +16,6 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('@/database/repositories/platformAgentCatalog', () => ({
   PlatformAgentCatalogRepository: class {
-    appendVersionCas = mocks.appendVersionCas;
     getExactVersion = mocks.getExactVersion;
     lockIdentity = mocks.lockIdentity;
     pointToVersionCas = mocks.pointToVersionCas;
@@ -58,22 +56,10 @@ const dependencySnapshot = {
 };
 const input = {
   agentId: identity.id,
-  config: {
-    avatar: null,
-    backgroundColor: null,
-    description: null,
-    displayName: 'Support',
-    modelParameters: {},
-    openingMessage: null,
-    openingQuestions: [],
-    systemRole: 'Help users.',
-    tags: [],
-  },
-  dependencySnapshot,
   expectedDraftToken: platformAgentDraftToken(identity),
   expectedRevision: 0,
   reason: 'publish approved draft',
-  version: '1.0.0',
+  versionId: 'version-id',
 };
 
 const transaction = {} as Transaction;
@@ -87,15 +73,16 @@ describe('PlatformAgentPublicationService', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.lockIdentity.mockResolvedValue(identity);
-    mocks.appendVersionCas.mockResolvedValue({
+    mocks.getExactVersion.mockResolvedValue({
       checksum: 'f'.repeat(64),
+      dependencySnapshot,
       id: 'version-id',
       version: '1.0.0',
     });
     mocks.pointToVersionCas.mockResolvedValue({ revision: 1 });
   });
 
-  it('locks, revalidates, appends, points and audits before post-commit invalidation', async () => {
+  it('locks, revalidates an existing version, points and audits before invalidation', async () => {
     const publish = vi.fn();
     const result = await new PlatformAgentPublicationService(db, {
       invalidation: { publish },
@@ -104,11 +91,9 @@ describe('PlatformAgentPublicationService', () => {
     expect(result).toEqual({ agentId: 'agent-id', revision: 1, versionId: 'version-id' });
     expect(mocks.lockIdentity).toHaveBeenCalledBefore(mocks.acquireLock);
     expect(mocks.acquireLock).toHaveBeenCalledBefore(mocks.assertDependencies);
-    expect(mocks.appendVersionCas).toHaveBeenCalledWith(
-      expect.objectContaining({ expectedDraftSequence: 4, expectedRevision: 0 }),
-    );
+    expect(mocks.getExactVersion).toHaveBeenCalledWith('agent-id', 'version-id');
     expect(mocks.pointToVersionCas).toHaveBeenCalledWith(
-      expect.objectContaining({ expectedDraftSequence: 5, expectedRevision: 0 }),
+      expect.objectContaining({ expectedDraftSequence: 4, expectedRevision: 0 }),
     );
     expect(mocks.appendAudit).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'admin.agents.publish', result: 'success' }),
@@ -127,7 +112,7 @@ describe('PlatformAgentPublicationService', () => {
         input,
       ),
     ).rejects.toBeInstanceOf(PlatformAgentRevisionConflictError);
-    expect(mocks.appendVersionCas).not.toHaveBeenCalled();
+    expect(mocks.getExactVersion).not.toHaveBeenCalled();
     expect(publish).not.toHaveBeenCalled();
     expect(mocks.appendAudit).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'admin.agents.publish', result: 'failure' }),

@@ -5,7 +5,7 @@ import { PlatformAgentCatalogRepository } from '@/database/repositories/platform
 import type { LobeChatDatabase, Transaction } from '@/database/type';
 
 import type {
-  AdminPlatformAgentAppendVersionInput,
+  AdminPlatformAgentPublishInput,
   AdminPlatformAgentRollbackInput,
 } from '../../contracts/platformAgents';
 import { PlatformAuditService } from '../platformAudit';
@@ -54,7 +54,7 @@ export const platformAgentDraftToken = (identity: AgentDraftTokenInput): string 
     systemKey: identity.systemKey,
   });
 
-const assertExpectedIdentity = (
+export const assertExpectedPlatformAgentIdentity = (
   identity: AgentDraftTokenInput,
   expectedDraftToken: string,
   expectedRevision: number,
@@ -124,32 +124,27 @@ export class PlatformAgentPublicationService {
     }
   };
 
-  publish = async (actorUserId: string, input: AdminPlatformAgentAppendVersionInput) => {
+  publish = async (actorUserId: string, input: AdminPlatformAgentPublishInput) => {
     try {
       const result = await this.db.transaction(async (tx) => {
         const repository = new PlatformAgentCatalogRepository(tx);
         const locked = await repository.lockIdentity(input.agentId);
         if (!locked) throw new PlatformAgentNotFoundError();
         await this.lifecycle.afterIdentityLock?.(tx);
-        assertExpectedIdentity(locked, input.expectedDraftToken, input.expectedRevision);
+        assertExpectedPlatformAgentIdentity(
+          locked,
+          input.expectedDraftToken,
+          input.expectedRevision,
+        );
 
         await acquirePlatformDependencyPublicationLock(tx);
         await this.lifecycle.afterDependencyLock?.(tx);
-        await assertExactPlatformAgentDependencies(tx, input.dependencySnapshot);
-
-        const version = await repository.appendVersionCas({
-          agentId: locked.id,
-          config: input.config,
-          createdBy: actorUserId,
-          dependencySnapshot: input.dependencySnapshot,
-          expectedDraftSequence: locked.draftSequence,
-          expectedRevision: locked.revision,
-          version: input.version,
-        });
-        if (!version) throw new PlatformAgentRevisionConflictError();
+        const version = await repository.getExactVersion(locked.id, input.versionId);
+        if (!version) throw new PlatformAgentNotFoundError();
+        await assertExactPlatformAgentDependencies(tx, version.dependencySnapshot);
         const identity = await repository.pointToVersionCas({
           agentId: locked.id,
-          expectedDraftSequence: locked.draftSequence + 1,
+          expectedDraftSequence: locked.draftSequence,
           expectedRevision: locked.revision,
           publishedAt: new Date(),
           versionId: version.id,
@@ -161,8 +156,8 @@ export class PlatformAgentPublicationService {
           actorUserId,
           afterDiff: {
             dependencyCounts: {
-              connectors: input.dependencySnapshot.connectors.length,
-              skills: input.dependencySnapshot.skills.length,
+              connectors: version.dependencySnapshot.connectors.length,
+              skills: version.dependencySnapshot.skills.length,
             },
             revision: identity.revision,
             version: version.version,
@@ -201,7 +196,11 @@ export class PlatformAgentPublicationService {
         const locked = await repository.lockIdentity(input.agentId);
         if (!locked) throw new PlatformAgentNotFoundError();
         await this.lifecycle.afterIdentityLock?.(tx);
-        assertExpectedIdentity(locked, input.expectedDraftToken, input.expectedRevision);
+        assertExpectedPlatformAgentIdentity(
+          locked,
+          input.expectedDraftToken,
+          input.expectedRevision,
+        );
 
         await acquirePlatformDependencyPublicationLock(tx);
         await this.lifecycle.afterDependencyLock?.(tx);
