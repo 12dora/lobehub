@@ -8,7 +8,6 @@ import { platformConnectors, platformConnectorSecrets } from '@/database/schemas
 import type { LobeChatDatabase } from '@/database/type';
 
 import { type KeyProvider, PlatformSecretService } from '../../security/secret';
-import { ensurePendingM09ServiceSchema } from './catalogTestUtils';
 import { PlatformConnectorContractError } from './errors';
 import { PlatformConnectorSecretStore } from './platformConnectorSecretStore';
 
@@ -31,7 +30,6 @@ const cleanup = async () => {
 
 beforeAll(async () => {
   db = await getTestDB();
-  await ensurePendingM09ServiceSchema(db);
   await cleanup();
   const repository = new PlatformConnectorCatalogRepository(db);
   for (const connectorId of connectorIds) {

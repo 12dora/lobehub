@@ -2,7 +2,7 @@
 import { createHash } from 'node:crypto';
 
 import { eq } from 'drizzle-orm';
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
 import {
@@ -20,7 +20,6 @@ import { type KeyProvider, PlatformSecretService } from '../../security/secret';
 import {
   cleanupM09ServiceData,
   connectorToolFixture,
-  ensurePendingM09ServiceSchema,
   MemoryConnectorSecretStore,
 } from './catalogTestUtils';
 import type {
@@ -40,7 +39,6 @@ const callbackRedirectUri = 'https://aihub.example.test/oauth/connector/callback
 const userA = 'm09-service-user-oauth-a';
 const userB = 'm09-service-user-oauth-b';
 
-beforeAll(() => ensurePendingM09ServiceSchema(db));
 beforeEach(async () => {
   await cleanupM09ServiceData(db);
   await db

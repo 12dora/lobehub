@@ -1,16 +1,12 @@
 // @vitest-environment node
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
 import { platformAuditLogs } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 
 import type { ConnectorFailureAuditWriter } from './catalogAudit';
-import {
-  cleanupM09ServiceData,
-  ensurePendingM09ServiceSchema,
-  MemoryConnectorSecretStore,
-} from './catalogTestUtils';
+import { cleanupM09ServiceData, MemoryConnectorSecretStore } from './catalogTestUtils';
 import type { ConnectorOutboundClient } from './connectorOutboundClient';
 import { ConnectorCatalogDiscoveryService } from './discoveryService';
 import { ConnectorCatalogDraftService } from './draftService';
@@ -19,7 +15,6 @@ import { CONNECTOR_TOOL_VALIDATION_CODES } from './toolDefinitionValidator';
 
 const db: LobeChatDatabase = await getTestDB();
 
-beforeAll(() => ensurePendingM09ServiceSchema(db));
 beforeEach(() => cleanupM09ServiceData(db));
 afterEach(async () => {
   vi.restoreAllMocks();

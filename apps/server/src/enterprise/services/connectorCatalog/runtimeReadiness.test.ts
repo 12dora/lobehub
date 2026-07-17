@@ -20,7 +20,6 @@ import type { LobeChatDatabase } from '@/database/type';
 
 import { PlatformSecretService } from '../../security/secret';
 import { ConnectorCatalogReadService } from './catalogSnapshot';
-import { ensurePendingM09ServiceSchema } from './catalogTestUtils';
 import type { ConnectorOAuthRuntimeEnv } from './oauthRuntime';
 import { getConnectorOAuthRuntime } from './oauthRuntime';
 import { resolveConnectorCatalogRuntimeReadiness } from './runtimeReadiness';
@@ -38,7 +37,6 @@ const connectorIds: string[] = [];
 
 beforeAll(async () => {
   db = await getTestDB();
-  await ensurePendingM09ServiceSchema(db);
 });
 
 afterAll(async () => {
