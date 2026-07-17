@@ -21,6 +21,7 @@ import { PlatformAuditService } from '../services/platformAudit';
 import { LastSuperAdminError, PlatformRbacService } from '../services/platformRbac';
 import { ensureSkillCatalogReadinessRegistered } from '../services/skillCatalog';
 import { adminAiModelsRouter, adminAiProvidersRouter } from './admin/aiCatalog';
+import { adminConnectorsRouter } from './admin/connectors';
 import { adminManagedResourcesRouter } from './admin/managedResources';
 import { adminSettingsRouter } from './admin/settings';
 import { adminSkillsRouter } from './admin/skills';
@@ -227,6 +228,7 @@ export const adminRouter = router({
   aiProviders: adminAiProvidersRouter,
   audit: adminAuditRouter,
   auth: adminAuthRouter,
+  connectors: adminConnectorsRouter,
   easyauth: adminEasyauthRouter,
   managedResources: adminManagedResourcesRouter,
   roles: adminRolesRouter,
