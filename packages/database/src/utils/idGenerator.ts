@@ -39,6 +39,8 @@ const prefixes = {
   platformAuditLogs: 'paud',
   platformBranding: 'pbr',
   platformConnectors: 'pcn',
+  platformConnectorOAuthStates: 'pcos',
+  platformConnectorSecrets: 'pcs',
   platformConnectorTools: 'pct',
   platformEasyauthGrantSnapshots: 'peas',
   platformIdentityProviders: 'pidp',

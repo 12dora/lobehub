@@ -1,5 +1,7 @@
 import type { AgentRuntimeHost } from '@lobechat/agent-runtime';
 
+import { createConnectorApprovalReceipt } from '@/server/enterprise/services/connectorCatalog/runtimeIntegration';
+
 import { ServerCompressionTransport } from './adapters/ServerCompressionTransport';
 import { ServerLifecycleSink } from './adapters/ServerLifecycleSink';
 import { ServerLLMTransport } from './adapters/ServerLLMTransport';
@@ -41,6 +43,35 @@ export const buildHost = (ctx: RuntimeExecutorContext): AgentRuntimeHost => ({
       : undefined,
     llm: ctx.userId ? new ServerLLMTransport(ctx) : undefined,
     messages: new ServerMessageTransport(ctx.messageModel, {
+      createToolPluginState: async (params) => {
+        const plugin = params.plugin;
+        if (
+          !plugin?.identifier ||
+          !plugin.apiName ||
+          !plugin.type ||
+          !params.tool_call_id ||
+          !ctx.userId
+        )
+          return;
+        const state = await ctx.loadAgentState?.(ctx.operationId);
+        const manifest =
+          state?.operationToolSet?.manifestMap?.[plugin.identifier] ??
+          state?.toolManifestMap?.[plugin.identifier];
+        const agentId = state?.metadata?.agentId;
+        if (!agentId) return;
+        const receipt = createConnectorApprovalReceipt({
+          agentId,
+          apiName: plugin.apiName,
+          arguments: plugin.arguments,
+          identifier: plugin.identifier,
+          manifest,
+          operationId: ctx.operationId,
+          toolCallId: params.tool_call_id,
+          type: plugin.type,
+          userId: ctx.userId,
+        });
+        return receipt ? { platformConnectorApprovalReceipt: receipt } : undefined;
+      },
       postProcessUrl: buildPostProcessUrl(ctx),
     }),
     operationStore: new ServerOperationStore(

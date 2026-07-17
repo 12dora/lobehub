@@ -16,9 +16,14 @@ import { inferCrudType } from '@/libs/mcp/utils';
 import { router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 import {
+  assertLegacyConnectorTransportAllowed,
+  mapConnectorRuntimeTransportError,
+} from '@/server/enterprise/guards/connectorRuntimeTransport';
+import {
   isConnectorDisconnectInput,
   withManagedResourceGuard,
 } from '@/server/enterprise/guards/managedResource';
+import { platformSafeMcpService } from '@/server/enterprise/services/connectorCatalog/legacyMcpTransport';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 import { callConnectorToolById, ConnectorToolCallError } from '@/server/services/connector/exec';
 import {
@@ -42,6 +47,7 @@ const connectorProcedure = wsCompatProcedure.use(serverDatabase).use(async (opts
     ctx: {
       connectorModel: new ConnectorModel(ctx.serverDB, ctx.userId, wsId, gateKeeper),
       connectorToolModel: new ConnectorToolModel(ctx.serverDB, ctx.userId, wsId),
+      mcpService: platformSafeMcpService,
       pluginModel: new PluginModel(ctx.serverDB, ctx.userId, wsId),
     },
   });
@@ -344,8 +350,11 @@ export const connectorRouter = router({
     .input(z.object({ id: z.string().uuid() }))
     .mutation(async ({ input, ctx }) => {
       try {
+        await assertLegacyConnectorTransportAllowed();
         return await syncConnectorToolsById(input.id, ctx);
       } catch (err: any) {
+        const mapped = mapConnectorRuntimeTransportError(err);
+        if (mapped) throw mapped;
         throw new TRPCError({
           cause: err,
           code: 'INTERNAL_SERVER_ERROR',
@@ -370,8 +379,10 @@ export const connectorRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       try {
+        await assertLegacyConnectorTransportAllowed();
         return await callConnectorToolById(input, ctx);
       } catch (err: any) {
+        if (err instanceof TRPCError) throw err;
         if (err instanceof ConnectorToolCallError) {
           throw new TRPCError({ cause: err, code: err.code, message: err.message });
         }
@@ -441,6 +452,7 @@ export const connectorRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
+      await assertLegacyConnectorTransportAllowed();
       const connectorId = await upsertConnectorEntry(ctx.connectorModel, {
         identifier: input.identifier,
         name: input.name,
@@ -467,6 +479,7 @@ export const connectorRouter = router({
     .use(withManagedResourceGuard('connector.syncBuiltinTool'))
     .input(z.object({ identifier: z.string().min(1) }))
     .mutation(async ({ input, ctx }) => {
+      await assertLegacyConnectorTransportAllowed();
       const { builtinTools } = await import('@lobechat/builtin-tools');
       const tool = builtinTools.find((t) => t.identifier === input.identifier);
 
@@ -515,6 +528,7 @@ export const connectorRouter = router({
     .use(withManagedResourceGuard('connector.syncPluginTools'))
     .input(z.object({ identifier: z.string().min(1) }))
     .mutation(async ({ input, ctx }) => {
+      await assertLegacyConnectorTransportAllowed();
       const plugin = await ctx.pluginModel.findById(input.identifier);
 
       if (!plugin) {

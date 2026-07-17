@@ -25,6 +25,41 @@ describe('MCPService', () => {
     vi.spyOn(mcpService as any, 'getClient').mockResolvedValue(mockClient);
   });
 
+  it('injects the SafeOutbound fetch boundary into legacy HTTP MCP clients', async () => {
+    const { MCPClient } = await import('@/libs/mcp');
+    const { MCPService } = await import('./index');
+    const httpFetch = vi.fn() as unknown as typeof fetch;
+    const initialize = vi.fn(async () => {});
+    vi.mocked(MCPClient).mockImplementationOnce(() => ({ initialize }) as any);
+    const service = new MCPService({ httpFetch });
+    const params = {
+      name: 'legacy-http',
+      type: 'http' as const,
+      url: 'https://mcp.example.test',
+    };
+
+    await (service as any).getClient(params);
+
+    expect(MCPClient).toHaveBeenCalledWith(params, { httpFetch });
+    expect(initialize).toHaveBeenCalledOnce();
+  });
+
+  it('rejects stdio at the Web MCPService boundary without an isolated capability', async () => {
+    const { MCPClient } = await import('@/libs/mcp');
+    const { MCPService } = await import('./index');
+    const service = new MCPService();
+
+    await expect(
+      (service as any).getClient({
+        args: [],
+        command: 'dangerous-child',
+        name: 'x',
+        type: 'stdio',
+      }),
+    ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    expect(MCPClient).not.toHaveBeenCalled();
+  });
+
   describe('callTool', () => {
     const mockParams = {
       name: 'test-mcp',

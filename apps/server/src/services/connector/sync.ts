@@ -4,7 +4,9 @@ import type { ConnectorCredentials } from '@/database/schemas';
 import { ConnectorMcpConnectionType, ConnectorStatus } from '@/database/schemas';
 import type { AuthConfig } from '@/libs/mcp';
 import { inferCrudType } from '@/libs/mcp/utils';
-import { mcpService } from '@/server/services/mcp';
+import { PlatformConnectorContractError } from '@/server/enterprise/services/connectorCatalog/errors';
+import { platformSafeMcpService } from '@/server/enterprise/services/connectorCatalog/legacyMcpTransport';
+import { assertLegacyConnectorRuntimeAllowed } from '@/server/enterprise/services/connectorCatalog/runtimeIntegration';
 
 import { ensureFreshConnectorToken } from './tokens';
 
@@ -16,7 +18,7 @@ export interface ConnectorToolSyncContext {
 /** Build the MCP client connection params (with auth) from a connector row. */
 export const buildConnectorMcpParams = (
   connector: DecryptedConnector,
-): Parameters<typeof mcpService.listRawTools>[0] => {
+): Parameters<typeof platformSafeMcpService.listRawTools>[0] => {
   if (connector.mcpConnectionType === ConnectorMcpConnectionType.stdio) {
     if (!connector.mcpStdioConfig) throw new Error('Missing stdio config');
     return {
@@ -34,8 +36,7 @@ export const buildConnectorMcpParams = (
   // type. Merge them on top of any header-type credential headers (older rows
   // stored custom headers as a 'header' credential before this split).
   const customHeaders = connector.metadata?.customHeaders as Record<string, string> | undefined;
-  const mergedHeaders =
-    headers || customHeaders ? { ...headers, ...customHeaders } : undefined;
+  const mergedHeaders = headers || customHeaders ? { ...headers, ...customHeaders } : undefined;
   return {
     auth,
     headers: mergedHeaders,
@@ -98,8 +99,17 @@ export const syncConnectorToolsById = async (
   connectorId: string,
   ctx: ConnectorToolSyncContext,
 ): Promise<{ toolCount: number }> => {
+  // Managed mode never executes a legacy HTTP/stdio transport. Platform
+  // discovery uses the M09 SafeOutbound pipeline before publication instead.
+  await assertLegacyConnectorRuntimeAllowed({});
   let connector = await ctx.connectorModel.findById(connectorId);
   if (!connector) throw new Error('Connector not found');
+
+  // This service runs in the web server. Stdio is desktop-only and must never
+  // reach child_process even when managed connectors are disabled or legacy.
+  if (connector.mcpConnectionType === ConnectorMcpConnectionType.stdio) {
+    throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_STDIO_UNSUPPORTED');
+  }
 
   if (!connector.mcpServerUrl && connector.mcpConnectionType !== ConnectorMcpConnectionType.stdio) {
     throw new Error('Connector has no MCP server URL configured');
@@ -110,9 +120,9 @@ export const syncConnectorToolsById = async (
 
   const mcpParams = buildConnectorMcpParams(connector);
 
-  let rawTools: Awaited<ReturnType<typeof mcpService.listRawTools>>;
+  let rawTools: Awaited<ReturnType<typeof platformSafeMcpService.listRawTools>>;
   try {
-    rawTools = await mcpService.listRawTools(mcpParams);
+    rawTools = await platformSafeMcpService.listRawTools(mcpParams);
   } catch (err) {
     await ctx.connectorModel.updateStatus(connectorId, ConnectorStatus.error);
     throw err;

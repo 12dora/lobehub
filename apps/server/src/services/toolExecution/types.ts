@@ -153,6 +153,8 @@ export interface ToolExecutionContext {
    * `messageId`.
    */
   assistantMessageId?: string;
+  /** Server-signed receipt restored from the persisted pending tool row. */
+  connectorApprovalReceipt?: Record<string, unknown>;
   /**
    * Whether the run's execution plan is device-capable (`device` or
    * `device-unrouted`) — derived from `state.metadata.executionPlan` by the

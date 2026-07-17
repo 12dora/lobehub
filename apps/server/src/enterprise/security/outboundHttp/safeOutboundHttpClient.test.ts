@@ -1,4 +1,7 @@
 // @vitest-environment node
+import { createServer } from 'node:http';
+import { createServer as createNetServer } from 'node:net';
+
 import { describe, expect, it, vi } from 'vitest';
 
 import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
@@ -9,6 +12,7 @@ import {
   isPrivateIp,
   SafeOutboundHttpClient,
   SafeOutboundHttpError,
+  stripCredentialHeaders,
 } from './index';
 import type { DnsResolver, PinnedTransport, PinnedTransportResponse } from './types';
 
@@ -50,9 +54,156 @@ describe('policy helpers', () => {
     expect(isMetadataIp('0:0:0:0:0:ffff:169.254.170.2')).toBe(true);
     expect(isMetadataIp('::ffff:8.8.8.8')).toBe(false);
   });
+
+  it('decodes RFC 6052 NAT64/SIIT layouts before metadata classification', () => {
+    expect(isMetadataIp('64:ff9b::a9fe:a9fe')).toBe(true);
+    expect(isMetadataIp('64:ff9b:1:a9fe:a9:fe00::')).toBe(true);
+    expect(isMetadataIp('64:ff9b::808:808')).toBe(false);
+  });
 });
 
 describe('SafeOutboundHttpClient', () => {
+  it('returns AbortError promptly when aborted during DNS resolution', async () => {
+    const controller = new AbortController();
+    const client = new SafeOutboundHttpClient({
+      resolve: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        return [{ address: '1.1.1.1', family: 4 }];
+      },
+      timeoutMs: 500,
+    });
+    const startedAt = Date.now();
+    const pending = client.streamFetch('https://slow-dns.example/events', {
+      signal: controller.signal,
+    });
+    setTimeout(() => controller.abort(), 10);
+
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(Date.now() - startedAt).toBeLessThan(100);
+  });
+
+  it('streams SSE incrementally and propagates AbortSignal to the pinned socket', async () => {
+    let closed = false;
+    const server = createServer((_request, response) => {
+      response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      response.write('data: first\n\n');
+      response.on('close', () => {
+        closed = true;
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('test server address unavailable');
+    const controller = new AbortController();
+    const client = new SafeOutboundHttpClient({ timeoutMs: 5000 });
+    try {
+      const response = await client.streamFetch(`http://127.0.0.1:${address.port}/events`, {
+        signal: controller.signal,
+      });
+      const reader = response.body!.getReader();
+      const first = await reader.read();
+      expect(new TextDecoder().decode(first.value)).toContain('data: first');
+      expect(first.done).toBe(false);
+      controller.abort();
+      await expect(reader.read()).rejects.toMatchObject({ name: 'AbortError' });
+      await vi.waitFor(() => expect(closed).toBe(true));
+    } finally {
+      server.close();
+    }
+  });
+
+  it('enforces streaming byte and absolute timeout limits while reading', async () => {
+    const server = createServer((request, response) => {
+      response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      if (request.url === '/large') response.end('data: '.padEnd(128, 'x'));
+      else response.flushHeaders();
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('test server address unavailable');
+    const client = new SafeOutboundHttpClient();
+    try {
+      const large = await client.streamFetch(`http://127.0.0.1:${address.port}/large`, {
+        maxResponseBytes: 16,
+      });
+      await expect(large.text()).rejects.toThrow('exceeded byte limit');
+
+      const stalled = await client.streamFetch(`http://127.0.0.1:${address.port}/stalled`, {
+        timeoutMs: 50,
+      });
+      await expect(stalled.text()).rejects.toThrow('deadline exceeded');
+    } finally {
+      server.close();
+    }
+  });
+
+  it('tears down continuous redirect and accepted-response sockets on body cancel', async () => {
+    let redirectClosed = false;
+    let acceptedClosed = false;
+    const server = createServer((request, response) => {
+      const interval = setInterval(() => response.write('still-streaming'), 5);
+      response.on('close', () => {
+        clearInterval(interval);
+        if (request.url === '/redirect') redirectClosed = true;
+        if (request.url === '/accepted') acceptedClosed = true;
+      });
+      if (request.url === '/redirect') {
+        response.writeHead(302, { Location: '/accepted' });
+        response.write('redirect-body');
+      } else {
+        response.writeHead(202, { 'Content-Type': 'text/event-stream' });
+        response.write('accepted-body');
+      }
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('test server address unavailable');
+    const client = new SafeOutboundHttpClient({ timeoutMs: 5000 });
+    try {
+      const response = await client.streamFetch(`http://127.0.0.1:${address.port}/redirect`);
+      expect(response.status).toBe(202);
+      await vi.waitFor(() => expect(redirectClosed).toBe(true));
+      await response.body?.cancel();
+      await vi.waitFor(() => expect(acceptedClosed).toBe(true));
+    } finally {
+      server.close();
+    }
+  });
+
+  it.each([204, 205, 304])(
+    'constructs bodyless %s responses and terminates a peer that advertises a body',
+    async (status) => {
+      let closed = false;
+      const server = createNetServer((socket) => {
+        socket.once('data', () => {
+          socket.write(
+            `HTTP/1.1 ${status} Test\r\nContent-Length: 999999\r\nContent-Type: text/event-stream\r\nX-Untrusted-Header: preserved\r\nConnection: keep-alive\r\n\r\nmalicious-body`,
+          );
+          const interval = setInterval(() => socket.write('still-malicious'), 5);
+          socket.on('close', () => clearInterval(interval));
+        });
+        socket.on('close', () => {
+          closed = true;
+        });
+      });
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        throw new Error('test server address unavailable');
+      }
+      try {
+        const client = new SafeOutboundHttpClient({ timeoutMs: 5000 });
+        const response = await client.streamFetch(`http://127.0.0.1:${address.port}/bodyless`);
+        expect(response.status).toBe(status);
+        expect(response.body).toBeNull();
+        expect(response.headers.get('x-untrusted-header')).toBe('preserved');
+        await vi.waitFor(() => expect(closed).toBe(true));
+      } finally {
+        server.close();
+      }
+    },
+  );
+
   it('allows private/localhost by default (G-07) and pins DNS', async () => {
     const transport = vi.fn<PinnedTransport>(async (req) => {
       expect(req.pinnedAddress).toBe('127.0.0.1');
@@ -120,6 +271,35 @@ describe('SafeOutboundHttpClient', () => {
       code: PLATFORM_ERROR_CODES.PLATFORM_SSRF_BLOCKED,
     });
     expect(transport).not.toHaveBeenCalled();
+  });
+
+  it('blocks NAT64 metadata in literal, DNS, and redirect hops', async () => {
+    const nat64Metadata = '64:ff9b::a9fe:a9fe';
+    const transport = vi.fn<PinnedTransport>(async () =>
+      okResponse({
+        headers: { location: `http://[${nat64Metadata}]/latest/meta-data` },
+        status: 302,
+        statusText: 'Found',
+      }),
+    );
+    const client = new SafeOutboundHttpClient({
+      resolve: resolveTo([{ address: '93.184.216.34' }]),
+      transport,
+    });
+    await expect(client.fetch(`http://[${nat64Metadata}]/`)).rejects.toMatchObject({
+      code: PLATFORM_ERROR_CODES.PLATFORM_SSRF_BLOCKED,
+    });
+
+    const dnsClient = new SafeOutboundHttpClient({
+      resolve: resolveTo([{ address: nat64Metadata, family: 6 }]),
+      transport,
+    });
+    await expect(dnsClient.fetch('https://evil.example/imds')).rejects.toMatchObject({
+      code: PLATFORM_ERROR_CODES.PLATFORM_SSRF_BLOCKED,
+    });
+    await expect(client.fetch('https://safe.example/start')).rejects.toMatchObject({
+      code: PLATFORM_ERROR_CODES.PLATFORM_SSRF_BLOCKED,
+    });
   });
 
   it('permanently blocks metadata.google.internal hostname', async () => {
@@ -271,6 +451,131 @@ describe('SafeOutboundHttpClient', () => {
     await expect(client.fetch('gopher://example.com/')).rejects.toThrow(/protocol/i);
   });
 
+  it.each([
+    'key',
+    'api_key',
+    'access-token',
+    'signature',
+    'subscription-key',
+    'Ocp-Apim-Subscription-Key',
+    'X-Amz-Signature',
+  ])('rejects sensitive query key %s again at the final outbound boundary', async (key) => {
+    const transport = vi.fn();
+    const client = new SafeOutboundHttpClient({ transport });
+    await expect(client.fetch(`https://example.test/mcp?${key}=fake-secret`)).rejects.toMatchObject(
+      { code: PLATFORM_ERROR_CODES.PLATFORM_SSRF_BLOCKED },
+    );
+    expect(transport).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    '?subscription-key=fake-secret',
+    'https://other.example/next?Ocp-Apim-Subscription-Key=fake-secret',
+  ])('rejects sensitive query keys introduced by redirect: %s', async (location) => {
+    const transport = vi.fn<PinnedTransport>(async () =>
+      okResponse({ headers: { location }, status: 302, statusText: 'Found' }),
+    );
+    const client = new SafeOutboundHttpClient({
+      resolve: resolveTo([{ address: '1.1.1.1' }]),
+      transport,
+    });
+    await expect(client.fetch('https://safe.example/start')).rejects.toMatchObject({
+      code: PLATFORM_ERROR_CODES.PLATFORM_SSRF_BLOCKED,
+    });
+    expect(transport).toHaveBeenCalledOnce();
+  });
+
+  it('re-reads a versioned policy after DNS and fails closed when it tightens', async () => {
+    let reads = 0;
+    const transport = vi.fn();
+    const client = new SafeOutboundHttpClient({
+      policyProvider: () => {
+        reads += 1;
+        return reads === 1
+          ? { policy: { allowlist: [], mode: 'allow-private' }, version: 1 }
+          : { policy: { allowlist: ['allowed.example'], mode: 'allowlist' }, version: 2 };
+      },
+      resolve: resolveTo([{ address: '1.1.1.1' }]),
+      transport,
+    });
+
+    await expect(client.fetch('https://blocked.example/mcp')).rejects.toMatchObject({
+      code: PLATFORM_ERROR_CODES.PLATFORM_SSRF_BLOCKED,
+    });
+    expect(reads).toBeGreaterThanOrEqual(2);
+    expect(transport).not.toHaveBeenCalled();
+  });
+
+  it('returns the exact stable policy version used by DNS preflight', async () => {
+    const policyProvider = vi.fn(() => ({
+      policy: { allowlist: [], mode: 'allow-private' as const },
+      version: 'policy-v7',
+    }));
+    const client = new SafeOutboundHttpClient({
+      policyProvider,
+      resolve: resolveTo([{ address: '1.1.1.1' }]),
+      transport: vi.fn(),
+    });
+
+    await expect(client.preflight('https://connector.example/mcp')).resolves.toBe('policy-v7');
+    expect(client.getPolicyVersion()).toBe('policy-v7');
+    expect(policyProvider).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([
+    { policy: { allowlist: [], mode: 'invalid' }, version: 1 },
+    { policy: { allowlist: 'example.test', mode: 'allowlist' }, version: 1 },
+    { policy: { allowlist: [], mode: 'allow-private' }, version: '' },
+    { extra: true, policy: { allowlist: [], mode: 'allow-private' }, version: 1 },
+  ])('fails closed for malformed dynamic policy snapshot %#', async (snapshot) => {
+    const transport = vi.fn();
+    const client = new SafeOutboundHttpClient({
+      policyProvider: () => snapshot as never,
+      transport,
+    });
+    await expect(client.fetch('https://example.test/mcp')).rejects.toMatchObject({
+      code: PLATFORM_ERROR_CODES.PLATFORM_SSRF_BLOCKED,
+    });
+    expect(transport).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when a dynamic policy provider throws', async () => {
+    const client = new SafeOutboundHttpClient({
+      policyProvider: () => {
+        throw new Error('backend unavailable with sensitive details');
+      },
+      transport: vi.fn(),
+    });
+    await expect(client.fetch('https://example.test/mcp')).rejects.toMatchObject({
+      code: PLATFORM_ERROR_CODES.PLATFORM_SSRF_BLOCKED,
+      message: expect.not.stringContaining('sensitive details'),
+    });
+  });
+
+  it('uses one absolute deadline across DNS, redirects, transport, and body', async () => {
+    const transport = vi.fn<PinnedTransport>(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 12));
+      return okResponse({
+        headers: { location: 'https://b.example/next' },
+        status: 302,
+        statusText: 'Found',
+      });
+    });
+    const client = new SafeOutboundHttpClient({
+      resolve: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 12));
+        return [{ address: '1.1.1.1', family: 4 }];
+      },
+      timeoutMs: 30,
+      transport,
+    });
+
+    await expect(client.fetch('https://a.example/start')).rejects.toMatchObject({
+      code: PLATFORM_ERROR_CODES.PLATFORM_SSRF_BLOCKED,
+    });
+    expect(transport.mock.calls.length).toBeLessThanOrEqual(1);
+  });
+
   it('passes maxResponseBytes into transport (hard cap, not post-trim)', async () => {
     const transport = vi.fn<PinnedTransport>(async (req) => {
       expect(req.maxResponseBytes).toBe(10);
@@ -288,7 +593,7 @@ describe('SafeOutboundHttpClient', () => {
     expect(transport).toHaveBeenCalledOnce();
   });
 
-  it('strips Authorization/Cookie on cross-origin redirect', async () => {
+  it('rejects cross-origin redirects for secret-bearing requests', async () => {
     const transport = vi.fn<PinnedTransport>(async (req) => {
       if (req.url.hostname === 'a.example') {
         expect(req.headers.Authorization).toBe('Bearer fake-token-not-real');
@@ -299,26 +604,81 @@ describe('SafeOutboundHttpClient', () => {
           statusText: 'Found',
         });
       }
-      expect(req.url.hostname).toBe('b.example');
-      expect(req.headers.Authorization).toBeUndefined();
-      expect(req.headers.Cookie).toBeUndefined();
-      expect(req.headers['X-Custom']).toBe('keep');
-      return okResponse({ body: Buffer.from('final') });
+      throw new Error('cross-origin transport must not execute');
     });
 
     const client = new SafeOutboundHttpClient({
       resolve: resolveTo([{ address: '1.1.1.1' }]),
       transport,
     });
-    const res = await client.fetch('https://a.example/start', {
-      headers: {
-        'Authorization': 'Bearer fake-token-not-real',
-        'Cookie': 'sid=fake',
-        'X-Custom': 'keep',
-      },
-    });
-    expect(await res.text()).toBe('final');
+    await expect(
+      client.fetch('https://a.example/start', {
+        headers: {
+          'Authorization': 'Bearer fake-token-not-real',
+          'Cookie': 'sid=fake',
+          'X-Custom': 'keep',
+        },
+      }),
+    ).rejects.toMatchObject({ code: PLATFORM_ERROR_CODES.PLATFORM_SSRF_BLOCKED });
+    expect(transport).toHaveBeenCalledOnce();
   });
+
+  it('strips built-in and custom credential headers while retaining benign headers', () => {
+    const headers = {
+      'Authorization': 'Bearer fake',
+      'Cookie': 'sid=fake',
+      'X-Api-Key': 'fake-key',
+      'X-Custom': 'keep',
+      'X-Service-Secret': 'fake-secret',
+    };
+    stripCredentialHeaders(headers);
+    expect(headers).toEqual({ 'X-Custom': 'keep' });
+  });
+
+  it.each([307, 308])('rejects secret POST body on cross-origin %s redirect', async (status) => {
+    const transport = vi.fn<PinnedTransport>(async () =>
+      okResponse({
+        headers: { location: 'https://b.example/token' },
+        status,
+        statusText: 'Redirect',
+      }),
+    );
+    const client = new SafeOutboundHttpClient({
+      resolve: resolveTo([{ address: '1.1.1.1' }]),
+      transport,
+    });
+    await expect(
+      client.fetch('https://a.example/token', {
+        body: 'client_secret=fake-secret',
+        method: 'POST',
+        secretBearing: true,
+      }),
+    ).rejects.toMatchObject({ code: PLATFORM_ERROR_CODES.PLATFORM_SSRF_BLOCKED });
+    expect(transport).toHaveBeenCalledOnce();
+  });
+
+  it.each([301, 302, 303, 307, 308])(
+    'rejects arbitrary caller headers on cross-origin %s redirects',
+    async (status) => {
+      const transport = vi.fn<PinnedTransport>(async () =>
+        okResponse({
+          headers: { location: 'https://b.example/next' },
+          status,
+          statusText: 'Redirect',
+        }),
+      );
+      const client = new SafeOutboundHttpClient({
+        resolve: resolveTo([{ address: '1.1.1.1' }]),
+        transport,
+      });
+      await expect(
+        client.fetch('https://a.example/start', {
+          headers: { 'X-Random': 'ordinary-random-secret-with-no-known-shape' },
+        }),
+      ).rejects.toMatchObject({ code: PLATFORM_ERROR_CODES.PLATFORM_SSRF_BLOCKED });
+      expect(transport).toHaveBeenCalledOnce();
+    },
+  );
 
   it('keeps credentials on same-origin redirect', async () => {
     const transport = vi.fn<PinnedTransport>(async (req) => {

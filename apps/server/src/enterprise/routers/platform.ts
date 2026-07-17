@@ -10,6 +10,8 @@ import { publishedAiCatalogSchema } from '../contracts/aiCatalog';
 import { parseEnterpriseFeatureFlags } from '../featureFlags';
 import { resolveAccessStatus } from '../guards/accessGrant';
 import { AiCatalogReadService, getEmptyPublishedAiCatalog } from '../services/aiCatalog';
+import { ensureConnectorRuntimeAuditWorkerStarted } from '../services/connectorCatalog/runtimeAuditWorker';
+import { publishConnectorRuntimeCapabilityState } from '../services/connectorCatalog/runtimeEffectiveState';
 import { buildEasyauthDescriptor } from '../services/easyauthManifest';
 import { resolvePublishedManagedResourcePolicies } from '../services/managedResourceCapabilities';
 import { buildPlatformCapabilities } from '../services/platformCapabilities';
@@ -18,6 +20,8 @@ import { ensureSkillCatalogReadinessRegistered } from '../services/skillCatalog'
 import { platformSkillsRouter } from './platformSkills';
 
 ensureSkillCatalogReadinessRegistered();
+
+ensureConnectorRuntimeAuditWorkerStarted();
 
 /**
  * Platform router (M00 read-only + M02 access status / descriptor).
@@ -54,6 +58,18 @@ export const platformRouter = router({
       db: ctx.serverDB,
       flags,
     });
+    const connectorPolicy = managed.published.connectors;
+    if (flags.ENABLE_PLATFORM_MANAGED_CONNECTORS) {
+      await publishConnectorRuntimeCapabilityState({
+        mode:
+          !connectorPolicy.managed || connectorPolicy.enforcementMode !== 'enforced'
+            ? 'legacy'
+            : managed.readiness.connectors
+              ? 'enforced'
+              : 'blocked',
+        revision: managed.revision,
+      });
+    }
 
     return buildPlatformCapabilities({
       adminAccess,

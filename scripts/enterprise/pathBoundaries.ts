@@ -15,6 +15,8 @@ export const ENTERPRISE_UPSTREAM_MOUNT_POINTS = [
   'packages/types/src/serverConfig.ts',
   // M04: block Better Auth admin plugin mutations when platform admin is on
   'src/app/(backend)/api/auth/[...all]/route.ts',
+  // M09: exact thin mount into the enterprise-owned OAuth callback adapter
+  'src/app/(backend)/oauth/connector/callback/route.ts',
   // M05: effective settings + updateSettings adapter
   'apps/server/src/routers/lambda/user.ts',
   // M05: agent / systemAgent / agentGroup runtime reads through resolver adapter
@@ -23,6 +25,10 @@ export const ENTERPRISE_UPSTREAM_MOUNT_POINTS = [
   'apps/server/src/services/taskReview/index.ts',
   'apps/server/src/services/memory/userMemory/persona/service.ts',
   'apps/server/src/services/aiAgent/index.ts',
+  'apps/server/src/services/connector/sync.ts',
+  'apps/server/src/services/toolExecution/index.ts',
+  'apps/server/src/modules/AgentRuntime/buildHost.ts',
+  'apps/server/src/routers/tools/mcp.ts',
   'apps/server/src/routers/lambda/agentGroup.ts',
   // M05: memory runtime reads through the effective settings resolver
   'apps/server/src/routers/lambda/userMemories.ts',
@@ -42,6 +48,8 @@ export const ENTERPRISE_UPSTREAM_MOUNT_POINTS = [
   'src/features/ProfileEditor/AgentTool.tsx',
   'src/routes/(main)/settings/skill/features/PlatformSkillList.tsx',
   'src/routes/(main)/settings/skill/features/SkillDetail/PlatformSkillDetail.tsx',
+  // M09: single ordinary-user managed Connector authorization client seam.
+  'src/features/PlatformConnectorAuthorization/enterpriseAdapter.ts',
   // M06: public managed-resource capability adapter; ordinary surfaces import this adapter only.
   'src/features/ManagedResources/useManagedResource.ts',
   // M06: stable server enforcement seams for the five legacy mutation routers.

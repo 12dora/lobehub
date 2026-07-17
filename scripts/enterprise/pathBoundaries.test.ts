@@ -25,12 +25,23 @@ describe('enterprise path boundaries', () => {
       'apps/server/src/routers/lambda/connector.ts',
     );
     expect(ENTERPRISE_UPSTREAM_MOUNT_POINTS).toContain(
+      'src/app/(backend)/oauth/connector/callback/route.ts',
+    );
+    expect(ENTERPRISE_UPSTREAM_MOUNT_POINTS).toContain(
       'apps/server/src/services/toolExecution/serverRuntimes/skills.ts',
     );
     expect(ENTERPRISE_UPSTREAM_MOUNT_POINTS).toContain('apps/server/src/routers/tools/market.ts');
     expect(ENTERPRISE_UPSTREAM_MOUNT_POINTS).toContain(
       'src/routes/(main)/settings/skill/features/PlatformSkillList.tsx',
     );
+    expect(ENTERPRISE_UPSTREAM_MOUNT_POINTS).toContain(
+      'src/features/PlatformConnectorAuthorization/enterpriseAdapter.ts',
+    );
+    expect(
+      ENTERPRISE_UPSTREAM_MOUNT_POINTS.filter((path) =>
+        path.startsWith('src/features/PlatformConnectorAuthorization/'),
+      ),
+    ).toEqual(['src/features/PlatformConnectorAuthorization/enterpriseAdapter.ts']);
   });
 
   it('treats enterprise trees as owned', () => {

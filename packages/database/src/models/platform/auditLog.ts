@@ -16,6 +16,8 @@ export interface CreatePlatformAuditLogParams {
   afterDiff?: Record<string, unknown> | null;
   beforeDiff?: Record<string, unknown> | null;
   configRevision?: number | null;
+  /** Stable caller-owned identifier for idempotent append-only delivery. */
+  id?: string;
   ipHash?: string | null;
   reason?: string | null;
   requestId?: string | null;
@@ -83,6 +85,7 @@ export class PlatformAuditLogModel {
       afterDiff: params.afterDiff ? redactSensitive(params.afterDiff) : null,
       beforeDiff: params.beforeDiff ? redactSensitive(params.beforeDiff) : null,
       configRevision: params.configRevision ?? null,
+      id: params.id,
       ipHash: params.ipHash ?? null,
       reason: params.reason ?? null,
       requestId: params.requestId ?? null,
@@ -92,8 +95,19 @@ export class PlatformAuditLogModel {
       userAgent: params.userAgent ?? null,
     };
 
-    const [row] = await this.db.insert(platformAuditLogs).values(values).returning();
-    return row;
+    if (!params.id) {
+      const [row] = await this.db.insert(platformAuditLogs).values(values).returning();
+      return row;
+    }
+    const [row] = await this.db
+      .insert(platformAuditLogs)
+      .values(values)
+      .onConflictDoNothing({ target: platformAuditLogs.id })
+      .returning();
+    if (row) return row;
+    const existing = await this.findById(params.id);
+    if (!existing) throw new Error('Failed to append or load idempotent platform audit log');
+    return existing;
   };
 
   findById = async (id: string): Promise<PlatformAuditLogItem | undefined> => {

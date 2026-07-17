@@ -1,4 +1,5 @@
 import type { AgentRuntimeContext } from '@lobechat/agent-runtime';
+import type { ChatToolPayload, ToolSource } from '@lobechat/types';
 import debug from 'debug';
 
 import type { MessageModel } from '@/database/models/message';
@@ -75,9 +76,43 @@ export class HumanInterventionHandler {
       return { newState: state, nextContext: undefined };
     }
 
-    await this.messageModel.updateMessagePlugin(toolMessageId, {
-      intervention: { status: 'approved' },
-    });
+    const plugin = await this.messageModel.findMessagePlugin(toolMessageId);
+    const pendingTool = (state.pendingToolsCalling ?? []).find(
+      (tool: ChatToolPayload) => tool.id === approvedToolCall.id,
+    ) as ChatToolPayload | undefined;
+    if (
+      !plugin ||
+      !pendingTool ||
+      typeof plugin.toolCallId !== 'string' ||
+      plugin.toolCallId !== approvedToolCall.id ||
+      typeof plugin.apiName !== 'string' ||
+      typeof plugin.arguments !== 'string' ||
+      typeof plugin.identifier !== 'string'
+    ) {
+      log('approve tool receipt mismatch');
+      return { newState: state, nextContext: undefined };
+    }
+    const persistedType = plugin.type ?? 'default';
+    if (
+      pendingTool.apiName !== plugin.apiName ||
+      pendingTool.arguments !== plugin.arguments ||
+      pendingTool.identifier !== plugin.identifier ||
+      pendingTool.type !== persistedType
+    ) {
+      log('approve pending tool differs from persisted plugin');
+      return { newState: state, nextContext: undefined };
+    }
+    const source = this.resolvePersistedToolSource(state, plugin.identifier);
+    const persistedToolCall: ChatToolPayload = {
+      apiName: plugin.apiName,
+      arguments: plugin.arguments,
+      id: plugin.toolCallId,
+      identifier: plugin.identifier,
+      ...(source ? { source } : {}),
+      type: persistedType as ChatToolPayload['type'],
+    };
+    const approved = await this.messageModel.approvePendingMessagePlugin(toolMessageId);
+    if (!approved) return { newState: state, nextContext: undefined };
 
     const newState = structuredClone(state);
     newState.lastModified = new Date().toISOString();
@@ -87,6 +122,11 @@ export class HumanInterventionHandler {
     // Keep waiting_for_human while other tools remain pending; resume to
     // running when this was the last one.
     newState.status = newState.pendingToolsCalling.length > 0 ? 'waiting_for_human' : 'running';
+    const connectorApprovalReceipt = (plugin.state as Record<string, unknown> | undefined)
+      ?.platformConnectorApprovalReceipt;
+    if (connectorApprovalReceipt) {
+      newState.metadata = { ...newState.metadata, connectorApprovalReceipt };
+    }
 
     hookDispatcher
       .dispatch(
@@ -95,7 +135,7 @@ export class HumanInterventionHandler {
         {
           action: 'approve',
           operationId: state.metadata?.operationId ?? '',
-          toolCallId: approvedToolCall.id,
+          toolCallId: persistedToolCall.id,
           userId: state.metadata?.userId,
         },
         state.metadata?._hooks,
@@ -106,7 +146,7 @@ export class HumanInterventionHandler {
       newState,
       nextContext: {
         payload: {
-          approvedToolCall,
+          approvedToolCall: persistedToolCall,
           parentMessageId: toolMessageId,
           skipCreateToolMessage: true,
         },
@@ -114,6 +154,14 @@ export class HumanInterventionHandler {
       },
     };
   }
+
+  private resolvePersistedToolSource = (state: any, identifier: string): ToolSource | undefined => {
+    const source =
+      state.operationToolSet?.sourceMap?.[identifier] ?? state.toolSourceMap?.[identifier];
+    return ['builtin', 'client', 'composio', 'lobehubSkill', 'mcp'].includes(source)
+      ? (source as ToolSource)
+      : undefined;
+  };
 
   private async reject(
     state: any,

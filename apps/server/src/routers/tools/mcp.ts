@@ -13,8 +13,9 @@ import { ConnectorToolPermission } from '@/database/schemas';
 import { type ToolCallContent } from '@/libs/mcp';
 import { router } from '@/libs/trpc/lambda';
 import { serverDatabase, telemetry } from '@/libs/trpc/lambda/middleware';
+import { assertLegacyConnectorTransportAllowed } from '@/server/enterprise/guards/connectorRuntimeTransport';
+import { platformSafeMcpService } from '@/server/enterprise/services/connectorCatalog/legacyMcpTransport';
 import { FileService } from '@/server/services/file';
-import { mcpService } from '@/server/services/mcp';
 import { processContentBlocks } from '@/server/services/mcp/contentProcessor';
 
 import { scheduleToolCallReport } from './_helpers';
@@ -82,7 +83,8 @@ export const mcpRouter = router({
   getStreamableMcpServerManifest: mcpProcedure
     .input(GetStreamableMcpServerManifestInputSchema)
     .query(async ({ input }) => {
-      return await mcpService.getStreamableMcpServerManifest(
+      await assertLegacyConnectorTransportAllowed();
+      return await platformSafeMcpService.getStreamableMcpServerManifest(
         input.identifier,
         input.url,
         input.metadata,
@@ -95,33 +97,36 @@ export const mcpRouter = router({
   listTools: mcpProcedure
     .input(mcpClientParamsSchema) // Use the unified schema
     .query(async ({ input }) => {
+      await assertLegacyConnectorTransportAllowed();
       // Stdio check can be done here or rely on the service/client layer
       checkStdioEnvironment(input);
 
       // Pass the validated MCPClientParams to the service
-      return await mcpService.listTools(input);
+      return await platformSafeMcpService.listTools(input);
     }),
 
   // listResources now accepts MCPClientParams directly
   listResources: mcpProcedure
     .input(mcpClientParamsSchema) // Use the unified schema
     .query(async ({ input }) => {
+      await assertLegacyConnectorTransportAllowed();
       // Stdio check can be done here or rely on the service/client layer
       checkStdioEnvironment(input);
 
       // Pass the validated MCPClientParams to the service
-      return await mcpService.listResources(input);
+      return await platformSafeMcpService.listResources(input);
     }),
 
   // listPrompts now accepts MCPClientParams directly
   listPrompts: mcpProcedure
     .input(mcpClientParamsSchema) // Use the unified schema
     .query(async ({ input }) => {
+      await assertLegacyConnectorTransportAllowed();
       // Stdio check can be done here or rely on the service/client layer
       checkStdioEnvironment(input);
 
       // Pass the validated MCPClientParams to the service
-      return await mcpService.listPrompts(input);
+      return await platformSafeMcpService.listPrompts(input);
     }),
 
   // callTool now accepts MCPClientParams, toolName, and args
@@ -135,6 +140,7 @@ export const mcpRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
+      await assertLegacyConnectorTransportAllowed();
       // Stdio check can be done here or rely on the service/client layer
       checkStdioEnvironment(input.params);
 
@@ -181,7 +187,7 @@ export const mcpRouter = router({
       let success = true;
       let errorCode: string | undefined;
       let errorMessage: string | undefined;
-      let result: Awaited<ReturnType<typeof mcpService.callTool>> | undefined;
+      let result: Awaited<ReturnType<typeof platformSafeMcpService.callTool>> | undefined;
 
       try {
         // Create a closure that binds fileService and userId to processContentBlocks
@@ -190,7 +196,7 @@ export const mcpRouter = router({
         };
 
         // Pass the validated params, toolName, args, and bound processContentBlocks to the service
-        result = await mcpService.callTool({
+        result = await platformSafeMcpService.callTool({
           argsStr: input.args,
           clientParams: input.params,
           processContentBlocks: boundProcessContentBlocks,

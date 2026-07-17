@@ -15,11 +15,13 @@ import { withAnyPlatformPermission, withPlatformPermission } from '../guards/pla
 import { assertRecentReauth } from '../guards/reauth';
 import { AdminUserNotFoundError, AdminUserService } from '../services/adminUserService';
 import { ensureAiCatalogReadinessRegistered } from '../services/aiCatalog';
+import { ensureConnectorCatalogReadinessRegistered } from '../services/connectorCatalog/runtimeReadiness';
 import { EasyauthSyncService } from '../services/easyauthSync';
 import { PlatformAuditService } from '../services/platformAudit';
 import { LastSuperAdminError, PlatformRbacService } from '../services/platformRbac';
 import { ensureSkillCatalogReadinessRegistered } from '../services/skillCatalog';
 import { adminAiModelsRouter, adminAiProvidersRouter } from './admin/aiCatalog';
+import { adminConnectorsRouter } from './admin/connectors';
 import { adminManagedResourcesRouter } from './admin/managedResources';
 import { adminSettingsRouter } from './admin/settings';
 import { adminSkillsRouter } from './admin/skills';
@@ -28,6 +30,7 @@ import { adminUsersRouter } from './admin/users';
 const adminBase = authedProcedure.use(serverDatabase).use(withActiveUser());
 
 ensureAiCatalogReadinessRegistered();
+ensureConnectorCatalogReadinessRegistered();
 ensureSkillCatalogReadinessRegistered();
 
 export const adminAuthRouter = router({
@@ -225,6 +228,7 @@ export const adminRouter = router({
   aiProviders: adminAiProvidersRouter,
   audit: adminAuditRouter,
   auth: adminAuthRouter,
+  connectors: adminConnectorsRouter,
   easyauth: adminEasyauthRouter,
   managedResources: adminManagedResourcesRouter,
   roles: adminRolesRouter,
