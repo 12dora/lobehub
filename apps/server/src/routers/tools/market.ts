@@ -268,6 +268,7 @@ const execInSandboxHandler = async ({
         : null;
       execScriptBoundary = {
         authorizedSnapshot:
+          flags.ENABLE_PLATFORM_MANAGED_SKILLS &&
           snapshot.success &&
           proofClaims !== undefined &&
           trustedOperation !== null &&
