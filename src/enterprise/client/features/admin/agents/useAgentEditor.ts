@@ -7,6 +7,7 @@ import { useBlocker } from 'react-router';
 
 import {
   clearAdminAgentDraft,
+  type DraftPersistStatus,
   loadAdminAgentDraft,
   saveAdminAgentDraft,
 } from './localDraftStorage';
@@ -23,7 +24,13 @@ const toDraft = (snapshot: AdminAgentDetailOutput): AdminAgentDraft => {
   return version
     ? {
         config: structuredClone(version.config),
-        dependencySnapshot: structuredClone(version.dependencySnapshot),
+        // Carry the previous version's exact model/skill/connector refs; the operator re-picks
+        // to switch, which replaces the full ref with fresh catalog metadata.
+        dependencies: {
+          connectors: structuredClone(version.dependencySnapshot.connectors),
+          model: structuredClone(version.dependencySnapshot.model),
+          skills: structuredClone(version.dependencySnapshot.skills),
+        },
         version: nextVersion(version.version),
       }
     : {
@@ -38,16 +45,8 @@ const toDraft = (snapshot: AdminAgentDetailOutput): AdminAgentDraft => {
           systemRole: 'You are a helpful organization Agent.',
           tags: [],
         },
-        dependencySnapshot: {
-          connectors: [],
-          model: {
-            modelKey: 'model-key',
-            providerChecksum: '0'.repeat(64),
-            providerKey: 'provider-key',
-            providerRevision: 1,
-          },
-          skills: [],
-        },
+        // No fabricated model — a first version must pick an exact published model.
+        dependencies: { connectors: [], model: null, skills: [] },
         version: '0.1.0',
       };
 };
@@ -57,9 +56,10 @@ export const useAgentEditor = (snapshot: AdminAgentDetailOutput | undefined, edi
   const [draft, setDraft] = useState<AdminAgentDraft | null>(null);
   const [dirty, setDirty] = useState(false);
   const [conflict, setConflict] = useState(false);
-  const [saveState, setSaveState] = useState<'dirty' | 'failed' | 'idle' | 'saved' | 'saving'>(
-    'idle',
-  );
+  const [saveState, setSaveState] = useState<
+    'dirty' | 'failed' | 'idle' | 'refreshFailed' | 'saved' | 'saving'
+  >('idle');
+  const [persistState, setPersistState] = useState<DraftPersistStatus | null>(null);
   const hydratedRef = useRef('');
   const leaveModalRef = useRef<ReturnType<typeof confirmModal> | null>(null);
 
@@ -83,12 +83,13 @@ export const useAgentEditor = (snapshot: AdminAgentDetailOutput | undefined, edi
 
   useEffect(() => {
     if (!editable || !snapshot || !draft || !dirty) return;
-    saveAdminAgentDraft(snapshot.identity.id, {
+    const status = saveAdminAgentDraft(snapshot.identity.id, {
       draft,
       draftToken: snapshot.draftToken,
       revision: snapshot.identity.revision,
       savedAt: new Date().toISOString(),
     });
+    setPersistState(status);
   }, [dirty, draft, editable, snapshot]);
 
   useEffect(() => {
@@ -136,6 +137,7 @@ export const useAgentEditor = (snapshot: AdminAgentDetailOutput | undefined, edi
     setDirty(false);
     setConflict(false);
     setSaveState('idle');
+    setPersistState(null);
   }, [snapshot]);
 
   const markSaved = useCallback(() => {
@@ -144,6 +146,7 @@ export const useAgentEditor = (snapshot: AdminAgentDetailOutput | undefined, edi
     setDirty(false);
     setConflict(false);
     setSaveState('saved');
+    setPersistState(null);
   }, [snapshot]);
 
   return {
@@ -152,6 +155,7 @@ export const useAgentEditor = (snapshot: AdminAgentDetailOutput | undefined, edi
     discard,
     draft,
     markSaved,
+    persistState,
     saveState,
     setConflict,
     setSaveState,

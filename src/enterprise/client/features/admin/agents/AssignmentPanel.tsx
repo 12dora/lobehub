@@ -1,65 +1,57 @@
-import { Alert, Block, Flexbox, Input, Tag, Text, Tooltip } from '@lobehub/ui';
-import { Button, Select, toast } from '@lobehub/ui/base-ui';
-import { useTranslation } from 'react-i18next';
+'use client';
 
+import { Alert, Block, Flexbox, Input, Tag, Text, Tooltip } from '@lobehub/ui';
+import { Button, Select, Switch, toast } from '@lobehub/ui/base-ui';
+import { useTranslation } from 'react-i18next';
+import type { KeyedMutator } from 'swr';
+
+import type { AdminReauthAuthMethod } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
+import { openReasonModal } from '@/enterprise/client/features/admin/users/modals/openReasonModal';
 import { adminAgentsService } from '@/enterprise/client/services/adminAgents';
 
 import type { deriveAdminAgentPermissions } from './controller';
-import { openAgentReasonModal } from './openAgentReasonModal';
 import type { AdminAgentDetailOutput } from './types';
 import { useAssignmentEditor } from './useAssignmentEditor';
 
 interface AssignmentPanelProps {
+  authMethod: AdminReauthAuthMethod | null;
+  mutate: KeyedMutator<AdminAgentDetailOutput>;
   permissions: ReturnType<typeof deriveAdminAgentPermissions>;
-  refresh: () => Promise<AdminAgentDetailOutput | undefined>;
   /** Whether the Rollout backend (PR-052) is available; off ⇒ Start rollout is gated/deferred. */
   rolloutsEnabled: boolean;
   snapshot: AdminAgentDetailOutput;
 }
 
 export const AssignmentPanel = ({
+  authMethod,
+  mutate,
   permissions,
-  refresh,
   rolloutsEnabled,
   snapshot,
 }: AssignmentPanelProps) => {
   const { t } = useTranslation('admin');
-  const editor = useAssignmentEditor(snapshot, refresh);
+  const editor = useAssignmentEditor(snapshot, mutate, authMethod);
 
-  const remove = (assignmentId: string) =>
-    openAgentReasonModal({
-      danger: true,
-      description: t('agentCatalog.assignment.removeDescription'),
-      onConfirm: async (reason) => {
-        await adminAgentsService.removeAssignment({
-          agentId: snapshot.identity.id,
-          assignmentId,
-          expectedDraftToken: snapshot.draftToken,
-          expectedRevision: snapshot.identity.revision,
-          reason,
-        });
-        await refresh();
-        toast.success(t('agentCatalog.assignment.removed'));
-      },
-      submitLabel: t('agentCatalog.assignment.remove'),
-      title: t('agentCatalog.assignment.remove'),
-    });
-
-  const start = (assignmentId: string) =>
-    openAgentReasonModal({
+  const startRollout = (assignmentId: string) =>
+    openReasonModal({
+      authMethod: authMethod ?? undefined,
+      buildPayload: (reason) => ({
+        agentId: snapshot.identity.id,
+        assignmentId,
+        expectedDraftToken: snapshot.draftToken,
+        expectedRevision: snapshot.identity.revision,
+        reason,
+      }),
       description: t('agentCatalog.rollout.startDescription'),
-      onConfirm: async (reason) => {
-        await adminAgentsService.startRollout({
-          agentId: snapshot.identity.id,
-          assignmentId,
-          expectedDraftToken: snapshot.draftToken,
-          expectedRevision: snapshot.identity.revision,
-          reason,
-        });
-        await refresh();
+      onSubmit: async (input) => {
+        await adminAgentsService.startRollout(
+          input as Parameters<typeof adminAgentsService.startRollout>[0],
+        );
+        await mutate();
         toast.success(t('agentCatalog.rollout.started'));
       },
       submitLabel: t('agentCatalog.rollout.start'),
+      targetLabel: snapshot.identity.agentKey,
       title: t('agentCatalog.rollout.start'),
     });
 
@@ -68,9 +60,28 @@ export const AssignmentPanel = ({
       <Text as="h3" fontSize={16} weight={600}>
         {t('agentCatalog.assignment.title')}
       </Text>
+
+      {editor.refreshFailed ? (
+        <Alert
+          showIcon
+          message={t('agentCatalog.recovery.refreshFailed')}
+          type="warning"
+          action={
+            <Button size="small" onClick={editor.retryRefresh}>
+              {t('agentCatalog.recovery.refreshRetry')}
+            </Button>
+          }
+        />
+      ) : null}
+
       {permissions.canAssign ? (
         <Block padding={16} variant="outlined">
           <Flexbox gap={12}>
+            <Text strong>
+              {editor.editingId
+                ? t('agentCatalog.assignment.editingExisting')
+                : t('agentCatalog.assignment.createNew')}
+            </Text>
             <Flexbox horizontal gap={8} wrap="wrap">
               <Select
                 aria-label={t('agentCatalog.assignment.targetType')}
@@ -98,13 +109,34 @@ export const AssignmentPanel = ({
                 }))}
                 onChange={(value) => editor.setMode(value as typeof editor.mode)}
               />
+              <Select
+                aria-label={t('agentCatalog.assignment.versionPolicy')}
+                value={editor.versionPolicy}
+                options={(['latest_published', 'pinned'] as const).map((value) => ({
+                  label: t(`agentCatalog.assignment.versionPolicy.${value}` as never),
+                  value,
+                }))}
+                onChange={(value) => editor.setVersionPolicy(value as typeof editor.versionPolicy)}
+              />
+              {editor.versionPolicy === 'pinned' ? (
+                <Select
+                  aria-label={t('agentCatalog.assignment.pinnedVersion')}
+                  placeholder={t('agentCatalog.assignment.pinnedVersion')}
+                  value={editor.pinnedVersionId ?? undefined}
+                  options={snapshot.versions.map((version) => ({
+                    label: version.version,
+                    value: version.id,
+                  }))}
+                  onChange={(value) =>
+                    editor.setPinnedVersionId((value as string | undefined) ?? null)
+                  }
+                />
+              ) : null}
             </Flexbox>
-            <Input
-              aria-label={t('agentCatalog.reason.label')}
-              placeholder={t('agentCatalog.reason.placeholder')}
-              value={editor.reason}
-              onChange={(event) => editor.setReason(event.target.value)}
-            />
+            <Flexbox horizontal align="center" gap={8}>
+              <Switch checked={editor.enabled} onChange={(value) => editor.setEnabled(value)} />
+              <Text>{t('agentCatalog.assignment.enabled')}</Text>
+            </Flexbox>
             {editor.error ? <Alert message={editor.error} type="error" /> : null}
             {editor.preview ? (
               <Alert
@@ -117,32 +149,34 @@ export const AssignmentPanel = ({
                 })}
               />
             ) : null}
-            <Flexbox horizontal gap={8}>
+            <Flexbox horizontal gap={8} wrap="wrap">
               <Button
-                disabled={
-                  editor.busy || (editor.targetType !== 'global' && !editor.targetId.trim())
-                }
+                disabled={editor.busy || Boolean(editor.validationError)}
                 onClick={() => void editor.previewAssignment()}
               >
                 {t('agentCatalog.assignment.preview')}
               </Button>
               <Button
+                disabled={editor.busy || Boolean(editor.validationError)}
                 type="primary"
-                disabled={
-                  editor.busy ||
-                  !editor.reason.trim() ||
-                  (editor.targetType !== 'global' && !editor.targetId.trim())
-                }
-                onClick={() => void editor.createAssignment()}
+                onClick={editor.submit}
               >
-                {t('agentCatalog.assignment.create')}
+                {editor.editingId
+                  ? t('agentCatalog.assignment.update')
+                  : t('agentCatalog.assignment.create')}
               </Button>
+              {editor.editingId ? (
+                <Button onClick={editor.resetForm}>
+                  {t('agentCatalog.assignment.cancelEdit')}
+                </Button>
+              ) : null}
             </Flexbox>
           </Flexbox>
         </Block>
       ) : (
         <Alert message={t('agentCatalog.readOnly.assignment')} type="info" />
       )}
+
       {snapshot.assignments.length === 0 ? (
         <Text type="secondary">{t('agentCatalog.assignment.empty')}</Text>
       ) : (
@@ -150,7 +184,7 @@ export const AssignmentPanel = ({
           <Block key={assignment.id} padding={16} variant="outlined">
             <Flexbox horizontal align="center" gap={12} justify="space-between" wrap="wrap">
               <Flexbox gap={4}>
-                <Flexbox horizontal gap={6}>
+                <Flexbox horizontal gap={6} wrap="wrap">
                   <Tag>{t(`agentCatalog.assignment.mode.${assignment.mode}` as never)}</Tag>
                   <Tag>{t(`agentCatalog.assignment.target.${assignment.targetType}` as never)}</Tag>
                   <Tag>
@@ -158,6 +192,9 @@ export const AssignmentPanel = ({
                       `agentCatalog.assignment.versionPolicy.${assignment.versionPolicy}` as never,
                     )}
                   </Tag>
+                  {assignment.enabled ? null : (
+                    <Tag color="warning">{t('agentCatalog.assignment.disabledTag')}</Tag>
+                  )}
                 </Flexbox>
                 <Text code type="secondary">
                   {assignment.targetId}
@@ -165,8 +202,11 @@ export const AssignmentPanel = ({
               </Flexbox>
               {permissions.canAssign ? (
                 <Flexbox horizontal gap={8}>
+                  <Button onClick={() => editor.edit(assignment)}>
+                    {t('agentCatalog.assignment.edit')}
+                  </Button>
                   {rolloutsEnabled ? (
-                    <Button onClick={() => start(assignment.id)}>
+                    <Button onClick={() => startRollout(assignment.id)}>
                       {t('agentCatalog.rollout.start')}
                     </Button>
                   ) : (
@@ -174,7 +214,7 @@ export const AssignmentPanel = ({
                       <Button disabled>{t('agentCatalog.rollout.start')}</Button>
                     </Tooltip>
                   )}
-                  <Button danger onClick={() => remove(assignment.id)}>
+                  <Button danger onClick={() => editor.remove(assignment)}>
                     {t('agentCatalog.assignment.remove')}
                   </Button>
                 </Flexbox>

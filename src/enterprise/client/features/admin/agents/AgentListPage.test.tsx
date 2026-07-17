@@ -9,11 +9,17 @@ import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import AgentListPage from './AgentListPage';
 
 const mocks = vi.hoisted(() => ({
-  data: undefined as unknown,
-  error: undefined as unknown,
-  isLoading: false,
-  mutate: vi.fn(),
-  permissions: ['platform_agent:read:all'] as string[],
+  list: {
+    error: undefined as unknown,
+    hasMore: false,
+    isEmpty: false,
+    isLoadingInitial: false,
+    isLoadingMore: false,
+    items: [] as unknown[],
+    loadMore: vi.fn(),
+    retry: vi.fn(),
+  },
+  permissions: [] as string[],
 }));
 
 vi.mock('antd-style', () => ({ createStaticStyles: () => ({ identity: '' }) }));
@@ -23,18 +29,13 @@ vi.mock('@/enterprise/client/providers/AdminAccessProvider', () => ({
 }));
 vi.mock('./useAdminAgents', () => ({
   refreshAdminAgentLists: vi.fn(),
-  useFetchAdminAgents: () => ({
-    data: mocks.data,
-    error: mocks.error,
-    isLoading: mocks.isLoading,
-    mutate: mocks.mutate,
-  }),
+  useAdminAgentListPagination: () => mocks.list,
 }));
 vi.mock('./openCreateAgentModal', () => ({ openCreateAgentModal: vi.fn() }));
 vi.mock('@/components/AsyncBoundary', () => ({
-  default: ({ children, data, empty, error, isEmpty, isLoading }: any) => {
-    if (isLoading && data === undefined) return <div role="status">loading</div>;
-    if (error && data === undefined) return <div role="alert">error</div>;
+  default: ({ children, empty, error, isEmpty, isLoading }: any) => {
+    if (isLoading) return <div role="status">loading</div>;
+    if (error) return <div role="alert">error</div>;
     if (isEmpty) return <div>{empty}</div>;
     return children;
   },
@@ -64,14 +65,21 @@ vi.mock('../primitives/StatusBadge', () => ({ default: () => <span>status</span>
 
 describe('AgentListPage state precedence', () => {
   beforeEach(() => {
-    mocks.data = undefined;
-    mocks.error = undefined;
-    mocks.isLoading = false;
+    mocks.list = {
+      error: undefined,
+      hasMore: false,
+      isEmpty: false,
+      isLoadingInitial: false,
+      isLoadingMore: false,
+      items: [],
+      loadMore: vi.fn(),
+      retry: vi.fn(),
+    };
     mocks.permissions = [PLATFORM_PERMISSIONS.AGENT_READ];
   });
 
   it('renders first-load error instead of the empty state', () => {
-    mocks.error = new Error('offline');
+    mocks.list.error = new Error('offline');
     render(
       <MemoryRouter>
         <AgentListPage />
@@ -82,7 +90,7 @@ describe('AgentListPage state precedence', () => {
   });
 
   it('shows a real empty state only after a settled empty response', () => {
-    mocks.data = { items: [] };
+    mocks.list.isEmpty = true;
     render(
       <MemoryRouter>
         <AgentListPage />
@@ -91,8 +99,19 @@ describe('AgentListPage state precedence', () => {
     expect(screen.getByText('agentCatalog.list.empty.default')).toBeTruthy();
   });
 
+  it('surfaces a load-more control while more pages remain', () => {
+    mocks.list.items = [{ identity: { id: 'a' } }];
+    mocks.list.hasMore = true;
+    render(
+      <MemoryRouter>
+        <AgentListPage />
+      </MemoryRouter>,
+    );
+    expect(screen.getByText('agentCatalog.list.loadMore')).toBeTruthy();
+  });
+
   it('does not expose create to a read-only auditor', () => {
-    mocks.data = { items: [] };
+    mocks.list.isEmpty = true;
     render(
       <MemoryRouter>
         <AgentListPage />

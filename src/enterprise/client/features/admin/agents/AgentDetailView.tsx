@@ -1,10 +1,12 @@
 'use client';
 
 import { Alert, Block, Flexbox, Tag, Text } from '@lobehub/ui';
-import { Button, toast } from '@lobehub/ui/base-ui';
+import { Button } from '@lobehub/ui/base-ui';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
+import type { KeyedMutator } from 'swr';
 
+import type { AdminReauthAuthMethod } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 import { adminAgentsService } from '@/enterprise/client/services/adminAgents';
 
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
@@ -13,155 +15,39 @@ import { AgentEditorFields } from './AgentEditorFields';
 import { AssignmentPanel } from './AssignmentPanel';
 import type { deriveAdminAgentPermissions } from './controller';
 import { deriveAdminAgentActionAvailability } from './controller';
-import { openAgentReasonModal } from './openAgentReasonModal';
-import { openArchiveAgentModal } from './openArchiveAgentModal';
+import { DependencyEditor } from './DependencyEditor';
 import { RolloutPanel } from './RolloutPanel';
 import type { AdminAgentDetailOutput } from './types';
-import { fetchAllAdminAgents } from './useAdminAgents';
+import { useAgentActions } from './useAgentActions';
 import type { useAgentEditor } from './useAgentEditor';
 
 interface AgentDetailViewProps {
+  authMethod: AdminReauthAuthMethod | null;
   editor: ReturnType<typeof useAgentEditor>;
+  mutate: KeyedMutator<AdminAgentDetailOutput>;
   permissions: ReturnType<typeof deriveAdminAgentPermissions>;
-  refresh: () => Promise<AdminAgentDetailOutput | undefined>;
   snapshot: AdminAgentDetailOutput;
 }
 
+const PERSIST_HINT_KEY = {
+  blocked: 'agentCatalog.recovery.blocked',
+  saved: 'agentCatalog.recovery.saved',
+  too_large: 'agentCatalog.recovery.tooLarge',
+  unavailable: 'agentCatalog.recovery.unavailable',
+} as const;
+
 export const AgentDetailView = memo(
-  ({ editor, permissions, refresh, snapshot }: AgentDetailViewProps) => {
+  ({ authMethod, editor, mutate, permissions, snapshot }: AgentDetailViewProps) => {
     const { t } = useTranslation('admin');
     const current = snapshot.versions.find(({ id }) => id === snapshot.identity.currentVersionId);
     const latest = snapshot.versions[0];
+    const modelReady = Boolean(editor.draft?.dependencies.model);
     const availability = deriveAdminAgentActionAvailability({
       dirty: editor.dirty,
       hasCurrentVersion: Boolean(latest),
       permissions,
     });
-
-    const save = async (reason: string) => {
-      if (!editor.draft) return;
-      editor.setSaveState('saving');
-      try {
-        await adminAgentsService.appendVersion({
-          agentId: snapshot.identity.id,
-          config: editor.draft.config,
-          dependencySnapshot: editor.draft.dependencySnapshot,
-          expectedDraftToken: snapshot.draftToken,
-          expectedRevision: snapshot.identity.revision,
-          reason,
-          version: editor.draft.version,
-        });
-        editor.markSaved();
-        await refresh();
-        toast.success(t('agentCatalog.toast.saved'));
-      } catch (cause) {
-        editor.setSaveState('failed');
-        if (cause instanceof Error && cause.message.includes('CONFLICT')) editor.setConflict(true);
-        toast.error(cause instanceof Error ? cause.message : String(cause));
-      }
-    };
-
-    const openSave = () =>
-      openAgentReasonModal({
-        description: t('agentCatalog.save.description'),
-        onConfirm: save,
-        submitLabel: t('agentCatalog.action.saveVersion'),
-        title: t('agentCatalog.save.title'),
-      });
-
-    const publishVersion = (versionId: string) =>
-      openAgentReasonModal({
-        description: t('agentCatalog.publish.description'),
-        onConfirm: async (reason) => {
-          await adminAgentsService.publish({
-            agentId: snapshot.identity.id,
-            expectedDraftToken: snapshot.draftToken,
-            expectedRevision: snapshot.identity.revision,
-            reason,
-            versionId,
-          });
-          await refresh();
-          toast.success(t('agentCatalog.toast.published'));
-        },
-        submitLabel: t('agentCatalog.publish.submit'),
-        title: t('agentCatalog.publish.title'),
-      });
-
-    const rollback = (versionId: string) =>
-      openAgentReasonModal({
-        danger: true,
-        description: t('agentCatalog.rollback.description'),
-        onConfirm: async (reason) => {
-          await adminAgentsService.rollback({
-            agentId: snapshot.identity.id,
-            expectedDraftToken: snapshot.draftToken,
-            expectedRevision: snapshot.identity.revision,
-            reason,
-            targetVersionId: versionId,
-          });
-          await refresh();
-          toast.success(t('agentCatalog.toast.rolledBack'));
-        },
-        submitLabel: t('agentCatalog.rollback.submit'),
-        title: t('agentCatalog.rollback.title'),
-      });
-
-    const setDefaultInbox = () =>
-      openAgentReasonModal({
-        danger: true,
-        description: t('agentCatalog.defaultSwitch.description'),
-        onConfirm: async (reason) => {
-          const currentDefaultIdentity = (await fetchAllAdminAgents({}, adminAgentsService)).find(
-            ({ identity }) => identity.isDefault,
-          )?.identity;
-          const currentDefault =
-            currentDefaultIdentity && currentDefaultIdentity.id !== snapshot.identity.id
-              ? await adminAgentsService.get({ id: currentDefaultIdentity.id })
-              : null;
-          await adminAgentsService.setDefaultInbox({
-            currentDefault: currentDefault
-              ? {
-                  agentId: currentDefault.identity.id,
-                  expectedDraftToken: currentDefault.draftToken,
-                  expectedRevision: currentDefault.identity.revision,
-                }
-              : null,
-            nextDefault: {
-              agentId: snapshot.identity.id,
-              expectedDraftToken: snapshot.draftToken,
-              expectedRevision: snapshot.identity.revision,
-            },
-            reason,
-          });
-          await refresh();
-          toast.success(t('agentCatalog.defaultSwitch.success'));
-        },
-        submitLabel: t('agentCatalog.defaultSwitch.submit'),
-        title: t('agentCatalog.defaultSwitch.title'),
-      });
-
-    const archive = async () => {
-      const candidates = snapshot.identity.isDefault
-        ? (await fetchAllAdminAgents({ status: 'published' }, adminAgentsService))
-            .filter(({ identity }) => identity.id !== snapshot.identity.id)
-            .map(({ displayName, identity }) => ({ label: displayName, value: identity.id }))
-        : [];
-      openArchiveAgentModal({
-        candidates,
-        isDefault: snapshot.identity.isDefault,
-        onConfirm: async (reason, replacementAgentId) => {
-          await adminAgentsService.archive({
-            agentId: snapshot.identity.id,
-            expectedDraftToken: snapshot.draftToken,
-            expectedRevision: snapshot.identity.revision,
-            reason,
-            replacementAgentId,
-          });
-          await refresh();
-          toast.success(t('agentCatalog.toast.archived'));
-        },
-      });
-    };
+    const actions = useAgentActions({ authMethod, editor, mutate, permissions, snapshot });
 
     return (
       <AdminPageTemplate
@@ -171,9 +57,11 @@ export const AgentDetailView = memo(
           <Flexbox horizontal gap={8} wrap="wrap">
             {availability.canSaveVersion && editor.draft ? (
               <Button
-                disabled={!editor.dirty || editor.conflict || editor.saveState === 'saving'}
                 type="primary"
-                onClick={openSave}
+                disabled={
+                  !editor.dirty || editor.conflict || editor.saveState === 'saving' || !modelReady
+                }
+                onClick={actions.save}
               >
                 {editor.saveState === 'saving'
                   ? t('agentCatalog.action.saving')
@@ -185,7 +73,7 @@ export const AgentDetailView = memo(
             (latest.id !== current?.id || snapshot.identity.status !== 'published') ? (
               <Button
                 disabled={!availability.canPublishNow}
-                onClick={() => publishVersion(latest.id)}
+                onClick={() => actions.publish(latest.id)}
               >
                 {t('agentCatalog.publish.submit')}
               </Button>
@@ -193,12 +81,20 @@ export const AgentDetailView = memo(
             {permissions.canPublish &&
             !snapshot.identity.isDefault &&
             snapshot.identity.status === 'published' ? (
-              <Button danger disabled={!availability.canPublishNow} onClick={setDefaultInbox}>
+              <Button
+                danger
+                disabled={!availability.canPublishNow}
+                onClick={() => void actions.setDefaultInbox()}
+              >
                 {t('agentCatalog.defaultSwitch.submit')}
               </Button>
             ) : null}
             {permissions.canDelete ? (
-              <Button danger disabled={!availability.canArchiveNow} onClick={() => void archive()}>
+              <Button
+                danger
+                disabled={!availability.canArchiveNow}
+                onClick={() => void actions.archive()}
+              >
                 {t('agentCatalog.archive.submit')}
               </Button>
             ) : null}
@@ -217,6 +113,19 @@ export const AgentDetailView = memo(
               {t('agentCatalog.revision', { revision: snapshot.identity.revision })}
             </Text>
           </Flexbox>
+          {actions.refreshFailed ? (
+            <Alert
+              showIcon
+              description={t('agentCatalog.recovery.refreshFailedDescription')}
+              message={t('agentCatalog.recovery.refreshFailed')}
+              type="warning"
+              action={
+                <Button size="small" onClick={() => void actions.retryRefresh()}>
+                  {t('agentCatalog.recovery.refreshRetry')}
+                </Button>
+              }
+            />
+          ) : null}
           {editor.conflict ? (
             <Alert
               description={t('agentCatalog.conflict.description')}
@@ -232,13 +141,31 @@ export const AgentDetailView = memo(
           {editor.saveState === 'failed' ? (
             <Alert message={t('agentCatalog.save.failed')} type="error" />
           ) : null}
+          {editor.persistState && editor.persistState !== 'saved' ? (
+            <Alert showIcon message={t(PERSIST_HINT_KEY[editor.persistState])} type="warning" />
+          ) : editor.persistState === 'saved' ? (
+            <Text type="secondary">{t(PERSIST_HINT_KEY.saved)}</Text>
+          ) : null}
           {editor.draft ? (
             <Block padding={20} variant="outlined">
-              <AgentEditorFields
-                draft={editor.draft}
-                editable={permissions.canUpdate}
-                onChange={editor.updateDraft}
-              />
+              <Flexbox gap={20}>
+                <AgentEditorFields
+                  draft={editor.draft}
+                  editable={permissions.canUpdate}
+                  onChange={editor.updateDraft}
+                />
+                <DependencyEditor
+                  dependencies={editor.draft.dependencies}
+                  editable={permissions.canUpdate}
+                  enabled={permissions.canUpdate}
+                  onChange={(next) =>
+                    editor.updateDraft((currentDraft) => ({
+                      ...currentDraft,
+                      dependencies: next,
+                    }))
+                  }
+                />
+              </Flexbox>
             </Block>
           ) : null}
           <Flexbox gap={12}>
@@ -275,7 +202,7 @@ export const AgentDetailView = memo(
                     <Button
                       danger
                       disabled={!availability.canRollbackNow}
-                      onClick={() => rollback(version.id)}
+                      onClick={() => actions.rollback(version.id)}
                     >
                       {t('agentCatalog.rollback.submit')}
                     </Button>
@@ -285,15 +212,16 @@ export const AgentDetailView = memo(
             ))}
           </Flexbox>
           <AssignmentPanel
+            authMethod={authMethod}
+            mutate={mutate}
             permissions={permissions}
-            refresh={refresh}
             rolloutsEnabled={adminAgentsService.capabilities.rollouts}
             snapshot={snapshot}
           />
           <RolloutPanel
             enabled={adminAgentsService.capabilities.rollouts}
             permissions={permissions}
-            refresh={refresh}
+            refresh={mutate}
             snapshot={snapshot}
           />
         </Flexbox>
