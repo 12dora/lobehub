@@ -128,10 +128,10 @@ export const platformAgentVersions = pgTable(
 
     agentId: text('agent_id')
       .notNull()
-      .references(() => platformAgents.id, { onDelete: 'restrict' }),
+      .references((): AnyPgColumn => platformAgents.id, { onDelete: 'restrict' }),
     version: text('version').notNull(),
     config: jsonb('config')
-      .$type<PlatformAgentVersionConfig>()
+      .$type<PlatformAgentVersionConfig | Record<string, unknown>>()
       .notNull()
       .default(sql`'{}'::jsonb`),
     /** @deprecated M01 compatibility result; M10 uses the exact dependency snapshot. */
