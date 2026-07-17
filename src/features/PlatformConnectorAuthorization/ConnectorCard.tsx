@@ -25,15 +25,27 @@ const styles = createStaticStyles(({ css }) => ({
 }));
 
 interface ConnectorCardProps {
+  actionsDisabled: boolean;
+  authorizing: boolean;
   busy: boolean;
   connector: ManagedConnector;
   feedback: ConnectorActionFeedback | null;
   onAuthorize: (connectorId: string) => void;
+  onCancelAuthorization: () => void;
   onDisconnect: (connectorId: string) => void;
 }
 
 const ConnectorCard = memo<ConnectorCardProps>(
-  ({ busy, connector, feedback, onAuthorize, onDisconnect }) => {
+  ({
+    actionsDisabled,
+    authorizing,
+    busy,
+    connector,
+    feedback,
+    onAuthorize,
+    onCancelAuthorization,
+    onDisconnect,
+  }) => {
     const { t } = useTranslation('setting');
     const availability = resolveConnectorAvailability(connector);
     const connected = connector.binding?.status === 'connected';
@@ -126,13 +138,22 @@ const ConnectorCard = memo<ConnectorCardProps>(
           {connector.credentialMode === 'per_user_oauth' ? (
             <Flexbox horizontal gap={8} justify={'flex-end'}>
               {canDisconnectConnector(connector.binding) ? (
-                <Button disabled={busy} loading={busy} onClick={requestDisconnect}>
+                <Button
+                  disabled={actionsDisabled}
+                  loading={busy && !authorizing}
+                  onClick={requestDisconnect}
+                >
                   {t('platformConnectors.actions.disconnect')}
                 </Button>
               ) : null}
+              {authorizing ? (
+                <Button danger onClick={onCancelAuthorization}>
+                  {t('platformConnectors.actions.cancelAuthorization')}
+                </Button>
+              ) : null}
               <Button
-                disabled={busy}
-                loading={busy}
+                disabled={actionsDisabled}
+                loading={authorizing}
                 type={'primary'}
                 onClick={() => void onAuthorize(connector.id)}
               >
