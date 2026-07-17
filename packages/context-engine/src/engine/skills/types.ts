@@ -1,4 +1,8 @@
+import type { PlatformSkillOperationSnapshot } from '@lobechat/types';
+
 import type { SkillMeta } from '../../providers/SkillContextProvider';
+
+export type { PlatformSkillOperationSnapshot, PlatformSkillPinnedRef } from '@lobechat/types';
 
 /**
  * Application-layer checker that determines whether a skill is available
@@ -23,6 +27,15 @@ export interface SkillEngineOptions {
 export interface OperationSkillSet {
   /** Plugin IDs enabled on this agent — skills matching these IDs are auto-activated */
   enabledPluginIds: string[];
+  /**
+   * Immutable platform catalog selected when the operation was created.
+   *
+   * The runtime must resolve these exact references instead of consulting the
+   * moving catalog head. This keeps a running operation deterministic across a
+   * publish/rollback while still allowing an already-published historical
+   * version to be loaded after its Skill identity is archived.
+   */
+  platformCatalog?: PlatformSkillOperationSnapshot;
   /** All available skills after enableChecker filtering */
   skills: SkillMeta[];
 }

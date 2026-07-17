@@ -5,11 +5,23 @@ import { z } from 'zod';
 
 import { withScopedPermission } from '@/business/server/trpc-middlewares/rbacPermission';
 import { wsCompatProcedure } from '@/business/server/trpc-middlewares/workspaceAuth';
+import { AgentOperationModel } from '@/database/models/agentOperation';
 import { AgentSkillModel } from '@/database/models/agentSkill';
 import { FileModel } from '@/database/models/file';
 import { router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
+import {
+  hashPlatformSkillOperationRefs,
+  verifyPlatformSkillOperationProof,
+} from '@/libs/trpc/utils/internalJwt';
+import { resolvePlatformSkillPinnedInputSchema } from '@/server/enterprise/contracts/skillCatalog';
+import { parseEnterpriseFeatureFlags } from '@/server/enterprise/featureFlags';
 import { withManagedResourceGuard } from '@/server/enterprise/guards/managedResource';
+import { resolvePublishedManagedResourcePolicies } from '@/server/enterprise/services/managedResourceCapabilities';
+import {
+  getBuiltinSkillDefinitions,
+  SkillCatalogReadService,
+} from '@/server/enterprise/services/skillCatalog';
 import { FileService } from '@/server/services/file';
 import { MarketService } from '@/server/services/market';
 import {
@@ -110,6 +122,28 @@ const updateSkillSchema = z.object({
   // All metadata should be passed through manifest
   manifest: skillManifestSchema.partial().optional(),
 });
+
+const platformSkillExecutionProjectionSchema = z
+  .object({
+    checksum: z.string().regex(/^[a-f0-9]{64}$/),
+    content: z.string(),
+    description: z.string().nullable(),
+    identifier: z.string(),
+    name: z.string(),
+    resources: z.array(
+      z
+        .object({
+          checksum: z.string().regex(/^[a-f0-9]{64}$/),
+          content: z.string(),
+          mediaType: z.string(),
+          path: z.string(),
+          sizeBytes: z.number().int().nonnegative(),
+        })
+        .strict(),
+    ),
+    version: z.string(),
+  })
+  .strict();
 
 // ===== Router =====
 
@@ -285,6 +319,97 @@ export const agentSkillsRouter = router({
 
         throw error;
       }
+    }),
+
+  /**
+   * Authenticated browser/client execution projection for an explicit catalog
+   * pin. It is deliberately separate from the public platform catalog and
+   * legacy user-Skill reads, so flag-off/non-enforced callers retain their
+   * original path with no additional policy/catalog I/O.
+   */
+  resolvePlatformPinned: wsCompatProcedure
+    .use(serverDatabase)
+    .input(resolvePlatformSkillPinnedInputSchema)
+    .output(platformSkillExecutionProjectionSchema)
+    .query(async ({ ctx, input }) => {
+      const flags = parseEnterpriseFeatureFlags(process.env);
+      if (!flags.ENABLE_PLATFORM_MANAGED_SKILLS) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Skill not found' });
+      }
+
+      const catalogService = new SkillCatalogReadService(ctx.serverDB, {
+        builtinSkills: getBuiltinSkillDefinitions(),
+      });
+      if (input.operation) {
+        const claims = await verifyPlatformSkillOperationProof(input.operation.proof, ctx.userId);
+        const trustedOperation = claims
+          ? await new AgentOperationModel(
+              ctx.serverDB,
+              ctx.userId,
+              ctx.workspaceId ?? undefined,
+            ).findById(claims.operationId)
+          : undefined;
+        const authorized =
+          claims !== undefined &&
+          trustedOperation !== null &&
+          trustedOperation !== undefined &&
+          trustedOperation.status === 'running' &&
+          trustedOperation.agentId === claims.agentId &&
+          trustedOperation.id === claims.operationId &&
+          claims.agentId === input.operation.agentId &&
+          claims.operationId === input.operation.operationId &&
+          claims.revision === input.operation.revision &&
+          claims.refsHash === hashPlatformSkillOperationRefs(input.operation.refs) &&
+          input.operation.refs.some(
+            (ref) =>
+              ref.skillKey === input.ref.skillKey &&
+              ref.version === input.ref.version &&
+              ref.checksum === input.ref.checksum,
+          );
+        if (!authorized) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'Skill not found' });
+        }
+      } else {
+        const managed = await resolvePublishedManagedResourcePolicies({ db: ctx.serverDB, flags });
+        if (!managed.publicCapabilities.skills) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'Skill not found' });
+        }
+        const current = (await catalogService.getPublishedCatalog()).skills.find(
+          (skill) => skill.skillKey === input.ref.skillKey,
+        );
+        if (current?.version !== input.ref.version || current.checksum !== input.ref.checksum) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'Skill not found' });
+        }
+      }
+
+      // Resolve the immutable published revision directly. Re-reading the moving
+      // catalog head here would break an operation that captured v1 before v2
+      // was published or the current head was archived.
+      const skill = await catalogService.resolvePinnedForExecution(input.ref);
+      if (
+        !skill ||
+        skill.contentRef !== null ||
+        skill.resources.some(
+          (resource) => resource.content === undefined || resource.contentRef !== undefined,
+        )
+      ) {
+        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Skill is not executable' });
+      }
+      return {
+        checksum: skill.checksum,
+        content: skill.content,
+        description: skill.description,
+        identifier: skill.skillKey,
+        name: skill.displayName,
+        resources: skill.resources.map((resource) => ({
+          checksum: resource.checksum,
+          content: resource.content!,
+          mediaType: resource.mediaType,
+          path: resource.path,
+          sizeBytes: resource.sizeBytes,
+        })),
+        version: skill.version,
+      };
     }),
 
   search: skillProcedure.input(z.object({ query: z.string() })).query(async ({ ctx, input }) => {

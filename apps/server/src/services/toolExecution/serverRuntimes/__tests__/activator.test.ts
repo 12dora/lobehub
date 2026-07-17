@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   findById: vi.fn(),
   findByName: vi.fn(),
   getAgentConfigById: vi.fn(),
+  platformFindByName: vi.fn(),
 }));
 
 vi.mock('@lobechat/builtin-skills', () => ({
@@ -29,6 +30,15 @@ vi.mock('@/helpers/skillFilters', () => ({
   filterBuiltinSkills: vi.fn((skills: unknown) => skills),
 }));
 
+vi.mock('@/server/enterprise/services/skillCatalog', () => ({
+  createPlatformSkillOperationResolver: vi.fn(() => ({
+    findAll: vi.fn(),
+    findById: vi.fn(),
+    findByName: mocks.platformFindByName,
+    readResource: vi.fn(),
+  })),
+}));
+
 vi.mock('@/server/services/agentSignal/procedure', () => ({
   emitToolOutcomeSafely: vi.fn().mockResolvedValue(undefined),
   resolveToolOutcomeScope: vi.fn(() => ({ scope: 'agent', scopeKey: 'agent-1' })),
@@ -45,6 +55,7 @@ describe('activatorRuntime', () => {
     mocks.findAll.mockResolvedValue({ data: [], total: 0 });
     mocks.findById.mockResolvedValue(undefined);
     mocks.findByName.mockResolvedValue(undefined);
+    mocks.platformFindByName.mockResolvedValue(undefined);
   });
 
   describe('activateSkill — disabled skill enforcement', () => {
@@ -104,5 +115,38 @@ describe('activatorRuntime', () => {
 
       expect(result.success).toBe(true);
     });
+  });
+
+  it('uses only the pinned platform resolver for a managed operation snapshot', async () => {
+    mocks.platformFindByName.mockResolvedValue({
+      content: '# Managed',
+      id: 'platform-skill:managed.skill',
+      identifier: 'managed.skill',
+      name: 'managed.skill',
+      resources: {},
+    });
+    const { activatorRuntime } = await import('../activator');
+    const runtime = await activatorRuntime.factory({
+      agentId: 'agent-1',
+      operationSkillSet: {
+        enabledPluginIds: [],
+        platformCatalog: {
+          refs: [{ checksum: 'a'.repeat(64), skillKey: 'managed.skill', version: '1.0.0' }],
+          revision: 'r1',
+        },
+        skills: [],
+      },
+      serverDB: {} as never,
+      toolManifestMap: {},
+      userId: 'user-1',
+    });
+
+    await expect(runtime.activateSkill({ name: 'managed.skill' })).resolves.toMatchObject({
+      content: '# Managed',
+      success: true,
+    });
+    expect(mocks.platformFindByName).toHaveBeenCalledWith('managed.skill');
+    expect(mocks.getAgentConfigById).not.toHaveBeenCalled();
+    expect(mocks.findByName).not.toHaveBeenCalled();
   });
 });

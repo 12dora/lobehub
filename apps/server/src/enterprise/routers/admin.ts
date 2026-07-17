@@ -18,14 +18,17 @@ import { ensureAiCatalogReadinessRegistered } from '../services/aiCatalog';
 import { EasyauthSyncService } from '../services/easyauthSync';
 import { PlatformAuditService } from '../services/platformAudit';
 import { LastSuperAdminError, PlatformRbacService } from '../services/platformRbac';
+import { ensureSkillCatalogReadinessRegistered } from '../services/skillCatalog';
 import { adminAiModelsRouter, adminAiProvidersRouter } from './admin/aiCatalog';
 import { adminManagedResourcesRouter } from './admin/managedResources';
 import { adminSettingsRouter } from './admin/settings';
+import { adminSkillsRouter } from './admin/skills';
 import { adminUsersRouter } from './admin/users';
 
 const adminBase = authedProcedure.use(serverDatabase).use(withActiveUser());
 
 ensureAiCatalogReadinessRegistered();
+ensureSkillCatalogReadinessRegistered();
 
 export const adminAuthRouter = router({
   /**
@@ -226,6 +229,7 @@ export const adminRouter = router({
   managedResources: adminManagedResourcesRouter,
   roles: adminRolesRouter,
   settings: adminSettingsRouter,
+  skills: adminSkillsRouter,
   users: adminUsersRouter,
 });
 

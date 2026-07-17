@@ -2011,16 +2011,20 @@ table platform_skill_versions {
   id text [pk, not null]
   skill_id text [not null]
   version text [not null]
-  manifest jsonb [not null, default: `{}`]
+  manifest jsonb [not null]
+  content text [not null]
   content_ref text
-  zip_hash text
+  resources jsonb [not null, default: `[]`]
+  checksum text [not null]
   validation_result jsonb
   created_by text
   created_at "timestamp with time zone" [not null, default: `now()`]
 
   indexes {
     (skill_id, version) [name: 'platform_skill_versions_skill_id_version_unique', unique]
+    (skill_id, id) [name: 'platform_skill_versions_skill_id_id_unique', unique]
     skill_id [name: 'platform_skill_versions_skill_id_idx']
+    checksum [name: 'platform_skill_versions_checksum_idx']
   }
 }
 
@@ -2031,11 +2035,12 @@ table platform_skills {
   description text
   source varchar(32) [not null, default: 'uploaded']
   distribution varchar(32) [not null, default: 'optional']
+  allow_builtin_override boolean [not null, default: false]
   enabled boolean [not null, default: false]
-  current_version text
+  current_version_id text
   status varchar(32) [not null, default: 'draft']
   revision integer [not null, default: 0]
-  manifest jsonb [default: `{}`]
+  draft_sequence integer [not null, default: 0]
   created_by text
   updated_by text
   created_at "timestamp with time zone" [not null, default: `now()`]
@@ -2045,6 +2050,10 @@ table platform_skills {
     skill_key [name: 'platform_skills_skill_key_unique', unique]
     status [name: 'platform_skills_status_idx']
     enabled [name: 'platform_skills_enabled_idx']
+    distribution [name: 'platform_skills_distribution_idx']
+    current_version_id [name: 'platform_skills_current_version_id_idx']
+
+
   }
 }
 

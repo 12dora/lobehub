@@ -1,9 +1,15 @@
 import { MARKET_AUTH_REQUIRED_MESSAGE } from '@lobechat/desktop-bridge';
+import {
+  type InlineSkillResource,
+  type ValidatedInlineSkillResource,
+  validateInlineSkillOperationPayloads,
+} from '@lobechat/device-control';
 import { TRPCError } from '@trpc/server';
 import debug from 'debug';
 import { z } from 'zod';
 
 import { wsCompatProcedure } from '@/business/server/trpc-middlewares/workspaceAuth';
+import { AgentOperationModel } from '@/database/models/agentOperation';
 import { AgentSkillModel } from '@/database/models/agentSkill';
 import { FileModel } from '@/database/models/file';
 import { UserModel } from '@/database/models/user';
@@ -11,7 +17,21 @@ import { type ToolCallContent } from '@/libs/mcp';
 import { authedProcedure, router } from '@/libs/trpc/lambda';
 import { marketUserInfo, serverDatabase, telemetry } from '@/libs/trpc/lambda/middleware';
 import { marketSDK, requireMarketAuth } from '@/libs/trpc/lambda/middleware/marketSDK';
+import {
+  hashPlatformSkillOperationRefs,
+  verifyPlatformSkillOperationProof,
+} from '@/libs/trpc/utils/internalJwt';
 import { isTrustedClientEnabled } from '@/libs/trusted-client';
+import { parseEnterpriseFeatureFlags } from '@/server/enterprise/featureFlags';
+import { redactForLog } from '@/server/enterprise/security/redaction';
+import { getManagedSkillRuntimeModeSnapshot } from '@/server/enterprise/services/managedResourceCapabilities';
+import {
+  cleanupSandboxSkillWorkspace,
+  createSandboxSkillWorkspaceRoot,
+  getBuiltinSkillDefinitions,
+  SkillCatalogReadService,
+  sweepExpiredSandboxSkillWorkspaces,
+} from '@/server/enterprise/services/skillCatalog';
 import { DiscoverService } from '@/server/services/discover';
 import { FileService } from '@/server/services/file';
 import { MarketService } from '@/server/services/market';
@@ -31,6 +51,7 @@ import {
 } from './_helpers/marketConnections';
 
 const log = debug('lobe-server:tools:market');
+const shellQuote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
 const isSandboxAuthError = (error?: { message?: string; name?: string }) => {
   const code = error?.name;
@@ -119,11 +140,34 @@ const metaSchema = z
 
 // Schema for sandbox tool execution request
 const execInSandboxSchema = z.object({
+  agentId: z.string().min(1).max(256).optional(),
+  operationId: z.string().min(1).max(256).optional(),
   params: z.record(z.any()),
   toolName: z.string(),
   topicId: z.string(),
   userId: z.string().optional(), // Optional: fallback to ctx.userId if not provided
 });
+
+const platformSkillSnapshotSchema = z
+  .object({
+    agentId: z.string().min(1).max(256),
+    mandatorySkillIds: z.array(z.string().min(1)).max(10_000).optional(),
+    operationId: z.string().min(1).max(256),
+    proof: z.string().min(1).max(8192),
+    refs: z
+      .array(
+        z
+          .object({
+            checksum: z.string().min(1).max(200),
+            skillKey: z.string().min(1).max(200),
+            version: z.string().min(1).max(200),
+          })
+          .strict(),
+      )
+      .max(10_000),
+    revision: z.string().min(1).max(200),
+  })
+  .strict();
 
 // Schema for export and upload file (combined operation)
 const exportAndUploadFileSchema = z.object({
@@ -184,11 +228,64 @@ const execInSandboxHandler = async ({
 }): Promise<CallToolResult> => {
   const { toolName, params, topicId } = input;
   const userId = input?.userId || ctx.userId;
+  let managedCorrelationId: string | undefined;
+  let managedRequest = false;
 
   log('execInSandbox: tool=%s, topicId=%s', toolName, topicId);
 
   try {
     let enhancedParams = params;
+    let managedInlineSkills:
+      | Array<{
+          ref: { checksum: string; skillKey: string; version: string };
+          resources: ValidatedInlineSkillResource[];
+          skillContent: string;
+        }>
+      | undefined;
+
+    let execScriptBoundary:
+      | {
+          authorizedSnapshot: boolean;
+          platformEnforced: boolean;
+          snapshot: ReturnType<typeof platformSkillSnapshotSchema.safeParse>;
+        }
+      | undefined;
+    if (toolName === 'execScript') {
+      managedRequest = enhancedParams.platformSkillSnapshot !== undefined;
+      const flags = parseEnterpriseFeatureFlags(process.env);
+      const platformEnforced =
+        getManagedSkillRuntimeModeSnapshot({ db: ctx.serverDB, flags }) === 'enforced';
+      const snapshot = platformSkillSnapshotSchema.safeParse(enhancedParams.platformSkillSnapshot);
+      const proofClaims = snapshot.success
+        ? await verifyPlatformSkillOperationProof(snapshot.data.proof, ctx.userId)
+        : undefined;
+      const trustedOperation = proofClaims
+        ? await new AgentOperationModel(
+            ctx.serverDB,
+            ctx.userId,
+            ctx.workspaceId ?? undefined,
+          ).findById(proofClaims.operationId)
+        : null;
+      execScriptBoundary = {
+        authorizedSnapshot:
+          flags.ENABLE_PLATFORM_MANAGED_SKILLS &&
+          snapshot.success &&
+          proofClaims !== undefined &&
+          trustedOperation !== null &&
+          trustedOperation.id === proofClaims.operationId &&
+          trustedOperation.agentId === proofClaims.agentId &&
+          trustedOperation.status === 'running' &&
+          input.agentId === trustedOperation.agentId &&
+          input.operationId === trustedOperation.id &&
+          snapshot.data.agentId === trustedOperation.agentId &&
+          snapshot.data.operationId === trustedOperation.id &&
+          snapshot.data.revision === proofClaims.revision &&
+          hashPlatformSkillOperationRefs(snapshot.data.refs) === proofClaims.refsHash &&
+          snapshot.data.operationId === enhancedParams.operationId,
+        platformEnforced,
+        snapshot,
+      };
+    }
 
     // Preprocess lh commands: rewrite to npx @lobehub/cli + inject auth env vars
     if ((toolName === 'execScript' || toolName === 'runCommand') && params.command) {
@@ -212,28 +309,103 @@ const execInSandboxHandler = async ({
       }
     }
 
-    // For execScript tool, look up skill zipUrls from activatedSkills
-    if (toolName === 'execScript' && enhancedParams.activatedSkills?.length) {
-      const wsId = ctx.workspaceId ?? undefined;
-      const agentSkillModel = new AgentSkillModel(ctx.serverDB, userId, wsId);
-      const fileModel = new FileModel(ctx.serverDB, userId, wsId);
-
+    // Every execScript request crosses the managed boundary, including calls
+    // with a missing/empty activatedSkills array.
+    if (toolName === 'execScript' && execScriptBoundary) {
+      const { authorizedSnapshot, platformEnforced, snapshot } = execScriptBoundary;
+      const activatedSkills = Array.isArray(enhancedParams.activatedSkills)
+        ? enhancedParams.activatedSkills
+        : [];
       // Resolve zipUrls for all activated skills
       const skillZipUrls: Record<string, string> = {};
 
-      for (const activatedSkill of enhancedParams.activatedSkills) {
-        if (!activatedSkill.name) continue;
+      if (authorizedSnapshot && snapshot.success) {
+        if (activatedSkills.length === 0) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: 'Managed Skill activation is required',
+          });
+        }
+        const refsByKey = new Map(snapshot.data.refs.map((ref) => [ref.skillKey, ref]));
+        const catalog = new SkillCatalogReadService(ctx.serverDB, {
+          builtinSkills: getBuiltinSkillDefinitions(),
+        });
+        const unresolvedManagedInlineSkills: Array<{
+          ref: { checksum: string; skillKey: string; version: string };
+          resources: InlineSkillResource[];
+          skillContent: string;
+        }> = [];
+        for (const activatedSkill of activatedSkills) {
+          const ref = refsByKey.get(activatedSkill.name);
+          const resolved = ref ? await catalog.resolvePinnedForExecution(ref) : undefined;
+          if (!ref || !resolved) {
+            throw new TRPCError({
+              code: 'PRECONDITION_FAILED',
+              message: `Managed Skill reference is unavailable: ${activatedSkill.name}`,
+            });
+          }
+          unresolvedManagedInlineSkills.push({
+            ref,
+            resources: resolved.resources,
+            skillContent: resolved.content,
+          });
+        }
+        const validatedPayloads = validateInlineSkillOperationPayloads(
+          unresolvedManagedInlineSkills,
+        );
+        managedInlineSkills = unresolvedManagedInlineSkills.map((skill, index) => ({
+          ...skill,
+          resources: validatedPayloads[index].resources,
+        }));
+        if (
+          typeof enhancedParams.operationId !== 'string' ||
+          !enhancedParams.operationId ||
+          enhancedParams.operationId.length > 256
+        ) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: 'Managed Skill operationId is required',
+          });
+        }
+        const {
+          operationId: _operationId,
+          platformSkillSnapshot: _snapshot,
+          ...sandboxParams
+        } = enhancedParams;
+        void _operationId;
+        void _snapshot;
+        enhancedParams = sandboxParams;
+      } else {
+        if (snapshot.success || enhancedParams.platformSkillSnapshot !== undefined) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: 'Managed Skill operation proof is invalid',
+          });
+        }
+        if (platformEnforced) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: 'Managed Skill operation snapshot is required',
+          });
+        }
+        const wsId = ctx.workspaceId ?? undefined;
+        const agentSkillModel = new AgentSkillModel(ctx.serverDB, userId, wsId);
+        const fileModel = new FileModel(ctx.serverDB, userId, wsId);
 
-        const skill = await agentSkillModel.findByName(activatedSkill.name);
-        if (!skill?.zipFileHash) continue;
+        for (const activatedSkill of activatedSkills) {
+          if (!activatedSkill.name) continue;
 
-        const fileInfo = await fileModel.checkHash(skill.zipFileHash);
-        if (!fileInfo.isExist || !fileInfo.url) continue;
+          const skill = await agentSkillModel.findByName(activatedSkill.name);
+          if (!skill?.zipFileHash) continue;
 
-        const fullUrl = await ctx.fileService.getFullFileUrl(fileInfo.url);
-        if (fullUrl) {
-          skillZipUrls[activatedSkill.name] = fullUrl;
-          log('Resolved zipUrl for skill %s', activatedSkill.name);
+          const fileInfo = await fileModel.checkHash(skill.zipFileHash);
+          if (!fileInfo.isExist || !fileInfo.url) continue;
+
+          const fullUrl = await ctx.fileService.getFullFileUrl(fileInfo.url);
+          if (fullUrl) {
+            skillZipUrls[activatedSkill.name] = fullUrl;
+            log('Resolved zipUrl for skill %s', activatedSkill.name);
+          }
         }
       }
 
@@ -255,9 +427,57 @@ const execInSandboxHandler = async ({
       userId,
     });
 
-    const response = await sandboxService.callTool(toolName, enhancedParams);
+    let response: CallToolResult;
+    if (managedInlineSkills) {
+      const { auditId, root } = createSandboxSkillWorkspaceRoot(String(params.operationId));
+      managedCorrelationId = auditId;
+      try {
+        await sweepExpiredSandboxSkillWorkspaces(sandboxService);
+        const init = await sandboxService.callTool('runCommand', {
+          command: `umask 077 && mkdir -p ${shellQuote(root)} && [ ! -L ${shellQuote(root)} ] && [ "$(stat -c %u ${shellQuote(root)})" = "$(id -u)" ] && chmod 700 ${shellQuote(root)}`,
+        });
+        if (!init.success) throw new Error(init.error?.message || 'Failed to create workspace');
+        let runDir: string | undefined;
+        for (const { ref, resources, skillContent } of managedInlineSkills) {
+          const skillDir = `${root}/${ref.checksum}`;
+          runDir = skillDir;
+          for (const resource of [{ content: skillContent, path: 'SKILL.md' }, ...resources]) {
+            const write = await sandboxService.callTool('writeFile', {
+              content: resource.content,
+              createDirectories: true,
+              path: `${skillDir}/${resource.path}`,
+            });
+            if (!write.success)
+              throw new Error(write.error?.message || 'Failed to write workspace');
+          }
+          const protect = await sandboxService.callTool('runCommand', {
+            command: `[ ! -L ${shellQuote(root)} ] && [ "$(stat -c %u ${shellQuote(root)})" = "$(id -u)" ] && ! find -P ${shellQuote(skillDir)} -type l -print -quit | grep -q . && find -P ${shellQuote(skillDir)} -type d -exec chmod 700 {} + && find -P ${shellQuote(skillDir)} -type f -exec chmod 600 {} +`,
+          });
+          if (!protect.success)
+            throw new Error(protect.error?.message || 'Failed to protect workspace');
+        }
+        response = await sandboxService.callTool('runCommand', {
+          ...enhancedParams,
+          command: `cd ${shellQuote(runDir!)} && ${String(enhancedParams.command ?? '')}`,
+        });
+      } finally {
+        await cleanupSandboxSkillWorkspace({ auditId, root, sandbox: sandboxService });
+      }
+    } else {
+      response = await sandboxService.callTool(toolName, enhancedParams);
+    }
 
-    log('execInSandbox response for %s: %O', toolName, response);
+    const exitCode =
+      response.result && typeof response.result === 'object' && 'exitCode' in response.result
+        ? response.result.exitCode
+        : undefined;
+    log(
+      'execInSandbox completed tool=%s success=%s exitCode=%s correlation=%s',
+      toolName,
+      response.success,
+      typeof exitCode === 'number' ? exitCode : 'unknown',
+      managedCorrelationId ?? 'none',
+    );
 
     if (!response.success && isSandboxAuthError(response.error)) {
       throwSandboxAuthError();
@@ -265,20 +485,28 @@ const execInSandboxHandler = async ({
 
     return response;
   } catch (error) {
-    log('execInSandbox error for %s: %O', toolName, error);
+    log(
+      'execInSandbox failed tool=%s errorClass=%s correlation=%s',
+      toolName,
+      error instanceof Error ? error.name : 'UnknownError',
+      managedCorrelationId ?? 'none',
+    );
 
     // Re-throw TRPCError as-is (e.g., UNAUTHORIZED from above)
     if (error instanceof TRPCError) {
       throw error;
     }
 
-    const errorMessage = (error as Error).message;
+    const rawErrorMessage = error instanceof Error ? error.message : String(error);
+    const errorMessage = managedRequest
+      ? `Managed Skill execution failed${managedCorrelationId ? ` (${managedCorrelationId})` : ''}`
+      : String(redactForLog(rawErrorMessage)).slice(0, 1000);
 
     // Check for authentication errors thrown as exceptions
     if (
-      errorMessage.toLowerCase().includes('invalid_token') ||
-      errorMessage.toLowerCase().includes('token expired') ||
-      errorMessage.toLowerCase().includes('unauthorized')
+      rawErrorMessage.toLowerCase().includes('invalid_token') ||
+      rawErrorMessage.toLowerCase().includes('token expired') ||
+      rawErrorMessage.toLowerCase().includes('unauthorized')
     ) {
       throw new TRPCError({
         code: 'UNAUTHORIZED',

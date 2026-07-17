@@ -28,6 +28,7 @@ export * from './knowledgeBase';
 export * from './llm';
 export * from './message';
 export * from './meta';
+export * from './platform';
 export * from './plugins';
 export * from './rag';
 export * from './redis';

@@ -11,6 +11,7 @@ import {
 } from 'react';
 
 import { useServerConfigStore } from '@/store/serverConfig';
+import { useToolStore } from '@/store/tool';
 import {
   DISABLED_PLATFORM_CAPABILITIES,
   type PlatformCapabilities,
@@ -20,6 +21,7 @@ import {
   type PlatformPublicSnapshot,
 } from '@/types/platform/publicSnapshot';
 
+import { usePublishedSkillCatalog } from '../features/skills';
 import { fetchPlatformCapabilities, fetchPlatformPublicSnapshot } from '../services/platform';
 
 export interface EnterprisePlatformContextValue {
@@ -72,6 +74,8 @@ export default function EnterprisePlatformProvider({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
 
+  usePublishedSkillCatalog(capabilities.managedResources.skills);
+
   const refresh = useCallback(async () => {
     if (disableFetch) return;
     // Gate: only hit platform.* when global config says enterprise is on.
@@ -84,6 +88,9 @@ export default function EnterprisePlatformProvider({
         fetchCapabilities(),
         fetchPublicSnapshot(),
       ]);
+      useToolStore
+        .getState()
+        .configurePlatformSkillManagement(nextCapabilities.managedResources.skills);
       setCapabilities(nextCapabilities);
       setPublicSnapshot(nextPublic);
     } catch (err) {
@@ -101,6 +108,7 @@ export default function EnterprisePlatformProvider({
       // Explicitly stay on disabled snapshots — no network.
       setCapabilities(DISABLED_PLATFORM_CAPABILITIES);
       setPublicSnapshot(DISABLED_PLATFORM_PUBLIC_SNAPSHOT);
+      useToolStore.getState().configurePlatformSkillManagement(false);
       setLoading(false);
       setError(null);
       return;
