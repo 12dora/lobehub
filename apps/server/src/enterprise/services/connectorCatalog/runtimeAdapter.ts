@@ -319,7 +319,13 @@ export class PlatformConnectorRuntimeAdapter {
         }
         throw error;
       }
-      if (journalToken) await this.dependencies.journal.arm(journalToken);
+      if (journalToken) {
+        try {
+          await this.dependencies.journal.arm(journalToken);
+        } catch {
+          throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_RESOURCE_MISMATCH');
+        }
+      }
       outboundStarted = true;
       const response = await this.dependencies.outbound.requestJson({
         body: {
@@ -361,7 +367,8 @@ export class PlatformConnectorRuntimeAdapter {
         !(
           error instanceof PlatformConnectorContractError &&
           (error.code === 'PLATFORM_CONNECTOR_RATE_LIMITED' ||
-            error.code === 'PLATFORM_CONNECTOR_NOT_PUBLISHED')
+            error.code === 'PLATFORM_CONNECTOR_NOT_PUBLISHED' ||
+            error.code === 'PLATFORM_CONNECTOR_RESOURCE_MISMATCH')
         )
       ) {
         try {

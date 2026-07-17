@@ -518,6 +518,22 @@ describe('PlatformConnectorRuntimeAdapter', () => {
     );
     await vi.waitFor(() => expect(harness.dependencies.journal.cancel).toHaveBeenCalledTimes(4));
   });
+
+  it('fails closed without outbound when a slow publication check outlives the reservation', async () => {
+    const harness = createHarness('shared_service_account');
+    vi.mocked(harness.dependencies.journal.arm).mockRejectedValueOnce(
+      new Error('Connector runtime journal arm conflict'),
+    );
+
+    await expect(harness.adapter.execute(invocation)).rejects.toThrow(
+      'PLATFORM_CONNECTOR_RESOURCE_MISMATCH',
+    );
+    expect(harness.dependencies.journal.arm).toHaveBeenCalledOnce();
+    expect(harness.dependencies.outbound.requestJson).not.toHaveBeenCalled();
+    expect(harness.dependencies.audit.appendSharedCall).not.toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: expect.stringMatching(/failed|unknown/) }),
+    );
+  });
 });
 
 describe('BoundedConnectorRuntimeRateLimiter', () => {

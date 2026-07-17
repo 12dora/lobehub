@@ -127,4 +127,66 @@ describe('DatabaseConnectorRuntimeExecutionJournal', () => {
       db.query.platformJobs.findFirst({ where: eq(platformJobs.id, acquired.token.jobId) }),
     ).resolves.toBeUndefined();
   });
+
+  it('renews a live reservation from the arm instant', async () => {
+    const journal = new DatabaseConnectorRuntimeExecutionJournal(db);
+    const acquired = await journal.begin({
+      connectorId: 'connector-arm-renew',
+      operationId: `operation-${crypto.randomUUID()}`,
+      requestFingerprint: 'f'.repeat(64),
+      toolCallId: 'tool-call-arm-renew',
+      toolKey: 'write',
+      userId: 'user-arm-renew',
+    });
+    if (acquired.status !== 'acquired') throw new Error('journal was not acquired');
+    createdIds.push(acquired.token.jobId);
+    const beforeArm = new Date();
+
+    await journal.arm(acquired.token);
+
+    await expect(
+      db.query.platformJobs.findFirst({ where: eq(platformJobs.id, acquired.token.jobId) }),
+    ).resolves.toMatchObject({
+      heartbeatAt: expect.any(Date),
+      leaseUntil: expect.any(Date),
+      startedAt: expect.any(Date),
+      status: 'running',
+    });
+    const armed = await db.query.platformJobs.findFirst({
+      where: eq(platformJobs.id, acquired.token.jobId),
+    });
+    expect(armed!.leaseUntil!.getTime()).toBeGreaterThan(beforeArm.getTime() + 29_000);
+    expect(armed!.startedAt!.getTime()).toBeGreaterThanOrEqual(beforeArm.getTime());
+  });
+
+  it('lets cleanup win at the expiry boundary and never arms or audits the reservation', async () => {
+    const journal = new DatabaseConnectorRuntimeExecutionJournal(db);
+    const acquired = await journal.begin({
+      connectorId: 'connector-arm-expired',
+      operationId: `operation-${crypto.randomUUID()}`,
+      requestFingerprint: '1'.repeat(64),
+      toolCallId: 'tool-call-arm-expired',
+      toolKey: 'write',
+      userId: 'user-arm-expired',
+    });
+    if (acquired.status !== 'acquired') throw new Error('journal was not acquired');
+    await db
+      .update(platformJobs)
+      .set({ leaseUntil: new Date(0) })
+      .where(eq(platformJobs.id, acquired.token.jobId));
+    const delivered: string[] = [];
+
+    const [armResult, cleanupResult] = await Promise.allSettled([
+      journal.arm(acquired.token),
+      journal.reconcileNext(async (record) => {
+        delivered.push(record.outcome);
+      }),
+    ]);
+    expect(armResult.status).toBe('rejected');
+    expect(cleanupResult).toMatchObject({ status: 'fulfilled', value: true });
+    expect(delivered).toEqual([]);
+    await expect(
+      db.query.platformJobs.findFirst({ where: eq(platformJobs.id, acquired.token.jobId) }),
+    ).resolves.toBeUndefined();
+  });
 });
