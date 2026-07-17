@@ -851,7 +851,15 @@ export class PlatformAgentCatalogRepository {
         : status && status !== 'error'
           ? null
           : undefined;
+      // A real materialization reference carries real state; a visibility-only row (written by
+      // setMaterializationHidden to hold only the hidden preference) does NOT — see
+      // countAgentReferences. `upsertMaterialization` always intends a real materialization, so a
+      // visibility-only row is never "already in the desired state": it must be upgraded, not
+      // early-returned. This is what closes the visibility-first → materialize bypass.
+      const isRealMaterialization = (item: PlatformUserAgentMaterializationItem) =>
+        item.materializedAgentId !== null || item.lastSyncedAt !== null;
       const matchesDesiredState = (item: PlatformUserAgentMaterializationItem) =>
+        isRealMaterialization(item) &&
         item.platformAgentVersionId === params.platformAgentVersionId &&
         item.platformAgentVersionChecksum === params.platformAgentVersionChecksum &&
         (!hasHidden || item.hidden === params.hidden) &&
@@ -883,7 +891,35 @@ export class PlatformAgentCatalogRepository {
           .returning();
         if (inserted) return inserted;
         const existing = await scoped.getMaterialization(params.userId, params.platformAgentId);
-        return existing && matchesDesiredState(existing) ? existing : undefined;
+        if (!existing) return undefined;
+        // Idempotent only when the existing row is ALREADY a real materialization at the desired
+        // state; a visibility-only row (or any non-matching real row) must be upgraded in place.
+        if (matchesDesiredState(existing)) return existing;
+        const resolvedStatus = status ?? 'pending';
+        // Atomic upgrade under the same per-Agent reference lock: stamp last_synced_at (the real
+        // materialization marker) and write the target version/checksum/status, preserving the
+        // owner's hidden preference unless the caller explicitly overrides it.
+        const [upgraded] = await tx
+          .update(platformUserAgentMaterializations)
+          .set({
+            ...(hasHidden ? { hidden: params.hidden } : {}),
+            ...(hasMaterializedAgent ? { materializedAgentId: params.materializedAgentId } : {}),
+            lastErrorCategory:
+              resolvedStatus === 'error' ? (params.lastErrorCategory ?? null) : null,
+            lastSyncedAt: new Date(),
+            platformAgentVersionChecksum: params.platformAgentVersionChecksum,
+            platformAgentVersionId: params.platformAgentVersionId,
+            status: resolvedStatus,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(platformUserAgentMaterializations.userId, params.userId),
+              eq(platformUserAgentMaterializations.platformAgentId, params.platformAgentId),
+            ),
+          )
+          .returning();
+        return upgraded && matchesDesiredState(upgraded) ? upgraded : undefined;
       }
 
       const set = {

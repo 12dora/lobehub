@@ -499,4 +499,61 @@ describe('PlatformAgentCatalogRepository', () => {
     });
     expect(await serverDB.select().from(platformUserAgentMaterializations)).toHaveLength(1);
   });
+
+  it('upgrades a visibility-only hidden row to a real materialization instead of a bypass early-return', async () => {
+    const agent = await repository.createIdentity({
+      agentKey: 'vis-then-materialize',
+      isDefault: false,
+      systemKey: null,
+    });
+    const version1 = await repository.appendVersionCas({
+      agentId: agent.id,
+      config,
+      dependencySnapshot,
+      expectedDraftSequence: 0,
+      expectedRevision: 0,
+      version: '1.0.0',
+    });
+
+    // 1) hide first → a visibility-only row (last_synced_at NULL), NOT an archive reference.
+    await repository.setMaterializationHidden({
+      hidden: true,
+      platformAgentId: agent.id,
+      platformAgentVersionChecksum: version1!.checksum,
+      platformAgentVersionId: version1!.id,
+      userId: USER_A,
+    });
+    const hiddenRow = await repository.getMaterialization(USER_A, agent.id);
+    expect(hiddenRow!.lastSyncedAt).toBeNull();
+    expect(hiddenRow!.hidden).toBe(true);
+    expect((await repository.countAgentReferences(agent.id)).materializations).toBe(0);
+
+    // 2) materialize (no expectedCurrent) with the SAME version/checksum. Pre-fix this hit
+    //    matchesDesiredState and early-returned the visibility-only row, leaving last_synced_at
+    //    NULL — a real pending materialization that archive would silently ignore.
+    const materialized = await repository.upsertMaterialization({
+      platformAgentId: agent.id,
+      platformAgentVersionChecksum: version1!.checksum,
+      platformAgentVersionId: version1!.id,
+      userId: USER_A,
+    });
+    expect(materialized).toBeDefined();
+    const upgraded = await repository.getMaterialization(USER_A, agent.id);
+    expect(upgraded!.lastSyncedAt).not.toBeNull(); // upgraded to a real materialization
+    expect(upgraded!.hidden).toBe(true); // owner hidden preference preserved
+    expect(upgraded!.status).toBe('pending');
+    expect(upgraded!.platformAgentVersionId).toBe(version1!.id);
+    expect((await repository.countAgentReferences(agent.id)).materializations).toBe(1);
+
+    // 3) idempotent: a second materialize at the same desired real state does not refresh state.
+    const stampedAt = upgraded!.lastSyncedAt;
+    const again = await repository.upsertMaterialization({
+      platformAgentId: agent.id,
+      platformAgentVersionChecksum: version1!.checksum,
+      platformAgentVersionId: version1!.id,
+      userId: USER_A,
+    });
+    expect(again!.lastSyncedAt).toEqual(stampedAt);
+    expect(await serverDB.select().from(platformUserAgentMaterializations)).toHaveLength(1);
+  });
 });
