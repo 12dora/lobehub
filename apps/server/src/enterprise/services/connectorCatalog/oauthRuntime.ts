@@ -4,7 +4,13 @@ import { parseEnterpriseFeatureFlags } from '../../featureFlags';
 import { SafeOutboundHttpClient } from '../../security/outboundHttp';
 import { PlatformSecretService } from '../../security/secret';
 import type { ConnectorCatalogSecretStore } from './catalogTypes';
+import {
+  canonicalConnectorAppUrlProvider,
+  type ConnectorAppUrlProvider,
+  resolveConnectorCallbackRedirectUri,
+} from './connectorCallbackRedirect';
 import { ConnectorOutboundClient } from './connectorOutboundClient';
+import { connectorOutboundPolicyProvider } from './connectorOutboundPolicy';
 import { PlatformConnectorContractError } from './errors';
 import { ConnectorOAuthOutboundAdapter } from './oauthOutboundAdapter';
 import { PlatformConnectorSecretStore } from './platformConnectorSecretStore';
@@ -21,18 +27,6 @@ export const MANAGED_CONNECTOR_OAUTH_STATE_PREFIX = 'aihub-m09-v1.';
 
 export type ConnectorOAuthRuntimeEnv = Record<string, string | undefined>;
 
-const resolveCallbackRedirectUri = (env: ConnectorOAuthRuntimeEnv): string => {
-  const appUrl = env.APP_URL?.trim();
-  if (!appUrl) {
-    throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_CREDENTIAL_NOT_CONFIGURED');
-  }
-  try {
-    return new URL('/oauth/connector/callback', appUrl).toString();
-  } catch {
-    throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_CREDENTIAL_NOT_CONFIGURED');
-  }
-};
-
 /**
  * Cold-start-safe production factory. Both the standalone server router and
  * the Next callback construct their own dependencies from shared DB + M13
@@ -41,6 +35,7 @@ const resolveCallbackRedirectUri = (env: ConnectorOAuthRuntimeEnv): string => {
 export const getConnectorOAuthRuntime = (
   db: LobeChatDatabase,
   env: ConnectorOAuthRuntimeEnv = process.env,
+  options: { appUrlProvider?: ConnectorAppUrlProvider } = {},
 ): ConnectorOAuthRuntimeDependencies => {
   const flags = parseEnterpriseFeatureFlags(env);
   if (!flags.ENABLE_PLATFORM_MANAGED_CONNECTORS) {
@@ -50,10 +45,15 @@ export const getConnectorOAuthRuntime = (
   if (!secretService) {
     throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_CREDENTIAL_NOT_CONFIGURED');
   }
+  const appUrlProvider =
+    options.appUrlProvider ??
+    (env === process.env ? canonicalConnectorAppUrlProvider : () => env.APP_URL);
   return {
-    callbackRedirectUri: resolveCallbackRedirectUri(env),
+    callbackRedirectUri: resolveConnectorCallbackRedirectUri(appUrlProvider),
     outbound: new ConnectorOAuthOutboundAdapter(
-      new ConnectorOutboundClient(new SafeOutboundHttpClient()),
+      new ConnectorOutboundClient(
+        new SafeOutboundHttpClient({ policyProvider: connectorOutboundPolicyProvider }),
+      ),
     ),
     secrets: new PlatformConnectorSecretStore(db, secretService),
   };

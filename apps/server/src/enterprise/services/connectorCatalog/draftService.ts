@@ -231,10 +231,17 @@ export class ConnectorCatalogDraftService {
   constructor(
     private readonly db: LobeChatDatabase,
     private readonly secrets: ConnectorCatalogSecretStore,
-    private readonly redirectUri: string,
+    private readonly redirectUri: string | (() => string | undefined),
     private readonly failureAuditWriter?: ConnectorFailureAuditWriter,
     private readonly lifecycle: ConnectorCatalogLifecycle = {},
   ) {}
+
+  private resolveRedirectUri = (credentialMode: ConnectorDraft['credentialMode']) =>
+    credentialMode === 'per_user_oauth'
+      ? typeof this.redirectUri === 'function'
+        ? this.redirectUri()
+        : this.redirectUri
+      : undefined;
 
   private persistSlot = async (
     connectorId: string,
@@ -332,7 +339,7 @@ export class ConnectorCatalogDraftService {
         command,
         {
           id: connectorId,
-          serverRedirectUri: this.redirectUri,
+          serverRedirectUri: this.resolveRedirectUri(command.credentialMode),
           toolIds: (command.tools ?? []).map(() => randomUUID()),
         },
         secretContext,
@@ -462,7 +469,7 @@ export class ConnectorCatalogDraftService {
       const normalized = normalizeAdminConnectorUpdateInput(
         current.draft,
         patch,
-        this.redirectUri,
+        this.resolveRedirectUri(patch.credentialMode ?? current.draft.credentialMode),
         secretContext,
       );
       // Persist immutable Secret handles before acquiring the database row lock.
