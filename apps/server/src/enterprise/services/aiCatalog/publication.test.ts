@@ -1,17 +1,19 @@
 // @vitest-environment node
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
 import { platformAiCatalogDraftToken, PlatformAiCatalogModel } from '@/database/models/platform';
+import { PlatformAgentCatalogRepository } from '@/database/repositories/platformAgentCatalog';
 import {
   platformAgents,
+  platformAgentVersions,
   platformAiModels,
   platformAiProviders,
   platformAuditLogs,
   platformResourceRevisions,
 } from '@/database/schemas';
-import type { LobeChatDatabase } from '@/database/type';
+import type { LobeChatDatabase, Transaction } from '@/database/type';
 import { type KeyProvider, PlatformSecretService } from '@/server/enterprise/security/secret';
 
 import { InMemoryPlatformConfigInvalidationPublisher } from '../platformConfigInvalidation';
@@ -28,11 +30,64 @@ const keyProvider: KeyProvider = {
   getKek: async () => ({ key: new Uint8Array(32).fill(31), keyId: 'publish-test' }),
   providerId: 'test',
 };
+const AGENT_DEPENDENCY_CHECKSUM = 'c'.repeat(64);
+const agentConfig = {
+  avatar: null,
+  backgroundColor: null,
+  description: 'Exact AI publication dependent',
+  displayName: 'Exact AI publication dependent',
+  modelParameters: {},
+  openingMessage: null,
+  openingQuestions: [],
+  systemRole: 'Use the exact model dependency.',
+  tags: [],
+};
+
+const createPublishedAgentDependency = async (
+  source: LobeChatDatabase | Transaction,
+  params: { agentKey: string; modelKey: string; providerKey: string },
+) => {
+  const repository = new PlatformAgentCatalogRepository(source);
+  const agent = await repository.createIdentity({
+    agentKey: params.agentKey,
+    isDefault: false,
+    systemKey: null,
+  });
+  const version = await repository.appendVersionCas({
+    agentId: agent.id,
+    config: agentConfig,
+    dependencySnapshot: {
+      connectors: [],
+      model: {
+        modelKey: params.modelKey,
+        providerChecksum: AGENT_DEPENDENCY_CHECKSUM,
+        providerKey: params.providerKey,
+        providerRevision: 1,
+      },
+      skills: [],
+    },
+    expectedDraftSequence: 0,
+    expectedRevision: 0,
+    version: '1.0.0',
+  });
+  await repository.pointToVersionCas({
+    agentId: agent.id,
+    expectedDraftSequence: 1,
+    expectedRevision: 0,
+    publishedAt: new Date(),
+    versionId: version!.id,
+  });
+  await source
+    .update(platformAgents)
+    .set({ model: 'legacy-poison-model', provider: 'legacy-poison-provider' })
+    .where(eq(platformAgents.id, agent.id));
+  return agent;
+};
 
 const cleanup = async () => {
   await db.delete(platformAuditLogs);
   await db.delete(platformResourceRevisions);
-  await db.delete(platformAgents);
+  await db.execute(sql`TRUNCATE TABLE ${platformAgentVersions}, ${platformAgents} CASCADE`);
   await db.delete(platformAiModels);
   await db.delete(platformAiProviders);
 };
@@ -402,12 +457,10 @@ describe('AiCatalog publication transaction', () => {
       providerId: publishTarget.id,
       reason: 'remove in draft before dependency exists',
     });
-    await db.insert(platformAgents).values({
+    await createPublishedAgentDependency(db, {
       agentKey: 'publish-removal-agent',
-      model: 'removed-chat',
-      provider: 'publish-removal',
-      status: 'published',
-      title: 'Publish removal agent',
+      modelKey: 'removed-chat',
+      providerKey: 'publish-removal',
     });
     await service.testProvider('admin', { id: publishTarget.id, reason: 'retest removal' });
     detail = await service.getDetail(publishTarget.id);
@@ -423,7 +476,7 @@ describe('AiCatalog publication transaction', () => {
       expect.arrayContaining([expect.objectContaining({ modelKey: 'removed-chat' })]),
     );
 
-    await db.delete(platformAgents);
+    await db.execute(sql`TRUNCATE TABLE ${platformAgentVersions}, ${platformAgents} CASCADE`);
     const rollbackTarget = await service.createProviderDraft('admin', {
       checkModel: 'chat',
       displayName: 'Rollback removal target',
@@ -467,12 +520,10 @@ describe('AiCatalog publication transaction', () => {
       id: rollbackTarget.id,
       reason: 'publish v2',
     });
-    await db.insert(platformAgents).values({
+    await createPublishedAgentDependency(db, {
       agentKey: 'rollback-removal-agent',
-      model: 'v2-only',
-      provider: 'rollback-removal',
-      status: 'published',
-      title: 'Rollback removal agent',
+      modelKey: 'v2-only',
+      providerKey: 'rollback-removal',
     });
     detail = await service.getDetail(rollbackTarget.id);
     await expect(
@@ -520,12 +571,10 @@ describe('AiCatalog publication transaction', () => {
     detail = await service.getDetail(provider.id);
     const archiveService = createService({
       afterPublishLock: async (tx) => {
-        await tx.insert(platformAgents).values({
+        await createPublishedAgentDependency(tx, {
           agentKey: 'concurrent-agent',
-          model: 'chat',
-          provider: 'concurrent-provider',
-          status: 'published',
-          title: 'Concurrent Agent',
+          modelKey: 'chat',
+          providerKey: 'concurrent-provider',
         });
       },
     }).service;
