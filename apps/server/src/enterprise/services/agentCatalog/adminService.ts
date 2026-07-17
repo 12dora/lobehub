@@ -1,3 +1,5 @@
+import debug from 'debug';
+
 import {
   type ExactPlatformAgentVersion,
   type PlatformAgentAssignmentSafeItem,
@@ -30,6 +32,8 @@ import {
 } from './errors';
 import { assertExpectedPlatformAgentIdentity, platformAgentDraftToken } from './publication';
 
+const log = debug('lobe-server:platform-agent-admin');
+
 const identityView = (identity: PlatformAgentItem) => ({
   agentKey: identity.agentKey,
   currentVersionId: identity.currentVersionId,
@@ -39,7 +43,7 @@ const identityView = (identity: PlatformAgentItem) => ({
   migrationRequired: identity.migrationRequired,
   revision: identity.revision,
   status: identity.status as 'archived' | 'draft' | 'published',
-  systemKey: identity.systemKey === 'default-inbox' ? identity.systemKey : null,
+  systemKey: identity.systemKey === 'default-inbox' ? ('default-inbox' as const) : null,
 });
 
 const mutationView = (identity: PlatformAgentItem) => ({
@@ -104,9 +108,10 @@ export class PlatformAgentAdminService {
         result: 'failure',
       });
     } catch (auditError) {
-      console.error('[admin.agents] failure audit append failed', {
-        errorClass: auditError instanceof Error ? auditError.name : 'UnknownError',
-      });
+      log(
+        'failure audit append failed class=%s',
+        auditError instanceof Error ? auditError.name : 'UnknownError',
+      );
     }
   };
 
