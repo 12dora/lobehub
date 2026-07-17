@@ -9,7 +9,9 @@ import { assertRecentReauth } from '../../guards/reauth';
 import {
   PlatformAgentDefaultRequiredError,
   PlatformAgentDependencyValidationError,
+  PlatformAgentInvalidInputError,
   PlatformAgentNotFoundError,
+  PlatformAgentResourceInUseError,
   PlatformAgentRevisionConflictError,
 } from '../../services/agentCatalog';
 import { PlatformAuditService } from '../../services/platformAudit';
@@ -49,6 +51,20 @@ export const mapAgentServiceError = (error: unknown): never => {
     return throwEnterpriseError({
       code: PLATFORM_ERROR_CODES.PLATFORM_DEFAULT_AGENT_REQUIRED,
       httpCode: 'PRECONDITION_FAILED',
+    });
+  }
+  if (error instanceof PlatformAgentResourceInUseError) {
+    return throwEnterpriseError({
+      code: PLATFORM_ERROR_CODES.PLATFORM_RESOURCE_IN_USE,
+      httpCode: 'CONFLICT',
+    });
+  }
+  // Normalized (redacted) unique / foreign-key / trigger conflicts and rejected
+  // default-flag mutations. Detail-free: no constraint, target, or offending value.
+  if (error instanceof PlatformAgentInvalidInputError) {
+    return throwEnterpriseError({
+      code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
+      httpCode: 'BAD_REQUEST',
     });
   }
   throw error;

@@ -6,7 +6,7 @@ import type {
   PlatformAgentVersionConfig,
   PlatformAgentVersionPolicy,
 } from '@lobechat/types';
-import { and, asc, desc, eq, gt, ilike, isNotNull, isNull, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, ilike, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
 
 import { checksumPayload } from '../../models/platform/checksum';
 import {
@@ -478,6 +478,64 @@ export class PlatformAgentCatalogRepository {
       .from(platformAgentAssignments)
       .where(eq(platformAgentAssignments.agentId, agentId));
     return row?.count ?? 0;
+  };
+
+  /**
+   * Batch assignment counts for a page of Agents in a single aggregate query.
+   * Keyed by agentId; missing agents imply zero. Keeps `list` query count constant (ADM-04).
+   */
+  countAssignmentsByAgentIds = async (agentIds: string[]): Promise<Map<string, number>> => {
+    if (agentIds.length === 0) return new Map();
+    const rows = await this.db
+      .select({ agentId: platformAgentAssignments.agentId, count: sql<number>`count(*)::int` })
+      .from(platformAgentAssignments)
+      .where(inArray(platformAgentAssignments.agentId, agentIds))
+      .groupBy(platformAgentAssignments.agentId);
+    return new Map(rows.map((row) => [row.agentId, row.count]));
+  };
+
+  /**
+   * Batch exact-version lookup by version id in a single `IN` query. Version ids are
+   * globally unique, so results are safe to key by id across different Agents (ADM-04).
+   * Non-exact rows (missing checksum / dependency snapshot) are excluded.
+   */
+  getExactVersionsByIds = async (
+    versionIds: string[],
+  ): Promise<Map<string, ExactPlatformAgentVersion>> => {
+    if (versionIds.length === 0) return new Map();
+    const rows = await this.db
+      .select()
+      .from(platformAgentVersions)
+      .where(
+        and(
+          inArray(platformAgentVersions.id, versionIds),
+          isNotNull(platformAgentVersions.checksum),
+          isNotNull(platformAgentVersions.dependencySnapshot),
+        ),
+      );
+    return new Map((rows as ExactPlatformAgentVersion[]).map((row) => [row.id, row]));
+  };
+
+  /**
+   * Count live references to an Agent under the caller's identity row lock, so the
+   * result is TOCTOU-stable: a concurrent assignment / materialization insert takes a
+   * FK KEY SHARE lock on this Agent row and blocks behind the archive's FOR UPDATE (ADM-02).
+   */
+  countAgentReferences = async (
+    agentId: string,
+  ): Promise<{ assignments: number; materializations: number }> => {
+    const [assignmentRow] = await this.db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(platformAgentAssignments)
+      .where(eq(platformAgentAssignments.agentId, agentId));
+    const [materializationRow] = await this.db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(platformUserAgentMaterializations)
+      .where(eq(platformUserAgentMaterializations.platformAgentId, agentId));
+    return {
+      assignments: assignmentRow?.count ?? 0,
+      materializations: materializationRow?.count ?? 0,
+    };
   };
 
   countAssignmentTargets = async (params: {
