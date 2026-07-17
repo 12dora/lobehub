@@ -356,6 +356,13 @@ export const adminConnectorDraftSchema = z.discriminatedUnion('credentialMode', 
   adminConnectorOAuthDraftSchema,
 ]);
 
+export const adminConnectorDraftMutationOutputSchema = z
+  .object({
+    draft: adminConnectorDraftSchema,
+    draftToken: z.string().length(64),
+  })
+  .strict();
+
 const publishedConnectorFields = {
   publishedAt: z.date(),
   publishedRevision: z.number().int().positive(),
@@ -437,6 +444,19 @@ export const adminConnectorUpdateDraftInputSchema = connectorDraftFieldsSchema
     id: connectorIdSchema,
     reason: reasonSchema,
   })
+  .strict();
+
+export const adminConnectorDeleteDraftInputSchema = z
+  .object({
+    expectedDraftToken: z.string().length(64),
+    expectedRevision: z.number().int().nonnegative(),
+    id: connectorIdSchema,
+    reason: reasonSchema,
+  })
+  .strict();
+
+export const adminConnectorDeleteDraftOutputSchema = z
+  .object({ auditId: connectorIdSchema })
   .strict();
 
 export const adminConnectorListInputSchema = z
@@ -1006,6 +1026,13 @@ export const adminConnectorRevokeAllBindingsInputSchema = z
   })
   .strict();
 
+export const adminConnectorRevokeAllBindingsOutputSchema = z
+  .object({
+    auditId: connectorIdSchema,
+    revoked: z.number().int().nonnegative(),
+  })
+  .strict();
+
 export const adminConnectorRevisionOutputSchema = z
   .object({ auditId: connectorIdSchema, revision: z.number().int().positive() })
   .strict();
@@ -1293,6 +1320,8 @@ export const trustedConnectorOAuthBindingSchema = z
 export const ADMIN_CONNECTOR_PROCEDURE_PERMISSIONS = {
   archive: 'platform_connector:delete:all',
   create: 'platform_connector:create:all',
+  createDraft: 'platform_connector:create:all',
+  deleteDraft: 'platform_connector:delete:all',
   discover: 'platform_connector:test:all',
   get: 'platform_connector:read:all',
   list: 'platform_connector:read:all',
@@ -1301,4 +1330,5 @@ export const ADMIN_CONNECTOR_PROCEDURE_PERMISSIONS = {
   rollback: 'platform_connector:publish:all',
   test: 'platform_connector:test:all',
   update: 'platform_connector:update:all',
+  updateDraft: 'platform_connector:update:all',
 } as const;

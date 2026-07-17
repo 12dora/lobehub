@@ -2,7 +2,6 @@ import { randomUUID } from 'node:crypto';
 
 import { eq } from 'drizzle-orm';
 import type { z } from 'zod';
-import { z as zod } from 'zod';
 
 import { checksumPayload, PlatformRevisionConflictError } from '@/database/models/platform';
 import { PlatformConnectorCatalogRepository } from '@/database/repositories/platformConnectorCatalog';
@@ -22,6 +21,7 @@ import type {
 } from '../../contracts/platformConnectors';
 import {
   adminConnectorCreateDraftInputSchema,
+  adminConnectorDeleteDraftInputSchema,
   adminConnectorDraftSchema,
   adminConnectorListInputSchema,
   adminConnectorListOutputSchema,
@@ -74,15 +74,6 @@ interface PersistedSecretSlots {
   sharedSecretRef: string | null;
   sharedSecretUpdatedAt: Date | null;
 }
-
-const deleteDraftInputSchema = zod
-  .object({
-    expectedDraftToken: zod.string().length(64),
-    expectedRevision: zod.number().int().nonnegative(),
-    id: zod.string().trim().min(1).max(128),
-    reason: zod.string().trim().min(1).max(2000),
-  })
-  .strict();
 
 const currentSlot = (
   connector: PlatformConnectorItem | undefined,
@@ -555,8 +546,11 @@ export class ConnectorCatalogDraftService {
     }
   };
 
-  deleteDraft = async (actorUserId: string, input: z.input<typeof deleteDraftInputSchema>) => {
-    const command = deleteDraftInputSchema.parse(input);
+  deleteDraft = async (
+    actorUserId: string,
+    input: z.input<typeof adminConnectorDeleteDraftInputSchema>,
+  ) => {
+    const command = adminConnectorDeleteDraftInputSchema.parse(input);
     let safeReason: string | null = null;
     try {
       safeReason = await sanitizeConnectorReason(this.secrets, command.id, command.reason);
