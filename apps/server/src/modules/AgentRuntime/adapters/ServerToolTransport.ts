@@ -172,6 +172,7 @@ export class ServerToolTransport implements ToolTransport {
               execSubAgent: this.ctx.execSubAgent,
               executionTimeoutMs: timeoutMs,
               groupId: context.state.metadata?.groupId,
+              connectorApprovalReceipt: context.state.metadata?.connectorApprovalReceipt,
               isSubAgent: context.state.metadata?.isSubAgent === true,
               memoryToolPermission:
                 context.state.metadata?.agentConfig?.chatConfig?.memory?.toolPermission,

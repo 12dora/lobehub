@@ -15,10 +15,17 @@ import {
   adminManagedResourcesSaveDraftInputSchema,
   adminManagedResourcesSaveDraftOutputSchema,
 } from '../../contracts/adminManagedResources';
+import { parseEnterpriseFeatureFlags } from '../../featureFlags';
 import { withActiveUser } from '../../guards/activeUser';
 import { throwEnterpriseError } from '../../guards/enterpriseErrors';
 import { withPlatformPermission } from '../../guards/platformPermission';
 import { assertRecentReauth } from '../../guards/reauth';
+import {
+  beginConnectorRuntimeEffectiveStateTransition,
+  cancelConnectorRuntimeEffectiveStateTransition,
+  finalizeConnectorRuntimeEffectiveStateTransition,
+} from '../../services/connectorCatalog/runtimeEffectiveState';
+import { resolvePublishedManagedResourcePolicies } from '../../services/managedResourceCapabilities';
 import {
   ManagedResourceCatalogNotReadyError,
   ManagedResourcePolicyService,
@@ -79,16 +86,45 @@ export const adminManagedResourcesRouter = router({
         reason: input.reason,
         serverDB: ctx.serverDB,
       });
+      let connectorTransitionToken: string | null = null;
+      let connectorTransitionCanRestore = false;
       try {
-        return await new ManagedResourcePolicyService(ctx.serverDB).publish({
+        const flags = parseEnterpriseFeatureFlags(process.env);
+        connectorTransitionToken = flags.ENABLE_PLATFORM_MANAGED_CONNECTORS
+          ? await beginConnectorRuntimeEffectiveStateTransition(input.expectedRevision)
+          : null;
+        if (flags.ENABLE_PLATFORM_MANAGED_CONNECTORS && !connectorTransitionToken) {
+          // Close every direct MCP path before the policy pointer changes. If the
+          // shared authority is unavailable, abort the publish instead of leaving
+          // another instance on a stale legacy/enforced decision.
+          throw new Error('Connector runtime transition authority unavailable');
+        }
+        const result = await new ManagedResourcePolicyService(ctx.serverDB).publish({
           actorUserId: ctx.userId!,
           comment: input.comment,
           expectedDraftToken: input.expectedDraftToken,
           expectedRevision: input.expectedRevision,
           reason: input.reason,
         });
+        const managed = await resolvePublishedManagedResourcePolicies({ db: ctx.serverDB, flags });
+        const policy = managed.published.connectors;
+        if (flags.ENABLE_PLATFORM_MANAGED_CONNECTORS) {
+          await finalizeConnectorRuntimeEffectiveStateTransition({
+            mode:
+              !policy.managed || policy.enforcementMode !== 'enforced'
+                ? 'legacy'
+                : managed.readiness.connectors
+                  ? 'enforced'
+                  : 'blocked',
+            revision: managed.revision,
+            token: connectorTransitionToken!,
+          });
+          connectorTransitionToken = null;
+        }
+        return result;
       } catch (error) {
         if (error instanceof PlatformRevisionConflictError) {
+          connectorTransitionCanRestore = true;
           throwEnterpriseError({
             code: PLATFORM_ERROR_CODES.PLATFORM_REVISION_CONFLICT,
             details: error.details as Record<string, string | number | boolean | null> | undefined,
@@ -96,6 +132,7 @@ export const adminManagedResourcesRouter = router({
           });
         }
         if (error instanceof ManagedResourceCatalogNotReadyError) {
+          connectorTransitionCanRestore = true;
           throwEnterpriseError({
             code: PLATFORM_ERROR_CODES.PLATFORM_CONFIG_VALIDATION_FAILED,
             details: { resourceCount: error.resources.length },
@@ -104,6 +141,16 @@ export const adminManagedResourcesRouter = router({
           });
         }
         throw error;
+      } finally {
+        if (connectorTransitionToken && connectorTransitionCanRestore) {
+          try {
+            await cancelConnectorRuntimeEffectiveStateTransition(connectorTransitionToken);
+          } catch (cleanupError) {
+            console.error('[admin.managedResources.publish] transition cleanup failed', {
+              errorClass: cleanupError instanceof Error ? cleanupError.name : 'UnknownError',
+            });
+          }
+        }
       }
     }),
 

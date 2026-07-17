@@ -53,6 +53,12 @@ export const platformResourceRevisions = pgTable(
       t.resourceId,
       t.revision,
     ),
+    uniqueIndex('platform_resource_revisions_type_id_revision_checksum_unique').on(
+      t.resourceType,
+      t.resourceId,
+      t.revision,
+      t.checksum,
+    ),
     index('platform_resource_revisions_created_at_idx').on(t.createdAt),
     index('platform_resource_revisions_type_id_idx').on(t.resourceType, t.resourceId),
     index('platform_resource_revisions_status_idx').on(t.status),

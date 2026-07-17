@@ -5,6 +5,7 @@ import { type NextRequest, NextResponse } from 'next/server';
 import { ConnectorModel } from '@/database/models/connector';
 import { ConnectorToolModel } from '@/database/models/connectorTool';
 import { serverDB } from '@/database/server';
+import { handleManagedConnectorOAuthCallback } from '@/enterprise/server/connectorOAuthCallback';
 import { appEnv } from '@/envs/app';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 import { exchangeConnectorCode } from '@/server/services/connector/oauth';
@@ -67,15 +68,15 @@ const renderResultPage = (result: {
   });
 };
 
-export const GET = async (req: NextRequest) => {
+const legacyGET = async (req: NextRequest) => {
   const searchParams = req.nextUrl.searchParams;
   const code = searchParams.get('code');
   const state = searchParams.get('state');
   const oauthError = searchParams.get('error');
 
   if (oauthError) {
-    log('authorization server returned error: %s', oauthError);
-    return renderResultPage({ error: oauthError, success: false });
+    log('authorization server returned an error');
+    return renderResultPage({ error: 'authorization_failed', success: false });
   }
 
   if (!code || !state) {
@@ -146,8 +147,12 @@ export const GET = async (req: NextRequest) => {
 
     return renderResultPage({ connectorId: payload.connectorId, success: true, synced });
   } catch (err) {
-    log('connector OAuth callback error: %O', err);
-    const message = err instanceof Error ? err.message : 'internal_error';
-    return renderResultPage({ error: message, success: false });
+    log('connector OAuth callback failed: %s', err instanceof Error ? err.name : 'UnknownError');
+    return renderResultPage({ error: 'internal_error', success: false });
   }
+};
+
+export const GET = async (req: NextRequest) => {
+  const managed = await handleManagedConnectorOAuthCallback(req, serverDB);
+  return managed ?? legacyGET(req);
 };

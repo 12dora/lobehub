@@ -54,6 +54,8 @@ export class MCPService {
   // Store instances of the custom MCPClient, keyed by serialized MCPClientParams
   private clients: Map<string, MCPClient> = new Map();
 
+  constructor(private readonly options: { allowStdio?: boolean; httpFetch?: typeof fetch } = {}) {}
+
   /**
    * Process MCP tool call result with content blocks processing
    * This is a common utility method that can be used by both internal MCP calls and external services (e.g., Composio)
@@ -282,6 +284,12 @@ export class MCPService {
 
   // Private method to get or initialize a client based on parameters
   private async getClient(params: MCPClientParams, skipCache = false): Promise<MCPClient> {
+    if (params.type === 'stdio' && this.options.allowStdio !== true) {
+      throw new TRPCError({
+        code: 'BAD_REQUEST',
+        message: 'Stdio MCP requires an explicitly isolated worker capability',
+      });
+    }
     const key = this.serializeParams(params); // Use custom serialization
 
     if (!skipCache && this.clients.has(key)) {
@@ -290,7 +298,7 @@ export class MCPService {
 
     log(`No cached client found, Initializing new client.`);
     try {
-      const client = new MCPClient(params);
+      const client = new MCPClient(params, { httpFetch: this.options.httpFetch });
       await client.initialize({
         onProgress: (progress) => {
           log(`New client initializing... ${progress.progress}/${progress.total}`);

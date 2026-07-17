@@ -17,6 +17,7 @@ export type AdminNavLabelKey =
   | 'nav.skills'
   | 'nav.skillDetail'
   | 'nav.connectors'
+  | 'nav.connectorDetail'
   | 'nav.agents'
   | 'nav.identity'
   | 'nav.branding'
@@ -152,7 +153,15 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
     id: 'connectors',
     labelKey: 'nav.connectors',
     path: '/admin/connectors',
-    placeholder: true,
+    placeholder: false,
+    requiredPermissions: [PLATFORM_PERMISSIONS.CONNECTOR_READ],
+  },
+  {
+    hideFromNav: true,
+    id: 'connectors-detail',
+    labelKey: 'nav.connectorDetail',
+    path: '/admin/connectors/:id',
+    placeholder: false,
     requiredPermissions: [PLATFORM_PERMISSIONS.CONNECTOR_READ],
   },
   {

@@ -446,6 +446,7 @@ export class AgentRuntimeService {
       queueRetryDelay,
       botContext,
       botPlatformContext,
+      connectorApprovalReceipt,
       deviceAccessPolicy,
       discordContext,
       evalContext,
@@ -479,7 +480,14 @@ export class AgentRuntimeService {
       // Persist the Agent Signal run marker on the operation row so server-side
       // self-iteration tools can read it back (metadata.agentSignal) at tool-call
       // time — the trimmed appContext above intentionally drops it.
-      ...(appContext?.agentSignal ? { metadata: { agentSignal: appContext.agentSignal } } : {}),
+      ...(appContext?.agentSignal || connectorApprovalReceipt
+        ? {
+            metadata: {
+              ...(appContext?.agentSignal ? { agentSignal: appContext.agentSignal } : {}),
+              ...(connectorApprovalReceipt ? { connectorApprovalReceipt } : {}),
+            },
+          }
+        : {}),
       model: modelRuntimeConfig?.model,
       modelRuntimeConfig,
       operationId,
@@ -527,6 +535,7 @@ export class AgentRuntimeService {
           agentGroup,
           botContext,
           botPlatformContext,
+          connectorApprovalReceipt,
           deviceAccessPolicy,
           deviceSystemInfo,
           discordContext,

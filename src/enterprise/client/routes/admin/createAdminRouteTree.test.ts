@@ -33,6 +33,8 @@ describe('createAdminRouteTree', () => {
     expect(paths).toContain('/admin/ai/providers/:id');
     expect(paths).toContain('/admin/skills');
     expect(paths).toContain('/admin/skills/:id');
+    expect(paths).toContain('/admin/connectors');
+    expect(paths).toContain('/admin/connectors/:id');
   });
 
   it('deep links match nested paths and nested 404', () => {
@@ -44,6 +46,7 @@ describe('createAdminRouteTree', () => {
     expect(matchRoutes(routes, '/admin/managed-resources')).toBeTruthy();
     expect(matchRoutes(routes, '/admin/ai/providers/p-1')).toBeTruthy();
     expect(matchRoutes(routes, '/admin/skills/s-1')).toBeTruthy();
+    expect(matchRoutes(routes, '/admin/connectors/c-1')).toBeTruthy();
 
     const nestedUnknown = matchRoutes(routes, '/admin/does-not-exist');
     expect(nestedUnknown).toBeTruthy();
@@ -64,6 +67,8 @@ describe('createAdminRouteTree', () => {
     const aiModels = children.find((c) => c.path === 'ai/models');
     const skills = children.find((c) => c.path === 'skills');
     const skillDetail = children.find((c) => c.path === 'skills/:id');
+    const connectors = children.find((c) => c.path === 'connectors');
+    const connectorDetail = children.find((c) => c.path === 'connectors/:id');
 
     expect((users?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder).toBe(
       false,
@@ -92,6 +97,12 @@ describe('createAdminRouteTree', () => {
     expect((skillDetail?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder).toBe(
       false,
     );
+    expect((connectors?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder).toBe(
+      false,
+    );
+    expect(
+      (connectorDetail?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder,
+    ).toBe(false);
 
     // Element is not the shared PlaceholderPage for users (lazy wrapper present)
     expect(users?.element).toBeTruthy();
@@ -108,7 +119,9 @@ describe('createAdminRouteTree', () => {
           i.id !== 'ai-provider-detail' &&
           i.id !== 'ai-models' &&
           i.id !== 'skills' &&
-          i.id !== 'skills-detail',
+          i.id !== 'skills-detail' &&
+          i.id !== 'connectors' &&
+          i.id !== 'connectors-detail',
       ),
     ).toBe(true);
   });
