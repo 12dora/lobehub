@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
   adminPlatformAgentAppendVersionInputSchema,
   adminPlatformAgentArchiveInputSchema,
+  adminPlatformAgentAssignmentListOutputSchema,
   adminPlatformAgentAssignmentPreviewInputSchema,
   adminPlatformAgentAssignmentRemoveInputSchema,
   adminPlatformAgentAssignmentUpsertInputSchema,
@@ -12,10 +13,15 @@ import {
   adminPlatformAgentGetInputSchema,
   adminPlatformAgentListInputSchema,
   adminPlatformAgentListOutputSchema,
+  adminPlatformAgentPublishInputSchema,
   adminPlatformAgentRolloutCancelInputSchema,
+  adminPlatformAgentRolloutListOutputSchema,
+  adminPlatformAgentRolloutRetryInputSchema,
   adminPlatformAgentRolloutRollbackInputSchema,
   adminPlatformAgentRolloutStartInputSchema,
+  adminPlatformAgentSetDefaultInboxInputSchema,
   adminPlatformAgentUpdateDraftInputSchema,
+  adminPlatformAgentVersionsListOutputSchema,
   platformAgentAssignmentSchema,
   platformAgentDependencySnapshotSchema,
   platformAgentEffectiveListOutputSchema,
@@ -97,6 +103,7 @@ const rollout = {
   cursor: 'user-cursor',
   failed: 1,
   jobId: 'job-id',
+  revision: 2,
   status: 'dead' as const,
   total: 10,
   updatedAt: new Date('2026-07-17T00:00:00Z'),
@@ -260,16 +267,38 @@ describe('platform Agent contracts', () => {
     ).toBe(true);
     expect(
       adminPlatformAgentDetailOutputSchema.safeParse({
+        draftToken: 'b'.repeat(64),
+        identity: draft,
+      }).success,
+    ).toBe(true);
+    expect(
+      adminPlatformAgentDetailOutputSchema.safeParse({
         assignments: [assignment],
         draftToken: 'b'.repeat(64),
         identity: draft,
-        rollouts: [rollout],
-        versions: [version],
+      }).success,
+    ).toBe(false);
+    expect(
+      adminPlatformAgentVersionsListOutputSchema.safeParse({
+        items: [version],
+        nextCursor: null,
+      }).success,
+    ).toBe(true);
+    expect(
+      adminPlatformAgentAssignmentListOutputSchema.safeParse({
+        items: [assignment],
+        nextCursor: null,
+      }).success,
+    ).toBe(true);
+    expect(
+      adminPlatformAgentRolloutListOutputSchema.safeParse({
+        items: [rollout],
+        nextCursor: null,
       }).success,
     ).toBe(true);
   });
 
-  it('requires CAS, reason and a non-empty update patch on identity mutations', () => {
+  it('requires CAS, atomic default fields and explicit archive replacement', () => {
     const base = {
       agentId: 'agent-id',
       expectedDraftToken: 'b'.repeat(64),
@@ -279,6 +308,16 @@ describe('platform Agent contracts', () => {
     expect(adminPlatformAgentUpdateDraftInputSchema.safeParse(base).success).toBe(false);
     expect(
       adminPlatformAgentUpdateDraftInputSchema.safeParse({ ...base, isDefault: false }).success,
+    ).toBe(false);
+    expect(
+      adminPlatformAgentUpdateDraftInputSchema.safeParse({ ...base, systemKey: null }).success,
+    ).toBe(false);
+    expect(
+      adminPlatformAgentUpdateDraftInputSchema.safeParse({
+        ...base,
+        isDefault: false,
+        systemKey: null,
+      }).success,
     ).toBe(true);
     expect(
       adminPlatformAgentUpdateDraftInputSchema.safeParse({
@@ -287,16 +326,62 @@ describe('platform Agent contracts', () => {
         systemKey: null,
       }).success,
     ).toBe(false);
-    expect(adminPlatformAgentArchiveInputSchema.safeParse(base).success).toBe(true);
-    expect(adminPlatformAgentArchiveInputSchema.safeParse({ ...base, reason: '' }).success).toBe(
-      false,
-    );
+    expect(adminPlatformAgentArchiveInputSchema.safeParse(base).success).toBe(false);
+    expect(
+      adminPlatformAgentArchiveInputSchema.safeParse({ ...base, replacementAgentId: null }).success,
+    ).toBe(true);
+    expect(
+      adminPlatformAgentArchiveInputSchema.safeParse({
+        ...base,
+        reason: '',
+        replacementAgentId: null,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('publishes an existing immutable version and switches the default atomically', () => {
+    const pointer = {
+      agentId: 'agent-id',
+      expectedDraftToken: 'b'.repeat(64),
+      expectedRevision: 1,
+    };
+    expect(
+      adminPlatformAgentPublishInputSchema.safeParse({
+        ...pointer,
+        reason: 'publish reviewed version',
+        versionId: 'version-id',
+      }).success,
+    ).toBe(true);
+    expect(
+      adminPlatformAgentPublishInputSchema.safeParse({
+        ...pointer,
+        config,
+        reason: 'publish reviewed version',
+        versionId: 'version-id',
+      }).success,
+    ).toBe(false);
+    expect(
+      adminPlatformAgentSetDefaultInboxInputSchema.safeParse({
+        currentDefault: { ...pointer, agentId: 'old-agent-id' },
+        nextDefault: pointer,
+        reason: 'replace default inbox',
+      }).success,
+    ).toBe(true);
+    expect(
+      adminPlatformAgentSetDefaultInboxInputSchema.safeParse({
+        currentDefault: pointer,
+        nextDefault: pointer,
+        reason: 'replace default inbox',
+      }).success,
+    ).toBe(false);
   });
 
   it('keeps assignment upsert and preview target/version invariants identical', () => {
     const write = {
       agentId: 'agent-id',
       enabled: true,
+      expectedDraftToken: 'b'.repeat(64),
+      expectedRevision: 1,
       mode: 'optional' as const,
       pinnedVersionId: null,
       reason: 'assign cohort',
@@ -311,7 +396,13 @@ describe('platform Agent contracts', () => {
         targetId: 'not-global',
       }).success,
     ).toBe(false);
-    const { agentId: _, reason: __, ...preview } = write;
+    const {
+      agentId: _,
+      expectedDraftToken: __,
+      expectedRevision: ___,
+      reason: ____,
+      ...preview
+    } = write;
     expect(
       adminPlatformAgentAssignmentPreviewInputSchema.safeParse({
         agentId: 'agent-id',
@@ -322,19 +413,37 @@ describe('platform Agent contracts', () => {
       adminPlatformAgentAssignmentRemoveInputSchema.safeParse({
         agentId: 'agent-id',
         assignmentId: 'assignment-id',
+        expectedDraftToken: 'b'.repeat(64),
+        expectedRevision: 1,
         reason: 'remove cohort',
       }).success,
     ).toBe(true);
+    expect(
+      adminPlatformAgentAssignmentRemoveInputSchema.safeParse({
+        agentId: 'agent-id',
+        assignmentId: 'assignment-id',
+        reason: 'remove cohort',
+      }).success,
+    ).toBe(false);
   });
 
-  it('gates rollout mutations with reasons and strict rollback targets', () => {
+  it('gates rollout mutations with Agent and job CAS', () => {
+    expect(
+      adminPlatformAgentRolloutStartInputSchema.safeParse({
+        agentId: 'agent-id',
+        assignmentId: 'assignment-id',
+        expectedDraftToken: 'b'.repeat(64),
+        expectedRevision: 1,
+        reason: 'start rollout',
+      }).success,
+    ).toBe(true);
     expect(
       adminPlatformAgentRolloutStartInputSchema.safeParse({
         agentId: 'agent-id',
         assignmentId: 'assignment-id',
         reason: 'start rollout',
       }).success,
-    ).toBe(true);
+    ).toBe(false);
     expect(
       adminPlatformAgentRolloutCancelInputSchema.safeParse({
         agentId: 'agent-id',
@@ -342,8 +451,28 @@ describe('platform Agent contracts', () => {
       }).success,
     ).toBe(false);
     expect(
+      adminPlatformAgentRolloutCancelInputSchema.safeParse({
+        agentId: 'agent-id',
+        expectedJobRevision: 2,
+        expectedStatus: 'running',
+        jobId: 'job-id',
+        reason: 'stop rollout',
+      }).success,
+    ).toBe(true);
+    expect(
+      adminPlatformAgentRolloutRetryInputSchema.safeParse({
+        agentId: 'agent-id',
+        expectedJobRevision: 2,
+        expectedStatus: 'dead',
+        jobId: 'job-id',
+        reason: 'retry rollout',
+      }).success,
+    ).toBe(true);
+    expect(
       adminPlatformAgentRolloutRollbackInputSchema.safeParse({
         agentId: 'agent-id',
+        expectedJobRevision: 2,
+        expectedStatus: 'dead',
         jobId: 'job-id',
         reason: 'compensate rollout',
         targetVersionId: 'version-id',
