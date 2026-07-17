@@ -32,6 +32,7 @@ describe('admin Connector controller', () => {
       canDiscover: false,
       canPublish: false,
       canRead: true,
+      canReadAudit: false,
       canRevokeBindings: false,
       canTest: false,
       canUpdate: false,
