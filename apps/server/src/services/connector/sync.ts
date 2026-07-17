@@ -4,6 +4,7 @@ import type { ConnectorCredentials } from '@/database/schemas';
 import { ConnectorMcpConnectionType, ConnectorStatus } from '@/database/schemas';
 import type { AuthConfig } from '@/libs/mcp';
 import { inferCrudType } from '@/libs/mcp/utils';
+import { PlatformConnectorContractError } from '@/server/enterprise/services/connectorCatalog/errors';
 import { assertLegacyConnectorRuntimeAllowed } from '@/server/enterprise/services/connectorCatalog/runtimeIntegration';
 import { mcpService } from '@/server/services/mcp';
 
@@ -103,6 +104,12 @@ export const syncConnectorToolsById = async (
   await assertLegacyConnectorRuntimeAllowed({});
   let connector = await ctx.connectorModel.findById(connectorId);
   if (!connector) throw new Error('Connector not found');
+
+  // This service runs in the web server. Stdio is desktop-only and must never
+  // reach child_process even when managed connectors are disabled or legacy.
+  if (connector.mcpConnectionType === ConnectorMcpConnectionType.stdio) {
+    throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_STDIO_UNSUPPORTED');
+  }
 
   if (!connector.mcpServerUrl && connector.mcpConnectionType !== ConnectorMcpConnectionType.stdio) {
     throw new Error('Connector has no MCP server URL configured');

@@ -185,6 +185,22 @@ describe('buildConnectorMcpParams', () => {
 });
 
 describe('syncConnectorToolsById managed transport guard', () => {
+  it('rejects stdio in the web service even when legacy transport is allowed', async () => {
+    const connectorModel = {
+      findById: vi.fn().mockResolvedValue({
+        mcpConnectionType: 'stdio',
+        mcpStdioConfig: { args: [], command: 'dangerous-child-process' },
+      }),
+    };
+
+    await expect(
+      syncConnectorToolsById('connector-1', {
+        connectorModel,
+        connectorToolModel: { upsertMany: vi.fn() },
+      } as any),
+    ).rejects.toThrow('PLATFORM_CONNECTOR_STDIO_UNSUPPORTED');
+  });
+
   it.each(['http', 'stdio'] as const)(
     'blocks legacy %s discovery before reading credentials or starting MCP',
     async () => {
