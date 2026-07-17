@@ -3,6 +3,7 @@ import type { AgentPluginEntry } from '@lobechat/types';
 import { wsCompatProcedure } from '@/business/server/trpc-middlewares/workspaceAuth';
 import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { AgentModel } from '@/database/models/agent';
+import { AgentOperationModel } from '@/database/models/agentOperation';
 import { authedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 import { signPlatformSkillOperationProof } from '@/libs/trpc/utils/internalJwt';
@@ -85,6 +86,26 @@ export const platformSkillsRouter = router({
       const exactCurrent =
         input.revision === catalog.revision && hasExactPlatformSkillRefs(input.refs, serverRefs);
       if (!exactCurrent) {
+        return throwEnterpriseError({
+          code: PLATFORM_ERROR_CODES.PLATFORM_CONFIG_VALIDATION_FAILED,
+          details: { issueCount: 1 },
+          httpCode: 'PRECONDITION_FAILED',
+        });
+      }
+      const operationModel = new AgentOperationModel(
+        ctx.serverDB,
+        ctx.userId,
+        ctx.workspaceId ?? undefined,
+      );
+      let operation = await operationModel.findById(input.operationId);
+      if (!operation) {
+        await operationModel.recordStart({
+          agentId: input.agentId,
+          operationId: input.operationId,
+        });
+        operation = await operationModel.findById(input.operationId);
+      }
+      if (!operation || operation.agentId !== input.agentId || operation.status !== 'running') {
         return throwEnterpriseError({
           code: PLATFORM_ERROR_CODES.PLATFORM_CONFIG_VALIDATION_FAILED,
           details: { issueCount: 1 },

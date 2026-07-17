@@ -2,7 +2,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
-import { agents, users } from '@/database/schemas';
+import { AgentOperationModel } from '@/database/models/agentOperation';
+import { agentOperations, agents, users } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
 import { createCallerFactory } from '@/libs/trpc/lambda';
 import { createContextInner } from '@/libs/trpc/lambda/context';
@@ -44,7 +45,9 @@ vi.mock('@lobechat/builtin-skills', () => ({
 }));
 
 beforeEach(async () => {
+  vi.clearAllMocks();
   vi.unstubAllEnvs();
+  await db.delete(agentOperations);
   await db.delete(users);
   await db.insert(users).values({ id: userId });
   await db.insert(agents).values({ id: 'agent-1', plugins: [], userId });
@@ -53,6 +56,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  await db.delete(agentOperations);
   await db.delete(agents);
   await db.delete(users);
   vi.unstubAllEnvs();
@@ -136,6 +140,9 @@ describe('platformSkillsRouter', () => {
       refs,
       revision: catalog.revision,
     });
+    await expect(
+      new AgentOperationModel(db, userId).findById('operation-1'),
+    ).resolves.toMatchObject({ agentId: 'agent-1', status: 'running' });
   });
 
   it('rejects refs that omit the persisted mandatory selection', async () => {
@@ -176,5 +183,33 @@ describe('platformSkillsRouter', () => {
         revision: catalog.revision,
       }),
     ).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+  });
+
+  it('rejects a proof request when the persisted operation belongs to another agent', async () => {
+    vi.stubEnv('ENABLE_PLATFORM_MANAGED_SKILLS', '1');
+    await db.insert(agents).values({ id: 'agent-2', plugins: [], userId });
+    await new AgentOperationModel(db, userId).recordStart({
+      agentId: 'agent-2',
+      operationId: 'operation-agent-2',
+    });
+    const caller = createCaller({
+      ...(await createContextInner({ userId })),
+      serverDB: db,
+    } as never);
+    const catalog = await caller.getPublishedCatalog();
+
+    await expect(
+      caller.beginOperation({
+        agentId: 'agent-1',
+        operationId: 'operation-agent-2',
+        refs: catalog.skills.map(({ checksum, skillKey, version }) => ({
+          checksum,
+          skillKey,
+          version,
+        })),
+        revision: catalog.revision,
+      }),
+    ).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    expect(operationMocks.signProof).not.toHaveBeenCalled();
   });
 });

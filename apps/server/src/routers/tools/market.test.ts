@@ -19,8 +19,10 @@ const mockMarketSDK = vi.hoisted(() => ({
 }));
 const managedSkillMocks = vi.hoisted(() => ({
   AgentSkillModel: vi.fn(() => ({ findByName: vi.fn() })),
+  AgentOperationModel: vi.fn(() => ({ findById: managedSkillMocks.findOperation })),
   debugLog: vi.fn(),
   FileModel: vi.fn(() => ({ checkHash: vi.fn() })),
+  findOperation: vi.fn(),
   getRuntimeModeSnapshot: vi.fn(),
   SkillCatalogReadService: vi.fn(() => ({
     resolvePinnedForExecution: vi.fn(),
@@ -31,6 +33,10 @@ const managedSkillMocks = vi.hoisted(() => ({
 
 vi.mock('@/database/models/agentSkill', () => ({
   AgentSkillModel: managedSkillMocks.AgentSkillModel,
+}));
+
+vi.mock('@/database/models/agentOperation', () => ({
+  AgentOperationModel: managedSkillMocks.AgentOperationModel,
 }));
 
 vi.mock('@/database/models/file', () => ({
@@ -107,6 +113,11 @@ describe('tools marketRouter', () => {
       refsHash: 'refs-hash',
       revision: 'catalog-r1',
       userId: 'user-1',
+    });
+    managedSkillMocks.findOperation.mockResolvedValue({
+      agentId: 'agent-1',
+      id: 'operation-1',
+      status: 'running',
     });
     managedSkillMocks.getRuntimeModeSnapshot.mockReturnValue('unmanaged');
   });
@@ -203,7 +214,7 @@ describe('tools marketRouter', () => {
     });
     expect(managedSkillMocks.AgentSkillModel).not.toHaveBeenCalled();
     expect(managedSkillMocks.FileModel).not.toHaveBeenCalled();
-    expect(managedSkillMocks.getRuntimeModeSnapshot).not.toHaveBeenCalled();
+    expect(managedSkillMocks.getRuntimeModeSnapshot).toHaveBeenCalledOnce();
     expect(managedSkillMocks.verifyProof).toHaveBeenCalledWith('signed-proof', 'user-1');
     expect(mockSandboxCallTool).toHaveBeenCalledWith(
       'writeFile',
@@ -253,6 +264,81 @@ describe('tools marketRouter', () => {
         topicId: 'topic-1',
       }),
     ).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+  });
+
+  it('rejects proof A when the persisted runtime operation belongs to agent B', async () => {
+    const checksum = 'a'.repeat(64);
+    managedSkillMocks.parseEnterpriseFeatureFlags.mockReturnValue({
+      ENABLE_PLATFORM_MANAGED_SKILLS: true,
+    });
+    managedSkillMocks.findOperation.mockResolvedValue({
+      agentId: 'agent-b',
+      id: 'operation-1',
+      status: 'running',
+    });
+    mockPreprocessLhCommand.mockResolvedValue({
+      command: 'true',
+      isLhCommand: false,
+      skipSkillLookup: false,
+    });
+    const caller = marketRouter.createCaller({ serverDB: {}, userId: 'user-1' } as any);
+
+    await expect(
+      caller.execInSandbox({
+        agentId: 'agent-1',
+        operationId: 'operation-1',
+        params: {
+          activatedSkills: [{ name: 'managed.skill' }],
+          command: 'true',
+          operationId: 'operation-1',
+          platformSkillSnapshot: {
+            agentId: 'agent-1',
+            operationId: 'operation-1',
+            proof: 'signed-proof',
+            refs: [{ checksum, skillKey: 'managed.skill', version: '1.0.0' }],
+            revision: 'catalog-r1',
+          },
+        },
+        toolName: 'execScript',
+        topicId: 'topic-1',
+      }),
+    ).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    expect(managedSkillMocks.SkillCatalogReadService).not.toHaveBeenCalled();
+    expect(managedSkillMocks.AgentSkillModel).not.toHaveBeenCalled();
+  });
+
+  it('rejects a valid managed snapshot with no activated Skills', async () => {
+    managedSkillMocks.parseEnterpriseFeatureFlags.mockReturnValue({
+      ENABLE_PLATFORM_MANAGED_SKILLS: true,
+    });
+    mockPreprocessLhCommand.mockResolvedValue({
+      command: 'true',
+      isLhCommand: false,
+      skipSkillLookup: false,
+    });
+    const caller = marketRouter.createCaller({ serverDB: {}, userId: 'user-1' } as any);
+
+    await expect(
+      caller.execInSandbox({
+        agentId: 'agent-1',
+        operationId: 'operation-1',
+        params: {
+          activatedSkills: [],
+          command: 'true',
+          operationId: 'operation-1',
+          platformSkillSnapshot: {
+            agentId: 'agent-1',
+            operationId: 'operation-1',
+            proof: 'signed-proof',
+            refs: [],
+            revision: 'catalog-r1',
+          },
+        },
+        toolName: 'execScript',
+        topicId: 'topic-1',
+      }),
+    ).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    expect(managedSkillMocks.SkillCatalogReadService).not.toHaveBeenCalled();
   });
 
   it('redacts managed materialization errors and never logs resource paths', async () => {
@@ -401,6 +487,35 @@ describe('tools marketRouter', () => {
     ).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
     expect(managedSkillMocks.AgentSkillModel).not.toHaveBeenCalled();
   });
+
+  it.each([undefined, []])(
+    'fails closed in enforced mode when activatedSkills is %s',
+    async (activatedSkills) => {
+      managedSkillMocks.parseEnterpriseFeatureFlags.mockReturnValue({
+        ENABLE_PLATFORM_MANAGED_SKILLS: true,
+      });
+      managedSkillMocks.getRuntimeModeSnapshot.mockReturnValue('enforced');
+      mockPreprocessLhCommand.mockResolvedValue({
+        command: 'python scripts/run.py',
+        isLhCommand: false,
+        skipSkillLookup: false,
+      });
+      const caller = marketRouter.createCaller({ serverDB: {}, userId: 'user-1' } as any);
+
+      await expect(
+        caller.execInSandbox({
+          params: {
+            ...(activatedSkills === undefined ? {} : { activatedSkills }),
+            command: 'python scripts/run.py',
+          },
+          toolName: 'execScript',
+          topicId: 'topic-1',
+        }),
+      ).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+      expect(managedSkillMocks.getRuntimeModeSnapshot).toHaveBeenCalledOnce();
+      expect(managedSkillMocks.AgentSkillModel).not.toHaveBeenCalled();
+    },
+  );
 
   it.each(['observe', 'ui-only'])(
     'keeps the legacy ZIP path in %s mode when no operation snapshot exists',

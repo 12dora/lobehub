@@ -9,6 +9,7 @@ import debug from 'debug';
 import { z } from 'zod';
 
 import { wsCompatProcedure } from '@/business/server/trpc-middlewares/workspaceAuth';
+import { AgentOperationModel } from '@/database/models/agentOperation';
 import { AgentSkillModel } from '@/database/models/agentSkill';
 import { FileModel } from '@/database/models/file';
 import { UserModel } from '@/database/models/user';
@@ -242,6 +243,49 @@ const execInSandboxHandler = async ({
         }>
       | undefined;
 
+    let execScriptBoundary:
+      | {
+          authorizedSnapshot: boolean;
+          platformEnforced: boolean;
+          snapshot: ReturnType<typeof platformSkillSnapshotSchema.safeParse>;
+        }
+      | undefined;
+    if (toolName === 'execScript') {
+      managedRequest = enhancedParams.platformSkillSnapshot !== undefined;
+      const flags = parseEnterpriseFeatureFlags(process.env);
+      const platformEnforced =
+        getManagedSkillRuntimeModeSnapshot({ db: ctx.serverDB, flags }) === 'enforced';
+      const snapshot = platformSkillSnapshotSchema.safeParse(enhancedParams.platformSkillSnapshot);
+      const proofClaims = snapshot.success
+        ? await verifyPlatformSkillOperationProof(snapshot.data.proof, ctx.userId)
+        : undefined;
+      const trustedOperation = proofClaims
+        ? await new AgentOperationModel(
+            ctx.serverDB,
+            ctx.userId,
+            ctx.workspaceId ?? undefined,
+          ).findById(proofClaims.operationId)
+        : null;
+      execScriptBoundary = {
+        authorizedSnapshot:
+          snapshot.success &&
+          proofClaims !== undefined &&
+          trustedOperation !== null &&
+          trustedOperation.id === proofClaims.operationId &&
+          trustedOperation.agentId === proofClaims.agentId &&
+          trustedOperation.status === 'running' &&
+          input.agentId === trustedOperation.agentId &&
+          input.operationId === trustedOperation.id &&
+          snapshot.data.agentId === trustedOperation.agentId &&
+          snapshot.data.operationId === trustedOperation.id &&
+          snapshot.data.revision === proofClaims.revision &&
+          hashPlatformSkillOperationRefs(snapshot.data.refs) === proofClaims.refsHash &&
+          snapshot.data.operationId === enhancedParams.operationId,
+        platformEnforced,
+        snapshot,
+      };
+    }
+
     // Preprocess lh commands: rewrite to npx @lobehub/cli + inject auth env vars
     if ((toolName === 'execScript' || toolName === 'runCommand') && params.command) {
       const lhResult = await preprocessLhCommand(
@@ -264,30 +308,23 @@ const execInSandboxHandler = async ({
       }
     }
 
-    // For execScript tool, look up skill zipUrls from activatedSkills
-    if (toolName === 'execScript' && enhancedParams.activatedSkills?.length) {
-      managedRequest = enhancedParams.platformSkillSnapshot !== undefined;
-      const flags = parseEnterpriseFeatureFlags(process.env);
-      const snapshot = platformSkillSnapshotSchema.safeParse(enhancedParams.platformSkillSnapshot);
-      const proofClaims = snapshot.success
-        ? await verifyPlatformSkillOperationProof(snapshot.data.proof, ctx.userId)
-        : undefined;
-      const authorizedSnapshot =
-        snapshot.success &&
-        proofClaims !== undefined &&
-        input.agentId === proofClaims.agentId &&
-        input.operationId === proofClaims.operationId &&
-        snapshot.data.agentId === proofClaims.agentId &&
-        snapshot.data.operationId === proofClaims.operationId &&
-        snapshot.data.revision === proofClaims.revision &&
-        hashPlatformSkillOperationRefs(snapshot.data.refs) === proofClaims.refsHash &&
-        snapshot.data.operationId === enhancedParams.operationId &&
-        enhancedParams.operationId === input.operationId;
-
+    // Every execScript request crosses the managed boundary, including calls
+    // with a missing/empty activatedSkills array.
+    if (toolName === 'execScript' && execScriptBoundary) {
+      const { authorizedSnapshot, platformEnforced, snapshot } = execScriptBoundary;
+      const activatedSkills = Array.isArray(enhancedParams.activatedSkills)
+        ? enhancedParams.activatedSkills
+        : [];
       // Resolve zipUrls for all activated skills
       const skillZipUrls: Record<string, string> = {};
 
       if (authorizedSnapshot && snapshot.success) {
+        if (activatedSkills.length === 0) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: 'Managed Skill activation is required',
+          });
+        }
         const refsByKey = new Map(snapshot.data.refs.map((ref) => [ref.skillKey, ref]));
         const catalog = new SkillCatalogReadService(ctx.serverDB, {
           builtinSkills: getBuiltinSkillDefinitions(),
@@ -297,7 +334,7 @@ const execInSandboxHandler = async ({
           resources: InlineSkillResource[];
           skillContent: string;
         }> = [];
-        for (const activatedSkill of enhancedParams.activatedSkills) {
+        for (const activatedSkill of activatedSkills) {
           const ref = refsByKey.get(activatedSkill.name);
           const resolved = ref ? await catalog.resolvePinnedForExecution(ref) : undefined;
           if (!ref || !resolved) {
@@ -344,8 +381,6 @@ const execInSandboxHandler = async ({
             message: 'Managed Skill operation proof is invalid',
           });
         }
-        const platformEnforced =
-          getManagedSkillRuntimeModeSnapshot({ db: ctx.serverDB, flags }) === 'enforced';
         if (platformEnforced) {
           throw new TRPCError({
             code: 'PRECONDITION_FAILED',
@@ -356,7 +391,7 @@ const execInSandboxHandler = async ({
         const agentSkillModel = new AgentSkillModel(ctx.serverDB, userId, wsId);
         const fileModel = new FileModel(ctx.serverDB, userId, wsId);
 
-        for (const activatedSkill of enhancedParams.activatedSkills) {
+        for (const activatedSkill of activatedSkills) {
           if (!activatedSkill.name) continue;
 
           const skill = await agentSkillModel.findByName(activatedSkill.name);
