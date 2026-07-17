@@ -156,6 +156,7 @@ export const platformAgentIdentityDraftSchema = z
     draftSequence: revisionSchema,
     id: idSchema,
     isDefault: z.boolean(),
+    migrationRequired: z.boolean(),
     revision: revisionSchema,
     status: z.enum(['archived', 'draft', 'published']),
     systemKey: platformAgentSystemKeySchema,

@@ -71,6 +71,7 @@ export interface PlatformAgentIdentityDraft {
   draftSequence: number;
   id: string;
   isDefault: boolean;
+  migrationRequired: boolean;
   revision: number;
   status: 'archived' | 'draft' | 'published';
   systemKey: PlatformAgentSystemKey | null;

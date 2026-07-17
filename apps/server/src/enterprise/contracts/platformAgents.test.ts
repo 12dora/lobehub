@@ -116,6 +116,7 @@ describe('platform Agent contracts', () => {
       draftSequence: 1,
       id: 'agent-id',
       isDefault: true,
+      migrationRequired: false,
       revision: 1,
       status: 'published' as const,
       systemKey: 'default-inbox' as const,
