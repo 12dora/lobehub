@@ -830,13 +830,13 @@ export const useControls = ({ closeDropdown }: { closeDropdown?: () => void } = 
     agentSkillsSelectors.getPlatformSkillCatalog,
     isEqual,
   );
-  const platformSkillRuntimeEnforced = useToolStore((state) =>
-    Boolean(state.platformSkillRuntimeEnforced),
+  const platformSkillRuntimeManaged = useToolStore((state) =>
+    Boolean(state.platformSkillRuntimeManaged),
   );
   const platformSkillRuntimeStatus = useToolStore(
     (state) => state.platformSkillRuntimeStatus ?? 'unmanaged',
   );
-  const platformCatalogSWR = usePublishedSkillCatalog(platformSkillRuntimeEnforced);
+  const platformCatalogSWR = usePublishedSkillCatalog(platformSkillRuntimeManaged);
   const skillRuntimeSources = useMemo(
     () =>
       selectSkillRuntimeSources({
@@ -1423,7 +1423,7 @@ export const useControls = ({ closeDropdown }: { closeDropdown?: () => void } = 
   );
 
   const platformSkillUnavailableItems = useMemo<SkillMenuItem[]>(() => {
-    if (!platformSkillRuntimeEnforced || platformSkillRuntimeStatus === 'ready') return [];
+    if (!platformSkillRuntimeManaged || platformSkillRuntimeStatus === 'ready') return [];
     const loading = platformSkillRuntimeStatus === 'loading';
     return [
       {
@@ -1449,7 +1449,7 @@ export const useControls = ({ closeDropdown }: { closeDropdown?: () => void } = 
         searchText: t('platformSkills.runtime.unavailable'),
       },
     ];
-  }, [platformCatalogSWR, platformSkillRuntimeEnforced, platformSkillRuntimeStatus, t]);
+  }, [platformCatalogSWR, platformSkillRuntimeManaged, platformSkillRuntimeStatus, t]);
 
   // Custom connector list items (user-added OAuth MCP servers).
   // Toggling adds the connector identifier to agents.plugins[] — the same field

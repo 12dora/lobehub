@@ -98,8 +98,9 @@ const resolvePublished = async (identifier: string): Promise<SkillItem | undefin
 const resolveExactRef = async (
   ref: PlatformSkillPinnedRef,
   metadata?: { description?: string | null; displayName?: string },
+  snapshot?: PlatformSkillOperationSnapshot,
 ): Promise<SkillItem> => {
-  const resolved = await agentSkillService.resolvePlatformPinned(ref);
+  const resolved = await agentSkillService.resolvePlatformPinned(ref, snapshot);
   if (
     resolved.identifier !== ref.skillKey ||
     resolved.version !== ref.version ||
@@ -199,7 +200,7 @@ export const createClientSkillRuntimeService = (snapshot?: PlatformSkillOperatio
       const oldest = cache.keys().next().value;
       if (oldest) cache.delete(oldest);
     }
-    const pending = resolveExactRef(ref, metadataByKey.get(ref.skillKey)).then((skill) =>
+    const pending = resolveExactRef(ref, metadataByKey.get(ref.skillKey), frozen).then((skill) =>
       freezeCanonicalSkillItem(structuredClone(skill)),
     );
     cache.set(key, pending);

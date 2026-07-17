@@ -27,6 +27,7 @@ const managedSkillMocks = vi.hoisted(() => ({
     resolvePinnedForExecution: vi.fn(),
   })),
   parseEnterpriseFeatureFlags: vi.fn(() => ({ ENABLE_PLATFORM_MANAGED_SKILLS: false })),
+  validateProof: vi.fn(),
 }));
 
 vi.mock('@/database/models/agentSkill', () => ({
@@ -43,6 +44,10 @@ vi.mock('@/database/models/platform', () => ({
 
 vi.mock('@/server/enterprise/featureFlags', () => ({
   parseEnterpriseFeatureFlags: managedSkillMocks.parseEnterpriseFeatureFlags,
+}));
+
+vi.mock('@/libs/trpc/utils/internalJwt', () => ({
+  validatePlatformSkillOperationProof: managedSkillMocks.validateProof,
 }));
 
 vi.mock('@/server/enterprise/services/skillCatalog', () => ({
@@ -90,6 +95,7 @@ describe('tools marketRouter', () => {
     managedSkillMocks.parseEnterpriseFeatureFlags.mockReturnValue({
       ENABLE_PLATFORM_MANAGED_SKILLS: false,
     });
+    managedSkillMocks.validateProof.mockResolvedValue(true);
   });
 
   it('should pass workspace scope when preprocessing sandbox lh commands', async () => {
@@ -170,7 +176,10 @@ describe('tools marketRouter', () => {
         command: 'python scripts/run.py',
         operationId: 'operation-1',
         platformSkillSnapshot: {
+          agentId: 'agent-1',
           mandatorySkillIds: ['managed.skill'],
+          operationId: 'operation-1',
+          proof: 'signed-proof',
           refs: [{ checksum, skillKey: 'managed.skill', version: '1.0.0' }],
           revision: 'catalog-r1',
         },
@@ -186,6 +195,14 @@ describe('tools marketRouter', () => {
     });
     expect(managedSkillMocks.AgentSkillModel).not.toHaveBeenCalled();
     expect(managedSkillMocks.FileModel).not.toHaveBeenCalled();
+    expect(managedSkillMocks.PlatformManagedResourcePolicyModel).not.toHaveBeenCalled();
+    expect(managedSkillMocks.validateProof).toHaveBeenCalledWith('signed-proof', {
+      agentId: 'agent-1',
+      operationId: 'operation-1',
+      refs: [{ checksum, skillKey: 'managed.skill', version: '1.0.0' }],
+      revision: 'catalog-r1',
+      userId: 'user-1',
+    });
     expect(mockSandboxCallTool).toHaveBeenCalledWith(
       'writeFile',
       expect.objectContaining({

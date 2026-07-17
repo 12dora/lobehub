@@ -19,6 +19,7 @@ import { type ToolCallContent } from '@/libs/mcp';
 import { authedProcedure, router } from '@/libs/trpc/lambda';
 import { marketUserInfo, serverDatabase, telemetry } from '@/libs/trpc/lambda/middleware';
 import { marketSDK, requireMarketAuth } from '@/libs/trpc/lambda/middleware/marketSDK';
+import { validatePlatformSkillOperationProof } from '@/libs/trpc/utils/internalJwt';
 import { isTrustedClientEnabled } from '@/libs/trusted-client';
 import { parseEnterpriseFeatureFlags } from '@/server/enterprise/featureFlags';
 import {
@@ -141,7 +142,10 @@ const execInSandboxSchema = z.object({
 
 const platformSkillSnapshotSchema = z
   .object({
+    agentId: z.string().min(1).max(256),
     mandatorySkillIds: z.array(z.string().min(1)).max(10_000).optional(),
+    operationId: z.string().min(1).max(256),
+    proof: z.string().min(1).max(8192),
     refs: z
       .array(
         z
@@ -253,29 +257,23 @@ const execInSandboxHandler = async ({
 
     // For execScript tool, look up skill zipUrls from activatedSkills
     if (toolName === 'execScript' && enhancedParams.activatedSkills?.length) {
-      const wsId = ctx.workspaceId ?? undefined;
       const flags = parseEnterpriseFeatureFlags(process.env);
-      const policySnapshot = flags.ENABLE_PLATFORM_MANAGED_SKILLS
-        ? await new PlatformManagedResourcePolicyModel(ctx.serverDB).getSnapshot()
-        : undefined;
-      const platformEnforced =
-        policySnapshot?.status === 'published' &&
-        policySnapshot.published.skills.managed &&
-        policySnapshot.published.skills.enforcementMode === 'enforced';
+      const snapshot = platformSkillSnapshotSchema.safeParse(enhancedParams.platformSkillSnapshot);
+      const authorizedSnapshot =
+        snapshot.success &&
+        snapshot.data.operationId === enhancedParams.operationId &&
+        (await validatePlatformSkillOperationProof(snapshot.data.proof, {
+          agentId: snapshot.data.agentId,
+          operationId: snapshot.data.operationId,
+          refs: snapshot.data.refs,
+          revision: snapshot.data.revision,
+          userId: ctx.userId,
+        }));
 
       // Resolve zipUrls for all activated skills
       const skillZipUrls: Record<string, string> = {};
 
-      if (platformEnforced) {
-        const snapshot = platformSkillSnapshotSchema.safeParse(
-          enhancedParams.platformSkillSnapshot,
-        );
-        if (!snapshot.success) {
-          throw new TRPCError({
-            code: 'PRECONDITION_FAILED',
-            message: 'Managed Skill operation snapshot is required',
-          });
-        }
+      if (authorizedSnapshot && snapshot.success) {
         const refsByKey = new Map(snapshot.data.refs.map((ref) => [ref.skillKey, ref]));
         const catalog = new SkillCatalogReadService(ctx.serverDB, {
           builtinSkills: getBuiltinSkillDefinitions(),
@@ -324,6 +322,26 @@ const execInSandboxHandler = async ({
         void _snapshot;
         enhancedParams = sandboxParams;
       } else {
+        if (snapshot.success || enhancedParams.platformSkillSnapshot !== undefined) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: 'Managed Skill operation proof is invalid',
+          });
+        }
+        const policySnapshot = flags.ENABLE_PLATFORM_MANAGED_SKILLS
+          ? await new PlatformManagedResourcePolicyModel(ctx.serverDB).getSnapshot()
+          : undefined;
+        const platformEnforced =
+          policySnapshot?.status === 'published' &&
+          policySnapshot.published.skills.managed &&
+          policySnapshot.published.skills.enforcementMode === 'enforced';
+        if (platformEnforced) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: 'Managed Skill operation snapshot is required',
+          });
+        }
+        const wsId = ctx.workspaceId ?? undefined;
         const agentSkillModel = new AgentSkillModel(ctx.serverDB, userId, wsId);
         const fileModel = new FileModel(ctx.serverDB, userId, wsId);
 

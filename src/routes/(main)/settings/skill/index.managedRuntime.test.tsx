@@ -43,7 +43,7 @@ describe('ToolSettings managed runtime lifecycle', () => {
       builtinSkills: [],
       builtinTools: [],
       platformSkillCatalog: null,
-      platformSkillRuntimeEnforced: true,
+      platformSkillRuntimeManaged: true,
       platformSkillRuntimeStatus: 'loading',
     });
   });

@@ -1,16 +1,16 @@
 // @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type * as PlatformModels from '@/database/models/platform';
-import { PlatformManagedResourcePolicyModel } from '@/database/models/platform';
 import type * as SkillCatalog from '@/server/enterprise/services/skillCatalog';
 import { SkillCatalogReadService } from '@/server/enterprise/services/skillCatalog';
 
 import { agentSkillsRouter } from '../agentSkills';
 
 const mocks = vi.hoisted(() => ({
-  getPolicySnapshot: vi.fn(),
+  getPublishedCatalog: vi.fn(),
   resolvePinnedForExecution: vi.fn(),
+  resolvePolicies: vi.fn(),
+  validateProof: vi.fn(),
 }));
 
 vi.mock('@/business/server/trpc-middlewares/workspaceAuth', async () => {
@@ -21,24 +21,22 @@ vi.mock('@/libs/trpc/lambda/middleware', () => ({
   serverDatabase: async (opts: any) =>
     opts.next({ ctx: { ...opts.ctx, serverDB: opts.ctx.serverDB ?? {} } }),
 }));
+vi.mock('@/libs/trpc/utils/internalJwt', () => ({
+  validatePlatformSkillOperationProof: mocks.validateProof,
+}));
 vi.mock('@/server/enterprise/featureFlags', () => ({
   parseEnterpriseFeatureFlags: () => ({ ENABLE_PLATFORM_MANAGED_SKILLS: true }),
 }));
-vi.mock('@/database/models/platform', async (importOriginal) => {
-  const actual = await importOriginal<typeof PlatformModels>();
-  return {
-    ...actual,
-    PlatformManagedResourcePolicyModel: vi.fn().mockImplementation(() => ({
-      getSnapshot: mocks.getPolicySnapshot,
-    })),
-  };
-});
+vi.mock('@/server/enterprise/services/managedResourceCapabilities', () => ({
+  resolvePublishedManagedResourcePolicies: mocks.resolvePolicies,
+}));
 vi.mock('@/server/enterprise/services/skillCatalog', async (importOriginal) => {
   const actual = await importOriginal<typeof SkillCatalog>();
   return {
     ...actual,
     getBuiltinSkillDefinitions: () => [],
     SkillCatalogReadService: vi.fn().mockImplementation(() => ({
+      getPublishedCatalog: mocks.getPublishedCatalog,
       resolvePinnedForExecution: mocks.resolvePinnedForExecution,
     })),
   };
@@ -59,10 +57,9 @@ const caller = () =>
 describe('agentSkills.resolvePlatformPinned', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.getPolicySnapshot.mockResolvedValue({
-      published: { skills: { enforcementMode: 'enforced', managed: true } },
-      status: 'published',
-    });
+    mocks.getPublishedCatalog.mockResolvedValue({ revision: 'current', skills: [ref] });
+    mocks.resolvePolicies.mockResolvedValue({ publicCapabilities: { skills: true } });
+    mocks.validateProof.mockResolvedValue(true);
     mocks.resolvePinnedForExecution.mockResolvedValue({
       allowBuiltinOverride: false,
       checksum: ref.checksum,
@@ -81,25 +78,48 @@ describe('agentSkills.resolvePlatformPinned', () => {
     });
   });
 
-  it('resolves an exact historical published ref without consulting the moving catalog head', async () => {
-    await expect(caller().resolvePlatformPinned(ref)).resolves.toMatchObject({
+  it('allows ui-only clients to read an exact current published ref', async () => {
+    await expect(caller().resolvePlatformPinned({ ref })).resolves.toMatchObject({
       checksum: ref.checksum,
       content: '# historical v1',
       identifier: ref.skillKey,
       version: ref.version,
     });
     expect(mocks.resolvePinnedForExecution).toHaveBeenCalledWith(ref);
-    expect(PlatformManagedResourcePolicyModel).toHaveBeenCalledTimes(1);
+    expect(mocks.getPublishedCatalog).toHaveBeenCalledTimes(1);
     expect(SkillCatalogReadService).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects exact historical reads outside enforced mode', async () => {
-    mocks.getPolicySnapshot.mockResolvedValue({
-      published: { skills: { enforcementMode: 'ui-only', managed: true } },
-      status: 'published',
-    });
+  it('rejects a raw historical ref that does not match the current head', async () => {
+    mocks.getPublishedCatalog.mockResolvedValue({ revision: 'current', skills: [] });
 
-    await expect(caller().resolvePlatformPinned(ref)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await expect(caller().resolvePlatformPinned({ ref })).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+    });
     expect(mocks.resolvePinnedForExecution).not.toHaveBeenCalled();
+  });
+
+  it('resolves a historical ref only through a valid user-bound operation proof', async () => {
+    const operation = {
+      agentId: 'agent-1',
+      operationId: 'operation-1',
+      proof: 'signed-proof',
+      refs: [ref],
+      revision: 'historical-revision',
+    };
+
+    await expect(caller().resolvePlatformPinned({ operation, ref })).resolves.toMatchObject({
+      identifier: ref.skillKey,
+      version: ref.version,
+    });
+    expect(mocks.validateProof).toHaveBeenCalledWith('signed-proof', {
+      agentId: operation.agentId,
+      operationId: operation.operationId,
+      refs: operation.refs,
+      revision: operation.revision,
+      userId: 'user-1',
+    });
+    expect(mocks.getPublishedCatalog).not.toHaveBeenCalled();
+    expect(mocks.resolvePolicies).not.toHaveBeenCalled();
   });
 });

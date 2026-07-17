@@ -52,11 +52,12 @@ const buildSignJWTChain = () => {
 
 const SignJWTMock = vi.fn();
 const importJWKMock = vi.fn().mockResolvedValue('mock-crypto-key');
+const jwtVerifyMock = vi.fn();
 
 vi.mock('jose', () => ({
   SignJWT: SignJWTMock,
   importJWK: (...args: unknown[]) => importJWKMock(...args),
-  jwtVerify: vi.fn(),
+  jwtVerify: (...args: unknown[]) => jwtVerifyMock(...args),
 }));
 
 describe('internalJwt', () => {
@@ -64,6 +65,7 @@ describe('internalJwt', () => {
     vi.clearAllMocks();
     importJWKMock.mockResolvedValue('mock-crypto-key');
     signMock.mockResolvedValue('signed.jwt.token');
+    jwtVerifyMock.mockReset();
     SignJWTMock.mockImplementation(() => buildSignJWTChain());
   });
 
@@ -147,6 +149,55 @@ describe('internalJwt', () => {
 
       expect(userExpiry).toBe('5m');
       expect(opExpiry).toBe('4h');
+    });
+  });
+
+  describe('platform Skill operation proof', () => {
+    const input = {
+      agentId: 'agent-1',
+      operationId: 'operation-1',
+      refs: [{ checksum: 'a'.repeat(64), skillKey: 'managed.skill', version: '1.0.0' }],
+      revision: 'catalog-1',
+      userId: 'user-1',
+    };
+
+    it('binds the user, operation, agent, revision and canonical ref hash', async () => {
+      const { signPlatformSkillOperationProof } = await import('../internalJwt');
+
+      await signPlatformSkillOperationProof(input);
+
+      expect(SignJWTMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agent_id: 'agent-1',
+          catalog_revision: 'catalog-1',
+          operation_id: 'operation-1',
+          purpose: 'platform-skill-operation',
+          refs_hash: expect.stringMatching(/^[a-f0-9]{64}$/),
+        }),
+      );
+      expect(setSubjectMock).toHaveBeenCalledWith('user-1');
+      expect(setExpirationTimeMock).toHaveBeenCalledWith('4h');
+    });
+
+    it('accepts only an unexpired proof whose full scope matches', async () => {
+      const { validatePlatformSkillOperationProof } = await import('../internalJwt');
+      const claims = SignJWTMock.mock.calls.at(-1)?.[0] ?? {
+        agent_id: input.agentId,
+        catalog_revision: input.revision,
+        operation_id: input.operationId,
+        purpose: 'platform-skill-operation',
+      };
+      const { signPlatformSkillOperationProof } = await import('../internalJwt');
+      await signPlatformSkillOperationProof(input);
+      jwtVerifyMock.mockResolvedValue({
+        payload: { ...SignJWTMock.mock.calls.at(-1)?.[0], sub: input.userId },
+      });
+
+      await expect(validatePlatformSkillOperationProof('proof', input)).resolves.toBe(true);
+      await expect(
+        validatePlatformSkillOperationProof('proof', { ...input, operationId: 'other-operation' }),
+      ).resolves.toBe(false);
+      void claims;
     });
   });
 

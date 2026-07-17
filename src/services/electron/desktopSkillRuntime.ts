@@ -83,7 +83,7 @@ class DesktopSkillRuntimeService {
         const ref = refsByKey.get(activated.name);
         if (!ref)
           throw new Error(`Managed Skill is not in the operation snapshot: ${activated.name}`);
-        const resolved = await agentSkillService.resolvePlatformPinned(ref);
+        const resolved = await agentSkillService.resolvePlatformPinned(ref, platformSkillSnapshot);
         if (
           resolved.identifier !== ref.skillKey ||
           resolved.version !== ref.version ||

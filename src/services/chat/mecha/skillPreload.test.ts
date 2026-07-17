@@ -77,11 +77,14 @@ describe('managed platform Skill preload', () => {
     ).resolves.toEqual([
       expect.objectContaining({ content: 'approved body', identifier: 'approved.skill' }),
     ]);
-    expect(mockedResolvePlatformPinned).toHaveBeenCalledWith({
-      checksum: checksumV1,
-      skillKey: 'approved.skill',
-      version: '1.0.0',
-    });
+    expect(mockedResolvePlatformPinned).toHaveBeenCalledWith(
+      {
+        checksum: checksumV1,
+        skillKey: 'approved.skill',
+        version: '1.0.0',
+      },
+      operationSnapshot,
+    );
   });
 
   it('does not fall back to a personal Skill outside the published catalog', async () => {
@@ -141,7 +144,10 @@ describe('managed platform Skill preload', () => {
         selectedSkills: [{ identifier: 'approved.skill', name: 'Approved Skill' }],
       }),
     ).resolves.toEqual([expect.objectContaining({ content: 'immutable v1 body' })]);
-    expect(mockedResolvePlatformPinned).toHaveBeenCalledWith(operationSnapshot.refs[0]);
+    expect(mockedResolvePlatformPinned).toHaveBeenCalledWith(
+      operationSnapshot.refs[0],
+      operationSnapshot,
+    );
   });
 
   it('does not load disabled or optional Skills absent from the operation snapshot', async () => {

@@ -58,7 +58,7 @@ describe('usePublishedSkillCatalog', () => {
       platformSkillCatalog: null,
       platformSkillCatalogInvalidationRevision: '0',
       platformSkillCatalogRequestEpoch: 0,
-      platformSkillRuntimeEnforced: false,
+      platformSkillRuntimeManaged: false,
       platformSkillRuntimeStatus: 'unmanaged',
     });
   });
@@ -86,7 +86,7 @@ describe('usePublishedSkillCatalog', () => {
 
   it('ignores a stale response when a newer request epoch has completed', async () => {
     useToolStore.setState({
-      platformSkillRuntimeEnforced: true,
+      platformSkillRuntimeManaged: true,
       platformSkillRuntimeStatus: 'loading',
     });
     const first = deferred<ReturnType<typeof catalog>>();
@@ -111,9 +111,9 @@ describe('usePublishedSkillCatalog', () => {
     expect(state.platformSkillRuntimeStatus).toBe('ready');
   });
 
-  it('moves an enforced catalog to error on fetch failure', async () => {
+  it('moves a managed catalog to error on fetch failure', async () => {
     useToolStore.setState({
-      platformSkillRuntimeEnforced: true,
+      platformSkillRuntimeManaged: true,
       platformSkillRuntimeStatus: 'loading',
     });
     mocks.getPublishedCatalog.mockRejectedValue(new Error('offline'));
@@ -125,9 +125,9 @@ describe('usePublishedSkillCatalog', () => {
     expect(useToolStore.getState().platformSkillRuntimeStatus).toBe('error');
   });
 
-  it('keeps an enforced empty catalog fail-closed', async () => {
+  it('keeps a managed empty catalog fail-closed', async () => {
     useToolStore.setState({
-      platformSkillRuntimeEnforced: true,
+      platformSkillRuntimeManaged: true,
       platformSkillRuntimeStatus: 'loading',
     });
     mocks.getPublishedCatalog.mockResolvedValue({ revision: 'catalog-empty', skills: [] });

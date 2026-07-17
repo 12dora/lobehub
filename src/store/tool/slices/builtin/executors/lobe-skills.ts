@@ -38,7 +38,16 @@ const createRuntime = (ctx: BuiltinToolContext) =>
               description,
               platformSkillSnapshot: ctx.platformSkillSnapshot
                 ? {
+                    ...(ctx.platformSkillSnapshot.agentId
+                      ? { agentId: ctx.platformSkillSnapshot.agentId }
+                      : {}),
                     mandatorySkillIds: ctx.platformSkillSnapshot.mandatorySkillIds,
+                    ...(ctx.platformSkillSnapshot.operationId
+                      ? { operationId: ctx.platformSkillSnapshot.operationId }
+                      : {}),
+                    ...(ctx.platformSkillSnapshot.proof
+                      ? { proof: ctx.platformSkillSnapshot.proof }
+                      : {}),
                     refs: ctx.platformSkillSnapshot.refs,
                     revision: ctx.platformSkillSnapshot.revision,
                   }

@@ -411,6 +411,27 @@ export const platformSkillPinnedRefSchema = z
   })
   .strict();
 
+export const platformSkillOperationProofSchema = z
+  .object({
+    agentId: z.string().min(1).max(256),
+    operationId: z.string().min(1).max(256),
+    proof: z.string().min(1).max(8192),
+    refs: z.array(platformSkillPinnedRefSchema).min(1).max(10_000),
+    revision: z.string().min(1).max(200),
+  })
+  .strict();
+
+export const beginPlatformSkillOperationInputSchema = platformSkillOperationProofSchema
+  .omit({ proof: true })
+  .strict();
+
+export const resolvePlatformSkillPinnedInputSchema = z
+  .object({
+    operation: platformSkillOperationProofSchema.optional(),
+    ref: platformSkillPinnedRefSchema,
+  })
+  .strict();
+
 export const serverSkillResolveInputSchema = z
   .object({ skillKey: skillKeySchema, version: skillVersionSchema.optional() })
   .strict();

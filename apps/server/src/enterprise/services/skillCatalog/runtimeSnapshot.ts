@@ -3,8 +3,8 @@ import { resourcesTreePrompt } from '@lobechat/prompts';
 import type { AgentPluginEntry } from '@lobechat/types';
 
 import type { EnterpriseFeatureFlags } from '@/const/platform/featureFlags';
-import { PlatformManagedResourcePolicyModel } from '@/database/models/platform';
 import type { LobeChatDatabase } from '@/database/type';
+import { signPlatformSkillOperationProof } from '@/libs/trpc/utils/internalJwt';
 import { getPluginMode } from '@/types/agent/pluginConfig';
 import { resolvePlatformSkillSelection } from '@/types/platform/skills';
 
@@ -26,7 +26,7 @@ export interface ResolvePlatformSkillRuntimeSnapshotOptions {
     'getPublishedCatalog' | 'resolvePinnedForExecution'
   > &
     Partial<Pick<SkillCatalogReadService, 'isPublishedCatalogExecutionReady'>>;
-  policyModel?: Pick<PlatformManagedResourcePolicyModel, 'getSnapshot'>;
+  signProof?: typeof signPlatformSkillOperationProof;
 }
 
 const toSkillMeta = (skill: PublishedSkill): SkillMeta => ({
@@ -67,23 +67,14 @@ const buildResolvedContent = (
  */
 export const resolvePlatformSkillRuntimeSnapshot = async (params: {
   agentPlugins?: AgentPluginEntry[];
+  effectiveMode: 'enforced' | 'observe' | 'ui-only' | 'unmanaged';
   db: LobeChatDatabase;
   flags: EnterpriseFeatureFlags;
+  identity: { agentId: string; operationId: string; userId: string };
   options?: ResolvePlatformSkillRuntimeSnapshotOptions;
 }): Promise<PlatformSkillRuntimeSnapshot | undefined> => {
-  if (!params.flags.ENABLE_PLATFORM_MANAGED_SKILLS) return undefined;
-
-  const policyModel =
-    params.options?.policyModel ?? new PlatformManagedResourcePolicyModel(params.db);
-  const policySnapshot = await policyModel.getSnapshot();
-  const policy = policySnapshot.published.skills;
-  if (
-    policySnapshot.status !== 'published' ||
-    !policy.managed ||
-    policy.enforcementMode !== 'enforced'
-  ) {
+  if (!params.flags.ENABLE_PLATFORM_MANAGED_SKILLS || params.effectiveMode !== 'enforced')
     return undefined;
-  }
 
   const catalogService =
     params.options?.catalogService ??
@@ -118,16 +109,26 @@ export const resolvePlatformSkillRuntimeSnapshot = async (params: {
     }),
   );
 
+  const refs = selected.map(({ skill: { checksum, skillKey, version } }) => ({
+    checksum,
+    skillKey,
+    version,
+  }));
+  const proof = await (params.options?.signProof ?? signPlatformSkillOperationProof)({
+    ...params.identity,
+    refs,
+    revision: published.revision,
+  });
+
   return {
     catalog: freezeOperationSnapshot({
+      agentId: params.identity.agentId,
       mandatorySkillIds: selected.flatMap(({ skill }) =>
         skill.distribution === 'mandatory' ? [skill.skillKey] : [],
       ),
-      refs: selected.map(({ skill: { checksum, skillKey, version } }) => ({
-        checksum,
-        skillKey,
-        version,
-      })),
+      operationId: params.identity.operationId,
+      proof,
+      refs,
       revision: published.revision,
     }),
     skills,

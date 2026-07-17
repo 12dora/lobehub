@@ -74,7 +74,7 @@ export default function EnterprisePlatformProvider({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
 
-  usePublishedSkillCatalog(capabilities.enforcedManagedResources.skills);
+  usePublishedSkillCatalog(capabilities.managedResources.skills);
 
   const refresh = useCallback(async () => {
     if (disableFetch) return;
@@ -90,10 +90,7 @@ export default function EnterprisePlatformProvider({
       ]);
       useToolStore
         .getState()
-        .configurePlatformSkillManagement(
-          nextCapabilities.managedResources.skills,
-          nextCapabilities.enforcedManagedResources.skills,
-        );
+        .configurePlatformSkillManagement(nextCapabilities.managedResources.skills);
       setCapabilities(nextCapabilities);
       setPublicSnapshot(nextPublic);
     } catch (err) {
@@ -111,7 +108,7 @@ export default function EnterprisePlatformProvider({
       // Explicitly stay on disabled snapshots — no network.
       setCapabilities(DISABLED_PLATFORM_CAPABILITIES);
       setPublicSnapshot(DISABLED_PLATFORM_PUBLIC_SNAPSHOT);
-      useToolStore.getState().configurePlatformSkillManagement(false, false);
+      useToolStore.getState().configurePlatformSkillManagement(false);
       setLoading(false);
       setError(null);
       return;

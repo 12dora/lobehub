@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto';
+
+import type { PlatformSkillPinnedRef } from '@lobechat/types';
 import debug from 'debug';
 import { importJWK, jwtVerify, SignJWT } from 'jose';
 
@@ -6,6 +9,30 @@ import { authEnv } from '@/envs/auth';
 const log = debug('lobe-internal-jwt');
 
 const INTERNAL_JWT_PURPOSE = 'lobe-internal-call';
+const PLATFORM_SKILL_OPERATION_PURPOSE = 'platform-skill-operation';
+
+interface PlatformSkillOperationProofInput {
+  agentId: string;
+  operationId: string;
+  refs: PlatformSkillPinnedRef[];
+  revision: string;
+  userId: string;
+}
+
+const hashPlatformSkillOperationRefs = (refs: PlatformSkillPinnedRef[]) =>
+  createHash('sha256')
+    .update(
+      JSON.stringify(
+        [...refs]
+          .map(({ checksum, skillKey, version }) => ({ checksum, skillKey, version }))
+          .sort((a, b) =>
+            `${a.skillKey}\0${a.version}\0${a.checksum}`.localeCompare(
+              `${b.skillKey}\0${b.version}\0${b.checksum}`,
+            ),
+          ),
+      ),
+    )
+    .digest('hex');
 
 /**
  * Get RSA key pair from JWKS_KEY environment variable
@@ -119,6 +146,54 @@ export const signOperationJwt = async (userId: string): Promise<string> => {
     .setIssuedAt()
     .setExpirationTime('4h')
     .sign(key);
+};
+
+/**
+ * Sign immutable platform Skill refs for a single agent operation.
+ *
+ * The compact proof binds the authenticated principal, operation, agent,
+ * catalog revision and the complete canonical ref set. JWT verification also
+ * enforces the four-hour expiry, so a raw historical ref is never authority.
+ */
+export const signPlatformSkillOperationProof = async (
+  input: PlatformSkillOperationProofInput,
+): Promise<string> => {
+  const { key, kid } = await getSigningKey();
+
+  return new SignJWT({
+    agent_id: input.agentId,
+    catalog_revision: input.revision,
+    operation_id: input.operationId,
+    purpose: PLATFORM_SKILL_OPERATION_PURPOSE,
+    refs_hash: hashPlatformSkillOperationRefs(input.refs),
+  })
+    .setProtectedHeader({ alg: 'RS256', kid })
+    .setSubject(input.userId)
+    .setIssuedAt()
+    .setExpirationTime('4h')
+    .sign(key);
+};
+
+/** Validate a platform Skill proof against the request's authenticated scope. */
+export const validatePlatformSkillOperationProof = async (
+  token: string,
+  expected: PlatformSkillOperationProofInput,
+): Promise<boolean> => {
+  try {
+    const publicKey = await getVerificationKey();
+    const { payload } = await jwtVerify(token, publicKey, { algorithms: ['RS256'] });
+    return (
+      payload.purpose === PLATFORM_SKILL_OPERATION_PURPOSE &&
+      payload.sub === expected.userId &&
+      payload.agent_id === expected.agentId &&
+      payload.operation_id === expected.operationId &&
+      payload.catalog_revision === expected.revision &&
+      payload.refs_hash === hashPlatformSkillOperationRefs(expected.refs)
+    );
+  } catch (error) {
+    log('Platform Skill operation proof validation failed: %O', error);
+    return false;
+  }
 };
 
 /**

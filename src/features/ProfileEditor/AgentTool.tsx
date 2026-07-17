@@ -128,13 +128,13 @@ const AgentTool = memo<AgentToolProps>(
       agentSkillsSelectors.getPlatformSkillCatalog,
       isEqual,
     );
-    const platformSkillRuntimeEnforced = useToolStore((state) =>
-      Boolean(state.platformSkillRuntimeEnforced),
+    const platformSkillRuntimeManaged = useToolStore((state) =>
+      Boolean(state.platformSkillRuntimeManaged),
     );
     const platformSkillRuntimeStatus = useToolStore(
       (state) => state.platformSkillRuntimeStatus ?? 'unmanaged',
     );
-    const platformCatalogSWR = usePublishedSkillCatalog(platformSkillRuntimeEnforced);
+    const platformCatalogSWR = usePublishedSkillCatalog(platformSkillRuntimeManaged);
     const skillRuntimeSources = useMemo(
       () =>
         selectSkillRuntimeSources({
@@ -554,7 +554,7 @@ const AgentTool = memo<AgentToolProps>(
     );
 
     const platformSkillUnavailableItems = useMemo<ItemType[]>(() => {
-      if (!platformSkillRuntimeEnforced || platformSkillRuntimeStatus === 'ready') return [];
+      if (!platformSkillRuntimeManaged || platformSkillRuntimeStatus === 'ready') return [];
       const loading = platformSkillRuntimeStatus === 'loading';
       return [
         {
@@ -582,7 +582,7 @@ const AgentTool = memo<AgentToolProps>(
           ),
         },
       ];
-    }, [platformCatalogSWR, platformSkillRuntimeEnforced, platformSkillRuntimeStatus, t]);
+    }, [platformCatalogSWR, platformSkillRuntimeManaged, platformSkillRuntimeStatus, t]);
 
     // Merge Builtin Agent Skills, builtin tools, LobeHub Skill Providers, and Composio servers
     const builtinItems = useMemo(
@@ -877,7 +877,7 @@ const AgentTool = memo<AgentToolProps>(
     useEffect(() => {
       if (cleanupDoneRef.current) return;
       if (
-        platformSkillRuntimeEnforced &&
+        platformSkillRuntimeManaged &&
         (platformSkillRuntimeStatus === 'loading' || platformSkillRuntimeStatus === 'error')
       ) {
         return;

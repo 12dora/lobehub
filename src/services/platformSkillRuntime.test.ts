@@ -111,11 +111,12 @@ describe('clientSkillRuntimeService', () => {
   );
 
   it('keeps an operation on its captured v1 ref after the global catalog moves to v2', async () => {
-    const runtime = createClientSkillRuntimeService({
+    const snapshot = {
       mandatorySkillIds: [],
       refs: [{ checksum: published.checksum, skillKey: published.skillKey, version: '1.0.0' }],
       revision: 'catalog-v1',
-    });
+    };
+    const runtime = createClientSkillRuntimeService(snapshot);
     state.mockReturnValue({
       platformSkillCatalog: {
         revision: 'catalog-v2',
@@ -126,11 +127,14 @@ describe('clientSkillRuntimeService', () => {
 
     await runtime.findByName('approved.skill');
 
-    expect(resolvePinned).toHaveBeenCalledWith({
-      checksum: published.checksum,
-      skillKey: published.skillKey,
-      version: '1.0.0',
-    });
+    expect(resolvePinned).toHaveBeenCalledWith(
+      {
+        checksum: published.checksum,
+        skillKey: published.skillKey,
+        version: '1.0.0',
+      },
+      snapshot,
+    );
   });
 
   it('lists a 10,000-item operation index without concurrent resolution requests', async () => {

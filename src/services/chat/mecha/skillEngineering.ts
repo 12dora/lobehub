@@ -25,9 +25,10 @@ const freezePlatformSnapshot = (
   return Object.freeze(clone) as PlatformSkillOperationSnapshot;
 };
 
-export const captureClientPlatformSkillSnapshot = (
+export const captureClientPlatformSkillSnapshot = async (
   pluginEntries?: AgentPluginEntry[],
-): PlatformSkillOperationSnapshot | undefined => {
+  identity?: { agentId: string; operationId: string },
+): Promise<PlatformSkillOperationSnapshot | undefined> => {
   const state = getToolStoreState();
   if (state.platformSkillRuntimeStatus === 'unmanaged') return undefined;
   if (state.platformSkillRuntimeStatus !== 'ready' || !state.platformSkillCatalog) {
@@ -40,12 +41,22 @@ export const captureClientPlatformSkillSnapshot = (
         getPluginMode(pluginEntries, skill.skillKey),
       ).available,
   );
+  if (!identity) throw new Error('Managed Skill operation identity is required');
+  const refs = skills.map(({ checksum, skillKey, version }) => ({
+    checksum,
+    skillKey,
+    version,
+  }));
+  const authorization = await agentSkillService.beginPlatformSkillOperation({
+    ...identity,
+    refs,
+    revision: state.platformSkillCatalog.revision,
+  });
   return freezePlatformSnapshot({
+    ...authorization,
     mandatorySkillIds: skills.flatMap((skill) =>
       skill.distribution === 'mandatory' ? [skill.skillKey] : [],
     ),
-    refs: skills.map(({ checksum, skillKey, version }) => ({ checksum, skillKey, version })),
-    revision: state.platformSkillCatalog.revision,
     skills,
   });
 };
@@ -133,11 +144,14 @@ export const resolveClientSkills = async (
         // The authenticated legacy read projection is adapted server-side to
         // the same exact published resolver. Never fall back to personal data
         // when a managed catalog snapshot exists.
-        const resolved = await agentSkillService.resolvePlatformPinned({
-          checksum: skill.checksum,
-          skillKey: skill.skillKey,
-          version: skill.version,
-        });
+        const resolved = await agentSkillService.resolvePlatformPinned(
+          {
+            checksum: skill.checksum,
+            skillKey: skill.skillKey,
+            version: skill.version,
+          },
+          operationSnapshot,
+        );
         if (
           resolved.identifier !== skill.skillKey ||
           resolved.version !== skill.version ||
