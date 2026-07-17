@@ -94,6 +94,7 @@ export class ToolExecutionService {
             manifest: context.toolManifestMap[identifier],
             operationId: context.operationId,
             toolCallId: context.toolCallId,
+            toolType: type,
             userId: context.userId,
             workspaceId: context.workspaceId,
           })

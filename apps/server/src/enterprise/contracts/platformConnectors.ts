@@ -1192,6 +1192,7 @@ export const connectorApprovalReceiptSchema = z
       .strict(),
     proof: connectorOwnedOperationProofSchema,
     signature: connectorSha256Schema,
+    toolCallFingerprint: connectorSha256Schema,
     toolCallId: z.string().trim().min(1).max(512),
   })
   .strict();

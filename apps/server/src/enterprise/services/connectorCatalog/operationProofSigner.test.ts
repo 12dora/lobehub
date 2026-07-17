@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   ConnectorOperationProofSigner,
   fingerprintConnectorAgentPolicy,
+  fingerprintConnectorToolCall,
 } from './operationProofSigner';
 
 const env = { PLATFORM_MASTER_KEY: Buffer.alloc(32, 7).toString('base64') };
@@ -56,11 +57,33 @@ describe('ConnectorOperationProofSigner', () => {
       proof: baseProof,
       userId: 'user-1',
     });
-    const receipt = signer.signApprovalReceipt(proof, agentPolicy, 'tool-call-1');
+    const fingerprint = fingerprintConnectorToolCall({
+      apiName: 'search',
+      arguments: '{"b":2,"a":1}',
+      identifier: 'catalog',
+      type: 'mcp',
+    });
+    const receipt = signer.signApprovalReceipt(proof, agentPolicy, 'tool-call-1', fingerprint);
 
     expect(signer.verifyApprovalReceipt(receipt)).toEqual(receipt);
     expect(() => signer.verifyApprovalReceipt({ ...receipt, toolCallId: 'tool-call-2' })).toThrow(
       'PLATFORM_CONNECTOR_TOOL_DENIED',
     );
+    expect(
+      fingerprintConnectorToolCall({
+        apiName: 'search',
+        arguments: { a: 1, b: 2 },
+        identifier: 'catalog',
+        type: 'mcp',
+      }),
+    ).toBe(fingerprint);
+    expect(
+      fingerprintConnectorToolCall({
+        apiName: 'delete',
+        arguments: { a: 1, b: 2 },
+        identifier: 'catalog',
+        type: 'mcp',
+      }),
+    ).not.toBe(fingerprint);
   });
 });
