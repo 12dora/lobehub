@@ -8,6 +8,7 @@ import type * as RuntimeEffectiveStateModule from './runtimeEffectiveState';
 import {
   buildManagedConnectorManifests,
   createConnectorApprovalReceipt,
+  executeManagedConnectorTool,
   matchesConnectorApprovalReceipt,
   matchesConnectorDependencySelection,
 } from './runtimeIntegration';
@@ -315,5 +316,50 @@ describe('managed Connector operation integration security', () => {
         platformConnectorTombstone: true,
       }),
     ]);
+  });
+
+  it('rejects dispatch when the connector archives after manifest construction', async () => {
+    const built = await buildManagedConnectorManifests({
+      agentId: 'agent-1',
+      connectorKeys: ['catalog'],
+      db,
+      env,
+      operationId: 'operation-toctou',
+      serverAllowedConnectorKeys: ['catalog'],
+      userId: 'user-1',
+    });
+    const receipt = createConnectorApprovalReceipt({
+      agentId: 'agent-1',
+      apiName: 'search',
+      arguments: '{}',
+      env,
+      identifier: 'catalog',
+      manifest: built.manifests[0],
+      operationId: 'operation-toctou',
+      toolCallId: 'tool-call-toctou',
+      type: 'mcp',
+      userId: 'user-1',
+    });
+    mocks.getConnectorByKey.mockResolvedValue(connector(1, 'archived'));
+
+    await expect(
+      executeManagedConnectorTool({
+        agentId: 'agent-1',
+        apiName: 'search',
+        approvalReceipt: receipt,
+        arguments: '{}',
+        db,
+        env,
+        identifier: 'catalog',
+        manifest: built.manifests[0],
+        operationId: 'operation-toctou',
+        toolCallId: 'tool-call-toctou',
+        toolType: 'mcp',
+        userId: 'user-1',
+      }),
+    ).resolves.toMatchObject({
+      handled: true,
+      result: { error: { code: 'PLATFORM_CONNECTOR_NOT_PUBLISHED' }, success: false },
+    });
   });
 });

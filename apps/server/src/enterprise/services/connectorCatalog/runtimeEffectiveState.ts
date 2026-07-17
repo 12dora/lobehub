@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import { getRedisConfig } from '@/envs/redis';
 import { initializeRedis } from '@/libs/redis';
 
@@ -14,6 +16,7 @@ export interface ConnectorRuntimeEffectiveState {
 
 const REDIS_KEY = 'platform:managed:connectors:effective:v1';
 const REDIS_EPOCH_KEY = 'platform:managed:connectors:effective:epoch:v1';
+const REDIS_TRANSITION_KEY = 'platform:managed:connectors:effective:transition:v1';
 const CAS_SCRIPT = `
 local current = redis.call('GET', KEYS[1])
 if current then
@@ -25,6 +28,33 @@ return 1
 `;
 let localState: ConnectorRuntimeEffectiveState | null = null;
 let localEpoch = 0;
+let localTransitionToken: string | null = null;
+
+const BEGIN_TRANSITION_SCRIPT = `
+local epoch = redis.call('INCR', KEYS[2])
+local transition = cjson.encode({ token = ARGV[1], epoch = epoch })
+redis.call('SET', KEYS[3], transition)
+local state = cjson.encode({ epoch = epoch, mode = 'blocked', revision = tonumber(ARGV[2]) })
+redis.call('SET', KEYS[1], state)
+return state
+`;
+const CAPABILITY_SCRIPT = `
+local epoch = redis.call('INCR', KEYS[2])
+local mode = ARGV[1]
+if redis.call('EXISTS', KEYS[3]) == 1 then mode = 'blocked' end
+local state = cjson.encode({ epoch = epoch, mode = mode, revision = tonumber(ARGV[2]) })
+redis.call('SET', KEYS[1], state)
+return state
+`;
+const FINALIZE_TRANSITION_SCRIPT = `
+local transition = redis.call('GET', KEYS[3])
+if not transition or cjson.decode(transition).token ~= ARGV[1] then return nil end
+local epoch = redis.call('INCR', KEYS[2])
+local state = cjson.encode({ epoch = epoch, mode = ARGV[2], revision = tonumber(ARGV[3]) })
+redis.call('SET', KEYS[1], state)
+redis.call('DEL', KEYS[3])
+return state
+`;
 
 const parseState = (value: string | null): ConnectorRuntimeEffectiveState | null => {
   if (!value) return null;
@@ -79,6 +109,96 @@ export const publishConnectorRuntimeEffectiveState = async (
   if (applied === 1) localState = { ...state };
 };
 
+export const beginConnectorRuntimeEffectiveStateTransition = async (
+  revision: number,
+): Promise<string> => {
+  const token = randomUUID();
+  const config = getRedisConfig();
+  if (!config.enabled) {
+    localEpoch += 1;
+    localTransitionToken = token;
+    localState = { epoch: localEpoch, mode: 'blocked', revision };
+    return token;
+  }
+  const redis = await initializeRedis(config);
+  if (!redis) throw new Error('Connector runtime effective-state Redis is unavailable');
+  const value = await redis.eval(
+    BEGIN_TRANSITION_SCRIPT,
+    3,
+    REDIS_KEY,
+    REDIS_EPOCH_KEY,
+    REDIS_TRANSITION_KEY,
+    token,
+    String(revision),
+  );
+  const state = parseState(typeof value === 'string' ? value : null);
+  if (!state) throw new Error('Connector runtime transition state is invalid');
+  localState = state;
+  return token;
+};
+
+export const publishConnectorRuntimeCapabilityState = async (params: {
+  mode: ConnectorRuntimeEffectiveMode;
+  revision: number;
+}): Promise<void> => {
+  const config = getRedisConfig();
+  if (!config.enabled) {
+    localEpoch += 1;
+    localState = {
+      epoch: localEpoch,
+      mode: localTransitionToken ? 'blocked' : params.mode,
+      revision: params.revision,
+    };
+    return;
+  }
+  const redis = await initializeRedis(config);
+  if (!redis) throw new Error('Connector runtime effective-state Redis is unavailable');
+  const value = await redis.eval(
+    CAPABILITY_SCRIPT,
+    3,
+    REDIS_KEY,
+    REDIS_EPOCH_KEY,
+    REDIS_TRANSITION_KEY,
+    params.mode,
+    String(params.revision),
+  );
+  const state = parseState(typeof value === 'string' ? value : null);
+  if (!state) throw new Error('Connector runtime capability state is invalid');
+  localState = state;
+};
+
+export const finalizeConnectorRuntimeEffectiveStateTransition = async (params: {
+  mode: ConnectorRuntimeEffectiveMode;
+  revision: number;
+  token: string;
+}): Promise<void> => {
+  const config = getRedisConfig();
+  if (!config.enabled) {
+    if (localTransitionToken !== params.token) {
+      throw new Error('Connector runtime transition authority mismatch');
+    }
+    localEpoch += 1;
+    localState = { epoch: localEpoch, mode: params.mode, revision: params.revision };
+    localTransitionToken = null;
+    return;
+  }
+  const redis = await initializeRedis(config);
+  if (!redis) throw new Error('Connector runtime effective-state Redis is unavailable');
+  const value = await redis.eval(
+    FINALIZE_TRANSITION_SCRIPT,
+    3,
+    REDIS_KEY,
+    REDIS_EPOCH_KEY,
+    REDIS_TRANSITION_KEY,
+    params.token,
+    params.mode,
+    String(params.revision),
+  );
+  const state = parseState(typeof value === 'string' ? value : null);
+  if (!state) throw new Error('Connector runtime transition authority mismatch');
+  localState = state;
+};
+
 /** Feature-off is exact legacy. Feature-on without trusted state is fail-closed. */
 export const getConnectorRuntimeEffectiveState = async (
   env: ConnectorOAuthRuntimeEnv = process.env,
@@ -103,6 +223,9 @@ export const getConnectorRuntimeEffectiveState = async (
     });
     return { epoch: 0, mode: 'blocked', revision: 0 };
   }
+  // Without shared authority, multiple Web instances cannot prove that a
+  // publish transition is complete. Fail closed instead of trusting process CAS.
+  if (!getRedisConfig().enabled) return { epoch: 0, mode: 'blocked', revision: 0 };
   if (localState) return { ...localState };
   return { epoch: 0, mode: 'blocked', revision: 0 };
 };
@@ -110,4 +233,5 @@ export const getConnectorRuntimeEffectiveState = async (
 export const resetConnectorRuntimeEffectiveStateForTest = (): void => {
   localState = null;
   localEpoch = 0;
+  localTransitionToken = null;
 };

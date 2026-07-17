@@ -58,7 +58,7 @@ export interface ConnectorRuntimeAuditWriter {
     connectorId: string;
     idempotencyKey?: string;
     operationId: string;
-    outcome: 'admitted' | 'allowed' | 'denied' | 'failed' | 'rate_limited';
+    outcome: 'admitted' | 'allowed' | 'denied' | 'failed' | 'rate_limited' | 'unknown';
     toolKey: string;
     userId: string;
   }) => Promise<void>;
@@ -112,6 +112,7 @@ export class BoundedConnectorRuntimeRateLimiter implements ConnectorRuntimeRateL
 }
 
 export interface PlatformConnectorRuntimeAdapterDependencies {
+  assertCurrentPublished?: () => Promise<void>;
   audit: ConnectorRuntimeAuditWriter;
   bindingLoader: (
     userId: string,
@@ -302,6 +303,7 @@ export class PlatformConnectorRuntimeAdapter {
         }
         journalToken = journal.token;
       }
+      await this.dependencies.assertCurrentPublished?.();
       outboundStarted = true;
       const response = await this.dependencies.outbound.requestJson({
         body: {

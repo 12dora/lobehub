@@ -43,7 +43,7 @@ export interface ConnectorRuntimeAuditRecord {
   connectorId: string;
   idempotencyKey: string;
   operationId: string;
-  outcome: 'allowed' | 'failed';
+  outcome: 'allowed' | 'unknown';
   toolKey: string;
   userId: string;
 }
@@ -186,7 +186,7 @@ export class DatabaseConnectorRuntimeExecutionJournal implements ConnectorRuntim
       return false;
     }
     const result = journalResultSchema.safeParse(job.resultSummary);
-    const outcome = result.success ? 'allowed' : 'failed';
+    const outcome = result.success ? 'allowed' : 'unknown';
     try {
       await delivery({
         connectorId: input.data.connectorId,

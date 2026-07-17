@@ -20,7 +20,6 @@ import {
   type StdioMCPParams,
 } from '@/libs/mcp';
 import { MCPClient } from '@/libs/mcp';
-import { SafeOutboundHttpClient } from '@/server/enterprise/security/outboundHttp';
 
 import { type ProcessContentBlocksFn } from './contentProcessor';
 import { contentBlocksToString } from './contentProcessor';
@@ -55,7 +54,7 @@ export class MCPService {
   // Store instances of the custom MCPClient, keyed by serialized MCPClientParams
   private clients: Map<string, MCPClient> = new Map();
 
-  constructor(private readonly options: { httpFetch?: typeof fetch } = {}) {}
+  constructor(private readonly options: { allowStdio?: boolean; httpFetch?: typeof fetch } = {}) {}
 
   /**
    * Process MCP tool call result with content blocks processing
@@ -285,6 +284,12 @@ export class MCPService {
 
   // Private method to get or initialize a client based on parameters
   private async getClient(params: MCPClientParams, skipCache = false): Promise<MCPClient> {
+    if (params.type === 'stdio' && this.options.allowStdio !== true) {
+      throw new TRPCError({
+        code: 'BAD_REQUEST',
+        message: 'Stdio MCP requires an explicitly isolated worker capability',
+      });
+    }
     const key = this.serializeParams(params); // Use custom serialization
 
     if (!skipCache && this.clients.has(key)) {
@@ -500,21 +505,4 @@ export class MCPService {
 }
 
 // Export a singleton instance
-const safeOutbound = new SafeOutboundHttpClient();
-const safeMcpFetch: typeof fetch = async (input, init) => {
-  const request = input instanceof Request ? input : undefined;
-  const headers = Object.fromEntries(new Headers(init?.headers ?? request?.headers).entries());
-  const response = await safeOutbound.fetch(request?.url ?? input.toString(), {
-    body: init?.body as string | Uint8Array | undefined,
-    headers,
-    method: init?.method ?? request?.method,
-    secretBearing: headers.Authorization !== undefined || init?.body !== undefined,
-  });
-  return new Response(Uint8Array.from(response.body).buffer, {
-    headers: response.headers,
-    status: response.status,
-    statusText: response.statusText,
-  });
-};
-
-export const mcpService = new MCPService({ httpFetch: safeMcpFetch });
+export const mcpService = new MCPService();

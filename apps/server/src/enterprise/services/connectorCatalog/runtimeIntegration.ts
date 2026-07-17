@@ -29,6 +29,7 @@ import { ConnectorOperationSnapshotService } from './operationSnapshot';
 import { PlatformConnectorSecretStore } from './platformConnectorSecretStore';
 import { getConnectorPublishedIndex } from './publishedIndex';
 import { PlatformConnectorRuntimeAdapter } from './runtimeAdapter';
+import { appendConnectorRuntimeAudit } from './runtimeAudit';
 import {
   type ConnectorRuntimeEffectiveMode,
   getConnectorRuntimeEffectiveState,
@@ -475,29 +476,42 @@ export const executeManagedConnectorTool = async (params: {
     const secrets = new PlatformConnectorSecretStore(params.db, secretService);
     const outbound = new ConnectorOutboundClient(new SafeOutboundHttpClient());
     const adapter = new PlatformConnectorRuntimeAdapter({
+      assertCurrentPublished: async () => {
+        const current = await getConnectorPublishedIndex(params.db!).resolveCurrent({
+          connectorKey: proof.connectorKey,
+          operationId: proof.operationId,
+        });
+        if (
+          current.kind !== 'published' ||
+          current.snapshot.proof.connectorId !== proof.connectorId
+        ) {
+          throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_PUBLISHED');
+        }
+      },
       audit: {
-        appendSharedCall: async (entry) => {
-          await new PlatformAuditService(params.db!).append({
-            action: 'connector.runtime.sharedCall',
-            actorUserId: entry.userId,
-            afterDiff: {
-              connectorId: entry.connectorId,
-              operationId: entry.operationId,
-              outcome: entry.outcome,
-              toolKey: entry.toolKey,
-            },
-            id: entry.idempotencyKey,
-            reason: null,
-            result:
-              entry.outcome === 'allowed' || entry.outcome === 'admitted'
-                ? 'success'
-                : entry.outcome === 'denied'
-                  ? 'denied'
-                  : 'failure',
-            targetId: entry.connectorId,
-            targetType: 'connector',
-          });
-        },
+        appendSharedCall: async (entry) =>
+          entry.idempotencyKey
+            ? appendConnectorRuntimeAudit(params.db!, {
+                ...entry,
+                idempotencyKey: entry.idempotencyKey,
+                outcome: entry.outcome === 'allowed' ? 'allowed' : 'unknown',
+              })
+            : new PlatformAuditService(params.db!)
+                .append({
+                  action: 'connector.runtime.sharedCall',
+                  actorUserId: entry.userId,
+                  afterDiff: entry,
+                  reason: null,
+                  result:
+                    entry.outcome === 'admitted'
+                      ? 'success'
+                      : entry.outcome === 'denied'
+                        ? 'denied'
+                        : 'failure',
+                  targetId: entry.connectorId,
+                  targetType: 'connector',
+                })
+                .then(() => undefined),
       },
       bindingLoader: (userId, connectorId) =>
         new PlatformUserConnectorBindingRepository(params.db!, userId).getBinding(connectorId),

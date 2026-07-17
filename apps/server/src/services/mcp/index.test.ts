@@ -44,6 +44,22 @@ describe('MCPService', () => {
     expect(initialize).toHaveBeenCalledOnce();
   });
 
+  it('rejects stdio at the Web MCPService boundary without an isolated capability', async () => {
+    const { MCPClient } = await import('@/libs/mcp');
+    const { MCPService } = await import('./index');
+    const service = new MCPService();
+
+    await expect(
+      (service as any).getClient({
+        args: [],
+        command: 'dangerous-child',
+        name: 'x',
+        type: 'stdio',
+      }),
+    ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    expect(MCPClient).not.toHaveBeenCalled();
+  });
+
   describe('callTool', () => {
     const mockParams = {
       name: 'test-mcp',
