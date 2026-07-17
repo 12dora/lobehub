@@ -68,7 +68,7 @@ export const publishConnectorRuntimeEffectiveState = async (
 ): Promise<void> => {
   const config = getRedisConfig();
   if (!config.enabled) {
-    localState = { ...state };
+    if (!localState || localState.epoch <= state.epoch) localState = { ...state };
     return;
   }
   const redis = await initializeRedis(config);

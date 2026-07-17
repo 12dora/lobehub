@@ -107,11 +107,14 @@ export const adminManagedResourcesRouter = router({
           expectedRevision: input.expectedRevision,
           reason: input.reason,
         });
+        const postCommitConnectorStateEpoch = flags.ENABLE_PLATFORM_MANAGED_CONNECTORS
+          ? await reserveConnectorRuntimeEffectiveStateEpoch()
+          : 0;
         const managed = await resolvePublishedManagedResourcePolicies({ db: ctx.serverDB, flags });
         const policy = managed.published.connectors;
         if (flags.ENABLE_PLATFORM_MANAGED_CONNECTORS) {
           await publishConnectorRuntimeEffectiveState({
-            epoch: connectorStateEpoch,
+            epoch: postCommitConnectorStateEpoch,
             mode:
               !policy.managed || policy.enforcementMode !== 'enforced'
                 ? 'legacy'
