@@ -236,6 +236,41 @@ describe('ConnectorCatalogReadService exact snapshot boundary', () => {
     });
   });
 
+  it('exposes the exact published checksum on the ADMIN projection only (public/runtime hidden)', async () => {
+    const repository = await seedConnector();
+    const revision = payload('https://checksum.example.test/mcp');
+    const checksum = checksumPayload(revision);
+    await repository.createPublishedRevision({
+      checksum,
+      connectorId,
+      payload: revision,
+      publishedAt: new Date(),
+      publishedBy: 'admin-user',
+      revision: 1,
+    });
+    await repository.setPublishedPointerCas({
+      checksum,
+      connectorId,
+      expectedRevision: 0,
+      publishedAt: new Date(),
+      publishedRevision: 1,
+    });
+    const read = new ConnectorCatalogReadService(db, new MemoryConnectorSecretStore(db));
+
+    // Admin projection: the checksum is present AND exactly the published revision provenance
+    // checksum the agent dependency validator compares against — never a fabricated value.
+    const admin = await read.getAdminPublished(connectorId);
+    expect(admin.publishedChecksum).toBe(checksum);
+    expect(admin.publishedChecksum).toMatch(/^[a-f0-9]{64}$/);
+    expect(admin.publishedRevision).toBe(1);
+
+    // Public + runtime/trusted projections remain unchanged — the checksum stays hidden.
+    const publicSnapshot = await read.getPublicPublished(connectorId);
+    expect(publicSnapshot).not.toHaveProperty('publishedChecksum');
+    const trusted = await read.getTrustedPublished(connectorId);
+    expect(trusted).not.toHaveProperty('publishedChecksum');
+  });
+
   it('revalidates the database payload checksum even when the cache key already exists', async () => {
     const repository = await seedConnector();
     const revision = payload('https://cached.example.test/mcp');
