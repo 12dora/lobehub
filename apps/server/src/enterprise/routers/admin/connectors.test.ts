@@ -28,7 +28,11 @@ import {
   ensurePendingM09ServiceSchema,
 } from '../../services/connectorCatalog/catalogTestUtils';
 import { adminRouter } from '../admin';
-import { executeAdminConnectorOperation } from './connectorsSupport';
+import {
+  assertAdminConnectorRuntimeDependency,
+  createAdminConnectorRuntime,
+  executeAdminConnectorOperation,
+} from './connectorsSupport';
 
 const db: LobeChatDatabase = await getTestDB();
 const createRootCaller = createCallerFactory(adminRouter);
@@ -272,9 +276,114 @@ describe('admin.connectors RBAC and contract', () => {
       message: 'PLATFORM_SECRET_REQUIRED',
     });
   });
+
+  it('keeps read and none-mode Draft operations independent from OAuth redirect config', async () => {
+    const runtime = createAdminConnectorRuntime(db, { appUrlProvider: () => undefined });
+    await expect(runtime.service.listDrafts({ limit: 10 })).resolves.toEqual({
+      items: [],
+      nextCursor: null,
+    });
+    const draft = await runtime.service.createDraft(ids.aiAdmin, {
+      credentialMode: 'none',
+      displayName: 'No redirect dependency',
+      endpoint: 'https://connector.example.test/mcp',
+      key: 'no-redirect-none-mode',
+      reason: 'create none connector without app URL',
+      transport: 'http',
+    });
+    await expect(runtime.service.getDraft(draft.draft.id)).resolves.toMatchObject({
+      draft: { credentialMode: 'none' },
+    });
+    expect(runtime.resolveRedirectUri).toThrow('PLATFORM_CONNECTOR_CREDENTIAL_NOT_CONFIGURED');
+  });
 });
 
 describe('admin.connectors reauthentication and error redaction', () => {
+  it('audits authorized mutation factory failures once with stable sanitized categories', async () => {
+    const caller = await callerFor({ authenticatedAt: new Date(), userId: ids.aiAdmin });
+    vi.stubEnv('ENABLE_PLATFORM_MANAGED_CONNECTORS', '0');
+    await expect(
+      caller.createDraft({
+        credentialMode: 'none',
+        displayName: 'Feature unavailable',
+        endpoint: 'https://connector.example.test/mcp',
+        key: 'factory-feature-failure',
+        reason: 'operator requested feature-gated create',
+      }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN', message: 'PLATFORM_FEATURE_DISABLED' });
+
+    vi.stubEnv('ENABLE_PLATFORM_MANAGED_CONNECTORS', '1');
+    vi.stubEnv('PLATFORM_MASTER_KEY', '');
+    const unavailableSecret = 'factory-secret-must-not-enter-audit';
+    await expect(
+      caller.createDraft({
+        credentialMode: 'shared_service_account',
+        displayName: 'Secret unavailable',
+        endpoint: 'https://connector.example.test/mcp',
+        key: 'factory-secret-failure',
+        reason: `operator copied ${unavailableSecret}`,
+        sharedSecret: { operation: 'replace', value: { apiKey: unavailableSecret } },
+      }),
+    ).rejects.toMatchObject({ code: 'PRECONDITION_FAILED', message: 'PLATFORM_SECRET_REQUIRED' });
+
+    vi.stubEnv('PLATFORM_MASTER_KEY', Buffer.alloc(32, 91).toString('base64'));
+    vi.stubEnv('SSRF_ALLOW_PRIVATE_IP_ADDRESS', 'invalid');
+    const tester = await callerFor({ authenticatedAt: new Date(), userId: ids.tester });
+    await expect(
+      tester.discover({ id: 'transport-failure-target', reason: 'validate outbound transport' }),
+    ).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+      message: 'PLATFORM_CONNECTOR_SSRF_BLOCKED',
+    });
+
+    const factoryAudits = (await db.select().from(platformAuditLogs)).filter(
+      (row) =>
+        row.targetType === 'connector' &&
+        (row.afterDiff as { error?: string } | null)?.error === 'factory_dependency_unavailable',
+    );
+    expect(factoryAudits).toHaveLength(3);
+    expect(factoryAudits.map((row) => row.afterDiff)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ category: 'feature_disabled' }),
+        expect.objectContaining({ category: 'secret_unavailable' }),
+        expect.objectContaining({ category: 'transport_unavailable' }),
+      ]),
+    );
+    expect(factoryAudits.every((row) => Boolean(row.reason))).toBe(true);
+    expect(JSON.stringify(factoryAudits)).not.toContain(unavailableSecret);
+  });
+
+  it('audits lazy OAuth redirect dependency failure without entering the service', async () => {
+    const runtime = createAdminConnectorRuntime(db, { appUrlProvider: () => undefined });
+    await expect(
+      assertAdminConnectorRuntimeDependency({
+        action: 'admin.connectors.createDraft',
+        actorUserId: ids.aiAdmin,
+        category: 'redirect_unavailable',
+        operation: runtime.resolveRedirectUri,
+        reason: 'configure OAuth redirect',
+        runtime,
+        serverDB: db,
+        targetId: 'oauth-redirect-failure',
+      }),
+    ).rejects.toThrow('PLATFORM_CONNECTOR_CREDENTIAL_NOT_CONFIGURED');
+    expect(await db.select().from(platformConnectors)).toEqual([]);
+    const audits = (await db.select().from(platformAuditLogs)).filter(
+      (row) => row.action === 'admin.connectors.createDraft',
+    );
+    expect(audits).toEqual([
+      expect.objectContaining({
+        afterDiff: expect.objectContaining({
+          category: 'redirect_unavailable',
+          error: 'factory_dependency_unavailable',
+        }),
+        reason: 'configure OAuth redirect',
+        result: 'failure',
+        targetId: 'oauth-redirect-failure',
+      }),
+    ]);
+  });
+
   it('requires reauth for Secret replacement and never persists the denied Secret', async () => {
     const secret = 'opaque-router-replacement-leaf';
     const stale = await callerFor({
