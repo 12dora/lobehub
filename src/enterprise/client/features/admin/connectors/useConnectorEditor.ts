@@ -6,8 +6,12 @@ import { useTranslation } from 'react-i18next';
 import { useBlocker } from 'react-router';
 
 import {
+  changeConnectorCredentialMode,
+  clearConnectorSecretEdit,
+  createEmptyConnectorSecretEdit,
   type EditableAdminConnectorDraft,
   toEditableAdminConnectorDraft,
+  updateConnectorSecretEdit,
   updateConnectorToolPolicy,
   validateEditableAdminConnectorDraft,
 } from './controller';
@@ -30,7 +34,7 @@ export const useConnectorEditor = (
     'idle',
   );
   const [actionError, setActionError] = useState<string | null>(null);
-  const [secretValue, setSecretValue] = useState('');
+  const [secret, setSecret] = useState(createEmptyConnectorSecretEdit);
   const hydratedRef = useRef('');
   const leaveModalRef = useRef<ReturnType<typeof confirmModal> | null>(null);
 
@@ -51,7 +55,7 @@ export const useConnectorEditor = (
     );
     setSaveState(stored ? 'dirty' : 'idle');
     setActionError(null);
-    setSecretValue('');
+    setSecret(createEmptyConnectorSecretEdit());
   }, [editable, snapshot]);
 
   useEffect(() => {
@@ -98,12 +102,28 @@ export const useConnectorEditor = (
       value: EditableAdminConnectorDraft[Key],
     ) => {
       if (!editable) return;
+      if (key === 'credentialMode') {
+        setDraft((current) =>
+          current
+            ? changeConnectorCredentialMode(
+                current,
+                value as EditableAdminConnectorDraft['credentialMode'],
+                secret,
+              ).draft
+            : current,
+        );
+        setSecret(createEmptyConnectorSecretEdit());
+        setDirty(true);
+        setSaveState('dirty');
+        setActionError(null);
+        return;
+      }
       setDraft((current) => (current ? { ...current, [key]: value } : current));
       setDirty(true);
       setSaveState('dirty');
       setActionError(null);
     },
-    [editable],
+    [editable, secret],
   );
 
   const updateTool = useCallback(
@@ -112,7 +132,7 @@ export const useConnectorEditor = (
       patch: Partial<
         Pick<
           AdminConnectorToolDraft,
-          'enabled' | 'platformPolicy' | 'requiresConfirmation' | 'riskLevel'
+          'enabled' | 'platformPolicy' | 'requiresConfirmation' | 'riskLevel' | 'sort'
         >
       >,
     ) => {
@@ -132,13 +152,29 @@ export const useConnectorEditor = (
   const changeSecret = useCallback(
     (value: string) => {
       if (!editable) return;
-      setSecretValue(value);
+      setSecret(updateConnectorSecretEdit(value));
       setDirty(true);
       setSaveState('dirty');
       setActionError(null);
     },
     [editable],
   );
+
+  const clearSecret = useCallback(() => {
+    if (!editable) return;
+    setSecret(clearConnectorSecretEdit());
+    setDirty(true);
+    setSaveState('dirty');
+    setActionError(null);
+  }, [editable]);
+
+  const keepSecret = useCallback(() => {
+    if (!editable) return;
+    setSecret(createEmptyConnectorSecretEdit());
+    setDirty(true);
+    setSaveState('dirty');
+    setActionError(null);
+  }, [editable]);
 
   const discardLocal = useCallback(() => {
     if (!snapshot) return;
@@ -148,7 +184,7 @@ export const useConnectorEditor = (
     setConflict(false);
     setSaveState('idle');
     setActionError(null);
-    setSecretValue('');
+    setSecret(createEmptyConnectorSecretEdit());
   }, [snapshot]);
 
   const markSaved = useCallback(() => {
@@ -158,19 +194,21 @@ export const useConnectorEditor = (
     setConflict(false);
     setSaveState('saved');
     setActionError(null);
-    setSecretValue('');
+    setSecret(createEmptyConnectorSecretEdit());
   }, [snapshot]);
 
   return {
     actionError,
     changeSecret,
+    clearSecret,
     conflict,
     dirty,
     discardLocal,
     draft,
+    keepSecret,
     markSaved,
     saveState,
-    secretValue,
+    secret,
     setActionError,
     setConflict,
     setSaveState,

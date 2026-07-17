@@ -14,6 +14,7 @@ import type {
   AdminConnectorDraftValidation,
   AdminConnectorPermissions,
   AdminConnectorPrimaryAction,
+  ConnectorSecretEdit,
   EditableAdminConnectorDraft,
 } from './controller';
 import ToolPolicyEditor from './ToolPolicyEditor';
@@ -58,19 +59,21 @@ interface ConnectorDetailViewProps {
   onRevokeBindings: () => void;
   onRollback: () => void;
   onSecretChange: (secret: string) => void;
+  onSecretClear: () => void;
+  onSecretKeep: () => void;
   onToolChange: (
     toolId: string,
     patch: Partial<
       Pick<
         AdminConnectorToolDraft,
-        'enabled' | 'platformPolicy' | 'requiresConfirmation' | 'riskLevel'
+        'enabled' | 'platformPolicy' | 'requiresConfirmation' | 'riskLevel' | 'sort'
       >
     >,
   ) => void;
   permissions: AdminConnectorPermissions;
   primaryAction: AdminConnectorPrimaryAction;
   saveState: AdminConnectorSaveState;
-  secretValue: string;
+  secret: ConnectorSecretEdit;
   snapshot: AdminConnectorGetOutput;
   validation: AdminConnectorDraftValidation;
 }
@@ -91,11 +94,13 @@ const ConnectorDetailView = memo<ConnectorDetailViewProps>(
     onRevokeBindings,
     onRollback,
     onSecretChange,
+    onSecretClear,
+    onSecretKeep,
     onToolChange,
     permissions,
     primaryAction,
     saveState,
-    secretValue,
+    secret,
     snapshot,
     validation,
   }) => {
@@ -104,11 +109,13 @@ const ConnectorDetailView = memo<ConnectorDetailViewProps>(
     const hasUnsavedChanges =
       saveState === 'dirty' || saveState === 'failed' || saveState === 'saving';
     const secretConfigured =
-      snapshot.draft.credentialMode === 'shared_service_account'
-        ? snapshot.draft.sharedSecret.configured
-        : snapshot.draft.credentialMode === 'per_user_oauth'
-          ? snapshot.draft.oauthClientSecret.configured
-          : false;
+      draft.credentialMode === snapshot.draft.credentialMode
+        ? draft.credentialMode === 'shared_service_account'
+          ? snapshot.draft.sharedSecret.configured
+          : draft.credentialMode === 'per_user_oauth'
+            ? snapshot.draft.oauthClientSecret.configured
+            : false
+        : false;
 
     return (
       <AdminPageTemplate
@@ -201,10 +208,12 @@ const ConnectorDetailView = memo<ConnectorDetailViewProps>(
             disabled={readOnly || conflict || Boolean(busyAction)}
             draft={draft}
             errors={validation.errors}
+            secret={secret}
             secretConfigured={secretConfigured}
-            secretValue={secretValue}
             onChange={onChange}
             onSecretChange={onSecretChange}
+            onSecretClear={onSecretClear}
+            onSecretKeep={onSecretKeep}
           />
           <ToolPolicyEditor
             disabled={readOnly || conflict || Boolean(busyAction)}

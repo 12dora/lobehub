@@ -42,7 +42,7 @@ const ConnectorDetailContent = memo(
         permissions={permissions}
         primaryAction={actions.primaryAction}
         saveState={editor.saveState}
-        secretValue={editor.secretValue}
+        secret={editor.secret}
         snapshot={data}
         validation={editor.validation}
         onArchive={actions.archive}
@@ -55,6 +55,8 @@ const ConnectorDetailContent = memo(
         onRevokeBindings={actions.revokeBindings}
         onRollback={actions.rollback}
         onSecretChange={editor.changeSecret}
+        onSecretClear={editor.clearSecret}
+        onSecretKeep={editor.keepSecret}
         onToolChange={editor.updateTool}
       />
     ) : null;
