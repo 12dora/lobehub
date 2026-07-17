@@ -591,6 +591,7 @@ export const skillsRuntime: ServerRuntimeRegistration = {
         projectSkills: [],
         service: new ManagedSkillServerRuntimeService({
           activeDeviceId: context.activeDeviceId,
+          agentId: context.agentId,
           executionTimeoutMs: context.executionTimeoutMs,
           operationId: context.operationId,
           serverDB: context.serverDB,

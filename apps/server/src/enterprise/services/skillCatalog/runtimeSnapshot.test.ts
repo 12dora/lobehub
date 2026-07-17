@@ -111,6 +111,27 @@ describe('resolvePlatformSkillRuntimeSnapshot', () => {
     });
   });
 
+  it('signs an empty enforced selection instead of dropping operation authority', async () => {
+    const emptySigner = vi.fn().mockResolvedValue('empty-proof');
+    const result = await resolvePlatformSkillRuntimeSnapshot({
+      db: {} as never,
+      effectiveMode: 'enforced',
+      flags: flags(true),
+      identity,
+      options: {
+        catalogService: {
+          getPublishedCatalog: vi.fn().mockResolvedValue({ revision: 'empty-r1', skills: [] }),
+          isPublishedCatalogExecutionReady: vi.fn(() => true),
+          resolvePinnedForExecution: vi.fn(),
+        },
+        signProof: emptySigner,
+      },
+    });
+
+    expect(result?.catalog).toMatchObject({ proof: 'empty-proof', refs: [] });
+    expect(emptySigner).toHaveBeenCalledWith(expect.objectContaining({ refs: [] }));
+  });
+
   it('applies mandatory/default/optional tri-state selection before freezing refs', async () => {
     const makeSkill = (skillKey: string, distribution: 'mandatory' | 'default' | 'optional') => ({
       checksum: 'a'.repeat(64),

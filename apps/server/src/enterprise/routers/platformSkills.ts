@@ -1,4 +1,8 @@
+import type { AgentPluginEntry } from '@lobechat/types';
+
+import { wsCompatProcedure } from '@/business/server/trpc-middlewares/workspaceAuth';
 import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
+import { AgentModel } from '@/database/models/agent';
 import { authedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 import { signPlatformSkillOperationProof } from '@/libs/trpc/utils/internalJwt';
@@ -14,6 +18,8 @@ import { resolvePublishedManagedResourcePolicies } from '../services/managedReso
 import {
   getBuiltinSkillDefinitions,
   getEmptyPublishedSkillCatalog,
+  hasExactPlatformSkillRefs,
+  selectPlatformOperationSkills,
   SkillCatalogReadService,
 } from '../services/skillCatalog';
 
@@ -38,7 +44,7 @@ const getPublishedCatalog = authedProcedure
 
 export const platformSkillsRouter = router({
   /** Freeze the current published refs into a short-lived, user/agent/operation-bound proof. */
-  beginOperation: authedProcedure
+  beginOperation: wsCompatProcedure
     .use(serverDatabase)
     .input(beginPlatformSkillOperationInputSchema)
     .output(platformSkillOperationProofSchema)
@@ -55,13 +61,29 @@ export const platformSkillsRouter = router({
       const catalog = await new SkillCatalogReadService(ctx.serverDB, {
         builtinSkills: getBuiltinSkillDefinitions(),
       }).getPublishedCatalog();
-      const currentByKey = new Map(catalog.skills.map((skill) => [skill.skillKey, skill]));
-      const exactCurrent =
-        input.revision === catalog.revision &&
-        input.refs.every((ref) => {
-          const current = currentByKey.get(ref.skillKey);
-          return current?.version === ref.version && current.checksum === ref.checksum;
+      const agent = await new AgentModel(
+        ctx.serverDB,
+        ctx.userId,
+        ctx.workspaceId ?? undefined,
+      ).getAgentConfigById(input.agentId);
+      if (!agent) {
+        return throwEnterpriseError({
+          code: PLATFORM_ERROR_CODES.PLATFORM_CONFIG_VALIDATION_FAILED,
+          details: { issueCount: 1 },
+          httpCode: 'PRECONDITION_FAILED',
         });
+      }
+      const selected = selectPlatformOperationSkills(
+        catalog.skills,
+        agent.plugins as AgentPluginEntry[] | undefined,
+      );
+      const serverRefs = selected.map(({ skill: { checksum, skillKey, version } }) => ({
+        checksum,
+        skillKey,
+        version,
+      }));
+      const exactCurrent =
+        input.revision === catalog.revision && hasExactPlatformSkillRefs(input.refs, serverRefs);
       if (!exactCurrent) {
         return throwEnterpriseError({
           code: PLATFORM_ERROR_CODES.PLATFORM_CONFIG_VALIDATION_FAILED,
@@ -69,9 +91,10 @@ export const platformSkillsRouter = router({
           httpCode: 'PRECONDITION_FAILED',
         });
       }
+      const scope = { ...input, refs: serverRefs };
       return {
-        ...input,
-        proof: await signPlatformSkillOperationProof({ ...input, userId: ctx.userId! }),
+        ...scope,
+        proof: await signPlatformSkillOperationProof({ ...scope, userId: ctx.userId }),
       };
     }),
   /** Canonical public catalog name. */

@@ -5,11 +5,10 @@ import type { AgentPluginEntry } from '@lobechat/types';
 import type { EnterpriseFeatureFlags } from '@/const/platform/featureFlags';
 import type { LobeChatDatabase } from '@/database/type';
 import { signPlatformSkillOperationProof } from '@/libs/trpc/utils/internalJwt';
-import { getPluginMode } from '@/types/agent/pluginConfig';
-import { resolvePlatformSkillSelection } from '@/types/platform/skills';
 
 import type { PublishedSkill } from '../../contracts/skillCatalog';
 import { getBuiltinSkillDefinitions } from './builtinAdapter';
+import { selectPlatformOperationSkills } from './operationSelection';
 import { SkillCatalogReadService } from './readService';
 import { isPublishedSkillCatalogExecutionReady } from './runtimeReadiness';
 
@@ -88,13 +87,7 @@ export const resolvePlatformSkillRuntimeSnapshot = async (params: {
   ) {
     throw new Error('Published Skill catalog is not execution-ready');
   }
-  const selected = published.skills.flatMap((skill) => {
-    const selection = resolvePlatformSkillSelection(
-      skill.distribution,
-      getPluginMode(params.agentPlugins, skill.skillKey),
-    );
-    return selection.available ? [{ selection, skill }] : [];
-  });
+  const selected = selectPlatformOperationSkills(published.skills, params.agentPlugins);
   const skills = await Promise.all(
     selected.map(async ({ selection, skill }) => {
       const meta = toSkillMeta(skill);

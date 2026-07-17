@@ -74,6 +74,9 @@ class DesktopSkillRuntimeService {
       };
     }
     if (!operationId) throw new Error('Managed Skill execution requires an operationId');
+    if (!platformSkillSnapshot.operationId || platformSkillSnapshot.operationId !== operationId) {
+      throw new Error('Managed Skill operationId does not match the signed snapshot');
+    }
 
     const refsByKey = new Map(platformSkillSnapshot.refs.map((ref) => [ref.skillKey, ref]));
     const workspaceIds: string[] = [];

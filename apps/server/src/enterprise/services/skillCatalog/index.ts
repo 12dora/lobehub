@@ -1,6 +1,7 @@
 export * from './adminService';
 export * from './builtinAdapter';
 export * from './errors';
+export * from './operationSelection';
 export * from './publication';
 export * from './readService';
 export * from './runtimeAdapter';

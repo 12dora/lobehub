@@ -10,7 +10,7 @@ const mocks = vi.hoisted(() => ({
   getPublishedCatalog: vi.fn(),
   resolvePinnedForExecution: vi.fn(),
   resolvePolicies: vi.fn(),
-  validateProof: vi.fn(),
+  verifyProof: vi.fn(),
 }));
 
 vi.mock('@/business/server/trpc-middlewares/workspaceAuth', async () => {
@@ -22,7 +22,11 @@ vi.mock('@/libs/trpc/lambda/middleware', () => ({
     opts.next({ ctx: { ...opts.ctx, serverDB: opts.ctx.serverDB ?? {} } }),
 }));
 vi.mock('@/libs/trpc/utils/internalJwt', () => ({
-  validatePlatformSkillOperationProof: mocks.validateProof,
+  hashPlatformSkillOperationRefs: vi.fn(() => 'refs-hash'),
+  verifyPlatformSkillOperationProof: mocks.verifyProof,
+}));
+vi.mock('@/database/models/agent', () => ({
+  AgentModel: vi.fn(() => ({ getAgentConfigById: vi.fn(async () => ({ id: 'agent-1' })) })),
 }));
 vi.mock('@/server/enterprise/featureFlags', () => ({
   parseEnterpriseFeatureFlags: () => ({ ENABLE_PLATFORM_MANAGED_SKILLS: true }),
@@ -59,7 +63,13 @@ describe('agentSkills.resolvePlatformPinned', () => {
     vi.clearAllMocks();
     mocks.getPublishedCatalog.mockResolvedValue({ revision: 'current', skills: [ref] });
     mocks.resolvePolicies.mockResolvedValue({ publicCapabilities: { skills: true } });
-    mocks.validateProof.mockResolvedValue(true);
+    mocks.verifyProof.mockResolvedValue({
+      agentId: 'agent-1',
+      operationId: 'operation-1',
+      refsHash: 'refs-hash',
+      revision: 'historical-revision',
+      userId: 'user-1',
+    });
     mocks.resolvePinnedForExecution.mockResolvedValue({
       allowBuiltinOverride: false,
       checksum: ref.checksum,
@@ -112,14 +122,24 @@ describe('agentSkills.resolvePlatformPinned', () => {
       identifier: ref.skillKey,
       version: ref.version,
     });
-    expect(mocks.validateProof).toHaveBeenCalledWith('signed-proof', {
-      agentId: operation.agentId,
-      operationId: operation.operationId,
-      refs: operation.refs,
-      revision: operation.revision,
-      userId: 'user-1',
-    });
+    expect(mocks.verifyProof).toHaveBeenCalledWith('signed-proof', 'user-1');
     expect(mocks.getPublishedCatalog).not.toHaveBeenCalled();
     expect(mocks.resolvePolicies).not.toHaveBeenCalled();
+  });
+
+  it('rejects a cross-agent envelope even when it carries a valid proof', async () => {
+    await expect(
+      caller().resolvePlatformPinned({
+        operation: {
+          agentId: 'agent-2',
+          operationId: 'operation-1',
+          proof: 'signed-proof',
+          refs: [ref],
+          revision: 'historical-revision',
+        },
+        ref,
+      }),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    expect(mocks.resolvePinnedForExecution).not.toHaveBeenCalled();
   });
 });

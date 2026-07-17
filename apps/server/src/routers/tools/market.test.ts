@@ -25,7 +25,7 @@ const managedSkillMocks = vi.hoisted(() => ({
     resolvePinnedForExecution: vi.fn(),
   })),
   parseEnterpriseFeatureFlags: vi.fn(() => ({ ENABLE_PLATFORM_MANAGED_SKILLS: false })),
-  validateProof: vi.fn(),
+  verifyProof: vi.fn(),
 }));
 
 vi.mock('@/database/models/agentSkill', () => ({
@@ -41,7 +41,8 @@ vi.mock('@/server/enterprise/featureFlags', () => ({
 }));
 
 vi.mock('@/libs/trpc/utils/internalJwt', () => ({
-  validatePlatformSkillOperationProof: managedSkillMocks.validateProof,
+  hashPlatformSkillOperationRefs: vi.fn(() => 'refs-hash'),
+  verifyPlatformSkillOperationProof: managedSkillMocks.verifyProof,
 }));
 
 vi.mock('@/server/enterprise/services/skillCatalog', async () => {
@@ -99,7 +100,13 @@ describe('tools marketRouter', () => {
     managedSkillMocks.parseEnterpriseFeatureFlags.mockReturnValue({
       ENABLE_PLATFORM_MANAGED_SKILLS: false,
     });
-    managedSkillMocks.validateProof.mockResolvedValue(true);
+    managedSkillMocks.verifyProof.mockResolvedValue({
+      agentId: 'agent-1',
+      operationId: 'operation-1',
+      refsHash: 'refs-hash',
+      revision: 'catalog-r1',
+      userId: 'user-1',
+    });
     managedSkillMocks.resolveRuntimeMode.mockResolvedValue('unmanaged');
   });
 
@@ -169,6 +176,8 @@ describe('tools marketRouter', () => {
       workspaceId: 'workspace-1',
     } as any);
     await caller.execInSandbox({
+      agentId: 'agent-1',
+      operationId: 'operation-1',
       params: {
         activatedSkills: [{ name: 'managed.skill' }],
         command: 'python scripts/run.py',
@@ -194,13 +203,7 @@ describe('tools marketRouter', () => {
     expect(managedSkillMocks.AgentSkillModel).not.toHaveBeenCalled();
     expect(managedSkillMocks.FileModel).not.toHaveBeenCalled();
     expect(managedSkillMocks.resolveRuntimeMode).not.toHaveBeenCalled();
-    expect(managedSkillMocks.validateProof).toHaveBeenCalledWith('signed-proof', {
-      agentId: 'agent-1',
-      operationId: 'operation-1',
-      refs: [{ checksum, skillKey: 'managed.skill', version: '1.0.0' }],
-      revision: 'catalog-r1',
-      userId: 'user-1',
-    });
+    expect(managedSkillMocks.verifyProof).toHaveBeenCalledWith('signed-proof', 'user-1');
     expect(mockSandboxCallTool).toHaveBeenCalledWith(
       'writeFile',
       expect.objectContaining({
@@ -225,6 +228,27 @@ describe('tools marketRouter', () => {
     expect(commands.findIndex((command) => command.includes('-mmin +240'))).toBeLessThan(
       commands.findIndex((command) => command.startsWith('umask 077 && mkdir -p')),
     );
+
+    await expect(
+      caller.execInSandbox({
+        agentId: 'other-agent',
+        operationId: 'operation-1',
+        params: {
+          activatedSkills: [{ name: 'managed.skill' }],
+          command: 'python scripts/run.py',
+          operationId: 'operation-1',
+          platformSkillSnapshot: {
+            agentId: 'agent-1',
+            operationId: 'operation-1',
+            proof: 'signed-proof',
+            refs: [{ checksum, skillKey: 'managed.skill', version: '1.0.0' }],
+            revision: 'catalog-r1',
+          },
+        },
+        toolName: 'execScript',
+        topicId: 'topic-1',
+      }),
+    ).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
   });
 
   it('retries a failed managed cloud workspace cleanup', async () => {
@@ -259,6 +283,8 @@ describe('tools marketRouter', () => {
     const caller = marketRouter.createCaller({ serverDB: {}, userId: 'user-1' } as any);
     await expect(
       caller.execInSandbox({
+        agentId: 'agent-1',
+        operationId: 'operation-1',
         params: {
           activatedSkills: [{ name: 'managed.skill' }],
           command: 'true',

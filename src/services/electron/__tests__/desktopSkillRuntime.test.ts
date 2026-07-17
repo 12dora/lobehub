@@ -240,7 +240,13 @@ describe('desktopSkillRuntimeService', () => {
 
     const workspace = await desktopSkillRuntimeService.prepareExecutionWorkspace(
       [{ name: ref.skillKey }],
-      { mandatorySkillIds: [], refs: [ref], revision: 'catalog-r1' },
+      {
+        agentId: 'agent-1',
+        mandatorySkillIds: [],
+        operationId: 'operation-1',
+        refs: [ref],
+        revision: 'catalog-r1',
+      },
       'operation-1',
     );
     expect(workspace).toEqual({

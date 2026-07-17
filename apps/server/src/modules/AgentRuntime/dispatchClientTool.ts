@@ -12,6 +12,7 @@ import type { IStreamEventManager } from './types';
 const log = debug('lobe-server:agent-runtime:dispatch-client-tool');
 
 interface DispatchContext {
+  agentId?: string;
   operationId: string;
   platformSkillSnapshot?: PlatformSkillOperationSnapshot;
   streamManager: IStreamEventManager;
@@ -89,6 +90,13 @@ export async function dispatchClientTool(
   const timeoutMs = clampTimeout(ctx.timeoutMs ?? GLOBAL_DEFAULT_TIMEOUT_MS);
 
   try {
+    if (
+      ctx.platformSkillSnapshot &&
+      (ctx.platformSkillSnapshot.agentId !== ctx.agentId ||
+        ctx.platformSkillSnapshot.operationId !== operationId)
+    ) {
+      return buildErrorResult(0, 'Managed Skill operation context mismatch', 'invalid_operation');
+    }
     log(
       '[%s] dispatching client tool %s/%s (toolCallId=%s, timeout=%dms)',
       operationId,

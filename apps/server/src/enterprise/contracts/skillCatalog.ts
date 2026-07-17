@@ -416,7 +416,7 @@ export const platformSkillOperationProofSchema = z
     agentId: z.string().min(1).max(256),
     operationId: z.string().min(1).max(256),
     proof: z.string().min(1).max(8192),
-    refs: z.array(platformSkillPinnedRefSchema).min(1).max(10_000),
+    refs: z.array(platformSkillPinnedRefSchema).max(10_000),
     revision: z.string().min(1).max(200),
   })
   .strict();
