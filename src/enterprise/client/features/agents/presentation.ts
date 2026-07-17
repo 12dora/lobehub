@@ -7,7 +7,11 @@ export interface PlatformAgentPresentation {
   source: 'organization';
 }
 
-/** User-side policy adapter: platform fields are managed; only non-mandatory rows may hide. */
+/**
+ * PR-049 DEFERRED — this ordinary-user presentation adapter is intentionally not wired to the
+ * runtime Agent list or any hidden-state mutation yet. It stays a pure helper until PR-049.
+ * User-side policy adapter: platform fields are managed; only non-mandatory rows may hide.
+ */
 export const getPlatformAgentPresentation = (
   agent: PlatformEffectiveAgent,
   hidden: boolean,
