@@ -15,6 +15,7 @@ import { platformAgentDraftToken } from './publication';
 const mocks = vi.hoisted(() => ({
   acquireDefaultLock: vi.fn(),
   acquireLock: vi.fn(),
+  acquireReferenceLock: vi.fn(),
   appendAudit: vi.fn(),
   appendVersionCas: vi.fn(),
   archiveIdentityCas: vi.fn(),
@@ -37,6 +38,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('@/database/repositories/platformAgentCatalog', () => ({
+  acquirePlatformAgentReferenceLock: mocks.acquireReferenceLock,
   PlatformAgentCatalogRepository: class {
     appendVersionCas = mocks.appendVersionCas;
     archiveIdentityCas = mocks.archiveIdentityCas;
@@ -90,8 +92,8 @@ const pointer = (value: ReturnType<typeof identity>) => ({
 });
 
 /** Duck-typed raw pg driver error understood by `unwrapPgError`. */
-const pgError = (code: string, constraint?: string) =>
-  Object.assign(new Error('db failure'), { code, constraint, severity: 'ERROR' });
+const pgError = (code: string, constraint?: string, message = 'db failure') =>
+  Object.assign(new Error(message), { code, constraint, severity: 'ERROR' });
 
 const transaction = {} as Transaction;
 const db = {
@@ -134,6 +136,9 @@ describe('PlatformAgentAdminService', () => {
       }),
     ).resolves.toMatchObject({ id: 'assignment-id' });
     expect(mocks.createAssignment).toHaveBeenCalledBefore(mocks.updateDraftCas);
+    // ADM-02 lock order: reference lock (2) before the identity row lock (3).
+    expect(mocks.acquireReferenceLock).toHaveBeenCalledBefore(mocks.lockIdentity);
+    expect(mocks.acquireReferenceLock).toHaveBeenCalledWith(expect.anything(), 'agent-id');
     expect(mocks.updateDraftCas).toHaveBeenCalledWith(
       expect.objectContaining({ expectedDraftSequence: 4, expectedRevision: 2 }),
     );
@@ -297,6 +302,8 @@ describe('PlatformAgentAdminService', () => {
       expect(mocks.createIdentity).toHaveBeenCalledWith(
         expect.objectContaining({ isDefault: false, systemKey: null }),
       );
+      // ADM-01: create enters the shared singleton lock before writing.
+      expect(mocks.acquireDefaultLock).toHaveBeenCalledBefore(mocks.createIdentity);
     });
 
     it('rejects updateDraft that tries to promote to default', async () => {
@@ -402,7 +409,8 @@ describe('PlatformAgentAdminService', () => {
 
   // ADM-03: raw pg constraint / trigger failures normalize to stable, redacted errors.
   describe('constraint error normalization (ADM-03)', () => {
-    it('maps translatePlatformAgentPgError by constraint then SQLSTATE', () => {
+    it('maps translatePlatformAgentPgError by actual constraint / trigger, not blanket SQLSTATE', () => {
+      // 23505 system-key race → RevisionConflict; other known unique indexes → InvalidInput.
       expect(
         translatePlatformAgentPgError(pgError('23505', 'platform_agents_system_key_unique')),
       ).toBeInstanceOf(PlatformAgentRevisionConflictError);
@@ -419,9 +427,23 @@ describe('PlatformAgentAdminService', () => {
           pgError('23505', 'platform_agent_assignments_agent_target_unique'),
         ),
       ).toBeInstanceOf(PlatformAgentInvalidInputError);
-      expect(translatePlatformAgentPgError(pgError('23503'))).toBeInstanceOf(
-        PlatformAgentInvalidInputError,
-      );
+      // 23503 mapped only for a known platform-Agent FK constraint …
+      expect(
+        translatePlatformAgentPgError(
+          pgError('23503', 'platform_agent_assignments_pinned_version_same_agent_fk'),
+        ),
+      ).toBeInstanceOf(PlatformAgentInvalidInputError);
+      // … or a recognized target-guard trigger message (triggers carry no constraint name).
+      expect(
+        translatePlatformAgentPgError(
+          pgError('23503', undefined, 'platform Agent assignments require an existing user'),
+        ),
+      ).toBeInstanceOf(PlatformAgentInvalidInputError);
+      // A bare / unknown 23503 or 23505 is NOT misclassified — it surfaces unchanged.
+      const bareFk = pgError('23503', undefined, 'some unrelated fk');
+      expect(translatePlatformAgentPgError(bareFk)).toBe(bareFk);
+      const unknownUnique = pgError('23505', 'some_other_unique');
+      expect(translatePlatformAgentPgError(unknownUnique)).toBe(unknownUnique);
       // Non-pg errors pass through untouched so genuine bugs still surface.
       const bug = new Error('boom');
       expect(translatePlatformAgentPgError(bug)).toBe(bug);

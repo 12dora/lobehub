@@ -1,6 +1,7 @@
 import debug from 'debug';
 
 import {
+  acquirePlatformAgentReferenceLock,
   type ExactPlatformAgentVersion,
   type PlatformAgentAssignmentSafeItem,
   PlatformAgentCatalogRepository,
@@ -181,9 +182,12 @@ export class PlatformAgentAdminService {
       actorUserId,
       reason: input.reason,
       run: async (tx) => {
-        // The default-inbox singleton is owned exclusively by `setDefaultInbox` (which also
-        // enforces published-target + replacement rules). Creation can never seed it, so a
-        // freshly created Agent is always a non-default draft (ADM-01).
+        // Enter the shared default-inbox singleton lock (same lock as bootstrap /
+        // setDefaultInbox / archive) before any validation or write, so create participates
+        // in the one serialization point for the default pointer (ADM-01). The default-inbox
+        // singleton is owned exclusively by `setDefaultInbox`; creation can never seed it, so
+        // a freshly created Agent is always a non-default draft.
+        await acquirePlatformDefaultInboxLock(tx);
         if (input.isDefault || input.systemKey !== null) {
           throw new PlatformAgentInvalidInputError();
         }
@@ -344,6 +348,10 @@ export class PlatformAgentAdminService {
       reason: input.reason,
       run: async (tx) => {
         const repository = new PlatformAgentCatalogRepository(tx);
+        // Reference lock (2) before the identity row lock (3): matches archive's lock order
+        // so an assignment write and a concurrent archive of the same Agent serialize instead
+        // of deadlocking. The repository write re-checks referenceability under this lock.
+        await acquirePlatformAgentReferenceLock(tx, input.agentId);
         const locked = await repository.lockIdentity(input.agentId);
         if (!locked) throw new PlatformAgentNotFoundError();
         assertExpectedPlatformAgentIdentity(
@@ -482,10 +490,11 @@ export class PlatformAgentAdminService {
       reason: input.reason,
       run: async (tx) => {
         const repository = new PlatformAgentCatalogRepository(tx);
-        // Archive can hand off the default-inbox pointer to a replacement, so it must hold
-        // the same singleton lock as `setDefaultInbox` (consistent lock order: default-inbox
-        // lock first, then identity rows in sorted id order) to avoid deadlock (ADM-01).
+        // Lock order (ADM-01/ADM-02): (1) default-inbox singleton — archive can hand the
+        // pointer to a replacement — then (2) the per-Agent reference lock for the Agent being
+        // archived, then (3) the identity rows in sorted id order.
         await acquirePlatformDefaultInboxLock(tx);
+        await acquirePlatformAgentReferenceLock(tx, input.agentId);
         const ids = [
           input.agentId,
           ...(input.replacementAgentId ? [input.replacementAgentId] : []),
@@ -502,11 +511,13 @@ export class PlatformAgentAdminService {
           input.expectedDraftToken,
           input.expectedRevision,
         );
-        // This phase does not perform atomic reference migration. Any live Assignment or
-        // Materialization pointing at the Agent must be reassigned first; until then archive
-        // is a stable resource-in-use rejection rather than a half-done cascade (ADM-02).
-        // The identity FOR UPDATE lock above makes the count TOCTOU-stable: concurrent
-        // reference inserts take a FK KEY SHARE lock on this row and block behind us.
+        // This phase performs no atomic reference migration: any live Assignment /
+        // Materialization must be reassigned first, so archive is a stable resource-in-use
+        // rejection rather than a half-done cascade (ADM-02). TOCTOU is closed by the shared
+        // per-Agent reference lock (2): a concurrent reference writer either commits before us
+        // — and is counted here — or wakes after us, re-reads status='archived', and is
+        // rejected by the repository. FK KEY SHARE alone was insufficient because archive only
+        // flips status without deleting the parent row.
         const references = await repository.countAgentReferences(current.id);
         if (references.assignments > 0 || references.materializations > 0) {
           throw new PlatformAgentResourceInUseError();
