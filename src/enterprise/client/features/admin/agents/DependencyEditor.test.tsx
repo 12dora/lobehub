@@ -465,3 +465,97 @@ describe('DependencyEditor fails closed on retained-data errors / revalidation (
     );
   });
 });
+
+describe('DependencyEditor fails closed on the provider list / connector list / current detail (T1)', () => {
+  const model = () => ({
+    modelKey: 'gpt-4.1',
+    providerChecksum: 'a'.repeat(64),
+    providerKey: 'openai',
+    providerRevision: 4,
+  });
+
+  it('blocks save when the provider LIST errors while retaining matching data', async () => {
+    currentModel();
+    hooks.providers = { ...hooks.providers, error: new Error('flaky') }; // retained list + error
+    const onValidity = vi.fn();
+    renderEditor({ connectors: [], model: model(), skills: [] }, vi.fn(), onValidity);
+    await waitFor(() =>
+      expect(onValidity).toHaveBeenCalledWith(expect.objectContaining({ ready: false })),
+    );
+  });
+
+  it('blocks save + shows a revalidating hint while the provider LIST revalidates (data retained)', async () => {
+    currentModel();
+    hooks.providers = { ...hooks.providers, isValidating: true };
+    const onValidity = vi.fn();
+    renderEditor({ connectors: [], model: model(), skills: [] }, vi.fn(), onValidity);
+    expect(screen.getByText('agentCatalog.dependency.revalidating')).toBeTruthy();
+    await waitFor(() =>
+      expect(onValidity).toHaveBeenCalledWith(expect.objectContaining({ ready: false })),
+    );
+  });
+
+  it('surfaces the connector LIST error with a retry (Add picker not offered from a stale list)', () => {
+    hooks.providers = { ...idle, data: [] };
+    hooks.connectors = {
+      ...idle,
+      data: [{ displayName: 'Issues', id: 'c1', key: 'issues' }],
+      error: new Error('x'),
+    };
+    renderEditor(emptyDeps(), vi.fn());
+    expect(screen.getByText('agentCatalog.dependency.connector.loadError')).toBeTruthy();
+    expect(screen.getByText('agentCatalog.dependency.retry')).toBeTruthy();
+  });
+
+  it('shows a revalidating hint while the connector LIST revalidates with data retained', () => {
+    hooks.providers = { ...idle, data: [] };
+    hooks.connectors = {
+      ...idle,
+      data: [{ displayName: 'Issues', id: 'c1', key: 'issues' }],
+      isValidating: true,
+    };
+    renderEditor(emptyDeps(), vi.fn());
+    expect(screen.getByText('agentCatalog.dependency.revalidating')).toBeTruthy();
+  });
+
+  it('will NOT author a connector while the current detail is revalidating (retained data)', () => {
+    hooks.providers = { ...idle, data: [] };
+    hooks.connectors = { ...idle, data: [{ displayName: 'Issues', id: 'c1', key: 'issues' }] };
+    hooks.connectorDetail = { ...idle, data: connectorDetail, isValidating: true }; // retained + revalidating
+    const onChange = vi.fn();
+    renderEditor(emptyDeps(), onChange);
+    fireEvent.change(screen.getByLabelText('agentCatalog.dependency.connector.add'), {
+      target: { value: 'c1' },
+    });
+    fireEvent.click(screen.getByText('agentCatalog.dependency.connector.addAction'));
+    expect(onChange).not.toHaveBeenCalled(); // disabled Add → fail closed, never author from a stale snapshot
+  });
+
+  it('will NOT author a connector while the current detail errors with retained data (retry offered)', () => {
+    hooks.providers = { ...idle, data: [] };
+    hooks.connectors = { ...idle, data: [{ displayName: 'Issues', id: 'c1', key: 'issues' }] };
+    hooks.connectorDetail = { ...idle, data: connectorDetail, error: new Error('x') };
+    const onChange = vi.fn();
+    renderEditor(emptyDeps(), onChange);
+    fireEvent.change(screen.getByLabelText('agentCatalog.dependency.connector.add'), {
+      target: { value: 'c1' },
+    });
+    // The error branch renders a retry instead of the Add action.
+    expect(screen.getByText('agentCatalog.dependency.retry')).toBeTruthy();
+    expect(screen.queryByText('agentCatalog.dependency.connector.addAction')).toBeNull();
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('authors the connector only AFTER the current detail settles (no error, not revalidating)', () => {
+    hooks.providers = { ...idle, data: [] };
+    hooks.connectors = { ...idle, data: [{ displayName: 'Issues', id: 'c1', key: 'issues' }] };
+    hooks.connectorDetail = { ...idle, data: connectorDetail }; // settled success
+    const onChange = vi.fn();
+    renderEditor(emptyDeps(), onChange);
+    fireEvent.change(screen.getByLabelText('agentCatalog.dependency.connector.add'), {
+      target: { value: 'c1' },
+    });
+    fireEvent.click(screen.getByText('agentCatalog.dependency.connector.addAction'));
+    expect(onChange).toHaveBeenCalledTimes(1); // settled → authored exactly once
+  });
+});

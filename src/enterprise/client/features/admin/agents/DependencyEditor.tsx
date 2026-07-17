@@ -118,6 +118,11 @@ export const DependencyEditor = ({
   const sourceSettled = usable(source);
   const skillsSettled = usable(skills);
   const connectorsSettled = usable(connectorRefDetails);
+  // The provider list, connector list and currently-selected connector detail ALSO fail closed:
+  // a revalidating/errored list is not trustworthy for authoring or for gating save readiness.
+  const providersUsable = usable(providers);
+  const connectorsListUsable = usable(connectors);
+  const connectorDetailUsable = usable(connectorDetail);
 
   // Display staleness only once the relevant source has a settled success (no spurious "Outdated").
   const displayModelStale = Boolean(model) && sourceSettled && !isModelCurrent(model, source.data);
@@ -133,8 +138,11 @@ export const DependencyEditor = ({
     [connectorRefDetails.data, connectorsSettled, dependencies.connectors],
   );
 
-  // Readiness FAILS CLOSED: an unsettled/errored/revalidating source or ANY exact mismatch blocks save.
-  const modelReady = Boolean(model) && sourceSettled && isModelCurrent(model, source.data);
+  // Readiness FAILS CLOSED: an unsettled/errored/revalidating source (including the provider list) or
+  // ANY exact mismatch blocks save. The model is only trustworthy when BOTH the provider catalog and
+  // the exact provider/model source have a settled success and the pinned ref still matches.
+  const modelReady =
+    Boolean(model) && providersUsable && sourceSettled && isModelCurrent(model, source.data);
   const skillsReady =
     dependencies.skills.length === 0 || (skillsSettled && staleSkills.length === 0);
   const connectorsReady =
@@ -188,7 +196,8 @@ export const DependencyEditor = ({
     [connectors.data],
   );
   const addConnector = () => {
-    if (!connectorDetail.data) return;
+    // Fail closed: never author a connector ref from a loading/revalidating/errored detail snapshot.
+    if (!connectorDetailUsable || !connectorDetail.data) return;
     onChange(
       withConnectorAdded(
         dependencies,
@@ -240,6 +249,9 @@ export const DependencyEditor = ({
                 }))}
                 onChange={(value) => chooseProvider(value as string | undefined)}
               />
+              {providers.isValidating && providers.data ? (
+                <Text type="secondary">{t('agentCatalog.dependency.revalidating')}</Text>
+              ) : null}
             </Flexbox>
             {providerId ? (
               source.error ? (
@@ -455,7 +467,7 @@ export const DependencyEditor = ({
               <Flexbox gap={8}>
                 <Select
                   aria-label={t('agentCatalog.dependency.connector.add')}
-                  disabled={connectors.isLoading}
+                  disabled={!connectorsListUsable}
                   options={connectorOptions}
                   value={connectorId}
                   placeholder={
@@ -465,6 +477,9 @@ export const DependencyEditor = ({
                   }
                   onChange={(value) => setConnectorId(value as string | undefined)}
                 />
+                {connectors.isValidating && connectors.data ? (
+                  <Text type="secondary">{t('agentCatalog.dependency.revalidating')}</Text>
+                ) : null}
                 {connectorId ? (
                   connectorDetail.error ? (
                     <Alert
@@ -488,9 +503,17 @@ export const DependencyEditor = ({
                           count: allowedConnectorToolKeys(connectorDetail.data).length,
                         })}
                       </Text>
-                      <Button type="primary" onClick={addConnector}>
+                      {/* Add is disabled while the detail is revalidating — never author from a stale snapshot. */}
+                      <Button
+                        disabled={!connectorDetailUsable}
+                        type="primary"
+                        onClick={addConnector}
+                      >
                         {t('agentCatalog.dependency.connector.addAction')}
                       </Button>
+                      {connectorDetail.isValidating ? (
+                        <Text type="secondary">{t('agentCatalog.dependency.revalidating')}</Text>
+                      ) : null}
                     </Flexbox>
                   ) : null
                 ) : null}
