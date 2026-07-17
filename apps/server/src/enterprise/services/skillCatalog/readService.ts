@@ -241,7 +241,7 @@ export class SkillCatalogReadService {
     }
     const revision = checksumPayload({ skills });
     const executionIndex = new Map<string, ResolvedSkill>();
-    let executionReady = skills.length > 0;
+    let executionReady = true;
     for (const skill of skills) {
       const builtin = this.builtinSkills.find((item) => item.skillKey === skill.skillKey);
       const resolved =

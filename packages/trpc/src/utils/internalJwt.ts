@@ -19,7 +19,7 @@ interface PlatformSkillOperationProofInput {
   userId: string;
 }
 
-const hashPlatformSkillOperationRefs = (refs: PlatformSkillPinnedRef[]) =>
+export const hashPlatformSkillOperationRefs = (refs: PlatformSkillPinnedRef[]) =>
   createHash('sha256')
     .update(
       JSON.stringify(
@@ -174,25 +174,46 @@ export const signPlatformSkillOperationProof = async (
     .sign(key);
 };
 
-/** Validate a platform Skill proof against the request's authenticated scope. */
-export const validatePlatformSkillOperationProof = async (
+export interface VerifiedPlatformSkillOperationProof {
+  agentId: string;
+  operationId: string;
+  refsHash: string;
+  revision: string;
+  userId: string;
+}
+
+/**
+ * Verify a proof and return only server-signed claims. Callers must compare
+ * these claims with their own trusted runtime/operation context; raw request
+ * fields are never supplied as the verifier's expected authority.
+ */
+export const verifyPlatformSkillOperationProof = async (
   token: string,
-  expected: PlatformSkillOperationProofInput,
-): Promise<boolean> => {
+  userId: string,
+): Promise<VerifiedPlatformSkillOperationProof | undefined> => {
   try {
     const publicKey = await getVerificationKey();
     const { payload } = await jwtVerify(token, publicKey, { algorithms: ['RS256'] });
-    return (
-      payload.purpose === PLATFORM_SKILL_OPERATION_PURPOSE &&
-      payload.sub === expected.userId &&
-      payload.agent_id === expected.agentId &&
-      payload.operation_id === expected.operationId &&
-      payload.catalog_revision === expected.revision &&
-      payload.refs_hash === hashPlatformSkillOperationRefs(expected.refs)
-    );
+    if (
+      payload.purpose !== PLATFORM_SKILL_OPERATION_PURPOSE ||
+      payload.sub !== userId ||
+      typeof payload.agent_id !== 'string' ||
+      typeof payload.operation_id !== 'string' ||
+      typeof payload.catalog_revision !== 'string' ||
+      typeof payload.refs_hash !== 'string'
+    ) {
+      return undefined;
+    }
+    return {
+      agentId: payload.agent_id,
+      operationId: payload.operation_id,
+      refsHash: payload.refs_hash,
+      revision: payload.catalog_revision,
+      userId,
+    };
   } catch (error) {
-    log('Platform Skill operation proof validation failed: %O', error);
-    return false;
+    log('Platform Skill operation proof verification failed: %O', error);
+    return undefined;
   }
 };
 

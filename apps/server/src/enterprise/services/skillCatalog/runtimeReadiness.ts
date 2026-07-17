@@ -17,7 +17,7 @@ export const isPublishedSkillCatalogExecutionReady = async (params: {
   if (params.service.isPublishedCatalogExecutionReady) {
     return params.service.isPublishedCatalogExecutionReady(params.catalog);
   }
-  if (params.catalog.skills.length === 0) return false;
+  if (params.catalog.skills.length === 0) return true;
   const resolved = await Promise.all(
     params.catalog.skills.map(async ({ checksum, skillKey, version }) => {
       const skill = await params.service.resolvePinnedForExecution({ checksum, skillKey, version });

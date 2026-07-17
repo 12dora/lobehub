@@ -194,9 +194,13 @@ describe('skillsRuntime', () => {
     });
     const { skillsRuntime } = await import('../skills');
     const runtime = await skillsRuntime.factory({
+      agentId: 'agent-1',
+      operationId: 'operation-1',
       operationSkillSet: {
         enabledPluginIds: [],
         platformCatalog: {
+          agentId: 'agent-1',
+          operationId: 'operation-1',
           refs: [{ checksum: 'a'.repeat(64), skillKey: 'managed.skill', version: '1.0.0' }],
           revision: 'r1',
         },
@@ -245,10 +249,13 @@ describe('skillsRuntime', () => {
     });
     const { skillsRuntime } = await import('../skills');
     const runtime = await skillsRuntime.factory({
+      agentId: 'agent-1',
       operationId: 'operation-1',
       operationSkillSet: {
         enabledPluginIds: [],
         platformCatalog: {
+          agentId: 'agent-1',
+          operationId: 'operation-1',
           refs: [{ checksum, skillKey: 'managed.skill', version: '1.0.0' }],
           revision: 'r1',
         },
@@ -314,10 +321,13 @@ describe('skillsRuntime', () => {
     const { skillsRuntime } = await import('../skills');
     const runtime = await skillsRuntime.factory({
       activeDeviceId: 'device-1',
+      agentId: 'agent-1',
       operationId: 'operation-1',
       operationSkillSet: {
         enabledPluginIds: [],
         platformCatalog: {
+          agentId: 'agent-1',
+          operationId: 'operation-1',
           refs: [{ checksum, skillKey: 'managed.skill', version: '1.0.0' }],
           revision: 'r1',
         },

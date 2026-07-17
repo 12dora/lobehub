@@ -5,11 +5,15 @@ import { z } from 'zod';
 
 import { withScopedPermission } from '@/business/server/trpc-middlewares/rbacPermission';
 import { wsCompatProcedure } from '@/business/server/trpc-middlewares/workspaceAuth';
+import { AgentModel } from '@/database/models/agent';
 import { AgentSkillModel } from '@/database/models/agentSkill';
 import { FileModel } from '@/database/models/file';
 import { router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
-import { validatePlatformSkillOperationProof } from '@/libs/trpc/utils/internalJwt';
+import {
+  hashPlatformSkillOperationRefs,
+  verifyPlatformSkillOperationProof,
+} from '@/libs/trpc/utils/internalJwt';
 import { resolvePlatformSkillPinnedInputSchema } from '@/server/enterprise/contracts/skillCatalog';
 import { parseEnterpriseFeatureFlags } from '@/server/enterprise/featureFlags';
 import { withManagedResourceGuard } from '@/server/enterprise/guards/managedResource';
@@ -337,20 +341,28 @@ export const agentSkillsRouter = router({
         builtinSkills: getBuiltinSkillDefinitions(),
       });
       if (input.operation) {
+        const claims = await verifyPlatformSkillOperationProof(input.operation.proof, ctx.userId);
+        const ownedAgent = claims
+          ? await new AgentModel(
+              ctx.serverDB,
+              ctx.userId,
+              ctx.workspaceId ?? undefined,
+            ).getAgentConfigById(claims.agentId)
+          : undefined;
         const authorized =
+          claims !== undefined &&
+          ownedAgent !== null &&
+          ownedAgent !== undefined &&
+          claims.agentId === input.operation.agentId &&
+          claims.operationId === input.operation.operationId &&
+          claims.revision === input.operation.revision &&
+          claims.refsHash === hashPlatformSkillOperationRefs(input.operation.refs) &&
           input.operation.refs.some(
             (ref) =>
               ref.skillKey === input.ref.skillKey &&
               ref.version === input.ref.version &&
               ref.checksum === input.ref.checksum,
-          ) &&
-          (await validatePlatformSkillOperationProof(input.operation.proof, {
-            agentId: input.operation.agentId,
-            operationId: input.operation.operationId,
-            refs: input.operation.refs,
-            revision: input.operation.revision,
-            userId: ctx.userId,
-          }));
+          );
         if (!authorized) {
           throw new TRPCError({ code: 'NOT_FOUND', message: 'Skill not found' });
         }

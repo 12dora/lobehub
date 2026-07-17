@@ -48,7 +48,9 @@ vi.mock('@/server/services/sandbox', async () => {
 
 const checksum = 'a'.repeat(64);
 const snapshot = {
+  agentId: 'agent-1',
   mandatorySkillIds: ['managed.skill'],
+  operationId: 'operation-1',
   refs: [{ checksum, skillKey: 'managed.skill', version: '1.0.0' }],
   revision: 'catalog-r1',
 };
@@ -73,6 +75,7 @@ const resolved = {
 const createRuntime = (activeDeviceId?: string) =>
   new ManagedSkillServerRuntimeService({
     activeDeviceId,
+    agentId: 'agent-1',
     operationId: 'operation-1',
     serverDB: {} as never,
     snapshot,

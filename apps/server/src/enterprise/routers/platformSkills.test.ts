@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
-import { users } from '@/database/schemas';
+import { agents, users } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
 import { createCallerFactory } from '@/libs/trpc/lambda';
 import { createContextInner } from '@/libs/trpc/lambda/context';
@@ -47,11 +47,13 @@ beforeEach(async () => {
   vi.unstubAllEnvs();
   await db.delete(users);
   await db.insert(users).values({ id: userId });
+  await db.insert(agents).values({ id: 'agent-1', plugins: [], userId });
   operationMocks.resolvePolicies.mockResolvedValue({ publicCapabilities: { skills: true } });
   operationMocks.signProof.mockResolvedValue('signed-proof');
 });
 
 afterEach(async () => {
+  await db.delete(agents);
   await db.delete(users);
   vi.unstubAllEnvs();
 });
@@ -134,5 +136,45 @@ describe('platformSkillsRouter', () => {
       refs,
       revision: catalog.revision,
     });
+  });
+
+  it('rejects refs that omit the persisted mandatory selection', async () => {
+    vi.stubEnv('ENABLE_PLATFORM_MANAGED_SKILLS', '1');
+    const caller = createCaller({
+      ...(await createContextInner({ userId })),
+      serverDB: db,
+    } as never);
+    const catalog = await caller.getPublishedCatalog();
+
+    await expect(
+      caller.beginOperation({
+        agentId: 'agent-1',
+        operationId: 'operation-1',
+        refs: [],
+        revision: catalog.revision,
+      }),
+    ).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+  });
+
+  it('rejects an agent outside the authenticated ownership scope', async () => {
+    vi.stubEnv('ENABLE_PLATFORM_MANAGED_SKILLS', '1');
+    const caller = createCaller({
+      ...(await createContextInner({ userId })),
+      serverDB: db,
+    } as never);
+    const catalog = await caller.getPublishedCatalog();
+
+    await expect(
+      caller.beginOperation({
+        agentId: 'other-agent',
+        operationId: 'operation-1',
+        refs: catalog.skills.map(({ checksum, skillKey, version }) => ({
+          checksum,
+          skillKey,
+          version,
+        })),
+        revision: catalog.revision,
+      }),
+    ).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
   });
 });

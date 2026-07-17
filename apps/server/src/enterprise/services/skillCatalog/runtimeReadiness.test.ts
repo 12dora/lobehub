@@ -61,7 +61,7 @@ describe('Skill catalog runtime readiness', () => {
     expect(service.getPublishedCatalog).not.toHaveBeenCalled();
   });
 
-  it('requires a non-empty catalog and exact checksum-resolvable entries', async () => {
+  it('accepts an empty catalog and requires exact checksum resolution for non-empty entries', async () => {
     const emptyService = {
       getPublishedCatalog: vi.fn().mockResolvedValue({ revision: 'empty', skills: [] }),
       resolvePinnedForExecution: vi.fn(),
@@ -72,7 +72,7 @@ describe('Skill catalog runtime readiness', () => {
         flags: managedFlags,
         service: emptyService,
       }),
-    ).resolves.toBe(false);
+    ).resolves.toBe(true);
     expect(emptyService.resolvePinnedForExecution).not.toHaveBeenCalled();
 
     const mismatchService = {

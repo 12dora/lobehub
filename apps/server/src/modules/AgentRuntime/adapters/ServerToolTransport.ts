@@ -130,6 +130,7 @@ export class ServerToolTransport implements ToolTransport {
           manifest: context.effectiveManifestMap[chatToolPayload.identifier],
         });
         const dispatchResult = await dispatchClientTool(chatToolPayload, {
+          agentId: context.state.metadata?.agentId,
           operationId,
           platformSkillSnapshot: context.state.metadata?.operationSkillSet?.platformCatalog,
           streamManager,

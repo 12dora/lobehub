@@ -14,6 +14,7 @@ import {
   adminSkillPublicationOutputSchema,
   adminSkillUpdateDraftInputSchema,
   adminSkillValidateOutputSchema,
+  platformSkillOperationProofSchema,
   publishedSkillCatalogSchema,
   serverResolvedSkillSchema,
   skillIdentityDraftSchema,
@@ -49,6 +50,18 @@ const resource = {
 };
 
 describe('Skill catalog contracts', () => {
+  it('allows a signed operation snapshot with no selected refs', () => {
+    expect(
+      platformSkillOperationProofSchema.parse({
+        agentId: 'agent-1',
+        operationId: 'operation-1',
+        proof: 'signed-proof',
+        refs: [],
+        revision: 'catalog-empty',
+      }).refs,
+    ).toEqual([]);
+  });
+
   it('keeps identity draft edits separate from immutable versions', () => {
     expect(
       adminSkillUpdateDraftInputSchema.parse({

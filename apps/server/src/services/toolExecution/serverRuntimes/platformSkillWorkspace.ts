@@ -31,6 +31,7 @@ export class ManagedSkillServerRuntimeService implements SkillRuntimeService {
   constructor(
     private readonly options: {
       activeDeviceId?: string;
+      agentId?: string;
       executionTimeoutMs?: number;
       operationId?: string;
       serverDB: LobeChatDatabase;
@@ -40,6 +41,14 @@ export class ManagedSkillServerRuntimeService implements SkillRuntimeService {
       workspaceId?: string;
     },
   ) {
+    if (
+      !options.agentId ||
+      options.snapshot.agentId !== options.agentId ||
+      !options.operationId ||
+      options.snapshot.operationId !== options.operationId
+    ) {
+      throw new Error('Managed Skill operation context does not match its signed snapshot');
+    }
     this.catalog = new SkillCatalogReadService(options.serverDB, {
       builtinSkills: getBuiltinSkillDefinitions(),
     });

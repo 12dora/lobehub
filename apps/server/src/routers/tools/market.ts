@@ -16,7 +16,10 @@ import { type ToolCallContent } from '@/libs/mcp';
 import { authedProcedure, router } from '@/libs/trpc/lambda';
 import { marketUserInfo, serverDatabase, telemetry } from '@/libs/trpc/lambda/middleware';
 import { marketSDK, requireMarketAuth } from '@/libs/trpc/lambda/middleware/marketSDK';
-import { validatePlatformSkillOperationProof } from '@/libs/trpc/utils/internalJwt';
+import {
+  hashPlatformSkillOperationRefs,
+  verifyPlatformSkillOperationProof,
+} from '@/libs/trpc/utils/internalJwt';
 import { isTrustedClientEnabled } from '@/libs/trusted-client';
 import { parseEnterpriseFeatureFlags } from '@/server/enterprise/featureFlags';
 import { resolveManagedSkillRuntimeMode } from '@/server/enterprise/services/managedResourceCapabilities';
@@ -135,6 +138,8 @@ const metaSchema = z
 
 // Schema for sandbox tool execution request
 const execInSandboxSchema = z.object({
+  agentId: z.string().min(1).max(256).optional(),
+  operationId: z.string().min(1).max(256).optional(),
   params: z.record(z.any()),
   toolName: z.string(),
   topicId: z.string(),
@@ -260,16 +265,20 @@ const execInSandboxHandler = async ({
     if (toolName === 'execScript' && enhancedParams.activatedSkills?.length) {
       const flags = parseEnterpriseFeatureFlags(process.env);
       const snapshot = platformSkillSnapshotSchema.safeParse(enhancedParams.platformSkillSnapshot);
+      const proofClaims = snapshot.success
+        ? await verifyPlatformSkillOperationProof(snapshot.data.proof, ctx.userId)
+        : undefined;
       const authorizedSnapshot =
         snapshot.success &&
+        proofClaims !== undefined &&
+        input.agentId === proofClaims.agentId &&
+        input.operationId === proofClaims.operationId &&
+        snapshot.data.agentId === proofClaims.agentId &&
+        snapshot.data.operationId === proofClaims.operationId &&
+        snapshot.data.revision === proofClaims.revision &&
+        hashPlatformSkillOperationRefs(snapshot.data.refs) === proofClaims.refsHash &&
         snapshot.data.operationId === enhancedParams.operationId &&
-        (await validatePlatformSkillOperationProof(snapshot.data.proof, {
-          agentId: snapshot.data.agentId,
-          operationId: snapshot.data.operationId,
-          refs: snapshot.data.refs,
-          revision: snapshot.data.revision,
-          userId: ctx.userId,
-        }));
+        enhancedParams.operationId === input.operationId;
 
       // Resolve zipUrls for all activated skills
       const skillZipUrls: Record<string, string> = {};

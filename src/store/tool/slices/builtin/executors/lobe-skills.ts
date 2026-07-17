@@ -54,7 +54,7 @@ const createRuntime = (ctx: BuiltinToolContext) =>
                 : undefined,
               operationId: ctx.operationId,
             },
-            { topicId },
+            { agentId: ctx.agentId, operationId: ctx.operationId, topicId },
           );
 
           if (!result.success) {
