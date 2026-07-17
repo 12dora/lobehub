@@ -49,6 +49,16 @@ type ManagedConnectorToolWrite = Omit<
   | 'legacyPermissionPolicy'
 >;
 
+type ManagedConnectorSecretColumns = Pick<
+  ManagedConnectorCreate,
+  | 'oauthClientSecretFingerprint'
+  | 'oauthClientSecretRef'
+  | 'oauthClientSecretUpdatedAt'
+  | 'sharedSecretFingerprint'
+  | 'sharedSecretRef'
+  | 'sharedSecretUpdatedAt'
+>;
+
 const boundedLimit = (limit?: number): number =>
   Math.max(1, Math.min(limit ?? DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE));
 
@@ -164,6 +174,26 @@ export class PlatformConnectorCatalogRepository {
         legacySourceType: 'custom',
         migrationRequired: false,
       })
+      .returning();
+    return row;
+  };
+
+  initializeConnectorDraftSecrets = async (
+    connectorId: string,
+    values: ManagedConnectorSecretColumns,
+  ): Promise<PlatformConnectorItem | undefined> => {
+    const [row] = await this.db
+      .update(platformConnectors)
+      .set(values)
+      .where(
+        and(
+          eq(platformConnectors.id, connectorId),
+          eq(platformConnectors.revision, 0),
+          eq(platformConnectors.status, 'draft'),
+          isNull(platformConnectors.oauthClientSecretRef),
+          isNull(platformConnectors.sharedSecretRef),
+        ),
+      )
       .returning();
     return row;
   };
