@@ -6,5 +6,6 @@ export * from './readService';
 export * from './runtimeAdapter';
 export * from './runtimeReadiness';
 export * from './runtimeSnapshot';
+export * from './sandboxWorkspaceLifecycle';
 export * from './validationService';
 export * from './validator';

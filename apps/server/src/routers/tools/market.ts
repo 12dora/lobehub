@@ -1,5 +1,3 @@
-import { createHash, randomUUID } from 'node:crypto';
-
 import { MARKET_AUTH_REQUIRED_MESSAGE } from '@lobechat/desktop-bridge';
 import {
   MAX_INLINE_SKILL_FILES,
@@ -23,8 +21,11 @@ import { isTrustedClientEnabled } from '@/libs/trusted-client';
 import { parseEnterpriseFeatureFlags } from '@/server/enterprise/featureFlags';
 import { resolveManagedSkillRuntimeMode } from '@/server/enterprise/services/managedResourceCapabilities';
 import {
+  cleanupSandboxSkillWorkspace,
+  createSandboxSkillWorkspaceRoot,
   getBuiltinSkillDefinitions,
   SkillCatalogReadService,
+  sweepExpiredSandboxSkillWorkspaces,
 } from '@/server/enterprise/services/skillCatalog';
 import { DiscoverService } from '@/server/services/discover';
 import { FileService } from '@/server/services/file';
@@ -377,12 +378,9 @@ const execInSandboxHandler = async ({
 
     let response: CallToolResult;
     if (managedInlineSkills) {
-      const operationHash = createHash('sha256')
-        .update(String(params.operationId))
-        .digest('hex')
-        .slice(0, 24);
-      const root = `/tmp/lobe-managed-skills/${operationHash}-${randomUUID()}`;
+      const { auditId, root } = createSandboxSkillWorkspaceRoot(String(params.operationId));
       try {
+        await sweepExpiredSandboxSkillWorkspaces(sandboxService);
         const init = await sandboxService.callTool('runCommand', {
           command: `umask 077 && mkdir -p ${shellQuote(root)} && chmod 700 ${shellQuote(root)}`,
         });
@@ -411,9 +409,7 @@ const execInSandboxHandler = async ({
           command: `cd ${shellQuote(runDir!)} && ${String(enhancedParams.command ?? '')}`,
         });
       } finally {
-        await sandboxService
-          .callTool('runCommand', { command: `rm -rf ${shellQuote(root)}` })
-          .catch(() => undefined);
+        await cleanupSandboxSkillWorkspace({ auditId, root, sandbox: sandboxService });
       }
     } else {
       response = await sandboxService.callTool(toolName, enhancedParams);
