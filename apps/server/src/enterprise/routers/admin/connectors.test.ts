@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { WORKSPACE_SYSTEM_ROLES } from '@lobechat/const/rbac';
 import { inArray, sql } from 'drizzle-orm';
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { PLATFORM_SYSTEM_ROLES } from '@/const/platform/roles';
@@ -23,10 +23,7 @@ import { seedWorkspaceRoles } from '@/database/utils/seedWorkspaceRoles';
 import { createCallerFactory } from '@/libs/trpc/lambda';
 import { createContextInner } from '@/libs/trpc/lambda/context';
 
-import {
-  cleanupM09ServiceData,
-  ensurePendingM09ServiceSchema,
-} from '../../services/connectorCatalog/catalogTestUtils';
+import { cleanupM09ServiceData } from '../../services/connectorCatalog/catalogTestUtils';
 import { adminRouter } from '../admin';
 import {
   assertAdminConnectorRuntimeDependency,
@@ -79,8 +76,6 @@ const grantPermissions = async (userId: string, name: string, codes: string[]) =
     .values(rows.map(({ id }) => ({ permissionId: id, roleId: role.id })));
   await db.insert(userRoles).values({ roleId: role.id, userId, workspaceId: null });
 };
-
-beforeAll(() => ensurePendingM09ServiceSchema(db));
 
 beforeEach(async () => {
   vi.unstubAllEnvs();
