@@ -161,6 +161,18 @@ const ConnectorListView = memo<ConnectorListViewProps>(
               )}
               onChange={(value) => onFilterChange('credentialMode', value as string | undefined)}
             />
+            <Select
+              allowClear
+              aria-label={t('connectorCatalog.filters.enabled')}
+              placeholder={t('connectorCatalog.filters.enabled')}
+              style={{ minWidth: 140 }}
+              value={filters.enabled === undefined ? undefined : String(filters.enabled)}
+              options={(['true', 'false'] as const).map((value) => ({
+                label: t(`connectorCatalog.boolean.${value}` as never),
+                value,
+              }))}
+              onChange={(value) => onFilterChange('enabled', value as string | undefined)}
+            />
           </Flexbox>
         }
       >

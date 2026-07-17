@@ -36,6 +36,12 @@ const SkillListPage = lazy(() => import('@/enterprise/client/features/admin/skil
 const SkillDetailPage = lazy(
   () => import('@/enterprise/client/features/admin/skills/SkillDetailPage'),
 );
+const ConnectorListPage = lazy(
+  () => import('@/enterprise/client/features/admin/connectors/ConnectorListPage'),
+);
+const ConnectorDetailPage = lazy(
+  () => import('@/enterprise/client/features/admin/connectors/ConnectorDetailPage'),
+);
 
 /** Honest localized loading surface for lazy admin pages (no blank frame). */
 const AdminLazyFallback = () => {
@@ -81,6 +87,12 @@ const resolveAdminLeafElement = (id: string): ReactNode => {
     }
     case 'skills-detail': {
       return withLazy(<SkillDetailPage />);
+    }
+    case 'connectors': {
+      return withLazy(<ConnectorListPage />);
+    }
+    case 'connectors-detail': {
+      return withLazy(<ConnectorDetailPage />);
     }
     default: {
       return <PlaceholderPage />;

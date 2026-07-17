@@ -2,11 +2,14 @@ import { describe, expect, it } from 'vitest';
 
 import type { EditableAdminConnectorDraft } from './controller';
 import {
+  buildConnectorUpdatePayload,
   deriveAdminConnectorPermissions,
   resolveAdminConnectorPrimaryAction,
   updateConnectorToolPolicy,
+  validateConnectorRollbackTarget,
   validateEditableAdminConnectorDraft,
 } from './controller';
+import type { AdminConnectorGetOutput } from './types';
 
 const draft = (): EditableAdminConnectorDraft => ({
   credentialMode: 'none',
@@ -100,5 +103,54 @@ describe('admin Connector controller', () => {
     expect(updateConnectorToolPolicy(tools, 'tool-1', { platformPolicy: 'deny' })[0]).toMatchObject(
       { enabled: true, platformPolicy: 'deny' },
     );
+  });
+
+  it('builds an optimistic concurrency payload without persisting a secret', () => {
+    const value = draft();
+    value.credentialMode = 'shared_service_account';
+    const snapshot = {
+      baseRevision: 7,
+      draft: {
+        connectionTest: null,
+        credentialMode: 'shared_service_account',
+        description: null,
+        displayName: 'Calendar',
+        enabled: true,
+        endpoint: 'https://calendar.example.com/mcp',
+        id: 'connector-1',
+        key: 'calendar',
+        oauthClientSecret: { configured: false, fingerprint: null, updatedAt: null },
+        oauthConfig: null,
+        revision: 7,
+        sharedSecret: { configured: true, fingerprint: 'sha256:x', updatedAt: null },
+        sort: 0,
+        status: 'draft',
+        tools: [],
+        transport: 'http',
+      },
+      draftToken: 'a'.repeat(64),
+      published: null,
+    } satisfies AdminConnectorGetOutput;
+    expect(
+      buildConnectorUpdatePayload({
+        draft: value,
+        reason: 'rotate credential',
+        secretValue: 'private-token',
+        snapshot,
+      }),
+    ).toMatchObject({
+      expectedDraftToken: 'a'.repeat(64),
+      expectedRevision: 7,
+      id: 'connector-1',
+      sharedSecret: { operation: 'replace', value: { bearerToken: 'private-token' } },
+    });
+  });
+
+  it('accepts only a positive rollback revision different from the published head', () => {
+    expect(validateConnectorRollbackTarget(null, 7)).toBe('positiveInteger');
+    expect(validateConnectorRollbackTarget(1.5, 7)).toBe('positiveInteger');
+    expect(validateConnectorRollbackTarget(0, 7)).toBe('positiveInteger');
+    expect(validateConnectorRollbackTarget(7, 7)).toBe('currentRevision');
+    expect(validateConnectorRollbackTarget(3, 7)).toBeNull();
   });
 });

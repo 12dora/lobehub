@@ -13,10 +13,7 @@ import {
 } from './swrKeys';
 import type { AdminConnectorCatalogClient, AdminConnectorListInput } from './types';
 
-/**
- * Contract-first hook. PR-046 injects a Mock client until the server mounts admin.connectors;
- * production wiring must pass the real typed lambdaClient adapter later.
- */
+/** Production uses the real typed lambda adapter; tests may inject an explicit contract client. */
 export const useFetchAdminConnectors = (
   input: AdminConnectorListInput,
   enabled: boolean,
