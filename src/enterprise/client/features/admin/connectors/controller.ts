@@ -14,6 +14,7 @@ export interface AdminConnectorPermissions {
   canDiscover: boolean;
   canPublish: boolean;
   canRead: boolean;
+  canReadAudit: boolean;
   canRevokeBindings: boolean;
   canTest: boolean;
   canUpdate: boolean;
@@ -30,6 +31,7 @@ export const deriveAdminConnectorPermissions = (
     canDiscover: granted.has(PLATFORM_PERMISSIONS.CONNECTOR_TEST),
     canPublish: granted.has(PLATFORM_PERMISSIONS.CONNECTOR_PUBLISH),
     canRead: granted.has(PLATFORM_PERMISSIONS.CONNECTOR_READ),
+    canReadAudit: granted.has(PLATFORM_PERMISSIONS.AUDIT_READ),
     canRevokeBindings: granted.has(PLATFORM_PERMISSIONS.CONNECTOR_DELETE),
     canTest: granted.has(PLATFORM_PERMISSIONS.CONNECTOR_TEST),
     canUpdate: granted.has(PLATFORM_PERMISSIONS.CONNECTOR_UPDATE),
