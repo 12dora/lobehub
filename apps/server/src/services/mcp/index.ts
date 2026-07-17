@@ -20,6 +20,7 @@ import {
   type StdioMCPParams,
 } from '@/libs/mcp';
 import { MCPClient } from '@/libs/mcp';
+import { SafeOutboundHttpClient } from '@/server/enterprise/security/outboundHttp';
 
 import { type ProcessContentBlocksFn } from './contentProcessor';
 import { contentBlocksToString } from './contentProcessor';
@@ -53,6 +54,8 @@ export interface MCPToolCallProcessedResult {
 export class MCPService {
   // Store instances of the custom MCPClient, keyed by serialized MCPClientParams
   private clients: Map<string, MCPClient> = new Map();
+
+  constructor(private readonly options: { httpFetch?: typeof fetch } = {}) {}
 
   /**
    * Process MCP tool call result with content blocks processing
@@ -290,7 +293,7 @@ export class MCPService {
 
     log(`No cached client found, Initializing new client.`);
     try {
-      const client = new MCPClient(params);
+      const client = new MCPClient(params, { httpFetch: this.options.httpFetch });
       await client.initialize({
         onProgress: (progress) => {
           log(`New client initializing... ${progress.progress}/${progress.total}`);
@@ -497,4 +500,21 @@ export class MCPService {
 }
 
 // Export a singleton instance
-export const mcpService = new MCPService();
+const safeOutbound = new SafeOutboundHttpClient();
+const safeMcpFetch: typeof fetch = async (input, init) => {
+  const request = input instanceof Request ? input : undefined;
+  const headers = Object.fromEntries(new Headers(init?.headers ?? request?.headers).entries());
+  const response = await safeOutbound.fetch(request?.url ?? input.toString(), {
+    body: init?.body as string | Uint8Array | undefined,
+    headers,
+    method: init?.method ?? request?.method,
+    secretBearing: headers.Authorization !== undefined || init?.body !== undefined,
+  });
+  return new Response(Uint8Array.from(response.body).buffer, {
+    headers: response.headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
+};
+
+export const mcpService = new MCPService({ httpFetch: safeMcpFetch });

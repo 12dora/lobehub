@@ -159,7 +159,10 @@ export class MCPClient {
   private transport: Transport;
   private params: MCPClientParams;
 
-  constructor(params: MCPClientParams) {
+  constructor(
+    params: MCPClientParams,
+    private readonly options: { httpFetch?: typeof fetch } = {},
+  ) {
     this.params = params;
     this.mcp = new Client({ name: 'lobehub-mcp-client', version: '1.0.0' });
 
@@ -197,6 +200,7 @@ export class MCPClient {
 
         // Create StreamableHTTPClientTransport and pass headers
         this.transport = new StreamableHTTPClientTransport(new URL(params.url), {
+          fetch: this.options.httpFetch,
           requestInit: { headers },
         });
 
