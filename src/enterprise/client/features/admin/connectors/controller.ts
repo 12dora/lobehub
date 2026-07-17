@@ -4,6 +4,7 @@ import type {
   AdminConnectorDraft,
   AdminConnectorGetOutput,
   AdminConnectorToolDraft,
+  AdminConnectorUpdateDraftInput,
   ConnectorCredentialMode,
 } from './types';
 
@@ -169,6 +170,19 @@ export const isPersistedConnectorTestCurrent = (snapshot: AdminConnectorGetOutpu
   );
 };
 
+export type ConnectorRollbackTargetError = 'currentRevision' | 'positiveInteger' | null;
+
+export const validateConnectorRollbackTarget = (
+  targetRevision: number | null,
+  currentRevision: number,
+): ConnectorRollbackTargetError => {
+  if (targetRevision === null || !Number.isInteger(targetRevision) || targetRevision <= 0) {
+    return 'positiveInteger';
+  }
+  if (targetRevision === currentRevision) return 'currentRevision';
+  return null;
+};
+
 export const updateConnectorToolPolicy = (
   tools: AdminConnectorToolDraft[],
   toolId: string,
@@ -180,3 +194,49 @@ export const updateConnectorToolPolicy = (
   >,
 ): AdminConnectorToolDraft[] =>
   tools.map((tool) => (tool.id === toolId ? { ...tool, ...patch } : tool));
+
+export const buildConnectorUpdatePayload = (params: {
+  draft: EditableAdminConnectorDraft;
+  reason: string;
+  secretValue: string;
+  snapshot: AdminConnectorGetOutput;
+}): AdminConnectorUpdateDraftInput => {
+  const common = {
+    credentialMode: params.draft.credentialMode,
+    description: params.draft.description.trim() || null,
+    displayName: params.draft.displayName.trim(),
+    enabled: params.draft.enabled,
+    endpoint: params.draft.endpoint.trim(),
+    expectedDraftToken: params.snapshot.draftToken,
+    expectedRevision: params.snapshot.baseRevision,
+    id: params.snapshot.draft.id,
+    reason: params.reason,
+    sort: params.draft.sort,
+    tools: params.draft.tools,
+  };
+  if (params.draft.credentialMode === 'per_user_oauth') {
+    return {
+      ...common,
+      oauthClientSecret: params.secretValue
+        ? { operation: 'replace', value: params.secretValue }
+        : { operation: 'keep' },
+      oauthConfig: {
+        authorizationEndpoint: params.draft.oauthAuthorizationEndpoint.trim(),
+        clientId: params.draft.oauthClientId.trim(),
+        issuer: params.draft.oauthIssuer.trim(),
+        scopes: params.draft.oauthScopes.split(/\s+/).filter(Boolean),
+        tokenEndpoint: params.draft.oauthTokenEndpoint.trim(),
+      },
+    };
+  }
+  if (params.draft.credentialMode === 'shared_service_account') {
+    return {
+      ...common,
+      oauthConfig: null,
+      sharedSecret: params.secretValue
+        ? { operation: 'replace', value: { bearerToken: params.secretValue } }
+        : { operation: 'keep' },
+    };
+  }
+  return { ...common, oauthConfig: null };
+};

@@ -50,11 +50,13 @@ interface ConnectorDetailViewProps {
     key: Key,
     value: EditableAdminConnectorDraft[Key],
   ) => void;
+  onDeleteDraft: () => void;
   onDiscardConflict: () => void;
   onDiscover: () => void;
   onPrimaryAction: (action: AdminConnectorPrimaryAction) => void;
   onRefreshConflict: () => void;
   onRevokeBindings: () => void;
+  onRollback: () => void;
   onSecretChange: (secret: string) => void;
   onToolChange: (
     toolId: string,
@@ -82,10 +84,12 @@ const ConnectorDetailView = memo<ConnectorDetailViewProps>(
     onArchive,
     onChange,
     onDiscover,
+    onDeleteDraft,
     onDiscardConflict,
     onPrimaryAction,
     onRefreshConflict,
     onRevokeBindings,
+    onRollback,
     onSecretChange,
     onToolChange,
     permissions,
@@ -120,9 +124,24 @@ const ConnectorDetailView = memo<ConnectorDetailViewProps>(
                 {t('connectorCatalog.actions.revokeBindings')}
               </Button>
             ) : null}
+            {permissions.canPublish && snapshot.published ? (
+              <Button
+                danger
+                disabled={conflict || Boolean(busyAction)}
+                loading={busyAction === 'rollback'}
+                onClick={onRollback}
+              >
+                {t('connectorCatalog.actions.rollback')}
+              </Button>
+            ) : null}
             {permissions.canArchive && snapshot.published ? (
               <Button danger disabled={conflict || Boolean(busyAction)} onClick={onArchive}>
                 {t('connectorCatalog.actions.archive')}
+              </Button>
+            ) : null}
+            {permissions.canDelete && !snapshot.published ? (
+              <Button danger disabled={conflict || Boolean(busyAction)} onClick={onDeleteDraft}>
+                {t('connectorCatalog.actions.deleteDraft')}
               </Button>
             ) : null}
           </Flexbox>

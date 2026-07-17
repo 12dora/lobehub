@@ -119,6 +119,7 @@ const renderGate = (initialPath = '/admin') =>
           <Route index element={<BusinessChild />} />
           <Route element={<BusinessChild />} path="users" />
           <Route element={<BusinessChild />} path="ai/providers/:id" />
+          <Route element={<BusinessChild />} path="connectors/:id" />
         </Route>
       </Routes>
     </MemoryRouter>,
@@ -218,7 +219,7 @@ describe('AdminPermissionOutlet permissions', () => {
     childBusinessFetch.mockClear();
   });
 
-  it('read-only provider list vs edit detail 403', async () => {
+  it('provider reader reaches the read-only detail route', async () => {
     fetchAccess.mockResolvedValue({
       hasAdminAccess: true,
       permissions: [PLATFORM_PERMISSIONS.ADMIN_ACCESS, PLATFORM_PERMISSIONS.AI_PROVIDER_READ],
@@ -238,12 +239,11 @@ describe('AdminPermissionOutlet permissions', () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByText('page.forbidden.title')).toBeTruthy();
+      expect(screen.getByTestId('business-child')).toBeTruthy();
     });
-    expect(childBusinessFetch).not.toHaveBeenCalled();
   });
 
-  it('UPDATE principal reaches provider detail placeholder', async () => {
+  it('provider UPDATE without READ is forbidden before business data mounts', async () => {
     fetchAccess.mockResolvedValue({
       hasAdminAccess: true,
       permissions: [PLATFORM_PERMISSIONS.ADMIN_ACCESS, PLATFORM_PERMISSIONS.AI_PROVIDER_UPDATE],
@@ -263,8 +263,9 @@ describe('AdminPermissionOutlet permissions', () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByTestId('business-child')).toBeTruthy();
+      expect(screen.getByText('page.forbidden.title')).toBeTruthy();
     });
+    expect(childBusinessFetch).not.toHaveBeenCalled();
   });
 
   it('unknown nested path shows admin 404 without child fetch', async () => {
@@ -290,5 +291,54 @@ describe('AdminPermissionOutlet permissions', () => {
       expect(screen.getByText('notFound.title')).toBeTruthy();
     });
     expect(childBusinessFetch).not.toHaveBeenCalled();
+  });
+
+  it('connector detail without READ is forbidden before business data mounts', async () => {
+    fetchAccess.mockResolvedValue({
+      hasAdminAccess: true,
+      permissions: [PLATFORM_PERMISSIONS.ADMIN_ACCESS],
+      roles: [],
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/admin/connectors/c1']}>
+        <AdminAccessProvider fetchAccess={fetchAccess}>
+          <Routes>
+            <Route element={<AdminPermissionOutlet />} path="/admin">
+              <Route element={<BusinessChild />} path="connectors/:id" />
+            </Route>
+          </Routes>
+        </AdminAccessProvider>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('page.forbidden.title')).toBeTruthy();
+    });
+    expect(childBusinessFetch).not.toHaveBeenCalled();
+  });
+
+  it('connector auditor with READ reaches the read-only detail route', async () => {
+    fetchAccess.mockResolvedValue({
+      hasAdminAccess: true,
+      permissions: [PLATFORM_PERMISSIONS.ADMIN_ACCESS, PLATFORM_PERMISSIONS.CONNECTOR_READ],
+      roles: [{ displayName: 'Auditor', name: 'auditor' }],
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/admin/connectors/c1']}>
+        <AdminAccessProvider fetchAccess={fetchAccess}>
+          <Routes>
+            <Route element={<AdminPermissionOutlet />} path="/admin">
+              <Route element={<BusinessChild />} path="connectors/:id" />
+            </Route>
+          </Routes>
+        </AdminAccessProvider>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('business-child')).toBeTruthy();
+    });
   });
 });

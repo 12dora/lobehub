@@ -297,6 +297,7 @@ export default {
   'nav.audit': 'Audit',
   'nav.branding': 'Branding',
   'nav.connectors': 'Connectors',
+  'nav.connectorDetail': 'Connector detail',
   'nav.identity': 'Identity providers',
   'nav.managedResources': 'Managed resources',
   'nav.overview': 'Overview',
@@ -860,10 +861,12 @@ export default {
   // M09 platform Connector catalog
   'connectorCatalog.actions.archive': 'Archive Connector',
   'connectorCatalog.actions.create': 'Create Connector',
+  'connectorCatalog.actions.deleteDraft': 'Delete draft',
   'connectorCatalog.actions.discover': 'Discover tools',
   'connectorCatalog.actions.publish': 'Publish Connector',
   'connectorCatalog.actions.retrySave': 'Retry save',
   'connectorCatalog.actions.revokeBindings': 'Revoke all user bindings',
+  'connectorCatalog.actions.rollback': 'Roll back revision',
   'connectorCatalog.actions.save': 'Save draft',
   'connectorCatalog.actions.test': 'Test connection',
   'connectorCatalog.audit.empty': 'No audit events for this Connector.',
@@ -883,6 +886,13 @@ export default {
   'connectorCatalog.credentialMode.none': 'No credentials',
   'connectorCatalog.credentialMode.per_user_oauth': 'Per-user OAuth',
   'connectorCatalog.credentialMode.shared_service_account': 'Shared service account',
+  'connectorCatalog.create.description':
+    'Create the Connector identity and credential mode. Discover tools and test from the detail page before publishing.',
+  'connectorCatalog.create.key': 'Connector key',
+  'connectorCatalog.create.reason': 'Creation reason',
+  'connectorCatalog.create.required': 'Complete all required fields with valid HTTP(S) URLs.',
+  'connectorCatalog.create.secret': 'Initial write-only credential',
+  'connectorCatalog.create.title': 'Create Connector draft',
   'connectorCatalog.detail.description':
     'Edit the draft, validate network and Tool policy, test, then publish an immutable revision.',
   'connectorCatalog.editor.authorizationEndpoint': 'Authorization endpoint',
@@ -904,6 +914,7 @@ export default {
   'connectorCatalog.editor.sort': 'Sort order',
   'connectorCatalog.editor.tokenEndpoint': 'Token endpoint',
   'connectorCatalog.filters.credentialMode': 'Credential mode',
+  'connectorCatalog.filters.enabled': 'Availability',
   'connectorCatalog.filters.query': 'Search Connectors',
   'connectorCatalog.filters.status': 'Status',
   'connectorCatalog.list.columns.connector': 'Connector',
@@ -916,6 +927,37 @@ export default {
   'connectorCatalog.list.empty.default': 'No platform Connectors have been created yet.',
   'connectorCatalog.list.empty.filtered': 'No Connectors match these filters.',
   'connectorCatalog.list.title': 'Platform Connectors',
+  'connectorCatalog.errors.generic': 'The Connector action failed. Check the form and try again.',
+  'connectorCatalog.mutations.archive.description':
+    'Archive the published Connector so it is no longer available for new use.',
+  'connectorCatalog.mutations.archive.title': 'Archive Connector',
+  'connectorCatalog.mutations.delete.description':
+    'Permanently delete this unpublished draft. Published Connectors must be archived instead.',
+  'connectorCatalog.mutations.delete.title': 'Delete Connector draft',
+  'connectorCatalog.mutations.discover.description':
+    'Connect to the endpoint and replace the draft Tool inventory with the discovered definitions.',
+  'connectorCatalog.mutations.discover.title': 'Discover Connector tools',
+  'connectorCatalog.mutations.publish.description':
+    'Publish the tested draft as the managed Connector revision available to users.',
+  'connectorCatalog.mutations.publish.title': 'Publish Connector',
+  'connectorCatalog.mutations.revoke.description':
+    'Revoke every user OAuth binding for the current published revision. Users must authorize again.',
+  'connectorCatalog.mutations.revoke.title': 'Revoke all Connector bindings',
+  'connectorCatalog.mutations.rollback.current': 'Current published revision: #{{revision}}',
+  'connectorCatalog.mutations.rollback.description':
+    'Restore a previous published revision as a new auditable Connector revision.',
+  'connectorCatalog.mutations.rollback.target': 'Target revision',
+  'connectorCatalog.mutations.rollback.title': 'Roll back Connector',
+  'connectorCatalog.mutations.rollback.validation.currentRevision':
+    'Choose a revision other than the current published revision.',
+  'connectorCatalog.mutations.rollback.validation.positiveInteger':
+    'Enter a positive whole-number revision.',
+  'connectorCatalog.mutations.save.description':
+    'Save the public draft and any explicit write-only credential replacement.',
+  'connectorCatalog.mutations.save.title': 'Save Connector draft',
+  'connectorCatalog.mutations.test.description':
+    'Run a server-side connection test against the current persisted draft.',
+  'connectorCatalog.mutations.test.title': 'Test Connector connection',
   'connectorCatalog.readOnly':
     'You have read-only access. Draft fields, credentials, and lifecycle actions are disabled.',
   'connectorCatalog.risk.critical': 'Critical',
@@ -937,6 +979,20 @@ export default {
   'connectorCatalog.tools.policy.allow': 'Allow',
   'connectorCatalog.tools.policy.deny': 'Deny',
   'connectorCatalog.tools.title': 'Tool policy',
+  'connectorCatalog.toast.archived': 'Connector archived.',
+  'connectorCatalog.toast.created': 'Connector draft created.',
+  'connectorCatalog.toast.deleted': 'Connector draft deleted.',
+  'connectorCatalog.toast.discovered': 'Connector tools discovered.',
+  'connectorCatalog.toast.published': 'Connector revision published.',
+  'connectorCatalog.toast.revoked': 'Connector user bindings revoked.',
+  'connectorCatalog.toast.rolledBack': 'Connector revision rolled back.',
+  'connectorCatalog.toast.saved': 'Connector draft saved.',
+  'connectorCatalog.toast.tested': 'Connector connection test completed.',
+  'connectorCatalog.unsaved.description':
+    'You have unsaved public Connector changes. Secret values are never stored in recovery drafts.',
+  'connectorCatalog.unsaved.leave': 'Leave without saving',
+  'connectorCatalog.unsaved.stay': 'Keep editing',
+  'connectorCatalog.unsaved.title': 'Unsaved Connector changes',
   'connectorCatalog.validation.httpUrl': 'Enter an HTTP(S) URL without embedded credentials.',
   'connectorCatalog.validation.required': 'This field is required.',
 };
