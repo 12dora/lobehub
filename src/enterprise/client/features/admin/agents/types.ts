@@ -1,117 +1,181 @@
-import type {
-  PlatformAgentAssignment,
-  PlatformAgentDependencySnapshot,
-  PlatformAgentIdentityDraft,
-  PlatformAgentImmutableVersion,
-  PlatformAgentRolloutProjection,
-  PlatformAgentVersionConfig,
-} from '@lobechat/types';
+import type { PlatformAgentDependencySnapshot, PlatformAgentVersionConfig } from '@lobechat/types';
 
 import type {
   AdminPlatformAgentAppendVersionInput,
-  AdminPlatformAgentAssignmentCreateInput,
+  AdminPlatformAgentAppendVersionOutput,
+  AdminPlatformAgentArchiveInput,
+  AdminPlatformAgentArchiveOutput,
+  AdminPlatformAgentAssignmentListInput,
+  AdminPlatformAgentAssignmentListOutput,
+  AdminPlatformAgentAssignmentPreviewInput,
+  AdminPlatformAgentAssignmentPreviewOutput,
+  AdminPlatformAgentAssignmentRemoveInput,
+  AdminPlatformAgentAssignmentRemoveOutput,
+  AdminPlatformAgentAssignmentUpsertInput,
+  AdminPlatformAgentAssignmentUpsertOutput,
   AdminPlatformAgentCreateInput,
+  AdminPlatformAgentCreateOutput,
+  AdminPlatformAgentDependentsInput,
+  AdminPlatformAgentDependentsOutput,
+  AdminPlatformAgentGetInput,
+  AdminPlatformAgentGetOutput,
+  AdminPlatformAgentListInput,
+  AdminPlatformAgentListOutput,
+  AdminPlatformAgentPublishInput,
+  AdminPlatformAgentPublishOutput,
+  AdminPlatformAgentRollbackInput,
+  AdminPlatformAgentRollbackOutput,
+  AdminPlatformAgentRolloutCancelInput,
+  AdminPlatformAgentRolloutCancelOutput,
+  AdminPlatformAgentRolloutGetInput,
+  AdminPlatformAgentRolloutGetOutput,
+  AdminPlatformAgentRolloutListInput,
+  AdminPlatformAgentRolloutListOutput,
+  AdminPlatformAgentRolloutRetryInput,
+  AdminPlatformAgentRolloutRetryOutput,
+  AdminPlatformAgentRolloutRollbackInput,
+  AdminPlatformAgentRolloutRollbackOutput,
+  AdminPlatformAgentRolloutStartInput,
+  AdminPlatformAgentRolloutStartOutput,
+  AdminPlatformAgentSetDefaultInboxInput,
+  AdminPlatformAgentSetDefaultInboxOutput,
+  AdminPlatformAgentUpdateDraftInput,
+  AdminPlatformAgentUpdateDraftOutput,
+  AdminPlatformAgentValidateDependenciesInput,
+  AdminPlatformAgentValidateDependenciesOutput,
+  AdminPlatformAgentVersionsListInput,
+  AdminPlatformAgentVersionsListOutput,
 } from '@/server/enterprise/contracts/platformAgents';
 
 export type {
   AdminPlatformAgentAppendVersionInput,
-  AdminPlatformAgentAssignmentCreateInput,
+  AdminPlatformAgentAppendVersionOutput,
+  AdminPlatformAgentArchiveInput,
+  AdminPlatformAgentArchiveOutput,
+  AdminPlatformAgentAssignmentListInput,
+  AdminPlatformAgentAssignmentListOutput,
+  AdminPlatformAgentAssignmentPreviewInput,
+  AdminPlatformAgentAssignmentPreviewOutput,
+  AdminPlatformAgentAssignmentRemoveInput,
+  AdminPlatformAgentAssignmentRemoveOutput,
+  AdminPlatformAgentAssignmentUpsertInput,
+  AdminPlatformAgentAssignmentUpsertOutput,
   AdminPlatformAgentCreateInput,
+  AdminPlatformAgentCreateOutput,
+  AdminPlatformAgentDependentsInput,
+  AdminPlatformAgentDependentsOutput,
+  AdminPlatformAgentGetInput,
+  AdminPlatformAgentGetOutput,
+  AdminPlatformAgentListInput,
+  AdminPlatformAgentListOutput,
+  AdminPlatformAgentPublishInput,
+  AdminPlatformAgentPublishOutput,
+  AdminPlatformAgentRollbackInput,
+  AdminPlatformAgentRollbackOutput,
+  AdminPlatformAgentRolloutCancelInput,
+  AdminPlatformAgentRolloutCancelOutput,
+  AdminPlatformAgentRolloutGetInput,
+  AdminPlatformAgentRolloutGetOutput,
+  AdminPlatformAgentRolloutListInput,
+  AdminPlatformAgentRolloutListOutput,
+  AdminPlatformAgentRolloutRetryInput,
+  AdminPlatformAgentRolloutRetryOutput,
+  AdminPlatformAgentRolloutRollbackInput,
+  AdminPlatformAgentRolloutRollbackOutput,
+  AdminPlatformAgentRolloutStartInput,
+  AdminPlatformAgentRolloutStartOutput,
+  AdminPlatformAgentSetDefaultInboxInput,
+  AdminPlatformAgentSetDefaultInboxOutput,
+  AdminPlatformAgentUpdateDraftInput,
+  AdminPlatformAgentUpdateDraftOutput,
+  AdminPlatformAgentValidateDependenciesInput,
+  AdminPlatformAgentValidateDependenciesOutput,
+  AdminPlatformAgentVersionsListInput,
+  AdminPlatformAgentVersionsListOutput,
 };
 
-export interface AdminAgentListInput {
-  query?: string;
-  status?: PlatformAgentIdentityDraft['status'];
+export type AdminAgentListInput = AdminPlatformAgentListInput;
+export type AdminAgentListItem = AdminPlatformAgentListOutput['items'][number];
+export type AdminAgentListOutput = AdminPlatformAgentListOutput;
+export type AdminAgentAssignmentPreviewOutput = AdminPlatformAgentAssignmentPreviewOutput;
+
+/** Client-only aggregate assembled from the independently paged endpoint outputs. */
+export interface AdminAgentDetailOutput extends AdminPlatformAgentGetOutput {
+  assignments: AdminPlatformAgentAssignmentListOutput['items'];
+  rollouts: AdminPlatformAgentRolloutListOutput['items'];
+  versions: AdminPlatformAgentVersionsListOutput['items'];
 }
 
-export interface AdminAgentListItem extends PlatformAgentIdentityDraft {
-  assignmentCount: number;
-  displayName: string;
-  publishedVersion: string | null;
-}
-
-export interface AdminAgentListOutput {
-  items: AdminAgentListItem[];
-}
-
-export interface AdminAgentDetailOutput {
-  assignments: PlatformAgentAssignment[];
-  draftToken: string;
-  identity: PlatformAgentIdentityDraft;
-  rollouts: PlatformAgentRolloutProjection[];
-  versions: PlatformAgentImmutableVersion[];
-}
-
-export interface AdminAgentMutationOutput {
-  draftToken: string;
-  identity: PlatformAgentIdentityDraft;
-}
-
-export interface AdminAgentPublishInput {
-  agentId: string;
-  expectedRevision: number;
-  reason: string;
-  versionId: string;
-}
-
-export interface AdminAgentRollbackInput extends AdminAgentPublishInput {}
-
-export interface AdminAgentArchiveInput {
-  agentId: string;
-  expectedRevision: number;
-  reason: string;
-}
-
-export interface AdminAgentAssignmentDeleteInput {
-  agentId: string;
-  assignmentId: string;
-  reason: string;
-}
-
-export interface AdminAgentAssignmentPreviewInput {
-  agentId: string;
-  assignment: Omit<AdminPlatformAgentAssignmentCreateInput, 'agentId' | 'reason'>;
-}
-
-export interface AdminAgentAssignmentPreviewOutput {
-  estimatedUsers: number;
-  warnings: string[];
-}
-
-export interface AdminAgentRolloutInput {
-  agentId: string;
-  assignmentId: string;
-}
-
-export interface AdminAgentRolloutMutationInput extends AdminAgentRolloutInput {
-  jobId: string;
-}
-
+/** Editable client view-model. Transport fields remain derived from the authoritative Zod contract. */
 export interface AdminAgentDraft {
   config: PlatformAgentVersionConfig;
   dependencySnapshot: PlatformAgentDependencySnapshot;
   version: string;
 }
 
-/** UI boundary: production TRPC and deterministic mocks implement the same contract. */
+/**
+ * Capability flags the adapter advertises to the UI. `rollouts` stays `false` on the
+ * production lambda adapter until the PR-052 Rollout service (`admin.agents.rollouts.*`)
+ * lands — the UI reads this to gate/defer every rollout action instead of faking success.
+ */
+export interface AdminAgentsClientCapabilities {
+  rollouts: boolean;
+}
+
 export interface AdminAgentsClient {
-  appendVersion: (input: AdminPlatformAgentAppendVersionInput) => Promise<AdminAgentMutationOutput>;
-  archive: (input: AdminAgentArchiveInput) => Promise<AdminAgentMutationOutput>;
-  cancelRollout: (input: AdminAgentRolloutMutationInput) => Promise<PlatformAgentRolloutProjection>;
-  create: (input: AdminPlatformAgentCreateInput) => Promise<AdminAgentMutationOutput>;
-  createAssignment: (
-    input: AdminPlatformAgentAssignmentCreateInput,
-  ) => Promise<PlatformAgentAssignment>;
-  deleteAssignment: (input: AdminAgentAssignmentDeleteInput) => Promise<void>;
-  get: (input: { id: string }) => Promise<AdminAgentDetailOutput>;
-  list: (input: AdminAgentListInput) => Promise<AdminAgentListOutput>;
+  appendVersion: (
+    input: AdminPlatformAgentAppendVersionInput,
+  ) => Promise<AdminPlatformAgentAppendVersionOutput>;
+  archive: (input: AdminPlatformAgentArchiveInput) => Promise<AdminPlatformAgentArchiveOutput>;
+  cancelRollout: (
+    input: AdminPlatformAgentRolloutCancelInput,
+  ) => Promise<AdminPlatformAgentRolloutCancelOutput>;
+  capabilities: AdminAgentsClientCapabilities;
+  create: (input: AdminPlatformAgentCreateInput) => Promise<AdminPlatformAgentCreateOutput>;
+  get: (input: AdminPlatformAgentGetInput) => Promise<AdminPlatformAgentGetOutput>;
+  getDependents: (
+    input: AdminPlatformAgentDependentsInput,
+  ) => Promise<AdminPlatformAgentDependentsOutput>;
+  getRollout: (
+    input: AdminPlatformAgentRolloutGetInput,
+  ) => Promise<AdminPlatformAgentRolloutGetOutput>;
+  list: (input: AdminPlatformAgentListInput) => Promise<AdminPlatformAgentListOutput>;
+  listAssignments: (
+    input: AdminPlatformAgentAssignmentListInput,
+  ) => Promise<AdminPlatformAgentAssignmentListOutput>;
+  listRollouts: (
+    input: AdminPlatformAgentRolloutListInput,
+  ) => Promise<AdminPlatformAgentRolloutListOutput>;
+  listVersions: (
+    input: AdminPlatformAgentVersionsListInput,
+  ) => Promise<AdminPlatformAgentVersionsListOutput>;
   previewAssignment: (
-    input: AdminAgentAssignmentPreviewInput,
-  ) => Promise<AdminAgentAssignmentPreviewOutput>;
-  publish: (input: AdminAgentPublishInput) => Promise<AdminAgentMutationOutput>;
+    input: AdminPlatformAgentAssignmentPreviewInput,
+  ) => Promise<AdminPlatformAgentAssignmentPreviewOutput>;
+  publish: (input: AdminPlatformAgentPublishInput) => Promise<AdminPlatformAgentPublishOutput>;
+  removeAssignment: (
+    input: AdminPlatformAgentAssignmentRemoveInput,
+  ) => Promise<AdminPlatformAgentAssignmentRemoveOutput>;
   retryRollout: (
-    input: AdminAgentRolloutMutationInput,
-  ) => Promise<PlatformAgentRolloutProjection>;
-  rollback: (input: AdminAgentRollbackInput) => Promise<AdminAgentMutationOutput>;
-  startRollout: (input: AdminAgentRolloutInput) => Promise<PlatformAgentRolloutProjection>;
+    input: AdminPlatformAgentRolloutRetryInput,
+  ) => Promise<AdminPlatformAgentRolloutRetryOutput>;
+  rollback: (input: AdminPlatformAgentRollbackInput) => Promise<AdminPlatformAgentRollbackOutput>;
+  rollbackRollout: (
+    input: AdminPlatformAgentRolloutRollbackInput,
+  ) => Promise<AdminPlatformAgentRolloutRollbackOutput>;
+  setDefaultInbox: (
+    input: AdminPlatformAgentSetDefaultInboxInput,
+  ) => Promise<AdminPlatformAgentSetDefaultInboxOutput>;
+  startRollout: (
+    input: AdminPlatformAgentRolloutStartInput,
+  ) => Promise<AdminPlatformAgentRolloutStartOutput>;
+  updateDraft: (
+    input: AdminPlatformAgentUpdateDraftInput,
+  ) => Promise<AdminPlatformAgentUpdateDraftOutput>;
+  upsertAssignment: (
+    input: AdminPlatformAgentAssignmentUpsertInput,
+  ) => Promise<AdminPlatformAgentAssignmentUpsertOutput>;
+  validateDependencies: (
+    input: AdminPlatformAgentValidateDependenciesInput,
+  ) => Promise<AdminPlatformAgentValidateDependenciesOutput>;
 }
