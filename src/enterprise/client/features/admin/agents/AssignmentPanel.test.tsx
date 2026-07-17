@@ -66,10 +66,14 @@ const snapshot: AdminAgentDetailOutput = {
 
 const permissions = deriveAdminAgentPermissions([PLATFORM_PERMISSIONS.AGENT_ASSIGN]);
 const lock = {
+  abortWrite: vi.fn(),
+  beginWrite: () => true,
+  commitWrite: vi.fn(async () => {}),
   isLocked: () => false,
+  locked: false,
   refreshFailed: false,
+  resolveWrite: vi.fn(),
   retryRefresh: vi.fn(),
-  syncAfterCommit: vi.fn(),
 };
 
 beforeEach(() => {

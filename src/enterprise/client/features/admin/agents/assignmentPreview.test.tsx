@@ -36,10 +36,14 @@ const snapshot = {
 } as unknown as AdminAgentDetailOutput;
 
 const lock: RefreshLock = {
+  abortWrite: vi.fn(),
+  beginWrite: () => true,
+  commitWrite: vi.fn(async () => {}),
   isLocked: () => false,
+  locked: false,
   refreshFailed: false,
+  resolveWrite: vi.fn(),
   retryRefresh: vi.fn(),
-  syncAfterCommit: vi.fn(),
 };
 
 const setup = () => renderHook(() => useAssignmentEditor(snapshot, null, lock));
@@ -113,10 +117,14 @@ describe('assignment write lock (refresh-required)', () => {
   });
 
   const lockedLock: RefreshLock = {
+    abortWrite: vi.fn(),
+    beginWrite: () => false,
+    commitWrite: vi.fn(async () => {}),
     isLocked: () => true,
+    locked: true,
     refreshFailed: true,
+    resolveWrite: vi.fn(),
     retryRefresh: vi.fn(),
-    syncAfterCommit: vi.fn(),
   };
 
   it('does not open a submit modal while the refresh lock is engaged', () => {

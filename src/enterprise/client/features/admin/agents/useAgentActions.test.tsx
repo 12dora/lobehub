@@ -85,17 +85,28 @@ const makeEditor = () =>
     updateDraft: vi.fn(),
   }) as any;
 
-/** Controllable fake lock; `refresh` decides whether syncAfterCommit locks (refresh failed). */
+/** Controllable fake lock; `refresh` decides whether the post-commit refresh locks (refresh failed). */
 const makeLock = (refresh: 'ok' | 'fail'): RefreshLock => {
   let locked = false;
   return {
-    isLocked: () => locked,
-    refreshFailed: false,
-    retryRefresh: vi.fn(async () => {
+    abortWrite: vi.fn(() => {
       locked = false;
     }),
-    syncAfterCommit: vi.fn(async () => {
+    beginWrite: vi.fn(() => {
+      locked = true;
+      return true;
+    }),
+    commitWrite: vi.fn(async () => {
       locked = refresh === 'fail';
+    }),
+    isLocked: () => locked,
+    locked: false,
+    refreshFailed: false,
+    resolveWrite: vi.fn(() => {
+      locked = false;
+    }),
+    retryRefresh: vi.fn(async () => {
+      locked = false;
     }),
   };
 };

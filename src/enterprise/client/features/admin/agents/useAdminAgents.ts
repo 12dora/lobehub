@@ -5,6 +5,7 @@ import useSWRInfinite from 'swr/infinite';
 
 import { adminAgentsService } from '@/enterprise/client/services/adminAgents';
 import { useClientDataSWR } from '@/libs/swr';
+import { adminPlatformAgentDetailAggregateOutputSchema } from '@/server/enterprise/contracts/platformAgents';
 
 import {
   ADMIN_AGENT_GET_KEY,
@@ -56,7 +57,15 @@ export const fetchAdminAgentDetail = async (
     collectPages((cursor) => client.listVersions({ agentId: id, cursor, limit: 100 })),
   ]);
 
-  return { ...detail, assignments, rollouts, versions };
+  // API boundary: validate the assembled aggregate against the authoritative contract schema — the
+  // SAME schema the refresh gate uses to prove freshness. A malformed authoritative response is a
+  // hard error here rather than silently trusted downstream.
+  return adminPlatformAgentDetailAggregateOutputSchema.parse({
+    ...detail,
+    assignments,
+    rollouts,
+    versions,
+  }) as AdminAgentDetailOutput;
 };
 
 export const useFetchAdminAgents = (
