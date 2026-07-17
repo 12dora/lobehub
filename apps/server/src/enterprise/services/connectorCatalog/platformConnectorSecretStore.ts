@@ -8,7 +8,7 @@ import {
   platformConnectorSecrets,
   platformUserConnectorBindings,
 } from '@/database/schemas/platform';
-import type { LobeChatDatabase } from '@/database/type';
+import type { LobeChatDatabase, Transaction } from '@/database/type';
 
 import type { PlatformSecretService } from '../../security/secret';
 import type {
@@ -69,23 +69,28 @@ export class PlatformConnectorSecretStore implements ConnectorCatalogSecretStore
     }
   };
 
-  persistSecret = async (params: {
-    connectorId: string;
-    slot: ConnectorSecretSlot;
-    value: unknown;
-  }): Promise<ConnectorStoredSecret> => {
-    try {
-      await this.garbageCollectOrphanedOAuthSecrets();
-    } catch (error) {
-      console.error('[connectorSecretStore] opportunistic orphan cleanup failed', {
-        errorClass: error instanceof Error ? error.name : 'UnknownError',
-      });
+  persistSecret = async (
+    params: {
+      connectorId: string;
+      slot: ConnectorSecretSlot;
+      value: unknown;
+    },
+    transaction?: Transaction,
+  ): Promise<ConnectorStoredSecret> => {
+    if (!transaction) {
+      try {
+        await this.garbageCollectOrphanedOAuthSecrets();
+      } catch (error) {
+        console.error('[connectorSecretStore] opportunistic orphan cleanup failed', {
+          errorClass: error instanceof Error ? error.name : 'UnknownError',
+        });
+      }
     }
     const serialized = serializeSecret(params.value);
     const fingerprint = fingerprintSecret(serialized);
     const ciphertext = await this.secretService.encrypt(serialized);
     const ref = `kms://platform-connectors/${params.connectorId}/${params.slot}/${randomUUID()}`;
-    const [row] = await this.db
+    const [row] = await (transaction ?? this.db)
       .insert(platformConnectorSecrets)
       .values({
         ciphertext,

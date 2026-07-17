@@ -8,9 +8,12 @@ import { PlatformConnectorCatalogRepository } from '@/database/repositories/plat
 import {
   type NewPlatformConnectorTool,
   type PlatformConnectorItem,
+  platformConnectorOAuthStates,
   platformConnectors,
+  platformConnectorSecrets,
   type PlatformConnectorToolItem,
   platformConnectorTools,
+  platformUserConnectorBindings,
 } from '@/database/schemas/platform';
 import type { LobeChatDatabase, Transaction } from '@/database/type';
 
@@ -260,12 +263,16 @@ export class ConnectorCatalogDraftService {
     configured: boolean,
     mutation: { operation: 'clear' | 'keep' | 'replace'; value?: unknown } | undefined,
     current: ConnectorStoredSecret | null,
+    transaction?: Transaction,
   ): Promise<ConnectorStoredSecret | null> => {
     if (!configured || mutation?.operation === 'clear') return null;
     if (mutation?.operation === 'replace') {
       try {
         return assertStoredSecret(
-          await this.secrets.persistSecret({ connectorId, slot, value: mutation.value }),
+          await this.secrets.persistSecret(
+            { connectorId, slot, value: mutation.value },
+            transaction,
+          ),
         );
       } catch (error) {
         return throwStableConnectorSecretError(error);
@@ -285,6 +292,7 @@ export class ConnectorCatalogDraftService {
       oauthClientSecret?: { operation: 'clear' | 'keep' | 'replace'; value?: unknown };
       sharedSecret?: { operation: 'clear' | 'keep' | 'replace'; value?: unknown };
     },
+    transaction?: Transaction,
   ): Promise<PersistedSecretSlots> => {
     const oauth = await this.persistSlot(
       connectorId,
@@ -292,6 +300,7 @@ export class ConnectorCatalogDraftService {
       draft.oauthClientSecret.configured,
       command.oauthClientSecret,
       currentSlot(connector, 'oauthClientSecret'),
+      transaction,
     );
     const shared = await this.persistSlot(
       connectorId,
@@ -299,6 +308,7 @@ export class ConnectorCatalogDraftService {
       draft.sharedSecret.configured,
       command.sharedSecret,
       currentSlot(connector, 'sharedSecret'),
+      transaction,
     );
     return toSlotColumns(oauth, shared);
   };
@@ -366,16 +376,10 @@ export class ConnectorCatalogDraftService {
             ? normalized.command.sharedSecret
             : undefined,
       };
-      const secretSlots = await this.persistDraftSecrets(
-        connectorId,
-        normalized.draft,
-        undefined,
-        mutations,
-      );
       return await this.db.transaction(async (tx) => {
         const repository = new PlatformConnectorCatalogRepository(tx);
         await repository.createConnector({
-          ...secretSlots,
+          ...toSlotColumns(null, null),
           connectorKey: normalized.draft.key,
           createdBy: actorUserId,
           credentialMode: normalized.draft.credentialMode,
@@ -390,6 +394,18 @@ export class ConnectorCatalogDraftService {
           transport: 'http',
           updatedBy: actorUserId,
         });
+        const secretSlots = await this.persistDraftSecrets(
+          connectorId,
+          normalized.draft,
+          undefined,
+          mutations,
+          tx,
+        );
+        const initialized = await repository.initializeConnectorDraftSecrets(
+          connectorId,
+          secretSlots,
+        );
+        if (!initialized) throw new PlatformRevisionConflictError();
         await repository.replaceTools(
           connectorId,
           connectorToolInsertValues(normalized.draft.tools),
@@ -589,8 +605,17 @@ export class ConnectorCatalogDraftService {
           throw new PlatformRevisionConflictError();
         }
         await tx
+          .delete(platformConnectorOAuthStates)
+          .where(eq(platformConnectorOAuthStates.connectorId, command.id));
+        await tx
+          .delete(platformUserConnectorBindings)
+          .where(eq(platformUserConnectorBindings.connectorId, command.id));
+        await tx
           .delete(platformConnectorTools)
           .where(eq(platformConnectorTools.connectorId, command.id));
+        await tx
+          .delete(platformConnectorSecrets)
+          .where(eq(platformConnectorSecrets.connectorId, command.id));
         await tx.delete(platformConnectors).where(eq(platformConnectors.id, command.id));
         const audit = await new PlatformAuditService(tx).append({
           action: 'admin.connectors.deleteDraft',

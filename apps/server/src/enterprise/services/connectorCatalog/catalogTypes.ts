@@ -26,11 +26,14 @@ export interface ConnectorResolvedSecret extends ConnectorStoredSecret {
 
 export interface ConnectorCatalogSecretStore extends ConnectorCurrentSecretLoader {
   assertReady?: () => Promise<void>;
-  persistSecret: (params: {
-    connectorId: string;
-    slot: ConnectorSecretSlot;
-    value: unknown;
-  }) => Promise<ConnectorStoredSecret>;
+  persistSecret: (
+    params: {
+      connectorId: string;
+      slot: ConnectorSecretSlot;
+      value: unknown;
+    },
+    transaction?: Transaction,
+  ) => Promise<ConnectorStoredSecret>;
   resolveSecretRef: (params: {
     connectorId: string;
     ref: string;
