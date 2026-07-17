@@ -286,6 +286,83 @@ describe('SkillCatalogAdminService', () => {
     ).resolves.toMatchObject({ content: '# first' });
   });
 
+  it('keeps an archived builtin override suppressed until rollback restores it', async () => {
+    const skillKey = 'builtin.search';
+    const builtinContent = '# builtin';
+    const builtin = {
+      checksum: platformSkillVersionChecksum({ content: builtinContent, manifest }),
+      content: builtinContent,
+      description: 'Builtin search',
+      displayName: 'Builtin search',
+      distribution: 'default' as const,
+      manifest,
+      skillKey,
+      source: 'builtin' as const,
+      version: '1.0.0',
+    };
+    const service = new SkillCatalogAdminService(db, {
+      allowBuiltinOverride: true,
+      builtinSkills: [builtin],
+      invalidation,
+    });
+    const draft = await service.create('admin-1', {
+      allowBuiltinOverride: true,
+      displayName: 'Managed search',
+      distribution: 'default',
+      enabled: true,
+      reason: 'create approved builtin override',
+      skillKey,
+    });
+    const version = await createVersion(service, draft, '# managed', '2.0.0');
+    let detail = await service.getDetail(draft.draft.id);
+    await service.publish('admin-1', {
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.baseRevision,
+      id: draft.draft.id,
+      reason: 'publish approved builtin override',
+      versionId: version.id,
+    });
+
+    let reader = new SkillCatalogReadService(db, { builtinSkills: [builtin] });
+    await expect(reader.resolveForExecution(skillKey)).resolves.toMatchObject({
+      source: 'uploaded',
+      version: '2.0.0',
+    });
+
+    detail = await service.getDetail(draft.draft.id);
+    await service.archive('admin-1', {
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.baseRevision,
+      id: draft.draft.id,
+      reason: 'archive approved builtin override',
+    });
+    reader = new SkillCatalogReadService(db, { builtinSkills: [builtin] });
+    await expect(reader.resolveForExecution(skillKey)).resolves.toBeUndefined();
+    await expect(reader.getPublishedCatalog()).resolves.toMatchObject({ skills: [] });
+    const archived = await db.query.platformResourceRevisions.findFirst({
+      orderBy: (revision, { desc }) => [desc(revision.revision)],
+      where: (revision, { eq }) => eq(revision.resourceId, draft.draft.id),
+    });
+    expect(archived).toMatchObject({
+      payload: { builtinOverrideTombstone: true },
+      status: 'archived',
+    });
+
+    detail = await service.getDetail(draft.draft.id);
+    await service.rollback('admin-1', {
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.baseRevision,
+      id: draft.draft.id,
+      reason: 'restore approved builtin override',
+      targetVersionId: version.id,
+    });
+    reader = new SkillCatalogReadService(db, { builtinSkills: [builtin] });
+    await expect(reader.resolveForExecution(skillKey)).resolves.toMatchObject({
+      source: 'uploaded',
+      version: '2.0.0',
+    });
+  });
+
   it('records mutation reasons and rejects stale draft tokens', async () => {
     const service = new SkillCatalogAdminService(db, serviceOptions);
     const draft = await createDraft(service, 'audited.skill');

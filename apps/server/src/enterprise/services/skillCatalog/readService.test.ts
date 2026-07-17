@@ -277,7 +277,11 @@ describe('SkillCatalogReadService', () => {
   it('fails closed on unique-cursor pagination and aggregate item growth attacks', async () => {
     let page = 0;
     const uniqueCursorModel = {
-      listPublished: async () => ({ items: [], nextCursor: `unique-${page++}` }),
+      listPublished: async () => ({
+        builtinOverrideTombstones: [],
+        items: [],
+        nextCursor: `unique-${page++}`,
+      }),
       resolvePublishedVersion: async () => undefined,
     };
     await expect(
@@ -287,6 +291,7 @@ describe('SkillCatalogReadService', () => {
 
     const oversizedModel = {
       listPublished: async () => ({
+        builtinOverrideTombstones: [],
         items: Array.from({ length: 10_001 }, () => ({}) as never),
         nextCursor: null,
       }),
@@ -372,6 +377,7 @@ describe('SkillCatalogReadService', () => {
     const seed = page.items[0]!;
     const model = {
       listPublished: vi.fn(async () => ({
+        builtinOverrideTombstones: [],
         items: Array.from({ length: 10_000 }, (_, index) => ({
           ...seed,
           skillKey: `uploaded-${String(index).padStart(5, '0')}`,

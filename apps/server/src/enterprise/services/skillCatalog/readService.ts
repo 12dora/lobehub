@@ -169,6 +169,7 @@ export class SkillCatalogReadService {
 
     const platformItems: Awaited<ReturnType<PlatformSkillCatalogModel['listPublished']>>['items'] =
       [];
+    const builtinOverrideTombstones = new Set<string>();
     const seenCursors = new Set<string>();
     let cursor: string | undefined;
     let pageCount = 0;
@@ -178,6 +179,9 @@ export class SkillCatalogReadService {
       }
       pageCount += 1;
       const page = await this.model.listPublished({ cursor, limit: 100 });
+      for (const skillKey of page.builtinOverrideTombstones ?? []) {
+        builtinOverrideTombstones.add(skillKey);
+      }
       if (platformItems.length + page.items.length > MAX_PUBLISHED_SKILLS) {
         throw new Error('Published Skill item limit was exceeded');
       }
@@ -189,6 +193,7 @@ export class SkillCatalogReadService {
       cursor = page.nextCursor;
     } while (cursor);
     const builtins = new Map(this.builtinSkills.map((skill) => [skill.skillKey, skill] as const));
+    for (const skillKey of builtinOverrideTombstones) builtins.delete(skillKey);
     const platformSkills: PublishedSkill[] = [];
     const platformResolvedByKey = new Map<string, ResolvedSkill>();
     for (const item of platformItems) {
@@ -315,6 +320,68 @@ export class SkillCatalogReadService {
 
   resolveForExecution = async (skillKey: string, version?: string) => {
     const builtin = this.builtinSkills.find((item) => item.skillKey === skillKey);
+    if (!version) {
+      const catalog = await this.getPublishedCatalog();
+      const current = catalog.skills.find((skill) => skill.skillKey === skillKey);
+      if (!current) return undefined;
+      const indexed = this.publishedExecutionIndex.get(
+        exactRefKey({
+          checksum: current.checksum,
+          skillKey: current.skillKey,
+          version: current.version,
+        }),
+      );
+      if (indexed) return structuredClone(indexed);
+      if (current.source === 'builtin') {
+        if (
+          !builtin ||
+          builtin.version !== current.version ||
+          builtin.checksum !== current.checksum
+        ) {
+          return undefined;
+        }
+        return serverResolvedSkillSchema.parse({
+          allowBuiltinOverride: false,
+          checksum: builtin.checksum,
+          content: builtin.content,
+          contentRef: builtin.contentRef ?? null,
+          description: builtin.description,
+          displayName: builtin.displayName,
+          distribution: builtin.distribution,
+          manifest: builtin.manifest,
+          resources: builtin.resources ?? [],
+          skillId: `builtin:${builtin.skillKey}`,
+          skillKey: builtin.skillKey,
+          source: 'builtin',
+          version: builtin.version,
+          versionId: `builtin:${builtin.skillKey}@${builtin.version}`,
+        });
+      }
+      const platform = await this.model.resolvePublishedVersion(skillKey);
+      if (
+        !platform ||
+        platform.version.version !== current.version ||
+        platform.version.checksum !== current.checksum
+      ) {
+        return undefined;
+      }
+      return serverResolvedSkillSchema.parse({
+        allowBuiltinOverride: platform.allowBuiltinOverride,
+        checksum: platform.version.checksum,
+        content: platform.version.content,
+        contentRef: platform.version.contentRef,
+        description: platform.description,
+        displayName: platform.displayName,
+        distribution: platform.distribution,
+        manifest: platform.version.manifest,
+        resources: platform.version.resources,
+        skillId: platform.skillId,
+        skillKey: platform.skillKey,
+        source: platform.source,
+        version: platform.version.version,
+        versionId: platform.version.id,
+      });
+    }
     const platform = await this.model.resolvePublishedVersion(skillKey, version);
     if (platform && (!builtin || platform.allowBuiltinOverride)) {
       return serverResolvedSkillSchema.parse({
@@ -334,45 +401,25 @@ export class SkillCatalogReadService {
         versionId: platform.version.id,
       });
     }
-    if (version) {
-      if (builtin?.version === version) {
-        return serverResolvedSkillSchema.parse({
-          allowBuiltinOverride: false,
-          checksum: builtin.checksum,
-          content: builtin.content,
-          contentRef: builtin.contentRef ?? null,
-          description: builtin.description,
-          displayName: builtin.displayName,
-          distribution: builtin.distribution,
-          manifest: builtin.manifest,
-          resources: builtin.resources ?? [],
-          skillId: `builtin:${builtin.skillKey}`,
-          skillKey: builtin.skillKey,
-          source: 'builtin',
-          version: builtin.version,
-          versionId: `builtin:${builtin.skillKey}@${builtin.version}`,
-        });
-      }
-      return undefined;
+    if (builtin?.version === version) {
+      return serverResolvedSkillSchema.parse({
+        allowBuiltinOverride: false,
+        checksum: builtin.checksum,
+        content: builtin.content,
+        contentRef: builtin.contentRef ?? null,
+        description: builtin.description,
+        displayName: builtin.displayName,
+        distribution: builtin.distribution,
+        manifest: builtin.manifest,
+        resources: builtin.resources ?? [],
+        skillId: `builtin:${builtin.skillKey}`,
+        skillKey: builtin.skillKey,
+        source: 'builtin',
+        version: builtin.version,
+        versionId: `builtin:${builtin.skillKey}@${builtin.version}`,
+      });
     }
-
-    if (!builtin) return undefined;
-    return serverResolvedSkillSchema.parse({
-      allowBuiltinOverride: false,
-      checksum: builtin.checksum,
-      content: builtin.content,
-      contentRef: builtin.contentRef ?? null,
-      description: builtin.description,
-      displayName: builtin.displayName,
-      distribution: builtin.distribution,
-      manifest: builtin.manifest,
-      resources: builtin.resources ?? [],
-      skillId: `builtin:${builtin.skillKey}`,
-      skillKey: builtin.skillKey,
-      source: 'builtin',
-      version: builtin.version,
-      versionId: `builtin:${builtin.skillKey}@${builtin.version}`,
-    });
+    return undefined;
   };
 
   /**

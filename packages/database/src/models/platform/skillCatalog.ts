@@ -66,6 +66,7 @@ export interface PlatformPublishedSkillView {
 }
 
 export interface PlatformPublishedSkillPageView {
+  builtinOverrideTombstones: string[];
   items: PlatformPublishedSkillView[];
   nextCursor: string | null;
 }
@@ -130,6 +131,8 @@ const publishedSnapshot = (value: unknown): PlatformPublishedSkillSnapshot | und
   }
   const skill = candidate.skill as Partial<PlatformPublishedSkillSnapshot['skill']>;
   if (
+    (candidate.builtinOverrideTombstone !== undefined &&
+      candidate.builtinOverrideTombstone !== true) ||
     typeof candidate.versionId !== 'string' ||
     typeof skill.allowBuiltinOverride !== 'boolean' ||
     (skill.description !== null && typeof skill.description !== 'string') ||
@@ -147,6 +150,7 @@ const publishedSnapshot = (value: unknown): PlatformPublishedSkillSnapshot | und
 const publishedView = (row: PlatformPublishedSkillRow): PlatformPublishedSkillView | undefined => {
   const payload = publishedSnapshot(row.payload);
   if (
+    row.status !== 'published' ||
     !payload ||
     payload.versionId !== row.version.id ||
     row.skillId !== row.version.skillId ||
@@ -414,7 +418,16 @@ export class PlatformSkillCatalogModel {
     params: Parameters<PlatformSkillCatalogRepository['listPublished']>[0] = {},
   ): Promise<PlatformPublishedSkillPageView> => {
     const page = await new PlatformSkillCatalogRepository(this.db).listPublished(params);
+    const builtinOverrideTombstones = page.items.flatMap((row) => {
+      const snapshot = publishedSnapshot(row.payload);
+      return row.status === 'archived' &&
+        snapshot?.builtinOverrideTombstone === true &&
+        snapshot.skill.allowBuiltinOverride
+        ? [snapshot.skill.skillKey]
+        : [];
+    });
     return {
+      builtinOverrideTombstones,
       items: page.items.flatMap((row) => {
         const view = publishedView(row);
         return view ? [view] : [];
@@ -464,6 +477,7 @@ export class PlatformSkillCatalogModel {
 
 export interface PlatformSkillPointerAdapterParams {
   actorUserId?: string;
+  builtinOverrideTombstone?: boolean;
   expectedDraftToken: string;
   skillId: string;
   versionId: string;
@@ -512,7 +526,10 @@ export const createPlatformSkillPointerAdapter = (
         params.versionId,
       );
       if (!version) throw new Error('Published Skill version is unavailable');
-      const payload = buildPublishedSnapshot(lockedDraft, version.id);
+      const payload = {
+        ...buildPublishedSnapshot(lockedDraft, version.id),
+        ...(params.builtinOverrideTombstone ? { builtinOverrideTombstone: true as const } : {}),
+      };
       return {
         afterDiff: payload as unknown as Record<string, unknown>,
         payload: payload as unknown as Record<string, unknown>,
