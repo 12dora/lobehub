@@ -29,8 +29,20 @@ describe('HumanInterventionHandler.process', () => {
   const makeState = (overrides: Record<string, any> = {}) => ({
     lastModified: new Date().toISOString(),
     pendingToolsCalling: [
-      { apiName: 'search', arguments: '{}', id: 'tool-call-1', identifier: 'web-search' },
-      { apiName: 'write', arguments: '{}', id: 'tool-call-2', identifier: 'local-system' },
+      {
+        apiName: 'search',
+        arguments: '{}',
+        id: 'tool-call-1',
+        identifier: 'web-search',
+        type: 'default',
+      },
+      {
+        apiName: 'write',
+        arguments: '{}',
+        id: 'tool-call-2',
+        identifier: 'local-system',
+        type: 'default',
+      },
     ],
     status: 'waiting_for_human',
     ...overrides,
@@ -38,10 +50,17 @@ describe('HumanInterventionHandler.process', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mockDBPluginQuery = vi.fn().mockResolvedValue({ toolCallId: 'tool-call-1' });
+    const persistedPlugin = {
+      apiName: 'search',
+      arguments: '{}',
+      identifier: 'web-search',
+      toolCallId: 'tool-call-1',
+      type: 'default',
+    };
+    mockDBPluginQuery = vi.fn().mockResolvedValue(persistedPlugin);
     mockMessageModel = {
       approvePendingMessagePlugin: vi.fn().mockResolvedValue(true),
-      findMessagePlugin: vi.fn().mockResolvedValue({ toolCallId: 'tool-call-1' }),
+      findMessagePlugin: vi.fn().mockResolvedValue(persistedPlugin),
       updateMessagePlugin: vi.fn().mockResolvedValue(undefined),
       updateToolMessage: vi.fn().mockResolvedValue({ success: true }),
     };
@@ -70,7 +89,13 @@ describe('HumanInterventionHandler.process', () => {
 
       expect(result.nextContext).toEqual({
         payload: {
-          approvedToolCall: { id: 'tool-call-1' },
+          approvedToolCall: {
+            apiName: 'search',
+            arguments: '{}',
+            id: 'tool-call-1',
+            identifier: 'web-search',
+            type: 'default',
+          },
           parentMessageId: 'tool-msg-1',
           skipCreateToolMessage: true,
         },
@@ -104,7 +129,13 @@ describe('HumanInterventionHandler.process', () => {
     it('transitions to running when last pending tool is approved', async () => {
       const state = makeState({
         pendingToolsCalling: [
-          { apiName: 'search', arguments: '{}', id: 'tool-call-1', identifier: 'web-search' },
+          {
+            apiName: 'search',
+            arguments: '{}',
+            id: 'tool-call-1',
+            identifier: 'web-search',
+            type: 'default',
+          },
         ],
       });
 
@@ -125,6 +156,46 @@ describe('HumanInterventionHandler.process', () => {
 
       expect(mockMessageModel.approvePendingMessagePlugin).not.toHaveBeenCalled();
       expect(result.nextContext).toBeUndefined();
+    });
+
+    it('fails closed when pending execution fields differ from the persisted plugin', async () => {
+      const base = {
+        apiName: 'search',
+        arguments: '{}',
+        id: 'tool-call-1',
+        identifier: 'web-search',
+        type: 'default',
+      };
+      for (const pendingTool of [
+        { ...base, apiName: 'danger' },
+        { ...base, arguments: '{"admin":true}' },
+        { ...base, identifier: 'builtin-admin' },
+        { ...base, type: 'builtin' },
+      ]) {
+        const result = await handler.process(makeState({ pendingToolsCalling: [pendingTool] }), {
+          approvedToolCall: { ...pendingTool, source: 'composio', type: 'mcp' },
+          toolMessageId: 'tool-msg-1',
+        });
+        expect(result.nextContext).toBeUndefined();
+      }
+      expect(mockMessageModel.approvePendingMessagePlugin).not.toHaveBeenCalled();
+    });
+
+    it('rebuilds source from the operation tool set instead of the request payload', async () => {
+      const result = await handler.process(
+        makeState({ operationToolSet: { sourceMap: { 'web-search': 'mcp' } } }),
+        {
+          approvedToolCall: { id: 'tool-call-1', source: 'composio', type: 'builtin' },
+          toolMessageId: 'tool-msg-1',
+        },
+      );
+
+      const payload = result.nextContext?.payload as { approvedToolCall?: unknown } | undefined;
+      expect(payload?.approvedToolCall).toMatchObject({
+        identifier: 'web-search',
+        source: 'mcp',
+        type: 'default',
+      });
     });
   });
 
