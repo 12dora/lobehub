@@ -365,6 +365,14 @@ export const adminConnectorDraftMutationOutputSchema = z
 
 const publishedConnectorFields = {
   publishedAt: z.date(),
+  // Read-only projection of the already-computed published revision provenance checksum
+  // (identical to what the agent dependency validator compares against). Surfaced so the M10
+  // platform-agent admin UI can author an EXACT connector dependency ref without fabrication.
+  // Declared inline (connectorSha256Schema is defined later in the module).
+  publishedChecksum: z
+    .string()
+    .length(64)
+    .regex(/^[a-f0-9]{64}$/),
   publishedRevision: z.number().int().positive(),
   tools: publishedConnectorToolListSchema,
 };
