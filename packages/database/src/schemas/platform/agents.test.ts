@@ -84,6 +84,12 @@ describe('platform Agent persistence invariants', () => {
 
   it('stores per-user materialization outside shared assignments with exact version identity', () => {
     const config = getTableConfig(platformUserAgentMaterializations);
+    expect(checkNames(config.checks)).toEqual(
+      expect.arrayContaining([
+        'platform_user_agent_materializations_error_category_check',
+        'platform_user_agent_materializations_error_category_value_check',
+      ]),
+    );
     expect(indexNames(config.indexes)).toEqual(
       expect.arrayContaining([
         'platform_user_agent_materializations_local_agent_unique',
