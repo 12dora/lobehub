@@ -980,6 +980,7 @@ export default {
   'platformSkills.detail.mandatoryManaged': 'Always available · managed by your organization',
   'platformSkills.detail.noDescription': 'No description provided',
   'platformSkills.detail.notFound': 'This published Skill is no longer available.',
+  'platformSkills.detail.saveFailed': 'Could not update this assistant. Try again.',
   'platformSkills.detail.source': 'Source',
   'platformSkills.detail.use': 'Use with current assistant',
   'platformSkills.detail.useHint': 'This changes only your current assistant selection.',

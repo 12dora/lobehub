@@ -240,6 +240,58 @@ describe('SkillDetailPage independent async states', () => {
     expect(mocks.versionDetailMutate).toHaveBeenCalledTimes(1);
   });
 
+  it('renders validation codes through i18n and keeps raw messages in technical details', () => {
+    const rawMessage = 'Raw server validation text';
+    mocks.versionListError = undefined;
+    mocks.versionListData = { items: [summary], nextCursor: null };
+    mocks.versionDetailError = undefined;
+    mocks.versionDetailData = {
+      ...summary,
+      content: '# content',
+      contentRef: null,
+      manifest: {
+        description: 'Description',
+        displayName: 'Skill One',
+        localizedDescriptions: {},
+        localizedDisplayNames: {},
+        permissions: {
+          filesystem: 'none',
+          network: { allowedHosts: [], enabled: false },
+          tools: { allow: [] },
+        },
+        skillDependencies: [],
+        toolDependencies: [],
+      },
+      resources: [],
+      validation: {
+        issues: [
+          {
+            code: 'permissions_invalid',
+            message: rawMessage,
+            path: ['manifest', 'permissions'],
+            severity: 'error',
+          },
+        ],
+        validatedAt: new Date(0),
+        validatorVersion: 'v1',
+      },
+    };
+    mocks.dependentError = undefined;
+    mocks.dependentData = { items: [], nextCursor: null };
+
+    render(
+      <MemoryRouter initialEntries={['/admin/skills/s1']}>
+        <Routes>
+          <Route element={<SkillDetailPage />} path="/admin/skills/:id" />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText('skillCatalog.validation.issue.permissions_invalid')).toBeTruthy();
+    expect(screen.getByText(rawMessage).closest('details')).toBeTruthy();
+    expect(screen.getByText('skillCatalog.validation.technicalDetails')).toBeTruthy();
+  });
+
   it('passes independent version and dependent cursors back to their server hooks', async () => {
     mocks.versionListError = undefined;
     mocks.versionListData = { items: [summary], nextCursor: 'version-cursor-2' };
