@@ -18,7 +18,7 @@ import StatusBadge from '../primitives/StatusBadge';
 import { deriveAdminAgentPermissions } from './controller';
 import { openCreateAgentModal } from './openCreateAgentModal';
 import type { AdminAgentListItem } from './types';
-import { refreshAdminAgentLists, useFetchAdminAgents } from './useAdminAgents';
+import { refreshAdminAgentLists, useAdminAgentListPagination } from './useAdminAgents';
 
 const styles = createStaticStyles(({ css }) => ({
   identity: css`
@@ -44,7 +44,7 @@ const AgentListPage = memo(() => {
     () => ({ query: searchParams.get('q') || undefined, status }),
     [searchParams, status],
   );
-  const { data, error, isLoading, mutate } = useFetchAdminAgents(input, agentPermissions.canRead);
+  const list = useAdminAgentListPagination(input, agentPermissions.canRead);
   const columns = useMemo<TableColumnsType<AdminAgentListItem>>(
     () => [
       {
@@ -143,26 +143,39 @@ const AgentListPage = memo(() => {
       }
     >
       <AsyncBoundary
-        data={data}
-        error={error}
-        isEmpty={Boolean(data && data.items.length === 0)}
-        isLoading={isLoading}
+        data={list.items}
+        error={list.error}
+        isEmpty={list.isEmpty}
+        isLoading={list.isLoadingInitial}
         loading={<Loading debugId="AdminAgentList" />}
         empty={t(
           searchParams.size
             ? 'agentCatalog.list.empty.filtered'
             : 'agentCatalog.list.empty.default',
         )}
-        onRetry={() => void mutate()}
+        onRetry={list.retry}
       >
-        <DataTable<AdminAgentListItem>
-          columns={columns}
-          dataSource={data?.items ?? []}
-          rowKey={(item) => item.identity.id}
-          onRowActivate={(item) =>
-            navigate(`/admin/agents/${encodeURIComponent(item.identity.id)}`)
-          }
-        />
+        <Flexbox gap={12}>
+          <DataTable<AdminAgentListItem>
+            columns={columns}
+            dataSource={list.items}
+            rowKey={(item) => item.identity.id}
+            onRowActivate={(item) =>
+              navigate(`/admin/agents/${encodeURIComponent(item.identity.id)}`)
+            }
+          />
+          <Flexbox horizontal align="center" gap={8} justify="center">
+            {list.hasMore ? (
+              <Button loading={list.isLoadingMore} onClick={list.loadMore}>
+                {list.isLoadingMore
+                  ? t('agentCatalog.list.loadingMore')
+                  : t('agentCatalog.list.loadMore')}
+              </Button>
+            ) : list.items.length > 0 ? (
+              <Text type="secondary">{t('agentCatalog.list.end')}</Text>
+            ) : null}
+          </Flexbox>
+        </Flexbox>
       </AsyncBoundary>
     </AdminPageTemplate>
   );

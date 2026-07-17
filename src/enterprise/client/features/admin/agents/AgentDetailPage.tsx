@@ -24,7 +24,7 @@ const isNotFoundError = (error: unknown) => {
 
 const AgentDetailPage = memo(() => {
   const { id } = useParams<{ id: string }>();
-  const { permissions } = useAdminAccess();
+  const { authMethod, permissions } = useAdminAccess();
   const agentPermissions = deriveAdminAgentPermissions(permissions);
   const { data, error, isLoading, mutate } = useFetchAdminAgent(
     id,
@@ -45,9 +45,10 @@ const AgentDetailPage = memo(() => {
     >
       {data ? (
         <AgentDetailView
+          authMethod={authMethod ?? null}
           editor={editor}
+          mutate={mutate}
           permissions={agentPermissions}
-          refresh={mutate}
           snapshot={data}
         />
       ) : null}

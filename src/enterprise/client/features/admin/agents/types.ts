@@ -1,4 +1,9 @@
-import type { PlatformAgentDependencySnapshot, PlatformAgentVersionConfig } from '@lobechat/types';
+import type {
+  PlatformAgentConnectorDependencyRef,
+  PlatformAgentModelDependencyRef,
+  PlatformAgentSkillDependencyRef,
+  PlatformAgentVersionConfig,
+} from '@lobechat/types';
 
 import type {
   AdminPlatformAgentAppendVersionInput,
@@ -106,10 +111,25 @@ export interface AdminAgentDetailOutput extends AdminPlatformAgentGetOutput {
   versions: AdminPlatformAgentVersionsListOutput['items'];
 }
 
+export type AdminAgentModelDependency = PlatformAgentModelDependencyRef;
+export type AdminAgentSkillDependency = PlatformAgentSkillDependencyRef;
+export type AdminAgentConnectorDependency = PlatformAgentConnectorDependencyRef;
+
+/**
+ * Client-editable dependency draft. `model` is `null` until an exact published provider/model is
+ * resolved (revision + checksum come from the real AI catalog, never fabricated). Skills and
+ * connectors carry exact published version/checksum references.
+ */
+export interface AdminAgentDraftDependencies {
+  connectors: AdminAgentConnectorDependency[];
+  model: AdminAgentModelDependency | null;
+  skills: AdminAgentSkillDependency[];
+}
+
 /** Editable client view-model. Transport fields remain derived from the authoritative Zod contract. */
 export interface AdminAgentDraft {
   config: PlatformAgentVersionConfig;
-  dependencySnapshot: PlatformAgentDependencySnapshot;
+  dependencies: AdminAgentDraftDependencies;
   version: string;
 }
 

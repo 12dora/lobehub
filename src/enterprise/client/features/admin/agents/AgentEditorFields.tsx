@@ -32,14 +32,6 @@ export const AgentEditorFields = ({ draft, editable, onChange }: AgentEditorFiel
     key: Key,
     value: AdminAgentDraft['config'][Key],
   ) => onChange((current) => ({ ...current, config: { ...current.config, [key]: value } }));
-  const patchModel = (key: 'modelKey' | 'providerKey', value: string) =>
-    onChange((current) => ({
-      ...current,
-      dependencySnapshot: {
-        ...current.dependencySnapshot,
-        model: { ...current.dependencySnapshot.model, [key]: value },
-      },
-    }));
 
   return (
     <Flexbox gap={16}>
@@ -60,22 +52,6 @@ export const AgentEditorFields = ({ draft, editable, onChange }: AgentEditorFiel
             disabled={!editable}
             value={draft.config.displayName}
             onChange={(event) => patchConfig('displayName', event.target.value)}
-          />
-        </Flexbox>
-        <Flexbox gap={6}>
-          <FieldLabel>{t('agentCatalog.editor.provider')}</FieldLabel>
-          <Input
-            disabled={!editable}
-            value={draft.dependencySnapshot.model.providerKey}
-            onChange={(event) => patchModel('providerKey', event.target.value)}
-          />
-        </Flexbox>
-        <Flexbox gap={6}>
-          <FieldLabel>{t('agentCatalog.editor.model')}</FieldLabel>
-          <Input
-            disabled={!editable}
-            value={draft.dependencySnapshot.model.modelKey}
-            onChange={(event) => patchModel('modelKey', event.target.value)}
           />
         </Flexbox>
       </div>

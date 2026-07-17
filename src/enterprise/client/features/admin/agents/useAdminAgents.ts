@@ -1,6 +1,7 @@
 'use client';
 
 import { mutate } from 'swr';
+import useSWRInfinite from 'swr/infinite';
 
 import { adminAgentsService } from '@/enterprise/client/services/adminAgents';
 import { useClientDataSWR } from '@/libs/swr';
@@ -11,7 +12,13 @@ import {
   buildAdminAgentGetKey,
   buildAdminAgentListKey,
 } from './swrKeys';
-import type { AdminAgentDetailOutput, AdminAgentListInput, AdminAgentsClient } from './types';
+import type {
+  AdminAgentDetailOutput,
+  AdminAgentListInput,
+  AdminAgentListItem,
+  AdminAgentListOutput,
+  AdminAgentsClient,
+} from './types';
 
 interface CursorPage<T> {
   items: T[];
@@ -60,6 +67,70 @@ export const useFetchAdminAgents = (
   useClientDataSWR(buildAdminAgentListKey(input, enabled), () => client.list(input), {
     revalidateOnFocus: false,
   });
+
+export interface AdminAgentListPagination {
+  error: unknown;
+  hasMore: boolean;
+  isEmpty: boolean;
+  isLoadingInitial: boolean;
+  isLoadingMore: boolean;
+  items: AdminAgentListItem[];
+  loadMore: () => void;
+  retry: () => void;
+}
+
+/**
+ * Cursor-paginated Agent list. Follows the server `nextCursor` explicitly (never silently
+ * truncated at one page), dedupes by identity id, and resets when the filter/search input
+ * changes (the input is part of the SWR-infinite key).
+ */
+export const useAdminAgentListPagination = (
+  input: Omit<AdminAgentListInput, 'cursor'>,
+  enabled: boolean,
+  client: AdminAgentsClient = adminAgentsService,
+): AdminAgentListPagination => {
+  const swr = useSWRInfinite<AdminAgentListOutput>(
+    (index, previous: AdminAgentListOutput | null) => {
+      if (!enabled) return null;
+      if (previous && previous.nextCursor === null) return null;
+      const cursor = index === 0 ? undefined : (previous?.nextCursor ?? undefined);
+      return [ADMIN_AGENT_LIST_KEY, input, cursor] as const;
+    },
+    ([, listInput, cursor]: readonly [
+      string,
+      Omit<AdminAgentListInput, 'cursor'>,
+      string | undefined,
+    ]) => client.list({ ...listInput, cursor }),
+    { revalidateFirstPage: false, revalidateOnFocus: false },
+  );
+
+  const pages = swr.data ?? [];
+  const seen = new Set<string>();
+  const items: AdminAgentListItem[] = [];
+  for (const page of pages) {
+    for (const item of page.items) {
+      if (seen.has(item.identity.id)) continue;
+      seen.add(item.identity.id);
+      items.push(item);
+    }
+  }
+
+  const loadedPages = swr.data?.length ?? 0;
+  const isReachingEnd = loadedPages > 0 && (pages.at(-1)?.nextCursor ?? null) === null;
+  const isLoadingInitial = enabled && !swr.data && !swr.error;
+
+  return {
+    error: swr.error,
+    hasMore: enabled && !isReachingEnd,
+    isEmpty: !isLoadingInitial && !swr.error && items.length === 0,
+    isLoadingInitial,
+    // A pending page beyond those already materialized means "loading more", not initial load.
+    isLoadingMore: swr.isValidating && loadedPages > 0 && swr.size > loadedPages,
+    items,
+    loadMore: () => void swr.setSize((size) => size + 1),
+    retry: () => void swr.mutate(),
+  };
+};
 
 export const useFetchAdminAgent = (
   id: string | undefined,
