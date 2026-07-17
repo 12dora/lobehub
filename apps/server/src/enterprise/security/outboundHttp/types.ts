@@ -23,6 +23,8 @@ export interface PinnedTransportRequest {
   method: string;
   /** Connect to this IP (DNS pin). */
   pinnedAddress: string;
+  /** Abort DNS/connect/read work for the owning request. */
+  signal?: AbortSignal | null;
   /**
    * Absolute wall-clock deadline for the entire request (ms), and socket
    * idle timeout. Continuous streaming still cannot exceed this total.
