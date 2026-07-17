@@ -3,11 +3,11 @@
 Explicit residual risk surface for M07/M09/M11 consumers. These are **not**
 covered by the current primitive; do not assume they are hardened.
 
-| Residual                                      | Notes                                                                                                                                                                         |
-| --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **No port allowlist**                         | Any port on an otherwise-allowed host is permitted (private MCP often uses non-default ports). Tighten per-caller if needed.                                                  |
-| **No content-type validation**                | Response `Content-Type` is not restricted; callers that parse JSON/XML should validate themselves.                                                                            |
-| **DNS resolver trust**                        | Production depends on the host resolver; tests inject `resolve`. Compromised recursive DNS is out of scope for this client alone.                                             |
+| Residual                       | Notes                                                                                                                             |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| **No port allowlist**          | Any port on an otherwise-allowed host is permitted (private MCP often uses non-default ports). Tighten per-caller if needed.      |
+| **No content-type validation** | Response `Content-Type` is not restricted; callers that parse JSON/XML should validate themselves.                                |
+| **DNS resolver trust**         | Production depends on the host resolver; tests inject `resolve`. Compromised recursive DNS is out of scope for this client alone. |
 
 Enforced today (non-residual):
 
