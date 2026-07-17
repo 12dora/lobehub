@@ -1,8 +1,8 @@
 import { MARKET_AUTH_REQUIRED_MESSAGE } from '@lobechat/desktop-bridge';
 import {
-  MAX_INLINE_SKILL_FILES,
-  MAX_INLINE_SKILL_TOTAL_BYTES,
-  validateInlineSkillResources,
+  type InlineSkillResource,
+  type ValidatedInlineSkillResource,
+  validateInlineSkillOperationPayloads,
 } from '@lobechat/device-control';
 import { TRPCError } from '@trpc/server';
 import debug from 'debug';
@@ -22,6 +22,7 @@ import {
 } from '@/libs/trpc/utils/internalJwt';
 import { isTrustedClientEnabled } from '@/libs/trusted-client';
 import { parseEnterpriseFeatureFlags } from '@/server/enterprise/featureFlags';
+import { redactForLog } from '@/server/enterprise/security/redaction';
 import { resolveManagedSkillRuntimeMode } from '@/server/enterprise/services/managedResourceCapabilities';
 import {
   cleanupSandboxSkillWorkspace,
@@ -226,6 +227,8 @@ const execInSandboxHandler = async ({
 }): Promise<CallToolResult> => {
   const { toolName, params, topicId } = input;
   const userId = input?.userId || ctx.userId;
+  let managedCorrelationId: string | undefined;
+  let managedRequest = false;
 
   log('execInSandbox: tool=%s, topicId=%s', toolName, topicId);
 
@@ -234,7 +237,7 @@ const execInSandboxHandler = async ({
     let managedInlineSkills:
       | Array<{
           ref: { checksum: string; skillKey: string; version: string };
-          resources: ReturnType<typeof validateInlineSkillResources>;
+          resources: ValidatedInlineSkillResource[];
           skillContent: string;
         }>
       | undefined;
@@ -263,6 +266,7 @@ const execInSandboxHandler = async ({
 
     // For execScript tool, look up skill zipUrls from activatedSkills
     if (toolName === 'execScript' && enhancedParams.activatedSkills?.length) {
+      managedRequest = enhancedParams.platformSkillSnapshot !== undefined;
       const flags = parseEnterpriseFeatureFlags(process.env);
       const snapshot = platformSkillSnapshotSchema.safeParse(enhancedParams.platformSkillSnapshot);
       const proofClaims = snapshot.success
@@ -288,9 +292,11 @@ const execInSandboxHandler = async ({
         const catalog = new SkillCatalogReadService(ctx.serverDB, {
           builtinSkills: getBuiltinSkillDefinitions(),
         });
-        managedInlineSkills = [];
-        let totalFiles = 0;
-        let totalBytes = 0;
+        const unresolvedManagedInlineSkills: Array<{
+          ref: { checksum: string; skillKey: string; version: string };
+          resources: InlineSkillResource[];
+          skillContent: string;
+        }> = [];
         for (const activatedSkill of enhancedParams.activatedSkills) {
           const ref = refsByKey.get(activatedSkill.name);
           const resolved = ref ? await catalog.resolvePinnedForExecution(ref) : undefined;
@@ -300,19 +306,19 @@ const execInSandboxHandler = async ({
               message: `Managed Skill reference is unavailable: ${activatedSkill.name}`,
             });
           }
-          const resources = validateInlineSkillResources(resolved.resources);
-          totalFiles += resources.length + 1;
-          totalBytes +=
-            new TextEncoder().encode(resolved.content).byteLength +
-            resources.reduce((sum, resource) => sum + resource.sizeBytes, 0);
-          if (totalFiles > MAX_INLINE_SKILL_FILES || totalBytes > MAX_INLINE_SKILL_TOTAL_BYTES) {
-            throw new TRPCError({
-              code: 'PRECONDITION_FAILED',
-              message: 'Managed Skill operation workspace exceeds its aggregate limit',
-            });
-          }
-          managedInlineSkills.push({ ref, resources, skillContent: resolved.content });
+          unresolvedManagedInlineSkills.push({
+            ref,
+            resources: resolved.resources,
+            skillContent: resolved.content,
+          });
         }
+        const validatedPayloads = validateInlineSkillOperationPayloads(
+          unresolvedManagedInlineSkills,
+        );
+        managedInlineSkills = unresolvedManagedInlineSkills.map((skill, index) => ({
+          ...skill,
+          resources: validatedPayloads[index].resources,
+        }));
         if (
           typeof enhancedParams.operationId !== 'string' ||
           !enhancedParams.operationId ||
@@ -388,10 +394,11 @@ const execInSandboxHandler = async ({
     let response: CallToolResult;
     if (managedInlineSkills) {
       const { auditId, root } = createSandboxSkillWorkspaceRoot(String(params.operationId));
+      managedCorrelationId = auditId;
       try {
         await sweepExpiredSandboxSkillWorkspaces(sandboxService);
         const init = await sandboxService.callTool('runCommand', {
-          command: `umask 077 && mkdir -p ${shellQuote(root)} && chmod 700 ${shellQuote(root)}`,
+          command: `umask 077 && mkdir -p ${shellQuote(root)} && [ ! -L ${shellQuote(root)} ] && [ "$(stat -c %u ${shellQuote(root)})" = "$(id -u)" ] && chmod 700 ${shellQuote(root)}`,
         });
         if (!init.success) throw new Error(init.error?.message || 'Failed to create workspace');
         let runDir: string | undefined;
@@ -408,7 +415,7 @@ const execInSandboxHandler = async ({
               throw new Error(write.error?.message || 'Failed to write workspace');
           }
           const protect = await sandboxService.callTool('runCommand', {
-            command: `find ${shellQuote(skillDir)} -type d -exec chmod 700 {} + && find ${shellQuote(skillDir)} -type f -exec chmod 600 {} +`,
+            command: `[ ! -L ${shellQuote(root)} ] && [ "$(stat -c %u ${shellQuote(root)})" = "$(id -u)" ] && ! find -P ${shellQuote(skillDir)} -type l -print -quit | grep -q . && find -P ${shellQuote(skillDir)} -type d -exec chmod 700 {} + && find -P ${shellQuote(skillDir)} -type f -exec chmod 600 {} +`,
           });
           if (!protect.success)
             throw new Error(protect.error?.message || 'Failed to protect workspace');
@@ -424,7 +431,17 @@ const execInSandboxHandler = async ({
       response = await sandboxService.callTool(toolName, enhancedParams);
     }
 
-    log('execInSandbox response for %s: %O', toolName, response);
+    const exitCode =
+      response.result && typeof response.result === 'object' && 'exitCode' in response.result
+        ? response.result.exitCode
+        : undefined;
+    log(
+      'execInSandbox completed tool=%s success=%s exitCode=%s correlation=%s',
+      toolName,
+      response.success,
+      typeof exitCode === 'number' ? exitCode : 'unknown',
+      managedCorrelationId ?? 'none',
+    );
 
     if (!response.success && isSandboxAuthError(response.error)) {
       throwSandboxAuthError();
@@ -432,20 +449,28 @@ const execInSandboxHandler = async ({
 
     return response;
   } catch (error) {
-    log('execInSandbox error for %s: %O', toolName, error);
+    log(
+      'execInSandbox failed tool=%s errorClass=%s correlation=%s',
+      toolName,
+      error instanceof Error ? error.name : 'UnknownError',
+      managedCorrelationId ?? 'none',
+    );
 
     // Re-throw TRPCError as-is (e.g., UNAUTHORIZED from above)
     if (error instanceof TRPCError) {
       throw error;
     }
 
-    const errorMessage = (error as Error).message;
+    const rawErrorMessage = error instanceof Error ? error.message : String(error);
+    const errorMessage = managedRequest
+      ? `Managed Skill execution failed${managedCorrelationId ? ` (${managedCorrelationId})` : ''}`
+      : String(redactForLog(rawErrorMessage)).slice(0, 1000);
 
     // Check for authentication errors thrown as exceptions
     if (
-      errorMessage.toLowerCase().includes('invalid_token') ||
-      errorMessage.toLowerCase().includes('token expired') ||
-      errorMessage.toLowerCase().includes('unauthorized')
+      rawErrorMessage.toLowerCase().includes('invalid_token') ||
+      rawErrorMessage.toLowerCase().includes('token expired') ||
+      rawErrorMessage.toLowerCase().includes('unauthorized')
     ) {
       throw new TRPCError({
         code: 'UNAUTHORIZED',

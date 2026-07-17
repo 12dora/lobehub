@@ -1,4 +1,5 @@
 import type { ExecScriptActivatedSkill } from '@lobechat/builtin-tool-skills';
+import { validateInlineSkillOperationPayloads } from '@lobechat/device-control';
 
 import { agentSkillService } from '@/services/skill';
 import type { PlatformSkillOperationSnapshot } from '@/types/platform/skills';
@@ -82,6 +83,7 @@ class DesktopSkillRuntimeService {
     const workspaceIds: string[] = [];
     let cwd: string | undefined;
     try {
+      const resolvedSkills = [];
       for (const activated of activatedSkills ?? []) {
         const ref = refsByKey.get(activated.name);
         if (!ref)
@@ -94,11 +96,21 @@ class DesktopSkillRuntimeService {
         ) {
           throw new Error(`Managed Skill could not be resolved exactly: ${ref.skillKey}`);
         }
+        resolvedSkills.push({ ref, resolved });
+      }
+      const payloads = validateInlineSkillOperationPayloads(
+        resolvedSkills.map(({ resolved }) => ({
+          resources: resolved.resources,
+          skillContent: resolved.content,
+        })),
+      );
+      for (const [index, { ref }] of resolvedSkills.entries()) {
+        const payload = payloads[index];
         const prepared = await localFileService.prepareInlineSkillWorkspace({
           checksum: ref.checksum,
           operationId,
-          resources: resolved.resources,
-          skillContent: resolved.content,
+          resources: payload.resources,
+          skillContent: payload.skillContent,
           skillKey: ref.skillKey,
           version: ref.version,
         });

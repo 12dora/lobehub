@@ -2,11 +2,7 @@ import { LocalSystemApiName, LocalSystemIdentifier } from '@lobechat/builtin-too
 import type { CommandResult, ExecScriptActivatedSkill } from '@lobechat/builtin-tool-skills';
 import type { SkillRuntimeService } from '@lobechat/builtin-tool-skills/executionRuntime';
 import type { PlatformSkillOperationSnapshot } from '@lobechat/context-engine';
-import {
-  MAX_INLINE_SKILL_FILES,
-  MAX_INLINE_SKILL_TOTAL_BYTES,
-  validateInlineSkillResources,
-} from '@lobechat/device-control';
+import { validateInlineSkillOperationPayloads } from '@lobechat/device-control';
 
 import type { LobeChatDatabase } from '@/database/type';
 import {
@@ -65,29 +61,19 @@ export class ManagedSkillServerRuntimeService implements SkillRuntimeService {
     if (!activatedSkills?.length) {
       throw new Error('Managed Skill execScript requires an activated operation Skill');
     }
-    if (activatedSkills.length > MAX_INLINE_SKILL_FILES) {
-      throw new Error('Managed Skill activation count exceeds the workspace limit');
-    }
     const resolved = [];
-    let totalFiles = 0;
-    let totalBytes = 0;
     for (const activated of activatedSkills) {
       const ref = this.refsByKey.get(activated.name);
       if (!ref)
         throw new Error(`Managed Skill is not in the operation snapshot: ${activated.name}`);
       const skill = await this.catalog.resolvePinnedForExecution(ref);
       if (!skill) throw new Error(`Managed Skill could not be resolved exactly: ${ref.skillKey}`);
-      const resources = validateInlineSkillResources(skill.resources);
-      totalFiles += resources.length + 1;
-      totalBytes +=
-        new TextEncoder().encode(skill.content).byteLength +
-        resources.reduce((sum, resource) => sum + resource.sizeBytes, 0);
-      if (totalFiles > MAX_INLINE_SKILL_FILES || totalBytes > MAX_INLINE_SKILL_TOTAL_BYTES) {
-        throw new Error('Managed Skill operation workspace exceeds its aggregate limit');
-      }
-      resolved.push({ ref, resources, skill });
+      resolved.push({ ref, skill });
     }
-    return resolved;
+    const payloads = validateInlineSkillOperationPayloads(
+      resolved.map(({ skill }) => ({ resources: skill.resources, skillContent: skill.content })),
+    );
+    return resolved.map((item, index) => ({ ...item, resources: payloads[index].resources }));
   };
 
   private sandboxService = () => {
@@ -147,7 +133,7 @@ export class ManagedSkillServerRuntimeService implements SkillRuntimeService {
     try {
       await sweepExpiredSandboxSkillWorkspaces(sandbox);
       const init = await sandbox.callTool('runCommand', {
-        command: `umask 077 && mkdir -p ${shellQuote(root)} && chmod 700 ${shellQuote(root)}`,
+        command: `umask 077 && mkdir -p ${shellQuote(root)} && [ ! -L ${shellQuote(root)} ] && [ "$(stat -c %u ${shellQuote(root)})" = "$(id -u)" ] && chmod 700 ${shellQuote(root)}`,
       });
       if (!init.success) throw new Error(init.error?.message || 'Failed to create Skill workspace');
 
@@ -165,7 +151,7 @@ export class ManagedSkillServerRuntimeService implements SkillRuntimeService {
           }
         }
         const protect = await sandbox.callTool('runCommand', {
-          command: `find ${shellQuote(skillDir)} -type d -exec chmod 700 {} + && find ${shellQuote(skillDir)} -type f -exec chmod 600 {} +`,
+          command: `[ ! -L ${shellQuote(root)} ] && [ "$(stat -c %u ${shellQuote(root)})" = "$(id -u)" ] && ! find -P ${shellQuote(skillDir)} -type l -print -quit | grep -q . && find -P ${shellQuote(skillDir)} -type d -exec chmod 700 {} + && find -P ${shellQuote(skillDir)} -type f -exec chmod 600 {} +`,
         });
         if (!protect.success)
           throw new Error(protect.error?.message || 'Failed to protect workspace');

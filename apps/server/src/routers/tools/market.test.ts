@@ -19,6 +19,7 @@ const mockMarketSDK = vi.hoisted(() => ({
 }));
 const managedSkillMocks = vi.hoisted(() => ({
   AgentSkillModel: vi.fn(() => ({ findByName: vi.fn() })),
+  debugLog: vi.fn(),
   FileModel: vi.fn(() => ({ checkHash: vi.fn() })),
   resolveRuntimeMode: vi.fn(),
   SkillCatalogReadService: vi.fn(() => ({
@@ -91,7 +92,7 @@ vi.mock('@/server/services/toolExecution/preprocessLhCommand', () => ({
 }));
 
 vi.mock('debug', () => ({
-  default: vi.fn(() => vi.fn()),
+  default: vi.fn(() => managedSkillMocks.debugLog),
 }));
 
 describe('tools marketRouter', () => {
@@ -228,6 +229,9 @@ describe('tools marketRouter', () => {
     expect(commands.findIndex((command) => command.includes('-mmin +240'))).toBeLessThan(
       commands.findIndex((command) => command.startsWith('umask 077 && mkdir -p')),
     );
+    const managedLogs = JSON.stringify(managedSkillMocks.debugLog.mock.calls);
+    expect(managedLogs).not.toContain('print("ok")');
+    expect(managedLogs).not.toContain('/tmp/lobe-managed-skills');
 
     await expect(
       caller.execInSandbox({
@@ -249,6 +253,68 @@ describe('tools marketRouter', () => {
         topicId: 'topic-1',
       }),
     ).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+  });
+
+  it('redacts managed materialization errors and never logs resource paths', async () => {
+    const checksum = 'a'.repeat(64);
+    managedSkillMocks.parseEnterpriseFeatureFlags.mockReturnValue({
+      ENABLE_PLATFORM_MANAGED_SKILLS: true,
+    });
+    managedSkillMocks.SkillCatalogReadService.mockImplementation(
+      () =>
+        ({
+          resolvePinnedForExecution: vi.fn().mockResolvedValue({
+            checksum,
+            content: '# secret managed content',
+            contentRef: null,
+            resources: [
+              {
+                checksum: 'b'.repeat(64),
+                content: 'Bearer super-secret-token',
+                mediaType: 'text/plain',
+                path: '/tmp/private-resource.txt',
+                sizeBytes: 25,
+              },
+            ],
+            skillKey: 'managed.skill',
+            version: '1.0.0',
+          }),
+        }) as never,
+    );
+    mockPreprocessLhCommand.mockResolvedValue({
+      command: 'true',
+      isLhCommand: false,
+      skipSkillLookup: false,
+    });
+    const caller = marketRouter.createCaller({ serverDB: {}, userId: 'user-1' } as any);
+
+    await expect(
+      caller.execInSandbox({
+        agentId: 'agent-1',
+        operationId: 'operation-1',
+        params: {
+          activatedSkills: [{ name: 'managed.skill' }],
+          command: 'true',
+          operationId: 'operation-1',
+          platformSkillSnapshot: {
+            agentId: 'agent-1',
+            operationId: 'operation-1',
+            proof: 'signed-proof',
+            refs: [{ checksum, skillKey: 'managed.skill', version: '1.0.0' }],
+            revision: 'catalog-r1',
+          },
+        },
+        toolName: 'execScript',
+        topicId: 'topic-1',
+      }),
+    ).resolves.toMatchObject({
+      error: { message: 'Managed Skill execution failed' },
+      success: false,
+    });
+    const logs = JSON.stringify(managedSkillMocks.debugLog.mock.calls);
+    expect(logs).not.toContain('private-resource');
+    expect(logs).not.toContain('super-secret-token');
+    expect(logs).not.toContain('secret managed content');
   });
 
   it('retries a failed managed cloud workspace cleanup', async () => {
