@@ -3,6 +3,19 @@ import { describe, expect, it } from 'vitest';
 
 import {
   adminPlatformAgentAppendVersionInputSchema,
+  adminPlatformAgentArchiveInputSchema,
+  adminPlatformAgentAssignmentPreviewInputSchema,
+  adminPlatformAgentAssignmentRemoveInputSchema,
+  adminPlatformAgentAssignmentUpsertInputSchema,
+  adminPlatformAgentDependentsOutputSchema,
+  adminPlatformAgentDetailOutputSchema,
+  adminPlatformAgentGetInputSchema,
+  adminPlatformAgentListInputSchema,
+  adminPlatformAgentListOutputSchema,
+  adminPlatformAgentRolloutCancelInputSchema,
+  adminPlatformAgentRolloutRollbackInputSchema,
+  adminPlatformAgentRolloutStartInputSchema,
+  adminPlatformAgentUpdateDraftInputSchema,
   platformAgentAssignmentSchema,
   platformAgentDependencySnapshotSchema,
   platformAgentEffectiveListOutputSchema,
@@ -42,6 +55,51 @@ const dependencySnapshot = {
     providerRevision: 7,
   },
   skills: [{ checksum, skillKey: 'research', version: '1.0.0' }],
+};
+
+const draft = {
+  agentKey: 'research',
+  currentVersionId: 'version-id',
+  draftSequence: 2,
+  id: 'agent-id',
+  isDefault: false,
+  migrationRequired: false,
+  revision: 1,
+  status: 'published' as const,
+  systemKey: null,
+};
+
+const version = {
+  agentId: 'agent-id',
+  checksum,
+  config,
+  createdAt: new Date('2026-07-17T00:00:00Z'),
+  createdBy: 'admin-id',
+  dependencySnapshot,
+  id: 'version-id',
+  version: '1.0.0',
+};
+
+const assignment = {
+  agentId: 'agent-id',
+  enabled: true,
+  id: 'assignment-id',
+  mode: 'mandatory' as const,
+  pinnedVersionId: null,
+  targetId: PLATFORM_AGENT_GLOBAL_TARGET_ID,
+  targetType: 'global' as const,
+  versionPolicy: 'latest_published' as const,
+};
+
+const rollout = {
+  assignmentId: 'assignment-id',
+  completed: 9,
+  cursor: 'user-cursor',
+  failed: 1,
+  jobId: 'job-id',
+  status: 'dead' as const,
+  total: 10,
+  updatedAt: new Date('2026-07-17T00:00:00Z'),
 };
 
 describe('platform Agent contracts', () => {
@@ -92,16 +150,6 @@ describe('platform Agent contracts', () => {
   });
 
   it('keeps immutable versions strict and complete', () => {
-    const version = {
-      agentId: 'agent-id',
-      checksum,
-      config,
-      createdAt: new Date('2026-07-17T00:00:00Z'),
-      createdBy: 'admin-id',
-      dependencySnapshot,
-      id: 'version-id',
-      version: '1.0.0',
-    };
     expect(platformAgentImmutableVersionSchema.safeParse(version).success).toBe(true);
     expect(
       platformAgentImmutableVersionSchema.safeParse({ ...version, encryptedCredentials: 'x' })
@@ -188,17 +236,141 @@ describe('platform Agent contracts', () => {
   });
 
   it('preserves the terminal dead rollout state', () => {
+    expect(platformAgentRolloutProjectionSchema.safeParse(rollout).success).toBe(true);
+  });
+
+  it('defines strict list, get and detail endpoint projections', () => {
+    expect(adminPlatformAgentListInputSchema.safeParse({ query: 'research' }).success).toBe(true);
     expect(
-      platformAgentRolloutProjectionSchema.safeParse({
-        assignmentId: 'assignment-id',
-        completed: 9,
-        cursor: 'user-cursor',
-        failed: 1,
-        jobId: 'job-id',
-        status: 'dead',
-        total: 10,
-        updatedAt: new Date('2026-07-17T00:00:00Z'),
+      adminPlatformAgentListInputSchema.safeParse({ poison: true, query: 'research' }).success,
+    ).toBe(false);
+    expect(adminPlatformAgentGetInputSchema.safeParse({ id: 'agent-id' }).success).toBe(true);
+    expect(
+      adminPlatformAgentListOutputSchema.safeParse({
+        items: [
+          {
+            assignmentCount: 1,
+            displayName: 'Research Agent',
+            identity: draft,
+            publishedVersion: '1.0.0',
+          },
+        ],
+        nextCursor: null,
       }).success,
     ).toBe(true);
+    expect(
+      adminPlatformAgentDetailOutputSchema.safeParse({
+        assignments: [assignment],
+        draftToken: 'b'.repeat(64),
+        identity: draft,
+        rollouts: [rollout],
+        versions: [version],
+      }).success,
+    ).toBe(true);
+  });
+
+  it('requires CAS, reason and a non-empty update patch on identity mutations', () => {
+    const base = {
+      agentId: 'agent-id',
+      expectedDraftToken: 'b'.repeat(64),
+      expectedRevision: 1,
+      reason: 'approved change',
+    };
+    expect(adminPlatformAgentUpdateDraftInputSchema.safeParse(base).success).toBe(false);
+    expect(
+      adminPlatformAgentUpdateDraftInputSchema.safeParse({ ...base, isDefault: false }).success,
+    ).toBe(true);
+    expect(
+      adminPlatformAgentUpdateDraftInputSchema.safeParse({
+        ...base,
+        isDefault: true,
+        systemKey: null,
+      }).success,
+    ).toBe(false);
+    expect(adminPlatformAgentArchiveInputSchema.safeParse(base).success).toBe(true);
+    expect(adminPlatformAgentArchiveInputSchema.safeParse({ ...base, reason: '' }).success).toBe(
+      false,
+    );
+  });
+
+  it('keeps assignment upsert and preview target/version invariants identical', () => {
+    const write = {
+      agentId: 'agent-id',
+      enabled: true,
+      mode: 'optional' as const,
+      pinnedVersionId: null,
+      reason: 'assign cohort',
+      targetId: PLATFORM_AGENT_GLOBAL_TARGET_ID,
+      targetType: 'global' as const,
+      versionPolicy: 'latest_published' as const,
+    };
+    expect(adminPlatformAgentAssignmentUpsertInputSchema.safeParse(write).success).toBe(true);
+    expect(
+      adminPlatformAgentAssignmentUpsertInputSchema.safeParse({
+        ...write,
+        targetId: 'not-global',
+      }).success,
+    ).toBe(false);
+    const { agentId: _, reason: __, ...preview } = write;
+    expect(
+      adminPlatformAgentAssignmentPreviewInputSchema.safeParse({
+        agentId: 'agent-id',
+        assignment: preview,
+      }).success,
+    ).toBe(true);
+    expect(
+      adminPlatformAgentAssignmentRemoveInputSchema.safeParse({
+        agentId: 'agent-id',
+        assignmentId: 'assignment-id',
+        reason: 'remove cohort',
+      }).success,
+    ).toBe(true);
+  });
+
+  it('gates rollout mutations with reasons and strict rollback targets', () => {
+    expect(
+      adminPlatformAgentRolloutStartInputSchema.safeParse({
+        agentId: 'agent-id',
+        assignmentId: 'assignment-id',
+        reason: 'start rollout',
+      }).success,
+    ).toBe(true);
+    expect(
+      adminPlatformAgentRolloutCancelInputSchema.safeParse({
+        agentId: 'agent-id',
+        jobId: 'job-id',
+      }).success,
+    ).toBe(false);
+    expect(
+      adminPlatformAgentRolloutRollbackInputSchema.safeParse({
+        agentId: 'agent-id',
+        jobId: 'job-id',
+        reason: 'compensate rollout',
+        targetVersionId: 'version-id',
+      }).success,
+    ).toBe(true);
+  });
+
+  it('bounds and redacts dependent endpoint output', () => {
+    expect(
+      adminPlatformAgentDependentsOutputSchema.safeParse({
+        items: [
+          {
+            id: 'assignment-id',
+            key: 'global',
+            name: 'All users',
+            type: 'assignment',
+            version: '1.0.0',
+          },
+        ],
+        nextCursor: null,
+      }).success,
+    ).toBe(true);
+    expect(
+      adminPlatformAgentDependentsOutputSchema.safeParse({
+        items: [{ secret: 'token', type: 'assignment' }],
+        nextCursor: null,
+      }).success,
+    ).toBe(false);
   });
 });
