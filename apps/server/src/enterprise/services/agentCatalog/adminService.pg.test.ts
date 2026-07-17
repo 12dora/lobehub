@@ -15,12 +15,14 @@ import { Pool } from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
+import { PlatformAgentCatalogRepository } from '@/database/repositories/platformAgentCatalog';
 import * as schema from '@/database/schemas';
 import {
   platformAgentAssignments,
   platformAgents,
   platformAgentVersions,
   platformAuditLogs,
+  platformUserAgentMaterializations,
 } from '@/database/schemas/platform';
 import { roles, userRoles } from '@/database/schemas/rbac';
 import { users } from '@/database/schemas/user';
@@ -30,9 +32,12 @@ import type { LobeChatDatabase } from '@/database/type';
 import { PlatformAgentAdminService } from './adminService';
 import {
   PlatformAgentDefaultRequiredError,
+  PlatformAgentInvalidInputError,
+  PlatformAgentNotFoundError,
   PlatformAgentResourceInUseError,
   PlatformAgentRevisionConflictError,
 } from './errors';
+import { translatePlatformAgentPgError } from './pgErrors';
 import { platformAgentDraftToken } from './publication';
 
 const enabled = process.env.TEST_SERVER_DB === '1' && Boolean(process.env.DATABASE_TEST_URL);
@@ -520,6 +525,394 @@ run('PlatformAgentAdminService (PostgreSQL) — ADM-04 / ADM-05', () => {
       // 1 assignment page + (no overflow) 1 materialization page + 1 batched versions = 2..3, constant.
       expect(small.queries).toBe(large.queries);
       expect(large.queries).toBeLessThanOrEqual(3);
+    }, 30_000);
+  });
+
+  // ADM-03: real pg/Drizzle cause chains normalize by actual constraint / trigger, no leak.
+  describe('constraint / trigger normalization (real cause chain)', () => {
+    const rawErrorOf = async (op: () => Promise<unknown>) => {
+      try {
+        await op();
+        throw new Error('expected a database error');
+      } catch (error) {
+        return error;
+      }
+    };
+
+    it('normalizes unique / FK / trigger violations to stable redacted errors', async () => {
+      await seedDraftAgent('norm-a', 'norm-a');
+      await seedPublishedAgent('norm-pub', 'norm-pub');
+      await db.insert(users).values({ id: 'norm-user' });
+      await db.insert(roles).values({
+        displayName: 'R',
+        id: 'norm-role',
+        isActive: true,
+        name: 'norm-role',
+      });
+
+      // agent key unique (23505) → InvalidInput
+      const dupKey = await rawErrorOf(() =>
+        db.insert(platformAgents).values({
+          agentKey: 'norm-a',
+          id: 'norm-a-dup',
+          migrationRequired: false,
+          status: 'draft',
+          title: 'norm-a',
+        }),
+      );
+      expect(translatePlatformAgentPgError(dupKey)).toBeInstanceOf(PlatformAgentInvalidInputError);
+
+      // system key unique (23505) → RevisionConflict (default-inbox singleton)
+      await db.insert(platformAgents).values({
+        agentKey: 'sys-1',
+        id: 'sys-1',
+        isDefault: true,
+        migrationRequired: false,
+        status: 'draft',
+        systemKey: 'default-inbox',
+        title: 'sys-1',
+      });
+      const dupSystem = await rawErrorOf(() =>
+        db.insert(platformAgents).values({
+          agentKey: 'sys-2',
+          id: 'sys-2',
+          isDefault: true,
+          migrationRequired: false,
+          status: 'draft',
+          systemKey: 'default-inbox',
+          title: 'sys-2',
+        }),
+      );
+      expect(translatePlatformAgentPgError(dupSystem)).toBeInstanceOf(
+        PlatformAgentRevisionConflictError,
+      );
+
+      // SemVer version unique (23505) → InvalidInput
+      await db.insert(platformAgentVersions).values({
+        agentId: 'norm-a',
+        checksum: CHECKSUM,
+        config: config('norm-a'),
+        dependencySnapshot,
+        id: 'norm-a-ver1',
+        version: '1.0.0',
+      });
+      const dupVersion = await rawErrorOf(() =>
+        db.insert(platformAgentVersions).values({
+          agentId: 'norm-a',
+          checksum: CHECKSUM,
+          config: config('norm-a'),
+          dependencySnapshot,
+          id: 'norm-a-ver2',
+          version: '1.0.0',
+        }),
+      );
+      expect(translatePlatformAgentPgError(dupVersion)).toBeInstanceOf(
+        PlatformAgentInvalidInputError,
+      );
+
+      // assignment target unique (23505) → InvalidInput
+      await db.insert(platformAgentAssignments).values({
+        agentId: 'norm-pub',
+        enabled: true,
+        id: 'norm-assign-1',
+        mode: 'optional',
+        status: 'active',
+        targetId: 'norm-user',
+        targetType: 'user',
+        versionPolicy: 'latest_published',
+      });
+      const dupTarget = await rawErrorOf(() =>
+        db.insert(platformAgentAssignments).values({
+          agentId: 'norm-pub',
+          enabled: true,
+          id: 'norm-assign-2',
+          mode: 'optional',
+          status: 'active',
+          targetId: 'norm-user',
+          targetType: 'user',
+          versionPolicy: 'latest_published',
+        }),
+      );
+      expect(translatePlatformAgentPgError(dupTarget)).toBeInstanceOf(
+        PlatformAgentInvalidInputError,
+      );
+
+      // target trigger, missing user (23503, no constraint) → InvalidInput
+      const ghostUser = await rawErrorOf(() =>
+        db.insert(platformAgentAssignments).values({
+          agentId: 'norm-pub',
+          enabled: true,
+          id: 'norm-ghost-user',
+          mode: 'optional',
+          status: 'active',
+          targetId: 'ghost-user',
+          targetType: 'user',
+          versionPolicy: 'latest_published',
+        }),
+      );
+      expect(translatePlatformAgentPgError(ghostUser)).toBeInstanceOf(
+        PlatformAgentInvalidInputError,
+      );
+
+      // target trigger, missing global role (23503, no constraint) → InvalidInput
+      const ghostRole = await rawErrorOf(() =>
+        db.insert(platformAgentAssignments).values({
+          agentId: 'norm-pub',
+          enabled: true,
+          id: 'norm-ghost-role',
+          mode: 'optional',
+          status: 'active',
+          targetId: 'ghost-role',
+          targetType: 'global_role',
+          versionPolicy: 'latest_published',
+        }),
+      );
+      expect(translatePlatformAgentPgError(ghostRole)).toBeInstanceOf(
+        PlatformAgentInvalidInputError,
+      );
+
+      // The mapped errors carry no SQLSTATE / constraint / target / value.
+      for (const raw of [dupKey, dupSystem, dupVersion, dupTarget, ghostUser, ghostRole]) {
+        const mapped = translatePlatformAgentPgError(raw) as { code: string; message: string };
+        expect(JSON.stringify({ code: mapped.code, message: mapped.message })).not.toMatch(
+          /23505|23503|constraint|platform_agents_|platform_agent_|_unique|_fk|norm-user|ghost-|norm-a|__global__/,
+        );
+      }
+    });
+
+    it('rejects a duplicate assignment target through the service with a redacted failure audit', async () => {
+      await seedPublishedAgent('svc-dup', 'svc-dup');
+      await db.insert(users).values({ id: 'svc-user' });
+      const service = new PlatformAgentAdminService(db);
+      const upsert = async () =>
+        service.upsertAssignment('admin', {
+          ...(await pointerFor('svc-dup')),
+          enabled: true,
+          mode: 'optional',
+          pinnedVersionId: null,
+          reason: 'assign',
+          targetId: 'svc-user',
+          targetType: 'user',
+          versionPolicy: 'latest_published',
+        });
+      await upsert();
+      await expect(upsert()).rejects.toBeInstanceOf(PlatformAgentInvalidInputError);
+
+      const failures = await db
+        .select()
+        .from(platformAuditLogs)
+        .where(eq(platformAuditLogs.action, 'admin.agents.assignments.create'));
+      const failed = failures.find((row) => row.result === 'failure');
+      expect(failed?.afterDiff).toEqual({ error: 'invalid_input' });
+      expect(JSON.stringify(failed?.afterDiff)).not.toMatch(/svc-user|23505|constraint|_unique/);
+    });
+  });
+
+  // ADM-02: the shared per-Agent reference lock closes the archive/reference TOCTOU window.
+  describe('referenceable-Agent protocol (TOCTOU)', () => {
+    const poolService = () => {
+      const pool = new Pool({ connectionString, max: 1 });
+      const scopedDb = drizzle(pool, { schema }) as unknown as LobeChatDatabase;
+      return { pool, service: new PlatformAgentAdminService(scopedDb), scopedDb };
+    };
+    const assignmentCount = async (agentId: string) => {
+      const [row] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(platformAgentAssignments)
+        .where(eq(platformAgentAssignments.agentId, agentId));
+      return row.count;
+    };
+    const materializationCount = async (agentId: string) => {
+      const [row] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(platformUserAgentMaterializations)
+        .where(eq(platformUserAgentMaterializations.platformAgentId, agentId));
+      return row.count;
+    };
+    const upsertAssignment = (
+      service: PlatformAgentAdminService,
+      agentId: string,
+      pointer: Awaited<ReturnType<typeof pointerFor>>,
+      target: { targetId: string; targetType: 'global' | 'global_role' | 'user' },
+    ) =>
+      service.upsertAssignment('admin', {
+        ...pointer,
+        enabled: true,
+        mode: 'optional',
+        pinnedVersionId: null,
+        reason: 'assign',
+        versionPolicy: 'latest_published',
+        ...target,
+      });
+    const materialize = (target: LobeChatDatabase, agentId: string, userId: string) =>
+      new PlatformAgentCatalogRepository(target).upsertMaterialization({
+        platformAgentId: agentId,
+        platformAgentVersionChecksum: CHECKSUM,
+        platformAgentVersionId: `${agentId}-v1`,
+        userId,
+      });
+
+    it.each([
+      ['global', { targetId: '__global__', targetType: 'global' as const }],
+      ['user', { targetId: 'toctou-user', targetType: 'user' as const }],
+      ['global_role', { targetId: 'toctou-role', targetType: 'global_role' as const }],
+    ])(
+      'archive rejects with resource-in-use when a %s assignment committed first',
+      async (_label, target) => {
+        await seedPublishedAgent('ref-seq', 'ref-seq');
+        await db.insert(users).values({ id: 'toctou-user' });
+        await db
+          .insert(roles)
+          .values({ displayName: 'R', id: 'toctou-role', isActive: true, name: 'toctou-role' });
+        const service = new PlatformAgentAdminService(db);
+        await upsertAssignment(service, 'ref-seq', await pointerFor('ref-seq'), target);
+
+        await expect(
+          service.archive('admin', {
+            ...(await pointerFor('ref-seq')),
+            reason: 'archive after assign',
+            replacementAgentId: null,
+          }),
+        ).rejects.toBeInstanceOf(PlatformAgentResourceInUseError);
+        expect((await currentIdentity('ref-seq')).status).toBe('published');
+      },
+    );
+
+    it('rejects a new assignment against an already-archived Agent (no orphan reference)', async () => {
+      await seedPublishedAgent('ref-archived', 'ref-archived');
+      await db.insert(users).values({ id: 'toctou-user' });
+      const service = new PlatformAgentAdminService(db);
+      await service.archive('admin', {
+        ...(await pointerFor('ref-archived')),
+        reason: 'archive first',
+        replacementAgentId: null,
+      });
+      expect((await currentIdentity('ref-archived')).status).toBe('archived');
+
+      await expect(
+        upsertAssignment(service, 'ref-archived', await pointerFor('ref-archived'), {
+          targetId: 'toctou-user',
+          targetType: 'user',
+        }),
+      ).rejects.toBeInstanceOf(PlatformAgentNotFoundError);
+      expect(await assignmentCount('ref-archived')).toBe(0);
+    });
+
+    it('archive rejects when a materialization committed first, and no-ops on an archived Agent', async () => {
+      await seedPublishedAgent('ref-mat', 'ref-mat');
+      await seedPublishedAgent('ref-mat2', 'ref-mat2');
+      await db.insert(users).values([{ id: 'mat-user' }, { id: 'mat-user2' }]);
+      const service = new PlatformAgentAdminService(db);
+
+      // materialization first → archive resource-in-use
+      await materialize(db, 'ref-mat', 'mat-user');
+      await expect(
+        service.archive('admin', {
+          ...(await pointerFor('ref-mat')),
+          reason: 'archive after materialize',
+          replacementAgentId: null,
+        }),
+      ).rejects.toBeInstanceOf(PlatformAgentResourceInUseError);
+
+      // archive first → materialization is rejected (undefined), no row created
+      await service.archive('admin', {
+        ...(await pointerFor('ref-mat2')),
+        reason: 'archive first',
+        replacementAgentId: null,
+      });
+      expect(await materialize(db, 'ref-mat2', 'mat-user2')).toBeUndefined();
+      expect(await materializationCount('ref-mat2')).toBe(0);
+    });
+
+    it('concurrent archive vs assignment never leaves an archived Agent with a reference', async () => {
+      for (let round = 0; round < 6; round += 1) {
+        await cleanup();
+        const agentId = `race-${round}`;
+        await seedPublishedAgent(agentId, agentId);
+        await db.insert(users).values({ id: 'race-user' });
+        const a = poolService();
+        const b = poolService();
+        try {
+          const pointer = await pointerFor(agentId);
+          const results = await Promise.allSettled([
+            a.service.archive('admin', {
+              ...pointer,
+              reason: 'concurrent archive',
+              replacementAgentId: null,
+            }),
+            upsertAssignment(b.service, agentId, pointer, {
+              targetId: 'race-user',
+              targetType: 'user',
+            }),
+          ]);
+          const fulfilled = results.filter((r) => r.status === 'fulfilled');
+          expect(fulfilled).toHaveLength(1);
+          const archived = (await currentIdentity(agentId)).status === 'archived';
+          const count = await assignmentCount(agentId);
+          // Core invariant: never an archived Agent that still owns a reference.
+          expect(archived ? count === 0 : count === 1).toBe(true);
+        } finally {
+          await Promise.all([a.pool.end(), b.pool.end()]);
+        }
+      }
+    }, 30_000);
+  });
+
+  // ADM-01: create joins the singleton lock; create / switch / archive / bootstrap never deadlock.
+  describe('default singleton lock ordering', () => {
+    it('runs concurrent create + setDefault switch + archive without deadlock', async () => {
+      await seedPublishedAgent('ord-a', 'ord-a');
+      await seedPublishedAgent('ord-b', 'ord-b');
+      await seedPublishedAgent('ord-c', 'ord-c');
+      // ord-a starts as the default; the switch hands it to ord-b.
+      await db
+        .update(platformAgents)
+        .set({ isDefault: true, systemKey: 'default-inbox' })
+        .where(eq(platformAgents.id, 'ord-a'));
+
+      const make = () => {
+        const pool = new Pool({ connectionString, max: 1 });
+        return { pool, service: new PlatformAgentAdminService(drizzle(pool, { schema }) as never) };
+      };
+      const [creator, switcher, archiver] = [make(), make(), make()];
+      try {
+        const results = await Promise.allSettled([
+          creator.service.create('admin', {
+            agentKey: 'ord-new',
+            isDefault: false,
+            reason: 'concurrent create',
+            systemKey: null,
+          }),
+          switcher.service.setDefaultInbox('admin', {
+            currentDefault: await pointerFor('ord-a'),
+            nextDefault: await pointerFor('ord-b'),
+            reason: 'concurrent switch',
+          }),
+          archiver.service.archive('admin', {
+            ...(await pointerFor('ord-c')),
+            reason: 'concurrent archive',
+            replacementAgentId: null,
+          }),
+        ]);
+
+        // No deadlock: every serialized default mutation completes.
+        for (const result of results) {
+          if (result.status === 'rejected') {
+            expect(String((result.reason as { code?: string })?.code ?? '')).not.toBe('40P01');
+          }
+        }
+        expect(results.every((r) => r.status === 'fulfilled')).toBe(true);
+
+        const [defaults] = await db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(platformAgents)
+          .where(eq(platformAgents.isDefault, true));
+        expect(defaults.count).toBe(1);
+        expect((await currentIdentity('ord-b')).isDefault).toBe(true);
+        expect((await currentIdentity('ord-c')).status).toBe('archived');
+      } finally {
+        await Promise.all([creator.pool.end(), switcher.pool.end(), archiver.pool.end()]);
+      }
     }, 30_000);
   });
 });

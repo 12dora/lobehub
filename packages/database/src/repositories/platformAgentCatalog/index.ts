@@ -101,6 +101,34 @@ const inTransaction = async <T>(
   operation: (transaction: Transaction) => Promise<T>,
 ): Promise<T> => (isRootDatabase(db) ? db.transaction(operation) : operation(db));
 
+const PLATFORM_AGENT_REFERENCE_LOCK_NAMESPACE = 'aihub:platform-agent-reference:v1';
+
+/**
+ * Per-Agent transaction-level advisory lock for the "referenceable Agent" protocol.
+ *
+ * Every path that creates or updates a reference to a platform Agent — assignment
+ * insert/update and materialization upsert — and the archive path acquire this same
+ * per-Agent lock, so a reference write and an archive of the same Agent are mutually
+ * exclusive and cannot interleave into an archived-Agent orphan reference.
+ *
+ * Global lock order (acquire strictly in this order to stay deadlock-free):
+ *   (1) default-inbox singleton advisory lock  (acquirePlatformDefaultInboxLock)
+ *   (2) per-Agent reference advisory lock       (this)         — sorted by agentId
+ *   (3) identity row FOR UPDATE                 (lockIdentity) — sorted by id
+ *
+ * Reference writers acquire (2) then (3); archive acquires (1) then (2) then (3);
+ * setDefaultInbox acquires (1) then (3). No path ever takes a later lock before an
+ * earlier one, so the wait-for graph has no cycle.
+ */
+export const acquirePlatformAgentReferenceLock = async (
+  db: LobeChatDatabase | Transaction,
+  agentId: string,
+): Promise<void> => {
+  await db.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtext(${`${PLATFORM_AGENT_REFERENCE_LOCK_NAMESPACE}:${agentId}`})::bigint)`,
+  );
+};
+
 const targetPriority = sql<1 | 2 | 3>`CASE
   WHEN ${platformAgentAssignments.targetType} = 'user' THEN 3
   WHEN ${platformAgentAssignments.targetType} = 'global_role' THEN 2
@@ -372,30 +400,58 @@ export class PlatformAgentCatalogRepository {
       return identity;
     });
 
-  createAssignment = async (
-    values: PlatformAgentAssignmentWrite,
-  ): Promise<PlatformAgentAssignmentSafeItem> => {
-    const [row] = await this.db
-      .insert(platformAgentAssignments)
-      .values({ ...values, status: 'active' })
-      .returning(safeAssignmentColumns);
+  /**
+   * Acquire the per-Agent reference lock (2) then the identity row lock (3), and return
+   * the row only if it can still accept references. Any concurrent archive of this Agent
+   * is serialized behind the same lock: a writer that wakes after the archive commits sees
+   * `status = 'archived'` (or a vanished / migration-pending row) and is rejected here, which
+   * — together with archive counting references under the same lock — closes the TOCTOU window.
+   */
+  private lockReferenceableAgent = async (
+    db: LobeChatDatabase | Transaction,
+    agentId: string,
+  ): Promise<PlatformAgentItem | undefined> => {
+    await acquirePlatformAgentReferenceLock(db, agentId);
+    const [row] = await db
+      .select()
+      .from(platformAgents)
+      .where(eq(platformAgents.id, agentId))
+      .for('update')
+      .limit(1);
+    if (!row || row.migrationRequired || row.status === 'archived') return undefined;
     return row;
   };
+
+  createAssignment = async (
+    values: PlatformAgentAssignmentWrite,
+  ): Promise<PlatformAgentAssignmentSafeItem | undefined> =>
+    inTransaction(this.db, async (tx) => {
+      const agent = await this.lockReferenceableAgent(tx, values.agentId);
+      if (!agent) return undefined;
+      const [row] = await tx
+        .insert(platformAgentAssignments)
+        .values({ ...values, status: 'active' })
+        .returning(safeAssignmentColumns);
+      return row;
+    });
 
   updateAssignment = async (
     agentId: string,
     id: string,
     values: Omit<PlatformAgentAssignmentWrite, 'agentId'>,
-  ): Promise<PlatformAgentAssignmentSafeItem | undefined> => {
-    const [row] = await this.db
-      .update(platformAgentAssignments)
-      .set({ ...values, updatedAt: new Date() })
-      .where(
-        and(eq(platformAgentAssignments.id, id), eq(platformAgentAssignments.agentId, agentId)),
-      )
-      .returning(safeAssignmentColumns);
-    return row;
-  };
+  ): Promise<PlatformAgentAssignmentSafeItem | undefined> =>
+    inTransaction(this.db, async (tx) => {
+      const agent = await this.lockReferenceableAgent(tx, agentId);
+      if (!agent) return undefined;
+      const [row] = await tx
+        .update(platformAgentAssignments)
+        .set({ ...values, updatedAt: new Date() })
+        .where(
+          and(eq(platformAgentAssignments.id, id), eq(platformAgentAssignments.agentId, agentId)),
+        )
+        .returning(safeAssignmentColumns);
+      return row;
+    });
 
   deleteAssignment = async (
     agentId: string,
@@ -668,98 +724,105 @@ export class PlatformAgentCatalogRepository {
     platformAgentVersionId: string;
     status?: PlatformUserAgentMaterializationStatus;
     userId: string;
-  }): Promise<PlatformUserAgentMaterializationItem | undefined> => {
-    const hasHidden = Object.hasOwn(params, 'hidden') && params.hidden !== undefined;
-    const hasLastErrorCategory =
-      Object.hasOwn(params, 'lastErrorCategory') && params.lastErrorCategory !== undefined;
-    const hasMaterializedAgent =
-      Object.hasOwn(params, 'materializedAgentId') && params.materializedAgentId !== undefined;
-    const status =
-      params.status ??
-      (hasMaterializedAgent
-        ? params.materializedAgentId === null
-          ? 'pending'
-          : 'materialized'
-        : undefined);
-    const lastErrorCategory = hasLastErrorCategory
-      ? params.lastErrorCategory
-      : status && status !== 'error'
-        ? null
-        : undefined;
-    const matchesDesiredState = (item: PlatformUserAgentMaterializationItem) =>
-      item.platformAgentVersionId === params.platformAgentVersionId &&
-      item.platformAgentVersionChecksum === params.platformAgentVersionChecksum &&
-      (!hasHidden || item.hidden === params.hidden) &&
-      (!hasMaterializedAgent || item.materializedAgentId === params.materializedAgentId) &&
-      (!(hasLastErrorCategory || (status && status !== 'error')) ||
-        item.lastErrorCategory === lastErrorCategory) &&
-      (!status || item.status === status);
-    const insertValues = {
-      hidden: params.hidden ?? false,
-      lastErrorCategory,
-      lastSyncedAt: new Date(),
-      materializedAgentId: params.materializedAgentId,
-      platformAgentId: params.platformAgentId,
-      platformAgentVersionChecksum: params.platformAgentVersionChecksum,
-      platformAgentVersionId: params.platformAgentVersionId,
-      status: status ?? 'pending',
-      userId: params.userId,
-    };
-    if (!params.expectedCurrent) {
-      const [inserted] = await this.db
-        .insert(platformUserAgentMaterializations)
-        .values(insertValues)
-        .onConflictDoNothing({
-          target: [
-            platformUserAgentMaterializations.userId,
-            platformUserAgentMaterializations.platformAgentId,
-          ],
-        })
-        .returning();
-      if (inserted) return inserted;
-      const existing = await this.getMaterialization(params.userId, params.platformAgentId);
-      return existing && matchesDesiredState(existing) ? existing : undefined;
-    }
+  }): Promise<PlatformUserAgentMaterializationItem | undefined> =>
+    // Materialization is a reference to a platform Agent, so it joins the same
+    // referenceable-Agent protocol as assignment writes: reject when the Agent has been
+    // archived (or is missing / migration-pending) under the shared per-Agent lock.
+    inTransaction(this.db, async (tx) => {
+      const scoped = new PlatformAgentCatalogRepository(tx);
+      const agent = await this.lockReferenceableAgent(tx, params.platformAgentId);
+      if (!agent) return undefined;
+      const hasHidden = Object.hasOwn(params, 'hidden') && params.hidden !== undefined;
+      const hasLastErrorCategory =
+        Object.hasOwn(params, 'lastErrorCategory') && params.lastErrorCategory !== undefined;
+      const hasMaterializedAgent =
+        Object.hasOwn(params, 'materializedAgentId') && params.materializedAgentId !== undefined;
+      const status =
+        params.status ??
+        (hasMaterializedAgent
+          ? params.materializedAgentId === null
+            ? 'pending'
+            : 'materialized'
+          : undefined);
+      const lastErrorCategory = hasLastErrorCategory
+        ? params.lastErrorCategory
+        : status && status !== 'error'
+          ? null
+          : undefined;
+      const matchesDesiredState = (item: PlatformUserAgentMaterializationItem) =>
+        item.platformAgentVersionId === params.platformAgentVersionId &&
+        item.platformAgentVersionChecksum === params.platformAgentVersionChecksum &&
+        (!hasHidden || item.hidden === params.hidden) &&
+        (!hasMaterializedAgent || item.materializedAgentId === params.materializedAgentId) &&
+        (!(hasLastErrorCategory || (status && status !== 'error')) ||
+          item.lastErrorCategory === lastErrorCategory) &&
+        (!status || item.status === status);
+      const insertValues = {
+        hidden: params.hidden ?? false,
+        lastErrorCategory,
+        lastSyncedAt: new Date(),
+        materializedAgentId: params.materializedAgentId,
+        platformAgentId: params.platformAgentId,
+        platformAgentVersionChecksum: params.platformAgentVersionChecksum,
+        platformAgentVersionId: params.platformAgentVersionId,
+        status: status ?? 'pending',
+        userId: params.userId,
+      };
+      if (!params.expectedCurrent) {
+        const [inserted] = await tx
+          .insert(platformUserAgentMaterializations)
+          .values(insertValues)
+          .onConflictDoNothing({
+            target: [
+              platformUserAgentMaterializations.userId,
+              platformUserAgentMaterializations.platformAgentId,
+            ],
+          })
+          .returning();
+        if (inserted) return inserted;
+        const existing = await scoped.getMaterialization(params.userId, params.platformAgentId);
+        return existing && matchesDesiredState(existing) ? existing : undefined;
+      }
 
-    const set = {
-      ...(hasHidden ? { hidden: params.hidden } : {}),
-      ...(hasLastErrorCategory || (status && status !== 'error') ? { lastErrorCategory } : {}),
-      ...(hasMaterializedAgent ? { materializedAgentId: params.materializedAgentId } : {}),
-      ...(status ? { status } : {}),
-      lastSyncedAt: new Date(),
-      platformAgentVersionChecksum: params.platformAgentVersionChecksum,
-      platformAgentVersionId: params.platformAgentVersionId,
-      updatedAt: new Date(),
-    };
-    const stableMaterializedAgentId = !hasMaterializedAgent
-      ? undefined
-      : typeof params.materializedAgentId === 'string'
-        ? or(
-            isNull(platformUserAgentMaterializations.materializedAgentId),
-            eq(platformUserAgentMaterializations.materializedAgentId, params.materializedAgentId),
-          )
-        : isNull(platformUserAgentMaterializations.materializedAgentId);
-    const [updated] = await this.db
-      .update(platformUserAgentMaterializations)
-      .set(set)
-      .where(
-        and(
-          eq(platformUserAgentMaterializations.userId, params.userId),
-          eq(platformUserAgentMaterializations.platformAgentId, params.platformAgentId),
-          eq(
-            platformUserAgentMaterializations.platformAgentVersionId,
-            params.expectedCurrent.versionId,
+      const set = {
+        ...(hasHidden ? { hidden: params.hidden } : {}),
+        ...(hasLastErrorCategory || (status && status !== 'error') ? { lastErrorCategory } : {}),
+        ...(hasMaterializedAgent ? { materializedAgentId: params.materializedAgentId } : {}),
+        ...(status ? { status } : {}),
+        lastSyncedAt: new Date(),
+        platformAgentVersionChecksum: params.platformAgentVersionChecksum,
+        platformAgentVersionId: params.platformAgentVersionId,
+        updatedAt: new Date(),
+      };
+      const stableMaterializedAgentId = !hasMaterializedAgent
+        ? undefined
+        : typeof params.materializedAgentId === 'string'
+          ? or(
+              isNull(platformUserAgentMaterializations.materializedAgentId),
+              eq(platformUserAgentMaterializations.materializedAgentId, params.materializedAgentId),
+            )
+          : isNull(platformUserAgentMaterializations.materializedAgentId);
+      const [updated] = await tx
+        .update(platformUserAgentMaterializations)
+        .set(set)
+        .where(
+          and(
+            eq(platformUserAgentMaterializations.userId, params.userId),
+            eq(platformUserAgentMaterializations.platformAgentId, params.platformAgentId),
+            eq(
+              platformUserAgentMaterializations.platformAgentVersionId,
+              params.expectedCurrent.versionId,
+            ),
+            eq(
+              platformUserAgentMaterializations.platformAgentVersionChecksum,
+              params.expectedCurrent.checksum,
+            ),
+            stableMaterializedAgentId,
           ),
-          eq(
-            platformUserAgentMaterializations.platformAgentVersionChecksum,
-            params.expectedCurrent.checksum,
-          ),
-          stableMaterializedAgentId,
-        ),
-      )
-      .returning();
-    if (updated) return updated;
-    const existing = await this.getMaterialization(params.userId, params.platformAgentId);
-    return existing && matchesDesiredState(existing) ? existing : undefined;
-  };
+        )
+        .returning();
+      if (updated) return updated;
+      const existing = await scoped.getMaterialization(params.userId, params.platformAgentId);
+      return existing && matchesDesiredState(existing) ? existing : undefined;
+    });
 }

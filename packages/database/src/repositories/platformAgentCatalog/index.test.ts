@@ -282,7 +282,7 @@ describe('PlatformAgentCatalogRepository', () => {
       targetType: 'global_role',
       versionPolicy: 'latest_published',
     });
-    const userAssignment = await repository.createAssignment({
+    const userAssignment = (await repository.createAssignment({
       agentId: agent.id,
       enabled: true,
       mode: 'optional',
@@ -290,7 +290,7 @@ describe('PlatformAgentCatalogRepository', () => {
       targetId: USER_A,
       targetType: 'user',
       versionPolicy: 'pinned',
-    });
+    }))!;
     await serverDB
       .update(platformAgentAssignments)
       .set({
