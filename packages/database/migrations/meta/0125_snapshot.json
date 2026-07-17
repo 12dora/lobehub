@@ -14392,6 +14392,10 @@
           "name": "platform_user_agent_materializations_local_status_check",
           "value": "(\"platform_user_agent_materializations\".\"status\" = 'materialized' AND \"platform_user_agent_materializations\".\"materialized_agent_id\" IS NOT NULL)\n        OR (\"platform_user_agent_materializations\".\"status\" <> 'materialized')"
         },
+        "platform_user_agent_materializations_error_category_value_check": {
+          "name": "platform_user_agent_materializations_error_category_value_check",
+          "value": "\"platform_user_agent_materializations\".\"last_error_category\" IS NULL\n        OR \"platform_user_agent_materializations\".\"last_error_category\" IN ('local_agent_missing', 'materialization_failed', 'version_conflict')"
+        },
         "platform_user_agent_materializations_error_category_check": {
           "name": "platform_user_agent_materializations_error_category_check",
           "value": "(\"platform_user_agent_materializations\".\"status\" = 'error' AND \"platform_user_agent_materializations\".\"last_error_category\" IS NOT NULL)\n        OR (\"platform_user_agent_materializations\".\"status\" <> 'error' AND \"platform_user_agent_materializations\".\"last_error_category\" IS NULL)"

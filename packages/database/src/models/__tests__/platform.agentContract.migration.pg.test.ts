@@ -208,7 +208,10 @@ describe.skipIf(!runPostgresMigration)('M10 PostgreSQL migration from the M01 sh
       );
       await client.query(`
         INSERT INTO agents (id, user_id, title)
-        VALUES ('m10-local-a', 'm10-user-a', 'Local A'), ('m10-local-b', 'm10-user-b', 'Local B')
+        VALUES
+          ('m10-local-a', 'm10-user-a', 'Local A'),
+          ('m10-local-a-2', 'm10-user-a', 'Local A 2'),
+          ('m10-local-b', 'm10-user-b', 'Local B')
       `);
 
       await expectRejected(`INSERT INTO platform_agent_assignments
@@ -238,6 +241,12 @@ describe.skipIf(!runPostgresMigration)('M10 PostgreSQL migration from the M01 sh
          platform_agent_version_checksum, materialized_agent_id, status)
         VALUES ('m10-materialized', 'm10-user-a', 'm10-agent-a', 'm10-version-a',
                 '${SHA_A}', 'm10-local-a', 'materialized')`);
+      await expectRejected(`UPDATE platform_user_agent_materializations
+        SET materialized_agent_id = NULL, status = 'pending'
+        WHERE id = 'm10-materialized'`);
+      await expectRejected(`UPDATE platform_user_agent_materializations
+        SET materialized_agent_id = 'm10-local-a-2'
+        WHERE id = 'm10-materialized'`);
       await expectRejected(`UPDATE agents SET user_id = 'm10-user-b' WHERE id = 'm10-local-a'`);
       await expectRejected(`INSERT INTO platform_user_agent_materializations
         (id, user_id, platform_agent_id, platform_agent_version_id,

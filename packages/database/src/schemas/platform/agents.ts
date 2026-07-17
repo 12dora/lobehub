@@ -314,6 +314,11 @@ export const platformUserAgentMaterializations = pgTable(
         OR (${t.status} <> 'materialized')`,
     ),
     check(
+      'platform_user_agent_materializations_error_category_value_check',
+      sql`${t.lastErrorCategory} IS NULL
+        OR ${t.lastErrorCategory} IN ('local_agent_missing', 'materialization_failed', 'version_conflict')`,
+    ),
+    check(
       'platform_user_agent_materializations_error_category_check',
       sql`(${t.status} = 'error' AND ${t.lastErrorCategory} IS NOT NULL)
         OR (${t.status} <> 'error' AND ${t.lastErrorCategory} IS NULL)`,

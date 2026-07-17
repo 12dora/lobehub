@@ -50,6 +50,8 @@ describe('M10 platform Agent expand migration', () => {
     expect(sql).toContain('users_platform_agent_assignment_guard');
     expect(sql).toContain('platform_user_agent_materializations_owner_guard');
     expect(sql).toContain('agents_materialization_owner_guard');
+    expect(sql).toContain('a materialized Agent identity cannot be replaced or cleared');
+    expect(sql).toContain('platform_user_agent_materializations_error_category_value_check');
     expect(sql).toContain('platform_agent_versions_exact_insert_guard');
     expect(sql).toContain('platform_agents_exact_published_pointer_guard');
     expect(sql).toContain('platform_agent_versions_immutable');

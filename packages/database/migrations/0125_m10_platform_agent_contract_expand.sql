@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS "platform_user_agent_materializations" (
 	CONSTRAINT "platform_user_agent_materializations_checksum_check" CHECK ("platform_agent_version_checksum" ~ '^[a-f0-9]{64}$'),
 	CONSTRAINT "platform_user_agent_materializations_status_check" CHECK ("status" IN ('pending', 'materialized', 'error')),
 	CONSTRAINT "platform_user_agent_materializations_local_status_check" CHECK (("status" = 'materialized' AND "materialized_agent_id" IS NOT NULL) OR "status" <> 'materialized'),
+	CONSTRAINT "platform_user_agent_materializations_error_category_value_check" CHECK ("last_error_category" IS NULL OR "last_error_category" IN ('local_agent_missing', 'materialization_failed', 'version_conflict')),
 	CONSTRAINT "platform_user_agent_materializations_error_category_check" CHECK (("status" = 'error' AND "last_error_category" IS NOT NULL) OR ("status" <> 'error' AND "last_error_category" IS NULL))
 );
 --> statement-breakpoint
@@ -300,6 +301,12 @@ END $$;
 CREATE OR REPLACE FUNCTION "enforce_platform_user_agent_materialization_owner"()
 RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
+  IF TG_OP = 'UPDATE'
+    AND OLD."materialized_agent_id" IS NOT NULL
+    AND NEW."materialized_agent_id" IS DISTINCT FROM OLD."materialized_agent_id"
+  THEN
+    RAISE EXCEPTION 'a materialized Agent identity cannot be replaced or cleared' USING ERRCODE = '55000';
+  END IF;
   IF NEW."materialized_agent_id" IS NOT NULL THEN
     PERFORM 1 FROM "agents"
     WHERE "id" = NEW."materialized_agent_id" AND "user_id" = NEW."user_id"
