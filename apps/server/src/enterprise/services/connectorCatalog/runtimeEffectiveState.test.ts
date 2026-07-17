@@ -36,11 +36,12 @@ const redis = vi.hoisted(() => ({
       });
       return redisState.value;
     }
-    if (script.includes('local mode = ARGV[1]')) {
+    if (script.includes('mode = ARGV[1]')) {
+      if (redisState.transition) return redisState.value;
       redisState.epoch += 1;
       redisState.value = JSON.stringify({
         epoch: redisState.epoch,
-        mode: redisState.transition ? 'blocked' : args[3],
+        mode: args[3],
         revision: Number(args[4]),
       });
       return redisState.value;
@@ -60,7 +61,6 @@ const redis = vi.hoisted(() => ({
       });
       return redisState.value;
     }
-    if (script.includes("decoded.mode ~= 'blocked'")) return redisState.value;
     if (script.includes("redis.call('DEL'")) {
       if (redisState.transition !== args[3]) return null;
       redisState.epoch += 1;
@@ -164,12 +164,29 @@ describe('connector runtime effective-state authority', () => {
   it('rejects concurrent transition owners and restores the published strategy on cancel', async () => {
     await publishConnectorRuntimeCapabilityState({ mode: 'enforced', revision: 7 });
     const token = await beginConnectorRuntimeEffectiveStateTransition(7);
+    await publishConnectorRuntimeCapabilityState({ mode: 'legacy', revision: 8 });
 
     await expect(beginConnectorRuntimeEffectiveStateTransition(7)).rejects.toThrow(
       'transition state is invalid',
     );
     await expect(cancelConnectorRuntimeEffectiveStateTransition('not-owner')).resolves.toBe(false);
     await expect(cancelConnectorRuntimeEffectiveStateTransition(token)).resolves.toBe(true);
+    await expect(
+      getConnectorRuntimeEffectiveState({ ENABLE_PLATFORM_MANAGED_CONNECTORS: 'true' }),
+    ).resolves.toMatchObject({ mode: 'enforced', revision: 7 });
+  });
+
+  it('stays blocked after a commit-unknown owner expires until DB authority republishes', async () => {
+    await publishConnectorRuntimeCapabilityState({ mode: 'legacy', revision: 6 });
+    await beginConnectorRuntimeEffectiveStateTransition(6);
+    await publishConnectorRuntimeCapabilityState({ mode: 'enforced', revision: 7 });
+    redisState.transition = null;
+
+    await expect(
+      getConnectorRuntimeEffectiveState({ ENABLE_PLATFORM_MANAGED_CONNECTORS: 'true' }),
+    ).resolves.toMatchObject({ mode: 'blocked', revision: 6 });
+
+    await publishConnectorRuntimeCapabilityState({ mode: 'enforced', revision: 7 });
     await expect(
       getConnectorRuntimeEffectiveState({ ENABLE_PLATFORM_MANAGED_CONNECTORS: 'true' }),
     ).resolves.toMatchObject({ mode: 'enforced', revision: 7 });

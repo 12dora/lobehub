@@ -307,6 +307,18 @@ export class PlatformConnectorRuntimeAdapter {
         }
         journalToken = journal.token;
       }
+      try {
+        // Close the archive race opened between the pre-reservation check and
+        // the shared idempotency insert. This remains immediately adjacent to
+        // the first possible external side effect.
+        await this.dependencies.assertCurrentPublished?.();
+      } catch (error) {
+        if (journalToken) {
+          await this.cancelJournal(journalToken);
+          journalToken = undefined;
+        }
+        throw error;
+      }
       outboundStarted = true;
       const response = await this.dependencies.outbound.requestJson({
         body: {
@@ -362,6 +374,19 @@ export class PlatformConnectorRuntimeAdapter {
       if (error instanceof PlatformConnectorContractError) throw error;
       throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_TRANSPORT_UNSUPPORTED');
     }
+  };
+
+  private cancelJournal = async (token: ConnectorRuntimeJournalToken): Promise<void> => {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await this.dependencies.journal.cancel(token);
+        return;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError;
   };
 
   private completeJournal = async (
