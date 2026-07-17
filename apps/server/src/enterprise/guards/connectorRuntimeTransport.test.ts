@@ -1,7 +1,11 @@
 import { TRPCError } from '@trpc/server';
 import { describe, expect, it } from 'vitest';
 
-import { assertLegacyConnectorTransportAllowed } from './connectorRuntimeTransport';
+import { PlatformConnectorContractError } from '../services/connectorCatalog/errors';
+import {
+  assertLegacyConnectorTransportAllowed,
+  mapConnectorRuntimeTransportError,
+} from './connectorRuntimeTransport';
 
 describe('assertLegacyConnectorTransportAllowed', () => {
   it.each([
@@ -15,5 +19,14 @@ describe('assertLegacyConnectorTransportAllowed', () => {
 
     expect(error).toBeInstanceOf(TRPCError);
     expect(error).toMatchObject({ code, message });
+  });
+
+  it('maps a second service-level guard failure without losing the business contract', () => {
+    const error = mapConnectorRuntimeTransportError(
+      new PlatformConnectorContractError('PLATFORM_CONNECTOR_TOOL_DENIED'),
+    );
+
+    expect(error).toBeInstanceOf(TRPCError);
+    expect(error).toMatchObject({ code: 'FORBIDDEN', message: 'PLATFORM_CONNECTOR_TOOL_DENIED' });
   });
 });

@@ -5,6 +5,16 @@ import { assertLegacyConnectorRuntimeAllowed } from '../services/connectorCatalo
 
 type ConnectorRuntimeGuardParams = Parameters<typeof assertLegacyConnectorRuntimeAllowed>[0];
 
+export const mapConnectorRuntimeTransportError = (error: unknown): TRPCError | undefined => {
+  if (error instanceof TRPCError) return error;
+  if (!(error instanceof PlatformConnectorContractError)) return;
+  return new TRPCError({
+    cause: error,
+    code: error.code === 'PLATFORM_CONNECTOR_NOT_PUBLISHED' ? 'PRECONDITION_FAILED' : 'FORBIDDEN',
+    message: error.code,
+  });
+};
+
 /** Preserve the stable PLATFORM_CONNECTOR_* contract at direct tRPC transport boundaries. */
 export const assertLegacyConnectorTransportAllowed = async (
   params: ConnectorRuntimeGuardParams = {},
@@ -12,15 +22,8 @@ export const assertLegacyConnectorTransportAllowed = async (
   try {
     await assertLegacyConnectorRuntimeAllowed(params);
   } catch (error) {
-    if (error instanceof TRPCError) throw error;
-    if (error instanceof PlatformConnectorContractError) {
-      throw new TRPCError({
-        cause: error,
-        code:
-          error.code === 'PLATFORM_CONNECTOR_NOT_PUBLISHED' ? 'PRECONDITION_FAILED' : 'FORBIDDEN',
-        message: error.code,
-      });
-    }
+    const mapped = mapConnectorRuntimeTransportError(error);
+    if (mapped) throw mapped;
     throw error;
   }
 };
