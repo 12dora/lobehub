@@ -1,4 +1,6 @@
 // @vitest-environment node
+import { randomUUID } from 'node:crypto';
+
 import { eq, sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
@@ -15,13 +17,20 @@ const enabled = process.env.TEST_SERVER_DB === '1' && Boolean(process.env.DATABA
 const run = enabled ? describe : describe.skip;
 
 run('platform Agent / Connector dependency lock (PostgreSQL)', () => {
-  const pool = new Pool({ connectionString: process.env.DATABASE_TEST_URL });
+  const schemaName = `m10_p48a_${process.pid}_${randomUUID().replaceAll('-', '')}`;
+  const adminPool = new Pool({ connectionString: process.env.DATABASE_TEST_URL });
+  // Every transaction can use a different physical connection. Pin search_path
+  // at connection startup so both contenders always address the same isolated schema.
+  const pool = new Pool({
+    connectionString: process.env.DATABASE_TEST_URL,
+    options: `-c search_path=${schemaName}`,
+  });
   const db = drizzle(pool, { schema }) as unknown as LobeChatDatabase;
 
   beforeAll(async () => {
     // The probe intentionally owns only two minimal tables. It exercises real
     // PostgreSQL row/advisory locks without depending on optional extensions.
-    await db.execute(sql`DROP TABLE IF EXISTS platform_agents, platform_connectors CASCADE`);
+    await adminPool.query(`CREATE SCHEMA "${schemaName}"`);
     await db.execute(sql`
       CREATE TABLE platform_agents (
         id text PRIMARY KEY,
@@ -46,8 +55,9 @@ run('platform Agent / Connector dependency lock (PostgreSQL)', () => {
   });
 
   afterAll(async () => {
-    await db.execute(sql`DROP TABLE IF EXISTS platform_agents, platform_connectors CASCADE`);
     await pool.end();
+    await adminPool.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`);
+    await adminPool.end();
   });
 
   it('blocks Agent validation until Connector commits, then rejects the archived dependency', async () => {
