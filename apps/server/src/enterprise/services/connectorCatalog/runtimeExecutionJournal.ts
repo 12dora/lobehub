@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 
-import { and, eq, lte } from 'drizzle-orm';
+import { and, eq, gt, lte } from 'drizzle-orm';
 import { z } from 'zod';
 
 import { PlatformJobModel } from '@/database/models/platform/job';
@@ -119,7 +119,6 @@ export class DatabaseConnectorRuntimeExecutionJournal implements ConnectorRuntim
         // never redispatch the remote call.
         leaseUntil: new Date(now.getTime() + AUDIT_LEASE_MS),
         requestedBy: params.userId,
-        startedAt: now,
         status: 'reserved',
         type: JOURNAL_TYPE,
       })
@@ -150,14 +149,22 @@ export class DatabaseConnectorRuntimeExecutionJournal implements ConnectorRuntim
   };
 
   arm: ConnectorRuntimeExecutionJournal['arm'] = async (token) => {
+    const now = new Date();
     const [armed] = await this.db
       .update(platformJobs)
-      .set({ status: 'running', updatedAt: new Date() })
+      .set({
+        heartbeatAt: now,
+        leaseUntil: new Date(now.getTime() + AUDIT_LEASE_MS),
+        startedAt: now,
+        status: 'running',
+        updatedAt: now,
+      })
       .where(
         and(
           eq(platformJobs.id, token.jobId),
           eq(platformJobs.leaseOwner, token.owner),
           eq(platformJobs.status, 'reserved'),
+          gt(platformJobs.leaseUntil, now),
         ),
       )
       .returning({ id: platformJobs.id });
