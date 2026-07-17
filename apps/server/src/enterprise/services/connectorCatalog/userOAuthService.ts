@@ -181,8 +181,37 @@ export class UserConnectorOAuthService {
 
   getAuthorizationStatus = async (input: GetAuthorizationStatusInput) => {
     const command = userConnectorGetAuthorizationStatusInputSchema.parse(input);
+    const attempt = await this.bindings.getAuthorizationAttempt(
+      command.connectorId,
+      command.attemptId,
+    );
+    if (!attempt) {
+      return userConnectorGetAuthorizationStatusOutputSchema.parse({
+        attemptId: command.attemptId,
+        binding: null,
+        status: 'invalid',
+      });
+    }
+    const { binding, state } = attempt;
+    const now = (this.dependencies.clock ?? (() => new Date()))();
+    const expired = !state.authorizationOutcome && state.expiresAt.getTime() <= now.getTime();
+    const completed =
+      !state.revokedAt &&
+      state.authorizationOutcome === 'completed' &&
+      binding.status === 'connected' &&
+      !binding.revokedAt;
     return userConnectorGetAuthorizationStatusOutputSchema.parse({
-      binding: toBindingProjection(await this.bindings.getBinding(command.connectorId)),
+      attemptId: command.attemptId,
+      binding: completed ? toBindingProjection(binding) : null,
+      status: completed
+        ? 'completed'
+        : state.revokedAt
+          ? 'superseded'
+          : expired
+            ? 'expired'
+            : state.authorizationOutcome === 'failed'
+              ? 'failed'
+              : 'pending',
     });
   };
 
@@ -262,6 +291,7 @@ export class UserConnectorOAuthService {
     authorizationUrl.searchParams.set('scope', oauth.scopes.join(' '));
     authorizationUrl.searchParams.set('state', state);
     return userConnectorStartAuthorizationOutputSchema.parse({
+      attemptId: stateId,
       authorizationUrl: authorizationUrl.toString(),
       bindingId: prepared.binding.id,
     });
@@ -655,6 +685,17 @@ export class ConnectorOAuthCallbackService {
         unboundTokenRef,
       );
       if (exchangeAttempted) {
+        try {
+          await this.catalog.failOAuthStateReservation(
+            stateHash,
+            reservation.reservedAt,
+            (this.dependencies.clock ?? (() => new Date()))(),
+          );
+        } catch (statusError) {
+          console.error('[connectorOAuth] failure outcome persistence failed', {
+            errorClass: statusError instanceof Error ? statusError.name : 'UnknownError',
+          });
+        }
         await bestEffortRevokeSecret(
           this.dependencies,
           state.connectorId,

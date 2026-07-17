@@ -27,8 +27,10 @@ import {
   PlatformConnectorContractError,
   userConnectorDisconnectInputSchema,
   userConnectorGetAuthorizationStatusInputSchema,
+  userConnectorGetAuthorizationStatusOutputSchema,
   userConnectorListManagedInputSchema,
   userConnectorStartAuthorizationInputSchema,
+  userConnectorStartAuthorizationOutputSchema,
   webConnectorTransportSchema,
 } from './platformConnectors';
 
@@ -840,6 +842,41 @@ describe('platform connector contracts', () => {
     expect(connectorScopesSchema.safeParse(['openid profile']).success).toBe(false);
   });
 
+  it('requires one opaque attempt id across authorization start and status polling', () => {
+    const attemptId = 'a'.repeat(32);
+    expect(
+      userConnectorStartAuthorizationOutputSchema.parse({
+        attemptId,
+        authorizationUrl: 'https://identity.example.test/authorize',
+        bindingId: 'binding-1',
+      }),
+    ).toMatchObject({ attemptId });
+    expect(
+      userConnectorGetAuthorizationStatusInputSchema.safeParse({ connectorId: 'connector-1' })
+        .success,
+    ).toBe(false);
+    expect(
+      userConnectorGetAuthorizationStatusInputSchema.safeParse({
+        attemptId: 'not-opaque',
+        connectorId: 'connector-1',
+      }).success,
+    ).toBe(false);
+    expect(
+      userConnectorGetAuthorizationStatusOutputSchema.parse({
+        attemptId,
+        binding: null,
+        status: 'pending',
+      }),
+    ).toEqual({ attemptId, binding: null, status: 'pending' });
+    expect(
+      userConnectorGetAuthorizationStatusOutputSchema.safeParse({
+        attemptId,
+        binding: { status: 'connected' },
+        status: 'pending',
+      }).success,
+    ).toBe(false);
+  });
+
   it('defines archive and minimal admin permissions while user inputs never accept userId', () => {
     const publication = {
       expectedDraftToken: 'd'.repeat(64),
@@ -861,7 +898,7 @@ describe('platform connector contracts', () => {
       [userConnectorStartAuthorizationInputSchema, { connectorId: 'connector-1', userId: 'other' }],
       [
         userConnectorGetAuthorizationStatusInputSchema,
-        { connectorId: 'connector-1', userId: 'other' },
+        { attemptId: 'a'.repeat(32), connectorId: 'connector-1', userId: 'other' },
       ],
       [userConnectorDisconnectInputSchema, { connectorId: 'connector-1', userId: 'other' }],
     ] as const;
