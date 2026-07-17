@@ -10,7 +10,11 @@ import {
   type OutboundPolicy,
   outboundPolicySnapshotSchema,
 } from './policy';
-import { defaultDnsResolve, defaultPinnedTransport } from './transport';
+import {
+  defaultDnsResolve,
+  defaultPinnedStreamingTransport,
+  defaultPinnedTransport,
+} from './transport';
 import type {
   DnsResolver,
   OutboundPolicySnapshot,
@@ -146,6 +150,62 @@ export class SafeOutboundHttpClient {
       }
 
       return this.toResponse(response, current);
+    }
+  };
+
+  /** Streaming MCP/SSE request with the same policy, redirect, DNS-pin, and byte guards. */
+  streamFetch = async (
+    input: string | URL,
+    init: SafeOutboundRequestInit = {},
+  ): Promise<Response> => {
+    let current = this.parseUrl(input);
+    let redirects = 0;
+    const maxRedirects = init.maxRedirects ?? this.maxRedirects;
+    const timeoutMs = init.timeoutMs ?? this.timeoutMs;
+    const maxResponseBytes = init.maxResponseBytes ?? this.maxResponseBytes;
+    const deadlineAt = Date.now() + timeoutMs;
+    let method = (init.method ?? 'GET').toUpperCase();
+    let body = toBuffer(init.body);
+    const headers = { ...init.headers };
+    delete headers.host;
+    delete headers.Host;
+
+    while (true) {
+      this.assertUrlPolicy(current, this.getPolicy());
+      const addresses = await this.resolveHost(current.hostname, deadlineAt);
+      this.assertResolvedAddresses(current, addresses, this.getPolicy());
+      const response = await defaultPinnedStreamingTransport({
+        body: body && method !== 'GET' && method !== 'HEAD' ? body : undefined,
+        family: addresses[0]!.family,
+        headers,
+        maxResponseBytes,
+        method,
+        pinnedAddress: addresses[0]!.address,
+        signal: init.signal,
+        timeoutMs: this.remainingMs(deadlineAt),
+        url: current,
+      });
+      if (![301, 302, 303, 307, 308].includes(response.status)) return response;
+      if (redirects >= maxRedirects) {
+        await response.body?.cancel();
+        throw ssrfBlocked('too many redirects', { maxRedirects, url: current.toString() });
+      }
+      const location = response.headers.get('location');
+      if (!location) return response;
+      await response.body?.cancel();
+      const previous = current;
+      current = this.parseUrl(new URL(location, previous));
+      redirects += 1;
+      if (!isSameOrigin(previous, current)) {
+        if (init.secretBearing || Object.keys(headers).length > 0 || body) {
+          throw ssrfBlocked('cross-origin redirect rejected for secret-bearing request');
+        }
+        stripCredentialHeaders(headers);
+      }
+      if ([301, 302, 303].includes(response.status)) {
+        method = 'GET';
+        body = undefined;
+      }
     }
   };
 

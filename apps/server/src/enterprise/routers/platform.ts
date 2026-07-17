@@ -10,14 +10,14 @@ import { publishedAiCatalogSchema } from '../contracts/aiCatalog';
 import { parseEnterpriseFeatureFlags } from '../featureFlags';
 import { resolveAccessStatus } from '../guards/accessGrant';
 import { AiCatalogReadService, getEmptyPublishedAiCatalog } from '../services/aiCatalog';
-import {
-  publishConnectorRuntimeEffectiveState,
-  reserveConnectorRuntimeEffectiveStateEpoch,
-} from '../services/connectorCatalog/runtimeEffectiveState';
+import { ensureConnectorRuntimeAuditWorkerStarted } from '../services/connectorCatalog/runtimeAuditWorker';
+import { publishConnectorRuntimeCapabilityState } from '../services/connectorCatalog/runtimeEffectiveState';
 import { buildEasyauthDescriptor } from '../services/easyauthManifest';
 import { resolvePublishedManagedResourcePolicies } from '../services/managedResourceCapabilities';
 import { buildPlatformCapabilities } from '../services/platformCapabilities';
 import { buildPlatformPublicSnapshot } from '../services/platformPublicSnapshot';
+
+ensureConnectorRuntimeAuditWorkerStarted();
 
 /**
  * Platform router (M00 read-only + M02 access status / descriptor).
@@ -48,17 +48,13 @@ export const platformRouter = router({
       adminAccess = await rbac.hasGlobalPermission(PLATFORM_PERMISSIONS.ADMIN_ACCESS, ctx.userId);
     }
 
-    const connectorStateEpoch = flags.ENABLE_PLATFORM_MANAGED_CONNECTORS
-      ? await reserveConnectorRuntimeEffectiveStateEpoch()
-      : 0;
     const managed = await resolvePublishedManagedResourcePolicies({
       db: ctx.serverDB,
       flags,
     });
     const connectorPolicy = managed.published.connectors;
     if (flags.ENABLE_PLATFORM_MANAGED_CONNECTORS) {
-      await publishConnectorRuntimeEffectiveState({
-        epoch: connectorStateEpoch,
+      await publishConnectorRuntimeCapabilityState({
         mode:
           !connectorPolicy.managed || connectorPolicy.enforcementMode !== 'enforced'
             ? 'legacy'

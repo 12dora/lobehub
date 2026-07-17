@@ -452,6 +452,18 @@ describe('PlatformConnectorRuntimeAdapter', () => {
     expect(harness.resolveSecretVersion).not.toHaveBeenCalled();
     expect(harness.dependencies.outbound.requestJson).not.toHaveBeenCalled();
   });
+
+  it('rechecks current publication at the final outbound boundary', async () => {
+    const harness = createHarness('none');
+    harness.dependencies.assertCurrentPublished = vi.fn(async () => {
+      throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_PUBLISHED');
+    });
+
+    await expect(harness.adapter.execute(invocation)).rejects.toThrow(
+      'PLATFORM_CONNECTOR_NOT_PUBLISHED',
+    );
+    expect(harness.dependencies.outbound.requestJson).not.toHaveBeenCalled();
+  });
 });
 
 describe('BoundedConnectorRuntimeRateLimiter', () => {

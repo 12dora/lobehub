@@ -8,6 +8,7 @@ import {
   buildBlockedToolResponse,
   getConnectorToolPermission,
 } from '@/libs/mcp/connectorPermissionCheck';
+import { platformSafeMcpService } from '@/server/enterprise/services/connectorCatalog/legacyMcpTransport';
 import { executeManagedConnectorTool } from '@/server/enterprise/services/connectorCatalog/runtimeIntegration';
 import { deviceGateway } from '@/server/services/deviceGateway';
 import { contentBlocksToString } from '@/server/services/mcp/contentProcessor';
@@ -66,11 +67,9 @@ const normalizeExecutionError = (error: unknown, fallbackMessage: string) => {
 
 export class ToolExecutionService {
   private builtinToolsExecutor: BuiltinToolsExecutor;
-  private mcpService: MCPService;
 
-  constructor({ mcpService, builtinToolsExecutor }: ToolExecutionServiceDeps) {
+  constructor({ builtinToolsExecutor }: ToolExecutionServiceDeps) {
     this.builtinToolsExecutor = builtinToolsExecutor;
-    this.mcpService = mcpService;
   }
 
   async executeTool(
@@ -255,8 +254,19 @@ export class ToolExecutionService {
         return await this.executeMcpViaDevice(payload, context, mcpParams);
       }
 
-      // For stdio (in-process) / http/sse types, use standard MCP service
-      const result = await this.mcpService.callTool({
+      if (mcpParams.type === 'stdio') {
+        return {
+          content: 'Stdio MCP requires an isolated device',
+          error: {
+            code: 'MCP_STDIO_DEVICE_REQUIRED',
+            message: 'Stdio MCP requires an isolated device',
+          },
+          success: false,
+        };
+      }
+
+      // Web HTTP MCP calls always use the SafeOutbound-wrapped service.
+      const result = await platformSafeMcpService.callTool({
         argsStr: args,
         clientParams: mcpParams,
         toolName: apiName,

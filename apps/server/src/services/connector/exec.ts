@@ -1,10 +1,14 @@
-import { ConnectorToolPermission } from '@/database/schemas';
-import { mcpService } from '@/server/services/mcp';
+import { ConnectorMcpConnectionType, ConnectorToolPermission } from '@/database/schemas';
+import type { MCPService } from '@/server/services/mcp';
 
 import { buildConnectorMcpParams, type ConnectorToolSyncContext } from './sync';
 import { ensureFreshConnectorToken } from './tokens';
 
 export type ConnectorToolCallErrorCode = 'NOT_FOUND' | 'FORBIDDEN' | 'BAD_REQUEST';
+
+interface ConnectorToolCallContext extends ConnectorToolSyncContext {
+  mcpService: Pick<MCPService, 'callTool'>;
+}
 
 /** Typed error so the tRPC layer can map to the right code and tests can assert. */
 export class ConnectorToolCallError extends Error {
@@ -29,7 +33,7 @@ export class ConnectorToolCallError extends Error {
  */
 export const callConnectorToolById = async (
   params: { args?: string; identifier: string; toolName: string },
-  ctx: ConnectorToolSyncContext,
+  ctx: ConnectorToolCallContext,
 ): Promise<unknown> => {
   const [connector] = await ctx.connectorModel.queryByIdentifiers([params.identifier]);
   if (!connector) {
@@ -37,6 +41,9 @@ export const callConnectorToolById = async (
   }
   if (!connector.isEnabled) {
     throw new ConnectorToolCallError('FORBIDDEN', 'Connector is disabled');
+  }
+  if (connector.mcpConnectionType === ConnectorMcpConnectionType.stdio) {
+    throw new ConnectorToolCallError('BAD_REQUEST', 'Stdio MCP requires an isolated device');
   }
 
   // The tool MUST be present in the synced list — this is the single source of
@@ -59,7 +66,7 @@ export const callConnectorToolById = async (
 
   const fresh = await ensureFreshConnectorToken(connector, ctx.connectorModel);
 
-  return mcpService.callTool({
+  return ctx.mcpService.callTool({
     argsStr: params.args ?? '{}',
     clientParams: buildConnectorMcpParams(fresh),
     toolName: params.toolName,

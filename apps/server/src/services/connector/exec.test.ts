@@ -7,6 +7,9 @@ import { callConnectorToolById } from './exec';
 import { ensureFreshConnectorToken } from './tokens';
 
 vi.mock('@/server/services/mcp', () => ({ mcpService: { callTool: vi.fn() } }));
+vi.mock('@/server/enterprise/services/connectorCatalog/legacyMcpTransport', () => ({
+  platformSafeMcpService: { callTool: vi.fn(), listRawTools: vi.fn() },
+}));
 vi.mock('./tokens', () => ({ ensureFreshConnectorToken: vi.fn(async (c) => c) }));
 
 const connector = {
@@ -31,6 +34,7 @@ const makeCtx = (connectors: any[], tools: any[]) =>
   ({
     connectorModel: { queryByIdentifiers: vi.fn().mockResolvedValue(connectors) },
     connectorToolModel: { queryByConnector: vi.fn().mockResolvedValue(tools) },
+    mcpService,
   }) as any;
 
 beforeEach(() => {
@@ -50,6 +54,15 @@ describe('callConnectorToolById', () => {
     await expect(
       callConnectorToolById({ identifier: 'my-conn', toolName: 'do_thing' }, ctx),
     ).rejects.toHaveProperty('code', 'FORBIDDEN');
+    expect(mcpService.callTool).not.toHaveBeenCalled();
+  });
+
+  it('rejects legacy stdio before token refresh or in-process MCP execution', async () => {
+    const ctx = makeCtx([{ ...connector, mcpConnectionType: 'stdio' }], [tool()]);
+    await expect(
+      callConnectorToolById({ identifier: 'my-conn', toolName: 'do_thing' }, ctx),
+    ).rejects.toHaveProperty('code', 'BAD_REQUEST');
+    expect(ensureFreshConnectorToken).not.toHaveBeenCalled();
     expect(mcpService.callTool).not.toHaveBeenCalled();
   });
 

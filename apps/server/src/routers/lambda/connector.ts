@@ -23,6 +23,7 @@ import {
   isConnectorDisconnectInput,
   withManagedResourceGuard,
 } from '@/server/enterprise/guards/managedResource';
+import { platformSafeMcpService } from '@/server/enterprise/services/connectorCatalog/legacyMcpTransport';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 import { callConnectorToolById, ConnectorToolCallError } from '@/server/services/connector/exec';
 import {
@@ -46,6 +47,7 @@ const connectorProcedure = wsCompatProcedure.use(serverDatabase).use(async (opts
     ctx: {
       connectorModel: new ConnectorModel(ctx.serverDB, ctx.userId, wsId, gateKeeper),
       connectorToolModel: new ConnectorToolModel(ctx.serverDB, ctx.userId, wsId),
+      mcpService: platformSafeMcpService,
       pluginModel: new PluginModel(ctx.serverDB, ctx.userId, wsId),
     },
   });

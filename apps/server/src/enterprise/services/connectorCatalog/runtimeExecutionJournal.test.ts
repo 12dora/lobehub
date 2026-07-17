@@ -64,4 +64,37 @@ describe('DatabaseConnectorRuntimeExecutionJournal', () => {
       status: 'replay',
     });
   });
+
+  it('reconciles an expired ambiguous call as unknown without redispatch', async () => {
+    const journal = new DatabaseConnectorRuntimeExecutionJournal(db);
+    const acquired = await journal.begin({
+      connectorId: 'connector-unknown',
+      operationId: `operation-${crypto.randomUUID()}`,
+      requestFingerprint: 'c'.repeat(64),
+      toolCallId: 'tool-call-unknown',
+      toolKey: 'write',
+      userId: 'user-unknown',
+    });
+    expect(acquired.status).toBe('acquired');
+    if (acquired.status !== 'acquired') throw new Error('journal was not acquired');
+    createdIds.push(acquired.token.jobId);
+    await db
+      .update(platformJobs)
+      .set({ leaseUntil: new Date(0) })
+      .where(eq(platformJobs.id, acquired.token.jobId));
+    const delivered: string[] = [];
+
+    await expect(
+      journal.reconcileNext(async (record) => {
+        delivered.push(record.outcome);
+      }),
+    ).resolves.toBe(true);
+
+    expect(delivered).toEqual(['unknown']);
+    await expect(
+      db.query.platformJobs.findFirst({
+        where: eq(platformJobs.id, acquired.token.jobId),
+      }),
+    ).resolves.toMatchObject({ status: 'dead' });
+  });
 });

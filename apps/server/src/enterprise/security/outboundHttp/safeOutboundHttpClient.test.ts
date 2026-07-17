@@ -1,4 +1,6 @@
 // @vitest-environment node
+import { createServer } from 'node:http';
+
 import { describe, expect, it, vi } from 'vitest';
 
 import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
@@ -60,6 +62,61 @@ describe('policy helpers', () => {
 });
 
 describe('SafeOutboundHttpClient', () => {
+  it('streams SSE incrementally and propagates AbortSignal to the pinned socket', async () => {
+    let closed = false;
+    const server = createServer((_request, response) => {
+      response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      response.write('data: first\n\n');
+      response.on('close', () => {
+        closed = true;
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('test server address unavailable');
+    const controller = new AbortController();
+    const client = new SafeOutboundHttpClient({ timeoutMs: 5000 });
+    try {
+      const response = await client.streamFetch(`http://127.0.0.1:${address.port}/events`, {
+        signal: controller.signal,
+      });
+      const reader = response.body!.getReader();
+      const first = await reader.read();
+      expect(new TextDecoder().decode(first.value)).toContain('data: first');
+      expect(first.done).toBe(false);
+      controller.abort();
+      await expect(reader.read()).rejects.toMatchObject({ name: 'AbortError' });
+      await vi.waitFor(() => expect(closed).toBe(true));
+    } finally {
+      server.close();
+    }
+  });
+
+  it('enforces streaming byte and absolute timeout limits while reading', async () => {
+    const server = createServer((request, response) => {
+      response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      if (request.url === '/large') response.end('data: '.padEnd(128, 'x'));
+      else response.flushHeaders();
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('test server address unavailable');
+    const client = new SafeOutboundHttpClient();
+    try {
+      const large = await client.streamFetch(`http://127.0.0.1:${address.port}/large`, {
+        maxResponseBytes: 16,
+      });
+      await expect(large.text()).rejects.toThrow('exceeded byte limit');
+
+      const stalled = await client.streamFetch(`http://127.0.0.1:${address.port}/stalled`, {
+        timeoutMs: 50,
+      });
+      await expect(stalled.text()).rejects.toThrow('deadline exceeded');
+    } finally {
+      server.close();
+    }
+  });
+
   it('allows private/localhost by default (G-07) and pins DNS', async () => {
     const transport = vi.fn<PinnedTransport>(async (req) => {
       expect(req.pinnedAddress).toBe('127.0.0.1');

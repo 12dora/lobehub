@@ -1,6 +1,7 @@
 import { lookup as dnsLookup } from 'node:dns/promises';
 import http from 'node:http';
 import https from 'node:https';
+import { Readable, Transform } from 'node:stream';
 
 import type {
   DnsResolver,
@@ -157,6 +158,108 @@ export const defaultPinnedTransport: PinnedTransport = (
     if (body && body.length > 0) {
       request.write(body);
     }
+    request.end();
+  });
+};
+
+/** Streaming variant for MCP Streamable HTTP/SSE with DNS pinning and abort propagation. */
+export const defaultPinnedStreamingTransport = (
+  req: PinnedTransportRequest & { signal?: AbortSignal | null },
+): Promise<Response> => {
+  const { url, pinnedAddress, family, method, headers, body, timeoutMs, maxResponseBytes, signal } =
+    req;
+  const isHttps = url.protocol === 'https:';
+  const lib = isHttps ? https : http;
+  const port = url.port ? Number(url.port) : isHttps ? 443 : 80;
+
+  return new Promise((resolve, reject) => {
+    let response: http.IncomingMessage | undefined;
+    let limiter: Transform | undefined;
+    let settled = false;
+    const abortError = () => new DOMException('The operation was aborted', 'AbortError');
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+    };
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+    const onAbort = () => {
+      const error = abortError();
+      limiter?.destroy(error);
+      response?.destroy(error);
+      request.destroy(error);
+      fail(error);
+    };
+    const timer = setTimeout(() => {
+      const error = new Error(`Outbound request absolute deadline exceeded after ${timeoutMs}ms`);
+      limiter?.destroy(error);
+      response?.destroy(error);
+      request.destroy(error);
+      fail(error);
+    }, timeoutMs);
+    const request = lib.request(
+      {
+        family,
+        headers: { ...headers, Host: url.host },
+        hostname: pinnedAddress,
+        method,
+        path: `${url.pathname}${url.search}`,
+        port,
+        servername: isHttps ? url.hostname : undefined,
+        timeout: timeoutMs,
+      },
+      (incoming) => {
+        response = incoming;
+        let total = 0;
+        limiter = new Transform({
+          transform(chunk: Buffer | string, _encoding, callback) {
+            const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+            total += bytes.length;
+            if (total > maxResponseBytes) {
+              callback(new Error('Outbound streaming response exceeded byte limit'));
+              incoming.destroy();
+              request.destroy();
+              return;
+            }
+            callback(null, bytes);
+          },
+        });
+        incoming.pipe(limiter);
+        const finish = () => cleanup();
+        limiter.once('close', finish);
+        limiter.once('end', finish);
+        limiter.once('error', finish);
+        const responseHeaders = new Headers();
+        for (const [key, value] of Object.entries(incoming.headers)) {
+          if (value === undefined) continue;
+          if (Array.isArray(value)) {
+            for (const item of value) responseHeaders.append(key, item);
+          } else {
+            responseHeaders.set(key, value);
+          }
+        }
+        settled = true;
+        resolve(
+          new Response(Readable.toWeb(limiter) as ReadableStream<Uint8Array>, {
+            headers: responseHeaders,
+            status: incoming.statusCode ?? 500,
+            statusText: incoming.statusMessage,
+          }),
+        );
+      },
+    );
+    request.once('error', fail);
+    request.once('timeout', () => request.destroy(new Error('Outbound request idle timed out')));
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (body?.length) request.write(body);
     request.end();
   });
 };

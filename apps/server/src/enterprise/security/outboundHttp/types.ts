@@ -52,6 +52,7 @@ export interface SafeOutboundRequestInit {
   method?: string;
   /** Secret body/custom headers present: cross-origin redirects fail closed. */
   secretBearing?: boolean;
+  signal?: AbortSignal | null;
   timeoutMs?: number;
 }
 

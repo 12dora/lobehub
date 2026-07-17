@@ -21,8 +21,8 @@ import { throwEnterpriseError } from '../../guards/enterpriseErrors';
 import { withPlatformPermission } from '../../guards/platformPermission';
 import { assertRecentReauth } from '../../guards/reauth';
 import {
-  publishConnectorRuntimeEffectiveState,
-  reserveConnectorRuntimeEffectiveStateEpoch,
+  beginConnectorRuntimeEffectiveStateTransition,
+  finalizeConnectorRuntimeEffectiveStateTransition,
 } from '../../services/connectorCatalog/runtimeEffectiveState';
 import { resolvePublishedManagedResourcePolicies } from '../../services/managedResourceCapabilities';
 import {
@@ -87,18 +87,14 @@ export const adminManagedResourcesRouter = router({
       });
       try {
         const flags = parseEnterpriseFeatureFlags(process.env);
-        const connectorStateEpoch = flags.ENABLE_PLATFORM_MANAGED_CONNECTORS
-          ? await reserveConnectorRuntimeEffectiveStateEpoch()
-          : 0;
-        if (flags.ENABLE_PLATFORM_MANAGED_CONNECTORS) {
+        const connectorTransitionToken = flags.ENABLE_PLATFORM_MANAGED_CONNECTORS
+          ? await beginConnectorRuntimeEffectiveStateTransition(input.expectedRevision)
+          : null;
+        if (flags.ENABLE_PLATFORM_MANAGED_CONNECTORS && !connectorTransitionToken) {
           // Close every direct MCP path before the policy pointer changes. If the
           // shared authority is unavailable, abort the publish instead of leaving
           // another instance on a stale legacy/enforced decision.
-          await publishConnectorRuntimeEffectiveState({
-            epoch: connectorStateEpoch,
-            mode: 'blocked',
-            revision: input.expectedRevision,
-          });
+          throw new Error('Connector runtime transition authority unavailable');
         }
         const result = await new ManagedResourcePolicyService(ctx.serverDB).publish({
           actorUserId: ctx.userId!,
@@ -107,14 +103,10 @@ export const adminManagedResourcesRouter = router({
           expectedRevision: input.expectedRevision,
           reason: input.reason,
         });
-        const postCommitConnectorStateEpoch = flags.ENABLE_PLATFORM_MANAGED_CONNECTORS
-          ? await reserveConnectorRuntimeEffectiveStateEpoch()
-          : 0;
         const managed = await resolvePublishedManagedResourcePolicies({ db: ctx.serverDB, flags });
         const policy = managed.published.connectors;
         if (flags.ENABLE_PLATFORM_MANAGED_CONNECTORS) {
-          await publishConnectorRuntimeEffectiveState({
-            epoch: postCommitConnectorStateEpoch,
+          await finalizeConnectorRuntimeEffectiveStateTransition({
             mode:
               !policy.managed || policy.enforcementMode !== 'enforced'
                 ? 'legacy'
@@ -122,6 +114,7 @@ export const adminManagedResourcesRouter = router({
                   ? 'enforced'
                   : 'blocked',
             revision: managed.revision,
+            token: connectorTransitionToken!,
           });
         }
         return result;

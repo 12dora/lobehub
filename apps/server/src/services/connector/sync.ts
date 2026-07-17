@@ -5,8 +5,8 @@ import { ConnectorMcpConnectionType, ConnectorStatus } from '@/database/schemas'
 import type { AuthConfig } from '@/libs/mcp';
 import { inferCrudType } from '@/libs/mcp/utils';
 import { PlatformConnectorContractError } from '@/server/enterprise/services/connectorCatalog/errors';
+import { platformSafeMcpService } from '@/server/enterprise/services/connectorCatalog/legacyMcpTransport';
 import { assertLegacyConnectorRuntimeAllowed } from '@/server/enterprise/services/connectorCatalog/runtimeIntegration';
-import { mcpService } from '@/server/services/mcp';
 
 import { ensureFreshConnectorToken } from './tokens';
 
@@ -18,7 +18,7 @@ export interface ConnectorToolSyncContext {
 /** Build the MCP client connection params (with auth) from a connector row. */
 export const buildConnectorMcpParams = (
   connector: DecryptedConnector,
-): Parameters<typeof mcpService.listRawTools>[0] => {
+): Parameters<typeof platformSafeMcpService.listRawTools>[0] => {
   if (connector.mcpConnectionType === ConnectorMcpConnectionType.stdio) {
     if (!connector.mcpStdioConfig) throw new Error('Missing stdio config');
     return {
@@ -120,9 +120,9 @@ export const syncConnectorToolsById = async (
 
   const mcpParams = buildConnectorMcpParams(connector);
 
-  let rawTools: Awaited<ReturnType<typeof mcpService.listRawTools>>;
+  let rawTools: Awaited<ReturnType<typeof platformSafeMcpService.listRawTools>>;
   try {
-    rawTools = await mcpService.listRawTools(mcpParams);
+    rawTools = await platformSafeMcpService.listRawTools(mcpParams);
   } catch (err) {
     await ctx.connectorModel.updateStatus(connectorId, ConnectorStatus.error);
     throw err;
