@@ -438,8 +438,14 @@ export class ConnectorCatalogPublicationService {
         ).map((tool) => ({ ...tool, connectorId })),
       );
     }
-    const revoked = await this.revokeBindings(tx, connectorId);
-    proof.cleanupRefs.push(...revoked.cleanupRefs);
+    // Published revisions are immutable operation inputs. Keep a binding pinned
+    // to its historical revision alive for already-approved operations; new
+    // operations on a newer revision will reject it and require reconnect.
+    // Archive is the emergency-stop boundary and revokes every binding.
+    if (status === 'archived') {
+      const revoked = await this.revokeBindings(tx, connectorId);
+      proof.cleanupRefs.push(...revoked.cleanupRefs);
+    }
   };
 
   private pointer = (

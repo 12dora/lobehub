@@ -116,6 +116,7 @@ const createHarness = () => {
     drafts: new ConnectorCatalogDraftService(db, secrets, callbackRedirectUri),
     exchangeCode,
     preflightAuthorization,
+    preflightToken,
     publication: new ConnectorCatalogPublicationService(db, catalogOutbound, secrets, {}),
     refresh,
     secrets,
@@ -633,6 +634,50 @@ describe('per-user connector OAuth service', () => {
     expect(revoked).toMatchObject({ oauthTokenRef: null, scopes: [], status: 'revoked' });
     const auditJson = JSON.stringify(await db.select().from(platformAuditLogs));
     expect(auditJson).not.toMatch(/provider-(access|refresh|client)-token|vault:\/\//i);
+  });
+
+  it('refreshes the historical v1 binding used by an approved operation after v2 publishes', async () => {
+    const harness = createHarness();
+    const first = await publishOAuthConnector(harness);
+    const authorization = await start(harness, first.draft.id);
+    await harness.callback.callback({ code: 'connect-v1', state: authorization.state });
+    const publishedV1 = await harness.drafts.getDraft(first.draft.id);
+    const second = await harness.drafts.updateDraft('admin-user', {
+      expectedDraftToken: publishedV1.draftToken,
+      expectedRevision: 1,
+      id: first.draft.id,
+      oauthClientSecret: { operation: 'replace', value: 'provider-client-secret-v2' },
+      oauthConfig: {
+        authorizationEndpoint: 'https://identity-v2.example.test/oauth/authorize',
+        clientId: 'managed-client-id-v2',
+        issuer: 'https://identity-v2.example.test',
+        scopes: ['issues:read'],
+        tokenEndpoint: 'https://identity-v2.example.test/oauth/token',
+      },
+      reason: 'prepare OAuth connector v2',
+    });
+    await harness.publication.publish('admin-user', {
+      expectedDraftToken: second.draftToken,
+      expectedRevision: 2,
+      id: first.draft.id,
+      reason: 'publish OAuth connector v2',
+    });
+
+    await harness.userA.refreshBinding(first.draft.id, 1);
+
+    expect(harness.preflightToken).toHaveBeenLastCalledWith(
+      'https://identity.example.test/oauth/token',
+    );
+    expect(harness.refresh).toHaveBeenLastCalledWith({
+      clientId: 'managed-client-id',
+      clientSecret: 'provider-client-secret',
+      refreshToken: 'provider-refresh-token-v1',
+      tokenEndpoint: 'https://identity.example.test/oauth/token',
+    });
+    expect((await db.select().from(platformUserConnectorBindings))[0]).toMatchObject({
+      publishedRevision: 1,
+      status: 'connected',
+    });
   });
 
   it('keeps the new binding valid when bounded old-secret cleanup fails', async () => {

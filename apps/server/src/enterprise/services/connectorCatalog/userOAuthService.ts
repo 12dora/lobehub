@@ -265,20 +265,17 @@ export class UserConnectorOAuthService {
   };
 
   /** Server-only refresh path; the old valid binding remains untouched on every failure. */
-  refreshBinding = async (connectorId: string): Promise<void> => {
-    const [snapshot, binding, current] = await Promise.all([
-      this.read.getSnapshot(connectorId),
+  refreshBinding = async (connectorId: string, publishedRevision?: number): Promise<void> => {
+    const [snapshot, binding] = await Promise.all([
+      publishedRevision === undefined
+        ? this.read.getSnapshot(connectorId)
+        : this.read.getSnapshotRevision(connectorId, publishedRevision),
       this.bindings.getBinding(connectorId),
-      this.catalog.getConnector(connectorId),
     ]);
     const connector = snapshot.payload.connector;
     const oauth = connector.oauthConfig;
     if (
       !binding ||
-      !current ||
-      current.status !== 'published' ||
-      !current.enabled ||
-      current.publishedRevision !== snapshot.provenance.revision ||
       binding.status !== 'connected' ||
       binding.publishedRevision !== snapshot.provenance.revision ||
       !binding.oauthTokenRef ||
