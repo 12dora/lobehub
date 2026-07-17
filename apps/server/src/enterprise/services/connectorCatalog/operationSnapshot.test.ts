@@ -72,6 +72,7 @@ const connector = (revision = 1): PlatformConnectorItem => ({
   legacyOidcConfig: null,
   legacySecretFingerprint: null,
   legacySourceType: 'custom',
+  migrationRequired: false,
   oauthClientSecretFingerprint: null,
   oauthClientSecretRef: null,
   oauthClientSecretUpdatedAt: null,

@@ -76,6 +76,7 @@ const connector = (overrides: Partial<PlatformConnectorItem> = {}): PlatformConn
   updatedAt: new Date(),
   updatedBy: null,
   ...overrides,
+  migrationRequired: overrides.migrationRequired ?? false,
 });
 
 describe('ConnectorPublishedIndex', () => {
