@@ -5,7 +5,7 @@ import { PlatformAgentCatalogRepository } from '@/database/repositories/platform
 import type { LobeChatDatabase, Transaction } from '@/database/type';
 
 import type {
-  AdminPlatformAgentPublishInput,
+  AdminPlatformAgentAppendVersionInput,
   AdminPlatformAgentRollbackInput,
 } from '../../contracts/platformAgents';
 import { PlatformAuditService } from '../platformAudit';
@@ -124,7 +124,7 @@ export class PlatformAgentPublicationService {
     }
   };
 
-  publish = async (actorUserId: string, input: AdminPlatformAgentPublishInput) => {
+  publish = async (actorUserId: string, input: AdminPlatformAgentAppendVersionInput) => {
     try {
       const result = await this.db.transaction(async (tx) => {
         const repository = new PlatformAgentCatalogRepository(tx);
