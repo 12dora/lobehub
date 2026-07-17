@@ -96,6 +96,7 @@ const invocation = {
   arguments: '{"query":"docs"}',
   humanApproved: true,
   proof,
+  toolCallId: 'tool-call-1',
   toolKey: 'search',
   userId: 'user-1',
 };
@@ -133,6 +134,14 @@ const createHarness = (
     audit: { appendSharedCall: vi.fn(async () => {}) },
     bindingLoader: vi.fn(async () => binding()),
     clock: () => new Date('2029-01-01T00:00:00Z'),
+    journal: {
+      begin: vi.fn(async () => ({
+        status: 'acquired' as const,
+        token: { jobId: 'journal-1', owner: 'owner-1' },
+      })),
+      complete: vi.fn(async () => {}),
+      markAudited: vi.fn(async () => {}),
+    },
     outbound: {
       preflight: vi.fn(async () => {
         order.push('preflight');
@@ -364,6 +373,35 @@ describe('PlatformConnectorRuntimeAdapter', () => {
     await expect(harness.adapter.execute(invocation)).rejects.toThrow();
     expect(harness.dependencies.outbound.preflight).not.toHaveBeenCalled();
     expect(harness.resolveSecretVersion).not.toHaveBeenCalled();
+    expect(harness.dependencies.outbound.requestJson).not.toHaveBeenCalled();
+  });
+
+  it('returns the journaled success when terminal audit delivery fails after outbound', async () => {
+    const harness = createHarness('shared_service_account');
+    vi.mocked(harness.dependencies.audit.appendSharedCall).mockImplementation(async (entry) => {
+      if (entry.outcome === 'allowed') throw new Error('terminal audit unavailable');
+    });
+
+    await expect(harness.adapter.execute(invocation)).resolves.toMatchObject({ success: true });
+
+    expect(harness.dependencies.outbound.requestJson).toHaveBeenCalledOnce();
+    expect(harness.dependencies.journal.complete).toHaveBeenCalledOnce();
+  });
+
+  it('replays a completed shared call without repeating the external side effect', async () => {
+    const harness = createHarness('shared_service_account');
+    vi.mocked(harness.dependencies.journal.begin).mockResolvedValueOnce({
+      auditPending: false,
+      result: { confirmation: null, content: 'cached', success: true },
+      status: 'replay',
+      token: { jobId: 'journal-1', owner: 'owner-1' },
+    });
+
+    await expect(harness.adapter.execute(invocation)).resolves.toMatchObject({
+      content: 'cached',
+      success: true,
+    });
+
     expect(harness.dependencies.outbound.requestJson).not.toHaveBeenCalled();
   });
 

@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { isPlainRecord } from '@lobechat/utils/object';
 import { z } from 'zod';
 
@@ -13,6 +15,10 @@ import type {
   ConnectorOperationProof,
   ConnectorOperationSnapshotService,
 } from './operationSnapshot';
+import type {
+  ConnectorRuntimeExecutionJournal,
+  ConnectorRuntimeJournalToken,
+} from './runtimeExecutionJournal';
 import {
   assertConnectorScopesAllowed,
   resolveConnectorConfirmationPolicy,
@@ -111,6 +117,7 @@ export interface PlatformConnectorRuntimeAdapterDependencies {
     connectorId: string,
   ) => Promise<PlatformUserConnectorBindingItem | undefined>;
   clock?: () => Date;
+  journal: ConnectorRuntimeExecutionJournal;
   outbound: Pick<ConnectorOutboundClient, 'preflight' | 'requestJson'>;
   policy: ConnectorRuntimePolicyResolver;
   rateLimiter: ConnectorRuntimeRateLimiter;
@@ -128,6 +135,7 @@ export interface PlatformConnectorRuntimeInvocation {
   arguments: string | Record<string, unknown>;
   humanApproved: boolean;
   proof: ConnectorOperationProof;
+  toolCallId: string;
   toolKey: string;
   userId: string;
 }
@@ -189,6 +197,7 @@ export class PlatformConnectorRuntimeAdapter {
     try {
       const args = parseArguments(invocation.arguments);
       let headers: Record<string, string> | undefined;
+      let journalToken: ConnectorRuntimeJournalToken | undefined;
       const taintedValues: string[] = [];
       if (connector.credentialMode === 'shared_service_account') {
         const allowed = await this.dependencies.rateLimiter.consume(
@@ -265,6 +274,33 @@ export class PlatformConnectorRuntimeAdapter {
       } else {
         await this.dependencies.outbound.preflight(connector.endpoint);
       }
+      if (connector.credentialMode === 'shared_service_account') {
+        const journal = await this.dependencies.journal.begin({
+          connectorId: connector.id,
+          operationId: invocation.proof.operationId,
+          requestFingerprint: createHash('sha256').update(JSON.stringify(args)).digest('hex'),
+          toolCallId: invocation.toolCallId,
+          toolKey: tool.toolKey,
+          userId: invocation.userId,
+        });
+        if (journal.status === 'reserved') {
+          throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_TOOL_DENIED');
+        }
+        if (journal.status === 'replay') {
+          if (journal.auditPending) {
+            try {
+              await this.auditShared(invocation, connector.id, 'allowed');
+              await this.dependencies.journal.markAudited(journal.token);
+            } catch (error) {
+              console.error('[connector-runtime] terminal audit reconciliation pending', {
+                errorClass: error instanceof Error ? error.name : 'UnknownError',
+              });
+            }
+          }
+          return journal.result;
+        }
+        journalToken = journal.token;
+      }
       const response = await this.dependencies.outbound.requestJson({
         body: {
           id: `${invocation.proof.operationId}:${tool.toolKey}`,
@@ -279,10 +315,25 @@ export class PlatformConnectorRuntimeAdapter {
         url: connector.endpoint,
       });
       const result = parseRuntimeResponse(response.body, taintedValues);
+      const executionResult = { confirmation, ...result, success: true as const };
       if (connector.credentialMode === 'shared_service_account') {
-        await this.auditShared(invocation, connector.id, 'allowed');
+        try {
+          await this.dependencies.journal.complete(journalToken!, executionResult);
+        } catch (error) {
+          console.error('[connector-runtime] terminal result journal pending', {
+            errorClass: error instanceof Error ? error.name : 'UnknownError',
+          });
+        }
+        try {
+          await this.auditShared(invocation, connector.id, 'allowed');
+          if (journalToken) await this.dependencies.journal.markAudited(journalToken);
+        } catch (error) {
+          console.error('[connector-runtime] terminal audit delivery pending', {
+            errorClass: error instanceof Error ? error.name : 'UnknownError',
+          });
+        }
       }
-      return { confirmation, ...result, success: true };
+      return executionResult;
     } catch (error) {
       if (
         connector.credentialMode === 'shared_service_account' &&
@@ -291,7 +342,13 @@ export class PlatformConnectorRuntimeAdapter {
           error.code === 'PLATFORM_CONNECTOR_RATE_LIMITED'
         )
       ) {
-        await this.auditShared(invocation, connector.id, 'failed');
+        try {
+          await this.auditShared(invocation, connector.id, 'failed');
+        } catch (auditError) {
+          console.error('[connector-runtime] failure audit delivery pending', {
+            errorClass: auditError instanceof Error ? auditError.name : 'UnknownError',
+          });
+        }
       }
       if (error instanceof PlatformConnectorContractError) throw error;
       throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_TRANSPORT_UNSUPPORTED');
