@@ -556,4 +556,111 @@ describe('PlatformAgentCatalogRepository', () => {
     expect(again!.lastSyncedAt).toEqual(stampedAt);
     expect(await serverDB.select().from(platformUserAgentMaterializations)).toHaveLength(1);
   });
+
+  it('never overwrites a real materialization on a no-expectedCurrent call for a different version (CAS)', async () => {
+    const agent = await repository.createIdentity({
+      agentKey: 'cas-no-expected',
+      isDefault: false,
+      systemKey: null,
+    });
+    const version1 = await repository.appendVersionCas({
+      agentId: agent.id,
+      config,
+      dependencySnapshot,
+      expectedDraftSequence: 0,
+      expectedRevision: 0,
+      version: '1.0.0',
+    });
+    const version2 = await repository.appendVersionCas({
+      agentId: agent.id,
+      config: { ...config, displayName: 'v2' },
+      dependencySnapshot,
+      expectedDraftSequence: 1,
+      expectedRevision: 0,
+      version: '2.0.0',
+    });
+
+    // A real v1 materialization (fresh insert stamps last_synced_at).
+    const v1mat = await repository.upsertMaterialization({
+      platformAgentId: agent.id,
+      platformAgentVersionChecksum: version1!.checksum,
+      platformAgentVersionId: version1!.id,
+      userId: USER_A,
+    });
+    expect(v1mat!.lastSyncedAt).not.toBeNull();
+    const before = await repository.getMaterialization(USER_A, agent.id);
+
+    // No-expectedCurrent v2 must NOT clobber the real v1 — it returns undefined (fails pre-fix).
+    const attempt = await repository.upsertMaterialization({
+      platformAgentId: agent.id,
+      platformAgentVersionChecksum: version2!.checksum,
+      platformAgentVersionId: version2!.id,
+      userId: USER_A,
+    });
+    expect(attempt).toBeUndefined();
+    const after = await repository.getMaterialization(USER_A, agent.id);
+    expect(after!.platformAgentVersionId).toBe(version1!.id);
+    expect(after!.platformAgentVersionChecksum).toBe(version1!.checksum);
+    expect(after!.status).toBe(before!.status);
+    expect(after!.lastSyncedAt).toEqual(before!.lastSyncedAt);
+  });
+
+  it('upgrades a visibility-only row with a correct expectedCurrent but rejects a wrong one (CAS)', async () => {
+    const agent = await repository.createIdentity({
+      agentKey: 'cas-expected',
+      isDefault: false,
+      systemKey: null,
+    });
+    const version1 = await repository.appendVersionCas({
+      agentId: agent.id,
+      config,
+      dependencySnapshot,
+      expectedDraftSequence: 0,
+      expectedRevision: 0,
+      version: '1.0.0',
+    });
+    const version2 = await repository.appendVersionCas({
+      agentId: agent.id,
+      config: { ...config, displayName: 'v2' },
+      dependencySnapshot,
+      expectedDraftSequence: 1,
+      expectedRevision: 0,
+      version: '2.0.0',
+    });
+
+    // hide → visibility-only row at v1 (last_synced_at NULL).
+    await repository.setMaterializationHidden({
+      hidden: true,
+      platformAgentId: agent.id,
+      platformAgentVersionChecksum: version1!.checksum,
+      platformAgentVersionId: version1!.id,
+      userId: USER_A,
+    });
+    expect((await repository.getMaterialization(USER_A, agent.id))!.lastSyncedAt).toBeNull();
+
+    // Wrong expectedCurrent (v2) must not upgrade the visibility-only row.
+    const wrong = await repository.upsertMaterialization({
+      expectedCurrent: { checksum: version2!.checksum, versionId: version2!.id },
+      platformAgentId: agent.id,
+      platformAgentVersionChecksum: version1!.checksum,
+      platformAgentVersionId: version1!.id,
+      userId: USER_A,
+    });
+    expect(wrong).toBeUndefined();
+    expect((await repository.getMaterialization(USER_A, agent.id))!.lastSyncedAt).toBeNull();
+
+    // Correct expectedCurrent (v1, matching the visibility-only row) upgrades it to real.
+    const right = await repository.upsertMaterialization({
+      expectedCurrent: { checksum: version1!.checksum, versionId: version1!.id },
+      platformAgentId: agent.id,
+      platformAgentVersionChecksum: version1!.checksum,
+      platformAgentVersionId: version1!.id,
+      userId: USER_A,
+    });
+    expect(right).toBeDefined();
+    const upgraded = await repository.getMaterialization(USER_A, agent.id);
+    expect(upgraded!.lastSyncedAt).not.toBeNull();
+    expect(upgraded!.hidden).toBe(true);
+    expect(upgraded!.platformAgentVersionId).toBe(version1!.id);
+  });
 });

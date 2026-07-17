@@ -892,9 +892,13 @@ export class PlatformAgentCatalogRepository {
         if (inserted) return inserted;
         const existing = await scoped.getMaterialization(params.userId, params.platformAgentId);
         if (!existing) return undefined;
-        // Idempotent only when the existing row is ALREADY a real materialization at the desired
-        // state; a visibility-only row (or any non-matching real row) must be upgraded in place.
+        // No-expectedCurrent conflict resolves to exactly one of three cases:
+        //   1) a real materialization already in the desired state → idempotent, do not refresh;
         if (matchesDesiredState(existing)) return existing;
+        //   2) a real materialization NOT in the desired state → refuse: without an explicit
+        //      expectedCurrent CAS we must never clobber it (e.g. overwrite a real v1 with v2);
+        if (isRealMaterialization(existing)) return undefined;
+        //   3) a visibility-only row → atomically upgrade it in place (below).
         const resolvedStatus = status ?? 'pending';
         // Atomic upgrade under the same per-Agent reference lock: stamp last_synced_at (the real
         // materialization marker) and write the target version/checksum/status, preserving the
@@ -959,6 +963,12 @@ export class PlatformAgentCatalogRepository {
           ),
         )
         .returning();
+      // The UPDATE is the CAS: it only writes when the row still matches expectedCurrent (and the
+      // materialized-agent guard). A correct expectedCurrent updates / upgrades; a wrong one never
+      // writes. The fallback below is a pure read-back — it returns the row only when it is ALREADY
+      // a real materialization in the desired state (matchesDesiredState requires
+      // isRealMaterialization), so a wrong expectedCurrent against a visibility-only or otherwise
+      // non-matching row yields undefined and never a fallback upgrade.
       if (updated) return updated;
       const existing = await scoped.getMaterialization(params.userId, params.platformAgentId);
       return existing && matchesDesiredState(existing) ? existing : undefined;
