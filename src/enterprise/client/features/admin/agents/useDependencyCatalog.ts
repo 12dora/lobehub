@@ -26,7 +26,10 @@ export type PublishedProviderService = Pick<
   'getProvider' | 'listProviderRevisions' | 'listProviders'
 >;
 export type PublishedSkillService = Pick<typeof platformSkillsService, 'getPublishedCatalog'>;
-export type PublishedConnectorService = Pick<typeof adminConnectorsService, 'get' | 'list'>;
+export type PublishedConnectorService = Pick<
+  typeof adminConnectorsService,
+  'get' | 'getPublishedBatch' | 'list'
+>;
 
 const DEP_PROVIDERS_KEY = 'enterprise.admin.agents.dep.providers';
 const DEP_PROVIDER_SOURCE_KEY = 'enterprise.admin.agents.dep.providerSource';
@@ -169,9 +172,10 @@ export const useAdminConnectorDetail = (
   );
 
 /**
- * Fetch the exact published detail for EVERY referenced connector id, so existing connector refs
- * can be validated against the current catalog (checksum/revision/tools). Returns a map keyed by
- * connectorId (`null` when a referenced connector is unpublished/missing); `data` stays
+ * Fetch the exact published detail for EVERY referenced connector id so existing connector refs can
+ * be validated against the current catalog (checksum/revision/tools). Uses ONE bounded batch read
+ * (`admin.connectors.getPublishedBatch`, ≤100 ids) — never N per-connector requests. Returns a map
+ * keyed by connectorId (`null` when a referenced connector is unpublished/missing); `data` stays
  * `undefined` until settled so callers fail closed while loading.
  */
 export const useAdminConnectorDetails = (
@@ -182,13 +186,23 @@ export const useAdminConnectorDetails = (
   return useClientDataSWR<Record<string, PublishedConnectorDetail | null>>(
     ids.length ? [DEP_CONNECTOR_DETAILS_KEY, ids.join(',')] : null,
     async () => {
-      const entries = await Promise.all(
-        ids.map(async (id) => {
-          const detail = await service.get({ id });
-          return [id, detail.published ? toConnectorDetail(detail.published) : null] as const;
-        }),
-      );
-      return Object.fromEntries(entries);
+      const { items } = await service.getPublishedBatch({ ids });
+      const map: Record<string, PublishedConnectorDetail | null> = {};
+      for (const item of items) {
+        map[item.connectorId] = item.published
+          ? {
+              connectorId: item.published.connectorId,
+              connectorKey: item.published.connectorKey,
+              publishedChecksum: item.published.publishedChecksum,
+              publishedRevision: item.published.publishedRevision,
+              tools: item.published.tools.map((tool) => ({
+                platformPolicy: tool.platformPolicy,
+                toolKey: tool.toolKey,
+              })),
+            }
+          : null;
+      }
+      return map;
     },
     { revalidateOnFocus: false },
   );

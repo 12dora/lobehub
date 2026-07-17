@@ -42,22 +42,23 @@ const PERSIST_HINT_KEY = {
 const PERSIST_WARNING = new Set(['blocked', 'too_large', 'unavailable']);
 
 /**
- * A refreshed Agent detail is "fresh" only when it is a complete authoritative detail (identity +
- * 64-hex draftToken) whose CAS (draftToken / revision / current version) has demonstrably advanced
- * past the pre-refresh snapshot. Used to gate unlocking the refresh lock.
+ * A refreshed Agent detail unlocks the refresh gate ONLY when it is a complete authoritative
+ * detail for the SAME Agent whose CAS has demonstrably advanced past the frozen baseline:
+ * revision STRICTLY greater AND the 64-hex draftToken changed. A revision rollback, a token-only
+ * change, a currentVersionId-only change, another Agent, or an undefined/incomplete detail are all
+ * rejected. (currentVersionId is treated consistently but is never sole proof of freshness.)
  */
 export const isAgentDetailFresh = (
   result: AdminAgentDetailOutput | undefined,
-  previous: AdminAgentDetailOutput | undefined,
+  baseline: AdminAgentDetailOutput | undefined,
 ): boolean => {
-  if (!result?.identity || typeof result.draftToken !== 'string' || result.draftToken.length !== 64)
-    return false;
-  if (!previous) return true;
-  return (
-    result.draftToken !== previous.draftToken ||
-    result.identity.revision !== previous.identity.revision ||
-    result.identity.currentVersionId !== previous.identity.currentVersionId
-  );
+  const validToken = (token: unknown): token is string =>
+    typeof token === 'string' && /^[a-f0-9]{64}$/.test(token);
+  if (!result?.identity || !validToken(result.draftToken)) return false; // complete + valid
+  if (!baseline?.identity || !validToken(baseline.draftToken)) return false; // need a real baseline
+  if (result.identity.id !== baseline.identity.id) return false; // same Agent only
+  if (result.identity.revision <= baseline.identity.revision) return false; // strictly advanced (no rollback / equal)
+  return result.draftToken !== baseline.draftToken; // the CAS token must also have changed
 };
 
 export const AgentDetailView = memo(

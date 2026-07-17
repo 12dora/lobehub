@@ -109,12 +109,17 @@ export const DependencyEditor = ({
   );
   const connectorRefDetails = useAdminConnectorDetails(enabled ? referencedConnectorIds : []);
 
-  // A catalog is "settled" once it has resolved at least once; before that, readiness fails closed.
-  const skillsSettled = skills.data !== undefined;
-  const connectorsSettled = connectorRefDetails.data !== undefined;
-  const sourceSettled = source.data !== undefined;
+  // A source is usable for validation ONLY when it has a successful, settled snapshot: data present,
+  // no error, and NOT revalidating. Retained data from a prior success while an error or background
+  // revalidation is in flight is NOT trustworthy → readiness fails closed.
+  const usable = (hook: { data?: unknown; error?: unknown; isValidating?: boolean }) =>
+    hook.data !== undefined && !hook.error && !hook.isValidating;
 
-  // Display staleness only once the relevant catalog has settled (no spurious "Outdated" flashes).
+  const sourceSettled = usable(source);
+  const skillsSettled = usable(skills);
+  const connectorsSettled = usable(connectorRefDetails);
+
+  // Display staleness only once the relevant source has a settled success (no spurious "Outdated").
   const displayModelStale = Boolean(model) && sourceSettled && !isModelCurrent(model, source.data);
   const staleSkills = useMemo(
     () => (skillsSettled ? staleSkillKeys(dependencies.skills, skills.data) : []),
@@ -128,8 +133,8 @@ export const DependencyEditor = ({
     [connectorRefDetails.data, connectorsSettled, dependencies.connectors],
   );
 
-  // Readiness FAILS CLOSED: an unsettled/failed catalog or ANY exact mismatch blocks save.
-  const modelReady = Boolean(model) && isModelCurrent(model, source.data);
+  // Readiness FAILS CLOSED: an unsettled/errored/revalidating source or ANY exact mismatch blocks save.
+  const modelReady = Boolean(model) && sourceSettled && isModelCurrent(model, source.data);
   const skillsReady =
     dependencies.skills.length === 0 || (skillsSettled && staleSkills.length === 0);
   const connectorsReady =
@@ -281,6 +286,9 @@ export const DependencyEditor = ({
                     {displayModelStale ? (
                       <Tag color="warning">{t('agentCatalog.dependency.stale')}</Tag>
                     ) : null}
+                    {source.isValidating && source.data ? (
+                      <Text type="secondary">{t('agentCatalog.dependency.revalidating')}</Text>
+                    ) : null}
                   </Flexbox>
                   <Text className={styles.mono}>
                     {t('agentCatalog.dependency.model.pinned', {
@@ -358,6 +366,9 @@ export const DependencyEditor = ({
                 onChange={(value) => addSkill(value as string | undefined)}
               />
             ) : null}
+            {dependencies.skills.length > 0 && skills.isValidating && skills.data ? (
+              <Text type="secondary">{t('agentCatalog.dependency.revalidating')}</Text>
+            ) : null}
           </Flexbox>
         )}
       </Flexbox>
@@ -367,6 +378,18 @@ export const DependencyEditor = ({
         <Text as="h4" fontSize={14} weight={600}>
           {t('agentCatalog.dependency.connector.title')}
         </Text>
+        {/* Referenced-connector validation state: an error or in-flight revalidation blocks save
+            (readiness fails closed) and is surfaced here with a sanitized message + explicit retry. */}
+        {dependencies.connectors.length > 0 && connectorRefDetails.error ? (
+          <Alert
+            showIcon
+            action={retry(connectorRefDetails.mutate)}
+            message={t('agentCatalog.dependency.connector.validateError')}
+            type="error"
+          />
+        ) : dependencies.connectors.length > 0 && !connectorsSettled ? (
+          <Text type="secondary">{t('agentCatalog.dependency.connector.validating')}</Text>
+        ) : null}
         {connectors.error ? (
           <Alert
             showIcon
