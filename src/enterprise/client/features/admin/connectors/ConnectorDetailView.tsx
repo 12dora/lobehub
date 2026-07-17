@@ -101,6 +101,8 @@ const ConnectorDetailView = memo<ConnectorDetailViewProps>(
   }) => {
     const { t } = useTranslation('admin');
     const readOnly = !permissions.canUpdate;
+    const hasUnsavedChanges =
+      saveState === 'dirty' || saveState === 'failed' || saveState === 'saving';
     const secretConfigured =
       snapshot.draft.credentialMode === 'shared_service_account'
         ? snapshot.draft.sharedSecret.configured
@@ -115,19 +117,26 @@ const ConnectorDetailView = memo<ConnectorDetailViewProps>(
         actions={
           <Flexbox horizontal gap={8}>
             {permissions.canDiscover ? (
-              <Button disabled={conflict || Boolean(busyAction)} onClick={onDiscover}>
+              <Button
+                disabled={conflict || hasUnsavedChanges || Boolean(busyAction)}
+                onClick={onDiscover}
+              >
                 {t('connectorCatalog.actions.discover')}
               </Button>
             ) : null}
             {permissions.canRevokeBindings && snapshot.published ? (
-              <Button danger disabled={conflict || Boolean(busyAction)} onClick={onRevokeBindings}>
+              <Button
+                danger
+                disabled={conflict || hasUnsavedChanges || Boolean(busyAction)}
+                onClick={onRevokeBindings}
+              >
                 {t('connectorCatalog.actions.revokeBindings')}
               </Button>
             ) : null}
             {permissions.canPublish && snapshot.published ? (
               <Button
                 danger
-                disabled={conflict || Boolean(busyAction)}
+                disabled={conflict || hasUnsavedChanges || Boolean(busyAction)}
                 loading={busyAction === 'rollback'}
                 onClick={onRollback}
               >
@@ -135,12 +144,20 @@ const ConnectorDetailView = memo<ConnectorDetailViewProps>(
               </Button>
             ) : null}
             {permissions.canArchive && snapshot.published ? (
-              <Button danger disabled={conflict || Boolean(busyAction)} onClick={onArchive}>
+              <Button
+                danger
+                disabled={conflict || hasUnsavedChanges || Boolean(busyAction)}
+                onClick={onArchive}
+              >
                 {t('connectorCatalog.actions.archive')}
               </Button>
             ) : null}
             {permissions.canDelete && !snapshot.published ? (
-              <Button danger disabled={conflict || Boolean(busyAction)} onClick={onDeleteDraft}>
+              <Button
+                danger
+                disabled={conflict || hasUnsavedChanges || Boolean(busyAction)}
+                onClick={onDeleteDraft}
+              >
                 {t('connectorCatalog.actions.deleteDraft')}
               </Button>
             ) : null}
@@ -205,9 +222,11 @@ const ConnectorDetailView = memo<ConnectorDetailViewProps>(
             <Flexbox horizontal gap={8}>
               {permissions.canTest ? (
                 <Button
-                  disabled={conflict || Boolean(busyAction) || !validation.valid}
                   loading={busyAction === 'test'}
                   type={primaryAction === 'test' ? 'primary' : undefined}
+                  disabled={
+                    conflict || hasUnsavedChanges || Boolean(busyAction) || !validation.valid
+                  }
                   onClick={() => onPrimaryAction('test')}
                 >
                   {t('connectorCatalog.actions.test')}
