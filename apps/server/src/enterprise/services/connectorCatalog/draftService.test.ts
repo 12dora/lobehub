@@ -4,9 +4,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
 import { PlatformRevisionConflictError } from '@/database/models/platform';
-import { platformAuditLogs, platformConnectors } from '@/database/schemas/platform';
+import {
+  platformAuditLogs,
+  platformConnectors,
+  platformConnectorSecrets,
+} from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 
+import { type KeyProvider, PlatformSecretService } from '../../security/secret';
 import type { ConnectorFailureAuditWriter } from './catalogAudit';
 import {
   cleanupM09ServiceData,
@@ -15,6 +20,7 @@ import {
 } from './catalogTestUtils';
 import type { ConnectorCatalogLifecycle } from './catalogTypes';
 import { ConnectorCatalogDraftService } from './draftService';
+import { PlatformConnectorSecretStore } from './platformConnectorSecretStore';
 
 const db: LobeChatDatabase = await getTestDB();
 const redirectUri = 'https://aihub.example.test/oauth/callback';
@@ -130,6 +136,104 @@ describe('ConnectorCatalogDraftService', () => {
       }),
     ).rejects.toBeInstanceOf(PlatformRevisionConflictError);
     expect(JSON.stringify(await db.select().from(platformAuditLogs))).not.toContain(secret);
+  });
+
+  it('creates and physically deletes real shared/OAuth secret drafts without FK or orphan leaks', async () => {
+    const keyProvider: KeyProvider = {
+      getKek: async () => ({ key: new Uint8Array(32).fill(7), keyId: 'draft-real-store' }),
+      providerId: 'test',
+    };
+    const service = createService(
+      undefined,
+      new PlatformConnectorSecretStore(db, new PlatformSecretService({ keyProvider })),
+    );
+    const inputs = [
+      {
+        credentialMode: 'shared_service_account' as const,
+        displayName: 'Real Shared Draft',
+        endpoint: 'https://connector.example.test/shared',
+        key: 'real-shared-draft',
+        reason: 'verify shared parent first create',
+        sharedSecret: { operation: 'replace' as const, value: { apiKey: 'real-shared-secret' } },
+        slot: 'sharedSecret',
+        transport: 'http' as const,
+      },
+      {
+        credentialMode: 'per_user_oauth' as const,
+        displayName: 'Real OAuth Draft',
+        endpoint: 'https://connector.example.test/oauth',
+        key: 'real-oauth-draft',
+        oauthClientSecret: { operation: 'replace' as const, value: 'real-oauth-secret' },
+        oauthConfig: {
+          authorizationEndpoint: 'https://identity.example.test/authorize',
+          clientId: 'real-client',
+          issuer: 'https://identity.example.test',
+          scopes: ['read'],
+          tokenEndpoint: 'https://identity.example.test/token',
+        },
+        reason: 'verify OAuth parent first create',
+        slot: 'oauthClientSecret',
+        transport: 'http' as const,
+      },
+    ];
+
+    for (const { slot, ...input } of inputs) {
+      const created = await service.createDraft('admin-user', input);
+      const secrets = await db
+        .select()
+        .from(platformConnectorSecrets)
+        .where(eq(platformConnectorSecrets.connectorId, created.draft.id));
+      expect(secrets).toEqual([expect.objectContaining({ connectorId: created.draft.id, slot })]);
+      await expect(
+        service.deleteDraft('admin-user', {
+          expectedDraftToken: created.draftToken,
+          expectedRevision: created.draft.revision,
+          id: created.draft.id,
+          reason: 'delete real secret draft',
+        }),
+      ).resolves.toMatchObject({ auditId: expect.any(String) });
+      expect(
+        await db
+          .select()
+          .from(platformConnectors)
+          .where(eq(platformConnectors.id, created.draft.id)),
+      ).toEqual([]);
+      expect(
+        await db
+          .select()
+          .from(platformConnectorSecrets)
+          .where(eq(platformConnectorSecrets.connectorId, created.draft.id)),
+      ).toEqual([]);
+    }
+  });
+
+  it('rolls back the parent and records failure when transactional Secret persistence fails', async () => {
+    const keyProvider: KeyProvider = {
+      getKek: async () => {
+        throw new Error('private KMS outage');
+      },
+      providerId: 'test',
+    };
+    const service = createService(
+      undefined,
+      new PlatformConnectorSecretStore(db, new PlatformSecretService({ keyProvider })),
+    );
+    await expect(
+      service.createDraft('admin-user', {
+        credentialMode: 'shared_service_account',
+        displayName: 'Rolled Back Parent',
+        endpoint: 'https://connector.example.test/rollback',
+        key: 'rolled-back-parent',
+        reason: 'verify transactional create rollback',
+        sharedSecret: { operation: 'replace', value: { apiKey: 'must-not-persist' } },
+        transport: 'http',
+      }),
+    ).rejects.toMatchObject({ code: 'PLATFORM_CONNECTOR_CREDENTIAL_NOT_CONFIGURED' });
+    expect(await db.select().from(platformConnectors)).toEqual([]);
+    expect(await db.select().from(platformConnectorSecrets)).toEqual([]);
+    expect(await db.select().from(platformAuditLogs)).toContainEqual(
+      expect.objectContaining({ action: 'admin.connectors.createDraft', result: 'failure' }),
+    );
   });
 
   it('persists replacement handles before locking and leaves a safe orphan after a losing CAS', async () => {
