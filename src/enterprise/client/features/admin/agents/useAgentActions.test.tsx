@@ -7,6 +7,7 @@ import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { deriveAdminAgentPermissions } from './controller';
 import type { AdminAgentDetailOutput } from './types';
 import { useAgentActions } from './useAgentActions';
+import type { RefreshLock } from './useRefreshLock';
 
 const mocks = vi.hoisted(() => ({
   openReasonModal: vi.fn(),
@@ -84,9 +85,24 @@ const makeEditor = () =>
     updateDraft: vi.fn(),
   }) as any;
 
+/** Controllable fake lock; `refresh` decides whether syncAfterCommit locks (refresh failed). */
+const makeLock = (refresh: 'ok' | 'fail'): RefreshLock => {
+  let locked = false;
+  return {
+    isLocked: () => locked,
+    refreshFailed: false,
+    retryRefresh: vi.fn(async () => {
+      locked = false;
+    }),
+    syncAfterCommit: vi.fn(async () => {
+      locked = refresh === 'fail';
+    }),
+  };
+};
+
 const lastModalConfig = () => mocks.openReasonModal.mock.calls.at(-1)![0];
 
-describe('useAgentActions reauth + commit/refresh separation', () => {
+describe('useAgentActions reauth + commit/refresh + write-lock', () => {
   beforeEach(() => {
     for (const fn of Object.values(mocks.service)) fn.mockReset();
     mocks.openReasonModal.mockReset();
@@ -100,6 +116,7 @@ describe('useAgentActions reauth + commit/refresh separation', () => {
       useAgentActions({
         authMethod: 'better-auth',
         editor: makeEditor(),
+        lock: makeLock('ok'),
         mutate,
         permissions,
         snapshot,
@@ -109,7 +126,6 @@ describe('useAgentActions reauth + commit/refresh separation', () => {
     act(() => result.current.publish('v1'));
     const config = lastModalConfig();
     expect(config.authMethod).toBe('better-auth');
-    // Payload is frozen from the snapshot CAS, not regenerated.
     expect(config.buildPayload('do it')).toEqual({
       agentId: 'agent-1',
       expectedDraftToken: 'b'.repeat(64),
@@ -122,34 +138,42 @@ describe('useAgentActions reauth + commit/refresh separation', () => {
       await config.onSubmit(config.buildPayload('do it'));
     });
     expect(mocks.service.publish).toHaveBeenCalledOnce();
-    expect(mutate).toHaveBeenCalled();
-    expect(result.current.refreshFailed).toBe(false);
   });
 
-  it('keeps a committed publish successful when the refresh fails (no duplicate mutation)', async () => {
-    const mutate = vi.fn().mockRejectedValue(new Error('network'));
+  it('locks a second dangerous write after a committed publish whose refresh failed', async () => {
+    const mutate = vi.fn().mockResolvedValue(undefined);
+    const lock = makeLock('fail');
     mocks.service.publish.mockResolvedValue({ agentId: 'agent-1', revision: 8, versionId: 'v1' });
     const { result } = renderHook(() =>
-      useAgentActions({ authMethod: null, editor: makeEditor(), mutate, permissions, snapshot }),
+      useAgentActions({
+        authMethod: null,
+        editor: makeEditor(),
+        lock,
+        mutate,
+        permissions,
+        snapshot,
+      }),
     );
 
     act(() => result.current.publish('v1'));
-    const config = lastModalConfig();
     await act(async () => {
-      // onSubmit must NOT throw — the commit succeeded, only the refresh failed.
-      await config.onSubmit(config.buildPayload('reason'));
-    });
-
-    expect(mocks.service.publish).toHaveBeenCalledOnce();
-    expect(result.current.refreshFailed).toBe(true);
-
-    // Retrying the refresh recovers without re-running the mutation.
-    mutate.mockResolvedValueOnce(undefined);
-    await act(async () => {
-      await result.current.retryRefresh();
+      await lastModalConfig().onSubmit(lastModalConfig().buildPayload('reason'));
     });
     expect(mocks.service.publish).toHaveBeenCalledOnce();
-    expect(result.current.refreshFailed).toBe(false);
+    expect(lock.isLocked()).toBe(true);
+
+    // Second publish while locked must NOT open a modal or call the service again.
+    const modalCalls = mocks.openReasonModal.mock.calls.length;
+    act(() => result.current.publish('v1'));
+    expect(mocks.openReasonModal.mock.calls.length).toBe(modalCalls);
+    expect(mocks.service.publish).toHaveBeenCalledOnce();
+
+    // A successful refresh unlocks and re-enables the action.
+    await act(async () => {
+      await lock.retryRefresh();
+    });
+    act(() => result.current.publish('v1'));
+    expect(mocks.openReasonModal.mock.calls.length).toBe(modalCalls + 1);
   });
 
   it('applies the authoritative appendVersion output locally after a committed save', async () => {
@@ -161,18 +185,42 @@ describe('useAgentActions reauth + commit/refresh separation', () => {
       version: { id: 'v2', version: '1.0.1' },
     });
     const { result } = renderHook(() =>
-      useAgentActions({ authMethod: null, editor, mutate, permissions, snapshot }),
+      useAgentActions({
+        authMethod: null,
+        editor,
+        lock: makeLock('ok'),
+        mutate,
+        permissions,
+        snapshot,
+      }),
     );
 
     act(() => result.current.save());
-    const config = lastModalConfig();
+    // The frozen append-version payload carries the exact config + snapshot + version + CAS.
+    expect(lastModalConfig().buildPayload('save it')).toEqual({
+      agentId: 'agent-1',
+      config: { displayName: 'X' },
+      dependencySnapshot: {
+        connectors: [],
+        model: {
+          modelKey: 'm',
+          providerChecksum: 'a'.repeat(64),
+          providerKey: 'p',
+          providerRevision: 1,
+        },
+        skills: [],
+      },
+      expectedDraftToken: 'b'.repeat(64),
+      expectedRevision: 7,
+      reason: 'save it',
+      version: '1.0.1',
+    });
     await act(async () => {
-      await config.onSubmit(config.buildPayload('save it'));
+      await lastModalConfig().onSubmit(lastModalConfig().buildPayload('save it'));
     });
 
     expect(mocks.service.appendVersion).toHaveBeenCalledOnce();
     expect(editor.markSaved).toHaveBeenCalledOnce();
-    // Authoritative output applied locally with no revalidation.
     expect(mutate).toHaveBeenCalledWith(expect.any(Function), { revalidate: false });
   });
 });

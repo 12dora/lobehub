@@ -3,19 +3,28 @@
 import { Alert, Block, Flexbox, Tag, Text } from '@lobehub/ui';
 import { Button, Select } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import {
+  allowedConnectorToolKeys,
+  buildConnectorDependency,
   buildModelDependency,
   buildSkillDependency,
+  isModelCurrent,
+  staleConnectorKeys,
+  staleSkillKeys,
+  withConnectorAdded,
+  withConnectorRemoved,
   withModel,
   withSkillAdded,
   withSkillRemoved,
 } from './dependencyCatalog';
 import type { AdminAgentDraftDependencies } from './types';
 import {
+  useAdminConnectorDetail,
   useAdminProviderModelSource,
+  useAdminPublishedConnectors,
   useAdminPublishedProviders,
   useAdminPublishedSkills,
 } from './useDependencyCatalog';
@@ -33,11 +42,19 @@ const styles = createStaticStyles(({ css }) => ({
   `,
 }));
 
+export interface DependencyValidity {
+  issues: string[];
+  ready: boolean;
+}
+
 interface DependencyEditorProps {
+  /** Owning Agent id — changing it resets the provider/connector selection so it never bleeds. */
+  agentId: string;
   dependencies: AdminAgentDraftDependencies;
   editable: boolean;
   enabled: boolean;
   onChange: (next: AdminAgentDraftDependencies) => void;
+  onValidityChange?: (validity: DependencyValidity) => void;
 }
 
 const FieldLabel = ({ children }: { children: string }) => (
@@ -45,17 +62,30 @@ const FieldLabel = ({ children }: { children: string }) => (
 );
 
 export const DependencyEditor = ({
+  agentId,
   dependencies,
   editable,
   enabled,
   onChange,
+  onValidityChange,
 }: DependencyEditorProps) => {
   const { t } = useTranslation('admin');
 
   const providers = useAdminPublishedProviders(enabled);
   const skills = useAdminPublishedSkills(enabled);
+  const connectors = useAdminPublishedConnectors(enabled);
 
   const [providerId, setProviderId] = useState<string | undefined>();
+  const [connectorId, setConnectorId] = useState<string | undefined>();
+
+  // Reset all selection state whenever the Agent context changes — never bleed across Agents.
+  const agentRef = useRef(agentId);
+  useEffect(() => {
+    if (agentRef.current === agentId) return;
+    agentRef.current = agentId;
+    setProviderId(undefined);
+    setConnectorId(undefined);
+  }, [agentId]);
 
   // Initialise the provider selection from an existing model ref (edit / recovery).
   useEffect(() => {
@@ -67,10 +97,37 @@ export const DependencyEditor = ({
   }, [dependencies.model, providerId, providers.data]);
 
   const source = useAdminProviderModelSource(providerId);
+  const connectorDetail = useAdminConnectorDetail(connectorId);
+
+  const model = dependencies.model;
+
+  // Validate existing refs against the CURRENTLY fetched published catalog.
+  const modelCurrent = isModelCurrent(model, source.data);
+  const staleSkills = useMemo(
+    () => staleSkillKeys(dependencies.skills, skills.data),
+    [dependencies.skills, skills.data],
+  );
+  const staleConnectors = useMemo(
+    () => staleConnectorKeys(dependencies.connectors, connectors.data),
+    [dependencies.connectors, connectors.data],
+  );
+
+  const issues = useMemo(() => {
+    const list: string[] = [];
+    if (!modelCurrent) list.push('agentCatalog.dependency.issues.modelStale');
+    if (staleSkills.length > 0) list.push('agentCatalog.dependency.issues.skillStale');
+    if (staleConnectors.length > 0) list.push('agentCatalog.dependency.issues.connectorStale');
+    return list;
+  }, [modelCurrent, staleConnectors.length, staleSkills.length]);
+  const ready = issues.length === 0;
+
+  const issuesKey = issues.join('|');
+  useEffect(() => {
+    onValidityChange?.({ issues: issuesKey ? issuesKey.split('|') : [], ready });
+  }, [issuesKey, onValidityChange, ready]);
 
   const chooseProvider = (nextId: string | undefined) => {
     setProviderId(nextId);
-    // Switching provider invalidates the previous exact model ref — clear it fully.
     if (dependencies.model) onChange(withModel(dependencies, null));
   };
 
@@ -89,14 +146,38 @@ export const DependencyEditor = ({
         })),
     [dependencies.skills, skills.data],
   );
-
   const addSkill = (skillKey: string | undefined) => {
     const published = skills.data?.find((skill) => skill.skillKey === skillKey);
-    if (!published) return;
-    onChange(withSkillAdded(dependencies, buildSkillDependency(published)));
+    if (published) onChange(withSkillAdded(dependencies, buildSkillDependency(published)));
   };
 
-  const model = dependencies.model;
+  const connectorOptions = useMemo(
+    () =>
+      (connectors.data ?? []).map((connector) => ({
+        label: `${connector.displayName} (${connector.key})`,
+        value: connector.id,
+      })),
+    [connectors.data],
+  );
+  const addConnector = () => {
+    if (!connectorDetail.data) return;
+    onChange(
+      withConnectorAdded(
+        dependencies,
+        buildConnectorDependency(
+          connectorDetail.data,
+          allowedConnectorToolKeys(connectorDetail.data),
+        ),
+      ),
+    );
+    setConnectorId(undefined);
+  };
+
+  const retry = (mutate: () => Promise<unknown>) => (
+    <Button size="small" onClick={() => void mutate()}>
+      {t('agentCatalog.dependency.retry')}
+    </Button>
+  );
 
   return (
     <Flexbox gap={20}>
@@ -108,13 +189,9 @@ export const DependencyEditor = ({
         {providers.error ? (
           <Alert
             showIcon
+            action={retry(providers.mutate)}
             message={t('agentCatalog.dependency.model.loadError')}
             type="error"
-            action={
-              <Button size="small" onClick={() => void providers.mutate()}>
-                {t('agentCatalog.dependency.retry')}
-              </Button>
-            }
           />
         ) : providers.isLoading ? (
           <Text type="secondary">{t('agentCatalog.dependency.loading')}</Text>
@@ -140,13 +217,9 @@ export const DependencyEditor = ({
               source.error ? (
                 <Alert
                   showIcon
+                  action={retry(source.mutate)}
                   message={t('agentCatalog.dependency.model.loadError')}
                   type="error"
-                  action={
-                    <Button size="small" onClick={() => void source.mutate()}>
-                      {t('agentCatalog.dependency.retry')}
-                    </Button>
-                  }
                 />
               ) : source.isLoading ? (
                 <Text type="secondary">{t('agentCatalog.dependency.loading')}</Text>
@@ -178,9 +251,14 @@ export const DependencyEditor = ({
             {model ? (
               <Block padding={12} variant="outlined">
                 <Flexbox gap={2}>
-                  <Text>
-                    {model.providerKey}/{model.modelKey}
-                  </Text>
+                  <Flexbox horizontal align="center" gap={8}>
+                    <Text>
+                      {model.providerKey}/{model.modelKey}
+                    </Text>
+                    {!modelCurrent ? (
+                      <Tag color="warning">{t('agentCatalog.dependency.stale')}</Tag>
+                    ) : null}
+                  </Flexbox>
                   <Text className={styles.mono}>
                     {t('agentCatalog.dependency.model.pinned', {
                       checksum: model.providerChecksum.slice(0, 16),
@@ -204,13 +282,9 @@ export const DependencyEditor = ({
         {skills.error ? (
           <Alert
             showIcon
+            action={retry(skills.mutate)}
             message={t('agentCatalog.dependency.skill.loadError')}
             type="error"
-            action={
-              <Button size="small" onClick={() => void skills.mutate()}>
-                {t('agentCatalog.dependency.retry')}
-              </Button>
-            }
           />
         ) : (
           <Flexbox gap={8}>
@@ -226,9 +300,14 @@ export const DependencyEditor = ({
                   key={skill.skillKey}
                 >
                   <Flexbox gap={2}>
-                    <Text>
-                      {skill.skillKey} · {skill.version}
-                    </Text>
+                    <Flexbox horizontal align="center" gap={8}>
+                      <Text>
+                        {skill.skillKey} · {skill.version}
+                      </Text>
+                      {staleSkills.includes(skill.skillKey) ? (
+                        <Tag color="warning">{t('agentCatalog.dependency.stale')}</Tag>
+                      ) : null}
+                    </Flexbox>
                     <Text className={styles.mono}>{skill.checksum.slice(0, 16)}…</Text>
                   </Flexbox>
                   {editable ? (
@@ -260,31 +339,119 @@ export const DependencyEditor = ({
         )}
       </Flexbox>
 
-      {/* ---- Connectors (deferred: catalog does not expose published checksums yet) ---- */}
+      {/* ---- Connectors (optional, exact) ---- */}
       <Flexbox gap={8}>
         <Text as="h4" fontSize={14} weight={600}>
           {t('agentCatalog.dependency.connector.title')}
         </Text>
-        {dependencies.connectors.length > 0 ? (
-          dependencies.connectors.map((connector) => (
-            <Flexbox horizontal align="center" gap={8} key={connector.connectorKey}>
-              <Tag>{connector.connectorKey}</Tag>
-              <Text className={styles.mono}>
-                {t('agentCatalog.dependency.connector.pinned', {
-                  revision: connector.publishedRevision,
-                })}
-              </Text>
-            </Flexbox>
-          ))
+        {connectors.error ? (
+          <Alert
+            showIcon
+            action={retry(connectors.mutate)}
+            message={t('agentCatalog.dependency.connector.loadError')}
+            type="error"
+          />
         ) : (
-          <Text type="secondary">{t('agentCatalog.dependency.connector.empty')}</Text>
+          <Flexbox gap={8}>
+            {dependencies.connectors.length === 0 ? (
+              <Text type="secondary">{t('agentCatalog.dependency.connector.empty')}</Text>
+            ) : (
+              dependencies.connectors.map((connector) => (
+                <Flexbox
+                  horizontal
+                  align="center"
+                  gap={8}
+                  justify="space-between"
+                  key={connector.connectorKey}
+                >
+                  <Flexbox gap={2}>
+                    <Flexbox horizontal align="center" gap={8}>
+                      <Tag>{connector.connectorKey}</Tag>
+                      <Text className={styles.mono}>
+                        {t('agentCatalog.dependency.connector.pinned', {
+                          revision: connector.publishedRevision,
+                        })}{' '}
+                        · {connector.allowedToolKeys.length}{' '}
+                        {t('agentCatalog.dependency.connector.toolsLabel')}
+                      </Text>
+                      {staleConnectors.includes(connector.connectorKey) ? (
+                        <Tag color="warning">{t('agentCatalog.dependency.stale')}</Tag>
+                      ) : null}
+                    </Flexbox>
+                  </Flexbox>
+                  {editable ? (
+                    <Flexbox horizontal gap={8}>
+                      <Button
+                        size="small"
+                        onClick={() => {
+                          const match = connectors.data?.find(
+                            (option) => option.key === connector.connectorKey,
+                          );
+                          if (match) setConnectorId(match.id);
+                        }}
+                      >
+                        {t('agentCatalog.dependency.connector.update')}
+                      </Button>
+                      <Button
+                        size="small"
+                        onClick={() =>
+                          onChange(withConnectorRemoved(dependencies, connector.connectorKey))
+                        }
+                      >
+                        {t('agentCatalog.dependency.connector.remove')}
+                      </Button>
+                    </Flexbox>
+                  ) : null}
+                </Flexbox>
+              ))
+            )}
+            {editable ? (
+              <Flexbox gap={8}>
+                <Select
+                  aria-label={t('agentCatalog.dependency.connector.add')}
+                  disabled={connectors.isLoading}
+                  options={connectorOptions}
+                  value={connectorId}
+                  placeholder={
+                    connectors.isLoading
+                      ? t('agentCatalog.dependency.loading')
+                      : t('agentCatalog.dependency.connector.add')
+                  }
+                  onChange={(value) => setConnectorId(value as string | undefined)}
+                />
+                {connectorId ? (
+                  connectorDetail.error ? (
+                    <Alert
+                      showIcon
+                      action={retry(connectorDetail.mutate)}
+                      message={t('agentCatalog.dependency.connector.loadError')}
+                      type="error"
+                    />
+                  ) : connectorDetail.isLoading ? (
+                    <Text type="secondary">{t('agentCatalog.dependency.loading')}</Text>
+                  ) : connectorDetail.data === null ? (
+                    <Alert
+                      showIcon
+                      message={t('agentCatalog.dependency.connector.unresolvable')}
+                      type="warning"
+                    />
+                  ) : connectorDetail.data ? (
+                    <Flexbox horizontal align="center" gap={8}>
+                      <Text type="secondary">
+                        {t('agentCatalog.dependency.connector.toolsAvailable', {
+                          count: allowedConnectorToolKeys(connectorDetail.data).length,
+                        })}
+                      </Text>
+                      <Button type="primary" onClick={addConnector}>
+                        {t('agentCatalog.dependency.connector.addAction')}
+                      </Button>
+                    </Flexbox>
+                  ) : null
+                ) : null}
+              </Flexbox>
+            ) : null}
+          </Flexbox>
         )}
-        <Alert
-          showIcon
-          description={t('agentCatalog.dependency.connector.deferred')}
-          message={t('agentCatalog.dependency.connector.deferredTitle')}
-          type="info"
-        />
       </Flexbox>
     </Flexbox>
   );

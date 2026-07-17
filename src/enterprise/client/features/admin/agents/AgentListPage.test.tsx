@@ -7,21 +7,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 
 import AgentListPage from './AgentListPage';
+import type { AdminAgentListItem } from './types';
 
 const mocks = vi.hoisted(() => ({
-  list: {
-    error: undefined as unknown,
-    hasMore: false,
-    isEmpty: false,
-    isLoadingInitial: false,
-    isLoadingMore: false,
-    items: [] as unknown[],
-    loadMore: vi.fn(),
-    retry: vi.fn(),
-  },
+  list: {} as Record<string, unknown>,
   permissions: [] as string[],
 }));
 
+// NOTE: AsyncBoundary is intentionally NOT mocked — this exercises its real
+// loading → error → empty → data precedence against the hook's settled signal.
 vi.mock('antd-style', () => ({ createStaticStyles: () => ({ identity: '' }) }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock('@/enterprise/client/providers/AdminAccessProvider', () => ({
@@ -32,16 +26,21 @@ vi.mock('./useAdminAgents', () => ({
   useAdminAgentListPagination: () => mocks.list,
 }));
 vi.mock('./openCreateAgentModal', () => ({ openCreateAgentModal: vi.fn() }));
-vi.mock('@/components/AsyncBoundary', () => ({
-  default: ({ children, empty, error, isEmpty, isLoading }: any) => {
-    if (isLoading) return <div role="status">loading</div>;
-    if (error) return <div role="alert">error</div>;
-    if (isEmpty) return <div>{empty}</div>;
-    return children;
-  },
+vi.mock('@/components/Loading/BrandTextLoading', () => ({
+  default: () => <div role="status">loading</div>,
 }));
-vi.mock('@/components/Loading/BrandTextLoading', () => ({ default: () => <div>loader</div> }));
+vi.mock('@/components/NeuralNetworkLoading', () => ({
+  default: () => <div role="status">loading</div>,
+}));
+vi.mock('@/components/AsyncError', () => ({
+  default: ({ onRetry }: { onRetry?: () => void }) => (
+    <div role="alert">
+      error<button onClick={onRetry}>retry</button>
+    </div>
+  ),
+}));
 vi.mock('@lobehub/ui', () => ({
+  Center: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   Flexbox: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   Input: (props: any) => <input {...props} />,
   Tag: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
@@ -60,63 +59,89 @@ vi.mock('../primitives/AdminPageTemplate', () => ({
     </main>
   ),
 }));
-vi.mock('../primitives/DataTable', () => ({ default: () => <div>table-data</div> }));
+vi.mock('../primitives/DataTable', () => ({
+  default: ({ dataSource }: { dataSource: AdminAgentListItem[] }) => (
+    <div>rows:{dataSource.length}</div>
+  ),
+}));
 vi.mock('../primitives/StatusBadge', () => ({ default: () => <span>status</span> }));
 
-describe('AgentListPage state precedence', () => {
+const item = (id: string): AdminAgentListItem =>
+  ({
+    assignmentCount: 0,
+    displayName: id,
+    identity: { agentKey: id, id },
+    publishedVersion: null,
+  }) as never;
+
+const pagination = (over: Record<string, unknown>) => ({
+  boundaryData: undefined,
+  error: undefined,
+  hasMore: false,
+  isEmpty: false,
+  isLoadingInitial: false,
+  isLoadingMore: false,
+  items: [],
+  loadMore: vi.fn(),
+  loadMoreError: false,
+  retry: vi.fn(),
+  ...over,
+});
+
+const renderPage = () =>
+  render(
+    <MemoryRouter>
+      <AgentListPage />
+    </MemoryRouter>,
+  );
+
+describe('AgentListPage with the real AsyncBoundary', () => {
   beforeEach(() => {
-    mocks.list = {
-      error: undefined,
-      hasMore: false,
-      isEmpty: false,
-      isLoadingInitial: false,
-      isLoadingMore: false,
-      items: [],
-      loadMore: vi.fn(),
-      retry: vi.fn(),
-    };
     mocks.permissions = [PLATFORM_PERMISSIONS.AGENT_READ];
+    mocks.list = pagination({});
   });
 
-  it('renders first-load error instead of the empty state', () => {
-    mocks.list.error = new Error('offline');
-    render(
-      <MemoryRouter>
-        <AgentListPage />
-      </MemoryRouter>,
-    );
-    expect(screen.getByRole('alert').textContent).toBe('error');
+  it('shows the real loading state before the first page settles (data undefined)', () => {
+    mocks.list = pagination({ boundaryData: undefined, isLoadingInitial: true });
+    renderPage();
+    expect(screen.getByRole('status')).toBeTruthy();
     expect(screen.queryByText('agentCatalog.list.empty.default')).toBeNull();
   });
 
-  it('shows a real empty state only after a settled empty response', () => {
-    mocks.list.isEmpty = true;
-    render(
-      <MemoryRouter>
-        <AgentListPage />
-      </MemoryRouter>,
-    );
+  it('renders the initial-fetch error (not empty) when the first page fails', () => {
+    mocks.list = pagination({ boundaryData: undefined, error: new Error('offline') });
+    renderPage();
+    expect(screen.getByRole('alert')).toBeTruthy();
+    expect(screen.queryByText('agentCatalog.list.empty.default')).toBeNull();
+  });
+
+  it('shows the empty state only after a settled empty page', () => {
+    mocks.list = pagination({ boundaryData: [], isEmpty: true });
+    renderPage();
     expect(screen.getByText('agentCatalog.list.empty.default')).toBeTruthy();
   });
 
-  it('surfaces a load-more control while more pages remain', () => {
-    mocks.list.items = [{ identity: { id: 'a' } }];
-    mocks.list.hasMore = true;
-    render(
-      <MemoryRouter>
-        <AgentListPage />
-      </MemoryRouter>,
-    );
+  it('renders rows and a load-more control when more pages remain', () => {
+    mocks.list = pagination({ boundaryData: [item('a')], hasMore: true, items: [item('a')] });
+    renderPage();
+    expect(screen.getByText('rows:1')).toBeTruthy();
     expect(screen.getByText('agentCatalog.list.loadMore')).toBeTruthy();
   });
 
+  it('keeps content and shows an inline retry when a later page fails', () => {
+    mocks.list = pagination({
+      boundaryData: [item('a')],
+      items: [item('a')],
+      loadMoreError: true,
+    });
+    renderPage();
+    expect(screen.getByText('rows:1')).toBeTruthy();
+    expect(screen.getByText('agentCatalog.list.loadMoreError')).toBeTruthy();
+  });
+
   it('does not expose create to a read-only auditor', () => {
-    mocks.list.isEmpty = true;
-    render(
-      <MemoryRouter>
-        <AgentListPage />
-      </MemoryRouter>,
-    );
+    mocks.list = pagination({ boundaryData: [], isEmpty: true });
+    renderPage();
     expect(screen.queryByText('agentCatalog.create.submit')).toBeNull();
   });
 });

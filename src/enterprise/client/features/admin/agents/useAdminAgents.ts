@@ -69,6 +69,11 @@ export const useFetchAdminAgents = (
   });
 
 export interface AdminAgentListPagination {
+  /**
+   * The AsyncBoundary "settled" signal: `undefined` until the first page resolves (so the real
+   * AsyncBoundary shows loading/first-error), then the (possibly empty) accumulated items.
+   */
+  boundaryData: AdminAgentListItem[] | undefined;
   error: unknown;
   hasMore: boolean;
   isEmpty: boolean;
@@ -76,6 +81,8 @@ export interface AdminAgentListPagination {
   isLoadingMore: boolean;
   items: AdminAgentListItem[];
   loadMore: () => void;
+  /** A later page (not the first) failed — surfaced inline without discarding settled content. */
+  loadMoreError: boolean;
   retry: () => void;
 }
 
@@ -116,16 +123,21 @@ export const useAdminAgentListPagination = (
   }
 
   const loadedPages = swr.data?.length ?? 0;
+  const settled = swr.data !== undefined; // the first page has resolved at least once
   const isReachingEnd = loadedPages > 0 && (pages.at(-1)?.nextCursor ?? null) === null;
-  const isLoadingInitial = enabled && !swr.data && !swr.error;
+  const isLoadingInitial = enabled && !settled && !swr.error;
 
   return {
+    // Undefined before the first settle so a real AsyncBoundary renders loading / first error.
+    boundaryData: settled ? items : undefined,
     error: swr.error,
     hasMore: enabled && !isReachingEnd,
-    isEmpty: !isLoadingInitial && !swr.error && items.length === 0,
+    isEmpty: settled && items.length === 0,
     isLoadingInitial,
     // A pending page beyond those already materialized means "loading more", not initial load.
     isLoadingMore: swr.isValidating && loadedPages > 0 && swr.size > loadedPages,
+    // A later-page failure keeps settled content on screen and is surfaced inline instead.
+    loadMoreError: settled && Boolean(swr.error),
     items,
     loadMore: () => void swr.setSize((size) => size + 1),
     retry: () => void swr.mutate(),

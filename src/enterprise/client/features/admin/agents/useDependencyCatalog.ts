@@ -1,11 +1,14 @@
 'use client';
 
 import { adminAiCatalogService } from '@/enterprise/client/services/adminAiCatalog';
+import { adminConnectorsService } from '@/enterprise/client/services/adminConnectors';
 import { platformSkillsService } from '@/enterprise/client/services/platformSkills';
 import { useClientDataSWR } from '@/libs/swr';
 
 import {
   type ProviderRevisionRef,
+  type PublishedConnectorDetail,
+  type PublishedConnectorSummary,
   type PublishedProviderSummary,
   type PublishedSkillOption,
   type ResolvedProviderModelSource,
@@ -23,10 +26,13 @@ export type PublishedProviderService = Pick<
   'getProvider' | 'listProviderRevisions' | 'listProviders'
 >;
 export type PublishedSkillService = Pick<typeof platformSkillsService, 'getPublishedCatalog'>;
+export type PublishedConnectorService = Pick<typeof adminConnectorsService, 'get' | 'list'>;
 
 const DEP_PROVIDERS_KEY = 'enterprise.admin.agents.dep.providers';
 const DEP_PROVIDER_SOURCE_KEY = 'enterprise.admin.agents.dep.providerSource';
 const DEP_SKILLS_KEY = 'enterprise.admin.agents.dep.skills';
+const DEP_CONNECTORS_KEY = 'enterprise.admin.agents.dep.connectors';
+const DEP_CONNECTOR_DETAIL_KEY = 'enterprise.admin.agents.dep.connectorDetail';
 
 export const useAdminPublishedProviders = (
   enabled: boolean,
@@ -100,6 +106,60 @@ export const useAdminPublishedSkills = (
         skillKey: skill.skillKey,
         version: skill.version,
       }));
+    },
+    { revalidateOnFocus: false },
+  );
+
+export const useAdminPublishedConnectors = (
+  enabled: boolean,
+  service: PublishedConnectorService = adminConnectorsService,
+) =>
+  useClientDataSWR<PublishedConnectorSummary[]>(
+    enabled ? [DEP_CONNECTORS_KEY] : null,
+    async () => {
+      const items: PublishedConnectorSummary[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = await service.list({ cursor, limit: 100, status: 'published' });
+        for (const connector of page.items) {
+          if (connector.status !== 'published') continue;
+          items.push({
+            displayName: connector.displayName,
+            id: connector.id,
+            key: connector.key,
+          });
+        }
+        cursor = page.nextCursor ?? undefined;
+      } while (cursor);
+      return items;
+    },
+    { revalidateOnFocus: false },
+  );
+
+/**
+ * Resolve one published connector's EXACT ref inputs — id, key, published revision + checksum and
+ * its published tools (with platform policy). Returns `null` when the connector has no published
+ * revision, so the UI shows "unavailable" rather than fabricating a checksum.
+ */
+export const useAdminConnectorDetail = (
+  connectorId: string | undefined,
+  service: PublishedConnectorService = adminConnectorsService,
+) =>
+  useClientDataSWR<PublishedConnectorDetail | null>(
+    connectorId ? [DEP_CONNECTOR_DETAIL_KEY, connectorId] : null,
+    async () => {
+      const detail = await service.get({ id: connectorId! });
+      if (!detail.published) return null;
+      return {
+        connectorId: detail.published.id,
+        connectorKey: detail.published.key,
+        publishedChecksum: detail.published.publishedChecksum,
+        publishedRevision: detail.published.publishedRevision,
+        tools: detail.published.tools.map((tool) => ({
+          platformPolicy: tool.platformPolicy,
+          toolKey: tool.toolKey,
+        })),
+      };
     },
     { revalidateOnFocus: false },
   );

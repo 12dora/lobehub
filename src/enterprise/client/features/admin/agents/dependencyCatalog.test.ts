@@ -1,12 +1,20 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  allowedConnectorToolKeys,
+  buildConnectorDependency,
   buildModelDependency,
   buildSkillDependency,
+  isModelCurrent,
   type ProviderPublishedDetail,
   type ProviderRevisionRef,
+  type PublishedConnectorDetail,
   resolveProviderModelSource,
+  staleConnectorKeys,
+  staleSkillKeys,
   toDependencySnapshot,
+  withConnectorAdded,
+  withConnectorRemoved,
   withModel,
   withSkillAdded,
   withSkillRemoved,
@@ -128,5 +136,98 @@ describe('dependencyCatalog exact resolution', () => {
       model: deps.model,
       skills: [],
     });
+  });
+});
+
+const connectorDetail: PublishedConnectorDetail = {
+  connectorId: 'connector-1',
+  connectorKey: 'issues',
+  publishedChecksum: 'a'.repeat(64),
+  publishedRevision: 3,
+  tools: [
+    { platformPolicy: 'allow', toolKey: 'search' },
+    { platformPolicy: 'deny', toolKey: 'delete' },
+    { platformPolicy: 'confirm', toolKey: 'create' },
+  ],
+};
+
+describe('dependencyCatalog connector authoring', () => {
+  it('excludes deny-policy tools from the allowed set', () => {
+    expect(allowedConnectorToolKeys(connectorDetail)).toEqual(['search', 'create']);
+  });
+
+  it('builds an exact connector ref and adds / replaces / removes by key', () => {
+    const ref = buildConnectorDependency(connectorDetail, ['search']);
+    expect(ref).toEqual({
+      allowedToolKeys: ['search'],
+      connectorId: 'connector-1',
+      connectorKey: 'issues',
+      publishedChecksum: 'a'.repeat(64),
+      publishedRevision: 3,
+    });
+
+    let deps = withConnectorAdded(empty(), ref);
+    expect(deps.connectors).toHaveLength(1);
+    // Re-adding the same key REPLACES (e.g. update to a newer published revision).
+    deps = withConnectorAdded(deps, { ...ref, publishedRevision: 4 });
+    expect(deps.connectors).toEqual([{ ...ref, publishedRevision: 4 }]);
+    deps = withConnectorRemoved(deps, 'issues');
+    expect(deps.connectors).toEqual([]);
+  });
+});
+
+describe('dependencyCatalog validation against the current published catalog', () => {
+  it('treats a model as current only on an exact provider/revision/checksum/model match', () => {
+    const source = resolveProviderModelSource(detail, revisions)!;
+    const model = buildModelDependency(source, 'gpt-4.1');
+    expect(isModelCurrent(model, source)).toBe(true);
+    expect(isModelCurrent(null, source)).toBe(false);
+    expect(isModelCurrent(model, undefined)).toBe(false);
+    expect(isModelCurrent({ ...model, providerChecksum: 'z'.repeat(64) }, source)).toBe(false);
+    expect(isModelCurrent({ ...model, providerRevision: 99 }, source)).toBe(false);
+    expect(isModelCurrent({ ...model, modelKey: 'gone' }, source)).toBe(false);
+  });
+
+  it('flags skills and connectors that are no longer published', () => {
+    const skills = [{ checksum: 'a'.repeat(64), skillKey: 'writer', version: '1.0.0' }];
+    expect(staleSkillKeys(skills, undefined)).toEqual([]); // not loaded yet → no false positive
+    expect(staleSkillKeys(skills, [])).toEqual(['writer']);
+    expect(
+      staleSkillKeys(skills, [
+        {
+          checksum: 'a'.repeat(64),
+          displayName: 'W',
+          distribution: 'optional',
+          skillKey: 'writer',
+          version: '1.0.0',
+        },
+      ]),
+    ).toEqual([]);
+    // A published version/checksum change makes the pinned ref stale.
+    expect(
+      staleSkillKeys(skills, [
+        {
+          checksum: 'b'.repeat(64),
+          displayName: 'W',
+          distribution: 'optional',
+          skillKey: 'writer',
+          version: '1.0.0',
+        },
+      ]),
+    ).toEqual(['writer']);
+
+    const connectors = [
+      {
+        allowedToolKeys: ['search'],
+        connectorId: 'c1',
+        connectorKey: 'issues',
+        publishedChecksum: 'a'.repeat(64),
+        publishedRevision: 3,
+      },
+    ];
+    expect(staleConnectorKeys(connectors, [])).toEqual(['issues']);
+    expect(
+      staleConnectorKeys(connectors, [{ displayName: 'Issues', id: 'c1', key: 'issues' }]),
+    ).toEqual([]);
   });
 });

@@ -40,9 +40,11 @@ describe('useAdminAgentListPagination', () => {
     });
     const { result } = renderHook(() => useAdminAgentListPagination({}, true));
     expect(result.current.items.map((i) => i.identity.id)).toEqual(['a', 'b', 'c']);
+    expect(result.current.boundaryData?.map((i) => i.identity.id)).toEqual(['a', 'b', 'c']);
     expect(result.current.hasMore).toBe(false);
     expect(result.current.isEmpty).toBe(false);
     expect(result.current.isLoadingInitial).toBe(false);
+    expect(result.current.loadMoreError).toBe(false);
   });
 
   it('flags more pages and loads them via setSize', () => {
@@ -74,6 +76,23 @@ describe('useAdminAgentListPagination', () => {
     const { result } = renderHook(() => useAdminAgentListPagination({}, true));
     expect(result.current.isLoadingInitial).toBe(true);
     expect(result.current.isEmpty).toBe(false);
+    // Not settled yet → AsyncBoundary must see undefined so it renders loading, not empty.
+    expect(result.current.boundaryData).toBeUndefined();
+  });
+
+  it('keeps settled content and flags loadMoreError when a later page fails', () => {
+    infinite.impl.mockReturnValue({
+      data: [{ items: [item('a')], nextCursor: 'p2' }],
+      error: new Error('page 2 failed'),
+      isValidating: false,
+      mutate: vi.fn(),
+      setSize: vi.fn(),
+      size: 2,
+    });
+    const { result } = renderHook(() => useAdminAgentListPagination({}, true));
+    expect(result.current.boundaryData?.map((i) => i.identity.id)).toEqual(['a']);
+    expect(result.current.loadMoreError).toBe(true);
+    expect(result.current.isLoadingInitial).toBe(false);
   });
 
   it('reports empty only after a resolved empty first page', () => {
@@ -88,6 +107,8 @@ describe('useAdminAgentListPagination', () => {
     const { result } = renderHook(() => useAdminAgentListPagination({}, true));
     expect(result.current.isEmpty).toBe(true);
     expect(result.current.hasMore).toBe(false);
+    // Settled empty page → defined (empty) so AsyncBoundary renders the empty state, not loading.
+    expect(result.current.boundaryData).toEqual([]);
   });
 
   it('advances the cursor and stops at the end via getKey', () => {

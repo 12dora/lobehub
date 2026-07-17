@@ -1,4 +1,5 @@
 import type {
+  PlatformAgentConnectorDependencyRef,
   PlatformAgentDependencySnapshot,
   PlatformAgentModelDependencyRef,
   PlatformAgentSkillDependencyRef,
@@ -147,3 +148,114 @@ export const toDependencySnapshot = (
         skills: dependencies.skills,
       }
     : null;
+
+// ---- connectors (exact authoring from the M09 published catalog) ----
+
+/** A published connector list row (from admin.connectors.list). */
+export interface PublishedConnectorSummary {
+  displayName: string;
+  id: string;
+  key: string;
+}
+
+/** A published connector tool (from admin.connectors.get → published.tools). */
+export interface PublishedConnectorTool {
+  platformPolicy: string;
+  toolKey: string;
+}
+
+/** The exact published connector detail consumed to author a connector ref. */
+export interface PublishedConnectorDetail {
+  connectorId: string;
+  connectorKey: string;
+  publishedChecksum: string;
+  publishedRevision: number;
+  tools: PublishedConnectorTool[];
+}
+
+/** Tools an agent may reference: every published tool whose platform policy is not `deny`. */
+export const allowedConnectorToolKeys = (detail: PublishedConnectorDetail): string[] =>
+  detail.tools.filter((tool) => tool.platformPolicy !== 'deny').map((tool) => tool.toolKey);
+
+/** Build the exact connector dependency ref from a published connector detail + chosen tools. */
+export const buildConnectorDependency = (
+  detail: PublishedConnectorDetail,
+  allowedToolKeys: string[],
+): PlatformAgentConnectorDependencyRef => ({
+  allowedToolKeys,
+  connectorId: detail.connectorId,
+  connectorKey: detail.connectorKey,
+  publishedChecksum: detail.publishedChecksum,
+  publishedRevision: detail.publishedRevision,
+});
+
+/** Add (or replace, keyed by connectorKey) a connector dependency ref. */
+export const withConnectorAdded = (
+  dependencies: AdminAgentDraftDependencies,
+  connector: PlatformAgentConnectorDependencyRef,
+): AdminAgentDraftDependencies =>
+  dependencies.connectors.some((existing) => existing.connectorKey === connector.connectorKey)
+    ? {
+        ...dependencies,
+        connectors: dependencies.connectors.map((existing) =>
+          existing.connectorKey === connector.connectorKey ? connector : existing,
+        ),
+      }
+    : { ...dependencies, connectors: [...dependencies.connectors, connector] };
+
+/** Remove a connector dependency ref by connectorKey. */
+export const withConnectorRemoved = (
+  dependencies: AdminAgentDraftDependencies,
+  connectorKey: string,
+): AdminAgentDraftDependencies => ({
+  ...dependencies,
+  connectors: dependencies.connectors.filter((existing) => existing.connectorKey !== connectorKey),
+});
+
+// ---- validation of existing refs against the CURRENTLY fetched published catalog ----
+
+/**
+ * A model ref is "current" only when it matches the freshly-resolved published source EXACTLY:
+ * same provider key + published revision + checksum, and the model is still an offered chat model.
+ * Non-null alone is NOT sufficient (a stale checksum/revision would fail server validation).
+ */
+export const isModelCurrent = (
+  model: PlatformAgentModelDependencyRef | null,
+  source: ResolvedProviderModelSource | null | undefined,
+): boolean =>
+  !!model &&
+  !!source &&
+  model.providerKey === source.providerKey &&
+  model.providerRevision === source.providerRevision &&
+  model.providerChecksum === source.providerChecksum &&
+  source.chatModels.some((option) => option.modelKey === model.modelKey);
+
+/** skillKeys whose exact (key, version, checksum) is no longer present in the published catalog. */
+export const staleSkillKeys = (
+  skills: readonly PlatformAgentSkillDependencyRef[],
+  published: readonly PublishedSkillOption[] | undefined,
+): string[] => {
+  if (!published) return [];
+  return skills
+    .filter(
+      (skill) =>
+        !published.some(
+          (option) =>
+            option.skillKey === skill.skillKey &&
+            option.version === skill.version &&
+            option.checksum === skill.checksum,
+        ),
+    )
+    .map((skill) => skill.skillKey);
+};
+
+/** connectorKeys that are no longer present (archived / unpublished / missing) in the catalog. */
+export const staleConnectorKeys = (
+  connectors: readonly PlatformAgentConnectorDependencyRef[],
+  published: readonly PublishedConnectorSummary[] | undefined,
+): string[] => {
+  if (!published) return [];
+  return connectors
+    .filter((connector) => !published.some((option) => option.key === connector.connectorKey))
+    .map((connector) => connector.connectorKey);
+};

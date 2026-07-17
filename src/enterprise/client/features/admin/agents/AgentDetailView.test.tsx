@@ -9,6 +9,8 @@ import { AgentDetailView } from './AgentDetailView';
 import { deriveAdminAgentPermissions } from './controller';
 import type { AdminAgentDetailOutput, AdminAgentDraft } from './types';
 
+const validityMock = vi.hoisted(() => ({ value: { issues: [] as string[], ready: true } }));
+
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock('@/enterprise/client/services/adminAgents', () => ({
   adminAgentsService: { capabilities: { rollouts: false } },
@@ -24,8 +26,26 @@ vi.mock('./useAgentActions', () => ({
     setDefaultInbox: vi.fn(),
   }),
 }));
+vi.mock('./useRefreshLock', () => ({
+  useRefreshLock: () => ({
+    isLocked: () => false,
+    refreshFailed: false,
+    retryRefresh: vi.fn(),
+    syncAfterCommit: vi.fn(),
+  }),
+}));
 vi.mock('./AgentEditorFields', () => ({ AgentEditorFields: () => <div>editor-fields</div> }));
-vi.mock('./DependencyEditor', () => ({ DependencyEditor: () => <div>dependency-editor</div> }));
+vi.mock('./DependencyEditor', async () => {
+  const { useEffect } = await import('react');
+  return {
+    DependencyEditor: ({ onValidityChange }: { onValidityChange?: (v: unknown) => void }) => {
+      useEffect(() => {
+        onValidityChange?.(validityMock.value);
+      }, [onValidityChange]);
+      return <div>dependency-editor</div>;
+    },
+  };
+});
 vi.mock('./AssignmentPanel', () => ({ AssignmentPanel: () => <div>assignment-panel</div> }));
 vi.mock('./RolloutPanel', () => ({ RolloutPanel: () => <div>rollout-panel</div> }));
 vi.mock('../primitives/AdminPageTemplate', () => ({
@@ -101,11 +121,11 @@ const snapshot: AdminAgentDetailOutput = {
   ],
 };
 
-const createEditor = (dirty: boolean, modelReady = true): any => ({
+const createEditor = (dirty: boolean): any => ({
   conflict: false,
   dirty,
   discard: vi.fn(),
-  draft: { ...draft, dependencies: { ...draft.dependencies, model: modelReady ? model : null } },
+  draft,
   markSaved: vi.fn(),
   persistState: null,
   saveState: dirty ? 'dirty' : 'idle',
@@ -114,55 +134,40 @@ const createEditor = (dirty: boolean, modelReady = true): any => ({
   updateDraft: vi.fn(),
 });
 
+const renderView = (editorDirty: boolean, permissionKeys: string[]) =>
+  render(
+    <AgentDetailView
+      authMethod={null}
+      editor={createEditor(editorDirty)}
+      mutate={vi.fn() as any}
+      permissions={deriveAdminAgentPermissions(permissionKeys)}
+      snapshot={snapshot}
+    />,
+  );
+
 describe('AgentDetailView write gating', () => {
   it('keeps a read-only auditor on a real detail surface without mutation buttons', () => {
-    render(
-      <AgentDetailView
-        authMethod={null}
-        editor={createEditor(false)}
-        mutate={vi.fn() as any}
-        permissions={deriveAdminAgentPermissions([PLATFORM_PERMISSIONS.AGENT_READ])}
-        snapshot={snapshot}
-      />,
-    );
-
+    validityMock.value = { issues: [], ready: true };
+    renderView(false, [PLATFORM_PERMISSIONS.AGENT_READ]);
     expect(screen.getByText('agentCatalog.readOnly.badge')).toBeTruthy();
     expect(screen.queryByText('agentCatalog.action.saveVersion')).toBeNull();
     expect(screen.queryByText('agentCatalog.archive.submit')).toBeNull();
   });
 
-  it('allows saving but disables destructive actions while the draft is dirty', () => {
-    const permissions = deriveAdminAgentPermissions([
+  it('allows saving but disables destructive actions while the draft is dirty and deps are current', () => {
+    validityMock.value = { issues: [], ready: true };
+    renderView(true, [
       PLATFORM_PERMISSIONS.AGENT_DELETE,
       PLATFORM_PERMISSIONS.AGENT_PUBLISH,
       PLATFORM_PERMISSIONS.AGENT_UPDATE,
     ]);
-    render(
-      <AgentDetailView
-        authMethod={null}
-        editor={createEditor(true)}
-        mutate={vi.fn() as any}
-        permissions={permissions}
-        snapshot={snapshot}
-      />,
-    );
-
     expect(screen.getByText('agentCatalog.action.saveVersion')).not.toBeDisabled();
     expect(screen.getByText('agentCatalog.archive.submit')).toBeDisabled();
   });
 
-  it('blocks save until an exact model is resolved', () => {
-    const permissions = deriveAdminAgentPermissions([PLATFORM_PERMISSIONS.AGENT_UPDATE]);
-    render(
-      <AgentDetailView
-        authMethod={null}
-        editor={createEditor(true, false)}
-        mutate={vi.fn() as any}
-        permissions={permissions}
-        snapshot={snapshot}
-      />,
-    );
-
+  it('blocks save until the dependencies validate against the current catalog', () => {
+    validityMock.value = { issues: ['agentCatalog.dependency.issues.modelStale'], ready: false };
+    renderView(true, [PLATFORM_PERMISSIONS.AGENT_UPDATE]);
     expect(screen.getByText('agentCatalog.action.saveVersion')).toBeDisabled();
   });
 });
