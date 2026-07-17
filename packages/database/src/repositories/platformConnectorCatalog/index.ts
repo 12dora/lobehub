@@ -162,6 +162,7 @@ export class PlatformConnectorCatalogRepository {
         legacyMcpServerUrl: values.endpoint,
         legacyName: values.displayName,
         legacySourceType: 'custom',
+        migrationRequired: false,
       })
       .returning();
     return row;
@@ -204,7 +205,12 @@ export class PlatformConnectorCatalogRepository {
     const rows = await this.db
       .select()
       .from(platformConnectors)
-      .where(eq(platformConnectors.connectorKey, connectorKey))
+      .where(
+        and(
+          eq(platformConnectors.connectorKey, connectorKey),
+          eq(platformConnectors.migrationRequired, false),
+        ),
+      )
       .limit(1);
     return rows[0];
   };
@@ -232,7 +238,12 @@ export class PlatformConnectorCatalogRepository {
           eq(platformResourceRevisions.status, 'published'),
         ),
       )
-      .where(eq(platformConnectors.id, connectorId))
+      .where(
+        and(
+          eq(platformConnectors.id, connectorId),
+          eq(platformConnectors.migrationRequired, false),
+        ),
+      )
       .limit(1);
     const row = rows[0];
     if (!row?.publishedAt) return undefined;
@@ -252,6 +263,17 @@ export class PlatformConnectorCatalogRepository {
     connectorId: string,
     revision: number,
   ): Promise<PlatformConnectorRuntimeRevision | undefined> => {
+    const [managed] = await this.db
+      .select({ id: platformConnectors.id })
+      .from(platformConnectors)
+      .where(
+        and(
+          eq(platformConnectors.id, connectorId),
+          eq(platformConnectors.migrationRequired, false),
+        ),
+      )
+      .limit(1);
+    if (!managed) return undefined;
     const rows = await this.db
       .select()
       .from(platformResourceRevisions)
@@ -289,6 +311,7 @@ export class PlatformConnectorCatalogRepository {
     const limit = boundedLimit(params.limit);
     const cursor = params.cursor;
     const conditions = [
+      eq(platformConnectors.migrationRequired, false),
       ...(params.credentialMode
         ? [eq(platformConnectors.credentialMode, params.credentialMode)]
         : []),
@@ -435,6 +458,7 @@ export class PlatformConnectorCatalogRepository {
         and(
           eq(platformConnectors.id, params.connectorId),
           eq(platformConnectors.revision, params.expectedRevision),
+          eq(platformConnectors.migrationRequired, false),
         ),
       )
       .returning();
@@ -461,7 +485,13 @@ export class PlatformConnectorCatalogRepository {
         status: 'draft',
         updatedAt: new Date(),
       })
-      .where(and(eq(platformConnectors.id, id), eq(platformConnectors.revision, expectedRevision)))
+      .where(
+        and(
+          eq(platformConnectors.id, id),
+          eq(platformConnectors.revision, expectedRevision),
+          eq(platformConnectors.migrationRequired, false),
+        ),
+      )
       .returning();
     return row;
   };
@@ -514,7 +544,9 @@ export class PlatformConnectorCatalogRepository {
       if (!['connected', 'error', 'expired', 'pending'].includes(binding.status)) {
         return { status: 'invalid' };
       }
-      const databaseNow = sql<Date>`CURRENT_TIMESTAMP`;
+      // PostgreSQL timestamps carry microseconds while JS Date only carries milliseconds.
+      // Normalize at reservation time so the release/terminate CAS round-trips exactly.
+      const databaseNow = sql<Date>`date_trunc('milliseconds', CURRENT_TIMESTAMP)`;
       const [row] = await db
         .update(platformConnectorOAuthStates)
         .set({ consumedAt: databaseNow })

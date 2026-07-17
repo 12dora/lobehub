@@ -1,5 +1,5 @@
 {
-  "id": "76267871-46ca-42ef-9e80-54936a3ba921",
+  "id": "57f4d50b-43eb-4b3a-9d5e-44da9c0aee01",
   "prevId": "92e015c4-0129-49e1-967c-a79770866f1c",
   "version": "7",
   "dialect": "postgresql",
@@ -15554,39 +15554,6 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
-        },
-        "platform_connector_tools_connector_sort_key_id_idx": {
-          "name": "platform_connector_tools_connector_sort_key_id_idx",
-          "columns": [
-            {
-              "expression": "connector_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "sort",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "tool_key",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
         }
       },
       "foreignKeys": {
@@ -15692,6 +15659,13 @@
           "type": "text",
           "primaryKey": false,
           "notNull": false
+        },
+        "migration_required": {
+          "name": "migration_required",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
         },
         "transport": {
           "name": "transport",
@@ -15884,60 +15858,6 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
-        },
-        "platform_connectors_status_key_id_idx": {
-          "name": "platform_connectors_status_key_id_idx",
-          "columns": [
-            {
-              "expression": "status",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "connector_key",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "platform_connectors_enabled_sort_id_idx": {
-          "name": "platform_connectors_enabled_sort_id_idx",
-          "columns": [
-            {
-              "expression": "enabled",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "sort",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
         }
       },
       "foreignKeys": {
@@ -15967,19 +15887,19 @@
       "checkConstraints": {
         "platform_connectors_transport_http_check": {
           "name": "platform_connectors_transport_http_check",
-          "value": "\"platform_connectors\".\"endpoint\" IS NULL OR \"platform_connectors\".\"transport\" = 'http'"
+          "value": "\"platform_connectors\".\"migration_required\" OR (\"platform_connectors\".\"endpoint\" IS NOT NULL AND \"platform_connectors\".\"transport\" = 'http')"
         },
         "platform_connectors_credential_mode_check": {
           "name": "platform_connectors_credential_mode_check",
-          "value": "\"platform_connectors\".\"credential_mode\" IN ('none', 'shared_service_account', 'per_user_oauth')"
+          "value": "\"platform_connectors\".\"migration_required\" OR \"platform_connectors\".\"credential_mode\" IN ('none', 'shared_service_account', 'per_user_oauth')"
         },
         "platform_connectors_credential_slot_check": {
           "name": "platform_connectors_credential_slot_check",
-          "value": "\"platform_connectors\".\"endpoint\" IS NULL OR (\n        (\"platform_connectors\".\"credential_mode\" = 'none'\n          AND \"platform_connectors\".\"shared_secret_ref\" IS NULL\n          AND \"platform_connectors\".\"shared_secret_fingerprint\" IS NULL\n          AND \"platform_connectors\".\"shared_secret_updated_at\" IS NULL\n          AND \"platform_connectors\".\"oauth_client_secret_ref\" IS NULL\n          AND \"platform_connectors\".\"oauth_client_secret_fingerprint\" IS NULL\n          AND \"platform_connectors\".\"oauth_client_secret_updated_at\" IS NULL\n          AND \"platform_connectors\".\"oauth_config\" IS NULL)\n        OR (\"platform_connectors\".\"credential_mode\" = 'shared_service_account'\n          AND \"platform_connectors\".\"oauth_client_secret_ref\" IS NULL\n          AND \"platform_connectors\".\"oauth_client_secret_fingerprint\" IS NULL\n          AND \"platform_connectors\".\"oauth_client_secret_updated_at\" IS NULL\n          AND \"platform_connectors\".\"oauth_config\" IS NULL\n          AND ((\"platform_connectors\".\"shared_secret_ref\" IS NULL\n              AND \"platform_connectors\".\"shared_secret_fingerprint\" IS NULL\n              AND \"platform_connectors\".\"shared_secret_updated_at\" IS NULL)\n            OR (\"platform_connectors\".\"shared_secret_ref\" IS NOT NULL\n              AND \"platform_connectors\".\"shared_secret_fingerprint\" IS NOT NULL\n              AND \"platform_connectors\".\"shared_secret_updated_at\" IS NOT NULL)))\n        OR (\"platform_connectors\".\"credential_mode\" = 'per_user_oauth'\n          AND \"platform_connectors\".\"shared_secret_ref\" IS NULL\n          AND \"platform_connectors\".\"shared_secret_fingerprint\" IS NULL\n          AND \"platform_connectors\".\"shared_secret_updated_at\" IS NULL\n          AND \"platform_connectors\".\"oauth_config\" IS NOT NULL\n          AND ((\"platform_connectors\".\"oauth_client_secret_ref\" IS NULL\n              AND \"platform_connectors\".\"oauth_client_secret_fingerprint\" IS NULL\n              AND \"platform_connectors\".\"oauth_client_secret_updated_at\" IS NULL)\n            OR (\"platform_connectors\".\"oauth_client_secret_ref\" IS NOT NULL\n              AND \"platform_connectors\".\"oauth_client_secret_fingerprint\" IS NOT NULL\n              AND \"platform_connectors\".\"oauth_client_secret_updated_at\" IS NOT NULL)))\n      )"
+          "value": "\"platform_connectors\".\"migration_required\" OR (\n        (\"platform_connectors\".\"credential_mode\" = 'none'\n          AND \"platform_connectors\".\"shared_secret_ref\" IS NULL\n          AND \"platform_connectors\".\"shared_secret_fingerprint\" IS NULL\n          AND \"platform_connectors\".\"shared_secret_updated_at\" IS NULL\n          AND \"platform_connectors\".\"oauth_client_secret_ref\" IS NULL\n          AND \"platform_connectors\".\"oauth_client_secret_fingerprint\" IS NULL\n          AND \"platform_connectors\".\"oauth_client_secret_updated_at\" IS NULL\n          AND \"platform_connectors\".\"oauth_config\" IS NULL)\n        OR (\"platform_connectors\".\"credential_mode\" = 'shared_service_account'\n          AND \"platform_connectors\".\"oauth_client_secret_ref\" IS NULL\n          AND \"platform_connectors\".\"oauth_client_secret_fingerprint\" IS NULL\n          AND \"platform_connectors\".\"oauth_client_secret_updated_at\" IS NULL\n          AND \"platform_connectors\".\"oauth_config\" IS NULL\n          AND ((\"platform_connectors\".\"shared_secret_ref\" IS NULL\n              AND \"platform_connectors\".\"shared_secret_fingerprint\" IS NULL\n              AND \"platform_connectors\".\"shared_secret_updated_at\" IS NULL)\n            OR (\"platform_connectors\".\"shared_secret_ref\" IS NOT NULL\n              AND \"platform_connectors\".\"shared_secret_fingerprint\" IS NOT NULL\n              AND \"platform_connectors\".\"shared_secret_updated_at\" IS NOT NULL)))\n        OR (\"platform_connectors\".\"credential_mode\" = 'per_user_oauth'\n          AND \"platform_connectors\".\"shared_secret_ref\" IS NULL\n          AND \"platform_connectors\".\"shared_secret_fingerprint\" IS NULL\n          AND \"platform_connectors\".\"shared_secret_updated_at\" IS NULL\n          AND \"platform_connectors\".\"oauth_config\" IS NOT NULL\n          AND ((\"platform_connectors\".\"oauth_client_secret_ref\" IS NULL\n              AND \"platform_connectors\".\"oauth_client_secret_fingerprint\" IS NULL\n              AND \"platform_connectors\".\"oauth_client_secret_updated_at\" IS NULL)\n            OR (\"platform_connectors\".\"oauth_client_secret_ref\" IS NOT NULL\n              AND \"platform_connectors\".\"oauth_client_secret_fingerprint\" IS NOT NULL\n              AND \"platform_connectors\".\"oauth_client_secret_updated_at\" IS NOT NULL)))\n      )"
         },
         "platform_connectors_published_pointer_check": {
           "name": "platform_connectors_published_pointer_check",
-          "value": "\"platform_connectors\".\"endpoint\" IS NULL OR ((\n        (\"platform_connectors\".\"published_revision\" IS NULL\n          AND \"platform_connectors\".\"published_checksum\" IS NULL\n          AND \"platform_connectors\".\"published_at\" IS NULL)\n        OR (\"platform_connectors\".\"published_revision\" > 0\n          AND \"platform_connectors\".\"published_checksum\" ~ '^[a-f0-9]{64}$'\n          AND \"platform_connectors\".\"published_at\" IS NOT NULL)\n        ) AND (\"platform_connectors\".\"status\" <> 'published' OR \"platform_connectors\".\"published_revision\" IS NOT NULL))"
+          "value": "\"platform_connectors\".\"migration_required\" OR ((\n        (\"platform_connectors\".\"published_revision\" IS NULL\n          AND \"platform_connectors\".\"published_checksum\" IS NULL\n          AND \"platform_connectors\".\"published_at\" IS NULL)\n        OR (\"platform_connectors\".\"published_revision\" > 0\n          AND \"platform_connectors\".\"published_checksum\" ~ '^[a-f0-9]{64}$'\n          AND \"platform_connectors\".\"published_at\" IS NOT NULL)\n        ) AND (\"platform_connectors\".\"status\" <> 'published' OR \"platform_connectors\".\"published_revision\" IS NOT NULL))"
         },
         "platform_connectors_revision_check": {
           "name": "platform_connectors_revision_check",
@@ -15995,7 +15915,7 @@
         },
         "platform_connectors_published_shared_secret_check": {
           "name": "platform_connectors_published_shared_secret_check",
-          "value": "\"platform_connectors\".\"endpoint\" IS NULL\n        OR \"platform_connectors\".\"status\" <> 'published'\n        OR \"platform_connectors\".\"credential_mode\" <> 'shared_service_account'\n        OR (\"platform_connectors\".\"shared_secret_ref\" IS NOT NULL\n          AND \"platform_connectors\".\"shared_secret_fingerprint\" IS NOT NULL\n          AND \"platform_connectors\".\"shared_secret_updated_at\" IS NOT NULL)"
+          "value": "\"platform_connectors\".\"migration_required\"\n        OR \"platform_connectors\".\"status\" <> 'published'\n        OR \"platform_connectors\".\"credential_mode\" <> 'shared_service_account'\n        OR (\"platform_connectors\".\"shared_secret_ref\" IS NOT NULL\n          AND \"platform_connectors\".\"shared_secret_fingerprint\" IS NOT NULL\n          AND \"platform_connectors\".\"shared_secret_updated_at\" IS NOT NULL)"
         }
       },
       "isRLSEnabled": false
@@ -16217,69 +16137,6 @@
           "columns": [
             {
               "expression": "status",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "platform_user_connector_bindings_user_id_id_idx": {
-          "name": "platform_user_connector_bindings_user_id_id_idx",
-          "columns": [
-            {
-              "expression": "user_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "platform_user_connector_bindings_connector_id_id_idx": {
-          "name": "platform_user_connector_bindings_connector_id_id_idx",
-          "columns": [
-            {
-              "expression": "connector_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "platform_user_connector_bindings_status_expires_idx": {
-          "name": "platform_user_connector_bindings_status_expires_idx",
-          "columns": [
-            {
-              "expression": "binding_status",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "expires_at",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
