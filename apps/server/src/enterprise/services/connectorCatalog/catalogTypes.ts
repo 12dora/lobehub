@@ -66,7 +66,7 @@ export interface ConnectorCatalogServiceOptions {
   failureAuditWriter?: ConnectorFailureAuditWriter;
   invalidation?: PlatformConfigInvalidationPublisher;
   lifecycle?: ConnectorCatalogLifecycle;
-  redirectUri: string;
+  redirectUri: string | (() => string | undefined);
 }
 
 export interface ConnectorDraftDetail {

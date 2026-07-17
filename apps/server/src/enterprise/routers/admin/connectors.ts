@@ -26,10 +26,12 @@ import {
 import { withActiveUser } from '../../guards/activeUser';
 import { withPlatformPermission } from '../../guards/platformPermission';
 import {
+  assertAdminConnectorRuntimeDependency,
   assertConnectorDangerousReauth,
   connectorSecretMutationRequiresReauth,
   createAdminConnectorRuntime,
   executeAdminConnectorOperation,
+  resolveAdminConnectorMutationRuntime,
 } from './connectorsSupport';
 
 const adminConnectorProcedure = authedProcedure
@@ -59,7 +61,14 @@ export const adminConnectorsRouter = router({
     .output(adminConnectorRevisionOutputSchema)
     .mutation(async ({ ctx, input }) =>
       executeAdminConnectorOperation('admin.connectors.archive', async () => {
-        const runtime = ctx.getAdminConnectorRuntime();
+        const runtime = await resolveAdminConnectorMutationRuntime({
+          action: 'admin.connectors.archive',
+          actorUserId: ctx.userId!,
+          createRuntime: ctx.getAdminConnectorRuntime,
+          reason: input.reason,
+          serverDB: ctx.serverDB,
+          targetId: input.id,
+        });
         await assertConnectorDangerousReauth({
           action: 'admin.connectors.archive',
           actorUserId: ctx.userId!,
@@ -80,7 +89,15 @@ export const adminConnectorsRouter = router({
     .output(adminConnectorDraftMutationOutputSchema)
     .mutation(async ({ ctx, input }) =>
       executeAdminConnectorOperation('admin.connectors.createDraft', async () => {
-        const runtime = ctx.getAdminConnectorRuntime();
+        const runtime = await resolveAdminConnectorMutationRuntime({
+          action: 'admin.connectors.createDraft',
+          actorUserId: ctx.userId!,
+          createRuntime: ctx.getAdminConnectorRuntime,
+          reason: input.reason,
+          replacementSecrets: replacementSecrets(input),
+          serverDB: ctx.serverDB,
+          targetId: input.key,
+        });
         const dangerous =
           connectorSecretMutationRequiresReauth(
             input.credentialMode === 'per_user_oauth' ? input.oauthClientSecret : undefined,
@@ -101,6 +118,19 @@ export const adminConnectorsRouter = router({
             targetId: input.key,
           });
         }
+        if (input.credentialMode === 'per_user_oauth') {
+          await assertAdminConnectorRuntimeDependency({
+            action: 'admin.connectors.createDraft',
+            actorUserId: ctx.userId!,
+            category: 'redirect_unavailable',
+            operation: runtime.resolveRedirectUri,
+            reason: input.reason,
+            replacementSecrets: replacementSecrets(input),
+            runtime,
+            serverDB: ctx.serverDB,
+            targetId: input.key,
+          });
+        }
         return runtime.service.createDraft(ctx.userId!, input);
       }),
     ),
@@ -110,9 +140,17 @@ export const adminConnectorsRouter = router({
     .input(adminConnectorDeleteDraftInputSchema)
     .output(adminConnectorDeleteDraftOutputSchema)
     .mutation(async ({ ctx, input }) =>
-      executeAdminConnectorOperation('admin.connectors.deleteDraft', () =>
-        ctx.getAdminConnectorRuntime().service.deleteDraft(ctx.userId!, input),
-      ),
+      executeAdminConnectorOperation('admin.connectors.deleteDraft', async () => {
+        const runtime = await resolveAdminConnectorMutationRuntime({
+          action: 'admin.connectors.deleteDraft',
+          actorUserId: ctx.userId!,
+          createRuntime: ctx.getAdminConnectorRuntime,
+          reason: input.reason,
+          serverDB: ctx.serverDB,
+          targetId: input.id,
+        });
+        return runtime.service.deleteDraft(ctx.userId!, input);
+      }),
     ),
 
   discover: adminConnectorProcedure
@@ -120,9 +158,27 @@ export const adminConnectorsRouter = router({
     .input(adminConnectorDiscoverInputSchema)
     .output(adminConnectorDiscoverOutputSchema)
     .mutation(async ({ ctx, input }) =>
-      executeAdminConnectorOperation('admin.connectors.discover', () =>
-        ctx.getAdminConnectorRuntime().service.discover(ctx.userId!, input),
-      ),
+      executeAdminConnectorOperation('admin.connectors.discover', async () => {
+        const runtime = await resolveAdminConnectorMutationRuntime({
+          action: 'admin.connectors.discover',
+          actorUserId: ctx.userId!,
+          createRuntime: ctx.getAdminConnectorRuntime,
+          reason: input.reason,
+          serverDB: ctx.serverDB,
+          targetId: input.id,
+        });
+        await assertAdminConnectorRuntimeDependency({
+          action: 'admin.connectors.discover',
+          actorUserId: ctx.userId!,
+          category: 'transport_unavailable',
+          operation: runtime.assertOutboundPolicyReady,
+          reason: input.reason,
+          runtime,
+          serverDB: ctx.serverDB,
+          targetId: input.id,
+        });
+        return runtime.service.discover(ctx.userId!, input);
+      }),
     ),
 
   get: adminConnectorProcedure
@@ -151,12 +207,29 @@ export const adminConnectorsRouter = router({
     .output(adminConnectorRevisionOutputSchema)
     .mutation(async ({ ctx, input }) =>
       executeAdminConnectorOperation('admin.connectors.publish', async () => {
-        const runtime = ctx.getAdminConnectorRuntime();
+        const runtime = await resolveAdminConnectorMutationRuntime({
+          action: 'admin.connectors.publish',
+          actorUserId: ctx.userId!,
+          createRuntime: ctx.getAdminConnectorRuntime,
+          reason: input.reason,
+          serverDB: ctx.serverDB,
+          targetId: input.id,
+        });
         await assertConnectorDangerousReauth({
           action: 'admin.connectors.publish',
           actorUserId: ctx.userId!,
           authenticatedAt: ctx.authenticatedAt,
           authMethod: ctx.authMethod,
+          reason: input.reason,
+          runtime,
+          serverDB: ctx.serverDB,
+          targetId: input.id,
+        });
+        await assertAdminConnectorRuntimeDependency({
+          action: 'admin.connectors.publish',
+          actorUserId: ctx.userId!,
+          category: 'transport_unavailable',
+          operation: runtime.assertOutboundPolicyReady,
           reason: input.reason,
           runtime,
           serverDB: ctx.serverDB,
@@ -172,7 +245,14 @@ export const adminConnectorsRouter = router({
     .output(adminConnectorRevokeAllBindingsOutputSchema)
     .mutation(async ({ ctx, input }) =>
       executeAdminConnectorOperation('admin.connectors.revokeAllBindings', async () => {
-        const runtime = ctx.getAdminConnectorRuntime();
+        const runtime = await resolveAdminConnectorMutationRuntime({
+          action: 'admin.connectors.revokeAllBindings',
+          actorUserId: ctx.userId!,
+          createRuntime: ctx.getAdminConnectorRuntime,
+          reason: input.reason,
+          serverDB: ctx.serverDB,
+          targetId: input.id,
+        });
         await assertConnectorDangerousReauth({
           action: 'admin.connectors.revokeAllBindings',
           actorUserId: ctx.userId!,
@@ -193,12 +273,29 @@ export const adminConnectorsRouter = router({
     .output(adminConnectorRevisionOutputSchema)
     .mutation(async ({ ctx, input }) =>
       executeAdminConnectorOperation('admin.connectors.rollback', async () => {
-        const runtime = ctx.getAdminConnectorRuntime();
+        const runtime = await resolveAdminConnectorMutationRuntime({
+          action: 'admin.connectors.rollback',
+          actorUserId: ctx.userId!,
+          createRuntime: ctx.getAdminConnectorRuntime,
+          reason: input.reason,
+          serverDB: ctx.serverDB,
+          targetId: input.id,
+        });
         await assertConnectorDangerousReauth({
           action: 'admin.connectors.rollback',
           actorUserId: ctx.userId!,
           authenticatedAt: ctx.authenticatedAt,
           authMethod: ctx.authMethod,
+          reason: input.reason,
+          runtime,
+          serverDB: ctx.serverDB,
+          targetId: input.id,
+        });
+        await assertAdminConnectorRuntimeDependency({
+          action: 'admin.connectors.rollback',
+          actorUserId: ctx.userId!,
+          category: 'transport_unavailable',
+          operation: runtime.assertOutboundPolicyReady,
           reason: input.reason,
           runtime,
           serverDB: ctx.serverDB,
@@ -213,9 +310,27 @@ export const adminConnectorsRouter = router({
     .input(adminConnectorTestInputSchema)
     .output(adminConnectorTestOutputSchema)
     .mutation(async ({ ctx, input }) =>
-      executeAdminConnectorOperation('admin.connectors.test', () =>
-        ctx.getAdminConnectorRuntime().service.testConnection(ctx.userId!, input),
-      ),
+      executeAdminConnectorOperation('admin.connectors.test', async () => {
+        const runtime = await resolveAdminConnectorMutationRuntime({
+          action: 'admin.connectors.test',
+          actorUserId: ctx.userId!,
+          createRuntime: ctx.getAdminConnectorRuntime,
+          reason: input.reason,
+          serverDB: ctx.serverDB,
+          targetId: input.id,
+        });
+        await assertAdminConnectorRuntimeDependency({
+          action: 'admin.connectors.test',
+          actorUserId: ctx.userId!,
+          category: 'transport_unavailable',
+          operation: runtime.assertOutboundPolicyReady,
+          reason: input.reason,
+          runtime,
+          serverDB: ctx.serverDB,
+          targetId: input.id,
+        });
+        return runtime.service.testConnection(ctx.userId!, input);
+      }),
     ),
 
   updateDraft: adminConnectorProcedure
@@ -224,8 +339,17 @@ export const adminConnectorsRouter = router({
     .output(adminConnectorDraftMutationOutputSchema)
     .mutation(async ({ ctx, input }) =>
       executeAdminConnectorOperation('admin.connectors.updateDraft', async () => {
-        const runtime = ctx.getAdminConnectorRuntime();
+        const runtime = await resolveAdminConnectorMutationRuntime({
+          action: 'admin.connectors.updateDraft',
+          actorUserId: ctx.userId!,
+          createRuntime: ctx.getAdminConnectorRuntime,
+          reason: input.reason,
+          replacementSecrets: replacementSecrets(input),
+          serverDB: ctx.serverDB,
+          targetId: input.id,
+        });
         const current = await runtime.service.getDraft(input.id);
+        const targetMode = input.credentialMode ?? current.draft.credentialMode;
         const clearsExistingMode =
           input.credentialMode !== undefined &&
           input.credentialMode !== current.draft.credentialMode &&
@@ -240,6 +364,19 @@ export const adminConnectorsRouter = router({
             actorUserId: ctx.userId!,
             authenticatedAt: ctx.authenticatedAt,
             authMethod: ctx.authMethod,
+            reason: input.reason,
+            replacementSecrets: replacementSecrets(input),
+            runtime,
+            serverDB: ctx.serverDB,
+            targetId: input.id,
+          });
+        }
+        if (targetMode === 'per_user_oauth') {
+          await assertAdminConnectorRuntimeDependency({
+            action: 'admin.connectors.updateDraft',
+            actorUserId: ctx.userId!,
+            category: 'redirect_unavailable',
+            operation: runtime.resolveRedirectUri,
             reason: input.reason,
             replacementSecrets: replacementSecrets(input),
             runtime,
