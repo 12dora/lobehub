@@ -31,6 +31,7 @@ import {
 } from '../../contracts/platformConnectors';
 import { PlatformAuditService } from '../platformAudit';
 import type { PlatformConfigInvalidationPublisher } from '../platformConfigInvalidation';
+import { acquirePlatformDependencyPublicationLock } from '../platformDependencyLock';
 import { PlatformPublisherService } from '../platformPublisher';
 import type { ConnectorFailureAuditWriter } from './catalogAudit';
 import {
@@ -197,6 +198,16 @@ const sanitizeConnectorRevisionPayload = (
       toolKey: tool.toolKey,
     })),
   };
+};
+
+/** Shared by the production pointer and the real-PostgreSQL lock probe. */
+export const acquireConnectorPublicationDependencyLock = async (
+  tx: Transaction,
+  connectorId: string,
+  lifecycle: ConnectorCatalogLifecycle,
+): Promise<void> => {
+  await acquirePlatformDependencyPublicationLock(tx);
+  await lifecycle.afterPublicationDependencyLock?.(connectorId, tx);
 };
 
 export class ConnectorCatalogPublicationService {
@@ -457,6 +468,10 @@ export class ConnectorCatalogPublicationService {
     proof: ConnectorPublicationProof,
   ): ResourcePointerAdapter => ({
     assertLockedState: async (tx) => {
+      // lockAndGetRevision has already acquired the connector row lock. Joining
+      // the shared dependency protocol here serializes Agent exact validation
+      // with every publish, rollback and archive pointer/materialization change.
+      await acquireConnectorPublicationDependencyLock(tx, connectorId, this.lifecycle);
       const detail = await loadConnectorDraft(tx, connectorId);
       if (detail.draftToken !== proof.draftToken) throw new PlatformRevisionConflictError();
       if (proof.policyVersion !== null) {

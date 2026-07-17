@@ -90,11 +90,12 @@ export class PlatformAgentPublicationService {
         scopes: ['agent-catalog', 'agent-runtime'],
       });
     } catch (error) {
-      log('post-commit invalidation failed agent=%s revision=%d class=%s', {
+      log(
+        'post-commit invalidation failed agent=%s revision=%d class=%s',
         agentId,
-        errorClass: error instanceof Error ? error.name : 'UnknownError',
         revision,
-      });
+        error instanceof Error ? error.name : 'UnknownError',
+      );
     }
   };
 
@@ -115,10 +116,11 @@ export class PlatformAgentPublicationService {
         targetType: 'agent',
       });
     } catch (error) {
-      log('failure audit append failed agent=%s class=%s', {
-        agentId: params.targetId,
-        errorClass: error instanceof Error ? error.name : 'UnknownError',
-      });
+      log(
+        'failure audit append failed agent=%s class=%s',
+        params.targetId,
+        error instanceof Error ? error.name : 'UnknownError',
+      );
     }
   };
 
