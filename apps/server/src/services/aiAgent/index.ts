@@ -78,7 +78,6 @@ import { ConnectorToolModel } from '@/database/models/connectorTool';
 import { DeviceModel } from '@/database/models/device';
 import { FileModel } from '@/database/models/file';
 import { MessageModel } from '@/database/models/message';
-import { PlatformManagedResourcePolicyModel } from '@/database/models/platform';
 import { PluginModel } from '@/database/models/plugin';
 import { TaskModel } from '@/database/models/task';
 import { ThreadModel } from '@/database/models/thread';
@@ -98,6 +97,7 @@ import { buildConnectorManifests } from '@/libs/mcp/buildConnectorManifests';
 import { patchManifestWithPermissions } from '@/libs/mcp/connectorPermissionCheck';
 import { signOperationJwt, signUserJWT } from '@/libs/trpc/utils/internalJwt';
 import { parseEnterpriseFeatureFlags } from '@/server/enterprise/featureFlags';
+import { resolveManagedSkillRuntimeMode } from '@/server/enterprise/services/managedResourceCapabilities';
 import {
   getEffectiveMemorySettings,
   resolveEffectiveUserInterventionConfig,
@@ -3440,13 +3440,10 @@ export class AiAgentService {
     // agent-document Skill source. Feature-off exits inside the resolver
     // before constructing policy/catalog services.
     const enterpriseFlags = parseEnterpriseFeatureFlags(process.env);
-    const managedSkillPolicy = enterpriseFlags.ENABLE_PLATFORM_MANAGED_SKILLS
-      ? await new PlatformManagedResourcePolicyModel(this.db).getSnapshot()
-      : undefined;
-    const managedSkillEffectiveMode =
-      managedSkillPolicy?.status === 'published' && managedSkillPolicy.published.skills.managed
-        ? managedSkillPolicy.published.skills.enforcementMode
-        : 'unmanaged';
+    const managedSkillEffectiveMode = await resolveManagedSkillRuntimeMode({
+      db: this.db,
+      flags: enterpriseFlags,
+    });
     const platformSkillSnapshot = await resolvePlatformSkillRuntimeSnapshot({
       agentPlugins: persistedAgentPluginEntries,
       db: this.db,

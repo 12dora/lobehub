@@ -13,7 +13,6 @@ import { z } from 'zod';
 import { wsCompatProcedure } from '@/business/server/trpc-middlewares/workspaceAuth';
 import { AgentSkillModel } from '@/database/models/agentSkill';
 import { FileModel } from '@/database/models/file';
-import { PlatformManagedResourcePolicyModel } from '@/database/models/platform';
 import { UserModel } from '@/database/models/user';
 import { type ToolCallContent } from '@/libs/mcp';
 import { authedProcedure, router } from '@/libs/trpc/lambda';
@@ -22,6 +21,7 @@ import { marketSDK, requireMarketAuth } from '@/libs/trpc/lambda/middleware/mark
 import { validatePlatformSkillOperationProof } from '@/libs/trpc/utils/internalJwt';
 import { isTrustedClientEnabled } from '@/libs/trusted-client';
 import { parseEnterpriseFeatureFlags } from '@/server/enterprise/featureFlags';
+import { resolveManagedSkillRuntimeMode } from '@/server/enterprise/services/managedResourceCapabilities';
 import {
   getBuiltinSkillDefinitions,
   SkillCatalogReadService,
@@ -328,13 +328,8 @@ const execInSandboxHandler = async ({
             message: 'Managed Skill operation proof is invalid',
           });
         }
-        const policySnapshot = flags.ENABLE_PLATFORM_MANAGED_SKILLS
-          ? await new PlatformManagedResourcePolicyModel(ctx.serverDB).getSnapshot()
-          : undefined;
         const platformEnforced =
-          policySnapshot?.status === 'published' &&
-          policySnapshot.published.skills.managed &&
-          policySnapshot.published.skills.enforcementMode === 'enforced';
+          (await resolveManagedSkillRuntimeMode({ db: ctx.serverDB, flags })) === 'enforced';
         if (platformEnforced) {
           throw new TRPCError({
             code: 'PRECONDITION_FAILED',
