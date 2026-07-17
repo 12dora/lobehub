@@ -495,6 +495,49 @@ export const adminConnectorGetOutputSchema = z
   })
   .strict();
 
+// Compact exact published projection for BATCH validation of agent connector dependency refs.
+// Read-only, bounded (≤100 ids), one query. Carries only what an exact ref needs — never secrets.
+const publishedConnectorBatchToolSchema = publishedConnectorToolObjectSchema
+  .pick({ platformPolicy: true, toolKey: true })
+  .strict();
+
+const publishedConnectorBatchItemSchema = z
+  .object({
+    connectorId: connectorIdSchema,
+    connectorKey: connectorKeySchema,
+    publishedChecksum: z
+      .string()
+      .length(64)
+      .regex(/^[a-f0-9]{64}$/),
+    publishedRevision: z.number().int().positive(),
+    tools: z.array(publishedConnectorBatchToolSchema).max(1000),
+  })
+  .strict();
+
+export const adminConnectorGetPublishedBatchInputSchema = z
+  .object({ ids: z.array(connectorIdSchema).min(1).max(100) })
+  .strict();
+
+export const adminConnectorGetPublishedBatchOutputSchema = z
+  .object({
+    items: z.array(
+      z
+        .object({
+          connectorId: connectorIdSchema,
+          published: publishedConnectorBatchItemSchema.nullable(),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
+
+export type AdminConnectorGetPublishedBatchInput = z.input<
+  typeof adminConnectorGetPublishedBatchInputSchema
+>;
+export type AdminConnectorGetPublishedBatchOutput = z.output<
+  typeof adminConnectorGetPublishedBatchOutputSchema
+>;
+
 const clearSecretMutation = { operation: 'clear' } as const;
 const emptySecretState = { configured: false, fingerprint: null, updatedAt: null } as const;
 const configuredSecretState = { configured: true, fingerprint: null, updatedAt: null } as const;

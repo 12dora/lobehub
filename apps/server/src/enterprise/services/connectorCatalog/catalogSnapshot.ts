@@ -10,6 +10,7 @@ import {
 import type { LobeChatDatabase } from '@/database/type';
 
 import {
+  adminConnectorGetPublishedBatchOutputSchema,
   adminConnectorOAuthConfigSchema,
   adminPublishedConnectorSchema,
   connectorCredentialModeSchema,
@@ -273,6 +274,42 @@ export class ConnectorCatalogReadService {
               sharedSecret: empty,
             },
     );
+  };
+
+  /**
+   * BATCH exact published projection for up to 100 connector ids in ONE repository query. Each id
+   * is validated independently (checksum recompute + credential sanitization via parseExactSnapshot,
+   * plus the enabled check) and any id that is not currently published — or whose row fails
+   * validation — is returned as `null` rather than aborting the whole batch. Carries only the exact
+   * fields an agent connector dependency ref needs; no secrets, no endpoint/OAuth metadata.
+   */
+  getAdminPublishedBatch = async (connectorIds: string[]) => {
+    const snapshots = await this.repository.getCurrentPublishedRuntimeBatch(connectorIds);
+    const byId = new Map<string, unknown>();
+    for (const snapshot of snapshots) {
+      try {
+        const payload = parseExactSnapshot(snapshot);
+        if (!payload.connector.enabled) continue; // treated as not published → null
+        byId.set(snapshot.provenance.connectorId, {
+          connectorId: snapshot.provenance.connectorId,
+          connectorKey: payload.connector.key,
+          publishedChecksum: snapshot.provenance.checksum,
+          publishedRevision: snapshot.provenance.revision,
+          tools: payload.tools.map((tool) => ({
+            platformPolicy: tool.platformPolicy,
+            toolKey: tool.toolKey,
+          })),
+        });
+      } catch {
+        // A single malicious / invalid row must never abort or leak — drop it to null.
+      }
+    }
+    return adminConnectorGetPublishedBatchOutputSchema.parse({
+      items: connectorIds.map((connectorId) => ({
+        connectorId,
+        published: byId.get(connectorId) ?? null,
+      })),
+    });
   };
 
   getPublicPublished = async (connectorId: string) => {

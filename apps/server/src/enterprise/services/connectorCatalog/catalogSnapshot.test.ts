@@ -145,6 +145,10 @@ describe('ConnectorCatalogReadService exact snapshot boundary', () => {
         code: 'PLATFORM_CONNECTOR_NOT_PUBLISHED',
       });
     }
+    // The BATCH must fail closed per-id — drop the malicious row to null, never leak or throw.
+    await expect(read.getAdminPublishedBatch([connectorId])).resolves.toEqual({
+      items: [{ connectorId, published: null }],
+    });
   });
 
   it('reads only the checksum-bound pointer revision and ignores mutable Draft drift', async () => {
@@ -269,6 +273,46 @@ describe('ConnectorCatalogReadService exact snapshot boundary', () => {
     expect(publicSnapshot).not.toHaveProperty('publishedChecksum');
     const trusted = await read.getTrustedPublished(connectorId);
     expect(trusted).not.toHaveProperty('publishedChecksum');
+  });
+
+  it('batch-projects the exact published tuple per id and returns null for unpublished ids', async () => {
+    const repository = await seedConnector();
+    const revision = payload('https://batch.example.test/mcp');
+    const checksum = checksumPayload(revision);
+    await repository.createPublishedRevision({
+      checksum,
+      connectorId,
+      payload: revision,
+      publishedAt: new Date(),
+      publishedBy: 'admin-user',
+      revision: 1,
+    });
+    await repository.setPublishedPointerCas({
+      checksum,
+      connectorId,
+      expectedRevision: 0,
+      publishedAt: new Date(),
+      publishedRevision: 1,
+    });
+    const read = new ConnectorCatalogReadService(db, new MemoryConnectorSecretStore(db));
+
+    // One batch call, mixed published + never-published id; order matches the requested ids.
+    const batch = await read.getAdminPublishedBatch([connectorId, 'connector-not-published']);
+    expect(batch.items).toEqual([
+      {
+        connectorId,
+        published: {
+          connectorId,
+          connectorKey: 'snapshot-connector',
+          publishedChecksum: checksum,
+          publishedRevision: 1,
+          tools: [{ platformPolicy: 'allow', toolKey: 'search.v1' }],
+        },
+      },
+      { connectorId: 'connector-not-published', published: null },
+    ]);
+    // The compact batch item never carries endpoint / OAuth / secret metadata.
+    expect(batch.items[0]!.published).not.toHaveProperty('endpoint');
   });
 
   it('revalidates the database payload checksum even when the cache key already exists', async () => {

@@ -10,6 +10,8 @@ import type {
   adminConnectorDraftMutationOutputSchema,
   adminConnectorDraftSchema,
   adminConnectorGetOutputSchema,
+  adminConnectorGetPublishedBatchInputSchema,
+  adminConnectorGetPublishedBatchOutputSchema,
   adminConnectorListInputSchema,
   adminConnectorListOutputSchema,
   adminConnectorPublishInputSchema,
@@ -37,6 +39,12 @@ export type AdminConnectorDraftMutationOutput = z.infer<
   typeof adminConnectorDraftMutationOutputSchema
 >;
 export type AdminConnectorGetOutput = z.infer<typeof adminConnectorGetOutputSchema>;
+export type AdminConnectorGetPublishedBatchInput = z.infer<
+  typeof adminConnectorGetPublishedBatchInputSchema
+>;
+export type AdminConnectorGetPublishedBatchOutput = z.infer<
+  typeof adminConnectorGetPublishedBatchOutputSchema
+>;
 export type AdminConnectorListInput = z.infer<typeof adminConnectorListInputSchema>;
 export type AdminConnectorListOutput = z.infer<typeof adminConnectorListOutputSchema>;
 export type AdminConnectorListItem = AdminConnectorListOutput['items'][number];
@@ -70,6 +78,9 @@ export interface AdminConnectorCatalogClient {
   deleteDraft: (input: AdminConnectorDeleteDraftInput) => Promise<AdminConnectorDeleteDraftOutput>;
   discover: (input: AdminConnectorDiscoverInput) => Promise<AdminConnectorDiscoverOutput>;
   get: (input: { id: string }) => Promise<AdminConnectorGetOutput>;
+  getPublishedBatch: (
+    input: AdminConnectorGetPublishedBatchInput,
+  ) => Promise<AdminConnectorGetPublishedBatchOutput>;
   list: (input: AdminConnectorListInput) => Promise<AdminConnectorListOutput>;
   publish: (input: AdminConnectorPublishInput) => Promise<AdminConnectorRevisionOutput>;
   revokeAllBindings: (

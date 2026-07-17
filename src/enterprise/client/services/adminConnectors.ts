@@ -29,6 +29,9 @@ class AdminConnectorsService implements AdminConnectorCatalogClient {
 
   get = async (input: { id: string }) => lambdaClient.admin.connectors.get.query(input);
 
+  getPublishedBatch = async (input: { ids: string[] }) =>
+    lambdaClient.admin.connectors.getPublishedBatch.query(input);
+
   list = async (input: AdminConnectorListInput) => lambdaClient.admin.connectors.list.query(input);
 
   publish = async (input: AdminConnectorPublishInput) =>

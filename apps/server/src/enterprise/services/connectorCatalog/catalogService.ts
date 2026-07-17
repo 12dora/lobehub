@@ -88,6 +88,9 @@ export class ConnectorCatalogService {
     });
   };
 
+  /** Bounded batch exact published projection (≤100 ids, one query) for agent dependency validation. */
+  getPublishedBatch = (ids: string[]) => this.read.getAdminPublishedBatch(ids);
+
   createDraft = (
     actorUserId: string,
     input: z.input<typeof adminConnectorCreateDraftInputSchema>,

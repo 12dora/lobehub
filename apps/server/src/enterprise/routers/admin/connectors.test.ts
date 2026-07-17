@@ -166,9 +166,15 @@ describe('admin.connectors RBAC and contract', () => {
   it('denies anonymous, ordinary users, and workspace owners before service access', async () => {
     const anonymous = await callerFor({});
     await expect(anonymous.list({ limit: 10 })).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    await expect(anonymous.getPublishedBatch({ ids: ['connector-1'] })).rejects.toMatchObject({
+      code: 'UNAUTHORIZED',
+    });
     for (const userId of [ids.normal, ids.workspaceOwner]) {
       const caller = await callerFor({ authenticatedAt: new Date(), userId });
       await expect(caller.list({ limit: 10 })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+      await expect(caller.getPublishedBatch({ ids: ['connector-1'] })).rejects.toMatchObject({
+        code: 'FORBIDDEN',
+      });
       await expect(
         caller.createDraft({
           credentialMode: 'none',
@@ -190,6 +196,10 @@ describe('admin.connectors RBAC and contract', () => {
     await expect(caller.get({ id: 'missing' })).rejects.toMatchObject({
       code: 'NOT_FOUND',
       message: 'PLATFORM_CONNECTOR_NOT_FOUND',
+    });
+    // CONNECTOR_READ covers the batch published projection; a missing id maps to null (no throw).
+    await expect(caller.getPublishedBatch({ ids: ['missing'] })).resolves.toEqual({
+      items: [{ connectorId: 'missing', published: null }],
     });
     await expect(
       caller.createDraft({
