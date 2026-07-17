@@ -1844,7 +1844,6 @@ table platform_connector_tools {
   indexes {
     connector_id [name: 'platform_connector_tools_connector_id_idx']
     (connector_id, tool_key) [name: 'platform_connector_tools_connector_id_tool_key_unique', unique]
-    (connector_id, sort, tool_key, id) [name: 'platform_connector_tools_connector_sort_key_id_idx']
 
 
 
@@ -1863,6 +1862,7 @@ table platform_connectors {
   display_name varchar(200) [not null]
   description text
   endpoint text
+  migration_required boolean [not null, default: true]
   transport varchar(16) [not null, default: 'http']
   credential_mode varchar(64) [not null, default: 'per_user_oauth']
   oidc_config jsonb
@@ -1892,8 +1892,6 @@ table platform_connectors {
   indexes {
     connector_key [name: 'platform_connectors_connector_key_unique', unique]
     status [name: 'platform_connectors_status_idx']
-    (status, connector_key, id) [name: 'platform_connectors_status_key_id_idx']
-    (enabled, sort, id) [name: 'platform_connectors_enabled_sort_id_idx']
 
 
 
@@ -1935,9 +1933,6 @@ table platform_user_connector_bindings {
     connector_id [name: 'platform_user_connector_bindings_connector_id_idx']
     status [name: 'platform_user_connector_bindings_status_idx']
 
-    (user_id, id) [name: 'platform_user_connector_bindings_user_id_id_idx']
-    (connector_id, id) [name: 'platform_user_connector_bindings_connector_id_id_idx']
-    (binding_status, expires_at) [name: 'platform_user_connector_bindings_status_expires_idx']
 
 
 

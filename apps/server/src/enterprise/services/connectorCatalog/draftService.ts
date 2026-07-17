@@ -149,7 +149,7 @@ const toDraft = (
   connector: PlatformConnectorItem,
   tools: PlatformConnectorToolItem[],
 ): ConnectorDraft => {
-  if (!connector.endpoint) {
+  if (connector.migrationRequired || !connector.endpoint) {
     throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_PUBLISHED');
   }
   const common = {

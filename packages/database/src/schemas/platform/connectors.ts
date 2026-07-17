@@ -81,6 +81,8 @@ export const platformConnectors = pgTable(
     description: text('description'),
     /** Nullable during expand: legacy stdio/incomplete rows have no safe HTTP endpoint. */
     endpoint: text('endpoint'),
+    /** Fail-closed marker for legacy rows that need an explicit operator migration. */
+    migrationRequired: boolean('migration_required').notNull().default(true),
     transport: varchar('transport', { length: 16 })
       .$type<PlatformConnectorTransport>()
       .notNull()
@@ -131,8 +133,6 @@ export const platformConnectors = pgTable(
     uniqueIndex('platform_connectors_connector_key_unique').on(t.connectorKey),
     /** @deprecated M01 compatibility index; remove only in a later contract migration. */
     index('platform_connectors_status_idx').on(t.status),
-    index('platform_connectors_status_key_id_idx').on(t.status, t.connectorKey, t.id),
-    index('platform_connectors_enabled_sort_id_idx').on(t.enabled, t.sort, t.id),
     foreignKey({
       columns: [t.publishedResourceType, t.id, t.publishedRevision, t.publishedChecksum],
       foreignColumns: [
@@ -145,15 +145,15 @@ export const platformConnectors = pgTable(
     }).onDelete('restrict'),
     check(
       'platform_connectors_transport_http_check',
-      sql`${t.endpoint} IS NULL OR ${t.transport} = 'http'`,
+      sql`${t.migrationRequired} OR (${t.endpoint} IS NOT NULL AND ${t.transport} = 'http')`,
     ),
     check(
       'platform_connectors_credential_mode_check',
-      sql`${t.credentialMode} IN ('none', 'shared_service_account', 'per_user_oauth')`,
+      sql`${t.migrationRequired} OR ${t.credentialMode} IN ('none', 'shared_service_account', 'per_user_oauth')`,
     ),
     check(
       'platform_connectors_credential_slot_check',
-      sql`${t.endpoint} IS NULL OR (
+      sql`${t.migrationRequired} OR (
         (${t.credentialMode} = 'none'
           AND ${t.sharedSecretRef} IS NULL
           AND ${t.sharedSecretFingerprint} IS NULL
@@ -188,7 +188,7 @@ export const platformConnectors = pgTable(
     ),
     check(
       'platform_connectors_published_pointer_check',
-      sql`${t.endpoint} IS NULL OR ((
+      sql`${t.migrationRequired} OR ((
         (${t.publishedRevision} IS NULL
           AND ${t.publishedChecksum} IS NULL
           AND ${t.publishedAt} IS NULL)
@@ -215,7 +215,7 @@ export const platformConnectors = pgTable(
     ),
     check(
       'platform_connectors_published_shared_secret_check',
-      sql`${t.endpoint} IS NULL
+      sql`${t.migrationRequired}
         OR ${t.status} <> 'published'
         OR ${t.credentialMode} <> 'shared_service_account'
         OR (${t.sharedSecretRef} IS NOT NULL
@@ -333,12 +333,6 @@ export const platformConnectorTools = pgTable(
       t.connectorId,
       t.toolKey,
     ),
-    index('platform_connector_tools_connector_sort_key_id_idx').on(
-      t.connectorId,
-      t.sort,
-      t.toolKey,
-      t.id,
-    ),
     check('platform_connector_tools_policy_check', sql`${t.platformPolicy} IN ('allow', 'deny')`),
     check(
       'platform_connector_tools_risk_check',
@@ -430,9 +424,6 @@ export const platformUserConnectorBindings = pgTable(
       ],
       name: 'platform_user_connector_bindings_revision_fk',
     }).onDelete('restrict'),
-    index('platform_user_connector_bindings_user_id_id_idx').on(t.userId, t.id),
-    index('platform_user_connector_bindings_connector_id_id_idx').on(t.connectorId, t.id),
-    index('platform_user_connector_bindings_status_expires_idx').on(t.status, t.expiresAt),
     check(
       'platform_user_connector_bindings_status_check',
       sql`${t.status} IN ('disconnected', 'pending', 'connected', 'expired', 'revoked', 'error')`,
