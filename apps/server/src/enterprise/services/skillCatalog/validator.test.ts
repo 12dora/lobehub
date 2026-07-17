@@ -84,6 +84,30 @@ describe('SkillCatalogValidator', () => {
     expect(skillValidationResultSchema.safeParse(result).success).toBe(true);
   });
 
+  it.each([
+    { resources: [{ ...resource, path: 'CON.txt' }] },
+    { resources: [{ ...resource, path: 'trailing. ' }] },
+    {
+      resources: [
+        { ...resource, path: 'docs' },
+        { ...resource, path: 'docs/readme.txt' },
+      ],
+    },
+    {
+      resources: [
+        { ...resource, path: 'Straße.txt' },
+        { ...resource, path: 'STRASSE.txt' },
+      ],
+    },
+  ])('uses the materializer path rules during publication validation', async (resources) => {
+    const result = await new SkillCatalogValidator(safeOptions()).validate(
+      validationInput(resources),
+    );
+    expect(result.issues).toContainEqual(
+      expect.objectContaining({ code: 'manifest_invalid', path: ['resources'] }),
+    );
+  });
+
   it('fails closed when the builtin catalog is missing and requires policy plus persisted intent', async () => {
     expect(codes(await new SkillCatalogValidator().validate(validationInput()))).toContain(
       'builtin_override_forbidden',

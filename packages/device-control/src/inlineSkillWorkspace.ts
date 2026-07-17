@@ -5,8 +5,7 @@ import path from 'node:path';
 
 import {
   type InlineSkillResource,
-  MAX_INLINE_SKILL_FILE_BYTES,
-  validateInlineSkillResources,
+  validateInlineSkillOperationPayloads,
 } from './inlineSkillResources';
 
 const DEFAULT_WORKSPACE_TTL_MS = 15 * 60 * 1000;
@@ -35,6 +34,17 @@ export interface InlineSkillWorkspaceDeps {
 }
 
 const hashToken = (value: string) => createHash('sha256').update(value).digest('hex');
+
+const assertOwnedDirectory = async (target: string) => {
+  const metadata = await lstat(target);
+  const currentUid = typeof process.getuid === 'function' ? process.getuid() : undefined;
+  if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+    throw new Error('Inline Skill workspace directory is unsafe');
+  }
+  if (currentUid !== undefined && metadata.uid !== currentUid) {
+    throw new Error('Inline Skill workspace directory owner is unsafe');
+  }
+};
 
 export const defaultInlineSkillWorkspaceRoot = () =>
   path.join(os.tmpdir(), 'lobehub-managed-skills');
@@ -65,15 +75,11 @@ export const prepareInlineSkillWorkspace = async (
     if (!/^[a-f0-9]{64}$/.test(params.checksum)) {
       throw new Error('An exact Skill checksum is required for inline Skill materialization');
     }
-    if (new TextEncoder().encode(params.skillContent).byteLength > MAX_INLINE_SKILL_FILE_BYTES) {
-      throw new Error('Inline Skill content exceeds the per-file byte limit');
-    }
-    const resources = validateInlineSkillResources(params.resources);
+    const [{ resources }] = validateInlineSkillOperationPayloads([params]);
     const root = path.resolve(deps.cacheRoot ?? defaultInlineSkillWorkspaceRoot());
     await mkdir(root, { mode: 0o700, recursive: true });
+    await assertOwnedDirectory(root);
     await chmod(root, 0o700);
-    if ((await lstat(root)).isSymbolicLink())
-      throw new Error('Inline Skill workspace root is unsafe');
     await sweepExpiredWorkspaces(
       root,
       (deps.now ?? Date.now)(),
@@ -84,6 +90,7 @@ export const prepareInlineSkillWorkspace = async (
     // exact version checksum, while mkdtemp provides isolation for concurrent tool calls.
     const prefix = `${hashToken(params.operationId).slice(0, 24)}-${params.checksum}-`;
     workspaceDir = await mkdtemp(path.join(root, prefix));
+    await assertOwnedDirectory(workspaceDir);
     await chmod(workspaceDir, 0o700);
     await writeFile(path.join(workspaceDir, 'SKILL.md'), params.skillContent, {
       flag: 'wx',
@@ -93,6 +100,7 @@ export const prepareInlineSkillWorkspace = async (
     for (const resource of resources) {
       const target = path.join(workspaceDir, ...resource.path.split('/'));
       await mkdir(path.dirname(target), { mode: 0o700, recursive: true });
+      await assertOwnedDirectory(path.dirname(target));
       await chmod(path.dirname(target), 0o700);
       await writeFile(target, resource.content, { flag: 'wx', mode: 0o600 });
     }

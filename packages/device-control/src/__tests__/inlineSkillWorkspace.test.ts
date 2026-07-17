@@ -1,4 +1,4 @@
-import { access, lstat, mkdtemp, readFile, rm, symlink } from 'node:fs/promises';
+import { access, chmod, lstat, mkdtemp, readFile, rm, symlink } from 'node:fs/promises';
 import * as os from 'node:os';
 import path from 'node:path';
 
@@ -61,6 +61,10 @@ describe('inline Skill operation workspace', () => {
     'scripts/../escape.py',
     'scripts/.hidden.py',
     'scripts/ＣＯＮ',
+    'scripts/CON.txt',
+    'scripts/AUX.log',
+    'scripts/trailing. ',
+    'scripts/bad:name.txt',
     'SKILL.md',
   ])('rejects unsafe and normalization-confusable path %s', async (resourcePath) => {
     const result = await prepareInlineSkillWorkspace(params([resource(resourcePath)]), {
@@ -76,6 +80,16 @@ describe('inline Skill operation workspace', () => {
         params([resource('scripts/run.py'), resource('SCRIPTS/RUN.PY')]),
         { cacheRoot: root },
       ),
+    ).resolves.toMatchObject({ success: false });
+    await expect(
+      prepareInlineSkillWorkspace(params([resource('Straße.txt'), resource('STRASSE.txt')]), {
+        cacheRoot: root,
+      }),
+    ).resolves.toMatchObject({ success: false });
+    await expect(
+      prepareInlineSkillWorkspace(params([resource('scripts'), resource('scripts/run.py')]), {
+        cacheRoot: root,
+      }),
     ).resolves.toMatchObject({ success: false });
     await expect(
       prepareInlineSkillWorkspace(
@@ -99,10 +113,12 @@ describe('inline Skill operation workspace', () => {
     const parent = await makeRoot();
     const target = await makeRoot();
     const linkedRoot = path.join(parent, 'linked');
+    await chmod(target, 0o755);
     await symlink(target, linkedRoot);
 
     await expect(
       prepareInlineSkillWorkspace(params(), { cacheRoot: linkedRoot }),
     ).resolves.toMatchObject({ success: false });
+    expect((await lstat(target)).mode & 0o777).toBe(0o755);
   });
 });

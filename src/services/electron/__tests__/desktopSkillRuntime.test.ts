@@ -266,6 +266,38 @@ describe('desktopSkillRuntimeService', () => {
     expect(cleanupInlineSkillWorkspaceMock).toHaveBeenCalledWith({ workspaceId: 'workspace-1' });
   });
 
+  it('rejects an operation whose aggregate includes more than 100 files', async () => {
+    const { agentSkillService } = await import('@/services/skill');
+    const ref = { checksum: 'a'.repeat(64), skillKey: 'managed.skill', version: '1.0.0' };
+    vi.mocked(agentSkillService.resolvePlatformPinned).mockResolvedValue({
+      checksum: ref.checksum,
+      content: '# Managed',
+      identifier: ref.skillKey,
+      resources: Array.from({ length: 100 }, (_, index) => ({
+        checksum: 'b'.repeat(64),
+        content: 'x',
+        mediaType: 'text/plain',
+        path: `refs/${index}.txt`,
+        sizeBytes: 1,
+      })),
+      version: ref.version,
+    } as never);
+
+    await expect(
+      desktopSkillRuntimeService.prepareExecutionWorkspace(
+        [{ name: ref.skillKey }],
+        {
+          agentId: 'agent-1',
+          operationId: 'operation-1',
+          refs: [ref],
+          revision: 'catalog-r1',
+        },
+        'operation-1',
+      ),
+    ).rejects.toThrow('file count exceeds 100');
+    expect(prepareInlineSkillWorkspaceMock).not.toHaveBeenCalled();
+  });
+
   it('should resolve the full local path for a referenced skill resource', async () => {
     getByNameMock.mockResolvedValue({
       id: 'skill-1',

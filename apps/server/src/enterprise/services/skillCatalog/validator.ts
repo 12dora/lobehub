@@ -1,3 +1,5 @@
+import { validateInlineSkillResourcePaths } from '@lobechat/device-control';
+
 import {
   canonicalizePlatformSkillContent,
   canonicalizePlatformSkillManifest,
@@ -221,6 +223,17 @@ export class SkillCatalogValidator {
           'builtin_override_forbidden',
           ['allowBuiltinOverride'],
           'Builtin override requires a real collision, persisted intent, and server policy',
+        ),
+      );
+    }
+    try {
+      validateInlineSkillResourcePaths((input.resources ?? []).map((resource) => resource.path));
+    } catch {
+      this.pushIssue(
+        issue(
+          'manifest_invalid',
+          ['resources'],
+          'Skill resource paths are unsafe or collide across target filesystems',
         ),
       );
     }

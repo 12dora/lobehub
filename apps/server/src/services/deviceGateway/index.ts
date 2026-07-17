@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 
 import { type DeviceAttachment } from '@lobechat/builtin-tool-remote-device';
@@ -294,16 +295,24 @@ export class DeviceGateway {
     userId: string;
     workspaceId: string;
     workspacePrincipalId?: string;
-  }): Promise<void> {
+  }): Promise<boolean> {
     const { deviceId, timeout = 15_000, userId, workspaceId, workspacePrincipalId } = params;
     const client = this.getClient();
-    if (!client) return;
-    await client
-      .invokeRpc(
-        { deviceId, timeout, userId, workspaceId: workspacePrincipalId },
-        { method: 'cleanupInlineSkillWorkspace', params: { workspaceId } },
-      )
-      .catch(() => undefined);
+    if (!client) return false;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const result = await client.invokeRpc<{ success: boolean }>(
+          { deviceId, timeout, userId, workspaceId: workspacePrincipalId },
+          { method: 'cleanupInlineSkillWorkspace', params: { workspaceId } },
+        );
+        if (result.success && result.data?.success === true) return true;
+      } catch {
+        // Bounded retry below. Do not log RPC details or remote paths.
+      }
+    }
+    const auditId = createHash('sha256').update(workspaceId).digest('hex').slice(0, 24);
+    log('managed Skill device cleanup deferred audit=%s', auditId);
+    return false;
   }
 
   /**

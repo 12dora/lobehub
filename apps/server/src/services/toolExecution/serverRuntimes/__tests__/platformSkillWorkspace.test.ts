@@ -176,6 +176,8 @@ describe('ManagedSkillServerRuntimeService workspace lifecycle', () => {
     expect(commands[0]).toContain('-mmin +240');
     expect(commands[0]).toContain('"$count" -lt 32');
     expect(commands[1]).toMatch(/^umask 077 && mkdir -p/);
+    expect(commands.some((command) => command.includes('find -P'))).toBe(true);
+    expect(commands.some((command) => command.includes('stat -c %u'))).toBe(true);
   });
 
   it('cleans the device workspace when command delivery fails', async () => {
