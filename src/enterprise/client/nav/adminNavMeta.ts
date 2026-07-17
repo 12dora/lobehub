@@ -19,6 +19,7 @@ export type AdminNavLabelKey =
   | 'nav.connectors'
   | 'nav.connectorDetail'
   | 'nav.agents'
+  | 'nav.agentDetail'
   | 'nav.identity'
   | 'nav.branding'
   | 'nav.audit'
@@ -168,7 +169,15 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
     id: 'agents',
     labelKey: 'nav.agents',
     path: '/admin/agents',
-    placeholder: true,
+    placeholder: false,
+    requiredPermissions: [PLATFORM_PERMISSIONS.AGENT_READ],
+  },
+  {
+    hideFromNav: true,
+    id: 'agents-detail',
+    labelKey: 'nav.agentDetail',
+    path: '/admin/agents/:id',
+    placeholder: false,
     requiredPermissions: [PLATFORM_PERMISSIONS.AGENT_READ],
   },
   {

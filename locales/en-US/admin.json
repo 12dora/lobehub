@@ -377,6 +377,7 @@
   "managedResources.unsavedTitle": "Unsaved managed resource changes",
   "mobile.unsupported.desc": "Platform administration requires a desktop browser or the desktop app. Tables and management workflows are not available on mobile.",
   "mobile.unsupported.title": "Desktop required",
+  "nav.agentDetail": "Agent details",
   "nav.agents": "Agents",
   "nav.ai": "AI infrastructure",
   "nav.aiModels": "Models",

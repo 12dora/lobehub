@@ -42,6 +42,10 @@ const ConnectorListPage = lazy(
 const ConnectorDetailPage = lazy(
   () => import('@/enterprise/client/features/admin/connectors/ConnectorDetailPage'),
 );
+const AgentListPage = lazy(() => import('@/enterprise/client/features/admin/agents/AgentListPage'));
+const AgentDetailPage = lazy(
+  () => import('@/enterprise/client/features/admin/agents/AgentDetailPage'),
+);
 
 /** Honest localized loading surface for lazy admin pages (no blank frame). */
 const AdminLazyFallback = () => {
@@ -93,6 +97,12 @@ const resolveAdminLeafElement = (id: string): ReactNode => {
     }
     case 'connectors-detail': {
       return withLazy(<ConnectorDetailPage />);
+    }
+    case 'agents': {
+      return withLazy(<AgentListPage />);
+    }
+    case 'agents-detail': {
+      return withLazy(<AgentDetailPage />);
     }
     default: {
       return <PlaceholderPage />;
