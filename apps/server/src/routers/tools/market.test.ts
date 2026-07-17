@@ -307,6 +307,39 @@ describe('tools marketRouter', () => {
     expect(managedSkillMocks.AgentSkillModel).not.toHaveBeenCalled();
   });
 
+  it('rejects a previously signed managed snapshot after the feature is disabled', async () => {
+    const checksum = 'a'.repeat(64);
+    mockPreprocessLhCommand.mockResolvedValue({
+      command: 'true',
+      isLhCommand: false,
+      skipSkillLookup: false,
+    });
+    const caller = marketRouter.createCaller({ serverDB: {}, userId: 'user-1' } as any);
+
+    await expect(
+      caller.execInSandbox({
+        agentId: 'agent-1',
+        operationId: 'operation-1',
+        params: {
+          activatedSkills: [{ name: 'managed.skill' }],
+          command: 'true',
+          operationId: 'operation-1',
+          platformSkillSnapshot: {
+            agentId: 'agent-1',
+            operationId: 'operation-1',
+            proof: 'signed-proof',
+            refs: [{ checksum, skillKey: 'managed.skill', version: '1.0.0' }],
+            revision: 'catalog-r1',
+          },
+        },
+        toolName: 'execScript',
+        topicId: 'topic-1',
+      }),
+    ).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    expect(managedSkillMocks.SkillCatalogReadService).not.toHaveBeenCalled();
+    expect(managedSkillMocks.AgentSkillModel).not.toHaveBeenCalled();
+  });
+
   it('rejects a valid managed snapshot with no activated Skills', async () => {
     managedSkillMocks.parseEnterpriseFeatureFlags.mockReturnValue({
       ENABLE_PLATFORM_MANAGED_SKILLS: true,
