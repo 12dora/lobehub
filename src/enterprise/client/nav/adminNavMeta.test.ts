@@ -33,6 +33,11 @@ describe('adminNavMeta', () => {
     expect(findAdminNavItemByPath('/admin/skills/s1')?.requiredPermissions).toEqual([
       PLATFORM_PERMISSIONS.SKILL_READ,
     ]);
+    expect(findAdminNavItemByPath('/admin/agents')?.id).toBe('agents');
+    expect(findAdminNavItemByPath('/admin/agents/a1')?.id).toBe('agents-detail');
+    expect(findAdminNavItemByPath('/admin/agents/a1')?.requiredPermissions).toEqual([
+      PLATFORM_PERMISSIONS.AGENT_READ,
+    ]);
   });
 
   it('lets Provider auditors inspect detail without granting write actions', () => {
@@ -92,6 +97,9 @@ describe('adminNavMeta', () => {
     );
     expect(getAdminBreadcrumbs('/admin/skills/s1').map((c) => c.id)).toEqual(
       expect.arrayContaining(['overview', 'skills', 'skills-detail']),
+    );
+    expect(getAdminBreadcrumbs('/admin/agents/a1').map((c) => c.id)).toEqual(
+      expect.arrayContaining(['overview', 'agents', 'agents-detail']),
     );
   });
 

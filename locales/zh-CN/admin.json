@@ -377,6 +377,7 @@
   "managedResources.unsavedTitle": "受管资源修改尚未保存",
   "mobile.unsupported.desc": "平台管理需要使用桌面浏览器或桌面客户端。移动端不提供表格与管理流程的缩小版。",
   "mobile.unsupported.title": "请使用桌面端",
+  "nav.agentDetail": "助理详情",
   "nav.agents": "平台助理",
   "nav.ai": "AI 基础设施",
   "nav.aiModels": "模型",

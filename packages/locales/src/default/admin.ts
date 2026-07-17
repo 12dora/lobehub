@@ -289,6 +289,7 @@ export default {
   'managedResources.unsavedStay': 'Keep editing',
   'managedResources.unsavedTitle': 'Unsaved managed resource changes',
   'nav.agents': 'Agents',
+  'nav.agentDetail': 'Agent details',
   'nav.ai': 'AI infrastructure',
   'nav.aiModels': 'Models',
   'nav.aiProviderDetail': 'Provider detail',
