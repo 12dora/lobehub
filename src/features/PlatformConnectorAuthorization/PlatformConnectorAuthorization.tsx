@@ -5,7 +5,7 @@ import { Button, Select } from '@lobehub/ui/base-ui';
 import { createStaticStyles } from 'antd-style';
 import { memo, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useSearchParams } from 'react-router';
+import { useLocation, useSearchParams } from 'react-router';
 
 import AsyncBoundary from '@/components/AsyncBoundary';
 
@@ -30,6 +30,7 @@ const styles = createStaticStyles(({ css }) => ({
 
 const PlatformConnectorAuthorization = memo(() => {
   const { t } = useTranslation('setting');
+  const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
   const query = searchParams.get('connector_q') ?? '';
   const [searchDraft, setSearchDraft] = useState(query);
@@ -41,7 +42,8 @@ const PlatformConnectorAuthorization = memo(() => {
     [cursor, limit, query],
   );
   const { data, error, isLoading, mutate } = useFetchManagedConnectors(input);
-  const { authorize, busyConnectorId, disconnect, feedback } = useConnectorAuthorizationActions();
+  const { authorize, busyAction, busyConnectorId, cancelAuthorization, disconnect, feedback } =
+    useConnectorAuthorizationActions();
 
   const commitSearch = () => {
     const next = new URLSearchParams(searchParams);
@@ -114,11 +116,14 @@ const PlatformConnectorAuthorization = memo(() => {
         <Flexbox gap={12}>
           {data?.items.map((connector) => (
             <ConnectorCard
+              actionsDisabled={Boolean(busyConnectorId)}
+              authorizing={busyAction === 'authorize' && busyConnectorId === connector.id}
               busy={busyConnectorId === connector.id}
               connector={connector}
               feedback={feedback}
               key={connector.id}
-              onAuthorize={(id) => void authorize(id)}
+              onAuthorize={(id) => void authorize(id, location.pathname)}
+              onCancelAuthorization={cancelAuthorization}
               onDisconnect={(id) => void disconnect(id)}
             />
           ))}
