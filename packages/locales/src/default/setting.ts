@@ -3140,6 +3140,7 @@ When I am ___, I need ___
   // M09 platform Connector authorization
   'platformConnectors.actions.authorize': 'Connect account',
   'platformConnectors.actions.cancel': 'Keep connection',
+  'platformConnectors.actions.cancelAuthorization': 'Cancel authorization',
   'platformConnectors.actions.disconnect': 'Disconnect account',
   'platformConnectors.actions.reauthorize': 'Reconnect account',
   'platformConnectors.availability.authorization_required': 'Account required',
@@ -3174,6 +3175,8 @@ When I am ___, I need ___
     'This Connector is not published. Contact an administrator.',
   'platformConnectors.feedback.PLATFORM_CONNECTOR_OAUTH_CALLBACK_INVALID':
     'The authorization response was invalid. Try connecting again.',
+  'platformConnectors.feedback.PLATFORM_CONNECTOR_OAUTH_CANCELLED':
+    'Authorization was cancelled. You can start again when ready.',
   'platformConnectors.feedback.PLATFORM_CONNECTOR_OAUTH_DISMISSED':
     'Authorization was not completed. You can try again.',
   'platformConnectors.feedback.PLATFORM_CONNECTOR_OAUTH_POPUP_BLOCKED':
