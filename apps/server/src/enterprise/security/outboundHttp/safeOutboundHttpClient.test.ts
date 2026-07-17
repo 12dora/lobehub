@@ -62,6 +62,25 @@ describe('policy helpers', () => {
 });
 
 describe('SafeOutboundHttpClient', () => {
+  it('returns AbortError promptly when aborted during DNS resolution', async () => {
+    const controller = new AbortController();
+    const client = new SafeOutboundHttpClient({
+      resolve: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        return [{ address: '1.1.1.1', family: 4 }];
+      },
+      timeoutMs: 500,
+    });
+    const startedAt = Date.now();
+    const pending = client.streamFetch('https://slow-dns.example/events', {
+      signal: controller.signal,
+    });
+    setTimeout(() => controller.abort(), 10);
+
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(Date.now() - startedAt).toBeLessThan(100);
+  });
+
   it('streams SSE incrementally and propagates AbortSignal to the pinned socket', async () => {
     let closed = false;
     const server = createServer((_request, response) => {
@@ -112,6 +131,39 @@ describe('SafeOutboundHttpClient', () => {
         timeoutMs: 50,
       });
       await expect(stalled.text()).rejects.toThrow('deadline exceeded');
+    } finally {
+      server.close();
+    }
+  });
+
+  it('tears down continuous redirect and accepted-response sockets on body cancel', async () => {
+    let redirectClosed = false;
+    let acceptedClosed = false;
+    const server = createServer((request, response) => {
+      const interval = setInterval(() => response.write('still-streaming'), 5);
+      response.on('close', () => {
+        clearInterval(interval);
+        if (request.url === '/redirect') redirectClosed = true;
+        if (request.url === '/accepted') acceptedClosed = true;
+      });
+      if (request.url === '/redirect') {
+        response.writeHead(302, { Location: '/accepted' });
+        response.write('redirect-body');
+      } else {
+        response.writeHead(202, { 'Content-Type': 'text/event-stream' });
+        response.write('accepted-body');
+      }
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('test server address unavailable');
+    const client = new SafeOutboundHttpClient({ timeoutMs: 5000 });
+    try {
+      const response = await client.streamFetch(`http://127.0.0.1:${address.port}/redirect`);
+      expect(response.status).toBe(202);
+      await vi.waitFor(() => expect(redirectClosed).toBe(true));
+      await response.body?.cancel();
+      await vi.waitFor(() => expect(acceptedClosed).toBe(true));
     } finally {
       server.close();
     }

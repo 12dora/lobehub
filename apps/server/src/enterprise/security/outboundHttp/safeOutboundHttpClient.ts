@@ -100,7 +100,7 @@ export class SafeOutboundHttpClient {
       this.assertUrlPolicy(current, this.getPolicy());
 
       const hostname = current.hostname;
-      const addresses = await this.resolveHost(hostname, deadlineAt);
+      const addresses = await this.resolveHost(hostname, deadlineAt, init.signal);
       this.assertResolvedAddresses(current, addresses, this.getPolicy());
 
       // Pin to first allowed address (all were validated)
@@ -115,10 +115,12 @@ export class SafeOutboundHttpClient {
           maxResponseBytes,
           method,
           pinnedAddress: pinned.address,
+          signal: init.signal,
           timeoutMs: remainingMs,
           url: current,
         }),
         deadlineAt,
+        init.signal,
       );
 
       if (REDIRECT_STATUSES.has(response.status) && redirects < maxRedirects) {
@@ -172,7 +174,7 @@ export class SafeOutboundHttpClient {
 
     while (true) {
       this.assertUrlPolicy(current, this.getPolicy());
-      const addresses = await this.resolveHost(current.hostname, deadlineAt);
+      const addresses = await this.resolveHost(current.hostname, deadlineAt, init.signal);
       this.assertResolvedAddresses(current, addresses, this.getPolicy());
       const response = await defaultPinnedStreamingTransport({
         body: body && method !== 'GET' && method !== 'HEAD' ? body : undefined,
@@ -262,14 +264,14 @@ export class SafeOutboundHttpClient {
     assertHostnamePolicy(url.hostname, policy);
   }
 
-  private async resolveHost(hostname: string, deadlineAt: number) {
+  private async resolveHost(hostname: string, deadlineAt: number, signal?: AbortSignal | null) {
     const host = hostname.replaceAll(/^\[|\]$/g, '');
     if (isIP(host)) {
       const family = (isIP(host) === 6 ? 6 : 4) as 4 | 6;
       return [{ address: host, family }];
     }
 
-    const addresses = await this.withDeadline(this.resolve(host), deadlineAt);
+    const addresses = await this.withDeadline(this.resolve(host), deadlineAt, signal);
     if (!addresses.length) {
       throw ssrfBlocked('DNS resolution returned no addresses', { hostname: host });
     }
@@ -307,18 +309,29 @@ export class SafeOutboundHttpClient {
     return remaining;
   }
 
-  private withDeadline = async <T>(operation: Promise<T>, deadlineAt: number): Promise<T> => {
+  private withDeadline = async <T>(
+    operation: Promise<T>,
+    deadlineAt: number,
+    signal?: AbortSignal | null,
+  ): Promise<T> => {
     const remaining = this.remainingMs(deadlineAt);
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let onAbort: (() => void) | undefined;
     try {
       return await Promise.race([
         operation,
         new Promise<never>((_, reject) => {
           timer = setTimeout(() => reject(ssrfBlocked('absolute deadline exceeded')), remaining);
         }),
+        new Promise<never>((_, reject) => {
+          onAbort = () => reject(new DOMException('The operation was aborted', 'AbortError'));
+          if (signal?.aborted) onAbort();
+          else signal?.addEventListener('abort', onAbort, { once: true });
+        }),
       ]);
     } finally {
       if (timer) clearTimeout(timer);
+      if (onAbort) signal?.removeEventListener('abort', onAbort);
     }
   };
 
