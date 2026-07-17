@@ -18,7 +18,7 @@ import {
   connectorToolFixture,
   MemoryConnectorSecretStore,
 } from './catalogTestUtils';
-import type { ConnectorCatalogLifecycle } from './catalogTypes';
+import type { ConnectorCatalogLifecycle, ConnectorCatalogSecretStore } from './catalogTypes';
 import { ConnectorCatalogDraftService } from './draftService';
 import { PlatformConnectorSecretStore } from './platformConnectorSecretStore';
 
@@ -33,7 +33,7 @@ afterEach(async () => {
 
 const createService = (
   failureAuditWriter?: ConnectorFailureAuditWriter,
-  secrets = new MemoryConnectorSecretStore(db),
+  secrets: ConnectorCatalogSecretStore = new MemoryConnectorSecretStore(db),
   lifecycle: ConnectorCatalogLifecycle = {},
 ) => new ConnectorCatalogDraftService(db, secrets, redirectUri, failureAuditWriter, lifecycle);
 
