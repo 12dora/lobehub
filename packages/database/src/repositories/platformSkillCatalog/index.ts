@@ -441,6 +441,58 @@ export class PlatformSkillCatalogRepository {
     return { ...row, payload: row.payload as unknown as PlatformPublishedSkillSnapshot };
   };
 
+  /**
+   * Publication-only exact read for dependents such as platform Agents.
+   * Unlike resolveVersion, this additionally requires the current Skill identity
+   * and the historical published snapshot to remain enabled and key-consistent.
+   */
+  getPublishedExecutionVersionExact = async (
+    skillKey: string,
+    version: string,
+  ): Promise<PlatformPublishedSkillRow | undefined> => {
+    const [row] = await this.db
+      .select({
+        payload: platformResourceRevisions.payload,
+        revision: platformResourceRevisions.revision,
+        skillId: platformSkills.id,
+        status: platformResourceRevisions.status,
+        version: platformSkillVersions,
+      })
+      .from(platformSkills)
+      .innerJoin(
+        platformResourceRevisions,
+        and(
+          eq(platformResourceRevisions.resourceType, 'skill'),
+          eq(platformResourceRevisions.resourceId, platformSkills.id),
+          eq(platformResourceRevisions.status, 'published'),
+        ),
+      )
+      .innerJoin(
+        platformSkillVersions,
+        and(
+          eq(platformSkillVersions.skillId, platformSkills.id),
+          eq(
+            platformSkillVersions.id,
+            sql<string>`${platformResourceRevisions.payload}->>'versionId'`,
+          ),
+          eq(platformSkillVersions.version, version),
+        ),
+      )
+      .where(
+        and(
+          eq(platformSkills.skillKey, skillKey),
+          eq(platformSkills.status, 'published'),
+          eq(platformSkills.enabled, true),
+          sql`COALESCE((${platformResourceRevisions.payload}->'skill'->>'enabled')::boolean, false)`,
+          sql`${platformResourceRevisions.payload}->'skill'->>'skillKey' = ${skillKey}`,
+        ),
+      )
+      .orderBy(desc(platformResourceRevisions.revision))
+      .limit(1);
+    if (!row) return undefined;
+    return { ...row, payload: row.payload as unknown as PlatformPublishedSkillSnapshot };
+  };
+
   getDependentsPage = async (params: {
     cursor?: PlatformSkillDependentCursor;
     limit?: number;

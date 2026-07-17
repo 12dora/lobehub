@@ -4,8 +4,9 @@ import { isRecord } from '@lobechat/utils/object';
 import { PlatformAiCatalogRepository } from '@/database/repositories/platformAiCatalog';
 import { PlatformConnectorCatalogRepository } from '@/database/repositories/platformConnectorCatalog';
 import { PlatformSkillCatalogRepository } from '@/database/repositories/platformSkillCatalog';
-import type { Transaction } from '@/database/type';
+import type { LobeChatDatabase, Transaction } from '@/database/type';
 
+import { acquirePlatformDependencyPublicationLock } from '../platformDependencyLock';
 import {
   type PlatformAgentDependencyIssueCode,
   PlatformAgentDependencyValidationError,
@@ -57,8 +58,18 @@ export const assertExactPlatformAgentDependencies = async (
 
   const skillRepository = new PlatformSkillCatalogRepository(tx);
   for (const reference of snapshot.skills) {
-    const row = await skillRepository.resolveVersion(reference.skillKey, reference.version);
-    if (!row || row.version.checksum !== reference.checksum) issues.push('SKILL_UNAVAILABLE');
+    const row = await skillRepository.getPublishedExecutionVersionExact(
+      reference.skillKey,
+      reference.version,
+    );
+    if (
+      !row ||
+      row.version.checksum !== reference.checksum ||
+      row.payload.skill.skillKey !== reference.skillKey ||
+      row.payload.skill.enabled !== true
+    ) {
+      issues.push('SKILL_UNAVAILABLE');
+    }
   }
 
   const connectorRepository = new PlatformConnectorCatalogRepository(tx);
@@ -95,3 +106,13 @@ export const assertExactPlatformAgentDependencies = async (
 
   if (issues.length > 0) throw new PlatformAgentDependencyValidationError(issues);
 };
+
+export const validateExactPlatformAgentDependencies = async (
+  db: LobeChatDatabase,
+  snapshot: PlatformAgentDependencySnapshot,
+): Promise<{ valid: true }> =>
+  db.transaction(async (tx) => {
+    await acquirePlatformDependencyPublicationLock(tx);
+    await assertExactPlatformAgentDependencies(tx, snapshot);
+    return { valid: true };
+  });

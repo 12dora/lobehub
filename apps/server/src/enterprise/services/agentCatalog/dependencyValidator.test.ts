@@ -11,7 +11,7 @@ const mocks = vi.hoisted(() => ({
   getProviderByKey: vi.fn(),
   getProviderRevision: vi.fn(),
   getPublishedRuntimeRevision: vi.fn(),
-  resolveVersion: vi.fn(),
+  getPublishedExecutionVersionExact: vi.fn(),
 }));
 
 vi.mock('@/database/repositories/platformAiCatalog', () => ({
@@ -22,7 +22,7 @@ vi.mock('@/database/repositories/platformAiCatalog', () => ({
 }));
 vi.mock('@/database/repositories/platformSkillCatalog', () => ({
   PlatformSkillCatalogRepository: class {
-    resolveVersion = mocks.resolveVersion;
+    getPublishedExecutionVersionExact = mocks.getPublishedExecutionVersionExact;
   },
 }));
 vi.mock('@/database/repositories/platformConnectorCatalog', () => ({
@@ -64,7 +64,10 @@ const arrangeValid = () => {
     },
     status: 'published',
   });
-  mocks.resolveVersion.mockResolvedValue({ version: { checksum: checksum('b') } });
+  mocks.getPublishedExecutionVersionExact.mockResolvedValue({
+    payload: { skill: { enabled: true, skillKey: 'summary' } },
+    version: { checksum: checksum('b') },
+  });
   mocks.getConnectorByKey.mockResolvedValue({
     id: 'connector-id',
     status: 'published',
@@ -87,7 +90,7 @@ describe('assertExactPlatformAgentDependencies', () => {
   it('accepts exact published and enabled M07/M08/M09 references', async () => {
     await expect(assertExactPlatformAgentDependencies(tx, snapshot)).resolves.toBeUndefined();
     expect(mocks.getProviderRevision).toHaveBeenCalledWith('provider-id', 2);
-    expect(mocks.resolveVersion).toHaveBeenCalledWith('summary', '1.0.0');
+    expect(mocks.getPublishedExecutionVersionExact).toHaveBeenCalledWith('summary', '1.0.0');
     expect(mocks.getPublishedRuntimeRevision).toHaveBeenCalledWith('connector-id', 3);
   });
 
@@ -118,8 +121,18 @@ describe('assertExactPlatformAgentDependencies', () => {
     [
       'skill checksum drift',
       () =>
-        mocks.resolveVersion.mockResolvedValue({
+        mocks.getPublishedExecutionVersionExact.mockResolvedValue({
+          payload: { skill: { enabled: true, skillKey: 'summary' } },
           version: { checksum: checksum('f') },
+        }),
+      'SKILL_UNAVAILABLE',
+    ],
+    [
+      'disabled skill snapshot',
+      () =>
+        mocks.getPublishedExecutionVersionExact.mockResolvedValue({
+          payload: { skill: { enabled: false, skillKey: 'summary' } },
+          version: { checksum: checksum('b') },
         }),
       'SKILL_UNAVAILABLE',
     ],
