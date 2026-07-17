@@ -636,6 +636,48 @@ describe('per-user connector OAuth service', () => {
     expect(auditJson).not.toMatch(/provider-(access|refresh|client)-token|vault:\/\//i);
   });
 
+  it('acquires a shared binding-revision lease before calling a rotating token provider', async () => {
+    const harness = createHarness();
+    const published = await publishOAuthConnector(harness);
+    const authorization = await start(harness, published.draft.id);
+    await harness.callback.callback({ code: 'connect', state: authorization.state });
+
+    let releaseRefresh!: () => void;
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    harness.refresh.mockImplementationOnce(async () => {
+      markStarted();
+      await gate;
+      return {
+        body: {
+          access_token: 'provider-access-token-v2',
+          expires_in: 7200,
+          refresh_token: 'provider-refresh-token-v2',
+          scope: 'issues:read',
+          token_type: 'Bearer',
+        },
+        status: 200,
+        url: 'https://identity.example.test/oauth/token',
+      };
+    });
+
+    const first = harness.userA.refreshBinding(published.draft.id);
+    await started;
+    await expect(harness.userA.refreshBinding(published.draft.id)).rejects.toMatchObject({
+      code: 'PLATFORM_CONNECTOR_RESOURCE_MISMATCH',
+    });
+    expect(harness.refresh).toHaveBeenCalledOnce();
+
+    releaseRefresh();
+    await expect(first).resolves.toBeUndefined();
+    expect(harness.refresh).toHaveBeenCalledOnce();
+  });
+
   it('refreshes the historical v1 binding used by an approved operation after v2 publishes', async () => {
     const harness = createHarness();
     const first = await publishOAuthConnector(harness);

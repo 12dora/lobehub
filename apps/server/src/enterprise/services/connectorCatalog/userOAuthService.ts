@@ -1,13 +1,15 @@
 import { createHash, randomBytes as cryptoRandomBytes, randomUUID } from 'node:crypto';
 
 import { isPlainRecord } from '@lobechat/utils/object';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 
+import { PlatformJobModel } from '@/database/models/platform/job';
 import {
   PlatformConnectorCatalogRepository,
   PlatformUserConnectorBindingRepository,
 } from '@/database/repositories/platformConnectorCatalog';
-import type { PlatformUserConnectorBindingItem } from '@/database/schemas/platform';
+import { platformJobs, type PlatformUserConnectorBindingItem } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 
 import {
@@ -32,6 +34,7 @@ import { MANAGED_CONNECTOR_OAUTH_STATE_PREFIX } from './oauthRuntime';
 import { cleanupConnectorSecretRefs } from './secretCleanup';
 
 const AUTHORIZATION_TTL_MS = 9 * 60 * 1000;
+const OAUTH_REFRESH_JOB_TYPE = 'connector.oauth.refresh.v1';
 const storedOAuthTokenSchema = z
   .object({
     accessToken: z.string().min(1).max(32_768),
@@ -309,55 +312,122 @@ export class UserConnectorOAuthService {
     if (clientSecretValue !== undefined && typeof clientSecretValue !== 'string') {
       throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_CREDENTIAL_NOT_CONFIGURED');
     }
-    const response = await this.dependencies.outbound.refresh({
-      clientId: oauth.clientId,
-      clientSecret: clientSecretValue,
-      refreshToken: currentToken.data.refreshToken,
-      tokenEndpoint: oauth.tokenEndpoint,
-    });
-    const token = connectorOAuthTokenResponseSchema.safeParse(response.body);
-    if (!token.success) {
-      throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_OAUTH_CALLBACK_INVALID');
-    }
-    const scopes = parseGrantedScopes(token.data.scope, binding.scopes);
-    if (scopes.some((scope) => !oauth.scopes.includes(scope))) {
-      throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_SCOPE_NOT_ALLOWED');
-    }
-    const storedToken = assertStoredSecret(
-      await this.dependencies.secrets.persistSecret({
-        connectorId,
-        slot: 'oauthBindingToken',
-        value: {
-          accessToken: token.data.access_token,
-          refreshToken: token.data.refresh_token ?? currentToken.data.refreshToken,
-        },
-      }),
-    );
-    const updatedAt = (this.dependencies.clock ?? (() => new Date()))();
-    const updated = await this.bindings.updateBindingCas(connectorId, binding.revision, {
-      expiresAt:
-        token.data.expires_in === undefined
-          ? binding.expiresAt
-          : new Date(updatedAt.getTime() + token.data.expires_in * 1000),
-      oauthTokenRef: storedToken.ref,
-      scopes,
-      tokenFingerprint: storedToken.fingerprint,
-    });
-    if (!updated) {
+    const refreshLease = await this.acquireRefreshLease(binding);
+    try {
+      const response = await this.dependencies.outbound.refresh({
+        clientId: oauth.clientId,
+        clientSecret: clientSecretValue,
+        refreshToken: currentToken.data.refreshToken,
+        tokenEndpoint: oauth.tokenEndpoint,
+      });
+      const token = connectorOAuthTokenResponseSchema.safeParse(response.body);
+      if (!token.success) {
+        throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_OAUTH_CALLBACK_INVALID');
+      }
+      const scopes = parseGrantedScopes(token.data.scope, binding.scopes);
+      if (scopes.some((scope) => !oauth.scopes.includes(scope))) {
+        throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_SCOPE_NOT_ALLOWED');
+      }
+      const storedToken = assertStoredSecret(
+        await this.dependencies.secrets.persistSecret({
+          connectorId,
+          slot: 'oauthBindingToken',
+          value: {
+            accessToken: token.data.access_token,
+            refreshToken: token.data.refresh_token ?? currentToken.data.refreshToken,
+          },
+        }),
+      );
+      const updatedAt = (this.dependencies.clock ?? (() => new Date()))();
+      const updated = await this.bindings.updateBindingCas(connectorId, binding.revision, {
+        expiresAt:
+          token.data.expires_in === undefined
+            ? binding.expiresAt
+            : new Date(updatedAt.getTime() + token.data.expires_in * 1000),
+        oauthTokenRef: storedToken.ref,
+        scopes,
+        tokenFingerprint: storedToken.fingerprint,
+      });
+      if (!updated) {
+        await bestEffortRevokeSecret(
+          this.dependencies,
+          connectorId,
+          'oauthBindingToken',
+          storedToken.ref,
+        );
+        throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_RESOURCE_MISMATCH');
+      }
+      await new PlatformJobModel(this.db).complete({
+        jobId: refreshLease.jobId,
+        resultSummary: { bindingRevision: updated.revision },
+        workerId: refreshLease.owner,
+      });
       await bestEffortRevokeSecret(
         this.dependencies,
         connectorId,
         'oauthBindingToken',
-        storedToken.ref,
+        binding.oauthTokenRef,
       );
-      throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_RESOURCE_MISMATCH');
+    } catch (error) {
+      await new PlatformJobModel(this.db).fail({
+        error: { code: 'CONNECTOR_OAUTH_REFRESH_FAILED' },
+        jobId: refreshLease.jobId,
+        terminal: true,
+        workerId: refreshLease.owner,
+      });
+      throw error;
     }
-    await bestEffortRevokeSecret(
-      this.dependencies,
-      connectorId,
-      'oauthBindingToken',
-      binding.oauthTokenRef,
-    );
+  };
+
+  private acquireRefreshLease = async (
+    binding: PlatformUserConnectorBindingItem,
+  ): Promise<{ jobId: string; owner: string }> => {
+    const owner = randomUUID();
+    const now = new Date();
+    const idempotencyKey = hash(`${binding.id}:${binding.revision}`);
+    const [created] = await this.db
+      .insert(platformJobs)
+      .values({
+        attempt: 1,
+        heartbeatAt: now,
+        idempotencyKey,
+        input: {
+          bindingId: binding.id,
+          bindingRevision: binding.revision,
+          connectorId: binding.connectorId,
+          userId: binding.userId,
+        },
+        leaseOwner: owner,
+        leaseUntil: new Date('9999-12-31T23:59:59.999Z'),
+        requestedBy: binding.userId,
+        startedAt: now,
+        status: 'running',
+        type: OAUTH_REFRESH_JOB_TYPE,
+      })
+      .onConflictDoNothing({ target: [platformJobs.type, platformJobs.idempotencyKey] })
+      .returning({ id: platformJobs.id });
+    if (created) return { jobId: created.id, owner };
+
+    const [reclaimed] = await this.db
+      .update(platformJobs)
+      .set({
+        attempt: sql`${platformJobs.attempt} + 1`,
+        heartbeatAt: now,
+        leaseOwner: owner,
+        leaseUntil: new Date('9999-12-31T23:59:59.999Z'),
+        status: 'running',
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(platformJobs.type, OAUTH_REFRESH_JOB_TYPE),
+          eq(platformJobs.idempotencyKey, idempotencyKey),
+          inArray(platformJobs.status, ['dead', 'failed']),
+        ),
+      )
+      .returning({ id: platformJobs.id });
+    if (reclaimed) return { jobId: reclaimed.id, owner };
+    throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_RESOURCE_MISMATCH');
   };
 
   disconnect = async (input: DisconnectInput) => {
