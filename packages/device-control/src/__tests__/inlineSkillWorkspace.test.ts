@@ -65,6 +65,10 @@ describe('inline Skill operation workspace', () => {
     'scripts/AUX.log',
     'scripts/trailing. ',
     'scripts/bad:name.txt',
+    'scripts/в.txt',
+    'scripts/ᲀ.txt',
+    'scripts/ι.txt',
+    'scripts/ͅ.txt',
     'SKILL.md',
   ])('rejects unsafe and normalization-confusable path %s', async (resourcePath) => {
     const result = await prepareInlineSkillWorkspace(params([resource(resourcePath)]), {

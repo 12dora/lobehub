@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { validateInlineSkillOperationPayloads } from '../inlineSkillResources';
+import {
+  validateInlineSkillOperationPayloads,
+  validateInlineSkillResourcePaths,
+} from '../inlineSkillResources';
 
 const resource = (path: string, content = 'x') => ({
   checksum: 'a'.repeat(64),
@@ -11,6 +14,15 @@ const resource = (path: string, content = 'x') => ({
 });
 
 describe('inline Skill operation payload validation', () => {
+  it.each([
+    ['в.txt', 'ᲀ.txt'],
+    ['ι.txt', 'ͅ.txt'],
+  ])('rejects non-ASCII case-fold edge paths %s and %s', (left, right) => {
+    expect(() => validateInlineSkillResourcePaths([left, right])).toThrow(
+      'Unsafe inline Skill resource path',
+    );
+  });
+
   it('counts every SKILL.md across all activated Skills', () => {
     const payloads = [0, 1].map((group) => ({
       resources: Array.from({ length: 50 }, (_, index) => resource(`group-${group}/${index}.txt`)),
