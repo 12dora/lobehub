@@ -230,6 +230,7 @@ export const platformAgentRolloutProjectionSchema = z
     cursor: z.string().min(1).max(1000).nullable(),
     failed: z.number().int().nonnegative(),
     jobId: idSchema,
+    revision: revisionSchema,
     status: z.enum(['cancelled', 'completed', 'dead', 'failed', 'pending', 'running']),
     total: z.number().int().nonnegative(),
     updatedAt: z.date(),
@@ -291,13 +292,12 @@ export const adminPlatformAgentGetInputSchema = z.object({ id: idSchema }).stric
 
 export const adminPlatformAgentDetailOutputSchema = z
   .object({
-    assignments: z.array(platformAgentAssignmentSchema).max(1000),
     draftToken: draftTokenSchema,
     identity: platformAgentIdentityDraftSchema,
-    rollouts: z.array(platformAgentRolloutProjectionSchema).max(1000),
-    versions: z.array(platformAgentImmutableVersionSchema).max(1000),
   })
   .strict();
+
+export const adminPlatformAgentGetOutputSchema = adminPlatformAgentDetailOutputSchema;
 
 export const adminPlatformAgentMutationOutputSchema = z
   .object({
@@ -314,20 +314,13 @@ export const adminPlatformAgentUpdateDraftInputSchema = z
     agentId: idSchema,
     expectedDraftToken: draftTokenSchema,
     expectedRevision: revisionSchema,
-    isDefault: z.boolean().optional(),
+    isDefault: z.boolean(),
     reason: reasonSchema,
-    systemKey: platformAgentSystemKeySchema.optional(),
+    systemKey: platformAgentSystemKeySchema,
   })
   .strict()
   .superRefine((input, ctx) => {
-    if (input.isDefault === undefined && input.systemKey === undefined) {
-      ctx.addIssue({ code: 'custom', message: 'at least one draft field is required' });
-    }
-    if (
-      input.isDefault !== undefined &&
-      input.systemKey !== undefined &&
-      input.isDefault !== (input.systemKey === PLATFORM_AGENT_DEFAULT_INBOX_SYSTEM_KEY)
-    ) {
+    if (input.isDefault !== (input.systemKey === PLATFORM_AGENT_DEFAULT_INBOX_SYSTEM_KEY)) {
       ctx.addIssue({ code: 'custom', message: 'default Agent and system key must agree' });
     }
   });
@@ -344,8 +337,15 @@ export const adminPlatformAgentAppendVersionInputSchema = z
   })
   .strict();
 
-export const adminPlatformAgentPublishInputSchema =
-  adminPlatformAgentAppendVersionInputSchema.strict();
+export const adminPlatformAgentPublishInputSchema = z
+  .object({
+    agentId: idSchema,
+    expectedDraftToken: draftTokenSchema,
+    expectedRevision: revisionSchema,
+    reason: reasonSchema,
+    versionId: idSchema,
+  })
+  .strict();
 
 export const adminPlatformAgentAppendVersionOutputSchema = z
   .object({
@@ -377,16 +377,63 @@ export const platformAgentPublicationOutputSchema = z
   })
   .strict();
 
+export const adminPlatformAgentPublishOutputSchema = platformAgentPublicationOutputSchema;
+export const adminPlatformAgentRollbackOutputSchema = platformAgentPublicationOutputSchema;
+
 export const adminPlatformAgentArchiveInputSchema = z
   .object({
     agentId: idSchema,
     expectedDraftToken: draftTokenSchema,
     expectedRevision: revisionSchema,
     reason: reasonSchema,
+    replacementAgentId: idSchema.nullable(),
   })
   .strict();
 
 export const adminPlatformAgentArchiveOutputSchema = adminPlatformAgentMutationOutputSchema;
+
+const platformAgentPointerCasSchema = z
+  .object({
+    agentId: idSchema,
+    expectedDraftToken: draftTokenSchema,
+    expectedRevision: revisionSchema,
+  })
+  .strict();
+
+export const adminPlatformAgentSetDefaultInboxInputSchema = z
+  .object({
+    currentDefault: platformAgentPointerCasSchema.nullable(),
+    nextDefault: platformAgentPointerCasSchema,
+    reason: reasonSchema,
+  })
+  .strict()
+  .superRefine((input, ctx) => {
+    if (input.currentDefault?.agentId === input.nextDefault.agentId) {
+      ctx.addIssue({ code: 'custom', message: 'replacement default Agent must be different' });
+    }
+  });
+
+export const adminPlatformAgentSetDefaultInboxOutputSchema = z
+  .object({
+    currentDefault: adminPlatformAgentMutationOutputSchema.nullable(),
+    nextDefault: adminPlatformAgentMutationOutputSchema,
+  })
+  .strict();
+
+export const adminPlatformAgentVersionsListInputSchema = z
+  .object({
+    agentId: idSchema,
+    cursor: z.string().trim().min(1).max(512).optional(),
+    limit: z.number().int().min(1).max(100).default(50),
+  })
+  .strict();
+
+export const adminPlatformAgentVersionsListOutputSchema = z
+  .object({
+    items: z.array(platformAgentImmutableVersionSchema).max(100),
+    nextCursor: z.string().trim().min(1).max(512).nullable(),
+  })
+  .strict();
 
 export const adminPlatformAgentDependentSchema = z
   .object({
@@ -437,10 +484,19 @@ export const adminPlatformAgentAssignmentCreateInputSchema = z
     }
   });
 
-export const adminPlatformAgentAssignmentListInputSchema = z.object({ agentId: idSchema }).strict();
+export const adminPlatformAgentAssignmentListInputSchema = z
+  .object({
+    agentId: idSchema,
+    cursor: z.string().trim().min(1).max(512).optional(),
+    limit: z.number().int().min(1).max(100).default(50),
+  })
+  .strict();
 
 export const adminPlatformAgentAssignmentListOutputSchema = z
-  .object({ items: z.array(platformAgentAssignmentSchema).max(1000) })
+  .object({
+    items: z.array(platformAgentAssignmentSchema).max(100),
+    nextCursor: z.string().trim().min(1).max(512).nullable(),
+  })
   .strict();
 
 export const adminPlatformAgentAssignmentUpsertInputSchema = z
@@ -448,6 +504,8 @@ export const adminPlatformAgentAssignmentUpsertInputSchema = z
     agentId: idSchema,
     assignmentId: idSchema.optional(),
     enabled: z.boolean(),
+    expectedDraftToken: draftTokenSchema,
+    expectedRevision: revisionSchema,
     mode: z.enum(PLATFORM_AGENT_ASSIGNMENT_MODES),
     pinnedVersionId: idSchema.nullable(),
     reason: reasonSchema,
@@ -472,6 +530,8 @@ export const adminPlatformAgentAssignmentRemoveInputSchema = z
   .object({
     agentId: idSchema,
     assignmentId: idSchema,
+    expectedDraftToken: draftTokenSchema,
+    expectedRevision: revisionSchema,
     reason: reasonSchema,
   })
   .strict();
@@ -522,7 +582,24 @@ export const adminPlatformAgentRolloutStartInputSchema = z
   .object({
     agentId: idSchema,
     assignmentId: idSchema,
+    expectedDraftToken: draftTokenSchema,
+    expectedRevision: revisionSchema,
     reason: reasonSchema,
+  })
+  .strict();
+
+export const adminPlatformAgentRolloutListInputSchema = z
+  .object({
+    agentId: idSchema,
+    cursor: z.string().trim().min(1).max(512).optional(),
+    limit: z.number().int().min(1).max(100).default(50),
+  })
+  .strict();
+
+export const adminPlatformAgentRolloutListOutputSchema = z
+  .object({
+    items: z.array(platformAgentRolloutProjectionSchema).max(100),
+    nextCursor: z.string().trim().min(1).max(512).nullable(),
   })
   .strict();
 
@@ -536,6 +613,8 @@ export const adminPlatformAgentRolloutGetInputSchema = z
 export const adminPlatformAgentRolloutMutationInputSchema = z
   .object({
     agentId: idSchema,
+    expectedJobRevision: revisionSchema,
+    expectedStatus: z.enum(['cancelled', 'completed', 'dead', 'failed', 'pending', 'running']),
     jobId: idSchema,
     reason: reasonSchema,
   })
@@ -549,6 +628,8 @@ export const adminPlatformAgentRolloutRetryInputSchema =
 export const adminPlatformAgentRolloutRollbackInputSchema = z
   .object({
     agentId: idSchema,
+    expectedJobRevision: revisionSchema,
+    expectedStatus: z.enum(['cancelled', 'completed', 'dead', 'failed', 'pending', 'running']),
     jobId: idSchema,
     reason: reasonSchema,
     targetVersionId: idSchema,
@@ -576,76 +657,137 @@ export const adminPlatformAgentValidateDependenciesInputSchema = z
   .object({ dependencySnapshot: platformAgentDependencySnapshotSchema })
   .strict();
 
-export type AdminPlatformAgentAppendVersionInput = z.infer<
+export const adminPlatformAgentValidateDependenciesOutputSchema =
+  platformAgentDependencyValidationOutputSchema;
+
+export type AdminPlatformAgentAppendVersionInput = z.input<
   typeof adminPlatformAgentAppendVersionInputSchema
 >;
-export type AdminPlatformAgentAssignmentCreateInput = z.infer<
-  typeof adminPlatformAgentAssignmentCreateInputSchema
->;
-export type AdminPlatformAgentCreateInput = z.infer<typeof adminPlatformAgentCreateInputSchema>;
-export type AdminPlatformAgentPublishInput = z.infer<typeof adminPlatformAgentPublishInputSchema>;
-export type AdminPlatformAgentRollbackInput = z.infer<typeof adminPlatformAgentRollbackInputSchema>;
-export type AdminPlatformAgentArchiveInput = z.infer<typeof adminPlatformAgentArchiveInputSchema>;
-export type AdminPlatformAgentAppendVersionOutput = z.infer<
+export type AdminPlatformAgentAppendVersionOutput = z.output<
   typeof adminPlatformAgentAppendVersionOutputSchema
 >;
-export type AdminPlatformAgentAssignmentListInput = z.infer<
+export type AdminPlatformAgentArchiveInput = z.input<typeof adminPlatformAgentArchiveInputSchema>;
+export type AdminPlatformAgentArchiveOutput = z.output<
+  typeof adminPlatformAgentArchiveOutputSchema
+>;
+export type AdminPlatformAgentAssignmentCreateInput = z.input<
+  typeof adminPlatformAgentAssignmentCreateInputSchema
+>;
+export type AdminPlatformAgentAssignmentListInput = z.input<
   typeof adminPlatformAgentAssignmentListInputSchema
 >;
-export type AdminPlatformAgentAssignmentListOutput = z.infer<
+export type AdminPlatformAgentAssignmentListOutput = z.output<
   typeof adminPlatformAgentAssignmentListOutputSchema
 >;
-export type AdminPlatformAgentAssignmentPreviewInput = z.infer<
+export type AdminPlatformAgentAssignmentPreviewInput = z.input<
   typeof adminPlatformAgentAssignmentPreviewInputSchema
 >;
-export type AdminPlatformAgentAssignmentPreviewOutput = z.infer<
+export type AdminPlatformAgentAssignmentPreviewOutput = z.output<
   typeof adminPlatformAgentAssignmentPreviewOutputSchema
 >;
-export type AdminPlatformAgentAssignmentRemoveInput = z.infer<
+export type AdminPlatformAgentAssignmentRemoveInput = z.input<
   typeof adminPlatformAgentAssignmentRemoveInputSchema
 >;
-export type AdminPlatformAgentAssignmentRemoveOutput = z.infer<
+export type AdminPlatformAgentAssignmentRemoveOutput = z.output<
   typeof adminPlatformAgentAssignmentRemoveOutputSchema
 >;
-export type AdminPlatformAgentAssignmentUpsertInput = z.infer<
+export type AdminPlatformAgentAssignmentUpsertInput = z.input<
   typeof adminPlatformAgentAssignmentUpsertInputSchema
 >;
-export type AdminPlatformAgentDependentsInput = z.infer<
+export type AdminPlatformAgentAssignmentUpsertOutput = z.output<
+  typeof adminPlatformAgentAssignmentUpsertOutputSchema
+>;
+export type AdminPlatformAgentCreateInput = z.input<typeof adminPlatformAgentCreateInputSchema>;
+export type AdminPlatformAgentCreateOutput = z.output<typeof adminPlatformAgentCreateOutputSchema>;
+export type AdminPlatformAgentDependentsInput = z.input<
   typeof adminPlatformAgentDependentsInputSchema
 >;
-export type AdminPlatformAgentDependentsOutput = z.infer<
+export type AdminPlatformAgentDependentsOutput = z.output<
   typeof adminPlatformAgentDependentsOutputSchema
 >;
-export type AdminPlatformAgentDetailOutput = z.infer<typeof adminPlatformAgentDetailOutputSchema>;
-export type AdminPlatformAgentGetInput = z.infer<typeof adminPlatformAgentGetInputSchema>;
-export type AdminPlatformAgentListInput = z.infer<typeof adminPlatformAgentListInputSchema>;
-export type AdminPlatformAgentListOutput = z.infer<typeof adminPlatformAgentListOutputSchema>;
-export type AdminPlatformAgentMutationOutput = z.infer<
+export type AdminPlatformAgentDetailOutput = z.output<typeof adminPlatformAgentDetailOutputSchema>;
+export type AdminPlatformAgentGetInput = z.input<typeof adminPlatformAgentGetInputSchema>;
+export type AdminPlatformAgentGetOutput = z.output<typeof adminPlatformAgentGetOutputSchema>;
+export type AdminPlatformAgentListInput = z.input<typeof adminPlatformAgentListInputSchema>;
+export type AdminPlatformAgentListOutput = z.output<typeof adminPlatformAgentListOutputSchema>;
+export type AdminPlatformAgentMutationOutput = z.output<
   typeof adminPlatformAgentMutationOutputSchema
 >;
-export type AdminPlatformAgentRolloutGetInput = z.infer<
-  typeof adminPlatformAgentRolloutGetInputSchema
+export type AdminPlatformAgentPublishInput = z.input<typeof adminPlatformAgentPublishInputSchema>;
+export type AdminPlatformAgentPublishOutput = z.output<
+  typeof adminPlatformAgentPublishOutputSchema
 >;
-export type AdminPlatformAgentRolloutCancelInput = z.infer<
+export type AdminPlatformAgentRollbackInput = z.input<typeof adminPlatformAgentRollbackInputSchema>;
+export type AdminPlatformAgentRollbackOutput = z.output<
+  typeof adminPlatformAgentRollbackOutputSchema
+>;
+export type AdminPlatformAgentRolloutCancelInput = z.input<
   typeof adminPlatformAgentRolloutCancelInputSchema
 >;
-export type AdminPlatformAgentRolloutMutationInput = z.infer<
+export type AdminPlatformAgentRolloutCancelOutput = z.output<
+  typeof adminPlatformAgentRolloutCancelOutputSchema
+>;
+export type AdminPlatformAgentRolloutGetInput = z.input<
+  typeof adminPlatformAgentRolloutGetInputSchema
+>;
+export type AdminPlatformAgentRolloutGetOutput = z.output<
+  typeof adminPlatformAgentRolloutGetOutputSchema
+>;
+export type AdminPlatformAgentRolloutListInput = z.input<
+  typeof adminPlatformAgentRolloutListInputSchema
+>;
+export type AdminPlatformAgentRolloutListOutput = z.output<
+  typeof adminPlatformAgentRolloutListOutputSchema
+>;
+export type AdminPlatformAgentRolloutMutationInput = z.input<
   typeof adminPlatformAgentRolloutMutationInputSchema
 >;
-export type AdminPlatformAgentRolloutRetryInput = z.infer<
+export type AdminPlatformAgentRolloutRetryInput = z.input<
   typeof adminPlatformAgentRolloutRetryInputSchema
 >;
-export type AdminPlatformAgentRolloutRollbackInput = z.infer<
+export type AdminPlatformAgentRolloutRetryOutput = z.output<
+  typeof adminPlatformAgentRolloutRetryOutputSchema
+>;
+export type AdminPlatformAgentRolloutRollbackInput = z.input<
   typeof adminPlatformAgentRolloutRollbackInputSchema
 >;
-export type AdminPlatformAgentRolloutStartInput = z.infer<
+export type AdminPlatformAgentRolloutRollbackOutput = z.output<
+  typeof adminPlatformAgentRolloutRollbackOutputSchema
+>;
+export type AdminPlatformAgentRolloutStartInput = z.input<
   typeof adminPlatformAgentRolloutStartInputSchema
 >;
-export type AdminPlatformAgentUpdateDraftInput = z.infer<
+export type AdminPlatformAgentRolloutStartOutput = z.output<
+  typeof adminPlatformAgentRolloutStartOutputSchema
+>;
+export type AdminPlatformAgentSetDefaultInboxInput = z.input<
+  typeof adminPlatformAgentSetDefaultInboxInputSchema
+>;
+export type AdminPlatformAgentSetDefaultInboxOutput = z.output<
+  typeof adminPlatformAgentSetDefaultInboxOutputSchema
+>;
+export type AdminPlatformAgentUpdateDraftInput = z.input<
   typeof adminPlatformAgentUpdateDraftInputSchema
 >;
-export type PlatformAgentEffectiveGetInput = z.infer<typeof platformAgentEffectiveGetInputSchema>;
-export type PlatformAgentEffectiveGetOutput = z.infer<typeof platformAgentEffectiveGetOutputSchema>;
-export type PlatformAgentEffectiveListOutput = z.infer<
+export type AdminPlatformAgentUpdateDraftOutput = z.output<
+  typeof adminPlatformAgentUpdateDraftOutputSchema
+>;
+export type AdminPlatformAgentValidateDependenciesInput = z.input<
+  typeof adminPlatformAgentValidateDependenciesInputSchema
+>;
+export type AdminPlatformAgentValidateDependenciesOutput = z.output<
+  typeof adminPlatformAgentValidateDependenciesOutputSchema
+>;
+export type AdminPlatformAgentVersionsListInput = z.input<
+  typeof adminPlatformAgentVersionsListInputSchema
+>;
+export type AdminPlatformAgentVersionsListOutput = z.output<
+  typeof adminPlatformAgentVersionsListOutputSchema
+>;
+export type PlatformAgentEffectiveGetInput = z.input<typeof platformAgentEffectiveGetInputSchema>;
+export type PlatformAgentEffectiveGetOutput = z.output<
+  typeof platformAgentEffectiveGetOutputSchema
+>;
+export type PlatformAgentEffectiveListOutput = z.output<
   typeof platformAgentEffectiveListOutputSchema
 >;
