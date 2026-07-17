@@ -3107,4 +3107,95 @@ When I am ___, I need ___
   'managedResources.resource.aiProviders': 'Providers',
   'managedResources.resource.connectors': 'Connectors',
   'managedResources.resource.skills': 'Skills',
+
+  // M09 platform Connector authorization
+  'platformConnectors.actions.authorize': 'Connect account',
+  'platformConnectors.actions.cancel': 'Keep connection',
+  'platformConnectors.actions.disconnect': 'Disconnect account',
+  'platformConnectors.actions.reauthorize': 'Reconnect account',
+  'platformConnectors.availability.authorization_required': 'Account required',
+  'platformConnectors.availability.available': 'Available',
+  'platformConnectors.availability.unavailable': 'Unavailable',
+  'platformConnectors.credentialHelp.none':
+    'No account is required. This Connector is ready to use.',
+  'platformConnectors.credentialHelp.shared_service_account':
+    'Your organization provides the service account. Its credentials are never shown here.',
+  'platformConnectors.credentialMode.none': 'No credentials',
+  'platformConnectors.credentialMode.per_user_oauth': 'Personal OAuth',
+  'platformConnectors.credentialMode.shared_service_account': 'Organization account',
+  'platformConnectors.description':
+    'Use Connectors published by your organization and manage only your personal authorization.',
+  'platformConnectors.disconnect.confirmDesc':
+    'This removes your authorization for {{name}}. Other users and the organization Connector are not affected.',
+  'platformConnectors.disconnect.confirmTitle': 'Disconnect this account?',
+  'platformConnectors.empty.default': 'Your organization has not published any Connectors yet.',
+  'platformConnectors.empty.filtered': 'No Connectors match this search.',
+  'platformConnectors.feedback.PLATFORM_CONNECTOR_BINDING_NOT_FOUND':
+    'This authorization no longer exists. Reload the list and connect again.',
+  'platformConnectors.feedback.PLATFORM_CONNECTOR_BINDING_OWNERSHIP_MISMATCH':
+    'This authorization belongs to another account and cannot be used.',
+  'platformConnectors.feedback.PLATFORM_CONNECTOR_CONFIRMATION_REQUIRED':
+    'This operation needs confirmation before it can run.',
+  'platformConnectors.feedback.PLATFORM_CONNECTOR_CREDENTIAL_NOT_CONFIGURED':
+    'The organization credential is not configured. Contact an administrator.',
+  'platformConnectors.feedback.PLATFORM_CONNECTOR_DISCONNECTED': 'Your account was disconnected.',
+  'platformConnectors.feedback.PLATFORM_CONNECTOR_NOT_FOUND':
+    'This Connector is no longer available.',
+  'platformConnectors.feedback.PLATFORM_CONNECTOR_NOT_PUBLISHED':
+    'This Connector is not published. Contact an administrator.',
+  'platformConnectors.feedback.PLATFORM_CONNECTOR_OAUTH_CALLBACK_INVALID':
+    'The authorization response was invalid. Try connecting again.',
+  'platformConnectors.feedback.PLATFORM_CONNECTOR_OAUTH_DISMISSED':
+    'Authorization was not completed. You can try again.',
+  'platformConnectors.feedback.PLATFORM_CONNECTOR_OAUTH_POPUP_BLOCKED':
+    'Your browser blocked the authorization window. Allow popups and try again.',
+  'platformConnectors.feedback.PLATFORM_CONNECTOR_OAUTH_STATE_EXPIRED':
+    'The authorization request expired. Start a new connection.',
+  'platformConnectors.feedback.PLATFORM_CONNECTOR_OAUTH_STATE_INVALID':
+    'The authorization request was invalid. Start a new connection.',
+  'platformConnectors.feedback.PLATFORM_CONNECTOR_OAUTH_STATE_REPLAYED':
+    'This authorization request was already used. Start a new connection.',
+  'platformConnectors.feedback.PLATFORM_CONNECTOR_OAUTH_TIMEOUT':
+    'Authorization took too long. Check the provider and try again.',
+  'platformConnectors.feedback.PLATFORM_CONNECTOR_OPERATION_FAILED':
+    'The Connector operation failed. Review the status and try again.',
+  'platformConnectors.feedback.PLATFORM_CONNECTOR_OPERATION_SUCCEEDED':
+    'Your account is connected and ready to use.',
+  'platformConnectors.feedback.PLATFORM_CONNECTOR_RATE_LIMITED':
+    'Too many Connector requests. Wait a moment and try again.',
+  'platformConnectors.feedback.PLATFORM_CONNECTOR_RESOURCE_MISMATCH':
+    'The Connector changed while this operation was running. Reload and try again.',
+  'platformConnectors.feedback.PLATFORM_CONNECTOR_RETURN_TO_INVALID':
+    'The requested return page was invalid. Start authorization again.',
+  'platformConnectors.feedback.PLATFORM_CONNECTOR_SCOPE_NOT_ALLOWED':
+    'The requested authorization scope is not allowed by your organization.',
+  'platformConnectors.feedback.PLATFORM_CONNECTOR_SECRET_EXPOSURE_BLOCKED':
+    'The operation was blocked because it could expose a credential.',
+  'platformConnectors.feedback.PLATFORM_CONNECTOR_SSRF_BLOCKED':
+    'The Connector endpoint was blocked by the network safety policy.',
+  'platformConnectors.feedback.PLATFORM_CONNECTOR_STDIO_UNSUPPORTED':
+    'Command-based Connectors are not supported in this app.',
+  'platformConnectors.feedback.PLATFORM_CONNECTOR_TOOL_DENIED':
+    'This tool is not allowed by your organization or Agent policy.',
+  'platformConnectors.feedback.PLATFORM_CONNECTOR_TRANSPORT_UNSUPPORTED':
+    'This Connector transport is not supported.',
+  'platformConnectors.feedback.PLATFORM_CONNECTOR_UNKNOWN_ERROR':
+    'The Connector operation could not be completed. Try again.',
+  'platformConnectors.pagination.next': 'Next page',
+  'platformConnectors.pagination.pageSize': 'Connectors per page',
+  'platformConnectors.pagination.previous': 'Previous page',
+  'platformConnectors.policy.description':
+    'Organization deny rules always win. Agent rules can narrow the allowed tools, and your choices can only turn allowed tools off—not grant additional access.',
+  'platformConnectors.policy.title': 'Tool access is managed in layers',
+  'platformConnectors.risk.critical': 'Critical risk',
+  'platformConnectors.risk.high': 'High risk',
+  'platformConnectors.search.action': 'Search',
+  'platformConnectors.search.placeholder': 'Search organization Connectors',
+  'platformConnectors.title': 'Organization Connectors',
+  'platformConnectors.tools.available': 'Allowed',
+  'platformConnectors.tools.confirmationRequired': 'Confirmation required',
+  'platformConnectors.tools.policyDesc':
+    'This is a read-only view of the effective platform and Agent policy.',
+  'platformConnectors.tools.title': 'Available tools',
+  'platformConnectors.tools.unavailable': 'Not allowed',
 };
