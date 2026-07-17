@@ -48,6 +48,8 @@ export const ENTERPRISE_UPSTREAM_MOUNT_POINTS = [
   'src/features/ProfileEditor/AgentTool.tsx',
   'src/routes/(main)/settings/skill/features/PlatformSkillList.tsx',
   'src/routes/(main)/settings/skill/features/SkillDetail/PlatformSkillDetail.tsx',
+  // M09: single ordinary-user managed Connector authorization client seam.
+  'src/features/PlatformConnectorAuthorization/enterpriseAdapter.ts',
   // M06: public managed-resource capability adapter; ordinary surfaces import this adapter only.
   'src/features/ManagedResources/useManagedResource.ts',
   // M06: stable server enforcement seams for the five legacy mutation routers.

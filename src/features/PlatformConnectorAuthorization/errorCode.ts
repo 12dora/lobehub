@@ -1,4 +1,7 @@
-import { platformConnectorErrorCodeSchema } from '@/server/enterprise/contracts/platformConnectors';
+import {
+  parsePlatformConnectorErrorCode,
+  type PlatformConnectorContractErrorCode,
+} from './enterpriseAdapter';
 
 export type ConnectorClientErrorCode =
   | 'PLATFORM_CONNECTOR_OAUTH_POPUP_BLOCKED'
@@ -8,7 +11,7 @@ export type ConnectorClientErrorCode =
   | 'PLATFORM_CONNECTOR_OPERATION_SUCCEEDED'
   | 'PLATFORM_CONNECTOR_DISCONNECTED'
   | 'PLATFORM_CONNECTOR_UNKNOWN_ERROR'
-  | (typeof platformConnectorErrorCodeSchema)['_output'];
+  | PlatformConnectorContractErrorCode;
 
 const extractErrorMessage = (error: unknown): string => {
   if (typeof error === 'string') return error;
@@ -24,8 +27,8 @@ const extractErrorMessage = (error: unknown): string => {
 
 export const resolveConnectorErrorCode = (error: unknown): ConnectorClientErrorCode => {
   const message = extractErrorMessage(error).trim();
-  const parsed = platformConnectorErrorCodeSchema.safeParse(message);
-  if (parsed.success) return parsed.data;
+  const parsed = parsePlatformConnectorErrorCode(message);
+  if (parsed) return parsed;
   if (message === 'PLATFORM_FEATURE_DISABLED') return 'PLATFORM_CONNECTOR_OPERATION_FAILED';
   return 'PLATFORM_CONNECTOR_UNKNOWN_ERROR';
 };
