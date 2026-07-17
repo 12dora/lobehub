@@ -32,6 +32,7 @@ describe('connector runtime audit worker', () => {
     if (acquired.status !== 'acquired') throw new Error('journal was not acquired');
     jobIds.push(acquired.token.jobId);
     auditIds.push(`connector-runtime-audit:${acquired.token.jobId}`);
+    await journal.arm(acquired.token);
     await journal.complete(acquired.token, {
       confirmation: null,
       content: 'done',

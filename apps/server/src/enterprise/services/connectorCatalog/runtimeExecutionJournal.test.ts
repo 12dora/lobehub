@@ -36,6 +36,7 @@ describe('DatabaseConnectorRuntimeExecutionJournal', () => {
     await expect(journal.begin({ ...params, requestFingerprint: 'b'.repeat(64) })).resolves.toEqual(
       { status: 'reserved' },
     );
+    await journal.arm(acquired.token);
     await journal.complete(acquired.token, {
       confirmation: null,
       content: 'done',
@@ -78,6 +79,7 @@ describe('DatabaseConnectorRuntimeExecutionJournal', () => {
     expect(acquired.status).toBe('acquired');
     if (acquired.status !== 'acquired') throw new Error('journal was not acquired');
     createdIds.push(acquired.token.jobId);
+    await journal.arm(acquired.token);
     await db
       .update(platformJobs)
       .set({ leaseUntil: new Date(0) })
@@ -96,5 +98,33 @@ describe('DatabaseConnectorRuntimeExecutionJournal', () => {
         where: eq(platformJobs.id, acquired.token.jobId),
       }),
     ).resolves.toMatchObject({ status: 'dead' });
+  });
+
+  it('cleans an expired unarmed reservation without producing an unknown audit', async () => {
+    const journal = new DatabaseConnectorRuntimeExecutionJournal(db);
+    const acquired = await journal.begin({
+      connectorId: 'connector-reserved',
+      operationId: `operation-${crypto.randomUUID()}`,
+      requestFingerprint: 'e'.repeat(64),
+      toolCallId: 'tool-call-reserved',
+      toolKey: 'write',
+      userId: 'user-reserved',
+    });
+    if (acquired.status !== 'acquired') throw new Error('journal was not acquired');
+    await db
+      .update(platformJobs)
+      .set({ leaseUntil: new Date(0) })
+      .where(eq(platformJobs.id, acquired.token.jobId));
+    const delivered: string[] = [];
+
+    await expect(
+      journal.reconcileNext(async (record) => {
+        delivered.push(record.outcome);
+      }),
+    ).resolves.toBe(true);
+    expect(delivered).toEqual([]);
+    await expect(
+      db.query.platformJobs.findFirst({ where: eq(platformJobs.id, acquired.token.jobId) }),
+    ).resolves.toBeUndefined();
   });
 });

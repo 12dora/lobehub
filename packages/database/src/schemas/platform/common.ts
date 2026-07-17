@@ -30,7 +30,7 @@ export type PlatformDistribution = 'mandatory' | 'default' | 'optional';
 
 /** Job lifecycle for platform background work. */
 export type PlatformJobStatus =
-  'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'dead';
+  'pending' | 'reserved' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'dead';
 
 /** Audit outcome. */
 export type PlatformAuditResult = 'success' | 'failure' | 'denied';
