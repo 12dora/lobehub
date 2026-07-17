@@ -1,3 +1,4 @@
+export * from './adminService';
 export * from './dependencyValidator';
 export * from './effectiveResolver';
 export * from './errors';

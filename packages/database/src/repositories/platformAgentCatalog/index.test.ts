@@ -328,7 +328,7 @@ describe('PlatformAgentCatalogRepository', () => {
       }),
     ).rejects.toThrow();
     expect(
-      await repository.updateAssignment(userAssignment.id, {
+      await repository.updateAssignment(agent.id, userAssignment.id, {
         enabled: false,
         mode: 'optional',
         pinnedVersionId: version2!.id,
@@ -337,12 +337,12 @@ describe('PlatformAgentCatalogRepository', () => {
         versionPolicy: 'pinned',
       }),
     ).toMatchObject({ enabled: false, id: userAssignment.id });
-    const updatedAssignment = await repository.getAssignment(userAssignment.id);
+    const updatedAssignment = await repository.getAssignment(agent.id, userAssignment.id);
     expect(updatedAssignment).toMatchObject({ enabled: false });
     expect(Object.keys(updatedAssignment!)).not.toEqual(
       expect.arrayContaining(LEGACY_ASSIGNMENT_KEYS),
     );
-    expect(await repository.deleteAssignment(userAssignment.id)).toMatchObject({
+    expect(await repository.deleteAssignment(agent.id, userAssignment.id)).toMatchObject({
       id: userAssignment.id,
     });
   });

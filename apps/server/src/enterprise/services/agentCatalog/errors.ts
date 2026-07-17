@@ -14,6 +14,14 @@ export class PlatformAgentRevisionConflictError extends Error {
   }
 }
 
+export class PlatformAgentDefaultRequiredError extends Error {
+  readonly code = 'PLATFORM_DEFAULT_AGENT_REQUIRED';
+
+  constructor() {
+    super('PLATFORM_DEFAULT_AGENT_REQUIRED');
+  }
+}
+
 export type PlatformAgentDependencyIssueCode =
   | 'AI_MODEL_UNAVAILABLE'
   | 'CONNECTOR_UNAVAILABLE'
