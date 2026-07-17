@@ -66,6 +66,7 @@ export class SkillCatalogPublicationService {
 
   private createPointer = (params: {
     actorUserId: string;
+    builtinOverrideTombstone?: boolean;
     expectedDraftToken: string;
     skillId: string;
     validateVersion?: boolean;
@@ -143,6 +144,7 @@ export class SkillCatalogPublicationService {
         payload: {},
         pointer: this.createPointer({
           actorUserId,
+          builtinOverrideTombstone: skill.allowBuiltinOverride,
           expectedDraftToken: input.expectedDraftToken,
           skillId: input.id,
           versionId: skill.currentVersionId,

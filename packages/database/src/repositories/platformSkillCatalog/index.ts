@@ -8,6 +8,7 @@ import {
   type PlatformDistribution,
   platformResourceRevisions,
   type PlatformResourceStatus,
+  type PlatformRevisionStatus,
   type PlatformSkillItem,
   platformSkills,
   type PlatformSkillSource,
@@ -33,10 +34,12 @@ export interface PlatformPublishedSkillRow {
   payload: PlatformPublishedSkillSnapshot;
   revision: number;
   skillId: string;
+  status: PlatformRevisionStatus;
   version: PlatformSkillVersionItem;
 }
 
 export interface PlatformPublishedSkillSnapshot {
+  builtinOverrideTombstone?: true;
   skill: {
     allowBuiltinOverride: boolean;
     description: string | null;
@@ -255,7 +258,7 @@ export class PlatformSkillCatalogRepository {
     const snapshotSkillKey = sql<string>`${platformResourceRevisions.payload}->'skill'->>'skillKey'`;
     const conditions = [
       eq(platformResourceRevisions.resourceType, 'skill'),
-      eq(platformResourceRevisions.status, 'published'),
+      inArray(platformResourceRevisions.status, ['published', 'archived']),
       sql`COALESCE((${platformResourceRevisions.payload}->'skill'->>'enabled')::boolean, false)`,
     ];
     if (params.cursor) conditions.push(gt(snapshotSkillKey, params.cursor));
@@ -264,6 +267,7 @@ export class PlatformSkillCatalogRepository {
         payload: platformResourceRevisions.payload,
         revision: platformResourceRevisions.revision,
         skillId: platformSkills.id,
+        status: platformResourceRevisions.status,
         version: platformSkillVersions,
       })
       .from(platformSkills)
@@ -409,6 +413,7 @@ export class PlatformSkillCatalogRepository {
         payload: platformResourceRevisions.payload,
         revision: platformResourceRevisions.revision,
         skillId: platformSkills.id,
+        status: platformResourceRevisions.status,
         version: platformSkillVersions,
       })
       .from(platformSkills)
