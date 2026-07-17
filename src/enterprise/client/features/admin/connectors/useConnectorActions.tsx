@@ -112,11 +112,11 @@ export const useConnectorActions = ({
     if (!permissions.canUpdate || !editor.draft || !editor.dirty || !editor.validation.valid)
       return;
     const draft = structuredClone(editor.draft);
-    const secretValue = editor.secretValue;
+    const secret = editor.secret;
     openReasonModal({
       authMethod: authMethod ?? undefined,
       buildPayload: (reason) =>
-        buildConnectorUpdatePayload({ draft, reason, secretValue, snapshot: data }),
+        buildConnectorUpdatePayload({ draft, reason, secret, snapshot: data }),
       description: t('connectorCatalog.mutations.save.description'),
       onSubmit: async (input) => {
         editor.setSaveState('saving');

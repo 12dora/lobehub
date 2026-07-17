@@ -11,6 +11,28 @@ export interface StoredAdminConnectorDraft {
 
 const keyFor = (id: string) => `${STORAGE_PREFIX}${id}`;
 
+const sanitizePublicDraft = (draft: EditableAdminConnectorDraft): EditableAdminConnectorDraft => ({
+  credentialMode: draft.credentialMode,
+  description: draft.description,
+  displayName: draft.displayName,
+  enabled: draft.enabled,
+  endpoint: draft.endpoint,
+  oauthAuthorizationEndpoint: draft.oauthAuthorizationEndpoint,
+  oauthClientId: draft.oauthClientId,
+  oauthIssuer: draft.oauthIssuer,
+  oauthScopes: draft.oauthScopes,
+  oauthTokenEndpoint: draft.oauthTokenEndpoint,
+  sort: draft.sort,
+  tools: draft.tools,
+});
+
+const sanitizeStoredDraft = (value: StoredAdminConnectorDraft): StoredAdminConnectorDraft => ({
+  baseRevision: value.baseRevision,
+  draft: sanitizePublicDraft(value.draft),
+  draftToken: value.draftToken,
+  savedAt: value.savedAt,
+});
+
 export const loadAdminConnectorDraft = (id: string): StoredAdminConnectorDraft | null => {
   try {
     const raw = localStorage.getItem(keyFor(id));
@@ -20,7 +42,9 @@ export const loadAdminConnectorDraft = (id: string): StoredAdminConnectorDraft |
       localStorage.removeItem(keyFor(id));
       return null;
     }
-    return parsed;
+    const sanitized = sanitizeStoredDraft(parsed);
+    localStorage.setItem(keyFor(id), JSON.stringify(sanitized));
+    return sanitized;
   } catch {
     localStorage.removeItem(keyFor(id));
     return null;
@@ -28,7 +52,7 @@ export const loadAdminConnectorDraft = (id: string): StoredAdminConnectorDraft |
 };
 
 export const saveAdminConnectorDraft = (id: string, value: StoredAdminConnectorDraft) => {
-  localStorage.setItem(keyFor(id), JSON.stringify(value));
+  localStorage.setItem(keyFor(id), JSON.stringify(sanitizeStoredDraft(value)));
 };
 
 export const clearAdminConnectorDraft = (id: string) => localStorage.removeItem(keyFor(id));
