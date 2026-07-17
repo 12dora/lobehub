@@ -14,6 +14,7 @@ import { SafeOutboundHttpClient } from '../../security/outboundHttp';
 import { PlatformSecretService } from '../../security/secret';
 import { PlatformAuditService } from '../platformAudit';
 import { ConnectorOutboundClient } from './connectorOutboundClient';
+import { connectorOutboundPolicyProvider } from './connectorOutboundPolicy';
 import { PlatformConnectorContractError } from './errors';
 import { type ConnectorOAuthRuntimeEnv, getConnectorOAuthRuntime } from './oauthRuntime';
 import {
@@ -474,7 +475,9 @@ export const executeManagedConnectorTool = async (params: {
     );
     if (!secretService) return stableFailure('PLATFORM_CONNECTOR_CREDENTIAL_NOT_CONFIGURED');
     const secrets = new PlatformConnectorSecretStore(params.db, secretService);
-    const outbound = new ConnectorOutboundClient(new SafeOutboundHttpClient());
+    const outbound = new ConnectorOutboundClient(
+      new SafeOutboundHttpClient({ policyProvider: connectorOutboundPolicyProvider }),
+    );
     const adapter = new PlatformConnectorRuntimeAdapter({
       assertCurrentPublished: async () => {
         const current = await getConnectorPublishedIndex(params.db!).resolveCurrent({

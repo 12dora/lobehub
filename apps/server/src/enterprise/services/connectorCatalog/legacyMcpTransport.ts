@@ -1,7 +1,10 @@
 import { MCPService } from '../../../services/mcp';
 import { SafeOutboundHttpClient } from '../../security/outboundHttp';
+import { connectorOutboundPolicyProvider } from './connectorOutboundPolicy';
 
-const safeOutbound = new SafeOutboundHttpClient();
+const safeOutbound = new SafeOutboundHttpClient({
+  policyProvider: connectorOutboundPolicyProvider,
+});
 
 const safeMcpFetch: typeof fetch = async (input, init) => {
   const request = input instanceof Request ? input : undefined;

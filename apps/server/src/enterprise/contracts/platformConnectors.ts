@@ -762,7 +762,7 @@ const assertDraftMatchesSecretSlots = (
 export const adminConnectorCreateDerivedInputSchema = z
   .object({
     id: connectorIdSchema,
-    serverRedirectUri: httpUrlSchema,
+    serverRedirectUri: httpUrlSchema.optional(),
     toolIds: z.array(connectorIdSchema).max(1000),
   })
   .strict();
@@ -782,6 +782,10 @@ export const normalizeAdminConnectorCreateInput = (
   if (tools.length !== derived.toolIds.length) {
     throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_RESOURCE_MISMATCH');
   }
+  const redirectUri =
+    command.credentialMode === 'per_user_oauth'
+      ? httpUrlSchema.parse(derived.serverRedirectUri)
+      : null;
   const common = {
     connectionTest: null,
     description: command.description ?? null,
@@ -821,7 +825,7 @@ export const normalizeAdminConnectorCreateInput = (
               command.oauthClientSecret,
               true,
             ),
-            oauthConfig: { ...command.oauthConfig, redirectUri: derived.serverRedirectUri },
+            oauthConfig: { ...command.oauthConfig, redirectUri },
             sharedSecret: emptySecretState,
           },
   );
@@ -854,7 +858,7 @@ export const normalizeAdminConnectorCreateInput = (
 export const normalizeAdminConnectorUpdateInput = (
   currentInput: z.input<typeof adminConnectorDraftSchema>,
   patchInput: z.input<typeof adminConnectorUpdateDraftInputSchema>,
-  serverRedirectUri: string,
+  serverRedirectUri: string | undefined,
   secretContext: TrustedConnectorSecretContext,
 ) => {
   const current = adminConnectorDraftSchema.parse(currentInput);
@@ -864,7 +868,8 @@ export const normalizeAdminConnectorUpdateInput = (
   }
   const targetMode = patch.credentialMode ?? current.credentialMode;
   const switchingMode = targetMode !== current.credentialMode;
-  const redirectUri = httpUrlSchema.parse(serverRedirectUri);
+  const redirectUri =
+    targetMode === 'per_user_oauth' ? httpUrlSchema.parse(serverRedirectUri) : null;
   assertConfiguredCurrentSecretsLoaded(current, secretContext);
   assertReplacementLeavesComplete(
     { oauthClientSecret: patch.oauthClientSecret, sharedSecret: patch.sharedSecret },
