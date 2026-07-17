@@ -47,8 +47,7 @@ export type ValidatedInlineSkillResource = Omit<InlineSkillResource, 'content' |
 
 const byteLength = (value: string) => new TextEncoder().encode(value).byteLength;
 
-const unicodeCaseFold = (value: string) =>
-  value.normalize('NFKC').toLowerCase().replaceAll('ß', 'ss').replaceAll('ς', 'σ');
+const asciiCaseFold = (value: string) => value.toLowerCase();
 
 const isTextMediaType = (mediaType: string) =>
   mediaType.startsWith('text/') ||
@@ -71,13 +70,14 @@ export const canonicalInlineSkillPathKey = (value: string) => {
 
   const segments = value.split('/');
   const keys = segments.map((segment) => {
-    const collisionKey = unicodeCaseFold(segment);
+    const collisionKey = asciiCaseFold(segment);
     const windowsDeviceName = collisionKey.split('.')[0];
     if (
       segment.length === 0 ||
       segment === '.' ||
       segment === '..' ||
       segment.startsWith('.') ||
+      !/^[A-Z0-9][\w. -]*$/i.test(segment) ||
       /[. ]$/.test(segment) ||
       /[<>:"|?*]/.test(segment) ||
       [...segment].some((character) => character.charCodeAt(0) < 32) ||
