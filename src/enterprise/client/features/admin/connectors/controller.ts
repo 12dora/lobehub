@@ -54,6 +54,33 @@ export interface EditableAdminConnectorDraft {
   tools: AdminConnectorToolDraft[];
 }
 
+export type ConnectorSecretEdit =
+  | { operation: 'clear'; value: '' }
+  | { operation: 'keep'; value: '' }
+  | { operation: 'replace'; value: string };
+
+export const createEmptyConnectorSecretEdit = (): ConnectorSecretEdit => ({
+  operation: 'keep',
+  value: '',
+});
+
+export const updateConnectorSecretEdit = (value: string): ConnectorSecretEdit =>
+  value ? { operation: 'replace', value } : createEmptyConnectorSecretEdit();
+
+export const clearConnectorSecretEdit = (): ConnectorSecretEdit => ({
+  operation: 'clear',
+  value: '',
+});
+
+export const changeConnectorCredentialMode = (
+  draft: EditableAdminConnectorDraft,
+  credentialMode: ConnectorCredentialMode,
+  _secret: ConnectorSecretEdit,
+): { draft: EditableAdminConnectorDraft; secret: ConnectorSecretEdit } => ({
+  draft: { ...draft, credentialMode },
+  secret: createEmptyConnectorSecretEdit(),
+});
+
 export const toEditableAdminConnectorDraft = (
   draft: AdminConnectorDraft,
 ): EditableAdminConnectorDraft => ({
@@ -189,16 +216,47 @@ export const updateConnectorToolPolicy = (
   patch: Partial<
     Pick<
       AdminConnectorToolDraft,
-      'enabled' | 'platformPolicy' | 'requiresConfirmation' | 'riskLevel'
+      'enabled' | 'platformPolicy' | 'requiresConfirmation' | 'riskLevel' | 'sort'
     >
   >,
 ): AdminConnectorToolDraft[] =>
-  tools.map((tool) => (tool.id === toolId ? { ...tool, ...patch } : tool));
+  sortConnectorTools(
+    tools.map((tool) => {
+      if (tool.id !== toolId) return tool;
+      const next = {
+        ...tool,
+        ...patch,
+        sort: Number.isInteger(patch.sort) ? patch.sort! : tool.sort,
+      };
+      return next.riskLevel === 'critical' || next.riskLevel === 'high'
+        ? { ...next, requiresConfirmation: true }
+        : next;
+    }),
+  );
+
+export const sortConnectorTools = (tools: AdminConnectorToolDraft[]): AdminConnectorToolDraft[] =>
+  [...tools].sort(
+    (left, right) =>
+      left.sort - right.sort ||
+      left.toolKey.localeCompare(right.toolKey) ||
+      left.id.localeCompare(right.id),
+  );
+
+export const normalizeConnectorTools = (
+  tools: AdminConnectorToolDraft[],
+): AdminConnectorToolDraft[] =>
+  sortConnectorTools(
+    tools.map((tool) =>
+      tool.riskLevel === 'critical' || tool.riskLevel === 'high'
+        ? { ...tool, requiresConfirmation: true }
+        : tool,
+    ),
+  );
 
 export const buildConnectorUpdatePayload = (params: {
   draft: EditableAdminConnectorDraft;
   reason: string;
-  secretValue: string;
+  secret: ConnectorSecretEdit;
   snapshot: AdminConnectorGetOutput;
 }): AdminConnectorUpdateDraftInput => {
   const common = {
@@ -212,14 +270,15 @@ export const buildConnectorUpdatePayload = (params: {
     id: params.snapshot.draft.id,
     reason: params.reason,
     sort: params.draft.sort,
-    tools: params.draft.tools,
+    tools: normalizeConnectorTools(params.draft.tools),
   };
   if (params.draft.credentialMode === 'per_user_oauth') {
     return {
       ...common,
-      oauthClientSecret: params.secretValue
-        ? { operation: 'replace', value: params.secretValue }
-        : { operation: 'keep' },
+      oauthClientSecret:
+        params.secret.operation === 'replace'
+          ? { operation: 'replace', value: params.secret.value }
+          : { operation: params.secret.operation },
       oauthConfig: {
         authorizationEndpoint: params.draft.oauthAuthorizationEndpoint.trim(),
         clientId: params.draft.oauthClientId.trim(),
@@ -233,9 +292,10 @@ export const buildConnectorUpdatePayload = (params: {
     return {
       ...common,
       oauthConfig: null,
-      sharedSecret: params.secretValue
-        ? { operation: 'replace', value: { bearerToken: params.secretValue } }
-        : { operation: 'keep' },
+      sharedSecret:
+        params.secret.operation === 'replace'
+          ? { operation: 'replace', value: { bearerToken: params.secret.value } }
+          : { operation: params.secret.operation },
     };
   }
   return { ...common, oauthConfig: null };

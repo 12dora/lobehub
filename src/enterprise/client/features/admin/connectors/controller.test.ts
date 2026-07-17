@@ -3,8 +3,13 @@ import { describe, expect, it } from 'vitest';
 import type { EditableAdminConnectorDraft } from './controller';
 import {
   buildConnectorUpdatePayload,
+  changeConnectorCredentialMode,
+  clearConnectorSecretEdit,
   deriveAdminConnectorPermissions,
+  normalizeConnectorTools,
   resolveAdminConnectorPrimaryAction,
+  sortConnectorTools,
+  updateConnectorSecretEdit,
   updateConnectorToolPolicy,
   validateConnectorRollbackTarget,
   validateEditableAdminConnectorDraft,
@@ -24,6 +29,30 @@ const draft = (): EditableAdminConnectorDraft => ({
   oauthTokenEndpoint: '',
   sort: 0,
   tools: [],
+});
+
+const sharedSnapshot = (): AdminConnectorGetOutput => ({
+  baseRevision: 7,
+  draft: {
+    connectionTest: null,
+    credentialMode: 'shared_service_account',
+    description: null,
+    displayName: 'Calendar',
+    enabled: true,
+    endpoint: 'https://calendar.example.com/mcp',
+    id: 'connector-1',
+    key: 'calendar',
+    oauthClientSecret: { configured: false, fingerprint: null, updatedAt: null },
+    oauthConfig: null,
+    revision: 7,
+    sharedSecret: { configured: true, fingerprint: 'sha256:x', updatedAt: null },
+    sort: 0,
+    status: 'draft',
+    tools: [],
+    transport: 'http',
+  },
+  draftToken: 'a'.repeat(64),
+  published: null,
 });
 
 describe('admin Connector controller', () => {
@@ -135,7 +164,7 @@ describe('admin Connector controller', () => {
       buildConnectorUpdatePayload({
         draft: value,
         reason: 'rotate credential',
-        secretValue: 'private-token',
+        secret: updateConnectorSecretEdit('private-token'),
         snapshot,
       }),
     ).toMatchObject({
@@ -144,6 +173,125 @@ describe('admin Connector controller', () => {
       id: 'connector-1',
       sharedSecret: { operation: 'replace', value: { bearerToken: 'private-token' } },
     });
+  });
+
+  it('clears the in-memory credential on both credential mode switch directions', () => {
+    const shared = draft();
+    shared.credentialMode = 'shared_service_account';
+    const oauth = changeConnectorCredentialMode(
+      shared,
+      'per_user_oauth',
+      updateConnectorSecretEdit('shared-bearer-token'),
+    );
+    expect(oauth.secret).toEqual({ operation: 'keep', value: '' });
+
+    const backToShared = changeConnectorCredentialMode(
+      oauth.draft,
+      'shared_service_account',
+      updateConnectorSecretEdit('oauth-client-secret'),
+    );
+    expect(backToShared.secret).toEqual({ operation: 'keep', value: '' });
+  });
+
+  it('emits explicit shared credential replace and clear operations', () => {
+    const value = draft();
+    value.credentialMode = 'shared_service_account';
+
+    expect(
+      buildConnectorUpdatePayload({
+        draft: value,
+        reason: 'replace',
+        secret: updateConnectorSecretEdit('shared-token'),
+        snapshot: sharedSnapshot(),
+      }),
+    ).toMatchObject({
+      sharedSecret: { operation: 'replace', value: { bearerToken: 'shared-token' } },
+    });
+    expect(
+      buildConnectorUpdatePayload({
+        draft: value,
+        reason: 'clear',
+        secret: clearConnectorSecretEdit(),
+        snapshot: sharedSnapshot(),
+      }),
+    ).toMatchObject({ sharedSecret: { operation: 'clear' } });
+  });
+
+  it('emits explicit OAuth credential replace and clear without reusing the shared secret slot', () => {
+    const value = draft();
+    value.credentialMode = 'per_user_oauth';
+    value.oauthAuthorizationEndpoint = 'https://identity.example.com/authorize';
+    value.oauthClientId = 'calendar-client';
+    value.oauthIssuer = 'https://identity.example.com';
+    value.oauthScopes = 'calendar.read';
+    value.oauthTokenEndpoint = 'https://identity.example.com/token';
+
+    expect(
+      buildConnectorUpdatePayload({
+        draft: value,
+        reason: 'replace',
+        secret: updateConnectorSecretEdit('oauth-secret'),
+        snapshot: sharedSnapshot(),
+      }),
+    ).toMatchObject({
+      oauthClientSecret: { operation: 'replace', value: 'oauth-secret' },
+    });
+    expect(
+      buildConnectorUpdatePayload({
+        draft: value,
+        reason: 'clear',
+        secret: clearConnectorSecretEdit(),
+        snapshot: sharedSnapshot(),
+      }),
+    ).toMatchObject({ oauthClientSecret: { operation: 'clear' } });
+  });
+
+  it('edits Tool risk and integer sort with stable ordering and enforced confirmation', () => {
+    const tools = [
+      {
+        description: null,
+        displayName: 'Zulu',
+        enabled: true,
+        id: 'tool-z',
+        inputSchema: {},
+        outputSchema: {},
+        platformPolicy: 'allow' as const,
+        requiresConfirmation: false,
+        riskLevel: 'low' as const,
+        sort: 2,
+        toolKey: 'zulu',
+      },
+      {
+        description: null,
+        displayName: 'Alpha',
+        enabled: true,
+        id: 'tool-a',
+        inputSchema: {},
+        outputSchema: {},
+        platformPolicy: 'allow' as const,
+        requiresConfirmation: false,
+        riskLevel: 'medium' as const,
+        sort: 1,
+        toolKey: 'alpha',
+      },
+    ];
+
+    const updated = updateConnectorToolPolicy(tools, 'tool-z', {
+      requiresConfirmation: false,
+      riskLevel: 'critical',
+      sort: 1,
+    });
+    expect(updated.map((tool) => tool.toolKey)).toEqual(['alpha', 'zulu']);
+    expect(updated[1]).toMatchObject({
+      requiresConfirmation: true,
+      riskLevel: 'critical',
+      sort: 1,
+    });
+    expect(updateConnectorToolPolicy(updated, 'tool-z', { sort: 1.5 })[1]?.sort).toBe(1);
+    expect(sortConnectorTools([...updated].reverse())).toEqual(updated);
+    expect(
+      normalizeConnectorTools([{ ...updated[1]!, requiresConfirmation: false }])[0],
+    ).toMatchObject({ requiresConfirmation: true });
   });
 
   it('accepts only a positive rollback revision different from the published head', () => {

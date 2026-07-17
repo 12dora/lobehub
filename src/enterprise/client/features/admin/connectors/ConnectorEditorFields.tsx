@@ -1,12 +1,16 @@
 'use client';
 
 import { Flexbox, Input, InputNumber, InputPassword, Text, TextArea } from '@lobehub/ui';
-import { Select, Switch } from '@lobehub/ui/base-ui';
+import { Button, Select, Switch } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import type { AdminConnectorDraftValidation, EditableAdminConnectorDraft } from './controller';
+import type {
+  AdminConnectorDraftValidation,
+  ConnectorSecretEdit,
+  EditableAdminConnectorDraft,
+} from './controller';
 
 const styles = createStaticStyles(({ css }) => ({
   card: css`
@@ -45,12 +49,24 @@ interface ConnectorEditorFieldsProps {
     value: EditableAdminConnectorDraft[Key],
   ) => void;
   onSecretChange: (secret: string) => void;
+  onSecretClear: () => void;
+  onSecretKeep: () => void;
+  secret: ConnectorSecretEdit;
   secretConfigured: boolean;
-  secretValue: string;
 }
 
 const ConnectorEditorFields = memo<ConnectorEditorFieldsProps>(
-  ({ disabled, draft, errors, onChange, onSecretChange, secretConfigured, secretValue }) => {
+  ({
+    disabled,
+    draft,
+    errors,
+    onChange,
+    onSecretChange,
+    onSecretClear,
+    onSecretKeep,
+    secret,
+    secretConfigured,
+  }) => {
     const { t } = useTranslation('admin');
     const error = (field: keyof EditableAdminConnectorDraft) =>
       errors[field] ? (
@@ -162,8 +178,8 @@ const ConnectorEditorFields = memo<ConnectorEditorFieldsProps>(
               )}
             </Text>
             <InputPassword
-              disabled={disabled}
-              value={secretValue}
+              disabled={disabled || secret.operation === 'clear'}
+              value={secret.value}
               placeholder={t(
                 secretConfigured
                   ? 'connectorCatalog.editor.secretKeepPlaceholder'
@@ -171,6 +187,25 @@ const ConnectorEditorFields = memo<ConnectorEditorFieldsProps>(
               )}
               onChange={(event) => onSecretChange(event.target.value)}
             />
+            <Flexbox horizontal align={'center'} gap={8}>
+              <Text type={'secondary'}>
+                {t(`connectorCatalog.editor.secretOperation.${secret.operation}` as never)}
+              </Text>
+              {secretConfigured ? (
+                <Button
+                  danger={secret.operation !== 'clear'}
+                  disabled={disabled}
+                  size={'small'}
+                  onClick={secret.operation === 'clear' ? onSecretKeep : onSecretClear}
+                >
+                  {t(
+                    secret.operation === 'clear'
+                      ? 'connectorCatalog.editor.secretKeepAction'
+                      : 'connectorCatalog.editor.secretClearAction',
+                  )}
+                </Button>
+              ) : null}
+            </Flexbox>
             <Text type={'secondary'}>{t('connectorCatalog.editor.secretNeverReturned')}</Text>
           </div>
         ) : null}

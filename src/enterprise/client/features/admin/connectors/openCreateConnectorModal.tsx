@@ -45,7 +45,7 @@ const styles = createStaticStyles(({ css }) => ({
   `,
 }));
 
-interface CreateConnectorState {
+export interface CreateConnectorState {
   authorizationEndpoint: string;
   clientId: string;
   credentialMode: ConnectorCredentialMode;
@@ -62,7 +62,7 @@ interface CreateConnectorState {
   tokenEndpoint: string;
 }
 
-type CreateConnectorAction =
+export type CreateConnectorAction =
   | {
       field: keyof Omit<CreateConnectorState, 'credentialMode' | 'locked'>;
       type: 'text';
@@ -71,7 +71,7 @@ type CreateConnectorAction =
   | { type: 'mode'; value: ConnectorCredentialMode }
   | { type: 'locked'; value: boolean };
 
-const initialState: CreateConnectorState = {
+export const initialCreateConnectorState: CreateConnectorState = {
   authorizationEndpoint: '',
   clientId: '',
   credentialMode: 'none',
@@ -88,13 +88,20 @@ const initialState: CreateConnectorState = {
   tokenEndpoint: '',
 };
 
-const reducer = (state: CreateConnectorState, action: CreateConnectorAction) => {
+export const reduceCreateConnectorState = (
+  state: CreateConnectorState,
+  action: CreateConnectorAction,
+): CreateConnectorState => {
   if (action.type === 'locked') return { ...state, locked: action.value };
-  if (action.type === 'mode') return { ...state, credentialMode: action.value, error: null };
+  if (action.type === 'mode') {
+    return { ...state, credentialMode: action.value, error: null, secret: '' };
+  }
   return { ...state, [action.field]: action.value, error: null };
 };
 
-const buildInput = (state: CreateConnectorState): AdminConnectorCreateDraftInput | null => {
+export const buildCreateConnectorInput = (
+  state: CreateConnectorState,
+): AdminConnectorCreateDraftInput | null => {
   const base = {
     credentialMode: state.credentialMode,
     description: state.description.trim() || null,
@@ -110,9 +117,9 @@ const buildInput = (state: CreateConnectorState): AdminConnectorCreateDraftInput
     return {
       ...base,
       credentialMode: 'shared_service_account',
-      sharedSecret: state.secret
-        ? { operation: 'replace', value: { bearerToken: state.secret } }
-        : undefined,
+      ...(state.secret
+        ? { sharedSecret: { operation: 'replace' as const, value: { bearerToken: state.secret } } }
+        : {}),
     };
   }
   if (
@@ -127,7 +134,9 @@ const buildInput = (state: CreateConnectorState): AdminConnectorCreateDraftInput
   return {
     ...base,
     credentialMode: 'per_user_oauth',
-    oauthClientSecret: state.secret ? { operation: 'replace', value: state.secret } : undefined,
+    ...(state.secret
+      ? { oauthClientSecret: { operation: 'replace' as const, value: state.secret } }
+      : {}),
     oauthConfig: {
       authorizationEndpoint: state.authorizationEndpoint.trim(),
       clientId: state.clientId.trim(),
@@ -146,13 +155,13 @@ interface CreateConnectorContentProps {
 const CreateConnectorContent = memo<CreateConnectorContentProps>(({ authMethod, onSubmit }) => {
   const { t } = useTranslation('admin');
   const { close } = useModalContext();
-  const [state, dispatch] = useReducer(reducer, initialState);
+  const [state, dispatch] = useReducer(reduceCreateConnectorState, initialCreateConnectorState);
   const text =
     (field: keyof Omit<CreateConnectorState, 'credentialMode' | 'locked'>) => (value: string) =>
       dispatch({ field, type: 'text', value });
 
   const submit = async () => {
-    const input = buildInput(state);
+    const input = buildCreateConnectorInput(state);
     if (!input) {
       text('error')(t('connectorCatalog.create.required'));
       return;
