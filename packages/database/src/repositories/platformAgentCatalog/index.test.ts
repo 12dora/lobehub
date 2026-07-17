@@ -24,6 +24,13 @@ const USER_B = 'm10-repo-user-b';
 const GLOBAL_ROLE = 'm10-repo-global-role';
 const WORKSPACE_ROLE = 'm10-repo-workspace-role';
 const WORKSPACE = 'm10-repo-workspace';
+const LEGACY_ASSIGNMENT_KEYS = [
+  'installedVersion',
+  'lastError',
+  'lastSyncedAt',
+  'materializedAgentId',
+  'userOverlay',
+];
 
 const config = {
   avatar: null,
@@ -129,12 +136,9 @@ describe('PlatformAgentCatalogRepository', () => {
       checksumPayload({ config: created[0]?.config, dependencySnapshot }),
     );
     expect((await repository.getIdentity(agent.id))?.draftSequence).toBe(1);
-    expect(await repository.getLatestExactVersion(agent.id)).toMatchObject({
-      agentId: agent.id,
-      dependencySnapshot,
-    });
     expect(await repository.getExactVersion(agent.id, created[0]!.id)).toMatchObject({
       checksum: created[0]!.checksum,
+      dependencySnapshot,
       id: created[0]!.id,
     });
     await expect(
@@ -287,9 +291,22 @@ describe('PlatformAgentCatalogRepository', () => {
       targetType: 'user',
       versionPolicy: 'pinned',
     });
+    await serverDB
+      .update(platformAgentAssignments)
+      .set({
+        installedVersion: 'legacy-poison',
+        lastError: 'legacy poison must not cross the repository boundary',
+        lastSyncedAt: new Date(),
+        materializedAgentId: 'legacy-poison-local-agent',
+        userOverlay: { secretLikeLegacyValue: 'must-not-leak' },
+      })
+      .where(eq(platformAgentAssignments.id, userAssignment.id));
 
     const inputs = await repository.listEffectiveInputs(USER_A);
     expect(inputs.map(({ targetPriority }) => targetPriority)).toEqual([3, 2, 1]);
+    for (const { assignment } of inputs) {
+      expect(Object.keys(assignment)).not.toEqual(expect.arrayContaining(LEGACY_ASSIGNMENT_KEYS));
+    }
     expect(inputs[0]).toMatchObject({
       assignment: { id: userAssignment.id },
       version: { id: version2!.id },
@@ -320,7 +337,11 @@ describe('PlatformAgentCatalogRepository', () => {
         versionPolicy: 'pinned',
       }),
     ).toMatchObject({ enabled: false, id: userAssignment.id });
-    expect(await repository.getAssignment(userAssignment.id)).toMatchObject({ enabled: false });
+    const updatedAssignment = await repository.getAssignment(userAssignment.id);
+    expect(updatedAssignment).toMatchObject({ enabled: false });
+    expect(Object.keys(updatedAssignment!)).not.toEqual(
+      expect.arrayContaining(LEGACY_ASSIGNMENT_KEYS),
+    );
     expect(await repository.deleteAssignment(userAssignment.id)).toMatchObject({
       id: userAssignment.id,
     });
