@@ -240,6 +240,8 @@ export type PlatformAgentAssignmentItem = typeof platformAgentAssignments.$infer
 export type NewPlatformAgentAssignment = typeof platformAgentAssignments.$inferInsert;
 
 export type PlatformUserAgentMaterializationStatus = 'error' | 'materialized' | 'pending';
+export type PlatformUserAgentMaterializationErrorCategory =
+  'local_agent_missing' | 'materialization_failed' | 'version_conflict';
 
 /**
  * Owner-scoped delayed materialization state. The assignment remains shared;
@@ -272,7 +274,9 @@ export const platformUserAgentMaterializations = pgTable(
       .$type<PlatformUserAgentMaterializationStatus>()
       .notNull()
       .default('pending'),
-    lastError: text('last_error'),
+    lastErrorCategory: varchar('last_error_category', {
+      length: 64,
+    }).$type<PlatformUserAgentMaterializationErrorCategory>(),
     lastSyncedAt: timestamptz('last_synced_at'),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -308,6 +312,11 @@ export const platformUserAgentMaterializations = pgTable(
       'platform_user_agent_materializations_local_status_check',
       sql`(${t.status} = 'materialized' AND ${t.materializedAgentId} IS NOT NULL)
         OR (${t.status} <> 'materialized')`,
+    ),
+    check(
+      'platform_user_agent_materializations_error_category_check',
+      sql`(${t.status} = 'error' AND ${t.lastErrorCategory} IS NOT NULL)
+        OR (${t.status} <> 'error' AND ${t.lastErrorCategory} IS NULL)`,
     ),
   ],
 );
