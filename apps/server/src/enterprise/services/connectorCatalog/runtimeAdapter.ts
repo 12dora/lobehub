@@ -319,6 +319,7 @@ export class PlatformConnectorRuntimeAdapter {
         }
         throw error;
       }
+      if (journalToken) await this.dependencies.journal.arm(journalToken);
       outboundStarted = true;
       const response = await this.dependencies.outbound.requestJson({
         body: {
@@ -377,16 +378,25 @@ export class PlatformConnectorRuntimeAdapter {
   };
 
   private cancelJournal = async (token: ConnectorRuntimeJournalToken): Promise<void> => {
-    let lastError: unknown;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
         await this.dependencies.journal.cancel(token);
         return;
       } catch (error) {
-        lastError = error;
+        if (attempt === 2) {
+          console.error('[connector-runtime] reserved journal cleanup deferred', {
+            errorClass: error instanceof Error ? error.name : 'UnknownError',
+          });
+        }
       }
     }
-    throw lastError;
+    // Preserve the stable business rejection. A best-effort retry can converge
+    // immediately; the audit worker also deletes expired `reserved` rows.
+    void this.dependencies.journal.cancel(token).catch((error) => {
+      console.error('[connector-runtime] deferred reserved journal cleanup pending', {
+        errorClass: error instanceof Error ? error.name : 'UnknownError',
+      });
+    });
   };
 
   private completeJournal = async (

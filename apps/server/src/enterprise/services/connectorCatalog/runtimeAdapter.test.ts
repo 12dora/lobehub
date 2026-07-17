@@ -135,6 +135,7 @@ const createHarness = (
     bindingLoader: vi.fn(async () => binding()),
     clock: () => new Date('2029-01-01T00:00:00Z'),
     journal: {
+      arm: vi.fn(async () => {}),
       begin: vi.fn(async () => ({
         status: 'acquired' as const,
         token: { jobId: 'journal-1', owner: 'owner-1' },
@@ -491,6 +492,31 @@ describe('PlatformConnectorRuntimeAdapter', () => {
     expect(harness.dependencies.audit.appendSharedCall).not.toHaveBeenCalledWith(
       expect.objectContaining({ outcome: 'failed' }),
     );
+  });
+
+  it('preserves archive rejection while failed cancellation converges asynchronously', async () => {
+    const harness = createHarness('shared_service_account');
+    harness.dependencies.assertCurrentPublished = vi
+      .fn<() => Promise<void>>()
+      .mockResolvedValueOnce()
+      .mockRejectedValueOnce(
+        new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_PUBLISHED'),
+      );
+    vi.mocked(harness.dependencies.journal.cancel)
+      .mockRejectedValueOnce(new Error('database unavailable'))
+      .mockRejectedValueOnce(new Error('database unavailable'))
+      .mockRejectedValueOnce(new Error('database unavailable'))
+      .mockResolvedValueOnce();
+
+    await expect(harness.adapter.execute(invocation)).rejects.toThrow(
+      'PLATFORM_CONNECTOR_NOT_PUBLISHED',
+    );
+    expect(harness.dependencies.journal.arm).not.toHaveBeenCalled();
+    expect(harness.dependencies.outbound.requestJson).not.toHaveBeenCalled();
+    expect(harness.dependencies.audit.appendSharedCall).not.toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: expect.stringMatching(/failed|unknown/) }),
+    );
+    await vi.waitFor(() => expect(harness.dependencies.journal.cancel).toHaveBeenCalledTimes(4));
   });
 });
 

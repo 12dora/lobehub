@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 
-import { and, eq } from 'drizzle-orm';
+import { and, eq, lte } from 'drizzle-orm';
 import { z } from 'zod';
 
 import { PlatformJobModel } from '@/database/models/platform/job';
@@ -59,6 +59,7 @@ export type ConnectorRuntimeJournalBegin =
   | { status: 'reserved' };
 
 export interface ConnectorRuntimeExecutionJournal {
+  arm: (token: ConnectorRuntimeJournalToken) => Promise<void>;
   begin: (params: {
     connectorId: string;
     operationId: string;
@@ -119,7 +120,7 @@ export class DatabaseConnectorRuntimeExecutionJournal implements ConnectorRuntim
         leaseUntil: new Date(now.getTime() + AUDIT_LEASE_MS),
         requestedBy: params.userId,
         startedAt: now,
-        status: 'running',
+        status: 'reserved',
         type: JOURNAL_TYPE,
       })
       .onConflictDoNothing({ target: [platformJobs.type, platformJobs.idempotencyKey] })
@@ -148,6 +149,21 @@ export class DatabaseConnectorRuntimeExecutionJournal implements ConnectorRuntim
     };
   };
 
+  arm: ConnectorRuntimeExecutionJournal['arm'] = async (token) => {
+    const [armed] = await this.db
+      .update(platformJobs)
+      .set({ status: 'running', updatedAt: new Date() })
+      .where(
+        and(
+          eq(platformJobs.id, token.jobId),
+          eq(platformJobs.leaseOwner, token.owner),
+          eq(platformJobs.status, 'reserved'),
+        ),
+      )
+      .returning({ id: platformJobs.id });
+    if (!armed) throw new Error('Connector runtime journal arm conflict');
+  };
+
   cancel: ConnectorRuntimeExecutionJournal['cancel'] = async (token) => {
     const [removed] = await this.db
       .delete(platformJobs)
@@ -155,7 +171,7 @@ export class DatabaseConnectorRuntimeExecutionJournal implements ConnectorRuntim
         and(
           eq(platformJobs.id, token.jobId),
           eq(platformJobs.leaseOwner, token.owner),
-          eq(platformJobs.status, 'running'),
+          eq(platformJobs.status, 'reserved'),
         ),
       )
       .returning({ id: platformJobs.id });
@@ -259,6 +275,19 @@ export class DatabaseConnectorRuntimeExecutionJournal implements ConnectorRuntim
   reconcileNext = async (
     delivery: (record: ConnectorRuntimeAuditRecord) => Promise<void>,
   ): Promise<boolean> => {
+    // A reserved row proves no external call began. Expired reservations are
+    // safe to delete and must never become an `unknown` audit outcome.
+    const [cleanedReservation] = await this.db
+      .delete(platformJobs)
+      .where(
+        and(
+          eq(platformJobs.type, JOURNAL_TYPE),
+          eq(platformJobs.status, 'reserved'),
+          lte(platformJobs.leaseUntil, new Date()),
+        ),
+      )
+      .returning({ id: platformJobs.id });
+    if (cleanedReservation) return true;
     const workerId = randomUUID();
     const claimed = await this.jobs.claimNext({ types: [JOURNAL_TYPE], workerId });
     return claimed ? this.deliverClaimed(claimed, workerId, delivery) : false;
