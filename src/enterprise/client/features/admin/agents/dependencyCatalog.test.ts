@@ -5,6 +5,7 @@ import {
   buildConnectorDependency,
   buildModelDependency,
   buildSkillDependency,
+  isConnectorCurrent,
   isModelCurrent,
   type ProviderPublishedDetail,
   type ProviderRevisionRef,
@@ -188,46 +189,83 @@ describe('dependencyCatalog validation against the current published catalog', (
     expect(isModelCurrent({ ...model, modelKey: 'gone' }, source)).toBe(false);
   });
 
-  it('flags skills and connectors that are no longer published', () => {
-    const skills = [{ checksum: 'a'.repeat(64), skillKey: 'writer', version: '1.0.0' }];
-    expect(staleSkillKeys(skills, undefined)).toEqual([]); // not loaded yet → no false positive
-    expect(staleSkillKeys(skills, [])).toEqual(['writer']);
-    expect(
-      staleSkillKeys(skills, [
-        {
-          checksum: 'a'.repeat(64),
-          displayName: 'W',
-          distribution: 'optional',
-          skillKey: 'writer',
-          version: '1.0.0',
-        },
-      ]),
-    ).toEqual([]);
-    // A published version/checksum change makes the pinned ref stale.
-    expect(
-      staleSkillKeys(skills, [
-        {
-          checksum: 'b'.repeat(64),
-          displayName: 'W',
-          distribution: 'optional',
-          skillKey: 'writer',
-          version: '1.0.0',
-        },
-      ]),
-    ).toEqual(['writer']);
+  const skillOption = (over: Record<string, unknown> = {}) => ({
+    checksum: 'a'.repeat(64),
+    displayName: 'W',
+    distribution: 'optional',
+    skillKey: 'writer',
+    version: '1.0.0',
+    ...over,
+  });
 
-    const connectors = [
-      {
-        allowedToolKeys: ['search'],
-        connectorId: 'c1',
-        connectorKey: 'issues',
-        publishedChecksum: 'a'.repeat(64),
-        publishedRevision: 3,
-      },
-    ];
-    expect(staleConnectorKeys(connectors, [])).toEqual(['issues']);
+  it('exact-matches skills on all contract fields and FAILS CLOSED on an unsettled catalog', () => {
+    const skills = [{ checksum: 'a'.repeat(64), skillKey: 'writer', version: '1.0.0' }];
+    // Undefined catalog cannot be verified → treated as stale (fail closed), not "no stale refs".
+    expect(staleSkillKeys(skills, undefined)).toEqual(['writer']);
+    expect(staleSkillKeys(skills, [])).toEqual(['writer']);
+    expect(staleSkillKeys(skills, [skillOption()])).toEqual([]);
+    expect(staleSkillKeys(skills, [skillOption({ checksum: 'b'.repeat(64) })])).toEqual(['writer']);
+    expect(staleSkillKeys(skills, [skillOption({ version: '1.1.0' })])).toEqual(['writer']);
+  });
+
+  const connectorRef = (over: Record<string, unknown> = {}) => ({
+    allowedToolKeys: ['search', 'create'],
+    connectorId: 'connector-1',
+    connectorKey: 'issues',
+    publishedChecksum: 'a'.repeat(64),
+    publishedRevision: 3,
+    ...over,
+  });
+
+  it('validates the COMPLETE connector tuple against the fetched detail', () => {
+    const ref = connectorRef();
+    expect(isConnectorCurrent(ref, connectorDetail)).toBe(true);
+    expect(isConnectorCurrent(ref, null)).toBe(false); // missing / unpublished
+    expect(isConnectorCurrent({ ...ref, connectorId: 'other' }, connectorDetail)).toBe(false);
+    expect(isConnectorCurrent({ ...ref, connectorKey: 'other' }, connectorDetail)).toBe(false);
+    expect(isConnectorCurrent({ ...ref, publishedChecksum: 'z'.repeat(64) }, connectorDetail)).toBe(
+      false,
+    );
+    expect(isConnectorCurrent({ ...ref, publishedRevision: 9 }, connectorDetail)).toBe(false);
+    // Order canonicalization: same allowed set in a different order is still current.
     expect(
-      staleConnectorKeys(connectors, [{ displayName: 'Issues', id: 'c1', key: 'issues' }]),
-    ).toEqual([]);
+      isConnectorCurrent({ ...ref, allowedToolKeys: ['create', 'search'] }, connectorDetail),
+    ).toBe(true);
+    // A referenced tool that was removed / denied is stale.
+    expect(isConnectorCurrent({ ...ref, allowedToolKeys: ['search'] }, connectorDetail)).toBe(
+      false,
+    ); // 'create' dropped
+    expect(
+      isConnectorCurrent(
+        { ...ref, allowedToolKeys: ['search', 'create', 'extra'] },
+        connectorDetail,
+      ),
+    ).toBe(false);
+    // A newly-denied tool (deny excluded from the allowed set) makes a ref referencing it stale.
+    const denied = {
+      ...connectorDetail,
+      tools: [
+        { platformPolicy: 'deny', toolKey: 'search' },
+        { platformPolicy: 'allow', toolKey: 'create' },
+      ],
+    };
+    expect(isConnectorCurrent(connectorRef({ allowedToolKeys: ['create'] }), denied)).toBe(true);
+    expect(isConnectorCurrent(ref, denied)).toBe(false);
+  });
+
+  it('staleConnectorKeys FAILS CLOSED on an unsettled details map and flags exact mismatches', () => {
+    const connectors = [connectorRef()];
+    // Details not loaded → stale (fail closed).
+    expect(staleConnectorKeys(connectors, undefined)).toEqual(['issues']);
+    // Referenced connector unpublished/missing → stale.
+    expect(staleConnectorKeys(connectors, { 'connector-1': null })).toEqual(['issues']);
+    // Exact tuple match → current.
+    expect(staleConnectorKeys(connectors, { 'connector-1': connectorDetail })).toEqual([]);
+    // Revision drift → stale.
+    expect(
+      staleConnectorKeys(connectors, {
+        'connector-1': { ...connectorDetail, publishedRevision: 4 },
+      }),
+    ).toEqual(['issues']);
   });
 });

@@ -105,3 +105,43 @@ describe('assignment preview invalidation (B6)', () => {
     }).toEqual(previewAssignmentArg);
   });
 });
+
+describe('assignment write lock (refresh-required)', () => {
+  beforeEach(() => {
+    mocks.openReasonModal.mockReset();
+    mocks.previewAssignment.mockReset();
+  });
+
+  const lockedLock: RefreshLock = {
+    isLocked: () => true,
+    refreshFailed: true,
+    retryRefresh: vi.fn(),
+    syncAfterCommit: vi.fn(),
+  };
+
+  it('does not open a submit modal while the refresh lock is engaged', () => {
+    const { result } = renderHook(() => useAssignmentEditor(snapshot, null, lockedLock));
+    act(() => result.current.submit()); // global default is a valid draft
+    expect(mocks.openReasonModal).not.toHaveBeenCalled();
+  });
+
+  it('the re-enabled submit uses the NEW agent CAS after the surface refreshes', () => {
+    const { result, rerender } = renderHook(
+      (current: AdminAgentDetailOutput) => useAssignmentEditor(current, null, lock),
+      { initialProps: snapshot },
+    );
+    act(() => result.current.submit());
+    expect(mocks.openReasonModal.mock.calls.at(-1)![0].buildPayload('r').expectedRevision).toBe(4);
+
+    const advanced = {
+      ...snapshot,
+      draftToken: 'f'.repeat(64),
+      identity: { ...snapshot.identity, revision: 5 },
+    } as AdminAgentDetailOutput;
+    rerender(advanced);
+    act(() => result.current.submit());
+    const built = mocks.openReasonModal.mock.calls.at(-1)![0].buildPayload('r2');
+    expect(built.expectedRevision).toBe(5);
+    expect(built.expectedDraftToken).toBe('f'.repeat(64));
+  });
+});
