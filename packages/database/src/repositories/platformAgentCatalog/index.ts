@@ -711,6 +711,58 @@ export class PlatformAgentCatalogRepository {
     return row;
   };
 
+  /**
+   * Owner-scoped set of platform Agent ids the given user has hidden. Strictly filtered by
+   * the trusted `userId`, so one user's visibility choices can never widen another's read.
+   */
+  listHiddenPlatformAgentIds = async (userId: string): Promise<Set<string>> => {
+    const rows = await this.db
+      .select({ platformAgentId: platformUserAgentMaterializations.platformAgentId })
+      .from(platformUserAgentMaterializations)
+      .where(
+        and(
+          eq(platformUserAgentMaterializations.userId, userId),
+          eq(platformUserAgentMaterializations.hidden, true),
+        ),
+      );
+    return new Set(rows.map((row) => row.platformAgentId));
+  };
+
+  /**
+   * Owner-scoped write of the per-user hidden flag. The row lives in the same
+   * materialization store (per-user visibility) and joins the referenceable-Agent protocol,
+   * so hiding an archived Agent is rejected. Returns false when the Agent is not referenceable.
+   */
+  setMaterializationHidden = async (params: {
+    hidden: boolean;
+    platformAgentId: string;
+    platformAgentVersionChecksum: string;
+    platformAgentVersionId: string;
+    userId: string;
+  }): Promise<boolean> =>
+    inTransaction(this.db, async (tx) => {
+      const agent = await this.lockReferenceableAgent(tx, params.platformAgentId);
+      if (!agent) return false;
+      await tx
+        .insert(platformUserAgentMaterializations)
+        .values({
+          hidden: params.hidden,
+          platformAgentId: params.platformAgentId,
+          platformAgentVersionChecksum: params.platformAgentVersionChecksum,
+          platformAgentVersionId: params.platformAgentVersionId,
+          status: 'pending',
+          userId: params.userId,
+        })
+        .onConflictDoUpdate({
+          set: { hidden: params.hidden, updatedAt: new Date() },
+          target: [
+            platformUserAgentMaterializations.userId,
+            platformUserAgentMaterializations.platformAgentId,
+          ],
+        });
+      return true;
+    });
+
   upsertMaterialization = async (params: {
     expectedCurrent?: {
       checksum: string;
