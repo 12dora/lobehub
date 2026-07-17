@@ -1,4 +1,12 @@
 export default {
+  'platformAgents.managed.description':
+    'Your organization manages this Agent configuration. Managed fields are read only.',
+  'platformAgents.source.organization': 'Organization provided',
+  'platformAgents.visibility.hidden': 'Hidden from your Agent list',
+  'platformAgents.visibility.hide': 'Hide Agent',
+  'platformAgents.visibility.locked': 'Required by your organization and cannot be hidden',
+  'platformAgents.visibility.show': 'Show Agent',
+  'platformAgents.visibility.visible': 'Visible in your Agent list',
   '_cloud.officialProvider': '{{name}} Official Model Service',
   'about.title': 'About',
   'agentImport.action': 'Copy to Workspace...',

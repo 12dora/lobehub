@@ -11,7 +11,46 @@ import {
   buildAdminAgentGetKey,
   buildAdminAgentListKey,
 } from './swrKeys';
-import type { AdminAgentListInput, AdminAgentsClient } from './types';
+import type { AdminAgentDetailOutput, AdminAgentListInput, AdminAgentsClient } from './types';
+
+interface CursorPage<T> {
+  items: T[];
+  nextCursor: string | null;
+}
+
+const collectPages = async <T>(fetchPage: (cursor?: string) => Promise<CursorPage<T>>) => {
+  const items: T[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await fetchPage(cursor);
+    items.push(...page.items);
+    cursor = page.nextCursor ?? undefined;
+  } while (cursor);
+  return items;
+};
+
+export const fetchAllAdminAgents = async (
+  input: Omit<AdminAgentListInput, 'cursor' | 'limit'>,
+  client: AdminAgentsClient,
+) => collectPages((cursor) => client.list({ ...input, cursor, limit: 100 }));
+
+export const fetchAdminAgentDetail = async (
+  id: string,
+  client: AdminAgentsClient,
+): Promise<AdminAgentDetailOutput> => {
+  const [detail, assignments, rollouts, versions] = await Promise.all([
+    client.get({ id }),
+    collectPages((cursor) => client.listAssignments({ agentId: id, cursor, limit: 100 })),
+    // Rollouts have no core router yet (PR-052). Skip the read entirely when the adapter
+    // reports the capability off, rather than calling a mock/absent endpoint.
+    client.capabilities.rollouts
+      ? collectPages((cursor) => client.listRollouts({ agentId: id, cursor, limit: 100 }))
+      : Promise.resolve([] as AdminAgentDetailOutput['rollouts']),
+    collectPages((cursor) => client.listVersions({ agentId: id, cursor, limit: 100 })),
+  ]);
+
+  return { ...detail, assignments, rollouts, versions };
+};
 
 export const useFetchAdminAgents = (
   input: AdminAgentListInput,
@@ -27,7 +66,7 @@ export const useFetchAdminAgent = (
   enabled: boolean,
   client: AdminAgentsClient = adminAgentsService,
 ) =>
-  useClientDataSWR(buildAdminAgentGetKey(id, enabled), () => client.get({ id: id! }), {
+  useClientDataSWR(buildAdminAgentGetKey(id, enabled), () => fetchAdminAgentDetail(id!, client), {
     revalidateOnFocus: false,
   });
 

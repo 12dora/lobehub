@@ -11,3 +11,15 @@ export const deriveAdminAgentPermissions = (permissions: readonly string[]) => {
     canUpdate: granted.has(PLATFORM_PERMISSIONS.AGENT_UPDATE),
   };
 };
+
+export const deriveAdminAgentActionAvailability = (params: {
+  dirty: boolean;
+  hasCurrentVersion: boolean;
+  permissions: ReturnType<typeof deriveAdminAgentPermissions>;
+}) => ({
+  canArchiveNow: params.permissions.canDelete && !params.dirty,
+  canAssign: params.permissions.canAssign,
+  canPublishNow: params.permissions.canPublish && params.hasCurrentVersion && !params.dirty,
+  canRollbackNow: params.permissions.canPublish && !params.dirty,
+  canSaveVersion: params.permissions.canUpdate,
+});
