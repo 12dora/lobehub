@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { eq } from 'drizzle-orm';
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
 import { PlatformRevisionConflictError } from '@/database/models/platform';
@@ -11,7 +11,6 @@ import type { ConnectorFailureAuditWriter } from './catalogAudit';
 import {
   cleanupM09ServiceData,
   connectorToolFixture,
-  ensurePendingM09ServiceSchema,
   MemoryConnectorSecretStore,
 } from './catalogTestUtils';
 import type { ConnectorCatalogLifecycle } from './catalogTypes';
@@ -20,7 +19,6 @@ import { ConnectorCatalogDraftService } from './draftService';
 const db: LobeChatDatabase = await getTestDB();
 const redirectUri = 'https://aihub.example.test/oauth/callback';
 
-beforeAll(() => ensurePendingM09ServiceSchema(db));
 beforeEach(() => cleanupM09ServiceData(db));
 afterEach(async () => {
   vi.restoreAllMocks();

@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { and, eq, inArray, or, sql } from 'drizzle-orm';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { getTestDB } from '../../core/getTestDB';
 import {
@@ -29,194 +29,6 @@ const catalog = new PlatformConnectorCatalogRepository(serverDB);
 
 const connectorPrefix = 'm09-test-';
 const userIds = ['m09-user-a', 'm09-user-b', 'm09-user-c', 'm09-user-d'];
-
-/**
- * Temporary compatibility fixture while M08 owns the next migration sequence.
- * Remove this block when the coordinated M08 + M09 migration is generated.
- */
-const ensurePendingM09Schema = async () => {
-  const statements = [
-    `ALTER TABLE "platform_connectors" ALTER COLUMN "name" DROP NOT NULL`,
-    `ALTER TABLE "platform_connectors" ADD COLUMN IF NOT EXISTS "display_name" varchar(200)`,
-    `ALTER TABLE "platform_connectors" ADD COLUMN IF NOT EXISTS "endpoint" text`,
-    `ALTER TABLE "platform_connectors" ADD COLUMN IF NOT EXISTS "transport" varchar(16) DEFAULT 'http'`,
-    `ALTER TABLE "platform_connectors" ADD COLUMN IF NOT EXISTS "oauth_config" jsonb`,
-    `ALTER TABLE "platform_connectors" ADD COLUMN IF NOT EXISTS "shared_secret_ref" text`,
-    `ALTER TABLE "platform_connectors" ADD COLUMN IF NOT EXISTS "shared_secret_fingerprint" varchar(256)`,
-    `ALTER TABLE "platform_connectors" ADD COLUMN IF NOT EXISTS "shared_secret_updated_at" timestamptz`,
-    `ALTER TABLE "platform_connectors" ADD COLUMN IF NOT EXISTS "oauth_client_secret_ref" text`,
-    `ALTER TABLE "platform_connectors" ADD COLUMN IF NOT EXISTS "oauth_client_secret_fingerprint" varchar(256)`,
-    `ALTER TABLE "platform_connectors" ADD COLUMN IF NOT EXISTS "oauth_client_secret_updated_at" timestamptz`,
-    `ALTER TABLE "platform_connectors" ADD COLUMN IF NOT EXISTS "sort" integer DEFAULT 0 NOT NULL`,
-    `ALTER TABLE "platform_connectors" ADD COLUMN IF NOT EXISTS "published_resource_type" varchar(64) DEFAULT 'connector' NOT NULL`,
-    `ALTER TABLE "platform_connectors" ADD COLUMN IF NOT EXISTS "published_revision" integer`,
-    `ALTER TABLE "platform_connectors" ADD COLUMN IF NOT EXISTS "published_checksum" varchar(64)`,
-    `ALTER TABLE "platform_connectors" ADD COLUMN IF NOT EXISTS "published_at" timestamptz`,
-    `ALTER TABLE "platform_connector_tools" ADD COLUMN IF NOT EXISTS "display_name" varchar(200)`,
-    `ALTER TABLE "platform_connector_tools" ADD COLUMN IF NOT EXISTS "description" text`,
-    `ALTER TABLE "platform_connector_tools" ADD COLUMN IF NOT EXISTS "input_schema" jsonb DEFAULT '{}'::jsonb NOT NULL`,
-    `ALTER TABLE "platform_connector_tools" ADD COLUMN IF NOT EXISTS "output_schema" jsonb DEFAULT '{}'::jsonb NOT NULL`,
-    `ALTER TABLE "platform_connector_tools" ADD COLUMN IF NOT EXISTS "enabled" boolean DEFAULT true NOT NULL`,
-    `ALTER TABLE "platform_connector_tools" ADD COLUMN IF NOT EXISTS "platform_policy" varchar(16) DEFAULT 'deny' NOT NULL`,
-    `ALTER TABLE "platform_connector_tools" ADD COLUMN IF NOT EXISTS "risk_level" varchar(16) DEFAULT 'high' NOT NULL`,
-    `ALTER TABLE "platform_connector_tools" ADD COLUMN IF NOT EXISTS "requires_confirmation" boolean DEFAULT true NOT NULL`,
-    `ALTER TABLE "platform_connector_tools" ADD COLUMN IF NOT EXISTS "sort" integer DEFAULT 0 NOT NULL`,
-    `ALTER TABLE "platform_user_connector_bindings" ADD COLUMN IF NOT EXISTS "published_revision" integer`,
-    `ALTER TABLE "platform_user_connector_bindings" ADD COLUMN IF NOT EXISTS "revision_resource_type" varchar(64) DEFAULT 'connector' NOT NULL`,
-    `ALTER TABLE "platform_user_connector_bindings" ADD COLUMN IF NOT EXISTS "binding_status" varchar(32) DEFAULT 'disconnected' NOT NULL`,
-    `ALTER TABLE "platform_user_connector_bindings" ADD COLUMN IF NOT EXISTS "oauth_token_ref" text`,
-    `ALTER TABLE "platform_user_connector_bindings" ADD COLUMN IF NOT EXISTS "token_fingerprint" varchar(256)`,
-    `ALTER TABLE "platform_user_connector_bindings" ADD COLUMN IF NOT EXISTS "scopes" varchar(200)[] DEFAULT ARRAY[]::varchar[] NOT NULL`,
-    `ALTER TABLE "platform_user_connector_bindings" ADD COLUMN IF NOT EXISTS "revoked_at" timestamptz`,
-    `ALTER TABLE "platform_user_connector_bindings" ADD COLUMN IF NOT EXISTS "last_error_category" varchar(32)`,
-    `ALTER TABLE "platform_user_connector_bindings" ADD COLUMN IF NOT EXISTS "revision" integer DEFAULT 0 NOT NULL`,
-    `CREATE TABLE IF NOT EXISTS "platform_connector_oauth_states" (
-      "id" text PRIMARY KEY NOT NULL,
-      "state_id" varchar(32) NOT NULL UNIQUE,
-      "state_hash" varchar(64) NOT NULL UNIQUE,
-      "binding_id" text NOT NULL,
-      "user_id" text NOT NULL,
-      "connector_id" text NOT NULL,
-      "revision_resource_type" varchar(64) DEFAULT 'connector' NOT NULL,
-      "published_revision" integer NOT NULL,
-      "pkce_verifier_ref" text NOT NULL,
-      "redirect_uri" text NOT NULL,
-      "return_to" text,
-      "scopes" varchar(200)[] DEFAULT ARRAY[]::varchar[] NOT NULL,
-      "expires_at" timestamptz NOT NULL,
-      "consumed_at" timestamptz,
-      "revoked_at" timestamptz,
-      "created_at" timestamptz DEFAULT now() NOT NULL
-    )`,
-    `CREATE TABLE IF NOT EXISTS "platform_connector_secrets" (
-      "id" text PRIMARY KEY NOT NULL,
-      "connector_id" text NOT NULL,
-      "slot" varchar(32) NOT NULL,
-      "fingerprint" varchar(64) NOT NULL,
-      "ref" text NOT NULL UNIQUE,
-      "ciphertext" text NOT NULL,
-      "key_id" varchar(256) NOT NULL,
-      "revision" integer DEFAULT 1 NOT NULL,
-      "revoked_at" timestamptz,
-      "created_at" timestamptz DEFAULT now() NOT NULL
-    )`,
-    `CREATE UNIQUE INDEX IF NOT EXISTS "m09_test_revision_provenance_unique"
-      ON "platform_resource_revisions" ("resource_type", "resource_id", "revision", "checksum")`,
-    `ALTER TABLE "platform_connector_oauth_states" DROP CONSTRAINT IF EXISTS "m09_test_oauth_owner_fk"`,
-    `DROP INDEX IF EXISTS "m09_test_binding_owner_unique"`,
-    `CREATE UNIQUE INDEX IF NOT EXISTS "m09_test_binding_owner_unique"
-      ON "platform_user_connector_bindings" ("id", "user_id", "connector_id")`,
-  ];
-
-  for (const statement of statements) await serverDB.execute(sql.raw(statement));
-};
-
-const ensurePendingM09Constraints = async () => {
-  const statements = [
-    `ALTER TABLE "platform_connectors" DROP CONSTRAINT IF EXISTS "m09_test_connector_provenance_fk"`,
-    `ALTER TABLE "platform_connectors" ADD CONSTRAINT "m09_test_connector_provenance_fk"
-      FOREIGN KEY ("published_resource_type", "id", "published_revision", "published_checksum")
-      REFERENCES "platform_resource_revisions" ("resource_type", "resource_id", "revision", "checksum")
-      ON DELETE RESTRICT`,
-    `ALTER TABLE "platform_connectors" DROP CONSTRAINT IF EXISTS "m09_test_connector_revision_check"`,
-    `ALTER TABLE "platform_connectors" ADD CONSTRAINT "m09_test_connector_revision_check"
-      CHECK ("revision" >= 0 AND "published_resource_type" = 'connector')`,
-    `ALTER TABLE "platform_connectors" DROP CONSTRAINT IF EXISTS "m09_test_connector_pointer_check"`,
-    `ALTER TABLE "platform_connectors" ADD CONSTRAINT "m09_test_connector_pointer_check" CHECK ((
-      ("published_revision" IS NULL AND "published_checksum" IS NULL AND "published_at" IS NULL)
-      OR ("published_revision" > 0 AND "published_checksum" ~ '^[a-f0-9]{64}$' AND "published_at" IS NOT NULL)
-    ) AND ("status" <> 'published' OR "published_revision" IS NOT NULL))`,
-    `ALTER TABLE "platform_connectors" DROP CONSTRAINT IF EXISTS "m09_test_connector_credential_check"`,
-    `ALTER TABLE "platform_connectors" ADD CONSTRAINT "m09_test_connector_credential_check" CHECK (
-      ("credential_mode" = 'none'
-        AND "shared_secret_ref" IS NULL AND "shared_secret_fingerprint" IS NULL AND "shared_secret_updated_at" IS NULL
-        AND "oauth_client_secret_ref" IS NULL AND "oauth_client_secret_fingerprint" IS NULL
-        AND "oauth_client_secret_updated_at" IS NULL AND "oauth_config" IS NULL)
-      OR ("credential_mode" = 'shared_service_account'
-        AND "oauth_client_secret_ref" IS NULL AND "oauth_client_secret_fingerprint" IS NULL
-        AND "oauth_client_secret_updated_at" IS NULL AND "oauth_config" IS NULL
-        AND (("shared_secret_ref" IS NULL AND "shared_secret_fingerprint" IS NULL AND "shared_secret_updated_at" IS NULL)
-          OR ("shared_secret_ref" IS NOT NULL AND "shared_secret_fingerprint" IS NOT NULL
-            AND "shared_secret_updated_at" IS NOT NULL)))
-      OR ("credential_mode" = 'per_user_oauth'
-        AND "shared_secret_ref" IS NULL AND "shared_secret_fingerprint" IS NULL AND "shared_secret_updated_at" IS NULL
-        AND "oauth_config" IS NOT NULL
-        AND (("oauth_client_secret_ref" IS NULL AND "oauth_client_secret_fingerprint" IS NULL
-            AND "oauth_client_secret_updated_at" IS NULL)
-          OR ("oauth_client_secret_ref" IS NOT NULL AND "oauth_client_secret_fingerprint" IS NOT NULL
-            AND "oauth_client_secret_updated_at" IS NOT NULL)))
-    )`,
-    `ALTER TABLE "platform_connectors" DROP CONSTRAINT IF EXISTS "m09_test_connector_oauth_config_check"`,
-    `ALTER TABLE "platform_connectors" ADD CONSTRAINT "m09_test_connector_oauth_config_check" CHECK (
-      "oauth_config" IS NULL OR (jsonb_typeof("oauth_config") = 'object'
-        AND octet_length("oauth_config"::text) <= 16384
-        AND "oauth_config"::text !~* '"(client_?secret|secret|access_?token|refresh_?token|token|password|authorization)"[[:space:]]*:')
-    )`,
-    `ALTER TABLE "platform_connector_tools" DROP CONSTRAINT IF EXISTS "m09_test_tool_schema_check"`,
-    `ALTER TABLE "platform_connector_tools" ADD CONSTRAINT "m09_test_tool_schema_check" CHECK (
-      jsonb_typeof("input_schema") = 'object' AND jsonb_typeof("output_schema") = 'object'
-      AND octet_length("input_schema"::text) <= 65536 AND octet_length("output_schema"::text) <= 65536
-    )`,
-    `ALTER TABLE "platform_connector_tools" DROP CONSTRAINT IF EXISTS "m09_test_tool_confirmation_check"`,
-    `ALTER TABLE "platform_connector_tools" ADD CONSTRAINT "m09_test_tool_confirmation_check"
-      CHECK ("risk_level" NOT IN ('high', 'critical') OR "requires_confirmation" = true)`,
-    `ALTER TABLE "platform_user_connector_bindings" DROP CONSTRAINT IF EXISTS "m09_test_binding_revision_check"`,
-    `ALTER TABLE "platform_user_connector_bindings" ADD CONSTRAINT "m09_test_binding_revision_check"
-      CHECK ("published_revision" > 0 AND "revision" >= 0 AND "revision_resource_type" = 'connector')`,
-    `ALTER TABLE "platform_user_connector_bindings" DROP CONSTRAINT IF EXISTS "m09_test_binding_revision_fk"`,
-    `ALTER TABLE "platform_user_connector_bindings" ADD CONSTRAINT "m09_test_binding_revision_fk"
-      FOREIGN KEY ("revision_resource_type", "connector_id", "published_revision")
-      REFERENCES "platform_resource_revisions" ("resource_type", "resource_id", "revision")
-      ON DELETE RESTRICT`,
-    `ALTER TABLE "platform_user_connector_bindings" DROP CONSTRAINT IF EXISTS "m09_test_binding_token_pair_check"`,
-    `ALTER TABLE "platform_user_connector_bindings" ADD CONSTRAINT "m09_test_binding_token_pair_check" CHECK (
-      ("oauth_token_ref" IS NULL AND "token_fingerprint" IS NULL)
-      OR ("oauth_token_ref" IS NOT NULL AND "token_fingerprint" IS NOT NULL)
-    )`,
-    `ALTER TABLE "platform_user_connector_bindings" DROP CONSTRAINT IF EXISTS "m09_test_binding_state_check"`,
-    `ALTER TABLE "platform_user_connector_bindings" ADD CONSTRAINT "m09_test_binding_state_check" CHECK (
-      ("binding_status" = 'connected' AND "oauth_token_ref" IS NOT NULL AND "token_fingerprint" IS NOT NULL
-        AND "connected_at" IS NOT NULL AND "revoked_at" IS NULL)
-      OR ("binding_status" = 'revoked' AND "oauth_token_ref" IS NULL AND "token_fingerprint" IS NULL
-        AND cardinality("scopes") = 0 AND "revoked_at" IS NOT NULL)
-      OR ("binding_status" IN ('disconnected', 'pending') AND "oauth_token_ref" IS NULL
-        AND "token_fingerprint" IS NULL AND cardinality("scopes") = 0 AND "revoked_at" IS NULL)
-      OR ("binding_status" IN ('expired', 'error') AND "revoked_at" IS NULL)
-    )`,
-    `ALTER TABLE "platform_user_connector_bindings" DROP CONSTRAINT IF EXISTS "m09_test_binding_revoked_check"`,
-    `ALTER TABLE "platform_user_connector_bindings" ADD CONSTRAINT "m09_test_binding_revoked_check" CHECK (
-      ("binding_status" = 'revoked' AND "revoked_at" IS NOT NULL)
-      OR ("binding_status" <> 'revoked' AND "revoked_at" IS NULL)
-    )`,
-    `ALTER TABLE "platform_connector_oauth_states" DROP CONSTRAINT IF EXISTS "m09_test_oauth_owner_fk"`,
-    `ALTER TABLE "platform_connector_oauth_states" ADD CONSTRAINT "m09_test_oauth_owner_fk"
-      FOREIGN KEY ("binding_id", "user_id", "connector_id")
-      REFERENCES "platform_user_connector_bindings" ("id", "user_id", "connector_id")
-      ON DELETE RESTRICT`,
-    `ALTER TABLE "platform_connector_oauth_states" DROP CONSTRAINT IF EXISTS "m09_test_oauth_revision_fk"`,
-    `ALTER TABLE "platform_connector_oauth_states" ADD CONSTRAINT "m09_test_oauth_revision_fk"
-      FOREIGN KEY ("revision_resource_type", "connector_id", "published_revision")
-      REFERENCES "platform_resource_revisions" ("resource_type", "resource_id", "revision")
-      ON DELETE RESTRICT`,
-    `ALTER TABLE "platform_connector_oauth_states" DROP CONSTRAINT IF EXISTS "m09_test_oauth_revision_check"`,
-    `ALTER TABLE "platform_connector_oauth_states" ADD CONSTRAINT "m09_test_oauth_revision_check"
-      CHECK ("published_revision" > 0 AND "revision_resource_type" = 'connector')`,
-    `ALTER TABLE "platform_connector_oauth_states" DROP CONSTRAINT IF EXISTS "m09_test_oauth_terminal_check"`,
-    `ALTER TABLE "platform_connector_oauth_states" ADD CONSTRAINT "m09_test_oauth_terminal_check"
-      CHECK ("consumed_at" IS NULL OR "revoked_at" IS NULL)`,
-    `ALTER TABLE "platform_connector_oauth_states" DROP CONSTRAINT IF EXISTS "m09_test_oauth_pkce_check"`,
-    `ALTER TABLE "platform_connector_oauth_states" ADD CONSTRAINT "m09_test_oauth_pkce_check"
-      CHECK ("pkce_verifier_ref" LIKE 'vault://%' OR "pkce_verifier_ref" LIKE 'kms://%')`,
-    `ALTER TABLE "platform_connector_oauth_states" DROP CONSTRAINT IF EXISTS "m09_test_oauth_hash_check"`,
-    `ALTER TABLE "platform_connector_oauth_states" ADD CONSTRAINT "m09_test_oauth_hash_check"
-      CHECK ("state_hash" ~ '^[a-f0-9]{64}$')`,
-    `ALTER TABLE "platform_connector_oauth_states" DROP CONSTRAINT IF EXISTS "m09_test_oauth_ttl_check"`,
-    `ALTER TABLE "platform_connector_oauth_states" ADD CONSTRAINT "m09_test_oauth_ttl_check"
-      CHECK ("expires_at" > "created_at" AND "expires_at" <= "created_at" + interval '10 minutes')`,
-  ];
-
-  for (const statement of statements) await serverDB.execute(sql.raw(statement));
-};
 
 const cleanup = async () => {
   await serverDB
@@ -344,11 +156,6 @@ const createPublishedOAuthConnector = async (suffix: string) => {
   return connector;
 };
 
-beforeAll(async () => {
-  await ensurePendingM09Schema();
-  await cleanup();
-  await ensurePendingM09Constraints();
-});
 beforeEach(async () => {
   await cleanup();
   await serverDB.insert(users).values(userIds.map((id) => ({ id })));
@@ -712,8 +519,17 @@ describe('PlatformConnectorCatalogRepository', () => {
         endpoint: 'https://connector.example.test/mcp',
         id: `${connectorPrefix}page-${String(index).padStart(3, '0')}`,
         legacyName: `Page ${index}`,
+        migrationRequired: false,
       })),
     );
+    await serverDB.insert(platformConnectors).values({
+      connectorKey: `${connectorPrefix}legacy-isolated`,
+      credentialMode: 'none',
+      displayName: 'Legacy isolated',
+      id: `${connectorPrefix}legacy-isolated`,
+      legacyName: 'Legacy isolated',
+      migrationRequired: true,
+    });
 
     const first = await catalog.listConnectors({ limit: 10_000 });
     expect(first.items).toHaveLength(100);
@@ -724,6 +540,9 @@ describe('PlatformConnectorCatalogRepository', () => {
     const second = await catalog.listConnectors({ cursor: first.nextCursor!, limit: 100 });
     expect(second.items.map((item) => item.id)).toEqual([`${connectorPrefix}page-100`]);
     expect(second.nextCursor).toBeNull();
+    await expect(
+      catalog.getConnectorByKey(`${connectorPrefix}legacy-isolated`),
+    ).resolves.toBeUndefined();
   });
 
   it('replaces tools with deterministic pagination and enforces the hard bound', async () => {

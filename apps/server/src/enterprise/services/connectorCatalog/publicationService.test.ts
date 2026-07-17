@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { eq } from 'drizzle-orm';
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
 import { checksumPayload, PlatformRevisionConflictError } from '@/database/models/platform';
@@ -17,7 +17,6 @@ import { ConnectorCatalogReadService } from './catalogSnapshot';
 import {
   cleanupM09ServiceData,
   connectorToolFixture,
-  ensurePendingM09ServiceSchema,
   MemoryConnectorSecretStore,
 } from './catalogTestUtils';
 import type { ConnectorCatalogLifecycle, ConnectorCatalogSecretStore } from './catalogTypes';
@@ -28,7 +27,6 @@ import { ConnectorCatalogPublicationService } from './publicationService';
 
 const db: LobeChatDatabase = await getTestDB();
 
-beforeAll(() => ensurePendingM09ServiceSchema(db));
 beforeEach(() => cleanupM09ServiceData(db));
 afterEach(() => cleanupM09ServiceData(db));
 
