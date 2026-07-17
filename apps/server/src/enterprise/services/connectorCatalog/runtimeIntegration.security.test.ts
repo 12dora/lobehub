@@ -9,6 +9,7 @@ import {
   buildManagedConnectorManifests,
   createConnectorApprovalReceipt,
   matchesConnectorApprovalReceipt,
+  matchesConnectorDependencySelection,
 } from './runtimeIntegration';
 
 const mocks = vi.hoisted(() => ({
@@ -116,6 +117,21 @@ describe('managed Connector operation integration security', () => {
       .mockImplementation(async (_id, revision) => runtime(revision));
   });
 
+  it('rejects a client-selected published connector absent from the persisted Agent allowlist', async () => {
+    const result = await buildManagedConnectorManifests({
+      agentId: 'agent-1',
+      connectorKeys: ['catalog'],
+      db,
+      env,
+      operationId: 'operation-injected',
+      serverAllowedConnectorKeys: [],
+      userId: 'user-1',
+    });
+
+    expect(result.manifests).toEqual([]);
+    expect(mocks.getConnectorByKey).not.toHaveBeenCalled();
+  });
+
   it('restores the exact v1 proof after approval even after current publish moves to v2', async () => {
     const first = await buildManagedConnectorManifests({
       agentId: 'agent-1',
@@ -123,6 +139,7 @@ describe('managed Connector operation integration security', () => {
       db,
       env,
       operationId: 'operation-v1',
+      serverAllowedConnectorKeys: ['catalog'],
       userId: 'user-1',
     });
     const manifest = first.manifests[0]!;
@@ -147,6 +164,7 @@ describe('managed Connector operation integration security', () => {
       db,
       env,
       operationId: 'operation-resume',
+      serverAllowedConnectorKeys: ['catalog'],
       userId: 'user-1',
     });
 
@@ -156,6 +174,21 @@ describe('managed Connector operation integration security', () => {
     });
     expect(resumed.manifests[0]?.meta.title).toBe('Catalog v1');
     const resumedProof = resumed.manifests[0]!.platformConnectorProof!;
+    const resumedSelection = resumed.manifests[0]!.platformConnectorAgentPolicy.selections[0];
+    expect(
+      matchesConnectorDependencySelection({
+        apiName: 'search',
+        proof: resumedProof,
+        selection: resumedSelection,
+      }),
+    ).toBe(true);
+    expect(
+      matchesConnectorDependencySelection({
+        apiName: 'client-injected-tool',
+        proof: resumedProof,
+        selection: resumedSelection,
+      }),
+    ).toBe(false);
     expect(
       matchesConnectorApprovalReceipt({
         apiName: 'search',
@@ -187,6 +220,7 @@ describe('managed Connector operation integration security', () => {
       db,
       env,
       operationId: 'operation-v1',
+      serverAllowedConnectorKeys: ['catalog'],
       userId: 'user-1',
     });
     const receipt = createConnectorApprovalReceipt({
@@ -209,6 +243,7 @@ describe('managed Connector operation integration security', () => {
       db,
       env,
       operationId: 'operation-resume',
+      serverAllowedConnectorKeys: ['catalog'],
       userId: 'user-1',
     });
 
@@ -224,6 +259,7 @@ describe('managed Connector operation integration security', () => {
       db: {} as LobeChatDatabase,
       env,
       operationId: 'operation-2',
+      serverAllowedConnectorKeys: ['catalog'],
       userId: 'user-1',
     });
 

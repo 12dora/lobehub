@@ -15,17 +15,45 @@ const baseProof = {
   publishedRevision: 4,
   toolPolicyFingerprint: 'b'.repeat(64),
 };
+const selection = {
+  allowedToolKeys: ['search'],
+  connectorId: baseProof.connectorId,
+  connectorKey: baseProof.connectorKey,
+  publishedChecksum: baseProof.publishedChecksum,
+  publishedRevision: baseProof.publishedRevision,
+};
 
 describe('ConnectorOperationProofSigner', () => {
+  it('fingerprints exact dependency revisions and tool allowlists', () => {
+    const base = {
+      agentId: 'agent-1',
+      managedPolicyRevision: 9,
+      selections: [selection],
+    };
+    const fingerprint = fingerprintConnectorAgentPolicy(base);
+
+    expect(
+      fingerprintConnectorAgentPolicy({
+        ...base,
+        selections: [{ ...selection, publishedRevision: selection.publishedRevision + 1 }],
+      }),
+    ).not.toBe(fingerprint);
+    expect(
+      fingerprintConnectorAgentPolicy({
+        ...base,
+        selections: [{ ...selection, allowedToolKeys: ['delete'] }],
+      }),
+    ).not.toBe(fingerprint);
+  });
+
   it('rejects cross-user, cross-agent, cross-connector and policy tampering', () => {
     const signer = new ConnectorOperationProofSigner(env);
-    const connectorKeys = ['catalog'];
     const proof = signer.signProof({
       agentId: 'agent-1',
       agentPolicyFingerprint: fingerprintConnectorAgentPolicy({
         agentId: 'agent-1',
-        connectorKeys,
         managedPolicyRevision: 9,
+        selections: [selection],
       }),
       managedPolicyRevision: 9,
       proof: baseProof,
@@ -45,13 +73,13 @@ describe('ConnectorOperationProofSigner', () => {
 
   it('binds an approval receipt to the exact proof and tool call', () => {
     const signer = new ConnectorOperationProofSigner(env);
-    const agentPolicy = { connectorKeys: ['catalog'], revision: 9 };
+    const agentPolicy = { revision: 9, selections: [selection] };
     const proof = signer.signProof({
       agentId: 'agent-1',
       agentPolicyFingerprint: fingerprintConnectorAgentPolicy({
         agentId: 'agent-1',
-        connectorKeys: agentPolicy.connectorKeys,
         managedPolicyRevision: agentPolicy.revision,
+        selections: agentPolicy.selections,
       }),
       managedPolicyRevision: agentPolicy.revision,
       proof: baseProof,

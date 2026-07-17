@@ -18,6 +18,7 @@ import { PlatformConnectorContractError } from './errors';
 import { type ConnectorOAuthRuntimeEnv, getConnectorOAuthRuntime } from './oauthRuntime';
 import {
   type ConnectorApprovalReceipt,
+  type ConnectorDependencySelection,
   ConnectorOperationProofSigner,
   type ConnectorOwnedOperationProof,
   fingerprintConnectorAgentPolicy,
@@ -37,7 +38,10 @@ import { resolveConnectorConfirmationPolicy } from './toolPolicy';
 import { UserConnectorOAuthService } from './userOAuthService';
 
 export interface PlatformConnectorRuntimeManifest extends ToolManifest {
-  platformConnectorAgentPolicy: { connectorKeys: string[]; revision: number };
+  platformConnectorAgentPolicy: {
+    revision: number;
+    selections: ConnectorDependencySelection[];
+  };
   platformConnectorProof?: ConnectorOwnedOperationProof;
   platformConnectorTombstone?: boolean;
 }
@@ -94,6 +98,17 @@ export const matchesConnectorApprovalReceipt = (params: {
   params.receipt.proof.toolPolicyFingerprint === params.proof.toolPolicyFingerprint &&
   params.receipt.proof.agentPolicyFingerprint === params.proof.agentPolicyFingerprint;
 
+export const matchesConnectorDependencySelection = (params: {
+  apiName: string;
+  proof: ConnectorOwnedOperationProof;
+  selection: ConnectorDependencySelection | undefined;
+}): boolean =>
+  params.selection?.connectorId === params.proof.connectorId &&
+  params.selection.connectorKey === params.proof.connectorKey &&
+  params.selection.publishedRevision === params.proof.publishedRevision &&
+  params.selection.publishedChecksum === params.proof.publishedChecksum &&
+  params.selection.allowedToolKeys.includes(params.apiName);
+
 export const createConnectorApprovalReceipt = (params: {
   agentId: string;
   apiName: string;
@@ -118,12 +133,25 @@ export const createConnectorApprovalReceipt = (params: {
   ) {
     throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_TOOL_DENIED');
   }
-  if (!manifest.platformConnectorAgentPolicy) {
+  const agentPolicy = manifest.platformConnectorAgentPolicy;
+  const selection = agentPolicy?.selections.find(
+    (candidate) => candidate.connectorKey === params.identifier,
+  );
+  if (
+    !agentPolicy ||
+    agentPolicy.revision !== proof.managedPolicyRevision ||
+    !matchesConnectorDependencySelection({ apiName: params.apiName, proof, selection }) ||
+    fingerprintConnectorAgentPolicy({
+      agentId: params.agentId,
+      managedPolicyRevision: agentPolicy.revision,
+      selections: agentPolicy.selections,
+    }) !== proof.agentPolicyFingerprint
+  ) {
     throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_TOOL_DENIED');
   }
   return signer.signApprovalReceipt(
     proof,
-    manifest.platformConnectorAgentPolicy,
+    agentPolicy,
     params.toolCallId,
     fingerprintConnectorToolCall({
       apiName: params.apiName,
@@ -164,6 +192,7 @@ export const buildManagedConnectorManifests = async (params: {
   db: LobeChatDatabase;
   env?: ConnectorOAuthRuntimeEnv;
   operationId: string;
+  serverAllowedConnectorKeys: string[];
   userId: string;
   workspaceId?: string;
 }): Promise<{
@@ -174,13 +203,10 @@ export const buildManagedConnectorManifests = async (params: {
   const mode = effectiveState.mode;
   if (mode !== 'enforced') return { manifests: [], mode };
 
-  const connectorKeys = [...new Set(params.connectorKeys)].sort();
-  const agentPolicy = { connectorKeys, revision: effectiveState.revision };
-  const agentPolicyFingerprint = fingerprintConnectorAgentPolicy({
-    agentId: params.agentId,
-    connectorKeys,
-    managedPolicyRevision: effectiveState.revision,
-  });
+  const serverAllowed = new Set(params.serverAllowedConnectorKeys);
+  const connectorKeys = [...new Set(params.connectorKeys)]
+    .filter((connectorKey) => serverAllowed.has(connectorKey))
+    .sort();
   const signer = new ConnectorOperationProofSigner(params.env ?? process.env);
   const approvedReceipt = params.approvedReceipt
     ? signer.verifyApprovalReceipt(params.approvedReceipt)
@@ -189,11 +215,13 @@ export const buildManagedConnectorManifests = async (params: {
     approvedReceipt &&
     (approvedReceipt.proof.userId !== params.userId ||
       approvedReceipt.proof.agentId !== params.agentId ||
-      !approvedReceipt.agentPolicy.connectorKeys.includes(approvedReceipt.proof.connectorKey) ||
+      !approvedReceipt.agentPolicy.selections.some(
+        (selection) => selection.connectorKey === approvedReceipt.proof.connectorKey,
+      ) ||
       fingerprintConnectorAgentPolicy({
         agentId: params.agentId,
-        connectorKeys: approvedReceipt.agentPolicy.connectorKeys,
         managedPolicyRevision: approvedReceipt.agentPolicy.revision,
+        selections: approvedReceipt.agentPolicy.selections,
       }) !== approvedReceipt.proof.agentPolicyFingerprint)
   ) {
     throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_TOOL_DENIED');
@@ -202,7 +230,7 @@ export const buildManagedConnectorManifests = async (params: {
     params.db,
     params.userId,
     params.workspaceId,
-  ).queryByIdentifiers(params.connectorKeys);
+  ).queryByIdentifiers(connectorKeys);
   const legacyByKey = new Map(
     legacyConnectors.map((connector) => [connector.identifier, connector]),
   );
@@ -224,6 +252,17 @@ export const buildManagedConnectorManifests = async (params: {
       const exact = await getSnapshots(params.db).resolveExact(
         toConnectorOperationProof(approvedReceipt.proof),
       );
+      const selection = approvedReceipt.agentPolicy.selections.find(
+        (candidate) => candidate.connectorKey === connectorKey,
+      );
+      if (
+        !selection ||
+        selection.connectorId !== exact.proof.connectorId ||
+        selection.publishedRevision !== exact.proof.publishedRevision ||
+        selection.publishedChecksum !== exact.proof.publishedChecksum
+      ) {
+        throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_TOOL_DENIED');
+      }
       const permissionByTool = new Map<string, string>();
       const legacyConnector = legacyByKey.get(connectorKey);
       for (const tool of legacyConnector
@@ -243,6 +282,7 @@ export const buildManagedConnectorManifests = async (params: {
             proof: { ...exact.proof, operationId: params.operationId },
             userId: params.userId,
           }),
+          selection,
           snapshot: exact,
         }),
       );
@@ -258,13 +298,29 @@ export const buildManagedConnectorManifests = async (params: {
         api: [],
         identifier: connectorKey,
         meta: { description: 'Managed Connector is unavailable', title: connectorKey },
-        platformConnectorAgentPolicy: agentPolicy,
+        platformConnectorAgentPolicy: { revision: effectiveState.revision, selections: [] },
         platformConnectorTombstone: true,
         type: 'mcp',
       });
       continue;
     }
     const snapshot = indexed.snapshot;
+    const selection: ConnectorDependencySelection = {
+      allowedToolKeys: snapshot.payload.tools
+        .filter((tool) => tool.platformPolicy === 'allow')
+        .map((tool) => tool.toolKey)
+        .sort(),
+      connectorId: snapshot.proof.connectorId,
+      connectorKey,
+      publishedChecksum: snapshot.proof.publishedChecksum,
+      publishedRevision: snapshot.proof.publishedRevision,
+    };
+    const agentPolicy = { revision: effectiveState.revision, selections: [selection] };
+    const agentPolicyFingerprint = fingerprintConnectorAgentPolicy({
+      agentId: params.agentId,
+      managedPolicyRevision: effectiveState.revision,
+      selections: agentPolicy.selections,
+    });
     const legacyConnector = legacyByKey.get(connectorKey);
     const permissionByTool = new Map(
       (legacyConnector ? (legacyToolsByConnector.get(legacyConnector.id) ?? []) : []).map(
@@ -283,6 +339,7 @@ export const buildManagedConnectorManifests = async (params: {
           proof: snapshot.proof,
           userId: params.userId,
         }),
+        selection,
         snapshot,
       }),
     );
@@ -295,10 +352,12 @@ const buildPublishedManifest = (params: {
   connectorKey: string;
   permissionByTool: Map<string, string>;
   proof: ConnectorOwnedOperationProof;
+  selection: ConnectorDependencySelection;
   snapshot: Awaited<ReturnType<ConnectorOperationSnapshotService['resolveExact']>>;
 }): PlatformConnectorRuntimeManifest => ({
   api: params.snapshot.payload.tools
     .filter((tool) => tool.platformPolicy === 'allow')
+    .filter((tool) => params.selection.allowedToolKeys.includes(tool.toolKey))
     .filter(
       (tool) => params.permissionByTool.get(tool.toolKey) !== ConnectorToolPermission.disabled,
     )
@@ -366,16 +425,19 @@ export const executeManagedConnectorTool = async (params: {
     const signer = new ConnectorOperationProofSigner(params.env ?? process.env);
     const proof = signer.verifyProof(manifest?.platformConnectorProof);
     const agentPolicy = manifest?.platformConnectorAgentPolicy;
+    const selection = agentPolicy?.selections.find(
+      (candidate) => candidate.connectorKey === params.identifier,
+    );
     const agentPolicyAllowed =
       proof.agentId === params.agentId &&
       proof.userId === params.userId &&
       proof.connectorKey === params.identifier &&
       agentPolicy?.revision === proof.managedPolicyRevision &&
-      agentPolicy.connectorKeys.includes(proof.connectorKey) &&
+      matchesConnectorDependencySelection({ apiName: params.apiName, proof, selection }) &&
       fingerprintConnectorAgentPolicy({
         agentId: params.agentId,
-        connectorKeys: agentPolicy.connectorKeys,
         managedPolicyRevision: agentPolicy.revision,
+        selections: agentPolicy.selections,
       }) === proof.agentPolicyFingerprint;
     if (!agentPolicyAllowed) return stableFailure('PLATFORM_CONNECTOR_TOOL_DENIED');
 
