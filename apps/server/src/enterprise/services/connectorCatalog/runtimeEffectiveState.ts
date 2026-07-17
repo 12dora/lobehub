@@ -17,6 +17,7 @@ export interface ConnectorRuntimeEffectiveState {
 const REDIS_KEY = 'platform:managed:connectors:effective:v1';
 const REDIS_EPOCH_KEY = 'platform:managed:connectors:effective:epoch:v1';
 const REDIS_TRANSITION_KEY = 'platform:managed:connectors:effective:transition:v1';
+const TRANSITION_LEASE_MS = 30_000;
 const CAS_SCRIPT = `
 local current = redis.call('GET', KEYS[1])
 if current then
@@ -31,10 +32,26 @@ let localEpoch = 0;
 let localTransitionToken: string | null = null;
 
 const BEGIN_TRANSITION_SCRIPT = `
+if redis.call('EXISTS', KEYS[3]) == 1 then return nil end
+local previous = redis.call('GET', KEYS[1])
+local previousMode = 'blocked'
+local previousRevision = 0
+if previous then
+  local decoded = cjson.decode(previous)
+  previousMode = decoded.mode
+  previousRevision = tonumber(decoded.revision or 0)
+end
+local lease = cjson.encode({ token = ARGV[1] })
+if not redis.call('SET', KEYS[3], lease, 'PX', tonumber(ARGV[3]), 'NX') then return nil end
 local epoch = redis.call('INCR', KEYS[2])
-local transition = cjson.encode({ token = ARGV[1], epoch = epoch })
-redis.call('SET', KEYS[3], transition)
-local state = cjson.encode({ epoch = epoch, mode = 'blocked', revision = tonumber(ARGV[2]) })
+local state = cjson.encode({
+  epoch = epoch,
+  mode = 'blocked',
+  previousMode = previousMode,
+  previousRevision = previousRevision,
+  revision = tonumber(ARGV[2]),
+  transitionToken = ARGV[1]
+})
 redis.call('SET', KEYS[1], state)
 return state
 `;
@@ -53,6 +70,38 @@ local epoch = redis.call('INCR', KEYS[2])
 local state = cjson.encode({ epoch = epoch, mode = ARGV[2], revision = tonumber(ARGV[3]) })
 redis.call('SET', KEYS[1], state)
 redis.call('DEL', KEYS[3])
+return state
+`;
+const CANCEL_TRANSITION_SCRIPT = `
+local transition = redis.call('GET', KEYS[3])
+if not transition or cjson.decode(transition).token ~= ARGV[1] then return nil end
+local current = redis.call('GET', KEYS[1])
+if not current then return nil end
+local decoded = cjson.decode(current)
+if decoded.transitionToken ~= ARGV[1] then return nil end
+local epoch = redis.call('INCR', KEYS[2])
+local state = cjson.encode({
+  epoch = epoch,
+  mode = decoded.previousMode or 'blocked',
+  revision = tonumber(decoded.previousRevision or 0)
+})
+redis.call('SET', KEYS[1], state)
+redis.call('DEL', KEYS[3])
+return state
+`;
+const RECOVER_EXPIRED_TRANSITION_SCRIPT = `
+if redis.call('EXISTS', KEYS[3]) == 1 then return redis.call('GET', KEYS[1]) end
+local current = redis.call('GET', KEYS[1])
+if not current then return nil end
+local decoded = cjson.decode(current)
+if decoded.mode ~= 'blocked' or not decoded.transitionToken then return current end
+local epoch = redis.call('INCR', KEYS[2])
+local state = cjson.encode({
+  epoch = epoch,
+  mode = decoded.previousMode or 'blocked',
+  revision = tonumber(decoded.previousRevision or 0)
+})
+redis.call('SET', KEYS[1], state)
 return state
 `;
 
@@ -77,6 +126,9 @@ const parseState = (value: string | null): ConnectorRuntimeEffectiveState | null
 export const reserveConnectorRuntimeEffectiveStateEpoch = async (): Promise<number> => {
   const config = getRedisConfig();
   if (!config.enabled) {
+    if (localTransitionToken) {
+      throw new Error('Connector runtime transition is already in progress');
+    }
     localEpoch += 1;
     return localEpoch;
   }
@@ -130,11 +182,40 @@ export const beginConnectorRuntimeEffectiveStateTransition = async (
     REDIS_TRANSITION_KEY,
     token,
     String(revision),
+    String(TRANSITION_LEASE_MS),
   );
   const state = parseState(typeof value === 'string' ? value : null);
   if (!state) throw new Error('Connector runtime transition state is invalid');
   localState = state;
   return token;
+};
+
+/** Release an owned transition and restore the last published effective strategy. */
+export const cancelConnectorRuntimeEffectiveStateTransition = async (
+  token: string,
+): Promise<boolean> => {
+  const config = getRedisConfig();
+  if (!config.enabled) {
+    if (localTransitionToken !== token) return false;
+    localTransitionToken = null;
+    // Redis-off runtime is always blocked, so no process-local strategy can be trusted.
+    localState = null;
+    return true;
+  }
+  const redis = await initializeRedis(config);
+  if (!redis) throw new Error('Connector runtime effective-state Redis is unavailable');
+  const value = await redis.eval(
+    CANCEL_TRANSITION_SCRIPT,
+    3,
+    REDIS_KEY,
+    REDIS_EPOCH_KEY,
+    REDIS_TRANSITION_KEY,
+    token,
+  );
+  const state = parseState(typeof value === 'string' ? value : null);
+  if (!state) return false;
+  localState = state;
+  return true;
 };
 
 export const publishConnectorRuntimeCapabilityState = async (params: {
@@ -210,7 +291,14 @@ export const getConnectorRuntimeEffectiveState = async (
     const config = getRedisConfig();
     if (config.enabled) {
       const redis = await initializeRedis(config);
-      const shared = parseState((await redis?.get(REDIS_KEY)) ?? null);
+      const recovered = await redis?.eval(
+        RECOVER_EXPIRED_TRANSITION_SCRIPT,
+        3,
+        REDIS_KEY,
+        REDIS_EPOCH_KEY,
+        REDIS_TRANSITION_KEY,
+      );
+      const shared = parseState(typeof recovered === 'string' ? recovered : null);
       if (shared) {
         localState = shared;
         return { ...shared };

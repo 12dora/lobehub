@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   beginConnectorRuntimeEffectiveStateTransition,
+  cancelConnectorRuntimeEffectiveStateTransition,
   finalizeConnectorRuntimeEffectiveStateTransition,
   getConnectorRuntimeEffectiveState,
   publishConnectorRuntimeCapabilityState,
@@ -18,17 +19,24 @@ const redisState = vi.hoisted(() => ({
 }));
 const redis = vi.hoisted(() => ({
   eval: vi.fn(async (script: string, _keys: number, ...args: string[]) => {
-    if (script.includes('transition = cjson.encode')) {
+    if (script.includes("'PX'")) {
+      if (redisState.transition) return null;
+      const previous = redisState.value
+        ? (JSON.parse(redisState.value) as { mode: string; revision: number })
+        : { mode: 'blocked', revision: 0 };
       redisState.epoch += 1;
       redisState.transition = args[3]!;
       redisState.value = JSON.stringify({
         epoch: redisState.epoch,
         mode: 'blocked',
+        previousMode: previous.mode,
+        previousRevision: previous.revision,
         revision: Number(args[4]),
+        transitionToken: args[3],
       });
       return redisState.value;
     }
-    if (script.includes("redis.call('EXISTS'")) {
+    if (script.includes('local mode = ARGV[1]')) {
       redisState.epoch += 1;
       redisState.value = JSON.stringify({
         epoch: redisState.epoch,
@@ -37,6 +45,22 @@ const redis = vi.hoisted(() => ({
       });
       return redisState.value;
     }
+    if (script.includes('decoded.transitionToken ~= ARGV[1]')) {
+      if (redisState.transition !== args[3]) return null;
+      const current = JSON.parse(redisState.value!) as {
+        previousMode: string;
+        previousRevision: number;
+      };
+      redisState.epoch += 1;
+      redisState.transition = null;
+      redisState.value = JSON.stringify({
+        epoch: redisState.epoch,
+        mode: current.previousMode,
+        revision: current.previousRevision,
+      });
+      return redisState.value;
+    }
+    if (script.includes("decoded.mode ~= 'blocked'")) return redisState.value;
     if (script.includes("redis.call('DEL'")) {
       if (redisState.transition !== args[3]) return null;
       redisState.epoch += 1;
@@ -135,6 +159,20 @@ describe('connector runtime effective-state authority', () => {
     await expect(
       getConnectorRuntimeEffectiveState({ ENABLE_PLATFORM_MANAGED_CONNECTORS: 'true' }),
     ).resolves.toMatchObject({ mode: 'enforced', revision: 9 });
+  });
+
+  it('rejects concurrent transition owners and restores the published strategy on cancel', async () => {
+    await publishConnectorRuntimeCapabilityState({ mode: 'enforced', revision: 7 });
+    const token = await beginConnectorRuntimeEffectiveStateTransition(7);
+
+    await expect(beginConnectorRuntimeEffectiveStateTransition(7)).rejects.toThrow(
+      'transition state is invalid',
+    );
+    await expect(cancelConnectorRuntimeEffectiveStateTransition('not-owner')).resolves.toBe(false);
+    await expect(cancelConnectorRuntimeEffectiveStateTransition(token)).resolves.toBe(true);
+    await expect(
+      getConnectorRuntimeEffectiveState({ ENABLE_PLATFORM_MANAGED_CONNECTORS: 'true' }),
+    ).resolves.toMatchObject({ mode: 'enforced', revision: 7 });
   });
 
   it('rejects a stale capability writer that finishes after a newer policy publish', async () => {
