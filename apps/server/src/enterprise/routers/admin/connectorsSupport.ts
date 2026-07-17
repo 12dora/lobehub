@@ -12,6 +12,7 @@ import {
 } from '../../contracts/platformConnectors';
 import { parseEnterpriseFeatureFlags } from '../../featureFlags';
 import { assertRecentReauth } from '../../guards/reauth';
+import type { OutboundPolicySnapshot } from '../../security/outboundHttp';
 import { SafeOutboundHttpClient } from '../../security/outboundHttp';
 import { PlatformSecretError, PlatformSecretService } from '../../security/secret';
 import { ConnectorCatalogService } from '../../services/connectorCatalog/catalogService';
@@ -19,33 +20,19 @@ import type {
   ConnectorCatalogCredentialProvider,
   ConnectorCatalogSecretStore,
 } from '../../services/connectorCatalog/catalogTypes';
+import {
+  canonicalConnectorAppUrlProvider,
+  type ConnectorAppUrlProvider,
+  resolveConnectorCallbackRedirectUri,
+} from '../../services/connectorCatalog/connectorCallbackRedirect';
 import { ConnectorOutboundClient } from '../../services/connectorCatalog/connectorOutboundClient';
+import { connectorOutboundPolicyProvider } from '../../services/connectorCatalog/connectorOutboundPolicy';
 import { PlatformConnectorSecretStore } from '../../services/connectorCatalog/platformConnectorSecretStore';
 import { assertConnectorPersistentTextSafe } from '../../services/connectorCatalog/secretBoundary';
 import { PlatformAuditService } from '../../services/platformAudit';
 import { getPlatformConfigInvalidationPublisher } from '../../services/platformConfigInvalidation';
 
 const OPERATION_FAILED = 'PLATFORM_CONNECTOR_OPERATION_FAILED';
-
-const resolveRedirectUri = (env: Record<string, string | undefined>): string => {
-  const appUrl = env.APP_URL?.trim();
-  if (!appUrl) {
-    throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_CREDENTIAL_NOT_CONFIGURED');
-  }
-  try {
-    const parsed = new URL(appUrl);
-    if (
-      (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') ||
-      parsed.username ||
-      parsed.password
-    ) {
-      throw new Error('invalid app URL');
-    }
-    return new URL('/oauth/connector/callback', parsed).toString();
-  } catch {
-    throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_CREDENTIAL_NOT_CONFIGURED');
-  }
-};
 
 const toCredentialHeaders = (value: unknown): Record<string, string> => {
   const credential = connectorSharedCredentialSchema.parse(value);
@@ -90,14 +77,23 @@ const createCredentialProvider = (
 });
 
 export interface AdminConnectorRuntime {
+  assertOutboundPolicyReady: () => void;
+  resolveRedirectUri: () => string;
   secrets: ConnectorCatalogSecretStore;
   service: ConnectorCatalogService;
 }
 
+export interface AdminConnectorRuntimeOptions {
+  appUrlProvider?: ConnectorAppUrlProvider;
+  env?: Record<string, string | undefined>;
+  outboundPolicyProvider?: () => OutboundPolicySnapshot;
+}
+
 export const createAdminConnectorRuntime = (
   db: LobeChatDatabase,
-  env: Record<string, string | undefined> = process.env,
+  options: AdminConnectorRuntimeOptions = {},
 ): AdminConnectorRuntime => {
+  const env = options.env ?? process.env;
   const flags = parseEnterpriseFeatureFlags(env);
   if (!flags.ENABLE_PLATFORM_MANAGED_CONNECTORS) {
     throw new TRPCError({
@@ -121,19 +117,129 @@ export const createAdminConnectorRuntime = (
     });
   }
   const secrets = new PlatformConnectorSecretStore(db, secretService);
+  const appUrlProvider = options.appUrlProvider ?? canonicalConnectorAppUrlProvider;
+  const outbound = new ConnectorOutboundClient(
+    new SafeOutboundHttpClient({
+      policyProvider: options.outboundPolicyProvider ?? connectorOutboundPolicyProvider,
+    }),
+  );
+  const resolveRedirectUri = () => resolveConnectorCallbackRedirectUri(appUrlProvider);
   return {
+    assertOutboundPolicyReady: () => {
+      outbound.getPolicyVersion();
+    },
+    resolveRedirectUri,
     secrets,
-    service: new ConnectorCatalogService(
-      db,
-      new ConnectorOutboundClient(new SafeOutboundHttpClient()),
-      secrets,
-      {
-        credentials: createCredentialProvider(secrets),
-        invalidation: getPlatformConfigInvalidationPublisher(),
-        redirectUri: resolveRedirectUri(env),
-      },
-    ),
+    service: new ConnectorCatalogService(db, outbound, secrets, {
+      credentials: createCredentialProvider(secrets),
+      invalidation: getPlatformConfigInvalidationPublisher(),
+      redirectUri: resolveRedirectUri,
+    }),
   };
+};
+
+export type AdminConnectorFactoryFailureCategory =
+  'feature_disabled' | 'redirect_unavailable' | 'secret_unavailable' | 'transport_unavailable';
+
+const FACTORY_FAILURE_REASON = 'connector factory dependency unavailable';
+
+const sanitizeFactoryFailureReason = async (params: {
+  reason: string;
+  replacementSecrets?: unknown[];
+  runtime?: AdminConnectorRuntime;
+  targetId: string;
+}): Promise<string> => {
+  if (!params.runtime) return FACTORY_FAILURE_REASON;
+  try {
+    const current = await params.runtime.secrets.loadCurrentSecretSources(params.targetId);
+    return assertConnectorPersistentTextSafe(
+      params.reason,
+      collectConnectorSecretLeaves(
+        current.oauthClientSecret,
+        current.sharedSecret,
+        ...(params.replacementSecrets ?? []),
+      ),
+    );
+  } catch {
+    return FACTORY_FAILURE_REASON;
+  }
+};
+
+const appendFactoryFailureAudit = async (params: {
+  action: string;
+  actorUserId: string;
+  category: AdminConnectorFactoryFailureCategory;
+  reason: string;
+  replacementSecrets?: unknown[];
+  runtime?: AdminConnectorRuntime;
+  serverDB: LobeChatDatabase;
+  targetId: string;
+}): Promise<void> => {
+  try {
+    await new PlatformAuditService(params.serverDB).append({
+      action: params.action,
+      actorUserId: params.actorUserId,
+      afterDiff: { category: params.category, error: 'factory_dependency_unavailable' },
+      reason: await sanitizeFactoryFailureReason(params),
+      result: 'failure',
+      targetId: params.targetId,
+      targetType: 'connector',
+    });
+  } catch (auditError) {
+    console.error('[admin.connectors] factory failure audit failed', {
+      action: params.action,
+      errorClass: auditError instanceof Error ? auditError.name : 'UnknownError',
+    });
+  }
+};
+
+const inferRuntimeFactoryFailureCategory = (
+  error: unknown,
+): AdminConnectorFactoryFailureCategory =>
+  error instanceof TRPCError && error.message === PLATFORM_ERROR_CODES.PLATFORM_FEATURE_DISABLED
+    ? 'feature_disabled'
+    : 'secret_unavailable';
+
+export const resolveAdminConnectorMutationRuntime = async (params: {
+  action: string;
+  actorUserId: string;
+  createRuntime: () => AdminConnectorRuntime;
+  reason: string;
+  replacementSecrets?: unknown[];
+  serverDB: LobeChatDatabase;
+  targetId: string;
+}): Promise<AdminConnectorRuntime> => {
+  try {
+    return params.createRuntime();
+  } catch (error) {
+    await appendFactoryFailureAudit({
+      ...params,
+      category: inferRuntimeFactoryFailureCategory(error),
+    });
+    throw error;
+  }
+};
+
+export const assertAdminConnectorRuntimeDependency = async (params: {
+  action: string;
+  actorUserId: string;
+  category: Extract<
+    AdminConnectorFactoryFailureCategory,
+    'redirect_unavailable' | 'transport_unavailable'
+  >;
+  operation: () => void;
+  reason: string;
+  replacementSecrets?: unknown[];
+  runtime: AdminConnectorRuntime;
+  serverDB: LobeChatDatabase;
+  targetId: string;
+}): Promise<void> => {
+  try {
+    params.operation();
+  } catch (error) {
+    await appendFactoryFailureAudit(params);
+    throw error;
+  }
 };
 
 const connectorErrorHttpCode = (
