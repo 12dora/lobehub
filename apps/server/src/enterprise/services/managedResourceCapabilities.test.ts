@@ -11,6 +11,7 @@ import { platformManagedResourcePolicies } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 
 import {
+  getManagedSkillRuntimeModeSnapshot,
   resetManagedSkillRuntimeModeCacheForTest,
   resolveManagedSkillRuntimeMode,
   resolvePublishedManagedResourcePolicies,
@@ -56,24 +57,65 @@ describe('resolveManagedSkillRuntimeMode', () => {
   });
 
   it.each(['observe', 'ui-only'] as const)(
-    'caches trusted %s mode without repeated policy DB reads',
+    'injects trusted %s mode into the synchronous hot-path snapshot',
     async (enforcementMode) => {
       const getSnapshot = vi.fn().mockResolvedValue({
         published: { skills: { enforcementMode, managed: true } },
         status: 'published',
       });
       const model = { getSnapshot };
-      const options = { getCacheEpoch: async () => 'epoch-1', model };
+      const getCacheEpoch = vi.fn(async () => 'epoch-1');
+      const options = { getCacheEpoch, model };
 
       await expect(resolveManagedSkillRuntimeMode({ db: serverDB, flags, options })).resolves.toBe(
         enforcementMode,
       );
-      await expect(resolveManagedSkillRuntimeMode({ db: serverDB, flags, options })).resolves.toBe(
-        enforcementMode,
-      );
+      expect(getManagedSkillRuntimeModeSnapshot({ db: serverDB, flags })).toBe(enforcementMode);
       expect(getSnapshot).toHaveBeenCalledTimes(1);
+      expect(getCacheEpoch).toHaveBeenCalledTimes(1);
     },
   );
+
+  it('performs zero managed policy I/O on feature-off hot paths', () => {
+    expect(
+      getManagedSkillRuntimeModeSnapshot({ db: serverDB, flags: DEFAULT_ENTERPRISE_FEATURE_FLAGS }),
+    ).toBe('unmanaged');
+  });
+
+  it('fails closed on missing or expired trusted hot-path snapshots', async () => {
+    let now = 1_000;
+    expect(getManagedSkillRuntimeModeSnapshot({ db: serverDB, flags, now: () => now })).toBe(
+      'enforced',
+    );
+    await resolveManagedSkillRuntimeMode({
+      db: serverDB,
+      flags,
+      options: {
+        cacheTtlMs: 100,
+        getCacheEpoch: async () => 'epoch-1',
+        model: {
+          getSnapshot: async () => {
+            const published = createUnmanagedResourcePolicyMap();
+            published.skills = { enforcementMode: 'observe', managed: true };
+            return {
+              draft: published,
+              published,
+              revision: 1,
+              status: 'published' as const,
+            };
+          },
+        },
+        now: () => now,
+      },
+    });
+    expect(getManagedSkillRuntimeModeSnapshot({ db: serverDB, flags, now: () => now })).toBe(
+      'observe',
+    );
+    now += 101;
+    expect(getManagedSkillRuntimeModeSnapshot({ db: serverDB, flags, now: () => now })).toBe(
+      'enforced',
+    );
+  });
 
   it('refreshes the trusted mode when another instance bumps the epoch', async () => {
     let epoch = 'epoch-1';

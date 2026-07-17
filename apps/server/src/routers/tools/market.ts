@@ -23,7 +23,7 @@ import {
 import { isTrustedClientEnabled } from '@/libs/trusted-client';
 import { parseEnterpriseFeatureFlags } from '@/server/enterprise/featureFlags';
 import { redactForLog } from '@/server/enterprise/security/redaction';
-import { resolveManagedSkillRuntimeMode } from '@/server/enterprise/services/managedResourceCapabilities';
+import { getManagedSkillRuntimeModeSnapshot } from '@/server/enterprise/services/managedResourceCapabilities';
 import {
   cleanupSandboxSkillWorkspace,
   createSandboxSkillWorkspaceRoot,
@@ -345,7 +345,7 @@ const execInSandboxHandler = async ({
           });
         }
         const platformEnforced =
-          (await resolveManagedSkillRuntimeMode({ db: ctx.serverDB, flags })) === 'enforced';
+          getManagedSkillRuntimeModeSnapshot({ db: ctx.serverDB, flags }) === 'enforced';
         if (platformEnforced) {
           throw new TRPCError({
             code: 'PRECONDITION_FAILED',
