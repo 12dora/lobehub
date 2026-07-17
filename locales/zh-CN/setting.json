@@ -559,6 +559,7 @@
   "platformSkills.detail.mandatoryManaged": "始终可用 · 由组织管理",
   "platformSkills.detail.noDescription": "暂无描述",
   "platformSkills.detail.notFound": "该已发布 Skill 已不可用。",
+  "platformSkills.detail.saveFailed": "无法更新此助手，请重试。",
   "platformSkills.detail.source": "来源",
   "platformSkills.detail.use": "用于当前助手",
   "platformSkills.detail.useHint": "此设置仅影响当前助手的选择。",

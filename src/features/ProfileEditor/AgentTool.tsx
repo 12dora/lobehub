@@ -44,7 +44,6 @@ import {
   agentSkillsSelectors,
   builtinToolSelectors,
   composioStoreSelectors,
-  lobehubSkillStoreSelectors,
   pluginSelectors,
 } from '@/store/tool/selectors';
 import { type LobeToolMetaWithAvailability } from '@/store/tool/slices/builtin/selectors';
@@ -53,6 +52,7 @@ import { getPlatformSkillToggleMode, resolvePlatformSkillSelection } from '@/typ
 
 import PluginTag from './PluginTag';
 import PopoverContent from './PopoverContent';
+import { runAgentToolUpdate } from './runAgentToolUpdate';
 
 const WEB_BROWSING_IDENTIFIER = 'lobe-web-browsing';
 
@@ -114,7 +114,6 @@ const AgentTool = memo<AgentToolProps>(
     const isComposioEnabledInEnv = useServerConfigStore(serverConfigSelectors.enableComposio);
 
     // LobeHub Skill-related state
-    const allLobehubSkillServers = useToolStore(lobehubSkillStoreSelectors.getServers, isEqual);
     const isLobehubSkillEnabled = useServerConfigStore(serverConfigSelectors.enableLobehubSkill);
 
     // Agent Skills-related state
@@ -244,11 +243,6 @@ const AgentTool = memo<AgentToolProps>(
       [canEdit, toggleWebBrowsing, togglePlugin, showWebBrowsing],
     );
 
-    // Get connected server by identifier
-    const getServerByName = (identifier: string) => {
-      return allComposioServers.find((server) => server.identifier === identifier);
-    };
-
     // Get all Composio server type identifiers (used to filter builtinList)
     const allComposioTypeIdentifiers = useMemo(
       () => new Set(COMPOSIO_APP_TYPES.map((type) => type.identifier)),
@@ -311,7 +305,9 @@ const AgentTool = memo<AgentToolProps>(
                   appSlug={type.appSlug}
                   identifier={type.identifier}
                   label={type.label}
-                  server={getServerByName(type.identifier)}
+                  server={allComposioServers.find(
+                    (server) => server.identifier === type.identifier,
+                  )}
                 />
               ),
               popoverContent: (
@@ -363,7 +359,7 @@ const AgentTool = memo<AgentToolProps>(
               ),
             }))
           : [],
-      [isLobehubSkillEnabled, allLobehubSkillServers, effectiveAgentId, t],
+      [isLobehubSkillEnabled, effectiveAgentId, t],
     );
 
     // Handle plugin remove via Tag close - use byId actions
@@ -401,9 +397,7 @@ const AgentTool = memo<AgentToolProps>(
               id={skill.identifier}
               label={skill.name}
               onUpdate={async () => {
-                setUpdating(true);
-                await handleToggleTool(skill.identifier);
-                setUpdating(false);
+                await runAgentToolUpdate(setUpdating, () => handleToggleTool(skill.identifier));
               }}
             />
           ),
@@ -452,9 +446,7 @@ const AgentTool = memo<AgentToolProps>(
               id={skill.identifier}
               label={skill.name}
               onUpdate={async () => {
-                setUpdating(true);
-                await handleToggleTool(skill.identifier);
-                setUpdating(false);
+                await runAgentToolUpdate(setUpdating, () => handleToggleTool(skill.identifier));
               }}
             />
           ),
@@ -482,9 +474,7 @@ const AgentTool = memo<AgentToolProps>(
               id={skill.identifier}
               label={skill.name}
               onUpdate={async () => {
-                setUpdating(true);
-                await handleToggleTool(skill.identifier);
-                setUpdating(false);
+                await runAgentToolUpdate(setUpdating, () => handleToggleTool(skill.identifier));
               }}
             />
           ),
@@ -534,9 +524,7 @@ const AgentTool = memo<AgentToolProps>(
                 ).available
               }
               onUpdate={async () => {
-                setUpdating(true);
-                await togglePlatformSkill(skill);
-                setUpdating(false);
+                await runAgentToolUpdate(setUpdating, () => togglePlatformSkill(skill));
               }}
             />
           ),
@@ -606,9 +594,7 @@ const AgentTool = memo<AgentToolProps>(
               id={item.identifier}
               label={item.meta?.title}
               onUpdate={async () => {
-                setUpdating(true);
-                await handleToggleTool(item.identifier);
-                setUpdating(false);
+                await runAgentToolUpdate(setUpdating, () => handleToggleTool(item.identifier));
               }}
             />
           ),
@@ -673,9 +659,7 @@ const AgentTool = memo<AgentToolProps>(
               id={item.identifier}
               label={item.title}
               onUpdate={async () => {
-                setUpdating(true);
-                await togglePlugin(item.identifier);
-                setUpdating(false);
+                await runAgentToolUpdate(setUpdating, () => togglePlugin(item.identifier));
               }}
             />
           ),
@@ -735,9 +719,7 @@ const AgentTool = memo<AgentToolProps>(
                 id={connector.identifier}
                 label={connector.name || connector.identifier}
                 onUpdate={async () => {
-                  setUpdating(true);
-                  await togglePlugin(connector.identifier);
-                  setUpdating(false);
+                  await runAgentToolUpdate(setUpdating, () => togglePlugin(connector.identifier));
                 }}
               />
             ),

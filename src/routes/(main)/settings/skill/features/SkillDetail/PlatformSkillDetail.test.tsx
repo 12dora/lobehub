@@ -25,6 +25,7 @@ const mocks = vi.hoisted(() => ({
   },
   config: { plugins: [] as Array<string | { identifier: string; mode: string }> },
   setPluginModeById: vi.fn(),
+  toastError: vi.fn(),
   toolState: {
     platformSkillRuntimeManaged: true,
     platformSkillRuntimeStatus: 'ready' as 'error' | 'loading' | 'ready' | 'unmanaged',
@@ -60,7 +61,16 @@ vi.mock('@/store/tool', () => ({
   useToolStore: (selector: (state: typeof mocks.toolState) => unknown) => selector(mocks.toolState),
 }));
 
-vi.mock('@/components/AsyncError', () => ({ default: () => <div>catalog-error</div> }));
+vi.mock('@/components/AsyncError', () => ({
+  default: ({ error, onRetry }: { error?: Error; onRetry?: () => void }) => (
+    <div>
+      async-error:{error?.message}
+      <button type="button" onClick={onRetry}>
+        retry-save
+      </button>
+    </div>
+  ),
+}));
 vi.mock('@/components/Loading/BrandTextLoading', () => ({
   default: () => <div>catalog-loading</div>,
 }));
@@ -88,6 +98,7 @@ vi.mock('@lobehub/ui/base-ui', () => ({
       onChange={(event) => onChange(event.target.checked)}
     />
   ),
+  toast: { error: mocks.toastError },
 }));
 
 vi.mock('antd-style', () => ({
@@ -114,6 +125,7 @@ describe('PlatformSkillDetail', () => {
     mocks.config.plugins = [];
     mocks.setPluginModeById.mockReset();
     mocks.setPluginModeById.mockResolvedValue(undefined);
+    mocks.toastError.mockReset();
     mocks.toolState.platformSkillRuntimeManaged = true;
     mocks.toolState.platformSkillRuntimeStatus = 'ready';
   });
@@ -136,6 +148,26 @@ describe('PlatformSkillDetail', () => {
 
     await waitFor(() =>
       expect(mocks.setPluginModeById).toHaveBeenCalledWith('agent-a', 'approved.skill', 'pinned'),
+    );
+  });
+
+  it('shows a retryable error and unlocks the toggle when assistant update rejects', async () => {
+    mocks.catalog.data.skills = [skill('optional')];
+    mocks.setPluginModeById
+      .mockRejectedValueOnce(new Error('update rejected'))
+      .mockResolvedValueOnce(undefined);
+    render(<PlatformSkillDetail skillKey="approved.skill" />);
+
+    fireEvent.click(screen.getByLabelText('use-skill'));
+
+    await waitFor(() => expect(screen.getByText('async-error:update rejected')).toBeTruthy());
+    expect(mocks.toastError).toHaveBeenCalledWith('platformSkills.detail.saveFailed');
+    expect(screen.getByLabelText('use-skill')).not.toBeDisabled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'retry-save' }));
+    await waitFor(() => expect(mocks.setPluginModeById).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(screen.queryByText('async-error:update rejected')).not.toBeInTheDocument(),
     );
   });
 });

@@ -332,10 +332,21 @@ const VersionDetail = memo<{
                       </Tag>
                       <Text code>{issue.code}</Text>
                       <Flexbox gap={2}>
-                        <Text>{issue.message}</Text>
+                        <Text>
+                          {t(`skillCatalog.validation.issue.${issue.code}` as never, {
+                            path:
+                              issue.path.length > 0
+                                ? issue.path.join('.')
+                                : t('skillCatalog.validation.path.root'),
+                          })}
+                        </Text>
                         <Text code type="secondary">
                           {issue.path.length ? issue.path.join('.') : '—'}
                         </Text>
+                        <details>
+                          <summary>{t('skillCatalog.validation.technicalDetails')}</summary>
+                          <Text>{issue.message}</Text>
+                        </details>
                       </Flexbox>
                     </div>
                   ))

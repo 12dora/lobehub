@@ -79,6 +79,7 @@ export class AgentSkillsActionImpl {
   };
 
   configurePlatformSkillManagement = (managed: boolean): void => {
+    if (managed === this.#get().platformSkillRuntimeManaged) return;
     const epoch = this.#get().platformSkillCatalogRequestEpoch + 1;
     this.#set(
       {

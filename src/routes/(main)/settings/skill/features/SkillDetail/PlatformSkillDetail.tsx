@@ -2,7 +2,7 @@
 
 import { getPluginMode } from '@lobechat/types';
 import { Flexbox, Text } from '@lobehub/ui';
-import { Switch } from '@lobehub/ui/base-ui';
+import { Switch, toast } from '@lobehub/ui/base-ui';
 import { createStaticStyles } from 'antd-style';
 import { memo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -59,6 +59,8 @@ const PlatformSkillDetail = memo<PlatformSkillDetailProps>(({ skillKey }) => {
   const runtimeStatus = useToolStore((state) => state.platformSkillRuntimeStatus);
   const catalog = usePublishedSkillCatalog(runtimeManaged);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<Error | null>(null);
+  const [failedNextEnabled, setFailedNextEnabled] = useState<boolean | null>(null);
   const config = useAgentStore(agentSelectors.currentAgentConfig);
   const agentId = useAgentStore((state) => state.activeAgentId);
   const setPluginModeById = useAgentStore((state) => state.setPluginModeById);
@@ -82,8 +84,14 @@ const PlatformSkillDetail = memo<PlatformSkillDetailProps>(({ skillKey }) => {
     const nextMode = getPublishedSkillToggleMode(skill.distribution, nextEnabled);
     if (!nextMode || !config || !agentId) return;
     setSaving(true);
+    setSaveError(null);
+    setFailedNextEnabled(null);
     try {
       await setPluginModeById(agentId, skill.skillKey, nextMode);
+    } catch (error) {
+      setSaveError(error instanceof Error ? error : new Error(String(error)));
+      setFailedNextEnabled(nextEnabled);
+      toast.error(t('platformSkills.detail.saveFailed'));
     } finally {
       setSaving(false);
     }
@@ -102,6 +110,13 @@ const PlatformSkillDetail = memo<PlatformSkillDetailProps>(({ skillKey }) => {
       <main className={styles.body}>
         {catalog.error ? (
           <AsyncError error={catalog.error} variant="block" onRetry={() => void catalog.mutate()} />
+        ) : null}
+        {saveError && failedNextEnabled !== null ? (
+          <AsyncError
+            error={saveError}
+            variant="block"
+            onRetry={() => void toggle(failedNextEnabled)}
+          />
         ) : null}
         <section className={styles.card}>
           <Text type="secondary">{t('platformSkills.detail.source')}</Text>
