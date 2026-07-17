@@ -44,13 +44,21 @@ describe('M10 platform Agent expand migration', () => {
     expect(sql).not.toContain('platform_agent_versions_checksum_idx');
   });
 
-  it('installs database guards for role scope, polymorphic users, local ownership, and immutability', () => {
+  it('installs serialized database guards for targets, exact publication, and immutability', () => {
     expect(sql).toContain('platform_agent_assignments_target_guard');
     expect(sql).toContain('rbac_roles_platform_agent_assignment_guard');
     expect(sql).toContain('users_platform_agent_assignment_guard');
     expect(sql).toContain('platform_user_agent_materializations_owner_guard');
     expect(sql).toContain('agents_materialization_owner_guard');
+    expect(sql).toContain('platform_agent_versions_exact_insert_guard');
+    expect(sql).toContain('platform_agents_exact_published_pointer_guard');
     expect(sql).toContain('platform_agent_versions_immutable');
+    expect(sql).toMatch(/FROM "rbac_roles"[\s\S]+FOR KEY SHARE/);
+    expect(sql).toMatch(/FROM "users" WHERE "id" = NEW\."target_id" FOR KEY SHARE/);
+    expect(sql).toMatch(/FROM "agents"[\s\S]+FOR KEY SHARE/);
+    expect(sql).toMatch(/FROM "platform_agent_versions"[\s\S]+FOR KEY SHARE/);
+    expect(sql).toMatch(/FROM "rbac_roles" WHERE "id" = OLD\."id" FOR UPDATE/);
+    expect(sql).toMatch(/FROM "agents" WHERE "id" = OLD\."id" FOR UPDATE/);
   });
 
   it('keeps journal and snapshots aligned at 0125', () => {

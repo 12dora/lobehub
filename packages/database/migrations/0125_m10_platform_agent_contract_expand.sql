@@ -7,13 +7,14 @@ CREATE TABLE IF NOT EXISTS "platform_user_agent_materializations" (
 	"materialized_agent_id" text,
 	"hidden" boolean DEFAULT false NOT NULL,
 	"status" varchar(32) DEFAULT 'pending' NOT NULL,
-	"last_error" text,
+	"last_error_category" varchar(64),
 	"last_synced_at" timestamp with time zone,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "platform_user_agent_materializations_checksum_check" CHECK ("platform_agent_version_checksum" ~ '^[a-f0-9]{64}$'),
 	CONSTRAINT "platform_user_agent_materializations_status_check" CHECK ("status" IN ('pending', 'materialized', 'error')),
-	CONSTRAINT "platform_user_agent_materializations_local_status_check" CHECK (("status" = 'materialized' AND "materialized_agent_id" IS NOT NULL) OR "status" <> 'materialized')
+	CONSTRAINT "platform_user_agent_materializations_local_status_check" CHECK (("status" = 'materialized' AND "materialized_agent_id" IS NOT NULL) OR "status" <> 'materialized'),
+	CONSTRAINT "platform_user_agent_materializations_error_category_check" CHECK (("status" = 'error' AND "last_error_category" IS NOT NULL) OR ("status" <> 'error' AND "last_error_category" IS NULL))
 );
 --> statement-breakpoint
 DO $$
@@ -203,15 +204,19 @@ END $$;
 CREATE OR REPLACE FUNCTION "enforce_platform_agent_assignment_target"()
 RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-  IF NEW."target_type" = 'global_role' AND NOT EXISTS (
-    SELECT 1 FROM "rbac_roles" WHERE "id" = NEW."target_id" AND "workspace_id" IS NULL
-  ) THEN
-    RAISE EXCEPTION 'platform Agent assignments require an existing global RBAC role' USING ERRCODE = '23503';
+  IF NEW."target_type" = 'global_role' THEN
+    PERFORM 1 FROM "rbac_roles"
+    WHERE "id" = NEW."target_id" AND "workspace_id" IS NULL
+    FOR KEY SHARE;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'platform Agent assignments require an existing global RBAC role' USING ERRCODE = '23503';
+    END IF;
   END IF;
-  IF NEW."target_type" = 'user' AND NOT EXISTS (
-    SELECT 1 FROM "users" WHERE "id" = NEW."target_id"
-  ) THEN
-    RAISE EXCEPTION 'platform Agent assignments require an existing user' USING ERRCODE = '23503';
+  IF NEW."target_type" = 'user' THEN
+    PERFORM 1 FROM "users" WHERE "id" = NEW."target_id" FOR KEY SHARE;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'platform Agent assignments require an existing user' USING ERRCODE = '23503';
+    END IF;
   END IF;
   RETURN NEW;
 END;
@@ -238,6 +243,9 @@ BEGIN
     END IF;
     RETURN OLD;
   END IF;
+  -- workspace_id is not a key column, so UPDATE would otherwise take a lock that
+  -- does not conflict with the assignment trigger's FOR KEY SHARE lookup.
+  PERFORM 1 FROM "rbac_roles" WHERE "id" = OLD."id" FOR UPDATE;
   IF EXISTS (
     SELECT 1 FROM "platform_agent_assignments"
     WHERE "target_type" = 'global_role' AND "target_id" = OLD."id"
@@ -269,6 +277,7 @@ BEGIN
     END IF;
     RETURN OLD;
   END IF;
+  PERFORM 1 FROM "users" WHERE "id" = OLD."id" FOR UPDATE;
   IF NEW."id" IS DISTINCT FROM OLD."id" AND EXISTS (
     SELECT 1 FROM "platform_agent_assignments"
     WHERE "target_type" = 'user' AND "target_id" = OLD."id"
@@ -291,11 +300,13 @@ END $$;
 CREATE OR REPLACE FUNCTION "enforce_platform_user_agent_materialization_owner"()
 RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-  IF NEW."materialized_agent_id" IS NOT NULL AND NOT EXISTS (
-    SELECT 1 FROM "agents"
+  IF NEW."materialized_agent_id" IS NOT NULL THEN
+    PERFORM 1 FROM "agents"
     WHERE "id" = NEW."materialized_agent_id" AND "user_id" = NEW."user_id"
-  ) THEN
-    RAISE EXCEPTION 'materialized Agent must belong to the materialization user' USING ERRCODE = '23503';
+    FOR KEY SHARE;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'materialized Agent must belong to the materialization user' USING ERRCODE = '23503';
+    END IF;
   END IF;
   RETURN NEW;
 END;
@@ -313,6 +324,9 @@ END $$;
 CREATE OR REPLACE FUNCTION "protect_materialized_agent_owner"()
 RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
+  -- user_id is not part of the Agent key, so explicitly serialize owner changes
+  -- with the materialization trigger's FOR KEY SHARE lookup.
+  PERFORM 1 FROM "agents" WHERE "id" = OLD."id" FOR UPDATE;
   IF NEW."user_id" IS DISTINCT FROM OLD."user_id" AND EXISTS (
     SELECT 1 FROM "platform_user_agent_materializations" WHERE "materialized_agent_id" = OLD."id"
   ) THEN
@@ -328,6 +342,56 @@ BEGIN
     CREATE TRIGGER "agents_materialization_owner_guard"
       BEFORE UPDATE OF "user_id" ON "agents"
       FOR EACH ROW EXECUTE FUNCTION "protect_materialized_agent_owner"();
+  END IF;
+END $$;
+--> statement-breakpoint
+CREATE OR REPLACE FUNCTION "require_exact_platform_agent_version_insert"()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW."checksum" IS NULL OR NEW."dependency_snapshot" IS NULL THEN
+    RAISE EXCEPTION 'new platform Agent versions require an exact dependency snapshot and checksum' USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+--> statement-breakpoint
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'platform_agent_versions_exact_insert_guard') THEN
+    CREATE TRIGGER "platform_agent_versions_exact_insert_guard"
+      BEFORE INSERT ON "platform_agent_versions"
+      FOR EACH ROW EXECUTE FUNCTION "require_exact_platform_agent_version_insert"();
+  END IF;
+END $$;
+--> statement-breakpoint
+CREATE OR REPLACE FUNCTION "require_exact_platform_agent_published_pointer"()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW."status" = 'published' THEN
+    IF NEW."migration_required" OR NEW."current_version_id" IS NULL OR NEW."published_at" IS NULL THEN
+      RAISE EXCEPTION 'published platform Agents require an exact current version' USING ERRCODE = '23514';
+    END IF;
+    PERFORM 1 FROM "platform_agent_versions"
+    WHERE "agent_id" = NEW."id"
+      AND "id" = NEW."current_version_id"
+      AND "checksum" IS NOT NULL
+      AND "dependency_snapshot" IS NOT NULL
+    FOR KEY SHARE;
+    IF NOT FOUND THEN
+      RAISE EXCEPTION 'published platform Agents require an exact current version' USING ERRCODE = '23514';
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+--> statement-breakpoint
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'platform_agents_exact_published_pointer_guard') THEN
+    CREATE TRIGGER "platform_agents_exact_published_pointer_guard"
+      BEFORE INSERT OR UPDATE OF "status", "current_version_id", "published_at", "migration_required"
+      ON "platform_agents"
+      FOR EACH ROW EXECUTE FUNCTION "require_exact_platform_agent_published_pointer"();
   END IF;
 END $$;
 --> statement-breakpoint

@@ -1655,7 +1655,7 @@ table platform_user_agent_materializations {
   materialized_agent_id text
   hidden boolean [not null, default: false]
   status varchar(32) [not null, default: 'pending']
-  last_error text
+  last_error_category varchar(64)
   last_synced_at "timestamp with time zone"
   created_at "timestamp with time zone" [not null, default: `now()`]
   updated_at "timestamp with time zone" [not null, default: `now()`]

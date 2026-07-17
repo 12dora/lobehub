@@ -14222,9 +14222,9 @@
           "notNull": true,
           "default": "'pending'"
         },
-        "last_error": {
-          "name": "last_error",
-          "type": "text",
+        "last_error_category": {
+          "name": "last_error_category",
+          "type": "varchar(64)",
           "primaryKey": false,
           "notNull": false
         },
@@ -14391,6 +14391,10 @@
         "platform_user_agent_materializations_local_status_check": {
           "name": "platform_user_agent_materializations_local_status_check",
           "value": "(\"platform_user_agent_materializations\".\"status\" = 'materialized' AND \"platform_user_agent_materializations\".\"materialized_agent_id\" IS NOT NULL)\n        OR (\"platform_user_agent_materializations\".\"status\" <> 'materialized')"
+        },
+        "platform_user_agent_materializations_error_category_check": {
+          "name": "platform_user_agent_materializations_error_category_check",
+          "value": "(\"platform_user_agent_materializations\".\"status\" = 'error' AND \"platform_user_agent_materializations\".\"last_error_category\" IS NOT NULL)\n        OR (\"platform_user_agent_materializations\".\"status\" <> 'error' AND \"platform_user_agent_materializations\".\"last_error_category\" IS NULL)"
         }
       },
       "isRLSEnabled": false
