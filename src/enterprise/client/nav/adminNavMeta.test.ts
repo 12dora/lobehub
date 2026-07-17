@@ -28,6 +28,11 @@ describe('adminNavMeta', () => {
     expect(findAdminNavItemByPath('/admin/managed-resources')?.requiredPermissions).toEqual([
       PLATFORM_PERMISSIONS.POLICY_READ,
     ]);
+    expect(findAdminNavItemByPath('/admin/skills')?.id).toBe('skills');
+    expect(findAdminNavItemByPath('/admin/skills/s1')?.id).toBe('skills-detail');
+    expect(findAdminNavItemByPath('/admin/skills/s1')?.requiredPermissions).toEqual([
+      PLATFORM_PERMISSIONS.SKILL_READ,
+    ]);
   });
 
   it('lets Provider auditors inspect detail without granting write actions', () => {
@@ -72,6 +77,7 @@ describe('adminNavMeta', () => {
     expect(flatIds).toContain('ai-providers');
     expect(flatIds).not.toContain('users-detail');
     expect(flatIds).not.toContain('ai-provider-detail');
+    expect(flatIds).not.toContain('skills-detail');
     expect(flatIds).not.toContain('audit');
 
     expect(canAccessAdminPath('/admin/users', granted)).toBe(true);
@@ -83,6 +89,9 @@ describe('adminNavMeta', () => {
     const crumbs = getAdminBreadcrumbs('/admin/ai/providers/p1');
     expect(crumbs.map((c) => c.id)).toEqual(
       expect.arrayContaining(['overview', 'ai-providers', 'ai-provider-detail']),
+    );
+    expect(getAdminBreadcrumbs('/admin/skills/s1').map((c) => c.id)).toEqual(
+      expect.arrayContaining(['overview', 'skills', 'skills-detail']),
     );
   });
 

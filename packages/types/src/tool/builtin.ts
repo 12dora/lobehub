@@ -1,6 +1,7 @@
 import { type ReactNode } from 'react';
 import { z } from 'zod';
 
+import type { PlatformSkillOperationSnapshot } from '../platform/skills';
 import { type RuntimeStepContext } from '../stepContext';
 import { type HumanInterventionConfig, type HumanInterventionPolicy } from './intervention';
 import { HumanInterventionConfigSchema, HumanInterventionPolicySchema } from './intervention';
@@ -565,6 +566,9 @@ export interface BuiltinToolContext {
    * The current operation ID (for abort signal)
    */
   operationId?: string;
+
+  /** Immutable exact Skill refs captured when the root operation was created. */
+  platformSkillSnapshot?: PlatformSkillOperationSnapshot;
 
   /**
    * Current plugin state for this tool message

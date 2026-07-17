@@ -17,6 +17,36 @@ const serverConfigState = vi.hoisted(() => ({
   serverConfigInit: true,
 }));
 
+const platformSkillMocks = vi.hoisted(() => ({
+  beginPlatformSkillCatalogRequest: vi.fn(),
+  completePlatformSkillCatalogRequest: vi.fn(),
+  configurePlatformSkillManagement: vi.fn(),
+  failPlatformSkillCatalogRequest: vi.fn(),
+  getPublishedCatalog: vi.fn(),
+  state: {
+    platformSkillCatalogInvalidationRevision: '0',
+  },
+}));
+
+vi.mock('../services/platformSkills', () => ({
+  platformSkillsService: { getPublishedCatalog: platformSkillMocks.getPublishedCatalog },
+}));
+
+vi.mock('@/store/tool', () => ({
+  useToolStore: Object.assign(
+    (selector: (state: typeof platformSkillMocks.state) => unknown) =>
+      selector(platformSkillMocks.state),
+    {
+      getState: () => ({
+        beginPlatformSkillCatalogRequest: platformSkillMocks.beginPlatformSkillCatalogRequest,
+        completePlatformSkillCatalogRequest: platformSkillMocks.completePlatformSkillCatalogRequest,
+        configurePlatformSkillManagement: platformSkillMocks.configurePlatformSkillManagement,
+        failPlatformSkillCatalogRequest: platformSkillMocks.failPlatformSkillCatalogRequest,
+      }),
+    },
+  ),
+}));
+
 const fetchCapabilities = vi.fn(async () => DISABLED_PLATFORM_CAPABILITIES);
 const fetchPublicSnapshot = vi.fn(async () => ({
   brandingRevision: null,
@@ -72,6 +102,14 @@ describe('EnterprisePlatformProvider', () => {
     serverConfigState.enterpriseEnabled = false;
     serverConfigState.serverConfigInit = true;
     fetchCapabilities.mockReset().mockResolvedValue(DISABLED_PLATFORM_CAPABILITIES);
+    platformSkillMocks.getPublishedCatalog.mockReset().mockResolvedValue({
+      revision: 'catalog-1',
+      skills: [],
+    });
+    platformSkillMocks.beginPlatformSkillCatalogRequest.mockReset().mockReturnValue(1);
+    platformSkillMocks.completePlatformSkillCatalogRequest.mockReset();
+    platformSkillMocks.configurePlatformSkillManagement.mockReset();
+    platformSkillMocks.failPlatformSkillCatalogRequest.mockReset();
     fetchPublicSnapshot.mockReset().mockResolvedValue({
       brandingRevision: null,
       configRevision: '0',
@@ -99,6 +137,8 @@ describe('EnterprisePlatformProvider', () => {
 
     expect(fetchCapabilities).not.toHaveBeenCalled();
     expect(fetchPublicSnapshot).not.toHaveBeenCalled();
+    expect(platformSkillMocks.getPublishedCatalog).not.toHaveBeenCalled();
+    expect(platformSkillMocks.configurePlatformSkillManagement).toHaveBeenCalledWith(false);
   });
 
   it('enterprise enabled: loads platform snapshots once config is ready', async () => {
@@ -111,6 +151,34 @@ describe('EnterprisePlatformProvider', () => {
       expect(fetchCapabilities).toHaveBeenCalledTimes(1);
       expect(fetchPublicSnapshot).toHaveBeenCalledTimes(1);
     });
+    expect(platformSkillMocks.getPublishedCatalog).not.toHaveBeenCalled();
+  });
+
+  it('loads the single platform catalog authority in ui-only managed mode', async () => {
+    serverConfigState.enterpriseEnabled = true;
+    fetchCapabilities.mockResolvedValue({
+      ...DISABLED_PLATFORM_CAPABILITIES,
+      managedResources: { ...DISABLED_PLATFORM_CAPABILITIES.managedResources, skills: true },
+    });
+
+    renderProvider();
+
+    await waitFor(() => expect(fetchCapabilities).toHaveBeenCalledOnce());
+    await waitFor(() => expect(platformSkillMocks.getPublishedCatalog).toHaveBeenCalledOnce());
+    expect(platformSkillMocks.configurePlatformSkillManagement).toHaveBeenLastCalledWith(true);
+  });
+
+  it('uses the same catalog path for every public managed Skill capability', async () => {
+    serverConfigState.enterpriseEnabled = true;
+    fetchCapabilities.mockResolvedValue({
+      ...DISABLED_PLATFORM_CAPABILITIES,
+      managedResources: { ...DISABLED_PLATFORM_CAPABILITIES.managedResources, skills: true },
+    });
+
+    renderProvider();
+
+    await waitFor(() => expect(platformSkillMocks.getPublishedCatalog).toHaveBeenCalledOnce());
+    expect(platformSkillMocks.configurePlatformSkillManagement).toHaveBeenLastCalledWith(true);
   });
 
   it('retains last-known capabilities with an error, then reactively refreshes after retry', async () => {

@@ -1,4 +1,4 @@
-import type { ChatToolPayload } from '@lobechat/types';
+import type { ChatToolPayload, PlatformSkillOperationSnapshot } from '@lobechat/types';
 import debug from 'debug';
 
 import type { ToolExecutionResultResponse } from '@/server/services/toolExecution/types';
@@ -12,7 +12,9 @@ import type { IStreamEventManager } from './types';
 const log = debug('lobe-server:agent-runtime:dispatch-client-tool');
 
 interface DispatchContext {
+  agentId?: string;
   operationId: string;
+  platformSkillSnapshot?: PlatformSkillOperationSnapshot;
   streamManager: IStreamEventManager;
   /**
    * Per-call execution budget in milliseconds, normally produced by
@@ -88,6 +90,13 @@ export async function dispatchClientTool(
   const timeoutMs = clampTimeout(ctx.timeoutMs ?? GLOBAL_DEFAULT_TIMEOUT_MS);
 
   try {
+    if (
+      ctx.platformSkillSnapshot &&
+      (ctx.platformSkillSnapshot.agentId !== ctx.agentId ||
+        ctx.platformSkillSnapshot.operationId !== operationId)
+    ) {
+      return buildErrorResult(0, 'Managed Skill operation context mismatch', 'invalid_operation');
+    }
     log(
       '[%s] dispatching client tool %s/%s (toolCallId=%s, timeout=%dms)',
       operationId,
@@ -102,6 +111,20 @@ export async function dispatchClientTool(
       arguments: chatToolPayload.arguments,
       executionTimeoutMs: timeoutMs,
       identifier: chatToolPayload.identifier,
+      platformSkillSnapshot: ctx.platformSkillSnapshot
+        ? {
+            ...(ctx.platformSkillSnapshot.agentId
+              ? { agentId: ctx.platformSkillSnapshot.agentId }
+              : {}),
+            mandatorySkillIds: ctx.platformSkillSnapshot.mandatorySkillIds,
+            ...(ctx.platformSkillSnapshot.operationId
+              ? { operationId: ctx.platformSkillSnapshot.operationId }
+              : {}),
+            ...(ctx.platformSkillSnapshot.proof ? { proof: ctx.platformSkillSnapshot.proof } : {}),
+            refs: ctx.platformSkillSnapshot.refs,
+            revision: ctx.platformSkillSnapshot.revision,
+          }
+        : undefined,
       toolCallId: chatToolPayload.id,
     });
 

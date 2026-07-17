@@ -1,7 +1,12 @@
 'use client';
 
 import { COMPOSIO_APP_TYPES, LOBEHUB_SKILL_PROVIDERS } from '@lobechat/const';
-import { getActivePluginIds, parsePluginEntry, upsertPluginMode } from '@lobechat/types';
+import {
+  getActivePluginIds,
+  getPluginMode,
+  parsePluginEntry,
+  upsertPluginMode,
+} from '@lobechat/types';
 import { type ItemType } from '@lobehub/ui';
 import { Avatar, Button, Flexbox, Icon } from '@lobehub/ui';
 import { McpIcon, SkillsIcon } from '@lobehub/ui/icons';
@@ -11,6 +16,10 @@ import { PlusIcon } from 'lucide-react';
 import React, { memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import {
+  selectSkillRuntimeSources,
+  usePublishedSkillCatalog,
+} from '@/enterprise/client/features/skills';
 import ActionDropdown from '@/features/ChatInput/ActionBar/components/ActionDropdown';
 import ComposioServerItem from '@/features/ChatInput/ActionBar/Tools/ComposioServerItem';
 import ComposioSkillIcon, {
@@ -35,14 +44,15 @@ import {
   agentSkillsSelectors,
   builtinToolSelectors,
   composioStoreSelectors,
-  lobehubSkillStoreSelectors,
   pluginSelectors,
 } from '@/store/tool/selectors';
 import { type LobeToolMetaWithAvailability } from '@/store/tool/slices/builtin/selectors';
 import { connectorSelectors } from '@/store/tool/slices/connector';
+import { getPlatformSkillToggleMode, resolvePlatformSkillSelection } from '@/types/platform/skills';
 
 import PluginTag from './PluginTag';
 import PopoverContent from './PopoverContent';
+import { runAgentToolUpdate } from './runAgentToolUpdate';
 
 const WEB_BROWSING_IDENTIFIER = 'lobe-web-browsing';
 
@@ -104,16 +114,48 @@ const AgentTool = memo<AgentToolProps>(
     const isComposioEnabledInEnv = useServerConfigStore(serverConfigSelectors.enableComposio);
 
     // LobeHub Skill-related state
-    const allLobehubSkillServers = useToolStore(lobehubSkillStoreSelectors.getServers, isEqual);
     const isLobehubSkillEnabled = useServerConfigStore(serverConfigSelectors.enableLobehubSkill);
 
     // Agent Skills-related state
-    const installedBuiltinSkills = useToolStore(
+    const rawInstalledBuiltinSkills = useToolStore(
       builtinToolSelectors.installedBuiltinSkills,
       isEqual,
     );
-    const marketAgentSkills = useToolStore(agentSkillsSelectors.getMarketAgentSkills, isEqual);
-    const userAgentSkills = useToolStore(agentSkillsSelectors.getUserAgentSkills, isEqual);
+    const rawMarketAgentSkills = useToolStore(agentSkillsSelectors.getMarketAgentSkills, isEqual);
+    const rawUserAgentSkills = useToolStore(agentSkillsSelectors.getUserAgentSkills, isEqual);
+    const rawPlatformSkillCatalog = useToolStore(
+      agentSkillsSelectors.getPlatformSkillCatalog,
+      isEqual,
+    );
+    const platformSkillRuntimeManaged = useToolStore((state) =>
+      Boolean(state.platformSkillRuntimeManaged),
+    );
+    const platformSkillRuntimeStatus = useToolStore(
+      (state) => state.platformSkillRuntimeStatus ?? 'unmanaged',
+    );
+    const platformCatalogSWR = usePublishedSkillCatalog(platformSkillRuntimeManaged);
+    const skillRuntimeSources = useMemo(
+      () =>
+        selectSkillRuntimeSources({
+          builtin: rawInstalledBuiltinSkills,
+          market: rawMarketAgentSkills,
+          platform: rawPlatformSkillCatalog,
+          status: platformSkillRuntimeStatus,
+          user: rawUserAgentSkills,
+        }),
+      [
+        platformSkillRuntimeStatus,
+        rawInstalledBuiltinSkills,
+        rawMarketAgentSkills,
+        rawPlatformSkillCatalog,
+        rawUserAgentSkills,
+      ],
+    );
+    const installedBuiltinSkills = skillRuntimeSources.builtin;
+    const marketAgentSkills = skillRuntimeSources.market;
+    const userAgentSkills = skillRuntimeSources.user;
+    const platformSkillCatalog = skillRuntimeSources.platform;
+    const useLegacySkills = platformSkillRuntimeStatus === 'unmanaged';
 
     const [updating, setUpdating] = useState(false);
     const [dropdownOpen, setDropdownOpen] = useState(false);
@@ -132,7 +174,7 @@ const AgentTool = memo<AgentToolProps>(
     ]);
     useFetchInstalledPlugins();
     useFetchUninstalledBuiltinTools(true);
-    useFetchAgentSkills(true);
+    useFetchAgentSkills(useLegacySkills);
     useCheckPluginsIsInstalled(plugins);
 
     // Load user's Composio integrations via SWR (from database)
@@ -201,11 +243,6 @@ const AgentTool = memo<AgentToolProps>(
       [canEdit, toggleWebBrowsing, togglePlugin, showWebBrowsing],
     );
 
-    // Get connected server by identifier
-    const getServerByName = (identifier: string) => {
-      return allComposioServers.find((server) => server.identifier === identifier);
-    };
-
     // Get all Composio server type identifiers (used to filter builtinList)
     const allComposioTypeIdentifiers = useMemo(
       () => new Set(COMPOSIO_APP_TYPES.map((type) => type.identifier)),
@@ -215,11 +252,11 @@ const AgentTool = memo<AgentToolProps>(
     // Get all skill identifiers (used to filter builtinList)
     const allSkillIdentifiers = useMemo(() => {
       const ids = new Set<string>();
-      for (const s of installedBuiltinSkills) ids.add(s.identifier);
-      for (const s of marketAgentSkills) ids.add(s.identifier);
-      for (const s of userAgentSkills) ids.add(s.identifier);
+      for (const s of rawInstalledBuiltinSkills) ids.add(s.identifier);
+      for (const s of rawMarketAgentSkills) ids.add(s.identifier);
+      for (const s of rawUserAgentSkills) ids.add(s.identifier);
       return ids;
-    }, [installedBuiltinSkills, marketAgentSkills, userAgentSkills]);
+    }, [rawInstalledBuiltinSkills, rawMarketAgentSkills, rawUserAgentSkills]);
 
     // Filter out Composio tools and skills from builtinList (they are displayed separately)
     // Optionally filter out tools with availableInWeb: false based on config (e.g., LocalSystem is desktop-only)
@@ -268,7 +305,9 @@ const AgentTool = memo<AgentToolProps>(
                   appSlug={type.appSlug}
                   identifier={type.identifier}
                   label={type.label}
-                  server={getServerByName(type.identifier)}
+                  server={allComposioServers.find(
+                    (server) => server.identifier === type.identifier,
+                  )}
                 />
               ),
               popoverContent: (
@@ -320,7 +359,7 @@ const AgentTool = memo<AgentToolProps>(
               ),
             }))
           : [],
-      [isLobehubSkillEnabled, allLobehubSkillServers, effectiveAgentId, t],
+      [isLobehubSkillEnabled, effectiveAgentId, t],
     );
 
     // Handle plugin remove via Tag close - use byId actions
@@ -358,9 +397,7 @@ const AgentTool = memo<AgentToolProps>(
               id={skill.identifier}
               label={skill.name}
               onUpdate={async () => {
-                setUpdating(true);
-                await handleToggleTool(skill.identifier);
-                setUpdating(false);
+                await runAgentToolUpdate(setUpdating, () => handleToggleTool(skill.identifier));
               }}
             />
           ),
@@ -409,9 +446,7 @@ const AgentTool = memo<AgentToolProps>(
               id={skill.identifier}
               label={skill.name}
               onUpdate={async () => {
-                setUpdating(true);
-                await handleToggleTool(skill.identifier);
-                setUpdating(false);
+                await runAgentToolUpdate(setUpdating, () => handleToggleTool(skill.identifier));
               }}
             />
           ),
@@ -439,9 +474,7 @@ const AgentTool = memo<AgentToolProps>(
               id={skill.identifier}
               label={skill.name}
               onUpdate={async () => {
-                setUpdating(true);
-                await handleToggleTool(skill.identifier);
-                setUpdating(false);
+                await runAgentToolUpdate(setUpdating, () => handleToggleTool(skill.identifier));
               }}
             />
           ),
@@ -458,11 +491,93 @@ const AgentTool = memo<AgentToolProps>(
       [userAgentSkills, isToolEnabled, handleToggleTool, t],
     );
 
+    const togglePlatformSkill = useCallback(
+      async (skill: NonNullable<typeof platformSkillCatalog>['skills'][number]) => {
+        if (!canEdit || !effectiveAgentId) return;
+        const current = resolvePlatformSkillSelection(
+          skill.distribution,
+          getPluginMode(config?.plugins, skill.skillKey),
+        );
+        const nextMode = getPlatformSkillToggleMode(skill.distribution, !current.available);
+        if (!nextMode) return;
+        await updateAgentConfigById(effectiveAgentId, {
+          plugins: upsertPluginMode(config?.plugins, skill.skillKey, nextMode),
+        });
+      },
+      [canEdit, config?.plugins, effectiveAgentId, updateAgentConfigById],
+    );
+
+    const platformSkillItems = useMemo(
+      () =>
+        (platformSkillCatalog?.skills ?? []).map((skill) => ({
+          icon: <Icon icon={SkillsIcon} size={SKILL_ICON_SIZE} />,
+          key: skill.skillKey,
+          label: (
+            <ToolItem
+              disabled={skill.distribution === 'mandatory' || !canEdit}
+              id={skill.skillKey}
+              label={skill.displayName}
+              checked={
+                resolvePlatformSkillSelection(
+                  skill.distribution,
+                  getPluginMode(config?.plugins, skill.skillKey),
+                ).available
+              }
+              onUpdate={async () => {
+                await runAgentToolUpdate(setUpdating, () => togglePlatformSkill(skill));
+              }}
+            />
+          ),
+          popoverContent: (
+            <ToolItemDetailPopover
+              description={skill.description ?? ''}
+              icon={<Icon icon={SkillsIcon} size={36} />}
+              identifier={skill.skillKey}
+              sourceLabel={t(`platformSkills.source.${skill.source}` as never)}
+              title={skill.displayName}
+            />
+          ),
+        })),
+      [canEdit, config?.plugins, platformSkillCatalog, t, togglePlatformSkill],
+    );
+
+    const platformSkillUnavailableItems = useMemo<ItemType[]>(() => {
+      if (!platformSkillRuntimeManaged || platformSkillRuntimeStatus === 'ready') return [];
+      const loading = platformSkillRuntimeStatus === 'loading';
+      return [
+        {
+          disabled: loading,
+          key: 'platform-skill-runtime-unavailable',
+          label: (
+            <Flexbox horizontal align="center" gap={8} justify="space-between">
+              <span>
+                {t(
+                  loading ? 'platformSkills.runtime.loading' : 'platformSkills.runtime.unavailable',
+                )}
+              </span>
+              <Button
+                disabled={loading}
+                size="small"
+                type="text"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void platformCatalogSWR.mutate();
+                }}
+              >
+                {t('retry', { ns: 'common' })}
+              </Button>
+            </Flexbox>
+          ),
+        },
+      ];
+    }, [platformCatalogSWR, platformSkillRuntimeManaged, platformSkillRuntimeStatus, t]);
+
     // Merge Builtin Agent Skills, builtin tools, LobeHub Skill Providers, and Composio servers
     const builtinItems = useMemo(
       () => [
+        ...platformSkillUnavailableItems,
         // 1. Builtin Agent Skills
-        ...builtinAgentSkillItems,
+        ...(platformSkillCatalog ? platformSkillItems : builtinAgentSkillItems),
         // 2. Original builtin tools
         ...filteredBuiltinList.map((item) => ({
           icon: (
@@ -479,9 +594,7 @@ const AgentTool = memo<AgentToolProps>(
               id={item.identifier}
               label={item.meta?.title}
               onUpdate={async () => {
-                setUpdating(true);
-                await handleToggleTool(item.identifier);
-                setUpdating(false);
+                await runAgentToolUpdate(setUpdating, () => handleToggleTool(item.identifier));
               }}
             />
           ),
@@ -512,6 +625,9 @@ const AgentTool = memo<AgentToolProps>(
       ],
       [
         builtinAgentSkillItems,
+        platformSkillUnavailableItems,
+        platformSkillCatalog,
+        platformSkillItems,
         filteredBuiltinList,
         composioServerItems,
         lobehubSkillItems,
@@ -543,9 +659,7 @@ const AgentTool = memo<AgentToolProps>(
               id={item.identifier}
               label={item.title}
               onUpdate={async () => {
-                setUpdating(true);
-                await togglePlugin(item.identifier);
-                setUpdating(false);
+                await runAgentToolUpdate(setUpdating, () => togglePlugin(item.identifier));
               }}
             />
           ),
@@ -588,8 +702,8 @@ const AgentTool = memo<AgentToolProps>(
 
     // Community group children (Market Agent Skills + community plugins)
     const communityGroupChildren = useMemo(
-      () => [...marketAgentSkillItems, ...communityPluginItems],
-      [marketAgentSkillItems, communityPluginItems],
+      () => [...(platformSkillCatalog ? [] : marketAgentSkillItems), ...communityPluginItems],
+      [platformSkillCatalog, marketAgentSkillItems, communityPluginItems],
     );
 
     // Custom connector list items (user-added OAuth MCP servers)
@@ -605,9 +719,7 @@ const AgentTool = memo<AgentToolProps>(
                 id={connector.identifier}
                 label={connector.name || connector.identifier}
                 onUpdate={async () => {
-                  setUpdating(true);
-                  await togglePlugin(connector.identifier);
-                  setUpdating(false);
+                  await runAgentToolUpdate(setUpdating, () => togglePlugin(connector.identifier));
                 }}
               />
             ),
@@ -627,8 +739,12 @@ const AgentTool = memo<AgentToolProps>(
 
     // Custom group children (User Agent Skills + custom plugins + custom connectors)
     const customGroupChildren = useMemo(
-      () => [...userAgentSkillItems, ...customPluginItems, ...customConnectorItems],
-      [userAgentSkillItems, customPluginItems, customConnectorItems],
+      () => [
+        ...(platformSkillCatalog ? [] : userAgentSkillItems),
+        ...customPluginItems,
+        ...customConnectorItems,
+      ],
+      [platformSkillCatalog, userAgentSkillItems, customPluginItems, customConnectorItems],
     );
 
     // All tab items (marketplace tab)
@@ -708,16 +824,19 @@ const AgentTool = memo<AgentToolProps>(
       }
 
       // 5. Builtin skills
-      for (const skill of installedBuiltinSkills) all.add(skill.identifier);
+      for (const skill of rawInstalledBuiltinSkills) all.add(skill.identifier);
 
       // 6. Market agent skills
-      for (const skill of marketAgentSkills) all.add(skill.identifier);
+      for (const skill of rawMarketAgentSkills) all.add(skill.identifier);
 
       // 7. User agent skills
-      for (const skill of userAgentSkills) all.add(skill.identifier);
+      for (const skill of rawUserAgentSkills) all.add(skill.identifier);
 
       // 8. Custom connectors
       for (const connector of customConnectors) all.add(connector.identifier);
+
+      // 9. Platform Published Catalog (stable skillKey identifiers)
+      for (const skill of rawPlatformSkillCatalog?.skills ?? []) all.add(skill.skillKey);
 
       return all;
     }, [
@@ -725,10 +844,11 @@ const AgentTool = memo<AgentToolProps>(
       installedPluginList,
       isComposioEnabledInEnv,
       isLobehubSkillEnabled,
-      installedBuiltinSkills,
-      marketAgentSkills,
-      userAgentSkills,
+      rawInstalledBuiltinSkills,
+      rawMarketAgentSkills,
+      rawUserAgentSkills,
       customConnectors,
+      rawPlatformSkillCatalog?.skills,
     ]);
 
     // Track whether initial cleanup has been performed
@@ -738,6 +858,12 @@ const AgentTool = memo<AgentToolProps>(
     // Uses a short debounce to allow async data (SWR) to complete loading
     useEffect(() => {
       if (cleanupDoneRef.current) return;
+      if (
+        platformSkillRuntimeManaged &&
+        (platformSkillRuntimeStatus === 'loading' || platformSkillRuntimeStatus === 'error')
+      ) {
+        return;
+      }
       if (validIdentifiers.size === 0) return;
       const rawPlugins = config?.plugins ?? [];
       if (rawPlugins.length === 0) return;

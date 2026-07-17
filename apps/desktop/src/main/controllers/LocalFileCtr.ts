@@ -3,7 +3,9 @@ import { access, readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 import {
+  cleanupInlineSkillWorkspace,
   defaultSearchProjectFiles,
+  prepareInlineSkillWorkspace,
   prepareSkillDirectory,
   type SkillDirectoryDeps,
 } from '@lobechat/device-control';
@@ -30,6 +32,8 @@ import {
   type OpenLocalFolderParams,
   type PickFileParams,
   type PickFileResult,
+  type PrepareInlineSkillWorkspaceParams,
+  type PrepareInlineSkillWorkspaceResult,
   type PrepareSkillDirectoryParams,
   type PrepareSkillDirectoryResult,
   type ProjectFileIndexEntry,
@@ -516,6 +520,20 @@ export default class LocalFileCtr extends ControllerModule {
     params: PrepareSkillDirectoryParams,
   ): Promise<PrepareSkillDirectoryResult> {
     return prepareSkillDirectory(params, this.getSkillDirectoryDeps());
+  }
+
+  @IpcMethod()
+  async handlePrepareInlineSkillWorkspace(
+    params: PrepareInlineSkillWorkspaceParams,
+  ): Promise<PrepareInlineSkillWorkspaceResult> {
+    return prepareInlineSkillWorkspace(params, {
+      cacheRoot: path.join(this.app.appStoragePath, 'file-storage', 'managed-skills'),
+    });
+  }
+
+  @IpcMethod()
+  async handleCleanupInlineSkillWorkspace(params: { workspaceId: string }) {
+    return cleanupInlineSkillWorkspace(params);
   }
 
   @IpcMethod()

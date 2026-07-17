@@ -47,6 +47,7 @@ import {
   userProfileSelectors,
 } from '@/store/user/selectors';
 import { type ChatStreamPayload, type OpenAIChatMessage } from '@/types/openai/chat';
+import type { PlatformSkillOperationSnapshot } from '@/types/platform/skills';
 import { createErrorResponse } from '@/utils/errorResponse';
 import { createTraceHeader } from '@/utils/trace';
 
@@ -76,6 +77,7 @@ interface GetChatCompletionPayload extends Partial<Omit<ChatStreamPayload, 'mess
   agentId?: string;
   groupId?: string;
   messages: UIChatMessage[];
+  platformSkillSnapshot?: PlatformSkillOperationSnapshot;
   /**
    * Pre-resolved agent config from AgentRuntime layer.
    * Required to ensure config consistency and proper isSubAgent filtering.
@@ -133,6 +135,7 @@ class ChatService {
       agentId,
       groupId,
       topicId,
+      platformSkillSnapshot,
       resolvedAgentConfig,
       ...params
     }: GetChatCompletionPayload,
@@ -304,6 +307,7 @@ class ChatService {
       messages,
       model: payload.model,
       plugins,
+      platformSkillSnapshot,
       provider: payload.provider!,
       sessionId: options?.trace?.sessionId,
       stepContext: options?.stepContext,

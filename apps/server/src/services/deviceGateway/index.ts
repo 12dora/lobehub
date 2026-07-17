@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 
 import { type DeviceAttachment } from '@lobechat/builtin-tool-remote-device';
@@ -245,6 +246,73 @@ export class DeviceGateway {
       log('prepareSkillDirectory: error for deviceId=%s — %s', deviceId, message);
       return { error: message, success: false };
     }
+  }
+
+  async prepareInlineSkillWorkspace(params: {
+    checksum: string;
+    deviceId: string;
+    operationId: string;
+    resources: Array<{
+      checksum: string;
+      content?: string;
+      contentRef?: string;
+      mediaType: string;
+      path: string;
+      sizeBytes: number;
+    }>;
+    skillContent: string;
+    skillKey: string;
+    timeout?: number;
+    userId: string;
+    version: string;
+    workspaceId?: string;
+  }): Promise<{ error?: string; success: boolean; workspaceDir?: string; workspaceId?: string }> {
+    const { deviceId, timeout = 60_000, userId, workspaceId, ...rpcParams } = params;
+    const client = this.getClient();
+    if (!client) return { error: 'Device Gateway is not configured', success: false };
+    try {
+      const result = await client.invokeRpc<{
+        error?: string;
+        success: boolean;
+        workspaceDir?: string;
+        workspaceId?: string;
+      }>(
+        { deviceId, timeout, userId, workspaceId },
+        { method: 'prepareInlineSkillWorkspace', params: rpcParams },
+      );
+      if (!result.success || !result.data) {
+        return { error: result.error || 'prepareInlineSkillWorkspace failed', success: false };
+      }
+      return result.data;
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : String(error), success: false };
+    }
+  }
+
+  async cleanupInlineSkillWorkspace(params: {
+    deviceId: string;
+    timeout?: number;
+    userId: string;
+    workspaceId: string;
+    workspacePrincipalId?: string;
+  }): Promise<boolean> {
+    const { deviceId, timeout = 15_000, userId, workspaceId, workspacePrincipalId } = params;
+    const client = this.getClient();
+    if (!client) return false;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const result = await client.invokeRpc<{ success: boolean }>(
+          { deviceId, timeout, userId, workspaceId: workspacePrincipalId },
+          { method: 'cleanupInlineSkillWorkspace', params: { workspaceId } },
+        );
+        if (result.success && result.data?.success === true) return true;
+      } catch {
+        // Bounded retry below. Do not log RPC details or remote paths.
+      }
+    }
+    const auditId = createHash('sha256').update(workspaceId).digest('hex').slice(0, 24);
+    log('managed Skill device cleanup deferred audit=%s', auditId);
+    return false;
   }
 
   /**

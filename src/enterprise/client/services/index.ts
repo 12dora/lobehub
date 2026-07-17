@@ -7,6 +7,7 @@ export {
 } from './adminAuth';
 export { adminManagedResourcesService } from './adminManagedResources';
 export { adminSettingsService } from './adminSettings';
+export { adminSkillsService } from './adminSkills';
 export {
   type AdminUsersBanInput,
   type AdminUsersGetOutput,

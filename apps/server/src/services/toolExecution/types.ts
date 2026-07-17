@@ -1,4 +1,4 @@
-import { type LobeToolManifest } from '@lobechat/context-engine';
+import type { LobeToolManifest, OperationSkillSet } from '@lobechat/context-engine';
 import { type LobeChatDatabase } from '@lobechat/database';
 import {
   type ChatToolPayload,
@@ -197,6 +197,8 @@ export interface ToolExecutionContext {
   messageId?: string;
   /** Agent runtime operation ID for structured tool outcome identity. */
   operationId?: string;
+  /** Immutable Skill catalog selected at operation creation. */
+  operationSkillSet?: OperationSkillSet;
   /**
    * Filesystem skills (name + absolute SKILL.md path) discovered on the
    * execution device. Used by the Skills runtime to load them on demand via the

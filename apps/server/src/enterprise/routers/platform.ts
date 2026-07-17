@@ -16,6 +16,10 @@ import { buildEasyauthDescriptor } from '../services/easyauthManifest';
 import { resolvePublishedManagedResourcePolicies } from '../services/managedResourceCapabilities';
 import { buildPlatformCapabilities } from '../services/platformCapabilities';
 import { buildPlatformPublicSnapshot } from '../services/platformPublicSnapshot';
+import { ensureSkillCatalogReadinessRegistered } from '../services/skillCatalog';
+import { platformSkillsRouter } from './platformSkills';
+
+ensureSkillCatalogReadinessRegistered();
 
 ensureConnectorRuntimeAuditWorkerStarted();
 
@@ -38,6 +42,8 @@ export const platformRouter = router({
         return new AiCatalogReadService(ctx.serverDB).getPublished();
       }),
   }),
+
+  skills: platformSkillsRouter,
 
   getCapabilities: authedProcedure.use(serverDatabase).query(async ({ ctx }) => {
     const flags = parseEnterpriseFeatureFlags(process.env);

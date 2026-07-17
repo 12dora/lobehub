@@ -10,3 +10,4 @@ export * from './managedResourcePolicy';
 export * from './redact';
 export * from './revision';
 export * from './settings';
+export * from './skillCatalog';

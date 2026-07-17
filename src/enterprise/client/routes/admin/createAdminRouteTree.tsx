@@ -32,6 +32,10 @@ const AiProviderDetailPage = lazy(
 const AiModelListPage = lazy(
   () => import('@/enterprise/client/features/admin/ai/models/ModelListPage'),
 );
+const SkillListPage = lazy(() => import('@/enterprise/client/features/admin/skills/SkillListPage'));
+const SkillDetailPage = lazy(
+  () => import('@/enterprise/client/features/admin/skills/SkillDetailPage'),
+);
 
 /** Honest localized loading surface for lazy admin pages (no blank frame). */
 const AdminLazyFallback = () => {
@@ -71,6 +75,12 @@ const resolveAdminLeafElement = (id: string): ReactNode => {
     }
     case 'ai-models': {
       return withLazy(<AiModelListPage />);
+    }
+    case 'skills': {
+      return withLazy(<SkillListPage />);
+    }
+    case 'skills-detail': {
+      return withLazy(<SkillDetailPage />);
     }
     default: {
       return <PlaceholderPage />;

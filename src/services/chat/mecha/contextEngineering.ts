@@ -71,6 +71,7 @@ import {
   toolSelectors,
 } from '@/store/tool/selectors';
 import { ComposioServerStatus } from '@/store/tool/slices/composioStore';
+import type { PlatformSkillOperationSnapshot } from '@/types/platform/skills';
 
 import {
   getRuntimeModelDisplayName,
@@ -120,6 +121,7 @@ interface ContextEngineeringContext {
   memoryContext?: MemoryContext;
   messages: UIChatMessage[];
   model: string;
+  platformSkillSnapshot?: PlatformSkillOperationSnapshot;
   /** Agent's enabled plugin/tool/skill identifiers (from agentConfig.plugins) */
   plugins?: string[];
   provider: string;
@@ -156,6 +158,7 @@ export const contextEngineering = async ({
   groupId,
   initialContext,
   plugins,
+  platformSkillSnapshot,
   stepContext,
   topicId,
   memoryContext,
@@ -685,12 +688,15 @@ export const contextEngineering = async ({
   // In manual mode: only expose user-selected skills (filtered by pluginIds).
   let enabledSkills: OperationSkillSet['skills'] | undefined;
   if (plugins) {
-    const skillSet = await resolveClientSkills(plugins, disabledPluginIds);
+    const skillSet = await resolveClientSkills(plugins, disabledPluginIds, platformSkillSnapshot);
     if (isInAutoSkillMode) {
       enabledSkills = skillSet.skills;
     } else {
       const selectedIds = new Set(plugins);
-      enabledSkills = skillSet.skills.filter((s) => selectedIds.has(s.identifier));
+      const mandatoryIds = new Set(skillSet.platformCatalog?.mandatorySkillIds ?? []);
+      enabledSkills = skillSet.skills.filter(
+        (skill) => selectedIds.has(skill.identifier) || mandatoryIds.has(skill.identifier),
+      );
     }
   }
 

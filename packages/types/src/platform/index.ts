@@ -5,3 +5,4 @@ export * from './managedResources';
 export * from './publicSnapshot';
 export * from './revision';
 export * from './settings';
+export * from './skills';
