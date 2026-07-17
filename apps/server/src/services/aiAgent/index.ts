@@ -97,7 +97,7 @@ import { buildConnectorManifests } from '@/libs/mcp/buildConnectorManifests';
 import { patchManifestWithPermissions } from '@/libs/mcp/connectorPermissionCheck';
 import { signOperationJwt, signUserJWT } from '@/libs/trpc/utils/internalJwt';
 import { parseEnterpriseFeatureFlags } from '@/server/enterprise/featureFlags';
-import { resolveManagedSkillRuntimeMode } from '@/server/enterprise/services/managedResourceCapabilities';
+import { getManagedSkillRuntimeModeSnapshot } from '@/server/enterprise/services/managedResourceCapabilities';
 import {
   getEffectiveMemorySettings,
   resolveEffectiveUserInterventionConfig,
@@ -3436,11 +3436,11 @@ export class AiAgentService {
       Object.keys(toolManifestMap).length,
     );
 
-    // Resolve the platform boundary before touching any personal, project or
-    // agent-document Skill source. Feature-off exits inside the resolver
-    // before constructing policy/catalog services.
+    // Read the trusted non-hot policy snapshot before touching any personal,
+    // project or agent-document Skill source. This operation hot path performs
+    // no epoch/policy I/O; feature-on cache misses fail closed as enforced.
     const enterpriseFlags = parseEnterpriseFeatureFlags(process.env);
-    const managedSkillEffectiveMode = await resolveManagedSkillRuntimeMode({
+    const managedSkillEffectiveMode = getManagedSkillRuntimeModeSnapshot({
       db: this.db,
       flags: enterpriseFlags,
     });

@@ -12,6 +12,7 @@ const {
   mockGetComposioManifests,
   mockGetLobehubSkillManifests,
   mockGetAgentSkills,
+  mockGetManagedSkillRuntimeModeSnapshot,
   mockMessageCreate,
   mockPluginQuery,
   mockResolvePlatformSkillRuntimeSnapshot,
@@ -28,6 +29,7 @@ const {
   mockGetComposioManifests: vi.fn().mockResolvedValue([]),
   mockGetLobehubSkillManifests: vi.fn().mockResolvedValue([]),
   mockGetAgentSkills: vi.fn().mockResolvedValue([]),
+  mockGetManagedSkillRuntimeModeSnapshot: vi.fn().mockReturnValue('unmanaged'),
   mockMessageCreate: vi.fn(),
   mockPluginQuery: vi.fn().mockResolvedValue([]),
   mockResolvePlatformSkillRuntimeSnapshot: vi.fn().mockResolvedValue(undefined),
@@ -36,6 +38,10 @@ const {
 
 vi.mock('@/server/enterprise/services/skillCatalog', () => ({
   resolvePlatformSkillRuntimeSnapshot: mockResolvePlatformSkillRuntimeSnapshot,
+}));
+
+vi.mock('@/server/enterprise/services/managedResourceCapabilities', () => ({
+  getManagedSkillRuntimeModeSnapshot: mockGetManagedSkillRuntimeModeSnapshot,
 }));
 
 vi.mock('@/libs/trusted-client', () => ({
@@ -193,6 +199,7 @@ describe('AiAgentService.execAgent - three-state plugin config (pinned/auto/disa
       pluginManifest('plugin-c'),
     ]);
     mockResolvePlatformSkillRuntimeSnapshot.mockResolvedValue(undefined);
+    mockGetManagedSkillRuntimeModeSnapshot.mockReturnValue('unmanaged');
     mockGetAgentSkills.mockResolvedValue([]);
     mockSkillFindAll.mockResolvedValue({ data: [], total: 0 });
     service = new AiAgentService({} as any, 'test-user-id');
@@ -286,6 +293,7 @@ describe('AiAgentService.execAgent - three-state plugin config (pinned/auto/disa
       },
       skills: [{ description: 'Managed', identifier: 'managed.skill', name: 'managed.skill' }],
     });
+    mockGetManagedSkillRuntimeModeSnapshot.mockReturnValue('enforced');
     mockGetAgentConfig.mockResolvedValue({
       chatConfig: {},
       id: 'agent-1',
@@ -307,5 +315,6 @@ describe('AiAgentService.execAgent - three-state plugin config (pinned/auto/disa
     });
     expect(mockSkillFindAll).not.toHaveBeenCalled();
     expect(mockGetAgentSkills).not.toHaveBeenCalled();
+    expect(mockGetManagedSkillRuntimeModeSnapshot).toHaveBeenCalledOnce();
   });
 });

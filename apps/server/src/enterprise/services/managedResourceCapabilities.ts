@@ -53,6 +53,14 @@ export interface ResolvedManagedResourcePolicies {
   revision: number;
 }
 
+const setManagedSkillRuntimeModeSnapshot = (
+  db: LobeChatDatabase,
+  mode: ResolvedManagedResourcePolicies['effectiveModes']['skills'],
+  expiresAt = Date.now() + RUNTIME_MODE_CACHE_TTL_MS,
+) => {
+  runtimeModeSnapshotCache.set(db as object, { expiresAt, mode });
+};
+
 export const resolvePublishedManagedResourcePolicies = async (params: {
   db: LobeChatDatabase;
   flags: EnterpriseFeatureFlags;
@@ -80,6 +88,8 @@ export const resolvePublishedManagedResourcePolicies = async (params: {
       featureOn && policy.managed && catalogSafe ? policy.enforcementMode : 'unmanaged';
     publicCapabilities[resource] = ['ui-only', 'enforced'].includes(effectiveModes[resource]);
   }
+
+  setManagedSkillRuntimeModeSnapshot(params.db, effectiveModes.skills);
 
   return { effectiveModes, publicCapabilities, published, readiness, revision: snapshot.revision };
 };
@@ -114,10 +124,7 @@ export const resolveManagedSkillRuntimeMode = async (params: {
   )().catch(() => 'unavailable');
   const cached = runtimeModeCache.get(sourceId);
   if (cached && cached.epoch === epoch && cached.expiresAt > now) {
-    runtimeModeSnapshotCache.set(params.db as object, {
-      expiresAt: cached.expiresAt,
-      mode: cached.mode,
-    });
+    setManagedSkillRuntimeModeSnapshot(params.db, cached.mode, cached.expiresAt);
     return cached.mode;
   }
 
@@ -132,10 +139,11 @@ export const resolveManagedSkillRuntimeMode = async (params: {
     expiresAt: now + (params.options?.cacheTtlMs ?? RUNTIME_MODE_CACHE_TTL_MS),
     mode,
   });
-  runtimeModeSnapshotCache.set(params.db as object, {
-    expiresAt: now + (params.options?.cacheTtlMs ?? RUNTIME_MODE_CACHE_TTL_MS),
+  setManagedSkillRuntimeModeSnapshot(
+    params.db,
     mode,
-  });
+    now + (params.options?.cacheTtlMs ?? RUNTIME_MODE_CACHE_TTL_MS),
+  );
   return mode;
 };
 

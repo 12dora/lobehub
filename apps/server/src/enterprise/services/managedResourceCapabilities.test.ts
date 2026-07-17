@@ -142,6 +142,22 @@ describe('resolveManagedSkillRuntimeMode', () => {
 });
 
 describe('resolvePublishedManagedResourcePolicies', () => {
+  it('injects the trusted published Skill mode for synchronous operation reads', async () => {
+    const model = new PlatformManagedResourcePolicyModel(serverDB);
+    await model.ensureRows();
+    const policies = createUnmanagedResourcePolicyMap();
+    policies.skills = { enforcementMode: 'observe', managed: true };
+    await model.materializePublished({ policies, revision: 1 });
+    const flags = {
+      ...DEFAULT_ENTERPRISE_FEATURE_FLAGS,
+      ENABLE_PLATFORM_MANAGED_SKILLS: true,
+    };
+
+    await resolvePublishedManagedResourcePolicies({ db: serverDB, flags, readiness });
+
+    expect(getManagedSkillRuntimeModeSnapshot({ db: serverDB, flags })).toBe('observe');
+  });
+
   it('reads published only: an unpublished draft never changes public capabilities', async () => {
     const model = new PlatformManagedResourcePolicyModel(serverDB);
     await model.ensureRows();
