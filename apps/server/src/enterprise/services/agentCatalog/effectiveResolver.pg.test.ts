@@ -367,6 +367,31 @@ run('PlatformAgentEffectiveResolver (PostgreSQL) — R1 / R2 / R3', () => {
       );
     });
 
+    it('materializing AFTER hide upgrades the visibility-only row and still blocks archive', async () => {
+      await seedGlobalAgent('vis-upgrade', 'optional');
+      // hide first → visibility-only row (last_synced_at NULL).
+      await resolver().setAgentHidden('vis-user', 'vis-upgrade', true);
+      expect((await materializationRow('vis-user', 'vis-upgrade')).lastSyncedAt).toBeNull();
+
+      // then a real materialization at the same version must upgrade the row, not bypass it.
+      await realMaterialize('vis-user', 'vis-upgrade');
+      const upgraded = await materializationRow('vis-user', 'vis-upgrade');
+      expect(upgraded.lastSyncedAt).not.toBeNull();
+      expect(upgraded.hidden).toBe(true);
+      expect(upgraded.platformAgentVersionId).toBe('vis-upgrade-v1');
+      expect(upgraded.status).toBe('pending');
+
+      // archive must now see a real materialization reference and refuse (fails pre-fix).
+      await clearAssignments('vis-upgrade');
+      await expect(archiveAgent('vis-upgrade')).rejects.toBeInstanceOf(
+        PlatformAgentResourceInUseError,
+      );
+      expect(
+        (await db.select().from(platformAgents).where(eq(platformAgents.id, 'vis-upgrade')))[0]
+          .status,
+      ).toBe('published');
+    });
+
     it('keeps blocking archive when a real materialization is also hidden', async () => {
       await seedGlobalAgent('vis-realhidden', 'optional');
       await realMaterialize('vis-user', 'vis-realhidden');
