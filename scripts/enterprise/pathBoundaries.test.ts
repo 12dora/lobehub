@@ -34,6 +34,14 @@ describe('enterprise path boundaries', () => {
     expect(ENTERPRISE_UPSTREAM_MOUNT_POINTS).toContain(
       'src/routes/(main)/settings/skill/features/PlatformSkillList.tsx',
     );
+    expect(ENTERPRISE_UPSTREAM_MOUNT_POINTS).toContain(
+      'src/features/PlatformConnectorAuthorization/enterpriseAdapter.ts',
+    );
+    expect(
+      ENTERPRISE_UPSTREAM_MOUNT_POINTS.filter((path) =>
+        path.startsWith('src/features/PlatformConnectorAuthorization/'),
+      ),
+    ).toEqual(['src/features/PlatformConnectorAuthorization/enterpriseAdapter.ts']);
   });
 
   it('treats enterprise trees as owned', () => {

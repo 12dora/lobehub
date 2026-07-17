@@ -1,14 +1,33 @@
-import type {
-  UserConnectorAuthorizationStatusInput,
-  UserConnectorAuthorizationStatusOutput,
-  UserConnectorDisconnectInput,
-  UserConnectorDisconnectOutput,
-  UserConnectorListInput,
-  UserConnectorListOutput,
-  UserConnectorStartAuthorizationInput,
-  UserConnectorStartAuthorizationOutput,
-} from '@/features/PlatformConnectorAuthorization/types';
+import type { z } from 'zod';
+
 import { lambdaClient } from '@/libs/trpc/client';
+import type {
+  userConnectorDisconnectInputSchema,
+  userConnectorDisconnectOutputSchema,
+  userConnectorGetAuthorizationStatusInputSchema,
+  userConnectorGetAuthorizationStatusOutputSchema,
+  userConnectorListManagedInputSchema,
+  userConnectorListManagedOutputSchema,
+  userConnectorStartAuthorizationInputSchema,
+  userConnectorStartAuthorizationOutputSchema,
+} from '@/server/enterprise/contracts/platformConnectors';
+
+type UserConnectorDisconnectInput = z.infer<typeof userConnectorDisconnectInputSchema>;
+type UserConnectorDisconnectOutput = z.infer<typeof userConnectorDisconnectOutputSchema>;
+type UserConnectorAuthorizationStatusInput = z.infer<
+  typeof userConnectorGetAuthorizationStatusInputSchema
+>;
+type UserConnectorAuthorizationStatusOutput = z.infer<
+  typeof userConnectorGetAuthorizationStatusOutputSchema
+>;
+type UserConnectorListInput = z.infer<typeof userConnectorListManagedInputSchema>;
+type UserConnectorListOutput = z.infer<typeof userConnectorListManagedOutputSchema>;
+type UserConnectorStartAuthorizationInput = z.infer<
+  typeof userConnectorStartAuthorizationInputSchema
+>;
+type UserConnectorStartAuthorizationOutput = z.infer<
+  typeof userConnectorStartAuthorizationOutputSchema
+>;
 
 class PlatformConnectorsService {
   disconnect = async (

@@ -2,8 +2,7 @@
 
 import { useCallback, useState } from 'react';
 
-import { platformConnectorsService } from '@/enterprise/client/services/platformConnectors';
-
+import { managedConnectorClient } from './enterpriseAdapter';
 import type { ConnectorClientErrorCode } from './errorCode';
 import { resolveConnectorErrorCode } from './errorCode';
 import { waitForManagedConnectorAuthorization } from './oauthFlow';
@@ -33,14 +32,14 @@ export const useConnectorAuthorizationActions = () => {
     setBusyConnectorId(connectorId);
     setFeedback(null);
     try {
-      const { authorizationUrl } = await platformConnectorsService.startAuthorization({
+      const { authorizationUrl } = await managedConnectorClient.startAuthorization({
         connectorId,
         returnTo: '/settings/connector',
       });
       popup.location.assign(authorizationUrl);
       const result = await waitForManagedConnectorAuthorization({
         getStatus: async () =>
-          (await platformConnectorsService.getAuthorizationStatus({ connectorId })).binding,
+          (await managedConnectorClient.getAuthorizationStatus({ connectorId })).binding,
         popup,
       });
       if (!popup.closed) popup.close();
@@ -67,7 +66,7 @@ export const useConnectorAuthorizationActions = () => {
     setBusyConnectorId(connectorId);
     setFeedback(null);
     try {
-      await platformConnectorsService.disconnect({ connectorId });
+      await managedConnectorClient.disconnect({ connectorId });
       await refreshManagedConnectorLists();
       setFeedback({ code: 'PLATFORM_CONNECTOR_DISCONNECTED', connectorId, type: 'success' });
     } catch (error) {

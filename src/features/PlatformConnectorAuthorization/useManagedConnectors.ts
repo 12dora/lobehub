@@ -2,16 +2,16 @@
 
 import { mutate } from 'swr';
 
-import { platformConnectorsService } from '@/enterprise/client/services/platformConnectors';
 import { useClientDataSWR } from '@/libs/swr';
 
+import { managedConnectorClient } from './enterpriseAdapter';
 import { buildManagedConnectorListKey, MANAGED_CONNECTOR_LIST_KEY } from './swrKeys';
 import type { UserConnectorListInput } from './types';
 
 export const useFetchManagedConnectors = (input: UserConnectorListInput) =>
   useClientDataSWR(
     buildManagedConnectorListKey(input),
-    () => platformConnectorsService.listManaged(input),
+    () => managedConnectorClient.listManaged(input),
     { revalidateOnFocus: false },
   );
 
