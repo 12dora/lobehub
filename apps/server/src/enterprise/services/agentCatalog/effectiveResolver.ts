@@ -32,6 +32,15 @@ export interface PlatformAgentOperationSnapshot {
   versionId: string;
 }
 
+/**
+ * Operation-scoped handle (R2). Wraps a single captured snapshot; `getSnapshot()` replays that
+ * exact frozen value for the whole operation and never re-resolves the current pointer.
+ */
+export interface PlatformAgentOperationHandle {
+  getSnapshot: () => PlatformAgentOperationSnapshot;
+  readonly platformAgentId: string;
+}
+
 /** Authorized (assignment-resolved) Agent before per-user hidden filtering. */
 interface AuthorizedAgent {
   agentKey: string;
@@ -160,12 +169,12 @@ export class PlatformAgentEffectiveResolver {
   };
 
   /**
-   * Capture an immutable operation snapshot of an authorized Agent's exact version (R2).
-   * Resolves against the authorization set (not the hidden-filtered list), so an operation
-   * that targets an entitled Agent always pins a version. Returns null when the user is not
+   * Capture an immutable operation snapshot ONCE against the authorization set (not the
+   * hidden-filtered list). The only capture entry point; callers reach it through
+   * `beginOperation`, never re-resolving mid-operation. Returns null when the user is not
    * entitled to the Agent — no assignment / target / role metadata is exposed.
    */
-  resolveOperationSnapshot = async (
+  private captureOperationSnapshot = async (
     userId: string,
     platformAgentId: string,
   ): Promise<PlatformAgentOperationSnapshot | null> => {
@@ -183,9 +192,33 @@ export class PlatformAgentEffectiveResolver {
   };
 
   /**
+   * Begin an operation-scoped boundary (R2). Captures the exact version exactly once, then
+   * returns a handle whose `getSnapshot()` only ever replays that frozen capture — there is no
+   * path to re-resolve current/latest within a handle, so publishing v2 cannot swap the version
+   * out from under an in-flight operation. A fresh `beginOperation` is the only way to capture a
+   * newer version. The handle is a frozen closure over an immutable value — no global cache, no
+   * cross-request state, nothing to leak. Returns null when the user is not entitled to the Agent.
+   */
+  beginOperation = async (
+    userId: string,
+    platformAgentId: string,
+  ): Promise<PlatformAgentOperationHandle | null> => {
+    const snapshot = await this.captureOperationSnapshot(userId, platformAgentId);
+    if (!snapshot) return null;
+    return Object.freeze<PlatformAgentOperationHandle>({
+      getSnapshot: () => snapshot,
+      platformAgentId: snapshot.platformAgentId,
+    });
+  };
+
+  /**
    * Owner-scoped visibility write. Only ever acts on the trusted `userId`'s own row (there is
    * no target-user parameter to forge), and only for an Agent the user is entitled to. Hiding a
    * mandatory Agent is accepted but has no read effect — mandatory always stays visible.
+   *
+   * If the Agent is archived between authorization and the write (a lost archive race), the
+   * repository returns false under its per-Agent lock and this maps to a stable NotFound rather
+   * than silently succeeding (R1-02).
    */
   setAgentHidden = async (
     userId: string,
@@ -195,12 +228,13 @@ export class PlatformAgentEffectiveResolver {
     const authorized = await this.resolveAuthorized(userId);
     const target = authorized.find((agent) => agent.platformAgentId === platformAgentId);
     if (!target) throw new PlatformAgentNotFoundError();
-    await new PlatformAgentCatalogRepository(this.db).setMaterializationHidden({
+    const written = await new PlatformAgentCatalogRepository(this.db).setMaterializationHidden({
       hidden,
       platformAgentId: target.platformAgentId,
       platformAgentVersionChecksum: target.checksum,
       platformAgentVersionId: target.versionId,
       userId,
     });
+    if (!written) throw new PlatformAgentNotFoundError();
   };
 }

@@ -207,49 +207,67 @@ describe('PlatformAgentEffectiveResolver', () => {
     });
   });
 
-  // R2: operation snapshot is copy-safe and pins the exact version captured at call time.
-  describe('operation snapshot (R2)', () => {
+  // R2: operation handle captures once and replays a copy-safe, version-pinned snapshot.
+  describe('operation handle (R2)', () => {
     it('returns a deep-frozen snapshot that a caller cannot mutate or pollute', async () => {
       listEffectiveInputs.mockResolvedValue([
         row({ agentId: 'snap', agentKey: 'snap', assignmentId: 'a', priority: 1 }),
       ]);
-      const snapshot = await createResolver().resolveOperationSnapshot('user', 'snap');
+      const handle = await createResolver().beginOperation('user', 'snap');
+      const snapshot = handle!.getSnapshot();
       expect(snapshot).toMatchObject({
         checksum: 'a'.repeat(64),
         platformAgentId: 'snap',
         versionId: 'snap-version',
       });
       expect(Object.isFrozen(snapshot)).toBe(true);
-      expect(Object.isFrozen(snapshot!.config)).toBe(true);
+      expect(Object.isFrozen(snapshot.config)).toBe(true);
       // Deep clone: mutating the source config does not change the captured snapshot.
-      expect(snapshot!.config).not.toBe(config);
+      expect(snapshot.config).not.toBe(config);
       expect(() => {
-        (snapshot!.config as { displayName: string }).displayName = 'tampered';
+        (snapshot.config as { displayName: string }).displayName = 'tampered';
       }).toThrow();
-      expect(snapshot!.config.displayName).toBe('Support');
+      expect(snapshot.config.displayName).toBe('Support');
       expect(JSON.stringify(snapshot)).not.toContain('dependencySnapshot');
     });
 
-    it('pins the version captured when the operation started even after a new publish', async () => {
+    it('captures exactly once per handle and replays the same value on repeated reads', async () => {
+      listEffectiveInputs.mockResolvedValue([
+        row({ agentId: 'once', agentKey: 'once', assignmentId: 'a', priority: 1 }),
+      ]);
+      const handle = await createResolver().beginOperation('user', 'once');
+      expect(listEffectiveInputs).toHaveBeenCalledTimes(1);
+      const first = handle!.getSnapshot();
+      const second = handle!.getSnapshot();
+      const third = handle!.getSnapshot();
+      // No re-resolution: still one repository call, and the same frozen value every time.
+      expect(listEffectiveInputs).toHaveBeenCalledTimes(1);
+      expect(second).toBe(first);
+      expect(third).toBe(first);
+    });
+
+    it('pins the version captured at begin even after a new publish; a new handle sees v2', async () => {
       listEffectiveInputs.mockResolvedValue([
         row({ agentId: 'ver', agentKey: 'ver', assignmentId: 'a', priority: 1, versionId: 'v1' }),
       ]);
       const resolver = createResolver();
-      const operationA = await resolver.resolveOperationSnapshot('user', 'ver');
+      const operationA = await resolver.beginOperation('user', 'ver');
 
       // Publish v2 (the current pointer now resolves to a new version).
       listEffectiveInputs.mockResolvedValue([
         row({ agentId: 'ver', agentKey: 'ver', assignmentId: 'a', priority: 1, versionId: 'v2' }),
       ]);
-      const operationB = await resolver.resolveOperationSnapshot('user', 'ver');
+      const operationB = await resolver.beginOperation('user', 'ver');
 
-      expect(operationA?.versionId).toBe('v1'); // held snapshot unchanged by the new publish
-      expect(operationB?.versionId).toBe('v2'); // a fresh operation captures the new version
+      // The handle replays its captured version no matter how often it is read.
+      expect(operationA!.getSnapshot().versionId).toBe('v1');
+      expect(operationA!.getSnapshot().versionId).toBe('v1');
+      expect(operationB!.getSnapshot().versionId).toBe('v2');
     });
 
     it('returns null for an Agent the user is not entitled to', async () => {
       listEffectiveInputs.mockResolvedValue([]);
-      expect(await createResolver().resolveOperationSnapshot('user', 'nope')).toBeNull();
+      expect(await createResolver().beginOperation('user', 'nope')).toBeNull();
     });
   });
 });
