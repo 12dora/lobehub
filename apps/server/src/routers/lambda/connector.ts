@@ -15,7 +15,10 @@ import {
 import { inferCrudType } from '@/libs/mcp/utils';
 import { router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
-import { assertLegacyConnectorTransportAllowed } from '@/server/enterprise/guards/connectorRuntimeTransport';
+import {
+  assertLegacyConnectorTransportAllowed,
+  mapConnectorRuntimeTransportError,
+} from '@/server/enterprise/guards/connectorRuntimeTransport';
 import {
   isConnectorDisconnectInput,
   withManagedResourceGuard,
@@ -348,7 +351,8 @@ export const connectorRouter = router({
         await assertLegacyConnectorTransportAllowed();
         return await syncConnectorToolsById(input.id, ctx);
       } catch (err: any) {
-        if (err instanceof TRPCError) throw err;
+        const mapped = mapConnectorRuntimeTransportError(err);
+        if (mapped) throw mapped;
         throw new TRPCError({
           cause: err,
           code: 'INTERNAL_SERVER_ERROR',

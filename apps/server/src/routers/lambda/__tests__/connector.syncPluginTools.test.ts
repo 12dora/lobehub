@@ -4,8 +4,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ConnectorModel } from '@/database/models/connector';
 import { ConnectorToolModel } from '@/database/models/connectorTool';
 import { PluginModel } from '@/database/models/plugin';
+import { PlatformConnectorContractError } from '@/server/enterprise/services/connectorCatalog/errors';
 
 import { connectorRouter } from '../connector';
+
+const mocks = vi.hoisted(() => ({ syncConnectorToolsById: vi.fn() }));
 
 // `vi.mock` is hoisted by vitest's transformer above all imports at runtime,
 // so the relative import order doesn't matter functionally — the mocks below
@@ -14,6 +17,10 @@ import { connectorRouter } from '../connector';
 vi.mock('@/database/models/connector', () => ({ ConnectorModel: vi.fn() }));
 vi.mock('@/database/models/connectorTool', () => ({ ConnectorToolModel: vi.fn() }));
 vi.mock('@/database/models/plugin', () => ({ PluginModel: vi.fn() }));
+vi.mock('@/server/services/connector/sync', async (importOriginal) => ({
+  ...((await importOriginal()) as Record<string, unknown>),
+  syncConnectorToolsById: mocks.syncConnectorToolsById,
+}));
 vi.mock('@/server/modules/KeyVaultsEncrypt', () => ({
   KeyVaultsGateKeeper: { initWithEnvKey: async () => ({}) },
 }));
@@ -43,6 +50,7 @@ describe('connectorRouter.syncPluginTools — customPlugin guard', () => {
     };
     connectorToolModelMock = { upsertMany: vi.fn() };
     pluginModelMock = { findById: vi.fn() };
+    mocks.syncConnectorToolsById.mockReset();
 
     vi.mocked(ConnectorModel).mockImplementation(() => connectorModelMock);
     vi.mocked(ConnectorToolModel).mockImplementation(() => connectorToolModelMock);
@@ -55,6 +63,18 @@ describe('connectorRouter.syncPluginTools — customPlugin guard', () => {
       userId: 'user_test',
       workspaceId: workspaceId ?? null,
     } as any);
+
+  it('preserves the stable contract when the second sync guard closes after entry', async () => {
+    mocks.syncConnectorToolsById.mockRejectedValueOnce(
+      new PlatformConnectorContractError('PLATFORM_CONNECTOR_TOOL_DENIED'),
+    );
+
+    const error = await callerFor()
+      .syncTools({ id: '00000000-0000-4000-8000-000000000001' })
+      .catch((reason: unknown) => reason);
+
+    expect(error).toMatchObject({ code: 'FORBIDDEN', message: 'PLATFORM_CONNECTOR_TOOL_DENIED' });
+  });
 
   it('returns { connectorId: null } early for customPlugin rows that own an MCP endpoint', async () => {
     // This is the load-bearing guard: legacy custom MCP plugins MUST go through
