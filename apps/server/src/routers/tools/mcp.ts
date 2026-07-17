@@ -13,7 +13,7 @@ import { ConnectorToolPermission } from '@/database/schemas';
 import { type ToolCallContent } from '@/libs/mcp';
 import { router } from '@/libs/trpc/lambda';
 import { serverDatabase, telemetry } from '@/libs/trpc/lambda/middleware';
-import { assertLegacyConnectorRuntimeAllowed } from '@/server/enterprise/services/connectorCatalog/runtimeIntegration';
+import { assertLegacyConnectorTransportAllowed } from '@/server/enterprise/guards/connectorRuntimeTransport';
 import { FileService } from '@/server/services/file';
 import { mcpService } from '@/server/services/mcp';
 import { processContentBlocks } from '@/server/services/mcp/contentProcessor';
@@ -83,7 +83,7 @@ export const mcpRouter = router({
   getStreamableMcpServerManifest: mcpProcedure
     .input(GetStreamableMcpServerManifestInputSchema)
     .query(async ({ input }) => {
-      await assertLegacyConnectorRuntimeAllowed({});
+      await assertLegacyConnectorTransportAllowed();
       return await mcpService.getStreamableMcpServerManifest(
         input.identifier,
         input.url,
@@ -97,7 +97,7 @@ export const mcpRouter = router({
   listTools: mcpProcedure
     .input(mcpClientParamsSchema) // Use the unified schema
     .query(async ({ input }) => {
-      await assertLegacyConnectorRuntimeAllowed({});
+      await assertLegacyConnectorTransportAllowed();
       // Stdio check can be done here or rely on the service/client layer
       checkStdioEnvironment(input);
 
@@ -109,7 +109,7 @@ export const mcpRouter = router({
   listResources: mcpProcedure
     .input(mcpClientParamsSchema) // Use the unified schema
     .query(async ({ input }) => {
-      await assertLegacyConnectorRuntimeAllowed({});
+      await assertLegacyConnectorTransportAllowed();
       // Stdio check can be done here or rely on the service/client layer
       checkStdioEnvironment(input);
 
@@ -121,7 +121,7 @@ export const mcpRouter = router({
   listPrompts: mcpProcedure
     .input(mcpClientParamsSchema) // Use the unified schema
     .query(async ({ input }) => {
-      await assertLegacyConnectorRuntimeAllowed({});
+      await assertLegacyConnectorTransportAllowed();
       // Stdio check can be done here or rely on the service/client layer
       checkStdioEnvironment(input);
 
@@ -140,7 +140,7 @@ export const mcpRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      await assertLegacyConnectorRuntimeAllowed({});
+      await assertLegacyConnectorTransportAllowed();
       // Stdio check can be done here or rely on the service/client layer
       checkStdioEnvironment(input.params);
 
