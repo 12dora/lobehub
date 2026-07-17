@@ -34,9 +34,24 @@ type ExactPlatformAgentVersion = Omit<
   dependencySnapshot: PlatformAgentDependencySnapshot;
 };
 
+export type PlatformAgentAssignmentSafeItem = Pick<
+  PlatformAgentAssignmentItem,
+  | 'agentId'
+  | 'createdAt'
+  | 'enabled'
+  | 'id'
+  | 'mode'
+  | 'pinnedVersionId'
+  | 'status'
+  | 'targetId'
+  | 'targetType'
+  | 'updatedAt'
+  | 'versionPolicy'
+>;
+
 export interface PlatformAgentEffectiveInput {
   agent: PlatformAgentItem;
-  assignment: PlatformAgentAssignmentItem;
+  assignment: PlatformAgentAssignmentSafeItem;
   targetPriority: 1 | 2 | 3;
   version: ExactPlatformAgentVersion;
 }
@@ -70,6 +85,20 @@ const targetPriority = sql<1 | 2 | 3>`CASE
   WHEN ${platformAgentAssignments.targetType} = 'global_role' THEN 2
   ELSE 1
 END`;
+
+const safeAssignmentColumns = {
+  agentId: platformAgentAssignments.agentId,
+  createdAt: platformAgentAssignments.createdAt,
+  enabled: platformAgentAssignments.enabled,
+  id: platformAgentAssignments.id,
+  mode: platformAgentAssignments.mode,
+  pinnedVersionId: platformAgentAssignments.pinnedVersionId,
+  status: platformAgentAssignments.status,
+  targetId: platformAgentAssignments.targetId,
+  targetType: platformAgentAssignments.targetType,
+  updatedAt: platformAgentAssignments.updatedAt,
+  versionPolicy: platformAgentAssignments.versionPolicy,
+};
 
 /** PR-047 persistence primitives only; publication policy and resolution live in later services. */
 export class PlatformAgentCatalogRepository {
@@ -189,24 +218,6 @@ export class PlatformAgentCatalogRepository {
     return row as ExactPlatformAgentVersion | undefined;
   };
 
-  getLatestExactVersion = async (
-    agentId: string,
-  ): Promise<ExactPlatformAgentVersion | undefined> => {
-    const [row] = await this.db
-      .select()
-      .from(platformAgentVersions)
-      .where(
-        and(
-          eq(platformAgentVersions.agentId, agentId),
-          isNotNull(platformAgentVersions.checksum),
-          isNotNull(platformAgentVersions.dependencySnapshot),
-        ),
-      )
-      .orderBy(desc(platformAgentVersions.createdAt), desc(platformAgentVersions.id))
-      .limit(1);
-    return row as ExactPlatformAgentVersion | undefined;
-  };
-
   pointToVersionCas = async (params: {
     agentId: string;
     expectedDraftSequence: number;
@@ -253,37 +264,37 @@ export class PlatformAgentCatalogRepository {
 
   createAssignment = async (
     values: PlatformAgentAssignmentWrite,
-  ): Promise<PlatformAgentAssignmentItem> => {
+  ): Promise<PlatformAgentAssignmentSafeItem> => {
     const [row] = await this.db
       .insert(platformAgentAssignments)
       .values({ ...values, status: 'active' })
-      .returning();
+      .returning(safeAssignmentColumns);
     return row;
   };
 
   updateAssignment = async (
     id: string,
     values: Omit<PlatformAgentAssignmentWrite, 'agentId'>,
-  ): Promise<PlatformAgentAssignmentItem | undefined> => {
+  ): Promise<PlatformAgentAssignmentSafeItem | undefined> => {
     const [row] = await this.db
       .update(platformAgentAssignments)
       .set({ ...values, updatedAt: new Date() })
       .where(eq(platformAgentAssignments.id, id))
-      .returning();
+      .returning(safeAssignmentColumns);
     return row;
   };
 
-  deleteAssignment = async (id: string): Promise<PlatformAgentAssignmentItem | undefined> => {
+  deleteAssignment = async (id: string): Promise<PlatformAgentAssignmentSafeItem | undefined> => {
     const [row] = await this.db
       .delete(platformAgentAssignments)
       .where(eq(platformAgentAssignments.id, id))
-      .returning();
+      .returning(safeAssignmentColumns);
     return row;
   };
 
-  getAssignment = async (id: string): Promise<PlatformAgentAssignmentItem | undefined> => {
+  getAssignment = async (id: string): Promise<PlatformAgentAssignmentSafeItem | undefined> => {
     const [row] = await this.db
-      .select()
+      .select(safeAssignmentColumns)
       .from(platformAgentAssignments)
       .where(eq(platformAgentAssignments.id, id))
       .limit(1);
@@ -299,7 +310,7 @@ export class PlatformAgentCatalogRepository {
     const rows = await this.db
       .select({
         agent: platformAgents,
-        assignment: platformAgentAssignments,
+        assignment: safeAssignmentColumns,
         targetPriority,
         version: platformAgentVersions,
       })
