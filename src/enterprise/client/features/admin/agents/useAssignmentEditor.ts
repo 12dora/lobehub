@@ -200,7 +200,9 @@ export const useAssignmentEditor = (
           lock.abortWrite(writeToken);
           throw cause;
         }
-        // Committed: reset the form so the stale CAS cannot be resubmitted, then revalidate.
+        // Committed on the server → mark synchronously before touching local state or refreshing.
+        lock.markCommitted(writeToken);
+        // Reset the form so the stale CAS cannot be resubmitted, then revalidate.
         resetForm();
         await lock.commitWrite(writeToken);
         toast.success(t('agentCatalog.assignment.saved'));
@@ -243,6 +245,7 @@ export const useAssignmentEditor = (
           lock.abortWrite(writeToken);
           throw cause;
         }
+        lock.markCommitted(writeToken); // committed on the server → mark before local state / refresh
         if (editingId === assignment.id) resetForm();
         await lock.commitWrite(writeToken);
         toast.success(t('agentCatalog.assignment.removed'));

@@ -31,6 +31,12 @@ export interface RefreshLock {
   isLocked: () => boolean;
   /** Reactive mirror of `isLocked` for disabling controls the moment a write starts. */
   locked: boolean;
+  /**
+   * Mark the logical write COMMITTED the instant its service call succeeds — BEFORE awaiting any
+   * cache apply / refresh. Once committed, `abortWrite` (and therefore a modal idle/finally) can no
+   * longer unlock it, so a local cache-apply failure can never masquerade as an uncommitted write.
+   */
+  markCommitted: (token: WriteToken) => void;
   /** Reactive: a committed change whose refresh has not yet advanced the CAS (banner + disable). */
   refreshFailed: boolean;
   /**
@@ -105,6 +111,11 @@ export const useRefreshLock = <T>(
     [endCycle],
   );
 
+  const markCommitted = useCallback((token: WriteToken) => {
+    // Synchronous commit boundary: from here the write is server-authoritative and cannot be aborted.
+    if (tokenRef.current === token) committedRef.current = true;
+  }, []);
+
   const resolveWrite = useCallback(
     (token: WriteToken) => {
       if (tokenRef.current !== token) return;
@@ -153,6 +164,7 @@ export const useRefreshLock = <T>(
     commitWrite,
     isLocked,
     locked,
+    markCommitted,
     refreshFailed,
     resolveWrite,
     retryRefresh: refresh,

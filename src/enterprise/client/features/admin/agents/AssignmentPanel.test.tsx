@@ -71,6 +71,7 @@ const lock = {
   commitWrite: vi.fn(async () => {}),
   isLocked: () => false,
   locked: false,
+  markCommitted: vi.fn(),
   refreshFailed: false,
   resolveWrite: vi.fn(),
   retryRefresh: vi.fn(),
