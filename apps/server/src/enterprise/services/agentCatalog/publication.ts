@@ -1,0 +1,251 @@
+import debug from 'debug';
+
+import { checksumPayload } from '@/database/models/platform/checksum';
+import { PlatformAgentCatalogRepository } from '@/database/repositories/platformAgentCatalog';
+import type { LobeChatDatabase, Transaction } from '@/database/type';
+
+import type {
+  AdminPlatformAgentPublishInput,
+  AdminPlatformAgentRollbackInput,
+} from '../../contracts/platformAgents';
+import { PlatformAuditService } from '../platformAudit';
+import {
+  getPlatformConfigInvalidationPublisher,
+  type PlatformConfigInvalidationPublisher,
+} from '../platformConfigInvalidation';
+import { acquirePlatformDependencyPublicationLock } from '../platformDependencyLock';
+import { assertExactPlatformAgentDependencies } from './dependencyValidator';
+import { PlatformAgentNotFoundError, PlatformAgentRevisionConflictError } from './errors';
+
+const log = debug('lobe-server:platform-agent-publication');
+
+export interface PlatformAgentPublicationLifecycle {
+  afterDependencyLock?: (tx: Transaction) => Promise<void>;
+  afterIdentityLock?: (tx: Transaction) => Promise<void>;
+}
+
+export interface PlatformAgentPublicationOptions {
+  invalidation?: PlatformConfigInvalidationPublisher;
+  lifecycle?: PlatformAgentPublicationLifecycle;
+}
+
+interface AgentDraftTokenInput {
+  agentKey: string;
+  currentVersionId: string | null;
+  draftSequence: number;
+  id: string;
+  isDefault: boolean;
+  migrationRequired: boolean;
+  revision: number;
+  status: string;
+  systemKey: string | null;
+}
+
+export const platformAgentDraftToken = (identity: AgentDraftTokenInput): string =>
+  checksumPayload({
+    agentKey: identity.agentKey,
+    currentVersionId: identity.currentVersionId,
+    draftSequence: identity.draftSequence,
+    id: identity.id,
+    isDefault: identity.isDefault,
+    migrationRequired: identity.migrationRequired,
+    revision: identity.revision,
+    status: identity.status,
+    systemKey: identity.systemKey,
+  });
+
+const assertExpectedIdentity = (
+  identity: AgentDraftTokenInput,
+  expectedDraftToken: string,
+  expectedRevision: number,
+) => {
+  if (
+    identity.migrationRequired ||
+    identity.revision !== expectedRevision ||
+    platformAgentDraftToken(identity) !== expectedDraftToken
+  ) {
+    throw new PlatformAgentRevisionConflictError();
+  }
+};
+
+export class PlatformAgentPublicationService {
+  private readonly invalidation: PlatformConfigInvalidationPublisher;
+  private readonly lifecycle: PlatformAgentPublicationLifecycle;
+
+  constructor(
+    private readonly db: LobeChatDatabase,
+    options: PlatformAgentPublicationOptions = {},
+  ) {
+    this.invalidation = options.invalidation ?? getPlatformConfigInvalidationPublisher();
+    this.lifecycle = options.lifecycle ?? {};
+  }
+
+  private invalidate = async (agentId: string, revision: number): Promise<void> => {
+    try {
+      await this.invalidation.publish({
+        at: new Date().toISOString(),
+        resourceId: agentId,
+        resourceType: 'agent',
+        revision,
+        scopes: ['agent-catalog', 'agent-runtime'],
+      });
+    } catch (error) {
+      log('post-commit invalidation failed agent=%s revision=%d class=%s', {
+        agentId,
+        errorClass: error instanceof Error ? error.name : 'UnknownError',
+        revision,
+      });
+    }
+  };
+
+  private appendFailureAudit = async (params: {
+    action: string;
+    actorUserId: string;
+    reason: string;
+    targetId: string;
+  }): Promise<void> => {
+    try {
+      await new PlatformAuditService(this.db).append({
+        action: params.action,
+        actorUserId: params.actorUserId,
+        afterDiff: { error: 'platform_agent_publication_failed' },
+        reason: params.reason,
+        result: 'failure',
+        targetId: params.targetId,
+        targetType: 'agent',
+      });
+    } catch (error) {
+      log('failure audit append failed agent=%s class=%s', {
+        agentId: params.targetId,
+        errorClass: error instanceof Error ? error.name : 'UnknownError',
+      });
+    }
+  };
+
+  publish = async (actorUserId: string, input: AdminPlatformAgentPublishInput) => {
+    try {
+      const result = await this.db.transaction(async (tx) => {
+        const repository = new PlatformAgentCatalogRepository(tx);
+        const locked = await repository.lockIdentity(input.agentId);
+        if (!locked) throw new PlatformAgentNotFoundError();
+        await this.lifecycle.afterIdentityLock?.(tx);
+        assertExpectedIdentity(locked, input.expectedDraftToken, input.expectedRevision);
+
+        await acquirePlatformDependencyPublicationLock(tx);
+        await this.lifecycle.afterDependencyLock?.(tx);
+        await assertExactPlatformAgentDependencies(tx, input.dependencySnapshot);
+
+        const version = await repository.appendVersionCas({
+          agentId: locked.id,
+          config: input.config,
+          createdBy: actorUserId,
+          dependencySnapshot: input.dependencySnapshot,
+          expectedDraftSequence: locked.draftSequence,
+          expectedRevision: locked.revision,
+          version: input.version,
+        });
+        if (!version) throw new PlatformAgentRevisionConflictError();
+        const identity = await repository.pointToVersionCas({
+          agentId: locked.id,
+          expectedDraftSequence: locked.draftSequence + 1,
+          expectedRevision: locked.revision,
+          publishedAt: new Date(),
+          versionId: version.id,
+        });
+        if (!identity) throw new PlatformAgentRevisionConflictError();
+
+        await new PlatformAuditService(tx).append({
+          action: 'admin.agents.publish',
+          actorUserId,
+          afterDiff: {
+            dependencyCounts: {
+              connectors: input.dependencySnapshot.connectors.length,
+              skills: input.dependencySnapshot.skills.length,
+            },
+            revision: identity.revision,
+            version: version.version,
+            versionChecksum: version.checksum,
+            versionId: version.id,
+          },
+          beforeDiff: {
+            currentVersionId: locked.currentVersionId,
+            revision: locked.revision,
+          },
+          configRevision: identity.revision,
+          reason: input.reason,
+          result: 'success',
+          targetId: locked.id,
+          targetType: 'agent',
+        });
+        return { agentId: locked.id, revision: identity.revision, versionId: version.id };
+      });
+      await this.invalidate(result.agentId, result.revision);
+      return result;
+    } catch (error) {
+      await this.appendFailureAudit({
+        action: 'admin.agents.publish',
+        actorUserId,
+        reason: input.reason,
+        targetId: input.agentId,
+      });
+      throw error;
+    }
+  };
+
+  rollback = async (actorUserId: string, input: AdminPlatformAgentRollbackInput) => {
+    try {
+      const result = await this.db.transaction(async (tx) => {
+        const repository = new PlatformAgentCatalogRepository(tx);
+        const locked = await repository.lockIdentity(input.agentId);
+        if (!locked) throw new PlatformAgentNotFoundError();
+        await this.lifecycle.afterIdentityLock?.(tx);
+        assertExpectedIdentity(locked, input.expectedDraftToken, input.expectedRevision);
+
+        await acquirePlatformDependencyPublicationLock(tx);
+        await this.lifecycle.afterDependencyLock?.(tx);
+        const target = await repository.getExactVersion(locked.id, input.targetVersionId);
+        if (!target) throw new PlatformAgentNotFoundError();
+        await assertExactPlatformAgentDependencies(tx, target.dependencySnapshot);
+
+        const identity = await repository.pointToVersionCas({
+          agentId: locked.id,
+          expectedDraftSequence: locked.draftSequence,
+          expectedRevision: locked.revision,
+          publishedAt: new Date(),
+          versionId: target.id,
+        });
+        if (!identity) throw new PlatformAgentRevisionConflictError();
+        await new PlatformAuditService(tx).append({
+          action: 'admin.agents.rollback',
+          actorUserId,
+          afterDiff: {
+            revision: identity.revision,
+            version: target.version,
+            versionChecksum: target.checksum,
+            versionId: target.id,
+          },
+          beforeDiff: {
+            currentVersionId: locked.currentVersionId,
+            revision: locked.revision,
+          },
+          configRevision: identity.revision,
+          reason: input.reason,
+          result: 'success',
+          targetId: locked.id,
+          targetType: 'agent',
+        });
+        return { agentId: locked.id, revision: identity.revision, versionId: target.id };
+      });
+      await this.invalidate(result.agentId, result.revision);
+      return result;
+    } catch (error) {
+      await this.appendFailureAudit({
+        action: 'admin.agents.rollback',
+        actorUserId,
+        reason: input.reason,
+        targetId: input.agentId,
+      });
+      throw error;
+    }
+  };
+}

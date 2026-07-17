@@ -129,6 +129,17 @@ export class PlatformAgentCatalogRepository {
     return row;
   };
 
+  /** Lock the mutable Agent identity before publication CAS and dependency revalidation. */
+  lockIdentity = async (id: string): Promise<PlatformAgentItem | undefined> => {
+    const [row] = await this.db
+      .select()
+      .from(platformAgents)
+      .where(eq(platformAgents.id, id))
+      .for('update')
+      .limit(1);
+    return row;
+  };
+
   updateDraftCas = async (params: {
     expectedDraftSequence: number;
     expectedRevision: number;

@@ -274,6 +274,31 @@ export const adminPlatformAgentAppendVersionInputSchema = z
   })
   .strict();
 
+export const adminPlatformAgentPublishInputSchema =
+  adminPlatformAgentAppendVersionInputSchema.strict();
+
+export const adminPlatformAgentRollbackInputSchema = z
+  .object({
+    agentId: idSchema,
+    expectedDraftToken: draftTokenSchema,
+    expectedRevision: revisionSchema,
+    reason: reasonSchema,
+    targetVersionId: idSchema,
+  })
+  .strict();
+
+export const platformAgentDependencyValidationOutputSchema = z
+  .object({ valid: z.literal(true) })
+  .strict();
+
+export const platformAgentPublicationOutputSchema = z
+  .object({
+    agentId: idSchema,
+    revision: positiveRevisionSchema,
+    versionId: idSchema,
+  })
+  .strict();
+
 export const adminPlatformAgentAssignmentCreateInputSchema = z
   .object({
     agentId: idSchema,
@@ -309,3 +334,5 @@ export type AdminPlatformAgentAssignmentCreateInput = z.infer<
   typeof adminPlatformAgentAssignmentCreateInputSchema
 >;
 export type AdminPlatformAgentCreateInput = z.infer<typeof adminPlatformAgentCreateInputSchema>;
+export type AdminPlatformAgentPublishInput = z.infer<typeof adminPlatformAgentPublishInputSchema>;
+export type AdminPlatformAgentRollbackInput = z.infer<typeof adminPlatformAgentRollbackInputSchema>;
