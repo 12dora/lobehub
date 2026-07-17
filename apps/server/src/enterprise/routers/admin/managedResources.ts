@@ -22,6 +22,7 @@ import { withPlatformPermission } from '../../guards/platformPermission';
 import { assertRecentReauth } from '../../guards/reauth';
 import {
   beginConnectorRuntimeEffectiveStateTransition,
+  cancelConnectorRuntimeEffectiveStateTransition,
   finalizeConnectorRuntimeEffectiveStateTransition,
 } from '../../services/connectorCatalog/runtimeEffectiveState';
 import { resolvePublishedManagedResourcePolicies } from '../../services/managedResourceCapabilities';
@@ -85,9 +86,10 @@ export const adminManagedResourcesRouter = router({
         reason: input.reason,
         serverDB: ctx.serverDB,
       });
+      let connectorTransitionToken: string | null = null;
       try {
         const flags = parseEnterpriseFeatureFlags(process.env);
-        const connectorTransitionToken = flags.ENABLE_PLATFORM_MANAGED_CONNECTORS
+        connectorTransitionToken = flags.ENABLE_PLATFORM_MANAGED_CONNECTORS
           ? await beginConnectorRuntimeEffectiveStateTransition(input.expectedRevision)
           : null;
         if (flags.ENABLE_PLATFORM_MANAGED_CONNECTORS && !connectorTransitionToken) {
@@ -116,6 +118,7 @@ export const adminManagedResourcesRouter = router({
             revision: managed.revision,
             token: connectorTransitionToken!,
           });
+          connectorTransitionToken = null;
         }
         return result;
       } catch (error) {
@@ -135,6 +138,16 @@ export const adminManagedResourcesRouter = router({
           });
         }
         throw error;
+      } finally {
+        if (connectorTransitionToken) {
+          try {
+            await cancelConnectorRuntimeEffectiveStateTransition(connectorTransitionToken);
+          } catch (cleanupError) {
+            console.error('[admin.managedResources.publish] transition cleanup failed', {
+              errorClass: cleanupError instanceof Error ? cleanupError.name : 'UnknownError',
+            });
+          }
+        }
       }
     }),
 

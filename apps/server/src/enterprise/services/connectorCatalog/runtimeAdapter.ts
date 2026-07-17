@@ -277,6 +277,10 @@ export class PlatformConnectorRuntimeAdapter {
       } else {
         await this.dependencies.outbound.preflight(connector.endpoint);
       }
+      // Emergency archive/current-state guard must precede idempotency reservation.
+      // A rejected stale manifest must not consume a toolCall key or create a
+      // running journal entry that later reconciles as unknown.
+      await this.dependencies.assertCurrentPublished?.();
       if (connector.credentialMode === 'shared_service_account') {
         const journal = await this.dependencies.journal.begin({
           connectorId: connector.id,
@@ -303,7 +307,6 @@ export class PlatformConnectorRuntimeAdapter {
         }
         journalToken = journal.token;
       }
-      await this.dependencies.assertCurrentPublished?.();
       outboundStarted = true;
       const response = await this.dependencies.outbound.requestJson({
         body: {
@@ -344,7 +347,8 @@ export class PlatformConnectorRuntimeAdapter {
         !(outboundStarted && journalToken) &&
         !(
           error instanceof PlatformConnectorContractError &&
-          error.code === 'PLATFORM_CONNECTOR_RATE_LIMITED'
+          (error.code === 'PLATFORM_CONNECTOR_RATE_LIMITED' ||
+            error.code === 'PLATFORM_CONNECTOR_NOT_PUBLISHED')
         )
       ) {
         try {

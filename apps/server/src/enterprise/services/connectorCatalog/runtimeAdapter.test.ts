@@ -453,8 +453,8 @@ describe('PlatformConnectorRuntimeAdapter', () => {
     expect(harness.dependencies.outbound.requestJson).not.toHaveBeenCalled();
   });
 
-  it('rechecks current publication at the final outbound boundary', async () => {
-    const harness = createHarness('none');
+  it('rechecks current publication before reserving a shared idempotency key', async () => {
+    const harness = createHarness('shared_service_account');
     harness.dependencies.assertCurrentPublished = vi.fn(async () => {
       throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_PUBLISHED');
     });
@@ -462,7 +462,11 @@ describe('PlatformConnectorRuntimeAdapter', () => {
     await expect(harness.adapter.execute(invocation)).rejects.toThrow(
       'PLATFORM_CONNECTOR_NOT_PUBLISHED',
     );
+    expect(harness.dependencies.journal.begin).not.toHaveBeenCalled();
     expect(harness.dependencies.outbound.requestJson).not.toHaveBeenCalled();
+    expect(harness.dependencies.audit.appendSharedCall).not.toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: 'failed' }),
+    );
   });
 });
 
