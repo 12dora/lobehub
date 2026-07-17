@@ -4,6 +4,7 @@ import type { ConnectorCredentials } from '@/database/schemas';
 import { ConnectorMcpConnectionType, ConnectorStatus } from '@/database/schemas';
 import type { AuthConfig } from '@/libs/mcp';
 import { inferCrudType } from '@/libs/mcp/utils';
+import { assertLegacyConnectorRuntimeAllowed } from '@/server/enterprise/services/connectorCatalog/runtimeIntegration';
 import { mcpService } from '@/server/services/mcp';
 
 import { ensureFreshConnectorToken } from './tokens';
@@ -34,8 +35,7 @@ export const buildConnectorMcpParams = (
   // type. Merge them on top of any header-type credential headers (older rows
   // stored custom headers as a 'header' credential before this split).
   const customHeaders = connector.metadata?.customHeaders as Record<string, string> | undefined;
-  const mergedHeaders =
-    headers || customHeaders ? { ...headers, ...customHeaders } : undefined;
+  const mergedHeaders = headers || customHeaders ? { ...headers, ...customHeaders } : undefined;
   return {
     auth,
     headers: mergedHeaders,
@@ -98,6 +98,9 @@ export const syncConnectorToolsById = async (
   connectorId: string,
   ctx: ConnectorToolSyncContext,
 ): Promise<{ toolCount: number }> => {
+  // Managed mode never executes a legacy HTTP/stdio transport. Platform
+  // discovery uses the M09 SafeOutbound pipeline before publication instead.
+  await assertLegacyConnectorRuntimeAllowed({});
   let connector = await ctx.connectorModel.findById(connectorId);
   if (!connector) throw new Error('Connector not found');
 

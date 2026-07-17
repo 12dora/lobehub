@@ -345,8 +345,10 @@ export const connectorRouter = router({
     .input(z.object({ id: z.string().uuid() }))
     .mutation(async ({ input, ctx }) => {
       try {
+        await assertLegacyConnectorTransportAllowed();
         return await syncConnectorToolsById(input.id, ctx);
       } catch (err: any) {
+        if (err instanceof TRPCError) throw err;
         throw new TRPCError({
           cause: err,
           code: 'INTERNAL_SERVER_ERROR',
@@ -444,6 +446,7 @@ export const connectorRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
+      await assertLegacyConnectorTransportAllowed();
       const connectorId = await upsertConnectorEntry(ctx.connectorModel, {
         identifier: input.identifier,
         name: input.name,
@@ -470,6 +473,7 @@ export const connectorRouter = router({
     .use(withManagedResourceGuard('connector.syncBuiltinTool'))
     .input(z.object({ identifier: z.string().min(1) }))
     .mutation(async ({ input, ctx }) => {
+      await assertLegacyConnectorTransportAllowed();
       const { builtinTools } = await import('@lobechat/builtin-tools');
       const tool = builtinTools.find((t) => t.identifier === input.identifier);
 
@@ -518,6 +522,7 @@ export const connectorRouter = router({
     .use(withManagedResourceGuard('connector.syncPluginTools'))
     .input(z.object({ identifier: z.string().min(1) }))
     .mutation(async ({ input, ctx }) => {
+      await assertLegacyConnectorTransportAllowed();
       const plugin = await ctx.pluginModel.findById(input.identifier);
 
       if (!plugin) {
