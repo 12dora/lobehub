@@ -611,6 +611,26 @@ export class PlatformConnectorCatalogRepository {
     return row !== undefined;
   };
 
+  failOAuthStateReservation = async (
+    stateHash: string,
+    reservedAt: Date,
+    finishedAt: Date,
+  ): Promise<boolean> => {
+    const [row] = await this.db
+      .update(platformConnectorOAuthStates)
+      .set({ authorizationOutcome: 'failed', finishedAt })
+      .where(
+        and(
+          eq(platformConnectorOAuthStates.stateHash, stateHash),
+          eq(platformConnectorOAuthStates.consumedAt, reservedAt),
+          isNull(platformConnectorOAuthStates.authorizationOutcome),
+          isNull(platformConnectorOAuthStates.revokedAt),
+        ),
+      )
+      .returning({ id: platformConnectorOAuthStates.id });
+    return row !== undefined;
+  };
+
   terminateOAuthStateReservation = async (
     stateHash: string,
     reservedAt: Date,
@@ -1029,6 +1049,22 @@ export class PlatformUserConnectorBindingRepository {
         )
         .returning();
       if (!binding) throw new Error('PLATFORM_CONNECTOR_BINDING_OWNERSHIP_MISMATCH');
+      const [completedState] = await db
+        .update(platformConnectorOAuthStates)
+        .set({
+          authorizationOutcome: 'completed',
+          finishedAt: params.connectedAt,
+        })
+        .where(
+          and(
+            eq(platformConnectorOAuthStates.id, state.id),
+            eq(platformConnectorOAuthStates.consumedAt, params.reservedAt),
+            isNull(platformConnectorOAuthStates.authorizationOutcome),
+            isNull(platformConnectorOAuthStates.revokedAt),
+          ),
+        )
+        .returning({ id: platformConnectorOAuthStates.id });
+      if (!completedState) throw new Error('PLATFORM_CONNECTOR_OAUTH_STATE_INVALID');
       return { binding, previousTokenRef: current.oauthTokenRef };
     });
   };
@@ -1047,6 +1083,32 @@ export class PlatformUserConnectorBindingRepository {
       )
       .limit(1);
     return rows[0];
+  };
+
+  getAuthorizationAttempt = async (connectorId: string, attemptId: string) => {
+    const [row] = await this.db
+      .select({
+        binding: platformUserConnectorBindings,
+        state: platformConnectorOAuthStates,
+      })
+      .from(platformConnectorOAuthStates)
+      .innerJoin(
+        platformUserConnectorBindings,
+        and(
+          eq(platformUserConnectorBindings.id, platformConnectorOAuthStates.bindingId),
+          eq(platformUserConnectorBindings.userId, platformConnectorOAuthStates.userId),
+          eq(platformUserConnectorBindings.connectorId, platformConnectorOAuthStates.connectorId),
+        ),
+      )
+      .where(
+        and(
+          eq(platformConnectorOAuthStates.stateId, attemptId),
+          eq(platformConnectorOAuthStates.userId, this.userId),
+          eq(platformConnectorOAuthStates.connectorId, connectorId),
+        ),
+      )
+      .limit(1);
+    return row;
   };
 
   listBindings = async (params: { cursor?: string; limit?: number }) => {

@@ -1097,16 +1097,39 @@ export const userConnectorListManagedOutputSchema = z
 export const userConnectorStartAuthorizationInputSchema = z
   .object({ connectorId: connectorIdSchema, returnTo: connectorReturnToSchema.optional() })
   .strict();
+export const connectorAuthorizationAttemptIdSchema = z
+  .string()
+  .length(32)
+  .regex(/^[a-f0-9]+$/);
 export const userConnectorStartAuthorizationOutputSchema = z
-  .object({ authorizationUrl: httpUrlSchema, bindingId: connectorIdSchema })
+  .object({
+    attemptId: connectorAuthorizationAttemptIdSchema,
+    authorizationUrl: httpUrlSchema,
+    bindingId: connectorIdSchema,
+  })
   .strict();
 
 export const userConnectorGetAuthorizationStatusInputSchema = z
-  .object({ connectorId: connectorIdSchema })
+  .object({
+    attemptId: connectorAuthorizationAttemptIdSchema,
+    connectorId: connectorIdSchema,
+  })
   .strict();
 export const userConnectorGetAuthorizationStatusOutputSchema = z
-  .object({ binding: connectorBindingSchema.nullable() })
-  .strict();
+  .object({
+    attemptId: connectorAuthorizationAttemptIdSchema,
+    binding: connectorBindingSchema.nullable(),
+    status: z.enum(['pending', 'completed', 'failed', 'expired', 'superseded', 'invalid']),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.status === 'completed' && value.binding?.status !== 'connected') {
+      ctx.addIssue({ code: 'custom', message: 'completed attempt requires connected binding' });
+    }
+    if (value.status !== 'completed' && value.binding !== null) {
+      ctx.addIssue({ code: 'custom', message: 'non-completed attempt must omit binding' });
+    }
+  });
 
 export const userConnectorDisconnectInputSchema = z
   .object({ connectorId: connectorIdSchema })

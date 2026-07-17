@@ -339,13 +339,27 @@ describe('per-user connector OAuth service', () => {
     const [listA, listB, statusA, statusB] = await Promise.all([
       harness.userA.listManaged({ limit: 50 }),
       harness.userB.listManaged({ limit: 50 }),
-      harness.userA.getAuthorizationStatus({ connectorId: published.draft.id }),
-      harness.userB.getAuthorizationStatus({ connectorId: published.draft.id }),
+      harness.userA.getAuthorizationStatus({
+        attemptId: authorization.result.attemptId,
+        connectorId: published.draft.id,
+      }),
+      harness.userB.getAuthorizationStatus({
+        attemptId: authorization.result.attemptId,
+        connectorId: published.draft.id,
+      }),
     ]);
     expect(listA.items[0]?.binding).toMatchObject({ id: authorization.result.bindingId });
     expect(listB.items[0]?.binding).toBeNull();
-    expect(statusA.binding).toMatchObject({ status: 'pending' });
-    expect(statusB.binding).toBeNull();
+    expect(statusA).toEqual({
+      attemptId: authorization.result.attemptId,
+      binding: null,
+      status: 'pending',
+    });
+    expect(statusB).toEqual({
+      attemptId: authorization.result.attemptId,
+      binding: null,
+      status: 'invalid',
+    });
     for (const projection of [listA, listB, statusA, statusB]) {
       expect(JSON.stringify(projection)).not.toMatch(
         /endpoint|clientId|oauthConfig|tokenFingerprint|oauthTokenRef|vault:\/\//i,
@@ -382,6 +396,14 @@ describe('per-user connector OAuth service', () => {
       userId: userA,
     });
     expect(binding.oauthTokenRef).toMatch(/^vault:\/\//);
+    const [completedState] = await db
+      .select()
+      .from(platformConnectorOAuthStates)
+      .where(eq(platformConnectorOAuthStates.stateId, authorization.result.attemptId));
+    expect(completedState).toMatchObject({
+      authorizationOutcome: 'completed',
+      finishedAt: expect.any(Date),
+    });
     const persistedJson = JSON.stringify({
       audits: await db.select().from(platformAuditLogs),
       bindings: await db.select().from(platformUserConnectorBindings),
@@ -399,6 +421,77 @@ describe('per-user connector OAuth service', () => {
     ).rejects.toMatchObject({ code: 'PLATFORM_CONNECTOR_OAUTH_STATE_INVALID' });
   });
 
+  it('keeps a reserved callback pending until its exact attempt commits', async () => {
+    const harness = createHarness();
+    const published = await publishOAuthConnector(harness);
+    const authorization = await start(harness, published.draft.id);
+    let releaseExchange!: () => void;
+    let exchangeStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      exchangeStarted = resolve;
+    });
+    const release = new Promise<void>((resolve) => {
+      releaseExchange = resolve;
+    });
+    harness.exchangeCode.mockImplementationOnce(async () => {
+      exchangeStarted();
+      await release;
+      return {
+        body: {
+          access_token: 'provider-access-token-reserved',
+          refresh_token: 'provider-refresh-token-reserved',
+          scope: 'issues:read',
+          token_type: 'Bearer',
+        },
+        status: 200,
+        url: 'https://identity.example.test/oauth/token',
+      };
+    });
+    const callback = harness.callback.callback({ code: 'in-flight', state: authorization.state });
+    await started;
+    await expect(
+      harness.userA.getAuthorizationStatus({
+        attemptId: authorization.result.attemptId,
+        connectorId: published.draft.id,
+      }),
+    ).resolves.toEqual({
+      attemptId: authorization.result.attemptId,
+      binding: null,
+      status: 'pending',
+    });
+    releaseExchange();
+    await expect(callback).resolves.toEqual({ returnTo: '/settings/connectors' });
+    await expect(
+      harness.userA.getAuthorizationStatus({
+        attemptId: authorization.result.attemptId,
+        connectorId: published.draft.id,
+      }),
+    ).resolves.toMatchObject({ binding: { status: 'connected' }, status: 'completed' });
+  });
+
+  it('expires an unconsumed attempt without exposing a preserved binding', async () => {
+    const harness = createHarness();
+    const published = await publishOAuthConnector(harness);
+    const first = await start(harness, published.draft.id);
+    await harness.callback.callback({ code: 'connected', state: first.state });
+    const attempt = await start(harness, published.draft.id);
+    const [state] = await db
+      .select()
+      .from(platformConnectorOAuthStates)
+      .where(eq(platformConnectorOAuthStates.stateId, attempt.result.attemptId));
+    harness.dependencies.clock = () => new Date(state!.expiresAt.getTime() + 1);
+    await expect(
+      harness.userA.getAuthorizationStatus({
+        attemptId: attempt.result.attemptId,
+        connectorId: published.draft.id,
+      }),
+    ).resolves.toEqual({
+      attemptId: attempt.result.attemptId,
+      binding: null,
+      status: 'expired',
+    });
+  });
+
   it('keeps exchange-attempted state single-use and preserves a valid binding during reconnect', async () => {
     const harness = createHarness();
     const published = await publishOAuthConnector(harness);
@@ -406,15 +499,44 @@ describe('per-user connector OAuth service', () => {
     await harness.callback.callback({ code: 'first', state: first.state });
     const [connected] = await db.select().from(platformUserConnectorBindings);
     const originalRef = connected.oauthTokenRef;
+    await expect(
+      harness.userA.getAuthorizationStatus({
+        attemptId: first.result.attemptId,
+        connectorId: published.draft.id,
+      }),
+    ).resolves.toMatchObject({ binding: { status: 'connected' }, status: 'completed' });
 
     const reconnect = await start(harness, published.draft.id);
+    await expect(
+      harness.userA.getAuthorizationStatus({
+        attemptId: reconnect.result.attemptId,
+        connectorId: published.draft.id,
+      }),
+    ).resolves.toEqual({
+      attemptId: reconnect.result.attemptId,
+      binding: null,
+      status: 'pending',
+    });
+    await expect(
+      harness.userA.getAuthorizationStatus({
+        attemptId: first.result.attemptId,
+        connectorId: published.draft.id,
+      }),
+    ).resolves.toMatchObject({ binding: null, status: 'superseded' });
     harness.exchangeCode.mockRejectedValueOnce(new Error('provider private failure'));
     await expect(
       harness.callback.callback({ code: 'retryable', state: reconnect.state }),
     ).rejects.toMatchObject({ code: 'PLATFORM_CONNECTOR_OAUTH_CALLBACK_INVALID' });
     await expect(
-      harness.userA.getAuthorizationStatus({ connectorId: published.draft.id }),
-    ).resolves.toMatchObject({ binding: { status: 'connected' } });
+      harness.userA.getAuthorizationStatus({
+        attemptId: reconnect.result.attemptId,
+        connectorId: published.draft.id,
+      }),
+    ).resolves.toEqual({
+      attemptId: reconnect.result.attemptId,
+      binding: null,
+      status: 'failed',
+    });
     expect((await db.select().from(platformUserConnectorBindings))[0]?.oauthTokenRef).toBe(
       originalRef,
     );
@@ -422,6 +544,12 @@ describe('per-user connector OAuth service', () => {
       harness.callback.callback({ code: 'must-not-reuse', state: reconnect.state }),
     ).rejects.toMatchObject({ code: 'PLATFORM_CONNECTOR_OAUTH_STATE_REPLAYED' });
     const restarted = await start(harness, published.draft.id);
+    await expect(
+      harness.userA.getAuthorizationStatus({
+        attemptId: reconnect.result.attemptId,
+        connectorId: published.draft.id,
+      }),
+    ).resolves.toMatchObject({ binding: null, status: 'superseded' });
     harness.exchangeCode.mockResolvedValueOnce({
       body: {
         access_token: 'provider-access-token-reconnected',
@@ -435,6 +563,12 @@ describe('per-user connector OAuth service', () => {
     await expect(
       harness.callback.callback({ code: 'new-authorization-code', state: restarted.state }),
     ).resolves.toEqual({ returnTo: '/settings/connectors' });
+    await expect(
+      harness.userA.getAuthorizationStatus({
+        attemptId: restarted.result.attemptId,
+        connectorId: published.draft.id,
+      }),
+    ).resolves.toMatchObject({ binding: { status: 'connected' }, status: 'completed' });
     expect((await db.select().from(platformUserConnectorBindings))[0]?.oauthTokenRef).not.toBe(
       originalRef,
     );
@@ -626,8 +760,15 @@ describe('per-user connector OAuth service', () => {
       disconnected: true,
     });
     await expect(
-      harness.userB.getAuthorizationStatus({ connectorId: published.draft.id }),
-    ).resolves.toEqual({ binding: null });
+      harness.userB.getAuthorizationStatus({
+        attemptId: authorization.result.attemptId,
+        connectorId: published.draft.id,
+      }),
+    ).resolves.toEqual({
+      attemptId: authorization.result.attemptId,
+      binding: null,
+      status: 'invalid',
+    });
     const [revoked] = await db.select().from(platformUserConnectorBindings);
     expect(revoked).toMatchObject({ oauthTokenRef: null, scopes: [], status: 'revoked' });
     const auditJson = JSON.stringify(await db.select().from(platformAuditLogs));

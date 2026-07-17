@@ -118,6 +118,7 @@ describe('platform connector persistence invariants', () => {
     );
     expect(checkNames(config.checks)).toEqual(
       expect.arrayContaining([
+        'platform_connector_oauth_states_outcome_check',
         'platform_connector_oauth_states_revision_check',
         'platform_connector_oauth_states_terminal_check',
         'platform_connector_oauth_states_ttl_check',
@@ -126,6 +127,12 @@ describe('platform connector persistence invariants', () => {
     expect(
       checkSql(platformConnectorOAuthStates, 'platform_connector_oauth_states_ttl_check'),
     ).toMatch(/expires_at.*created_at.*10 minutes/s);
+    expect(
+      checkSql(platformConnectorOAuthStates, 'platform_connector_oauth_states_outcome_check'),
+    ).toMatch(/authorization_outcome.*finished_at.*completed.*failed/s);
+    expect(config.columns.map((column) => column.name)).toEqual(
+      expect.arrayContaining(['authorization_outcome', 'finished_at']),
+    );
     const ownerForeignKey = config.foreignKeys.find(
       (item) => item.getName() === 'platform_connector_oauth_states_binding_owner_fk',
     );
