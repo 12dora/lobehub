@@ -27,6 +27,13 @@ const runtimeModeCache = new Map<
     mode: ResolvedManagedResourcePolicies['effectiveModes']['skills'];
   }
 >();
+let runtimeModeSnapshotCache = new WeakMap<
+  object,
+  {
+    expiresAt: number;
+    mode: ResolvedManagedResourcePolicies['effectiveModes']['skills'];
+  }
+>();
 const runtimeModeSourceIds = new WeakMap<object, number>();
 let nextRuntimeModeSourceId = 1;
 
@@ -106,7 +113,13 @@ export const resolveManagedSkillRuntimeMode = async (params: {
     params.options?.getCacheEpoch ?? (() => getPlatformConfigScopeVersion('managed-policy'))
   )().catch(() => 'unavailable');
   const cached = runtimeModeCache.get(sourceId);
-  if (cached && cached.epoch === epoch && cached.expiresAt > now) return cached.mode;
+  if (cached && cached.epoch === epoch && cached.expiresAt > now) {
+    runtimeModeSnapshotCache.set(params.db as object, {
+      expiresAt: cached.expiresAt,
+      mode: cached.mode,
+    });
+    return cached.mode;
+  }
 
   const snapshot = await (
     params.options?.model ?? new PlatformManagedResourcePolicyModel(params.db)
@@ -119,7 +132,30 @@ export const resolveManagedSkillRuntimeMode = async (params: {
     expiresAt: now + (params.options?.cacheTtlMs ?? RUNTIME_MODE_CACHE_TTL_MS),
     mode,
   });
+  runtimeModeSnapshotCache.set(params.db as object, {
+    expiresAt: now + (params.options?.cacheTtlMs ?? RUNTIME_MODE_CACHE_TTL_MS),
+    mode,
+  });
   return mode;
 };
 
-export const resetManagedSkillRuntimeModeCacheForTest = () => runtimeModeCache.clear();
+/**
+ * Synchronous runtime read for hot tool paths. The snapshot is populated only
+ * by the trusted policy resolver above; feature-on cache misses and expired
+ * snapshots fail closed until a non-hot operation refreshes them.
+ */
+export const getManagedSkillRuntimeModeSnapshot = (params: {
+  db: LobeChatDatabase;
+  flags: EnterpriseFeatureFlags;
+  now?: () => number;
+}): ResolvedManagedResourcePolicies['effectiveModes']['skills'] => {
+  if (!params.flags.ENABLE_PLATFORM_MANAGED_SKILLS) return 'unmanaged';
+  const cached = runtimeModeSnapshotCache.get(params.db as object);
+  if (!cached || cached.expiresAt <= (params.now?.() ?? Date.now())) return 'enforced';
+  return cached.mode;
+};
+
+export const resetManagedSkillRuntimeModeCacheForTest = () => {
+  runtimeModeCache.clear();
+  runtimeModeSnapshotCache = new WeakMap();
+};

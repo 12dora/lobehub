@@ -21,7 +21,7 @@ const managedSkillMocks = vi.hoisted(() => ({
   AgentSkillModel: vi.fn(() => ({ findByName: vi.fn() })),
   debugLog: vi.fn(),
   FileModel: vi.fn(() => ({ checkHash: vi.fn() })),
-  resolveRuntimeMode: vi.fn(),
+  getRuntimeModeSnapshot: vi.fn(),
   SkillCatalogReadService: vi.fn(() => ({
     resolvePinnedForExecution: vi.fn(),
   })),
@@ -58,7 +58,7 @@ vi.mock('@/server/enterprise/services/skillCatalog', async () => {
 });
 
 vi.mock('@/server/enterprise/services/managedResourceCapabilities', () => ({
-  resolveManagedSkillRuntimeMode: managedSkillMocks.resolveRuntimeMode,
+  getManagedSkillRuntimeModeSnapshot: managedSkillMocks.getRuntimeModeSnapshot,
 }));
 
 vi.mock('@/libs/trpc/lambda/middleware', () => ({
@@ -108,7 +108,7 @@ describe('tools marketRouter', () => {
       revision: 'catalog-r1',
       userId: 'user-1',
     });
-    managedSkillMocks.resolveRuntimeMode.mockResolvedValue('unmanaged');
+    managedSkillMocks.getRuntimeModeSnapshot.mockReturnValue('unmanaged');
   });
 
   it('should pass workspace scope when preprocessing sandbox lh commands', async () => {
@@ -203,7 +203,7 @@ describe('tools marketRouter', () => {
     });
     expect(managedSkillMocks.AgentSkillModel).not.toHaveBeenCalled();
     expect(managedSkillMocks.FileModel).not.toHaveBeenCalled();
-    expect(managedSkillMocks.resolveRuntimeMode).not.toHaveBeenCalled();
+    expect(managedSkillMocks.getRuntimeModeSnapshot).not.toHaveBeenCalled();
     expect(managedSkillMocks.verifyProof).toHaveBeenCalledWith('signed-proof', 'user-1');
     expect(mockSandboxCallTool).toHaveBeenCalledWith(
       'writeFile',
@@ -380,7 +380,7 @@ describe('tools marketRouter', () => {
     managedSkillMocks.parseEnterpriseFeatureFlags.mockReturnValue({
       ENABLE_PLATFORM_MANAGED_SKILLS: true,
     });
-    managedSkillMocks.resolveRuntimeMode.mockResolvedValue('enforced');
+    managedSkillMocks.getRuntimeModeSnapshot.mockReturnValue('enforced');
     mockPreprocessLhCommand.mockResolvedValue({
       command: 'python scripts/run.py',
       isLhCommand: false,
@@ -408,7 +408,7 @@ describe('tools marketRouter', () => {
       managedSkillMocks.parseEnterpriseFeatureFlags.mockReturnValue({
         ENABLE_PLATFORM_MANAGED_SKILLS: true,
       });
-      managedSkillMocks.resolveRuntimeMode.mockResolvedValue(mode);
+      managedSkillMocks.getRuntimeModeSnapshot.mockReturnValue(mode);
       mockPreprocessLhCommand.mockResolvedValue({
         command: 'python scripts/run.py',
         isLhCommand: false,
