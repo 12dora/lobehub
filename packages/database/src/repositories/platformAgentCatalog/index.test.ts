@@ -282,7 +282,7 @@ describe('PlatformAgentCatalogRepository', () => {
       targetType: 'global_role',
       versionPolicy: 'latest_published',
     });
-    const userAssignment = await repository.createAssignment({
+    const userAssignment = (await repository.createAssignment({
       agentId: agent.id,
       enabled: true,
       mode: 'optional',
@@ -290,7 +290,7 @@ describe('PlatformAgentCatalogRepository', () => {
       targetId: USER_A,
       targetType: 'user',
       versionPolicy: 'pinned',
-    });
+    }))!;
     await serverDB
       .update(platformAgentAssignments)
       .set({
@@ -328,7 +328,7 @@ describe('PlatformAgentCatalogRepository', () => {
       }),
     ).rejects.toThrow();
     expect(
-      await repository.updateAssignment(userAssignment.id, {
+      await repository.updateAssignment(agent.id, userAssignment.id, {
         enabled: false,
         mode: 'optional',
         pinnedVersionId: version2!.id,
@@ -337,12 +337,12 @@ describe('PlatformAgentCatalogRepository', () => {
         versionPolicy: 'pinned',
       }),
     ).toMatchObject({ enabled: false, id: userAssignment.id });
-    const updatedAssignment = await repository.getAssignment(userAssignment.id);
+    const updatedAssignment = await repository.getAssignment(agent.id, userAssignment.id);
     expect(updatedAssignment).toMatchObject({ enabled: false });
     expect(Object.keys(updatedAssignment!)).not.toEqual(
       expect.arrayContaining(LEGACY_ASSIGNMENT_KEYS),
     );
-    expect(await repository.deleteAssignment(userAssignment.id)).toMatchObject({
+    expect(await repository.deleteAssignment(agent.id, userAssignment.id)).toMatchObject({
       id: userAssignment.id,
     });
   });
@@ -498,5 +498,169 @@ describe('PlatformAgentCatalogRepository', () => {
       status: 'error',
     });
     expect(await serverDB.select().from(platformUserAgentMaterializations)).toHaveLength(1);
+  });
+
+  it('upgrades a visibility-only hidden row to a real materialization instead of a bypass early-return', async () => {
+    const agent = await repository.createIdentity({
+      agentKey: 'vis-then-materialize',
+      isDefault: false,
+      systemKey: null,
+    });
+    const version1 = await repository.appendVersionCas({
+      agentId: agent.id,
+      config,
+      dependencySnapshot,
+      expectedDraftSequence: 0,
+      expectedRevision: 0,
+      version: '1.0.0',
+    });
+
+    // 1) hide first → a visibility-only row (last_synced_at NULL), NOT an archive reference.
+    await repository.setMaterializationHidden({
+      hidden: true,
+      platformAgentId: agent.id,
+      platformAgentVersionChecksum: version1!.checksum,
+      platformAgentVersionId: version1!.id,
+      userId: USER_A,
+    });
+    const hiddenRow = await repository.getMaterialization(USER_A, agent.id);
+    expect(hiddenRow!.lastSyncedAt).toBeNull();
+    expect(hiddenRow!.hidden).toBe(true);
+    expect((await repository.countAgentReferences(agent.id)).materializations).toBe(0);
+
+    // 2) materialize (no expectedCurrent) with the SAME version/checksum. Pre-fix this hit
+    //    matchesDesiredState and early-returned the visibility-only row, leaving last_synced_at
+    //    NULL — a real pending materialization that archive would silently ignore.
+    const materialized = await repository.upsertMaterialization({
+      platformAgentId: agent.id,
+      platformAgentVersionChecksum: version1!.checksum,
+      platformAgentVersionId: version1!.id,
+      userId: USER_A,
+    });
+    expect(materialized).toBeDefined();
+    const upgraded = await repository.getMaterialization(USER_A, agent.id);
+    expect(upgraded!.lastSyncedAt).not.toBeNull(); // upgraded to a real materialization
+    expect(upgraded!.hidden).toBe(true); // owner hidden preference preserved
+    expect(upgraded!.status).toBe('pending');
+    expect(upgraded!.platformAgentVersionId).toBe(version1!.id);
+    expect((await repository.countAgentReferences(agent.id)).materializations).toBe(1);
+
+    // 3) idempotent: a second materialize at the same desired real state does not refresh state.
+    const stampedAt = upgraded!.lastSyncedAt;
+    const again = await repository.upsertMaterialization({
+      platformAgentId: agent.id,
+      platformAgentVersionChecksum: version1!.checksum,
+      platformAgentVersionId: version1!.id,
+      userId: USER_A,
+    });
+    expect(again!.lastSyncedAt).toEqual(stampedAt);
+    expect(await serverDB.select().from(platformUserAgentMaterializations)).toHaveLength(1);
+  });
+
+  it('never overwrites a real materialization on a no-expectedCurrent call for a different version (CAS)', async () => {
+    const agent = await repository.createIdentity({
+      agentKey: 'cas-no-expected',
+      isDefault: false,
+      systemKey: null,
+    });
+    const version1 = await repository.appendVersionCas({
+      agentId: agent.id,
+      config,
+      dependencySnapshot,
+      expectedDraftSequence: 0,
+      expectedRevision: 0,
+      version: '1.0.0',
+    });
+    const version2 = await repository.appendVersionCas({
+      agentId: agent.id,
+      config: { ...config, displayName: 'v2' },
+      dependencySnapshot,
+      expectedDraftSequence: 1,
+      expectedRevision: 0,
+      version: '2.0.0',
+    });
+
+    // A real v1 materialization (fresh insert stamps last_synced_at).
+    const v1mat = await repository.upsertMaterialization({
+      platformAgentId: agent.id,
+      platformAgentVersionChecksum: version1!.checksum,
+      platformAgentVersionId: version1!.id,
+      userId: USER_A,
+    });
+    expect(v1mat!.lastSyncedAt).not.toBeNull();
+    const before = await repository.getMaterialization(USER_A, agent.id);
+
+    // No-expectedCurrent v2 must NOT clobber the real v1 — it returns undefined (fails pre-fix).
+    const attempt = await repository.upsertMaterialization({
+      platformAgentId: agent.id,
+      platformAgentVersionChecksum: version2!.checksum,
+      platformAgentVersionId: version2!.id,
+      userId: USER_A,
+    });
+    expect(attempt).toBeUndefined();
+    const after = await repository.getMaterialization(USER_A, agent.id);
+    expect(after!.platformAgentVersionId).toBe(version1!.id);
+    expect(after!.platformAgentVersionChecksum).toBe(version1!.checksum);
+    expect(after!.status).toBe(before!.status);
+    expect(after!.lastSyncedAt).toEqual(before!.lastSyncedAt);
+  });
+
+  it('upgrades a visibility-only row with a correct expectedCurrent but rejects a wrong one (CAS)', async () => {
+    const agent = await repository.createIdentity({
+      agentKey: 'cas-expected',
+      isDefault: false,
+      systemKey: null,
+    });
+    const version1 = await repository.appendVersionCas({
+      agentId: agent.id,
+      config,
+      dependencySnapshot,
+      expectedDraftSequence: 0,
+      expectedRevision: 0,
+      version: '1.0.0',
+    });
+    const version2 = await repository.appendVersionCas({
+      agentId: agent.id,
+      config: { ...config, displayName: 'v2' },
+      dependencySnapshot,
+      expectedDraftSequence: 1,
+      expectedRevision: 0,
+      version: '2.0.0',
+    });
+
+    // hide → visibility-only row at v1 (last_synced_at NULL).
+    await repository.setMaterializationHidden({
+      hidden: true,
+      platformAgentId: agent.id,
+      platformAgentVersionChecksum: version1!.checksum,
+      platformAgentVersionId: version1!.id,
+      userId: USER_A,
+    });
+    expect((await repository.getMaterialization(USER_A, agent.id))!.lastSyncedAt).toBeNull();
+
+    // Wrong expectedCurrent (v2) must not upgrade the visibility-only row.
+    const wrong = await repository.upsertMaterialization({
+      expectedCurrent: { checksum: version2!.checksum, versionId: version2!.id },
+      platformAgentId: agent.id,
+      platformAgentVersionChecksum: version1!.checksum,
+      platformAgentVersionId: version1!.id,
+      userId: USER_A,
+    });
+    expect(wrong).toBeUndefined();
+    expect((await repository.getMaterialization(USER_A, agent.id))!.lastSyncedAt).toBeNull();
+
+    // Correct expectedCurrent (v1, matching the visibility-only row) upgrades it to real.
+    const right = await repository.upsertMaterialization({
+      expectedCurrent: { checksum: version1!.checksum, versionId: version1!.id },
+      platformAgentId: agent.id,
+      platformAgentVersionChecksum: version1!.checksum,
+      platformAgentVersionId: version1!.id,
+      userId: USER_A,
+    });
+    expect(right).toBeDefined();
+    const upgraded = await repository.getMaterialization(USER_A, agent.id);
+    expect(upgraded!.lastSyncedAt).not.toBeNull();
+    expect(upgraded!.hidden).toBe(true);
+    expect(upgraded!.platformAgentVersionId).toBe(version1!.id);
   });
 });

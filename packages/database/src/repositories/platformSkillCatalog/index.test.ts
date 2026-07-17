@@ -238,18 +238,40 @@ describe('PlatformSkillCatalogRepository', () => {
     });
 
     expect((await repository.resolveVersion('search'))?.version.version).toBe('2.0.0');
+    expect(
+      (await repository.getPublishedExecutionVersionExact('search', '1.0.0'))?.version.id,
+    ).toBe(v1.id);
+    await repository.updateSkill(skill.id, { enabled: false });
+    expect(await repository.getPublishedExecutionVersionExact('search', '1.0.0')).toBeUndefined();
+    await repository.updateSkill(skill.id, { enabled: true });
+
+    await serverDB.insert(platformResourceRevisions).values({
+      checksum: 'disabled-v3',
+      payload: publishedPayload(unpublished.id, { enabled: false }),
+      resourceId: skill.id,
+      resourceType: 'skill',
+      revision: 3,
+      status: 'published',
+    });
+    expect(
+      await repository.getPublishedExecutionVersionExact('search', unpublished.version),
+    ).toBeUndefined();
+
     await serverDB.insert(platformResourceRevisions).values({
       checksum: 'archived-v2',
       payload: publishedPayload(v2.id),
       resourceId: skill.id,
       resourceType: 'skill',
-      revision: 3,
+      revision: 4,
       status: 'archived',
     });
-    await repository.updateSkill(skill.id, { revision: 3, status: 'archived' });
+    await repository.updateSkill(skill.id, { revision: 4, status: 'archived' });
     expect(await repository.resolveVersion('search')).toBeUndefined();
     expect((await repository.resolveVersion('search', '1.0.0'))?.version.id).toBe(v1.id);
-    expect(await repository.resolveVersion('search', unpublished.version)).toBeUndefined();
+    expect(await repository.getPublishedExecutionVersionExact('search', '1.0.0')).toBeUndefined();
+    expect((await repository.resolveVersion('search', unpublished.version))?.version.id).toBe(
+      unpublished.id,
+    );
   });
 
   it('cursor-paginates only current immutable published snapshots with same-Skill versions', async () => {
