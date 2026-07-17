@@ -76,18 +76,24 @@ vi.mock('@/helpers/skillFilters', () => ({
   filterBuiltinSkills: vi.fn((skills: unknown) => skills),
 }));
 
-vi.mock('@/server/enterprise/services/skillCatalog', () => ({
-  getBuiltinSkillDefinitions: vi.fn(() => []),
-  PlatformSkillOperationResolver: vi.fn(() => ({
-    findAll: vi.fn(),
-    findById: vi.fn(),
-    findByName: mocks.platformFindByName,
-    readResource: vi.fn(),
-  })),
-  SkillCatalogReadService: vi.fn(() => ({
-    resolvePinnedForExecution: mocks.platformResolvePinned,
-  })),
-}));
+vi.mock('@/server/enterprise/services/skillCatalog', async () => {
+  const lifecycle = await vi.importActual<Record<string, unknown>>(
+    '@/server/enterprise/services/skillCatalog/sandboxWorkspaceLifecycle',
+  );
+  return {
+    ...lifecycle,
+    getBuiltinSkillDefinitions: vi.fn(() => []),
+    PlatformSkillOperationResolver: vi.fn(() => ({
+      findAll: vi.fn(),
+      findById: vi.fn(),
+      findByName: mocks.platformFindByName,
+      readResource: vi.fn(),
+    })),
+    SkillCatalogReadService: vi.fn(() => ({
+      resolvePinnedForExecution: mocks.platformResolvePinned,
+    })),
+  };
+});
 
 vi.mock('@/server/services/agentDocuments', () => ({
   AgentDocumentsService: vi.fn(() => ({
