@@ -15,11 +15,11 @@ import {
 import { inferCrudType } from '@/libs/mcp/utils';
 import { router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
+import { assertLegacyConnectorTransportAllowed } from '@/server/enterprise/guards/connectorRuntimeTransport';
 import {
   isConnectorDisconnectInput,
   withManagedResourceGuard,
 } from '@/server/enterprise/guards/managedResource';
-import { assertLegacyConnectorRuntimeAllowed } from '@/server/enterprise/services/connectorCatalog/runtimeIntegration';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 import { callConnectorToolById, ConnectorToolCallError } from '@/server/services/connector/exec';
 import {
@@ -371,9 +371,10 @@ export const connectorRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       try {
-        await assertLegacyConnectorRuntimeAllowed({});
+        await assertLegacyConnectorTransportAllowed();
         return await callConnectorToolById(input, ctx);
       } catch (err: any) {
+        if (err instanceof TRPCError) throw err;
         if (err instanceof ConnectorToolCallError) {
           throw new TRPCError({ cause: err, code: err.code, message: err.message });
         }
