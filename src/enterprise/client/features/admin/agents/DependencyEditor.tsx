@@ -23,6 +23,7 @@ import {
 import type { AdminAgentDraftDependencies } from './types';
 import {
   useAdminConnectorDetail,
+  useAdminConnectorDetails,
   useAdminProviderModelSource,
   useAdminPublishedConnectors,
   useAdminPublishedProviders,
@@ -101,25 +102,47 @@ export const DependencyEditor = ({
 
   const model = dependencies.model;
 
-  // Validate existing refs against the CURRENTLY fetched published catalog.
-  const modelCurrent = isModelCurrent(model, source.data);
+  // Fetch the exact detail for every referenced connector so existing refs can be exact-validated.
+  const referencedConnectorIds = useMemo(
+    () => dependencies.connectors.map((connector) => connector.connectorId),
+    [dependencies.connectors],
+  );
+  const connectorRefDetails = useAdminConnectorDetails(enabled ? referencedConnectorIds : []);
+
+  // A catalog is "settled" once it has resolved at least once; before that, readiness fails closed.
+  const skillsSettled = skills.data !== undefined;
+  const connectorsSettled = connectorRefDetails.data !== undefined;
+  const sourceSettled = source.data !== undefined;
+
+  // Display staleness only once the relevant catalog has settled (no spurious "Outdated" flashes).
+  const displayModelStale = Boolean(model) && sourceSettled && !isModelCurrent(model, source.data);
   const staleSkills = useMemo(
-    () => staleSkillKeys(dependencies.skills, skills.data),
-    [dependencies.skills, skills.data],
+    () => (skillsSettled ? staleSkillKeys(dependencies.skills, skills.data) : []),
+    [dependencies.skills, skills.data, skillsSettled],
   );
   const staleConnectors = useMemo(
-    () => staleConnectorKeys(dependencies.connectors, connectors.data),
-    [dependencies.connectors, connectors.data],
+    () =>
+      connectorsSettled
+        ? staleConnectorKeys(dependencies.connectors, connectorRefDetails.data)
+        : [],
+    [connectorRefDetails.data, connectorsSettled, dependencies.connectors],
   );
+
+  // Readiness FAILS CLOSED: an unsettled/failed catalog or ANY exact mismatch blocks save.
+  const modelReady = Boolean(model) && isModelCurrent(model, source.data);
+  const skillsReady =
+    dependencies.skills.length === 0 || (skillsSettled && staleSkills.length === 0);
+  const connectorsReady =
+    dependencies.connectors.length === 0 || (connectorsSettled && staleConnectors.length === 0);
+  const ready = modelReady && skillsReady && connectorsReady;
 
   const issues = useMemo(() => {
     const list: string[] = [];
-    if (!modelCurrent) list.push('agentCatalog.dependency.issues.modelStale');
+    if (displayModelStale) list.push('agentCatalog.dependency.issues.modelStale');
     if (staleSkills.length > 0) list.push('agentCatalog.dependency.issues.skillStale');
     if (staleConnectors.length > 0) list.push('agentCatalog.dependency.issues.connectorStale');
     return list;
-  }, [modelCurrent, staleConnectors.length, staleSkills.length]);
-  const ready = issues.length === 0;
+  }, [displayModelStale, staleConnectors.length, staleSkills.length]);
 
   const issuesKey = issues.join('|');
   useEffect(() => {
@@ -255,7 +278,7 @@ export const DependencyEditor = ({
                     <Text>
                       {model.providerKey}/{model.modelKey}
                     </Text>
-                    {!modelCurrent ? (
+                    {displayModelStale ? (
                       <Tag color="warning">{t('agentCatalog.dependency.stale')}</Tag>
                     ) : null}
                   </Flexbox>

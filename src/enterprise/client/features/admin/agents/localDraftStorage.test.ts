@@ -133,20 +133,36 @@ describe('admin Agent recovery draft storage', () => {
       expect(localStorage.getItem(key)).toBeNull();
     });
 
-    it('fails closed on a >10k-node tree hiding a secret PAST the scan cap', () => {
-      // A wide array pushes the secret beyond the node budget; the scan must not silently pass.
-      const value = baseValue() as unknown as { filler: unknown[]; late: { systemRole: string } };
-      value.filler = Array.from({ length: 10_050 }, () => 'safe');
-      value.late = { systemRole: 'AKIA1234567890ABCD99' };
+    it('fails closed when a secret is truly visited only AFTER the >10k-node scan cap', () => {
+      // The scan is a LIFO stack: the LAST-inserted key is popped first. To force the secret to be
+      // reached only after the node budget is exhausted, insert it FIRST (bottom of the stack) and
+      // the wide benign filler LAST (top of the stack, drained first).
+      // Innocuous key names (no sensitive substring) so ONLY the deep value is a secret. Built in
+      // one literal to preserve key order: `aaaDeep` first (bottom of the LIFO stack → visited last)
+      // and `zzzFillerLast` last (top of the stack → drained first).
+      const value: Record<string, unknown> = {
+        aaaDeep: { note: 'AKIA1234567890ABCD99' },
+        ...baseValue(),
+        zzzFillerLast: Array.from({ length: 10_050 }, (_, i) => `safe-${i}`),
+      };
+
+      const bytes = new TextEncoder().encode(JSON.stringify(value)).length;
+      expect(bytes).toBeLessThanOrEqual(MAX_DRAFT_BYTES); // within size, yet un-scannable → blocked
+
       expect(saveAdminAgentDraft('agent-1', value as unknown as StoredAdminAgentDraft)).toBe(
         'blocked',
       );
       expect(localStorage.getItem(key)).toBeNull();
     });
 
-    it('fails closed on a benign but un-scannably-large tree', () => {
-      const value = baseValue() as unknown as { filler: unknown[] };
-      value.filler = Array.from({ length: 10_050 }, (_, i) => `benign-${i}`);
+    it('fails closed on a benign but un-scannably-large tree (within size)', () => {
+      const value: Record<string, unknown> = {
+        ...baseValue(),
+        filler: Array.from({ length: 10_050 }, (_, i) => `benign-${i}`),
+      };
+      expect(new TextEncoder().encode(JSON.stringify(value)).length).toBeLessThanOrEqual(
+        MAX_DRAFT_BYTES,
+      );
       expect(saveAdminAgentDraft('agent-1', value as unknown as StoredAdminAgentDraft)).toBe(
         'blocked',
       );

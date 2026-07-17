@@ -2,7 +2,7 @@
 
 import { Alert, Block, Flexbox, Tag, Text } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
-import { memo, useCallback, useState } from 'react';
+import { memo, useCallback, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { KeyedMutator } from 'swr';
 
@@ -41,6 +41,25 @@ const PERSIST_HINT_KEY = {
 // Statuses that warrant a visible warning (vs. the subtle "saved"/"pending" secondary text).
 const PERSIST_WARNING = new Set(['blocked', 'too_large', 'unavailable']);
 
+/**
+ * A refreshed Agent detail is "fresh" only when it is a complete authoritative detail (identity +
+ * 64-hex draftToken) whose CAS (draftToken / revision / current version) has demonstrably advanced
+ * past the pre-refresh snapshot. Used to gate unlocking the refresh lock.
+ */
+export const isAgentDetailFresh = (
+  result: AdminAgentDetailOutput | undefined,
+  previous: AdminAgentDetailOutput | undefined,
+): boolean => {
+  if (!result?.identity || typeof result.draftToken !== 'string' || result.draftToken.length !== 64)
+    return false;
+  if (!previous) return true;
+  return (
+    result.draftToken !== previous.draftToken ||
+    result.identity.revision !== previous.identity.revision ||
+    result.identity.currentVersionId !== previous.identity.currentVersionId
+  );
+};
+
 export const AgentDetailView = memo(
   ({ authMethod, editor, mutate, permissions, snapshot }: AgentDetailViewProps) => {
     const { t } = useTranslation('admin');
@@ -59,9 +78,15 @@ export const AgentDetailView = memo(
       hasCurrentVersion: Boolean(latest),
       permissions,
     });
-    // Shared refresh gate: a committed change whose refresh fails locks EVERY dependent write
-    // (agent actions + assignments) until an explicit refresh succeeds.
-    const lock = useRefreshLock(mutate);
+    // Shared refresh gate: a committed change whose refresh does NOT return a fresh, CAS-advanced
+    // detail locks EVERY dependent write (agent actions + assignments) until refresh advances CAS.
+    // The snapshot is read through a ref so the lock never compares against a stale closure.
+    const snapshotRef = useRef(snapshot);
+    snapshotRef.current = snapshot;
+    const lock = useRefreshLock<AdminAgentDetailOutput>(mutate, {
+      getSnapshot: () => snapshotRef.current,
+      isFresh: isAgentDetailFresh,
+    });
     const actions = useAgentActions({ authMethod, editor, lock, mutate, permissions, snapshot });
 
     return (

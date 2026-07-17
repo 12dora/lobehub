@@ -1,41 +1,60 @@
 'use client';
 
 import { useCallback, useRef, useState } from 'react';
-import type { KeyedMutator } from 'swr';
-
-import type { AdminAgentDetailOutput } from './types';
 
 export interface RefreshLock {
-  /** Ref-based check (no stale closures) — true while a committed change awaits a successful refresh. */
+  /** Ref-based check (no stale closures) — true while a committed change awaits a fresh refresh. */
   isLocked: () => boolean;
   /** Reactive flag for disabling controls + showing the "saved, refresh required" banner. */
   refreshFailed: boolean;
-  /** Retry the detail refresh; unlocks on success, stays locked on failure. */
+  /** Retry the detail refresh; unlocks ONLY on a complete CAS-advanced result. */
   retryRefresh: () => Promise<void>;
   /**
    * Call after a committed mutation whose output cannot advance the local CAS. Revalidates the
-   * detail; on failure it LOCKS every dependent write (agent + assignment) until an explicit
-   * refresh succeeds, so a stale-CAS second mutation can never fire.
+   * detail; unlocks ONLY when the refresh returns a complete authoritative detail whose CAS has
+   * demonstrably advanced from the locked pre-refresh snapshot — otherwise (undefined / incomplete
+   * / same CAS / thrown) it stays LOCKED so a stale-CAS second write can never fire.
    */
   syncAfterCommit: () => Promise<void>;
 }
 
+export interface RefreshLockOptions<T> {
+  /** The current (pre-refresh) detail. Read through a ref by the caller so it is never stale. */
+  getSnapshot: () => T | undefined;
+  /** True only when `result` is a complete authoritative detail advanced past `previous`. */
+  isFresh: (result: T | undefined, previous: T | undefined) => boolean;
+}
+
 /**
- * Shared refresh gate for one Agent detail surface. A committed mutation followed by a failed
- * detail refresh must not read as a save failure, must not clear recovery, and must block ALL
- * further dangerous/agent/assignment writes on the now-stale snapshot until refresh succeeds.
+ * Shared refresh gate for one Agent detail surface. A committed mutation followed by a refresh
+ * that does not return a complete, CAS-advanced detail must not read as success, must not clear
+ * recovery, and must block ALL further dangerous/agent/assignment writes on the stale snapshot
+ * until an explicit refresh genuinely advances the CAS.
  */
-export const useRefreshLock = (mutate: KeyedMutator<AdminAgentDetailOutput>): RefreshLock => {
+export const useRefreshLock = <T>(
+  mutate: () => Promise<T | undefined>,
+  options: RefreshLockOptions<T>,
+): RefreshLock => {
   const [refreshFailed, setRefreshFailed] = useState(false);
   const lockedRef = useRef(false);
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
 
   const sync = useCallback(async () => {
+    const previous = optionsRef.current.getSnapshot();
+    let fresh: T | undefined;
     try {
-      await mutate();
+      fresh = await mutate();
+    } catch {
+      lockedRef.current = true;
+      setRefreshFailed(true);
+      return;
+    }
+    if (optionsRef.current.isFresh(fresh, previous)) {
       lockedRef.current = false;
       setRefreshFailed(false);
-    } catch {
-      // Committed already — surface a distinct refresh-required state and lock writes.
+    } else {
+      // Incomplete / undefined / unchanged CAS → keep locked and surface refresh-required.
       lockedRef.current = true;
       setRefreshFailed(true);
     }

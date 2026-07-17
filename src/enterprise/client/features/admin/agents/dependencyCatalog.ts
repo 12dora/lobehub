@@ -230,15 +230,23 @@ export const isModelCurrent = (
   model.providerChecksum === source.providerChecksum &&
   source.chatModels.some((option) => option.modelKey === model.modelKey);
 
-/** skillKeys whose exact (key, version, checksum) is no longer present in the published catalog. */
+/** Order-independent canonical form of a tool-key set (dedup + sort). */
+const canonicalToolSet = (toolKeys: readonly string[]): string =>
+  [...new Set(toolKeys)].sort().join(' ');
+
+/**
+ * A skill ref is current only when EVERY contract field (skillKey + version + checksum) still
+ * matches a published skill. FAIL-CLOSED: an undefined catalog (loading / error / initial /
+ * unsettled) can never be verified, so the ref is treated as stale.
+ */
 export const staleSkillKeys = (
   skills: readonly PlatformAgentSkillDependencyRef[],
   published: readonly PublishedSkillOption[] | undefined,
-): string[] => {
-  if (!published) return [];
-  return skills
+): string[] =>
+  skills
     .filter(
       (skill) =>
+        !published ||
         !published.some(
           (option) =>
             option.skillKey === skill.skillKey &&
@@ -247,15 +255,36 @@ export const staleSkillKeys = (
         ),
     )
     .map((skill) => skill.skillKey);
-};
 
-/** connectorKeys that are no longer present (archived / unpublished / missing) in the catalog. */
+/**
+ * A connector ref is current only when the COMPLETE authoritative tuple matches the freshly
+ * fetched published detail: connectorId, connectorKey, publishedChecksum, publishedRevision, and
+ * the canonical allowed-tool set (after deny/deleted tools are excluded). `null` detail
+ * (missing / unpublished / not yet fetched) is never current.
+ */
+export const isConnectorCurrent = (
+  ref: PlatformAgentConnectorDependencyRef,
+  detail: PublishedConnectorDetail | null | undefined,
+): boolean =>
+  !!detail &&
+  ref.connectorId === detail.connectorId &&
+  ref.connectorKey === detail.connectorKey &&
+  ref.publishedChecksum === detail.publishedChecksum &&
+  ref.publishedRevision === detail.publishedRevision &&
+  canonicalToolSet(ref.allowedToolKeys) === canonicalToolSet(allowedConnectorToolKeys(detail));
+
+/**
+ * connectorKeys whose exact tuple no longer matches the published catalog. `detailsById` maps a
+ * referenced connectorId to its freshly fetched detail (`null` when unpublished/missing).
+ * FAIL-CLOSED: an undefined map (loading / error / unsettled) treats every ref as stale.
+ */
 export const staleConnectorKeys = (
   connectors: readonly PlatformAgentConnectorDependencyRef[],
-  published: readonly PublishedConnectorSummary[] | undefined,
-): string[] => {
-  if (!published) return [];
-  return connectors
-    .filter((connector) => !published.some((option) => option.key === connector.connectorKey))
+  detailsById: Readonly<Record<string, PublishedConnectorDetail | null>> | undefined,
+): string[] =>
+  connectors
+    .filter(
+      (connector) =>
+        !detailsById || !isConnectorCurrent(connector, detailsById[connector.connectorId]),
+    )
     .map((connector) => connector.connectorKey);
-};

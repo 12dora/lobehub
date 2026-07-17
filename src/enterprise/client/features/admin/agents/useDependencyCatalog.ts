@@ -33,6 +33,20 @@ const DEP_PROVIDER_SOURCE_KEY = 'enterprise.admin.agents.dep.providerSource';
 const DEP_SKILLS_KEY = 'enterprise.admin.agents.dep.skills';
 const DEP_CONNECTORS_KEY = 'enterprise.admin.agents.dep.connectors';
 const DEP_CONNECTOR_DETAIL_KEY = 'enterprise.admin.agents.dep.connectorDetail';
+const DEP_CONNECTOR_DETAILS_KEY = 'enterprise.admin.agents.dep.connectorDetails';
+
+const toConnectorDetail = (
+  published: NonNullable<Awaited<ReturnType<PublishedConnectorService['get']>>['published']>,
+): PublishedConnectorDetail => ({
+  connectorId: published.id,
+  connectorKey: published.key,
+  publishedChecksum: published.publishedChecksum,
+  publishedRevision: published.publishedRevision,
+  tools: published.tools.map((tool) => ({
+    platformPolicy: tool.platformPolicy,
+    toolKey: tool.toolKey,
+  })),
+});
 
 export const useAdminPublishedProviders = (
   enabled: boolean,
@@ -149,17 +163,33 @@ export const useAdminConnectorDetail = (
     connectorId ? [DEP_CONNECTOR_DETAIL_KEY, connectorId] : null,
     async () => {
       const detail = await service.get({ id: connectorId! });
-      if (!detail.published) return null;
-      return {
-        connectorId: detail.published.id,
-        connectorKey: detail.published.key,
-        publishedChecksum: detail.published.publishedChecksum,
-        publishedRevision: detail.published.publishedRevision,
-        tools: detail.published.tools.map((tool) => ({
-          platformPolicy: tool.platformPolicy,
-          toolKey: tool.toolKey,
-        })),
-      };
+      return detail.published ? toConnectorDetail(detail.published) : null;
     },
     { revalidateOnFocus: false },
   );
+
+/**
+ * Fetch the exact published detail for EVERY referenced connector id, so existing connector refs
+ * can be validated against the current catalog (checksum/revision/tools). Returns a map keyed by
+ * connectorId (`null` when a referenced connector is unpublished/missing); `data` stays
+ * `undefined` until settled so callers fail closed while loading.
+ */
+export const useAdminConnectorDetails = (
+  connectorIds: readonly string[],
+  service: PublishedConnectorService = adminConnectorsService,
+) => {
+  const ids = [...new Set(connectorIds)].sort();
+  return useClientDataSWR<Record<string, PublishedConnectorDetail | null>>(
+    ids.length ? [DEP_CONNECTOR_DETAILS_KEY, ids.join(',')] : null,
+    async () => {
+      const entries = await Promise.all(
+        ids.map(async (id) => {
+          const detail = await service.get({ id });
+          return [id, detail.published ? toConnectorDetail(detail.published) : null] as const;
+        }),
+      );
+      return Object.fromEntries(entries);
+    },
+    { revalidateOnFocus: false },
+  );
+};

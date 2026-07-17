@@ -8,6 +8,7 @@ import type { AdminAgentDraftDependencies } from './types';
 
 const hooks = vi.hoisted(() => ({
   connectorDetail: {} as Record<string, unknown>,
+  connectorRefDetails: {} as Record<string, unknown>,
   connectors: {} as Record<string, unknown>,
   providers: {} as Record<string, unknown>,
   skills: {} as Record<string, unknown>,
@@ -21,6 +22,7 @@ vi.mock('antd-style', () => ({
 }));
 vi.mock('./useDependencyCatalog', () => ({
   useAdminConnectorDetail: () => hooks.connectorDetail,
+  useAdminConnectorDetails: () => hooks.connectorRefDetails,
   useAdminProviderModelSource: () => hooks.source,
   useAdminPublishedConnectors: () => hooks.connectors,
   useAdminPublishedProviders: () => hooks.providers,
@@ -62,7 +64,42 @@ beforeEach(() => {
   hooks.connectors = { ...idle, data: [] };
   hooks.source = { ...idle };
   hooks.connectorDetail = { ...idle };
+  hooks.connectorRefDetails = { ...idle };
 });
+
+const currentModel = () => {
+  hooks.providers = { ...idle, data: [{ displayName: 'OpenAI', id: 'p1', providerKey: 'openai' }] };
+  hooks.source = {
+    ...idle,
+    data: {
+      chatModels: [{ displayName: 'GPT-4.1', modelKey: 'gpt-4.1', type: 'chat' }],
+      providerChecksum: 'a'.repeat(64),
+      providerKey: 'openai',
+      providerRevision: 4,
+    },
+  };
+  return {
+    modelKey: 'gpt-4.1',
+    providerChecksum: 'a'.repeat(64),
+    providerKey: 'openai',
+    providerRevision: 4,
+  };
+};
+
+const connectorRef = {
+  allowedToolKeys: ['search'],
+  connectorId: 'c1',
+  connectorKey: 'issues',
+  publishedChecksum: 'e'.repeat(64),
+  publishedRevision: 3,
+};
+const connectorDetail = {
+  connectorId: 'c1',
+  connectorKey: 'issues',
+  publishedChecksum: 'e'.repeat(64),
+  publishedRevision: 3,
+  tools: [{ platformPolicy: 'allow', toolKey: 'search' }],
+};
 
 const renderEditor = (
   deps: AdminAgentDraftDependencies,
@@ -258,5 +295,91 @@ describe('DependencyEditor exact authoring', () => {
         }),
       ),
     );
+  });
+
+  it('reports ready when a connector ref matches its fetched detail exactly', async () => {
+    const model = currentModel();
+    hooks.connectorRefDetails = { ...idle, data: { c1: connectorDetail } };
+    const onValidity = vi.fn();
+    renderEditor({ connectors: [connectorRef], model, skills: [] }, vi.fn(), onValidity);
+    await waitFor(() =>
+      expect(onValidity).toHaveBeenCalledWith(expect.objectContaining({ ready: true })),
+    );
+  });
+
+  it('flags a connector whose fetched detail no longer matches (revision drift)', async () => {
+    const model = currentModel();
+    hooks.connectorRefDetails = {
+      ...idle,
+      data: { c1: { ...connectorDetail, publishedRevision: 4 } },
+    };
+    const onValidity = vi.fn();
+    renderEditor({ connectors: [connectorRef], model, skills: [] }, vi.fn(), onValidity);
+    await waitFor(() =>
+      expect(onValidity).toHaveBeenCalledWith(
+        expect.objectContaining({
+          issues: ['agentCatalog.dependency.issues.connectorStale'],
+          ready: false,
+        }),
+      ),
+    );
+  });
+
+  it('FAILS CLOSED (not ready) while the referenced connector details are still loading', async () => {
+    const model = currentModel();
+    hooks.connectorRefDetails = { ...idle, data: undefined, isLoading: true };
+    const onValidity = vi.fn();
+    renderEditor({ connectors: [connectorRef], model, skills: [] }, vi.fn(), onValidity);
+    await waitFor(() =>
+      expect(onValidity).toHaveBeenCalledWith(expect.objectContaining({ ready: false })),
+    );
+  });
+
+  it('FAILS CLOSED (not ready) while the Skill catalog is still loading', async () => {
+    const model = currentModel();
+    hooks.skills = { ...idle, data: undefined, isLoading: true };
+    const skillRef = { checksum: 'f'.repeat(64), skillKey: 'writer', version: '1.0.0' };
+    const onValidity = vi.fn();
+    renderEditor({ connectors: [], model, skills: [skillRef] }, vi.fn(), onValidity);
+    await waitFor(() =>
+      expect(onValidity).toHaveBeenCalledWith(expect.objectContaining({ ready: false })),
+    );
+  });
+
+  it('resets the provider selection when the Agent context changes', () => {
+    hooks.providers = {
+      ...idle,
+      data: [
+        { displayName: 'OpenAI', id: 'p1', providerKey: 'openai' },
+        { displayName: 'Anthropic', id: 'p2', providerKey: 'anthropic' },
+      ],
+    };
+    hooks.source = { ...idle, data: null };
+    const { rerender } = render(
+      <DependencyEditor
+        editable
+        enabled
+        agentId="agent-1"
+        dependencies={emptyDeps()}
+        onChange={vi.fn()}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText('agentCatalog.dependency.model.provider'), {
+      target: { value: 'p1' },
+    });
+    // Selecting a provider surfaced the (unresolvable) source panel.
+    expect(screen.getByText('agentCatalog.dependency.model.unresolvable')).toBeTruthy();
+
+    // Switching Agent must clear the transient provider selection → source panel gone.
+    rerender(
+      <DependencyEditor
+        editable
+        enabled
+        agentId="agent-2"
+        dependencies={emptyDeps()}
+        onChange={vi.fn()}
+      />,
+    );
+    expect(screen.queryByText('agentCatalog.dependency.model.unresolvable')).toBeNull();
   });
 });

@@ -140,19 +140,22 @@ describe('useAgentActions reauth + commit/refresh + write-lock', () => {
     expect(mocks.service.publish).toHaveBeenCalledOnce();
   });
 
-  it('locks a second dangerous write after a committed publish whose refresh failed', async () => {
+  it('locks a second write after a refresh-failed publish; the re-enabled write uses the NEW CAS', async () => {
     const mutate = vi.fn().mockResolvedValue(undefined);
     const lock = makeLock('fail');
     mocks.service.publish.mockResolvedValue({ agentId: 'agent-1', revision: 8, versionId: 'v1' });
-    const { result } = renderHook(() =>
-      useAgentActions({
-        authMethod: null,
-        editor: makeEditor(),
-        lock,
-        mutate,
-        permissions,
-        snapshot,
-      }),
+    const { result, rerender } = renderHook(
+      (props: Parameters<typeof useAgentActions>[0]) => useAgentActions(props),
+      {
+        initialProps: {
+          authMethod: null,
+          editor: makeEditor(),
+          lock,
+          mutate,
+          permissions,
+          snapshot,
+        },
+      },
     );
 
     act(() => result.current.publish('v1'));
@@ -168,12 +171,30 @@ describe('useAgentActions reauth + commit/refresh + write-lock', () => {
     expect(mocks.openReasonModal.mock.calls.length).toBe(modalCalls);
     expect(mocks.service.publish).toHaveBeenCalledOnce();
 
-    // A successful refresh unlocks and re-enables the action.
+    // A successful refresh unlocks; the surface re-renders with the advanced CAS.
     await act(async () => {
       await lock.retryRefresh();
     });
+    const advanced = {
+      ...snapshot,
+      draftToken: 'c'.repeat(64),
+      identity: { ...snapshot.identity, revision: 8 },
+    };
+    rerender({
+      authMethod: null,
+      editor: makeEditor(),
+      lock,
+      mutate,
+      permissions,
+      snapshot: advanced,
+    });
+
     act(() => result.current.publish('v1'));
     expect(mocks.openReasonModal.mock.calls.length).toBe(modalCalls + 1);
+    // The re-enabled write uses the NEW CAS, never the stale pre-refresh values.
+    const built = lastModalConfig().buildPayload('again');
+    expect(built.expectedRevision).toBe(8);
+    expect(built.expectedDraftToken).toBe('c'.repeat(64));
   });
 
   it('applies the authoritative appendVersion output locally after a committed save', async () => {
