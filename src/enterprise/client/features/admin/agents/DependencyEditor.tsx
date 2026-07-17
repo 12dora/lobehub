@@ -138,15 +138,18 @@ export const DependencyEditor = ({
     [connectorRefDetails.data, connectorsSettled, dependencies.connectors],
   );
 
-  // Readiness FAILS CLOSED: an unsettled/errored/revalidating source (including the provider list) or
-  // ANY exact mismatch blocks save. The model is only trustworthy when BOTH the provider catalog and
-  // the exact provider/model source have a settled success and the pinned ref still matches.
+  // Readiness FAILS CLOSED. EVERY authorable dependency catalog must be freshly settled
+  // (non-error, non-validating) — not just the ones the current draft already references — because
+  // the operator can author from any of them. So an errored/revalidating provider list, model
+  // source, skill catalog OR connector list blocks save even when the skill/connector ref arrays
+  // are EMPTY. When refs are present, the referenced batch must also be settled and match exactly.
   const modelReady =
     Boolean(model) && providersUsable && sourceSettled && isModelCurrent(model, source.data);
   const skillsReady =
-    dependencies.skills.length === 0 || (skillsSettled && staleSkills.length === 0);
+    skillsSettled && (dependencies.skills.length === 0 || staleSkills.length === 0);
   const connectorsReady =
-    dependencies.connectors.length === 0 || (connectorsSettled && staleConnectors.length === 0);
+    connectorsListUsable &&
+    (dependencies.connectors.length === 0 || (connectorsSettled && staleConnectors.length === 0));
   const ready = modelReady && skillsReady && connectorsReady;
 
   const issues = useMemo(() => {
@@ -163,12 +166,14 @@ export const DependencyEditor = ({
   }, [issuesKey, onValidityChange, ready]);
 
   const chooseProvider = (nextId: string | undefined) => {
+    if (!providersUsable) return; // never select against a loading/revalidating/errored provider list
     setProviderId(nextId);
     if (dependencies.model) onChange(withModel(dependencies, null));
   };
 
   const chooseModel = (modelKey: string | undefined) => {
-    if (!modelKey || !source.data) return;
+    // Fail closed: never author a model ref from a loading/revalidating/errored source snapshot.
+    if (!modelKey || !sourceSettled || !source.data) return;
     onChange(withModel(dependencies, buildModelDependency(source.data, modelKey)));
   };
 
@@ -183,6 +188,7 @@ export const DependencyEditor = ({
     [dependencies.skills, skills.data],
   );
   const addSkill = (skillKey: string | undefined) => {
+    if (!skillsSettled) return; // never author from a loading/revalidating/errored skill catalog
     const published = skills.data?.find((skill) => skill.skillKey === skillKey);
     if (published) onChange(withSkillAdded(dependencies, buildSkillDependency(published)));
   };
@@ -240,7 +246,7 @@ export const DependencyEditor = ({
               <FieldLabel>{t('agentCatalog.dependency.model.provider')}</FieldLabel>
               <Select
                 aria-label={t('agentCatalog.dependency.model.provider')}
-                disabled={!editable}
+                disabled={!editable || !providersUsable}
                 placeholder={t('agentCatalog.dependency.model.providerPlaceholder')}
                 value={providerId}
                 options={(providers.data ?? []).map((provider) => ({
@@ -274,7 +280,7 @@ export const DependencyEditor = ({
                   <FieldLabel>{t('agentCatalog.dependency.model.model')}</FieldLabel>
                   <Select
                     aria-label={t('agentCatalog.dependency.model.model')}
-                    disabled={!editable}
+                    disabled={!editable || !sourceSettled}
                     placeholder={t('agentCatalog.dependency.model.modelPlaceholder')}
                     value={model?.modelKey}
                     options={source.data.chatModels.map((option) => ({
@@ -367,7 +373,7 @@ export const DependencyEditor = ({
             {editable ? (
               <Select
                 aria-label={t('agentCatalog.dependency.skill.add')}
-                disabled={skills.isLoading}
+                disabled={!skillsSettled}
                 options={skillOptions}
                 value={null}
                 placeholder={
@@ -440,8 +446,10 @@ export const DependencyEditor = ({
                   {editable ? (
                     <Flexbox horizontal gap={8}>
                       <Button
+                        disabled={!connectorsListUsable}
                         size="small"
                         onClick={() => {
+                          if (!connectorsListUsable) return; // never re-select from a stale list
                           const match = connectors.data?.find(
                             (option) => option.key === connector.connectorKey,
                           );

@@ -43,8 +43,12 @@ vi.mock('@lobehub/ui', () => ({
 }));
 vi.mock('@lobehub/ui/base-ui', () => ({
   Button: ({ children, ...props }: any) => <button {...props}>{children}</button>,
-  Select: ({ 'aria-label': label, options, onChange }: any) => (
-    <select aria-label={label} onChange={(event) => onChange?.(event.target.value)}>
+  Select: ({ 'aria-label': label, disabled, options, onChange }: any) => (
+    <select
+      aria-label={label}
+      disabled={disabled}
+      onChange={(event) => onChange?.(event.target.value)}
+    >
       <option value="">--</option>
       {(options ?? []).map((option: any) => (
         <option key={option.value} value={option.value}>
@@ -557,5 +561,132 @@ describe('DependencyEditor fails closed on the provider list / connector list / 
     });
     fireEvent.click(screen.getByText('agentCatalog.dependency.connector.addAction'));
     expect(onChange).toHaveBeenCalledTimes(1); // settled → authored exactly once
+  });
+});
+
+describe('DependencyEditor requires ALL authorable catalogs fresh even with EMPTY refs (U1)', () => {
+  const skillOption = {
+    checksum: 'f'.repeat(64),
+    displayName: 'Writer',
+    distribution: 'optional',
+    skillKey: 'writer',
+    version: '1.0.0',
+  };
+
+  it('blocks save when the Skill catalog errors even though there are NO skill refs', async () => {
+    const m = currentModel();
+    hooks.skills = { ...idle, data: [], error: new Error('x') }; // authorable catalog is unhealthy
+    const onValidity = vi.fn();
+    renderEditor({ connectors: [], model: m, skills: [] }, vi.fn(), onValidity);
+    await waitFor(() =>
+      expect(onValidity).toHaveBeenLastCalledWith(expect.objectContaining({ ready: false })),
+    );
+  });
+
+  it('blocks save while the Skill catalog revalidates (retained data) with NO skill refs', async () => {
+    const m = currentModel();
+    hooks.skills = { ...idle, data: [skillOption], isValidating: true };
+    const onValidity = vi.fn();
+    renderEditor({ connectors: [], model: m, skills: [] }, vi.fn(), onValidity);
+    await waitFor(() =>
+      expect(onValidity).toHaveBeenLastCalledWith(expect.objectContaining({ ready: false })),
+    );
+  });
+
+  it('blocks save when the Connector list errors even though there are NO connector refs', async () => {
+    const m = currentModel();
+    hooks.connectors = { ...idle, data: [], error: new Error('x') };
+    const onValidity = vi.fn();
+    renderEditor({ connectors: [], model: m, skills: [] }, vi.fn(), onValidity);
+    await waitFor(() =>
+      expect(onValidity).toHaveBeenLastCalledWith(expect.objectContaining({ ready: false })),
+    );
+  });
+
+  it('blocks save while the Connector list revalidates (retained data) with NO connector refs', async () => {
+    const m = currentModel();
+    hooks.connectors = {
+      ...idle,
+      data: [{ displayName: 'Issues', id: 'c1', key: 'issues' }],
+      isValidating: true,
+    };
+    const onValidity = vi.fn();
+    renderEditor({ connectors: [], model: m, skills: [] }, vi.fn(), onValidity);
+    await waitFor(() =>
+      expect(onValidity).toHaveBeenLastCalledWith(expect.objectContaining({ ready: false })),
+    );
+  });
+
+  it('disables the provider selector while the provider list revalidates with retained data', () => {
+    hooks.providers = {
+      ...idle,
+      data: [{ displayName: 'OpenAI', id: 'p1', providerKey: 'openai' }],
+      isValidating: true,
+    };
+    renderEditor(emptyDeps());
+    const select = screen.getByLabelText(
+      'agentCatalog.dependency.model.provider',
+    ) as HTMLSelectElement;
+    expect(select.disabled).toBe(true);
+  });
+
+  it('refuses a model change while the model source revalidates with retained data', () => {
+    hooks.providers = {
+      ...idle,
+      data: [{ displayName: 'OpenAI', id: 'p1', providerKey: 'openai' }],
+    };
+    hooks.source = {
+      ...idle,
+      data: {
+        chatModels: [{ displayName: 'GPT-4.1', modelKey: 'gpt-4.1', type: 'chat' }],
+        providerChecksum: 'a'.repeat(64),
+        providerKey: 'openai',
+        providerRevision: 4,
+      },
+      isValidating: true, // retained data, but revalidating
+    };
+    const onChange = vi.fn();
+    renderEditor(emptyDeps(), onChange);
+    fireEvent.change(screen.getByLabelText('agentCatalog.dependency.model.provider'), {
+      target: { value: 'p1' },
+    });
+    const modelSelect = screen.getByLabelText(
+      'agentCatalog.dependency.model.model',
+    ) as HTMLSelectElement;
+    expect(modelSelect.disabled).toBe(true);
+    fireEvent.change(modelSelect, { target: { value: 'gpt-4.1' } });
+    expect(onChange).not.toHaveBeenCalled(); // change refused → never author from a stale source
+  });
+
+  it('disables the skill selector while the skill catalog revalidates with retained data', () => {
+    hooks.skills = { ...idle, data: [skillOption], isValidating: true };
+    renderEditor(emptyDeps());
+    const select = screen.getByLabelText('agentCatalog.dependency.skill.add') as HTMLSelectElement;
+    expect(select.disabled).toBe(true);
+  });
+
+  it('restores readiness after a skill-catalog retry settles to a fresh success', async () => {
+    const m = currentModel();
+    hooks.skills = { ...idle, data: [], error: new Error('x') };
+    const onValidity = vi.fn();
+    const view = renderEditor({ connectors: [], model: m, skills: [] }, vi.fn(), onValidity);
+    await waitFor(() =>
+      expect(onValidity).toHaveBeenLastCalledWith(expect.objectContaining({ ready: false })),
+    );
+
+    hooks.skills = { ...idle, data: [] }; // retry settles: no error, not validating
+    view.rerender(
+      <DependencyEditor
+        editable
+        enabled
+        agentId="agent-1"
+        dependencies={{ connectors: [], model: m, skills: [] }}
+        onChange={vi.fn()}
+        onValidityChange={onValidity}
+      />,
+    );
+    await waitFor(() =>
+      expect(onValidity).toHaveBeenLastCalledWith(expect.objectContaining({ ready: true })),
+    );
   });
 });
