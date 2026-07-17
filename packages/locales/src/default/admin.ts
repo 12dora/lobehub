@@ -72,6 +72,9 @@ export default {
   'agentCatalog.dependency.connector.pinned': 'published revision {{revision}}',
   'agentCatalog.dependency.connector.remove': 'Remove',
   'agentCatalog.dependency.connector.title': 'Connectors',
+  'agentCatalog.dependency.connector.validateError':
+    'Could not verify the referenced Connectors against the current catalog.',
+  'agentCatalog.dependency.connector.validating': 'Verifying referenced Connectors…',
   'agentCatalog.dependency.connector.toolsAvailable': '{{count}} allowed tools',
   'agentCatalog.dependency.connector.toolsLabel': 'tools',
   'agentCatalog.dependency.connector.unresolvable':
@@ -97,6 +100,7 @@ export default {
   'agentCatalog.dependency.model.unresolvable':
     'This provider has no published revision with a resolvable checksum. Publish the provider before referencing it.',
   'agentCatalog.dependency.retry': 'Retry',
+  'agentCatalog.dependency.revalidating': 'Re-checking the current published catalog…',
   'agentCatalog.dependency.skill.add': 'Add a published Skill',
   'agentCatalog.dependency.skill.empty': 'No Skill dependencies.',
   'agentCatalog.dependency.skill.loadError': 'Could not load the published Skill catalog.',

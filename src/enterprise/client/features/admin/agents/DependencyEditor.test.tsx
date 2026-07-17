@@ -383,3 +383,85 @@ describe('DependencyEditor exact authoring', () => {
     expect(screen.queryByText('agentCatalog.dependency.model.unresolvable')).toBeNull();
   });
 });
+
+describe('DependencyEditor fails closed on retained-data errors / revalidation (S1)', () => {
+  const model = () => ({
+    modelKey: 'gpt-4.1',
+    providerChecksum: 'a'.repeat(64),
+    providerKey: 'openai',
+    providerRevision: 4,
+  });
+
+  it('blocks save when the model source errors while retaining matching data', async () => {
+    currentModel();
+    hooks.source = { ...hooks.source, error: new Error('flaky') }; // retained matching data + error
+    const onValidity = vi.fn();
+    renderEditor({ connectors: [], model: model(), skills: [] }, vi.fn(), onValidity);
+    await waitFor(() =>
+      expect(onValidity).toHaveBeenCalledWith(expect.objectContaining({ ready: false })),
+    );
+  });
+
+  it('blocks save while the model source is revalidating (matching data retained)', async () => {
+    currentModel();
+    hooks.source = { ...hooks.source, isValidating: true };
+    const onValidity = vi.fn();
+    renderEditor({ connectors: [], model: model(), skills: [] }, vi.fn(), onValidity);
+    await waitFor(() =>
+      expect(onValidity).toHaveBeenCalledWith(expect.objectContaining({ ready: false })),
+    );
+  });
+
+  it('blocks save + shows a retry when referenced-connector validation errors with retained data', async () => {
+    currentModel();
+    hooks.connectorRefDetails = { ...idle, data: { c1: connectorDetail }, error: new Error('x') };
+    const onValidity = vi.fn();
+    renderEditor({ connectors: [connectorRef], model: model(), skills: [] }, vi.fn(), onValidity);
+    expect(screen.getByText('agentCatalog.dependency.connector.validateError')).toBeTruthy();
+    expect(screen.getByText('agentCatalog.dependency.retry')).toBeTruthy();
+    await waitFor(() =>
+      expect(onValidity).toHaveBeenCalledWith(expect.objectContaining({ ready: false })),
+    );
+  });
+
+  it('blocks save + shows a validating hint while referenced-connector details revalidate', async () => {
+    currentModel();
+    hooks.connectorRefDetails = { ...idle, data: { c1: connectorDetail }, isValidating: true };
+    const onValidity = vi.fn();
+    renderEditor({ connectors: [connectorRef], model: model(), skills: [] }, vi.fn(), onValidity);
+    expect(screen.getByText('agentCatalog.dependency.connector.validating')).toBeTruthy();
+    await waitFor(() =>
+      expect(onValidity).toHaveBeenCalledWith(expect.objectContaining({ ready: false })),
+    );
+  });
+
+  it('becomes ready only AFTER a retry resolves to a settled non-error, non-validating snapshot', async () => {
+    currentModel();
+    hooks.connectorRefDetails = { ...idle, data: { c1: connectorDetail }, error: new Error('x') };
+    const onValidity = vi.fn();
+    const view = renderEditor(
+      { connectors: [connectorRef], model: model(), skills: [] },
+      vi.fn(),
+      onValidity,
+    );
+    await waitFor(() =>
+      expect(onValidity).toHaveBeenLastCalledWith(expect.objectContaining({ ready: false })),
+    );
+
+    // Retry succeeds: data settled, no error, not validating → NOW ready.
+    hooks.connectorRefDetails = { ...idle, data: { c1: connectorDetail } };
+    view.rerender(
+      <DependencyEditor
+        editable
+        enabled
+        agentId="agent-1"
+        dependencies={{ connectors: [connectorRef], model: model(), skills: [] }}
+        onChange={vi.fn()}
+        onValidityChange={onValidity}
+      />,
+    );
+    await waitFor(() =>
+      expect(onValidity).toHaveBeenLastCalledWith(expect.objectContaining({ ready: true })),
+    );
+  });
+});
