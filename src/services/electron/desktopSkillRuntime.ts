@@ -67,6 +67,7 @@ class DesktopSkillRuntimeService {
     activatedSkills?: ExecScriptActivatedSkill[],
     platformSkillSnapshot?: PlatformSkillOperationSnapshot,
     operationId?: string,
+    agentId?: string,
   ): Promise<DesktopSkillExecutionWorkspace> {
     if (!platformSkillSnapshot) {
       return {
@@ -75,8 +76,12 @@ class DesktopSkillRuntimeService {
       };
     }
     if (!operationId) throw new Error('Managed Skill execution requires an operationId');
+    if (!agentId) throw new Error('Managed Skill execution requires an agentId');
     if (!platformSkillSnapshot.operationId || platformSkillSnapshot.operationId !== operationId) {
       throw new Error('Managed Skill operationId does not match the signed snapshot');
+    }
+    if (!platformSkillSnapshot.agentId || platformSkillSnapshot.agentId !== agentId) {
+      throw new Error('Managed Skill agentId does not match the signed snapshot');
     }
 
     const refsByKey = new Map(platformSkillSnapshot.refs.map((ref) => [ref.skillKey, ref]));

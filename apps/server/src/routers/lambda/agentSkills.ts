@@ -5,7 +5,7 @@ import { z } from 'zod';
 
 import { withScopedPermission } from '@/business/server/trpc-middlewares/rbacPermission';
 import { wsCompatProcedure } from '@/business/server/trpc-middlewares/workspaceAuth';
-import { AgentModel } from '@/database/models/agent';
+import { AgentOperationModel } from '@/database/models/agentOperation';
 import { AgentSkillModel } from '@/database/models/agentSkill';
 import { FileModel } from '@/database/models/file';
 import { router } from '@/libs/trpc/lambda';
@@ -342,17 +342,20 @@ export const agentSkillsRouter = router({
       });
       if (input.operation) {
         const claims = await verifyPlatformSkillOperationProof(input.operation.proof, ctx.userId);
-        const ownedAgent = claims
-          ? await new AgentModel(
+        const trustedOperation = claims
+          ? await new AgentOperationModel(
               ctx.serverDB,
               ctx.userId,
               ctx.workspaceId ?? undefined,
-            ).getAgentConfigById(claims.agentId)
+            ).findById(claims.operationId)
           : undefined;
         const authorized =
           claims !== undefined &&
-          ownedAgent !== null &&
-          ownedAgent !== undefined &&
+          trustedOperation !== null &&
+          trustedOperation !== undefined &&
+          trustedOperation.status === 'running' &&
+          trustedOperation.agentId === claims.agentId &&
+          trustedOperation.id === claims.operationId &&
           claims.agentId === input.operation.agentId &&
           claims.operationId === input.operation.operationId &&
           claims.revision === input.operation.revision &&

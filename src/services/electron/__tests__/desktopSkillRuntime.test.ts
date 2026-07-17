@@ -248,6 +248,7 @@ describe('desktopSkillRuntimeService', () => {
         revision: 'catalog-r1',
       },
       'operation-1',
+      'agent-1',
     );
     expect(workspace).toEqual({
       cwd: '/private/managed-operation',
@@ -293,8 +294,28 @@ describe('desktopSkillRuntimeService', () => {
           revision: 'catalog-r1',
         },
         'operation-1',
+        'agent-1',
       ),
     ).rejects.toThrow('file count exceeds 100');
+    expect(prepareInlineSkillWorkspaceMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a managed snapshot from another agent before exact resolution', async () => {
+    const ref = { checksum: 'a'.repeat(64), skillKey: 'managed.skill', version: '1.0.0' };
+
+    await expect(
+      desktopSkillRuntimeService.prepareExecutionWorkspace(
+        [{ name: ref.skillKey }],
+        {
+          agentId: 'agent-a',
+          operationId: 'operation-1',
+          refs: [ref],
+          revision: 'catalog-r1',
+        },
+        'operation-1',
+        'agent-b',
+      ),
+    ).rejects.toThrow('agentId does not match');
     expect(prepareInlineSkillWorkspaceMock).not.toHaveBeenCalled();
   });
 

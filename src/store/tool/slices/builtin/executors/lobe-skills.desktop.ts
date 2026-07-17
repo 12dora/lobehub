@@ -24,6 +24,7 @@ const createRuntime = (ctx: BuiltinToolContext) =>
           options.activatedSkills,
           ctx.platformSkillSnapshot,
           ctx.operationId,
+          ctx.agentId,
         );
         try {
           const result = await localFileService.runCommand({
