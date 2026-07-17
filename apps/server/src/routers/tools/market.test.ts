@@ -44,10 +44,16 @@ vi.mock('@/libs/trpc/utils/internalJwt', () => ({
   validatePlatformSkillOperationProof: managedSkillMocks.validateProof,
 }));
 
-vi.mock('@/server/enterprise/services/skillCatalog', () => ({
-  getBuiltinSkillDefinitions: vi.fn(() => []),
-  SkillCatalogReadService: managedSkillMocks.SkillCatalogReadService,
-}));
+vi.mock('@/server/enterprise/services/skillCatalog', async () => {
+  const lifecycle = await vi.importActual<Record<string, unknown>>(
+    '@/server/enterprise/services/skillCatalog/sandboxWorkspaceLifecycle',
+  );
+  return {
+    ...lifecycle,
+    getBuiltinSkillDefinitions: vi.fn(() => []),
+    SkillCatalogReadService: managedSkillMocks.SkillCatalogReadService,
+  };
+});
 
 vi.mock('@/server/enterprise/services/managedResourceCapabilities', () => ({
   resolveManagedSkillRuntimeMode: managedSkillMocks.resolveRuntimeMode,
@@ -211,8 +217,71 @@ describe('tools marketRouter', () => {
     expect(execution?.[1]).not.toHaveProperty('skillZipUrls');
     expect(mockSandboxCallTool).toHaveBeenCalledWith(
       'runCommand',
-      expect.objectContaining({ command: expect.stringContaining('rm -rf') }),
+      expect.objectContaining({ command: expect.stringMatching(/^rm -rf '/) }),
     );
+    const commands = mockSandboxCallTool.mock.calls
+      .filter(([toolName]) => toolName === 'runCommand')
+      .map(([, callParams]) => String(callParams.command));
+    expect(commands.findIndex((command) => command.includes('-mmin +240'))).toBeLessThan(
+      commands.findIndex((command) => command.startsWith('umask 077 && mkdir -p')),
+    );
+  });
+
+  it('retries a failed managed cloud workspace cleanup', async () => {
+    const checksum = 'a'.repeat(64);
+    managedSkillMocks.parseEnterpriseFeatureFlags.mockReturnValue({
+      ENABLE_PLATFORM_MANAGED_SKILLS: true,
+    });
+    managedSkillMocks.SkillCatalogReadService.mockImplementation(
+      () =>
+        ({
+          resolvePinnedForExecution: vi.fn().mockResolvedValue({
+            checksum,
+            content: '# exact managed content',
+            contentRef: null,
+            resources: [],
+            skillKey: 'managed.skill',
+            version: '1.0.0',
+          }),
+        }) as never,
+    );
+    mockPreprocessLhCommand.mockResolvedValue({
+      command: 'true',
+      isLhCommand: false,
+      skipSkillLookup: false,
+    });
+    mockSandboxCallTool.mockImplementation(async (toolName: string, params: Record<string, any>) =>
+      toolName === 'runCommand' && String(params.command).startsWith('rm -rf ')
+        ? { error: { message: 'cleanup deferred' }, success: false }
+        : { result: { exitCode: 0 }, success: true },
+    );
+
+    const caller = marketRouter.createCaller({ serverDB: {}, userId: 'user-1' } as any);
+    await expect(
+      caller.execInSandbox({
+        params: {
+          activatedSkills: [{ name: 'managed.skill' }],
+          command: 'true',
+          operationId: 'operation-1',
+          platformSkillSnapshot: {
+            agentId: 'agent-1',
+            mandatorySkillIds: ['managed.skill'],
+            operationId: 'operation-1',
+            proof: 'signed-proof',
+            refs: [{ checksum, skillKey: 'managed.skill', version: '1.0.0' }],
+            revision: 'catalog-r1',
+          },
+        },
+        toolName: 'execScript',
+        topicId: 'topic-1',
+      }),
+    ).resolves.toMatchObject({ success: true });
+
+    const cleanups = mockSandboxCallTool.mock.calls.filter(
+      ([toolName, params]) =>
+        toolName === 'runCommand' && String(params.command).startsWith('rm -rf '),
+    );
+    expect(cleanups).toHaveLength(2);
   });
 
   it('fails closed in enforced mode when no verified operation snapshot exists', async () => {

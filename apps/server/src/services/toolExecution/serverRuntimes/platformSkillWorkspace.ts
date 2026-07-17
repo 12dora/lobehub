@@ -1,5 +1,3 @@
-import { createHash, randomUUID } from 'node:crypto';
-
 import { LocalSystemApiName, LocalSystemIdentifier } from '@lobechat/builtin-tool-local-system';
 import type { CommandResult, ExecScriptActivatedSkill } from '@lobechat/builtin-tool-skills';
 import type { SkillRuntimeService } from '@lobechat/builtin-tool-skills/executionRuntime';
@@ -12,9 +10,12 @@ import {
 
 import type { LobeChatDatabase } from '@/database/type';
 import {
+  cleanupSandboxSkillWorkspace,
+  createSandboxSkillWorkspaceRoot,
   getBuiltinSkillDefinitions,
   PlatformSkillOperationResolver,
   SkillCatalogReadService,
+  sweepExpiredSandboxSkillWorkspaces,
 } from '@/server/enterprise/services/skillCatalog';
 import { deviceGateway } from '@/server/services/deviceGateway';
 import { MarketService } from '@/server/services/market';
@@ -130,15 +131,12 @@ export class ManagedSkillServerRuntimeService implements SkillRuntimeService {
     skills: Awaited<ReturnType<ManagedSkillServerRuntimeService['resolveActivated']>>,
   ): Promise<CommandResult> => {
     const sandbox = this.sandboxService();
-    const operationHash = createHash('sha256')
-      .update(this.options.operationId!)
-      .digest('hex')
-      .slice(0, 24);
     // A random suffix makes concurrent tool calls in one operation independent: one call's finally
     // cleanup can never delete another call's files, so no reference counting is required.
-    const root = `/tmp/lobe-managed-skills/${operationHash}-${randomUUID()}`;
+    const { auditId, root } = createSandboxSkillWorkspaceRoot(this.options.operationId!);
     let runDir: string | undefined;
     try {
+      await sweepExpiredSandboxSkillWorkspaces(sandbox);
       const init = await sandbox.callTool('runCommand', {
         command: `umask 077 && mkdir -p ${shellQuote(root)} && chmod 700 ${shellQuote(root)}`,
       });
@@ -178,9 +176,7 @@ export class ManagedSkillServerRuntimeService implements SkillRuntimeService {
         success: false,
       };
     } finally {
-      await sandbox
-        .callTool('runCommand', { command: `rm -rf ${shellQuote(root)}` })
-        .catch(() => {});
+      await cleanupSandboxSkillWorkspace({ auditId, root, sandbox });
     }
   };
 
