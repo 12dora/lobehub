@@ -15,12 +15,14 @@ import { toDependencySnapshot } from './dependencyCatalog';
 import type { AdminAgentDetailOutput, AdminPlatformAgentAppendVersionOutput } from './types';
 import { fetchAllAdminAgents } from './useAdminAgents';
 import type { useAgentEditor } from './useAgentEditor';
+import type { RefreshLock } from './useRefreshLock';
 
 type IdentityMutationOutput = Pick<AdminAgentDetailOutput, 'draftToken' | 'identity'>;
 
 interface UseAgentActionsParams {
   authMethod: AdminReauthAuthMethod | null;
   editor: ReturnType<typeof useAgentEditor>;
+  lock: RefreshLock;
   mutate: KeyedMutator<AdminAgentDetailOutput>;
   permissions: ReturnType<typeof deriveAdminAgentPermissions>;
   snapshot: AdminAgentDetailOutput;
@@ -83,35 +85,16 @@ const applyAppendVersion =
 export const useAgentActions = ({
   authMethod,
   editor,
+  lock,
   mutate,
   permissions,
   snapshot,
 }: UseAgentActionsParams) => {
   const { t } = useTranslation('admin');
-  const [refreshFailed, setRefreshFailed] = useState(false);
-
-  /** Revalidate after a committed mutation whose output cannot advance CAS locally. */
-  const revalidateAfterCommit = useCallback(async () => {
-    try {
-      await mutate();
-      setRefreshFailed(false);
-    } catch {
-      // The mutation already committed — surface a distinct refresh-failed state, never "failed".
-      setRefreshFailed(true);
-    }
-  }, [mutate]);
-
-  const retryRefresh = useCallback(async () => {
-    try {
-      await mutate();
-      setRefreshFailed(false);
-    } catch {
-      setRefreshFailed(true);
-    }
-  }, [mutate]);
 
   const save = useCallback(() => {
-    if (!permissions.canUpdate || !editor.draft) return;
+    // Locked after a committed change whose refresh failed → block the stale-CAS write.
+    if (lock.isLocked() || !permissions.canUpdate || !editor.draft) return;
     const dependencySnapshot = toDependencySnapshot(editor.draft.dependencies);
     if (!dependencySnapshot) {
       toast.error(t('agentCatalog.dependency.model.required'));
@@ -132,6 +115,7 @@ export const useAgentActions = ({
       }),
       description: t('agentCatalog.save.description'),
       onSubmit: async (input) => {
+        if (lock.isLocked()) return; // defence in depth against a stale-CAS resubmission
         editor.setSaveState('saving');
         let output: AdminPlatformAgentAppendVersionOutput;
         try {
@@ -153,10 +137,11 @@ export const useAgentActions = ({
       targetLabel: snapshot.identity.agentKey,
       title: t('agentCatalog.save.title'),
     });
-  }, [authMethod, editor, mutate, permissions.canUpdate, snapshot, t]);
+  }, [authMethod, editor, lock, mutate, permissions.canUpdate, snapshot, t]);
 
   const publish = useCallback(
     (versionId: string) => {
+      if (lock.isLocked()) return;
       openReasonModal({
         authMethod: authMethod ?? undefined,
         buildPayload: (reason) => ({
@@ -168,11 +153,12 @@ export const useAgentActions = ({
         }),
         description: t('agentCatalog.publish.description'),
         onSubmit: async (input) => {
+          if (lock.isLocked()) return;
           await adminAgentsService.publish(
             input as Parameters<typeof adminAgentsService.publish>[0],
           );
-          // publish output carries no draftToken → revalidate to recover the next CAS.
-          await revalidateAfterCommit();
+          // publish output carries no draftToken → revalidate; lock on failure.
+          await lock.syncAfterCommit();
           toast.success(t('agentCatalog.toast.published'));
         },
         submitLabel: t('agentCatalog.publish.submit'),
@@ -180,11 +166,12 @@ export const useAgentActions = ({
         title: t('agentCatalog.publish.title'),
       });
     },
-    [authMethod, revalidateAfterCommit, snapshot, t],
+    [authMethod, lock, snapshot, t],
   );
 
   const rollback = useCallback(
     (versionId: string) => {
+      if (lock.isLocked()) return;
       openReasonModal({
         authMethod: authMethod ?? undefined,
         buildPayload: (reason) => ({
@@ -197,10 +184,11 @@ export const useAgentActions = ({
         danger: true,
         description: t('agentCatalog.rollback.description'),
         onSubmit: async (input) => {
+          if (lock.isLocked()) return;
           await adminAgentsService.rollback(
             input as Parameters<typeof adminAgentsService.rollback>[0],
           );
-          await revalidateAfterCommit();
+          await lock.syncAfterCommit();
           toast.success(t('agentCatalog.toast.rolledBack'));
         },
         submitLabel: t('agentCatalog.rollback.submit'),
@@ -208,10 +196,11 @@ export const useAgentActions = ({
         title: t('agentCatalog.rollback.title'),
       });
     },
-    [authMethod, revalidateAfterCommit, snapshot, t],
+    [authMethod, lock, snapshot, t],
   );
 
   const setDefaultInbox = useCallback(async () => {
+    if (lock.isLocked()) return;
     // Resolve the outgoing default's exact CAS BEFORE opening the modal, then freeze it.
     const currentDefaultIdentity = (await fetchAllAdminAgents({}, adminAgentsService)).find(
       ({ identity }) => identity.isDefault,
@@ -240,21 +229,22 @@ export const useAgentActions = ({
       danger: true,
       description: t('agentCatalog.defaultSwitch.description'),
       onSubmit: async (input) => {
+        if (lock.isLocked()) return;
         const output = await adminAgentsService.setDefaultInbox(
           input as Parameters<typeof adminAgentsService.setDefaultInbox>[0],
         );
         // nextDefault carries the authoritative CAS for this agent → advance locally.
         await mutate(applyIdentity(output.nextDefault), { revalidate: false });
-        void mutate().catch(() => setRefreshFailed(true));
         toast.success(t('agentCatalog.defaultSwitch.success'));
       },
       submitLabel: t('agentCatalog.defaultSwitch.submit'),
       targetLabel: snapshot.identity.agentKey,
       title: t('agentCatalog.defaultSwitch.title'),
     });
-  }, [authMethod, mutate, snapshot, t]);
+  }, [authMethod, lock, mutate, snapshot, t]);
 
   const archive = useCallback(async () => {
+    if (lock.isLocked()) return;
     const candidates = snapshot.identity.isDefault
       ? (await fetchAllAdminAgents({ status: 'published' }, adminAgentsService))
           .filter(({ identity }) => identity.id !== snapshot.identity.id)
@@ -283,11 +273,11 @@ export const useAgentActions = ({
         />
       ),
       onSubmit: async (input) => {
+        if (lock.isLocked()) return;
         const output = await adminAgentsService.archive(
           input as Parameters<typeof adminAgentsService.archive>[0],
         );
         await mutate(applyIdentity(output), { revalidate: false });
-        void mutate().catch(() => setRefreshFailed(true));
         toast.success(t('agentCatalog.toast.archived'));
       },
       submitLabel: t('agentCatalog.archive.submit'),
@@ -298,7 +288,15 @@ export const useAgentActions = ({
           ? 'agentCatalog.archive.noReplacement'
           : null,
     });
-  }, [authMethod, mutate, snapshot, t]);
+  }, [authMethod, lock, mutate, snapshot, t]);
 
-  return { archive, publish, refreshFailed, retryRefresh, rollback, save, setDefaultInbox };
+  return {
+    archive,
+    publish,
+    refreshFailed: lock.refreshFailed,
+    retryRefresh: lock.retryRefresh,
+    rollback,
+    save,
+    setDefaultInbox,
+  };
 };

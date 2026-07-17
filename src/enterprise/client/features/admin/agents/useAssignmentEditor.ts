@@ -4,7 +4,6 @@ import { PLATFORM_AGENT_GLOBAL_TARGET_ID } from '@lobechat/types';
 import { toast } from '@lobehub/ui/base-ui';
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { KeyedMutator } from 'swr';
 
 import type { AdminReauthAuthMethod } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 import { openReasonModal } from '@/enterprise/client/features/admin/users/modals/openReasonModal';
@@ -16,6 +15,7 @@ import type {
   AdminPlatformAgentAssignmentListOutput,
   AdminPlatformAgentAssignmentUpsertInput,
 } from './types';
+import type { RefreshLock } from './useRefreshLock';
 
 type Assignment = AdminPlatformAgentAssignmentListOutput['items'][number];
 type TargetType = AdminPlatformAgentAssignmentUpsertInput['targetType'];
@@ -57,10 +57,21 @@ export const validateAssignmentDraft = (draft: NormalizedAssignmentDraft): strin
   return null;
 };
 
+/** Stable fingerprint of the exact normalized draft, used to auto-invalidate a stale preview. */
+export const assignmentDraftFingerprint = (draft: NormalizedAssignmentDraft): string =>
+  JSON.stringify([
+    draft.targetType,
+    draft.targetId,
+    draft.mode,
+    draft.enabled,
+    draft.versionPolicy,
+    draft.pinnedVersionId,
+  ]);
+
 export const useAssignmentEditor = (
   snapshot: AdminAgentDetailOutput,
-  mutate: KeyedMutator<AdminAgentDetailOutput>,
   authMethod: AdminReauthAuthMethod | null,
+  lock: RefreshLock,
 ) => {
   const { t } = useTranslation('admin');
   const [editingId, setEditingId] = useState<string | undefined>();
@@ -70,10 +81,12 @@ export const useAssignmentEditor = (
   const [enabled, setEnabled] = useState(true);
   const [versionPolicy, setVersionPolicyState] = useState<VersionPolicy>('latest_published');
   const [pinnedVersionId, setPinnedVersionId] = useState<string | null>(null);
-  const [preview, setPreview] = useState<AdminAgentAssignmentPreviewOutput | null>(null);
+  const [previewState, setPreviewState] = useState<{
+    fingerprint: string;
+    result: AdminAgentAssignmentPreviewOutput;
+  } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [refreshFailed, setRefreshFailed] = useState(false);
 
   const draft = useMemo(
     () =>
@@ -88,6 +101,9 @@ export const useAssignmentEditor = (
     [enabled, mode, pinnedVersionId, targetId, targetType, versionPolicy],
   );
   const validationError = validateAssignmentDraft(draft);
+  const fingerprint = assignmentDraftFingerprint(draft);
+  // The preview is shown ONLY while it matches the exact current draft; ANY field change hides it.
+  const preview = previewState?.fingerprint === fingerprint ? previewState.result : null;
 
   const resetForm = () => {
     setEditingId(undefined);
@@ -97,7 +113,7 @@ export const useAssignmentEditor = (
     setEnabled(true);
     setVersionPolicyState('latest_published');
     setPinnedVersionId(null);
-    setPreview(null);
+    setPreviewState(null);
     setError(null);
   };
 
@@ -109,20 +125,18 @@ export const useAssignmentEditor = (
     setEnabled(assignment.enabled);
     setVersionPolicyState(assignment.versionPolicy);
     setPinnedVersionId(assignment.pinnedVersionId);
-    setPreview(null);
+    setPreviewState(null);
     setError(null);
   };
 
   const setTargetType = (value: TargetType) => {
     setTargetTypeState(value);
-    setTargetId(value === 'global' ? '' : '');
-    setPreview(null);
+    setTargetId('');
   };
 
   const setVersionPolicy = (value: VersionPolicy) => {
     setVersionPolicyState(value);
     if (value !== 'pinned') setPinnedVersionId(null);
-    setPreview(null);
   };
 
   const previewAssignment = async () => {
@@ -132,13 +146,14 @@ export const useAssignmentEditor = (
     }
     setBusy(true);
     setError(null);
+    // Capture the exact draft this preview is for, so a later edit invalidates the result.
+    const requested = { ...draft };
     try {
-      setPreview(
-        await adminAgentsService.previewAssignment({
-          agentId: snapshot.identity.id,
-          assignment: draft,
-        }),
-      );
+      const result = await adminAgentsService.previewAssignment({
+        agentId: snapshot.identity.id,
+        assignment: requested,
+      });
+      setPreviewState({ fingerprint: assignmentDraftFingerprint(requested), result });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -146,22 +161,14 @@ export const useAssignmentEditor = (
     }
   };
 
-  /** Revalidate after a committed mutation; a refresh failure must never read as a save failure. */
-  const syncAfterCommit = async () => {
-    try {
-      await mutate();
-      setRefreshFailed(false);
-    } catch {
-      setRefreshFailed(true);
-    }
-  };
-
   const submit = () => {
+    // Locked after a committed change whose refresh failed → block the stale-CAS write.
+    if (lock.isLocked()) return;
     if (validationError) {
       setError(t(validationError as never));
       return;
     }
-    // Freeze the exact normalized draft + CAS + assignmentId at confirm time.
+    // Freeze the exact normalized draft + CAS + assignmentId at confirm time (identical to preview).
     const frozenDraft = { ...draft };
     const frozenAssignmentId = editingId;
     openReasonModal({
@@ -176,10 +183,11 @@ export const useAssignmentEditor = (
       }),
       description: t('agentCatalog.assignment.upsertDescription'),
       onSubmit: async (input) => {
+        if (lock.isLocked()) return; // defence in depth against a stale-CAS resubmission
         await adminAgentsService.upsertAssignment(input as AdminPlatformAgentAssignmentUpsertInput);
         // Committed: reset the form so the stale CAS cannot be resubmitted, then revalidate.
         resetForm();
-        await syncAfterCommit();
+        await lock.syncAfterCommit();
         toast.success(t('agentCatalog.assignment.saved'));
       },
       submitLabel: t(
@@ -193,6 +201,7 @@ export const useAssignmentEditor = (
   };
 
   const remove = (assignment: Assignment) => {
+    if (lock.isLocked()) return;
     openReasonModal({
       authMethod: authMethod ?? undefined,
       buildPayload: (reason) => ({
@@ -205,11 +214,12 @@ export const useAssignmentEditor = (
       danger: true,
       description: t('agentCatalog.assignment.removeDescription'),
       onSubmit: async (input) => {
+        if (lock.isLocked()) return;
         await adminAgentsService.removeAssignment(
           input as Parameters<typeof adminAgentsService.removeAssignment>[0],
         );
         if (editingId === assignment.id) resetForm();
-        await syncAfterCommit();
+        await lock.syncAfterCommit();
         toast.success(t('agentCatalog.assignment.removed'));
       },
       submitLabel: t('agentCatalog.assignment.remove'),
@@ -218,8 +228,6 @@ export const useAssignmentEditor = (
     });
   };
 
-  const retryRefresh = () => void syncAfterCommit();
-
   return {
     busy,
     draft,
@@ -227,14 +235,15 @@ export const useAssignmentEditor = (
     editingId,
     enabled,
     error,
+    locked: lock.refreshFailed,
     mode,
     pinnedVersionId,
     preview,
     previewAssignment,
-    refreshFailed,
+    refreshFailed: lock.refreshFailed,
     remove,
     resetForm,
-    retryRefresh,
+    retryRefresh: lock.retryRefresh,
     setEnabled,
     setMode,
     setPinnedVersionId,

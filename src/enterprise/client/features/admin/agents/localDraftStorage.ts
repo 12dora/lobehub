@@ -1,5 +1,13 @@
 import { z } from 'zod';
 
+import {
+  platformAgentConnectorDependencyRefSchema,
+  platformAgentModelDependencyRefSchema,
+  platformAgentSkillDependencyRefSchema,
+  platformAgentVersionConfigSchema,
+  platformAgentVersionSchema,
+} from '@/server/enterprise/contracts/platformAgents';
+
 import type { AdminAgentDraft } from './types';
 
 /**
@@ -31,6 +39,12 @@ const SECRET_VALUE_PATTERNS: RegExp[] = [
   /["']?type["']?\s*:\s*["']service_account["']/i,
 ];
 
+/**
+ * Hard cap on nodes scanned. A legitimate draft is small (a few hundred nodes); anything larger
+ * is refused rather than partially scanned, so a secret can never hide past the limit.
+ */
+const MAX_SCAN_NODES = 10_000;
+
 const isSensitiveKeyName = (key: string) =>
   !BENIGN_KEYS.has(key.toLowerCase()) && SENSITIVE_KEY_PATTERN.test(key);
 
@@ -38,15 +52,18 @@ const containsSecretValue = (value: string) =>
   SECRET_VALUE_PATTERNS.some((pattern) => pattern.test(value));
 
 /**
- * Fail-closed secret scan tuned for the draft shape: flags secret-bearing string VALUES anywhere
+ * FAIL-CLOSED secret scan tuned for the draft shape: flags secret-bearing string VALUES anywhere
  * and any sensitive foreign KEY name (e.g. `password`, `apiKey`) that is not an allow-listed
- * schema identifier. The rejected content is never returned or logged.
+ * schema identifier. If the traversal cannot COMPLETE within {@link MAX_SCAN_NODES} it returns
+ * `true` (treat incomplete traversal as sensitive) so a secret placed past the cap — or a
+ * benignly oversized tree — is never persisted. Rejected content is never returned or logged.
  */
 const carriesSecretMaterial = (value: unknown): boolean => {
   const stack: unknown[] = [value];
   const seen = new WeakSet<object>();
   let visited = 0;
-  while (stack.length > 0 && visited < 10_000) {
+  while (stack.length > 0) {
+    if (visited >= MAX_SCAN_NODES) return true; // could not finish the scan → fail closed
     const current = stack.pop();
     visited += 1;
     if (typeof current === 'string') {
@@ -72,84 +89,48 @@ const STORAGE_PREFIX = 'aihub.admin.agents.draft.';
 
 /**
  * Absolute upper bound on a persisted recovery draft. The contract already caps every text
- * field (systemRole ≤ 100k chars, etc.), so a legitimate in-progress draft stays well under
- * this; the bound is a hard backstop against a corrupted/oversized payload filling quota.
+ * field, but a contract-valid draft with many connectors/tools can still be large, so this is a
+ * hard backstop against a payload filling local-storage quota.
  */
 export const MAX_DRAFT_BYTES = 512 * 1024;
 
 /**
- * Structural (not business-complete) validation of a persisted draft. Types and object shape
- * are enforced strictly so schema drift / corrupted storage is rejected, while empty strings
- * are tolerated because a recovery draft is captured mid-edit and may be incomplete.
+ * Authoritative draft validation. Reuses the M10 append-version CONTRACT schemas so the local
+ * recovery draft is held to the exact same rules the server enforces (SemVer, 64-hex checksums,
+ * positive revisions, field lengths, array max + key uniqueness, model-parameter ranges, secret
+ * refusal in text fields). The only adapter is that `model` may be `null` while the operator has
+ * not yet resolved an exact published model, plus the local envelope (token/revision/savedAt).
  */
-const storedConfigSchema = z
+const storedDependenciesSchema = z
   .object({
-    avatar: z.string().nullable(),
-    backgroundColor: z.string().nullable(),
-    description: z.string().nullable(),
-    displayName: z.string(),
-    modelParameters: z
-      .object({
-        frequencyPenalty: z.number().optional(),
-        maxTokens: z.number().optional(),
-        presencePenalty: z.number().optional(),
-        temperature: z.number().optional(),
-        topP: z.number().optional(),
-      })
-      .strict(),
-    openingMessage: z.string().nullable(),
-    openingQuestions: z.array(z.string()),
-    systemRole: z.string(),
-    tags: z.array(z.string()),
+    connectors: z.array(platformAgentConnectorDependencyRefSchema).max(100),
+    model: platformAgentModelDependencyRefSchema.nullable(),
+    skills: z.array(platformAgentSkillDependencyRefSchema).max(100),
   })
-  .strict();
-
-const storedSnapshotSchema = z
-  .object({
-    connectors: z.array(
-      z
-        .object({
-          allowedToolKeys: z.array(z.string()),
-          connectorId: z.string(),
-          connectorKey: z.string(),
-          publishedChecksum: z.string(),
-          publishedRevision: z.number(),
-        })
-        .strict(),
-    ),
-    model: z
-      .object({
-        modelKey: z.string(),
-        providerChecksum: z.string(),
-        providerKey: z.string(),
-        providerRevision: z.number(),
-      })
-      .strict()
-      .nullable(),
-    skills: z.array(
-      z
-        .object({
-          checksum: z.string(),
-          skillKey: z.string(),
-          version: z.string(),
-        })
-        .strict(),
-    ),
-  })
-  .strict();
+  .strict()
+  .superRefine((snapshot, ctx) => {
+    const connectorKeys = snapshot.connectors.map(({ connectorKey }) => connectorKey);
+    if (new Set(connectorKeys).size !== connectorKeys.length) {
+      ctx.addIssue({ code: 'custom', message: 'connector references must be unique' });
+    }
+    const skillKeys = snapshot.skills.map(({ skillKey }) => skillKey);
+    if (new Set(skillKeys).size !== skillKeys.length) {
+      ctx.addIssue({ code: 'custom', message: 'skill references must be unique' });
+    }
+  });
 
 const storedAdminAgentDraftSchema = z
   .object({
     draft: z
       .object({
-        config: storedConfigSchema,
-        dependencies: storedSnapshotSchema,
-        version: z.string(),
+        config: platformAgentVersionConfigSchema,
+        dependencies: storedDependenciesSchema,
+        version: platformAgentVersionSchema,
       })
       .strict(),
     draftToken: z.string().regex(/^[a-f0-9]{64}$/),
     revision: z.number().int().nonnegative(),
-    savedAt: z.string(),
+    savedAt: z.string().datetime(),
   })
   .strict();
 
@@ -165,10 +146,11 @@ export interface StoredAdminAgentDraft {
  * their in-progress work is actually recoverable.
  * - `saved`        — written to local storage.
  * - `unavailable`  — storage threw (private mode / quota / security exception).
- * - `blocked`      — rejected because it carries secret-bearing material; content is NOT logged.
+ * - `blocked`      — carried secret material or was too large to scan; content is NOT logged.
  * - `too_large`    — exceeds {@link MAX_DRAFT_BYTES}.
+ * - `invalid`      — failed authoritative contract validation (not yet a persistable draft).
  */
-export type DraftPersistStatus = 'blocked' | 'saved' | 'too_large' | 'unavailable';
+export type DraftPersistStatus = 'blocked' | 'invalid' | 'saved' | 'too_large' | 'unavailable';
 
 const keyFor = (id: string) => `${STORAGE_PREFIX}${id}`;
 
@@ -199,13 +181,13 @@ export const loadAdminAgentDraft = (id: string): StoredAdminAgentDraft | null =>
     return null;
   }
 
-  const result = storedAdminAgentDraftSchema.safeParse(parsed);
-  if (!result.success) {
+  // Never hydrate secret-bearing (or un-scannable) material.
+  if (carriesSecretMaterial(parsed)) {
     safeRemove(id);
     return null;
   }
-  // Defense in depth: never hydrate secret-bearing material even if it reached storage.
-  if (carriesSecretMaterial(result.data)) {
+  const result = storedAdminAgentDraftSchema.safeParse(parsed);
+  if (!result.success) {
     safeRemove(id);
     return null;
   }
@@ -216,10 +198,15 @@ export const saveAdminAgentDraft = (
   id: string,
   value: StoredAdminAgentDraft,
 ): DraftPersistStatus => {
-  // Never persist secret-bearing material; the rejected content is deliberately not surfaced.
+  // 1. Fail-closed secret / un-scannable-size guard (never surface the rejected content).
   if (carriesSecretMaterial(value)) {
     safeRemove(id);
     return 'blocked';
+  }
+  // 2. Authoritative contract validation before anything is written.
+  if (!storedAdminAgentDraftSchema.safeParse(value).success) {
+    safeRemove(id);
+    return 'invalid';
   }
 
   let serialized: string;
@@ -228,6 +215,7 @@ export const saveAdminAgentDraft = (
   } catch {
     return 'unavailable';
   }
+  // 3. Envelope size bound (a contract-valid draft can still be large via many tools).
   if (byteLength(serialized) > MAX_DRAFT_BYTES) {
     safeRemove(id);
     return 'too_large';

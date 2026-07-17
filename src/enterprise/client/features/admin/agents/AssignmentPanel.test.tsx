@@ -65,6 +65,12 @@ const snapshot: AdminAgentDetailOutput = {
 };
 
 const permissions = deriveAdminAgentPermissions([PLATFORM_PERMISSIONS.AGENT_ASSIGN]);
+const lock = {
+  isLocked: () => false,
+  refreshFailed: false,
+  retryRefresh: vi.fn(),
+  syncAfterCommit: vi.fn(),
+};
 
 beforeEach(() => {
   editorMock.value = {
@@ -73,6 +79,7 @@ beforeEach(() => {
     edit: vi.fn(),
     editingId: undefined,
     enabled: true,
+    locked: false,
     error: null,
     mode: 'optional',
     pinnedVersionId: null,
@@ -101,6 +108,7 @@ describe('AssignmentPanel', () => {
     render(
       <AssignmentPanel
         authMethod={null}
+        lock={lock}
         mutate={vi.fn() as any}
         permissions={permissions}
         rolloutsEnabled={false}
@@ -118,6 +126,7 @@ describe('AssignmentPanel', () => {
       <AssignmentPanel
         rolloutsEnabled
         authMethod={null}
+        lock={lock}
         mutate={vi.fn() as any}
         permissions={permissions}
         snapshot={snapshot}
@@ -131,6 +140,7 @@ describe('AssignmentPanel', () => {
     render(
       <AssignmentPanel
         authMethod={null}
+        lock={lock}
         mutate={vi.fn() as any}
         permissions={permissions}
         rolloutsEnabled={false}

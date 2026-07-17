@@ -12,9 +12,12 @@ import { adminAgentsService } from '@/enterprise/client/services/adminAgents';
 import type { deriveAdminAgentPermissions } from './controller';
 import type { AdminAgentDetailOutput } from './types';
 import { useAssignmentEditor } from './useAssignmentEditor';
+import type { RefreshLock } from './useRefreshLock';
 
 interface AssignmentPanelProps {
   authMethod: AdminReauthAuthMethod | null;
+  /** Shared refresh gate; when a committed agent/assignment change awaits refresh, writes lock. */
+  lock: RefreshLock;
   mutate: KeyedMutator<AdminAgentDetailOutput>;
   permissions: ReturnType<typeof deriveAdminAgentPermissions>;
   /** Whether the Rollout backend (PR-052) is available; off ⇒ Start rollout is gated/deferred. */
@@ -24,13 +27,14 @@ interface AssignmentPanelProps {
 
 export const AssignmentPanel = ({
   authMethod,
+  lock,
   mutate,
   permissions,
   rolloutsEnabled,
   snapshot,
 }: AssignmentPanelProps) => {
   const { t } = useTranslation('admin');
-  const editor = useAssignmentEditor(snapshot, mutate, authMethod);
+  const editor = useAssignmentEditor(snapshot, authMethod, lock);
 
   const startRollout = (assignmentId: string) =>
     openReasonModal({
@@ -151,13 +155,13 @@ export const AssignmentPanel = ({
             ) : null}
             <Flexbox horizontal gap={8} wrap="wrap">
               <Button
-                disabled={editor.busy || Boolean(editor.validationError)}
+                disabled={editor.busy || editor.locked || Boolean(editor.validationError)}
                 onClick={() => void editor.previewAssignment()}
               >
                 {t('agentCatalog.assignment.preview')}
               </Button>
               <Button
-                disabled={editor.busy || Boolean(editor.validationError)}
+                disabled={editor.busy || editor.locked || Boolean(editor.validationError)}
                 type="primary"
                 onClick={editor.submit}
               >
@@ -202,7 +206,7 @@ export const AssignmentPanel = ({
               </Flexbox>
               {permissions.canAssign ? (
                 <Flexbox horizontal gap={8}>
-                  <Button onClick={() => editor.edit(assignment)}>
+                  <Button disabled={editor.locked} onClick={() => editor.edit(assignment)}>
                     {t('agentCatalog.assignment.edit')}
                   </Button>
                   {rolloutsEnabled ? (
@@ -214,7 +218,7 @@ export const AssignmentPanel = ({
                       <Button disabled>{t('agentCatalog.rollout.start')}</Button>
                     </Tooltip>
                   )}
-                  <Button danger onClick={() => editor.remove(assignment)}>
+                  <Button danger disabled={editor.locked} onClick={() => editor.remove(assignment)}>
                     {t('agentCatalog.assignment.remove')}
                   </Button>
                 </Flexbox>

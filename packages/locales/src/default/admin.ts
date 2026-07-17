@@ -65,12 +65,24 @@ export default {
   'agentCatalog.defaultSwitch.submit': 'Set as default Inbox',
   'agentCatalog.defaultSwitch.success': 'Default Inbox switched.',
   'agentCatalog.defaultSwitch.title': 'Switch default Inbox',
-  'agentCatalog.dependency.connector.deferred':
-    'Connector dependency authoring will be available once the connector catalog exposes published checksums. Existing connector references are preserved.',
-  'agentCatalog.dependency.connector.deferredTitle': 'Connector authoring not available yet',
+  'agentCatalog.dependency.connector.add': 'Add a published Connector',
+  'agentCatalog.dependency.connector.addAction': 'Add Connector',
   'agentCatalog.dependency.connector.empty': 'No connector dependencies.',
+  'agentCatalog.dependency.connector.loadError': 'Could not load the published Connector catalog.',
   'agentCatalog.dependency.connector.pinned': 'published revision {{revision}}',
+  'agentCatalog.dependency.connector.remove': 'Remove',
   'agentCatalog.dependency.connector.title': 'Connectors',
+  'agentCatalog.dependency.connector.toolsAvailable': '{{count}} allowed tools',
+  'agentCatalog.dependency.connector.toolsLabel': 'tools',
+  'agentCatalog.dependency.connector.unresolvable':
+    'This Connector has no resolvable published revision. Publish it before referencing it.',
+  'agentCatalog.dependency.connector.update': 'Update',
+  'agentCatalog.dependency.issues.connectorStale':
+    'A referenced Connector is no longer published — remove or update it before saving.',
+  'agentCatalog.dependency.issues.modelStale':
+    'The selected model no longer matches the current published catalog — re-pick it before saving.',
+  'agentCatalog.dependency.issues.skillStale':
+    'A referenced Skill version is no longer published — remove or update it before saving.',
   'agentCatalog.dependency.loading': 'Loading catalog…',
   'agentCatalog.dependency.model.empty': 'No published providers are available yet.',
   'agentCatalog.dependency.model.loadError': 'Could not load the published catalog.',
@@ -90,6 +102,7 @@ export default {
   'agentCatalog.dependency.skill.loadError': 'Could not load the published Skill catalog.',
   'agentCatalog.dependency.skill.remove': 'Remove',
   'agentCatalog.dependency.skill.title': 'Skills',
+  'agentCatalog.dependency.stale': 'Outdated',
   'agentCatalog.editor.description': 'Description',
   'agentCatalog.editor.displayName': 'Display name',
   'agentCatalog.editor.model': 'Published model key',
@@ -110,6 +123,7 @@ export default {
   'agentCatalog.list.empty.filtered': 'No Agents match these filters.',
   'agentCatalog.list.end': 'End of list.',
   'agentCatalog.list.loadMore': 'Load more',
+  'agentCatalog.list.loadMoreError': 'Could not load more Agents.',
   'agentCatalog.list.loadingMore': 'Loading…',
   'agentCatalog.list.search': 'Search Agents',
   'agentCatalog.list.status': 'Status',
@@ -130,6 +144,7 @@ export default {
   'agentCatalog.recovery.refreshFailedDescription':
     'Your change was committed. Retry the refresh to load the latest revision before making further changes.',
   'agentCatalog.recovery.refreshRetry': 'Retry refresh',
+  'agentCatalog.recovery.invalid': 'Draft not saved locally yet — complete the required fields.',
   'agentCatalog.recovery.saved': 'Draft recovery saved locally.',
   'agentCatalog.recovery.tooLarge': 'This draft is too large to save locally for recovery.',
   'agentCatalog.recovery.unavailable': 'Local recovery is unavailable in this browser session.',

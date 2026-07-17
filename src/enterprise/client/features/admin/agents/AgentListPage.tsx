@@ -143,7 +143,7 @@ const AgentListPage = memo(() => {
       }
     >
       <AsyncBoundary
-        data={list.items}
+        data={list.boundaryData}
         error={list.error}
         isEmpty={list.isEmpty}
         isLoading={list.isLoadingInitial}
@@ -165,7 +165,12 @@ const AgentListPage = memo(() => {
             }
           />
           <Flexbox horizontal align="center" gap={8} justify="center">
-            {list.hasMore ? (
+            {list.loadMoreError ? (
+              <Flexbox horizontal align="center" gap={8}>
+                <Text type="danger">{t('agentCatalog.list.loadMoreError')}</Text>
+                <Button onClick={list.retry}>{t('agentCatalog.dependency.retry')}</Button>
+              </Flexbox>
+            ) : list.hasMore ? (
               <Button loading={list.isLoadingMore} onClick={list.loadMore}>
                 {list.isLoadingMore
                   ? t('agentCatalog.list.loadingMore')

@@ -2,7 +2,7 @@
 
 import { Alert, Block, Flexbox, Tag, Text } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
-import { memo } from 'react';
+import { memo, useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { KeyedMutator } from 'swr';
 
@@ -15,11 +15,12 @@ import { AgentEditorFields } from './AgentEditorFields';
 import { AssignmentPanel } from './AssignmentPanel';
 import type { deriveAdminAgentPermissions } from './controller';
 import { deriveAdminAgentActionAvailability } from './controller';
-import { DependencyEditor } from './DependencyEditor';
+import { DependencyEditor, type DependencyValidity } from './DependencyEditor';
 import { RolloutPanel } from './RolloutPanel';
 import type { AdminAgentDetailOutput } from './types';
 import { useAgentActions } from './useAgentActions';
 import type { useAgentEditor } from './useAgentEditor';
+import { useRefreshLock } from './useRefreshLock';
 
 interface AgentDetailViewProps {
   authMethod: AdminReauthAuthMethod | null;
@@ -31,23 +32,37 @@ interface AgentDetailViewProps {
 
 const PERSIST_HINT_KEY = {
   blocked: 'agentCatalog.recovery.blocked',
+  invalid: 'agentCatalog.recovery.invalid',
   saved: 'agentCatalog.recovery.saved',
   too_large: 'agentCatalog.recovery.tooLarge',
   unavailable: 'agentCatalog.recovery.unavailable',
 } as const;
+
+// Statuses that warrant a visible warning (vs. the subtle "saved"/"pending" secondary text).
+const PERSIST_WARNING = new Set(['blocked', 'too_large', 'unavailable']);
 
 export const AgentDetailView = memo(
   ({ authMethod, editor, mutate, permissions, snapshot }: AgentDetailViewProps) => {
     const { t } = useTranslation('admin');
     const current = snapshot.versions.find(({ id }) => id === snapshot.identity.currentVersionId);
     const latest = snapshot.versions[0];
-    const modelReady = Boolean(editor.draft?.dependencies.model);
+    // Exact catalog validity of the draft dependencies, reported up by the DependencyEditor.
+    // `ready` means the model/skill/connector refs still match the CURRENT published catalog.
+    const [depValidity, setDepValidity] = useState<DependencyValidity>({
+      issues: [],
+      ready: false,
+    });
+    const onDepValidity = useCallback((value: DependencyValidity) => setDepValidity(value), []);
+    const modelReady = depValidity.ready;
     const availability = deriveAdminAgentActionAvailability({
       dirty: editor.dirty,
       hasCurrentVersion: Boolean(latest),
       permissions,
     });
-    const actions = useAgentActions({ authMethod, editor, mutate, permissions, snapshot });
+    // Shared refresh gate: a committed change whose refresh fails locks EVERY dependent write
+    // (agent actions + assignments) until an explicit refresh succeeds.
+    const lock = useRefreshLock(mutate);
+    const actions = useAgentActions({ authMethod, editor, lock, mutate, permissions, snapshot });
 
     return (
       <AdminPageTemplate
@@ -59,7 +74,11 @@ export const AgentDetailView = memo(
               <Button
                 type="primary"
                 disabled={
-                  !editor.dirty || editor.conflict || editor.saveState === 'saving' || !modelReady
+                  !editor.dirty ||
+                  editor.conflict ||
+                  editor.saveState === 'saving' ||
+                  !modelReady ||
+                  lock.refreshFailed
                 }
                 onClick={actions.save}
               >
@@ -72,7 +91,7 @@ export const AgentDetailView = memo(
             latest &&
             (latest.id !== current?.id || snapshot.identity.status !== 'published') ? (
               <Button
-                disabled={!availability.canPublishNow}
+                disabled={!availability.canPublishNow || lock.refreshFailed}
                 onClick={() => actions.publish(latest.id)}
               >
                 {t('agentCatalog.publish.submit')}
@@ -83,7 +102,7 @@ export const AgentDetailView = memo(
             snapshot.identity.status === 'published' ? (
               <Button
                 danger
-                disabled={!availability.canPublishNow}
+                disabled={!availability.canPublishNow || lock.refreshFailed}
                 onClick={() => void actions.setDefaultInbox()}
               >
                 {t('agentCatalog.defaultSwitch.submit')}
@@ -92,7 +111,7 @@ export const AgentDetailView = memo(
             {permissions.canDelete ? (
               <Button
                 danger
-                disabled={!availability.canArchiveNow}
+                disabled={!availability.canArchiveNow || lock.refreshFailed}
                 onClick={() => void actions.archive()}
               >
                 {t('agentCatalog.archive.submit')}
@@ -141,10 +160,10 @@ export const AgentDetailView = memo(
           {editor.saveState === 'failed' ? (
             <Alert message={t('agentCatalog.save.failed')} type="error" />
           ) : null}
-          {editor.persistState && editor.persistState !== 'saved' ? (
+          {editor.persistState && PERSIST_WARNING.has(editor.persistState) ? (
             <Alert showIcon message={t(PERSIST_HINT_KEY[editor.persistState])} type="warning" />
-          ) : editor.persistState === 'saved' ? (
-            <Text type="secondary">{t(PERSIST_HINT_KEY.saved)}</Text>
+          ) : editor.persistState ? (
+            <Text type="secondary">{t(PERSIST_HINT_KEY[editor.persistState])}</Text>
           ) : null}
           {editor.draft ? (
             <Block padding={20} variant="outlined">
@@ -155,9 +174,11 @@ export const AgentDetailView = memo(
                   onChange={editor.updateDraft}
                 />
                 <DependencyEditor
+                  agentId={snapshot.identity.id}
                   dependencies={editor.draft.dependencies}
                   editable={permissions.canUpdate}
                   enabled={permissions.canUpdate}
+                  onValidityChange={onDepValidity}
                   onChange={(next) =>
                     editor.updateDraft((currentDraft) => ({
                       ...currentDraft,
@@ -165,6 +186,13 @@ export const AgentDetailView = memo(
                     }))
                   }
                 />
+                {permissions.canUpdate && depValidity.issues.length > 0 ? (
+                  <Alert
+                    showIcon
+                    message={depValidity.issues.map((issue) => t(issue as never)).join(' · ')}
+                    type="warning"
+                  />
+                ) : null}
               </Flexbox>
             </Block>
           ) : null}
@@ -201,7 +229,7 @@ export const AgentDetailView = memo(
                   !(snapshot.identity.status === 'draft' && version.id === latest?.id) ? (
                     <Button
                       danger
-                      disabled={!availability.canRollbackNow}
+                      disabled={!availability.canRollbackNow || lock.refreshFailed}
                       onClick={() => actions.rollback(version.id)}
                     >
                       {t('agentCatalog.rollback.submit')}
@@ -213,6 +241,7 @@ export const AgentDetailView = memo(
           </Flexbox>
           <AssignmentPanel
             authMethod={authMethod}
+            lock={lock}
             mutate={mutate}
             permissions={permissions}
             rolloutsEnabled={adminAgentsService.capabilities.rollouts}
