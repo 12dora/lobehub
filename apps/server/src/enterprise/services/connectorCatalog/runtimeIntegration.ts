@@ -33,6 +33,7 @@ import {
   type ConnectorRuntimeEffectiveMode,
   getConnectorRuntimeEffectiveState,
 } from './runtimeEffectiveState';
+import { DatabaseConnectorRuntimeExecutionJournal } from './runtimeExecutionJournal';
 import { createSharedRateLimiter } from './sharedRateLimiter';
 import { resolveConnectorConfirmationPolicy } from './toolPolicy';
 import { UserConnectorOAuthService } from './userOAuthService';
@@ -492,6 +493,7 @@ export const executeManagedConnectorTool = async (params: {
       },
       bindingLoader: (userId, connectorId) =>
         new PlatformUserConnectorBindingRepository(params.db!, userId).getBinding(connectorId),
+      journal: new DatabaseConnectorRuntimeExecutionJournal(params.db),
       outbound,
       policy: {
         resolve: async ({ connectorKey, toolKey, userId }) => {
@@ -525,6 +527,7 @@ export const executeManagedConnectorTool = async (params: {
       arguments: params.arguments,
       humanApproved,
       proof: toConnectorOperationProof(proof),
+      toolCallId: params.toolCallId,
       toolKey: params.apiName,
       userId: params.userId,
     });
