@@ -23,13 +23,19 @@ import type {
   AdminPlatformAgentVersionsListInput,
 } from '../../contracts/platformAgents';
 import { PlatformAuditService } from '../platformAudit';
-import { acquirePlatformDependencyPublicationLock } from '../platformDependencyLock';
+import {
+  acquirePlatformDefaultInboxLock,
+  acquirePlatformDependencyPublicationLock,
+} from '../platformDependencyLock';
 import { assertExactPlatformAgentDependencies } from './dependencyValidator';
 import {
   PlatformAgentDefaultRequiredError,
+  PlatformAgentInvalidInputError,
   PlatformAgentNotFoundError,
+  PlatformAgentResourceInUseError,
   PlatformAgentRevisionConflictError,
 } from './errors';
+import { translatePlatformAgentPgError } from './pgErrors';
 import { assertExpectedPlatformAgentIdentity, platformAgentDraftToken } from './publication';
 
 const log = debug('lobe-server:platform-agent-admin');
@@ -61,6 +67,19 @@ const versionView = (version: ExactPlatformAgentVersion) => ({
   id: version.id,
   version: version.version,
 });
+
+/**
+ * Stable failure-audit category. Records the mutation's failure class only — never the
+ * offending value, constraint name, or target identifier (ADM-03 audit redaction).
+ */
+const failureAuditCategory = (error: unknown): string => {
+  if (error instanceof PlatformAgentNotFoundError) return 'not_found';
+  if (error instanceof PlatformAgentRevisionConflictError) return 'revision_conflict';
+  if (error instanceof PlatformAgentDefaultRequiredError) return 'default_required';
+  if (error instanceof PlatformAgentResourceInUseError) return 'resource_in_use';
+  if (error instanceof PlatformAgentInvalidInputError) return 'invalid_input';
+  return 'platform_agent_mutation_failed';
+};
 
 const assignmentView = (assignment: PlatformAgentAssignmentSafeItem) => ({
   agentId: assignment.agentId,
@@ -98,14 +117,18 @@ export class PlatformAgentAdminService {
   private appendFailureAudit = async (params: {
     action: string;
     actorUserId: string;
+    errorCategory: string;
     reason: string;
     targetId: string;
   }) => {
     try {
       await this.appendAudit({
-        ...params,
-        afterDiff: { error: 'platform_agent_mutation_failed' },
+        action: params.action,
+        actorUserId: params.actorUserId,
+        afterDiff: { error: params.errorCategory },
+        reason: params.reason,
         result: 'failure',
+        targetId: params.targetId,
       });
     } catch (auditError) {
       log(
@@ -138,8 +161,17 @@ export class PlatformAgentAdminService {
         return result;
       });
     } catch (error) {
-      await this.appendFailureAudit(params);
-      throw error;
+      // Normalize raw PostgreSQL constraint / trigger failures to stable, redacted
+      // service errors before auditing or surfacing them (ADM-03).
+      const mapped = translatePlatformAgentPgError(error);
+      await this.appendFailureAudit({
+        action: params.action,
+        actorUserId: params.actorUserId,
+        errorCategory: failureAuditCategory(mapped),
+        reason: params.reason,
+        targetId: params.targetId,
+      });
+      throw mapped;
     }
   };
 
@@ -149,11 +181,17 @@ export class PlatformAgentAdminService {
       actorUserId,
       reason: input.reason,
       run: async (tx) => {
+        // The default-inbox singleton is owned exclusively by `setDefaultInbox` (which also
+        // enforces published-target + replacement rules). Creation can never seed it, so a
+        // freshly created Agent is always a non-default draft (ADM-01).
+        if (input.isDefault || input.systemKey !== null) {
+          throw new PlatformAgentInvalidInputError();
+        }
         const identity = await new PlatformAgentCatalogRepository(tx).createIdentity({
           agentKey: input.agentKey,
           createdBy: actorUserId,
-          isDefault: input.isDefault ?? false,
-          systemKey: input.systemKey ?? null,
+          isDefault: false,
+          systemKey: null,
         });
         return mutationView(identity);
       },
@@ -170,20 +208,28 @@ export class PlatformAgentAdminService {
   list = async (input: AdminPlatformAgentListInput) => {
     const repository = new PlatformAgentCatalogRepository(this.db);
     const page = await repository.listIdentities(input);
+    // Constant query count regardless of page size (ADM-04): one identity page + one
+    // batched version lookup + one batched assignment-count aggregate.
+    const agentIds = page.items.map((identity) => identity.id);
+    const versionIds = page.items
+      .map((identity) => identity.currentVersionId)
+      .filter((versionId): versionId is string => versionId !== null);
+    const [versions, assignmentCounts] = await Promise.all([
+      repository.getExactVersionsByIds(versionIds),
+      repository.countAssignmentsByAgentIds(agentIds),
+    ]);
     return {
-      items: await Promise.all(
-        page.items.map(async (identity) => {
-          const version = identity.currentVersionId
-            ? await repository.getExactVersion(identity.id, identity.currentVersionId)
-            : undefined;
-          return {
-            assignmentCount: await repository.countAssignments(identity.id),
-            displayName: version?.config.displayName ?? identity.agentKey,
-            identity: identityView(identity),
-            publishedVersion: version?.version ?? null,
-          };
-        }),
-      ),
+      items: page.items.map((identity) => {
+        const version = identity.currentVersionId
+          ? versions.get(identity.currentVersionId)
+          : undefined;
+        return {
+          assignmentCount: assignmentCounts.get(identity.id) ?? 0,
+          displayName: version?.config.displayName ?? identity.agentKey,
+          identity: identityView(identity),
+          publishedVersion: version?.version ?? null,
+        };
+      }),
       nextCursor: page.nextCursor,
     };
   };
@@ -202,15 +248,19 @@ export class PlatformAgentAdminService {
           input.expectedDraftToken,
           input.expectedRevision,
         );
+        // updateDraft must never be a side door into the default-inbox singleton. The
+        // default flag / system key are managed solely by `setDefaultInbox` and `archive`;
+        // any attempt to flip them here (promote or de-default) is rejected, and the CAS
+        // patch never carries them (ADM-01).
+        const lockedSystemKey = locked.systemKey === 'default-inbox' ? 'default-inbox' : null;
+        if (input.isDefault !== locked.isDefault || input.systemKey !== lockedSystemKey) {
+          throw new PlatformAgentInvalidInputError();
+        }
         const updated = await repository.updateDraftCas({
           expectedDraftSequence: locked.draftSequence,
           expectedRevision: locked.revision,
           id: locked.id,
-          patch: {
-            isDefault: input.isDefault,
-            systemKey: input.systemKey,
-            updatedBy: actorUserId,
-          },
+          patch: { updatedBy: actorUserId },
         });
         if (!updated) throw new PlatformAgentRevisionConflictError();
         return mutationView(updated);
@@ -366,6 +416,10 @@ export class PlatformAgentAdminService {
       reason: input.reason,
       run: async (tx) => {
         const repository = new PlatformAgentCatalogRepository(tx);
+        // Serialize every default-inbox election before touching any row, so concurrent
+        // promotions (including the first, when no default row exists yet) queue instead of
+        // racing the partial unique index (ADM-01).
+        await acquirePlatformDefaultInboxLock(tx);
         const pointers = [
           input.nextDefault,
           ...(input.currentDefault ? [input.currentDefault] : []),
@@ -428,6 +482,10 @@ export class PlatformAgentAdminService {
       reason: input.reason,
       run: async (tx) => {
         const repository = new PlatformAgentCatalogRepository(tx);
+        // Archive can hand off the default-inbox pointer to a replacement, so it must hold
+        // the same singleton lock as `setDefaultInbox` (consistent lock order: default-inbox
+        // lock first, then identity rows in sorted id order) to avoid deadlock (ADM-01).
+        await acquirePlatformDefaultInboxLock(tx);
         const ids = [
           input.agentId,
           ...(input.replacementAgentId ? [input.replacementAgentId] : []),
@@ -444,6 +502,15 @@ export class PlatformAgentAdminService {
           input.expectedDraftToken,
           input.expectedRevision,
         );
+        // This phase does not perform atomic reference migration. Any live Assignment or
+        // Materialization pointing at the Agent must be reassigned first; until then archive
+        // is a stable resource-in-use rejection rather than a half-done cascade (ADM-02).
+        // The identity FOR UPDATE lock above makes the count TOCTOU-stable: concurrent
+        // reference inserts take a FK KEY SHARE lock on this row and block behind us.
+        const references = await repository.countAgentReferences(current.id);
+        if (references.assignments > 0 || references.materializations > 0) {
+          throw new PlatformAgentResourceInUseError();
+        }
         if (current.isDefault && !input.replacementAgentId) {
           throw new PlatformAgentDefaultRequiredError();
         }
@@ -482,13 +549,19 @@ export class PlatformAgentAdminService {
     const limit = input.limit ?? 50;
     const [kind, rawCursor] = input.cursor?.split(':', 2) ?? ['a', undefined];
     if (kind !== 'a' && kind !== 'm') throw new PlatformAgentRevisionConflictError();
-    const items: Array<{
+
+    // Collect dependents with their (optional) version id first, then resolve every version
+    // in a single batched query — keeping the query count constant per page (ADM-04).
+    const drafts: Array<{
       id: string;
       key: string;
       name: string;
       type: 'assignment' | 'materialization';
-      version: string | null;
+      versionId: string | null;
     }> = [];
+    let nextCursor: string | null = null;
+    let includeMaterializations = kind === 'm';
+
     if (kind === 'a') {
       const assignments = await repository.listAssignments({
         agentId: input.agentId,
@@ -496,40 +569,54 @@ export class PlatformAgentAdminService {
         limit,
       });
       for (const assignment of assignments.items) {
-        const version = assignment.pinnedVersionId
-          ? await repository.getExactVersion(input.agentId, assignment.pinnedVersionId)
-          : undefined;
-        items.push({
+        drafts.push({
           id: assignment.id,
           key: `${assignment.targetType}:${assignment.targetId}`,
           name: `${assignment.targetType}:${assignment.targetId}`,
           type: 'assignment',
-          version: version?.version ?? null,
+          versionId: assignment.pinnedVersionId,
         });
       }
       if (assignments.nextCursor) {
-        return { items, nextCursor: `a:${assignments.nextCursor}` };
+        nextCursor = `a:${assignments.nextCursor}`;
+      } else if (drafts.length >= limit) {
+        nextCursor = 'm:';
+      } else {
+        includeMaterializations = true;
       }
-      if (items.length >= limit) return { items, nextCursor: 'm:' };
     }
-    const materializations = await repository.listDependentMaterializations({
-      agentId: input.agentId,
-      cursor: kind === 'm' ? rawCursor || undefined : undefined,
-      limit: limit - items.length,
-    });
-    for (const materialization of materializations.items) {
-      const version = await repository.getExactVersion(input.agentId, materialization.versionId);
-      items.push({
-        id: materialization.id,
-        key: materialization.userId,
-        name: materialization.userId,
-        type: 'materialization',
-        version: version?.version ?? null,
+
+    if (includeMaterializations) {
+      const materializations = await repository.listDependentMaterializations({
+        agentId: input.agentId,
+        cursor: kind === 'm' ? rawCursor || undefined : undefined,
+        limit: limit - drafts.length,
       });
+      for (const materialization of materializations.items) {
+        drafts.push({
+          id: materialization.id,
+          key: materialization.userId,
+          name: materialization.userId,
+          type: 'materialization',
+          versionId: materialization.versionId,
+        });
+      }
+      nextCursor = materializations.nextCursor ? `m:${materializations.nextCursor}` : null;
     }
+
+    const versionIds = drafts
+      .map((draft) => draft.versionId)
+      .filter((versionId): versionId is string => versionId !== null);
+    const versions = await repository.getExactVersionsByIds(versionIds);
     return {
-      items,
-      nextCursor: materializations.nextCursor ? `m:${materializations.nextCursor}` : null,
+      items: drafts.map((draft) => ({
+        id: draft.id,
+        key: draft.key,
+        name: draft.name,
+        type: draft.type,
+        version: draft.versionId ? (versions.get(draft.versionId)?.version ?? null) : null,
+      })),
+      nextCursor,
     };
   };
 }
