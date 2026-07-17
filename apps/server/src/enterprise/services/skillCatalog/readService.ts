@@ -15,6 +15,7 @@ import {
   type SkillManifest,
   type SkillResource,
 } from '../../contracts/skillCatalog';
+import { getPlatformConfigScopeVersion } from '../platformConfigInvalidation';
 
 export interface BuiltinSkillDefinition extends PublishedSkill {
   content: string;
@@ -25,7 +26,10 @@ export interface BuiltinSkillDefinition extends PublishedSkill {
 
 export interface SkillCatalogReadOptions {
   builtinSkills?: BuiltinSkillDefinition[];
+  cacheTtlMs?: number;
+  getCacheEpoch?: () => Promise<string>;
   model?: Pick<PlatformSkillCatalogModel, 'listPublished' | 'resolvePublishedVersion'>;
+  now?: () => number;
 }
 
 export const builtinSkillDefinitionSchema = serverResolvedSkillSchema
@@ -40,8 +44,12 @@ export const builtinSkillDefinitionsSchema = z.array(builtinSkillDefinitionSchem
 const MAX_PUBLISHED_SKILL_PAGES = 100;
 const MAX_PUBLISHED_SKILLS = 10_000;
 const MAX_READINESS_REVISIONS = 32;
+const PUBLISHED_PROJECTION_CACHE_TTL_MS = 30_000;
 const readinessByRevision = new Map<string, boolean>();
-const activeProjectionRevisionBySource = new Map<string, string>();
+const activeProjectionRevisionBySource = new Map<
+  string,
+  { epoch: string; expiresAt: number; projectionKey: string }
+>();
 
 interface CachedPublishedProjection {
   catalog: { revision: string; skills: PublishedSkill[] };
@@ -113,6 +121,8 @@ const compareCodepoint = (left: string, right: string) =>
 
 export class SkillCatalogReadService {
   private readonly builtinSkills: BuiltinSkillDefinition[];
+  private readonly cacheTtlMs: number;
+  private readonly getCacheEpoch: () => Promise<string>;
   private readonly model: Pick<
     PlatformSkillCatalogModel,
     'listPublished' | 'resolvePublishedVersion'
@@ -120,9 +130,14 @@ export class SkillCatalogReadService {
   private publishedExecutionIndex = new Map<string, ResolvedSkill>();
   private publishedExecutionRevision: string | undefined;
   private readonly projectionSource: string;
+  private readonly now: () => number;
 
   constructor(db: LobeChatDatabase | Transaction, options: SkillCatalogReadOptions = {}) {
     this.model = options.model ?? new PlatformSkillCatalogModel(db);
+    this.cacheTtlMs = options.cacheTtlMs ?? PUBLISHED_PROJECTION_CACHE_TTL_MS;
+    this.getCacheEpoch =
+      options.getCacheEpoch ?? (() => getPlatformConfigScopeVersion('skill-catalog'));
+    this.now = options.now ?? Date.now;
     const parsedBuiltins = builtinSkillDefinitionsSchema.parse(
       (options.builtinSkills ?? []).map((skill) => ({
         ...skill,
@@ -137,8 +152,14 @@ export class SkillCatalogReadService {
   }
 
   getPublishedCatalog = async () => {
-    const activeProjectionKey = activeProjectionRevisionBySource.get(this.projectionSource);
-    const cached = activeProjectionKey ? projectionByRevision.get(activeProjectionKey) : undefined;
+    const epoch = await this.getCacheEpoch().catch(() => 'unavailable');
+    const activeProjection = activeProjectionRevisionBySource.get(this.projectionSource);
+    const cached =
+      activeProjection &&
+      activeProjection.epoch === epoch &&
+      activeProjection.expiresAt > this.now()
+        ? projectionByRevision.get(activeProjection.projectionKey)
+        : undefined;
     if (cached) {
       this.publishedExecutionIndex = cloneExecutionIndex(cached.executionIndex);
       this.publishedExecutionRevision = cached.catalog.revision;
@@ -272,7 +293,11 @@ export class SkillCatalogReadService {
       executionIndex: cloneExecutionIndex(executionIndex),
       executionReady: ready,
     });
-    activeProjectionRevisionBySource.set(this.projectionSource, projectionKey);
+    activeProjectionRevisionBySource.set(this.projectionSource, {
+      epoch,
+      expiresAt: this.now() + this.cacheTtlMs,
+      projectionKey,
+    });
     while (projectionByRevision.size > MAX_READINESS_REVISIONS) {
       const oldest = projectionByRevision.keys().next().value;
       if (!oldest) break;

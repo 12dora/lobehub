@@ -20,9 +20,7 @@ const mockMarketSDK = vi.hoisted(() => ({
 const managedSkillMocks = vi.hoisted(() => ({
   AgentSkillModel: vi.fn(() => ({ findByName: vi.fn() })),
   FileModel: vi.fn(() => ({ checkHash: vi.fn() })),
-  PlatformManagedResourcePolicyModel: vi.fn(() => ({
-    getSnapshot: vi.fn(),
-  })),
+  resolveRuntimeMode: vi.fn(),
   SkillCatalogReadService: vi.fn(() => ({
     resolvePinnedForExecution: vi.fn(),
   })),
@@ -38,10 +36,6 @@ vi.mock('@/database/models/file', () => ({
   FileModel: managedSkillMocks.FileModel,
 }));
 
-vi.mock('@/database/models/platform', () => ({
-  PlatformManagedResourcePolicyModel: managedSkillMocks.PlatformManagedResourcePolicyModel,
-}));
-
 vi.mock('@/server/enterprise/featureFlags', () => ({
   parseEnterpriseFeatureFlags: managedSkillMocks.parseEnterpriseFeatureFlags,
 }));
@@ -53,6 +47,10 @@ vi.mock('@/libs/trpc/utils/internalJwt', () => ({
 vi.mock('@/server/enterprise/services/skillCatalog', () => ({
   getBuiltinSkillDefinitions: vi.fn(() => []),
   SkillCatalogReadService: managedSkillMocks.SkillCatalogReadService,
+}));
+
+vi.mock('@/server/enterprise/services/managedResourceCapabilities', () => ({
+  resolveManagedSkillRuntimeMode: managedSkillMocks.resolveRuntimeMode,
 }));
 
 vi.mock('@/libs/trpc/lambda/middleware', () => ({
@@ -96,6 +94,7 @@ describe('tools marketRouter', () => {
       ENABLE_PLATFORM_MANAGED_SKILLS: false,
     });
     managedSkillMocks.validateProof.mockResolvedValue(true);
+    managedSkillMocks.resolveRuntimeMode.mockResolvedValue('unmanaged');
   });
 
   it('should pass workspace scope when preprocessing sandbox lh commands', async () => {
@@ -129,10 +128,6 @@ describe('tools marketRouter', () => {
 
   it('validates exact managed refs without consulting personal Skill ZIP storage', async () => {
     const checksum = 'a'.repeat(64);
-    const getSnapshot = vi.fn().mockResolvedValue({
-      published: { skills: { enforcementMode: 'enforced', managed: true } },
-      status: 'published',
-    });
     const resolvePinnedForExecution = vi.fn().mockResolvedValue({
       checksum,
       content: '# exact managed content',
@@ -152,9 +147,6 @@ describe('tools marketRouter', () => {
     managedSkillMocks.parseEnterpriseFeatureFlags.mockReturnValue({
       ENABLE_PLATFORM_MANAGED_SKILLS: true,
     });
-    managedSkillMocks.PlatformManagedResourcePolicyModel.mockImplementation(
-      () => ({ getSnapshot }) as never,
-    );
     managedSkillMocks.SkillCatalogReadService.mockImplementation(
       () => ({ resolvePinnedForExecution }) as never,
     );
@@ -195,7 +187,7 @@ describe('tools marketRouter', () => {
     });
     expect(managedSkillMocks.AgentSkillModel).not.toHaveBeenCalled();
     expect(managedSkillMocks.FileModel).not.toHaveBeenCalled();
-    expect(managedSkillMocks.PlatformManagedResourcePolicyModel).not.toHaveBeenCalled();
+    expect(managedSkillMocks.resolveRuntimeMode).not.toHaveBeenCalled();
     expect(managedSkillMocks.validateProof).toHaveBeenCalledWith('signed-proof', {
       agentId: 'agent-1',
       operationId: 'operation-1',
@@ -222,6 +214,62 @@ describe('tools marketRouter', () => {
       expect.objectContaining({ command: expect.stringContaining('rm -rf') }),
     );
   });
+
+  it('fails closed in enforced mode when no verified operation snapshot exists', async () => {
+    managedSkillMocks.parseEnterpriseFeatureFlags.mockReturnValue({
+      ENABLE_PLATFORM_MANAGED_SKILLS: true,
+    });
+    managedSkillMocks.resolveRuntimeMode.mockResolvedValue('enforced');
+    mockPreprocessLhCommand.mockResolvedValue({
+      command: 'python scripts/run.py',
+      isLhCommand: false,
+      skipSkillLookup: false,
+    });
+    const caller = marketRouter.createCaller({ serverDB: {}, userId: 'user-1' } as any);
+
+    await expect(
+      caller.execInSandbox({
+        params: {
+          activatedSkills: [{ name: 'managed.skill' }],
+          command: 'python scripts/run.py',
+          operationId: 'operation-1',
+        },
+        toolName: 'execScript',
+        topicId: 'topic-1',
+      }),
+    ).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    expect(managedSkillMocks.AgentSkillModel).not.toHaveBeenCalled();
+  });
+
+  it.each(['observe', 'ui-only'])(
+    'keeps the legacy ZIP path in %s mode when no operation snapshot exists',
+    async (mode) => {
+      managedSkillMocks.parseEnterpriseFeatureFlags.mockReturnValue({
+        ENABLE_PLATFORM_MANAGED_SKILLS: true,
+      });
+      managedSkillMocks.resolveRuntimeMode.mockResolvedValue(mode);
+      mockPreprocessLhCommand.mockResolvedValue({
+        command: 'python scripts/run.py',
+        isLhCommand: false,
+        skipSkillLookup: false,
+      });
+      mockSandboxCallTool.mockResolvedValue({ result: { exitCode: 0 }, success: true });
+      const caller = marketRouter.createCaller({ serverDB: {}, userId: 'user-1' } as any);
+
+      await caller.execInSandbox({
+        params: {
+          activatedSkills: [{ name: 'personal.skill' }],
+          command: 'python scripts/run.py',
+          operationId: 'operation-1',
+        },
+        toolName: 'execScript',
+        topicId: 'topic-1',
+      });
+
+      expect(managedSkillMocks.AgentSkillModel).toHaveBeenCalled();
+      expect(managedSkillMocks.SkillCatalogReadService).not.toHaveBeenCalled();
+    },
+  );
 
   it('should fall back to static tools when live discovery fails', async () => {
     const caller = marketRouter.createCaller({ userId: 'user-1' } as any);

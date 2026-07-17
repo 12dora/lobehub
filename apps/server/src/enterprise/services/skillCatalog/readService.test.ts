@@ -314,6 +314,58 @@ describe('SkillCatalogReadService', () => {
     expect(listPublished).toHaveBeenCalledTimes(2);
   });
 
+  it('invalidates a warm projection on another instance through the shared epoch', async () => {
+    const { skill } = await publish({ skillKey: 'cross-instance.skill', version: '1.0.0' });
+    const model = new PlatformSkillCatalogModel(db);
+    const listPublished = vi.spyOn(model, 'listPublished');
+    let epoch = '1';
+    const options = {
+      cacheTtlMs: 60_000,
+      getCacheEpoch: async () => epoch,
+      model,
+    };
+    const firstInstance = new SkillCatalogReadService(db, options);
+    await expect(firstInstance.getPublishedCatalog()).resolves.toMatchObject({
+      skills: [expect.objectContaining({ version: '1.0.0' })],
+    });
+
+    await publish({
+      revision: 2,
+      skillId: skill.id,
+      skillKey: 'cross-instance.skill',
+      version: '2.0.0',
+    });
+    epoch = '2';
+    const secondInstance = new SkillCatalogReadService(db, options);
+
+    await expect(secondInstance.getPublishedCatalog()).resolves.toMatchObject({
+      skills: [expect.objectContaining({ version: '2.0.0' })],
+    });
+    expect(listPublished).toHaveBeenCalledTimes(2);
+  });
+
+  it('bounds a warm projection when the epoch reader is unavailable', async () => {
+    await publish({ skillKey: 'ttl.skill', version: '1.0.0' });
+    const model = new PlatformSkillCatalogModel(db);
+    const listPublished = vi.spyOn(model, 'listPublished');
+    let now = 1_000;
+    const options = {
+      cacheTtlMs: 100,
+      getCacheEpoch: async () => {
+        throw new Error('redis unavailable');
+      },
+      model,
+      now: () => now,
+    };
+    await new SkillCatalogReadService(db, options).getPublishedCatalog();
+    await new SkillCatalogReadService(db, options).getPublishedCatalog();
+    expect(listPublished).toHaveBeenCalledTimes(1);
+
+    now += 101;
+    await new SkillCatalogReadService(db, options).getPublishedCatalog();
+    expect(listPublished).toHaveBeenCalledTimes(2);
+  });
+
   it('rejects a final catalog over 10,000 after builtin merging', async () => {
     await publish({ skillKey: 'seed.skill', version: '1.0.0' });
     const page = await new PlatformSkillCatalogModel(db).listPublished({ limit: 1 });
