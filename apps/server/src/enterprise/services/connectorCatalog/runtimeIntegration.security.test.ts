@@ -251,6 +251,51 @@ describe('managed Connector operation integration security', () => {
     expect(mocks.getPublishedRuntimeRevision).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['archived', connector(1, 'archived')],
+    ['disabled', { ...connector(1), enabled: false }],
+  ])(
+    'gives the current %s emergency stop priority over an approved historical proof',
+    async (_, stopped) => {
+      const first = await buildManagedConnectorManifests({
+        agentId: 'agent-1',
+        connectorKeys: ['catalog'],
+        db,
+        env,
+        operationId: 'operation-before-stop',
+        serverAllowedConnectorKeys: ['catalog'],
+        userId: 'user-1',
+      });
+      const receipt = createConnectorApprovalReceipt({
+        agentId: 'agent-1',
+        apiName: 'search',
+        arguments: '{}',
+        env,
+        identifier: 'catalog',
+        manifest: first.manifests[0],
+        operationId: 'operation-before-stop',
+        toolCallId: 'tool-call-before-stop',
+        type: 'mcp',
+        userId: 'user-1',
+      })!;
+      mocks.getConnectorByKey.mockResolvedValue(stopped);
+
+      await expect(
+        buildManagedConnectorManifests({
+          agentId: 'agent-1',
+          approvedReceipt: receipt,
+          connectorKeys: ['catalog'],
+          db,
+          env,
+          operationId: 'operation-after-stop',
+          serverAllowedConnectorKeys: ['catalog'],
+          userId: 'user-1',
+        }),
+      ).rejects.toThrow('PLATFORM_CONNECTOR_NOT_PUBLISHED');
+      expect(mocks.getPublishedRuntimeRevision).not.toHaveBeenCalled();
+    },
+  );
+
   it('emits a tombstone for an archived managed key instead of allowing same-name fallback', async () => {
     mocks.getConnectorByKey.mockResolvedValue(connector(1, 'archived'));
     const result = await buildManagedConnectorManifests({

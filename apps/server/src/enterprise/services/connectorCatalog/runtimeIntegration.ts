@@ -250,6 +250,13 @@ export const buildManagedConnectorManifests = async (params: {
   const manifests: PlatformConnectorRuntimeManifest[] = [];
   for (const connectorKey of connectorKeys) {
     if (approvedReceipt?.proof.connectorKey === connectorKey) {
+      const current = await getConnectorPublishedIndex(params.db).resolveCurrent({
+        connectorKey,
+        operationId: params.operationId,
+      });
+      if (current.kind !== 'published') {
+        throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_PUBLISHED');
+      }
       const exact = await getSnapshots(params.db).resolveExact(
         toConnectorOperationProof(approvedReceipt.proof),
       );
