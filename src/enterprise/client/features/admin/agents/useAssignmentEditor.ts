@@ -5,7 +5,10 @@ import { toast } from '@lobehub/ui/base-ui';
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import type { AdminReauthAuthMethod } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
+import {
+  type AdminReauthAuthMethod,
+  isAdminReauthRequiredError,
+} from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 import { openReasonModal } from '@/enterprise/client/features/admin/users/modals/openReasonModal';
 import { adminAgentsService } from '@/enterprise/client/services/adminAgents';
 
@@ -171,6 +174,7 @@ export const useAssignmentEditor = (
     // Freeze the exact normalized draft + CAS + assignmentId at confirm time (identical to preview).
     const frozenDraft = { ...draft };
     const frozenAssignmentId = editingId;
+    const writeToken = {};
     openReasonModal({
       authMethod: authMethod ?? undefined,
       buildPayload: (reason) => ({
@@ -182,12 +186,23 @@ export const useAssignmentEditor = (
         reason,
       }),
       description: t('agentCatalog.assignment.upsertDescription'),
+      onPhaseChange: (phase) => {
+        if (phase === 'idle') lock.abortWrite(writeToken);
+      },
       onSubmit: async (input) => {
-        if (lock.isLocked()) return; // defence in depth against a stale-CAS resubmission
-        await adminAgentsService.upsertAssignment(input as AdminPlatformAgentAssignmentUpsertInput);
+        if (!lock.beginWrite(writeToken)) return; // lock BEFORE the service; reject concurrent writes
+        try {
+          await adminAgentsService.upsertAssignment(
+            input as AdminPlatformAgentAssignmentUpsertInput,
+          );
+        } catch (cause) {
+          if (isAdminReauthRequiredError(cause)) throw cause;
+          lock.abortWrite(writeToken);
+          throw cause;
+        }
         // Committed: reset the form so the stale CAS cannot be resubmitted, then revalidate.
         resetForm();
-        await lock.syncAfterCommit();
+        await lock.commitWrite(writeToken);
         toast.success(t('agentCatalog.assignment.saved'));
       },
       submitLabel: t(
@@ -202,6 +217,7 @@ export const useAssignmentEditor = (
 
   const remove = (assignment: Assignment) => {
     if (lock.isLocked()) return;
+    const writeToken = {};
     openReasonModal({
       authMethod: authMethod ?? undefined,
       buildPayload: (reason) => ({
@@ -213,13 +229,22 @@ export const useAssignmentEditor = (
       }),
       danger: true,
       description: t('agentCatalog.assignment.removeDescription'),
+      onPhaseChange: (phase) => {
+        if (phase === 'idle') lock.abortWrite(writeToken);
+      },
       onSubmit: async (input) => {
-        if (lock.isLocked()) return;
-        await adminAgentsService.removeAssignment(
-          input as Parameters<typeof adminAgentsService.removeAssignment>[0],
-        );
+        if (!lock.beginWrite(writeToken)) return;
+        try {
+          await adminAgentsService.removeAssignment(
+            input as Parameters<typeof adminAgentsService.removeAssignment>[0],
+          );
+        } catch (cause) {
+          if (isAdminReauthRequiredError(cause)) throw cause;
+          lock.abortWrite(writeToken);
+          throw cause;
+        }
         if (editingId === assignment.id) resetForm();
-        await lock.syncAfterCommit();
+        await lock.commitWrite(writeToken);
         toast.success(t('agentCatalog.assignment.removed'));
       },
       submitLabel: t('agentCatalog.assignment.remove'),
@@ -235,7 +260,7 @@ export const useAssignmentEditor = (
     editingId,
     enabled,
     error,
-    locked: lock.refreshFailed,
+    locked: lock.locked,
     mode,
     pinnedVersionId,
     preview,

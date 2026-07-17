@@ -6,7 +6,10 @@ import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { KeyedMutator } from 'swr';
 
-import type { AdminReauthAuthMethod } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
+import {
+  type AdminReauthAuthMethod,
+  isAdminReauthRequiredError,
+} from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 import { openReasonModal } from '@/enterprise/client/features/admin/users/modals/openReasonModal';
 import { adminAgentsService } from '@/enterprise/client/services/adminAgents';
 
@@ -102,6 +105,9 @@ export const useAgentActions = ({
     }
     const config = structuredClone(editor.draft.config);
     const version = editor.draft.version;
+    // One token for this logical write — captured by both submit and the reauth-abort hook so the
+    // shared-reauth retry is recognised as the SAME write and a cancel releases the frozen baseline.
+    const writeToken = {};
     openReasonModal({
       authMethod: authMethod ?? undefined,
       buildPayload: (reason) => ({
@@ -114,8 +120,11 @@ export const useAgentActions = ({
         version,
       }),
       description: t('agentCatalog.save.description'),
+      onPhaseChange: (phase) => {
+        if (phase === 'idle') lock.abortWrite(writeToken); // reauth cancel / terminal → unlock if uncommitted
+      },
       onSubmit: async (input) => {
-        if (lock.isLocked()) return; // defence in depth against a stale-CAS resubmission
+        if (!lock.beginWrite(writeToken)) return; // lock BEFORE the service; reject concurrent writes
         editor.setSaveState('saving');
         let output: AdminPlatformAgentAppendVersionOutput;
         try {
@@ -123,6 +132,8 @@ export const useAgentActions = ({
             input as Parameters<typeof adminAgentsService.appendVersion>[0],
           );
         } catch (cause) {
+          if (isAdminReauthRequiredError(cause)) throw cause; // retryable: keep the frozen baseline
+          lock.abortWrite(writeToken);
           editor.setSaveState('failed');
           if (cause instanceof Error && cause.message.includes('CONFLICT'))
             editor.setConflict(true);
@@ -131,6 +142,7 @@ export const useAgentActions = ({
         // Committed: clear recovery, advance CAS from the authoritative output (no stale CAS).
         editor.markSaved();
         await mutate(applyAppendVersion(output), { revalidate: false });
+        lock.resolveWrite(writeToken); // output carries the advanced CAS → end the cycle, no refresh
         toast.success(t('agentCatalog.toast.saved'));
       },
       submitLabel: t('agentCatalog.action.saveVersion'),
@@ -142,6 +154,7 @@ export const useAgentActions = ({
   const publish = useCallback(
     (versionId: string) => {
       if (lock.isLocked()) return;
+      const writeToken = {};
       openReasonModal({
         authMethod: authMethod ?? undefined,
         buildPayload: (reason) => ({
@@ -152,13 +165,22 @@ export const useAgentActions = ({
           versionId,
         }),
         description: t('agentCatalog.publish.description'),
+        onPhaseChange: (phase) => {
+          if (phase === 'idle') lock.abortWrite(writeToken);
+        },
         onSubmit: async (input) => {
-          if (lock.isLocked()) return;
-          await adminAgentsService.publish(
-            input as Parameters<typeof adminAgentsService.publish>[0],
-          );
-          // publish output carries no draftToken → revalidate; lock on failure.
-          await lock.syncAfterCommit();
+          if (!lock.beginWrite(writeToken)) return;
+          try {
+            await adminAgentsService.publish(
+              input as Parameters<typeof adminAgentsService.publish>[0],
+            );
+          } catch (cause) {
+            if (isAdminReauthRequiredError(cause)) throw cause;
+            lock.abortWrite(writeToken);
+            throw cause;
+          }
+          // publish output carries no draftToken → refresh; stays locked on a non-advanced refresh.
+          await lock.commitWrite(writeToken);
           toast.success(t('agentCatalog.toast.published'));
         },
         submitLabel: t('agentCatalog.publish.submit'),
@@ -172,6 +194,7 @@ export const useAgentActions = ({
   const rollback = useCallback(
     (versionId: string) => {
       if (lock.isLocked()) return;
+      const writeToken = {};
       openReasonModal({
         authMethod: authMethod ?? undefined,
         buildPayload: (reason) => ({
@@ -183,12 +206,21 @@ export const useAgentActions = ({
         }),
         danger: true,
         description: t('agentCatalog.rollback.description'),
+        onPhaseChange: (phase) => {
+          if (phase === 'idle') lock.abortWrite(writeToken);
+        },
         onSubmit: async (input) => {
-          if (lock.isLocked()) return;
-          await adminAgentsService.rollback(
-            input as Parameters<typeof adminAgentsService.rollback>[0],
-          );
-          await lock.syncAfterCommit();
+          if (!lock.beginWrite(writeToken)) return;
+          try {
+            await adminAgentsService.rollback(
+              input as Parameters<typeof adminAgentsService.rollback>[0],
+            );
+          } catch (cause) {
+            if (isAdminReauthRequiredError(cause)) throw cause;
+            lock.abortWrite(writeToken);
+            throw cause;
+          }
+          await lock.commitWrite(writeToken);
           toast.success(t('agentCatalog.toast.rolledBack'));
         },
         submitLabel: t('agentCatalog.rollback.submit'),
@@ -209,6 +241,7 @@ export const useAgentActions = ({
       currentDefaultIdentity && currentDefaultIdentity.id !== snapshot.identity.id
         ? await adminAgentsService.get({ id: currentDefaultIdentity.id })
         : null;
+    const writeToken = {};
     openReasonModal({
       authMethod: authMethod ?? undefined,
       buildPayload: (reason) => ({
@@ -228,13 +261,24 @@ export const useAgentActions = ({
       }),
       danger: true,
       description: t('agentCatalog.defaultSwitch.description'),
+      onPhaseChange: (phase) => {
+        if (phase === 'idle') lock.abortWrite(writeToken);
+      },
       onSubmit: async (input) => {
-        if (lock.isLocked()) return;
-        const output = await adminAgentsService.setDefaultInbox(
-          input as Parameters<typeof adminAgentsService.setDefaultInbox>[0],
-        );
-        // nextDefault carries the authoritative CAS for this agent → advance locally.
+        if (!lock.beginWrite(writeToken)) return;
+        let output: Awaited<ReturnType<typeof adminAgentsService.setDefaultInbox>>;
+        try {
+          output = await adminAgentsService.setDefaultInbox(
+            input as Parameters<typeof adminAgentsService.setDefaultInbox>[0],
+          );
+        } catch (cause) {
+          if (isAdminReauthRequiredError(cause)) throw cause;
+          lock.abortWrite(writeToken);
+          throw cause;
+        }
+        // nextDefault carries the authoritative CAS for this agent → advance locally, end the cycle.
         await mutate(applyIdentity(output.nextDefault), { revalidate: false });
+        lock.resolveWrite(writeToken);
         toast.success(t('agentCatalog.defaultSwitch.success'));
       },
       submitLabel: t('agentCatalog.defaultSwitch.submit'),
@@ -251,6 +295,7 @@ export const useAgentActions = ({
           .map(({ displayName, identity }) => ({ label: displayName, value: identity.id }))
       : [];
     const replacementRef: { current: string | null } = { current: null };
+    const writeToken = {};
     openReasonModal({
       authMethod: authMethod ?? undefined,
       buildPayload: (reason) => ({
@@ -272,12 +317,23 @@ export const useAgentActions = ({
           }}
         />
       ),
+      onPhaseChange: (phase) => {
+        if (phase === 'idle') lock.abortWrite(writeToken);
+      },
       onSubmit: async (input) => {
-        if (lock.isLocked()) return;
-        const output = await adminAgentsService.archive(
-          input as Parameters<typeof adminAgentsService.archive>[0],
-        );
+        if (!lock.beginWrite(writeToken)) return;
+        let output: Awaited<ReturnType<typeof adminAgentsService.archive>>;
+        try {
+          output = await adminAgentsService.archive(
+            input as Parameters<typeof adminAgentsService.archive>[0],
+          );
+        } catch (cause) {
+          if (isAdminReauthRequiredError(cause)) throw cause;
+          lock.abortWrite(writeToken);
+          throw cause;
+        }
         await mutate(applyIdentity(output), { revalidate: false });
+        lock.resolveWrite(writeToken);
         toast.success(t('agentCatalog.toast.archived'));
       },
       submitLabel: t('agentCatalog.archive.submit'),

@@ -8,6 +8,7 @@ import type { KeyedMutator } from 'swr';
 
 import type { AdminReauthAuthMethod } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 import { adminAgentsService } from '@/enterprise/client/services/adminAgents';
+import { adminPlatformAgentDetailAggregateOutputSchema } from '@/server/enterprise/contracts/platformAgents';
 
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
 import StatusBadge from '../primitives/StatusBadge';
@@ -42,23 +43,26 @@ const PERSIST_HINT_KEY = {
 const PERSIST_WARNING = new Set(['blocked', 'too_large', 'unavailable']);
 
 /**
- * A refreshed Agent detail unlocks the refresh gate ONLY when it is a complete authoritative
- * detail for the SAME Agent whose CAS has demonstrably advanced past the frozen baseline:
- * revision STRICTLY greater AND the 64-hex draftToken changed. A revision rollback, a token-only
- * change, a currentVersionId-only change, another Agent, or an undefined/incomplete detail are all
- * rejected. (currentVersionId is treated consistently but is never sole proof of freshness.)
+ * A refreshed Agent detail unlocks the refresh gate ONLY when it FIRST parses as a COMPLETE
+ * authoritative aggregate — full identity + draftToken + the assignments / versions / rollouts
+ * collections — against the same contract Zod schema used at the API boundary (not a handwritten
+ * partial shape), AND then demonstrably advances the CAS past the frozen baseline for the SAME
+ * Agent: revision STRICTLY greater AND the draftToken changed. A partial object with a valid
+ * id/revision/token but missing aggregate arrays, a revision rollback, a token-only change, a
+ * currentVersionId-only change, another Agent, or an undefined/incomplete detail are all rejected.
  */
 export const isAgentDetailFresh = (
   result: AdminAgentDetailOutput | undefined,
   baseline: AdminAgentDetailOutput | undefined,
 ): boolean => {
-  const validToken = (token: unknown): token is string =>
-    typeof token === 'string' && /^[a-f0-9]{64}$/.test(token);
-  if (!result?.identity || !validToken(result.draftToken)) return false; // complete + valid
-  if (!baseline?.identity || !validToken(baseline.draftToken)) return false; // need a real baseline
-  if (result.identity.id !== baseline.identity.id) return false; // same Agent only
-  if (result.identity.revision <= baseline.identity.revision) return false; // strictly advanced (no rollback / equal)
-  return result.draftToken !== baseline.draftToken; // the CAS token must also have changed
+  // Must be a complete authoritative aggregate (identity, draftToken, assignments/versions/rollouts).
+  const parsed = adminPlatformAgentDetailAggregateOutputSchema.safeParse(result);
+  if (!parsed.success) return false;
+  if (!baseline?.identity || typeof baseline.draftToken !== 'string') return false; // need a real baseline
+  const fresh = parsed.data;
+  if (fresh.identity.id !== baseline.identity.id) return false; // same Agent only
+  if (fresh.identity.revision <= baseline.identity.revision) return false; // strictly advanced (no rollback / equal)
+  return fresh.draftToken !== baseline.draftToken; // the CAS token must also have changed
 };
 
 export const AgentDetailView = memo(
@@ -104,7 +108,7 @@ export const AgentDetailView = memo(
                   editor.conflict ||
                   editor.saveState === 'saving' ||
                   !modelReady ||
-                  lock.refreshFailed
+                  lock.locked
                 }
                 onClick={actions.save}
               >
@@ -117,7 +121,7 @@ export const AgentDetailView = memo(
             latest &&
             (latest.id !== current?.id || snapshot.identity.status !== 'published') ? (
               <Button
-                disabled={!availability.canPublishNow || lock.refreshFailed}
+                disabled={!availability.canPublishNow || lock.locked}
                 onClick={() => actions.publish(latest.id)}
               >
                 {t('agentCatalog.publish.submit')}
@@ -128,7 +132,7 @@ export const AgentDetailView = memo(
             snapshot.identity.status === 'published' ? (
               <Button
                 danger
-                disabled={!availability.canPublishNow || lock.refreshFailed}
+                disabled={!availability.canPublishNow || lock.locked}
                 onClick={() => void actions.setDefaultInbox()}
               >
                 {t('agentCatalog.defaultSwitch.submit')}
@@ -137,7 +141,7 @@ export const AgentDetailView = memo(
             {permissions.canDelete ? (
               <Button
                 danger
-                disabled={!availability.canArchiveNow || lock.refreshFailed}
+                disabled={!availability.canArchiveNow || lock.locked}
                 onClick={() => void actions.archive()}
               >
                 {t('agentCatalog.archive.submit')}
@@ -255,7 +259,7 @@ export const AgentDetailView = memo(
                   !(snapshot.identity.status === 'draft' && version.id === latest?.id) ? (
                     <Button
                       danger
-                      disabled={!availability.canRollbackNow || lock.refreshFailed}
+                      disabled={!availability.canRollbackNow || lock.locked}
                       onClick={() => actions.rollback(version.id)}
                     >
                       {t('agentCatalog.rollback.submit')}
