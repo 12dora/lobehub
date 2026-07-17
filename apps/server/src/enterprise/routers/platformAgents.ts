@@ -9,7 +9,13 @@ import {
 import { withActiveUser } from '../guards/activeUser';
 import { PlatformAgentEffectiveResolver } from '../services/agentCatalog';
 
-const platformAgentBase = authedProcedure.use(serverDatabase).use(withActiveUser());
+// User-facing platform.agents is mounted regardless of ENABLE_PLATFORM_ADMIN and can be
+// activated via ENABLE_PLATFORM_MANAGED_AGENTS alone, so active-user enforcement must never
+// depend on the admin flag — reject inactive/banned/epoch-invalid principals before any
+// resolver/DB access.
+const platformAgentBase = authedProcedure
+  .use(serverDatabase)
+  .use(withActiveUser({ enforceWhenAdminDisabled: true }));
 
 export const platformAgentsRouter = router({
   getEffectiveAgent: platformAgentBase
