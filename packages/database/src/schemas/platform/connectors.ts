@@ -24,6 +24,7 @@ export type PlatformConnectorToolPolicy = 'allow' | 'deny';
 export type PlatformConnectorToolRiskLevel = 'low' | 'medium' | 'high' | 'critical';
 export type PlatformConnectorBindingStatus =
   'disconnected' | 'pending' | 'connected' | 'expired' | 'revoked' | 'error';
+export type PlatformConnectorOAuthAuthorizationOutcome = 'completed' | 'failed';
 export type PlatformConnectorSecretSlot =
   'oauthBindingToken' | 'oauthClientSecret' | 'oauthPkceVerifier' | 'sharedSecret';
 
@@ -504,6 +505,12 @@ export const platformConnectorOAuthStates = pgTable(
       .default(sql`ARRAY[]::varchar[]`),
     expiresAt: timestamptz('expires_at').notNull(),
     consumedAt: timestamptz('consumed_at'),
+    /** Terminal callback outcome; null while the attempt is pending or exchanging a code. */
+    authorizationOutcome: varchar('authorization_outcome', {
+      length: 16,
+    }).$type<PlatformConnectorOAuthAuthorizationOutcome>(),
+    /** Written atomically with authorizationOutcome after callback success/failure. */
+    finishedAt: timestamptz('finished_at'),
     revokedAt: timestamptz('revoked_at'),
     createdAt: createdAt(),
   },
@@ -534,6 +541,11 @@ export const platformConnectorOAuthStates = pgTable(
     check(
       'platform_connector_oauth_states_terminal_check',
       sql`${t.consumedAt} IS NULL OR ${t.revokedAt} IS NULL`,
+    ),
+    check(
+      'platform_connector_oauth_states_outcome_check',
+      sql`(${t.authorizationOutcome} IS NULL AND ${t.finishedAt} IS NULL)
+        OR (${t.authorizationOutcome} IN ('completed', 'failed') AND ${t.finishedAt} IS NOT NULL)`,
     ),
     check(
       'platform_connector_oauth_states_pkce_ref_check',

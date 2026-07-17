@@ -7,6 +7,8 @@ import { describe, expect, it } from 'vitest';
 const migrations = path.join(import.meta.dirname, '../../../migrations');
 const migrationName = '0123_m09_connector_catalog_expand';
 const sql = readFileSync(path.join(migrations, `${migrationName}.sql`), 'utf8');
+const attemptMigrationName = '0124_m09_oauth_attempt_outcome';
+const attemptSql = readFileSync(path.join(migrations, `${attemptMigrationName}.sql`), 'utf8');
 const journal = JSON.parse(readFileSync(path.join(migrations, 'meta/_journal.json'), 'utf8')) as {
   entries: Array<{ idx: number; tag: string }>;
 };
@@ -46,11 +48,26 @@ describe('M09 connector expand migration', () => {
     expect(sql).not.toContain('platform_connector_tools_connector_sort_key_id_idx');
   });
 
-  it('keeps journal and snapshots at the coordinated 124 entries', () => {
-    expect(journal.entries).toHaveLength(124);
-    expect(journal.entries.at(-1)).toMatchObject({ idx: 123, tag: migrationName });
+  it('keeps journal and snapshots aligned after the follow-up attempt migration', () => {
+    expect(journal.entries).toHaveLength(125);
+    expect(journal.entries.at(-1)).toMatchObject({ idx: 124, tag: attemptMigrationName });
     expect(
       readdirSync(path.join(migrations, 'meta')).filter((file) => file.endsWith('_snapshot.json')),
-    ).toHaveLength(124);
+    ).toHaveLength(125);
+  });
+});
+
+describe('M09 OAuth attempt outcome migration', () => {
+  it('adds only the attempt outcome fields with no stable-object drop or rename', () => {
+    expect(attemptSql).not.toMatch(/\b(?:DROP|RENAME)\b/i);
+    expect(attemptSql).toContain('ADD COLUMN IF NOT EXISTS "authorization_outcome"');
+    expect(attemptSql).toContain('ADD COLUMN IF NOT EXISTS "finished_at"');
+    expect(attemptSql).toContain('ADD CONSTRAINT "platform_connector_oauth_states_outcome_check"');
+    expect(attemptSql).toContain('NOT VALID');
+    expect(attemptSql).toContain(
+      'VALIDATE CONSTRAINT "platform_connector_oauth_states_outcome_check"',
+    );
+    expect(attemptSql).not.toContain('platform_connectors');
+    expect(attemptSql).not.toContain('platform_connector_secrets');
   });
 });

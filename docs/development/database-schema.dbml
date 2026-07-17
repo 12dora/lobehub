@@ -1779,6 +1779,8 @@ table platform_connector_oauth_states {
   scopes "varchar(200)[]" [not null, default: `ARRAY[]::varchar[]`]
   expires_at "timestamp with time zone" [not null]
   consumed_at "timestamp with time zone"
+  authorization_outcome varchar(16)
+  finished_at "timestamp with time zone"
   revoked_at "timestamp with time zone"
   created_at "timestamp with time zone" [not null, default: `now()`]
 

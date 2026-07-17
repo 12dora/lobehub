@@ -31,9 +31,12 @@ describe('user.connectors router', () => {
       items: [],
       nextCursor: null,
     });
-    await expect(caller.getAuthorizationStatus({ connectorId: 'connector-1' })).resolves.toEqual({
-      binding: null,
-    });
+    await expect(
+      caller.getAuthorizationStatus({
+        attemptId: 'a'.repeat(32),
+        connectorId: 'connector-1',
+      }),
+    ).resolves.toEqual({ attemptId: 'a'.repeat(32), binding: null, status: 'invalid' });
     await expect(caller.disconnect({ connectorId: 'connector-1' })).resolves.toEqual({
       disconnected: true,
     });
@@ -46,7 +49,14 @@ describe('user.connectors router', () => {
   it('rejects every client-supplied identity field at the strict boundary', async () => {
     const caller = await callerFor('m09-router-user-a');
     await expect(
-      caller.getAuthorizationStatus({ connectorId: 'connector-1', userId: 'user-b' } as never),
+      caller.getAuthorizationStatus({ connectorId: 'connector-1' } as never),
+    ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    await expect(
+      caller.getAuthorizationStatus({
+        attemptId: 'a'.repeat(32),
+        connectorId: 'connector-1',
+        userId: 'user-b',
+      } as never),
     ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
     await expect(
       caller.startAuthorization({
