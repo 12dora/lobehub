@@ -576,6 +576,13 @@ export class PlatformAgentCatalogRepository {
    * Count live references to an Agent under the caller's identity row lock, so the
    * result is TOCTOU-stable: a concurrent assignment / materialization insert takes a
    * FK KEY SHARE lock on this Agent row and blocks behind the archive's FOR UPDATE (ADM-02).
+   *
+   * Materialization invariant (R1-01): a row is a REAL materialization reference iff it carries
+   * real materialization state — `materialized_agent_id IS NOT NULL` (a local Agent exists) OR
+   * `last_synced_at IS NOT NULL` (the materialization pipeline has processed it; `upsertMaterialization`
+   * always stamps `last_synced_at`). A pure visibility-only row (materialized_agent_id IS NULL AND
+   * last_synced_at IS NULL), written solely to carry the owner's hidden preference, is NOT a
+   * reference and never blocks archive. Real pending / materialized / error rows still block it.
    */
   countAgentReferences = async (
     agentId: string,
@@ -587,7 +594,15 @@ export class PlatformAgentCatalogRepository {
     const [materializationRow] = await this.db
       .select({ count: sql<number>`count(*)::int` })
       .from(platformUserAgentMaterializations)
-      .where(eq(platformUserAgentMaterializations.platformAgentId, agentId));
+      .where(
+        and(
+          eq(platformUserAgentMaterializations.platformAgentId, agentId),
+          or(
+            isNotNull(platformUserAgentMaterializations.materializedAgentId),
+            isNotNull(platformUserAgentMaterializations.lastSyncedAt),
+          ),
+        ),
+      );
     return {
       assignments: assignmentRow?.count ?? 0,
       materializations: materializationRow?.count ?? 0,
@@ -729,9 +744,14 @@ export class PlatformAgentCatalogRepository {
   };
 
   /**
-   * Owner-scoped write of the per-user hidden flag. The row lives in the same
-   * materialization store (per-user visibility) and joins the referenceable-Agent protocol,
-   * so hiding an archived Agent is rejected. Returns false when the Agent is not referenceable.
+   * Owner-scoped write of the per-user hidden flag (R1). Joins the referenceable-Agent protocol
+   * (hiding an archived Agent is rejected → returns false). A hidden row is written as a pure
+   * visibility-only row — `last_synced_at` is left NULL and `materialized_agent_id` NULL — so it
+   * is never counted as an archive reference (see `countAgentReferences`). Hiding an Agent that
+   * already has a real materialization only flips the flag and preserves its sync/local state.
+   *
+   * Unhiding deletes a pure visibility-only row (so a hide→unhide cycle leaves no archive blocker)
+   * but only clears the flag on a row that carries real materialization state.
    */
   setMaterializationHidden = async (params: {
     hidden: boolean;
@@ -743,23 +763,53 @@ export class PlatformAgentCatalogRepository {
     inTransaction(this.db, async (tx) => {
       const agent = await this.lockReferenceableAgent(tx, params.platformAgentId);
       if (!agent) return false;
-      await tx
-        .insert(platformUserAgentMaterializations)
-        .values({
-          hidden: params.hidden,
-          platformAgentId: params.platformAgentId,
-          platformAgentVersionChecksum: params.platformAgentVersionChecksum,
-          platformAgentVersionId: params.platformAgentVersionId,
-          status: 'pending',
-          userId: params.userId,
-        })
-        .onConflictDoUpdate({
-          set: { hidden: params.hidden, updatedAt: new Date() },
-          target: [
-            platformUserAgentMaterializations.userId,
-            platformUserAgentMaterializations.platformAgentId,
-          ],
-        });
+
+      const ownerScope = and(
+        eq(platformUserAgentMaterializations.userId, params.userId),
+        eq(platformUserAgentMaterializations.platformAgentId, params.platformAgentId),
+      );
+
+      if (params.hidden) {
+        // Never touch last_synced_at: an inserted row stays visibility-only; an existing real
+        // materialization keeps its sync/local state and only gains the hidden flag.
+        await tx
+          .insert(platformUserAgentMaterializations)
+          .values({
+            hidden: true,
+            platformAgentId: params.platformAgentId,
+            platformAgentVersionChecksum: params.platformAgentVersionChecksum,
+            platformAgentVersionId: params.platformAgentVersionId,
+            status: 'pending',
+            userId: params.userId,
+          })
+          .onConflictDoUpdate({
+            set: { hidden: true, updatedAt: new Date() },
+            target: [
+              platformUserAgentMaterializations.userId,
+              platformUserAgentMaterializations.platformAgentId,
+            ],
+          });
+        return true;
+      }
+
+      // Unhide: drop a pure visibility-only row so it can never linger as an archive blocker …
+      const deleted = await tx
+        .delete(platformUserAgentMaterializations)
+        .where(
+          and(
+            ownerScope,
+            isNull(platformUserAgentMaterializations.materializedAgentId),
+            isNull(platformUserAgentMaterializations.lastSyncedAt),
+          ),
+        )
+        .returning({ id: platformUserAgentMaterializations.id });
+      // … otherwise (a real materialization row) just clear the flag, preserving its state.
+      if (deleted.length === 0) {
+        await tx
+          .update(platformUserAgentMaterializations)
+          .set({ hidden: false, updatedAt: new Date() })
+          .where(ownerScope);
+      }
       return true;
     });
 
