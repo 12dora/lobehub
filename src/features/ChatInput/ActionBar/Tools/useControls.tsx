@@ -6,8 +6,17 @@ import {
 } from '@lobechat/const';
 import { type AgentPluginMode, getDisabledPluginIds } from '@lobechat/types';
 import type { ItemType } from '@lobehub/ui';
-import { Avatar, Icon, Popover, SearchBar, stopPropagation, Tag, Tooltip } from '@lobehub/ui';
-import { confirmModal } from '@lobehub/ui/base-ui';
+import {
+  Avatar,
+  Flexbox,
+  Icon,
+  Popover,
+  SearchBar,
+  stopPropagation,
+  Tag,
+  Tooltip,
+} from '@lobehub/ui';
+import { Button, confirmModal } from '@lobehub/ui/base-ui';
 import { McpIcon, SkillsIcon } from '@lobehub/ui/icons';
 import { Switch } from 'antd';
 import { createStaticStyles, cssVar, cx } from 'antd-style';
@@ -31,6 +40,10 @@ import type { ReactNode } from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import {
+  selectSkillRuntimeSources,
+  usePublishedSkillCatalog,
+} from '@/enterprise/client/features/skills';
 import { CustomConnectorModal } from '@/features/Connectors';
 import DevModal from '@/features/PluginDevModal';
 import { createSkillStoreModal } from '@/features/SkillStore';
@@ -458,11 +471,11 @@ export const useControls = ({ closeDropdown }: { closeDropdown?: () => void } = 
     pluginSelectors.getCustomPluginById(editingPluginId ?? ''),
     isEqual,
   );
-  const [checked, togglePlugin, setPluginMode] = useAgentStore((s) => [
+  const [checked, togglePlugin, setPluginModeById] = useAgentStore((s) => [
     // Pinned identifiers only (getAgentPluginsById already excludes disabled).
     agentByIdSelectors.getAgentPluginsById(agentId)(s),
     s.togglePlugin,
-    s.setPluginMode,
+    s.setPluginModeById,
   ]);
   const checkedSet = useMemo(() => new Set(checked), [checked]);
   // Disabled identifiers, read from the raw (unfiltered) plugins config —
@@ -509,9 +522,9 @@ export const useControls = ({ closeDropdown }: { closeDropdown?: () => void } = 
           : 'auto';
       if (currentMode === mode) return;
 
-      await setPluginMode(id, mode);
+      await setPluginModeById(agentId, id, mode);
     },
-    [canEdit, checkedSet, disabledIdSet, setPluginMode],
+    [agentId, canEdit, checkedSet, disabledIdSet, setPluginModeById],
   );
 
   const openSkillPolicyMenu = useCallback((id: string) => {
@@ -531,6 +544,7 @@ export const useControls = ({ closeDropdown }: { closeDropdown?: () => void } = 
       // connected yet (pending auth / re-authorize), where activation is
       // meaningless but the user still needs a way to remove the entry.
       deleteOnly = false,
+      allowedModes: SkillPolicyMode[] = ['pinned', 'auto', 'disabled'],
     ) => {
       const mode: SkillPolicyMode = checkedSet.has(id)
         ? 'pinned'
@@ -571,6 +585,7 @@ export const useControls = ({ closeDropdown }: { closeDropdown?: () => void } = 
           onContextMenu={(event) => event.stopPropagation()}
         >
           {!deleteOnly &&
+            allowedModes.includes('pinned') &&
             renderPolicyItem(
               'pinned',
               <Icon
@@ -580,6 +595,7 @@ export const useControls = ({ closeDropdown }: { closeDropdown?: () => void } = 
               />,
             )}
           {!deleteOnly &&
+            allowedModes.includes('auto') &&
             renderPolicyItem(
               'auto',
               <Icon
@@ -589,6 +605,7 @@ export const useControls = ({ closeDropdown }: { closeDropdown?: () => void } = 
               />,
             )}
           {!deleteOnly &&
+            allowedModes.includes('disabled') &&
             renderPolicyItem(
               'disabled',
               <Icon
@@ -705,15 +722,17 @@ export const useControls = ({ closeDropdown }: { closeDropdown?: () => void } = 
       badge?: ReactNode,
       icon?: ReactNode,
       extraTag?: ReactNode,
+      immutable = false,
     ) => {
       // Disabled items stay in the Auto group (no separate group) — greyed out
       // + relabeled in place, per the confirmed UI plan.
-      const isDisabled = disabledIdSet.has(id);
+      const isDisabled = !immutable && disabledIdSet.has(id);
 
       return (
         <span
           className={cx(styles.toolRow, isDisabled && styles.toolRowDisabled)}
           onContextMenu={(event) => {
+            if (immutable) return;
             event.preventDefault();
             event.stopPropagation();
             openSkillPolicyMenu(id);
@@ -743,21 +762,25 @@ export const useControls = ({ closeDropdown }: { closeDropdown?: () => void } = 
   const createManagedSkillItem = useCallback(
     ({
       badge,
+      allowedModes,
       configureConfig,
       deleteConfig,
       extraTag,
       icon,
+      immutable,
       id,
       popoverContent,
       searchText,
       title,
     }: {
+      allowedModes?: SkillPolicyMode[];
       badge?: ReactNode;
       configureConfig?: SkillConfigureConfig;
       deleteConfig?: SkillDeleteConfig;
       extraTag?: ReactNode;
       icon: ReactNode;
       id: string;
+      immutable?: boolean;
       popoverContent?: ReactNode;
       searchText?: string;
       title: ReactNode;
@@ -768,15 +791,24 @@ export const useControls = ({ closeDropdown }: { closeDropdown?: () => void } = 
         label: renderToolLabel(
           id,
           title,
-          renderPolicyMenu(id, deleteConfig, configureConfig),
+          immutable ? (
+            <Tooltip placement="top" title={t('platformSkills.detail.mandatoryManaged')}>
+              <span className={cx(styles.fixedIndicator)}>
+                <Icon icon={Pin} size={15} />
+              </span>
+            </Tooltip>
+          ) : (
+            renderPolicyMenu(id, deleteConfig, configureConfig, false, allowedModes)
+          ),
           badge,
           icon,
           extraTag,
+          immutable,
         ),
         popoverContent,
         searchText: searchText || String(title || id),
       }) as SkillMenuItem,
-    [renderPolicyMenu, renderToolLabel],
+    [renderPolicyMenu, renderToolLabel, t],
   );
 
   // Composio-related state
@@ -788,9 +820,45 @@ export const useControls = ({ closeDropdown }: { closeDropdown?: () => void } = 
   const isLobehubSkillEnabled = useServerConfigStore(serverConfigSelectors.enableLobehubSkill);
 
   // Agent Skills related state
-  const installedBuiltinSkills = useToolStore(builtinToolSelectors.installedBuiltinSkills, isEqual);
-  const marketAgentSkills = useToolStore(agentSkillsSelectors.getMarketAgentSkills, isEqual);
-  const userAgentSkills = useToolStore(agentSkillsSelectors.getUserAgentSkills, isEqual);
+  const rawInstalledBuiltinSkills = useToolStore(
+    builtinToolSelectors.installedBuiltinSkills,
+    isEqual,
+  );
+  const rawMarketAgentSkills = useToolStore(agentSkillsSelectors.getMarketAgentSkills, isEqual);
+  const rawUserAgentSkills = useToolStore(agentSkillsSelectors.getUserAgentSkills, isEqual);
+  const rawPlatformSkillCatalog = useToolStore(
+    agentSkillsSelectors.getPlatformSkillCatalog,
+    isEqual,
+  );
+  const platformSkillRuntimeManaged = useToolStore((state) =>
+    Boolean(state.platformSkillRuntimeManaged),
+  );
+  const platformSkillRuntimeStatus = useToolStore(
+    (state) => state.platformSkillRuntimeStatus ?? 'unmanaged',
+  );
+  const platformCatalogSWR = usePublishedSkillCatalog(platformSkillRuntimeManaged);
+  const skillRuntimeSources = useMemo(
+    () =>
+      selectSkillRuntimeSources({
+        builtin: rawInstalledBuiltinSkills,
+        market: rawMarketAgentSkills,
+        platform: rawPlatformSkillCatalog,
+        status: platformSkillRuntimeStatus,
+        user: rawUserAgentSkills,
+      }),
+    [
+      platformSkillRuntimeStatus,
+      rawInstalledBuiltinSkills,
+      rawMarketAgentSkills,
+      rawPlatformSkillCatalog,
+      rawUserAgentSkills,
+    ],
+  );
+  const installedBuiltinSkills = skillRuntimeSources.builtin;
+  const marketAgentSkills = skillRuntimeSources.market;
+  const userAgentSkills = skillRuntimeSources.user;
+  const platformSkillCatalog = skillRuntimeSources.platform;
+  const useLegacySkills = platformSkillRuntimeStatus === 'unmanaged';
 
   // Custom connectors (user-added OAuth MCP servers) from the connector store
   const customConnectors = useToolStore(connectorSelectors.customConnectors, isEqual);
@@ -814,7 +882,7 @@ export const useControls = ({ closeDropdown }: { closeDropdown?: () => void } = 
 
   useFetchInstalledPlugins();
   useFetchUninstalledBuiltinTools(true);
-  useFetchAgentSkills(true);
+  useFetchAgentSkills(useLegacySkills);
   useCheckPluginsIsInstalled(plugins);
 
   // Load user's Composio integrations via SWR (from database)
@@ -840,11 +908,17 @@ export const useControls = ({ closeDropdown }: { closeDropdown?: () => void } = 
   // Get all skill identifier sets (used for filtering builtinList)
   const allSkillIdentifiers = useMemo(() => {
     const ids = new Set<string>();
-    for (const s of installedBuiltinSkills) ids.add(s.identifier);
-    for (const s of marketAgentSkills) ids.add(s.identifier);
-    for (const s of userAgentSkills) ids.add(s.identifier);
+    for (const s of rawInstalledBuiltinSkills) ids.add(s.identifier);
+    for (const s of rawMarketAgentSkills) ids.add(s.identifier);
+    for (const s of rawUserAgentSkills) ids.add(s.identifier);
+    for (const s of rawPlatformSkillCatalog?.skills ?? []) ids.add(s.skillKey);
     return ids;
-  }, [installedBuiltinSkills, marketAgentSkills, userAgentSkills]);
+  }, [
+    rawInstalledBuiltinSkills,
+    rawMarketAgentSkills,
+    rawPlatformSkillCatalog?.skills,
+    rawUserAgentSkills,
+  ]);
 
   // Filter out Composio tools and skills from builtinList (they will be displayed separately)
   const filteredBuiltinList = useMemo(() => {
@@ -1318,6 +1392,65 @@ export const useControls = ({ closeDropdown }: { closeDropdown?: () => void } = 
     [userAgentSkills, t, createManagedSkillItem, deleteAgentSkill],
   );
 
+  const platformSkillItems = useMemo(
+    () =>
+      (platformSkillCatalog?.skills ?? []).map((skill) =>
+        createManagedSkillItem({
+          allowedModes: skill.distribution === 'optional' ? ['pinned', 'disabled'] : undefined,
+          badge: <Icon icon={SkillsIcon} size={12} />,
+          extraTag: (
+            <Tag size="small">
+              {t(`platformSkills.distribution.${skill.distribution}` as never)}
+            </Tag>
+          ),
+          icon: <Icon icon={SkillsIcon} size={SKILL_ICON_SIZE} />,
+          id: skill.skillKey,
+          immutable: skill.distribution === 'mandatory',
+          popoverContent: (
+            <ToolItemDetailPopover
+              description={skill.description ?? ''}
+              icon={<Icon icon={SkillsIcon} size={36} />}
+              identifier={skill.skillKey}
+              sourceLabel={t(`platformSkills.source.${skill.source}` as never)}
+              title={skill.displayName}
+            />
+          ),
+          searchText: `${skill.displayName} ${skill.skillKey}`,
+          title: skill.displayName,
+        }),
+      ),
+    [createManagedSkillItem, platformSkillCatalog?.skills, t],
+  );
+
+  const platformSkillUnavailableItems = useMemo<SkillMenuItem[]>(() => {
+    if (!platformSkillRuntimeManaged || platformSkillRuntimeStatus === 'ready') return [];
+    const loading = platformSkillRuntimeStatus === 'loading';
+    return [
+      {
+        closeOnClick: false,
+        key: 'platform-skill-runtime-unavailable',
+        label: (
+          <Flexbox horizontal align="center" gap={8} justify="space-between">
+            <span>
+              {t(loading ? 'platformSkills.runtime.loading' : 'platformSkills.runtime.unavailable')}
+            </span>
+            <Button
+              disabled={loading}
+              size="small"
+              onClick={(event) => {
+                event.stopPropagation();
+                void platformCatalogSWR.mutate();
+              }}
+            >
+              {t('retry', { ns: 'common' })}
+            </Button>
+          </Flexbox>
+        ),
+        searchText: t('platformSkills.runtime.unavailable'),
+      },
+    ];
+  }, [platformCatalogSWR, platformSkillRuntimeManaged, platformSkillRuntimeStatus, t]);
+
   // Custom connector list items (user-added OAuth MCP servers).
   // Toggling adds the connector identifier to agents.plugins[] — the same field
   // the runtime resolves connectors from, so they become callable immediately.
@@ -1463,7 +1596,8 @@ export const useControls = ({ closeDropdown }: { closeDropdown?: () => void } = 
   // Build LobeHub group children (including Builtin Agent Skills, builtin tools, and LobeHub Skill/Composio)
   const lobehubGroupChildren: ItemType[] = [
     // 1. Builtin Agent Skills
-    ...builtinAgentSkillItems,
+    ...platformSkillUnavailableItems,
+    ...(platformSkillCatalog ? platformSkillItems : builtinAgentSkillItems),
     // 2. Builtin tools
     ...builtinItems,
     // 3. LobeHub Skill and Composio (as builtin skills)
@@ -1472,13 +1606,13 @@ export const useControls = ({ closeDropdown }: { closeDropdown?: () => void } = 
 
   // Build Community group children (Market Agent Skills + community plugins)
   const communityGroupChildren: ItemType[] = [
-    ...marketAgentSkillItems,
+    ...(platformSkillCatalog ? [] : marketAgentSkillItems),
     ...communityPlugins.map(mapPluginToItem),
   ];
 
   // Build Custom group children (User Agent Skills + custom plugins + custom connectors)
   const customGroupChildren: ItemType[] = [
-    ...userAgentSkillItems,
+    ...(platformSkillCatalog ? [] : userAgentSkillItems),
     ...customPlugins.map(mapPluginToItem),
     ...customConnectorItems,
   ];
@@ -1510,8 +1644,17 @@ export const useControls = ({ closeDropdown }: { closeDropdown?: () => void } = 
         .includes(normalizedSearchKeyword),
     );
   };
-  const allPinnedItems = allSkillItems.filter((item) => checkedSet.has(String(item.key)));
-  const allAutoItems = allSkillItems.filter((item) => !checkedSet.has(String(item.key)));
+  const mandatoryPlatformKeys = new Set(
+    (platformSkillCatalog?.skills ?? [])
+      .filter((skill) => skill.distribution === 'mandatory')
+      .map((skill) => skill.skillKey),
+  );
+  const allPinnedItems = allSkillItems.filter(
+    (item) => checkedSet.has(String(item.key)) || mandatoryPlatformKeys.has(String(item.key)),
+  );
+  const allAutoItems = allSkillItems.filter(
+    (item) => !checkedSet.has(String(item.key)) && !mandatoryPlatformKeys.has(String(item.key)),
+  );
   // App-fixed tools always lead the pinned section, ahead of user-pinned plugins.
   const pinnedItems = filterBySearch([...fixedItems, ...allPinnedItems]);
   const autoItems = filterBySearch(allAutoItems);

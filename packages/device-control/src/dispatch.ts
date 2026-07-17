@@ -22,6 +22,11 @@ import {
   writeLocalFile,
 } from '@lobechat/local-file-shell';
 
+import {
+  cleanupInlineSkillWorkspace,
+  prepareInlineSkillWorkspace,
+  type PrepareInlineSkillWorkspaceParams,
+} from './inlineSkillWorkspace';
 import { prepareSkillDirectory } from './skillDirectory';
 import type {
   DeviceControlDeps,
@@ -44,6 +49,8 @@ export const DEVICE_RPC_METHODS = [
   'initWorkspace',
   'listProjectSkills',
   'prepareSkillDirectory',
+  'prepareInlineSkillWorkspace',
+  'cleanupInlineSkillWorkspace',
   'statPath',
   'getProjectFileIndex',
   'searchProjectFiles',
@@ -100,6 +107,16 @@ export const executeDeviceRpc = async (
 
     case 'prepareSkillDirectory': {
       return prepareSkillDirectory(params as PrepareSkillDirectoryParams, deps);
+    }
+
+    case 'prepareInlineSkillWorkspace': {
+      return prepareInlineSkillWorkspace(params as PrepareInlineSkillWorkspaceParams, {
+        cacheRoot: deps.skillCacheRoot,
+      });
+    }
+
+    case 'cleanupInlineSkillWorkspace': {
+      return cleanupInlineSkillWorkspace(params as { workspaceId: string });
     }
 
     case 'statPath': {

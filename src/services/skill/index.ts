@@ -1,4 +1,8 @@
 import type {
+  PlatformSkillOperationSnapshot,
+  PlatformSkillPinnedRef,
+} from '@lobechat/context-engine';
+import type {
   CreateSkillInput,
   ImportGitHubInput,
   ImportUrlInput,
@@ -73,6 +77,39 @@ class AgentSkillService {
 
   async readResource(id: string, path: string): Promise<SkillResourceContent> {
     return lambdaClient.agentSkills.readResource.query({ id, path });
+  }
+
+  async beginPlatformSkillOperation(
+    snapshot: Pick<PlatformSkillOperationSnapshot, 'agentId' | 'operationId' | 'refs' | 'revision'>,
+  ) {
+    if (!snapshot.agentId || !snapshot.operationId) {
+      throw new Error('Platform Skill operation identity is required');
+    }
+    return lambdaClient.platform.skills.beginOperation.mutate({
+      agentId: snapshot.agentId,
+      operationId: snapshot.operationId,
+      refs: snapshot.refs,
+      revision: snapshot.revision,
+    });
+  }
+
+  async resolvePlatformPinned(
+    ref: PlatformSkillPinnedRef,
+    operation?: PlatformSkillOperationSnapshot,
+  ) {
+    return lambdaClient.agentSkills.resolvePlatformPinned.query({
+      operation:
+        operation?.agentId && operation.operationId && operation.proof
+          ? {
+              agentId: operation.agentId,
+              operationId: operation.operationId,
+              proof: operation.proof,
+              refs: operation.refs,
+              revision: operation.revision,
+            }
+          : undefined,
+      ref,
+    });
   }
 
   // ===== Update =====

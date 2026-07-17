@@ -37,46 +37,16 @@ import { createSandboxService, normalizeSandboxCommandResult } from '@/server/se
 import { SkillResourceService } from '@/server/services/skill/resource';
 import { preprocessLhCommand } from '@/server/services/toolExecution/preprocessLhCommand';
 
+import { ManagedSkillServerRuntimeService } from './platformSkillWorkspace';
 import { resolveRunWorkspaceId } from './resolveWorkspaceScope';
+import type {
+  ActivatedSkillArchive,
+  SkillDeviceExecution,
+  UserSettingsWithMarketToken,
+} from './skillRuntimeTypes';
 import { type ServerRuntimeRegistration } from './types';
 
 const log = debug('lobe-server:skills-runtime');
-
-interface UserSettingsWithMarketToken {
-  market?: {
-    accessToken?: string;
-  };
-}
-
-/**
- * Device-execution wiring for the exec APIs, present only when the run's
- * execution plan routed a device (`plan.kind === 'device'` — the aiAgent sets
- * `context.activeDeviceId` from exactly that condition). When present,
- * `execScript` runs ON the device instead of the cloud sandbox: skill archives
- * are prepared device-side via the `prepareSkillDirectory` RPC and the command
- * executes through the local-system tool over the device gateway.
- */
-interface SkillDeviceExecution {
-  deviceId: string;
-  executionTimeoutMs?: number;
-  operationId?: string;
-  /**
-   * Filesystem skills already living on the device (project/device SKILL.md).
-   * execScript resolves their SKILL.md directory as cwd, mirroring the
-   * prepared-archive skills.
-   */
-  projectSkills?: { location: string; name: string }[];
-  /** Lazily resolved workspace principal — see `resolveRunWorkspaceId`. */
-  resolveWorkspaceId: () => Promise<string | undefined>;
-  /** cwd fallback when no activated skill resolves to a directory. */
-  workingDirectory?: string;
-}
-
-interface ActivatedSkillArchive {
-  name: string;
-  url: string;
-  zipHash: string;
-}
 
 /**
  * Sentinel returned by `execScriptOnDevice` when the routed device runs a
@@ -606,6 +576,31 @@ export const skillsRuntime: ServerRuntimeRegistration = {
     }
     if (!context.userId) {
       throw new Error('userId is required for Skills execution');
+    }
+
+    // Enforced managed operations carry the exact published catalog selected
+    // when the operation was created. Resolve only those pins and return
+    // before reading user settings, user Skill rows, agent documents, project
+    // directories or the market. This is both the isolation boundary and the
+    // feature's no-user-owned-I/O guarantee.
+    const platformCatalog = context.operationSkillSet?.platformCatalog;
+    if (platformCatalog) {
+      return new SkillsExecutionRuntime({
+        activatedSkills: context.activatedSkills,
+        builtinSkills: [],
+        projectSkills: [],
+        service: new ManagedSkillServerRuntimeService({
+          activeDeviceId: context.activeDeviceId,
+          agentId: context.agentId,
+          executionTimeoutMs: context.executionTimeoutMs,
+          operationId: context.operationId,
+          serverDB: context.serverDB,
+          snapshot: platformCatalog,
+          topicId: context.topicId,
+          userId: context.userId,
+          workspaceId: context.workspaceId,
+        }),
+      });
     }
 
     // Fetch market access token from user settings

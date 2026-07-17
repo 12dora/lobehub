@@ -12,6 +12,7 @@ vi.mock('@/store/tool', () => ({
 vi.mock('@/services/skill', () => ({
   agentSkillService: {
     getById: vi.fn(),
+    resolvePlatformPinned: vi.fn(),
   },
 }));
 
@@ -22,12 +23,15 @@ vi.mock('@/helpers/toolAvailability', () => ({
 
 const mockedGetToolStoreState = vi.mocked(getToolStoreState);
 const mockedGetById = vi.mocked(agentSkillService.getById);
+const mockedResolvePlatformPinned = vi.mocked(agentSkillService.resolvePlatformPinned);
 
 const setToolState = (state: any) => {
   mockedGetToolStoreState.mockReturnValue({
     agentSkillDetailMap: {},
     agentSkills: [],
     builtinSkills: [],
+    platformSkillCatalog: null,
+    platformSkillRuntimeStatus: 'unmanaged',
     ...state,
   } as any);
 };
@@ -227,6 +231,111 @@ describe('resolveClientSkills', () => {
 
       expect(findSkill(result.skills, 'disabled-skill')).toBeUndefined();
       expect(findSkill(result.skills, 'enabled-skill')).toBeDefined();
+    });
+  });
+
+  describe('managed Published Catalog', () => {
+    const catalogSkill = (
+      skillKey: string,
+      distribution: 'mandatory' | 'default' | 'optional',
+    ) => ({
+      checksum: skillKey.padEnd(64, 'a').slice(0, 64),
+      description: `${skillKey} description`,
+      displayName: skillKey,
+      distribution,
+      skillKey,
+      source: 'uploaded' as const,
+      version: '1.0.0',
+    });
+
+    it('applies distribution semantics and ignores legacy personal candidates', async () => {
+      setToolState({
+        agentSkills: [
+          { description: 'personal', id: 'db-1', identifier: 'personal', name: 'Personal' },
+        ],
+        builtinSkills: [
+          { content: 'legacy', description: 'legacy', identifier: 'legacy', name: 'Legacy' },
+        ],
+        platformSkillCatalog: {
+          revision: 'catalog-1',
+          skills: [
+            catalogSkill('mandatory', 'mandatory'),
+            catalogSkill('default', 'default'),
+            catalogSkill('optional', 'optional'),
+          ],
+        },
+        platformSkillRuntimeStatus: 'ready',
+      });
+      mockedResolvePlatformPinned.mockImplementation(
+        async (ref) =>
+          ({
+            checksum: ref.checksum,
+            content: `${ref.skillKey} body`,
+            description: `${ref.skillKey} description`,
+            identifier: ref.skillKey,
+            name: ref.skillKey,
+            resources: [],
+            version: ref.version,
+          }) as any,
+      );
+
+      const result = await resolveClientSkills(['optional'], ['mandatory', 'default']);
+
+      expect(result.skills.map((skill) => skill.identifier)).toEqual(['mandatory', 'optional']);
+      expect(findSkill(result.skills, 'optional')).toMatchObject({
+        activated: true,
+        content: 'optional body',
+      });
+      expect(result.platformCatalog).toMatchObject({
+        mandatorySkillIds: ['mandatory'],
+        refs: [
+          expect.objectContaining({ skillKey: 'mandatory', version: '1.0.0' }),
+          expect.objectContaining({ skillKey: 'optional', version: '1.0.0' }),
+        ],
+        revision: 'catalog-1',
+      });
+      expect(findSkill(result.skills, 'personal')).toBeUndefined();
+      expect(findSkill(result.skills, 'legacy')).toBeUndefined();
+    });
+
+    it('fails closed when a pinned published Skill cannot be resolved', async () => {
+      setToolState({
+        platformSkillCatalog: {
+          revision: 'catalog-1',
+          skills: [catalogSkill('optional', 'optional')],
+        },
+        platformSkillRuntimeStatus: 'ready',
+      });
+      mockedResolvePlatformPinned.mockRejectedValue(new Error('not found'));
+
+      await expect(resolveClientSkills(['optional'])).rejects.toThrow('not found');
+    });
+
+    it('keeps mandatory Skills available and activated in manual mode', async () => {
+      setToolState({
+        platformSkillCatalog: {
+          revision: 'catalog-1',
+          skills: [catalogSkill('mandatory', 'mandatory')],
+        },
+        platformSkillRuntimeStatus: 'ready',
+      });
+      mockedResolvePlatformPinned.mockResolvedValue({
+        checksum: catalogSkill('mandatory', 'mandatory').checksum,
+        content: 'mandatory body',
+        description: 'mandatory description',
+        identifier: 'mandatory',
+        name: 'mandatory',
+        resources: [],
+        version: '1.0.0',
+      } as any);
+
+      const result = await resolveClientSkills([], ['mandatory']);
+
+      expect(findSkill(result.skills, 'mandatory')).toMatchObject({
+        activated: true,
+        content: 'mandatory body',
+      });
+      expect(result.platformCatalog?.mandatorySkillIds).toEqual(['mandatory']);
     });
   });
 });

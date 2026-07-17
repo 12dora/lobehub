@@ -130,7 +130,9 @@ export class ServerToolTransport implements ToolTransport {
           manifest: context.effectiveManifestMap[chatToolPayload.identifier],
         });
         const dispatchResult = await dispatchClientTool(chatToolPayload, {
+          agentId: context.state.metadata?.agentId,
           operationId,
+          platformSkillSnapshot: context.state.metadata?.operationSkillSet?.platformCatalog,
           streamManager,
           timeoutMs,
         });
@@ -175,6 +177,7 @@ export class ServerToolTransport implements ToolTransport {
                 context.state.metadata?.agentConfig?.chatConfig?.memory?.toolPermission,
               messageId: context.state.metadata?.sourceMessageId,
               operationId,
+              operationSkillSet: context.state.metadata?.operationSkillSet,
               projectSkills: resolveRunProjectSkills(context.state.metadata),
               scope: context.state.metadata?.scope,
               serverDB,

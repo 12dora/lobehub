@@ -40,3 +40,6 @@ export const resolveManagedResourceReadiness = async (): Promise<ManagedResource
 };
 
 export const clearManagedResourceReadinessForTest = (): void => probes.clear();
+
+export const hasManagedResourceReadinessProbeForTest = (resource: ManagedResourceKind): boolean =>
+  probes.has(resource);

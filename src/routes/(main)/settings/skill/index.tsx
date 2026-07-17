@@ -5,7 +5,9 @@ import isEqual from 'fast-deep-equal';
 import { memo, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router';
 
-import { ManagedResourceNotice } from '@/features/ManagedResources';
+import AsyncError from '@/components/AsyncError';
+import Loading from '@/components/Loading/BrandTextLoading';
+import { ManagedResourceNotice, useManagedResource } from '@/features/ManagedResources';
 import NavHeader from '@/features/NavHeader';
 import { useToolStore } from '@/store/tool';
 import { agentSkillsSelectors, builtinToolSelectors } from '@/store/tool/selectors';
@@ -40,7 +42,7 @@ interface ToolSettingsProps {
 }
 
 export const ToolSettings = memo<ToolSettingsProps>(({ viewMode, managed = false }) => {
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const querySkillIdentifier = searchParams.get('skill');
   const [selected, setSelected] = useState<SelectedTool | null>(null);
 
@@ -48,12 +50,54 @@ export const ToolSettings = memo<ToolSettingsProps>(({ viewMode, managed = false
   const builtinSkills = useToolStore((s) => s.builtinSkills, isEqual);
   const marketAgentSkills = useToolStore(agentSkillsSelectors.getMarketAgentSkills, isEqual);
   const userAgentSkills = useToolStore(agentSkillsSelectors.getUserAgentSkills, isEqual);
+  const platformSkillCatalog = useToolStore(agentSkillsSelectors.getPlatformSkillCatalog, isEqual);
+  const platformSkillRuntimeStatus = useToolStore((s) => s.platformSkillRuntimeStatus);
   const installedBuiltinIds = useToolStore(
     (s) => builtinToolSelectors.installedAllMetaList(s).map((tool) => tool.identifier),
     isEqual,
   );
 
   useEffect(() => {
+    if (!managed || viewMode !== 'skill') return;
+    if (platformSkillRuntimeStatus !== 'ready') return;
+    const skills = platformSkillCatalog?.skills ?? [];
+    const requested = querySkillIdentifier
+      ? skills.find((skill) => skill.skillKey === querySkillIdentifier)
+      : undefined;
+    const initial = resolveInitialToolSelection({
+      builtinSkills,
+      builtinTools,
+      installedBuiltinIds,
+      managed,
+      platformSkills: skills,
+      viewMode,
+    });
+    const next = requested
+      ? { identifier: requested.skillKey, type: 'platform-skill' as const }
+      : initial;
+    setSelected(next);
+
+    const nextParams = new URLSearchParams(searchParams);
+    if (next) nextParams.set('skill', next.identifier);
+    else nextParams.delete('skill');
+    if (nextParams.toString() !== searchParams.toString()) {
+      setSearchParams(nextParams, { replace: true });
+    }
+  }, [
+    builtinTools,
+    builtinSkills,
+    installedBuiltinIds,
+    managed,
+    platformSkillCatalog,
+    platformSkillRuntimeStatus,
+    querySkillIdentifier,
+    searchParams,
+    setSearchParams,
+    viewMode,
+  ]);
+
+  useEffect(() => {
+    if (managed) return;
     if (selected) return;
     if (viewMode === 'skill' && querySkillIdentifier) return;
     const initial = resolveInitialToolSelection({
@@ -61,6 +105,7 @@ export const ToolSettings = memo<ToolSettingsProps>(({ viewMode, managed = false
       builtinTools,
       installedBuiltinIds,
       managed,
+      platformSkills: platformSkillCatalog?.skills,
       viewMode,
     });
     if (initial) setSelected(initial);
@@ -69,30 +114,40 @@ export const ToolSettings = memo<ToolSettingsProps>(({ viewMode, managed = false
     builtinSkills,
     installedBuiltinIds,
     managed,
+    platformSkillCatalog,
     querySkillIdentifier,
     selected,
     viewMode,
   ]);
 
   useEffect(() => {
+    if (managed) return;
     if (viewMode !== 'skill' || !querySkillIdentifier) return;
 
     const skill = [...marketAgentSkills, ...userAgentSkills].find(
       (item) => item.identifier === querySkillIdentifier,
     );
     if (skill) setSelected({ identifier: skill.id, type: 'agent-skill' });
-  }, [marketAgentSkills, querySkillIdentifier, userAgentSkills, viewMode]);
+  }, [managed, marketAgentSkills, querySkillIdentifier, userAgentSkills, viewMode]);
 
   const handleSelect = (identifier: string, type: ToolDetailType) => {
     setSelected({ identifier, type });
+    if (managed && type === 'platform-skill') {
+      const nextParams = new URLSearchParams(searchParams);
+      nextParams.set('skill', identifier);
+      setSearchParams(nextParams);
+    }
   };
 
   return (
     <>
       <NavHeader />
-      {managed && viewMode === 'connector' ? (
+      {managed ? (
         <div style={{ padding: '12px 16px 0' }}>
-          <ManagedResourceNotice inline resource="connectors" />
+          <ManagedResourceNotice
+            inline
+            resource={viewMode === 'connector' ? 'connectors' : 'skills'}
+          />
         </div>
       ) : null}
       <div className={styles.root}>
@@ -121,7 +176,14 @@ export const ToolSettings = memo<ToolSettingsProps>(({ viewMode, managed = false
 
 ToolSettings.displayName = 'ToolSettings';
 
-const Page = memo(() => <ToolSettings viewMode="skill" />);
+const Page = memo(() => {
+  const { error, loading, managed, refresh } = useManagedResource('skills');
+
+  if (error) return <AsyncError error={error} variant="page" onRetry={() => void refresh()} />;
+  if (loading) return <Loading debugId="Settings > Skill > Managed policy" />;
+
+  return <ToolSettings managed={managed} viewMode="skill" />;
+});
 
 Page.displayName = 'SkillSettings';
 

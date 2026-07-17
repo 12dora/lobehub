@@ -483,6 +483,7 @@ export const createAgentExecutors = (context: {
           messages,
           model: llmPayload.model,
           provider: llmPayload.provider,
+          platformSkillSnapshot: operation.metadata?.platformSkillSnapshot,
           resolvedAgentConfig,
           topicId: topicId ?? undefined,
           ...agentConfigData.params,

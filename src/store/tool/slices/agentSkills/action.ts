@@ -16,6 +16,7 @@ import { useClientDataSWR } from '@/libs/swr';
 import { toolKeys } from '@/libs/swr/keys';
 import { agentSkillService } from '@/services/skill';
 import { type StoreSetter } from '@/store/types';
+import type { PlatformPublishedSkillCatalog } from '@/types/platform/skills';
 import { setNamespace } from '@/utils/storeDebug';
 
 import { type ToolStore } from '../../store';
@@ -42,6 +43,83 @@ export class AgentSkillsActionImpl {
     this.#set = set;
     this.#get = get;
   }
+
+  beginPlatformSkillCatalogRequest = (): number => {
+    const epoch = this.#get().platformSkillCatalogRequestEpoch + 1;
+    this.#set(
+      {
+        platformSkillCatalogRequestEpoch: epoch,
+        platformSkillRuntimeStatus: this.#get().platformSkillRuntimeManaged
+          ? 'loading'
+          : 'unmanaged',
+      },
+      false,
+      n('beginPlatformSkillCatalogRequest'),
+    );
+    return epoch;
+  };
+
+  completePlatformSkillCatalogRequest = (
+    epoch: number,
+    catalog: PlatformPublishedSkillCatalog,
+  ): void => {
+    if (epoch !== this.#get().platformSkillCatalogRequestEpoch) return;
+    this.#set(
+      {
+        platformSkillCatalog: catalog,
+        platformSkillRuntimeStatus: this.#get().platformSkillRuntimeManaged
+          ? catalog.skills.length > 0
+            ? 'ready'
+            : 'error'
+          : 'unmanaged',
+      },
+      false,
+      n('completePlatformSkillCatalogRequest'),
+    );
+  };
+
+  configurePlatformSkillManagement = (managed: boolean): void => {
+    if (managed === this.#get().platformSkillRuntimeManaged) return;
+    const epoch = this.#get().platformSkillCatalogRequestEpoch + 1;
+    this.#set(
+      {
+        platformSkillCatalog: managed ? this.#get().platformSkillCatalog : null,
+        platformSkillCatalogRequestEpoch: epoch,
+        platformSkillRuntimeManaged: managed,
+        platformSkillRuntimeStatus: managed ? 'loading' : 'unmanaged',
+      },
+      false,
+      n('configurePlatformSkillManagement'),
+    );
+  };
+
+  failPlatformSkillCatalogRequest = (epoch: number): void => {
+    if (epoch !== this.#get().platformSkillCatalogRequestEpoch) return;
+    this.#set(
+      {
+        platformSkillCatalog: null,
+        platformSkillRuntimeStatus: this.#get().platformSkillRuntimeManaged ? 'error' : 'unmanaged',
+      },
+      false,
+      n('failPlatformSkillCatalogRequest'),
+    );
+  };
+
+  invalidatePlatformSkillCatalog = (revision: string): void => {
+    const epoch = this.#get().platformSkillCatalogRequestEpoch + 1;
+    this.#set(
+      {
+        platformSkillCatalog: null,
+        platformSkillCatalogInvalidationRevision: revision,
+        platformSkillCatalogRequestEpoch: epoch,
+        platformSkillRuntimeStatus: this.#get().platformSkillRuntimeManaged
+          ? 'loading'
+          : 'unmanaged',
+      },
+      false,
+      n('invalidatePlatformSkillCatalog'),
+    );
+  };
 
   createAgentSkill = async (params: CreateSkillInput): Promise<SkillItem | undefined> => {
     const result = await agentSkillService.createSkill(params);
@@ -109,6 +187,10 @@ export class AgentSkillsActionImpl {
   refreshAgentSkills = async (): Promise<void> => {
     const { data } = await agentSkillService.list();
     this.#set({ agentSkills: data }, false, n('refreshAgentSkills'));
+  };
+
+  setPlatformSkillCatalog = (catalog: PlatformPublishedSkillCatalog | null): void => {
+    this.#set({ platformSkillCatalog: catalog }, false, n('setPlatformSkillCatalog'));
   };
 
   updateAgentSkill = async (params: UpdateSkillInput): Promise<SkillItem | undefined> => {

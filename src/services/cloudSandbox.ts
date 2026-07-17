@@ -16,9 +16,11 @@ class CloudSandboxService {
   async callTool(
     toolName: string,
     params: Record<string, any>,
-    context: { topicId: string; userId?: string },
+    context: { agentId?: string; operationId?: string; topicId: string; userId?: string },
   ): Promise<CallToolResult> {
     const input: ExecInSandboxInput = {
+      agentId: context.agentId,
+      operationId: context.operationId,
       params,
       toolName,
       topicId: context.topicId,

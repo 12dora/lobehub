@@ -485,6 +485,31 @@ export interface PrepareSkillDirectoryResult {
   zipPath: string;
 }
 
+export interface InlineSkillResource {
+  checksum: string;
+  content?: string;
+  contentRef?: string;
+  mediaType: string;
+  path: string;
+  sizeBytes: number;
+}
+
+export interface PrepareInlineSkillWorkspaceParams {
+  checksum: string;
+  operationId: string;
+  resources: InlineSkillResource[];
+  skillContent: string;
+  skillKey: string;
+  version: string;
+}
+
+export interface PrepareInlineSkillWorkspaceResult {
+  error?: string;
+  success: boolean;
+  workspaceDir?: string;
+  workspaceId?: string;
+}
+
 export interface ResolveSkillResourcePathParams {
   path: string;
   url: string;
