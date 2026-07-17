@@ -26,6 +26,10 @@ export interface PlatformConfigInvalidationPublisher {
   publish: (event: PlatformConfigInvalidationEvent) => Promise<void>;
 }
 
+export interface PlatformConfigVersionReader {
+  getScopeVersion: (scope: string) => Promise<string>;
+}
+
 /** Redis key builders for platform config versioning (local to enterprise). */
 export const platformConfigKeys = {
   globalVersion: () => 'platform:config:version',
@@ -38,18 +42,24 @@ export const platformConfigKeys = {
  * In-memory publisher for single-process / tests.
  * Stores the latest event per resource key.
  */
-export class InMemoryPlatformConfigInvalidationPublisher implements PlatformConfigInvalidationPublisher {
+export class InMemoryPlatformConfigInvalidationPublisher
+  implements PlatformConfigInvalidationPublisher, PlatformConfigVersionReader
+{
   readonly events: PlatformConfigInvalidationEvent[] = [];
   readonly versions = new Map<string, number>();
 
   publish = async (event: PlatformConfigInvalidationEvent): Promise<void> => {
     this.events.push(event);
     this.versions.set(`${event.resourceType}:${event.resourceId}`, event.revision);
-    this.versions.set('global', event.revision);
+    this.versions.set('global', Math.max((this.versions.get('global') ?? 0) + 1, event.revision));
     for (const scope of event.scopes ?? []) {
-      this.versions.set(`scope:${scope}`, event.revision);
+      const key = `scope:${scope}`;
+      this.versions.set(key, Math.max((this.versions.get(key) ?? 0) + 1, event.revision));
     }
   };
+
+  getScopeVersion = async (scope: string): Promise<string> =>
+    String(this.versions.get(`scope:${scope}`) ?? 0);
 }
 
 /**
@@ -71,13 +81,13 @@ export class RedisPlatformConfigInvalidationPublisher implements PlatformConfigI
       }
 
       const pipeline = redis.pipeline();
-      pipeline.set(platformConfigKeys.globalVersion(), String(event.revision));
+      pipeline.incr(platformConfigKeys.globalVersion());
       pipeline.set(
         platformConfigKeys.resourceVersion(event.resourceType, event.resourceId),
         String(event.revision),
       );
       for (const scope of event.scopes ?? []) {
-        pipeline.set(platformConfigKeys.scopeVersion(scope), String(event.revision));
+        pipeline.incr(platformConfigKeys.scopeVersion(scope));
       }
       // Store a small envelope for diagnostics / multi-instance watchers.
       pipeline.set(
@@ -126,4 +136,23 @@ export const setPlatformConfigInvalidationPublisher = (
   publisher: PlatformConfigInvalidationPublisher | null,
 ): void => {
   defaultPublisher = publisher;
+};
+
+/**
+ * Read a cross-instance cache epoch. Redis loss degrades to a process-local
+ * epoch; consumers still apply a bounded TTL before rebuilding from the DB.
+ */
+export const getPlatformConfigScopeVersion = async (scope: string): Promise<string> => {
+  const publisher = getPlatformConfigInvalidationPublisher();
+  if ('getScopeVersion' in publisher) {
+    return (publisher as PlatformConfigVersionReader).getScopeVersion(scope);
+  }
+  try {
+    if (!getRedisConfig().enabled) return '0';
+    const redis = await initializeRedis(getRedisConfig());
+    return (await redis?.get(platformConfigKeys.scopeVersion(scope))) ?? '0';
+  } catch (error) {
+    log('scope version read failed for %s: %O', scope, error);
+    return '0';
+  }
 };

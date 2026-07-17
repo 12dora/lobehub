@@ -31,6 +31,8 @@ describe('createAdminRouteTree', () => {
     expect(paths).toContain('/admin/managed-resources');
     expect(paths).toContain('/admin/ai/providers');
     expect(paths).toContain('/admin/ai/providers/:id');
+    expect(paths).toContain('/admin/skills');
+    expect(paths).toContain('/admin/skills/:id');
   });
 
   it('deep links match nested paths and nested 404', () => {
@@ -41,6 +43,7 @@ describe('createAdminRouteTree', () => {
     expect(matchRoutes(routes, '/admin/users/u-1')).toBeTruthy();
     expect(matchRoutes(routes, '/admin/managed-resources')).toBeTruthy();
     expect(matchRoutes(routes, '/admin/ai/providers/p-1')).toBeTruthy();
+    expect(matchRoutes(routes, '/admin/skills/s-1')).toBeTruthy();
 
     const nestedUnknown = matchRoutes(routes, '/admin/does-not-exist');
     expect(nestedUnknown).toBeTruthy();
@@ -59,6 +62,8 @@ describe('createAdminRouteTree', () => {
     const aiProviders = children.find((c) => c.path === 'ai/providers');
     const aiProviderDetail = children.find((c) => c.path === 'ai/providers/:id');
     const aiModels = children.find((c) => c.path === 'ai/models');
+    const skills = children.find((c) => c.path === 'skills');
+    const skillDetail = children.find((c) => c.path === 'skills/:id');
 
     expect((users?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder).toBe(
       false,
@@ -81,6 +86,12 @@ describe('createAdminRouteTree', () => {
     expect(
       (aiProviderDetail?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder,
     ).toBe(false);
+    expect((skills?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder).toBe(
+      false,
+    );
+    expect((skillDetail?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder).toBe(
+      false,
+    );
 
     // Element is not the shared PlaceholderPage for users (lazy wrapper present)
     expect(users?.element).toBeTruthy();
@@ -95,7 +106,9 @@ describe('createAdminRouteTree', () => {
           i.id !== 'managed-resources' &&
           i.id !== 'ai-providers' &&
           i.id !== 'ai-provider-detail' &&
-          i.id !== 'ai-models',
+          i.id !== 'ai-models' &&
+          i.id !== 'skills' &&
+          i.id !== 'skills-detail',
       ),
     ).toBe(true);
   });

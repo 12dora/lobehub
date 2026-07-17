@@ -6,12 +6,16 @@ const {
   getByIdMock,
   getByNameMock,
   getZipUrlMock,
+  cleanupInlineSkillWorkspaceMock,
+  prepareInlineSkillWorkspaceMock,
   prepareSkillDirectoryMock,
   resolveSkillResourcePathMock,
 } = vi.hoisted(() => ({
   getByIdMock: vi.fn(),
   getByNameMock: vi.fn(),
   getZipUrlMock: vi.fn(),
+  cleanupInlineSkillWorkspaceMock: vi.fn(),
+  prepareInlineSkillWorkspaceMock: vi.fn(),
   prepareSkillDirectoryMock: vi.fn(),
   resolveSkillResourcePathMock: vi.fn(),
 }));
@@ -21,11 +25,14 @@ vi.mock('@/services/skill', () => ({
     getById: getByIdMock,
     getByName: getByNameMock,
     getZipUrl: getZipUrlMock,
+    resolvePlatformPinned: vi.fn(),
   },
 }));
 
 vi.mock('@/services/electron/localFileService', () => ({
   localFileService: {
+    cleanupInlineSkillWorkspace: cleanupInlineSkillWorkspaceMock,
+    prepareInlineSkillWorkspace: prepareInlineSkillWorkspaceMock,
     prepareSkillDirectory: prepareSkillDirectoryMock,
     resolveSkillResourcePath: resolveSkillResourcePathMock,
   },
@@ -164,6 +171,152 @@ describe('desktopSkillRuntimeService', () => {
     expect(getZipUrlMock).not.toHaveBeenCalled();
     expect(prepareSkillDirectoryMock).not.toHaveBeenCalled();
     expect(result).toBeUndefined();
+  });
+
+  it('should never resolve personal names or ZIPs during a managed operation', async () => {
+    const platformSkillSnapshot = {
+      mandatorySkillIds: ['managed.skill'],
+      refs: [
+        {
+          checksum: 'a'.repeat(64),
+          skillKey: 'managed.skill',
+          version: '1.0.0',
+        },
+      ],
+      revision: 'catalog-r1',
+    };
+
+    await expect(
+      desktopSkillRuntimeService.resolveExecutionDirectory(
+        [{ id: 'personal-id', name: 'managed.skill' }],
+        platformSkillSnapshot,
+      ),
+    ).resolves.toBeUndefined();
+    await expect(
+      desktopSkillRuntimeService.resolveReferenceFullPath({
+        path: 'scripts/run.py',
+        platformSkillSnapshot,
+        skillId: 'personal-id',
+        skillName: 'managed.skill',
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(getByIdMock).not.toHaveBeenCalled();
+    expect(getByNameMock).not.toHaveBeenCalled();
+    expect(getZipUrlMock).not.toHaveBeenCalled();
+    expect(prepareSkillDirectoryMock).not.toHaveBeenCalled();
+    expect(resolveSkillResourcePathMock).not.toHaveBeenCalled();
+  });
+
+  it('materializes exact managed resources and cleans the operation workspace', async () => {
+    const { agentSkillService } = await import('@/services/skill');
+    const ref = {
+      checksum: 'a'.repeat(64),
+      skillKey: 'managed.skill',
+      version: '1.0.0',
+    };
+    vi.mocked(agentSkillService.resolvePlatformPinned).mockResolvedValue({
+      checksum: ref.checksum,
+      content: '# Managed',
+      description: 'Managed',
+      identifier: ref.skillKey,
+      name: 'Managed',
+      resources: [
+        {
+          checksum: 'b'.repeat(64),
+          content: 'print("ok")',
+          mediaType: 'text/x-python',
+          path: 'scripts/run.py',
+          sizeBytes: 11,
+        },
+      ],
+      version: ref.version,
+    } as never);
+    prepareInlineSkillWorkspaceMock.mockResolvedValue({
+      success: true,
+      workspaceDir: '/private/managed-operation',
+      workspaceId: 'workspace-1',
+    });
+
+    const workspace = await desktopSkillRuntimeService.prepareExecutionWorkspace(
+      [{ name: ref.skillKey }],
+      {
+        agentId: 'agent-1',
+        mandatorySkillIds: [],
+        operationId: 'operation-1',
+        refs: [ref],
+        revision: 'catalog-r1',
+      },
+      'operation-1',
+      'agent-1',
+    );
+    expect(workspace).toEqual({
+      cwd: '/private/managed-operation',
+      workspaceIds: ['workspace-1'],
+    });
+    expect(prepareInlineSkillWorkspaceMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        checksum: ref.checksum,
+        operationId: 'operation-1',
+        skillKey: ref.skillKey,
+      }),
+    );
+    expect(getByNameMock).not.toHaveBeenCalled();
+
+    await desktopSkillRuntimeService.cleanupExecutionWorkspace(workspace);
+    expect(cleanupInlineSkillWorkspaceMock).toHaveBeenCalledWith({ workspaceId: 'workspace-1' });
+  });
+
+  it('rejects an operation whose aggregate includes more than 100 files', async () => {
+    const { agentSkillService } = await import('@/services/skill');
+    const ref = { checksum: 'a'.repeat(64), skillKey: 'managed.skill', version: '1.0.0' };
+    vi.mocked(agentSkillService.resolvePlatformPinned).mockResolvedValue({
+      checksum: ref.checksum,
+      content: '# Managed',
+      identifier: ref.skillKey,
+      resources: Array.from({ length: 100 }, (_, index) => ({
+        checksum: 'b'.repeat(64),
+        content: 'x',
+        mediaType: 'text/plain',
+        path: `refs/${index}.txt`,
+        sizeBytes: 1,
+      })),
+      version: ref.version,
+    } as never);
+
+    await expect(
+      desktopSkillRuntimeService.prepareExecutionWorkspace(
+        [{ name: ref.skillKey }],
+        {
+          agentId: 'agent-1',
+          operationId: 'operation-1',
+          refs: [ref],
+          revision: 'catalog-r1',
+        },
+        'operation-1',
+        'agent-1',
+      ),
+    ).rejects.toThrow('file count exceeds 100');
+    expect(prepareInlineSkillWorkspaceMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a managed snapshot from another agent before exact resolution', async () => {
+    const ref = { checksum: 'a'.repeat(64), skillKey: 'managed.skill', version: '1.0.0' };
+
+    await expect(
+      desktopSkillRuntimeService.prepareExecutionWorkspace(
+        [{ name: ref.skillKey }],
+        {
+          agentId: 'agent-a',
+          operationId: 'operation-1',
+          refs: [ref],
+          revision: 'catalog-r1',
+        },
+        'operation-1',
+        'agent-b',
+      ),
+    ).rejects.toThrow('agentId does not match');
+    expect(prepareInlineSkillWorkspaceMock).not.toHaveBeenCalled();
   });
 
   it('should resolve the full local path for a referenced skill resource', async () => {

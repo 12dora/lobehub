@@ -1,8 +1,15 @@
 import type { ExecScriptActivatedSkill } from '@lobechat/builtin-tool-skills';
+import { validateInlineSkillOperationPayloads } from '@lobechat/device-control';
 
 import { agentSkillService } from '@/services/skill';
+import type { PlatformSkillOperationSnapshot } from '@/types/platform/skills';
 
 import { localFileService } from './localFileService';
+
+export interface DesktopSkillExecutionWorkspace {
+  cwd?: string;
+  workspaceIds: string[];
+}
 
 class DesktopSkillRuntimeService {
   private async prepareSkillDirectoryForSkill(skill?: {
@@ -34,8 +41,12 @@ class DesktopSkillRuntimeService {
 
   async resolveExecutionDirectory(
     activatedSkills?: ExecScriptActivatedSkill[],
+    platformSkillSnapshot?: PlatformSkillOperationSnapshot,
   ): Promise<string | undefined> {
     if (!activatedSkills?.length) return undefined;
+    // Platform content/resources are materialized by the exact resolver. Never
+    // search personal ZIPs by the same name during a managed operation.
+    if (platformSkillSnapshot) return undefined;
 
     // Walk from the most recent activation and use the first one that
     // resolves to a packaged (zip-backed) DB skill — id-less filesystem/
@@ -52,11 +63,90 @@ class DesktopSkillRuntimeService {
     return undefined;
   }
 
+  async prepareExecutionWorkspace(
+    activatedSkills?: ExecScriptActivatedSkill[],
+    platformSkillSnapshot?: PlatformSkillOperationSnapshot,
+    operationId?: string,
+    agentId?: string,
+  ): Promise<DesktopSkillExecutionWorkspace> {
+    if (!platformSkillSnapshot) {
+      return {
+        cwd: await this.resolveExecutionDirectory(activatedSkills),
+        workspaceIds: [],
+      };
+    }
+    if (!operationId) throw new Error('Managed Skill execution requires an operationId');
+    if (!agentId) throw new Error('Managed Skill execution requires an agentId');
+    if (!platformSkillSnapshot.operationId || platformSkillSnapshot.operationId !== operationId) {
+      throw new Error('Managed Skill operationId does not match the signed snapshot');
+    }
+    if (!platformSkillSnapshot.agentId || platformSkillSnapshot.agentId !== agentId) {
+      throw new Error('Managed Skill agentId does not match the signed snapshot');
+    }
+
+    const refsByKey = new Map(platformSkillSnapshot.refs.map((ref) => [ref.skillKey, ref]));
+    const workspaceIds: string[] = [];
+    let cwd: string | undefined;
+    try {
+      const resolvedSkills = [];
+      for (const activated of activatedSkills ?? []) {
+        const ref = refsByKey.get(activated.name);
+        if (!ref)
+          throw new Error(`Managed Skill is not in the operation snapshot: ${activated.name}`);
+        const resolved = await agentSkillService.resolvePlatformPinned(ref, platformSkillSnapshot);
+        if (
+          resolved.identifier !== ref.skillKey ||
+          resolved.version !== ref.version ||
+          resolved.checksum !== ref.checksum
+        ) {
+          throw new Error(`Managed Skill could not be resolved exactly: ${ref.skillKey}`);
+        }
+        resolvedSkills.push({ ref, resolved });
+      }
+      const payloads = validateInlineSkillOperationPayloads(
+        resolvedSkills.map(({ resolved }) => ({
+          resources: resolved.resources,
+          skillContent: resolved.content,
+        })),
+      );
+      for (const [index, { ref }] of resolvedSkills.entries()) {
+        const payload = payloads[index];
+        const prepared = await localFileService.prepareInlineSkillWorkspace({
+          checksum: ref.checksum,
+          operationId,
+          resources: payload.resources,
+          skillContent: payload.skillContent,
+          skillKey: ref.skillKey,
+          version: ref.version,
+        });
+        if (!prepared.success || !prepared.workspaceDir || !prepared.workspaceId) {
+          throw new Error(prepared.error || `Failed to materialize managed Skill: ${ref.skillKey}`);
+        }
+        cwd = prepared.workspaceDir;
+        workspaceIds.push(prepared.workspaceId);
+      }
+      return { cwd, workspaceIds };
+    } catch (error) {
+      await this.cleanupExecutionWorkspace({ workspaceIds });
+      throw error;
+    }
+  }
+
+  async cleanupExecutionWorkspace(workspace: DesktopSkillExecutionWorkspace): Promise<void> {
+    await Promise.all(
+      workspace.workspaceIds.map((workspaceId) =>
+        localFileService.cleanupInlineSkillWorkspace({ workspaceId }),
+      ),
+    );
+  }
+
   async resolveReferenceFullPath(params: {
     path: string;
+    platformSkillSnapshot?: PlatformSkillOperationSnapshot;
     skillId?: string;
     skillName?: string;
   }): Promise<string | undefined> {
+    if (params.platformSkillSnapshot) return undefined;
     const skill = await this.resolveSkill({ id: params.skillId, name: params.skillName });
     if (!skill?.zipFileHash) return undefined;
 

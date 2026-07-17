@@ -9,6 +9,7 @@ import { isDesktop, LOADING_FLAT } from '@lobechat/const';
 import { formatSelectedSkillsContext, formatSelectedToolsContext } from '@lobechat/context-engine';
 import { chainCompressContext } from '@lobechat/prompts';
 import type {
+  AgentPluginEntry,
   ChatImageItem,
   ChatThreadType,
   ChatToolPayload,
@@ -30,6 +31,7 @@ import { resolveAgentWorkingDirectoryConfig } from '@/helpers/agentWorkingDirect
 import { agentService } from '@/services/agent';
 import { aiChatService } from '@/services/aiChat';
 import { chatService } from '@/services/chat';
+import { captureClientPlatformSkillSnapshot } from '@/services/chat/mecha/skillEngineering';
 import { resolveSelectedSkillsWithContent } from '@/services/chat/mecha/skillPreload';
 import { resolveSelectedToolsWithContent } from '@/services/chat/mecha/toolPreload';
 import { messageService } from '@/services/message';
@@ -394,16 +396,6 @@ export class ConversationLifecycleActionImpl {
           }
         : undefined;
 
-    // Enrich selected skills/tools with preloaded content, injected directly
-    // via SelectedSkillInjector/SelectedToolInjector — no fake tool-call preload messages
-    const enrichedSelectedSkills = await resolveSelectedSkillsWithContent({
-      message,
-      selectedSkills,
-    });
-    const enrichedSelectedTools = resolveSelectedToolsWithContent({
-      message,
-      selectedTools,
-    });
     const requestTrigger = (metadata as Pick<MessageMetadata, 'trigger'> | undefined)?.trigger;
     const requestMetadata = requestTrigger ? { trigger: requestTrigger } : undefined;
 
@@ -466,6 +458,22 @@ export class ConversationLifecycleActionImpl {
       return;
     }
 
+    // Freeze the managed catalog through the authenticated server before any
+    // preload or executor can read exact content. The same operationId is then
+    // registered locally and is carried to cloud/device/desktop execution.
+    const operationId = `op_${nanoid()}`;
+    const operationPlatformSkillSnapshot = await captureClientPlatformSkillSnapshot(
+      agentSelectors.getAgentConfigById(agentId)(getAgentStoreState())
+        .plugins as unknown as AgentPluginEntry[],
+      { agentId, operationId },
+    );
+    const enrichedSelectedSkills = await resolveSelectedSkillsWithContent({
+      message,
+      platformSkillSnapshot: operationPlatformSkillSnapshot,
+      selectedSkills,
+    });
+    const enrichedSelectedTools = resolveSelectedToolsWithContent({ message, selectedTools });
+
     // Use provided messages or query from store
     // For /newTopic from existing topic, start with empty message list (fresh topic)
     const contextKey = messageMapKey(context);
@@ -490,13 +498,15 @@ export class ConversationLifecycleActionImpl {
     // Create operation for send message first, so we can use operationId for optimistic updates
     const tempId = 'tmp_' + nanoid();
     const tempAssistantId = 'tmp_' + nanoid();
-    const { operationId, abortController } = this.#get().startOperation({
+    const { abortController } = this.#get().startOperation({
       type: 'sendMessage',
       context: { ...operationContext, messageId: tempId },
       label: 'Send Message',
+      operationId,
       metadata: {
         // Mark this as thread operation if threadId exists
         inThread: !!operationContext.threadId,
+        platformSkillSnapshot: operationPlatformSkillSnapshot,
       },
     });
 

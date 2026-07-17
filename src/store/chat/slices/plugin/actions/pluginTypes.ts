@@ -65,7 +65,10 @@ export class PluginTypesActionImpl {
     }
 
     if (effectiveSource === 'composio') {
-      return await this.#get().invokeComposioTypePlugin(id, { ...payload, source: effectiveSource });
+      return await this.#get().invokeComposioTypePlugin(id, {
+        ...payload,
+        source: effectiveSource,
+      });
     }
 
     if (effectiveSource === 'lobehubSkill') {
@@ -89,12 +92,14 @@ export class PluginTypesActionImpl {
 
       let rootRuntimeOperationId: string | undefined;
       let rootRuntimeOperationContext = operation?.context;
+      let rootRuntimeOperationMetadata = operation?.metadata;
       if (operationId) {
         let currentOp = operation;
         while (currentOp) {
           if (AI_RUNTIME_OPERATION_TYPES.includes(currentOp.type)) {
             rootRuntimeOperationId = currentOp.id;
             rootRuntimeOperationContext = currentOp.context;
+            rootRuntimeOperationMetadata = currentOp.metadata;
             break;
           }
           // Move up to parent operation
@@ -204,6 +209,7 @@ export class PluginTypesActionImpl {
           isSubAgent,
           messageId: id,
           operationId,
+          platformSkillSnapshot: rootRuntimeOperationMetadata?.platformSkillSnapshot,
           registerAfterCompletion,
           scope,
           signal: operation?.abortController?.signal,

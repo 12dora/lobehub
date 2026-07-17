@@ -11,8 +11,12 @@ const {
   mockGetAgentConfig,
   mockGetComposioManifests,
   mockGetLobehubSkillManifests,
+  mockGetAgentSkills,
+  mockGetManagedSkillRuntimeModeSnapshot,
   mockMessageCreate,
   mockPluginQuery,
+  mockResolvePlatformSkillRuntimeSnapshot,
+  mockSkillFindAll,
 } = vi.hoisted(() => ({
   mockConnectorQueryByIdentifiers: vi.fn().mockResolvedValue([]),
   mockConnectorToolQueryAll: vi.fn().mockResolvedValue([]),
@@ -24,8 +28,20 @@ const {
   mockGetAgentConfig: vi.fn(),
   mockGetComposioManifests: vi.fn().mockResolvedValue([]),
   mockGetLobehubSkillManifests: vi.fn().mockResolvedValue([]),
+  mockGetAgentSkills: vi.fn().mockResolvedValue([]),
+  mockGetManagedSkillRuntimeModeSnapshot: vi.fn().mockReturnValue('unmanaged'),
   mockMessageCreate: vi.fn(),
   mockPluginQuery: vi.fn().mockResolvedValue([]),
+  mockResolvePlatformSkillRuntimeSnapshot: vi.fn().mockResolvedValue(undefined),
+  mockSkillFindAll: vi.fn().mockResolvedValue({ data: [], total: 0 }),
+}));
+
+vi.mock('@/server/enterprise/services/skillCatalog', () => ({
+  resolvePlatformSkillRuntimeSnapshot: mockResolvePlatformSkillRuntimeSnapshot,
+}));
+
+vi.mock('@/server/enterprise/services/managedResourceCapabilities', () => ({
+  getManagedSkillRuntimeModeSnapshot: mockGetManagedSkillRuntimeModeSnapshot,
 }));
 
 vi.mock('@/libs/trusted-client', () => ({
@@ -47,6 +63,16 @@ vi.mock('@/database/models/message', () => ({
     getLatestSpineMessageId: vi.fn().mockResolvedValue(undefined),
     query: vi.fn().mockResolvedValue([]),
     update: vi.fn().mockResolvedValue({}),
+  })),
+}));
+
+vi.mock('@/database/models/agentSkill', () => ({
+  AgentSkillModel: vi.fn().mockImplementation(() => ({ findAll: mockSkillFindAll })),
+}));
+
+vi.mock('@/server/services/agentDocuments', () => ({
+  AgentDocumentsService: vi.fn().mockImplementation(() => ({
+    getAgentSkills: mockGetAgentSkills,
   })),
 }));
 
@@ -172,6 +198,10 @@ describe('AiAgentService.execAgent - three-state plugin config (pinned/auto/disa
       pluginManifest('plugin-b'),
       pluginManifest('plugin-c'),
     ]);
+    mockResolvePlatformSkillRuntimeSnapshot.mockResolvedValue(undefined);
+    mockGetManagedSkillRuntimeModeSnapshot.mockReturnValue('unmanaged');
+    mockGetAgentSkills.mockResolvedValue([]);
+    mockSkillFindAll.mockResolvedValue({ data: [], total: 0 });
     service = new AiAgentService({} as any, 'test-user-id');
   });
 
@@ -252,5 +282,39 @@ describe('AiAgentService.execAgent - three-state plugin config (pinned/auto/disa
     // used to re-add them here from the raw (unfiltered) manifest arrays.
     expect(toolManifestMapArg()).not.toHaveProperty('composio-disabled');
     expect(toolManifestMapArg()).not.toHaveProperty('skill-disabled');
+  });
+
+  it('freezes only the managed catalog pool when the runtime policy is enforced', async () => {
+    const checksum = 'a'.repeat(64);
+    mockResolvePlatformSkillRuntimeSnapshot.mockResolvedValue({
+      catalog: {
+        refs: [{ checksum, skillKey: 'managed.skill', version: '1.0.0' }],
+        revision: 'catalog-r1',
+      },
+      skills: [{ description: 'Managed', identifier: 'managed.skill', name: 'managed.skill' }],
+    });
+    mockGetManagedSkillRuntimeModeSnapshot.mockReturnValue('enforced');
+    mockGetAgentConfig.mockResolvedValue({
+      chatConfig: {},
+      id: 'agent-1',
+      model: 'gpt-4',
+      plugins: [],
+      provider: 'openai',
+      systemRole: 'You are a helper',
+    });
+
+    await service.execAgent({ agentId: 'agent-1', prompt: 'Hello' } as any);
+
+    expect(mockCreateOperation.mock.calls[0][0].operationSkillSet).toEqual({
+      enabledPluginIds: [],
+      platformCatalog: {
+        refs: [{ checksum, skillKey: 'managed.skill', version: '1.0.0' }],
+        revision: 'catalog-r1',
+      },
+      skills: [{ description: 'Managed', identifier: 'managed.skill', name: 'managed.skill' }],
+    });
+    expect(mockSkillFindAll).not.toHaveBeenCalled();
+    expect(mockGetAgentSkills).not.toHaveBeenCalled();
+    expect(mockGetManagedSkillRuntimeModeSnapshot).toHaveBeenCalledOnce();
   });
 });

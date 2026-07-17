@@ -121,6 +121,12 @@ vi.mock('antd-style', () => ({
     }),
 }));
 
+vi.mock('./PlatformSkillDetail', () => ({
+  default: ({ skillKey }: { skillKey: string }) => (
+    <div data-testid="platform-skill-detail">{skillKey}</div>
+  ),
+}));
+
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string, options?: { defaultValue?: string; name?: string } | string) => {
@@ -285,7 +291,7 @@ describe('SkillDetail', () => {
     );
   });
 
-  it('propagates managed-safe mode into connected connector permission detail', async () => {
+  it('does not expose legacy connector details or actions in managed mode', () => {
     mocks.toolState.connectors = [{ id: 'connector-1', identifier: 'notion' }];
     mocks.toolState.lobehubSkillServers = [
       {
@@ -294,10 +300,12 @@ describe('SkillDetail', () => {
       },
     ];
 
-    render(<SkillDetail managed identifier="notion" type="lobehub-connector" />);
+    const { container } = render(
+      <SkillDetail managed identifier="notion" type="lobehub-connector" />,
+    );
 
-    expect(await screen.findByTestId('connector-detail')).toHaveAttribute('data-managed', 'true');
-    expect(screen.getByRole('button', { name: 'Disconnect' })).toBeInTheDocument();
+    expect(container).toBeEmptyDOMElement();
+    expect(screen.queryByRole('button', { name: 'Disconnect' })).not.toBeInTheDocument();
   });
 
   it('only leaves connector permissions detail after disconnect actually succeeds', async () => {

@@ -1,3 +1,4 @@
+export { containsEnterpriseSecretMaterial } from './detectSecretMaterial';
 export {
   containsSensitiveMaterial,
   isCredentialBearingUrl,

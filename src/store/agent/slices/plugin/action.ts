@@ -3,7 +3,7 @@ import { produce } from 'immer';
 
 import { type StoreSetter } from '@/store/types';
 
-import { agentSelectors } from '../../selectors';
+import { agentByIdSelectors, agentSelectors } from '../../selectors';
 import { type AgentStore } from '../../store';
 
 /**
@@ -51,7 +51,14 @@ export class PluginSliceActionImpl {
    * untouched legacy strings, is left exactly as-is (lazy per-item upgrade).
    */
   setPluginMode = async (id: string, mode: AgentPluginMode): Promise<void> => {
-    const originConfig = agentSelectors.currentAgentConfig(this.#get());
+    const agentId = this.#get().activeAgentId;
+    if (!agentId) return;
+    await this.setPluginModeById(agentId, id, mode);
+  };
+
+  /** Owner-safe variant for embedded/group inputs whose agent is not active globally. */
+  setPluginModeById = async (agentId: string, id: string, mode: AgentPluginMode): Promise<void> => {
+    const originConfig = agentByIdSelectors.getAgentConfigById(agentId)(this.#get());
     if (!originConfig) return;
 
     const config = produce(originConfig, (draft) => {
@@ -64,7 +71,7 @@ export class PluginSliceActionImpl {
       draft.plugins = upsertPluginMode(draft.plugins, id, mode) as unknown as string[];
     });
 
-    await this.#get().updateAgentConfig(config);
+    await this.#get().updateAgentConfigById(agentId, config);
   };
 }
 

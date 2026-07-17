@@ -128,6 +128,71 @@ describe('dispatchClientTool', () => {
     expect(mockDisconnect).toHaveBeenCalled();
   });
 
+  it('forwards only opaque platform refs and strips public catalog metadata', async () => {
+    const sendToolExecute = vi.fn().mockResolvedValue(undefined);
+    const streamManager = makeStreamManager(sendToolExecute);
+    const checksum = 'a'.repeat(64);
+    mockBlpop.mockResolvedValue([
+      'tool_result:call-1',
+      JSON.stringify({ content: 'ok', success: true, toolCallId: 'call-1' }),
+    ]);
+
+    await dispatchClientTool(makePayload(), {
+      agentId: 'agent-1',
+      operationId: 'op-1',
+      platformSkillSnapshot: {
+        agentId: 'agent-1',
+        mandatorySkillIds: ['managed.skill'],
+        operationId: 'op-1',
+        proof: 'signed-proof',
+        refs: [{ checksum, skillKey: 'managed.skill', version: '1.0.0' }],
+        revision: 'catalog-r1',
+        skills: [
+          {
+            checksum,
+            description: 'Must not cross Gateway',
+            displayName: 'Managed',
+            distribution: 'mandatory',
+            skillKey: 'managed.skill',
+            source: 'uploaded',
+            version: '1.0.0',
+          },
+        ],
+      },
+      streamManager,
+    });
+
+    const toolExecute = sendToolExecute.mock.calls[0][1];
+    expect(toolExecute.platformSkillSnapshot).toEqual({
+      agentId: 'agent-1',
+      mandatorySkillIds: ['managed.skill'],
+      operationId: 'op-1',
+      proof: 'signed-proof',
+      refs: [{ checksum, skillKey: 'managed.skill', version: '1.0.0' }],
+      revision: 'catalog-r1',
+    });
+    expect(toolExecute.platformSkillSnapshot).not.toHaveProperty('skills');
+  });
+
+  it('rejects a platform snapshot bound to another agent operation', async () => {
+    const sendToolExecute = vi.fn().mockResolvedValue(undefined);
+    const result = await dispatchClientTool(makePayload(), {
+      agentId: 'agent-2',
+      operationId: 'op-2',
+      platformSkillSnapshot: {
+        agentId: 'agent-1',
+        operationId: 'op-1',
+        proof: 'signed-proof',
+        refs: [],
+        revision: 'catalog-r1',
+      },
+      streamManager: makeStreamManager(sendToolExecute),
+    });
+
+    expect(result).toMatchObject({ error: { type: 'invalid_operation' }, success: false });
+    expect(sendToolExecute).not.toHaveBeenCalled();
+  });
+
   it('forwards pluginState (state field) from the BLPOP payload to the execution result', async () => {
     const sendToolExecute = vi.fn().mockResolvedValue(undefined);
     const streamManager = makeStreamManager(sendToolExecute);
