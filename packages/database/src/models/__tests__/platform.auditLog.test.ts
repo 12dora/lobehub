@@ -14,6 +14,23 @@ afterEach(async () => {
 });
 
 describe('PlatformAuditLogModel', () => {
+  it('appends a caller-keyed audit exactly once across delivery retries', async () => {
+    const params = {
+      action: 'connector.runtime.sharedCall',
+      actorUserId: 'user-1',
+      id: `connector-runtime-audit:${crypto.randomUUID()}`,
+      result: 'success' as const,
+      targetId: 'connector-1',
+      targetType: 'connector',
+    };
+
+    const first = await auditModel.append(params);
+    const replay = await auditModel.append(params);
+
+    expect(replay.id).toBe(first.id);
+    await expect(serverDB.query.platformAuditLogs.findMany()).resolves.toHaveLength(1);
+  });
+
   it('appends redacted audit rows and supports cursor pagination', async () => {
     const first = await auditModel.append({
       action: 'platform.branding.publish',

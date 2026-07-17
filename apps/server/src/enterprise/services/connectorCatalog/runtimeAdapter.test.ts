@@ -140,7 +140,17 @@ const createHarness = (
         token: { jobId: 'journal-1', owner: 'owner-1' },
       })),
       complete: vi.fn(async () => {}),
-      markAudited: vi.fn(async () => {}),
+      deliverAudit: vi.fn(async (_token, delivery) => {
+        await delivery({
+          connectorId: 'connector-1',
+          idempotencyKey: 'connector-runtime-audit:journal-1',
+          operationId: 'operation-1',
+          outcome: 'allowed',
+          toolKey: 'search',
+          userId: 'user-1',
+        });
+        return true;
+      }),
     },
     outbound: {
       preflight: vi.fn(async () => {
@@ -230,6 +240,7 @@ describe('PlatformConnectorRuntimeAdapter', () => {
     expect(harness.order).toEqual(['policy', 'preflight', 'secret-version']);
     expect(harness.dependencies.audit.appendSharedCall).toHaveBeenCalledWith({
       connectorId: 'connector-1',
+      idempotencyKey: 'connector-runtime-audit:journal-1',
       operationId: 'operation-1',
       outcome: 'allowed',
       toolKey: 'search',
@@ -386,6 +397,31 @@ describe('PlatformConnectorRuntimeAdapter', () => {
 
     expect(harness.dependencies.outbound.requestJson).toHaveBeenCalledOnce();
     expect(harness.dependencies.journal.complete).toHaveBeenCalledOnce();
+  });
+
+  it('retries terminal journal persistence and fails closed without repeating outbound', async () => {
+    const recovered = createHarness('shared_service_account');
+    vi.mocked(recovered.dependencies.journal.complete)
+      .mockRejectedValueOnce(new Error('database unavailable'))
+      .mockRejectedValueOnce(new Error('database unavailable'))
+      .mockResolvedValueOnce();
+
+    await expect(recovered.adapter.execute(invocation)).resolves.toMatchObject({ success: true });
+    expect(recovered.dependencies.journal.complete).toHaveBeenCalledTimes(3);
+    expect(recovered.dependencies.outbound.requestJson).toHaveBeenCalledOnce();
+
+    const failed = createHarness('shared_service_account');
+    vi.mocked(failed.dependencies.journal.complete).mockRejectedValue(
+      new Error('database unavailable'),
+    );
+    await expect(failed.adapter.execute(invocation)).rejects.toThrow(
+      'PLATFORM_CONNECTOR_RESOURCE_MISMATCH',
+    );
+    expect(failed.dependencies.journal.complete).toHaveBeenCalledTimes(3);
+    expect(failed.dependencies.outbound.requestJson).toHaveBeenCalledOnce();
+    expect(failed.dependencies.audit.appendSharedCall).not.toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: 'failed' }),
+    );
   });
 
   it('replays a completed shared call without repeating the external side effect', async () => {

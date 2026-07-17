@@ -486,6 +486,7 @@ export const executeManagedConnectorTool = async (params: {
               outcome: entry.outcome,
               toolKey: entry.toolKey,
             },
+            id: entry.idempotencyKey,
             reason: null,
             result:
               entry.outcome === 'allowed' || entry.outcome === 'admitted'

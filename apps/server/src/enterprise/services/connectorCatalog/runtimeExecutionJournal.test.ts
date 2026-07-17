@@ -33,22 +33,32 @@ describe('DatabaseConnectorRuntimeExecutionJournal', () => {
     createdIds.push(acquired.token.jobId);
 
     await expect(journal.begin(params)).resolves.toEqual({ status: 'reserved' });
-    await expect(
-      journal.begin({ ...params, requestFingerprint: 'b'.repeat(64) }),
-    ).resolves.toEqual({ status: 'reserved' });
+    await expect(journal.begin({ ...params, requestFingerprint: 'b'.repeat(64) })).resolves.toEqual(
+      { status: 'reserved' },
+    );
     await journal.complete(acquired.token, {
       confirmation: null,
       content: 'done',
       success: true,
     });
-    const replay = await journal.begin(params);
-    expect(replay).toMatchObject({
+    const pendingReplay = await journal.begin(params);
+    expect(pendingReplay).toMatchObject({
       auditPending: true,
       result: { content: 'done', success: true },
       status: 'replay',
     });
-    if (replay.status !== 'replay') throw new Error('journal did not replay');
-    await journal.markAudited(replay.token);
+    if (pendingReplay.status !== 'replay') throw new Error('journal did not replay');
+    const delivered: string[] = [];
+    const results = await Promise.all([
+      journal.deliverAudit(pendingReplay.token, async (record) => {
+        delivered.push(record.outcome);
+      }),
+      journal.deliverAudit(pendingReplay.token, async (record) => {
+        delivered.push(record.outcome);
+      }),
+    ]);
+    expect(results.filter(Boolean)).toHaveLength(1);
+    expect(delivered).toEqual(['allowed']);
     await expect(journal.begin(params)).resolves.toMatchObject({
       auditPending: false,
       status: 'replay',

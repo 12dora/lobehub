@@ -56,6 +56,7 @@ export interface ConnectorRuntimePolicyResolver {
 export interface ConnectorRuntimeAuditWriter {
   appendSharedCall: (params: {
     connectorId: string;
+    idempotencyKey?: string;
     operationId: string;
     outcome: 'admitted' | 'allowed' | 'denied' | 'failed' | 'rate_limited';
     toolKey: string;
@@ -194,10 +195,11 @@ export class PlatformConnectorRuntimeAdapter {
       throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_CONFIRMATION_REQUIRED');
     }
 
+    let journalToken: ConnectorRuntimeJournalToken | undefined;
+    let outboundStarted = false;
     try {
       const args = parseArguments(invocation.arguments);
       let headers: Record<string, string> | undefined;
-      let journalToken: ConnectorRuntimeJournalToken | undefined;
       const taintedValues: string[] = [];
       if (connector.credentialMode === 'shared_service_account') {
         const allowed = await this.dependencies.rateLimiter.consume(
@@ -289,8 +291,7 @@ export class PlatformConnectorRuntimeAdapter {
         if (journal.status === 'replay') {
           if (journal.auditPending) {
             try {
-              await this.auditShared(invocation, connector.id, 'allowed');
-              await this.dependencies.journal.markAudited(journal.token);
+              await this.deliverJournalAudit(journal.token);
             } catch (error) {
               console.error('[connector-runtime] terminal audit reconciliation pending', {
                 errorClass: error instanceof Error ? error.name : 'UnknownError',
@@ -301,6 +302,7 @@ export class PlatformConnectorRuntimeAdapter {
         }
         journalToken = journal.token;
       }
+      outboundStarted = true;
       const response = await this.dependencies.outbound.requestJson({
         body: {
           id: `${invocation.proof.operationId}:${tool.toolKey}`,
@@ -318,15 +320,15 @@ export class PlatformConnectorRuntimeAdapter {
       const executionResult = { confirmation, ...result, success: true as const };
       if (connector.credentialMode === 'shared_service_account') {
         try {
-          await this.dependencies.journal.complete(journalToken!, executionResult);
+          await this.completeJournal(journalToken!, executionResult);
         } catch (error) {
           console.error('[connector-runtime] terminal result journal pending', {
             errorClass: error instanceof Error ? error.name : 'UnknownError',
           });
+          throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_RESOURCE_MISMATCH');
         }
         try {
-          await this.auditShared(invocation, connector.id, 'allowed');
-          if (journalToken) await this.dependencies.journal.markAudited(journalToken);
+          await this.deliverJournalAudit(journalToken!);
         } catch (error) {
           console.error('[connector-runtime] terminal audit delivery pending', {
             errorClass: error instanceof Error ? error.name : 'UnknownError',
@@ -337,6 +339,7 @@ export class PlatformConnectorRuntimeAdapter {
     } catch (error) {
       if (
         connector.credentialMode === 'shared_service_account' &&
+        !(outboundStarted && journalToken) &&
         !(
           error instanceof PlatformConnectorContractError &&
           error.code === 'PLATFORM_CONNECTOR_RATE_LIMITED'
@@ -353,6 +356,28 @@ export class PlatformConnectorRuntimeAdapter {
       if (error instanceof PlatformConnectorContractError) throw error;
       throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_TRANSPORT_UNSUPPORTED');
     }
+  };
+
+  private completeJournal = async (
+    token: ConnectorRuntimeJournalToken,
+    result: PlatformConnectorRuntimeResult,
+  ): Promise<void> => {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await this.dependencies.journal.complete(token, result);
+        return;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError;
+  };
+
+  private deliverJournalAudit = async (token: ConnectorRuntimeJournalToken): Promise<void> => {
+    await this.dependencies.journal.deliverAudit(token, (record) =>
+      this.dependencies.audit.appendSharedCall(record),
+    );
   };
 
   private auditShared = async (
