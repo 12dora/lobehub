@@ -48,14 +48,21 @@ const INVALID_INPUT_UNIQUE_CONSTRAINTS = new Set([
   'platform_agent_assignments_agent_target_unique',
 ]);
 
-/** Foreign keys whose violation reflects an invalid reference in the request. */
+/**
+ * Foreign keys whose violation reflects an invalid reference in the request.
+ *
+ * These are the exact names PostgreSQL reports — identifiers longer than 63 bytes are
+ * truncated by the server (NAMEDATALEN-1), so the two long materialization FKs appear here
+ * in their real, truncated form (verified against pg_constraint), not the Drizzle spelling.
+ */
 const INVALID_INPUT_FK_CONSTRAINTS = new Set([
   'platform_agent_assignments_pinned_version_same_agent_fk',
   'platform_agent_assignments_agent_id_platform_agents_id_fk',
   'platform_agents_current_version_same_agent_fk',
-  'platform_user_agent_materializations_platform_agent_id_platform_agents_id_fk',
   'platform_user_agent_materializations_exact_version_fk',
-  'platform_user_agent_materializations_materialized_agent_id_agents_id_fk',
+  // Truncated at 63 bytes: ..._platform_agent_id_platform_agents_id_fk / ..._materialized_agent_id_agents_id_fk
+  'platform_user_agent_materializations_platform_agent_id_platform',
+  'platform_user_agent_materializations_materialized_agent_id_agen',
 ]);
 
 /**

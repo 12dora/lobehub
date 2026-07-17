@@ -433,6 +433,17 @@ describe('PlatformAgentAdminService', () => {
           pgError('23503', 'platform_agent_assignments_pinned_version_same_agent_fk'),
         ),
       ).toBeInstanceOf(PlatformAgentInvalidInputError);
+      // … including the two materialization FKs whose names PostgreSQL truncates to 63 bytes.
+      expect(
+        translatePlatformAgentPgError(
+          pgError('23503', 'platform_user_agent_materializations_platform_agent_id_platform'),
+        ),
+      ).toBeInstanceOf(PlatformAgentInvalidInputError);
+      expect(
+        translatePlatformAgentPgError(
+          pgError('23503', 'platform_user_agent_materializations_materialized_agent_id_agen'),
+        ),
+      ).toBeInstanceOf(PlatformAgentInvalidInputError);
       // … or a recognized target-guard trigger message (triggers carry no constraint name).
       expect(
         translatePlatformAgentPgError(

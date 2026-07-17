@@ -15,7 +15,10 @@ import { Pool } from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
-import { PlatformAgentCatalogRepository } from '@/database/repositories/platformAgentCatalog';
+import {
+  acquirePlatformAgentReferenceLock,
+  PlatformAgentCatalogRepository,
+} from '@/database/repositories/platformAgentCatalog';
 import * as schema from '@/database/schemas';
 import {
   platformAgentAssignments,
@@ -29,6 +32,8 @@ import { users } from '@/database/schemas/user';
 import { workspaces } from '@/database/schemas/workspace';
 import type { LobeChatDatabase } from '@/database/type';
 
+import { getEnterpriseErrorBody } from '../../guards/enterpriseErrors';
+import { mapAgentServiceError } from '../../routers/admin/agentsSupport';
 import { PlatformAgentAdminService } from './adminService';
 import {
   PlatformAgentDefaultRequiredError,
@@ -118,6 +123,24 @@ run('PlatformAgentAdminService (PostgreSQL) — ADM-04 / ADM-05', () => {
       expectedDraftToken: platformAgentDraftToken(row),
       expectedRevision: row.revision,
     };
+  };
+
+  /** Manual latch — resolve() releases whoever is awaiting promise (no timers). */
+  const deferred = () => {
+    let resolve!: () => void;
+    const promise = new Promise<void>((settle) => {
+      resolve = settle;
+    });
+    return { promise, resolve };
+  };
+
+  const rawErrorOf = async (op: () => Promise<unknown>): Promise<unknown> => {
+    try {
+      await op();
+      throw new Error('expected a database error');
+    } catch (error) {
+      return error;
+    }
   };
 
   const cleanup = async () => {
@@ -530,15 +553,6 @@ run('PlatformAgentAdminService (PostgreSQL) — ADM-04 / ADM-05', () => {
 
   // ADM-03: real pg/Drizzle cause chains normalize by actual constraint / trigger, no leak.
   describe('constraint / trigger normalization (real cause chain)', () => {
-    const rawErrorOf = async (op: () => Promise<unknown>) => {
-      try {
-        await op();
-        throw new Error('expected a database error');
-      } catch (error) {
-        return error;
-      }
-    };
-
     it('normalizes unique / FK / trigger violations to stable redacted errors', async () => {
       await seedDraftAgent('norm-a', 'norm-a');
       await seedPublishedAgent('norm-pub', 'norm-pub');
@@ -710,11 +724,6 @@ run('PlatformAgentAdminService (PostgreSQL) — ADM-04 / ADM-05', () => {
 
   // ADM-02: the shared per-Agent reference lock closes the archive/reference TOCTOU window.
   describe('referenceable-Agent protocol (TOCTOU)', () => {
-    const poolService = () => {
-      const pool = new Pool({ connectionString, max: 1 });
-      const scopedDb = drizzle(pool, { schema }) as unknown as LobeChatDatabase;
-      return { pool, service: new PlatformAgentAdminService(scopedDb), scopedDb };
-    };
     const assignmentCount = async (agentId: string) => {
       const [row] = await db
         .select({ count: sql<number>`count(*)::int` })
@@ -824,38 +833,148 @@ run('PlatformAgentAdminService (PostgreSQL) — ADM-04 / ADM-05', () => {
       expect(await materializationCount('ref-mat2')).toBe(0);
     });
 
-    it('concurrent archive vs assignment never leaves an archived Agent with a reference', async () => {
-      for (let round = 0; round < 6; round += 1) {
-        await cleanup();
-        const agentId = `race-${round}`;
-        await seedPublishedAgent(agentId, agentId);
-        await db.insert(users).values({ id: 'race-user' });
-        const a = poolService();
-        const b = poolService();
-        try {
-          const pointer = await pointerFor(agentId);
-          const results = await Promise.allSettled([
-            a.service.archive('admin', {
-              ...pointer,
-              reason: 'concurrent archive',
-              replacementAgentId: null,
-            }),
-            upsertAssignment(b.service, agentId, pointer, {
-              targetId: 'race-user',
-              targetType: 'user',
-            }),
-          ]);
-          const fulfilled = results.filter((r) => r.status === 'fulfilled');
-          expect(fulfilled).toHaveLength(1);
-          const archived = (await currentIdentity(agentId)).status === 'archived';
-          const count = await assignmentCount(agentId);
-          // Core invariant: never an archived Agent that still owns a reference.
-          expect(archived ? count === 0 : count === 1).toBe(true);
-        } finally {
-          await Promise.all([a.pool.end(), b.pool.end()]);
-        }
+    /**
+     * Barrier-driven proof that repository reference writers share the archive lock.
+     *
+     * An archiver holds the SAME per-Agent reference lock (the production
+     * `acquirePlatformAgentReferenceLock`) inside an open transaction that has already flipped
+     * the row to 'archived', then a real repository write is launched on a separate connection.
+     *
+     * Structural assertion (`writerBlocked`): the writer must still be pending while the archiver
+     * holds the lock. Pre-fix, the write took no shared lock and the FK KEY SHARE lock does not
+     * conflict with the archiver's NO KEY UPDATE, so it would have committed a reference against
+     * the doomed Agent immediately — settling before release and leaving an orphan. Post-fix it
+     * blocks on the advisory lock, wakes after commit, re-reads status='archived', and rejects.
+     */
+    const archiveHolderBarrier = async (
+      agentId: string,
+      writer: (repo: PlatformAgentCatalogRepository) => Promise<unknown>,
+    ) => {
+      const archiverPool = new Pool({ connectionString, max: 1 });
+      const writerPool = new Pool({ connectionString, max: 1 });
+      const archiverDb = drizzle(archiverPool, { schema }) as unknown as LobeChatDatabase;
+      const writerRepo = new PlatformAgentCatalogRepository(
+        drizzle(writerPool, { schema }) as unknown as LobeChatDatabase,
+      );
+      const holding = deferred();
+      const release = deferred();
+      try {
+        const archiverTx = archiverDb.transaction(async (tx) => {
+          await acquirePlatformAgentReferenceLock(tx, agentId);
+          await tx
+            .update(platformAgents)
+            .set({ isDefault: false, status: 'archived', systemKey: null })
+            .where(eq(platformAgents.id, agentId));
+          holding.resolve();
+          await release.promise;
+        });
+        await holding.promise;
+
+        let writerBlocked = true;
+        const writerResult = writer(writerRepo).then((value) => {
+          writerBlocked = false;
+          return value;
+        });
+        await new Promise((settle) => setTimeout(settle, 300));
+        expect(writerBlocked).toBe(true); // still queued behind the archiver's shared lock
+
+        release.resolve();
+        await archiverTx;
+        const result = await writerResult;
+        return result;
+      } finally {
+        await Promise.all([archiverPool.end(), writerPool.end()]);
       }
-    }, 30_000);
+    };
+
+    it('repository materialization write waits on the shared lock, then rejects (archive-first)', async () => {
+      await seedPublishedAgent('bar-mat', 'bar-mat');
+      await db.insert(users).values({ id: 'bar-user' });
+      const result = await archiveHolderBarrier('bar-mat', (repo) =>
+        repo.upsertMaterialization({
+          platformAgentId: 'bar-mat',
+          platformAgentVersionChecksum: CHECKSUM,
+          platformAgentVersionId: 'bar-mat-v1',
+          userId: 'bar-user',
+        }),
+      );
+      expect(result).toBeUndefined();
+      expect(await materializationCount('bar-mat')).toBe(0);
+      expect((await currentIdentity('bar-mat')).status).toBe('archived');
+    }, 20_000);
+
+    it('repository assignment create waits on the shared lock, then rejects (archive-first)', async () => {
+      await seedPublishedAgent('bar-asg', 'bar-asg');
+      await db.insert(users).values({ id: 'bar-user' });
+      const result = await archiveHolderBarrier('bar-asg', (repo) =>
+        repo.createAssignment({
+          agentId: 'bar-asg',
+          enabled: true,
+          mode: 'optional',
+          pinnedVersionId: null,
+          targetId: 'bar-user',
+          targetType: 'user',
+          versionPolicy: 'latest_published',
+        }),
+      );
+      expect(result).toBeUndefined();
+      expect(await assignmentCount('bar-asg')).toBe(0);
+      expect((await currentIdentity('bar-asg')).status).toBe('archived');
+    }, 20_000);
+
+    it('reference committed first blocks the archiver, which then rejects resource-in-use', async () => {
+      await seedPublishedAgent('bar-first', 'bar-first');
+      await db.insert(users).values({ id: 'bar-user' });
+      const holderPool = new Pool({ connectionString, max: 1 });
+      const archiverPool = new Pool({ connectionString, max: 1 });
+      const archiverService = new PlatformAgentAdminService(
+        drizzle(archiverPool, { schema }) as unknown as LobeChatDatabase,
+      );
+      const holding = deferred();
+      const release = deferred();
+      try {
+        // Writer opens a tx, takes the shared lock, inserts a materialization, then holds.
+        const holderTx = (
+          drizzle(holderPool, { schema }) as unknown as LobeChatDatabase
+        ).transaction(async (tx) => {
+          await new PlatformAgentCatalogRepository(tx).upsertMaterialization({
+            platformAgentId: 'bar-first',
+            platformAgentVersionChecksum: CHECKSUM,
+            platformAgentVersionId: 'bar-first-v1',
+            userId: 'bar-user',
+          });
+          holding.resolve();
+          await release.promise;
+        });
+        await holding.promise;
+
+        let archiverBlocked = true;
+        const archiveResult = archiverService
+          .archive('admin', {
+            ...(await pointerFor('bar-first')),
+            reason: 'archive behind reference writer',
+            replacementAgentId: null,
+          })
+          .then(
+            () => ({ ok: true }) as const,
+            (error: unknown) => {
+              archiverBlocked = false;
+              return { error } as const;
+            },
+          );
+        await new Promise((settle) => setTimeout(settle, 300));
+        expect(archiverBlocked).toBe(true); // archiver queued behind the reference writer's lock
+
+        release.resolve();
+        await holderTx;
+        const outcome = await archiveResult;
+        expect('error' in outcome && outcome.error).toBeInstanceOf(PlatformAgentResourceInUseError);
+        expect(await materializationCount('bar-first')).toBe(1);
+        expect((await currentIdentity('bar-first')).status).toBe('published');
+      } finally {
+        await Promise.all([holderPool.end(), archiverPool.end()]);
+      }
+    }, 20_000);
   });
 
   // ADM-01: create joins the singleton lock; create / switch / archive / bootstrap never deadlock.
@@ -914,5 +1033,148 @@ run('PlatformAgentAdminService (PostgreSQL) — ADM-04 / ADM-05', () => {
         await Promise.all([creator.pool.end(), switcher.pool.end(), archiver.pool.end()]);
       }
     }, 30_000);
+  });
+
+  // ADM-03 finding: real foreign-key cause chains (not just unique / trigger) normalize + redact.
+  describe('foreign-key cause-chain normalization (real pg)', () => {
+    // Dig the raw pg diagnostics out of the wrapped Drizzle error's `.cause` chain, mirroring
+    // what the production normalizer walks — so we assert against the ACTUAL constraint name.
+    const pgFields = (error: unknown): { code?: string; constraint?: string } => {
+      let current = error as { cause?: unknown; code?: unknown; constraint?: unknown } | undefined;
+      for (let depth = 0; depth < 6 && current && typeof current === 'object'; depth++) {
+        if (typeof current.code === 'string') {
+          return { code: current.code, constraint: current.constraint as string | undefined };
+        }
+        current = current.cause as typeof current;
+      }
+      return {};
+    };
+
+    it('normalizes cross-agent pinned-version and materialization exact-version FK without leak', async () => {
+      await seedPublishedAgent('fk-a', 'fk-a'); // exact version fk-a-v1
+      await seedPublishedAgent('fk-b', 'fk-b'); // exact version fk-b-v1
+      await db.insert(users).values({ id: 'fk-user' });
+
+      // Pinned version belongs to a DIFFERENT Agent → composite same-agent FK (23503).
+      const pinnedFk = await rawErrorOf(() =>
+        db.insert(platformAgentAssignments).values({
+          agentId: 'fk-a',
+          enabled: true,
+          id: 'fk-assign',
+          mode: 'optional',
+          pinnedVersionId: 'fk-b-v1',
+          status: 'active',
+          targetId: '__global__',
+          targetType: 'global',
+          versionPolicy: 'pinned',
+        }),
+      );
+      expect(pgFields(pinnedFk).code).toBe('23503');
+      expect(pgFields(pinnedFk).constraint).toBe(
+        'platform_agent_assignments_pinned_version_same_agent_fk',
+      );
+      expect(translatePlatformAgentPgError(pinnedFk)).toBeInstanceOf(
+        PlatformAgentInvalidInputError,
+      );
+
+      // Materialization with a checksum that matches no exact version → exact-version FK (23503).
+      const matFk = await rawErrorOf(() =>
+        db.insert(platformUserAgentMaterializations).values({
+          platformAgentId: 'fk-a',
+          platformAgentVersionChecksum: 'c'.repeat(64),
+          platformAgentVersionId: 'fk-a-v1',
+          userId: 'fk-user',
+        }),
+      );
+      expect(pgFields(matFk).code).toBe('23503');
+      expect(pgFields(matFk).constraint).toBe(
+        'platform_user_agent_materializations_exact_version_fk',
+      );
+      expect(translatePlatformAgentPgError(matFk)).toBeInstanceOf(PlatformAgentInvalidInputError);
+
+      // Raw errors DO carry the constraint/target; the normalized error + public Router body must not.
+      for (const raw of [pinnedFk, matFk]) {
+        const mapped = translatePlatformAgentPgError(raw) as { code: string; message: string };
+        let body: unknown;
+        try {
+          mapAgentServiceError(mapped);
+        } catch (routerError) {
+          body = getEnterpriseErrorBody(routerError);
+        }
+        expect((body as { code?: string })?.code).toBe('PLATFORM_INVALID_INPUT');
+        const blob = JSON.stringify({ body, code: mapped.code, message: mapped.message });
+        expect(blob).not.toMatch(/23503|constraint|_fk|fk-a|fk-b|fk-user|__global__/);
+      }
+    });
+  });
+
+  // ADM-02 finding: archiving the current default with a bad replacement rolls back atomically.
+  describe('archive replacement failure rollback', () => {
+    it('leaves the default published and untouched when the replacement is not published', async () => {
+      await seedPublishedAgent('repl-current', 'repl-current');
+      await db
+        .update(platformAgents)
+        .set({ isDefault: true, systemKey: 'default-inbox' })
+        .where(eq(platformAgents.id, 'repl-current'));
+      await seedDraftAgent('repl-draft', 'repl-draft'); // never published
+
+      const before = await currentIdentity('repl-current');
+      const service = new PlatformAgentAdminService(db);
+      await expect(
+        service.archive('admin', {
+          ...(await pointerFor('repl-current')),
+          reason: 'archive default with unpublished replacement',
+          replacementAgentId: 'repl-draft',
+        }),
+      ).rejects.toBeInstanceOf(PlatformAgentDefaultRequiredError);
+
+      // Whole transaction rolled back: the archive CAS ran then the replacement check threw, so
+      // the current default reverts to published/default and the replacement never changed.
+      const current = await currentIdentity('repl-current');
+      expect(current.status).toBe('published');
+      expect(current.isDefault).toBe(true);
+      expect(current.revision).toBe(before.revision);
+      expect(current.draftSequence).toBe(before.draftSequence);
+      const draft = await currentIdentity('repl-draft');
+      expect(draft.status).toBe('draft');
+      expect(draft.isDefault).toBe(false);
+
+      // Only a stable, redacted failure audit — no target / replacement identifier.
+      const audits = await db
+        .select()
+        .from(platformAuditLogs)
+        .where(eq(platformAuditLogs.action, 'admin.agents.archive'));
+      expect(audits).toHaveLength(1);
+      expect(audits[0].result).toBe('failure');
+      expect(audits[0].afterDiff).toEqual({ error: 'default_required' });
+      expect(JSON.stringify(audits[0].afterDiff)).not.toMatch(/repl-draft|repl-current/);
+    });
+
+    it('promotes the replacement and archives the current default when the replacement is published', async () => {
+      await seedPublishedAgent('repl-cur2', 'repl-cur2');
+      await seedPublishedAgent('repl-next', 'repl-next');
+      await db
+        .update(platformAgents)
+        .set({ isDefault: true, systemKey: 'default-inbox' })
+        .where(eq(platformAgents.id, 'repl-cur2'));
+
+      const service = new PlatformAgentAdminService(db);
+      await service.archive('admin', {
+        ...(await pointerFor('repl-cur2')),
+        reason: 'archive default with published replacement',
+        replacementAgentId: 'repl-next',
+      });
+
+      expect((await currentIdentity('repl-cur2')).status).toBe('archived');
+      expect((await currentIdentity('repl-cur2')).isDefault).toBe(false);
+      const next = await currentIdentity('repl-next');
+      expect(next.isDefault).toBe(true);
+      expect(next.systemKey).toBe('default-inbox');
+      const [defaults] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(platformAgents)
+        .where(eq(platformAgents.isDefault, true));
+      expect(defaults.count).toBe(1);
+    });
   });
 });
