@@ -1,9 +1,19 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { DecryptedConnector } from '@/database/models/connector';
 import type { ConnectorCredentials } from '@/database/schemas';
 
-import { buildConnectorMcpParams, buildHttpAuthFromCredentials } from './sync';
+import {
+  buildConnectorMcpParams,
+  buildHttpAuthFromCredentials,
+  syncConnectorToolsById,
+} from './sync';
+
+const mocks = vi.hoisted(() => ({ assertRuntimeAllowed: vi.fn(async () => {}) }));
+
+vi.mock('@/server/enterprise/services/connectorCatalog/runtimeIntegration', () => ({
+  assertLegacyConnectorRuntimeAllowed: mocks.assertRuntimeAllowed,
+}));
 
 const httpConnector = (
   credentials: ConnectorCredentials | null,
@@ -21,6 +31,10 @@ const httpConnector = (
     name: 'My Connector',
     oidcConfig: null,
   }) as any;
+
+beforeEach(() => {
+  mocks.assertRuntimeAllowed.mockReset().mockResolvedValue(undefined);
+});
 
 describe('buildHttpAuthFromCredentials', () => {
   it('returns nothing for no credentials (no-auth)', () => {
@@ -100,10 +114,7 @@ describe('buildConnectorMcpParams', () => {
   it('merges metadata.customHeaders alongside bearer auth', () => {
     expect(
       buildConnectorMcpParams(
-        httpConnector(
-          { token: 'tok', type: 'bearer' },
-          { customHeaders: { 'X-Tenant': 't1' } },
-        ),
+        httpConnector({ token: 'tok', type: 'bearer' }, { customHeaders: { 'X-Tenant': 't1' } }),
       ),
     ).toEqual({
       auth: { token: 'tok', type: 'bearer' },
@@ -116,9 +127,7 @@ describe('buildConnectorMcpParams', () => {
 
   it('applies metadata.customHeaders with no auth credential', () => {
     expect(
-      buildConnectorMcpParams(
-        httpConnector(null, { customHeaders: { 'X-Api-Key': 'abc' } }),
-      ),
+      buildConnectorMcpParams(httpConnector(null, { customHeaders: { 'X-Api-Key': 'abc' } })),
     ).toEqual({
       auth: undefined,
       headers: { 'X-Api-Key': 'abc' },
@@ -173,4 +182,25 @@ describe('buildConnectorMcpParams', () => {
       type: 'stdio',
     });
   });
+});
+
+describe('syncConnectorToolsById managed transport guard', () => {
+  it.each(['http', 'stdio'] as const)(
+    'blocks legacy %s discovery before reading credentials or starting MCP',
+    async () => {
+      mocks.assertRuntimeAllowed.mockRejectedValueOnce(new Error('PLATFORM_CONNECTOR_TOOL_DENIED'));
+      const connectorModel = { findById: vi.fn() };
+      const connectorToolModel = { upsertMany: vi.fn() };
+
+      await expect(
+        syncConnectorToolsById('connector-1', {
+          connectorModel,
+          connectorToolModel,
+        } as any),
+      ).rejects.toThrow('PLATFORM_CONNECTOR_TOOL_DENIED');
+
+      expect(connectorModel.findById).not.toHaveBeenCalled();
+      expect(connectorToolModel.upsertMany).not.toHaveBeenCalled();
+    },
+  );
 });
