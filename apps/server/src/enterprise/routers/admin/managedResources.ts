@@ -20,7 +20,10 @@ import { withActiveUser } from '../../guards/activeUser';
 import { throwEnterpriseError } from '../../guards/enterpriseErrors';
 import { withPlatformPermission } from '../../guards/platformPermission';
 import { assertRecentReauth } from '../../guards/reauth';
-import { publishConnectorRuntimeEffectiveState } from '../../services/connectorCatalog/runtimeEffectiveState';
+import {
+  publishConnectorRuntimeEffectiveState,
+  reserveConnectorRuntimeEffectiveStateEpoch,
+} from '../../services/connectorCatalog/runtimeEffectiveState';
 import { resolvePublishedManagedResourcePolicies } from '../../services/managedResourceCapabilities';
 import {
   ManagedResourceCatalogNotReadyError,
@@ -84,11 +87,15 @@ export const adminManagedResourcesRouter = router({
       });
       try {
         const flags = parseEnterpriseFeatureFlags(process.env);
+        const connectorStateEpoch = flags.ENABLE_PLATFORM_MANAGED_CONNECTORS
+          ? await reserveConnectorRuntimeEffectiveStateEpoch()
+          : 0;
         if (flags.ENABLE_PLATFORM_MANAGED_CONNECTORS) {
           // Close every direct MCP path before the policy pointer changes. If the
           // shared authority is unavailable, abort the publish instead of leaving
           // another instance on a stale legacy/enforced decision.
           await publishConnectorRuntimeEffectiveState({
+            epoch: connectorStateEpoch,
             mode: 'blocked',
             revision: input.expectedRevision,
           });
@@ -104,6 +111,7 @@ export const adminManagedResourcesRouter = router({
         const policy = managed.published.connectors;
         if (flags.ENABLE_PLATFORM_MANAGED_CONNECTORS) {
           await publishConnectorRuntimeEffectiveState({
+            epoch: connectorStateEpoch,
             mode:
               !policy.managed || policy.enforcementMode !== 'enforced'
                 ? 'legacy'

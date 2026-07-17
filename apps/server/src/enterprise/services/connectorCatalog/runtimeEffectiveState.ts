@@ -7,12 +7,24 @@ import type { ConnectorOAuthRuntimeEnv } from './oauthRuntime';
 export type ConnectorRuntimeEffectiveMode = 'blocked' | 'enforced' | 'legacy';
 
 export interface ConnectorRuntimeEffectiveState {
+  epoch: number;
   mode: ConnectorRuntimeEffectiveMode;
   revision: number;
 }
 
 const REDIS_KEY = 'platform:managed:connectors:effective:v1';
+const REDIS_EPOCH_KEY = 'platform:managed:connectors:effective:epoch:v1';
+const CAS_SCRIPT = `
+local current = redis.call('GET', KEYS[1])
+if current then
+  local decoded = cjson.decode(current)
+  if tonumber(decoded.epoch or 0) > tonumber(ARGV[1]) then return 0 end
+end
+redis.call('SET', KEYS[1], ARGV[2])
+return 1
+`;
 let localState: ConnectorRuntimeEffectiveState | null = null;
+let localEpoch = 0;
 
 const parseState = (value: string | null): ConnectorRuntimeEffectiveState | null => {
   if (!value) return null;
@@ -20,13 +32,31 @@ const parseState = (value: string | null): ConnectorRuntimeEffectiveState | null
     const parsed = JSON.parse(value) as Partial<ConnectorRuntimeEffectiveState>;
     return parsed &&
       ['blocked', 'enforced', 'legacy'].includes(parsed.mode ?? '') &&
+      Number.isSafeInteger(parsed.epoch) &&
+      (parsed.epoch ?? -1) >= 0 &&
       Number.isSafeInteger(parsed.revision) &&
       (parsed.revision ?? -1) >= 0
-      ? { mode: parsed.mode!, revision: parsed.revision! }
+      ? { epoch: parsed.epoch!, mode: parsed.mode!, revision: parsed.revision! }
       : null;
   } catch {
     return null;
   }
+};
+
+/** Reserve authority order before reading DB policy/readiness, not after. */
+export const reserveConnectorRuntimeEffectiveStateEpoch = async (): Promise<number> => {
+  const config = getRedisConfig();
+  if (!config.enabled) {
+    localEpoch += 1;
+    return localEpoch;
+  }
+  const redis = await initializeRedis(config);
+  if (!redis) throw new Error('Connector runtime effective-state Redis is unavailable');
+  const epoch = Number(await redis.incr(REDIS_EPOCH_KEY));
+  if (!Number.isSafeInteger(epoch) || epoch < 1) {
+    throw new Error('Connector runtime effective-state epoch is invalid');
+  }
+  return epoch;
 };
 
 /**
@@ -43,8 +73,10 @@ export const publishConnectorRuntimeEffectiveState = async (
   }
   const redis = await initializeRedis(config);
   if (!redis) throw new Error('Connector runtime effective-state Redis is unavailable');
-  await redis.set(REDIS_KEY, JSON.stringify(state));
-  localState = { ...state };
+  const applied = Number(
+    await redis.eval(CAS_SCRIPT, 1, REDIS_KEY, String(state.epoch), JSON.stringify(state)),
+  );
+  if (applied === 1) localState = { ...state };
 };
 
 /** Feature-off is exact legacy. Feature-on without trusted state is fail-closed. */
@@ -52,7 +84,7 @@ export const getConnectorRuntimeEffectiveState = async (
   env: ConnectorOAuthRuntimeEnv = process.env,
 ): Promise<ConnectorRuntimeEffectiveState> => {
   if (!parseEnterpriseFeatureFlags(env).ENABLE_PLATFORM_MANAGED_CONNECTORS) {
-    return { mode: 'legacy', revision: 0 };
+    return { epoch: 0, mode: 'legacy', revision: 0 };
   }
   try {
     const config = getRedisConfig();
@@ -63,18 +95,19 @@ export const getConnectorRuntimeEffectiveState = async (
         localState = shared;
         return { ...shared };
       }
-      return { mode: 'blocked', revision: 0 };
+      return { epoch: 0, mode: 'blocked', revision: 0 };
     }
   } catch (error) {
     console.error('[connector-runtime-state] shared state read failed', {
       errorClass: error instanceof Error ? error.name : 'UnknownError',
     });
-    return { mode: 'blocked', revision: 0 };
+    return { epoch: 0, mode: 'blocked', revision: 0 };
   }
   if (localState) return { ...localState };
-  return { mode: 'blocked', revision: 0 };
+  return { epoch: 0, mode: 'blocked', revision: 0 };
 };
 
 export const resetConnectorRuntimeEffectiveStateForTest = (): void => {
   localState = null;
+  localEpoch = 0;
 };
