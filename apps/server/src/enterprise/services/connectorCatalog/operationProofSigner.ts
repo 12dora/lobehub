@@ -14,6 +14,8 @@ import type { ConnectorOperationProof } from './operationSnapshot';
 
 export type ConnectorOwnedOperationProof = z.infer<typeof connectorOwnedOperationProofSchema>;
 export type ConnectorApprovalReceipt = z.infer<typeof connectorApprovalReceiptSchema>;
+export type ConnectorDependencySelection =
+  ConnectorApprovalReceipt['agentPolicy']['selections'][number];
 
 const canonical = (values: Array<number | string>): string => JSON.stringify(values);
 
@@ -35,9 +37,19 @@ const proofValues = (
   proof.userId,
 ];
 
+const normalizeSelections = (
+  selections: ConnectorDependencySelection[],
+): ConnectorDependencySelection[] =>
+  selections
+    .map((selection) => ({
+      ...selection,
+      allowedToolKeys: [...new Set(selection.allowedToolKeys)].sort(),
+    }))
+    .sort((left, right) => left.connectorKey.localeCompare(right.connectorKey));
+
 const receiptValues = (receipt: Omit<ConnectorApprovalReceipt, 'signature'>) => [
+  JSON.stringify(normalizeSelections(receipt.agentPolicy.selections)),
   receipt.agentPolicy.revision,
-  ...receipt.agentPolicy.connectorKeys,
   receipt.proof.signature,
   receipt.proof.operationId,
   receipt.proof.userId,
@@ -92,15 +104,15 @@ const equalMac = (left: string, right: string): boolean => {
 
 export const fingerprintConnectorAgentPolicy = (params: {
   agentId: string;
-  connectorKeys: string[];
   managedPolicyRevision: number;
+  selections: ConnectorDependencySelection[];
 }): string =>
   createHash('sha256')
     .update(
       canonical([
         params.agentId,
         params.managedPolicyRevision,
-        ...[...new Set(params.connectorKeys.map((key) => key.trim()).filter(Boolean))].sort(),
+        JSON.stringify(normalizeSelections(params.selections)),
       ]),
     )
     .digest('hex');

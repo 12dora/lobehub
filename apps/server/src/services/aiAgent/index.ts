@@ -2409,9 +2409,11 @@ export class AiAgentService {
       const managedConnectors = await buildManagedConnectorManifests({
         agentId: resolvedAgentId,
         approvedReceipt: trustedConnectorApprovalReceipt,
-        connectorKeys: agentPlugins,
+        connectorKeys:
+          selectedToolIds && selectedToolIds.length > 0 ? selectedToolIds : activePluginIds,
         db: this.db,
         operationId,
+        serverAllowedConnectorKeys: activePluginIds,
         userId: this.userId,
         workspaceId: this.workspaceId,
       });

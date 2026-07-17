@@ -1182,12 +1182,22 @@ export const connectorOwnedOperationProofSchema = connectorOperationProofSchema
   })
   .strict();
 
+export const connectorDependencySelectionSchema = z
+  .object({
+    allowedToolKeys: z.array(connectorToolKeySchema).max(1000),
+    connectorId: connectorIdSchema,
+    connectorKey: connectorKeySchema,
+    publishedChecksum: connectorSha256Schema,
+    publishedRevision: z.number().int().positive(),
+  })
+  .strict();
+
 export const connectorApprovalReceiptSchema = z
   .object({
     agentPolicy: z
       .object({
-        connectorKeys: z.array(connectorKeySchema).max(1000),
         revision: z.number().int().nonnegative(),
+        selections: z.array(connectorDependencySelectionSchema).max(1000),
       })
       .strict(),
     proof: connectorOwnedOperationProofSchema,
