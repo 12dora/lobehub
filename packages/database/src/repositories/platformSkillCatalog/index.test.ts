@@ -16,6 +16,18 @@ import { PlatformSkillCatalogRepository } from '.';
 
 const serverDB: LobeChatDatabase = await getTestDB();
 const repository = new PlatformSkillCatalogRepository(serverDB);
+const AGENT_DEPENDENCY_CHECKSUM = 'a'.repeat(64);
+const agentDependencySnapshot = {
+  connectors: [],
+  model: {
+    modelKey: 'test-model',
+    providerChecksum: AGENT_DEPENDENCY_CHECKSUM,
+    providerKey: 'test-provider',
+    providerRevision: 1,
+  },
+  skills: [{ checksum: AGENT_DEPENDENCY_CHECKSUM, skillKey: 'base', version: '1.0.0' }],
+};
+const legacyAgentConfig = { skills: [{ skillKey: 'base', version: '1.0.0' }] };
 
 const manifest = {
   description: 'Search internal sources',
@@ -44,6 +56,41 @@ const publishedPayload = (versionId: string, overrides: Record<string, unknown> 
   },
   versionId,
 });
+
+const createExactAgentVersion = async (agentId: string, version: string) => {
+  const [item] = await serverDB
+    .insert(platformAgentVersions)
+    .values({
+      agentId,
+      checksum: checksumPayload({
+        config: legacyAgentConfig,
+        dependencySnapshot: agentDependencySnapshot,
+      }),
+      config: legacyAgentConfig,
+      dependencySnapshot: agentDependencySnapshot,
+      version,
+    })
+    .returning();
+  return item;
+};
+
+const createPublishedAgentDependent = async (agentKey: string, version: string) => {
+  const [agent] = await serverDB
+    .insert(platformAgents)
+    .values({ agentKey, title: agentKey })
+    .returning();
+  const exactVersion = await createExactAgentVersion(agent.id, version);
+  await serverDB
+    .update(platformAgents)
+    .set({
+      currentVersion: version,
+      currentVersionId: exactVersion.id,
+      publishedAt: new Date(),
+      status: 'published',
+    })
+    .where(sql`${platformAgents.id} = ${agent.id}`);
+  return { agent, version: exactVersion };
+};
 
 const cleanup = async () => {
   await serverDB.execute(sql`
@@ -333,20 +380,7 @@ describe('PlatformSkillCatalogRepository', () => {
       enabled: true,
       status: 'published',
     });
-    const [agent] = await serverDB
-      .insert(platformAgents)
-      .values({
-        agentKey: 'helper',
-        currentVersion: '3.0.0',
-        status: 'published',
-        title: 'Helper',
-      })
-      .returning();
-    await serverDB.insert(platformAgentVersions).values({
-      agentId: agent.id,
-      config: { skills: [{ skillKey: 'base', version: '1.0.0' }] },
-      version: '3.0.0',
-    });
+    const { agent } = await createPublishedAgentDependent('helper', '3.0.0');
 
     expect(
       (await repository.getDependentsPage({ skillKey: 'base', version: '1.0.0' })).items,
@@ -365,14 +399,7 @@ describe('PlatformSkillCatalogRepository', () => {
       skillId: dependent.id,
       version: '2.1.0',
     });
-    const [unpublishedAgentVersion] = await serverDB
-      .insert(platformAgentVersions)
-      .values({
-        agentId: agent.id,
-        config: { skills: [{ skillKey: 'base', version: '1.0.0' }] },
-        version: '3.1.0',
-      })
-      .returning();
+    const unpublishedAgentVersion = await createExactAgentVersion(agent.id, '3.1.0');
     expect(
       (await repository.getDependentsPage({ skillKey: 'base', version: '1.0.0' })).items.map(
         (item) => item.id,
@@ -406,15 +433,7 @@ describe('PlatformSkillCatalogRepository', () => {
 
   it('cursor-paginates dependents after filtering in the database', async () => {
     for (const key of ['agent-a', 'agent-b', 'agent-c']) {
-      const [agent] = await serverDB
-        .insert(platformAgents)
-        .values({ agentKey: key, currentVersion: '1.0.0', status: 'published', title: key })
-        .returning();
-      await serverDB.insert(platformAgentVersions).values({
-        agentId: agent.id,
-        config: { skills: [{ skillKey: 'base', version: '1.0.0' }] },
-        version: '1.0.0',
-      });
+      await createPublishedAgentDependent(key, '1.0.0');
     }
     const first = await repository.getDependentsPage({ limit: 2, skillKey: 'base' });
     expect(first.items.map((item) => item.key)).toEqual(['agent-a', 'agent-b']);
