@@ -453,6 +453,7 @@ export class PlatformConnectorRuntimeAdapter {
       !binding ||
       binding.userId !== invocation.userId ||
       binding.connectorId !== connectorId ||
+      binding.publishedRevision === null ||
       binding.publishedRevision !== publishedRevision ||
       binding.status !== 'connected' ||
       binding.revokedAt ||
@@ -470,6 +471,9 @@ export class PlatformConnectorRuntimeAdapter {
     expected: PlatformUserConnectorBindingItem,
     allowedScopes: string[],
   ): Promise<PlatformUserConnectorBindingItem> => {
+    if (expected.publishedRevision === null) {
+      throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_BINDING_OWNERSHIP_MISMATCH');
+    }
     const current = await this.loadBinding(
       invocation,
       expected.connectorId,

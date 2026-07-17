@@ -66,17 +66,37 @@ export const platformConnectors = pgTable(
       .$defaultFn(() => idGenerator('platformConnectors', 16))
       .primaryKey()
       .notNull(),
-    connectorKey: varchar('connector_key', { length: 64 }).notNull(),
+    connectorKey: varchar('connector_key', { length: 128 }).notNull(),
+    /** @deprecated M01 compatibility shadow; new writes mirror displayName. */
+    legacyName: text('name').notNull(),
+    /** @deprecated M01 compatibility discriminator. */
+    legacySourceType: varchar('source_type', { length: 32 }).notNull().default('custom'),
+    /** @deprecated M01 compatibility transport discriminator. */
+    legacyConnectionType: varchar('connection_type', { length: 32 }).notNull().default('http'),
+    /** @deprecated M01 compatibility URL; new HTTP writes mirror endpoint. */
+    legacyMcpServerUrl: text('mcp_server_url'),
+    /** @deprecated M01 stdio configuration; never consumed by managed runtime. */
+    legacyMcpStdioConfig: jsonb('mcp_stdio_config'),
     displayName: varchar('display_name', { length: 200 }).notNull(),
     description: text('description'),
-    endpoint: text('endpoint').notNull(),
+    /** Nullable during expand: legacy stdio/incomplete rows have no safe HTTP endpoint. */
+    endpoint: text('endpoint'),
     transport: varchar('transport', { length: 16 })
       .$type<PlatformConnectorTransport>()
       .notNull()
       .default('http'),
-    credentialMode: varchar('credential_mode', { length: 32 })
+    credentialMode: varchar('credential_mode', { length: 64 })
       .$type<PlatformConnectorCredentialMode>()
-      .notNull(),
+      .notNull()
+      .default('per_user_oauth'),
+    /** @deprecated M01 OIDC payload; never copied into secret-free oauthConfig. */
+    legacyOidcConfig: jsonb('oidc_config'),
+    /** @deprecated M01 encrypted payload; retained only for compatibility reads. */
+    legacyEncryptedSharedCredentials: text('encrypted_shared_credentials'),
+    /** @deprecated M01 fingerprint paired with legacy encrypted credentials. */
+    legacySecretFingerprint: text('secret_fingerprint'),
+    /** @deprecated M01 distribution flag. */
+    legacyIsRequired: boolean('is_required').notNull().default(false),
     /** Secret-free OAuth metadata. Client secret lives behind oauthClientSecretRef. */
     oauthConfig: jsonb('oauth_config').$type<PlatformConnectorOAuthConfig>(),
     sharedSecretRef: text('shared_secret_ref'),
@@ -109,6 +129,8 @@ export const platformConnectors = pgTable(
   },
   (t) => [
     uniqueIndex('platform_connectors_connector_key_unique').on(t.connectorKey),
+    /** @deprecated M01 compatibility index; remove only in a later contract migration. */
+    index('platform_connectors_status_idx').on(t.status),
     index('platform_connectors_status_key_id_idx').on(t.status, t.connectorKey, t.id),
     index('platform_connectors_enabled_sort_id_idx').on(t.enabled, t.sort, t.id),
     foreignKey({
@@ -121,14 +143,17 @@ export const platformConnectors = pgTable(
       ],
       name: 'platform_connectors_published_revision_fk',
     }).onDelete('restrict'),
-    check('platform_connectors_transport_http_check', sql`${t.transport} = 'http'`),
+    check(
+      'platform_connectors_transport_http_check',
+      sql`${t.endpoint} IS NULL OR ${t.transport} = 'http'`,
+    ),
     check(
       'platform_connectors_credential_mode_check',
       sql`${t.credentialMode} IN ('none', 'shared_service_account', 'per_user_oauth')`,
     ),
     check(
       'platform_connectors_credential_slot_check',
-      sql`(
+      sql`${t.endpoint} IS NULL OR (
         (${t.credentialMode} = 'none'
           AND ${t.sharedSecretRef} IS NULL
           AND ${t.sharedSecretFingerprint} IS NULL
@@ -163,7 +188,7 @@ export const platformConnectors = pgTable(
     ),
     check(
       'platform_connectors_published_pointer_check',
-      sql`((
+      sql`${t.endpoint} IS NULL OR ((
         (${t.publishedRevision} IS NULL
           AND ${t.publishedChecksum} IS NULL
           AND ${t.publishedAt} IS NULL)
@@ -190,7 +215,8 @@ export const platformConnectors = pgTable(
     ),
     check(
       'platform_connectors_published_shared_secret_check',
-      sql`${t.status} <> 'published'
+      sql`${t.endpoint} IS NULL
+        OR ${t.status} <> 'published'
         OR ${t.credentialMode} <> 'shared_service_account'
         OR (${t.sharedSecretRef} IS NOT NULL
           AND ${t.sharedSecretFingerprint} IS NOT NULL
@@ -265,7 +291,17 @@ export const platformConnectorTools = pgTable(
     connectorId: text('connector_id')
       .notNull()
       .references(() => platformConnectors.id, { onDelete: 'restrict' }),
-    toolKey: varchar('tool_key', { length: 200 }).notNull(),
+    toolKey: varchar('tool_key', { length: 128 }).notNull(),
+    /** @deprecated M01 tool payload retained for one stable compatibility window. */
+    legacyManifest: jsonb('manifest').notNull().default({}),
+    /** @deprecated M01 permission policy shadow. */
+    legacyPermissionPolicy: varchar('permission_policy', { length: 32 })
+      .notNull()
+      .default('needs_approval'),
+    /** @deprecated M01 user-policy flag. */
+    legacyAllowUserStricterPolicy: boolean('allow_user_stricter_policy').notNull().default(true),
+    /** @deprecated M01 limit configuration. */
+    legacyLimitConfig: jsonb('limit_config'),
     displayName: varchar('display_name', { length: 200 }).notNull(),
     description: text('description'),
     inputSchema: jsonb('input_schema')
@@ -291,6 +327,8 @@ export const platformConnectorTools = pgTable(
     updatedAt: updatedAt(),
   },
   (t) => [
+    /** @deprecated M01 compatibility index; remove only in a later contract migration. */
+    index('platform_connector_tools_connector_id_idx').on(t.connectorId),
     uniqueIndex('platform_connector_tools_connector_id_tool_key_unique').on(
       t.connectorId,
       t.toolKey,
@@ -341,8 +379,17 @@ export const platformUserConnectorBindings = pgTable(
       .$type<'connector'>()
       .notNull()
       .default('connector'),
-    publishedRevision: integer('published_revision').notNull(),
-    status: varchar('status', { length: 32 })
+    /** Nullable during expand for bindings created before immutable connector revisions. */
+    publishedRevision: integer('published_revision'),
+    /** @deprecated M01 row lifecycle; managed OAuth uses bindingStatus. */
+    legacyStatus: varchar('status', { length: 32 }).notNull().default('active'),
+    /** @deprecated M01 authentication lifecycle. */
+    legacyAuthStatus: varchar('auth_status', { length: 32 }).notNull().default('disconnected'),
+    /** @deprecated M01 encrypted credentials; never populated by M09. */
+    legacyEncryptedCredentials: text('encrypted_credentials'),
+    /** @deprecated M01 free-form error; managed OAuth uses lastErrorCategory. */
+    legacyLastError: text('last_error'),
+    status: varchar('binding_status', { length: 32 })
       .$type<PlatformConnectorBindingStatus>()
       .notNull()
       .default('disconnected'),
@@ -370,6 +417,10 @@ export const platformUserConnectorBindings = pgTable(
       t.userId,
       t.connectorId,
     ),
+    /** @deprecated M01 compatibility indexes; retained during expand. */
+    index('platform_user_connector_bindings_user_id_idx').on(t.userId),
+    index('platform_user_connector_bindings_connector_id_idx').on(t.connectorId),
+    index('platform_user_connector_bindings_status_idx').on(t.legacyStatus),
     foreignKey({
       columns: [t.revisionResourceType, t.connectorId, t.publishedRevision],
       foreignColumns: [
@@ -388,9 +439,9 @@ export const platformUserConnectorBindings = pgTable(
     ),
     check(
       'platform_user_connector_bindings_revision_check',
-      sql`${t.publishedRevision} > 0
+      sql`${t.publishedRevision} IS NULL OR (${t.publishedRevision} > 0
         AND ${t.revision} >= 0
-        AND ${t.revisionResourceType} = 'connector'`,
+        AND ${t.revisionResourceType} = 'connector')`,
     ),
     check(
       'platform_user_connector_bindings_token_ref_check',
