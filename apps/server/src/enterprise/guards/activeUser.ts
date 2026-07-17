@@ -24,13 +24,26 @@ const resolveServerDb = (ctx: { serverDB?: LobeChatDatabase }): LobeChatDatabase
   return ctx.serverDB as LobeChatDatabase;
 };
 
+export interface WithActiveUserOptions {
+  /**
+   * Force active-user enforcement even when ENABLE_PLATFORM_ADMIN is off.
+   *
+   * Set for user-facing enterprise routers (e.g. platform.agents) whose surface
+   * can be enabled independently via ENABLE_PLATFORM_MANAGED_* flags — otherwise an
+   * inactive/banned/epoch-invalid principal could read Effective data when only the
+   * managed-agents flag is on. Defaults false to keep upstream-parity no-op for
+   * admin-only routers (which are unreachable while the admin flag is off).
+   */
+  enforceWhenAdminDisabled?: boolean;
+}
+
 /**
- * Reject effectively banned / auth-invalidated principals on admin procedure entry.
- * No-op when ENABLE_PLATFORM_ADMIN is off.
+ * Reject effectively banned / auth-invalidated principals on procedure entry.
+ * No-op when ENABLE_PLATFORM_ADMIN is off, unless `enforceWhenAdminDisabled` is set.
  */
-export const withActiveUser = () =>
+export const withActiveUser = (options: WithActiveUserOptions = {}) =>
   trpc.middleware(async ({ ctx, next }) => {
-    if (!isPlatformAdminFeatureEnabled()) {
+    if (!options.enforceWhenAdminDisabled && !isPlatformAdminFeatureEnabled()) {
       return next();
     }
 
