@@ -98,6 +98,7 @@ import { signOperationJwt, signUserJWT } from '@/libs/trpc/utils/internalJwt';
 import {
   type ConnectorApprovalReceipt,
   ConnectorOperationProofSigner,
+  fingerprintConnectorToolCall,
 } from '@/server/enterprise/services/connectorCatalog/operationProofSigner';
 import { buildManagedConnectorManifests } from '@/server/enterprise/services/connectorCatalog/runtimeIntegration';
 import {
@@ -1343,6 +1344,13 @@ export class AiAgentService {
             receipt.proof.userId !== this.userId ||
             receipt.proof.agentId !== resolvedAgentId ||
             receipt.proof.connectorKey !== resumeApprovalPlugin.identifier ||
+            receipt.toolCallFingerprint !==
+              fingerprintConnectorToolCall({
+                apiName: resumeApprovalPlugin.apiName ?? '',
+                arguments: resumeApprovalPlugin.arguments,
+                identifier: resumeApprovalPlugin.identifier ?? '',
+                type: resumeApprovalPlugin.type,
+              }) ||
             owner?.userId !== this.userId ||
             owner.agentId !== resolvedAgentId ||
             owner.status !== 'waiting_for_human'

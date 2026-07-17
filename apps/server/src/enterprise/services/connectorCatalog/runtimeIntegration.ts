@@ -21,6 +21,7 @@ import {
   ConnectorOperationProofSigner,
   type ConnectorOwnedOperationProof,
   fingerprintConnectorAgentPolicy,
+  fingerprintConnectorToolCall,
   toConnectorOperationProof,
 } from './operationProofSigner';
 import { ConnectorOperationSnapshotService } from './operationSnapshot';
@@ -67,13 +68,42 @@ const stableFailure = (code: string): ManagedConnectorExecutionResult => ({
   result: { content: code, error: { code, message: code }, success: false },
 });
 
+export const matchesConnectorApprovalReceipt = (params: {
+  apiName: string;
+  arguments: unknown;
+  identifier: string;
+  proof: ConnectorOwnedOperationProof;
+  receipt: ConnectorApprovalReceipt;
+  toolCallId: string;
+  toolType: string;
+}): boolean =>
+  params.receipt.toolCallId === params.toolCallId &&
+  params.receipt.toolCallFingerprint ===
+    fingerprintConnectorToolCall({
+      apiName: params.apiName,
+      arguments: params.arguments,
+      identifier: params.identifier,
+      type: params.toolType,
+    }) &&
+  params.receipt.proof.userId === params.proof.userId &&
+  params.receipt.proof.agentId === params.proof.agentId &&
+  params.receipt.proof.connectorId === params.proof.connectorId &&
+  params.receipt.proof.connectorKey === params.proof.connectorKey &&
+  params.receipt.proof.publishedRevision === params.proof.publishedRevision &&
+  params.receipt.proof.publishedChecksum === params.proof.publishedChecksum &&
+  params.receipt.proof.toolPolicyFingerprint === params.proof.toolPolicyFingerprint &&
+  params.receipt.proof.agentPolicyFingerprint === params.proof.agentPolicyFingerprint;
+
 export const createConnectorApprovalReceipt = (params: {
   agentId: string;
+  apiName: string;
+  arguments: unknown;
   env?: ConnectorOAuthRuntimeEnv;
   identifier: string;
   manifest: unknown;
   operationId: string;
   toolCallId: string;
+  type: string;
   userId: string;
 }): ConnectorApprovalReceipt | undefined => {
   const manifest = params.manifest as Partial<PlatformConnectorRuntimeManifest> | undefined;
@@ -95,6 +125,12 @@ export const createConnectorApprovalReceipt = (params: {
     proof,
     manifest.platformConnectorAgentPolicy,
     params.toolCallId,
+    fingerprintConnectorToolCall({
+      apiName: params.apiName,
+      arguments: params.arguments,
+      identifier: params.identifier,
+      type: params.type,
+    }),
   );
 };
 
@@ -200,7 +236,13 @@ export const buildManagedConnectorManifests = async (params: {
           agentPolicy: approvedReceipt.agentPolicy,
           connectorKey,
           permissionByTool,
-          proof: approvedReceipt.proof,
+          proof: signer.signProof({
+            agentId: params.agentId,
+            agentPolicyFingerprint: approvedReceipt.proof.agentPolicyFingerprint,
+            managedPolicyRevision: approvedReceipt.proof.managedPolicyRevision,
+            proof: { ...exact.proof, operationId: params.operationId },
+            userId: params.userId,
+          }),
           snapshot: exact,
         }),
       );
@@ -296,6 +338,7 @@ export const executeManagedConnectorTool = async (params: {
   manifest?: ToolManifest;
   operationId?: string;
   toolCallId?: string;
+  toolType?: string;
   userId?: string;
   workspaceId?: string;
 }): Promise<ManagedConnectorExecutionResult> => {
@@ -307,7 +350,13 @@ export const executeManagedConnectorTool = async (params: {
     if (mode === 'legacy') return { handled: false };
     if (mode === 'blocked') return stableFailure('PLATFORM_CONNECTOR_NOT_PUBLISHED');
 
-    if (!params.userId || !params.agentId || !params.operationId || !params.toolCallId) {
+    if (
+      !params.userId ||
+      !params.agentId ||
+      !params.operationId ||
+      !params.toolCallId ||
+      !params.toolType
+    ) {
       return stableFailure('PLATFORM_CONNECTOR_TOOL_DENIED');
     }
     const manifest = params.manifest as Partial<PlatformConnectorRuntimeManifest> | undefined;
@@ -330,20 +379,21 @@ export const executeManagedConnectorTool = async (params: {
       }) === proof.agentPolicyFingerprint;
     if (!agentPolicyAllowed) return stableFailure('PLATFORM_CONNECTOR_TOOL_DENIED');
 
-    let humanApproved = false;
     if (proof.operationId !== params.operationId) {
+      return stableFailure('PLATFORM_CONNECTOR_TOOL_DENIED');
+    }
+    let humanApproved = false;
+    if (params.approvalReceipt) {
       const receipt = signer.verifyApprovalReceipt(params.approvalReceipt);
-      humanApproved =
-        receipt.toolCallId === params.toolCallId &&
-        receipt.proof.signature === proof.signature &&
-        receipt.proof.operationId === proof.operationId &&
-        receipt.proof.userId === params.userId &&
-        receipt.proof.agentId === params.agentId;
-      if (!humanApproved) return stableFailure('PLATFORM_CONNECTOR_TOOL_DENIED');
-    } else if (params.approvalReceipt) {
-      const receipt = signer.verifyApprovalReceipt(params.approvalReceipt);
-      humanApproved =
-        receipt.toolCallId === params.toolCallId && receipt.proof.signature === proof.signature;
+      humanApproved = matchesConnectorApprovalReceipt({
+        apiName: params.apiName,
+        arguments: params.arguments,
+        identifier: params.identifier,
+        proof,
+        receipt,
+        toolCallId: params.toolCallId,
+        toolType: params.toolType,
+      });
     }
 
     const snapshots = getSnapshots(params.db);

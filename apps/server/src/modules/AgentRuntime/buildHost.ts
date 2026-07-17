@@ -45,7 +45,14 @@ export const buildHost = (ctx: RuntimeExecutorContext): AgentRuntimeHost => ({
     messages: new ServerMessageTransport(ctx.messageModel, {
       createToolPluginState: async (params) => {
         const plugin = params.plugin;
-        if (!plugin?.identifier || !params.tool_call_id || !ctx.userId) return;
+        if (
+          !plugin?.identifier ||
+          !plugin.apiName ||
+          !plugin.type ||
+          !params.tool_call_id ||
+          !ctx.userId
+        )
+          return;
         const state = await ctx.loadAgentState?.(ctx.operationId);
         const manifest =
           state?.operationToolSet?.manifestMap?.[plugin.identifier] ??
@@ -54,10 +61,13 @@ export const buildHost = (ctx: RuntimeExecutorContext): AgentRuntimeHost => ({
         if (!agentId) return;
         const receipt = createConnectorApprovalReceipt({
           agentId,
+          apiName: plugin.apiName,
+          arguments: plugin.arguments,
           identifier: plugin.identifier,
           manifest,
           operationId: ctx.operationId,
           toolCallId: params.tool_call_id,
+          type: plugin.type,
           userId: ctx.userId,
         });
         return receipt ? { platformConnectorApprovalReceipt: receipt } : undefined;

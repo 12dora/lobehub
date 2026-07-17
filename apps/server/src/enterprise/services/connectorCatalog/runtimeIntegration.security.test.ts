@@ -8,6 +8,7 @@ import type * as RuntimeEffectiveStateModule from './runtimeEffectiveState';
 import {
   buildManagedConnectorManifests,
   createConnectorApprovalReceipt,
+  matchesConnectorApprovalReceipt,
 } from './runtimeIntegration';
 
 const mocks = vi.hoisted(() => ({
@@ -127,11 +128,14 @@ describe('managed Connector operation integration security', () => {
     const manifest = first.manifests[0]!;
     const receipt = createConnectorApprovalReceipt({
       agentId: 'agent-1',
+      apiName: 'search',
+      arguments: '{"query":"docs"}',
       env,
       identifier: 'catalog',
       manifest,
       operationId: 'operation-v1',
       toolCallId: 'tool-call-1',
+      type: 'mcp',
       userId: 'user-1',
     })!;
     mocks.currentRevision = 2;
@@ -147,10 +151,33 @@ describe('managed Connector operation integration security', () => {
     });
 
     expect(resumed.manifests[0]?.platformConnectorProof).toMatchObject({
-      operationId: 'operation-v1',
+      operationId: 'operation-resume',
       publishedRevision: 1,
     });
     expect(resumed.manifests[0]?.meta.title).toBe('Catalog v1');
+    const resumedProof = resumed.manifests[0]!.platformConnectorProof!;
+    expect(
+      matchesConnectorApprovalReceipt({
+        apiName: 'search',
+        arguments: { query: 'docs' },
+        identifier: 'catalog',
+        proof: resumedProof,
+        receipt,
+        toolCallId: 'tool-call-1',
+        toolType: 'mcp',
+      }),
+    ).toBe(true);
+    expect(
+      matchesConnectorApprovalReceipt({
+        apiName: 'search',
+        arguments: { query: 'next' },
+        identifier: 'catalog',
+        proof: resumedProof,
+        receipt,
+        toolCallId: 'tool-call-2',
+        toolType: 'mcp',
+      }),
+    ).toBe(false);
   });
 
   it('does not restore an approved connector after the agent policy removes its key', async () => {
@@ -164,11 +191,14 @@ describe('managed Connector operation integration security', () => {
     });
     const receipt = createConnectorApprovalReceipt({
       agentId: 'agent-1',
+      apiName: 'search',
+      arguments: '{"query":"docs"}',
       env,
       identifier: 'catalog',
       manifest: first.manifests[0],
       operationId: 'operation-v1',
       toolCallId: 'tool-call-1',
+      type: 'mcp',
       userId: 'user-1',
     })!;
 

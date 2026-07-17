@@ -44,8 +44,45 @@ const receiptValues = (receipt: Omit<ConnectorApprovalReceipt, 'signature'>) => 
   receipt.proof.agentId,
   receipt.proof.connectorId,
   receipt.proof.connectorKey,
+  receipt.toolCallFingerprint,
   receipt.toolCallId,
 ];
+
+const canonicalize = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, child]) => [key, canonicalize(child)]),
+  );
+};
+
+const normalizeToolArguments = (value: unknown): unknown => {
+  if (typeof value !== 'string') return canonicalize(value);
+  try {
+    return canonicalize(JSON.parse(value));
+  } catch {
+    return value;
+  }
+};
+
+export const fingerprintConnectorToolCall = (params: {
+  apiName: string;
+  arguments: unknown;
+  identifier: string;
+  type: string;
+}): string =>
+  createHash('sha256')
+    .update(
+      JSON.stringify([
+        params.type,
+        params.identifier,
+        params.apiName,
+        normalizeToolArguments(params.arguments),
+      ]),
+    )
+    .digest('hex');
 
 const equalMac = (left: string, right: string): boolean => {
   const a = Buffer.from(left, 'hex');
@@ -113,9 +150,10 @@ export class ConnectorOperationProofSigner {
     proof: ConnectorOwnedOperationProof,
     agentPolicy: ConnectorApprovalReceipt['agentPolicy'],
     toolCallId: string,
+    toolCallFingerprint: string,
   ): ConnectorApprovalReceipt => {
     const verified = this.verifyProof(proof);
-    const unsigned = { agentPolicy, proof: verified, toolCallId };
+    const unsigned = { agentPolicy, proof: verified, toolCallFingerprint, toolCallId };
     return connectorApprovalReceiptSchema.parse({
       ...unsigned,
       signature: mac(this.key, receiptValues(unsigned)),
