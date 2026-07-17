@@ -513,7 +513,8 @@ export class PlatformSkillCatalogRepository {
           or(
             and(
               eq(platformAgents.status, 'published'),
-              eq(platformAgents.currentVersion, platformAgentVersions.version),
+              eq(platformAgents.migrationRequired, false),
+              eq(platformAgents.currentVersionId, platformAgentVersions.id),
             ),
             sql`EXISTS (
               SELECT 1 FROM ${platformResourceRevisions} agent_revision
@@ -526,7 +527,7 @@ export class PlatformSkillCatalogRepository {
           agentCursorCondition,
           sql`EXISTS (
             SELECT 1
-            FROM jsonb_array_elements(${platformAgentVersions.config}->'skills') dependency
+            FROM jsonb_array_elements(${platformAgentVersions.dependencySnapshot}->'skills') dependency
             WHERE dependency->>'skillKey' = ${params.skillKey} AND ${versionCondition}
           )`,
         ),
