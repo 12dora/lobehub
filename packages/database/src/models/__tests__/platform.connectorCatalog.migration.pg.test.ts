@@ -12,6 +12,10 @@ const migrationPath = path.join(
   __dirname,
   '../../../migrations/0123_m09_connector_catalog_expand.sql',
 );
+const attemptMigrationPath = path.join(
+  __dirname,
+  '../../../migrations/0124_m09_oauth_attempt_outcome.sql',
+);
 
 const connectorColumns = [
   'display_name',
@@ -237,4 +241,43 @@ describe.skipIf(!runPostgresMigration)('M09 PostgreSQL migration from the M01 sh
       await pool.end();
     }
   }, 20_000);
+
+  it('applies the OAuth attempt outcome follow-up twice without destructive DDL', async () => {
+    await getTestDB();
+    const connectionString = process.env.DATABASE_TEST_URL;
+    if (!connectionString) throw new Error('DATABASE_TEST_URL is required');
+    const pool = new Pool({ connectionString, max: 1 });
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const migration = await readFile(attemptMigrationPath, 'utf8');
+      for (let pass = 0; pass < 2; pass += 1) {
+        for (const statement of migration.split('--> statement-breakpoint')) {
+          if (statement.trim()) await client.query(statement);
+        }
+      }
+      const columns = await client.query<{ column_name: string }>(`
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_name = 'platform_connector_oauth_states'
+          AND column_name IN ('authorization_outcome', 'finished_at')
+        ORDER BY column_name
+      `);
+      expect(columns.rows).toEqual([
+        { column_name: 'authorization_outcome' },
+        { column_name: 'finished_at' },
+      ]);
+      const constraint = await client.query<{ convalidated: boolean }>(`
+        SELECT convalidated
+        FROM pg_constraint
+        WHERE conname = 'platform_connector_oauth_states_outcome_check'
+          AND conrelid = 'platform_connector_oauth_states'::regclass
+      `);
+      expect(constraint.rows).toEqual([{ convalidated: true }]);
+    } finally {
+      await client.query('ROLLBACK');
+      client.release();
+      await pool.end();
+    }
+  });
 });

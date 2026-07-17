@@ -71,7 +71,9 @@ export const userConnectorsRouter = router({
     .input(userConnectorGetAuthorizationStatusInputSchema)
     .output(userConnectorGetAuthorizationStatusOutputSchema)
     .query(async ({ ctx, input }) => {
-      if (!featureEnabled()) return { binding: null };
+      if (!featureEnabled()) {
+        return { attemptId: input.attemptId, binding: null, status: 'invalid' as const };
+      }
       return execute(() => ctx.getUserConnectorOAuthService().getAuthorizationStatus(input));
     }),
 
