@@ -136,7 +136,7 @@
   },
   "lint-staged": {
     "*.md": [
-      "remark --silent --output --",
+      "remark --silently-ignore --silent --output --",
       "prettier --write --no-error-on-unmatched-pattern"
     ],
     "*.mdx": [

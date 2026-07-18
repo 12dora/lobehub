@@ -51,9 +51,14 @@ describe('pipelineFor', () => {
   });
 
   it('maps md to remark+prettier and json to prettier only', () => {
-    expect(pipelineFor(lobehubPipelines, 'AGENTS.md')?.tools.map(([tool]) => tool)).toEqual([
+    const markdownPipeline = pipelineFor(lobehubPipelines, 'AGENTS.md');
+    expect(markdownPipeline?.tools.map(([tool]) => tool)).toEqual(['remark', 'prettier']);
+    expect(markdownPipeline?.tools[0]).toEqual([
       'remark',
-      'prettier',
+      '--silently-ignore',
+      '--silent',
+      '--output',
+      '--',
     ]);
     expect(pipelineFor(lobehubPipelines, 'package.json')?.tools.map(([tool]) => tool)).toEqual([
       'prettier',
@@ -96,6 +101,16 @@ describe('lobehubPipelines drift', () => {
         ).toEqual(expected);
       }
     }
+  });
+
+  it('keeps ignored Markdown files non-fatal in both lint entry points', async () => {
+    const pkg = JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8')) as {
+      'lint-staged': Record<string, string[]>;
+    };
+    const markdownRemarkCommand = pkg['lint-staged']['*.md'][0];
+
+    expect(markdownRemarkCommand?.split(' ')).toContain('--silently-ignore');
+    expect(pipelineFor(lobehubPipelines, 'AGENTS.md')?.tools[0]).toContain('--silently-ignore');
   });
 });
 
