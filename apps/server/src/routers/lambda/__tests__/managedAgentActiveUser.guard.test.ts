@@ -28,7 +28,14 @@ vi.mock('@/database/core/db-adaptor', () => ({ getServerDB: vi.fn(async () => db
 // access. The guard's active-user determination still runs against real banned / epoch DB rows.
 const { mergeAvailableAgents, mergeSidebarList, mergeSearchResults, listCtor } = vi.hoisted(() => ({
   listCtor: vi.fn(),
-  mergeAvailableAgents: vi.fn(async () => [] as unknown[]),
+  mergeAvailableAgents: vi.fn(
+    async (
+      _userId?: string,
+      _params?: unknown,
+      _loadManaged?: unknown,
+      _loadLegacy?: () => Promise<unknown[]>,
+    ) => [] as unknown[],
+  ),
   mergeSearchResults: vi.fn(async () => [] as unknown[]),
   mergeSidebarList: vi.fn(async (_userId: string, base: unknown) => base),
 }));
@@ -234,14 +241,10 @@ describe('REWORK-3 — flag OFF preserves legacy behavior (no new restriction)',
   });
 
   it('agent.queryAgents still serves a banned caller (guard is a no-op)', async () => {
-    mergeAvailableAgents.mockImplementationOnce(
-      async (
-        _userId: string,
-        _params: unknown,
-        _loadManaged: unknown,
-        loadLegacy: () => Promise<unknown[]>,
-      ) => loadLegacy(),
-    );
+    mergeAvailableAgents.mockImplementationOnce(async (...args: unknown[]) => {
+      const loadLegacy = args[3] as () => Promise<unknown[]>;
+      return loadLegacy();
+    });
     const caller = createCallerFactory(agentRouter)(await ctx(IDS.banned));
     const input = { keyword: 'exact-input', limit: 10, offset: 3 };
     await caller.queryAgents(input);
