@@ -58,6 +58,7 @@ describe('ProtocolManager', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    delete process.env.DESKTOP_DISABLE_PROTOCOL_REGISTRATION;
 
     // Reset electron app mock
     mockApp.isDefaultProtocolClient.mockReturnValue(true);
@@ -117,6 +118,15 @@ describe('ProtocolManager', () => {
 
       expect(app.on).toHaveBeenCalledWith('open-url', expect.any(Function));
       expect(app.on).toHaveBeenCalledWith('second-instance', expect.any(Function));
+    });
+
+    it('does not claim the LobeHub protocol for an isolated desktop build', () => {
+      process.env.DESKTOP_DISABLE_PROTOCOL_REGISTRATION = '1';
+
+      manager.initialize();
+
+      expect(app.setAsDefaultProtocolClient).not.toHaveBeenCalled();
+      expect(app.on).not.toHaveBeenCalled();
     });
   });
 

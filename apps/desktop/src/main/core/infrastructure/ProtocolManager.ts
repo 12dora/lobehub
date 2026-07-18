@@ -30,6 +30,11 @@ export class ProtocolManager {
   public initialize(): void {
     logger.debug('Setting up protocol handlers');
 
+    if (process.env.DESKTOP_DISABLE_PROTOCOL_REGISTRATION === '1') {
+      logger.info('Custom protocol registration is disabled for this desktop build');
+      return;
+    }
+
     this.registerProtocolHandlers();
     this.setupEventListeners();
 
