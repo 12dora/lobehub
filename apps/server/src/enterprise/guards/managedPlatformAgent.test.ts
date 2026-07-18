@@ -22,6 +22,7 @@ import { PlatformDefaultInboxService } from '@/server/enterprise/services/agentC
 import {
   assertAgentNotPlatformManaged,
   assertAgentsNotPlatformManaged,
+  MAX_MANAGED_AGENT_GUARD_IDS,
   pickAgentId,
   pickAgentIds,
   pickDocumentAgentIds,
@@ -162,8 +163,51 @@ describe('assertAgentsNotPlatformManaged (RR2-4 batch)', () => {
   it('is owner-scoped and flag-gated', async () => {
     vi.stubEnv('ENABLE_PLATFORM_MANAGED_AGENTS', '1');
     expect(await assertMany(['agt_materialized'], 'user-b')).toBeNull();
+    const countingDb = Object.create(db) as LobeChatDatabase;
+    countingDb.select = vi.fn(db.select.bind(db)) as never;
     vi.stubEnv('ENABLE_PLATFORM_MANAGED_AGENTS', '0');
-    expect(await assertMany(['agt_materialized'])).toBeNull();
+    await expect(
+      assertAgentsNotPlatformManaged({
+        agentIds: ['agt_materialized'],
+        db: countingDb,
+        userId: 'user-a',
+      }),
+    ).resolves.toBeUndefined();
+    expect(countingDb.select).not.toHaveBeenCalled();
+  });
+
+  it('deduplicates into exactly two owner-scoped batch queries', async () => {
+    vi.stubEnv('ENABLE_PLATFORM_MANAGED_AGENTS', '1');
+    const countingDb = Object.create(db) as LobeChatDatabase;
+    countingDb.select = vi.fn(db.select.bind(db)) as never;
+
+    await expect(
+      assertAgentsNotPlatformManaged({
+        agentIds: ['agt_ordinary', 'agt_ordinary'],
+        db: countingDb,
+        userId: 'user-a',
+      }),
+    ).resolves.toBeUndefined();
+    expect(countingDb.select).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects oversized batches before any query', async () => {
+    vi.stubEnv('ENABLE_PLATFORM_MANAGED_AGENTS', '1');
+    const countingDb = Object.create(db) as LobeChatDatabase;
+    countingDb.select = vi.fn(db.select.bind(db)) as never;
+    const ids = Array.from({ length: MAX_MANAGED_AGENT_GUARD_IDS + 1 }, (_, i) => `agt_${i}`);
+
+    const error = await assertAgentsNotPlatformManaged({
+      agentIds: ids,
+      db: countingDb,
+      userId: 'user-a',
+    }).then(
+      () => null,
+      (e) => e,
+    );
+    expect(error).toBeInstanceOf(TRPCError);
+    expect((error as TRPCError).code).toBe('BAD_REQUEST');
+    expect(countingDb.select).not.toHaveBeenCalled();
   });
 });
 

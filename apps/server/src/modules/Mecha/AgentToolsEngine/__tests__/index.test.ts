@@ -9,7 +9,7 @@ import { RemoteDeviceManifest } from '@lobechat/builtin-tool-remote-device';
 import { SkillsApiName, SkillsManifest } from '@lobechat/builtin-tool-skills';
 import { WebBrowsingManifest } from '@lobechat/builtin-tool-web-browsing';
 import { builtinTools } from '@lobechat/builtin-tools';
-import { ToolsEngine } from '@lobechat/context-engine';
+import { type LobeToolManifest, ToolsEngine } from '@lobechat/context-engine';
 import { describe, expect, it } from 'vitest';
 
 import { createServerAgentToolsEngine, createServerToolsEngine } from '../index';
@@ -186,6 +186,36 @@ describe('createServerToolsEngine', () => {
 });
 
 describe('createServerAgentToolsEngine', () => {
+  it('uses only the server exact builtin and additional-manifest allowlist', () => {
+    const pinnedConnector = {
+      ...mockInstalledPlugins[0].manifest,
+      identifier: 'pinned-connector',
+    } as LobeToolManifest;
+    const engine = createServerAgentToolsEngine(createMockContext(), {
+      additionalManifests: [pinnedConnector],
+      agentConfig: { plugins: ['pinned-connector'] },
+      exactBuiltinToolIds: [SkillsManifest.identifier],
+      model: 'gpt-4',
+      provider: 'openai',
+    });
+
+    const result = engine.generateToolsDetailed({
+      context: { isExplicitActivation: true },
+      model: 'gpt-4',
+      provider: 'openai',
+      toolIds: [
+        'test-plugin',
+        WebBrowsingManifest.identifier,
+        SkillsManifest.identifier,
+        'pinned-connector',
+      ],
+    });
+    expect(result.enabledToolIds).toContain(SkillsManifest.identifier);
+    expect(result.enabledToolIds).toContain('pinned-connector');
+    expect(result.enabledToolIds).not.toContain('test-plugin');
+    expect(result.enabledToolIds).not.toContain(WebBrowsingManifest.identifier);
+  });
+
   it('should return a ToolsEngine instance', () => {
     const context = createMockContext();
     const engine = createServerAgentToolsEngine(context, {

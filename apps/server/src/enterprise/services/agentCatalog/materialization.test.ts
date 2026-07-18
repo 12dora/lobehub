@@ -21,7 +21,6 @@ const config = (displayName: string): PlatformAgentOperationSnapshot['config'] =
   modelParameters: { maxTokens: 4096, temperature: 0.4, topP: 0.9 },
   openingMessage: 'hi',
   openingQuestions: ['q1'],
-  plugins: ['managed-tool'],
   systemRole: 'Use approved sources.',
   tags: ['t1'],
 });
@@ -101,13 +100,10 @@ describe('PlatformAgentMaterializationService', () => {
       systemRole: 'Use approved sources.',
       title: 'Research Agent',
     });
-    expect(runtime.plugins).toEqual(['managed-tool']);
-    expect(runtime.platform).toMatchObject({
-      checksum: CHECKSUM,
+    expect(runtime.plugins).toEqual([]);
+    expect(runtime.platform).toEqual({
       managed: true,
-      platformAgentId: 'pagt_1',
       source: 'platform',
-      versionId: 'pav_1',
     });
     // camelCase managed params are lowered to the runtime snake_case shape.
     expect(runtime.params).toMatchObject({ max_tokens: 4096, temperature: 0.4, top_p: 0.9 });
@@ -130,7 +126,7 @@ describe('PlatformAgentMaterializationService', () => {
     expect(result.config.title).toBe('Research Agent');
   });
 
-  it('resolves and binds the exact snapshot onto the stable builtin inbox id without creating a row', async () => {
+  it('resolves the exact snapshot onto the stable builtin inbox id without creating a row or mapping', async () => {
     const materializeLocalAgent = vi.fn(async (input) => ({
       agentId: (await input.createLocalAgent()).id,
       created: true,
@@ -151,14 +147,16 @@ describe('PlatformAgentMaterializationService', () => {
     });
     expect(materializeLocalAgent).not.toHaveBeenCalled();
 
-    await service.bindExistingAgentForOperation(snapshot(), 'builtin-inbox-id');
-    expect(materializeLocalAgent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        platformAgentId: 'pagt_1',
-        platformAgentVersionId: 'pav_1',
-        userId: 'user-a',
-      }),
+    expect(materializeLocalAgent).not.toHaveBeenCalled();
+  });
+
+  it('keeps a null avatar as an authoritative managed clear', async () => {
+    const service = makeService({ getExactVersion: vi.fn(async () => exactVersion()) });
+    const resolved = await service.resolveForExistingAgent(
+      snapshot({ config: { ...config('Research Agent'), avatar: null } }),
+      'builtin-inbox-id',
     );
+    expect(resolved.config.avatar).toBeNull();
   });
 
   it('pins each operation to its OWN captured snapshot (v1 stays v1 after v2 exists)', async () => {

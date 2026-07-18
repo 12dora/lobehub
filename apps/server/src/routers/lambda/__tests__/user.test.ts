@@ -331,6 +331,31 @@ describe('userRouter', () => {
       expect(KeyVaultsGateKeeper.initWithEnvKey).not.toHaveBeenCalled();
     });
 
+    it.each(['patchSettingOverride', 'resetSettingOverride'] as const)(
+      'guards %s defaultAgent paths before any settings write',
+      async (procedure) => {
+        const failure = new Error('managed inbox');
+        vi.mocked(assertDefaultInboxNotPlatformManaged).mockRejectedValueOnce(failure);
+        const updateSetting = vi.fn();
+        const updateUser = vi.fn();
+        vi.mocked(UserModel).mockImplementation(() => ({ updateSetting, updateUser }) as any);
+        const caller = userRouter.createCaller({ ...mockCtx });
+
+        const mutation =
+          procedure === 'patchSettingOverride'
+            ? caller.patchSettingOverride({ path: 'defaultAgent.config.model', value: 'legacy' })
+            : caller.resetSettingOverride({ path: 'defaultAgent.config.model' });
+        await expect(mutation).rejects.toMatchObject({ message: failure.message });
+
+        expect(assertDefaultInboxNotPlatformManaged).toHaveBeenCalledWith({
+          db: serverDB,
+          userId: mockUserId,
+        });
+        expect(updateSetting).not.toHaveBeenCalled();
+        expect(updateUser).not.toHaveBeenCalled();
+      },
+    );
+
     it('should allow legacy system agent model-only fields', async () => {
       const updateSetting = vi.fn().mockResolvedValue({ rowCount: 1 });
 

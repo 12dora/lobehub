@@ -358,6 +358,93 @@ describe('RR2-6 — real platform Agent service chain', () => {
     expect(fromV2.agentId).toBe(fromV1.agentId);
   });
 
+  it('keeps the builtin inbox unmapped across default A→B while old operations replay A', async () => {
+    await seedPublishedAgent('default-a');
+    await seedPublishedAgent('default-b');
+    await db
+      .update(platformAgents)
+      .set({ isDefault: true, systemKey: 'default-inbox' })
+      .where(eq(platformAgents.id, 'default-a'));
+    await db.insert(agents).values({
+      id: 'builtin-inbox-id',
+      slug: 'inbox',
+      userId: 'user-a',
+      workspaceId: null,
+    });
+
+    const capturedA = await resolver().beginSystemOperation('user-a', 'default-inbox');
+    expect(capturedA?.platformAgentId).toBe('default-a');
+    const resolvedA = await materialization('user-a').resolveForExistingAgent(
+      capturedA!.getSnapshot(),
+      'builtin-inbox-id',
+    );
+    expect(resolvedA.config.title).toBe('default-a v1');
+
+    await db.insert(topics).values({ id: 'topic-default', userId: 'user-a' });
+    const opModel = new AgentOperationModel(db, 'user-a');
+    const platformOperation = {
+      checksum: capturedA!.getSnapshot().checksum,
+      platformAgentId: 'default-a',
+      versionId: capturedA!.getSnapshot().versionId,
+    };
+    await opModel.recordStart({
+      agentId: 'builtin-inbox-id',
+      metadata: {
+        assistantMessageId: 'asst-1',
+        platformConnectors: [],
+        platformModel: modelPin,
+        platformOperation,
+        platformSkills: [],
+      },
+      operationId: 'op-1',
+      topicId: 'topic-default',
+    });
+    await opModel.parkForHumanIntervention('op-1', {
+      anchors: [approvalAnchor],
+      completionReason: 'waiting_for_human',
+      expectedGeneration: 0,
+      expectedPlatformStart: {
+        assistantMessageId: 'asst-1',
+        platformConnectors: [],
+        platformModel: modelPin,
+        platformOperation,
+        platformSkills: [],
+      },
+      status: 'waiting_for_human',
+    });
+
+    await db
+      .update(platformAgents)
+      .set({ isDefault: false, systemKey: null })
+      .where(eq(platformAgents.id, 'default-a'));
+    await db
+      .update(platformAgents)
+      .set({ isDefault: true, systemKey: 'default-inbox' })
+      .where(eq(platformAgents.id, 'default-b'));
+
+    const capturedB = await resolver().beginSystemOperation('user-a', 'default-inbox');
+    expect(capturedB?.platformAgentId).toBe('default-b');
+    const historicalPin = await opModel.findResumablePlatformOperationPin({
+      anchorKind: 'approval',
+      anchorMessageId: approvalAnchor.messageId,
+      fingerprint: approvalAnchor.fingerprint,
+      threadId: null,
+      toolCallId: approvalAnchor.toolCallId,
+      topicId: 'topic-default',
+    });
+    expect(historicalPin?.platformAgentId).toBe('default-a');
+    const resumedA = await materialization('user-a').resolveFromPinForExistingAgent(
+      historicalPin!,
+      'builtin-inbox-id',
+    );
+    expect(resumedA.config.title).toBe('default-a v1');
+    expect(await mappingFor('user-a', 'default-a')).toEqual([]);
+    expect(await mappingFor('user-a', 'default-b')).toEqual([]);
+    expect(
+      await db.select({ id: agents.id, workspaceId: agents.workspaceId }).from(agents),
+    ).toEqual([{ id: 'builtin-inbox-id', workspaceId: null }]);
+  });
+
   it('runtime config comes from the pinned version even after the local Agent row is tampered', async () => {
     await seedPublishedAgent('pa');
     const materialized = await materialization('user-a').materializeForOperation(

@@ -46,7 +46,6 @@ const snapshot = (versionId: string, displayName = `Inbox ${versionId}`) =>
       modelParameters: { temperature: 0.2 },
       openingMessage: 'Managed welcome',
       openingQuestions: ['Managed question'],
-      plugins: ['managed-tool'],
       systemRole: `Managed prompt ${versionId}`,
       tags: ['managed'],
     },
@@ -55,6 +54,7 @@ const snapshot = (versionId: string, displayName = `Inbox ${versionId}`) =>
   }) satisfies PlatformAgentOperationSnapshot;
 
 const handle = (value: PlatformAgentOperationSnapshot): PlatformAgentOperationHandle => ({
+  distribution: 'mandatory',
   getSnapshot: () => value,
   platformAgentId: value.platformAgentId,
 });
@@ -83,15 +83,10 @@ const resolvedConfig = (value: PlatformAgentOperationSnapshot) => ({
   model: dependencySnapshot.model.modelKey,
   params: { temperature: value.config.modelParameters.temperature },
   platform: {
-    checksum: value.checksum,
-    dependencySnapshot,
     managed: true as const,
-    platformAgentId: value.platformAgentId,
     source: 'platform' as const,
-    systemKey: null,
-    versionId: value.versionId,
   },
-  plugins: value.config.plugins,
+  plugins: [],
   provider: dependencySnapshot.model.providerKey,
   slug: null,
   systemRole: value.config.systemRole,
@@ -158,11 +153,11 @@ describe('PlatformDefaultInboxService', () => {
       tags: ['managed'],
       title: 'Inbox v2',
     });
-    expect(result.plugins).toEqual(['managed-tool', 'managed-skill', 'managed-search']);
-    expect(result.platform).toMatchObject({
+    expect(result.plugins).toEqual([]);
+    expect(result.platform).toEqual({
+      distribution: 'mandatory',
       managed: true,
-      systemKey: PLATFORM_AGENT_DEFAULT_INBOX_SYSTEM_KEY,
-      versionId: 'v2',
+      source: 'platform',
     });
     expect(resolveForExistingAgent).toHaveBeenCalledWith(captured, 'builtin-inbox-id');
     expect(validateDependencies).toHaveBeenCalledWith(db, dependencySnapshot);
@@ -189,10 +184,30 @@ describe('PlatformDefaultInboxService', () => {
 
     const operationStartedOnV2 = await service.getEffectiveBuiltinConfig(base());
     const operationStartedAfterRollback = await service.getEffectiveBuiltinConfig(base());
-    expect(operationStartedOnV2.platform?.versionId).toBe('v2');
     expect(operationStartedOnV2.systemRole).toBe('Managed prompt v2');
-    expect(operationStartedAfterRollback.platform?.versionId).toBe('v1');
     expect(operationStartedAfterRollback.systemRole).toBe('Managed prompt v1');
+  });
+
+  it('treats managed avatar null as an authoritative clear', async () => {
+    const baseSnapshot = snapshot('v2');
+    const captured: PlatformAgentOperationSnapshot = {
+      ...baseSnapshot,
+      config: { ...baseSnapshot.config, avatar: null },
+    };
+    const service = new PlatformDefaultInboxService(db, 'user', {
+      flags: flagsOn,
+      materializationService: {
+        resolveForExistingAgent: vi.fn(async () => ({
+          agentId: 'builtin-inbox-id',
+          config: resolvedConfig(captured),
+          dependencySnapshot,
+        })),
+      },
+      resolver: { beginSystemOperation: vi.fn(async () => handle(captured)) },
+      validateDependencies: vi.fn(async () => ({ valid: true as const })),
+    });
+
+    expect((await service.getEffectiveBuiltinConfig(base())).avatar).toBeNull();
   });
 
   it('propagates resolver and exact dependency failures instead of treating errors as absence', async () => {
