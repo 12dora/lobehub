@@ -24,6 +24,12 @@ const createReleaseEnv = (overrides: Record<string, string> = {}) => ({
   ...overrides,
 });
 
+const encodedLobehubUrls = [
+  'https://lobe%68ub.com/',
+  'https://%6c%6f%62%65%68%75%62.com/',
+  'https://%4c%6F%62%45%68%55%62.com/',
+];
+
 describe('AIHub release preflight', () => {
   it('accepts an explicitly confirmed main-branch build with immutable assets', () => {
     expect(validateAihubReleaseInputs(createReleaseEnv())).toEqual({
@@ -64,6 +70,15 @@ describe('AIHub release preflight', () => {
       'must not expose the LobeHub brand',
     );
   });
+
+  it.each(encodedLobehubUrls)(
+    'rejects a percent-encoded upstream app URL after canonicalization: %s',
+    (appUrl) => {
+      expect(() => validateAihubReleaseInputs(createReleaseEnv({ AIHUB_APP_URL: appUrl }))).toThrow(
+        'must not expose the LobeHub brand',
+      );
+    },
+  );
 
   it.each([
     ['AIHUB_ASSET_REF', 'main', 'immutable 40-character commit SHA'],

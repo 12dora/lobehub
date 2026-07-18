@@ -21,6 +21,12 @@ const createAihubEnv = () => ({
   UPDATE_SERVER_URL: 'https://updates.example.com/releases/aihub',
 });
 
+const encodedLobehubUrls = [
+  'https://lobe%68ub.com/',
+  'https://%6c%6f%62%65%68%75%62.com/',
+  'https://%4c%6F%62%45%68%55%62.com/',
+];
+
 const createIcon = (format: 'icns' | 'ico' | 'png', size = 512) => {
   const buffer = Buffer.alloc(size);
 
@@ -92,6 +98,18 @@ describe('desktop branding config', () => {
     expect(() => resolveDesktopBranding({ env, fileExists: () => true })).toThrow(message);
   });
 
+  it.each(encodedLobehubUrls)(
+    'rejects a percent-encoded upstream homepage after URL canonicalization: %s',
+    (homepage) => {
+      expect(() =>
+        resolveDesktopBranding({
+          env: { ...createAihubEnv(), AIHUB_DESKTOP_HOMEPAGE: homepage },
+          fileExists: () => true,
+        }),
+      ).toThrow('must not expose the LobeHub brand');
+    },
+  );
+
   it('changes only approved user-visible package metadata fields', () => {
     const packageMetadata = {
       author: 'Upstream Author',
@@ -121,6 +139,12 @@ describe('desktop branding config', () => {
         packageMetadata,
       }),
     ).toThrow('must not expose the LobeHub brand');
+
+    for (const homepage of encodedLobehubUrls) {
+      expect(() => applyAihubPackageMetadata({ homepage, packageMetadata })).toThrow(
+        'must not expose the LobeHub brand',
+      );
+    }
   });
 
   it('fails closed when an approved icon is missing', () => {
