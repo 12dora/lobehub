@@ -406,14 +406,14 @@ export const DependencyEditor = ({
         </Text>
         {/* Referenced-connector validation state: an error or in-flight revalidation blocks save
             (readiness fails closed) and is surfaced here with a sanitized message + explicit retry. */}
-        {dependencies.connectors.length > 0 && connectorRefDetails.error ? (
+        {enabled && dependencies.connectors.length > 0 && connectorRefDetails.error ? (
           <Alert
             showIcon
             action={retry(connectorRefDetails.mutate)}
             message={t('agentCatalog.dependency.connector.validateError')}
             type="error"
           />
-        ) : dependencies.connectors.length > 0 && !connectorsSettled ? (
+        ) : enabled && dependencies.connectors.length > 0 && !connectorsSettled ? (
           <Text type="secondary">{t('agentCatalog.dependency.connector.validating')}</Text>
         ) : null}
         {connectors.error ? (

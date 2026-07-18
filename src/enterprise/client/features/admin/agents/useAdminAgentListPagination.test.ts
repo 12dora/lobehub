@@ -80,6 +80,20 @@ describe('useAdminAgentListPagination', () => {
     expect(result.current.boundaryData).toBeUndefined();
   });
 
+  it('returns to initial loading feedback while retrying a first-page error', () => {
+    infinite.impl.mockReturnValue({
+      data: undefined,
+      error: new Error('offline'),
+      isValidating: true,
+      mutate: vi.fn(),
+      setSize: vi.fn(),
+      size: 1,
+    });
+    const { result } = renderHook(() => useAdminAgentListPagination({}, true));
+    expect(result.current.isLoadingInitial).toBe(true);
+    expect(result.current.boundaryData).toBeUndefined();
+  });
+
   it('keeps settled content and flags loadMoreError when a later page fails', () => {
     infinite.impl.mockReturnValue({
       data: [{ items: [item('a')], nextCursor: 'p2' }],

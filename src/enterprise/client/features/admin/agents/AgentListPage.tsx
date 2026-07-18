@@ -1,6 +1,6 @@
 'use client';
 
-import { Flexbox, Input, Tag, Text } from '@lobehub/ui';
+import { Empty, Flexbox, Input, Tag, Text } from '@lobehub/ui';
 import { Button, Select } from '@lobehub/ui/base-ui';
 import type { TableColumnsType } from 'antd';
 import { createStaticStyles } from 'antd-style';
@@ -45,6 +45,7 @@ const AgentListPage = memo(() => {
     [searchParams, status],
   );
   const list = useAdminAgentListPagination(input, agentPermissions.canRead);
+  const filtered = Boolean(input.query || input.status);
   const columns = useMemo<TableColumnsType<AdminAgentListItem>>(
     () => [
       {
@@ -95,6 +96,15 @@ const AgentListPage = memo(() => {
     else next.delete(key);
     setSearchParams(next, { replace: true });
   };
+  const createAgent = () =>
+    openCreateAgentModal(async (id) => {
+      await refreshAdminAgentLists();
+      navigate(`/admin/agents/${encodeURIComponent(id)}`);
+    });
+  const clearFilters = () => {
+    setQueryDraft('');
+    setSearchParams({}, { replace: true });
+  };
 
   return (
     <AdminPageTemplate
@@ -102,15 +112,7 @@ const AgentListPage = memo(() => {
       title={t('agentCatalog.list.title')}
       actions={
         agentPermissions.canCreate ? (
-          <Button
-            type="primary"
-            onClick={() =>
-              openCreateAgentModal(async (id) => {
-                await refreshAdminAgentLists();
-                navigate(`/admin/agents/${encodeURIComponent(id)}`);
-              })
-            }
-          >
+          <Button type="primary" onClick={createAgent}>
             {t('agentCatalog.create.submit')}
           </Button>
         ) : null
@@ -148,11 +150,22 @@ const AgentListPage = memo(() => {
         isEmpty={list.isEmpty}
         isLoading={list.isLoadingInitial}
         loading={<Loading debugId="AdminAgentList" />}
-        empty={t(
-          searchParams.size
-            ? 'agentCatalog.list.empty.filtered'
-            : 'agentCatalog.list.empty.default',
-        )}
+        empty={
+          <Empty
+            action={
+              filtered ? (
+                <Button onClick={clearFilters}>{t('primitives.filterBar.clear')}</Button>
+              ) : agentPermissions.canCreate ? (
+                <Button type="primary" onClick={createAgent}>
+                  {t('agentCatalog.create.submit')}
+                </Button>
+              ) : undefined
+            }
+            description={t(
+              filtered ? 'agentCatalog.list.empty.filtered' : 'agentCatalog.list.empty.default',
+            )}
+          />
+        }
         onRetry={list.retry}
       >
         <Flexbox gap={12}>

@@ -192,6 +192,8 @@ export default {
   'agentCatalog.status.draft': 'Draft',
   'agentCatalog.status.published': 'Published',
   'agentCatalog.toast.archived': 'Agent archived.',
+  'agentCatalog.toast.actionFailed':
+    'The Agent action could not start. Check your connection and try again.',
   'agentCatalog.toast.created': 'Agent draft created.',
   'agentCatalog.toast.published': 'Agent version published.',
   'agentCatalog.toast.rolledBack': 'Agent version rolled back.',

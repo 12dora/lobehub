@@ -171,6 +171,7 @@
   "agentCatalog.status.archived": "已归档",
   "agentCatalog.status.draft": "草稿",
   "agentCatalog.status.published": "已发布",
+  "agentCatalog.toast.actionFailed": "无法开始助理操作。请检查网络连接后重试。",
   "agentCatalog.toast.archived": "助理已归档。",
   "agentCatalog.toast.created": "助理草稿已创建。",
   "agentCatalog.toast.published": "助理版本已发布。",

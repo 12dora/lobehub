@@ -31,6 +31,12 @@ vi.mock('@/components/NeuralNetworkLoading', () => ({
 vi.mock('@/components/AsyncError', () => ({ default: () => <div role="alert">error</div> }));
 vi.mock('@lobehub/ui', () => ({
   Center: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  Empty: ({ action, description }: { action?: ReactNode; description?: ReactNode }) => (
+    <div>
+      {description}
+      {action}
+    </div>
+  ),
   Flexbox: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   Input: (props: any) => <input {...props} />,
   Tag: ({ children }: { children?: ReactNode }) => <span>{children}</span>,

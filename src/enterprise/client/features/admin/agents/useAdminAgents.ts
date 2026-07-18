@@ -134,7 +134,10 @@ export const useAdminAgentListPagination = (
   const loadedPages = swr.data?.length ?? 0;
   const settled = swr.data !== undefined; // the first page has resolved at least once
   const isReachingEnd = loadedPages > 0 && (pages.at(-1)?.nextCursor ?? null) === null;
-  const isLoadingInitial = enabled && !settled && !swr.error;
+  // SWR keeps the previous error while a retry is in flight. Drive the first-load gate from the
+  // real request state so Retry returns to loading feedback instead of leaving a clickable stale
+  // error surface on screen.
+  const isLoadingInitial = enabled && !settled && swr.isValidating;
 
   return {
     // Undefined before the first settle so a real AsyncBoundary renders loading / first error.
