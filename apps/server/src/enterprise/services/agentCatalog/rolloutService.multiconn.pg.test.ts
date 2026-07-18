@@ -29,6 +29,7 @@ import type { LobeChatDatabase } from '@/database/type';
 import { runPlatformAgentRolloutBatches } from '../../jobs/agentRollout';
 import { platformAgentDraftToken } from './publication';
 import { PlatformAgentRolloutService } from './rolloutService';
+import { processNextPlatformAgentRolloutBatch } from './rolloutWorker';
 
 const enabled = process.env.TEST_SERVER_DB === '1' && Boolean(process.env.DATABASE_TEST_URL);
 const run = enabled ? describe : describe.skip;
@@ -170,5 +171,78 @@ run('Platform Agent rollout — true multi-connection PostgreSQL', () => {
       .where(eq(platformUserAgentMaterializations.platformAgentId, identity.id));
     expect(materializations).toHaveLength(203);
     expect(new Set(materializations.map(({ userId }) => userId)).size).toBe(203);
+  });
+
+  it('rolls back an expired independent writer before cancel → retry commits', async () => {
+    const service = new PlatformAgentRolloutService(db);
+    const [identity] = await db
+      .select()
+      .from(platformAgents)
+      .where(eq(platformAgents.id, 'pg-agent'));
+    const started = await service.start('admin', {
+      agentId: identity.id,
+      assignmentId: 'pg-assignment',
+      expectedDraftToken: platformAgentDraftToken(identity),
+      expectedRevision: identity.revision,
+      reason: 'real PostgreSQL lease evidence',
+    });
+    let entered!: () => void;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (entered = resolve));
+    const wait = new Promise<void>((resolve) => (release = resolve));
+    const expired = processNextPlatformAgentRolloutBatch(workerDb(), 'pg-expired-worker', {
+      leaseMs: 25,
+      lifecycle: {
+        beforeBulkWrite: async () => {
+          entered();
+          await wait;
+        },
+      },
+    });
+    await held;
+    const cancelling = service.cancel('admin', {
+      agentId: identity.id,
+      expectedJobRevision: 0,
+      expectedStatus: 'running',
+      jobId: started.jobId,
+      reason: 'cancel real expired writer',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    release();
+    await expect(expired).resolves.toMatchObject({ terminal: false });
+    const cancelled = await cancelling;
+    expect(cancelled.status).toBe('cancelled');
+    expect(await db.select().from(platformUserAgentMaterializations)).toHaveLength(0);
+
+    await service.retry('admin', {
+      agentId: identity.id,
+      expectedJobRevision: cancelled.revision,
+      expectedStatus: cancelled.status,
+      jobId: cancelled.jobId,
+      reason: 'retry real expired writer',
+    });
+    await runPlatformAgentRolloutBatches(workerDb(), 10);
+    await expect(
+      service.get({ agentId: identity.id, jobId: started.jobId }),
+    ).resolves.toMatchObject({ completed: 203, failed: 0, status: 'completed' });
+  });
+
+  it('installs both partial expression indexes in real PostgreSQL', async () => {
+    const pool = new Pool({ connectionString, max: 1 });
+    pools.push(pool);
+    const result = await pool.query<{ indexname: string }>(`
+      SELECT indexname
+      FROM pg_indexes
+      WHERE schemaname = current_schema()
+        AND indexname IN (
+          'platform_jobs_rollout_agent_id_id_idx',
+          'platform_jobs_rollout_transition_parent_status_user_idx'
+        )
+      ORDER BY indexname
+    `);
+    expect(result.rows.map(({ indexname }) => indexname)).toEqual([
+      'platform_jobs_rollout_agent_id_id_idx',
+      'platform_jobs_rollout_transition_parent_status_user_idx',
+    ]);
   });
 });

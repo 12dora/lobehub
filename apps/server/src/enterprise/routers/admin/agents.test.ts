@@ -24,6 +24,7 @@ import { createContextInner } from '@/libs/trpc/lambda/context';
 import { adminRouter } from '../admin';
 
 const db: LobeChatDatabase = await getTestDB();
+const databaseMocks = vi.hoisted(() => ({ getServerDB: vi.fn() }));
 const createRootCaller = createCallerFactory(adminRouter);
 const createCaller = (context: Parameters<typeof createRootCaller>[0]) =>
   createRootCaller(context).agents;
@@ -38,7 +39,7 @@ const ids = {
 };
 
 vi.mock('@/database/core/db-adaptor', () => ({
-  getServerDB: vi.fn(async () => db),
+  getServerDB: databaseMocks.getServerDB,
 }));
 
 const cleanup = async () => {
@@ -87,6 +88,7 @@ beforeEach(async () => {
   vi.unstubAllEnvs();
   vi.stubEnv('ENABLE_PLATFORM_ADMIN', '1');
   vi.stubEnv('ENABLE_PLATFORM_MANAGED_AGENTS', '1');
+  databaseMocks.getServerDB.mockReset().mockResolvedValue(db);
   await cleanup();
   await db.insert(users).values(Object.values(ids).map((id) => ({ id })));
   await seedPlatformRoles(db);
@@ -247,5 +249,21 @@ describe('adminAgentsRouter security gates', () => {
     await expect(
       reader.rollouts.list({ agentId: 'agent-support', limit: 10 }),
     ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  });
+
+  it('gates Rollout before serverDatabase, active-user and RBAC when only Admin is enabled', async () => {
+    vi.stubEnv('ENABLE_PLATFORM_MANAGED_AGENTS', '0');
+    databaseMocks.getServerDB.mockClear();
+    const context = await createContextInner({
+      authenticatedAt: new Date(),
+      authMethod: 'better-auth',
+      userId: ids.reader,
+    });
+    const caller = createCaller(context as never);
+
+    await expect(
+      caller.rollouts.list({ agentId: 'agent-support', limit: 10 }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    expect(databaseMocks.getServerDB).not.toHaveBeenCalled();
   });
 });
