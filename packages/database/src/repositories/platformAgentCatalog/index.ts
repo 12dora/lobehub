@@ -25,6 +25,7 @@ import {
 import { roles, userRoles } from '../../schemas/rbac';
 import { users } from '../../schemas/user';
 import type { LobeChatDatabase, Transaction } from '../../type';
+import { idGenerator } from '../../utils/idGenerator';
 
 export type ExactPlatformAgentVersion = Omit<
   PlatformAgentVersionItem,
@@ -81,6 +82,20 @@ export interface PlatformAgentAssignmentPage {
 export interface PlatformAgentMaterializationDependentPage {
   items: Array<{ id: string; userId: string; versionId: string }>;
   nextCursor: string | null;
+}
+
+export interface PlatformAgentAssignmentTargetPage {
+  items: string[];
+  nextCursor: string | null;
+}
+
+export interface PlatformAgentRolloutMaterializationInput {
+  userId: string;
+}
+
+export interface PlatformAgentRolloutMaterializationResult {
+  appliedUserIds: Set<string>;
+  previousByUserId: Map<string, { checksum: string; versionId: string } | null>;
 }
 
 export interface PlatformAgentAssignmentWrite {
@@ -623,23 +638,35 @@ export class PlatformAgentCatalogRepository {
   };
 
   countAssignmentTargets = async (params: {
+    cutoff?: string;
     targetId: string;
     targetType: PlatformAgentAssignmentTargetType;
   }): Promise<number> => {
     if (params.targetType === 'global') {
-      const [row] = await this.db.select({ count: sql<number>`count(*)::int` }).from(users);
+      const [row] = await this.db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(users)
+        .where(
+          params.cutoff ? sql`${users.createdAt} <= ${params.cutoff}::timestamptz` : undefined,
+        );
       return row?.count ?? 0;
     }
     if (params.targetType === 'user') {
       const [row] = await this.db
         .select({ count: sql<number>`count(*)::int` })
         .from(users)
-        .where(eq(users.id, params.targetId));
+        .where(
+          and(
+            eq(users.id, params.targetId),
+            params.cutoff ? sql`${users.createdAt} <= ${params.cutoff}::timestamptz` : undefined,
+          ),
+        );
       return row?.count ?? 0;
     }
     const [row] = await this.db
       .select({ count: sql<number>`count(distinct ${userRoles.userId})::int` })
       .from(userRoles)
+      .innerJoin(users, eq(users.id, userRoles.userId))
       .innerJoin(
         roles,
         and(eq(roles.id, userRoles.roleId), isNull(roles.workspaceId), eq(roles.isActive, true)),
@@ -648,10 +675,190 @@ export class PlatformAgentCatalogRepository {
         and(
           eq(userRoles.roleId, params.targetId),
           isNull(userRoles.workspaceId),
+          params.cutoff ? sql`${users.createdAt} <= ${params.cutoff}::timestamptz` : undefined,
+          params.cutoff ? sql`${userRoles.createdAt} <= ${params.cutoff}::timestamptz` : undefined,
           or(isNull(userRoles.expiresAt), sql`${userRoles.expiresAt} > CURRENT_TIMESTAMP`),
         ),
       );
     return row?.count ?? 0;
+  };
+
+  listAssignmentTargetUserIds = async (params: {
+    cutoff: string;
+    cursor?: string;
+    limit?: number;
+    targetId: string;
+    targetType: PlatformAgentAssignmentTargetType;
+  }): Promise<PlatformAgentAssignmentTargetPage> => {
+    const limit = Math.max(1, Math.min(params.limit ?? 100, 500));
+    if (params.targetType === 'user') {
+      if (params.cursor && params.targetId <= params.cursor) return { items: [], nextCursor: null };
+      const [row] = await this.db
+        .select({ id: users.id })
+        .from(users)
+        .where(
+          and(
+            eq(users.id, params.targetId),
+            sql`${users.createdAt} <= ${params.cutoff}::timestamptz`,
+          ),
+        )
+        .limit(1);
+      return { items: row ? [row.id] : [], nextCursor: null };
+    }
+
+    const baseCondition = and(
+      sql`${users.createdAt} <= ${params.cutoff}::timestamptz`,
+      params.cursor ? gt(users.id, params.cursor) : undefined,
+    );
+    const rows =
+      params.targetType === 'global'
+        ? await this.db
+            .select({ id: users.id })
+            .from(users)
+            .where(baseCondition)
+            .orderBy(asc(users.id))
+            .limit(limit + 1)
+        : await this.db
+            .selectDistinct({ id: users.id })
+            .from(users)
+            .innerJoin(userRoles, eq(userRoles.userId, users.id))
+            .innerJoin(
+              roles,
+              and(
+                eq(roles.id, userRoles.roleId),
+                isNull(roles.workspaceId),
+                eq(roles.isActive, true),
+              ),
+            )
+            .where(
+              and(
+                baseCondition,
+                eq(userRoles.roleId, params.targetId),
+                isNull(userRoles.workspaceId),
+                sql`${userRoles.createdAt} <= ${params.cutoff}::timestamptz`,
+                or(isNull(userRoles.expiresAt), sql`${userRoles.expiresAt} > CURRENT_TIMESTAMP`),
+              ),
+            )
+            .orderBy(asc(users.id))
+            .limit(limit + 1);
+    const hasMore = rows.length > limit;
+    const items = (hasMore ? rows.slice(0, limit) : rows).map(({ id }) => id);
+    return { items, nextCursor: hasMore ? (items.at(-1) ?? null) : null };
+  };
+
+  /**
+   * Apply one bounded rollout page with two queries: one exact owner-scoped read and one bulk CAS
+   * upsert. The caller MUST already hold the per-Agent reference advisory lock and validate the
+   * locked Agent identity / Assignment snapshot in the same transaction. The bounded OR predicate
+   * preserves each row's independently observed prior version, while the advisory lock serializes
+   * every supported materialization writer for this Agent.
+   */
+  bulkCasRolloutMaterializations = async (params: {
+    beforeWrite?: (
+      previousByUserId: ReadonlyMap<string, { checksum: string; versionId: string } | null>,
+    ) => Promise<ReadonlySet<string> | void>;
+    platformAgentId: string;
+    targetVersionChecksum: string;
+    targetVersionId: string;
+    targets: PlatformAgentRolloutMaterializationInput[];
+  }): Promise<PlatformAgentRolloutMaterializationResult> => {
+    if (params.targets.length === 0) {
+      return { appliedUserIds: new Set(), previousByUserId: new Map() };
+    }
+    if (params.targets.length > 100) throw new Error('Rollout materialization batch exceeds 100');
+
+    const userIds = [...new Set(params.targets.map(({ userId }) => userId))];
+    const existingRows = await this.db
+      .select()
+      .from(platformUserAgentMaterializations)
+      .where(
+        and(
+          eq(platformUserAgentMaterializations.platformAgentId, params.platformAgentId),
+          inArray(platformUserAgentMaterializations.userId, userIds),
+        ),
+      );
+    const existingByUserId = new Map(existingRows.map((row) => [row.userId, row]));
+    const previousByUserId = new Map<string, { checksum: string; versionId: string } | null>();
+    const casConditions = userIds.map((userId) => {
+      const existing = existingByUserId.get(userId);
+      const isReal =
+        existing && (existing.lastSyncedAt !== null || existing.materializedAgentId !== null);
+      previousByUserId.set(
+        userId,
+        isReal
+          ? {
+              checksum: existing.platformAgentVersionChecksum,
+              versionId: existing.platformAgentVersionId,
+            }
+          : null,
+      );
+      return and(
+        eq(platformUserAgentMaterializations.userId, userId),
+        existing && isReal
+          ? and(
+              eq(
+                platformUserAgentMaterializations.platformAgentVersionId,
+                existing.platformAgentVersionId,
+              ),
+              eq(
+                platformUserAgentMaterializations.platformAgentVersionChecksum,
+                existing.platformAgentVersionChecksum,
+              ),
+            )
+          : and(
+              isNull(platformUserAgentMaterializations.lastSyncedAt),
+              isNull(platformUserAgentMaterializations.materializedAgentId),
+            ),
+      );
+    });
+    const blockedUserIds = (await params.beforeWrite?.(previousByUserId)) ?? new Set<string>();
+    const writableUserIds = userIds.filter((userId) => !blockedUserIds.has(userId));
+    if (writableUserIds.length === 0) {
+      return { appliedUserIds: new Set(), previousByUserId };
+    }
+    const now = new Date();
+    const written = await this.db
+      .insert(platformUserAgentMaterializations)
+      .values(
+        writableUserIds.map((userId) => {
+          const existing = existingByUserId.get(userId);
+          return {
+            hidden: existing?.hidden ?? false,
+            id: existing?.id ?? idGenerator('platformUserAgentMaterializations', 16),
+            lastErrorCategory: null,
+            lastSyncedAt: now,
+            materializedAgentId: existing?.materializedAgentId ?? null,
+            platformAgentId: params.platformAgentId,
+            platformAgentVersionChecksum: params.targetVersionChecksum,
+            platformAgentVersionId: params.targetVersionId,
+            status: existing?.materializedAgentId
+              ? ('materialized' as const)
+              : ('pending' as const),
+            userId,
+          };
+        }),
+      )
+      .onConflictDoUpdate({
+        set: {
+          lastErrorCategory: null,
+          lastSyncedAt: now,
+          platformAgentVersionChecksum: sql`excluded.platform_agent_version_checksum`,
+          platformAgentVersionId: sql`excluded.platform_agent_version_id`,
+          status: sql`excluded.status`,
+          updatedAt: now,
+        },
+        target: [
+          platformUserAgentMaterializations.userId,
+          platformUserAgentMaterializations.platformAgentId,
+        ],
+        where: or(...casConditions.filter((_, index) => writableUserIds.includes(userIds[index]))),
+      })
+      .returning({ userId: platformUserAgentMaterializations.userId });
+
+    return {
+      appliedUserIds: new Set(written.map(({ userId }) => userId)),
+      previousByUserId,
+    };
   };
 
   getDefaultIdentityForUpdate = async (): Promise<PlatformAgentItem | undefined> => {

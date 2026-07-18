@@ -103,8 +103,10 @@ const rollout = {
   cursor: 'user-cursor',
   failed: 1,
   jobId: 'job-id',
+  previousVersionId: 'version-0',
   revision: 2,
   status: 'dead' as const,
+  targetVersionId: 'version-1',
   total: 10,
   updatedAt: new Date('2026-07-17T00:00:00Z'),
 };

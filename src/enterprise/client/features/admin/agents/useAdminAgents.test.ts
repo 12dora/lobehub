@@ -5,14 +5,18 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMockAdminAgentsClient } from './mockAdminAgents';
 import {
   clearAdminAgentCache,
+  fetchActiveAdminAgentRollouts,
   fetchAdminAgentDetail,
+  mergePolledRollouts,
   refreshAdminAgent,
   refreshAdminAgentLists,
+  selectActiveRolloutJobIds,
   useFetchAdminAgent,
   useFetchAdminAgents,
 } from './useAdminAgents';
 
 const mocks = vi.hoisted(() => ({
+  configs: [] as Record<string, unknown>[],
   fetchers: [] as (() => Promise<unknown>)[],
   keys: [] as unknown[],
   mutate: vi.fn(),
@@ -20,15 +24,23 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('swr', () => ({ mutate: mocks.mutate }));
 vi.mock('@/libs/swr', () => ({
-  useClientDataSWR: (key: unknown, fetcher: () => Promise<unknown>) => {
+  useClientDataSWR: (key: unknown, fetcher: () => Promise<unknown>, config = {}) => {
     mocks.keys.push(key);
     mocks.fetchers.push(fetcher);
+    mocks.configs.push(config);
+    return { data: undefined, error: undefined, isLoading: true, mutate: vi.fn() };
+  },
+  useClientPollingSWR: (key: unknown, fetcher: () => Promise<unknown>, config = {}) => {
+    mocks.keys.push(key);
+    mocks.fetchers.push(fetcher);
+    mocks.configs.push(config);
     return { data: undefined, error: undefined, isLoading: true, mutate: vi.fn() };
   },
 }));
 
 describe('Admin Agent hook adapter injection', () => {
   beforeEach(() => {
+    mocks.configs.length = 0;
     mocks.fetchers.length = 0;
     mocks.keys.length = 0;
     mocks.mutate.mockReset().mockResolvedValue(undefined);
@@ -40,7 +52,7 @@ describe('Admin Agent hook adapter injection', () => {
     const list = vi.spyOn(client, 'list');
     renderHook(() => useFetchAdminAgents({}, false, client));
     renderHook(() => useFetchAdminAgent('agent-1', false, client));
-    expect(mocks.keys).toEqual([null, null]);
+    expect(mocks.keys).toEqual([null, null, null]);
     expect(list).not.toHaveBeenCalled();
     expect(get).not.toHaveBeenCalled();
   });
@@ -74,14 +86,32 @@ describe('Admin Agent hook adapter injection', () => {
       limit: 100,
     });
     expect((detail as { versions: unknown[] }).versions).toHaveLength(1);
+    expect(mocks.configs[1]!.refreshInterval).toBeUndefined();
+    expect(mocks.keys[2]).toBeNull();
   });
 
-  it('skips the rollout read entirely when the adapter reports the capability off', async () => {
+  it('dedupes active jobs and merges lightweight getRollout projections', async () => {
+    const client = createMockAdminAgentsClient();
+    const detail = await fetchAdminAgentDetail('agent-inbox', client);
+    const running = detail.rollouts[0]!;
+    const duplicateDetail = { ...detail, rollouts: [running, running] };
+    expect(selectActiveRolloutJobIds(duplicateDetail)).toEqual([running.jobId]);
+
+    const getRollout = vi.spyOn(client, 'getRollout');
+    const polled = await fetchActiveAdminAgentRollouts(detail.identity.id, [running.jobId], client);
+    expect(getRollout).toHaveBeenCalledTimes(1);
+    const merged = mergePolledRollouts(detail, [
+      { ...polled[0]!, completed: running.completed + 1 },
+    ]);
+    expect(merged.rollouts[0]!.completed).toBe(running.completed + 1);
+    expect(detail.rollouts[0]!.completed).toBe(running.completed);
+  });
+
+  it('skips rollout reads when the authoritative platform capability is off', async () => {
     const base = createMockAdminAgentsClient();
     const listRollouts = vi.spyOn(base, 'listRollouts');
-    const client = { ...base, capabilities: { rollouts: false } };
 
-    const detail = await fetchAdminAgentDetail('agent-inbox', client);
+    const detail = await fetchAdminAgentDetail('agent-inbox', base, false);
 
     expect(listRollouts).not.toHaveBeenCalled();
     expect(detail.rollouts).toEqual([]);
@@ -122,7 +152,9 @@ describe('Admin Agent hook adapter injection', () => {
 
     mocks.mutate.mockClear();
     await refreshAdminAgent('agent-1');
-    expect(mocks.mutate).toHaveBeenCalledWith(['enterprise.admin.agents.get', 'agent-1']);
+    const detailPredicate = mocks.mutate.mock.calls[0]![0] as (key: unknown) => boolean;
+    expect(detailPredicate(['enterprise.admin.agents.get', 'agent-1', true])).toBe(true);
+    expect(detailPredicate(['enterprise.admin.agents.get', 'agent-2', true])).toBe(false);
     const refreshPredicate = mocks.mutate.mock.calls[1]![0] as (key: unknown) => boolean;
     expect(refreshPredicate(['enterprise.admin.agents.list', {}])).toBe(true);
   });

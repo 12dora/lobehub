@@ -230,8 +230,10 @@ export const platformAgentRolloutProjectionSchema = z
     cursor: z.string().min(1).max(1000).nullable(),
     failed: z.number().int().nonnegative(),
     jobId: idSchema,
+    previousVersionId: idSchema.nullable(),
     revision: revisionSchema,
     status: z.enum(['cancelled', 'completed', 'dead', 'failed', 'pending', 'running']),
+    targetVersionId: idSchema,
     total: z.number().int().nonnegative(),
     updatedAt: z.date(),
   })

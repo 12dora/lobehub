@@ -34,7 +34,11 @@ export const publicProcedure = baseProcedure;
  * Gate is no-op when ENABLE_PLATFORM_ADMIN is off.
  * Allowlisted paths (platform.getAccessStatus, …) skip the gate.
  */
-export const authedProcedure = baseProcedure.use(oidcAuth).use(userAuth).use(enterpriseAccessGate);
+/** Authenticated but not yet aihub.access-gated. Use only for an env-only feature gate that must
+ * short-circuit before every database-backed enterprise guard. Ordinary routes use authedProcedure. */
+export const preAccessAuthedProcedure = baseProcedure.use(oidcAuth).use(userAuth);
+export const authedProcedure = preAccessAuthedProcedure.use(enterpriseAccessGate);
+export { enterpriseAccessGate } from './middleware/enterpriseAccess';
 
 // procedure for hetero-agent ingest/finish endpoints — requires a `hetero-operation` JWT
 // (no aihub.access gate — device/runtime paths are not user SPA session traffic)

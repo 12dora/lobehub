@@ -27,6 +27,7 @@ export interface PlatformAgentPublicationLifecycle {
 export interface PlatformAgentPublicationOptions {
   invalidation?: PlatformConfigInvalidationPublisher;
   lifecycle?: PlatformAgentPublicationLifecycle;
+  validateDependencies?: typeof assertExactPlatformAgentDependencies;
 }
 
 interface AgentDraftTokenInput {
@@ -71,6 +72,7 @@ export const assertExpectedPlatformAgentIdentity = (
 export class PlatformAgentPublicationService {
   private readonly invalidation: PlatformConfigInvalidationPublisher;
   private readonly lifecycle: PlatformAgentPublicationLifecycle;
+  private readonly validateDependencies: typeof assertExactPlatformAgentDependencies;
 
   constructor(
     private readonly db: LobeChatDatabase,
@@ -78,6 +80,8 @@ export class PlatformAgentPublicationService {
   ) {
     this.invalidation = options.invalidation ?? getPlatformConfigInvalidationPublisher();
     this.lifecycle = options.lifecycle ?? {};
+    this.validateDependencies =
+      options.validateDependencies ?? assertExactPlatformAgentDependencies;
   }
 
   private invalidate = async (agentId: string, revision: number): Promise<void> => {
@@ -141,7 +145,7 @@ export class PlatformAgentPublicationService {
         await this.lifecycle.afterDependencyLock?.(tx);
         const version = await repository.getExactVersion(locked.id, input.versionId);
         if (!version) throw new PlatformAgentNotFoundError();
-        await assertExactPlatformAgentDependencies(tx, version.dependencySnapshot);
+        await this.validateDependencies(tx, version.dependencySnapshot);
         const identity = await repository.pointToVersionCas({
           agentId: locked.id,
           expectedDraftSequence: locked.draftSequence,
@@ -206,7 +210,7 @@ export class PlatformAgentPublicationService {
         await this.lifecycle.afterDependencyLock?.(tx);
         const target = await repository.getExactVersion(locked.id, input.targetVersionId);
         if (!target) throw new PlatformAgentNotFoundError();
-        await assertExactPlatformAgentDependencies(tx, target.dependencySnapshot);
+        await this.validateDependencies(tx, target.dependencySnapshot);
 
         const identity = await repository.pointToVersionCas({
           agentId: locked.id,

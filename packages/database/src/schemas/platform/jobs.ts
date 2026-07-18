@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm';
 import { index, integer, jsonb, pgTable, text, uniqueIndex, varchar } from 'drizzle-orm/pg-core';
 
 import { idGenerator } from '../../utils/idGenerator';
@@ -65,6 +66,12 @@ export const platformJobs = pgTable(
     uniqueIndex('platform_jobs_type_idempotency_key_unique').on(t.type, t.idempotencyKey),
     index('platform_jobs_status_lease_until_idx').on(t.status, t.leaseUntil),
     index('platform_jobs_type_status_idx').on(t.type, t.status),
+    index('platform_jobs_rollout_agent_id_id_idx')
+      .on(sql`(${t.input}->'snapshot'->>'agentId')`, t.id)
+      .where(sql`${t.type} = 'platform.agent.rollout.v1'`),
+    index('platform_jobs_rollout_transition_parent_status_user_idx')
+      .on(sql`(${t.input}->>'parentJobId')`, t.status, sql`(${t.input}->>'userId')`)
+      .where(sql`${t.type} = 'platform.agent.rollout.transition.v1'`),
     index('platform_jobs_created_at_idx').on(t.createdAt),
     index('platform_jobs_requested_by_idx').on(t.requestedBy),
   ],
