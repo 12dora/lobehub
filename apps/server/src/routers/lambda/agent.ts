@@ -17,6 +17,7 @@ import { UserModel } from '@/database/models/user';
 import { router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 import { withActiveUserWhenManagedAgents } from '@/server/enterprise/guards/activeUser';
+import { assertAgentNotPlatformManaged } from '@/server/enterprise/guards/managedPlatformAgent';
 import { withManagedResourceGuard } from '@/server/enterprise/guards/managedResource';
 import { PlatformAgentUserListService } from '@/server/enterprise/services/agentCatalog';
 import { AgentService } from '@/server/services/agent';
@@ -469,6 +470,12 @@ export const agentRouter = router({
     .use(withManagedResourceGuard('agent.removeAgent'))
     .input(z.object({ agentId: z.string() }))
     .mutation(async ({ input, ctx }) => {
+      // ROOT-02: a platform-managed materialized Agent cannot be deleted through the ordinary path.
+      await assertAgentNotPlatformManaged({
+        agentId: input.agentId,
+        db: ctx.serverDB,
+        userId: ctx.userId,
+      });
       return ctx.agentModel.delete(input.agentId);
     }),
 
@@ -590,6 +597,13 @@ export const agentRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
+      // ROOT-02: managed fields on a platform-materialized Agent are not user-editable.
+      await assertAgentNotPlatformManaged({
+        agentId: input.agentId,
+        db: ctx.serverDB,
+        userId: ctx.userId,
+      });
+
       // Collaborative edit lock: reject writes to a workspace agent another
       // member is actively editing. Inert until a client acquires the lock.
       if (ctx.workspaceId) {
@@ -620,6 +634,12 @@ export const agentRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
+      // ROOT-02: a platform-managed materialized Agent is not user-manageable via the ordinary path.
+      await assertAgentNotPlatformManaged({
+        agentId: input.id,
+        db: ctx.serverDB,
+        userId: ctx.userId,
+      });
       return ctx.agentModel.update(input.id, { pinned: input.pinned });
     }),
 

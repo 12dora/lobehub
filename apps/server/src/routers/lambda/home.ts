@@ -9,6 +9,7 @@ import { HomeRepository } from '@/database/repositories/home';
 import { router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 import { withActiveUserWhenManagedAgents } from '@/server/enterprise/guards/activeUser';
+import { assertAgentNotPlatformManaged } from '@/server/enterprise/guards/managedPlatformAgent';
 import { withManagedResourceGuard } from '@/server/enterprise/guards/managedResource';
 import { PlatformAgentUserListService } from '@/server/enterprise/services/agentCatalog';
 import { type HomeBriefData, HomeService } from '@/server/services/home';
@@ -75,6 +76,12 @@ export const homeRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
+      // ROOT-02: a platform-managed materialized Agent cannot be re-grouped via the ordinary path.
+      await assertAgentNotPlatformManaged({
+        agentId: input.agentId,
+        db: ctx.serverDB,
+        userId: ctx.userId,
+      });
       return ctx.agentModel.updateSessionGroupId(input.agentId, input.sessionGroupId);
     }),
 });
