@@ -778,4 +778,25 @@ describe('MessageModel — server-reserved metadata stripping (RR3-1)', () => {
     expect(meta?.operationId).toBeUndefined();
     expect(meta?.keep).toBe(true);
   });
+
+  it('RR4-5: updateToolMessage strips a reserved key on the post-merge result', async () => {
+    // updateToolMessage is reachable from the public message router (single + batchMutate), so the
+    // final write boundary must filter it. Seed an existing message with legit metadata, then try to
+    // smuggle operationId through updateToolMessage's merge.
+    const created = await messageModel.create({
+      content: 'tool',
+      metadata: { keep: 'yes' } as never,
+      role: 'tool',
+      sessionId: '1',
+    });
+    await messageModel.updateToolMessage(created.id, {
+      content: 'answered',
+      metadata: { operationId: 'op-forged', extra: 1 },
+    });
+    const meta = await readMeta(created.id);
+    expect(meta?.operationId).toBeUndefined();
+    // Legit metadata (existing + new) survives.
+    expect(meta?.keep).toBe('yes');
+    expect(meta?.extra).toBe(1);
+  });
 });
