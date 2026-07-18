@@ -27,6 +27,18 @@ import {
   adminPlatformAgentPublishOutputSchema,
   adminPlatformAgentRollbackInputSchema,
   adminPlatformAgentRollbackOutputSchema,
+  adminPlatformAgentRolloutCancelInputSchema,
+  adminPlatformAgentRolloutCancelOutputSchema,
+  adminPlatformAgentRolloutGetInputSchema,
+  adminPlatformAgentRolloutGetOutputSchema,
+  adminPlatformAgentRolloutListInputSchema,
+  adminPlatformAgentRolloutListOutputSchema,
+  adminPlatformAgentRolloutRetryInputSchema,
+  adminPlatformAgentRolloutRetryOutputSchema,
+  adminPlatformAgentRolloutRollbackInputSchema,
+  adminPlatformAgentRolloutRollbackOutputSchema,
+  adminPlatformAgentRolloutStartInputSchema,
+  adminPlatformAgentRolloutStartOutputSchema,
   adminPlatformAgentSetDefaultInboxInputSchema,
   adminPlatformAgentSetDefaultInboxOutputSchema,
   adminPlatformAgentUpdateDraftInputSchema,
@@ -41,6 +53,7 @@ import { withPlatformPermission } from '../../guards/platformPermission';
 import {
   PlatformAgentAdminService,
   PlatformAgentPublicationService,
+  PlatformAgentRolloutService,
   validateExactPlatformAgentDependencies,
 } from '../../services/agentCatalog';
 import {
@@ -105,6 +118,141 @@ const assignmentsRouter = router({
           ctx.userId!,
           input,
         );
+      } catch (error) {
+        return mapAgentServiceError(error);
+      }
+    }),
+});
+
+const rolloutMutation = async (params: {
+  action: string;
+  actorUserId: string;
+  authenticatedAt?: Date | null;
+  authMethod?: Parameters<typeof assertAgentDangerousReauth>[0]['authMethod'];
+  reason: string;
+  serverDB: Parameters<typeof assertAgentDangerousReauth>[0]['serverDB'];
+  targetId: string;
+}) =>
+  assertAgentDangerousReauth({
+    action: params.action,
+    actorUserId: params.actorUserId,
+    authenticatedAt: params.authenticatedAt,
+    authMethod: params.authMethod,
+    reason: params.reason,
+    serverDB: params.serverDB,
+    targetId: params.targetId,
+  });
+
+const rolloutsRouter = router({
+  cancel: adminBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AGENT_ASSIGN))
+    .input(adminPlatformAgentRolloutCancelInputSchema)
+    .output(adminPlatformAgentRolloutCancelOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      assertAgentFeatureEnabled();
+      await rolloutMutation({
+        action: 'admin.agents.rollouts.cancel',
+        actorUserId: ctx.userId!,
+        authenticatedAt: ctx.authenticatedAt,
+        authMethod: ctx.authMethod,
+        reason: input.reason,
+        serverDB: ctx.serverDB,
+        targetId: input.agentId,
+      });
+      try {
+        return await new PlatformAgentRolloutService(ctx.serverDB).cancel(ctx.userId!, input);
+      } catch (error) {
+        return mapAgentServiceError(error);
+      }
+    }),
+
+  get: adminBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AGENT_READ))
+    .input(adminPlatformAgentRolloutGetInputSchema)
+    .output(adminPlatformAgentRolloutGetOutputSchema)
+    .query(async ({ ctx, input }) => {
+      assertAgentFeatureEnabled();
+      try {
+        return await new PlatformAgentRolloutService(ctx.serverDB).get(input);
+      } catch (error) {
+        return mapAgentServiceError(error);
+      }
+    }),
+
+  list: adminBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AGENT_READ))
+    .input(adminPlatformAgentRolloutListInputSchema)
+    .output(adminPlatformAgentRolloutListOutputSchema)
+    .query(async ({ ctx, input }) => {
+      assertAgentFeatureEnabled();
+      try {
+        return await new PlatformAgentRolloutService(ctx.serverDB).list(input);
+      } catch (error) {
+        return mapAgentServiceError(error);
+      }
+    }),
+
+  retry: adminBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AGENT_ASSIGN))
+    .input(adminPlatformAgentRolloutRetryInputSchema)
+    .output(adminPlatformAgentRolloutRetryOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      assertAgentFeatureEnabled();
+      await rolloutMutation({
+        action: 'admin.agents.rollouts.retry',
+        actorUserId: ctx.userId!,
+        authenticatedAt: ctx.authenticatedAt,
+        authMethod: ctx.authMethod,
+        reason: input.reason,
+        serverDB: ctx.serverDB,
+        targetId: input.agentId,
+      });
+      try {
+        return await new PlatformAgentRolloutService(ctx.serverDB).retry(ctx.userId!, input);
+      } catch (error) {
+        return mapAgentServiceError(error);
+      }
+    }),
+
+  rollback: adminBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AGENT_PUBLISH))
+    .input(adminPlatformAgentRolloutRollbackInputSchema)
+    .output(adminPlatformAgentRolloutRollbackOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      assertAgentFeatureEnabled();
+      await rolloutMutation({
+        action: 'admin.agents.rollouts.rollback',
+        actorUserId: ctx.userId!,
+        authenticatedAt: ctx.authenticatedAt,
+        authMethod: ctx.authMethod,
+        reason: input.reason,
+        serverDB: ctx.serverDB,
+        targetId: input.agentId,
+      });
+      try {
+        return await new PlatformAgentRolloutService(ctx.serverDB).rollback(ctx.userId!, input);
+      } catch (error) {
+        return mapAgentServiceError(error);
+      }
+    }),
+
+  start: adminBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AGENT_ASSIGN))
+    .input(adminPlatformAgentRolloutStartInputSchema)
+    .output(adminPlatformAgentRolloutStartOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      assertAgentFeatureEnabled();
+      await rolloutMutation({
+        action: 'admin.agents.rollouts.start',
+        actorUserId: ctx.userId!,
+        authenticatedAt: ctx.authenticatedAt,
+        authMethod: ctx.authMethod,
+        reason: input.reason,
+        serverDB: ctx.serverDB,
+        targetId: input.agentId,
+      });
+      try {
+        return await new PlatformAgentRolloutService(ctx.serverDB).start(ctx.userId!, input);
       } catch (error) {
         return mapAgentServiceError(error);
       }
@@ -257,6 +405,8 @@ export const adminAgentsRouter = router({
         return mapAgentServiceError(error);
       }
     }),
+
+  rollouts: rolloutsRouter,
 
   setDefaultInbox: adminBase
     .use(withPlatformPermission(PLATFORM_PERMISSIONS.AGENT_PUBLISH))

@@ -134,9 +134,8 @@ export interface AdminAgentDraft {
 }
 
 /**
- * Capability flags the adapter advertises to the UI. `rollouts` stays `false` on the
- * production lambda adapter until the PR-052 Rollout service (`admin.agents.rollouts.*`)
- * lands — the UI reads this to gate/defer every rollout action instead of faking success.
+ * Capability flags the adapter advertises to the UI. Production exposes the real PR-052 backend;
+ * tests and alternate adapters may still turn it off to exercise the deferred surface.
  */
 export interface AdminAgentsClientCapabilities {
   rollouts: boolean;

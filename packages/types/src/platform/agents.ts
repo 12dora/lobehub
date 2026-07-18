@@ -163,7 +163,10 @@ export interface PlatformAgentRolloutProjection {
   cursor: string | null;
   failed: number;
   jobId: string;
+  previousVersionId: string | null;
+  revision: number;
   status: PlatformAgentRolloutStatus;
+  targetVersionId: string;
   total: number;
   updatedAt: Date;
 }
