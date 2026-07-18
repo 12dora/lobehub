@@ -30,7 +30,7 @@ const AgentDetailPage = memo(() => {
   const { capabilities } = useEnterprisePlatform();
   const agentPermissions = deriveAdminAgentPermissions(permissions);
   const rolloutsEnabled = capabilities.managedResources.agents;
-  const { data, error, isLoading, mutate } = useFetchAdminAgent(
+  const { data, error, isLoading, mutate, retryRolloutPoll, rolloutPollError } = useFetchAdminAgent(
     id,
     Boolean(id && agentPermissions.canRead),
     adminAgentsService,
@@ -55,7 +55,8 @@ const AgentDetailPage = memo(() => {
           editor={editor}
           mutate={mutate}
           permissions={agentPermissions}
-          pollError={data ? error : undefined}
+          pollError={rolloutPollError}
+          retryRolloutPoll={retryRolloutPoll}
           rolloutsEnabled={rolloutsEnabled}
           snapshot={data}
         />

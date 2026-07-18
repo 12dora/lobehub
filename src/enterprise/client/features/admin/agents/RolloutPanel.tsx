@@ -15,6 +15,7 @@ interface RolloutPanelProps {
   permissions: ReturnType<typeof deriveAdminAgentPermissions>;
   pollError?: unknown;
   refresh: () => Promise<AdminAgentDetailOutput | undefined>;
+  retryPoll?: () => Promise<unknown>;
   snapshot: AdminAgentDetailOutput;
 }
 
@@ -23,6 +24,7 @@ export const RolloutPanel = ({
   permissions,
   pollError,
   refresh,
+  retryPoll,
   snapshot,
 }: RolloutPanelProps) => {
   const { t } = useTranslation('admin');
@@ -113,7 +115,7 @@ export const RolloutPanel = ({
           message={t('agentCatalog.rollout.pollFailed')}
           type="warning"
           action={
-            <Button size="small" onClick={() => void retryRefresh()}>
+            <Button size="small" onClick={() => void retryPoll?.()}>
               {t('agentCatalog.rollout.pollRetry')}
             </Button>
           }

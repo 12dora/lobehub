@@ -33,6 +33,7 @@ import {
   PlatformAgentInvalidInputError,
   PlatformAgentNotFoundError,
   PlatformAgentRevisionConflictError,
+  redactPlatformReadError,
 } from './errors';
 import { assertExpectedPlatformAgentIdentity } from './publication';
 
@@ -60,6 +61,7 @@ const rolloutJobInputSchema = z
           .nullable(),
         previousVersionId: z.string().min(1).max(128).nullable(),
         rollbackOfJobId: z.string().min(1).max(128).nullable(),
+        targetCutoff: z.string().datetime(),
         targetId: z.string().min(1).max(128),
         targetType: z.enum(['global', 'global_role', 'user']),
         targetVersionChecksum: z.string().regex(/^[a-f0-9]{64}$/),
@@ -283,7 +285,7 @@ export class PlatformAgentRolloutService {
           auditError instanceof Error ? auditError.name : 'UnknownError',
         );
       }
-      throw error;
+      throw redactPlatformReadError(error);
     }
   };
 
@@ -321,7 +323,16 @@ export class PlatformAgentRolloutService {
         if (!targetVersionId) throw new PlatformAgentInvalidInputError();
         const target = await repository.getExactVersion(identity.id, targetVersionId);
         if (!target) throw new PlatformAgentNotFoundError();
-        const progressTotal = await repository.countAssignmentTargets(assignment);
+        const clockResult = await tx.execute(
+          sql`SELECT to_char(CURRENT_TIMESTAMP AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS cutoff`,
+        );
+        const [clock] = clockResult.rows as unknown as Array<{ cutoff: string }>;
+        if (!clock?.cutoff) throw new PlatformAgentInvalidInputError();
+        const targetCutoff = new Date(clock.cutoff);
+        const progressTotal = await repository.countAssignmentTargets({
+          ...assignment,
+          cutoff: targetCutoff,
+        });
         const idempotencyKey = [
           identity.id,
           assignment.id,
@@ -342,6 +353,7 @@ export class PlatformAgentRolloutService {
               previousVersionChecksum: null,
               previousVersionId: null,
               rollbackOfJobId: null,
+              targetCutoff: targetCutoff.toISOString(),
               targetId: assignment.targetId,
               targetType: assignment.targetType,
               targetVersionChecksum: target.checksum,

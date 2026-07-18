@@ -77,7 +77,14 @@ export const mapAgentServiceError = (error: unknown): never => {
       message: 'Platform temporarily unavailable',
     });
   }
-  throw error;
+  log(
+    'unmapped Agent service error redacted class=%s',
+    error instanceof Error ? error.name : 'UnknownError',
+  );
+  throw new TRPCError({
+    code: 'INTERNAL_SERVER_ERROR',
+    message: 'Platform temporarily unavailable',
+  });
 };
 
 export const assertAgentDangerousReauth = async (params: {

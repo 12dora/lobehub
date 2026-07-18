@@ -28,6 +28,7 @@ interface AgentDetailViewProps {
   mutate: KeyedMutator<AdminAgentDetailOutput>;
   permissions: ReturnType<typeof deriveAdminAgentPermissions>;
   pollError?: unknown;
+  retryRolloutPoll?: () => Promise<unknown>;
   rolloutsEnabled?: boolean;
   snapshot: AdminAgentDetailOutput;
 }
@@ -73,6 +74,7 @@ export const AgentDetailView = memo(
     mutate,
     permissions,
     pollError,
+    retryRolloutPoll,
     rolloutsEnabled = false,
     snapshot,
   }: AgentDetailViewProps) => {
@@ -291,6 +293,7 @@ export const AgentDetailView = memo(
             permissions={permissions}
             pollError={pollError}
             refresh={mutate}
+            retryPoll={retryRolloutPoll}
             snapshot={snapshot}
           />
         </Flexbox>
