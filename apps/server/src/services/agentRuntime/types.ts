@@ -9,6 +9,7 @@ import type {
 } from '@lobechat/context-engine';
 import type {
   ChatTopicBotContext,
+  PlatformAgentConnectorDependencyRef,
   PlatformAgentSkillDependencyRef,
   PlatformOperationModelPin,
   PlatformOperationPin,
@@ -409,6 +410,12 @@ export interface OperationCreationParams {
    * sub-tree back to its root.
    */
   parentOperationId?: string;
+  /**
+   * Secret-free exact Connector refs + tool allowlist (M10 PR-049 · CONNECTOR-EXACT). Persisted onto
+   * `agent_operations.metadata.platformConnectors` for audit/replay. Absent for ordinary / builtin
+   * operations.
+   */
+  platformConnectorPins?: PlatformAgentConnectorDependencyRef[];
   /**
    * Secret-free exact model ref (M10 PR-049 · MODEL-EXACT). Persisted onto
    * `agent_operations.metadata.platformModel` so every LLM call runs on the exact historical
