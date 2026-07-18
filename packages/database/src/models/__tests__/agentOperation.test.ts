@@ -269,8 +269,15 @@ describe('AgentOperationModel', () => {
     });
   });
 
-  describe('findLatestPlatformOperationPin', () => {
+  describe('findPlatformOperationPinByOperationId (RR2-1)', () => {
     const pin = { checksum: 'a'.repeat(64), platformAgentId: 'pagt_1', versionId: 'pav_1' };
+    const pinV2 = { checksum: 'c'.repeat(64), platformAgentId: 'pagt_1', versionId: 'pav_2' };
+    const modelPin = {
+      modelKey: 'chat',
+      providerChecksum: 'b'.repeat(64),
+      providerKey: 'openai',
+      providerRevision: 1,
+    };
 
     // agent_operations.topic_id / thread_id are FK-restricted, so seed the referenced rows.
     beforeEach(async () => {
@@ -286,6 +293,7 @@ describe('AgentOperationModel', () => {
     const seed = (
       model: AgentOperationModel,
       params: {
+        modelPin?: typeof modelPin;
         operationId: string;
         pin?: typeof pin;
         startedAt: Date;
@@ -294,15 +302,22 @@ describe('AgentOperationModel', () => {
       },
     ) =>
       model.recordStart({
-        metadata: params.pin ? { platformOperation: params.pin } : undefined,
+        metadata:
+          params.pin || params.modelPin
+            ? {
+                ...(params.pin ? { platformOperation: params.pin } : {}),
+                ...(params.modelPin ? { platformModel: params.modelPin } : {}),
+              }
+            : undefined,
         operationId: params.operationId,
         startedAt: params.startedAt,
         threadId: params.threadId ?? null,
         topicId: params.topicId,
       });
 
-    it('returns the pin of the most recent platform operation on the topic', async () => {
+    it('resolves the EXACT operation pin, not the latest on the topic (concurrent v1/v2)', async () => {
       const model = new AgentOperationModel(serverDB, userId);
+      // v1 started first, v2 later on the SAME topic. The fuzzy "latest" would return v2 for both.
       await seed(model, {
         operationId: 'op-v1',
         pin,
@@ -311,19 +326,21 @@ describe('AgentOperationModel', () => {
       });
       await seed(model, {
         operationId: 'op-v2',
-        pin: { ...pin, checksum: 'c'.repeat(64), versionId: 'pav_2' },
+        pin: pinV2,
         startedAt: new Date('2024-01-02T00:00:00Z'),
         topicId: 'topic-1',
       });
 
-      expect(await model.findLatestPlatformOperationPin({ topicId: 'topic-1' })).toEqual({
-        ...pin,
-        checksum: 'c'.repeat(64),
-        versionId: 'pav_2',
-      });
+      // An out-of-order resume of the v1 turn resolves v1 — bound to the exact operationId.
+      expect(
+        await model.findPlatformOperationPinByOperationId('op-v1', { topicId: 'topic-1' }),
+      ).toEqual(pin);
+      expect(
+        await model.findPlatformOperationPinByOperationId('op-v2', { topicId: 'topic-1' }),
+      ).toEqual(pinV2);
     });
 
-    it('is owner-scoped: another user never sees the pin', async () => {
+    it('is owner-scoped: another user never sees the pin by a leaked operationId', async () => {
       const model = new AgentOperationModel(serverDB, userId);
       await seed(model, {
         operationId: 'op-a',
@@ -332,10 +349,12 @@ describe('AgentOperationModel', () => {
         topicId: 'topic-1',
       });
       const other = new AgentOperationModel(serverDB, otherUserId);
-      expect(await other.findLatestPlatformOperationPin({ topicId: 'topic-1' })).toBeNull();
+      expect(
+        await other.findPlatformOperationPinByOperationId('op-a', { topicId: 'topic-1' }),
+      ).toBeNull();
     });
 
-    it('matches the thread and returns null when there is no platform operation', async () => {
+    it('binds topic and thread exactly (a cross-turn operationId does not rebind)', async () => {
       const model = new AgentOperationModel(serverDB, userId);
       await seed(model, {
         operationId: 'op-thread',
@@ -344,19 +363,72 @@ describe('AgentOperationModel', () => {
         threadId: 'thread-1',
         topicId: 'topic-1',
       });
-      // Non-platform operation (no pin) on another topic must not resolve.
+
+      // Exact operationId + matching topic/thread → resolves.
+      expect(
+        await model.findPlatformOperationPinByOperationId('op-thread', {
+          threadId: 'thread-1',
+          topicId: 'topic-1',
+        }),
+      ).toEqual(pin);
+      // A thread op must NOT resolve when asked for the main-turn (threadId null) leg.
+      expect(
+        await model.findPlatformOperationPinByOperationId('op-thread', {
+          threadId: null,
+          topicId: 'topic-1',
+        }),
+      ).toBeNull();
+      // A wrong topic scope does not resolve.
+      expect(
+        await model.findPlatformOperationPinByOperationId('op-thread', { topicId: 'topic-2' }),
+      ).toBeNull();
+    });
+
+    it('returns null for an ordinary (non-platform) operation', async () => {
+      const model = new AgentOperationModel(serverDB, userId);
       await seed(model, {
         operationId: 'op-plain',
         startedAt: new Date('2024-01-03T00:00:00Z'),
         topicId: 'topic-2',
       });
-
       expect(
-        await model.findLatestPlatformOperationPin({ threadId: 'thread-1', topicId: 'topic-1' }),
-      ).toEqual(pin);
-      // A thread mismatch (asking for the null-thread turn) finds nothing.
-      expect(await model.findLatestPlatformOperationPin({ topicId: 'topic-1' })).toBeNull();
-      expect(await model.findLatestPlatformOperationPin({ topicId: 'topic-2' })).toBeNull();
+        await model.findPlatformOperationPinByOperationId('op-plain', { topicId: 'topic-2' }),
+      ).toBeNull();
+    });
+
+    describe('findPlatformOperationRef (RR2-2)', () => {
+      it('classifies a platform operation and returns its model pin', async () => {
+        const model = new AgentOperationModel(serverDB, userId);
+        await seed(model, {
+          modelPin,
+          operationId: 'op-platform',
+          pin,
+          startedAt: new Date('2024-01-01T00:00:00Z'),
+          topicId: 'topic-1',
+        });
+        expect(await model.findPlatformOperationRef('op-platform')).toEqual({
+          isPlatformOperation: true,
+          modelPin,
+        });
+      });
+
+      it('classifies an ordinary operation (no marker, no pin)', async () => {
+        const model = new AgentOperationModel(serverDB, userId);
+        await seed(model, {
+          operationId: 'op-ordinary',
+          startedAt: new Date('2024-01-01T00:00:00Z'),
+          topicId: 'topic-1',
+        });
+        expect(await model.findPlatformOperationRef('op-ordinary')).toEqual({
+          isPlatformOperation: false,
+          modelPin: null,
+        });
+      });
+
+      it('returns null when the operation row does not exist under this owner scope', async () => {
+        const model = new AgentOperationModel(serverDB, userId);
+        expect(await model.findPlatformOperationRef('op-missing')).toBeNull();
+      });
     });
   });
 

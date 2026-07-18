@@ -16,6 +16,9 @@ import { users } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
 import { createCallerFactory } from '@/libs/trpc/lambda';
 import { createContextInner } from '@/libs/trpc/lambda/context';
+import { trpc } from '@/libs/trpc/lambda/init';
+import { serverDatabase } from '@/libs/trpc/lambda/middleware';
+import { withActiveUserWhenManagedAgents } from '@/server/enterprise/guards/activeUser';
 
 let db: LobeChatDatabase;
 
@@ -165,6 +168,62 @@ describe('REWORK-3 — managed flag ON (ADMIN=0, MANAGED_AGENTS=1) rejects befor
     const caller = createCallerFactory(aiAgentRouter)(await ctx(IDS.banned));
     await rejects(() => caller.execAgent({ agentId: 'platform-agent:pagt_1', prompt: 'hi' }));
     expect(execAgentSpy).not.toHaveBeenCalled();
+  });
+
+  // RR2-3: the batch entrypoint reaches the same runtime and must reject before any per-task work.
+  it('aiAgent.execAgents (batch) rejects a banned caller before any task runs', async () => {
+    const caller = createCallerFactory(aiAgentRouter)(await ctx(IDS.banned));
+    await rejects(() =>
+      caller.execAgents({ tasks: [{ agentId: 'platform-agent:pagt_1', prompt: 'hi' }] }),
+    );
+    expect(execAgentSpy).not.toHaveBeenCalled();
+  });
+
+  it('aiAgent.execAgents (batch) lets an active caller through to the runtime', async () => {
+    const caller = createCallerFactory(aiAgentRouter)(await ctx(IDS.active));
+    await caller.execAgents({ tasks: [{ agentId: 'agt_local', autoStart: false, prompt: 'hi' }] });
+    expect(execAgentSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+// RR2-7: the extra ban/epoch restriction exists ONLY because of the managed surface. Prove the
+// `withActiveUserWhenManagedAgents` guard in ISOLATION (a minimal procedure carrying only
+// serverDatabase + the guard), so the assertion is about the guard's own flag behavior and not the
+// separate ADMIN access-grant gate that fires app-wide when ENABLE_PLATFORM_ADMIN=1.
+describe('RR2-7 — withActiveUserWhenManagedAgents gates strictly on ENABLE_PLATFORM_MANAGED_AGENTS', () => {
+  const guardRouter = trpc.router({
+    ping: trpc.procedure
+      .use(serverDatabase)
+      .use(withActiveUserWhenManagedAgents())
+      .query(() => 'ok' as const),
+  });
+  const ping = async (userId: string) =>
+    createCallerFactory(guardRouter)(await ctx(userId))
+      .ping()
+      .then(
+        (value) => ({ value }),
+        (error: { code?: string }) => ({ error }),
+      );
+
+  it('MANAGED=1 → rejects a banned caller (the guard fires)', async () => {
+    vi.stubEnv('ENABLE_PLATFORM_ADMIN', '0');
+    vi.stubEnv('ENABLE_PLATFORM_MANAGED_AGENTS', '1');
+    expect((await ping(IDS.banned)).error?.code).toBe('UNAUTHORIZED');
+    expect((await ping(IDS.active)).value).toBe('ok');
+  });
+
+  it('MANAGED=0 + ADMIN=1 → legacy pass-through for banned / inactive (ADMIN alone adds no restriction)', async () => {
+    vi.stubEnv('ENABLE_PLATFORM_ADMIN', '1');
+    vi.stubEnv('ENABLE_PLATFORM_MANAGED_AGENTS', '0');
+    expect((await ping(IDS.active)).value).toBe('ok');
+    expect((await ping(IDS.banned)).value).toBe('ok');
+    expect((await ping(IDS.epoch)).value).toBe('ok');
+  });
+
+  it('MANAGED=0 + ADMIN=0 → legacy pass-through', async () => {
+    vi.stubEnv('ENABLE_PLATFORM_ADMIN', '0');
+    vi.stubEnv('ENABLE_PLATFORM_MANAGED_AGENTS', '0');
+    expect((await ping(IDS.banned)).value).toBe('ok');
   });
 });
 

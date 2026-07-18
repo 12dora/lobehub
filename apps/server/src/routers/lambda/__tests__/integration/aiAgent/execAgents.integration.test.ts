@@ -174,7 +174,12 @@ describe('Batch Execution (execAgents)', () => {
 
     expect(result.results[1].success).toBe(false);
     expect(result.results[1].taskIndex).toBe(1);
+    // RR2-5: a curated NOT_FOUND (carrying only the caller's OWN identifier) passes through, but no
+    // internal detail — raw driver / SQL text, catalog keys, revisions, checksums, secrets — leaks.
     expect(result.results[1].error).toBeDefined();
+    expect(result.results[1].error).not.toMatch(
+      /constraint|SELECT|INSERT|checksum|revision|providerKey|skillKey|connectorKey|secret/i,
+    );
 
     expect(result.results[2].success).toBe(true);
     expect(result.results[2].taskIndex).toBe(2);
