@@ -57,6 +57,15 @@ describe('AIHub release preflight', () => {
   });
 
   it.each([
+    ['AIHUB_APP_URL', 'https://LoBeHuB.example.com/'],
+    ['AIHUB_MAINTAINER', 'The LOBEHUB Release Team'],
+  ])('rejects upstream branding in protected external value %s', (name, value) => {
+    expect(() => validateAihubReleaseInputs(createReleaseEnv({ [name]: value }))).toThrow(
+      'must not expose the LobeHub brand',
+    );
+  });
+
+  it.each([
     ['AIHUB_ASSET_REF', 'main', 'immutable 40-character commit SHA'],
     ['AIHUB_ASSET_REF', 'a'.repeat(39), 'immutable 40-character commit SHA'],
     ['AIHUB_ASSET_TOKEN', '', 'AIHUB_ASSET_TOKEN'],
