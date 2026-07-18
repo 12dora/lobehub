@@ -67,6 +67,16 @@ export const initOperationModelRuntime = async (
     if (trustedBinding !== undefined || (ref && ref.classification !== 'ordinary')) {
       throw new PlatformExactModelUnavailableError();
     }
+  } else if (
+    trustedClassification === undefined &&
+    trustedBinding === undefined &&
+    (!ref || ref.classification === 'ordinary')
+  ) {
+    // Upgrade compatibility: operations queued or parked before RR6 have no server-authored
+    // runtime classification in their saved state. They may use the legacy runtime only when the
+    // owner-scoped persisted row independently proves they are ordinary (or no row exists, as with
+    // older fire-and-forget starts). A complete/partial persisted platform start never reaches this
+    // branch, even when the managed-Agent feature flag is now disabled.
   } else {
     throw new PlatformExactModelUnavailableError();
   }
