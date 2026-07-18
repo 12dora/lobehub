@@ -14,7 +14,7 @@ import {
 import { roles, userRoles } from '../../schemas/rbac';
 import { users } from '../../schemas/user';
 import { workspaces } from '../../schemas/workspace';
-import type { LobeChatDatabase } from '../../type';
+import type { LobeChatDatabase, Transaction } from '../../type';
 import { PlatformAgentCatalogRepository } from '.';
 
 const serverDB: LobeChatDatabase = await getTestDB();
@@ -662,5 +662,148 @@ describe('PlatformAgentCatalogRepository', () => {
     expect(upgraded!.lastSyncedAt).not.toBeNull();
     expect(upgraded!.hidden).toBe(true);
     expect(upgraded!.platformAgentVersionId).toBe(version1!.id);
+  });
+
+  describe('materializeLocalAgent + listMaterializedAgentIds (M10 PR-049)', () => {
+    const seedVersion = async (agentKey: string) => {
+      const agent = await repository.createIdentity({
+        agentKey,
+        isDefault: false,
+        systemKey: null,
+      });
+      const version = await repository.appendVersionCas({
+        agentId: agent.id,
+        config,
+        dependencySnapshot,
+        expectedDraftSequence: 0,
+        expectedRevision: 0,
+        version: '1.0.0',
+      });
+      return { agentId: agent.id, version: version! };
+    };
+
+    // Each caller proposes its own local Agent id; only the winner's row must survive.
+    const createLocalAgentFor = (userId: string, localId: string) => async (tx: Transaction) => {
+      const [row] = await tx
+        .insert(agents)
+        .values({ id: localId, title: 'Materialized', userId })
+        .returning({ id: agents.id });
+      return row;
+    };
+
+    it('creates one local Agent + mapping on first materialize and reuses it on repeat', async () => {
+      const { agentId, version } = await seedVersion('mat-first');
+
+      const first = await repository.materializeLocalAgent({
+        createLocalAgent: createLocalAgentFor(USER_A, 'm10-local-a'),
+        platformAgentId: agentId,
+        platformAgentVersionChecksum: version.checksum,
+        platformAgentVersionId: version.id,
+        userId: USER_A,
+      });
+      expect(first).toEqual({ agentId: 'm10-local-a', created: true, ok: true });
+
+      // Repeat reuses the same local Agent and never runs the (throwing) creator again.
+      const repeat = await repository.materializeLocalAgent({
+        createLocalAgent: async () => {
+          throw new Error('must not create a second Agent');
+        },
+        platformAgentId: agentId,
+        platformAgentVersionChecksum: version.checksum,
+        platformAgentVersionId: version.id,
+        userId: USER_A,
+      });
+      expect(repeat).toEqual({ agentId: 'm10-local-a', created: false, ok: true });
+
+      expect(await repository.listMaterializedAgentIds(USER_A)).toEqual(new Set(['m10-local-a']));
+      const row = await repository.getMaterialization(USER_A, agentId);
+      expect(row).toMatchObject({
+        materializedAgentId: 'm10-local-a',
+        platformAgentVersionChecksum: version.checksum,
+        platformAgentVersionId: version.id,
+        status: 'materialized',
+      });
+    });
+
+    it('leaves exactly one mapping + one Agent under N concurrent materializations (no orphan)', async () => {
+      const { agentId, version } = await seedVersion('mat-concurrent');
+
+      const results = await Promise.all(
+        Array.from({ length: 5 }, (_, index) =>
+          repository.materializeLocalAgent({
+            createLocalAgent: createLocalAgentFor(USER_A, `m10-conc-${index}`),
+            platformAgentId: agentId,
+            platformAgentVersionChecksum: version.checksum,
+            platformAgentVersionId: version.id,
+            userId: USER_A,
+          }),
+        ),
+      );
+
+      const winners = new Set(results.map((r) => (r.ok ? r.agentId : 'none')));
+      expect(winners.size).toBe(1);
+      const [winner] = [...winners];
+      // Only the winner's local Agent survived; every rolled-back candidate left no orphan row.
+      const survivors = await serverDB
+        .select({ id: agents.id })
+        .from(agents)
+        .where(
+          inArray(agents.id, [
+            'm10-conc-0',
+            'm10-conc-1',
+            'm10-conc-2',
+            'm10-conc-3',
+            'm10-conc-4',
+          ]),
+        );
+      expect(survivors).toEqual([{ id: winner }]);
+      expect(await repository.listMaterializedAgentIds(USER_A)).toEqual(new Set([winner]));
+    });
+
+    it('rejects materializing an archived Agent without creating an orphan local Agent', async () => {
+      const { agentId, version } = await seedVersion('mat-archived');
+      await serverDB
+        .update(platformAgents)
+        .set({ status: 'archived' })
+        .where(eq(platformAgents.id, agentId));
+
+      const result = await repository.materializeLocalAgent({
+        createLocalAgent: createLocalAgentFor(USER_A, 'm10-archived-local'),
+        platformAgentId: agentId,
+        platformAgentVersionChecksum: version.checksum,
+        platformAgentVersionId: version.id,
+        userId: USER_A,
+      });
+      expect(result).toEqual({ ok: false, reason: 'archived' });
+
+      const orphan = await serverDB
+        .select({ id: agents.id })
+        .from(agents)
+        .where(eq(agents.id, 'm10-archived-local'));
+      expect(orphan).toEqual([]);
+      expect(await repository.listMaterializedAgentIds(USER_A)).toEqual(new Set());
+    });
+
+    it('is owner-scoped: each user gets an isolated mapping, never the other user’s', async () => {
+      const { agentId, version } = await seedVersion('mat-owner');
+
+      await repository.materializeLocalAgent({
+        createLocalAgent: createLocalAgentFor(USER_A, 'm10-owner-a'),
+        platformAgentId: agentId,
+        platformAgentVersionChecksum: version.checksum,
+        platformAgentVersionId: version.id,
+        userId: USER_A,
+      });
+      await repository.materializeLocalAgent({
+        createLocalAgent: createLocalAgentFor(USER_B, 'm10-owner-b'),
+        platformAgentId: agentId,
+        platformAgentVersionChecksum: version.checksum,
+        platformAgentVersionId: version.id,
+        userId: USER_B,
+      });
+
+      expect(await repository.listMaterializedAgentIds(USER_A)).toEqual(new Set(['m10-owner-a']));
+      expect(await repository.listMaterializedAgentIds(USER_B)).toEqual(new Set(['m10-owner-b']));
+    });
   });
 });
