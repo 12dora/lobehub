@@ -269,9 +269,8 @@ describe('AgentOperationModel', () => {
     });
   });
 
-  describe('findPlatformOperationPinByOperationId (RR2-1)', () => {
+  describe('findResumablePlatformOperationPin (RR3-1)', () => {
     const pin = { checksum: 'a'.repeat(64), platformAgentId: 'pagt_1', versionId: 'pav_1' };
-    const pinV2 = { checksum: 'c'.repeat(64), platformAgentId: 'pagt_1', versionId: 'pav_2' };
     const modelPin = {
       modelKey: 'chat',
       providerChecksum: 'b'.repeat(64),
@@ -279,7 +278,6 @@ describe('AgentOperationModel', () => {
       providerRevision: 1,
     };
 
-    // agent_operations.topic_id / thread_id are FK-restricted, so seed the referenced rows.
     beforeEach(async () => {
       await serverDB.insert(topics).values([
         { id: 'topic-1', userId },
@@ -290,145 +288,192 @@ describe('AgentOperationModel', () => {
         .values([{ id: 'thread-1', topicId: 'topic-1', type: 'standalone', userId }]);
     });
 
-    const seed = (
+    // Seed an operation row directly (server-controlled) with the resume-anchor binding + status.
+    const seedOp = (params: {
+      assistantMessageId?: string;
+      id: string;
+      ownerId?: string;
+      platformAgentId?: string;
+      status?: 'waiting_for_human' | 'waiting_for_async_tool' | 'done';
+      threadId?: string | null;
+      topicId?: string;
+    }) =>
+      serverDB.insert(agentOperations).values({
+        id: params.id,
+        metadata: {
+          ...(params.assistantMessageId ? { assistantMessageId: params.assistantMessageId } : {}),
+          platformModel: modelPin,
+          platformOperation: { ...pin, platformAgentId: params.platformAgentId ?? 'pagt_1' },
+        },
+        startedAt: new Date(),
+        status: params.status ?? 'waiting_for_human',
+        threadId: params.threadId ?? null,
+        topicId: params.topicId ?? 'topic-1',
+        userId: params.ownerId ?? userId,
+      });
+
+    const find = (
       model: AgentOperationModel,
       params: {
-        modelPin?: typeof modelPin;
-        operationId: string;
-        pin?: typeof pin;
-        startedAt: Date;
+        anchorMessageId: string;
+        anchorParentId?: string | null;
+        platformAgentId?: string;
         threadId?: string | null;
-        topicId: string;
+        topicId?: string | null;
       },
     ) =>
-      model.recordStart({
-        metadata:
-          params.pin || params.modelPin
-            ? {
-                ...(params.pin ? { platformOperation: params.pin } : {}),
-                ...(params.modelPin ? { platformModel: params.modelPin } : {}),
-              }
-            : undefined,
-        operationId: params.operationId,
-        startedAt: params.startedAt,
+      model.findResumablePlatformOperationPin({
+        anchorMessageId: params.anchorMessageId,
+        anchorParentId: params.anchorParentId ?? null,
+        platformAgentId: params.platformAgentId ?? 'pagt_1',
         threadId: params.threadId ?? null,
-        topicId: params.topicId,
+        topicId: params.topicId === undefined ? 'topic-1' : params.topicId,
       });
 
-    it('resolves the EXACT operation pin, not the latest on the topic (concurrent v1/v2)', async () => {
-      const model = new AgentOperationModel(serverDB, userId);
-      // v1 started first, v2 later on the SAME topic. The fuzzy "latest" would return v2 for both.
-      await seed(model, {
-        operationId: 'op-v1',
-        pin,
-        startedAt: new Date('2024-01-01T00:00:00Z'),
-        topicId: 'topic-1',
-      });
-      await seed(model, {
-        operationId: 'op-v2',
-        pin: pinV2,
-        startedAt: new Date('2024-01-02T00:00:00Z'),
-        topicId: 'topic-1',
-      });
+    const model = () => new AgentOperationModel(serverDB, userId);
 
-      // An out-of-order resume of the v1 turn resolves v1 — bound to the exact operationId.
-      expect(
-        await model.findPlatformOperationPinByOperationId('op-v1', { topicId: 'topic-1' }),
-      ).toEqual(pin);
-      expect(
-        await model.findPlatformOperationPinByOperationId('op-v2', { topicId: 'topic-1' }),
-      ).toEqual(pinV2);
+    it('resolves via a direct assistant-turn anchor (server binding)', async () => {
+      await seedOp({ assistantMessageId: 'asst-1', id: 'op-1' });
+      expect(await find(model(), { anchorMessageId: 'asst-1' })).toEqual(pin);
     });
 
-    it('is owner-scoped: another user never sees the pin by a leaked operationId', async () => {
-      const model = new AgentOperationModel(serverDB, userId);
-      await seed(model, {
-        operationId: 'op-a',
+    it('resolves a pending tool message via its assistant parent (one hop)', async () => {
+      await seedOp({ assistantMessageId: 'asst-1', id: 'op-1' });
+      expect(await find(model(), { anchorMessageId: 'tool-1', anchorParentId: 'asst-1' })).toEqual(
         pin,
-        startedAt: new Date('2024-01-01T00:00:00Z'),
-        topicId: 'topic-1',
-      });
-      const other = new AgentOperationModel(serverDB, otherUserId);
+      );
+    });
+
+    it('fails closed for an unbound / fabricated anchor (no operation points at it)', async () => {
+      await seedOp({ assistantMessageId: 'asst-1', id: 'op-1' });
+      // A forged message metadata / a fabricated tool→assistant chain binds to no operation.
       expect(
-        await other.findPlatformOperationPinByOperationId('op-a', { topicId: 'topic-1' }),
+        await find(model(), { anchorMessageId: 'forged', anchorParentId: 'also-forged' }),
       ).toBeNull();
     });
 
-    it('binds topic and thread exactly (a cross-turn operationId does not rebind)', async () => {
-      const model = new AgentOperationModel(serverDB, userId);
-      await seed(model, {
-        operationId: 'op-thread',
-        pin,
-        startedAt: new Date('2024-01-01T00:00:00Z'),
-        threadId: 'thread-1',
-        topicId: 'topic-1',
-      });
-
-      // Exact operationId + matching topic/thread → resolves.
+    it('is owner-scoped: another user cannot bind to this operation', async () => {
+      await seedOp({ assistantMessageId: 'asst-1', id: 'op-1' });
       expect(
-        await model.findPlatformOperationPinByOperationId('op-thread', {
+        await find(new AgentOperationModel(serverDB, otherUserId), { anchorMessageId: 'asst-1' }),
+      ).toBeNull();
+    });
+
+    it('binds topic and thread exactly, and requires a topic', async () => {
+      await seedOp({ assistantMessageId: 'asst-1', id: 'op-1', threadId: 'thread-1' });
+      expect(await find(model(), { anchorMessageId: 'asst-1', threadId: 'thread-1' })).toEqual(pin);
+      // Wrong thread (main-turn leg) → null.
+      expect(await find(model(), { anchorMessageId: 'asst-1', threadId: null })).toBeNull();
+      // Wrong topic → null.
+      expect(
+        await find(model(), {
+          anchorMessageId: 'asst-1',
           threadId: 'thread-1',
-          topicId: 'topic-1',
-        }),
-      ).toEqual(pin);
-      // A thread op must NOT resolve when asked for the main-turn (threadId null) leg.
-      expect(
-        await model.findPlatformOperationPinByOperationId('op-thread', {
-          threadId: null,
-          topicId: 'topic-1',
+          topicId: 'topic-2',
         }),
       ).toBeNull();
-      // A wrong topic scope does not resolve.
+      // Missing topic → null (cannot jointly scope).
       expect(
-        await model.findPlatformOperationPinByOperationId('op-thread', { topicId: 'topic-2' }),
+        await find(model(), { anchorMessageId: 'asst-1', threadId: 'thread-1', topicId: null }),
       ).toBeNull();
     });
 
-    it('returns null for an ordinary (non-platform) operation', async () => {
-      const model = new AgentOperationModel(serverDB, userId);
-      await seed(model, {
-        operationId: 'op-plain',
-        startedAt: new Date('2024-01-03T00:00:00Z'),
-        topicId: 'topic-2',
-      });
+    it('only resumes a paused operation — a terminal (done) op is never a source', async () => {
+      await seedOp({ assistantMessageId: 'asst-1', id: 'op-done', status: 'done' });
+      expect(await find(model(), { anchorMessageId: 'asst-1' })).toBeNull();
+    });
+
+    it('binds the requested platform Agent', async () => {
+      await seedOp({ assistantMessageId: 'asst-1', id: 'op-1', platformAgentId: 'pagt_OTHER' });
       expect(
-        await model.findPlatformOperationPinByOperationId('op-plain', { topicId: 'topic-2' }),
+        await find(model(), { anchorMessageId: 'asst-1', platformAgentId: 'pagt_1' }),
       ).toBeNull();
+      expect(
+        await find(model(), { anchorMessageId: 'asst-1', platformAgentId: 'pagt_OTHER' }),
+      ).toEqual({ ...pin, platformAgentId: 'pagt_OTHER' });
     });
 
     describe('findPlatformOperationRef (RR2-2)', () => {
-      it('classifies a platform operation and returns its model pin', async () => {
-        const model = new AgentOperationModel(serverDB, userId);
-        await seed(model, {
-          modelPin,
-          operationId: 'op-platform',
-          pin,
-          startedAt: new Date('2024-01-01T00:00:00Z'),
+      const seedRef = (id: string, platform: boolean) =>
+        model().recordStart({
+          metadata: platform ? { platformModel: modelPin, platformOperation: pin } : undefined,
+          operationId: id,
           topicId: 'topic-1',
         });
-        expect(await model.findPlatformOperationRef('op-platform')).toEqual({
+
+      it('classifies a platform operation and returns its model pin', async () => {
+        await seedRef('op-platform', true);
+        expect(await model().findPlatformOperationRef('op-platform')).toEqual({
           isPlatformOperation: true,
           modelPin,
         });
       });
 
       it('classifies an ordinary operation (no marker, no pin)', async () => {
-        const model = new AgentOperationModel(serverDB, userId);
-        await seed(model, {
-          operationId: 'op-ordinary',
-          startedAt: new Date('2024-01-01T00:00:00Z'),
-          topicId: 'topic-1',
-        });
-        expect(await model.findPlatformOperationRef('op-ordinary')).toEqual({
+        await seedRef('op-ordinary', false);
+        expect(await model().findPlatformOperationRef('op-ordinary')).toEqual({
           isPlatformOperation: false,
           modelPin: null,
         });
       });
 
       it('returns null when the operation row does not exist under this owner scope', async () => {
-        const model = new AgentOperationModel(serverDB, userId);
-        expect(await model.findPlatformOperationRef('op-missing')).toBeNull();
+        expect(await model().findPlatformOperationRef('op-missing')).toBeNull();
       });
+    });
+  });
+
+  describe('recordStart — platform start conflict verification (RR3-2)', () => {
+    const pin = { checksum: 'a'.repeat(64), platformAgentId: 'pagt_1', versionId: 'pav_1' };
+    const modelPin = {
+      modelKey: 'chat',
+      providerChecksum: 'b'.repeat(64),
+      providerKey: 'openai',
+      providerRevision: 1,
+    };
+    const platformMeta = { platformModel: modelPin, platformOperation: pin };
+    const startPlatform = (model: AgentOperationModel, operationId = 'op-p') =>
+      model.recordStart({ metadata: platformMeta, operationId });
+
+    it('is exact-idempotent when the existing row is this owner with identical pins', async () => {
+      const model = new AgentOperationModel(serverDB, userId);
+      await startPlatform(model);
+      // A retry/queued re-entry with the SAME pins must not throw.
+      await expect(startPlatform(model)).resolves.toBeUndefined();
+    });
+
+    it('fails closed when a pre-existing row is an ordinary (no-pin) operation', async () => {
+      const model = new AgentOperationModel(serverDB, userId);
+      await model.recordStart({ operationId: 'op-p' }); // ordinary row lands first
+      await expect(startPlatform(model)).rejects.toThrow('PLATFORM_OPERATION_START_CONFLICT');
+    });
+
+    it('fails closed when the existing row carries an inconsistent (different) pin', async () => {
+      const model = new AgentOperationModel(serverDB, userId);
+      await model.recordStart({
+        metadata: {
+          platformModel: modelPin,
+          platformOperation: { ...pin, versionId: 'pav_OTHER' },
+        },
+        operationId: 'op-p',
+      });
+      await expect(startPlatform(model)).rejects.toThrow('PLATFORM_OPERATION_START_CONFLICT');
+    });
+
+    it('fails closed when the existing row belongs to another owner', async () => {
+      await new AgentOperationModel(serverDB, otherUserId).recordStart({
+        metadata: platformMeta,
+        operationId: 'op-p',
+      });
+      await expect(startPlatform(new AgentOperationModel(serverDB, userId))).rejects.toThrow(
+        'PLATFORM_OPERATION_START_CONFLICT',
+      );
+    });
+
+    it('keeps ordinary operations idempotent on conflict (no throw)', async () => {
+      const model = new AgentOperationModel(serverDB, userId);
+      await model.recordStart({ operationId: 'op-o' });
+      await expect(model.recordStart({ operationId: 'op-o' })).resolves.toBeUndefined();
     });
   });
 
