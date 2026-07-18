@@ -3260,6 +3260,15 @@ export class AiAgentService {
         if (tool.discoverable !== false && !toolManifestMap[tool.identifier]) {
           toolManifestMap[tool.identifier] = tool.manifest as LobeToolManifest;
         }
+        // Snapshot the server-authored origin together with the manifest. This is security
+        // provenance, not a name-based guess: createServerToolsEngine gives builtins precedence
+        // over installed plugins, while the additional Skill/Composio/Connector manifests below
+        // intentionally overwrite both the manifest and this source in the same merge order.
+        // Human-answer resume therefore cannot be enabled by an external manifest that merely
+        // claims an audited builtin identifier.
+        if (toolManifestMap[tool.identifier]) {
+          toolSourceMap[tool.identifier] = 'builtin';
+        }
       }
 
       // lobe-local-system has `discoverable: isDesktop` in builtinTools, which
@@ -3276,6 +3285,7 @@ export class AiAgentService {
         !toolManifestMap[LocalSystemManifest.identifier]
       ) {
         toolManifestMap[LocalSystemManifest.identifier] = LocalSystemManifest as LobeToolManifest;
+        toolSourceMap[LocalSystemManifest.identifier] = 'builtin';
       }
 
       // Include lobehub skill and composio manifests for activator discovery.
@@ -3304,6 +3314,10 @@ export class AiAgentService {
       for (const manifest of activeComposioManifests) {
         if (!isManifestIngestAllowed(manifest.identifier)) continue;
         toolSourceMap[manifest.identifier] = 'composio';
+      }
+      for (const manifest of activeConnectorManifests) {
+        if (!isManifestIngestAllowed(manifest.identifier)) continue;
+        toolSourceMap[manifest.identifier] = 'mcp';
       }
 
       // Mark tools that must run on the user's machine (local-system, stdio

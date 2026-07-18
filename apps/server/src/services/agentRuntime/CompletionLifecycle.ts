@@ -267,10 +267,9 @@ export class CompletionLifecycle {
         : [];
       const anchors = pending;
 
-      // Whether this is a platform-managed operation decides fail-closed severity (below). Read the
-      // trusted runtime classification is authoritative when present. A legacy rehydrated state
-      // without it must recover a complete persisted classification; missing/partial rows and read
-      // failures are fatal rather than guessed as ordinary.
+      // Whether this is a platform-managed operation decides fail-closed severity (below). The
+      // server-authored runtime classification + binding are the proof carried through execution;
+      // persisted operation metadata cannot substitute for missing or contradictory runtime proof.
       const runtimeClassification = state?.metadata?.platformStartClassification;
       const runtimeBinding = state?.metadata?.platformStartBinding as
         PlatformOperationMetadata | undefined;
@@ -285,22 +284,9 @@ export class CompletionLifecycle {
       } else if (runtimeClassification === 'ordinary' && runtimeBinding === undefined) {
         isPlatformOperation = false;
       } else {
-        if (runtimeClassification !== undefined || runtimeBinding !== undefined) {
-          throw new Error('OPERATION_PARK_CLASSIFICATION_FAILED', {
-            cause: new Error('inconsistent trusted runtime classification'),
-          });
-        }
-        try {
-          const ref = await this.agentOperationModel.findPlatformOperationRef(operationId);
-          if (!ref || ref.classification === 'partial') {
-            throw new Error('operation classification unavailable');
-          }
-          isPlatformOperation = ref.classification === 'complete';
-          expectedPlatformStart = ref.platformStart ?? undefined;
-        } catch (error) {
-          log('[%s] Failed to classify park operation (fatal): %O', operationId, error);
-          throw new Error('OPERATION_PARK_CLASSIFICATION_FAILED', { cause: error });
-        }
+        throw new Error('OPERATION_PARK_CLASSIFICATION_FAILED', {
+          cause: new Error('missing or inconsistent trusted runtime classification'),
+        });
       }
 
       let affected = 0;
