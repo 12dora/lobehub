@@ -11,7 +11,7 @@ import { platformConnectors } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 
 import { acquireConnectorPublicationDependencyLock } from '../connectorCatalog/publicationService';
-import { acquirePlatformDependencyPublicationLock } from '../platformDependencyLock';
+import { acquirePlatformDependencyValidationLock } from '../platformDependencyLock';
 
 const enabled = process.env.TEST_SERVER_DB === '1' && Boolean(process.env.DATABASE_TEST_URL);
 const run = enabled ? describe : describe.skip;
@@ -97,7 +97,7 @@ run('platform Agent / Connector dependency lock (PostgreSQL)', () => {
     let agentPassedSharedLock = false;
     const agentValidation = db.transaction(async (tx) => {
       await tx.execute(sql`SELECT id FROM platform_agents WHERE id = ${agentId} FOR UPDATE`);
-      await acquirePlatformDependencyPublicationLock(tx);
+      await acquirePlatformDependencyValidationLock(tx);
       agentPassedSharedLock = true;
       const [current] = await tx
         .select({ status: platformConnectors.status })
@@ -112,5 +112,82 @@ run('platform Agent / Connector dependency lock (PostgreSQL)', () => {
     await connectorMutation;
     await expect(agentValidation).rejects.toThrow('CONNECTOR_UNAVAILABLE');
     expect(agentPassedSharedLock).toBe(true);
+  });
+
+  it('allows two read-only dependency validations to hold the shared lock concurrently', async () => {
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let firstLocked!: () => void;
+    const firstLockAcquired = new Promise<void>((resolve) => {
+      firstLocked = resolve;
+    });
+    const first = db.transaction(async (tx) => {
+      await acquirePlatformDependencyValidationLock(tx);
+      firstLocked();
+      await firstGate;
+    });
+    await firstLockAcquired;
+
+    let secondLocked!: () => void;
+    const secondLockAcquired = new Promise<void>((resolve) => {
+      secondLocked = resolve;
+    });
+    const second = db.transaction(async (tx) => {
+      await acquirePlatformDependencyValidationLock(tx);
+      secondLocked();
+    });
+
+    const acquiredConcurrently = await Promise.race([
+      secondLockAcquired.then(() => true),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 500)),
+    ]);
+    releaseFirst();
+    await Promise.all([first, second]);
+    expect(acquiredConcurrently).toBe(true);
+  });
+
+  it('blocks a Connector publication/archive writer until a shared validation commits', async () => {
+    const connectorId = 'shared-reader-lock-probe';
+    await db.execute(
+      sql`INSERT INTO platform_connectors (id, enabled, status) VALUES (${connectorId}, true, 'published')`,
+    );
+
+    let releaseValidation!: () => void;
+    const validationGate = new Promise<void>((resolve) => {
+      releaseValidation = resolve;
+    });
+    let validationLocked!: () => void;
+    const validationLockAcquired = new Promise<void>((resolve) => {
+      validationLocked = resolve;
+    });
+    const validation = db.transaction(async (tx) => {
+      await acquirePlatformDependencyValidationLock(tx);
+      validationLocked();
+      await validationGate;
+    });
+    await validationLockAcquired;
+
+    let writerPassedExclusiveLock = false;
+    const writer = db.transaction(async (tx) => {
+      await tx
+        .select({ id: platformConnectors.id })
+        .from(platformConnectors)
+        .where(eq(platformConnectors.id, connectorId))
+        .for('update');
+      await acquireConnectorPublicationDependencyLock(tx, connectorId, {});
+      writerPassedExclusiveLock = true;
+      await tx
+        .update(platformConnectors)
+        .set({ enabled: false, status: 'archived' })
+        .where(eq(platformConnectors.id, connectorId));
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(writerPassedExclusiveLock).toBe(false);
+    releaseValidation();
+    await Promise.all([validation, writer]);
+    expect(writerPassedExclusiveLock).toBe(true);
   });
 });

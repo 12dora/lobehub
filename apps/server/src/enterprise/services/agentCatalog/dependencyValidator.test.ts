@@ -1,17 +1,24 @@
 import type { PlatformAgentDependencySnapshot } from '@lobechat/types';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { Transaction } from '@/database/type';
+import type { LobeChatDatabase, Transaction } from '@/database/type';
 
-import { assertExactPlatformAgentDependencies } from './dependencyValidator';
+import {
+  assertExactPlatformAgentDependencies,
+  validateExactPlatformAgentDependencies,
+} from './dependencyValidator';
 import { PlatformAgentDependencyValidationError } from './errors';
 
 const mocks = vi.hoisted(() => ({
-  getConnectorByKey: vi.fn(),
+  acquireValidationLock: vi.fn(),
   getProviderByKey: vi.fn(),
   getProviderRevision: vi.fn(),
-  getPublishedRuntimeRevision: vi.fn(),
-  getPublishedExecutionVersionExact: vi.fn(),
+  getPublishedExecutionVersionsExact: vi.fn(),
+  getPublishedRuntimeRevisionsExact: vi.fn(),
+}));
+
+vi.mock('../platformDependencyLock', () => ({
+  acquirePlatformDependencyValidationLock: mocks.acquireValidationLock,
 }));
 
 vi.mock('@/database/repositories/platformAiCatalog', () => ({
@@ -22,13 +29,12 @@ vi.mock('@/database/repositories/platformAiCatalog', () => ({
 }));
 vi.mock('@/database/repositories/platformSkillCatalog', () => ({
   PlatformSkillCatalogRepository: class {
-    getPublishedExecutionVersionExact = mocks.getPublishedExecutionVersionExact;
+    getPublishedExecutionVersionsExact = mocks.getPublishedExecutionVersionsExact;
   },
 }));
 vi.mock('@/database/repositories/platformConnectorCatalog', () => ({
   PlatformConnectorCatalogRepository: class {
-    getConnectorByKey = mocks.getConnectorByKey;
-    getPublishedRuntimeRevision = mocks.getPublishedRuntimeRevision;
+    getPublishedRuntimeRevisionsExact = mocks.getPublishedRuntimeRevisionsExact;
   },
 }));
 
@@ -54,6 +60,22 @@ const snapshot: PlatformAgentDependencySnapshot = {
 
 const tx = {} as Transaction;
 
+const skillRow = (overrides: Record<string, unknown> = {}) => ({
+  payload: { skill: { enabled: true, skillKey: 'summary' } },
+  version: { checksum: checksum('b') },
+  ...overrides,
+});
+
+const connectorRow = (overrides: Record<string, unknown> = {}) => ({
+  connector: { connectorKey: 'web', id: 'connector-id', status: 'published' },
+  payload: {
+    connector: { enabled: true, id: 'connector-id', key: 'web' },
+    tools: [{ platformPolicy: 'allow', toolKey: 'search' }],
+  },
+  provenance: { checksum: checksum('c') },
+  ...overrides,
+});
+
 const arrangeValid = () => {
   mocks.getProviderByKey.mockResolvedValue({ id: 'provider-id', status: 'published' });
   mocks.getProviderRevision.mockResolvedValue({
@@ -64,21 +86,12 @@ const arrangeValid = () => {
     },
     status: 'published',
   });
-  mocks.getPublishedExecutionVersionExact.mockResolvedValue({
-    payload: { skill: { enabled: true, skillKey: 'summary' } },
-    version: { checksum: checksum('b') },
-  });
-  mocks.getConnectorByKey.mockResolvedValue({
-    id: 'connector-id',
-    status: 'published',
-  });
-  mocks.getPublishedRuntimeRevision.mockResolvedValue({
-    payload: {
-      connector: { enabled: true, id: 'connector-id', key: 'web' },
-      tools: [{ platformPolicy: 'allow', toolKey: 'search' }],
-    },
-    provenance: { checksum: checksum('c') },
-  });
+  mocks.getPublishedExecutionVersionsExact.mockResolvedValue(
+    new Map([['summary\0' + '1.0.0', skillRow()]]),
+  );
+  mocks.getPublishedRuntimeRevisionsExact.mockResolvedValue(
+    new Map([['connector-id\0' + 3, connectorRow()]]),
+  );
 };
 
 describe('assertExactPlatformAgentDependencies', () => {
@@ -90,8 +103,22 @@ describe('assertExactPlatformAgentDependencies', () => {
   it('accepts exact published and enabled M07/M08/M09 references', async () => {
     await expect(assertExactPlatformAgentDependencies(tx, snapshot)).resolves.toBeUndefined();
     expect(mocks.getProviderRevision).toHaveBeenCalledWith('provider-id', 2);
-    expect(mocks.getPublishedExecutionVersionExact).toHaveBeenCalledWith('summary', '1.0.0');
-    expect(mocks.getPublishedRuntimeRevision).toHaveBeenCalledWith('connector-id', 3);
+    expect(mocks.getPublishedExecutionVersionsExact).toHaveBeenCalledOnce();
+    expect(mocks.getPublishedExecutionVersionsExact).toHaveBeenCalledWith(snapshot.skills);
+    expect(mocks.getPublishedRuntimeRevisionsExact).toHaveBeenCalledOnce();
+    expect(mocks.getPublishedRuntimeRevisionsExact).toHaveBeenCalledWith(snapshot.connectors);
+  });
+
+  it('takes the shared validation lock before any exact catalog read', async () => {
+    const db = {
+      transaction: vi.fn(async (run: (transaction: Transaction) => Promise<unknown>) => run(tx)),
+    } as unknown as LobeChatDatabase;
+
+    await expect(validateExactPlatformAgentDependencies(db, snapshot)).resolves.toEqual({
+      valid: true,
+    });
+    expect(mocks.acquireValidationLock).toHaveBeenCalledWith(tx);
+    expect(mocks.acquireValidationLock).toHaveBeenCalledBefore(mocks.getProviderByKey);
   });
 
   it.each([
@@ -121,40 +148,55 @@ describe('assertExactPlatformAgentDependencies', () => {
     [
       'skill checksum drift',
       () =>
-        mocks.getPublishedExecutionVersionExact.mockResolvedValue({
-          payload: { skill: { enabled: true, skillKey: 'summary' } },
-          version: { checksum: checksum('f') },
-        }),
+        mocks.getPublishedExecutionVersionsExact.mockResolvedValue(
+          new Map([['summary\0' + '1.0.0', skillRow({ version: { checksum: checksum('f') } })]]),
+        ),
       'SKILL_UNAVAILABLE',
     ],
     [
       'disabled skill snapshot',
       () =>
-        mocks.getPublishedExecutionVersionExact.mockResolvedValue({
-          payload: { skill: { enabled: false, skillKey: 'summary' } },
-          version: { checksum: checksum('b') },
-        }),
+        mocks.getPublishedExecutionVersionsExact.mockResolvedValue(
+          new Map([
+            [
+              'summary\0' + '1.0.0',
+              skillRow({ payload: { skill: { enabled: false, skillKey: 'summary' } } }),
+            ],
+          ]),
+        ),
       'SKILL_UNAVAILABLE',
     ],
     [
       'connector identity drift',
       () =>
-        mocks.getConnectorByKey.mockResolvedValue({
-          id: 'different-id',
-          status: 'published',
-        }),
+        mocks.getPublishedRuntimeRevisionsExact.mockResolvedValue(
+          new Map([
+            [
+              'connector-id\0' + 3,
+              connectorRow({
+                connector: { connectorKey: 'web', id: 'different-id', status: 'published' },
+              }),
+            ],
+          ]),
+        ),
       'CONNECTOR_UNAVAILABLE',
     ],
     [
       'denied connector tool',
       () =>
-        mocks.getPublishedRuntimeRevision.mockResolvedValue({
-          payload: {
-            connector: { enabled: true, id: 'connector-id', key: 'web' },
-            tools: [{ platformPolicy: 'deny', toolKey: 'search' }],
-          },
-          provenance: { checksum: checksum('c') },
-        }),
+        mocks.getPublishedRuntimeRevisionsExact.mockResolvedValue(
+          new Map([
+            [
+              'connector-id\0' + 3,
+              connectorRow({
+                payload: {
+                  connector: { enabled: true, id: 'connector-id', key: 'web' },
+                  tools: [{ platformPolicy: 'deny', toolKey: 'search' }],
+                },
+              }),
+            ],
+          ]),
+        ),
       'CONNECTOR_TOOL_UNAVAILABLE',
     ],
   ] as const)('rejects %s without exposing dependency details', async (_name, mutate, code) => {
@@ -165,5 +207,54 @@ describe('assertExactPlatformAgentDependencies', () => {
     expect(error.message).toBe('PLATFORM_CONFIG_VALIDATION_FAILED');
     expect(error.message).not.toContain('provider');
     expect(error.message).not.toContain('search');
+  });
+
+  it('keeps the maximum Skill/Connector snapshot to one batch query per catalog', async () => {
+    const largeSnapshot = {
+      ...snapshot,
+      connectors: Array.from({ length: 100 }, (_, index) => ({
+        ...snapshot.connectors[0],
+        connectorId: `connector-${index}`,
+        connectorKey: `connector-${index}`,
+      })),
+      skills: Array.from({ length: 100 }, (_, index) => ({
+        ...snapshot.skills[0],
+        skillKey: `skill-${index}`,
+      })),
+    };
+    mocks.getPublishedExecutionVersionsExact.mockResolvedValue(
+      new Map(
+        largeSnapshot.skills.map((reference) => [
+          `${reference.skillKey}\0${reference.version}`,
+          skillRow({ payload: { skill: { enabled: true, skillKey: reference.skillKey } } }),
+        ]),
+      ),
+    );
+    mocks.getPublishedRuntimeRevisionsExact.mockResolvedValue(
+      new Map(
+        largeSnapshot.connectors.map((reference) => [
+          `${reference.connectorId}\0${reference.publishedRevision}`,
+          connectorRow({
+            connector: {
+              connectorKey: reference.connectorKey,
+              id: reference.connectorId,
+              status: 'published',
+            },
+            payload: {
+              connector: {
+                enabled: true,
+                id: reference.connectorId,
+                key: reference.connectorKey,
+              },
+              tools: [{ platformPolicy: 'allow', toolKey: 'search' }],
+            },
+          }),
+        ]),
+      ),
+    );
+
+    await expect(assertExactPlatformAgentDependencies(tx, largeSnapshot)).resolves.toBeUndefined();
+    expect(mocks.getPublishedExecutionVersionsExact).toHaveBeenCalledOnce();
+    expect(mocks.getPublishedRuntimeRevisionsExact).toHaveBeenCalledOnce();
   });
 });

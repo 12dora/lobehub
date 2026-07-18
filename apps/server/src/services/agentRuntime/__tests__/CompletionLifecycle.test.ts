@@ -575,6 +575,28 @@ describe('CompletionLifecycle.persistCompletion — atomic human-intervention pa
         platformStart: null,
       },
     },
+    { classification: 'missing', persistedRef: null },
+  ])(
+    'keeps an upgrade-era parked operation legacy when persisted metadata is $classification',
+    async ({ persistedRef }) => {
+      const findRef = vi
+        .spyOn(AgentOperationModel.prototype, 'findPlatformOperationRef')
+        .mockResolvedValue(persistedRef);
+      const park = vi
+        .spyOn(AgentOperationModel.prototype, 'parkForHumanIntervention')
+        .mockResolvedValue({ affected: 0 });
+      const state = parkedState(false);
+      delete (state.metadata as Record<string, unknown>).platformStartClassification;
+
+      await expect(
+        buildLifecycle().dispatchHooks('op-1', state, 'waiting_for_human'),
+      ).resolves.toBeUndefined();
+      expect(findRef).toHaveBeenCalledWith('op-1');
+      expect(park).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([
     {
       classification: 'complete',
       persistedRef: {
@@ -584,8 +606,17 @@ describe('CompletionLifecycle.persistCompletion — atomic human-intervention pa
         platformStart,
       },
     },
+    {
+      classification: 'partial',
+      persistedRef: {
+        classification: 'partial' as const,
+        isPlatformOperation: false,
+        modelPin: platformStart.platformModel,
+        platformStart: null,
+      },
+    },
   ])(
-    'fails closed without runtime proof even when DB metadata classifies the operation as $classification',
+    'fails closed without runtime proof when persisted metadata is $classification',
     async ({ persistedRef }) => {
       const findRef = vi
         .spyOn(AgentOperationModel.prototype, 'findPlatformOperationRef')
@@ -597,9 +628,23 @@ describe('CompletionLifecycle.persistCompletion — atomic human-intervention pa
       await expect(
         buildLifecycle().dispatchHooks('op-1', state, 'waiting_for_human'),
       ).rejects.toThrow('OPERATION_PARK_CLASSIFICATION_FAILED');
-      expect(findRef).not.toHaveBeenCalled();
+      expect(findRef).toHaveBeenCalledWith('op-1');
     },
   );
+
+  it('fails closed with a stable classification error when the upgrade-era ref read fails', async () => {
+    vi.spyOn(AgentOperationModel.prototype, 'findPlatformOperationRef').mockRejectedValue(
+      new Error('select metadata failed'),
+    );
+    const park = vi.spyOn(AgentOperationModel.prototype, 'parkForHumanIntervention');
+    const state = parkedState(false);
+    delete (state.metadata as Record<string, unknown>).platformStartClassification;
+
+    await expect(
+      buildLifecycle().dispatchHooks('op-1', state, 'waiting_for_human'),
+    ).rejects.toThrow('OPERATION_PARK_CLASSIFICATION_FAILED');
+    expect(park).not.toHaveBeenCalled();
+  });
 
   it.each(['platformStartBinding', 'platformStartClassification'] as const)(
     'fails closed when trusted runtime proof is missing %s',

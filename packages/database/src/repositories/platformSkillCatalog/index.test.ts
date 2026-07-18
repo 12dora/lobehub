@@ -241,8 +241,21 @@ describe('PlatformSkillCatalogRepository', () => {
     expect(
       (await repository.getPublishedExecutionVersionExact('search', '1.0.0'))?.version.id,
     ).toBe(v1.id);
+    const exactBatch = await repository.getPublishedExecutionVersionsExact([
+      { skillKey: 'search', version: '1.0.0' },
+      { skillKey: 'search', version: '2.0.0' },
+      { skillKey: 'search', version: 'missing' },
+    ]);
+    expect(exactBatch.get(`${'search'}\0${'1.0.0'}`)?.version.id).toBe(v1.id);
+    expect(exactBatch.get(`${'search'}\0${'2.0.0'}`)?.version.id).toBe(v2.id);
+    expect(exactBatch.has(`${'search'}\0${'missing'}`)).toBe(false);
     await repository.updateSkill(skill.id, { enabled: false });
     expect(await repository.getPublishedExecutionVersionExact('search', '1.0.0')).toBeUndefined();
+    expect(
+      await repository.getPublishedExecutionVersionsExact([
+        { skillKey: 'search', version: '1.0.0' },
+      ]),
+    ).toEqual(new Map());
     await repository.updateSkill(skill.id, { enabled: true });
 
     await serverDB.insert(platformResourceRevisions).values({
