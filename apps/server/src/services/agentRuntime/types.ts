@@ -7,7 +7,11 @@ import type {
   ToolExecutor,
   ToolSource,
 } from '@lobechat/context-engine';
-import type { ChatTopicBotContext, UserInterventionConfig } from '@lobechat/types';
+import type {
+  ChatTopicBotContext,
+  PlatformOperationPin,
+  UserInterventionConfig,
+} from '@lobechat/types';
 
 import type { ExecutionPlan } from '@/helpers/executionTarget';
 import { type ServerUserMemoryConfig } from '@/server/modules/Mecha/ContextEngineering/types';
@@ -403,6 +407,12 @@ export interface OperationCreationParams {
    * sub-tree back to its root.
    */
   parentOperationId?: string;
+  /**
+   * Secret-free platform operation pin (M10 PR-049 · REWORK-2). Persisted verbatim onto
+   * `agent_operations.metadata.platformOperation` so resume/retry/queued steps replay the exact
+   * pinned version. Absent for ordinary / builtin operations.
+   */
+  platformOperationPin?: PlatformOperationPin;
   queueRetries?: number;
   queueRetryDelay?: string;
   /** Abort startup before the first step is scheduled */

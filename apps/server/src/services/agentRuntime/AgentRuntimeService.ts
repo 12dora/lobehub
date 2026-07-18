@@ -456,6 +456,7 @@ export class AgentRuntimeService {
       deviceSystemInfo,
       operationSkillSet,
       parentOperationId,
+      platformOperationPin,
       signal,
       userTimezone,
       initialStepCount = 0,
@@ -480,11 +481,13 @@ export class AgentRuntimeService {
       // Persist the Agent Signal run marker on the operation row so server-side
       // self-iteration tools can read it back (metadata.agentSignal) at tool-call
       // time — the trimmed appContext above intentionally drops it.
-      ...(appContext?.agentSignal || connectorApprovalReceipt
+      ...(appContext?.agentSignal || connectorApprovalReceipt || platformOperationPin
         ? {
             metadata: {
               ...(appContext?.agentSignal ? { agentSignal: appContext.agentSignal } : {}),
               ...(connectorApprovalReceipt ? { connectorApprovalReceipt } : {}),
+              // Secret-free pin so resume/retry/queued steps replay the exact pinned version.
+              ...(platformOperationPin ? { platformOperation: platformOperationPin } : {}),
             },
           }
         : {}),

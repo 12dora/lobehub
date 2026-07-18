@@ -217,6 +217,40 @@ describe('PlatformAgentMaterializationService', () => {
     );
   });
 
+  describe('materializeFromPin (resume replay)', () => {
+    const pin = { checksum: CHECKSUM, platformAgentId: 'pagt_1', versionId: 'pav_1' };
+
+    it('re-derives the pinned config from the exact version and reuses the local Agent', async () => {
+      const service = makeService({
+        getExactVersion: vi.fn(async () => exactVersion()),
+        materializeLocalAgent: vi.fn(async () => ({
+          agentId: 'agt_reuse',
+          created: false,
+          ok: true as const,
+        })),
+      });
+      const result = await service.materializeFromPin(pin);
+      expect(result.agentId).toBe('agt_reuse');
+      expect(result.config.title).toBe('Research Agent');
+    });
+
+    it('fails closed when the pinned version is missing', async () => {
+      const service = makeService({ getExactVersion: vi.fn(async () => undefined) });
+      await expect(service.materializeFromPin(pin)).rejects.toBeInstanceOf(
+        PlatformAgentMaterializationError,
+      );
+    });
+
+    it('fails closed when the persisted pin checksum no longer matches the version (tampered)', async () => {
+      const service = makeService({
+        getExactVersion: vi.fn(async () => exactVersion({ checksum: 'f'.repeat(64) })),
+      });
+      await expect(service.materializeFromPin(pin)).rejects.toBeInstanceOf(
+        PlatformAgentMaterializationError,
+      );
+    });
+  });
+
   it('redacts a raw driver error from the exact-version read (REWORK-5)', async () => {
     const service = makeService({
       getExactVersion: vi.fn(async () => {

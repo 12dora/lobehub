@@ -49,6 +49,7 @@ import type {
   LobeAgentAgencyConfig,
   LobeAgentConfig,
   MessagePluginItem,
+  PlatformOperationPin,
   RuntimeMentionedAgent,
   UserInterventionConfig,
   WorkspaceInitResult,
@@ -1020,10 +1021,84 @@ export class AiAgentService {
     );
   }
 
+  /** Map a platform config-resolution failure to a stable, redacted TRPCError. */
+  private mapPlatformConfigError(
+    error: unknown,
+    platformAgentId: string,
+    identifier: string,
+  ): never {
+    if (error instanceof PlatformAgentNotFoundError) {
+      throw new TRPCError({ code: 'NOT_FOUND', message: `Agent not found: ${identifier}` });
+    }
+    if (error instanceof PlatformAgentDependencyValidationError) {
+      log('execAgent: platform dependency validation failed for %s', platformAgentId);
+      throw new TRPCError({
+        code: 'PRECONDITION_FAILED',
+        message: 'Platform agent dependencies are unavailable',
+      });
+    }
+    if (error instanceof PlatformAgentMaterializationError) {
+      log('execAgent: platform materialization failed for %s: %O', platformAgentId, error);
+      throw new TRPCError({
+        code: 'INTERNAL_SERVER_ERROR',
+        message: 'Failed to start platform agent',
+      });
+    }
+    throw error;
+  }
+
+  /**
+   * Validate the operation's pinned, immutable dependency snapshot against the published catalog via
+   * the existing M07/M08/M09 exact validator (REWORK-4): fail-closed at the pinned revision — no
+   * latest fallback, no silently-dropped Skill/Connector — surfacing only redacted issue codes.
+   */
+  private async assertPlatformOperationDependencies(
+    dependencySnapshot: Parameters<typeof validateExactPlatformAgentDependencies>[1],
+  ): Promise<void> {
+    await validateExactPlatformAgentDependencies(this.db, dependencySnapshot);
+  }
+
+  /**
+   * Resolve a platform Agent chat entry into a runtime config + the secret-free operation pin.
+   *
+   * NEW operation: `beginOperation` re-resolves owner-scoped Effective entitlement ONCE and captures
+   * the exact pinned version; the returned pin is persisted so later steps replay it.
+   *
+   * RESUME / retry / queued (a continuation of an existing topic/thread turn): replay the persisted,
+   * owner-scoped pin via `materializeFromPin` — NO `beginOperation`, no latest resolve — so an
+   * in-flight v1 operation stays on v1 after v2 is published. A persisted pin for a different
+   * platform Agent, a missing exact version, or a checksum mismatch (tampered metadata / advanced
+   * pointer) fails closed.
+   */
   private async resolvePlatformAgentConfig(
     platformAgentId: string,
     identifier: string,
-  ): Promise<AgentConfigWithId> {
+    resumeContext: { resume: boolean; threadId: string | null; topicId: string | null },
+  ): Promise<{ config: AgentConfigWithId; pin: PlatformOperationPin }> {
+    const materializationService = new PlatformAgentMaterializationService(this.db, this.userId);
+
+    if (resumeContext.resume && resumeContext.topicId) {
+      const pin = await this.agentOperationModel.findLatestPlatformOperationPin({
+        threadId: resumeContext.threadId,
+        topicId: resumeContext.topicId,
+      });
+      if (pin) {
+        // The resumed turn must belong to the same platform Agent the request targets.
+        if (pin.platformAgentId !== platformAgentId) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: `Agent not found: ${identifier}` });
+        }
+        try {
+          const materialized = await materializationService.materializeFromPin(pin);
+          await this.assertPlatformOperationDependencies(materialized.dependencySnapshot);
+          return { config: materialized.config, pin };
+        } catch (error) {
+          this.mapPlatformConfigError(error, platformAgentId, identifier);
+        }
+      }
+      // No persisted platform pin for this topic/thread (unexpected for a platform resume): fall
+      // through to a fresh authorization rather than silently running as an ordinary agent.
+    }
+
     const handle = await new PlatformAgentEffectiveResolver(this.db).beginOperation(
       this.userId,
       platformAgentId,
@@ -1032,37 +1107,19 @@ export class AiAgentService {
       throw new TRPCError({ code: 'NOT_FOUND', message: `Agent not found: ${identifier}` });
     }
     try {
-      const materialized = await new PlatformAgentMaterializationService(
-        this.db,
-        this.userId,
-      ).materializeForOperation(handle.getSnapshot());
-      // Exact-dependency binding (REWORK-4): validate the operation's pinned, immutable dependency
-      // snapshot — model provider revision/checksum, skills exact version/checksum, connectors exact
-      // revision/checksum/allowlist — against the published catalog via the existing M07/M08/M09
-      // validator. Fail-closed at the pinned revision: no latest fallback, no silently-dropped
-      // Skill/Connector. Raises the redacted PlatformAgentDependencyValidationError (issue codes
-      // only, no secrets) when a pinned dependency is no longer published.
-      await validateExactPlatformAgentDependencies(this.db, materialized.dependencySnapshot);
-      return materialized.config;
+      const snapshot = handle.getSnapshot();
+      const materialized = await materializationService.materializeForOperation(snapshot);
+      await this.assertPlatformOperationDependencies(materialized.dependencySnapshot);
+      return {
+        config: materialized.config,
+        pin: {
+          checksum: snapshot.checksum,
+          platformAgentId: snapshot.platformAgentId,
+          versionId: snapshot.versionId,
+        },
+      };
     } catch (error) {
-      if (error instanceof PlatformAgentNotFoundError) {
-        throw new TRPCError({ code: 'NOT_FOUND', message: `Agent not found: ${identifier}` });
-      }
-      if (error instanceof PlatformAgentDependencyValidationError) {
-        log('execAgent: platform dependency validation failed for %s', platformAgentId);
-        throw new TRPCError({
-          code: 'PRECONDITION_FAILED',
-          message: 'Platform agent dependencies are unavailable',
-        });
-      }
-      if (error instanceof PlatformAgentMaterializationError) {
-        log('execAgent: platform materialization failed for %s: %O', platformAgentId, error);
-        throw new TRPCError({
-          code: 'INTERNAL_SERVER_ERROR',
-          message: 'Failed to start platform agent',
-        });
-      }
-      throw error;
+      this.mapPlatformConfigError(error, platformAgentId, identifier);
     }
   }
 
@@ -1192,8 +1249,16 @@ export class AiAgentService {
     // and then fails closed in resolvePlatformAgentConfig.
     const platformAgentId = await this.resolvePlatformAgentId(identifier, agentId);
     let agentConfig: AgentConfigWithId | null;
+    // Persisted onto the operation so resume/retry/queued steps replay the exact pinned version.
+    let platformOperationPin: PlatformOperationPin | undefined;
     if (platformAgentId) {
-      agentConfig = await this.resolvePlatformAgentConfig(platformAgentId, identifier);
+      const resolved = await this.resolvePlatformAgentConfig(platformAgentId, identifier, {
+        resume: resume || !!resumeApproval || !!resumeToolResult,
+        threadId: appContext?.threadId ?? null,
+        topicId: appContext?.topicId ?? null,
+      });
+      agentConfig = resolved.config;
+      platformOperationPin = resolved.pin;
     } else {
       agentConfig = await this.agentService.getAgentConfig(identifier);
       // Builtin agents (inbox / page / task / self-iteration slugs) may be addressed
@@ -3800,6 +3865,7 @@ export class AiAgentService {
         hooks,
         operationId,
         parentOperationId,
+        platformOperationPin,
         signal,
         queueRetries,
         queueRetryDelay,

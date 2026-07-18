@@ -22,12 +22,14 @@ import type { LobeChatDatabase } from '@/database/type';
 const {
   beginOperation,
   materializeForOperation,
+  materializeFromPin,
   getPlatformAgentIdByMaterializedAgentId,
   validateDeps,
 } = vi.hoisted(() => ({
   beginOperation: vi.fn(),
   getPlatformAgentIdByMaterializedAgentId: vi.fn(),
   materializeForOperation: vi.fn(),
+  materializeFromPin: vi.fn(),
   validateDeps: vi.fn(async () => ({ valid: true })),
 }));
 
@@ -40,6 +42,7 @@ vi.mock('@/server/enterprise/services/agentCatalog', async (importOriginal) => {
     },
     PlatformAgentMaterializationService: class {
       materializeForOperation = materializeForOperation;
+      materializeFromPin = materializeFromPin;
     },
     validateExactPlatformAgentDependencies: validateDeps,
   };
@@ -65,10 +68,12 @@ const service = () => new AiAgentService(db, 'user-a');
 
 // Spy the ordinary config path so we can prove whether the request went platform or ordinary.
 let getAgentConfigSpy: MockInstance;
+// Spy the persisted-pin lookup so we can drive the resume path.
+let findPinSpy: MockInstance;
 
-const run = (params: { agentId?: string; slug?: string }) =>
+const run = (params: Record<string, unknown>) =>
   service()
-    .execAgent({ prompt: 'hi', ...params })
+    .execAgent({ prompt: 'hi', ...params } as never)
     .then(
       () => null,
       (e) => e,
@@ -82,6 +87,11 @@ beforeEach(async () => {
   // Ordinary path resolves to "not found" so we can assert reject-early without a real agent row.
   const { AgentService } = await import('@/server/services/agent');
   getAgentConfigSpy = vi.spyOn(AgentService.prototype, 'getAgentConfig').mockResolvedValue(null);
+  // Default: no persisted pin (fresh operation path).
+  const { AgentOperationModel } = await import('@/database/models/agentOperation');
+  findPinSpy = vi
+    .spyOn(AgentOperationModel.prototype, 'findLatestPlatformOperationPin')
+    .mockResolvedValue(null);
 });
 
 afterEach(() => {
@@ -173,5 +183,50 @@ describe('AiAgentService.execAgent — platform entitlement (REWORK-2)', () => {
     expect(validateDeps).toHaveBeenCalledWith(expect.anything(), dependencySnapshot);
     // Public message carries no dependency identifiers / secrets.
     expect((error as TRPCError).message).toBe('Platform agent dependencies are unavailable');
+  });
+
+  // REWORK-2 resume/retry/queued: a continuation replays the persisted pin (the exact version the
+  // operation started on) and NEVER re-authorizes via beginOperation, so it stays on v1 after v2.
+  describe('resume replays the persisted operation pin', () => {
+    const pin = { checksum: 'a'.repeat(64), platformAgentId: 'pagt_1', versionId: 'pav_1' };
+    const resumeParams = {
+      agentId: 'platform-agent:pagt_1',
+      appContext: { topicId: 'topic-1' },
+      parentMessageId: 'msg-1',
+      resume: true,
+    };
+
+    it('reuses the pinned version via materializeFromPin without calling beginOperation', async () => {
+      findPinSpy.mockResolvedValue(pin);
+      materializeFromPin.mockResolvedValue({
+        agentId: 'agt_x',
+        config: { id: 'agt_x' },
+        dependencySnapshot: { connectors: [], model: {}, skills: [] },
+      });
+      // (execAgent later fails at resume message validation — irrelevant to the pin path we assert.)
+      await run(resumeParams);
+      expect(findPinSpy).toHaveBeenCalledWith({ threadId: null, topicId: 'topic-1' });
+      expect(materializeFromPin).toHaveBeenCalledWith(pin);
+      expect(beginOperation).not.toHaveBeenCalled();
+      // Dependencies are still validated at the pinned revision on resume.
+      expect(validateDeps).toHaveBeenCalled();
+    });
+
+    it('fails closed when the persisted pin is for a different platform Agent', async () => {
+      findPinSpy.mockResolvedValue({ ...pin, platformAgentId: 'pagt_OTHER' });
+      const error = await run(resumeParams);
+      expect((error as TRPCError).code).toBe('NOT_FOUND');
+      expect(materializeFromPin).not.toHaveBeenCalled();
+      expect(beginOperation).not.toHaveBeenCalled();
+    });
+
+    it('falls back to a fresh authorization when no platform pin is persisted for the turn', async () => {
+      findPinSpy.mockResolvedValue(null);
+      beginOperation.mockResolvedValue(null); // e.g. entitlement gone → fresh resolve fails closed
+      const error = await run(resumeParams);
+      expect((error as TRPCError).code).toBe('NOT_FOUND');
+      expect(materializeFromPin).not.toHaveBeenCalled();
+      expect(beginOperation).toHaveBeenCalledTimes(1);
+    });
   });
 });
