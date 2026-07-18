@@ -4,7 +4,7 @@ import { getServerDB } from '@/database/core/db-adaptor';
 import type { LobeChatDatabase } from '@/database/type';
 
 import { parseEnterpriseFeatureFlags } from '../featureFlags';
-import { processNextPlatformAgentRolloutBatch } from '../services/agentCatalog/rolloutService';
+import { processNextPlatformAgentRolloutBatch } from '../services/agentCatalog/rolloutWorker';
 
 const DEFAULT_BATCH_LIMIT = 10;
 const DEFAULT_INTERVAL_MS = 2000;

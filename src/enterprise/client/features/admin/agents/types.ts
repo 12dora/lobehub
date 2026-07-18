@@ -134,8 +134,8 @@ export interface AdminAgentDraft {
 }
 
 /**
- * Capability flags the adapter advertises to the UI. Production exposes the real PR-052 backend;
- * tests and alternate adapters may still turn it off to exercise the deferred surface.
+ * Test/alternate-adapter fallback. Production UI availability is injected from the authoritative
+ * `platform.getCapabilities.managedResources.agents` snapshot; the singleton adapter stays closed.
  */
 export interface AdminAgentsClientCapabilities {
   rollouts: boolean;

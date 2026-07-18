@@ -209,12 +209,18 @@ export const AssignmentPanel = ({
                   <Button disabled={editor.locked} onClick={() => editor.edit(assignment)}>
                     {t('agentCatalog.assignment.edit')}
                   </Button>
-                  {rolloutsEnabled ? (
+                  {rolloutsEnabled && snapshot.identity.systemKey !== 'default-inbox' ? (
                     <Button onClick={() => startRollout(assignment.id)}>
                       {t('agentCatalog.rollout.start')}
                     </Button>
                   ) : (
-                    <Tooltip title={t('agentCatalog.rollout.deferred')}>
+                    <Tooltip
+                      title={
+                        snapshot.identity.systemKey === 'default-inbox'
+                          ? t('agentCatalog.rollout.defaultInboxDelegated')
+                          : t('agentCatalog.rollout.deferred')
+                      }
+                    >
                       <Button disabled>{t('agentCatalog.rollout.start')}</Button>
                     </Tooltip>
                   )}

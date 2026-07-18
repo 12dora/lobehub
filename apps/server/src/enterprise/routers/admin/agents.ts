@@ -1,5 +1,10 @@
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
-import { authedProcedure, router } from '@/libs/trpc/lambda';
+import {
+  authedProcedure,
+  enterpriseAccessGate,
+  preAccessAuthedProcedure,
+  router,
+} from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 
 import {
@@ -63,6 +68,16 @@ import {
 } from './agentsSupport';
 
 const adminBase = authedProcedure.use(serverDatabase).use(withActiveUser());
+const rolloutBase = preAccessAuthedProcedure
+  .use(({ next }) => {
+    // This synchronous env-only gate MUST precede serverDatabase, active-user and RBAC. With
+    // ADMIN=1 + MANAGED_AGENTS=0 every rollout procedure exits with zero database/guard work.
+    assertAgentFeatureEnabled();
+    return next();
+  })
+  .use(enterpriseAccessGate)
+  .use(serverDatabase)
+  .use(withActiveUser());
 
 const assignmentsRouter = router({
   list: adminBase
@@ -144,7 +159,7 @@ const rolloutMutation = async (params: {
   });
 
 const rolloutsRouter = router({
-  cancel: adminBase
+  cancel: rolloutBase
     .use(withPlatformPermission(PLATFORM_PERMISSIONS.AGENT_ASSIGN))
     .input(adminPlatformAgentRolloutCancelInputSchema)
     .output(adminPlatformAgentRolloutCancelOutputSchema)
@@ -166,7 +181,7 @@ const rolloutsRouter = router({
       }
     }),
 
-  get: adminBase
+  get: rolloutBase
     .use(withPlatformPermission(PLATFORM_PERMISSIONS.AGENT_READ))
     .input(adminPlatformAgentRolloutGetInputSchema)
     .output(adminPlatformAgentRolloutGetOutputSchema)
@@ -179,7 +194,7 @@ const rolloutsRouter = router({
       }
     }),
 
-  list: adminBase
+  list: rolloutBase
     .use(withPlatformPermission(PLATFORM_PERMISSIONS.AGENT_READ))
     .input(adminPlatformAgentRolloutListInputSchema)
     .output(adminPlatformAgentRolloutListOutputSchema)
@@ -192,7 +207,7 @@ const rolloutsRouter = router({
       }
     }),
 
-  retry: adminBase
+  retry: rolloutBase
     .use(withPlatformPermission(PLATFORM_PERMISSIONS.AGENT_ASSIGN))
     .input(adminPlatformAgentRolloutRetryInputSchema)
     .output(adminPlatformAgentRolloutRetryOutputSchema)
@@ -214,7 +229,7 @@ const rolloutsRouter = router({
       }
     }),
 
-  rollback: adminBase
+  rollback: rolloutBase
     .use(withPlatformPermission(PLATFORM_PERMISSIONS.AGENT_PUBLISH))
     .input(adminPlatformAgentRolloutRollbackInputSchema)
     .output(adminPlatformAgentRolloutRollbackOutputSchema)
@@ -236,7 +251,7 @@ const rolloutsRouter = router({
       }
     }),
 
-  start: adminBase
+  start: rolloutBase
     .use(withPlatformPermission(PLATFORM_PERMISSIONS.AGENT_ASSIGN))
     .input(adminPlatformAgentRolloutStartInputSchema)
     .output(adminPlatformAgentRolloutStartOutputSchema)

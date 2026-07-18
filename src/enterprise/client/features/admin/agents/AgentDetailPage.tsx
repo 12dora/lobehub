@@ -7,6 +7,8 @@ import AsyncBoundary from '@/components/AsyncBoundary';
 import Loading from '@/components/Loading/BrandTextLoading';
 import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
+import { useEnterprisePlatform } from '@/enterprise/client/providers/EnterprisePlatformProvider';
+import { adminAgentsService } from '@/enterprise/client/services/adminAgents';
 
 import { AdminNotFoundSurface } from '../pages/AdminStateSurfaces';
 import { AgentDetailView } from './AgentDetailView';
@@ -25,10 +27,14 @@ const isNotFoundError = (error: unknown) => {
 const AgentDetailPage = memo(() => {
   const { id } = useParams<{ id: string }>();
   const { authMethod, permissions } = useAdminAccess();
+  const { capabilities } = useEnterprisePlatform();
   const agentPermissions = deriveAdminAgentPermissions(permissions);
+  const rolloutsEnabled = capabilities.managedResources.agents;
   const { data, error, isLoading, mutate } = useFetchAdminAgent(
     id,
     Boolean(id && agentPermissions.canRead),
+    adminAgentsService,
+    rolloutsEnabled,
   );
   const editor = useAgentEditor(data, agentPermissions.canUpdate);
 
@@ -37,7 +43,7 @@ const AgentDetailPage = memo(() => {
   return (
     <AsyncBoundary
       data={data}
-      error={error}
+      error={data ? undefined : error}
       errorVariant="page"
       isLoading={isLoading}
       loading={<Loading debugId="AdminAgentDetail" />}
@@ -49,6 +55,8 @@ const AgentDetailPage = memo(() => {
           editor={editor}
           mutate={mutate}
           permissions={agentPermissions}
+          pollError={data ? error : undefined}
+          rolloutsEnabled={rolloutsEnabled}
           snapshot={data}
         />
       ) : null}

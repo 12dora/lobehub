@@ -6,21 +6,7 @@ import type {
   PlatformAgentVersionConfig,
   PlatformAgentVersionPolicy,
 } from '@lobechat/types';
-import {
-  and,
-  asc,
-  desc,
-  eq,
-  gt,
-  ilike,
-  inArray,
-  isNotNull,
-  isNull,
-  lt,
-  ne,
-  or,
-  sql,
-} from 'drizzle-orm';
+import { and, asc, desc, eq, gt, ilike, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
 
 import { checksumPayload } from '../../models/platform/checksum';
 import {
@@ -39,6 +25,7 @@ import {
 import { roles, userRoles } from '../../schemas/rbac';
 import { users } from '../../schemas/user';
 import type { LobeChatDatabase, Transaction } from '../../type';
+import { idGenerator } from '../../utils/idGenerator';
 
 export type ExactPlatformAgentVersion = Omit<
   PlatformAgentVersionItem,
@@ -100,6 +87,15 @@ export interface PlatformAgentMaterializationDependentPage {
 export interface PlatformAgentAssignmentTargetPage {
   items: string[];
   nextCursor: string | null;
+}
+
+export interface PlatformAgentRolloutMaterializationInput {
+  userId: string;
+}
+
+export interface PlatformAgentRolloutMaterializationResult {
+  appliedUserIds: Set<string>;
+  previousByUserId: Map<string, { checksum: string; versionId: string } | null>;
 }
 
 export interface PlatformAgentAssignmentWrite {
@@ -331,36 +327,6 @@ export class PlatformAgentCatalogRepository {
           isNotNull(platformAgentVersions.dependencySnapshot),
         ),
       )
-      .limit(1);
-    return row as ExactPlatformAgentVersion | undefined;
-  };
-
-  getPreviousExactVersion = async (
-    agentId: string,
-    versionId: string,
-  ): Promise<ExactPlatformAgentVersion | undefined> => {
-    const target = await this.getExactVersion(agentId, versionId);
-    if (!target) return undefined;
-
-    const [row] = await this.db
-      .select()
-      .from(platformAgentVersions)
-      .where(
-        and(
-          eq(platformAgentVersions.agentId, agentId),
-          ne(platformAgentVersions.id, versionId),
-          or(
-            lt(platformAgentVersions.createdAt, target.createdAt),
-            and(
-              eq(platformAgentVersions.createdAt, target.createdAt),
-              lt(platformAgentVersions.id, target.id),
-            ),
-          ),
-          isNotNull(platformAgentVersions.checksum),
-          isNotNull(platformAgentVersions.dependencySnapshot),
-        ),
-      )
-      .orderBy(desc(platformAgentVersions.createdAt), desc(platformAgentVersions.id))
       .limit(1);
     return row as ExactPlatformAgentVersion | undefined;
   };
@@ -754,6 +720,121 @@ export class PlatformAgentCatalogRepository {
     const hasMore = rows.length > limit;
     const items = (hasMore ? rows.slice(0, limit) : rows).map(({ id }) => id);
     return { items, nextCursor: hasMore ? (items.at(-1) ?? null) : null };
+  };
+
+  /**
+   * Apply one bounded rollout page with two queries: one exact owner-scoped read and one bulk CAS
+   * upsert. The caller MUST already hold the per-Agent reference advisory lock and validate the
+   * locked Agent identity / Assignment snapshot in the same transaction. The bounded OR predicate
+   * preserves each row's independently observed prior version, while the advisory lock serializes
+   * every supported materialization writer for this Agent.
+   */
+  bulkCasRolloutMaterializations = async (params: {
+    beforeWrite?: (
+      previousByUserId: ReadonlyMap<string, { checksum: string; versionId: string } | null>,
+    ) => Promise<ReadonlySet<string> | void>;
+    platformAgentId: string;
+    targetVersionChecksum: string;
+    targetVersionId: string;
+    targets: PlatformAgentRolloutMaterializationInput[];
+  }): Promise<PlatformAgentRolloutMaterializationResult> => {
+    if (params.targets.length === 0) {
+      return { appliedUserIds: new Set(), previousByUserId: new Map() };
+    }
+    if (params.targets.length > 100) throw new Error('Rollout materialization batch exceeds 100');
+
+    const userIds = [...new Set(params.targets.map(({ userId }) => userId))];
+    const existingRows = await this.db
+      .select()
+      .from(platformUserAgentMaterializations)
+      .where(
+        and(
+          eq(platformUserAgentMaterializations.platformAgentId, params.platformAgentId),
+          inArray(platformUserAgentMaterializations.userId, userIds),
+        ),
+      );
+    const existingByUserId = new Map(existingRows.map((row) => [row.userId, row]));
+    const previousByUserId = new Map<string, { checksum: string; versionId: string } | null>();
+    const casConditions = userIds.map((userId) => {
+      const existing = existingByUserId.get(userId);
+      const isReal =
+        existing && (existing.lastSyncedAt !== null || existing.materializedAgentId !== null);
+      previousByUserId.set(
+        userId,
+        isReal
+          ? {
+              checksum: existing.platformAgentVersionChecksum,
+              versionId: existing.platformAgentVersionId,
+            }
+          : null,
+      );
+      return and(
+        eq(platformUserAgentMaterializations.userId, userId),
+        existing && isReal
+          ? and(
+              eq(
+                platformUserAgentMaterializations.platformAgentVersionId,
+                existing.platformAgentVersionId,
+              ),
+              eq(
+                platformUserAgentMaterializations.platformAgentVersionChecksum,
+                existing.platformAgentVersionChecksum,
+              ),
+            )
+          : and(
+              isNull(platformUserAgentMaterializations.lastSyncedAt),
+              isNull(platformUserAgentMaterializations.materializedAgentId),
+            ),
+      );
+    });
+    const blockedUserIds = (await params.beforeWrite?.(previousByUserId)) ?? new Set<string>();
+    const writableUserIds = userIds.filter((userId) => !blockedUserIds.has(userId));
+    if (writableUserIds.length === 0) {
+      return { appliedUserIds: new Set(), previousByUserId };
+    }
+    const now = new Date();
+    const written = await this.db
+      .insert(platformUserAgentMaterializations)
+      .values(
+        writableUserIds.map((userId) => {
+          const existing = existingByUserId.get(userId);
+          return {
+            hidden: existing?.hidden ?? false,
+            id: existing?.id ?? idGenerator('platformUserAgentMaterializations', 16),
+            lastErrorCategory: null,
+            lastSyncedAt: now,
+            materializedAgentId: existing?.materializedAgentId ?? null,
+            platformAgentId: params.platformAgentId,
+            platformAgentVersionChecksum: params.targetVersionChecksum,
+            platformAgentVersionId: params.targetVersionId,
+            status: existing?.materializedAgentId
+              ? ('materialized' as const)
+              : ('pending' as const),
+            userId,
+          };
+        }),
+      )
+      .onConflictDoUpdate({
+        set: {
+          lastErrorCategory: null,
+          lastSyncedAt: now,
+          platformAgentVersionChecksum: sql`excluded.platform_agent_version_checksum`,
+          platformAgentVersionId: sql`excluded.platform_agent_version_id`,
+          status: sql`excluded.status`,
+          updatedAt: now,
+        },
+        target: [
+          platformUserAgentMaterializations.userId,
+          platformUserAgentMaterializations.platformAgentId,
+        ],
+        where: or(...casConditions.filter((_, index) => writableUserIds.includes(userIds[index]))),
+      })
+      .returning({ userId: platformUserAgentMaterializations.userId });
+
+    return {
+      appliedUserIds: new Set(written.map(({ userId }) => userId)),
+      previousByUserId,
+    };
   };
 
   getDefaultIdentityForUpdate = async (): Promise<PlatformAgentItem | undefined> => {

@@ -1,8 +1,7 @@
-import type { PlatformAgentAssignmentTargetType } from '@lobechat/types';
-import { and, asc, desc, eq, gt, lt, sql } from 'drizzle-orm';
+import debug from 'debug';
+import { and, desc, eq, lt, sql } from 'drizzle-orm';
 import { z } from 'zod';
 
-import { PlatformJobModel } from '@/database/models/platform/job';
 import {
   acquirePlatformAgentReferenceLock,
   PlatformAgentCatalogRepository,
@@ -30,6 +29,7 @@ import {
 import { acquirePlatformDependencyPublicationLock } from '../platformDependencyLock';
 import { assertExactPlatformAgentDependencies } from './dependencyValidator';
 import {
+  PlatformAgentDependencyValidationError,
   PlatformAgentInvalidInputError,
   PlatformAgentNotFoundError,
   PlatformAgentRevisionConflictError,
@@ -37,8 +37,10 @@ import {
 import { assertExpectedPlatformAgentIdentity } from './publication';
 
 export const PLATFORM_AGENT_ROLLOUT_JOB_TYPE = 'platform.agent.rollout.v1';
-export const PLATFORM_AGENT_ROLLOUT_FAILURE_TYPE = 'platform.agent.rollout.failure.v1';
+export const PLATFORM_AGENT_ROLLOUT_TRANSITION_TYPE = 'platform.agent.rollout.transition.v1';
 export const PLATFORM_AGENT_ROLLOUT_BATCH_SIZE = 100;
+
+const log = debug('lobe-server:platform-agent-rollout');
 
 const rolloutJobInputSchema = z
   .object({
@@ -52,6 +54,10 @@ const rolloutJobInputSchema = z
       .object({
         agentId: z.string().min(1).max(128),
         assignmentId: z.string().min(1).max(128),
+        previousVersionChecksum: z
+          .string()
+          .regex(/^[a-f0-9]{64}$/)
+          .nullable(),
         previousVersionId: z.string().min(1).max(128).nullable(),
         rollbackOfJobId: z.string().min(1).max(128).nullable(),
         targetId: z.string().min(1).max(128),
@@ -66,21 +72,57 @@ const rolloutJobInputSchema = z
 
 export type PlatformAgentRolloutJobInput = z.infer<typeof rolloutJobInputSchema>;
 
-const rolloutResultSchema = z.object({ failed: z.number().int().nonnegative() }).passthrough();
+export const platformAgentRolloutTransitionInputSchema = z
+  .object({
+    assignmentId: z.string().min(1).max(128),
+    parentAttempt: z.number().int().positive(),
+    parentJobId: z.string().min(1).max(128),
+    parentRevision: z.number().int().nonnegative(),
+    previousVersionChecksum: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .nullable(),
+    previousVersionId: z.string().min(1).max(128).nullable(),
+    targetId: z.string().min(1).max(128),
+    targetType: z.enum(['global', 'global_role', 'user']),
+    targetVersionChecksum: z.string().regex(/^[a-f0-9]{64}$/),
+    targetVersionId: z.string().min(1).max(128),
+    userId: z.string().min(1).max(128),
+    versionPolicy: z.enum(['latest_published', 'pinned']),
+  })
+  .strict();
 
-const jobRevision = sql<number>`COALESCE((${platformJobs.input}->'control'->>'revision')::int, 0)`;
+export type PlatformAgentRolloutTransitionInput = z.infer<
+  typeof platformAgentRolloutTransitionInputSchema
+>;
 
-const failureUserId = sql<string>`${platformJobs.input}->>'userId'`;
+const rolloutResultSchema = z
+  .object({
+    failed: z.number().int().nonnegative(),
+    previousVersionChecksum: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .nullable()
+      .optional(),
+    previousVersionId: z.string().min(1).max(128).nullable().optional(),
+  })
+  .passthrough();
 
-const parseInput = (job: PlatformJobItem): PlatformAgentRolloutJobInput => {
+export const platformAgentRolloutJobRevision = sql<number>`COALESCE((${platformJobs.input}->'control'->>'revision')::int, 0)`;
+
+export const parsePlatformAgentRolloutInput = (
+  job: PlatformJobItem,
+): PlatformAgentRolloutJobInput => {
   const parsed = rolloutJobInputSchema.safeParse(job.input);
   if (!parsed.success) throw new PlatformAgentInvalidInputError();
   return parsed.data;
 };
 
-const failedCount = (job: PlatformJobItem): number => {
+export const getPlatformAgentRolloutResult = (job: PlatformJobItem) => {
   const parsed = rolloutResultSchema.safeParse(job.resultSummary);
-  return parsed.success ? parsed.data.failed : 0;
+  return parsed.success
+    ? parsed.data
+    : { failed: 0, previousVersionChecksum: null, previousVersionId: null };
 };
 
 const projectionStatus = (status: PlatformJobItem['status']) => {
@@ -94,15 +136,16 @@ const persistenceStatus = (
 ) => (status === 'completed' ? ('succeeded' as const) : status);
 
 export const projectPlatformAgentRollout = (job: PlatformJobItem) => {
-  const input = parseInput(job);
+  const input = parsePlatformAgentRolloutInput(job);
   const { snapshot } = input;
+  const result = getPlatformAgentRolloutResult(job);
   return {
     assignmentId: snapshot.assignmentId,
     completed: job.progressDone,
     cursor: typeof job.cursor === 'string' ? job.cursor : null,
-    failed: failedCount(job),
+    failed: result.failed,
     jobId: job.id,
-    previousVersionId: snapshot.previousVersionId,
+    previousVersionId: result.previousVersionId ?? snapshot.previousVersionId,
     revision: input.control.revision,
     status: projectionStatus(job.status),
     targetVersionId: snapshot.targetVersionId,
@@ -149,53 +192,6 @@ const enqueueRollout = async (
   return existing;
 };
 
-const recordRolloutFailure = async (
-  db: LobeChatDatabase,
-  params: { parentJobId: string; userId: string },
-) => {
-  await db
-    .insert(platformJobs)
-    .values({
-      idempotencyKey: `${params.parentJobId}:${params.userId}`,
-      input: { parentJobId: params.parentJobId, userId: params.userId },
-      lastError: { category: 'materialization_failed' },
-      maxAttempts: 1,
-      progressTotal: 1,
-      status: 'failed',
-      type: PLATFORM_AGENT_ROLLOUT_FAILURE_TYPE,
-    })
-    .onConflictDoUpdate({
-      set: {
-        lastError: { category: 'materialization_failed' },
-        status: 'failed',
-        updatedAt: new Date(),
-      },
-      target: [platformJobs.type, platformJobs.idempotencyKey],
-    });
-};
-
-const listRolloutFailures = async (
-  db: LobeChatDatabase,
-  params: { cursor?: string; parentJobId: string },
-) => {
-  const rows = await db
-    .select({ id: platformJobs.id, userId: failureUserId })
-    .from(platformJobs)
-    .where(
-      and(
-        eq(platformJobs.type, PLATFORM_AGENT_ROLLOUT_FAILURE_TYPE),
-        eq(platformJobs.status, 'failed'),
-        sql`${platformJobs.input}->>'parentJobId' = ${params.parentJobId}`,
-        params.cursor ? gt(failureUserId, params.cursor) : undefined,
-      ),
-    )
-    .orderBy(asc(failureUserId))
-    .limit(PLATFORM_AGENT_ROLLOUT_BATCH_SIZE + 1);
-  const hasMore = rows.length > PLATFORM_AGENT_ROLLOUT_BATCH_SIZE;
-  const items = hasMore ? rows.slice(0, PLATFORM_AGENT_ROLLOUT_BATCH_SIZE) : rows;
-  return { items, nextCursor: hasMore ? (items.at(-1)?.userId ?? null) : null };
-};
-
 const appendRolloutAudit = async (
   db: Transaction | LobeChatDatabase,
   params: {
@@ -203,6 +199,7 @@ const appendRolloutAudit = async (
     actorUserId: string;
     afterDiff: Record<string, unknown>;
     reason: string;
+    result: 'failure' | 'success';
     targetId: string;
   },
 ) =>
@@ -211,10 +208,20 @@ const appendRolloutAudit = async (
     actorUserId: params.actorUserId,
     afterDiff: params.afterDiff,
     reason: params.reason,
-    result: 'success',
+    result: params.result,
     targetId: params.targetId,
     targetType: 'agent',
   });
+
+const rolloutFailureCategory = (error: unknown): string => {
+  if (error instanceof PlatformAgentRevisionConflictError) return 'revision_conflict';
+  if (error instanceof PlatformAgentDependencyValidationError) {
+    return 'dependency_validation_failed';
+  }
+  if (error instanceof PlatformAgentNotFoundError) return 'not_found';
+  if (error instanceof PlatformAgentInvalidInputError) return 'invalid_input';
+  return 'rollout_mutation_failed';
+};
 
 export class PlatformAgentRolloutService {
   private readonly invalidation: PlatformConfigInvalidationPublisher;
@@ -232,71 +239,127 @@ export class PlatformAgentRolloutService {
       options.validateDependencies ?? assertExactPlatformAgentDependencies;
   }
 
+  /**
+   * Success audit is atomic with the mutation. A rejected/failed mutation rolls back first, then
+   * appends a stable redacted failure category on a fresh transaction. If the database itself is
+   * unavailable, that second append is best-effort and emits an observable debug event; it is not
+   * falsely described as atomic delivery.
+   */
+  private auditedMutation = async <T>(params: {
+    action: string;
+    actorUserId: string;
+    reason: string;
+    run: (tx: Transaction) => Promise<T>;
+    summarize: (result: T) => Record<string, unknown>;
+    targetId: string;
+  }): Promise<T> => {
+    try {
+      return await this.db.transaction(async (tx) => {
+        const result = await params.run(tx);
+        await appendRolloutAudit(tx, {
+          action: params.action,
+          actorUserId: params.actorUserId,
+          afterDiff: params.summarize(result),
+          reason: params.reason,
+          result: 'success',
+          targetId: params.targetId,
+        });
+        return result;
+      });
+    } catch (error) {
+      try {
+        await appendRolloutAudit(this.db, {
+          action: params.action,
+          actorUserId: params.actorUserId,
+          afterDiff: { error: rolloutFailureCategory(error) },
+          reason: params.reason,
+          result: 'failure',
+          targetId: params.targetId,
+        });
+      } catch (auditError) {
+        log(
+          'failure audit append unavailable action=%s class=%s',
+          params.action,
+          auditError instanceof Error ? auditError.name : 'UnknownError',
+        );
+      }
+      throw error;
+    }
+  };
+
   start = async (actorUserId: string, input: AdminPlatformAgentRolloutStartInput) => {
-    const job = await this.db.transaction(async (tx) => {
-      const repository = new PlatformAgentCatalogRepository(tx);
-      const identity = await repository.lockIdentity(input.agentId);
-      if (!identity) throw new PlatformAgentNotFoundError();
-      assertExpectedPlatformAgentIdentity(
-        identity,
-        input.expectedDraftToken,
-        input.expectedRevision,
-      );
-      if (identity.status !== 'published' || !identity.currentVersionId) {
-        throw new PlatformAgentInvalidInputError();
-      }
-      const assignment = await repository.getAssignment(identity.id, input.assignmentId);
-      if (!assignment || !assignment.enabled || assignment.status !== 'active') {
-        throw new PlatformAgentNotFoundError();
-      }
-      const targetVersionId =
-        assignment.versionPolicy === 'pinned'
-          ? assignment.pinnedVersionId
-          : identity.currentVersionId;
-      if (!targetVersionId) throw new PlatformAgentInvalidInputError();
-      const target = await repository.getExactVersion(identity.id, targetVersionId);
-      if (!target) throw new PlatformAgentNotFoundError();
-      const previous = await repository.getPreviousExactVersion(identity.id, target.id);
-      const progressTotal = await repository.countAssignmentTargets(assignment);
-      const idempotencyKey = [
-        identity.id,
-        assignment.id,
-        identity.revision,
-        identity.draftSequence,
-        target.id,
-      ].join(':');
-      const created = await enqueueRollout(tx, {
-        idempotencyKey,
-        input: {
-          control: { phase: 'targets', revision: 0 },
-          snapshot: {
-            agentId: identity.id,
-            assignmentId: assignment.id,
-            previousVersionId: previous?.id ?? null,
-            rollbackOfJobId: null,
-            targetId: assignment.targetId,
-            targetType: assignment.targetType,
-            targetVersionChecksum: target.checksum,
-            targetVersionId: target.id,
-            versionPolicy: assignment.versionPolicy,
+    const job = await this.auditedMutation({
+      action: 'admin.agents.rollouts.start',
+      actorUserId,
+      reason: input.reason,
+      run: async (tx) => {
+        const repository = new PlatformAgentCatalogRepository(tx);
+        const identity = await repository.lockIdentity(input.agentId);
+        if (!identity) throw new PlatformAgentNotFoundError();
+        assertExpectedPlatformAgentIdentity(
+          identity,
+          input.expectedDraftToken,
+          input.expectedRevision,
+        );
+        if (
+          identity.status !== 'published' ||
+          !identity.currentVersionId ||
+          identity.systemKey === 'default-inbox'
+        ) {
+          // Default inbox has no ordinary per-user materialization to reverse. Its V2→V1 rollback
+          // is the publication pointer CAS, which preserves old operation pins and changes new work.
+          throw new PlatformAgentInvalidInputError();
+        }
+        const assignment = await repository.getAssignment(identity.id, input.assignmentId);
+        if (!assignment || !assignment.enabled || assignment.status !== 'active') {
+          throw new PlatformAgentNotFoundError();
+        }
+        const targetVersionId =
+          assignment.versionPolicy === 'pinned'
+            ? assignment.pinnedVersionId
+            : identity.currentVersionId;
+        if (!targetVersionId) throw new PlatformAgentInvalidInputError();
+        const target = await repository.getExactVersion(identity.id, targetVersionId);
+        if (!target) throw new PlatformAgentNotFoundError();
+        const progressTotal = await repository.countAssignmentTargets(assignment);
+        const idempotencyKey = [
+          identity.id,
+          assignment.id,
+          identity.revision,
+          identity.draftSequence,
+          assignment.targetType,
+          assignment.targetId,
+          target.id,
+          target.checksum,
+        ].join(':');
+        return enqueueRollout(tx, {
+          idempotencyKey,
+          input: {
+            control: { phase: 'targets', revision: 0 },
+            snapshot: {
+              agentId: identity.id,
+              assignmentId: assignment.id,
+              previousVersionChecksum: null,
+              previousVersionId: null,
+              rollbackOfJobId: null,
+              targetId: assignment.targetId,
+              targetType: assignment.targetType,
+              targetVersionChecksum: target.checksum,
+              targetVersionId: target.id,
+              versionPolicy: assignment.versionPolicy,
+            },
           },
-        },
-        progressTotal,
-        requestedBy: actorUserId,
-      });
-      await appendRolloutAudit(tx, {
-        action: 'admin.agents.rollouts.start',
-        actorUserId,
-        afterDiff: {
-          assignmentId: assignment.id,
-          jobId: created.id,
-          targetVersionId: target.id,
-          total: progressTotal,
-        },
-        reason: input.reason,
-        targetId: identity.id,
-      });
-      return created;
+          progressTotal,
+          requestedBy: actorUserId,
+        });
+      },
+      summarize: (created) => ({
+        assignmentId: parsePlatformAgentRolloutInput(created).snapshot.assignmentId,
+        jobId: created.id,
+        targetVersionId: parsePlatformAgentRolloutInput(created).snapshot.targetVersionId,
+        total: created.progressTotal ?? 0,
+      }),
+      targetId: input.agentId,
     });
     return projectPlatformAgentRollout(job);
   };
@@ -346,117 +409,188 @@ export class PlatformAgentRolloutService {
     this.transition(actorUserId, input, 'retry');
 
   rollback = async (actorUserId: string, input: AdminPlatformAgentRolloutRollbackInput) => {
-    const result = await this.db.transaction(async (tx) => {
-      const [original] = await tx
-        .select()
-        .from(platformJobs)
-        .where(
-          and(
-            eq(platformJobs.id, input.jobId),
-            eq(platformJobs.type, PLATFORM_AGENT_ROLLOUT_JOB_TYPE),
-            eq(platformJobs.status, persistenceStatus(input.expectedStatus)),
-            eq(jobRevision, input.expectedJobRevision),
-            sql`${platformJobs.input}->'snapshot'->>'agentId' = ${input.agentId}`,
-          ),
-        )
-        .for('update')
-        .limit(1);
-      if (!original) throw new PlatformAgentRevisionConflictError();
-      if (original.status !== 'succeeded') throw new PlatformAgentRevisionConflictError();
-      const originalInput = parseInput(original);
-      if (
-        originalInput.snapshot.previousVersionId !== input.targetVersionId ||
-        input.targetVersionId === originalInput.snapshot.targetVersionId
-      ) {
-        throw new PlatformAgentInvalidInputError();
-      }
-
-      const repository = new PlatformAgentCatalogRepository(tx);
-      await acquirePlatformAgentReferenceLock(tx, input.agentId);
-      const identity = await repository.lockIdentity(input.agentId);
-      if (!identity) throw new PlatformAgentNotFoundError();
-      const target = await repository.getExactVersion(identity.id, input.targetVersionId);
-      if (!target) throw new PlatformAgentNotFoundError();
-      await acquirePlatformDependencyPublicationLock(tx);
-      await this.validateDependencies(tx, target.dependencySnapshot);
-      let updatedIdentity;
-      if (originalInput.snapshot.versionPolicy === 'pinned') {
-        const [assignment] = await tx
-          .update(platformAgentAssignments)
-          .set({ pinnedVersionId: target.id, updatedAt: new Date() })
+    const result = await this.auditedMutation({
+      action: 'admin.agents.rollouts.rollback',
+      actorUserId,
+      reason: input.reason,
+      run: async (tx) => {
+        const [original] = await tx
+          .select()
+          .from(platformJobs)
           .where(
             and(
-              eq(platformAgentAssignments.id, originalInput.snapshot.assignmentId),
-              eq(platformAgentAssignments.agentId, identity.id),
-              eq(platformAgentAssignments.enabled, true),
-              eq(platformAgentAssignments.status, 'active'),
-              eq(platformAgentAssignments.versionPolicy, 'pinned'),
-              eq(platformAgentAssignments.pinnedVersionId, originalInput.snapshot.targetVersionId),
+              eq(platformJobs.id, input.jobId),
+              eq(platformJobs.type, PLATFORM_AGENT_ROLLOUT_JOB_TYPE),
+              eq(platformJobs.status, persistenceStatus(input.expectedStatus)),
+              eq(platformAgentRolloutJobRevision, input.expectedJobRevision),
+              sql`${platformJobs.input}->'snapshot'->>'agentId' = ${input.agentId}`,
             ),
           )
-          .returning({ id: platformAgentAssignments.id });
-        if (!assignment) throw new PlatformAgentRevisionConflictError();
-        updatedIdentity = await repository.updateDraftCas({
-          expectedDraftSequence: identity.draftSequence,
-          expectedRevision: identity.revision,
-          id: identity.id,
-          patch: { updatedBy: actorUserId },
-        });
-      } else {
-        if (identity.currentVersionId !== originalInput.snapshot.targetVersionId) {
+          .for('update')
+          .limit(1);
+        if (!original || original.status !== 'succeeded') {
           throw new PlatformAgentRevisionConflictError();
         }
-        updatedIdentity = await repository.pointToVersionCas({
-          agentId: identity.id,
-          expectedDraftSequence: identity.draftSequence,
-          expectedRevision: identity.revision,
-          publishedAt: new Date(),
-          versionId: target.id,
-        });
-      }
-      if (!updatedIdentity) throw new PlatformAgentRevisionConflictError();
+        const originalInput = parsePlatformAgentRolloutInput(original);
+        const rolloutResult = getPlatformAgentRolloutResult(original);
+        if (
+          !rolloutResult.previousVersionId ||
+          !rolloutResult.previousVersionChecksum ||
+          rolloutResult.previousVersionId !== input.targetVersionId ||
+          input.targetVersionId === originalInput.snapshot.targetVersionId
+        ) {
+          throw new PlatformAgentInvalidInputError();
+        }
 
-      const progressTotal = original.progressTotal ?? 0;
-      const rollbackJob = await enqueueRollout(tx, {
-        idempotencyKey: `rollback:${original.id}:${input.expectedJobRevision}:${target.id}`,
-        input: {
-          control: { phase: 'targets', revision: 0 },
-          snapshot: {
-            ...originalInput.snapshot,
-            previousVersionId: originalInput.snapshot.targetVersionId,
-            rollbackOfJobId: original.id,
-            targetVersionChecksum: target.checksum,
-            targetVersionId: target.id,
+        // Re-prove the summary from the complete per-target transition ledger. A mixed population,
+        // a target with no prior materialization, or a missing ledger row cannot be represented as
+        // one Assignment pointer and therefore fails closed instead of fabricating a previous value.
+        const [proof] = await tx
+          .select({
+            count: sql<number>`count(*)::int`,
+            maxChecksum: sql<string | null>`max(${platformJobs.input}->>'previousVersionChecksum')`,
+            maxVersionId: sql<string | null>`max(${platformJobs.input}->>'previousVersionId')`,
+            minChecksum: sql<string | null>`min(${platformJobs.input}->>'previousVersionChecksum')`,
+            minVersionId: sql<string | null>`min(${platformJobs.input}->>'previousVersionId')`,
+            nullCount: sql<number>`count(*) FILTER (WHERE ${platformJobs.input}->>'previousVersionId' IS NULL OR ${platformJobs.input}->>'previousVersionChecksum' IS NULL)::int`,
+          })
+          .from(platformJobs)
+          .where(
+            and(
+              eq(platformJobs.type, PLATFORM_AGENT_ROLLOUT_TRANSITION_TYPE),
+              eq(platformJobs.status, 'succeeded'),
+              sql`${platformJobs.input}->>'parentJobId' = ${original.id}`,
+            ),
+          );
+        if (
+          !proof ||
+          proof.count !== original.progressTotal ||
+          proof.nullCount !== 0 ||
+          proof.minVersionId !== proof.maxVersionId ||
+          proof.minChecksum !== proof.maxChecksum ||
+          proof.minVersionId !== rolloutResult.previousVersionId ||
+          proof.minChecksum !== rolloutResult.previousVersionChecksum
+        ) {
+          throw new PlatformAgentRevisionConflictError();
+        }
+
+        const repository = new PlatformAgentCatalogRepository(tx);
+        await acquirePlatformAgentReferenceLock(tx, input.agentId);
+        const identity = await repository.lockIdentity(input.agentId);
+        if (!identity || identity.systemKey === 'default-inbox') {
+          throw new PlatformAgentInvalidInputError();
+        }
+        const currentTarget = await repository.getExactVersion(
+          identity.id,
+          originalInput.snapshot.targetVersionId,
+        );
+        const target = await repository.getExactVersion(identity.id, input.targetVersionId);
+        if (
+          !currentTarget ||
+          currentTarget.checksum !== originalInput.snapshot.targetVersionChecksum ||
+          !target ||
+          target.checksum !== rolloutResult.previousVersionChecksum
+        ) {
+          throw new PlatformAgentRevisionConflictError();
+        }
+        await acquirePlatformDependencyPublicationLock(tx);
+        await this.validateDependencies(tx, target.dependencySnapshot);
+        let updatedIdentity;
+        if (originalInput.snapshot.versionPolicy === 'pinned') {
+          const [assignment] = await tx
+            .update(platformAgentAssignments)
+            .set({ pinnedVersionId: target.id, updatedAt: new Date() })
+            .where(
+              and(
+                eq(platformAgentAssignments.id, originalInput.snapshot.assignmentId),
+                eq(platformAgentAssignments.agentId, identity.id),
+                eq(platformAgentAssignments.enabled, true),
+                eq(platformAgentAssignments.status, 'active'),
+                eq(platformAgentAssignments.targetType, originalInput.snapshot.targetType),
+                eq(platformAgentAssignments.targetId, originalInput.snapshot.targetId),
+                eq(platformAgentAssignments.versionPolicy, 'pinned'),
+                eq(
+                  platformAgentAssignments.pinnedVersionId,
+                  originalInput.snapshot.targetVersionId,
+                ),
+              ),
+            )
+            .returning({ id: platformAgentAssignments.id });
+          if (!assignment) throw new PlatformAgentRevisionConflictError();
+          updatedIdentity = await repository.updateDraftCas({
+            expectedDraftSequence: identity.draftSequence,
+            expectedRevision: identity.revision,
+            id: identity.id,
+            patch: { updatedBy: actorUserId },
+          });
+        } else {
+          if (identity.currentVersionId !== originalInput.snapshot.targetVersionId) {
+            throw new PlatformAgentRevisionConflictError();
+          }
+          const assignment = await repository.getAssignment(
+            identity.id,
+            originalInput.snapshot.assignmentId,
+          );
+          if (
+            !assignment ||
+            !assignment.enabled ||
+            assignment.status !== 'active' ||
+            assignment.targetType !== originalInput.snapshot.targetType ||
+            assignment.targetId !== originalInput.snapshot.targetId ||
+            assignment.versionPolicy !== 'latest_published'
+          ) {
+            throw new PlatformAgentRevisionConflictError();
+          }
+          updatedIdentity = await repository.pointToVersionCas({
+            agentId: identity.id,
+            expectedDraftSequence: identity.draftSequence,
+            expectedRevision: identity.revision,
+            publishedAt: new Date(),
+            versionId: target.id,
+          });
+        }
+        if (!updatedIdentity) throw new PlatformAgentRevisionConflictError();
+
+        const rollbackJob = await enqueueRollout(tx, {
+          idempotencyKey: `rollback:${original.id}:${input.expectedJobRevision}:${target.id}:${target.checksum}`,
+          input: {
+            control: { phase: 'targets', revision: 0 },
+            snapshot: {
+              ...originalInput.snapshot,
+              previousVersionChecksum: null,
+              previousVersionId: null,
+              rollbackOfJobId: original.id,
+              targetVersionChecksum: target.checksum,
+              targetVersionId: target.id,
+            },
           },
-        },
-        progressTotal,
-        requestedBy: actorUserId,
-      });
-      const consumedInput = {
-        ...originalInput,
-        control: { ...originalInput.control, revision: originalInput.control.revision + 1 },
-      };
-      const [consumed] = await tx
-        .update(platformJobs)
-        .set({ input: consumedInput, updatedAt: new Date() })
-        .where(
-          and(eq(platformJobs.id, original.id), eq(jobRevision, originalInput.control.revision)),
-        )
-        .returning({ id: platformJobs.id });
-      if (!consumed) throw new PlatformAgentRevisionConflictError();
-      await appendRolloutAudit(tx, {
-        action: 'admin.agents.rollouts.rollback',
-        actorUserId,
-        afterDiff: {
-          fromJobId: original.id,
-          jobId: rollbackJob.id,
-          revision: updatedIdentity.revision,
-          targetVersionId: target.id,
-        },
-        reason: input.reason,
-        targetId: identity.id,
-      });
-      return { identityRevision: updatedIdentity.revision, job: rollbackJob };
+          progressTotal: original.progressTotal ?? 0,
+          requestedBy: actorUserId,
+        });
+        const consumedInput = {
+          ...originalInput,
+          control: { ...originalInput.control, revision: originalInput.control.revision + 1 },
+        };
+        const [consumed] = await tx
+          .update(platformJobs)
+          .set({ input: consumedInput, updatedAt: new Date() })
+          .where(
+            and(
+              eq(platformJobs.id, original.id),
+              eq(platformAgentRolloutJobRevision, originalInput.control.revision),
+            ),
+          )
+          .returning({ id: platformJobs.id });
+        if (!consumed) throw new PlatformAgentRevisionConflictError();
+        return { identityRevision: updatedIdentity.revision, job: rollbackJob };
+      },
+      summarize: ({ identityRevision, job }) => ({
+        fromJobId: input.jobId,
+        jobId: job.id,
+        revision: identityRevision,
+        targetVersionId: input.targetVersionId,
+      }),
+      targetId: input.agentId,
     });
     try {
       await this.invalidation.publish({
@@ -479,251 +613,87 @@ export class PlatformAgentRolloutService {
     input: AdminPlatformAgentRolloutCancelInput | AdminPlatformAgentRolloutRetryInput,
     action: 'cancel' | 'retry',
   ) => {
-    const job = await this.db.transaction(async (tx) => {
-      const [current] = await tx
-        .select()
-        .from(platformJobs)
-        .where(
-          and(
-            eq(platformJobs.id, input.jobId),
-            eq(platformJobs.type, PLATFORM_AGENT_ROLLOUT_JOB_TYPE),
-            eq(platformJobs.status, persistenceStatus(input.expectedStatus)),
-            eq(jobRevision, input.expectedJobRevision),
-            sql`${platformJobs.input}->'snapshot'->>'agentId' = ${input.agentId}`,
-          ),
-        )
-        .for('update')
-        .limit(1);
-      if (!current) throw new PlatformAgentRevisionConflictError();
-      if (
-        (action === 'cancel' && !['pending', 'running'].includes(current.status)) ||
-        (action === 'retry' && !['cancelled', 'dead', 'failed'].includes(current.status))
-      ) {
-        throw new PlatformAgentRevisionConflictError();
-      }
-      const currentInput = parseInput(current);
-      const nextInput = {
-        ...currentInput,
-        control: {
-          phase:
-            action === 'retry' && current.status === 'failed'
-              ? ('failed' as const)
-              : currentInput.control.phase,
-          revision: currentInput.control.revision + 1,
-        },
-      };
-      const [updated] = await tx
-        .update(platformJobs)
-        .set(
-          action === 'cancel'
-            ? {
-                finishedAt: new Date(),
-                input: nextInput,
-                leaseOwner: null,
-                leaseUntil: null,
-                status: 'cancelled',
-                updatedAt: new Date(),
-              }
-            : {
-                cursor: current.status === 'failed' ? null : current.cursor,
-                finishedAt: null,
-                input: nextInput,
-                lastError: null,
-                leaseOwner: null,
-                leaseUntil: null,
-                maxAttempts: Math.max(current.maxAttempts ?? 0, current.attempt + 3),
-                progressDone: current.progressDone,
-                resultSummary: current.resultSummary,
-                status: 'pending',
-                updatedAt: new Date(),
-              },
-        )
-        .where(
-          and(
-            eq(platformJobs.id, current.id),
-            eq(platformJobs.status, current.status),
-            eq(jobRevision, currentInput.control.revision),
-          ),
-        )
-        .returning();
-      if (!updated) throw new PlatformAgentRevisionConflictError();
-      await appendRolloutAudit(tx, {
-        action: `admin.agents.rollouts.${action}`,
-        actorUserId,
-        afterDiff: {
-          jobId: updated.id,
-          revision: nextInput.control.revision,
-          status: updated.status,
-        },
-        reason: input.reason,
-        targetId: input.agentId,
-      });
-      return updated;
+    const job = await this.auditedMutation({
+      action: `admin.agents.rollouts.${action}`,
+      actorUserId,
+      reason: input.reason,
+      run: async (tx) => {
+        const [current] = await tx
+          .select()
+          .from(platformJobs)
+          .where(
+            and(
+              eq(platformJobs.id, input.jobId),
+              eq(platformJobs.type, PLATFORM_AGENT_ROLLOUT_JOB_TYPE),
+              eq(platformJobs.status, persistenceStatus(input.expectedStatus)),
+              eq(platformAgentRolloutJobRevision, input.expectedJobRevision),
+              sql`${platformJobs.input}->'snapshot'->>'agentId' = ${input.agentId}`,
+            ),
+          )
+          .for('update')
+          .limit(1);
+        if (!current) throw new PlatformAgentRevisionConflictError();
+        if (
+          (action === 'cancel' && !['pending', 'running'].includes(current.status)) ||
+          (action === 'retry' && !['cancelled', 'dead', 'failed'].includes(current.status))
+        ) {
+          throw new PlatformAgentRevisionConflictError();
+        }
+        const currentInput = parsePlatformAgentRolloutInput(current);
+        const nextInput = {
+          ...currentInput,
+          control: {
+            phase:
+              action === 'retry' && current.status === 'failed'
+                ? ('failed' as const)
+                : currentInput.control.phase,
+            revision: currentInput.control.revision + 1,
+          },
+        };
+        const [updated] = await tx
+          .update(platformJobs)
+          .set(
+            action === 'cancel'
+              ? {
+                  finishedAt: new Date(),
+                  input: nextInput,
+                  leaseOwner: null,
+                  leaseUntil: null,
+                  status: 'cancelled',
+                  updatedAt: new Date(),
+                }
+              : {
+                  cursor: current.status === 'failed' ? null : current.cursor,
+                  finishedAt: null,
+                  input: nextInput,
+                  lastError: null,
+                  leaseOwner: null,
+                  leaseUntil: null,
+                  maxAttempts: Math.max(current.maxAttempts ?? 0, current.attempt + 3),
+                  progressDone: current.progressDone,
+                  resultSummary: current.resultSummary,
+                  status: 'pending',
+                  updatedAt: new Date(),
+                },
+          )
+          .where(
+            and(
+              eq(platformJobs.id, current.id),
+              eq(platformJobs.status, current.status),
+              eq(platformAgentRolloutJobRevision, currentInput.control.revision),
+            ),
+          )
+          .returning();
+        if (!updated) throw new PlatformAgentRevisionConflictError();
+        return updated;
+      },
+      summarize: (updated) => ({
+        jobId: updated.id,
+        revision: parsePlatformAgentRolloutInput(updated).control.revision,
+        status: updated.status,
+      }),
+      targetId: input.agentId,
     });
     return projectPlatformAgentRollout(job);
   };
 }
-
-export interface ProcessPlatformAgentRolloutBatchResult {
-  claimed: boolean;
-  jobId?: string;
-  terminal?: boolean;
-}
-
-export const processNextPlatformAgentRolloutBatch = async (
-  db: LobeChatDatabase,
-  workerId: string,
-): Promise<ProcessPlatformAgentRolloutBatchResult> => {
-  const jobs = new PlatformJobModel(db);
-  const claimed = await jobs.claimNext({
-    leaseMs: 60_000,
-    types: [PLATFORM_AGENT_ROLLOUT_JOB_TYPE],
-    workerId,
-  });
-  if (!claimed) return { claimed: false };
-
-  let input: PlatformAgentRolloutJobInput;
-  try {
-    input = parseInput(claimed);
-  } catch {
-    await jobs.fail({
-      error: { category: 'invalid_rollout_snapshot' },
-      jobId: claimed.id,
-      terminal: true,
-      workerId,
-    });
-    return { claimed: true, jobId: claimed.id, terminal: true };
-  }
-
-  const repository = new PlatformAgentCatalogRepository(db);
-  const current = await jobs.findById(claimed.id);
-  if (!current || current.status !== 'running' || current.leaseOwner !== workerId) {
-    return { claimed: true, jobId: claimed.id, terminal: true };
-  }
-  const completedBefore = current.progressDone;
-  const failedBefore = failedCount(current);
-  const { snapshot } = input;
-  const remaining = Math.max(0, (current.progressTotal ?? 0) - completedBefore - failedBefore);
-  let nextCursor: string | null;
-  let targets: Array<{ id: string | null; userId: string }>;
-  if (input.control.phase === 'failed') {
-    const failures = await listRolloutFailures(db, {
-      cursor: typeof current.cursor === 'string' ? current.cursor : undefined,
-      parentJobId: current.id,
-    });
-    targets = failures.items;
-    nextCursor = failures.nextCursor;
-  } else {
-    const targetPage = await repository.listAssignmentTargetUserIds({
-      cursor: typeof current.cursor === 'string' ? current.cursor : undefined,
-      limit: Math.min(
-        PLATFORM_AGENT_ROLLOUT_BATCH_SIZE,
-        remaining || PLATFORM_AGENT_ROLLOUT_BATCH_SIZE,
-      ),
-      targetId: snapshot.targetId,
-      targetType: snapshot.targetType as PlatformAgentAssignmentTargetType,
-    });
-    targets = targetPage.items.slice(0, remaining).map((userId) => ({ id: null, userId }));
-    nextCursor = targetPage.nextCursor;
-  }
-  let completed = completedBefore;
-  let failed = failedBefore;
-
-  for (const target of targets) {
-    const { userId } = target;
-    try {
-      const existing = await repository.getMaterialization(userId, snapshot.agentId);
-      const alreadyApplied =
-        existing?.platformAgentVersionId === snapshot.targetVersionId &&
-        existing.platformAgentVersionChecksum === snapshot.targetVersionChecksum &&
-        existing.lastSyncedAt !== null &&
-        existing.status !== 'error';
-      if (!alreadyApplied) {
-        const written = await repository.upsertMaterialization({
-          expectedCurrent:
-            existing && (existing.lastSyncedAt !== null || existing.materializedAgentId !== null)
-              ? {
-                  checksum: existing.platformAgentVersionChecksum,
-                  versionId: existing.platformAgentVersionId,
-                }
-              : undefined,
-          lastErrorCategory: null,
-          platformAgentId: snapshot.agentId,
-          platformAgentVersionChecksum: snapshot.targetVersionChecksum,
-          platformAgentVersionId: snapshot.targetVersionId,
-          status: 'pending',
-          userId,
-        });
-        if (!written) throw new PlatformAgentRevisionConflictError();
-      }
-      completed += 1;
-      if (input.control.phase === 'failed') {
-        failed -= 1;
-        await db
-          .update(platformJobs)
-          .set({
-            finishedAt: new Date(),
-            lastError: null,
-            progressDone: 1,
-            status: 'succeeded',
-            updatedAt: new Date(),
-          })
-          .where(
-            and(
-              eq(platformJobs.id, target.id!),
-              eq(platformJobs.type, PLATFORM_AGENT_ROLLOUT_FAILURE_TYPE),
-              eq(platformJobs.status, 'failed'),
-            ),
-          );
-      }
-    } catch {
-      if (input.control.phase === 'targets') failed += 1;
-      await recordRolloutFailure(db, { parentJobId: current.id, userId });
-    }
-  }
-
-  const cursor =
-    targets.at(-1)?.userId ?? (typeof current.cursor === 'string' ? current.cursor : null);
-  const terminal =
-    input.control.phase === 'failed'
-      ? nextCursor === null
-      : completed + failed >= (current.progressTotal ?? 0) || nextCursor === null;
-  const nextInput = {
-    ...input,
-    control: { ...input.control, revision: input.control.revision + 1 },
-  };
-  const now = new Date();
-  const [checkpointed] = await db
-    .update(platformJobs)
-    .set({
-      cursor,
-      ...(terminal
-        ? {
-            finishedAt: now,
-            lastError: failed > 0 ? { category: 'rollout_items_failed' } : null,
-            leaseOwner: null,
-            leaseUntil: null,
-            status: failed > 0 ? ('failed' as const) : ('succeeded' as const),
-          }
-        : {
-            heartbeatAt: now,
-            leaseOwner: null,
-            leaseUntil: null,
-            status: 'pending' as const,
-          }),
-      input: nextInput,
-      progressDone: completed,
-      resultSummary: { failed },
-      updatedAt: now,
-    })
-    .where(
-      and(
-        eq(platformJobs.id, current.id),
-        eq(platformJobs.status, 'running'),
-        eq(platformJobs.leaseOwner, workerId),
-        eq(jobRevision, input.control.revision),
-      ),
-    )
-    .returning({ id: platformJobs.id });
-  return { claimed: true, jobId: claimed.id, terminal: terminal || !checkpointed };
-};
