@@ -288,12 +288,12 @@ describe('AgentOperationModel', () => {
         .values([{ id: 'thread-1', topicId: 'topic-1', type: 'standalone', userId }]);
     });
 
-    // Seed an operation row directly (server-controlled) with the resume-anchor binding + status.
+    // Seed an operation row directly (server-controlled) with the kind-keyed resume-anchor binding.
     const seedOp = (params: {
       assistantMessageId?: string;
       id: string;
       ownerId?: string;
-      pendingResumeAnchorIds?: string[];
+      pendingResumeAnchors?: { approval?: string[]; toolResult?: string[] };
       platformAgentId?: string;
       status?: 'waiting_for_human' | 'waiting_for_async_tool' | 'done';
       threadId?: string | null;
@@ -303,8 +303,8 @@ describe('AgentOperationModel', () => {
         id: params.id,
         metadata: {
           ...(params.assistantMessageId ? { assistantMessageId: params.assistantMessageId } : {}),
-          ...(params.pendingResumeAnchorIds
-            ? { pendingResumeAnchorIds: params.pendingResumeAnchorIds }
+          ...(params.pendingResumeAnchors
+            ? { pendingResumeAnchors: params.pendingResumeAnchors }
             : {}),
           platformModel: modelPin,
           platformOperation: { ...pin, platformAgentId: params.platformAgentId ?? 'pagt_1' },
@@ -319,7 +319,7 @@ describe('AgentOperationModel', () => {
     const find = (
       model: AgentOperationModel,
       params: {
-        anchorKind?: 'assistant' | 'tool';
+        anchorKind?: 'approval' | 'toolResult';
         anchorMessageId: string;
         platformAgentId?: string;
         threadId?: string | null;
@@ -327,7 +327,7 @@ describe('AgentOperationModel', () => {
       },
     ) =>
       model.findResumablePlatformOperationPin({
-        anchorKind: params.anchorKind ?? 'assistant',
+        anchorKind: params.anchorKind ?? 'approval',
         anchorMessageId: params.anchorMessageId,
         platformAgentId: params.platformAgentId ?? 'pagt_1',
         threadId: params.threadId ?? null,
@@ -336,95 +336,192 @@ describe('AgentOperationModel', () => {
 
     const model = () => new AgentOperationModel(serverDB, userId);
 
-    it('direct resume resolves via the EXACT server-recorded assistant id', async () => {
-      await seedOp({ assistantMessageId: 'asst-1', id: 'op-1' });
-      expect(await find(model(), { anchorKind: 'assistant', anchorMessageId: 'asst-1' })).toEqual(
+    it('approval resume resolves via an EXACT server-recorded pending tool id — a forged tool never binds', async () => {
+      await seedOp({ id: 'op-1', pendingResumeAnchors: { approval: ['tool-1', 'tool-2'] } });
+      expect(await find(model(), { anchorKind: 'approval', anchorMessageId: 'tool-2' })).toEqual(
+        pin,
+      );
+      // A client-forged tool message whose id is NOT among the server-recorded pending ids can't bind.
+      expect(
+        await find(model(), { anchorKind: 'approval', anchorMessageId: 'forged-tool' }),
+      ).toBeNull();
+    });
+
+    it('toolResult resume resolves via its OWN kind-keyed anchor list', async () => {
+      await seedOp({ id: 'op-1', pendingResumeAnchors: { toolResult: ['ans-1'] } });
+      expect(await find(model(), { anchorKind: 'toolResult', anchorMessageId: 'ans-1' })).toEqual(
         pin,
       );
     });
 
-    it('tool resume resolves via an EXACT server-recorded pending tool id — a forged tool never binds', async () => {
+    it('kind crossing fails: an approval id as a toolResult anchor (and vice versa) never matches', async () => {
       await seedOp({
-        assistantMessageId: 'asst-1',
         id: 'op-1',
-        pendingResumeAnchorIds: ['tool-1', 'tool-2'],
+        pendingResumeAnchors: { approval: ['tool-1'], toolResult: ['ans-1'] },
       });
-      expect(await find(model(), { anchorKind: 'tool', anchorMessageId: 'tool-2' })).toEqual(pin);
-      // A client-forged tool message (e.g. parentId spoofed to asst-1) whose id is NOT among the
-      // server-recorded pending tool ids can never bind.
       expect(
-        await find(model(), { anchorKind: 'tool', anchorMessageId: 'forged-tool' }),
+        await find(model(), { anchorKind: 'toolResult', anchorMessageId: 'tool-1' }),
       ).toBeNull();
-    });
-
-    it('kind crossing fails: assistant id as a tool anchor (and vice versa) never matches', async () => {
-      await seedOp({
-        assistantMessageId: 'asst-1',
-        id: 'op-1',
-        pendingResumeAnchorIds: ['tool-1'],
-      });
-      expect(await find(model(), { anchorKind: 'tool', anchorMessageId: 'asst-1' })).toBeNull();
-      expect(
-        await find(model(), { anchorKind: 'assistant', anchorMessageId: 'tool-1' }),
-      ).toBeNull();
+      expect(await find(model(), { anchorKind: 'approval', anchorMessageId: 'ans-1' })).toBeNull();
     });
 
     it('fails closed for a fabricated anchor bound to no operation', async () => {
-      await seedOp({ assistantMessageId: 'asst-1', id: 'op-1' });
+      await seedOp({ id: 'op-1', pendingResumeAnchors: { approval: ['tool-1'] } });
       expect(await find(model(), { anchorMessageId: 'forged' })).toBeNull();
     });
 
     it('is owner-scoped: another user cannot bind to this operation', async () => {
-      await seedOp({ assistantMessageId: 'asst-1', id: 'op-1' });
+      await seedOp({ id: 'op-1', pendingResumeAnchors: { approval: ['tool-1'] } });
       expect(
-        await find(new AgentOperationModel(serverDB, otherUserId), { anchorMessageId: 'asst-1' }),
+        await find(new AgentOperationModel(serverDB, otherUserId), { anchorMessageId: 'tool-1' }),
       ).toBeNull();
     });
 
     it('binds topic and thread exactly, and requires a topic', async () => {
-      await seedOp({ assistantMessageId: 'asst-1', id: 'op-1', threadId: 'thread-1' });
-      expect(await find(model(), { anchorMessageId: 'asst-1', threadId: 'thread-1' })).toEqual(pin);
-      expect(await find(model(), { anchorMessageId: 'asst-1', threadId: null })).toBeNull();
+      await seedOp({
+        id: 'op-1',
+        pendingResumeAnchors: { approval: ['tool-1'] },
+        threadId: 'thread-1',
+      });
+      expect(await find(model(), { anchorMessageId: 'tool-1', threadId: 'thread-1' })).toEqual(pin);
+      expect(await find(model(), { anchorMessageId: 'tool-1', threadId: null })).toBeNull();
       expect(
         await find(model(), {
-          anchorMessageId: 'asst-1',
+          anchorMessageId: 'tool-1',
           threadId: 'thread-1',
           topicId: 'topic-2',
         }),
       ).toBeNull();
       expect(
-        await find(model(), { anchorMessageId: 'asst-1', threadId: 'thread-1', topicId: null }),
+        await find(model(), { anchorMessageId: 'tool-1', threadId: 'thread-1', topicId: null }),
       ).toBeNull();
     });
 
     it('RR4-2: only waiting_for_human is externally resumable (async-tool + terminal excluded)', async () => {
       await seedOp({
-        assistantMessageId: 'asst-async',
         id: 'op-async',
+        pendingResumeAnchors: { approval: ['tool-async'] },
         status: 'waiting_for_async_tool',
       });
-      await seedOp({ assistantMessageId: 'asst-done', id: 'op-done', status: 'done' });
-      expect(await find(model(), { anchorMessageId: 'asst-async' })).toBeNull();
-      expect(await find(model(), { anchorMessageId: 'asst-done' })).toBeNull();
+      await seedOp({
+        id: 'op-done',
+        pendingResumeAnchors: { approval: ['tool-done'] },
+        status: 'done',
+      });
+      expect(await find(model(), { anchorMessageId: 'tool-async' })).toBeNull();
+      expect(await find(model(), { anchorMessageId: 'tool-done' })).toBeNull();
     });
 
     it('binds the requested platform Agent', async () => {
-      await seedOp({ assistantMessageId: 'asst-1', id: 'op-1', platformAgentId: 'pagt_OTHER' });
+      await seedOp({
+        id: 'op-1',
+        pendingResumeAnchors: { approval: ['tool-1'] },
+        platformAgentId: 'pagt_OTHER',
+      });
       expect(
-        await find(model(), { anchorMessageId: 'asst-1', platformAgentId: 'pagt_1' }),
+        await find(model(), { anchorMessageId: 'tool-1', platformAgentId: 'pagt_1' }),
       ).toBeNull();
       expect(
-        await find(model(), { anchorMessageId: 'asst-1', platformAgentId: 'pagt_OTHER' }),
+        await find(model(), { anchorMessageId: 'tool-1', platformAgentId: 'pagt_OTHER' }),
       ).toEqual({ ...pin, platformAgentId: 'pagt_OTHER' });
     });
 
-    it('recordResumeAnchors records the server-owned pending tool ids (owner-scoped)', async () => {
-      await seedOp({ assistantMessageId: 'asst-1', id: 'op-1' });
-      await model().recordResumeAnchors('op-1', ['tool-a', 'tool-b']);
-      expect(await find(model(), { anchorKind: 'tool', anchorMessageId: 'tool-b' })).toEqual(pin);
-      // Another owner can't write anchors onto this op.
-      await new AgentOperationModel(serverDB, otherUserId).recordResumeAnchors('op-1', ['tool-x']);
-      expect(await find(model(), { anchorKind: 'tool', anchorMessageId: 'tool-x' })).toBeNull();
+    it('parkForHumanIntervention records kind-keyed anchors atomically (owner-scoped, running→waiting)', async () => {
+      // Seed a RUNNING op (the expected previous status) so the park CAS fires.
+      await serverDB.insert(agentOperations).values({
+        id: 'op-1',
+        metadata: {
+          assistantMessageId: 'asst-1',
+          platformModel: modelPin,
+          platformOperation: pin,
+        },
+        startedAt: new Date(),
+        status: 'running',
+        topicId: 'topic-1',
+        userId,
+      });
+
+      const parked = await model().parkForHumanIntervention('op-1', {
+        anchors: { approval: ['tool-a'], toolResult: ['ans-a'] },
+        completionReason: 'waiting_for_human',
+        status: 'waiting_for_human',
+      });
+      expect(parked.affected).toBe(1);
+      expect(await find(model(), { anchorKind: 'approval', anchorMessageId: 'tool-a' })).toEqual(
+        pin,
+      );
+      expect(await find(model(), { anchorKind: 'toolResult', anchorMessageId: 'ans-a' })).toEqual(
+        pin,
+      );
+      // Kinds still can't cross even after a real park.
+      expect(
+        await find(model(), { anchorKind: 'toolResult', anchorMessageId: 'tool-a' }),
+      ).toBeNull();
+
+      // Another owner can't park / write anchors onto this op (0 rows affected).
+      const foreign = await new AgentOperationModel(serverDB, otherUserId).parkForHumanIntervention(
+        'op-1',
+        {
+          anchors: { approval: ['tool-x'] },
+          completionReason: 'waiting_for_human',
+          status: 'waiting_for_human',
+        },
+      );
+      expect(foreign.affected).toBe(0);
+      expect(await find(model(), { anchorKind: 'approval', anchorMessageId: 'tool-x' })).toBeNull();
+    });
+
+    it('parkForHumanIntervention fails closed on a cancelled/terminal op (no resurrection)', async () => {
+      // A terminal (done) op must NOT be flipped back into waiting_for_human by a late park.
+      await serverDB.insert(agentOperations).values({
+        id: 'op-done',
+        metadata: { assistantMessageId: 'asst-1', platformModel: modelPin, platformOperation: pin },
+        startedAt: new Date(),
+        status: 'done',
+        topicId: 'topic-1',
+        userId,
+      });
+      const parked = await model().parkForHumanIntervention('op-done', {
+        anchors: { approval: ['tool-late'] },
+        completionReason: 'waiting_for_human',
+        status: 'waiting_for_human',
+      });
+      expect(parked.affected).toBe(0);
+      const [row] = await serverDB
+        .select()
+        .from(agentOperations)
+        .where(eq(agentOperations.id, 'op-done'));
+      expect(row.status).toBe('done');
+    });
+
+    it('parkForHumanIntervention preserves the sibling kind when only one kind is present', async () => {
+      await serverDB.insert(agentOperations).values({
+        id: 'op-1',
+        metadata: {
+          assistantMessageId: 'asst-1',
+          pendingResumeAnchors: { toolResult: ['ans-existing'] },
+          platformModel: modelPin,
+          platformOperation: pin,
+        },
+        startedAt: new Date(),
+        status: 'waiting_for_human',
+        topicId: 'topic-1',
+        userId,
+      });
+      // Re-park (waiting_for_human is an allowed previous status) with only approval anchors.
+      const parked = await model().parkForHumanIntervention('op-1', {
+        anchors: { approval: ['tool-new'] },
+        completionReason: 'waiting_for_human',
+        status: 'waiting_for_human',
+      });
+      expect(parked.affected).toBe(1);
+      // The pre-existing toolResult anchor survives; the new approval anchor is added.
+      expect(
+        await find(model(), { anchorKind: 'toolResult', anchorMessageId: 'ans-existing' }),
+      ).toEqual(pin);
+      expect(await find(model(), { anchorKind: 'approval', anchorMessageId: 'tool-new' })).toEqual(
+        pin,
+      );
     });
 
     describe('findPlatformOperationRef (RR2-2)', () => {
@@ -554,6 +651,24 @@ describe('AgentOperationModel', () => {
       await model().recordStart({ operationId: 'op-o' });
       await expect(model().recordStart({ operationId: 'op-o' })).resolves.toBeUndefined();
     });
+
+    it('RR5-4: a PARTIAL platform start (any marker, not the full set) fails closed — never ordinary', async () => {
+      // Only a single platform marker present (no operation pin) previously slipped through as an
+      // ORDINARY no-op; now it must fail closed rather than run on the managed latest pointer.
+      await expect(start(model(), { platformModel: modelPin }, 'op-m')).rejects.toThrow(
+        'PLATFORM_OPERATION_START_CONFLICT',
+      );
+      await expect(start(model(), { assistantMessageId: 'asst-1' }, 'op-x')).rejects.toThrow(
+        'PLATFORM_OPERATION_START_CONFLICT',
+      );
+      await expect(
+        start(model(), { platformSkills: [], platformConnectors: [] }, 'op-sc'),
+      ).rejects.toThrow('PLATFORM_OPERATION_START_CONFLICT');
+      // A truly ordinary op (agentSignal-only metadata, NO platform marker) stays an idempotent no-op.
+      await expect(
+        model().recordStart({ metadata: { agentSignal: { runId: 'r1' } }, operationId: 'op-sig' }),
+      ).resolves.toBeUndefined();
+    });
   });
 
   describe('findPlatformModelPin', () => {
@@ -566,7 +681,15 @@ describe('AgentOperationModel', () => {
 
     it('returns the exact model pin owner-scoped, null for another user or an ordinary op', async () => {
       const model = new AgentOperationModel(serverDB, userId);
-      await model.recordStart({ metadata: { platformModel: modelPin }, operationId: 'op-model' });
+      // Direct insert (not recordStart) so this read-path test can seed a model pin without
+      // satisfying the full RR4-3/RR5-4 complete-start gate (which rejects a partial platform start).
+      await serverDB.insert(agentOperations).values({
+        id: 'op-model',
+        metadata: { platformModel: modelPin },
+        startedAt: new Date(),
+        status: 'running',
+        userId,
+      });
       await model.recordStart({ operationId: 'op-plain' });
 
       expect(await model.findPlatformModelPin('op-model')).toEqual(modelPin);

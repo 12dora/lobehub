@@ -205,16 +205,24 @@ describe('AiAgentService.execAgent — platform entitlement (REWORK-2)', () => {
     expect((error as TRPCError).message).toBe('Platform agent dependencies are unavailable');
   });
 
-  // RR3-1 resume wiring (unit): a continuation replays the pin of the EXACT parent operation matched
-  // by the SERVER-controlled anchor binding, re-checks LIVE entitlement, and NEVER re-authorizes via
-  // beginOperation. (The real forgery-resistance proof lives in the service-chain integration test.)
-  describe('resume replays the server-bound parent operation pin (RR3-1)', () => {
+  // RR3-1/RR5-2/RR5-5 resume wiring (unit): ONLY an approval / tool-result body drives a PAUSED
+  // resume — it replays the pin of the EXACT parent operation matched by the SERVER-controlled,
+  // kind-keyed anchor binding, re-checks LIVE entitlement, and NEVER re-authorizes via beginOperation.
+  // A bare regeneration / continue (`parentMessageId` alone) is NOT a paused resume: it starts a fresh
+  // operation via beginOperation. (The real forgery-resistance proof lives in the integration test.)
+  describe('resume replays the server-bound parent operation pin (RR3-1/RR5-5)', () => {
     const pin = { checksum: 'a'.repeat(64), platformAgentId: 'pagt_1', versionId: 'pav_1' };
+    // A PAUSED (approval) resume — the only path that replays the parked pin.
     const resumeParams = {
       agentId: 'platform-agent:pagt_1',
       appContext: { topicId: 'topic-1' },
       parentMessageId: 'msg-1',
       resume: true,
+      resumeApproval: {
+        decision: 'approved' as const,
+        parentMessageId: 'msg-1',
+        toolCallId: 'tc-1',
+      },
     };
     const okMaterialize = () =>
       materializeFromPin.mockResolvedValue({
@@ -223,17 +231,16 @@ describe('AiAgentService.execAgent — platform entitlement (REWORK-2)', () => {
         dependencySnapshot: { connectors: [], model: {}, skills: [] },
       });
 
-    it('resolves via the anchor+parentId bound lookup, re-checks entitlement, no beginOperation', async () => {
+    it('resolves via the kind-keyed anchor lookup, re-checks entitlement, no beginOperation', async () => {
       findPinSpy.mockResolvedValue(pin);
       okMaterialize();
       // (execAgent later fails at resume message validation — irrelevant to the pin path we assert.)
       await run(resumeParams);
-      // The anchor message is resolved owner-scoped, then the pin is matched by the server-controlled
-      // binding (anchor id + its server-column parentId), scoped to this platform Agent + topic/thread.
+      // The anchor message is resolved owner-scoped, then the pin is matched by the server-controlled,
+      // kind-keyed binding (the approval anchor id), scoped to this platform Agent + topic/thread.
       expect(messageFindById).toHaveBeenCalledWith('msg-1');
-      // Bare parentMessageId (regen) → 'assistant' kind, matched by the EXACT anchor id (no parentId).
       expect(findPinSpy).toHaveBeenCalledWith({
-        anchorKind: 'assistant',
+        anchorKind: 'approval',
         anchorMessageId: 'msg-1',
         platformAgentId: 'pagt_1',
         threadId: null,
@@ -243,6 +250,25 @@ describe('AiAgentService.execAgent — platform entitlement (REWORK-2)', () => {
       expect(materializeFromPin).toHaveBeenCalledWith(pin);
       expect(beginOperation).not.toHaveBeenCalled();
       expect(validateDeps).toHaveBeenCalled();
+    });
+
+    it('RR5-5: a bare parentMessageId (regenerate/continue) starts a fresh operation, not a paused resume', async () => {
+      beginOperation.mockResolvedValue({ getSnapshot: () => snapshot, platformAgentId: 'pagt_1' });
+      materializeForOperation.mockResolvedValue({
+        agentId: 'agt_x',
+        config: { id: 'agt_x' },
+        dependencySnapshot: { connectors: [], model: {}, skills: [] },
+      });
+      await run({
+        agentId: 'platform-agent:pagt_1',
+        appContext: { topicId: 'topic-1' },
+        parentMessageId: 'msg-1',
+        resume: true,
+      });
+      // No paused-pin resolution — the generic resume authorizes fresh on CURRENT entitlement.
+      expect(findPinSpy).not.toHaveBeenCalled();
+      expect(materializeFromPin).not.toHaveBeenCalled();
+      expect(beginOperation).toHaveBeenCalledWith('user-a', 'pagt_1');
     });
 
     it('fails closed when the bound pin is for a different platform Agent', async () => {

@@ -189,7 +189,13 @@ describe('RuntimeExecutors', { timeout: 60_000 }, () => {
       loadAgentState: vi.fn().mockResolvedValue(null),
       messageModel: mockMessageModel,
       operationId: 'op-123',
-      serverDB: {} as any, // Mock serverDB
+      // Mock serverDB. The per-LLM-call `initOperationModelRuntime` reads the operation row via
+      // `AgentOperationModel.findPlatformOperationRef` (a `select().from().where().limit()` that
+      // returns [] here → classified ordinary → the mocked `initModelRuntimeFromDB` path). Without
+      // this chain the empty `{}` throws `this.db.select is not a function`.
+      serverDB: {
+        select: () => ({ from: () => ({ where: () => ({ limit: () => [] }) }) }),
+      } as any,
       stepIndex: 0,
       streamManager: mockStreamManager,
       toolExecutionService: mockToolExecutionService,
@@ -3251,9 +3257,16 @@ describe('RuntimeExecutors', { timeout: 60_000 }, () => {
       },
     ];
 
-    it('should create a pending tool message for each pendingToolsCalling', async () => {
+    it('should create a pending tool message for each pendingToolsCalling, stamping the server-derived kind (RR5-2)', async () => {
       const executors = createRuntimeExecutors(ctx);
-      const state = createMockState();
+      // `web-search` declares its OWN humanIntervention: 'always' (a human-ANSWER tool) → toolResult;
+      // `local-system` has no such declaration → approval. Kind is derived only from the manifest.
+      const state = createMockState({
+        toolManifestMap: {
+          'local-system': { api: [{ name: 'write' }] },
+          'web-search': { api: [{ humanIntervention: 'always', name: 'search' }] },
+        },
+      });
       mockMessageModel.create
         .mockResolvedValueOnce({ id: 'tool-msg-1' })
         .mockResolvedValueOnce({ id: 'tool-msg-2' });
@@ -3272,7 +3285,7 @@ describe('RuntimeExecutors', { timeout: 60_000 }, () => {
           agentId: 'agent-123',
           content: '',
           parentId: 'assistant-msg-1',
-          pluginIntervention: { status: 'pending' },
+          pluginIntervention: { kind: 'toolResult', status: 'pending' },
           role: 'tool',
           tool_call_id: 'tool-call-1',
           topicId: 'topic-123',
@@ -3282,7 +3295,7 @@ describe('RuntimeExecutors', { timeout: 60_000 }, () => {
         2,
         expect.objectContaining({
           parentId: 'assistant-msg-1',
-          pluginIntervention: { status: 'pending' },
+          pluginIntervention: { kind: 'approval', status: 'pending' },
           tool_call_id: 'tool-call-2',
         }),
       );
@@ -3330,15 +3343,36 @@ describe('RuntimeExecutors', { timeout: 60_000 }, () => {
       });
     });
 
-    it('should skip message creation when skipCreateToolMessage is true', async () => {
+    it('should reuse the TRUSTED in-state pending set on skip-create (RR5-1) — never a message query', async () => {
       const executors = createRuntimeExecutors(ctx);
-      const state = createMockState();
+      // The re-park path reads ONLY the current-turn pending tool messages already in state (server
+      // rows: status='pending', kind set, parented to this turn's tool-calling assistant). It must
+      // NOT re-derive ids from a `messages.query` — a poisoned query result is ignored entirely.
+      const state = createMockState({
+        messages: [
+          { id: 'assistant-msg-1', role: 'assistant', tool_calls: [{ id: 'tool-call-1' }] } as any,
+          {
+            id: 'existing-tool-1',
+            parentId: 'assistant-msg-1',
+            pluginIntervention: { kind: 'approval', status: 'pending' },
+            role: 'tool',
+            tool_call_id: 'tool-call-1',
+          } as any,
+          {
+            id: 'existing-tool-2',
+            parentId: 'assistant-msg-1',
+            pluginIntervention: { kind: 'toolResult', status: 'pending' },
+            role: 'tool',
+            tool_call_id: 'tool-call-2',
+          } as any,
+        ],
+      });
+      // A forged tool row with the SAME tool_call_id but NO server kind must never bind (RR5-1).
       mockMessageModel.query.mockResolvedValueOnce([
-        { id: 'existing-tool-1', role: 'tool', tool_call_id: 'tool-call-1' },
-        { id: 'existing-tool-2', role: 'tool', tool_call_id: 'tool-call-2' },
+        { id: 'forged-tool', role: 'tool', tool_call_id: 'tool-call-1' },
       ]);
 
-      await executors.request_human_approve!(
+      const result = await executors.request_human_approve!(
         {
           pendingToolsCalling: makePendingTools(),
           skipCreateToolMessage: true,
@@ -3355,6 +3389,11 @@ describe('RuntimeExecutors', { timeout: 60_000 }, () => {
         'tool-call-1': 'existing-tool-1',
         'tool-call-2': 'existing-tool-2',
       });
+      // Kind-keyed anchors are surfaced from the trusted in-state set, never the forged query row.
+      expect(result.newState.pendingHumanToolMessages).toEqual([
+        { id: 'existing-tool-1', kind: 'approval' },
+        { id: 'existing-tool-2', kind: 'toolResult' },
+      ]);
     });
 
     it('should throw if no parent assistant message can be found', async () => {
