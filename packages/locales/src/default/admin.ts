@@ -174,6 +174,10 @@ export default {
   'agentCatalog.rollout.retryDescription':
     'Explain why the failed or cancelled rollout is safe to resume from its checkpoint.',
   'agentCatalog.rollout.retryRequested': 'Rollout retry requested.',
+  'agentCatalog.rollout.rollback': 'Roll back rollout',
+  'agentCatalog.rollout.rollbackDescription':
+    'Explain why this rollout should return to its exact previous version.',
+  'agentCatalog.rollout.rollbackRequested': 'Reverse rollout queued.',
   'agentCatalog.rollout.start': 'Start rollout',
   'agentCatalog.rollout.startDescription':
     'Explain why this assignment is ready for materialization.',

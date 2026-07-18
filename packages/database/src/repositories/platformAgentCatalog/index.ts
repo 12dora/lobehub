@@ -6,7 +6,21 @@ import type {
   PlatformAgentVersionConfig,
   PlatformAgentVersionPolicy,
 } from '@lobechat/types';
-import { and, asc, desc, eq, gt, ilike, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  ilike,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  ne,
+  or,
+  sql,
+} from 'drizzle-orm';
 
 import { checksumPayload } from '../../models/platform/checksum';
 import {
@@ -80,6 +94,11 @@ export interface PlatformAgentAssignmentPage {
 
 export interface PlatformAgentMaterializationDependentPage {
   items: Array<{ id: string; userId: string; versionId: string }>;
+  nextCursor: string | null;
+}
+
+export interface PlatformAgentAssignmentTargetPage {
+  items: string[];
   nextCursor: string | null;
 }
 
@@ -312,6 +331,36 @@ export class PlatformAgentCatalogRepository {
           isNotNull(platformAgentVersions.dependencySnapshot),
         ),
       )
+      .limit(1);
+    return row as ExactPlatformAgentVersion | undefined;
+  };
+
+  getPreviousExactVersion = async (
+    agentId: string,
+    versionId: string,
+  ): Promise<ExactPlatformAgentVersion | undefined> => {
+    const target = await this.getExactVersion(agentId, versionId);
+    if (!target) return undefined;
+
+    const [row] = await this.db
+      .select()
+      .from(platformAgentVersions)
+      .where(
+        and(
+          eq(platformAgentVersions.agentId, agentId),
+          ne(platformAgentVersions.id, versionId),
+          or(
+            lt(platformAgentVersions.createdAt, target.createdAt),
+            and(
+              eq(platformAgentVersions.createdAt, target.createdAt),
+              lt(platformAgentVersions.id, target.id),
+            ),
+          ),
+          isNotNull(platformAgentVersions.checksum),
+          isNotNull(platformAgentVersions.dependencySnapshot),
+        ),
+      )
+      .orderBy(desc(platformAgentVersions.createdAt), desc(platformAgentVersions.id))
       .limit(1);
     return row as ExactPlatformAgentVersion | undefined;
   };
@@ -652,6 +701,59 @@ export class PlatformAgentCatalogRepository {
         ),
       );
     return row?.count ?? 0;
+  };
+
+  listAssignmentTargetUserIds = async (params: {
+    cursor?: string;
+    limit?: number;
+    targetId: string;
+    targetType: PlatformAgentAssignmentTargetType;
+  }): Promise<PlatformAgentAssignmentTargetPage> => {
+    const limit = Math.max(1, Math.min(params.limit ?? 100, 500));
+    if (params.targetType === 'user') {
+      if (params.cursor && params.targetId <= params.cursor) return { items: [], nextCursor: null };
+      const [row] = await this.db
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.id, params.targetId))
+        .limit(1);
+      return { items: row ? [row.id] : [], nextCursor: null };
+    }
+
+    const baseCondition = params.cursor ? gt(users.id, params.cursor) : undefined;
+    const rows =
+      params.targetType === 'global'
+        ? await this.db
+            .select({ id: users.id })
+            .from(users)
+            .where(baseCondition)
+            .orderBy(asc(users.id))
+            .limit(limit + 1)
+        : await this.db
+            .selectDistinct({ id: users.id })
+            .from(users)
+            .innerJoin(userRoles, eq(userRoles.userId, users.id))
+            .innerJoin(
+              roles,
+              and(
+                eq(roles.id, userRoles.roleId),
+                isNull(roles.workspaceId),
+                eq(roles.isActive, true),
+              ),
+            )
+            .where(
+              and(
+                baseCondition,
+                eq(userRoles.roleId, params.targetId),
+                isNull(userRoles.workspaceId),
+                or(isNull(userRoles.expiresAt), sql`${userRoles.expiresAt} > CURRENT_TIMESTAMP`),
+              ),
+            )
+            .orderBy(asc(users.id))
+            .limit(limit + 1);
+    const hasMore = rows.length > limit;
+    const items = (hasMore ? rows.slice(0, limit) : rows).map(({ id }) => id);
+    return { items, nextCursor: hasMore ? (items.at(-1) ?? null) : null };
   };
 
   getDefaultIdentityForUpdate = async (): Promise<PlatformAgentItem | undefined> => {

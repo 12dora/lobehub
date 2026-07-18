@@ -20,7 +20,7 @@ export const RolloutPanel = ({ enabled, permissions, refresh, snapshot }: Rollou
   const { t } = useTranslation('admin');
   const mutateRollout = (
     rollout: AdminAgentDetailOutput['rollouts'][number],
-    action: 'cancel' | 'retry',
+    action: 'cancel' | 'retry' | 'rollback',
   ) =>
     openAgentReasonModal({
       danger: action === 'cancel',
@@ -34,7 +34,14 @@ export const RolloutPanel = ({ enabled, permissions, refresh, snapshot }: Rollou
           reason,
         };
         if (action === 'cancel') await adminAgentsService.cancelRollout(input);
-        else await adminAgentsService.retryRollout(input);
+        else if (action === 'retry') await adminAgentsService.retryRollout(input);
+        else {
+          if (!rollout.previousVersionId) return;
+          await adminAgentsService.rollbackRollout({
+            ...input,
+            targetVersionId: rollout.previousVersionId,
+          });
+        }
         await refresh();
         toast.success(t(`agentCatalog.rollout.${action}Requested` as never));
       },
@@ -95,6 +102,13 @@ export const RolloutPanel = ({ enabled, permissions, refresh, snapshot }: Rollou
               {permissions.canAssign && ['cancelled', 'dead', 'failed'].includes(rollout.status) ? (
                 <Button onClick={() => mutateRollout(rollout, 'retry')}>
                   {t('agentCatalog.rollout.retry')}
+                </Button>
+              ) : null}
+              {permissions.canPublish &&
+              rollout.status === 'completed' &&
+              rollout.previousVersionId ? (
+                <Button danger onClick={() => mutateRollout(rollout, 'rollback')}>
+                  {t('agentCatalog.rollout.rollback')}
                 </Button>
               ) : null}
             </Flexbox>
