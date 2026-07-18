@@ -52,6 +52,11 @@ export interface PlatformPublishedSkillSnapshot {
   versionId: string;
 }
 
+export interface PlatformSkillExactReference {
+  skillKey: string;
+  version: string;
+}
+
 export interface PlatformPublishedSkillPage {
   items: PlatformPublishedSkillRow[];
   nextCursor: string | null;
@@ -441,6 +446,120 @@ export class PlatformSkillCatalogRepository {
     return { ...row, payload: row.payload as unknown as PlatformPublishedSkillSnapshot };
   };
 
+  /**
+   * Publication-only exact read for dependents such as platform Agents.
+   * Unlike resolveVersion, this additionally requires the current Skill identity
+   * and the historical published snapshot to remain enabled and key-consistent.
+   */
+  getPublishedExecutionVersionExact = async (
+    skillKey: string,
+    version: string,
+  ): Promise<PlatformPublishedSkillRow | undefined> => {
+    const [row] = await this.db
+      .select({
+        payload: platformResourceRevisions.payload,
+        revision: platformResourceRevisions.revision,
+        skillId: platformSkills.id,
+        status: platformResourceRevisions.status,
+        version: platformSkillVersions,
+      })
+      .from(platformSkills)
+      .innerJoin(
+        platformResourceRevisions,
+        and(
+          eq(platformResourceRevisions.resourceType, 'skill'),
+          eq(platformResourceRevisions.resourceId, platformSkills.id),
+          eq(platformResourceRevisions.status, 'published'),
+        ),
+      )
+      .innerJoin(
+        platformSkillVersions,
+        and(
+          eq(platformSkillVersions.skillId, platformSkills.id),
+          eq(
+            platformSkillVersions.id,
+            sql<string>`${platformResourceRevisions.payload}->>'versionId'`,
+          ),
+          eq(platformSkillVersions.version, version),
+        ),
+      )
+      .where(
+        and(
+          eq(platformSkills.skillKey, skillKey),
+          eq(platformSkills.status, 'published'),
+          eq(platformSkills.enabled, true),
+          sql`COALESCE((${platformResourceRevisions.payload}->'skill'->>'enabled')::boolean, false)`,
+          sql`${platformResourceRevisions.payload}->'skill'->>'skillKey' = ${skillKey}`,
+        ),
+      )
+      .orderBy(desc(platformResourceRevisions.revision))
+      .limit(1);
+    if (!row) return undefined;
+    return { ...row, payload: row.payload as unknown as PlatformPublishedSkillSnapshot };
+  };
+
+  /**
+   * Batch form of {@link getPublishedExecutionVersionExact}. The Agent contract permits up to 100
+   * Skill refs, so validation must not turn one request into 100 sequential roundtrips.
+   */
+  getPublishedExecutionVersionsExact = async (
+    references: readonly PlatformSkillExactReference[],
+  ): Promise<Map<string, PlatformPublishedSkillRow>> => {
+    if (references.length === 0) return new Map();
+    const requestedPairs = references.map(({ skillKey, version }) =>
+      and(eq(platformSkills.skillKey, skillKey), eq(platformSkillVersions.version, version)),
+    );
+    const rows = await this.db
+      .select({
+        payload: platformResourceRevisions.payload,
+        revision: platformResourceRevisions.revision,
+        skillId: platformSkills.id,
+        status: platformResourceRevisions.status,
+        version: platformSkillVersions,
+      })
+      .from(platformSkills)
+      .innerJoin(
+        platformResourceRevisions,
+        and(
+          eq(platformResourceRevisions.resourceType, 'skill'),
+          eq(platformResourceRevisions.resourceId, platformSkills.id),
+          eq(platformResourceRevisions.status, 'published'),
+        ),
+      )
+      .innerJoin(
+        platformSkillVersions,
+        and(
+          eq(platformSkillVersions.skillId, platformSkills.id),
+          eq(
+            platformSkillVersions.id,
+            sql<string>`${platformResourceRevisions.payload}->>'versionId'`,
+          ),
+        ),
+      )
+      .where(
+        and(
+          eq(platformSkills.status, 'published'),
+          eq(platformSkills.enabled, true),
+          sql`COALESCE((${platformResourceRevisions.payload}->'skill'->>'enabled')::boolean, false)`,
+          sql`${platformResourceRevisions.payload}->'skill'->>'skillKey' = ${platformSkills.skillKey}`,
+          or(...requestedPairs),
+        ),
+      )
+      .orderBy(
+        asc(platformSkills.skillKey),
+        asc(platformSkillVersions.version),
+        desc(platformResourceRevisions.revision),
+      );
+
+    const exact = new Map<string, PlatformPublishedSkillRow>();
+    for (const row of rows) {
+      const payload = row.payload as unknown as PlatformPublishedSkillSnapshot;
+      const key = `${payload.skill.skillKey}\0${row.version.version}`;
+      if (!exact.has(key)) exact.set(key, { ...row, payload });
+    }
+    return exact;
+  };
+
   getDependentsPage = async (params: {
     cursor?: PlatformSkillDependentCursor;
     limit?: number;
@@ -513,7 +632,8 @@ export class PlatformSkillCatalogRepository {
           or(
             and(
               eq(platformAgents.status, 'published'),
-              eq(platformAgents.currentVersion, platformAgentVersions.version),
+              eq(platformAgents.migrationRequired, false),
+              eq(platformAgents.currentVersionId, platformAgentVersions.id),
             ),
             sql`EXISTS (
               SELECT 1 FROM ${platformResourceRevisions} agent_revision
@@ -526,7 +646,7 @@ export class PlatformSkillCatalogRepository {
           agentCursorCondition,
           sql`EXISTS (
             SELECT 1
-            FROM jsonb_array_elements(${platformAgentVersions.config}->'skills') dependency
+            FROM jsonb_array_elements(${platformAgentVersions.dependencySnapshot}->'skills') dependency
             WHERE dependency->>'skillKey' = ${params.skillKey} AND ${versionCondition}
           )`,
         ),

@@ -3,7 +3,7 @@ import { INBOX_SESSION_ID } from '@lobechat/const';
 import type { AgentRankItem, LobeAgentAgencyConfig } from '@lobechat/types';
 import { pruneWorkingDirByDeviceDeletes } from '@lobechat/types';
 import { TRPCError } from '@trpc/server';
-import { and, count, desc, eq, gt, ilike, inArray, isNull, ne, or, sql } from 'drizzle-orm';
+import { and, count, desc, eq, gt, ilike, inArray, isNull, ne, not, or, sql } from 'drizzle-orm';
 import type { PartialDeep } from 'type-fest';
 
 import { merge } from '@/utils/merge';
@@ -297,11 +297,17 @@ export class AgentModel {
    * Build the where condition shared by queryAgents / countAgents:
    * non-virtual agents of the current user, with optional keyword filter.
    */
-  private buildQueryAgentsWhere = (keyword?: string) => {
-    // Include agents where virtual is false OR null (legacy data without virtual field)
+  private buildQueryAgentsWhere = (keyword?: string, excludeAgentIds?: string[]) => {
+    // Include agents where virtual is false OR null (legacy data without virtual field).
+    // `excludeAgentIds` drops rows that are already surfaced elsewhere in a unified list — e.g.
+    // local rows materialized from a platform Agent (M10), which are represented by their
+    // platform list item instead. Excluding in-SQL keeps limit/offset pagination exact.
     const baseConditions = and(
       this.ownership(),
       or(eq(agents.virtual, false), isNull(agents.virtual)),
+      excludeAgentIds && excludeAgentIds.length > 0
+        ? not(inArray(agents.id, excludeAgentIds))
+        : undefined,
     );
 
     // Add keyword search condition if provided
@@ -320,9 +326,14 @@ export class AgentModel {
    * which results are heterogeneous (external CLI/device) agents.
    * Excludes virtual agents (like inbox, supervisors, etc).
    */
-  queryAgents = async (params?: { keyword?: string; limit?: number; offset?: number }) => {
-    const { keyword, limit = 9999, offset = 0 } = params ?? {};
-    const searchCondition = this.buildQueryAgentsWhere(keyword);
+  queryAgents = async (params?: {
+    excludeAgentIds?: string[];
+    keyword?: string;
+    limit?: number;
+    offset?: number;
+  }) => {
+    const { keyword, limit = 9999, offset = 0, excludeAgentIds } = params ?? {};
+    const searchCondition = this.buildQueryAgentsWhere(keyword, excludeAgentIds);
 
     const rows = await this.db
       .select({

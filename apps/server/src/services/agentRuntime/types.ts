@@ -7,7 +7,14 @@ import type {
   ToolExecutor,
   ToolSource,
 } from '@lobechat/context-engine';
-import type { ChatTopicBotContext, UserInterventionConfig } from '@lobechat/types';
+import type {
+  ChatTopicBotContext,
+  PlatformAgentConnectorDependencyRef,
+  PlatformAgentSkillDependencyRef,
+  PlatformOperationModelPin,
+  PlatformOperationPin,
+  UserInterventionConfig,
+} from '@lobechat/types';
 
 import type { ExecutionPlan } from '@/helpers/executionTarget';
 import { type ServerUserMemoryConfig } from '@/server/modules/Mecha/ContextEngineering/types';
@@ -352,6 +359,13 @@ export interface OperationCreationParams {
     topicId?: string | null;
     trigger?: string;
   };
+  /**
+   * Id of the assistant turn this operation produces (M10 PR-049 · RR3-1). Persisted onto the
+   * operation's own (server-only) `agent_operations.metadata.assistantMessageId` as the SERVER-
+   * controlled resume anchor — a resume binds to this operation through it without ever trusting
+   * client-writable `message.metadata`. Only meaningful for platform operations.
+   */
+  assistantMessageId?: string;
   autoStart?: boolean;
   /**
    * Sender/owner identity for bot-originated runs. Forwarded into
@@ -403,6 +417,30 @@ export interface OperationCreationParams {
    * sub-tree back to its root.
    */
   parentOperationId?: string;
+  /**
+   * Secret-free exact Connector refs + tool allowlist (M10 PR-049 · CONNECTOR-EXACT). Persisted onto
+   * `agent_operations.metadata.platformConnectors` for audit/replay. Absent for ordinary / builtin
+   * operations.
+   */
+  platformConnectorPins?: PlatformAgentConnectorDependencyRef[];
+  /**
+   * Secret-free exact model ref (M10 PR-049 · MODEL-EXACT). Persisted onto
+   * `agent_operations.metadata.platformModel` so every LLM call runs on the exact historical
+   * provider revision. Absent for ordinary / builtin operations.
+   */
+  platformModelPin?: PlatformOperationModelPin;
+  /**
+   * Secret-free platform operation pin (M10 PR-049 · REWORK-2). Persisted verbatim onto
+   * `agent_operations.metadata.platformOperation` so resume/retry/queued steps replay the exact
+   * pinned version. Absent for ordinary / builtin operations.
+   */
+  platformOperationPin?: PlatformOperationPin;
+  /**
+   * Secret-free exact Skill refs (M10 PR-049 · SKILL-EXACT). Persisted onto
+   * `agent_operations.metadata.platformSkills` for audit/replay. Absent for ordinary / builtin
+   * operations.
+   */
+  platformSkillPins?: PlatformAgentSkillDependencyRef[];
   queueRetries?: number;
   queueRetryDelay?: string;
   /** Abort startup before the first step is scheduled */

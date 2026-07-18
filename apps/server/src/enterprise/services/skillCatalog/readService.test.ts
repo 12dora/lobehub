@@ -2,6 +2,7 @@
 import { sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { DEFAULT_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
 import { getTestDB } from '@/database/core/getTestDB';
 import {
   PlatformSkillCatalogModel,
@@ -22,6 +23,7 @@ import {
   resetPublishedSkillCatalogReadCacheForTest,
   SkillCatalogReadService,
 } from './readService';
+import { resolvePinnedPlatformSkillRuntimeSnapshot } from './runtimeSnapshot';
 
 const db: LobeChatDatabase = await getTestDB();
 
@@ -401,5 +403,69 @@ describe('SkillCatalogReadService', () => {
     await expect(
       new SkillCatalogReadService(db, { builtinSkills: [builtin], model }).getPublishedCatalog(),
     ).rejects.toThrow('after builtin merge');
+  });
+
+  // SKILL-EXACT (M10 PR-049): the pinned Skill runtime snapshot must inject the EXACT historical
+  // version's content into the runtime, even after a newer version becomes the catalog head.
+  describe('resolvePinnedPlatformSkillRuntimeSnapshot exact historical (SKILL-EXACT)', () => {
+    const flags = { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_SKILLS: true };
+    const identity = { agentId: 'agent-1', operationId: 'op-1', userId: 'user-1' };
+
+    it('resolves the pinned v1 content after v2 is published (head moved forward)', async () => {
+      const { skill, version: v1 } = await publish({
+        revision: 1,
+        skillKey: 'research.exact',
+        version: '1.0.0',
+      });
+      // Publish v2 on the same Skill — the catalog head advances to v2.
+      await publish({
+        revision: 2,
+        skillId: skill.id,
+        skillKey: 'research.exact',
+        version: '2.0.0',
+      });
+
+      const snapshot = await resolvePinnedPlatformSkillRuntimeSnapshot({
+        db,
+        flags,
+        identity,
+        // Real DB-backed catalog service (uploaded skills need no builtin registry); only the JWT
+        // signer is stubbed (no signing key in tests).
+        options: {
+          catalogService: new SkillCatalogReadService(db),
+          signProof: vi.fn().mockResolvedValue('pinned-proof'),
+        },
+        pinnedSkills: [{ checksum: v1.checksum, skillKey: 'research.exact', version: '1.0.0' }],
+      });
+
+      expect(snapshot.catalog.refs).toEqual([
+        { checksum: v1.checksum, skillKey: 'research.exact', version: '1.0.0' },
+      ]);
+      const [skillMeta] = snapshot.skills;
+      expect(skillMeta.activated).toBe(true);
+      // The model activates v1's historical content, NOT the v2 head.
+      expect(skillMeta.content).toContain('# 1.0.0');
+      expect(skillMeta.content).not.toContain('# 2.0.0');
+    });
+
+    it('fails closed on a checksum mismatch for a pinned Skill (tampered ref)', async () => {
+      await publish({ revision: 1, skillKey: 'research.exact', version: '1.0.0' });
+      await expect(
+        resolvePinnedPlatformSkillRuntimeSnapshot({
+          db,
+          flags,
+          identity,
+          options: {
+            catalogService: new SkillCatalogReadService(db),
+            signProof: vi.fn().mockResolvedValue('pinned-proof'),
+          },
+          // Real published version exists, but the pinned checksum is wrong → exact resolution
+          // returns undefined → fail closed.
+          pinnedSkills: [
+            { checksum: 'f'.repeat(64), skillKey: 'research.exact', version: '1.0.0' },
+          ],
+        }),
+      ).rejects.toThrow();
+    });
   });
 });

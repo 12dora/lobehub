@@ -10,18 +10,16 @@ const {
   mockFindMessagePlugin,
   mockMessageCreate,
   mockMessageQuery,
+  mockResolvePendingToolResult,
   mockUpdateMessagePlugin,
-  mockUpdatePluginState,
-  mockUpdateToolMessage,
 } = vi.hoisted(() => ({
   mockCreateOperation: vi.fn(),
   mockFindById: vi.fn(),
   mockFindMessagePlugin: vi.fn(),
   mockMessageCreate: vi.fn(),
   mockMessageQuery: vi.fn(),
+  mockResolvePendingToolResult: vi.fn(),
   mockUpdateMessagePlugin: vi.fn(),
-  mockUpdatePluginState: vi.fn(),
-  mockUpdateToolMessage: vi.fn(),
 }));
 
 vi.mock('@/libs/trusted-client', () => ({
@@ -38,10 +36,9 @@ vi.mock('@/database/models/message', () => ({
     findById: mockFindById,
     findMessagePlugin: mockFindMessagePlugin,
     query: mockMessageQuery,
+    resolvePendingToolResultPlugin: mockResolvePendingToolResult,
     update: vi.fn().mockResolvedValue({}),
     updateMessagePlugin: mockUpdateMessagePlugin,
-    updatePluginState: mockUpdatePluginState,
-    updateToolMessage: mockUpdateToolMessage,
   })),
 }));
 
@@ -161,6 +158,8 @@ describe('AiAgentService.execAgent - resumeToolResult', () => {
     apiName: 'askUserQuestion',
     arguments: '{"question":"favorite color?"}',
     identifier: 'lobe-agent',
+    // Server-owned resume kind (RR5-2): this is a human-ANSWER tool → toolResult.
+    intervention: { kind: 'toolResult' as const, status: 'pending' as const },
     toolCallId: 'call_ask',
     type: 'builtin',
   };
@@ -175,11 +174,10 @@ describe('AiAgentService.execAgent - resumeToolResult', () => {
     });
     mockFindById.mockResolvedValue(pendingToolMessage);
     mockFindMessagePlugin.mockResolvedValue(pendingToolPlugin);
+    mockResolvePendingToolResult.mockResolvedValue(true);
     mockMessageQuery.mockResolvedValue([{ content: 'hi', id: 'history-1', role: 'user' }]);
     mockMessageCreate.mockResolvedValue({ id: 'assistant-msg-new' });
     mockUpdateMessagePlugin.mockResolvedValue(undefined);
-    mockUpdatePluginState.mockResolvedValue(undefined);
-    mockUpdateToolMessage.mockResolvedValue(undefined);
     service = new AiAgentService({} as unknown as LobeChatDatabase, 'user-1');
   });
 
@@ -190,7 +188,7 @@ describe('AiAgentService.execAgent - resumeToolResult', () => {
     prompt: '',
   };
 
-  it('writes the human answer as tool content, marks approved, and resumes from tool_result (no re-execution)', async () => {
+  it('writes the human answer as tool content, marks approved via the kind-guarded CAS, and resumes from tool_result (no re-execution)', async () => {
     await service.execAgent({
       ...baseParams,
       resumeToolResult: {
@@ -200,13 +198,10 @@ describe('AiAgentService.execAgent - resumeToolResult', () => {
       },
     });
 
-    // The human answer becomes the tool message's result content.
-    expect(mockUpdateToolMessage).toHaveBeenCalledWith('tool-msg-1', {
+    // RR5-2: a single-winner, kind-guarded pending→approved CAS clears the pending state.
+    expect(mockResolvePendingToolResult).toHaveBeenCalledWith('tool-msg-1', {
       content: 'My favorite color is blue',
-    });
-    // Intervention is marked approved so the pending state clears.
-    expect(mockUpdateMessagePlugin).toHaveBeenCalledWith('tool-msg-1', {
-      intervention: { status: 'approved' },
+      pluginState: undefined,
     });
 
     // Resumes from `tool_result` — NOT `human_approved_tool` (which would
@@ -237,8 +232,9 @@ describe('AiAgentService.execAgent - resumeToolResult', () => {
       },
     });
 
-    expect(mockUpdatePluginState).toHaveBeenCalledWith('tool-msg-1', {
-      askUserAnswers: { 'favorite color?': 'blue' },
+    expect(mockResolvePendingToolResult).toHaveBeenCalledWith('tool-msg-1', {
+      content: 'blue',
+      pluginState: { askUserAnswers: { 'favorite color?': 'blue' } },
     });
   });
 
@@ -252,7 +248,10 @@ describe('AiAgentService.execAgent - resumeToolResult', () => {
       },
     });
 
-    expect(mockUpdatePluginState).not.toHaveBeenCalled();
+    expect(mockResolvePendingToolResult).toHaveBeenCalledWith('tool-msg-1', {
+      content: 'blue',
+      pluginState: undefined,
+    });
   });
 
   describe('validation guards', () => {
@@ -299,6 +298,43 @@ describe('AiAgentService.execAgent - resumeToolResult', () => {
           },
         }),
       ).rejects.toThrow(/no plugin row/);
+    });
+
+    it('RR5-2: fails closed when the tool parked as an approval interaction (kind mismatch)', async () => {
+      mockFindMessagePlugin.mockResolvedValue({
+        ...pendingToolPlugin,
+        intervention: { kind: 'approval', status: 'pending' },
+      });
+
+      await expect(
+        service.execAgent({
+          ...baseParams,
+          resumeToolResult: {
+            content: 'blue',
+            parentMessageId: 'tool-msg-1',
+            toolCallId: 'call_ask',
+          },
+        }),
+      ).rejects.toThrow(/'toolResult' interaction/);
+      // The kind gate rejects BEFORE any mutation runs.
+      expect(mockResolvePendingToolResult).not.toHaveBeenCalled();
+    });
+
+    it('RR5-2: fails closed (stale / already consumed) when the pending CAS loses', async () => {
+      mockResolvePendingToolResult.mockResolvedValue(false);
+
+      await expect(
+        service.execAgent({
+          ...baseParams,
+          resumeToolResult: {
+            content: 'blue',
+            parentMessageId: 'tool-msg-1',
+            toolCallId: 'call_ask',
+          },
+        }),
+      ).rejects.toThrow(/stale or already consumed/);
+      // The answer is never written when the single-winner CAS loses.
+      expect(mockCreateOperation).not.toHaveBeenCalled();
     });
   });
 });

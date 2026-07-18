@@ -42,6 +42,14 @@ export const assertPlatformPublishedModel = (
   }
 };
 
+/** Secret-free exact model reference used to resolve a historical published provider revision. */
+export interface PlatformAiExactModelRef {
+  modelKey: string;
+  providerChecksum: string;
+  providerKey: string;
+  providerRevision: number;
+}
+
 export interface PlatformAiRuntimeImplementation {
   createModelAllowlistHooks: (models: PlatformAiExecutionModel[]) => ModelRuntimeHooks;
   isEnabled: () => boolean;
@@ -49,6 +57,10 @@ export interface PlatformAiRuntimeImplementation {
   resolveExecutionConfig: (
     db: LobeChatDatabase,
     providerKey: string,
+  ) => Promise<PlatformAiExecutionConfig>;
+  resolveExecutionConfigAtRevision: (
+    db: LobeChatDatabase,
+    ref: PlatformAiExactModelRef,
   ) => Promise<PlatformAiExecutionConfig>;
   resolveRuntimeState: (params: {
     db: LobeChatDatabase;
@@ -80,6 +92,12 @@ export const resolvePlatformAiExecutionConfig = (
   providerKey: string,
 ): Promise<PlatformAiExecutionConfig> =>
   requireImplementation().resolveExecutionConfig(db, providerKey);
+
+export const resolvePlatformAiExecutionConfigAtRevision = (
+  db: LobeChatDatabase,
+  ref: PlatformAiExactModelRef,
+): Promise<PlatformAiExecutionConfig> =>
+  requireImplementation().resolveExecutionConfigAtRevision(db, ref);
 
 export const resolvePlatformAiRuntimeState = (params: {
   db: LobeChatDatabase;

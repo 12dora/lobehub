@@ -8,8 +8,7 @@ const buildHandler = (
   messageModel: {
     approvePendingMessagePlugin: any;
     findMessagePlugin: any;
-    updateMessagePlugin: any;
-    updateToolMessage: any;
+    rejectPendingMessagePlugin: any;
   },
 ) => {
   const serverDB = { query: { messagePlugins: { findFirst: pluginQuery } } } as any;
@@ -20,8 +19,7 @@ describe('HumanInterventionHandler.process', () => {
   let mockMessageModel: {
     approvePendingMessagePlugin: any;
     findMessagePlugin: any;
-    updateMessagePlugin: any;
-    updateToolMessage: any;
+    rejectPendingMessagePlugin: any;
   };
   let mockDBPluginQuery: ReturnType<typeof vi.fn>;
   let handler: HumanInterventionHandler;
@@ -54,6 +52,7 @@ describe('HumanInterventionHandler.process', () => {
       apiName: 'search',
       arguments: '{}',
       identifier: 'web-search',
+      intervention: { kind: 'approval', status: 'pending' },
       toolCallId: 'tool-call-1',
       type: 'default',
     };
@@ -61,8 +60,7 @@ describe('HumanInterventionHandler.process', () => {
     mockMessageModel = {
       approvePendingMessagePlugin: vi.fn().mockResolvedValue(true),
       findMessagePlugin: vi.fn().mockResolvedValue(persistedPlugin),
-      updateMessagePlugin: vi.fn().mockResolvedValue(undefined),
-      updateToolMessage: vi.fn().mockResolvedValue({ success: true }),
+      rejectPendingMessagePlugin: vi.fn().mockResolvedValue(true),
     };
     handler = buildHandler(mockDBPluginQuery, mockMessageModel);
   });
@@ -208,11 +206,9 @@ describe('HumanInterventionHandler.process', () => {
         toolMessageId: 'tool-msg-1',
       });
 
-      expect(mockMessageModel.updateToolMessage).toHaveBeenCalledWith('tool-msg-1', {
+      expect(mockMessageModel.rejectPendingMessagePlugin).toHaveBeenCalledWith('tool-msg-1', {
         content: 'User reject this tool calling with reason: privacy concern',
-      });
-      expect(mockMessageModel.updateMessagePlugin).toHaveBeenCalledWith('tool-msg-1', {
-        intervention: { rejectedReason: 'privacy concern', status: 'rejected' },
+        rejectedReason: 'privacy concern',
       });
     });
 
@@ -224,7 +220,7 @@ describe('HumanInterventionHandler.process', () => {
         toolMessageId: 'tool-msg-1',
       });
 
-      expect(mockMessageModel.updateToolMessage).not.toHaveBeenCalled();
+      expect(mockMessageModel.rejectPendingMessagePlugin).not.toHaveBeenCalled();
     });
 
     it('writes "with reason" content for any non-empty reason', async () => {
@@ -235,7 +231,7 @@ describe('HumanInterventionHandler.process', () => {
         toolMessageId: 'tool-msg-1',
       });
 
-      expect(mockMessageModel.updateToolMessage).toHaveBeenCalledWith(
+      expect(mockMessageModel.rejectPendingMessagePlugin).toHaveBeenCalledWith(
         'tool-msg-1',
         expect.objectContaining({
           content: 'User reject this tool calling with reason: r',
@@ -245,7 +241,10 @@ describe('HumanInterventionHandler.process', () => {
 
     it('removes the rejected tool from pendingToolsCalling by tool_call_id lookup', async () => {
       const state = makeState();
-      mockDBPluginQuery.mockResolvedValueOnce({ toolCallId: 'tool-call-2' });
+      mockMessageModel.findMessagePlugin.mockResolvedValueOnce({
+        intervention: { kind: 'approval', status: 'pending' },
+        toolCallId: 'tool-call-2',
+      });
 
       const result = await handler.process(state, {
         rejectionReason: 'nope',
@@ -281,7 +280,10 @@ describe('HumanInterventionHandler.process', () => {
       // Returning a `phase: 'user_input'` context here would resume the LLM
       // before the remaining pending tools are decided (review P1).
       const state = makeState();
-      mockDBPluginQuery.mockResolvedValueOnce({ toolCallId: 'tool-call-1' });
+      mockMessageModel.findMessagePlugin.mockResolvedValueOnce({
+        intervention: { kind: 'approval', status: 'pending' },
+        toolCallId: 'tool-call-1',
+      });
 
       const result = await handler.process(state, {
         rejectAndContinue: true,
@@ -299,7 +301,10 @@ describe('HumanInterventionHandler.process', () => {
           { apiName: 'search', arguments: '{}', id: 'tool-call-1', identifier: 'web-search' },
         ],
       });
-      mockDBPluginQuery.mockResolvedValueOnce({ toolCallId: 'tool-call-1' });
+      mockMessageModel.findMessagePlugin.mockResolvedValueOnce({
+        intervention: { kind: 'approval', status: 'pending' },
+        toolCallId: 'tool-call-1',
+      });
 
       const result = await handler.process(state, {
         rejectAndContinue: true,
@@ -320,9 +325,40 @@ describe('HumanInterventionHandler.process', () => {
         toolMessageId: 'tool-msg-1',
       });
 
-      expect(mockMessageModel.updateMessagePlugin).toHaveBeenCalledWith('tool-msg-1', {
-        intervention: { rejectedReason: 'privacy', status: 'rejected' },
+      expect(mockMessageModel.rejectPendingMessagePlugin).toHaveBeenCalledWith('tool-msg-1', {
+        content: 'User reject this tool calling with reason: privacy',
+        rejectedReason: 'privacy',
       });
+    });
+
+    it('fails closed without transitioning state when rejection CAS loses', async () => {
+      mockMessageModel.rejectPendingMessagePlugin.mockResolvedValue(false);
+      const state = makeState();
+
+      const result = await handler.process(state, {
+        rejectAndContinue: true,
+        rejectionReason: 'stale',
+        toolMessageId: 'tool-msg-1',
+      });
+
+      expect(result.newState).toBe(state);
+      expect(result.nextContext).toBeUndefined();
+    });
+
+    it('never rejects a toolResult-kind human-answer interaction', async () => {
+      mockMessageModel.findMessagePlugin.mockResolvedValue({
+        intervention: { kind: 'toolResult', status: 'pending' },
+        toolCallId: 'tool-call-1',
+      });
+      const state = makeState();
+
+      const result = await handler.process(state, {
+        rejectionReason: 'wrong path',
+        toolMessageId: 'tool-msg-1',
+      });
+
+      expect(mockMessageModel.rejectPendingMessagePlugin).not.toHaveBeenCalled();
+      expect(result.newState).toBe(state);
     });
   });
 
@@ -337,7 +373,7 @@ describe('HumanInterventionHandler.process', () => {
 
       expect(result.newState).toBe(state);
       expect(result.nextContext).toBeUndefined();
-      expect(mockMessageModel.updateMessagePlugin).not.toHaveBeenCalled();
+      expect(mockMessageModel.approvePendingMessagePlugin).not.toHaveBeenCalled();
     });
 
     it('returns state unchanged when status is not waiting_for_human (reject)', async () => {

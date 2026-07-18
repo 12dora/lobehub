@@ -112,8 +112,10 @@ export class PlatformSkillOperationResolver {
   readResource = async (id: string, path: string): Promise<SkillResourceContent> => {
     const skill = await this.findById(id);
     const resource = skill?.resources?.[path];
+    // RR2-5: do not echo the requested resource path back in the error — it is an internal
+    // Skill-package path and must not surface to the caller.
     if (resource?.content === undefined) {
-      throw new Error(`Platform Skill resource is unavailable: ${path}`);
+      throw new Error('A platform Skill resource is unavailable');
     }
     return {
       content: resource.content,

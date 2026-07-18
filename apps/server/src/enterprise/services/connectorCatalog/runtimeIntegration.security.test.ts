@@ -5,8 +5,10 @@ import type * as PlatformConnectorCatalogModule from '@/database/repositories/pl
 import type { LobeChatDatabase } from '@/database/type';
 
 import type * as RuntimeEffectiveStateModule from './runtimeEffectiveState';
+import { getConnectorRuntimeEffectiveState } from './runtimeEffectiveState';
 import {
   buildManagedConnectorManifests,
+  buildPinnedManagedConnectorManifests,
   createConnectorApprovalReceipt,
   executeManagedConnectorTool,
   matchesConnectorApprovalReceipt,
@@ -360,6 +362,112 @@ describe('managed Connector operation integration security', () => {
     ).resolves.toMatchObject({
       handled: true,
       result: { error: { code: 'PLATFORM_CONNECTOR_NOT_PUBLISHED' }, success: false },
+    });
+  });
+
+  // CONNECTOR-EXACT: a platform Agent's Connector manifests come from its immutable pinned refs —
+  // the exact historical revision + pinned allowlist — not the moving catalog head.
+  describe('buildPinnedManagedConnectorManifests (CONNECTOR-EXACT)', () => {
+    const pinnedRef = (revision: number) => ({
+      allowedToolKeys: ['search'],
+      connectorId: 'connector-1',
+      connectorKey: 'catalog',
+      publishedChecksum: runtime(revision).provenance.checksum,
+      publishedRevision: revision,
+    });
+
+    it('injects the exact pinned v1 manifest + allowlist even after the head moves to v2', async () => {
+      // Current head is v2, but the operation pinned v1.
+      mocks.currentRevision = 2;
+      const result = await buildPinnedManagedConnectorManifests({
+        agentId: 'agent-1',
+        db,
+        env,
+        operationId: 'operation-v1',
+        pinnedConnectors: [pinnedRef(1)],
+        userId: 'user-1',
+      });
+
+      const manifest = result.manifests[0]!;
+      // Exact v1 — title + proof revision are v1, not the v2 head.
+      expect(manifest.meta.title).toBe('Catalog v1');
+      expect(manifest.platformConnectorProof?.publishedRevision).toBe(1);
+      // Only the pinned allowlisted tool is exposed.
+      expect(manifest.api.map((tool) => tool.name)).toEqual(['search']);
+      expect(manifest.platformConnectorAgentPolicy.selections[0].allowedToolKeys).toEqual([
+        'search',
+      ]);
+      // The exact revision was resolved by ref (not the current head).
+      expect(mocks.getPublishedRuntimeRevision).toHaveBeenCalledWith('connector-1', 1);
+
+      // Rebuild after the head advances to v2 → still v1 (deterministic, pinned).
+      const resumed = await buildPinnedManagedConnectorManifests({
+        agentId: 'agent-1',
+        db,
+        env,
+        operationId: 'operation-resume',
+        pinnedConnectors: [pinnedRef(1)],
+        userId: 'user-1',
+      });
+      expect(resumed.manifests[0]?.meta.title).toBe('Catalog v1');
+      expect(resumed.manifests[0]?.platformConnectorProof?.publishedRevision).toBe(1);
+    });
+
+    it('fails closed when a pinned allowed tool is not allow-listed in the exact revision (escalation)', async () => {
+      await expect(
+        buildPinnedManagedConnectorManifests({
+          agentId: 'agent-1',
+          db,
+          env,
+          operationId: 'operation-escalate',
+          pinnedConnectors: [{ ...pinnedRef(1), allowedToolKeys: ['search', 'ghost-tool'] }],
+          userId: 'user-1',
+        }),
+      ).rejects.toThrow('PLATFORM_CONNECTOR_TOOL_DENIED');
+    });
+
+    it('fails closed on a checksum mismatch for a pinned Connector', async () => {
+      await expect(
+        buildPinnedManagedConnectorManifests({
+          agentId: 'agent-1',
+          db,
+          env,
+          operationId: 'operation-tamper',
+          pinnedConnectors: [{ ...pinnedRef(1), publishedChecksum: 'f'.repeat(64) }],
+          userId: 'user-1',
+        }),
+      ).rejects.toThrow('PLATFORM_CONNECTOR_NOT_PUBLISHED');
+    });
+
+    it('fails closed when the Agent pinned Connectors but managed Connectors are not enforced', async () => {
+      vi.mocked(getConnectorRuntimeEffectiveState).mockResolvedValueOnce({
+        epoch: 0,
+        mode: 'legacy',
+        revision: 8,
+      });
+      await expect(
+        buildPinnedManagedConnectorManifests({
+          agentId: 'agent-1',
+          db,
+          env,
+          operationId: 'operation-off',
+          pinnedConnectors: [pinnedRef(1)],
+          userId: 'user-1',
+        }),
+      ).rejects.toThrow('PLATFORM_CONNECTOR_NOT_PUBLISHED');
+    });
+
+    it('returns an empty manifest set with zero catalog I/O when there are no pinned Connectors', async () => {
+      const result = await buildPinnedManagedConnectorManifests({
+        agentId: 'agent-1',
+        db,
+        env,
+        operationId: 'operation-empty',
+        pinnedConnectors: [],
+        userId: 'user-1',
+      });
+      expect(result.manifests).toEqual([]);
+      expect(mocks.getPublishedRuntimeRevision).not.toHaveBeenCalled();
     });
   });
 });

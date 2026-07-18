@@ -40,6 +40,14 @@ export const ensurePlatformAiRuntimeRegistered = (): void => {
         providerKey,
       );
     },
+    resolveExecutionConfigAtRevision: async (db, ref) => {
+      const flags = parseEnterpriseFeatureFlags(process.env);
+      const secrets = PlatformSecretService.fromEnvOrThrowIfEnterprise(process.env, flags);
+      if (!secrets) throw new Error('PLATFORM_SECRET_REQUIRED');
+      return new AiCatalogExecutionResolver(db, secrets).resolveProviderExecutionConfigAtRevision(
+        ref,
+      );
+    },
     resolveRuntimeState: ({ db, upstreamState }) =>
       resolveAiCatalogRuntimeState({ db, upstreamState }),
   };

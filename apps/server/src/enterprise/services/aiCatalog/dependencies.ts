@@ -1,7 +1,11 @@
 import { isRecord } from '@lobechat/utils/object';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 
-import { platformAgents, platformSettingPolicies } from '@/database/schemas/platform';
+import {
+  platformAgents,
+  platformAgentVersions,
+  platformSettingPolicies,
+} from '@/database/schemas/platform';
 import type { LobeChatDatabase, Transaction } from '@/database/type';
 
 import type { AiCatalogDependent } from './errors';
@@ -30,11 +34,19 @@ export const resolveAiCatalogDependents = async (
     db
       .select({ id: platformAgents.id, title: platformAgents.title })
       .from(platformAgents)
+      .innerJoin(
+        platformAgentVersions,
+        and(
+          eq(platformAgentVersions.agentId, platformAgents.id),
+          eq(platformAgentVersions.id, platformAgents.currentVersionId),
+        ),
+      )
       .where(
         and(
-          eq(platformAgents.provider, providerKey),
-          eq(platformAgents.model, modelKey),
           eq(platformAgents.status, 'published'),
+          eq(platformAgents.migrationRequired, false),
+          sql`${platformAgentVersions.dependencySnapshot}->'model'->>'providerKey' = ${providerKey}`,
+          sql`${platformAgentVersions.dependencySnapshot}->'model'->>'modelKey' = ${modelKey}`,
         ),
       ),
     db

@@ -1531,4 +1531,48 @@ describe('Message Router Integration Tests', () => {
       expect(wordCount).toBeGreaterThan(0);
     });
   });
+
+  describe('RR4-5 — public router strips server-reserved metadata (operationId)', () => {
+    const readMeta = async (id: string) => {
+      const [row] = await serverDB.select().from(messages).where(eq(messages.id, id));
+      return (row?.metadata ?? null) as Record<string, unknown> | null;
+    };
+
+    it('strips operationId on createMessage, updateToolMessage, and batchMutate', async () => {
+      const caller = messageRouter.createCaller(createTestContext(userId));
+
+      // 1) Single createMessage — a forged operationId in metadata is dropped, other keys kept.
+      const created = await caller.createMessage({
+        content: 'tool',
+        metadata: { keep: 'a', operationId: 'op-forge-create' },
+        role: 'tool',
+        sessionId: testSessionId,
+        topicId: testTopicId,
+      } as never);
+      expect((await readMeta(created.id))?.operationId).toBeUndefined();
+      expect((await readMeta(created.id))?.keep).toBe('a');
+
+      // 2) Single updateToolMessage — the post-merge metadata cannot re-introduce operationId.
+      await caller.updateToolMessage({
+        id: created.id,
+        value: { content: 'answered', metadata: { extra: 1, operationId: 'op-forge-update' } },
+      } as never);
+      expect((await readMeta(created.id))?.operationId).toBeUndefined();
+      expect((await readMeta(created.id))?.extra).toBe(1);
+      expect((await readMeta(created.id))?.keep).toBe('a');
+
+      // 3) batchMutate updateToolMessage — same filter at the final write boundary.
+      await caller.batchMutate({
+        operations: [
+          {
+            id: created.id,
+            type: 'updateToolMessage',
+            value: { metadata: { batched: true, operationId: 'op-forge-batch' } },
+          },
+        ],
+      } as never);
+      expect((await readMeta(created.id))?.operationId).toBeUndefined();
+      expect((await readMeta(created.id))?.batched).toBe(true);
+    });
+  });
 });

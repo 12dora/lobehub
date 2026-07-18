@@ -17,6 +17,7 @@ import { resolvePublishedManagedResourcePolicies } from '../services/managedReso
 import { buildPlatformCapabilities } from '../services/platformCapabilities';
 import { buildPlatformPublicSnapshot } from '../services/platformPublicSnapshot';
 import { ensureSkillCatalogReadinessRegistered } from '../services/skillCatalog';
+import { platformAgentsRouter } from './platformAgents';
 import { platformSkillsRouter } from './platformSkills';
 
 ensureSkillCatalogReadinessRegistered();
@@ -32,6 +33,7 @@ ensureConnectorRuntimeAuditWorkerStarted();
  * - getEasyauthDescriptor: public EasyAuth app descriptor (manifest).
  */
 export const platformRouter = router({
+  agents: platformAgentsRouter,
   aiCatalog: router({
     getPublished: authedProcedure
       .use(serverDatabase)

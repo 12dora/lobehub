@@ -12,10 +12,34 @@ import {
   platformSkillVersions,
 } from '../../schemas/platform';
 import type { LobeChatDatabase } from '../../type';
+import { PlatformAgentCatalogRepository } from '../platformAgentCatalog';
 import { PlatformSkillCatalogRepository } from '.';
 
 const serverDB: LobeChatDatabase = await getTestDB();
 const repository = new PlatformSkillCatalogRepository(serverDB);
+const agentRepository = new PlatformAgentCatalogRepository(serverDB);
+const AGENT_DEPENDENCY_CHECKSUM = 'a'.repeat(64);
+const agentDependencySnapshot = {
+  connectors: [],
+  model: {
+    modelKey: 'test-model',
+    providerChecksum: AGENT_DEPENDENCY_CHECKSUM,
+    providerKey: 'test-provider',
+    providerRevision: 1,
+  },
+  skills: [{ checksum: AGENT_DEPENDENCY_CHECKSUM, skillKey: 'base', version: '1.0.0' }],
+};
+const agentConfig = {
+  avatar: null,
+  backgroundColor: null,
+  description: 'M10 exact dependent',
+  displayName: 'M10 exact dependent',
+  modelParameters: {},
+  openingMessage: null,
+  openingQuestions: [],
+  systemRole: 'Use the exact dependency snapshot.',
+  tags: [],
+};
 
 const manifest = {
   description: 'Search internal sources',
@@ -44,6 +68,40 @@ const publishedPayload = (versionId: string, overrides: Record<string, unknown> 
   },
   versionId,
 });
+
+const createExactAgentVersion = async (params: {
+  agentId: string;
+  expectedDraftSequence: number;
+  expectedRevision: number;
+  version: string;
+}) =>
+  agentRepository.appendVersionCas({
+    ...params,
+    config: agentConfig,
+    dependencySnapshot: agentDependencySnapshot,
+  });
+
+const createPublishedAgentDependent = async (agentKey: string, version: string) => {
+  const agent = await agentRepository.createIdentity({
+    agentKey,
+    isDefault: false,
+    systemKey: null,
+  });
+  const exactVersion = await createExactAgentVersion({
+    agentId: agent.id,
+    expectedDraftSequence: 0,
+    expectedRevision: 0,
+    version,
+  });
+  await agentRepository.pointToVersionCas({
+    agentId: agent.id,
+    expectedDraftSequence: 1,
+    expectedRevision: 0,
+    publishedAt: new Date(),
+    versionId: exactVersion!.id,
+  });
+  return { agent, version: exactVersion };
+};
 
 const cleanup = async () => {
   await serverDB.execute(sql`
@@ -180,18 +238,53 @@ describe('PlatformSkillCatalogRepository', () => {
     });
 
     expect((await repository.resolveVersion('search'))?.version.version).toBe('2.0.0');
+    expect(
+      (await repository.getPublishedExecutionVersionExact('search', '1.0.0'))?.version.id,
+    ).toBe(v1.id);
+    const exactBatch = await repository.getPublishedExecutionVersionsExact([
+      { skillKey: 'search', version: '1.0.0' },
+      { skillKey: 'search', version: '2.0.0' },
+      { skillKey: 'search', version: 'missing' },
+    ]);
+    expect(exactBatch.get(`${'search'}\0${'1.0.0'}`)?.version.id).toBe(v1.id);
+    expect(exactBatch.get(`${'search'}\0${'2.0.0'}`)?.version.id).toBe(v2.id);
+    expect(exactBatch.has(`${'search'}\0${'missing'}`)).toBe(false);
+    await repository.updateSkill(skill.id, { enabled: false });
+    expect(await repository.getPublishedExecutionVersionExact('search', '1.0.0')).toBeUndefined();
+    expect(
+      await repository.getPublishedExecutionVersionsExact([
+        { skillKey: 'search', version: '1.0.0' },
+      ]),
+    ).toEqual(new Map());
+    await repository.updateSkill(skill.id, { enabled: true });
+
+    await serverDB.insert(platformResourceRevisions).values({
+      checksum: 'disabled-v3',
+      payload: publishedPayload(unpublished.id, { enabled: false }),
+      resourceId: skill.id,
+      resourceType: 'skill',
+      revision: 3,
+      status: 'published',
+    });
+    expect(
+      await repository.getPublishedExecutionVersionExact('search', unpublished.version),
+    ).toBeUndefined();
+
     await serverDB.insert(platformResourceRevisions).values({
       checksum: 'archived-v2',
       payload: publishedPayload(v2.id),
       resourceId: skill.id,
       resourceType: 'skill',
-      revision: 3,
+      revision: 4,
       status: 'archived',
     });
-    await repository.updateSkill(skill.id, { revision: 3, status: 'archived' });
+    await repository.updateSkill(skill.id, { revision: 4, status: 'archived' });
     expect(await repository.resolveVersion('search')).toBeUndefined();
     expect((await repository.resolveVersion('search', '1.0.0'))?.version.id).toBe(v1.id);
-    expect(await repository.resolveVersion('search', unpublished.version)).toBeUndefined();
+    expect(await repository.getPublishedExecutionVersionExact('search', '1.0.0')).toBeUndefined();
+    expect((await repository.resolveVersion('search', unpublished.version))?.version.id).toBe(
+      unpublished.id,
+    );
   });
 
   it('cursor-paginates only current immutable published snapshots with same-Skill versions', async () => {
@@ -333,20 +426,7 @@ describe('PlatformSkillCatalogRepository', () => {
       enabled: true,
       status: 'published',
     });
-    const [agent] = await serverDB
-      .insert(platformAgents)
-      .values({
-        agentKey: 'helper',
-        currentVersion: '3.0.0',
-        status: 'published',
-        title: 'Helper',
-      })
-      .returning();
-    await serverDB.insert(platformAgentVersions).values({
-      agentId: agent.id,
-      config: { skills: [{ skillKey: 'base', version: '1.0.0' }] },
-      version: '3.0.0',
-    });
+    const { agent } = await createPublishedAgentDependent('helper', '3.0.0');
 
     expect(
       (await repository.getDependentsPage({ skillKey: 'base', version: '1.0.0' })).items,
@@ -365,19 +445,19 @@ describe('PlatformSkillCatalogRepository', () => {
       skillId: dependent.id,
       version: '2.1.0',
     });
-    const [unpublishedAgentVersion] = await serverDB
-      .insert(platformAgentVersions)
-      .values({
-        agentId: agent.id,
-        config: { skills: [{ skillKey: 'base', version: '1.0.0' }] },
-        version: '3.1.0',
-      })
-      .returning();
+    const unpublishedAgentVersion = await createExactAgentVersion({
+      agentId: agent.id,
+      expectedDraftSequence: 2,
+      expectedRevision: 1,
+      version: '3.1.0',
+    });
     expect(
       (await repository.getDependentsPage({ skillKey: 'base', version: '1.0.0' })).items.map(
         (item) => item.id,
       ),
-    ).not.toEqual(expect.arrayContaining([unpublishedSkillVersion.id, unpublishedAgentVersion.id]));
+    ).not.toEqual(
+      expect.arrayContaining([unpublishedSkillVersion.id, unpublishedAgentVersion!.id]),
+    );
 
     await serverDB.insert(platformResourceRevisions).values([
       {
@@ -390,7 +470,7 @@ describe('PlatformSkillCatalogRepository', () => {
       },
       {
         checksum: 'agent-provenance',
-        payload: { versionId: unpublishedAgentVersion.id },
+        payload: { versionId: unpublishedAgentVersion!.id },
         resourceId: agent.id,
         resourceType: 'agent',
         revision: 1,
@@ -401,20 +481,12 @@ describe('PlatformSkillCatalogRepository', () => {
       (await repository.getDependentsPage({ skillKey: 'base', version: '1.0.0' })).items.map(
         (item) => item.id,
       ),
-    ).toEqual(expect.arrayContaining([unpublishedSkillVersion.id, unpublishedAgentVersion.id]));
+    ).toEqual(expect.arrayContaining([unpublishedSkillVersion.id, unpublishedAgentVersion!.id]));
   });
 
   it('cursor-paginates dependents after filtering in the database', async () => {
     for (const key of ['agent-a', 'agent-b', 'agent-c']) {
-      const [agent] = await serverDB
-        .insert(platformAgents)
-        .values({ agentKey: key, currentVersion: '1.0.0', status: 'published', title: key })
-        .returning();
-      await serverDB.insert(platformAgentVersions).values({
-        agentId: agent.id,
-        config: { skills: [{ skillKey: 'base', version: '1.0.0' }] },
-        version: '1.0.0',
-      });
+      await createPublishedAgentDependent(key, '1.0.0');
     }
     const first = await repository.getDependentsPage({ limit: 2, skillKey: 'base' });
     expect(first.items.map((item) => item.key)).toEqual(['agent-a', 'agent-b']);

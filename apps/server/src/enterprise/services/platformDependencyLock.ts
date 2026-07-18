@@ -5,6 +5,7 @@ import { PlatformAiCatalogRepository } from '@/database/repositories/platformAiC
 import type { Transaction } from '@/database/type';
 
 const PLATFORM_DEPENDENCY_LOCK_NAMESPACE = 'aihub:platform-published-dependencies:v1';
+const PLATFORM_DEFAULT_INBOX_LOCK_NAMESPACE = 'aihub:platform-default-inbox:v1';
 
 /**
  * Shared protocol for publishing dependency references and checking destructive mutations.
@@ -13,6 +14,31 @@ const PLATFORM_DEPENDENCY_LOCK_NAMESPACE = 'aihub:platform-published-dependencie
 export const acquirePlatformDependencyPublicationLock = async (tx: Transaction): Promise<void> => {
   await tx.execute(
     sql`SELECT pg_advisory_xact_lock(hashtext(${PLATFORM_DEPENDENCY_LOCK_NAMESPACE})::bigint)`,
+  );
+};
+
+/**
+ * Read-side lock for exact dependency validation. Multiple validators may proceed concurrently,
+ * while every publisher/archiver continues to take the exclusive lock above and therefore waits
+ * for all in-flight validations (and vice versa).
+ */
+export const acquirePlatformDependencyValidationLock = async (tx: Transaction): Promise<void> => {
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock_shared(hashtext(${PLATFORM_DEPENDENCY_LOCK_NAMESPACE})::bigint)`,
+  );
+};
+
+/**
+ * Transaction-level singleton lock for the default-inbox pointer. Every path that can
+ * elect or clear the single default Agent (`setDefaultInbox`, `archive`) must acquire it
+ * FIRST, before reading or row-locking any identity, so concurrent promotions serialize
+ * even when no default row yet exists (an empty `FOR UPDATE` locks nothing). The loser then
+ * observes the winner's committed default and fails with a stable RevisionConflict instead
+ * of racing the partial unique index into a raw constraint violation.
+ */
+export const acquirePlatformDefaultInboxLock = async (tx: Transaction): Promise<void> => {
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(hashtext(${PLATFORM_DEFAULT_INBOX_LOCK_NAMESPACE})::bigint)`,
   );
 };
 

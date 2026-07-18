@@ -37,7 +37,11 @@ import {
 import debug from 'debug';
 import urlJoin from 'url-join';
 
-import { AgentOperationModel } from '@/database/models/agentOperation';
+import {
+  AgentOperationModel,
+  classifyPlatformStart,
+  extractPlatformStartBinding,
+} from '@/database/models/agentOperation';
 import { MessageModel } from '@/database/models/message';
 import { type LobeChatDatabase } from '@/database/type';
 import { appEnv } from '@/envs/app';
@@ -456,11 +460,36 @@ export class AgentRuntimeService {
       deviceSystemInfo,
       operationSkillSet,
       parentOperationId,
+      assistantMessageId,
+      platformConnectorPins,
+      platformModelPin,
+      platformOperationPin,
+      platformSkillPins,
       signal,
       userTimezone,
       initialStepCount = 0,
       workspaceId,
     } = params;
+
+    const operationMetadata =
+      appContext?.agentSignal ||
+      connectorApprovalReceipt ||
+      platformOperationPin ||
+      platformModelPin ||
+      platformSkillPins ||
+      platformConnectorPins
+        ? {
+            ...(appContext?.agentSignal ? { agentSignal: appContext.agentSignal } : {}),
+            ...(connectorApprovalReceipt ? { connectorApprovalReceipt } : {}),
+            ...(platformOperationPin && assistantMessageId ? { assistantMessageId } : {}),
+            ...(platformOperationPin ? { platformOperation: platformOperationPin } : {}),
+            ...(platformModelPin ? { platformModel: platformModelPin } : {}),
+            ...(platformSkillPins ? { platformSkills: platformSkillPins } : {}),
+            ...(platformConnectorPins ? { platformConnectors: platformConnectorPins } : {}),
+          }
+        : undefined;
+    const platformStartClassification = classifyPlatformStart(operationMetadata);
+    const platformStartBinding = extractPlatformStartBinding(operationMetadata);
 
     // Persist initial agent_operations row. CompletionLifecycle owns both
     // ends of the persistence lifecycle (start row here, terminal update
@@ -480,14 +509,7 @@ export class AgentRuntimeService {
       // Persist the Agent Signal run marker on the operation row so server-side
       // self-iteration tools can read it back (metadata.agentSignal) at tool-call
       // time — the trimmed appContext above intentionally drops it.
-      ...(appContext?.agentSignal || connectorApprovalReceipt
-        ? {
-            metadata: {
-              ...(appContext?.agentSignal ? { agentSignal: appContext.agentSignal } : {}),
-              ...(connectorApprovalReceipt ? { connectorApprovalReceipt } : {}),
-            },
-          }
-        : {}),
+      ...(operationMetadata ? { metadata: operationMetadata } : {}),
       model: modelRuntimeConfig?.model,
       modelRuntimeConfig,
       operationId,
@@ -553,6 +575,10 @@ export class AgentRuntimeService {
           workingDirectory: agentConfig?.chatConfig?.runtimeEnv?.workingDirectory,
           workspaceId,
           ...appContext,
+          // These two fields are server-authored after the app context spread so no caller context
+          // can override the trusted runtime classification or its immutable exact binding.
+          platformStartBinding: platformStartBinding ?? undefined,
+          platformStartClassification,
         },
         maxSteps,
         // modelRuntimeConfig at state level for executor fallback

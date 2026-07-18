@@ -6,9 +6,8 @@ import type {
 } from '@lobechat/agent-runtime';
 import { consumeStreamUntilDone } from '@lobechat/model-runtime';
 
-import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
-
 import type { RuntimeExecutorContext } from '../context';
+import { initOperationModelRuntime } from './operationModelRuntime';
 import { callLlm as createServerCallLlmExecutor } from './serverCallLlmExecutor';
 import { resolveServerCallLlmTooling } from './serverCallLlmTooling';
 
@@ -48,12 +47,7 @@ export class ServerLLMTransport implements LLMTransport {
     payload: LLMStreamPayload,
     handlers?: Parameters<LLMTransport['stream']>[1],
   ): Promise<LLMStreamResult> {
-    const runtime = await initModelRuntimeFromDB(
-      this.ctx.serverDB,
-      this.ctx.userId!,
-      payload.provider,
-      this.ctx.workspaceId,
-    );
+    const runtime = await initOperationModelRuntime(this.ctx, payload.provider, payload.model);
     const { provider: _provider, ...runtimePayload } = payload;
     let content = '';
     let usage: LLMStreamResult['usage'];
