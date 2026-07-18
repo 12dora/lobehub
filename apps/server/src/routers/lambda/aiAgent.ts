@@ -87,6 +87,19 @@ const formatTaskError = (error: unknown): Record<string, unknown> | undefined =>
   return message ? { ...taskError, message } : taskError;
 };
 
+/**
+ * Redact an agent-execution failure into a stable, caller-safe message (M10 PR-049 · RR2-5).
+ *
+ * Curated `TRPCError`s (our own fail-closed platform mappings + tRPC input validation) already carry
+ * stable, identifier-free messages, so they pass through unchanged. Any other error — a raw driver /
+ * SQL error, a Skill runtime-snapshot string (`Pinned platform Skill <skillKey>@<version>…`), a
+ * connector/model contract detail — is collapsed to a single generic message so no internal
+ * identifier / revision / checksum / SQL text can reach the client. The raw error is still attached
+ * as `cause` (server-side only) and logged for diagnostics.
+ */
+const publicExecErrorMessage = (error: unknown): string =>
+  error instanceof TRPCError ? error.message : 'Failed to execute agent';
+
 const GetOperationStatusSchema = z.object({
   historyLimit: z.number().optional().default(10),
   includeHistory: z.boolean().optional().default(false),
@@ -757,16 +770,18 @@ export const aiAgentRouter = router({
           userInterventionConfig,
         });
       } catch (error: any) {
-        console.error('execAgent failed: %O', error);
+        log('execAgent failed: %O', error);
 
         if (error instanceof TRPCError) {
           throw error;
         }
 
+        // RR2-5: never concatenate a raw error message — collapse to a stable, identifier-free
+        // message and keep the raw error server-side via `cause`.
         throw new TRPCError({
           cause: error,
           code: 'INTERNAL_SERVER_ERROR',
-          message: `Failed to execute agent: ${error.message}`,
+          message: 'Failed to execute agent',
         });
       }
     }),
@@ -775,87 +790,94 @@ export const aiAgentRouter = router({
    * Batch execute multiple agents
    * Supports parallel or sequential execution
    */
-  execAgents: aiAgentWriteProcedure.input(ExecAgentsSchema).mutation(async ({ input, ctx }) => {
-    const { tasks, parallel = true } = input;
+  execAgents: aiAgentWriteProcedure
+    // RR2-3: the batch entrypoint reaches the identical platform chat runtime as `execAgent`, so it
+    // must apply the SAME active-user guard — when the managed flag is on, reject banned/inactive/
+    // epoch-invalid principals before any per-task entitlement/materialization. Flag off → no-op.
+    .use(withActiveUserWhenManagedAgents())
+    .input(ExecAgentsSchema)
+    .mutation(async ({ input, ctx }) => {
+      const { tasks, parallel = true } = input;
 
-    log('execAgents: %d tasks, parallel=%s', tasks.length, parallel);
+      log('execAgents: %d tasks, parallel=%s', tasks.length, parallel);
 
-    type TaskResult = {
-      autoStarted?: boolean;
-      error?: string;
-      operationId?: string;
-      success: boolean;
-      taskIndex: number;
-    };
+      type TaskResult = {
+        autoStarted?: boolean;
+        error?: string;
+        operationId?: string;
+        success: boolean;
+        taskIndex: number;
+      };
 
-    const executeTask = async (
-      task: (typeof tasks)[number],
-      taskIndex: number,
-    ): Promise<TaskResult> => {
-      const {
-        agentId,
-        slug,
-        prompt,
-        appContext,
-        autoStart = true,
-        deviceId,
-        existingMessageIds = [],
-        parentMessageId,
-        trigger,
-      } = task;
-
-      try {
-        const result = await ctx.aiAgentService.execAgent({
+      const executeTask = async (
+        task: (typeof tasks)[number],
+        taskIndex: number,
+      ): Promise<TaskResult> => {
+        const {
           agentId,
-          appContext,
-          autoStart,
-          deviceId,
-          existingMessageIds,
-          parentMessageId,
-          prompt,
-          // When parentMessageId is provided, this is a regeneration/continue — skip user message creation
-          resume: !!parentMessageId,
           slug,
-          trigger: trigger ?? RequestTrigger.Chat,
-        });
+          prompt,
+          appContext,
+          autoStart = true,
+          deviceId,
+          existingMessageIds = [],
+          parentMessageId,
+          trigger,
+        } = task;
 
-        return {
-          autoStarted: result.autoStarted,
-          operationId: result.operationId,
-          success: true,
-          taskIndex,
-        };
-      } catch (error: any) {
-        log('execAgents task %d failed: %O', taskIndex, error);
+        try {
+          const result = await ctx.aiAgentService.execAgent({
+            agentId,
+            appContext,
+            autoStart,
+            deviceId,
+            existingMessageIds,
+            parentMessageId,
+            prompt,
+            // When parentMessageId is provided, this is a regeneration/continue — skip user message creation
+            resume: !!parentMessageId,
+            slug,
+            trigger: trigger ?? RequestTrigger.Chat,
+          });
 
-        return {
-          error: error.message || 'Unknown error',
-          success: false,
-          taskIndex,
-        };
-      }
-    };
+          return {
+            autoStarted: result.autoStarted,
+            operationId: result.operationId,
+            success: true,
+            taskIndex,
+          };
+        } catch (error: any) {
+          log('execAgents task %d failed: %O', taskIndex, error);
 
-    // Execute tasks with pMap for concurrency control
-    // parallel=true: concurrency of 5, parallel=false: sequential (concurrency of 1)
-    const concurrency = parallel ? 5 : 1;
+          return {
+            // RR2-5: per-item failures must not leak a raw error message either.
+            error: publicExecErrorMessage(error),
+            success: false,
+            taskIndex,
+          };
+        }
+      };
 
-    const results = await pMap(tasks, (task, index) => executeTask(task, index), { concurrency });
+      // Execute tasks with pMap for concurrency control
+      // parallel=true: concurrency of 5, parallel=false: sequential (concurrency of 1)
+      const concurrency = parallel ? 5 : 1;
 
-    // Calculate summary
-    const succeeded = results.filter((r) => r.success).length;
-    const failed = results.filter((r) => !r.success).length;
+      const results = await pMap(tasks, (task, index) => executeTask(task, index), { concurrency });
 
-    return {
-      results,
-      success: failed === 0,
-      summary: {
-        failed,
-        succeeded,
-        total: tasks.length,
-      },
-    };
-  }),
+      // Calculate summary
+      const succeeded = results.filter((r) => r.success).length;
+      const failed = results.filter((r) => !r.success).length;
+
+      return {
+        results,
+        success: failed === 0,
+        summary: {
+          failed,
+          succeeded,
+          total: tasks.length,
+        },
+      };
+    }),
 
   /**
    * Execute Group Agent (Supervisor) in a single call

@@ -97,7 +97,9 @@ export const resolvePlatformSkillRuntimeSnapshot = async (params: {
         skillKey: skill.skillKey,
         version: skill.version,
       });
-      if (!resolved) throw new Error(`Published Skill ${skill.skillKey} could not be resolved`);
+      // RR2-5: fail closed WITHOUT naming the Skill — the skillKey is an internal catalog
+      // identifier and must never surface to the caller.
+      if (!resolved) throw new Error('A published platform Skill could not be resolved');
       return { ...meta, activated: true, content: buildResolvedContent(resolved) };
     }),
   );
@@ -195,10 +197,10 @@ export const resolvePinnedPlatformSkillRuntimeSnapshot = async (params: {
   const skills = await Promise.all(
     refs.map(async (ref): Promise<SkillMeta> => {
       const resolved = await catalogService.resolvePinnedForExecution(ref);
+      // RR2-5: fail closed WITHOUT naming the Skill — `skillKey@version` is an internal pinned
+      // identifier and must never surface to the caller.
       if (!resolved) {
-        throw new Error(
-          `Pinned platform Skill ${ref.skillKey}@${ref.version} could not be resolved`,
-        );
+        throw new Error('A pinned platform Skill could not be resolved');
       }
       return {
         activated: true,

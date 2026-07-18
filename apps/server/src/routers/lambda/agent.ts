@@ -17,7 +17,11 @@ import { UserModel } from '@/database/models/user';
 import { router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 import { withActiveUserWhenManagedAgents } from '@/server/enterprise/guards/activeUser';
-import { assertAgentNotPlatformManaged } from '@/server/enterprise/guards/managedPlatformAgent';
+import {
+  pickAgentId,
+  pickId,
+  withManagedLocalAgentGuard,
+} from '@/server/enterprise/guards/managedPlatformAgent';
 import { withManagedResourceGuard } from '@/server/enterprise/guards/managedResource';
 import { PlatformAgentUserListService } from '@/server/enterprise/services/agentCatalog';
 import { AgentService } from '@/server/services/agent';
@@ -117,6 +121,7 @@ export const agentRouter = router({
   publishAgentToWorkspace: agentProcedure
     .use(withScopedPermission('agent:update'))
     .use(withManagedResourceGuard('agent.publishAgentToWorkspace'))
+    .use(withManagedLocalAgentGuard(pickId))
     .input(z.object({ id: z.string() }))
     .mutation(async ({ input, ctx }) => {
       return ctx.agentModel.publishToWorkspace(input.id);
@@ -133,6 +138,7 @@ export const agentRouter = router({
   setAgentVisibility: agentProcedure
     .use(withScopedPermission('agent:update'))
     .use(withManagedResourceGuard('agent.setAgentVisibility'))
+    .use(withManagedLocalAgentGuard(pickId))
     .input(z.object({ id: z.string(), visibility: z.enum(['private', 'public']) }))
     .mutation(async ({ input, ctx }) => {
       const meta = await ctx.agentModel.getAgentVisibilityMeta(input.id);
@@ -194,6 +200,7 @@ export const agentRouter = router({
   createAgentFiles: agentProcedure
     .use(withScopedPermission('agent:update'))
     .use(withManagedResourceGuard('agent.createAgentFiles'))
+    .use(withManagedLocalAgentGuard(pickAgentId))
     .input(
       z.object({
         agentId: z.string(),
@@ -208,6 +215,7 @@ export const agentRouter = router({
   createAgentKnowledgeBase: agentProcedure
     .use(withScopedPermission('agent:update'))
     .use(withManagedResourceGuard('agent.createAgentKnowledgeBase'))
+    .use(withManagedLocalAgentGuard(pickAgentId))
     .input(
       z.object({
         agentId: z.string(),
@@ -250,6 +258,7 @@ export const agentRouter = router({
   deleteAgentFile: agentProcedure
     .use(withScopedPermission('agent:update'))
     .use(withManagedResourceGuard('agent.deleteAgentFile'))
+    .use(withManagedLocalAgentGuard(pickAgentId))
     .input(
       z.object({
         agentId: z.string(),
@@ -263,6 +272,7 @@ export const agentRouter = router({
   deleteAgentKnowledgeBase: agentProcedure
     .use(withScopedPermission('agent:update'))
     .use(withManagedResourceGuard('agent.deleteAgentKnowledgeBase'))
+    .use(withManagedLocalAgentGuard(pickAgentId))
     .input(
       z.object({
         agentId: z.string(),
@@ -280,6 +290,8 @@ export const agentRouter = router({
   duplicateAgent: agentProcedure
     .use(withScopedPermission('agent:fork'))
     .use(withManagedResourceGuard('agent.duplicateAgent'))
+    // A managed platform Agent must not be duplicated into an unmanaged local copy either.
+    .use(withManagedLocalAgentGuard(pickAgentId))
     .input(
       z.object({
         agentId: z.string(),
@@ -468,20 +480,18 @@ export const agentRouter = router({
   removeAgent: agentProcedure
     .use(withScopedPermission('agent:delete'))
     .use(withManagedResourceGuard('agent.removeAgent'))
+    // ROOT-02 / RR2-4: a platform-managed materialized Agent cannot be deleted through the ordinary
+    // path (unified guard, runs before the handler → zero writes on reject).
+    .use(withManagedLocalAgentGuard(pickAgentId))
     .input(z.object({ agentId: z.string() }))
     .mutation(async ({ input, ctx }) => {
-      // ROOT-02: a platform-managed materialized Agent cannot be deleted through the ordinary path.
-      await assertAgentNotPlatformManaged({
-        agentId: input.agentId,
-        db: ctx.serverDB,
-        userId: ctx.userId,
-      });
       return ctx.agentModel.delete(input.agentId);
     }),
 
   toggleFile: agentProcedure
     .use(withScopedPermission('agent:update'))
     .use(withManagedResourceGuard('agent.toggleFile'))
+    .use(withManagedLocalAgentGuard(pickAgentId))
     .input(
       z.object({
         agentId: z.string(),
@@ -496,6 +506,7 @@ export const agentRouter = router({
   toggleKnowledgeBase: agentProcedure
     .use(withScopedPermission('agent:update'))
     .use(withManagedResourceGuard('agent.toggleKnowledgeBase'))
+    .use(withManagedLocalAgentGuard(pickAgentId))
     .input(
       z.object({
         agentId: z.string(),
@@ -514,6 +525,7 @@ export const agentRouter = router({
   transferAgent: agentProcedure
     .use(withScopedPermission('agent:update'))
     .use(withManagedResourceGuard('agent.transferAgent'))
+    .use(withManagedLocalAgentGuard(pickAgentId))
     .input(
       z.object({
         agentId: z.string(),
@@ -590,6 +602,8 @@ export const agentRouter = router({
   updateAgentConfig: agentProcedure
     .use(withScopedPermission('agent:update'))
     .use(withManagedResourceGuard('agent.updateAgentConfig'))
+    // ROOT-02 / RR2-4: managed fields on a platform-materialized Agent are not user-editable.
+    .use(withManagedLocalAgentGuard(pickAgentId))
     .input(
       z.object({
         agentId: z.string(),
@@ -597,13 +611,6 @@ export const agentRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      // ROOT-02: managed fields on a platform-materialized Agent are not user-editable.
-      await assertAgentNotPlatformManaged({
-        agentId: input.agentId,
-        db: ctx.serverDB,
-        userId: ctx.userId,
-      });
-
       // Collaborative edit lock: reject writes to a workspace agent another
       // member is actively editing. Inert until a client acquires the lock.
       if (ctx.workspaceId) {
@@ -627,6 +634,8 @@ export const agentRouter = router({
   updateAgentPinned: agentProcedure
     .use(withScopedPermission('agent:update'))
     .use(withManagedResourceGuard('agent.updateAgentPinned'))
+    // ROOT-02 / RR2-4: a platform-managed materialized Agent is not user-manageable via this path.
+    .use(withManagedLocalAgentGuard(pickId))
     .input(
       z.object({
         id: z.string(),
@@ -634,18 +643,13 @@ export const agentRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      // ROOT-02: a platform-managed materialized Agent is not user-manageable via the ordinary path.
-      await assertAgentNotPlatformManaged({
-        agentId: input.id,
-        db: ctx.serverDB,
-        userId: ctx.userId,
-      });
       return ctx.agentModel.update(input.id, { pinned: input.pinned });
     }),
 
   acquireAgentLock: agentProcedure
     .use(withScopedPermission('agent:update'))
     .use(withManagedResourceGuard('agent.acquireAgentLock'))
+    .use(withManagedLocalAgentGuard(pickAgentId))
     .input(z.object({ agentId: z.string() }))
     .mutation(async ({ ctx, input }) => {
       if (!ctx.workspaceId) return { expiresAt: null, holderId: null, lockedByOther: false };
@@ -676,6 +680,7 @@ export const agentRouter = router({
   releaseAgentLock: agentProcedure
     .use(withScopedPermission('agent:update'))
     .use(withManagedResourceGuard('agent.releaseAgentLock'))
+    .use(withManagedLocalAgentGuard(pickAgentId))
     .input(z.object({ agentId: z.string() }))
     .mutation(async ({ ctx, input }) => {
       if (!ctx.workspaceId) return;

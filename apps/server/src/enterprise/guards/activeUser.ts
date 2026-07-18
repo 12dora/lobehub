@@ -98,18 +98,23 @@ export const withActiveUser = (options: WithActiveUserOptions = {}) =>
 
 /**
  * Active-user guard for ordinary user entrypoints that gain a managed-Agent surface under M10
- * (unified list, platform chat runtime). Enforcement is gated on the managed boundary being active:
+ * (unified list, platform chat runtime). The extra restriction exists ONLY because of the managed
+ * surface, so it is gated strictly on that surface being enabled:
  *
- * - Flag OFF (no ENABLE_PLATFORM_ADMIN and no ENABLE_PLATFORM_MANAGED_AGENTS) → no-op, so the
- *   legacy local-only behavior and its access rules are preserved verbatim (no new restriction).
- * - Flag ON → reject banned / inactive / epoch-invalid principals BEFORE any platform
- *   resolver / catalog / materialization access, regardless of the admin flag (ADMIN=0 + MANAGED=1
- *   still rejects). Reuses the exact same `enforceActiveUser` assertion as the admin guard.
+ * - `ENABLE_PLATFORM_MANAGED_AGENTS` OFF → no-op, so the legacy local-only behavior and its access
+ *   rules are preserved verbatim (no new restriction). This holds even when `ENABLE_PLATFORM_ADMIN`
+ *   is ON (RR2-7): the admin flag alone must not add a ban/epoch restriction to these ordinary
+ *   legacy entrypoints — admin-only routers enforce their own `withActiveUser` separately. A
+ *   `MANAGED=0 + ADMIN=1` caller therefore keeps full legacy pass-through here (banned/inactive/
+ *   epoch-invalid principals are served exactly as upstream), with zero platform access.
+ * - `ENABLE_PLATFORM_MANAGED_AGENTS` ON → reject banned / inactive / epoch-invalid principals BEFORE
+ *   any platform resolver / catalog / materialization access (ADMIN independent). Reuses the exact
+ *   same `enforceActiveUser` assertion as the admin guard.
  */
 export const withActiveUserWhenManagedAgents = () =>
   trpc.middleware(async ({ ctx, next }) => {
     const flags = getEnterpriseFeatureFlags();
-    if (!flags.ENABLE_PLATFORM_MANAGED_AGENTS && !flags.ENABLE_PLATFORM_ADMIN) {
+    if (!flags.ENABLE_PLATFORM_MANAGED_AGENTS) {
       return next();
     }
     await enforceActiveUser(ctx as ActiveUserCtx & { serverDB?: LobeChatDatabase });

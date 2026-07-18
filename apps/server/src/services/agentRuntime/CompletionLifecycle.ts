@@ -126,9 +126,25 @@ export class CompletionLifecycle {
    * path — `dispatchHooks` will still finalize the row if one was written.
    */
   async recordStart(params: RecordOperationStartParams): Promise<void> {
+    // RR2-2: a platform-managed operation persists a `platformOperation` pin. Its persistence is NOT
+    // fire-and-forget — if the pin (and the model/skill/connector pins written with it) fails to
+    // land, every later LLM call and every resume would silently fall back to the managed *latest*
+    // pointer. So a platform operation whose start row fails to persist must fail CLOSED here, before
+    // any execution, with a stable identifier-free error (never the raw DB message).
+    const isPlatformOperation = Boolean(
+      (params.metadata as { platformOperation?: unknown } | undefined)?.platformOperation,
+    );
     try {
       await this.agentOperationModel.recordStart(params);
     } catch (error) {
+      if (isPlatformOperation) {
+        log(
+          '[%s] Failed to persist platform operation start (fatal): %O',
+          params.operationId,
+          error,
+        );
+        throw new Error('PLATFORM_OPERATION_START_PERSIST_FAILED', { cause: error });
+      }
       log('[%s] Failed to record operation start (non-fatal): %O', params.operationId, error);
     }
 
