@@ -202,6 +202,20 @@ export interface PlatformOperationModelPin {
 
 /** JSONB shape stored under `agent_operations.metadata`. */
 export interface PlatformOperationMetadata {
+  /**
+   * Server-controlled resume anchor: the id of the assistant turn this operation produced (M10
+   * PR-049 · RR3-1/RR4-1). Written once at start; a DIRECT (regeneration) resume must match this
+   * EXACTLY. Never derived from a client-writable `message.parentId`.
+   */
+  assistantMessageId?: string;
+  /**
+   * Server-recorded ids of the pending `role='tool'` messages the runtime created when this
+   * operation paused for human intervention (M10 PR-049 · RR4-1). An approval / tool-result resume
+   * must match one of these EXACTLY — the pending tool ids are created by the runtime and recorded
+   * here, so a client-forged tool message (even with a spoofed parentId / pending plugin) can never
+   * be a valid resume anchor. Empty / absent until the operation actually parks on `waiting_for_human`.
+   */
+  pendingResumeAnchorIds?: string[];
   /** Exact connector references (revision/checksum + tool allowlist) for historical execution. */
   platformConnectors?: PlatformAgentConnectorDependencyRef[];
   /** Exact model reference for historical-revision execution. */

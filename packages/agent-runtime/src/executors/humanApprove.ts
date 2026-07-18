@@ -139,6 +139,12 @@ export const requestHumanApprove =
       }
     }
 
+    // RR4-1: surface the SERVER-created pending tool message ids on state so the server can record
+    // them as the operation's trusted resume anchors. A resume approval/tool-result must target one
+    // of these exact ids — a client-forged tool message (spoofed parentId / pending plugin) is never
+    // a valid anchor.
+    newState.pendingHumanToolMessageIds = Object.values(toolMessageIds);
+
     // Notify frontend to display approval UI through streaming system.
     // `toolMessageIds` is a new optional field; legacy consumers ignore it.
     await transports.stream.publishChunk({

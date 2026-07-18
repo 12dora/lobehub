@@ -26,11 +26,14 @@ import { buildWorkspaceWhere } from '../utils/workspace';
  * managed *latest* pointer (M10 PR-049 · RR3-2). Stable + identifier-free.
  */
 /**
- * Operation statuses a platform resume may replay a pin from: only a genuinely paused, in-flight
- * turn. Terminal (`done`/`error`/`interrupted`) and pre-start (`idle`/`running`) rows are never a
- * resume source, so a completed historical operation can't be derived from indefinitely (RR3-1).
+ * The ONLY operation status an EXTERNAL (execAgent message-anchor) platform resume may replay a pin
+ * from (M10 PR-049 · RR4-2): a turn genuinely parked on human intervention. `waiting_for_async_tool`
+ * is deliberately excluded — an async-tool park resumes INTERNALLY under the SAME operationId via a
+ * state CAS (`tryResumeFromAsyncTool`), never through an external message anchor. Terminal
+ * (`done`/`error`/`interrupted`) and pre-start (`idle`/`running`) rows are never a resume source, so
+ * a completed historical operation can't be derived from indefinitely.
  */
-const RESUMABLE_OPERATION_STATUSES = ['waiting_for_human', 'waiting_for_async_tool'] as const;
+const RESUMABLE_OPERATION_STATUSES = ['waiting_for_human'] as const;
 
 export class PlatformOperationStartConflictError extends Error {
   constructor() {
@@ -53,6 +56,33 @@ const canonicalize = (value: unknown): unknown => {
 };
 const pinsEqual = (a: unknown, b: unknown): boolean =>
   JSON.stringify(canonicalize(a ?? null)) === JSON.stringify(canonicalize(b ?? null));
+
+/**
+ * A platform start's metadata is COMPLETE only when EVERY exact-binding field is present (M10 PR-049
+ * · RR4-3): the operation pin, the model pin, the skill + connector ref arrays (an EMPTY array is
+ * valid — `undefined` is not), and the server-owned assistant-message anchor. Incompleteness on
+ * either side of a start conflict is a mismatch (never idempotent).
+ */
+const isCompletePlatformStartMetadata = (
+  meta: PlatformOperationMetadata | undefined,
+): meta is Required<
+  Pick<
+    PlatformOperationMetadata,
+    | 'assistantMessageId'
+    | 'platformConnectors'
+    | 'platformModel'
+    | 'platformOperation'
+    | 'platformSkills'
+  >
+> &
+  PlatformOperationMetadata =>
+  !!meta &&
+  !!meta.platformOperation &&
+  !!meta.platformModel &&
+  Array.isArray(meta.platformSkills) &&
+  Array.isArray(meta.platformConnectors) &&
+  typeof meta.assistantMessageId === 'string' &&
+  meta.assistantMessageId.length > 0;
 
 /**
  * Verify rollup states. Aliases the single `VerifyRunStatus` source of truth in
@@ -158,41 +188,56 @@ export class AgentOperationModel {
       workspaceId: this.workspaceId ?? null,
     };
 
-    const inserted = await this.db
-      .insert(agentOperations)
-      .values(values)
-      .onConflictDoNothing()
-      .returning({ id: agentOperations.id });
-    if (inserted.length > 0) return;
-
-    // A row with this operationId already exists (onConflictDoNothing wrote nothing). An ordinary
-    // operation keeps the upstream idempotent no-op. A PLATFORM operation must NOT silently continue
-    // on a pre-existing row: if that row is a different owner/workspace, an ordinary/missing-pin row,
-    // or carries inconsistent pins, the runtime would later read its (wrong) metadata and could drop
-    // to the managed *latest* pointer. So a platform start is idempotent ONLY when the existing row
-    // is THIS owner's and carries byte-for-byte the same exact pins; otherwise fail closed (RR3-2).
     const desired = params.metadata as PlatformOperationMetadata | undefined;
-    if (!desired?.platformOperation) return;
 
-    const [existing] = await this.db
-      .select({
-        metadata: agentOperations.metadata,
-        userId: agentOperations.userId,
-        workspaceId: agentOperations.workspaceId,
-      })
-      .from(agentOperations)
-      .where(eq(agentOperations.id, params.operationId))
-      .limit(1);
-    const existingMeta = existing?.metadata as PlatformOperationMetadata | undefined;
-    const exactIdempotent =
-      !!existing &&
-      existing.userId === this.userId &&
-      (existing.workspaceId ?? null) === (this.workspaceId ?? null) &&
-      pinsEqual(existingMeta?.platformOperation, desired.platformOperation) &&
-      pinsEqual(existingMeta?.platformModel, desired.platformModel) &&
-      pinsEqual(existingMeta?.platformSkills, desired.platformSkills) &&
-      pinsEqual(existingMeta?.platformConnectors, desired.platformConnectors);
-    if (!exactIdempotent) throw new PlatformOperationStartConflictError();
+    // An ORDINARY operation keeps the upstream idempotent no-op.
+    if (!desired?.platformOperation) {
+      await this.db.insert(agentOperations).values(values).onConflictDoNothing();
+      return;
+    }
+
+    // A PLATFORM start must carry a COMPLETE exact binding — all four pins present (an empty
+    // skills/connectors array is valid, `undefined` is NOT) plus the server-owned assistant anchor.
+    // An incomplete start is itself invalid (RR4-3).
+    if (!isCompletePlatformStartMetadata(desired)) throw new PlatformOperationStartConflictError();
+
+    // A platform operation must NOT silently continue on a pre-existing row: an ordinary /
+    // missing-pin / inconsistent / cross-owner row would later be read by the runtime and could drop
+    // it to the managed *latest* pointer. The insert + conflict verification run in ONE transaction
+    // with a row lock, so a concurrent update/delete/replace can't slip between the conflict and the
+    // check (RR4-4); a platform start is idempotent ONLY when the existing row is THIS owner's and
+    // carries byte-for-byte the SAME complete binding, otherwise it fails closed (RR3-2/RR4-3).
+    await this.db.transaction(async (tx) => {
+      const inserted = await tx
+        .insert(agentOperations)
+        .values(values)
+        .onConflictDoNothing()
+        .returning({ id: agentOperations.id });
+      if (inserted.length > 0) return;
+
+      const [existing] = await tx
+        .select({
+          metadata: agentOperations.metadata,
+          userId: agentOperations.userId,
+          workspaceId: agentOperations.workspaceId,
+        })
+        .from(agentOperations)
+        .where(eq(agentOperations.id, params.operationId))
+        .for('update')
+        .limit(1);
+      const existingMeta = existing?.metadata as PlatformOperationMetadata | undefined;
+      const exactIdempotent =
+        !!existing &&
+        existing.userId === this.userId &&
+        (existing.workspaceId ?? null) === (this.workspaceId ?? null) &&
+        isCompletePlatformStartMetadata(existingMeta) &&
+        pinsEqual(existingMeta.platformOperation, desired.platformOperation) &&
+        pinsEqual(existingMeta.platformModel, desired.platformModel) &&
+        pinsEqual(existingMeta.platformSkills, desired.platformSkills) &&
+        pinsEqual(existingMeta.platformConnectors, desired.platformConnectors) &&
+        existingMeta.assistantMessageId === desired.assistantMessageId;
+      if (!exactIdempotent) throw new PlatformOperationStartConflictError();
+    });
   }
 
   /**
@@ -246,25 +291,27 @@ export class AgentOperationModel {
   }
 
   /**
-   * Load the secret-free platform operation pin of the EXACT parent operation a resume continues,
-   * via a SERVER-CONTROLLED anchor binding (M10 PR-049 · RR3-1). The operation stamps the id of the
-   * assistant turn it produced into its own (server-only) `metadata.assistantMessageId`; a resume
-   * passes the trusted anchor message it targets (the pending tool message, or the assistant turn
-   * for regen) plus that message's server-column `parentId`. We match the operation whose
-   * `metadata.assistantMessageId` equals the anchor OR its assistant parent — so the link can NEVER
-   * be forged through client-writable `message.metadata`, and a fabricated message resolves to no
-   * operation.
+   * Load the secret-free platform operation pin of the EXACT parent operation a resume continues, via
+   * a SERVER-CONTROLLED anchor binding keyed by resume kind (M10 PR-049 · RR3-1/RR4-1). The link is
+   * NEVER derived from a client-writable `message.parentId`:
    *
-   * The lookup jointly enforces owner + workspace (via `ownership()`), the exact topic (REQUIRED —
-   * no topic ⇒ no resume) and thread leg, the requested `platformAgentId`, and a RESUMABLE operation
-   * status (only a genuinely paused turn — `waiting_for_human` / `waiting_for_async_tool`); a
-   * terminal / historical operation is never a resume source, so it can't be derived indefinitely.
-   * Returns null (→ caller fails closed) when nothing matches. The caller still re-derives the exact
-   * pinned version from `versionId` and fails closed on a checksum mismatch.
+   * - a DIRECT (regeneration) resume matches the operation's own server-recorded assistant-turn id
+   *   (`metadata.assistantMessageId`, written once at start);
+   * - an APPROVAL / TOOL-RESULT resume matches one of the pending tool-message ids the RUNTIME created
+   *   when the operation parked (`metadata.pendingResumeAnchorIds`, recorded by `recordResumeAnchors`).
+   *
+   * so a fabricated / forged anchor message (spoofed parentId, forged pending plugin) is never among
+   * the server-owned ids, and an assistant id can't cross-match the tool slot (or vice versa). The
+   * lookup jointly enforces owner + workspace (via `ownership()`), the exact topic (REQUIRED — no
+   * topic ⇒ no resume) and thread leg, the requested `platformAgentId`, and the ONLY externally
+   * resumable status (`waiting_for_human`; `waiting_for_async_tool` resumes internally, terminal /
+   * historical ops are never a source). Returns null (→ caller fails closed) when nothing matches.
+   * The caller still re-derives the exact pinned version from `versionId` and fails closed on a
+   * checksum mismatch.
    */
   async findResumablePlatformOperationPin(params: {
+    anchorKind: 'assistant' | 'tool';
     anchorMessageId: string;
-    anchorParentId: string | null;
     platformAgentId: string;
     threadId: string | null;
     topicId: string | null;
@@ -272,9 +319,17 @@ export class AgentOperationModel {
     // A resume MUST bind to a topic — without one the operation cannot be jointly scoped.
     if (!params.topicId) return null;
 
-    const anchorMatch = params.anchorParentId
-      ? sql`(${agentOperations.metadata} ->> 'assistantMessageId' = ${params.anchorMessageId} OR ${agentOperations.metadata} ->> 'assistantMessageId' = ${params.anchorParentId})`
-      : sql`${agentOperations.metadata} ->> 'assistantMessageId' = ${params.anchorMessageId}`;
+    // Per RR4-1 the anchor match is EXACT against a server-owned id, keyed by resume kind — never a
+    // client-writable `message.parentId`:
+    //   - direct (regeneration) → the operation's own assistant-turn id (`assistantMessageId`);
+    //   - approval / tool-result → one of the pending tool-message ids the RUNTIME created at pause
+    //     (`pendingResumeAnchorIds`). A client-forged tool message (spoofed parentId / pending
+    //     plugin) is not among these, and an assistant id used as a tool anchor (or vice versa) can
+    //     never cross-match the other slot.
+    const anchorMatch =
+      params.anchorKind === 'assistant'
+        ? sql`${agentOperations.metadata} ->> 'assistantMessageId' = ${params.anchorMessageId}`
+        : sql`${agentOperations.metadata} -> 'pendingResumeAnchorIds' @> to_jsonb(${params.anchorMessageId}::text)`;
 
     const [row] = await this.db
       .select({ metadata: agentOperations.metadata })
@@ -295,6 +350,24 @@ export class AgentOperationModel {
       )
       .limit(1);
     return (row?.metadata as PlatformOperationMetadata | undefined)?.platformOperation ?? null;
+  }
+
+  /**
+   * Record the SERVER-created pending tool-message ids as this operation's trusted resume anchors
+   * when it parks on human intervention (M10 PR-049 · RR4-1). Owner-scoped; merges into the
+   * operation's own (server-only) `metadata.pendingResumeAnchorIds` without disturbing the pins.
+   * These ids are the ONLY valid anchors for an approval / tool-result resume — so a client-forged
+   * tool message can never bind. A no-op when there are no anchors or the row isn't this owner's.
+   */
+  async recordResumeAnchors(operationId: string, anchorIds: string[]): Promise<void> {
+    const ids = [...new Set(anchorIds)].filter((id) => typeof id === 'string' && id.length > 0);
+    if (ids.length === 0) return;
+    await this.db
+      .update(agentOperations)
+      .set({
+        metadata: sql`jsonb_set(coalesce(${agentOperations.metadata}, '{}'::jsonb), '{pendingResumeAnchorIds}', ${JSON.stringify(ids)}::jsonb, true)`,
+      })
+      .where(and(eq(agentOperations.id, operationId), this.ownership()));
   }
 
   /**

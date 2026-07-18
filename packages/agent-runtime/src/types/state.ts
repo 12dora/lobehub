@@ -101,13 +101,20 @@ export interface AgentState {
    */
   pendingAssistantMessageId?: string;
   pendingHumanPrompt?: { metadata?: Record<string, unknown>; prompt: string };
-
   pendingHumanSelect?: {
     metadata?: Record<string, unknown>;
     multi?: boolean;
     options: Array<{ label: string; value: string }>;
     prompt?: string;
   };
+
+  /**
+   * Server-created ids of the pending `role='tool'` messages produced when the operation parks on
+   * `waiting_for_human` (M10 PR-049 · RR4-1). Surfaced from the human-approve executor so the server
+   * can record them as the operation's trusted resume anchors — a resume approval/tool-result must
+   * target one of these exact ids, never a client-forgeable message parentId. Legacy consumers ignore it.
+   */
+  pendingHumanToolMessageIds?: string[];
   /**
    * When status is 'waiting_for_human', this stores pending requests
    * for human-in-the-loop operations.

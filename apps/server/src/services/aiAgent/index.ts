@@ -1078,19 +1078,20 @@ export class AiAgentService {
 
   /**
    * Resolve the secret-free pin of the EXACT parent operation a resume continues, via a
-   * SERVER-CONTROLLED anchor binding (M10 PR-049 · RR3-1) — the client-writable
-   * `message.metadata.operationId` is NEVER trusted.
+   * SERVER-CONTROLLED, resume-kind-keyed anchor binding (M10 PR-049 · RR3-1/RR4-1) — the
+   * client-writable `message.metadata.operationId` AND the client-writable `message.parentId` are
+   * BOTH untrusted.
    *
-   * The anchor message (the pending `role='tool'` message for approve/tool-result, or the assistant
-   * turn for regen) is loaded owner-scoped — a foreign / non-existent message resolves to null and
-   * fails the resume closed. The operation is then matched by its OWN server-written
-   * `metadata.assistantMessageId` (the assistant turn it produced) against the anchor or the anchor's
-   * server-column `parentId`, jointly scoped to owner/workspace/topic/thread/platformAgent and a
-   * paused, resumable status. A fabricated message points at no operation → null; a message pointing
-   * at another owner's assistant turn is excluded by ownership → null.
+   * The anchor message is loaded owner-scoped (a foreign / non-existent message → null → fail
+   * closed) only to confirm the caller owns it; the operation is then matched by kind against a
+   * SERVER-owned id — a DIRECT (regen) anchor against the operation's `metadata.assistantMessageId`,
+   * an APPROVAL / TOOL-RESULT anchor against the pending tool-message ids the runtime recorded at
+   * pause (`metadata.pendingResumeAnchorIds`). No `parentId` hop, so a client-forged tool message
+   * (spoofed parentId) can never bind, and the kinds can't cross.
    */
   private async resolveResumePlatformPin(
     anchorMessageId: string | null,
+    anchorKind: 'assistant' | 'tool',
     platformAgentId: string,
     topicId: string | null,
     threadId: string | null,
@@ -1099,8 +1100,8 @@ export class AiAgentService {
     const anchor = await this.messageModel.findById(anchorMessageId);
     if (!anchor) return null;
     return this.agentOperationModel.findResumablePlatformOperationPin({
+      anchorKind,
       anchorMessageId: anchor.id,
-      anchorParentId: anchor.parentId ?? null,
       platformAgentId,
       threadId,
       topicId,
@@ -1124,6 +1125,7 @@ export class AiAgentService {
     identifier: string,
     resumeContext: {
       resume: boolean;
+      resumeAnchorKind: 'assistant' | 'tool';
       resumeAnchorMessageId: string | null;
       threadId: string | null;
       topicId: string | null;
@@ -1145,6 +1147,7 @@ export class AiAgentService {
       // NEVER fall through to a fresh `beginOperation` (latest) on a resume.
       const pin = await this.resolveResumePlatformPin(
         resumeContext.resumeAnchorMessageId,
+        resumeContext.resumeAnchorKind,
         platformAgentId,
         resumeContext.topicId,
         resumeContext.threadId,
@@ -1346,9 +1349,11 @@ export class AiAgentService {
     if (platformAgentId) {
       const resolved = await this.resolvePlatformAgentConfig(platformAgentId, identifier, {
         resume: resume || !!resumeApproval || !!resumeToolResult,
-        // The trusted anchor for a resume: the pending tool message (approve / tool-result) or the
-        // regeneration parent. resolvePlatformAgentConfig walks it to the EXACT parent operation and
-        // replays that operation's pin — never "the latest platform op on the topic" (RR2-1).
+        // The trusted anchor for a resume, keyed by KIND (RR4-1): an approval / tool-result resume
+        // anchors on the pending TOOL message (matched against the op's server-recorded pending tool
+        // ids), a regeneration anchors on the assistant turn (matched against the op's server-recorded
+        // assistant id). Never a client-writable parentId hop.
+        resumeAnchorKind: resumeApproval || resumeToolResult ? 'tool' : 'assistant',
         resumeAnchorMessageId:
           resumeApproval?.parentMessageId ??
           resumeToolResult?.parentMessageId ??

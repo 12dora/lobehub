@@ -2276,7 +2276,11 @@ export class MessageModel {
                     .from(messages)
                     .where(and(eq(messages.id, id), this.ownership())),
               );
-              mergedMetadata = merge(existingMessage?.metadata || {}, metadataPatch);
+              // RR4-5: strip server-reserved keys on the POST-MERGE result (the final write value),
+              // so a caller can neither introduce nor re-introduce a reserved key via a merge.
+              mergedMetadata = stripReservedMessageMetadata(
+                merge(existingMessage?.metadata || {}, metadataPatch),
+              );
             }
 
             const [updated] = await runTimedStage(
@@ -2331,8 +2335,8 @@ export class MessageModel {
 
     if (!item) return;
 
-    // RR3-1: a caller can never merge a server-reserved key (operationId) onto a message.
-    const mergedMetadata = merge(item.metadata || {}, stripReservedMessageMetadata(metadata));
+    // RR4-5: strip server-reserved keys on the POST-MERGE result (the final write value).
+    const mergedMetadata = stripReservedMessageMetadata(merge(item.metadata || {}, metadata));
     // Keep the dedicated `usage` column in sync when the merged metadata carries
     // token usage, preferring it over the existing column value.
     const usageToWrite = (metadata as { usage?: ModelUsage } | undefined)?.usage;
@@ -2485,7 +2489,12 @@ export class MessageModel {
             const existingMessage = await trx.query.messages.findFirst({
               where: and(eq(messages.id, id), this.ownership()),
             });
-            messageUpdateData.metadata = merge(existingMessage?.metadata || {}, metadata);
+            // RR4-5: strip server-reserved keys on the POST-MERGE result — updateToolMessage is
+            // reachable from the public message router (single + batchMutate), so this final write
+            // boundary must filter it too.
+            messageUpdateData.metadata = stripReservedMessageMetadata(
+              merge(existingMessage?.metadata || {}, metadata),
+            );
           }
 
           if (Object.keys(messageUpdateData).length > 0) {
