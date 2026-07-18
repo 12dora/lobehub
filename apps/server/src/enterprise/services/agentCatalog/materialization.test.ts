@@ -216,4 +216,23 @@ describe('PlatformAgentMaterializationService', () => {
       PlatformAgentMaterializationError,
     );
   });
+
+  it('redacts a raw driver error from the exact-version read (REWORK-5)', async () => {
+    const service = makeService({
+      getExactVersion: vi.fn(async () => {
+        throw Object.assign(
+          new Error('error: column "checksum" does not exist for provider acme-secret'),
+          { code: '42703', severity: 'ERROR' },
+        );
+      }),
+    });
+    const error = await service.materializeForOperation(snapshot()).then(
+      () => null,
+      (e) => e,
+    );
+    expect(error).toBeInstanceOf(PlatformAgentMaterializationError);
+    expect(`${(error as Error).message} ${JSON.stringify(error)}`).not.toMatch(
+      /does not exist|acme-secret|42703|checksum/,
+    );
+  });
 });

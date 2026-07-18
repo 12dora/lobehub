@@ -62,6 +62,44 @@ export class PlatformAgentMaterializationError extends Error {
   }
 }
 
+/**
+ * Stable, detail-free fallback for any UNKNOWN failure at a platform Agent read boundary
+ * (resolver / effective list / exact version lookup). Raised in place of a raw driver / SQL error
+ * so the public boundary can never leak SQLSTATE, constraint names, table/column names, the
+ * offending value, or a user / role / target / provider identifier (REWORK-5).
+ */
+export class PlatformAgentUnavailableError extends Error {
+  readonly code = 'PLATFORM_UNAVAILABLE';
+
+  constructor() {
+    super('PLATFORM_UNAVAILABLE');
+  }
+}
+
+/** The stable, already-redacted platform Agent errors that are safe to surface verbatim. */
+const REDACTED_PLATFORM_ERRORS = [
+  PlatformAgentNotFoundError,
+  PlatformAgentRevisionConflictError,
+  PlatformAgentDefaultRequiredError,
+  PlatformAgentInvalidInputError,
+  PlatformAgentResourceInUseError,
+  PlatformAgentMaterializationError,
+  PlatformAgentUnavailableError,
+] as const;
+
+/**
+ * Redact an unexpected error thrown behind a platform Agent read boundary. A known, already-stable
+ * platform error (and the dependency-validation error, which only carries issue codes) passes
+ * through so NOT_FOUND / materialization / validation classifications are preserved; anything else
+ * — a raw postgres driver error, an unexpected throw — collapses to a detail-free
+ * `PlatformAgentUnavailableError`. Never returns the original message.
+ */
+export const redactPlatformReadError = (error: unknown): Error => {
+  if (REDACTED_PLATFORM_ERRORS.some((ctor) => error instanceof ctor)) return error as Error;
+  if (error instanceof PlatformAgentDependencyValidationError) return error;
+  return new PlatformAgentUnavailableError();
+};
+
 export type PlatformAgentDependencyIssueCode =
   | 'AI_MODEL_UNAVAILABLE'
   | 'CONNECTOR_UNAVAILABLE'

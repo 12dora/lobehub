@@ -260,4 +260,57 @@ describe('PlatformAgentUserListService', () => {
       expect(merged.map((i) => i.id)).toEqual([encodePlatformAgentListId('p1'), 'agt_x']);
     });
   });
+
+  // REWORK-1: a materialized local row whose platform Agent is now hidden/revoked (so it is NOT in
+  // the visible effective list) must still be stripped everywhere — never leak back into the
+  // ordinary local list, where it would also become runnable via the ordinary runtime.
+  describe('hidden / revoked materialized rows (REWORK-1)', () => {
+    const sidebarLocal = (id: string): SidebarAgentItem => ({
+      id,
+      pinned: false,
+      title: id,
+      type: 'agent',
+      updatedAt: new Date('2024-01-01T00:00:00Z'),
+    });
+
+    it('reads the materialized-id set even when the visible entry list is empty', async () => {
+      const { service, getEffectiveList, listMaterializedAgentIds } = makeService({
+        effective: [],
+        materialized: ['agt_hidden'],
+      });
+      // Both the resolver and the owner-scoped materialized-id read must run under the managed flag.
+      const picker = await service.mergeAvailableAgents(
+        'u',
+        { limit: 10, offset: 0 },
+        localLoader([localItem('agt_hidden', 'Hidden'), localItem('agt_keep', 'Keep')]),
+      );
+      expect(picker.map((r) => r.id)).toEqual(['agt_keep']);
+      expect(getEffectiveList).toHaveBeenCalledTimes(1);
+      expect(listMaterializedAgentIds).toHaveBeenCalledTimes(1);
+    });
+
+    it('strips the hidden materialized row from the sidebar even with no visible platform items', async () => {
+      const { service } = makeService({ effective: [], materialized: ['agt_hidden'] });
+      const base = {
+        groups: [],
+        pinned: [sidebarLocal('agt_hidden')],
+        privateGroups: [],
+        privateUngrouped: [],
+        ungrouped: [sidebarLocal('agt_hidden'), sidebarLocal('agt_u')],
+      };
+      const merged = await service.mergeSidebarList('u', base);
+      expect(merged.pinned).toEqual([]);
+      expect(merged.ungrouped.map((i) => i.id)).toEqual(['agt_u']);
+    });
+
+    it('strips the hidden materialized row from search even with no visible platform items', async () => {
+      const { service } = makeService({ effective: [], materialized: ['agt_hidden'] });
+      const merged = await service.mergeSearchResults(
+        'u',
+        [sidebarLocal('agt_hidden'), sidebarLocal('agt_x')],
+        'anything',
+      );
+      expect(merged.map((i) => i.id)).toEqual(['agt_x']);
+    });
+  });
 });

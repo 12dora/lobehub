@@ -12,6 +12,7 @@ import type {
 import type { LobeChatDatabase } from '@/database/type';
 
 import { PlatformAgentEffectiveResolver } from './effectiveResolver';
+import { PlatformAgentUnavailableError } from './errors';
 
 const config = {
   avatar: null,
@@ -100,6 +101,37 @@ describe('PlatformAgentEffectiveResolver', () => {
     expect(getSnapshot).not.toHaveBeenCalled();
     expect(listEffectiveInputs).not.toHaveBeenCalled();
     expect(listHiddenPlatformAgentIds).not.toHaveBeenCalled();
+  });
+
+  // REWORK-5: a raw driver / SQL error must never cross the read boundary — it is redacted to the
+  // stable, detail-free PlatformAgentUnavailableError carrying no SQL / constraint / identifier.
+  describe('DB error redaction (REWORK-5)', () => {
+    const rawDbError = Object.assign(
+      new Error(
+        'error: relation "platform_agent_assignments" does not exist for user super-admin-42',
+      ),
+      { code: '42P01', constraint: 'platform_agents_agent_key_unique', severity: 'ERROR' },
+    );
+
+    const expectRedacted = async (run: () => Promise<unknown>) => {
+      const error = await run().then(
+        () => null,
+        (e) => e,
+      );
+      expect(error).toBeInstanceOf(PlatformAgentUnavailableError);
+      const serialized = `${(error as Error).message} ${JSON.stringify(error)}`;
+      expect(serialized).not.toMatch(/platform_agent|does not exist|super-admin|42P01|ERROR/);
+    };
+
+    it('redacts a raw error from getEffectiveList', async () => {
+      listEffectiveInputs.mockRejectedValueOnce(rawDbError);
+      await expectRedacted(() => createResolver().getEffectiveList('user'));
+    });
+
+    it('redacts a raw error from beginOperation', async () => {
+      listEffectiveInputs.mockRejectedValueOnce(rawDbError);
+      await expectRedacted(() => createResolver().beginOperation('user', 'agent-1'));
+    });
   });
 
   it('does not read Agent or hidden tables while the published policy is unmanaged', async () => {
