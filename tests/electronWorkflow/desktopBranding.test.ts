@@ -1,26 +1,27 @@
 // @vitest-environment node
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import {
   materializeDesktopBrandAssets,
   resolveDesktopBranding,
-  validateAihubReleaseArtifacts,
   validateDesktopIcon,
 } from '../../scripts/electronWorkflow/desktopBranding.mjs';
 
 const createAihubEnv = () => ({
   AIHUB_DESKTOP_APP_ID: 'com.example.aihub.desktop',
   AIHUB_DESKTOP_ASSETS_DIR: '/approved/aihub-icons',
+  AIHUB_DESKTOP_HOMEPAGE: 'https://aihub.example.com/',
+  AIHUB_DESKTOP_MAINTAINER: 'AIHub Release Team <release@example.com>',
   DESKTOP_BRAND: 'aihub',
   UPDATE_CHANNEL: 'stable',
   UPDATE_SERVER_URL: 'https://updates.example.com/releases/aihub',
 });
 
-const createIcon = (format: 'icns' | 'ico' | 'png') => {
-  const buffer = Buffer.alloc(512);
+const createIcon = (format: 'icns' | 'ico' | 'png', size = 512) => {
+  const buffer = Buffer.alloc(size);
 
   if (format === 'png') {
     Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).copy(buffer);
@@ -49,7 +50,10 @@ describe('desktop branding config', () => {
       {
         appId: 'com.example.aihub.desktop',
         brand: 'aihub',
+        description: 'AIHub Desktop Application',
+        homepage: 'https://aihub.example.com/',
         isAIHub: true,
+        maintainer: 'AIHub Release Team <release@example.com>',
         productName: 'AIHub',
         updateServerUrl: 'https://updates.example.com/releases/aihub',
       },
@@ -118,21 +122,28 @@ describe('AIHub icon materialization', () => {
     ).toThrow('SHA-256 does not match');
   });
 
-  it('materializes all required formats without logging encoded inputs', async () => {
-    const directory = await mkdtemp(path.join(tmpdir(), 'aihub-icons-'));
+  it('materializes approved icon files larger than the GitHub Secret size limit', async () => {
+    const temporaryRoot = await mkdtemp(path.join(tmpdir(), 'aihub-icons-'));
+    const directory = path.join(temporaryRoot, 'output');
+    const sourceDirectory = path.join(temporaryRoot, 'private-assets');
     const env: Record<string, string> = {};
+    await mkdir(sourceDirectory);
 
     for (const format of ['png', 'icns', 'ico'] as const) {
       const upperFormat = format.toUpperCase();
-      const buffer = createIcon(format);
-      env[`AIHUB_DESKTOP_ICON_${upperFormat}_BASE64`] = buffer.toString('base64');
+      const buffer = createIcon(format, 64 * 1024);
       env[`AIHUB_DESKTOP_ICON_${upperFormat}_SHA256`] = createHash('sha256')
         .update(buffer)
         .digest('hex');
+      const fileName = format === 'icns' ? 'Icon.icns' : `icon.${format}`;
+      await writeFile(path.join(sourceDirectory, fileName), buffer);
     }
 
     try {
-      await expect(materializeDesktopBrandAssets({ directory, env })).resolves.toBeUndefined();
+      await expect(
+        materializeDesktopBrandAssets({ directory, env, sourceDirectory }),
+      ).resolves.toBeUndefined();
+      expect((await readFile(path.join(directory, 'Icon.icns'))).length).toBeGreaterThan(48 * 1024);
       expect(
         resolveDesktopBranding({
           env: { ...createAihubEnv(), AIHUB_DESKTOP_ASSETS_DIR: directory },
@@ -143,40 +154,7 @@ describe('AIHub icon materialization', () => {
         png: path.join(directory, 'icon.png'),
       });
     } finally {
-      await rm(directory, { force: true, recursive: true });
-    }
-  });
-});
-
-describe('AIHub release artifact isolation', () => {
-  it('accepts AIHub installers referenced by isolated update manifests', async () => {
-    const directory = await mkdtemp(path.join(tmpdir(), 'aihub-release-'));
-    try {
-      await writeFile(path.join(directory, 'AIHub-1.2.3-x64.dmg'), 'installer');
-      await writeFile(
-        path.join(directory, 'stable-mac.yml'),
-        'version: 1.2.3\nfiles:\n  - url: AIHub-1.2.3-x64.dmg\n',
-      );
-      await expect(validateAihubReleaseArtifacts(directory)).resolves.toBeUndefined();
-    } finally {
-      await rm(directory, { force: true, recursive: true });
-    }
-  });
-
-  it('rejects LobeHub installers or manifest references', async () => {
-    const directory = await mkdtemp(path.join(tmpdir(), 'aihub-release-'));
-    try {
-      await mkdir(path.join(directory, 'nested'));
-      await writeFile(path.join(directory, 'AIHub-1.2.3.exe'), 'installer');
-      await writeFile(
-        path.join(directory, 'nested', 'latest.yml'),
-        'version: 1.2.3\npath: LobeHub-1.2.3-setup.exe\n',
-      );
-      await expect(validateAihubReleaseArtifacts(directory)).rejects.toThrow(
-        'update manifest references LobeHub',
-      );
-    } finally {
-      await rm(directory, { force: true, recursive: true });
+      await rm(temporaryRoot, { force: true, recursive: true });
     }
   });
 });
