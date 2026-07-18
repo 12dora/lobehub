@@ -359,4 +359,26 @@ describe('AgentOperationModel', () => {
       expect(await model.findLatestPlatformOperationPin({ topicId: 'topic-2' })).toBeNull();
     });
   });
+
+  describe('findPlatformModelPin', () => {
+    const modelPin = {
+      modelKey: 'chat-model',
+      providerChecksum: 'b'.repeat(64),
+      providerKey: 'internal-provider',
+      providerRevision: 1,
+    };
+
+    it('returns the exact model pin owner-scoped, null for another user or an ordinary op', async () => {
+      const model = new AgentOperationModel(serverDB, userId);
+      await model.recordStart({ metadata: { platformModel: modelPin }, operationId: 'op-model' });
+      await model.recordStart({ operationId: 'op-plain' });
+
+      expect(await model.findPlatformModelPin('op-model')).toEqual(modelPin);
+      expect(await model.findPlatformModelPin('op-plain')).toBeNull();
+      // Owner isolation: another user cannot read the pin via a leaked operationId.
+      expect(
+        await new AgentOperationModel(serverDB, otherUserId).findPlatformModelPin('op-model'),
+      ).toBeNull();
+    });
+  });
 });

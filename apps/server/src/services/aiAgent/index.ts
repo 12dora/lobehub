@@ -49,6 +49,7 @@ import type {
   LobeAgentAgencyConfig,
   LobeAgentConfig,
   MessagePluginItem,
+  PlatformOperationModelPin,
   PlatformOperationPin,
   RuntimeMentionedAgent,
   UserInterventionConfig,
@@ -1074,7 +1075,11 @@ export class AiAgentService {
     platformAgentId: string,
     identifier: string,
     resumeContext: { resume: boolean; threadId: string | null; topicId: string | null },
-  ): Promise<{ config: AgentConfigWithId; pin: PlatformOperationPin }> {
+  ): Promise<{
+    config: AgentConfigWithId;
+    modelPin: PlatformOperationModelPin;
+    pin: PlatformOperationPin;
+  }> {
     const materializationService = new PlatformAgentMaterializationService(this.db, this.userId);
 
     if (resumeContext.resume && resumeContext.topicId) {
@@ -1090,7 +1095,11 @@ export class AiAgentService {
         try {
           const materialized = await materializationService.materializeFromPin(pin);
           await this.assertPlatformOperationDependencies(materialized.dependencySnapshot);
-          return { config: materialized.config, pin };
+          return {
+            config: materialized.config,
+            modelPin: materialized.dependencySnapshot.model,
+            pin,
+          };
         } catch (error) {
           this.mapPlatformConfigError(error, platformAgentId, identifier);
         }
@@ -1112,6 +1121,7 @@ export class AiAgentService {
       await this.assertPlatformOperationDependencies(materialized.dependencySnapshot);
       return {
         config: materialized.config,
+        modelPin: materialized.dependencySnapshot.model,
         pin: {
           checksum: snapshot.checksum,
           platformAgentId: snapshot.platformAgentId,
@@ -1249,8 +1259,10 @@ export class AiAgentService {
     // and then fails closed in resolvePlatformAgentConfig.
     const platformAgentId = await this.resolvePlatformAgentId(identifier, agentId);
     let agentConfig: AgentConfigWithId | null;
-    // Persisted onto the operation so resume/retry/queued steps replay the exact pinned version.
+    // Persisted onto the operation so resume/retry/queued steps replay the exact pinned version and
+    // every LLM call runs on the exact historical provider revision.
     let platformOperationPin: PlatformOperationPin | undefined;
+    let platformModelPin: PlatformOperationModelPin | undefined;
     if (platformAgentId) {
       const resolved = await this.resolvePlatformAgentConfig(platformAgentId, identifier, {
         resume: resume || !!resumeApproval || !!resumeToolResult,
@@ -1259,6 +1271,7 @@ export class AiAgentService {
       });
       agentConfig = resolved.config;
       platformOperationPin = resolved.pin;
+      platformModelPin = resolved.modelPin;
     } else {
       agentConfig = await this.agentService.getAgentConfig(identifier);
       // Builtin agents (inbox / page / task / self-iteration slugs) may be addressed
@@ -3865,6 +3878,7 @@ export class AiAgentService {
         hooks,
         operationId,
         parentOperationId,
+        platformModelPin,
         platformOperationPin,
         signal,
         queueRetries,

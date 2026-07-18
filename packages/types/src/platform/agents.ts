@@ -186,7 +186,24 @@ export interface PlatformOperationPin {
   versionId: string;
 }
 
-/** JSONB shape stored under `agent_operations.metadata.platformOperation`. */
+/**
+ * Secret-free exact model reference persisted on a platform operation so every LLM call runs on the
+ * EXACT historical provider revision the operation started on — not the current published pointer
+ * (M10 PR-049 · MODEL-EXACT). Carries only stable keys + revision numbers + the revision checksum;
+ * credentials are never persisted here and are re-read/decrypted per execution at this exact
+ * revision, failing closed on a missing / disabled / checksum-mismatched revision.
+ */
+export interface PlatformOperationModelPin {
+  modelKey: string;
+  providerChecksum: string;
+  providerKey: string;
+  providerRevision: number;
+}
+
+/** JSONB shape stored under `agent_operations.metadata`. */
 export interface PlatformOperationMetadata {
+  /** Exact model reference for historical-revision execution. */
+  platformModel?: PlatformOperationModelPin;
+  /** Version pin for resume/retry replay. */
   platformOperation?: PlatformOperationPin;
 }
