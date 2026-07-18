@@ -121,7 +121,25 @@ const renderEditor = (
     />,
   );
 
+const renderReadOnlyEditor = (deps: AdminAgentDraftDependencies) =>
+  render(
+    <DependencyEditor
+      agentId="agent-1"
+      dependencies={deps}
+      editable={false}
+      enabled={false}
+      onChange={vi.fn()}
+    />,
+  );
+
 describe('DependencyEditor exact authoring', () => {
+  it('does not show a permanent connector validation state when read-only catalog reads are off', () => {
+    renderReadOnlyEditor({ connectors: [connectorRef], model: currentModel(), skills: [] });
+
+    expect(screen.queryByText('agentCatalog.dependency.connector.validating')).toBeNull();
+    expect(screen.getByText('issues')).toBeTruthy();
+  });
+
   it('shows loading / error / empty / unresolvable model states', () => {
     hooks.providers = { ...idle, isLoading: true };
     const { unmount } = renderEditor(emptyDeps());

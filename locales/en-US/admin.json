@@ -171,6 +171,7 @@
   "agentCatalog.status.archived": "Archived",
   "agentCatalog.status.draft": "Draft",
   "agentCatalog.status.published": "Published",
+  "agentCatalog.toast.actionFailed": "The Agent action could not start. Check your connection and try again.",
   "agentCatalog.toast.archived": "Agent archived.",
   "agentCatalog.toast.created": "Agent draft created.",
   "agentCatalog.toast.published": "Agent version published.",

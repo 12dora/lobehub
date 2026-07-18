@@ -243,14 +243,21 @@ export const useAgentActions = ({
 
   const setDefaultInbox = useCallback(async () => {
     if (lock.isLocked()) return;
-    // Resolve the outgoing default's exact CAS BEFORE opening the modal, then freeze it.
-    const currentDefaultIdentity = (await fetchAllAdminAgents({}, adminAgentsService)).find(
-      ({ identity }) => identity.isDefault,
-    )?.identity;
-    const currentDefault =
-      currentDefaultIdentity && currentDefaultIdentity.id !== snapshot.identity.id
-        ? await adminAgentsService.get({ id: currentDefaultIdentity.id })
-        : null;
+    let currentDefault: Awaited<ReturnType<typeof adminAgentsService.get>> | null;
+    try {
+      // Resolve the outgoing default's exact CAS BEFORE opening the modal, then freeze it.
+      const currentDefaultIdentity = (await fetchAllAdminAgents({}, adminAgentsService)).find(
+        ({ identity }) => identity.isDefault,
+      )?.identity;
+      currentDefault =
+        currentDefaultIdentity && currentDefaultIdentity.id !== snapshot.identity.id
+          ? await adminAgentsService.get({ id: currentDefaultIdentity.id })
+          : null;
+    } catch (cause) {
+      console.error(cause);
+      toast.error(t('agentCatalog.toast.actionFailed'));
+      return;
+    }
     const writeToken = {};
     openReasonModal({
       authMethod: authMethod ?? undefined,
@@ -305,11 +312,18 @@ export const useAgentActions = ({
 
   const archive = useCallback(async () => {
     if (lock.isLocked()) return;
-    const candidates = snapshot.identity.isDefault
-      ? (await fetchAllAdminAgents({ status: 'published' }, adminAgentsService))
-          .filter(({ identity }) => identity.id !== snapshot.identity.id)
-          .map(({ displayName, identity }) => ({ label: displayName, value: identity.id }))
-      : [];
+    let candidates: { label: string; value: string }[];
+    try {
+      candidates = snapshot.identity.isDefault
+        ? (await fetchAllAdminAgents({ status: 'published' }, adminAgentsService))
+            .filter(({ identity }) => identity.id !== snapshot.identity.id)
+            .map(({ displayName, identity }) => ({ label: displayName, value: identity.id }))
+        : [];
+    } catch (cause) {
+      console.error(cause);
+      toast.error(t('agentCatalog.toast.actionFailed'));
+      return;
+    }
     const replacementRef: { current: string | null } = { current: null };
     const writeToken = {};
     openReasonModal({

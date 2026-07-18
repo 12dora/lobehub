@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
     setDefaultInbox: vi.fn(),
   },
   fetchAllAdminAgents: vi.fn(),
+  toastError: vi.fn(),
 }));
 
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
@@ -31,7 +32,7 @@ vi.mock('./useAdminAgents', () => ({ fetchAllAdminAgents: mocks.fetchAllAdminAge
 vi.mock('@lobehub/ui', () => ({ Flexbox: () => null, Text: () => null }));
 vi.mock('@lobehub/ui/base-ui', () => ({
   Select: () => null,
-  toast: { error: vi.fn(), success: vi.fn() },
+  toast: { error: mocks.toastError, success: vi.fn() },
 }));
 
 const snapshot = {
@@ -119,6 +120,7 @@ describe('useAgentActions reauth + commit/refresh + write-lock', () => {
     for (const fn of Object.values(mocks.service)) fn.mockReset();
     mocks.openReasonModal.mockReset();
     mocks.fetchAllAdminAgents.mockReset().mockResolvedValue([]);
+    mocks.toastError.mockReset();
   });
 
   it('routes publish through the shared reauth modal with authMethod and a frozen CAS payload', async () => {
@@ -255,5 +257,51 @@ describe('useAgentActions reauth + commit/refresh + write-lock', () => {
     expect(mocks.service.appendVersion).toHaveBeenCalledOnce();
     expect(editor.markSaved).toHaveBeenCalledOnce();
     expect(mutate).toHaveBeenCalledWith(expect.any(Function), { revalidate: false });
+  });
+
+  it('surfaces a default-switch preflight failure without opening the confirmation modal', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    mocks.fetchAllAdminAgents.mockRejectedValue(new Error('offline'));
+    const { result } = renderHook(() =>
+      useAgentActions({
+        authMethod: null,
+        editor: makeEditor(),
+        lock: makeLock('ok'),
+        mutate: vi.fn(),
+        permissions,
+        snapshot,
+      }),
+    );
+
+    await act(async () => {
+      await result.current.setDefaultInbox();
+    });
+
+    expect(mocks.openReasonModal).not.toHaveBeenCalled();
+    expect(mocks.toastError).toHaveBeenCalledWith('agentCatalog.toast.actionFailed');
+    consoleError.mockRestore();
+  });
+
+  it('surfaces a default-archive candidate load failure without opening the modal', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    mocks.fetchAllAdminAgents.mockRejectedValue(new Error('offline'));
+    const { result } = renderHook(() =>
+      useAgentActions({
+        authMethod: null,
+        editor: makeEditor(),
+        lock: makeLock('ok'),
+        mutate: vi.fn(),
+        permissions,
+        snapshot: { ...snapshot, identity: { ...snapshot.identity, isDefault: true } },
+      }),
+    );
+
+    await act(async () => {
+      await result.current.archive();
+    });
+
+    expect(mocks.openReasonModal).not.toHaveBeenCalled();
+    expect(mocks.toastError).toHaveBeenCalledWith('agentCatalog.toast.actionFailed');
+    consoleError.mockRestore();
   });
 });

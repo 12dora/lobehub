@@ -41,6 +41,12 @@ vi.mock('@/components/AsyncError', () => ({
 }));
 vi.mock('@lobehub/ui', () => ({
   Center: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
+  Empty: ({ action, description }: { action?: ReactNode; description?: ReactNode }) => (
+    <div>
+      {description}
+      {action}
+    </div>
+  ),
   Flexbox: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   Input: (props: any) => <input {...props} />,
   Tag: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
@@ -119,6 +125,18 @@ describe('AgentListPage with the real AsyncBoundary', () => {
     mocks.list = pagination({ boundaryData: [], isEmpty: true });
     renderPage();
     expect(screen.getByText('agentCatalog.list.empty.default')).toBeTruthy();
+  });
+
+  it('offers a clear-filters action for a settled filtered empty result', () => {
+    mocks.list = pagination({ boundaryData: [], isEmpty: true });
+    render(
+      <MemoryRouter initialEntries={['/admin/agents?q=missing']}>
+        <AgentListPage />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText('agentCatalog.list.empty.filtered')).toBeTruthy();
+    expect(screen.getByText('primitives.filterBar.clear')).toBeTruthy();
   });
 
   it('renders rows and a load-more control when more pages remain', () => {
