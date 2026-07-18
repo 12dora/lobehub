@@ -210,12 +210,15 @@ export interface PlatformOperationMetadata {
   assistantMessageId?: string;
   /**
    * Server-recorded ids of the pending `role='tool'` messages the runtime created when this
-   * operation paused for human intervention (M10 PR-049 · RR4-1). An approval / tool-result resume
-   * must match one of these EXACTLY — the pending tool ids are created by the runtime and recorded
-   * here, so a client-forged tool message (even with a spoofed parentId / pending plugin) can never
-   * be a valid resume anchor. Empty / absent until the operation actually parks on `waiting_for_human`.
+   * operation paused for human intervention, keyed by the SERVER-derived interaction kind (M10
+   * PR-049 · RR4-1/RR5-2). `approval` = a `humanIntervention:'required'` / policy-blocked tool
+   * (resumed via `resumeApproval`); `toolResult` = a `humanIntervention:'always'` human-answer tool
+   * such as `askUserQuestion` (resumed via `resumeToolResult`). A resume must match one of the ids
+   * under its OWN kind EXACTLY — the ids are created by the runtime and recorded here, so a
+   * client-forged tool message (spoofed parentId / pending plugin) can never bind and an approval
+   * anchor can never be replayed as a tool-result (or vice versa). Absent until the op parks.
    */
-  pendingResumeAnchorIds?: string[];
+  pendingResumeAnchors?: { approval?: string[]; toolResult?: string[] };
   /** Exact connector references (revision/checksum + tool allowlist) for historical execution. */
   platformConnectors?: PlatformAgentConnectorDependencyRef[];
   /** Exact model reference for historical-revision execution. */

@@ -225,52 +225,102 @@ export class CompletionLifecycle {
     // dispatchHooks call (when the op resumes and truly ends) overwrites both.
     const completedAt = isParkedStatus(status) ? undefined : new Date();
 
-    try {
-      await this.agentOperationModel.recordCompletion(operationId, {
-        completedAt,
-        completionReason,
-        cost: state?.cost ?? null,
-        error: state?.error ?? null,
-        interruption: state?.interruption ?? null,
-        llmCalls: state?.usage?.llm?.apiCalls ?? null,
-        // Backfill the executed model/provider when the terminal state carries
-        // them. The in-process runtime sets neither on `state` (the op already
-        // holds them from recordStart) so these stay undefined and recordCompletion
-        // skips them — a no-op. A heterogeneous run, which only learns its real
-        // model from the CLI stream, feeds them in via the synthetic state built in
-        // heteroFinish; the verify gate keys off op.model/provider, so dropping this
-        // backfill would leave op.model null and silently skip verify.
-        model: state?.model,
-        processingTimeMs,
-        provider: state?.provider,
-        status,
-        stepCount: state?.stepCount ?? null,
-        toolCalls: state?.usage?.tools?.totalCalls ?? null,
-        totalCost: state?.cost?.total ?? null,
-        totalInputTokens: state?.usage?.llm?.tokens?.input ?? null,
-        totalOutputTokens: state?.usage?.llm?.tokens?.output ?? null,
-        totalTokens: state?.usage?.llm?.tokens?.total ?? null,
-        traceS3Key,
-        usage: state?.usage ?? null,
-      });
-    } catch (error) {
-      log('[%s] Failed to persist operation completion (non-fatal): %O', operationId, error);
+    const completionParams = {
+      completedAt,
+      completionReason,
+      cost: state?.cost ?? null,
+      error: state?.error ?? null,
+      interruption: state?.interruption ?? null,
+      llmCalls: state?.usage?.llm?.apiCalls ?? null,
+      // Backfill the executed model/provider when the terminal state carries
+      // them. The in-process runtime sets neither on `state` (the op already
+      // holds them from recordStart) so these stay undefined and recordCompletion
+      // skips them — a no-op. A heterogeneous run, which only learns its real
+      // model from the CLI stream, feeds them in via the synthetic state built in
+      // heteroFinish; the verify gate keys off op.model/provider, so dropping this
+      // backfill would leave op.model null and silently skip verify.
+      model: state?.model,
+      processingTimeMs,
+      provider: state?.provider,
+      status,
+      stepCount: state?.stepCount ?? null,
+      toolCalls: state?.usage?.tools?.totalCalls ?? null,
+      totalCost: state?.cost?.total ?? null,
+      totalInputTokens: state?.usage?.llm?.tokens?.input ?? null,
+      totalOutputTokens: state?.usage?.llm?.tokens?.output ?? null,
+      totalTokens: state?.usage?.llm?.tokens?.total ?? null,
+      traceS3Key,
+      usage: state?.usage ?? null,
+    } as const;
+
+    // RR5-3: a `waiting_for_human` park writes the paused status AND the SERVER-created pending
+    // tool-message ids (as KIND-KEYED trusted resume anchors, surfaced on state by the human-approve
+    // executor) in ONE atomic, expected-previous-status CAS — no longer a status write followed by a
+    // best-effort anchor write. An approval / tool-result resume must target one of these exact ids
+    // under its own kind, so a client-forged tool message can never bind. The CAS fires only from
+    // running / waiting_for_human, so a late park can't resurrect a cancelled / completed op.
+    if (status === 'waiting_for_human') {
+      const pending: { id: string; kind: 'approval' | 'toolResult' }[] = Array.isArray(
+        state?.pendingHumanToolMessages,
+      )
+        ? state.pendingHumanToolMessages
+        : [];
+      const anchors = {
+        approval: pending.filter((p) => p?.kind === 'approval').map((p) => p.id),
+        toolResult: pending.filter((p) => p?.kind === 'toolResult').map((p) => p.id),
+      };
+
+      // Whether this is a platform-managed operation decides fail-closed severity (below). Read the
+      // persisted marker up front so a concurrently-deleted row is still classified from its last
+      // known metadata. Read failure defaults to ordinary (non-fatal).
+      let isPlatformOperation = false;
+      try {
+        const ref = await this.agentOperationModel.findPlatformOperationRef(operationId);
+        isPlatformOperation = ref?.isPlatformOperation ?? false;
+      } catch (error) {
+        log('[%s] Failed to classify park operation (non-fatal): %O', operationId, error);
+      }
+
+      let affected = 0;
+      let parkError: unknown;
+      try {
+        ({ affected } = await this.agentOperationModel.parkForHumanIntervention(operationId, {
+          ...completionParams,
+          anchors,
+        }));
+      } catch (error) {
+        parkError = error;
+      }
+
+      if (affected !== 1 || parkError) {
+        // A platform park that fails to land its status + anchors atomically is FATAL: the pin/anchor
+        // binding every later resume depends on would be missing, so surface it instead of silently
+        // treating the op as parked. An ordinary op keeps the prior best-effort (non-fatal) behavior.
+        if (isPlatformOperation) {
+          log(
+            '[%s] Failed to atomically park platform operation (fatal): affected=%d %O',
+            operationId,
+            affected,
+            parkError,
+          );
+          throw new Error('PLATFORM_OPERATION_PARK_PERSIST_FAILED', {
+            cause: parkError ?? new Error(`park CAS affected ${affected} rows`),
+          });
+        }
+        log(
+          '[%s] Failed to atomically park operation (non-fatal): affected=%d %O',
+          operationId,
+          affected,
+          parkError,
+        );
+      }
+      return;
     }
 
-    // RR4-1: when the operation parks on human intervention, record the SERVER-created pending
-    // tool-message ids (surfaced on state by the human-approve executor) as the operation's trusted
-    // resume anchors. An approval / tool-result resume must target one of these exact ids — a
-    // client-forged tool message can never bind. Non-fatal: a missed record only makes a later
-    // approval resume of this turn fail closed, never a data leak.
-    if (status === 'waiting_for_human' && Array.isArray(state?.pendingHumanToolMessageIds)) {
-      try {
-        await this.agentOperationModel.recordResumeAnchors(
-          operationId,
-          state.pendingHumanToolMessageIds as string[],
-        );
-      } catch (error) {
-        log('[%s] Failed to record resume anchors (non-fatal): %O', operationId, error);
-      }
+    try {
+      await this.agentOperationModel.recordCompletion(operationId, completionParams);
+    } catch (error) {
+      log('[%s] Failed to persist operation completion (non-fatal): %O', operationId, error);
     }
   }
 
@@ -507,6 +557,10 @@ export class CompletionLifecycle {
     // firing + unregistering on the park is correct there.)
     const isAsyncToolPark = reason === 'waiting_for_async_tool';
 
+    // Set when a platform park fails to persist atomically (RR5-3): re-thrown after the finally
+    // cleanup runs, so a fatal park failure surfaces instead of being logged as an ordinary error.
+    let fatalParkError: Error | undefined;
+
     try {
       const { event, metadata } = this.buildLifecycleEvent(operationId, state, reason);
 
@@ -586,7 +640,14 @@ export class CompletionLifecycle {
         }
       }
     } catch (error) {
-      log('[%s] Hook dispatch error (non-fatal): %O', operationId, error);
+      // A FATAL platform-operation park failure (RR5-3) must not be swallowed like an ordinary hook
+      // error — re-throw it (after the finally cleanup runs) so the caller sees the atomic park
+      // never landed, instead of proceeding as if the op parked cleanly.
+      if (error instanceof Error && error.message === 'PLATFORM_OPERATION_PARK_PERSIST_FAILED') {
+        fatalParkError = error;
+      } else {
+        log('[%s] Hook dispatch error (non-fatal): %O', operationId, error);
+      }
     } finally {
       // Keep hooks registered across an async-tool park so the eventual resume
       // (same operationId) can still fire onComplete/onError.
@@ -598,6 +659,7 @@ export class CompletionLifecycle {
         this.verifyPlanInstantiations.delete(operationId);
       }
     }
+    if (fatalParkError) throw fatalParkError;
   }
 
   private buildLifecycleEvent(operationId: string, state: any, reason: string) {

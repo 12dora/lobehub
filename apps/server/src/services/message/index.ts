@@ -42,6 +42,25 @@ interface CreateMessageResult {
   messages: any[];
 }
 
+/**
+ * Drop the SERVER-owned `intervention.kind` discriminator from client-supplied intervention input
+ * (M10 PR-049 · RR5-1). `kind` decides which resume path (`resumeApproval` vs `resumeToolResult`) may
+ * resolve a pending tool and which resume anchor is recorded; it must be stamped ONLY by the server
+ * human-approve executor (which writes through `MessageModel` directly, bypassing this public
+ * service). A client that could set it — or forge a pending tool carrying it — could inject a
+ * fabricated, kind-tagged resume anchor. Ordinary `status` / `rejectedReason` fields pass through
+ * untouched, so a normal client message is unaffected.
+ */
+const stripInterventionKind = <T extends Record<string, any> | undefined | null>(
+  intervention: T,
+): T => {
+  if (!intervention || typeof intervention !== 'object' || !('kind' in intervention)) {
+    return intervention;
+  }
+  const { kind: _kind, ...rest } = intervention as Record<string, unknown>;
+  return rest as T;
+};
+
 export type MessageBatchOperation =
   | {
       message: CreateMessageParams;
@@ -170,7 +189,14 @@ export class MessageService {
     for (const [index, operation] of operations.entries()) {
       try {
         if (operation.type === 'createMessage') {
-          const item = await this.messageModel.create(operation.message, operation.message.id);
+          // RR5-1: strip the server-owned intervention kind from client-batched creates too.
+          const message = operation.message.pluginIntervention
+            ? {
+                ...operation.message,
+                pluginIntervention: stripInterventionKind(operation.message.pluginIntervention),
+              }
+            : operation.message;
+          const item = await this.messageModel.create(message, message.id);
           results.push({ id: item.id, index, success: true, type: operation.type });
           continue;
         }
@@ -205,11 +231,15 @@ export class MessageService {
    * reducing the need for separate refresh calls and improving performance.
    */
   async createMessage(params: CreateMessageParams): Promise<CreateMessageResult> {
+    // RR5-1: never let a client stamp the server-owned intervention kind on a created tool message.
+    const sanitized: CreateMessageParams = params.pluginIntervention
+      ? { ...params, pluginIntervention: stripInterventionKind(params.pluginIntervention) }
+      : params;
     // 1. Create the message (using agentId). Honor a caller-pre-allocated id
     //    when present (passing `undefined` falls back to the model's genId
     //    default), so flows that chain parentId across not-yet-created messages
     //    (e.g. the subagent run coordinator) can assign ids up front.
-    const item = await this.messageModel.create(params, params.id);
+    const item = await this.messageModel.create(sanitized, sanitized.id);
 
     // 2. Query all messages for this agent/topic
     // Use agentId field for query
@@ -292,7 +322,12 @@ export class MessageService {
     value: any,
     options: QueryOptions,
   ): Promise<{ messages?: UIChatMessage[]; success: boolean }> {
-    await this.messageModel.updateMessagePlugin(id, value);
+    // RR5-1: a client plugin update must not set the server-owned intervention kind.
+    const sanitized =
+      value && value.intervention
+        ? { ...value, intervention: stripInterventionKind(value.intervention) }
+        : value;
+    await this.messageModel.updateMessagePlugin(id, sanitized);
     return this.queryWithSuccess(options);
   }
 

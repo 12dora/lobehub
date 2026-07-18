@@ -2388,6 +2388,29 @@ export class MessageModel {
   };
 
   /**
+   * Single-winner resolution for a human-ANSWER tool (M10 PR-049 · RR5-2): flips a `toolResult`-kind
+   * pending tool to approved ONLY when it is still pending AND carries the server-owned
+   * `intervention.kind = 'toolResult'`. The kind predicate in the CAS is what prevents a
+   * `resumeToolResult` from writing an answer onto a real `approval`-kind sensitive tool; a stale /
+   * double / wrong-kind call returns false so the caller fails closed without mutating the row.
+   */
+  approvePendingToolResultPlugin = async (id: string): Promise<boolean> => {
+    const rows = await this.db
+      .update(messagePlugins)
+      .set({ intervention: { status: 'approved' } })
+      .where(
+        and(
+          eq(messagePlugins.id, id),
+          this.pluginsOwnership(),
+          sql`${messagePlugins.intervention}->>'status' = 'pending'`,
+          sql`${messagePlugins.intervention}->>'kind' = 'toolResult'`,
+        ),
+      )
+      .returning({ id: messagePlugins.id });
+    return rows.length === 1;
+  };
+
+  /**
    * Fetch the `message_plugins` row associated with a tool message. Tool-call
    * metadata (identifier / apiName / arguments / type / toolCallId /
    * intervention) lives on this row, not on the `messages` row returned by
