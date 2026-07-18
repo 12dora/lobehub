@@ -2,6 +2,14 @@ name: Desktop Publish to S3
 description: Upload desktop release artifacts to S3 update server
 
 inputs:
+  artifact-name:
+    description: 'Artifact bundle to download'
+    required: false
+    default: 'merged-release'
+  artifact-brand:
+    description: 'Artifact brand profile used for manifest validation'
+    required: false
+    default: 'lobehub'
   channel:
     description: 'Update channel (stable, canary, nightly)'
     required: true
@@ -25,6 +33,14 @@ inputs:
     description: 'Custom S3 endpoint (for R2/MinIO etc.)'
     required: false
     default: ''
+  namespace:
+    description: 'Optional isolated path prefix placed before the update channel'
+    required: false
+    default: ''
+  require-config:
+    description: 'Fail instead of skipping when S3 credentials or bucket are missing'
+    required: false
+    default: 'false'
 
 runs:
   using: composite
@@ -32,7 +48,7 @@ runs:
     - name: Download merged artifacts
       uses: actions/download-artifact@v7
       with:
-        name: merged-release
+        name: ${{ inputs.artifact-name }}
         path: release
 
     - name: List artifacts to upload
@@ -52,15 +68,42 @@ runs:
         AWS_ACCESS_KEY_ID: ${{ inputs.aws-access-key-id }}
         AWS_SECRET_ACCESS_KEY: ${{ inputs.aws-secret-access-key }}
         AWS_REGION: ${{ inputs.s3-region }}
+        ARTIFACT_BRAND: ${{ inputs.artifact-brand }}
         S3_BUCKET: ${{ inputs.s3-bucket }}
         S3_ENDPOINT: ${{ inputs.s3-endpoint }}
         CHANNEL: ${{ inputs.channel }}
+        NAMESPACE: ${{ inputs.namespace }}
+        REQUIRE_CONFIG: ${{ inputs.require-config }}
         VERSION: ${{ inputs.version }}
       run: |
+        set -euo pipefail
+
+        if [[ ! "$CHANNEL" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+          echo "Invalid desktop update channel"
+          exit 1
+        fi
+
+        if [ -n "$NAMESPACE" ] && [[ ! "$NAMESPACE" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+          echo "Invalid desktop update namespace"
+          exit 1
+        fi
+
+        if [ "$ARTIFACT_BRAND" != "lobehub" ] && [ "$ARTIFACT_BRAND" != "aihub" ]; then
+          echo "Invalid desktop artifact brand"
+          exit 1
+        fi
+
+        if [ "$REQUIRE_CONFIG" = "true" ] && { [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ] || [ -z "$AWS_REGION" ] || [ -z "$S3_BUCKET" ]; }; then
+          echo "Required S3 release configuration is missing"
+          exit 1
+        fi
+
         if [ -z "$S3_BUCKET" ]; then
           echo "⚠️ S3 bucket is not configured, skipping S3 upload"
           exit 0
         fi
+
+        TARGET_PREFIX="${NAMESPACE:+$NAMESPACE/}$CHANNEL"
 
         # 构建端点参数
         ENDPOINT_ARG=""
@@ -70,23 +113,40 @@ runs:
         fi
 
         echo "🚀 Uploading to S3 bucket: $S3_BUCKET"
-        echo "📁 Target path: s3://$S3_BUCKET/$CHANNEL/"
+        echo "📁 Target path: s3://$S3_BUCKET/$TARGET_PREFIX/"
         echo ""
 
+        # AIHub must validate both original and rewritten manifests before any upload.
+        if [ "$ARTIFACT_BRAND" = "aihub" ]; then
+          if [ "$CHANNEL" = "stable" ]; then
+            echo "📋 Creating stable*.yml from latest*.yml..."
+            for yml in release/latest*.yml; do
+              if [ -f "$yml" ]; then
+                stable_yml=$(basename "$yml" | sed 's/^latest/stable/')
+                cp "$yml" "release/$stable_yml"
+                echo "   📄 Created $stable_yml from $(basename "$yml")"
+              fi
+            done
+          fi
+
+          echo "📋 Validating and rewriting AIHub manifests before upload..."
+          node scripts/electronWorkflow/prepareAihubReleaseManifests.mjs release "$VERSION"
+        fi
+
         # 1. 上传安装包到版本目录
-        echo "📦 Uploading release files to s3://$S3_BUCKET/$CHANNEL/$VERSION/"
+        echo "📦 Uploading release files to s3://$S3_BUCKET/$TARGET_PREFIX/$VERSION/"
         for file in release/*.dmg release/*.zip release/*.exe release/*.AppImage release/*.deb release/*.rpm release/*.snap release/*.tar.gz release/*.blockmap; do
           if [ -f "$file" ]; then
             filename=$(basename "$file")
             echo "   ↗️ $filename"
-            aws s3 cp "$file" "s3://$S3_BUCKET/$CHANNEL/$VERSION/$filename" $ENDPOINT_ARG
+            aws s3 cp "$file" "s3://$S3_BUCKET/$TARGET_PREFIX/$VERSION/$filename" $ENDPOINT_ARG
           fi
         done
 
         # 2. stable 渠道补充 stable*.yml
         # electron-builder 对稳定版默认生成 latest*.yml
         echo ""
-        if [ "$CHANNEL" = "stable" ]; then
+        if [ "$ARTIFACT_BRAND" = "lobehub" ] && [ "$CHANNEL" = "stable" ]; then
           echo "📋 Creating stable*.yml from latest*.yml..."
           for yml in release/latest*.yml; do
             if [ -f "$yml" ]; then
@@ -102,12 +162,14 @@ runs:
         # 安装包在 s3://$BUCKET/$CHANNEL/$VERSION/ 下，URL 需加 $VERSION/ 前缀
         echo ""
         echo "📋 Adding version prefix to yml manifest URLs..."
-        for yml in release/${CHANNEL}*.yml release/latest*.yml; do
-          if [ -f "$yml" ]; then
-            sed -i "s|url: |url: $VERSION/|g" "$yml"
-            echo "   📄 Updated $(basename $yml) with URL prefix: $VERSION/"
-          fi
-        done
+        if [ "$ARTIFACT_BRAND" = "lobehub" ]; then
+          for yml in release/${CHANNEL}*.yml release/latest*.yml; do
+            if [ -f "$yml" ]; then
+              sed -i "s|url: |url: $VERSION/|g" "$yml"
+              echo "   📄 Updated $(basename $yml) with URL prefix: $VERSION/"
+            fi
+          done
+        fi
 
         # 4. 创建 renderer manifest (仅 stable 渠道有 renderer tar)
         RENDERER_TAR="release/lobehub-renderer.tar.gz"
@@ -138,18 +200,18 @@ runs:
         for yml in release/${CHANNEL}*.yml release/latest*.yml; do
           if [ -f "$yml" ]; then
             filename=$(basename "$yml")
-            echo "   ↗️ $filename -> s3://$S3_BUCKET/$CHANNEL/$filename"
-            aws s3 cp "$yml" "s3://$S3_BUCKET/$CHANNEL/$filename" $ENDPOINT_ARG
-            echo "   ↗️ $filename -> s3://$S3_BUCKET/$CHANNEL/$VERSION/$filename (archive)"
-            aws s3 cp "$yml" "s3://$S3_BUCKET/$CHANNEL/$VERSION/$filename" $ENDPOINT_ARG
+            echo "   ↗️ $filename -> s3://$S3_BUCKET/$TARGET_PREFIX/$filename"
+            aws s3 cp "$yml" "s3://$S3_BUCKET/$TARGET_PREFIX/$filename" $ENDPOINT_ARG
+            echo "   ↗️ $filename -> s3://$S3_BUCKET/$TARGET_PREFIX/$VERSION/$filename (archive)"
+            aws s3 cp "$yml" "s3://$S3_BUCKET/$TARGET_PREFIX/$VERSION/$filename" $ENDPOINT_ARG
           fi
         done
 
         echo ""
         echo "✅ S3 upload completed!"
         echo ""
-        echo "📋 Files in s3://$S3_BUCKET/$CHANNEL/:"
-        aws s3 ls "s3://$S3_BUCKET/$CHANNEL/" $ENDPOINT_ARG || true
+        echo "📋 Files in s3://$S3_BUCKET/$TARGET_PREFIX/:"
+        aws s3 ls "s3://$S3_BUCKET/$TARGET_PREFIX/" $ENDPOINT_ARG || true
         echo ""
-        echo "📋 Files in s3://$S3_BUCKET/$CHANNEL/$VERSION/:"
-        aws s3 ls "s3://$S3_BUCKET/$CHANNEL/$VERSION/" $ENDPOINT_ARG || true
+        echo "📋 Files in s3://$S3_BUCKET/$TARGET_PREFIX/$VERSION/:"
+        aws s3 ls "s3://$S3_BUCKET/$TARGET_PREFIX/$VERSION/" $ENDPOINT_ARG || true

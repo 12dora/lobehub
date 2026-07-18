@@ -1,0 +1,245 @@
+name: Release AIHub Desktop
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: 'Type RELEASE-AIHUB-DESKTOP to confirm this isolated build'
+        required: true
+        type: string
+      version:
+        description: 'AIHub desktop version (SemVer, without a v prefix)'
+        required: true
+        type: string
+      build_macos:
+        description: 'Build and sign macOS artifacts'
+        required: true
+        default: true
+        type: boolean
+      build_windows:
+        description: 'Build and sign Windows artifacts'
+        required: true
+        default: true
+        type: boolean
+      build_linux:
+        description: 'Build Linux artifacts'
+        required: true
+        default: true
+        type: boolean
+      publish:
+        description: 'Publish to the isolated AIHub S3 update namespace'
+        required: true
+        default: false
+        type: boolean
+
+concurrency:
+  group: aihub-desktop-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: 24.11.1
+
+jobs:
+  preflight:
+    name: Validate explicit release inputs
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    environment: aihub-desktop-release
+    outputs:
+      matrix: ${{ steps.release-gate.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Validate release gate
+        id: release-gate
+        env:
+          AIHUB_APP_ID: ${{ vars.AIHUB_DESKTOP_APP_ID }}
+          AIHUB_APP_URL: ${{ vars.AIHUB_DESKTOP_APP_URL }}
+          AIHUB_ASSET_REF: ${{ vars.AIHUB_DESKTOP_ASSET_REF }}
+          AIHUB_ASSET_REPOSITORY: ${{ vars.AIHUB_DESKTOP_ASSET_REPOSITORY }}
+          AIHUB_ASSET_TOKEN: ${{ secrets.AIHUB_DESKTOP_ASSET_TOKEN }}
+          AIHUB_APPLE_CERTIFICATE: ${{ secrets.AIHUB_APPLE_CERTIFICATE_BASE64 }}
+          AIHUB_APPLE_CERTIFICATE_PASSWORD: ${{ secrets.AIHUB_APPLE_CERTIFICATE_PASSWORD }}
+          AIHUB_APPLE_ID: ${{ secrets.AIHUB_APPLE_ID }}
+          AIHUB_APPLE_PASSWORD: ${{ secrets.AIHUB_APPLE_APP_SPECIFIC_PASSWORD }}
+          AIHUB_APPLE_TEAM_ID: ${{ secrets.AIHUB_APPLE_TEAM_ID }}
+          AIHUB_BUILD_KEY: ${{ secrets.AIHUB_BUILD_KEY_VAULTS_SECRET }}
+          AIHUB_ICON_ICNS_SHA256: ${{ vars.AIHUB_DESKTOP_ICON_ICNS_SHA256 }}
+          AIHUB_ICON_ICO_SHA256: ${{ vars.AIHUB_DESKTOP_ICON_ICO_SHA256 }}
+          AIHUB_ICON_PNG_SHA256: ${{ vars.AIHUB_DESKTOP_ICON_PNG_SHA256 }}
+          AIHUB_MAINTAINER: ${{ vars.AIHUB_DESKTOP_MAINTAINER }}
+          AIHUB_S3_ACCESS_KEY: ${{ secrets.AIHUB_UPDATE_AWS_ACCESS_KEY_ID }}
+          AIHUB_S3_BUCKET: ${{ secrets.AIHUB_UPDATE_S3_BUCKET }}
+          AIHUB_S3_REGION: ${{ secrets.AIHUB_UPDATE_S3_REGION }}
+          AIHUB_S3_SECRET_KEY: ${{ secrets.AIHUB_UPDATE_AWS_SECRET_ACCESS_KEY }}
+          AIHUB_UPDATE_URL: ${{ secrets.AIHUB_DESKTOP_UPDATE_SERVER_URL }}
+          AIHUB_WINDOWS_CERTIFICATE: ${{ secrets.AIHUB_WINDOWS_CERTIFICATE_BASE64 }}
+          AIHUB_WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.AIHUB_WINDOWS_CERTIFICATE_PASSWORD }}
+          BUILD_LINUX: ${{ inputs.build_linux }}
+          BUILD_MACOS: ${{ inputs.build_macos }}
+          BUILD_WINDOWS: ${{ inputs.build_windows }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+          PUBLISH: ${{ inputs.publish }}
+          RELEASE_REF: ${{ github.ref }}
+          RELEASE_REF_NAME: ${{ github.ref_name }}
+          VERSION: ${{ inputs.version }}
+        run: node scripts/electronWorkflow/validateAihubReleasePreflight.mjs
+
+  build:
+    name: Build AIHub Desktop (${{ matrix.name }})
+    needs: [preflight]
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ${{ matrix.os }}
+    environment: aihub-desktop-release
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.preflight.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Checkout approved AIHub brand assets
+        uses: actions/checkout@v6
+        with:
+          path: .aihub-brand-assets
+          persist-credentials: false
+          ref: ${{ vars.AIHUB_DESKTOP_ASSET_REF }}
+          repository: ${{ vars.AIHUB_DESKTOP_ASSET_REPOSITORY }}
+          token: ${{ secrets.AIHUB_DESKTOP_ASSET_TOKEN }}
+
+      - name: Setup build environment
+        uses: ./.github/actions/desktop-build-setup
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Set isolated AIHub package metadata
+        shell: bash
+        env:
+          AIHUB_DESKTOP_HOMEPAGE: ${{ vars.AIHUB_DESKTOP_APP_URL }}
+          VERSION: ${{ inputs.version }}
+        run: npm run workflow:set-desktop-version "$VERSION" stable aihub
+
+      - name: Validate and materialize approved AIHub icons
+        shell: bash
+        env:
+          AIHUB_DESKTOP_ICON_ICNS_SHA256: ${{ vars.AIHUB_DESKTOP_ICON_ICNS_SHA256 }}
+          AIHUB_DESKTOP_ICON_ICO_SHA256: ${{ vars.AIHUB_DESKTOP_ICON_ICO_SHA256 }}
+          AIHUB_DESKTOP_ICON_PNG_SHA256: ${{ vars.AIHUB_DESKTOP_ICON_PNG_SHA256 }}
+          ASSETS_DIRECTORY: ${{ runner.temp }}/aihub-desktop-assets
+          SOURCE_DIRECTORY: ${{ github.workspace }}/.aihub-brand-assets/desktop
+        run: node scripts/electronWorkflow/materializeDesktopBrandAssets.mjs "$SOURCE_DIRECTORY" "$ASSETS_DIRECTORY"
+
+      - name: Build signed AIHub artifacts
+        env:
+          AIHUB_DESKTOP_APP_ID: ${{ vars.AIHUB_DESKTOP_APP_ID }}
+          AIHUB_DESKTOP_ASSETS_DIR: ${{ runner.temp }}/aihub-desktop-assets
+          AIHUB_DESKTOP_HOMEPAGE: ${{ vars.AIHUB_DESKTOP_APP_URL }}
+          AIHUB_DESKTOP_MAINTAINER: ${{ vars.AIHUB_DESKTOP_MAINTAINER }}
+          AIHUB_REQUIRE_SIGNING: ${{ matrix.platform == 'linux' && '0' || '1' }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ matrix.platform == 'macos' && secrets.AIHUB_APPLE_APP_SPECIFIC_PASSWORD || '' }}
+          APPLE_ID: ${{ matrix.platform == 'macos' && secrets.AIHUB_APPLE_ID || '' }}
+          APPLE_TEAM_ID: ${{ matrix.platform == 'macos' && secrets.AIHUB_APPLE_TEAM_ID || '' }}
+          APP_URL: ${{ vars.AIHUB_DESKTOP_APP_URL }}
+          CSC_KEY_PASSWORD: ${{ matrix.platform == 'macos' && secrets.AIHUB_APPLE_CERTIFICATE_PASSWORD || matrix.platform == 'windows' && secrets.AIHUB_WINDOWS_CERTIFICATE_PASSWORD || '' }}
+          CSC_LINK: ${{ matrix.platform == 'macos' && secrets.AIHUB_APPLE_CERTIFICATE_BASE64 || matrix.platform == 'windows' && secrets.AIHUB_WINDOWS_CERTIFICATE_BASE64 || '' }}
+          DATABASE_URL: postgresql://postgres@localhost:5432/postgres
+          DESKTOP_BRAND: aihub
+          DESKTOP_DISABLE_PROTOCOL_REGISTRATION: '1'
+          KEY_VAULTS_SECRET: ${{ secrets.AIHUB_BUILD_KEY_VAULTS_SECRET }}
+          UPDATE_CHANNEL: stable
+          UPDATE_SERVER_URL: ${{ secrets.AIHUB_DESKTOP_UPDATE_SERVER_URL }}
+        run: npm run desktop:package:app
+
+      - name: Reject mixed-brand artifacts and manifests
+        run: node scripts/electronWorkflow/validateAihubReleaseArtifacts.mjs apps/desktop/release
+
+      - name: Upload isolated build artifacts
+        uses: ./.github/actions/desktop-upload-artifacts
+        with:
+          artifact-name: aihub-release-${{ matrix.name }}
+          retention-days: 5
+
+  aggregate:
+    name: Aggregate isolated AIHub release
+    needs: [build]
+    if: ${{ github.ref == 'refs/heads/main' && !cancelled() && needs.build.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download AIHub artifacts only
+        uses: actions/download-artifact@v7
+        with:
+          path: release
+          pattern: aihub-release-*
+          merge-multiple: true
+
+      - name: Setup merge runtime
+        uses: ./.github/actions/setup-env
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install manifest validation dependencies
+        run: |
+          cd scripts/electronWorkflow
+          if [ ! -f package.json ]; then
+            echo '{"name":"merge-aihub-mac-release","private":true}' > package.json
+          fi
+          bun add --no-save yaml@2.9.0 zod@3.25.76
+
+      - name: Merge macOS update manifests
+        if: inputs.build_macos
+        run: bun run scripts/electronWorkflow/mergeMacReleaseFiles.js
+
+      - name: Reject mixed-brand aggregate
+        run: node scripts/electronWorkflow/validateAihubReleaseArtifacts.mjs release
+
+      - name: Upload isolated release bundle
+        uses: actions/upload-artifact@v6
+        with:
+          name: aihub-merged-release
+          path: release/
+          retention-days: 5
+
+  publish:
+    name: Publish AIHub update channel
+    needs: [aggregate]
+    if: ${{ github.ref == 'refs/heads/main' && inputs.publish }}
+    runs-on: ubuntu-latest
+    environment: aihub-desktop-release
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup manifest validation runtime
+        uses: ./.github/actions/setup-env
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install manifest validation dependencies
+        run: |
+          cd scripts/electronWorkflow
+          if [ ! -f package.json ]; then
+            echo '{"name":"validate-aihub-release","private":true}' > package.json
+          fi
+          bun add --no-save yaml@2.9.0 zod@3.25.76
+
+      - name: Publish only to the AIHub namespace
+        uses: ./.github/actions/desktop-publish-s3
+        with:
+          artifact-name: aihub-merged-release
+          artifact-brand: aihub
+          aws-access-key-id: ${{ secrets.AIHUB_UPDATE_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AIHUB_UPDATE_AWS_SECRET_ACCESS_KEY }}
+          channel: stable
+          namespace: aihub
+          require-config: 'true'
+          s3-bucket: ${{ secrets.AIHUB_UPDATE_S3_BUCKET }}
+          s3-endpoint: ${{ secrets.AIHUB_UPDATE_S3_ENDPOINT }}
+          s3-region: ${{ secrets.AIHUB_UPDATE_S3_REGION }}
+          version: ${{ inputs.version }}
