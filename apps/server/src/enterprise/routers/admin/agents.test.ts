@@ -10,6 +10,7 @@ import {
   platformAgents,
   platformAgentVersions,
   platformAuditLogs,
+  platformJobs,
   rolePermissions,
   roles,
   userRoles,
@@ -44,6 +45,7 @@ const cleanup = async () => {
   await db.execute(sql`
     TRUNCATE TABLE
       ${platformAuditLogs},
+      ${platformJobs},
       ${platformAgentAssignments},
       ${platformAgentVersions},
       ${platformAgents},
@@ -114,6 +116,10 @@ describe('adminAgentsRouter security gates', () => {
 
     const reader = await callerFor({ authenticatedAt: new Date(), userId: ids.reader });
     await expect(reader.list({ limit: 10 })).resolves.toEqual({ items: [], nextCursor: null });
+    await expect(reader.rollouts.list({ agentId: 'missing-agent', limit: 10 })).resolves.toEqual({
+      items: [],
+      nextCursor: null,
+    });
     await expect(
       reader.create({ agentKey: 'reader-denied', reason: 'reader cannot create' }),
     ).rejects.toMatchObject({ code: 'FORBIDDEN' });
@@ -152,6 +158,9 @@ describe('adminAgentsRouter security gates', () => {
     await expect(assigner.assignments.list({ agentId: created.identity.id })).rejects.toMatchObject(
       { code: 'FORBIDDEN' },
     );
+    await expect(
+      assigner.rollouts.list({ agentId: created.identity.id, limit: 10 }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
 
     const publisher = await callerFor({ authenticatedAt: new Date(), userId: ids.publisher });
     const detail = await reader.get({ id: created.identity.id });
@@ -211,11 +220,22 @@ describe('adminAgentsRouter security gates', () => {
         replacementAgentId: null,
       }),
     ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    const staleAssigner = await callerFor({ authenticatedAt: null, userId: ids.assigner });
+    await expect(
+      staleAssigner.rollouts.start({
+        agentId: 'missing-agent',
+        assignmentId: 'missing-assignment',
+        expectedDraftToken: 'a'.repeat(64),
+        expectedRevision: 0,
+        reason: 'rollout needs reauth',
+      }),
+    ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
     expect(await db.select().from(platformAuditLogs)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ action: 'admin.agents.publish', result: 'denied' }),
         expect.objectContaining({ action: 'admin.agents.setDefaultInbox', result: 'denied' }),
         expect.objectContaining({ action: 'admin.agents.archive', result: 'denied' }),
+        expect.objectContaining({ action: 'admin.agents.rollouts.start', result: 'denied' }),
       ]),
     );
   });
@@ -224,5 +244,8 @@ describe('adminAgentsRouter security gates', () => {
     vi.stubEnv('ENABLE_PLATFORM_MANAGED_AGENTS', '0');
     const reader = await callerFor({ authenticatedAt: new Date(), userId: ids.reader });
     await expect(reader.list({ limit: 10 })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    await expect(
+      reader.rollouts.list({ agentId: 'agent-support', limit: 10 }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
   });
 });

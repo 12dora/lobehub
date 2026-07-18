@@ -11,7 +11,11 @@ import type { AdminAgentDetailOutput } from './types';
 
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock('@/enterprise/client/services/adminAgents', () => ({
-  adminAgentsService: { cancelRollout: vi.fn(), retryRollout: vi.fn() },
+  adminAgentsService: {
+    cancelRollout: vi.fn(),
+    retryRollout: vi.fn(),
+    rollbackRollout: vi.fn(),
+  },
 }));
 vi.mock('./openAgentReasonModal', () => ({ openAgentReasonModal: vi.fn() }));
 vi.mock('@lobehub/ui', () => ({
@@ -52,8 +56,10 @@ const runningSnapshot: AdminAgentDetailOutput = {
       cursor: null,
       failed: 0,
       jobId: 'rollout-1',
+      previousVersionId: null,
       revision: 1,
       status: 'running',
+      targetVersionId: 'version-1',
       total: 100,
       updatedAt: new Date('2026-07-17T00:00:00Z'),
     },
@@ -90,5 +96,28 @@ describe('RolloutPanel capability gate', () => {
 
     expect(screen.queryByText('agentCatalog.rollout.deferredTitle')).toBeNull();
     expect(screen.getByText('agentCatalog.rollout.cancel')).toBeTruthy();
+  });
+
+  it('offers an explicit reverse rollout only to publishers with a previous version', () => {
+    render(
+      <RolloutPanel
+        enabled
+        permissions={deriveAdminAgentPermissions([PLATFORM_PERMISSIONS.AGENT_PUBLISH])}
+        refresh={vi.fn()}
+        snapshot={{
+          ...runningSnapshot,
+          rollouts: [
+            {
+              ...runningSnapshot.rollouts[0],
+              previousVersionId: 'version-0',
+              status: 'completed',
+            },
+          ],
+        }}
+      />,
+    );
+
+    expect(screen.getByText('agentCatalog.rollout.rollback')).toBeTruthy();
+    expect(screen.queryByText('agentCatalog.rollout.retry')).toBeNull();
   });
 });

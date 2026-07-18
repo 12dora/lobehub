@@ -1,10 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import {
-  adminAgentsService,
-  createLambdaAdminAgentsClient,
-  PlatformAgentRolloutUnavailableError,
-} from './adminAgents';
+import { adminAgentsService, createLambdaAdminAgentsClient } from './adminAgents';
 
 const mocks = vi.hoisted(() => ({
   agents: {
@@ -27,6 +23,14 @@ const mocks = vi.hoisted(() => ({
     remove: vi.fn(),
     upsert: vi.fn(),
   },
+  rollouts: {
+    cancel: vi.fn(),
+    get: vi.fn(),
+    list: vi.fn(),
+    retry: vi.fn(),
+    rollback: vi.fn(),
+    start: vi.fn(),
+  },
 }));
 
 vi.mock('@/libs/trpc/client', () => ({
@@ -48,6 +52,14 @@ vi.mock('@/libs/trpc/client', () => ({
         listVersions: { query: mocks.agents.listVersions },
         publish: { mutate: mocks.agents.publish },
         rollback: { mutate: mocks.agents.rollback },
+        rollouts: {
+          cancel: { mutate: mocks.rollouts.cancel },
+          get: { query: mocks.rollouts.get },
+          list: { query: mocks.rollouts.list },
+          retry: { mutate: mocks.rollouts.retry },
+          rollback: { mutate: mocks.rollouts.rollback },
+          start: { mutate: mocks.rollouts.start },
+        },
         setDefaultInbox: { mutate: mocks.agents.setDefaultInbox },
         updateDraft: { mutate: mocks.agents.updateDraft },
         validateDependencies: { mutate: mocks.agents.validateDependencies },
@@ -59,6 +71,7 @@ vi.mock('@/libs/trpc/client', () => ({
 const allProcedureMocks = () => [
   ...Object.values(mocks.agents),
   ...Object.values(mocks.assignments),
+  ...Object.values(mocks.rollouts),
 ];
 
 describe('production admin agents adapter (lambdaClient)', () => {
@@ -68,7 +81,7 @@ describe('production admin agents adapter (lambdaClient)', () => {
 
   it('is the runtime default singleton and carries no mock catalog data', () => {
     // The exported production singleton must be the lambda-backed adapter, never the mock.
-    expect(adminAgentsService.capabilities.rollouts).toBe(false);
+    expect(adminAgentsService.capabilities.rollouts).toBe(true);
     mocks.agents.list.mockResolvedValue({ items: [], nextCursor: null });
     // Delegates straight to the router — no seeded agents are returned locally.
     return expect(adminAgentsService.list({})).resolves.toEqual({ items: [], nextCursor: null });
@@ -187,23 +200,18 @@ describe('production admin agents adapter (lambdaClient)', () => {
     await expect(client.list({})).rejects.toBe(failure);
   });
 
-  it('gates every rollout action behind the missing PR-052 backend', async () => {
+  it('routes every rollout action through the real PR-052 procedures', async () => {
     const client = createLambdaAdminAgentsClient();
-    expect(client.capabilities.rollouts).toBe(false);
+    expect(client.capabilities.rollouts).toBe(true);
+    for (const fn of Object.values(mocks.rollouts)) fn.mockResolvedValue({ ok: true });
 
-    const rolloutCalls = [
-      () => client.startRollout({} as never),
-      () => client.cancelRollout({} as never),
-      () => client.retryRollout({} as never),
-      () => client.rollbackRollout({} as never),
-      () => client.getRollout({} as never),
-      () => client.listRollouts({} as never),
-    ];
-    for (const call of rolloutCalls) {
-      expect(call).toThrow(PlatformAgentRolloutUnavailableError);
-    }
+    await client.startRollout({} as never);
+    await client.cancelRollout({} as never);
+    await client.retryRollout({} as never);
+    await client.rollbackRollout({} as never);
+    await client.getRollout({} as never);
+    await client.listRollouts({} as never);
 
-    // No rollout path may reach the transport layer.
-    for (const fn of allProcedureMocks()) expect(fn).not.toHaveBeenCalled();
+    for (const fn of Object.values(mocks.rollouts)) expect(fn).toHaveBeenCalledOnce();
   });
 });
