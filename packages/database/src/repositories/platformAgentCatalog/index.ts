@@ -93,6 +93,19 @@ export interface PlatformAgentAssignmentWrite {
   versionPolicy: PlatformAgentVersionPolicy;
 }
 
+/**
+ * Thrown only on the (lock-serialized, effectively unreachable) materialization race path so the
+ * transaction rolls back the just-created local Agent instead of committing an orphan. The caller
+ * reconciles by re-reading the winning owner-scoped mapping.
+ */
+export class PlatformAgentMaterializationRaceError extends Error {
+  readonly code = 'PLATFORM_MATERIALIZATION_RACE';
+
+  constructor() {
+    super('PLATFORM_MATERIALIZATION_RACE');
+  }
+}
+
 const isRootDatabase = (db: LobeChatDatabase | Transaction): db is LobeChatDatabase =>
   'transaction' in db;
 
@@ -725,6 +738,110 @@ export class PlatformAgentCatalogRepository {
       .limit(1);
     return row;
   };
+
+  /**
+   * Owner-scoped set of local Agent ids that are materializations of a platform Agent for the
+   * given user. Strictly filtered by the trusted `userId`. Used by the unified list to
+   * de-duplicate: a materialized local row is represented by its platform list item, never a
+   * second local entry. Only rows with a real local Agent (materializedAgentId set) are returned
+   * — pure visibility-only rows carry no local Agent.
+   */
+  listMaterializedAgentIds = async (userId: string): Promise<Set<string>> => {
+    const rows = await this.db
+      .select({ materializedAgentId: platformUserAgentMaterializations.materializedAgentId })
+      .from(platformUserAgentMaterializations)
+      .where(
+        and(
+          eq(platformUserAgentMaterializations.userId, userId),
+          isNotNull(platformUserAgentMaterializations.materializedAgentId),
+        ),
+      );
+    return new Set(rows.map((row) => row.materializedAgentId as string));
+  };
+
+  /**
+   * Delayed materialization of a local user-owned Agent for a platform Agent, transactional and
+   * owner-scoped (R-materialize). The whole thing runs under the per-Agent reference lock inside
+   * ONE transaction so that:
+   *
+   * - Local Agent creation (`createLocalAgent`, run against the SAME tx) and the mapping insert
+   *   commit atomically. N concurrent callers therefore leave exactly one mapping and one local
+   *   Agent: the lock serializes them, the first sees no mapping and creates one, the rest see the
+   *   existing mapping and reuse it — never creating a second Agent, never orphaning one.
+   * - It joins the referenceable-Agent protocol: an Agent archived under the shared lock is
+   *   rejected (`{ reason: 'archived' }`) instead of producing an orphan reference.
+   * - The mapping is upgraded in place from a pure visibility-only row (materializedAgentId NULL)
+   *   without disturbing the owner's hidden preference.
+   *
+   * The exact pinned `{ versionId, checksum }` is written verbatim (FK-validated against the
+   * immutable version), so the local row can never point at a version/checksum the caller did not
+   * pin. No secret is written — the mapping carries only ids and a checksum.
+   */
+  materializeLocalAgent = async (params: {
+    createLocalAgent: (tx: Transaction) => Promise<{ id: string }>;
+    platformAgentId: string;
+    platformAgentVersionChecksum: string;
+    platformAgentVersionId: string;
+    userId: string;
+  }): Promise<
+    { agentId: string; created: boolean; ok: true } | { ok: false; reason: 'archived' }
+  > =>
+    inTransaction(this.db, async (tx) => {
+      const scoped = new PlatformAgentCatalogRepository(tx);
+      const agent = await this.lockReferenceableAgent(tx, params.platformAgentId);
+      if (!agent) return { ok: false as const, reason: 'archived' as const };
+
+      const existing = await scoped.getMaterialization(params.userId, params.platformAgentId);
+      if (existing?.materializedAgentId) {
+        return {
+          agentId: existing.materializedAgentId,
+          created: false as const,
+          ok: true as const,
+        };
+      }
+
+      const local = await params.createLocalAgent(tx);
+      const now = new Date();
+      const [row] = await tx
+        .insert(platformUserAgentMaterializations)
+        .values({
+          hidden: existing?.hidden ?? false,
+          lastSyncedAt: now,
+          materializedAgentId: local.id,
+          platformAgentId: params.platformAgentId,
+          platformAgentVersionChecksum: params.platformAgentVersionChecksum,
+          platformAgentVersionId: params.platformAgentVersionId,
+          status: 'materialized',
+          userId: params.userId,
+        })
+        .onConflictDoUpdate({
+          // Only upgrade a pure visibility-only row; a row that already carries a real local Agent
+          // is left untouched (setWhere false → no row returned → treated as a lost race below).
+          set: {
+            lastErrorCategory: null,
+            lastSyncedAt: now,
+            materializedAgentId: local.id,
+            platformAgentVersionChecksum: params.platformAgentVersionChecksum,
+            platformAgentVersionId: params.platformAgentVersionId,
+            status: 'materialized',
+            updatedAt: now,
+          },
+          setWhere: isNull(platformUserAgentMaterializations.materializedAgentId),
+          target: [
+            platformUserAgentMaterializations.userId,
+            platformUserAgentMaterializations.platformAgentId,
+          ],
+        })
+        .returning({ materializedAgentId: platformUserAgentMaterializations.materializedAgentId });
+
+      if (row?.materializedAgentId === local.id) {
+        return { agentId: local.id, created: true as const, ok: true as const };
+      }
+      // Unreachable while the per-Agent lock is held (the mapping check above is authoritative).
+      // Throwing rolls back this tx — undoing the just-created local Agent — so a caller that
+      // retries (re-reads the winning mapping) never leaves an orphan Agent behind.
+      throw new PlatformAgentMaterializationRaceError();
+    });
 
   /**
    * Owner-scoped set of platform Agent ids the given user has hidden. Strictly filtered by

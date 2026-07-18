@@ -55,6 +55,7 @@ import type {
 } from '@lobechat/types';
 import {
   buildHeteroExecArgs,
+  decodePlatformAgentListId,
   getActivePluginIds,
   getDisabledPluginIds,
   getWorkingDirEffectivePath,
@@ -97,13 +98,19 @@ import { buildConnectorManifests } from '@/libs/mcp/buildConnectorManifests';
 import { patchManifestWithPermissions } from '@/libs/mcp/connectorPermissionCheck';
 import { signOperationJwt, signUserJWT } from '@/libs/trpc/utils/internalJwt';
 import { parseEnterpriseFeatureFlags } from '@/server/enterprise/featureFlags';
-import { getManagedSkillRuntimeModeSnapshot } from '@/server/enterprise/services/managedResourceCapabilities';
+import {
+  PlatformAgentEffectiveResolver,
+  PlatformAgentMaterializationError,
+  PlatformAgentMaterializationService,
+  PlatformAgentNotFoundError,
+} from '@/server/enterprise/services/agentCatalog';
 import {
   type ConnectorApprovalReceipt,
   ConnectorOperationProofSigner,
   fingerprintConnectorToolCall,
 } from '@/server/enterprise/services/connectorCatalog/operationProofSigner';
 import { buildManagedConnectorManifests } from '@/server/enterprise/services/connectorCatalog/runtimeIntegration';
+import { getManagedSkillRuntimeModeSnapshot } from '@/server/enterprise/services/managedResourceCapabilities';
 import {
   getEffectiveMemorySettings,
   resolveEffectiveUserInterventionConfig,
@@ -114,6 +121,7 @@ import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 import type { EvalContext, ServerAgentToolsContext } from '@/server/modules/Mecha';
 import { createServerAgentToolsEngine } from '@/server/modules/Mecha';
 import type { ServerUserMemoryConfig } from '@/server/modules/Mecha/ContextEngineering/types';
+import type { AgentConfigWithId } from '@/server/services/agent';
 import { AgentService } from '@/server/services/agent';
 import { AgentDocumentsService } from '@/server/services/agentDocuments';
 import type {
@@ -975,6 +983,50 @@ export class AiAgentService {
   }
 
   /**
+   * Resolve a platform Agent chat entry into a runtime config (M10 PR-049 · C).
+   *
+   * Authorization is server-side only: `beginOperation` re-resolves the caller's owner-scoped
+   * effective entitlement — the client-supplied `platformAgentId` is never trusted as proof — and
+   * captures the exact pinned version snapshot exactly once. The returned config is built solely
+   * from that snapshot, with `id` bound to a materialized real user-owned Agent for attribution.
+   *
+   * Not entitled (no effective assignment / archived) → NOT_FOUND, indistinguishable from a missing
+   * ordinary agent so we never leak whether the platform Agent exists. A fail-closed materialization
+   * error (missing exact version / checksum mismatch / malformed refs) surfaces as a redacted 500.
+   */
+  private async resolvePlatformAgentConfig(
+    platformAgentId: string,
+    identifier: string,
+  ): Promise<AgentConfigWithId> {
+    const handle = await new PlatformAgentEffectiveResolver(this.db).beginOperation(
+      this.userId,
+      platformAgentId,
+    );
+    if (!handle) {
+      throw new TRPCError({ code: 'NOT_FOUND', message: `Agent not found: ${identifier}` });
+    }
+    try {
+      const materialized = await new PlatformAgentMaterializationService(
+        this.db,
+        this.userId,
+      ).materializeForOperation(handle.getSnapshot());
+      return materialized.config;
+    } catch (error) {
+      if (error instanceof PlatformAgentNotFoundError) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: `Agent not found: ${identifier}` });
+      }
+      if (error instanceof PlatformAgentMaterializationError) {
+        log('execAgent: platform materialization failed for %s: %O', platformAgentId, error);
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: 'Failed to start platform agent',
+        });
+      }
+      throw error;
+    }
+  }
+
+  /**
    * Execute agent with just a prompt
    *
    * This is a simplified API that requires agent identifier (id or slug) and prompt.
@@ -1086,16 +1138,29 @@ export class AiAgentService {
 
     throwIfAborted(signal, 'Agent execution aborted before startup');
 
-    // 1. Get agent configuration with default config merged (supports both id and slug)
-    let agentConfig = await this.agentService.getAgentConfig(identifier);
-    // Builtin agents (inbox / page / task / self-iteration slugs) may be addressed
-    // purely by slug before a row exists — e.g. background self-iteration runs
-    // dispatched via execAgent({ slug }). Lazily materialize the virtual row from
-    // the builtin registry (mirrors the inbox/task `getBuiltinAgent` path) and
-    // re-resolve. No-op for ordinary agent ids (getBuiltinAgent returns null).
-    if (!agentConfig && (Object.values(BUILTIN_AGENT_SLUGS) as string[]).includes(identifier)) {
-      await this.agentModel.getBuiltinAgent(identifier);
+    // 1. Get agent configuration with default config merged (supports both id and slug).
+    // Platform Agent chat entry (M10 PR-049 · C): the list-item identity is only a request-entry
+    // hint and is NEVER trusted for authorization. `beginOperation` re-resolves owner-scoped
+    // effective entitlement exactly ONCE and captures the exact pinned {versionId, checksum,
+    // config}; the whole operation runs from that immutable snapshot, so publishing a newer version
+    // mid-flight cannot mutate an already-started operation. Materialization yields a real
+    // user-owned Agent id for message/operation attribution, while the runtime config is derived
+    // solely from the snapshot (never re-read from the local row).
+    const platformAgentId = decodePlatformAgentListId(identifier);
+    let agentConfig: AgentConfigWithId | null;
+    if (platformAgentId) {
+      agentConfig = await this.resolvePlatformAgentConfig(platformAgentId, identifier);
+    } else {
       agentConfig = await this.agentService.getAgentConfig(identifier);
+      // Builtin agents (inbox / page / task / self-iteration slugs) may be addressed
+      // purely by slug before a row exists — e.g. background self-iteration runs
+      // dispatched via execAgent({ slug }). Lazily materialize the virtual row from
+      // the builtin registry (mirrors the inbox/task `getBuiltinAgent` path) and
+      // re-resolve. No-op for ordinary agent ids (getBuiltinAgent returns null).
+      if (!agentConfig && (Object.values(BUILTIN_AGENT_SLUGS) as string[]).includes(identifier)) {
+        await this.agentModel.getBuiltinAgent(identifier);
+        agentConfig = await this.agentService.getAgentConfig(identifier);
+      }
     }
     if (!agentConfig) {
       // `agentService.getAgentConfig` already routes through `AgentModel`'s

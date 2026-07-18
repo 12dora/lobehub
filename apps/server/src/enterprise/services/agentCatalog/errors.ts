@@ -48,6 +48,20 @@ export class PlatformAgentResourceInUseError extends Error {
   }
 }
 
+/**
+ * Stable, detail-free failure of the delayed-materialization path (M10 PR-049). Raised when the
+ * pinned exact version/checksum cannot be honored (missing version, checksum mismatch, malformed
+ * dependency refs) or the local Agent could not be attached. Fail-closed: never carries SQL,
+ * constraint names, the local Agent id, or any secret material.
+ */
+export class PlatformAgentMaterializationError extends Error {
+  readonly code = 'PLATFORM_MATERIALIZATION_FAILED';
+
+  constructor() {
+    super('PLATFORM_MATERIALIZATION_FAILED');
+  }
+}
+
 export type PlatformAgentDependencyIssueCode =
   | 'AI_MODEL_UNAVAILABLE'
   | 'CONNECTOR_UNAVAILABLE'
