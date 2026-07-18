@@ -12,6 +12,7 @@ import {
 import { openReasonModal } from '@/enterprise/client/features/admin/users/modals/openReasonModal';
 import { adminAgentsService } from '@/enterprise/client/services/adminAgents';
 
+import { getAdminAgentErrorMessage } from './errorPresentation';
 import type {
   AdminAgentAssignmentPreviewOutput,
   AdminAgentDetailOutput,
@@ -158,7 +159,7 @@ export const useAssignmentEditor = (
       });
       setPreviewState({ fingerprint: assignmentDraftFingerprint(requested), result });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(getAdminAgentErrorMessage(cause, t));
     } finally {
       setBusy(false);
     }

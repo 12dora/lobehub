@@ -1,13 +1,5 @@
 import { z } from 'zod';
 
-import {
-  platformAgentConnectorDependencyRefSchema,
-  platformAgentModelDependencyRefSchema,
-  platformAgentSkillDependencyRefSchema,
-  platformAgentVersionConfigSchema,
-  platformAgentVersionSchema,
-} from '@/server/enterprise/contracts/platformAgents';
-
 import type { AdminAgentDraft } from './types';
 
 /**
@@ -95,37 +87,80 @@ const STORAGE_PREFIX = 'aihub.admin.agents.draft.';
 export const MAX_DRAFT_BYTES = 512 * 1024;
 
 /**
- * Authoritative draft validation. Reuses the M10 append-version CONTRACT schemas so the local
- * recovery draft is held to the exact same rules the server enforces (SemVer, 64-hex checksums,
- * positive revisions, field lengths, array max + key uniqueness, model-parameter ranges, secret
- * refusal in text fields). The only adapter is that `model` may be `null` while the operator has
- * not yet resolved an exact published model, plus the local envelope (token/revision/savedAt).
+ * Recovery validation deliberately checks only shape, primitive types and hard size bounds. An
+ * operator may pause mid-edit with a temporarily incomplete value (for example an empty display
+ * name, `1.`, or an unfinished color). Rejecting that value here would delete the very recovery
+ * draft meant to protect their work. The authoritative append-version contract is enforced at the
+ * explicit Save boundary instead.
  */
-const storedDependenciesSchema = z
+const boundedString = (max: number) => z.string().max(max);
+
+const recoveryModelParametersSchema = z
   .object({
-    connectors: z.array(platformAgentConnectorDependencyRefSchema).max(100),
-    model: platformAgentModelDependencyRefSchema.nullable(),
-    skills: z.array(platformAgentSkillDependencyRefSchema).max(100),
+    frequencyPenalty: z.number().finite().optional(),
+    maxTokens: z.number().finite().optional(),
+    presencePenalty: z.number().finite().optional(),
+    temperature: z.number().finite().optional(),
+    topP: z.number().finite().optional(),
   })
-  .strict()
-  .superRefine((snapshot, ctx) => {
-    const connectorKeys = snapshot.connectors.map(({ connectorKey }) => connectorKey);
-    if (new Set(connectorKeys).size !== connectorKeys.length) {
-      ctx.addIssue({ code: 'custom', message: 'connector references must be unique' });
-    }
-    const skillKeys = snapshot.skills.map(({ skillKey }) => skillKey);
-    if (new Set(skillKeys).size !== skillKeys.length) {
-      ctx.addIssue({ code: 'custom', message: 'skill references must be unique' });
-    }
-  });
+  .strict();
+
+const recoveryConfigSchema = z
+  .object({
+    avatar: boundedString(2048).nullable(),
+    backgroundColor: boundedString(64).nullable(),
+    description: boundedString(4000).nullable(),
+    displayName: boundedString(200),
+    modelParameters: recoveryModelParametersSchema,
+    openingMessage: boundedString(8000).nullable(),
+    openingQuestions: z.array(boundedString(1000)).max(50),
+    systemRole: boundedString(100_000),
+    tags: z.array(boundedString(100)).max(50),
+  })
+  .strict();
+
+const recoveryModelDependencySchema = z
+  .object({
+    modelKey: boundedString(150),
+    providerChecksum: boundedString(128),
+    providerKey: boundedString(128),
+    providerRevision: z.number().finite(),
+  })
+  .strict();
+
+const recoverySkillDependencySchema = z
+  .object({
+    checksum: boundedString(128),
+    skillKey: boundedString(128),
+    version: boundedString(64),
+  })
+  .strict();
+
+const recoveryConnectorDependencySchema = z
+  .object({
+    allowedToolKeys: z.array(boundedString(200)).max(1000),
+    connectorId: boundedString(128),
+    connectorKey: boundedString(128),
+    publishedChecksum: boundedString(128),
+    publishedRevision: z.number().finite(),
+  })
+  .strict();
+
+const recoveryDependenciesSchema = z
+  .object({
+    connectors: z.array(recoveryConnectorDependencySchema).max(100),
+    model: recoveryModelDependencySchema.nullable(),
+    skills: z.array(recoverySkillDependencySchema).max(100),
+  })
+  .strict();
 
 const storedAdminAgentDraftSchema = z
   .object({
     draft: z
       .object({
-        config: platformAgentVersionConfigSchema,
-        dependencies: storedDependenciesSchema,
-        version: platformAgentVersionSchema,
+        config: recoveryConfigSchema,
+        dependencies: recoveryDependenciesSchema,
+        version: boundedString(64),
       })
       .strict(),
     draftToken: z.string().regex(/^[a-f0-9]{64}$/),
@@ -148,7 +183,7 @@ export interface StoredAdminAgentDraft {
  * - `unavailable`  — storage threw (private mode / quota / security exception).
  * - `blocked`      — carried secret material or was too large to scan; content is NOT logged.
  * - `too_large`    — exceeds {@link MAX_DRAFT_BYTES}.
- * - `invalid`      — failed authoritative contract validation (not yet a persistable draft).
+ * - `invalid`      — malformed recovery shape/type (temporarily incomplete strings are allowed).
  */
 export type DraftPersistStatus = 'blocked' | 'invalid' | 'saved' | 'too_large' | 'unavailable';
 
@@ -203,9 +238,9 @@ export const saveAdminAgentDraft = (
     safeRemove(id);
     return 'blocked';
   }
-  // 2. Authoritative contract validation before anything is written.
+  // 2. Recovery shape/type/length validation before anything is written. Keep the last good
+  // recovery value when a malformed programmatic update is rejected.
   if (!storedAdminAgentDraftSchema.safeParse(value).success) {
-    safeRemove(id);
     return 'invalid';
   }
 

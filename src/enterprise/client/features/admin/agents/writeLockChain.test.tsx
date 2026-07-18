@@ -93,7 +93,17 @@ const reauthError = () => new Error('ADMIN_REAUTH_REQUIRED');
 
 const editor = {
   draft: {
-    config: { displayName: 'Assistant' },
+    config: {
+      avatar: null,
+      backgroundColor: null,
+      description: null,
+      displayName: 'Assistant',
+      modelParameters: {},
+      openingMessage: null,
+      openingQuestions: [],
+      systemRole: 'Help the user.',
+      tags: [],
+    },
     dependencies: {
       connectors: [],
       model: {

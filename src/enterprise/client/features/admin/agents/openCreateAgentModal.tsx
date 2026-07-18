@@ -8,11 +8,13 @@ import { useTranslation } from 'react-i18next';
 
 import { adminAgentsService } from '@/enterprise/client/services/adminAgents';
 
+import { getAdminAgentErrorMessage } from './errorPresentation';
+
 interface CreateAgentContentProps {
   onCreated: (id: string) => Promise<void>;
 }
 
-const CreateAgentContent = ({ onCreated }: CreateAgentContentProps) => {
+export const CreateAgentContent = ({ onCreated }: CreateAgentContentProps) => {
   const { t } = useTranslation('admin');
   const { close } = useModalContext();
   const [agentKey, setAgentKey] = useState('');
@@ -34,7 +36,7 @@ const CreateAgentContent = ({ onCreated }: CreateAgentContentProps) => {
       toast.success(t('agentCatalog.toast.created'));
       close();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(getAdminAgentErrorMessage(cause, t));
     } finally {
       setBusy(false);
     }

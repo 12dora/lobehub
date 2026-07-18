@@ -107,6 +107,8 @@ export default {
   'agentCatalog.dependency.skill.remove': 'Remove',
   'agentCatalog.dependency.skill.title': 'Skills',
   'agentCatalog.dependency.stale': 'Outdated',
+  'agentCatalog.errors.generic':
+    'The Agent action failed. Your input is still here; check your connection and retry.',
   'agentCatalog.editor.description': 'Description',
   'agentCatalog.editor.displayName': 'Display name',
   'agentCatalog.editor.model': 'Published model key',
@@ -184,6 +186,7 @@ export default {
   'agentCatalog.rollout.status.running': 'Running',
   'agentCatalog.rollout.title': 'Rollout progress',
   'agentCatalog.save.failed': 'The version was not saved. Review the error and retry.',
+  'agentCatalog.save.invalid': 'Complete the required Agent fields before saving this version.',
   'agentCatalog.save.description':
     'Create a new immutable Agent version from this recovery draft and its exact dependencies.',
   'agentCatalog.save.title': 'Save Agent version',
