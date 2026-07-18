@@ -3,6 +3,8 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
+/** @typedef {Record<string, string | undefined>} DesktopEnvironment */
+
 export const AIHUB_DESKTOP_BRAND = 'aihub';
 export const AIHUB_PRODUCT_NAME = 'AIHub';
 export const AIHUB_UPDATE_NAMESPACE = 'aihub';
@@ -135,6 +137,13 @@ const validateSigningEnvironment = (env, platform) => {
   for (const name of requiredNames) getRequiredEnv(env, name);
 };
 
+/**
+ * @param {{
+ *   env?: DesktopEnvironment;
+ *   fileExists?: typeof existsSync;
+ *   platform?: NodeJS.Platform;
+ * }} [options]
+ */
 export const resolveDesktopBranding = ({
   env = process.env,
   fileExists = existsSync,
@@ -219,6 +228,9 @@ export const validateDesktopIcon = ({ buffer, expectedDigest, format }) => {
   if (!hasExpectedHeader) throw new Error(`${format} icon has an invalid file signature`);
 };
 
+/**
+ * @param {{ directory: string; env?: DesktopEnvironment; sourceDirectory: string }} options
+ */
 export const materializeDesktopBrandAssets = async ({
   directory,
   env = process.env,

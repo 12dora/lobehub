@@ -151,7 +151,7 @@ describe('desktop branding config', () => {
     expect(() =>
       resolveDesktopBranding({
         env: createAihubEnv(),
-        fileExists: (file) => !file.endsWith('icon.ico'),
+        fileExists: (file) => !path.normalize(file.toString()).endsWith('icon.ico'),
       }),
     ).toThrow('Required AIHub desktop icon is missing: icon.ico');
   });
