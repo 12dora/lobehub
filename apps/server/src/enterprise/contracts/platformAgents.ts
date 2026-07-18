@@ -653,6 +653,12 @@ export const platformAgentEffectiveGetInputSchema = z
 
 export const platformAgentEffectiveGetOutputSchema = platformEffectiveAgentSchema.nullable();
 
+export const platformAgentSetHiddenInputSchema = z
+  .object({ hidden: z.boolean(), platformAgentId: idSchema })
+  .strict();
+
+export const platformAgentSetHiddenOutputSchema = z.object({ success: z.literal(true) }).strict();
+
 export const adminPlatformAgentValidateDependenciesInputSchema = z
   .object({ dependencySnapshot: platformAgentDependencySnapshotSchema })
   .strict();

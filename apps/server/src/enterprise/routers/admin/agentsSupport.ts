@@ -1,3 +1,4 @@
+import { TRPCError } from '@trpc/server';
 import debug from 'debug';
 
 import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
@@ -13,6 +14,7 @@ import {
   PlatformAgentNotFoundError,
   PlatformAgentResourceInUseError,
   PlatformAgentRevisionConflictError,
+  PlatformAgentUnavailableError,
 } from '../../services/agentCatalog';
 import { PlatformAuditService } from '../../services/platformAudit';
 
@@ -65,6 +67,14 @@ export const mapAgentServiceError = (error: unknown): never => {
     return throwEnterpriseError({
       code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
       httpCode: 'BAD_REQUEST',
+    });
+  }
+  // Already-redacted unknown read failure (REWORK-5). Surface a stable, detail-free 500 rather
+  // than re-throwing a raw driver error at the boundary.
+  if (error instanceof PlatformAgentUnavailableError) {
+    throw new TRPCError({
+      code: 'INTERNAL_SERVER_ERROR',
+      message: 'Platform temporarily unavailable',
     });
   }
   throw error;

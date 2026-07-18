@@ -149,6 +149,20 @@ describe('R01 — platform.agents active-user enforcement (ADMIN=0, MANAGED_AGEN
     expect(getEffectiveAgentSpy).not.toHaveBeenCalled();
   });
 
+  it('rejects a banned caller before resolver access — setHidden (ROOT-01 mutation)', async () => {
+    const caller = createCaller(await ctx(IDS.banned));
+
+    try {
+      await caller.setHidden({ hidden: true, platformAgentId: AGENT_ID });
+      expect.fail('expected banned caller to be denied');
+    } catch (error) {
+      expectAccessDenied(error);
+    }
+
+    // The owner-scoped hidden write must be gated by the same active-user boundary.
+    expect(resolverCtorSpy).not.toHaveBeenCalled();
+  });
+
   it('rejects a temporarily-banned (unexpired) caller', async () => {
     const caller = createCaller(await ctx(IDS.tempBanned));
 

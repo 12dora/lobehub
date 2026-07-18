@@ -5,9 +5,12 @@ import {
   platformAgentEffectiveGetInputSchema,
   platformAgentEffectiveGetOutputSchema,
   platformAgentEffectiveListOutputSchema,
+  platformAgentSetHiddenInputSchema,
+  platformAgentSetHiddenOutputSchema,
 } from '../contracts/platformAgents';
 import { withActiveUser } from '../guards/activeUser';
 import { PlatformAgentEffectiveResolver } from '../services/agentCatalog';
+import { mapAgentServiceError } from './admin/agentsSupport';
 
 // User-facing platform.agents is mounted regardless of ENABLE_PLATFORM_ADMIN and can be
 // activated via ENABLE_PLATFORM_MANAGED_AGENTS alone, so active-user enforcement must never
@@ -33,4 +36,23 @@ export const platformAgentsRouter = router({
     .query(async ({ ctx }) =>
       new PlatformAgentEffectiveResolver(ctx.serverDB).getEffectiveList(ctx.userId!),
     ),
+
+  // Owner-scoped visibility toggle (M10 PR-049 · ROOT-01). Active-user enforced via
+  // platformAgentBase. Mandatory Agents cannot be hidden (rejected in the resolver); default /
+  // optional can. Toggling never materializes a local Agent. Errors are stable and redacted.
+  setHidden: platformAgentBase
+    .input(platformAgentSetHiddenInputSchema)
+    .output(platformAgentSetHiddenOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      try {
+        await new PlatformAgentEffectiveResolver(ctx.serverDB).setAgentHidden(
+          ctx.userId!,
+          input.platformAgentId,
+          input.hidden,
+        );
+        return { success: true as const };
+      } catch (error) {
+        return mapAgentServiceError(error);
+      }
+    }),
 });

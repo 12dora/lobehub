@@ -25,7 +25,11 @@ import { users } from '@/database/schemas/user';
 import type { LobeChatDatabase } from '@/database/type';
 
 import { PlatformAgentEffectiveResolver } from './effectiveResolver';
-import { PlatformAgentMaterializationError, PlatformAgentNotFoundError } from './errors';
+import {
+  PlatformAgentInvalidInputError,
+  PlatformAgentMaterializationError,
+  PlatformAgentNotFoundError,
+} from './errors';
 import { PlatformAgentMaterializationService } from './materialization';
 
 const flags = { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AGENTS: true };
@@ -79,7 +83,10 @@ const service = (userId: string) => new PlatformAgentMaterializationService(db, 
 const checksumFor = (versionRow: { checksum: string | null }) => versionRow.checksum!;
 
 /** Insert a published Agent with a v1 version + a global assignment (latest_published). */
-const seedPublishedAgent = async (id: string) => {
+const seedPublishedAgent = async (
+  id: string,
+  mode: 'default' | 'mandatory' | 'optional' = 'optional',
+) => {
   await db.insert(platformAgents).values({
     agentKey: id,
     id,
@@ -106,7 +113,7 @@ const seedPublishedAgent = async (id: string) => {
     agentId: id,
     enabled: true,
     id: `${id}-global`,
-    mode: 'optional',
+    mode,
     status: 'active',
     targetId: '__global__',
     targetType: 'global',
@@ -283,5 +290,40 @@ describe('PlatformAgentMaterializationService (PostgreSQL) — delayed materiali
     expect(await new PlatformAgentCatalogRepository(db).listMaterializedAgentIds('user-a')).toEqual(
       new Set(),
     );
+  });
+
+  // ROOT-01 — owner-scoped setHidden: mandatory not hideable, default/optional hideable, and the
+  // toggle never materializes a local Agent (visibility-only row).
+  describe('setAgentHidden (ROOT-01)', () => {
+    it('rejects hiding a mandatory Agent', async () => {
+      await seedPublishedAgent('mand-agent', 'mandatory');
+      await expect(resolver().setAgentHidden('user-a', 'mand-agent', true)).rejects.toBeInstanceOf(
+        PlatformAgentInvalidInputError,
+      );
+      expect(await mappingRow('user-a', 'mand-agent')).toBeUndefined();
+    });
+
+    it('hides an optional Agent as a visibility-only row without materializing a local Agent', async () => {
+      await seedPublishedAgent('opt-agent', 'optional');
+      await resolver().setAgentHidden('user-a', 'opt-agent', true);
+
+      const row = await mappingRow('user-a', 'opt-agent');
+      expect(row).toMatchObject({ hidden: true, materializedAgentId: null });
+      expect(row.lastSyncedAt).toBeNull();
+      expect(await db.select().from(agents).where(eq(agents.userId, 'user-a'))).toHaveLength(0);
+
+      // Owner-scoped: user-b is unaffected.
+      expect(await mappingRow('user-b', 'opt-agent')).toBeUndefined();
+    });
+
+    it('rejects hiding an Agent the user is not entitled to', async () => {
+      await seedPublishedAgent('opt-agent', 'optional');
+      await db
+        .delete(platformAgentAssignments)
+        .where(eq(platformAgentAssignments.agentId, 'opt-agent'));
+      await expect(resolver().setAgentHidden('user-a', 'opt-agent', true)).rejects.toBeInstanceOf(
+        PlatformAgentNotFoundError,
+      );
+    });
   });
 });

@@ -12,7 +12,11 @@ import type { LobeChatDatabase } from '@/database/type';
 
 import type { platformAgentEffectiveListOutputSchema } from '../../contracts/platformAgents';
 import { parseEnterpriseFeatureFlags } from '../../featureFlags';
-import { PlatformAgentNotFoundError, redactPlatformReadError } from './errors';
+import {
+  PlatformAgentInvalidInputError,
+  PlatformAgentNotFoundError,
+  redactPlatformReadError,
+} from './errors';
 
 type EffectiveList = z.infer<typeof platformAgentEffectiveListOutputSchema>;
 type EffectiveAgent = EffectiveList['agents'][number];
@@ -239,6 +243,12 @@ export class PlatformAgentEffectiveResolver {
       const authorized = await this.resolveAuthorized(userId);
       const target = authorized.find((agent) => agent.platformAgentId === platformAgentId);
       if (!target) throw new PlatformAgentNotFoundError();
+      // A mandatory Agent can never be hidden by an ordinary user (ROOT-01). Reject the write
+      // instead of silently accepting a no-op, so the boundary is explicit. Un-hiding (hidden=false)
+      // stays a harmless no-op for mandatory.
+      if (hidden && target.distribution === 'mandatory') {
+        throw new PlatformAgentInvalidInputError();
+      }
       const written = await new PlatformAgentCatalogRepository(this.db).setMaterializationHidden({
         hidden,
         platformAgentId: target.platformAgentId,
