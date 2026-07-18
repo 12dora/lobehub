@@ -63,3 +63,8 @@ Dockerfile*
 
 # Drizzle migration meta (drizzle-kit tab style; avoid full-file reformat noise)
 packages/database/migrations/meta/
+
+# Machine-readable manifest / long ledger tables: preserve literal paths and code-contained |
+docs/redevelopment/MANIFEST.md
+docs/redevelopment/list/01_数据库表与迁移清单.md
+docs/redevelopment/list/07_上游直接修改点台账.md
