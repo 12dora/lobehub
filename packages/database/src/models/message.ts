@@ -2371,21 +2371,67 @@ export class MessageModel {
       .where(and(eq(messagePlugins.id, id), this.pluginsOwnership()));
   };
 
-  /** Single-winner approval transition; stale/double-click approvals return false. */
-  approvePendingMessagePlugin = async (id: string): Promise<boolean> => {
-    const rows = await this.db
-      .update(messagePlugins)
-      .set({ intervention: { status: 'approved' } })
-      .where(
-        and(
-          eq(messagePlugins.id, id),
-          this.pluginsOwnership(),
-          sql`${messagePlugins.intervention}->>'status' = 'pending'`,
-        ),
-      )
-      .returning({ id: messagePlugins.id });
-    return rows.length === 1;
-  };
+  private resolvePendingIntervention = async (
+    id: string,
+    params: {
+      content?: string;
+      kind: 'approval' | 'toolResult';
+      pluginState?: Record<string, unknown>;
+      rejectedReason?: string;
+      status: 'approved' | 'rejected';
+    },
+  ): Promise<boolean> =>
+    this.db.transaction(async (trx) => {
+      const interventionPatch = JSON.stringify({
+        ...(params.rejectedReason !== undefined ? { rejectedReason: params.rejectedReason } : {}),
+        status: params.status,
+      });
+      const pluginRows = await trx
+        .update(messagePlugins)
+        .set({
+          intervention: sql`coalesce(${messagePlugins.intervention}, '{}'::jsonb) || ${interventionPatch}::jsonb`,
+          ...(params.pluginState
+            ? {
+                state: sql`coalesce(${messagePlugins.state}, '{}'::jsonb) || ${JSON.stringify(sanitizeNullBytes(params.pluginState))}::jsonb`,
+              }
+            : {}),
+        })
+        .where(
+          and(
+            eq(messagePlugins.id, id),
+            this.pluginsOwnership(),
+            sql`${messagePlugins.intervention}->>'status' = 'pending'`,
+            sql`${messagePlugins.intervention}->>'kind' = ${params.kind}`,
+          ),
+        )
+        .returning({ id: messagePlugins.id });
+      if (pluginRows.length !== 1) return false;
+
+      if (params.content !== undefined) {
+        const messageRows = await trx
+          .update(messages)
+          .set({ content: sanitizeNullBytes(params.content) })
+          .where(and(eq(messages.id, id), this.ownership()))
+          .returning({ id: messages.id });
+        if (messageRows.length !== 1) throw new Error('Pending intervention message not found');
+      }
+      return true;
+    });
+
+  /** Kind-guarded single-winner approval transition. */
+  approvePendingMessagePlugin = (id: string): Promise<boolean> =>
+    this.resolvePendingIntervention(id, { kind: 'approval', status: 'approved' });
+
+  /** Atomically persist a rejected approval's content and intervention state. */
+  rejectPendingMessagePlugin = (
+    id: string,
+    params: { content: string; rejectedReason?: string },
+  ): Promise<boolean> =>
+    this.resolvePendingIntervention(id, {
+      ...params,
+      kind: 'approval',
+      status: 'rejected',
+    });
 
   /**
    * Single-winner resolution for a human-ANSWER tool (M10 PR-049 · RR5-2): flips a `toolResult`-kind
@@ -2394,21 +2440,15 @@ export class MessageModel {
    * `resumeToolResult` from writing an answer onto a real `approval`-kind sensitive tool; a stale /
    * double / wrong-kind call returns false so the caller fails closed without mutating the row.
    */
-  approvePendingToolResultPlugin = async (id: string): Promise<boolean> => {
-    const rows = await this.db
-      .update(messagePlugins)
-      .set({ intervention: { status: 'approved' } })
-      .where(
-        and(
-          eq(messagePlugins.id, id),
-          this.pluginsOwnership(),
-          sql`${messagePlugins.intervention}->>'status' = 'pending'`,
-          sql`${messagePlugins.intervention}->>'kind' = 'toolResult'`,
-        ),
-      )
-      .returning({ id: messagePlugins.id });
-    return rows.length === 1;
-  };
+  resolvePendingToolResultPlugin = (
+    id: string,
+    params: { content: string; pluginState?: Record<string, unknown> },
+  ): Promise<boolean> =>
+    this.resolvePendingIntervention(id, {
+      ...params,
+      kind: 'toolResult',
+      status: 'approved',
+    });
 
   /**
    * Fetch the `message_plugins` row associated with a tool message. Tool-call

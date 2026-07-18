@@ -2,9 +2,10 @@ import type {
   PlatformOperationMetadata,
   PlatformOperationModelPin,
   PlatformOperationPin,
+  ResumeToolProvenance,
   VerifyRunStatus,
 } from '@lobechat/types';
-import { and, eq, gte, inArray, isNotNull, isNull, type SQL, sql } from 'drizzle-orm';
+import { and, eq, gte, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
 
 import { today } from '@/utils/time';
 
@@ -41,8 +42,6 @@ const RESUMABLE_OPERATION_STATUSES = ['waiting_for_human'] as const;
  * server-computed anchors). A terminal / cancelled / interrupted op is deliberately excluded so a
  * late or duplicate park can never resurrect it back into a paused, resumable state.
  */
-const PARK_EXPECTED_PREV_STATUSES = ['running', 'waiting_for_human'] as const;
-
 export class PlatformOperationStartConflictError extends Error {
   constructor() {
     super('PLATFORM_OPERATION_START_CONFLICT');
@@ -62,7 +61,7 @@ const canonicalize = (value: unknown): unknown => {
   }
   return value;
 };
-const pinsEqual = (a: unknown, b: unknown): boolean =>
+export const platformStartBindingsEqual = (a: unknown, b: unknown): boolean =>
   JSON.stringify(canonicalize(a ?? null)) === JSON.stringify(canonicalize(b ?? null));
 
 /**
@@ -127,6 +126,20 @@ export const classifyPlatformStart = (
   );
   if (!hasMarker) return 'ordinary';
   return isCompletePlatformStartMetadata(meta) ? 'complete' : 'partial';
+};
+
+/** Return only the immutable fields that constitute a complete platform-operation start binding. */
+export const extractPlatformStartBinding = (
+  meta: PlatformOperationMetadata | undefined,
+): PlatformOperationMetadata | null => {
+  if (!isCompletePlatformStartMetadata(meta)) return null;
+  return {
+    assistantMessageId: meta.assistantMessageId,
+    platformConnectors: meta.platformConnectors,
+    platformModel: meta.platformModel,
+    platformOperation: meta.platformOperation,
+    platformSkills: meta.platformSkills,
+  };
 };
 
 /**
@@ -280,10 +293,10 @@ export class AgentOperationModel {
         existing.userId === this.userId &&
         (existing.workspaceId ?? null) === (this.workspaceId ?? null) &&
         isCompletePlatformStartMetadata(existingMeta) &&
-        pinsEqual(existingMeta.platformOperation, desired.platformOperation) &&
-        pinsEqual(existingMeta.platformModel, desired.platformModel) &&
-        pinsEqual(existingMeta.platformSkills, desired.platformSkills) &&
-        pinsEqual(existingMeta.platformConnectors, desired.platformConnectors) &&
+        platformStartBindingsEqual(existingMeta.platformOperation, desired.platformOperation) &&
+        platformStartBindingsEqual(existingMeta.platformModel, desired.platformModel) &&
+        platformStartBindingsEqual(existingMeta.platformSkills, desired.platformSkills) &&
+        platformStartBindingsEqual(existingMeta.platformConnectors, desired.platformConnectors) &&
         existingMeta.assistantMessageId === desired.assistantMessageId;
       if (!exactIdempotent) throw new PlatformOperationStartConflictError();
     });
@@ -352,8 +365,8 @@ export class AgentOperationModel {
    *
    * - a DIRECT (regeneration) resume matches the operation's own server-recorded assistant-turn id
    *   (`metadata.assistantMessageId`, written once at start);
-   * - an APPROVAL / TOOL-RESULT resume matches one of the pending tool-message ids the RUNTIME created
-   *   when the operation parked, under its OWN kind (`metadata.pendingResumeAnchors[kind]`, recorded
+   * - an APPROVAL / TOOL-RESULT resume matches one complete provenance entry for a pending
+   *   tool-message the RUNTIME created when the operation parked, including its OWN kind (recorded
    *   atomically with the park by `parkForHumanIntervention`).
    *
    * so a fabricated / forged anchor message (spoofed parentId, forged pending plugin) is never among
@@ -369,8 +382,10 @@ export class AgentOperationModel {
   async findResumablePlatformOperationPin(params: {
     anchorKind: 'approval' | 'toolResult';
     anchorMessageId: string;
+    fingerprint: string;
     platformAgentId: string;
     threadId: string | null;
+    toolCallId: string;
     topicId: string | null;
   }): Promise<PlatformOperationPin | null> {
     // A resume MUST bind to a topic — without one the operation cannot be jointly scoped.
@@ -382,7 +397,16 @@ export class AgentOperationModel {
     // message is not among them and an approval anchor can never be replayed as a tool-result (or
     // vice versa). Only approval/tool-result are paused resumes; regeneration/continue never reaches
     // here (it starts a fresh operation — RR5-5).
-    const anchorMatch = sql`${agentOperations.metadata} -> 'pendingResumeAnchors' -> ${params.anchorKind} @> to_jsonb(${params.anchorMessageId}::text)`;
+    const anchorMatch = sql`exists (
+      select 1
+      from jsonb_array_elements(coalesce(${agentOperations.metadata} -> 'pendingResumeAnchors', '[]'::jsonb)) as anchor
+      where anchor ->> 'messageId' = ${params.anchorMessageId}
+        and anchor ->> 'toolCallId' = ${params.toolCallId}
+        and anchor ->> 'kind' = ${params.anchorKind}
+        and anchor ->> 'fingerprint' = ${params.fingerprint}
+        and anchor ->> 'operationId' = ${agentOperations.id}
+        and anchor ->> 'assistantMessageId' = ${agentOperations.metadata} ->> 'assistantMessageId'
+    )`;
 
     const [row] = await this.db
       .select({ metadata: agentOperations.metadata })
@@ -402,21 +426,20 @@ export class AgentOperationModel {
         ),
       )
       .limit(1);
-    return (row?.metadata as PlatformOperationMetadata | undefined)?.platformOperation ?? null;
+    const metadata = row?.metadata as PlatformOperationMetadata | undefined;
+    return classifyPlatformStart(metadata) === 'complete' ? metadata!.platformOperation! : null;
   }
 
   /**
    * Park an operation on human intervention ATOMICALLY (M10 PR-049 · RR5-3): a SINGLE
-   * owner/workspace-scoped, expected-previous-status CAS that flips the row to `waiting_for_human`
-   * AND records the SERVER-created pending tool-message ids as KIND-KEYED resume anchors
-   * (`metadata.pendingResumeAnchors[kind]`) in one statement. Merging the status flip and the anchor
-   * write removes the old two-write window where a late/duplicate park could land the paused status
-   * without (or after) its anchors.
+   * owner/workspace-scoped generation CAS that flips the row to `waiting_for_human` and replaces the
+   * complete SERVER-created resume-provenance set in one statement. This removes the old two-write
+   * window where a late park could land the paused status without its matching anchors.
    *
-   * The CAS only fires from `running` / `waiting_for_human` (an idempotent re-park), so a late write
-   * can NEVER resurrect a cancelled / completed / interrupted op back into `waiting_for_human`, and a
-   * concurrent newer park isn't clobbered. Anchor kinds present are merged without disturbing the
-   * sibling kind (an approval-only park keeps any recorded toolResult set). The pins are untouched.
+   * A current generation advances exactly once; an identical retry at the next generation is
+   * idempotent. A stale generation cannot overwrite a newer complete anchor set or resurrect a
+   * cancelled / completed / interrupted operation. Platform parks also compare the complete
+   * immutable start binding before writing.
    *
    * Returns the affected row count so the caller can fail CLOSED (fatal for a platform operation)
    * when it isn't exactly 1 — e.g. the row was already cancelled, deleted, or replaced.
@@ -424,38 +447,80 @@ export class AgentOperationModel {
   async parkForHumanIntervention(
     operationId: string,
     params: RecordOperationCompletionParams & {
-      anchors: { approval?: string[]; toolResult?: string[] };
+      anchors: ResumeToolProvenance[];
+      expectedGeneration: number;
+      expectedPlatformStart?: PlatformOperationMetadata;
     },
   ): Promise<{ affected: number }> {
-    const { anchors, ...completion } = params;
+    const { anchors, expectedGeneration, expectedPlatformStart, ...completion } = params;
     const updates = this.buildCompletionUpdates({ ...completion, status: 'waiting_for_human' });
 
-    const normalize = (ids: string[] | undefined) =>
-      [...new Set(ids ?? [])].filter((id) => typeof id === 'string' && id.length > 0);
-    const approval = normalize(anchors.approval);
-    const toolResult = normalize(anchors.toolResult);
-
-    // Build the kind-keyed anchor object with ONLY the kinds present, so a park surfacing just one
-    // kind never clobbers the sibling kind's recorded ids.
-    const kindPairs: SQL[] = [];
-    if (approval.length > 0) kindPairs.push(sql`'approval', ${JSON.stringify(approval)}::jsonb`);
-    if (toolResult.length > 0) {
-      kindPairs.push(sql`'toolResult', ${JSON.stringify(toolResult)}::jsonb`);
+    const normalizedAnchors = [...anchors]
+      .filter(
+        (anchor) =>
+          anchor &&
+          typeof anchor.messageId === 'string' &&
+          anchor.messageId.length > 0 &&
+          typeof anchor.operationId === 'string' &&
+          anchor.operationId === operationId &&
+          typeof anchor.assistantMessageId === 'string' &&
+          anchor.assistantMessageId.length > 0 &&
+          typeof anchor.toolCallId === 'string' &&
+          anchor.toolCallId.length > 0 &&
+          typeof anchor.fingerprint === 'string' &&
+          /^[\da-f]{64}$/.test(anchor.fingerprint) &&
+          (anchor.kind === 'approval' || anchor.kind === 'toolResult'),
+      )
+      .sort((left, right) => left.messageId.localeCompare(right.messageId));
+    if (normalizedAnchors.length !== anchors.length) return { affected: 0 };
+    if (expectedPlatformStart && classifyPlatformStart(expectedPlatformStart) !== 'complete') {
+      return { affected: 0 };
+    }
+    if (
+      expectedPlatformStart &&
+      normalizedAnchors.some(
+        (anchor) => anchor.assistantMessageId !== expectedPlatformStart.assistantMessageId,
+      )
+    ) {
+      return { affected: 0 };
     }
 
-    const metadataSql =
-      kindPairs.length > 0
-        ? sql`coalesce(${agentOperations.metadata}, '{}'::jsonb) || jsonb_build_object('pendingResumeAnchors', coalesce(${agentOperations.metadata} -> 'pendingResumeAnchors', '{}'::jsonb) || jsonb_build_object(${sql.join(kindPairs, sql`, `)}))`
-        : undefined;
+    const anchorJson = JSON.stringify(normalizedAnchors);
+    const nextGeneration = expectedGeneration + 1;
+    const currentGeneration = sql`coalesce((${agentOperations.metadata} ->> 'pendingResumeGeneration')::integer, 0)`;
+    const metadataSql = sql`coalesce(${agentOperations.metadata}, '{}'::jsonb) || jsonb_build_object(
+      'pendingResumeAnchors', ${anchorJson}::jsonb,
+      'pendingResumeGeneration', ${nextGeneration}::integer
+    )`;
+    const expectedBinding = expectedPlatformStart
+      ? and(
+          sql`${agentOperations.metadata} -> 'platformOperation' = ${JSON.stringify(expectedPlatformStart.platformOperation)}::jsonb`,
+          sql`${agentOperations.metadata} -> 'platformModel' = ${JSON.stringify(expectedPlatformStart.platformModel)}::jsonb`,
+          sql`${agentOperations.metadata} -> 'platformSkills' = ${JSON.stringify(expectedPlatformStart.platformSkills)}::jsonb`,
+          sql`${agentOperations.metadata} -> 'platformConnectors' = ${JSON.stringify(expectedPlatformStart.platformConnectors)}::jsonb`,
+          sql`${agentOperations.metadata} ->> 'assistantMessageId' = ${expectedPlatformStart.assistantMessageId}`,
+        )
+      : undefined;
 
     const rows = await this.db
       .update(agentOperations)
-      .set(metadataSql ? { ...updates, metadata: metadataSql } : updates)
+      .set({ ...updates, metadata: metadataSql })
       .where(
         and(
           eq(agentOperations.id, operationId),
           this.ownership(),
-          inArray(agentOperations.status, [...PARK_EXPECTED_PREV_STATUSES]),
+          expectedBinding,
+          or(
+            and(
+              inArray(agentOperations.status, ['running', 'waiting_for_human']),
+              sql`${currentGeneration} = ${expectedGeneration}`,
+            ),
+            and(
+              eq(agentOperations.status, 'waiting_for_human'),
+              sql`${currentGeneration} = ${nextGeneration}`,
+              sql`${agentOperations.metadata} -> 'pendingResumeAnchors' = ${anchorJson}::jsonb`,
+            ),
+          ),
         ),
       )
       .returning({ id: agentOperations.id });
@@ -492,8 +557,10 @@ export class AgentOperationModel {
    * ordinary/anonymous call). A DB read error propagates (the caller fails the call closed).
    */
   async findPlatformOperationRef(operationId: string): Promise<{
+    classification: 'complete' | 'ordinary' | 'partial';
     isPlatformOperation: boolean;
     modelPin: PlatformOperationModelPin | null;
+    platformStart: PlatformOperationMetadata | null;
   } | null> {
     const [row] = await this.db
       .select({ metadata: agentOperations.metadata })
@@ -502,9 +569,13 @@ export class AgentOperationModel {
       .limit(1);
     if (!row) return null;
     const metadata = row.metadata as PlatformOperationMetadata | undefined;
+    const classification = classifyPlatformStart(metadata);
+    const platformStart = extractPlatformStartBinding(metadata);
     return {
-      isPlatformOperation: Boolean(metadata?.platformOperation),
+      classification,
+      isPlatformOperation: classification === 'complete',
       modelPin: metadata?.platformModel ?? null,
+      platformStart,
     };
   }
 

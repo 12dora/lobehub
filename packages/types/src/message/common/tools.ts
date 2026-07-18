@@ -15,16 +15,63 @@ import type { LobeToolRenderType } from '../../tool';
  */
 export type ResumeInteractionKind = 'approval' | 'toolResult';
 
+/**
+ * Server-authored provenance for a resumable human-intervention placeholder. Public message
+ * mutations must never be allowed to author these fields. The fingerprint binds the immutable tool
+ * call identity without persisting its arguments in operation metadata.
+ */
+export interface ResumeToolProvenance {
+  assistantMessageId: string;
+  fingerprint: string;
+  kind: ResumeInteractionKind;
+  messageId: string;
+  operationId: string;
+  toolCallId: string;
+}
+
+export const fingerprintResumeToolCall = async (tool: {
+  apiName?: string;
+  arguments?: string;
+  identifier?: string;
+  toolCallId?: string;
+  type?: string;
+}): Promise<string> => {
+  const payload = JSON.stringify([
+    tool.identifier ?? '',
+    tool.apiName ?? '',
+    tool.toolCallId ?? '',
+    tool.type ?? '',
+    tool.arguments ?? '',
+  ]);
+  const digest = await globalThis.crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(payload),
+  );
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+};
+
 // ToolIntervention must be defined first to avoid circular dependency
 export interface ToolIntervention {
   /** Server-owned resume-interaction kind — see {@link ResumeInteractionKind}. */
   kind?: ResumeInteractionKind;
+  /** Server-owned binding for a pending resumable tool placeholder. */
+  provenance?: ResumeToolProvenance;
   rejectedReason?: string;
   status?: 'pending' | 'approved' | 'rejected' | 'aborted' | 'none';
 }
 
 export const ToolInterventionSchema = z.object({
   kind: z.enum(['approval', 'toolResult']).optional(),
+  provenance: z
+    .object({
+      assistantMessageId: z.string(),
+      fingerprint: z.string(),
+      kind: z.enum(['approval', 'toolResult']),
+      messageId: z.string(),
+      operationId: z.string(),
+      toolCallId: z.string(),
+    })
+    .optional(),
   rejectedReason: z.string().optional(),
   status: z.enum(['pending', 'approved', 'rejected', 'aborted', 'none']).optional(),
 });
