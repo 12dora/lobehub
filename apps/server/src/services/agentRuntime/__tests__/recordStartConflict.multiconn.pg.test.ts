@@ -138,4 +138,50 @@ run('recordStart platform-start conflict — true multi-connection PostgreSQL', 
     const [row] = await db.select().from(agentOperations).where(eq(agentOperations.id, 'op-1'));
     expect((row?.metadata as { platformOperation?: unknown })?.platformOperation).toBeDefined();
   });
+
+  it('a start after a committed DELETE of the row cleanly inserts a fresh complete row (no conflict)', async () => {
+    // Seed a genuine complete row, then DELETE it (committed) from an independent connection. The row
+    // the previous start created is gone, so a later identical start finds no conflicting row and its
+    // `onConflictDoNothing` insert wins outright — exactly one complete row, never a fail-closed miss.
+    await start(workerModel(), complete());
+    const deleterPool = new Pool({ connectionString, max: 1 });
+    pools.push(deleterPool);
+    const deleter = drizzle(deleterPool, { schema }) as unknown as LobeChatDatabase;
+    await deleter.delete(agentOperations).where(eq(agentOperations.id, 'op-1'));
+
+    const outcome = await start(workerModel(), complete());
+    expect(outcome.ok).toBe(true);
+    const rows = await db.select().from(agentOperations).where(eq(agentOperations.id, 'op-1'));
+    expect(rows).toHaveLength(1);
+    expect((rows[0]?.metadata as { platformOperation?: unknown })?.platformOperation).toBeDefined();
+  });
+
+  it('a start after a committed DELETE+REINSERT (replace) with different pins fails closed on the replaced row', async () => {
+    // The row is DELETEd and REINSERTed with an INCONSISTENT pin (a full replace) on an independent
+    // connection, all committed, before the racing start runs. The start's insert no-ops (id exists),
+    // then the FOR UPDATE select observes the REPLACED row → not byte-for-byte idempotent → fail
+    // closed. It must never adopt the replaced row as its own, and never downgrade to ordinary/latest.
+    await start(workerModel(), complete());
+    const replacerPool = new Pool({ connectionString, max: 1 });
+    pools.push(replacerPool);
+    const replacer = drizzle(replacerPool, { schema }) as unknown as LobeChatDatabase;
+    await replacer.transaction(async (tx) => {
+      await tx.delete(agentOperations).where(eq(agentOperations.id, 'op-1'));
+      await tx.insert(agentOperations).values({
+        id: 'op-1',
+        metadata: complete({ platformOperation: { ...pin, versionId: 'pav_REPLACED' } }) as never,
+        startedAt: new Date(),
+        status: 'running',
+        userId: USER,
+      });
+    });
+
+    const outcome = await start(workerModel(), complete());
+    expect(outcome.ok).toBe(false);
+    const [row] = await db.select().from(agentOperations).where(eq(agentOperations.id, 'op-1'));
+    // The replaced pin is intact — the losing start neither overwrote it nor ordinary-downgraded it.
+    expect(
+      (row?.metadata as { platformOperation?: { versionId?: string } })?.platformOperation,
+    ).toMatchObject({ versionId: 'pav_REPLACED' });
+  });
 });

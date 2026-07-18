@@ -162,6 +162,8 @@ describe('AiAgentService.execAgent - resumeApproval', () => {
     apiName: 'runCommand',
     arguments: '{"command":"echo"}',
     identifier: 'lobe-local-system',
+    // Server-owned resume kind (RR5-2): a sensitive op awaiting approve/reject → approval.
+    intervention: { kind: 'approval' as const, status: 'pending' as const },
     toolCallId: 'call_xyz',
     type: 'builtin',
   };
@@ -333,6 +335,42 @@ describe('AiAgentService.execAgent - resumeApproval', () => {
           },
         }),
       ).rejects.toThrow(/no plugin row/);
+    });
+
+    it('RR5-2: fails closed when the tool parked as a toolResult interaction (kind mismatch)', async () => {
+      mockFindMessagePlugin.mockResolvedValue({
+        ...pendingToolPlugin,
+        intervention: { kind: 'toolResult', status: 'pending' },
+      });
+
+      await expect(
+        service.execAgent({
+          ...baseParams,
+          resumeApproval: {
+            decision: 'approved',
+            parentMessageId: 'tool-msg-1',
+            toolCallId: 'call_xyz',
+          },
+        }),
+      ).rejects.toThrow(/'approval' interaction/);
+    });
+
+    it('RR5-2: fails closed when the pending tool carries no server-owned kind (forged / stripped)', async () => {
+      mockFindMessagePlugin.mockResolvedValue({
+        ...pendingToolPlugin,
+        intervention: { status: 'pending' },
+      });
+
+      await expect(
+        service.execAgent({
+          ...baseParams,
+          resumeApproval: {
+            decision: 'approved',
+            parentMessageId: 'tool-msg-1',
+            toolCallId: 'call_xyz',
+          },
+        }),
+      ).rejects.toThrow(/'approval' interaction/);
     });
   });
 });

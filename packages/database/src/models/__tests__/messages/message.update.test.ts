@@ -505,6 +505,42 @@ describe('MessageModel Update Tests', () => {
     });
   });
 
+  describe('approvePendingToolResultPlugin (RR5-2)', () => {
+    const seedToolResult = (kind: 'approval' | 'toolResult') =>
+      serverDB.transaction(async (tx) => {
+        await tx.insert(messages).values({ id: 'tr', content: '', role: 'tool', userId });
+        await tx.insert(messagePlugins).values({
+          id: 'tr',
+          identifier: 'lobe-agent',
+          intervention: { kind, status: 'pending' },
+          toolCallId: 'call_ask',
+          userId,
+        });
+      });
+
+    it('flips a pending toolResult tool to approved (single winner; a second call loses)', async () => {
+      await seedToolResult('toolResult');
+      expect(await messageModel.approvePendingToolResultPlugin('tr')).toBe(true);
+      const [row] = await serverDB.select().from(messagePlugins).where(eq(messagePlugins.id, 'tr'));
+      expect((row.intervention as { status?: string })?.status).toBe('approved');
+      // Second (stale/double) call finds it no longer pending → loses.
+      expect(await messageModel.approvePendingToolResultPlugin('tr')).toBe(false);
+    });
+
+    it('never flips an approval-kind tool (kind guard fails closed)', async () => {
+      await seedToolResult('approval');
+      expect(await messageModel.approvePendingToolResultPlugin('tr')).toBe(false);
+      const [row] = await serverDB.select().from(messagePlugins).where(eq(messagePlugins.id, 'tr'));
+      expect((row.intervention as { status?: string })?.status).toBe('pending');
+    });
+
+    it('is owner-scoped: another user cannot resolve it', async () => {
+      await seedToolResult('toolResult');
+      const other = new MessageModel(serverDB, 'other-user');
+      expect(await other.approvePendingToolResultPlugin('tr')).toBe(false);
+    });
+  });
+
   describe('findMessagePlugin', () => {
     it('should return the plugin row (identifier / apiName / toolCallId / ...) for a tool message', async () => {
       await serverDB.insert(messages).values({ id: '1', role: 'tool', content: '', userId });

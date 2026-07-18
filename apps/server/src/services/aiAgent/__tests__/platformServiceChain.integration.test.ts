@@ -228,30 +228,44 @@ describe('RR2-6 — real platform Agent service chain', () => {
       operationId: 'op-1',
       topicId: 'topic-1',
     });
-    await opModel.recordCompletion('op-1', { status: 'waiting_for_human' });
-    // The runtime records the server-created pending tool ids when it parks.
-    await opModel.recordResumeAnchors('op-1', ['tool-1']);
+    // The runtime parks the op ATOMICALLY (RR5-3): the waiting_for_human flip + the kind-keyed,
+    // server-created pending tool ids land in one CAS.
+    const parked = await opModel.parkForHumanIntervention('op-1', {
+      anchors: { approval: ['tool-1'], toolResult: ['ans-1'] },
+      completionReason: 'waiting_for_human',
+      status: 'waiting_for_human',
+    });
+    expect(parked.affected).toBe(1);
 
-    // Resume read-back (RR4-1): direct kind matches the exact server assistant id; tool kind matches
-    // an exact server-recorded pending tool id.
+    // Resume read-back (RR4-1/RR5-2): each kind matches ONLY its own server-recorded pending id.
     expect(
       await opModel.findResumablePlatformOperationPin({
-        anchorKind: 'assistant',
-        anchorMessageId: 'asst-1',
-        platformAgentId: 'pa',
-        threadId: null,
-        topicId: 'topic-1',
-      }),
-    ).toEqual({ checksum: CHECKSUM_V1, platformAgentId: 'pa', versionId: 'pa-v1' });
-    expect(
-      await opModel.findResumablePlatformOperationPin({
-        anchorKind: 'tool',
+        anchorKind: 'approval',
         anchorMessageId: 'tool-1',
         platformAgentId: 'pa',
         threadId: null,
         topicId: 'topic-1',
       }),
     ).toEqual({ checksum: CHECKSUM_V1, platformAgentId: 'pa', versionId: 'pa-v1' });
+    expect(
+      await opModel.findResumablePlatformOperationPin({
+        anchorKind: 'toolResult',
+        anchorMessageId: 'ans-1',
+        platformAgentId: 'pa',
+        threadId: null,
+        topicId: 'topic-1',
+      }),
+    ).toEqual({ checksum: CHECKSUM_V1, platformAgentId: 'pa', versionId: 'pa-v1' });
+    // Kind crossing never binds.
+    expect(
+      await opModel.findResumablePlatformOperationPin({
+        anchorKind: 'toolResult',
+        anchorMessageId: 'tool-1',
+        platformAgentId: 'pa',
+        threadId: null,
+        topicId: 'topic-1',
+      }),
+    ).toBeNull();
     // Model-runtime classification: platform op + exact model pin.
     expect(await opModel.findPlatformOperationRef('op-1')).toEqual({
       isPlatformOperation: true,

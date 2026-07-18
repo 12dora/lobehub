@@ -1,14 +1,17 @@
 /**
- * RR4-1 — REAL service-chain adversarial tests for the KIND-keyed platform resume anchor.
+ * RR4-1 / RR5-2 / RR5-5 — REAL service-chain adversarial tests for the KIND-keyed platform resume
+ * anchor.
  *
  * Drives the REAL `AiAgentService.execAgent` resume path against a real PGlite DB with a real
  * published platform Agent + assignment + managed policy, a real server-parked (`waiting_for_human`)
- * operation, real message rows, and the SERVER-recorded resume anchors — NO deep mocks of the
- * security logic. A resume binds ONLY through server-owned ids keyed by kind: a DIRECT (regen) anchor
- * against `metadata.assistantMessageId`, an APPROVAL/tool-result anchor against the pending tool ids
- * the runtime recorded in `metadata.pendingResumeAnchorIds`. The client-writable `message.parentId`
- * is NEVER trusted — so a forged tool message whose parentId points at the real assistant fails
- * closed, kinds can't cross, and `waiting_for_async_tool` is not externally resumable.
+ * operation, real message rows, and the SERVER-recorded, KIND-keyed resume anchors — NO deep mocks of
+ * the security logic. A PAUSED resume binds ONLY through server-owned ids under its OWN kind: a
+ * `resumeApproval` against `metadata.pendingResumeAnchors.approval`, a `resumeToolResult` against
+ * `metadata.pendingResumeAnchors.toolResult`. The client-writable `message.parentId` is NEVER trusted
+ * — a forged tool message whose parentId points at the real assistant fails closed, the two kinds
+ * can't cross, and `waiting_for_async_tool` is not externally resumable. A bare regeneration /
+ * continue (`parentMessageId` alone) is NOT a paused resume (RR5-5): it never replays the parked pin,
+ * so it does not fail closed with the platform-resolution NOT_FOUND.
  *
  * @vitest-environment node
  */
@@ -16,7 +19,7 @@ import { eq, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
-import { agentOperations, messages, topics } from '@/database/schemas';
+import { agentOperations, messagePlugins, messages, topics } from '@/database/schemas';
 import { agents } from '@/database/schemas/agent';
 import {
   platformAgentAssignments,
@@ -118,18 +121,23 @@ const seedAgent = async () => {
 const seedParkedOperation = async (
   userId: string,
   opts: {
+    approvalToolIds?: string[];
     assistantMessageId?: string;
     operationId: string;
-    pendingToolIds?: string[];
     status?: 'waiting_for_human' | 'waiting_for_async_tool';
+    toolResultToolIds?: string[];
     topicId: string;
   },
 ) => {
+  const pendingResumeAnchors: { approval?: string[]; toolResult?: string[] } = {};
+  if (opts.approvalToolIds?.length) pendingResumeAnchors.approval = opts.approvalToolIds;
+  if (opts.toolResultToolIds?.length) pendingResumeAnchors.toolResult = opts.toolResultToolIds;
+
   await db.insert(agentOperations).values({
     id: opts.operationId,
     metadata: {
       ...(opts.assistantMessageId ? { assistantMessageId: opts.assistantMessageId } : {}),
-      ...(opts.pendingToolIds ? { pendingResumeAnchorIds: opts.pendingToolIds } : {}),
+      ...(Object.keys(pendingResumeAnchors).length ? { pendingResumeAnchors } : {}),
       platformConnectors: [],
       platformModel: modelPin,
       platformOperation: {
@@ -149,7 +157,9 @@ const seedParkedOperation = async (
       .insert(messages)
       .values({ id: opts.assistantMessageId, role: 'assistant', topicId: opts.topicId, userId });
   }
-  for (const toolId of opts.pendingToolIds ?? []) {
+  // Seed each recorded pending tool as a real role='tool' message + a plugin row carrying the
+  // SERVER-owned intervention kind, so genuine resumes clear the pin resolution AND the kind gate.
+  const seedTool = async (toolId: string, kind: 'approval' | 'toolResult') => {
     await db.insert(messages).values({
       id: toolId,
       parentId: opts.assistantMessageId,
@@ -157,23 +167,35 @@ const seedParkedOperation = async (
       topicId: opts.topicId,
       userId,
     });
-  }
+    await db.insert(messagePlugins).values({
+      id: toolId,
+      identifier: 'demo',
+      intervention: { kind, status: 'pending' },
+      toolCallId: 'tc-1',
+      type: 'default',
+      userId,
+    });
+  };
+  for (const toolId of opts.approvalToolIds ?? []) await seedTool(toolId, 'approval');
+  for (const toolId of opts.toolResultToolIds ?? []) await seedTool(toolId, 'toolResult');
 };
 
 const cleanup = () =>
   db.execute(sql`
-    TRUNCATE TABLE ${agentOperations}, ${messages}, ${platformUserAgentMaterializations}, ${platformAgentAssignments}, ${platformAgentVersions}, ${platformAgents}, ${platformManagedResourcePolicies}, ${topics}, ${agents}, ${users} RESTART IDENTITY CASCADE
+    TRUNCATE TABLE ${agentOperations}, ${messagePlugins}, ${messages}, ${platformUserAgentMaterializations}, ${platformAgentAssignments}, ${platformAgentVersions}, ${platformAgents}, ${platformManagedResourcePolicies}, ${topics}, ${agents}, ${users} RESTART IDENTITY CASCADE
   `);
 
 // Run a resume through the REAL service and report whether it failed with the platform resolution
-// NOT_FOUND (the stable fail-closed outcome). `approvalToolId` drives the tool kind (resumeApproval);
-// `parentMessageId` drives the direct/regen kind.
+// NOT_FOUND (the stable fail-closed outcome). `approvalToolId` drives a `resumeApproval` (approval
+// kind); `toolResultToolId` drives a `resumeToolResult` (toolResult kind); a bare `parentMessageId`
+// drives a generic regeneration / continue (RR5-5 — a NEW operation, not a paused resume).
 const resume = async (
   userId: string,
   params: {
     approvalToolId?: string;
     parentMessageId?: string;
     threadId?: string | null;
+    toolResultToolId?: string;
     topicId: string;
   },
 ) => {
@@ -185,7 +207,15 @@ const resume = async (
           toolCallId: 'tc-1',
         },
       }
-    : { parentMessageId: params.parentMessageId };
+    : params.toolResultToolId
+      ? {
+          resumeToolResult: {
+            content: 'the human answer',
+            parentMessageId: params.toolResultToolId,
+            toolCallId: 'tc-1',
+          },
+        }
+      : { parentMessageId: params.parentMessageId };
   const error = await new AiAgentService(db, userId)
     .execAgent({
       agentId: ENCODED,
@@ -220,11 +250,12 @@ beforeEach(async () => {
   await seedPolicy();
   await seedAgent();
   // The genuine, server-parked turn for user-a on topic-1: assistant anchor `asst-1`, one recorded
-  // pending tool anchor `tool-1`.
+  // approval anchor `tool-1`, one recorded toolResult anchor `ans-1`.
   await seedParkedOperation('user-a', {
+    approvalToolIds: ['tool-1'],
     assistantMessageId: 'asst-1',
     operationId: 'op-1',
-    pendingToolIds: ['tool-1'],
+    toolResultToolIds: ['ans-1'],
     topicId: 'topic-1',
   });
 });
@@ -234,10 +265,10 @@ afterEach(async () => {
   vi.unstubAllEnvs();
 });
 
-describe('RR4-1 — kind-keyed resume anchor forgery resistance (real service chain)', () => {
+describe('RR4-1/RR5-2 — kind-keyed resume anchor forgery resistance (real service chain)', () => {
   it('KEY: a forged tool message whose parentId points at the real assistant fails closed', async () => {
     // The exact exploit: create a tool message the attacker owns, with parentId spoofed to the real
-    // op's assistant turn. Its id is NOT among the server-recorded pending tool ids → no bind.
+    // op's assistant turn. Its id is NOT among the server-recorded approval anchors → no bind.
     await db.insert(messages).values({
       id: 'evil-tool',
       parentId: 'asst-1',
@@ -251,29 +282,15 @@ describe('RR4-1 — kind-keyed resume anchor forgery resistance (real service ch
     ).toBe(true);
   });
 
-  it('kind crossing fails closed: assistant id as a tool anchor, tool id as a direct anchor', async () => {
-    // assistant id used with the tool (approval) kind → not among pendingResumeAnchorIds.
+  it('RR5-2 kind crossing fails closed: an approval anchor via resumeToolResult (and vice versa)', async () => {
+    // `tool-1` is an approval anchor — replaying it via resumeToolResult must not resolve.
     expect(
-      (await resume('user-a', { approvalToolId: 'asst-1', topicId: 'topic-1' }))
+      (await resume('user-a', { toolResultToolId: 'tool-1', topicId: 'topic-1' }))
         .resolutionFailedClosed,
     ).toBe(true);
-    // real tool id used with the direct (assistant) kind → not the assistantMessageId.
+    // `ans-1` is a toolResult anchor — replaying it via resumeApproval must not resolve.
     expect(
-      (await resume('user-a', { parentMessageId: 'tool-1', topicId: 'topic-1' }))
-        .resolutionFailedClosed,
-    ).toBe(true);
-  });
-
-  it('fails closed for a forged DIRECT anchor (client metadata.operationId cannot help)', async () => {
-    await db.insert(messages).values({
-      id: 'forged-asst',
-      metadata: { operationId: 'op-1' },
-      role: 'assistant',
-      topicId: 'topic-1',
-      userId: 'user-a',
-    });
-    expect(
-      (await resume('user-a', { parentMessageId: 'forged-asst', topicId: 'topic-1' }))
+      (await resume('user-a', { approvalToolId: 'ans-1', topicId: 'topic-1' }))
         .resolutionFailedClosed,
     ).toBe(true);
   });
@@ -290,64 +307,80 @@ describe('RR4-1 — kind-keyed resume anchor forgery resistance (real service ch
 
   it('RR4-2: a waiting_for_async_tool op is NOT externally resumable', async () => {
     await seedParkedOperation('user-a', {
+      approvalToolIds: ['tool-async'],
       assistantMessageId: 'asst-async',
       operationId: 'op-async',
       status: 'waiting_for_async_tool',
       topicId: 'topic-1',
     });
     expect(
-      (await resume('user-a', { parentMessageId: 'asst-async', topicId: 'topic-1' }))
+      (await resume('user-a', { approvalToolId: 'tool-async', topicId: 'topic-1' }))
         .resolutionFailedClosed,
     ).toBe(true);
   });
 
-  it('fails closed after revocation, even for the genuine assistant anchor', async () => {
+  it('fails closed after revocation, even for the genuine approval anchor', async () => {
     await db
       .delete(platformAgentAssignments)
       .where(eq(platformAgentAssignments.agentId, PLATFORM_AGENT_ID));
     expect(
-      (await resume('user-a', { parentMessageId: 'asst-1', topicId: 'topic-1' }))
+      (await resume('user-a', { approvalToolId: 'tool-1', topicId: 'topic-1' }))
         .resolutionFailedClosed,
     ).toBe(true);
   });
 
   it('fails closed on the wrong topic and cross-owner', async () => {
     expect(
-      (await resume('user-a', { parentMessageId: 'asst-1', topicId: 'topic-2' }))
+      (await resume('user-a', { approvalToolId: 'tool-1', topicId: 'topic-2' }))
         .resolutionFailedClosed,
     ).toBe(true);
     // user-b can't even resolve user-a's owner-scoped anchor message.
     expect(
-      (await resume('user-b', { parentMessageId: 'asst-1', topicId: 'topic-1' }))
+      (await resume('user-b', { approvalToolId: 'tool-1', topicId: 'topic-1' }))
         .resolutionFailedClosed,
     ).toBe(true);
   });
 
-  it('fails closed when the operation carries no server assistant stamp', async () => {
-    await seedParkedOperation('user-a', { operationId: 'op-nostamp', topicId: 'topic-1' });
-    await db
-      .insert(messages)
-      .values({ id: 'asst-unbound', role: 'assistant', topicId: 'topic-1', userId: 'user-a' });
+  it('passes resolution for the GENUINE approval anchor (exact server-recorded pending tool id)', async () => {
+    // `tool-1` is among the op's server-recorded approval anchors → resolution succeeds; the approval
+    // machinery may fail later but that is NOT the platform resolution NOT_FOUND.
     expect(
-      (await resume('user-a', { parentMessageId: 'asst-unbound', topicId: 'topic-1' }))
+      (await resume('user-a', { approvalToolId: 'tool-1', topicId: 'topic-1' }))
         .resolutionFailedClosed,
-    ).toBe(true);
+    ).toBe(false);
   });
 
-  it('passes resolution for the GENUINE direct anchor (exact server assistant id), entitled', async () => {
-    // The real assistant id on the correct topic, entitled → resolution succeeds (any later failure
-    // is NOT the platform resolution NOT_FOUND).
+  it('passes resolution for the GENUINE toolResult anchor (exact server-recorded pending id)', async () => {
+    expect(
+      (await resume('user-a', { toolResultToolId: 'ans-1', topicId: 'topic-1' }))
+        .resolutionFailedClosed,
+    ).toBe(false);
+  });
+});
+
+describe('RR5-5 — a bare regeneration / continue is NOT a paused resume', () => {
+  it('does not fail closed with the platform NOT_FOUND for a generic parentMessageId', async () => {
+    // Regenerate passes the user/assistant message id, not an approval/tool-result body. It must NOT
+    // replay the parked pin — it starts a FRESH operation on current entitlement — so it never hits
+    // the paused-pin resolution NOT_FOUND (the pre-RR5-5 regression). Any later failure is unrelated.
     expect(
       (await resume('user-a', { parentMessageId: 'asst-1', topicId: 'topic-1' }))
         .resolutionFailedClosed,
     ).toBe(false);
   });
 
-  it('passes resolution for the GENUINE tool anchor (exact server-recorded pending tool id)', async () => {
-    // `tool-1` is among the op's server-recorded pending tool ids → resolution succeeds; the approval
-    // machinery may fail later (no plugin row seeded) but that is NOT the resolution NOT_FOUND.
+  it('a generic resume does not resolve the parked pin even for a forged assistant anchor', async () => {
+    // Because a generic resume never touches the paused pin, a forged `metadata.operationId` on an
+    // assistant message is irrelevant — the run begins a new operation regardless.
+    await db.insert(messages).values({
+      id: 'forged-asst',
+      metadata: { operationId: 'op-1' },
+      role: 'assistant',
+      topicId: 'topic-1',
+      userId: 'user-a',
+    });
     expect(
-      (await resume('user-a', { approvalToolId: 'tool-1', topicId: 'topic-1' }))
+      (await resume('user-a', { parentMessageId: 'forged-asst', topicId: 'topic-1' }))
         .resolutionFailedClosed,
     ).toBe(false);
   });

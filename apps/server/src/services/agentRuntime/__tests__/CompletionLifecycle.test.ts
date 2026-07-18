@@ -419,6 +419,74 @@ describe('CompletionLifecycle.recordStart — platform fail-closed (RR2-2)', () 
   });
 });
 
+describe('CompletionLifecycle.persistCompletion — atomic human-intervention park (RR5-3)', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const parkedState = (isPlatform: boolean) => ({
+    metadata: { agentId: 'a', topicId: 't', userId: 'user-1' },
+    pendingHumanToolMessages: [
+      { id: 'tool-1', kind: 'approval' },
+      { id: 'ans-1', kind: 'toolResult' },
+    ],
+    status: 'waiting_for_human',
+    _isPlatform: isPlatform,
+  });
+
+  it('parks via a SINGLE kind-keyed CAS and does not throw on success', async () => {
+    vi.spyOn(AgentOperationModel.prototype, 'findPlatformOperationRef').mockResolvedValue({
+      isPlatformOperation: true,
+      modelPin: null,
+    });
+    const park = vi
+      .spyOn(AgentOperationModel.prototype, 'parkForHumanIntervention')
+      .mockResolvedValue({ affected: 1 });
+    const recordCompletion = vi
+      .spyOn(AgentOperationModel.prototype, 'recordCompletion')
+      .mockResolvedValue(undefined);
+
+    await buildLifecycle().dispatchHooks('op-1', parkedState(true), 'waiting_for_human');
+
+    // ONE park write carrying the kind-grouped anchors — never a separate status + anchor write.
+    expect(park).toHaveBeenCalledTimes(1);
+    expect(park).toHaveBeenCalledWith(
+      'op-1',
+      expect.objectContaining({
+        anchors: { approval: ['tool-1'], toolResult: ['ans-1'] },
+        status: 'waiting_for_human',
+      }),
+    );
+    expect(recordCompletion).not.toHaveBeenCalled();
+  });
+
+  it('is FATAL for a platform operation when the park CAS affects no row', async () => {
+    vi.spyOn(AgentOperationModel.prototype, 'findPlatformOperationRef').mockResolvedValue({
+      isPlatformOperation: true,
+      modelPin: null,
+    });
+    vi.spyOn(AgentOperationModel.prototype, 'parkForHumanIntervention').mockResolvedValue({
+      affected: 0,
+    });
+
+    await expect(
+      buildLifecycle().dispatchHooks('op-1', parkedState(true), 'waiting_for_human'),
+    ).rejects.toThrow('PLATFORM_OPERATION_PARK_PERSIST_FAILED');
+  });
+
+  it('stays fire-and-forget (no throw) for an ordinary operation when the park CAS affects no row', async () => {
+    vi.spyOn(AgentOperationModel.prototype, 'findPlatformOperationRef').mockResolvedValue({
+      isPlatformOperation: false,
+      modelPin: null,
+    });
+    vi.spyOn(AgentOperationModel.prototype, 'parkForHumanIntervention').mockResolvedValue({
+      affected: 0,
+    });
+
+    await expect(
+      buildLifecycle().dispatchHooks('op-1', parkedState(false), 'waiting_for_human'),
+    ).resolves.toBeUndefined();
+  });
+});
+
 describe('CompletionLifecycle.dispatchHooks — async-tool park', () => {
   afterEach(() => {
     vi.restoreAllMocks();

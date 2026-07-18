@@ -590,4 +590,64 @@ describe('MessageService', () => {
       expect(result).toEqual({ messages: mockMessages, success: true });
     });
   });
+
+  describe('RR5-1 — strips the server-owned intervention kind from client input', () => {
+    it('createMessage drops pluginIntervention.kind but keeps status/rejectedReason', async () => {
+      vi.mocked(mockMessageModel.create).mockResolvedValue({ id: 'm-1' } as any);
+      vi.mocked(mockMessageModel.query).mockResolvedValue([] as any);
+
+      await messageService.createMessage({
+        content: '',
+        pluginIntervention: { kind: 'approval', status: 'pending' },
+        role: 'tool',
+      } as any);
+
+      const [passed] = vi.mocked(mockMessageModel.create).mock.calls[0];
+      expect((passed as any).pluginIntervention).toEqual({ status: 'pending' });
+      expect((passed as any).pluginIntervention.kind).toBeUndefined();
+    });
+
+    it('updateMessagePlugin drops intervention.kind but keeps the rest', async () => {
+      vi.mocked(mockMessageModel.query).mockResolvedValue([] as any);
+
+      await messageService.updateMessagePlugin(
+        'm-1',
+        { intervention: { kind: 'toolResult', status: 'approved' } },
+        {},
+      );
+
+      expect(mockMessageModel.updateMessagePlugin).toHaveBeenCalledWith('m-1', {
+        intervention: { status: 'approved' },
+      });
+    });
+
+    it('batchMutate createMessage drops pluginIntervention.kind', async () => {
+      vi.mocked(mockMessageModel.create).mockResolvedValue({ id: 'm-1' } as any);
+
+      await messageService.batchMutate([
+        {
+          message: {
+            content: '',
+            id: 'm-1',
+            pluginIntervention: { kind: 'approval', status: 'pending' },
+            role: 'tool',
+          } as any,
+          type: 'createMessage',
+        },
+      ]);
+
+      const [passed] = vi.mocked(mockMessageModel.create).mock.calls[0];
+      expect((passed as any).pluginIntervention).toEqual({ status: 'pending' });
+    });
+
+    it('leaves an ordinary message (no pluginIntervention) untouched', async () => {
+      vi.mocked(mockMessageModel.create).mockResolvedValue({ id: 'm-1' } as any);
+      vi.mocked(mockMessageModel.query).mockResolvedValue([] as any);
+
+      await messageService.createMessage({ content: 'hi', role: 'user' } as any);
+
+      const [passed] = vi.mocked(mockMessageModel.create).mock.calls[0];
+      expect((passed as any).pluginIntervention).toBeUndefined();
+    });
+  });
 });
