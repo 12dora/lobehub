@@ -1249,19 +1249,20 @@ export class AiAgentService {
       }
       // Re-check LIVE entitlement so a revoked / no-longer-assigned user fails closed even for a
       // genuinely paused turn — WITHOUT resolving latest (the pinned version is still what runs).
-      if (!resumeContext.capturedResumePin) {
-        let entitled: boolean;
-        try {
-          entitled = await new PlatformAgentEffectiveResolver(this.db).isEntitled(
-            this.userId,
-            platformAgentId,
-          );
-        } catch (error) {
-          this.mapPlatformConfigError(error, platformAgentId, identifier);
-        }
-        if (!entitled) {
-          throw new TRPCError({ code: 'NOT_FOUND', message: `Agent not found: ${identifier}` });
-        }
+      // Every historical pin — including a pin captured while resolving the builtin inbox — must
+      // pass current entitlement before exact replay. The pin selects the immutable old version;
+      // it is never authorization evidence by itself.
+      let entitled: boolean;
+      try {
+        entitled = await new PlatformAgentEffectiveResolver(this.db).isEntitled(
+          this.userId,
+          platformAgentId,
+        );
+      } catch (error) {
+        this.mapPlatformConfigError(error, platformAgentId, identifier);
+      }
+      if (!entitled) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: `Agent not found: ${identifier}` });
       }
       try {
         const materialized = resumeContext.existingAgentId
@@ -4168,7 +4169,7 @@ export class AiAgentService {
       const result = await this.agentRuntimeService.createOperation({
         activeDeviceId,
         agentConfig,
-        agentGroup: operationAgentGroup,
+        agentGroup: platformOperationPin ? undefined : operationAgentGroup,
         deviceSystemInfo: Object.keys(deviceSystemInfo).length > 0 ? deviceSystemInfo : undefined,
         executionPlan,
         userTimezone,
@@ -4208,11 +4209,11 @@ export class AiAgentService {
         },
         connectorApprovalReceipt: trustedConnectorApprovalReceipt,
         autoStart,
-        botContext,
-        botPlatformContext,
+        botContext: platformOperationPin ? undefined : botContext,
+        botPlatformContext: platformOperationPin ? undefined : botPlatformContext,
         deviceAccessPolicy: { canUseDevice, reason: deviceAccessReason },
-        discordContext,
-        evalContext,
+        discordContext: platformOperationPin ? undefined : discordContext,
+        evalContext: platformOperationPin ? undefined : evalContext,
         initialContext,
         initialMessages: allMessages,
         initialStepCount,
