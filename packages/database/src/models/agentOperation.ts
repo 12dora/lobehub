@@ -4,7 +4,7 @@ import type {
   PlatformOperationPin,
   VerifyRunStatus,
 } from '@lobechat/types';
-import { and, eq, gte, isNotNull, isNull, sql } from 'drizzle-orm';
+import { and, eq, gte, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 
 import { today } from '@/utils/time';
 
@@ -17,6 +17,42 @@ import type {
 import { agentOperations } from '../schemas/agentOperations';
 import type { LobeChatDatabase } from '../type';
 import { buildWorkspaceWhere } from '../utils/workspace';
+
+/**
+ * A platform operation start collided with an existing `agent_operations` row that is NOT a
+ * byte-for-byte exact-idempotent replay of this start (a different owner/workspace, an ordinary /
+ * missing-pin row, or inconsistent pins). Thrown so the runtime fails the start CLOSED instead of
+ * silently continuing on a row whose (wrong) metadata would route the per-call model runtime to the
+ * managed *latest* pointer (M10 PR-049 · RR3-2). Stable + identifier-free.
+ */
+/**
+ * Operation statuses a platform resume may replay a pin from: only a genuinely paused, in-flight
+ * turn. Terminal (`done`/`error`/`interrupted`) and pre-start (`idle`/`running`) rows are never a
+ * resume source, so a completed historical operation can't be derived from indefinitely (RR3-1).
+ */
+const RESUMABLE_OPERATION_STATUSES = ['waiting_for_human', 'waiting_for_async_tool'] as const;
+
+export class PlatformOperationStartConflictError extends Error {
+  constructor() {
+    super('PLATFORM_OPERATION_START_CONFLICT');
+    this.name = 'PlatformOperationStartConflictError';
+  }
+}
+
+/** Order-independent deep equality for the secret-free pin objects/arrays stored in metadata. */
+const canonicalize = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.keys(value as Record<string, unknown>)
+        .sort()
+        .map((key) => [key, canonicalize((value as Record<string, unknown>)[key])]),
+    );
+  }
+  return value;
+};
+const pinsEqual = (a: unknown, b: unknown): boolean =>
+  JSON.stringify(canonicalize(a ?? null)) === JSON.stringify(canonicalize(b ?? null));
 
 /**
  * Verify rollup states. Aliases the single `VerifyRunStatus` source of truth in
@@ -122,7 +158,41 @@ export class AgentOperationModel {
       workspaceId: this.workspaceId ?? null,
     };
 
-    await this.db.insert(agentOperations).values(values).onConflictDoNothing();
+    const inserted = await this.db
+      .insert(agentOperations)
+      .values(values)
+      .onConflictDoNothing()
+      .returning({ id: agentOperations.id });
+    if (inserted.length > 0) return;
+
+    // A row with this operationId already exists (onConflictDoNothing wrote nothing). An ordinary
+    // operation keeps the upstream idempotent no-op. A PLATFORM operation must NOT silently continue
+    // on a pre-existing row: if that row is a different owner/workspace, an ordinary/missing-pin row,
+    // or carries inconsistent pins, the runtime would later read its (wrong) metadata and could drop
+    // to the managed *latest* pointer. So a platform start is idempotent ONLY when the existing row
+    // is THIS owner's and carries byte-for-byte the same exact pins; otherwise fail closed (RR3-2).
+    const desired = params.metadata as PlatformOperationMetadata | undefined;
+    if (!desired?.platformOperation) return;
+
+    const [existing] = await this.db
+      .select({
+        metadata: agentOperations.metadata,
+        userId: agentOperations.userId,
+        workspaceId: agentOperations.workspaceId,
+      })
+      .from(agentOperations)
+      .where(eq(agentOperations.id, params.operationId))
+      .limit(1);
+    const existingMeta = existing?.metadata as PlatformOperationMetadata | undefined;
+    const exactIdempotent =
+      !!existing &&
+      existing.userId === this.userId &&
+      (existing.workspaceId ?? null) === (this.workspaceId ?? null) &&
+      pinsEqual(existingMeta?.platformOperation, desired.platformOperation) &&
+      pinsEqual(existingMeta?.platformModel, desired.platformModel) &&
+      pinsEqual(existingMeta?.platformSkills, desired.platformSkills) &&
+      pinsEqual(existingMeta?.platformConnectors, desired.platformConnectors);
+    if (!exactIdempotent) throw new PlatformOperationStartConflictError();
   }
 
   /**
@@ -176,38 +246,53 @@ export class AgentOperationModel {
   }
 
   /**
-   * Load the secret-free platform operation pin of an EXACT parent operation, for resume / retry /
-   * queued replay (M10 PR-049 · RR2-1). Bound to a single trusted `operationId` — NEVER "the most
-   * recent platform op on the topic/thread" — so two operations that ran different Agent versions on
-   * the same topic (e.g. a concurrent v1 and v2) each resolve their OWN pin, and an out-of-order
-   * resume of the v1 turn replays v1, not whichever started last.
+   * Load the secret-free platform operation pin of the EXACT parent operation a resume continues,
+   * via a SERVER-CONTROLLED anchor binding (M10 PR-049 · RR3-1). The operation stamps the id of the
+   * assistant turn it produced into its own (server-only) `metadata.assistantMessageId`; a resume
+   * passes the trusted anchor message it targets (the pending tool message, or the assistant turn
+   * for regen) plus that message's server-column `parentId`. We match the operation whose
+   * `metadata.assistantMessageId` equals the anchor OR its assistant parent — so the link can NEVER
+   * be forged through client-writable `message.metadata`, and a fabricated message resolves to no
+   * operation.
    *
-   * Strictly owner- and workspace-scoped (via `ownership()`), and — when the caller passes the
-   * resume turn's `topicId` / `threadId` — additionally constrained to that same turn, so a leaked /
-   * cross-turn operationId can neither surface another principal's pin nor rebind a pin from a
-   * different topic/thread. Returns null when the operation is not found under the scope or is not a
-   * platform operation. The caller re-derives the exact pinned version from `versionId` and fails
-   * closed on a checksum mismatch.
+   * The lookup jointly enforces owner + workspace (via `ownership()`), the exact topic (REQUIRED —
+   * no topic ⇒ no resume) and thread leg, the requested `platformAgentId`, and a RESUMABLE operation
+   * status (only a genuinely paused turn — `waiting_for_human` / `waiting_for_async_tool`); a
+   * terminal / historical operation is never a resume source, so it can't be derived indefinitely.
+   * Returns null (→ caller fails closed) when nothing matches. The caller still re-derives the exact
+   * pinned version from `versionId` and fails closed on a checksum mismatch.
    */
-  async findPlatformOperationPinByOperationId(
-    operationId: string,
-    scope?: { threadId?: string | null; topicId?: string | null },
-  ): Promise<PlatformOperationPin | null> {
-    const conditions = [eq(agentOperations.id, operationId), this.ownership()];
-    if (scope?.topicId) conditions.push(eq(agentOperations.topicId, scope.topicId));
-    // Bind the thread leg exactly: a thread resume must match the same thread, and a main-turn
-    // resume (threadId null) must match a main-turn op — never a thread op on the same topic.
-    if (scope && 'threadId' in scope) {
-      conditions.push(
-        scope.threadId
-          ? eq(agentOperations.threadId, scope.threadId)
-          : isNull(agentOperations.threadId),
-      );
-    }
+  async findResumablePlatformOperationPin(params: {
+    anchorMessageId: string;
+    anchorParentId: string | null;
+    platformAgentId: string;
+    threadId: string | null;
+    topicId: string | null;
+  }): Promise<PlatformOperationPin | null> {
+    // A resume MUST bind to a topic — without one the operation cannot be jointly scoped.
+    if (!params.topicId) return null;
+
+    const anchorMatch = params.anchorParentId
+      ? sql`(${agentOperations.metadata} ->> 'assistantMessageId' = ${params.anchorMessageId} OR ${agentOperations.metadata} ->> 'assistantMessageId' = ${params.anchorParentId})`
+      : sql`${agentOperations.metadata} ->> 'assistantMessageId' = ${params.anchorMessageId}`;
+
     const [row] = await this.db
       .select({ metadata: agentOperations.metadata })
       .from(agentOperations)
-      .where(and(...conditions))
+      .where(
+        and(
+          this.ownership(),
+          eq(agentOperations.topicId, params.topicId),
+          // A thread resume must match the same thread; a main-turn resume (threadId null) must match
+          // a main-turn op — never a thread op on the same topic.
+          params.threadId
+            ? eq(agentOperations.threadId, params.threadId)
+            : isNull(agentOperations.threadId),
+          inArray(agentOperations.status, RESUMABLE_OPERATION_STATUSES),
+          anchorMatch,
+          sql`${agentOperations.metadata} -> 'platformOperation' ->> 'platformAgentId' = ${params.platformAgentId}`,
+        ),
+      )
       .limit(1);
     return (row?.metadata as PlatformOperationMetadata | undefined)?.platformOperation ?? null;
   }

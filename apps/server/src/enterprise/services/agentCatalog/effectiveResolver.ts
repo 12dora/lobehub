@@ -226,6 +226,24 @@ export class PlatformAgentEffectiveResolver {
   };
 
   /**
+   * Snapshot-free entitlement re-check (M10 PR-049 · RR3-1). Returns whether `userId` is CURRENTLY
+   * entitled to `platformAgentId`, using the exact same owner-scoped assignment + managed-policy +
+   * flag resolution as {@link beginOperation}, but WITHOUT capturing the latest version snapshot.
+   *
+   * A resume uses this to verify LIVE entitlement (so a revoked / no-longer-assigned user fails
+   * closed) while still replaying its OWN exact pinned version via `materializeFromPin` — entitlement
+   * is checked against current state, the running version stays pinned. Never resolves "latest".
+   */
+  isEntitled = async (userId: string, platformAgentId: string): Promise<boolean> => {
+    try {
+      const authorized = await this.resolveAuthorized(userId);
+      return authorized.some((agent) => agent.platformAgentId === platformAgentId);
+    } catch (error) {
+      throw redactPlatformReadError(error);
+    }
+  };
+
+  /**
    * Owner-scoped visibility write. Only ever acts on the trusted `userId`'s own row (there is
    * no target-user parameter to forge), and only for an Agent the user is entitled to. Hiding a
    * mandatory Agent is accepted but has no read effect — mandatory always stays visible.

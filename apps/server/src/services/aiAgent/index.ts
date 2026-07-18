@@ -1077,36 +1077,34 @@ export class AiAgentService {
   }
 
   /**
-   * Resolve the EXACT parent operationId a resume must replay, from its trusted anchor message
-   * (owner-scoped `messageModel.findById`, so a foreign / non-existent message resolves to null and
-   * fails the resume closed) — M10 PR-049 · RR2-1.
+   * Resolve the secret-free pin of the EXACT parent operation a resume continues, via a
+   * SERVER-CONTROLLED anchor binding (M10 PR-049 · RR3-1) — the client-writable
+   * `message.metadata.operationId` is NEVER trusted.
    *
-   * Each operation stamps its own operationId onto the assistant turn it produces
-   * (`metadata.operationId`). The anchor is either that assistant turn (regeneration) or a pending
-   * `role='tool'` message hanging off it (approve / tool-result) — so the operation stamp is read
-   * directly from the anchor or from its one-hop assistant parent. Because the stamp is per-message,
-   * two operations that ran different Agent versions on the same topic (a concurrent v1 and v2) are
-   * disambiguated exactly, and an out-of-order resume of the v1 turn resolves v1 — never "whichever
-   * platform op started last". Returns null when no operation stamp can be reached.
+   * The anchor message (the pending `role='tool'` message for approve/tool-result, or the assistant
+   * turn for regen) is loaded owner-scoped — a foreign / non-existent message resolves to null and
+   * fails the resume closed. The operation is then matched by its OWN server-written
+   * `metadata.assistantMessageId` (the assistant turn it produced) against the anchor or the anchor's
+   * server-column `parentId`, jointly scoped to owner/workspace/topic/thread/platformAgent and a
+   * paused, resumable status. A fabricated message points at no operation → null; a message pointing
+   * at another owner's assistant turn is excluded by ownership → null.
    */
-  private async resolveResumeParentOperationId(
+  private async resolveResumePlatformPin(
     anchorMessageId: string | null,
-  ): Promise<string | null> {
+    platformAgentId: string,
+    topicId: string | null,
+    threadId: string | null,
+  ): Promise<PlatformOperationPin | null> {
     if (!anchorMessageId) return null;
-    const readOperationId = (metadata: unknown): string | null => {
-      const value = (metadata as { operationId?: unknown } | null | undefined)?.operationId;
-      return typeof value === 'string' && value.length > 0 ? value : null;
-    };
     const anchor = await this.messageModel.findById(anchorMessageId);
     if (!anchor) return null;
-    const direct = readOperationId(anchor.metadata);
-    if (direct) return direct;
-    if (anchor.parentId) {
-      const parent = await this.messageModel.findById(anchor.parentId);
-      const viaParent = readOperationId(parent?.metadata);
-      if (viaParent) return viaParent;
-    }
-    return null;
+    return this.agentOperationModel.findResumablePlatformOperationPin({
+      anchorMessageId: anchor.id,
+      anchorParentId: anchor.parentId ?? null,
+      platformAgentId,
+      threadId,
+      topicId,
+    });
   }
 
   /**
@@ -1140,21 +1138,32 @@ export class AiAgentService {
     const materializationService = new PlatformAgentMaterializationService(this.db, this.userId);
 
     if (resumeContext.resume) {
-      // RR2-1: a platform resume MUST replay the pin of its EXACT parent operation, resolved from the
-      // trusted anchor message (owner-scoped) — not the newest platform op on the topic/thread. Any
-      // of: no anchor, no resolvable parent operation, no persisted pin on it, or a pin belonging to a
-      // different platform Agent → fail closed as NOT_FOUND. We NEVER fall through to a fresh
-      // `beginOperation` (latest) on a resume, so a paused v1 turn can't be silently upgraded to v2.
-      const parentOperationId = await this.resolveResumeParentOperationId(
+      // RR3-1: a platform resume MUST replay the pin of its EXACT parent operation, matched by the
+      // SERVER-CONTROLLED assistant-message binding (never client-writable message metadata) and
+      // jointly scoped to owner/workspace/topic/thread/platformAgent + a paused, resumable status.
+      // No such bound pin (fabricated / cross-owner / wrong turn / terminal op) → fail closed. We
+      // NEVER fall through to a fresh `beginOperation` (latest) on a resume.
+      const pin = await this.resolveResumePlatformPin(
         resumeContext.resumeAnchorMessageId,
+        platformAgentId,
+        resumeContext.topicId,
+        resumeContext.threadId,
       );
-      const pin = parentOperationId
-        ? await this.agentOperationModel.findPlatformOperationPinByOperationId(parentOperationId, {
-            threadId: resumeContext.threadId,
-            topicId: resumeContext.topicId,
-          })
-        : null;
       if (!pin || pin.platformAgentId !== platformAgentId) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: `Agent not found: ${identifier}` });
+      }
+      // Re-check LIVE entitlement so a revoked / no-longer-assigned user fails closed even for a
+      // genuinely paused turn — WITHOUT resolving latest (the pinned version is still what runs).
+      let entitled: boolean;
+      try {
+        entitled = await new PlatformAgentEffectiveResolver(this.db).isEntitled(
+          this.userId,
+          platformAgentId,
+        );
+      } catch (error) {
+        this.mapPlatformConfigError(error, platformAgentId, identifier);
+      }
+      if (!entitled) {
         throw new TRPCError({ code: 'NOT_FOUND', message: `Agent not found: ${identifier}` });
       }
       try {
@@ -3990,6 +3999,10 @@ export class AiAgentService {
         hooks,
         operationId,
         parentOperationId,
+        // RR3-1: the server-controlled resume anchor — the id of the assistant turn this operation
+        // produces. Persisted into the operation's own (server-only) metadata so a later resume can
+        // bind to THIS operation without trusting any client-writable message metadata.
+        assistantMessageId: assistantMessageRecord.id,
         platformConnectorPins: platformConnectorRefs,
         platformModelPin,
         platformOperationPin,
@@ -4023,19 +4036,6 @@ export class AiAgentService {
           threadId: appContext?.threadId ?? undefined,
         },
       });
-
-      // RR2-1: stamp this operation's id onto the assistant turn it produced, so a later resume of
-      // this exact turn (or a pending tool message hanging off it) can replay THIS operation's pin —
-      // not the newest platform op on the topic. Only platform operations are ever resume-resolved
-      // through the pin, so the (owner-scoped) stamp is written only for them. Non-fatal: a failed
-      // stamp only makes a future platform resume of this turn fail closed, never a data leak.
-      if (platformOperationPin) {
-        try {
-          await this.messageModel.updateMetadata(assistantMessageRecord.id, { operationId });
-        } catch (error) {
-          log('execAgent: failed to stamp operationId on assistant message (non-fatal): %O', error);
-        }
-      }
 
       // Generate a short-lived JWT for Gateway WebSocket authentication
       let gatewayToken: string | undefined;

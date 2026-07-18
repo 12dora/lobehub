@@ -359,6 +359,13 @@ export interface OperationCreationParams {
     topicId?: string | null;
     trigger?: string;
   };
+  /**
+   * Id of the assistant turn this operation produces (M10 PR-049 · RR3-1). Persisted onto the
+   * operation's own (server-only) `agent_operations.metadata.assistantMessageId` as the SERVER-
+   * controlled resume anchor — a resume binds to this operation through it without ever trusting
+   * client-writable `message.metadata`. Only meaningful for platform operations.
+   */
+  assistantMessageId?: string;
   autoStart?: boolean;
   /**
    * Sender/owner identity for bot-originated runs. Forwarded into
