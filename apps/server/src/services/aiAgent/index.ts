@@ -20,7 +20,7 @@ import {
 } from '@lobechat/builtin-tool-self-iteration';
 import { TaskIdentifier } from '@lobechat/builtin-tool-task';
 import { builtinTools, manualModeExcludeToolIds } from '@lobechat/builtin-tools';
-import { LOADING_FLAT } from '@lobechat/const';
+import { INBOX_SESSION_ID, LOADING_FLAT } from '@lobechat/const';
 import type {
   AgentGroupConfig,
   AgentManagementContext,
@@ -65,6 +65,7 @@ import {
   getActivePluginIds,
   getDisabledPluginIds,
   getWorkingDirEffectivePath,
+  PLATFORM_AGENT_DEFAULT_INBOX_SYSTEM_KEY,
   ReasoningGraphSchema,
   RequestTrigger,
   ThreadStatus,
@@ -111,6 +112,8 @@ import {
   PlatformAgentMaterializationError,
   PlatformAgentMaterializationService,
   PlatformAgentNotFoundError,
+  type PlatformAgentOperationHandle,
+  PlatformDefaultInboxService,
   validateExactPlatformAgentDependencies,
 } from '@/server/enterprise/services/agentCatalog';
 import {
@@ -1021,15 +1024,53 @@ export class AiAgentService {
   private async resolvePlatformAgentId(
     identifier: string,
     agentId: string | undefined,
-  ): Promise<string | null> {
+  ): Promise<{
+    existingAgentId?: string;
+    handle?: PlatformAgentOperationHandle;
+    platformAgentId: string;
+  } | null> {
     const encoded = decodePlatformAgentListId(identifier);
-    if (encoded) return encoded;
-    if (!agentId) return null;
+    if (encoded) return { platformAgentId: encoded };
     if (!parseEnterpriseFeatureFlags(process.env).ENABLE_PLATFORM_MANAGED_AGENTS) return null;
-    return new PlatformAgentCatalogRepository(this.db).getPlatformAgentIdByMaterializedAgentId(
-      this.userId,
-      agentId,
-    );
+
+    if (agentId) {
+      const materializedPlatformAgentId = await new PlatformAgentCatalogRepository(
+        this.db,
+      ).getPlatformAgentIdByMaterializedAgentId(this.userId, agentId);
+      if (materializedPlatformAgentId) {
+        const candidate = await this.agentModel.getAgentConfigById(agentId);
+        if (candidate?.slug === INBOX_SESSION_ID) {
+          // A historical reverse mapping must not turn a genuinely absent current default into an
+          // execution error. Re-resolve the system role for every new inbox operation; exact pins
+          // remain responsible for already-paused operations.
+          const handle = await new PlatformDefaultInboxService(this.db, this.userId).capture();
+          if (!handle) return null;
+          return {
+            existingAgentId: agentId,
+            handle,
+            platformAgentId: handle.platformAgentId,
+          };
+        }
+        return {
+          platformAgentId: materializedPlatformAgentId,
+        };
+      }
+    }
+
+    // PR-051: map only the trusted owner-scoped builtin inbox identity. A forged local id cannot
+    // opt into the default platform Agent: it must resolve to this user's real slug='inbox' row.
+    let inboxAgentId: string | undefined;
+    if (identifier === INBOX_SESSION_ID) {
+      inboxAgentId = (await this.agentModel.getBuiltinAgent(INBOX_SESSION_ID))?.id;
+    } else if (agentId) {
+      const candidate = await this.agentModel.getAgentConfigById(agentId);
+      if (candidate?.slug === INBOX_SESSION_ID) inboxAgentId = candidate.id;
+    }
+    if (!inboxAgentId) return null;
+
+    const handle = await new PlatformDefaultInboxService(this.db, this.userId).capture();
+    if (!handle) return null;
+    return { existingAgentId: inboxAgentId, handle, platformAgentId: handle.platformAgentId };
   }
 
   /** Map a platform config-resolution failure to a stable, redacted TRPCError. */
@@ -1149,6 +1190,8 @@ export class AiAgentService {
     platformAgentId: string,
     identifier: string,
     resumeContext: {
+      capturedHandle?: PlatformAgentOperationHandle;
+      existingAgentId?: string;
       /**
        * Set ONLY for a paused (approval / tool-result) resume — the sole case that replays a parked
        * operation's pin (RR5-5). A bare regeneration / continue leaves it undefined and takes the
@@ -1203,8 +1246,19 @@ export class AiAgentService {
         throw new TRPCError({ code: 'NOT_FOUND', message: `Agent not found: ${identifier}` });
       }
       try {
-        const materialized = await materializationService.materializeFromPin(pin);
+        const materialized = resumeContext.existingAgentId
+          ? await materializationService.resolveFromPinForExistingAgent(
+              pin,
+              resumeContext.existingAgentId,
+            )
+          : await materializationService.materializeFromPin(pin);
         await this.assertPlatformOperationDependencies(materialized.dependencySnapshot);
+        if (resumeContext.existingAgentId) {
+          materialized.config.slug = INBOX_SESSION_ID;
+          if (materialized.config.platform) {
+            materialized.config.platform.systemKey = PLATFORM_AGENT_DEFAULT_INBOX_SYSTEM_KEY;
+          }
+        }
         return {
           config: materialized.config,
           connectorRefs: materialized.dependencySnapshot.connectors,
@@ -1217,17 +1271,37 @@ export class AiAgentService {
       }
     }
 
-    const handle = await new PlatformAgentEffectiveResolver(this.db).beginOperation(
-      this.userId,
-      platformAgentId,
-    );
+    const handle =
+      resumeContext.capturedHandle ??
+      (await new PlatformAgentEffectiveResolver(this.db).beginOperation(
+        this.userId,
+        platformAgentId,
+      ));
     if (!handle) {
+      throw new TRPCError({ code: 'NOT_FOUND', message: `Agent not found: ${identifier}` });
+    }
+    if (handle.platformAgentId !== platformAgentId) {
       throw new TRPCError({ code: 'NOT_FOUND', message: `Agent not found: ${identifier}` });
     }
     try {
       const snapshot = handle.getSnapshot();
-      const materialized = await materializationService.materializeForOperation(snapshot);
+      const materialized = resumeContext.existingAgentId
+        ? await materializationService.resolveForExistingAgent(
+            snapshot,
+            resumeContext.existingAgentId,
+          )
+        : await materializationService.materializeForOperation(snapshot);
       await this.assertPlatformOperationDependencies(materialized.dependencySnapshot);
+      if (resumeContext.existingAgentId) {
+        await materializationService.bindExistingAgentForOperation(
+          snapshot,
+          resumeContext.existingAgentId,
+        );
+        materialized.config.slug = INBOX_SESSION_ID;
+        if (materialized.config.platform) {
+          materialized.config.platform.systemKey = PLATFORM_AGENT_DEFAULT_INBOX_SYSTEM_KEY;
+        }
+      }
       return {
         config: materialized.config,
         connectorRefs: materialized.dependencySnapshot.connectors,
@@ -1377,7 +1451,8 @@ export class AiAgentService {
     // from a platform Agent — BOTH must re-run owner-scoped entitlement (REWORK-2), never run the
     // local row directly. A local id whose assignment was revoked resolves to a platform id here
     // and then fails closed in resolvePlatformAgentConfig.
-    const platformAgentId = await this.resolvePlatformAgentId(identifier, agentId);
+    const platformAgentEntry = await this.resolvePlatformAgentId(identifier, agentId);
+    const platformAgentId = platformAgentEntry?.platformAgentId;
     let agentConfig: AgentConfigWithId | null;
     // Persisted onto the operation so resume/retry/queued steps replay the exact pinned version and
     // every LLM call runs on the exact historical provider revision.
@@ -1399,6 +1474,8 @@ export class AiAgentService {
           ? 'toolResult'
           : undefined;
       const resolved = await this.resolvePlatformAgentConfig(platformAgentId, identifier, {
+        capturedHandle: platformAgentEntry?.handle,
+        existingAgentId: platformAgentEntry?.existingAgentId,
         pausedResumeKind,
         // The trusted anchor for a paused resume is the pending TOOL message (matched against the
         // op's server-recorded pending tool provenance). Never a client-writable parentId hop,
@@ -1480,7 +1557,7 @@ export class AiAgentService {
     // The DB only stores persist config. Runtime config (e.g. inbox systemRole) is generated dynamically.
     const agentSlug = agentConfig.slug;
     const builtinSlugs = Object.values(BUILTIN_AGENT_SLUGS) as string[];
-    if (agentSlug && builtinSlugs.includes(agentSlug)) {
+    if (!platformOperationPin && agentSlug && builtinSlugs.includes(agentSlug)) {
       let userLocale: string | undefined;
       try {
         const userInfo = await UserModel.getInfoForAIGeneration(this.db, this.userId);
@@ -2657,14 +2734,16 @@ export class AiAgentService {
     // (deduped) alongside the agent's pinned plugins and any internal
     // `additionalPluginIds` so a mentioned-but-not-pinned tool (e.g. a custom MCP
     // connector) is both queried for manifests and enabled by the tools engine.
-    let agentPlugins: string[] = [
-      ...new Set([
-        ...getActivePluginIds(agentConfig?.plugins),
-        ...(additionalPluginIds || []),
-        ...(selectedToolIds || []),
-        ...(hasMentionedAgents ? ['lobe-agent-management'] : []),
-      ]),
-    ];
+    let agentPlugins: string[] = platformOperationPin
+      ? getActivePluginIds(agentConfig?.plugins)
+      : [
+          ...new Set([
+            ...getActivePluginIds(agentConfig?.plugins),
+            ...(additionalPluginIds || []),
+            ...(selectedToolIds || []),
+            ...(hasMentionedAgents ? ['lobe-agent-management'] : []),
+          ]),
+        ];
 
     // Model metadata is needed both for tool support checks and agent-management context.
     const { loadModels } = await import('@/business/client/model-bank/loadModels');

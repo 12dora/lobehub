@@ -130,7 +130,11 @@ export const buildServerCallLlmContext = async ({
   // Fetch agent documents for context injection.
   let agentDocuments: AgentContextDocument[] | undefined;
   const agentId = state.metadata?.agentId;
-  if (agentId && ctx.serverDB && ctx.userId) {
+  // A platform operation's immutable prompt/Skill snapshot is authoritative. In particular the
+  // PR-051 default inbox deliberately reuses the historic builtin Agent id, whose legacy SOUL.md
+  // and agent documents must not be appended as an unpinned prompt side door.
+  const isManagedPlatformOperation = state.metadata?.platformStartClassification === 'complete';
+  if (agentId && ctx.serverDB && ctx.userId && !isManagedPlatformOperation) {
     try {
       const agentDocService = new AgentDocumentsService(
         ctx.serverDB,

@@ -56,6 +56,20 @@ export interface PlatformAgentUserListMeta {
   source: 'platform';
 }
 
+/**
+ * User-safe exact platform configuration metadata attached to a managed local/builtin Agent.
+ * It excludes assignment targets, mutation tokens, credentials and decrypted material.
+ */
+export interface PlatformAgentEffectiveConfigMeta {
+  checksum: string;
+  dependencySnapshot: PlatformAgentDependencySnapshot;
+  managed: true;
+  platformAgentId: string;
+  source: 'platform';
+  systemKey: PlatformAgentSystemKey | null;
+  versionId: string;
+}
+
 export interface PlatformAgentModelParameters {
   frequencyPenalty?: number;
   maxTokens?: number;
@@ -73,6 +87,8 @@ export interface PlatformAgentVersionConfig {
   modelParameters: PlatformAgentModelParameters;
   openingMessage: string | null;
   openingQuestions: string[];
+  /** Builtin/plugin tool identifiers explicitly enabled by this immutable version. */
+  plugins?: string[];
   systemRole: string;
   tags: string[];
 }

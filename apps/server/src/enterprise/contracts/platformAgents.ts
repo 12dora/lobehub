@@ -77,6 +77,7 @@ export const platformAgentVersionConfigSchema = z
     modelParameters: platformAgentModelParametersSchema,
     openingMessage: safeText(8000, 1).nullable(),
     openingQuestions: uniqueStringsSchema(safeText(1000, 1), 50),
+    plugins: uniqueStringsSchema(safeText(200, 1), 200).optional(),
     systemRole: safeText(100_000, 1),
     tags: uniqueStringsSchema(safeText(100, 1), 50),
   })
