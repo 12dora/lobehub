@@ -12,6 +12,7 @@
  *
  * @vitest-environment node
  */
+import { fingerprintResumeToolCall } from '@lobechat/types';
 import { TRPCError } from '@trpc/server';
 import type { MockInstance } from 'vitest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -64,10 +65,14 @@ vi.mock('@/database/repositories/platformAgentCatalog', async (importOriginal) =
 // The resume path resolves the trusted anchor message via MessageModel.findById; stub the model so
 // the RR2-1 pin-resolution can be driven deterministically (findById is an instance property, not a
 // prototype method, so it can't be vi.spyOn'd). Only findById is exercised before the assertions.
-const { messageFindById } = vi.hoisted(() => ({ messageFindById: vi.fn() }));
+const { messageFindById, messageFindPlugin } = vi.hoisted(() => ({
+  messageFindById: vi.fn(),
+  messageFindPlugin: vi.fn(),
+}));
 vi.mock('@/database/models/message', () => ({
   MessageModel: class {
     findById = messageFindById;
+    findMessagePlugin = messageFindPlugin;
     create = vi.fn(async () => ({ id: 'asst-new' }));
     query = vi.fn(async () => []);
     update = vi.fn(async () => undefined);
@@ -111,6 +116,14 @@ beforeEach(async () => {
     .mockResolvedValue(null);
   // Default: the anchor message exists (owner-scoped); the operation binding drives the resume path.
   messageFindById.mockResolvedValue({ id: 'msg-1', metadata: {}, parentId: 'asst-1' });
+  messageFindPlugin.mockResolvedValue({
+    apiName: 'deleteRecords',
+    arguments: '{"scope":"project"}',
+    identifier: 'lobe-database',
+    intervention: { kind: 'approval', status: 'pending' },
+    toolCallId: 'tc-1',
+    type: 'default',
+  });
   isEntitled.mockResolvedValue(true);
 });
 
@@ -239,11 +252,21 @@ describe('AiAgentService.execAgent — platform entitlement (REWORK-2)', () => {
       // The anchor message is resolved owner-scoped, then the pin is matched by the server-controlled,
       // kind-keyed binding (the approval anchor id), scoped to this platform Agent + topic/thread.
       expect(messageFindById).toHaveBeenCalledWith('msg-1');
+      expect(messageFindPlugin).toHaveBeenCalledWith('msg-1');
+      const expectedFingerprint = await fingerprintResumeToolCall({
+        apiName: 'deleteRecords',
+        arguments: '{"scope":"project"}',
+        identifier: 'lobe-database',
+        toolCallId: 'tc-1',
+        type: 'default',
+      });
       expect(findPinSpy).toHaveBeenCalledWith({
         anchorKind: 'approval',
         anchorMessageId: 'msg-1',
+        fingerprint: expectedFingerprint,
         platformAgentId: 'pagt_1',
         threadId: null,
+        toolCallId: 'tc-1',
         topicId: 'topic-1',
       });
       expect(isEntitled).toHaveBeenCalledWith('user-a', 'pagt_1');

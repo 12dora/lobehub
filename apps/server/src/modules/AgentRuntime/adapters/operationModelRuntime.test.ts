@@ -145,6 +145,34 @@ describe('initOperationModelRuntime (MODEL-EXACT + RR2-2)', () => {
     expect(initPlatformExactModelRuntime).not.toHaveBeenCalled();
   });
 
+  it.each([
+    [
+      'queued',
+      {
+        classification: 'ordinary',
+        isPlatformOperation: false,
+        modelPin: null,
+        platformStart: null,
+      },
+    ],
+    ['resumed', null],
+  ] as const)(
+    'keeps an upgrade-era %s ordinary operation on the legacy runtime without saved RR6 proof',
+    async (_kind, persistedRef) => {
+      findPlatformOperationRef.mockResolvedValue(persistedRef);
+      const upgradeCtx = {
+        ...ctx,
+        loadAgentState: vi.fn().mockResolvedValue({ metadata: {} }),
+      } as RuntimeExecutorContext;
+
+      await expect(initOperationModelRuntime(upgradeCtx, 'openai', 'gpt-4o')).resolves.toEqual({
+        id: 'ordinary-runtime',
+      });
+      expect(initModelRuntimeFromDB).toHaveBeenCalled();
+      expect(initPlatformExactModelRuntime).not.toHaveBeenCalled();
+    },
+  );
+
   it('a DB read error propagates (the LLM call fails closed, never guesses)', async () => {
     findPlatformOperationRef.mockRejectedValue(new Error('db down'));
     await expect(initOperationModelRuntime(ctx, 'openai', 'gpt-4o')).rejects.toThrow('db down');
@@ -153,6 +181,7 @@ describe('initOperationModelRuntime (MODEL-EXACT + RR2-2)', () => {
   });
 
   it('fails closed when the trusted runtime classification is missing', async () => {
+    vi.stubEnv('ENABLE_PLATFORM_MANAGED_AGENTS', '0');
     findPlatformOperationRef.mockResolvedValue(platformRef);
     const missingStateCtx = {
       ...ctx,
@@ -163,6 +192,26 @@ describe('initOperationModelRuntime (MODEL-EXACT + RR2-2)', () => {
     ).rejects.toBeInstanceOf(PlatformExactModelUnavailableError);
     expect(initPlatformExactModelRuntime).not.toHaveBeenCalled();
     expect(initModelRuntimeFromDB).not.toHaveBeenCalled();
+    vi.unstubAllEnvs();
+  });
+
+  it('fails closed when saved RR6 proof is missing and the persisted start is partial', async () => {
+    findPlatformOperationRef.mockResolvedValue({
+      classification: 'partial',
+      isPlatformOperation: false,
+      modelPin: pin,
+      platformStart: null,
+    });
+    const missingProofCtx = {
+      ...ctx,
+      loadAgentState: vi.fn().mockResolvedValue({ metadata: {} }),
+    } as RuntimeExecutorContext;
+
+    await expect(
+      initOperationModelRuntime(missingProofCtx, 'internal-provider', 'chat-model'),
+    ).rejects.toBeInstanceOf(PlatformExactModelUnavailableError);
+    expect(initModelRuntimeFromDB).not.toHaveBeenCalled();
+    expect(initPlatformExactModelRuntime).not.toHaveBeenCalled();
   });
 
   it('fails closed when the trusted binding differs from the persisted complete binding', async () => {

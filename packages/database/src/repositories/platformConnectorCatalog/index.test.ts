@@ -659,6 +659,14 @@ describe('PlatformConnectorCatalogRepository', () => {
     await expect(catalog.getPublishedRuntimeRevision(connector.id, 2)).resolves.toMatchObject({
       provenance: { checksum: 'b'.repeat(64), connectorId: connector.id, revision: 2 },
     });
+    const exactBatch = await catalog.getPublishedRuntimeRevisionsExact([
+      { connectorId: connector.id, publishedRevision: 1 },
+      { connectorId: connector.id, publishedRevision: 2 },
+      { connectorId: connector.id, publishedRevision: 99 },
+    ]);
+    expect(exactBatch.get(`${connector.id}\0${1}`)?.provenance.revisionId).toBe(revision.id);
+    expect(exactBatch.get(`${connector.id}\0${2}`)?.provenance.checksum).toBe('b'.repeat(64));
+    expect(exactBatch.has(`${connector.id}\0${99}`)).toBe(false);
     await expect(
       serverDB
         .update(platformConnectors)
