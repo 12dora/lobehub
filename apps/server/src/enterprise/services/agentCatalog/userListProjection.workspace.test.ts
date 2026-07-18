@@ -98,9 +98,10 @@ describe('PlatformAgentUserListService — real DB workspace scope', () => {
 
     const workspaceRuntime = new AgentService(db, userId, workspaceId);
     const personalRuntime = new AgentService(db, userId);
-    expect((await workspaceRuntime.getAgentConfigById(workspaceInboxId))?.slug).toBe(
-      INBOX_SESSION_ID,
-    );
+    const workspaceConfig = (await workspaceRuntime.getAgentConfigById(workspaceInboxId)) as {
+      slug?: string | null;
+    } | null;
+    expect(workspaceConfig?.slug).toBe(INBOX_SESSION_ID);
     expect(await personalRuntime.getAgentConfigById(workspaceInboxId)).toBeNull();
     expect(await workspaceRuntime.getAgentConfigById(personalInboxId)).toBeNull();
   });
