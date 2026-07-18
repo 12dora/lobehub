@@ -194,6 +194,25 @@ interface SplitCreateMessageParams {
 }
 
 /**
+ * Keys on `messages.metadata` that are SERVER-controlled and must never be accepted from a client
+ * write (M10 PR-049 · RR3-1). `operationId` in particular is a resume-anchor field: it lives on the
+ * server-only `agent_operations.metadata`, never on a message, so an ordinary message
+ * create/update/batch that carries it is stripped to defuse any attempt to forge a resume binding.
+ */
+const RESERVED_MESSAGE_METADATA_KEYS = new Set(['operationId']);
+
+/** Drop server-reserved keys from a caller-supplied message metadata object (RR3-1). */
+const stripReservedMessageMetadata = <T>(metadata: T): T => {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return metadata;
+  const record = metadata as Record<string, unknown>;
+  const hasReserved = [...RESERVED_MESSAGE_METADATA_KEYS].some((key) => Object.hasOwn(record, key));
+  if (!hasReserved) return metadata;
+  const cleaned: Record<string, unknown> = { ...record };
+  for (const key of RESERVED_MESSAGE_METADATA_KEYS) delete cleaned[key];
+  return cleaned as T;
+};
+
+/**
  * Shared, ownership-scoped filters for the analytics queries
  * (count / countGroupByTopic / topicMessageStats). All of these are
  * applied on top of the workspace ownership predicate, so the resulting
@@ -1946,6 +1965,8 @@ export class MessageModel {
         ...normalizedMessage,
         // Sanitize content to strip null bytes that PostgreSQL rejects
         content: sanitizeNullBytes(normalizedMessage.content),
+        // RR3-1: never persist a client-supplied server-reserved metadata key (e.g. operationId).
+        metadata: stripReservedMessageMetadata(normalizedMessage.metadata),
         // TODO: remove this when the client is updated
         createdAt: createdAt ? new Date(createdAt) : undefined,
         id,
@@ -2174,7 +2195,8 @@ export class MessageModel {
       buildWorkspacePayload(
         { userId: this.userId, workspaceId: this.workspaceId },
         // TODO: need a better way to handle this
-        { ...m, role: m.role as any },
+        // RR3-1: strip server-reserved metadata (operationId) from every batched row.
+        { ...m, metadata: stripReservedMessageMetadata(m.metadata), role: m.role as any },
       ),
     );
 
@@ -2211,7 +2233,11 @@ export class MessageModel {
     // patch also keeps it consistent with the column when both are sent.
     const metadataPatch =
       metadata || usageToWrite
-        ? { ...metadata, ...(usageToWrite && { usage: usageToWrite }) }
+        ? // RR3-1: strip server-reserved keys (operationId) from a caller-supplied update patch.
+          stripReservedMessageMetadata({
+            ...metadata,
+            ...(usageToWrite && { usage: usageToWrite }),
+          })
         : undefined;
     try {
       await runTimedStage(
@@ -2305,7 +2331,8 @@ export class MessageModel {
 
     if (!item) return;
 
-    const mergedMetadata = merge(item.metadata || {}, metadata);
+    // RR3-1: a caller can never merge a server-reserved key (operationId) onto a message.
+    const mergedMetadata = merge(item.metadata || {}, stripReservedMessageMetadata(metadata));
     // Keep the dedicated `usage` column in sync when the merged metadata carries
     // token usage, preferring it over the existing column value.
     const usageToWrite = (metadata as { usage?: ModelUsage } | undefined)?.usage;

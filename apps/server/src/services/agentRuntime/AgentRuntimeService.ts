@@ -456,6 +456,7 @@ export class AgentRuntimeService {
       deviceSystemInfo,
       operationSkillSet,
       parentOperationId,
+      assistantMessageId,
       platformConnectorPins,
       platformModelPin,
       platformOperationPin,
@@ -494,6 +495,9 @@ export class AgentRuntimeService {
             metadata: {
               ...(appContext?.agentSignal ? { agentSignal: appContext.agentSignal } : {}),
               ...(connectorApprovalReceipt ? { connectorApprovalReceipt } : {}),
+              // RR3-1: server-controlled resume anchor — the id of the assistant turn this operation
+              // produced. A resume binds to this operation through it, never via client metadata.
+              ...(platformOperationPin && assistantMessageId ? { assistantMessageId } : {}),
               // Secret-free pin so resume/retry/queued steps replay the exact pinned version.
               ...(platformOperationPin ? { platformOperation: platformOperationPin } : {}),
               // Secret-free exact model ref so every LLM call runs on the pinned provider revision.
