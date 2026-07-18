@@ -49,6 +49,7 @@ import type {
   LobeAgentAgencyConfig,
   LobeAgentConfig,
   MessagePluginItem,
+  PlatformAgentConnectorDependencyRef,
   PlatformAgentSkillDependencyRef,
   PlatformOperationModelPin,
   PlatformOperationPin,
@@ -115,7 +116,10 @@ import {
   ConnectorOperationProofSigner,
   fingerprintConnectorToolCall,
 } from '@/server/enterprise/services/connectorCatalog/operationProofSigner';
-import { buildManagedConnectorManifests } from '@/server/enterprise/services/connectorCatalog/runtimeIntegration';
+import {
+  buildManagedConnectorManifests,
+  buildPinnedManagedConnectorManifests,
+} from '@/server/enterprise/services/connectorCatalog/runtimeIntegration';
 import { getManagedSkillRuntimeModeSnapshot } from '@/server/enterprise/services/managedResourceCapabilities';
 import {
   getEffectiveMemorySettings,
@@ -1081,6 +1085,7 @@ export class AiAgentService {
     resumeContext: { resume: boolean; threadId: string | null; topicId: string | null },
   ): Promise<{
     config: AgentConfigWithId;
+    connectorRefs: PlatformAgentConnectorDependencyRef[];
     modelPin: PlatformOperationModelPin;
     pin: PlatformOperationPin;
     skillRefs: PlatformAgentSkillDependencyRef[];
@@ -1102,6 +1107,7 @@ export class AiAgentService {
           await this.assertPlatformOperationDependencies(materialized.dependencySnapshot);
           return {
             config: materialized.config,
+            connectorRefs: materialized.dependencySnapshot.connectors,
             modelPin: materialized.dependencySnapshot.model,
             pin,
             skillRefs: materialized.dependencySnapshot.skills,
@@ -1127,6 +1133,7 @@ export class AiAgentService {
       await this.assertPlatformOperationDependencies(materialized.dependencySnapshot);
       return {
         config: materialized.config,
+        connectorRefs: materialized.dependencySnapshot.connectors,
         modelPin: materialized.dependencySnapshot.model,
         pin: {
           checksum: snapshot.checksum,
@@ -1270,9 +1277,11 @@ export class AiAgentService {
     // every LLM call runs on the exact historical provider revision.
     let platformOperationPin: PlatformOperationPin | undefined;
     let platformModelPin: PlatformOperationModelPin | undefined;
-    // Exact pinned Skill refs for a platform operation (undefined for non-platform). Set (possibly
-    // empty) whenever the operation is a platform Agent, so the Skill pool is EXACTLY its pinned set.
+    // Exact pinned Skill / Connector refs for a platform operation (undefined for non-platform). Set
+    // (possibly empty) whenever the operation is a platform Agent, so the Skill/Connector pools are
+    // EXACTLY its pinned set.
     let platformSkillRefs: PlatformAgentSkillDependencyRef[] | undefined;
+    let platformConnectorRefs: PlatformAgentConnectorDependencyRef[] | undefined;
     if (platformAgentId) {
       const resolved = await this.resolvePlatformAgentConfig(platformAgentId, identifier, {
         resume: resume || !!resumeApproval || !!resumeToolResult,
@@ -1283,6 +1292,7 @@ export class AiAgentService {
       platformOperationPin = resolved.pin;
       platformModelPin = resolved.modelPin;
       platformSkillRefs = resolved.skillRefs;
+      platformConnectorRefs = resolved.connectorRefs;
     } else {
       agentConfig = await this.agentService.getAgentConfig(identifier);
       // Builtin agents (inbox / page / task / self-iteration slugs) may be addressed
@@ -2611,43 +2621,64 @@ export class AiAgentService {
       // from immutable Published revisions; personal endpoint/schema/credentials
       // are never read or used. Feature-off/non-enforced keeps the exact legacy path.
       let connectorsMcp: DecryptedConnector[] = [];
-      const managedConnectors = await buildManagedConnectorManifests({
-        agentId: resolvedAgentId,
-        approvedReceipt: trustedConnectorApprovalReceipt,
-        connectorKeys:
-          selectedToolIds && selectedToolIds.length > 0 ? selectedToolIds : activePluginIds,
-        db: this.db,
-        operationId,
-        serverAllowedConnectorKeys: activePluginIds,
-        userId: this.userId,
-        workspaceId: this.workspaceId,
-      });
-      if (managedConnectors.mode === 'blocked') {
-        throw new Error('PLATFORM_CONNECTOR_NOT_PUBLISHED');
-      }
-      if (managedConnectors.mode === 'enforced') {
-        connectorManifests = managedConnectors.manifests as LobeToolManifest[];
+      // True when Connectors run under the managed/enforced runtime (platform pinned OR current
+      // enforced) — those never fall back to the personal stdio-client executor path below.
+      let connectorsEnforced = false;
+      // Platform Agent (CONNECTOR-EXACT): build Connector manifests from the immutable pinned refs —
+      // exact historical published revision/checksum + pinned tool allowlist — never the current
+      // catalog head, and never personal Connectors. The pinned set is authoritative and fully
+      // replaces the ordinary Connector path.
+      if (platformConnectorRefs) {
+        const pinnedConnectors = await buildPinnedManagedConnectorManifests({
+          agentId: resolvedAgentId,
+          db: this.db,
+          operationId,
+          pinnedConnectors: platformConnectorRefs,
+          userId: this.userId,
+          workspaceId: this.workspaceId,
+        });
+        connectorManifests = pinnedConnectors.manifests as LobeToolManifest[];
+        connectorsEnforced = true;
       } else {
-        let connectorGateKeeper: KeyVaultsGateKeeper | undefined;
-        try {
-          connectorGateKeeper = await KeyVaultsGateKeeper.initWithEnvKey();
-        } catch (err) {
-          log('execAgent: failed to init gatekeeper for connector credentials: %O', err);
+        const managedConnectors = await buildManagedConnectorManifests({
+          agentId: resolvedAgentId,
+          approvedReceipt: trustedConnectorApprovalReceipt,
+          connectorKeys:
+            selectedToolIds && selectedToolIds.length > 0 ? selectedToolIds : activePluginIds,
+          db: this.db,
+          operationId,
+          serverAllowedConnectorKeys: activePluginIds,
+          userId: this.userId,
+          workspaceId: this.workspaceId,
+        });
+        if (managedConnectors.mode === 'blocked') {
+          throw new Error('PLATFORM_CONNECTOR_NOT_PUBLISHED');
         }
-        const connectors =
-          agentPlugins.length > 0
-            ? await this.connectorModel.queryByIdentifiers(agentPlugins, connectorGateKeeper)
-            : [];
-        connectorsMcp = connectors.filter(
-          (connector) => connector.mcpServerUrl || connector.mcpConnectionType === 'stdio',
-        );
-        const connectorTools =
-          connectorsMcp.length > 0
-            ? await this.connectorToolModel.queryAllByConnectorIds(
-                connectorsMcp.map(({ id }) => id),
-              )
-            : [];
-        connectorManifests = buildConnectorManifests(connectorsMcp, connectorTools);
+        if (managedConnectors.mode === 'enforced') {
+          connectorManifests = managedConnectors.manifests as LobeToolManifest[];
+          connectorsEnforced = true;
+        } else {
+          let connectorGateKeeper: KeyVaultsGateKeeper | undefined;
+          try {
+            connectorGateKeeper = await KeyVaultsGateKeeper.initWithEnvKey();
+          } catch (err) {
+            log('execAgent: failed to init gatekeeper for connector credentials: %O', err);
+          }
+          const connectors =
+            agentPlugins.length > 0
+              ? await this.connectorModel.queryByIdentifiers(agentPlugins, connectorGateKeeper)
+              : [];
+          connectorsMcp = connectors.filter(
+            (connector) => connector.mcpServerUrl || connector.mcpConnectionType === 'stdio',
+          );
+          const connectorTools =
+            connectorsMcp.length > 0
+              ? await this.connectorToolModel.queryAllByConnectorIds(
+                  connectorsMcp.map(({ id }) => id),
+                )
+              : [];
+          connectorManifests = buildConnectorManifests(connectorsMcp, connectorTools);
+        }
       }
 
       // Only connectors that ACTUALLY produced a manifest (enabled + with synced
@@ -3147,7 +3178,7 @@ export class AiAgentService {
             toolExecutorMap[id] = 'client';
           }
         }
-        if (managedConnectors.mode !== 'enforced') {
+        if (!connectorsEnforced) {
           for (const plugin of installedPlugins) {
             if (plugin.customParams?.mcp?.type === 'stdio' && manifestMap.has(plugin.identifier)) {
               toolExecutorMap[plugin.identifier] = 'client';
@@ -3899,6 +3930,7 @@ export class AiAgentService {
         hooks,
         operationId,
         parentOperationId,
+        platformConnectorPins: platformConnectorRefs,
         platformModelPin,
         platformOperationPin,
         platformSkillPins: platformSkillRefs,

@@ -90,6 +90,34 @@ export class ConnectorOperationSnapshotService {
     });
   };
 
+  /**
+   * Freeze an EXACT historical published Connector revision by its pinned coordinates
+   * (M10 PR-049 · CONNECTOR-EXACT). Unlike {@link resolveExact}, the caller has no prior proof
+   * (and therefore no `toolPolicyFingerprint`): the fingerprint is computed from the exact
+   * revision's own tool policy. Fail-closed on a missing / non-published / checksum-mismatched
+   * revision, or a payload whose connector id/key/enabled does not match the pin.
+   */
+  freezeExact = async (params: {
+    connectorId: string;
+    connectorKey: string;
+    operationId: string;
+    publishedChecksum: string;
+    publishedRevision: number;
+  }): Promise<FrozenConnectorOperationSnapshot> => {
+    const runtime = await this.repository.getPublishedRuntimeRevision(
+      params.connectorId,
+      params.publishedRevision,
+    );
+    if (!runtime || runtime.provenance.checksum !== params.publishedChecksum) {
+      throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_PUBLISHED');
+    }
+    return this.validateAndRemember({
+      expectedConnectorKey: params.connectorKey,
+      operationId: params.operationId,
+      runtime,
+    });
+  };
+
   resolveExact = async (
     rawProof: ConnectorOperationProof,
   ): Promise<FrozenConnectorOperationSnapshot> => {

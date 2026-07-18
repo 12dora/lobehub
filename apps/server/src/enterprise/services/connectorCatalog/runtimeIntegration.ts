@@ -1,4 +1,4 @@
-import type { ToolManifest } from '@lobechat/types';
+import type { PlatformAgentConnectorDependencyRef, ToolManifest } from '@lobechat/types';
 
 import { ConnectorModel } from '@/database/models/connector';
 import { ConnectorToolModel } from '@/database/models/connectorTool';
@@ -355,6 +355,136 @@ export const buildManagedConnectorManifests = async (params: {
     );
   }
   return { manifests, mode };
+};
+
+/**
+ * Self-referential managed-policy revision bound into a platform Agent's pinned Connector manifests
+ * (M10 PR-049 · CONNECTOR-EXACT). `managedPolicyRevision` is only ever compared against the manifest's
+ * own `agentPolicy.revision` + the recomputed fingerprint at execution — never the live managed
+ * policy — so a fixed marker keeps the agentPolicyFingerprint (and therefore any human-approval
+ * receipt) stable across resume/retry, independent of live policy churn.
+ */
+const PINNED_CONNECTOR_MANAGED_POLICY_REVISION = 0;
+
+/**
+ * Build managed Connector manifests for a platform Agent from its immutable, per-operation pinned
+ * Connector refs (M10 PR-049 · CONNECTOR-EXACT) — the EXACT historical published revisions, not the
+ * current catalog head. Each ref is exact-resolved via `freezeExact` (fail-closed on missing /
+ * non-published / checksum-mismatched revision), the pinned allowlist is validated against the exact
+ * revision's allow-policy tools (a tool not allow-listed in that revision is a fail-closed
+ * escalation), and the resulting manifest exposes ONLY the pinned tools. Publishing v2 / advancing
+ * the head cannot change an in-flight operation's manifests or allowlist; resume/retry rebuild the
+ * same v1 manifests deterministically (so an approval receipt still matches). Fail-closed when the
+ * Agent pinned Connectors but managed Connectors are not enforced. No M09 read when there are none.
+ */
+export const buildPinnedManagedConnectorManifests = async (params: {
+  agentId: string;
+  db: LobeChatDatabase;
+  env?: ConnectorOAuthRuntimeEnv;
+  operationId: string;
+  pinnedConnectors: PlatformAgentConnectorDependencyRef[];
+  userId: string;
+  workspaceId?: string;
+}): Promise<{
+  manifests: PlatformConnectorRuntimeManifest[];
+  mode: ConnectorRuntimeEffectiveMode;
+}> => {
+  if (params.pinnedConnectors.length === 0) return { manifests: [], mode: 'enforced' };
+
+  const effectiveState = await getConnectorRuntimeEffectiveState(params.env ?? process.env);
+  if (effectiveState.mode !== 'enforced') {
+    // The Agent pinned Connectors but managed Connectors are not enforced — cannot honor them.
+    throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_PUBLISHED');
+  }
+
+  const signer = new ConnectorOperationProofSigner(params.env ?? process.env);
+  const snapshots = getSnapshots(params.db);
+
+  // Legacy per-tool permission overlay (user disabled / needs-approval), same as the current path.
+  const connectorKeys = [...new Set(params.pinnedConnectors.map((ref) => ref.connectorKey))];
+  const legacyConnectors = await new ConnectorModel(
+    params.db,
+    params.userId,
+    params.workspaceId,
+  ).queryByIdentifiers(connectorKeys);
+  const legacyByKey = new Map(
+    legacyConnectors.map((connector) => [connector.identifier, connector]),
+  );
+  const legacyTools = await new ConnectorToolModel(
+    params.db,
+    params.userId,
+    params.workspaceId,
+  ).queryAllByConnectorIds(legacyConnectors.map((connector) => connector.id));
+  const legacyToolsByConnector = new Map<string, typeof legacyTools>();
+  for (const tool of legacyTools) {
+    const current = legacyToolsByConnector.get(tool.userConnectorId) ?? [];
+    current.push(tool);
+    legacyToolsByConnector.set(tool.userConnectorId, current);
+  }
+
+  const manifests: PlatformConnectorRuntimeManifest[] = [];
+  const orderedRefs = [...params.pinnedConnectors].sort((left, right) =>
+    left.connectorKey.localeCompare(right.connectorKey),
+  );
+  for (const ref of orderedRefs) {
+    const snapshot = await snapshots.freezeExact({
+      connectorId: ref.connectorId,
+      connectorKey: ref.connectorKey,
+      operationId: params.operationId,
+      publishedChecksum: ref.publishedChecksum,
+      publishedRevision: ref.publishedRevision,
+    });
+    // No tool escalation: every pinned allowed tool must be an allow-policy tool in THIS exact
+    // revision. A ref tool that is not allow-listed in the pinned snapshot fails closed.
+    const allowableTools = new Set(
+      snapshot.payload.tools
+        .filter((tool) => tool.platformPolicy === 'allow')
+        .map((tool) => tool.toolKey),
+    );
+    const allowedToolKeys = [...new Set(ref.allowedToolKeys)].sort();
+    if (allowedToolKeys.some((toolKey) => !allowableTools.has(toolKey))) {
+      throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_TOOL_DENIED');
+    }
+    const selection: ConnectorDependencySelection = {
+      allowedToolKeys,
+      connectorId: snapshot.proof.connectorId,
+      connectorKey: ref.connectorKey,
+      publishedChecksum: snapshot.proof.publishedChecksum,
+      publishedRevision: snapshot.proof.publishedRevision,
+    };
+    const agentPolicy = {
+      revision: PINNED_CONNECTOR_MANAGED_POLICY_REVISION,
+      selections: [selection],
+    };
+    const agentPolicyFingerprint = fingerprintConnectorAgentPolicy({
+      agentId: params.agentId,
+      managedPolicyRevision: PINNED_CONNECTOR_MANAGED_POLICY_REVISION,
+      selections: agentPolicy.selections,
+    });
+    const legacyConnector = legacyByKey.get(ref.connectorKey);
+    const permissionByTool = new Map(
+      (legacyConnector ? (legacyToolsByConnector.get(legacyConnector.id) ?? []) : []).map(
+        (tool) => [tool.toolName, tool.permission],
+      ),
+    );
+    manifests.push(
+      buildPublishedManifest({
+        agentPolicy,
+        connectorKey: ref.connectorKey,
+        permissionByTool,
+        proof: signer.signProof({
+          agentId: params.agentId,
+          agentPolicyFingerprint,
+          managedPolicyRevision: PINNED_CONNECTOR_MANAGED_POLICY_REVISION,
+          proof: snapshot.proof,
+          userId: params.userId,
+        }),
+        selection,
+        snapshot,
+      }),
+    );
+  }
+  return { manifests, mode: 'enforced' };
 };
 
 const buildPublishedManifest = (params: {

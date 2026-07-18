@@ -202,6 +202,8 @@ export interface PlatformOperationModelPin {
 
 /** JSONB shape stored under `agent_operations.metadata`. */
 export interface PlatformOperationMetadata {
+  /** Exact connector references (revision/checksum + tool allowlist) for historical execution. */
+  platformConnectors?: PlatformAgentConnectorDependencyRef[];
   /** Exact model reference for historical-revision execution. */
   platformModel?: PlatformOperationModelPin;
   /** Version pin for resume/retry replay. */

@@ -456,6 +456,7 @@ export class AgentRuntimeService {
       deviceSystemInfo,
       operationSkillSet,
       parentOperationId,
+      platformConnectorPins,
       platformModelPin,
       platformOperationPin,
       platformSkillPins,
@@ -487,7 +488,8 @@ export class AgentRuntimeService {
       connectorApprovalReceipt ||
       platformOperationPin ||
       platformModelPin ||
-      platformSkillPins
+      platformSkillPins ||
+      platformConnectorPins
         ? {
             metadata: {
               ...(appContext?.agentSignal ? { agentSignal: appContext.agentSignal } : {}),
@@ -498,6 +500,8 @@ export class AgentRuntimeService {
               ...(platformModelPin ? { platformModel: platformModelPin } : {}),
               // Secret-free exact Skill refs (audit/replay) — the runtime pool is pinned exactly.
               ...(platformSkillPins ? { platformSkills: platformSkillPins } : {}),
+              // Secret-free exact Connector refs + allowlist (audit/replay) — pinned exactly.
+              ...(platformConnectorPins ? { platformConnectors: platformConnectorPins } : {}),
             },
           }
         : {}),
