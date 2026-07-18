@@ -257,6 +257,15 @@ const config = {
     mirror: 'https://npmmirror.com/mirrors/electron/',
   },
 
+  ...(desktopBranding.isAIHub
+    ? {
+        extraMetadata: {
+          description: desktopBranding.description,
+          homepage: desktopBranding.homepage,
+        },
+      }
+    : {}),
+
   files: [
     'dist',
     'resources',
@@ -276,8 +285,14 @@ const config = {
       ? { artifactName: '${productName}-${version}-${arch}.${ext}' }
       : {}),
     category: 'Utility',
+    ...(desktopBranding.isAIHub
+      ? {
+          description: desktopBranding.description,
+          maintainer: desktopBranding.maintainer,
+          synopsis: 'AIHub Desktop',
+        }
+      : { maintainer: 'electronjs.org' }),
     icon: desktopBranding.isAIHub ? desktopBranding.icons.png : 'build/icon.png',
-    maintainer: 'electronjs.org',
     target: ['AppImage', 'snap', 'deb', 'rpm', 'tar.gz'],
   },
   mac: {

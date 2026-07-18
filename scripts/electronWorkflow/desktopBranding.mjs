@@ -1,28 +1,26 @@
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 export const AIHUB_DESKTOP_BRAND = 'aihub';
 export const AIHUB_PRODUCT_NAME = 'AIHub';
 export const AIHUB_UPDATE_NAMESPACE = 'aihub';
+export const AIHUB_DESKTOP_DESCRIPTION = 'AIHub Desktop Application';
 
 const ICON_DEFINITIONS = [
   {
     digestEnv: 'AIHUB_DESKTOP_ICON_PNG_SHA256',
-    encodedEnv: 'AIHUB_DESKTOP_ICON_PNG_BASE64',
     fileName: 'icon.png',
     format: 'png',
   },
   {
     digestEnv: 'AIHUB_DESKTOP_ICON_ICNS_SHA256',
-    encodedEnv: 'AIHUB_DESKTOP_ICON_ICNS_BASE64',
     fileName: 'Icon.icns',
     format: 'icns',
   },
   {
     digestEnv: 'AIHUB_DESKTOP_ICON_ICO_SHA256',
-    encodedEnv: 'AIHUB_DESKTOP_ICON_ICO_BASE64',
     fileName: 'icon.ico',
     format: 'ico',
   },
@@ -77,6 +75,28 @@ const validateUpdateServerUrl = (rawUrl) => {
   return updateUrl.toString();
 };
 
+const validateHomepage = (rawUrl) => {
+  let homepage;
+  try {
+    homepage = new URL(rawUrl);
+  } catch {
+    throw new Error('AIHUB_DESKTOP_HOMEPAGE must be a valid URL');
+  }
+
+  if (homepage.protocol !== 'https:' || homepage.username || homepage.password) {
+    throw new Error('AIHUB_DESKTOP_HOMEPAGE must be a credential-free HTTPS URL');
+  }
+
+  return homepage.toString();
+};
+
+const validateMaintainer = (maintainer) => {
+  if (maintainer.length > 200 || /[\r\n]/.test(maintainer)) {
+    throw new Error('AIHUB_DESKTOP_MAINTAINER must be a single line of at most 200 characters');
+  }
+  return maintainer;
+};
+
 const validateSigningEnvironment = (env, platform) => {
   if (env.AIHUB_REQUIRE_SIGNING !== '1') return;
 
@@ -116,6 +136,8 @@ export const resolveDesktopBranding = ({
 
   const appId = getRequiredEnv(env, 'AIHUB_DESKTOP_APP_ID');
   validateAppId(appId);
+  const homepage = validateHomepage(getRequiredEnv(env, 'AIHUB_DESKTOP_HOMEPAGE'));
+  const maintainer = validateMaintainer(getRequiredEnv(env, 'AIHUB_DESKTOP_MAINTAINER'));
 
   const assetsDirectory = path.resolve(getRequiredEnv(env, 'AIHUB_DESKTOP_ASSETS_DIR'));
   const icons = {
@@ -136,20 +158,14 @@ export const resolveDesktopBranding = ({
     appId,
     assetsDirectory,
     brand: AIHUB_DESKTOP_BRAND,
+    description: AIHUB_DESKTOP_DESCRIPTION,
+    homepage,
     icons,
     isAIHub: true,
+    maintainer,
     productName: AIHUB_PRODUCT_NAME,
     updateServerUrl: validateUpdateServerUrl(getRequiredEnv(env, 'UPDATE_SERVER_URL')),
   };
-};
-
-const decodeBase64 = (encoded, name) => {
-  const normalized = encoded.replaceAll(/\s/g, '');
-  if (!normalized || normalized.length % 4 !== 0 || !/^[a-z\d+/]+={0,2}$/i.test(normalized)) {
-    throw new Error(`${name} must contain valid base64 data`);
-  }
-
-  return Buffer.from(normalized, 'base64');
 };
 
 export const validateDesktopIcon = ({ buffer, expectedDigest, format }) => {
@@ -178,61 +194,18 @@ export const validateDesktopIcon = ({ buffer, expectedDigest, format }) => {
   if (!hasExpectedHeader) throw new Error(`${format} icon has an invalid file signature`);
 };
 
-export const materializeDesktopBrandAssets = async ({ directory, env = process.env }) => {
+export const materializeDesktopBrandAssets = async ({
+  directory,
+  env = process.env,
+  sourceDirectory,
+}) => {
   await mkdir(directory, { recursive: true, mode: 0o700 });
 
   for (const definition of ICON_DEFINITIONS) {
-    const encoded = getRequiredEnv(env, definition.encodedEnv);
     const expectedDigest = getRequiredEnv(env, definition.digestEnv);
-    const buffer = decodeBase64(encoded, definition.encodedEnv);
+    const buffer = await readFile(path.join(sourceDirectory, definition.fileName));
 
     validateDesktopIcon({ buffer, expectedDigest, format: definition.format });
     await writeFile(path.join(directory, definition.fileName), buffer, { mode: 0o600 });
-  }
-};
-
-const RELEASE_ARTIFACT_PATTERN = /\.(?:appimage|blockmap|deb|dmg|exe|rpm|snap|tar\.gz|zip)$/i;
-
-const listFilesRecursively = async (directory) => {
-  const entries = await readdir(directory, { withFileTypes: true });
-  const nested = await Promise.all(
-    entries.map(async (entry) => {
-      const entryPath = path.join(directory, entry.name);
-      return entry.isDirectory() ? listFilesRecursively(entryPath) : [entryPath];
-    }),
-  );
-  return nested.flat();
-};
-
-export const validateAihubReleaseArtifacts = async (directory) => {
-  const files = await listFilesRecursively(directory);
-  const artifacts = files.filter((file) => RELEASE_ARTIFACT_PATTERN.test(file));
-  const manifests = files.filter((file) => file.endsWith('.yml'));
-
-  if (artifacts.length === 0) throw new Error('AIHub release contains no installer artifacts');
-  if (manifests.length === 0) throw new Error('AIHub release contains no update manifests');
-
-  for (const file of [...artifacts, ...manifests]) {
-    if (/lobehub/i.test(path.basename(file))) {
-      throw new Error(`AIHub release contains a LobeHub-branded file: ${path.basename(file)}`);
-    }
-  }
-
-  for (const artifact of artifacts) {
-    if (!path.basename(artifact).startsWith(`${AIHUB_PRODUCT_NAME}-`)) {
-      throw new Error(`AIHub installer has an unexpected name: ${path.basename(artifact)}`);
-    }
-  }
-
-  for (const manifest of manifests) {
-    const content = await readFile(manifest, 'utf8');
-    if (/lobehub/i.test(content)) {
-      throw new Error(`AIHub update manifest references LobeHub: ${path.basename(manifest)}`);
-    }
-    if (!content.includes(`${AIHUB_PRODUCT_NAME}-`)) {
-      throw new Error(
-        `AIHub update manifest does not reference AIHub artifacts: ${path.basename(manifest)}`,
-      );
-    }
   }
 };
