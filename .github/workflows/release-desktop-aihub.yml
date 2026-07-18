@@ -51,6 +51,8 @@ jobs:
     outputs:
       matrix: ${{ steps.release-gate.outputs.matrix }}
     steps:
+      - uses: actions/checkout@v6
+
       - name: Validate release gate
         id: release-gate
         env:
