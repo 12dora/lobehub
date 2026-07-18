@@ -1,9 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { createRequire } from 'node:module';
+import path from 'node:path';
 
 import {
   validateInlineSkillOperationPayloads,
   validateInlineSkillResourcePaths,
-} from '../inlineSkillResources';
+} from '@lobechat/device-control/inlineSkillResources';
+import { describe, expect, it } from 'vitest';
+
+const requireModule = createRequire(import.meta.url);
+const resolveModule = (id: string) => requireModule.resolve(id);
 
 const resource = (path: string, content = 'x') => ({
   checksum: 'a'.repeat(64),
@@ -14,6 +19,11 @@ const resource = (path: string, content = 'x') => ({
 });
 
 describe('inline Skill operation payload validation', () => {
+  it('resolves the browser-safe public entrypoint directly to the pure validation module', () => {
+    const resolvedEntry = resolveModule('@lobechat/device-control/inlineSkillResources');
+    expect(resolvedEntry.endsWith(path.join('src', 'inlineSkillResources.ts'))).toBe(true);
+  });
+
   it.each([
     ['в.txt', 'ᲀ.txt'],
     ['ι.txt', 'ͅ.txt'],

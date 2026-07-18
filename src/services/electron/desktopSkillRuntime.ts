@@ -1,5 +1,5 @@
 import type { ExecScriptActivatedSkill } from '@lobechat/builtin-tool-skills';
-import { validateInlineSkillOperationPayloads } from '@lobechat/device-control';
+import { validateInlineSkillOperationPayloads } from '@lobechat/device-control/inlineSkillResources';
 
 import { agentSkillService } from '@/services/skill';
 import type { PlatformSkillOperationSnapshot } from '@/types/platform/skills';
