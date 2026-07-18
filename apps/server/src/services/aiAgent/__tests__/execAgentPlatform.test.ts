@@ -58,6 +58,20 @@ vi.mock('@/database/repositories/platformAgentCatalog', async (importOriginal) =
   };
 });
 
+// The resume path resolves the trusted anchor message via MessageModel.findById; stub the model so
+// the RR2-1 pin-resolution can be driven deterministically (findById is an instance property, not a
+// prototype method, so it can't be vi.spyOn'd). Only findById is exercised before the assertions.
+const { messageFindById } = vi.hoisted(() => ({ messageFindById: vi.fn() }));
+vi.mock('@/database/models/message', () => ({
+  MessageModel: class {
+    findById = messageFindById;
+    create = vi.fn(async () => ({ id: 'asst-new' }));
+    query = vi.fn(async () => []);
+    update = vi.fn(async () => undefined);
+    updateMetadata = vi.fn(async () => undefined);
+  },
+}));
+
 const { AiAgentService } = await import('../index');
 const { PlatformAgentDependencyValidationError, PlatformAgentMaterializationError } =
   await import('@/server/enterprise/services/agentCatalog');
@@ -68,7 +82,7 @@ const service = () => new AiAgentService(db, 'user-a');
 
 // Spy the ordinary config path so we can prove whether the request went platform or ordinary.
 let getAgentConfigSpy: MockInstance;
-// Spy the persisted-pin lookup so we can drive the resume path.
+// Spy the EXACT parent-operation pin lookup to drive the resume path.
 let findPinSpy: MockInstance;
 
 const run = (params: Record<string, unknown>) =>
@@ -90,8 +104,14 @@ beforeEach(async () => {
   // Default: no persisted pin (fresh operation path).
   const { AgentOperationModel } = await import('@/database/models/agentOperation');
   findPinSpy = vi
-    .spyOn(AgentOperationModel.prototype, 'findLatestPlatformOperationPin')
+    .spyOn(AgentOperationModel.prototype, 'findPlatformOperationPinByOperationId')
     .mockResolvedValue(null);
+  // Default: the anchor message resolves to a parent operation stamp (drives the resume path).
+  messageFindById.mockResolvedValue({
+    id: 'msg-1',
+    metadata: { operationId: 'op-parent' },
+    parentId: null,
+  });
 });
 
 afterEach(() => {
@@ -185,9 +205,10 @@ describe('AiAgentService.execAgent — platform entitlement (REWORK-2)', () => {
     expect((error as TRPCError).message).toBe('Platform agent dependencies are unavailable');
   });
 
-  // REWORK-2 resume/retry/queued: a continuation replays the persisted pin (the exact version the
-  // operation started on) and NEVER re-authorizes via beginOperation, so it stays on v1 after v2.
-  describe('resume replays the persisted operation pin', () => {
+  // RR2-1 resume/retry/queued: a continuation replays the pin of its EXACT parent operation —
+  // resolved from the trusted anchor message — and NEVER re-authorizes via beginOperation, so an
+  // out-of-order resume of a v1 turn stays on v1 and a missing/foreign pin fails closed.
+  describe('resume replays the EXACT parent operation pin (RR2-1)', () => {
     const pin = { checksum: 'a'.repeat(64), platformAgentId: 'pagt_1', versionId: 'pav_1' };
     const resumeParams = {
       agentId: 'platform-agent:pagt_1',
@@ -196,7 +217,7 @@ describe('AiAgentService.execAgent — platform entitlement (REWORK-2)', () => {
       resume: true,
     };
 
-    it('reuses the pinned version via materializeFromPin without calling beginOperation', async () => {
+    it('resolves the pin by the anchor message stamp, exact operationId, without beginOperation', async () => {
       findPinSpy.mockResolvedValue(pin);
       materializeFromPin.mockResolvedValue({
         agentId: 'agt_x',
@@ -205,11 +226,33 @@ describe('AiAgentService.execAgent — platform entitlement (REWORK-2)', () => {
       });
       // (execAgent later fails at resume message validation — irrelevant to the pin path we assert.)
       await run(resumeParams);
-      expect(findPinSpy).toHaveBeenCalledWith({ threadId: null, topicId: 'topic-1' });
+      // The anchor message is resolved owner-scoped, then the pin is looked up by EXACT operationId
+      // (never "latest on the topic"), scoped to the resume turn's topic/thread.
+      expect(messageFindById).toHaveBeenCalledWith('msg-1');
+      expect(findPinSpy).toHaveBeenCalledWith('op-parent', { threadId: null, topicId: 'topic-1' });
       expect(materializeFromPin).toHaveBeenCalledWith(pin);
       expect(beginOperation).not.toHaveBeenCalled();
       // Dependencies are still validated at the pinned revision on resume.
       expect(validateDeps).toHaveBeenCalled();
+    });
+
+    it('walks a pending tool message to its assistant parent stamp', async () => {
+      // Anchor is a tool message with no own stamp; its assistant parent carries the operationId.
+      messageFindById.mockImplementation(async (id: string) =>
+        id === 'msg-1'
+          ? { id: 'msg-1', metadata: {}, parentId: 'asst-1' }
+          : { id: 'asst-1', metadata: { operationId: 'op-parent' }, parentId: null },
+      );
+      findPinSpy.mockResolvedValue(pin);
+      materializeFromPin.mockResolvedValue({
+        agentId: 'agt_x',
+        config: { id: 'agt_x' },
+        dependencySnapshot: { connectors: [], model: {}, skills: [] },
+      });
+      await run(resumeParams);
+      expect(findPinSpy).toHaveBeenCalledWith('op-parent', { threadId: null, topicId: 'topic-1' });
+      expect(materializeFromPin).toHaveBeenCalledWith(pin);
+      expect(beginOperation).not.toHaveBeenCalled();
     });
 
     it('fails closed when the persisted pin is for a different platform Agent', async () => {
@@ -220,13 +263,22 @@ describe('AiAgentService.execAgent — platform entitlement (REWORK-2)', () => {
       expect(beginOperation).not.toHaveBeenCalled();
     });
 
-    it('falls back to a fresh authorization when no platform pin is persisted for the turn', async () => {
-      findPinSpy.mockResolvedValue(null);
-      beginOperation.mockResolvedValue(null); // e.g. entitlement gone → fresh resolve fails closed
+    it('RR2-1: fails closed (never a fresh beginOperation) when no parent-op pin resolves', async () => {
+      findPinSpy.mockResolvedValue(null); // exact parent op has no persisted platform pin
       const error = await run(resumeParams);
       expect((error as TRPCError).code).toBe('NOT_FOUND');
       expect(materializeFromPin).not.toHaveBeenCalled();
-      expect(beginOperation).toHaveBeenCalledTimes(1);
+      // The security invariant: a platform resume NEVER re-authorizes a fresh (latest) operation.
+      expect(beginOperation).not.toHaveBeenCalled();
+    });
+
+    it('RR2-1: fails closed when the anchor message is missing (foreign / cross-owner)', async () => {
+      messageFindById.mockResolvedValue(undefined as never);
+      const error = await run(resumeParams);
+      expect((error as TRPCError).code).toBe('NOT_FOUND');
+      expect(findPinSpy).not.toHaveBeenCalled();
+      expect(materializeFromPin).not.toHaveBeenCalled();
+      expect(beginOperation).not.toHaveBeenCalled();
     });
   });
 });

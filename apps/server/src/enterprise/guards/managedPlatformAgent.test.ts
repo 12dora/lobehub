@@ -18,7 +18,14 @@ import {
 import { users } from '@/database/schemas/user';
 import type { LobeChatDatabase } from '@/database/type';
 
-import { assertAgentNotPlatformManaged } from './managedPlatformAgent';
+import {
+  assertAgentNotPlatformManaged,
+  assertAgentsNotPlatformManaged,
+  pickAgentId,
+  pickAgentIds,
+  pickDocumentAgentIds,
+  pickId,
+} from './managedPlatformAgent';
 
 const db: LobeChatDatabase = await getTestDB();
 const CHECKSUM = 'a'.repeat(64);
@@ -102,5 +109,51 @@ describe('assertAgentNotPlatformManaged (ROOT-02)', () => {
   it('is a no-op when the managed flag is off (ordinary local Agents unaffected)', async () => {
     vi.stubEnv('ENABLE_PLATFORM_MANAGED_AGENTS', '0');
     expect(await assertManaged('agt_materialized')).toBeNull();
+  });
+});
+
+describe('assertAgentsNotPlatformManaged (RR2-4 batch)', () => {
+  const assertMany = (agentIds: string[], userId = 'user-a') =>
+    assertAgentsNotPlatformManaged({ agentIds, db, userId }).then(
+      () => null,
+      (e) => e,
+    );
+
+  it('rejects the whole batch when ANY id is a materialized platform Agent', async () => {
+    vi.stubEnv('ENABLE_PLATFORM_MANAGED_AGENTS', '1');
+    // A managed id smuggled inside an otherwise-ordinary array must still be caught.
+    const error = await assertMany(['agt_ordinary', 'agt_materialized']);
+    expect(error).toBeInstanceOf(TRPCError);
+    expect((error as TRPCError).code).toBe('FORBIDDEN');
+  });
+
+  it('allows a batch of only ordinary local Agents', async () => {
+    vi.stubEnv('ENABLE_PLATFORM_MANAGED_AGENTS', '1');
+    expect(await assertMany(['agt_ordinary'])).toBeNull();
+    expect(await assertMany([])).toBeNull();
+  });
+
+  it('is owner-scoped and flag-gated', async () => {
+    vi.stubEnv('ENABLE_PLATFORM_MANAGED_AGENTS', '1');
+    expect(await assertMany(['agt_materialized'], 'user-b')).toBeNull();
+    vi.stubEnv('ENABLE_PLATFORM_MANAGED_AGENTS', '0');
+    expect(await assertMany(['agt_materialized'])).toBeNull();
+  });
+});
+
+describe('agent-id pickers (RR2-4)', () => {
+  it('extract the target agent id(s) from each mutation input shape', () => {
+    expect(pickAgentId({ agentId: 'a1' })).toEqual(['a1']);
+    expect(pickId({ id: 'a2' })).toEqual(['a2']);
+    expect(pickAgentIds({ agentIds: ['a3', 'a4'] })).toEqual(['a3', 'a4']);
+    expect(pickDocumentAgentIds({ sourceAgentId: 's', targetAgentId: 't' })).toEqual([
+      undefined,
+      's',
+      't',
+    ]);
+    // Robust to malformed / missing inputs (guard then simply finds nothing to check).
+    expect(pickAgentIds({})).toEqual([]);
+    expect(pickAgentId(null)).toEqual([undefined]);
+    expect(pickId(undefined)).toEqual([undefined]);
   });
 });

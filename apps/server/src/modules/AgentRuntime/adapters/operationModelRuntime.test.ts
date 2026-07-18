@@ -2,13 +2,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { RuntimeExecutorContext } from '../context';
 
-const { findPlatformModelPin, initModelRuntimeFromDB, initPlatformExactModelRuntime } = vi.hoisted(
-  () => ({
-    findPlatformModelPin: vi.fn(),
+const { findPlatformOperationRef, initModelRuntimeFromDB, initPlatformExactModelRuntime } =
+  vi.hoisted(() => ({
+    findPlatformOperationRef: vi.fn(),
     initModelRuntimeFromDB: vi.fn(async () => ({ id: 'ordinary-runtime' })),
     initPlatformExactModelRuntime: vi.fn(async () => ({ id: 'exact-runtime' })),
-  }),
-);
+  }));
 
 vi.mock('@/server/modules/ModelRuntime', () => ({
   initModelRuntimeFromDB,
@@ -17,11 +16,12 @@ vi.mock('@/server/modules/ModelRuntime', () => ({
 
 vi.mock('@/database/models/agentOperation', () => ({
   AgentOperationModel: class {
-    findPlatformModelPin = findPlatformModelPin;
+    findPlatformOperationRef = findPlatformOperationRef;
   },
 }));
 
-const { initOperationModelRuntime } = await import('./operationModelRuntime');
+const { initOperationModelRuntime, PlatformExactModelUnavailableError } =
+  await import('./operationModelRuntime');
 
 const pin = {
   modelKey: 'chat-model',
@@ -29,6 +29,8 @@ const pin = {
   providerKey: 'internal-provider',
   providerRevision: 1,
 };
+
+const platformRef = { isPlatformOperation: true, modelPin: pin };
 
 const ctx = {
   operationId: 'op-1',
@@ -39,9 +41,9 @@ const ctx = {
 
 beforeEach(() => vi.clearAllMocks());
 
-describe('initOperationModelRuntime (MODEL-EXACT)', () => {
-  it('binds the EXACT pinned provider revision when the operation model pin matches the call', async () => {
-    findPlatformModelPin.mockResolvedValue(pin);
+describe('initOperationModelRuntime (MODEL-EXACT + RR2-2)', () => {
+  it('binds the EXACT pinned provider revision when a platform op pin matches the call', async () => {
+    findPlatformOperationRef.mockResolvedValue(platformRef);
     const runtime = await initOperationModelRuntime(ctx, 'internal-provider', 'chat-model');
 
     expect(runtime).toEqual({ id: 'exact-runtime' });
@@ -55,26 +57,34 @@ describe('initOperationModelRuntime (MODEL-EXACT)', () => {
     expect(initModelRuntimeFromDB).not.toHaveBeenCalled();
   });
 
-  it('uses the ordinary path when the call is for a different provider/model than the pin', async () => {
-    findPlatformModelPin.mockResolvedValue(pin);
-    await initOperationModelRuntime(ctx, 'other-provider', 'chat-model');
-    expect(initModelRuntimeFromDB).toHaveBeenCalledWith(
-      expect.anything(),
-      'user-a',
-      'other-provider',
-      undefined,
-    );
+  it('RR2-2: a platform op fails closed (no downgrade) when the call provider/model ≠ the pin', async () => {
+    findPlatformOperationRef.mockResolvedValue(platformRef);
+    await expect(
+      initOperationModelRuntime(ctx, 'other-provider', 'chat-model'),
+    ).rejects.toBeInstanceOf(PlatformExactModelUnavailableError);
+    expect(initModelRuntimeFromDB).not.toHaveBeenCalled();
     expect(initPlatformExactModelRuntime).not.toHaveBeenCalled();
 
     vi.clearAllMocks();
-    findPlatformModelPin.mockResolvedValue(pin);
-    await initOperationModelRuntime(ctx, 'internal-provider', 'other-model');
-    expect(initModelRuntimeFromDB).toHaveBeenCalled();
+    findPlatformOperationRef.mockResolvedValue(platformRef);
+    await expect(
+      initOperationModelRuntime(ctx, 'internal-provider', 'other-model'),
+    ).rejects.toBeInstanceOf(PlatformExactModelUnavailableError);
+    expect(initModelRuntimeFromDB).not.toHaveBeenCalled();
     expect(initPlatformExactModelRuntime).not.toHaveBeenCalled();
   });
 
-  it('uses the ordinary path for an operation without a platform model pin (local/builtin)', async () => {
-    findPlatformModelPin.mockResolvedValue(null);
+  it('RR2-2: a platform op fails closed when its model pin is missing (never latest)', async () => {
+    findPlatformOperationRef.mockResolvedValue({ isPlatformOperation: true, modelPin: null });
+    await expect(
+      initOperationModelRuntime(ctx, 'internal-provider', 'chat-model'),
+    ).rejects.toBeInstanceOf(PlatformExactModelUnavailableError);
+    expect(initModelRuntimeFromDB).not.toHaveBeenCalled();
+    expect(initPlatformExactModelRuntime).not.toHaveBeenCalled();
+  });
+
+  it('uses the ordinary path for a genuinely ordinary operation (no platform marker)', async () => {
+    findPlatformOperationRef.mockResolvedValue({ isPlatformOperation: false, modelPin: null });
     const runtime = await initOperationModelRuntime(ctx, 'openai', 'gpt-4o');
     expect(runtime).toEqual({ id: 'ordinary-runtime' });
     expect(initModelRuntimeFromDB).toHaveBeenCalledWith(
@@ -86,10 +96,25 @@ describe('initOperationModelRuntime (MODEL-EXACT)', () => {
     expect(initPlatformExactModelRuntime).not.toHaveBeenCalled();
   });
 
-  it('never reads the pin (or hits exact) when there is no trusted userId', async () => {
+  it('uses the ordinary path when the operation row does not exist (builtin/local)', async () => {
+    findPlatformOperationRef.mockResolvedValue(null);
+    const runtime = await initOperationModelRuntime(ctx, 'openai', 'gpt-4o');
+    expect(runtime).toEqual({ id: 'ordinary-runtime' });
+    expect(initModelRuntimeFromDB).toHaveBeenCalled();
+    expect(initPlatformExactModelRuntime).not.toHaveBeenCalled();
+  });
+
+  it('a DB read error propagates (the LLM call fails closed, never guesses)', async () => {
+    findPlatformOperationRef.mockRejectedValue(new Error('db down'));
+    await expect(initOperationModelRuntime(ctx, 'openai', 'gpt-4o')).rejects.toThrow('db down');
+    expect(initModelRuntimeFromDB).not.toHaveBeenCalled();
+    expect(initPlatformExactModelRuntime).not.toHaveBeenCalled();
+  });
+
+  it('never reads the ref (or hits exact) when there is no trusted userId', async () => {
     const anonCtx = { ...ctx, userId: undefined } as RuntimeExecutorContext;
     await initOperationModelRuntime(anonCtx, 'openai', 'gpt-4o').catch(() => null);
-    expect(findPlatformModelPin).not.toHaveBeenCalled();
+    expect(findPlatformOperationRef).not.toHaveBeenCalled();
     expect(initPlatformExactModelRuntime).not.toHaveBeenCalled();
   });
 });

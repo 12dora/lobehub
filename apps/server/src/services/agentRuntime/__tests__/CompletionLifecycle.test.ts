@@ -2,6 +2,7 @@
 import { ChatErrorType } from '@lobechat/types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { AgentOperationModel } from '@/database/models/agentOperation';
 import * as agentSignalService from '@/server/services/agentSignal';
 import * as verifyServices from '@/server/services/verify';
 
@@ -372,6 +373,46 @@ describe('CompletionLifecycle.dispatchHooks — verify plan race', () => {
     } as any);
 
     expect(instantiateSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('CompletionLifecycle.recordStart — platform fail-closed (RR2-2)', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('fails the start closed with a stable error when a platform op start fails to persist', async () => {
+    vi.spyOn(AgentOperationModel.prototype, 'recordStart').mockRejectedValue(
+      new Error('duplicate key value violates unique constraint "agent_operations_pkey"'),
+    );
+    const lifecycle = buildLifecycle();
+    await expect(
+      lifecycle.recordStart({
+        metadata: {
+          platformOperation: { checksum: 'a'.repeat(64), platformAgentId: 'p', versionId: 'v' },
+        },
+        operationId: 'op-x',
+      } as any),
+    ).rejects.toThrow('PLATFORM_OPERATION_START_PERSIST_FAILED');
+  });
+
+  it('the stable error carries no raw DB / SQL detail', async () => {
+    vi.spyOn(AgentOperationModel.prototype, 'recordStart').mockRejectedValue(
+      new Error('violates constraint agent_operations_pkey during INSERT ... SELECT'),
+    );
+    const lifecycle = buildLifecycle();
+    const error = await lifecycle
+      .recordStart({
+        metadata: { platformOperation: { checksum: 'a', platformAgentId: 'p', versionId: 'v' } },
+        operationId: 'op-y',
+      } as any)
+      .catch((e) => e as Error);
+    expect(error.message).toBe('PLATFORM_OPERATION_START_PERSIST_FAILED');
+    expect(error.message).not.toMatch(/constraint|INSERT|SELECT|agent_operations/i);
+  });
+
+  it('stays fire-and-forget (swallows the failure) for an ordinary operation', async () => {
+    vi.spyOn(AgentOperationModel.prototype, 'recordStart').mockRejectedValue(new Error('db down'));
+    const lifecycle = buildLifecycle();
+    await expect(lifecycle.recordStart({ operationId: 'op-z' } as any)).resolves.toBeUndefined();
   });
 });
 
