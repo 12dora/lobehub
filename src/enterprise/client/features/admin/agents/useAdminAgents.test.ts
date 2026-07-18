@@ -3,12 +3,14 @@ import { renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createMockAdminAgentsClient } from './mockAdminAgents';
-import type { AdminAgentDetailOutput } from './types';
 import {
   clearAdminAgentCache,
+  fetchActiveAdminAgentRollouts,
   fetchAdminAgentDetail,
+  mergePolledRollouts,
   refreshAdminAgent,
   refreshAdminAgentLists,
+  selectActiveRolloutJobIds,
   useFetchAdminAgent,
   useFetchAdminAgents,
 } from './useAdminAgents';
@@ -50,7 +52,7 @@ describe('Admin Agent hook adapter injection', () => {
     const list = vi.spyOn(client, 'list');
     renderHook(() => useFetchAdminAgents({}, false, client));
     renderHook(() => useFetchAdminAgent('agent-1', false, client));
-    expect(mocks.keys).toEqual([null, null]);
+    expect(mocks.keys).toEqual([null, null, null]);
     expect(list).not.toHaveBeenCalled();
     expect(get).not.toHaveBeenCalled();
   });
@@ -84,19 +86,25 @@ describe('Admin Agent hook adapter injection', () => {
       limit: 100,
     });
     expect((detail as { versions: unknown[] }).versions).toHaveLength(1);
-    const refreshInterval = mocks.configs[1]!.refreshInterval as (
-      latest: AdminAgentDetailOutput,
-    ) => number;
-    expect(refreshInterval(detail as AdminAgentDetailOutput)).toBe(2000);
-    expect(
-      refreshInterval({
-        ...(detail as AdminAgentDetailOutput),
-        rollouts: (detail as AdminAgentDetailOutput).rollouts.map((rollout) => ({
-          ...rollout,
-          status: 'completed',
-        })),
-      }),
-    ).toBe(0);
+    expect(mocks.configs[1]!.refreshInterval).toBeUndefined();
+    expect(mocks.keys[2]).toBeNull();
+  });
+
+  it('dedupes active jobs and merges lightweight getRollout projections', async () => {
+    const client = createMockAdminAgentsClient();
+    const detail = await fetchAdminAgentDetail('agent-inbox', client);
+    const running = detail.rollouts[0]!;
+    const duplicateDetail = { ...detail, rollouts: [running, running] };
+    expect(selectActiveRolloutJobIds(duplicateDetail)).toEqual([running.jobId]);
+
+    const getRollout = vi.spyOn(client, 'getRollout');
+    const polled = await fetchActiveAdminAgentRollouts(detail.identity.id, [running.jobId], client);
+    expect(getRollout).toHaveBeenCalledTimes(1);
+    const merged = mergePolledRollouts(detail, [
+      { ...polled[0]!, completed: running.completed + 1 },
+    ]);
+    expect(merged.rollouts[0]!.completed).toBe(running.completed + 1);
+    expect(detail.rollouts[0]!.completed).toBe(running.completed);
   });
 
   it('skips rollout reads when the authoritative platform capability is off', async () => {
