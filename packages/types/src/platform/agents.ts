@@ -172,3 +172,21 @@ export interface PlatformUserAgentMaterialization {
   platformAgentVersionId: string;
   userId: string;
 }
+
+/**
+ * Secret-free pin persisted on an operation so resume / retry / queued steps replay the EXACT
+ * version the operation started on, instead of re-resolving latest (M10 PR-049 · REWORK-2).
+ * Carries only stable identifiers + the version checksum — never a secret, token, or decrypted
+ * value; the full pinned config + dependency snapshot are re-derived from the immutable version at
+ * `versionId`, and a checksum mismatch (tampered / advanced pointer) fails closed.
+ */
+export interface PlatformOperationPin {
+  checksum: string;
+  platformAgentId: string;
+  versionId: string;
+}
+
+/** JSONB shape stored under `agent_operations.metadata.platformOperation`. */
+export interface PlatformOperationMetadata {
+  platformOperation?: PlatformOperationPin;
+}

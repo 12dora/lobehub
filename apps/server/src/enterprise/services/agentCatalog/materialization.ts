@@ -5,6 +5,7 @@ import type {
   PlatformAgentModelDependencyRef,
   PlatformAgentSkillDependencyRef,
   PlatformAgentVersionConfig,
+  PlatformOperationPin,
 } from '@lobechat/types';
 import type { LLMParams } from 'model-bank';
 
@@ -112,6 +113,40 @@ export class PlatformAgentMaterializationService {
       // against the published catalog at the pinned revision (fail-closed, no latest fallback).
       dependencySnapshot: version.dependencySnapshot,
     };
+  };
+
+  /**
+   * Resume path (REWORK-2): re-derive the operation from a persisted secret-free pin instead of
+   * re-resolving latest. Fetches the immutable version by exact id, fail-closed on a missing version
+   * or a checksum mismatch (tampered metadata / advanced pointer), then reuses the existing
+   * materialized Agent and rebuilds the pinned config from that exact version. No `beginOperation`,
+   * so an in-flight v1 operation stays on v1 even after v2 is published.
+   */
+  materializeFromPin = async (
+    pin: PlatformOperationPin,
+  ): Promise<{
+    agentId: string;
+    config: AgentConfigWithId;
+    dependencySnapshot: PlatformAgentDependencySnapshot;
+  }> => {
+    let fetched: ExactPlatformAgentVersion | undefined;
+    try {
+      fetched = await this.repository.getExactVersion(pin.platformAgentId, pin.versionId);
+    } catch (error) {
+      const redacted = redactPlatformReadError(error);
+      throw redacted instanceof PlatformAgentUnavailableError
+        ? new PlatformAgentMaterializationError()
+        : redacted;
+    }
+    if (!fetched || fetched.checksum !== pin.checksum) {
+      throw new PlatformAgentMaterializationError();
+    }
+    return this.materializeForOperation({
+      checksum: fetched.checksum,
+      config: fetched.config,
+      platformAgentId: pin.platformAgentId,
+      versionId: pin.versionId,
+    });
   };
 
   /** Fail-closed validation that the fetched version exactly matches the pinned snapshot. */

@@ -1,5 +1,9 @@
-import type { VerifyRunStatus } from '@lobechat/types';
-import { and, eq, gte, isNotNull, sql } from 'drizzle-orm';
+import type {
+  PlatformOperationMetadata,
+  PlatformOperationPin,
+  VerifyRunStatus,
+} from '@lobechat/types';
+import { and, desc, eq, gte, isNotNull, isNull, sql } from 'drizzle-orm';
 
 import { today } from '@/utils/time';
 
@@ -168,6 +172,35 @@ export class AgentOperationModel {
       .where(and(eq(agentOperations.id, operationId), this.ownership()))
       .limit(1);
     return row ?? null;
+  }
+
+  /**
+   * Load the secret-free platform operation pin of the most recent platform operation on a
+   * topic/thread, for resume/retry replay (M10 PR-049 · REWORK-2). Strictly owner- and
+   * workspace-scoped (via `ownership()`), so a leaked operationId / topicId can never surface
+   * another principal's pin. Returns null when no platform operation exists there. The caller
+   * re-derives the exact pinned version from `versionId` and fails closed on a checksum mismatch.
+   */
+  async findLatestPlatformOperationPin(params: {
+    threadId?: string | null;
+    topicId: string;
+  }): Promise<PlatformOperationPin | null> {
+    const [row] = await this.db
+      .select({ metadata: agentOperations.metadata })
+      .from(agentOperations)
+      .where(
+        and(
+          this.ownership(),
+          eq(agentOperations.topicId, params.topicId),
+          params.threadId
+            ? eq(agentOperations.threadId, params.threadId)
+            : isNull(agentOperations.threadId),
+          sql`${agentOperations.metadata} -> 'platformOperation' is not null`,
+        ),
+      )
+      .orderBy(desc(agentOperations.startedAt))
+      .limit(1);
+    return (row?.metadata as PlatformOperationMetadata | undefined)?.platformOperation ?? null;
   }
 
   /**

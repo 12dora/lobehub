@@ -3,7 +3,7 @@ import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { getTestDB } from '../../core/getTestDB';
-import { agentOperations, users } from '../../schemas';
+import { agentOperations, threads, topics, users } from '../../schemas';
 import type { LobeChatDatabase } from '../../type';
 import { AgentOperationModel } from '../agentOperation';
 
@@ -266,6 +266,97 @@ describe('AgentOperationModel', () => {
 
       const result = await model.getMaxDurationSeconds();
       expect(result).toBe(0);
+    });
+  });
+
+  describe('findLatestPlatformOperationPin', () => {
+    const pin = { checksum: 'a'.repeat(64), platformAgentId: 'pagt_1', versionId: 'pav_1' };
+
+    // agent_operations.topic_id / thread_id are FK-restricted, so seed the referenced rows.
+    beforeEach(async () => {
+      await serverDB.insert(topics).values([
+        { id: 'topic-1', userId },
+        { id: 'topic-2', userId },
+      ]);
+      await serverDB
+        .insert(threads)
+        .values([{ id: 'thread-1', topicId: 'topic-1', type: 'standalone', userId }]);
+    });
+
+    const seed = (
+      model: AgentOperationModel,
+      params: {
+        operationId: string;
+        pin?: typeof pin;
+        startedAt: Date;
+        threadId?: string | null;
+        topicId: string;
+      },
+    ) =>
+      model.recordStart({
+        metadata: params.pin ? { platformOperation: params.pin } : undefined,
+        operationId: params.operationId,
+        startedAt: params.startedAt,
+        threadId: params.threadId ?? null,
+        topicId: params.topicId,
+      });
+
+    it('returns the pin of the most recent platform operation on the topic', async () => {
+      const model = new AgentOperationModel(serverDB, userId);
+      await seed(model, {
+        operationId: 'op-v1',
+        pin,
+        startedAt: new Date('2024-01-01T00:00:00Z'),
+        topicId: 'topic-1',
+      });
+      await seed(model, {
+        operationId: 'op-v2',
+        pin: { ...pin, checksum: 'c'.repeat(64), versionId: 'pav_2' },
+        startedAt: new Date('2024-01-02T00:00:00Z'),
+        topicId: 'topic-1',
+      });
+
+      expect(await model.findLatestPlatformOperationPin({ topicId: 'topic-1' })).toEqual({
+        ...pin,
+        checksum: 'c'.repeat(64),
+        versionId: 'pav_2',
+      });
+    });
+
+    it('is owner-scoped: another user never sees the pin', async () => {
+      const model = new AgentOperationModel(serverDB, userId);
+      await seed(model, {
+        operationId: 'op-a',
+        pin,
+        startedAt: new Date('2024-01-01T00:00:00Z'),
+        topicId: 'topic-1',
+      });
+      const other = new AgentOperationModel(serverDB, otherUserId);
+      expect(await other.findLatestPlatformOperationPin({ topicId: 'topic-1' })).toBeNull();
+    });
+
+    it('matches the thread and returns null when there is no platform operation', async () => {
+      const model = new AgentOperationModel(serverDB, userId);
+      await seed(model, {
+        operationId: 'op-thread',
+        pin,
+        startedAt: new Date('2024-01-01T00:00:00Z'),
+        threadId: 'thread-1',
+        topicId: 'topic-1',
+      });
+      // Non-platform operation (no pin) on another topic must not resolve.
+      await seed(model, {
+        operationId: 'op-plain',
+        startedAt: new Date('2024-01-03T00:00:00Z'),
+        topicId: 'topic-2',
+      });
+
+      expect(
+        await model.findLatestPlatformOperationPin({ threadId: 'thread-1', topicId: 'topic-1' }),
+      ).toEqual(pin);
+      // A thread mismatch (asking for the null-thread turn) finds nothing.
+      expect(await model.findLatestPlatformOperationPin({ topicId: 'topic-1' })).toBeNull();
+      expect(await model.findLatestPlatformOperationPin({ topicId: 'topic-2' })).toBeNull();
     });
   });
 });
