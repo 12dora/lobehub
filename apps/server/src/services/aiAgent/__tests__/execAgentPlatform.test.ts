@@ -21,6 +21,7 @@ import type { LobeChatDatabase } from '@/database/type';
 
 const {
   beginOperation,
+  isEntitled,
   materializeForOperation,
   materializeFromPin,
   getPlatformAgentIdByMaterializedAgentId,
@@ -28,6 +29,7 @@ const {
 } = vi.hoisted(() => ({
   beginOperation: vi.fn(),
   getPlatformAgentIdByMaterializedAgentId: vi.fn(),
+  isEntitled: vi.fn(async () => true),
   materializeForOperation: vi.fn(),
   materializeFromPin: vi.fn(),
   validateDeps: vi.fn(async () => ({ valid: true })),
@@ -39,6 +41,7 @@ vi.mock('@/server/enterprise/services/agentCatalog', async (importOriginal) => {
     ...actual,
     PlatformAgentEffectiveResolver: class {
       beginOperation = beginOperation;
+      isEntitled = isEntitled;
     },
     PlatformAgentMaterializationService: class {
       materializeForOperation = materializeForOperation;
@@ -101,17 +104,14 @@ beforeEach(async () => {
   // Ordinary path resolves to "not found" so we can assert reject-early without a real agent row.
   const { AgentService } = await import('@/server/services/agent');
   getAgentConfigSpy = vi.spyOn(AgentService.prototype, 'getAgentConfig').mockResolvedValue(null);
-  // Default: no persisted pin (fresh operation path).
+  // Default: no server-bound resumable pin (fresh operation path).
   const { AgentOperationModel } = await import('@/database/models/agentOperation');
   findPinSpy = vi
-    .spyOn(AgentOperationModel.prototype, 'findPlatformOperationPinByOperationId')
+    .spyOn(AgentOperationModel.prototype, 'findResumablePlatformOperationPin')
     .mockResolvedValue(null);
-  // Default: the anchor message resolves to a parent operation stamp (drives the resume path).
-  messageFindById.mockResolvedValue({
-    id: 'msg-1',
-    metadata: { operationId: 'op-parent' },
-    parentId: null,
-  });
+  // Default: the anchor message exists (owner-scoped); the operation binding drives the resume path.
+  messageFindById.mockResolvedValue({ id: 'msg-1', metadata: {}, parentId: 'asst-1' });
+  isEntitled.mockResolvedValue(true);
 });
 
 afterEach(() => {
@@ -205,10 +205,10 @@ describe('AiAgentService.execAgent — platform entitlement (REWORK-2)', () => {
     expect((error as TRPCError).message).toBe('Platform agent dependencies are unavailable');
   });
 
-  // RR2-1 resume/retry/queued: a continuation replays the pin of its EXACT parent operation —
-  // resolved from the trusted anchor message — and NEVER re-authorizes via beginOperation, so an
-  // out-of-order resume of a v1 turn stays on v1 and a missing/foreign pin fails closed.
-  describe('resume replays the EXACT parent operation pin (RR2-1)', () => {
+  // RR3-1 resume wiring (unit): a continuation replays the pin of the EXACT parent operation matched
+  // by the SERVER-controlled anchor binding, re-checks LIVE entitlement, and NEVER re-authorizes via
+  // beginOperation. (The real forgery-resistance proof lives in the service-chain integration test.)
+  describe('resume replays the server-bound parent operation pin (RR3-1)', () => {
     const pin = { checksum: 'a'.repeat(64), platformAgentId: 'pagt_1', versionId: 'pav_1' };
     const resumeParams = {
       agentId: 'platform-agent:pagt_1',
@@ -216,46 +216,35 @@ describe('AiAgentService.execAgent — platform entitlement (REWORK-2)', () => {
       parentMessageId: 'msg-1',
       resume: true,
     };
-
-    it('resolves the pin by the anchor message stamp, exact operationId, without beginOperation', async () => {
-      findPinSpy.mockResolvedValue(pin);
+    const okMaterialize = () =>
       materializeFromPin.mockResolvedValue({
         agentId: 'agt_x',
         config: { id: 'agt_x' },
         dependencySnapshot: { connectors: [], model: {}, skills: [] },
       });
+
+    it('resolves via the anchor+parentId bound lookup, re-checks entitlement, no beginOperation', async () => {
+      findPinSpy.mockResolvedValue(pin);
+      okMaterialize();
       // (execAgent later fails at resume message validation — irrelevant to the pin path we assert.)
       await run(resumeParams);
-      // The anchor message is resolved owner-scoped, then the pin is looked up by EXACT operationId
-      // (never "latest on the topic"), scoped to the resume turn's topic/thread.
+      // The anchor message is resolved owner-scoped, then the pin is matched by the server-controlled
+      // binding (anchor id + its server-column parentId), scoped to this platform Agent + topic/thread.
       expect(messageFindById).toHaveBeenCalledWith('msg-1');
-      expect(findPinSpy).toHaveBeenCalledWith('op-parent', { threadId: null, topicId: 'topic-1' });
+      expect(findPinSpy).toHaveBeenCalledWith({
+        anchorMessageId: 'msg-1',
+        anchorParentId: 'asst-1',
+        platformAgentId: 'pagt_1',
+        threadId: null,
+        topicId: 'topic-1',
+      });
+      expect(isEntitled).toHaveBeenCalledWith('user-a', 'pagt_1');
       expect(materializeFromPin).toHaveBeenCalledWith(pin);
       expect(beginOperation).not.toHaveBeenCalled();
-      // Dependencies are still validated at the pinned revision on resume.
       expect(validateDeps).toHaveBeenCalled();
     });
 
-    it('walks a pending tool message to its assistant parent stamp', async () => {
-      // Anchor is a tool message with no own stamp; its assistant parent carries the operationId.
-      messageFindById.mockImplementation(async (id: string) =>
-        id === 'msg-1'
-          ? { id: 'msg-1', metadata: {}, parentId: 'asst-1' }
-          : { id: 'asst-1', metadata: { operationId: 'op-parent' }, parentId: null },
-      );
-      findPinSpy.mockResolvedValue(pin);
-      materializeFromPin.mockResolvedValue({
-        agentId: 'agt_x',
-        config: { id: 'agt_x' },
-        dependencySnapshot: { connectors: [], model: {}, skills: [] },
-      });
-      await run(resumeParams);
-      expect(findPinSpy).toHaveBeenCalledWith('op-parent', { threadId: null, topicId: 'topic-1' });
-      expect(materializeFromPin).toHaveBeenCalledWith(pin);
-      expect(beginOperation).not.toHaveBeenCalled();
-    });
-
-    it('fails closed when the persisted pin is for a different platform Agent', async () => {
+    it('fails closed when the bound pin is for a different platform Agent', async () => {
       findPinSpy.mockResolvedValue({ ...pin, platformAgentId: 'pagt_OTHER' });
       const error = await run(resumeParams);
       expect((error as TRPCError).code).toBe('NOT_FOUND');
@@ -263,20 +252,30 @@ describe('AiAgentService.execAgent — platform entitlement (REWORK-2)', () => {
       expect(beginOperation).not.toHaveBeenCalled();
     });
 
-    it('RR2-1: fails closed (never a fresh beginOperation) when no parent-op pin resolves', async () => {
-      findPinSpy.mockResolvedValue(null); // exact parent op has no persisted platform pin
+    it('fails closed (never a fresh beginOperation) when no bound resumable pin resolves', async () => {
+      findPinSpy.mockResolvedValue(null);
       const error = await run(resumeParams);
       expect((error as TRPCError).code).toBe('NOT_FOUND');
       expect(materializeFromPin).not.toHaveBeenCalled();
-      // The security invariant: a platform resume NEVER re-authorizes a fresh (latest) operation.
       expect(beginOperation).not.toHaveBeenCalled();
     });
 
-    it('RR2-1: fails closed when the anchor message is missing (foreign / cross-owner)', async () => {
+    it('fails closed when the anchor message is missing (foreign / cross-owner)', async () => {
       messageFindById.mockResolvedValue(undefined as never);
       const error = await run(resumeParams);
       expect((error as TRPCError).code).toBe('NOT_FOUND');
       expect(findPinSpy).not.toHaveBeenCalled();
+      expect(materializeFromPin).not.toHaveBeenCalled();
+      expect(beginOperation).not.toHaveBeenCalled();
+    });
+
+    it('RR3-1: fails closed when live entitlement is revoked (even for a genuinely bound pin)', async () => {
+      findPinSpy.mockResolvedValue(pin);
+      isEntitled.mockResolvedValue(false);
+      okMaterialize();
+      const error = await run(resumeParams);
+      expect((error as TRPCError).code).toBe('NOT_FOUND');
+      // Entitlement is checked BEFORE replaying the pin, so materialize never runs.
       expect(materializeFromPin).not.toHaveBeenCalled();
       expect(beginOperation).not.toHaveBeenCalled();
     });

@@ -207,12 +207,14 @@ describe('RR2-6 — real platform Agent service chain', () => {
     // Exact secret-free pins derived from the version's dependency snapshot.
     expect(materialized.dependencySnapshot.model).toEqual(modelPin);
 
-    // Persist the operation exactly as execAgent would, then prove the resume + model-runtime reads.
+    // Persist the operation exactly as execAgent would (server-controlled assistant-message anchor +
+    // exact pins), park it on human approval, then prove the resume + model-runtime reads.
     await db.insert(topics).values({ id: 'topic-1', userId: 'user-a' });
     const opModel = new AgentOperationModel(db, 'user-a');
     await opModel.recordStart({
       agentId: materialized.agentId,
       metadata: {
+        assistantMessageId: 'asst-1',
         platformModel: modelPin,
         platformOperation: {
           checksum: snapshot.checksum,
@@ -223,15 +225,19 @@ describe('RR2-6 — real platform Agent service chain', () => {
       operationId: 'op-1',
       topicId: 'topic-1',
     });
+    await opModel.recordCompletion('op-1', { status: 'waiting_for_human' });
 
-    // Resume read-back: the EXACT operation pin, owner + topic scoped.
+    // Resume read-back: the EXACT pin, matched by the SERVER-controlled assistant-message binding and
+    // owner + topic scope (a pending tool message would arrive as anchorParentId = 'asst-1').
     expect(
-      await opModel.findPlatformOperationPinByOperationId('op-1', { topicId: 'topic-1' }),
-    ).toEqual({
-      checksum: CHECKSUM_V1,
-      platformAgentId: 'pa',
-      versionId: 'pa-v1',
-    });
+      await opModel.findResumablePlatformOperationPin({
+        anchorMessageId: 'asst-1',
+        anchorParentId: null,
+        platformAgentId: 'pa',
+        threadId: null,
+        topicId: 'topic-1',
+      }),
+    ).toEqual({ checksum: CHECKSUM_V1, platformAgentId: 'pa', versionId: 'pa-v1' });
     // Model-runtime classification: platform op + exact model pin.
     expect(await opModel.findPlatformOperationRef('op-1')).toEqual({
       isPlatformOperation: true,
