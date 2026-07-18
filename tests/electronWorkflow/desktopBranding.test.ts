@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import {
+  applyAihubPackageMetadata,
   materializeDesktopBrandAssets,
   resolveDesktopBranding,
   validateDesktopIcon,
@@ -79,8 +80,47 @@ describe('desktop branding config', () => {
       { ...createAihubEnv(), UPDATE_SERVER_URL: 'https://updates.example.com/aihub/' },
       'must not have a trailing slash',
     ],
+    [
+      { ...createAihubEnv(), AIHUB_DESKTOP_HOMEPAGE: 'https://LoBeHuB.example.com/' },
+      'must not expose the LobeHub brand',
+    ],
+    [
+      { ...createAihubEnv(), AIHUB_DESKTOP_MAINTAINER: 'LobeHub Release Team' },
+      'must not expose the LobeHub brand',
+    ],
   ])('fails closed for invalid AIHub configuration', (env, message) => {
     expect(() => resolveDesktopBranding({ env, fileExists: () => true })).toThrow(message);
+  });
+
+  it('changes only approved user-visible package metadata fields', () => {
+    const packageMetadata = {
+      author: 'Upstream Author',
+      description: 'Upstream description',
+      homepage: 'https://upstream.example.com/',
+      legalTrademarks: 'Upstream legal text',
+      license: 'MIT',
+      name: 'lobehub-desktop',
+      productName: 'LobeHub',
+      repository: { type: 'git', url: 'https://example.com/upstream.git' },
+    };
+
+    expect(
+      applyAihubPackageMetadata({
+        homepage: 'https://aihub.example.com/',
+        packageMetadata,
+      }),
+    ).toEqual({
+      ...packageMetadata,
+      description: 'AIHub Desktop Application',
+      homepage: 'https://aihub.example.com/',
+      productName: 'AIHub',
+    });
+    expect(() =>
+      applyAihubPackageMetadata({
+        homepage: 'https://products.LOBEHUB.example.com/',
+        packageMetadata,
+      }),
+    ).toThrow('must not expose the LobeHub brand');
   });
 
   it('fails closed when an approved icon is missing', () => {

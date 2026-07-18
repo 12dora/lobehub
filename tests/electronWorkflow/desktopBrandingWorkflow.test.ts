@@ -16,14 +16,16 @@ describe('AIHub desktop release workflow', () => {
     expect(workflow.on).toEqual({ workflow_dispatch: expect.any(Object) });
     expect(workflow.permissions).toEqual({ contents: 'read' });
     expect(workflow.jobs.preflight.environment).toBe('aihub-desktop-release');
+    expect(workflow.jobs.preflight.steps[0]).toEqual({ uses: 'actions/checkout@v6' });
+    expect(workflow.jobs.preflight.steps[1].id).toBe('release-gate');
     for (const job of Object.values(workflow.jobs) as Array<{ if: string }>) {
       expect(job.if).toContain("github.ref == 'refs/heads/main'");
     }
-    expect(workflow.jobs.preflight.steps[0].run).toBe(
+    expect(workflow.jobs.preflight.steps[1].run).toBe(
       'node scripts/electronWorkflow/validateAihubReleasePreflight.mjs',
     );
-    expect(workflow.jobs.preflight.steps[0].run).not.toContain('${{ github.ref_name }}');
-    expect(workflow.jobs.preflight.steps[0].env.RELEASE_REF_NAME).toBe('${{ github.ref_name }}');
+    expect(workflow.jobs.preflight.steps[1].run).not.toContain('${{ github.ref_name }}');
+    expect(workflow.jobs.preflight.steps[1].env.RELEASE_REF_NAME).toBe('${{ github.ref_name }}');
     expect(workflow.jobs.publish.if).toContain('inputs.publish');
   });
 
@@ -64,8 +66,14 @@ describe('AIHub desktop release workflow', () => {
     expect(actionSource).toContain('REQUIRE_CONFIG');
     expect(actionSource).toContain("default: 'lobehub'");
     expect(actionSource).toContain('prepareAihubReleaseManifests.mjs');
+    expect(actionSource.indexOf('Creating stable*.yml')).toBeLessThan(
+      actionSource.indexOf('prepareAihubReleaseManifests.mjs'),
+    );
     expect(actionSource.indexOf('prepareAihubReleaseManifests.mjs')).toBeLessThan(
-      actionSource.indexOf('Uploading manifest files'),
+      actionSource.indexOf('aws s3 cp'),
+    );
+    expect(actionSource.indexOf('aws s3 cp')).toBeLessThan(
+      actionSource.indexOf('if [ "$ARTIFACT_BRAND" = "lobehub" ] &&'),
     );
   });
 });
