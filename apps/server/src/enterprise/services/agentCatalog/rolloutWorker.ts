@@ -334,7 +334,7 @@ export const processNextPlatformAgentRolloutBatch = async (
         nextCursor = failures.nextCursor;
       } else {
         const page = await repository.listAssignmentTargetUserIds({
-          cutoff: new Date(input.snapshot.targetCutoff),
+          cutoff: input.snapshot.targetCutoff,
           cursor: typeof current.cursor === 'string' ? current.cursor : undefined,
           limit: PLATFORM_AGENT_ROLLOUT_BATCH_SIZE,
           targetId: input.snapshot.targetId,
