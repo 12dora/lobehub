@@ -269,7 +269,7 @@ describe('AgentOperationModel', () => {
     });
   });
 
-  describe('findResumablePlatformOperationPin (RR3-1)', () => {
+  describe('findResumablePlatformOperationPin (RR4-1)', () => {
     const pin = { checksum: 'a'.repeat(64), platformAgentId: 'pagt_1', versionId: 'pav_1' };
     const modelPin = {
       modelKey: 'chat',
@@ -293,6 +293,7 @@ describe('AgentOperationModel', () => {
       assistantMessageId?: string;
       id: string;
       ownerId?: string;
+      pendingResumeAnchorIds?: string[];
       platformAgentId?: string;
       status?: 'waiting_for_human' | 'waiting_for_async_tool' | 'done';
       threadId?: string | null;
@@ -302,6 +303,9 @@ describe('AgentOperationModel', () => {
         id: params.id,
         metadata: {
           ...(params.assistantMessageId ? { assistantMessageId: params.assistantMessageId } : {}),
+          ...(params.pendingResumeAnchorIds
+            ? { pendingResumeAnchorIds: params.pendingResumeAnchorIds }
+            : {}),
           platformModel: modelPin,
           platformOperation: { ...pin, platformAgentId: params.platformAgentId ?? 'pagt_1' },
         },
@@ -315,16 +319,16 @@ describe('AgentOperationModel', () => {
     const find = (
       model: AgentOperationModel,
       params: {
+        anchorKind?: 'assistant' | 'tool';
         anchorMessageId: string;
-        anchorParentId?: string | null;
         platformAgentId?: string;
         threadId?: string | null;
         topicId?: string | null;
       },
     ) =>
       model.findResumablePlatformOperationPin({
+        anchorKind: params.anchorKind ?? 'assistant',
         anchorMessageId: params.anchorMessageId,
-        anchorParentId: params.anchorParentId ?? null,
         platformAgentId: params.platformAgentId ?? 'pagt_1',
         threadId: params.threadId ?? null,
         topicId: params.topicId === undefined ? 'topic-1' : params.topicId,
@@ -332,24 +336,42 @@ describe('AgentOperationModel', () => {
 
     const model = () => new AgentOperationModel(serverDB, userId);
 
-    it('resolves via a direct assistant-turn anchor (server binding)', async () => {
+    it('direct resume resolves via the EXACT server-recorded assistant id', async () => {
       await seedOp({ assistantMessageId: 'asst-1', id: 'op-1' });
-      expect(await find(model(), { anchorMessageId: 'asst-1' })).toEqual(pin);
-    });
-
-    it('resolves a pending tool message via its assistant parent (one hop)', async () => {
-      await seedOp({ assistantMessageId: 'asst-1', id: 'op-1' });
-      expect(await find(model(), { anchorMessageId: 'tool-1', anchorParentId: 'asst-1' })).toEqual(
+      expect(await find(model(), { anchorKind: 'assistant', anchorMessageId: 'asst-1' })).toEqual(
         pin,
       );
     });
 
-    it('fails closed for an unbound / fabricated anchor (no operation points at it)', async () => {
-      await seedOp({ assistantMessageId: 'asst-1', id: 'op-1' });
-      // A forged message metadata / a fabricated tool→assistant chain binds to no operation.
+    it('tool resume resolves via an EXACT server-recorded pending tool id — a forged tool never binds', async () => {
+      await seedOp({
+        assistantMessageId: 'asst-1',
+        id: 'op-1',
+        pendingResumeAnchorIds: ['tool-1', 'tool-2'],
+      });
+      expect(await find(model(), { anchorKind: 'tool', anchorMessageId: 'tool-2' })).toEqual(pin);
+      // A client-forged tool message (e.g. parentId spoofed to asst-1) whose id is NOT among the
+      // server-recorded pending tool ids can never bind.
       expect(
-        await find(model(), { anchorMessageId: 'forged', anchorParentId: 'also-forged' }),
+        await find(model(), { anchorKind: 'tool', anchorMessageId: 'forged-tool' }),
       ).toBeNull();
+    });
+
+    it('kind crossing fails: assistant id as a tool anchor (and vice versa) never matches', async () => {
+      await seedOp({
+        assistantMessageId: 'asst-1',
+        id: 'op-1',
+        pendingResumeAnchorIds: ['tool-1'],
+      });
+      expect(await find(model(), { anchorKind: 'tool', anchorMessageId: 'asst-1' })).toBeNull();
+      expect(
+        await find(model(), { anchorKind: 'assistant', anchorMessageId: 'tool-1' }),
+      ).toBeNull();
+    });
+
+    it('fails closed for a fabricated anchor bound to no operation', async () => {
+      await seedOp({ assistantMessageId: 'asst-1', id: 'op-1' });
+      expect(await find(model(), { anchorMessageId: 'forged' })).toBeNull();
     });
 
     it('is owner-scoped: another user cannot bind to this operation', async () => {
@@ -362,9 +384,7 @@ describe('AgentOperationModel', () => {
     it('binds topic and thread exactly, and requires a topic', async () => {
       await seedOp({ assistantMessageId: 'asst-1', id: 'op-1', threadId: 'thread-1' });
       expect(await find(model(), { anchorMessageId: 'asst-1', threadId: 'thread-1' })).toEqual(pin);
-      // Wrong thread (main-turn leg) → null.
       expect(await find(model(), { anchorMessageId: 'asst-1', threadId: null })).toBeNull();
-      // Wrong topic → null.
       expect(
         await find(model(), {
           anchorMessageId: 'asst-1',
@@ -372,15 +392,20 @@ describe('AgentOperationModel', () => {
           topicId: 'topic-2',
         }),
       ).toBeNull();
-      // Missing topic → null (cannot jointly scope).
       expect(
         await find(model(), { anchorMessageId: 'asst-1', threadId: 'thread-1', topicId: null }),
       ).toBeNull();
     });
 
-    it('only resumes a paused operation — a terminal (done) op is never a source', async () => {
-      await seedOp({ assistantMessageId: 'asst-1', id: 'op-done', status: 'done' });
-      expect(await find(model(), { anchorMessageId: 'asst-1' })).toBeNull();
+    it('RR4-2: only waiting_for_human is externally resumable (async-tool + terminal excluded)', async () => {
+      await seedOp({
+        assistantMessageId: 'asst-async',
+        id: 'op-async',
+        status: 'waiting_for_async_tool',
+      });
+      await seedOp({ assistantMessageId: 'asst-done', id: 'op-done', status: 'done' });
+      expect(await find(model(), { anchorMessageId: 'asst-async' })).toBeNull();
+      expect(await find(model(), { anchorMessageId: 'asst-done' })).toBeNull();
     });
 
     it('binds the requested platform Agent', async () => {
@@ -393,12 +418,26 @@ describe('AgentOperationModel', () => {
       ).toEqual({ ...pin, platformAgentId: 'pagt_OTHER' });
     });
 
+    it('recordResumeAnchors records the server-owned pending tool ids (owner-scoped)', async () => {
+      await seedOp({ assistantMessageId: 'asst-1', id: 'op-1' });
+      await model().recordResumeAnchors('op-1', ['tool-a', 'tool-b']);
+      expect(await find(model(), { anchorKind: 'tool', anchorMessageId: 'tool-b' })).toEqual(pin);
+      // Another owner can't write anchors onto this op.
+      await new AgentOperationModel(serverDB, otherUserId).recordResumeAnchors('op-1', ['tool-x']);
+      expect(await find(model(), { anchorKind: 'tool', anchorMessageId: 'tool-x' })).toBeNull();
+    });
+
     describe('findPlatformOperationRef (RR2-2)', () => {
+      // Direct insert (not recordStart) so the classification test can seed a platform row without
+      // satisfying the full RR4-3 start-completeness gate.
       const seedRef = (id: string, platform: boolean) =>
-        model().recordStart({
-          metadata: platform ? { platformModel: modelPin, platformOperation: pin } : undefined,
-          operationId: id,
+        serverDB.insert(agentOperations).values({
+          id,
+          metadata: platform ? { platformModel: modelPin, platformOperation: pin } : {},
+          startedAt: new Date(),
+          status: 'running',
           topicId: 'topic-1',
+          userId,
         });
 
       it('classifies a platform operation and returns its model pin', async () => {
@@ -423,7 +462,7 @@ describe('AgentOperationModel', () => {
     });
   });
 
-  describe('recordStart — platform start conflict verification (RR3-2)', () => {
+  describe('recordStart — platform start exact binding + conflict (RR4-3/RR4-4)', () => {
     const pin = { checksum: 'a'.repeat(64), platformAgentId: 'pagt_1', versionId: 'pav_1' };
     const modelPin = {
       modelKey: 'chat',
@@ -431,49 +470,89 @@ describe('AgentOperationModel', () => {
       providerKey: 'openai',
       providerRevision: 1,
     };
-    const platformMeta = { platformModel: modelPin, platformOperation: pin };
-    const startPlatform = (model: AgentOperationModel, operationId = 'op-p') =>
-      model.recordStart({ metadata: platformMeta, operationId });
-
-    it('is exact-idempotent when the existing row is this owner with identical pins', async () => {
-      const model = new AgentOperationModel(serverDB, userId);
-      await startPlatform(model);
-      // A retry/queued re-entry with the SAME pins must not throw.
-      await expect(startPlatform(model)).resolves.toBeUndefined();
+    // A COMPLETE platform-start binding: all four pins (empty skill/connector arrays are valid) + the
+    // server-owned assistant anchor.
+    const complete = (overrides: Record<string, unknown> = {}) => ({
+      assistantMessageId: 'asst-1',
+      platformConnectors: [],
+      platformModel: modelPin,
+      platformOperation: pin,
+      platformSkills: [],
+      ...overrides,
     });
+    const start = (model: AgentOperationModel, metadata: Record<string, unknown>, id = 'op-p') =>
+      model.recordStart({ metadata, operationId: id });
+    const model = () => new AgentOperationModel(serverDB, userId);
 
-    it('fails closed when a pre-existing row is an ordinary (no-pin) operation', async () => {
-      const model = new AgentOperationModel(serverDB, userId);
-      await model.recordStart({ operationId: 'op-p' }); // ordinary row lands first
-      await expect(startPlatform(model)).rejects.toThrow('PLATFORM_OPERATION_START_CONFLICT');
-    });
-
-    it('fails closed when the existing row carries an inconsistent (different) pin', async () => {
-      const model = new AgentOperationModel(serverDB, userId);
-      await model.recordStart({
-        metadata: {
-          platformModel: modelPin,
-          platformOperation: { ...pin, versionId: 'pav_OTHER' },
-        },
-        operationId: 'op-p',
+    it('is exact-idempotent when the existing row is this owner with identical COMPLETE metadata', async () => {
+      await start(model(), complete());
+      await expect(start(model(), complete())).resolves.toBeUndefined();
+      // A populated (non-empty) skill/connector set is also idempotent when identical.
+      const withRefs = complete({
+        assistantMessageId: 'asst-2',
+        platformSkills: [{ checksum: 'c'.repeat(64), skillKey: 's', version: '1' }],
       });
-      await expect(startPlatform(model)).rejects.toThrow('PLATFORM_OPERATION_START_CONFLICT');
+      await start(model(), withRefs, 'op-refs');
+      await expect(start(model(), withRefs, 'op-refs')).resolves.toBeUndefined();
     });
 
-    it('fails closed when the existing row belongs to another owner', async () => {
-      await new AgentOperationModel(serverDB, otherUserId).recordStart({
-        metadata: platformMeta,
-        operationId: 'op-p',
-      });
-      await expect(startPlatform(new AgentOperationModel(serverDB, userId))).rejects.toThrow(
+    it('fails the start closed when the DESIRED metadata is incomplete (missing assistant / a pin)', async () => {
+      const { assistantMessageId: _a, ...noAssistant } = complete();
+      await expect(start(model(), noAssistant, 'op-a')).rejects.toThrow(
+        'PLATFORM_OPERATION_START_CONFLICT',
+      );
+      const { platformSkills: _s, ...noSkills } = complete();
+      await expect(start(model(), noSkills, 'op-b')).rejects.toThrow(
+        'PLATFORM_OPERATION_START_CONFLICT',
+      );
+      const { platformConnectors: _c, ...noConnectors } = complete();
+      await expect(start(model(), noConnectors, 'op-c')).rejects.toThrow(
         'PLATFORM_OPERATION_START_CONFLICT',
       );
     });
 
+    it('fails closed when the existing row has the SAME pins but a different assistant anchor', async () => {
+      await start(model(), complete({ assistantMessageId: 'asst-EXISTING' }));
+      await expect(
+        start(model(), complete({ assistantMessageId: 'asst-DESIRED' })),
+      ).rejects.toThrow('PLATFORM_OPERATION_START_CONFLICT');
+    });
+
+    it('fails closed when the existing row is incomplete (missing assistant binding)', async () => {
+      // Seed a pre-existing platform-ish row WITHOUT the assistant anchor (bypassing recordStart).
+      await serverDB.insert(agentOperations).values({
+        id: 'op-p',
+        metadata: {
+          platformConnectors: [],
+          platformModel: modelPin,
+          platformOperation: pin,
+          platformSkills: [],
+        },
+        startedAt: new Date(),
+        status: 'running',
+        userId,
+      });
+      await expect(start(model(), complete())).rejects.toThrow('PLATFORM_OPERATION_START_CONFLICT');
+    });
+
+    it('fails closed when a pre-existing row is an ordinary (no-pin) operation', async () => {
+      await model().recordStart({ operationId: 'op-p' });
+      await expect(start(model(), complete())).rejects.toThrow('PLATFORM_OPERATION_START_CONFLICT');
+    });
+
+    it('fails closed when the existing row carries an inconsistent (different) pin', async () => {
+      await start(model(), complete({ platformOperation: { ...pin, versionId: 'pav_OTHER' } }));
+      await expect(start(model(), complete())).rejects.toThrow('PLATFORM_OPERATION_START_CONFLICT');
+    });
+
+    it('fails closed when the existing row belongs to another owner', async () => {
+      await start(new AgentOperationModel(serverDB, otherUserId), complete());
+      await expect(start(model(), complete())).rejects.toThrow('PLATFORM_OPERATION_START_CONFLICT');
+    });
+
     it('keeps ordinary operations idempotent on conflict (no throw)', async () => {
-      const model = new AgentOperationModel(serverDB, userId);
-      await model.recordStart({ operationId: 'op-o' });
-      await expect(model.recordStart({ operationId: 'op-o' })).resolves.toBeUndefined();
+      await model().recordStart({ operationId: 'op-o' });
+      await expect(model().recordStart({ operationId: 'op-o' })).resolves.toBeUndefined();
     });
   });
 

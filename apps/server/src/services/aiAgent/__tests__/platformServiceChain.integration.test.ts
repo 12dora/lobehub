@@ -214,25 +214,39 @@ describe('RR2-6 — real platform Agent service chain', () => {
     await opModel.recordStart({
       agentId: materialized.agentId,
       metadata: {
+        // A COMPLETE platform-start binding (RR4-3): all four pins + the server-owned assistant anchor.
         assistantMessageId: 'asst-1',
+        platformConnectors: [],
         platformModel: modelPin,
         platformOperation: {
           checksum: snapshot.checksum,
           platformAgentId: 'pa',
           versionId: snapshot.versionId,
         },
+        platformSkills: [],
       },
       operationId: 'op-1',
       topicId: 'topic-1',
     });
     await opModel.recordCompletion('op-1', { status: 'waiting_for_human' });
+    // The runtime records the server-created pending tool ids when it parks.
+    await opModel.recordResumeAnchors('op-1', ['tool-1']);
 
-    // Resume read-back: the EXACT pin, matched by the SERVER-controlled assistant-message binding and
-    // owner + topic scope (a pending tool message would arrive as anchorParentId = 'asst-1').
+    // Resume read-back (RR4-1): direct kind matches the exact server assistant id; tool kind matches
+    // an exact server-recorded pending tool id.
     expect(
       await opModel.findResumablePlatformOperationPin({
+        anchorKind: 'assistant',
         anchorMessageId: 'asst-1',
-        anchorParentId: null,
+        platformAgentId: 'pa',
+        threadId: null,
+        topicId: 'topic-1',
+      }),
+    ).toEqual({ checksum: CHECKSUM_V1, platformAgentId: 'pa', versionId: 'pa-v1' });
+    expect(
+      await opModel.findResumablePlatformOperationPin({
+        anchorKind: 'tool',
+        anchorMessageId: 'tool-1',
         platformAgentId: 'pa',
         threadId: null,
         topicId: 'topic-1',

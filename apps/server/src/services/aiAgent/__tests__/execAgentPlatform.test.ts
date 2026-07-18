@@ -231,9 +231,10 @@ describe('AiAgentService.execAgent — platform entitlement (REWORK-2)', () => {
       // The anchor message is resolved owner-scoped, then the pin is matched by the server-controlled
       // binding (anchor id + its server-column parentId), scoped to this platform Agent + topic/thread.
       expect(messageFindById).toHaveBeenCalledWith('msg-1');
+      // Bare parentMessageId (regen) → 'assistant' kind, matched by the EXACT anchor id (no parentId).
       expect(findPinSpy).toHaveBeenCalledWith({
+        anchorKind: 'assistant',
         anchorMessageId: 'msg-1',
-        anchorParentId: 'asst-1',
         platformAgentId: 'pagt_1',
         threadId: null,
         topicId: 'topic-1',
