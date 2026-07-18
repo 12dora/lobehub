@@ -6,6 +6,10 @@ inputs:
     description: 'Artifact bundle to download'
     required: false
     default: 'merged-release'
+  artifact-brand:
+    description: 'Artifact brand profile used for manifest validation'
+    required: false
+    default: 'lobehub'
   channel:
     description: 'Update channel (stable, canary, nightly)'
     required: true
@@ -64,6 +68,7 @@ runs:
         AWS_ACCESS_KEY_ID: ${{ inputs.aws-access-key-id }}
         AWS_SECRET_ACCESS_KEY: ${{ inputs.aws-secret-access-key }}
         AWS_REGION: ${{ inputs.s3-region }}
+        ARTIFACT_BRAND: ${{ inputs.artifact-brand }}
         S3_BUCKET: ${{ inputs.s3-bucket }}
         S3_ENDPOINT: ${{ inputs.s3-endpoint }}
         CHANNEL: ${{ inputs.channel }}
@@ -80,6 +85,11 @@ runs:
 
         if [ -n "$NAMESPACE" ] && [[ ! "$NAMESPACE" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
           echo "Invalid desktop update namespace"
+          exit 1
+        fi
+
+        if [ "$ARTIFACT_BRAND" != "lobehub" ] && [ "$ARTIFACT_BRAND" != "aihub" ]; then
+          echo "Invalid desktop artifact brand"
           exit 1
         fi
 
@@ -135,12 +145,16 @@ runs:
         # 安装包在 s3://$BUCKET/$CHANNEL/$VERSION/ 下，URL 需加 $VERSION/ 前缀
         echo ""
         echo "📋 Adding version prefix to yml manifest URLs..."
-        for yml in release/${CHANNEL}*.yml release/latest*.yml; do
-          if [ -f "$yml" ]; then
-            sed -i "s|url: |url: $VERSION/|g" "$yml"
-            echo "   📄 Updated $(basename $yml) with URL prefix: $VERSION/"
-          fi
-        done
+        if [ "$ARTIFACT_BRAND" = "aihub" ]; then
+          node scripts/electronWorkflow/prepareAihubReleaseManifests.mjs release "$VERSION"
+        else
+          for yml in release/${CHANNEL}*.yml release/latest*.yml; do
+            if [ -f "$yml" ]; then
+              sed -i "s|url: |url: $VERSION/|g" "$yml"
+              echo "   📄 Updated $(basename $yml) with URL prefix: $VERSION/"
+            fi
+          done
+        fi
 
         # 4. 创建 renderer manifest (仅 stable 渠道有 renderer tar)
         RENDERER_TAR="release/lobehub-renderer.tar.gz"
