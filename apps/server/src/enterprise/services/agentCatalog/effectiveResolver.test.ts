@@ -302,4 +302,67 @@ describe('PlatformAgentEffectiveResolver', () => {
       expect(await createResolver().beginOperation('user', 'nope')).toBeNull();
     });
   });
+
+  describe('system operation handle (PR-051)', () => {
+    it('does not read policy or catalog state while the feature is disabled', async () => {
+      const result = await createResolver(DEFAULT_ENTERPRISE_FEATURE_FLAGS).beginSystemOperation(
+        'user',
+        'default-inbox',
+      );
+      expect(result).toBeNull();
+      expect(getSnapshot).not.toHaveBeenCalled();
+      expect(listEffectiveInputs).not.toHaveBeenCalled();
+      expect(listHiddenPlatformAgentIds).not.toHaveBeenCalled();
+    });
+
+    it('resolves default-inbox from the authorized set even when its list tile is hidden', async () => {
+      listEffectiveInputs.mockResolvedValue([
+        row({
+          agentId: 'inbox',
+          agentKey: 'inbox',
+          assignmentId: 'a',
+          mode: 'optional',
+          priority: 3,
+          systemKey: 'default-inbox',
+          versionId: 'v2',
+        }),
+      ]);
+      listHiddenPlatformAgentIds.mockResolvedValue(new Set(['inbox']));
+
+      const handle = await createResolver().beginSystemOperation('user', 'default-inbox');
+      expect(handle?.getSnapshot()).toMatchObject({ platformAgentId: 'inbox', versionId: 'v2' });
+      // System roles deliberately ignore the list-only hidden preference.
+      expect(listHiddenPlatformAgentIds).not.toHaveBeenCalled();
+    });
+
+    it('pins V2 for an existing operation while a new operation sees rollback V1', async () => {
+      listEffectiveInputs.mockResolvedValue([
+        row({
+          agentId: 'inbox',
+          agentKey: 'inbox',
+          assignmentId: 'a',
+          priority: 3,
+          systemKey: 'default-inbox',
+          versionId: 'v2',
+        }),
+      ]);
+      const resolver = createResolver();
+      const oldOperation = await resolver.beginSystemOperation('user', 'default-inbox');
+
+      listEffectiveInputs.mockResolvedValue([
+        row({
+          agentId: 'inbox',
+          agentKey: 'inbox',
+          assignmentId: 'a',
+          priority: 3,
+          systemKey: 'default-inbox',
+          versionId: 'v1',
+        }),
+      ]);
+      const newOperation = await resolver.beginSystemOperation('user', 'default-inbox');
+
+      expect(oldOperation?.getSnapshot().versionId).toBe('v2');
+      expect(newOperation?.getSnapshot().versionId).toBe('v1');
+    });
+  });
 });

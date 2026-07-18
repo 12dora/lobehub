@@ -21,6 +21,7 @@ const config = (displayName: string): PlatformAgentOperationSnapshot['config'] =
   modelParameters: { maxTokens: 4096, temperature: 0.4, topP: 0.9 },
   openingMessage: 'hi',
   openingQuestions: ['q1'],
+  plugins: ['managed-tool'],
   systemRole: 'Use approved sources.',
   tags: ['t1'],
 });
@@ -100,6 +101,14 @@ describe('PlatformAgentMaterializationService', () => {
       systemRole: 'Use approved sources.',
       title: 'Research Agent',
     });
+    expect(runtime.plugins).toEqual(['managed-tool']);
+    expect(runtime.platform).toMatchObject({
+      checksum: CHECKSUM,
+      managed: true,
+      platformAgentId: 'pagt_1',
+      source: 'platform',
+      versionId: 'pav_1',
+    });
     // camelCase managed params are lowered to the runtime snake_case shape.
     expect(runtime.params).toMatchObject({ max_tokens: 4096, temperature: 0.4, top_p: 0.9 });
   });
@@ -119,6 +128,37 @@ describe('PlatformAgentMaterializationService', () => {
     expect(result.agentId).toBe('agt_existing');
     expect(result.config.id).toBe('agt_existing');
     expect(result.config.title).toBe('Research Agent');
+  });
+
+  it('resolves and binds the exact snapshot onto the stable builtin inbox id without creating a row', async () => {
+    const materializeLocalAgent = vi.fn(async (input) => ({
+      agentId: (await input.createLocalAgent()).id,
+      created: true,
+      ok: true as const,
+    }));
+    const service = makeService({
+      getExactVersion: vi.fn(async () => exactVersion()),
+      materializeLocalAgent,
+    });
+
+    const resolved = await service.resolveForExistingAgent(snapshot(), 'builtin-inbox-id');
+    expect(resolved.agentId).toBe('builtin-inbox-id');
+    expect(resolved.config).toMatchObject({
+      id: 'builtin-inbox-id',
+      model: 'chat-model',
+      provider: 'internal-provider',
+      title: 'Research Agent',
+    });
+    expect(materializeLocalAgent).not.toHaveBeenCalled();
+
+    await service.bindExistingAgentForOperation(snapshot(), 'builtin-inbox-id');
+    expect(materializeLocalAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        platformAgentId: 'pagt_1',
+        platformAgentVersionId: 'pav_1',
+        userId: 'user-a',
+      }),
+    );
   });
 
   it('pins each operation to its OWN captured snapshot (v1 stays v1 after v2 exists)', async () => {
@@ -248,6 +288,28 @@ describe('PlatformAgentMaterializationService', () => {
       await expect(service.materializeFromPin(pin)).rejects.toBeInstanceOf(
         PlatformAgentMaterializationError,
       );
+    });
+
+    it('replays the exact historical version on the stable builtin inbox id', async () => {
+      const getExactVersion = vi.fn(async (_agentId: string, versionId: string) =>
+        exactVersion({
+          config: config(versionId === 'pav_v2' ? 'Inbox V2' : 'Inbox V1'),
+          id: versionId,
+        }),
+      );
+      const service = makeService({ getExactVersion });
+
+      const oldOperation = await service.resolveFromPinForExistingAgent(
+        { checksum: CHECKSUM, platformAgentId: 'pagt_1', versionId: 'pav_v2' },
+        'builtin-inbox-id',
+      );
+      const afterRollback = await service.resolveFromPinForExistingAgent(
+        { checksum: CHECKSUM, platformAgentId: 'pagt_1', versionId: 'pav_v1' },
+        'builtin-inbox-id',
+      );
+
+      expect(oldOperation.config).toMatchObject({ id: 'builtin-inbox-id', title: 'Inbox V2' });
+      expect(afterRollback.config).toMatchObject({ id: 'builtin-inbox-id', title: 'Inbox V1' });
     });
   });
 

@@ -63,6 +63,8 @@ describe('AgentService', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockUserModel.getUserSettings.mockReset().mockResolvedValue({});
+    mockUserModel.getUserSettingsDefaultAgentConfig.mockReset().mockResolvedValue({});
     // Setup default UserModel mock
     (UserModel as any).mockImplementation(() => mockUserModel);
     service = new AgentService(mockDb, mockUserId);
