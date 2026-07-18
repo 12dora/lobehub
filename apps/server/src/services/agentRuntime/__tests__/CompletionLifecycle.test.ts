@@ -565,29 +565,55 @@ describe('CompletionLifecycle.persistCompletion — atomic human-intervention pa
     ).resolves.toBeUndefined();
   });
 
-  it('fails closed when runtime classification is unknown and the persisted classification read fails', async () => {
-    vi.spyOn(AgentOperationModel.prototype, 'findPlatformOperationRef').mockRejectedValue(
-      new Error('db down'),
-    );
-    const state = parkedState(true);
-    delete (state.metadata as Record<string, unknown>).platformStartBinding;
-    delete (state.metadata as Record<string, unknown>).platformStartClassification;
+  it.each([
+    {
+      classification: 'ordinary',
+      persistedRef: {
+        classification: 'ordinary' as const,
+        isPlatformOperation: false,
+        modelPin: null,
+        platformStart: null,
+      },
+    },
+    {
+      classification: 'complete',
+      persistedRef: {
+        classification: 'complete' as const,
+        isPlatformOperation: true,
+        modelPin: platformStart.platformModel,
+        platformStart,
+      },
+    },
+  ])(
+    'fails closed without runtime proof even when DB metadata classifies the operation as $classification',
+    async ({ persistedRef }) => {
+      const findRef = vi
+        .spyOn(AgentOperationModel.prototype, 'findPlatformOperationRef')
+        .mockResolvedValue(persistedRef);
+      const state = parkedState(true);
+      delete (state.metadata as Record<string, unknown>).platformStartBinding;
+      delete (state.metadata as Record<string, unknown>).platformStartClassification;
 
-    await expect(
-      buildLifecycle().dispatchHooks('op-1', state, 'waiting_for_human'),
-    ).rejects.toThrow('OPERATION_PARK_CLASSIFICATION_FAILED');
-  });
+      await expect(
+        buildLifecycle().dispatchHooks('op-1', state, 'waiting_for_human'),
+      ).rejects.toThrow('OPERATION_PARK_CLASSIFICATION_FAILED');
+      expect(findRef).not.toHaveBeenCalled();
+    },
+  );
 
-  it('fails closed when runtime classification is unknown and no persisted operation exists', async () => {
-    vi.spyOn(AgentOperationModel.prototype, 'findPlatformOperationRef').mockResolvedValue(null);
-    const state = parkedState(true);
-    delete (state.metadata as Record<string, unknown>).platformStartBinding;
-    delete (state.metadata as Record<string, unknown>).platformStartClassification;
+  it.each(['platformStartBinding', 'platformStartClassification'] as const)(
+    'fails closed when trusted runtime proof is missing %s',
+    async (missingField) => {
+      const findRef = vi.spyOn(AgentOperationModel.prototype, 'findPlatformOperationRef');
+      const state = parkedState(true);
+      delete (state.metadata as Record<string, unknown>)[missingField];
 
-    await expect(
-      buildLifecycle().dispatchHooks('op-1', state, 'waiting_for_human'),
-    ).rejects.toThrow('OPERATION_PARK_CLASSIFICATION_FAILED');
-  });
+      await expect(
+        buildLifecycle().dispatchHooks('op-1', state, 'waiting_for_human'),
+      ).rejects.toThrow('OPERATION_PARK_CLASSIFICATION_FAILED');
+      expect(findRef).not.toHaveBeenCalled();
+    },
+  );
 
   it('fails closed when an ordinary trusted classification carries a platform binding', async () => {
     const findRef = vi.spyOn(AgentOperationModel.prototype, 'findPlatformOperationRef');
