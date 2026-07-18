@@ -13,6 +13,7 @@
  * @vitest-environment node
  */
 import { TRPCError } from '@trpc/server';
+import type { MockInstance } from 'vitest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
@@ -57,7 +58,7 @@ let db: LobeChatDatabase;
 const service = () => new AiAgentService(db, 'user-a');
 
 // Spy the ordinary config path so we can prove whether the request went platform or ordinary.
-let getAgentConfigSpy: ReturnType<typeof vi.spyOn>;
+let getAgentConfigSpy: MockInstance;
 
 const run = (params: { agentId?: string; slug?: string }) =>
   service()
