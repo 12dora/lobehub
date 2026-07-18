@@ -122,6 +122,16 @@ const STEP_LOCK_TTL_SECONDS = 120;
 const STEP_LOCK_HEARTBEAT_MS = 30_000;
 
 /**
+ * Keep the runtime control plane intact while removing the unpinned prompt context from an exact
+ * managed operation. In particular, human approval/tool-result payloads live beside
+ * `initialContext`, not inside it, and must survive persistence and first-step dispatch.
+ */
+const sanitizeManagedOperationContext = (context: AgentRuntimeContext): AgentRuntimeContext => {
+  const { initialContext: _dynamicPromptContext, ...controlContext } = context;
+  return controlContext;
+};
+
+/**
  * Exponential backoff delay for the Nth (1-based) watchdog re-check:
  * 15s, 30s, 60s, 120s, 240s, capped at {@link ASYNC_TOOL_VERIFY_MAX_DELAY_MS}.
  */
@@ -491,6 +501,9 @@ export class AgentRuntimeService {
     const platformStartClassification = classifyPlatformStart(operationMetadata);
     const platformStartBinding = extractPlatformStartBinding(operationMetadata);
     const isManagedPlatformOperation = platformStartClassification === 'complete';
+    const operationInitialContext = isManagedPlatformOperation
+      ? sanitizeManagedOperationContext(initialContext)
+      : initialContext;
 
     // Persist initial agent_operations row. CompletionLifecycle owns both
     // ends of the persistence lifecycle (start row here, terminal update
@@ -548,7 +561,7 @@ export class AgentRuntimeService {
       const initialState = {
         createdAt: new Date().toISOString(),
         // Store initialContext for executeSync to use
-        initialContext: isManagedPlatformOperation ? undefined : initialContext,
+        initialContext: operationInitialContext,
         lastModified: new Date().toISOString(),
         // Use the passed initial messages
         messages: initialMessages,
@@ -647,7 +660,7 @@ export class AgentRuntimeService {
         // LocalQueueServiceImpl uses setTimeout + callback mechanism
         // QStashQueueServiceImpl schedules HTTP requests
         messageId = await this.queueService.scheduleMessage({
-          context: initialContext,
+          context: operationInitialContext,
           delay: 50, // Short delay for startup
           endpoint: `${this.baseURL}/run`,
           operationId,
