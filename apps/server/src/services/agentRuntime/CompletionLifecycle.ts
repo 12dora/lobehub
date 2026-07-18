@@ -256,6 +256,22 @@ export class CompletionLifecycle {
     } catch (error) {
       log('[%s] Failed to persist operation completion (non-fatal): %O', operationId, error);
     }
+
+    // RR4-1: when the operation parks on human intervention, record the SERVER-created pending
+    // tool-message ids (surfaced on state by the human-approve executor) as the operation's trusted
+    // resume anchors. An approval / tool-result resume must target one of these exact ids — a
+    // client-forged tool message can never bind. Non-fatal: a missed record only makes a later
+    // approval resume of this turn fail closed, never a data leak.
+    if (status === 'waiting_for_human' && Array.isArray(state?.pendingHumanToolMessageIds)) {
+      try {
+        await this.agentOperationModel.recordResumeAnchors(
+          operationId,
+          state.pendingHumanToolMessageIds as string[],
+        );
+      } catch (error) {
+        log('[%s] Failed to record resume anchors (non-fatal): %O', operationId, error);
+      }
+    }
   }
 
   /**
