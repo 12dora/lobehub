@@ -1,3 +1,5 @@
+import type { PlatformAgentUserListMeta } from './platform/agents';
+
 /**
  * Sidebar item type - can be an agent or a chat group
  */
@@ -48,6 +50,12 @@ export interface SidebarAgentItem {
   heterogeneousType?: string | null;
   id: string;
   pinned: boolean;
+  /**
+   * Present only for platform-managed items (M10). Carries the minimal user-safe metadata the
+   * client needs to render a managed Agent and hide creator-only actions. Absent for ordinary
+   * user-owned agents and chat groups.
+   */
+  platform?: PlatformAgentUserListMeta;
   sessionId?: string | null;
   /**
    * Agent slug. Builtin agents (LobeAI / agent-builder / …) are identified by

@@ -17,6 +17,7 @@ import { UserModel } from '@/database/models/user';
 import { router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 import { withManagedResourceGuard } from '@/server/enterprise/guards/managedResource';
+import { PlatformAgentUserListService } from '@/server/enterprise/services/agentCatalog';
 import { AgentService } from '@/server/services/agent';
 import { EditLockService } from '@/server/services/editLock';
 import { publishResourceEvent } from '@/server/services/resourceEvents';
@@ -438,7 +439,17 @@ export const agentRouter = router({
         .optional(),
     )
     .query(async ({ input, ctx }) => {
-      return ctx.agentModel.queryAgents(input);
+      // Unified list (M10 PR-049 · A): merge the user's own non-virtual agents with the effective
+      // platform agents. Deterministic order/pagination; local rows already materialized from a
+      // platform Agent are excluded (represented by their platform item). Flag off → the projection
+      // short-circuits with zero catalog access and this returns the legacy local-only result.
+      const limit = input?.limit ?? 9999;
+      const offset = input?.offset ?? 0;
+      return new PlatformAgentUserListService(ctx.serverDB).mergeAvailableAgents(
+        ctx.userId,
+        { keyword: input?.keyword, limit, offset },
+        (localParams) => ctx.agentModel.queryAgents(localParams),
+      );
     }),
 
   rankAgents: agentProcedure.input(z.number().max(50).optional()).query(async ({ ctx, input }) => {

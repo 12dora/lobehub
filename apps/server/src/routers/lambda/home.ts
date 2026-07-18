@@ -9,6 +9,7 @@ import { HomeRepository } from '@/database/repositories/home';
 import { router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 import { withManagedResourceGuard } from '@/server/enterprise/guards/managedResource';
+import { PlatformAgentUserListService } from '@/server/enterprise/services/agentCatalog';
 import { type HomeBriefData, HomeService } from '@/server/services/home';
 
 const homeProcedure = wsCompatProcedure.use(serverDatabase).use(async (opts) => {
@@ -21,6 +22,9 @@ const homeProcedure = wsCompatProcedure.use(serverDatabase).use(async (opts) => 
       agentModel: new AgentModel(ctx.serverDB, ctx.userId, workspaceId),
       homeRepository: new HomeRepository(ctx.serverDB, ctx.userId, workspaceId),
       homeService: new HomeService(ctx.userId),
+      // Enterprise adapter (M10 PR-049 · A). Kept out of HomeRepository so the database layer
+      // never depends on enterprise code. Flag off → merges nothing with zero catalog access.
+      platformAgentListService: new PlatformAgentUserListService(ctx.serverDB),
     },
   });
 });
@@ -31,7 +35,9 @@ export const homeRouter = router({
   ),
 
   getSidebarAgentList: homeProcedure.query(async ({ ctx }) => {
-    const result = await ctx.homeRepository.getSidebarAgentList();
+    const base = await ctx.homeRepository.getSidebarAgentList();
+    // Merge effective platform agents into the main sidebar list (never materializes).
+    const result = await ctx.platformAgentListService.mergeSidebarList(ctx.userId, base);
 
     // Runtime migration: backfill sessionGroupId for legacy agents
     const runMigration = async () => {
@@ -51,7 +57,8 @@ export const homeRouter = router({
   searchAgents: homeProcedure
     .input(z.object({ keyword: z.string() }))
     .query(async ({ input, ctx }) => {
-      return ctx.homeRepository.searchAgents(input.keyword);
+      const base = await ctx.homeRepository.searchAgents(input.keyword);
+      return ctx.platformAgentListService.mergeSearchResults(ctx.userId, base, input.keyword);
     }),
 
   updateAgentSessionGroupId: homeProcedure

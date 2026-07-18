@@ -16,6 +16,44 @@ export const PLATFORM_AGENT_DEFAULT_INBOX_SYSTEM_KEY = 'default-inbox' as const;
 
 export type PlatformAgentSystemKey = typeof PLATFORM_AGENT_DEFAULT_INBOX_SYSTEM_KEY;
 
+/**
+ * Namespace prefix for a platform Agent's stable list-item identity. Local Agent ids
+ * (`agt_…`) and slugs never contain this prefix, so an encoded id can never collide with a
+ * user-owned Agent id/slug when merged into a unified list or routed back to a chat entry.
+ *
+ * This identity is a *request-entry hint only*. It is not proof of authorization: the server
+ * must always re-resolve owner-scoped entitlement (`PlatformAgentEffectiveResolver`) before
+ * acting on it — a client can forge any `platformAgentId` here.
+ */
+export const PLATFORM_AGENT_LIST_ID_PREFIX = 'platform-agent:' as const;
+
+/** Encode a platform Agent id into its stable, collision-proof list-item identity. */
+export const encodePlatformAgentListId = (platformAgentId: string): string =>
+  `${PLATFORM_AGENT_LIST_ID_PREFIX}${platformAgentId}`;
+
+/** Return the platformAgentId when `id` is an encoded platform list identity, else null. */
+export const decodePlatformAgentListId = (id: string): string | null => {
+  if (!id.startsWith(PLATFORM_AGENT_LIST_ID_PREFIX)) return null;
+  const platformAgentId = id.slice(PLATFORM_AGENT_LIST_ID_PREFIX.length);
+  return platformAgentId.length > 0 ? platformAgentId : null;
+};
+
+/**
+ * Minimal, user-safe metadata attached to a platform Agent when it appears in an ordinary
+ * user's unified Agent list (home sidebar / picker). It deliberately excludes every admin-only
+ * field — assignment target, version pointer, checksum, mutation reason — exposing only what
+ * the client needs to render a managed item and gate creator-only affordances.
+ */
+export interface PlatformAgentUserListMeta {
+  /** Distribution mode the item was assigned under (drives mandatory-not-hideable UI). */
+  distribution: PlatformAgentAssignmentMode;
+  /** Always true — a platform item is managed, so the client hides edit/delete affordances. */
+  managed: true;
+  /** Stable platform Agent id (also carried inside the encoded list-item id). */
+  platformAgentId: string;
+  source: 'platform';
+}
+
 export interface PlatformAgentModelParameters {
   frequencyPenalty?: number;
   maxTokens?: number;
