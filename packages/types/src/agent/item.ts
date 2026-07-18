@@ -4,6 +4,7 @@ import { z } from 'zod';
 import type { FileItem } from '../files';
 import type { KnowledgeBaseItem } from '../knowledgeBase';
 import type { FewShots } from '../llm';
+import type { PlatformAgentEffectiveConfigMeta } from '../platform/agents';
 import type { LobeAgentAgencyConfig } from './agencyConfig';
 import { AgentChatConfigSchema, type LobeAgentChatConfig } from './chatConfig';
 import { type AgentPluginEntry, AgentPluginEntrySchema } from './pluginConfig';
@@ -64,6 +65,9 @@ export interface LobeAgentConfig {
    * Language model parameters
    */
   params: LLMParams;
+  /** Exact managed-platform source metadata, absent for ordinary and flag-off Agents. */
+  platform?: PlatformAgentEffectiveConfigMeta;
+
   /**
    * Enabled plugins. Each entry is either a legacy bare identifier string
    * (implicit pinned) or a tri-state `{ identifier, mode }` object — see
@@ -155,6 +159,8 @@ export interface AgentItem {
   openingMessage?: string | null;
   openingQuestions?: string[];
   params?: any;
+  /** Exact managed-platform source metadata, absent for ordinary and flag-off Agents. */
+  platform?: PlatformAgentEffectiveConfigMeta;
   plugins?: AgentPluginEntry[];
   provider?: string | null;
   /** Session group ID for direct grouping */

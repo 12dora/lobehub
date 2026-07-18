@@ -2,6 +2,7 @@ import { DEFAULT_AGENT_CONFIG } from '@lobechat/const';
 import type {
   PlatformAgentConnectorDependencyRef,
   PlatformAgentDependencySnapshot,
+  PlatformAgentEffectiveConfigMeta,
   PlatformAgentModelDependencyRef,
   PlatformAgentSkillDependencyRef,
   PlatformAgentVersionConfig,
@@ -90,29 +91,65 @@ export class PlatformAgentMaterializationService {
     config: AgentConfigWithId;
     dependencySnapshot: PlatformAgentDependencySnapshot;
   }> => {
-    // Redact a raw driver / SQL error from the exact-version read into the stable, detail-free
-    // materialization error before it can reach the boundary — preserving the materialization
-    // classification (a known platform error still passes through) (REWORK-5).
-    let fetched: ExactPlatformAgentVersion | undefined;
-    try {
-      fetched = await this.repository.getExactVersion(snapshot.platformAgentId, snapshot.versionId);
-    } catch (error) {
-      const redacted = redactPlatformReadError(error);
-      throw redacted instanceof PlatformAgentUnavailableError
-        ? new PlatformAgentMaterializationError()
-        : redacted;
-    }
+    const fetched = await this.getExactVersion(snapshot);
     const version = this.resolveExactVersion(fetched, snapshot);
     const model = version.dependencySnapshot.model;
 
     const agentId = await this.attachLocalAgent(snapshot, model);
     return {
       agentId,
-      config: this.buildRuntimeConfig(agentId, snapshot.config, model),
+      config: this.buildRuntimeConfig(agentId, snapshot, version.dependencySnapshot),
       // The exact, immutable dependency snapshot bound to this operation. The caller validates it
       // against the published catalog at the pinned revision (fail-closed, no latest fallback).
       dependencySnapshot: version.dependencySnapshot,
     };
+  };
+
+  /**
+   * Resolve an exact platform snapshot while preserving an existing local Agent attribution id.
+   * The default inbox uses this path so old/new topics, messages and sessions continue to point at
+   * the same builtin inbox row instead of being rewritten to a materialized platform Agent.
+   */
+  resolveForExistingAgent = async (
+    snapshot: PlatformAgentOperationSnapshot,
+    agentId: string,
+  ): Promise<{
+    agentId: string;
+    config: AgentConfigWithId;
+    dependencySnapshot: PlatformAgentDependencySnapshot;
+  }> => {
+    const version = this.resolveExactVersion(await this.getExactVersion(snapshot), snapshot);
+    return {
+      agentId,
+      config: this.buildRuntimeConfig(agentId, snapshot, version.dependencySnapshot),
+      dependencySnapshot: version.dependencySnapshot,
+    };
+  };
+
+  /**
+   * Persist the platform→builtin attribution mapping at operation start without creating or
+   * rewriting the builtin row. This makes paused resumes and ordinary mutation guards recognize
+   * the managed inbox even if the published pointer later rolls back or is temporarily absent.
+   */
+  bindExistingAgentForOperation = async (
+    snapshot: PlatformAgentOperationSnapshot,
+    agentId: string,
+  ): Promise<void> => {
+    try {
+      const result = await this.repository.materializeLocalAgent({
+        createLocalAgent: async () => ({ id: agentId }),
+        platformAgentId: snapshot.platformAgentId,
+        platformAgentVersionChecksum: snapshot.checksum,
+        platformAgentVersionId: snapshot.versionId,
+        userId: this.userId,
+      });
+      if (!result.ok || result.agentId !== agentId) {
+        throw new PlatformAgentMaterializationError();
+      }
+    } catch (error) {
+      if (error instanceof PlatformAgentMaterializationError) throw error;
+      throw new PlatformAgentMaterializationError();
+    }
   };
 
   /**
@@ -129,15 +166,7 @@ export class PlatformAgentMaterializationService {
     config: AgentConfigWithId;
     dependencySnapshot: PlatformAgentDependencySnapshot;
   }> => {
-    let fetched: ExactPlatformAgentVersion | undefined;
-    try {
-      fetched = await this.repository.getExactVersion(pin.platformAgentId, pin.versionId);
-    } catch (error) {
-      const redacted = redactPlatformReadError(error);
-      throw redacted instanceof PlatformAgentUnavailableError
-        ? new PlatformAgentMaterializationError()
-        : redacted;
-    }
+    const fetched = await this.getExactVersion(pin);
     if (!fetched || fetched.checksum !== pin.checksum) {
       throw new PlatformAgentMaterializationError();
     }
@@ -147,6 +176,46 @@ export class PlatformAgentMaterializationService {
       platformAgentId: pin.platformAgentId,
       versionId: pin.versionId,
     });
+  };
+
+  /** Exact paused-resume replay while preserving the builtin inbox attribution id. */
+  resolveFromPinForExistingAgent = async (
+    pin: PlatformOperationPin,
+    agentId: string,
+  ): Promise<{
+    agentId: string;
+    config: AgentConfigWithId;
+    dependencySnapshot: PlatformAgentDependencySnapshot;
+  }> => {
+    const fetched = await this.getExactVersion(pin);
+    if (!fetched || fetched.checksum !== pin.checksum) {
+      throw new PlatformAgentMaterializationError();
+    }
+    const snapshot: PlatformAgentOperationSnapshot = {
+      checksum: fetched.checksum,
+      config: fetched.config,
+      platformAgentId: pin.platformAgentId,
+      versionId: pin.versionId,
+    };
+    const version = this.resolveExactVersion(fetched, snapshot);
+    return {
+      agentId,
+      config: this.buildRuntimeConfig(agentId, snapshot, version.dependencySnapshot),
+      dependencySnapshot: version.dependencySnapshot,
+    };
+  };
+
+  private getExactVersion = async (
+    pin: Pick<PlatformOperationPin, 'platformAgentId' | 'versionId'>,
+  ): Promise<ExactPlatformAgentVersion | undefined> => {
+    try {
+      return await this.repository.getExactVersion(pin.platformAgentId, pin.versionId);
+    } catch (error) {
+      const redacted = redactPlatformReadError(error);
+      throw redacted instanceof PlatformAgentUnavailableError
+        ? new PlatformAgentMaterializationError()
+        : redacted;
+    }
   };
 
   /** Fail-closed validation that the fetched version exactly matches the pinned snapshot. */
@@ -229,22 +298,36 @@ export class PlatformAgentMaterializationService {
    */
   private buildRuntimeConfig = (
     agentId: string,
-    config: PlatformAgentVersionConfig,
-    model: PlatformAgentModelDependencyRef,
-  ): AgentConfigWithId => ({
-    ...DEFAULT_AGENT_CONFIG,
-    avatar: config.avatar ?? undefined,
-    backgroundColor: config.backgroundColor ?? undefined,
-    id: agentId,
-    model: model.modelKey,
-    openingMessage: config.openingMessage ?? undefined,
-    openingQuestions: config.openingQuestions,
-    params: { ...DEFAULT_AGENT_CONFIG.params, ...mapModelParameters(config) },
-    plugins: [],
-    provider: model.providerKey,
-    // Not a builtin slug — keeps the builtin runtime-config merge in execAgent inert.
-    slug: null,
-    systemRole: config.systemRole,
-    title: config.displayName,
-  });
+    snapshot: PlatformAgentOperationSnapshot,
+    dependencySnapshot: PlatformAgentDependencySnapshot,
+  ): AgentConfigWithId => {
+    const { config } = snapshot;
+    const model = dependencySnapshot.model;
+    const platform: PlatformAgentEffectiveConfigMeta = {
+      checksum: snapshot.checksum,
+      dependencySnapshot,
+      managed: true,
+      platformAgentId: snapshot.platformAgentId,
+      source: 'platform',
+      systemKey: null,
+      versionId: snapshot.versionId,
+    };
+    return {
+      ...DEFAULT_AGENT_CONFIG,
+      avatar: config.avatar ?? undefined,
+      backgroundColor: config.backgroundColor ?? undefined,
+      id: agentId,
+      model: model.modelKey,
+      openingMessage: config.openingMessage ?? undefined,
+      openingQuestions: config.openingQuestions,
+      params: { ...DEFAULT_AGENT_CONFIG.params, ...mapModelParameters(config) },
+      platform,
+      plugins: config.plugins ?? [],
+      provider: model.providerKey,
+      // Not a builtin slug — keeps the builtin runtime-config merge in execAgent inert.
+      slug: null,
+      systemRole: config.systemRole,
+      title: config.displayName,
+    };
+  };
 }

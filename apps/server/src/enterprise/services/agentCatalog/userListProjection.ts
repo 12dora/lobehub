@@ -1,5 +1,6 @@
 import {
   encodePlatformAgentListId,
+  PLATFORM_AGENT_DEFAULT_INBOX_SYSTEM_KEY,
   type PlatformAgentAssignmentMode,
   type PlatformAgentUserListMeta,
   type SidebarAgentItem,
@@ -119,17 +120,25 @@ export class PlatformAgentUserListService {
     }
     const [{ agents }, materializedAgentIds] = await Promise.all([
       this.resolver().getEffectiveList(userId),
-      this.repository().listMaterializedAgentIds(userId),
+      this.repository().listMaterializedAgentIds(userId, {
+        // The default inbox deliberately reuses its builtin local row. Its reverse mapping is an
+        // execution/guard binding, not a duplicate list identity, so this row must remain visible.
+        excludeSystemKeys: [PLATFORM_AGENT_DEFAULT_INBOX_SYSTEM_KEY],
+      }),
     ]);
-    const entries = agents.map((agent): PlatformAgentUserListEntry => ({
-      avatar: agent.config.avatar,
-      backgroundColor: agent.config.backgroundColor,
-      description: agent.config.description,
-      distribution: agent.distribution,
-      id: encodePlatformAgentListId(agent.platformAgentId),
-      platformAgentId: agent.platformAgentId,
-      title: agent.config.displayName,
-    }));
+    // The stable default-inbox is rendered through the existing builtin inbox row/selector/URL.
+    // Do not add a second encoded platform identity to ordinary lists.
+    const entries = agents
+      .filter((agent) => agent.systemKey !== PLATFORM_AGENT_DEFAULT_INBOX_SYSTEM_KEY)
+      .map((agent): PlatformAgentUserListEntry => ({
+        avatar: agent.config.avatar,
+        backgroundColor: agent.config.backgroundColor,
+        description: agent.config.description,
+        distribution: agent.distribution,
+        id: encodePlatformAgentListId(agent.platformAgentId),
+        platformAgentId: agent.platformAgentId,
+        title: agent.config.displayName,
+      }));
     return { entries, materializedAgentIds };
   };
 
