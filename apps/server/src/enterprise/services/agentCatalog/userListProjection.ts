@@ -63,7 +63,10 @@ interface BuiltinInboxListSource {
 
 interface PlatformAgentUserListServiceOptions {
   flags?: EnterpriseFeatureFlags;
-  loadBuiltinInbox?: (userId: string) => Promise<BuiltinInboxListSource | null>;
+  loadBuiltinInbox?: (
+    userId: string,
+    workspaceId?: string,
+  ) => Promise<BuiltinInboxListSource | null>;
   policyModel?: Pick<PlatformManagedResourcePolicyModel, 'getSnapshot'>;
   repository?: PlatformAgentCatalogRepository;
   resolver?: Pick<PlatformAgentEffectiveResolver, 'getEffectiveList'>;
@@ -98,6 +101,7 @@ const toMeta = (entry: PlatformAgentUserListEntry): PlatformAgentUserListMeta =>
 export class PlatformAgentUserListService {
   constructor(
     private readonly db: LobeChatDatabase,
+    private readonly workspaceId?: string,
     private readonly options: PlatformAgentUserListServiceOptions = {},
   ) {}
 
@@ -118,11 +122,11 @@ export class PlatformAgentUserListService {
   private loadBuiltinInbox = async (userId: string): Promise<UnifiedAvailableAgentItem> => {
     const loader =
       this.options.loadBuiltinInbox ??
-      (async (ownerId: string): Promise<BuiltinInboxListSource | null> =>
-        (await new AgentService(this.db, ownerId).getBuiltinAgent(
+      (async (ownerId: string, workspaceId?: string): Promise<BuiltinInboxListSource | null> =>
+        (await new AgentService(this.db, ownerId, workspaceId).getBuiltinAgent(
           INBOX_SESSION_ID,
         )) as BuiltinInboxListSource | null);
-    const inbox = await loader(userId);
+    const inbox = await loader(userId, this.workspaceId);
     if (!inbox) throw new Error('Builtin inbox is unavailable');
     return {
       avatar: inbox.avatar ?? null,
@@ -145,8 +149,6 @@ export class PlatformAgentUserListService {
    * Resolve the owner-scoped visible platform Agents (already hidden-filtered and ordered by the
    * resolver) plus the set of local rows to de-duplicate.
    *
-   * Flag off → empty, ZERO catalog access (legacy result preserved verbatim).
-   *
    * Flag on → ALWAYS read the owner-scoped materialized-id set, even when the visible entries are
    * empty. A materialized local row for an Agent the user has since hidden, or whose assignment was
    * revoked, is NOT in `getEffectiveList` — but it must still be stripped from the ordinary local
@@ -155,13 +157,6 @@ export class PlatformAgentUserListService {
    */
   private getVisibleProjection = async (userId: string): Promise<VisibleProjection> => {
     const builtinInboxPromise = this.loadBuiltinInbox(userId);
-    if (!this.flags().ENABLE_PLATFORM_MANAGED_AGENTS) {
-      return {
-        builtinInbox: await builtinInboxPromise,
-        entries: [],
-        materializedAgentIds: new Set(),
-      };
-    }
     const [builtinInbox, { agents }, materializedAgentIds] = await Promise.all([
       builtinInboxPromise,
       this.resolver().getEffectiveList(userId),
@@ -198,7 +193,13 @@ export class PlatformAgentUserListService {
       limit: number;
       offset: number;
     }) => Promise<UnifiedAvailableAgentItem[]>,
+    loadLegacy: () => Promise<UnifiedAvailableAgentItem[]>,
   ): Promise<UnifiedAvailableAgentItem[]> => {
+    // The disabled path is deliberately the original loader call, not a reconstruction through
+    // the managed pagination contract. Preserve its exact arguments, ordering, result identity,
+    // and query count while touching no builtin/catalog service.
+    if (!this.flags().ENABLE_PLATFORM_MANAGED_AGENTS) return loadLegacy();
+
     const { builtinInbox, entries, materializedAgentIds } = await this.getVisibleProjection(userId);
     const builtinMatches = params.keyword
       ? matchesUnifiedKeyword(builtinInbox, params.keyword)
@@ -237,6 +238,8 @@ export class PlatformAgentUserListService {
     userId: string,
     base: SidebarAgentListResponse,
   ): Promise<SidebarAgentListResponse> => {
+    if (!this.flags().ENABLE_PLATFORM_MANAGED_AGENTS) return base;
+
     const { builtinInbox, entries, materializedAgentIds } = await this.getVisibleProjection(userId);
     const excludedIds = new Set([...materializedAgentIds, builtinInbox.id]);
 
@@ -262,6 +265,8 @@ export class PlatformAgentUserListService {
     base: SidebarAgentItem[],
     keyword: string,
   ): Promise<SidebarAgentItem[]> => {
+    if (!this.flags().ENABLE_PLATFORM_MANAGED_AGENTS) return base;
+
     const { builtinInbox, entries, materializedAgentIds } = await this.getVisibleProjection(userId);
     const matched = entries.filter((entry) => matchesKeyword(entry, keyword));
     const excludedIds = new Set([...materializedAgentIds, builtinInbox.id]);

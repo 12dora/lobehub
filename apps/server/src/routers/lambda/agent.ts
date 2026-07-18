@@ -463,10 +463,13 @@ export const agentRouter = router({
       // short-circuits with zero catalog access and this returns the legacy local-only result.
       const limit = input?.limit ?? 9999;
       const offset = input?.offset ?? 0;
-      return new PlatformAgentUserListService(ctx.serverDB).mergeAvailableAgents(
+      return new PlatformAgentUserListService(ctx.serverDB, ctx.workspaceId).mergeAvailableAgents(
         ctx.userId,
         { keyword: input?.keyword, limit, offset },
         (localParams) => ctx.agentModel.queryAgents(localParams),
+        // Disabled flag: invoke the exact pre-managed endpoint path, including an undefined input
+        // and its original defaults/pagination semantics.
+        () => ctx.agentModel.queryAgents(input),
       );
     }),
 
