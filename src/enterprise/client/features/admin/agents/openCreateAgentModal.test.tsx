@@ -51,7 +51,7 @@ describe('CreateAgentContent safe retry errors', () => {
         data: { errorData: { code: 'PLATFORM_PERMISSION_DENIED' } },
         message: 'raw permission backend detail',
       },
-      'enterprise.error.PLATFORM_PERMISSION_DENIED',
+      'agentCatalog.errors.generic',
       'raw permission backend detail',
     ],
     [
