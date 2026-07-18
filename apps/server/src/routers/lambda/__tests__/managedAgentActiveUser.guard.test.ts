@@ -197,7 +197,7 @@ describe('RR2-7 — withActiveUserWhenManagedAgents gates strictly on ENABLE_PLA
       .use(withActiveUserWhenManagedAgents())
       .query(() => 'ok' as const),
   });
-  const ping = async (userId: string) =>
+  const ping = async (userId: string): Promise<{ error?: { code?: string }; value?: 'ok' }> =>
     createCallerFactory(guardRouter)(await ctx(userId))
       .ping()
       .then(

@@ -42,6 +42,16 @@ const CHECKSUM = 'a'.repeat(64);
 
 const ctx = async () => (await createContextInner({ userId: USER as never })) as never;
 
+const buildCallers = async () => {
+  const context = await ctx();
+  return {
+    agent: createCallerFactory(agentRouter)(context),
+    doc: createCallerFactory(agentDocumentRouter)(context),
+    group: createCallerFactory(agentGroupRouter)(context),
+    home: createCallerFactory(homeRouter)(context),
+  };
+};
+
 const seed = async () => {
   await db.insert(users).values([{ id: USER }]);
   await db.insert(platformAgents).values({
@@ -101,11 +111,14 @@ afterEach(async () => {
 afterAll(() => vi.restoreAllMocks());
 
 describe('RR2-4 — managed local Agent mutations reject with zero write', () => {
-  const managedCases = (
-    agent: ReturnType<typeof createCallerFactory<typeof agentRouter>>,
-    group: ReturnType<typeof createCallerFactory<typeof agentGroupRouter>>,
-    home: ReturnType<typeof createCallerFactory<typeof homeRouter>>,
-    doc: ReturnType<typeof createCallerFactory<typeof agentDocumentRouter>>,
+  // Callers are inferred from createCallerFactory(router)(ctx); typing the case-builder params
+  // explicitly is brittle across tRPC versions, so build the case list inline over the inferred
+  // callers.
+  const buildManagedCases = (
+    agent: Awaited<ReturnType<typeof buildCallers>>['agent'],
+    group: Awaited<ReturnType<typeof buildCallers>>['group'],
+    home: Awaited<ReturnType<typeof buildCallers>>['home'],
+    doc: Awaited<ReturnType<typeof buildCallers>>['doc'],
   ): Array<{ name: string; run: () => Promise<unknown> }> => [
     { name: 'agent.removeAgent', run: () => agent.removeAgent({ agentId: 'agt_mat' }) },
     {
@@ -174,15 +187,11 @@ describe('RR2-4 — managed local Agent mutations reject with zero write', () =>
   ];
 
   it('rejects each registered mutation with FORBIDDEN and writes nothing', async () => {
-    const context = await ctx();
-    const agent = createCallerFactory(agentRouter)(context);
-    const group = createCallerFactory(agentGroupRouter)(context);
-    const home = createCallerFactory(homeRouter)(context);
-    const doc = createCallerFactory(agentDocumentRouter)(context);
+    const { agent, group, home, doc } = await buildCallers();
 
     const before = await db.select().from(agents).where(eq(agents.userId, USER));
 
-    for (const { name, run } of managedCases(agent, group, home, doc)) {
+    for (const { name, run } of buildManagedCases(agent, group, home, doc)) {
       const error = await run().then(
         () => {
           throw new Error(`${name} should have been rejected for a managed local Agent`);

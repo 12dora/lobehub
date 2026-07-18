@@ -399,12 +399,15 @@ describe('CompletionLifecycle.recordStart — platform fail-closed (RR2-2)', () 
       new Error('violates constraint agent_operations_pkey during INSERT ... SELECT'),
     );
     const lifecycle = buildLifecycle();
-    const error = await lifecycle
+    const error = (await lifecycle
       .recordStart({
         metadata: { platformOperation: { checksum: 'a', platformAgentId: 'p', versionId: 'v' } },
         operationId: 'op-y',
       } as any)
-      .catch((e) => e as Error);
+      .then(
+        () => new Error('expected recordStart to reject'),
+        (e) => e as Error,
+      )) as Error;
     expect(error.message).toBe('PLATFORM_OPERATION_START_PERSIST_FAILED');
     expect(error.message).not.toMatch(/constraint|INSERT|SELECT|agent_operations/i);
   });
