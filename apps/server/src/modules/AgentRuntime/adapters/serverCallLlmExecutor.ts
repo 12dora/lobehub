@@ -33,14 +33,13 @@ import {
 import { type ChatToolPayload, type MessageToolCall } from '@lobechat/types';
 import { sanitizeToolCallArguments, serializePartsForStorage } from '@lobechat/utils';
 
-import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
-
 import { type RuntimeExecutorContext } from '../context';
 import { isOperationInterrupted, log, sleep, timing } from '../executorHelpers';
 import { formatErrorEventData } from '../formatErrorEventData';
 import { classifyLLMError } from '../llmErrorClassification';
 import { createConversationParentMissingError } from '../messagePersistErrors';
 import { VISIBLE_OUTPUT_END_PUBLISHED_STEP_INDEX_METADATA_KEY } from '../visibleOutputEnd';
+import { initOperationModelRuntime } from './operationModelRuntime';
 import { buildServerCallLlmContext } from './serverCallLlmContextBuilder';
 import { createServerCallLlmStreamSink } from './serverCallLlmStreamSink';
 import { resolveServerCallLlmTooling, type ServerCallLlmTooling } from './serverCallLlmTooling';
@@ -205,13 +204,9 @@ export const callLlm =
         );
       }
 
-      // Initialize ModelRuntime (read user's keyVaults from database)
-      const modelRuntime = await initModelRuntimeFromDB(
-        ctx.serverDB,
-        ctx.userId!,
-        provider,
-        ctx.workspaceId,
-      );
+      // Initialize ModelRuntime (read user's keyVaults from database). For a managed platform
+      // operation this binds the EXACT historical provider revision the operation pinned.
+      const modelRuntime = await initOperationModelRuntime(ctx, provider, model);
 
       // Construct ChatStreamPayload
       const stream = ctx.stream ?? true;

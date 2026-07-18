@@ -9,6 +9,7 @@ import type {
 } from '@lobechat/context-engine';
 import type {
   ChatTopicBotContext,
+  PlatformOperationModelPin,
   PlatformOperationPin,
   UserInterventionConfig,
 } from '@lobechat/types';
@@ -407,6 +408,12 @@ export interface OperationCreationParams {
    * sub-tree back to its root.
    */
   parentOperationId?: string;
+  /**
+   * Secret-free exact model ref (M10 PR-049 · MODEL-EXACT). Persisted onto
+   * `agent_operations.metadata.platformModel` so every LLM call runs on the exact historical
+   * provider revision. Absent for ordinary / builtin operations.
+   */
+  platformModelPin?: PlatformOperationModelPin;
   /**
    * Secret-free platform operation pin (M10 PR-049 · REWORK-2). Persisted verbatim onto
    * `agent_operations.metadata.platformOperation` so resume/retry/queued steps replay the exact

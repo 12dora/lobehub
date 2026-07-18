@@ -27,7 +27,9 @@ import { getLLMConfig } from '@/envs/llm';
 import {
   createPlatformAiModelAllowlistHooks,
   isPlatformManagedAiEnabled,
+  type PlatformAiExactModelRef,
   resolvePlatformAiExecutionConfig,
+  resolvePlatformAiExecutionConfigAtRevision,
 } from '@/server/modules/ModelRuntime/platformAiRuntimeBridge';
 import { createLLMGenerationTracingHook } from '@/server/services/llmGenerationTracing/hook';
 
@@ -526,4 +528,35 @@ export const initModelRuntimeFromDB = async (
 
   // 6. Initialize ModelRuntime with the payload and hooks
   return initModelRuntimeWithUserPayload(provider, payload, { userId }, hooks);
+};
+
+/**
+ * Initialize a ModelRuntime bound to an EXACT historical published provider revision (MODEL-EXACT).
+ *
+ * Used only for a managed platform operation carrying a pinned model ref, so an in-flight operation
+ * keeps running on the provider revision it started on even after the admin publishes a newer
+ * revision. Resolves the exact revision config + credentials fail-closed (missing / disabled /
+ * checksum-mismatch throws), composes the same published-model allowlist + business/tracing hooks as
+ * the managed path, and never reads the current/latest pointer. Requires managed AI to be enabled
+ * (the caller only reaches this for a platform pin); credentials are decrypted per-execution and
+ * never persisted.
+ */
+export const initPlatformExactModelRuntime = async (
+  db: LobeChatDatabase,
+  userId: string,
+  ref: PlatformAiExactModelRef,
+  workspaceId?: string,
+): Promise<ModelRuntime> => {
+  const providerConfig = await resolvePlatformAiExecutionConfigAtRevision(db, ref);
+  const payload = buildPayloadFromKeyVaults(
+    providerConfig.keyVaults as ProviderKeyVaults,
+    providerConfig.runtimeProvider,
+  );
+  const businessHooks = getBusinessModelRuntimeHooks(userId, ref.providerKey, workspaceId);
+  const tracingHooks = createLLMGenerationTracingHook(userId, ref.providerKey, workspaceId);
+  const hooks = mergeModelRuntimeHooks(
+    createPlatformAiModelAllowlistHooks(providerConfig.allowedModels),
+    mergeModelRuntimeHooks(businessHooks, tracingHooks),
+  );
+  return initModelRuntimeWithUserPayload(ref.providerKey, payload, { userId }, hooks);
 };

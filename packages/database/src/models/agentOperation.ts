@@ -1,5 +1,6 @@
 import type {
   PlatformOperationMetadata,
+  PlatformOperationModelPin,
   PlatformOperationPin,
   VerifyRunStatus,
 } from '@lobechat/types';
@@ -201,6 +202,21 @@ export class AgentOperationModel {
       .orderBy(desc(agentOperations.startedAt))
       .limit(1);
     return (row?.metadata as PlatformOperationMetadata | undefined)?.platformOperation ?? null;
+  }
+
+  /**
+   * Load the secret-free exact model pin persisted on an operation (MODEL-EXACT), owner- and
+   * workspace-scoped by operationId, so a leaked operationId can never surface another principal's
+   * pin. Returns null for an ordinary / builtin operation. The caller resolves the exact historical
+   * provider revision from it and fails closed on a checksum/revision mismatch.
+   */
+  async findPlatformModelPin(operationId: string): Promise<PlatformOperationModelPin | null> {
+    const [row] = await this.db
+      .select({ metadata: agentOperations.metadata })
+      .from(agentOperations)
+      .where(and(eq(agentOperations.id, operationId), this.ownership()))
+      .limit(1);
+    return (row?.metadata as PlatformOperationMetadata | undefined)?.platformModel ?? null;
   }
 
   /**
