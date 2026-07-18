@@ -1,6 +1,6 @@
 import type { ModelRuntime } from '@lobechat/model-runtime';
 
-import { AgentOperationModel } from '@/database/models/agentOperation';
+import { AgentOperationModel, platformStartBindingsEqual } from '@/database/models/agentOperation';
 import {
   initModelRuntimeFromDB,
   initPlatformExactModelRuntime,
@@ -44,6 +44,9 @@ export const initOperationModelRuntime = async (
   provider: string,
   model: string,
 ): Promise<ModelRuntime> => {
+  const state = await ctx.loadAgentState?.(ctx.operationId);
+  const trustedClassification = state?.metadata?.platformStartClassification;
+  const trustedBinding = state?.metadata?.platformStartBinding;
   const ref = ctx.userId
     ? await new AgentOperationModel(
         ctx.serverDB,
@@ -51,6 +54,22 @@ export const initOperationModelRuntime = async (
         ctx.workspaceId,
       ).findPlatformOperationRef(ctx.operationId)
     : null;
+
+  if (trustedClassification === 'complete') {
+    if (
+      ref?.classification !== 'complete' ||
+      !trustedBinding ||
+      !platformStartBindingsEqual(ref.platformStart, trustedBinding)
+    ) {
+      throw new PlatformExactModelUnavailableError();
+    }
+  } else if (trustedClassification === 'ordinary') {
+    if (trustedBinding !== undefined || (ref && ref.classification !== 'ordinary')) {
+      throw new PlatformExactModelUnavailableError();
+    }
+  } else {
+    throw new PlatformExactModelUnavailableError();
+  }
 
   if (ref?.isPlatformOperation) {
     const pin = ref.modelPin;

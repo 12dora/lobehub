@@ -61,6 +61,7 @@ import type {
 import {
   buildHeteroExecArgs,
   decodePlatformAgentListId,
+  fingerprintResumeToolCall,
   getActivePluginIds,
   getDisabledPluginIds,
   getWorkingDirEffectivePath,
@@ -1079,14 +1080,14 @@ export class AiAgentService {
 
   /**
    * Resolve the secret-free pin of the EXACT parent operation a resume continues, via a
-   * SERVER-CONTROLLED, resume-kind-keyed anchor binding (M10 PR-049 · RR3-1/RR4-1) — the
+   * SERVER-CONTROLLED, complete provenance binding (M10 PR-049 · RR3-1/RR4-1) — the
    * client-writable `message.metadata.operationId` AND the client-writable `message.parentId` are
    * BOTH untrusted.
    *
    * The anchor message is loaded owner-scoped (a foreign / non-existent message → null → fail
    * closed) only to confirm the caller owns it; the operation is then matched by kind against a
    * SERVER-owned id under its OWN kind — an APPROVAL / TOOL-RESULT anchor against the pending
-   * tool-message ids the runtime recorded at pause (`metadata.pendingResumeAnchors[kind]`). No
+   * tool-message provenance the runtime recorded at pause. No
    * `parentId` hop, so a client-forged tool message (spoofed parentId) can never bind, and the two
    * kinds can't cross. ONLY approval / tool-result are paused resumes; a bare regeneration / continue
    * (`parentMessageId` without an approval/tool-result body) never reaches here — it starts a fresh
@@ -1095,6 +1096,7 @@ export class AiAgentService {
   private async resolveResumePlatformPin(
     anchorMessageId: string | null,
     anchorKind: ResumeInteractionKind,
+    toolCallId: string,
     platformAgentId: string,
     topicId: string | null,
     threadId: string | null,
@@ -1102,11 +1104,31 @@ export class AiAgentService {
     if (!anchorMessageId) return null;
     const anchor = await this.messageModel.findById(anchorMessageId);
     if (!anchor) return null;
+    const plugin = await this.messageModel.findMessagePlugin(anchor.id);
+    if (
+      !plugin ||
+      plugin.toolCallId !== toolCallId ||
+      plugin.intervention?.kind !== anchorKind ||
+      typeof plugin.apiName !== 'string' ||
+      typeof plugin.arguments !== 'string' ||
+      typeof plugin.identifier !== 'string'
+    ) {
+      return null;
+    }
+    const fingerprint = await fingerprintResumeToolCall({
+      apiName: plugin.apiName,
+      arguments: plugin.arguments,
+      identifier: plugin.identifier,
+      toolCallId,
+      type: plugin.type,
+    });
     return this.agentOperationModel.findResumablePlatformOperationPin({
       anchorKind,
       anchorMessageId: anchor.id,
+      fingerprint,
       platformAgentId,
       threadId,
+      toolCallId,
       topicId,
     });
   }
@@ -1134,6 +1156,7 @@ export class AiAgentService {
        */
       pausedResumeKind?: ResumeInteractionKind;
       resumeAnchorMessageId: string | null;
+      resumeToolCallId?: string;
       threadId: string | null;
       topicId: string | null;
     },
@@ -1148,7 +1171,7 @@ export class AiAgentService {
 
     if (resumeContext.pausedResumeKind) {
       // RR3-1/RR5-5: a PAUSED (approval / tool-result) resume MUST replay the pin of its EXACT parent
-      // operation, matched by the SERVER-CONTROLLED, kind-keyed pending tool-message binding (never
+      // operation, matched by the SERVER-CONTROLLED pending tool-message provenance (never
       // client-writable message metadata) and jointly scoped to owner/workspace/topic/thread/
       // platformAgent + a paused, resumable status. No such bound pin (fabricated / cross-owner /
       // wrong turn / wrong kind / terminal op) → fail closed. We NEVER fall through to a fresh
@@ -1157,6 +1180,7 @@ export class AiAgentService {
       const pin = await this.resolveResumePlatformPin(
         resumeContext.resumeAnchorMessageId,
         resumeContext.pausedResumeKind,
+        resumeContext.resumeToolCallId ?? '',
         platformAgentId,
         resumeContext.topicId,
         resumeContext.threadId,
@@ -1377,10 +1401,11 @@ export class AiAgentService {
       const resolved = await this.resolvePlatformAgentConfig(platformAgentId, identifier, {
         pausedResumeKind,
         // The trusted anchor for a paused resume is the pending TOOL message (matched against the
-        // op's server-recorded, kind-keyed pending tool ids). Never a client-writable parentId hop,
+        // op's server-recorded pending tool provenance). Never a client-writable parentId hop,
         // and never the generic regeneration/continue parentMessageId.
         resumeAnchorMessageId:
           resumeApproval?.parentMessageId ?? resumeToolResult?.parentMessageId ?? null,
+        resumeToolCallId: resumeApproval?.toolCallId ?? resumeToolResult?.toolCallId,
         threadId: appContext?.threadId ?? null,
         topicId: appContext?.topicId ?? null,
       });
@@ -1691,12 +1716,16 @@ export class AiAgentService {
         const rejectionContent = rejectionReason
           ? `User reject this tool calling with reason: ${rejectionReason}`
           : 'User reject this tool calling without reason';
-        await this.messageModel.updateToolMessage(resumeApproval.parentMessageId, {
-          content: rejectionContent,
-        });
-        await this.messageModel.updateMessagePlugin(resumeApproval.parentMessageId, {
-          intervention: { rejectedReason: rejectionReason, status: 'rejected' },
-        });
+        const rejected = await this.messageModel.rejectPendingMessagePlugin(
+          resumeApproval.parentMessageId,
+          {
+            content: rejectionContent,
+            rejectedReason: rejectionReason,
+          },
+        );
+        if (!rejected) {
+          throw new Error('resumeApproval is stale or already consumed');
+        }
       }
 
       log(
@@ -1757,20 +1786,14 @@ export class AiAgentService {
       // Single-winner, kind-guarded pending→approved transition FIRST (RR5-2), so a stale / double /
       // wrong-kind resume can never mutate the answer or double-run the tool. Only after we win the
       // CAS do we write the human's answer as the tool result.
-      const resolved = await this.messageModel.approvePendingToolResultPlugin(
+      const resolved = await this.messageModel.resolvePendingToolResultPlugin(
         resumeToolResult.parentMessageId,
+        {
+          content: resumeToolResult.content,
+          pluginState: resumeToolResult.pluginState,
+        },
       );
       if (!resolved) throw new Error('resumeToolResult is stale or already consumed');
-
-      await this.messageModel.updateToolMessage(resumeToolResult.parentMessageId, {
-        content: resumeToolResult.content,
-      });
-      if (resumeToolResult.pluginState) {
-        await this.messageModel.updatePluginState(
-          resumeToolResult.parentMessageId,
-          resumeToolResult.pluginState,
-        );
-      }
 
       log(
         'execAgent: resumeToolResult applied to tool message %s (toolCallId=%s)',

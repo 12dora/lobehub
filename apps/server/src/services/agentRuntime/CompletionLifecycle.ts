@@ -1,8 +1,10 @@
 import { isParkedStatus } from '@lobechat/agent-runtime';
+import type { PlatformOperationMetadata, ResumeToolProvenance } from '@lobechat/types';
 import debug from 'debug';
 
 import {
   AgentOperationModel,
+  classifyPlatformStart,
   type RecordOperationStartParams,
 } from '@/database/models/agentOperation';
 import { MessageModel } from '@/database/models/message';
@@ -131,13 +133,13 @@ export class CompletionLifecycle {
     // land, every later LLM call and every resume would silently fall back to the managed *latest*
     // pointer. So a platform operation whose start row fails to persist must fail CLOSED here, before
     // any execution, with a stable identifier-free error (never the raw DB message).
-    const isPlatformOperation = Boolean(
-      (params.metadata as { platformOperation?: unknown } | undefined)?.platformOperation,
+    const classification = classifyPlatformStart(
+      params.metadata as PlatformOperationMetadata | undefined,
     );
     try {
       await this.agentOperationModel.recordStart(params);
     } catch (error) {
-      if (isPlatformOperation) {
+      if (classification !== 'ordinary') {
         log(
           '[%s] Failed to persist platform operation start (fatal): %O',
           params.operationId,
@@ -254,31 +256,51 @@ export class CompletionLifecycle {
     } as const;
 
     // RR5-3: a `waiting_for_human` park writes the paused status AND the SERVER-created pending
-    // tool-message ids (as KIND-KEYED trusted resume anchors, surfaced on state by the human-approve
+    // complete tool provenance (surfaced on state by the human-approve
     // executor) in ONE atomic, expected-previous-status CAS — no longer a status write followed by a
     // best-effort anchor write. An approval / tool-result resume must target one of these exact ids
     // under its own kind, so a client-forged tool message can never bind. The CAS fires only from
     // running / waiting_for_human, so a late park can't resurrect a cancelled / completed op.
     if (status === 'waiting_for_human') {
-      const pending: { id: string; kind: 'approval' | 'toolResult' }[] = Array.isArray(
-        state?.pendingHumanToolMessages,
-      )
+      const pending: ResumeToolProvenance[] = Array.isArray(state?.pendingHumanToolMessages)
         ? state.pendingHumanToolMessages
         : [];
-      const anchors = {
-        approval: pending.filter((p) => p?.kind === 'approval').map((p) => p.id),
-        toolResult: pending.filter((p) => p?.kind === 'toolResult').map((p) => p.id),
-      };
+      const anchors = pending;
 
       // Whether this is a platform-managed operation decides fail-closed severity (below). Read the
-      // persisted marker up front so a concurrently-deleted row is still classified from its last
-      // known metadata. Read failure defaults to ordinary (non-fatal).
-      let isPlatformOperation = false;
-      try {
-        const ref = await this.agentOperationModel.findPlatformOperationRef(operationId);
-        isPlatformOperation = ref?.isPlatformOperation ?? false;
-      } catch (error) {
-        log('[%s] Failed to classify park operation (non-fatal): %O', operationId, error);
+      // trusted runtime classification is authoritative when present. A legacy rehydrated state
+      // without it must recover a complete persisted classification; missing/partial rows and read
+      // failures are fatal rather than guessed as ordinary.
+      const runtimeClassification = state?.metadata?.platformStartClassification;
+      const runtimeBinding = state?.metadata?.platformStartBinding as
+        PlatformOperationMetadata | undefined;
+      let isPlatformOperation: boolean;
+      let expectedPlatformStart: PlatformOperationMetadata | undefined;
+      if (
+        runtimeClassification === 'complete' &&
+        classifyPlatformStart(runtimeBinding) === 'complete'
+      ) {
+        isPlatformOperation = true;
+        expectedPlatformStart = runtimeBinding;
+      } else if (runtimeClassification === 'ordinary' && runtimeBinding === undefined) {
+        isPlatformOperation = false;
+      } else {
+        if (runtimeClassification !== undefined || runtimeBinding !== undefined) {
+          throw new Error('OPERATION_PARK_CLASSIFICATION_FAILED', {
+            cause: new Error('inconsistent trusted runtime classification'),
+          });
+        }
+        try {
+          const ref = await this.agentOperationModel.findPlatformOperationRef(operationId);
+          if (!ref || ref.classification === 'partial') {
+            throw new Error('operation classification unavailable');
+          }
+          isPlatformOperation = ref.classification === 'complete';
+          expectedPlatformStart = ref.platformStart ?? undefined;
+        } catch (error) {
+          log('[%s] Failed to classify park operation (fatal): %O', operationId, error);
+          throw new Error('OPERATION_PARK_CLASSIFICATION_FAILED', { cause: error });
+        }
       }
 
       let affected = 0;
@@ -287,6 +309,8 @@ export class CompletionLifecycle {
         ({ affected } = await this.agentOperationModel.parkForHumanIntervention(operationId, {
           ...completionParams,
           anchors,
+          expectedGeneration: Math.max((state?.pendingResumeGeneration ?? 1) - 1, 0),
+          expectedPlatformStart,
         }));
       } catch (error) {
         parkError = error;
@@ -643,7 +667,11 @@ export class CompletionLifecycle {
       // A FATAL platform-operation park failure (RR5-3) must not be swallowed like an ordinary hook
       // error — re-throw it (after the finally cleanup runs) so the caller sees the atomic park
       // never landed, instead of proceeding as if the op parked cleanly.
-      if (error instanceof Error && error.message === 'PLATFORM_OPERATION_PARK_PERSIST_FAILED') {
+      if (
+        error instanceof Error &&
+        (error.message === 'PLATFORM_OPERATION_PARK_PERSIST_FAILED' ||
+          error.message === 'OPERATION_PARK_CLASSIFICATION_FAILED')
+      ) {
         fatalParkError = error;
       } else {
         log('[%s] Hook dispatch error (non-fatal): %O', operationId, error);

@@ -51,13 +51,17 @@ interface CreateMessageResult {
  * fabricated, kind-tagged resume anchor. Ordinary `status` / `rejectedReason` fields pass through
  * untouched, so a normal client message is unaffected.
  */
-const stripInterventionKind = <T extends Record<string, any> | undefined | null>(
+const stripReservedInterventionFields = <T extends Record<string, any> | undefined | null>(
   intervention: T,
 ): T => {
-  if (!intervention || typeof intervention !== 'object' || !('kind' in intervention)) {
+  if (
+    !intervention ||
+    typeof intervention !== 'object' ||
+    (!('kind' in intervention) && !('provenance' in intervention))
+  ) {
     return intervention;
   }
-  const { kind: _kind, ...rest } = intervention as Record<string, unknown>;
+  const { kind: _kind, provenance: _provenance, ...rest } = intervention as Record<string, unknown>;
   return rest as T;
 };
 
@@ -193,7 +197,9 @@ export class MessageService {
           const message = operation.message.pluginIntervention
             ? {
                 ...operation.message,
-                pluginIntervention: stripInterventionKind(operation.message.pluginIntervention),
+                pluginIntervention: stripReservedInterventionFields(
+                  operation.message.pluginIntervention,
+                ),
               }
             : operation.message;
           const item = await this.messageModel.create(message, message.id);
@@ -233,7 +239,10 @@ export class MessageService {
   async createMessage(params: CreateMessageParams): Promise<CreateMessageResult> {
     // RR5-1: never let a client stamp the server-owned intervention kind on a created tool message.
     const sanitized: CreateMessageParams = params.pluginIntervention
-      ? { ...params, pluginIntervention: stripInterventionKind(params.pluginIntervention) }
+      ? {
+          ...params,
+          pluginIntervention: stripReservedInterventionFields(params.pluginIntervention),
+        }
       : params;
     // 1. Create the message (using agentId). Honor a caller-pre-allocated id
     //    when present (passing `undefined` falls back to the model's genId
@@ -325,7 +334,7 @@ export class MessageService {
     // RR5-1: a client plugin update must not set the server-owned intervention kind.
     const sanitized =
       value && value.intervention
-        ? { ...value, intervention: stripInterventionKind(value.intervention) }
+        ? { ...value, intervention: stripReservedInterventionFields(value.intervention) }
         : value;
     await this.messageModel.updateMessagePlugin(id, sanitized);
     return this.queryWithSuccess(options);

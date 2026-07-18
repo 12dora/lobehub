@@ -1,33 +1,28 @@
-import type { ResumeInteractionKind } from '@lobechat/types';
+import type { ResumeInteractionKind, ResumeToolProvenance } from '@lobechat/types';
+import { fingerprintResumeToolCall } from '@lobechat/types';
 
 import type { AgentRuntimeHost } from '../transport';
-import type {
-  AgentEvent,
-  AgentInstruction,
-  AgentState,
-  AnyHookEvent,
-  InstructionExecutor,
-} from '../types';
+import type { AgentEvent, AgentInstruction, AnyHookEvent, InstructionExecutor } from '../types';
 
 /**
- * Derive the SERVER-owned resume-interaction kind for a pending tool (M10 PR-049 · RR5-2), read only
- * from the server-built `state.toolManifestMap` — never a client field. A tool that declares its OWN
- * static `humanIntervention: 'always'` (e.g. lobe-agent `askUserQuestion`) is a human-ANSWER tool
- * whose result IS the human's input → `toolResult`. Everything else parked for intervention (security
- * block, `required` policy, unknown tool, allow-list miss, dynamic policy) is an approve/reject
- * decision → `approval`.
+ * Derive the SERVER-owned resume-interaction kind for a pending tool (M10 PR-049 · RR5-2).
+ * Human-answer semantics are an explicit trusted capability, not a synonym for the broad
+ * `humanIntervention: 'always'` policy. Only audited built-in UI interactions are allowed to accept
+ * arbitrary user input as their result; every unknown/general `always` tool remains an approval.
  */
-const deriveResumeKind = (
-  state: AgentState,
-  toolPayload: { apiName?: string; identifier?: string },
-): ResumeInteractionKind => {
-  const manifest = toolPayload.identifier
-    ? state.toolManifestMap?.[toolPayload.identifier]
-    : undefined;
-  const api = manifest?.api?.find((a: any) => a.name === toolPayload.apiName);
-  const config = api?.humanIntervention ?? manifest?.humanIntervention;
-  return config === 'always' ? 'toolResult' : 'approval';
-};
+const TRUSTED_HUMAN_ANSWER_TOOLS = new Set([
+  'lobe-agent/askUserQuestion',
+  'lobe-user-interaction/askUserQuestion',
+  'lobe-web-onboarding/showAgentMarketplace',
+]);
+
+const deriveResumeKind = (toolPayload: {
+  apiName?: string;
+  identifier?: string;
+}): ResumeInteractionKind =>
+  TRUSTED_HUMAN_ANSWER_TOOLS.has(`${toolPayload.identifier}/${toolPayload.apiName}`)
+    ? 'toolResult'
+    : 'approval';
 
 /**
  * `request_human_approve` executor — pauses the operation for human tool
@@ -86,7 +81,7 @@ export const requestHumanApprove =
     // pending tool messages or (in resumption mode) by reusing the trusted refs.
     const toolMessageIds: Record<string, string> = {};
     // Kind-tagged, server-owned resume anchors surfaced on state (RR5-2).
-    const pendingHumanToolMessages: { id: string; kind: ResumeInteractionKind }[] = [];
+    const pendingHumanToolMessages: ResumeToolProvenance[] = [];
 
     if (skipCreateToolMessage) {
       // Re-park (resumption) mode: the pending tool messages already exist. Their ids + server-owned
@@ -107,19 +102,44 @@ export const requestHumanApprove =
           break;
         }
       }
-      for (const m of messages) {
+      const candidates = new Map<string, any>();
+      for (const message of messages) {
+        const provenance = message?.pluginIntervention?.provenance as
+          ResumeToolProvenance | undefined;
+        if (!provenance) continue;
         if (
-          m?.role !== 'tool' ||
-          m.pluginIntervention?.status !== 'pending' ||
-          m.parentId !== currentAssistantId
+          message?.role === 'tool' &&
+          message.pluginIntervention?.status === 'pending' &&
+          message.parentId === currentAssistantId &&
+          provenance.messageId === message.id &&
+          provenance.assistantMessageId === message.parentId &&
+          provenance.toolCallId === (message.tool_call_id ?? message.plugin?.id) &&
+          provenance.kind === message.pluginIntervention?.kind &&
+          typeof provenance.operationId === 'string' &&
+          provenance.operationId.length > 0
         ) {
-          continue;
+          candidates.set(provenance.toolCallId, message);
         }
-        const kind = m.pluginIntervention?.kind as ResumeInteractionKind | undefined;
-        const toolCallId: string | undefined = m.tool_call_id ?? m.plugin?.id;
-        if (!m.id || !toolCallId || (kind !== 'approval' && kind !== 'toolResult')) continue;
-        toolMessageIds[toolCallId] = m.id;
-        pendingHumanToolMessages.push({ id: m.id, kind });
+      }
+      for (const toolPayload of pendingToolsCalling) {
+        const message = candidates.get(toolPayload.id);
+        const provenance = message?.pluginIntervention?.provenance as
+          ResumeToolProvenance | undefined;
+        const fingerprint = await fingerprintResumeToolCall({
+          apiName: toolPayload.apiName,
+          arguments: toolPayload.arguments,
+          identifier: toolPayload.identifier,
+          toolCallId: toolPayload.id,
+          type: toolPayload.type,
+        });
+        if (!message || !provenance || provenance.fingerprint !== fingerprint) {
+          throw new Error(
+            `[request_human_approve] Missing trusted pending provenance (op=${operationId})`,
+          );
+        }
+        const promoted = { ...provenance, operationId };
+        toolMessageIds[toolPayload.id] = message.id;
+        pendingHumanToolMessages.push(promoted);
       }
     } else {
       // Find parent assistant message. Prefer state.messages (already in
@@ -158,16 +178,33 @@ export const requestHumanApprove =
       for (const toolPayload of pendingToolsCalling) {
         // Server-derived resume kind from the tool's own manifest intervention type (RR5-2); an
         // unmapped tool defaults to 'approval' (approve/reject), never a blind toolResult write.
-        const kind = deriveResumeKind(state, toolPayload);
+        const kind = deriveResumeKind(toolPayload);
+        const fingerprint = await fingerprintResumeToolCall({
+          apiName: toolPayload.apiName,
+          arguments: toolPayload.arguments,
+          identifier: toolPayload.identifier,
+          toolCallId: toolPayload.id,
+          type: toolPayload.type,
+        });
+        const toolMessageId = globalThis.crypto.randomUUID();
+        const provenance: ResumeToolProvenance = {
+          assistantMessageId: parentAssistantId,
+          fingerprint,
+          kind,
+          messageId: toolMessageId,
+          operationId,
+          toolCallId: toolPayload.id,
+        };
         const toolMessage = await transports.messages.createToolMessage({
           agentId: state.metadata!.agentId!,
           content: '',
           groupId: state.metadata?.groupId ?? undefined,
+          id: toolMessageId,
           parentId: parentAssistantId,
           plugin: toolPayload as any,
           // Stamp the SERVER-owned resume kind alongside the pending status so a later resume can be
-          // validated against it and the operation anchor is kind-keyed (RR5-2).
-          pluginIntervention: { kind, status: 'pending' },
+          // validated against it and the operation provenance carries the exact kind (RR5-2).
+          pluginIntervention: { kind, provenance, status: 'pending' },
           role: 'tool',
           threadId: state.metadata?.threadId,
           tool_call_id: toolPayload.id,
@@ -175,7 +212,7 @@ export const requestHumanApprove =
         });
 
         toolMessageIds[toolPayload.id] = toolMessage.id;
-        pendingHumanToolMessages.push({ id: toolMessage.id, kind });
+        pendingHumanToolMessages.push(provenance);
 
         // Intentionally DO NOT push the empty placeholder into
         // newState.messages. When the approval resumes, the `call_tool`
@@ -186,11 +223,12 @@ export const requestHumanApprove =
     }
 
     // RR4-1/RR5-2: surface the SERVER-created pending tool messages (id + server-owned kind) on state
-    // so the server records them as the operation's trusted, KIND-KEYED resume anchors. A resume
+    // so the server records them as the operation's trusted resume-provenance set. A resume
     // approval/tool-result must target one of these exact ids under its OWN kind — a client-forged
     // tool message (spoofed parentId / pending plugin) is never a valid anchor, and an approval id
     // can never be replayed as a tool-result.
     newState.pendingHumanToolMessages = pendingHumanToolMessages;
+    newState.pendingResumeGeneration = (state.pendingResumeGeneration ?? 0) + 1;
 
     // Notify frontend to display approval UI through streaming system.
     // `toolMessageIds` is a new optional field; legacy consumers ignore it.

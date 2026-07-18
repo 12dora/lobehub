@@ -1,3 +1,5 @@
+import type { ResumeToolProvenance } from '../message';
+
 export const PLATFORM_AGENT_ASSIGNMENT_MODES = ['mandatory', 'default', 'optional'] as const;
 export type PlatformAgentAssignmentMode = (typeof PLATFORM_AGENT_ASSIGNMENT_MODES)[number];
 
@@ -209,8 +211,9 @@ export interface PlatformOperationMetadata {
    */
   assistantMessageId?: string;
   /**
-   * Server-recorded ids of the pending `role='tool'` messages the runtime created when this
-   * operation paused for human intervention, keyed by the SERVER-derived interaction kind (M10
+   * Server-recorded provenance for the pending `role='tool'` messages the runtime created when this
+   * operation paused for human intervention, with the SERVER-derived interaction kind embedded in
+   * each entry (M10
    * PR-049 · RR4-1/RR5-2). `approval` = a `humanIntervention:'required'` / policy-blocked tool
    * (resumed via `resumeApproval`); `toolResult` = a `humanIntervention:'always'` human-answer tool
    * such as `askUserQuestion` (resumed via `resumeToolResult`). A resume must match one of the ids
@@ -218,7 +221,9 @@ export interface PlatformOperationMetadata {
    * client-forged tool message (spoofed parentId / pending plugin) can never bind and an approval
    * anchor can never be replayed as a tool-result (or vice versa). Absent until the op parks.
    */
-  pendingResumeAnchors?: { approval?: string[]; toolResult?: string[] };
+  pendingResumeAnchors?: ResumeToolProvenance[];
+  /** Monotonic CAS generation for replacing the complete pending anchor set. */
+  pendingResumeGeneration?: number;
   /** Exact connector references (revision/checksum + tool allowlist) for historical execution. */
   platformConnectors?: PlatformAgentConnectorDependencyRef[];
   /** Exact model reference for historical-revision execution. */
