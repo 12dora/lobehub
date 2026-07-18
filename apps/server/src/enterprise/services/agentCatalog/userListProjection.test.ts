@@ -1,4 +1,8 @@
-import type { PlatformAgentAssignmentMode, SidebarAgentItem } from '@lobechat/types';
+import type {
+  PlatformAgentAssignmentMode,
+  PlatformAgentSystemKey,
+  SidebarAgentItem,
+} from '@lobechat/types';
 import { encodePlatformAgentListId } from '@lobechat/types';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -17,6 +21,7 @@ const effectiveAgent = (
   distribution: PlatformAgentAssignmentMode,
   displayName = platformAgentId,
   description: string | null = null,
+  systemKey: PlatformAgentSystemKey | null = null,
 ) => ({
   agentKey: platformAgentId,
   checksum: 'a'.repeat(64),
@@ -35,12 +40,13 @@ const effectiveAgent = (
   mutable: false as const,
   platformAgentId,
   source: 'platform' as const,
-  systemKey: null,
+  systemKey,
   version: '1.0.0',
   versionId: `${platformAgentId}-v1`,
 });
 
 const makeService = (params: {
+  defaultInboxMaterializedId?: string;
   effective?: ReturnType<typeof effectiveAgent>[];
   flags?: typeof flagsOn;
   materialized?: string[];
@@ -49,7 +55,18 @@ const makeService = (params: {
     agents: params.effective ?? [],
     revision: 'r',
   }));
-  const listMaterializedAgentIds = vi.fn(async () => new Set(params.materialized ?? []));
+  const listMaterializedAgentIds = vi.fn(
+    async (_userId: string, options?: { excludeSystemKeys?: string[] }) =>
+      new Set(
+        (params.materialized ?? []).filter(
+          (id) =>
+            !(
+              id === params.defaultInboxMaterializedId &&
+              options?.excludeSystemKeys?.includes('default-inbox')
+            ),
+        ),
+      ),
+  );
   const service = new PlatformAgentUserListService({} as LobeChatDatabase, {
     flags: params.flags ?? flagsOn,
     repository: { listMaterializedAgentIds } as unknown as PlatformAgentCatalogRepository,
@@ -130,6 +147,40 @@ describe('PlatformAgentUserListService', () => {
   });
 
   describe('mergeAvailableAgents (picker)', () => {
+    it('keeps one stable builtin inbox identity and removes the encoded default-inbox duplicate', async () => {
+      const defaultInbox = effectiveAgent(
+        'platform-inbox',
+        'mandatory',
+        'Managed inbox',
+        null,
+        'default-inbox',
+      );
+      const { service, listMaterializedAgentIds } = makeService({
+        defaultInboxMaterializedId: 'builtin-inbox-id',
+        effective: [defaultInbox, effectiveAgent('p1', 'optional')],
+        materialized: ['builtin-inbox-id', 'agt_duplicate'],
+      });
+      const result = await service.mergeAvailableAgents(
+        'user-a',
+        { limit: 10, offset: 0 },
+        localLoader([
+          localItem('builtin-inbox-id', 'Inbox'),
+          localItem('agt_duplicate', 'Duplicate'),
+          localItem('agt_keep', 'Keep'),
+        ]),
+      );
+
+      expect(result.map(({ id }) => id)).toEqual([
+        encodePlatformAgentListId('p1'),
+        'builtin-inbox-id',
+        'agt_keep',
+      ]);
+      expect(result.map(({ id }) => id)).not.toContain(encodePlatformAgentListId('platform-inbox'));
+      expect(listMaterializedAgentIds).toHaveBeenCalledWith('user-a', {
+        excludeSystemKeys: ['default-inbox'],
+      });
+    });
+
     it('places platform items first, then local, in a single non-overlapping window', async () => {
       const { service } = makeService({
         effective: [effectiveAgent('p1', 'mandatory'), effectiveAgent('p2', 'default')],
