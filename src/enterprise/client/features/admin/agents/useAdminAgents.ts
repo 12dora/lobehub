@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect } from 'react';
 import { mutate } from 'swr';
 import useSWRInfinite from 'swr/infinite';
 
@@ -12,6 +13,7 @@ import {
   ADMIN_AGENT_LIST_KEY,
   buildAdminAgentGetKey,
   buildAdminAgentListKey,
+  buildAdminAgentRolloutPollKey,
 } from './swrKeys';
 import type {
   AdminAgentDetailOutput,
@@ -66,6 +68,33 @@ export const fetchAdminAgentDetail = async (
     rollouts,
     versions,
   }) as AdminAgentDetailOutput;
+};
+
+const ACTIVE_ROLLOUT_POLL_LIMIT = 20;
+const isActiveRollout = ({ status }: AdminAgentDetailOutput['rollouts'][number]) =>
+  status === 'pending' || status === 'running';
+
+export const selectActiveRolloutJobIds = (detail?: AdminAgentDetailOutput): string[] =>
+  [...new Set(detail?.rollouts.filter(isActiveRollout).map(({ jobId }) => jobId) ?? [])].slice(
+    0,
+    ACTIVE_ROLLOUT_POLL_LIMIT,
+  );
+
+export const fetchActiveAdminAgentRollouts = async (
+  agentId: string,
+  jobIds: string[],
+  client: AdminAgentsClient,
+) => Promise.all(jobIds.map((jobId) => client.getRollout({ agentId, jobId })));
+
+export const mergePolledRollouts = (
+  detail: AdminAgentDetailOutput,
+  polled: AdminAgentDetailOutput['rollouts'],
+): AdminAgentDetailOutput => {
+  const byJobId = new Map(polled.map((rollout) => [rollout.jobId, rollout]));
+  return {
+    ...detail,
+    rollouts: detail.rollouts.map((rollout) => byJobId.get(rollout.jobId) ?? rollout),
+  };
 };
 
 export const useFetchAdminAgents = (
@@ -161,21 +190,41 @@ export const useFetchAdminAgent = (
   enabled: boolean,
   client: AdminAgentsClient = adminAgentsService,
   rolloutsEnabled = client.capabilities.rollouts,
-) =>
-  useClientPollingSWR(
+) => {
+  const detail = useClientDataSWR<AdminAgentDetailOutput>(
     buildAdminAgentGetKey(id, enabled, rolloutsEnabled),
     () => fetchAdminAgentDetail(id!, client, rolloutsEnabled),
     {
-      dedupingInterval: 1000,
       keepPreviousData: true,
-      refreshInterval: (latest: AdminAgentDetailOutput | undefined) =>
-        rolloutsEnabled &&
-        latest?.rollouts.some(({ status }) => status === 'pending' || status === 'running')
-          ? 2000
-          : 0,
       revalidateOnFocus: false,
     },
   );
+  const activeJobIds = rolloutsEnabled ? selectActiveRolloutJobIds(detail.data) : [];
+  const rolloutPoll = useClientPollingSWR<AdminAgentDetailOutput['rollouts']>(
+    buildAdminAgentRolloutPollKey(id, activeJobIds),
+    () => fetchActiveAdminAgentRollouts(id!, activeJobIds, client),
+    {
+      dedupingInterval: 1000,
+      refreshInterval: 2000,
+      revalidateOnFocus: false,
+      shouldRetryOnError: false,
+    },
+  );
+
+  useEffect(() => {
+    if (!rolloutPoll.data) return;
+    void detail.mutate(
+      (current) => (current ? mergePolledRollouts(current, rolloutPoll.data!) : current),
+      { revalidate: false },
+    );
+  }, [detail.mutate, rolloutPoll.data]);
+
+  return {
+    ...detail,
+    retryRolloutPoll: rolloutPoll.mutate,
+    rolloutPollError: rolloutPoll.error,
+  };
+};
 
 export const refreshAdminAgentLists = async () => {
   await mutate((key) => Array.isArray(key) && key[0] === ADMIN_AGENT_LIST_KEY);

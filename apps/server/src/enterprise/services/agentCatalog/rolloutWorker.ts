@@ -315,7 +315,6 @@ export const processNextPlatformAgentRolloutBatch = async (
       const currentResult = getPlatformAgentRolloutResult(current);
       const completedBefore = current.progressDone;
       const failedBefore = currentResult.failed;
-      const remaining = Math.max(0, (current.progressTotal ?? 0) - completedBefore - failedBefore);
       let nextCursor: string | null;
       let sourceTargets: Array<{
         previousVersionChecksum: string | null;
@@ -335,15 +334,13 @@ export const processNextPlatformAgentRolloutBatch = async (
         nextCursor = failures.nextCursor;
       } else {
         const page = await repository.listAssignmentTargetUserIds({
+          cutoff: new Date(input.snapshot.targetCutoff),
           cursor: typeof current.cursor === 'string' ? current.cursor : undefined,
-          limit: Math.min(
-            PLATFORM_AGENT_ROLLOUT_BATCH_SIZE,
-            remaining || PLATFORM_AGENT_ROLLOUT_BATCH_SIZE,
-          ),
+          limit: PLATFORM_AGENT_ROLLOUT_BATCH_SIZE,
           targetId: input.snapshot.targetId,
           targetType: input.snapshot.targetType as PlatformAgentAssignmentTargetType,
         });
-        sourceTargets = page.items.slice(0, remaining).map((userId) => ({
+        sourceTargets = page.items.map((userId) => ({
           previousVersionChecksum: null,
           previousVersionId: null,
           userId,
@@ -387,15 +384,13 @@ export const processNextPlatformAgentRolloutBatch = async (
       const cursor =
         sourceTargets.at(-1)?.userId ??
         (typeof current.cursor === 'string' ? current.cursor : null);
-      const terminal =
-        input.control.phase === 'failed'
-          ? nextCursor === null
-          : completed + failed >= (current.progressTotal ?? 0) || nextCursor === null;
+      const terminal = nextCursor === null;
+      const actualTotal = terminal ? completed + failed : (current.progressTotal ?? 0);
       const previous = terminal
         ? await deriveUniformPrevious(tx, {
             parentJobId: current.id,
             targetVersionId: input.snapshot.targetVersionId,
-            total: current.progressTotal ?? 0,
+            total: actualTotal,
           })
         : {
             checksum: currentResult.previousVersionChecksum ?? null,
@@ -426,6 +421,7 @@ export const processNextPlatformAgentRolloutBatch = async (
               }),
           input: nextInput,
           progressDone: completed,
+          progressTotal: actualTotal,
           resultSummary: {
             failed,
             previousVersionChecksum: previous.checksum,

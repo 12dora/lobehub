@@ -6,7 +6,20 @@ import type {
   PlatformAgentVersionConfig,
   PlatformAgentVersionPolicy,
 } from '@lobechat/types';
-import { and, asc, desc, eq, gt, ilike, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  ilike,
+  inArray,
+  isNotNull,
+  isNull,
+  lte,
+  or,
+  sql,
+} from 'drizzle-orm';
 
 import { checksumPayload } from '../../models/platform/checksum';
 import {
@@ -638,23 +651,33 @@ export class PlatformAgentCatalogRepository {
   };
 
   countAssignmentTargets = async (params: {
+    cutoff?: Date;
     targetId: string;
     targetType: PlatformAgentAssignmentTargetType;
   }): Promise<number> => {
     if (params.targetType === 'global') {
-      const [row] = await this.db.select({ count: sql<number>`count(*)::int` }).from(users);
+      const [row] = await this.db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(users)
+        .where(params.cutoff ? lte(users.createdAt, params.cutoff) : undefined);
       return row?.count ?? 0;
     }
     if (params.targetType === 'user') {
       const [row] = await this.db
         .select({ count: sql<number>`count(*)::int` })
         .from(users)
-        .where(eq(users.id, params.targetId));
+        .where(
+          and(
+            eq(users.id, params.targetId),
+            params.cutoff ? lte(users.createdAt, params.cutoff) : undefined,
+          ),
+        );
       return row?.count ?? 0;
     }
     const [row] = await this.db
       .select({ count: sql<number>`count(distinct ${userRoles.userId})::int` })
       .from(userRoles)
+      .innerJoin(users, eq(users.id, userRoles.userId))
       .innerJoin(
         roles,
         and(eq(roles.id, userRoles.roleId), isNull(roles.workspaceId), eq(roles.isActive, true)),
@@ -663,6 +686,8 @@ export class PlatformAgentCatalogRepository {
         and(
           eq(userRoles.roleId, params.targetId),
           isNull(userRoles.workspaceId),
+          params.cutoff ? lte(users.createdAt, params.cutoff) : undefined,
+          params.cutoff ? lte(userRoles.createdAt, params.cutoff) : undefined,
           or(isNull(userRoles.expiresAt), sql`${userRoles.expiresAt} > CURRENT_TIMESTAMP`),
         ),
       );
@@ -670,6 +695,7 @@ export class PlatformAgentCatalogRepository {
   };
 
   listAssignmentTargetUserIds = async (params: {
+    cutoff: Date;
     cursor?: string;
     limit?: number;
     targetId: string;
@@ -681,12 +707,15 @@ export class PlatformAgentCatalogRepository {
       const [row] = await this.db
         .select({ id: users.id })
         .from(users)
-        .where(eq(users.id, params.targetId))
+        .where(and(eq(users.id, params.targetId), lte(users.createdAt, params.cutoff)))
         .limit(1);
       return { items: row ? [row.id] : [], nextCursor: null };
     }
 
-    const baseCondition = params.cursor ? gt(users.id, params.cursor) : undefined;
+    const baseCondition = and(
+      lte(users.createdAt, params.cutoff),
+      params.cursor ? gt(users.id, params.cursor) : undefined,
+    );
     const rows =
       params.targetType === 'global'
         ? await this.db
@@ -712,6 +741,7 @@ export class PlatformAgentCatalogRepository {
                 baseCondition,
                 eq(userRoles.roleId, params.targetId),
                 isNull(userRoles.workspaceId),
+                lte(userRoles.createdAt, params.cutoff),
                 or(isNull(userRoles.expiresAt), sql`${userRoles.expiresAt} > CURRENT_TIMESTAMP`),
               ),
             )
