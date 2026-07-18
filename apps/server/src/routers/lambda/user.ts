@@ -65,6 +65,8 @@ const usernameSchema = z
   .regex(/^\w+$/, { message: 'USERNAME_INVALID' });
 
 const AVATAR_WEBAPI_PREFIX = '/webapi/';
+const isDefaultAgentSettingsPath = (path: string): boolean =>
+  path === 'defaultAgent' || path.startsWith('defaultAgent.');
 
 // Accept only: base64 data URL, absolute http(s) URL, empty string,
 // or an internal /webapi/user/avatar/<userId>/... path scoped to the caller.
@@ -247,6 +249,9 @@ export const userRouter = router({
     .input(userSettingsPatchOverrideInputSchema)
     .output(userSettingsPatchOverrideOutputSchema)
     .mutation(async ({ ctx, input }) => {
+      if (isDefaultAgentSettingsPath(input.path)) {
+        await assertDefaultInboxNotPlatformManaged({ db: ctx.serverDB, userId: ctx.userId });
+      }
       const perm = await assertWorkspaceSettingsWritePermission({
         db: ctx.serverDB,
         paths: [input.path],
@@ -290,6 +295,9 @@ export const userRouter = router({
     .input(userSettingsResetOverrideInputSchema)
     .output(userSettingsResetOverrideOutputSchema)
     .mutation(async ({ ctx, input }) => {
+      if (isDefaultAgentSettingsPath(input.path)) {
+        await assertDefaultInboxNotPlatformManaged({ db: ctx.serverDB, userId: ctx.userId });
+      }
       const perm = await assertWorkspaceSettingsWritePermission({
         db: ctx.serverDB,
         paths: [input.path],

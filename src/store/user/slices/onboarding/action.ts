@@ -1,10 +1,5 @@
 import { CURRENT_ONBOARDING_VERSION, INBOX_SESSION_ID } from '@lobechat/const';
-import {
-  getPluginMode,
-  MAX_ONBOARDING_STEPS,
-  PLATFORM_AGENT_DEFAULT_INBOX_SYSTEM_KEY,
-  upsertPluginMode,
-} from '@lobechat/types';
+import { getPluginMode, MAX_ONBOARDING_STEPS, upsertPluginMode } from '@lobechat/types';
 
 import { userService } from '@/services/user';
 import { getAgentStoreState } from '@/store/agent';
@@ -151,10 +146,7 @@ export class OnboardingActionImpl {
     const inboxAgentId = agentStore.builtinAgentIdMap[INBOX_SESSION_ID];
     if (!inboxAgentId) return;
     const inboxConfig = agentStore.agentMap[inboxAgentId];
-    if (
-      inboxConfig?.platform?.managed &&
-      inboxConfig.platform.systemKey === PLATFORM_AGENT_DEFAULT_INBOX_SYSTEM_KEY
-    ) {
+    if (inboxConfig?.platform?.managed) {
       return;
     }
 
@@ -171,10 +163,7 @@ export class OnboardingActionImpl {
     const agentStore = getAgentStoreState();
     const inboxAgentId = agentStore.builtinAgentIdMap[INBOX_SESSION_ID];
     const inboxConfig = inboxAgentId ? agentStore.agentMap[inboxAgentId] : undefined;
-    if (
-      inboxConfig?.platform?.managed &&
-      inboxConfig.platform.systemKey === PLATFORM_AGENT_DEFAULT_INBOX_SYSTEM_KEY
-    ) {
+    if (inboxConfig?.platform?.managed) {
       return;
     }
 

@@ -717,6 +717,20 @@ export class OnboardingService {
     const parsed = rawInput;
     const savedFields: SaveUserQuestionField[] = [];
     const unchangedFields: SaveUserQuestionField[] = [];
+    const agentName =
+      typeof parsed.agentName === 'string' && parsed.agentName.trim()
+        ? parsed.agentName.trim()
+        : undefined;
+    const agentEmoji =
+      typeof parsed.agentEmoji === 'string' && parsed.agentEmoji.trim()
+        ? parsed.agentEmoji.trim()
+        : undefined;
+    // Capture before any User/Agent/document write. A resolver/catalog failure must leave the
+    // onboarding mutation with zero partial writes.
+    const isManagedInbox =
+      agentName || agentEmoji
+        ? Boolean(await new PlatformDefaultInboxService(this.db, this.userId).capture())
+        : false;
     const userState = await this.getUserState();
     const userPatch: { fullName?: string; interests?: string[] } = {};
 
@@ -753,14 +767,6 @@ export class OnboardingService {
     }
 
     // Update inbox agent avatar and title when agent identity fields are provided
-    const agentName =
-      typeof parsed.agentName === 'string' && parsed.agentName.trim()
-        ? parsed.agentName.trim()
-        : undefined;
-    const agentEmoji =
-      typeof parsed.agentEmoji === 'string' && parsed.agentEmoji.trim()
-        ? parsed.agentEmoji.trim()
-        : undefined;
     const userIdentityNames = new Set(
       [fullName, userState.fullName, userState.username]
         .map((name) => normalizeComparableName(name))
@@ -769,11 +775,6 @@ export class OnboardingService {
     const agentNameMatchesUserIdentity =
       Boolean(agentName) && userIdentityNames.has(normalizeComparableName(agentName) ?? '');
     const shouldIgnoreAgentIdentity = Boolean(agentNameMatchesUserIdentity);
-    const isManagedInbox =
-      agentName || agentEmoji
-        ? Boolean(await new PlatformDefaultInboxService(this.db, this.userId).capture())
-        : false;
-
     if (isManagedInbox) {
       if (agentName) ignoredFields.push('agentName');
       if (agentEmoji) ignoredFields.push('agentEmoji');

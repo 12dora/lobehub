@@ -1,7 +1,9 @@
+import { INBOX_SESSION_ID } from '@lobechat/const';
 import {
   encodePlatformAgentListId,
   PLATFORM_AGENT_DEFAULT_INBOX_SYSTEM_KEY,
   type PlatformAgentAssignmentMode,
+  type PlatformAgentConfigMeta,
   type PlatformAgentUserListMeta,
   type SidebarAgentItem,
   type SidebarAgentListResponse,
@@ -11,6 +13,7 @@ import type { EnterpriseFeatureFlags } from '@/const/platform/featureFlags';
 import type { PlatformManagedResourcePolicyModel } from '@/database/models/platform';
 import { PlatformAgentCatalogRepository } from '@/database/repositories/platformAgentCatalog';
 import type { LobeChatDatabase } from '@/database/type';
+import { AgentService } from '@/server/services/agent';
 
 import { parseEnterpriseFeatureFlags } from '../../featureFlags';
 import { PlatformAgentEffectiveResolver } from './effectiveResolver';
@@ -43,13 +46,24 @@ export interface UnifiedAvailableAgentItem {
 
 /** A visibility-resolved projection: what the user may see, plus the local rows to hide. */
 interface VisibleProjection {
+  builtinInbox: UnifiedAvailableAgentItem;
   entries: PlatformAgentUserListEntry[];
   /** Local Agent ids already materialized from a platform Agent — hidden from the local list. */
   materializedAgentIds: Set<string>;
 }
 
+interface BuiltinInboxListSource {
+  avatar?: string | null;
+  backgroundColor?: string | null;
+  description?: string | null;
+  id: string;
+  platform?: PlatformAgentConfigMeta;
+  title?: string | null;
+}
+
 interface PlatformAgentUserListServiceOptions {
   flags?: EnterpriseFeatureFlags;
+  loadBuiltinInbox?: (userId: string) => Promise<BuiltinInboxListSource | null>;
   policyModel?: Pick<PlatformManagedResourcePolicyModel, 'getSnapshot'>;
   repository?: PlatformAgentCatalogRepository;
   resolver?: Pick<PlatformAgentEffectiveResolver, 'getEffectiveList'>;
@@ -69,7 +83,6 @@ const matchesKeyword = (entry: PlatformAgentUserListEntry, keyword: string): boo
 const toMeta = (entry: PlatformAgentUserListEntry): PlatformAgentUserListMeta => ({
   distribution: entry.distribution,
   managed: true,
-  platformAgentId: entry.platformAgentId,
   source: 'platform',
 });
 
@@ -102,6 +115,32 @@ export class PlatformAgentUserListService {
       repository: this.options.repository,
     });
 
+  private loadBuiltinInbox = async (userId: string): Promise<UnifiedAvailableAgentItem> => {
+    const loader =
+      this.options.loadBuiltinInbox ??
+      (async (ownerId: string): Promise<BuiltinInboxListSource | null> =>
+        (await new AgentService(this.db, ownerId).getBuiltinAgent(
+          INBOX_SESSION_ID,
+        )) as BuiltinInboxListSource | null);
+    const inbox = await loader(userId);
+    if (!inbox) throw new Error('Builtin inbox is unavailable');
+    return {
+      avatar: inbox.avatar ?? null,
+      backgroundColor: inbox.backgroundColor ?? null,
+      description: inbox.description ?? null,
+      id: inbox.id,
+      platform:
+        inbox.platform?.managed && inbox.platform.distribution
+          ? {
+              distribution: inbox.platform.distribution,
+              managed: true,
+              source: 'platform',
+            }
+          : undefined,
+      title: inbox.title ?? null,
+    };
+  };
+
   /**
    * Resolve the owner-scoped visible platform Agents (already hidden-filtered and ordered by the
    * resolver) plus the set of local rows to de-duplicate.
@@ -115,16 +154,18 @@ export class PlatformAgentUserListService {
    * let that row leak back in (REWORK-1).
    */
   private getVisibleProjection = async (userId: string): Promise<VisibleProjection> => {
+    const builtinInboxPromise = this.loadBuiltinInbox(userId);
     if (!this.flags().ENABLE_PLATFORM_MANAGED_AGENTS) {
-      return { entries: [], materializedAgentIds: new Set() };
+      return {
+        builtinInbox: await builtinInboxPromise,
+        entries: [],
+        materializedAgentIds: new Set(),
+      };
     }
-    const [{ agents }, materializedAgentIds] = await Promise.all([
+    const [builtinInbox, { agents }, materializedAgentIds] = await Promise.all([
+      builtinInboxPromise,
       this.resolver().getEffectiveList(userId),
-      this.repository().listMaterializedAgentIds(userId, {
-        // The default inbox deliberately reuses its builtin local row. Its reverse mapping is an
-        // execution/guard binding, not a duplicate list identity, so this row must remain visible.
-        excludeSystemKeys: [PLATFORM_AGENT_DEFAULT_INBOX_SYSTEM_KEY],
-      }),
+      this.repository().listMaterializedAgentIds(userId),
     ]);
     // The stable default-inbox is rendered through the existing builtin inbox row/selector/URL.
     // Do not add a second encoded platform identity to ordinary lists.
@@ -139,7 +180,7 @@ export class PlatformAgentUserListService {
         platformAgentId: agent.platformAgentId,
         title: agent.config.displayName,
       }));
-    return { entries, materializedAgentIds };
+    return { builtinInbox, entries, materializedAgentIds };
   };
 
   /**
@@ -158,17 +199,24 @@ export class PlatformAgentUserListService {
       offset: number;
     }) => Promise<UnifiedAvailableAgentItem[]>,
   ): Promise<UnifiedAvailableAgentItem[]> => {
-    const { entries, materializedAgentIds } = await this.getVisibleProjection(userId);
-    const platform = params.keyword
+    const { builtinInbox, entries, materializedAgentIds } = await this.getVisibleProjection(userId);
+    const builtinMatches = params.keyword
+      ? matchesUnifiedKeyword(builtinInbox, params.keyword)
+      : true;
+    const platformEntries = params.keyword
       ? entries.filter((entry) => matchesKeyword(entry, params.keyword!))
       : entries;
+    const platform = [
+      ...(builtinMatches ? [builtinInbox] : []),
+      ...platformEntries.map(this.toPickerItem),
+    ];
 
     const platformWindow = platform.slice(params.offset, params.offset + params.limit);
     const remaining = params.limit - platformWindow.length;
     const local =
       remaining > 0
         ? await loadLocal({
-            excludeAgentIds: [...materializedAgentIds],
+            excludeAgentIds: [...new Set([...materializedAgentIds, builtinInbox.id])],
             keyword: params.keyword,
             limit: remaining,
             // Once platform items are exhausted, continue into the local list from where the
@@ -177,7 +225,7 @@ export class PlatformAgentUserListService {
           })
         : [];
 
-    return [...platformWindow.map(this.toPickerItem), ...local];
+    return [...platformWindow, ...local];
   };
 
   /**
@@ -189,20 +237,22 @@ export class PlatformAgentUserListService {
     userId: string,
     base: SidebarAgentListResponse,
   ): Promise<SidebarAgentListResponse> => {
-    const { entries, materializedAgentIds } = await this.getVisibleProjection(userId);
-    if (entries.length === 0 && materializedAgentIds.size === 0) return base;
+    const { builtinInbox, entries, materializedAgentIds } = await this.getVisibleProjection(userId);
+    const excludedIds = new Set([...materializedAgentIds, builtinInbox.id]);
 
     const strip = (items: SidebarAgentItem[]): SidebarAgentItem[] =>
-      materializedAgentIds.size === 0
-        ? items
-        : items.filter((item) => !materializedAgentIds.has(item.id));
+      items.filter((item) => !excludedIds.has(item.id));
 
     return {
       groups: base.groups.map((group) => ({ ...group, items: strip(group.items) })),
       pinned: strip(base.pinned),
       privateGroups: base.privateGroups.map((group) => ({ ...group, items: strip(group.items) })),
       privateUngrouped: strip(base.privateUngrouped),
-      ungrouped: [...entries.map(this.toSidebarItem), ...strip(base.ungrouped)],
+      ungrouped: [
+        this.builtinToSidebarItem(builtinInbox),
+        ...entries.map(this.toSidebarItem),
+        ...strip(base.ungrouped),
+      ],
     };
   };
 
@@ -212,13 +262,17 @@ export class PlatformAgentUserListService {
     base: SidebarAgentItem[],
     keyword: string,
   ): Promise<SidebarAgentItem[]> => {
-    const { entries, materializedAgentIds } = await this.getVisibleProjection(userId);
+    const { builtinInbox, entries, materializedAgentIds } = await this.getVisibleProjection(userId);
     const matched = entries.filter((entry) => matchesKeyword(entry, keyword));
-    const local =
-      materializedAgentIds.size === 0
-        ? base
-        : base.filter((item) => !materializedAgentIds.has(item.id));
-    return [...matched.map(this.toSidebarItem), ...local];
+    const excludedIds = new Set([...materializedAgentIds, builtinInbox.id]);
+    const local = base.filter((item) => !excludedIds.has(item.id));
+    return [
+      ...(matchesUnifiedKeyword(builtinInbox, keyword)
+        ? [this.builtinToSidebarItem(builtinInbox)]
+        : []),
+      ...matched.map(this.toSidebarItem),
+      ...local,
+    ];
   };
 
   private toPickerItem = (entry: PlatformAgentUserListEntry): UnifiedAvailableAgentItem => ({
@@ -243,4 +297,27 @@ export class PlatformAgentUserListService {
     updatedAt: SIDEBAR_PLATFORM_UPDATED_AT,
     visibility: 'public',
   });
+
+  private builtinToSidebarItem = (entry: UnifiedAvailableAgentItem): SidebarAgentItem => ({
+    avatar: entry.avatar,
+    backgroundColor: entry.backgroundColor,
+    description: entry.description,
+    id: entry.id,
+    pinned: false,
+    platform: entry.platform,
+    sessionId: null,
+    title: entry.title,
+    type: 'agent',
+    updatedAt: SIDEBAR_PLATFORM_UPDATED_AT,
+    visibility: 'public',
+  });
 }
+
+const matchesUnifiedKeyword = (entry: UnifiedAvailableAgentItem, keyword: string): boolean => {
+  const needle = keyword.trim().toLowerCase();
+  if (needle.length === 0) return true;
+  return (
+    (entry.title ?? '').toLowerCase().includes(needle) ||
+    (entry.description ?? '').toLowerCase().includes(needle)
+  );
+};

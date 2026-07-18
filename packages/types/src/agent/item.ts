@@ -4,7 +4,7 @@ import { z } from 'zod';
 import type { FileItem } from '../files';
 import type { KnowledgeBaseItem } from '../knowledgeBase';
 import type { FewShots } from '../llm';
-import type { PlatformAgentEffectiveConfigMeta } from '../platform/agents';
+import type { PlatformAgentConfigMeta } from '../platform/agents';
 import type { LobeAgentAgencyConfig } from './agencyConfig';
 import { AgentChatConfigSchema, type LobeAgentChatConfig } from './chatConfig';
 import { type AgentPluginEntry, AgentPluginEntrySchema } from './pluginConfig';
@@ -28,7 +28,7 @@ export interface LobeAgentConfig {
    */
   agencyConfig?: LobeAgentAgencyConfig;
 
-  avatar?: string;
+  avatar?: string | null;
   backgroundColor?: string;
 
   chatConfig: LobeAgentChatConfig;
@@ -66,7 +66,7 @@ export interface LobeAgentConfig {
    */
   params: LLMParams;
   /** Exact managed-platform source metadata, absent for ordinary and flag-off Agents. */
-  platform?: PlatformAgentEffectiveConfigMeta;
+  platform?: PlatformAgentConfigMeta;
 
   /**
    * Enabled plugins. Each entry is either a legacy bare identifier string
@@ -160,7 +160,7 @@ export interface AgentItem {
   openingQuestions?: string[];
   params?: any;
   /** Exact managed-platform source metadata, absent for ordinary and flag-off Agents. */
-  platform?: PlatformAgentEffectiveConfigMeta;
+  platform?: PlatformAgentConfigMeta;
   plugins?: AgentPluginEntry[];
   provider?: string | null;
   /** Session group ID for direct grouping */

@@ -2,7 +2,6 @@ import { DEFAULT_AGENT_CONFIG } from '@lobechat/const';
 import type {
   PlatformAgentConnectorDependencyRef,
   PlatformAgentDependencySnapshot,
-  PlatformAgentEffectiveConfigMeta,
   PlatformAgentModelDependencyRef,
   PlatformAgentSkillDependencyRef,
   PlatformAgentVersionConfig,
@@ -124,32 +123,6 @@ export class PlatformAgentMaterializationService {
       config: this.buildRuntimeConfig(agentId, snapshot, version.dependencySnapshot),
       dependencySnapshot: version.dependencySnapshot,
     };
-  };
-
-  /**
-   * Persist the platform→builtin attribution mapping at operation start without creating or
-   * rewriting the builtin row. This makes paused resumes and ordinary mutation guards recognize
-   * the managed inbox even if the published pointer later rolls back or is temporarily absent.
-   */
-  bindExistingAgentForOperation = async (
-    snapshot: PlatformAgentOperationSnapshot,
-    agentId: string,
-  ): Promise<void> => {
-    try {
-      const result = await this.repository.materializeLocalAgent({
-        createLocalAgent: async () => ({ id: agentId }),
-        platformAgentId: snapshot.platformAgentId,
-        platformAgentVersionChecksum: snapshot.checksum,
-        platformAgentVersionId: snapshot.versionId,
-        userId: this.userId,
-      });
-      if (!result.ok || result.agentId !== agentId) {
-        throw new PlatformAgentMaterializationError();
-      }
-    } catch (error) {
-      if (error instanceof PlatformAgentMaterializationError) throw error;
-      throw new PlatformAgentMaterializationError();
-    }
   };
 
   /**
@@ -303,18 +276,13 @@ export class PlatformAgentMaterializationService {
   ): AgentConfigWithId => {
     const { config } = snapshot;
     const model = dependencySnapshot.model;
-    const platform: PlatformAgentEffectiveConfigMeta = {
-      checksum: snapshot.checksum,
-      dependencySnapshot,
+    const platform = {
       managed: true,
-      platformAgentId: snapshot.platformAgentId,
       source: 'platform',
-      systemKey: null,
-      versionId: snapshot.versionId,
-    };
+    } as const;
     return {
       ...DEFAULT_AGENT_CONFIG,
-      avatar: config.avatar ?? undefined,
+      avatar: config.avatar,
       backgroundColor: config.backgroundColor ?? undefined,
       id: agentId,
       model: model.modelKey,
@@ -322,7 +290,7 @@ export class PlatformAgentMaterializationService {
       openingQuestions: config.openingQuestions,
       params: { ...DEFAULT_AGENT_CONFIG.params, ...mapModelParameters(config) },
       platform,
-      plugins: config.plugins ?? [],
+      plugins: [],
       provider: model.providerKey,
       // Not a builtin slug — keeps the builtin runtime-config merge in execAgent inert.
       slug: null,

@@ -6,20 +6,7 @@ import type {
   PlatformAgentVersionConfig,
   PlatformAgentVersionPolicy,
 } from '@lobechat/types';
-import {
-  and,
-  asc,
-  desc,
-  eq,
-  gt,
-  ilike,
-  inArray,
-  isNotNull,
-  isNull,
-  notInArray,
-  or,
-  sql,
-} from 'drizzle-orm';
+import { and, asc, desc, eq, gt, ilike, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
 
 import { checksumPayload } from '../../models/platform/checksum';
 import {
@@ -759,28 +746,14 @@ export class PlatformAgentCatalogRepository {
    * second local entry. Only rows with a real local Agent (materializedAgentId set) are returned
    * — pure visibility-only rows carry no local Agent.
    */
-  listMaterializedAgentIds = async (
-    userId: string,
-    options?: { excludeSystemKeys?: PlatformAgentSystemKey[] },
-  ): Promise<Set<string>> => {
-    const excludeSystemKeys = options?.excludeSystemKeys ?? [];
+  listMaterializedAgentIds = async (userId: string): Promise<Set<string>> => {
     const rows = await this.db
       .select({ materializedAgentId: platformUserAgentMaterializations.materializedAgentId })
       .from(platformUserAgentMaterializations)
-      .innerJoin(
-        platformAgents,
-        eq(platformAgents.id, platformUserAgentMaterializations.platformAgentId),
-      )
       .where(
         and(
           eq(platformUserAgentMaterializations.userId, userId),
           isNotNull(platformUserAgentMaterializations.materializedAgentId),
-          excludeSystemKeys.length > 0
-            ? or(
-                isNull(platformAgents.systemKey),
-                notInArray(platformAgents.systemKey, excludeSystemKeys),
-              )
-            : undefined,
         ),
       );
     return new Set(rows.map((row) => row.materializedAgentId as string));
@@ -808,6 +781,24 @@ export class PlatformAgentCatalogRepository {
       )
       .limit(1);
     return row?.platformAgentId ?? null;
+  };
+
+  /** Owner-scoped batch reverse lookup used by mutation guards. */
+  getPlatformAgentIdsByMaterializedAgentIds = async (
+    userId: string,
+    materializedAgentIds: string[],
+  ): Promise<Set<string>> => {
+    if (materializedAgentIds.length === 0) return new Set();
+    const rows = await this.db
+      .select({ platformAgentId: platformUserAgentMaterializations.platformAgentId })
+      .from(platformUserAgentMaterializations)
+      .where(
+        and(
+          eq(platformUserAgentMaterializations.userId, userId),
+          inArray(platformUserAgentMaterializations.materializedAgentId, materializedAgentIds),
+        ),
+      );
+    return new Set(rows.map(({ platformAgentId }) => platformAgentId));
   };
 
   /**

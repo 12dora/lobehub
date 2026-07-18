@@ -13,6 +13,8 @@ export const MANAGED_AGENT_MUTATION_FORBIDDEN = {
   message: 'This agent is managed by your organization and cannot be modified here.',
 } as const;
 
+export const MAX_MANAGED_AGENT_GUARD_IDS = 100;
+
 /** Guard mutation paths that target the stable builtin inbox without carrying its local id. */
 export const assertDefaultInboxNotPlatformManaged = async (params: {
   db: LobeChatDatabase;
@@ -69,24 +71,20 @@ export const assertAgentsNotPlatformManaged = async (params: {
   if (!parseEnterpriseFeatureFlags(process.env).ENABLE_PLATFORM_MANAGED_AGENTS) return;
   const uniqueIds = [...new Set(params.agentIds)].filter((id) => id.length > 0);
   if (uniqueIds.length === 0) return;
+  if (uniqueIds.length > MAX_MANAGED_AGENT_GUARD_IDS) {
+    throw new TRPCError({
+      code: 'BAD_REQUEST',
+      message: `A maximum of ${MAX_MANAGED_AGENT_GUARD_IDS} agents can be mutated at once.`,
+    });
+  }
   const repository = new PlatformAgentCatalogRepository(params.db);
   const agentModel = new AgentModel(params.db, params.userId, params.workspaceId);
-  for (const agentId of uniqueIds) {
-    const platformAgentId = await repository.getPlatformAgentIdByMaterializedAgentId(
-      params.userId,
-      agentId,
-    );
-    if (platformAgentId) {
-      throw new TRPCError(MANAGED_AGENT_MUTATION_FORBIDDEN);
-    }
-    // Before the first managed inbox operation there is intentionally no materialization mapping.
-    // Recognize the trusted owner/workspace-scoped builtin row directly, then resolve the stable
-    // default-inbox role. A real absence remains legacy-editable; resolver/DB failure fails closed.
-    const candidate = await agentModel.getAgentConfigById(agentId);
-    if (candidate?.slug === 'inbox') {
-      await assertDefaultInboxNotPlatformManaged(params);
-    }
-  }
+  const [platformAgentIds, inboxAgentIds] = await Promise.all([
+    repository.getPlatformAgentIdsByMaterializedAgentIds(params.userId, uniqueIds),
+    agentModel.findAgentIdsBySlug(uniqueIds, 'inbox'),
+  ]);
+  if (platformAgentIds.size > 0) throw new TRPCError(MANAGED_AGENT_MUTATION_FORBIDDEN);
+  if (inboxAgentIds.size > 0) await assertDefaultInboxNotPlatformManaged(params);
 };
 
 /** Extracts the agent id(s) a mutation targets from its raw tRPC input. */
