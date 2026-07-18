@@ -117,6 +117,56 @@ const createRepository = () => {
 };
 
 describe('ConnectorOperationSnapshotService', () => {
+  describe('freezeExact (CONNECTOR-EXACT by pinned ref)', () => {
+    const v1Checksum = runtime(1).provenance.checksum;
+
+    it('resolves the exact pinned v1 revision even after the head moved to v3', async () => {
+      const repository = createRepository();
+      const service = new ConnectorOperationSnapshotService(repository);
+      // Head is v3 (getCurrentPublishedRuntime), but the pinned ref is v1.
+      repository.getConnectorByKey.mockResolvedValue(connector(3));
+      repository.getCurrentPublishedRuntime.mockResolvedValue(runtime(3));
+
+      const frozen = await service.freezeExact({
+        connectorId: 'connector-1',
+        connectorKey: 'catalog',
+        operationId: 'op-1',
+        publishedChecksum: v1Checksum,
+        publishedRevision: 1,
+      });
+      expect(frozen.proof.publishedRevision).toBe(1);
+      expect(frozen.payload.connector.endpoint).toBe('https://connector.example.test/v1');
+    });
+
+    it('fails closed on a checksum mismatch for the pinned revision (tampered ref)', async () => {
+      const repository = createRepository();
+      const service = new ConnectorOperationSnapshotService(repository);
+      await expect(
+        service.freezeExact({
+          connectorId: 'connector-1',
+          connectorKey: 'catalog',
+          operationId: 'op-1',
+          publishedChecksum: 'f'.repeat(64),
+          publishedRevision: 1,
+        }),
+      ).rejects.toThrow('PLATFORM_CONNECTOR_NOT_PUBLISHED');
+    });
+
+    it('fails closed when the pinned revision does not exist', async () => {
+      const repository = createRepository();
+      const service = new ConnectorOperationSnapshotService(repository);
+      await expect(
+        service.freezeExact({
+          connectorId: 'connector-1',
+          connectorKey: 'catalog',
+          operationId: 'op-1',
+          publishedChecksum: v1Checksum,
+          publishedRevision: 99,
+        }),
+      ).rejects.toThrow('PLATFORM_CONNECTOR_NOT_PUBLISHED');
+    });
+  });
+
   it('keeps an operation on its exact revision across publish and rollback pointer drift', async () => {
     const repository = createRepository();
     const service = new ConnectorOperationSnapshotService(repository);

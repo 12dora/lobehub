@@ -1,0 +1,114 @@
+import type { PlatformAgentDependencySnapshot } from '@lobechat/types';
+import { isRecord } from '@lobechat/utils/object';
+
+import { PlatformAiCatalogRepository } from '@/database/repositories/platformAiCatalog';
+import { PlatformConnectorCatalogRepository } from '@/database/repositories/platformConnectorCatalog';
+import { PlatformSkillCatalogRepository } from '@/database/repositories/platformSkillCatalog';
+import type { LobeChatDatabase, Transaction } from '@/database/type';
+
+import { acquirePlatformDependencyValidationLock } from '../platformDependencyLock';
+import {
+  type PlatformAgentDependencyIssueCode,
+  PlatformAgentDependencyValidationError,
+} from './errors';
+
+const isEnabledChatModel = (
+  payload: Record<string, unknown>,
+  providerKey: string,
+  modelKey: string,
+): boolean => {
+  if (!isRecord(payload.provider) || !Array.isArray(payload.models)) return false;
+  if (payload.provider.providerKey !== providerKey || payload.provider.enabled !== true)
+    return false;
+  return payload.models.some(
+    (model) =>
+      isRecord(model) &&
+      model.modelKey === modelKey &&
+      model.enabled === true &&
+      (model.type === undefined || model.type === 'chat'),
+  );
+};
+
+/** Exact M07/M08/M09 validation. Call only while holding the dependency protocol lock. */
+export const assertExactPlatformAgentDependencies = async (
+  tx: Transaction,
+  snapshot: PlatformAgentDependencySnapshot,
+): Promise<void> => {
+  const issues: PlatformAgentDependencyIssueCode[] = [];
+
+  const aiRepository = new PlatformAiCatalogRepository(tx);
+  const provider = await aiRepository.getProviderByKey(snapshot.model.providerKey);
+  const providerRevision = provider
+    ? await aiRepository.getProviderRevision(provider.id, snapshot.model.providerRevision)
+    : undefined;
+  if (
+    !provider ||
+    provider.status !== 'published' ||
+    !providerRevision ||
+    providerRevision.status !== 'published' ||
+    providerRevision.checksum !== snapshot.model.providerChecksum ||
+    !isEnabledChatModel(
+      providerRevision.payload,
+      snapshot.model.providerKey,
+      snapshot.model.modelKey,
+    )
+  ) {
+    issues.push('AI_MODEL_UNAVAILABLE');
+  }
+
+  const skillRepository = new PlatformSkillCatalogRepository(tx);
+  const skills = await skillRepository.getPublishedExecutionVersionsExact(snapshot.skills);
+  for (const reference of snapshot.skills) {
+    const row = skills.get(`${reference.skillKey}\0${reference.version}`);
+    if (
+      !row ||
+      row.version.checksum !== reference.checksum ||
+      row.payload.skill.skillKey !== reference.skillKey ||
+      row.payload.skill.enabled !== true
+    ) {
+      issues.push('SKILL_UNAVAILABLE');
+    }
+  }
+
+  const connectorRepository = new PlatformConnectorCatalogRepository(tx);
+  const connectors = await connectorRepository.getPublishedRuntimeRevisionsExact(
+    snapshot.connectors,
+  );
+  for (const reference of snapshot.connectors) {
+    const revision = connectors.get(`${reference.connectorId}\0${reference.publishedRevision}`);
+    const connector = revision?.connector;
+    if (
+      !connector ||
+      connector.id !== reference.connectorId ||
+      connector.status !== 'published' ||
+      !revision ||
+      revision.provenance.checksum !== reference.publishedChecksum ||
+      revision.payload.connector.id !== reference.connectorId ||
+      revision.payload.connector.key !== reference.connectorKey ||
+      revision.payload.connector.enabled !== true
+    ) {
+      issues.push('CONNECTOR_UNAVAILABLE');
+      continue;
+    }
+    const usableTools = new Set(
+      revision.payload.tools
+        .filter(({ platformPolicy }) => platformPolicy !== 'deny')
+        .map(({ toolKey }) => toolKey),
+    );
+    if (reference.allowedToolKeys.some((toolKey) => !usableTools.has(toolKey))) {
+      issues.push('CONNECTOR_TOOL_UNAVAILABLE');
+    }
+  }
+
+  if (issues.length > 0) throw new PlatformAgentDependencyValidationError(issues);
+};
+
+export const validateExactPlatformAgentDependencies = async (
+  db: LobeChatDatabase,
+  snapshot: PlatformAgentDependencySnapshot,
+): Promise<{ valid: true }> =>
+  db.transaction(async (tx) => {
+    await acquirePlatformDependencyValidationLock(tx);
+    await assertExactPlatformAgentDependencies(tx, snapshot);
+    return { valid: true };
+  });

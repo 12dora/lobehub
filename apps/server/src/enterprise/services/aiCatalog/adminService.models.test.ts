@@ -1,11 +1,13 @@
 // @vitest-environment node
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
 import { PlatformRevisionConflictError } from '@/database/models/platform';
+import { PlatformAgentCatalogRepository } from '@/database/repositories/platformAgentCatalog';
 import {
   platformAgents,
+  platformAgentVersions,
   platformAiModels,
   platformAiProviders,
   platformAuditLogs,
@@ -23,11 +25,65 @@ const keyProvider: KeyProvider = {
   providerId: 'test',
 };
 const service = new AiCatalogAdminService(db, new PlatformSecretService({ keyProvider }));
+const AGENT_DEPENDENCY_CHECKSUM = 'b'.repeat(64);
+const agentConfig = {
+  avatar: null,
+  backgroundColor: null,
+  description: 'Exact AI dependent',
+  displayName: 'Exact AI dependent',
+  modelParameters: {},
+  openingMessage: null,
+  openingQuestions: [],
+  systemRole: 'Use the exact model dependency.',
+  tags: [],
+};
+
+const createPublishedAgentDependency = async (params: {
+  agentKey: string;
+  modelKey: string;
+  providerKey: string;
+}) => {
+  const repository = new PlatformAgentCatalogRepository(db);
+  const agent = await repository.createIdentity({
+    agentKey: params.agentKey,
+    isDefault: false,
+    systemKey: null,
+  });
+  const version = await repository.appendVersionCas({
+    agentId: agent.id,
+    config: agentConfig,
+    dependencySnapshot: {
+      connectors: [],
+      model: {
+        modelKey: params.modelKey,
+        providerChecksum: AGENT_DEPENDENCY_CHECKSUM,
+        providerKey: params.providerKey,
+        providerRevision: 1,
+      },
+      skills: [],
+    },
+    expectedDraftSequence: 0,
+    expectedRevision: 0,
+    version: '1.0.0',
+  });
+  await repository.pointToVersionCas({
+    agentId: agent.id,
+    expectedDraftSequence: 1,
+    expectedRevision: 0,
+    publishedAt: new Date(),
+    versionId: version!.id,
+  });
+  await db
+    .update(platformAgents)
+    .set({ model: 'legacy-poison-model', provider: 'legacy-poison-provider' })
+    .where(eq(platformAgents.id, agent.id));
+  return agent;
+};
 
 const cleanup = async () => {
   await db.delete(platformAuditLogs);
   await db.delete(platformResourceRevisions);
-  await db.delete(platformAgents);
+  await db.execute(sql`TRUNCATE TABLE ${platformAgentVersions}, ${platformAgents} CASCADE`);
   await db.delete(platformSettingPolicies);
   await db.delete(platformAiModels);
   await db.delete(platformAiProviders);
@@ -160,14 +216,34 @@ describe('AiCatalogAdminService model mutations', () => {
   });
 
   it('blocks disabling/deleting models referenced by published agents or settings', async () => {
-    const { first, provider } = await createProviderAndModels();
-    await db.insert(platformAgents).values({
+    const { first, provider, second } = await createProviderAndModels();
+    const dependentAgent = await createPublishedAgentDependency({
       agentKey: 'default-agent',
-      model: first.modelKey,
-      provider: provider.providerKey,
-      status: 'published',
-      title: 'Default agent',
+      modelKey: first.modelKey,
+      providerKey: provider.providerKey,
     });
+    await new PlatformAgentCatalogRepository(db).appendVersionCas({
+      agentId: dependentAgent.id,
+      config: agentConfig,
+      dependencySnapshot: {
+        connectors: [],
+        model: {
+          modelKey: second.modelKey,
+          providerChecksum: AGENT_DEPENDENCY_CHECKSUM,
+          providerKey: provider.providerKey,
+          providerRevision: 2,
+        },
+        skills: [],
+      },
+      expectedDraftSequence: 2,
+      expectedRevision: 1,
+      version: '2.0.0',
+    });
+    expect(await service.getDependents(provider.id, second.id)).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ resourceId: dependentAgent.id, resourceType: 'agent' }),
+      ]),
+    );
     await db.insert(platformSettingPolicies).values([
       {
         mode: 'locked',

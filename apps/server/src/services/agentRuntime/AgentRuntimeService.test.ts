@@ -254,6 +254,7 @@ describe('AgentRuntimeService', () => {
           metadata: {
             agentConfig: mockParams.agentConfig,
             modelRuntimeConfig: mockParams.modelRuntimeConfig,
+            platformStartClassification: 'ordinary',
             userId: mockParams.userId,
           },
           toolManifestMap: {},
@@ -289,6 +290,51 @@ describe('AgentRuntimeService', () => {
       });
 
       expect(mockQueueService.scheduleMessage).not.toHaveBeenCalled();
+    });
+
+    it('stores a server-authored complete platform classification and immutable binding', async () => {
+      vi.spyOn((service as any).completionLifecycle, 'recordStart').mockResolvedValue(undefined);
+      const platformModelPin = {
+        modelKey: 'chat-model',
+        providerChecksum: 'b'.repeat(64),
+        providerKey: 'internal-provider',
+        providerRevision: 1,
+      };
+      const platformOperationPin = {
+        checksum: 'a'.repeat(64),
+        platformAgentId: 'pagt-1',
+        versionId: 'pav-1',
+      };
+
+      await service.createOperation({
+        ...mockParams,
+        appContext: {
+          platformStartBinding: { assistantMessageId: 'forged-assistant' },
+          platformStartClassification: 'ordinary',
+        } as never,
+        assistantMessageId: 'assistant-1',
+        autoStart: false,
+        platformConnectorPins: [],
+        platformModelPin,
+        platformOperationPin,
+        platformSkillPins: [],
+      });
+
+      expect(mockCoordinator.saveAgentState).toHaveBeenCalledWith(
+        'test-operation-1',
+        expect.objectContaining({
+          metadata: expect.objectContaining({
+            platformStartBinding: {
+              assistantMessageId: 'assistant-1',
+              platformConnectors: [],
+              platformModel: platformModelPin,
+              platformOperation: platformOperationPin,
+              platformSkills: [],
+            },
+            platformStartClassification: 'complete',
+          }),
+        }),
+      );
     });
 
     it('should handle errors during operation creation', async () => {

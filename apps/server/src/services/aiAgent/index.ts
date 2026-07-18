@@ -49,12 +49,19 @@ import type {
   LobeAgentAgencyConfig,
   LobeAgentConfig,
   MessagePluginItem,
+  PlatformAgentConnectorDependencyRef,
+  PlatformAgentSkillDependencyRef,
+  PlatformOperationModelPin,
+  PlatformOperationPin,
+  ResumeInteractionKind,
   RuntimeMentionedAgent,
   UserInterventionConfig,
   WorkspaceInitResult,
 } from '@lobechat/types';
 import {
   buildHeteroExecArgs,
+  decodePlatformAgentListId,
+  fingerprintResumeToolCall,
   getActivePluginIds,
   getDisabledPluginIds,
   getWorkingDirEffectivePath,
@@ -84,6 +91,7 @@ import { ThreadModel } from '@/database/models/thread';
 import { TopicModel } from '@/database/models/topic';
 import { UserModel } from '@/database/models/user';
 import { UserPersonaModel } from '@/database/models/userMemory/persona';
+import { PlatformAgentCatalogRepository } from '@/database/repositories/platformAgentCatalog';
 import { toolsEnv } from '@/envs/tools';
 import {
   type ExecutionPlan,
@@ -97,23 +105,38 @@ import { buildConnectorManifests } from '@/libs/mcp/buildConnectorManifests';
 import { patchManifestWithPermissions } from '@/libs/mcp/connectorPermissionCheck';
 import { signOperationJwt, signUserJWT } from '@/libs/trpc/utils/internalJwt';
 import { parseEnterpriseFeatureFlags } from '@/server/enterprise/featureFlags';
-import { getManagedSkillRuntimeModeSnapshot } from '@/server/enterprise/services/managedResourceCapabilities';
+import {
+  PlatformAgentDependencyValidationError,
+  PlatformAgentEffectiveResolver,
+  PlatformAgentMaterializationError,
+  PlatformAgentMaterializationService,
+  PlatformAgentNotFoundError,
+  validateExactPlatformAgentDependencies,
+} from '@/server/enterprise/services/agentCatalog';
 import {
   type ConnectorApprovalReceipt,
   ConnectorOperationProofSigner,
   fingerprintConnectorToolCall,
 } from '@/server/enterprise/services/connectorCatalog/operationProofSigner';
-import { buildManagedConnectorManifests } from '@/server/enterprise/services/connectorCatalog/runtimeIntegration';
+import {
+  buildManagedConnectorManifests,
+  buildPinnedManagedConnectorManifests,
+} from '@/server/enterprise/services/connectorCatalog/runtimeIntegration';
+import { getManagedSkillRuntimeModeSnapshot } from '@/server/enterprise/services/managedResourceCapabilities';
 import {
   getEffectiveMemorySettings,
   resolveEffectiveUserInterventionConfig,
 } from '@/server/enterprise/services/settings/runtimeSettingsAdapter';
-import { resolvePlatformSkillRuntimeSnapshot } from '@/server/enterprise/services/skillCatalog';
+import {
+  resolvePinnedPlatformSkillRuntimeSnapshot,
+  resolvePlatformSkillRuntimeSnapshot,
+} from '@/server/enterprise/services/skillCatalog';
 import { createStreamEventManager } from '@/server/modules/AgentRuntime/factory';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 import type { EvalContext, ServerAgentToolsContext } from '@/server/modules/Mecha';
 import { createServerAgentToolsEngine } from '@/server/modules/Mecha';
 import type { ServerUserMemoryConfig } from '@/server/modules/Mecha/ContextEngineering/types';
+import type { AgentConfigWithId } from '@/server/services/agent';
 import { AgentService } from '@/server/services/agent';
 import { AgentDocumentsService } from '@/server/services/agentDocuments';
 import type {
@@ -975,6 +998,253 @@ export class AiAgentService {
   }
 
   /**
+   * Resolve a platform Agent chat entry into a runtime config (M10 PR-049 · C).
+   *
+   * Authorization is server-side only: `beginOperation` re-resolves the caller's owner-scoped
+   * effective entitlement — the client-supplied `platformAgentId` is never trusted as proof — and
+   * captures the exact pinned version snapshot exactly once. The returned config is built solely
+   * from that snapshot, with `id` bound to a materialized real user-owned Agent for attribution.
+   *
+   * Not entitled (no effective assignment / archived) → NOT_FOUND, indistinguishable from a missing
+   * ordinary agent so we never leak whether the platform Agent exists. A fail-closed materialization
+   * error (missing exact version / checksum mismatch / malformed refs) surfaces as a redacted 500.
+   */
+  /**
+   * Resolve the platform Agent an operation should run, from the request identity (REWORK-2).
+   *
+   * Returns the platformAgentId when the identity is either the encoded platform list item OR a
+   * plain local Agent id that THIS user materialized from a platform Agent — both must go back
+   * through owner-scoped entitlement. The materialized-id reverse lookup is owner-scoped and gated
+   * on the managed flag, so flag-off keeps zero platform access and ordinary local ids fall through.
+   * Returns null for an ordinary agent / slug.
+   */
+  private async resolvePlatformAgentId(
+    identifier: string,
+    agentId: string | undefined,
+  ): Promise<string | null> {
+    const encoded = decodePlatformAgentListId(identifier);
+    if (encoded) return encoded;
+    if (!agentId) return null;
+    if (!parseEnterpriseFeatureFlags(process.env).ENABLE_PLATFORM_MANAGED_AGENTS) return null;
+    return new PlatformAgentCatalogRepository(this.db).getPlatformAgentIdByMaterializedAgentId(
+      this.userId,
+      agentId,
+    );
+  }
+
+  /** Map a platform config-resolution failure to a stable, redacted TRPCError. */
+  private mapPlatformConfigError(
+    error: unknown,
+    platformAgentId: string,
+    identifier: string,
+  ): never {
+    if (error instanceof PlatformAgentNotFoundError) {
+      throw new TRPCError({ code: 'NOT_FOUND', message: `Agent not found: ${identifier}` });
+    }
+    if (error instanceof PlatformAgentDependencyValidationError) {
+      log('execAgent: platform dependency validation failed for %s', platformAgentId);
+      throw new TRPCError({
+        code: 'PRECONDITION_FAILED',
+        message: 'Platform agent dependencies are unavailable',
+      });
+    }
+    if (error instanceof PlatformAgentMaterializationError) {
+      log('execAgent: platform materialization failed for %s: %O', platformAgentId, error);
+      throw new TRPCError({
+        code: 'INTERNAL_SERVER_ERROR',
+        message: 'Failed to start platform agent',
+      });
+    }
+    // An already-curated stable TRPCError (e.g. a fail-closed NOT_FOUND from the resume path) passes
+    // through unchanged. Anything else — a raw driver / SQL error escaping the dependency-validation
+    // transaction, a Skill/Connector snapshot detail — is redacted to the stable materialization
+    // error (RR2-5) so no SQL text / constraint / identifier / secret reaches the client.
+    if (error instanceof TRPCError) throw error;
+    log('execAgent: unexpected platform config error for %s: %O', platformAgentId, error);
+    throw new TRPCError({
+      code: 'INTERNAL_SERVER_ERROR',
+      message: 'Failed to start platform agent',
+    });
+  }
+
+  /**
+   * Validate the operation's pinned, immutable dependency snapshot against the published catalog via
+   * the existing M07/M08/M09 exact validator (REWORK-4): fail-closed at the pinned revision — no
+   * latest fallback, no silently-dropped Skill/Connector — surfacing only redacted issue codes.
+   */
+  private async assertPlatformOperationDependencies(
+    dependencySnapshot: Parameters<typeof validateExactPlatformAgentDependencies>[1],
+  ): Promise<void> {
+    await validateExactPlatformAgentDependencies(this.db, dependencySnapshot);
+  }
+
+  /**
+   * Resolve the secret-free pin of the EXACT parent operation a resume continues, via a
+   * SERVER-CONTROLLED, complete provenance binding (M10 PR-049 · RR3-1/RR4-1) — the
+   * client-writable `message.metadata.operationId` AND the client-writable `message.parentId` are
+   * BOTH untrusted.
+   *
+   * The anchor message is loaded owner-scoped (a foreign / non-existent message → null → fail
+   * closed) only to confirm the caller owns it; the operation is then matched by kind against a
+   * SERVER-owned id under its OWN kind — an APPROVAL / TOOL-RESULT anchor against the pending
+   * tool-message provenance the runtime recorded at pause. No
+   * `parentId` hop, so a client-forged tool message (spoofed parentId) can never bind, and the two
+   * kinds can't cross. ONLY approval / tool-result are paused resumes; a bare regeneration / continue
+   * (`parentMessageId` without an approval/tool-result body) never reaches here — it starts a fresh
+   * operation on current entitlement (RR5-5).
+   */
+  private async resolveResumePlatformPin(
+    anchorMessageId: string | null,
+    anchorKind: ResumeInteractionKind,
+    toolCallId: string,
+    platformAgentId: string,
+    topicId: string | null,
+    threadId: string | null,
+  ): Promise<PlatformOperationPin | null> {
+    if (!anchorMessageId) return null;
+    const anchor = await this.messageModel.findById(anchorMessageId);
+    if (!anchor) return null;
+    const plugin = await this.messageModel.findMessagePlugin(anchor.id);
+    if (
+      !plugin ||
+      plugin.toolCallId !== toolCallId ||
+      plugin.intervention?.kind !== anchorKind ||
+      typeof plugin.apiName !== 'string' ||
+      typeof plugin.arguments !== 'string' ||
+      typeof plugin.identifier !== 'string'
+    ) {
+      return null;
+    }
+    const fingerprint = await fingerprintResumeToolCall({
+      apiName: plugin.apiName,
+      arguments: plugin.arguments,
+      identifier: plugin.identifier,
+      toolCallId,
+      type: plugin.type,
+    });
+    return this.agentOperationModel.findResumablePlatformOperationPin({
+      anchorKind,
+      anchorMessageId: anchor.id,
+      fingerprint,
+      platformAgentId,
+      threadId,
+      toolCallId,
+      topicId,
+    });
+  }
+
+  /**
+   * Resolve a platform Agent chat entry into a runtime config + the secret-free operation pin.
+   *
+   * NEW operation: `beginOperation` re-resolves owner-scoped Effective entitlement ONCE and captures
+   * the exact pinned version; the returned pin is persisted so later steps replay it.
+   *
+   * RESUME / retry / queued (a continuation of an existing topic/thread turn): replay the persisted,
+   * owner-scoped pin via `materializeFromPin` — NO `beginOperation`, no latest resolve — so an
+   * in-flight v1 operation stays on v1 after v2 is published. A persisted pin for a different
+   * platform Agent, a missing exact version, or a checksum mismatch (tampered metadata / advanced
+   * pointer) fails closed.
+   */
+  private async resolvePlatformAgentConfig(
+    platformAgentId: string,
+    identifier: string,
+    resumeContext: {
+      /**
+       * Set ONLY for a paused (approval / tool-result) resume — the sole case that replays a parked
+       * operation's pin (RR5-5). A bare regeneration / continue leaves it undefined and takes the
+       * fresh-operation path below.
+       */
+      pausedResumeKind?: ResumeInteractionKind;
+      resumeAnchorMessageId: string | null;
+      resumeToolCallId?: string;
+      threadId: string | null;
+      topicId: string | null;
+    },
+  ): Promise<{
+    config: AgentConfigWithId;
+    connectorRefs: PlatformAgentConnectorDependencyRef[];
+    modelPin: PlatformOperationModelPin;
+    pin: PlatformOperationPin;
+    skillRefs: PlatformAgentSkillDependencyRef[];
+  }> {
+    const materializationService = new PlatformAgentMaterializationService(this.db, this.userId);
+
+    if (resumeContext.pausedResumeKind) {
+      // RR3-1/RR5-5: a PAUSED (approval / tool-result) resume MUST replay the pin of its EXACT parent
+      // operation, matched by the SERVER-CONTROLLED pending tool-message provenance (never
+      // client-writable message metadata) and jointly scoped to owner/workspace/topic/thread/
+      // platformAgent + a paused, resumable status. No such bound pin (fabricated / cross-owner /
+      // wrong turn / wrong kind / terminal op) → fail closed. We NEVER fall through to a fresh
+      // `beginOperation` (latest) on a paused resume. A bare regeneration / continue never enters
+      // this branch — it takes the fresh-operation path below on CURRENT entitlement.
+      const pin = await this.resolveResumePlatformPin(
+        resumeContext.resumeAnchorMessageId,
+        resumeContext.pausedResumeKind,
+        resumeContext.resumeToolCallId ?? '',
+        platformAgentId,
+        resumeContext.topicId,
+        resumeContext.threadId,
+      );
+      if (!pin || pin.platformAgentId !== platformAgentId) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: `Agent not found: ${identifier}` });
+      }
+      // Re-check LIVE entitlement so a revoked / no-longer-assigned user fails closed even for a
+      // genuinely paused turn — WITHOUT resolving latest (the pinned version is still what runs).
+      let entitled: boolean;
+      try {
+        entitled = await new PlatformAgentEffectiveResolver(this.db).isEntitled(
+          this.userId,
+          platformAgentId,
+        );
+      } catch (error) {
+        this.mapPlatformConfigError(error, platformAgentId, identifier);
+      }
+      if (!entitled) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: `Agent not found: ${identifier}` });
+      }
+      try {
+        const materialized = await materializationService.materializeFromPin(pin);
+        await this.assertPlatformOperationDependencies(materialized.dependencySnapshot);
+        return {
+          config: materialized.config,
+          connectorRefs: materialized.dependencySnapshot.connectors,
+          modelPin: materialized.dependencySnapshot.model,
+          pin,
+          skillRefs: materialized.dependencySnapshot.skills,
+        };
+      } catch (error) {
+        this.mapPlatformConfigError(error, platformAgentId, identifier);
+      }
+    }
+
+    const handle = await new PlatformAgentEffectiveResolver(this.db).beginOperation(
+      this.userId,
+      platformAgentId,
+    );
+    if (!handle) {
+      throw new TRPCError({ code: 'NOT_FOUND', message: `Agent not found: ${identifier}` });
+    }
+    try {
+      const snapshot = handle.getSnapshot();
+      const materialized = await materializationService.materializeForOperation(snapshot);
+      await this.assertPlatformOperationDependencies(materialized.dependencySnapshot);
+      return {
+        config: materialized.config,
+        connectorRefs: materialized.dependencySnapshot.connectors,
+        modelPin: materialized.dependencySnapshot.model,
+        pin: {
+          checksum: snapshot.checksum,
+          platformAgentId: snapshot.platformAgentId,
+          versionId: snapshot.versionId,
+        },
+        skillRefs: materialized.dependencySnapshot.skills,
+      };
+    } catch (error) {
+      this.mapPlatformConfigError(error, platformAgentId, identifier);
+    }
+  }
+
+  /**
    * Execute agent with just a prompt
    *
    * This is a simplified API that requires agent identifier (id or slug) and prompt.
@@ -1031,6 +1301,15 @@ export class AiAgentService {
       ephemeralUserMessage,
     } = params;
 
+    // RR5-2: enforce the approval-vs-tool-result mutual exclusion in the SERVICE too (not only at the
+    // tRPC schema) — internal / non-router callers must never drive a double mutation on one tool.
+    if (resumeApproval && resumeToolResult) {
+      throw new TRPCError({
+        code: 'BAD_REQUEST',
+        message: 'resumeApproval and resumeToolResult are mutually exclusive',
+      });
+    }
+
     // M05 R3-B1: platform-effective approvalMode wins over request body when policy ON.
     // Flag OFF: preserve legacy default headless when caller omits config.
     const resolvedIntervention = await resolveEffectiveUserInterventionConfig({
@@ -1086,16 +1365,66 @@ export class AiAgentService {
 
     throwIfAborted(signal, 'Agent execution aborted before startup');
 
-    // 1. Get agent configuration with default config merged (supports both id and slug)
-    let agentConfig = await this.agentService.getAgentConfig(identifier);
-    // Builtin agents (inbox / page / task / self-iteration slugs) may be addressed
-    // purely by slug before a row exists — e.g. background self-iteration runs
-    // dispatched via execAgent({ slug }). Lazily materialize the virtual row from
-    // the builtin registry (mirrors the inbox/task `getBuiltinAgent` path) and
-    // re-resolve. No-op for ordinary agent ids (getBuiltinAgent returns null).
-    if (!agentConfig && (Object.values(BUILTIN_AGENT_SLUGS) as string[]).includes(identifier)) {
-      await this.agentModel.getBuiltinAgent(identifier);
+    // 1. Get agent configuration with default config merged (supports both id and slug).
+    // Platform Agent chat entry (M10 PR-049 · C): the list-item identity is only a request-entry
+    // hint and is NEVER trusted for authorization. `beginOperation` re-resolves owner-scoped
+    // effective entitlement exactly ONCE and captures the exact pinned {versionId, checksum,
+    // config}; the whole operation runs from that immutable snapshot, so publishing a newer version
+    // mid-flight cannot mutate an already-started operation. Materialization yields a real
+    // user-owned Agent id for message/operation attribution, while the runtime config is derived
+    // solely from the snapshot (never re-read from the local row).
+    // The identity may be the encoded list item OR a plain local Agent id that was materialized
+    // from a platform Agent — BOTH must re-run owner-scoped entitlement (REWORK-2), never run the
+    // local row directly. A local id whose assignment was revoked resolves to a platform id here
+    // and then fails closed in resolvePlatformAgentConfig.
+    const platformAgentId = await this.resolvePlatformAgentId(identifier, agentId);
+    let agentConfig: AgentConfigWithId | null;
+    // Persisted onto the operation so resume/retry/queued steps replay the exact pinned version and
+    // every LLM call runs on the exact historical provider revision.
+    let platformOperationPin: PlatformOperationPin | undefined;
+    let platformModelPin: PlatformOperationModelPin | undefined;
+    // Exact pinned Skill / Connector refs for a platform operation (undefined for non-platform). Set
+    // (possibly empty) whenever the operation is a platform Agent, so the Skill/Connector pools are
+    // EXACTLY its pinned set.
+    let platformSkillRefs: PlatformAgentSkillDependencyRef[] | undefined;
+    let platformConnectorRefs: PlatformAgentConnectorDependencyRef[] | undefined;
+    if (platformAgentId) {
+      // RR5-5: ONLY an approval / tool-result body drives a PAUSED resume (replay the parked op's
+      // pin). A bare `resume` / `parentMessageId` (UI regenerate passes the user message id, continue
+      // passes the completed assistant id) is NOT a paused resume — it starts a FRESH operation on
+      // current entitlement + snapshot, while still skipping a new user-message row downstream.
+      const pausedResumeKind: ResumeInteractionKind | undefined = resumeApproval
+        ? 'approval'
+        : resumeToolResult
+          ? 'toolResult'
+          : undefined;
+      const resolved = await this.resolvePlatformAgentConfig(platformAgentId, identifier, {
+        pausedResumeKind,
+        // The trusted anchor for a paused resume is the pending TOOL message (matched against the
+        // op's server-recorded pending tool provenance). Never a client-writable parentId hop,
+        // and never the generic regeneration/continue parentMessageId.
+        resumeAnchorMessageId:
+          resumeApproval?.parentMessageId ?? resumeToolResult?.parentMessageId ?? null,
+        resumeToolCallId: resumeApproval?.toolCallId ?? resumeToolResult?.toolCallId,
+        threadId: appContext?.threadId ?? null,
+        topicId: appContext?.topicId ?? null,
+      });
+      agentConfig = resolved.config;
+      platformOperationPin = resolved.pin;
+      platformModelPin = resolved.modelPin;
+      platformSkillRefs = resolved.skillRefs;
+      platformConnectorRefs = resolved.connectorRefs;
+    } else {
       agentConfig = await this.agentService.getAgentConfig(identifier);
+      // Builtin agents (inbox / page / task / self-iteration slugs) may be addressed
+      // purely by slug before a row exists — e.g. background self-iteration runs
+      // dispatched via execAgent({ slug }). Lazily materialize the virtual row from
+      // the builtin registry (mirrors the inbox/task `getBuiltinAgent` path) and
+      // re-resolve. No-op for ordinary agent ids (getBuiltinAgent returns null).
+      if (!agentConfig && (Object.values(BUILTIN_AGENT_SLUGS) as string[]).includes(identifier)) {
+        await this.agentModel.getBuiltinAgent(identifier);
+        agentConfig = await this.agentService.getAgentConfig(identifier);
+      }
     }
     if (!agentConfig) {
       // `agentService.getAgentConfig` already routes through `AgentModel`'s
@@ -1338,6 +1667,16 @@ export class AiAgentService {
             `stored=${resumeApprovalPlugin.toolCallId}, requested=${resumeApproval.toolCallId}`,
         );
       }
+      // RR5-2: the tool must have parked as an `approval` interaction (server-owned kind). This is
+      // what stops an approve/reject decision from being applied to a human-ANSWER (`toolResult`)
+      // tool, or to a forged pending row that carries no server kind (the public API strips it).
+      if (resumeApprovalPlugin.intervention?.kind !== 'approval') {
+        throw new Error(
+          `resumeApproval requires a tool parked as an 'approval' interaction, got kind='${
+            resumeApprovalPlugin.intervention?.kind ?? 'none'
+          }'`,
+        );
+      }
 
       const { decision, rejectionReason } = resumeApproval;
       if (decision === 'approved') {
@@ -1377,12 +1716,16 @@ export class AiAgentService {
         const rejectionContent = rejectionReason
           ? `User reject this tool calling with reason: ${rejectionReason}`
           : 'User reject this tool calling without reason';
-        await this.messageModel.updateToolMessage(resumeApproval.parentMessageId, {
-          content: rejectionContent,
-        });
-        await this.messageModel.updateMessagePlugin(resumeApproval.parentMessageId, {
-          intervention: { rejectedReason: rejectionReason, status: 'rejected' },
-        });
+        const rejected = await this.messageModel.rejectPendingMessagePlugin(
+          resumeApproval.parentMessageId,
+          {
+            content: rejectionContent,
+            rejectedReason: rejectionReason,
+          },
+        );
+        if (!rejected) {
+          throw new Error('resumeApproval is stale or already consumed');
+        }
       }
 
       log(
@@ -1429,19 +1772,28 @@ export class AiAgentService {
             `stored=${resumeToolResultPlugin.toolCallId}, requested=${resumeToolResult.toolCallId}`,
         );
       }
-
-      await this.messageModel.updateToolMessage(resumeToolResult.parentMessageId, {
-        content: resumeToolResult.content,
-      });
-      await this.messageModel.updateMessagePlugin(resumeToolResult.parentMessageId, {
-        intervention: { status: 'approved' },
-      });
-      if (resumeToolResult.pluginState) {
-        await this.messageModel.updatePluginState(
-          resumeToolResult.parentMessageId,
-          resumeToolResult.pluginState,
+      // RR5-2: the tool must have parked as a `toolResult` (human-answer) interaction. Combined with
+      // the single-winner CAS below, this stops a `resumeToolResult` from writing an arbitrary
+      // "result" onto a real `approval`-kind sensitive tool (or a forged, kind-less pending row).
+      if (resumeToolResultPlugin.intervention?.kind !== 'toolResult') {
+        throw new Error(
+          `resumeToolResult requires a tool parked as a 'toolResult' interaction, got kind='${
+            resumeToolResultPlugin.intervention?.kind ?? 'none'
+          }'`,
         );
       }
+
+      // Single-winner, kind-guarded pending→approved transition FIRST (RR5-2), so a stale / double /
+      // wrong-kind resume can never mutate the answer or double-run the tool. Only after we win the
+      // CAS do we write the human's answer as the tool result.
+      const resolved = await this.messageModel.resolvePendingToolResultPlugin(
+        resumeToolResult.parentMessageId,
+        {
+          content: resumeToolResult.content,
+          pluginState: resumeToolResult.pluginState,
+        },
+      );
+      if (!resolved) throw new Error('resumeToolResult is stale or already consumed');
 
       log(
         'execAgent: resumeToolResult applied to tool message %s (toolCallId=%s)',
@@ -2413,43 +2765,64 @@ export class AiAgentService {
       // from immutable Published revisions; personal endpoint/schema/credentials
       // are never read or used. Feature-off/non-enforced keeps the exact legacy path.
       let connectorsMcp: DecryptedConnector[] = [];
-      const managedConnectors = await buildManagedConnectorManifests({
-        agentId: resolvedAgentId,
-        approvedReceipt: trustedConnectorApprovalReceipt,
-        connectorKeys:
-          selectedToolIds && selectedToolIds.length > 0 ? selectedToolIds : activePluginIds,
-        db: this.db,
-        operationId,
-        serverAllowedConnectorKeys: activePluginIds,
-        userId: this.userId,
-        workspaceId: this.workspaceId,
-      });
-      if (managedConnectors.mode === 'blocked') {
-        throw new Error('PLATFORM_CONNECTOR_NOT_PUBLISHED');
-      }
-      if (managedConnectors.mode === 'enforced') {
-        connectorManifests = managedConnectors.manifests as LobeToolManifest[];
+      // True when Connectors run under the managed/enforced runtime (platform pinned OR current
+      // enforced) — those never fall back to the personal stdio-client executor path below.
+      let connectorsEnforced = false;
+      // Platform Agent (CONNECTOR-EXACT): build Connector manifests from the immutable pinned refs —
+      // exact historical published revision/checksum + pinned tool allowlist — never the current
+      // catalog head, and never personal Connectors. The pinned set is authoritative and fully
+      // replaces the ordinary Connector path.
+      if (platformConnectorRefs) {
+        const pinnedConnectors = await buildPinnedManagedConnectorManifests({
+          agentId: resolvedAgentId,
+          db: this.db,
+          operationId,
+          pinnedConnectors: platformConnectorRefs,
+          userId: this.userId,
+          workspaceId: this.workspaceId,
+        });
+        connectorManifests = pinnedConnectors.manifests as LobeToolManifest[];
+        connectorsEnforced = true;
       } else {
-        let connectorGateKeeper: KeyVaultsGateKeeper | undefined;
-        try {
-          connectorGateKeeper = await KeyVaultsGateKeeper.initWithEnvKey();
-        } catch (err) {
-          log('execAgent: failed to init gatekeeper for connector credentials: %O', err);
+        const managedConnectors = await buildManagedConnectorManifests({
+          agentId: resolvedAgentId,
+          approvedReceipt: trustedConnectorApprovalReceipt,
+          connectorKeys:
+            selectedToolIds && selectedToolIds.length > 0 ? selectedToolIds : activePluginIds,
+          db: this.db,
+          operationId,
+          serverAllowedConnectorKeys: activePluginIds,
+          userId: this.userId,
+          workspaceId: this.workspaceId,
+        });
+        if (managedConnectors.mode === 'blocked') {
+          throw new Error('PLATFORM_CONNECTOR_NOT_PUBLISHED');
         }
-        const connectors =
-          agentPlugins.length > 0
-            ? await this.connectorModel.queryByIdentifiers(agentPlugins, connectorGateKeeper)
-            : [];
-        connectorsMcp = connectors.filter(
-          (connector) => connector.mcpServerUrl || connector.mcpConnectionType === 'stdio',
-        );
-        const connectorTools =
-          connectorsMcp.length > 0
-            ? await this.connectorToolModel.queryAllByConnectorIds(
-                connectorsMcp.map(({ id }) => id),
-              )
-            : [];
-        connectorManifests = buildConnectorManifests(connectorsMcp, connectorTools);
+        if (managedConnectors.mode === 'enforced') {
+          connectorManifests = managedConnectors.manifests as LobeToolManifest[];
+          connectorsEnforced = true;
+        } else {
+          let connectorGateKeeper: KeyVaultsGateKeeper | undefined;
+          try {
+            connectorGateKeeper = await KeyVaultsGateKeeper.initWithEnvKey();
+          } catch (err) {
+            log('execAgent: failed to init gatekeeper for connector credentials: %O', err);
+          }
+          const connectors =
+            agentPlugins.length > 0
+              ? await this.connectorModel.queryByIdentifiers(agentPlugins, connectorGateKeeper)
+              : [];
+          connectorsMcp = connectors.filter(
+            (connector) => connector.mcpServerUrl || connector.mcpConnectionType === 'stdio',
+          );
+          const connectorTools =
+            connectorsMcp.length > 0
+              ? await this.connectorToolModel.queryAllByConnectorIds(
+                  connectorsMcp.map(({ id }) => id),
+                )
+              : [];
+          connectorManifests = buildConnectorManifests(connectorsMcp, connectorTools);
+        }
       }
 
       // Only connectors that ACTUALLY produced a manifest (enabled + with synced
@@ -2887,6 +3260,15 @@ export class AiAgentService {
         if (tool.discoverable !== false && !toolManifestMap[tool.identifier]) {
           toolManifestMap[tool.identifier] = tool.manifest as LobeToolManifest;
         }
+        // Snapshot the server-authored origin together with the manifest. This is security
+        // provenance, not a name-based guess: createServerToolsEngine gives builtins precedence
+        // over installed plugins, while the additional Skill/Composio/Connector manifests below
+        // intentionally overwrite both the manifest and this source in the same merge order.
+        // Human-answer resume therefore cannot be enabled by an external manifest that merely
+        // claims an audited builtin identifier.
+        if (toolManifestMap[tool.identifier]) {
+          toolSourceMap[tool.identifier] = 'builtin';
+        }
       }
 
       // lobe-local-system has `discoverable: isDesktop` in builtinTools, which
@@ -2903,6 +3285,7 @@ export class AiAgentService {
         !toolManifestMap[LocalSystemManifest.identifier]
       ) {
         toolManifestMap[LocalSystemManifest.identifier] = LocalSystemManifest as LobeToolManifest;
+        toolSourceMap[LocalSystemManifest.identifier] = 'builtin';
       }
 
       // Include lobehub skill and composio manifests for activator discovery.
@@ -2932,6 +3315,10 @@ export class AiAgentService {
         if (!isManifestIngestAllowed(manifest.identifier)) continue;
         toolSourceMap[manifest.identifier] = 'composio';
       }
+      for (const manifest of activeConnectorManifests) {
+        if (!isManifestIngestAllowed(manifest.identifier)) continue;
+        toolSourceMap[manifest.identifier] = 'mcp';
+      }
 
       // Mark tools that must run on the user's machine (local-system, stdio
       // MCP) for direct client dispatch only in the standalone deployment
@@ -2949,7 +3336,7 @@ export class AiAgentService {
             toolExecutorMap[id] = 'client';
           }
         }
-        if (managedConnectors.mode !== 'enforced') {
+        if (!connectorsEnforced) {
           for (const plugin of installedPlugins) {
             if (plugin.customParams?.mcp?.type === 'stdio' && manifestMap.has(plugin.identifier)) {
               toolExecutorMap[plugin.identifier] = 'client';
@@ -3491,13 +3878,23 @@ export class AiAgentService {
       db: this.db,
       flags: enterpriseFlags,
     });
-    const platformSkillSnapshot = await resolvePlatformSkillRuntimeSnapshot({
-      agentPlugins: persistedAgentPluginEntries,
-      db: this.db,
-      effectiveMode: managedSkillEffectiveMode,
-      flags: enterpriseFlags,
-      identity: { agentId: resolvedAgentId, operationId, userId: this.userId },
-    });
+    // Platform Agent (SKILL-EXACT): resolve the operation's Skill pool from its immutable pinned
+    // Skill refs — exact historical version/checksum — not the moving catalog head. Ordinary /
+    // builtin operations keep the existing latest-catalog managed-Skill path unchanged.
+    const platformSkillSnapshot = platformSkillRefs
+      ? await resolvePinnedPlatformSkillRuntimeSnapshot({
+          db: this.db,
+          flags: enterpriseFlags,
+          identity: { agentId: resolvedAgentId, operationId, userId: this.userId },
+          pinnedSkills: platformSkillRefs,
+        })
+      : await resolvePlatformSkillRuntimeSnapshot({
+          agentPlugins: persistedAgentPluginEntries,
+          db: this.db,
+          effectiveMode: managedSkillEffectiveMode,
+          flags: enterpriseFlags,
+          identity: { agentId: resolvedAgentId, operationId, userId: this.userId },
+        });
 
     // Project discovery also supplies operation-wide instructions and working
     // directory metadata. Keep it independent of Skill catalog enforcement:
@@ -3691,6 +4088,14 @@ export class AiAgentService {
         hooks,
         operationId,
         parentOperationId,
+        // RR3-1: the server-controlled resume anchor — the id of the assistant turn this operation
+        // produces. Persisted into the operation's own (server-only) metadata so a later resume can
+        // bind to THIS operation without trusting any client-writable message metadata.
+        assistantMessageId: assistantMessageRecord.id,
+        platformConnectorPins: platformConnectorRefs,
+        platformModelPin,
+        platformOperationPin,
+        platformSkillPins: platformSkillRefs,
         signal,
         queueRetries,
         queueRetryDelay,

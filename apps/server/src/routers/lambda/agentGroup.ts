@@ -11,6 +11,11 @@ import { AgentGroupRepository } from '@/database/repositories/agentGroup';
 import { type ChatGroupConfig } from '@/database/types/chatGroup';
 import { router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
+import {
+  pickAgentId,
+  pickAgentIds,
+  withManagedLocalAgentGuard,
+} from '@/server/enterprise/guards/managedPlatformAgent';
 import { withManagedResourceGuard } from '@/server/enterprise/guards/managedResource';
 import { getEffectiveDefaultAgentConfig } from '@/server/enterprise/services/settings/runtimeSettingsAdapter';
 import { AgentGroupService } from '@/server/services/agentGroup';
@@ -71,6 +76,8 @@ const agentGroupProcedureWrite = agentGroupProcedure.use(withScopedPermission('a
 export const agentGroupRouter = router({
   addAgentsToGroup: agentGroupProcedureWrite
     .use(withManagedResourceGuard('agentGroup.addAgentsToGroup'))
+    // RR2-4: per-item — a managed platform Agent cannot be smuggled into a group via the array.
+    .use(withManagedLocalAgentGuard(pickAgentIds))
     .input(
       z.object({
         agentIds: z.array(z.string()),
@@ -303,6 +310,8 @@ export const agentGroupRouter = router({
    */
   removeAgentsFromGroup: agentGroupProcedureWrite
     .use(withManagedResourceGuard('agentGroup.removeAgentsFromGroup'))
+    // RR2-4: per-item guard over the array.
+    .use(withManagedLocalAgentGuard(pickAgentIds))
     .input(
       z.object({
         agentIds: z.array(z.string()),
@@ -390,6 +399,7 @@ export const agentGroupRouter = router({
 
   updateAgentInGroup: agentGroupProcedureWrite
     .use(withManagedResourceGuard('agentGroup.updateAgentInGroup'))
+    .use(withManagedLocalAgentGuard(pickAgentId))
     .input(
       z.object({
         agentId: z.string(),

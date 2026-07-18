@@ -1960,6 +1960,20 @@ describe('AgentModel', () => {
       expect(result.some((a: { title: string | null }) => a.title === 'Regular Agent')).toBe(true);
     });
 
+    it('should exclude agents whose ids are in excludeAgentIds (unified-list dedup)', async () => {
+      const kept = await agentModel.create({ title: 'Kept Agent', virtual: false });
+      const excluded = await agentModel.create({ title: 'Excluded Agent', virtual: false });
+
+      const result = await agentModel.queryAgents({ excludeAgentIds: [excluded.id] });
+
+      const ids = result.map((a) => a.id);
+      expect(ids).toContain(kept.id);
+      expect(ids).not.toContain(excluded.id);
+      // An empty exclusion list is a no-op (legacy behavior preserved).
+      const all = await agentModel.queryAgents({ excludeAgentIds: [] });
+      expect(all.map((a) => a.id)).toContain(excluded.id);
+    });
+
     it('should only return agents for the current user', async () => {
       // Create agent for user 1
       await agentModel.create({

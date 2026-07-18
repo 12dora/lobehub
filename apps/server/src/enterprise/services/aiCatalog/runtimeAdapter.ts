@@ -12,6 +12,7 @@ import { PlatformAiCatalogRepository } from '@/database/repositories/platformAiC
 import type {
   PlatformAiProviderConfig,
   PlatformAiProviderSettings,
+  PlatformResourceRevisionItem,
 } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 
@@ -321,6 +322,58 @@ export class AiCatalogExecutionResolver {
     if (!revision || !isRecord(revision.payload.provider)) {
       throw new AiCatalogNotFoundError();
     }
+    return this.buildExecutionConfigFromRevision(providerKey, revision, repository);
+  }
+
+  /**
+   * Resolve the provider execution config at an EXACT historical published revision (MODEL-EXACT):
+   * used so an in-flight platform operation keeps running on the provider revision it started on,
+   * even after the admin publishes a newer revision and advances the current pointer.
+   *
+   * Fail-closed: an unknown provider, a missing / non-published revision, or a checksum that does not
+   * match the pinned `providerChecksum` throws `AiCatalogNotFoundError` (never falls back to
+   * current/latest). The optional `modelKey` must be enabled in this exact revision or
+   * `AiCatalogModelNotPublishedError` is thrown. Secrets are re-read + decrypted at THIS revision's
+   * secret fingerprint and never persisted.
+   */
+  async resolveProviderExecutionConfigAtRevision(params: {
+    modelKey?: string;
+    providerChecksum: string;
+    providerKey: string;
+    providerRevision: number;
+  }): Promise<AiCatalogProviderExecutionConfig> {
+    const repository = new PlatformAiCatalogRepository(this.db);
+    const provider = await repository.getProviderByKey(params.providerKey);
+    if (!provider || provider.status !== 'published') throw new AiCatalogNotFoundError();
+    const revision = await repository.getProviderRevision(provider.id, params.providerRevision);
+    if (
+      !revision ||
+      revision.status !== 'published' ||
+      revision.checksum !== params.providerChecksum ||
+      !isRecord(revision.payload.provider)
+    ) {
+      throw new AiCatalogNotFoundError();
+    }
+    const resolved = await this.buildExecutionConfigFromRevision(
+      params.providerKey,
+      revision,
+      repository,
+    );
+    if (
+      params.modelKey &&
+      !resolved.allowedModels.some((model) => model.modelKey === params.modelKey)
+    ) {
+      throw new AiCatalogModelNotPublishedError(params.modelKey, 'chat');
+    }
+    return resolved;
+  }
+
+  private async buildExecutionConfigFromRevision(
+    providerKey: string,
+    revision: PlatformResourceRevisionItem,
+    repository: PlatformAiCatalogRepository,
+  ): Promise<AiCatalogProviderExecutionConfig> {
+    if (!isRecord(revision.payload.provider)) throw new AiCatalogNotFoundError();
     const provider = revision.payload.provider;
     if (provider.enabled !== true) throw new AiCatalogNotFoundError();
     const allowedModels = Array.isArray(revision.payload.models)

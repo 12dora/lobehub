@@ -194,6 +194,25 @@ interface SplitCreateMessageParams {
 }
 
 /**
+ * Keys on `messages.metadata` that are SERVER-controlled and must never be accepted from a client
+ * write (M10 PR-049 · RR3-1). `operationId` in particular is a resume-anchor field: it lives on the
+ * server-only `agent_operations.metadata`, never on a message, so an ordinary message
+ * create/update/batch that carries it is stripped to defuse any attempt to forge a resume binding.
+ */
+const RESERVED_MESSAGE_METADATA_KEYS = new Set(['operationId']);
+
+/** Drop server-reserved keys from a caller-supplied message metadata object (RR3-1). */
+const stripReservedMessageMetadata = <T>(metadata: T): T => {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return metadata;
+  const record = metadata as Record<string, unknown>;
+  const hasReserved = [...RESERVED_MESSAGE_METADATA_KEYS].some((key) => Object.hasOwn(record, key));
+  if (!hasReserved) return metadata;
+  const cleaned: Record<string, unknown> = { ...record };
+  for (const key of RESERVED_MESSAGE_METADATA_KEYS) delete cleaned[key];
+  return cleaned as T;
+};
+
+/**
  * Shared, ownership-scoped filters for the analytics queries
  * (count / countGroupByTopic / topicMessageStats). All of these are
  * applied on top of the workspace ownership predicate, so the resulting
@@ -1946,6 +1965,8 @@ export class MessageModel {
         ...normalizedMessage,
         // Sanitize content to strip null bytes that PostgreSQL rejects
         content: sanitizeNullBytes(normalizedMessage.content),
+        // RR3-1: never persist a client-supplied server-reserved metadata key (e.g. operationId).
+        metadata: stripReservedMessageMetadata(normalizedMessage.metadata),
         // TODO: remove this when the client is updated
         createdAt: createdAt ? new Date(createdAt) : undefined,
         id,
@@ -2174,7 +2195,8 @@ export class MessageModel {
       buildWorkspacePayload(
         { userId: this.userId, workspaceId: this.workspaceId },
         // TODO: need a better way to handle this
-        { ...m, role: m.role as any },
+        // RR3-1: strip server-reserved metadata (operationId) from every batched row.
+        { ...m, metadata: stripReservedMessageMetadata(m.metadata), role: m.role as any },
       ),
     );
 
@@ -2211,7 +2233,11 @@ export class MessageModel {
     // patch also keeps it consistent with the column when both are sent.
     const metadataPatch =
       metadata || usageToWrite
-        ? { ...metadata, ...(usageToWrite && { usage: usageToWrite }) }
+        ? // RR3-1: strip server-reserved keys (operationId) from a caller-supplied update patch.
+          stripReservedMessageMetadata({
+            ...metadata,
+            ...(usageToWrite && { usage: usageToWrite }),
+          })
         : undefined;
     try {
       await runTimedStage(
@@ -2250,7 +2276,11 @@ export class MessageModel {
                     .from(messages)
                     .where(and(eq(messages.id, id), this.ownership())),
               );
-              mergedMetadata = merge(existingMessage?.metadata || {}, metadataPatch);
+              // RR4-5: strip server-reserved keys on the POST-MERGE result (the final write value),
+              // so a caller can neither introduce nor re-introduce a reserved key via a merge.
+              mergedMetadata = stripReservedMessageMetadata(
+                merge(existingMessage?.metadata || {}, metadataPatch),
+              );
             }
 
             const [updated] = await runTimedStage(
@@ -2305,7 +2335,8 @@ export class MessageModel {
 
     if (!item) return;
 
-    const mergedMetadata = merge(item.metadata || {}, metadata);
+    // RR4-5: strip server-reserved keys on the POST-MERGE result (the final write value).
+    const mergedMetadata = stripReservedMessageMetadata(merge(item.metadata || {}, metadata));
     // Keep the dedicated `usage` column in sync when the merged metadata carries
     // token usage, preferring it over the existing column value.
     const usageToWrite = (metadata as { usage?: ModelUsage } | undefined)?.usage;
@@ -2340,21 +2371,84 @@ export class MessageModel {
       .where(and(eq(messagePlugins.id, id), this.pluginsOwnership()));
   };
 
-  /** Single-winner approval transition; stale/double-click approvals return false. */
-  approvePendingMessagePlugin = async (id: string): Promise<boolean> => {
-    const rows = await this.db
-      .update(messagePlugins)
-      .set({ intervention: { status: 'approved' } })
-      .where(
-        and(
-          eq(messagePlugins.id, id),
-          this.pluginsOwnership(),
-          sql`${messagePlugins.intervention}->>'status' = 'pending'`,
-        ),
-      )
-      .returning({ id: messagePlugins.id });
-    return rows.length === 1;
-  };
+  private resolvePendingIntervention = async (
+    id: string,
+    params: {
+      content?: string;
+      kind: 'approval' | 'toolResult';
+      pluginState?: Record<string, unknown>;
+      rejectedReason?: string;
+      status: 'approved' | 'rejected';
+    },
+  ): Promise<boolean> =>
+    this.db.transaction(async (trx) => {
+      const interventionPatch = JSON.stringify({
+        ...(params.rejectedReason !== undefined ? { rejectedReason: params.rejectedReason } : {}),
+        status: params.status,
+      });
+      const pluginRows = await trx
+        .update(messagePlugins)
+        .set({
+          intervention: sql`coalesce(${messagePlugins.intervention}, '{}'::jsonb) || ${interventionPatch}::jsonb`,
+          ...(params.pluginState
+            ? {
+                state: sql`coalesce(${messagePlugins.state}, '{}'::jsonb) || ${JSON.stringify(sanitizeNullBytes(params.pluginState))}::jsonb`,
+              }
+            : {}),
+        })
+        .where(
+          and(
+            eq(messagePlugins.id, id),
+            this.pluginsOwnership(),
+            sql`${messagePlugins.intervention}->>'status' = 'pending'`,
+            sql`${messagePlugins.intervention}->>'kind' = ${params.kind}`,
+          ),
+        )
+        .returning({ id: messagePlugins.id });
+      if (pluginRows.length !== 1) return false;
+
+      if (params.content !== undefined) {
+        const messageRows = await trx
+          .update(messages)
+          .set({ content: sanitizeNullBytes(params.content) })
+          .where(and(eq(messages.id, id), this.ownership()))
+          .returning({ id: messages.id });
+        if (messageRows.length !== 1) throw new Error('Pending intervention message not found');
+      }
+      return true;
+    });
+
+  /** Kind-guarded single-winner approval transition. */
+  approvePendingMessagePlugin = (id: string): Promise<boolean> =>
+    this.resolvePendingIntervention(id, { kind: 'approval', status: 'approved' });
+
+  /** Atomically persist a rejected approval's content and intervention state. */
+  rejectPendingMessagePlugin = (
+    id: string,
+    params: { content: string; rejectedReason?: string },
+  ): Promise<boolean> =>
+    this.resolvePendingIntervention(id, {
+      ...params,
+      kind: 'approval',
+      status: 'rejected',
+    });
+
+  /**
+   * Single-winner resolution for a human-ANSWER tool (M10 PR-049 · RR5-2): flips a `toolResult`-kind
+   * pending tool to approved ONLY when it is still pending AND carries the server-owned
+   * `intervention.kind = 'toolResult'`. The kind predicate in the CAS is what prevents a
+   * `resumeToolResult` from writing an answer onto a real `approval`-kind sensitive tool; a stale /
+   * double / wrong-kind call returns false so the caller fails closed without mutating the row.
+   */
+  resolvePendingToolResultPlugin = (
+    id: string,
+    params: { content: string; pluginState?: Record<string, unknown> },
+  ): Promise<boolean> =>
+    this.resolvePendingIntervention(id, {
+      ...params,
+      kind: 'toolResult',
+      status: 'approved',
+    });
 
   /**
    * Fetch the `message_plugins` row associated with a tool message. Tool-call
@@ -2458,7 +2552,12 @@ export class MessageModel {
             const existingMessage = await trx.query.messages.findFirst({
               where: and(eq(messages.id, id), this.ownership()),
             });
-            messageUpdateData.metadata = merge(existingMessage?.metadata || {}, metadata);
+            // RR4-5: strip server-reserved keys on the POST-MERGE result — updateToolMessage is
+            // reachable from the public message router (single + batchMutate), so this final write
+            // boundary must filter it too.
+            messageUpdateData.metadata = stripReservedMessageMetadata(
+              merge(existingMessage?.metadata || {}, metadata),
+            );
           }
 
           if (Object.keys(messageUpdateData).length > 0) {

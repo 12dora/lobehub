@@ -1,6 +1,6 @@
 import type { PlatformSkillOperationSnapshot, SkillMeta } from '@lobechat/context-engine';
 import { resourcesTreePrompt } from '@lobechat/prompts';
-import type { AgentPluginEntry } from '@lobechat/types';
+import type { AgentPluginEntry, PlatformAgentSkillDependencyRef } from '@lobechat/types';
 
 import type { EnterpriseFeatureFlags } from '@/const/platform/featureFlags';
 import type { LobeChatDatabase } from '@/database/type';
@@ -97,7 +97,9 @@ export const resolvePlatformSkillRuntimeSnapshot = async (params: {
         skillKey: skill.skillKey,
         version: skill.version,
       });
-      if (!resolved) throw new Error(`Published Skill ${skill.skillKey} could not be resolved`);
+      // RR2-5: fail closed WITHOUT naming the Skill — the skillKey is an internal catalog
+      // identifier and must never surface to the caller.
+      if (!resolved) throw new Error('A published platform Skill could not be resolved');
       return { ...meta, activated: true, content: buildResolvedContent(resolved) };
     }),
   );
@@ -126,4 +128,93 @@ export const resolvePlatformSkillRuntimeSnapshot = async (params: {
     }),
     skills,
   };
+};
+
+/**
+ * Revision marker bound into the proof of a platform-Agent pinned-skill snapshot. The pinned refs
+ * (skillKey/version/checksum) — not a catalog head — are the authority; the value is only a stable,
+ * consistent binding checked equal by the activation verifier, so a fixed marker is correct.
+ */
+const PINNED_SKILL_OPERATION_REVISION = 'platform-agent-pinned';
+
+/**
+ * Resolve the operation-level Skill boundary for a managed platform Agent from its immutable,
+ * per-operation pinned Skill refs (M10 PR-049 · SKILL-EXACT) — NOT the moving catalog head.
+ *
+ * The `dependencySnapshot.skills` `{skillKey, version, checksum}` captured on the Agent version are
+ * the sole authority: each is exact-resolved (`resolvePinnedForExecution`, which fail-closes on a
+ * missing / superseded / checksum-mismatched version), so the model sees and activates the exact
+ * historical Skill content the operation started on. Publishing v2 / advancing the catalog head
+ * cannot change an in-flight operation's Skills. The returned snapshot fully REPLACES the ordinary
+ * builtin/db/project pool (the platform Agent's Skills are exactly its pinned set — an empty set
+ * therefore yields an empty pool). Fail-closed when the managed-Skills feature is off but the Agent
+ * pinned Skills (they could never be activated). No M08 read when there are no pinned Skills.
+ */
+export const resolvePinnedPlatformSkillRuntimeSnapshot = async (params: {
+  db: LobeChatDatabase;
+  flags: EnterpriseFeatureFlags;
+  identity: { agentId: string; operationId: string; userId: string };
+  options?: ResolvePlatformSkillRuntimeSnapshotOptions;
+  pinnedSkills: PlatformAgentSkillDependencyRef[];
+}): Promise<PlatformSkillRuntimeSnapshot> => {
+  const signProof = params.options?.signProof ?? signPlatformSkillOperationProof;
+  const buildSnapshot = (
+    refs: PlatformSkillOperationSnapshot['refs'],
+    proof: string,
+  ): PlatformSkillOperationSnapshot =>
+    freezeOperationSnapshot({
+      agentId: params.identity.agentId,
+      // Every pinned Skill is part of the Agent's declared, non-user-mutable set.
+      mandatorySkillIds: refs.map((ref) => ref.skillKey),
+      operationId: params.identity.operationId,
+      proof,
+      refs,
+      revision: PINNED_SKILL_OPERATION_REVISION,
+    });
+
+  if (params.pinnedSkills.length === 0) {
+    const proof = await signProof({
+      ...params.identity,
+      refs: [],
+      revision: PINNED_SKILL_OPERATION_REVISION,
+    });
+    return { catalog: buildSnapshot([], proof), skills: [] };
+  }
+
+  if (!params.flags.ENABLE_PLATFORM_MANAGED_SKILLS) {
+    // The Agent pinned Skills but the managed-Skills feature is off — they could never be activated.
+    throw new Error('Platform managed Skills are required to run this Agent');
+  }
+
+  const catalogService =
+    params.options?.catalogService ??
+    new SkillCatalogReadService(params.db, { builtinSkills: getBuiltinSkillDefinitions() });
+  const refs = params.pinnedSkills.map(({ checksum, skillKey, version }) => ({
+    checksum,
+    skillKey,
+    version,
+  }));
+  const skills = await Promise.all(
+    refs.map(async (ref): Promise<SkillMeta> => {
+      const resolved = await catalogService.resolvePinnedForExecution(ref);
+      // RR2-5: fail closed WITHOUT naming the Skill — `skillKey@version` is an internal pinned
+      // identifier and must never surface to the caller.
+      if (!resolved) {
+        throw new Error('A pinned platform Skill could not be resolved');
+      }
+      return {
+        activated: true,
+        content: buildResolvedContent(resolved),
+        description: resolved.description ?? resolved.displayName,
+        identifier: resolved.skillKey,
+        name: resolved.skillKey,
+      };
+    }),
+  );
+  const proof = await signProof({
+    ...params.identity,
+    refs,
+    revision: PINNED_SKILL_OPERATION_REVISION,
+  });
+  return { catalog: buildSnapshot(refs, proof), skills };
 };

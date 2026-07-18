@@ -159,6 +159,15 @@ export interface PlatformConnectorRuntimeRevision {
   };
 }
 
+export interface PlatformConnectorExactReference {
+  connectorId: string;
+  publishedRevision: number;
+}
+
+export interface PlatformConnectorExactRuntimeRevision extends PlatformConnectorRuntimeRevision {
+  connector: Pick<PlatformConnectorItem, 'connectorKey' | 'id' | 'status'>;
+}
+
 export class PlatformConnectorCatalogRepository {
   constructor(private readonly db: LobeChatDatabase | Transaction) {}
 
@@ -328,6 +337,64 @@ export class PlatformConnectorCatalogRepository {
         revisionId: row.id,
       },
     };
+  };
+
+  /**
+   * Resolve exact historical runtime revisions for many Connectors in one query. Validation may
+   * carry up to 100 refs and must remain a constant-roundtrip operation.
+   */
+  getPublishedRuntimeRevisionsExact = async (
+    references: readonly PlatformConnectorExactReference[],
+  ): Promise<Map<string, PlatformConnectorExactRuntimeRevision>> => {
+    if (references.length === 0) return new Map();
+    const requestedPairs = references.map(({ connectorId, publishedRevision }) =>
+      and(
+        eq(platformConnectors.id, connectorId),
+        eq(platformResourceRevisions.revision, publishedRevision),
+      ),
+    );
+    const rows = await this.db
+      .select({
+        checksum: platformResourceRevisions.checksum,
+        connectorId: platformConnectors.id,
+        connectorKey: platformConnectors.connectorKey,
+        connectorStatus: platformConnectors.status,
+        payload: platformResourceRevisions.payload,
+        publishedAt: platformResourceRevisions.publishedAt,
+        revision: platformResourceRevisions.revision,
+        revisionId: platformResourceRevisions.id,
+      })
+      .from(platformConnectors)
+      .innerJoin(
+        platformResourceRevisions,
+        and(
+          eq(platformResourceRevisions.resourceType, 'connector'),
+          eq(platformResourceRevisions.resourceId, platformConnectors.id),
+          eq(platformResourceRevisions.status, 'published'),
+        ),
+      )
+      .where(and(eq(platformConnectors.migrationRequired, false), or(...requestedPairs)));
+
+    const exact = new Map<string, PlatformConnectorExactRuntimeRevision>();
+    for (const row of rows) {
+      if (!row.publishedAt) continue;
+      exact.set(`${row.connectorId}\0${row.revision}`, {
+        connector: {
+          connectorKey: row.connectorKey,
+          id: row.connectorId,
+          status: row.connectorStatus,
+        },
+        payload: row.payload as unknown as PlatformConnectorRevisionPayload,
+        provenance: {
+          checksum: row.checksum,
+          connectorId: row.connectorId,
+          publishedAt: row.publishedAt,
+          revision: row.revision,
+          revisionId: row.revisionId,
+        },
+      });
+    }
+    return exact;
   };
 
   listConnectors = async (params: {

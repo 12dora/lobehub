@@ -40,7 +40,7 @@ export interface InterventionResult {
  */
 export class HumanInterventionHandler {
   constructor(
-    private readonly serverDB: LobeChatDatabase,
+    _serverDB: LobeChatDatabase,
     private readonly messageModel: MessageModel,
   ) {}
 
@@ -182,16 +182,22 @@ export class HumanInterventionHandler {
       ? `User reject this tool calling with reason: ${rejectionReason}`
       : 'User reject this tool calling without reason';
 
-    await this.messageModel.updateToolMessage(toolMessageId, { content: rejectionContent });
-    await this.messageModel.updateMessagePlugin(toolMessageId, {
-      intervention: { rejectedReason: rejectionReason, status: 'rejected' },
+    const plugin = await this.messageModel.findMessagePlugin(toolMessageId);
+    const rejectedToolCallId = plugin?.toolCallId;
+    if (
+      plugin?.intervention?.kind !== 'approval' ||
+      !rejectedToolCallId ||
+      !(state.pendingToolsCalling ?? []).some(
+        (tool: ChatToolPayload) => tool.id === rejectedToolCallId,
+      )
+    ) {
+      return { newState: state, nextContext: undefined };
+    }
+    const rejected = await this.messageModel.rejectPendingMessagePlugin(toolMessageId, {
+      content: rejectionContent,
+      rejectedReason: rejectionReason,
     });
-
-    // Find the tool_call_id for this tool message so we can drop it from
-    // pendingToolsCalling. pendingToolsCalling holds ChatToolPayload[] whose
-    // id === tool_call_id; the mapping lives in messagePlugins (plugin id
-    // === message id, toolCallId is a separate column).
-    const rejectedToolCallId = await this.lookupToolCallId(toolMessageId);
+    if (!rejected) return { newState: state, nextContext: undefined };
 
     const newState = structuredClone(state);
     newState.lastModified = new Date().toISOString();
@@ -274,17 +280,5 @@ export class HumanInterventionHandler {
       reason: 'human_rejected',
     };
     return { newState, nextContext: undefined };
-  }
-
-  private async lookupToolCallId(toolMessageId: string): Promise<string | undefined> {
-    try {
-      const plugin = await this.serverDB.query.messagePlugins.findFirst({
-        where: (mp: any, { eq }: any) => eq(mp.id, toolMessageId),
-      });
-      return (plugin as any)?.toolCallId ?? undefined;
-    } catch (error) {
-      log('failed to look up tool plugin: %O', error);
-      return undefined;
-    }
   }
 }

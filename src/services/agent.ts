@@ -1,4 +1,9 @@
-import { type AgentItem, type AgentRankItem, type LobeAgentConfig } from '@lobechat/types';
+import {
+  type AgentItem,
+  type AgentRankItem,
+  type LobeAgentConfig,
+  type PlatformAgentUserListMeta,
+} from '@lobechat/types';
 import { type PartialDeep } from 'type-fest';
 
 import { lambdaClient } from '@/libs/trpc/client';
@@ -10,7 +15,16 @@ export interface AvailableAgentItem {
   avatar: string | null;
   backgroundColor: string | null;
   description: string | null;
+  /**
+   * Compact heterogeneous runtime type (external CLI/device agents). Absent for regular agents.
+   */
+  heteroType?: string;
   id: string;
+  /**
+   * Present only for platform-managed items (M10) merged into the unified list. Carries minimal
+   * user-safe metadata; absent for ordinary user-owned agents.
+   */
+  platform?: PlatformAgentUserListMeta;
   title: string | null;
 }
 
