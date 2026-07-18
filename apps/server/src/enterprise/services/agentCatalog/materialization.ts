@@ -1,6 +1,7 @@
 import { DEFAULT_AGENT_CONFIG } from '@lobechat/const';
 import type {
   PlatformAgentConnectorDependencyRef,
+  PlatformAgentDependencySnapshot,
   PlatformAgentModelDependencyRef,
   PlatformAgentSkillDependencyRef,
   PlatformAgentVersionConfig,
@@ -83,7 +84,11 @@ export class PlatformAgentMaterializationService {
    */
   materializeForOperation = async (
     snapshot: PlatformAgentOperationSnapshot,
-  ): Promise<{ agentId: string; config: AgentConfigWithId }> => {
+  ): Promise<{
+    agentId: string;
+    config: AgentConfigWithId;
+    dependencySnapshot: PlatformAgentDependencySnapshot;
+  }> => {
     // Redact a raw driver / SQL error from the exact-version read into the stable, detail-free
     // materialization error before it can reach the boundary — preserving the materialization
     // classification (a known platform error still passes through) (REWORK-5).
@@ -100,7 +105,13 @@ export class PlatformAgentMaterializationService {
     const model = version.dependencySnapshot.model;
 
     const agentId = await this.attachLocalAgent(snapshot, model);
-    return { agentId, config: this.buildRuntimeConfig(agentId, snapshot.config, model) };
+    return {
+      agentId,
+      config: this.buildRuntimeConfig(agentId, snapshot.config, model),
+      // The exact, immutable dependency snapshot bound to this operation. The caller validates it
+      // against the published catalog at the pinned revision (fail-closed, no latest fallback).
+      dependencySnapshot: version.dependencySnapshot,
+    };
   };
 
   /** Fail-closed validation that the fetched version exactly matches the pinned snapshot. */

@@ -100,10 +100,12 @@ import { patchManifestWithPermissions } from '@/libs/mcp/connectorPermissionChec
 import { signOperationJwt, signUserJWT } from '@/libs/trpc/utils/internalJwt';
 import { parseEnterpriseFeatureFlags } from '@/server/enterprise/featureFlags';
 import {
+  PlatformAgentDependencyValidationError,
   PlatformAgentEffectiveResolver,
   PlatformAgentMaterializationError,
   PlatformAgentMaterializationService,
   PlatformAgentNotFoundError,
+  validateExactPlatformAgentDependencies,
 } from '@/server/enterprise/services/agentCatalog';
 import {
   type ConnectorApprovalReceipt,
@@ -1034,10 +1036,24 @@ export class AiAgentService {
         this.db,
         this.userId,
       ).materializeForOperation(handle.getSnapshot());
+      // Exact-dependency binding (REWORK-4): validate the operation's pinned, immutable dependency
+      // snapshot — model provider revision/checksum, skills exact version/checksum, connectors exact
+      // revision/checksum/allowlist — against the published catalog via the existing M07/M08/M09
+      // validator. Fail-closed at the pinned revision: no latest fallback, no silently-dropped
+      // Skill/Connector. Raises the redacted PlatformAgentDependencyValidationError (issue codes
+      // only, no secrets) when a pinned dependency is no longer published.
+      await validateExactPlatformAgentDependencies(this.db, materialized.dependencySnapshot);
       return materialized.config;
     } catch (error) {
       if (error instanceof PlatformAgentNotFoundError) {
         throw new TRPCError({ code: 'NOT_FOUND', message: `Agent not found: ${identifier}` });
+      }
+      if (error instanceof PlatformAgentDependencyValidationError) {
+        log('execAgent: platform dependency validation failed for %s', platformAgentId);
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Platform agent dependencies are unavailable',
+        });
       }
       if (error instanceof PlatformAgentMaterializationError) {
         log('execAgent: platform materialization failed for %s: %O', platformAgentId, error);

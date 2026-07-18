@@ -19,12 +19,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getTestDB } from '@/database/core/getTestDB';
 import type { LobeChatDatabase } from '@/database/type';
 
-const { beginOperation, materializeForOperation, getPlatformAgentIdByMaterializedAgentId } =
-  vi.hoisted(() => ({
-    beginOperation: vi.fn(),
-    getPlatformAgentIdByMaterializedAgentId: vi.fn(),
-    materializeForOperation: vi.fn(),
-  }));
+const {
+  beginOperation,
+  materializeForOperation,
+  getPlatformAgentIdByMaterializedAgentId,
+  validateDeps,
+} = vi.hoisted(() => ({
+  beginOperation: vi.fn(),
+  getPlatformAgentIdByMaterializedAgentId: vi.fn(),
+  materializeForOperation: vi.fn(),
+  validateDeps: vi.fn(async () => ({ valid: true })),
+}));
 
 vi.mock('@/server/enterprise/services/agentCatalog', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
@@ -36,6 +41,7 @@ vi.mock('@/server/enterprise/services/agentCatalog', async (importOriginal) => {
     PlatformAgentMaterializationService: class {
       materializeForOperation = materializeForOperation;
     },
+    validateExactPlatformAgentDependencies: validateDeps,
   };
 });
 
@@ -50,7 +56,7 @@ vi.mock('@/database/repositories/platformAgentCatalog', async (importOriginal) =
 });
 
 const { AiAgentService } = await import('../index');
-const { PlatformAgentMaterializationError } =
+const { PlatformAgentDependencyValidationError, PlatformAgentMaterializationError } =
   await import('@/server/enterprise/services/agentCatalog');
 
 let db: LobeChatDatabase;
@@ -147,5 +153,25 @@ describe('AiAgentService.execAgent — platform entitlement (REWORK-2)', () => {
     // No SQL / snapshot internals leaked to the public message.
     expect((error as TRPCError).message).toBe('Failed to start platform agent');
     expect(beginOperation).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails closed (PRECONDITION_FAILED) when a pinned dependency is unavailable (REWORK-4)', async () => {
+    const dependencySnapshot = { connectors: [], model: {}, skills: [] } as never;
+    beginOperation.mockResolvedValue({ getSnapshot: () => snapshot, platformAgentId: 'pagt_1' });
+    materializeForOperation.mockResolvedValue({
+      agentId: 'agt_x',
+      config: { id: 'agt_x' },
+      dependencySnapshot,
+    });
+    // The existing M07/M08/M09 exact validator rejects (redacted issue codes only).
+    validateDeps.mockRejectedValueOnce(
+      new PlatformAgentDependencyValidationError(['SKILL_UNAVAILABLE']),
+    );
+    const error = await run({ agentId: 'platform-agent:pagt_1' });
+    expect((error as TRPCError).code).toBe('PRECONDITION_FAILED');
+    // Validation runs against the exact pinned dependency snapshot — no latest fallback.
+    expect(validateDeps).toHaveBeenCalledWith(expect.anything(), dependencySnapshot);
+    // Public message carries no dependency identifiers / secrets.
+    expect((error as TRPCError).message).toBe('Platform agent dependencies are unavailable');
   });
 });
