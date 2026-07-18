@@ -7,6 +7,7 @@ import type {
 } from '@lobechat/context-engine';
 import type {
   ChatToolPayload,
+  ResumeInteractionKind,
   SecurityBlacklistConfig,
   UserInterventionConfig,
 } from '@lobechat/types';
@@ -109,12 +110,16 @@ export interface AgentState {
   };
 
   /**
-   * Server-created ids of the pending `role='tool'` messages produced when the operation parks on
-   * `waiting_for_human` (M10 PR-049 · RR4-1). Surfaced from the human-approve executor so the server
-   * can record them as the operation's trusted resume anchors — a resume approval/tool-result must
-   * target one of these exact ids, never a client-forgeable message parentId. Legacy consumers ignore it.
+   * Server-created pending `role='tool'` messages produced when the operation parks on
+   * `waiting_for_human`, each tagged with its SERVER-derived resume-interaction kind (M10 PR-049 ·
+   * RR4-1/RR5-2). Surfaced from the human-approve executor so the server records them as the
+   * operation's trusted, KIND-KEYED resume anchors — a resume approval/tool-result must target one
+   * of these exact ids under its OWN kind, never a client-forgeable message parentId, and an
+   * `approval` id can never be replayed as a `toolResult` (or vice versa). The ids come from the
+   * server-created message rows (create path) or the trusted in-state pending set (re-park path) —
+   * never re-derived from an ordinary, forgeable message query. Legacy consumers ignore it.
    */
-  pendingHumanToolMessageIds?: string[];
+  pendingHumanToolMessages?: { id: string; kind: ResumeInteractionKind }[];
   /**
    * When status is 'waiting_for_human', this stores pending requests
    * for human-in-the-loop operations.

@@ -53,6 +53,7 @@ import type {
   PlatformAgentSkillDependencyRef,
   PlatformOperationModelPin,
   PlatformOperationPin,
+  ResumeInteractionKind,
   RuntimeMentionedAgent,
   UserInterventionConfig,
   WorkspaceInitResult,
@@ -1084,14 +1085,16 @@ export class AiAgentService {
    *
    * The anchor message is loaded owner-scoped (a foreign / non-existent message → null → fail
    * closed) only to confirm the caller owns it; the operation is then matched by kind against a
-   * SERVER-owned id — a DIRECT (regen) anchor against the operation's `metadata.assistantMessageId`,
-   * an APPROVAL / TOOL-RESULT anchor against the pending tool-message ids the runtime recorded at
-   * pause (`metadata.pendingResumeAnchorIds`). No `parentId` hop, so a client-forged tool message
-   * (spoofed parentId) can never bind, and the kinds can't cross.
+   * SERVER-owned id under its OWN kind — an APPROVAL / TOOL-RESULT anchor against the pending
+   * tool-message ids the runtime recorded at pause (`metadata.pendingResumeAnchors[kind]`). No
+   * `parentId` hop, so a client-forged tool message (spoofed parentId) can never bind, and the two
+   * kinds can't cross. ONLY approval / tool-result are paused resumes; a bare regeneration / continue
+   * (`parentMessageId` without an approval/tool-result body) never reaches here — it starts a fresh
+   * operation on current entitlement (RR5-5).
    */
   private async resolveResumePlatformPin(
     anchorMessageId: string | null,
-    anchorKind: 'assistant' | 'tool',
+    anchorKind: ResumeInteractionKind,
     platformAgentId: string,
     topicId: string | null,
     threadId: string | null,
@@ -1124,8 +1127,12 @@ export class AiAgentService {
     platformAgentId: string,
     identifier: string,
     resumeContext: {
-      resume: boolean;
-      resumeAnchorKind: 'assistant' | 'tool';
+      /**
+       * Set ONLY for a paused (approval / tool-result) resume — the sole case that replays a parked
+       * operation's pin (RR5-5). A bare regeneration / continue leaves it undefined and takes the
+       * fresh-operation path below.
+       */
+      pausedResumeKind?: ResumeInteractionKind;
       resumeAnchorMessageId: string | null;
       threadId: string | null;
       topicId: string | null;
@@ -1139,15 +1146,17 @@ export class AiAgentService {
   }> {
     const materializationService = new PlatformAgentMaterializationService(this.db, this.userId);
 
-    if (resumeContext.resume) {
-      // RR3-1: a platform resume MUST replay the pin of its EXACT parent operation, matched by the
-      // SERVER-CONTROLLED assistant-message binding (never client-writable message metadata) and
-      // jointly scoped to owner/workspace/topic/thread/platformAgent + a paused, resumable status.
-      // No such bound pin (fabricated / cross-owner / wrong turn / terminal op) → fail closed. We
-      // NEVER fall through to a fresh `beginOperation` (latest) on a resume.
+    if (resumeContext.pausedResumeKind) {
+      // RR3-1/RR5-5: a PAUSED (approval / tool-result) resume MUST replay the pin of its EXACT parent
+      // operation, matched by the SERVER-CONTROLLED, kind-keyed pending tool-message binding (never
+      // client-writable message metadata) and jointly scoped to owner/workspace/topic/thread/
+      // platformAgent + a paused, resumable status. No such bound pin (fabricated / cross-owner /
+      // wrong turn / wrong kind / terminal op) → fail closed. We NEVER fall through to a fresh
+      // `beginOperation` (latest) on a paused resume. A bare regeneration / continue never enters
+      // this branch — it takes the fresh-operation path below on CURRENT entitlement.
       const pin = await this.resolveResumePlatformPin(
         resumeContext.resumeAnchorMessageId,
-        resumeContext.resumeAnchorKind,
+        resumeContext.pausedResumeKind,
         platformAgentId,
         resumeContext.topicId,
         resumeContext.threadId,
@@ -1268,6 +1277,15 @@ export class AiAgentService {
       ephemeralUserMessage,
     } = params;
 
+    // RR5-2: enforce the approval-vs-tool-result mutual exclusion in the SERVICE too (not only at the
+    // tRPC schema) — internal / non-router callers must never drive a double mutation on one tool.
+    if (resumeApproval && resumeToolResult) {
+      throw new TRPCError({
+        code: 'BAD_REQUEST',
+        message: 'resumeApproval and resumeToolResult are mutually exclusive',
+      });
+    }
+
     // M05 R3-B1: platform-effective approvalMode wins over request body when policy ON.
     // Flag OFF: preserve legacy default headless when caller omits config.
     const resolvedIntervention = await resolveEffectiveUserInterventionConfig({
@@ -1347,18 +1365,22 @@ export class AiAgentService {
     let platformSkillRefs: PlatformAgentSkillDependencyRef[] | undefined;
     let platformConnectorRefs: PlatformAgentConnectorDependencyRef[] | undefined;
     if (platformAgentId) {
+      // RR5-5: ONLY an approval / tool-result body drives a PAUSED resume (replay the parked op's
+      // pin). A bare `resume` / `parentMessageId` (UI regenerate passes the user message id, continue
+      // passes the completed assistant id) is NOT a paused resume — it starts a FRESH operation on
+      // current entitlement + snapshot, while still skipping a new user-message row downstream.
+      const pausedResumeKind: ResumeInteractionKind | undefined = resumeApproval
+        ? 'approval'
+        : resumeToolResult
+          ? 'toolResult'
+          : undefined;
       const resolved = await this.resolvePlatformAgentConfig(platformAgentId, identifier, {
-        resume: resume || !!resumeApproval || !!resumeToolResult,
-        // The trusted anchor for a resume, keyed by KIND (RR4-1): an approval / tool-result resume
-        // anchors on the pending TOOL message (matched against the op's server-recorded pending tool
-        // ids), a regeneration anchors on the assistant turn (matched against the op's server-recorded
-        // assistant id). Never a client-writable parentId hop.
-        resumeAnchorKind: resumeApproval || resumeToolResult ? 'tool' : 'assistant',
+        pausedResumeKind,
+        // The trusted anchor for a paused resume is the pending TOOL message (matched against the
+        // op's server-recorded, kind-keyed pending tool ids). Never a client-writable parentId hop,
+        // and never the generic regeneration/continue parentMessageId.
         resumeAnchorMessageId:
-          resumeApproval?.parentMessageId ??
-          resumeToolResult?.parentMessageId ??
-          parentMessageId ??
-          null,
+          resumeApproval?.parentMessageId ?? resumeToolResult?.parentMessageId ?? null,
         threadId: appContext?.threadId ?? null,
         topicId: appContext?.topicId ?? null,
       });
@@ -1620,6 +1642,16 @@ export class AiAgentService {
             `stored=${resumeApprovalPlugin.toolCallId}, requested=${resumeApproval.toolCallId}`,
         );
       }
+      // RR5-2: the tool must have parked as an `approval` interaction (server-owned kind). This is
+      // what stops an approve/reject decision from being applied to a human-ANSWER (`toolResult`)
+      // tool, or to a forged pending row that carries no server kind (the public API strips it).
+      if (resumeApprovalPlugin.intervention?.kind !== 'approval') {
+        throw new Error(
+          `resumeApproval requires a tool parked as an 'approval' interaction, got kind='${
+            resumeApprovalPlugin.intervention?.kind ?? 'none'
+          }'`,
+        );
+      }
 
       const { decision, rejectionReason } = resumeApproval;
       if (decision === 'approved') {
@@ -1711,12 +1743,27 @@ export class AiAgentService {
             `stored=${resumeToolResultPlugin.toolCallId}, requested=${resumeToolResult.toolCallId}`,
         );
       }
+      // RR5-2: the tool must have parked as a `toolResult` (human-answer) interaction. Combined with
+      // the single-winner CAS below, this stops a `resumeToolResult` from writing an arbitrary
+      // "result" onto a real `approval`-kind sensitive tool (or a forged, kind-less pending row).
+      if (resumeToolResultPlugin.intervention?.kind !== 'toolResult') {
+        throw new Error(
+          `resumeToolResult requires a tool parked as a 'toolResult' interaction, got kind='${
+            resumeToolResultPlugin.intervention?.kind ?? 'none'
+          }'`,
+        );
+      }
+
+      // Single-winner, kind-guarded pending→approved transition FIRST (RR5-2), so a stale / double /
+      // wrong-kind resume can never mutate the answer or double-run the tool. Only after we win the
+      // CAS do we write the human's answer as the tool result.
+      const resolved = await this.messageModel.approvePendingToolResultPlugin(
+        resumeToolResult.parentMessageId,
+      );
+      if (!resolved) throw new Error('resumeToolResult is stale or already consumed');
 
       await this.messageModel.updateToolMessage(resumeToolResult.parentMessageId, {
         content: resumeToolResult.content,
-      });
-      await this.messageModel.updateMessagePlugin(resumeToolResult.parentMessageId, {
-        intervention: { status: 'approved' },
       });
       if (resumeToolResult.pluginState) {
         await this.messageModel.updatePluginState(

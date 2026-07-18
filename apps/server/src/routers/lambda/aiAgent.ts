@@ -262,6 +262,12 @@ const ExecAgentSchema = z
   })
   .refine((data) => data.agentId || data.slug, {
     message: 'Either agentId or slug must be provided',
+  })
+  // RR5-2: an approval and a tool-result resume are distinct paused-resume interactions and must
+  // never be requested together (a double mutation on the same tool message). Enforced here at the
+  // schema boundary AND again in the service.
+  .refine((data) => !(data.resumeApproval && data.resumeToolResult), {
+    message: 'resumeApproval and resumeToolResult are mutually exclusive',
   });
 
 /**

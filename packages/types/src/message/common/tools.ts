@@ -3,13 +3,28 @@ import { z } from 'zod';
 
 import type { LobeToolRenderType } from '../../tool';
 
+/**
+ * SERVER-owned resume-interaction kind (M10 PR-049 · RR5-2). Recorded on a pending tool message by
+ * the runtime when the operation parks, from the tool's VERIFIED intervention type — never a client
+ * field. `approval` = a sensitive op awaiting approve/reject (security block / `required` policy /
+ * unknown tool); `toolResult` = a human-answer tool whose result IS the human's input (a tool that
+ * declares its OWN `humanIntervention: 'always'`, e.g. lobe-agent `askUserQuestion`). A resume must
+ * match the persisted kind EXACTLY — `resumeApproval` only on `approval`, `resumeToolResult` only on
+ * `toolResult` — so the two interaction paths can never cross-mutate one tool. The public message
+ * API strips this key from client input so it stays server-owned.
+ */
+export type ResumeInteractionKind = 'approval' | 'toolResult';
+
 // ToolIntervention must be defined first to avoid circular dependency
 export interface ToolIntervention {
+  /** Server-owned resume-interaction kind — see {@link ResumeInteractionKind}. */
+  kind?: ResumeInteractionKind;
   rejectedReason?: string;
   status?: 'pending' | 'approved' | 'rejected' | 'aborted' | 'none';
 }
 
 export const ToolInterventionSchema = z.object({
+  kind: z.enum(['approval', 'toolResult']).optional(),
   rejectedReason: z.string().optional(),
   status: z.enum(['pending', 'approved', 'rejected', 'aborted', 'none']).optional(),
 });

@@ -1,5 +1,33 @@
+import type { ResumeInteractionKind } from '@lobechat/types';
+
 import type { AgentRuntimeHost } from '../transport';
-import type { AgentEvent, AgentInstruction, AnyHookEvent, InstructionExecutor } from '../types';
+import type {
+  AgentEvent,
+  AgentInstruction,
+  AgentState,
+  AnyHookEvent,
+  InstructionExecutor,
+} from '../types';
+
+/**
+ * Derive the SERVER-owned resume-interaction kind for a pending tool (M10 PR-049 · RR5-2), read only
+ * from the server-built `state.toolManifestMap` — never a client field. A tool that declares its OWN
+ * static `humanIntervention: 'always'` (e.g. lobe-agent `askUserQuestion`) is a human-ANSWER tool
+ * whose result IS the human's input → `toolResult`. Everything else parked for intervention (security
+ * block, `required` policy, unknown tool, allow-list miss, dynamic policy) is an approve/reject
+ * decision → `approval`.
+ */
+const deriveResumeKind = (
+  state: AgentState,
+  toolPayload: { apiName?: string; identifier?: string },
+): ResumeInteractionKind => {
+  const manifest = toolPayload.identifier
+    ? state.toolManifestMap?.[toolPayload.identifier]
+    : undefined;
+  const api = manifest?.api?.find((a: any) => a.name === toolPayload.apiName);
+  const config = api?.humanIntervention ?? manifest?.humanIntervention;
+  return config === 'always' ? 'toolResult' : 'approval';
+};
 
 /**
  * `request_human_approve` executor — pauses the operation for human tool
@@ -55,31 +83,43 @@ export const requestHumanApprove =
     newState.pendingToolsCalling = pendingToolsCalling;
 
     // Map of toolCallId -> toolMessageId, populated either by creating fresh
-    // pending tool messages or (in resumption mode) by looking up existing ones.
+    // pending tool messages or (in resumption mode) by reusing the trusted refs.
     const toolMessageIds: Record<string, string> = {};
+    // Kind-tagged, server-owned resume anchors surfaced on state (RR5-2).
+    const pendingHumanToolMessages: { id: string; kind: ResumeInteractionKind }[] = [];
 
     if (skipCreateToolMessage) {
-      // Resumption mode: tool messages already exist. Look them up by
-      // tool_call_id so we can still ship the mapping to the client.
-      try {
-        const dbMessages = await transports.messages.query({
-          agentId: state.metadata?.agentId,
-          // Group runs need groupId or the query returns no group messages, so
-          // the existing tool-message lookup on resume would find nothing.
-          groupId: state.metadata?.groupId,
-          threadId: state.metadata?.threadId,
-          topicId: state.metadata?.topicId,
-        });
-        for (const toolPayload of pendingToolsCalling) {
-          const existing = dbMessages.find(
-            (m: any) => m.role === 'tool' && m.tool_call_id === toolPayload.id,
-          );
-          if (existing) {
-            toolMessageIds[toolPayload.id] = existing.id;
-          }
+      // Re-park (resumption) mode: the pending tool messages already exist. Their ids + server-owned
+      // resume kinds are read ONLY from the TRUSTED current-turn pending set already in runtime
+      // `state.messages` — server-created rows with `intervention.status='pending'` parented to THIS
+      // turn's assistant message — NOT re-derived from a message query keyed by `tool_call_id`, which
+      // an attacker could poison with a forged role='tool' row (same tool_call_id, backdated
+      // createdAt) to inject a fabricated anchor (M10 PR-049 · RR5-1). A row is a valid anchor only
+      // when it carries a server-owned `intervention.kind` (`approval` / `toolResult`); the public
+      // message API strips that key from client input, so a forged row (no kind) is skipped
+      // fail-closed rather than binding under a default kind.
+      const messages = (state.messages ?? []) as any[];
+      let currentAssistantId: string | undefined;
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const m = messages[i];
+        if (m?.role === 'assistant' && (m.tool_calls?.length > 0 || m.tools?.length > 0)) {
+          currentAssistantId = m.id;
+          break;
         }
-      } catch {
-        // best-effort lookup — a miss just omits the mapping
+      }
+      for (const m of messages) {
+        if (
+          m?.role !== 'tool' ||
+          m.pluginIntervention?.status !== 'pending' ||
+          m.parentId !== currentAssistantId
+        ) {
+          continue;
+        }
+        const kind = m.pluginIntervention?.kind as ResumeInteractionKind | undefined;
+        const toolCallId: string | undefined = m.tool_call_id ?? m.plugin?.id;
+        if (!m.id || !toolCallId || (kind !== 'approval' && kind !== 'toolResult')) continue;
+        toolMessageIds[toolCallId] = m.id;
+        pendingHumanToolMessages.push({ id: m.id, kind });
       }
     } else {
       // Find parent assistant message. Prefer state.messages (already in
@@ -116,13 +156,18 @@ export const requestHumanApprove =
       }
 
       for (const toolPayload of pendingToolsCalling) {
+        // Server-derived resume kind from the tool's own manifest intervention type (RR5-2); an
+        // unmapped tool defaults to 'approval' (approve/reject), never a blind toolResult write.
+        const kind = deriveResumeKind(state, toolPayload);
         const toolMessage = await transports.messages.createToolMessage({
           agentId: state.metadata!.agentId!,
           content: '',
           groupId: state.metadata?.groupId ?? undefined,
           parentId: parentAssistantId,
           plugin: toolPayload as any,
-          pluginIntervention: { status: 'pending' },
+          // Stamp the SERVER-owned resume kind alongside the pending status so a later resume can be
+          // validated against it and the operation anchor is kind-keyed (RR5-2).
+          pluginIntervention: { kind, status: 'pending' },
           role: 'tool',
           threadId: state.metadata?.threadId,
           tool_call_id: toolPayload.id,
@@ -130,6 +175,7 @@ export const requestHumanApprove =
         });
 
         toolMessageIds[toolPayload.id] = toolMessage.id;
+        pendingHumanToolMessages.push({ id: toolMessage.id, kind });
 
         // Intentionally DO NOT push the empty placeholder into
         // newState.messages. When the approval resumes, the `call_tool`
@@ -139,11 +185,12 @@ export const requestHumanApprove =
       }
     }
 
-    // RR4-1: surface the SERVER-created pending tool message ids on state so the server can record
-    // them as the operation's trusted resume anchors. A resume approval/tool-result must target one
-    // of these exact ids — a client-forged tool message (spoofed parentId / pending plugin) is never
-    // a valid anchor.
-    newState.pendingHumanToolMessageIds = Object.values(toolMessageIds);
+    // RR4-1/RR5-2: surface the SERVER-created pending tool messages (id + server-owned kind) on state
+    // so the server records them as the operation's trusted, KIND-KEYED resume anchors. A resume
+    // approval/tool-result must target one of these exact ids under its OWN kind — a client-forged
+    // tool message (spoofed parentId / pending plugin) is never a valid anchor, and an approval id
+    // can never be replayed as a tool-result.
+    newState.pendingHumanToolMessages = pendingHumanToolMessages;
 
     // Notify frontend to display approval UI through streaming system.
     // `toolMessageIds` is a new optional field; legacy consumers ignore it.
