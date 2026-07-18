@@ -5,25 +5,21 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AiAgentService } from '../index';
 
 const {
-  mockApprovePendingToolResult,
   mockCreateOperation,
   mockFindById,
   mockFindMessagePlugin,
   mockMessageCreate,
   mockMessageQuery,
+  mockResolvePendingToolResult,
   mockUpdateMessagePlugin,
-  mockUpdatePluginState,
-  mockUpdateToolMessage,
 } = vi.hoisted(() => ({
-  mockApprovePendingToolResult: vi.fn(),
   mockCreateOperation: vi.fn(),
   mockFindById: vi.fn(),
   mockFindMessagePlugin: vi.fn(),
   mockMessageCreate: vi.fn(),
   mockMessageQuery: vi.fn(),
+  mockResolvePendingToolResult: vi.fn(),
   mockUpdateMessagePlugin: vi.fn(),
-  mockUpdatePluginState: vi.fn(),
-  mockUpdateToolMessage: vi.fn(),
 }));
 
 vi.mock('@/libs/trusted-client', () => ({
@@ -34,17 +30,15 @@ vi.mock('@/libs/trusted-client', () => ({
 
 vi.mock('@/database/models/message', () => ({
   MessageModel: vi.fn().mockImplementation(() => ({
-    approvePendingToolResultPlugin: mockApprovePendingToolResult,
     create: mockMessageCreate,
     getLatestNonToolMessageId: vi.fn().mockResolvedValue(undefined),
     getLatestSpineMessageId: vi.fn().mockResolvedValue(undefined),
     findById: mockFindById,
     findMessagePlugin: mockFindMessagePlugin,
     query: mockMessageQuery,
+    resolvePendingToolResultPlugin: mockResolvePendingToolResult,
     update: vi.fn().mockResolvedValue({}),
     updateMessagePlugin: mockUpdateMessagePlugin,
-    updatePluginState: mockUpdatePluginState,
-    updateToolMessage: mockUpdateToolMessage,
   })),
 }));
 
@@ -180,12 +174,10 @@ describe('AiAgentService.execAgent - resumeToolResult', () => {
     });
     mockFindById.mockResolvedValue(pendingToolMessage);
     mockFindMessagePlugin.mockResolvedValue(pendingToolPlugin);
-    mockApprovePendingToolResult.mockResolvedValue(true);
+    mockResolvePendingToolResult.mockResolvedValue(true);
     mockMessageQuery.mockResolvedValue([{ content: 'hi', id: 'history-1', role: 'user' }]);
     mockMessageCreate.mockResolvedValue({ id: 'assistant-msg-new' });
     mockUpdateMessagePlugin.mockResolvedValue(undefined);
-    mockUpdatePluginState.mockResolvedValue(undefined);
-    mockUpdateToolMessage.mockResolvedValue(undefined);
     service = new AiAgentService({} as unknown as LobeChatDatabase, 'user-1');
   });
 
@@ -207,10 +199,9 @@ describe('AiAgentService.execAgent - resumeToolResult', () => {
     });
 
     // RR5-2: a single-winner, kind-guarded pending→approved CAS clears the pending state.
-    expect(mockApprovePendingToolResult).toHaveBeenCalledWith('tool-msg-1');
-    // The human answer becomes the tool message's result content.
-    expect(mockUpdateToolMessage).toHaveBeenCalledWith('tool-msg-1', {
+    expect(mockResolvePendingToolResult).toHaveBeenCalledWith('tool-msg-1', {
       content: 'My favorite color is blue',
+      pluginState: undefined,
     });
 
     // Resumes from `tool_result` — NOT `human_approved_tool` (which would
@@ -241,8 +232,9 @@ describe('AiAgentService.execAgent - resumeToolResult', () => {
       },
     });
 
-    expect(mockUpdatePluginState).toHaveBeenCalledWith('tool-msg-1', {
-      askUserAnswers: { 'favorite color?': 'blue' },
+    expect(mockResolvePendingToolResult).toHaveBeenCalledWith('tool-msg-1', {
+      content: 'blue',
+      pluginState: { askUserAnswers: { 'favorite color?': 'blue' } },
     });
   });
 
@@ -256,7 +248,10 @@ describe('AiAgentService.execAgent - resumeToolResult', () => {
       },
     });
 
-    expect(mockUpdatePluginState).not.toHaveBeenCalled();
+    expect(mockResolvePendingToolResult).toHaveBeenCalledWith('tool-msg-1', {
+      content: 'blue',
+      pluginState: undefined,
+    });
   });
 
   describe('validation guards', () => {
@@ -322,12 +317,11 @@ describe('AiAgentService.execAgent - resumeToolResult', () => {
         }),
       ).rejects.toThrow(/'toolResult' interaction/);
       // The kind gate rejects BEFORE any mutation runs.
-      expect(mockApprovePendingToolResult).not.toHaveBeenCalled();
-      expect(mockUpdateToolMessage).not.toHaveBeenCalled();
+      expect(mockResolvePendingToolResult).not.toHaveBeenCalled();
     });
 
     it('RR5-2: fails closed (stale / already consumed) when the pending CAS loses', async () => {
-      mockApprovePendingToolResult.mockResolvedValue(false);
+      mockResolvePendingToolResult.mockResolvedValue(false);
 
       await expect(
         service.execAgent({
@@ -340,7 +334,7 @@ describe('AiAgentService.execAgent - resumeToolResult', () => {
         }),
       ).rejects.toThrow(/stale or already consumed/);
       // The answer is never written when the single-winner CAS loses.
-      expect(mockUpdateToolMessage).not.toHaveBeenCalled();
+      expect(mockCreateOperation).not.toHaveBeenCalled();
     });
   });
 });

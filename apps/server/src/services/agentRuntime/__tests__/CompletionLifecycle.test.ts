@@ -379,6 +379,23 @@ describe('CompletionLifecycle.dispatchHooks — verify plan race', () => {
 describe('CompletionLifecycle.recordStart — platform fail-closed (RR2-2)', () => {
   afterEach(() => vi.restoreAllMocks());
 
+  const completePlatformStart = {
+    assistantMessageId: 'asst-1',
+    platformConnectors: [],
+    platformModel: {
+      modelKey: 'chat',
+      providerChecksum: 'b'.repeat(64),
+      providerKey: 'openai',
+      providerRevision: 1,
+    },
+    platformOperation: {
+      checksum: 'a'.repeat(64),
+      platformAgentId: 'p',
+      versionId: 'v',
+    },
+    platformSkills: [],
+  };
+
   it('fails the start closed with a stable error when a platform op start fails to persist', async () => {
     vi.spyOn(AgentOperationModel.prototype, 'recordStart').mockRejectedValue(
       new Error('duplicate key value violates unique constraint "agent_operations_pkey"'),
@@ -417,16 +434,72 @@ describe('CompletionLifecycle.recordStart — platform fail-closed (RR2-2)', () 
     const lifecycle = buildLifecycle();
     await expect(lifecycle.recordStart({ operationId: 'op-z' } as any)).resolves.toBeUndefined();
   });
+
+  it('treats every partial platform marker shape as fatal, not ordinary', async () => {
+    vi.spyOn(AgentOperationModel.prototype, 'recordStart').mockRejectedValue(new Error('db down'));
+    const lifecycle = buildLifecycle();
+    await expect(
+      lifecycle.recordStart({
+        metadata: { platformModel: completePlatformStart.platformModel },
+        operationId: 'op-partial',
+      } as any),
+    ).rejects.toThrow('PLATFORM_OPERATION_START_PERSIST_FAILED');
+  });
+
+  it('treats a complete platform start persistence failure as fatal', async () => {
+    vi.spyOn(AgentOperationModel.prototype, 'recordStart').mockRejectedValue(new Error('db down'));
+    const lifecycle = buildLifecycle();
+    await expect(
+      lifecycle.recordStart({ metadata: completePlatformStart, operationId: 'op-complete' } as any),
+    ).rejects.toThrow('PLATFORM_OPERATION_START_PERSIST_FAILED');
+  });
 });
 
 describe('CompletionLifecycle.persistCompletion — atomic human-intervention park (RR5-3)', () => {
   afterEach(() => vi.restoreAllMocks());
 
+  const platformStart = {
+    assistantMessageId: 'asst-1',
+    platformConnectors: [],
+    platformModel: {
+      modelKey: 'chat',
+      providerChecksum: 'b'.repeat(64),
+      providerKey: 'openai',
+      providerRevision: 1,
+    },
+    platformOperation: {
+      checksum: 'a'.repeat(64),
+      platformAgentId: 'pagt_1',
+      versionId: 'pav_1',
+    },
+    platformSkills: [],
+  };
   const parkedState = (isPlatform: boolean) => ({
-    metadata: { agentId: 'a', topicId: 't', userId: 'user-1' },
+    metadata: {
+      agentId: 'a',
+      ...(isPlatform
+        ? { platformStartBinding: platformStart, platformStartClassification: 'complete' }
+        : { platformStartClassification: 'ordinary' }),
+      topicId: 't',
+      userId: 'user-1',
+    },
     pendingHumanToolMessages: [
-      { id: 'tool-1', kind: 'approval' },
-      { id: 'ans-1', kind: 'toolResult' },
+      {
+        assistantMessageId: 'asst-1',
+        fingerprint: 'fingerprint-tool-1',
+        kind: 'approval',
+        messageId: 'tool-1',
+        operationId: 'op-1',
+        toolCallId: 'call-tool-1',
+      },
+      {
+        assistantMessageId: 'asst-1',
+        fingerprint: 'fingerprint-ans-1',
+        kind: 'toolResult',
+        messageId: 'ans-1',
+        operationId: 'op-1',
+        toolCallId: 'call-ans-1',
+      },
     ],
     status: 'waiting_for_human',
     _isPlatform: isPlatform,
@@ -434,8 +507,10 @@ describe('CompletionLifecycle.persistCompletion — atomic human-intervention pa
 
   it('parks via a SINGLE kind-keyed CAS and does not throw on success', async () => {
     vi.spyOn(AgentOperationModel.prototype, 'findPlatformOperationRef').mockResolvedValue({
+      classification: 'complete',
       isPlatformOperation: true,
       modelPin: null,
+      platformStart,
     });
     const park = vi
       .spyOn(AgentOperationModel.prototype, 'parkForHumanIntervention')
@@ -451,7 +526,7 @@ describe('CompletionLifecycle.persistCompletion — atomic human-intervention pa
     expect(park).toHaveBeenCalledWith(
       'op-1',
       expect.objectContaining({
-        anchors: { approval: ['tool-1'], toolResult: ['ans-1'] },
+        anchors: parkedState(true).pendingHumanToolMessages,
         status: 'waiting_for_human',
       }),
     );
@@ -460,8 +535,10 @@ describe('CompletionLifecycle.persistCompletion — atomic human-intervention pa
 
   it('is FATAL for a platform operation when the park CAS affects no row', async () => {
     vi.spyOn(AgentOperationModel.prototype, 'findPlatformOperationRef').mockResolvedValue({
+      classification: 'complete',
       isPlatformOperation: true,
       modelPin: null,
+      platformStart,
     });
     vi.spyOn(AgentOperationModel.prototype, 'parkForHumanIntervention').mockResolvedValue({
       affected: 0,
@@ -474,8 +551,10 @@ describe('CompletionLifecycle.persistCompletion — atomic human-intervention pa
 
   it('stays fire-and-forget (no throw) for an ordinary operation when the park CAS affects no row', async () => {
     vi.spyOn(AgentOperationModel.prototype, 'findPlatformOperationRef').mockResolvedValue({
+      classification: 'ordinary',
       isPlatformOperation: false,
       modelPin: null,
+      platformStart: null,
     });
     vi.spyOn(AgentOperationModel.prototype, 'parkForHumanIntervention').mockResolvedValue({
       affected: 0,
@@ -484,6 +563,41 @@ describe('CompletionLifecycle.persistCompletion — atomic human-intervention pa
     await expect(
       buildLifecycle().dispatchHooks('op-1', parkedState(false), 'waiting_for_human'),
     ).resolves.toBeUndefined();
+  });
+
+  it('fails closed when runtime classification is unknown and the persisted classification read fails', async () => {
+    vi.spyOn(AgentOperationModel.prototype, 'findPlatformOperationRef').mockRejectedValue(
+      new Error('db down'),
+    );
+    const state = parkedState(true);
+    delete (state.metadata as Record<string, unknown>).platformStartBinding;
+    delete (state.metadata as Record<string, unknown>).platformStartClassification;
+
+    await expect(
+      buildLifecycle().dispatchHooks('op-1', state, 'waiting_for_human'),
+    ).rejects.toThrow('OPERATION_PARK_CLASSIFICATION_FAILED');
+  });
+
+  it('fails closed when runtime classification is unknown and no persisted operation exists', async () => {
+    vi.spyOn(AgentOperationModel.prototype, 'findPlatformOperationRef').mockResolvedValue(null);
+    const state = parkedState(true);
+    delete (state.metadata as Record<string, unknown>).platformStartBinding;
+    delete (state.metadata as Record<string, unknown>).platformStartClassification;
+
+    await expect(
+      buildLifecycle().dispatchHooks('op-1', state, 'waiting_for_human'),
+    ).rejects.toThrow('OPERATION_PARK_CLASSIFICATION_FAILED');
+  });
+
+  it('fails closed when an ordinary trusted classification carries a platform binding', async () => {
+    const findRef = vi.spyOn(AgentOperationModel.prototype, 'findPlatformOperationRef');
+    const state = parkedState(false);
+    (state.metadata as Record<string, unknown>).platformStartBinding = platformStart;
+
+    await expect(
+      buildLifecycle().dispatchHooks('op-1', state, 'waiting_for_human'),
+    ).rejects.toThrow('OPERATION_PARK_CLASSIFICATION_FAILED');
+    expect(findRef).not.toHaveBeenCalled();
   });
 });
 

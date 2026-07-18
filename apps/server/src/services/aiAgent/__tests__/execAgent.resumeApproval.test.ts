@@ -11,8 +11,7 @@ const {
   mockFindMessagePlugin,
   mockMessageCreate,
   mockMessageQuery,
-  mockUpdateMessagePlugin,
-  mockUpdateToolMessage,
+  mockRejectPendingMessagePlugin,
 } = vi.hoisted(() => ({
   mockCreateOperation: vi.fn(),
   mockApprovePendingMessagePlugin: vi.fn(),
@@ -20,8 +19,7 @@ const {
   mockFindMessagePlugin: vi.fn(),
   mockMessageCreate: vi.fn(),
   mockMessageQuery: vi.fn(),
-  mockUpdateMessagePlugin: vi.fn(),
-  mockUpdateToolMessage: vi.fn(),
+  mockRejectPendingMessagePlugin: vi.fn(),
 }));
 
 vi.mock('@/libs/trusted-client', () => ({
@@ -39,9 +37,8 @@ vi.mock('@/database/models/message', () => ({
     findById: mockFindById,
     findMessagePlugin: mockFindMessagePlugin,
     query: mockMessageQuery,
+    rejectPendingMessagePlugin: mockRejectPendingMessagePlugin,
     update: vi.fn().mockResolvedValue({}),
-    updateMessagePlugin: mockUpdateMessagePlugin,
-    updateToolMessage: mockUpdateToolMessage,
   })),
 }));
 
@@ -180,9 +177,8 @@ describe('AiAgentService.execAgent - resumeApproval', () => {
     mockFindMessagePlugin.mockResolvedValue(pendingToolPlugin);
     mockMessageQuery.mockResolvedValue([{ content: 'hi', id: 'history-1', role: 'user' }]);
     mockMessageCreate.mockResolvedValue({ id: 'assistant-msg-new' });
-    mockUpdateMessagePlugin.mockResolvedValue(undefined);
     mockApprovePendingMessagePlugin.mockResolvedValue(true);
-    mockUpdateToolMessage.mockResolvedValue(undefined);
+    mockRejectPendingMessagePlugin.mockResolvedValue(true);
     // `MessageModel` is fully mocked above, so the service never touches the
     // raw `db` arg — cast an empty stub through `unknown` to satisfy the
     // `LobeChatDatabase` parameter type without dragging the real schema.
@@ -210,7 +206,7 @@ describe('AiAgentService.execAgent - resumeApproval', () => {
       expect(mockApprovePendingMessagePlugin).toHaveBeenCalledWith('tool-msg-1');
       // `approved` decision never writes tool content — the content arrives
       // when the approved tool actually executes.
-      expect(mockUpdateToolMessage).not.toHaveBeenCalled();
+      expect(mockRejectPendingMessagePlugin).not.toHaveBeenCalled();
 
       expect(mockCreateOperation).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -252,11 +248,9 @@ describe('AiAgentService.execAgent - resumeApproval', () => {
         },
       });
 
-      expect(mockUpdateToolMessage).toHaveBeenCalledWith('tool-msg-1', {
+      expect(mockRejectPendingMessagePlugin).toHaveBeenCalledWith('tool-msg-1', {
         content: `User reject this tool calling ${expectedSuffix}`,
-      });
-      expect(mockUpdateMessagePlugin).toHaveBeenCalledWith('tool-msg-1', {
-        intervention: { rejectedReason: rejectionReason, status: 'rejected' },
+        rejectedReason: rejectionReason,
       });
 
       expect(mockCreateOperation).toHaveBeenCalledWith(
@@ -283,9 +277,27 @@ describe('AiAgentService.execAgent - resumeApproval', () => {
       },
     });
 
-    expect(mockUpdateToolMessage).toHaveBeenCalledWith('tool-msg-1', {
+    expect(mockRejectPendingMessagePlugin).toHaveBeenCalledWith('tool-msg-1', {
       content: 'User reject this tool calling without reason',
+      rejectedReason: undefined,
     });
+  });
+
+  it('fails closed without creating an operation when rejection consumption loses', async () => {
+    mockRejectPendingMessagePlugin.mockResolvedValue(false);
+
+    await expect(
+      service.execAgent({
+        ...baseParams,
+        resumeApproval: {
+          decision: 'rejected_continue',
+          parentMessageId: 'tool-msg-1',
+          rejectionReason: 'stale',
+          toolCallId: 'call_xyz',
+        },
+      }),
+    ).rejects.toThrow(/stale or already consumed/);
+    expect(mockCreateOperation).not.toHaveBeenCalled();
   });
 
   describe('validation guards', () => {

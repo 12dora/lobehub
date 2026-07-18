@@ -2,6 +2,7 @@ import { type AgentState } from '@lobechat/agent-runtime';
 import { BRANDING_PROVIDER } from '@lobechat/business-const';
 import { ToolNameResolver } from '@lobechat/context-engine';
 import { consumeStreamUntilDone, ModelEmptyError } from '@lobechat/model-runtime';
+import { fingerprintResumeToolCall } from '@lobechat/types';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as ContextEngineering from '@/server/modules/Mecha/ContextEngineering';
@@ -186,7 +187,9 @@ describe('RuntimeExecutors', { timeout: 60_000 }, () => {
     };
 
     ctx = {
-      loadAgentState: vi.fn().mockResolvedValue(null),
+      loadAgentState: vi.fn().mockResolvedValue({
+        metadata: { platformStartClassification: 'ordinary' },
+      }),
       messageModel: mockMessageModel,
       operationId: 'op-123',
       // Mock serverDB. The per-LLM-call `initOperationModelRuntime` reads the operation row via
@@ -2632,7 +2635,10 @@ describe('RuntimeExecutors', { timeout: 60_000 }, () => {
         // partial-finalize branch instead of the retry path.
         const interruptedCtx: RuntimeExecutorContext = {
           ...ctx,
-          loadAgentState: vi.fn().mockResolvedValue({ status: 'interrupted' }),
+          loadAgentState: vi.fn().mockResolvedValue({
+            metadata: { platformStartClassification: 'ordinary' },
+            status: 'interrupted',
+          }),
         };
         mockMessageModel.create.mockResolvedValueOnce({ id: 'asst-interrupted' });
 
@@ -2674,7 +2680,10 @@ describe('RuntimeExecutors', { timeout: 60_000 }, () => {
 
         const interruptedCtx: RuntimeExecutorContext = {
           ...ctx,
-          loadAgentState: vi.fn().mockResolvedValue({ status: 'interrupted' }),
+          loadAgentState: vi.fn().mockResolvedValue({
+            metadata: { platformStartClassification: 'ordinary' },
+            status: 'interrupted',
+          }),
         };
         mockMessageModel.create.mockResolvedValueOnce({ id: 'asst-empty-interrupt' });
 
@@ -2718,7 +2727,10 @@ describe('RuntimeExecutors', { timeout: 60_000 }, () => {
         // finalize branch should be skipped even with accumulated content.
         const runningCtx: RuntimeExecutorContext = {
           ...ctx,
-          loadAgentState: vi.fn().mockResolvedValue({ status: 'running' }),
+          loadAgentState: vi.fn().mockResolvedValue({
+            metadata: { platformStartClassification: 'ordinary' },
+            status: 'running',
+          }),
         };
         mockMessageModel.create.mockResolvedValueOnce({ id: 'asst-error' });
 
@@ -3015,7 +3027,10 @@ describe('RuntimeExecutors', { timeout: 60_000 }, () => {
         state: {},
         success: false,
       });
-      const loadAgentState = vi.fn().mockResolvedValue({ status: 'interrupted' });
+      const loadAgentState = vi.fn().mockResolvedValue({
+        metadata: { platformStartClassification: 'ordinary' },
+        status: 'interrupted',
+      });
 
       const executors = createRuntimeExecutors({
         ...ctx,
@@ -3259,17 +3274,17 @@ describe('RuntimeExecutors', { timeout: 60_000 }, () => {
 
     it('should create a pending tool message for each pendingToolsCalling, stamping the server-derived kind (RR5-2)', async () => {
       const executors = createRuntimeExecutors(ctx);
-      // `web-search` declares its OWN humanIntervention: 'always' (a human-ANSWER tool) → toolResult;
-      // `local-system` has no such declaration → approval. Kind is derived only from the manifest.
+      // A general `humanIntervention: 'always'` policy still means approve/reject. It is not trusted
+      // human-answer capability and must never become a blind toolResult write.
       const state = createMockState({
         toolManifestMap: {
           'local-system': { api: [{ name: 'write' }] },
           'web-search': { api: [{ humanIntervention: 'always', name: 'search' }] },
         },
       });
-      mockMessageModel.create
-        .mockResolvedValueOnce({ id: 'tool-msg-1' })
-        .mockResolvedValueOnce({ id: 'tool-msg-2' });
+      mockMessageModel.create.mockImplementation(async (message: { id: string }) => ({
+        id: message.id,
+      }));
 
       const instruction = {
         pendingToolsCalling: makePendingTools(),
@@ -3279,25 +3294,61 @@ describe('RuntimeExecutors', { timeout: 60_000 }, () => {
       await executors.request_human_approve!(instruction, state);
 
       expect(mockMessageModel.create).toHaveBeenCalledTimes(2);
-      expect(mockMessageModel.create).toHaveBeenNthCalledWith(
-        1,
-        expect.objectContaining({
-          agentId: 'agent-123',
-          content: '',
-          parentId: 'assistant-msg-1',
-          pluginIntervention: { kind: 'toolResult', status: 'pending' },
-          role: 'tool',
-          tool_call_id: 'tool-call-1',
-          topicId: 'topic-123',
-        }),
+      for (const [index, tool] of makePendingTools().entries()) {
+        const created = mockMessageModel.create.mock.calls[index][0];
+        expect(created).toEqual(
+          expect.objectContaining({
+            agentId: 'agent-123',
+            content: '',
+            parentId: 'assistant-msg-1',
+            pluginIntervention: {
+              kind: 'approval',
+              provenance: {
+                assistantMessageId: 'assistant-msg-1',
+                fingerprint: expect.stringMatching(/^[\da-f]{64}$/),
+                kind: 'approval',
+                messageId: created.id,
+                operationId: 'op-123',
+                toolCallId: tool.id,
+              },
+              status: 'pending',
+            },
+            role: 'tool',
+            tool_call_id: tool.id,
+            topicId: 'topic-123',
+          }),
+        );
+      }
+    });
+
+    it.each([
+      ['lobe-agent', 'askUserQuestion'],
+      ['lobe-user-interaction', 'askUserQuestion'],
+      ['lobe-web-onboarding', 'showAgentMarketplace'],
+    ])('treats the audited human-answer tool %s/%s as toolResult', async (identifier, apiName) => {
+      const executors = createRuntimeExecutors(ctx);
+      mockMessageModel.create.mockImplementation(async (message: { id: string }) => ({
+        id: message.id,
+      }));
+      const tool = {
+        apiName,
+        arguments: '{}',
+        id: `call-${identifier}-${apiName}`,
+        identifier,
+        type: 'default' as const,
+      };
+
+      await executors.request_human_approve!(
+        { pendingToolsCalling: [tool], type: 'request_human_approve' as const },
+        createMockState(),
       );
-      expect(mockMessageModel.create).toHaveBeenNthCalledWith(
-        2,
+
+      expect(mockMessageModel.create).toHaveBeenCalledWith(
         expect.objectContaining({
-          parentId: 'assistant-msg-1',
-          pluginIntervention: { kind: 'approval', status: 'pending' },
-          tool_call_id: 'tool-call-2',
+          pluginIntervention: expect.objectContaining({ kind: 'toolResult', status: 'pending' }),
+          tool_call_id: tool.id,
         }),
+        expect.any(String),
       );
     });
 
@@ -3348,20 +3399,51 @@ describe('RuntimeExecutors', { timeout: 60_000 }, () => {
       // The re-park path reads ONLY the current-turn pending tool messages already in state (server
       // rows: status='pending', kind set, parented to this turn's tool-calling assistant). It must
       // NOT re-derive ids from a `messages.query` — a poisoned query result is ignored entirely.
+      const pendingTools = makePendingTools();
+      const firstProvenance = {
+        assistantMessageId: 'assistant-msg-1',
+        fingerprint: await fingerprintResumeToolCall({
+          ...pendingTools[0],
+          toolCallId: pendingTools[0].id,
+        }),
+        kind: 'approval' as const,
+        messageId: 'existing-tool-1',
+        operationId: 'op-123',
+        toolCallId: 'tool-call-1',
+      };
+      const secondProvenance = {
+        assistantMessageId: 'assistant-msg-1',
+        fingerprint: await fingerprintResumeToolCall({
+          ...pendingTools[1],
+          toolCallId: pendingTools[1].id,
+        }),
+        kind: 'approval' as const,
+        messageId: 'existing-tool-2',
+        operationId: 'op-123',
+        toolCallId: 'tool-call-2',
+      };
       const state = createMockState({
         messages: [
           { id: 'assistant-msg-1', role: 'assistant', tool_calls: [{ id: 'tool-call-1' }] } as any,
           {
             id: 'existing-tool-1',
             parentId: 'assistant-msg-1',
-            pluginIntervention: { kind: 'approval', status: 'pending' },
+            pluginIntervention: {
+              kind: 'approval',
+              provenance: firstProvenance,
+              status: 'pending',
+            },
             role: 'tool',
             tool_call_id: 'tool-call-1',
           } as any,
           {
             id: 'existing-tool-2',
             parentId: 'assistant-msg-1',
-            pluginIntervention: { kind: 'toolResult', status: 'pending' },
+            pluginIntervention: {
+              kind: 'approval',
+              provenance: secondProvenance,
+              status: 'pending',
+            },
             role: 'tool',
             tool_call_id: 'tool-call-2',
           } as any,
@@ -3374,7 +3456,7 @@ describe('RuntimeExecutors', { timeout: 60_000 }, () => {
 
       const result = await executors.request_human_approve!(
         {
-          pendingToolsCalling: makePendingTools(),
+          pendingToolsCalling: pendingTools,
           skipCreateToolMessage: true,
           type: 'request_human_approve' as const,
         },
@@ -3390,10 +3472,44 @@ describe('RuntimeExecutors', { timeout: 60_000 }, () => {
         'tool-call-2': 'existing-tool-2',
       });
       // Kind-keyed anchors are surfaced from the trusted in-state set, never the forged query row.
-      expect(result.newState.pendingHumanToolMessages).toEqual([
-        { id: 'existing-tool-1', kind: 'approval' },
-        { id: 'existing-tool-2', kind: 'toolResult' },
-      ]);
+      expect(result.newState.pendingHumanToolMessages).toEqual([firstProvenance, secondProvenance]);
+      expect(result.newState.pendingResumeGeneration).toBe(1);
+    });
+
+    it('fails closed when re-park provenance no longer matches pendingToolsCalling', async () => {
+      const executors = createRuntimeExecutors(ctx);
+      const [pendingTool] = makePendingTools();
+      const provenance = {
+        assistantMessageId: 'assistant-msg-1',
+        fingerprint: 'f'.repeat(64),
+        kind: 'approval' as const,
+        messageId: 'existing-tool-1',
+        operationId: 'op-123',
+        toolCallId: pendingTool.id,
+      };
+      const state = createMockState({
+        messages: [
+          { id: 'assistant-msg-1', role: 'assistant', tool_calls: [{ id: pendingTool.id }] } as any,
+          {
+            id: 'existing-tool-1',
+            parentId: 'assistant-msg-1',
+            pluginIntervention: { kind: 'approval', provenance, status: 'pending' },
+            role: 'tool',
+            tool_call_id: pendingTool.id,
+          } as any,
+        ],
+      });
+
+      await expect(
+        executors.request_human_approve!(
+          {
+            pendingToolsCalling: [pendingTool],
+            skipCreateToolMessage: true,
+            type: 'request_human_approve' as const,
+          },
+          state,
+        ),
+      ).rejects.toThrow(/Missing trusted pending provenance/);
     });
 
     it('should throw if no parent assistant message can be found', async () => {
@@ -4978,7 +5094,10 @@ describe('RuntimeExecutors', { timeout: 60_000 }, () => {
     it('should not retry llm execution after operation is interrupted', async () => {
       const mockChat = vi.fn().mockRejectedValue(new Error('network timeout'));
       vi.mocked(initModelRuntimeFromDB).mockResolvedValue({ chat: mockChat } as any);
-      const loadAgentState = vi.fn().mockResolvedValue({ status: 'interrupted' });
+      const loadAgentState = vi.fn().mockResolvedValue({
+        metadata: { platformStartClassification: 'ordinary' },
+        status: 'interrupted',
+      });
 
       const executors = createRuntimeExecutors({
         ...ctx,
@@ -5014,8 +5133,14 @@ describe('RuntimeExecutors', { timeout: 60_000 }, () => {
       vi.mocked(initModelRuntimeFromDB).mockResolvedValue({ chat: mockChat } as any);
       const loadAgentState = vi
         .fn()
-        .mockResolvedValueOnce({ status: 'running' })
-        .mockResolvedValueOnce({ status: 'interrupted' });
+        .mockResolvedValueOnce({
+          metadata: { platformStartClassification: 'ordinary' },
+          status: 'running',
+        })
+        .mockResolvedValueOnce({
+          metadata: { platformStartClassification: 'ordinary' },
+          status: 'interrupted',
+        });
 
       const executors = createRuntimeExecutors({
         ...ctx,
