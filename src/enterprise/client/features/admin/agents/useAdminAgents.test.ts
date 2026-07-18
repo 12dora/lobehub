@@ -3,6 +3,7 @@ import { renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createMockAdminAgentsClient } from './mockAdminAgents';
+import type { AdminAgentDetailOutput } from './types';
 import {
   clearAdminAgentCache,
   fetchAdminAgentDetail,
@@ -13,6 +14,7 @@ import {
 } from './useAdminAgents';
 
 const mocks = vi.hoisted(() => ({
+  configs: [] as Record<string, unknown>[],
   fetchers: [] as (() => Promise<unknown>)[],
   keys: [] as unknown[],
   mutate: vi.fn(),
@@ -20,15 +22,23 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('swr', () => ({ mutate: mocks.mutate }));
 vi.mock('@/libs/swr', () => ({
-  useClientDataSWR: (key: unknown, fetcher: () => Promise<unknown>) => {
+  useClientDataSWR: (key: unknown, fetcher: () => Promise<unknown>, config = {}) => {
     mocks.keys.push(key);
     mocks.fetchers.push(fetcher);
+    mocks.configs.push(config);
+    return { data: undefined, error: undefined, isLoading: true, mutate: vi.fn() };
+  },
+  useClientPollingSWR: (key: unknown, fetcher: () => Promise<unknown>, config = {}) => {
+    mocks.keys.push(key);
+    mocks.fetchers.push(fetcher);
+    mocks.configs.push(config);
     return { data: undefined, error: undefined, isLoading: true, mutate: vi.fn() };
   },
 }));
 
 describe('Admin Agent hook adapter injection', () => {
   beforeEach(() => {
+    mocks.configs.length = 0;
     mocks.fetchers.length = 0;
     mocks.keys.length = 0;
     mocks.mutate.mockReset().mockResolvedValue(undefined);
@@ -74,14 +84,26 @@ describe('Admin Agent hook adapter injection', () => {
       limit: 100,
     });
     expect((detail as { versions: unknown[] }).versions).toHaveLength(1);
+    const refreshInterval = mocks.configs[1]!.refreshInterval as (
+      latest: AdminAgentDetailOutput,
+    ) => number;
+    expect(refreshInterval(detail as AdminAgentDetailOutput)).toBe(2000);
+    expect(
+      refreshInterval({
+        ...(detail as AdminAgentDetailOutput),
+        rollouts: (detail as AdminAgentDetailOutput).rollouts.map((rollout) => ({
+          ...rollout,
+          status: 'completed',
+        })),
+      }),
+    ).toBe(0);
   });
 
-  it('skips the rollout read entirely when the adapter reports the capability off', async () => {
+  it('skips rollout reads when the authoritative platform capability is off', async () => {
     const base = createMockAdminAgentsClient();
     const listRollouts = vi.spyOn(base, 'listRollouts');
-    const client = { ...base, capabilities: { rollouts: false } };
 
-    const detail = await fetchAdminAgentDetail('agent-inbox', client);
+    const detail = await fetchAdminAgentDetail('agent-inbox', base, false);
 
     expect(listRollouts).not.toHaveBeenCalled();
     expect(detail.rollouts).toEqual([]);
@@ -122,7 +144,9 @@ describe('Admin Agent hook adapter injection', () => {
 
     mocks.mutate.mockClear();
     await refreshAdminAgent('agent-1');
-    expect(mocks.mutate).toHaveBeenCalledWith(['enterprise.admin.agents.get', 'agent-1']);
+    const detailPredicate = mocks.mutate.mock.calls[0]![0] as (key: unknown) => boolean;
+    expect(detailPredicate(['enterprise.admin.agents.get', 'agent-1', true])).toBe(true);
+    expect(detailPredicate(['enterprise.admin.agents.get', 'agent-2', true])).toBe(false);
     const refreshPredicate = mocks.mutate.mock.calls[1]![0] as (key: unknown) => boolean;
     expect(refreshPredicate(['enterprise.admin.agents.list', {}])).toBe(true);
   });

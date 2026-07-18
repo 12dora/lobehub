@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
-import { render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 
@@ -9,20 +9,34 @@ import { deriveAdminAgentPermissions } from './controller';
 import { RolloutPanel } from './RolloutPanel';
 import type { AdminAgentDetailOutput } from './types';
 
+const mocks = vi.hoisted(() => ({
+  cancel: vi.fn(),
+  openModal: vi.fn(),
+}));
+
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock('@/enterprise/client/services/adminAgents', () => ({
   adminAgentsService: {
-    cancelRollout: vi.fn(),
+    cancelRollout: mocks.cancel,
     retryRollout: vi.fn(),
     rollbackRollout: vi.fn(),
   },
 }));
-vi.mock('./openAgentReasonModal', () => ({ openAgentReasonModal: vi.fn() }));
+vi.mock('./openAgentReasonModal', () => ({ openAgentReasonModal: mocks.openModal }));
 vi.mock('@lobehub/ui', () => ({
-  Alert: ({ description, message }: { description?: ReactNode; message?: ReactNode }) => (
+  Alert: ({
+    action,
+    description,
+    message,
+  }: {
+    action?: ReactNode;
+    description?: ReactNode;
+    message?: ReactNode;
+  }) => (
     <div>
       <span>{message}</span>
       <span>{description}</span>
+      {action}
     </div>
   ),
   Block: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
@@ -68,6 +82,11 @@ const runningSnapshot: AdminAgentDetailOutput = {
 };
 
 describe('RolloutPanel capability gate', () => {
+  beforeEach(() => {
+    mocks.cancel.mockReset();
+    mocks.openModal.mockReset();
+  });
+
   it('shows a deferral notice and no rollout actions when the backend is unavailable', () => {
     render(
       <RolloutPanel
@@ -119,5 +138,48 @@ describe('RolloutPanel capability gate', () => {
 
     expect(screen.getByText('agentCatalog.rollout.rollback')).toBeTruthy();
     expect(screen.queryByText('agentCatalog.rollout.retry')).toBeNull();
+  });
+
+  it('keeps loaded progress visible when live polling fails and exposes retry', () => {
+    render(
+      <RolloutPanel
+        enabled
+        permissions={deriveAdminAgentPermissions([PLATFORM_PERMISSIONS.AGENT_ASSIGN])}
+        pollError={new Error('poll failed')}
+        refresh={vi.fn()}
+        snapshot={runningSnapshot}
+      />,
+    );
+
+    expect(screen.getByText('agentCatalog.rollout.pollFailed')).toBeTruthy();
+    expect(screen.getByText('agentCatalog.rollout.pollRetry')).toBeTruthy();
+    expect(screen.getByText('agentCatalog.rollout.cancel')).toBeTruthy();
+  });
+
+  it('disables duplicate controls during mutation and surfaces a refresh failure', async () => {
+    let resolveCancel!: () => void;
+    mocks.cancel.mockReturnValueOnce(new Promise<void>((resolve) => (resolveCancel = resolve)));
+    const refresh = vi.fn().mockResolvedValue(undefined);
+    render(
+      <RolloutPanel
+        enabled
+        permissions={deriveAdminAgentPermissions([PLATFORM_PERMISSIONS.AGENT_ASSIGN])}
+        refresh={refresh}
+        snapshot={runningSnapshot}
+      />,
+    );
+    fireEvent.click(screen.getByText('agentCatalog.rollout.cancel'));
+    const options = mocks.openModal.mock.calls[0]![0] as {
+      onConfirm: (reason: string) => Promise<void>;
+    };
+    let confirming!: Promise<void>;
+    act(() => {
+      confirming = options.onConfirm('approved reason');
+    });
+    await waitFor(() => expect(screen.getByText('agentCatalog.rollout.cancel')).toBeDisabled());
+    resolveCancel();
+    await act(async () => confirming);
+    expect(screen.getByText('agentCatalog.rollout.refreshFailed')).toBeTruthy();
+    expect(screen.getByText('agentCatalog.rollout.refreshRetry')).toBeTruthy();
   });
 });

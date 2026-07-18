@@ -81,7 +81,7 @@ describe('production admin agents adapter (lambdaClient)', () => {
 
   it('is the runtime default singleton and carries no mock catalog data', () => {
     // The exported production singleton must be the lambda-backed adapter, never the mock.
-    expect(adminAgentsService.capabilities.rollouts).toBe(true);
+    expect(adminAgentsService.capabilities.rollouts).toBe(false);
     mocks.agents.list.mockResolvedValue({ items: [], nextCursor: null });
     // Delegates straight to the router — no seeded agents are returned locally.
     return expect(adminAgentsService.list({})).resolves.toEqual({ items: [], nextCursor: null });
@@ -202,7 +202,7 @@ describe('production admin agents adapter (lambdaClient)', () => {
 
   it('routes every rollout action through the real PR-052 procedures', async () => {
     const client = createLambdaAdminAgentsClient();
-    expect(client.capabilities.rollouts).toBe(true);
+    expect(client.capabilities.rollouts).toBe(false);
     for (const fn of Object.values(mocks.rollouts)) fn.mockResolvedValue({ ok: true });
 
     await client.startRollout({} as never);
