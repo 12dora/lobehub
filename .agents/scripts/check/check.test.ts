@@ -108,9 +108,9 @@ describe('lobehubPipelines drift', () => {
       'lint-staged': Record<string, string[]>;
     };
     const markdownRemarkCommand = pkg['lint-staged']['*.md'][0];
+    const markdownRemarkPipeline = pipelineFor(lobehubPipelines, 'AGENTS.md')?.tools[0];
 
-    expect(markdownRemarkCommand?.split(' ')).toContain('--silently-ignore');
-    expect(pipelineFor(lobehubPipelines, 'AGENTS.md')?.tools[0]).toContain('--silently-ignore');
+    expect(markdownRemarkCommand?.trim().split(/\s+/)).toEqual(markdownRemarkPipeline);
   });
 });
 
