@@ -86,6 +86,18 @@ function updatePackageJson() {
     packageJson.version = version;
 
     if (desktopBrand === 'aihub') {
+      const homepage = process.env.AIHUB_DESKTOP_HOMEPAGE?.trim();
+      if (!homepage) {
+        throw new Error('AIHUB_DESKTOP_HOMEPAGE is required for AIHub desktop builds');
+      }
+
+      const homepageUrl = new URL(homepage);
+      if (homepageUrl.protocol !== 'https:' || homepageUrl.username || homepageUrl.password) {
+        throw new Error('AIHUB_DESKTOP_HOMEPAGE must be a credential-free HTTPS URL');
+      }
+
+      packageJson.description = 'AIHub Desktop Application';
+      packageJson.homepage = homepageUrl.toString();
       packageJson.productName = 'AIHub';
       fs.writeJsonSync(desktopPackageJsonPath, packageJson, { spaces: 2 });
       console.log('✅ AIHub desktop package metadata updated successfully.');
