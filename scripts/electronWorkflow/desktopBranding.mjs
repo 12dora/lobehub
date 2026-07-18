@@ -83,15 +83,21 @@ export const rejectLobehubExternalBrandValue = (value, name) => {
   return value;
 };
 
-const validateHomepage = (rawUrl) => {
-  rejectLobehubExternalBrandValue(rawUrl, 'AIHUB_DESKTOP_HOMEPAGE');
-
-  let homepage;
+export const parseAihubExternalUrl = (rawUrl, name) => {
+  let parsedUrl;
   try {
-    homepage = new URL(rawUrl);
+    parsedUrl = new URL(rawUrl);
   } catch {
-    throw new Error('AIHUB_DESKTOP_HOMEPAGE must be a valid URL');
+    throw new Error(`${name} must be a valid URL`);
   }
+
+  rejectLobehubExternalBrandValue(parsedUrl.toString(), name);
+  rejectLobehubExternalBrandValue(parsedUrl.hostname, name);
+  return parsedUrl;
+};
+
+const validateHomepage = (rawUrl) => {
+  const homepage = parseAihubExternalUrl(rawUrl, 'AIHUB_DESKTOP_HOMEPAGE');
 
   if (homepage.protocol !== 'https:' || homepage.username || homepage.password) {
     throw new Error('AIHUB_DESKTOP_HOMEPAGE must be a credential-free HTTPS URL');
