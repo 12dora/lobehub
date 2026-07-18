@@ -147,8 +147,16 @@ export const DependencyEditor = ({
     Boolean(model) && providersUsable && sourceSettled && isModelCurrent(model, source.data);
   const skillsReady =
     skillsSettled && (dependencies.skills.length === 0 || staleSkills.length === 0);
+  // A connector selected for add/update means an authoring operation is in flight: its current
+  // detail must be a settled, RESOLVED success (not undefined/loading, not retained-data+error,
+  // not retained-data+isValidating, and not a null/unresolvable projection). Otherwise save FAILS
+  // CLOSED — the operator could otherwise commit while authoring from a stale/absent snapshot. With
+  // no connector selected, no current detail is required.
+  const connectorDetailReady =
+    !connectorId || (connectorDetailUsable && connectorDetail.data != null);
   const connectorsReady =
     connectorsListUsable &&
+    connectorDetailReady &&
     (dependencies.connectors.length === 0 || (connectorsSettled && staleConnectors.length === 0));
   const ready = modelReady && skillsReady && connectorsReady;
 
@@ -483,7 +491,11 @@ export const DependencyEditor = ({
                       ? t('agentCatalog.dependency.loading')
                       : t('agentCatalog.dependency.connector.add')
                   }
-                  onChange={(value) => setConnectorId(value as string | undefined)}
+                  onChange={(value) => {
+                    // Never mutate the selection from a stale/errored/revalidating connector list.
+                    if (!connectorsListUsable) return;
+                    setConnectorId(value as string | undefined);
+                  }}
                 />
                 {connectors.isValidating && connectors.data ? (
                   <Text type="secondary">{t('agentCatalog.dependency.revalidating')}</Text>

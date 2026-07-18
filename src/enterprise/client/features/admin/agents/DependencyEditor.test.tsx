@@ -690,3 +690,90 @@ describe('DependencyEditor requires ALL authorable catalogs fresh even with EMPT
     );
   });
 });
+
+describe('DependencyEditor: a SELECTED connector requires a settled current detail for readiness', () => {
+  const withList = () => {
+    hooks.connectors = { ...idle, data: [{ displayName: 'Issues', id: 'c1', key: 'issues' }] };
+  };
+  const selectConnector = () =>
+    fireEvent.change(screen.getByLabelText('agentCatalog.dependency.connector.add'), {
+      target: { value: 'c1' },
+    });
+
+  it('stays ready with NO connector selected (a current detail is not required)', async () => {
+    const m = currentModel();
+    withList();
+    const onValidity = vi.fn();
+    renderEditor({ connectors: [], model: m, skills: [] }, vi.fn(), onValidity);
+    await waitFor(() =>
+      expect(onValidity).toHaveBeenLastCalledWith(expect.objectContaining({ ready: true })),
+    );
+  });
+
+  it.each<[string, Record<string, unknown>]>([
+    ['undefined / loading', { ...idle, isLoading: true }],
+    ['retained data + error', { ...idle, data: connectorDetail, error: new Error('x') }],
+    ['retained data + isValidating', { ...idle, data: connectorDetail, isValidating: true }],
+    ['null / unresolvable', { ...idle, data: null }],
+  ])(
+    'drops onValidityChange.ready to false once a connector is selected and its detail is %s',
+    async (_label, detailState) => {
+      const m = currentModel();
+      withList();
+      hooks.connectorDetail = detailState;
+      const onValidity = vi.fn();
+      renderEditor({ connectors: [], model: m, skills: [] }, vi.fn(), onValidity);
+      // Ready BEFORE selecting — no current detail required yet.
+      await waitFor(() =>
+        expect(onValidity).toHaveBeenLastCalledWith(expect.objectContaining({ ready: true })),
+      );
+      // Selecting a connector puts an authoring op in flight → its unsettled detail fails closed.
+      selectConnector();
+      await waitFor(() =>
+        expect(onValidity).toHaveBeenLastCalledWith(expect.objectContaining({ ready: false })),
+      );
+    },
+  );
+
+  it('returns ready:true after the selected connector detail settles to a resolved success', async () => {
+    const m = currentModel();
+    withList();
+    hooks.connectorDetail = { ...idle, data: connectorDetail, error: new Error('x') };
+    const onValidity = vi.fn();
+    const view = renderEditor({ connectors: [], model: m, skills: [] }, vi.fn(), onValidity);
+    selectConnector();
+    await waitFor(() =>
+      expect(onValidity).toHaveBeenLastCalledWith(expect.objectContaining({ ready: false })),
+    );
+
+    // Retry settles: resolved detail, no error, not validating → ready again.
+    hooks.connectorDetail = { ...idle, data: connectorDetail };
+    view.rerender(
+      <DependencyEditor
+        editable
+        enabled
+        agentId="agent-1"
+        dependencies={{ connectors: [], model: m, skills: [] }}
+        onChange={vi.fn()}
+        onValidityChange={onValidity}
+      />,
+    );
+    await waitFor(() =>
+      expect(onValidity).toHaveBeenLastCalledWith(expect.objectContaining({ ready: true })),
+    );
+  });
+
+  it('refuses connector selection while the connector LIST revalidates (picker disabled)', () => {
+    currentModel();
+    hooks.connectors = {
+      ...idle,
+      data: [{ displayName: 'Issues', id: 'c1', key: 'issues' }],
+      isValidating: true,
+    };
+    renderEditor(emptyDeps());
+    const picker = screen.getByLabelText(
+      'agentCatalog.dependency.connector.add',
+    ) as HTMLSelectElement;
+    expect(picker.disabled).toBe(true);
+  });
+});
