@@ -34,7 +34,11 @@ import type { LobeChatDatabase } from '@/database/type';
 
 import { PlatformAgentAdminService } from './adminService';
 import { PlatformAgentEffectiveResolver } from './effectiveResolver';
-import { PlatformAgentNotFoundError, PlatformAgentResourceInUseError } from './errors';
+import {
+  PlatformAgentInvalidInputError,
+  PlatformAgentNotFoundError,
+  PlatformAgentResourceInUseError,
+} from './errors';
 import { platformAgentDraftToken } from './publication';
 
 const enabled = process.env.TEST_SERVER_DB === '1' && Boolean(process.env.DATABASE_TEST_URL);
@@ -237,11 +241,20 @@ run('PlatformAgentEffectiveResolver (PostgreSQL) — R1 / R2 / R3', () => {
 
       expect(await ids('user-a')).toEqual(['def', 'mand', 'opt']);
 
-      // user-a hides all three; only the mandatory one survives for A.
-      await resolver().setAgentHidden('user-a', 'mand', true);
+      // A mandatory Agent can never be hidden — the write is rejected (ROOT-01), not a silent no-op.
+      await expect(resolver().setAgentHidden('user-a', 'mand', true)).rejects.toBeInstanceOf(
+        PlatformAgentInvalidInputError,
+      );
+      // user-a hides the default + optional ones; the mandatory one always survives for A.
       await resolver().setAgentHidden('user-a', 'def', true);
       await resolver().setAgentHidden('user-a', 'opt', true);
       expect(await ids('user-a')).toEqual(['mand']);
+
+      // ROOT-01: hiding must NOT materialize a local Agent — only a visibility-only row.
+      const hiddenRow = await materializationRow('user-a', 'opt');
+      expect(hiddenRow?.hidden).toBe(true);
+      expect(hiddenRow?.materializedAgentId).toBeNull();
+      expect(hiddenRow?.lastSyncedAt).toBeNull();
 
       // user-b is unaffected — hidden is strictly owner-scoped.
       expect(await ids('user-b')).toEqual(['def', 'mand', 'opt']);
