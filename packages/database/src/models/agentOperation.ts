@@ -4,7 +4,7 @@ import type {
   PlatformOperationPin,
   VerifyRunStatus,
 } from '@lobechat/types';
-import { and, desc, eq, gte, isNotNull, isNull, sql } from 'drizzle-orm';
+import { and, eq, gte, isNotNull, isNull, sql } from 'drizzle-orm';
 
 import { today } from '@/utils/time';
 
@@ -176,30 +176,38 @@ export class AgentOperationModel {
   }
 
   /**
-   * Load the secret-free platform operation pin of the most recent platform operation on a
-   * topic/thread, for resume/retry replay (M10 PR-049 · REWORK-2). Strictly owner- and
-   * workspace-scoped (via `ownership()`), so a leaked operationId / topicId can never surface
-   * another principal's pin. Returns null when no platform operation exists there. The caller
-   * re-derives the exact pinned version from `versionId` and fails closed on a checksum mismatch.
+   * Load the secret-free platform operation pin of an EXACT parent operation, for resume / retry /
+   * queued replay (M10 PR-049 · RR2-1). Bound to a single trusted `operationId` — NEVER "the most
+   * recent platform op on the topic/thread" — so two operations that ran different Agent versions on
+   * the same topic (e.g. a concurrent v1 and v2) each resolve their OWN pin, and an out-of-order
+   * resume of the v1 turn replays v1, not whichever started last.
+   *
+   * Strictly owner- and workspace-scoped (via `ownership()`), and — when the caller passes the
+   * resume turn's `topicId` / `threadId` — additionally constrained to that same turn, so a leaked /
+   * cross-turn operationId can neither surface another principal's pin nor rebind a pin from a
+   * different topic/thread. Returns null when the operation is not found under the scope or is not a
+   * platform operation. The caller re-derives the exact pinned version from `versionId` and fails
+   * closed on a checksum mismatch.
    */
-  async findLatestPlatformOperationPin(params: {
-    threadId?: string | null;
-    topicId: string;
-  }): Promise<PlatformOperationPin | null> {
+  async findPlatformOperationPinByOperationId(
+    operationId: string,
+    scope?: { threadId?: string | null; topicId?: string | null },
+  ): Promise<PlatformOperationPin | null> {
+    const conditions = [eq(agentOperations.id, operationId), this.ownership()];
+    if (scope?.topicId) conditions.push(eq(agentOperations.topicId, scope.topicId));
+    // Bind the thread leg exactly: a thread resume must match the same thread, and a main-turn
+    // resume (threadId null) must match a main-turn op — never a thread op on the same topic.
+    if (scope && 'threadId' in scope) {
+      conditions.push(
+        scope.threadId
+          ? eq(agentOperations.threadId, scope.threadId)
+          : isNull(agentOperations.threadId),
+      );
+    }
     const [row] = await this.db
       .select({ metadata: agentOperations.metadata })
       .from(agentOperations)
-      .where(
-        and(
-          this.ownership(),
-          eq(agentOperations.topicId, params.topicId),
-          params.threadId
-            ? eq(agentOperations.threadId, params.threadId)
-            : isNull(agentOperations.threadId),
-          sql`${agentOperations.metadata} -> 'platformOperation' is not null`,
-        ),
-      )
-      .orderBy(desc(agentOperations.startedAt))
+      .where(and(...conditions))
       .limit(1);
     return (row?.metadata as PlatformOperationMetadata | undefined)?.platformOperation ?? null;
   }
@@ -217,6 +225,37 @@ export class AgentOperationModel {
       .where(and(eq(agentOperations.id, operationId), this.ownership()))
       .limit(1);
     return (row?.metadata as PlatformOperationMetadata | undefined)?.platformModel ?? null;
+  }
+
+  /**
+   * Classify an operation for the per-LLM-call runtime (M10 PR-049 · RR2-2). Returns, owner- and
+   * workspace-scoped by operationId:
+   *
+   * - `isPlatformOperation` — true when the row carries a `platformOperation` pin, i.e. it started
+   *   as a platform-managed Agent. Because a platform operation's start is persisted fail-closed
+   *   (see `CompletionLifecycle.recordStart`), this marker is reliably present by the time any LLM
+   *   call runs — so the model runtime can DISTINGUISH a genuine ordinary/builtin op (no marker)
+   *   from a platform op, instead of guessing from the model pin alone.
+   * - `modelPin` — the secret-free exact model ref, or null.
+   *
+   * Returns null only when the operation row does not exist under this owner scope (a genuinely
+   * ordinary/anonymous call). A DB read error propagates (the caller fails the call closed).
+   */
+  async findPlatformOperationRef(operationId: string): Promise<{
+    isPlatformOperation: boolean;
+    modelPin: PlatformOperationModelPin | null;
+  } | null> {
+    const [row] = await this.db
+      .select({ metadata: agentOperations.metadata })
+      .from(agentOperations)
+      .where(and(eq(agentOperations.id, operationId), this.ownership()))
+      .limit(1);
+    if (!row) return null;
+    const metadata = row.metadata as PlatformOperationMetadata | undefined;
+    return {
+      isPlatformOperation: Boolean(metadata?.platformOperation),
+      modelPin: metadata?.platformModel ?? null,
+    };
   }
 
   /**

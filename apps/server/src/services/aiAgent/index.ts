@@ -1053,7 +1053,16 @@ export class AiAgentService {
         message: 'Failed to start platform agent',
       });
     }
-    throw error;
+    // An already-curated stable TRPCError (e.g. a fail-closed NOT_FOUND from the resume path) passes
+    // through unchanged. Anything else — a raw driver / SQL error escaping the dependency-validation
+    // transaction, a Skill/Connector snapshot detail — is redacted to the stable materialization
+    // error (RR2-5) so no SQL text / constraint / identifier / secret reaches the client.
+    if (error instanceof TRPCError) throw error;
+    log('execAgent: unexpected platform config error for %s: %O', platformAgentId, error);
+    throw new TRPCError({
+      code: 'INTERNAL_SERVER_ERROR',
+      message: 'Failed to start platform agent',
+    });
   }
 
   /**
@@ -1065,6 +1074,39 @@ export class AiAgentService {
     dependencySnapshot: Parameters<typeof validateExactPlatformAgentDependencies>[1],
   ): Promise<void> {
     await validateExactPlatformAgentDependencies(this.db, dependencySnapshot);
+  }
+
+  /**
+   * Resolve the EXACT parent operationId a resume must replay, from its trusted anchor message
+   * (owner-scoped `messageModel.findById`, so a foreign / non-existent message resolves to null and
+   * fails the resume closed) — M10 PR-049 · RR2-1.
+   *
+   * Each operation stamps its own operationId onto the assistant turn it produces
+   * (`metadata.operationId`). The anchor is either that assistant turn (regeneration) or a pending
+   * `role='tool'` message hanging off it (approve / tool-result) — so the operation stamp is read
+   * directly from the anchor or from its one-hop assistant parent. Because the stamp is per-message,
+   * two operations that ran different Agent versions on the same topic (a concurrent v1 and v2) are
+   * disambiguated exactly, and an out-of-order resume of the v1 turn resolves v1 — never "whichever
+   * platform op started last". Returns null when no operation stamp can be reached.
+   */
+  private async resolveResumeParentOperationId(
+    anchorMessageId: string | null,
+  ): Promise<string | null> {
+    if (!anchorMessageId) return null;
+    const readOperationId = (metadata: unknown): string | null => {
+      const value = (metadata as { operationId?: unknown } | null | undefined)?.operationId;
+      return typeof value === 'string' && value.length > 0 ? value : null;
+    };
+    const anchor = await this.messageModel.findById(anchorMessageId);
+    if (!anchor) return null;
+    const direct = readOperationId(anchor.metadata);
+    if (direct) return direct;
+    if (anchor.parentId) {
+      const parent = await this.messageModel.findById(anchor.parentId);
+      const viaParent = readOperationId(parent?.metadata);
+      if (viaParent) return viaParent;
+    }
+    return null;
   }
 
   /**
@@ -1082,7 +1124,12 @@ export class AiAgentService {
   private async resolvePlatformAgentConfig(
     platformAgentId: string,
     identifier: string,
-    resumeContext: { resume: boolean; threadId: string | null; topicId: string | null },
+    resumeContext: {
+      resume: boolean;
+      resumeAnchorMessageId: string | null;
+      threadId: string | null;
+      topicId: string | null;
+    },
   ): Promise<{
     config: AgentConfigWithId;
     connectorRefs: PlatformAgentConnectorDependencyRef[];
@@ -1092,32 +1139,37 @@ export class AiAgentService {
   }> {
     const materializationService = new PlatformAgentMaterializationService(this.db, this.userId);
 
-    if (resumeContext.resume && resumeContext.topicId) {
-      const pin = await this.agentOperationModel.findLatestPlatformOperationPin({
-        threadId: resumeContext.threadId,
-        topicId: resumeContext.topicId,
-      });
-      if (pin) {
-        // The resumed turn must belong to the same platform Agent the request targets.
-        if (pin.platformAgentId !== platformAgentId) {
-          throw new TRPCError({ code: 'NOT_FOUND', message: `Agent not found: ${identifier}` });
-        }
-        try {
-          const materialized = await materializationService.materializeFromPin(pin);
-          await this.assertPlatformOperationDependencies(materialized.dependencySnapshot);
-          return {
-            config: materialized.config,
-            connectorRefs: materialized.dependencySnapshot.connectors,
-            modelPin: materialized.dependencySnapshot.model,
-            pin,
-            skillRefs: materialized.dependencySnapshot.skills,
-          };
-        } catch (error) {
-          this.mapPlatformConfigError(error, platformAgentId, identifier);
-        }
+    if (resumeContext.resume) {
+      // RR2-1: a platform resume MUST replay the pin of its EXACT parent operation, resolved from the
+      // trusted anchor message (owner-scoped) — not the newest platform op on the topic/thread. Any
+      // of: no anchor, no resolvable parent operation, no persisted pin on it, or a pin belonging to a
+      // different platform Agent → fail closed as NOT_FOUND. We NEVER fall through to a fresh
+      // `beginOperation` (latest) on a resume, so a paused v1 turn can't be silently upgraded to v2.
+      const parentOperationId = await this.resolveResumeParentOperationId(
+        resumeContext.resumeAnchorMessageId,
+      );
+      const pin = parentOperationId
+        ? await this.agentOperationModel.findPlatformOperationPinByOperationId(parentOperationId, {
+            threadId: resumeContext.threadId,
+            topicId: resumeContext.topicId,
+          })
+        : null;
+      if (!pin || pin.platformAgentId !== platformAgentId) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: `Agent not found: ${identifier}` });
       }
-      // No persisted platform pin for this topic/thread (unexpected for a platform resume): fall
-      // through to a fresh authorization rather than silently running as an ordinary agent.
+      try {
+        const materialized = await materializationService.materializeFromPin(pin);
+        await this.assertPlatformOperationDependencies(materialized.dependencySnapshot);
+        return {
+          config: materialized.config,
+          connectorRefs: materialized.dependencySnapshot.connectors,
+          modelPin: materialized.dependencySnapshot.model,
+          pin,
+          skillRefs: materialized.dependencySnapshot.skills,
+        };
+      } catch (error) {
+        this.mapPlatformConfigError(error, platformAgentId, identifier);
+      }
     }
 
     const handle = await new PlatformAgentEffectiveResolver(this.db).beginOperation(
@@ -1285,6 +1337,14 @@ export class AiAgentService {
     if (platformAgentId) {
       const resolved = await this.resolvePlatformAgentConfig(platformAgentId, identifier, {
         resume: resume || !!resumeApproval || !!resumeToolResult,
+        // The trusted anchor for a resume: the pending tool message (approve / tool-result) or the
+        // regeneration parent. resolvePlatformAgentConfig walks it to the EXACT parent operation and
+        // replays that operation's pin — never "the latest platform op on the topic" (RR2-1).
+        resumeAnchorMessageId:
+          resumeApproval?.parentMessageId ??
+          resumeToolResult?.parentMessageId ??
+          parentMessageId ??
+          null,
         threadId: appContext?.threadId ?? null,
         topicId: appContext?.topicId ?? null,
       });
@@ -3963,6 +4023,19 @@ export class AiAgentService {
           threadId: appContext?.threadId ?? undefined,
         },
       });
+
+      // RR2-1: stamp this operation's id onto the assistant turn it produced, so a later resume of
+      // this exact turn (or a pending tool message hanging off it) can replay THIS operation's pin —
+      // not the newest platform op on the topic. Only platform operations are ever resume-resolved
+      // through the pin, so the (owner-scoped) stamp is written only for them. Non-fatal: a failed
+      // stamp only makes a future platform resume of this turn fail closed, never a data leak.
+      if (platformOperationPin) {
+        try {
+          await this.messageModel.updateMetadata(assistantMessageRecord.id, { operationId });
+        } catch (error) {
+          log('execAgent: failed to stamp operationId on assistant message (non-fatal): %O', error);
+        }
+      }
 
       // Generate a short-lived JWT for Gateway WebSocket authentication
       let gatewayToken: string | undefined;

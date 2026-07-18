@@ -17,6 +17,10 @@ import { TopicDocumentModel } from '@/database/models/topicDocument';
 import { router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 import {
+  pickDocumentAgentIds,
+  withManagedLocalAgentGuard,
+} from '@/server/enterprise/guards/managedPlatformAgent';
+import {
   isOrdinaryAgentDocumentPathInput,
   isOrdinaryAgentDocumentPathPairInput,
   withManagedResourceGuard,
@@ -181,9 +185,13 @@ const agentDocumentProcedure = wsCompatProcedure.use(serverDatabase).use(async (
 // Write variant gates viewers out of every agent-document mutation
 // (upsert/delete/rename/copy/skill-edit, plus the VFS path-based writes).
 // Read endpoints keep using `agentDocumentProcedure`.
-const agentDocumentProcedureWrite = agentDocumentProcedure.use(
-  withScopedPermission('document:update'),
-);
+//
+// RR2-4: every agent-document write also runs the unified managed-local-agent guard here, once — so
+// a materialized platform Agent's document tree (by `agentId`, or `sourceAgentId`/`targetAgentId`
+// on cloneDocuments) can never be mutated through the ordinary endpoints. Flag off → no-op.
+const agentDocumentProcedureWrite = agentDocumentProcedure
+  .use(withScopedPermission('document:update'))
+  .use(withManagedLocalAgentGuard(pickDocumentAgentIds));
 
 const agentDocumentIdGuardSchema = z.object({ agentId: z.string(), id: z.string() }).passthrough();
 const agentDocumentFilenameGuardSchema = z
