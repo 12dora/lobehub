@@ -9,6 +9,7 @@ import type {
 } from '@lobechat/context-engine';
 import type {
   ChatTopicBotContext,
+  PlatformAgentSkillDependencyRef,
   PlatformOperationModelPin,
   PlatformOperationPin,
   UserInterventionConfig,
@@ -420,6 +421,12 @@ export interface OperationCreationParams {
    * pinned version. Absent for ordinary / builtin operations.
    */
   platformOperationPin?: PlatformOperationPin;
+  /**
+   * Secret-free exact Skill refs (M10 PR-049 · SKILL-EXACT). Persisted onto
+   * `agent_operations.metadata.platformSkills` for audit/replay. Absent for ordinary / builtin
+   * operations.
+   */
+  platformSkillPins?: PlatformAgentSkillDependencyRef[];
   queueRetries?: number;
   queueRetryDelay?: string;
   /** Abort startup before the first step is scheduled */

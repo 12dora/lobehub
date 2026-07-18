@@ -458,6 +458,7 @@ export class AgentRuntimeService {
       parentOperationId,
       platformModelPin,
       platformOperationPin,
+      platformSkillPins,
       signal,
       userTimezone,
       initialStepCount = 0,
@@ -485,7 +486,8 @@ export class AgentRuntimeService {
       ...(appContext?.agentSignal ||
       connectorApprovalReceipt ||
       platformOperationPin ||
-      platformModelPin
+      platformModelPin ||
+      platformSkillPins
         ? {
             metadata: {
               ...(appContext?.agentSignal ? { agentSignal: appContext.agentSignal } : {}),
@@ -494,6 +496,8 @@ export class AgentRuntimeService {
               ...(platformOperationPin ? { platformOperation: platformOperationPin } : {}),
               // Secret-free exact model ref so every LLM call runs on the pinned provider revision.
               ...(platformModelPin ? { platformModel: platformModelPin } : {}),
+              // Secret-free exact Skill refs (audit/replay) — the runtime pool is pinned exactly.
+              ...(platformSkillPins ? { platformSkills: platformSkillPins } : {}),
             },
           }
         : {}),

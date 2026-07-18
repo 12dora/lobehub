@@ -206,4 +206,6 @@ export interface PlatformOperationMetadata {
   platformModel?: PlatformOperationModelPin;
   /** Version pin for resume/retry replay. */
   platformOperation?: PlatformOperationPin;
+  /** Exact skill references (skillKey/version/checksum) for historical-version execution. */
+  platformSkills?: PlatformAgentSkillDependencyRef[];
 }
