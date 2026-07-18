@@ -51,6 +51,23 @@ const toDraft = (snapshot: AdminAgentDetailOutput): AdminAgentDraft => {
       };
 };
 
+export interface AgentDraftBaseline {
+  agentId: string;
+  draftToken: string;
+  revision: number;
+}
+
+const baselineFromSnapshot = (snapshot: AdminAgentDetailOutput): AgentDraftBaseline => ({
+  agentId: snapshot.identity.id,
+  draftToken: snapshot.draftToken,
+  revision: snapshot.identity.revision,
+});
+
+const sameBaseline = (left: AgentDraftBaseline, right: AgentDraftBaseline) =>
+  left.agentId === right.agentId &&
+  left.revision === right.revision &&
+  left.draftToken === right.draftToken;
+
 export const useAgentEditor = (snapshot: AdminAgentDetailOutput | undefined, editable: boolean) => {
   const { t } = useTranslation('admin');
   const [draft, setDraft] = useState<AdminAgentDraft | null>(null);
@@ -60,15 +77,33 @@ export const useAgentEditor = (snapshot: AdminAgentDetailOutput | undefined, edi
     'dirty' | 'failed' | 'idle' | 'refreshFailed' | 'saved' | 'saving'
   >('idle');
   const [persistState, setPersistState] = useState<DraftPersistStatus | null>(null);
-  const hydratedRef = useRef('');
+  // Frozen origin CAS for the current draft. It is intentionally independent from the live SWR
+  // snapshot: a background refresh must never silently rebase a dirty form or rewrite its recovery
+  // envelope to a CAS the draft was not authored from.
+  const [draftBaseline, setDraftBaseline] = useState<AgentDraftBaseline | null>(null);
   const leaveModalRef = useRef<ReturnType<typeof confirmModal> | null>(null);
 
   useEffect(() => {
     if (!snapshot) return;
-    const key = `${snapshot.identity.id}:${snapshot.identity.revision}:${snapshot.draftToken}:${editable}`;
-    if (hydratedRef.current === key) return;
-    hydratedRef.current = key;
+    const incoming = baselineFromSnapshot(snapshot);
+
+    // Hydrate once per Agent context. A stored dirty draft keeps the CAS it was authored against,
+    // even when the first authoritative snapshot has already advanced.
+    if (draftBaseline?.agentId === incoming.agentId) {
+      if (dirty && !sameBaseline(draftBaseline, incoming)) setConflict(true);
+      return;
+    }
+
     const stored = editable ? loadAdminAgentDraft(snapshot.identity.id) : null;
+    setDraftBaseline(
+      stored
+        ? {
+            agentId: snapshot.identity.id,
+            draftToken: stored.draftToken,
+            revision: stored.revision,
+          }
+        : incoming,
+    );
     setDraft(stored?.draft ?? toDraft(snapshot));
     setDirty(Boolean(stored));
     setConflict(
@@ -79,18 +114,19 @@ export const useAgentEditor = (snapshot: AdminAgentDetailOutput | undefined, edi
       ),
     );
     setSaveState(stored ? 'dirty' : 'idle');
-  }, [editable, snapshot]);
+    setPersistState(stored ? 'saved' : null);
+  }, [dirty, draftBaseline, editable, snapshot]);
 
   useEffect(() => {
-    if (!editable || !snapshot || !draft || !dirty) return;
-    const status = saveAdminAgentDraft(snapshot.identity.id, {
+    if (!editable || !draftBaseline || !draft || !dirty) return;
+    const status = saveAdminAgentDraft(draftBaseline.agentId, {
       draft,
-      draftToken: snapshot.draftToken,
-      revision: snapshot.identity.revision,
+      draftToken: draftBaseline.draftToken,
+      revision: draftBaseline.revision,
       savedAt: new Date().toISOString(),
     });
     setPersistState(status);
-  }, [dirty, draft, editable, snapshot]);
+  }, [dirty, draft, draftBaseline, editable]);
 
   useEffect(() => {
     if (!editable || !dirty) return;
@@ -133,6 +169,7 @@ export const useAgentEditor = (snapshot: AdminAgentDetailOutput | undefined, edi
   const discard = useCallback(() => {
     if (!snapshot) return;
     clearAdminAgentDraft(snapshot.identity.id);
+    setDraftBaseline(baselineFromSnapshot(snapshot));
     setDraft(toDraft(snapshot));
     setDirty(false);
     setConflict(false);
@@ -140,17 +177,22 @@ export const useAgentEditor = (snapshot: AdminAgentDetailOutput | undefined, edi
     setPersistState(null);
   }, [snapshot]);
 
-  const markSaved = useCallback(() => {
-    if (!snapshot) return;
-    clearAdminAgentDraft(snapshot.identity.id);
+  const markSaved = useCallback((baseline: AgentDraftBaseline) => {
+    clearAdminAgentDraft(baseline.agentId);
+    setDraftBaseline(baseline);
+    // The just-saved draft is now the source for the next immutable version.
+    setDraft((current) =>
+      current ? { ...current, version: nextVersion(current.version) } : current,
+    );
     setDirty(false);
     setConflict(false);
     setSaveState('saved');
     setPersistState(null);
-  }, [snapshot]);
+  }, []);
 
   return {
     conflict,
+    draftBaseline,
     dirty,
     discard,
     draft,

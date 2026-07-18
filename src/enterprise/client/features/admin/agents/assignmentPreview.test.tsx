@@ -109,6 +109,46 @@ describe('assignment preview invalidation (B6)', () => {
       versionPolicy: built.versionPolicy,
     }).toEqual(previewAssignmentArg);
   });
+
+  it.each([
+    [
+      'known enterprise error',
+      {
+        data: { errorData: { code: 'PLATFORM_PERMISSION_DENIED' } },
+        message: 'raw permission backend detail',
+      },
+      'enterprise.error.PLATFORM_PERMISSION_DENIED',
+      'raw permission backend detail',
+    ],
+    [
+      'unknown error',
+      new Error('SQLSTATE 08006 password=never-render'),
+      'agentCatalog.errors.generic',
+      'SQLSTATE 08006 password=never-render',
+    ],
+  ])('keeps preview input retryable after a %s', async (_label, cause, expected, raw) => {
+    const { result } = setup();
+    act(() => {
+      result.current.setTargetType('user');
+      result.current.setTargetId('user-1');
+    });
+    mocks.previewAssignment.mockRejectedValueOnce(cause);
+
+    await act(async () => {
+      await result.current.previewAssignment();
+    });
+
+    expect(result.current.error).toBe(expected);
+    expect(result.current.error).not.toContain(raw);
+    expect(result.current.targetType).toBe('user');
+    expect(result.current.targetId).toBe('user-1');
+
+    mocks.previewAssignment.mockResolvedValueOnce({ estimatedUsers: 7, warnings: [] });
+    await act(async () => {
+      await result.current.previewAssignment();
+    });
+    expect(result.current.preview).toEqual({ estimatedUsers: 7, warnings: [] });
+  });
 });
 
 describe('assignment write lock (refresh-required)', () => {

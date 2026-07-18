@@ -12,6 +12,7 @@ import {
 } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 import { openReasonModal } from '@/enterprise/client/features/admin/users/modals/openReasonModal';
 import { adminAgentsService } from '@/enterprise/client/services/adminAgents';
+import { adminPlatformAgentAppendVersionInputSchema } from '@/server/enterprise/contracts/platformAgents';
 
 import type { deriveAdminAgentPermissions } from './controller';
 import { toDependencySnapshot } from './dependencyCatalog';
@@ -105,6 +106,23 @@ export const useAgentActions = ({
     }
     const config = structuredClone(editor.draft.config);
     const version = editor.draft.version;
+    // Recovery storage intentionally accepts temporarily incomplete form values. The complete
+    // append-version contract is enforced only at this explicit submission boundary.
+    if (
+      !adminPlatformAgentAppendVersionInputSchema.safeParse({
+        agentId: snapshot.identity.id,
+        config,
+        dependencySnapshot,
+        expectedDraftToken: snapshot.draftToken,
+        expectedRevision: snapshot.identity.revision,
+        reason: 'validate recovered Agent draft',
+        version,
+      }).success
+    ) {
+      editor.setSaveState('failed');
+      toast.error(t('agentCatalog.save.invalid'));
+      return;
+    }
     // One token for this logical write — captured by both submit and the reauth-abort hook so the
     // shared-reauth retry is recognised as the SAME write and a cancel releases the frozen baseline.
     const writeToken = {};
@@ -142,7 +160,11 @@ export const useAgentActions = ({
         // Committed on the server — mark synchronously BEFORE any cache apply, so an idle/finally can
         // never abort a committed write.
         lock.markCommitted(writeToken);
-        editor.markSaved();
+        editor.markSaved({
+          agentId: output.identity.id,
+          draftToken: output.draftToken,
+          revision: output.identity.revision,
+        });
         try {
           await mutate(applyAppendVersion(output), { revalidate: false });
           lock.resolveWrite(writeToken); // output carries the advanced CAS → end the cycle, no refresh

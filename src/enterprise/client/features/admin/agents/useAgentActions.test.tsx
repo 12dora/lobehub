@@ -65,7 +65,17 @@ const makeEditor = () =>
     dirty: true,
     discard: vi.fn(),
     draft: {
-      config: { displayName: 'X' },
+      config: {
+        avatar: null,
+        backgroundColor: null,
+        description: null,
+        displayName: 'X',
+        modelParameters: {},
+        openingMessage: null,
+        openingQuestions: [],
+        systemRole: 'Help the user.',
+        tags: [],
+      },
       dependencies: {
         connectors: [],
         model: {
@@ -234,7 +244,17 @@ describe('useAgentActions reauth + commit/refresh + write-lock', () => {
     // The frozen append-version payload carries the exact config + snapshot + version + CAS.
     expect(lastModalConfig().buildPayload('save it')).toEqual({
       agentId: 'agent-1',
-      config: { displayName: 'X' },
+      config: {
+        avatar: null,
+        backgroundColor: null,
+        description: null,
+        displayName: 'X',
+        modelParameters: {},
+        openingMessage: null,
+        openingQuestions: [],
+        systemRole: 'Help the user.',
+        tags: [],
+      },
       dependencySnapshot: {
         connectors: [],
         model: {
@@ -255,8 +275,34 @@ describe('useAgentActions reauth + commit/refresh + write-lock', () => {
     });
 
     expect(mocks.service.appendVersion).toHaveBeenCalledOnce();
-    expect(editor.markSaved).toHaveBeenCalledOnce();
+    expect(editor.markSaved).toHaveBeenCalledWith({
+      agentId: 'agent-1',
+      draftToken: 'c'.repeat(64),
+      revision: 8,
+    });
     expect(mutate).toHaveBeenCalledWith(expect.any(Function), { revalidate: false });
+  });
+
+  it('keeps an incomplete recovery draft but blocks it at the explicit save boundary', () => {
+    const editor = makeEditor();
+    editor.draft.config.displayName = '';
+    const { result } = renderHook(() =>
+      useAgentActions({
+        authMethod: null,
+        editor,
+        lock: makeLock('ok'),
+        mutate: vi.fn(),
+        permissions,
+        snapshot,
+      }),
+    );
+
+    act(() => result.current.save());
+
+    expect(mocks.openReasonModal).not.toHaveBeenCalled();
+    expect(mocks.service.appendVersion).not.toHaveBeenCalled();
+    expect(editor.setSaveState).toHaveBeenCalledWith('failed');
+    expect(mocks.toastError).toHaveBeenCalledWith('agentCatalog.save.invalid');
   });
 
   it('surfaces a default-switch preflight failure without opening the confirmation modal', async () => {

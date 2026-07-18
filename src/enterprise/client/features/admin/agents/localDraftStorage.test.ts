@@ -71,48 +71,74 @@ describe('admin Agent recovery draft storage', () => {
     expect(localStorage.getItem(key)).toBeNull();
   });
 
-  describe('authoritative contract validation on write', () => {
+  describe('recovery validation on write', () => {
     it.each([
-      ['invalid SemVer version', (v: StoredAdminAgentDraft) => (v.draft.version = 'not-semver')],
+      ['unfinished SemVer version', (v: StoredAdminAgentDraft) => (v.draft.version = '1.')],
       [
-        'non-hex provider checksum',
+        'unfinished provider checksum',
         (v: StoredAdminAgentDraft) => (v.draft.dependencies.model!.providerChecksum = 'zz'),
       ],
       [
-        'non-positive provider revision',
+        'unresolved provider revision',
         (v: StoredAdminAgentDraft) => (v.draft.dependencies.model!.providerRevision = 0),
       ],
       [
-        'out-of-range model parameter',
+        'temporarily out-of-range model parameter',
         (v: StoredAdminAgentDraft) => (v.draft.config.modelParameters.temperature = 9),
       ],
-      [
-        'too many opening questions',
-        (v: StoredAdminAgentDraft) =>
-          (v.draft.config.openingQuestions = Array.from({ length: 51 }, (_, i) => `q${i}`)),
-      ],
       ['empty display name', (v: StoredAdminAgentDraft) => (v.draft.config.displayName = '')],
-      ['invalid savedAt date', (v: StoredAdminAgentDraft) => (v.savedAt = 'yesterday')],
-    ])('rejects %s as invalid without persisting', (_label, mutate) => {
+      [
+        'unfinished background color',
+        (v: StoredAdminAgentDraft) => (v.draft.config.backgroundColor = '#1'),
+      ],
+    ])('persists %s so incomplete form input is recoverable', (_label, mutate) => {
       const value = baseValue();
       mutate(value);
-      expect(saveAdminAgentDraft('agent-1', value)).toBe('invalid');
-      expect(localStorage.getItem(key)).toBeNull();
+      expect(saveAdminAgentDraft('agent-1', value)).toBe('saved');
+      expect(loadAdminAgentDraft('agent-1')).toEqual(value);
     });
 
-    it('rejects duplicate skill references as invalid', () => {
+    it('keeps duplicate dependency references for authoritative submission validation', () => {
       const value = baseValue();
       const skill = { checksum: 'c'.repeat(64), skillKey: 'writer', version: '1.0.0' };
       value.draft.dependencies.skills = [skill, { ...skill }];
-      expect(saveAdminAgentDraft('agent-1', value)).toBe('invalid');
+      expect(saveAdminAgentDraft('agent-1', value)).toBe('saved');
+      expect(loadAdminAgentDraft('agent-1')).toEqual(value);
     });
 
-    it('rejects a drifted persisted draft on read (bad checksum) and purges it', () => {
+    it('hydrates an incomplete persisted draft instead of deleting user input', () => {
       const value = baseValue();
       value.draft.dependencies.model!.providerChecksum = 'not-64-hex';
       localStorage.setItem(key, JSON.stringify(value));
-      expect(loadAdminAgentDraft('agent-1')).toBeNull();
-      expect(localStorage.getItem(key)).toBeNull();
+      expect(loadAdminAgentDraft('agent-1')).toEqual(value);
+      expect(localStorage.getItem(key)).not.toBeNull();
+    });
+
+    it('rejects malformed shape without erasing the last good recovery draft', () => {
+      const original = baseValue();
+      expect(saveAdminAgentDraft('agent-1', original)).toBe('saved');
+
+      const malformed = baseValue() as unknown as {
+        draft: { config: { displayName: number } };
+      };
+      malformed.draft.config.displayName = 42;
+      expect(saveAdminAgentDraft('agent-1', malformed as unknown as StoredAdminAgentDraft)).toBe(
+        'invalid',
+      );
+      expect(loadAdminAgentDraft('agent-1')).toEqual(original);
+    });
+
+    it('still enforces hard recovery bounds and envelope metadata types', () => {
+      const tooManyQuestions = baseValue();
+      tooManyQuestions.draft.config.openingQuestions = Array.from(
+        { length: 51 },
+        (_, index) => `q${index}`,
+      );
+      expect(saveAdminAgentDraft('agent-1', tooManyQuestions)).toBe('invalid');
+
+      const invalidDate = baseValue();
+      invalidDate.savedAt = 'yesterday';
+      expect(saveAdminAgentDraft('agent-1', invalidDate)).toBe('invalid');
     });
   });
 
