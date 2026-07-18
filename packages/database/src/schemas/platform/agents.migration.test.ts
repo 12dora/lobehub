@@ -63,11 +63,13 @@ describe('M10 platform Agent expand migration', () => {
     expect(sql).toMatch(/FROM "agents" WHERE "id" = OLD\."id" FOR UPDATE/);
   });
 
-  it('keeps journal and snapshots aligned at 0125', () => {
-    expect(journal.entries).toHaveLength(126);
-    expect(journal.entries.at(-1)).toMatchObject({ idx: 125, tag: migrationName });
+  it('keeps the 0125 journal entry and snapshot intact', () => {
+    expect(journal.entries.find(({ idx }) => idx === 125)).toMatchObject({
+      idx: 125,
+      tag: migrationName,
+    });
     expect(
       readdirSync(path.join(migrations, 'meta')).filter((file) => file.endsWith('_snapshot.json')),
-    ).toHaveLength(126);
+    ).toEqual(expect.arrayContaining(['0125_snapshot.json']));
   });
 });

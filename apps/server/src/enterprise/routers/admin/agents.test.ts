@@ -4,12 +4,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { getTestDB } from '@/database/core/getTestDB';
+import { checksumPayload } from '@/database/models/platform/checksum';
 import {
   permissions,
   platformAgentAssignments,
   platformAgents,
   platformAgentVersions,
   platformAuditLogs,
+  platformJobs,
   rolePermissions,
   roles,
   userRoles,
@@ -20,9 +22,11 @@ import { seedPlatformRoles } from '@/database/utils/seedPlatformRoles';
 import { createCallerFactory } from '@/libs/trpc/lambda';
 import { createContextInner } from '@/libs/trpc/lambda/context';
 
+import { platformAgentDraftToken } from '../../services/agentCatalog';
 import { adminRouter } from '../admin';
 
 const db: LobeChatDatabase = await getTestDB();
+const databaseMocks = vi.hoisted(() => ({ getServerDB: vi.fn() }));
 const createRootCaller = createCallerFactory(adminRouter);
 const createCaller = (context: Parameters<typeof createRootCaller>[0]) =>
   createRootCaller(context).agents;
@@ -37,13 +41,14 @@ const ids = {
 };
 
 vi.mock('@/database/core/db-adaptor', () => ({
-  getServerDB: vi.fn(async () => db),
+  getServerDB: databaseMocks.getServerDB,
 }));
 
 const cleanup = async () => {
   await db.execute(sql`
     TRUNCATE TABLE
       ${platformAuditLogs},
+      ${platformJobs},
       ${platformAgentAssignments},
       ${platformAgentVersions},
       ${platformAgents},
@@ -85,6 +90,7 @@ beforeEach(async () => {
   vi.unstubAllEnvs();
   vi.stubEnv('ENABLE_PLATFORM_ADMIN', '1');
   vi.stubEnv('ENABLE_PLATFORM_MANAGED_AGENTS', '1');
+  databaseMocks.getServerDB.mockReset().mockResolvedValue(db);
   await cleanup();
   await db.insert(users).values(Object.values(ids).map((id) => ({ id })));
   await seedPlatformRoles(db);
@@ -114,6 +120,10 @@ describe('adminAgentsRouter security gates', () => {
 
     const reader = await callerFor({ authenticatedAt: new Date(), userId: ids.reader });
     await expect(reader.list({ limit: 10 })).resolves.toEqual({ items: [], nextCursor: null });
+    await expect(reader.rollouts.list({ agentId: 'missing-agent', limit: 10 })).resolves.toEqual({
+      items: [],
+      nextCursor: null,
+    });
     await expect(
       reader.create({ agentKey: 'reader-denied', reason: 'reader cannot create' }),
     ).rejects.toMatchObject({ code: 'FORBIDDEN' });
@@ -152,6 +162,9 @@ describe('adminAgentsRouter security gates', () => {
     await expect(assigner.assignments.list({ agentId: created.identity.id })).rejects.toMatchObject(
       { code: 'FORBIDDEN' },
     );
+    await expect(
+      assigner.rollouts.list({ agentId: created.identity.id, limit: 10 }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
 
     const publisher = await callerFor({ authenticatedAt: new Date(), userId: ids.publisher });
     const detail = await reader.get({ id: created.identity.id });
@@ -211,11 +224,22 @@ describe('adminAgentsRouter security gates', () => {
         replacementAgentId: null,
       }),
     ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    const staleAssigner = await callerFor({ authenticatedAt: null, userId: ids.assigner });
+    await expect(
+      staleAssigner.rollouts.start({
+        agentId: 'missing-agent',
+        assignmentId: 'missing-assignment',
+        expectedDraftToken: 'a'.repeat(64),
+        expectedRevision: 0,
+        reason: 'rollout needs reauth',
+      }),
+    ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
     expect(await db.select().from(platformAuditLogs)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ action: 'admin.agents.publish', result: 'denied' }),
         expect.objectContaining({ action: 'admin.agents.setDefaultInbox', result: 'denied' }),
         expect.objectContaining({ action: 'admin.agents.archive', result: 'denied' }),
+        expect.objectContaining({ action: 'admin.agents.rollouts.start', result: 'denied' }),
       ]),
     );
   });
@@ -224,5 +248,134 @@ describe('adminAgentsRouter security gates', () => {
     vi.stubEnv('ENABLE_PLATFORM_MANAGED_AGENTS', '0');
     const reader = await callerFor({ authenticatedAt: new Date(), userId: ids.reader });
     await expect(reader.list({ limit: 10 })).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    await expect(
+      reader.rollouts.list({ agentId: 'agent-support', limit: 10 }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  });
+
+  it('gates Rollout before serverDatabase, active-user and RBAC when only Admin is enabled', async () => {
+    vi.stubEnv('ENABLE_PLATFORM_MANAGED_AGENTS', '0');
+    databaseMocks.getServerDB.mockClear();
+    const context = await createContextInner({
+      authenticatedAt: new Date(),
+      authMethod: 'better-auth',
+      userId: ids.reader,
+    });
+    const caller = createCaller(context as never);
+
+    await expect(
+      caller.rollouts.list({ agentId: 'agent-support', limit: 10 }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    expect(databaseMocks.getServerDB).not.toHaveBeenCalled();
+  });
+
+  it('redacts an unknown SQL mutation failure while retaining a classified failure audit', async () => {
+    const dependencySnapshot = {
+      connectors: [],
+      model: {
+        modelKey: 'chat',
+        providerChecksum: 'a'.repeat(64),
+        providerKey: 'provider',
+        providerRevision: 1,
+      },
+      skills: [],
+    };
+    const config = {
+      avatar: null,
+      backgroundColor: null,
+      description: null,
+      displayName: 'Redaction test',
+      modelParameters: {},
+      openingMessage: null,
+      openingQuestions: [],
+      systemRole: 'Safe',
+      tags: [],
+    };
+    await db.insert(platformAgents).values({
+      agentKey: 'redaction-agent',
+      id: 'redaction-agent',
+      migrationRequired: false,
+      revision: 1,
+      title: 'Redaction Agent',
+    });
+    await db.insert(platformAgentVersions).values({
+      agentId: 'redaction-agent',
+      checksum: checksumPayload({ config, dependencySnapshot }),
+      config,
+      dependencySnapshot,
+      id: 'redaction-version',
+      version: '1.0.0',
+    });
+    await db
+      .update(platformAgents)
+      .set({ currentVersionId: 'redaction-version', publishedAt: new Date(), status: 'published' })
+      .where(sql`${platformAgents.id} = 'redaction-agent'`);
+    await db.insert(platformAgentAssignments).values({
+      agentId: 'redaction-agent',
+      enabled: true,
+      id: 'redaction-assignment',
+      mode: 'mandatory',
+      pinnedVersionId: null,
+      status: 'active',
+      targetId: '__global__',
+      targetType: 'global',
+      versionPolicy: 'latest_published',
+    });
+    const [identity] = await db
+      .select()
+      .from(platformAgents)
+      .where(sql`${platformAgents.id} = 'redaction-agent'`);
+    await db.execute(
+      sql.raw(`
+      CREATE FUNCTION rr2_reject_rollout_job() RETURNS trigger AS $$
+      BEGIN
+        RAISE EXCEPTION 'SQL constraint platform_jobs_secret_unique leaked-secret';
+      END;
+      $$ LANGUAGE plpgsql
+    `),
+    );
+    await db.execute(
+      sql.raw(`
+      CREATE TRIGGER rr2_reject_rollout_job
+      BEFORE INSERT ON platform_jobs
+      FOR EACH ROW EXECUTE FUNCTION rr2_reject_rollout_job()
+    `),
+    );
+    try {
+      const caller = await callerFor({ authenticatedAt: new Date(), userId: ids.assigner });
+      let responseError: unknown;
+      try {
+        await caller.rollouts.start({
+          agentId: identity.id,
+          assignmentId: 'redaction-assignment',
+          expectedDraftToken: platformAgentDraftToken(identity),
+          expectedRevision: identity.revision,
+          reason: 'redaction route test',
+        });
+      } catch (error) {
+        responseError = error;
+      }
+      expect(responseError).toMatchObject({
+        code: 'INTERNAL_SERVER_ERROR',
+        message: 'Platform temporarily unavailable',
+      });
+      expect(JSON.stringify(responseError)).not.toMatch(
+        /platform_jobs_secret_unique|leaked-secret|constraint/i,
+      );
+      const audits = await db
+        .select()
+        .from(platformAuditLogs)
+        .where(sql`${platformAuditLogs.action} = 'admin.agents.rollouts.start'`);
+      expect(audits).toEqual([
+        expect.objectContaining({
+          afterDiff: { error: 'rollout_mutation_failed' },
+          result: 'failure',
+        }),
+      ]);
+      expect(JSON.stringify(audits)).not.toMatch(/platform_jobs_secret_unique|leaked-secret/);
+    } finally {
+      await db.execute(sql.raw('DROP TRIGGER rr2_reject_rollout_job ON platform_jobs'));
+      await db.execute(sql.raw('DROP FUNCTION rr2_reject_rollout_job()'));
+    }
   });
 });

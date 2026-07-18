@@ -134,9 +134,8 @@ export interface AdminAgentDraft {
 }
 
 /**
- * Capability flags the adapter advertises to the UI. `rollouts` stays `false` on the
- * production lambda adapter until the PR-052 Rollout service (`admin.agents.rollouts.*`)
- * lands — the UI reads this to gate/defer every rollout action instead of faking success.
+ * Test/alternate-adapter fallback. Production UI availability is injected from the authoritative
+ * `platform.getCapabilities.managedResources.agents` snapshot; the singleton adapter stays closed.
  */
 export interface AdminAgentsClientCapabilities {
   rollouts: boolean;

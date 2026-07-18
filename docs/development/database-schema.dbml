@@ -1580,7 +1580,7 @@ table platform_agent_versions {
   id text [pk, not null]
   agent_id text [not null]
   version text [not null]
-  config jsonb [not null, default: `{}`]
+  config jsonb [not null, default: `'{}'::jsonb`]
   dependency_check jsonb
   dependency_snapshot jsonb
   checksum varchar(64)
@@ -1665,6 +1665,8 @@ table platform_user_agent_materializations {
     materialized_agent_id [name: 'platform_user_agent_materializations_local_agent_unique', unique]
     user_id [name: 'platform_user_agent_materializations_user_id_idx']
     platform_agent_id [name: 'platform_user_agent_materializations_platform_agent_id_idx']
+
+
 
 
 
@@ -2076,6 +2078,8 @@ table platform_jobs {
     (type, idempotency_key) [name: 'platform_jobs_type_idempotency_key_unique', unique]
     (status, lease_until) [name: 'platform_jobs_status_lease_until_idx']
     (type, status) [name: 'platform_jobs_type_status_idx']
+    (input, id) [name: 'platform_jobs_rollout_agent_id_id_idx']
+    (input, status, input) [name: 'platform_jobs_rollout_transition_parent_status_user_idx']
     created_at [name: 'platform_jobs_created_at_idx']
     requested_by [name: 'platform_jobs_requested_by_idx']
   }
