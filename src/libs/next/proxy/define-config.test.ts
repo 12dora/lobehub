@@ -2,12 +2,14 @@
  * @vitest-environment node
  */
 import { NextRequest } from 'next/server';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { defineConfig } from './define-config';
 
+const getSessionMock = vi.hoisted(() => vi.fn());
+
 vi.mock('@/auth', () => ({
-  auth: { api: { getSession: vi.fn().mockResolvedValue(null) } },
+  auth: { api: { getSession: getSessionMock } },
 }));
 
 const { middleware } = defineConfig();
@@ -16,6 +18,10 @@ const run = async (url: string) => {
   const res = await middleware(new NextRequest(url));
   return res?.headers.get('x-middleware-rewrite');
 };
+
+beforeEach(() => {
+  getSessionMock.mockResolvedValue(null);
+});
 
 describe('defineConfig locale path-traversal hardening', () => {
   it('rewrites a normal locale into /spa-auth/<locale>', async () => {
@@ -36,4 +42,17 @@ describe('defineConfig locale path-traversal hardening', () => {
     expect(pathname.startsWith('/spa-auth/')).toBe(true);
     expect(pathname).toBe('/spa-auth/en-US/signin');
   });
+});
+
+describe('defineConfig SPA rewrites', () => {
+  it.each(['/admin', '/admin/agents'])(
+    'rewrites an authenticated %s route to the SPA',
+    async (path) => {
+      getSessionMock.mockResolvedValue({ user: { id: 'admin-user' } });
+
+      const rewrite = await run(`http://localhost:3010${path}`);
+
+      expect(new URL(rewrite!).pathname).toMatch(new RegExp(`^/spa/[^/]+${path}$`));
+    },
+  );
 });
