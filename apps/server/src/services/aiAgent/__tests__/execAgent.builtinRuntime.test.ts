@@ -496,6 +496,46 @@ describe('AiAgentService.execAgent - builtin agent runtime config', () => {
     expect(callArgs.toolSet.sourceMap[SELF_FEEDBACK_INTENT_IDENTIFIER]).toBe('builtin');
   });
 
+  it('should persist builtin provenance for every trusted human-answer tool', async () => {
+    const trustedToolIds = ['lobe-agent', 'lobe-user-interaction', 'lobe-web-onboarding'];
+    vi.mocked(createServerAgentToolsEngine).mockReturnValueOnce({
+      generateToolsDetailed: vi.fn().mockReturnValue({
+        enabledToolIds: trustedToolIds,
+        tools: [],
+      }),
+      getEnabledPluginManifests: vi
+        .fn()
+        .mockReturnValue(
+          new Map(
+            trustedToolIds.map((identifier) => [
+              identifier,
+              { api: [], identifier, meta: { title: identifier }, type: 'builtin' },
+            ]),
+          ),
+        ),
+    } as unknown as ReturnType<typeof createServerAgentToolsEngine>);
+    mockGetAgentConfig.mockResolvedValue({
+      chatConfig: {},
+      id: 'agent-custom',
+      model: 'gpt-4',
+      plugins: trustedToolIds,
+      provider: 'openai',
+      systemRole: '',
+    });
+
+    await service.execAgent({
+      agentId: 'agent-custom',
+      prompt: 'Hello',
+    });
+
+    const callArgs = mockCreateOperation.mock.calls[0][0];
+    expect(callArgs.toolSet.sourceMap).toMatchObject({
+      'lobe-agent': 'builtin',
+      'lobe-user-interaction': 'builtin',
+      'lobe-web-onboarding': 'builtin',
+    });
+  });
+
   it('should not inject self-feedback intent tool for custom agents without agent self-iteration', async () => {
     mockGetAgentConfig.mockResolvedValue({
       chatConfig: {},

@@ -2,7 +2,7 @@ import { type AgentState } from '@lobechat/agent-runtime';
 import { BRANDING_PROVIDER } from '@lobechat/business-const';
 import { ToolNameResolver } from '@lobechat/context-engine';
 import { consumeStreamUntilDone, ModelEmptyError } from '@lobechat/model-runtime';
-import { fingerprintResumeToolCall } from '@lobechat/types';
+import { fingerprintResumeToolCall, type ToolSource } from '@lobechat/types';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as ContextEngineering from '@/server/modules/Mecha/ContextEngineering';
@@ -3340,7 +3340,14 @@ describe('RuntimeExecutors', { timeout: 60_000 }, () => {
 
       await executors.request_human_approve!(
         { pendingToolsCalling: [tool], type: 'request_human_approve' as const },
-        createMockState(),
+        createMockState({
+          operationToolSet: {
+            enabledToolIds: [identifier],
+            manifestMap: {},
+            sourceMap: { [identifier]: 'builtin' },
+            tools: [],
+          },
+        }),
       );
 
       expect(mockMessageModel.create).toHaveBeenCalledWith(
@@ -3351,6 +3358,53 @@ describe('RuntimeExecutors', { timeout: 60_000 }, () => {
         expect.any(String),
       );
     });
+
+    it.each<{ label: string; source: ToolSource | undefined }>([
+      { label: 'unknown', source: undefined },
+      { label: 'MCP', source: 'mcp' },
+      { label: 'Composio', source: 'composio' },
+      { label: 'Skill', source: 'lobehubSkill' },
+    ])(
+      'keeps a spoofed official identifier/API on the approval path for $label source',
+      async ({ source }) => {
+        const executors = createRuntimeExecutors(ctx);
+        mockMessageModel.create.mockImplementation(async (message: { id: string }) => ({
+          id: message.id,
+        }));
+        const tool = {
+          apiName: 'askUserQuestion',
+          arguments: '{}',
+          id: `call-spoof-${source ?? 'unknown'}`,
+          identifier: 'lobe-agent',
+          type: 'default' as const,
+        };
+        const operationToolSet = source
+          ? {
+              enabledToolIds: ['lobe-agent'],
+              manifestMap: {},
+              sourceMap: { 'lobe-agent': source },
+              tools: [],
+            }
+          : undefined;
+
+        await executors.request_human_approve!(
+          { pendingToolsCalling: [tool], type: 'request_human_approve' as const },
+          createMockState({
+            operationToolSet,
+            // A conflicting legacy map cannot override the operation snapshot's non-builtin source.
+            toolSourceMap: source ? { 'lobe-agent': 'builtin' } : undefined,
+          }),
+        );
+
+        expect(mockMessageModel.create).toHaveBeenCalledWith(
+          expect.objectContaining({
+            pluginIntervention: expect.objectContaining({ kind: 'approval', status: 'pending' }),
+            tool_call_id: tool.id,
+          }),
+          expect.any(String),
+        );
+      },
+    );
 
     it('should set state to waiting_for_human and copy pendingToolsCalling', async () => {
       const executors = createRuntimeExecutors(ctx);
