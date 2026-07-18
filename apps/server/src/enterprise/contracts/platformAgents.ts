@@ -603,6 +603,21 @@ export const adminPlatformAgentRolloutListOutputSchema = z
   })
   .strict();
 
+/**
+ * The client-assembled Agent detail aggregate: the authoritative get output plus the fully-paged
+ * assignments / rollouts / versions collections. Composed from the SAME contract schemas as the
+ * individual paged endpoints (no field is weakened), so a refreshed detail can be validated as a
+ * complete authoritative aggregate — full identity, draftToken, and every dependent collection —
+ * before it is ever trusted to advance the optimistic-concurrency CAS or unlock a pending write.
+ */
+export const adminPlatformAgentDetailAggregateOutputSchema = adminPlatformAgentDetailOutputSchema
+  .extend({
+    assignments: z.array(platformAgentAssignmentSchema),
+    rollouts: z.array(platformAgentRolloutProjectionSchema),
+    versions: z.array(platformAgentImmutableVersionSchema),
+  })
+  .strict();
+
 export const adminPlatformAgentRolloutGetInputSchema = z
   .object({
     agentId: idSchema,
@@ -714,6 +729,9 @@ export type AdminPlatformAgentDependentsOutput = z.output<
 export type AdminPlatformAgentDetailOutput = z.output<typeof adminPlatformAgentDetailOutputSchema>;
 export type AdminPlatformAgentGetInput = z.input<typeof adminPlatformAgentGetInputSchema>;
 export type AdminPlatformAgentGetOutput = z.output<typeof adminPlatformAgentGetOutputSchema>;
+export type AdminPlatformAgentDetailAggregateOutput = z.output<
+  typeof adminPlatformAgentDetailAggregateOutputSchema
+>;
 export type AdminPlatformAgentListInput = z.input<typeof adminPlatformAgentListInputSchema>;
 export type AdminPlatformAgentListOutput = z.output<typeof adminPlatformAgentListOutputSchema>;
 export type AdminPlatformAgentMutationOutput = z.output<

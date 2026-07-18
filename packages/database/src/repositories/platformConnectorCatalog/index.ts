@@ -298,6 +298,55 @@ export class PlatformConnectorCatalogRepository {
     };
   };
 
+  /**
+   * Batch variant of {@link getCurrentPublishedRuntime}: resolves the current published runtime
+   * revision for many connectors in ONE query (`WHERE id IN (:ids)`). Ids without a current
+   * published pointer are simply absent from the result — the caller maps them to `null`.
+   */
+  getCurrentPublishedRuntimeBatch = async (
+    connectorIds: string[],
+  ): Promise<PlatformConnectorRuntimeRevision[]> => {
+    if (connectorIds.length === 0) return [];
+    const rows = await this.db
+      .select({
+        checksum: platformResourceRevisions.checksum,
+        connectorId: platformConnectors.id,
+        payload: platformResourceRevisions.payload,
+        publishedAt: platformResourceRevisions.publishedAt,
+        revision: platformResourceRevisions.revision,
+        revisionId: platformResourceRevisions.id,
+      })
+      .from(platformConnectors)
+      .innerJoin(
+        platformResourceRevisions,
+        and(
+          eq(platformResourceRevisions.resourceType, 'connector'),
+          eq(platformResourceRevisions.resourceId, platformConnectors.id),
+          eq(platformResourceRevisions.revision, platformConnectors.publishedRevision),
+          eq(platformResourceRevisions.checksum, platformConnectors.publishedChecksum),
+          eq(platformResourceRevisions.status, 'published'),
+        ),
+      )
+      .where(
+        and(
+          inArray(platformConnectors.id, connectorIds),
+          eq(platformConnectors.migrationRequired, false),
+        ),
+      );
+    return rows
+      .filter((row) => row.publishedAt)
+      .map((row) => ({
+        payload: row.payload as unknown as PlatformConnectorRevisionPayload,
+        provenance: {
+          checksum: row.checksum,
+          connectorId: row.connectorId,
+          publishedAt: row.publishedAt!,
+          revision: row.revision,
+          revisionId: row.revisionId,
+        },
+      }));
+  };
+
   getPublishedRuntimeRevision = async (
     connectorId: string,
     revision: number,
