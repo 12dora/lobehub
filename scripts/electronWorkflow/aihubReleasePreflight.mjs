@@ -1,4 +1,4 @@
-import { rejectLobehubExternalBrandValue } from './desktopBranding.mjs';
+import { parseAihubExternalUrl, rejectLobehubExternalBrandValue } from './desktopBranding.mjs';
 
 const MAIN_REF = 'refs/heads/main';
 const SEMVER_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Z.-]+)?(?:\+[0-9A-Z.-]+)?$/i;
@@ -47,10 +47,10 @@ export const validateAihubReleaseInputs = (env) => {
     'AIHUB_UPDATE_URL',
   ]);
 
-  rejectLobehubExternalBrandValue(env.AIHUB_APP_URL, 'AIHUB_APP_URL');
+  const appUrl = parseAihubExternalUrl(env.AIHUB_APP_URL, 'AIHUB_APP_URL');
   rejectLobehubExternalBrandValue(env.AIHUB_MAINTAINER, 'AIHUB_MAINTAINER');
 
-  if (!/^https:\/\//.test(env.AIHUB_APP_URL)) {
+  if (appUrl.protocol !== 'https:') {
     throw new Error('AIHUB_APP_URL must use HTTPS');
   }
   if (!/^[\w.-]+\/[\w.-]+$/.test(env.AIHUB_ASSET_REPOSITORY)) {
