@@ -116,6 +116,23 @@ runs:
         echo "📁 Target path: s3://$S3_BUCKET/$TARGET_PREFIX/"
         echo ""
 
+        # AIHub must validate both original and rewritten manifests before any upload.
+        if [ "$ARTIFACT_BRAND" = "aihub" ]; then
+          if [ "$CHANNEL" = "stable" ]; then
+            echo "📋 Creating stable*.yml from latest*.yml..."
+            for yml in release/latest*.yml; do
+              if [ -f "$yml" ]; then
+                stable_yml=$(basename "$yml" | sed 's/^latest/stable/')
+                cp "$yml" "release/$stable_yml"
+                echo "   📄 Created $stable_yml from $(basename "$yml")"
+              fi
+            done
+          fi
+
+          echo "📋 Validating and rewriting AIHub manifests before upload..."
+          node scripts/electronWorkflow/prepareAihubReleaseManifests.mjs release "$VERSION"
+        fi
+
         # 1. 上传安装包到版本目录
         echo "📦 Uploading release files to s3://$S3_BUCKET/$TARGET_PREFIX/$VERSION/"
         for file in release/*.dmg release/*.zip release/*.exe release/*.AppImage release/*.deb release/*.rpm release/*.snap release/*.tar.gz release/*.blockmap; do
@@ -129,7 +146,7 @@ runs:
         # 2. stable 渠道补充 stable*.yml
         # electron-builder 对稳定版默认生成 latest*.yml
         echo ""
-        if [ "$CHANNEL" = "stable" ]; then
+        if [ "$ARTIFACT_BRAND" = "lobehub" ] && [ "$CHANNEL" = "stable" ]; then
           echo "📋 Creating stable*.yml from latest*.yml..."
           for yml in release/latest*.yml; do
             if [ -f "$yml" ]; then
@@ -145,9 +162,7 @@ runs:
         # 安装包在 s3://$BUCKET/$CHANNEL/$VERSION/ 下，URL 需加 $VERSION/ 前缀
         echo ""
         echo "📋 Adding version prefix to yml manifest URLs..."
-        if [ "$ARTIFACT_BRAND" = "aihub" ]; then
-          node scripts/electronWorkflow/prepareAihubReleaseManifests.mjs release "$VERSION"
-        else
+        if [ "$ARTIFACT_BRAND" = "lobehub" ]; then
           for yml in release/${CHANNEL}*.yml release/latest*.yml; do
             if [ -f "$yml" ]; then
               sed -i "s|url: |url: $VERSION/|g" "$yml"
