@@ -25,6 +25,7 @@ const {
   isEntitled,
   materializeForOperation,
   materializeFromPin,
+  resolveFromPinForExistingAgent,
   getPlatformAgentIdByMaterializedAgentId,
   validateDeps,
 } = vi.hoisted(() => ({
@@ -33,6 +34,7 @@ const {
   isEntitled: vi.fn(async () => true),
   materializeForOperation: vi.fn(),
   materializeFromPin: vi.fn(),
+  resolveFromPinForExistingAgent: vi.fn(),
   validateDeps: vi.fn(async () => ({ valid: true })),
 }));
 
@@ -47,6 +49,7 @@ vi.mock('@/server/enterprise/services/agentCatalog', async (importOriginal) => {
     PlatformAgentMaterializationService: class {
       materializeForOperation = materializeForOperation;
       materializeFromPin = materializeFromPin;
+      resolveFromPinForExistingAgent = resolveFromPinForExistingAgent;
     },
     validateExactPlatformAgentDependencies: validateDeps,
   };
@@ -327,6 +330,70 @@ describe('AiAgentService.execAgent — platform entitlement (REWORK-2)', () => {
       expect((error as TRPCError).code).toBe('NOT_FOUND');
       // Entitlement is checked BEFORE replaying the pin, so materialize never runs.
       expect(materializeFromPin).not.toHaveBeenCalled();
+      expect(beginOperation).not.toHaveBeenCalled();
+    });
+
+    it('re-checks live entitlement for a builtin-inbox pin already captured from pending provenance', async () => {
+      isEntitled.mockResolvedValue(false);
+
+      const error = await (
+        service() as unknown as {
+          resolvePlatformAgentConfig: (
+            platformAgentId: string,
+            identifier: string,
+            context: Record<string, unknown>,
+          ) => Promise<unknown>;
+        }
+      )
+        .resolvePlatformAgentConfig('pagt_1', 'inbox', {
+          capturedResumePin: pin,
+          existingAgentId: 'workspace-inbox-id',
+          pausedResumeKind: 'approval',
+          resumeAnchorMessageId: 'msg-1',
+          resumeToolCallId: 'tc-1',
+          threadId: null,
+          topicId: 'topic-1',
+        })
+        .then(
+          () => null,
+          (cause) => cause,
+        );
+
+      expect((error as TRPCError).code).toBe('NOT_FOUND');
+      expect(isEntitled).toHaveBeenCalledWith('user-a', 'pagt_1');
+      expect(resolveFromPinForExistingAgent).not.toHaveBeenCalled();
+      expect(beginOperation).not.toHaveBeenCalled();
+    });
+
+    it('replays the exact captured old builtin pin when it remains entitled (never latest)', async () => {
+      resolveFromPinForExistingAgent.mockResolvedValue({
+        agentId: 'workspace-inbox-id',
+        config: { id: 'workspace-inbox-id' },
+        dependencySnapshot: { connectors: [], model: {}, skills: [] },
+      });
+
+      const result = await (
+        service() as unknown as {
+          resolvePlatformAgentConfig: (
+            platformAgentId: string,
+            identifier: string,
+            context: Record<string, unknown>,
+          ) => Promise<{ config: { slug?: string }; pin: typeof pin }>;
+        }
+      ).resolvePlatformAgentConfig('pagt_1', 'inbox', {
+        capturedResumePin: pin,
+        existingAgentId: 'workspace-inbox-id',
+        pausedResumeKind: 'tool_result',
+        resumeAnchorMessageId: 'msg-1',
+        resumeToolCallId: 'tc-1',
+        threadId: null,
+        topicId: 'topic-1',
+      });
+
+      expect(isEntitled).toHaveBeenCalledWith('user-a', 'pagt_1');
+      expect(resolveFromPinForExistingAgent).toHaveBeenCalledWith(pin, 'workspace-inbox-id');
+      expect(result.pin).toBe(pin);
+      expect(result.config.slug).toBe('inbox');
       expect(beginOperation).not.toHaveBeenCalled();
     });
   });

@@ -50,6 +50,7 @@ const makeService = (params: {
   effective?: ReturnType<typeof effectiveAgent>[];
   flags?: typeof flagsOn;
   materialized?: string[];
+  workspaceId?: string;
 }) => {
   const getEffectiveList = vi.fn(async () => ({
     agents: params.effective ?? [],
@@ -72,7 +73,7 @@ const makeService = (params: {
       : undefined,
     title: defaultInbox?.config.displayName ?? 'Legacy inbox',
   }));
-  const service = new PlatformAgentUserListService({} as LobeChatDatabase, {
+  const service = new PlatformAgentUserListService({} as LobeChatDatabase, params.workspaceId, {
     flags: params.flags ?? flagsOn,
     loadBuiltinInbox,
     repository: { listMaterializedAgentIds } as unknown as PlatformAgentCatalogRepository,
@@ -104,34 +105,41 @@ const localItem = (id: string, title: string): UnifiedAvailableAgentItem => ({
   title,
 });
 
+const unusedLegacyLoader = async (): Promise<UnifiedAvailableAgentItem[]> => [];
+
 describe('PlatformAgentUserListService', () => {
   describe('flag off', () => {
     it('returns the legacy local-only result with zero catalog access', async () => {
-      const { service, getEffectiveList, listMaterializedAgentIds } = makeService({
-        flags: flagsOff,
-      });
+      const { service, getEffectiveList, listMaterializedAgentIds, loadBuiltinInbox } = makeService(
+        {
+          flags: flagsOff,
+        },
+      );
       const loadLocal = vi.fn(localLoader([localItem('agt_1', 'Local One')]));
+      const exactLegacyResult = [localItem('agt_legacy', 'Legacy exact')];
+      const loadLegacy = vi.fn(async () => exactLegacyResult);
 
       const result = await service.mergeAvailableAgents(
         'user-a',
         { limit: 10, offset: 0 },
         loadLocal,
+        loadLegacy,
       );
 
-      expect(result.map(({ id }) => id)).toEqual(['builtin-inbox-id', 'agt_1']);
+      expect(result).toBe(exactLegacyResult);
+      expect(loadLegacy).toHaveBeenCalledOnce();
+      expect(loadLocal).not.toHaveBeenCalled();
+      expect(loadBuiltinInbox).not.toHaveBeenCalled();
       expect(getEffectiveList).not.toHaveBeenCalled();
       expect(listMaterializedAgentIds).not.toHaveBeenCalled();
-      // The stable builtin is loaded explicitly because virtual agents are excluded by queryAgents.
-      expect(loadLocal).toHaveBeenCalledWith({
-        excludeAgentIds: ['builtin-inbox-id'],
-        keyword: undefined,
-        limit: 9,
-        offset: 0,
-      });
     });
 
     it('sidebar merge returns the base unchanged and never queries the catalog', async () => {
-      const { service, getEffectiveList } = makeService({ flags: flagsOff });
+      const { service, getEffectiveList, listMaterializedAgentIds, loadBuiltinInbox } = makeService(
+        {
+          flags: flagsOff,
+        },
+      );
       const base = {
         groups: [],
         pinned: [],
@@ -147,10 +155,38 @@ describe('PlatformAgentUserListService', () => {
           },
         ],
       };
-      expect(
-        (await service.mergeSidebarList('user-a', base)).ungrouped.map(({ id }) => id),
-      ).toEqual(['builtin-inbox-id', 'agt_1']);
+      expect(await service.mergeSidebarList('user-a', base)).toBe(base);
+      expect(loadBuiltinInbox).not.toHaveBeenCalled();
       expect(getEffectiveList).not.toHaveBeenCalled();
+      expect(listMaterializedAgentIds).not.toHaveBeenCalled();
+    });
+
+    it('search returns the same base value with zero builtin/catalog access', async () => {
+      const { service, getEffectiveList, listMaterializedAgentIds, loadBuiltinInbox } = makeService(
+        {
+          flags: flagsOff,
+        },
+      );
+      const base: SidebarAgentItem[] = [];
+
+      expect(await service.mergeSearchResults('user-a', base, 'needle')).toBe(base);
+      expect(loadBuiltinInbox).not.toHaveBeenCalled();
+      expect(getEffectiveList).not.toHaveBeenCalled();
+      expect(listMaterializedAgentIds).not.toHaveBeenCalled();
+    });
+
+    it('threads the explicit workspace id into the builtin loader', async () => {
+      const { service, loadBuiltinInbox } = makeService({ workspaceId: 'workspace-a' });
+
+      await service.mergeSidebarList('user-a', {
+        groups: [],
+        pinned: [],
+        privateGroups: [],
+        privateUngrouped: [],
+        ungrouped: [],
+      });
+
+      expect(loadBuiltinInbox).toHaveBeenCalledWith('user-a', 'workspace-a');
     });
   });
 
@@ -176,6 +212,7 @@ describe('PlatformAgentUserListService', () => {
           localItem('agt_duplicate', 'Duplicate'),
           localItem('agt_keep', 'Keep'),
         ]),
+        unusedLegacyLoader,
       );
 
       expect(result.map(({ id }) => id)).toEqual([
@@ -195,6 +232,7 @@ describe('PlatformAgentUserListService', () => {
         'user-a',
         { limit: 10, offset: 0 },
         localLoader([localItem('agt_1', 'Local One'), localItem('agt_2', 'Local Two')]),
+        unusedLegacyLoader,
       );
       expect(result.map((r) => r.id)).toEqual([
         'builtin-inbox-id',
@@ -222,16 +260,19 @@ describe('PlatformAgentUserListService', () => {
         'u',
         { limit: 2, offset: 0 },
         localLoader(local),
+        unusedLegacyLoader,
       );
       const page2 = await service.mergeAvailableAgents(
         'u',
         { limit: 2, offset: 2 },
         localLoader(local),
+        unusedLegacyLoader,
       );
       const page3 = await service.mergeAvailableAgents(
         'u',
         { limit: 2, offset: 4 },
         localLoader(local),
+        unusedLegacyLoader,
       );
 
       expect(page1.map((r) => r.id)).toEqual(['builtin-inbox-id', encodePlatformAgentListId('p1')]);
@@ -251,6 +292,7 @@ describe('PlatformAgentUserListService', () => {
         'u',
         { keyword: 'research', limit: 10, offset: 0 },
         loadLocal,
+        unusedLegacyLoader,
       );
       expect(result.map((r) => r.id)).toEqual([encodePlatformAgentListId('p1'), 'agt_1']);
       expect(loadLocal).toHaveBeenCalledWith(
@@ -275,11 +317,13 @@ describe('PlatformAgentUserListService', () => {
         'u',
         { keyword: 'published', limit: 10, offset: 0 },
         localLoader([]),
+        unusedLegacyLoader,
       );
       const byLegacy = await service.mergeAvailableAgents(
         'u',
         { keyword: 'legacy inbox', limit: 10, offset: 0 },
         localLoader([]),
+        unusedLegacyLoader,
       );
       expect(byPublished.map(({ id }) => id)).toEqual(['builtin-inbox-id']);
       expect(byPublished[0].title).toBe('Published Assistant');
@@ -295,6 +339,7 @@ describe('PlatformAgentUserListService', () => {
         'u',
         { limit: 10, offset: 0 },
         localLoader([localItem('agt_materialized', 'Dup'), localItem('agt_keep', 'Keep')]),
+        unusedLegacyLoader,
       );
       expect(result.map((r) => r.id)).toEqual([
         'builtin-inbox-id',
@@ -378,6 +423,7 @@ describe('PlatformAgentUserListService', () => {
         'u',
         { limit: 10, offset: 0 },
         localLoader([localItem('agt_hidden', 'Hidden'), localItem('agt_keep', 'Keep')]),
+        unusedLegacyLoader,
       );
       expect(picker.map((r) => r.id)).toEqual(['builtin-inbox-id', 'agt_keep']);
       expect(getEffectiveList).toHaveBeenCalledTimes(1);
