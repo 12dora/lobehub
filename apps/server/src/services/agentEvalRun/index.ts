@@ -1628,7 +1628,7 @@ export class AgentEvalRunService {
 
     // Get target agent display info via AgentService (fallback for runs without snapshot)
     let targetAgent:
-      | { avatar?: string; id: string; model?: string; provider?: string; title?: string }
+      | { avatar?: string | null; id: string; model?: string; provider?: string; title?: string }
       | undefined;
     if (run.targetAgentId) {
       const agentConfig = await this.agentService.getAgentConfigById(run.targetAgentId);

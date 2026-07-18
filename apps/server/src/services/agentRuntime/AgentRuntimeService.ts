@@ -122,6 +122,16 @@ const STEP_LOCK_TTL_SECONDS = 120;
 const STEP_LOCK_HEARTBEAT_MS = 30_000;
 
 /**
+ * Keep the runtime control plane intact while removing the unpinned prompt context from an exact
+ * managed operation. In particular, human approval/tool-result payloads live beside
+ * `initialContext`, not inside it, and must survive persistence and first-step dispatch.
+ */
+const sanitizeManagedOperationContext = (context: AgentRuntimeContext): AgentRuntimeContext => {
+  const { initialContext: _dynamicPromptContext, ...controlContext } = context;
+  return controlContext;
+};
+
+/**
  * Exponential backoff delay for the Nth (1-based) watchdog re-check:
  * 15s, 30s, 60s, 120s, 240s, capped at {@link ASYNC_TOOL_VERIFY_MAX_DELAY_MS}.
  */
@@ -490,6 +500,10 @@ export class AgentRuntimeService {
         : undefined;
     const platformStartClassification = classifyPlatformStart(operationMetadata);
     const platformStartBinding = extractPlatformStartBinding(operationMetadata);
+    const isManagedPlatformOperation = platformStartClassification === 'complete';
+    const operationInitialContext = isManagedPlatformOperation
+      ? sanitizeManagedOperationContext(initialContext)
+      : initialContext;
 
     // Persist initial agent_operations row. CompletionLifecycle owns both
     // ends of the persistence lifecycle (start row here, terminal update
@@ -547,21 +561,21 @@ export class AgentRuntimeService {
       const initialState = {
         createdAt: new Date().toISOString(),
         // Store initialContext for executeSync to use
-        initialContext,
+        initialContext: operationInitialContext,
         lastModified: new Date().toISOString(),
         // Use the passed initial messages
         messages: initialMessages,
         metadata: {
           activeDeviceId,
           agentConfig,
-          agentGroup,
-          botContext,
-          botPlatformContext,
+          agentGroup: isManagedPlatformOperation ? undefined : agentGroup,
+          botContext: isManagedPlatformOperation ? undefined : botContext,
+          botPlatformContext: isManagedPlatformOperation ? undefined : botPlatformContext,
           connectorApprovalReceipt,
           deviceAccessPolicy,
           deviceSystemInfo,
-          discordContext,
-          evalContext,
+          discordContext: isManagedPlatformOperation ? undefined : discordContext,
+          evalContext: isManagedPlatformOperation ? undefined : evalContext,
           executionPlan,
           // need be removed
           modelRuntimeConfig,
@@ -570,8 +584,8 @@ export class AgentRuntimeService {
           stream,
           operationSkillSet,
           userId,
-          userMemory,
-          userTimezone,
+          userMemory: isManagedPlatformOperation ? undefined : userMemory,
+          userTimezone: isManagedPlatformOperation ? undefined : userTimezone,
           workingDirectory: agentConfig?.chatConfig?.runtimeEnv?.workingDirectory,
           workspaceId,
           ...appContext,
@@ -646,7 +660,7 @@ export class AgentRuntimeService {
         // LocalQueueServiceImpl uses setTimeout + callback mechanism
         // QStashQueueServiceImpl schedules HTTP requests
         messageId = await this.queueService.scheduleMessage({
-          context: initialContext,
+          context: operationInitialContext,
           delay: 50, // Short delay for startup
           endpoint: `${this.baseURL}/run`,
           operationId,
@@ -2613,14 +2627,15 @@ export class AgentRuntimeService {
       : new GeneralChatAgent(generalConfig);
 
     // Create streaming executor context
+    const isManagedPlatformOperation = metadata?.platformStartClassification === 'complete';
     const executorContext: RuntimeExecutorContext = {
       agentConfig: metadata?.agentConfig,
       allowEarlyFinalAnswerVisibleOutputEnd: !this.agentFactory,
-      botContext: metadata?.botContext,
-      botPlatformContext: metadata?.botPlatformContext,
-      discordContext: metadata?.discordContext,
-      userTimezone: metadata?.userTimezone,
-      evalContext: metadata?.evalContext,
+      botContext: isManagedPlatformOperation ? undefined : metadata?.botContext,
+      botPlatformContext: isManagedPlatformOperation ? undefined : metadata?.botPlatformContext,
+      discordContext: isManagedPlatformOperation ? undefined : metadata?.discordContext,
+      userTimezone: isManagedPlatformOperation ? undefined : metadata?.userTimezone,
+      evalContext: isManagedPlatformOperation ? undefined : metadata?.evalContext,
       execSubAgent: this.delegate.execSubAgent,
       execVirtualSubAgent: this.delegate.execVirtualSubAgent,
       execGroupMember: this.delegate.execGroupMember,

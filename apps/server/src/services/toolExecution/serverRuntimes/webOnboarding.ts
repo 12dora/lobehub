@@ -2,6 +2,7 @@ import { WebOnboardingIdentifier } from '@lobechat/builtin-tool-web-onboarding';
 import { WebOnboardingExecutionRuntime } from '@lobechat/builtin-tool-web-onboarding/executionRuntime';
 
 import { UserPersonaModel } from '@/database/models/userMemory/persona';
+import { assertDefaultInboxNotPlatformManaged } from '@/server/enterprise/guards/managedPlatformAgent';
 import { AgentDocumentsService } from '@/server/services/agentDocuments';
 import { OnboardingService } from '@/server/services/onboarding';
 
@@ -47,6 +48,10 @@ export const webOnboardingRuntime: ServerRuntimeRegistration = {
 
       updateDocument: async (type, content) => {
         if (type === 'soul') {
+          await assertDefaultInboxNotPlatformManaged({
+            db: context.serverDB!,
+            userId: context.userId!,
+          });
           const inboxAgentId = await onboardingService.getInboxAgentId();
           const doc = await docService.upsertDocumentByFilename({
             agentId: inboxAgentId,

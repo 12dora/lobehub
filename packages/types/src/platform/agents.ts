@@ -51,8 +51,13 @@ export interface PlatformAgentUserListMeta {
   distribution: PlatformAgentAssignmentMode;
   /** Always true — a platform item is managed, so the client hides edit/delete affordances. */
   managed: true;
-  /** Stable platform Agent id (also carried inside the encoded list-item id). */
-  platformAgentId: string;
+  source: 'platform';
+}
+
+/** Minimal public marker attached to a managed Agent config. Exact pins stay server-only. */
+export interface PlatformAgentConfigMeta {
+  distribution?: PlatformAgentAssignmentMode;
+  managed: true;
   source: 'platform';
 }
 

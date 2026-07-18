@@ -42,6 +42,7 @@ import {
   userSettingsResetOverrideOutputSchema,
 } from '@/server/enterprise/contracts/userSettings';
 import { throwEnterpriseError } from '@/server/enterprise/guards/enterpriseErrors';
+import { assertDefaultInboxNotPlatformManaged } from '@/server/enterprise/guards/managedPlatformAgent';
 import { userConnectorsRouter } from '@/server/enterprise/routers/user/connectors';
 import {
   EffectiveSettingsService,
@@ -64,6 +65,8 @@ const usernameSchema = z
   .regex(/^\w+$/, { message: 'USERNAME_INVALID' });
 
 const AVATAR_WEBAPI_PREFIX = '/webapi/';
+const isDefaultAgentSettingsPath = (path: string): boolean =>
+  path === 'defaultAgent' || path.startsWith('defaultAgent.');
 
 // Accept only: base64 data URL, absolute http(s) URL, empty string,
 // or an internal /webapi/user/avatar/<userId>/... path scoped to the caller.
@@ -246,6 +249,9 @@ export const userRouter = router({
     .input(userSettingsPatchOverrideInputSchema)
     .output(userSettingsPatchOverrideOutputSchema)
     .mutation(async ({ ctx, input }) => {
+      if (isDefaultAgentSettingsPath(input.path)) {
+        await assertDefaultInboxNotPlatformManaged({ db: ctx.serverDB, userId: ctx.userId });
+      }
       const perm = await assertWorkspaceSettingsWritePermission({
         db: ctx.serverDB,
         paths: [input.path],
@@ -289,6 +295,9 @@ export const userRouter = router({
     .input(userSettingsResetOverrideInputSchema)
     .output(userSettingsResetOverrideOutputSchema)
     .mutation(async ({ ctx, input }) => {
+      if (isDefaultAgentSettingsPath(input.path)) {
+        await assertDefaultInboxNotPlatformManaged({ db: ctx.serverDB, userId: ctx.userId });
+      }
       const perm = await assertWorkspaceSettingsWritePermission({
         db: ctx.serverDB,
         paths: [input.path],
@@ -501,6 +510,7 @@ export const userRouter = router({
     .input(z.object({ content: z.string(), type: z.enum(['soul', 'persona']) }))
     .mutation(async ({ ctx, input }) => {
       if (input.type === 'soul') {
+        await assertDefaultInboxNotPlatformManaged({ db: ctx.serverDB, userId: ctx.userId });
         const onboardingService = new OnboardingService(ctx.serverDB, ctx.userId);
         const docService = new AgentDocumentsService(
           ctx.serverDB,
@@ -567,6 +577,10 @@ export const userRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
+      if (input.type === 'soul') {
+        await assertDefaultInboxNotPlatformManaged({ db: ctx.serverDB, userId: ctx.userId });
+      }
+
       const readCurrent = async (): Promise<string> => {
         if (input.type === 'soul') {
           const onboardingService = new OnboardingService(ctx.serverDB, ctx.userId);
@@ -644,6 +658,13 @@ export const userRouter = router({
 
   updateSettings: userProcedure.input(UserSettingsSchema).mutation(async ({ ctx, input }) => {
     const { keyVaults, ...res } = input as Partial<UserSettings>;
+
+    // The legacy settings blob used to be able to rewrite inbox model/provider/prompt/plugins.
+    // Reject that narrow path before permissions, encryption, or writes when default-inbox is
+    // managed. Resolver/DB failure propagates, so an error cannot be treated as legacy absence.
+    if ('defaultAgent' in res) {
+      await assertDefaultInboxNotPlatformManaged({ db: ctx.serverDB, userId: ctx.userId });
+    }
 
     // Shared workspace permission (same rules for legacy + path patch/reset)
     const topKeys = Object.keys(res);

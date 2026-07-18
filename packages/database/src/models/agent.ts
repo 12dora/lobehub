@@ -415,6 +415,16 @@ export class AgentModel {
     return rows.map(({ slug, ...row }) => normalizeInboxAgentMeta(row, { slug }));
   };
 
+  /** Owner/workspace-scoped batch identity lookup for managed mutation guards. */
+  findAgentIdsBySlug = async (ids: string[], slug: string): Promise<Set<string>> => {
+    if (ids.length === 0) return new Set();
+    const rows = await this.db
+      .select({ id: agents.id })
+      .from(agents)
+      .where(and(this.ownership(), inArray(agents.id, ids), eq(agents.slug, slug)));
+    return new Set(rows.map(({ id }) => id));
+  };
+
   /**
    * List agents bindable by the System Bot messenger picker: real agents plus
    * the inbox (other virtual agents excluded), ordered by `updatedAt DESC` with

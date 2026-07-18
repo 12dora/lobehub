@@ -17,10 +17,12 @@ import {
 } from '@/database/schemas/platform';
 import { users } from '@/database/schemas/user';
 import type { LobeChatDatabase } from '@/database/type';
+import { PlatformDefaultInboxService } from '@/server/enterprise/services/agentCatalog/defaultInbox';
 
 import {
   assertAgentNotPlatformManaged,
   assertAgentsNotPlatformManaged,
+  MAX_MANAGED_AGENT_GUARD_IDS,
   pickAgentId,
   pickAgentIds,
   pickDocumentAgentIds,
@@ -85,6 +87,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await cleanup();
+  vi.restoreAllMocks();
   vi.unstubAllEnvs();
 });
 
@@ -109,6 +112,30 @@ describe('assertAgentNotPlatformManaged (ROOT-02)', () => {
   it('is a no-op when the managed flag is off (ordinary local Agents unaffected)', async () => {
     vi.stubEnv('ENABLE_PLATFORM_MANAGED_AGENTS', '0');
     expect(await assertManaged('agt_materialized')).toBeNull();
+  });
+
+  it('rejects the builtin inbox before its first operation creates a reverse mapping', async () => {
+    vi.stubEnv('ENABLE_PLATFORM_MANAGED_AGENTS', '1');
+    await db.insert(agents).values({ id: 'builtin-inbox', slug: 'inbox', userId: 'user-a' });
+    const capture = vi
+      .spyOn(PlatformDefaultInboxService.prototype, 'capture')
+      .mockResolvedValue({} as never);
+
+    const error = await assertManaged('builtin-inbox');
+    expect(error).toBeInstanceOf(TRPCError);
+    expect((error as TRPCError).code).toBe('FORBIDDEN');
+    expect(capture).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails closed when default-inbox resolution fails during a builtin inbox mutation', async () => {
+    vi.stubEnv('ENABLE_PLATFORM_MANAGED_AGENTS', '1');
+    await db.insert(agents).values({ id: 'builtin-inbox', slug: 'inbox', userId: 'user-a' });
+    const failure = new Error('resolver unavailable');
+    vi.spyOn(PlatformDefaultInboxService.prototype, 'capture').mockRejectedValue(failure);
+
+    await expect(
+      assertAgentNotPlatformManaged({ agentId: 'builtin-inbox', db, userId: 'user-a' }),
+    ).rejects.toBe(failure);
   });
 });
 
@@ -136,8 +163,51 @@ describe('assertAgentsNotPlatformManaged (RR2-4 batch)', () => {
   it('is owner-scoped and flag-gated', async () => {
     vi.stubEnv('ENABLE_PLATFORM_MANAGED_AGENTS', '1');
     expect(await assertMany(['agt_materialized'], 'user-b')).toBeNull();
+    const countingDb = Object.create(db) as LobeChatDatabase;
+    countingDb.select = vi.fn(db.select.bind(db)) as never;
     vi.stubEnv('ENABLE_PLATFORM_MANAGED_AGENTS', '0');
-    expect(await assertMany(['agt_materialized'])).toBeNull();
+    await expect(
+      assertAgentsNotPlatformManaged({
+        agentIds: ['agt_materialized'],
+        db: countingDb,
+        userId: 'user-a',
+      }),
+    ).resolves.toBeUndefined();
+    expect(countingDb.select).not.toHaveBeenCalled();
+  });
+
+  it('deduplicates into exactly two owner-scoped batch queries', async () => {
+    vi.stubEnv('ENABLE_PLATFORM_MANAGED_AGENTS', '1');
+    const countingDb = Object.create(db) as LobeChatDatabase;
+    countingDb.select = vi.fn(db.select.bind(db)) as never;
+
+    await expect(
+      assertAgentsNotPlatformManaged({
+        agentIds: ['agt_ordinary', 'agt_ordinary'],
+        db: countingDb,
+        userId: 'user-a',
+      }),
+    ).resolves.toBeUndefined();
+    expect(countingDb.select).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects oversized batches before any query', async () => {
+    vi.stubEnv('ENABLE_PLATFORM_MANAGED_AGENTS', '1');
+    const countingDb = Object.create(db) as LobeChatDatabase;
+    countingDb.select = vi.fn(db.select.bind(db)) as never;
+    const ids = Array.from({ length: MAX_MANAGED_AGENT_GUARD_IDS + 1 }, (_, i) => `agt_${i}`);
+
+    const error = await assertAgentsNotPlatformManaged({
+      agentIds: ids,
+      db: countingDb,
+      userId: 'user-a',
+    }).then(
+      () => null,
+      (e) => e,
+    );
+    expect(error).toBeInstanceOf(TRPCError);
+    expect((error as TRPCError).code).toBe('BAD_REQUEST');
+    expect(countingDb.select).not.toHaveBeenCalled();
   });
 });
 

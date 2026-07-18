@@ -29,7 +29,7 @@ const homeProcedure = wsCompatProcedure.use(serverDatabase).use(async (opts) => 
       homeService: new HomeService(ctx.userId),
       // Enterprise adapter (M10 PR-049 · A). Kept out of HomeRepository so the database layer
       // never depends on enterprise code. Flag off → merges nothing with zero catalog access.
-      platformAgentListService: new PlatformAgentUserListService(ctx.serverDB),
+      platformAgentListService: new PlatformAgentUserListService(ctx.serverDB, workspaceId),
     },
   });
 });

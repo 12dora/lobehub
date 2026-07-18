@@ -20,6 +20,7 @@ import {
   RedisKeyNamespace,
   RedisKeys,
 } from '@/libs/redis';
+import { PlatformDefaultInboxService } from '@/server/enterprise/services/agentCatalog/defaultInbox';
 import { getEffectiveDefaultAgentConfig } from '@/server/enterprise/services/settings/runtimeSettingsAdapter';
 import { getServerDefaultAgentConfig } from '@/server/globalConfig';
 
@@ -99,11 +100,24 @@ export class AgentService {
 
     // Use builtin avatar as fallback only when DB has no custom avatar
     const builtinAgent = BUILTIN_AGENTS[slug as BuiltinAgentSlug];
-    if (builtinAgent?.avatar && !normalizedConfig.avatar) {
-      return { ...normalizedConfig, avatar: builtinAgent.avatar };
+    const withBuiltinAvatar =
+      builtinAgent?.avatar && !normalizedConfig.avatar
+        ? { ...normalizedConfig, avatar: builtinAgent.avatar }
+        : normalizedConfig;
+
+    // PR-051: the stable builtin inbox id/slug stays authoritative, while its user-visible and
+    // runtime-owned fields come from the exact effective default-inbox platform version. A real
+    // absence falls back to legacy; resolver/DB/dependency errors propagate instead of pretending
+    // there is no managed default. Flag off performs zero platform IO inside the adapter.
+    if (slug === 'inbox') {
+      return this.applyDefaultInboxTakeover({
+        ...withBuiltinAvatar,
+        avatar: withBuiltinAvatar.avatar ?? undefined,
+        title: withBuiltinAvatar.title ?? undefined,
+      });
     }
 
-    return normalizedConfig;
+    return withBuiltinAvatar;
   }
 
   /**
@@ -155,15 +169,28 @@ export class AgentService {
 
     // Merge AI-generated welcome data if available
     if (welcomeData) {
-      return {
+      return this.applyDefaultInboxTakeover({
         ...config,
         openingMessage: welcomeData.welcomeMessage,
         openingQuestions: welcomeData.openQuestions,
-      };
+      });
     }
 
-    return config;
+    return this.applyDefaultInboxTakeover(config);
   }
+
+  private applyDefaultInboxTakeover = async (config: LobeAgentConfig) => {
+    const candidate = config as AgentConfigWithId & {
+      description?: string | null;
+      slug?: string | null;
+      tags?: string[];
+    };
+    if (candidate.slug !== 'inbox') return config;
+    return new PlatformDefaultInboxService(this.db, this.userId).getEffectiveBuiltinConfig({
+      ...candidate,
+      slug: candidate.slug,
+    });
+  };
 
   /**
    * Get AI-generated welcome data from Redis

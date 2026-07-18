@@ -100,6 +100,11 @@ describe('PlatformAgentMaterializationService', () => {
       systemRole: 'Use approved sources.',
       title: 'Research Agent',
     });
+    expect(runtime.plugins).toEqual([]);
+    expect(runtime.platform).toEqual({
+      managed: true,
+      source: 'platform',
+    });
     // camelCase managed params are lowered to the runtime snake_case shape.
     expect(runtime.params).toMatchObject({ max_tokens: 4096, temperature: 0.4, top_p: 0.9 });
   });
@@ -119,6 +124,39 @@ describe('PlatformAgentMaterializationService', () => {
     expect(result.agentId).toBe('agt_existing');
     expect(result.config.id).toBe('agt_existing');
     expect(result.config.title).toBe('Research Agent');
+  });
+
+  it('resolves the exact snapshot onto the stable builtin inbox id without creating a row or mapping', async () => {
+    const materializeLocalAgent = vi.fn(async (input) => ({
+      agentId: (await input.createLocalAgent()).id,
+      created: true,
+      ok: true as const,
+    }));
+    const service = makeService({
+      getExactVersion: vi.fn(async () => exactVersion()),
+      materializeLocalAgent,
+    });
+
+    const resolved = await service.resolveForExistingAgent(snapshot(), 'builtin-inbox-id');
+    expect(resolved.agentId).toBe('builtin-inbox-id');
+    expect(resolved.config).toMatchObject({
+      id: 'builtin-inbox-id',
+      model: 'chat-model',
+      provider: 'internal-provider',
+      title: 'Research Agent',
+    });
+    expect(materializeLocalAgent).not.toHaveBeenCalled();
+
+    expect(materializeLocalAgent).not.toHaveBeenCalled();
+  });
+
+  it('keeps a null avatar as an authoritative managed clear', async () => {
+    const service = makeService({ getExactVersion: vi.fn(async () => exactVersion()) });
+    const resolved = await service.resolveForExistingAgent(
+      snapshot({ config: { ...config('Research Agent'), avatar: null } }),
+      'builtin-inbox-id',
+    );
+    expect(resolved.config.avatar).toBeNull();
   });
 
   it('pins each operation to its OWN captured snapshot (v1 stays v1 after v2 exists)', async () => {
@@ -248,6 +286,28 @@ describe('PlatformAgentMaterializationService', () => {
       await expect(service.materializeFromPin(pin)).rejects.toBeInstanceOf(
         PlatformAgentMaterializationError,
       );
+    });
+
+    it('replays the exact historical version on the stable builtin inbox id', async () => {
+      const getExactVersion = vi.fn(async (_agentId: string, versionId: string) =>
+        exactVersion({
+          config: config(versionId === 'pav_v2' ? 'Inbox V2' : 'Inbox V1'),
+          id: versionId,
+        }),
+      );
+      const service = makeService({ getExactVersion });
+
+      const oldOperation = await service.resolveFromPinForExistingAgent(
+        { checksum: CHECKSUM, platformAgentId: 'pagt_1', versionId: 'pav_v2' },
+        'builtin-inbox-id',
+      );
+      const afterRollback = await service.resolveFromPinForExistingAgent(
+        { checksum: CHECKSUM, platformAgentId: 'pagt_1', versionId: 'pav_v1' },
+        'builtin-inbox-id',
+      );
+
+      expect(oldOperation.config).toMatchObject({ id: 'builtin-inbox-id', title: 'Inbox V2' });
+      expect(afterRollback.config).toMatchObject({ id: 'builtin-inbox-id', title: 'Inbox V1' });
     });
   });
 

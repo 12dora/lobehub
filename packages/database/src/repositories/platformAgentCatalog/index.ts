@@ -783,6 +783,24 @@ export class PlatformAgentCatalogRepository {
     return row?.platformAgentId ?? null;
   };
 
+  /** Owner-scoped batch reverse lookup used by mutation guards. */
+  getPlatformAgentIdsByMaterializedAgentIds = async (
+    userId: string,
+    materializedAgentIds: string[],
+  ): Promise<Set<string>> => {
+    if (materializedAgentIds.length === 0) return new Set();
+    const rows = await this.db
+      .select({ platformAgentId: platformUserAgentMaterializations.platformAgentId })
+      .from(platformUserAgentMaterializations)
+      .where(
+        and(
+          eq(platformUserAgentMaterializations.userId, userId),
+          inArray(platformUserAgentMaterializations.materializedAgentId, materializedAgentIds),
+        ),
+      );
+    return new Set(rows.map(({ platformAgentId }) => platformAgentId));
+  };
+
   /**
    * Delayed materialization of a local user-owned Agent for a platform Agent, transactional and
    * owner-scoped (R-materialize). The whole thing runs under the per-Agent reference lock inside

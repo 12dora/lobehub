@@ -1,15 +1,28 @@
 import { TRPCError } from '@trpc/server';
 
+import { AgentModel } from '@/database/models/agent';
 import { PlatformAgentCatalogRepository } from '@/database/repositories/platformAgentCatalog';
 import type { LobeChatDatabase } from '@/database/type';
 import { trpc } from '@/libs/trpc/lambda/init';
 
 import { parseEnterpriseFeatureFlags } from '../featureFlags';
+import { PlatformDefaultInboxService } from '../services/agentCatalog/defaultInbox';
 
-const MANAGED_AGENT_MUTATION_FORBIDDEN = {
+export const MANAGED_AGENT_MUTATION_FORBIDDEN = {
   code: 'FORBIDDEN',
   message: 'This agent is managed by your organization and cannot be modified here.',
 } as const;
+
+export const MAX_MANAGED_AGENT_GUARD_IDS = 100;
+
+/** Guard mutation paths that target the stable builtin inbox without carrying its local id. */
+export const assertDefaultInboxNotPlatformManaged = async (params: {
+  db: LobeChatDatabase;
+  userId: string;
+}): Promise<void> => {
+  const managedDefault = await new PlatformDefaultInboxService(params.db, params.userId).capture();
+  if (managedDefault) throw new TRPCError(MANAGED_AGENT_MUTATION_FORBIDDEN);
+};
 
 /**
  * Reject an ordinary Agent mutation (update / remove / pin / group) when the target local Agent id
@@ -30,11 +43,13 @@ export const assertAgentNotPlatformManaged = async (params: {
   agentId: string;
   db: LobeChatDatabase;
   userId: string;
+  workspaceId?: string;
 }): Promise<void> => {
   await assertAgentsNotPlatformManaged({
     agentIds: [params.agentId],
     db: params.db,
     userId: params.userId,
+    workspaceId: params.workspaceId,
   });
 };
 
@@ -51,20 +66,25 @@ export const assertAgentsNotPlatformManaged = async (params: {
   agentIds: string[];
   db: LobeChatDatabase;
   userId: string;
+  workspaceId?: string;
 }): Promise<void> => {
   if (!parseEnterpriseFeatureFlags(process.env).ENABLE_PLATFORM_MANAGED_AGENTS) return;
   const uniqueIds = [...new Set(params.agentIds)].filter((id) => id.length > 0);
   if (uniqueIds.length === 0) return;
-  const repository = new PlatformAgentCatalogRepository(params.db);
-  for (const agentId of uniqueIds) {
-    const platformAgentId = await repository.getPlatformAgentIdByMaterializedAgentId(
-      params.userId,
-      agentId,
-    );
-    if (platformAgentId) {
-      throw new TRPCError(MANAGED_AGENT_MUTATION_FORBIDDEN);
-    }
+  if (uniqueIds.length > MAX_MANAGED_AGENT_GUARD_IDS) {
+    throw new TRPCError({
+      code: 'BAD_REQUEST',
+      message: `A maximum of ${MAX_MANAGED_AGENT_GUARD_IDS} agents can be mutated at once.`,
+    });
   }
+  const repository = new PlatformAgentCatalogRepository(params.db);
+  const agentModel = new AgentModel(params.db, params.userId, params.workspaceId);
+  const [platformAgentIds, inboxAgentIds] = await Promise.all([
+    repository.getPlatformAgentIdsByMaterializedAgentIds(params.userId, uniqueIds),
+    agentModel.findAgentIdsBySlug(uniqueIds, 'inbox'),
+  ]);
+  if (platformAgentIds.size > 0) throw new TRPCError(MANAGED_AGENT_MUTATION_FORBIDDEN);
+  if (inboxAgentIds.size > 0) await assertDefaultInboxNotPlatformManaged(params);
 };
 
 /** Extracts the agent id(s) a mutation targets from its raw tRPC input. */
@@ -117,6 +137,7 @@ export const withManagedLocalAgentGuard = (pick: ManagedLocalAgentIdPicker) =>
     const agentIds = pick(await getRawInput()).filter(
       (id): id is string => typeof id === 'string' && id.length > 0,
     );
-    await assertAgentsNotPlatformManaged({ agentIds, db, userId });
+    const workspaceId = (ctx as { workspaceId?: string }).workspaceId;
+    await assertAgentsNotPlatformManaged({ agentIds, db, userId, workspaceId });
     return next();
   });

@@ -3,10 +3,44 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AiAgentService } from '../index';
 
-const { mockCreateOperation, mockGetAgentConfig, mockMessageCreate } = vi.hoisted(() => ({
+const {
+  mockBeginOperation,
+  mockCreateOperation,
+  mockCreateToolsEngine,
+  mockGetAgentConfig,
+  mockMaterialize,
+  mockMessageCreate,
+} = vi.hoisted(() => ({
+  mockBeginOperation: vi.fn(),
   mockCreateOperation: vi.fn(),
+  mockCreateToolsEngine: vi.fn(),
   mockGetAgentConfig: vi.fn(),
+  mockMaterialize: vi.fn(),
   mockMessageCreate: vi.fn(),
+}));
+
+vi.mock('@/server/enterprise/services/agentCatalog', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return {
+    ...actual,
+    PlatformAgentEffectiveResolver: class {
+      beginOperation = mockBeginOperation;
+    },
+    PlatformAgentMaterializationService: class {
+      materializeForOperation = mockMaterialize;
+    },
+    validateExactPlatformAgentDependencies: vi.fn(async () => ({ valid: true })),
+  };
+});
+
+vi.mock('@/server/enterprise/services/connectorCatalog/runtimeIntegration', () => ({
+  buildManagedConnectorManifests: vi.fn(async () => ({ manifests: [], mode: 'legacy' })),
+  buildPinnedManagedConnectorManifests: vi.fn(async () => ({ manifests: [] })),
+}));
+
+vi.mock('@/server/enterprise/services/skillCatalog', () => ({
+  resolvePinnedPlatformSkillRuntimeSnapshot: vi.fn(async () => ({ catalog: [], skills: [] })),
+  resolvePlatformSkillRuntimeSnapshot: vi.fn(async () => null),
 }));
 
 vi.mock('@/libs/trusted-client', () => ({
@@ -83,10 +117,7 @@ vi.mock('@/server/services/file', () => ({
 }));
 
 vi.mock('@/server/modules/Mecha', () => ({
-  createServerAgentToolsEngine: vi.fn().mockReturnValue({
-    generateToolsDetailed: vi.fn().mockReturnValue({ enabledToolIds: [], tools: [] }),
-    getEnabledPluginManifests: vi.fn().mockReturnValue(new Map()),
-  }),
+  createServerAgentToolsEngine: mockCreateToolsEngine,
   serverMessagesEngine: vi.fn().mockResolvedValue([{ content: 'test', role: 'user' }]),
 }));
 
@@ -139,6 +170,10 @@ describe('AiAgentService.execAgent - model/provider override', () => {
       messageId: 'queue-msg-1',
       operationId: 'op-123',
       success: true,
+    });
+    mockCreateToolsEngine.mockReturnValue({
+      generateToolsDetailed: vi.fn().mockReturnValue({ enabledToolIds: [], tools: [] }),
+      getEnabledPluginManifests: vi.fn().mockReturnValue(new Map()),
     });
     service = new AiAgentService(mockDb, userId);
   });
@@ -201,5 +236,67 @@ describe('AiAgentService.execAgent - model/provider override', () => {
     const callArgs = mockCreateOperation.mock.calls[0][0];
     expect(callArgs.agentConfig.model).toBe('claude-sonnet-4-6');
     expect(callArgs.agentConfig.provider).toBe('anthropic');
+  });
+
+  it('ignores request overrides and dynamic injections for an exact platform operation', async () => {
+    const snapshot = {
+      checksum: 'a'.repeat(64),
+      config: {} as never,
+      platformAgentId: 'platform-1',
+      versionId: 'version-1',
+    };
+    mockBeginOperation.mockResolvedValue({
+      getSnapshot: () => snapshot,
+      platformAgentId: 'platform-1',
+    });
+    mockMaterialize.mockResolvedValue({
+      agentId: 'managed-agent',
+      config: {
+        chatConfig: {},
+        id: 'managed-agent',
+        model: 'managed-model',
+        platform: { managed: true, source: 'platform' },
+        plugins: [],
+        provider: 'managed-provider',
+        slug: null,
+        systemRole: 'Managed exact prompt',
+      },
+      dependencySnapshot: {
+        connectors: [],
+        model: {
+          modelKey: 'managed-model',
+          providerChecksum: 'b'.repeat(64),
+          providerKey: 'managed-provider',
+          providerRevision: 1,
+        },
+        skills: [],
+      },
+    });
+
+    await service.execAgent({
+      additionalPluginIds: ['request-plugin'],
+      agentId: 'platform-agent:platform-1',
+      functionTools: [{ name: 'clientFunction', parameters: { type: 'object' } }],
+      instructions: 'Untrusted request instruction',
+      model: 'request-model',
+      prompt: 'Hello',
+      provider: 'request-provider',
+      selectedToolIds: ['selected-plugin'],
+    });
+
+    const callArgs = mockCreateOperation.mock.calls[0][0];
+    expect(callArgs.agentConfig.model).toBe('managed-model');
+    expect(callArgs.agentConfig.provider).toBe('managed-provider');
+    expect(callArgs.agentConfig.systemRole).toBe('Managed exact prompt');
+    expect(callArgs.toolSet.manifestMap).not.toHaveProperty('lobe-client-fn');
+    expect(mockCreateToolsEngine).toHaveBeenCalledWith(
+      expect.objectContaining({ installedPlugins: [] }),
+      expect.objectContaining({
+        exactBuiltinToolIds: ['lobe-activator', 'lobe-skills'],
+        agentConfig: expect.objectContaining({
+          plugins: ['lobe-activator', 'lobe-skills'],
+        }),
+      }),
+    );
   });
 });
