@@ -5,6 +5,7 @@
   "sideEffects": false,
   "exports": {
     ".": "./src/index.ts",
+    "./inlineSkillResources": "./src/inlineSkillResources.ts",
     "./workspace": "./src/workspace.ts"
   },
   "main": "./src/index.ts",

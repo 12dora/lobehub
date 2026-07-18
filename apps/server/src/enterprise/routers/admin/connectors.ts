@@ -12,6 +12,8 @@ import {
   adminConnectorDraftMutationOutputSchema,
   adminConnectorGetInputSchema,
   adminConnectorGetOutputSchema,
+  adminConnectorGetPublishedBatchInputSchema,
+  adminConnectorGetPublishedBatchOutputSchema,
   adminConnectorListInputSchema,
   adminConnectorListOutputSchema,
   adminConnectorPublishInputSchema,
@@ -188,6 +190,16 @@ export const adminConnectorsRouter = router({
     .query(async ({ ctx, input }) =>
       executeAdminConnectorOperation('admin.connectors.get', () =>
         ctx.getAdminConnectorRuntime().service.getDraft(input.id),
+      ),
+    ),
+
+  getPublishedBatch: adminConnectorProcedure
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.CONNECTOR_READ))
+    .input(adminConnectorGetPublishedBatchInputSchema)
+    .output(adminConnectorGetPublishedBatchOutputSchema)
+    .query(async ({ ctx, input }) =>
+      executeAdminConnectorOperation('admin.connectors.getPublishedBatch', () =>
+        ctx.getAdminConnectorRuntime().service.getPublishedBatch(input.ids),
       ),
     ),
 
