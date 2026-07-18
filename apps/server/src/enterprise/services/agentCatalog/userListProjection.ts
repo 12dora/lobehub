@@ -103,16 +103,24 @@ export class PlatformAgentUserListService {
 
   /**
    * Resolve the owner-scoped visible platform Agents (already hidden-filtered and ordered by the
-   * resolver) plus the set of local rows to de-duplicate. Flag off → empty, no catalog access.
+   * resolver) plus the set of local rows to de-duplicate.
+   *
+   * Flag off → empty, ZERO catalog access (legacy result preserved verbatim).
+   *
+   * Flag on → ALWAYS read the owner-scoped materialized-id set, even when the visible entries are
+   * empty. A materialized local row for an Agent the user has since hidden, or whose assignment was
+   * revoked, is NOT in `getEffectiveList` — but it must still be stripped from the ordinary local
+   * list (and never routed through ordinary runtime). Short-circuiting on an empty visible set would
+   * let that row leak back in (REWORK-1).
    */
   private getVisibleProjection = async (userId: string): Promise<VisibleProjection> => {
     if (!this.flags().ENABLE_PLATFORM_MANAGED_AGENTS) {
       return { entries: [], materializedAgentIds: new Set() };
     }
-    const { agents } = await this.resolver().getEffectiveList(userId);
-    if (agents.length === 0) return { entries: [], materializedAgentIds: new Set() };
-
-    const materializedAgentIds = await this.repository().listMaterializedAgentIds(userId);
+    const [{ agents }, materializedAgentIds] = await Promise.all([
+      this.resolver().getEffectiveList(userId),
+      this.repository().listMaterializedAgentIds(userId),
+    ]);
     const entries = agents.map((agent): PlatformAgentUserListEntry => ({
       avatar: agent.config.avatar,
       backgroundColor: agent.config.backgroundColor,

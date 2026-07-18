@@ -11,7 +11,7 @@ import { assertUserActive, isOIDCUserInactiveError } from '@/libs/oidc-provider/
 import { trpc } from '@/libs/trpc/lambda/init';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 
-import { isPlatformAdminFeatureEnabled } from '../featureFlags';
+import { getEnterpriseFeatureFlags, isPlatformAdminFeatureEnabled } from '../featureFlags';
 import { throwEnterpriseError } from './enterpriseErrors';
 
 const resolveServerDb = (ctx: { serverDB?: LobeChatDatabase }): LobeChatDatabase => {
@@ -37,6 +37,52 @@ export interface WithActiveUserOptions {
   enforceWhenAdminDisabled?: boolean;
 }
 
+/** tRPC ctx fields the active-user assertion trusts. */
+interface ActiveUserCtx {
+  authMethod?: string;
+  credentialIssuedAt?: Date;
+  sessionId?: string;
+  userId?: string;
+}
+
+/**
+ * Reject an effectively banned / auth-invalidated principal, using only the trusted security-epoch
+ * timestamp (never authenticatedAt/auth_time). Throws UNAUTHORIZED. Shared by every active-user
+ * guard so the enforcement is identical regardless of which flag gates it.
+ */
+const enforceActiveUser = async (ctx: ActiveUserCtx & { serverDB?: LobeChatDatabase }) => {
+  const rawUserId = ctx.userId;
+  if (typeof rawUserId !== 'string' || rawUserId.length === 0) {
+    return throwEnterpriseError({
+      code: ADMIN_ERROR_CODES.ADMIN_ACCESS_DENIED,
+      httpCode: 'UNAUTHORIZED',
+    });
+  }
+
+  const db = resolveServerDb(ctx);
+  // Trusted security-epoch timestamp only (session issuance / OIDC iat / API-key createdAt).
+  const credentialIssuedAt =
+    ctx.credentialIssuedAt instanceof Date && !Number.isNaN(ctx.credentialIssuedAt.getTime())
+      ? ctx.credentialIssuedAt
+      : null;
+  // Session exception only for Better Auth path with trusted sessionId (never OIDC/API-key).
+  const sessionId =
+    ctx.authMethod === 'better-auth' && typeof ctx.sessionId === 'string' ? ctx.sessionId : null;
+
+  try {
+    await assertUserActive(db, rawUserId, { credentialIssuedAt, sessionId });
+  } catch (error) {
+    if (isOIDCUserInactiveError(error)) {
+      return throwEnterpriseError({
+        code: ADMIN_ERROR_CODES.ADMIN_ACCESS_DENIED,
+        details: { reason: 'user_inactive' },
+        httpCode: 'UNAUTHORIZED',
+      });
+    }
+    throw error;
+  }
+};
+
 /**
  * Reject effectively banned / auth-invalidated principals on procedure entry.
  * No-op when ENABLE_PLATFORM_ADMIN is off, unless `enforceWhenAdminDisabled` is set.
@@ -46,38 +92,27 @@ export const withActiveUser = (options: WithActiveUserOptions = {}) =>
     if (!options.enforceWhenAdminDisabled && !isPlatformAdminFeatureEnabled()) {
       return next();
     }
+    await enforceActiveUser(ctx as ActiveUserCtx & { serverDB?: LobeChatDatabase });
+    return next();
+  });
 
-    const rawUserId = ctx.userId;
-    if (typeof rawUserId !== 'string' || rawUserId.length === 0) {
-      return throwEnterpriseError({
-        code: ADMIN_ERROR_CODES.ADMIN_ACCESS_DENIED,
-        httpCode: 'UNAUTHORIZED',
-      });
+/**
+ * Active-user guard for ordinary user entrypoints that gain a managed-Agent surface under M10
+ * (unified list, platform chat runtime). Enforcement is gated on the managed boundary being active:
+ *
+ * - Flag OFF (no ENABLE_PLATFORM_ADMIN and no ENABLE_PLATFORM_MANAGED_AGENTS) → no-op, so the
+ *   legacy local-only behavior and its access rules are preserved verbatim (no new restriction).
+ * - Flag ON → reject banned / inactive / epoch-invalid principals BEFORE any platform
+ *   resolver / catalog / materialization access, regardless of the admin flag (ADMIN=0 + MANAGED=1
+ *   still rejects). Reuses the exact same `enforceActiveUser` assertion as the admin guard.
+ */
+export const withActiveUserWhenManagedAgents = () =>
+  trpc.middleware(async ({ ctx, next }) => {
+    const flags = getEnterpriseFeatureFlags();
+    if (!flags.ENABLE_PLATFORM_MANAGED_AGENTS && !flags.ENABLE_PLATFORM_ADMIN) {
+      return next();
     }
-
-    const db = resolveServerDb(ctx as { serverDB?: LobeChatDatabase });
-    // Trusted security-epoch timestamp only (session issuance / OIDC iat / API-key createdAt).
-    const credentialIssuedAt =
-      ctx.credentialIssuedAt instanceof Date && !Number.isNaN(ctx.credentialIssuedAt.getTime())
-        ? ctx.credentialIssuedAt
-        : null;
-    // Session exception only for Better Auth path with trusted sessionId (never OIDC/API-key).
-    const sessionId =
-      ctx.authMethod === 'better-auth' && typeof ctx.sessionId === 'string' ? ctx.sessionId : null;
-
-    try {
-      await assertUserActive(db, rawUserId, { credentialIssuedAt, sessionId });
-    } catch (error) {
-      if (isOIDCUserInactiveError(error)) {
-        return throwEnterpriseError({
-          code: ADMIN_ERROR_CODES.ADMIN_ACCESS_DENIED,
-          details: { reason: 'user_inactive' },
-          httpCode: 'UNAUTHORIZED',
-        });
-      }
-      throw error;
-    }
-
+    await enforceActiveUser(ctx as ActiveUserCtx & { serverDB?: LobeChatDatabase });
     return next();
   });
 

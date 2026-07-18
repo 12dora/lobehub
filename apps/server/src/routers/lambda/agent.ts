@@ -16,6 +16,7 @@ import { TaskModel } from '@/database/models/task';
 import { UserModel } from '@/database/models/user';
 import { router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
+import { withActiveUserWhenManagedAgents } from '@/server/enterprise/guards/activeUser';
 import { withManagedResourceGuard } from '@/server/enterprise/guards/managedResource';
 import { PlatformAgentUserListService } from '@/server/enterprise/services/agentCatalog';
 import { AgentService } from '@/server/services/agent';
@@ -429,6 +430,10 @@ export const agentRouter = router({
    * Used by AddGroupMemberModal and group-management tool to search/select agents.
    */
   queryAgents: agentProcedure
+    // M10 PR-049 (REWORK-3): this endpoint gains a managed-Agent surface, so when the managed flag
+    // is on it must reject banned/inactive/epoch-invalid principals before any platform catalog
+    // access. Flag off → no-op, legacy local-only behavior preserved.
+    .use(withActiveUserWhenManagedAgents())
     .input(
       z
         .object({

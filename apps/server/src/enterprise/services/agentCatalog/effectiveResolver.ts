@@ -12,7 +12,7 @@ import type { LobeChatDatabase } from '@/database/type';
 
 import type { platformAgentEffectiveListOutputSchema } from '../../contracts/platformAgents';
 import { parseEnterpriseFeatureFlags } from '../../featureFlags';
-import { PlatformAgentNotFoundError } from './errors';
+import { PlatformAgentNotFoundError, redactPlatformReadError } from './errors';
 
 type EffectiveList = z.infer<typeof platformAgentEffectiveListOutputSchema>;
 type EffectiveAgent = EffectiveList['agents'][number];
@@ -151,16 +151,21 @@ export class PlatformAgentEffectiveResolver {
   };
 
   getEffectiveList = async (userId: string): Promise<EffectiveList> => {
-    const authorized = await this.resolveAuthorized(userId);
-    if (authorized.length === 0) return emptyEffectiveList();
+    try {
+      const authorized = await this.resolveAuthorized(userId);
+      if (authorized.length === 0) return emptyEffectiveList();
 
-    // Owner-scoped hidden read: mandatory Agents ignore hidden (always visible); default /
-    // optional Agents respect the requesting user's own hidden choices (R1).
-    const hidden = await this.repository().listHiddenPlatformAgentIds(userId);
-    const agents = authorized
-      .filter((agent) => agent.distribution === 'mandatory' || !hidden.has(agent.platformAgentId))
-      .map(projectEffective);
-    return { agents, revision: checksumPayload({ agents }) };
+      // Owner-scoped hidden read: mandatory Agents ignore hidden (always visible); default /
+      // optional Agents respect the requesting user's own hidden choices (R1).
+      const hidden = await this.repository().listHiddenPlatformAgentIds(userId);
+      const agents = authorized
+        .filter((agent) => agent.distribution === 'mandatory' || !hidden.has(agent.platformAgentId))
+        .map(projectEffective);
+      return { agents, revision: checksumPayload({ agents }) };
+    } catch (error) {
+      // Redact any unexpected driver / SQL failure at the read boundary (REWORK-5).
+      throw redactPlatformReadError(error);
+    }
   };
 
   getEffectiveAgent = async (userId: string, platformAgentId: string) => {
@@ -203,12 +208,17 @@ export class PlatformAgentEffectiveResolver {
     userId: string,
     platformAgentId: string,
   ): Promise<PlatformAgentOperationHandle | null> => {
-    const snapshot = await this.captureOperationSnapshot(userId, platformAgentId);
-    if (!snapshot) return null;
-    return Object.freeze<PlatformAgentOperationHandle>({
-      getSnapshot: () => snapshot,
-      platformAgentId: snapshot.platformAgentId,
-    });
+    try {
+      const snapshot = await this.captureOperationSnapshot(userId, platformAgentId);
+      if (!snapshot) return null;
+      return Object.freeze<PlatformAgentOperationHandle>({
+        getSnapshot: () => snapshot,
+        platformAgentId: snapshot.platformAgentId,
+      });
+    } catch (error) {
+      // Redact any unexpected driver / SQL failure so entitlement resolution never leaks internals.
+      throw redactPlatformReadError(error);
+    }
   };
 
   /**
@@ -225,16 +235,21 @@ export class PlatformAgentEffectiveResolver {
     platformAgentId: string,
     hidden: boolean,
   ): Promise<void> => {
-    const authorized = await this.resolveAuthorized(userId);
-    const target = authorized.find((agent) => agent.platformAgentId === platformAgentId);
-    if (!target) throw new PlatformAgentNotFoundError();
-    const written = await new PlatformAgentCatalogRepository(this.db).setMaterializationHidden({
-      hidden,
-      platformAgentId: target.platformAgentId,
-      platformAgentVersionChecksum: target.checksum,
-      platformAgentVersionId: target.versionId,
-      userId,
-    });
-    if (!written) throw new PlatformAgentNotFoundError();
+    try {
+      const authorized = await this.resolveAuthorized(userId);
+      const target = authorized.find((agent) => agent.platformAgentId === platformAgentId);
+      if (!target) throw new PlatformAgentNotFoundError();
+      const written = await new PlatformAgentCatalogRepository(this.db).setMaterializationHidden({
+        hidden,
+        platformAgentId: target.platformAgentId,
+        platformAgentVersionChecksum: target.checksum,
+        platformAgentVersionId: target.versionId,
+        userId,
+      });
+      if (!written) throw new PlatformAgentNotFoundError();
+    } catch (error) {
+      // NotFound passes through; any unexpected driver / SQL failure is redacted (REWORK-5).
+      throw redactPlatformReadError(error);
+    }
   };
 }

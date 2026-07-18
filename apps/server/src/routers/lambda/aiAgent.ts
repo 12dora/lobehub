@@ -22,6 +22,7 @@ import { agentOperations, topics } from '@/database/schemas';
 import { heteroAuthedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 import { signUserJWT } from '@/libs/trpc/utils/internalJwt';
+import { withActiveUserWhenManagedAgents } from '@/server/enterprise/guards/activeUser';
 import { createStreamEventManager } from '@/server/modules/AgentRuntime/factory';
 import { AgentRuntimeService } from '@/server/services/agentRuntime';
 import { AiAgentService } from '@/server/services/aiAgent';
@@ -707,62 +708,68 @@ export const aiAgentRouter = router({
       }
     }),
 
-  execAgent: aiAgentWriteProcedure.input(ExecAgentSchema).mutation(async ({ input, ctx }) => {
-    const {
-      agentId,
-      slug,
-      prompt,
-      appContext,
-      autoStart = true,
-      deviceId,
-      existingMessageIds = [],
-      fileIds,
-      mentionedAgents,
-      parentMessageId,
-      resumeApproval,
-      resumeToolResult,
-      selectedToolIds,
-      trigger,
-      userInterventionConfig,
-    } = input;
-
-    log('execAgent: identifier=%s, prompt=%s', agentId || slug, prompt.slice(0, 50));
-
-    try {
-      return await ctx.aiAgentService.execAgent({
+  execAgent: aiAgentWriteProcedure
+    // M10 PR-049 (REWORK-3): the platform chat runtime is reachable here, so when the managed flag
+    // is on reject banned/inactive/epoch-invalid principals before entitlement/materialization.
+    // Flag off → no-op, legacy runtime unchanged.
+    .use(withActiveUserWhenManagedAgents())
+    .input(ExecAgentSchema)
+    .mutation(async ({ input, ctx }) => {
+      const {
         agentId,
+        slug,
+        prompt,
         appContext,
-        autoStart,
+        autoStart = true,
         deviceId,
-        existingMessageIds,
+        existingMessageIds = [],
         fileIds,
         mentionedAgents,
         parentMessageId,
-        prompt,
-        // When parentMessageId is provided, this is a regeneration/continue or a
-        // human-approval resume — either way, skip user message creation.
-        resume: !!parentMessageId,
         resumeApproval,
         resumeToolResult,
         selectedToolIds,
-        slug,
-        trigger: trigger ?? RequestTrigger.Chat,
+        trigger,
         userInterventionConfig,
-      });
-    } catch (error: any) {
-      console.error('execAgent failed: %O', error);
+      } = input;
 
-      if (error instanceof TRPCError) {
-        throw error;
+      log('execAgent: identifier=%s, prompt=%s', agentId || slug, prompt.slice(0, 50));
+
+      try {
+        return await ctx.aiAgentService.execAgent({
+          agentId,
+          appContext,
+          autoStart,
+          deviceId,
+          existingMessageIds,
+          fileIds,
+          mentionedAgents,
+          parentMessageId,
+          prompt,
+          // When parentMessageId is provided, this is a regeneration/continue or a
+          // human-approval resume — either way, skip user message creation.
+          resume: !!parentMessageId,
+          resumeApproval,
+          resumeToolResult,
+          selectedToolIds,
+          slug,
+          trigger: trigger ?? RequestTrigger.Chat,
+          userInterventionConfig,
+        });
+      } catch (error: any) {
+        console.error('execAgent failed: %O', error);
+
+        if (error instanceof TRPCError) {
+          throw error;
+        }
+
+        throw new TRPCError({
+          cause: error,
+          code: 'INTERNAL_SERVER_ERROR',
+          message: `Failed to execute agent: ${error.message}`,
+        });
       }
-
-      throw new TRPCError({
-        cause: error,
-        code: 'INTERNAL_SERVER_ERROR',
-        message: `Failed to execute agent: ${error.message}`,
-      });
-    }
-  }),
+    }),
 
   /**
    * Batch execute multiple agents

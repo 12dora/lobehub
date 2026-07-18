@@ -18,7 +18,12 @@ import type { LobeChatDatabase } from '@/database/type';
 import type { AgentConfigWithId } from '@/server/services/agent';
 
 import type { PlatformAgentOperationSnapshot } from './effectiveResolver';
-import { PlatformAgentMaterializationError, PlatformAgentNotFoundError } from './errors';
+import {
+  PlatformAgentMaterializationError,
+  PlatformAgentNotFoundError,
+  PlatformAgentUnavailableError,
+  redactPlatformReadError,
+} from './errors';
 
 const CHECKSUM_PATTERN = /^[a-f0-9]{64}$/;
 
@@ -79,10 +84,19 @@ export class PlatformAgentMaterializationService {
   materializeForOperation = async (
     snapshot: PlatformAgentOperationSnapshot,
   ): Promise<{ agentId: string; config: AgentConfigWithId }> => {
-    const version = this.resolveExactVersion(
-      await this.repository.getExactVersion(snapshot.platformAgentId, snapshot.versionId),
-      snapshot,
-    );
+    // Redact a raw driver / SQL error from the exact-version read into the stable, detail-free
+    // materialization error before it can reach the boundary — preserving the materialization
+    // classification (a known platform error still passes through) (REWORK-5).
+    let fetched: ExactPlatformAgentVersion | undefined;
+    try {
+      fetched = await this.repository.getExactVersion(snapshot.platformAgentId, snapshot.versionId);
+    } catch (error) {
+      const redacted = redactPlatformReadError(error);
+      throw redacted instanceof PlatformAgentUnavailableError
+        ? new PlatformAgentMaterializationError()
+        : redacted;
+    }
+    const version = this.resolveExactVersion(fetched, snapshot);
     const model = version.dependencySnapshot.model;
 
     const agentId = await this.attachLocalAgent(snapshot, model);
