@@ -51,23 +51,14 @@ export interface PlatformAgentUserListMeta {
   distribution: PlatformAgentAssignmentMode;
   /** Always true — a platform item is managed, so the client hides edit/delete affordances. */
   managed: true;
-  /** Stable platform Agent id (also carried inside the encoded list-item id). */
-  platformAgentId: string;
   source: 'platform';
 }
 
-/**
- * User-safe exact platform configuration metadata attached to a managed local/builtin Agent.
- * It excludes assignment targets, mutation tokens, credentials and decrypted material.
- */
-export interface PlatformAgentEffectiveConfigMeta {
-  checksum: string;
-  dependencySnapshot: PlatformAgentDependencySnapshot;
+/** Minimal public marker attached to a managed Agent config. Exact pins stay server-only. */
+export interface PlatformAgentConfigMeta {
+  distribution?: PlatformAgentAssignmentMode;
   managed: true;
-  platformAgentId: string;
   source: 'platform';
-  systemKey: PlatformAgentSystemKey | null;
-  versionId: string;
 }
 
 export interface PlatformAgentModelParameters {
@@ -87,8 +78,6 @@ export interface PlatformAgentVersionConfig {
   modelParameters: PlatformAgentModelParameters;
   openingMessage: string | null;
   openingQuestions: string[];
-  /** Builtin/plugin tool identifiers explicitly enabled by this immutable version. */
-  plugins?: string[];
   systemRole: string;
   tags: string[];
 }

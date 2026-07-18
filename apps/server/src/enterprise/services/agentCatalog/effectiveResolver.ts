@@ -41,6 +41,7 @@ export interface PlatformAgentOperationSnapshot {
  * exact frozen value for the whole operation and never re-resolves the current pointer.
  */
 export interface PlatformAgentOperationHandle {
+  readonly distribution?: Distribution;
   getSnapshot: () => PlatformAgentOperationSnapshot;
   readonly platformAgentId: string;
 }
@@ -202,8 +203,10 @@ export class PlatformAgentEffectiveResolver {
 
   private createOperationHandle = (
     snapshot: PlatformAgentOperationSnapshot,
+    distribution?: Distribution,
   ): PlatformAgentOperationHandle =>
     Object.freeze<PlatformAgentOperationHandle>({
+      distribution,
       getSnapshot: () => snapshot,
       platformAgentId: snapshot.platformAgentId,
     });
@@ -252,7 +255,7 @@ export class PlatformAgentEffectiveResolver {
           versionId: target.versionId,
         }),
       );
-      return this.createOperationHandle(snapshot);
+      return this.createOperationHandle(snapshot, target.distribution);
     } catch (error) {
       throw redactPlatformReadError(error);
     }

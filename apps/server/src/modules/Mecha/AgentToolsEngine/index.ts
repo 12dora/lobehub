@@ -154,6 +154,7 @@ export const createServerAgentToolsEngine = (
     canUseDevice = false,
     deviceContext,
     disableLocalSystem = false,
+    exactBuiltinToolIds,
     executionPlan,
     globalMemoryEnabled = false,
     hasEnabledKnowledgeBases = false,
@@ -163,6 +164,24 @@ export const createServerAgentToolsEngine = (
     model,
     provider,
   } = params;
+
+  if (exactBuiltinToolIds) {
+    const exactIds = new Set([
+      ...exactBuiltinToolIds,
+      ...(agentConfig.plugins ?? []),
+      ...(additionalManifests ?? []).map(({ identifier }) => identifier),
+    ]);
+    return createServerToolsEngine(context, {
+      additionalManifests,
+      builtinTools: builtinTools.filter(({ identifier }) => exactIds.has(identifier)),
+      defaultToolIds: [...exactIds],
+      enableChecker: createEnableChecker({
+        allowExplicitActivation: false,
+        rules: Object.fromEntries([...exactIds].map((id) => [id, true])),
+      }),
+      manifestContext,
+    });
+  }
 
   // Tools that need a user-side execution target (local-system, stdio MCP)
   // run on a device registered with the device-gateway. Desktop, CLI, and

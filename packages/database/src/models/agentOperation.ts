@@ -383,7 +383,7 @@ export class AgentOperationModel {
     anchorKind: 'approval' | 'toolResult';
     anchorMessageId: string;
     fingerprint: string;
-    platformAgentId: string;
+    platformAgentId?: string;
     threadId: string | null;
     toolCallId: string;
     topicId: string | null;
@@ -422,7 +422,9 @@ export class AgentOperationModel {
             : isNull(agentOperations.threadId),
           inArray(agentOperations.status, RESUMABLE_OPERATION_STATUSES),
           anchorMatch,
-          sql`${agentOperations.metadata} -> 'platformOperation' ->> 'platformAgentId' = ${params.platformAgentId}`,
+          params.platformAgentId
+            ? sql`${agentOperations.metadata} -> 'platformOperation' ->> 'platformAgentId' = ${params.platformAgentId}`
+            : undefined,
         ),
       )
       .limit(1);

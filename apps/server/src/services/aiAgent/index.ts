@@ -7,6 +7,7 @@ import type {
 import { GeneralChatAgent, GraphAgent } from '@lobechat/agent-runtime';
 import { BUILTIN_AGENT_SLUGS, getAgentRuntimeConfig } from '@lobechat/builtin-agents';
 import { builtinSkills } from '@lobechat/builtin-skills';
+import { LobeActivatorIdentifier } from '@lobechat/builtin-tool-activator';
 import { CloudSandboxManifest } from '@lobechat/builtin-tool-cloud-sandbox';
 import { LobeAgentIdentifier, LobeAgentManifest } from '@lobechat/builtin-tool-lobe-agent';
 import { LocalSystemManifest } from '@lobechat/builtin-tool-local-system';
@@ -18,6 +19,7 @@ import {
   injectSelfFeedbackIntentTool,
   shouldExposeSelfFeedbackIntentTool,
 } from '@lobechat/builtin-tool-self-iteration';
+import { SkillsIdentifier } from '@lobechat/builtin-tool-skills';
 import { TaskIdentifier } from '@lobechat/builtin-tool-task';
 import { builtinTools, manualModeExcludeToolIds } from '@lobechat/builtin-tools';
 import { INBOX_SESSION_ID, LOADING_FLAT } from '@lobechat/const';
@@ -65,7 +67,6 @@ import {
   getActivePluginIds,
   getDisabledPluginIds,
   getWorkingDirEffectivePath,
-  PLATFORM_AGENT_DEFAULT_INBOX_SYSTEM_KEY,
   ReasoningGraphSchema,
   RequestTrigger,
   ThreadStatus,
@@ -196,6 +197,7 @@ import {
 import { isWorkspaceCacheFresh, upsertWorkspaceScan } from './workspaceInitCache';
 
 const log = debug('lobe-server:ai-agent-service');
+const PLATFORM_AUDITED_BUILTIN_TOOL_IDS = [LobeActivatorIdentifier, SkillsIdentifier] as const;
 
 const createGraphAwareAgentFactory =
   (
@@ -1024,7 +1026,15 @@ export class AiAgentService {
   private async resolvePlatformAgentId(
     identifier: string,
     agentId: string | undefined,
+    pausedResume?: {
+      anchorMessageId: string | null;
+      kind: ResumeInteractionKind;
+      threadId: string | null;
+      toolCallId: string;
+      topicId: string | null;
+    },
   ): Promise<{
+    capturedResumePin?: PlatformOperationPin;
     existingAgentId?: string;
     handle?: PlatformAgentOperationHandle;
     platformAgentId: string;
@@ -1033,32 +1043,8 @@ export class AiAgentService {
     if (encoded) return { platformAgentId: encoded };
     if (!parseEnterpriseFeatureFlags(process.env).ENABLE_PLATFORM_MANAGED_AGENTS) return null;
 
-    if (agentId) {
-      const materializedPlatformAgentId = await new PlatformAgentCatalogRepository(
-        this.db,
-      ).getPlatformAgentIdByMaterializedAgentId(this.userId, agentId);
-      if (materializedPlatformAgentId) {
-        const candidate = await this.agentModel.getAgentConfigById(agentId);
-        if (candidate?.slug === INBOX_SESSION_ID) {
-          // A historical reverse mapping must not turn a genuinely absent current default into an
-          // execution error. Re-resolve the system role for every new inbox operation; exact pins
-          // remain responsible for already-paused operations.
-          const handle = await new PlatformDefaultInboxService(this.db, this.userId).capture();
-          if (!handle) return null;
-          return {
-            existingAgentId: agentId,
-            handle,
-            platformAgentId: handle.platformAgentId,
-          };
-        }
-        return {
-          platformAgentId: materializedPlatformAgentId,
-        };
-      }
-    }
-
-    // PR-051: map only the trusted owner-scoped builtin inbox identity. A forged local id cannot
-    // opt into the default platform Agent: it must resolve to this user's real slug='inbox' row.
+    // The builtin inbox is a dedicated, non-copy identity. Resolve it before ordinary reverse
+    // materialization so a stale mapping from an older default can never select the runtime.
     let inboxAgentId: string | undefined;
     if (identifier === INBOX_SESSION_ID) {
       inboxAgentId = (await this.agentModel.getBuiltinAgent(INBOX_SESSION_ID))?.id;
@@ -1066,17 +1052,44 @@ export class AiAgentService {
       const candidate = await this.agentModel.getAgentConfigById(agentId);
       if (candidate?.slug === INBOX_SESSION_ID) inboxAgentId = candidate.id;
     }
-    if (!inboxAgentId) return null;
+    if (inboxAgentId) {
+      if (pausedResume) {
+        const pin = await this.resolveResumePlatformPin(
+          pausedResume.anchorMessageId,
+          pausedResume.kind,
+          pausedResume.toolCallId,
+          undefined,
+          pausedResume.topicId,
+          pausedResume.threadId,
+        );
+        if (!pin) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: `Agent not found: ${identifier}` });
+        }
+        return {
+          capturedResumePin: pin,
+          existingAgentId: inboxAgentId,
+          platformAgentId: pin.platformAgentId,
+        };
+      }
 
-    const handle = await new PlatformDefaultInboxService(this.db, this.userId).capture();
-    if (!handle) return null;
-    return { existingAgentId: inboxAgentId, handle, platformAgentId: handle.platformAgentId };
+      const handle = await new PlatformDefaultInboxService(this.db, this.userId).capture();
+      if (!handle) return null;
+      return { existingAgentId: inboxAgentId, handle, platformAgentId: handle.platformAgentId };
+    }
+
+    if (agentId) {
+      const materializedPlatformAgentId = await new PlatformAgentCatalogRepository(
+        this.db,
+      ).getPlatformAgentIdByMaterializedAgentId(this.userId, agentId);
+      if (materializedPlatformAgentId) return { platformAgentId: materializedPlatformAgentId };
+    }
+    return null;
   }
 
   /** Map a platform config-resolution failure to a stable, redacted TRPCError. */
   private mapPlatformConfigError(
     error: unknown,
-    platformAgentId: string,
+    platformAgentId: string | undefined,
     identifier: string,
   ): never {
     if (error instanceof PlatformAgentNotFoundError) {
@@ -1138,7 +1151,7 @@ export class AiAgentService {
     anchorMessageId: string | null,
     anchorKind: ResumeInteractionKind,
     toolCallId: string,
-    platformAgentId: string,
+    platformAgentId: string | undefined,
     topicId: string | null,
     threadId: string | null,
   ): Promise<PlatformOperationPin | null> {
@@ -1191,6 +1204,7 @@ export class AiAgentService {
     identifier: string,
     resumeContext: {
       capturedHandle?: PlatformAgentOperationHandle;
+      capturedResumePin?: PlatformOperationPin;
       existingAgentId?: string;
       /**
        * Set ONLY for a paused (approval / tool-result) resume — the sole case that replays a parked
@@ -1220,30 +1234,34 @@ export class AiAgentService {
       // wrong turn / wrong kind / terminal op) → fail closed. We NEVER fall through to a fresh
       // `beginOperation` (latest) on a paused resume. A bare regeneration / continue never enters
       // this branch — it takes the fresh-operation path below on CURRENT entitlement.
-      const pin = await this.resolveResumePlatformPin(
-        resumeContext.resumeAnchorMessageId,
-        resumeContext.pausedResumeKind,
-        resumeContext.resumeToolCallId ?? '',
-        platformAgentId,
-        resumeContext.topicId,
-        resumeContext.threadId,
-      );
+      const pin =
+        resumeContext.capturedResumePin ??
+        (await this.resolveResumePlatformPin(
+          resumeContext.resumeAnchorMessageId,
+          resumeContext.pausedResumeKind,
+          resumeContext.resumeToolCallId ?? '',
+          platformAgentId,
+          resumeContext.topicId,
+          resumeContext.threadId,
+        ));
       if (!pin || pin.platformAgentId !== platformAgentId) {
         throw new TRPCError({ code: 'NOT_FOUND', message: `Agent not found: ${identifier}` });
       }
       // Re-check LIVE entitlement so a revoked / no-longer-assigned user fails closed even for a
       // genuinely paused turn — WITHOUT resolving latest (the pinned version is still what runs).
-      let entitled: boolean;
-      try {
-        entitled = await new PlatformAgentEffectiveResolver(this.db).isEntitled(
-          this.userId,
-          platformAgentId,
-        );
-      } catch (error) {
-        this.mapPlatformConfigError(error, platformAgentId, identifier);
-      }
-      if (!entitled) {
-        throw new TRPCError({ code: 'NOT_FOUND', message: `Agent not found: ${identifier}` });
+      if (!resumeContext.capturedResumePin) {
+        let entitled: boolean;
+        try {
+          entitled = await new PlatformAgentEffectiveResolver(this.db).isEntitled(
+            this.userId,
+            platformAgentId,
+          );
+        } catch (error) {
+          this.mapPlatformConfigError(error, platformAgentId, identifier);
+        }
+        if (!entitled) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: `Agent not found: ${identifier}` });
+        }
       }
       try {
         const materialized = resumeContext.existingAgentId
@@ -1255,9 +1273,6 @@ export class AiAgentService {
         await this.assertPlatformOperationDependencies(materialized.dependencySnapshot);
         if (resumeContext.existingAgentId) {
           materialized.config.slug = INBOX_SESSION_ID;
-          if (materialized.config.platform) {
-            materialized.config.platform.systemKey = PLATFORM_AGENT_DEFAULT_INBOX_SYSTEM_KEY;
-          }
         }
         return {
           config: materialized.config,
@@ -1293,13 +1308,9 @@ export class AiAgentService {
         : await materializationService.materializeForOperation(snapshot);
       await this.assertPlatformOperationDependencies(materialized.dependencySnapshot);
       if (resumeContext.existingAgentId) {
-        await materializationService.bindExistingAgentForOperation(
-          snapshot,
-          resumeContext.existingAgentId,
-        );
         materialized.config.slug = INBOX_SESSION_ID;
-        if (materialized.config.platform) {
-          materialized.config.platform.systemKey = PLATFORM_AGENT_DEFAULT_INBOX_SYSTEM_KEY;
+        if (materialized.config.platform && handle.distribution) {
+          materialized.config.platform.distribution = handle.distribution;
         }
       }
       return {
@@ -1451,7 +1462,25 @@ export class AiAgentService {
     // from a platform Agent — BOTH must re-run owner-scoped entitlement (REWORK-2), never run the
     // local row directly. A local id whose assignment was revoked resolves to a platform id here
     // and then fails closed in resolvePlatformAgentConfig.
-    const platformAgentEntry = await this.resolvePlatformAgentId(identifier, agentId);
+    const pausedResumeKind: ResumeInteractionKind | undefined = resumeApproval
+      ? 'approval'
+      : resumeToolResult
+        ? 'toolResult'
+        : undefined;
+    const platformAgentEntry = await this.resolvePlatformAgentId(
+      identifier,
+      agentId,
+      pausedResumeKind
+        ? {
+            anchorMessageId:
+              resumeApproval?.parentMessageId ?? resumeToolResult?.parentMessageId ?? null,
+            kind: pausedResumeKind,
+            threadId: appContext?.threadId ?? null,
+            toolCallId: resumeApproval?.toolCallId ?? resumeToolResult?.toolCallId ?? '',
+            topicId: appContext?.topicId ?? null,
+          }
+        : undefined,
+    );
     const platformAgentId = platformAgentEntry?.platformAgentId;
     let agentConfig: AgentConfigWithId | null;
     // Persisted onto the operation so resume/retry/queued steps replay the exact pinned version and
@@ -1468,13 +1497,9 @@ export class AiAgentService {
       // pin). A bare `resume` / `parentMessageId` (UI regenerate passes the user message id, continue
       // passes the completed assistant id) is NOT a paused resume — it starts a FRESH operation on
       // current entitlement + snapshot, while still skipping a new user-message row downstream.
-      const pausedResumeKind: ResumeInteractionKind | undefined = resumeApproval
-        ? 'approval'
-        : resumeToolResult
-          ? 'toolResult'
-          : undefined;
       const resolved = await this.resolvePlatformAgentConfig(platformAgentId, identifier, {
         capturedHandle: platformAgentEntry?.handle,
+        capturedResumePin: platformAgentEntry?.capturedResumePin,
         existingAgentId: platformAgentEntry?.existingAgentId,
         pausedResumeKind,
         // The trusted anchor for a paused resume is the pending TOOL message (matched against the
@@ -1525,8 +1550,10 @@ export class AiAgentService {
     const persistAgentId = appContext?.agentSignal?.agentId ?? resolvedAgentId;
 
     // Apply per-call model/provider overrides (e.g. from task.config)
-    if (modelOverride) agentConfig.model = modelOverride;
-    if (providerOverride) agentConfig.provider = providerOverride;
+    if (!platformOperationPin) {
+      if (modelOverride) agentConfig.model = modelOverride;
+      if (providerOverride) agentConfig.provider = providerOverride;
+    }
 
     log(
       'execAgent: got agent config for %s (id: %s), model: %s, provider: %s',
@@ -1592,54 +1619,56 @@ export class AiAgentService {
       }
     }
 
-    if (appContext?.scope !== 'page') {
-      activePluginIds = activePluginIds.filter((id) => id !== PageAgentIdentifier);
-    }
-
-    if (appContext?.scope === 'page' && agentSlug !== BUILTIN_AGENT_SLUGS.pageAgent) {
-      const pageAgentRuntime = getAgentRuntimeConfig(BUILTIN_AGENT_SLUGS.pageAgent, {
-        model: agentConfig.model,
-        plugins: activePluginIds,
-      });
-      const pageAgentSystemRole = pageAgentRuntime?.systemRole || '';
-
-      if (pageAgentSystemRole) {
-        agentConfig.systemRole = agentConfig.systemRole
-          ? `${agentConfig.systemRole}\n\n${pageAgentSystemRole}`
-          : pageAgentSystemRole;
+    if (!platformOperationPin) {
+      if (appContext?.scope !== 'page') {
+        activePluginIds = activePluginIds.filter((id) => id !== PageAgentIdentifier);
       }
 
-      activePluginIds = activePluginIds.includes(PageAgentIdentifier)
-        ? activePluginIds
-        : [PageAgentIdentifier, ...activePluginIds];
-      agentConfig.chatConfig = {
-        ...agentConfig.chatConfig,
-        enableHistoryCount: false,
-      };
-      log('execAgent: injected page-agent runtime for page scope');
-    }
+      if (appContext?.scope === 'page' && agentSlug !== BUILTIN_AGENT_SLUGS.pageAgent) {
+        const pageAgentRuntime = getAgentRuntimeConfig(BUILTIN_AGENT_SLUGS.pageAgent, {
+          model: agentConfig.model,
+          plugins: activePluginIds,
+        });
+        const pageAgentSystemRole = pageAgentRuntime?.systemRole || '';
 
-    if (appContext?.scope === 'task' && agentSlug !== BUILTIN_AGENT_SLUGS.taskAgent) {
-      const taskAgentRuntime = getAgentRuntimeConfig(BUILTIN_AGENT_SLUGS.taskAgent, {
-        model: agentConfig.model,
-        plugins: activePluginIds,
-      });
-      const taskAgentSystemRole = taskAgentRuntime?.systemRole || '';
+        if (pageAgentSystemRole) {
+          agentConfig.systemRole = agentConfig.systemRole
+            ? `${agentConfig.systemRole}\n\n${pageAgentSystemRole}`
+            : pageAgentSystemRole;
+        }
 
-      if (taskAgentSystemRole) {
-        agentConfig.systemRole = agentConfig.systemRole
-          ? `${agentConfig.systemRole}\n\n${taskAgentSystemRole}`
-          : taskAgentSystemRole;
+        activePluginIds = activePluginIds.includes(PageAgentIdentifier)
+          ? activePluginIds
+          : [PageAgentIdentifier, ...activePluginIds];
+        agentConfig.chatConfig = {
+          ...agentConfig.chatConfig,
+          enableHistoryCount: false,
+        };
+        log('execAgent: injected page-agent runtime for page scope');
       }
 
-      activePluginIds = activePluginIds.includes(TaskIdentifier)
-        ? activePluginIds
-        : [TaskIdentifier, ...activePluginIds];
-      log('execAgent: injected task-agent runtime for task scope');
-    }
+      if (appContext?.scope === 'task' && agentSlug !== BUILTIN_AGENT_SLUGS.taskAgent) {
+        const taskAgentRuntime = getAgentRuntimeConfig(BUILTIN_AGENT_SLUGS.taskAgent, {
+          model: agentConfig.model,
+          plugins: activePluginIds,
+        });
+        const taskAgentSystemRole = taskAgentRuntime?.systemRole || '';
 
-    if (appContext?.isSubAgent) {
-      activePluginIds = activePluginIds.filter((id) => id !== LobeAgentIdentifier);
+        if (taskAgentSystemRole) {
+          agentConfig.systemRole = agentConfig.systemRole
+            ? `${agentConfig.systemRole}\n\n${taskAgentSystemRole}`
+            : taskAgentSystemRole;
+        }
+
+        activePluginIds = activePluginIds.includes(TaskIdentifier)
+          ? activePluginIds
+          : [TaskIdentifier, ...activePluginIds];
+        log('execAgent: injected task-agent runtime for task scope');
+      }
+
+      if (appContext?.isSubAgent) {
+        activePluginIds = activePluginIds.filter((id) => id !== LobeAgentIdentifier);
+      }
     }
 
     agentConfig.plugins = activePluginIds;
@@ -1647,7 +1676,7 @@ export class AiAgentService {
     await throwIfExecutionAborted('agent configuration');
 
     // 2.5. Append additional instructions to agent's systemRole
-    if (instructions) {
+    if (instructions && !platformOperationPin) {
       agentConfig.systemRole = agentConfig.systemRole
         ? `${agentConfig.systemRole}\n\n${instructions}`
         : instructions;
@@ -2686,6 +2715,7 @@ export class AiAgentService {
     } catch (error) {
       log('execAgent: failed to fetch user settings: %O', error);
     }
+    if (platformOperationPin) globalMemoryEnabled = false;
     log(
       'execAgent: globalMemoryEnabled=%s, timezone=%s',
       globalMemoryEnabled,
@@ -2735,7 +2765,10 @@ export class AiAgentService {
     // `additionalPluginIds` so a mentioned-but-not-pinned tool (e.g. a custom MCP
     // connector) is both queried for manifests and enabled by the tools engine.
     let agentPlugins: string[] = platformOperationPin
-      ? getActivePluginIds(agentConfig?.plugins)
+      ? [
+          ...PLATFORM_AUDITED_BUILTIN_TOOL_IDS,
+          ...(platformConnectorRefs ?? []).map(({ connectorKey }) => connectorKey),
+        ]
       : [
           ...new Set([
             ...getActivePluginIds(agentConfig?.plugins),
@@ -2822,7 +2855,7 @@ export class AiAgentService {
       return historyMessagesCache;
     };
 
-    if (params.disableTools) {
+    if (params.disableTools && !platformOperationPin) {
       log('execAgent: tools disabled by disableTools flag, skipping all tool discovery');
     } else {
       // 5a. Get installed plugins from database. Disabled identifiers are
@@ -2831,9 +2864,9 @@ export class AiAgentService {
       // bypass (auto activator) short-circuits before rules are consulted, so a
       // present-but-rule-disabled manifest could still be auto-activated.
       const disabledPluginIdSet = new Set(disabledPluginIds);
-      const installedPlugins = (await this.pluginModel.query()).filter(
-        (p) => !disabledPluginIdSet.has(p.identifier),
-      );
+      const installedPlugins = platformOperationPin
+        ? []
+        : (await this.pluginModel.query()).filter((p) => !disabledPluginIdSet.has(p.identifier));
       log(
         'execAgent: got %d installed plugins (%d disabled excluded)',
         installedPlugins.length,
@@ -2925,18 +2958,22 @@ export class AiAgentService {
       };
 
       // 5c. Fetch LobeHub Skills manifests
-      try {
-        lobehubSkillManifests = await this.marketService.getLobehubSkillManifests();
-      } catch (error) {
-        log('execAgent: failed to fetch lobehub skill manifests: %O', error);
+      if (!platformOperationPin) {
+        try {
+          lobehubSkillManifests = await this.marketService.getLobehubSkillManifests();
+        } catch (error) {
+          log('execAgent: failed to fetch lobehub skill manifests: %O', error);
+        }
       }
       log('execAgent: got %d lobehub skill manifests', lobehubSkillManifests.length);
 
       // 5d. Fetch Composio tool manifests from database
-      try {
-        composioManifests = await this.composioService.getComposioManifests();
-      } catch (error) {
-        log('execAgent: failed to fetch composio manifests: %O', error);
+      if (!platformOperationPin) {
+        try {
+          composioManifests = await this.composioService.getComposioManifests();
+        } catch (error) {
+          log('execAgent: failed to fetch composio manifests: %O', error);
+        }
       }
       log('execAgent: got %d composio manifests', composioManifests.length);
 
@@ -3014,10 +3051,12 @@ export class AiAgentService {
           (kb: { enabled?: boolean | null }) => kb.enabled === true,
         ) ?? false;
 
-      try {
-        hasAgentDocuments = await this.agentDocumentsService.hasDocuments(resolvedAgentId);
-      } catch {
-        // Agent documents check is non-critical
+      if (!platformOperationPin) {
+        try {
+          hasAgentDocuments = await this.agentDocumentsService.hasDocuments(resolvedAgentId);
+        } catch {
+          // Agent documents check is non-critical
+        }
       }
 
       log('execAgent: isBotConversation=%s', isBotConversation);
@@ -3083,12 +3122,14 @@ export class AiAgentService {
         !modelAbilities?.video;
       const shouldEnableVisualUnderstanding =
         visualUnderstandingConfigured && (needsImageUnderstanding || needsVideoUnderstanding);
-      agentPlugins = [
-        ...agentPlugins,
-        ...(hasTopicReference ? ['lobe-topic-reference'] : []),
-        ...(isBotConversation ? [MessageToolIdentifier] : []),
-        ...(shouldEnableVisualUnderstanding ? [LobeAgentManifest.identifier] : []),
-      ];
+      if (!platformOperationPin) {
+        agentPlugins = [
+          ...agentPlugins,
+          ...(hasTopicReference ? ['lobe-topic-reference'] : []),
+          ...(isBotConversation ? [MessageToolIdentifier] : []),
+          ...(shouldEnableVisualUnderstanding ? [LobeAgentManifest.identifier] : []),
+        ];
+      }
 
       // Resolve THE device decision for this run. All rules live in
       // `resolveExecutionPlan` (gated on `canUseDevice` first, `none`/`sandbox`
@@ -3112,7 +3153,7 @@ export class AiAgentService {
       // the same source of truth the tools engine uses.
       executionPlan = resolveExecutionPlan({
         agencyConfig: agentConfig.agencyConfig,
-        canUseDevice,
+        canUseDevice: platformOperationPin ? false : canUseDevice,
         chatConfig: agentConfig.chatConfig ?? undefined,
         clientExecutionAvailable: gatewayConfigured,
         onlineDeviceIds: onlineDevices.map((device) => device.deviceId),
@@ -3218,6 +3259,7 @@ export class AiAgentService {
             }
           : undefined,
         disableLocalSystem,
+        exactBuiltinToolIds: platformOperationPin ? PLATFORM_AUDITED_BUILTIN_TOOL_IDS : undefined,
         executionPlan,
         globalMemoryEnabled,
         hasEnabledKnowledgeBases,
@@ -3246,8 +3288,8 @@ export class AiAgentService {
       const pluginIds = [
         ...new Set([
           ...agentPlugins,
-          ...(disableLocalSystem ? [] : [LocalSystemManifest.identifier]),
-          RemoteDeviceManifest.identifier,
+          ...(!platformOperationPin && !disableLocalSystem ? [LocalSystemManifest.identifier] : []),
+          ...(!platformOperationPin ? [RemoteDeviceManifest.identifier] : []),
           // Include LobeHub Skills and Composio tools so they are passed to generateToolsDetailed
           ...activeLobehubSkillManifests.map((m) => m.identifier),
           ...activeComposioManifests.map((m) => m.identifier),
@@ -3305,7 +3347,11 @@ export class AiAgentService {
         canUseDevice,
         deviceLocked,
         disableLocalSystem,
-      });
+      }).filter(
+        ({ identifier }) =>
+          !platformOperationPin ||
+          (PLATFORM_AUDITED_BUILTIN_TOOL_IDS as readonly string[]).includes(identifier),
+      );
       // Effective runtimeMode from the plan's resolved target — same value the
       // engine derives, single derivation point.
       const agentRuntimeMode = executionTargetToRuntimeMode(executionPlan.target);
@@ -3358,6 +3404,7 @@ export class AiAgentService {
       // plan already degrades to `none` when device access is denied, so no
       // separate `canUseDevice` check is needed here.)
       if (
+        !platformOperationPin &&
         !disableLocalSystem &&
         gatewayConfigured &&
         agentRuntimeMode === 'local' &&
@@ -3440,7 +3487,7 @@ export class AiAgentService {
       const isLobeAiAgent = isLobeAiAgentSlug(agentSlug);
       const shouldCheckUserSelfIterationGate =
         !params.disableSelfFeedbackIntentTool && (agentSelfIterationEnabled || isLobeAiAgent);
-      if (shouldCheckUserSelfIterationGate) {
+      if (shouldCheckUserSelfIterationGate && !platformOperationPin) {
         const featureUserEnabled = await isAgentSignalEnabledForUser(this.db, this.userId);
         const effectiveAgentSelfIterationEnabled = resolveAgentSelfIterationCapability({
           agentSelfIterationEnabled,
@@ -3469,7 +3516,7 @@ export class AiAgentService {
 
     // Inject client function tools from Response API
     const CLIENT_FN_IDENTIFIER = 'lobe-client-fn';
-    if (functionTools?.length) {
+    if (functionTools?.length && !platformOperationPin) {
       for (const ft of functionTools) {
         tools?.push({
           function: {
@@ -3558,7 +3605,8 @@ export class AiAgentService {
     //   enabled, since they're solely needed for createAgent / updateAgent.
     const isAgentManagementEnabled = toolsResult.enabledToolIds?.includes('lobe-agent-management');
     const isInAutoSkillMode = agentConfig.chatConfig?.skillActivateMode !== 'manual';
-    const shouldInjectAvailableAgents = isInAutoSkillMode || isAgentManagementEnabled;
+    const shouldInjectAvailableAgents =
+      !platformOperationPin && (isInAutoSkillMode || isAgentManagementEnabled);
     let agentManagementContext: AgentManagementContext | undefined;
 
     if (shouldInjectAvailableAgents) {
@@ -3796,7 +3844,7 @@ export class AiAgentService {
       },
     };
 
-    if (appContext?.scope !== 'page' && appContext?.documentId) {
+    if (!platformOperationPin && appContext?.scope !== 'page' && appContext?.documentId) {
       // Server is authoritative — `(agentId, documentId)` is a unique binding
       // so a single indexed lookup both validates any caller-supplied
       // `agentDocumentId` hint and resolves the row id when one was not
@@ -3831,7 +3879,11 @@ export class AiAgentService {
       }
     }
 
-    if (appContext?.scope === 'task' && appContext.defaultTaskAssigneeAgentId) {
+    if (
+      !platformOperationPin &&
+      appContext?.scope === 'task' &&
+      appContext.defaultTaskAssigneeAgentId
+    ) {
       initialContext = {
         ...initialContext,
         initialContext: {
@@ -3849,7 +3901,7 @@ export class AiAgentService {
     // context engine injects the delegation context on every step (survives the
     // queue-mode dispatch). `callLlm` bridges this into `agentManagementContext`
     // for the AgentManagementContextInjector — mirrors the client runtime.
-    if (hasMentionedAgents) {
+    if (hasMentionedAgents && !platformOperationPin) {
       initialContext = {
         ...initialContext,
         initialContext: {
@@ -3978,11 +4030,13 @@ export class AiAgentService {
     // Project discovery also supplies operation-wide instructions and working
     // directory metadata. Keep it independent of Skill catalog enforcement:
     // managed Skills replace only the Skill pool, not project instructions.
-    const workspaceInit = await this.resolveWorkspaceInit({
-      activeDeviceId,
-      agencyConfig: agentConfig.agencyConfig ?? undefined,
-      topicId,
-    });
+    const workspaceInit: ResolvedWorkspaceInit = platformOperationPin
+      ? { workspace: { instructions: [], skills: [] } }
+      : await this.resolveWorkspaceInit({
+          activeDeviceId,
+          agencyConfig: agentConfig.agencyConfig ?? undefined,
+          topicId,
+        });
     if (workspaceInit.boundCwd) deviceSystemInfo.workingDirectory = workspaceInit.boundCwd;
     if (workspaceInit.workspace.instructions.length) {
       const block = workspaceInit.workspace.instructions

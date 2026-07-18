@@ -76,15 +76,9 @@ export class PlatformDefaultInboxService {
       resolved.dependencySnapshot,
     );
 
-    const dependencyPluginIds = [
-      ...resolved.dependencySnapshot.skills.map(({ skillKey }) => skillKey),
-      ...resolved.dependencySnapshot.connectors.map(({ connectorKey }) => connectorKey),
-    ];
-    const plugins = [...new Set([...(snapshot.config.plugins ?? []), ...dependencyPluginIds])];
-
     return {
       ...base,
-      avatar: snapshot.config.avatar ?? base.avatar,
+      avatar: snapshot.config.avatar,
       backgroundColor: snapshot.config.backgroundColor ?? undefined,
       description: snapshot.config.description ?? undefined,
       model: resolved.config.model,
@@ -92,10 +86,11 @@ export class PlatformDefaultInboxService {
       openingQuestions: snapshot.config.openingQuestions,
       params: { ...base.params, ...resolved.config.params },
       platform: {
-        ...resolved.config.platform!,
-        systemKey: PLATFORM_AGENT_DEFAULT_INBOX_SYSTEM_KEY,
+        distribution: handle.distribution,
+        managed: true,
+        source: 'platform',
       },
-      plugins,
+      plugins: [],
       provider: resolved.config.provider,
       slug: INBOX_SESSION_ID,
       systemRole: snapshot.config.systemRole,
@@ -108,6 +103,4 @@ export class PlatformDefaultInboxService {
 /** Client/store helper: platform-managed state is carried by the effective config itself. */
 export const isPlatformManagedInboxConfig = (
   config: Pick<LobeAgentConfig, 'platform'> | null | undefined,
-): boolean =>
-  config?.platform?.managed === true &&
-  config.platform.systemKey === PLATFORM_AGENT_DEFAULT_INBOX_SYSTEM_KEY;
+): boolean => config?.platform?.managed === true;
