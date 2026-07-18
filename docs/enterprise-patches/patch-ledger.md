@@ -74,6 +74,15 @@
 | Better Auth / OIDC config      | M11    | Adapter + LKG     |       |
 | Branding metadata / auth shell | M12    | Provider/fallback |       |
 
+## M12 desktop packaging applied
+
+| Upstream file / area                                                                                              | Change                                                                                | Module | PR     | Notes                                                                       |
+| ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- | ------ | ------ | --------------------------------------------------------------------------- |
+| `apps/desktop/{electron-builder.mjs,electron.vite.config.ts}` + `src/main/core/infrastructure/ProtocolManager.ts` | Explicit AIHub product/AppId/icon/update profile; disable LobeHub scheme registration | M12    | PR-063 | Default LobeHub profile and protocol identifiers remain unchanged           |
+| `scripts/electronWorkflow/setDesktopVersion.ts`                                                                   | Brand-aware package metadata selection                                                | M12    | PR-063 | AIHub is stable-only; internal package/protocol identifiers are not renamed |
+| `.github/actions/desktop-publish-s3/action.yml`                                                                   | Optional artifact name, namespace, and required-config behavior                       | M12    | PR-063 | Existing callers retain defaults; AIHub publishes only below `aihub/stable` |
+| `.github/workflows/release-desktop-aihub.yml` + desktop branding helper scripts                                   | Protected manual build/sign/publish flow and mixed-brand rejection                    | M12    | PR-063 | Approved icons/AppId/signing/S3 configuration remain external release gates |
+
 ## M04 applied
 
 | Upstream file                                                                | Change                                                       | Module | PR         | Notes                                                                     |
