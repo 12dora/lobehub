@@ -725,30 +725,6 @@ describe('PlatformAgentCatalogRepository', () => {
       });
     });
 
-    it('can keep the stable default-inbox local row out of ordinary materialization de-dup', async () => {
-      const { agentId, version } = await seedVersion('mat-inbox');
-      await serverDB
-        .update(platformAgents)
-        .set({ isDefault: true, systemKey: 'default-inbox' })
-        .where(eq(platformAgents.id, agentId));
-      await repository.materializeLocalAgent({
-        createLocalAgent: createLocalAgentFor(USER_A, 'builtin-inbox-id'),
-        platformAgentId: agentId,
-        platformAgentVersionChecksum: version.checksum,
-        platformAgentVersionId: version.id,
-        userId: USER_A,
-      });
-
-      expect(await repository.listMaterializedAgentIds(USER_A)).toEqual(
-        new Set(['builtin-inbox-id']),
-      );
-      expect(
-        await repository.listMaterializedAgentIds(USER_A, {
-          excludeSystemKeys: ['default-inbox'],
-        }),
-      ).toEqual(new Set());
-    });
-
     it('leaves exactly one mapping + one Agent under N concurrent materializations (no orphan)', async () => {
       const { agentId, version } = await seedVersion('mat-concurrent');
 

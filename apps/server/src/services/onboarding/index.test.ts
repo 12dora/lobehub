@@ -296,8 +296,17 @@ describe('OnboardingService', () => {
     vi.spyOn(PlatformDefaultInboxService.prototype, 'capture').mockRejectedValue(failure);
     const service = new OnboardingService(mockDb, userId);
 
-    await expect(service.saveUserQuestion({ agentName: 'Legacy override' })).rejects.toBe(failure);
+    await expect(
+      service.saveUserQuestion({ agentName: 'Legacy override', fullName: 'Must not persist' }),
+    ).rejects.toBe(failure);
+    expect(mockUserModel.getUserState).not.toHaveBeenCalled();
+    expect(mockUserModel.updateUser).not.toHaveBeenCalled();
+    expect(mockUserModel.updateSetting).not.toHaveBeenCalled();
     expect(mockAgentModel.update).not.toHaveBeenCalled();
+    expect(mockAgentService.getBuiltinAgent).not.toHaveBeenCalled();
+    expect(mockAgentDocumentsService.deleteTemplateDocuments).not.toHaveBeenCalled();
+    expect(mockAgentDocumentsService.upsertDocument).not.toHaveBeenCalled();
+    expect(mockDb.transaction).not.toHaveBeenCalled();
   });
 
   it('resets user onboarding state but preserves managed inbox identity and documents', async () => {
