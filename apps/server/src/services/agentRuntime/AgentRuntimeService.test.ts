@@ -337,6 +337,52 @@ describe('AgentRuntimeService', () => {
       );
     });
 
+    it('clears mutable prompt contexts from a complete managed operation state', async () => {
+      vi.spyOn((service as any).completionLifecycle, 'recordStart').mockResolvedValue(undefined);
+      const platformOperationPin = {
+        checksum: 'a'.repeat(64),
+        platformAgentId: 'pagt-1',
+        versionId: 'pav-1',
+      };
+
+      await service.createOperation({
+        ...mockParams,
+        agentGroup: { agents: [{ id: 'dynamic-agent' }] } as never,
+        assistantMessageId: 'assistant-managed',
+        autoStart: false,
+        botContext: { botId: 'dynamic-bot' } as never,
+        botPlatformContext: { platform: 'dynamic-platform' } as never,
+        discordContext: { guildId: 'dynamic-guild' } as never,
+        evalContext: { envPrompt: 'dynamic-eval-prompt' },
+        platformConnectorPins: [],
+        platformModelPin: {
+          modelKey: 'chat-model',
+          providerChecksum: 'b'.repeat(64),
+          providerKey: 'internal-provider',
+          providerRevision: 1,
+        },
+        platformOperationPin,
+        platformSkillPins: [],
+        userMemory: { memories: { contexts: [{ content: 'dynamic-memory' }] } } as never,
+        userTimezone: 'Asia/Singapore',
+      });
+
+      const savedState = mockCoordinator.saveAgentState.mock.calls.at(-1)?.[1];
+      expect(savedState.initialContext).toBeUndefined();
+      expect(savedState.metadata).toEqual(
+        expect.objectContaining({
+          agentGroup: undefined,
+          botContext: undefined,
+          botPlatformContext: undefined,
+          discordContext: undefined,
+          evalContext: undefined,
+          platformStartClassification: 'complete',
+          userMemory: undefined,
+          userTimezone: undefined,
+        }),
+      );
+    });
+
     it('should handle errors during operation creation', async () => {
       mockCoordinator.saveAgentState.mockRejectedValueOnce(new Error('Database error'));
 
