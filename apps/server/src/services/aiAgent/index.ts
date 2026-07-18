@@ -49,6 +49,7 @@ import type {
   LobeAgentAgencyConfig,
   LobeAgentConfig,
   MessagePluginItem,
+  PlatformAgentSkillDependencyRef,
   PlatformOperationModelPin,
   PlatformOperationPin,
   RuntimeMentionedAgent,
@@ -120,7 +121,10 @@ import {
   getEffectiveMemorySettings,
   resolveEffectiveUserInterventionConfig,
 } from '@/server/enterprise/services/settings/runtimeSettingsAdapter';
-import { resolvePlatformSkillRuntimeSnapshot } from '@/server/enterprise/services/skillCatalog';
+import {
+  resolvePinnedPlatformSkillRuntimeSnapshot,
+  resolvePlatformSkillRuntimeSnapshot,
+} from '@/server/enterprise/services/skillCatalog';
 import { createStreamEventManager } from '@/server/modules/AgentRuntime/factory';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 import type { EvalContext, ServerAgentToolsContext } from '@/server/modules/Mecha';
@@ -1079,6 +1083,7 @@ export class AiAgentService {
     config: AgentConfigWithId;
     modelPin: PlatformOperationModelPin;
     pin: PlatformOperationPin;
+    skillRefs: PlatformAgentSkillDependencyRef[];
   }> {
     const materializationService = new PlatformAgentMaterializationService(this.db, this.userId);
 
@@ -1099,6 +1104,7 @@ export class AiAgentService {
             config: materialized.config,
             modelPin: materialized.dependencySnapshot.model,
             pin,
+            skillRefs: materialized.dependencySnapshot.skills,
           };
         } catch (error) {
           this.mapPlatformConfigError(error, platformAgentId, identifier);
@@ -1127,6 +1133,7 @@ export class AiAgentService {
           platformAgentId: snapshot.platformAgentId,
           versionId: snapshot.versionId,
         },
+        skillRefs: materialized.dependencySnapshot.skills,
       };
     } catch (error) {
       this.mapPlatformConfigError(error, platformAgentId, identifier);
@@ -1263,6 +1270,9 @@ export class AiAgentService {
     // every LLM call runs on the exact historical provider revision.
     let platformOperationPin: PlatformOperationPin | undefined;
     let platformModelPin: PlatformOperationModelPin | undefined;
+    // Exact pinned Skill refs for a platform operation (undefined for non-platform). Set (possibly
+    // empty) whenever the operation is a platform Agent, so the Skill pool is EXACTLY its pinned set.
+    let platformSkillRefs: PlatformAgentSkillDependencyRef[] | undefined;
     if (platformAgentId) {
       const resolved = await this.resolvePlatformAgentConfig(platformAgentId, identifier, {
         resume: resume || !!resumeApproval || !!resumeToolResult,
@@ -1272,6 +1282,7 @@ export class AiAgentService {
       agentConfig = resolved.config;
       platformOperationPin = resolved.pin;
       platformModelPin = resolved.modelPin;
+      platformSkillRefs = resolved.skillRefs;
     } else {
       agentConfig = await this.agentService.getAgentConfig(identifier);
       // Builtin agents (inbox / page / task / self-iteration slugs) may be addressed
@@ -3678,13 +3689,23 @@ export class AiAgentService {
       db: this.db,
       flags: enterpriseFlags,
     });
-    const platformSkillSnapshot = await resolvePlatformSkillRuntimeSnapshot({
-      agentPlugins: persistedAgentPluginEntries,
-      db: this.db,
-      effectiveMode: managedSkillEffectiveMode,
-      flags: enterpriseFlags,
-      identity: { agentId: resolvedAgentId, operationId, userId: this.userId },
-    });
+    // Platform Agent (SKILL-EXACT): resolve the operation's Skill pool from its immutable pinned
+    // Skill refs — exact historical version/checksum — not the moving catalog head. Ordinary /
+    // builtin operations keep the existing latest-catalog managed-Skill path unchanged.
+    const platformSkillSnapshot = platformSkillRefs
+      ? await resolvePinnedPlatformSkillRuntimeSnapshot({
+          db: this.db,
+          flags: enterpriseFlags,
+          identity: { agentId: resolvedAgentId, operationId, userId: this.userId },
+          pinnedSkills: platformSkillRefs,
+        })
+      : await resolvePlatformSkillRuntimeSnapshot({
+          agentPlugins: persistedAgentPluginEntries,
+          db: this.db,
+          effectiveMode: managedSkillEffectiveMode,
+          flags: enterpriseFlags,
+          identity: { agentId: resolvedAgentId, operationId, userId: this.userId },
+        });
 
     // Project discovery also supplies operation-wide instructions and working
     // directory metadata. Keep it independent of Skill catalog enforcement:
@@ -3880,6 +3901,7 @@ export class AiAgentService {
         parentOperationId,
         platformModelPin,
         platformOperationPin,
+        platformSkillPins: platformSkillRefs,
         signal,
         queueRetries,
         queueRetryDelay,
