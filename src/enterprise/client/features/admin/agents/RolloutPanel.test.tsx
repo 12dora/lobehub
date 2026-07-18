@@ -141,12 +141,15 @@ describe('RolloutPanel capability gate', () => {
   });
 
   it('keeps loaded progress visible when live polling fails and exposes retry', () => {
+    const refresh = vi.fn();
+    const retryPoll = vi.fn();
     render(
       <RolloutPanel
         enabled
         permissions={deriveAdminAgentPermissions([PLATFORM_PERMISSIONS.AGENT_ASSIGN])}
         pollError={new Error('poll failed')}
-        refresh={vi.fn()}
+        refresh={refresh}
+        retryPoll={retryPoll}
         snapshot={runningSnapshot}
       />,
     );
@@ -154,6 +157,9 @@ describe('RolloutPanel capability gate', () => {
     expect(screen.getByText('agentCatalog.rollout.pollFailed')).toBeTruthy();
     expect(screen.getByText('agentCatalog.rollout.pollRetry')).toBeTruthy();
     expect(screen.getByText('agentCatalog.rollout.cancel')).toBeTruthy();
+    fireEvent.click(screen.getByText('agentCatalog.rollout.pollRetry'));
+    expect(retryPoll).toHaveBeenCalledTimes(1);
+    expect(refresh).not.toHaveBeenCalled();
   });
 
   it('disables duplicate controls during mutation and surfaces a refresh failure', async () => {

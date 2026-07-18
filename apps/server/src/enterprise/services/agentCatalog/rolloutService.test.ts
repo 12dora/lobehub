@@ -12,6 +12,8 @@ import {
   platformAuditLogs,
   platformJobs,
   platformUserAgentMaterializations,
+  roles,
+  userRoles,
   users,
 } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
@@ -62,6 +64,8 @@ const cleanup = () =>
       ${platformUserAgentMaterializations},
       ${platformAgentVersions},
       ${platformAgents},
+      ${userRoles},
+      ${roles},
       ${users}
     CASCADE
   `);
@@ -283,6 +287,90 @@ describe('PlatformAgentRolloutService control plane', () => {
     expect(await db.select().from(platformUserAgentMaterializations)).toHaveLength(3);
   });
 
+  it('freezes the database target cutoff so a later sorting user is excluded at 3/3', async () => {
+    vi.stubEnv('ENABLE_PLATFORM_MANAGED_AGENTS', '1');
+    const service = new PlatformAgentRolloutService(db);
+    const started = await service.start('admin', await startInput());
+    const [job] = await db
+      .select()
+      .from(platformJobs)
+      .where(sql`${platformJobs.id} = ${started.jobId}`);
+    const cutoff = new Date(
+      (job.input as { snapshot: { targetCutoff: string } }).snapshot.targetCutoff,
+    );
+    await db.insert(users).values({
+      createdAt: new Date(cutoff.getTime() + 1000),
+      id: 'zz-after-cutoff',
+    });
+
+    await runPlatformAgentRolloutBatches(db, 10);
+    await expect(
+      service.get({ agentId: 'agent-support', jobId: started.jobId }),
+    ).resolves.toMatchObject({ completed: 3, failed: 0, status: 'completed', total: 3 });
+    expect(
+      await db
+        .select()
+        .from(platformUserAgentMaterializations)
+        .where(sql`${platformUserAgentMaterializations.userId} = 'zz-after-cutoff'`),
+    ).toHaveLength(0);
+  });
+
+  it('reconciles a deleted target to an actual terminal total of 2/2', async () => {
+    vi.stubEnv('ENABLE_PLATFORM_MANAGED_AGENTS', '1');
+    const service = new PlatformAgentRolloutService(db);
+    const started = await service.start('admin', await startInput());
+    await db.delete(users).where(sql`${users.id} = 'user-b'`);
+
+    await runPlatformAgentRolloutBatches(db, 10);
+    await expect(
+      service.get({ agentId: 'agent-support', jobId: started.jobId }),
+    ).resolves.toMatchObject({ completed: 2, failed: 0, status: 'completed', total: 2 });
+  });
+
+  it('uses the same cutoff for role users and memberships while honoring later removals', async () => {
+    vi.stubEnv('ENABLE_PLATFORM_MANAGED_AGENTS', '1');
+    await db.insert(roles).values({
+      displayName: 'Rollout role',
+      id: 'rollout-role',
+      isActive: true,
+      name: 'rollout_role',
+      workspaceId: null,
+    });
+    await db.insert(userRoles).values([
+      { roleId: 'rollout-role', userId: 'admin', workspaceId: null },
+      { roleId: 'rollout-role', userId: 'user-a', workspaceId: null },
+    ]);
+    await db
+      .update(platformAgentAssignments)
+      .set({ targetId: 'rollout-role', targetType: 'global_role' });
+    const service = new PlatformAgentRolloutService(db);
+    const started = await service.start('admin', await startInput());
+    const [job] = await db
+      .select()
+      .from(platformJobs)
+      .where(sql`${platformJobs.id} = ${started.jobId}`);
+    const cutoff = new Date(
+      (job.input as { snapshot: { targetCutoff: string } }).snapshot.targetCutoff,
+    );
+    await db
+      .delete(userRoles)
+      .where(sql`${userRoles.roleId} = 'rollout-role' AND ${userRoles.userId} = 'user-a'`);
+    await db.insert(userRoles).values({
+      createdAt: new Date(cutoff.getTime() + 1000),
+      roleId: 'rollout-role',
+      userId: 'user-b',
+      workspaceId: null,
+    });
+
+    await runPlatformAgentRolloutBatches(db, 10);
+    await expect(
+      service.get({ agentId: 'agent-support', jobId: started.jobId }),
+    ).resolves.toMatchObject({ completed: 1, failed: 0, status: 'completed', total: 1 });
+    expect(
+      (await db.select().from(platformUserAgentMaterializations)).map(({ userId }) => userId),
+    ).toEqual(['admin']);
+  });
+
   it('coordinates concurrent workers across multiple bounded pages without duplicates', async () => {
     vi.stubEnv('ENABLE_PLATFORM_MANAGED_AGENTS', '1');
     await db.insert(users).values(
@@ -292,6 +380,10 @@ describe('PlatformAgentRolloutService control plane', () => {
     );
     const service = new PlatformAgentRolloutService(db);
     const started = await service.start('admin', await startInput());
+    await db
+      .update(platformJobs)
+      .set({ progressTotal: 1 })
+      .where(sql`${platformJobs.id} = ${started.jobId}`);
     await Promise.all([
       runPlatformAgentRolloutBatches(db, 10),
       runPlatformAgentRolloutBatches(db, 10),
