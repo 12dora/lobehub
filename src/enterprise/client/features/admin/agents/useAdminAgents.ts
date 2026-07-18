@@ -4,7 +4,7 @@ import { mutate } from 'swr';
 import useSWRInfinite from 'swr/infinite';
 
 import { adminAgentsService } from '@/enterprise/client/services/adminAgents';
-import { useClientDataSWR } from '@/libs/swr';
+import { useClientDataSWR, useClientPollingSWR } from '@/libs/swr';
 import { adminPlatformAgentDetailAggregateOutputSchema } from '@/server/enterprise/contracts/platformAgents';
 
 import {
@@ -45,13 +45,13 @@ export const fetchAllAdminAgents = async (
 export const fetchAdminAgentDetail = async (
   id: string,
   client: AdminAgentsClient,
+  rolloutsEnabled = client.capabilities.rollouts,
 ): Promise<AdminAgentDetailOutput> => {
   const [detail, assignments, rollouts, versions] = await Promise.all([
     client.get({ id }),
     collectPages((cursor) => client.listAssignments({ agentId: id, cursor, limit: 100 })),
-    // Rollouts have no core router yet (PR-052). Skip the read entirely when the adapter
-    // reports the capability off, rather than calling a mock/absent endpoint.
-    client.capabilities.rollouts
+    // Skip the read entirely when the server capability is off, rather than touching a gated API.
+    rolloutsEnabled
       ? collectPages((cursor) => client.listRollouts({ agentId: id, cursor, limit: 100 }))
       : Promise.resolve([] as AdminAgentDetailOutput['rollouts']),
     collectPages((cursor) => client.listVersions({ agentId: id, cursor, limit: 100 })),
@@ -160,10 +160,22 @@ export const useFetchAdminAgent = (
   id: string | undefined,
   enabled: boolean,
   client: AdminAgentsClient = adminAgentsService,
+  rolloutsEnabled = client.capabilities.rollouts,
 ) =>
-  useClientDataSWR(buildAdminAgentGetKey(id, enabled), () => fetchAdminAgentDetail(id!, client), {
-    revalidateOnFocus: false,
-  });
+  useClientPollingSWR(
+    buildAdminAgentGetKey(id, enabled, rolloutsEnabled),
+    () => fetchAdminAgentDetail(id!, client, rolloutsEnabled),
+    {
+      dedupingInterval: 1000,
+      keepPreviousData: true,
+      refreshInterval: (latest: AdminAgentDetailOutput | undefined) =>
+        rolloutsEnabled &&
+        latest?.rollouts.some(({ status }) => status === 'pending' || status === 'running')
+          ? 2000
+          : 0,
+      revalidateOnFocus: false,
+    },
+  );
 
 export const refreshAdminAgentLists = async () => {
   await mutate((key) => Array.isArray(key) && key[0] === ADMIN_AGENT_LIST_KEY);
@@ -171,7 +183,7 @@ export const refreshAdminAgentLists = async () => {
 
 export const refreshAdminAgent = async (id: string) => {
   const [detail] = await Promise.all([
-    mutate(buildAdminAgentGetKey(id, true)),
+    mutate((key) => Array.isArray(key) && key[0] === ADMIN_AGENT_GET_KEY && key[1] === id),
     mutate((key) => Array.isArray(key) && key[0] === ADMIN_AGENT_LIST_KEY),
   ]);
   return detail;

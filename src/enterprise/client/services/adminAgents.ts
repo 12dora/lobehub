@@ -25,7 +25,9 @@ export class PlatformAgentRolloutUnavailableError extends Error {
  * disabled when managed Agents are off.
  */
 export const createLambdaAdminAgentsClient = (): AdminAgentsClient => ({
-  capabilities: { rollouts: true },
+  // Runtime rollout availability comes from platform.getCapabilities.managedResources.agents.
+  // Keep the adapter default closed so direct/partial trees cannot accidentally read Rollout APIs.
+  capabilities: { rollouts: false },
 
   appendVersion: (input) => lambdaClient.admin.agents.appendVersion.mutate(input),
   archive: (input) => lambdaClient.admin.agents.archive.mutate(input),

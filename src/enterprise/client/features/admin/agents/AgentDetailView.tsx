@@ -7,7 +7,6 @@ import { useTranslation } from 'react-i18next';
 import type { KeyedMutator } from 'swr';
 
 import type { AdminReauthAuthMethod } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
-import { adminAgentsService } from '@/enterprise/client/services/adminAgents';
 import { adminPlatformAgentDetailAggregateOutputSchema } from '@/server/enterprise/contracts/platformAgents';
 
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
@@ -28,6 +27,8 @@ interface AgentDetailViewProps {
   editor: ReturnType<typeof useAgentEditor>;
   mutate: KeyedMutator<AdminAgentDetailOutput>;
   permissions: ReturnType<typeof deriveAdminAgentPermissions>;
+  pollError?: unknown;
+  rolloutsEnabled?: boolean;
   snapshot: AdminAgentDetailOutput;
 }
 
@@ -66,7 +67,15 @@ export const isAgentDetailFresh = (
 };
 
 export const AgentDetailView = memo(
-  ({ authMethod, editor, mutate, permissions, snapshot }: AgentDetailViewProps) => {
+  ({
+    authMethod,
+    editor,
+    mutate,
+    permissions,
+    pollError,
+    rolloutsEnabled = false,
+    snapshot,
+  }: AgentDetailViewProps) => {
     const { t } = useTranslation('admin');
     const current = snapshot.versions.find(({ id }) => id === snapshot.identity.currentVersionId);
     const latest = snapshot.versions[0];
@@ -274,12 +283,13 @@ export const AgentDetailView = memo(
             lock={lock}
             mutate={mutate}
             permissions={permissions}
-            rolloutsEnabled={adminAgentsService.capabilities.rollouts}
+            rolloutsEnabled={rolloutsEnabled}
             snapshot={snapshot}
           />
           <RolloutPanel
-            enabled={adminAgentsService.capabilities.rollouts}
+            enabled={rolloutsEnabled}
             permissions={permissions}
+            pollError={pollError}
             refresh={mutate}
             snapshot={snapshot}
           />

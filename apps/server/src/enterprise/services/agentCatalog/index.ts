@@ -5,4 +5,5 @@ export * from './errors';
 export * from './materialization';
 export * from './publication';
 export * from './rolloutService';
+export * from './rolloutWorker';
 export * from './userListProjection';

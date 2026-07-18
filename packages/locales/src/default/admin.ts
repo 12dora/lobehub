@@ -168,8 +168,15 @@ export default {
   'agentCatalog.rollout.deferredTitle': 'Rollout service not enabled yet',
   'agentCatalog.rollout.deadHelp':
     'A dead rollout requires an explicit retry after its dependency or user-row failure is corrected.',
+  'agentCatalog.rollout.defaultInboxDelegated':
+    'Default inbox versions are changed through the atomic publication rollback, not per-user rollout.',
   'agentCatalog.rollout.empty': 'No rollout jobs yet.',
   'agentCatalog.rollout.progress': '{{completed}} completed · {{failed}} failed · {{total}} total',
+  'agentCatalog.rollout.pollFailed': 'Live rollout updates paused. Loaded progress is preserved.',
+  'agentCatalog.rollout.pollRetry': 'Retry live updates',
+  'agentCatalog.rollout.refreshFailed':
+    'The rollout action completed, but refreshed progress could not be loaded.',
+  'agentCatalog.rollout.refreshRetry': 'Retry refresh',
   'agentCatalog.rollout.retry': 'Retry rollout',
   'agentCatalog.rollout.retryDescription':
     'Explain why the failed or cancelled rollout is safe to resume from its checkpoint.',
