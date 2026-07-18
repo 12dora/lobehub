@@ -16,13 +16,24 @@ const TRUSTED_HUMAN_ANSWER_TOOLS = new Set([
   'lobe-web-onboarding/showAgentMarketplace',
 ]);
 
-const deriveResumeKind = (toolPayload: {
-  apiName?: string;
-  identifier?: string;
-}): ResumeInteractionKind =>
-  TRUSTED_HUMAN_ANSWER_TOOLS.has(`${toolPayload.identifier}/${toolPayload.apiName}`)
+const deriveResumeKind = (
+  toolPayload: {
+    apiName?: string;
+    identifier?: string;
+  },
+  state: {
+    operationToolSet?: { sourceMap?: Record<string, unknown> };
+    toolSourceMap?: Record<string, unknown>;
+  },
+): ResumeInteractionKind => {
+  const identifier = toolPayload.identifier ?? '';
+  const trustedSource =
+    state.operationToolSet?.sourceMap?.[identifier] ?? state.toolSourceMap?.[identifier];
+  return trustedSource === 'builtin' &&
+    TRUSTED_HUMAN_ANSWER_TOOLS.has(`${identifier}/${toolPayload.apiName}`)
     ? 'toolResult'
     : 'approval';
+};
 
 /**
  * `request_human_approve` executor — pauses the operation for human tool
@@ -176,9 +187,10 @@ export const requestHumanApprove =
       }
 
       for (const toolPayload of pendingToolsCalling) {
-        // Server-derived resume kind from the tool's own manifest intervention type (RR5-2); an
-        // unmapped tool defaults to 'approval' (approve/reject), never a blind toolResult write.
-        const kind = deriveResumeKind(toolPayload);
+        // Server-derived resume kind from exact audited capability + operation-snapshot source
+        // provenance (RR6); an unmapped/non-builtin tool defaults to approval, never a blind
+        // toolResult write.
+        const kind = deriveResumeKind(toolPayload, state);
         const fingerprint = await fingerprintResumeToolCall({
           apiName: toolPayload.apiName,
           arguments: toolPayload.arguments,
