@@ -99,6 +99,21 @@ export const useAgentActions = ({
   const save = useCallback(() => {
     // Locked after a committed change whose refresh failed → block the stale-CAS write.
     if (lock.isLocked() || !permissions.canUpdate || !editor.draft) return;
+    // The draft must be submitted against the exact CAS it was authored from. This synchronous
+    // guard also protects direct/programmatic calls that bypass the disabled Save button during a
+    // refresh race. Never bind a dirty draft to the newer live snapshot implicitly.
+    const baseline = editor.draftBaseline;
+    if (
+      editor.conflict ||
+      !baseline ||
+      baseline.agentId !== snapshot.identity.id ||
+      baseline.revision !== snapshot.identity.revision ||
+      baseline.draftToken !== snapshot.draftToken
+    ) {
+      editor.setConflict(true);
+      return;
+    }
+    const { agentId, draftToken: expectedDraftToken, revision: expectedRevision } = baseline;
     const dependencySnapshot = toDependencySnapshot(editor.draft.dependencies);
     if (!dependencySnapshot) {
       toast.error(t('agentCatalog.dependency.model.required'));
@@ -110,11 +125,11 @@ export const useAgentActions = ({
     // append-version contract is enforced only at this explicit submission boundary.
     if (
       !adminPlatformAgentAppendVersionInputSchema.safeParse({
-        agentId: snapshot.identity.id,
+        agentId,
         config,
         dependencySnapshot,
-        expectedDraftToken: snapshot.draftToken,
-        expectedRevision: snapshot.identity.revision,
+        expectedDraftToken,
+        expectedRevision,
         reason: 'validate recovered Agent draft',
         version,
       }).success
@@ -129,11 +144,11 @@ export const useAgentActions = ({
     openReasonModal({
       authMethod: authMethod ?? undefined,
       buildPayload: (reason) => ({
-        agentId: snapshot.identity.id,
+        agentId,
         config,
         dependencySnapshot,
-        expectedDraftToken: snapshot.draftToken,
-        expectedRevision: snapshot.identity.revision,
+        expectedDraftToken,
+        expectedRevision,
         reason,
         version,
       }),

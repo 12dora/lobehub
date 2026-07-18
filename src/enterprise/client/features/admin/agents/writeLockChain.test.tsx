@@ -10,6 +10,7 @@ import { isAgentDetailFresh } from './AgentDetailView';
 import { deriveAdminAgentPermissions } from './controller';
 import type { AdminAgentDetailOutput } from './types';
 import { useAgentActions } from './useAgentActions';
+import type { AgentDraftBaseline } from './useAgentEditor';
 import { useAssignmentEditor } from './useAssignmentEditor';
 import { useRefreshLock } from './useRefreshLock';
 
@@ -92,6 +93,7 @@ const deferred = <T,>() => {
 const reauthError = () => new Error('ADMIN_REAUTH_REQUIRED');
 
 const editor = {
+  conflict: false,
   draft: {
     config: {
       avatar: null,
@@ -119,7 +121,7 @@ const editor = {
   markSaved: vi.fn(),
   setConflict: vi.fn(),
   setSaveState: vi.fn(),
-} as never;
+};
 
 // The shared SWR mutate: an updater arg = optimistic local cache apply; a bare call = a refresh,
 // resolving to whatever `freshRef` currently holds. `cacheApply` lets a test force the optimistic
@@ -142,13 +144,25 @@ const renderHarness = (snapshot: AdminAgentDetailOutput) =>
     ({ snap }: { snap: AdminAgentDetailOutput }) => {
       const snapshotRef = useRef(snap);
       snapshotRef.current = snap;
+      const draftBaselineRef = useRef({
+        agentId: snap.identity.id,
+        draftToken: snap.draftToken,
+        revision: snap.identity.revision,
+      });
       const lock = useRefreshLock<AdminAgentDetailOutput>(mutate, {
         getSnapshot: () => snapshotRef.current,
         isFresh: isAgentDetailFresh,
       });
       const actions = useAgentActions({
         authMethod: null,
-        editor,
+        editor: {
+          ...editor,
+          draftBaseline: draftBaselineRef.current,
+          markSaved: (baseline: AgentDraftBaseline) => {
+            draftBaselineRef.current = baseline;
+            editor.markSaved(baseline);
+          },
+        } as never,
         lock,
         mutate,
         permissions,
@@ -329,22 +343,23 @@ describe('write-lock chain: refresh writes stay locked until a fresh CAS-advance
       expect(mocks.service[w.method].mock.calls.length).toBe(calls);
 
       // A fresh, strictly-advanced aggregate on retry unlocks.
-      freshRef.current = complete(5, 'c');
+      const refreshed = w.method === 'appendVersion' ? complete(8, 'e') : complete(5, 'c');
+      freshRef.current = refreshed;
       await act(async () => {
         await h.result.current.lock.retryRefresh();
       });
       expect(h.result.current.lock.isLocked()).toBe(false);
 
       // The re-rendered surface authors the next write from the NEW CAS.
-      h.rerender({ snap: complete(5, 'c') });
+      h.rerender({ snap: refreshed });
       await fire(h, w);
       const next = lastConfig();
       const built = next.buildPayload('again') as {
         expectedDraftToken: string;
         expectedRevision: number;
       };
-      expect(built.expectedRevision).toBe(5);
-      expect(built.expectedDraftToken).toBe('c'.repeat(64));
+      expect(built.expectedRevision).toBe(refreshed.identity.revision);
+      expect(built.expectedDraftToken).toBe(refreshed.draftToken);
     },
   );
 
@@ -464,22 +479,23 @@ describe('write-lock chain: a committed write survives a local cache-apply failu
 
       // The authoritative aggregate refresh (fresh, strictly advanced) unlocks.
       cacheApply.current = 'ok';
-      freshRef.current = complete(5, 'c');
+      const refreshed = w.method === 'appendVersion' ? complete(8, 'e') : complete(5, 'c');
+      freshRef.current = refreshed;
       await act(async () => {
         await h.result.current.lock.retryRefresh();
       });
       expect(h.result.current.lock.isLocked()).toBe(false);
 
       // The next write authors from the NEW CAS (setDefaultInbox nests it under `nextDefault`).
-      h.rerender({ snap: complete(5, 'c') });
+      h.rerender({ snap: refreshed });
       await fire(h, w);
       const raw = lastConfig().buildPayload('again') as Record<string, unknown>;
       const built = (raw.nextDefault ?? raw) as {
         expectedDraftToken: string;
         expectedRevision: number;
       };
-      expect(built.expectedRevision).toBe(5);
-      expect(built.expectedDraftToken).toBe('c'.repeat(64));
+      expect(built.expectedRevision).toBe(refreshed.identity.revision);
+      expect(built.expectedDraftToken).toBe(refreshed.draftToken);
     },
   );
 });

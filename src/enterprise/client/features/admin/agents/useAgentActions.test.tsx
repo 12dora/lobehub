@@ -64,6 +64,11 @@ const makeEditor = () =>
     conflict: false,
     dirty: true,
     discard: vi.fn(),
+    draftBaseline: {
+      agentId: 'agent-1',
+      draftToken: 'b'.repeat(64),
+      revision: 7,
+    },
     draft: {
       config: {
         avatar: null,
@@ -281,6 +286,70 @@ describe('useAgentActions reauth + commit/refresh + write-lock', () => {
       revision: 8,
     });
     expect(mutate).toHaveBeenCalledWith(expect.any(Function), { revalidate: false });
+  });
+
+  it.each([
+    ['existing conflict', (editor: ReturnType<typeof makeEditor>) => (editor.conflict = true)],
+    [
+      'different Agent baseline',
+      (editor: ReturnType<typeof makeEditor>) => (editor.draftBaseline.agentId = 'agent-other'),
+    ],
+    [
+      'different revision baseline',
+      (editor: ReturnType<typeof makeEditor>) => (editor.draftBaseline.revision = 6),
+    ],
+    [
+      'different draft-token baseline',
+      (editor: ReturnType<typeof makeEditor>) => (editor.draftBaseline.draftToken = 'f'.repeat(64)),
+    ],
+    ['missing baseline', (editor: ReturnType<typeof makeEditor>) => (editor.draftBaseline = null)],
+  ])('blocks a direct save call with %s before opening a modal', (_label, mutateEditor) => {
+    const editor = makeEditor();
+    mutateEditor(editor);
+    const { result } = renderHook(() =>
+      useAgentActions({
+        authMethod: null,
+        editor,
+        lock: makeLock('ok'),
+        mutate: vi.fn(),
+        permissions,
+        snapshot,
+      }),
+    );
+
+    act(() => result.current.save());
+
+    expect(editor.setConflict).toHaveBeenCalledWith(true);
+    expect(mocks.openReasonModal).not.toHaveBeenCalled();
+    expect(mocks.service.appendVersion).not.toHaveBeenCalled();
+  });
+
+  it('freezes the modal payload CAS from draftBaseline at the synchronous save boundary', () => {
+    const editor = makeEditor();
+    const liveSnapshot = {
+      ...snapshot,
+      identity: { ...snapshot.identity },
+    } as AdminAgentDetailOutput;
+    const { result } = renderHook(() =>
+      useAgentActions({
+        authMethod: null,
+        editor,
+        lock: makeLock('ok'),
+        mutate: vi.fn(),
+        permissions,
+        snapshot: liveSnapshot,
+      }),
+    );
+
+    act(() => result.current.save());
+    // Simulate a mutable external snapshot advancing after the modal opens. The confirmation must
+    // retain the baseline primitives captured by save(), not read the live object again.
+    liveSnapshot.identity.revision = 99;
+    liveSnapshot.draftToken = 'f'.repeat(64);
+
+    const built = lastModalConfig().buildPayload('save it');
+    expect(built.expectedRevision).toBe(7);
+    expect(built.expectedDraftToken).toBe('b'.repeat(64));
   });
 
   it('keeps an incomplete recovery draft but blocks it at the explicit save boundary', () => {
