@@ -171,16 +171,19 @@ export const createServerAgentToolsEngine = (
       ...(agentConfig.plugins ?? []),
       ...(additionalManifests ?? []).map(({ identifier }) => identifier),
     ]);
-    return createServerToolsEngine(context, {
-      additionalManifests,
-      builtinTools: builtinTools.filter(({ identifier }) => exactIds.has(identifier)),
-      defaultToolIds: [...exactIds],
-      enableChecker: createEnableChecker({
-        allowExplicitActivation: false,
-        rules: Object.fromEntries([...exactIds].map((id) => [id, true])),
-      }),
-      manifestContext,
-    });
+    return createServerToolsEngine(
+      { ...context, installedPlugins: [] },
+      {
+        additionalManifests,
+        builtinTools: builtinTools.filter(({ identifier }) => exactIds.has(identifier)),
+        defaultToolIds: [...exactIds],
+        enableChecker: createEnableChecker({
+          allowExplicitActivation: false,
+          rules: Object.fromEntries([...exactIds].map((id) => [id, true])),
+        }),
+        manifestContext,
+      },
+    );
   }
 
   // Tools that need a user-side execution target (local-system, stdio MCP)
