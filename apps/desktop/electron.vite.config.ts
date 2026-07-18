@@ -288,6 +288,9 @@ export default defineConfig({
     },
     define: {
       'process.env.DESKTOP_EXTERNAL_NAVIGATION_HOSTS': JSON.stringify(externalNavigationHosts),
+      'process.env.DESKTOP_DISABLE_PROTOCOL_REGISTRATION': JSON.stringify(
+        process.env.DESKTOP_DISABLE_PROTOCOL_REGISTRATION,
+      ),
       'process.env.UPDATE_CHANNEL': JSON.stringify(process.env.UPDATE_CHANNEL),
       'process.env.UPDATE_SERVER_URL': JSON.stringify(process.env.UPDATE_SERVER_URL),
     },

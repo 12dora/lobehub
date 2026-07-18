@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import dotenv from 'dotenv';
 
+import { resolveDesktopBranding } from '../../scripts/electronWorkflow/desktopBranding.mjs';
 import {
   copyExternalRuntimeModulesToSource,
   getExternalRuntimeModulesFilesConfig,
@@ -25,13 +26,15 @@ const packageJSON = JSON.parse(await fs.readFile(path.join(__dirname, 'package.j
 
 const channel = process.env.UPDATE_CHANNEL;
 const arch = os.arch();
+const desktopBranding = resolveDesktopBranding();
 const hasAppleCertificate = Boolean(process.env.CSC_LINK);
 
 // 自定义更新服务器 URL (用于 stable 频道)
-const updateServerUrl = process.env.UPDATE_SERVER_URL;
+const updateServerUrl = desktopBranding.updateServerUrl ?? process.env.UPDATE_SERVER_URL;
 
 console.info(`🚄 Build Version ${packageJSON.version}, Channel: ${channel}`);
 console.info(`🏗️ Building for architecture: ${arch}`);
+console.info(`🏷️ Desktop brand profile: ${desktopBranding.brand}`);
 
 // Channel identity derived solely from UPDATE_CHANNEL env var.
 // Supported channels: stable, nightly, canary
@@ -59,6 +62,10 @@ const getPublishConfig = () => {
         url: fullUrl,
       },
     ];
+  }
+
+  if (desktopBranding.isAIHub) {
+    throw new Error('AIHub desktop builds require an isolated generic update server');
   }
 
   // 本地开发无 S3 时回退到 GitHub
@@ -174,7 +181,9 @@ const config = {
     }
 
     const iconFileName = getIconFileName();
-    const assetsCarSource = path.join(__dirname, 'build', `${iconFileName}.Assets.car`);
+    const assetsCarSource = desktopBranding.isAIHub
+      ? path.join(desktopBranding.assetsDirectory, 'Icon.Assets.car')
+      : path.join(__dirname, 'build', `${iconFileName}.Assets.car`);
     const assetsCarDest = path.join(resourcesPath, 'Assets.car');
 
     // Remove unused Electron Framework localizations to reduce app size
@@ -215,7 +224,7 @@ const config = {
       console.info(`⏭️  Skipping Assets.car (not found or copy failed)`);
     }
   },
-  appId: 'com.lobehub.lobehub-desktop',
+  appId: desktopBranding.appId,
   appImage: {
     artifactName: '${productName}-${version}.${ext}',
   },
@@ -232,7 +241,7 @@ const config = {
 
   dmg: {
     artifactName: '${productName}-${version}-${arch}.${ext}',
-    background: 'resources/dmg.png',
+    ...(desktopBranding.isAIHub ? {} : { background: 'resources/dmg.png' }),
     contents: [
       { type: 'file', x: 150, y: 240 },
       { type: 'link', path: '/Applications', x: 450, y: 240 },
@@ -263,8 +272,11 @@ const config = {
   ],
   generateUpdatesFilesForAllChannels: true,
   linux: {
+    ...(desktopBranding.isAIHub
+      ? { artifactName: '${productName}-${version}-${arch}.${ext}' }
+      : {}),
     category: 'Utility',
-    icon: 'build/icon.png',
+    icon: desktopBranding.isAIHub ? desktopBranding.icons.png : 'build/icon.png',
     maintainer: 'electronjs.org',
     target: ['AppImage', 'snap', 'deb', 'rpm', 'tar.gz'],
   },
@@ -273,12 +285,16 @@ const config = {
     entitlementsInherit: 'build/entitlements.mac.plist',
     extendInfo: {
       CFBundleIconName: 'AppIcon',
-      CFBundleURLTypes: [
-        {
-          CFBundleURLName: 'LobeHub Protocol',
-          CFBundleURLSchemes: [protocolScheme],
-        },
-      ],
+      ...(desktopBranding.isAIHub
+        ? {}
+        : {
+            CFBundleURLTypes: [
+              {
+                CFBundleURLName: 'LobeHub Protocol',
+                CFBundleURLSchemes: [protocolScheme],
+              },
+            ],
+          }),
       NSAppleEventsUsageDescription:
         'Application needs to control System Settings to help you grant Full Disk Access automatically.',
       NSCameraUsageDescription: "Application requests access to the device's camera.",
@@ -292,6 +308,7 @@ const config = {
     },
     gatekeeperAssess: false,
     hardenedRuntime: hasAppleCertificate,
+    ...(desktopBranding.isAIHub ? { icon: desktopBranding.icons.icns } : {}),
     notarize: hasAppleCertificate,
     ...(hasAppleCertificate ? {} : { identity: null }),
     target: [
@@ -304,19 +321,26 @@ const config = {
     allowToChangeInstallationDirectory: true,
     artifactName: '${productName}-${version}-setup.${ext}',
     createDesktopShortcut: 'always',
-    installerHeader: './build/nsis-header.bmp',
-    installerSidebar: './build/nsis-sidebar.bmp',
+    ...(desktopBranding.isAIHub
+      ? {}
+      : {
+          installerHeader: './build/nsis-header.bmp',
+          installerSidebar: './build/nsis-sidebar.bmp',
+          uninstallerSidebar: './build/nsis-sidebar.bmp',
+        }),
     oneClick: false,
     shortcutName: '${productName}',
     uninstallDisplayName: '${productName}',
-    uninstallerSidebar: './build/nsis-sidebar.bmp',
   },
-  protocols: [
-    {
-      name: 'LobeHub Protocol',
-      schemes: [protocolScheme],
-    },
-  ],
+  ...(desktopBranding.productName ? { productName: desktopBranding.productName } : {}),
+  protocols: desktopBranding.isAIHub
+    ? []
+    : [
+        {
+          name: 'LobeHub Protocol',
+          schemes: [protocolScheme],
+        },
+      ],
   publish: getPublishConfig(),
 
   // Release notes 配置
@@ -332,7 +356,8 @@ const config = {
   ],
 
   win: {
-    executableName: 'LobeHub',
+    executableName: desktopBranding.productName ?? 'LobeHub',
+    ...(desktopBranding.isAIHub ? { icon: desktopBranding.icons.ico } : {}),
   },
 };
 

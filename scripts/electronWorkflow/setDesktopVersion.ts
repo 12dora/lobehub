@@ -3,16 +3,28 @@ import path from 'node:path';
 import fs from 'fs-extra';
 
 type ReleaseType = 'stable' | 'beta' | 'nightly' | 'canary';
+type DesktopBrand = 'aihub' | 'lobehub';
 
 // Get command line arguments for the script
 const version = process.argv[2];
 const releaseType = process.argv[3] as ReleaseType;
+const desktopBrand = (process.argv[4] || 'lobehub') as DesktopBrand;
 
 // Validate parameters
 if (!version || !releaseType) {
   console.error(
     'Missing parameters. Usage: bun run setDesktopVersion.ts <version> <stable|beta|nightly|canary>',
   );
+  process.exit(1);
+}
+
+if (desktopBrand !== 'lobehub' && desktopBrand !== 'aihub') {
+  console.error(`Invalid desktop brand: ${desktopBrand}. Must be 'lobehub' or 'aihub'.`);
+  process.exit(1);
+}
+
+if (desktopBrand === 'aihub' && releaseType !== 'stable') {
+  console.error('AIHub desktop builds only support the isolated stable channel.');
   process.exit(1);
 }
 
@@ -73,7 +85,14 @@ function updatePackageJson() {
     // Always update the version number
     packageJson.version = version;
 
-    // Modify other fields based on releaseType
+    if (desktopBrand === 'aihub') {
+      packageJson.productName = 'AIHub';
+      fs.writeJsonSync(desktopPackageJsonPath, packageJson, { spaces: 2 });
+      console.log('✅ AIHub desktop package metadata updated successfully.');
+      return;
+    }
+
+    // Modify LobeHub fields based on releaseType
     switch (releaseType) {
       case 'stable': {
         packageJson.productName = 'LobeHub';
