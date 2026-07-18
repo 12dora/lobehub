@@ -337,6 +337,156 @@ describe('AgentRuntimeService', () => {
       );
     });
 
+    it('sanitizes only nested prompt context and shares the control context with state + queue', async () => {
+      vi.spyOn((service as any).completionLifecycle, 'recordStart').mockResolvedValue(undefined);
+      mockQueueService.scheduleMessage.mockResolvedValueOnce('managed-queue-message');
+      const platformOperationPin = {
+        checksum: 'a'.repeat(64),
+        platformAgentId: 'pagt-1',
+        versionId: 'pav-1',
+      };
+
+      await service.createOperation({
+        ...mockParams,
+        agentGroup: { agents: [{ id: 'dynamic-agent' }] } as never,
+        assistantMessageId: 'assistant-managed',
+        autoStart: true,
+        botContext: { botId: 'dynamic-bot' } as never,
+        botPlatformContext: { platform: 'dynamic-platform' } as never,
+        discordContext: { guildId: 'dynamic-guild' } as never,
+        evalContext: { envPrompt: 'dynamic-eval-prompt' },
+        initialContext: {
+          initialContext: {
+            injectedManifests: [{ identifier: 'dynamic-tool' }],
+            mentionedAgents: [{ id: 'dynamic-agent', name: 'Dynamic agent' }],
+          } as never,
+          payload: {
+            assistantMessageId: 'assistant-managed',
+            parentMessageId: 'user-message',
+            tools: [{ name: 'exact-tool' }],
+          },
+          phase: 'user_input',
+          session: mockParams.initialContext.session,
+        },
+        platformConnectorPins: [],
+        platformModelPin: {
+          modelKey: 'chat-model',
+          providerChecksum: 'b'.repeat(64),
+          providerKey: 'internal-provider',
+          providerRevision: 1,
+        },
+        platformOperationPin,
+        platformSkillPins: [],
+        userMemory: { memories: { contexts: [{ content: 'dynamic-memory' }] } } as never,
+        userTimezone: 'Asia/Singapore',
+      });
+
+      const savedState = mockCoordinator.saveAgentState.mock.calls.at(-1)?.[1];
+      expect(savedState.initialContext).toEqual({
+        payload: {
+          assistantMessageId: 'assistant-managed',
+          parentMessageId: 'user-message',
+          tools: [{ name: 'exact-tool' }],
+        },
+        phase: 'user_input',
+        session: mockParams.initialContext.session,
+      });
+      const scheduledContext = mockQueueService.scheduleMessage.mock.calls.at(-1)?.[0].context;
+      expect(scheduledContext).toBe(savedState.initialContext);
+      expect(savedState.metadata).toEqual(
+        expect.objectContaining({
+          agentGroup: undefined,
+          botContext: undefined,
+          botPlatformContext: undefined,
+          discordContext: undefined,
+          evalContext: undefined,
+          platformStartClassification: 'complete',
+          userMemory: undefined,
+          userTimezone: undefined,
+        }),
+      );
+    });
+
+    it.each([
+      {
+        payload: {
+          approvedToolCall: {
+            apiName: 'run',
+            arguments: '{}',
+            id: 'tool-call-approval',
+            identifier: 'exact-tool',
+            type: 'builtin',
+          },
+          assistantMessageId: 'assistant-approval',
+          parentMessageId: 'tool-message-approval',
+          skipCreateToolMessage: true,
+        },
+        phase: 'human_approved_tool' as const,
+      },
+      {
+        payload: {
+          assistantMessageId: 'assistant-tool-result',
+          parentMessageId: 'tool-message-result',
+        },
+        phase: 'tool_result' as const,
+      },
+    ])('executeSync receives the managed $phase control payload', async ({ payload, phase }) => {
+      vi.spyOn((service as any).completionLifecycle, 'recordStart').mockResolvedValue(undefined);
+      const runtimeContext = {
+        initialContext: {
+          mentionedAgents: [{ id: 'dynamic-agent', name: 'Dynamic agent' }],
+        },
+        payload,
+        phase,
+        session: {
+          messageCount: 2,
+          sessionId: `managed-${phase}`,
+          status: 'idle' as const,
+          stepCount: 0,
+        },
+      };
+
+      const result = await service.createOperation({
+        ...mockParams,
+        assistantMessageId: `assistant-${phase}`,
+        autoStart: false,
+        initialContext: runtimeContext,
+        operationId: `managed-${phase}`,
+        platformConnectorPins: [],
+        platformModelPin: {
+          modelKey: 'chat-model',
+          providerChecksum: 'b'.repeat(64),
+          providerKey: 'internal-provider',
+          providerRevision: 1,
+        },
+        platformOperationPin: {
+          checksum: 'a'.repeat(64),
+          platformAgentId: 'pagt-1',
+          versionId: 'pav-1',
+        },
+        platformSkillPins: [],
+      });
+      let executedContext: unknown;
+      vi.spyOn(service, 'executeStep').mockImplementation(async (params) => {
+        executedContext = params.context;
+        const state = await mockCoordinator.loadAgentState(params.operationId);
+        return {
+          nextStepScheduled: false,
+          state: { ...state, status: 'done' },
+          stepResult: { nextContext: undefined },
+          success: true,
+        };
+      });
+
+      await service.executeSync(result.operationId, { maxSteps: 1 });
+
+      expect(executedContext).toEqual({
+        payload,
+        phase,
+        session: runtimeContext.session,
+      });
+    });
+
     it('should handle errors during operation creation', async () => {
       mockCoordinator.saveAgentState.mockRejectedValueOnce(new Error('Database error'));
 

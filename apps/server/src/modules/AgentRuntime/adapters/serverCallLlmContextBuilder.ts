@@ -79,6 +79,10 @@ export const buildServerCallLlmContext = async ({
       shouldReplayAssistantReasoning: false,
     };
   }
+  // A complete platform start is an exact, audited prompt/tool snapshot. Per-user, per-channel,
+  // per-topic, and other mutable runtime context must not become an unpinned system-prompt side
+  // door. This classification is server-authored by AgentRuntimeService.
+  const isManagedPlatformOperation = state.metadata?.platformStartClassification === 'complete';
 
   const { operationId, stepIndex } = ctx;
   const { resolved, resolvedSkills, toolDiscoveryConfig } = tooling;
@@ -107,7 +111,7 @@ export const buildServerCallLlmContext = async ({
       typeof message.content === 'string' && message.content.includes('topic_reference_context'),
   );
 
-  if (!alreadyHasTopicRefs && ctx.serverDB && ctx.userId) {
+  if (!isManagedPlatformOperation && !alreadyHasTopicRefs && ctx.serverDB && ctx.userId) {
     const topicModel = new TopicModel(ctx.serverDB, ctx.userId, ctx.workspaceId);
     const messageModel = new MessageModelClass(ctx.serverDB, ctx.userId, ctx.workspaceId);
     topicReferences = await resolveTopicReferences(
@@ -130,7 +134,10 @@ export const buildServerCallLlmContext = async ({
   // Fetch agent documents for context injection.
   let agentDocuments: AgentContextDocument[] | undefined;
   const agentId = state.metadata?.agentId;
-  if (agentId && ctx.serverDB && ctx.userId) {
+  // A platform operation's immutable prompt/Skill snapshot is authoritative. In particular the
+  // PR-051 default inbox deliberately reuses the historic builtin Agent id, whose legacy SOUL.md
+  // and agent documents must not be appended as an unpinned prompt side door.
+  if (agentId && ctx.serverDB && ctx.userId && !isManagedPlatformOperation) {
     try {
       const agentDocService = new AgentDocumentsService(
         ctx.serverDB,
@@ -164,7 +171,13 @@ export const buildServerCallLlmContext = async ({
     );
   });
 
-  if (isOnboardingAgent && !alreadyHasOnboardingContext && ctx.serverDB && ctx.userId) {
+  if (
+    !isManagedPlatformOperation &&
+    isOnboardingAgent &&
+    !alreadyHasOnboardingContext &&
+    ctx.serverDB &&
+    ctx.userId
+  ) {
     try {
       const { formatWebOnboardingStateMessage } =
         await import('@lobechat/builtin-tool-web-onboarding/utils');
@@ -221,7 +234,7 @@ export const buildServerCallLlmContext = async ({
     { description?: string | null; title?: string | null } | undefined;
 
   let lobehubSkillTopicTitle = '';
-  if (lobehubSkillTopicId && ctx.serverDB && ctx.userId) {
+  if (!isManagedPlatformOperation && lobehubSkillTopicId && ctx.serverDB && ctx.userId) {
     try {
       const topicModelForLobehub = new TopicModel(ctx.serverDB, ctx.userId, ctx.workspaceId);
       const topicRecord = await topicModelForLobehub.findById(lobehubSkillTopicId);
@@ -244,7 +257,7 @@ export const buildServerCallLlmContext = async ({
   // In execAgent (server/bot) mode we must fetch from DB directly.
   let serverUsername = '';
   let serverLanguage = '';
-  if (ctx.serverDB && ctx.userId) {
+  if (!isManagedPlatformOperation && ctx.serverDB && ctx.userId) {
     try {
       const userInfo = await UserModel.getInfoForAIGeneration(ctx.serverDB, ctx.userId);
       serverUsername = userInfo.userName;
@@ -256,7 +269,13 @@ export const buildServerCallLlmContext = async ({
 
   const sandboxEnabled = String(resolved.enabledToolIds.includes('lobe-cloud-sandbox'));
   let sandboxUploadedFiles = '';
-  if (sandboxEnabled === 'true' && ctx.serverDB && ctx.userId && lobehubSkillTopicId) {
+  if (
+    !isManagedPlatformOperation &&
+    sandboxEnabled === 'true' &&
+    ctx.serverDB &&
+    ctx.userId &&
+    lobehubSkillTopicId
+  ) {
     try {
       const { formatUploadedFilesPrompt } = await import('@lobechat/builtin-tool-cloud-sandbox');
       const fileModel = new FileModel(ctx.serverDB, ctx.userId);
@@ -280,7 +299,7 @@ export const buildServerCallLlmContext = async ({
   );
 
   let credsListStr = '';
-  if (ctx.userId) {
+  if (!isManagedPlatformOperation && ctx.userId) {
     try {
       const marketService = new MarketService({ userInfo: { userId: ctx.userId } });
       // Inside a workspace, the agent must only see the workspace's shared
@@ -306,7 +325,7 @@ export const buildServerCallLlmContext = async ({
   }
 
   let composioServicesListStr = '';
-  if (ctx.serverDB && ctx.userId && !!composioEnv.COMPOSIO_API_KEY) {
+  if (!isManagedPlatformOperation && ctx.serverDB && ctx.userId && !!composioEnv.COMPOSIO_API_KEY) {
     try {
       const pluginModel = new PluginModel(ctx.serverDB, ctx.userId, ctx.workspaceId);
       const allPlugins = await pluginModel.query();
@@ -353,7 +372,7 @@ export const buildServerCallLlmContext = async ({
 
   let agentBuilderContext: AgentBuilderContext | undefined;
   const editingAgentId = state.metadata?.editingAgentId;
-  if (editingAgentId && ctx.serverDB && ctx.userId) {
+  if (!isManagedPlatformOperation && editingAgentId && ctx.serverDB && ctx.userId) {
     try {
       const editingAgentModel = new AgentModel(ctx.serverDB, ctx.userId, ctx.workspaceId);
       const editingConfig = (await editingAgentModel.getAgentConfigById(editingAgentId)) as Record<
@@ -436,34 +455,42 @@ export const buildServerCallLlmContext = async ({
 
   const contextEngineInput = {
     agentDocuments,
-    ...(agentBuilderContext && { agentBuilderContext }),
-    agentGroup: state.metadata?.agentGroup as AgentGroupConfig | undefined,
-    agentManagementContext: (state as any).initialContext?.initialContext?.mentionedAgents?.length
-      ? {
-          mentionedAgents: (state as any).initialContext.initialContext.mentionedAgents,
-        }
-      : undefined,
-    additionalVariables: {
-      ...state.metadata?.deviceSystemInfo,
-      ...lobehubSkillVariables,
-      COMPOSIO_SERVICES_LIST: composioServicesListStr,
-      CREDS_LIST: credsListStr,
-      language: serverLanguage,
-      memory_effort: memoryEffort,
-      sandbox_enabled: sandboxEnabled,
-      sandbox_uploaded_files: sandboxUploadedFiles,
-      session_date: sessionDate,
-      username: serverUsername,
-    },
-    userTimezone: ctx.userTimezone,
+    ...(!isManagedPlatformOperation && agentBuilderContext && { agentBuilderContext }),
+    agentGroup: isManagedPlatformOperation
+      ? undefined
+      : (state.metadata?.agentGroup as AgentGroupConfig | undefined),
+    agentManagementContext:
+      !isManagedPlatformOperation &&
+      (state as any).initialContext?.initialContext?.mentionedAgents?.length
+        ? {
+            mentionedAgents: (state as any).initialContext.initialContext.mentionedAgents,
+          }
+        : undefined,
+    additionalVariables: isManagedPlatformOperation
+      ? {}
+      : {
+          ...state.metadata?.deviceSystemInfo,
+          ...lobehubSkillVariables,
+          COMPOSIO_SERVICES_LIST: composioServicesListStr,
+          CREDS_LIST: credsListStr,
+          language: serverLanguage,
+          memory_effort: memoryEffort,
+          sandbox_enabled: sandboxEnabled,
+          sandbox_uploaded_files: sandboxUploadedFiles,
+          session_date: sessionDate,
+          username: serverUsername,
+        },
+    userTimezone: isManagedPlatformOperation ? undefined : ctx.userTimezone,
     capabilities,
-    botPlatformContext: ctx.botPlatformContext,
-    discordContext: ctx.discordContext,
+    botPlatformContext: isManagedPlatformOperation ? undefined : ctx.botPlatformContext,
+    discordContext: isManagedPlatformOperation ? undefined : ctx.discordContext,
     enableHistoryCount: agentConfig.chatConfig?.enableHistoryCount ?? undefined,
-    evalContext: ctx.evalContext,
+    evalContext: isManagedPlatformOperation ? undefined : ctx.evalContext,
     forceFinish: state.forceFinish,
     historyCount: resolveRuntimeHistoryCount(agentConfig.chatConfig?.historyCount),
-    initialContext: (state as any).initialContext?.initialContext,
+    initialContext: isManagedPlatformOperation
+      ? undefined
+      : (state as any).initialContext?.initialContext,
     knowledge: {
       fileContents: agentConfig.files
         ?.filter((file: { enabled?: boolean | null }) => file.enabled === true)
@@ -490,13 +517,13 @@ export const buildServerCallLlmContext = async ({
       manifests: Object.values(resolved.promptManifestMap),
       tools: resolved.enabledToolIds,
     },
-    userMemory: state.metadata?.userMemory,
+    userMemory: isManagedPlatformOperation ? undefined : state.metadata?.userMemory,
     ...(resolvedSkills?.enabledSkills?.length && {
       skillsConfig: { enabledSkills: resolvedSkills.enabledSkills },
     }),
     enableAgentMode: agentConfig.chatConfig?.enableAgentMode,
-    ...(topicReferences && { topicReferences }),
-    ...(onboardingContext && { onboardingContext }),
+    ...(!isManagedPlatformOperation && topicReferences && { topicReferences }),
+    ...(!isManagedPlatformOperation && onboardingContext && { onboardingContext }),
   };
 
   const processedMessages = await agentRuntimeTracer.startActiveSpan(

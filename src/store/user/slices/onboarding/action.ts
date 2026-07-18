@@ -145,6 +145,10 @@ export class OnboardingActionImpl {
     const agentStore = getAgentStoreState();
     const inboxAgentId = agentStore.builtinAgentIdMap[INBOX_SESSION_ID];
     if (!inboxAgentId) return;
+    const inboxConfig = agentStore.agentMap[inboxAgentId];
+    if (inboxConfig?.platform?.managed) {
+      return;
+    }
 
     // upsertPluginMode preserves an already-matching entry as-is and flips a
     // disabled entry back to pinned in place, instead of blindly pushing a
@@ -158,6 +162,10 @@ export class OnboardingActionImpl {
   updateDefaultModel = async (model: string, provider: string): Promise<void> => {
     const agentStore = getAgentStoreState();
     const inboxAgentId = agentStore.builtinAgentIdMap[INBOX_SESSION_ID];
+    const inboxConfig = inboxAgentId ? agentStore.agentMap[inboxAgentId] : undefined;
+    if (inboxConfig?.platform?.managed) {
+      return;
+    }
 
     await Promise.all([
       // 1. Update user settings' defaultAgentConfig

@@ -12,19 +12,23 @@
  *
  * @vitest-environment node
  */
+import type { AgentRuntimeContext } from '@lobechat/agent-runtime';
 import { fingerprintResumeToolCall } from '@lobechat/types';
 import { TRPCError } from '@trpc/server';
 import type { MockInstance } from 'vitest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
+import { agents, users } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
+import type { AgentRuntimeService } from '@/server/services/agentRuntime';
 
 const {
   beginOperation,
   isEntitled,
   materializeForOperation,
   materializeFromPin,
+  resolveFromPinForExistingAgent,
   getPlatformAgentIdByMaterializedAgentId,
   validateDeps,
 } = vi.hoisted(() => ({
@@ -33,6 +37,7 @@ const {
   isEntitled: vi.fn(async () => true),
   materializeForOperation: vi.fn(),
   materializeFromPin: vi.fn(),
+  resolveFromPinForExistingAgent: vi.fn(),
   validateDeps: vi.fn(async () => ({ valid: true })),
 }));
 
@@ -47,6 +52,7 @@ vi.mock('@/server/enterprise/services/agentCatalog', async (importOriginal) => {
     PlatformAgentMaterializationService: class {
       materializeForOperation = materializeForOperation;
       materializeFromPin = materializeFromPin;
+      resolveFromPinForExistingAgent = resolveFromPinForExistingAgent;
     },
     validateExactPlatformAgentDependencies: validateDeps,
   };
@@ -69,11 +75,27 @@ const { messageFindById, messageFindPlugin } = vi.hoisted(() => ({
   messageFindById: vi.fn(),
   messageFindPlugin: vi.fn(),
 }));
+
+vi.mock('@/server/services/file', () => ({
+  FileService: class {
+    getFileAccessUrl = vi.fn(async ({ url }: { url: string | null }) => url ?? '');
+  },
+}));
+vi.mock('@/server/enterprise/services/connectorCatalog/runtimeIntegration', () => ({
+  buildManagedConnectorManifests: vi.fn(async () => ({ manifests: [], mode: 'legacy' })),
+  buildPinnedManagedConnectorManifests: vi.fn(async () => ({ manifests: [] })),
+}));
+vi.mock('@/server/enterprise/services/skillCatalog', () => ({
+  resolvePinnedPlatformSkillRuntimeSnapshot: vi.fn(async () => ({ catalog: [], skills: [] })),
+  resolvePlatformSkillRuntimeSnapshot: vi.fn(async () => null),
+}));
 vi.mock('@/database/models/message', () => ({
   MessageModel: class {
     findById = messageFindById;
     findMessagePlugin = messageFindPlugin;
     create = vi.fn(async () => ({ id: 'asst-new' }));
+    getLatestNonToolMessageId = vi.fn(async () => undefined);
+    getLatestSpineMessageId = vi.fn(async () => undefined);
     query = vi.fn(async () => []);
     update = vi.fn(async () => undefined);
     updateMetadata = vi.fn(async () => undefined);
@@ -103,6 +125,8 @@ const run = (params: Record<string, unknown>) =>
 
 beforeEach(async () => {
   db = await getTestDB();
+  await db.insert(users).values({ id: 'user-a' }).onConflictDoNothing();
+  await db.insert(agents).values({ id: 'agt_x', userId: 'user-a' }).onConflictDoNothing();
   vi.clearAllMocks();
   vi.unstubAllEnvs();
   vi.stubEnv('ENABLE_PLATFORM_MANAGED_AGENTS', '1');
@@ -218,6 +242,72 @@ describe('AiAgentService.execAgent — platform entitlement (REWORK-2)', () => {
     expect((error as TRPCError).message).toBe('Platform agent dependencies are unavailable');
   });
 
+  it('runs a real managed execAgent(autoStart:false) operation through executeSync control context', async () => {
+    const dependencySnapshot = {
+      connectors: [],
+      model: {
+        modelKey: 'chat-model',
+        providerChecksum: 'b'.repeat(64),
+        providerKey: 'internal-provider',
+        providerRevision: 1,
+      },
+      skills: [],
+    };
+    beginOperation.mockResolvedValue({ getSnapshot: () => snapshot, platformAgentId: 'pagt_1' });
+    materializeForOperation.mockResolvedValue({
+      agentId: 'agt_x',
+      config: {
+        chatConfig: {},
+        files: [],
+        id: 'agt_x',
+        knowledgeBases: [],
+        model: 'chat-model',
+        plugins: [],
+        provider: 'internal-provider',
+        systemRole: 'audited exact role',
+      },
+      dependencySnapshot,
+    });
+    const aiService = service();
+
+    const created = await aiService.execAgent({
+      agentId: 'platform-agent:pagt_1',
+      autoStart: false,
+      prompt: 'hello managed runtime',
+    });
+    const runtime = (aiService as unknown as { agentRuntimeService: AgentRuntimeService })
+      .agentRuntimeService;
+    const state = await runtime.getCoordinator().loadAgentState(created.operationId);
+    const savedControlContext = (state as unknown as { initialContext: AgentRuntimeContext })
+      .initialContext;
+    let executedContext: AgentRuntimeContext | undefined;
+    vi.spyOn(runtime, 'executeStep').mockImplementation(async (params) => {
+      executedContext = params.context;
+      return {
+        nextStepScheduled: false,
+        state: { ...state, status: 'done' },
+        stepResult: { nextContext: undefined },
+        success: true,
+      };
+    });
+
+    await runtime.executeSync(created.operationId, { maxSteps: 1 });
+
+    expect(savedControlContext).toEqual(
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          assistantMessageId: created.assistantMessageId,
+          message: [{ content: 'hello managed runtime' }],
+          tools: expect.any(Array),
+        }),
+        phase: 'user_input',
+        session: expect.objectContaining({ sessionId: created.operationId }),
+      }),
+    );
+    expect(savedControlContext.initialContext).toBeUndefined();
+    expect(executedContext).toEqual(savedControlContext);
+  });
+
   // RR3-1/RR5-2/RR5-5 resume wiring (unit): ONLY an approval / tool-result body drives a PAUSED
   // resume — it replays the pin of the EXACT parent operation matched by the SERVER-controlled,
   // kind-keyed anchor binding, re-checks LIVE entitlement, and NEVER re-authorizes via beginOperation.
@@ -327,6 +417,70 @@ describe('AiAgentService.execAgent — platform entitlement (REWORK-2)', () => {
       expect((error as TRPCError).code).toBe('NOT_FOUND');
       // Entitlement is checked BEFORE replaying the pin, so materialize never runs.
       expect(materializeFromPin).not.toHaveBeenCalled();
+      expect(beginOperation).not.toHaveBeenCalled();
+    });
+
+    it('re-checks live entitlement for a builtin-inbox pin already captured from pending provenance', async () => {
+      isEntitled.mockResolvedValue(false);
+
+      const error = await (
+        service() as unknown as {
+          resolvePlatformAgentConfig: (
+            platformAgentId: string,
+            identifier: string,
+            context: Record<string, unknown>,
+          ) => Promise<unknown>;
+        }
+      )
+        .resolvePlatformAgentConfig('pagt_1', 'inbox', {
+          capturedResumePin: pin,
+          existingAgentId: 'workspace-inbox-id',
+          pausedResumeKind: 'approval',
+          resumeAnchorMessageId: 'msg-1',
+          resumeToolCallId: 'tc-1',
+          threadId: null,
+          topicId: 'topic-1',
+        })
+        .then(
+          () => null,
+          (cause) => cause,
+        );
+
+      expect((error as TRPCError).code).toBe('NOT_FOUND');
+      expect(isEntitled).toHaveBeenCalledWith('user-a', 'pagt_1');
+      expect(resolveFromPinForExistingAgent).not.toHaveBeenCalled();
+      expect(beginOperation).not.toHaveBeenCalled();
+    });
+
+    it('replays the exact captured old builtin pin when it remains entitled (never latest)', async () => {
+      resolveFromPinForExistingAgent.mockResolvedValue({
+        agentId: 'workspace-inbox-id',
+        config: { id: 'workspace-inbox-id' },
+        dependencySnapshot: { connectors: [], model: {}, skills: [] },
+      });
+
+      const result = await (
+        service() as unknown as {
+          resolvePlatformAgentConfig: (
+            platformAgentId: string,
+            identifier: string,
+            context: Record<string, unknown>,
+          ) => Promise<{ config: { slug?: string }; pin: typeof pin }>;
+        }
+      ).resolvePlatformAgentConfig('pagt_1', 'inbox', {
+        capturedResumePin: pin,
+        existingAgentId: 'workspace-inbox-id',
+        pausedResumeKind: 'tool_result',
+        resumeAnchorMessageId: 'msg-1',
+        resumeToolCallId: 'tc-1',
+        threadId: null,
+        topicId: 'topic-1',
+      });
+
+      expect(isEntitled).toHaveBeenCalledWith('user-a', 'pagt_1');
+      expect(resolveFromPinForExistingAgent).toHaveBeenCalledWith(pin, 'workspace-inbox-id');
+      expect(result.pin).toBe(pin);
+      expect(result.config.slug).toBe('inbox');
       expect(beginOperation).not.toHaveBeenCalled();
     });
   });

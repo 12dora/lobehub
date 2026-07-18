@@ -41,6 +41,7 @@ export interface PlatformAgentOperationSnapshot {
  * exact frozen value for the whole operation and never re-resolves the current pointer.
  */
 export interface PlatformAgentOperationHandle {
+  readonly distribution?: Distribution;
   getSnapshot: () => PlatformAgentOperationSnapshot;
   readonly platformAgentId: string;
 }
@@ -200,6 +201,16 @@ export class PlatformAgentEffectiveResolver {
     );
   };
 
+  private createOperationHandle = (
+    snapshot: PlatformAgentOperationSnapshot,
+    distribution?: Distribution,
+  ): PlatformAgentOperationHandle =>
+    Object.freeze<PlatformAgentOperationHandle>({
+      distribution,
+      getSnapshot: () => snapshot,
+      platformAgentId: snapshot.platformAgentId,
+    });
+
   /**
    * Begin an operation-scoped boundary (R2). Captures the exact version exactly once, then
    * returns a handle whose `getSnapshot()` only ever replays that frozen capture — there is no
@@ -215,12 +226,37 @@ export class PlatformAgentEffectiveResolver {
     try {
       const snapshot = await this.captureOperationSnapshot(userId, platformAgentId);
       if (!snapshot) return null;
-      return Object.freeze<PlatformAgentOperationHandle>({
-        getSnapshot: () => snapshot,
-        platformAgentId: snapshot.platformAgentId,
-      });
+      return this.createOperationHandle(snapshot);
     } catch (error) {
       // Redact any unexpected driver / SQL failure so entitlement resolution never leaks internals.
+      throw redactPlatformReadError(error);
+    }
+  };
+
+  /**
+   * Capture the exact effective Agent assigned to a stable system role (PR-051 default inbox).
+   * This uses the same authorized set as {@link beginOperation}, but ignores the list-only hidden
+   * preference: hiding a catalog tile must never turn the fixed inbox into an unmanaged bypass.
+   * A genuinely absent assigned/published system Agent returns null; resolver/DB failures throw.
+   */
+  beginSystemOperation = async (
+    userId: string,
+    systemKey: NonNullable<AuthorizedAgent['systemKey']>,
+  ): Promise<PlatformAgentOperationHandle | null> => {
+    try {
+      const authorized = await this.resolveAuthorized(userId);
+      const target = authorized.find((agent) => agent.systemKey === systemKey);
+      if (!target) return null;
+      const snapshot = deepFreeze<PlatformAgentOperationSnapshot>(
+        structuredClone({
+          checksum: target.checksum,
+          config: target.config,
+          platformAgentId: target.platformAgentId,
+          versionId: target.versionId,
+        }),
+      );
+      return this.createOperationHandle(snapshot, target.distribution);
+    } catch (error) {
       throw redactPlatformReadError(error);
     }
   };

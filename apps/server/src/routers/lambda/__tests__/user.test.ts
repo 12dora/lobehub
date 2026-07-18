@@ -11,6 +11,7 @@ import { MessageModel } from '@/database/models/message';
 import { SessionModel } from '@/database/models/session';
 import { UserModel } from '@/database/models/user';
 import { serverDB } from '@/database/server';
+import { assertDefaultInboxNotPlatformManaged } from '@/server/enterprise/guards/managedPlatformAgent';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 
 import { userRouter } from '../user';
@@ -40,6 +41,10 @@ vi.mock('@/database/models/user');
 vi.mock('@/server/modules/KeyVaultsEncrypt');
 vi.mock('@/server/modules/S3');
 vi.mock('@/server/services/user');
+vi.mock('@/server/enterprise/guards/managedPlatformAgent', async (importOriginal) => ({
+  ...(await importOriginal()),
+  assertDefaultInboxNotPlatformManaged: vi.fn(),
+}));
 
 describe('userRouter', () => {
   const mockUserId = 'test-user-id';
@@ -57,6 +62,7 @@ describe('userRouter', () => {
     vi.mocked(getReferralStatus).mockResolvedValue(undefined);
     vi.mocked(getSubscriptionPlan).mockResolvedValue(Plans.Free);
     vi.mocked(onUserActivityForBusiness).mockResolvedValue(undefined);
+    vi.mocked(assertDefaultInboxNotPlatformManaged).mockResolvedValue(undefined);
   });
 
   describe('getUserActivitySummary', () => {
@@ -304,6 +310,51 @@ describe('userRouter', () => {
 
       expect(UserModel).toHaveBeenCalledWith(serverDB, mockUserId);
     });
+
+    it('guards legacy defaultAgent writes before they can mutate a managed inbox', async () => {
+      const failure = new Error('managed inbox');
+      vi.mocked(assertDefaultInboxNotPlatformManaged).mockRejectedValueOnce(failure);
+      const updateSetting = vi.fn();
+      vi.mocked(UserModel).mockImplementation(() => ({ updateSetting }) as any);
+
+      await expect(
+        userRouter.createCaller({ ...mockCtx }).updateSettings({
+          defaultAgent: { config: { model: 'legacy-model', provider: 'legacy-provider' } },
+        }),
+      ).rejects.toMatchObject({ message: failure.message });
+
+      expect(assertDefaultInboxNotPlatformManaged).toHaveBeenCalledWith({
+        db: serverDB,
+        userId: mockUserId,
+      });
+      expect(updateSetting).not.toHaveBeenCalled();
+      expect(KeyVaultsGateKeeper.initWithEnvKey).not.toHaveBeenCalled();
+    });
+
+    it.each(['patchSettingOverride', 'resetSettingOverride'] as const)(
+      'guards %s defaultAgent paths before any settings write',
+      async (procedure) => {
+        const failure = new Error('managed inbox');
+        vi.mocked(assertDefaultInboxNotPlatformManaged).mockRejectedValueOnce(failure);
+        const updateSetting = vi.fn();
+        const updateUser = vi.fn();
+        vi.mocked(UserModel).mockImplementation(() => ({ updateSetting, updateUser }) as any);
+        const caller = userRouter.createCaller({ ...mockCtx });
+
+        const mutation =
+          procedure === 'patchSettingOverride'
+            ? caller.patchSettingOverride({ path: 'defaultAgent.config.model', value: 'legacy' })
+            : caller.resetSettingOverride({ path: 'defaultAgent.config.model' });
+        await expect(mutation).rejects.toMatchObject({ message: failure.message });
+
+        expect(assertDefaultInboxNotPlatformManaged).toHaveBeenCalledWith({
+          db: serverDB,
+          userId: mockUserId,
+        });
+        expect(updateSetting).not.toHaveBeenCalled();
+        expect(updateUser).not.toHaveBeenCalled();
+      },
+    );
 
     it('should allow legacy system agent model-only fields', async () => {
       const updateSetting = vi.fn().mockResolvedValue({ rowCount: 1 });

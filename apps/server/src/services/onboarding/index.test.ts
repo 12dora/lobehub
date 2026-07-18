@@ -8,6 +8,7 @@ import { AgentModel } from '@/database/models/agent';
 import { MessageModel } from '@/database/models/message';
 import { TopicModel } from '@/database/models/topic';
 import { UserModel } from '@/database/models/user';
+import { PlatformDefaultInboxService } from '@/server/enterprise/services/agentCatalog/defaultInbox';
 import { AgentService } from '@/server/services/agent';
 import { AgentDocumentsService } from '@/server/services/agentDocuments';
 
@@ -192,6 +193,7 @@ describe('OnboardingService', () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.useRealTimers();
   });
 
@@ -271,6 +273,52 @@ describe('OnboardingService', () => {
     );
     expect(persistedUserState.fullName).toBe('anbex');
     expect(mockAgentModel.update).not.toHaveBeenCalled();
+  });
+
+  it('does not let onboarding overwrite a platform-managed inbox identity', async () => {
+    vi.spyOn(PlatformDefaultInboxService.prototype, 'capture').mockResolvedValue({} as never);
+    const service = new OnboardingService(mockDb, userId);
+    const result = await service.saveUserQuestion({
+      agentEmoji: '🤖',
+      agentName: 'Legacy override',
+    });
+
+    expect(result).toEqual({
+      content: 'Skipped agent identity because the inbox is managed by your organization.',
+      ignoredFields: ['agentName', 'agentEmoji'],
+      success: false,
+    });
+    expect(mockAgentModel.update).not.toHaveBeenCalled();
+  });
+
+  it('fails closed before onboarding writes when managed-inbox resolution fails', async () => {
+    const failure = new Error('resolver unavailable');
+    vi.spyOn(PlatformDefaultInboxService.prototype, 'capture').mockRejectedValue(failure);
+    const service = new OnboardingService(mockDb, userId);
+
+    await expect(
+      service.saveUserQuestion({ agentName: 'Legacy override', fullName: 'Must not persist' }),
+    ).rejects.toBe(failure);
+    expect(mockUserModel.getUserState).not.toHaveBeenCalled();
+    expect(mockUserModel.updateUser).not.toHaveBeenCalled();
+    expect(mockUserModel.updateSetting).not.toHaveBeenCalled();
+    expect(mockAgentModel.update).not.toHaveBeenCalled();
+    expect(mockAgentService.getBuiltinAgent).not.toHaveBeenCalled();
+    expect(mockAgentDocumentsService.deleteTemplateDocuments).not.toHaveBeenCalled();
+    expect(mockAgentDocumentsService.upsertDocument).not.toHaveBeenCalled();
+    expect(mockDb.transaction).not.toHaveBeenCalled();
+  });
+
+  it('resets user onboarding state but preserves managed inbox identity and documents', async () => {
+    vi.spyOn(PlatformDefaultInboxService.prototype, 'capture').mockResolvedValue({} as never);
+    const service = new OnboardingService(mockDb, userId);
+
+    await service.reset();
+
+    expect(mockUserModel.updateUser).toHaveBeenCalled();
+    expect(mockAgentModel.update).not.toHaveBeenCalled();
+    expect(mockAgentDocumentsService.deleteTemplateDocuments).not.toHaveBeenCalled();
+    expect(mockAgentDocumentsService.upsertDocument).not.toHaveBeenCalled();
   });
 
   it('rejects saveUserQuestion when no supported fields are provided', async () => {

@@ -34,6 +34,7 @@ import {
   userPersonaDocuments,
 } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
+import { PlatformDefaultInboxService } from '@/server/enterprise/services/agentCatalog/defaultInbox';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 import { AgentService } from '@/server/services/agent';
 import { AgentDocumentsService } from '@/server/services/agentDocuments';
@@ -519,8 +520,7 @@ export class OnboardingService {
       };
     } else {
       let discoveryContext:
-        | { currentUserMessageCount: number; startUserMessageCount: number }
-        | undefined;
+        { currentUserMessageCount: number; startUserMessageCount: number } | undefined;
 
       if (topicId) {
         const pastPreDiscovery =
@@ -653,8 +653,7 @@ export class OnboardingService {
 
     let currentUserMessageCount: number | undefined;
     let discoveryContext:
-      | { currentUserMessageCount: number; startUserMessageCount: number }
-      | undefined;
+      { currentUserMessageCount: number; startUserMessageCount: number } | undefined;
 
     // Build discovery context if we have a topic and are past agent_identity + user_identity
     if (topicId) {
@@ -718,6 +717,20 @@ export class OnboardingService {
     const parsed = rawInput;
     const savedFields: SaveUserQuestionField[] = [];
     const unchangedFields: SaveUserQuestionField[] = [];
+    const agentName =
+      typeof parsed.agentName === 'string' && parsed.agentName.trim()
+        ? parsed.agentName.trim()
+        : undefined;
+    const agentEmoji =
+      typeof parsed.agentEmoji === 'string' && parsed.agentEmoji.trim()
+        ? parsed.agentEmoji.trim()
+        : undefined;
+    // Capture before any User/Agent/document write. A resolver/catalog failure must leave the
+    // onboarding mutation with zero partial writes.
+    const isManagedInbox =
+      agentName || agentEmoji
+        ? Boolean(await new PlatformDefaultInboxService(this.db, this.userId).capture())
+        : false;
     const userState = await this.getUserState();
     const userPatch: { fullName?: string; interests?: string[] } = {};
 
@@ -754,14 +767,6 @@ export class OnboardingService {
     }
 
     // Update inbox agent avatar and title when agent identity fields are provided
-    const agentName =
-      typeof parsed.agentName === 'string' && parsed.agentName.trim()
-        ? parsed.agentName.trim()
-        : undefined;
-    const agentEmoji =
-      typeof parsed.agentEmoji === 'string' && parsed.agentEmoji.trim()
-        ? parsed.agentEmoji.trim()
-        : undefined;
     const userIdentityNames = new Set(
       [fullName, userState.fullName, userState.username]
         .map((name) => normalizeComparableName(name))
@@ -770,8 +775,10 @@ export class OnboardingService {
     const agentNameMatchesUserIdentity =
       Boolean(agentName) && userIdentityNames.has(normalizeComparableName(agentName) ?? '');
     const shouldIgnoreAgentIdentity = Boolean(agentNameMatchesUserIdentity);
-
-    if (shouldIgnoreAgentIdentity) {
+    if (isManagedInbox) {
+      if (agentName) ignoredFields.push('agentName');
+      if (agentEmoji) ignoredFields.push('agentEmoji');
+    } else if (shouldIgnoreAgentIdentity) {
       if (agentName) ignoredFields.push('agentName');
       if (agentEmoji) ignoredFields.push('agentEmoji');
     } else if (agentName || agentEmoji) {
@@ -799,10 +806,15 @@ export class OnboardingService {
       }
     }
 
-    if (savedFields.length === 0 && unchangedFields.length === 0 && shouldIgnoreAgentIdentity) {
+    if (
+      savedFields.length === 0 &&
+      unchangedFields.length === 0 &&
+      (shouldIgnoreAgentIdentity || isManagedInbox)
+    ) {
       return {
-        content:
-          'Skipped agent identity because agentName matches the user identity. Ask the user to clarify the assistant name/avatar before saving agentName or agentEmoji.',
+        content: isManagedInbox
+          ? 'Skipped agent identity because the inbox is managed by your organization.'
+          : 'Skipped agent identity because agentName matches the user identity. Ask the user to clarify the assistant name/avatar before saving agentName or agentEmoji.',
         ignoredFields,
         success: false,
       };
@@ -827,6 +839,11 @@ export class OnboardingService {
     if (shouldIgnoreAgentIdentity) {
       contentParts.push(
         'Skipped agent identity because agentName matches the user identity. Ask the user to clarify the assistant name/avatar before saving agentName or agentEmoji.',
+      );
+    }
+    if (isManagedInbox) {
+      contentParts.push(
+        'Skipped agent identity because the inbox is managed by your organization.',
       );
     }
 
@@ -916,6 +933,11 @@ export class OnboardingService {
 
   reset = async () => {
     const state = defaultAgentOnboardingState();
+    // Resolve before any mutation: active management skips inbox-owned fields, while a resolver/DB
+    // error fails closed and leaves the onboarding state untouched.
+    const isManagedInbox = Boolean(
+      await new PlatformDefaultInboxService(this.db, this.userId).capture(),
+    );
 
     // Preserve users.full_name and users.username on reset.
     // Why: fullName/username are usually seeded from OAuth at signup, and we
@@ -945,17 +967,19 @@ export class OnboardingService {
       console.error('[OnboardingService] Failed to reset persona documents:', error);
     }
 
-    try {
-      const inboxAgentId = await this.getInboxAgentId();
+    if (!isManagedInbox) {
+      try {
+        const inboxAgentId = await this.getInboxAgentId();
 
-      // Reset inbox agent title and avatar
-      await this.agentModel.update(inboxAgentId, { avatar: null, title: null });
+        // Reset inbox agent title and avatar
+        await this.agentModel.update(inboxAgentId, { avatar: null, title: null });
 
-      await this.agentDocumentsService.deleteTemplateDocuments(inboxAgentId, 'claw');
-      this.inboxDocumentsInitialized = false;
-      await this.ensureInboxDocuments(inboxAgentId);
-    } catch (error) {
-      console.error('[OnboardingService] Failed to reset inbox documents:', error);
+        await this.agentDocumentsService.deleteTemplateDocuments(inboxAgentId, 'claw');
+        this.inboxDocumentsInitialized = false;
+        await this.ensureInboxDocuments(inboxAgentId);
+      } catch (error) {
+        console.error('[OnboardingService] Failed to reset inbox documents:', error);
+      }
     }
 
     return state;

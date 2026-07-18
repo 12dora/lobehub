@@ -1,5 +1,5 @@
 import { CURRENT_ONBOARDING_VERSION, INBOX_SESSION_ID } from '@lobechat/const';
-import { MAX_ONBOARDING_STEPS } from '@lobechat/types';
+import { MAX_ONBOARDING_STEPS, PLATFORM_AGENT_DEFAULT_INBOX_SYSTEM_KEY } from '@lobechat/types';
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -386,5 +386,56 @@ describe('onboarding actions', () => {
 
       expect(updateAgentConfigById).toHaveBeenCalledWith('inbox-agent-id', { plugins: [] });
     });
+
+    it('does not send a legacy plugin mutation for the managed default inbox', async () => {
+      act(() => {
+        useAgentStore.setState({
+          agentMap: {
+            'inbox-agent-id': {
+              platform: {
+                managed: true,
+                systemKey: PLATFORM_AGENT_DEFAULT_INBOX_SYSTEM_KEY,
+              },
+              plugins: ['managed-tool'],
+            } as any,
+          },
+        } as any);
+      });
+      const { result } = renderHook(() => useUserStore());
+
+      await act(async () => {
+        await result.current.toggleInboxAgentDefaultPlugin('legacy-tool', true);
+      });
+
+      expect(updateAgentConfigById).not.toHaveBeenCalled();
+    });
+  });
+
+  it('does not send legacy model/settings mutations for the managed default inbox', async () => {
+    const updateAgentConfigById = vi.fn();
+    const updateDefaultAgent = vi.fn();
+    act(() => {
+      useAgentStore.setState({
+        agentMap: {
+          'inbox-agent-id': {
+            platform: {
+              managed: true,
+              systemKey: PLATFORM_AGENT_DEFAULT_INBOX_SYSTEM_KEY,
+            },
+          } as any,
+        },
+        builtinAgentIdMap: { [INBOX_SESSION_ID]: 'inbox-agent-id' },
+        updateAgentConfigById,
+      } as any);
+      useUserStore.setState({ updateDefaultAgent } as any);
+    });
+    const { result } = renderHook(() => useUserStore());
+
+    await act(async () => {
+      await result.current.updateDefaultModel('legacy-model', 'legacy-provider');
+    });
+
+    expect(updateDefaultAgent).not.toHaveBeenCalled();
+    expect(updateAgentConfigById).not.toHaveBeenCalled();
   });
 });
