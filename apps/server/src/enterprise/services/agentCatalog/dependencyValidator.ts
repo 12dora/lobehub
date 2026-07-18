@@ -6,7 +6,7 @@ import { PlatformConnectorCatalogRepository } from '@/database/repositories/plat
 import { PlatformSkillCatalogRepository } from '@/database/repositories/platformSkillCatalog';
 import type { LobeChatDatabase, Transaction } from '@/database/type';
 
-import { acquirePlatformDependencyPublicationLock } from '../platformDependencyLock';
+import { acquirePlatformDependencyValidationLock } from '../platformDependencyLock';
 import {
   type PlatformAgentDependencyIssueCode,
   PlatformAgentDependencyValidationError,
@@ -29,7 +29,7 @@ const isEnabledChatModel = (
   );
 };
 
-/** Exact M07/M08/M09 validation. Call only while holding the shared publication lock. */
+/** Exact M07/M08/M09 validation. Call only while holding the dependency protocol lock. */
 export const assertExactPlatformAgentDependencies = async (
   tx: Transaction,
   snapshot: PlatformAgentDependencySnapshot,
@@ -57,11 +57,9 @@ export const assertExactPlatformAgentDependencies = async (
   }
 
   const skillRepository = new PlatformSkillCatalogRepository(tx);
+  const skills = await skillRepository.getPublishedExecutionVersionsExact(snapshot.skills);
   for (const reference of snapshot.skills) {
-    const row = await skillRepository.getPublishedExecutionVersionExact(
-      reference.skillKey,
-      reference.version,
-    );
+    const row = skills.get(`${reference.skillKey}\0${reference.version}`);
     if (
       !row ||
       row.version.checksum !== reference.checksum ||
@@ -73,14 +71,12 @@ export const assertExactPlatformAgentDependencies = async (
   }
 
   const connectorRepository = new PlatformConnectorCatalogRepository(tx);
+  const connectors = await connectorRepository.getPublishedRuntimeRevisionsExact(
+    snapshot.connectors,
+  );
   for (const reference of snapshot.connectors) {
-    const connector = await connectorRepository.getConnectorByKey(reference.connectorKey);
-    const revision = connector
-      ? await connectorRepository.getPublishedRuntimeRevision(
-          connector.id,
-          reference.publishedRevision,
-        )
-      : undefined;
+    const revision = connectors.get(`${reference.connectorId}\0${reference.publishedRevision}`);
+    const connector = revision?.connector;
     if (
       !connector ||
       connector.id !== reference.connectorId ||
@@ -112,7 +108,7 @@ export const validateExactPlatformAgentDependencies = async (
   snapshot: PlatformAgentDependencySnapshot,
 ): Promise<{ valid: true }> =>
   db.transaction(async (tx) => {
-    await acquirePlatformDependencyPublicationLock(tx);
+    await acquirePlatformDependencyValidationLock(tx);
     await assertExactPlatformAgentDependencies(tx, snapshot);
     return { valid: true };
   });

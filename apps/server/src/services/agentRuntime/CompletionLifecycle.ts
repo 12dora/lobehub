@@ -283,6 +283,23 @@ export class CompletionLifecycle {
         expectedPlatformStart = runtimeBinding;
       } else if (runtimeClassification === 'ordinary' && runtimeBinding === undefined) {
         isPlatformOperation = false;
+      } else if (runtimeClassification === undefined && runtimeBinding === undefined) {
+        // Upgrade compatibility for operations parked from a state created before RR6 added the
+        // server-authored classification. Persisted metadata is consulted only to prove the row is
+        // ordinary (or absent); it can never stand in for missing runtime proof on a complete or
+        // partial platform start.
+        let persistedRef: Awaited<ReturnType<AgentOperationModel['findPlatformOperationRef']>>;
+        try {
+          persistedRef = await this.agentOperationModel.findPlatformOperationRef(operationId);
+        } catch (error) {
+          throw new Error('OPERATION_PARK_CLASSIFICATION_FAILED', { cause: error });
+        }
+        if (persistedRef && persistedRef.classification !== 'ordinary') {
+          throw new Error('OPERATION_PARK_CLASSIFICATION_FAILED', {
+            cause: new Error('missing trusted runtime proof for persisted platform operation'),
+          });
+        }
+        isPlatformOperation = false;
       } else {
         throw new Error('OPERATION_PARK_CLASSIFICATION_FAILED', {
           cause: new Error('missing or inconsistent trusted runtime classification'),

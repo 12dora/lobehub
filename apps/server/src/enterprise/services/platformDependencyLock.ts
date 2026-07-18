@@ -18,6 +18,17 @@ export const acquirePlatformDependencyPublicationLock = async (tx: Transaction):
 };
 
 /**
+ * Read-side lock for exact dependency validation. Multiple validators may proceed concurrently,
+ * while every publisher/archiver continues to take the exclusive lock above and therefore waits
+ * for all in-flight validations (and vice versa).
+ */
+export const acquirePlatformDependencyValidationLock = async (tx: Transaction): Promise<void> => {
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock_shared(hashtext(${PLATFORM_DEPENDENCY_LOCK_NAMESPACE})::bigint)`,
+  );
+};
+
+/**
  * Transaction-level singleton lock for the default-inbox pointer. Every path that can
  * elect or clear the single default Agent (`setDefaultInbox`, `archive`) must acquire it
  * FIRST, before reading or row-locking any identity, so concurrent promotions serialize
