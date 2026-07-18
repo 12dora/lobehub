@@ -784,6 +784,30 @@ describe('PlatformAgentCatalogRepository', () => {
       expect(await repository.listMaterializedAgentIds(USER_A)).toEqual(new Set());
     });
 
+    it('reverse-maps a local Agent id to its platform Agent, strictly owner-scoped', async () => {
+      const { agentId, version } = await seedVersion('mat-reverse');
+      await repository.materializeLocalAgent({
+        createLocalAgent: createLocalAgentFor(USER_A, 'm10-reverse-a'),
+        platformAgentId: agentId,
+        platformAgentVersionChecksum: version.checksum,
+        platformAgentVersionId: version.id,
+        userId: USER_A,
+      });
+
+      // Owner sees the mapping…
+      expect(
+        await repository.getPlatformAgentIdByMaterializedAgentId(USER_A, 'm10-reverse-a'),
+      ).toBe(agentId);
+      // …another user never resolves it (no cross-user entitlement via a known local id)…
+      expect(
+        await repository.getPlatformAgentIdByMaterializedAgentId(USER_B, 'm10-reverse-a'),
+      ).toBeNull();
+      // …and an ordinary (non-materialized) local id resolves to null.
+      expect(
+        await repository.getPlatformAgentIdByMaterializedAgentId(USER_A, 'not-materialized'),
+      ).toBeNull();
+    });
+
     it('is owner-scoped: each user gets an isolated mapping, never the other user’s', async () => {
       const { agentId, version } = await seedVersion('mat-owner');
 

@@ -760,6 +760,30 @@ export class PlatformAgentCatalogRepository {
   };
 
   /**
+   * Owner-scoped reverse lookup: given a local Agent id, return the platform Agent it was
+   * materialized from for THIS user, or null. Strictly filtered by the trusted `userId`, so a local
+   * id belonging to another user (or an ordinary, non-materialized Agent) can never resolve to a
+   * platform Agent. Used by the chat runtime to force a materialized local id back through
+   * owner-scoped entitlement + the exact pinned snapshot instead of running the local row directly.
+   */
+  getPlatformAgentIdByMaterializedAgentId = async (
+    userId: string,
+    materializedAgentId: string,
+  ): Promise<string | null> => {
+    const [row] = await this.db
+      .select({ platformAgentId: platformUserAgentMaterializations.platformAgentId })
+      .from(platformUserAgentMaterializations)
+      .where(
+        and(
+          eq(platformUserAgentMaterializations.userId, userId),
+          eq(platformUserAgentMaterializations.materializedAgentId, materializedAgentId),
+        ),
+      )
+      .limit(1);
+    return row?.platformAgentId ?? null;
+  };
+
+  /**
    * Delayed materialization of a local user-owned Agent for a platform Agent, transactional and
    * owner-scoped (R-materialize). The whole thing runs under the per-Agent reference lock inside
    * ONE transaction so that:

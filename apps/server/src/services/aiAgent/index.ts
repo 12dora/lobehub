@@ -85,6 +85,7 @@ import { ThreadModel } from '@/database/models/thread';
 import { TopicModel } from '@/database/models/topic';
 import { UserModel } from '@/database/models/user';
 import { UserPersonaModel } from '@/database/models/userMemory/persona';
+import { PlatformAgentCatalogRepository } from '@/database/repositories/platformAgentCatalog';
 import { toolsEnv } from '@/envs/tools';
 import {
   type ExecutionPlan,
@@ -994,6 +995,29 @@ export class AiAgentService {
    * ordinary agent so we never leak whether the platform Agent exists. A fail-closed materialization
    * error (missing exact version / checksum mismatch / malformed refs) surfaces as a redacted 500.
    */
+  /**
+   * Resolve the platform Agent an operation should run, from the request identity (REWORK-2).
+   *
+   * Returns the platformAgentId when the identity is either the encoded platform list item OR a
+   * plain local Agent id that THIS user materialized from a platform Agent — both must go back
+   * through owner-scoped entitlement. The materialized-id reverse lookup is owner-scoped and gated
+   * on the managed flag, so flag-off keeps zero platform access and ordinary local ids fall through.
+   * Returns null for an ordinary agent / slug.
+   */
+  private async resolvePlatformAgentId(
+    identifier: string,
+    agentId: string | undefined,
+  ): Promise<string | null> {
+    const encoded = decodePlatformAgentListId(identifier);
+    if (encoded) return encoded;
+    if (!agentId) return null;
+    if (!parseEnterpriseFeatureFlags(process.env).ENABLE_PLATFORM_MANAGED_AGENTS) return null;
+    return new PlatformAgentCatalogRepository(this.db).getPlatformAgentIdByMaterializedAgentId(
+      this.userId,
+      agentId,
+    );
+  }
+
   private async resolvePlatformAgentConfig(
     platformAgentId: string,
     identifier: string,
@@ -1146,7 +1170,11 @@ export class AiAgentService {
     // mid-flight cannot mutate an already-started operation. Materialization yields a real
     // user-owned Agent id for message/operation attribution, while the runtime config is derived
     // solely from the snapshot (never re-read from the local row).
-    const platformAgentId = decodePlatformAgentListId(identifier);
+    // The identity may be the encoded list item OR a plain local Agent id that was materialized
+    // from a platform Agent — BOTH must re-run owner-scoped entitlement (REWORK-2), never run the
+    // local row directly. A local id whose assignment was revoked resolves to a platform id here
+    // and then fails closed in resolvePlatformAgentConfig.
+    const platformAgentId = await this.resolvePlatformAgentId(identifier, agentId);
     let agentConfig: AgentConfigWithId | null;
     if (platformAgentId) {
       agentConfig = await this.resolvePlatformAgentConfig(platformAgentId, identifier);
