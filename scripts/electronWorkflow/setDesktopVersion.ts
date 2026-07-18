@@ -2,6 +2,8 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 
+import { applyAihubPackageMetadata } from './desktopBranding.mjs';
+
 type ReleaseType = 'stable' | 'beta' | 'nightly' | 'canary';
 type DesktopBrand = 'aihub' | 'lobehub';
 
@@ -91,15 +93,11 @@ function updatePackageJson() {
         throw new Error('AIHUB_DESKTOP_HOMEPAGE is required for AIHub desktop builds');
       }
 
-      const homepageUrl = new URL(homepage);
-      if (homepageUrl.protocol !== 'https:' || homepageUrl.username || homepageUrl.password) {
-        throw new Error('AIHUB_DESKTOP_HOMEPAGE must be a credential-free HTTPS URL');
-      }
-
-      packageJson.description = 'AIHub Desktop Application';
-      packageJson.homepage = homepageUrl.toString();
-      packageJson.productName = 'AIHub';
-      fs.writeJsonSync(desktopPackageJsonPath, packageJson, { spaces: 2 });
+      const aihubPackageJson = applyAihubPackageMetadata({
+        homepage,
+        packageMetadata: packageJson,
+      });
+      fs.writeJsonSync(desktopPackageJsonPath, aihubPackageJson, { spaces: 2 });
       console.log('✅ AIHub desktop package metadata updated successfully.');
       return;
     }

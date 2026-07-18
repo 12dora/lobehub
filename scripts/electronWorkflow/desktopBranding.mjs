@@ -28,6 +28,7 @@ const ICON_DEFINITIONS = [
 
 const MAX_ICON_BYTES = 20 * 1024 * 1024;
 const MIN_ICON_BYTES = 256;
+const UPSTREAM_BRAND_PATTERN = /lobehub/i;
 
 const getRequiredEnv = (env, name) => {
   const value = env[name]?.trim();
@@ -75,7 +76,16 @@ const validateUpdateServerUrl = (rawUrl) => {
   return updateUrl.toString();
 };
 
+export const rejectLobehubExternalBrandValue = (value, name) => {
+  if (UPSTREAM_BRAND_PATTERN.test(value)) {
+    throw new Error(`${name} must not expose the LobeHub brand in an AIHub build`);
+  }
+  return value;
+};
+
 const validateHomepage = (rawUrl) => {
+  rejectLobehubExternalBrandValue(rawUrl, 'AIHUB_DESKTOP_HOMEPAGE');
+
   let homepage;
   try {
     homepage = new URL(rawUrl);
@@ -91,11 +101,20 @@ const validateHomepage = (rawUrl) => {
 };
 
 const validateMaintainer = (maintainer) => {
+  rejectLobehubExternalBrandValue(maintainer, 'AIHUB_DESKTOP_MAINTAINER');
+
   if (maintainer.length > 200 || /[\r\n]/.test(maintainer)) {
     throw new Error('AIHUB_DESKTOP_MAINTAINER must be a single line of at most 200 characters');
   }
   return maintainer;
 };
+
+export const applyAihubPackageMetadata = ({ homepage, packageMetadata }) => ({
+  ...packageMetadata,
+  description: AIHUB_DESKTOP_DESCRIPTION,
+  homepage: validateHomepage(homepage),
+  productName: AIHUB_PRODUCT_NAME,
+});
 
 const validateSigningEnvironment = (env, platform) => {
   if (env.AIHUB_REQUIRE_SIGNING !== '1') return;
