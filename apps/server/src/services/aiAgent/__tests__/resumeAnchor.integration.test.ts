@@ -4,10 +4,10 @@
  *
  * Drives the REAL `AiAgentService.execAgent` resume path against a real PGlite DB with a real
  * published platform Agent + assignment + managed policy, a real server-parked (`waiting_for_human`)
- * operation, real message rows, and the SERVER-recorded, KIND-keyed resume anchors — NO deep mocks of
+ * operation, real message rows, and the SERVER-recorded provenance resume anchors — NO deep mocks of
  * the security logic. A PAUSED resume binds ONLY through server-owned ids under its OWN kind: a
- * `resumeApproval` against `metadata.pendingResumeAnchors.approval`, a `resumeToolResult` against
- * `metadata.pendingResumeAnchors.toolResult`. The client-writable `message.parentId` is NEVER trusted
+ * `resumeApproval` / `resumeToolResult` against the exact message/tool/kind/fingerprint provenance.
+ * The client-writable `message.parentId` is NEVER trusted
  * — a forged tool message whose parentId points at the real assistant fails closed, the two kinds
  * can't cross, and `waiting_for_async_tool` is not externally resumable. A bare regeneration /
  * continue (`parentMessageId` alone) is NOT a paused resume (RR5-5): it never replays the parked pin,
@@ -15,6 +15,7 @@
  *
  * @vitest-environment node
  */
+import { fingerprintResumeToolCall } from '@lobechat/types';
 import { eq, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -50,6 +51,14 @@ const modelPin = {
   providerKey: 'internal-provider',
   providerRevision: 1,
 };
+const toolCallIdFor = (toolId: string) => `tc-${toolId}`;
+const toolDescriptor = (toolId: string) => ({
+  apiName: 'run',
+  arguments: JSON.stringify({ toolId }),
+  identifier: 'demo',
+  toolCallId: toolCallIdFor(toolId),
+  type: 'default',
+});
 
 const config = (title: string) => ({
   avatar: null,
@@ -129,15 +138,26 @@ const seedParkedOperation = async (
     topicId: string;
   },
 ) => {
-  const pendingResumeAnchors: { approval?: string[]; toolResult?: string[] } = {};
-  if (opts.approvalToolIds?.length) pendingResumeAnchors.approval = opts.approvalToolIds;
-  if (opts.toolResultToolIds?.length) pendingResumeAnchors.toolResult = opts.toolResultToolIds;
+  const toolSpecs = [
+    ...(opts.approvalToolIds ?? []).map((toolId) => ({ kind: 'approval' as const, toolId })),
+    ...(opts.toolResultToolIds ?? []).map((toolId) => ({ kind: 'toolResult' as const, toolId })),
+  ];
+  const pendingResumeAnchors = await Promise.all(
+    toolSpecs.map(async ({ kind, toolId }) => ({
+      assistantMessageId: opts.assistantMessageId ?? '',
+      fingerprint: await fingerprintResumeToolCall(toolDescriptor(toolId)),
+      kind,
+      messageId: toolId,
+      operationId: opts.operationId,
+      toolCallId: toolCallIdFor(toolId),
+    })),
+  );
 
   await db.insert(agentOperations).values({
     id: opts.operationId,
     metadata: {
       ...(opts.assistantMessageId ? { assistantMessageId: opts.assistantMessageId } : {}),
-      ...(Object.keys(pendingResumeAnchors).length ? { pendingResumeAnchors } : {}),
+      ...(pendingResumeAnchors.length ? { pendingResumeAnchors } : {}),
       platformConnectors: [],
       platformModel: modelPin,
       platformOperation: {
@@ -160,6 +180,8 @@ const seedParkedOperation = async (
   // Seed each recorded pending tool as a real role='tool' message + a plugin row carrying the
   // SERVER-owned intervention kind, so genuine resumes clear the pin resolution AND the kind gate.
   const seedTool = async (toolId: string, kind: 'approval' | 'toolResult') => {
+    const provenance = pendingResumeAnchors.find((anchor) => anchor.messageId === toolId)!;
+    const descriptor = toolDescriptor(toolId);
     await db.insert(messages).values({
       id: toolId,
       parentId: opts.assistantMessageId,
@@ -168,11 +190,13 @@ const seedParkedOperation = async (
       userId,
     });
     await db.insert(messagePlugins).values({
+      apiName: descriptor.apiName,
+      arguments: descriptor.arguments,
       id: toolId,
-      identifier: 'demo',
-      intervention: { kind, status: 'pending' },
-      toolCallId: 'tc-1',
-      type: 'default',
+      identifier: descriptor.identifier,
+      intervention: { kind, provenance, status: 'pending' },
+      toolCallId: descriptor.toolCallId,
+      type: descriptor.type,
       userId,
     });
   };
@@ -204,7 +228,7 @@ const resume = async (
         resumeApproval: {
           decision: 'approved' as const,
           parentMessageId: params.approvalToolId,
-          toolCallId: 'tc-1',
+          toolCallId: toolCallIdFor(params.approvalToolId),
         },
       }
     : params.toolResultToolId
@@ -212,7 +236,7 @@ const resume = async (
           resumeToolResult: {
             content: 'the human answer',
             parentMessageId: params.toolResultToolId,
-            toolCallId: 'tc-1',
+            toolCallId: toolCallIdFor(params.toolResultToolId),
           },
         }
       : { parentMessageId: params.parentMessageId };
@@ -301,6 +325,43 @@ describe('RR4-1/RR5-2 — kind-keyed resume anchor forgery resistance (real serv
       .values({ id: 'ghost-tool', role: 'tool', topicId: 'topic-1', userId: 'user-a' });
     expect(
       (await resume('user-a', { approvalToolId: 'ghost-tool', topicId: 'topic-1' }))
+        .resolutionFailedClosed,
+    ).toBe(true);
+  });
+
+  it('fails closed when the persisted tool arguments no longer match the parked fingerprint', async () => {
+    await db
+      .update(messagePlugins)
+      .set({ arguments: '{"toolId":"tampered"}' })
+      .where(eq(messagePlugins.id, 'tool-1'));
+    expect(
+      (await resume('user-a', { approvalToolId: 'tool-1', topicId: 'topic-1' }))
+        .resolutionFailedClosed,
+    ).toBe(true);
+  });
+
+  it('fails closed when the parked provenance assistant or operation binding is tampered', async () => {
+    const [operation] = await db
+      .select({ metadata: agentOperations.metadata })
+      .from(agentOperations)
+      .where(eq(agentOperations.id, 'op-1'));
+    const metadata = operation.metadata as Record<string, any>;
+    const anchors = metadata.pendingResumeAnchors as Array<Record<string, unknown>>;
+    await db
+      .update(agentOperations)
+      .set({
+        metadata: {
+          ...metadata,
+          pendingResumeAnchors: anchors.map((anchor) =>
+            anchor.messageId === 'tool-1'
+              ? { ...anchor, assistantMessageId: 'forged-assistant' }
+              : anchor,
+          ),
+        },
+      })
+      .where(eq(agentOperations.id, 'op-1'));
+    expect(
+      (await resume('user-a', { approvalToolId: 'tool-1', topicId: 'topic-1' }))
         .resolutionFailedClosed,
     ).toBe(true);
   });

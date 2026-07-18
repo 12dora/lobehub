@@ -1,4 +1,5 @@
 // @vitest-environment node
+import type { ResumeToolProvenance } from '@lobechat/types';
 import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -277,6 +278,21 @@ describe('AgentOperationModel', () => {
       providerKey: 'openai',
       providerRevision: 1,
     };
+    const fingerprintFor = (messageId: string) =>
+      (messageId.startsWith('ans') ? 'b' : 'a').repeat(64);
+    const anchor = (
+      operationId: string,
+      messageId: string,
+      kind: 'approval' | 'toolResult' = 'approval',
+      assistantMessageId = 'asst-1',
+    ): ResumeToolProvenance => ({
+      assistantMessageId,
+      fingerprint: fingerprintFor(messageId),
+      kind,
+      messageId,
+      operationId,
+      toolCallId: `call-${messageId}`,
+    });
 
     beforeEach(async () => {
       await serverDB.insert(topics).values([
@@ -293,7 +309,7 @@ describe('AgentOperationModel', () => {
       assistantMessageId?: string;
       id: string;
       ownerId?: string;
-      pendingResumeAnchors?: { approval?: string[]; toolResult?: string[] };
+      pendingResumeAnchors?: ResumeToolProvenance[];
       platformAgentId?: string;
       status?: 'waiting_for_human' | 'waiting_for_async_tool' | 'done';
       threadId?: string | null;
@@ -302,12 +318,14 @@ describe('AgentOperationModel', () => {
       serverDB.insert(agentOperations).values({
         id: params.id,
         metadata: {
-          ...(params.assistantMessageId ? { assistantMessageId: params.assistantMessageId } : {}),
+          assistantMessageId: params.assistantMessageId ?? 'asst-1',
           ...(params.pendingResumeAnchors
             ? { pendingResumeAnchors: params.pendingResumeAnchors }
             : {}),
+          platformConnectors: [],
           platformModel: modelPin,
           platformOperation: { ...pin, platformAgentId: params.platformAgentId ?? 'pagt_1' },
+          platformSkills: [],
         },
         startedAt: new Date(),
         status: params.status ?? 'waiting_for_human',
@@ -321,23 +339,30 @@ describe('AgentOperationModel', () => {
       params: {
         anchorKind?: 'approval' | 'toolResult';
         anchorMessageId: string;
+        fingerprint?: string;
         platformAgentId?: string;
         threadId?: string | null;
+        toolCallId?: string;
         topicId?: string | null;
       },
     ) =>
       model.findResumablePlatformOperationPin({
         anchorKind: params.anchorKind ?? 'approval',
         anchorMessageId: params.anchorMessageId,
+        fingerprint: params.fingerprint ?? fingerprintFor(params.anchorMessageId),
         platformAgentId: params.platformAgentId ?? 'pagt_1',
         threadId: params.threadId ?? null,
+        toolCallId: params.toolCallId ?? `call-${params.anchorMessageId}`,
         topicId: params.topicId === undefined ? 'topic-1' : params.topicId,
       });
 
     const model = () => new AgentOperationModel(serverDB, userId);
 
     it('approval resume resolves via an EXACT server-recorded pending tool id — a forged tool never binds', async () => {
-      await seedOp({ id: 'op-1', pendingResumeAnchors: { approval: ['tool-1', 'tool-2'] } });
+      await seedOp({
+        id: 'op-1',
+        pendingResumeAnchors: [anchor('op-1', 'tool-1'), anchor('op-1', 'tool-2')],
+      });
       expect(await find(model(), { anchorKind: 'approval', anchorMessageId: 'tool-2' })).toEqual(
         pin,
       );
@@ -348,7 +373,10 @@ describe('AgentOperationModel', () => {
     });
 
     it('toolResult resume resolves via its OWN kind-keyed anchor list', async () => {
-      await seedOp({ id: 'op-1', pendingResumeAnchors: { toolResult: ['ans-1'] } });
+      await seedOp({
+        id: 'op-1',
+        pendingResumeAnchors: [anchor('op-1', 'ans-1', 'toolResult')],
+      });
       expect(await find(model(), { anchorKind: 'toolResult', anchorMessageId: 'ans-1' })).toEqual(
         pin,
       );
@@ -357,7 +385,7 @@ describe('AgentOperationModel', () => {
     it('kind crossing fails: an approval id as a toolResult anchor (and vice versa) never matches', async () => {
       await seedOp({
         id: 'op-1',
-        pendingResumeAnchors: { approval: ['tool-1'], toolResult: ['ans-1'] },
+        pendingResumeAnchors: [anchor('op-1', 'tool-1'), anchor('op-1', 'ans-1', 'toolResult')],
       });
       expect(
         await find(model(), { anchorKind: 'toolResult', anchorMessageId: 'tool-1' }),
@@ -365,13 +393,71 @@ describe('AgentOperationModel', () => {
       expect(await find(model(), { anchorKind: 'approval', anchorMessageId: 'ans-1' })).toBeNull();
     });
 
+    it('fails closed when any provenance field is tampered', async () => {
+      await seedOp({ id: 'op-1', pendingResumeAnchors: [anchor('op-1', 'tool-1')] });
+      expect(
+        await find(model(), { anchorMessageId: 'tool-1', toolCallId: 'call-forged' }),
+      ).toBeNull();
+      expect(
+        await find(model(), { anchorMessageId: 'tool-1', fingerprint: 'f'.repeat(64) }),
+      ).toBeNull();
+
+      await seedOp({
+        id: 'op-operation-mismatch',
+        pendingResumeAnchors: [anchor('other-operation', 'tool-operation-mismatch')],
+      });
+      expect(await find(model(), { anchorMessageId: 'tool-operation-mismatch' })).toBeNull();
+
+      await seedOp({
+        id: 'op-assistant-mismatch',
+        pendingResumeAnchors: [
+          anchor('op-assistant-mismatch', 'tool-assistant-mismatch', 'approval', 'forged-asst'),
+        ],
+      });
+      expect(await find(model(), { anchorMessageId: 'tool-assistant-mismatch' })).toBeNull();
+    });
+
+    it('fails closed for a partial platform start even when provenance matches exactly', async () => {
+      const completeMetadata = {
+        assistantMessageId: 'asst-1',
+        pendingResumeAnchors: [anchor('op-partial', 'tool-partial')],
+        platformConnectors: [],
+        platformModel: modelPin,
+        platformOperation: pin,
+        platformSkills: [],
+      };
+      for (const [index, missingField] of [
+        'platformConnectors',
+        'platformModel',
+        'platformSkills',
+      ].entries()) {
+        const id = `op-partial-${index}`;
+        const metadata = {
+          ...completeMetadata,
+          pendingResumeAnchors: [anchor(id, 'tool-partial')],
+        };
+        delete metadata[missingField as keyof typeof metadata];
+        await serverDB.insert(agentOperations).values({
+          id,
+          metadata,
+          startedAt: new Date(),
+          status: 'waiting_for_human',
+          topicId: 'topic-1',
+          userId,
+        });
+      }
+      for (let index = 0; index < 3; index++) {
+        expect(await find(model(), { anchorMessageId: 'tool-partial' })).toBeNull();
+      }
+    });
+
     it('fails closed for a fabricated anchor bound to no operation', async () => {
-      await seedOp({ id: 'op-1', pendingResumeAnchors: { approval: ['tool-1'] } });
+      await seedOp({ id: 'op-1', pendingResumeAnchors: [anchor('op-1', 'tool-1')] });
       expect(await find(model(), { anchorMessageId: 'forged' })).toBeNull();
     });
 
     it('is owner-scoped: another user cannot bind to this operation', async () => {
-      await seedOp({ id: 'op-1', pendingResumeAnchors: { approval: ['tool-1'] } });
+      await seedOp({ id: 'op-1', pendingResumeAnchors: [anchor('op-1', 'tool-1')] });
       expect(
         await find(new AgentOperationModel(serverDB, otherUserId), { anchorMessageId: 'tool-1' }),
       ).toBeNull();
@@ -380,7 +466,7 @@ describe('AgentOperationModel', () => {
     it('binds topic and thread exactly, and requires a topic', async () => {
       await seedOp({
         id: 'op-1',
-        pendingResumeAnchors: { approval: ['tool-1'] },
+        pendingResumeAnchors: [anchor('op-1', 'tool-1')],
         threadId: 'thread-1',
       });
       expect(await find(model(), { anchorMessageId: 'tool-1', threadId: 'thread-1' })).toEqual(pin);
@@ -400,12 +486,12 @@ describe('AgentOperationModel', () => {
     it('RR4-2: only waiting_for_human is externally resumable (async-tool + terminal excluded)', async () => {
       await seedOp({
         id: 'op-async',
-        pendingResumeAnchors: { approval: ['tool-async'] },
+        pendingResumeAnchors: [anchor('op-async', 'tool-async')],
         status: 'waiting_for_async_tool',
       });
       await seedOp({
         id: 'op-done',
-        pendingResumeAnchors: { approval: ['tool-done'] },
+        pendingResumeAnchors: [anchor('op-done', 'tool-done')],
         status: 'done',
       });
       expect(await find(model(), { anchorMessageId: 'tool-async' })).toBeNull();
@@ -415,7 +501,7 @@ describe('AgentOperationModel', () => {
     it('binds the requested platform Agent', async () => {
       await seedOp({
         id: 'op-1',
-        pendingResumeAnchors: { approval: ['tool-1'] },
+        pendingResumeAnchors: [anchor('op-1', 'tool-1')],
         platformAgentId: 'pagt_OTHER',
       });
       expect(
@@ -432,8 +518,10 @@ describe('AgentOperationModel', () => {
         id: 'op-1',
         metadata: {
           assistantMessageId: 'asst-1',
+          platformConnectors: [],
           platformModel: modelPin,
           platformOperation: pin,
+          platformSkills: [],
         },
         startedAt: new Date(),
         status: 'running',
@@ -442,8 +530,16 @@ describe('AgentOperationModel', () => {
       });
 
       const parked = await model().parkForHumanIntervention('op-1', {
-        anchors: { approval: ['tool-a'], toolResult: ['ans-a'] },
+        anchors: [anchor('op-1', 'tool-a'), anchor('op-1', 'ans-a', 'toolResult')],
         completionReason: 'waiting_for_human',
+        expectedGeneration: 0,
+        expectedPlatformStart: {
+          assistantMessageId: 'asst-1',
+          platformConnectors: [],
+          platformModel: modelPin,
+          platformOperation: pin,
+          platformSkills: [],
+        },
         status: 'waiting_for_human',
       });
       expect(parked.affected).toBe(1);
@@ -462,8 +558,16 @@ describe('AgentOperationModel', () => {
       const foreign = await new AgentOperationModel(serverDB, otherUserId).parkForHumanIntervention(
         'op-1',
         {
-          anchors: { approval: ['tool-x'] },
+          anchors: [anchor('op-1', 'tool-x')],
           completionReason: 'waiting_for_human',
+          expectedGeneration: 0,
+          expectedPlatformStart: {
+            assistantMessageId: 'asst-1',
+            platformConnectors: [],
+            platformModel: modelPin,
+            platformOperation: pin,
+            platformSkills: [],
+          },
           status: 'waiting_for_human',
         },
       );
@@ -475,15 +579,29 @@ describe('AgentOperationModel', () => {
       // A terminal (done) op must NOT be flipped back into waiting_for_human by a late park.
       await serverDB.insert(agentOperations).values({
         id: 'op-done',
-        metadata: { assistantMessageId: 'asst-1', platformModel: modelPin, platformOperation: pin },
+        metadata: {
+          assistantMessageId: 'asst-1',
+          platformConnectors: [],
+          platformModel: modelPin,
+          platformOperation: pin,
+          platformSkills: [],
+        },
         startedAt: new Date(),
         status: 'done',
         topicId: 'topic-1',
         userId,
       });
       const parked = await model().parkForHumanIntervention('op-done', {
-        anchors: { approval: ['tool-late'] },
+        anchors: [anchor('op-done', 'tool-late')],
         completionReason: 'waiting_for_human',
+        expectedGeneration: 0,
+        expectedPlatformStart: {
+          assistantMessageId: 'asst-1',
+          platformConnectors: [],
+          platformModel: modelPin,
+          platformOperation: pin,
+          platformSkills: [],
+        },
         status: 'waiting_for_human',
       });
       expect(parked.affected).toBe(0);
@@ -494,33 +612,123 @@ describe('AgentOperationModel', () => {
       expect(row.status).toBe('done');
     });
 
-    it('parkForHumanIntervention preserves the sibling kind when only one kind is present', async () => {
+    it('parkForHumanIntervention matches the complete platform pin and assistant binding', async () => {
+      const platformStart = {
+        assistantMessageId: 'asst-1',
+        platformConnectors: [],
+        platformModel: modelPin,
+        platformOperation: pin,
+        platformSkills: [],
+      };
+      await serverDB.insert(agentOperations).values({
+        id: 'op-binding',
+        metadata: platformStart,
+        startedAt: new Date(),
+        status: 'running',
+        topicId: 'topic-1',
+        userId,
+      });
+      const park = (expectedPlatformStart: typeof platformStart, assistantMessageId = 'asst-1') =>
+        model().parkForHumanIntervention('op-binding', {
+          anchors: [anchor('op-binding', 'tool-binding', 'approval', assistantMessageId)],
+          completionReason: 'waiting_for_human',
+          expectedGeneration: 0,
+          expectedPlatformStart,
+          status: 'waiting_for_human',
+        });
+
+      expect(
+        await park({
+          ...platformStart,
+          platformOperation: { ...pin, versionId: 'forged-version' },
+        }),
+      ).toEqual({ affected: 0 });
+      expect(
+        await park({
+          ...platformStart,
+          platformModel: { ...modelPin, providerRevision: 99 },
+        }),
+      ).toEqual({ affected: 0 });
+      expect(await park(platformStart, 'forged-assistant')).toEqual({ affected: 0 });
+      expect(await park(platformStart)).toEqual({ affected: 1 });
+    });
+
+    it('replaces the complete anchor set by generation and blocks a stale older park', async () => {
       await serverDB.insert(agentOperations).values({
         id: 'op-1',
         metadata: {
           assistantMessageId: 'asst-1',
-          pendingResumeAnchors: { toolResult: ['ans-existing'] },
+          platformConnectors: [],
           platformModel: modelPin,
           platformOperation: pin,
+          platformSkills: [],
         },
         startedAt: new Date(),
-        status: 'waiting_for_human',
+        status: 'running',
         topicId: 'topic-1',
         userId,
       });
-      // Re-park (waiting_for_human is an allowed previous status) with only approval anchors.
-      const parked = await model().parkForHumanIntervention('op-1', {
-        anchors: { approval: ['tool-new'] },
-        completionReason: 'waiting_for_human',
-        status: 'waiting_for_human',
-      });
-      expect(parked.affected).toBe(1);
-      // The pre-existing toolResult anchor survives; the new approval anchor is added.
+      const platformStart = {
+        assistantMessageId: 'asst-1',
+        platformConnectors: [],
+        platformModel: modelPin,
+        platformOperation: pin,
+        platformSkills: [],
+      };
+      const firstAnchors = [anchor('op-1', 'ans-existing', 'toolResult')];
+      const secondAnchors = [anchor('op-1', 'tool-new')];
+
+      expect(
+        await model().parkForHumanIntervention('op-1', {
+          anchors: firstAnchors,
+          completionReason: 'waiting_for_human',
+          expectedGeneration: 0,
+          expectedPlatformStart: platformStart,
+          status: 'waiting_for_human',
+        }),
+      ).toEqual({ affected: 1 });
+      expect(
+        await model().parkForHumanIntervention('op-1', {
+          anchors: secondAnchors,
+          completionReason: 'waiting_for_human',
+          expectedGeneration: 1,
+          expectedPlatformStart: platformStart,
+          status: 'waiting_for_human',
+        }),
+      ).toEqual({ affected: 1 });
+
       expect(
         await find(model(), { anchorKind: 'toolResult', anchorMessageId: 'ans-existing' }),
-      ).toEqual(pin);
-      expect(await find(model(), { anchorKind: 'approval', anchorMessageId: 'tool-new' })).toEqual(
-        pin,
+      ).toBeNull();
+      expect(await find(model(), { anchorMessageId: 'tool-new' })).toEqual(pin);
+
+      const stale = await model().parkForHumanIntervention('op-1', {
+        anchors: firstAnchors,
+        completionReason: 'waiting_for_human',
+        expectedGeneration: 0,
+        expectedPlatformStart: platformStart,
+        status: 'waiting_for_human',
+      });
+      expect(stale.affected).toBe(0);
+
+      expect(
+        await model().parkForHumanIntervention('op-1', {
+          anchors: secondAnchors,
+          completionReason: 'waiting_for_human',
+          expectedGeneration: 1,
+          expectedPlatformStart: platformStart,
+          status: 'waiting_for_human',
+        }),
+      ).toEqual({ affected: 1 });
+      const [row] = await serverDB
+        .select({ metadata: agentOperations.metadata })
+        .from(agentOperations)
+        .where(eq(agentOperations.id, 'op-1'));
+      expect(row.metadata).toEqual(
+        expect.objectContaining({
+          pendingResumeAnchors: secondAnchors,
+          pendingResumeGeneration: 2,
+        }),
       );
     });
 
@@ -540,16 +748,20 @@ describe('AgentOperationModel', () => {
       it('classifies a platform operation and returns its model pin', async () => {
         await seedRef('op-platform', true);
         expect(await model().findPlatformOperationRef('op-platform')).toEqual({
-          isPlatformOperation: true,
+          classification: 'partial',
+          isPlatformOperation: false,
           modelPin,
+          platformStart: null,
         });
       });
 
       it('classifies an ordinary operation (no marker, no pin)', async () => {
         await seedRef('op-ordinary', false);
         expect(await model().findPlatformOperationRef('op-ordinary')).toEqual({
+          classification: 'ordinary',
           isPlatformOperation: false,
           modelPin: null,
+          platformStart: null,
         });
       });
 

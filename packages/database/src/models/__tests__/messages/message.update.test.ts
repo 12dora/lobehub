@@ -505,7 +505,7 @@ describe('MessageModel Update Tests', () => {
     });
   });
 
-  describe('approvePendingToolResultPlugin (RR5-2)', () => {
+  describe('resolvePendingToolResultPlugin (RR5-2)', () => {
     const seedToolResult = (kind: 'approval' | 'toolResult') =>
       serverDB.transaction(async (tx) => {
         await tx.insert(messages).values({ id: 'tr', content: '', role: 'tool', userId });
@@ -520,24 +520,168 @@ describe('MessageModel Update Tests', () => {
 
     it('flips a pending toolResult tool to approved (single winner; a second call loses)', async () => {
       await seedToolResult('toolResult');
-      expect(await messageModel.approvePendingToolResultPlugin('tr')).toBe(true);
+      expect(
+        await messageModel.resolvePendingToolResultPlugin('tr', {
+          content: 'human answer',
+          pluginState: { selected: 'winner' },
+        }),
+      ).toBe(true);
       const [row] = await serverDB.select().from(messagePlugins).where(eq(messagePlugins.id, 'tr'));
       expect((row.intervention as { status?: string })?.status).toBe('approved');
+      expect(row.state).toEqual({ selected: 'winner' });
+      const [message] = await serverDB.select().from(messages).where(eq(messages.id, 'tr'));
+      expect(message.content).toBe('human answer');
       // Second (stale/double) call finds it no longer pending → loses.
-      expect(await messageModel.approvePendingToolResultPlugin('tr')).toBe(false);
+      expect(
+        await messageModel.resolvePendingToolResultPlugin('tr', {
+          content: 'stale answer',
+          pluginState: { selected: 'loser' },
+        }),
+      ).toBe(false);
+      const [unchangedPlugin] = await serverDB
+        .select()
+        .from(messagePlugins)
+        .where(eq(messagePlugins.id, 'tr'));
+      const [unchangedMessage] = await serverDB
+        .select()
+        .from(messages)
+        .where(eq(messages.id, 'tr'));
+      expect(unchangedPlugin.state).toEqual({ selected: 'winner' });
+      expect(unchangedMessage.content).toBe('human answer');
     });
 
     it('never flips an approval-kind tool (kind guard fails closed)', async () => {
       await seedToolResult('approval');
-      expect(await messageModel.approvePendingToolResultPlugin('tr')).toBe(false);
+      expect(
+        await messageModel.resolvePendingToolResultPlugin('tr', { content: 'wrong kind' }),
+      ).toBe(false);
       const [row] = await serverDB.select().from(messagePlugins).where(eq(messagePlugins.id, 'tr'));
       expect((row.intervention as { status?: string })?.status).toBe('pending');
+      const [message] = await serverDB.select().from(messages).where(eq(messages.id, 'tr'));
+      expect(message.content).toBe('');
     });
 
     it('is owner-scoped: another user cannot resolve it', async () => {
       await seedToolResult('toolResult');
       const other = new MessageModel(serverDB, 'other-user');
-      expect(await other.approvePendingToolResultPlugin('tr')).toBe(false);
+      expect(await other.resolvePendingToolResultPlugin('tr', { content: 'foreign answer' })).toBe(
+        false,
+      );
+    });
+
+    it('allows exactly one concurrent toolResult answer to commit content and plugin state', async () => {
+      await seedToolResult('toolResult');
+      const results = await Promise.all([
+        messageModel.resolvePendingToolResultPlugin('tr', {
+          content: 'answer-a',
+          pluginState: { winner: 'a' },
+        }),
+        messageModel.resolvePendingToolResultPlugin('tr', {
+          content: 'answer-b',
+          pluginState: { winner: 'b' },
+        }),
+      ]);
+      expect(results.filter(Boolean)).toHaveLength(1);
+      const winner = results[0] ? 'a' : 'b';
+      const [plugin] = await serverDB
+        .select()
+        .from(messagePlugins)
+        .where(eq(messagePlugins.id, 'tr'));
+      const [message] = await serverDB.select().from(messages).where(eq(messages.id, 'tr'));
+      expect(plugin.state).toEqual({ winner });
+      expect(message.content).toBe(`answer-${winner}`);
+    });
+  });
+
+  describe('approval intervention atomic consumption (RR6)', () => {
+    const seedApproval = () =>
+      serverDB.transaction(async (tx) => {
+        await tx.insert(messages).values({ id: 'approval', content: '', role: 'tool', userId });
+        await tx.insert(messagePlugins).values({
+          id: 'approval',
+          identifier: 'sensitive-tool',
+          intervention: { kind: 'approval', status: 'pending' },
+          toolCallId: 'call-sensitive',
+          userId,
+        });
+      });
+
+    it('approve versus reject is a kind-guarded single-winner transaction', async () => {
+      await seedApproval();
+      const results = await Promise.all([
+        messageModel.approvePendingMessagePlugin('approval'),
+        messageModel.rejectPendingMessagePlugin('approval', {
+          content: 'rejected by user',
+          rejectedReason: 'unsafe',
+        }),
+      ]);
+      expect(results.filter(Boolean)).toHaveLength(1);
+      const [plugin] = await serverDB
+        .select()
+        .from(messagePlugins)
+        .where(eq(messagePlugins.id, 'approval'));
+      const [message] = await serverDB.select().from(messages).where(eq(messages.id, 'approval'));
+      if (results[0]) {
+        expect(plugin.intervention).toEqual(expect.objectContaining({ status: 'approved' }));
+        expect(message.content).toBe('');
+      } else {
+        expect(plugin.intervention).toEqual(
+          expect.objectContaining({ rejectedReason: 'unsafe', status: 'rejected' }),
+        );
+        expect(message.content).toBe('rejected by user');
+      }
+    });
+
+    it('reject and reject-continue attempts cannot overwrite the winning rejection', async () => {
+      await seedApproval();
+      const results = await Promise.all([
+        messageModel.rejectPendingMessagePlugin('approval', {
+          content: 'halt rejection',
+          rejectedReason: 'halt',
+        }),
+        messageModel.rejectPendingMessagePlugin('approval', {
+          content: 'continue rejection',
+          rejectedReason: 'continue',
+        }),
+      ]);
+      expect(results.filter(Boolean)).toHaveLength(1);
+      const winner = results[0] ? 'halt' : 'continue';
+      const [plugin] = await serverDB
+        .select()
+        .from(messagePlugins)
+        .where(eq(messagePlugins.id, 'approval'));
+      const [message] = await serverDB.select().from(messages).where(eq(messages.id, 'approval'));
+      expect(plugin.intervention).toEqual(
+        expect.objectContaining({ rejectedReason: winner, status: 'rejected' }),
+      );
+      expect(message.content).toBe(`${winner} rejection`);
+    });
+
+    it('approval consumers fail closed without mutating a toolResult-kind row', async () => {
+      await serverDB.transaction(async (tx) => {
+        await tx.insert(messages).values({ id: 'approval', content: '', role: 'tool', userId });
+        await tx.insert(messagePlugins).values({
+          id: 'approval',
+          identifier: 'human-answer-tool',
+          intervention: { kind: 'toolResult', status: 'pending' },
+          toolCallId: 'call-answer',
+          userId,
+        });
+      });
+      expect(await messageModel.approvePendingMessagePlugin('approval')).toBe(false);
+      expect(
+        await messageModel.rejectPendingMessagePlugin('approval', {
+          content: 'must not land',
+          rejectedReason: 'wrong kind',
+        }),
+      ).toBe(false);
+      const [plugin] = await serverDB
+        .select()
+        .from(messagePlugins)
+        .where(eq(messagePlugins.id, 'approval'));
+      const [message] = await serverDB.select().from(messages).where(eq(messages.id, 'approval'));
+      expect(plugin.intervention).toEqual({ kind: 'toolResult', status: 'pending' });
+      expect(message.content).toBe('');
     });
   });
 

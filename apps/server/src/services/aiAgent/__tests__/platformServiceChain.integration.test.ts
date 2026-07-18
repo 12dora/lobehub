@@ -46,6 +46,22 @@ const modelPin = {
   providerKey: 'internal-provider',
   providerRevision: 1,
 };
+const approvalAnchor = {
+  assistantMessageId: 'asst-1',
+  fingerprint: 'd'.repeat(64),
+  kind: 'approval' as const,
+  messageId: 'tool-1',
+  operationId: 'op-1',
+  toolCallId: 'call-tool-1',
+};
+const toolResultAnchor = {
+  assistantMessageId: 'asst-1',
+  fingerprint: 'e'.repeat(64),
+  kind: 'toolResult' as const,
+  messageId: 'ans-1',
+  operationId: 'op-1',
+  toolCallId: 'call-ans-1',
+};
 const dependencySnapshot = { connectors: [], model: modelPin, skills: [] };
 
 const config = (title: string) => ({
@@ -231,8 +247,20 @@ describe('RR2-6 — real platform Agent service chain', () => {
     // The runtime parks the op ATOMICALLY (RR5-3): the waiting_for_human flip + the kind-keyed,
     // server-created pending tool ids land in one CAS.
     const parked = await opModel.parkForHumanIntervention('op-1', {
-      anchors: { approval: ['tool-1'], toolResult: ['ans-1'] },
+      anchors: [approvalAnchor, toolResultAnchor],
       completionReason: 'waiting_for_human',
+      expectedGeneration: 0,
+      expectedPlatformStart: {
+        assistantMessageId: 'asst-1',
+        platformConnectors: [],
+        platformModel: modelPin,
+        platformOperation: {
+          checksum: snapshot.checksum,
+          platformAgentId: 'pa',
+          versionId: snapshot.versionId,
+        },
+        platformSkills: [],
+      },
       status: 'waiting_for_human',
     });
     expect(parked.affected).toBe(1);
@@ -242,8 +270,10 @@ describe('RR2-6 — real platform Agent service chain', () => {
       await opModel.findResumablePlatformOperationPin({
         anchorKind: 'approval',
         anchorMessageId: 'tool-1',
+        fingerprint: approvalAnchor.fingerprint,
         platformAgentId: 'pa',
         threadId: null,
+        toolCallId: approvalAnchor.toolCallId,
         topicId: 'topic-1',
       }),
     ).toEqual({ checksum: CHECKSUM_V1, platformAgentId: 'pa', versionId: 'pa-v1' });
@@ -251,8 +281,10 @@ describe('RR2-6 — real platform Agent service chain', () => {
       await opModel.findResumablePlatformOperationPin({
         anchorKind: 'toolResult',
         anchorMessageId: 'ans-1',
+        fingerprint: toolResultAnchor.fingerprint,
         platformAgentId: 'pa',
         threadId: null,
+        toolCallId: toolResultAnchor.toolCallId,
         topicId: 'topic-1',
       }),
     ).toEqual({ checksum: CHECKSUM_V1, platformAgentId: 'pa', versionId: 'pa-v1' });
@@ -261,15 +293,29 @@ describe('RR2-6 — real platform Agent service chain', () => {
       await opModel.findResumablePlatformOperationPin({
         anchorKind: 'toolResult',
         anchorMessageId: 'tool-1',
+        fingerprint: approvalAnchor.fingerprint,
         platformAgentId: 'pa',
         threadId: null,
+        toolCallId: approvalAnchor.toolCallId,
         topicId: 'topic-1',
       }),
     ).toBeNull();
     // Model-runtime classification: platform op + exact model pin.
     expect(await opModel.findPlatformOperationRef('op-1')).toEqual({
+      classification: 'complete',
       isPlatformOperation: true,
       modelPin,
+      platformStart: {
+        assistantMessageId: 'asst-1',
+        platformConnectors: [],
+        platformModel: modelPin,
+        platformOperation: {
+          checksum: snapshot.checksum,
+          platformAgentId: 'pa',
+          versionId: snapshot.versionId,
+        },
+        platformSkills: [],
+      },
     });
   });
 

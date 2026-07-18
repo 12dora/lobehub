@@ -18,6 +18,8 @@ vi.mock('@/database/models/agentOperation', () => ({
   AgentOperationModel: class {
     findPlatformOperationRef = findPlatformOperationRef;
   },
+  platformStartBindingsEqual: (left: unknown, right: unknown) =>
+    JSON.stringify(left) === JSON.stringify(right),
 }));
 
 const { initOperationModelRuntime, PlatformExactModelUnavailableError } =
@@ -30,9 +32,31 @@ const pin = {
   providerRevision: 1,
 };
 
-const platformRef = { isPlatformOperation: true, modelPin: pin };
+const platformStart = {
+  assistantMessageId: 'asst-1',
+  platformConnectors: [],
+  platformModel: pin,
+  platformOperation: {
+    checksum: 'b'.repeat(64),
+    platformAgentId: 'pagt-1',
+    versionId: 'pav-1',
+  },
+  platformSkills: [],
+};
+const platformRef = {
+  classification: 'complete',
+  isPlatformOperation: true,
+  modelPin: pin,
+  platformStart,
+};
 
 const ctx = {
+  loadAgentState: vi.fn().mockResolvedValue({
+    metadata: {
+      platformStartBinding: platformStart,
+      platformStartClassification: 'complete',
+    },
+  }),
   operationId: 'op-1',
   serverDB: {},
   userId: 'user-a',
@@ -75,7 +99,7 @@ describe('initOperationModelRuntime (MODEL-EXACT + RR2-2)', () => {
   });
 
   it('RR2-2: a platform op fails closed when its model pin is missing (never latest)', async () => {
-    findPlatformOperationRef.mockResolvedValue({ isPlatformOperation: true, modelPin: null });
+    findPlatformOperationRef.mockResolvedValue({ ...platformRef, modelPin: null });
     await expect(
       initOperationModelRuntime(ctx, 'internal-provider', 'chat-model'),
     ).rejects.toBeInstanceOf(PlatformExactModelUnavailableError);
@@ -84,8 +108,19 @@ describe('initOperationModelRuntime (MODEL-EXACT + RR2-2)', () => {
   });
 
   it('uses the ordinary path for a genuinely ordinary operation (no platform marker)', async () => {
-    findPlatformOperationRef.mockResolvedValue({ isPlatformOperation: false, modelPin: null });
-    const runtime = await initOperationModelRuntime(ctx, 'openai', 'gpt-4o');
+    findPlatformOperationRef.mockResolvedValue({
+      classification: 'ordinary',
+      isPlatformOperation: false,
+      modelPin: null,
+      platformStart: null,
+    });
+    const ordinaryCtx = {
+      ...ctx,
+      loadAgentState: vi.fn().mockResolvedValue({
+        metadata: { platformStartClassification: 'ordinary' },
+      }),
+    } as RuntimeExecutorContext;
+    const runtime = await initOperationModelRuntime(ordinaryCtx, 'openai', 'gpt-4o');
     expect(runtime).toEqual({ id: 'ordinary-runtime' });
     expect(initModelRuntimeFromDB).toHaveBeenCalledWith(
       expect.anything(),
@@ -98,7 +133,13 @@ describe('initOperationModelRuntime (MODEL-EXACT + RR2-2)', () => {
 
   it('uses the ordinary path when the operation row does not exist (builtin/local)', async () => {
     findPlatformOperationRef.mockResolvedValue(null);
-    const runtime = await initOperationModelRuntime(ctx, 'openai', 'gpt-4o');
+    const ordinaryCtx = {
+      ...ctx,
+      loadAgentState: vi.fn().mockResolvedValue({
+        metadata: { platformStartClassification: 'ordinary' },
+      }),
+    } as RuntimeExecutorContext;
+    const runtime = await initOperationModelRuntime(ordinaryCtx, 'openai', 'gpt-4o');
     expect(runtime).toEqual({ id: 'ordinary-runtime' });
     expect(initModelRuntimeFromDB).toHaveBeenCalled();
     expect(initPlatformExactModelRuntime).not.toHaveBeenCalled();
@@ -111,9 +152,71 @@ describe('initOperationModelRuntime (MODEL-EXACT + RR2-2)', () => {
     expect(initPlatformExactModelRuntime).not.toHaveBeenCalled();
   });
 
+  it('fails closed when the trusted runtime classification is missing', async () => {
+    findPlatformOperationRef.mockResolvedValue(platformRef);
+    const missingStateCtx = {
+      ...ctx,
+      loadAgentState: vi.fn().mockResolvedValue(null),
+    } as RuntimeExecutorContext;
+    await expect(
+      initOperationModelRuntime(missingStateCtx, 'internal-provider', 'chat-model'),
+    ).rejects.toBeInstanceOf(PlatformExactModelUnavailableError);
+    expect(initPlatformExactModelRuntime).not.toHaveBeenCalled();
+    expect(initModelRuntimeFromDB).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the trusted binding differs from the persisted complete binding', async () => {
+    findPlatformOperationRef.mockResolvedValue(platformRef);
+    const mismatchedCtx = {
+      ...ctx,
+      loadAgentState: vi.fn().mockResolvedValue({
+        metadata: {
+          platformStartBinding: {
+            ...platformStart,
+            assistantMessageId: 'forged-assistant',
+          },
+          platformStartClassification: 'complete',
+        },
+      }),
+    } as RuntimeExecutorContext;
+    await expect(
+      initOperationModelRuntime(mismatchedCtx, 'internal-provider', 'chat-model'),
+    ).rejects.toBeInstanceOf(PlatformExactModelUnavailableError);
+    expect(initPlatformExactModelRuntime).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when an ordinary runtime state unexpectedly carries a platform binding', async () => {
+    findPlatformOperationRef.mockResolvedValue({
+      classification: 'ordinary',
+      isPlatformOperation: false,
+      modelPin: null,
+      platformStart: null,
+    });
+    const inconsistentCtx = {
+      ...ctx,
+      loadAgentState: vi.fn().mockResolvedValue({
+        metadata: {
+          platformStartBinding: platformStart,
+          platformStartClassification: 'ordinary',
+        },
+      }),
+    } as RuntimeExecutorContext;
+
+    await expect(initOperationModelRuntime(inconsistentCtx, 'openai', 'chat')).rejects.toThrow(
+      'PLATFORM_MODEL_UNAVAILABLE',
+    );
+    expect(initModelRuntimeFromDB).not.toHaveBeenCalled();
+  });
+
   it('never reads the ref (or hits exact) when there is no trusted userId', async () => {
-    const anonCtx = { ...ctx, userId: undefined } as RuntimeExecutorContext;
-    await initOperationModelRuntime(anonCtx, 'openai', 'gpt-4o').catch(() => null);
+    const anonCtx = {
+      ...ctx,
+      loadAgentState: vi.fn().mockResolvedValue({
+        metadata: { platformStartClassification: 'ordinary' },
+      }),
+      userId: undefined,
+    } as RuntimeExecutorContext;
+    await initOperationModelRuntime(anonCtx, 'openai', 'gpt-4o');
     expect(findPlatformOperationRef).not.toHaveBeenCalled();
     expect(initPlatformExactModelRuntime).not.toHaveBeenCalled();
   });
