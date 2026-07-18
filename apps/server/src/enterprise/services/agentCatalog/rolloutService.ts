@@ -42,6 +42,9 @@ export const PLATFORM_AGENT_ROLLOUT_TRANSITION_TYPE = 'platform.agent.rollout.tr
 export const PLATFORM_AGENT_ROLLOUT_BATCH_SIZE = 100;
 
 const log = debug('lobe-server:platform-agent-rollout');
+const platformAgentRolloutCutoffSchema = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/);
 
 const rolloutJobInputSchema = z
   .object({
@@ -61,7 +64,7 @@ const rolloutJobInputSchema = z
           .nullable(),
         previousVersionId: z.string().min(1).max(128).nullable(),
         rollbackOfJobId: z.string().min(1).max(128).nullable(),
-        targetCutoff: z.string().datetime(),
+        targetCutoff: platformAgentRolloutCutoffSchema,
         targetId: z.string().min(1).max(128),
         targetType: z.enum(['global', 'global_role', 'user']),
         targetVersionChecksum: z.string().regex(/^[a-f0-9]{64}$/),
@@ -324,11 +327,11 @@ export class PlatformAgentRolloutService {
         const target = await repository.getExactVersion(identity.id, targetVersionId);
         if (!target) throw new PlatformAgentNotFoundError();
         const clockResult = await tx.execute(
-          sql`SELECT to_char(CURRENT_TIMESTAMP AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS cutoff`,
+          sql`SELECT to_char(transaction_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cutoff`,
         );
         const [clock] = clockResult.rows as unknown as Array<{ cutoff: string }>;
         if (!clock?.cutoff) throw new PlatformAgentInvalidInputError();
-        const targetCutoff = new Date(clock.cutoff);
+        const targetCutoff = platformAgentRolloutCutoffSchema.parse(clock.cutoff);
         const progressTotal = await repository.countAssignmentTargets({
           ...assignment,
           cutoff: targetCutoff,
@@ -353,7 +356,7 @@ export class PlatformAgentRolloutService {
               previousVersionChecksum: null,
               previousVersionId: null,
               rollbackOfJobId: null,
-              targetCutoff: targetCutoff.toISOString(),
+              targetCutoff,
               targetId: assignment.targetId,
               targetType: assignment.targetType,
               targetVersionChecksum: target.checksum,
