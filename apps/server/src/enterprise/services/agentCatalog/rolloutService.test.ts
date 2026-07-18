@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getTestDB } from '@/database/core/getTestDB';
 import { checksumPayload } from '@/database/models/platform/checksum';
 import { PlatformJobModel } from '@/database/models/platform/job';
+import { PlatformAgentCatalogRepository } from '@/database/repositories/platformAgentCatalog';
 import {
   platformAgentAssignments,
   platformAgents,
@@ -26,6 +27,7 @@ import {
 } from './errors';
 import { platformAgentDraftToken, PlatformAgentPublicationService } from './publication';
 import {
+  parsePlatformAgentRolloutInput,
   PLATFORM_AGENT_ROLLOUT_TRANSITION_TYPE,
   PlatformAgentRolloutService,
 } from './rolloutService';
@@ -203,6 +205,9 @@ describe('PlatformAgentRolloutService control plane', () => {
         versionPolicy: 'latest_published',
       }),
     });
+    expect(parsePlatformAgentRolloutInput(job).snapshot.targetCutoff).toMatch(
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/,
+    );
     await expect(service.list({ agentId: 'agent-support', limit: 50 })).resolves.toMatchObject({
       items: [expect.objectContaining({ jobId: first.jobId })],
       nextCursor: null,
@@ -287,31 +292,137 @@ describe('PlatformAgentRolloutService control plane', () => {
     expect(await db.select().from(platformUserAgentMaterializations)).toHaveLength(3);
   });
 
-  it('freezes the database target cutoff so a later sorting user is excluded at 3/3', async () => {
+  it('preserves a six-digit cutoff across global/user/role pagination and worker JSON', async () => {
     vi.stubEnv('ENABLE_PLATFORM_MANAGED_AGENTS', '1');
+    const cutoff = '2000-01-01T00:00:00.123456Z';
+    const includedAt = '2000-01-01T00:00:00.123400Z';
+    const excludedAt = '2000-01-01T00:00:00.123457Z';
+    await db.insert(users).values(
+      Array.from({ length: 105 }, (_, index) => ({
+        createdAt: sql`${includedAt}::timestamptz`,
+        id: `micro-${String(index).padStart(3, '0')}`,
+      })),
+    );
+    await db.insert(users).values({
+      createdAt: sql`${excludedAt}::timestamptz`,
+      id: 'micro-after',
+    });
+    await db.insert(roles).values({
+      displayName: 'Microsecond role',
+      id: 'micro-role',
+      isActive: true,
+      name: 'micro_role',
+      workspaceId: null,
+    });
+    await db.insert(userRoles).values([
+      {
+        createdAt: sql`${includedAt}::timestamptz`,
+        roleId: 'micro-role',
+        userId: 'micro-000',
+        workspaceId: null,
+      },
+      {
+        createdAt: sql`${excludedAt}::timestamptz`,
+        roleId: 'micro-role',
+        userId: 'micro-001',
+        workspaceId: null,
+      },
+      {
+        createdAt: sql`${includedAt}::timestamptz`,
+        roleId: 'micro-role',
+        userId: 'micro-after',
+        workspaceId: null,
+      },
+    ]);
+    const repository = new PlatformAgentCatalogRepository(db);
+    await expect(
+      repository.countAssignmentTargets({
+        cutoff,
+        targetId: '__global__',
+        targetType: 'global',
+      }),
+    ).resolves.toBe(105);
+    await expect(
+      repository.countAssignmentTargets({
+        cutoff,
+        targetId: 'micro-000',
+        targetType: 'user',
+      }),
+    ).resolves.toBe(1);
+    await expect(
+      repository.countAssignmentTargets({
+        cutoff,
+        targetId: 'micro-after',
+        targetType: 'user',
+      }),
+    ).resolves.toBe(0);
+    await expect(
+      repository.countAssignmentTargets({
+        cutoff,
+        targetId: 'micro-role',
+        targetType: 'global_role',
+      }),
+    ).resolves.toBe(1);
+    const firstPage = await repository.listAssignmentTargetUserIds({
+      cutoff,
+      limit: 100,
+      targetId: '__global__',
+      targetType: 'global',
+    });
+    expect(firstPage.items).toHaveLength(100);
+    expect(firstPage.nextCursor).not.toBeNull();
+    await expect(
+      repository.listAssignmentTargetUserIds({
+        cutoff,
+        cursor: firstPage.nextCursor!,
+        limit: 100,
+        targetId: '__global__',
+        targetType: 'global',
+      }),
+    ).resolves.toMatchObject({ items: expect.arrayContaining(['micro-104']), nextCursor: null });
+    await expect(
+      repository.listAssignmentTargetUserIds({
+        cutoff,
+        targetId: 'micro-role',
+        targetType: 'global_role',
+      }),
+    ).resolves.toEqual({ items: ['micro-000'], nextCursor: null });
+
     const service = new PlatformAgentRolloutService(db);
     const started = await service.start('admin', await startInput());
     const [job] = await db
       .select()
       .from(platformJobs)
       .where(sql`${platformJobs.id} = ${started.jobId}`);
-    const cutoff = new Date(
-      (job.input as { snapshot: { targetCutoff: string } }).snapshot.targetCutoff,
-    );
-    await db.insert(users).values({
-      createdAt: new Date(cutoff.getTime() + 1000),
-      id: 'zz-after-cutoff',
-    });
+    const input = parsePlatformAgentRolloutInput(job);
+    await db
+      .update(platformJobs)
+      .set({ input: { ...input, snapshot: { ...input.snapshot, targetCutoff: cutoff } } })
+      .where(sql`${platformJobs.id} = ${started.jobId}`);
+    const [roundTripped] = await db
+      .select()
+      .from(platformJobs)
+      .where(sql`${platformJobs.id} = ${started.jobId}`);
+    expect(parsePlatformAgentRolloutInput(roundTripped).snapshot.targetCutoff).toBe(cutoff);
+    expect(() =>
+      parsePlatformAgentRolloutInput({
+        ...roundTripped,
+        input: {
+          ...input,
+          snapshot: { ...input.snapshot, targetCutoff: '2000-01-01T00:00:00.123Z' },
+        },
+      }),
+    ).toThrow(PlatformAgentInvalidInputError);
 
     await runPlatformAgentRolloutBatches(db, 10);
     await expect(
       service.get({ agentId: 'agent-support', jobId: started.jobId }),
-    ).resolves.toMatchObject({ completed: 3, failed: 0, status: 'completed', total: 3 });
+    ).resolves.toMatchObject({ completed: 105, failed: 0, status: 'completed', total: 105 });
     expect(
       await db
         .select()
         .from(platformUserAgentMaterializations)
-        .where(sql`${platformUserAgentMaterializations.userId} = 'zz-after-cutoff'`),
+        .where(sql`${platformUserAgentMaterializations.userId} = 'micro-after'`),
     ).toHaveLength(0);
   });
 
@@ -349,14 +460,12 @@ describe('PlatformAgentRolloutService control plane', () => {
       .select()
       .from(platformJobs)
       .where(sql`${platformJobs.id} = ${started.jobId}`);
-    const cutoff = new Date(
-      (job.input as { snapshot: { targetCutoff: string } }).snapshot.targetCutoff,
-    );
+    const cutoff = (job.input as { snapshot: { targetCutoff: string } }).snapshot.targetCutoff;
     await db
       .delete(userRoles)
       .where(sql`${userRoles.roleId} = 'rollout-role' AND ${userRoles.userId} = 'user-a'`);
     await db.insert(userRoles).values({
-      createdAt: new Date(cutoff.getTime() + 1000),
+      createdAt: sql`${cutoff}::timestamptz + interval '1 microsecond'`,
       roleId: 'rollout-role',
       userId: 'user-b',
       workspaceId: null,
