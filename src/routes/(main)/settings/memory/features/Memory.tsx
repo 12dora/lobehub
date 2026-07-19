@@ -10,6 +10,7 @@ import { useTranslation } from 'react-i18next';
 
 import AutoSaveHint from '@/components/Editor/AutoSaveHint';
 import { FORM_STYLE } from '@/const/layoutTokens';
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import LevelSlider from '@/features/ModelSwitchPanel/components/ControlsForm/LevelSlider';
 import { ManagedFormControlContent } from '@/features/PlatformSettingSourceBadge/ManagedFormControl';
 import { ManagedSettingFieldContent } from '@/features/PlatformSettingSourceBadge/ManagedSettingField';
@@ -23,6 +24,7 @@ const MEMORY_EFFORT_LEVELS: readonly UserMemoryEffort[] = ['low', 'medium', 'hig
 
 const MemorySetting = memo(() => {
   const { t } = useTranslation('setting');
+  const branding = useBranding();
   const { allowed: canManageMemory, reason } = usePermission('manage_settings');
   const [form] = Form.useForm();
   const { memory } = useUserStore(settingsSelectors.currentSettings, isEqual);
@@ -52,7 +54,7 @@ const MemorySetting = memo(() => {
                   <Switch />
                 </ManagedFormControlContent>
               ),
-              desc: t('memory.enabled.desc'),
+              desc: t('memory.enabled.desc', { platformName: branding.name }),
               label: t('memory.enabled.title'),
               layout: 'horizontal' as const,
               minWidth: undefined,

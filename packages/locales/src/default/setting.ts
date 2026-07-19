@@ -386,15 +386,15 @@ export default {
     'Start the background daemon to keep the device online and listening for remote operations.',
   'devices.connectWizard.cli.connectTitle': 'Start the daemon',
   'devices.connectWizard.cli.installDesc':
-    'Install the LobeHub CLI globally with your preferred package manager to enable device connectivity and management.',
+    'Install the platform CLI globally with your preferred package manager to enable device connectivity and management.',
   'devices.connectWizard.cli.installTitle': 'Install the CLI',
   'devices.connectWizard.cli.loginDesc':
     'Complete OAuth authorization in your browser to link the CLI with your account.',
   'devices.connectWizard.cli.loginTitle': 'Sign in',
-  'devices.connectWizard.desktop.downloadLink': 'Download LobeHub Desktop',
+  'devices.connectWizard.desktop.downloadLink': 'Download the desktop app',
   'devices.connectWizard.desktop.step1': 'Download the desktop app',
   'devices.connectWizard.desktop.step1Desc':
-    'Visit the LobeHub downloads page and get the app for your operating system.',
+    'Visit the downloads page and get the app for your operating system.',
   'devices.connectWizard.desktop.step2': 'Sign in and open the device gateway',
   'devices.connectWizard.desktop.step2Desc':
     "After signing in, click the device gateway icon in the top-right corner and confirm it's turned on.",
@@ -405,10 +405,10 @@ export default {
     'Only device metadata is registered — your data is never accessed.',
   'devices.connectWizard.method.cli': 'Via CLI',
   'devices.connectWizard.method.desktop': 'Via Desktop',
-  'devices.connectWizard.subtitle': 'Choose how to connect your computer to LobeHub.',
+  'devices.connectWizard.subtitle': 'Choose how to connect your computer to the platform.',
   'devices.connectWizard.title': 'Connect Device',
   'devices.empty.desc':
-    'Once connected, LobeHub agents can read/write files, run commands, and call system tools directly on your computer.',
+    'Once connected, agents can read/write files, run commands, and call system tools directly on your computer.',
   'devices.empty.methodCli.desc':
     'Install the CLI in your terminal — great for servers or headless machines.',
   'devices.empty.methodCli.title': 'Connect via CLI',
@@ -441,16 +441,16 @@ export default {
   'downloads.desktop.title': 'Desktop App',
   'downloads.messenger.cta': 'Open Messenger settings',
   'downloads.messenger.desc':
-    'Connect LobeHub to the messaging platforms you already use, with quick setup or your own bot configuration.',
+    'Connect {{platformName}} to the messaging platforms you already use, with quick setup or your own bot configuration.',
   'downloads.messenger.quickSetup': 'Quick setup',
   'downloads.messenger.quickSetupTooltip':
-    'You can chat with the official LobeHub account on this platform or manually set up your own.',
+    'You can chat with the official {{platformName}} account on this platform or manually set up your own.',
   'downloads.messenger.title': 'Messenger integration',
   'downloads.mobile.cta': 'Get Mobile App',
   'downloads.mobile.desc':
-    'Start conversations from your phone and keep LobeHub available when you are away from the desk.',
+    'Start conversations from your phone and keep {{platformName}} available when you are away from the desk.',
   'downloads.mobile.title': 'Mobile App',
-  'downloads.title': 'Discover more ways to use LobeHub',
+  'downloads.title': 'Discover more ways to use {{platformName}}',
   'checkingPermissions': 'Checking permissions...',
   'danger.reset.action': 'Reset Now',
   'danger.reset.confirm': 'Reset all settings?',
@@ -559,7 +559,7 @@ export default {
   'memory.effort.medium': 'Medium — Balanced behavior',
   'memory.effort.title': 'Aggressiveness',
   'memory.enabled.desc':
-    'Allow LobeHub to extract preferences and info from conversations and use them later. You can view, edit, or clear memory anytime.',
+    'Allow {{platformName}} to extract preferences and info from conversations and use them later. You can view, edit, or clear memory anytime.',
   'memory.enabled.title': 'Enable Memory',
   'memory.manageEntry': 'Manage memories',
   'memory.title': 'Memory Settings',
@@ -569,8 +569,7 @@ export default {
   'notification.email.title': 'Email Notifications',
   'notification.inbox.desc': 'Show notifications in the in-app inbox',
   'notification.inbox.title': 'Inbox Notifications',
-  'notification.push.desc':
-    'Send push notifications to your mobile devices (LobeHub mobile app required)',
+  'notification.push.desc': 'Send push notifications to your mobile devices (mobile app required)',
   'notification.push.title': 'Mobile Push Notifications',
   'notification.category.billing.title': 'Billing',
   'notification.category.generation.title': 'Generation',
@@ -659,7 +658,7 @@ export default {
   'settingAgent.tag.title': 'Tag',
   'settingAgent.title': 'Agent info',
   'settingAppearance.appTray.desc':
-    'Show the LobeHub icon in the system tray or macOS menu bar. Disabling it also removes tray menu access.',
+    'Show the app icon in the system tray or macOS menu bar. Disabling it also removes tray menu access.',
   'settingAppearance.appTray.title': 'Show App Tray',
   'settingAppearance.animationMode.agile': 'Agile',
   'settingAppearance.animationMode.desc':

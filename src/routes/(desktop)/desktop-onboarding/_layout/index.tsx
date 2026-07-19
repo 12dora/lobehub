@@ -6,6 +6,7 @@ import { Divider } from 'antd';
 import { css, cx } from 'antd-style';
 import { type FC, type PropsWithChildren } from 'react';
 
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import SimpleTitleBar from '@/features/Electron/titlebar/SimpleTitleBar';
 import LangButton from '@/features/User/UserPanel/LangButton';
 import ThemeButton from '@/features/User/UserPanel/ThemeButton';
@@ -18,6 +19,7 @@ const contentContainer = css`
 `;
 const OnboardingContainer: FC<PropsWithChildren> = ({ children }) => {
   const isDarkMode = useIsDark();
+  const branding = useBranding();
   return (
     <Flexbox height={'100%'} width={'100%'}>
       <SimpleTitleBar />
@@ -52,7 +54,7 @@ const OnboardingContainer: FC<PropsWithChildren> = ({ children }) => {
           </Flexbox>
           <Center padding={24}>
             <Text align={'center'} type={'secondary'}>
-              © 2026 LobeHub. All rights reserved.
+              © 2026 {branding.legalName}. All rights reserved.
             </Text>
           </Center>
         </Flexbox>

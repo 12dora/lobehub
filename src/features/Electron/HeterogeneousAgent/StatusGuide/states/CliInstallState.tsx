@@ -2,6 +2,8 @@ import { HeterogeneousAgentSessionErrorCode } from '@lobechat/electron-client-ip
 import { Flexbox, Snippet, Text } from '@lobehub/ui';
 import { useTranslation } from 'react-i18next';
 
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
+
 import GuideActions from '../GuideActions';
 import GuideShell from '../GuideShell';
 import type { HeterogeneousAgentGuideStateProps } from '../types';
@@ -13,6 +15,7 @@ const CliInstallState = ({
   variant,
 }: HeterogeneousAgentGuideStateProps) => {
   const { t } = useTranslation('chat');
+  const branding = useBranding();
   const translationPrefix = config.translationPrefix;
   const docsUrl = error?.docsUrl || config.docsUrl;
   const installCommands = error?.installCommands?.length
@@ -25,7 +28,11 @@ const CliInstallState = ({
   // `translationPrefix` is dynamic at runtime, so use the string-key overload
   // with `defaultValue` to satisfy the i18n key typing.
   const tKey = (suffix: string, options?: Record<string, unknown>) =>
-    t(`${translationPrefix}.${suffix}`, { defaultValue: '', ...options });
+    t(`${translationPrefix}.${suffix}`, {
+      defaultValue: '',
+      platformName: branding.name,
+      ...options,
+    });
 
   return (
     <GuideShell

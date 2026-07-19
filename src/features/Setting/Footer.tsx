@@ -1,6 +1,5 @@
 'use client';
 
-import { BRANDING_NAME } from '@lobechat/business-const';
 import { Center, Flexbox, Icon } from '@lobehub/ui';
 import { createStaticStyles } from 'antd-style';
 import { MessageSquareHeart } from 'lucide-react';
@@ -11,6 +10,7 @@ import { useTranslation } from 'react-i18next';
 import { createGuideModal } from '@/components/GuideModal';
 import GuideVideo from '@/components/GuideVideo';
 import { GITHUB, GITHUB_ISSUES } from '@/const/url';
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import { useServerConfigStore } from '@/store/serverConfig';
 import { isOnServerSide } from '@/utils/env';
 
@@ -25,6 +25,7 @@ export const LayoutSettingsFooterClassName = 'settings-layout-footer';
 
 const Footer = memo<PropsWithChildren>(() => {
   const { t } = useTranslation('common');
+  const branding = useBranding();
 
   const hideGitHubEngagementFooter = useServerConfigStore((s) =>
     Boolean(s.featureFlags.hideGitHub || s.serverConfig.enableBusinessFeatures),
@@ -59,7 +60,7 @@ const Footer = memo<PropsWithChildren>(() => {
           width={358}
         />
       ),
-      desc: t('footer.feedback.desc', { appName: BRANDING_NAME }),
+      desc: t('footer.feedback.desc', { appName: branding.name }),
       okText: t('footer.feedback.action'),
       onOk: () => {
         if (isOnServerSide) return;
