@@ -9,7 +9,7 @@ import { DEFAULT_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags'
 import { CIPHERTEXT_PREFIX, ENVELOPE_VERSION } from './config';
 import { parseEnvelopeString } from './envelope';
 import { PlatformSecretError } from './errors';
-import { EnvKeyProvider, VaultKeyProvider } from './keyProviders';
+import { EnvKeyProvider } from './keyProviders';
 import {
   assertPlatformMasterKeyIfEnterprise,
   PlatformSecretService,
@@ -179,6 +179,21 @@ describe('PlatformSecretService', () => {
       expect(svc!.peekKeyId(ct)).toBe('env:from-env');
     });
 
+    it('selects Vault explicitly without falling back to an available env key', () => {
+      const service = PlatformSecretService.tryFromEnv({
+        PLATFORM_KEY_PROVIDER: 'vault',
+        PLATFORM_MASTER_KEY: FAKE_MASTER_KEY_B64,
+        VAULT_TOKEN: 'scoped-test-token',
+      });
+      expect(service).toBeInstanceOf(PlatformSecretService);
+      expect(() =>
+        PlatformSecretService.tryFromEnv({
+          PLATFORM_KEY_PROVIDER: 'vault',
+          PLATFORM_MASTER_KEY: FAKE_MASTER_KEY_B64,
+        }),
+      ).toThrow(/Vault authentication/i);
+    });
+
     it('fromEnvOrThrowIfEnterprise throws when enterprise on and key missing', () => {
       expect(() =>
         PlatformSecretService.fromEnvOrThrowIfEnterprise(
@@ -224,16 +239,6 @@ describe('PlatformSecretService', () => {
       expect(
         () => new EnvKeyProvider({ masterKeyBase64: Buffer.alloc(16, 1).toString('base64') }),
       ).toThrow(PlatformSecretError);
-    });
-  });
-
-  describe('VaultKeyProvider stub', () => {
-    it('exposes providerId and fail-closed getKek', async () => {
-      const vault = new VaultKeyProvider({ address: 'http://127.0.0.1:8200' });
-      expect(vault.providerId).toBe('vault');
-      await expect(vault.getKek()).rejects.toMatchObject({
-        code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
-      });
     });
   });
 

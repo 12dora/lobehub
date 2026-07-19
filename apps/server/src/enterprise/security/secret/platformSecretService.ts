@@ -4,13 +4,14 @@ import type { EnterpriseFeatureFlags } from '@/const/platform/featureFlags';
 
 import { isAnyEnterpriseFeatureEnabled } from '../../featureFlags';
 import {
+  parsePlatformKeyProviderName,
   parsePlatformSecretConfig,
   PLATFORM_MASTER_KEY_ENV,
   type PlatformSecretEnv,
 } from './config';
 import { getEnvelopeKeyId, openEnvelope, parseEnvelopeString, sealEnvelope } from './envelope';
 import { secretInvalidInput, secretMasterKeyMissing } from './errors';
-import { EnvKeyProvider, type KeyProvider } from './keyProviders';
+import { EnvKeyProvider, type KeyProvider, VaultKeyProvider } from './keyProviders';
 
 export interface PlatformSecretServiceOptions {
   keyProvider: KeyProvider;
@@ -134,19 +135,19 @@ export class PlatformSecretService {
   };
 
   /**
-   * Build service from PLATFORM_MASTER_KEY when present.
-   * Returns null when key is absent (caller decides based on feature flags).
+   * Build the explicitly selected provider (Vault or legacy env KEK).
+   * Returns null only when the env provider is selected and its key is absent.
    */
   static tryFromEnv(env: PlatformSecretEnv = process.env): PlatformSecretService | null {
+    if (parsePlatformKeyProviderName(env) === 'vault') {
+      return new PlatformSecretService({ keyProvider: VaultKeyProvider.fromEnv(env) });
+    }
     const provider = EnvKeyProvider.tryCreate({ env });
     if (!provider) return null;
     return new PlatformSecretService({ keyProvider: provider });
   }
 
-  /**
-   * Fail-closed factory: enterprise flags ON require a master key.
-   * Flags OFF → returns null without throwing (upstream behavior unchanged).
-   */
+  /** Fail-closed factory: enabled enterprise features require a configured key provider. */
   static fromEnvOrThrowIfEnterprise(
     env: PlatformSecretEnv = process.env,
     flags?: EnterpriseFeatureFlags,
@@ -169,8 +170,8 @@ export class PlatformSecretService {
 }
 
 /**
- * Startup gate: when any enterprise feature flag is on, PLATFORM_MASTER_KEY
- * must be present and well-formed. When all flags are off, no-op.
+ * Startup config gate: enabled enterprise features require a valid Vault or
+ * env-backed provider configuration. When all flags are off, no-op.
  *
  * Call from enterprise bootstrap (M07/M09/M11 wire-up); does not attach tRPC.
  */
@@ -183,6 +184,11 @@ export const assertPlatformMasterKeyIfEnterprise = (
     : isAnyEnterpriseFeatureEnabled();
 
   if (!enterpriseOn) return;
+
+  if (parsePlatformKeyProviderName(env) === 'vault') {
+    VaultKeyProvider.fromEnv(env);
+    return;
+  }
 
   const config = parsePlatformSecretConfig(env);
   if (!config.masterKeyBase64) {
