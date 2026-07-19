@@ -1,12 +1,9 @@
 import { DEFAULT_INBOX_TITLE } from '@lobechat/const';
 
 import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
-import { useCacheScope } from '@/libs/swr/useCacheScope';
-import { useAgentStore } from '@/store/agent';
-import { builtinAgentSelectors } from '@/store/agent/selectors';
-import { useUserStore } from '@/store/user';
-import { authSelectors } from '@/store/user/selectors';
 import type { RuntimeBranding } from '@/types/platform/branding';
+
+import { useCurrentInboxAgentMeta } from './useCurrentInboxAgent';
 
 export const resolveDefaultInboxDisplayName = (
   configuredTitle: string | null | undefined,
@@ -25,11 +22,7 @@ export const useDefaultInboxDisplayName = (configuredTitle?: string | null): str
 
 /** Display name from the Inbox projection owned by the current resolved login scope. */
 export const useScopedDefaultInboxDisplayName = (): string => {
-  const cacheScope = useCacheScope();
-  const isLogin = useUserStore(authSelectors.isLogin);
-  const inboxMeta = useAgentStore(
-    builtinAgentSelectors.inboxAgentMetaForScope(isLogin === true ? cacheScope : undefined),
-  );
+  const inboxMeta = useCurrentInboxAgentMeta();
 
   return useDefaultInboxDisplayName(inboxMeta?.title);
 };

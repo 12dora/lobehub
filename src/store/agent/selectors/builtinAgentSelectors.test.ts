@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import { type AgentStoreState } from '@/store/agent/initialState';
 import { initialAgentSliceState } from '@/store/agent/slices/agent/initialState';
-import { initialBuiltinAgentSliceState } from '@/store/agent/slices/builtin';
+import { initialBuiltinAgentSliceState } from '@/store/agent/slices/builtin/initialState';
 
 import { builtinAgentSelectors } from './builtinAgentSelectors';
 

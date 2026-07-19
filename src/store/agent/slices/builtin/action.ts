@@ -5,17 +5,16 @@ import type { PartialDeep } from 'type-fest';
 
 import { useOnlyFetchOnceSWR } from '@/libs/swr';
 import { builtinAgentKeys } from '@/libs/swr/keys';
-import { getCacheScope, useCacheScope } from '@/libs/swr/useCacheScope';
 import { agentService } from '@/services/agent';
 import type { StoreSetter } from '@/store/types';
-import { getUserStoreState } from '@/store/user';
-import { authSelectors } from '@/store/user/selectors';
 
 import type { AgentStore } from '../../store';
 
 interface UseInitBuiltinAgentContext {
   /** Published branding revision; only participates in the inbox cache key. */
   brandingRevision?: string | null;
+  /** Resolved identity/workspace scope supplied by a leaf hook or provider. */
+  cacheScope?: string;
   /**
    * Whether the user is logged in.
    * When false or undefined, the hook will not fetch the agent.
@@ -42,8 +41,7 @@ export class BuiltinAgentSliceActionImpl {
     this.#get = get;
   }
 
-  #isCurrentInboxScope = (scope: string): boolean =>
-    getCacheScope() === scope && authSelectors.isLogin(getUserStoreState()) === true;
+  #isCurrentInboxScope = (scope: string): boolean => this.#get().activeInboxScope === scope;
 
   #setScopedInboxProjection = (data: AgentItem, scope: string): void => {
     this.#set(
@@ -61,7 +59,9 @@ export class BuiltinAgentSliceActionImpl {
   };
 
   refreshBuiltinAgent = async (slug: string): Promise<void> => {
-    const inboxRequestScope = slug === INBOX_SESSION_ID ? getCacheScope() : undefined;
+    const inboxRequestScope = slug === INBOX_SESSION_ID ? this.#get().activeInboxScope : undefined;
+    if (slug === INBOX_SESSION_ID && !inboxRequestScope) return;
+
     const data = await agentService.getBuiltinAgent(slug);
     if (data?.id) {
       if (inboxRequestScope) {
@@ -88,10 +88,23 @@ export class BuiltinAgentSliceActionImpl {
    */
   syncInboxProjectionScope = (scope: string, isLogin: boolean): void => {
     const current = this.#get();
-    if (isLogin && current.inboxProjectionScope === scope) return;
+    const activeInboxScope = isLogin ? scope : undefined;
+    const ownsCurrentProjection = isLogin && current.inboxProjectionScope === scope;
+
+    if (current.activeInboxScope === activeInboxScope && ownsCurrentProjection) return;
+
+    if (ownsCurrentProjection) {
+      this.#set({ activeInboxScope }, false, 'syncInboxProjectionScope/activate');
+      return;
+    }
 
     const inboxAgentId = current.builtinAgentIdMap[INBOX_SESSION_ID];
-    if (!inboxAgentId && current.inboxProjectionScope === undefined) return;
+    if (
+      !inboxAgentId &&
+      current.inboxProjectionScope === undefined &&
+      current.activeInboxScope === activeInboxScope
+    )
+      return;
 
     this.#set(
       (state) => {
@@ -103,6 +116,9 @@ export class BuiltinAgentSliceActionImpl {
         if (currentInboxAgentId) delete agentMap[currentInboxAgentId];
 
         return {
+          activeAgentId:
+            state.activeAgentId === currentInboxAgentId ? undefined : state.activeAgentId,
+          activeInboxScope,
           agentMap,
           builtinAgentIdMap,
           inboxProjectionScope: undefined,
@@ -117,15 +133,17 @@ export class BuiltinAgentSliceActionImpl {
     slug: string,
     context?: UseInitBuiltinAgentContext,
   ): SWRResponse<AgentItem | null> => {
-    const cacheScope = useCacheScope();
+    const inboxRequestScope =
+      slug === INBOX_SESSION_ID ? (context?.cacheScope ?? this.#get().activeInboxScope) : undefined;
     const cacheKey = builtinAgentKeys.init(
       slug,
       slug === INBOX_SESSION_ID ? (context?.brandingRevision ?? null) : undefined,
-      slug === INBOX_SESSION_ID ? cacheScope : undefined,
+      inboxRequestScope,
     );
+    const isInboxRequestEnabled = slug !== INBOX_SESSION_ID || Boolean(inboxRequestScope);
 
     return useOnlyFetchOnceSWR(
-      context?.isLogin === false ? null : cacheKey,
+      context?.isLogin === false || !isInboxRequestEnabled ? null : cacheKey,
       async () => {
         const data = await agentService.getBuiltinAgent(slug);
 
@@ -135,8 +153,8 @@ export class BuiltinAgentSliceActionImpl {
         onSuccess: (data: AgentItem | null) => {
           if (data?.id) {
             if (slug === INBOX_SESSION_ID) {
-              if (!this.#isCurrentInboxScope(cacheScope)) return;
-              this.#setScopedInboxProjection(data, cacheScope);
+              if (!inboxRequestScope || !this.#isCurrentInboxScope(inboxRequestScope)) return;
+              this.#setScopedInboxProjection(data, inboxRequestScope);
               return;
             }
 

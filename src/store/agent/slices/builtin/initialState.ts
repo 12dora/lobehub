@@ -1,4 +1,6 @@
 export interface BuiltinAgentSliceState {
+  /** Current authenticated identity/workspace allowed to own an Inbox projection. */
+  activeInboxScope?: string;
   /**
    * Builtin agent id mapping { [slug]: agentId }
    * Used to store IDs of builtin agents (page-agent, etc.)
@@ -9,6 +11,7 @@ export interface BuiltinAgentSliceState {
 }
 
 export const initialBuiltinAgentSliceState: BuiltinAgentSliceState = {
+  activeInboxScope: undefined,
   builtinAgentIdMap: {},
   inboxProjectionScope: undefined,
 };
