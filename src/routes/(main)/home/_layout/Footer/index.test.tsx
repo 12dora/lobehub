@@ -9,24 +9,27 @@ const analyticsTrack = vi.fn();
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     i18n: { language: 'en-US' },
-    t: (key: string) =>
-      ({
-        'agentOnboardingPromo.actionLabel': 'Try it now',
-        'agentOnboardingPromo.description':
-          'Set up your agent teams in a quick chat with Lobe AI. Your existing agents remain unchanged.',
-        'agentOnboardingPromo.title': 'Quick Wizard',
-        'changelog': 'Changelog',
-        'getApp': 'Get App',
-        'productHunt.actionLabel': 'Support us',
-        'productHunt.description': 'Support us on Product Hunt.',
-        'productHunt.title': "We're on Product Hunt!",
-        'userPanel.discord': 'Discord',
-        'userPanel.docs': 'Docs',
-        'userPanel.feedback': 'Feedback',
-        'userPanel.help': 'Help',
-        'userPanel.inviteFriend': 'Invite a friend',
-        'userPanel.setting': 'Settings',
-      })[key] || key,
+    t: (key: string, options?: { name?: string }) => {
+      const value =
+        {
+          'agentOnboardingPromo.actionLabel': 'Try it now',
+          'agentOnboardingPromo.description':
+            'Set up your agent teams in a quick chat with {{name}}. Your existing agents remain unchanged.',
+          'agentOnboardingPromo.title': 'Quick Wizard',
+          'changelog': 'Changelog',
+          'getApp': 'Get App',
+          'productHunt.actionLabel': 'Support us',
+          'productHunt.description': 'Support us on Product Hunt.',
+          'productHunt.title': "We're on Product Hunt!",
+          'userPanel.discord': 'Discord',
+          'userPanel.docs': 'Docs',
+          'userPanel.feedback': 'Feedback',
+          'userPanel.help': 'Help',
+          'userPanel.inviteFriend': 'Invite a friend',
+          'userPanel.setting': 'Settings',
+        }[key] || key;
+      return value.replace('{{name}}', options?.name ?? '{{name}}');
+    },
   }),
 }));
 
