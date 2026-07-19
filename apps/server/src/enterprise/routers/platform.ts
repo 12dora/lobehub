@@ -4,6 +4,7 @@ import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { RbacModel } from '@/database/models/rbac';
 import { authedProcedure, publicProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
+import { platformPublicSnapshotSchema } from '@/types/platform/publicSnapshot';
 
 import { parseEasyauthConfig } from '../config/easyauth';
 import { publishedAiCatalogSchema } from '../contracts/aiCatalog';
@@ -11,12 +12,12 @@ import { parseEnterpriseFeatureFlags } from '../featureFlags';
 import { resolveAccessStatus } from '../guards/accessGrant';
 import { ensurePlatformAgentRolloutWorkerStarted } from '../jobs/agentRollout';
 import { AiCatalogReadService, getEmptyPublishedAiCatalog } from '../services/aiCatalog';
+import { resolvePlatformPublicSnapshot } from '../services/branding';
 import { ensureConnectorRuntimeAuditWorkerStarted } from '../services/connectorCatalog/runtimeAuditWorker';
 import { publishConnectorRuntimeCapabilityState } from '../services/connectorCatalog/runtimeEffectiveState';
 import { buildEasyauthDescriptor } from '../services/easyauthManifest';
 import { resolvePublishedManagedResourcePolicies } from '../services/managedResourceCapabilities';
 import { buildPlatformCapabilities } from '../services/platformCapabilities';
-import { buildPlatformPublicSnapshot } from '../services/platformPublicSnapshot';
 import { ensureSkillCatalogReadinessRegistered } from '../services/skillCatalog';
 import { platformAgentsRouter } from './platformAgents';
 import { platformSkillsRouter } from './platformSkills';
@@ -84,14 +85,11 @@ export const platformRouter = router({
     });
   }),
 
-  getPublicSnapshot: publicProcedure.query(() => {
-    const flags = parseEnterpriseFeatureFlags(process.env);
-
-    return buildPlatformPublicSnapshot({
-      flags,
-      workAccountEnabled: false,
-    });
-  }),
+  getPublicSnapshot: publicProcedure
+    .output(platformPublicSnapshotSchema)
+    .query(async () =>
+      resolvePlatformPublicSnapshot({ flags: parseEnterpriseFeatureFlags(process.env) }),
+    ),
 
   /**
    * aihub.access status for the current principal (login → "request access" page).
