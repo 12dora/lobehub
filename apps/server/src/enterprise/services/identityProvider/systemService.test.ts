@@ -17,6 +17,7 @@ import type { LobeChatDatabase } from '@/database/type';
 import {
   getIdentityProviderProcessInstance,
   markIdentityProviderInstanceRegistrationFailed,
+  registerIdentityProviderInstance,
   stopIdentityProviderHeartbeatForTest,
 } from './instanceRegistry';
 import type { RestartController } from './restartController';
@@ -305,5 +306,65 @@ describe('IdentityProviderSystemService', () => {
     });
     const [provider] = await db.select().from(platformIdentityProviders);
     expect(provider.status).toBe('active');
+  });
+
+  it('returns an active provider to pending when a degraded responder registers', async () => {
+    const target = await seedPendingTarget();
+    const local = getIdentityProviderProcessInstance();
+    commitArtifact(target);
+    await insertInstance({ activeIdentityRevision: target, instanceId: local.instanceId });
+    const controller: RestartController = {
+      capability: () => ({ reason: null, supported: true }),
+      schedule: async () => undefined,
+    };
+    await new IdentityProviderSystemService(
+      db,
+      controller,
+      () => now,
+      () => undefined,
+    ).getAuthSnapshotStatus();
+    expect((await db.select().from(platformIdentityProviders))[0]?.status).toBe('active');
+
+    await registerIdentityProviderInstance({
+      db,
+      env: { ENABLE_DATABASE_OIDC: '1', VERCEL: '1' },
+      snapshot: {
+        databaseProviders: [],
+        generation: null,
+        health: 'degraded',
+        identityRevision: null,
+        lastError: 'secret_unavailable',
+        loadedAt: now,
+        providerIds: [],
+        source: 'break_glass',
+      },
+    });
+    expect((await db.select().from(platformIdentityProviders))[0]?.status).toBe('pending_restart');
+  });
+
+  it('does not ignore a mismatched fresh instance beyond the old 200-row boundary', async () => {
+    const target = await seedPendingTarget();
+    const local = getIdentityProviderProcessInstance();
+    commitArtifact(target);
+    await insertInstance({ activeIdentityRevision: target, instanceId: local.instanceId });
+    for (let index = 0; index < 201; index += 1) {
+      await insertInstance({
+        activeIdentityRevision: index === 200 ? 'a'.repeat(64) : target,
+        instanceId: `oidci_${index.toString(16).padStart(48, '0')}`,
+      });
+    }
+    const controller: RestartController = {
+      capability: () => ({ reason: null, supported: true }),
+      schedule: async () => undefined,
+    };
+    const status = await new IdentityProviderSystemService(
+      db,
+      controller,
+      () => now,
+      () => undefined,
+    ).getAuthSnapshotStatus();
+    expect(status.instances).toHaveLength(202);
+    expect(status.active.allFreshInstancesActive).toBe(false);
+    expect((await db.select().from(platformIdentityProviders))[0]?.status).toBe('pending_restart');
   });
 });
