@@ -137,6 +137,28 @@ describe('defineConfig', () => {
     );
   });
 
+  it('keeps trusted DingTalk fields out of request input and session output', async () => {
+    const { defineConfig } = await import('./define-config');
+
+    await defineConfig({ plugins: [] });
+
+    const options = mocks.betterAuth.mock.calls.at(-1)?.[0];
+    expect(options.user.additionalFields).toMatchObject({
+      dingtalkTitle: {
+        input: false,
+        required: false,
+        returned: false,
+        type: 'string',
+      },
+      dingtalkUserId: {
+        input: false,
+        required: false,
+        returned: false,
+        type: 'string',
+      },
+    });
+  });
+
   it('should respect NO_PROXY when configuring the development proxy dispatcher', async () => {
     process.env = {
       ...process.env,

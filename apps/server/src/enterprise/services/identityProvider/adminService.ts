@@ -304,7 +304,7 @@ export class AdminIdentityProviderService {
       throw new Error('PLATFORM_APP_URL_INVALID');
     }
     return {
-      production: `${base.origin}/api/auth/callback/{providerKey}`,
+      production: `${base.origin}/api/auth/oauth2/callback/{providerKey}`,
       test: new URL('/oauth/identity-provider/test/callback', base).toString(),
     };
   };
