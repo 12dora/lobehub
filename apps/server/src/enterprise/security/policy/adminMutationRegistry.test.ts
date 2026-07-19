@@ -1,21 +1,35 @@
 // @vitest-environment node
-import { readdir, readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import ts from 'typescript';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, expectTypeOf, it } from 'vitest';
 
-import { ADMIN_MUTATION_REGISTRY, ADMIN_MUTATION_ROUTER_SOURCES } from './adminMutationRegistry';
+import {
+  ADMIN_MUTATION_REGISTRY,
+  type DangerousAdminMutationDefinition,
+  type RegularAdminMutationDefinition,
+} from './adminMutationRegistry';
 
-interface DiscoveredRouter {
+interface ExpressionReference {
   file: string;
-  mutations: string[];
-  router: string;
+  node: ts.Expression;
 }
 
-const routerDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../routers');
+interface MountedProperty {
+  expression: ExpressionReference;
+  key: string;
+}
+
+type ModuleResolver = (containingFile: string, moduleName: string) => Promise<string>;
+type SourceLoader = (file: string) => Promise<string>;
+
 const registryFile = fileURLToPath(new URL('./adminMutationRegistry.ts', import.meta.url));
+const serverSourceRoot = path.resolve(path.dirname(registryFile), '../../..');
+const repositorySourceRoot = path.resolve(serverSourceRoot, '../../../src');
+const adminRouterFile = path.join(serverSourceRoot, 'enterprise/routers/admin.ts');
+const lambdaRouterFile = path.join(serverSourceRoot, 'routers/lambda/index.ts');
 
 const propertyName = (name: ts.PropertyName): string | null => {
   if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name)) {
@@ -24,56 +38,251 @@ const propertyName = (name: ts.PropertyName): string | null => {
   return null;
 };
 
-const containsMutationCall = (node: ts.Node): boolean => {
+const unwrapExpression = (expression: ts.Expression): ts.Expression => {
   if (
-    ts.isCallExpression(node) &&
-    ts.isPropertyAccessExpression(node.expression) &&
-    node.expression.name.text === 'mutation'
+    ts.isAsExpression(expression) ||
+    ts.isParenthesizedExpression(expression) ||
+    ts.isSatisfiesExpression(expression)
   ) {
-    return true;
+    return unwrapExpression(expression.expression);
   }
-
-  return node.getChildren().some(containsMutationCall);
+  return expression;
 };
 
-export const discoverMutationRouters = (file: string, source: string): DiscoveredRouter[] => {
-  const sourceFile = ts.createSourceFile(
-    file,
-    source,
-    ts.ScriptTarget.Latest,
-    true,
-    ts.ScriptKind.TS,
-  );
-  const discovered: DiscoveredRouter[] = [];
+class RouterSourceGraph {
+  private readonly sourceFiles = new Map<string, ts.SourceFile>();
 
-  const visit = (node: ts.Node) => {
-    if (
-      ts.isVariableDeclaration(node) &&
-      ts.isIdentifier(node.name) &&
-      node.initializer &&
-      ts.isCallExpression(node.initializer) &&
-      ts.isIdentifier(node.initializer.expression) &&
-      node.initializer.expression.text === 'router'
-    ) {
-      const routerObject = node.initializer.arguments[0];
-      if (routerObject && ts.isObjectLiteralExpression(routerObject)) {
-        const mutations = routerObject.properties.flatMap((property) => {
-          if (!ts.isPropertyAssignment(property) || !containsMutationCall(property.initializer)) {
-            return [];
+  constructor(
+    private readonly loadSource: SourceLoader,
+    private readonly resolveModule: ModuleResolver,
+  ) {}
+
+  private getSourceFile = async (file: string): Promise<ts.SourceFile> => {
+    const normalized = path.normalize(file);
+    const existing = this.sourceFiles.get(normalized);
+    if (existing) return existing;
+    const sourceFile = ts.createSourceFile(
+      normalized,
+      await this.loadSource(normalized),
+      ts.ScriptTarget.Latest,
+      true,
+      normalized.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+    );
+    this.sourceFiles.set(normalized, sourceFile);
+    return sourceFile;
+  };
+
+  private findVariable = async (
+    file: string,
+    name: string,
+  ): Promise<ExpressionReference | null> => {
+    const sourceFile = await this.getSourceFile(file);
+    for (const statement of sourceFile.statements) {
+      if (ts.isVariableStatement(statement)) {
+        for (const declaration of statement.declarationList.declarations) {
+          if (
+            ts.isIdentifier(declaration.name) &&
+            declaration.name.text === name &&
+            declaration.initializer
+          ) {
+            return { file, node: declaration.initializer };
           }
-          const name = propertyName(property.name);
-          return name ? [name] : [];
-        });
-        if (mutations.length > 0) {
-          discovered.push({ file, mutations, router: node.name.text });
+        }
+      }
+      if (
+        ts.isImportDeclaration(statement) &&
+        ts.isStringLiteral(statement.moduleSpecifier) &&
+        statement.importClause?.namedBindings &&
+        ts.isNamedImports(statement.importClause.namedBindings)
+      ) {
+        const imported = statement.importClause.namedBindings.elements.find(
+          (element) => element.name.text === name,
+        );
+        if (imported) {
+          const targetFile = await this.resolveModule(file, statement.moduleSpecifier.text);
+          return this.findVariable(targetFile, imported.propertyName?.text ?? imported.name.text);
         }
       }
     }
-    ts.forEachChild(node, visit);
+    return null;
   };
 
-  visit(sourceFile);
-  return discovered;
+  getExport = async (file: string, name: string): Promise<ExpressionReference> => {
+    const reference = await this.findVariable(file, name);
+    if (!reference) throw new Error(`Variable not found: ${file}:${name}`);
+    return reference;
+  };
+
+  private resolvePropertyAccess = async (
+    reference: ExpressionReference,
+    property: string,
+  ): Promise<ExpressionReference | null> => {
+    const object = await this.resolveExpression({
+      file: reference.file,
+      node: reference.node,
+    });
+    if (!ts.isObjectLiteralExpression(object.node)) return null;
+    for (const item of object.node.properties) {
+      if (ts.isPropertyAssignment(item) && propertyName(item.name) === property) {
+        return { file: object.file, node: item.initializer };
+      }
+      if (ts.isShorthandPropertyAssignment(item) && item.name.text === property) {
+        return { file: object.file, node: item.name };
+      }
+    }
+    return null;
+  };
+
+  resolveExpression = async (
+    reference: ExpressionReference,
+    visited: ReadonlySet<string> = new Set(),
+  ): Promise<ExpressionReference> => {
+    const node = unwrapExpression(reference.node);
+    if (ts.isIdentifier(node)) {
+      const key = `${path.normalize(reference.file)}:${node.text}`;
+      if (visited.has(key)) throw new Error(`Cyclic source alias: ${key}`);
+      const target = await this.findVariable(reference.file, node.text);
+      if (!target) return { file: reference.file, node };
+      return this.resolveExpression(target, new Set([...visited, key]));
+    }
+    if (ts.isPropertyAccessExpression(node)) {
+      const target = await this.resolvePropertyAccess(
+        { file: reference.file, node: node.expression },
+        node.name.text,
+      );
+      if (target) return this.resolveExpression(target, visited);
+    }
+    return { file: reference.file, node };
+  };
+
+  private getObject = async (
+    reference: ExpressionReference,
+  ): Promise<ExpressionReference | null> => {
+    const resolved = await this.resolveExpression(reference);
+    if (ts.isObjectLiteralExpression(resolved.node)) return resolved;
+    if (
+      ts.isCallExpression(resolved.node) &&
+      ts.isIdentifier(resolved.node.expression) &&
+      resolved.node.expression.text === 'router'
+    ) {
+      const argument = resolved.node.arguments[0];
+      if (argument && ts.isExpression(argument)) {
+        const object = await this.resolveExpression({ file: resolved.file, node: argument });
+        return ts.isObjectLiteralExpression(object.node) ? object : null;
+      }
+    }
+    return null;
+  };
+
+  private expandObject = async (reference: ExpressionReference): Promise<MountedProperty[]> => {
+    const object = await this.getObject(reference);
+    if (!object || !ts.isObjectLiteralExpression(object.node)) return [];
+    const properties: MountedProperty[] = [];
+    for (const item of object.node.properties) {
+      if (ts.isSpreadAssignment(item)) {
+        properties.push(...(await this.expandObject({ file: object.file, node: item.expression })));
+        continue;
+      }
+      if (ts.isPropertyAssignment(item)) {
+        const key = propertyName(item.name);
+        if (!key) throw new Error(`Computed router key is not supported: ${object.file}`);
+        properties.push({ expression: { file: object.file, node: item.initializer }, key });
+        continue;
+      }
+      if (ts.isShorthandPropertyAssignment(item)) {
+        properties.push({
+          expression: { file: object.file, node: item.name },
+          key: item.name.text,
+        });
+        continue;
+      }
+      throw new Error(`Unsupported router member in ${object.file}: ${item.getText()}`);
+    }
+    return properties;
+  };
+
+  private isMutation = async (reference: ExpressionReference): Promise<boolean> => {
+    const resolved = await this.resolveExpression(reference);
+    let found = false;
+    const visit = (node: ts.Node) => {
+      if (
+        ts.isCallExpression(node) &&
+        ts.isPropertyAccessExpression(node.expression) &&
+        node.expression.name.text === 'mutation'
+      ) {
+        found = true;
+        return;
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(resolved.node);
+    return found;
+  };
+
+  collectMutations = async (
+    reference: ExpressionReference,
+    prefix: readonly string[] = [],
+  ): Promise<string[]> => {
+    const properties = await this.expandObject(reference);
+    const paths: string[] = [];
+    for (const property of properties) {
+      const nested = await this.getObject(property.expression);
+      if (nested) {
+        paths.push(
+          ...(await this.collectMutations(property.expression, [...prefix, property.key])),
+        );
+      } else if (await this.isMutation(property.expression)) {
+        paths.push([...prefix, property.key].join('.'));
+      }
+    }
+    return paths;
+  };
+
+  expressionIdentity = async (reference: ExpressionReference): Promise<string> => {
+    const resolved = await this.resolveExpression(reference);
+    return `${path.normalize(resolved.file)}:${resolved.node.pos}:${resolved.node.end}`;
+  };
+
+  rootMountsOf = async (
+    root: ExpressionReference,
+    target: ExpressionReference,
+  ): Promise<MountedProperty[]> => {
+    const targetIdentity = await this.expressionIdentity(target);
+    const properties = await this.expandObject(root);
+    const matches: MountedProperty[] = [];
+    for (const property of properties) {
+      try {
+        if ((await this.expressionIdentity(property.expression)) === targetIdentity) {
+          matches.push(property);
+        }
+      } catch {
+        // Unrelated root routers can be generated business stubs outside this source checkout.
+      }
+    }
+    return matches;
+  };
+}
+
+const resolveRepositoryModule: ModuleResolver = async (containingFile, moduleName) => {
+  const unresolved = moduleName.startsWith('@/server/')
+    ? path.join(serverSourceRoot, moduleName.slice('@/server/'.length))
+    : moduleName.startsWith('@/')
+      ? path.join(repositorySourceRoot, moduleName.slice(2))
+      : path.resolve(path.dirname(containingFile), moduleName);
+  const candidates = [
+    unresolved,
+    `${unresolved}.ts`,
+    `${unresolved}.tsx`,
+    path.join(unresolved, 'index.ts'),
+  ];
+  for (const candidate of candidates) {
+    try {
+      if ((await stat(candidate)).isFile()) return candidate;
+    } catch {
+      // Try the next TypeScript module shape.
+    }
+  }
+  throw new Error(`Module not found: ${moduleName} from ${containingFile}`);
 };
 
 const discoverRegistryKeys = (source: string): string[] => {
@@ -85,7 +294,6 @@ const discoverRegistryKeys = (source: string): string[] => {
     ts.ScriptKind.TS,
   );
   let keys: string[] | undefined;
-
   const visit = (node: ts.Node) => {
     if (
       ts.isVariableDeclaration(node) &&
@@ -106,48 +314,57 @@ const discoverRegistryKeys = (source: string): string[] => {
     }
     ts.forEachChild(node, visit);
   };
-
   visit(sourceFile);
   if (!keys) throw new Error('ADMIN_MUTATION_REGISTRY object was not found');
   return keys;
 };
 
-const loadProductionRouterSources = async (): Promise<DiscoveredRouter[]> => {
-  const adminFiles = (await readdir(path.join(routerDirectory, 'admin'), { recursive: true }))
-    .filter((file) => file.endsWith('.ts') && !file.endsWith('.test.ts'))
-    .sort()
-    .map((file) => `admin/${file}`);
-  const files = ['admin.ts', ...adminFiles];
-
-  return (
-    await Promise.all(
-      files.map(async (file) =>
-        discoverMutationRouters(file, await readFile(path.join(routerDirectory, file), 'utf8')),
-      ),
-    )
-  ).flat();
-};
-
 describe('enterprise admin mutation policy registry', () => {
-  it('reconciles every real mutation and router declaration in both directions', async () => {
-    const discoveredRouters = await loadProductionRouterSources();
-    const sourceKeys = ADMIN_MUTATION_ROUTER_SOURCES.map(({ file, router }) => `${file}:${router}`);
-    const discoveredKeys = discoveredRouters.map(({ file, router }) => `${file}:${router}`);
+  it('reconciles the actual lambda mount and reachable admin router tree in both directions', async () => {
+    const graph = new RouterSourceGraph((file) => readFile(file, 'utf8'), resolveRepositoryModule);
+    const admin = await graph.getExport(adminRouterFile, 'adminRouter');
+    const lambda = await graph.getExport(lambdaRouterFile, 'lambdaRouter');
+    const mounts = await graph.rootMountsOf(lambda, admin);
+    const procedures = (
+      await Promise.all(
+        mounts.map(async ({ expression, key }) =>
+          (await graph.collectMutations(expression, [key])).sort(),
+        ),
+      )
+    ).flat();
 
-    expect(new Set(sourceKeys).size).toBe(sourceKeys.length);
-    expect(new Set(discoveredKeys).size).toBe(discoveredKeys.length);
-    expect([...sourceKeys].sort()).toEqual([...discoveredKeys].sort());
-
-    const procedures = ADMIN_MUTATION_ROUTER_SOURCES.flatMap(({ file, prefix, router }) => {
-      const declaration = discoveredRouters.find(
-        (candidate) => candidate.file === file && candidate.router === router,
-      );
-      expect(declaration, `${file}:${router} must exist`).toBeDefined();
-      return declaration!.mutations.map((mutation) => `admin.${prefix}.${mutation}`);
-    });
-
+    expect(mounts.map(({ key }) => key)).toEqual(['admin']);
     expect(new Set(procedures).size).toBe(procedures.length);
-    expect([...procedures].sort()).toEqual(Object.keys(ADMIN_MUTATION_REGISTRY).sort());
+    expect(procedures.sort()).toEqual(Object.keys(ADMIN_MUTATION_REGISTRY).sort());
+  });
+
+  it('follows import aliases, extracted shorthand, spreads, removals, and remounts', async () => {
+    const fixtureSources = new Map([
+      [
+        '/fixture/leaf.ts',
+        `
+          const extracted = base.mutation(() => true);
+          export const leafRouter = router({ extracted });
+          export const removedRouter = router({});
+        `,
+      ],
+      [
+        '/fixture/root.ts',
+        `
+          import { leafRouter as alias, removedRouter } from './leaf';
+          const spreadMount = { remounted: alias };
+          export const rootRouter = router({ ...spreadMount, removedRouter });
+        `,
+      ],
+    ]);
+    const graph = new RouterSourceGraph(
+      async (file) => fixtureSources.get(file) ?? Promise.reject(new Error(`Missing ${file}`)),
+      async (containingFile, moduleName) =>
+        `${path.resolve(path.dirname(containingFile), moduleName)}.ts`,
+    );
+    const root = await graph.getExport('/fixture/root.ts', 'rootRouter');
+
+    expect(await graph.collectMutations(root)).toEqual(['remounted.extracted']);
   });
 
   it('rejects duplicate registry declarations before object-key normalization', async () => {
@@ -156,22 +373,10 @@ describe('enterprise admin mutation policy registry', () => {
     expect([...declaredKeys].sort()).toEqual(Object.keys(ADMIN_MUTATION_REGISTRY).sort());
   });
 
-  it('rejects a synthetic mutation whose router has not been mapped', () => {
-    const source = `
-      const existingRouter = router({ existing: base.mutation(() => true) });
-      const newlyAddedRouter = router({ upstreamWrite: base.mutation(() => true) });
-    `;
-    expect(discoverMutationRouters('admin/synthetic.ts', source)).toEqual([
-      { file: 'admin/synthetic.ts', mutations: ['existing'], router: 'existingRouter' },
-      { file: 'admin/synthetic.ts', mutations: ['upstreamWrite'], router: 'newlyAddedRouter' },
-    ]);
-  });
-
   it('enforces the minimum policy shape for dangerous mutations', () => {
     for (const [procedure, definition] of Object.entries(ADMIN_MUTATION_REGISTRY)) {
       expect(definition.procedure).toBe(procedure);
       expect(definition.summary.trim().length).toBeGreaterThan(10);
-
       for (const control of Object.values(definition.controls)) {
         const detail =
           'evidence' in control
@@ -181,14 +386,21 @@ describe('enterprise admin mutation policy registry', () => {
               : control.rationale;
         expect(detail.trim().length).toBeGreaterThan(10);
       }
-
-      if (!definition.dangerous) continue;
+      if (!definition.dangerous) {
+        expect(['low', 'medium']).toContain(definition.risk);
+        continue;
+      }
       expect(['critical', 'high']).toContain(definition.risk);
       expect(definition.controls.reason.status).not.toBe('not-applicable');
       expect(definition.controls.reauth.status).not.toBe('not-applicable');
       expect(definition.controls.audit.status).not.toBe('not-applicable');
       expect(definition.controls.rateLimit.status).not.toBe('not-applicable');
     }
+  });
+
+  it('keeps high risks dangerous and regular risks below high at the type boundary', () => {
+    expectTypeOf<DangerousAdminMutationDefinition['risk']>().toEqualTypeOf<'critical' | 'high'>();
+    expectTypeOf<RegularAdminMutationDefinition['risk']>().toEqualTypeOf<'low' | 'medium'>();
   });
 
   it('contains policy metadata only and no sensitive material or remote address', () => {

@@ -59,8 +59,8 @@ or telemetry consumer without a need to access plaintext material.
 | Repudiation            | Administrator denies a destructive change                                          | Bounded reason fields and sanitized platform audit records on the procedures marked `enforced`                                                       | Some validation and restart-preparation paths lack a complete success/failure audit; denied-audit writes are sometimes best effort            |
 | Information disclosure | Integration material appears in API output, logs, or audit diffs                   | Server-side encrypted storage boundaries, redaction helpers, public projections, fingerprint removal on audit reads                                  | Environment-held master key remains available to the process; distributed trace/error-sink verification is incomplete                         |
 | Denial of service      | Repeated tests, syncs, publications, or restart requests consume resources         | Permission gates, bounded schemas, response/deadline limits on the shared outbound client, idempotency/CAS in selected services                      | There is no shared rate limiter for enterprise admin mutations; registry entries therefore mark rate limiting as `planned`                    |
-| Elevation of privilege | Role replacement, ban, publication, or managed-resource bypass                     | Fine-grained platform permissions, active-user checks, recent reauth on a subset, last-super-admin protection, managed-resource guards               | Settings publication, EasyAuth sync, identity-provider deletion, and agent assignment changes currently lack recent reauth                    |
-| SSRF / confused deputy | Remote catalog or identity address reaches metadata or pivots through redirect/DNS | Shared outbound client blocks metadata, pins DNS per hop, re-reads policy per redirect, bounds bytes/time, and strips sensitive cross-origin headers | No port allowlist or generic content-type enforcement; AI provider connection testing is not yet unified on this boundary                     |
+| Elevation of privilege | Role replacement, protected-value change, publication, or managed-resource bypass  | Fine-grained platform permissions, active-user checks, recent reauth on a subset, last-super-admin protection, managed-resource guards               | Settings publication, EasyAuth sync, identity-provider deletion, agent assignments, and AI/identity protected-value draft changes lack reauth |
+| SSRF / confused deputy | Remote catalog or identity address reaches metadata or pivots through redirect/DNS | Shared outbound client blocks metadata, pins DNS per hop, re-reads policy per redirect, bounds bytes/time, and strips sensitive cross-origin headers | No port allowlist or generic content-type enforcement; AI provider tests and EasyAuth synchronization still use direct remote fetches         |
 | Replay / split brain   | A captured request, stale restart intent, or stale cache re-applies state          | Request identifiers on selected flows, revision checks, bounded restart intents, shared state for selected transitions, signed identity LKG          | These controls are not a single global mutation protocol; cache convergence and multi-instance chaos evidence remain incomplete               |
 
 ## Admin mutation policy registry
@@ -77,14 +77,17 @@ The states have deliberately narrow meanings:
 - `planned`: the control is missing and explicitly scheduled for W8;
 - `not-applicable`: the entry gives a resource-specific rationale.
 
-`high` and `critical` entries marked `dangerous` cannot type-check with reason, reauth, audit, or rate
-limit marked not applicable. A gap is still allowed so the registry remains truthful while providing
-an executable backlog. The registry does not itself add guards or change business behavior.
+`high` and `critical` risks can only be represented by entries marked `dangerous`; regular entries
+are limited to `low` and `medium`. Dangerous entries cannot type-check with reason, reauth, audit, or
+rate limit marked not applicable. A gap is still allowed so the registry remains truthful while
+providing an executable backlog. The registry does not itself add guards or change business behavior.
 
-An AST-based reconciliation test scans production admin router declarations. It fails for an added,
-renamed, duplicated, stale, or unmapped mutation, validates dangerous-operation invariants, and scans
-registry data for sensitive material and remote addresses. It does not replace runtime authorization
-or penetration testing.
+An AST-based reachability test starts at the real lambda root mount, resolves the imported
+`adminRouter`, and follows import aliases, local aliases, shorthand properties, object spreads, and
+nested router composition. It derives paths from the actual mount keys rather than a prefix table. It
+fails for an added, renamed, duplicated, stale, unmapped, removed, or remounted mutation, validates
+dangerous-operation invariants, and scans registry data for sensitive material and remote addresses.
+It does not replace runtime authorization or penetration testing.
 
 ## LKG and fail-closed rules
 
@@ -97,11 +100,15 @@ The identity-provider LKG is a narrow startup recovery mechanism, not a general 
 It must be signed with a domain-separated key, have restrictive ownership/permissions, be bounded in
 size and age, match its embedded identity, and pass semantic validation. Invalid, stale, changed,
 symlinked, or unverifiable files are rejected. Publication and rollback update database revisions;
-they do not atomically refresh a local LKG file on every instance, which is why the registry records
-that control as conditional.
+they do not atomically refresh a local LKG file on every instance. More importantly, failure to write
+the local LKG records a degraded startup state but does not reject an otherwise valid database
+candidate. The registry therefore records LKG as conditional rather than an activation gate.
 
-Other resources use transactional immutable revisions and explicit rollback rather than an LKG.
-Serving a previous revision after an uncertain write is not permitted unless that resource defines a
+LKG applicability is decided per procedure. Database-backed drafts and direct user/role state use the
+authoritative database record; validation and bounded probes create no runtime state to recover;
+branding asset recovery uses its object-storage operation records. Catalogs that expose immutable
+revisions may offer explicit rollback, but the registry does not label that mechanism as an LKG.
+Serving a previous value after an uncertain write is not permitted unless that resource defines a
 separate authenticated, bounded recovery rule. Vault unavailability, sealing, authorization denial,
 timeout, or malformed key data must not trigger a production fallback to an environment key. The
 current Vault adapter is still a rejecting stub, so real Vault authentication, leases, rotation, and
@@ -118,6 +125,9 @@ historical-key reads remain W8 work.
   details. Logs should record only the category and error class required to operate the service.
 - The platform audit service is append-only at its public interface and list queries are bounded.
   Best-effort failure-audit handling must never turn a denied reauth into an allowed operation.
+- Administrative EasyAuth synchronization trims and bounds its reason and records minimized outcomes
+  for bypass, skipped, unchanged, degraded-cache, failure-without-cache, applied, and unexpected
+  failure paths. Remote failure text is not copied into those audit diffs.
 - Trace, error-reporting, and log-sink integration still require an end-to-end leakage check; the
   presence of a redaction helper alone is not proof that every sink invokes it.
 

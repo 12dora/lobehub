@@ -6,7 +6,7 @@ import { PLATFORM_SYSTEM_ROLES } from '@/const/platform/roles';
 import { getTestDB } from '@/database/core/getTestDB';
 import { RbacModel } from '@/database/models/rbac';
 import { permissions, rolePermissions, roles, userRoles, users } from '@/database/schemas';
-import { platformEasyauthGrantSnapshots } from '@/database/schemas/platform';
+import { platformAuditLogs, platformEasyauthGrantSnapshots } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 import { seedPlatformRoles } from '@/database/utils/seedPlatformRoles';
 
@@ -21,6 +21,7 @@ const db: LobeChatDatabase = await getTestDB();
 const userId = 'easyauth-sync-user';
 
 const cleanup = async () => {
+  await db.delete(platformAuditLogs);
   await db.delete(platformEasyauthGrantSnapshots);
   await db.delete(userRoles);
   await db.delete(rolePermissions);
@@ -101,6 +102,13 @@ describe('EasyauthSyncService', () => {
     expect(result.source).toBe('super_admin_bypass');
     expect(await rbac.isGlobalSuperAdmin(userId)).toBe(true);
     expect(fetch).not.toHaveBeenCalled();
+    await expect(db.select().from(platformAuditLogs)).resolves.toMatchObject([
+      {
+        action: 'platform.easyauth.sync',
+        afterDiff: { source: 'super_admin_bypass' },
+        result: 'success',
+      },
+    ]);
   });
 
   it('syncUser writes snapshot and global roles for normal user', async () => {
@@ -136,6 +144,13 @@ describe('EasyauthSyncService', () => {
     });
     expect(again.rolesApplied).toContain(PLATFORM_SYSTEM_ROLES.USER_ADMIN);
 
+    const audits = await db.select().from(platformAuditLogs);
+    expect(audits).toHaveLength(2);
+    expect(audits.at(-1)).toMatchObject({
+      afterDiff: { source: 'unchanged' },
+      result: 'success',
+    });
+
     const rbac = new RbacModel(db, userId);
     expect(await rbac.hasGlobalPermission('platform_user:ban:all', userId)).toBe(true);
   });
@@ -164,6 +179,110 @@ describe('EasyauthSyncService', () => {
     expect(degraded.degraded).toBe(true);
     expect(degraded.accessGranted).toBe(true);
     expect(degraded.source).toBe('cache');
+    const audits = await db.select().from(platformAuditLogs);
+    expect(audits.at(-1)).toMatchObject({
+      afterDiff: { degraded: true, source: 'cache' },
+      result: 'failure',
+    });
+    expect(JSON.stringify(audits)).not.toContain('network down');
+  });
+
+  it('audits a fail-closed cache result when no prior snapshot exists', async () => {
+    const client = new EasyauthPermissionClient({
+      config: {
+        appKey: 'aihub',
+        appToken: 'eat_fake_test_token_not_real',
+        baseUrl: 'https://easyauth.test',
+        descriptorToken: null,
+        manifestSchemaVersion: 1,
+        portalUrl: 'https://easyauth.test',
+        timeoutMs: 1000,
+      },
+    });
+    client.fetchPermissionSnapshot = vi.fn(async () => {
+      throw new Error('private upstream detail');
+    });
+
+    const outcome = await new EasyauthSyncService(db, { client }).syncUser({
+      actorUserId: 'admin-user',
+      externalUserId: 'ak_uid_1',
+      reason: '  manual recovery  ',
+      userId,
+    });
+
+    expect(outcome).toMatchObject({ accessGranted: false, degraded: true, source: 'cache' });
+    const audits = await db.select().from(platformAuditLogs);
+    expect(audits).toMatchObject([
+      {
+        actorUserId: 'admin-user',
+        afterDiff: { degraded: true, source: 'cache' },
+        reason: 'manual recovery',
+        result: 'failure',
+      },
+    ]);
+    expect(JSON.stringify(audits)).not.toContain('private upstream detail');
+  });
+
+  it('writes a minimized failure audit when a management sync throws', async () => {
+    const client = new EasyauthPermissionClient({
+      config: {
+        appKey: 'aihub',
+        appToken: 'eat_fake_test_token_not_real',
+        baseUrl: 'https://easyauth.test',
+        descriptorToken: null,
+        manifestSchemaVersion: 1,
+        portalUrl: 'https://easyauth.test',
+        timeoutMs: 1000,
+      },
+    });
+    client.fetchPermissionSnapshot = vi.fn(async () => sampleSnapshot());
+
+    await expect(
+      new EasyauthSyncService(db, { client }).syncUser({
+        actorUserId: 'admin-user',
+        externalUserId: 'ak_uid_missing',
+        reason: 'failed management sync',
+        userId: 'missing-user',
+      }),
+    ).rejects.toBeDefined();
+
+    await expect(db.select().from(platformAuditLogs)).resolves.toMatchObject([
+      {
+        actorUserId: 'admin-user',
+        afterDiff: { source: 'failed' },
+        reason: 'failed management sync',
+        result: 'failure',
+        targetId: 'missing-user',
+      },
+    ]);
+  });
+
+  it('audits a skipped result when no external identity or cache exists', async () => {
+    const service = new EasyauthSyncService(db, {
+      client: new EasyauthPermissionClient({
+        config: {
+          appKey: 'aihub',
+          appToken: 'eat_fake_test_token_not_real',
+          baseUrl: 'https://easyauth.test',
+          descriptorToken: null,
+          manifestSchemaVersion: 1,
+          portalUrl: 'https://easyauth.test',
+          timeoutMs: 1000,
+        },
+      }),
+    });
+
+    await expect(service.syncUser({ actorUserId: 'admin-user', userId })).resolves.toMatchObject({
+      accessGranted: false,
+      source: 'skipped',
+    });
+    await expect(db.select().from(platformAuditLogs)).resolves.toMatchObject([
+      {
+        actorUserId: 'admin-user',
+        afterDiff: { source: 'skipped' },
+        result: 'failure',
+      },
+    ]);
   });
 
   it('revokes managed roles when EasyAuth returns empty grants', async () => {

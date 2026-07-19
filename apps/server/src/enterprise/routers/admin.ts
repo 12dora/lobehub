@@ -168,7 +168,7 @@ export const adminEasyauthRouter = router({
     .use(withPlatformPermission(PLATFORM_PERMISSIONS.ROLE_UPDATE))
     .input(
       z.object({
-        reason: z.string().min(1),
+        reason: z.string().trim().min(1).max(2000),
         userId: z.string().min(1),
       }),
     )
