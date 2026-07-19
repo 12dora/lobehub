@@ -875,10 +875,12 @@ export const userKeys = {
   initState: def('user:initState', () => ['user:initState']),
 };
 export const builtinAgentKeys = {
-  init: def('builtinAgent:init', (slug: string, brandingRevision?: string | null) =>
-    brandingRevision === undefined
-      ? ['builtinAgent:init', slug]
-      : ['builtinAgent:init', slug, brandingRevision],
+  init: def(
+    'builtinAgent:init',
+    (slug: string, brandingRevision?: string | null, cacheScope?: string) =>
+      brandingRevision === undefined
+        ? ['builtinAgent:init', slug]
+        : ['builtinAgent:init', slug, brandingRevision, cacheScope],
   ),
 };
 export const imessageKeys = {
