@@ -4,6 +4,7 @@ import { cssVar, cx } from 'antd-style';
 import { memo, type ReactNode, useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import BriefCardSummary from '@/features/DailyBrief/BriefCardSummary';
 import { styles as briefStyles } from '@/features/DailyBrief/style';
 
@@ -23,13 +24,15 @@ interface RecommendationCardProps {
 export const RecommendationCard = memo<RecommendationCardProps>(
   ({ ctaKey, descriptionKey, i18nValues, icon, onAction, tagKey, titleKey }) => {
     const { t } = useTranslation('home');
+    const branding = useBranding();
     const { message } = App.useApp();
     const [loading, setLoading] = useState(false);
+    const translationValues = { platformName: branding.name, ...i18nValues };
 
-    const title = t(titleKey, { defaultValue: '', ...i18nValues });
-    const description = t(descriptionKey, { defaultValue: '', ...i18nValues });
-    const ctaLabel = t(ctaKey, { defaultValue: '', ...i18nValues });
-    const tagLabel = tagKey ? t(tagKey, { defaultValue: '', ...i18nValues }) : '';
+    const title = t(titleKey, { defaultValue: '', ...translationValues });
+    const description = t(descriptionKey, { defaultValue: '', ...translationValues });
+    const ctaLabel = t(ctaKey, { defaultValue: '', ...translationValues });
+    const tagLabel = tagKey ? t(tagKey, { defaultValue: '', ...translationValues }) : '';
 
     const handleClick = useCallback(async () => {
       if (loading) return;

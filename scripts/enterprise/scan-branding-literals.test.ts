@@ -289,5 +289,6 @@ describe('branding literal scan CLI', () => {
       maxBuffer: 1024 * 1024,
     });
     expect(result.stdout).toContain('runtime branding literals ok');
+    expect(result.stdout).toContain('stable-code-key=');
   }, 30_000);
 });

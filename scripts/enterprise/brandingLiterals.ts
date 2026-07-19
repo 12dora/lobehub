@@ -148,6 +148,7 @@ export type BrandingName = 'LobeChat' | 'LobeHub';
 export type BrandingAllowedCategory =
   | 'internal-package-or-path'
   | 'legal-attribution'
+  | 'stable-code-key'
   | 'stable-database-id'
   | 'stable-protocol-or-storage-id'
   | 'stable-url-or-email';
@@ -192,6 +193,7 @@ interface LiteralContext {
   argumentIndex?: number;
   callName?: string;
   moduleSpecifier?: boolean;
+  propertyKey?: boolean;
 }
 
 interface LiteralFragment extends BrandingFormatFragment {
@@ -360,6 +362,7 @@ const buildScriptLocator = (
     const parent = current.parent;
     if (ts.isPropertyAssignment(parent) || ts.isPropertyDeclaration(parent)) {
       parts.push(`property:${nodeName(parent, sourceFile) ?? '<computed>'}`);
+      if (parent.name === current) context.propertyKey = true;
     } else if (ts.isVariableDeclaration(parent)) {
       parts.push(`variable:${nodeName(parent, sourceFile) ?? '<binding>'}`);
     } else if (
@@ -720,6 +723,10 @@ const classifyAllowedOccurrence = (
   matchIndex: number,
 ): BrandingAllowedCategory | undefined => {
   if (isLegalAttributionPath(filePath)) return 'legal-attribution';
+
+  // Object/JSON property names are lookup identifiers rather than rendered copy. The value is
+  // visited independently, so a user-visible brand literal cannot hide behind this classification.
+  if (fragment.context.propertyKey) return 'stable-code-key';
 
   if (/^(?:https?:\/\/|mailto:|[\w.+-]+@)\S*(?:lobehub|lobechat)\S*$/iu.test(normalizedText)) {
     return 'stable-url-or-email';
