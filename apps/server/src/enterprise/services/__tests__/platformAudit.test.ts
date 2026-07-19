@@ -62,4 +62,34 @@ describe('PlatformAuditService', () => {
     expect(page.items).toHaveLength(1);
     expect(page.nextCursor).toBeTruthy();
   });
+
+  it('redacts legacy fingerprint fields recursively from list and detail reads', async () => {
+    const secretFingerprint = 'a'.repeat(64);
+    await serverDB.insert(platformAuditLogs).values({
+      action: 'admin.identityProviders.publish',
+      afterDiff: {
+        response: {
+          fingerprint: secretFingerprint,
+          nested: [{ secretFingerprint }],
+          providerKey: 'work',
+        },
+        secretFingerprint,
+      },
+      beforeDiff: { previousFingerprint: secretFingerprint },
+      id: 'legacy-identity-provider-audit',
+      result: 'success',
+      targetId: 'provider-work',
+      targetType: 'identity_provider',
+    });
+
+    const detail = await audit.findById('legacy-identity-provider-audit');
+    const page = await audit.list({ targetId: 'provider-work' });
+
+    for (const output of [detail, page.items[0]]) {
+      const serialized = JSON.stringify(output);
+      expect(serialized).not.toContain(secretFingerprint);
+      expect(serialized).not.toMatch(/fingerprint/i);
+      expect(output?.afterDiff).toMatchObject({ response: { providerKey: 'work' } });
+    }
+  });
 });

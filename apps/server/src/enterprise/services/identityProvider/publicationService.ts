@@ -274,27 +274,31 @@ const toIdempotentResponse = (
   const { secret, ...safeDraft } = draft;
   return {
     ...safeDraft,
-    fingerprint: secret.fingerprint,
-    fingerprintUpdatedAt: secret.updatedAt?.toISOString() ?? null,
     isConfigured: secret.configured,
+    secretUpdatedAt: secret.updatedAt?.toISOString() ?? null,
   };
 };
 
-const parseIdempotentResponse = (value: unknown): PlatformIdentityProviderInternalDraft => {
+const parseIdempotentResponse = async (
+  tx: Transaction,
+  input: IdempotencyRequest,
+  afterDiff: Record<string, unknown>,
+): Promise<PlatformIdentityProviderInternalDraft> => {
+  const value = afterDiff.response;
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_IDEMPOTENCY_CONFLICT');
   }
   const response = value as Record<string, unknown>;
   const {
-    fingerprint,
-    fingerprintUpdatedAt: rawFingerprintUpdatedAt,
+    fingerprint: legacyFingerprint,
+    fingerprintUpdatedAt: legacyFingerprintUpdatedAt,
     isConfigured,
+    secretUpdatedAt,
     ...safeDraft
   } = response;
+  const rawSecretUpdatedAt = secretUpdatedAt ?? legacyFingerprintUpdatedAt;
   const fingerprintUpdatedAt =
-    typeof rawFingerprintUpdatedAt === 'string'
-      ? new Date(rawFingerprintUpdatedAt)
-      : rawFingerprintUpdatedAt;
+    typeof rawSecretUpdatedAt === 'string' ? new Date(rawSecretUpdatedAt) : rawSecretUpdatedAt;
   const parsed = identityProviderDraftSchema.safeParse({
     ...safeDraft,
     secret: {
@@ -302,14 +306,42 @@ const parseIdempotentResponse = (value: unknown): PlatformIdentityProviderIntern
       updatedAt: fingerprintUpdatedAt,
     },
   });
+  const sourceRevision =
+    input.action === 'admin.identityProviders.publish'
+      ? afterDiff.revision
+      : afterDiff.restoredFromRevision;
+  if (!parsed.success || !Number.isInteger(sourceRevision) || Number(sourceRevision) <= 0) {
+    throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_IDEMPOTENCY_CONFLICT');
+  }
+  const [source] = await tx
+    .select({
+      checksum: platformResourceRevisions.checksum,
+      payload: platformResourceRevisions.payload,
+      secretFingerprint: platformResourceRevisions.secretFingerprint,
+    })
+    .from(platformResourceRevisions)
+    .where(
+      and(
+        eq(platformResourceRevisions.resourceType, 'oidc'),
+        eq(platformResourceRevisions.resourceId, input.targetId),
+        eq(platformResourceRevisions.revision, Number(sourceRevision)),
+        eq(platformResourceRevisions.status, 'published'),
+      ),
+    )
+    .limit(1);
+  const payload = parsePublishedIdentityProviderPayload(source?.payload);
   if (
-    !parsed.success ||
-    (fingerprint !== null &&
-      (typeof fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(fingerprint)))
+    !payload ||
+    source.checksum !== checksumPayload(source.payload) ||
+    source.secretFingerprint !== payload.secretFingerprint ||
+    (legacyFingerprint !== undefined && legacyFingerprint !== payload.secretFingerprint)
   ) {
     throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_IDEMPOTENCY_CONFLICT');
   }
-  return { ...parsed.data, secret: { ...parsed.data.secret, fingerprint } };
+  return {
+    ...parsed.data,
+    secret: { ...parsed.data.secret, fingerprint: payload.secretFingerprint },
+  };
 };
 
 interface IdempotencyRequest {
@@ -372,7 +404,7 @@ const findTerminalReplay = async (
   if (!terminal) return null;
   const afterDiff = assertAuditScope(terminal, input, input.action);
   if (terminal.result === 'success' && afterDiff.outcome === 'success') {
-    return parseIdempotentResponse(afterDiff.response);
+    return parseIdempotentResponse(tx, input, afterDiff);
   }
   if (
     terminal.result !== 'failure' ||
@@ -844,7 +876,6 @@ export class IdentityProviderPublicationService {
             checksum,
             providerKey: payload.providerKey,
             revision: nextRevision,
-            secretFingerprint: payload.secretFingerprint,
           },
           beforeDiff: { revision: draft.revision, status: draft.status },
           configRevision: nextRevision,

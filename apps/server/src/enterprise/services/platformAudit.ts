@@ -8,6 +8,23 @@ import type { LobeChatDatabase, Transaction } from '@/database/type';
 
 export type { CreatePlatformAuditLogParams, ListPlatformAuditLogParams, PlatformAuditLogItem };
 
+const redactFingerprintFields = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map(redactFingerprintFields);
+  if (!value || typeof value !== 'object') return value;
+
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([key]) => !key.toLowerCase().includes('fingerprint'))
+      .map(([key, item]) => [key, redactFingerprintFields(item)]),
+  );
+};
+
+const toPublicAuditItem = (item: PlatformAuditLogItem): PlatformAuditLogItem => ({
+  ...item,
+  afterDiff: redactFingerprintFields(item.afterDiff) as Record<string, unknown> | null,
+  beforeDiff: redactFingerprintFields(item.beforeDiff) as Record<string, unknown> | null,
+});
+
 /**
  * Server-side audit service.
  * Always redacts diffs before write (delegated to PlatformAuditLogModel).
@@ -25,7 +42,8 @@ export class PlatformAuditService {
   };
 
   findById = async (id: string): Promise<PlatformAuditLogItem | undefined> => {
-    return this.model.findById(id);
+    const item = await this.model.findById(id);
+    return item ? toPublicAuditItem(item) : undefined;
   };
 
   /**
@@ -35,6 +53,7 @@ export class PlatformAuditService {
   list = async (
     params: ListPlatformAuditLogParams = {},
   ): Promise<{ items: PlatformAuditLogItem[]; nextCursor: string | null }> => {
-    return this.model.list(params);
+    const page = await this.model.list(params);
+    return { ...page, items: page.items.map(toPublicAuditItem) };
   };
 }
