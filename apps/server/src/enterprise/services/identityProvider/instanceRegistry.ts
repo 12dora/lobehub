@@ -12,7 +12,7 @@ import type { LobeChatDatabase, Transaction } from '@/database/type';
 import { identityProviderLkgIdentity } from './lkg';
 import type { IdentityProviderStartupSnapshot } from './startupArtifact';
 import {
-  loadCanonicalPublishedIdentityProviders,
+  loadPublishedIdentityProviderSelection,
   parseEnvironmentIdentityProviderIds,
 } from './startupSnapshot';
 
@@ -80,10 +80,11 @@ const demoteActiveProvidersForInstance = async (input: {
   source: IdentityProviderStartupSnapshot['source'];
   tx: Transaction;
 }): Promise<void> => {
-  const selected = await loadCanonicalPublishedIdentityProviders({
+  const { environmentShadowed, selected } = await loadPublishedIdentityProviderSelection({
     db: input.tx,
     environmentProviderIds: new Set(parseEnvironmentIdentityProviderIds(input.env)),
   });
+  await demoteEnvironmentShadowedIdentityProviders(input.tx, environmentShadowed);
   if (selected.length === 0) return;
   const targetIdentityRevision = identityProviderLkgIdentity(
     selected.map((provider) => ({
@@ -106,6 +107,25 @@ const demoteActiveProvidersForInstance = async (input: {
         inArray(
           platformIdentityProviders.id,
           selected.map((provider) => provider.providerId),
+        ),
+      ),
+    );
+};
+
+export const demoteEnvironmentShadowedIdentityProviders = async (
+  tx: Transaction,
+  shadowed: Array<{ providerId: string }>,
+): Promise<void> => {
+  if (shadowed.length === 0) return;
+  await tx
+    .update(platformIdentityProviders)
+    .set({ status: 'pending_restart', updatedAt: sql`clock_timestamp()` })
+    .where(
+      and(
+        eq(platformIdentityProviders.status, 'active'),
+        inArray(
+          platformIdentityProviders.id,
+          shadowed.map((provider) => provider.providerId),
         ),
       ),
     );

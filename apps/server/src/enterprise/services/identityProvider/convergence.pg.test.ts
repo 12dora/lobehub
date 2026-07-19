@@ -18,6 +18,7 @@ import {
   getIdentityProviderProcessInstance,
   INSTANCE_CONVERGENCE_LOCK_NAMESPACE,
   INSTANCE_CONVERGENCE_LOCK_RESOURCE,
+  registerIdentityProviderInstance,
   stopIdentityProviderHeartbeatForTest,
 } from './instanceRegistry';
 import type { RestartController } from './restartController';
@@ -193,6 +194,39 @@ describe.skipIf(!runPostgres)('identity provider convergence PostgreSQL races', 
     ).getAuthSnapshotStatus();
     expect(status.instances).toHaveLength(202);
     expect(status.active.allFreshInstancesActive).toBe(false);
+    expect(
+      (
+        await db
+          .select()
+          .from(platformIdentityProviders)
+          .where(eq(platformIdentityProviders.id, 'provider-work'))
+      )[0]?.status,
+    ).toBe('pending_restart');
+  });
+
+  it('demotes an active DB provider when a matching environment provider becomes authoritative', async () => {
+    const target = await seed();
+    await db
+      .update(platformIdentityProviders)
+      .set({ status: 'active' })
+      .where(eq(platformIdentityProviders.id, 'provider-work'));
+
+    await registerIdentityProviderInstance({
+      db,
+      env: { AUTH_SSO_PROVIDERS: 'work', VERCEL: '1' },
+      snapshot: {
+        databaseProviders: [],
+        generation: null,
+        health: 'healthy',
+        identityRevision: null,
+        lastError: null,
+        loadedAt: now,
+        providerIds: ['work'],
+        source: 'environment',
+      },
+    });
+
+    expect(target).toMatch(/^[a-f0-9]{64}$/);
     expect(
       (
         await db

@@ -86,7 +86,7 @@ const publishedProviderKey = (value: unknown): string | null => {
 
 type DatabaseExecutor = LobeChatDatabase | Transaction;
 
-export const loadCanonicalPublishedIdentityProviders = async (input: {
+export const loadPublishedIdentityProviderSelection = async (input: {
   db: DatabaseExecutor;
   environmentProviderIds: Set<string>;
 }) => {
@@ -119,6 +119,7 @@ export const loadCanonicalPublishedIdentityProviders = async (input: {
       secretFingerprint: string;
     }
   >();
+  const environmentShadowed: Array<{ providerId: string; providerKey: string }> = [];
   const seenResourceIds = new Set<string>();
   for (const row of rows) {
     if (seenResourceIds.has(row.resourceId)) continue;
@@ -128,6 +129,7 @@ export const loadCanonicalPublishedIdentityProviders = async (input: {
     // prevent the explicitly configured provider from starting.
     const providerKey = publishedProviderKey(row.payload);
     if (providerKey && input.environmentProviderIds.has(providerKey.toLowerCase())) {
+      environmentShadowed.push({ providerId: row.resourceId, providerKey });
       continue;
     }
     const payload = parsePublishedIdentityProviderPayload(row.payload);
@@ -152,8 +154,13 @@ export const loadCanonicalPublishedIdentityProviders = async (input: {
   if (new Set(selected.map((row) => row.payload.providerKey)).size !== selected.length) {
     throw new Error('PLATFORM_IDENTITY_PROVIDER_DUPLICATE_KEY');
   }
-  return selected;
+  return { environmentShadowed, selected };
 };
+
+export const loadCanonicalPublishedIdentityProviders = async (input: {
+  db: DatabaseExecutor;
+  environmentProviderIds: Set<string>;
+}) => (await loadPublishedIdentityProviderSelection(input)).selected;
 
 const loadDatabasePayload = async (input: {
   db: DatabaseExecutor;
