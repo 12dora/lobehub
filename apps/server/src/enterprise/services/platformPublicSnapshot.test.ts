@@ -8,6 +8,25 @@ import {
   getDisabledPlatformPublicSnapshot,
 } from './platformPublicSnapshot';
 
+const branding = {
+  defaultAgentDisplayName: null,
+  emailFrom: null,
+  emailSenderName: null,
+  faviconUrl: null,
+  homeUrl: null,
+  iconUrl: null,
+  legalName: null,
+  logoUrl: '/logo.png',
+  name: 'AIHub',
+  ogImageUrl: null,
+  pageTitleTemplate: null,
+  privacyUrl: null,
+  revision: '2',
+  shortName: null,
+  supportUrl: null,
+  termsUrl: null,
+};
+
 describe('buildPlatformPublicSnapshot', () => {
   it('returns disabled public snapshot when flags are off', () => {
     const snap = buildPlatformPublicSnapshot({ flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS } });
@@ -16,7 +35,7 @@ describe('buildPlatformPublicSnapshot', () => {
 
   it('hides branding fields when runtime branding flag is off', () => {
     const snap = buildPlatformPublicSnapshot({
-      branding: { logoUrl: '/x.png', platformName: 'AIHub', revision: '9' },
+      branding: { ...branding, logoUrl: '/x.png', revision: '9' },
       flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS },
     });
     expect(snap.platformName).toBeNull();
@@ -26,7 +45,7 @@ describe('buildPlatformPublicSnapshot', () => {
 
   it('surfaces branding only when ENABLE_RUNTIME_BRANDING is on', () => {
     const snap = buildPlatformPublicSnapshot({
-      branding: { logoUrl: '/logo.png', platformName: 'AIHub', revision: '2' },
+      branding,
       flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_RUNTIME_BRANDING: true },
     });
     expect(snap.platformName).toBe('AIHub');
@@ -52,7 +71,7 @@ describe('buildPlatformPublicSnapshot', () => {
 
   it('does not leak secrets or admin fields', () => {
     const snap = buildPlatformPublicSnapshot({
-      branding: { logoUrl: '/a.png', platformName: 'AIHub', revision: '1' },
+      branding: { ...branding, logoUrl: '/a.png', revision: '1' },
       flags: {
         ...DEFAULT_ENTERPRISE_FEATURE_FLAGS,
         ENABLE_DATABASE_OIDC: true,

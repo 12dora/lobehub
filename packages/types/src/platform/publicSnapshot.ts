@@ -1,25 +1,40 @@
-/**
- * Anonymous / login-safe public platform snapshot.
- * Used by login shell and branding surfaces — no secrets, no admin detail.
- */
-export interface PlatformPublicLoginSnapshot {
-  /** Whether "Sign in with work account" may be shown (flag + published IdP). */
-  workAccountEnabled: boolean;
-}
+import { z } from 'zod';
 
-export interface PlatformPublicSnapshot {
-  brandingRevision: string | null;
-  /**
-   * Opaque config revision shared with capability cache keys.
-   */
-  configRevision: string;
-  login: PlatformPublicLoginSnapshot;
-  /** Public display name when runtime branding is enabled; otherwise null (use built-in). */
-  logoUrl: string | null;
-  platformName: string | null;
-}
+import { platformBrandingPublishedSchema } from './branding';
+
+/** Anonymous / login-safe snapshot. Secrets and admin metadata are never included. */
+export const platformPublicSnapshotSchema = z
+  .object({
+    branding: platformBrandingPublishedSchema.nullable(),
+    brandingRevision: z.string().trim().min(1).max(64).nullable(),
+    configRevision: z.string().trim().min(1).max(128),
+    login: z
+      .object({
+        workAccountEnabled: z.boolean(),
+      })
+      .strict(),
+    /** Compatibility projection for shells that do not consume `branding` yet. */
+    logoUrl: z.string().nullable(),
+    platformName: z.string().nullable(),
+  })
+  .strict()
+  .superRefine((snapshot, context) => {
+    const revision = snapshot.branding?.revision ?? null;
+
+    if (revision !== snapshot.brandingRevision) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Branding revision does not match the published branding payload',
+        path: ['brandingRevision'],
+      });
+    }
+  });
+
+export type PlatformPublicSnapshot = z.infer<typeof platformPublicSnapshotSchema>;
+export type PlatformPublicLoginSnapshot = PlatformPublicSnapshot['login'];
 
 export const DISABLED_PLATFORM_PUBLIC_SNAPSHOT: PlatformPublicSnapshot = {
+  branding: null,
   brandingRevision: null,
   configRevision: '0',
   login: {
