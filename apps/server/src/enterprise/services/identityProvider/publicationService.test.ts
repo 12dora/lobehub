@@ -1,9 +1,10 @@
 // @vitest-environment node
 import { GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE } from '@lobechat/types';
 import { eq } from 'drizzle-orm';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
+import { checksumPayload } from '@/database/models/platform';
 import {
   platformAuditLogs,
   platformIdentityProviders,
@@ -20,6 +21,7 @@ import {
   IdentityProviderPublicationService,
   parsePublishedIdentityProviderPayload,
 } from './publicationService';
+import { IdentityProviderSecretStore } from './secretStore';
 import { IdentityProviderTestAttemptStore } from './testAttemptStore';
 
 const db: LobeChatDatabase = await getTestDB();
@@ -39,6 +41,47 @@ const attempts = new IdentityProviderTestAttemptStore(db, secrets);
 const requestId = (index: number) =>
   `550e8400-e29b-41d4-a716-${index.toString().padStart(12, '0')}`;
 
+type AuditResponseMutation = (response: Record<string, unknown>) => Record<string, unknown>;
+
+const findTerminalAudit = async (idempotencyRequestId: string) => {
+  const terminal = (await db.select().from(platformAuditLogs)).find(
+    (audit) =>
+      audit.requestId === idempotencyRequestId &&
+      audit.result === 'success' &&
+      typeof (audit.afterDiff as Record<string, unknown> | null)?.response === 'object',
+  );
+  if (!terminal?.afterDiff || typeof terminal.afterDiff !== 'object') {
+    throw new Error('terminal audit is required');
+  }
+  return terminal;
+};
+
+const tamperTerminalAfterDiff = async (
+  idempotencyRequestId: string,
+  mutation: (afterDiff: Record<string, unknown>) => Record<string, unknown>,
+) => {
+  const terminal = await findTerminalAudit(idempotencyRequestId);
+  const afterDiff = terminal.afterDiff as Record<string, unknown>;
+  await db
+    .update(platformAuditLogs)
+    .set({ afterDiff: mutation(afterDiff) })
+    .where(eq(platformAuditLogs.id, terminal.id));
+};
+
+const tamperTerminalResponse = async (
+  idempotencyRequestId: string,
+  mutation: AuditResponseMutation,
+) =>
+  tamperTerminalAfterDiff(idempotencyRequestId, (afterDiff) => {
+    if (!afterDiff.response || typeof afterDiff.response !== 'object') {
+      throw new Error('terminal response is required');
+    }
+    return {
+      ...afterDiff,
+      response: mutation(afterDiff.response as Record<string, unknown>),
+    };
+  });
+
 const cleanup = async () => {
   await db.delete(platformIdentityProviderTestAttempts);
   await db.delete(platformIdentityProviderSecrets);
@@ -48,7 +91,10 @@ const cleanup = async () => {
 };
 
 beforeEach(cleanup);
-afterEach(cleanup);
+afterEach(async () => {
+  vi.useRealTimers();
+  await cleanup();
+});
 
 const createDraft = () =>
   admin.create('admin-1', {
@@ -111,10 +157,22 @@ describe('IdentityProviderPublicationService', () => {
       providerKey: 'work',
       scopes: [...GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE.scopes],
       secretFingerprint: 'a'.repeat(64),
+      secretUpdatedAt: '2026-07-19T00:00:00.000Z',
       type: 'generic_oidc',
       usePkce: true,
     };
     expect(parsePublishedIdentityProviderPayload(valid)).toEqual(valid);
+    const { secretUpdatedAt: _secretUpdatedAt, ...legacy } = valid;
+    expect(parsePublishedIdentityProviderPayload(legacy)).toEqual({
+      ...legacy,
+      secretUpdatedAt: undefined,
+    });
+    expect(
+      parsePublishedIdentityProviderPayload({
+        ...valid,
+        secretUpdatedAt: '2026-07-19T00:00:00Z',
+      }),
+    ).toBeNull();
     expect(
       parsePublishedIdentityProviderPayload({ ...valid, domainAllowlist: ['example.test', 42] }),
     ).toBeNull();
@@ -145,16 +203,155 @@ describe('IdentityProviderPublicationService', () => {
       status: 'pending_restart',
     });
     const [revision] = await db.select().from(platformResourceRevisions);
+    const [provider] = await db
+      .select({ fingerprint: platformIdentityProviders.secretFingerprint })
+      .from(platformIdentityProviders)
+      .where(eq(platformIdentityProviders.id, draft.id));
     expect(revision).toMatchObject({
       resourceId: draft.id,
       resourceType: 'oidc',
-      secretFingerprint: draft.secret.fingerprint,
+      secretFingerprint: provider.fingerprint,
       status: 'published',
     });
     const serialized = JSON.stringify(revision);
     expect(serialized).not.toContain('fake-client-secret-for-test');
     expect(serialized).not.toContain('kms://');
     expect(serialized).not.toContain('ciphertext');
+  });
+
+  it('replays publish and rollback with the immutable timestamp after storing the same secret again', async () => {
+    const draft = await createDraft();
+    const [initialSecret] = await db
+      .select()
+      .from(platformIdentityProviderSecrets)
+      .where(eq(platformIdentityProviderSecrets.providerId, draft.id));
+    const [initialProvider] = await db
+      .select()
+      .from(platformIdentityProviders)
+      .where(eq(platformIdentityProviders.id, draft.id));
+    const secondUpdatedAt = new Date(initialProvider.secretUpdatedAt!.getTime() + 5000);
+    vi.useFakeTimers();
+    vi.setSystemTime(secondUpdatedAt);
+    const stored = await new IdentityProviderSecretStore(db, secrets).persistClientSecret({
+      expectedRevision: draft.revision,
+      providerId: draft.id,
+      value: 'fake-client-secret-for-test',
+    });
+    vi.useRealTimers();
+    const [sameSecret] = await db
+      .select()
+      .from(platformIdentityProviderSecrets)
+      .where(eq(platformIdentityProviderSecrets.providerId, draft.id));
+    const [updatedProvider] = await db
+      .select()
+      .from(platformIdentityProviders)
+      .where(eq(platformIdentityProviders.id, draft.id));
+    expect(sameSecret.id).toBe(initialSecret.id);
+    expect(sameSecret.createdAt).toEqual(initialSecret.createdAt);
+    expect(updatedProvider.secretUpdatedAt).toEqual(secondUpdatedAt);
+    expect(stored.updatedAt).toEqual(secondUpdatedAt);
+
+    await recordSuccessfulTest(draft.id);
+    const publishInput = {
+      expectedRevision: stored.revision,
+      id: draft.id,
+      reason: 'publish same-secret timestamp',
+      requestId: requestId(52),
+    };
+    const published = await publication.publish('admin-1', publishInput);
+    const [revision] = await db.select().from(platformResourceRevisions);
+    expect((revision.payload as Record<string, unknown>).secretUpdatedAt).toBe(
+      secondUpdatedAt.toISOString(),
+    );
+    await tamperTerminalResponse(publishInput.requestId, (response) => {
+      const { secretUpdatedAt, ...legacy } = response;
+      return {
+        ...legacy,
+        fingerprint: sameSecret.fingerprint,
+        fingerprintUpdatedAt: secretUpdatedAt,
+      };
+    });
+    await db
+      .update(platformIdentityProviders)
+      .set({ displayName: 'Mutable after publish' })
+      .where(eq(platformIdentityProviders.id, draft.id));
+    const publishReplay = await publication.publish('admin-1', publishInput);
+    expect(publishReplay).toEqual(published);
+    expect(publishReplay.secret.updatedAt).toEqual(secondUpdatedAt);
+
+    const rollbackInput = {
+      expectedRevision: published.revision,
+      id: draft.id,
+      reason: 'rollback same-secret timestamp',
+      requestId: requestId(53),
+      targetRevision: published.revision,
+    };
+    const restored = await publication.rollback('admin-1', rollbackInput);
+    expect(restored.secret.updatedAt).toEqual(secondUpdatedAt);
+    await tamperTerminalResponse(rollbackInput.requestId, (response) => {
+      const { secretUpdatedAt, ...legacy } = response;
+      return {
+        ...legacy,
+        fingerprint: sameSecret.fingerprint,
+        fingerprintUpdatedAt: secretUpdatedAt,
+      };
+    });
+    await db
+      .update(platformIdentityProviders)
+      .set({ displayName: 'Mutable after rollback', revision: restored.revision + 1 })
+      .where(eq(platformIdentityProviders.id, draft.id));
+    const rollbackReplay = await publication.rollback('admin-1', rollbackInput);
+    expect(rollbackReplay).toEqual(restored);
+    expect(rollbackReplay.secret.updatedAt).toEqual(secondUpdatedAt);
+  });
+
+  it('rolls back and replays a legacy revision using private secret creation time', async () => {
+    const draft = await createDraft();
+    await recordSuccessfulTest(draft.id);
+    const published = await publication.publish('admin-1', {
+      expectedRevision: draft.revision,
+      id: draft.id,
+      reason: 'publish before legacy upgrade',
+      requestId: requestId(54),
+    });
+    const [revision] = await db.select().from(platformResourceRevisions);
+    const { secretUpdatedAt: _secretUpdatedAt, ...legacyPayload } = revision.payload as Record<
+      string,
+      unknown
+    >;
+    await db
+      .update(platformResourceRevisions)
+      .set({ checksum: checksumPayload(legacyPayload), payload: legacyPayload })
+      .where(eq(platformResourceRevisions.id, revision.id));
+    const [secret] = await db
+      .select()
+      .from(platformIdentityProviderSecrets)
+      .where(eq(platformIdentityProviderSecrets.providerId, draft.id));
+    const input = {
+      expectedRevision: published.revision,
+      id: draft.id,
+      reason: 'rollback legacy revision',
+      requestId: requestId(55),
+      targetRevision: published.revision,
+    };
+    const restored = await publication.rollback('admin-1', input);
+    expect(restored.secret.updatedAt).toEqual(secret.createdAt);
+    await tamperTerminalResponse(input.requestId, (response) => {
+      const { secretUpdatedAt, ...legacy } = response;
+      return {
+        ...legacy,
+        fingerprint: secret.fingerprint,
+        fingerprintUpdatedAt: secretUpdatedAt,
+      };
+    });
+    await db
+      .update(platformIdentityProviders)
+      .set({ displayName: 'Mutable legacy rollback', revision: restored.revision + 1 })
+      .where(eq(platformIdentityProviders.id, draft.id));
+
+    const replay = await publication.rollback('admin-1', input);
+    expect(replay).toEqual(restored);
+    expect(replay.secret.updatedAt).toEqual(secret.createdAt);
   });
 
   it('returns one exact result for concurrent requests with a single revision and terminal', async () => {
@@ -181,10 +378,15 @@ describe('IdentityProviderPublicationService', () => {
     }
     const first = fulfilled[0]!;
     for (const result of fulfilled) expect(result.value).toEqual(first.value);
+    await db
+      .update(platformIdentityProviders)
+      .set({ displayName: 'Later mutable draft', revision: draft.revision + 2, status: 'draft' })
+      .where(eq(platformIdentityProviders.id, draft.id));
     const laterReplay = await publication.publish('admin-1', input);
 
     expect(laterReplay).toEqual(first.value);
-    expect(await db.select().from(platformResourceRevisions)).toHaveLength(1);
+    const revisions = await db.select().from(platformResourceRevisions);
+    expect(revisions).toHaveLength(1);
     const audits = await db.select().from(platformAuditLogs);
     const publishAudits = audits.filter(
       (audit) => audit.action === 'admin.identityProviders.publish',
@@ -192,6 +394,90 @@ describe('IdentityProviderPublicationService', () => {
     expect(publishAudits.filter((audit) => audit.result === 'success')).toHaveLength(1);
     expect(publishAudits.filter((audit) => audit.result === 'failure')).toHaveLength(0);
     expect(publishAudits[0]?.requestId).toBe(input.requestId);
+    expect(JSON.stringify(publishAudits[0])).not.toContain(revisions[0]!.secretFingerprint!);
+    expect(JSON.stringify(publishAudits[0])).not.toMatch(/fingerprint/i);
+  });
+
+  it.each<[string, AuditResponseMutation]>([
+    ['id', (response) => ({ ...response, id: 'provider-tampered' })],
+    ['displayName', (response) => ({ ...response, displayName: 'Tampered login' })],
+    ['revision', (response) => ({ ...response, revision: Number(response.revision) + 1 })],
+    ['status', (response) => ({ ...response, status: 'draft' })],
+    ['isConfigured', (response) => ({ ...response, isConfigured: false })],
+    [
+      'secretUpdatedAt',
+      (response) => ({ ...response, secretUpdatedAt: new Date(0).toISOString() }),
+    ],
+    ['legacy fingerprint', (response) => ({ ...response, fingerprint: 'f'.repeat(64) })],
+    ['providerKey', (response) => ({ ...response, providerKey: 'tampered' })],
+  ])('fails closed when a publish replay response tampers %s', async (_field, mutation) => {
+    const draft = await createDraft();
+    await recordSuccessfulTest(draft.id);
+    const input = {
+      expectedRevision: draft.revision,
+      id: draft.id,
+      reason: 'publish adversarial replay',
+      requestId: requestId(40),
+    };
+    await publication.publish('admin-1', input);
+    await tamperTerminalResponse(input.requestId, mutation);
+
+    await expect(publication.publish('admin-1', input)).rejects.toMatchObject({
+      code: 'PLATFORM_IDENTITY_PROVIDER_IDEMPOTENCY_CONFLICT',
+    });
+  });
+
+  it('binds publish replay result revision to the original expected revision', async () => {
+    const draft = await createDraft();
+    await recordSuccessfulTest(draft.id);
+    const firstInput = {
+      expectedRevision: draft.revision,
+      id: draft.id,
+      reason: 'publish request-bound result',
+      requestId: requestId(47),
+    };
+    const firstPublished = await publication.publish('admin-1', firstInput);
+    const restored = await publication.rollback('admin-1', {
+      expectedRevision: firstPublished.revision,
+      id: draft.id,
+      reason: 'prepare another legitimate publication',
+      requestId: requestId(48),
+      targetRevision: firstPublished.revision,
+    });
+    const secondDraftRevision = restored.revision + 1;
+    await db
+      .update(platformIdentityProviders)
+      .set({ displayName: 'Another published source', revision: secondDraftRevision })
+      .where(eq(platformIdentityProviders.id, draft.id));
+    await recordSuccessfulTest(draft.id);
+    await publication.publish('admin-1', {
+      expectedRevision: secondDraftRevision,
+      id: draft.id,
+      reason: 'publish another legitimate source',
+      requestId: requestId(49),
+    });
+    const firstTerminal = await findTerminalAudit(firstInput.requestId);
+    const secondTerminal = await findTerminalAudit(requestId(49));
+    const firstAfterDiff = firstTerminal.afterDiff as Record<string, unknown>;
+    const secondAfterDiff = secondTerminal.afterDiff as Record<string, unknown>;
+    await db
+      .update(platformAuditLogs)
+      .set({
+        afterDiff: {
+          ...firstAfterDiff,
+          activation: secondAfterDiff.activation,
+          checksum: secondAfterDiff.checksum,
+          providerKey: secondAfterDiff.providerKey,
+          response: secondAfterDiff.response,
+          revision: secondAfterDiff.revision,
+        },
+        configRevision: secondTerminal.configRevision,
+      })
+      .where(eq(platformAuditLogs.id, firstTerminal.id));
+
+    await expect(publication.publish('admin-1', firstInput)).rejects.toMatchObject({
+      code: 'PLATFORM_IDENTITY_PROVIDER_IDEMPOTENCY_CONFLICT',
+    });
   });
 
   it('fences a paused expired owner after a recovery owner completes', async () => {
@@ -393,6 +679,10 @@ describe('IdentityProviderPublicationService', () => {
       requestId: requestId(4),
     });
 
+    await expect(publication.listPublishedRevisions(draft.id)).resolves.toEqual([
+      { publishedAt: expect.any(Date), revision: published.revision },
+    ]);
+
     const restored = await publication.rollback('admin-1', {
       expectedRevision: published.revision,
       id: draft.id,
@@ -405,7 +695,11 @@ describe('IdentityProviderPublicationService', () => {
       revision: published.revision + 1,
       status: 'draft',
     });
-    expect(restored.secret.fingerprint).toBe(draft.secret.fingerprint);
+    const [restoredRow] = await db
+      .select({ fingerprint: platformIdentityProviders.secretFingerprint })
+      .from(platformIdentityProviders)
+      .where(eq(platformIdentityProviders.id, draft.id));
+    expect(restored.secret.fingerprint).toBe(restoredRow.fingerprint);
     await expect(
       admin.delete('admin-1', {
         expectedRevision: restored.revision,
@@ -441,6 +735,10 @@ describe('IdentityProviderPublicationService', () => {
       targetRevision: published.revision,
     };
     const first = await publication.rollback('admin-1', input);
+    await db
+      .update(platformIdentityProviders)
+      .set({ displayName: 'Later rollback draft', revision: first.revision + 1 })
+      .where(eq(platformIdentityProviders.id, draft.id));
     const replay = await publication.rollback('admin-1', input);
 
     expect(replay).toEqual(first);
@@ -449,6 +747,133 @@ describe('IdentityProviderPublicationService', () => {
     );
     expect(rollbackAudits).toHaveLength(1);
     expect(rollbackAudits[0]?.requestId).toBe(input.requestId);
+    const [revision] = await db.select().from(platformResourceRevisions);
+    expect(JSON.stringify(rollbackAudits[0])).not.toContain(revision!.secretFingerprint!);
+    expect(JSON.stringify(rollbackAudits[0])).not.toMatch(/fingerprint/i);
+  });
+
+  it.each<[string, AuditResponseMutation]>([
+    ['id', (response) => ({ ...response, id: 'provider-tampered' })],
+    ['displayName', (response) => ({ ...response, displayName: 'Tampered login' })],
+    ['revision', (response) => ({ ...response, revision: Number(response.revision) + 1 })],
+    ['status', (response) => ({ ...response, status: 'pending_restart' })],
+    ['isConfigured', (response) => ({ ...response, isConfigured: false })],
+    [
+      'secretUpdatedAt',
+      (response) => ({ ...response, secretUpdatedAt: new Date(0).toISOString() }),
+    ],
+    ['legacy fingerprint', (response) => ({ ...response, fingerprint: 'f'.repeat(64) })],
+    ['providerKey', (response) => ({ ...response, providerKey: 'tampered' })],
+  ])('fails closed when a rollback replay response tampers %s', async (_field, mutation) => {
+    const draft = await createDraft();
+    await recordSuccessfulTest(draft.id);
+    const published = await publication.publish('admin-1', {
+      expectedRevision: draft.revision,
+      id: draft.id,
+      reason: 'publish for adversarial rollback',
+      requestId: requestId(41),
+    });
+    const input = {
+      expectedRevision: published.revision,
+      id: draft.id,
+      reason: 'rollback adversarial replay',
+      requestId: requestId(42),
+      targetRevision: published.revision,
+    };
+    await publication.rollback('admin-1', input);
+    await tamperTerminalResponse(input.requestId, mutation);
+
+    await expect(publication.rollback('admin-1', input)).rejects.toMatchObject({
+      code: 'PLATFORM_IDENTITY_PROVIDER_IDEMPOTENCY_CONFLICT',
+    });
+  });
+
+  it('binds rollback replay to the request target when audit source and response are changed together', async () => {
+    const draft = await createDraft();
+    await recordSuccessfulTest(draft.id);
+    const firstPublished = await publication.publish('admin-1', {
+      expectedRevision: draft.revision,
+      id: draft.id,
+      reason: 'publish first canonical source',
+      requestId: requestId(43),
+    });
+    const firstRollback = await publication.rollback('admin-1', {
+      expectedRevision: firstPublished.revision,
+      id: draft.id,
+      reason: 'restore first source for a second draft',
+      requestId: requestId(44),
+      targetRevision: firstPublished.revision,
+    });
+    const secondDraftRevision = firstRollback.revision + 1;
+    await db
+      .update(platformIdentityProviders)
+      .set({ displayName: 'Second canonical source', revision: secondDraftRevision })
+      .where(eq(platformIdentityProviders.id, draft.id));
+    await recordSuccessfulTest(draft.id);
+    const secondPublished = await publication.publish('admin-1', {
+      expectedRevision: secondDraftRevision,
+      id: draft.id,
+      reason: 'publish second canonical source',
+      requestId: requestId(45),
+    });
+    const input = {
+      expectedRevision: secondPublished.revision,
+      id: draft.id,
+      reason: 'rollback with request-bound source',
+      requestId: requestId(46),
+      targetRevision: firstPublished.revision,
+    };
+    await publication.rollback('admin-1', input);
+    await tamperTerminalAfterDiff(input.requestId, (afterDiff) => ({
+      ...afterDiff,
+      restoredFromRevision: secondPublished.revision,
+      response: {
+        ...(afterDiff.response as Record<string, unknown>),
+        displayName: 'Second canonical source',
+      },
+    }));
+
+    await expect(publication.rollback('admin-1', input)).rejects.toMatchObject({
+      code: 'PLATFORM_IDENTITY_PROVIDER_IDEMPOTENCY_CONFLICT',
+    });
+  });
+
+  it('binds rollback replay result revision to the original expected revision', async () => {
+    const draft = await createDraft();
+    await recordSuccessfulTest(draft.id);
+    const published = await publication.publish('admin-1', {
+      expectedRevision: draft.revision,
+      id: draft.id,
+      reason: 'publish for request-bound rollback result',
+      requestId: requestId(50),
+    });
+    const input = {
+      expectedRevision: published.revision,
+      id: draft.id,
+      reason: 'rollback with request-bound result',
+      requestId: requestId(51),
+      targetRevision: published.revision,
+    };
+    const result = await publication.rollback('admin-1', input);
+    const terminal = await findTerminalAudit(input.requestId);
+    const afterDiff = terminal.afterDiff as Record<string, unknown>;
+    const response = afterDiff.response as Record<string, unknown>;
+    const tamperedResultRevision = result.revision + 10;
+    await db
+      .update(platformAuditLogs)
+      .set({
+        afterDiff: {
+          ...afterDiff,
+          response: { ...response, revision: tamperedResultRevision },
+          revision: tamperedResultRevision,
+        },
+        configRevision: tamperedResultRevision,
+      })
+      .where(eq(platformAuditLogs.id, terminal.id));
+
+    await expect(publication.rollback('admin-1', input)).rejects.toMatchObject({
+      code: 'PLATFORM_IDENTITY_PROVIDER_IDEMPOTENCY_CONFLICT',
+    });
   });
 
   it.each([

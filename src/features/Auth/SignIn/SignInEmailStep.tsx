@@ -10,6 +10,9 @@ import AuthIcons from '@/components/AuthIcons';
 import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import AuthCard from '@/features/AuthCard';
 import { AuthAgreement } from '@/features/AuthShell';
+import type { GlobalServerConfig } from '@/types/serverConfig';
+
+import { EMAIL_REGEX, shouldShowLocalEmailForm, USERNAME_REGEX } from './validation';
 
 const styles = createStaticStyles(({ css, cssVar }) => ({
   inlineLink: css`
@@ -19,8 +22,7 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
   `,
 }));
 
-export const EMAIL_REGEX = /^[^\s@]+@[^\s@][^\s.@]*\.[^\s@]+$/;
-export const USERNAME_REGEX = /^\w+$/;
+export { EMAIL_REGEX, USERNAME_REGEX } from './validation';
 
 // Pin both the provider logo and the loading spinner to the same spot so the
 // spinner doesn't jump when a social button enters its loading state.
@@ -36,6 +38,7 @@ export interface SignInEmailStepProps {
   isSocialOnly: boolean;
   lastAuthProvider?: string | null;
   loading: boolean;
+  oAuthSSOProviderMetadata?: NonNullable<GlobalServerConfig['oAuthSSOProviderMetadata']>;
   oAuthSSOProviders: string[];
   onCheckUser: (values: { email: string }) => Promise<void>;
   onGoToSignup: () => void;
@@ -53,6 +56,7 @@ export const SignInEmailStep = ({
   lastAuthProvider,
   loading,
   oAuthSSOProviders,
+  oAuthSSOProviderMetadata = [],
   serverConfigInit,
   socialLoading,
   onCheckUser,
@@ -78,15 +82,36 @@ export const SignInEmailStep = ({
   );
 
   const getProviderLabel = (provider: string) => {
+    const configuredLabel = oAuthSSOProviderMetadata.find((item) => item.id === provider)?.label;
+    if (configuredLabel) return configuredLabel;
     const normalized = getProviderName(provider);
     const normalizedKey = normalized.replaceAll(/[^\da-z]/gi, '');
     const key = `betterAuth.signin.continueWith${normalizedKey}`;
     return t(key, { defaultValue: `Continue with ${normalized}` });
   };
 
+  const getProviderIcon = (provider: string) => {
+    const configured = oAuthSSOProviderMetadata.find((item) => item.id === provider)?.icon;
+    const safeConfiguredIcon =
+      configured && (configured.startsWith('https://') || configured.startsWith('data:image/'))
+        ? configured
+        : null;
+    return safeConfiguredIcon ? (
+      <img alt="" height={18} src={safeConfiguredIcon} style={PROVIDER_ICON_STYLE} width={18} />
+    ) : (
+      <Icon icon={AuthIcons(provider, 18)} style={PROVIDER_ICON_STYLE} />
+    );
+  };
+
   // Config is injected synchronously via window.__SERVER_CONFIG__, so the email
   // form is the primary path unless the account is social-only.
-  const showEmailForm = !disableEmailPassword && !isSocialOnly;
+  const hasDatabaseProvider = oAuthSSOProviderMetadata.some((provider) => provider.label !== null);
+  // Database OIDC augments the local break-glass path; it must never hide it.
+  const showEmailForm = shouldShowLocalEmailForm({
+    disableEmailPassword,
+    hasConfiguredDatabaseProvider: hasDatabaseProvider,
+    isSocialOnly,
+  });
 
   return (
     <AuthCard title={t('signin.subtitle', { appName: branding.name })}>
@@ -96,7 +121,7 @@ export const SignInEmailStep = ({
             const button = (
               <Button
                 block
-                icon={<Icon icon={AuthIcons(provider, 18)} style={PROVIDER_ICON_STYLE} />}
+                icon={getProviderIcon(provider)}
                 iconProps={{ size: 18, style: PROVIDER_ICON_STYLE }}
                 key={provider}
                 loading={socialLoading === provider}
@@ -126,9 +151,12 @@ export const SignInEmailStep = ({
           {showEmailForm && divider}
         </Flexbox>
       )}
-      {serverConfigInit && disableEmailPassword && oAuthSSOProviders.length === 0 && (
-        <Alert showIcon description={t('betterAuth.signin.ssoOnlyNoProviders')} type="warning" />
-      )}
+      {serverConfigInit &&
+        disableEmailPassword &&
+        !hasDatabaseProvider &&
+        oAuthSSOProviders.length === 0 && (
+          <Alert showIcon description={t('betterAuth.signin.ssoOnlyNoProviders')} type="warning" />
+        )}
       {showEmailForm && (
         <Form
           form={form}

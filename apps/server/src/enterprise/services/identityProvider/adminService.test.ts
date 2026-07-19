@@ -67,16 +67,19 @@ describe('AdminIdentityProviderService', () => {
     expect(created).toMatchObject({
       providerKey: 'work',
       revision: 1,
-      secret: { configured: true },
+      secret: { configured: true, updatedAt: expect.any(Date) },
     });
-    expect(JSON.stringify(created)).not.toContain(plaintext);
+    expect(JSON.stringify(created)).not.toMatch(new RegExp(`${plaintext}|fingerprint|digest`));
     const [secret] = await db.select().from(platformIdentityProviderSecrets);
     expect(secret.ciphertext).toMatch(/^aihub\.secret\.v1\./);
     expect(secret.ciphertext).not.toContain(plaintext);
-    await expect(service.list({ limit: 50 })).resolves.toMatchObject({
+    const listed = await service.list({ limit: 50 });
+    expect(listed).toMatchObject({
       items: [{ id: created.id, providerKey: 'work' }],
       nextCursor: null,
     });
+    expect(JSON.stringify(listed)).not.toMatch(/fingerprint|digest|[a-f0-9]{64}/i);
+    expect(JSON.stringify(await service.get(created.id))).not.toMatch(/fingerprint|digest/i);
     expect(await db.select().from(platformAuditLogs)).toContainEqual(
       expect.objectContaining({ action: 'admin.identityProviders.create', result: 'success' }),
     );
@@ -84,6 +87,7 @@ describe('AdminIdentityProviderService', () => {
 
   it('uses revision CAS for public and secret updates, then deletes draft-only data', async () => {
     const created = await service.create('admin-1', draftInput({ operation: 'clear' }));
+    expect(created.secret).toEqual({ configured: false, updatedAt: null });
     const updated = await service.update('admin-2', {
       ...draftInput({ operation: 'clear' }),
       displayName: 'Updated work login',
@@ -92,6 +96,7 @@ describe('AdminIdentityProviderService', () => {
       secret: { operation: 'keep' },
     });
     expect(updated).toMatchObject({ displayName: 'Updated work login', revision: 1 });
+    expect(JSON.stringify(updated)).not.toMatch(/fingerprint|digest/i);
     await expect(
       service.update('admin-2', {
         ...draftInput({ operation: 'clear' }),

@@ -124,7 +124,6 @@ export const PLATFORM_IDENTITY_PROVIDER_TEMPLATES = {
 
 export interface PlatformIdentityProviderSecretState {
   configured: boolean;
-  fingerprint: string | null;
   updatedAt: Date | null;
 }
 

@@ -86,6 +86,22 @@ export const buildIdentityProviderClaimPreview = (
   return { claims: previewClaims, issues, valid: issues.length === 0 };
 };
 
+export const summarizeIdentityProviderClaimPreview = (
+  preview: PlatformIdentityProviderClaimPreview | null,
+) => {
+  if (!preview) return null;
+  const claims: Partial<
+    Record<
+      (typeof PLATFORM_IDENTITY_PROVIDER_PREVIEW_CLAIMS)[number],
+      { present: true; type: 'string' }
+    >
+  > = {};
+  for (const claim of PLATFORM_IDENTITY_PROVIDER_PREVIEW_CLAIMS) {
+    if (preview.claims[claim] !== undefined) claims[claim] = { present: true, type: 'string' };
+  }
+  return { claims, issues: preview.issues, valid: preview.valid };
+};
+
 const assertNonce = (payload: JWTPayload, expectedHash: string) => {
   if (typeof payload.nonce !== 'string') throw new Error('OIDC_TEST_NONCE_INVALID');
   const actual = Buffer.from(hashIdentityProviderTestValue(payload.nonce), 'hex');
@@ -546,7 +562,7 @@ export class IdentityProviderTestFlowService {
     await this.reapExpiredBestEffort();
     const result = await this.attempts.getResult(input);
     if (!result) throw new Error('PLATFORM_IDENTITY_PROVIDER_NOT_FOUND');
-    return result;
+    return { ...result, result: summarizeIdentityProviderClaimPreview(result.result) };
   };
 
   private exchangeCode = async (input: {

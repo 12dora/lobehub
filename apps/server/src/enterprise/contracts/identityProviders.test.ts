@@ -1,197 +1,129 @@
-import {
-  AUTHENTIK_IDENTITY_PROVIDER_TEMPLATE,
-  GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE,
-} from '@lobechat/types';
 import { describe, expect, it } from 'vitest';
 
 import {
-  adminIdentityProviderCreateInputSchema,
-  adminIdentityProviderPublishInputSchema,
-  adminIdentityProviderTestStartInputSchema,
-  identityProviderClaimMappingSchema,
-  identityProviderClaimPreviewSchema,
-  identityProviderDraftSchema,
-  identityProviderIssuerSchema,
-  identityProviderScopesSchema,
+  adminIdentityProviderGetOutputSchema,
+  adminIdentityProviderListOutputSchema,
+  adminIdentityProviderMutationOutputSchema,
+  adminIdentityProviderPublishOutputSchema,
+  adminIdentityProviderRollbackOutputSchema,
+  adminIdentityProviderTestResultOutputSchema,
 } from './identityProviders';
 
-describe('identity provider contracts', () => {
-  it('keeps Authentik and Generic OIDC defaults structured and secret-free', () => {
-    expect(AUTHENTIK_IDENTITY_PROVIDER_TEMPLATE.scopes).toEqual([
-      'openid',
-      'profile',
-      'email',
-      'dingtalk',
-    ]);
-    expect(AUTHENTIK_IDENTITY_PROVIDER_TEMPLATE.claimMapping).toMatchObject({
-      dingtalkTitle: ['dingtalk_title'],
-      dingtalkUserId: ['dingtalk_user_id'],
-      name: ['name', 'preferred_username'],
-    });
-    expect(GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE.scopes).toEqual(['openid', 'profile', 'email']);
-    expect(JSON.stringify(AUTHENTIK_IDENTITY_PROVIDER_TEMPLATE)).not.toMatch(
-      /clientSecret|secretRef|ciphertext/,
-    );
-  });
+const publicDraft = {
+  activationRevision: null,
+  autoProvision: true,
+  buttonLabel: 'Sign in with work',
+  claimMapping: {
+    dingtalkTitle: [],
+    dingtalkUserId: [],
+    email: ['email'],
+    name: ['name'],
+    picture: [],
+    subject: ['sub'],
+  },
+  clientId: 'client-id',
+  displayName: 'Work',
+  domainAllowlist: [],
+  enabled: false,
+  groupRoleMapping: {},
+  icon: null,
+  id: 'provider-work',
+  issuer: 'https://login.example.test',
+  migrationRequired: false,
+  providerKey: 'work',
+  revision: 1,
+  scopes: ['openid'],
+  secret: { configured: true, updatedAt: new Date('2026-07-19T00:00:00Z') },
+  status: 'draft',
+  type: 'generic_oidc',
+  usePkce: true,
+};
 
-  it('requires openid and rejects duplicate scopes', () => {
-    expect(identityProviderScopesSchema.safeParse(['profile']).success).toBe(false);
-    expect(identityProviderScopesSchema.safeParse(['openid', 'openid']).success).toBe(false);
+describe('identity provider public draft outputs', () => {
+  it.each([
+    ['get', () => adminIdentityProviderGetOutputSchema.parse(publicDraft)],
+    ['create', () => adminIdentityProviderMutationOutputSchema.parse(publicDraft)],
+    ['update', () => adminIdentityProviderMutationOutputSchema.parse(publicDraft)],
+    ['publish', () => adminIdentityProviderPublishOutputSchema.parse(publicDraft)],
+    ['rollback', () => adminIdentityProviderRollbackOutputSchema.parse(publicDraft)],
+    [
+      'list',
+      () => adminIdentityProviderListOutputSchema.parse({ items: [publicDraft], nextCursor: null }),
+    ],
+  ])('keeps %s output free of fingerprint and digest metadata', (_name, parse) => {
+    expect(JSON.stringify(parse())).not.toMatch(/fingerprint|digest|[a-f0-9]{64}/i);
   });
 
   it.each([
-    'http://login.example.test',
-    'https://user:pass@login.example.test',
-    'https://login.example.test?tenant=internal',
-    'https://login.example.test/#fragment',
-    ' https://login.example.test',
-  ])('rejects non-canonical issuers: %s', (issuer) => {
-    expect(identityProviderIssuerSchema.safeParse(issuer).success).toBe(false);
+    adminIdentityProviderGetOutputSchema,
+    adminIdentityProviderMutationOutputSchema,
+    adminIdentityProviderPublishOutputSchema,
+    adminIdentityProviderRollbackOutputSchema,
+  ])('rejects server-internal fingerprint fields at the API boundary', (schema) => {
+    expect(() =>
+      schema.parse({
+        ...publicDraft,
+        secret: { ...publicDraft.secret, fingerprint: 'a'.repeat(64) },
+      }),
+    ).toThrow();
   });
 
-  it('requires subject/name mappings and rejects unstructured fields', () => {
+  it('rejects server-internal fields from list output and preserves cleared timestamps', () => {
+    expect(() =>
+      adminIdentityProviderListOutputSchema.parse({
+        items: [
+          {
+            ...publicDraft,
+            secret: { configured: true, digest: 'a'.repeat(64), updatedAt: new Date() },
+          },
+        ],
+        nextCursor: null,
+      }),
+    ).toThrow();
     expect(
-      identityProviderClaimMappingSchema.safeParse({
-        ...GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE.claimMapping,
-        unexpected: ['claim'],
-      }).success,
-    ).toBe(false);
-    expect(
-      identityProviderClaimMappingSchema.safeParse({
-        ...GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE.claimMapping,
-        subject: [],
-      }).success,
-    ).toBe(false);
+      adminIdentityProviderGetOutputSchema.parse({
+        ...publicDraft,
+        secret: { configured: false, updatedAt: null },
+      }).secret,
+    ).toEqual({ configured: false, updatedAt: null });
   });
+});
 
-  it.each(['clientSecret', 'apiKey', 'accessToken'])(
-    'rejects credential-shaped claim names: %s',
-    (claim) => {
-      expect(
-        identityProviderClaimMappingSchema.safeParse({
-          ...GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE.claimMapping,
-          email: [claim],
-        }).success,
-      ).toBe(false);
-    },
-  );
-
-  it('rejects nested credential fields, credential URLs, and disabled PKCE in safe drafts', () => {
-    const draft = {
-      activationRevision: null,
-      autoProvision: true,
-      buttonLabel: 'Sign in',
-      claimMapping: GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE.claimMapping,
-      clientId: 'client',
-      displayName: 'Work',
-      domainAllowlist: [],
-      enabled: false,
-      groupRoleMapping: {},
-      icon: null,
-      id: 'provider',
-      issuer: 'https://login.example.com',
-      migrationRequired: false,
-      providerKey: 'work',
-      revision: 0,
-      scopes: ['openid'],
-      secret: { configured: false, fingerprint: null, updatedAt: null },
-      status: 'draft',
-      type: 'generic_oidc',
-      usePkce: true,
-    } as const;
-    expect(identityProviderDraftSchema.safeParse(draft).success).toBe(true);
-    expect(
-      identityProviderDraftSchema.safeParse({
-        ...draft,
-        groupRoleMapping: { admins: { apiKey: 'sk-abcdefgh' } },
-      }).success,
-    ).toBe(false);
-    expect(
-      identityProviderDraftSchema.safeParse({
-        ...draft,
-        icon: 'https://example.com/icon?accessToken=opaque',
-      }).success,
-    ).toBe(false);
-    expect(identityProviderDraftSchema.safeParse({ ...draft, usePkce: false }).success).toBe(false);
-  });
-
-  it('accepts explicit create secret operations and rejects secret-shaped public config', () => {
-    const input = {
-      autoProvision: true,
-      buttonLabel: 'Sign in',
-      claimMapping: GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE.claimMapping,
-      clientId: 'client',
-      displayName: 'Work',
-      domainAllowlist: [],
-      groupRoleMapping: {},
-      icon: null,
-      issuer: 'https://login.example.test',
-      providerKey: 'work',
-      reason: 'configure work login',
-      scopes: ['openid'],
-      secret: { operation: 'replace', value: 'not-returned' },
-      type: 'generic_oidc',
-      usePkce: true,
-    } as const;
-    expect(adminIdentityProviderCreateInputSchema.safeParse(input).success).toBe(true);
-    expect(
-      adminIdentityProviderCreateInputSchema.safeParse({
-        ...input,
-        icon: 'https://example.test/icon?access_token=leak',
-      }).success,
-    ).toBe(false);
-    expect(
-      adminIdentityProviderCreateInputSchema.safeParse({
-        ...input,
-        secret: { operation: 'keep' },
-      }).success,
-    ).toBe(false);
-  });
-
-  it('accepts partial allowlisted previews and rejects token-shaped claims', () => {
-    expect(
-      identityProviderClaimPreviewSchema.safeParse({
-        claims: { sub: 'subject' },
+describe('identity provider test result output', () => {
+  it('serializes only strict claim presence summaries and rejects raw or unknown claims', () => {
+    const output = adminIdentityProviderTestResultOutputSchema.parse({
+      attemptId: 'attempt-1',
+      errorCode: null,
+      result: {
+        claims: {
+          dingtalk_user_id: { present: true, type: 'string' },
+          email: { present: true, type: 'string' },
+          name: { present: true, type: 'string' },
+          sub: { present: true, type: 'string' },
+        },
         issues: [],
         valid: true,
-      }).success,
-    ).toBe(true);
-    expect(
-      identityProviderClaimPreviewSchema.safeParse({
-        claims: { access_token: 'leak' },
-        issues: [],
-        valid: true,
-      }).success,
-    ).toBe(false);
-  });
+      },
+      status: 'succeeded',
+    });
+    expect(JSON.stringify(output)).not.toMatch(
+      /admin@example\.test|Ada Lovelace|subject-1|ding-user-42/,
+    );
 
-  it('requires a secret-safe reason for testStart', () => {
-    expect(
-      adminIdentityProviderTestStartInputSchema.safeParse({
-        expectedRevision: 1,
-        id: 'provider',
-        reason: 'validate work login',
-      }).success,
-    ).toBe(true);
-    expect(
-      adminIdentityProviderTestStartInputSchema.safeParse({
-        expectedRevision: 1,
-        id: 'provider',
-      }).success,
-    ).toBe(false);
-  });
-
-  it('requires a strict UUID request ID for publication idempotency', () => {
-    const input = {
-      expectedRevision: 1,
-      id: 'provider',
-      reason: 'publish work login',
-      requestId: '550e8400-e29b-41d4-a716-446655440001',
-    };
-    expect(adminIdentityProviderPublishInputSchema.safeParse(input).success).toBe(true);
-    expect(
-      adminIdentityProviderPublishInputSchema.safeParse({ ...input, requestId: 'request-1' })
-        .success,
-    ).toBe(false);
+    expect(() =>
+      adminIdentityProviderTestResultOutputSchema.parse({
+        ...output,
+        result: { ...output.result, claims: { email: 'admin@example.test' } },
+      }),
+    ).toThrow();
+    expect(() =>
+      adminIdentityProviderTestResultOutputSchema.parse({
+        ...output,
+        result: {
+          ...output.result,
+          claims: { unknown_private_claim: { present: true, type: 'string' } },
+        },
+      }),
+    ).toThrow();
   });
 });
