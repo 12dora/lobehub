@@ -110,6 +110,8 @@ describe('IdentityProviderDiscoveryValidator', () => {
       metadata({ id_token_signing_alg_values_supported: ['HS256'] }),
       metadata({ id_token_signing_alg_values_supported: ['made-up'] }),
       metadata({ code_challenge_methods_supported: ['plain'] }),
+      metadata({ token_endpoint_auth_methods_supported: [] }),
+      metadata({ token_endpoint_auth_methods_supported: ['none'] }),
     ];
     for (const body of cases) {
       const validator = validatorFor({ transport: async () => response(body) });

@@ -19,9 +19,12 @@ import type { IdentityProviderDiscoveryValidator } from './discoveryValidator';
 import { verifyPlatformOidcIdToken } from './idTokenVerifier';
 import { IdentityProviderSecretStore } from './secretStore';
 import { IdentityProviderTestAttemptStore } from './testAttemptStore';
+import { exchangePlatformOidcAuthorizationCode } from './tokenExchange';
 
 const TOKEN_TIMEOUT_MS = 5000;
 const TOKEN_MAX_BYTES = 64 * 1024;
+
+export { createClientSecretBasicAuthorization } from './tokenExchange';
 
 type AuditAppender = (
   db: LobeChatDatabase | Transaction,
@@ -31,14 +34,6 @@ type AuditAppender = (
 const appendPlatformAudit: AuditAppender = async (db, input) => {
   await new PlatformAuditService(db).append(input);
 };
-
-const tokenResponseSchema = z
-  .object({
-    access_token: z.string().min(1).max(32_768).optional(),
-    id_token: z.string().min(1).max(32_768),
-    token_type: z.string().max(64).optional(),
-  })
-  .passthrough();
 
 const safeJson = async (response: Awaited<ReturnType<SafeOutboundHttpClient['fetch']>>) => {
   const contentType = response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase();
@@ -107,12 +102,6 @@ const failureCategory = (error: unknown): string => {
   }
   return 'oidc_test_failed';
 };
-
-const encodeFormCredential = (value: string): string =>
-  new URLSearchParams({ value }).toString().slice('value='.length);
-
-export const createClientSecretBasicAuthorization = (clientId: string, clientSecret: string) =>
-  `Basic ${Buffer.from(`${encodeFormCredential(clientId)}:${encodeFormCredential(clientSecret)}`).toString('base64')}`;
 
 export const assertIdentityProviderAttemptCallbackOrigin = (
   redirectUri: string,
@@ -501,34 +490,12 @@ export class IdentityProviderTestFlowService {
     pkceVerifier: string;
     redirectUri: string;
   }) => {
-    const body = new URLSearchParams({
-      client_id: input.clientId,
-      code: input.code,
-      code_verifier: input.pkceVerifier,
-      grant_type: 'authorization_code',
-      redirect_uri: input.redirectUri,
+    return exchangePlatformOidcAuthorizationCode({
+      ...input,
+      errorCode: 'OIDC_TEST_REMOTE_INVALID',
+      expectedRedirectUri: input.redirectUri,
+      outbound: this.outbound,
+      redirectUri: input.redirectUri,
     });
-    const headers: Record<string, string> = { 'Content-Type': 'application/x-www-form-urlencoded' };
-    if (input.metadata.tokenEndpointAuthMethodsSupported.includes('client_secret_basic')) {
-      headers.Authorization = createClientSecretBasicAuthorization(
-        input.clientId,
-        input.clientSecret,
-      );
-    } else {
-      body.set('client_secret', input.clientSecret);
-    }
-    return tokenResponseSchema.parse(
-      await safeJson(
-        await this.outbound.fetch(input.metadata.tokenEndpoint, {
-          body: body.toString(),
-          headers,
-          maxRedirects: 0,
-          maxResponseBytes: TOKEN_MAX_BYTES,
-          method: 'POST',
-          secretBearing: true,
-          timeoutMs: TOKEN_TIMEOUT_MS,
-        }),
-      ),
-    );
   };
 }

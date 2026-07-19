@@ -11,7 +11,9 @@ import type { LobeChatDatabase, Transaction } from '@/database/type';
 import type { RuntimeIdentityProvider } from '@/libs/better-auth/sso/platformIdentityProvider';
 
 import { parseEnterpriseFeatureFlags } from '../../featureFlags';
+import { SafeOutboundHttpClient } from '../../security/outboundHttp';
 import { PlatformSecretService } from '../../security/secret';
+import { IdentityProviderDiscoveryValidator } from './discoveryValidator';
 import {
   identityProviderLkgGeneration,
   identityProviderLkgIdentity,
@@ -39,6 +41,7 @@ export type {
 interface LoadOptions {
   cache?: boolean;
   db?: LobeChatDatabase;
+  discovery?: Pick<IdentityProviderDiscoveryValidator, 'discover'>;
   env?: Record<string, string | undefined>;
 }
 
@@ -199,10 +202,12 @@ const loadDatabasePayload = async (input: {
 const snapshotGeneration = (rows: Awaited<ReturnType<typeof loadDatabasePayload>>): string =>
   identityProviderLkgGeneration(rows);
 
+type MaterializedIdentityProvider = Omit<RuntimeIdentityProvider, 'oidcMetadata'>;
+
 const materializeProviders = async (
   rows: Awaited<ReturnType<typeof loadDatabasePayload>>,
   secrets: PlatformSecretService,
-): Promise<RuntimeIdentityProvider[]> =>
+): Promise<MaterializedIdentityProvider[]> =>
   Promise.all(
     rows.map(async (row) => {
       const clientSecret = await secrets.decrypt(row.secretCiphertext);
@@ -211,6 +216,17 @@ const materializeProviders = async (
       }
       return { ...row.payload, clientSecret, revision: row.revision };
     }),
+  );
+
+const enrichRuntimeProviders = async (
+  providers: MaterializedIdentityProvider[],
+  discovery: Pick<IdentityProviderDiscoveryValidator, 'discover'>,
+): Promise<RuntimeIdentityProvider[]> =>
+  Promise.all(
+    providers.map(async (provider) => ({
+      ...provider,
+      oidcMetadata: await discovery.discover(provider.issuer),
+    })),
   );
 
 const toLkgPayload = (
@@ -305,6 +321,9 @@ const loadUncached = async (options: LoadOptions): Promise<IdentityProviderStart
   }
 
   const secrets = PlatformSecretService.tryFromEnv(env);
+  const discovery =
+    options.discovery ??
+    new IdentityProviderDiscoveryValidator(new SafeOutboundHttpClient({ mode: 'public-only' }));
   let databaseError: unknown = new Error('PLATFORM_IDENTITY_PROVIDER_SECRET_UNAVAILABLE');
   if (secrets) {
     try {
@@ -314,7 +333,6 @@ const loadUncached = async (options: LoadOptions): Promise<IdentityProviderStart
           db: tx,
           environmentProviderIds: new Set(environmentProviderIds),
         });
-        const databaseProviders = await materializeProviders(rows, secrets);
         const revision = identityRevision(rows);
         const generation = snapshotGeneration(rows);
         let lastError: string | null = null;
@@ -333,10 +351,14 @@ const loadUncached = async (options: LoadOptions): Promise<IdentityProviderStart
           });
           lastError = 'lkg_write_unavailable';
         }
-        return { databaseProviders, generation, lastError, revision };
+        return { generation, lastError, revision, rows };
       });
+      const databaseProviders = await enrichRuntimeProviders(
+        await materializeProviders(loaded.rows, secrets),
+        discovery,
+      );
       return {
-        databaseProviders: loaded.databaseProviders,
+        databaseProviders,
         generation: loaded.generation,
         health: loaded.lastError ? 'degraded' : 'healthy',
         identityRevision: loaded.revision,
@@ -344,7 +366,7 @@ const loadUncached = async (options: LoadOptions): Promise<IdentityProviderStart
         loadedAt,
         providerIds: [
           ...environmentProviderIds,
-          ...loaded.databaseProviders.map((provider) => provider.providerKey),
+          ...databaseProviders.map((provider) => provider.providerKey),
         ],
         source: 'database',
       };
@@ -359,7 +381,10 @@ const loadUncached = async (options: LoadOptions): Promise<IdentityProviderStart
       const lkg = await readIdentityProviderLkg({ env, secrets });
       if (lkg) {
         const rows = fromLkgPayload(lkg, new Set(environmentProviderIds));
-        const databaseProviders = await materializeProviders(rows, secrets);
+        const databaseProviders = await enrichRuntimeProviders(
+          await materializeProviders(rows, secrets),
+          discovery,
+        );
         return {
           databaseProviders,
           generation: snapshotGeneration(rows),

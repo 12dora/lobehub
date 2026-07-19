@@ -18,7 +18,7 @@ const issuer = 'https://login.example.test/application/o/work/';
 const clientId = 'client-id';
 const publicAddress = '93.184.216.34';
 
-const provider = {
+const baseProvider: Omit<RuntimeIdentityProvider, 'issuer' | 'oidcMetadata'> = {
   autoProvision: true,
   buttonLabel: 'Work login',
   claimMapping: {
@@ -36,14 +36,13 @@ const provider = {
   enabled: true,
   groupRoleMapping: {},
   icon: null,
-  issuer,
   providerKey: 'corp-oidc',
   revision: 4,
   scopes: ['openid', 'profile', 'email', 'dingtalk'],
   secretFingerprint: 'a'.repeat(64),
   type: 'authentik',
   usePkce: true,
-} as const satisfies RuntimeIdentityProvider;
+};
 
 const jsonResponse = (body: unknown): PinnedTransportResponse => ({
   body: Buffer.from(JSON.stringify(body)),
@@ -53,26 +52,26 @@ const jsonResponse = (body: unknown): PinnedTransportResponse => ({
 });
 
 const setup = async (options?: {
-  discovery?: Record<string, unknown>;
   jwks?: Record<string, unknown>;
+  token?: Record<string, unknown>;
   userInfo?: Record<string, unknown>;
 }) => {
   const { privateKey, publicKey } = await generateKeyPair('RS256');
   const publicJwk = { ...(await exportJWK(publicKey)), alg: 'RS256', kid: 'key-1', use: 'sig' };
-  const metadata = {
-    authorization_endpoint: 'https://login.example.test/application/o/authorize/',
-    code_challenge_methods_supported: ['S256'],
-    id_token_signing_alg_values_supported: ['RS256'],
+  const oidcMetadata = {
+    authorizationEndpoint: 'https://login.example.test/application/o/authorize/',
+    codeChallengeMethodsSupported: ['S256'],
+    idTokenSigningAlgValuesSupported: ['RS256'],
     issuer,
-    jwks_uri: 'https://login.example.test/application/o/work/jwks/',
-    response_types_supported: ['code'],
-    scopes_supported: ['openid', 'profile', 'email', 'dingtalk'],
-    subject_types_supported: ['public'],
-    token_endpoint: 'https://login.example.test/application/o/token/',
-    token_endpoint_auth_methods_supported: ['client_secret_basic'],
-    userinfo_endpoint: 'https://login.example.test/application/o/userinfo/',
-    ...options?.discovery,
+    jwksUri: 'https://login.example.test/application/o/work/jwks/',
+    responseTypesSupported: ['code'],
+    scopesSupported: ['openid', 'profile', 'email', 'dingtalk'],
+    subjectTypesSupported: ['public'],
+    tokenEndpoint: 'https://login.example.test/application/o/token/',
+    tokenEndpointAuthMethodsSupported: ['client_secret_basic'],
+    userinfoEndpoint: 'https://login.example.test/application/o/userinfo/',
   };
+  const provider = { ...baseProvider, issuer, oidcMetadata } satisfies RuntimeIdentityProvider;
   const userInfo = {
     avatar: 'https://cdn.example.test/ada.png',
     display_name: 'Ada',
@@ -84,9 +83,8 @@ const setup = async (options?: {
     ...options?.userInfo,
   };
   const transport = vi.fn<PinnedTransport>(async (request) => {
-    if (request.url.pathname.endsWith('/.well-known/openid-configuration')) {
-      return jsonResponse(metadata);
-    }
+    if (request.url.pathname.endsWith('/token/'))
+      return jsonResponse(options?.token ?? { access_token: 'access-token', id_token: 'id-token' });
     if (request.url.pathname.endsWith('/jwks/')) {
       return jsonResponse(options?.jwks ?? { keys: [publicJwk] });
     }
@@ -122,10 +120,32 @@ const setup = async (options?: {
       .setProtectedHeader({ alg: 'RS256', kid })
       .sign(key);
 
-  return { oauthProvider, sign, transport };
+  return { config, oauthProvider, sign, transport };
 };
 
 describe('platform identity provider trusted profile', () => {
+  it('creates authorization and exchanges tokens without Better Auth discovery or token fetches', async () => {
+    const { oauthProvider, transport } = await setup();
+
+    const authorizationUrl = await oauthProvider.createAuthorizationURL({
+      codeVerifier: 'pkce-verifier',
+      redirectURI: 'https://app.example.test/api/auth/oauth2/callback/corp-oidc',
+      state: 'state',
+    });
+    expect(authorizationUrl.toString()).toContain('/application/o/authorize/');
+    expect(transport).not.toHaveBeenCalled();
+
+    await expect(
+      oauthProvider.validateAuthorizationCode({
+        code: 'authorization-code',
+        codeVerifier: 'pkce-verifier',
+        redirectURI: 'https://app.example.test/api/auth/oauth2/callback/corp-oidc',
+      }),
+    ).resolves.toMatchObject({ accessToken: 'access-token', idToken: 'id-token' });
+    expect(transport).toHaveBeenCalledOnce();
+    expect(transport.mock.calls[0]![0].url.pathname).toBe('/application/o/token/');
+  });
+
   it('uses verified ID token identity plus protected userinfo claims in Better Auth mapping', async () => {
     const { oauthProvider, sign, transport } = await setup();
 
@@ -142,7 +162,7 @@ describe('platform identity provider trusted profile', () => {
       image: 'https://cdn.example.test/ada.png',
       name: 'Ada',
     });
-    expect(transport).toHaveBeenCalledTimes(3);
+    expect(transport).toHaveBeenCalledTimes(2);
   });
 
   it('rejects a token with the wrong issuer or audience', async () => {
@@ -181,17 +201,7 @@ describe('platform identity provider trusted profile', () => {
     ).rejects.toThrow('PLATFORM_OIDC_ID_TOKEN_INVALID');
   });
 
-  it('rejects discovery issuer substitution and userinfo subject substitution', async () => {
-    const wrongDiscovery = await setup({
-      discovery: { issuer: 'https://attacker.example.test/' },
-    });
-    await expect(
-      wrongDiscovery.oauthProvider.getUserInfo({
-        accessToken: 'access-token',
-        idToken: await wrongDiscovery.sign(),
-      }),
-    ).rejects.toThrow('OIDC_DISCOVERY_INVALID');
-
+  it('rejects userinfo subject substitution', async () => {
     const wrongSubject = await setup({ userInfo: { sub: 'attacker-subject' } });
     await expect(
       wrongSubject.oauthProvider.getUserInfo({
