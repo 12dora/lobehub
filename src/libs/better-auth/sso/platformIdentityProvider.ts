@@ -11,6 +11,10 @@ import { mergeReauthAuthorizationParams } from './reauthAuthorizationParams';
 
 const USERINFO_TIMEOUT_MS = 5000;
 const USERINFO_MAX_BYTES = 64 * 1024;
+// Better Auth 1.6 requires a tokenUrl before it will create the sign-in URL, even when
+// getToken owns the callback exchange. Keep this fixed .invalid sentinel provider-agnostic:
+// it satisfies that structural contract and fails closed if Better Auth ever bypasses getToken.
+const BETTER_AUTH_UNUSED_TOKEN_ENDPOINT = 'https://platform-oidc-token.invalid/';
 const userInfoSchema = z.record(z.string(), z.unknown());
 
 export interface RuntimeIdentityProvider extends PublishedIdentityProviderPayload {
@@ -171,6 +175,7 @@ export const buildPlatformIdentityProvider = (
     redirectURI,
     requireIssuerValidation: true,
     scopes: provider.scopes,
+    tokenUrl: BETTER_AUTH_UNUSED_TOKEN_ENDPOINT,
   };
 };
 
