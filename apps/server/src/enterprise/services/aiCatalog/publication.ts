@@ -257,6 +257,7 @@ export class AiCatalogPublicationService {
           logo: typeof provider.logo === 'string' ? provider.logo : null,
           revision,
           secretFingerprint: secretVersion?.fingerprint ?? null,
+          secretKeyId: secretVersion ? this.secrets.peekKeyId(secretVersion.ciphertext) : null,
           secretKeyVersion: secretVersion?.keyVersion ?? null,
           secretUpdatedAt: secretVersion?.createdAt ?? null,
           settings: isRecord(provider.settings)

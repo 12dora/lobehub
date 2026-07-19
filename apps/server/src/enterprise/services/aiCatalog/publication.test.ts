@@ -10,6 +10,7 @@ import {
   platformAgentVersions,
   platformAiModels,
   platformAiProviders,
+  platformAiProviderSecrets,
   platformAuditLogs,
   platformResourceRevisions,
 } from '@/database/schemas';
@@ -170,6 +171,10 @@ describe('AiCatalog publication transaction', () => {
 
     await service.testProvider('admin', { id: provider.id, reason: 'retest' });
     detail = await service.getDetail(provider.id);
+    await db
+      .update(platformAiProviderSecrets)
+      .set({ keyId: null })
+      .where(eq(platformAiProviderSecrets.providerId, provider.id));
     await expect(
       service.publishProvider('admin', {
         expectedDraftToken: detail.draftToken,
@@ -178,6 +183,11 @@ describe('AiCatalog publication transaction', () => {
         reason: 'tested publish',
       }),
     ).resolves.toMatchObject({ revision: 1 });
+    const [materialized] = await db
+      .select()
+      .from(platformAiProviders)
+      .where(eq(platformAiProviders.id, provider.id));
+    expect(materialized.secretKeyId).toBe('publish-test');
     expect((await service.getDetail(provider.id)).draft.connectionTest).toMatchObject({
       stale: false,
       status: 'success',
