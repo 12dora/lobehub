@@ -85,9 +85,35 @@ const JWT_PATTERN = /(?<![\w-])eyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]{8,}(?![\w-])/iu;
 const BEARER_VALUE_PATTERN = /\bbearer\s+([\w.~+/-]+)/giu;
 const SECRET_PLACEHOLDER_PATTERN =
   /^(?:<[^>]+>|\[redacted\]|\.{3}|available|bearer|configured|disabled|enabled|expired|failed|invalid|missing|none|null|required|reset|revoked|unknown|undefined|not[-_ ]?set)$/iu;
-const DOCUMENTATION_PLACEHOLDER_PATTERN =
-  /change[-_ ]?me|dummy|example|fake|not[-_ ]?real|placeholder|replace[-_ ]?(?:me|with)|sample|your[-_ ].*(?:key|password|secret|token)/iu;
+const DOCUMENTATION_PLACEHOLDER_MARKERS = [
+  'change me',
+  'change-me',
+  'change_me',
+  'changeme',
+  'dummy',
+  'example',
+  'fake',
+  'not real',
+  'not-real',
+  'not_real',
+  'notreal',
+  'placeholder',
+  'replace me',
+  'replace with',
+  'replace-me',
+  'replace-with',
+  'replace_me',
+  'replace_with',
+  'sample',
+] as const;
+const YOUR_PLACEHOLDER_PREFIXES = ['your ', 'your-', 'your_'] as const;
 const SECRET_SCALAR_PATTERN = /^[\w.~+/-]+$/iu;
+
+const isDocumentationPlaceholder = (value: string): boolean => {
+  const normalized = value.toLowerCase();
+  if (DOCUMENTATION_PLACEHOLDER_MARKERS.some((marker) => normalized.includes(marker))) return true;
+  return YOUR_PLACEHOLDER_PREFIXES.some((prefix) => normalized.startsWith(prefix));
+};
 
 const isKnownSecretScalar = (value: string): boolean =>
   EASYAUTH_APP_TOKEN_PATTERN.test(value) ||
@@ -98,7 +124,7 @@ const isExplicitCredentialScalar = (value: string): boolean =>
   isKnownSecretScalar(value) ||
   (SECRET_SCALAR_PATTERN.test(value) &&
     !SECRET_PLACEHOLDER_PATTERN.test(value) &&
-    !DOCUMENTATION_PLACEHOLDER_PATTERN.test(value));
+    !isDocumentationPlaceholder(value));
 
 const containsSecretValueShape = (value: string): boolean => {
   if (
@@ -228,12 +254,28 @@ export const isCredentialBearingUrl = (value: string): boolean => {
 };
 
 const stringContainsCredentialUrl = (value: string): boolean => {
-  const starts = [...value.matchAll(/[a-z][a-z0-9+.-]*:\/\//gi)].map((match) => match.index);
-  return starts.some((start, index) => {
-    const remainder = value.slice(start, starts[index + 1] ?? value.length);
-    const boundary = remainder.search(/[\s<>"']/u);
-    return isCredentialBearingUrl(remainder.slice(0, boundary < 0 ? remainder.length : boundary));
-  });
+  const separator = '://';
+  let searchFrom = 0;
+  while (searchFrom < value.length) {
+    const separatorIndex = value.indexOf(separator, searchFrom);
+    if (separatorIndex < 0) return false;
+
+    const minimumSchemeIndex = Math.max(0, separatorIndex - 64);
+    let schemeStart = separatorIndex;
+    while (schemeStart > minimumSchemeIndex && /[a-z0-9+.-]/iu.test(value[schemeStart - 1])) {
+      schemeStart -= 1;
+    }
+
+    if (schemeStart < separatorIndex && /[a-z]/iu.test(value[schemeStart])) {
+      let urlEnd = separatorIndex + separator.length;
+      while (urlEnd < value.length && !/[\s<>"']/u.test(value[urlEnd])) urlEnd += 1;
+      if (isCredentialBearingUrl(value.slice(schemeStart, urlEnd))) return true;
+      searchFrom = urlEnd;
+      continue;
+    }
+    searchFrom = separatorIndex + separator.length;
+  }
+  return false;
 };
 
 /** Complete fail-closed detector for values entering safe persistence projections. */
