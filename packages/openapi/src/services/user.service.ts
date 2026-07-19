@@ -8,6 +8,7 @@ import { idGenerator } from '@/database/utils/idGenerator';
 
 import { BaseService } from '../common/base.service';
 import { processPaginationConditions } from '../helpers/pagination';
+import { toPublicUser } from '../helpers/publicUser';
 import type { ServiceResult } from '../types';
 import type {
   CreateUserRequest,
@@ -57,7 +58,7 @@ export class UserService extends BaseService {
         .where(and(eq(userRoles.userId, userId), this.buildPermissionWhere(userRoles, { userId })));
 
       return {
-        ...user,
+        ...toPublicUser(user),
         roles: userRoleResults.map((r) => r.roles),
       };
     }
@@ -77,7 +78,7 @@ export class UserService extends BaseService {
     ]);
 
     return {
-      ...user,
+      ...toPublicUser(user),
       messageCount: messageCountResult[0]?.count || 0,
       roles: userRoleResults.map((r) => r.roles),
     };
@@ -145,7 +146,7 @@ export class UserService extends BaseService {
             .where(eq(messages.userId, userRow.id));
 
           return {
-            ...userRow,
+            ...toPublicUser(userRow),
             messageCount: messageCountResult[0]?.count || 0,
             roles: userRoleResults.map((r) => r.roles),
           };
