@@ -2085,6 +2085,58 @@ table platform_easyauth_grant_snapshots {
   }
 }
 
+table platform_identity_provider_instances {
+  instance_id varchar(64) [pk, not null]
+  startup_generation text
+  startup_source varchar(32) [not null]
+  active_identity_revision varchar(64)
+  health varchar(32) [not null]
+  degraded_category varchar(128)
+  loaded_at "timestamp with time zone" [not null]
+  started_at "timestamp with time zone" [not null]
+  last_heartbeat "timestamp with time zone" [not null]
+  hostname_hash varchar(64) [not null]
+
+  indexes {
+    last_heartbeat [name: 'platform_identity_provider_instances_heartbeat_idx']
+    (active_identity_revision, last_heartbeat) [name: 'platform_identity_provider_instances_revision_idx']
+
+
+
+
+
+
+  }
+}
+
+table platform_identity_provider_restart_requests {
+  request_id uuid [pk, not null]
+  actor_id text [not null]
+  target_instance_id varchar(64) [not null]
+  payload_hash varchar(64) [not null]
+  expected_identity_revision varchar(64) [not null]
+  status varchar(32) [not null, default: 'prepared']
+  intent_token_hash varchar(64) [not null]
+  expires_at "timestamp with time zone" [not null]
+  owner_fence varchar(64) [not null]
+  result_category varchar(128)
+  accepted_at "timestamp with time zone"
+  signaled_at "timestamp with time zone"
+  failed_at "timestamp with time zone"
+  created_at "timestamp with time zone" [not null, default: `now()`]
+  updated_at "timestamp with time zone" [not null, default: `now()`]
+
+  indexes {
+    intent_token_hash [name: 'platform_identity_provider_restart_requests_token_unique', unique]
+    (target_instance_id, status, created_at) [name: 'platform_identity_provider_restart_requests_instance_status_idx']
+
+
+
+
+
+  }
+}
+
 table platform_identity_provider_secrets {
   id text [pk, not null]
   provider_id text [not null]

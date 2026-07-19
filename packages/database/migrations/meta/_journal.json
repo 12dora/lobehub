@@ -910,6 +910,13 @@
       "when": 1784447944145,
       "tag": "0129_m12_platform_branding_lifecycle",
       "breakpoints": true
+    },
+    {
+      "idx": 130,
+      "version": "7",
+      "when": 1784451593483,
+      "tag": "0130_m11_identity_provider_instances",
+      "breakpoints": true
     }
   ],
   "version": "6"

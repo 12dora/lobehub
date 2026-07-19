@@ -4,7 +4,6 @@ import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 
 import { checksumPayload } from '@/database/models/platform';
 import {
-  platformIdentityProviders,
   platformIdentityProviderSecrets,
   platformResourceRevisions,
 } from '@/database/schemas/platform';
@@ -246,24 +245,6 @@ const fromLkgPayload = (payload: IdentityProviderLkgPayload, environmentProvider
     ];
   });
 
-const activateLoadedRevisions = async (
-  db: DatabaseExecutor,
-  providers: RuntimeIdentityProvider[],
-): Promise<void> => {
-  for (const provider of providers) {
-    await db
-      .update(platformIdentityProviders)
-      .set({ status: 'active', updatedAt: new Date() })
-      .where(
-        and(
-          eq(platformIdentityProviders.providerKey, provider.providerKey),
-          eq(platformIdentityProviders.activationRevision, provider.revision),
-          eq(platformIdentityProviders.status, 'pending_restart'),
-        ),
-      );
-  }
-};
-
 const loadDatabase = async (): Promise<LobeChatDatabase> => {
   const database = await import('@lobechat/database');
   return database.serverDB;
@@ -334,14 +315,6 @@ const loadUncached = async (options: LoadOptions): Promise<IdentityProviderStart
             errorClass: error instanceof Error ? error.name : 'UnknownError',
           });
           lastError = 'lkg_write_unavailable';
-        }
-        try {
-          await activateLoadedRevisions(tx, databaseProviders);
-        } catch (error) {
-          console.error('[identityProviderStartup] activation status update unavailable', {
-            errorClass: error instanceof Error ? error.name : 'UnknownError',
-          });
-          lastError = lastError ?? 'activation_status_update_unavailable';
         }
         return { databaseProviders, generation, lastError, revision };
       });

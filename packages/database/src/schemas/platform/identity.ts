@@ -15,6 +15,7 @@ import {
   pgTable,
   text,
   uniqueIndex,
+  uuid,
   varchar,
 } from 'drizzle-orm/pg-core';
 
@@ -309,3 +310,149 @@ export type PlatformIdentityProviderTestAttemptItem =
   typeof platformIdentityProviderTestAttempts.$inferSelect;
 export type NewPlatformIdentityProviderTestAttempt =
   typeof platformIdentityProviderTestAttempts.$inferInsert;
+
+/**
+ * A real server process that attempted to load the published OIDC startup artifact.
+ *
+ * The identifier and hostname digest are generated server-side. This table deliberately
+ * contains neither provider configuration nor an administrator-facing raw startup error.
+ */
+export const platformIdentityProviderInstances = pgTable(
+  'platform_identity_provider_instances',
+  {
+    instanceId: varchar('instance_id', { length: 64 }).primaryKey().notNull(),
+    startupGeneration: text('startup_generation'),
+    startupSource: varchar('startup_source', { length: 32 })
+      .$type<'break_glass' | 'database' | 'environment' | 'lkg'>()
+      .notNull(),
+    activeIdentityRevision: varchar('active_identity_revision', { length: 64 }),
+    health: varchar('health', { length: 32 }).$type<'degraded' | 'healthy'>().notNull(),
+    /** Stable, secret-free category only; raw startup errors remain in server logs. */
+    degradedCategory: varchar('degraded_category', { length: 128 }),
+    loadedAt: timestamptz('loaded_at').notNull(),
+    startedAt: timestamptz('started_at').notNull(),
+    lastHeartbeat: timestamptz('last_heartbeat').notNull(),
+    hostnameHash: varchar('hostname_hash', { length: 64 }).notNull(),
+  },
+  (t) => [
+    index('platform_identity_provider_instances_heartbeat_idx').on(t.lastHeartbeat),
+    index('platform_identity_provider_instances_revision_idx').on(
+      t.activeIdentityRevision,
+      t.lastHeartbeat,
+    ),
+    check(
+      'platform_identity_provider_instances_id_check',
+      sql`${t.instanceId} ~ '^oidci_[a-f0-9]{48}$'`,
+    ),
+    check(
+      'platform_identity_provider_instances_source_check',
+      sql`${t.startupSource} IN ('break_glass', 'database', 'environment', 'lkg')`,
+    ),
+    check(
+      'platform_identity_provider_instances_health_check',
+      sql`${t.health} IN ('degraded', 'healthy')`,
+    ),
+    check(
+      'platform_identity_provider_instances_digest_check',
+      sql`${t.hostnameHash} ~ '^[a-f0-9]{64}$'
+        AND (${t.activeIdentityRevision} IS NULL OR ${t.activeIdentityRevision} ~ '^[a-f0-9]{64}$')`,
+    ),
+    check(
+      'platform_identity_provider_instances_health_category_check',
+      sql`(${t.health} = 'healthy' AND ${t.degradedCategory} IS NULL)
+        OR (${t.health} = 'degraded'
+          AND ${t.degradedCategory} ~ '^[a-z0-9_]{1,128}$')`,
+    ),
+    check(
+      'platform_identity_provider_instances_time_check',
+      sql`${t.loadedAt} >= ${t.startedAt} AND ${t.lastHeartbeat} >= ${t.startedAt}`,
+    ),
+  ],
+);
+
+export type PlatformIdentityProviderInstanceItem =
+  typeof platformIdentityProviderInstances.$inferSelect;
+export type NewPlatformIdentityProviderInstance =
+  typeof platformIdentityProviderInstances.$inferInsert;
+
+/**
+ * Durable restart intent and outcome ledger. The raw one-time token is returned once and only its
+ * digest is persisted. A request is bound to one server-owned local instance and one exact startup
+ * identity revision; callers never provide a PID, process name, or command.
+ */
+export const platformIdentityProviderRestartRequests = pgTable(
+  'platform_identity_provider_restart_requests',
+  {
+    requestId: uuid('request_id').primaryKey().notNull(),
+    actorId: text('actor_id').notNull(),
+    targetInstanceId: varchar('target_instance_id', { length: 64 })
+      .notNull()
+      .references(() => platformIdentityProviderInstances.instanceId, { onDelete: 'restrict' }),
+    payloadHash: varchar('payload_hash', { length: 64 }).notNull(),
+    expectedIdentityRevision: varchar('expected_identity_revision', { length: 64 }).notNull(),
+    status: varchar('status', { length: 32 })
+      .$type<'accepted' | 'failed' | 'prepared' | 'signaled'>()
+      .notNull()
+      .default('prepared'),
+    intentTokenHash: varchar('intent_token_hash', { length: 64 }).notNull(),
+    expiresAt: timestamptz('expires_at').notNull(),
+    ownerFence: varchar('owner_fence', { length: 64 }).notNull(),
+    resultCategory: varchar('result_category', { length: 128 }),
+    acceptedAt: timestamptz('accepted_at'),
+    signaledAt: timestamptz('signaled_at'),
+    failedAt: timestamptz('failed_at'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex('platform_identity_provider_restart_requests_token_unique').on(t.intentTokenHash),
+    index('platform_identity_provider_restart_requests_instance_status_idx').on(
+      t.targetInstanceId,
+      t.status,
+      t.createdAt,
+    ),
+    check(
+      'platform_identity_provider_restart_requests_digest_check',
+      sql`${t.payloadHash} ~ '^[a-f0-9]{64}$'
+        AND ${t.expectedIdentityRevision} ~ '^[a-f0-9]{64}$'
+        AND ${t.intentTokenHash} ~ '^[a-f0-9]{64}$'
+        AND ${t.ownerFence} ~ '^[a-f0-9]{64}$'`,
+    ),
+    check(
+      'platform_identity_provider_restart_requests_status_check',
+      sql`${t.status} IN ('prepared', 'accepted', 'signaled', 'failed')`,
+    ),
+    check(
+      'platform_identity_provider_restart_requests_result_check',
+      sql`${t.resultCategory} IS NULL OR ${t.resultCategory} ~ '^[a-z0-9_]{1,128}$'`,
+    ),
+    check(
+      'platform_identity_provider_restart_requests_lifecycle_check',
+      sql`(${t.status} = 'prepared'
+          AND ${t.acceptedAt} IS NULL AND ${t.signaledAt} IS NULL AND ${t.failedAt} IS NULL
+          AND ${t.resultCategory} IS NULL)
+        OR (${t.status} = 'accepted'
+          AND ${t.acceptedAt} IS NOT NULL AND ${t.signaledAt} IS NULL AND ${t.failedAt} IS NULL
+          AND ${t.resultCategory} IS NULL)
+        OR (${t.status} = 'signaled'
+          AND ${t.acceptedAt} IS NOT NULL AND ${t.signaledAt} IS NOT NULL AND ${t.failedAt} IS NULL
+          AND ${t.resultCategory} = 'signal_scheduled')
+        OR (${t.status} = 'failed'
+          AND ${t.signaledAt} IS NULL AND ${t.failedAt} IS NOT NULL
+          AND ${t.resultCategory} IS NOT NULL)`,
+    ),
+    check(
+      'platform_identity_provider_restart_requests_time_check',
+      sql`${t.expiresAt} > ${t.createdAt}
+        AND ${t.expiresAt} <= ${t.createdAt} + interval '10 minutes'
+        AND (${t.acceptedAt} IS NULL OR ${t.acceptedAt} >= ${t.createdAt})
+        AND (${t.signaledAt} IS NULL OR ${t.signaledAt} >= ${t.acceptedAt})
+        AND (${t.failedAt} IS NULL OR ${t.failedAt} >= ${t.createdAt})`,
+    ),
+  ],
+);
+
+export type PlatformIdentityProviderRestartRequestItem =
+  typeof platformIdentityProviderRestartRequests.$inferSelect;
+export type NewPlatformIdentityProviderRestartRequest =
+  typeof platformIdentityProviderRestartRequests.$inferInsert;

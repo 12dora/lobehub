@@ -28,6 +28,7 @@ import { adminIdentityProvidersRouter } from './admin/identityProviders';
 import { adminManagedResourcesRouter } from './admin/managedResources';
 import { adminSettingsRouter } from './admin/settings';
 import { adminSkillsRouter } from './admin/skills';
+import { adminSystemRouter } from './admin/system';
 import { adminUsersRouter } from './admin/users';
 
 const adminBase = authedProcedure.use(serverDatabase).use(withActiveUser());
@@ -240,6 +241,7 @@ export const adminRouter = router({
   roles: adminRolesRouter,
   settings: adminSettingsRouter,
   skills: adminSkillsRouter,
+  system: adminSystemRouter,
   users: adminUsersRouter,
 });
 
