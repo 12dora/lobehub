@@ -10,6 +10,7 @@ import {
 import {
   DISABLED_PLATFORM_PUBLIC_SNAPSHOT,
   type PlatformPublicSnapshot,
+  resolveSafePlatformPublicSnapshot,
 } from '@/types/platform/publicSnapshot';
 
 import { fetchPlatformCapabilities, fetchPlatformPublicSnapshot } from '../services/platform';
@@ -23,6 +24,7 @@ export interface UseEnterprisePlatformDataOptions {
   enterpriseEnabled: boolean;
   fetchCapabilities?: typeof fetchPlatformCapabilities;
   fetchPublicSnapshot?: typeof fetchPlatformPublicSnapshot;
+  initialPublicSnapshot?: PlatformPublicSnapshot;
   serverConfigInit: boolean;
 }
 
@@ -45,23 +47,34 @@ export const useEnterprisePlatformData = ({
   enterpriseEnabled,
   fetchCapabilities = fetchPlatformCapabilities,
   fetchPublicSnapshot = fetchPlatformPublicSnapshot,
+  initialPublicSnapshot = DISABLED_PLATFORM_PUBLIC_SNAPSHOT,
   serverConfigInit,
 }: UseEnterprisePlatformDataOptions): EnterprisePlatformData => {
   const enabled = !disableFetch && serverConfigInit && enterpriseEnabled;
+  const safeInitialPublicSnapshot = resolveSafePlatformPublicSnapshot(initialPublicSnapshot);
+  const publicSnapshotKey = enabled
+    ? ([
+        PLATFORM_PUBLIC_SNAPSHOT_SWR_KEY,
+        safeInitialPublicSnapshot.configRevision,
+        safeInitialPublicSnapshot.brandingRevision,
+      ] as const)
+    : null;
+  const capabilitiesFetcher = useCallback(() => fetchCapabilities(), [fetchCapabilities]);
+  const publicSnapshotFetcher = useCallback(() => fetchPublicSnapshot(), [fetchPublicSnapshot]);
   const capabilitiesSWR = useClientDataSWR<PlatformCapabilities>(
     enabled ? PLATFORM_CAPABILITIES_SWR_KEY : null,
-    fetchCapabilities,
+    capabilitiesFetcher,
     {
       fallbackData: DISABLED_PLATFORM_CAPABILITIES,
       revalidateOnFocus: true,
     },
   );
   const publicSnapshotSWR = useClientDataSWR<PlatformPublicSnapshot>(
-    enabled ? PLATFORM_PUBLIC_SNAPSHOT_SWR_KEY : null,
-    fetchPublicSnapshot,
+    publicSnapshotKey,
+    publicSnapshotFetcher,
     {
       dedupingInterval: PLATFORM_PUBLIC_SNAPSHOT_REFRESH_INTERVAL,
-      fallbackData: DISABLED_PLATFORM_PUBLIC_SNAPSHOT,
+      fallbackData: safeInitialPublicSnapshot,
       refreshInterval: PLATFORM_PUBLIC_SNAPSHOT_REFRESH_INTERVAL,
       revalidateOnFocus: true,
     },
@@ -77,7 +90,7 @@ export const useEnterprisePlatformData = ({
       capabilities: DISABLED_PLATFORM_CAPABILITIES,
       error: null,
       loading: false,
-      publicSnapshot: DISABLED_PLATFORM_PUBLIC_SNAPSHOT,
+      publicSnapshot: safeInitialPublicSnapshot,
       refresh,
     };
   }
@@ -86,7 +99,9 @@ export const useEnterprisePlatformData = ({
     capabilities: capabilitiesSWR.data ?? DISABLED_PLATFORM_CAPABILITIES,
     error: toError(capabilitiesSWR.error ?? publicSnapshotSWR.error),
     loading: Boolean(capabilitiesSWR.isLoading || publicSnapshotSWR.isLoading),
-    publicSnapshot: publicSnapshotSWR.data ?? DISABLED_PLATFORM_PUBLIC_SNAPSHOT,
+    publicSnapshot: resolveSafePlatformPublicSnapshot(
+      publicSnapshotSWR.data ?? safeInitialPublicSnapshot,
+    ),
     refresh,
   };
 };

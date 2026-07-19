@@ -2,6 +2,11 @@ import { getServerFeatureFlagsValue } from '@/config/featureFlags';
 import { appEnv } from '@/envs/app';
 import { authEnv } from '@/envs/auth';
 import { type Locales, normalizeLocale } from '@/locales/resources';
+import { parseEnterpriseFeatureFlags } from '@/server/enterprise/featureFlags';
+import {
+  resolvePlatformPublicSnapshot,
+  resolveServerRuntimeBrandingFromPublicSnapshot,
+} from '@/server/enterprise/services/branding';
 import { getServerAuthConfig } from '@/server/globalConfig/getServerAuthConfig';
 import { buildAnalyticsConfig, fetchViteDevTemplate, renderSpaHtml } from '@/server/spaHtml';
 import { type AuthSPAServerConfig } from '@/types/spaServerConfig';
@@ -30,6 +35,10 @@ export async function GET(
 ) {
   const { locale: rawLocale, path } = await params;
   const locale = normalizeLocale(rawLocale);
+  const platformPublicSnapshot = await resolvePlatformPublicSnapshot({
+    flags: parseEnterpriseFeatureFlags(process.env),
+  });
+  const branding = resolveServerRuntimeBrandingFromPublicSnapshot(platformPublicSnapshot);
 
   const authConfig: AuthSPAServerConfig = {
     analyticsConfig: buildAnalyticsConfig(),
@@ -37,11 +46,12 @@ export async function GET(
     enableOIDC: authEnv.ENABLE_OIDC,
     featureFlags: getServerFeatureFlagsValue(),
     globalCDN: appEnv.CDN_USE_GLOBAL,
+    platformPublicSnapshot,
   };
 
   const template = await getTemplate();
   const pathname = `/${(path ?? []).join('/')}`;
-  const seoMeta = await buildSeoMeta(locale, pathname);
+  const seoMeta = await buildSeoMeta(locale, pathname, branding);
 
   return renderSpaHtml(template, { seoMeta, serverConfig: authConfig });
 }

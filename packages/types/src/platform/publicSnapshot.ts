@@ -63,3 +63,9 @@ export const DISABLED_PLATFORM_PUBLIC_SNAPSHOT: PlatformPublicSnapshot = {
   logoUrl: null,
   platformName: null,
 };
+
+/** Fail-closed boundary for HTML-injected or remotely fetched anonymous snapshots. */
+export const resolveSafePlatformPublicSnapshot = (value: unknown): PlatformPublicSnapshot => {
+  const parsed = platformPublicSnapshotSchema.safeParse(value);
+  return parsed.success ? parsed.data : { ...DISABLED_PLATFORM_PUBLIC_SNAPSHOT };
+};

@@ -1,14 +1,8 @@
 // @vitest-environment node
-import { BRANDING_LOGO_URL } from '@lobechat/business-const';
 import qs from 'query-string';
 import { describe, expect, it, vi } from 'vitest';
 
 import { Manifest, manifestModule } from './manifest';
-
-// Mock external dependencies
-vi.mock('@/const/branding', () => ({
-  BRANDING_LOGO_URL: 'https://example.com/logo.png',
-}));
 
 vi.mock('@/server/utils/url', () => ({
   getCanonicalUrl: vi.fn().mockReturnValue('https://example.com/manifest.webmanifest'),
@@ -22,7 +16,10 @@ describe('Manifest', () => {
       const input = {
         color: '#FF0000',
         description: 'Test description',
+        iconRevision: '42',
+        iconUrl: 'https://brand.example.com/icon.png',
         name: 'Test App',
+        shortName: 'Test',
         id: 'test-app',
         icons: [{ purpose: 'any' as const, sizes: '192x192', url: 'icon.png' }],
         screenshots: [{ form_factor: 'wide' as const, url: 'screenshot.png' }],
@@ -34,13 +31,9 @@ describe('Manifest', () => {
         background_color: input.color,
         description: input.description,
         name: input.name,
+        short_name: input.shortName,
         id: input.id,
-        icons: expect.arrayContaining([
-          expect.objectContaining({
-            purpose: 'any',
-            sizes: '192x192',
-          }),
-        ]),
+        icons: [{ src: 'https://brand.example.com/icon.png?runtime_branding_revision=42' }],
         screenshots: expect.arrayContaining([
           expect.objectContaining({
             form_factor: 'wide',
@@ -48,6 +41,51 @@ describe('Manifest', () => {
           }),
         ]),
       });
+      expect(result.icons).toEqual([
+        { src: 'https://brand.example.com/icon.png?runtime_branding_revision=42' },
+      ]);
+      expect(result.screenshots[0].src).toBe('screenshot.png?v=1');
+    });
+
+    it.each([
+      '/brand/icon.png?tenant=one#mark',
+      'https://brand.example.com/icon.jpg?tenant=one#mark',
+      'https://brand.example.com/icon.webp',
+    ])('declares runtime asset %s generically without invented metadata', (iconUrl) => {
+      const result = manifest.generate({
+        description: 'Test description',
+        iconRevision: 'revision 2',
+        iconUrl,
+        icons: [],
+        id: 'test-app',
+        name: 'Test App',
+        screenshots: [],
+      });
+
+      expect(result.icons).toHaveLength(1);
+      expect(result.icons[0]).toEqual({
+        src: expect.stringContaining('runtime_branding_revision=revision+2'),
+      });
+      expect(result.icons[0]).not.toHaveProperty('sizes');
+      expect(result.icons[0]).not.toHaveProperty('type');
+      expect(result.icons[0]).not.toHaveProperty('purpose');
+      expect(result).toMatchObject({ id: 'test-app', scope: '/', start_url: '/' });
+      expect(result.screenshots).toEqual([]);
+    });
+
+    it('retains truthful metadata for built-in PNG icons', () => {
+      const result = manifest.generate({
+        description: 'Test description',
+        iconUrl: null,
+        icons: [{ purpose: 'maskable', sizes: '192x192', url: '/icon.png' }],
+        id: 'test-app',
+        name: 'Test App',
+        screenshots: [],
+      });
+
+      expect(result.icons).toEqual([
+        expect.objectContaining({ purpose: 'maskable', sizes: '192x192', type: 'image/png' }),
+      ]);
     });
 
     it('should use default color if not provided', () => {
@@ -78,7 +116,7 @@ describe('Manifest', () => {
         cache_busting_mode: 'query',
         immutable: 'true',
         max_age: 31536000,
-        src: qs.stringifyUrl({ query: { v: version }, url: BRANDING_LOGO_URL || url }),
+        src: qs.stringifyUrl({ query: { v: version }, url }),
       });
     });
 
@@ -147,7 +185,7 @@ describe('Manifest', () => {
         form_factor: 'narrow',
         immutable: 'true',
         max_age: 31536000,
-        sizes: '1280x676',
+        sizes: '320x569',
         src: 'https://example.com/screenshot.png?v=1',
         type: 'image/png',
       });

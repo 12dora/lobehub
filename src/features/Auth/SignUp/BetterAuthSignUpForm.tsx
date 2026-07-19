@@ -1,6 +1,5 @@
 'use client';
 
-import { BRANDING_NAME } from '@lobechat/business-const';
 import { Button, Icon, Text } from '@lobehub/ui';
 import { Form, Input, type InputRef } from 'antd';
 import { Lock, Mail } from 'lucide-react';
@@ -8,6 +7,7 @@ import { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import { AuthCard } from '@/features/AuthCard';
 import { AuthAgreement } from '@/features/AuthShell';
 import { trackLoginOrSignupClicked } from '@/features/User/UserLoginOrSignup/trackLoginOrSignupClicked';
@@ -18,6 +18,7 @@ const BetterAuthSignUpForm = () => {
   const { form, loading, onSubmit, businessElement } = useSignUp();
 
   const { t } = useTranslation('auth');
+  const branding = useBranding();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
 
@@ -52,7 +53,7 @@ const BetterAuthSignUpForm = () => {
   );
 
   return (
-    <AuthCard footer={footer} title={t('betterAuth.signup.cardTitle', { appName: BRANDING_NAME })}>
+    <AuthCard footer={footer} title={t('betterAuth.signup.cardTitle', { appName: branding.name })}>
       <Form form={form} layout="vertical" onFinish={onSubmit}>
         <Form.Item
           name="email"

@@ -1,14 +1,19 @@
 import { describe, expect, it } from 'vitest';
 
+import { BUILT_IN_RUNTIME_BRANDING } from '@/enterprise/client/providers/runtimeBranding';
+
 import { buildAuthSeoEntry, buildSeoMeta } from './seoMeta';
 
 describe('buildAuthSeoEntry', () => {
+  const branding = { ...BUILT_IN_RUNTIME_BRANDING, name: 'AI & Hub', publishedRevision: '42' };
+
   it('maps /signin to signin metadata', async () => {
-    const entry = await buildAuthSeoEntry('en-US', '/signin');
+    const entry = await buildAuthSeoEntry('en-US', '/signin', branding);
 
     expect(entry.canonicalPath).toBe('/signin');
     expect(entry.title).toBe('Sign In');
     expect(entry.description).toContain('account');
+    expect(entry.description).toContain('AI & Hub');
   });
 
   it('maps /signup to signup metadata', async () => {
@@ -45,6 +50,32 @@ describe('buildAuthSeoEntry', () => {
 });
 
 describe('buildSeoMeta', () => {
+  const branding = {
+    ...BUILT_IN_RUNTIME_BRANDING,
+    name: 'AI & Hub',
+    ogImageUrl: 'https://assets.example.com/og.png',
+    publishedRevision: '42',
+  };
+
+  it('uses one runtime branding snapshot and escapes it in HTML', async () => {
+    const meta = await buildSeoMeta('en-US', '/signin', branding);
+
+    expect(meta).toContain('AI &amp; Hub');
+    expect(meta).toContain('https://assets.example.com/og.png');
+    expect(meta).not.toContain('AI & Hub');
+  });
+
+  it('emits the Published favicon with its revision while preserving its query', async () => {
+    const meta = await buildSeoMeta('en-US', '/signin', {
+      ...branding,
+      faviconUrl: '/favicon.webp?tenant=one',
+    });
+
+    expect(meta).toContain(
+      '<link rel="icon" href="/favicon.webp?tenant=one&amp;runtime_branding_revision=42" />',
+    );
+  });
+
   it('joins canonical path onto official url for mapped paths', async () => {
     const meta = await buildSeoMeta('en-US', '/signin');
 
