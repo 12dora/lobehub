@@ -8,6 +8,7 @@ import {
   assertIdentityProviderAttemptCallbackOrigin,
   buildIdentityProviderClaimPreview,
   createClientSecretBasicAuthorization,
+  summarizeIdentityProviderClaimPreview,
   verifyIdentityProviderIdToken,
 } from './testFlowService';
 
@@ -42,6 +43,35 @@ describe('buildIdentityProviderClaimPreview', () => {
       },
     );
     expect(preview).toEqual({ claims: {}, issues: [], valid: true });
+  });
+
+  it('redacts every PII value before the admin result leaves the service', () => {
+    const summary = summarizeIdentityProviderClaimPreview({
+      claims: {
+        dingtalk_user_id: 'ding-user-42',
+        email: 'admin@example.test',
+        name: 'Ada Lovelace',
+        picture: 'https://images.example.test/private/avatar.png',
+        sub: 'subject-1',
+      },
+      issues: [],
+      valid: true,
+    });
+
+    expect(summary).toEqual({
+      claims: {
+        dingtalk_user_id: { present: true, type: 'string' },
+        email: { present: true, type: 'string' },
+        name: { present: true, type: 'string' },
+        picture: { present: true, type: 'string' },
+        sub: { present: true, type: 'string' },
+      },
+      issues: [],
+      valid: true,
+    });
+    expect(JSON.stringify(summary)).not.toMatch(
+      /ding-user-42|admin@example\.test|Ada Lovelace|private\/avatar|subject-1/,
+    );
   });
 });
 
