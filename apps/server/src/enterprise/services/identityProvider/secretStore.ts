@@ -1,18 +1,27 @@
 import { createHash, randomUUID } from 'node:crypto';
 
-import { and, desc, eq, isNull } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 
+import { PlatformRevisionConflictError } from '@/database/models/platform';
 import {
   platformIdentityProviders,
   platformIdentityProviderSecrets,
 } from '@/database/schemas/platform';
-import type { LobeChatDatabase } from '@/database/type';
+import type { LobeChatDatabase, Transaction } from '@/database/type';
 import type { PlatformSecretService } from '@/server/enterprise/security/secret';
 
 export interface StoredIdentityProviderSecret {
   configured: true;
   fingerprint: string;
+  revision: number;
   updatedAt: Date;
+}
+
+export interface ClearedIdentityProviderSecret {
+  configured: false;
+  fingerprint: null;
+  revision: number;
+  updatedAt: null;
 }
 
 const fingerprintClientSecret = (value: string): string =>
@@ -21,58 +30,144 @@ const fingerprintClientSecret = (value: string): string =>
 /** Database-backed SecretRef store. Public methods never return refs or ciphertext. */
 export class IdentityProviderSecretStore {
   constructor(
-    private readonly db: LobeChatDatabase,
+    private readonly db: LobeChatDatabase | Transaction,
     private readonly secrets: PlatformSecretService,
   ) {}
 
-  persistClientSecret = async (
-    providerId: string,
-    value: string,
-  ): Promise<StoredIdentityProviderSecret> => {
+  private readonly inTransaction = async <T>(callback: (tx: Transaction) => Promise<T>) => {
+    const database = this.db as LobeChatDatabase;
+    return typeof database.transaction === 'function'
+      ? database.transaction(callback)
+      : callback(this.db as Transaction);
+  };
+
+  persistClientSecret = async (input: {
+    expectedRevision: number;
+    providerId: string;
+    value: string;
+  }): Promise<StoredIdentityProviderSecret> => {
+    const { expectedRevision, providerId, value } = input;
     if (!value || Buffer.byteLength(value, 'utf8') > 32_768) {
       throw new Error('PLATFORM_IDENTITY_PROVIDER_SECRET_INVALID');
     }
     const fingerprint = fingerprintClientSecret(value);
-    const ciphertext = await this.secrets.encrypt(value);
-    const ref = `kms://platform-identity-providers/${providerId}/${randomUUID()}`;
-    const updatedAt = new Date();
-
-    const stored = await this.db.transaction(async (tx) => {
+    return this.inTransaction(async (tx) => {
       const [provider] = await tx
-        .update(platformIdentityProviders)
-        .set({ secretFingerprint: fingerprint, secretRef: ref, secretUpdatedAt: updatedAt })
+        .select({
+          migrationRequired: platformIdentityProviders.migrationRequired,
+          revision: platformIdentityProviders.revision,
+        })
+        .from(platformIdentityProviders)
         .where(eq(platformIdentityProviders.id, providerId))
-        .returning({ id: platformIdentityProviders.id });
+        .for('update');
       if (!provider) throw new Error('PLATFORM_IDENTITY_PROVIDER_NOT_FOUND');
+      if (provider.revision !== expectedRevision) {
+        throw new PlatformRevisionConflictError('Identity provider revision changed', {
+          currentRevision: provider.revision,
+          expectedRevision,
+          resourceId: providerId,
+          resourceType: 'identity_provider',
+        });
+      }
+      if (provider.migrationRequired) {
+        throw new Error('PLATFORM_IDENTITY_PROVIDER_MIGRATION_REQUIRED');
+      }
 
-      const [row] = await tx
-        .insert(platformIdentityProviderSecrets)
-        .values({
+      const ciphertext = await this.secrets.encrypt(value);
+      const keyId = this.secrets.peekKeyId(ciphertext);
+      const updatedAt = new Date();
+      const [existing] = await tx
+        .select({
+          id: platformIdentityProviderSecrets.id,
+          ref: platformIdentityProviderSecrets.ref,
+        })
+        .from(platformIdentityProviderSecrets)
+        .where(
+          and(
+            eq(platformIdentityProviderSecrets.providerId, providerId),
+            eq(platformIdentityProviderSecrets.fingerprint, fingerprint),
+          ),
+        )
+        .for('update');
+      const ref =
+        existing?.ref ?? `kms://platform-identity-providers/${providerId}/${randomUUID()}`;
+      if (existing) {
+        await tx
+          .update(platformIdentityProviderSecrets)
+          .set({
+            ciphertext,
+            keyId,
+            revokedAt: null,
+            revision: sql`${platformIdentityProviderSecrets.revision} + 1`,
+          })
+          .where(eq(platformIdentityProviderSecrets.id, existing.id));
+      } else {
+        await tx.insert(platformIdentityProviderSecrets).values({
           ciphertext,
           createdAt: updatedAt,
           fingerprint,
-          keyId: this.secrets.peekKeyId(ciphertext),
+          keyId,
           providerId,
           ref,
-        })
-        .returning({
-          fingerprint: platformIdentityProviderSecrets.fingerprint,
-          updatedAt: platformIdentityProviderSecrets.createdAt,
         });
-      if (!row) throw new Error('PLATFORM_IDENTITY_PROVIDER_SECRET_INVALID');
-      return row;
+      }
+      const nextRevision = expectedRevision + 1;
+      const [updated] = await tx
+        .update(platformIdentityProviders)
+        .set({
+          activationRevision: null,
+          revision: nextRevision,
+          secretFingerprint: fingerprint,
+          secretRef: ref,
+          secretUpdatedAt: updatedAt,
+          status: 'draft',
+        })
+        .where(
+          and(
+            eq(platformIdentityProviders.id, providerId),
+            eq(platformIdentityProviders.revision, expectedRevision),
+          ),
+        )
+        .returning({ id: platformIdentityProviders.id });
+      if (!updated) throw new PlatformRevisionConflictError();
+      return { configured: true, fingerprint, revision: nextRevision, updatedAt };
     });
-
-    return { configured: true, fingerprint: stored.fingerprint, updatedAt: stored.updatedAt };
   };
 
-  clearCurrentClientSecret = async (providerId: string): Promise<boolean> => {
-    const rows = await this.db
-      .update(platformIdentityProviders)
-      .set({ secretFingerprint: null, secretRef: null, secretUpdatedAt: null })
-      .where(eq(platformIdentityProviders.id, providerId))
-      .returning({ id: platformIdentityProviders.id });
-    return rows.length === 1;
+  clearCurrentClientSecret = async (input: {
+    expectedRevision: number;
+    providerId: string;
+  }): Promise<ClearedIdentityProviderSecret> => {
+    const { expectedRevision, providerId } = input;
+    return this.inTransaction(async (tx) => {
+      const [provider] = await tx
+        .select({ revision: platformIdentityProviders.revision })
+        .from(platformIdentityProviders)
+        .where(eq(platformIdentityProviders.id, providerId))
+        .for('update');
+      if (!provider) throw new Error('PLATFORM_IDENTITY_PROVIDER_NOT_FOUND');
+      if (provider.revision !== expectedRevision) {
+        throw new PlatformRevisionConflictError('Identity provider revision changed', {
+          currentRevision: provider.revision,
+          expectedRevision,
+          resourceId: providerId,
+          resourceType: 'identity_provider',
+        });
+      }
+      const nextRevision = expectedRevision + 1;
+      await tx
+        .update(platformIdentityProviders)
+        .set({
+          activationRevision: null,
+          revision: nextRevision,
+          secretFingerprint: null,
+          secretRef: null,
+          secretUpdatedAt: null,
+          status: 'draft',
+        })
+        .where(eq(platformIdentityProviders.id, providerId));
+      return { configured: false, fingerprint: null, revision: nextRevision, updatedAt: null };
+    });
   };
 
   resolveCurrentClientSecret = async (providerId: string): Promise<string | null> => {
@@ -89,7 +184,12 @@ export class IdentityProviderSecretStore {
       )
       .where(eq(platformIdentityProviders.id, providerId))
       .limit(1);
-    return row ? this.secrets.decrypt(row.ciphertext) : null;
+    if (!row) return null;
+    try {
+      return await this.secrets.decrypt(row.ciphertext);
+    } catch {
+      throw new Error('PLATFORM_IDENTITY_PROVIDER_SECRET_UNAVAILABLE');
+    }
   };
 
   resolveClientSecretVersion = async (
@@ -107,11 +207,12 @@ export class IdentityProviderSecretStore {
           isNull(platformIdentityProviderSecrets.revokedAt),
         ),
       )
-      .orderBy(
-        desc(platformIdentityProviderSecrets.createdAt),
-        desc(platformIdentityProviderSecrets.id),
-      )
       .limit(1);
-    return row ? this.secrets.decrypt(row.ciphertext) : null;
+    if (!row) return null;
+    try {
+      return await this.secrets.decrypt(row.ciphertext);
+    } catch {
+      throw new Error('PLATFORM_IDENTITY_PROVIDER_SECRET_UNAVAILABLE');
+    }
   };
 }

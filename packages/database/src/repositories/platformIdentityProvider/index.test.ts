@@ -67,5 +67,22 @@ describe('PlatformIdentityProviderRepository', () => {
         )
       `),
     ).rejects.toThrow();
+    await expect(
+      serverDB.execute(sql`
+        INSERT INTO ${platformIdentityProviders} (id, provider_key, display_name, use_pkce)
+        VALUES ('invalid-pkce', 'invalid-pkce', 'Invalid', false)
+      `),
+    ).rejects.toThrow();
+    await expect(
+      serverDB.execute(sql`
+        INSERT INTO ${platformIdentityProviders} (id, provider_key, display_name, claim_mapping)
+        VALUES (
+          'invalid-array',
+          'invalid-array',
+          'Invalid',
+          '{"dingtalkTitle":[],"dingtalkUserId":[],"email":[7],"name":["name"],"picture":[],"subject":["sub"]}'::jsonb
+        )
+      `),
+    ).rejects.toThrow();
   });
 });

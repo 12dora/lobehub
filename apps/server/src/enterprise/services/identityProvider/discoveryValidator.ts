@@ -1,4 +1,7 @@
-import type { PlatformOidcDiscoveryMetadata } from '@lobechat/types';
+import {
+  OIDC_ALLOWED_ID_TOKEN_SIGNING_ALGORITHMS,
+  type PlatformOidcDiscoveryMetadata,
+} from '@lobechat/types';
 
 import { oidcDiscoveryMetadataSchema } from '../../contracts/identityProviders';
 import type { SafeOutboundHttpClient } from '../../security/outboundHttp';
@@ -26,7 +29,7 @@ const isJsonContentType = (value: string | null): boolean => {
   return mediaType === 'application/json' || mediaType?.endsWith('+json') === true;
 };
 
-const canonicalHttpsUrl = (value: string, errorCode: IdentityProviderValidationErrorCode): URL => {
+const parseSafeHttpsUrl = (value: string, errorCode: IdentityProviderValidationErrorCode): URL => {
   let url: URL;
   try {
     url = new URL(value);
@@ -45,15 +48,15 @@ const canonicalHttpsUrl = (value: string, errorCode: IdentityProviderValidationE
   return url;
 };
 
-const canonicalIssuer = (value: string): string => {
-  const url = canonicalHttpsUrl(value, 'OIDC_ISSUER_INVALID');
+const validateIssuer = (value: string): string => {
+  if (value !== value.trim()) throw new IdentityProviderValidationError('OIDC_ISSUER_INVALID');
+  const url = parseSafeHttpsUrl(value, 'OIDC_ISSUER_INVALID');
   if (url.search) throw new IdentityProviderValidationError('OIDC_ISSUER_INVALID');
-  url.pathname = url.pathname.replace(/\/+$/, '') || '/';
-  return url.toString().replace(/\/$/, '');
+  return value;
 };
 
 const discoveryUrlForIssuer = (issuer: string): string =>
-  `${issuer}/.well-known/openid-configuration`;
+  `${issuer.replace(/\/$/, '')}/.well-known/openid-configuration`;
 
 const toMetadata = (
   parsed: ReturnType<typeof oidcDiscoveryMetadataSchema.parse>,
@@ -79,7 +82,7 @@ export class IdentityProviderDiscoveryValidator {
   constructor(private readonly outbound: SafeOutboundHttpClient) {}
 
   validateNetwork = async (issuerInput: string): Promise<void> => {
-    const issuer = canonicalIssuer(issuerInput);
+    const issuer = validateIssuer(issuerInput);
     try {
       await this.outbound.preflight(discoveryUrlForIssuer(issuer));
     } catch (error) {
@@ -91,7 +94,7 @@ export class IdentityProviderDiscoveryValidator {
   };
 
   discover = async (issuerInput: string): Promise<PlatformOidcDiscoveryMetadata> => {
-    const issuer = canonicalIssuer(issuerInput);
+    const issuer = validateIssuer(issuerInput);
     let response;
     try {
       response = await this.outbound.fetch(discoveryUrlForIssuer(issuer), {
@@ -122,18 +125,20 @@ export class IdentityProviderDiscoveryValidator {
       throw new IdentityProviderValidationError('OIDC_DISCOVERY_INVALID');
     }
 
-    let discoveredIssuer: string;
     try {
-      discoveredIssuer = canonicalIssuer(metadata.issuer);
+      parseSafeHttpsUrl(metadata.issuer, 'OIDC_DISCOVERY_INVALID');
     } catch {
       throw new IdentityProviderValidationError('OIDC_DISCOVERY_INVALID');
     }
     if (
-      discoveredIssuer !== issuer ||
+      metadata.issuer !== issuer ||
       !metadata.responseTypesSupported.includes('code') ||
       !metadata.subjectTypesSupported.some((value) => value === 'public' || value === 'pairwise') ||
-      metadata.idTokenSigningAlgValuesSupported.includes('none') ||
-      metadata.idTokenSigningAlgValuesSupported.length === 0 ||
+      !metadata.idTokenSigningAlgValuesSupported.some((algorithm) =>
+        OIDC_ALLOWED_ID_TOKEN_SIGNING_ALGORITHMS.includes(
+          algorithm as (typeof OIDC_ALLOWED_ID_TOKEN_SIGNING_ALGORITHMS)[number],
+        ),
+      ) ||
       !metadata.codeChallengeMethodsSupported.includes('S256') ||
       !metadata.tokenEndpointAuthMethodsSupported.some(
         (value) => value === 'client_secret_basic' || value === 'client_secret_post',
@@ -150,7 +155,7 @@ export class IdentityProviderDiscoveryValidator {
     ];
     try {
       const endpoints = endpointInputs.map((endpoint) =>
-        canonicalHttpsUrl(endpoint, 'OIDC_DISCOVERY_INVALID'),
+        parseSafeHttpsUrl(endpoint, 'OIDC_DISCOVERY_INVALID'),
       );
       await Promise.all(endpoints.map((endpoint) => this.outbound.preflight(endpoint)));
     } catch (error) {

@@ -24,6 +24,60 @@ export interface PlatformIdentityProviderClaimMapping {
   subject: string[];
 }
 
+export const PLATFORM_IDENTITY_PROVIDER_CLAIM_MAPPING_KEYS = [
+  'dingtalkTitle',
+  'dingtalkUserId',
+  'email',
+  'name',
+  'picture',
+  'subject',
+] as const;
+
+const CLAIM_NAME_PATTERN = /^[\w.:-]{1,128}$/;
+
+/** Runtime parser for data crossing the untrusted persistence boundary. */
+export const parsePlatformIdentityProviderClaimMapping = (
+  value: unknown,
+): PlatformIdentityProviderClaimMapping | null => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (
+    Object.keys(record).length !== PLATFORM_IDENTITY_PROVIDER_CLAIM_MAPPING_KEYS.length ||
+    Object.keys(record).some(
+      (key) =>
+        !PLATFORM_IDENTITY_PROVIDER_CLAIM_MAPPING_KEYS.includes(
+          key as (typeof PLATFORM_IDENTITY_PROVIDER_CLAIM_MAPPING_KEYS)[number],
+        ),
+    )
+  ) {
+    return null;
+  }
+  const result = {} as PlatformIdentityProviderClaimMapping;
+  for (const key of PLATFORM_IDENTITY_PROVIDER_CLAIM_MAPPING_KEYS) {
+    const candidates = record[key];
+    if (
+      !Array.isArray(candidates) ||
+      candidates.length > 8 ||
+      candidates.some(
+        (candidate) => typeof candidate !== 'string' || !CLAIM_NAME_PATTERN.test(candidate),
+      ) ||
+      new Set(candidates).size !== candidates.length
+    ) {
+      return null;
+    }
+    result[key] = [...candidates] as string[];
+  }
+  if (result.subject.length === 0 || result.name.length === 0) return null;
+  return result;
+};
+
+export const OIDC_ALLOWED_ID_TOKEN_SIGNING_ALGORITHMS = [
+  'RS256',
+  'PS256',
+  'ES256',
+  'EdDSA',
+] as const;
+
 /** Secret-free defaults shared by schema, server validation, and later Admin UI work. */
 export interface PlatformIdentityProviderTemplate {
   buttonLabel: string;
@@ -88,13 +142,14 @@ export interface PlatformIdentityProviderDraft {
   icon: string | null;
   id: string;
   issuer: string | null;
+  migrationRequired: boolean;
   providerKey: string;
   revision: number;
   scopes: string[];
   secret: PlatformIdentityProviderSecretState;
   status: PlatformIdentityProviderStatus;
   type: PlatformIdentityProviderType;
-  usePkce: boolean;
+  usePkce: true;
 }
 
 /** Validated OpenID Provider metadata. Unknown discovery fields never cross this boundary. */

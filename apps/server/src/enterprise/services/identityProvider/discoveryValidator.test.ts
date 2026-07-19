@@ -106,6 +106,8 @@ describe('IdentityProviderDiscoveryValidator', () => {
       metadata({ issuer: 'https://other.example.com/application/o/work/' }),
       metadata({ token_endpoint: 'http://login.example.com/token' }),
       metadata({ id_token_signing_alg_values_supported: ['none'] }),
+      metadata({ id_token_signing_alg_values_supported: ['HS256'] }),
+      metadata({ id_token_signing_alg_values_supported: ['made-up'] }),
       metadata({ code_challenge_methods_supported: ['plain'] }),
     ];
     for (const body of cases) {
@@ -114,6 +116,32 @@ describe('IdentityProviderDiscoveryValidator', () => {
         validator.discover('https://login.example.com/application/o/work/'),
       ).rejects.toBeInstanceOf(IdentityProviderValidationError);
     }
+  });
+
+  it.each([
+    [
+      'https://login.example.com/application/o/work',
+      'https://login.example.com/application/o/work/',
+    ],
+    [
+      'https://LOGIN.example.com/application/o/work/',
+      'https://login.example.com/application/o/work/',
+    ],
+    [
+      'https://login.example.com:443/application/o/work/',
+      'https://login.example.com/application/o/work/',
+    ],
+    [
+      'https://login.example.com./application/o/work/',
+      'https://login.example.com/application/o/work/',
+    ],
+    ['https://例子.example/application/o/work/', 'https://xn--fsqu00a.example/application/o/work/'],
+  ])('requires exact issuer string equality: %s != %s', async (input, discovered) => {
+    await expect(
+      validatorFor({ transport: async () => response(metadata({ issuer: discovered })) }).discover(
+        input,
+      ),
+    ).rejects.toMatchObject({ code: 'OIDC_DISCOVERY_INVALID' });
   });
 
   it('preflights every discovered endpoint and blocks a private endpoint host', async () => {

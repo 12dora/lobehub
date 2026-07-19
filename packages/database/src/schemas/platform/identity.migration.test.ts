@@ -22,9 +22,21 @@ describe('M11 identity provider security foundation migration', () => {
     expect(migrationSql).not.toMatch(/platform_(?:agents|connectors|skills|ai_providers)/);
   });
 
-  it('removes the legacy direct-secret column without copying it into a revision or log', () => {
-    expect(migrationSql).toContain('DROP COLUMN IF EXISTS "encrypted_client_secret"');
+  it('retains unverifiable legacy material in fail-closed compatibility columns', () => {
+    expect(migrationSql).not.toContain('DROP COLUMN IF EXISTS "encrypted_client_secret"');
+    expect(migrationSql).not.toContain('DROP COLUMN IF EXISTS "discovery_url"');
+    expect(migrationSql).toContain('ADD COLUMN "migration_required" boolean DEFAULT true');
+    expect(migrationSql).toContain('WHERE "migration_required"');
+    expect(migrationSql).toContain('"enabled" = false');
     expect(migrationSql).not.toMatch(/INSERT INTO "platform_(?:resource_revisions|audit_logs)"/);
+  });
+
+  it('does not narrow legacy text and normalizes structured policy before constraints', () => {
+    expect(migrationSql).not.toMatch(/display_name" SET DATA TYPE varchar/);
+    expect(migrationSql).not.toMatch(/button_label" SET DATA TYPE varchar/);
+    expect(migrationSql).toContain(`USING '["openid","profile","email"]'::jsonb`);
+    expect(migrationSql).toContain('"claim_mapping" =');
+    expect(migrationSql).toContain('ADD CONSTRAINT "platform_identity_providers_pkce_check"');
   });
 
   it('keeps the generated journal and snapshot aligned at 0127', () => {

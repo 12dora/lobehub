@@ -2034,6 +2034,7 @@ table platform_identity_provider_secrets {
 
   indexes {
     ref [name: 'platform_identity_provider_secrets_ref_unique', unique]
+    (provider_id, fingerprint) [name: 'platform_identity_provider_secrets_provider_fingerprint_unique', unique]
     (provider_id, fingerprint, created_at) [name: 'platform_identity_provider_secrets_lookup_idx']
     key_id [name: 'platform_identity_provider_secrets_key_id_idx']
 
@@ -2044,15 +2045,18 @@ table platform_identity_provider_secrets {
 
 table platform_identity_providers {
   id text [pk, not null]
-  provider_key varchar(128) [not null]
+  provider_key text [not null]
   type varchar(32) [not null, default: 'generic_oidc']
-  display_name varchar(200) [not null]
-  button_label varchar(200) [not null, default: '使用工作账号登录']
+  display_name text [not null]
+  button_label text [not null, default: '使用工作账号登录']
   icon text
   issuer text
-  client_id varchar(1000)
+  client_id text
+  discovery_url text
+  encrypted_client_secret text
+  migration_required boolean [not null, default: false]
   secret_ref text
-  secret_fingerprint varchar(64)
+  secret_fingerprint text
   secret_updated_at "timestamp with time zone"
   scopes jsonb [not null, default: `["openid","profile","email"]`]
   use_pkce boolean [not null, default: true]
@@ -2073,6 +2077,8 @@ table platform_identity_providers {
     provider_key [name: 'platform_identity_providers_provider_key_unique', unique]
     status [name: 'platform_identity_providers_status_idx']
     (enabled, status) [name: 'platform_identity_providers_enabled_status_idx']
+
+
 
 
 

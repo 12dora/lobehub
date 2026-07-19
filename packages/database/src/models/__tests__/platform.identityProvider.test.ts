@@ -6,7 +6,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { getTestDB } from '../../core/getTestDB';
 import { platformIdentityProviders, platformIdentityProviderSecrets } from '../../schemas/platform';
 import type { LobeChatDatabase } from '../../type';
-import { PlatformIdentityProviderModel } from '../platform/identityProvider';
+import {
+  PlatformIdentityProviderModel,
+  toSafeIdentityProviderDraft,
+} from '../platform/identityProvider';
 
 const serverDB: LobeChatDatabase = await getTestDB();
 const model = new PlatformIdentityProviderModel(serverDB);
@@ -41,5 +44,35 @@ describe('PlatformIdentityProviderModel', () => {
     });
     expect(JSON.stringify(result)).not.toContain(privateMarker);
     expect(result).not.toHaveProperty('secretRef');
+  });
+
+  it('fails closed when untrusted persisted config contains extra or credential material', async () => {
+    const [row] = await serverDB
+      .insert(platformIdentityProviders)
+      .values({ displayName: 'Work', providerKey: 'work' })
+      .returning();
+    for (const claim of ['clientSecret', 'apiKey', 'accessToken']) {
+      expect(() =>
+        toSafeIdentityProviderDraft({
+          ...row,
+          claimMapping: { ...row.claimMapping, email: [claim] },
+        }),
+      ).toThrow('PLATFORM_IDENTITY_PROVIDER_INVALID_PERSISTED_CONFIG');
+    }
+    expect(() =>
+      toSafeIdentityProviderDraft({
+        ...row,
+        groupRoleMapping: { nested: { apiKey: 'sk-abcdefgh' } } as unknown as Record<
+          string,
+          string
+        >,
+      }),
+    ).toThrow('PLATFORM_IDENTITY_PROVIDER_INVALID_PERSISTED_CONFIG');
+    expect(() =>
+      toSafeIdentityProviderDraft({
+        ...row,
+        icon: 'https://example.com/icon?accessToken=value',
+      }),
+    ).toThrow('PLATFORM_IDENTITY_PROVIDER_INVALID_PERSISTED_CONFIG');
   });
 });

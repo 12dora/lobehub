@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 
 import {
+  extractRfc6052Ipv4,
   isMetadataHostname,
   isMetadataIp,
   isPrivateIp,
@@ -80,6 +81,25 @@ describe('policy helpers', () => {
     expect(isMetadataIp('64:ff9b:1:a9fe:a9:fe00::')).toBe(true);
     expect(isMetadataIp('64:ff9b::808:808')).toBe(false);
   });
+
+  it.each([
+    ['2001:db9::/32', '2001:db9:a00:1::'],
+    ['2001:db9:100::/40', '2001:db9:10a:0:1::'],
+    ['2001:db9:1::/48', '2001:db9:1:a00:0:100::'],
+    ['2001:db9:1:200::/56', '2001:db9:1:20a:0:1::'],
+    ['2001:db9:1:2::/64', '2001:db9:1:2:a:0:100:0'],
+    ['2001:db9:1:2:3:4::/96', '2001:db9:1:2:3:4:a00:1'],
+  ])('rejects private IPv4 embedded by configured RFC 6052 prefix %s', (prefix, address) => {
+    expect(extractRfc6052Ipv4(address, prefix)).toBe('10.0.0.1');
+    expect(isPubliclyRoutableIp(address, [prefix])).toBe(false);
+  });
+
+  it.each(['100.64.0.1', '169.254.1.1', '169.254.169.254'])(
+    'rejects non-public mapped IPv4 class %s',
+    (ipv4) => {
+      expect(isPubliclyRoutableIp(`::ffff:${ipv4}`)).toBe(false);
+    },
+  );
 });
 
 describe('SafeOutboundHttpClient', () => {
