@@ -7,9 +7,14 @@ import { SessionModel } from '@/database/models/session';
 import { UserModel } from '@/database/models/user';
 import type * as RedisModule from '@/libs/redis';
 import { initializeRedisWithPrefix, isRedisEnabled, RedisKeys } from '@/libs/redis';
+import { resolveServerRuntimeBranding } from '@/server/enterprise/services/branding/runtimeBranding';
 import { parseAgentConfig } from '@/server/globalConfig/parseDefaultAgent';
 
 import { AgentService } from './index';
+
+const { mockGetEffectiveBuiltinConfig } = vi.hoisted(() => ({
+  mockGetEffectiveBuiltinConfig: vi.fn(async (base) => base),
+}));
 
 vi.mock('@/envs/app', () => ({
   appEnv: {
@@ -22,6 +27,16 @@ vi.mock('@/envs/app', () => ({
 
 vi.mock('@/server/globalConfig/parseDefaultAgent', () => ({
   parseAgentConfig: vi.fn(),
+}));
+
+vi.mock('@/server/enterprise/services/branding/runtimeBranding', () => ({
+  resolveServerRuntimeBranding: vi.fn(),
+}));
+
+vi.mock('@/server/enterprise/services/agentCatalog/defaultInbox', () => ({
+  PlatformDefaultInboxService: class PlatformDefaultInboxService {
+    getEffectiveBuiltinConfig = (...args: any[]) => mockGetEffectiveBuiltinConfig(...args);
+  },
 }));
 
 vi.mock('@/database/models/session', () => ({
@@ -65,6 +80,10 @@ describe('AgentService', () => {
     vi.clearAllMocks();
     mockUserModel.getUserSettings.mockReset().mockResolvedValue({});
     mockUserModel.getUserSettingsDefaultAgentConfig.mockReset().mockResolvedValue({});
+    mockGetEffectiveBuiltinConfig.mockReset().mockImplementation(async (base) => base);
+    vi.mocked(resolveServerRuntimeBranding)
+      .mockReset()
+      .mockResolvedValue({ defaultAgentDisplayName: DEFAULT_INBOX_TITLE } as any);
     // Setup default UserModel mock
     (UserModel as any).mockImplementation(() => mockUserModel);
     service = new AgentService(mockDb, mockUserId);
@@ -215,6 +234,41 @@ describe('AgentService', () => {
       expect((result as any)?.title).toBe(DEFAULT_INBOX_TITLE);
     });
 
+    it('should use the resolved Runtime Branding display name for a blank inbox title', async () => {
+      vi.mocked(resolveServerRuntimeBranding).mockResolvedValue({
+        defaultAgentDisplayName: 'AIHub AI',
+      } as any);
+      const mockAgentModel = {
+        getBuiltinAgent: vi.fn().mockResolvedValue({ id: 'agent-1', slug: 'inbox', title: null }),
+      };
+      (AgentModel as any).mockImplementation(() => mockAgentModel);
+      (parseAgentConfig as any).mockReturnValue({});
+
+      const result = await new AgentService(mockDb, mockUserId).getBuiltinAgent('inbox');
+
+      expect(mockAgentModel.getBuiltinAgent).toHaveBeenCalledWith('inbox', {
+        inboxTitleFallback: 'AIHub AI',
+      });
+      expect(result?.title).toBe('AIHub AI');
+    });
+
+    it('should preserve an explicit literal Lobe AI title under custom branding', async () => {
+      vi.mocked(resolveServerRuntimeBranding).mockResolvedValue({
+        defaultAgentDisplayName: 'AIHub AI',
+      } as any);
+      const mockAgentModel = {
+        getBuiltinAgent: vi
+          .fn()
+          .mockResolvedValue({ id: 'agent-1', slug: 'inbox', title: 'Lobe AI' }),
+      };
+      (AgentModel as any).mockImplementation(() => mockAgentModel);
+      (parseAgentConfig as any).mockReturnValue({});
+
+      const result = await new AgentService(mockDb, mockUserId).getBuiltinAgent('inbox');
+
+      expect(result?.title).toBe('Lobe AI');
+    });
+
     it('should not include avatar for non-builtin agents', async () => {
       const mockAgent = {
         id: 'agent-1',
@@ -320,7 +374,9 @@ describe('AgentService', () => {
       const newService = new AgentService(mockDb, mockUserId);
       const result = await newService.getAgentConfig('agent-123');
 
-      expect(mockAgentModel.getAgentConfig).toHaveBeenCalledWith('agent-123');
+      expect(mockAgentModel.getAgentConfig).toHaveBeenCalledWith('agent-123', {
+        inboxTitleFallback: null,
+      });
       expect(result?.id).toBe('agent-123');
       expect(result?.model).toBe('gpt-4');
     });
@@ -342,7 +398,9 @@ describe('AgentService', () => {
       const newService = new AgentService(mockDb, mockUserId);
       const result = await newService.getAgentConfig('my-agent');
 
-      expect(mockAgentModel.getAgentConfig).toHaveBeenCalledWith('my-agent');
+      expect(mockAgentModel.getAgentConfig).toHaveBeenCalledWith('my-agent', {
+        inboxTitleFallback: null,
+      });
       expect(result?.id).toBe('agent-123');
     });
 
@@ -515,6 +573,31 @@ describe('AgentService', () => {
       expect(result?.provider).toBe('anthropic');
     });
 
+    it('should apply branding before the final managed default-inbox overlay', async () => {
+      vi.mocked(resolveServerRuntimeBranding).mockResolvedValue({
+        defaultAgentDisplayName: 'AIHub AI',
+      } as any);
+      const mockAgentModel = {
+        getAgentConfigById: vi
+          .fn()
+          .mockResolvedValue({ id: 'inbox-agent', slug: 'inbox', title: null }),
+      };
+      (AgentModel as any).mockImplementation(() => mockAgentModel);
+      (parseAgentConfig as any).mockReturnValue({});
+      vi.mocked(isRedisEnabled).mockReturnValue(false);
+      mockGetEffectiveBuiltinConfig.mockImplementationOnce(async (base) => ({
+        ...base,
+        title: 'Managed Inbox',
+      }));
+
+      const result = await new AgentService(mockDb, mockUserId).getAgentConfigById('inbox-agent');
+
+      expect(mockGetEffectiveBuiltinConfig).toHaveBeenCalledWith(
+        expect.objectContaining({ title: 'AIHub AI' }),
+      );
+      expect(result?.title).toBe('Managed Inbox');
+    });
+
     describe('Redis welcome data integration', () => {
       const mockRedisGet = vi.fn();
       const mockRedisClient = { get: mockRedisGet };
@@ -651,6 +734,40 @@ describe('AgentService', () => {
         expect(result?.id).toBe('agent-1');
         expect(result?.openingMessage).toBeUndefined();
       });
+    });
+  });
+
+  describe('listMessengerBindableAgents', () => {
+    it('uses the same branding-aware inbox projection as direct builtin reads', async () => {
+      vi.mocked(resolveServerRuntimeBranding).mockResolvedValue({
+        defaultAgentDisplayName: 'AIHub AI',
+      } as any);
+      const mockAgentModel = {
+        getBuiltinAgent: vi
+          .fn()
+          .mockResolvedValue({ id: 'inbox-agent', slug: 'inbox', title: 'AIHub AI' }),
+        listMessengerBindableAgents: vi.fn().mockResolvedValue([
+          {
+            avatar: null,
+            backgroundColor: null,
+            id: 'inbox-agent',
+            isInbox: true,
+            title: 'AIHub AI',
+          },
+        ]),
+      };
+      (AgentModel as any).mockImplementation(() => mockAgentModel);
+      (parseAgentConfig as any).mockReturnValue({});
+
+      const result = await new AgentService(mockDb, mockUserId).listMessengerBindableAgents({
+        fallbackTitle: 'Custom Agent',
+      });
+
+      expect(mockAgentModel.listMessengerBindableAgents).toHaveBeenCalledWith({
+        fallbackTitle: 'Custom Agent',
+        inboxTitleFallback: 'AIHub AI',
+      });
+      expect(result[0]?.title).toBe('AIHub AI');
     });
   });
 

@@ -10,13 +10,13 @@ import debug from 'debug';
 
 import type { MessengerPlatform } from '@/config/messenger';
 import { getServerDB } from '@/database/core/db-adaptor';
-import { AgentModel } from '@/database/models/agent';
 import { MessengerAccountLinkModel } from '@/database/models/messengerAccountLink';
 import { WorkspaceModel } from '@/database/models/workspace';
 import type { MessengerAccountLinkItem } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
 import { getServerFeatureFlagsStateFromRuntimeConfig } from '@/server/featureFlags';
 import { getAgentRuntimeRedisClient } from '@/server/modules/AgentRuntime/redis';
+import { AgentService } from '@/server/services/agent';
 import { AiAgentService } from '@/server/services/aiAgent';
 import { AgentBridgeService } from '@/server/services/bot/AgentBridgeService';
 import { buildBotContext } from '@/server/services/bot/buildBotContext';
@@ -1511,7 +1511,7 @@ export class MessengerRouter {
     // The filter, ordering, pinning, and title fallback all live in the model.
     // This text-only channel has no client-side i18n default, so it asks the
     // model to fill blank titles with a generic "Custom Agent" label.
-    const rows = await new AgentModel(
+    const rows = await new AgentService(
       serverDB,
       userId,
       workspaceId ?? undefined,

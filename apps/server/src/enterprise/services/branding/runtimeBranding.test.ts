@@ -14,6 +14,7 @@ describe('resolveServerRuntimeBranding', () => {
     });
 
     expect(getDatabase).not.toHaveBeenCalled();
+    expect(branding.defaultAgentDisplayName).toBe('Lobe AI');
     expect(branding.name).toBe('LobeHub');
     expect(branding.publishedRevision).toBeNull();
   });
@@ -48,7 +49,11 @@ describe('resolveServerRuntimeBranding', () => {
 
     expect(getDatabase).toHaveBeenCalledTimes(1);
     expect(getPublishedBranding).toHaveBeenCalledTimes(1);
-    expect(branding).toMatchObject({ name: 'AIHub', publishedRevision: '42' });
+    expect(branding).toMatchObject({
+      defaultAgentDisplayName: 'AIHub AI',
+      name: 'AIHub',
+      publishedRevision: '42',
+    });
   });
 
   it('fails closed to built-in branding when the database is unavailable', async () => {
@@ -58,6 +63,7 @@ describe('resolveServerRuntimeBranding', () => {
     });
 
     expect(branding.name).toBe('LobeHub');
+    expect(branding.defaultAgentDisplayName).toBe('Lobe AI');
     expect(branding.publishedRevision).toBeNull();
   });
 

@@ -1,6 +1,6 @@
 import { type BuiltinAgentSlug } from '@lobechat/builtin-agents';
 import { BUILTIN_AGENTS } from '@lobechat/builtin-agents';
-import { DEFAULT_AGENT_CONFIG } from '@lobechat/const';
+import { DEFAULT_AGENT_CONFIG, DEFAULT_INBOX_TITLE, INBOX_SESSION_ID } from '@lobechat/const';
 import { type LobeChatDatabase } from '@lobechat/database';
 import { type AgentItem, type LobeAgentConfig } from '@lobechat/types';
 import { cleanObject, merge } from '@lobechat/utils';
@@ -21,6 +21,7 @@ import {
   RedisKeys,
 } from '@/libs/redis';
 import { PlatformDefaultInboxService } from '@/server/enterprise/services/agentCatalog/defaultInbox';
+import { resolveServerRuntimeBranding } from '@/server/enterprise/services/branding/runtimeBranding';
 import { getEffectiveDefaultAgentConfig } from '@/server/enterprise/services/settings/runtimeSettingsAdapter';
 import { getServerDefaultAgentConfig } from '@/server/globalConfig';
 
@@ -79,9 +80,12 @@ export class AgentService {
    * This ensures the frontend always receives a complete config with model/provider.
    */
   async getBuiltinAgent(slug: string) {
+    const inboxTitleFallback =
+      slug === INBOX_SESSION_ID ? await this.resolveInboxTitleFallback() : undefined;
+
     // Fetch agent + effective defaultAgent (platform-only in workspace scope)
     const [agent, defaultAgentConfig] = await Promise.all([
-      this.agentModel.getBuiltinAgent(slug),
+      this.agentModel.getBuiltinAgent(slug, { inboxTitleFallback }),
       getEffectiveDefaultAgentConfig({
         db: this.db,
         scope: this.workspaceId ? 'workspace' : 'personal',
@@ -95,7 +99,7 @@ export class AgentService {
     const normalizedConfig = {
       ...mergedConfig,
       avatar: normalizeInboxAgentAvatar(mergedConfig.avatar, identity),
-      title: normalizeInboxAgentTitle(mergedConfig.title, identity),
+      title: normalizeInboxAgentTitle(mergedConfig.title, identity, inboxTitleFallback),
     };
 
     // Use builtin avatar as fallback only when DB has no custom avatar
@@ -109,7 +113,7 @@ export class AgentService {
     // runtime-owned fields come from the exact effective default-inbox platform version. A real
     // absence falls back to legacy; resolver/DB/dependency errors propagate instead of pretending
     // there is no managed default. Flag off performs zero platform IO inside the adapter.
-    if (slug === 'inbox') {
+    if (slug === INBOX_SESSION_ID) {
       return this.applyDefaultInboxTakeover({
         ...withBuiltinAvatar,
         avatar: withBuiltinAvatar.avatar ?? undefined,
@@ -132,7 +136,10 @@ export class AgentService {
    */
   async getAgentConfig(idOrSlug: string): Promise<AgentConfigWithId | null> {
     const [agent, defaultAgentConfig] = await Promise.all([
-      this.agentModel.getAgentConfig(idOrSlug),
+      // Preserve a blank inbox title until its identity is known. This avoids a
+      // branding read for non-inbox agents without losing the distinction
+      // between an explicit literal "Lobe AI" and the legacy fallback.
+      this.agentModel.getAgentConfig(idOrSlug, { inboxTitleFallback: null }),
       getEffectiveDefaultAgentConfig({
         db: this.db,
         scope: this.workspaceId ? 'workspace' : 'personal',
@@ -140,7 +147,10 @@ export class AgentService {
       }),
     ]);
 
-    return this.mergeDefaultConfig(agent, defaultAgentConfig) as AgentConfigWithId | null;
+    const normalizedAgent = await this.applyRuntimeInboxTitleFallback(agent);
+    const config = this.mergeDefaultConfig(normalizedAgent, defaultAgentConfig);
+
+    return config ? ((await this.applyDefaultInboxTakeover(config)) as AgentConfigWithId) : null;
   }
 
   /**
@@ -155,7 +165,7 @@ export class AgentService {
    */
   async getAgentConfigById(agentId: string) {
     const [agent, defaultAgentConfig, welcomeData] = await Promise.all([
-      this.agentModel.getAgentConfigById(agentId),
+      this.agentModel.getAgentConfigById(agentId, { inboxTitleFallback: null }),
       getEffectiveDefaultAgentConfig({
         db: this.db,
         scope: this.workspaceId ? 'workspace' : 'personal',
@@ -164,7 +174,8 @@ export class AgentService {
       this.getAgentWelcomeFromRedis(agentId),
     ]);
 
-    const config = this.mergeDefaultConfig(agent, defaultAgentConfig);
+    const normalizedAgent = await this.applyRuntimeInboxTitleFallback(agent);
+    const config = this.mergeDefaultConfig(normalizedAgent, defaultAgentConfig);
     if (!config) return null;
 
     // Merge AI-generated welcome data if available
@@ -185,12 +196,56 @@ export class AgentService {
       slug?: string | null;
       tags?: string[];
     };
-    if (candidate.slug !== 'inbox') return config;
+    if (candidate.slug !== INBOX_SESSION_ID) return config;
     return new PlatformDefaultInboxService(this.db, this.userId).getEffectiveBuiltinConfig({
       ...candidate,
       slug: candidate.slug,
     });
   };
+
+  private applyRuntimeInboxTitleFallback = async <
+    T extends { slug?: string | null; title?: string | null },
+  >(
+    agent: T | null,
+  ): Promise<T | null> => {
+    if (!agent || agent.slug !== INBOX_SESSION_ID || agent.title?.trim()) return agent;
+
+    return {
+      ...agent,
+      title: await this.resolveInboxTitleFallback(),
+    };
+  };
+
+  private resolveInboxTitleFallback = async (): Promise<string> => {
+    const branding = await resolveServerRuntimeBranding({ getDatabase: async () => this.db });
+    return branding.defaultAgentDisplayName?.trim() || DEFAULT_INBOX_TITLE;
+  };
+
+  async listMessengerBindableAgents(options?: { fallbackTitle?: string | null }) {
+    const inboxTitleFallback = await this.resolveInboxTitleFallback();
+    const rows = await this.agentModel.listMessengerBindableAgents({
+      ...options,
+      inboxTitleFallback,
+    });
+    const inbox = rows.find((row) => row.isInbox);
+    if (!inbox) return rows;
+
+    // The managed default-inbox overlay remains the final authority for every
+    // user-visible Messenger projection, just as it is for normal agent reads.
+    const effectiveInbox = await this.getBuiltinAgent(INBOX_SESSION_ID);
+    if (!effectiveInbox) return rows;
+
+    return rows.map((row) =>
+      row.isInbox
+        ? {
+            ...row,
+            avatar: effectiveInbox.avatar ?? null,
+            backgroundColor: effectiveInbox.backgroundColor ?? null,
+            title: effectiveInbox.title ?? inboxTitleFallback,
+          }
+        : row,
+    );
+  }
 
   /**
    * Get AI-generated welcome data from Redis

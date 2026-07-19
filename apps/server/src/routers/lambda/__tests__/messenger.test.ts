@@ -15,6 +15,7 @@ const {
   mockHasAnyPermission,
   mockInitWithEnvKey,
   mockListUserWorkspaces,
+  mockListMessengerBindableAgents,
   mockListByInstallerUserId,
   mockMarkRevoked,
   mockNotifyTelegramLinkSuccess,
@@ -31,6 +32,7 @@ const {
   mockHasAnyPermission: vi.fn(),
   mockInitWithEnvKey: vi.fn(),
   mockListUserWorkspaces: vi.fn(),
+  mockListMessengerBindableAgents: vi.fn(),
   mockListByInstallerUserId: vi.fn(),
   mockMarkRevoked: vi.fn(),
   mockNotifyTelegramLinkSuccess: vi.fn(),
@@ -82,6 +84,12 @@ vi.mock('@/server/modules/KeyVaultsEncrypt', () => ({
 
 vi.mock('@/server/featureFlags', () => ({
   getServerFeatureFlagsStateFromRuntimeConfig: mockGetServerFeatureFlagsStateFromRuntimeConfig,
+}));
+
+vi.mock('@/server/services/agent', () => ({
+  AgentService: class AgentService {
+    listMessengerBindableAgents = (...args: any[]) => mockListMessengerBindableAgents(...args);
+  },
 }));
 
 vi.mock('@/server/services/messenger', () => ({
@@ -436,6 +444,7 @@ describe('messengerRouter.listBindingScopes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetServerDB.mockResolvedValue({});
+    mockListMessengerBindableAgents.mockResolvedValue([]);
   });
 
   it('returns no workspace scopes when workspace feature is disabled', async () => {
@@ -474,5 +483,17 @@ describe('messengerRouter.listAgentsForBinding', () => {
     );
 
     expect(mockListUserWorkspaces).not.toHaveBeenCalled();
+  });
+
+  it('uses the branding-aware AgentService projection for the web picker', async () => {
+    mockListMessengerBindableAgents.mockResolvedValue([
+      { id: 'inbox-agent', isInbox: true, title: 'AIHub AI' },
+    ]);
+
+    const caller = createCaller(await createContextInner({ userId: 'user-1' }));
+    const result = await caller.listAgentsForBinding();
+
+    expect(result).toEqual([{ id: 'inbox-agent', isInbox: true, title: 'AIHub AI' }]);
+    expect(mockListMessengerBindableAgents).toHaveBeenCalledOnce();
   });
 });
