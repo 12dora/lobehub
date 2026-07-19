@@ -664,7 +664,7 @@
   "identityProviders.save.title": "Save identity provider draft",
   "identityProviders.secret.clear": "Clear the configured secret on save",
   "identityProviders.secret.configured": "A secret is configured; enter a value only to replace it",
-  "identityProviders.secret.fingerprint": "Configured secret fingerprint: {{fingerprint}}…",
+  "identityProviders.secret.updatedAt": "Secret configured · Updated {{updatedAt}}",
   "identityProviders.steps.basic": "Basic",
   "identityProviders.steps.claims": "Claims",
   "identityProviders.steps.client": "Client",

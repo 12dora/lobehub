@@ -1,6 +1,7 @@
 import {
   parsePlatformIdentityProviderClaimMapping,
   type PlatformIdentityProviderDraft,
+  type PlatformIdentityProviderSecretState,
 } from '@lobechat/types';
 
 import {
@@ -11,10 +12,21 @@ import {
 import type { LobeChatDatabase, Transaction } from '../../type';
 import { containsEnterpriseSecretMaterial, isSensitiveKey } from './redact';
 
+export interface PlatformIdentityProviderInternalSecretState extends PlatformIdentityProviderSecretState {
+  fingerprint: string | null;
+}
+
+export type PlatformIdentityProviderInternalDraft = Omit<
+  PlatformIdentityProviderDraft,
+  'secret'
+> & {
+  secret: PlatformIdentityProviderInternalSecretState;
+};
+
 const toSafeDraft = (
   row: Omit<SafePlatformIdentityProviderItem, 'secretRef'>,
   secretConfigured: boolean,
-): PlatformIdentityProviderDraft => {
+): PlatformIdentityProviderInternalDraft => {
   const claimMapping = parsePlatformIdentityProviderClaimMapping(row.claimMapping);
   const publicConfig = {
     buttonLabel: row.buttonLabel,
@@ -69,11 +81,21 @@ const toSafeDraft = (
 
 export const toSafeIdentityProviderDraft = (
   row: SafePlatformIdentityProviderItem,
-): PlatformIdentityProviderDraft => toSafeDraft(row, row.secretRef !== null);
+): PlatformIdentityProviderInternalDraft => toSafeDraft(row, row.secretRef !== null);
 
 export const toSafeIdentityProviderDraftFromList = (
   row: SafePlatformIdentityProviderListItem,
-): PlatformIdentityProviderDraft => toSafeDraft(row, row.secretConfigured);
+): PlatformIdentityProviderInternalDraft => toSafeDraft(row, row.secretConfigured);
+
+export const toPublicIdentityProviderDraft = (
+  draft: PlatformIdentityProviderInternalDraft,
+): PlatformIdentityProviderDraft => {
+  const { secret, ...publicDraft } = draft;
+  return {
+    ...publicDraft,
+    secret: { configured: secret.configured, updatedAt: secret.updatedAt },
+  };
+};
 
 /** Secret-safe database model used by every future API/revision projection. */
 export class PlatformIdentityProviderModel {
@@ -83,15 +105,16 @@ export class PlatformIdentityProviderModel {
     this.repository = new PlatformIdentityProviderRepository(db);
   }
 
-  get = async (id: string): Promise<PlatformIdentityProviderDraft | undefined> => {
+  get = async (id: string): Promise<PlatformIdentityProviderInternalDraft | undefined> => {
     const row = await this.repository.get(id);
     return row ? toSafeIdentityProviderDraft(row) : undefined;
   };
 
-  list = async (): Promise<PlatformIdentityProviderDraft[]> =>
+  list = async (): Promise<PlatformIdentityProviderInternalDraft[]> =>
     (await this.repository.list()).map(toSafeIdentityProviderDraft);
 
   /** Revision seed deliberately contains only configured/fingerprint metadata. */
-  prepareRevisionPayload = async (id: string): Promise<PlatformIdentityProviderDraft | null> =>
-    (await this.get(id)) ?? null;
+  prepareRevisionPayload = async (
+    id: string,
+  ): Promise<PlatformIdentityProviderInternalDraft | null> => (await this.get(id)) ?? null;
 }

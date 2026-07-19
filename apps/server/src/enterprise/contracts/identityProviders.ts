@@ -80,10 +80,6 @@ export const identityProviderSecretMutationSchema = z.discriminatedUnion('operat
 export const identityProviderSecretStateSchema = z
   .object({
     configured: z.boolean(),
-    fingerprint: z
-      .string()
-      .regex(/^[a-f0-9]{64}$/)
-      .nullable(),
     updatedAt: z.date().nullable(),
   })
   .strict();

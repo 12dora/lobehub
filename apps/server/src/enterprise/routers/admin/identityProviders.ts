@@ -1,5 +1,6 @@
 import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
+import { toPublicIdentityProviderDraft } from '@/database/models/platform';
 import { enterpriseAccessGate, preAccessAuthedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 
@@ -191,8 +192,10 @@ export const adminIdentityProvidersRouter = router({
         serverDB: ctx.serverDB,
         targetId: input.id,
       });
-      return execute(() =>
-        new IdentityProviderPublicationService(ctx.serverDB).publish(ctx.userId!, input),
+      return execute(async () =>
+        toPublicIdentityProviderDraft(
+          await new IdentityProviderPublicationService(ctx.serverDB).publish(ctx.userId!, input),
+        ),
       );
     }),
 
@@ -210,8 +213,10 @@ export const adminIdentityProvidersRouter = router({
         serverDB: ctx.serverDB,
         targetId: input.id,
       });
-      return execute(() =>
-        new IdentityProviderPublicationService(ctx.serverDB).rollback(ctx.userId!, input),
+      return execute(async () =>
+        toPublicIdentityProviderDraft(
+          await new IdentityProviderPublicationService(ctx.serverDB).rollback(ctx.userId!, input),
+        ),
       );
     }),
 
