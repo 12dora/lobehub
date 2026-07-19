@@ -4,7 +4,7 @@ import { NextResponse } from 'next/server';
 import { UAParser } from 'ua-parser-js';
 import urlJoin from 'url-join';
 
-import { auth } from '@/auth';
+import { proxyAuth as auth } from '@/auth.proxy';
 import { LOBE_LOCALE_COOKIE } from '@/const/locale';
 import { appEnv } from '@/envs/app';
 import { authEnv } from '@/envs/auth';

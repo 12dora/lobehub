@@ -126,7 +126,7 @@ describe('defineConfig', () => {
   it('should revoke existing sessions after password reset by default', async () => {
     const { defineConfig } = await import('./define-config');
 
-    defineConfig({ plugins: [] });
+    await defineConfig({ plugins: [] });
 
     expect(mocks.betterAuth).toHaveBeenCalledWith(
       expect.objectContaining({
