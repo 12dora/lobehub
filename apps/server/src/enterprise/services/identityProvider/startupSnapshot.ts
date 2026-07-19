@@ -229,6 +229,26 @@ const enrichRuntimeProviders = async (
     })),
   );
 
+const databasePayloadMatches = (
+  candidate: Awaited<ReturnType<typeof loadDatabasePayload>>,
+  current: Awaited<ReturnType<typeof loadDatabasePayload>>,
+): boolean =>
+  snapshotGeneration(candidate) === snapshotGeneration(current) &&
+  identityRevision(candidate) === identityRevision(current) &&
+  candidate.length === current.length &&
+  candidate.every((row, index) => {
+    const currentRow = current[index];
+    return (
+      currentRow !== undefined &&
+      row.checksum === currentRow.checksum &&
+      row.generation === currentRow.generation &&
+      row.providerId === currentRow.providerId &&
+      row.revision === currentRow.revision &&
+      row.secretCiphertext === currentRow.secretCiphertext &&
+      row.secretFingerprint === currentRow.secretFingerprint
+    );
+  });
+
 const toLkgPayload = (
   rows: Awaited<ReturnType<typeof loadDatabasePayload>>,
 ): IdentityProviderLkgPayload => ({
@@ -328,48 +348,66 @@ const loadUncached = async (options: LoadOptions): Promise<IdentityProviderStart
   if (secrets) {
     try {
       const db = options.db ?? (await loadDatabase());
-      const loaded = await withIdentityProviderLkgAdvisoryLock(db, async (tx) => {
+      const environmentProviderIdSet = new Set(environmentProviderIds);
+      for (let attempt = 0; attempt < 2; attempt++) {
         const rows = await loadDatabasePayload({
-          db: tx,
-          environmentProviderIds: new Set(environmentProviderIds),
+          db,
+          environmentProviderIds: environmentProviderIdSet,
         });
-        const revision = identityRevision(rows);
-        const generation = snapshotGeneration(rows);
-        let lastError: string | null = null;
-        try {
-          const writeResult = await writeIdentityProviderLkg({
-            env,
-            payload: toLkgPayload(rows),
-            secrets,
+        // Secret integrity and every remote endpoint are validated before the
+        // candidate is allowed to replace the last-known-good snapshot.
+        const databaseProviders = await enrichRuntimeProviders(
+          await materializeProviders(rows, secrets),
+          discovery,
+        );
+        const committed = await withIdentityProviderLkgAdvisoryLock(db, async (tx) => {
+          const currentRows = await loadDatabasePayload({
+            db: tx,
+            environmentProviderIds: environmentProviderIdSet,
           });
-          if (writeResult !== 'written' && writeResult !== 'unchanged') {
-            lastError = `lkg_write_${writeResult}`;
+          if (!databasePayloadMatches(rows, currentRows)) return null;
+
+          let lastError: string | null = null;
+          try {
+            const writeResult = await writeIdentityProviderLkg({
+              env,
+              payload: toLkgPayload(currentRows),
+              secrets,
+            });
+            if (writeResult !== 'written' && writeResult !== 'unchanged') {
+              lastError = `lkg_write_${writeResult}`;
+            }
+          } catch (error) {
+            console.error('[identityProviderStartup] LKG write unavailable', {
+              errorClass: error instanceof Error ? error.name : 'UnknownError',
+            });
+            lastError = 'lkg_write_unavailable';
           }
-        } catch (error) {
-          console.error('[identityProviderStartup] LKG write unavailable', {
-            errorClass: error instanceof Error ? error.name : 'UnknownError',
-          });
-          lastError = 'lkg_write_unavailable';
+          return {
+            generation: snapshotGeneration(currentRows),
+            lastError,
+            revision: identityRevision(currentRows),
+          };
+        });
+        if (!committed) {
+          if (attempt === 0) continue;
+          throw new Error('PLATFORM_IDENTITY_PROVIDER_SNAPSHOT_CHANGED');
         }
-        return { generation, lastError, revision, rows };
-      });
-      const databaseProviders = await enrichRuntimeProviders(
-        await materializeProviders(loaded.rows, secrets),
-        discovery,
-      );
-      return {
-        databaseProviders,
-        generation: loaded.generation,
-        health: loaded.lastError ? 'degraded' : 'healthy',
-        identityRevision: loaded.revision,
-        lastError: loaded.lastError,
-        loadedAt,
-        providerIds: [
-          ...environmentProviderIds,
-          ...databaseProviders.map((provider) => provider.providerKey),
-        ],
-        source: 'database',
-      };
+        return {
+          databaseProviders,
+          generation: committed.generation,
+          health: committed.lastError ? 'degraded' : 'healthy',
+          identityRevision: committed.revision,
+          lastError: committed.lastError,
+          loadedAt,
+          providerIds: [
+            ...environmentProviderIds,
+            ...databaseProviders.map((provider) => provider.providerKey),
+          ],
+          source: 'database',
+        };
+      }
+      throw new Error('PLATFORM_IDENTITY_PROVIDER_SNAPSHOT_CHANGED');
     } catch (error) {
       databaseError = error;
       console.error('[identityProviderStartup] critical database snapshot failure', {

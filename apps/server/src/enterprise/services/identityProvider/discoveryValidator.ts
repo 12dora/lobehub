@@ -70,7 +70,9 @@ const toMetadata = (
   scopesSupported: parsed.scopes_supported,
   subjectTypesSupported: parsed.subject_types_supported,
   tokenEndpoint: parsed.token_endpoint,
-  tokenEndpointAuthMethodsSupported: parsed.token_endpoint_auth_methods_supported,
+  tokenEndpointAuthMethodsSupported: parsed.token_endpoint_auth_methods_supported ?? [
+    'client_secret_basic',
+  ],
   userinfoEndpoint: parsed.userinfo_endpoint ?? null,
 });
 
@@ -138,7 +140,8 @@ export class IdentityProviderDiscoveryValidator {
         ),
       ) ||
       !metadata.codeChallengeMethodsSupported.includes('S256') ||
-      !metadata.tokenEndpointAuthMethodsSupported.some(
+      metadata.tokenEndpointAuthMethodsSupported.length === 0 ||
+      !metadata.tokenEndpointAuthMethodsSupported.every(
         (value) => value === 'client_secret_basic' || value === 'client_secret_post',
       )
     ) {
