@@ -54,6 +54,11 @@ export const users = pgTable(
      */
     authInvalidatedExcludedSessionId: text('auth_invalidated_excluded_session_id'),
 
+    /** Stable DingTalk title copied from a trusted enterprise OIDC profile on first sign-in */
+    dingtalkTitle: text('dingtalk_title'),
+    /** Stable DingTalk subject copied from a trusted enterprise OIDC profile on first sign-in */
+    dingtalkUserId: text('dingtalk_user_id'),
+
     // better-auth two-factor
     twoFactorEnabled: boolean('two_factor_enabled').default(false),
 

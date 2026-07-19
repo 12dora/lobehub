@@ -1,8 +1,9 @@
 import type { ChatTopicMetadata } from '@lobechat/types';
 import { z } from 'zod';
 
-import type { TopicItem, UserItem } from '@/database/schemas';
+import type { TopicItem } from '@/database/schemas';
 
+import type { PublicUserItem } from '../helpers/publicUser';
 import type { IPaginationQuery, PaginationQueryResponse } from './common.type';
 import { PaginationQuerySchema } from './common.type';
 
@@ -72,7 +73,7 @@ export const TopicUpdateRequestSchema = z.object({
 
 export interface TopicResponse extends TopicItem {
   messageCount: number;
-  user: UserItem;
+  user: PublicUserItem;
 }
 
 /**

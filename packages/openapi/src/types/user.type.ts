@@ -1,7 +1,8 @@
 import { z } from 'zod';
 
-import type { RoleItem, UserItem, UserRoleItem } from '@/database/schemas';
+import type { RoleItem, UserRoleItem } from '@/database/schemas';
 
+import type { PublicUserItem } from '../helpers/publicUser';
 import type { IPaginationQuery, PaginationQueryResponse } from './common.type';
 
 // ==================== User Base Types ====================
@@ -17,7 +18,7 @@ export interface GetUsersRequest {
 /**
  * Extended user info type including role information
  */
-export type UserWithRoles = UserItem & {
+export type UserWithRoles = PublicUserItem & {
   messageCount?: number;
   roles?: RoleItem[];
 };

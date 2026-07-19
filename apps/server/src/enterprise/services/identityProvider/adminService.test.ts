@@ -156,7 +156,7 @@ describe('AdminIdentityProviderService', () => {
     });
     expect(validateNetwork).toHaveBeenCalledWith('https://login.example.test');
     expect(service.getCallbackUrls()).toEqual({
-      production: 'https://app.example.test/api/auth/callback/{providerKey}',
+      production: 'https://app.example.test/api/auth/oauth2/callback/{providerKey}',
       test: 'https://app.example.test/oauth/identity-provider/test/callback',
     });
   });

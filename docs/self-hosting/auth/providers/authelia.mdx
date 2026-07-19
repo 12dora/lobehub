@@ -28,7 +28,7 @@ tags:
           client_name: 'LobeHub'
           client_secret: 'your-client-secret'
           redirect_uris:
-            - 'https://your-domain.com/api/auth/callback/authelia'
+            - 'https://your-domain.com/api/auth/oauth2/callback/authelia'
           scopes:
             - 'openid'
             - 'profile'
@@ -36,7 +36,7 @@ tags:
   ```
 
   <Callout type={'info'}>
-    **Callback URL Format**: `https://your-domain.com/api/auth/callback/authelia`
+    **Callback URL Format**: `https://your-domain.com/api/auth/oauth2/callback/authelia`
   </Callout>
 
   ### Configure Environment Variables
