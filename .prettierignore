@@ -64,6 +64,9 @@ Dockerfile*
 # Drizzle migration meta (drizzle-kit tab style; avoid full-file reformat noise)
 packages/database/migrations/meta/
 
+# Generated occurrence multiset: one JSON object per line keeps branding baseline diffs reviewable
+scripts/enterprise/branding-literals-baseline.json
+
 # Machine-readable manifest / long ledger tables: preserve literal paths and code-contained |
 docs/redevelopment/MANIFEST.md
 docs/redevelopment/list/01_数据库表与迁移清单.md
