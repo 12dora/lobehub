@@ -1,3 +1,5 @@
+import { createHmac, hkdfSync, timingSafeEqual } from 'node:crypto';
+
 import type { EnterpriseFeatureFlags } from '@/const/platform/featureFlags';
 
 import { isAnyEnterpriseFeatureEnabled } from '../../featureFlags';
@@ -63,6 +65,73 @@ export class PlatformSecretService {
 
   /** Read key id from ciphertext without decrypting (fingerprint / rotation planning). */
   peekKeyId = (ciphertext: string): string => getEnvelopeKeyId(ciphertext);
+
+  /**
+   * Sign a bounded platform artifact without exposing or re-reading the master key.
+   * HKDF domain separation prevents a signature from one artifact class being
+   * accepted by another consumer that uses the same KeyProvider.
+   */
+  signArtifact = async (domain: string, payload: string): Promise<string> => {
+    if (!/^[a-z0-9][a-z0-9._-]{0,127}$/.test(domain)) {
+      throw secretInvalidInput('Artifact signature domain is invalid');
+    }
+    const { key, keyId } = await this.keyProvider.getKek();
+    const signingKey = Buffer.from(
+      hkdfSync(
+        'sha256',
+        key,
+        Buffer.from('aihub.platform.artifact-signature.v1', 'utf8'),
+        Buffer.from(domain, 'utf8'),
+        32,
+      ),
+    );
+    try {
+      const signature = createHmac('sha256', signingKey)
+        .update(payload, 'utf8')
+        .digest('base64url');
+      return `aihub.signature.v1.${Buffer.from(keyId, 'utf8').toString('base64url')}.${signature}`;
+    } finally {
+      signingKey.fill(0);
+    }
+  };
+
+  verifyArtifact = async (domain: string, payload: string, signature: string): Promise<boolean> => {
+    if (!/^[a-z0-9][a-z0-9._-]{0,127}$/.test(domain)) return false;
+    const parts = signature.split('.');
+    if (
+      parts.length !== 5 ||
+      parts[0] !== 'aihub' ||
+      parts[1] !== 'signature' ||
+      parts[2] !== 'v1'
+    ) {
+      return false;
+    }
+    let keyId: string;
+    let supplied: Buffer;
+    try {
+      keyId = Buffer.from(parts[3]!, 'base64url').toString('utf8');
+      supplied = Buffer.from(parts[4]!, 'base64url');
+    } catch {
+      return false;
+    }
+    if (!keyId || supplied.length !== 32) return false;
+    const { key } = await this.keyProvider.getKek(keyId);
+    const signingKey = Buffer.from(
+      hkdfSync(
+        'sha256',
+        key,
+        Buffer.from('aihub.platform.artifact-signature.v1', 'utf8'),
+        Buffer.from(domain, 'utf8'),
+        32,
+      ),
+    );
+    try {
+      const expected = createHmac('sha256', signingKey).update(payload, 'utf8').digest();
+      return timingSafeEqual(expected, supplied);
+    } finally {
+      signingKey.fill(0);
+    }
+  };
 
   /**
    * Build service from PLATFORM_MASTER_KEY when present.
