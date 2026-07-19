@@ -2,8 +2,7 @@
  * Pluggable KEK provider for envelope encryption.
  *
  * EnvKeyProvider — first-party, env-backed (local / single-node).
- * VaultKeyProvider — interface + stub only in this PR; real AppRole/KV
- *   integration is W8 (see docs/redevelopment/overview/03_阶段0_环境准备记录.md).
+ * VaultKeyProvider — production KV v2 reader using AppRole or a scoped token.
  */
 
 /** 32-byte AES-256 key material plus opaque key id for ciphertext metadata. */
