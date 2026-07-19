@@ -45,9 +45,10 @@ const parseTrustedOrigin = (value: string | undefined, allowInternalHttp: boolea
 
 // Resolved exactly once from deployment-controlled configuration. Request headers
 // and request URLs are never authority inputs for this privileged internal call.
-const TRUSTED_AUTH_ORIGIN = process.env.INTERNAL_APP_URL
+const PUBLIC_AUTH_ORIGIN = parseTrustedOrigin(process.env.APP_URL, false);
+const INTERNAL_AUTH_ORIGIN = process.env.INTERNAL_APP_URL
   ? parseTrustedOrigin(process.env.INTERNAL_APP_URL, true)
-  : parseTrustedOrigin(process.env.APP_URL, false);
+  : PUBLIC_AUTH_ORIGIN;
 
 const validDateAfterNow = (value: unknown): boolean => {
   const timestamp =
@@ -100,9 +101,9 @@ const selectSessionCookies = (rawCookie: string): string | null => {
 
 const readSignedCookieCache = async (headers: Headers): Promise<ProxySession | null> => {
   const secret = process.env.AUTH_SECRET;
-  if (!secret || !TRUSTED_AUTH_ORIGIN) return null;
+  if (!secret || !PUBLIC_AUTH_ORIGIN) return null;
   const cache = await getCookieCache(headers, {
-    isSecure: TRUSTED_AUTH_ORIGIN.protocol === 'https:',
+    isSecure: PUBLIC_AUTH_ORIGIN.protocol === 'https:',
     secret,
     strategy: 'compact',
   });
@@ -120,10 +121,10 @@ const readSignedCookieCache = async (headers: Headers): Promise<ProxySession | n
 };
 
 const readAuthoritativeSession = async (headers: Headers): Promise<ProxySession | null> => {
-  if (!TRUSTED_AUTH_ORIGIN) return null;
+  if (!INTERNAL_AUTH_ORIGIN) return null;
   const cookie = selectSessionCookies(headers.get('cookie') ?? '');
   if (!cookie) return null;
-  const endpoint = new URL('/api/auth/get-session?disableCookieCache=true', TRUSTED_AUTH_ORIGIN);
+  const endpoint = new URL('/api/auth/get-session?disableCookieCache=true', INTERNAL_AUTH_ORIGIN);
   const response = await fetch(endpoint, {
     cache: 'no-store',
     headers: { cookie },
@@ -142,7 +143,7 @@ const getSession = async (input: {
   headers: Headers;
   requestUrl?: string;
 }): Promise<ProxySession | null> => {
-  if (!TRUSTED_AUTH_ORIGIN) return null;
+  if (!PUBLIC_AUTH_ORIGIN || !INTERNAL_AUTH_ORIGIN) return null;
   try {
     return (
       (await readSignedCookieCache(input.headers)) ??

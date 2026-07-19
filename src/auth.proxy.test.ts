@@ -34,13 +34,38 @@ afterEach(() => {
 });
 
 describe('edge-safe proxy auth', () => {
-  it('accepts a fresh signed cookie cache without a server lookup', async () => {
-    const proxyAuth = await loadProxyAuth({ appUrl: 'https://app.example.test' });
+  it('uses public HTTPS cookie semantics with an HTTP internal origin and skips fetch on cache hit', async () => {
+    const proxyAuth = await loadProxyAuth({
+      appUrl: 'https://app.example.test',
+      internalUrl: 'http://identity-internal:3210',
+    });
     getCookieCache.mockResolvedValue(cachedSession());
+    const secureHeaders = new Headers({ cookie: '__Secure-better-auth.session_data=signed' });
 
     await expect(
-      proxyAuth.api.getSession({ headers, requestUrl: 'https://hostile.test:8443/admin' }),
+      proxyAuth.api.getSession({
+        headers: secureHeaders,
+        requestUrl: 'https://hostile.test:8443/admin',
+      }),
     ).resolves.toMatchObject({ user: { id: 'user-1' } });
+    expect(getCookieCache).toHaveBeenCalledWith(
+      secureHeaders,
+      expect.objectContaining({ isSecure: true }),
+    );
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('uses non-secure cookie semantics only for a public localhost HTTP URL', async () => {
+    const proxyAuth = await loadProxyAuth({ appUrl: 'http://localhost:3210' });
+    getCookieCache.mockResolvedValue(cachedSession());
+
+    await expect(proxyAuth.api.getSession({ headers })).resolves.toMatchObject({
+      user: { id: 'user-1' },
+    });
+    expect(getCookieCache).toHaveBeenCalledWith(
+      headers,
+      expect.objectContaining({ isSecure: false }),
+    );
     expect(fetch).not.toHaveBeenCalled();
   });
 
@@ -98,6 +123,15 @@ describe('edge-safe proxy auth', () => {
     await expect(
       proxyAuth.api.getSession({ headers, requestUrl: 'https://attacker.test/admin' }),
     ).resolves.toBeNull();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('does not infer public cookie security from a configured internal origin', async () => {
+    const proxyAuth = await loadProxyAuth({ internalUrl: 'http://identity-internal:3210' });
+    getCookieCache.mockResolvedValue(cachedSession());
+
+    await expect(proxyAuth.api.getSession({ headers })).resolves.toBeNull();
+    expect(getCookieCache).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();
   });
 
