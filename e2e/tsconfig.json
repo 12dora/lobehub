@@ -10,7 +10,12 @@
     "resolveJsonModule": true,
     "skipLibCheck": true,
     "paths": {
-      "@/*": ["../*"]
+      "@/const/*": ["../packages/const/src/*", "../src/const/*"],
+      "@/database/*": ["../packages/database/src/*"],
+      "@/server/*": ["../apps/server/src/*", "../src/server/*"],
+      "@/types/*": ["../packages/types/src/*", "../src/types/*"],
+      "@/utils/*": ["../packages/utils/src/*", "../src/utils/*"],
+      "@/*": ["../src/*"]
     }
   },
   "exclude": ["node_modules", "reports"],

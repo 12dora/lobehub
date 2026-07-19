@@ -9,14 +9,18 @@
     "test:ci": "bun run build && bun run test",
     "test:community": "cucumber-js --config cucumber.config.js src/features/community/",
     "test:headed": "cross-env HEADLESS=false cucumber-js --config cucumber.config.js",
+    "test:identity-provider": "playwright test --config playwright.identity-provider.config.ts",
+    "test:identity-provider:unit": "vitest run --config vitest.identity-provider.config.ts --silent='passed-only'",
     "test:routes": "cucumber-js --config cucumber.config.js --tags '@routes'",
     "test:routes:ci": "cucumber-js --config cucumber.config.js --tags '@routes and not @ci-skip'",
-    "test:smoke": "cucumber-js --config cucumber.config.js --tags '@smoke'"
+    "test:smoke": "cucumber-js --config cucumber.config.js --tags '@smoke'",
+    "type:identity-provider": "tsc --noEmit -p tsconfig.identity-provider.json"
   },
   "dependencies": {
     "@cucumber/cucumber": "^12.2.0",
     "@playwright/test": "^1.57.0",
     "bcryptjs": "^3.0.3",
+    "jose": "^6.2.3",
     "pg": "^8.16.0",
     "playwright": "^1.57.0"
   },
