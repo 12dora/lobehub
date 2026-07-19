@@ -4,10 +4,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { GET } from './route';
 
 const mocks = vi.hoisted(() => ({
+  bootstrapIdentityProviderRuntime: vi.fn(async () => undefined),
   getServerAuthConfig: vi.fn(),
   resolvePlatformPublicSnapshot: vi.fn(),
   resolveServerRuntimeBranding: vi.fn(),
   resolveServerRuntimeBrandingFromPublicSnapshot: vi.fn(),
+}));
+
+vi.mock('@/server/enterprise/services/identityProvider/bootstrap', () => ({
+  bootstrapIdentityProviderRuntime: mocks.bootstrapIdentityProviderRuntime,
 }));
 
 vi.mock('@/server/enterprise/services/branding', () => ({
@@ -67,6 +72,7 @@ describe('auth SPA route runtime snapshot', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.bootstrapIdentityProviderRuntime.mockResolvedValue(undefined);
     mocks.getServerAuthConfig.mockReturnValue({ enterprise: { enabled: true } });
     mocks.resolvePlatformPublicSnapshot.mockResolvedValue(publicSnapshot);
     mocks.resolveServerRuntimeBrandingFromPublicSnapshot.mockReturnValue(branding);
@@ -79,6 +85,7 @@ describe('auth SPA route runtime snapshot', () => {
     const html = await response.text();
 
     expect(mocks.resolvePlatformPublicSnapshot).toHaveBeenCalledOnce();
+    expect(mocks.bootstrapIdentityProviderRuntime).toHaveBeenCalledOnce();
     expect(mocks.resolveServerRuntimeBrandingFromPublicSnapshot).toHaveBeenCalledOnce();
     expect(mocks.resolveServerRuntimeBrandingFromPublicSnapshot).toHaveBeenCalledWith(
       publicSnapshot,

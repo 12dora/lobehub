@@ -19,13 +19,29 @@ import {
 export const IDENTITY_PROVIDER_INSTANCE_STALE_MS = 90_000;
 export const IDENTITY_PROVIDER_HEARTBEAT_MS = 30_000;
 
-const processStartedAt = new Date();
-const processInstanceId = `oidci_${randomBytes(24).toString('hex')}`;
-const processHostnameHash = createHash('sha256').update(hostname(), 'utf8').digest('hex');
+interface IdentityProviderInstanceProcessState {
+  heartbeatTimer: ReturnType<typeof setInterval> | null;
+  hostnameHash: string;
+  instanceId: string;
+  registered: boolean;
+  registrationState: 'failed' | 'registered' | 'unknown';
+  startedAt: Date;
+}
 
-let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
-let registered = false;
-let registrationState: 'failed' | 'registered' | 'unknown' = 'unknown';
+const instanceProcess = process as NodeJS.Process & {
+  __lobehubIdentityProviderInstanceState?: IdentityProviderInstanceProcessState;
+};
+
+const ownedInstanceProcessState = (instanceProcess.__lobehubIdentityProviderInstanceState ??= {
+  heartbeatTimer: null,
+  hostnameHash: createHash('sha256').update(hostname(), 'utf8').digest('hex'),
+  instanceId: `oidci_${randomBytes(24).toString('hex')}`,
+  registered: false,
+  registrationState: 'unknown',
+  startedAt: new Date(),
+});
+
+const instanceProcessState = (): IdentityProviderInstanceProcessState => ownedInstanceProcessState;
 
 export const INSTANCE_CONVERGENCE_LOCK_NAMESPACE = 1_278_874_436;
 export const INSTANCE_CONVERGENCE_LOCK_RESOURCE = 1_348_691_815;
@@ -61,16 +77,18 @@ export const identityProviderDegradedCategory = (
 };
 
 export const getIdentityProviderProcessInstance = () => ({
-  hostnameHash: processHostnameHash,
-  instanceId: processInstanceId,
-  startedAt: processStartedAt,
+  hostnameHash: instanceProcessState().hostnameHash,
+  instanceId: instanceProcessState().instanceId,
+  startedAt: instanceProcessState().startedAt,
 });
 
-export const getIdentityProviderInstanceRegistrationState = () => registrationState;
+export const getIdentityProviderInstanceRegistrationState = () =>
+  instanceProcessState().registrationState;
 
 export const markIdentityProviderInstanceRegistrationFailed = (): void => {
-  registrationState = 'failed';
-  registered = false;
+  const state = instanceProcessState();
+  state.registrationState = 'failed';
+  state.registered = false;
 };
 
 const demoteActiveProvidersForInstance = async (input: {
@@ -135,13 +153,14 @@ const heartbeat = async (
   db: LobeChatDatabase,
   env: Record<string, string | undefined>,
 ): Promise<void> => {
-  if (!registered) return;
+  const state = instanceProcessState();
+  if (!state.registered) return;
   await db.transaction(async (tx) => {
     await acquireIdentityProviderConvergenceLock(tx);
     const [instance] = await tx
       .update(platformIdentityProviderInstances)
       .set({ lastHeartbeat: sql`clock_timestamp()` })
-      .where(eq(platformIdentityProviderInstances.instanceId, processInstanceId))
+      .where(eq(platformIdentityProviderInstances.instanceId, state.instanceId))
       .returning({
         activeIdentityRevision: platformIdentityProviderInstances.activeIdentityRevision,
         health: platformIdentityProviderInstances.health,
@@ -164,6 +183,7 @@ export const registerIdentityProviderInstance = async (input: {
   env?: Record<string, string | undefined>;
   snapshot: IdentityProviderStartupSnapshot;
 }): Promise<void> => {
+  const state = instanceProcessState();
   const category = identityProviderDegradedCategory(input.snapshot);
   const env = input.env ?? process.env;
   await input.db.transaction(async (tx) => {
@@ -174,11 +194,11 @@ export const registerIdentityProviderInstance = async (input: {
         activeIdentityRevision: input.snapshot.identityRevision,
         degradedCategory: category,
         health: input.snapshot.health,
-        hostnameHash: processHostnameHash,
-        instanceId: processInstanceId,
+        hostnameHash: state.hostnameHash,
+        instanceId: state.instanceId,
         lastHeartbeat: sql`clock_timestamp()`,
         loadedAt: input.snapshot.loadedAt,
-        startedAt: processStartedAt,
+        startedAt: state.startedAt,
         startupGeneration: input.snapshot.generation,
         startupSource: input.snapshot.source,
       })
@@ -187,7 +207,7 @@ export const registerIdentityProviderInstance = async (input: {
           activeIdentityRevision: input.snapshot.identityRevision,
           degradedCategory: category,
           health: input.snapshot.health,
-          hostnameHash: processHostnameHash,
+          hostnameHash: state.hostnameHash,
           lastHeartbeat: sql`clock_timestamp()`,
           loadedAt: input.snapshot.loadedAt,
           startupGeneration: input.snapshot.generation,
@@ -203,24 +223,25 @@ export const registerIdentityProviderInstance = async (input: {
       tx,
     });
   });
-  registered = true;
-  registrationState = 'registered';
+  state.registered = true;
+  state.registrationState = 'registered';
 
-  if (heartbeatTimer || isServerlessRuntime(env)) return;
-  heartbeatTimer = setInterval(() => {
+  if (state.heartbeatTimer || isServerlessRuntime(env)) return;
+  state.heartbeatTimer = setInterval(() => {
     void heartbeat(input.db, env).catch((error) => {
       console.error('[identityProviderInstance] heartbeat unavailable', {
         errorClass: error instanceof Error ? error.name : 'UnknownError',
-        instanceId: processInstanceId,
+        instanceId: state.instanceId,
       });
     });
   }, IDENTITY_PROVIDER_HEARTBEAT_MS);
-  heartbeatTimer.unref?.();
+  state.heartbeatTimer.unref?.();
 };
 
 export const stopIdentityProviderHeartbeatForTest = (): void => {
-  if (heartbeatTimer) clearInterval(heartbeatTimer);
-  heartbeatTimer = null;
-  registered = false;
-  registrationState = 'unknown';
+  const state = instanceProcessState();
+  if (state.heartbeatTimer) clearInterval(state.heartbeatTimer);
+  state.heartbeatTimer = null;
+  state.registered = false;
+  state.registrationState = 'unknown';
 };
