@@ -1,3 +1,4 @@
+export * from './adminBrandingAssetService';
 export * from './adminBrandingService';
 export * from './assetStorage';
 export * from './publishedReadService';

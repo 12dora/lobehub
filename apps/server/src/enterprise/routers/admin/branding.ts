@@ -24,8 +24,10 @@ import { assertRecentReauth } from '../../guards/reauth';
 import {
   AdminBrandingService,
   BrandingAssetStorageUnavailableError,
+  BrandingAssetUploadInProgressError,
   BrandingAssetValidationError,
   BrandingDraftValidationError,
+  BrandingIdempotencyConflictError,
   BrandingPersistenceInvariantError,
   PlatformRevisionConflictError,
 } from '../../services/branding/adminBrandingService';
@@ -51,6 +53,12 @@ const brandingProcedure = preAccessAuthedProcedure
   .use(withActiveUser());
 
 const mapBrandingError = (error: unknown): never => {
+  if (error instanceof BrandingIdempotencyConflictError) {
+    return throwEnterpriseError({
+      code: PLATFORM_ERROR_CODES.PLATFORM_IDEMPOTENCY_CONFLICT,
+      httpCode: 'CONFLICT',
+    });
+  }
   if (error instanceof PlatformRevisionConflictError) {
     return throwEnterpriseError({
       code: PLATFORM_ERROR_CODES.PLATFORM_REVISION_CONFLICT,
@@ -62,6 +70,13 @@ const mapBrandingError = (error: unknown): never => {
       code: PLATFORM_ERROR_CODES.PLATFORM_ASSET_STORAGE_UNAVAILABLE,
       httpCode: 'PRECONDITION_FAILED',
       message: 'Branding asset storage is not configured',
+    });
+  }
+  if (error instanceof BrandingAssetUploadInProgressError) {
+    return throwEnterpriseError({
+      code: PLATFORM_ERROR_CODES.PLATFORM_REVISION_CONFLICT,
+      httpCode: 'CONFLICT',
+      message: 'Branding asset upload is still in progress',
     });
   }
   if (

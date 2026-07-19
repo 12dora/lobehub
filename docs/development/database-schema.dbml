@@ -1815,6 +1815,41 @@ table platform_branding {
   }
 }
 
+table platform_branding_assets {
+  id text [pk, not null]
+  object_key text [not null]
+  mime_type varchar(64) [not null]
+  size integer [not null]
+  sha256 varchar(64) [not null]
+  width integer [not null]
+  height integer [not null]
+  kind varchar(32) [not null]
+  status varchar(32) [not null]
+  created_by text
+  request_actor_id text [not null]
+  operation varchar(64) [not null]
+  request_id uuid [not null]
+  request_fingerprint varchar(64) [not null]
+  draft_pinned boolean [not null, default: false]
+  first_published_revision integer
+  upload_owner uuid
+  upload_lease_until "timestamp with time zone"
+  cleanup_attempts integer [not null, default: 0]
+  cleanup_after "timestamp with time zone" [not null]
+  last_cleanup_error varchar(128)
+  object_deleted_at "timestamp with time zone"
+  created_at "timestamp with time zone" [not null, default: `now()`]
+  updated_at "timestamp with time zone" [not null, default: `now()`]
+
+  indexes {
+    object_key [name: 'platform_branding_assets_object_key_unique', unique]
+    (request_actor_id, operation, request_id) [name: 'platform_branding_assets_request_lane_unique', unique]
+    (status, cleanup_after) [name: 'platform_branding_assets_cleanup_idx']
+    created_by [name: 'platform_branding_assets_created_by_idx']
+    first_published_revision [name: 'platform_branding_assets_published_revision_idx']
+  }
+}
+
 table platform_connector_oauth_states {
   id text [pk, not null]
   state_id varchar(32) [not null]

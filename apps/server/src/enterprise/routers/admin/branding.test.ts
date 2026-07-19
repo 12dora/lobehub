@@ -146,9 +146,7 @@ describe('admin.branding router gates', () => {
   });
 
   it('requires recent reauthentication before publish and records a denied audit', async () => {
-    const service = new AdminBrandingService(db, {
-      assetStorage: { isConfigured: () => false, upload: vi.fn() },
-    });
+    const service = new AdminBrandingService(db);
     const initial = await service.getDraft();
     const draft = { ...initial.draft, name: 'Acme', pageTitleTemplate: '%s · Acme' };
     await db

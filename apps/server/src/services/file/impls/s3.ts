@@ -209,8 +209,14 @@ export class S3StaticFileImpl implements FileServiceImpl {
     return { key };
   }
 
-  async uploadBuffer(key: string, buffer: Buffer, contentType: string): Promise<{ key: string }> {
-    await this.s3.uploadBuffer(key, buffer, contentType);
+  async uploadBuffer(
+    key: string,
+    buffer: Buffer,
+    contentType: string,
+    cacheControl?: string,
+  ): Promise<{ key: string }> {
+    if (cacheControl) await this.s3.uploadBuffer(key, buffer, contentType, cacheControl);
+    else await this.s3.uploadBuffer(key, buffer, contentType);
     return { key };
   }
 }

@@ -9,12 +9,14 @@ import * as schema from '@/database/schemas';
 import {
   platformAuditLogs,
   platformBranding,
+  platformBrandingAssets,
   platformResourceRevisions,
 } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 
 import type { AdminBrandingDraft } from '../../contracts/adminBranding';
 import { InMemoryPlatformConfigInvalidationPublisher } from '../platformConfigInvalidation';
+import { AdminBrandingAssetService } from './adminBrandingAssetService';
 import { AdminBrandingService, PlatformRevisionConflictError } from './adminBrandingService';
 
 const enabled = process.env.TEST_SERVER_DB === '1' && Boolean(process.env.DATABASE_TEST_URL);
@@ -48,19 +50,20 @@ describe.skipIf(!enabled)('AdminBrandingService advisory lock (PostgreSQL)', () 
     const secondPool = new Pool({ connectionString, max: 1 });
     const firstDb = drizzle(firstPool, { schema }) as unknown as LobeChatDatabase;
     const secondDb = drizzle(secondPool, { schema }) as unknown as LobeChatDatabase;
-    const storage = { isConfigured: () => false, upload: async () => ({ url: '/f/unused' }) };
+    const storage = { delete: async () => {}, isConfigured: () => false, upload: async () => {} };
     const first = new AdminBrandingService(firstDb, {
-      assetStorage: storage,
+      assetService: new AdminBrandingAssetService(firstDb, { storage }),
       invalidation: new InMemoryPlatformConfigInvalidationPublisher(),
     });
     const second = new AdminBrandingService(secondDb, {
-      assetStorage: storage,
+      assetService: new AdminBrandingAssetService(secondDb, { storage }),
       invalidation: new InMemoryPlatformConfigInvalidationPublisher(),
     });
     const cleanup = async () => {
       await firstDb.delete(platformAuditLogs);
       await firstDb.delete(platformResourceRevisions);
       await firstDb.delete(platformBranding);
+      await firstDb.delete(platformBrandingAssets);
     };
 
     try {

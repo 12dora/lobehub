@@ -1,4 +1,3 @@
-import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 
 import { fileTypeFromBuffer } from 'file-type';
@@ -6,16 +5,15 @@ import sharp from 'sharp';
 
 import type { LobeChatDatabase } from '@/database/type';
 import { fileEnv } from '@/envs/file';
-import { FileService } from '@/server/services/file';
-
-import type { AdminBrandingUploadAssetInput } from '../../contracts/adminBranding';
+import { createFileServiceModule } from '@/server/services/file/impls';
 
 const MAX_ASSET_BYTES = 5 * 1024 * 1024;
 const MAX_DIMENSION = 4096;
 const MAX_PIXELS = 16_777_216;
+const PNG_TRAILER_BYTES = 12;
+const RIFF_CONTAINER_HEADER_BYTES = 8;
 
 const supportedAssets = {
-  ico: { extensions: ['.ico'], mimeType: 'image/x-icon' },
   jpg: { extensions: ['.jpeg', '.jpg'], mimeType: 'image/jpeg' },
   png: { extensions: ['.png'], mimeType: 'image/png' },
   webp: { extensions: ['.webp'], mimeType: 'image/webp' },
@@ -47,13 +45,9 @@ export interface ValidatedBrandingAsset {
 }
 
 export interface BrandingAssetStorage {
+  delete: (objectKey: string) => Promise<void>;
   isConfigured: () => boolean;
-  upload: (params: {
-    actorUserId: string;
-    asset: ValidatedBrandingAsset;
-    fileName: string;
-    kind: AdminBrandingUploadAssetInput['kind'];
-  }) => Promise<{ url: string }>;
+  upload: (params: { asset: ValidatedBrandingAsset; objectKey: string }) => Promise<void>;
 }
 
 const isCanonicalBase64 = (value: string, bytes: Buffer): boolean => {
@@ -66,27 +60,29 @@ const isCanonicalBase64 = (value: string, bytes: Buffer): boolean => {
 const hasExactContainerLength = (bytes: Buffer, extension: SupportedAssetExtension): boolean => {
   if (extension === 'png') {
     const trailer = Buffer.from([0, 0, 0, 0, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82]);
-    return bytes.length >= trailer.length && bytes.subarray(-trailer.length).equals(trailer);
+    return (
+      trailer.length === PNG_TRAILER_BYTES &&
+      bytes.length >= trailer.length &&
+      bytes.subarray(-trailer.length).equals(trailer)
+    );
   }
   if (extension === 'jpg')
     return bytes.length >= 2 && bytes.subarray(-2).equals(Buffer.from([0xff, 0xd9]));
   if (extension === 'webp') {
-    return bytes.length >= 12 && bytes.readUInt32LE(4) + 8 === bytes.length;
+    return (
+      bytes.length >= PNG_TRAILER_BYTES &&
+      bytes.readUInt32LE(4) + RIFF_CONTAINER_HEADER_BYTES === bytes.length
+    );
   }
+  return true;
+};
 
-  if (bytes.length < 6 || bytes.readUInt16LE(0) !== 0 || bytes.readUInt16LE(2) !== 1) return false;
-  const count = bytes.readUInt16LE(4);
-  if (count < 1 || count > 64 || bytes.length < 6 + count * 16) return false;
-  let exactEnd = 0;
-  for (let index = 0; index < count; index++) {
-    const offset = 6 + index * 16;
-    const size = bytes.readUInt32LE(offset + 8);
-    const imageOffset = bytes.readUInt32LE(offset + 12);
-    if (size === 0 || imageOffset < 6 + count * 16 || imageOffset + size > bytes.length)
-      return false;
-    exactEnd = Math.max(exactEnd, imageOffset + size);
+const hasAnimationContainer = (bytes: Buffer, extension: SupportedAssetExtension): boolean => {
+  if (extension === 'png') return bytes.includes(Buffer.from('acTL'));
+  if (extension === 'webp') {
+    return bytes.includes(Buffer.from('ANIM')) || bytes.includes(Buffer.from('ANMF'));
   }
-  return exactEnd === bytes.length;
+  return false;
 };
 
 export const validateBrandingAsset = async (params: {
@@ -110,14 +106,15 @@ export const validateBrandingAsset = async (params: {
     !definition ||
     detected.mime !== definition.mimeType ||
     !(definition.extensions as readonly string[]).includes(extension) ||
-    !hasExactContainerLength(bytes, detected.ext as SupportedAssetExtension)
+    !hasExactContainerLength(bytes, detected.ext as SupportedAssetExtension) ||
+    hasAnimationContainer(bytes, detected.ext as SupportedAssetExtension)
   ) {
     throw new BrandingAssetValidationError();
   }
 
   try {
     const image = sharp(bytes, {
-      animated: false,
+      animated: true,
       failOn: 'error',
       limitInputPixels: MAX_PIXELS,
       sequentialRead: true,
@@ -125,9 +122,12 @@ export const validateBrandingAsset = async (params: {
     const metadata = await image.metadata();
     const width = metadata.width;
     const height = metadata.height;
+    const pages = metadata.pages ?? 1;
     if (
       !width ||
       !height ||
+      pages !== 1 ||
+      (metadata.pageHeight !== undefined && metadata.pageHeight !== height) ||
       width > MAX_DIMENSION ||
       height > MAX_DIMENSION ||
       width * height > MAX_PIXELS
@@ -156,31 +156,18 @@ export class FileBrandingAssetStorage implements BrandingAssetStorage {
   isConfigured = (): boolean =>
     Boolean(fileEnv.S3_BUCKET && (fileEnv.S3_ENDPOINT || fileEnv.S3_REGION));
 
-  upload = async (params: {
-    actorUserId: string;
-    asset: ValidatedBrandingAsset;
-    fileName: string;
-    kind: AdminBrandingUploadAssetInput['kind'];
-  }): Promise<{ url: string }> => {
+  delete = async (objectKey: string): Promise<void> => {
+    await createFileServiceModule(this.db).deleteFile(objectKey);
+  };
+
+  upload = async (params: { asset: ValidatedBrandingAsset; objectKey: string }): Promise<void> => {
     if (!this.isConfigured()) throw new BrandingAssetStorageUnavailableError();
 
-    const key = `branding/${params.kind}/${randomUUID()}.${params.asset.extension}`;
-    const service = new FileService(this.db, params.actorUserId);
-    await service.uploadBuffer(key, params.asset.bytes, params.asset.mimeType);
-    const record = await service.createFileRecord({
-      fileHash: createHash('sha256').update(params.asset.bytes).digest('hex'),
-      fileType: params.asset.mimeType,
-      metadata: {
-        brandingAsset: true,
-        height: params.asset.height,
-        kind: params.kind,
-        width: params.asset.width,
-      },
-      name: params.fileName,
-      size: params.asset.bytes.length,
-      url: key,
-    });
-
-    return { url: `/f/${record.fileId}` };
+    await createFileServiceModule(this.db).uploadBuffer(
+      params.objectKey,
+      params.asset.bytes,
+      params.asset.mimeType,
+      'public, max-age=31536000, immutable',
+    );
   };
 }

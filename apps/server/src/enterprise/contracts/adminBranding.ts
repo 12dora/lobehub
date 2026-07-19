@@ -2,19 +2,29 @@ import { z } from 'zod';
 
 import {
   platformBrandingAssetUrlSchema,
-  platformBrandingLinkUrlSchema,
+  platformBrandingDraftSchema,
   platformBrandingNameSchema,
+  platformBrandingPublishedSchema,
 } from '@/types/platform/branding';
 
-const nullableText = (maximum: number) => z.string().trim().min(1).max(maximum).nullable();
+const PLATFORM_BRANDING_ASSET_ID_PATTERN =
+  /^pba_[\da-f]{8}-[\da-f]{4}-[1-8][\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/;
+
+export const isPlatformBrandingAssetId = (value: string): boolean =>
+  PLATFORM_BRANDING_ASSET_ID_PATTERN.test(value);
+
+export const platformBrandingAssetIdFromUrl = (value: string): string | null => {
+  if (!value.startsWith('/f/')) return null;
+  const id = value.slice('/f/'.length);
+  return isPlatformBrandingAssetId(id) ? id : null;
+};
 
 const controlledAssetUrlSchema = platformBrandingAssetUrlSchema.refine(
-  (value) => /^\/f\/[\w-]{1,128}$/.test(value),
+  (value) => platformBrandingAssetIdFromUrl(value) !== null,
   'Branding assets must use a controlled upload URL',
 );
 
 const nullableAssetUrlSchema = controlledAssetUrlSchema.nullable();
-const nullableLinkUrlSchema = platformBrandingLinkUrlSchema.nullable();
 
 export const adminBrandingThemeDefaultsSchema = z
   .object({
@@ -29,31 +39,41 @@ export const adminBrandingThemeDefaultsSchema = z
 export const adminBrandingDesktopSchema = z
   .object({
     iconUrl: nullableAssetUrlSchema,
-    productName: nullableText(120),
+    productName: platformBrandingNameSchema.nullable(),
   })
   .strict();
 
-export const adminBrandingDraftSchema = z
-  .object({
-    defaultAgentDisplayName: nullableText(120),
+export const adminBrandingDraftSchema = platformBrandingDraftSchema
+  .omit({ revision: true })
+  .extend({
     desktop: adminBrandingDesktopSchema,
-    emailFrom: z.string().trim().email().max(254).nullable(),
-    emailSenderName: nullableText(120),
     faviconUrl: nullableAssetUrlSchema,
-    homeUrl: nullableLinkUrlSchema,
     iconUrl: nullableAssetUrlSchema,
-    legalName: nullableText(200),
     logoUrl: nullableAssetUrlSchema,
-    name: platformBrandingNameSchema.nullable(),
     ogImageUrl: nullableAssetUrlSchema,
-    pageTitleTemplate: nullableText(200),
-    privacyUrl: nullableLinkUrlSchema,
-    shortName: nullableText(64),
-    supportUrl: nullableLinkUrlSchema,
-    termsUrl: nullableLinkUrlSchema,
     themeDefaults: adminBrandingThemeDefaultsSchema,
   })
   .strict();
+
+export const projectAdminBrandingPublished = (draft: AdminBrandingDraft, revision: number) =>
+  platformBrandingPublishedSchema.parse({
+    defaultAgentDisplayName: draft.defaultAgentDisplayName,
+    emailFrom: draft.emailFrom,
+    emailSenderName: draft.emailSenderName,
+    faviconUrl: draft.faviconUrl,
+    homeUrl: draft.homeUrl,
+    iconUrl: draft.iconUrl,
+    legalName: draft.legalName,
+    logoUrl: draft.logoUrl,
+    name: draft.name,
+    ogImageUrl: draft.ogImageUrl,
+    pageTitleTemplate: draft.pageTitleTemplate,
+    privacyUrl: draft.privacyUrl,
+    revision: String(revision),
+    shortName: draft.shortName,
+    supportUrl: draft.supportUrl,
+    termsUrl: draft.termsUrl,
+  });
 
 const publishedSnapshotSchema = adminBrandingDraftSchema.extend({
   name: platformBrandingNameSchema,
@@ -76,6 +96,7 @@ export const adminBrandingGetDraftOutputSchema = z
     draftToken: z.string().length(64),
     published: publishedSnapshotSchema.nullable(),
     revisions: z.array(brandingRevisionSummarySchema),
+    draftMatchesPublished: z.boolean(),
     storageConfigured: z.boolean(),
   })
   .strict();
@@ -154,8 +175,8 @@ export const adminBrandingUploadAssetInputSchema = z
 export const adminBrandingUploadAssetOutputSchema = z
   .object({
     height: z.number().int().positive(),
-    mimeType: z.enum(['image/jpeg', 'image/png', 'image/webp', 'image/x-icon']),
-    orphanPolicy: z.literal('retained_until_sweep'),
+    mimeType: z.enum(['image/jpeg', 'image/png', 'image/webp']),
+    orphanPolicy: z.literal('bounded_sweep'),
     url: controlledAssetUrlSchema,
     width: z.number().int().positive(),
   })

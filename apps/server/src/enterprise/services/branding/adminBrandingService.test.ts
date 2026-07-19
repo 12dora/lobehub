@@ -5,27 +5,34 @@ import { getTestDB } from '@/database/core/getTestDB';
 import {
   platformAuditLogs,
   platformBranding,
+  platformBrandingAssets,
   platformResourceRevisions,
 } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 
 import type { AdminBrandingDraft } from '../../contracts/adminBranding';
 import { InMemoryPlatformConfigInvalidationPublisher } from '../platformConfigInvalidation';
+import { AdminBrandingAssetService } from './adminBrandingAssetService';
 import {
   AdminBrandingService,
   BRANDING_DRAFT_ROW_ID,
   BRANDING_PUBLISHED_ROW_ID,
+  BrandingDraftValidationError,
+  BrandingIdempotencyConflictError,
   BrandingPersistenceInvariantError,
   PlatformRevisionConflictError,
 } from './adminBrandingService';
+import { BrandingPublishedReadService } from './publishedReadService';
 
 const db: LobeChatDatabase = await getTestDB();
 const invalidation = new InMemoryPlatformConfigInvalidationPublisher();
 const storage = {
+  delete: vi.fn(async () => {}),
   isConfigured: () => true,
-  upload: vi.fn(async () => ({ url: '/f/branding-asset' })),
+  upload: vi.fn(async () => {}),
 };
-const service = new AdminBrandingService(db, { assetStorage: storage, invalidation });
+const assetService = new AdminBrandingAssetService(db, { storage });
+const service = new AdminBrandingService(db, { assetService, invalidation });
 
 const draft = (name: string): AdminBrandingDraft => ({
   defaultAgentDisplayName: `${name} AI`,
@@ -53,6 +60,7 @@ const cleanup = async () => {
   await db.delete(platformAuditLogs);
   await db.delete(platformResourceRevisions);
   await db.delete(platformBranding);
+  await db.delete(platformBrandingAssets);
 };
 
 beforeEach(async () => {
@@ -67,7 +75,11 @@ describe('AdminBrandingService', () => {
     const result = await service.getDraft();
     const rows = await db.select().from(platformBranding);
 
-    expect(result).toMatchObject({ baseRevision: 0, published: null });
+    expect(result).toMatchObject({
+      baseRevision: 0,
+      draftMatchesPublished: false,
+      published: null,
+    });
     expect(result.draft.name).toBeNull();
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ id: BRANDING_DRAFT_ROW_ID, revision: 0, status: 'draft' });
@@ -88,6 +100,7 @@ describe('AdminBrandingService', () => {
     expect(saved.draftToken).toBe(after.draftToken);
     expect(replay).toEqual(saved);
     expect(after.published).toBeNull();
+    expect(after.draftMatchesPublished).toBe(false);
     expect(after.draft.name).toBe('Acme');
     expect(audits).toContainEqual(
       expect.objectContaining({ action: 'admin.branding.saveDraft', result: 'success' }),
@@ -116,6 +129,7 @@ describe('AdminBrandingService', () => {
 
     expect(published).toEqual(replay);
     expect(after.published).toMatchObject({ name: 'Acme', revision: 1 });
+    expect(after.draftMatchesPublished).toBe(true);
     expect(after.baseRevision).toBe(1);
     expect(rows.filter((row) => row.status === 'published')).toEqual([
       expect.objectContaining({ id: BRANDING_PUBLISHED_ROW_ID, revision: 1 }),
@@ -144,26 +158,114 @@ describe('AdminBrandingService', () => {
     );
   });
 
+  it('binds save and publish request IDs to their normalized payload without extra writes', async () => {
+    const initial = await service.getDraft();
+    const saveRequest = {
+      ...request(),
+      draft: draft('First'),
+      expectedDraftToken: initial.draftToken,
+    };
+    const saved = await service.saveDraft('admin-1', saveRequest);
+    const auditCountAfterSave = (await db.select().from(platformAuditLogs)).length;
+
+    await expect(
+      service.saveDraft('admin-1', { ...saveRequest, draft: draft('Different') }),
+    ).rejects.toBeInstanceOf(BrandingIdempotencyConflictError);
+    expect((await db.select().from(platformAuditLogs)).length).toBe(auditCountAfterSave);
+    expect((await service.getDraft()).draft.name).toBe('First');
+
+    const publishRequest = {
+      ...request(),
+      expectedDraftToken: saved.draftToken,
+      expectedRevision: 0,
+    };
+    await service.publish('admin-1', publishRequest);
+    const auditCountAfterPublish = (await db.select().from(platformAuditLogs)).length;
+    await expect(
+      service.publish('admin-1', { ...publishRequest, reason: 'different publication' }),
+    ).rejects.toBeInstanceOf(BrandingIdempotencyConflictError);
+    expect((await db.select().from(platformAuditLogs)).length).toBe(auditCountAfterPublish);
+    expect(await db.select().from(platformResourceRevisions)).toHaveLength(1);
+  });
+
+  it.each([
+    ['script markup', { shortName: '<script>alert(1)</script>' }],
+    ['control character', { legalName: 'Acme\u0000Ltd' }],
+    ['bidi control', { defaultAgentDisplayName: 'Acme\u202EAdmin' }],
+    ['credential URL', { supportUrl: 'https://user:pass@example.com/help' }],
+  ])('rejects %s before it can invalidate the public snapshot', async (_label, malicious) => {
+    const initial = await service.getDraft();
+    await expect(
+      service.saveDraft('admin-1', {
+        ...request(),
+        draft: { ...draft('Safe'), ...malicious },
+        expectedDraftToken: initial.draftToken,
+      }),
+    ).rejects.toBeInstanceOf(BrandingDraftValidationError);
+    expect((await service.getDraft()).published).toBeNull();
+  });
+
+  it('keeps the anonymous Published read valid after malicious save attempts', async () => {
+    const initial = await service.getDraft();
+    const saved = await service.saveDraft('admin-1', {
+      ...request(),
+      draft: draft('Safe'),
+      expectedDraftToken: initial.draftToken,
+    });
+    await service.publish('admin-1', {
+      ...request(),
+      expectedDraftToken: saved.draftToken,
+      expectedRevision: 0,
+    });
+    const current = await service.getDraft();
+    for (const malicious of [
+      { shortName: '<script>alert(1)</script>' },
+      { legalName: 'Acme\u0000Ltd' },
+      { defaultAgentDisplayName: 'Acme\u202EAdmin' },
+      { supportUrl: 'https://user:pass@example.com/help' },
+    ]) {
+      await expect(
+        service.saveDraft('admin-1', {
+          ...request(),
+          draft: { ...current.draft, ...malicious },
+          expectedDraftToken: current.draftToken,
+        }),
+      ).rejects.toBeInstanceOf(BrandingDraftValidationError);
+    }
+    const reader = new BrandingPublishedReadService(db, {
+      cacheKey: {},
+      getCacheEpoch: async () => 'security-regression',
+    });
+    await expect(reader.getPublished()).resolves.toMatchObject({ name: 'Safe', revision: '1' });
+  });
+
   it('validates every controlled asset reference in one bounded metadata lookup', async () => {
-    const lookup = vi.fn(async (_db, ids: string[]) =>
-      ids.map((id) => ({
-        fileType: 'image/png',
+    const ids = {
+      desktop: 'pba_11111111-1111-4111-8111-111111111111',
+      favicon: 'pba_22222222-2222-4222-8222-222222222222',
+      icon: 'pba_33333333-3333-4333-8333-333333333333',
+      logo: 'pba_44444444-4444-4444-8444-444444444444',
+      og: 'pba_55555555-5555-4555-8555-555555555555',
+    };
+    const kindById = new Map([
+      [ids.desktop, 'desktopIcon'],
+      [ids.favicon, 'favicon'],
+      [ids.icon, 'icon'],
+      [ids.logo, 'logo'],
+      [ids.og, 'ogImage'],
+    ] as const);
+    const lookup = vi.fn(async (_db, requestedIds: string[]) =>
+      requestedIds.map((id) => ({
         id,
-        metadata: {
-          brandingAsset: true,
-          kind: {
-            desktop: 'desktopIcon',
-            favicon: 'favicon',
-            icon: 'icon',
-            logo: 'logo',
-            og: 'ogImage',
-          }[id],
-        },
+        kind: kindById.get(id)!,
+        mimeType: 'image/png',
+        objectDeletedAt: null,
+        status: 'ready' as const,
       })),
     );
+    const targetAssets = new AdminBrandingAssetService(db, { referenceLookup: lookup, storage });
     const target = new AdminBrandingService(db, {
-      assetReferenceLookup: lookup,
-      assetStorage: storage,
+      assetService: targetAssets,
       invalidation,
     });
     const initial = await target.getDraft();
@@ -171,17 +273,17 @@ describe('AdminBrandingService', () => {
       ...request(),
       draft: {
         ...draft('Assets'),
-        desktop: { iconUrl: '/f/desktop', productName: 'Assets Desktop' },
-        faviconUrl: '/f/favicon',
-        iconUrl: '/f/icon',
-        logoUrl: '/f/logo',
-        ogImageUrl: '/f/og',
+        desktop: { iconUrl: `/f/${ids.desktop}`, productName: 'Assets Desktop' },
+        faviconUrl: `/f/${ids.favicon}`,
+        iconUrl: `/f/${ids.icon}`,
+        logoUrl: `/f/${ids.logo}`,
+        ogImageUrl: `/f/${ids.og}`,
       },
       expectedDraftToken: initial.draftToken,
     });
 
     expect(lookup).toHaveBeenCalledOnce();
-    expect(lookup.mock.calls[0]?.[1]).toEqual(['desktop', 'favicon', 'icon', 'logo', 'og']);
+    expect(lookup.mock.calls[0]?.[1]).toEqual(Object.values(ids));
   });
 
   it('restores history into Draft without silently changing Published', async () => {
@@ -216,12 +318,17 @@ describe('AdminBrandingService', () => {
     };
     const restored = await service.rollback('admin-1', rollbackRequest);
     const replay = await service.rollback('admin-1', rollbackRequest);
+    const auditCount = (await db.select().from(platformAuditLogs)).length;
+    await expect(
+      service.rollback('admin-1', { ...rollbackRequest, reason: 'different rollback' }),
+    ).rejects.toBeInstanceOf(BrandingIdempotencyConflictError);
     const after = await service.getDraft();
 
     expect(restored.draft.name).toBe('First');
     expect(replay).toEqual(restored);
     expect(after.draft.name).toBe('First');
     expect(after.published).toMatchObject({ name: 'Second', revision: 2 });
+    expect(await db.select().from(platformAuditLogs)).toHaveLength(auditCount);
     expect(invalidation.events).toHaveLength(2);
   });
 
