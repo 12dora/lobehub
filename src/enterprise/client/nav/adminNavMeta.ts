@@ -191,7 +191,7 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
     id: 'branding',
     labelKey: 'nav.branding',
     path: '/admin/branding',
-    placeholder: true,
+    placeholder: false,
     requiredPermissions: [PLATFORM_PERMISSIONS.BRANDING_READ],
   },
   {

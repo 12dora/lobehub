@@ -37,6 +37,7 @@ describe('createAdminRouteTree', () => {
     expect(paths).toContain('/admin/connectors/:id');
     expect(paths).toContain('/admin/agents');
     expect(paths).toContain('/admin/agents/:id');
+    expect(paths).toContain('/admin/branding');
   });
 
   it('deep links match nested paths and nested 404', () => {
@@ -74,6 +75,7 @@ describe('createAdminRouteTree', () => {
     const connectorDetail = children.find((c) => c.path === 'connectors/:id');
     const agents = children.find((c) => c.path === 'agents');
     const agentDetail = children.find((c) => c.path === 'agents/:id');
+    const branding = children.find((c) => c.path === 'branding');
 
     expect((users?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder).toBe(
       false,
@@ -114,6 +116,9 @@ describe('createAdminRouteTree', () => {
     expect((agentDetail?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder).toBe(
       false,
     );
+    expect((branding?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder).toBe(
+      false,
+    );
 
     // Element is not the shared PlaceholderPage for users (lazy wrapper present)
     expect(users?.element).toBeTruthy();
@@ -134,7 +139,8 @@ describe('createAdminRouteTree', () => {
           i.id !== 'connectors' &&
           i.id !== 'connectors-detail' &&
           i.id !== 'agents' &&
-          i.id !== 'agents-detail',
+          i.id !== 'agents-detail' &&
+          i.id !== 'branding',
       ),
     ).toBe(true);
   });
