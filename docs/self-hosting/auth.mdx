@@ -101,10 +101,12 @@ Click on a provider below for detailed configuration guides:
 
 ## Callback URL Format
 
-When configuring OAuth providers, use the following callback URL format:
+Better Auth uses different callback routes for built-in and Generic OAuth providers:
 
-- **Development**: `http://localhost:3210/api/auth/callback/{provider}`
-- **Production**: `https://yourdomain.com/api/auth/callback/{provider}`
+- **Built-in provider, development**: `http://localhost:3210/api/auth/callback/{provider}`
+- **Built-in provider, production**: `https://yourdomain.com/api/auth/callback/{provider}`
+- **Generic OAuth provider, development**: `http://localhost:3210/api/auth/oauth2/callback/{provider}`
+- **Generic OAuth provider, production**: `https://yourdomain.com/api/auth/oauth2/callback/{provider}`
 
 ## Email/Password Options
 

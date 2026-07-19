@@ -99,10 +99,12 @@ LobeHub 支持使用 Better Auth 配置外部身份验证服务，供企业 / �
 
 ## 回调 URL 格式
 
-配置 OAuth 提供商时，请使用以下回调 URL 格式：
+Better Auth 的内置提供商与 Generic OAuth 提供商使用不同的回调路由：
 
-- **开发环境**：`http://localhost:3210/api/auth/callback/{provider}`
-- **生产环境**：`https://yourdomain.com/api/auth/callback/{provider}`
+- **内置提供商，开发环境**：`http://localhost:3210/api/auth/callback/{provider}`
+- **内置提供商，生产环境**：`https://yourdomain.com/api/auth/callback/{provider}`
+- **Generic OAuth 提供商，开发环境**：`http://localhost:3210/api/auth/oauth2/callback/{provider}`
+- **Generic OAuth 提供商，生产环境**：`https://yourdomain.com/api/auth/oauth2/callback/{provider}`
 
 ## 邮箱密码选项
 
