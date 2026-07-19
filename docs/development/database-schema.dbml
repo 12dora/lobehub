@@ -1710,12 +1710,14 @@ table platform_ai_provider_secrets {
   provider_id text [not null]
   fingerprint text [not null]
   ciphertext text [not null]
+  key_id varchar(256)
   key_version integer [not null, default: 1]
   created_at "timestamp with time zone" [not null, default: `now()`]
 
   indexes {
     (provider_id, fingerprint) [name: 'platform_ai_provider_secrets_provider_fingerprint_unique', unique]
     provider_id [name: 'platform_ai_provider_secrets_provider_id_idx']
+    key_id [name: 'platform_ai_provider_secrets_key_id_idx']
   }
 }
 
@@ -1732,6 +1734,7 @@ table platform_ai_providers {
   settings jsonb [not null, default: `{}`]
   config jsonb [not null, default: `{}`]
   encrypted_key_vaults text
+  secret_key_id varchar(256)
   secret_key_version integer
   secret_updated_at "timestamp with time zone"
   secret_fingerprint text
@@ -1755,6 +1758,7 @@ table platform_ai_providers {
     provider_key [name: 'platform_ai_providers_provider_key_unique', unique]
     status [name: 'platform_ai_providers_status_idx']
     (enabled, sort) [name: 'platform_ai_providers_enabled_sort_idx']
+    secret_key_id [name: 'platform_ai_providers_secret_key_id_idx']
   }
 }
 
@@ -2186,6 +2190,7 @@ table platform_identity_provider_test_attempts {
     state_hash [name: 'platform_identity_provider_test_attempts_state_hash_unique', unique]
     (user_id, provider_id, created_at) [name: 'platform_identity_provider_test_attempts_user_provider_idx']
     expires_at [name: 'platform_identity_provider_test_attempts_expires_idx']
+    pkce_key_id [name: 'platform_identity_provider_test_attempts_pkce_key_id_idx']
 
 
 
