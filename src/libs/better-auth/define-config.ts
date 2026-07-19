@@ -22,6 +22,10 @@ import {
 } from '@/libs/better-auth/email-templates';
 import { emailWhitelist } from '@/libs/better-auth/plugins/email-whitelist';
 import { initBetterAuthSSOProviders } from '@/libs/better-auth/sso';
+import {
+  buildPlatformIdentityProvider,
+  type RuntimeIdentityProvider,
+} from '@/libs/better-auth/sso/platformIdentityProvider';
 import { createSecondaryStorage, getTrustedOrigins } from '@/libs/better-auth/utils/config';
 import { parseSSOProviders } from '@/libs/better-auth/utils/server';
 import { EmailService } from '@/server/services/email';
@@ -97,15 +101,31 @@ const MAGIC_LINK_EXPIRES_IN = 900;
 // OTP expiration time (in seconds) - 5 minutes for mobile OTP verification
 const OTP_EXPIRES_IN = 300;
 const enableMagicLink = authEnv.AUTH_ENABLE_MAGIC_LINK;
-const enabledSSOProviders = parseSSOProviders(authEnv.AUTH_SSO_PROVIDERS);
-
-const { socialProviders, genericOAuthProviders } = initBetterAuthSSOProviders();
-
 interface CustomBetterAuthOptions {
   plugins: BetterAuthPlugin[];
 }
 
-export function defineConfig(customOptions: CustomBetterAuthOptions) {
+export interface BetterAuthIdentitySnapshot {
+  databaseProviders: RuntimeIdentityProvider[];
+  providerIds: string[];
+}
+
+const environmentIdentitySnapshot = (): BetterAuthIdentitySnapshot => ({
+  databaseProviders: [],
+  providerIds: parseSSOProviders(authEnv.AUTH_SSO_PROVIDERS),
+});
+
+export function defineConfig(
+  customOptions: CustomBetterAuthOptions,
+  identitySnapshot: BetterAuthIdentitySnapshot = environmentIdentitySnapshot(),
+) {
+  const enabledSSOProviders = identitySnapshot.providerIds;
+  const databaseProviders = identitySnapshot.databaseProviders.map((provider) =>
+    buildPlatformIdentityProvider(provider, appEnv.APP_URL ?? ''),
+  );
+  const { socialProviders, genericOAuthProviders } = initBetterAuthSSOProviders({
+    additionalGenericOAuthProviders: databaseProviders,
+  });
   const options = {
     account: {
       accountLinking: {
