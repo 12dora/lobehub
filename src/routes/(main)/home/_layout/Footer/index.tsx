@@ -34,6 +34,7 @@ import { useBillboardMenuItems } from '@/features/Billboard/MenuItems';
 import { useActiveNavKey } from '@/features/NavPanel';
 import ThemeButton from '@/features/User/UserPanel/ThemeButton';
 import WorkspaceLink from '@/features/Workspace/WorkspaceLink';
+import { useDefaultInboxDisplayName } from '@/hooks/useDefaultInboxDisplayName';
 import { useNavLayout } from '@/hooks/useNavLayout';
 import { useGlobalStore } from '@/store/global';
 import { systemStatusSelectors } from '@/store/global/selectors/systemStatus';
@@ -109,6 +110,7 @@ const Footer = memo(() => {
   const navigate = useNavigate();
   const { analytics } = useAnalytics();
   const { footer } = useNavLayout();
+  const inboxDisplayName = useDefaultInboxDisplayName();
   const hasActiveWorkspace = useHasActiveWorkspace();
   const settingLabelKey = hasActiveWorkspace ? 'userPanel.workspaceSetting' : 'userPanel.setting';
   const activeNavKey = useActiveNavKey();
@@ -279,7 +281,7 @@ const Footer = memo(() => {
       return {
         actionIcon: <Icon icon={MessageCircle} size={14} />,
         actionLabel: t('agentOnboardingPromo.actionLabel'),
-        description: t('agentOnboardingPromo.description'),
+        description: t('agentOnboardingPromo.description', { name: inboxDisplayName }),
         onAction: handleAgentOnboardingAction,
         onClose: handleCloseAgentOnboardingCard,
         title: t('agentOnboardingPromo.title'),
@@ -306,6 +308,7 @@ const Footer = memo(() => {
     handleProductHuntActionClick,
     isAgentOnboardingCardOpen,
     isProductHuntCardOpen,
+    inboxDisplayName,
     t,
   ]);
 

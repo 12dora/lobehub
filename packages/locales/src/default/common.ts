@@ -9,7 +9,7 @@ export default {
   'alert.cloud.title': '{{name}} beta is live',
   'agentOnboardingPromo.actionLabel': 'Try it now',
   'agentOnboardingPromo.description':
-    'Set up your agent teams in a quick chat with Lobe AI. Your existing agents remain unchanged.',
+    'Set up your agent teams in a quick chat with {{name}}. Your existing agents remain unchanged.',
   'agentOnboardingPromo.title': 'Quick Wizard',
   'appLoading.appIdle': 'Ready to start',
   'appLoading.appInitializing': 'Application is starting...',
@@ -32,7 +32,7 @@ export default {
   'batchDelete': 'Batch Delete',
   'blog': 'Product Blog',
   'messengerBanner.dismiss': 'Dismiss',
-  'messengerBanner.title': 'Talk to Lobe AI on your favorite messaging apps',
+  'messengerBanner.title': 'Talk to {{name}} on your favorite messaging apps',
   'branching': 'Create Subtopic',
   'branchingDisable':
     'The "Sub-topic" feature is unavailable in the current mode. To use this feature, please switch to Postgres/Pglite DB mode or use {{platformName}} Cloud.',
