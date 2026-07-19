@@ -137,6 +137,18 @@ describe('defineConfig', () => {
     );
   });
 
+  it('stores OAuth state in the shared database for one-time callback consumption', async () => {
+    const { defineConfig } = await import('./define-config');
+
+    await defineConfig({ plugins: [] });
+
+    expect(mocks.betterAuth).toHaveBeenCalledWith(
+      expect.objectContaining({
+        account: expect.objectContaining({ storeStateStrategy: 'database' }),
+      }),
+    );
+  });
+
   it('keeps trusted DingTalk fields out of request input and session output', async () => {
     const { defineConfig } = await import('./define-config');
 
