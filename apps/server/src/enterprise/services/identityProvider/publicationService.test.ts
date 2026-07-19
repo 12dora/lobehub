@@ -36,6 +36,8 @@ const admin = new AdminIdentityProviderService(
 );
 const publication = new IdentityProviderPublicationService(db);
 const attempts = new IdentityProviderTestAttemptStore(db, secrets);
+const requestId = (index: number) =>
+  `550e8400-e29b-41d4-a716-${index.toString().padStart(12, '0')}`;
 
 const cleanup = async () => {
   await db.delete(platformIdentityProviderTestAttempts);
@@ -90,6 +92,7 @@ const recordSuccessfulTest = async (providerId: string) => {
       status: 'succeeded',
     })
     .where(eq(platformIdentityProviderTestAttempts.id, issued.attemptId));
+  return issued.attemptId;
 };
 
 describe('IdentityProviderPublicationService', () => {
@@ -134,6 +137,7 @@ describe('IdentityProviderPublicationService', () => {
       expectedRevision: draft.revision,
       id: draft.id,
       reason: 'activate verified work login',
+      requestId: requestId(1),
     });
     expect(published).toMatchObject({
       activationRevision: draft.revision + 1,
@@ -153,6 +157,55 @@ describe('IdentityProviderPublicationService', () => {
     expect(serialized).not.toContain('ciphertext');
   });
 
+  it('returns the original publish result for exact and concurrent request retries', async () => {
+    const draft = await createDraft();
+    await recordSuccessfulTest(draft.id);
+    const input = {
+      expectedRevision: draft.revision,
+      id: draft.id,
+      reason: 'idempotent publish',
+      requestId: requestId(20),
+    };
+    const [first, replay] = await Promise.all([
+      publication.publish('admin-1', input),
+      publication.publish('admin-1', input),
+    ]);
+    const laterReplay = await publication.publish('admin-1', input);
+
+    expect(replay).toEqual(first);
+    expect(laterReplay).toEqual(first);
+    expect(await db.select().from(platformResourceRevisions)).toHaveLength(1);
+    const audits = await db.select().from(platformAuditLogs);
+    const publishAudits = audits.filter(
+      (audit) => audit.action === 'admin.identityProviders.publish',
+    );
+    expect(publishAudits.filter((audit) => audit.result === 'success')).toHaveLength(1);
+    expect(publishAudits.filter((audit) => audit.result === 'failure')).toHaveLength(0);
+    expect(publishAudits[0]?.requestId).toBe(input.requestId);
+  });
+
+  it('fails closed when the same publish request ID is reused for a different payload', async () => {
+    const draft = await createDraft();
+    await recordSuccessfulTest(draft.id);
+    const request = requestId(21);
+    await publication.publish('admin-1', {
+      expectedRevision: draft.revision,
+      id: draft.id,
+      reason: 'first payload',
+      requestId: request,
+    });
+
+    await expect(
+      publication.publish('admin-1', {
+        expectedRevision: draft.revision,
+        id: draft.id,
+        reason: 'different payload',
+        requestId: request,
+      }),
+    ).rejects.toThrow('PLATFORM_IDENTITY_PROVIDER_IDEMPOTENCY_CONFLICT');
+    expect(await db.select().from(platformResourceRevisions)).toHaveLength(1);
+  });
+
   it('rejects missing, stale, or mismatched tests without changing the provider pointer', async () => {
     const draft = await createDraft();
     await expect(
@@ -160,6 +213,7 @@ describe('IdentityProviderPublicationService', () => {
         expectedRevision: draft.revision,
         id: draft.id,
         reason: 'must have exact test',
+        requestId: requestId(2),
       }),
     ).rejects.toThrow('PLATFORM_IDENTITY_PROVIDER_NOT_TESTED');
     const [unchanged] = await db.select().from(platformIdentityProviders);
@@ -170,6 +224,35 @@ describe('IdentityProviderPublicationService', () => {
     );
   });
 
+  it.each([
+    ['an invalid preview', { result: { claims: {}, issues: [], valid: false } }],
+    [
+      'an expired attempt',
+      {
+        createdAt: new Date(Date.now() - 10 * 60_000),
+        expiresAt: new Date(Date.now() - 5 * 60_000),
+      },
+    ],
+    ['a future completion', { completedAt: new Date(Date.now() + 60_000) }],
+    ['an old completion', { completedAt: new Date(Date.now() - 11 * 60_000) }],
+  ])('rejects %s even when the attempt row says succeeded', async (_label, mutation) => {
+    const draft = await createDraft();
+    const attemptId = await recordSuccessfulTest(draft.id);
+    await db
+      .update(platformIdentityProviderTestAttempts)
+      .set(mutation)
+      .where(eq(platformIdentityProviderTestAttempts.id, attemptId));
+
+    await expect(
+      publication.publish('admin-1', {
+        expectedRevision: draft.revision,
+        id: draft.id,
+        reason: 'reject invalid test evidence',
+        requestId: requestId(3),
+      }),
+    ).rejects.toThrow('PLATFORM_IDENTITY_PROVIDER_NOT_TESTED');
+  });
+
   it('restores a historical version as a new draft and forces a fresh test before republish', async () => {
     const draft = await createDraft();
     await recordSuccessfulTest(draft.id);
@@ -177,12 +260,14 @@ describe('IdentityProviderPublicationService', () => {
       expectedRevision: draft.revision,
       id: draft.id,
       reason: 'publish first version',
+      requestId: requestId(4),
     });
 
     const restored = await publication.rollback('admin-1', {
       expectedRevision: published.revision,
       id: draft.id,
       reason: 'restore first version for verification',
+      requestId: requestId(5),
       targetRevision: published.revision,
     });
     expect(restored).toMatchObject({
@@ -204,7 +289,63 @@ describe('IdentityProviderPublicationService', () => {
         expectedRevision: restored.revision,
         id: restored.id,
         reason: 'cannot skip retest after rollback',
+        requestId: requestId(6),
       }),
     ).rejects.toThrow('PLATFORM_IDENTITY_PROVIDER_NOT_TESTED');
+  });
+
+  it('returns the original rollback result for an exact request retry', async () => {
+    const draft = await createDraft();
+    await recordSuccessfulTest(draft.id);
+    const published = await publication.publish('admin-1', {
+      expectedRevision: draft.revision,
+      id: draft.id,
+      reason: 'publish for rollback replay',
+      requestId: requestId(22),
+    });
+    const input = {
+      expectedRevision: published.revision,
+      id: draft.id,
+      reason: 'idempotent rollback',
+      requestId: requestId(23),
+      targetRevision: published.revision,
+    };
+    const first = await publication.rollback('admin-1', input);
+    const replay = await publication.rollback('admin-1', input);
+
+    expect(replay).toEqual(first);
+    const rollbackAudits = (await db.select().from(platformAuditLogs)).filter(
+      (audit) => audit.action === 'admin.identityProviders.rollback',
+    );
+    expect(rollbackAudits).toHaveLength(1);
+    expect(rollbackAudits[0]?.requestId).toBe(input.requestId);
+  });
+
+  it.each([
+    ['checksum', { checksum: 'f'.repeat(64) }],
+    ['revision secret fingerprint', { secretFingerprint: 'f'.repeat(64) }],
+  ])('rejects rollback from a revision with a tampered %s', async (_label, mutation) => {
+    const draft = await createDraft();
+    await recordSuccessfulTest(draft.id);
+    const published = await publication.publish('admin-1', {
+      expectedRevision: draft.revision,
+      id: draft.id,
+      reason: 'publish first version',
+      requestId: requestId(7),
+    });
+    await db
+      .update(platformResourceRevisions)
+      .set(mutation)
+      .where(eq(platformResourceRevisions.resourceId, draft.id));
+
+    await expect(
+      publication.rollback('admin-1', {
+        expectedRevision: published.revision,
+        id: draft.id,
+        reason: 'must verify historical integrity',
+        requestId: requestId(8),
+        targetRevision: published.revision,
+      }),
+    ).rejects.toThrow('PLATFORM_IDENTITY_PROVIDER_INVALID_SNAPSHOT');
   });
 });
