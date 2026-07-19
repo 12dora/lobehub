@@ -10,7 +10,7 @@ import {
   type PlatformSecretEnv,
 } from './config';
 import { getEnvelopeKeyId, openEnvelope, parseEnvelopeString, sealEnvelope } from './envelope';
-import { secretInvalidInput, secretMasterKeyMissing } from './errors';
+import { secretInvalidInput, secretMasterKeyMissing, secretNotReadable } from './errors';
 import { EnvKeyProvider, type KeyProvider, VaultKeyProvider } from './keyProviders';
 
 export interface PlatformSecretServiceOptions {
@@ -46,9 +46,42 @@ export class PlatformSecretService {
   /** Decrypt ciphertext → utf8 plaintext. Fails closed on wrong key / tamper / unknown version. */
   decrypt = async (ciphertext: string): Promise<string> => {
     const envelope = parseEnvelopeString(ciphertext);
-    const { key } = await this.keyProvider.getKek(envelope.kid);
+    const { key, keyId } = await this.keyProvider.getKek(envelope.kid);
+    if (keyId !== envelope.kid) {
+      throw secretNotReadable('Key provider returned a different historical key');
+    }
     const plain = openEnvelope({ envelope, kek: key });
     return plain.toString('utf8');
+  };
+
+  /** Return only the opaque id of the provider's current encryption key. */
+  getActiveKeyId = async (): Promise<string> => {
+    const { keyId } = await this.keyProvider.getKek();
+    return keyId;
+  };
+
+  /**
+   * Re-wrap to one exact active key id. This rejects active-key drift instead
+   * of silently materializing ciphertext under a different key than planned.
+   */
+  rotateToKeyId = async (ciphertext: string, targetKeyId: string): Promise<string> => {
+    const envelope = parseEnvelopeString(ciphertext);
+    const historical = await this.keyProvider.getKek(envelope.kid);
+    if (historical.keyId !== envelope.kid) {
+      throw secretNotReadable('Key provider returned a different historical key');
+    }
+
+    const active = await this.keyProvider.getKek();
+    if (active.keyId !== targetKeyId) {
+      throw secretNotReadable('Active encryption key changed during secret rotation');
+    }
+
+    const plaintext = openEnvelope({ envelope, kek: historical.key });
+    try {
+      return sealEnvelope({ kek: active.key, keyId: targetKeyId, plaintext });
+    } finally {
+      plaintext.fill(0);
+    }
   };
 
   /**
@@ -56,12 +89,8 @@ export class PlatformSecretService {
    * re-encrypt with the provider's current/active KEK.
    */
   rotate = async (ciphertext: string): Promise<string> => {
-    const plaintext = await this.decrypt(ciphertext);
-    try {
-      return await this.encrypt(plaintext);
-    } finally {
-      // best-effort: string is immutable in JS; avoid retaining ref longer than needed
-    }
+    const targetKeyId = await this.getActiveKeyId();
+    return this.rotateToKeyId(ciphertext, targetKeyId);
   };
 
   /** Read key id from ciphertext without decrypting (fingerprint / rotation planning). */

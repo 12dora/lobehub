@@ -247,10 +247,15 @@ export class AiCatalogAdminService {
           status: 'draft',
           updatedBy: actorUserId,
         });
-        if (appliedSecret.encryptedKeyVaults && appliedSecret.secretFingerprint) {
+        if (
+          appliedSecret.encryptedKeyVaults &&
+          appliedSecret.secretFingerprint &&
+          appliedSecret.secretKeyId
+        ) {
           await repository.storeProviderSecretVersion({
             ciphertext: appliedSecret.encryptedKeyVaults,
             fingerprint: appliedSecret.secretFingerprint,
+            keyId: appliedSecret.secretKeyId,
             keyVersion: appliedSecret.secretKeyVersion ?? 1,
             providerId: row.id,
           });
@@ -323,10 +328,15 @@ export class AiCatalogAdminService {
           status: 'draft',
           updatedBy: actorUserId,
         });
-        if (appliedSecret.encryptedKeyVaults && appliedSecret.secretFingerprint) {
+        if (
+          appliedSecret.encryptedKeyVaults &&
+          appliedSecret.secretFingerprint &&
+          appliedSecret.secretKeyId
+        ) {
           await repository.storeProviderSecretVersion({
             ciphertext: appliedSecret.encryptedKeyVaults,
             fingerprint: appliedSecret.secretFingerprint,
+            keyId: appliedSecret.secretKeyId,
             keyVersion: appliedSecret.secretKeyVersion ?? 1,
             providerId: id,
           });

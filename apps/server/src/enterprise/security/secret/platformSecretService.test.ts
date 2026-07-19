@@ -161,6 +161,51 @@ describe('PlatformSecretService', () => {
       expect(rotator.peekKeyId(ct2)).toBe('env:new');
       expect(await rotator.decrypt(ct2)).toBe('rotate-me');
     });
+
+    it('returns the active key id and rotates to that exact target', async () => {
+      const oldSvc = makeService(FAKE_MASTER_KEY_B64, 'env:old');
+      const ciphertext = await oldSvc.encrypt('rotate-exactly');
+      const rotator = new PlatformSecretService({
+        keyProvider: {
+          getKek: async (keyId?: string) => ({
+            key: new Uint8Array(Buffer.from(FAKE_MASTER_KEY_B64, 'base64')),
+            keyId: keyId ?? 'env:new',
+          }),
+          providerId: 'env',
+        },
+      });
+
+      await expect(rotator.getActiveKeyId()).resolves.toBe('env:new');
+      const rotated = await rotator.rotateToKeyId(ciphertext, 'env:new');
+      expect(rotator.peekKeyId(rotated)).toBe('env:new');
+      await expect(rotator.decrypt(rotated)).resolves.toBe('rotate-exactly');
+    });
+
+    it('fails closed when the active key drifts from the exact target', async () => {
+      const ciphertext = await makeService(FAKE_MASTER_KEY_B64, 'env:old').encrypt('drift');
+      const rotator = new PlatformSecretService({
+        keyProvider: {
+          getKek: async (keyId?: string) => ({
+            key: new Uint8Array(Buffer.from(FAKE_MASTER_KEY_B64, 'base64')),
+            keyId: keyId ?? 'env:unexpected',
+          }),
+          providerId: 'env',
+        },
+      });
+
+      await expect(rotator.rotateToKeyId(ciphertext, 'env:planned')).rejects.toMatchObject({
+        code: PLATFORM_ERROR_CODES.PLATFORM_SECRET_NOT_READABLE,
+      });
+    });
+
+    it('fails closed when the historical key id cannot be resolved exactly', async () => {
+      const ciphertext = await makeService(FAKE_MASTER_KEY_B64, 'env:old').encrypt('historical');
+      const rotator = makeService(FAKE_MASTER_KEY_B64, 'env:new');
+
+      await expect(rotator.rotateToKeyId(ciphertext, 'env:new')).rejects.toMatchObject({
+        code: PLATFORM_ERROR_CODES.PLATFORM_SECRET_NOT_READABLE,
+      });
+    });
   });
 
   describe('startup / factory', () => {

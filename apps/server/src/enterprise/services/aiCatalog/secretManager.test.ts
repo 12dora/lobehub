@@ -20,6 +20,7 @@ describe('AiCatalogSecretManager', () => {
       value: 'fake-api-key',
     });
     expect(replaced.encryptedKeyVaults).toMatch(/^aihub\.secret\.v1\./);
+    expect(replaced.secretKeyId).toBe('test-key');
     expect(JSON.stringify(replaced)).not.toContain('fake-api-key');
     expect(await manager.decrypt(replaced.encryptedKeyVaults!)).toEqual({ apiKey: 'fake-api-key' });
 
@@ -30,6 +31,7 @@ describe('AiCatalogSecretManager', () => {
     expect(cleared).toEqual({
       encryptedKeyVaults: null,
       secretFingerprint: null,
+      secretKeyId: null,
       secretKeyVersion: null,
       secretUpdatedAt: null,
     });
