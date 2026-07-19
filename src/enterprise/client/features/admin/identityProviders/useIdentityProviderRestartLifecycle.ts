@@ -29,8 +29,11 @@ interface RestartPrepared {
 interface RestartAcceptedResponse {
   accepted: boolean;
   acceptedAt: Date;
+  convergenceDeadlineAt: Date;
   expectedIdentityRevision: string;
+  remainingMs: number;
   requestId: string;
+  serverNow: Date;
 }
 
 export const useIdentityProviderRestartLifecycle = ({
@@ -42,7 +45,7 @@ export const useIdentityProviderRestartLifecycle = ({
 
   const accept = useCallback(
     (prepared: RestartPrepared, response: RestartAcceptedResponse): boolean => {
-      const accepted = acceptIdentityProviderRestart(prepared, response);
+      const accepted = acceptIdentityProviderRestart(prepared, response, performance.now());
       if (!accepted) {
         setAttempt(null);
         setPhase('failed');
@@ -71,7 +74,7 @@ export const useIdentityProviderRestartLifecycle = ({
       resolveIdentityProviderRestartPhase({
         attempt,
         error,
-        now: Date.now(),
+        nowMonotonic: performance.now(),
         phase: current,
         status,
       }),
@@ -80,7 +83,7 @@ export const useIdentityProviderRestartLifecycle = ({
 
   useEffect(() => {
     if (phase !== 'accepted' || !attempt) return;
-    const remaining = Math.max(0, attempt.deadlineAt - Date.now());
+    const remaining = Math.max(0, attempt.deadlineAtMonotonic - performance.now());
     const timeout = window.setTimeout(() => setPhase('failed'), remaining);
     return () => window.clearTimeout(timeout);
   }, [attempt, phase]);

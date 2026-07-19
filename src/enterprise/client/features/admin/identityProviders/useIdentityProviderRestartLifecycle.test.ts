@@ -31,6 +31,7 @@ describe('useIdentityProviderRestartLifecycle', () => {
   });
 
   it('moves only an accepted request to activated after matching convergence', () => {
+    const acceptedAt = new Date();
     const { rerender, result } = renderHook(
       ({ status }) => useIdentityProviderRestartLifecycle({ error: null, status }),
       { initialProps: { status: pendingStatus } },
@@ -41,9 +42,14 @@ describe('useIdentityProviderRestartLifecycle', () => {
           { expectedIdentityRevision: targetIdentityRevision, requestId: 'request-1' },
           {
             accepted: true,
-            acceptedAt: new Date(),
+            acceptedAt,
+            convergenceDeadlineAt: new Date(
+              acceptedAt.getTime() + IDENTITY_PROVIDER_RESTART_TIMEOUT_MS,
+            ),
             expectedIdentityRevision: targetIdentityRevision,
+            remainingMs: IDENTITY_PROVIDER_RESTART_TIMEOUT_MS,
             requestId: 'request-1',
+            serverNow: acceptedAt,
           },
         ),
       ).toBe(true);
@@ -60,29 +66,39 @@ describe('useIdentityProviderRestartLifecycle', () => {
     expect(result.current.phase).toBe('activated');
   });
 
-  it('stops at the server-accepted deadline and retains request diagnostics', () => {
-    vi.useFakeTimers();
-    const acceptedAt = new Date('2026-07-19T00:00:00Z');
-    vi.setSystemTime(acceptedAt);
-    const { result } = renderHook(() =>
-      useIdentityProviderRestartLifecycle({ error: null, status: pendingStatus }),
-    );
-    act(() => {
-      result.current.accept(
-        { expectedIdentityRevision: targetIdentityRevision, requestId: 'request-timeout' },
-        {
-          accepted: true,
-          acceptedAt,
-          expectedIdentityRevision: targetIdentityRevision,
-          requestId: 'request-timeout',
-        },
+  it.each([-180_000, 180_000])(
+    'stops on the relative server window with a browser clock offset of %i ms',
+    (browserClockOffset) => {
+      vi.useFakeTimers();
+      const acceptedAt = new Date('2026-07-19T00:00:00Z');
+      vi.setSystemTime(new Date(acceptedAt.getTime() + browserClockOffset));
+      const { result } = renderHook(() =>
+        useIdentityProviderRestartLifecycle({ error: null, status: pendingStatus }),
       );
-    });
-    act(() => vi.advanceTimersByTime(IDENTITY_PROVIDER_RESTART_TIMEOUT_MS));
-    expect(result.current.phase).toBe('failed');
-    expect(result.current.attempt).toMatchObject({
-      requestId: 'request-timeout',
-      targetIdentityRevision,
-    });
-  });
+      act(() => {
+        result.current.accept(
+          { expectedIdentityRevision: targetIdentityRevision, requestId: 'request-timeout' },
+          {
+            accepted: true,
+            acceptedAt,
+            convergenceDeadlineAt: new Date(
+              acceptedAt.getTime() + IDENTITY_PROVIDER_RESTART_TIMEOUT_MS,
+            ),
+            expectedIdentityRevision: targetIdentityRevision,
+            remainingMs: IDENTITY_PROVIDER_RESTART_TIMEOUT_MS,
+            requestId: 'request-timeout',
+            serverNow: acceptedAt,
+          },
+        );
+      });
+      act(() => vi.advanceTimersByTime(IDENTITY_PROVIDER_RESTART_TIMEOUT_MS - 1));
+      expect(result.current.phase).toBe('accepted');
+      act(() => vi.advanceTimersByTime(1));
+      expect(result.current.phase).toBe('failed');
+      expect(result.current.attempt).toMatchObject({
+        requestId: 'request-timeout',
+        targetIdentityRevision,
+      });
+    },
+  );
 });

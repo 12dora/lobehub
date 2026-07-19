@@ -97,9 +97,12 @@ export const adminSystemRequestRestartOutputSchema = z
   .object({
     accepted: z.literal(true),
     acceptedAt: z.date(),
+    convergenceDeadlineAt: z.date(),
     duplicate: z.boolean(),
     expectedIdentityRevision: identityRevisionSchema,
+    remainingMs: z.number().int().nonnegative().max(120_000),
     requestId: z.string().uuid(),
+    serverNow: z.date(),
     status: z.enum(['accepted', 'signaled']),
   })
   .strict();

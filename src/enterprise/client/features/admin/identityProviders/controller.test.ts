@@ -77,14 +77,19 @@ describe('identity provider editor controller', () => {
 
   it('stops restart polling on activation, failure, and unsupported convergence', () => {
     const acceptedAt = 1_000;
+    const receivedAtMonotonic = 50;
     const attempt = acceptIdentityProviderRestart(
       { expectedIdentityRevision: 'a'.repeat(64), requestId: 'request-1' },
       {
         accepted: true,
         acceptedAt: new Date(acceptedAt),
+        convergenceDeadlineAt: new Date(acceptedAt + IDENTITY_PROVIDER_RESTART_TIMEOUT_MS),
         expectedIdentityRevision: 'a'.repeat(64),
+        remainingMs: IDENTITY_PROVIDER_RESTART_TIMEOUT_MS,
         requestId: 'request-1',
+        serverNow: new Date(acceptedAt),
       },
+      receivedAtMonotonic,
     )!;
     const pending = {
       active: { allFreshInstancesActive: false },
@@ -96,7 +101,7 @@ describe('identity provider editor controller', () => {
       resolveIdentityProviderRestartPhase({
         attempt,
         error: null,
-        now: acceptedAt,
+        nowMonotonic: receivedAtMonotonic,
         phase: 'accepted',
         status: pending,
       }),
@@ -105,7 +110,7 @@ describe('identity provider editor controller', () => {
       resolveIdentityProviderRestartPhase({
         error: null,
         attempt,
-        now: acceptedAt,
+        nowMonotonic: receivedAtMonotonic,
         phase: 'accepted',
         status: {
           ...pending,
@@ -118,7 +123,7 @@ describe('identity provider editor controller', () => {
       resolveIdentityProviderRestartPhase({
         attempt,
         error: new Error('offline'),
-        now: acceptedAt,
+        nowMonotonic: receivedAtMonotonic,
         phase: 'accepted',
       }),
     ).toBe('accepted');
@@ -126,7 +131,7 @@ describe('identity provider editor controller', () => {
       resolveIdentityProviderRestartPhase({
         attempt,
         error: new Error('background refresh failed'),
-        now: acceptedAt,
+        nowMonotonic: receivedAtMonotonic,
         phase: 'accepted',
         status: pending,
       }),
@@ -135,7 +140,7 @@ describe('identity provider editor controller', () => {
       resolveIdentityProviderRestartPhase({
         attempt,
         error: null,
-        now: acceptedAt,
+        nowMonotonic: receivedAtMonotonic,
         phase: 'accepted',
         status: { ...pending, restart: { supported: false } },
       }),
@@ -144,7 +149,7 @@ describe('identity provider editor controller', () => {
       resolveIdentityProviderRestartPhase({
         attempt,
         error: null,
-        now: acceptedAt + IDENTITY_PROVIDER_RESTART_TIMEOUT_MS,
+        nowMonotonic: receivedAtMonotonic + IDENTITY_PROVIDER_RESTART_TIMEOUT_MS,
         phase: 'accepted',
         status: pending,
       }),
@@ -156,24 +161,63 @@ describe('identity provider editor controller', () => {
     const accepted = {
       accepted: true,
       acceptedAt: new Date(1_000),
+      convergenceDeadlineAt: new Date(1_000 + IDENTITY_PROVIDER_RESTART_TIMEOUT_MS),
       expectedIdentityRevision: prepared.expectedIdentityRevision,
+      remainingMs: IDENTITY_PROVIDER_RESTART_TIMEOUT_MS,
       requestId: prepared.requestId,
+      serverNow: new Date(1_000),
     };
-    expect(acceptIdentityProviderRestart(prepared, accepted)).toEqual({
+    expect(acceptIdentityProviderRestart(prepared, accepted, 50)).toEqual({
       acceptedAt: 1_000,
-      deadlineAt: 1_000 + IDENTITY_PROVIDER_RESTART_TIMEOUT_MS,
+      convergenceDeadlineAt: 1_000 + IDENTITY_PROVIDER_RESTART_TIMEOUT_MS,
+      deadlineAtMonotonic: 50 + IDENTITY_PROVIDER_RESTART_TIMEOUT_MS,
       requestId: prepared.requestId,
       targetIdentityRevision: prepared.expectedIdentityRevision,
     });
     expect(
-      acceptIdentityProviderRestart(prepared, { ...accepted, requestId: 'different-request' }),
+      acceptIdentityProviderRestart(prepared, { ...accepted, requestId: 'different-request' }, 50),
     ).toBeNull();
     expect(
-      acceptIdentityProviderRestart(prepared, {
-        ...accepted,
-        expectedIdentityRevision: 'b'.repeat(64),
-      }),
+      acceptIdentityProviderRestart(
+        prepared,
+        {
+          ...accepted,
+          expectedIdentityRevision: 'b'.repeat(64),
+        },
+        50,
+      ),
     ).toBeNull();
+  });
+
+  it('uses the server remaining window as a relative monotonic deadline', () => {
+    const prepared = { expectedIdentityRevision: 'a'.repeat(64), requestId: 'request-1' };
+    const acceptedAt = new Date('2026-07-19T00:00:00Z');
+    const serverNow = new Date(acceptedAt.getTime() + 30_000);
+    const attempt = acceptIdentityProviderRestart(
+      prepared,
+      {
+        accepted: true,
+        acceptedAt,
+        convergenceDeadlineAt: new Date(
+          acceptedAt.getTime() + IDENTITY_PROVIDER_RESTART_TIMEOUT_MS,
+        ),
+        expectedIdentityRevision: prepared.expectedIdentityRevision,
+        remainingMs: 90_000,
+        requestId: prepared.requestId,
+        serverNow,
+      },
+      750,
+    );
+
+    expect(attempt?.deadlineAtMonotonic).toBe(90_750);
+    expect(
+      resolveIdentityProviderRestartPhase({
+        attempt,
+        error: null,
+        nowMonotonic: 90_750,
+        phase: 'accepted',
+      }),
+    ).toBe('failed');
   });
 
   it('preserves a local draft for the conflict refresh and hydrates later revisions', () => {

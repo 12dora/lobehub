@@ -42,7 +42,8 @@ export const IDENTITY_PROVIDER_RESTART_TIMEOUT_MS = 120_000;
 
 export interface AcceptedIdentityProviderRestart {
   acceptedAt: number;
-  deadlineAt: number;
+  convergenceDeadlineAt: number;
+  deadlineAtMonotonic: number;
   requestId: string;
   targetIdentityRevision: string;
 }
@@ -52,14 +53,30 @@ export const acceptIdentityProviderRestart = (
   response: {
     accepted: boolean;
     acceptedAt: Date;
+    convergenceDeadlineAt: Date;
     expectedIdentityRevision: string;
+    remainingMs: number;
     requestId: string;
+    serverNow: Date;
   },
+  receivedAtMonotonic: number,
 ): AcceptedIdentityProviderRestart | null => {
   const acceptedAt = response.acceptedAt.getTime();
+  const convergenceDeadlineAt = response.convergenceDeadlineAt.getTime();
+  const serverNow = response.serverNow.getTime();
+  const expectedRemainingMs = Math.min(
+    IDENTITY_PROVIDER_RESTART_TIMEOUT_MS,
+    Math.max(0, convergenceDeadlineAt - serverNow),
+  );
   if (
     !response.accepted ||
     !Number.isFinite(acceptedAt) ||
+    !Number.isFinite(convergenceDeadlineAt) ||
+    !Number.isFinite(receivedAtMonotonic) ||
+    !Number.isFinite(serverNow) ||
+    !Number.isInteger(response.remainingMs) ||
+    response.remainingMs !== expectedRemainingMs ||
+    convergenceDeadlineAt !== acceptedAt + IDENTITY_PROVIDER_RESTART_TIMEOUT_MS ||
     response.requestId !== prepared.requestId ||
     response.expectedIdentityRevision !== prepared.expectedIdentityRevision
   ) {
@@ -67,7 +84,8 @@ export const acceptIdentityProviderRestart = (
   }
   return {
     acceptedAt,
-    deadlineAt: acceptedAt + IDENTITY_PROVIDER_RESTART_TIMEOUT_MS,
+    convergenceDeadlineAt,
+    deadlineAtMonotonic: receivedAtMonotonic + response.remainingMs,
     requestId: response.requestId,
     targetIdentityRevision: response.expectedIdentityRevision,
   };
@@ -76,7 +94,7 @@ export const acceptIdentityProviderRestart = (
 export const resolveIdentityProviderRestartPhase = (input: {
   attempt: AcceptedIdentityProviderRestart | null;
   error: unknown;
-  now: number;
+  nowMonotonic: number;
   phase: IdentityProviderRestartPhase;
   status?: {
     active: { allFreshInstancesActive: boolean };
@@ -86,7 +104,7 @@ export const resolveIdentityProviderRestartPhase = (input: {
   };
 }): IdentityProviderRestartPhase => {
   if (input.phase !== 'accepted') return input.phase;
-  if (!input.attempt || input.now >= input.attempt.deadlineAt) return 'failed';
+  if (!input.attempt || input.nowMonotonic >= input.attempt.deadlineAtMonotonic) return 'failed';
   if (!input.status) return 'accepted';
   if (
     input.status.active.allFreshInstancesActive &&
