@@ -1,6 +1,19 @@
 import { describe, expect, it } from 'vitest';
 
-import { recentKeys } from './keys';
+import { builtinAgentKeys, recentKeys } from './keys';
+
+describe('builtinAgentKeys', () => {
+  it('tracks Published branding revisions only when the caller supplies one', () => {
+    expect(builtinAgentKeys.init('inbox', '12')).toEqual(['builtinAgent:init', 'inbox', '12']);
+    expect(builtinAgentKeys.init('inbox', '13')).toEqual(['builtinAgent:init', 'inbox', '13']);
+    expect(builtinAgentKeys.init('inbox', null)).toEqual(['builtinAgent:init', 'inbox', null]);
+  });
+
+  it('dedupes the same revision and leaves non-inbox keys revision-free', () => {
+    expect(builtinAgentKeys.init('inbox', '12')).toEqual(builtinAgentKeys.init('inbox', '12'));
+    expect(builtinAgentKeys.init('page-agent')).toEqual(['builtinAgent:init', 'page-agent']);
+  });
+});
 
 describe('recentKeys', () => {
   it('keys the Home recent list by identity cache scope', () => {

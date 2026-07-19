@@ -1,3 +1,4 @@
+import { INBOX_SESSION_ID } from '@lobechat/const';
 import { type AgentItem, type LobeAgentConfig } from '@lobechat/types';
 import { type SWRResponse } from 'swr';
 import { type PartialDeep } from 'type-fest';
@@ -10,6 +11,8 @@ import { type StoreSetter } from '@/store/types';
 import { type AgentStore } from '../../store';
 
 interface UseInitBuiltinAgentContext {
+  /** Published branding revision; only participates in the inbox cache key. */
+  brandingRevision?: string | null;
   /**
    * Whether the user is logged in.
    * When false or undefined, the hook will not fetch the agent.
@@ -55,8 +58,13 @@ export class BuiltinAgentSliceActionImpl {
     slug: string,
     context?: UseInitBuiltinAgentContext,
   ): SWRResponse<AgentItem | null> => {
+    const cacheKey = builtinAgentKeys.init(
+      slug,
+      slug === INBOX_SESSION_ID ? (context?.brandingRevision ?? null) : undefined,
+    );
+
     return useOnlyFetchOnceSWR(
-      context?.isLogin === false ? null : builtinAgentKeys.init(slug),
+      context?.isLogin === false ? null : cacheKey,
       async () => {
         const data = await agentService.getBuiltinAgent(slug);
 
