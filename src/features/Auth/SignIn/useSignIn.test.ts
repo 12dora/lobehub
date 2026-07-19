@@ -66,6 +66,13 @@ vi.mock('@/business/client/hooks/useBusinessSignin', () => ({
 
 let mockEnableBusinessFeatures = false;
 let mockEnableMagicLink = false;
+let mockProviderMetadata: Array<{
+  icon: string | null;
+  id: string;
+  label: string | null;
+  order: number;
+  providerKey: string;
+}> = [];
 vi.mock('@/features/AuthShell', () => ({
   useAuthServerConfigStore: (selector: (s: any) => any) =>
     selector({
@@ -73,6 +80,7 @@ vi.mock('@/features/AuthShell', () => ({
         disableEmailPassword: false,
         enableBusinessFeatures: mockEnableBusinessFeatures,
         enableMagicLink: mockEnableMagicLink,
+        oAuthSSOProviderMetadata: mockProviderMetadata,
         oAuthSSOProviders: ['google', 'github'],
       },
       serverConfigInit: true,
@@ -118,6 +126,7 @@ describe('useSignIn', () => {
     mockSearchParamsGet.mockReturnValue(null);
     mockEnableBusinessFeatures = false;
     mockEnableMagicLink = false;
+    mockProviderMetadata = [];
     mockBusinessSignin.ssoProviders = [];
     mockBusinessSignin.getAdditionalData.mockResolvedValue({});
     mockBusinessSignin.preSocialSigninCheck.mockResolvedValue(true);
@@ -682,6 +691,19 @@ describe('useSignIn', () => {
       const { result } = renderHook(() => useSignIn());
 
       expect(result.current.oAuthSSOProviders).toEqual(['saml']);
+    });
+
+    it('preserves the server-authoritative provider order when public metadata is present', () => {
+      localStorage.setItem('lobehub:auth:last-provider:v1', 'github');
+      mockProviderMetadata = [
+        { icon: null, id: 'google', label: 'Work', order: 0, providerKey: 'google' },
+        { icon: null, id: 'github', label: null, order: 1, providerKey: 'github' },
+      ];
+
+      const { result } = renderHook(() => useSignIn());
+
+      expect(result.current.oAuthSSOProviders).toEqual(['google', 'github']);
+      expect(result.current.oAuthSSOProviderMetadata).toEqual(mockProviderMetadata);
     });
   });
 });

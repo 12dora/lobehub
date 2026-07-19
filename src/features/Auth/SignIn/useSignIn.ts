@@ -13,7 +13,7 @@ import { requestPasswordReset, signIn } from '@/libs/better-auth/auth-client';
 import { isBuiltinProvider, normalizeProviderId } from '@/libs/better-auth/utils/client';
 import { buildOnboardingRedirectUrl, sanitizeRedirectPath } from '@/utils/onboardingRedirect';
 
-import { EMAIL_REGEX, USERNAME_REGEX } from './SignInEmailStep';
+import { EMAIL_REGEX, USERNAME_REGEX } from './validation';
 
 const LAST_AUTH_PROVIDER_KEY = 'lobehub:auth:last-provider:v1';
 
@@ -66,6 +66,8 @@ export const useSignIn = () => {
   });
   const serverConfigInit = useAuthServerConfigStore((s) => s.serverConfigInit);
   const oAuthSSOProviders = useAuthServerConfigStore((s) => s.serverConfig.oAuthSSOProviders) || [];
+  const oAuthSSOProviderMetadata =
+    useAuthServerConfigStore((s) => s.serverConfig.oAuthSSOProviderMetadata) || [];
   const { getAdditionalData, preSocialSigninCheck, ssoProviders } = useBusinessSignin();
 
   useEffect(() => {
@@ -376,13 +378,21 @@ export const useSignIn = () => {
   };
 
   const resolvedProviders = enableBusinessFeatures ? ssoProviders : oAuthSSOProviders;
-  const sortedProviders = lastAuthProvider
-    ? [...resolvedProviders].sort((a, b) => {
-        if (a === lastAuthProvider) return -1;
-        if (b === lastAuthProvider) return 1;
-        return 0;
-      })
+  // The startup artifact owns DB-provider order. Preserve it exactly so login does not
+  // silently reshuffle a controlled work-account entry based on browser history.
+  const orderedArtifactProviders = [...oAuthSSOProviderMetadata].sort((a, b) => a.order - b.order);
+  const artifactProviderIds = orderedArtifactProviders.map((provider) => provider.id);
+  const providersInArtifactOrder = artifactProviderIds.length
+    ? artifactProviderIds
     : resolvedProviders;
+  const sortedProviders =
+    lastAuthProvider && artifactProviderIds.length === 0
+      ? [...providersInArtifactOrder].sort((a, b) => {
+          if (a === lastAuthProvider) return -1;
+          if (b === lastAuthProvider) return 1;
+          return 0;
+        })
+      : providersInArtifactOrder;
 
   return {
     disableEmailPassword,
@@ -400,6 +410,7 @@ export const useSignIn = () => {
     lastAuthProvider,
     loading,
     oAuthSSOProviders: sortedProviders,
+    oAuthSSOProviderMetadata: orderedArtifactProviders,
     sending,
     sentInfo,
     serverConfigInit: enableBusinessFeatures ? true : serverConfigInit,

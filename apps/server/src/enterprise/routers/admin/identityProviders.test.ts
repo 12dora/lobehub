@@ -93,6 +93,7 @@ describe('admin.identityProviders RBAC and feature gate', () => {
   it('keeps read and update permissions separate', async () => {
     const reader = await callerFor(ids.reader);
     await expect(reader.list({ limit: 10 })).resolves.toEqual({ items: [], nextCursor: null });
+    await expect(reader.listPublishedRevisions({ id: 'missing' })).resolves.toEqual([]);
     await expect(
       reader.update({
         autoProvision: true,

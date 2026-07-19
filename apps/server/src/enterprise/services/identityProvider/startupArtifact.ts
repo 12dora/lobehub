@@ -17,9 +17,18 @@ export interface IdentityProviderStartupSnapshot extends IdentityProviderStartup
   providerIds: string[];
 }
 
+export interface IdentityProviderPublicDefinition {
+  icon: string | null;
+  id: string;
+  label: string | null;
+  order: number;
+  providerKey: string;
+}
+
 export interface IdentityProviderPublicArtifact extends IdentityProviderStartupHealth {
   phase: IdentityProviderStartupPhase;
   providerIds: string[];
+  providers: IdentityProviderPublicDefinition[];
 }
 
 export interface IdentityProviderRuntimeArtifact {
@@ -48,6 +57,26 @@ const fallbackHealth = (): IdentityProviderStartupHealth => ({
   loadedAt: new Date(0),
   source: 'break_glass',
 });
+
+const toPublicProviders = (
+  providerIds: string[],
+  databaseProviders: RuntimeIdentityProvider[] = [],
+): IdentityProviderPublicDefinition[] => {
+  const databaseByKey = new Map(
+    databaseProviders.map((provider) => [provider.providerKey, provider] as const),
+  );
+
+  return providerIds.map((id, order) => {
+    const provider = databaseByKey.get(id);
+    return {
+      icon: provider?.icon ?? null,
+      id,
+      label: provider?.buttonLabel ?? null,
+      order,
+      providerKey: id,
+    };
+  });
+};
 
 export const markIdentityProviderStartupLoading = (): void => {
   if (!snapshot) phase = 'loading';
@@ -79,14 +108,20 @@ export const getIdentityProviderPublicArtifact = (
   env: Record<string, string | undefined> = process.env,
 ): IdentityProviderPublicArtifact => {
   if (!snapshot) {
+    const providerIds = environmentProviderIds(env);
     return {
       ...fallbackHealth(),
       phase,
-      providerIds: environmentProviderIds(env),
+      providers: toPublicProviders(providerIds),
+      providerIds,
     };
   }
   const { databaseProviders: _, ...publicSnapshot } = snapshot;
-  return { ...publicSnapshot, phase };
+  return {
+    ...publicSnapshot,
+    phase,
+    providers: toPublicProviders(snapshot.providerIds, snapshot.databaseProviders),
+  };
 };
 
 export const getIdentityProviderRuntimeArtifact = (

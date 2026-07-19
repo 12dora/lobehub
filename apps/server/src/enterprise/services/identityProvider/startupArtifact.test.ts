@@ -14,6 +14,7 @@ describe('identity provider startup artifact', () => {
     resetIdentityProviderStartupArtifactForTest();
     expect(getIdentityProviderPublicArtifact({ AUTH_SSO_PROVIDERS: 'google' })).toMatchObject({
       phase: 'uninitialized',
+      providers: [{ icon: null, id: 'google', label: null, order: 0, providerKey: 'google' }],
       providerIds: ['google'],
     });
     expect(() => getInitializedIdentityProviderPublicArtifact()).toThrow(
@@ -67,7 +68,11 @@ describe('identity provider startup artifact', () => {
       source: 'database',
     });
 
-    expect(JSON.stringify(getIdentityProviderPublicArtifact())).not.toContain('must-not-be-public');
+    const publicArtifact = getIdentityProviderPublicArtifact();
+    expect(publicArtifact.providers).toEqual([
+      { icon: null, id: 'work', label: 'Work', order: 0, providerKey: 'work' },
+    ]);
+    expect(JSON.stringify(publicArtifact)).not.toContain('must-not-be-public');
     expect(getIdentityProviderRuntimeArtifact().databaseProviders[0]?.clientSecret).toBe(
       'must-not-be-public',
     );

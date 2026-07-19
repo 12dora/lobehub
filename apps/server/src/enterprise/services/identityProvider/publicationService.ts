@@ -630,6 +630,31 @@ export class IdentityProviderPublicationService {
     private readonly testHooks: IdentityProviderPublicationTestHooks = {},
   ) {}
 
+  /** Minimal secret-free history used to choose an exact rollback target. */
+  listPublishedRevisions = async (
+    id: string,
+  ): Promise<Array<{ publishedAt: Date; revision: number }>> => {
+    const rows = await this.db
+      .select({
+        publishedAt: platformResourceRevisions.publishedAt,
+        revision: platformResourceRevisions.revision,
+      })
+      .from(platformResourceRevisions)
+      .where(
+        and(
+          eq(platformResourceRevisions.resourceType, 'oidc'),
+          eq(platformResourceRevisions.resourceId, id),
+          eq(platformResourceRevisions.status, 'published'),
+        ),
+      )
+      .orderBy(desc(platformResourceRevisions.revision))
+      .limit(50);
+
+    return rows.flatMap((row) =>
+      row.publishedAt ? [{ publishedAt: row.publishedAt, revision: row.revision }] : [],
+    );
+  };
+
   private lockedDraft = async (tx: Transaction, id: string) => {
     const [row] = await tx
       .select()

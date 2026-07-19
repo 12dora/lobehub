@@ -183,8 +183,8 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
   {
     id: 'identity-providers',
     labelKey: 'nav.identity',
-    path: '/admin/identity/providers',
-    placeholder: true,
+    path: '/admin/identity-providers',
+    placeholder: false,
     requiredPermissions: [PLATFORM_PERMISSIONS.IDENTITY_READ],
   },
   {
