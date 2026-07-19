@@ -70,10 +70,7 @@ const toMetadata = (
   scopesSupported: parsed.scopes_supported,
   subjectTypesSupported: parsed.subject_types_supported,
   tokenEndpoint: parsed.token_endpoint,
-  tokenEndpointAuthMethodsSupported:
-    parsed.token_endpoint_auth_methods_supported.length > 0
-      ? parsed.token_endpoint_auth_methods_supported
-      : ['client_secret_basic'],
+  tokenEndpointAuthMethodsSupported: parsed.token_endpoint_auth_methods_supported,
   userinfoEndpoint: parsed.userinfo_endpoint ?? null,
 });
 
