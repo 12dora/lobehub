@@ -53,6 +53,7 @@ describe('BrandingPublishedReadService', () => {
   it('reads and strictly projects the exact Published database revision', async () => {
     await serverDB.insert(platformBranding).values({
       displayName: 'AIHub',
+      desktop: { privateBuildInstruction: true },
       emailSenderName: 'AIHub Mail',
       logoUrl: '/aihub.png',
       revision: 7,
@@ -72,6 +73,9 @@ describe('BrandingPublishedReadService', () => {
       revision: '7',
     });
     expect(branding).not.toHaveProperty('themeDefaults');
+    expect(branding).not.toHaveProperty('desktop');
+    expect(branding).not.toHaveProperty('audit');
+    expect(branding).not.toHaveProperty('admin');
     expect(branding).not.toHaveProperty('id');
   });
 
