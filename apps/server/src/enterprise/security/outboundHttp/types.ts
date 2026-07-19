@@ -81,6 +81,8 @@ export interface SafeOutboundHttpClientOptions {
   /** Inject resolver (tests / custom). Default: dns.promises.lookup all. */
   resolve?: DnsResolver;
   timeoutMs?: number;
+  /** Deployment-specific RFC 6052 NAT64/SIIT prefixes. */
+  translationPrefixes?: string[];
   /** Inject transport (tests). Default: node http/https with pin. */
   transport?: PinnedTransport;
 }
