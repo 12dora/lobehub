@@ -134,6 +134,9 @@ export function defineConfig(
         enabled: true,
         trustedProviders: enabledSSOProviders,
       },
+      // OAuth state carries the per-login OIDC nonce hash. Database strategy makes it
+      // shared across instances and consumes the verification row before token exchange.
+      storeStateStrategy: 'database',
     },
 
     baseURL: appEnv.APP_URL,
