@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
 
-import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull } from 'drizzle-orm';
 
 import { checksumPayload } from '@/database/models/platform';
+import { withIdentityProviderPublishedRevisionLock } from '@/database/models/platform/identityProviderPublishedRevisionLock';
 import {
   platformIdentityProviderSecrets,
   platformResourceRevisions,
@@ -43,6 +44,9 @@ interface LoadOptions {
   db?: LobeChatDatabase;
   discovery?: Pick<IdentityProviderDiscoveryValidator, 'discover'>;
   env?: Record<string, string | undefined>;
+  testHooks?: {
+    afterCanonicalRecheck?: () => Promise<void>;
+  };
 }
 
 export const parseEnvironmentIdentityProviderIds = (
@@ -303,26 +307,6 @@ const loadDatabase = async (): Promise<LobeChatDatabase> => {
   return database.serverDB;
 };
 
-const LKG_ADVISORY_LOCK_NAMESPACE = 1_278_874_436;
-const LKG_ADVISORY_LOCK_RESOURCE = 1_223_953_479;
-
-export const acquireIdentityProviderLkgAdvisoryLock = async (
-  db: DatabaseExecutor,
-): Promise<void> => {
-  await db.execute(
-    sql`SELECT pg_advisory_xact_lock(${LKG_ADVISORY_LOCK_NAMESPACE}, ${LKG_ADVISORY_LOCK_RESOURCE})`,
-  );
-};
-
-export const withIdentityProviderLkgAdvisoryLock = async <T>(
-  db: LobeChatDatabase,
-  work: (tx: Transaction) => Promise<T>,
-): Promise<T> =>
-  db.transaction(async (tx) => {
-    await acquireIdentityProviderLkgAdvisoryLock(tx);
-    return work(tx);
-  });
-
 const loadUncached = async (options: LoadOptions): Promise<IdentityProviderStartupSnapshot> => {
   const env = options.env ?? process.env;
   const environmentProviderIds = parseEnvironmentIdentityProviderIds(env);
@@ -360,12 +344,13 @@ const loadUncached = async (options: LoadOptions): Promise<IdentityProviderStart
           await materializeProviders(rows, secrets),
           discovery,
         );
-        const committed = await withIdentityProviderLkgAdvisoryLock(db, async (tx) => {
+        const committed = await withIdentityProviderPublishedRevisionLock(db, async (tx) => {
           const currentRows = await loadDatabasePayload({
             db: tx,
             environmentProviderIds: environmentProviderIdSet,
           });
           if (!databasePayloadMatches(rows, currentRows)) return null;
+          await options.testHooks?.afterCanonicalRecheck?.();
 
           let lastError: string | null = null;
           try {
