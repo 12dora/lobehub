@@ -1,6 +1,10 @@
 import { z } from 'zod';
 
-import { platformBrandingPublishedSchema } from './branding';
+import {
+  platformBrandingAssetUrlSchema,
+  platformBrandingNameSchema,
+  platformBrandingPublishedSchema,
+} from './branding';
 
 /** Anonymous / login-safe snapshot. Secrets and admin metadata are never included. */
 export const platformPublicSnapshotSchema = z
@@ -14,18 +18,34 @@ export const platformPublicSnapshotSchema = z
       })
       .strict(),
     /** Compatibility projection for shells that do not consume `branding` yet. */
-    logoUrl: z.string().nullable(),
-    platformName: z.string().nullable(),
+    logoUrl: platformBrandingAssetUrlSchema.nullable(),
+    platformName: platformBrandingNameSchema.nullable(),
   })
   .strict()
   .superRefine((snapshot, context) => {
     const revision = snapshot.branding?.revision ?? null;
+    const logoUrl = snapshot.branding?.logoUrl ?? null;
+    const platformName = snapshot.branding?.name ?? null;
 
     if (revision !== snapshot.brandingRevision) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
         message: 'Branding revision does not match the published branding payload',
         path: ['brandingRevision'],
+      });
+    }
+    if (logoUrl !== snapshot.logoUrl) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Compatibility logo URL does not match the published branding payload',
+        path: ['logoUrl'],
+      });
+    }
+    if (platformName !== snapshot.platformName) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Compatibility platform name does not match the published branding payload',
+        path: ['platformName'],
       });
     }
   });

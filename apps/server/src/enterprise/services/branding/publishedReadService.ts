@@ -21,6 +21,10 @@ interface BrandingCacheEntry {
   value: PlatformBrandingPublished | null;
 }
 
+interface BrandingEpochState {
+  epoch: string;
+}
+
 export interface BrandingPublishedReadServiceOptions {
   cacheKey?: object;
   cacheTtlMs?: number;
@@ -30,6 +34,11 @@ export interface BrandingPublishedReadServiceOptions {
 }
 
 let brandingCache = new WeakMap<object, BrandingCacheEntry>();
+let brandingEpochStates = new WeakMap<object, BrandingEpochState>();
+let brandingInflight = new WeakMap<
+  object,
+  Map<string, Promise<PlatformBrandingPublished | null>>
+>();
 
 const clonePublishedBranding = (
   branding: PlatformBrandingPublished | null,
@@ -79,6 +88,12 @@ export class BrandingPublishedReadService {
 
   getPublished = async (): Promise<PlatformBrandingPublished | null> => {
     const epoch = await this.getCacheEpoch();
+    let epochState = brandingEpochStates.get(this.cacheKey);
+    if (!epochState || epochState.epoch !== epoch) {
+      epochState = { epoch };
+      brandingEpochStates.set(this.cacheKey, epochState);
+    }
+
     const cached = brandingCache.get(this.cacheKey);
     const now = this.now();
 
@@ -86,19 +101,46 @@ export class BrandingPublishedReadService {
       return clonePublishedBranding(cached.value);
     }
 
-    const row = await this.model.getPublished();
-    const value = row ? projectPublishedBranding(row) : null;
+    let inflightByEpoch = brandingInflight.get(this.cacheKey);
+    if (!inflightByEpoch) {
+      inflightByEpoch = new Map<string, Promise<PlatformBrandingPublished | null>>();
+      brandingInflight.set(this.cacheKey, inflightByEpoch);
+    }
 
-    brandingCache.set(this.cacheKey, {
-      epoch,
-      expiresAt: now + this.cacheTtlMs,
-      value,
-    });
+    const existing = inflightByEpoch.get(epoch);
+    if (existing) return clonePublishedBranding(await existing);
 
-    return clonePublishedBranding(value);
+    const activeEpochState = epochState;
+    const request = (async () => {
+      const row = await this.model.getPublished();
+      const value = row ? projectPublishedBranding(row) : null;
+
+      // A slow result from an older epoch may return to its caller, but must not poison the cache.
+      if (brandingEpochStates.get(this.cacheKey) === activeEpochState) {
+        brandingCache.set(this.cacheKey, {
+          epoch,
+          expiresAt: this.now() + this.cacheTtlMs,
+          value,
+        });
+      }
+
+      return value;
+    })();
+    inflightByEpoch.set(epoch, request);
+
+    try {
+      return clonePublishedBranding(await request);
+    } finally {
+      if (inflightByEpoch.get(epoch) === request) inflightByEpoch.delete(epoch);
+      if (inflightByEpoch.size === 0 && brandingInflight.get(this.cacheKey) === inflightByEpoch) {
+        brandingInflight.delete(this.cacheKey);
+      }
+    }
   };
 }
 
 export const resetBrandingPublishedCache = (): void => {
   brandingCache = new WeakMap<object, BrandingCacheEntry>();
+  brandingEpochStates = new WeakMap<object, BrandingEpochState>();
+  brandingInflight = new WeakMap<object, Map<string, Promise<PlatformBrandingPublished | null>>>();
 };

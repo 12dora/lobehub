@@ -1,37 +1,56 @@
 import { z } from 'zod';
 
-const hasControlCharacter = (value: string): boolean =>
+const unicodeFormatCharacterPattern = /\p{Cf}/u;
+const dangerousInvisibleCodePoints = new Set([
+  0x034f, 0x115f, 0x1160, 0x17b4, 0x17b5, 0x3164, 0xffa0,
+]);
+
+const hasUnsafeUnicodeCharacter = (value: string): boolean =>
   Array.from(value).some((character) => {
-    const code = character.charCodeAt(0);
-    return code <= 31 || code === 127;
+    const codePoint = character.codePointAt(0) ?? 0;
+    const isControl = codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f);
+
+    return (
+      isControl ||
+      unicodeFormatCharacterPattern.test(character) ||
+      dangerousInvisibleCodePoints.has(codePoint)
+    );
   });
 
 const hasUnsafeText = (value: string): boolean =>
-  hasControlCharacter(value) || value.includes('<') || value.includes('>');
+  hasUnsafeUnicodeCharacter(value) || value.includes('<') || value.includes('>');
 
 const hasUnsafeUrlCharacter = (value: string): boolean =>
-  hasControlCharacter(value) ||
+  hasUnsafeUnicodeCharacter(value) ||
   ['<', '>', '"', "'", '`', '\\'].some((character) => value.includes(character));
 
-const decodePathname = (pathname: string): string => {
+const decodePathnameToStable = (pathname: string): string | null => {
   let decoded = pathname;
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < 8; attempt++) {
     const next = decodeURIComponent(decoded);
     if (next === decoded) return decoded;
     decoded = next;
   }
-  return decoded;
+
+  // Reject inputs that keep changing rather than trusting a partially decoded path.
+  return null;
 };
 
 const brandingText = (maximum: number) =>
   z
     .string()
-    .trim()
-    .min(1)
-    .max(maximum)
-    .refine((value) => !hasUnsafeText(value), {
-      message: 'Branding text contains unsafe characters',
-    });
+    .transform((value) => value.trim().normalize('NFC'))
+    .pipe(
+      z
+        .string()
+        .min(1)
+        .max(maximum)
+        .refine((value) => !hasUnsafeText(value), {
+          message: 'Branding text contains unsafe characters',
+        }),
+    );
+
+export const platformBrandingNameSchema = brandingText(120);
 
 const validateHttpUrl = (value: string): boolean => {
   try {
@@ -70,9 +89,9 @@ export const platformBrandingAssetUrlSchema = z
         const pathname = isRootRelative
           ? new URL(value, 'https://runtime.invalid').pathname
           : new URL(value).pathname;
-        const decodedPathname = decodePathname(pathname);
+        const decodedPathname = decodePathnameToStable(pathname);
 
-        return !/\.svgz?$/i.test(decodedPathname);
+        return decodedPathname !== null && !/\.svgz?$/i.test(decodedPathname);
       } catch {
         return false;
       }
@@ -96,7 +115,7 @@ const platformBrandingFieldsSchema = z
     iconUrl: nullableAssetUrl,
     legalName: nullableText(200),
     logoUrl: nullableAssetUrl,
-    name: nullableText(120),
+    name: platformBrandingNameSchema.nullable(),
     ogImageUrl: nullableAssetUrl,
     pageTitleTemplate: nullableText(200),
     privacyUrl: nullableLinkUrl,
@@ -113,7 +132,7 @@ export const platformBrandingDraftSchema = platformBrandingFieldsSchema.extend({
 
 /** Sanitized public projection of one uniquely published branding revision. */
 export const platformBrandingPublishedSchema = platformBrandingFieldsSchema.extend({
-  name: brandingText(120),
+  name: platformBrandingNameSchema,
   revision: z.string().trim().min(1).max(64),
 });
 
