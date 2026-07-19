@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { createHash } from 'node:crypto';
-import { mkdtemp, realpath, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -143,7 +143,33 @@ const seedPublished = async (env: Record<string, string | undefined>, providerKe
     secretFingerprint,
     status: 'published',
   });
-  return { clientSecret, provider };
+  return { clientSecret, provider, published };
+};
+
+const publishRevision = async (input: {
+  issuer?: string;
+  providerId: string;
+  providerKey?: string;
+  revision: number;
+  secretFingerprint: string;
+}) => {
+  const published = {
+    ...payload(input.providerKey),
+    issuer: input.issuer ?? 'https://login.example.test',
+    secretFingerprint: input.secretFingerprint,
+    secretUpdatedAt: new Date().toISOString(),
+  };
+  await db.insert(platformResourceRevisions).values({
+    checksum: checksumPayload(published),
+    payload: published,
+    publishedAt: new Date(),
+    resourceId: input.providerId,
+    resourceType: 'oidc',
+    revision: input.revision,
+    secretFingerprint: input.secretFingerprint,
+    status: 'published',
+  });
+  return published;
 };
 
 const cleanup = async () => {
@@ -272,7 +298,7 @@ describe('identity provider startup snapshot', () => {
     expect(discover).toHaveBeenCalledTimes(2);
   });
 
-  it('fails closed to environment break-glass when DB and LKG discovery are unavailable', async () => {
+  it('fails closed to environment break-glass when DB discovery fails without a prior LKG', async () => {
     const env = { ...(await baseEnv()), AUTH_SSO_PROVIDERS: 'google' };
     await seedPublished(env);
     const discover = vi.fn(async () => {
@@ -292,7 +318,108 @@ describe('identity provider startup snapshot', () => {
       providerIds: ['google'],
       source: 'break_glass',
     });
+    expect(discover).toHaveBeenCalledOnce();
+  });
+
+  it('preserves a good LKG when a newer revision has no matching secret', async () => {
+    const env = await baseEnv();
+    const { provider } = await seedPublished(env);
+    const good = await loadSnapshot({ cache: false, db, env });
+    const lkgPath = env.PLATFORM_OIDC_LKG_PATH!;
+    const bytesBefore = await readFile(lkgPath);
+    const identityBefore = (await readIdentityProviderLkg({
+      env,
+      secrets: PlatformSecretService.tryFromEnv(env)!,
+    }))!.identityRevision;
+    await publishRevision({
+      providerId: provider.id,
+      revision: 3,
+      secretFingerprint: 'f'.repeat(64),
+    });
+
+    const fallback = await loadSnapshot({ cache: false, db, env });
+
+    expect(good.source).toBe('database');
+    expect(fallback).toMatchObject({ source: 'lkg' });
+    expect(await readFile(lkgPath)).toEqual(bytesBefore);
+    expect(
+      (await readIdentityProviderLkg({
+        env,
+        secrets: PlatformSecretService.tryFromEnv(env)!,
+      }))!.identityRevision,
+    ).toBe(identityBefore);
+  });
+
+  it('preserves a good LKG when a newer revision fails secure discovery', async () => {
+    const env = await baseEnv();
+    const { provider, published } = await seedPublished(env);
+    await loadSnapshot({ cache: false, db, env });
+    const lkgPath = env.PLATFORM_OIDC_LKG_PATH!;
+    const bytesBefore = await readFile(lkgPath);
+    const identityBefore = (await readIdentityProviderLkg({
+      env,
+      secrets: PlatformSecretService.tryFromEnv(env)!,
+    }))!.identityRevision;
+    await publishRevision({
+      issuer: 'https://unavailable.example.test',
+      providerId: provider.id,
+      revision: 3,
+      secretFingerprint: published.secretFingerprint,
+    });
+    const discover = vi.fn(async (issuer: string) => {
+      if (issuer === 'https://unavailable.example.test') {
+        throw new Error('OIDC_DISCOVERY_UNAVAILABLE');
+      }
+      return discovery.discover(issuer);
+    });
+
+    const fallback = await loadIdentityProviderStartupSnapshot({
+      cache: false,
+      db,
+      discovery: { discover },
+      env,
+    });
+
+    expect(fallback).toMatchObject({ source: 'lkg' });
     expect(discover).toHaveBeenCalledTimes(2);
+    expect(await readFile(lkgPath)).toEqual(bytesBefore);
+    expect(
+      (await readIdentityProviderLkg({
+        env,
+        secrets: PlatformSecretService.tryFromEnv(env)!,
+      }))!.identityRevision,
+    ).toBe(identityBefore);
+  });
+
+  it('never writes a stale candidate when publication changes during validation', async () => {
+    const env = await baseEnv();
+    const { provider, published } = await seedPublished(env);
+    await loadSnapshot({ cache: false, db, env });
+    const lkgPath = env.PLATFORM_OIDC_LKG_PATH!;
+    const bytesBefore = await readFile(lkgPath);
+    let revision = 2;
+    const discover = vi.fn(async (issuer: string) => {
+      if (revision < 4) {
+        revision++;
+        await publishRevision({
+          providerId: provider.id,
+          revision,
+          secretFingerprint: published.secretFingerprint,
+        });
+      }
+      return discovery.discover(issuer);
+    });
+
+    const fallback = await loadIdentityProviderStartupSnapshot({
+      cache: false,
+      db,
+      discovery: { discover },
+      env,
+    });
+
+    expect(fallback).toMatchObject({ source: 'lkg' });
+    expect(discover).toHaveBeenCalledTimes(3);
+    expect(await readFile(lkgPath)).toEqual(bytesBefore);
   });
 
   it('keeps an environment provider authoritative over a conflicting DB provider', async () => {
