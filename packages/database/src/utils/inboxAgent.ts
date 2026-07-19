@@ -16,16 +16,22 @@ export const isInboxAgentIdentity = ({ slug }: InboxAgentIdentity) => slug === I
 export function normalizeInboxAgentTitle(
   title: string | null,
   identity: InboxAgentIdentity,
+  fallbackTitle?: string | null,
 ): string | null;
 export function normalizeInboxAgentTitle(
   title: string | null | undefined,
   identity: InboxAgentIdentity,
+  fallbackTitle?: string | null,
 ): string | null | undefined;
 export function normalizeInboxAgentTitle(
   title: string | null | undefined,
   identity: InboxAgentIdentity,
+  fallbackTitle: string | null = DEFAULT_INBOX_TITLE,
 ) {
-  return isInboxAgentIdentity(identity) && isBlank(title) ? DEFAULT_INBOX_TITLE : title;
+  if (!isInboxAgentIdentity(identity) || !isBlank(title)) return title;
+  if (fallbackTitle === null) return title;
+
+  return isBlank(fallbackTitle) ? DEFAULT_INBOX_TITLE : fallbackTitle;
 }
 
 export function normalizeInboxAgentAvatar(
@@ -46,8 +52,9 @@ export function normalizeInboxAgentAvatar(
 export const normalizeInboxAgentMeta = <T extends InboxAgentMeta>(
   agent: T,
   identity: InboxAgentIdentity = agent as T & InboxAgentIdentity,
+  fallbackTitle?: string | null,
 ): T => ({
   ...agent,
   avatar: normalizeInboxAgentAvatar(agent.avatar, identity),
-  title: normalizeInboxAgentTitle(agent.title, identity),
+  title: normalizeInboxAgentTitle(agent.title, identity, fallbackTitle),
 });

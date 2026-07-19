@@ -7,6 +7,7 @@ import { memo } from 'react';
 import { ProductLogo } from '@/components/Branding';
 import PluginTag from '@/features/PluginTag';
 import { filterToolIds } from '@/helpers/toolFilters';
+import { useDefaultInboxDisplayName } from '@/hooks/useDefaultInboxDisplayName';
 import { useAgentStore } from '@/store/agent';
 import { agentByIdSelectors, agentSelectors, builtinAgentSelectors } from '@/store/agent/selectors';
 
@@ -77,8 +78,10 @@ const Preview = memo<PreviewProps>(
       ];
     });
 
+    const configuredInboxTitle = isHeaderInbox ? headerMeta?.title : currentTitle;
+    const inboxDisplayName = useDefaultInboxDisplayName(configuredInboxTitle);
     const displayTitle =
-      (isHeaderInbox ?? isInbox) ? 'Lobe AI' : headerMeta?.title || title || currentTitle;
+      (isHeaderInbox ?? isInbox) ? inboxDisplayName : headerMeta?.title || title || currentTitle;
     const displayAvatar = headerMeta?.avatar || currentAvatar;
     const displayBackgroundColor = headerMeta?.backgroundColor || currentBackgroundColor;
     const displayModel = headerModel || currentModel;

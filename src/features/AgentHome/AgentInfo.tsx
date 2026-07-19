@@ -7,6 +7,7 @@ import { useTranslation } from 'react-i18next';
 
 import { DEFAULT_AVATAR, DEFAULT_INBOX_AVATAR } from '@/const/meta';
 import { contextSelectors, useConversationStore } from '@/features/Conversation/store';
+import { useDefaultInboxDisplayName } from '@/hooks/useDefaultInboxDisplayName';
 import { useAgentStore } from '@/store/agent';
 import { agentByIdSelectors, agentSelectors, builtinAgentSelectors } from '@/store/agent/selectors';
 import { useUserStore } from '@/store/user';
@@ -27,9 +28,10 @@ const AgentInfo = memo(() => {
     (s) => agentSelectors.getAgentConfigById(agentId)(s)?.openingMessage || '',
   );
   const fontSize = useUserStore(userGeneralSettingsSelectors.fontSize);
+  const inboxDisplayName = useDefaultInboxDisplayName(meta.title);
 
   const displayTitle = isInbox
-    ? meta.title || 'Lobe AI'
+    ? inboxDisplayName
     : meta.title || t('defaultSession', { ns: 'common' });
 
   const message = useMemo(() => {

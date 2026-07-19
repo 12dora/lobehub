@@ -146,6 +146,29 @@ describe('useAgentMeta', () => {
     expect(result.current.title).toBe('Page Agent Title');
   });
 
+  it('should not mislabel an untitled non-inbox builtin agent as the default inbox', () => {
+    const mockPageAgentId = 'page-agent-id';
+
+    vi.mocked(useConversationStore).mockImplementation((selector: any) => {
+      const state = { context: { agentId: mockPageAgentId } };
+      return selector(state);
+    });
+
+    act(() => {
+      useAgentStore.setState({
+        agentMap: { [mockPageAgentId]: { avatar: 'page-agent.png' } },
+        builtinAgentIdMap: {
+          inbox: 'inbox-agent-id',
+          pageAgent: mockPageAgentId,
+        },
+      });
+    });
+
+    const { result } = renderHook(() => useAgentMeta());
+
+    expect(result.current.title).toBeUndefined();
+  });
+
   it('should handle empty agentMap gracefully', () => {
     const mockAgentId = 'non-existent-agent';
 

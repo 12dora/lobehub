@@ -9,6 +9,7 @@ import { memo } from 'react';
 import NavItem from '@/features/NavPanel/components/NavItem';
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
 import WorkspaceLink from '@/features/Workspace/WorkspaceLink';
+import { useDefaultInboxDisplayName } from '@/hooks/useDefaultInboxDisplayName';
 import { useAgentStore } from '@/store/agent';
 import { agentSelectors, builtinAgentSelectors } from '@/store/agent/selectors';
 import { useChatStore } from '@/store/chat';
@@ -50,7 +51,7 @@ const InboxEntry = memo(() => {
     inboxAgentId ? operationSelectors.isAgentVisiblyRunning(inboxAgentId) : () => false,
   );
 
-  const title = inboxMeta.title || 'Lobe AI';
+  const title = useDefaultInboxDisplayName(inboxMeta.title);
   const avatar = inboxMeta.avatar || DEFAULT_INBOX_AVATAR;
   const url = AGENT_CHAT_URL(inboxAgentId, false);
 

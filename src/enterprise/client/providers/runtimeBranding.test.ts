@@ -10,6 +10,9 @@ describe('resolveRuntimeBranding', () => {
     expect(resolveRuntimeBranding(DISABLED_PLATFORM_PUBLIC_SNAPSHOT)).toEqual(
       BUILT_IN_RUNTIME_BRANDING,
     );
+    expect(resolveRuntimeBranding(DISABLED_PLATFORM_PUBLIC_SNAPSHOT).defaultAgentDisplayName).toBe(
+      'Lobe AI',
+    );
     expect(resolveRuntimeBranding(DISABLED_PLATFORM_PUBLIC_SNAPSHOT).publishedRevision).toBeNull();
   });
 

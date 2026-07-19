@@ -9,6 +9,7 @@ import { memo } from 'react';
 
 import NavItem from '@/features/NavPanel/components/NavItem';
 import WorkspaceLink from '@/features/Workspace/WorkspaceLink';
+import { useDefaultInboxDisplayName } from '@/hooks/useDefaultInboxDisplayName';
 import { usePrefetchAgent } from '@/hooks/usePrefetchAgent';
 import { useAgentStore } from '@/store/agent';
 import { agentSelectors, builtinAgentSelectors } from '@/store/agent/selectors';
@@ -57,7 +58,7 @@ const InboxItem = memo<InboxItemProps>(({ className, style }) => {
     inboxAgentId ? operationSelectors.isAgentVisiblyRunning(inboxAgentId) : () => false,
   );
   const prefetchAgent = usePrefetchAgent();
-  const inboxAgentTitle = inboxMeta.title || 'Lobe AI';
+  const inboxAgentTitle = useDefaultInboxDisplayName(inboxMeta.title);
   const inboxAgentAvatar = inboxMeta.avatar || DEFAULT_INBOX_AVATAR;
   const inboxUrl = usePreservedAgentUrl(inboxAgentId!);
 

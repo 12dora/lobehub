@@ -1,6 +1,57 @@
 import { describe, expect, it } from 'vitest';
 
-import { recentKeys } from './keys';
+import { builtinAgentKeys, recentKeys } from './keys';
+import { buildCacheScope } from './useCacheScope';
+
+describe('builtinAgentKeys', () => {
+  it('tracks Published branding revisions only when the caller supplies one', () => {
+    expect(builtinAgentKeys.init('inbox', '12', 'user-1:personal')).toEqual([
+      'builtinAgent:init',
+      'inbox',
+      '12',
+      'user-1:personal',
+    ]);
+    expect(builtinAgentKeys.init('inbox', '13', 'user-1:personal')).toEqual([
+      'builtinAgent:init',
+      'inbox',
+      '13',
+      'user-1:personal',
+    ]);
+    expect(builtinAgentKeys.init('inbox', null, 'user-1:personal')).toEqual([
+      'builtinAgent:init',
+      'inbox',
+      null,
+      'user-1:personal',
+    ]);
+  });
+
+  it('keeps the non-inbox key byte-for-byte unchanged', () => {
+    expect(builtinAgentKeys.init('page-agent')).toEqual(['builtinAgent:init', 'page-agent']);
+    expect(JSON.stringify(builtinAgentKeys.init('page-agent'))).toBe(
+      JSON.stringify(['builtinAgent:init', 'page-agent']),
+    );
+  });
+
+  it('isolates same-revision inbox data when the active workspace changes', () => {
+    const workspaceA = buildCacheScope('user-a', 'workspace-a');
+    const workspaceB = buildCacheScope('user-a', 'workspace-b');
+
+    expect(builtinAgentKeys.init('inbox', '12', workspaceA)).not.toEqual(
+      builtinAgentKeys.init('inbox', '12', workspaceB),
+    );
+  });
+
+  it('does not reuse a persisted user key during logout and a following user switch', () => {
+    const persistedUserA = buildCacheScope('user-a', 'workspace-a');
+    const resolvedAnonymous = buildCacheScope(undefined, undefined);
+    const userB = buildCacheScope('user-b', 'workspace-a');
+    const keys = [persistedUserA, resolvedAnonymous, userB].map((scope) =>
+      builtinAgentKeys.init('inbox', '12', scope),
+    );
+
+    expect(new Set(keys.map((key) => JSON.stringify(key)))).toHaveLength(3);
+  });
+});
 
 describe('recentKeys', () => {
   it('keys the Home recent list by identity cache scope', () => {

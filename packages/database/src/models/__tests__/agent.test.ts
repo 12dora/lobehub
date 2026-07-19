@@ -1426,6 +1426,29 @@ describe('AgentModel', () => {
         expect(result?.avatar).toBe(DEFAULT_INBOX_AVATAR);
       });
 
+      it('should apply an injected inbox title fallback without overriding an explicit title', async () => {
+        await serverDB.insert(agents).values({
+          id: 'branding-inbox',
+          slug: INBOX_SESSION_ID,
+          title: null,
+          userId,
+        });
+
+        const fallback = await agentModel.getBuiltinAgent(INBOX_SESSION_ID, {
+          inboxTitleFallback: 'AIHub AI',
+        });
+        expect(fallback?.title).toBe('AIHub AI');
+
+        await serverDB
+          .update(agents)
+          .set({ title: 'Lobe AI' })
+          .where(eq(agents.id, 'branding-inbox'));
+        const explicit = await agentModel.getBuiltinAgent(INBOX_SESSION_ID, {
+          inboxTitleFallback: 'AIHub AI',
+        });
+        expect(explicit?.title).toBe('Lobe AI');
+      });
+
       it('should find inbox from legacy session and update agent slug', async () => {
         // Create legacy format: session(slug=inbox) + agent(no slug) + relation
         const [session] = await serverDB
@@ -2717,6 +2740,26 @@ describe('AgentModel', () => {
         title: DEFAULT_INBOX_TITLE,
       });
       expect(result[1]).toMatchObject({ id: 'mb-normal', isInbox: false, title: 'Normal' });
+    });
+
+    it('should use the same injected inbox fallback as direct builtin reads', async () => {
+      await serverDB.insert(agents).values({
+        id: 'mb-branded-inbox',
+        slug: INBOX_SESSION_ID,
+        title: null,
+        userId,
+        virtual: true,
+      });
+
+      const result = await agentModel.listMessengerBindableAgents({
+        inboxTitleFallback: 'AIHub AI',
+      });
+
+      expect(result[0]).toMatchObject({
+        id: 'mb-branded-inbox',
+        isInbox: true,
+        title: 'AIHub AI',
+      });
     });
 
     it('should fall back a blank non-inbox title to options.fallbackTitle (null by default)', async () => {
