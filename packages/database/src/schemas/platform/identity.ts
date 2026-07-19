@@ -1,6 +1,8 @@
 import type {
   PlatformIdentityProviderClaimMapping,
+  PlatformIdentityProviderClaimPreview,
   PlatformIdentityProviderStatus,
+  PlatformIdentityProviderTestAttemptStatus,
   PlatformIdentityProviderType,
 } from '@lobechat/types';
 import { sql } from 'drizzle-orm';
@@ -222,3 +224,74 @@ export const platformIdentityProviderSecrets = pgTable(
 export type PlatformIdentityProviderSecretItem =
   typeof platformIdentityProviderSecrets.$inferSelect;
 export type NewPlatformIdentityProviderSecret = typeof platformIdentityProviderSecrets.$inferInsert;
+
+/** One-shot, admin-only OIDC test flow. Never consumed by the production login runtime. */
+export const platformIdentityProviderTestAttempts = pgTable(
+  'platform_identity_provider_test_attempts',
+  {
+    id: text('id')
+      .$defaultFn(() => idGenerator('platformIdentityProviderTestAttempts', 16))
+      .primaryKey()
+      .notNull(),
+    providerId: text('provider_id')
+      .notNull()
+      .references(() => platformIdentityProviders.id, { onDelete: 'cascade' }),
+    providerRevision: integer('provider_revision').notNull(),
+    userId: text('user_id').notNull(),
+    sessionId: text('session_id').notNull(),
+    stateHash: varchar('state_hash', { length: 64 }).notNull(),
+    nonceHash: varchar('nonce_hash', { length: 64 }).notNull(),
+    /** Envelope-encrypted PKCE verifier; never selected by admin result projections. */
+    pkceCiphertext: text('pkce_ciphertext').notNull(),
+    pkceKeyId: varchar('pkce_key_id', { length: 256 }).notNull(),
+    redirectUri: text('redirect_uri').notNull(),
+    status: varchar('status', { length: 32 })
+      .$type<PlatformIdentityProviderTestAttemptStatus>()
+      .notNull()
+      .default('pending'),
+    result: jsonb('result').$type<PlatformIdentityProviderClaimPreview>(),
+    errorCode: varchar('error_code', { length: 128 }),
+    expiresAt: timestamptz('expires_at').notNull(),
+    reservedAt: timestamptz('reserved_at'),
+    completedAt: timestamptz('completed_at'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex('platform_identity_provider_test_attempts_state_hash_unique').on(t.stateHash),
+    index('platform_identity_provider_test_attempts_user_provider_idx').on(
+      t.userId,
+      t.providerId,
+      t.createdAt,
+    ),
+    index('platform_identity_provider_test_attempts_expires_idx').on(t.expiresAt),
+    check(
+      'platform_identity_provider_test_attempts_hash_check',
+      sql`${t.stateHash} ~ '^[a-f0-9]{64}$' AND ${t.nonceHash} ~ '^[a-f0-9]{64}$'`,
+    ),
+    check(
+      'platform_identity_provider_test_attempts_status_check',
+      sql`${t.status} IN ('pending', 'processing', 'succeeded', 'failed')`,
+    ),
+    check(
+      'platform_identity_provider_test_attempts_revision_check',
+      sql`${t.providerRevision} >= 0`,
+    ),
+    check(
+      'platform_identity_provider_test_attempts_terminal_check',
+      sql`(${t.status} = 'pending' AND ${t.reservedAt} IS NULL AND ${t.completedAt} IS NULL AND ${t.result} IS NULL AND ${t.errorCode} IS NULL)
+        OR (${t.status} = 'processing' AND ${t.reservedAt} IS NOT NULL AND ${t.completedAt} IS NULL AND ${t.result} IS NULL AND ${t.errorCode} IS NULL)
+        OR (${t.status} = 'succeeded' AND ${t.completedAt} IS NOT NULL AND ${t.result} IS NOT NULL AND ${t.errorCode} IS NULL)
+        OR (${t.status} = 'failed' AND ${t.completedAt} IS NOT NULL AND ${t.result} IS NULL AND ${t.errorCode} IS NOT NULL)`,
+    ),
+    check(
+      'platform_identity_provider_test_attempts_ttl_check',
+      sql`${t.expiresAt} > ${t.createdAt} AND ${t.expiresAt} <= ${t.createdAt} + interval '10 minutes'`,
+    ),
+  ],
+);
+
+export type PlatformIdentityProviderTestAttemptItem =
+  typeof platformIdentityProviderTestAttempts.$inferSelect;
+export type NewPlatformIdentityProviderTestAttempt =
+  typeof platformIdentityProviderTestAttempts.$inferInsert;
