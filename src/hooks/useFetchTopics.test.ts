@@ -65,6 +65,27 @@ describe('useFetchTopics', () => {
     });
   });
 
+  it('uses an explicit pending agent session without leaking the stale active agent', () => {
+    mockUseChatStore.mockImplementation((selector) =>
+      selector({
+        activeAgentId: 'inbox-agent-a',
+        activeGroupId: undefined,
+        useFetchTopics: mockUseFetchTopicsFn,
+      }),
+    );
+
+    renderHook(() =>
+      useFetchTopics({ enabled: false, session: { agentId: undefined, isInbox: true } }),
+    );
+
+    expect(mockUseFetchTopicsFn).toHaveBeenCalledWith(false, {
+      agentId: undefined,
+      groupId: undefined,
+      isInbox: true,
+      pageSize: 20,
+    });
+  });
+
   it('should fetch topics with groupId when group session is active', () => {
     const activeAgentId = 'agent-123';
     const activeGroupId = 'group-456';

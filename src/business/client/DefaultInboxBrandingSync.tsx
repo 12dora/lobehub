@@ -23,6 +23,7 @@ const DefaultInboxBrandingSync = memo(() => {
 
   useInitBuiltinAgent(INBOX_SESSION_ID, {
     brandingRevision,
+    cacheScope,
     isLogin: Boolean(isLogin),
   });
 

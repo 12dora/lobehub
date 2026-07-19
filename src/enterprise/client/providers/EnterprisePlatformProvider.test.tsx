@@ -170,6 +170,7 @@ describe('EnterprisePlatformProvider', () => {
     expect(screen.getByTestId('admin').textContent).toBe('false');
     expect(inboxSyncMocks.useInitBuiltinAgent).toHaveBeenCalledWith('inbox', {
       brandingRevision: null,
+      cacheScope: 'user-a:personal',
       isLogin: true,
     });
     expect(inboxSyncMocks.syncInboxProjectionScope).toHaveBeenCalledWith('user-a:personal', true);
@@ -250,10 +251,12 @@ describe('EnterprisePlatformProvider', () => {
     expect(fetchPublicSnapshot).toHaveBeenCalledOnce();
     expect(inboxSyncMocks.useInitBuiltinAgent).toHaveBeenCalledWith('inbox', {
       brandingRevision: '3',
+      cacheScope: 'user-a:personal',
       isLogin: true,
     });
     expect(inboxSyncMocks.useInitBuiltinAgent).toHaveBeenCalledWith('inbox', {
       brandingRevision: '4',
+      cacheScope: 'user-a:personal',
       isLogin: true,
     });
   });
@@ -303,6 +306,7 @@ describe('EnterprisePlatformProvider', () => {
     for (const revision of ['A', 'B', 'A', null]) {
       expect(inboxSyncMocks.useInitBuiltinAgent).toHaveBeenCalledWith('inbox', {
         brandingRevision: revision,
+        cacheScope: 'user-a:personal',
         isLogin: true,
       });
     }
