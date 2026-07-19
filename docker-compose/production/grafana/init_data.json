@@ -342,10 +342,10 @@
       "clientId": "a387a4892ee19b1a2249",
       "clientSecret": "dbf205949d704de81b0b5b3603174e23fbecc354",
       "redirectUris": [
-        "http://localhost:3210/api/auth/callback/casdoor",
-        "https://localhost:3210/api/auth/callback/casdoor",
-        "http://example.com/api/auth/callback/casdoor",
-        "https://example.com/api/auth/callback/casdoor"
+        "http://localhost:3210/api/auth/oauth2/callback/casdoor",
+        "https://localhost:3210/api/auth/oauth2/callback/casdoor",
+        "http://example.com/api/auth/oauth2/callback/casdoor",
+        "https://example.com/api/auth/oauth2/callback/casdoor"
       ],
       "forcedRedirectOrigin": "",
       "tokenFormat": "JWT",
