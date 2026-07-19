@@ -7,7 +7,7 @@
 import { eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
 import * as schema from '@/database/schemas';
@@ -15,9 +15,10 @@ import {
   platformIdentityProviders,
   platformIdentityProviderTestAttempts,
 } from '@/database/schemas/platform';
-import type { LobeChatDatabase } from '@/database/type';
+import type { LobeChatDatabase, Transaction } from '@/database/type';
 import { type KeyProvider, PlatformSecretService } from '@/server/enterprise/security/secret';
 
+import { runIdentityProviderTestAttemptCleanup } from '../../jobs/identityProviderTestAttemptCleanup';
 import {
   cleanupExpiredIdentityProviderTestAttempts,
   IDENTITY_PROVIDER_TEST_PROCESSING_LEASE_MS,
@@ -84,8 +85,12 @@ run('IdentityProviderTestAttemptStore — true multi-connection PostgreSQL', () 
   beforeAll(async () => {
     db = await getTestDB();
   });
-  beforeEach(cleanup);
+  beforeEach(async () => {
+    vi.stubEnv('ENABLE_DATABASE_OIDC', '1');
+    await cleanup();
+  });
   afterEach(async () => {
+    vi.unstubAllEnvs();
     await Promise.all(pools.splice(0).map((pool) => pool.end()));
     await cleanup();
   });
@@ -149,5 +154,35 @@ run('IdentityProviderTestAttemptStore — true multi-connection PostgreSQL', () 
     await expect(reaper).resolves.toBe(1);
     await expect(callback).rejects.toMatchObject({ code: 'OIDC_TEST_PROVIDER_CHANGED' });
     await expect(db.select().from(platformIdentityProviderTestAttempts)).resolves.toHaveLength(0);
+  });
+
+  it('serializes duplicate scheduled cleanup invocations with the advisory lock', async () => {
+    await issueAndReserve();
+    let activeCleanups = 0;
+    let maxActiveCleanups = 0;
+    const cleanupWithConcurrencyEvidence = async (tx: Transaction) => {
+      activeCleanups += 1;
+      maxActiveCleanups = Math.max(maxActiveCleanups, activeCleanups);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        return await cleanupExpiredIdentityProviderTestAttempts(tx);
+      } finally {
+        activeCleanups -= 1;
+      }
+    };
+
+    const results = await Promise.all([
+      runIdentityProviderTestAttemptCleanup({
+        acquireDatabase: async () => independentDb(),
+        cleanup: cleanupWithConcurrencyEvidence,
+      }),
+      runIdentityProviderTestAttemptCleanup({
+        acquireDatabase: async () => independentDb(),
+        cleanup: cleanupWithConcurrencyEvidence,
+      }),
+    ]);
+
+    expect(results.toSorted()).toEqual([0, 1]);
+    expect(maxActiveCleanups).toBe(1);
   });
 });
