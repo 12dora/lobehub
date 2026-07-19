@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, sql } from 'drizzle-orm';
 
 import { checksumPayload } from '@/database/models/platform';
 import {
@@ -33,6 +33,7 @@ import {
 } from './startupSnapshot';
 
 const RESTART_INTENT_TTL_MS = 5 * 60 * 1000;
+export const IDENTITY_PROVIDER_RECENT_STALE_DIAGNOSTIC_LIMIT = 10;
 
 export type IdentityProviderAfterResponseHook = (task: () => Promise<void>) => void;
 
@@ -155,7 +156,10 @@ export class IdentityProviderSystemService {
           startupSource: platformIdentityProviderInstances.startupSource,
         })
         .from(platformIdentityProviderInstances)
-        .orderBy(desc(platformIdentityProviderInstances.lastHeartbeat));
+        .orderBy(
+          desc(platformIdentityProviderInstances.lastHeartbeat),
+          asc(platformIdentityProviderInstances.instanceId),
+        );
       const pendingRows = await tx
         .select({
           activationRevision: platformIdentityProviders.activationRevision,
@@ -190,6 +194,17 @@ export class IdentityProviderSystemService {
       const instanceProjection = [
         ...instances.filter((instance) => instance.instanceId !== local.instanceId),
         localProjection,
+      ];
+      const sortedInstanceProjection = [...instanceProjection].sort(
+        (left, right) =>
+          right.lastHeartbeat.getTime() - left.lastHeartbeat.getTime() ||
+          left.instanceId.localeCompare(right.instanceId),
+      );
+      const diagnosticInstances = [
+        ...sortedInstanceProjection.filter((instance) => instance.fresh),
+        ...sortedInstanceProjection
+          .filter((instance) => !instance.fresh)
+          .slice(0, IDENTITY_PROVIDER_RECENT_STALE_DIAGNOSTIC_LIMIT),
       ];
       const fresh = instanceProjection.filter((instance) => instance.fresh);
       const isActive = (instance: (typeof fresh)[number]) =>
@@ -260,7 +275,7 @@ export class IdentityProviderSystemService {
           loadedAt: artifact.loadedAt,
           source: artifact.source,
         },
-        instances: instanceProjection,
+        instances: diagnosticInstances,
         pendingPublished,
         pendingRestart,
         restart: {
