@@ -25,7 +25,11 @@ import {
   commitIdentityProviderStartupSnapshot,
   resetIdentityProviderStartupArtifactForTest,
 } from './startupArtifact';
-import { IdentityProviderSystemService, loadPublishedIdentityTarget } from './systemService';
+import {
+  IDENTITY_PROVIDER_RECENT_STALE_DIAGNOSTIC_LIMIT,
+  IdentityProviderSystemService,
+  loadPublishedIdentityTarget,
+} from './systemService';
 
 const db: LobeChatDatabase = await getTestDB();
 const requestId = '550e8400-e29b-41d4-a716-446655440056';
@@ -470,5 +474,41 @@ describe('IdentityProviderSystemService', () => {
     expect(status.instances).toHaveLength(202);
     expect(status.active.allFreshInstancesActive).toBe(false);
     expect((await db.select().from(platformIdentityProviders))[0]?.status).toBe('pending_restart');
+  });
+
+  it('returns every fresh instance plus bounded, stable recent stale diagnostics', async () => {
+    const target = await seedPendingTarget();
+    const local = getIdentityProviderProcessInstance();
+    commitArtifact(target);
+    await insertInstance({ activeIdentityRevision: target, instanceId: local.instanceId });
+    const remoteFreshId = `oidci_${(900).toString(16).padStart(48, '0')}`;
+    await insertInstance({ activeIdentityRevision: target, instanceId: remoteFreshId });
+    const staleIds: string[] = [];
+    for (let index = 0; index < IDENTITY_PROVIDER_RECENT_STALE_DIAGNOSTIC_LIMIT + 2; index += 1) {
+      const instanceId = `oidci_${(1000 + index).toString(16).padStart(48, '0')}`;
+      staleIds.push(instanceId);
+      await insertInstance({
+        activeIdentityRevision: target,
+        instanceId,
+        lastHeartbeat: new Date(now.getTime() - 100_000 - index * 1000),
+      });
+    }
+    const controller: RestartController = {
+      capability: () => ({ reason: null, supported: true }),
+      schedule: async () => undefined,
+    };
+    const status = await new IdentityProviderSystemService(
+      db,
+      controller,
+      () => now,
+      () => undefined,
+    ).getAuthSnapshotStatus();
+    expect(status.active.staleInstances).toBe(staleIds.length);
+    expect(
+      status.instances.filter(({ fresh }) => fresh).map(({ instanceId }) => instanceId),
+    ).toEqual(expect.arrayContaining([local.instanceId, remoteFreshId]));
+    expect(
+      status.instances.filter(({ fresh }) => !fresh).map(({ instanceId }) => instanceId),
+    ).toEqual(staleIds.slice(0, IDENTITY_PROVIDER_RECENT_STALE_DIAGNOSTIC_LIMIT));
   });
 });

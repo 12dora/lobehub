@@ -26,7 +26,11 @@ import {
   commitIdentityProviderStartupSnapshot,
   resetIdentityProviderStartupArtifactForTest,
 } from './startupArtifact';
-import { IdentityProviderSystemService, loadPublishedIdentityTarget } from './systemService';
+import {
+  IDENTITY_PROVIDER_RECENT_STALE_DIAGNOSTIC_LIMIT,
+  IdentityProviderSystemService,
+  loadPublishedIdentityTarget,
+} from './systemService';
 
 const runPostgres = process.env.TEST_SERVER_DB === '1';
 const db: LobeChatDatabase = await getTestDB();
@@ -202,6 +206,42 @@ describe.skipIf(!runPostgres)('identity provider convergence PostgreSQL races', 
           .where(eq(platformIdentityProviders.id, 'provider-work'))
       )[0]?.status,
     ).toBe('pending_restart');
+  });
+
+  it('keeps exact stale aggregates while bounding deterministic stale diagnostics', async () => {
+    await seed();
+    const connectionString = process.env.DATABASE_TEST_URL;
+    if (!connectionString) throw new Error('DATABASE_TEST_URL is required');
+    const pool = new Pool({ connectionString, max: 1 });
+    const staleCount = IDENTITY_PROVIDER_RECENT_STALE_DIAGNOSTIC_LIMIT + 5;
+    await pool.query(
+      `INSERT INTO platform_identity_provider_instances
+        (instance_id, startup_generation, startup_source, active_identity_revision, health,
+         loaded_at, started_at, last_heartbeat, hostname_hash)
+       SELECT 'oidci_' || lpad(to_hex(i), 48, '0'), 'generation', 'database', $1, 'healthy',
+              clock_timestamp() - interval '3 minutes',
+              clock_timestamp() - interval '4 minutes',
+              clock_timestamp() - interval '2 minutes' - i * interval '1 second', $2
+         FROM generate_series(1, $3::int) AS i`,
+      ['a'.repeat(64), 'f'.repeat(64), staleCount],
+    );
+    await pool.end();
+    const status = await new IdentityProviderSystemService(
+      db,
+      controller,
+      () => now,
+      () => undefined,
+    ).getAuthSnapshotStatus();
+    expect(status.active.staleInstances).toBe(staleCount);
+    expect(status.instances.filter(({ fresh }) => fresh)).toHaveLength(1);
+    expect(
+      status.instances.filter(({ fresh }) => !fresh).map(({ instanceId }) => instanceId),
+    ).toEqual(
+      Array.from(
+        { length: IDENTITY_PROVIDER_RECENT_STALE_DIAGNOSTIC_LIMIT },
+        (_, index) => `oidci_${(index + 1).toString(16).padStart(48, '0')}`,
+      ),
+    );
   });
 
   it('demotes an active DB provider when a matching environment provider becomes authoritative', async () => {
