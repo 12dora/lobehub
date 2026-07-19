@@ -1,14 +1,11 @@
-import { timingSafeEqual } from 'node:crypto';
-
 import {
-  OIDC_ALLOWED_ID_TOKEN_SIGNING_ALGORITHMS,
   PLATFORM_IDENTITY_PROVIDER_PREVIEW_CLAIMS,
   type PlatformIdentityProviderClaimMapping,
   type PlatformIdentityProviderClaimPreview,
   type PlatformOidcDiscoveryMetadata,
 } from '@lobechat/types';
 import { and, eq } from 'drizzle-orm';
-import { decodeProtectedHeader, importJWK, type JWK, type JWTPayload, jwtVerify } from 'jose';
+import type { JWTPayload } from 'jose';
 import { z } from 'zod';
 
 import { PlatformIdentityProviderModel } from '@/database/models/platform';
@@ -19,17 +16,12 @@ import type { SafeOutboundHttpClient } from '../../security/outboundHttp';
 import type { PlatformSecretService } from '../../security/secret';
 import { type CreatePlatformAuditLogParams, PlatformAuditService } from '../platformAudit';
 import type { IdentityProviderDiscoveryValidator } from './discoveryValidator';
+import { verifyPlatformOidcIdToken } from './idTokenVerifier';
 import { IdentityProviderSecretStore } from './secretStore';
-import {
-  hashIdentityProviderTestValue,
-  IdentityProviderTestAttemptStore,
-} from './testAttemptStore';
+import { IdentityProviderTestAttemptStore } from './testAttemptStore';
 
 const TOKEN_TIMEOUT_MS = 5000;
 const TOKEN_MAX_BYTES = 64 * 1024;
-const ID_TOKEN_MAX_AGE_SECONDS = 10 * 60;
-const ID_TOKEN_MAX_LIFETIME_SECONDS = 60 * 60;
-const ID_TOKEN_CLOCK_TOLERANCE_SECONDS = 60;
 
 type AuditAppender = (
   db: LobeChatDatabase | Transaction,
@@ -47,8 +39,6 @@ const tokenResponseSchema = z
     token_type: z.string().max(64).optional(),
   })
   .passthrough();
-
-const jwksSchema = z.object({ keys: z.array(z.record(z.string(), z.unknown())).min(1).max(64) });
 
 const safeJson = async (response: Awaited<ReturnType<SafeOutboundHttpClient['fetch']>>) => {
   const contentType = response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase();
@@ -102,15 +92,6 @@ export const summarizeIdentityProviderClaimPreview = (
   return { claims, issues: preview.issues, valid: preview.valid };
 };
 
-const assertNonce = (payload: JWTPayload, expectedHash: string) => {
-  if (typeof payload.nonce !== 'string') throw new Error('OIDC_TEST_NONCE_INVALID');
-  const actual = Buffer.from(hashIdentityProviderTestValue(payload.nonce), 'hex');
-  const expected = Buffer.from(expectedHash, 'hex');
-  if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) {
-    throw new Error('OIDC_TEST_NONCE_INVALID');
-  }
-};
-
 const failureCategory = (error: unknown): string => {
   if (!(error instanceof Error)) return 'oidc_test_failed';
   if (error.message.includes('NOT_FOUND')) return 'not_found';
@@ -150,70 +131,17 @@ export const verifyIdentityProviderIdToken = async (input: {
   outbound: SafeOutboundHttpClient;
 }): Promise<JWTPayload> => {
   try {
-    const header = decodeProtectedHeader(input.idToken);
-    if (
-      !header.alg ||
-      typeof header.kid !== 'string' ||
-      !header.kid ||
-      !OIDC_ALLOWED_ID_TOKEN_SIGNING_ALGORITHMS.includes(
-        header.alg as (typeof OIDC_ALLOWED_ID_TOKEN_SIGNING_ALGORITHMS)[number],
-      ) ||
-      !input.metadata.idTokenSigningAlgValuesSupported.includes(header.alg)
-    ) {
-      throw new Error('OIDC_TEST_ID_TOKEN_INVALID');
-    }
-    const jwks = jwksSchema.parse(
-      await safeJson(
-        await input.outbound.fetch(input.metadata.jwksUri, {
-          headers: { Accept: 'application/json' },
-          maxRedirects: 0,
-          maxResponseBytes: TOKEN_MAX_BYTES,
-          method: 'GET',
-          timeoutMs: TOKEN_TIMEOUT_MS,
-        }),
-      ),
-    );
-    const kidMatches = jwks.keys.filter((key) => key.kid === header.kid);
-    if (kidMatches.length !== 1) throw new Error('OIDC_TEST_ID_TOKEN_INVALID');
-    const candidate = kidMatches[0]!;
-    if (candidate.alg !== undefined && candidate.alg !== header.alg) {
-      throw new Error('OIDC_TEST_ID_TOKEN_INVALID');
-    }
-    const key = await importJWK(candidate as JWK, header.alg);
-    const { payload } = await jwtVerify(input.idToken, key, {
-      algorithms: [header.alg],
-      audience: input.clientId,
-      clockTolerance: ID_TOKEN_CLOCK_TOLERANCE_SECONDS,
-      issuer: input.metadata.issuer,
+    return await verifyPlatformOidcIdToken({
+      clientId: input.clientId,
+      idToken: input.idToken,
+      metadata: input.metadata,
+      nonce: { expectedHash: input.nonceHash, mode: 'required' },
+      outbound: input.outbound,
     });
-    const now = Math.floor(Date.now() / 1000);
-    if (
-      !Number.isInteger(payload.iat) ||
-      !Number.isInteger(payload.exp) ||
-      payload.iat! > now + ID_TOKEN_CLOCK_TOLERANCE_SECONDS ||
-      now - payload.iat! > ID_TOKEN_MAX_AGE_SECONDS ||
-      payload.exp! <= payload.iat! ||
-      payload.exp! - payload.iat! > ID_TOKEN_MAX_LIFETIME_SECONDS
-    ) {
-      throw new Error('OIDC_TEST_ID_TOKEN_INVALID');
-    }
-    const audiences = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
-    if (audiences.some((audience) => typeof audience !== 'string') || audiences.length === 0) {
-      throw new Error('OIDC_TEST_ID_TOKEN_INVALID');
-    }
-    if (
-      (payload.azp !== undefined && payload.azp !== input.clientId) ||
-      (audiences.length > 1 && payload.azp !== input.clientId)
-    ) {
-      throw new Error('OIDC_TEST_ID_TOKEN_INVALID');
-    }
-    assertNonce(payload, input.nonceHash);
-    if (typeof payload.sub !== 'string' || !payload.sub) {
-      throw new Error('OIDC_TEST_ID_TOKEN_INVALID');
-    }
-    return payload;
   } catch (error) {
-    if (error instanceof Error && error.message === 'OIDC_TEST_NONCE_INVALID') throw error;
+    if (error instanceof Error && error.message === 'PLATFORM_OIDC_NONCE_INVALID') {
+      throw new Error('OIDC_TEST_NONCE_INVALID', { cause: error });
+    }
     throw new Error('OIDC_TEST_ID_TOKEN_INVALID', { cause: error });
   }
 };
