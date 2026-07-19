@@ -1,9 +1,10 @@
 // @vitest-environment node
 import { GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE } from '@lobechat/types';
 import { eq } from 'drizzle-orm';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
+import { checksumPayload } from '@/database/models/platform';
 import {
   platformAuditLogs,
   platformIdentityProviders,
@@ -20,6 +21,7 @@ import {
   IdentityProviderPublicationService,
   parsePublishedIdentityProviderPayload,
 } from './publicationService';
+import { IdentityProviderSecretStore } from './secretStore';
 import { IdentityProviderTestAttemptStore } from './testAttemptStore';
 
 const db: LobeChatDatabase = await getTestDB();
@@ -89,7 +91,10 @@ const cleanup = async () => {
 };
 
 beforeEach(cleanup);
-afterEach(cleanup);
+afterEach(async () => {
+  vi.useRealTimers();
+  await cleanup();
+});
 
 const createDraft = () =>
   admin.create('admin-1', {
@@ -152,10 +157,22 @@ describe('IdentityProviderPublicationService', () => {
       providerKey: 'work',
       scopes: [...GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE.scopes],
       secretFingerprint: 'a'.repeat(64),
+      secretUpdatedAt: '2026-07-19T00:00:00.000Z',
       type: 'generic_oidc',
       usePkce: true,
     };
     expect(parsePublishedIdentityProviderPayload(valid)).toEqual(valid);
+    const { secretUpdatedAt: _secretUpdatedAt, ...legacy } = valid;
+    expect(parsePublishedIdentityProviderPayload(legacy)).toEqual({
+      ...legacy,
+      secretUpdatedAt: undefined,
+    });
+    expect(
+      parsePublishedIdentityProviderPayload({
+        ...valid,
+        secretUpdatedAt: '2026-07-19T00:00:00Z',
+      }),
+    ).toBeNull();
     expect(
       parsePublishedIdentityProviderPayload({ ...valid, domainAllowlist: ['example.test', 42] }),
     ).toBeNull();
@@ -200,6 +217,141 @@ describe('IdentityProviderPublicationService', () => {
     expect(serialized).not.toContain('fake-client-secret-for-test');
     expect(serialized).not.toContain('kms://');
     expect(serialized).not.toContain('ciphertext');
+  });
+
+  it('replays publish and rollback with the immutable timestamp after storing the same secret again', async () => {
+    const draft = await createDraft();
+    const [initialSecret] = await db
+      .select()
+      .from(platformIdentityProviderSecrets)
+      .where(eq(platformIdentityProviderSecrets.providerId, draft.id));
+    const [initialProvider] = await db
+      .select()
+      .from(platformIdentityProviders)
+      .where(eq(platformIdentityProviders.id, draft.id));
+    const secondUpdatedAt = new Date(initialProvider.secretUpdatedAt!.getTime() + 5000);
+    vi.useFakeTimers();
+    vi.setSystemTime(secondUpdatedAt);
+    const stored = await new IdentityProviderSecretStore(db, secrets).persistClientSecret({
+      expectedRevision: draft.revision,
+      providerId: draft.id,
+      value: 'fake-client-secret-for-test',
+    });
+    vi.useRealTimers();
+    const [sameSecret] = await db
+      .select()
+      .from(platformIdentityProviderSecrets)
+      .where(eq(platformIdentityProviderSecrets.providerId, draft.id));
+    const [updatedProvider] = await db
+      .select()
+      .from(platformIdentityProviders)
+      .where(eq(platformIdentityProviders.id, draft.id));
+    expect(sameSecret.id).toBe(initialSecret.id);
+    expect(sameSecret.createdAt).toEqual(initialSecret.createdAt);
+    expect(updatedProvider.secretUpdatedAt).toEqual(secondUpdatedAt);
+    expect(stored.updatedAt).toEqual(secondUpdatedAt);
+
+    await recordSuccessfulTest(draft.id);
+    const publishInput = {
+      expectedRevision: stored.revision,
+      id: draft.id,
+      reason: 'publish same-secret timestamp',
+      requestId: requestId(52),
+    };
+    const published = await publication.publish('admin-1', publishInput);
+    const [revision] = await db.select().from(platformResourceRevisions);
+    expect((revision.payload as Record<string, unknown>).secretUpdatedAt).toBe(
+      secondUpdatedAt.toISOString(),
+    );
+    await tamperTerminalResponse(publishInput.requestId, (response) => {
+      const { secretUpdatedAt, ...legacy } = response;
+      return {
+        ...legacy,
+        fingerprint: sameSecret.fingerprint,
+        fingerprintUpdatedAt: secretUpdatedAt,
+      };
+    });
+    await db
+      .update(platformIdentityProviders)
+      .set({ displayName: 'Mutable after publish' })
+      .where(eq(platformIdentityProviders.id, draft.id));
+    const publishReplay = await publication.publish('admin-1', publishInput);
+    expect(publishReplay).toEqual(published);
+    expect(publishReplay.secret.updatedAt).toEqual(secondUpdatedAt);
+
+    const rollbackInput = {
+      expectedRevision: published.revision,
+      id: draft.id,
+      reason: 'rollback same-secret timestamp',
+      requestId: requestId(53),
+      targetRevision: published.revision,
+    };
+    const restored = await publication.rollback('admin-1', rollbackInput);
+    expect(restored.secret.updatedAt).toEqual(secondUpdatedAt);
+    await tamperTerminalResponse(rollbackInput.requestId, (response) => {
+      const { secretUpdatedAt, ...legacy } = response;
+      return {
+        ...legacy,
+        fingerprint: sameSecret.fingerprint,
+        fingerprintUpdatedAt: secretUpdatedAt,
+      };
+    });
+    await db
+      .update(platformIdentityProviders)
+      .set({ displayName: 'Mutable after rollback', revision: restored.revision + 1 })
+      .where(eq(platformIdentityProviders.id, draft.id));
+    const rollbackReplay = await publication.rollback('admin-1', rollbackInput);
+    expect(rollbackReplay).toEqual(restored);
+    expect(rollbackReplay.secret.updatedAt).toEqual(secondUpdatedAt);
+  });
+
+  it('rolls back and replays a legacy revision using private secret creation time', async () => {
+    const draft = await createDraft();
+    await recordSuccessfulTest(draft.id);
+    const published = await publication.publish('admin-1', {
+      expectedRevision: draft.revision,
+      id: draft.id,
+      reason: 'publish before legacy upgrade',
+      requestId: requestId(54),
+    });
+    const [revision] = await db.select().from(platformResourceRevisions);
+    const { secretUpdatedAt: _secretUpdatedAt, ...legacyPayload } = revision.payload as Record<
+      string,
+      unknown
+    >;
+    await db
+      .update(platformResourceRevisions)
+      .set({ checksum: checksumPayload(legacyPayload), payload: legacyPayload })
+      .where(eq(platformResourceRevisions.id, revision.id));
+    const [secret] = await db
+      .select()
+      .from(platformIdentityProviderSecrets)
+      .where(eq(platformIdentityProviderSecrets.providerId, draft.id));
+    const input = {
+      expectedRevision: published.revision,
+      id: draft.id,
+      reason: 'rollback legacy revision',
+      requestId: requestId(55),
+      targetRevision: published.revision,
+    };
+    const restored = await publication.rollback('admin-1', input);
+    expect(restored.secret.updatedAt).toEqual(secret.createdAt);
+    await tamperTerminalResponse(input.requestId, (response) => {
+      const { secretUpdatedAt, ...legacy } = response;
+      return {
+        ...legacy,
+        fingerprint: secret.fingerprint,
+        fingerprintUpdatedAt: secretUpdatedAt,
+      };
+    });
+    await db
+      .update(platformIdentityProviders)
+      .set({ displayName: 'Mutable legacy rollback', revision: restored.revision + 1 })
+      .where(eq(platformIdentityProviders.id, draft.id));
+
+    const replay = await publication.rollback('admin-1', input);
+    expect(replay).toEqual(restored);
+    expect(replay.secret.updatedAt).toEqual(secret.createdAt);
   });
 
   it('returns one exact result for concurrent requests with a single revision and terminal', async () => {

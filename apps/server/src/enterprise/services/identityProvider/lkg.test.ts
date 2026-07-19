@@ -40,7 +40,11 @@ const createPath = async () => {
 };
 
 const payload = (createdAt = new Date().toISOString(), revision = 3) => {
-  const published = { providerKey: 'corp', secretFingerprint: 'a'.repeat(64) };
+  const published = {
+    providerKey: 'corp',
+    secretFingerprint: 'a'.repeat(64),
+    secretUpdatedAt: '2026-07-19T00:00:00.000Z',
+  };
   const generation = `2026-01-01T00:00:00.000Z:${revision}`;
   const providers = [
     {

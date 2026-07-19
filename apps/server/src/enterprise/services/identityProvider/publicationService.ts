@@ -40,6 +40,7 @@ export interface PublishedIdentityProviderPayload {
   providerKey: string;
   scopes: string[];
   secretFingerprint: string;
+  secretUpdatedAt?: string;
   type: PlatformIdentityProviderType;
   usePkce: true;
 }
@@ -94,6 +95,7 @@ export const parsePublishedIdentityProviderPayload = (
     'providerKey',
     'scopes',
     'secretFingerprint',
+    'secretUpdatedAt',
     'type',
     'usePkce',
   ]);
@@ -148,9 +150,17 @@ export const parsePublishedIdentityProviderPayload = (
     !/^[a-z0-9][a-z0-9._-]{0,127}$/.test(row.providerKey) ||
     typeof row.secretFingerprint !== 'string' ||
     !/^[a-f0-9]{64}$/.test(row.secretFingerprint) ||
+    (row.secretUpdatedAt !== undefined &&
+      (typeof row.secretUpdatedAt !== 'string' ||
+        Number.isNaN(Date.parse(row.secretUpdatedAt)) ||
+        new Date(row.secretUpdatedAt).toISOString() !== row.secretUpdatedAt)) ||
     (row.type !== 'authentik' && row.type !== 'generic_oidc') ||
     row.usePkce !== true ||
-    containsEnterpriseSecretMaterial({ ...row, secretFingerprint: undefined })
+    containsEnterpriseSecretMaterial({
+      ...row,
+      secretFingerprint: undefined,
+      secretUpdatedAt: undefined,
+    })
   ) {
     return null;
   }
@@ -183,6 +193,7 @@ export const parsePublishedIdentityProviderPayload = (
     providerKey: row.providerKey,
     scopes,
     secretFingerprint: row.secretFingerprint,
+    secretUpdatedAt: row.secretUpdatedAt as string | undefined,
     type: row.type,
     usePkce: true,
   };
@@ -190,13 +201,14 @@ export const parsePublishedIdentityProviderPayload = (
 
 const toPublishedPayload = (
   draft: PlatformIdentityProviderInternalDraft,
-): PublishedIdentityProviderPayload => {
+): PublishedIdentityProviderPayload & { secretUpdatedAt: string } => {
   if (
     draft.migrationRequired ||
     !draft.issuer ||
     !draft.clientId ||
     !draft.secret.configured ||
     !draft.secret.fingerprint ||
+    !draft.secret.updatedAt ||
     draft.usePkce !== true
   ) {
     throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_INVALID_SNAPSHOT');
@@ -215,14 +227,15 @@ const toPublishedPayload = (
     providerKey: draft.providerKey,
     scopes: draft.scopes,
     secretFingerprint: draft.secret.fingerprint,
+    secretUpdatedAt: draft.secret.updatedAt.toISOString(),
     type: draft.type,
     usePkce: true,
   };
   const parsed = parsePublishedIdentityProviderPayload(payload);
-  if (!parsed) {
+  if (!parsed || typeof parsed.secretUpdatedAt !== 'string') {
     throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_INVALID_SNAPSHOT');
   }
-  return parsed;
+  return { ...parsed, secretUpdatedAt: parsed.secretUpdatedAt };
 };
 
 const assertReason = (reason: string): string => {
@@ -346,6 +359,7 @@ const reconstructIdempotentResponse = async (
   const payload = parsePublishedIdentityProviderPayload(source?.payload);
   if (
     !payload ||
+    (isPublish && typeof payload.secretUpdatedAt !== 'string') ||
     source.checksum !== checksumPayload(source.payload) ||
     source.secretFingerprint !== payload.secretFingerprint ||
     (legacyFingerprint !== undefined && legacyFingerprint !== payload.secretFingerprint)
@@ -401,7 +415,10 @@ const reconstructIdempotentResponse = async (
     secret: {
       configured: true,
       fingerprint: secret.fingerprint,
-      updatedAt: secret.createdAt,
+      updatedAt:
+        typeof payload.secretUpdatedAt === 'string'
+          ? new Date(payload.secretUpdatedAt)
+          : secret.createdAt,
     },
     status: isPublish ? 'pending_restart' : 'draft',
     type: payload.type,
@@ -864,10 +881,7 @@ export class IdentityProviderPublicationService {
         }
         const payload = toPublishedPayload(draft);
         const [secret] = await tx
-          .select({
-            createdAt: platformIdentityProviderSecrets.createdAt,
-            id: platformIdentityProviderSecrets.id,
-          })
+          .select({ id: platformIdentityProviderSecrets.id })
           .from(platformIdentityProviderSecrets)
           .where(
             and(
@@ -950,7 +964,6 @@ export class IdentityProviderPublicationService {
           activationRevision: nextRevision,
           enabled: true,
           revision: nextRevision,
-          secret: { ...draft.secret, updatedAt: secret.createdAt },
           status: 'pending_restart',
         };
         return appendSuccessTerminal(tx, request, fence, {
@@ -1094,6 +1107,10 @@ export class IdentityProviderPublicationService {
             'PLATFORM_IDENTITY_PROVIDER_SECRET_UNAVAILABLE',
           );
         }
+        const canonicalSecretUpdatedAt =
+          typeof payload.secretUpdatedAt === 'string'
+            ? new Date(payload.secretUpdatedAt)
+            : secret.createdAt;
         const nextRevision = draft.revision + 1;
         const now = new Date();
         const [updated] = await tx
@@ -1115,7 +1132,7 @@ export class IdentityProviderPublicationService {
             scopes: payload.scopes,
             secretFingerprint: payload.secretFingerprint,
             secretRef: secret.ref,
-            secretUpdatedAt: secret.createdAt,
+            secretUpdatedAt: canonicalSecretUpdatedAt,
             status: 'draft',
             type: payload.type,
             updatedAt: now,
@@ -1149,7 +1166,7 @@ export class IdentityProviderPublicationService {
           secret: {
             configured: true,
             fingerprint: payload.secretFingerprint,
-            updatedAt: secret.createdAt,
+            updatedAt: canonicalSecretUpdatedAt,
           },
           status: 'draft',
           type: payload.type,
