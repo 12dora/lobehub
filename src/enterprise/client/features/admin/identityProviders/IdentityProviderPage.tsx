@@ -3,7 +3,7 @@
 import { Alert, Flexbox, Tag, Text } from '@lobehub/ui';
 import { Button, confirmModal, toast } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
-import { memo, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
@@ -13,6 +13,10 @@ import { adminIdentityProvidersService } from '@/enterprise/client/services/admi
 
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
 import { openReasonModal } from '../users/modals/openReasonModal';
+import {
+  type IdentityProviderRestartPhase,
+  resolveIdentityProviderRestartPhase,
+} from './controller';
 import IdentityProviderWizard from './IdentityProviderWizard';
 import {
   useAuthSnapshotStatus,
@@ -55,6 +59,10 @@ const styles = createStaticStyles(({ css }) => ({
     flex-direction: column;
     gap: 8px;
   `,
+  revision: css`
+    font-family: ${cssVar.fontFamilyCode};
+    overflow-wrap: anywhere;
+  `,
 }));
 
 const IdentityProviderPage = memo(() => {
@@ -68,17 +76,60 @@ const IdentityProviderPage = memo(() => {
   const canRestart = permissions.includes(PLATFORM_PERMISSIONS.OIDC_PUBLISH);
   const enabled = accessStatus === 'allowed' && canRead;
   const providers = useIdentityProviders(enabled);
+  const mutateProviders = providers.mutate;
   const callbacks = useIdentityProviderCallbacks(enabled);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
-  const [restartAccepted, setRestartAccepted] = useState(false);
+  const [editorDirty, setEditorDirty] = useState(false);
+  const [editorEpoch, setEditorEpoch] = useState(0);
+  const [restartPhase, setRestartPhase] = useState<IdentityProviderRestartPhase>('idle');
   const [restartError, setRestartError] = useState<string | null>(null);
   // This privileged query is never mounted for read-only identity administrators.
-  const runtime = useAuthSnapshotStatus(accessStatus === 'allowed' && canRestart, restartAccepted);
+  const runtime = useAuthSnapshotStatus(
+    accessStatus === 'allowed' && canRestart,
+    restartPhase === 'accepted',
+  );
   const selected = useMemo(
     () => providers.data?.items.find((item) => item.id === selectedId) ?? providers.data?.items[0],
     [providers.data?.items, selectedId],
   );
+
+  const refreshProviders = useCallback(() => mutateProviders(), [mutateProviders]);
+  const discardAndReload = useCallback(() => {
+    setEditorDirty(false);
+    setEditorEpoch((current) => current + 1);
+    void mutateProviders();
+  }, [mutateProviders]);
+  const changeEditor = useCallback(
+    (change: () => void) => {
+      if (!editorDirty) {
+        change();
+        return;
+      }
+      confirmModal({
+        cancelText: t('identityProviders.unsaved.stay'),
+        content: t('identityProviders.unsaved.description'),
+        okText: t('identityProviders.unsaved.discard'),
+        title: t('identityProviders.unsaved.title'),
+        onOk: () => {
+          setEditorDirty(false);
+          setEditorEpoch((current) => current + 1);
+          change();
+        },
+      });
+    },
+    [editorDirty, t],
+  );
+
+  useEffect(() => {
+    setRestartPhase((phase) =>
+      resolveIdentityProviderRestartPhase({
+        error: runtime.error,
+        phase,
+        status: runtime.data,
+      }),
+    );
+  }, [runtime.data, runtime.error]);
 
   const requestRestart = () => {
     if (!runtime.data?.pendingRestart || !runtime.data.restart.supported) return;
@@ -107,14 +158,13 @@ const IdentityProviderPage = memo(() => {
                 if (result.accepted) {
                   // The controller signals only after this committed response and a grace delay.
                   // A failed follow-up status fetch is a reconnect state, not a rejected restart.
-                  setRestartAccepted(true);
+                  setRestartPhase('accepted');
                   await runtime.mutate().catch(() => undefined);
                   toast.success(t('identityProviders.restart.accepted'));
                 }
               } catch (cause) {
-                setRestartAccepted(false);
-                const message = cause instanceof Error ? cause.message : String(cause);
-                setRestartError(message);
+                setRestartPhase('failed');
+                setRestartError(t('identityProviders.errors.generic'));
                 throw cause;
               }
             },
@@ -140,7 +190,14 @@ const IdentityProviderPage = memo(() => {
       actions={
         <Flexbox horizontal gap={8}>
           {canCreate ? (
-            <Button onClick={() => setCreating(true)}>
+            <Button
+              onClick={() =>
+                changeEditor(() => {
+                  setCreating(true);
+                  setSelectedId(null);
+                })
+              }
+            >
               {t('identityProviders.actions.create')}
             </Button>
           ) : null}
@@ -152,8 +209,34 @@ const IdentityProviderPage = memo(() => {
         </Flexbox>
       }
       banner={
-        restartAccepted && runtime.error ? (
+        restartPhase === 'accepted' ? (
           <Alert showIcon description={t('identityProviders.restart.reconnecting')} type="info" />
+        ) : restartPhase === 'activated' ? (
+          <Alert showIcon description={t('identityProviders.restart.activated')} type="success" />
+        ) : restartPhase === 'failed' ? (
+          <Alert
+            showIcon
+            description={t('identityProviders.restart.failed')}
+            type="error"
+            action={
+              <Button
+                size="small"
+                onClick={async () => {
+                  setRestartPhase('idle');
+                  const status = await runtime.mutate().catch(() => undefined);
+                  setRestartPhase(
+                    resolveIdentityProviderRestartPhase({
+                      error: status ? null : new Error('status unavailable'),
+                      phase: 'accepted',
+                      status,
+                    }),
+                  );
+                }}
+              >
+                {t('identityProviders.actions.retry')}
+              </Button>
+            }
+          />
         ) : runtime.error && canRestart ? (
           <Alert
             showIcon
@@ -175,12 +258,20 @@ const IdentityProviderPage = memo(() => {
             <Flexbox horizontal gap={8} justify="space-between">
               <Text strong>{t('identityProviders.runtime.title')}</Text>
               <Tag color={runtime.data.artifact.health === 'healthy' ? 'green' : 'orange'}>
-                {runtime.data.artifact.health}
+                {t(`identityProviders.values.health.${runtime.data.artifact.health}` as never)}
               </Tag>
             </Flexbox>
             <Text type="secondary">
-              {t('identityProviders.runtime.source', { source: runtime.data.artifact.source })} ·{' '}
-              {runtime.data.artifact.identityRevision?.slice(0, 12) ?? '—'}
+              {t('identityProviders.runtime.source', {
+                source: t(
+                  `identityProviders.values.source.${runtime.data.artifact.source}` as never,
+                ),
+              })}
+            </Text>
+            <Text className={styles.revision}>
+              {t('identityProviders.runtime.targetRevision', {
+                revision: runtime.data.targetIdentityRevision ?? '—',
+              })}
             </Text>
             <Text>
               {t('identityProviders.runtime.pending', {
@@ -195,7 +286,9 @@ const IdentityProviderPage = memo(() => {
                   key={provider.providerId}
                   type="warning"
                   description={t('identityProviders.runtime.environmentShadowed', {
-                    category: provider.blockedCategory,
+                    categoryLabel: t(
+                      `identityProviders.values.degraded.${provider.blockedCategory}` as never,
+                    ),
                     provider: provider.providerKey,
                   })}
                 />
@@ -208,7 +301,9 @@ const IdentityProviderPage = memo(() => {
                 showIcon
                 type="warning"
                 description={t('identityProviders.runtime.degraded', {
-                  category: runtime.data.artifact.degradedCategory ?? 'unknown',
+                  category: t(
+                    `identityProviders.values.degraded.${runtime.data.artifact.degradedCategory ?? 'unknown'}` as never,
+                  ),
                 })}
               />
             ) : null}
@@ -217,18 +312,32 @@ const IdentityProviderPage = memo(() => {
                 showIcon
                 type="info"
                 description={t('identityProviders.restart.unsupported', {
-                  reason: runtime.data.restart.reason,
+                  reason: t(
+                    `identityProviders.values.restartReason.${runtime.data.restart.reason ?? 'unknown'}` as never,
+                  ),
                 })}
               />
             ) : null}
             {runtime.data.instances.map((instance) => (
               <div className={styles.instance} key={instance.instanceId}>
-                <Text>{instance.instanceId.slice(0, 16)}…</Text>
-                <Tag color={instance.fresh ? 'green' : 'default'}>
-                  {instance.fresh
-                    ? t('identityProviders.runtime.fresh')
-                    : t('identityProviders.runtime.stale')}
-                </Tag>
+                <Flexbox gap={2}>
+                  <Text>{instance.instanceId.slice(0, 16)}…</Text>
+                  <Text className={styles.revision} type="secondary">
+                    {t('identityProviders.runtime.instanceRevision', {
+                      revision: instance.activeIdentityRevision ?? '—',
+                    })}
+                  </Text>
+                </Flexbox>
+                <Flexbox horizontal gap={6}>
+                  <Tag>
+                    {t(`identityProviders.values.source.${instance.startupSource}` as never)}
+                  </Tag>
+                  <Tag color={instance.fresh ? 'green' : 'default'}>
+                    {instance.fresh
+                      ? t('identityProviders.runtime.fresh')
+                      : t('identityProviders.runtime.stale')}
+                  </Tag>
+                </Flexbox>
               </div>
             ))}
           </div>
@@ -259,14 +368,18 @@ const IdentityProviderPage = memo(() => {
                   className={styles.card}
                   key={provider.id}
                   type="button"
-                  onClick={() => {
-                    setCreating(false);
-                    setSelectedId(provider.id);
-                  }}
+                  onClick={() =>
+                    changeEditor(() => {
+                      setCreating(false);
+                      setSelectedId(provider.id);
+                    })
+                  }
                 >
                   <Flexbox horizontal justify="space-between">
                     <Text strong>{provider.displayName}</Text>
-                    <Tag>{provider.status}</Tag>
+                    <Tag>
+                      {t(`identityProviders.values.providerStatus.${provider.status}` as never)}
+                    </Tag>
                   </Flexbox>
                   <Text type="secondary">
                     {provider.providerKey} · rev {provider.revision}
@@ -276,20 +389,37 @@ const IdentityProviderPage = memo(() => {
             )}
           </div>
           {creating || selected ? (
-            <IdentityProviderWizard
-              authMethod={authMethod ?? null}
-              callbacks={callbacks.data}
-              canCreate={canCreate}
-              canPublish={canPublish}
-              canTest={canTest}
-              canUpdate={canUpdate}
-              key={creating ? 'new' : `${selected?.id}:${selected?.revision}`}
-              provider={creating ? undefined : selected}
-              onSaved={async () => {
-                setCreating(false);
-                await providers.mutate();
-              }}
-            />
+            <Flexbox gap={8}>
+              {callbacks.error ? (
+                <Alert
+                  showIcon
+                  description={t('identityProviders.callback.loadError')}
+                  type="error"
+                  action={
+                    <Button size="small" onClick={() => void callbacks.mutate()}>
+                      {t('identityProviders.actions.retry')}
+                    </Button>
+                  }
+                />
+              ) : null}
+              <IdentityProviderWizard
+                authMethod={authMethod ?? null}
+                callbacks={callbacks.data}
+                canCreate={canCreate}
+                canPublish={canPublish}
+                canTest={canTest}
+                canUpdate={canUpdate}
+                key={`${creating ? 'new' : selected?.id}:${editorEpoch}`}
+                provider={creating ? undefined : selected}
+                onDirtyChange={setEditorDirty}
+                onDiscard={discardAndReload}
+                onRefresh={refreshProviders}
+                onSaved={async () => {
+                  setCreating(false);
+                  await mutateProviders();
+                }}
+              />
+            </Flexbox>
           ) : null}
         </div>
       )}
