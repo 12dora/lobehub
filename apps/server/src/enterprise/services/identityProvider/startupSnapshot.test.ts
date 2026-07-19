@@ -1,16 +1,20 @@
 // @vitest-environment node
 import { createHash } from 'node:crypto';
-import { mkdtemp, realpath, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { Client, Pool } from 'pg';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
 import { checksumPayload } from '@/database/models/platform';
+import {
+  acquireIdentityProviderPublishedRevisionLock,
+  withIdentityProviderPublishedRevisionLock,
+} from '@/database/models/platform/identityProviderPublishedRevisionLock';
 import {
   platformIdentityProviders,
   platformIdentityProviderSecrets,
@@ -26,15 +30,32 @@ import {
 } from './lkg';
 import type { PublishedIdentityProviderPayload } from './publicationService';
 import {
-  acquireIdentityProviderLkgAdvisoryLock,
   loadIdentityProviderStartupSnapshot,
   resetIdentityProviderStartupSnapshotForTest,
-  withIdentityProviderLkgAdvisoryLock,
 } from './startupSnapshot';
 
 const db: LobeChatDatabase = await getTestDB();
 const masterKey = Buffer.alloc(32, 88).toString('base64');
 const directories: string[] = [];
+
+const discovery = {
+  discover: async (issuer: string) => ({
+    authorizationEndpoint: 'https://login.example.test/authorize',
+    codeChallengeMethodsSupported: ['S256'],
+    idTokenSigningAlgValuesSupported: ['RS256'],
+    issuer,
+    jwksUri: 'https://login.example.test/jwks',
+    responseTypesSupported: ['code'],
+    scopesSupported: ['openid', 'profile', 'email', 'dingtalk'],
+    subjectTypesSupported: ['public'],
+    tokenEndpoint: 'https://login.example.test/token',
+    tokenEndpointAuthMethodsSupported: ['client_secret_basic'],
+    userinfoEndpoint: 'https://login.example.test/userinfo',
+  }),
+};
+
+const loadSnapshot = (options: Parameters<typeof loadIdentityProviderStartupSnapshot>[0] = {}) =>
+  loadIdentityProviderStartupSnapshot({ ...options, discovery });
 
 const baseEnv = async () => {
   const directory = await mkdtemp(path.join(await realpath(tmpdir()), 'aihub-oidc-startup-'));
@@ -124,7 +145,33 @@ const seedPublished = async (env: Record<string, string | undefined>, providerKe
     secretFingerprint,
     status: 'published',
   });
-  return { clientSecret, provider };
+  return { clientSecret, provider, published };
+};
+
+const publishRevision = async (input: {
+  issuer?: string;
+  providerId: string;
+  providerKey?: string;
+  revision: number;
+  secretFingerprint: string;
+}) => {
+  const published = {
+    ...payload(input.providerKey),
+    issuer: input.issuer ?? 'https://login.example.test',
+    secretFingerprint: input.secretFingerprint,
+    secretUpdatedAt: new Date().toISOString(),
+  };
+  await db.insert(platformResourceRevisions).values({
+    checksum: checksumPayload(published),
+    payload: published,
+    publishedAt: new Date(),
+    resourceId: input.providerId,
+    resourceType: 'oidc',
+    revision: input.revision,
+    secretFingerprint: input.secretFingerprint,
+    status: 'published',
+  });
+  return published;
 };
 
 const cleanup = async () => {
@@ -154,11 +201,11 @@ describe('identity provider startup snapshot', () => {
         await ownerClient.connect();
         await ownerClient.query('BEGIN');
         const ownerDb = drizzle(ownerClient) as unknown as LobeChatDatabase;
-        await acquireIdentityProviderLkgAdvisoryLock(ownerDb);
+        await acquireIdentityProviderPublishedRevisionLock(ownerDb);
         const ownerPid = Number(
           (await ownerClient.query('SELECT pg_backend_pid() AS pid')).rows[0].pid,
         );
-        const waiter = withIdentityProviderLkgAdvisoryLock(waiterDb, async () => {
+        const waiter = withIdentityProviderPublishedRevisionLock(waiterDb, async () => {
           waiterEntered = true;
           return 'acquired';
         });
@@ -175,7 +222,7 @@ describe('identity provider startup snapshot', () => {
   );
 
   it('has a flag-off zero DB/LKG path', async () => {
-    const snapshot = await loadIdentityProviderStartupSnapshot({
+    const snapshot = await loadSnapshot({
       cache: false,
       db: new Proxy({} as LobeChatDatabase, {
         get: () => {
@@ -195,8 +242,8 @@ describe('identity provider startup snapshot', () => {
   it('loads a complete DB snapshot once without fabricating global multi-instance activation', async () => {
     const env = await baseEnv();
     const { clientSecret, provider } = await seedPublished(env);
-    const first = await loadIdentityProviderStartupSnapshot({ db, env });
-    const second = await loadIdentityProviderStartupSnapshot({ db, env });
+    const first = await loadSnapshot({ db, env });
+    const second = await loadSnapshot({ db, env });
 
     expect(second).toBe(first);
     expect(first).toMatchObject({ health: 'healthy', providerIds: ['work'], source: 'database' });
@@ -222,9 +269,21 @@ describe('identity provider startup snapshot', () => {
       .set({ checksum: checksumPayload(legacyPayload), payload: legacyPayload })
       .where(eq(platformResourceRevisions.id, revision.id));
 
-    const database = await loadIdentityProviderStartupSnapshot({ cache: false, db, env });
+    const discover = vi.fn(discovery.discover);
+    const database = await loadIdentityProviderStartupSnapshot({
+      cache: false,
+      db,
+      discovery: { discover },
+      env,
+    });
     expect(database).toMatchObject({ health: 'healthy', source: 'database' });
     expect(database.databaseProviders[0]?.clientSecret).toBe(clientSecret);
+    expect(database.databaseProviders[0]?.oidcMetadata.issuer).toBe('https://login.example.test');
+    const persistedLkg = await readIdentityProviderLkg({
+      env,
+      secrets: PlatformSecretService.tryFromEnv(env)!,
+    });
+    expect(persistedLkg?.providers[0]?.payload).not.toHaveProperty('oidcMetadata');
     const unavailableDb = new Proxy({} as LobeChatDatabase, {
       get: () => {
         throw new Error('DATABASE_UNAVAILABLE');
@@ -233,10 +292,136 @@ describe('identity provider startup snapshot', () => {
     const lkg = await loadIdentityProviderStartupSnapshot({
       cache: false,
       db: unavailableDb,
+      discovery: { discover },
       env,
     });
     expect(lkg).toMatchObject({ health: 'degraded', source: 'lkg' });
     expect(lkg.databaseProviders[0]?.clientSecret).toBe(clientSecret);
+    expect(discover).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails closed to environment break-glass when DB discovery fails without a prior LKG', async () => {
+    const env = { ...(await baseEnv()), AUTH_SSO_PROVIDERS: 'google' };
+    await seedPublished(env);
+    const discover = vi.fn(async () => {
+      throw new Error('OIDC_DISCOVERY_UNAVAILABLE');
+    });
+
+    const snapshot = await loadIdentityProviderStartupSnapshot({
+      cache: false,
+      db,
+      discovery: { discover },
+      env,
+    });
+
+    expect(snapshot).toMatchObject({
+      databaseProviders: [],
+      health: 'degraded',
+      providerIds: ['google'],
+      source: 'break_glass',
+    });
+    expect(discover).toHaveBeenCalledOnce();
+  });
+
+  it('preserves a good LKG when a newer revision has no matching secret', async () => {
+    const env = await baseEnv();
+    const { provider } = await seedPublished(env);
+    const good = await loadSnapshot({ cache: false, db, env });
+    const lkgPath = env.PLATFORM_OIDC_LKG_PATH!;
+    const bytesBefore = await readFile(lkgPath);
+    const identityBefore = (await readIdentityProviderLkg({
+      env,
+      secrets: PlatformSecretService.tryFromEnv(env)!,
+    }))!.identityRevision;
+    await publishRevision({
+      providerId: provider.id,
+      revision: 3,
+      secretFingerprint: 'f'.repeat(64),
+    });
+
+    const fallback = await loadSnapshot({ cache: false, db, env });
+
+    expect(good.source).toBe('database');
+    expect(fallback).toMatchObject({ source: 'lkg' });
+    expect(await readFile(lkgPath)).toEqual(bytesBefore);
+    expect(
+      (await readIdentityProviderLkg({
+        env,
+        secrets: PlatformSecretService.tryFromEnv(env)!,
+      }))!.identityRevision,
+    ).toBe(identityBefore);
+  });
+
+  it('preserves a good LKG when a newer revision fails secure discovery', async () => {
+    const env = await baseEnv();
+    const { provider, published } = await seedPublished(env);
+    await loadSnapshot({ cache: false, db, env });
+    const lkgPath = env.PLATFORM_OIDC_LKG_PATH!;
+    const bytesBefore = await readFile(lkgPath);
+    const identityBefore = (await readIdentityProviderLkg({
+      env,
+      secrets: PlatformSecretService.tryFromEnv(env)!,
+    }))!.identityRevision;
+    await publishRevision({
+      issuer: 'https://unavailable.example.test',
+      providerId: provider.id,
+      revision: 3,
+      secretFingerprint: published.secretFingerprint,
+    });
+    const discover = vi.fn(async (issuer: string) => {
+      if (issuer === 'https://unavailable.example.test') {
+        throw new Error('OIDC_DISCOVERY_UNAVAILABLE');
+      }
+      return discovery.discover(issuer);
+    });
+
+    const fallback = await loadIdentityProviderStartupSnapshot({
+      cache: false,
+      db,
+      discovery: { discover },
+      env,
+    });
+
+    expect(fallback).toMatchObject({ source: 'lkg' });
+    expect(discover).toHaveBeenCalledTimes(2);
+    expect(await readFile(lkgPath)).toEqual(bytesBefore);
+    expect(
+      (await readIdentityProviderLkg({
+        env,
+        secrets: PlatformSecretService.tryFromEnv(env)!,
+      }))!.identityRevision,
+    ).toBe(identityBefore);
+  });
+
+  it('never writes a stale candidate when publication changes during validation', async () => {
+    const env = await baseEnv();
+    const { provider, published } = await seedPublished(env);
+    await loadSnapshot({ cache: false, db, env });
+    const lkgPath = env.PLATFORM_OIDC_LKG_PATH!;
+    const bytesBefore = await readFile(lkgPath);
+    let revision = 2;
+    const discover = vi.fn(async (issuer: string) => {
+      if (revision < 4) {
+        revision++;
+        await publishRevision({
+          providerId: provider.id,
+          revision,
+          secretFingerprint: published.secretFingerprint,
+        });
+      }
+      return discovery.discover(issuer);
+    });
+
+    const fallback = await loadIdentityProviderStartupSnapshot({
+      cache: false,
+      db,
+      discovery: { discover },
+      env,
+    });
+
+    expect(fallback).toMatchObject({ source: 'lkg' });
+    expect(discover).toHaveBeenCalledTimes(3);
+    expect(await readFile(lkgPath)).toEqual(bytesBefore);
   });
 
   it('keeps an environment provider authoritative over a conflicting DB provider', async () => {
@@ -248,7 +433,7 @@ describe('identity provider startup snapshot', () => {
       .set({ payload: { providerKey: 'authentik', unexpectedSecret: 'damaged-shadow-row' } })
       .where(eq(platformResourceRevisions.resourceId, provider.id));
 
-    const snapshot = await loadIdentityProviderStartupSnapshot({ cache: false, db, env });
+    const snapshot = await loadSnapshot({ cache: false, db, env });
     expect(snapshot.providerIds).toEqual(['authentik', 'work']);
     expect(snapshot.databaseProviders).toHaveLength(1);
     expect(snapshot.databaseProviders[0]?.providerKey).toBe('work');
@@ -263,7 +448,7 @@ describe('identity provider startup snapshot', () => {
       .set({ providerKey: 'corp-new', status: 'draft' })
       .where(eq(platformIdentityProviders.id, provider.id));
 
-    const snapshot = await loadIdentityProviderStartupSnapshot({ cache: false, db, env });
+    const snapshot = await loadSnapshot({ cache: false, db, env });
     expect(snapshot.providerIds).toEqual(['corp', 'work']);
     expect(snapshot.databaseProviders.map((item) => item.providerKey)).toEqual(['work']);
   });
@@ -292,7 +477,7 @@ describe('identity provider startup snapshot', () => {
     const { provider } = await seedPublished(env);
     await tamper(provider.id);
 
-    const snapshot = await loadIdentityProviderStartupSnapshot({ cache: false, db, env });
+    const snapshot = await loadSnapshot({ cache: false, db, env });
     expect(snapshot).toMatchObject({
       databaseProviders: [],
       health: 'degraded',
@@ -310,7 +495,7 @@ describe('identity provider startup snapshot', () => {
       .set({ ciphertext: wrongCiphertext })
       .where(eq(platformIdentityProviderSecrets.providerId, provider.id));
 
-    const snapshot = await loadIdentityProviderStartupSnapshot({ cache: false, db, env });
+    const snapshot = await loadSnapshot({ cache: false, db, env });
     expect(snapshot).toMatchObject({
       databaseProviders: [],
       health: 'degraded',
@@ -321,14 +506,14 @@ describe('identity provider startup snapshot', () => {
   it('uses LKG when DB becomes unavailable and never substitutes a wrong new secret', async () => {
     const env = await baseEnv();
     const { clientSecret } = await seedPublished(env);
-    await loadIdentityProviderStartupSnapshot({ cache: false, db, env });
+    await loadSnapshot({ cache: false, db, env });
     const unavailableDb = new Proxy({} as LobeChatDatabase, {
       get: () => {
         throw new Error('DATABASE_UNAVAILABLE');
       },
     });
 
-    const fallback = await loadIdentityProviderStartupSnapshot({
+    const fallback = await loadSnapshot({
       cache: false,
       db: unavailableDb,
       env,
@@ -341,7 +526,7 @@ describe('identity provider startup snapshot', () => {
     const env = await baseEnv();
     await seedPublished(env, 'corp');
     await seedPublished(env, 'work');
-    const full = await loadIdentityProviderStartupSnapshot({ cache: false, db, env });
+    const full = await loadSnapshot({ cache: false, db, env });
     const secretService = PlatformSecretService.tryFromEnv(env)!;
     const lkg = await readIdentityProviderLkg({ env, secrets: secretService });
     const retained = lkg!.providers.filter((provider) => provider.payload.providerKey === 'work');
@@ -351,7 +536,7 @@ describe('identity provider startup snapshot', () => {
       },
     });
 
-    const fallback = await loadIdentityProviderStartupSnapshot({
+    const fallback = await loadSnapshot({
       cache: false,
       db: unavailableDb,
       env: { ...env, AUTH_SSO_PROVIDERS: 'corp' },
@@ -371,7 +556,7 @@ describe('identity provider startup snapshot', () => {
       },
     });
 
-    const fallback = await loadIdentityProviderStartupSnapshot({
+    const fallback = await loadSnapshot({
       cache: false,
       db: unavailableDb,
       env,

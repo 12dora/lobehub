@@ -87,6 +87,17 @@ vi.mock('@/libs/better-auth/sso', () => ({
   })),
 }));
 
+vi.mock('@/libs/better-auth/sso/platformIdentityProvider', () => ({
+  buildPlatformIdentityProvider: vi.fn((provider) => ({ providerId: provider.providerKey })),
+}));
+
+vi.mock('@/libs/better-auth/sso/platformIdentityProviderState', () => ({
+  platformIdentityProviderState: vi.fn((providerIds) => ({
+    id: 'platform-identity-provider-state',
+    providerIds,
+  })),
+}));
+
 vi.mock('@/libs/better-auth/utils/config', () => ({
   createSecondaryStorage: vi.fn(() => ({ id: 'secondary-storage' })),
   getTrustedOrigins: vi.fn(() => ['https://example.com']),
@@ -135,6 +146,40 @@ describe('defineConfig', () => {
         }),
       }),
     );
+  });
+
+  it('stores OAuth state in the shared database for one-time callback consumption', async () => {
+    const { defineConfig } = await import('./define-config');
+
+    await defineConfig({ plugins: [] });
+
+    expect(mocks.betterAuth).toHaveBeenCalledWith(
+      expect.objectContaining({
+        account: expect.objectContaining({ storeStateStrategy: 'database' }),
+      }),
+    );
+  });
+
+  it('registers platform state binding without changing global verification storage', async () => {
+    const { defineConfig } = await import('./define-config');
+
+    await defineConfig({ plugins: [] });
+    expect(mocks.betterAuth.mock.calls.at(-1)?.[0].verification).toBeUndefined();
+
+    await defineConfig(
+      { plugins: [] },
+      {
+        databaseProviders: [{ providerKey: 'corp-oidc' } as never],
+        providerIds: ['corp-oidc'],
+      },
+    );
+
+    const options = mocks.betterAuth.mock.calls.at(-1)?.[0];
+    expect(options.verification).toBeUndefined();
+    expect(options.plugins).toContainEqual({
+      id: 'platform-identity-provider-state',
+      providerIds: ['corp-oidc'],
+    });
   });
 
   it('keeps trusted DingTalk fields out of request input and session output', async () => {

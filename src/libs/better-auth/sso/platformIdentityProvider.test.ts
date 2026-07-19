@@ -26,6 +26,19 @@ const provider = {
   groupRoleMapping: {},
   icon: null,
   issuer: 'https://login.example.test/application/o/work/',
+  oidcMetadata: {
+    authorizationEndpoint: 'https://login.example.test/application/o/authorize/',
+    codeChallengeMethodsSupported: ['S256'],
+    idTokenSigningAlgValuesSupported: ['RS256'],
+    issuer: 'https://login.example.test/application/o/work/',
+    jwksUri: 'https://login.example.test/application/o/work/jwks/',
+    responseTypesSupported: ['code'],
+    scopesSupported: ['openid', 'profile', 'email', 'dingtalk'],
+    subjectTypesSupported: ['public'],
+    tokenEndpoint: 'https://login.example.test/application/o/token/',
+    tokenEndpointAuthMethodsSupported: ['client_secret_basic'],
+    userinfoEndpoint: 'https://login.example.test/application/o/userinfo/',
+  },
   providerKey: 'corp-oidc',
   revision: 4,
   scopes: ['openid', 'profile', 'email', 'dingtalk'],
@@ -38,15 +51,17 @@ describe('platform identity provider Better Auth adapter', () => {
   it('uses stable provider identity, callback, PKCE, and mapped claims', async () => {
     const config = buildPlatformIdentityProvider(provider, 'https://app.example.test');
     expect(config).toMatchObject({
+      authorizationUrl: 'https://login.example.test/application/o/authorize/',
       clientId: 'client-id',
-      discoveryUrl:
-        'https://login.example.test/application/o/work/.well-known/openid-configuration',
       issuer: provider.issuer,
       pkce: true,
       providerId: 'corp-oidc',
       redirectURI: 'https://app.example.test/api/auth/oauth2/callback/corp-oidc',
       requireIssuerValidation: true,
     });
+    expect(config).not.toHaveProperty('discoveryUrl');
+    expect(config.tokenUrl).toBe('https://platform-oidc-token.invalid/');
+    expect(config.tokenUrl).not.toBe(provider.oidcMetadata.tokenEndpoint);
     expect(config).not.toHaveProperty('overrideUserInfo');
     expect(
       await config.mapProfileToUser!({
@@ -119,5 +134,17 @@ describe('platform identity provider Better Auth adapter', () => {
         dingtalk_user_id: 'ding-user-1',
       }),
     ).toEqual({ dingtalkTitle: 'Engineering Manager', dingtalkUserId: 'ding-user-1' });
+  });
+
+  it('rejects runtime metadata whose issuer was substituted after discovery', () => {
+    expect(() =>
+      buildPlatformIdentityProvider(
+        {
+          ...provider,
+          oidcMetadata: { ...provider.oidcMetadata, issuer: 'https://attacker.example.test' },
+        },
+        'https://app.example.test',
+      ),
+    ).toThrow('PLATFORM_IDENTITY_PROVIDER_INVALID_SNAPSHOT');
   });
 });
