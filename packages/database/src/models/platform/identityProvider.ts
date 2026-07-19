@@ -8,7 +8,7 @@ import {
   type SafePlatformIdentityProviderItem,
 } from '../../repositories/platformIdentityProvider';
 import type { LobeChatDatabase, Transaction } from '../../type';
-import { containsPersistedSecretMaterial, isSensitiveKey } from './redact';
+import { containsEnterpriseSecretMaterial, isSensitiveKey } from './redact';
 
 export const toSafeIdentityProviderDraft = (
   row: SafePlatformIdentityProviderItem,
@@ -33,7 +33,7 @@ export const toSafeIdentityProviderDraft = (
     !claimMapping ||
     hasCredentialClaim ||
     row.usePkce !== true ||
-    containsPersistedSecretMaterial(publicConfig)
+    containsEnterpriseSecretMaterial(publicConfig)
   ) {
     throw new Error('PLATFORM_IDENTITY_PROVIDER_INVALID_PERSISTED_CONFIG');
   }

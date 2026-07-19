@@ -89,6 +89,21 @@ describe('PlatformIdentityProviderModel', () => {
         icon: 'https://example.com/icon?accessToken=value',
       }),
     ).toThrow('PLATFORM_IDENTITY_PROVIDER_INVALID_PERSISTED_CONFIG');
+    for (const queryKey of [
+      'key',
+      'sig',
+      'signature',
+      'subscription-key',
+      'Ocp-Apim-Subscription-Key',
+      'X-Amz-Signature',
+    ]) {
+      expect(() =>
+        toSafeIdentityProviderDraft({
+          ...row,
+          icon: `https://example.com/icon?${queryKey}=signed-value`,
+        }),
+      ).toThrow('PLATFORM_IDENTITY_PROVIDER_INVALID_PERSISTED_CONFIG');
+    }
     for (const malicious of [
       '-----BEGIN PRIVATE KEY-----\nnot-a-real-key',
       'AKIA1234567890ABCDEF',
