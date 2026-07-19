@@ -83,9 +83,10 @@ rate limit marked not applicable. A gap is still allowed so the registry remains
 providing an executable backlog. The registry does not itself add guards or change business behavior.
 
 An AST-based reachability test starts at the real lambda root mount, resolves the imported
-`adminRouter`, and follows import aliases, local aliases, shorthand properties, object spreads, and
-nested router composition. It derives paths from the actual mount keys rather than a prefix table. It
-fails for an added, renamed, duplicated, stale, unmapped, removed, or remounted mutation, validates
+`adminRouter`, and follows import aliases, local aliases (including router-constructor aliases),
+shorthand properties, object spreads with JavaScript's later-key override semantics, and nested
+router composition. It derives paths from the actual mount keys rather than a prefix table. It fails
+for an added, renamed, duplicated, stale, unmapped, removed, or remounted mutation, validates
 dangerous-operation invariants, and scans registry data for sensitive material and remote addresses.
 It does not replace runtime authorization or penetration testing.
 
@@ -125,9 +126,12 @@ historical-key reads remain W8 work.
   details. Logs should record only the category and error class required to operate the service.
 - The platform audit service is append-only at its public interface and list queries are bounded.
   Best-effort failure-audit handling must never turn a denied reauth into an allowed operation.
-- Administrative EasyAuth synchronization trims and bounds its reason and records minimized outcomes
-  for bypass, skipped, unchanged, degraded-cache, failure-without-cache, applied, and unexpected
-  failure paths. Remote failure text is not copied into those audit diffs.
+- Administrative EasyAuth synchronization trims and bounds its reason, rejects values matched by the
+  centralized sensitive-material detector, and records minimized outcomes for bypass, skipped,
+  unchanged, degraded-cache, failure-without-cache, applied, and unexpected failure paths. Snapshot,
+  managed-role, and applied/degraded outcome-audit writes commit in one database transaction; an
+  outcome-audit failure rolls them all back and is not reclassified as a business failure. Remote
+  failure text is not copied into audit data.
 - Trace, error-reporting, and log-sink integration still require an end-to-end leakage check; the
   presence of a redaction helper alone is not proof that every sink invokes it.
 

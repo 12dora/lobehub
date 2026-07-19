@@ -63,6 +63,12 @@ const notApplicable = (rationale: string): NotApplicableControl => ({
 
 const reasonInput = enforced('Bounded non-empty reason in the procedure input contract.');
 const serviceAudit = enforced('Service persists a sanitized platform audit outcome.');
+const sensitiveSafeReason = enforced(
+  'The router bounds the reason and the service rejects centralized sensitive-material matches.',
+);
+const atomicOutcomeAudit = enforced(
+  'Snapshot, role, and outcome audit writes share one database transaction.',
+);
 const recentReauth = enforced('Router checks the server-authenticated recent-session timestamp.');
 const conditionalReauth = conditional(
   'Router checks recent authentication for sensitive input variants.',
@@ -131,6 +137,7 @@ const dangerousMutation = (
     audit?: RequiredAdminMutationControl;
     lastKnownGood?: AdminMutationControl;
     outbound?: AdminMutationControl;
+    reason?: RequiredAdminMutationControl;
     reauth: RequiredAdminMutationControl;
   },
 ): DangerousAdminMutationDefinition => ({
@@ -139,7 +146,7 @@ const dangerousMutation = (
     lastKnownGood: options.lastKnownGood ?? databaseStateNoLkg,
     outbound: options.outbound ?? noRemoteRequest,
     rateLimit: missingAdminRateLimit,
-    reason: reasonInput,
+    reason: options.reason ?? reasonInput,
     reauth: options.reauth,
   },
   dangerous: true,
@@ -372,7 +379,12 @@ export const ADMIN_MUTATION_REGISTRY = {
     'admin.easyauth.triggerSync',
     'high',
     'Synchronize externally managed global role grants for a user.',
-    { outbound: directFetchOutboundGap, reauth: missingReauth },
+    {
+      audit: atomicOutcomeAudit,
+      outbound: directFetchOutboundGap,
+      reason: sensitiveSafeReason,
+      reauth: missingReauth,
+    },
   ),
   'admin.identityProviders.create': regularMutation(
     'admin.identityProviders.create',

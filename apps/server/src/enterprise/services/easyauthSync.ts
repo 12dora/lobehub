@@ -8,25 +8,24 @@
 import { eq } from 'drizzle-orm';
 
 import { AIHUB_ACCESS_PERMISSION } from '@/const/platform/permissions';
+import type { EasyauthManagedRoleName } from '@/const/platform/roles';
 import {
   EASYAUTH_GROUP_TO_ROLE,
   EASYAUTH_PERMISSION_TO_ROLE,
-  type EasyauthManagedRoleName,
   PLATFORM_SYSTEM_ROLES,
 } from '@/const/platform/roles';
 import { EasyauthGrantSnapshotModel } from '@/database/models/platform/easyauthGrantSnapshot';
 import { PlatformJobModel } from '@/database/models/platform/job';
 import { RbacModel } from '@/database/models/rbac';
 import { account } from '@/database/schemas';
-import type { LobeChatDatabase } from '@/database/type';
+import type { LobeChatDatabase, Transaction } from '@/database/type';
 import { getGlobalRoleIdsByName } from '@/database/utils/seedPlatformRoles';
 
 import { parseEasyauthConfig } from '../config/easyauth';
-import {
-  EasyauthClientError,
-  EasyauthPermissionClient,
-  type EasyauthPermissionSnapshot,
-} from './easyauthClient';
+import { containsEnterpriseSecretMaterial } from '../security/redaction';
+import type { EasyauthPermissionSnapshot } from './easyauthClient';
+import { EasyauthPermissionClient } from './easyauthClient';
+import type { CreatePlatformAuditLogParams } from './platformAudit';
 import { PlatformAuditService } from './platformAudit';
 
 export const EASYAUTH_SYNC_JOB_TYPE = 'platform.easyauth.sync_user';
@@ -46,6 +45,56 @@ export interface SyncUserEasyauthParams {
   reason?: string;
   userId: string;
 }
+
+interface NormalizedSyncUserEasyauthParams extends SyncUserEasyauthParams {
+  reason: string;
+}
+
+type EasyauthAuditDatabase = LobeChatDatabase | Transaction;
+
+export type EasyauthAuditWriter = (
+  db: EasyauthAuditDatabase,
+  params: CreatePlatformAuditLogParams,
+) => Promise<void>;
+
+export class EasyauthSyncAuditError extends Error {
+  readonly code = 'PLATFORM_EASYAUTH_AUDIT_UNAVAILABLE' as const;
+
+  constructor() {
+    super('PLATFORM_EASYAUTH_AUDIT_UNAVAILABLE');
+    this.name = 'EasyauthSyncAuditError';
+  }
+}
+
+export class EasyauthSyncReasonError extends Error {
+  readonly code = 'PLATFORM_EASYAUTH_INVALID_REASON' as const;
+
+  constructor() {
+    super('PLATFORM_EASYAUTH_INVALID_REASON');
+    this.name = 'EasyauthSyncReasonError';
+  }
+}
+
+const DEFAULT_SYNC_REASON = 'easyauth_sync';
+const INVALID_REASON_AUDIT_REASON = 'easyauth_sync_invalid_reason';
+const MAX_SYNC_REASON_LENGTH = 2000;
+
+export const normalizeEasyauthSyncReason = (reason: string | undefined): string => {
+  if (reason === undefined) return DEFAULT_SYNC_REASON;
+  const normalized = reason.trim();
+  if (
+    !normalized ||
+    normalized.length > MAX_SYNC_REASON_LENGTH ||
+    containsEnterpriseSecretMaterial(normalized)
+  ) {
+    throw new EasyauthSyncReasonError();
+  }
+  return normalized;
+};
+
+const defaultEasyauthAuditWriter: EasyauthAuditWriter = async (db, params) => {
+  await new PlatformAuditService(db).append(params);
+};
 
 const resolveExternalUserId = async (
   db: LobeChatDatabase,
@@ -99,50 +148,63 @@ export const snapshotHasAccess = (snapshot: EasyauthPermissionSnapshot): boolean
 export class EasyauthSyncService {
   private readonly snapshots: EasyauthGrantSnapshotModel;
   private readonly rbac: RbacModel;
-  private readonly audit: PlatformAuditService;
+  private readonly auditWriter: EasyauthAuditWriter;
   private readonly client: EasyauthPermissionClient;
   private readonly jobs: PlatformJobModel;
 
   constructor(
     private readonly db: LobeChatDatabase,
-    options?: { client?: EasyauthPermissionClient },
+    options?: { auditWriter?: EasyauthAuditWriter; client?: EasyauthPermissionClient },
   ) {
     this.snapshots = new EasyauthGrantSnapshotModel(db);
     this.rbac = new RbacModel(db, 'system');
-    this.audit = new PlatformAuditService(db);
+    this.auditWriter = options?.auditWriter ?? defaultEasyauthAuditWriter;
     this.client = options?.client ?? new EasyauthPermissionClient();
     this.jobs = new PlatformJobModel(db);
   }
 
-  private recordSyncOutcome = async (
-    params: Pick<SyncUserEasyauthParams, 'actorUserId' | 'reason' | 'userId'>,
+  private appendSyncOutcome = async (
+    db: EasyauthAuditDatabase,
+    params: Pick<NormalizedSyncUserEasyauthParams, 'actorUserId' | 'reason' | 'userId'>,
     outcome: SyncUserEasyauthResult,
   ): Promise<void> => {
-    const reason = params.reason?.trim().slice(0, 2000) || 'easyauth_sync';
-    await this.audit.append({
-      action: 'platform.easyauth.sync',
-      actorUserId: params.actorUserId ?? params.userId,
-      afterDiff: {
-        accessGranted: outcome.accessGranted,
-        degraded: outcome.degraded,
-        grantVersion: outcome.grantVersion,
-        roles: outcome.rolesApplied,
-        source: outcome.source,
-      },
-      reason,
-      result: outcome.degraded || outcome.source === 'skipped' ? 'failure' : 'success',
-      targetId: params.userId,
-      targetType: 'user',
-    });
+    try {
+      await this.auditWriter(db, {
+        action: 'platform.easyauth.sync',
+        actorUserId: params.actorUserId ?? params.userId,
+        afterDiff: {
+          accessGranted: outcome.accessGranted,
+          degraded: outcome.degraded,
+          grantVersion: outcome.grantVersion,
+          roles: outcome.rolesApplied,
+          source: outcome.source,
+        },
+        reason: params.reason,
+        result: outcome.degraded || outcome.source === 'skipped' ? 'failure' : 'success',
+        targetId: params.userId,
+        targetType: 'user',
+      });
+    } catch {
+      throw new EasyauthSyncAuditError();
+    }
   };
 
-  private recordSyncFailure = async (params: SyncUserEasyauthParams): Promise<void> => {
+  private recordSyncOutcome = async (
+    params: NormalizedSyncUserEasyauthParams,
+    outcome: SyncUserEasyauthResult,
+  ): Promise<void> => {
+    await this.appendSyncOutcome(this.db, params, outcome);
+  };
+
+  private recordSyncFailure = async (
+    params: Pick<NormalizedSyncUserEasyauthParams, 'actorUserId' | 'reason' | 'userId'>,
+  ): Promise<void> => {
     try {
-      await this.audit.append({
+      await this.auditWriter(this.db, {
         action: 'platform.easyauth.sync',
         actorUserId: params.actorUserId ?? params.userId,
         afterDiff: { source: 'failed' },
-        reason: params.reason?.trim().slice(0, 2000) || 'easyauth_sync',
+        reason: params.reason,
         result: 'failure',
         targetId: params.userId,
         targetType: 'user',
@@ -154,12 +216,53 @@ export class EasyauthSyncService {
     }
   };
 
+  private persistSyncOutcome = async (
+    params: NormalizedSyncUserEasyauthParams,
+    input: {
+      degraded: boolean;
+      externalUserId: string;
+      managedRoles: EasyauthManagedRoleName[];
+      outcome: SyncUserEasyauthResult;
+      snapshot: EasyauthPermissionSnapshot;
+    },
+  ): Promise<void> => {
+    await this.db.transaction(async (tx) => {
+      await new EasyauthGrantSnapshotModel(tx).upsert({
+        accessGranted: input.outcome.accessGranted,
+        appKey: this.client.appKey,
+        catalogVersion: input.snapshot.catalog_version,
+        degraded: input.degraded,
+        expiresAt: input.snapshot.expires_at ? new Date(input.snapshot.expires_at) : null,
+        externalUserId: input.externalUserId,
+        grantVersion: input.snapshot.grant_version,
+        grants: input.snapshot.grants,
+        groups: input.snapshot.groups,
+        lastError: input.degraded ? 'using_cached_snapshot' : null,
+        snapshotVersion: input.snapshot.snapshot_version,
+        userId: params.userId,
+      });
+
+      const roleIdsByName = await getGlobalRoleIdsByName(tx, input.managedRoles);
+      const roleIds = input.managedRoles
+        .map((name) => roleIdsByName.get(name))
+        .filter((id): id is string => Boolean(id));
+      const txRbac = new RbacModel(tx as LobeChatDatabase, 'system');
+      await txRbac.replaceGlobalUserRoles(params.userId, roleIds, {
+        preserveRoleNames: [PLATFORM_SYSTEM_ROLES.SUPER_ADMIN],
+        // EasyAuth path never removes super_admin; last-super protect still applies.
+        protectLastSuperAdmin: true,
+      });
+
+      await this.appendSyncOutcome(tx, params, input.outcome);
+    });
+  };
+
   /**
    * Sync one user. Super admins skip EasyAuth (break-glass).
    * Same grant_version + non-degraded cache short-circuits (M8/minor).
    */
   private syncUserInternal = async (
-    params: SyncUserEasyauthParams,
+    params: NormalizedSyncUserEasyauthParams,
   ): Promise<SyncUserEasyauthResult> => {
     if (await this.rbac.isGlobalSuperAdmin(params.userId)) {
       const outcome = {
@@ -197,9 +300,8 @@ export class EasyauthSyncService {
 
     try {
       snapshot = await this.client.fetchPermissionSnapshot(externalUserId);
-    } catch (error) {
-      const message = error instanceof EasyauthClientError ? error.message : 'EasyAuth sync failed';
-      const cached = await this.snapshots.markDegraded(params.userId, message, this.client.appKey);
+    } catch {
+      const cached = await this.snapshots.findByUser(params.userId, this.client.appKey);
       if (cached) {
         snapshot = {
           app_key: cached.appKey,
@@ -252,32 +354,6 @@ export class EasyauthSyncService {
       managedRoles.push(PLATFORM_SYSTEM_ROLES.PLATFORM_USER);
     }
 
-    await this.snapshots.upsert({
-      accessGranted,
-      appKey: this.client.appKey,
-      catalogVersion: snapshot.catalog_version,
-      degraded,
-      expiresAt: snapshot.expires_at ? new Date(snapshot.expires_at) : null,
-      externalUserId,
-      grantVersion: snapshot.grant_version,
-      grants: snapshot.grants,
-      groups: snapshot.groups,
-      lastError: degraded ? 'using_cached_snapshot' : null,
-      snapshotVersion: snapshot.snapshot_version,
-      userId: params.userId,
-    });
-
-    const roleIdsByName = await getGlobalRoleIdsByName(this.db, managedRoles);
-    const roleIds = managedRoles
-      .map((name) => roleIdsByName.get(name))
-      .filter((id): id is string => Boolean(id));
-
-    await this.rbac.replaceGlobalUserRoles(params.userId, roleIds, {
-      preserveRoleNames: [PLATFORM_SYSTEM_ROLES.SUPER_ADMIN],
-      // EasyAuth path never removes super_admin; last-super protect still applies.
-      protectLastSuperAdmin: true,
-    });
-
     const outcome = {
       accessGranted,
       degraded,
@@ -285,22 +361,38 @@ export class EasyauthSyncService {
       rolesApplied: managedRoles,
       source: degraded ? ('cache' as const) : ('easyauth' as const),
     };
-    await this.recordSyncOutcome(params, outcome);
+    await this.persistSyncOutcome(params, {
+      degraded,
+      externalUserId,
+      managedRoles,
+      outcome,
+      snapshot,
+    });
     return outcome;
   };
 
   syncUser = async (params: SyncUserEasyauthParams): Promise<SyncUserEasyauthResult> => {
+    let normalizedParams: NormalizedSyncUserEasyauthParams;
     try {
-      return await this.syncUserInternal(params);
+      normalizedParams = { ...params, reason: normalizeEasyauthSyncReason(params.reason) };
     } catch (error) {
-      await this.recordSyncFailure(params);
+      await this.recordSyncFailure({ ...params, reason: INVALID_REASON_AUDIT_REASON });
+      throw error;
+    }
+
+    try {
+      return await this.syncUserInternal(normalizedParams);
+    } catch (error) {
+      if (!(error instanceof EasyauthSyncAuditError)) {
+        await this.recordSyncFailure(normalizedParams);
+      }
       throw error;
     }
   };
 
   /**
    * Fire-and-forget login hook entry (safe to call from Better Auth session create).
-   * Errors are swallowed after mark-degraded path inside syncUser.
+   * Errors are swallowed after syncUser's transactional degraded/failure handling.
    */
   syncUserOnLogin = async (userId: string): Promise<void> => {
     try {
