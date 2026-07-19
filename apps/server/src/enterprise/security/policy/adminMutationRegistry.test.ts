@@ -122,15 +122,8 @@ class RouterSourceGraph {
       node: reference.node,
     });
     if (!ts.isObjectLiteralExpression(object.node)) return null;
-    for (const item of object.node.properties) {
-      if (ts.isPropertyAssignment(item) && propertyName(item.name) === property) {
-        return { file: object.file, node: item.initializer };
-      }
-      if (ts.isShorthandPropertyAssignment(item) && item.name.text === property) {
-        return { file: object.file, node: item.name };
-      }
-    }
-    return null;
+    const properties = await this.expandObject(object);
+    return properties.find((item) => item.key === property)?.expression ?? null;
   };
 
   resolveExpression = async (
@@ -155,6 +148,43 @@ class RouterSourceGraph {
     return { file: reference.file, node };
   };
 
+  private isRouterConstructor = async (
+    reference: ExpressionReference,
+    visited: ReadonlySet<string> = new Set(),
+  ): Promise<boolean> => {
+    const node = unwrapExpression(reference.node);
+    if (!ts.isIdentifier(node)) return false;
+    const key = `${path.normalize(reference.file)}:${node.text}`;
+    if (visited.has(key)) throw new Error(`Cyclic router constructor alias: ${key}`);
+    if (node.text === 'router') return true;
+
+    const sourceFile = await this.getSourceFile(reference.file);
+    for (const statement of sourceFile.statements) {
+      if (ts.isVariableStatement(statement)) {
+        const declaration = statement.declarationList.declarations.find(
+          (item) => ts.isIdentifier(item.name) && item.name.text === node.text && item.initializer,
+        );
+        if (declaration?.initializer) {
+          return this.isRouterConstructor(
+            { file: reference.file, node: declaration.initializer },
+            new Set([...visited, key]),
+          );
+        }
+      }
+      if (
+        ts.isImportDeclaration(statement) &&
+        statement.importClause?.namedBindings &&
+        ts.isNamedImports(statement.importClause.namedBindings)
+      ) {
+        const imported = statement.importClause.namedBindings.elements.find(
+          (element) => element.name.text === node.text,
+        );
+        if (imported) return (imported.propertyName?.text ?? imported.name.text) === 'router';
+      }
+    }
+    return false;
+  };
+
   private getObject = async (
     reference: ExpressionReference,
   ): Promise<ExpressionReference | null> => {
@@ -162,8 +192,7 @@ class RouterSourceGraph {
     if (ts.isObjectLiteralExpression(resolved.node)) return resolved;
     if (
       ts.isCallExpression(resolved.node) &&
-      ts.isIdentifier(resolved.node.expression) &&
-      resolved.node.expression.text === 'router'
+      (await this.isRouterConstructor({ file: resolved.file, node: resolved.node.expression }))
     ) {
       const argument = resolved.node.arguments[0];
       if (argument && ts.isExpression(argument)) {
@@ -177,20 +206,25 @@ class RouterSourceGraph {
   private expandObject = async (reference: ExpressionReference): Promise<MountedProperty[]> => {
     const object = await this.getObject(reference);
     if (!object || !ts.isObjectLiteralExpression(object.node)) return [];
-    const properties: MountedProperty[] = [];
+    const properties = new Map<string, MountedProperty>();
     for (const item of object.node.properties) {
       if (ts.isSpreadAssignment(item)) {
-        properties.push(...(await this.expandObject({ file: object.file, node: item.expression })));
+        for (const property of await this.expandObject({
+          file: object.file,
+          node: item.expression,
+        })) {
+          properties.set(property.key, property);
+        }
         continue;
       }
       if (ts.isPropertyAssignment(item)) {
         const key = propertyName(item.name);
         if (!key) throw new Error(`Computed router key is not supported: ${object.file}`);
-        properties.push({ expression: { file: object.file, node: item.initializer }, key });
+        properties.set(key, { expression: { file: object.file, node: item.initializer }, key });
         continue;
       }
       if (ts.isShorthandPropertyAssignment(item)) {
-        properties.push({
+        properties.set(item.name.text, {
           expression: { file: object.file, node: item.name },
           key: item.name.text,
         });
@@ -198,7 +232,7 @@ class RouterSourceGraph {
       }
       throw new Error(`Unsupported router member in ${object.file}: ${item.getText()}`);
     }
-    return properties;
+    return [...properties.values()];
   };
 
   private isMutation = async (reference: ExpressionReference): Promise<boolean> => {
@@ -365,6 +399,75 @@ describe('enterprise admin mutation policy registry', () => {
     const root = await graph.getExport('/fixture/root.ts', 'rootRouter');
 
     expect(await graph.collectMutations(root)).toEqual(['remounted.extracted']);
+  });
+
+  it('recognizes imported and local router constructor aliases', async () => {
+    const fixtureSources = new Map([
+      ['/fixture/trpc.ts', 'export const router = (shape: unknown) => shape;'],
+      [
+        '/fixture/leaf.ts',
+        `
+          import { router as makeRouter } from './trpc';
+          const localRouter = makeRouter;
+          const extracted = base.mutation(() => true);
+          export const leafRouter = localRouter({ extracted });
+        `,
+      ],
+      [
+        '/fixture/root.ts',
+        `
+          import { router } from './trpc';
+          import { leafRouter } from './leaf';
+          const makeRouter = router;
+          export const rootRouter = makeRouter({ leaf: leafRouter });
+        `,
+      ],
+    ]);
+    const graph = new RouterSourceGraph(
+      async (file) => fixtureSources.get(file) ?? Promise.reject(new Error(`Missing ${file}`)),
+      async (containingFile, moduleName) =>
+        `${path.resolve(path.dirname(containingFile), moduleName)}.ts`,
+    );
+
+    expect(
+      await graph.collectMutations(await graph.getExport('/fixture/root.ts', 'rootRouter')),
+    ).toEqual(['leaf.extracted']);
+  });
+
+  it('applies later spread and direct-property overrides before collecting mutations', async () => {
+    const fixtureSources = new Map([
+      [
+        '/fixture/leaf.ts',
+        `
+          const alive = base.mutation(() => true);
+          export const mutationRouter = router({ alive });
+          export const emptyRouter = router({});
+        `,
+      ],
+      [
+        '/fixture/root.ts',
+        `
+          import { emptyRouter, mutationRouter } from './leaf';
+          const first = { duplicate: mutationRouter, selected: mutationRouter };
+          const second = { selected: emptyRouter };
+          export const rootRouter = router({
+            ...first,
+            ...second,
+            duplicate: emptyRouter,
+            kept: mutationRouter,
+          });
+        `,
+      ],
+    ]);
+    const graph = new RouterSourceGraph(
+      async (file) => fixtureSources.get(file) ?? Promise.reject(new Error(`Missing ${file}`)),
+      async (containingFile, moduleName) =>
+        `${path.resolve(path.dirname(containingFile), moduleName)}.ts`,
+    );
+
+    expect(
+      await graph.collectMutations(await graph.getExport('/fixture/root.ts', 'rootRouter')),
+    ).toEqual(['kept.alive']);
   });
 
   it('rejects duplicate registry declarations before object-key normalization', async () => {

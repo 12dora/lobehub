@@ -16,6 +16,7 @@ import {
   EasyauthSyncService,
   snapshotHasAccess,
 } from './easyauthSync';
+import { PlatformAuditService } from './platformAudit';
 
 const db: LobeChatDatabase = await getTestDB();
 const userId = 'easyauth-sync-user';
@@ -155,6 +156,43 @@ describe('EasyauthSyncService', () => {
     expect(await rbac.hasGlobalPermission('platform_user:ban:all', userId)).toBe(true);
   });
 
+  it('rolls back snapshot and roles when the success outcome audit cannot commit', async () => {
+    const client = new EasyauthPermissionClient({
+      config: {
+        appKey: 'aihub',
+        appToken: 'eat_fake_test_token_not_real',
+        baseUrl: 'https://easyauth.test',
+        descriptorToken: null,
+        manifestSchemaVersion: 1,
+        portalUrl: 'https://easyauth.test',
+        timeoutMs: 1000,
+      },
+    });
+    client.fetchPermissionSnapshot = vi.fn(async () => sampleSnapshot());
+    const auditWriter = vi.fn(async (auditDb, params) => {
+      await new PlatformAuditService(auditDb).append(params);
+      throw new Error('simulated audit outage');
+    });
+
+    await expect(
+      new EasyauthSyncService(db, { auditWriter, client }).syncUser({
+        actorUserId: 'admin-user',
+        externalUserId: 'ak_uid_1',
+        reason: 'role repair',
+        userId,
+      }),
+    ).rejects.toThrow('PLATFORM_EASYAUTH_AUDIT_UNAVAILABLE');
+
+    expect(auditWriter).toHaveBeenCalledTimes(1);
+    expect(auditWriter.mock.calls[0]?.[1]).toMatchObject({
+      afterDiff: { source: 'easyauth' },
+      result: 'success',
+    });
+    await expect(db.select().from(platformEasyauthGrantSnapshots)).resolves.toEqual([]);
+    await expect(db.select().from(userRoles)).resolves.toEqual([]);
+    await expect(db.select().from(platformAuditLogs)).resolves.toEqual([]);
+  });
+
   it('degrades to cache when EasyAuth is unreachable', async () => {
     const client = new EasyauthPermissionClient({
       config: {
@@ -185,6 +223,53 @@ describe('EasyauthSyncService', () => {
       result: 'failure',
     });
     expect(JSON.stringify(audits)).not.toContain('network down');
+  });
+
+  it('rolls back the degraded snapshot when its outcome audit cannot commit', async () => {
+    const client = new EasyauthPermissionClient({
+      config: {
+        appKey: 'aihub',
+        appToken: 'eat_fake_test_token_not_real',
+        baseUrl: 'https://easyauth.test',
+        descriptorToken: null,
+        manifestSchemaVersion: 1,
+        portalUrl: 'https://easyauth.test',
+        timeoutMs: 1000,
+      },
+    });
+    client.fetchPermissionSnapshot = vi.fn(async () => sampleSnapshot());
+    await new EasyauthSyncService(db, { client }).syncUser({
+      externalUserId: 'ak_uid_1',
+      reason: 'initial sync',
+      userId,
+    });
+
+    client.fetchPermissionSnapshot = vi.fn(async () => {
+      throw new Error('private upstream detail');
+    });
+    const auditWriter = vi.fn(async (auditDb, params) => {
+      await new PlatformAuditService(auditDb).append(params);
+      throw new Error('simulated degraded audit outage');
+    });
+    await expect(
+      new EasyauthSyncService(db, { auditWriter, client }).syncUser({
+        externalUserId: 'ak_uid_1',
+        reason: 'degraded retry',
+        userId,
+      }),
+    ).rejects.toThrow('PLATFORM_EASYAUTH_AUDIT_UNAVAILABLE');
+
+    expect(auditWriter).toHaveBeenCalledTimes(1);
+    expect(auditWriter.mock.calls[0]?.[1]).toMatchObject({
+      afterDiff: { degraded: true, source: 'cache' },
+      result: 'failure',
+    });
+    await expect(db.select().from(platformEasyauthGrantSnapshots)).resolves.toMatchObject([
+      { degraded: false, lastError: null },
+    ]);
+    await expect(db.select().from(platformAuditLogs)).resolves.toHaveLength(1);
+    const rbac = new RbacModel(db, userId);
+    await expect(rbac.hasGlobalPermission('platform_user:ban:all', userId)).resolves.toBe(true);
   });
 
   it('audits a fail-closed cache result when no prior snapshot exists', async () => {
@@ -221,6 +306,53 @@ describe('EasyauthSyncService', () => {
       },
     ]);
     expect(JSON.stringify(audits)).not.toContain('private upstream detail');
+  });
+
+  it('rejects credential-like reasons and persists only a stable safe failure reason', async () => {
+    const client = new EasyauthPermissionClient({
+      config: {
+        appKey: 'aihub',
+        appToken: 'eat_fake_test_token_not_real',
+        baseUrl: 'https://easyauth.test',
+        descriptorToken: null,
+        manifestSchemaVersion: 1,
+        portalUrl: 'https://easyauth.test',
+        timeoutMs: 1000,
+      },
+    });
+    const fetch = vi.fn(async () => sampleSnapshot());
+    client.fetchPermissionSnapshot = fetch;
+    const service = new EasyauthSyncService(db, { client });
+    const unsafeReasons = [
+      'token=opaque-value',
+      'password=hunter2',
+      'client_secret=opaque-value',
+      'private key=opaque-value',
+    ];
+
+    for (const reason of unsafeReasons) {
+      await expect(
+        service.syncUser({ actorUserId: 'admin-user', externalUserId: 'ak_uid_1', reason, userId }),
+      ).rejects.toThrow('PLATFORM_EASYAUTH_INVALID_REASON');
+    }
+
+    expect(fetch).not.toHaveBeenCalled();
+    const audits = await db.select().from(platformAuditLogs);
+    expect(audits).toHaveLength(unsafeReasons.length);
+    expect(audits).toEqual(
+      expect.arrayContaining(
+        unsafeReasons.map(() =>
+          expect.objectContaining({
+            actorUserId: 'admin-user',
+            afterDiff: { source: 'failed' },
+            reason: 'easyauth_sync_invalid_reason',
+            result: 'failure',
+          }),
+        ),
+      ),
+    );
+    const serialized = JSON.stringify(audits);
+    for (const reason of unsafeReasons) expect(serialized).not.toContain(reason);
   });
 
   it('writes a minimized failure audit when a management sync throws', async () => {

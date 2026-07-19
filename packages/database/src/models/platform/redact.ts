@@ -161,6 +161,8 @@ const PEM_PRIVATE_KEY_PATTERN = /-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----/;
 const AWS_ACCESS_KEY_PATTERN = /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/;
 const GCP_API_KEY_PATTERN = /\bAIza[\w-]{35}\b/;
 const GCP_SERVICE_ACCOUNT_PATTERN = /["']type["']\s*:\s*["']service_account["']/i;
+const INLINE_SECRET_ASSIGNMENT_PATTERN =
+  /\b(?:api[-_ ]?key|api[-_ ]?secret|api[-_ ]?token|access[-_ ]?token|authorization|bearer|client[-_ ]?secret|credential|id[-_ ]?token|password|passwd|private[-_ ]?key|refresh[-_ ]?token|secret[-_ ]?access[-_ ]?key|token)\s*[:=]\s*(?:"[^"]+"|'[^']+'|[^\s,;]+)/iu;
 
 const SIGNED_URL_QUERY_KEYS = new Set([
   'key',
@@ -212,6 +214,7 @@ export const containsEnterpriseSecretMaterial = (input: unknown): boolean => {
         AWS_ACCESS_KEY_PATTERN.test(value) ||
         GCP_API_KEY_PATTERN.test(value) ||
         GCP_SERVICE_ACCOUNT_PATTERN.test(value) ||
+        INLINE_SECRET_ASSIGNMENT_PATTERN.test(value) ||
         stringContainsCredentialUrl(value)
       ) {
         return true;
