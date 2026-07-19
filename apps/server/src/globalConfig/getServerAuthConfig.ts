@@ -2,16 +2,13 @@ import { ENABLE_BUSINESS_FEATURES } from '@lobechat/business-const';
 
 import { appEnv } from '@/envs/app';
 import { authEnv } from '@/envs/auth';
-import { parseSSOProviders } from '@/libs/better-auth/utils/server';
+import { getInitializedIdentityProviderPublicArtifact } from '@/server/enterprise/services/identityProvider/startupArtifact';
 import { type GlobalServerConfig } from '@/types/serverConfig';
 
 import { isAnyEnterpriseFeatureEnabled } from '../enterprise/featureFlags';
 
-const getBetterAuthSSOProviders = () => {
-  return parseSSOProviders(authEnv.AUTH_SSO_PROVIDERS);
-};
-
 export const getServerAuthConfig = (): GlobalServerConfig => {
+  const identitySnapshot = getInitializedIdentityProviderPublicArtifact();
   return {
     aiProvider: {},
     disableEmailPassword: authEnv.AUTH_DISABLE_EMAIL_PASSWORD,
@@ -22,7 +19,7 @@ export const getServerAuthConfig = (): GlobalServerConfig => {
       appEnv.MARKET_TRUSTED_CLIENT_SECRET && appEnv.MARKET_TRUSTED_CLIENT_ID
     ),
     enterprise: { enabled: isAnyEnterpriseFeatureEnabled(), platformAdmin: false },
-    oAuthSSOProviders: getBetterAuthSSOProviders(),
+    oAuthSSOProviders: identitySnapshot.providerIds,
     telemetry: {},
   };
 };

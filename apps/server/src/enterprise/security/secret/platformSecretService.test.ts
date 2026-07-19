@@ -57,6 +57,28 @@ describe('PlatformSecretService', () => {
     });
   });
 
+  describe('artifact signatures', () => {
+    it('uses the KeyProvider with domain separation and rejects tampering', async () => {
+      const svc = makeService();
+      const signature = await svc.signArtifact('platform-oidc-lkg', 'payload');
+
+      await expect(svc.verifyArtifact('platform-oidc-lkg', 'payload', signature)).resolves.toBe(
+        true,
+      );
+      await expect(svc.verifyArtifact('platform-oidc-lkg', 'tampered', signature)).resolves.toBe(
+        false,
+      );
+      await expect(svc.verifyArtifact('another-domain', 'payload', signature)).resolves.toBe(false);
+    });
+
+    it('rejects signatures made by a different key', async () => {
+      const signature = await makeService().signArtifact('platform-oidc-lkg', 'payload');
+      await expect(
+        makeService(OTHER_MASTER_KEY_B64).verifyArtifact('platform-oidc-lkg', 'payload', signature),
+      ).resolves.toBe(false);
+    });
+  });
+
   describe('failure paths', () => {
     it('fails decrypt with wrong master key', async () => {
       const a = makeService(FAKE_MASTER_KEY_B64, 'env:a');
