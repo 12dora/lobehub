@@ -23,6 +23,10 @@ vi.mock('@/features/Workspace/useWorkspaceAwareNavigate', () => ({
   useWorkspaceAwareNavigate: () => vi.fn(),
 }));
 
+vi.mock('@/libs/swr/useCacheScope', () => ({
+  useCacheScope: () => 'user-a:personal',
+}));
+
 vi.mock('@/routes/(main)/agent/channel/const', () => ({
   getPlatformIcon: () => undefined,
 }));
@@ -32,18 +36,27 @@ vi.mock('@/store/agent', () => ({
     selector({
       agentMap: { 'inbox-agent': { title: mocks.inboxTitle } },
       builtinAgentIdMap: { inbox: 'inbox-agent' },
+      inboxProjectionScope: 'user-a:personal',
     }),
 }));
 
 vi.mock('@/store/agent/selectors', () => ({
-  agentSelectors: {
-    getAgentMetaById: (id: string) => (state: Record<string, unknown>) =>
-      (state.agentMap as Record<string, Record<string, unknown>>)[id] ?? {},
-  },
   builtinAgentSelectors: {
-    inboxAgentId: (state: Record<string, unknown>) =>
-      (state.builtinAgentIdMap as Record<string, string>).inbox,
+    inboxAgentMetaForScope: (scope?: string) => (state: Record<string, unknown>) => {
+      if (state.inboxProjectionScope !== scope) return undefined;
+      const id = (state.builtinAgentIdMap as Record<string, string>).inbox;
+      return (state.agentMap as Record<string, Record<string, unknown>>)[id];
+    },
   },
+}));
+
+vi.mock('@/store/user', () => ({
+  useUserStore: (selector: (state: Record<string, unknown>) => unknown) =>
+    selector({ isSignedIn: true }),
+}));
+
+vi.mock('@/store/user/selectors', () => ({
+  authSelectors: { isLogin: (state: Record<string, unknown>) => state.isSignedIn },
 }));
 
 vi.mock('@/store/global', () => ({

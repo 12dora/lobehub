@@ -1,27 +1,65 @@
 import { INBOX_SESSION_ID } from '@lobechat/const';
+import type { AgentItem } from '@lobechat/types';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { useOnlyFetchOnceSWR } from '@/libs/swr';
-import { useCacheScope } from '@/libs/swr/useCacheScope';
+import { getCacheScope, useCacheScope } from '@/libs/swr/useCacheScope';
+import { initialAgentSliceState } from '@/store/agent/slices/agent/initialState';
+import { getUserStoreState } from '@/store/user';
 
+import { builtinAgentSelectors } from '../../selectors/builtinAgentSelectors';
 import type { AgentStore } from '../../store';
 import { BuiltinAgentSliceActionImpl } from './action';
+import { initialBuiltinAgentSliceState } from './initialState';
 
 vi.mock('@/libs/swr', () => ({
   useOnlyFetchOnceSWR: vi.fn(() => ({ data: undefined })),
 }));
 
 vi.mock('@/libs/swr/useCacheScope', () => ({
+  getCacheScope: vi.fn(),
   useCacheScope: vi.fn(),
 }));
 
+vi.mock('@/store/user', () => ({
+  getUserStoreState: vi.fn(),
+}));
+
+vi.mock('@/store/user/selectors', () => ({
+  authSelectors: { isLogin: (state: { isSignedIn?: boolean }) => state.isSignedIn },
+}));
+
 describe('BuiltinAgentSliceActionImpl.useInitBuiltinAgent', () => {
-  const get = () => ({}) as AgentStore;
-  const set = vi.fn();
+  let store: AgentStore;
+  const get = () => store;
+  const set = vi.fn(
+    (update: Partial<AgentStore> | ((state: AgentStore) => Partial<AgentStore>)) => {
+      const patch = typeof update === 'function' ? update(store) : update;
+      store = { ...store, ...patch };
+    },
+  );
+
+  const inboxAgent = (title: string): AgentItem => ({ id: 'inbox-agent', title }) as AgentItem;
+
+  const succeed = (requestIndex: number, data: AgentItem | null): void => {
+    const options = vi.mocked(useOnlyFetchOnceSWR).mock.calls[requestIndex][2] as {
+      onSuccess: (value: AgentItem | null) => void;
+    };
+    options.onSuccess(data);
+  };
 
   beforeEach(() => {
     vi.clearAllMocks();
+    store = {
+      ...initialAgentSliceState,
+      ...initialBuiltinAgentSliceState,
+      internal_dispatchAgentMap: vi.fn((id, data) => {
+        store = { ...store, agentMap: { ...store.agentMap, [id]: data } };
+      }),
+    } as unknown as AgentStore;
     vi.mocked(useCacheScope).mockReturnValue('user-a:workspace-a');
+    vi.mocked(getCacheScope).mockReturnValue('user-a:workspace-a');
+    vi.mocked(getUserStoreState).mockReturnValue({ isSignedIn: true } as never);
   });
 
   it('uses the stable user/workspace cache scope for inbox requests', () => {
@@ -57,6 +95,25 @@ describe('BuiltinAgentSliceActionImpl.useInitBuiltinAgent', () => {
     ]);
   });
 
+  it('does not expose workspace A while workspace B is pending at the same revision', () => {
+    const action = new BuiltinAgentSliceActionImpl(set, get);
+
+    action.useInitBuiltinAgent(INBOX_SESSION_ID, { brandingRevision: '12', isLogin: true });
+    succeed(0, inboxAgent('Workspace A Assistant'));
+
+    vi.mocked(useCacheScope).mockReturnValue('user-a:workspace-b');
+    vi.mocked(getCacheScope).mockReturnValue('user-a:workspace-b');
+    action.syncInboxProjectionScope('user-a:workspace-b', true);
+    action.useInitBuiltinAgent(INBOX_SESSION_ID, { brandingRevision: '12', isLogin: true });
+
+    expect(store.builtinAgentIdMap[INBOX_SESSION_ID]).toBeUndefined();
+    expect(store.agentMap['inbox-agent']).toBeUndefined();
+    expect(store.inboxProjectionScope).toBeUndefined();
+    expect(
+      builtinAgentSelectors.inboxAgentMetaForScope('user-a:workspace-b')(store),
+    ).toBeUndefined();
+  });
+
   it('disables the inbox request after logout instead of reading the previous user key', () => {
     const action = new BuiltinAgentSliceActionImpl(set, get);
 
@@ -84,6 +141,63 @@ describe('BuiltinAgentSliceActionImpl.useInitBuiltinAgent', () => {
     ]);
   });
 
+  it('does not expose user A through logout, unresolved persisted scope, anonymous, and user B', () => {
+    const action = new BuiltinAgentSliceActionImpl(set, get);
+
+    action.useInitBuiltinAgent(INBOX_SESSION_ID, { brandingRevision: '12', isLogin: true });
+    succeed(0, inboxAgent('User A Assistant'));
+
+    vi.mocked(getUserStoreState).mockReturnValue({ isSignedIn: false } as never);
+    action.syncInboxProjectionScope('user-a:workspace-a', false);
+    action.useInitBuiltinAgent(INBOX_SESSION_ID, { brandingRevision: '12', isLogin: false });
+
+    expect(store.builtinAgentIdMap[INBOX_SESSION_ID]).toBeUndefined();
+    expect(store.agentMap['inbox-agent']).toBeUndefined();
+    for (const scope of [undefined, 'anon:personal', 'user-b:workspace-a']) {
+      expect(builtinAgentSelectors.inboxAgentMetaForScope(scope)(store)).toBeUndefined();
+    }
+
+    vi.mocked(useCacheScope).mockReturnValue('user-b:workspace-a');
+    vi.mocked(getCacheScope).mockReturnValue('user-b:workspace-a');
+    vi.mocked(getUserStoreState).mockReturnValue({ isSignedIn: true } as never);
+    action.useInitBuiltinAgent(INBOX_SESSION_ID, { brandingRevision: '12', isLogin: true });
+
+    expect(
+      builtinAgentSelectors.inboxAgentMetaForScope('user-b:workspace-a')(store),
+    ).toBeUndefined();
+  });
+
+  it('ignores an old workspace response that arrives after the new workspace response', () => {
+    const action = new BuiltinAgentSliceActionImpl(set, get);
+
+    action.useInitBuiltinAgent(INBOX_SESSION_ID, { brandingRevision: '12', isLogin: true });
+    vi.mocked(useCacheScope).mockReturnValue('user-a:workspace-b');
+    vi.mocked(getCacheScope).mockReturnValue('user-a:workspace-b');
+    action.syncInboxProjectionScope('user-a:workspace-b', true);
+    action.useInitBuiltinAgent(INBOX_SESSION_ID, { brandingRevision: '12', isLogin: true });
+
+    succeed(1, inboxAgent('Workspace B Assistant'));
+    succeed(0, inboxAgent('Workspace A Assistant'));
+
+    expect(store.inboxProjectionScope).toBe('user-a:workspace-b');
+    expect(builtinAgentSelectors.inboxAgentMetaForScope('user-a:workspace-b')(store)).toMatchObject(
+      { title: 'Workspace B Assistant' },
+    );
+  });
+
+  it('ignores a persisted-scope response that arrives after logout', () => {
+    const action = new BuiltinAgentSliceActionImpl(set, get);
+
+    action.useInitBuiltinAgent(INBOX_SESSION_ID, { brandingRevision: '12', isLogin: true });
+    vi.mocked(getUserStoreState).mockReturnValue({ isSignedIn: false } as never);
+    action.syncInboxProjectionScope('user-a:workspace-a', false);
+    action.useInitBuiltinAgent(INBOX_SESSION_ID, { brandingRevision: '12', isLogin: false });
+    succeed(0, inboxAgent('User A Assistant'));
+
+    expect(store.inboxProjectionScope).toBeUndefined();
+    expect(store.builtinAgentIdMap[INBOX_SESSION_ID]).toBeUndefined();
+  });
+
   it('keeps the existing non-inbox key regardless of cache scope', () => {
     const action = new BuiltinAgentSliceActionImpl(set, get);
 
@@ -94,5 +208,10 @@ describe('BuiltinAgentSliceActionImpl.useInitBuiltinAgent', () => {
       expect.any(Function),
       expect.any(Object),
     );
+
+    succeed(0, { id: 'page-agent-id', title: 'Page Agent' } as unknown as AgentItem);
+
+    expect(store.builtinAgentIdMap['page-agent']).toBe('page-agent-id');
+    expect(store.inboxProjectionScope).toBeUndefined();
   });
 });

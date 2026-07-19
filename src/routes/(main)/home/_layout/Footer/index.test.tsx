@@ -103,6 +103,7 @@ const renderFooter = async ({
   mockAgentState = {
     agentMap: { 'inbox-agent': { title: inboxTitle } },
     builtinAgentIdMap: { inbox: 'inbox-agent' },
+    inboxProjectionScope: 'user-a:personal',
   };
   mockServerConfigState = {
     enableBusinessFeatures,
@@ -118,6 +119,7 @@ const renderFooter = async ({
     defaultSettings: {},
     onboarding: classicFinished ? { finishedAt: '2026-04-14T00:00:00.000Z' } : undefined,
     settings: { general: { isDevMode: false } },
+    isSignedIn: true,
   };
 
   vi.doMock('@lobechat/const', async (importOriginal) => {
@@ -214,6 +216,9 @@ const renderFooter = async ({
   vi.doMock('@/hooks/useNavLayout', () => ({
     useNavLayout: createNavLayoutState,
   }));
+  vi.doMock('@/libs/swr/useCacheScope', () => ({
+    useCacheScope: () => 'user-a:personal',
+  }));
   function selectFromAgentStore(selector: (state: Record<string, unknown>) => unknown) {
     return selector(mockAgentState);
   }
@@ -221,13 +226,12 @@ const renderFooter = async ({
     useAgentStore: selectFromAgentStore,
   }));
   vi.doMock('@/store/agent/selectors', () => ({
-    agentSelectors: {
-      getAgentMetaById: (id: string) => (state: Record<string, unknown>) =>
-        (state.agentMap as Record<string, Record<string, unknown>>)[id] ?? {},
-    },
     builtinAgentSelectors: {
-      inboxAgentId: (state: Record<string, unknown>) =>
-        (state.builtinAgentIdMap as Record<string, string>).inbox,
+      inboxAgentMetaForScope: (scope?: string) => (state: Record<string, unknown>) => {
+        if (state.inboxProjectionScope !== scope) return undefined;
+        const id = (state.builtinAgentIdMap as Record<string, string>).inbox;
+        return (state.agentMap as Record<string, Record<string, unknown>>)[id];
+      },
     },
   }));
   const selectFromGlobalStore = ((selector: (state: Record<string, unknown>) => unknown) =>
@@ -280,6 +284,7 @@ afterEach(() => {
   vi.doUnmock('@/features/Workspace/WorkspaceLink');
   vi.doUnmock('@/enterprise/client/providers/RuntimeBrandingProvider');
   vi.doUnmock('@/hooks/useNavLayout');
+  vi.doUnmock('@/libs/swr/useCacheScope');
   vi.doUnmock('@/store/agent');
   vi.doUnmock('@/store/agent/selectors');
   vi.doUnmock('@/store/global');

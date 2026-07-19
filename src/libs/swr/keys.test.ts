@@ -49,7 +49,7 @@ describe('builtinAgentKeys', () => {
       builtinAgentKeys.init('inbox', '12', scope),
     );
 
-    expect(new Set(keys.map(JSON.stringify))).toHaveLength(3);
+    expect(new Set(keys.map((key) => JSON.stringify(key)))).toHaveLength(3);
   });
 });
 
