@@ -140,7 +140,18 @@ export const formatBrandingScanResult = (result: BrandingRepositoryScanResult): 
       'Use runtime branding/i18n, classify a stable internal identifier in code, or update the reviewed baseline.',
     ].join('\n');
   }
-  return `✅ runtime branding literals ok (${result.filesScanned} files scanned, ${result.candidates.length} baselined, ${result.allowed.length} stable internal/legal)`;
+  const allowedCategories = new Map<string, number>();
+  for (const occurrence of result.allowed) {
+    allowedCategories.set(
+      occurrence.category,
+      (allowedCategories.get(occurrence.category) ?? 0) + 1,
+    );
+  }
+  const allowedSummary = [...allowedCategories.entries()]
+    .sort(([left], [right]) => left.localeCompare(right, 'en'))
+    .map(([category, count]) => `${category}=${count}`)
+    .join(', ');
+  return `✅ runtime branding literals ok (${result.filesScanned} files scanned, ${result.candidates.length} baselined, ${result.allowed.length} stable semantic occurrences${allowedSummary ? `: ${allowedSummary}` : ''})`;
 };
 
 export const runBrandingScanCli = async (

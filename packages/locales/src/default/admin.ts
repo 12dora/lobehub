@@ -1233,7 +1233,7 @@ export default {
   'branding.actions.save': 'Save draft',
   'branding.actions.upload': 'Upload asset',
   'branding.description':
-    'Edit a server draft, inspect an isolated preview, then deliberately publish one revision.',
+    'Edit the {{platformName}} server draft, inspect an isolated preview, then deliberately publish one revision.',
   'branding.empty': 'Branding is not available.',
   'branding.errors.generic': 'The Branding operation failed. Review the fields and try again.',
   'branding.fields.assets': 'Runtime assets',
@@ -1296,7 +1296,7 @@ export default {
     'Historical revision restored as a draft. Review and publish it separately.',
   'branding.storageUnavailable':
     'Asset storage is not configured. Text and controlled existing asset URLs can still be edited; uploads fail closed.',
-  'branding.title': 'Runtime Branding',
+  'branding.title': '{{platformName}} Branding',
   'branding.unsaved.description':
     'Your local Branding edits have not been saved to the server draft.',
   'branding.unsaved.leave': 'Leave without saving',

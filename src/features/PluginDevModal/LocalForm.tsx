@@ -5,6 +5,7 @@ import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import EmojiPicker from '@/components/EmojiPicker';
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import { useGlobalStore } from '@/store/global';
 import { globalGeneralSelectors } from '@/store/global/selectors';
 import { useToolStore } from '@/store/tool';
@@ -14,6 +15,7 @@ const LocalForm = memo<{ form: FormInstance; mode?: 'edit' | 'create' }>(({ form
   const isEditMode = mode === 'edit';
   const locale = useGlobalStore(globalGeneralSelectors.currentLanguage);
   const { t } = useTranslation('plugin');
+  const branding = useBranding();
 
   const pluginIds = useToolStore(pluginSelectors.storeAndInstallPluginsIdList);
 
@@ -56,7 +58,7 @@ const LocalForm = memo<{ form: FormInstance; mode?: 'edit' | 'create' }>(({ form
       name: ['manifest', 'meta', 'description'],
     },
     {
-      children: <Input placeholder={'LobeHub'} />,
+      children: <Input placeholder={branding.name} />,
       desc: t('dev.meta.author.desc'),
       label: t('dev.meta.author.label'),
       name: ['manifest', 'author'],

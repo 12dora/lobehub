@@ -4,6 +4,7 @@ import { Block, Button, Flexbox, Text } from '@lobehub/ui';
 import React, { memo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import AuthCard from '@/features/AuthCard';
 import type { OidcClientMetadata } from '@/types/oidc';
 
@@ -21,14 +22,15 @@ interface ClientProps {
 /**
  * Get the description for a scope
  */
-function getScopeDescription(scope: string, t: any): string {
-  return t(`consent.scope.${scope.replace(':', '-')}`, scope);
+function getScopeDescription(scope: string, platformName: string, t: any): string {
+  return t(`consent.scope.${scope.replace(':', '-')}`, { defaultValue: scope, platformName });
 }
 
 const BUILTIN_CLIENTS = new Set(['lobehub-desktop', 'lobehub-mobile', 'lobehub-market']);
 
 const ConsentClient = memo<ClientProps>(({ uid, clientId, scopes, clientMetadata }) => {
   const { t } = useTranslation('oauth');
+  const branding = useBranding();
 
   const [isLoading, setIsLoading] = useState(false);
 
@@ -78,7 +80,7 @@ const ConsentClient = memo<ClientProps>(({ uid, clientId, scopes, clientMetadata
         <Flexbox gap={4} style={{ marginTop: 8 }} width={'100%'}>
           {scopes.map((scope) => (
             <Block key={scope} padding={16} variant={'filled'}>
-              <Text>{getScopeDescription(scope, t)}</Text>
+              <Text>{getScopeDescription(scope, branding.name, t)}</Text>
             </Block>
           ))}
         </Flexbox>

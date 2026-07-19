@@ -19,6 +19,7 @@ import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router';
 
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import { PlatformBrandIcon, SUPPORTED_MESSENGER_PLATFORMS } from '@/features/Messenger/constants';
 
 import { AndroidPlatformIcon, ApplePlatformIcon } from './MobilePlatformIcons';
@@ -402,6 +403,7 @@ const openExternal = (url: string) => {
 
 const DownloadsPage = memo(() => {
   const { t } = useTranslation('setting');
+  const branding = useBranding();
   const navigate = useNavigate();
 
   const renderMessengerPlatformButton = (
@@ -425,7 +427,11 @@ const DownloadsPage = memo(() => {
       <span className={styles.platformLabel}>
         <span className={styles.platformName}>{name}</span>
         {isQuickSetup && (
-          <Tooltip title={t('downloads.messenger.quickSetupTooltip')}>
+          <Tooltip
+            title={t('downloads.messenger.quickSetupTooltip', {
+              platformName: branding.name,
+            })}
+          >
             <span
               aria-label={t('downloads.messenger.quickSetup')}
               className={styles.platformVerified}
@@ -470,7 +476,7 @@ const DownloadsPage = memo(() => {
       <main className={styles.content}>
         <header className={styles.pageHeader}>
           <Text as="h1" className={styles.pageTitle} weight={700}>
-            {t('downloads.title')}
+            {t('downloads.title', { platformName: branding.name })}
           </Text>
         </header>
 
@@ -484,7 +490,9 @@ const DownloadsPage = memo(() => {
                 <Text as="h2" style={{ fontSize: 20 }} weight={700}>
                   {t('downloads.mobile.title')}
                 </Text>
-                <Text type="secondary">{t('downloads.mobile.desc')}</Text>
+                <Text type="secondary">
+                  {t('downloads.mobile.desc', { platformName: branding.name })}
+                </Text>
               </Flexbox>
               <Flexbox horizontal align="center" className={styles.actionRow} gap={10}>
                 <Button type="primary" onClick={() => openExternal(DOWNLOAD_URL.mobile)}>
@@ -534,7 +542,9 @@ const DownloadsPage = memo(() => {
                 <Text as="h2" style={{ fontSize: 20 }} weight={700}>
                   {t('downloads.messenger.title')}
                 </Text>
-                <Text type="secondary">{t('downloads.messenger.desc')}</Text>
+                <Text type="secondary">
+                  {t('downloads.messenger.desc', { platformName: branding.name })}
+                </Text>
               </Flexbox>
               <div className={styles.platformGrid}>{renderMessengerPlatformGrid()}</div>
               <Flexbox horizontal className={styles.actionRow} gap={10}>

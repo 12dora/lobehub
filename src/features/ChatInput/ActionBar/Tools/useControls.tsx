@@ -44,6 +44,7 @@ import {
   selectSkillRuntimeSources,
   usePublishedSkillCatalog,
 } from '@/enterprise/client/features/skills';
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import { CustomConnectorModal } from '@/features/Connectors';
 import DevModal from '@/features/PluginDevModal';
 import { createSkillStoreModal } from '@/features/SkillStore';
@@ -79,12 +80,6 @@ import ToolItemDetailPopover from './ToolItemDetailPopover';
 
 const SKILL_ICON_SIZE = 18;
 const CLOSE_TOOL_DETAIL_POPOVER_EVENT = 'lobe-chat-tool-detail-popover-close';
-
-const officialTag = (
-  <Tooltip placement={'top'} title={'LobeHub'}>
-    <Tag color={'success'} icon={<Icon icon={BadgeCheck} />} size={'small'} />
-  </Tooltip>
-);
 
 type SkillPolicyMode = AgentPluginMode;
 
@@ -438,6 +433,15 @@ const styles = createStaticStyles(({ css }) => ({
 
 export const useControls = ({ closeDropdown }: { closeDropdown?: () => void } = {}) => {
   const { t } = useTranslation('setting');
+  const branding = useBranding();
+  const officialTag = useMemo(
+    () => (
+      <Tooltip placement={'top'} title={branding.name}>
+        <Tag color={'success'} icon={<Icon icon={BadgeCheck} />} size={'small'} />
+      </Tooltip>
+    ),
+    [branding.name],
+  );
   const agentId = useAgentId();
   const navigate = useWorkspaceAwareNavigate();
   const { updateAgentChatConfig } = useUpdateAgentConfig();
@@ -1094,6 +1098,7 @@ export const useControls = ({ closeDropdown }: { closeDropdown?: () => void } = 
       openSkillPolicyMenu,
       checkedSet,
       disabledIdSet,
+      officialTag,
     ],
   );
 
@@ -1160,6 +1165,7 @@ export const useControls = ({ closeDropdown }: { closeDropdown?: () => void } = 
       agentId,
       t,
       createManagedSkillItem,
+      officialTag,
     ],
   );
 
@@ -1212,7 +1218,7 @@ export const useControls = ({ closeDropdown }: { closeDropdown?: () => void } = 
           title,
         });
       }),
-    [filteredBuiltinList, t, createManagedSkillItem, uninstallBuiltinTool],
+    [filteredBuiltinList, t, createManagedSkillItem, uninstallBuiltinTool, officialTag],
   );
 
   // Application-fixed tool items (read-only). Always-on tools owned by the runtime
@@ -1278,7 +1284,7 @@ export const useControls = ({ closeDropdown }: { closeDropdown?: () => void } = 
           searchText: `${title} ${item.identifier}`,
         } as SkillMenuItem;
       }),
-    [fixedDisplayList, t],
+    [fixedDisplayList, t, officialTag],
   );
 
   // Builtin Agent Skills list items (grouped under LobeHub)
@@ -1326,7 +1332,7 @@ export const useControls = ({ closeDropdown }: { closeDropdown?: () => void } = 
           title,
         });
       }),
-    [installedBuiltinSkills, t, createManagedSkillItem],
+    [installedBuiltinSkills, t, createManagedSkillItem, officialTag],
   );
 
   // Market Agent Skills list items (grouped under Community)
