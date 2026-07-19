@@ -1,12 +1,20 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { hostname } from 'node:os';
 
-import { eq } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 
-import { platformIdentityProviderInstances } from '@/database/schemas/platform';
-import type { LobeChatDatabase } from '@/database/type';
+import {
+  platformIdentityProviderInstances,
+  platformIdentityProviders,
+} from '@/database/schemas/platform';
+import type { LobeChatDatabase, Transaction } from '@/database/type';
 
+import { identityProviderLkgIdentity } from './lkg';
 import type { IdentityProviderStartupSnapshot } from './startupArtifact';
+import {
+  loadCanonicalPublishedIdentityProviders,
+  parseEnvironmentIdentityProviderIds,
+} from './startupSnapshot';
 
 export const IDENTITY_PROVIDER_INSTANCE_STALE_MS = 90_000;
 export const IDENTITY_PROVIDER_HEARTBEAT_MS = 30_000;
@@ -18,6 +26,15 @@ const processHostnameHash = createHash('sha256').update(hostname(), 'utf8').dige
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let registered = false;
 let registrationState: 'failed' | 'registered' | 'unknown' = 'unknown';
+
+export const INSTANCE_CONVERGENCE_LOCK_NAMESPACE = 1_278_874_436;
+export const INSTANCE_CONVERGENCE_LOCK_RESOURCE = 1_348_691_815;
+
+export const acquireIdentityProviderConvergenceLock = async (tx: Transaction): Promise<void> => {
+  await tx.execute(
+    sql`SELECT pg_advisory_xact_lock(${INSTANCE_CONVERGENCE_LOCK_NAMESPACE}, ${INSTANCE_CONVERGENCE_LOCK_RESOURCE})`,
+  );
+};
 
 const isServerlessRuntime = (env: Record<string, string | undefined>): boolean =>
   Boolean(
@@ -56,12 +73,69 @@ export const markIdentityProviderInstanceRegistrationFailed = (): void => {
   registered = false;
 };
 
-const heartbeat = async (db: LobeChatDatabase): Promise<void> => {
+const demoteActiveProvidersForInstance = async (input: {
+  env: Record<string, string | undefined>;
+  health: 'degraded' | 'healthy';
+  identityRevision: string | null;
+  source: IdentityProviderStartupSnapshot['source'];
+  tx: Transaction;
+}): Promise<void> => {
+  const selected = await loadCanonicalPublishedIdentityProviders({
+    db: input.tx,
+    environmentProviderIds: new Set(parseEnvironmentIdentityProviderIds(input.env)),
+  });
+  if (selected.length === 0) return;
+  const targetIdentityRevision = identityProviderLkgIdentity(
+    selected.map((provider) => ({
+      ...provider,
+      payload: provider.payload as unknown as Record<string, unknown>,
+    })),
+  );
+  const converged =
+    input.health === 'healthy' &&
+    input.source === 'database' &&
+    input.identityRevision === targetIdentityRevision;
+  if (converged) return;
+
+  await input.tx
+    .update(platformIdentityProviders)
+    .set({ status: 'pending_restart', updatedAt: sql`clock_timestamp()` })
+    .where(
+      and(
+        eq(platformIdentityProviders.status, 'active'),
+        inArray(
+          platformIdentityProviders.id,
+          selected.map((provider) => provider.providerId),
+        ),
+      ),
+    );
+};
+
+const heartbeat = async (
+  db: LobeChatDatabase,
+  env: Record<string, string | undefined>,
+): Promise<void> => {
   if (!registered) return;
-  await db
-    .update(platformIdentityProviderInstances)
-    .set({ lastHeartbeat: new Date() })
-    .where(eq(platformIdentityProviderInstances.instanceId, processInstanceId));
+  await db.transaction(async (tx) => {
+    await acquireIdentityProviderConvergenceLock(tx);
+    const [instance] = await tx
+      .update(platformIdentityProviderInstances)
+      .set({ lastHeartbeat: sql`clock_timestamp()` })
+      .where(eq(platformIdentityProviderInstances.instanceId, processInstanceId))
+      .returning({
+        activeIdentityRevision: platformIdentityProviderInstances.activeIdentityRevision,
+        health: platformIdentityProviderInstances.health,
+        startupSource: platformIdentityProviderInstances.startupSource,
+      });
+    if (!instance) return;
+    await demoteActiveProvidersForInstance({
+      env,
+      health: instance.health,
+      identityRevision: instance.activeIdentityRevision,
+      source: instance.startupSource,
+      tx,
+    });
+  });
 };
 
 /** Upsert the real startup result for this process, including fail-closed fallback starts. */
@@ -70,42 +144,51 @@ export const registerIdentityProviderInstance = async (input: {
   env?: Record<string, string | undefined>;
   snapshot: IdentityProviderStartupSnapshot;
 }): Promise<void> => {
-  const now = new Date();
   const category = identityProviderDegradedCategory(input.snapshot);
-  await input.db
-    .insert(platformIdentityProviderInstances)
-    .values({
-      activeIdentityRevision: input.snapshot.identityRevision,
-      degradedCategory: category,
-      health: input.snapshot.health,
-      hostnameHash: processHostnameHash,
-      instanceId: processInstanceId,
-      lastHeartbeat: now,
-      loadedAt: input.snapshot.loadedAt,
-      startedAt: processStartedAt,
-      startupGeneration: input.snapshot.generation,
-      startupSource: input.snapshot.source,
-    })
-    .onConflictDoUpdate({
-      set: {
+  const env = input.env ?? process.env;
+  await input.db.transaction(async (tx) => {
+    await acquireIdentityProviderConvergenceLock(tx);
+    await tx
+      .insert(platformIdentityProviderInstances)
+      .values({
         activeIdentityRevision: input.snapshot.identityRevision,
         degradedCategory: category,
         health: input.snapshot.health,
         hostnameHash: processHostnameHash,
-        lastHeartbeat: now,
+        instanceId: processInstanceId,
+        lastHeartbeat: sql`clock_timestamp()`,
         loadedAt: input.snapshot.loadedAt,
+        startedAt: processStartedAt,
         startupGeneration: input.snapshot.generation,
         startupSource: input.snapshot.source,
-      },
-      target: platformIdentityProviderInstances.instanceId,
+      })
+      .onConflictDoUpdate({
+        set: {
+          activeIdentityRevision: input.snapshot.identityRevision,
+          degradedCategory: category,
+          health: input.snapshot.health,
+          hostnameHash: processHostnameHash,
+          lastHeartbeat: sql`clock_timestamp()`,
+          loadedAt: input.snapshot.loadedAt,
+          startupGeneration: input.snapshot.generation,
+          startupSource: input.snapshot.source,
+        },
+        target: platformIdentityProviderInstances.instanceId,
+      });
+    await demoteActiveProvidersForInstance({
+      env,
+      health: input.snapshot.health,
+      identityRevision: input.snapshot.identityRevision,
+      source: input.snapshot.source,
+      tx,
     });
+  });
   registered = true;
   registrationState = 'registered';
 
-  const env = input.env ?? process.env;
   if (heartbeatTimer || isServerlessRuntime(env)) return;
   heartbeatTimer = setInterval(() => {
-    void heartbeat(input.db).catch((error) => {
+    void heartbeat(input.db, env).catch((error) => {
       console.error('[identityProviderInstance] heartbeat unavailable', {
         errorClass: error instanceof Error ? error.name : 'UnknownError',
         instanceId: processInstanceId,

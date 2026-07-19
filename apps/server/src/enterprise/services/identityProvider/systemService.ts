@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, sql } from 'drizzle-orm';
 
 import { checksumPayload } from '@/database/models/platform';
 import {
@@ -17,6 +17,7 @@ import type {
 
 import { containsEnterpriseSecretMaterial } from '../../security/redaction';
 import {
+  acquireIdentityProviderConvergenceLock,
   getIdentityProviderInstanceRegistrationState,
   getIdentityProviderProcessInstance,
   IDENTITY_PROVIDER_INSTANCE_STALE_MS,
@@ -130,90 +131,91 @@ export class IdentityProviderSystemService {
     if (!artifact) {
       throw new IdentityProviderSystemError('PLATFORM_IDENTITY_RESTART_STATUS_UNAVAILABLE');
     }
-    const [{ identityRevision: targetIdentityRevision }, instances, pendingRows] =
-      await Promise.all([
-        loadPublishedIdentityTarget(this.db),
-        this.db
-          .select()
-          .from(platformIdentityProviderInstances)
-          .orderBy(desc(platformIdentityProviderInstances.lastHeartbeat))
-          .limit(200),
-        this.db
-          .select({
-            activationRevision: platformIdentityProviders.activationRevision,
-            id: platformIdentityProviders.id,
-            providerKey: platformIdentityProviders.providerKey,
-          })
-          .from(platformIdentityProviders)
-          .where(eq(platformIdentityProviders.status, 'pending_restart')),
-      ]);
-    const now = this.now().getTime();
-    let instanceProjection = instances.map((instance) => ({
-      activeIdentityRevision: instance.activeIdentityRevision,
-      degradedCategory: instance.degradedCategory,
-      fresh: now - instance.lastHeartbeat.getTime() <= IDENTITY_PROVIDER_INSTANCE_STALE_MS,
-      health: instance.health,
-      hostnameHash: instance.hostnameHash,
-      instanceId: instance.instanceId,
-      lastHeartbeat: instance.lastHeartbeat,
-      loadedAt: instance.loadedAt,
-      startedAt: instance.startedAt,
-      startupGeneration: instance.startupGeneration,
-      startupSource: instance.startupSource,
-    }));
     const local = getIdentityProviderProcessInstance();
-    const localRow = instanceProjection.find(
-      (instance) => instance.instanceId === local.instanceId,
-    );
     const registrationState = getIdentityProviderInstanceRegistrationState();
-    const registrationFailed =
-      registrationState === 'failed' || (!localRow && registrationState !== 'registered');
-    const localProjection = {
-      activeIdentityRevision: artifact.identityRevision,
-      degradedCategory: registrationFailed
-        ? 'instance_status_unavailable'
-        : identityProviderDegradedCategory({ ...artifact, databaseProviders: [], providerIds: [] }),
-      fresh: true,
-      health: registrationFailed ? ('degraded' as const) : artifact.health,
-      hostnameHash: local.hostnameHash,
-      instanceId: local.instanceId,
-      lastHeartbeat: localRow?.lastHeartbeat ?? this.now(),
-      loadedAt: artifact.loadedAt,
-      startedAt: local.startedAt,
-      startupGeneration: artifact.generation,
-      startupSource: artifact.source,
-    };
-    instanceProjection = [
-      ...instanceProjection.filter((instance) => instance.instanceId !== local.instanceId),
-      localProjection,
-    ];
-    const fresh = instanceProjection.filter((instance) => instance.fresh);
-    const isActive = (instance: (typeof fresh)[number]) =>
-      Boolean(targetIdentityRevision) &&
-      instance.activeIdentityRevision === targetIdentityRevision &&
-      instance.health === 'healthy' &&
-      instance.startupSource === 'database';
-    const activeCount = fresh.filter(isActive).length;
-    const allFreshInstancesActive = fresh.length > 0 && activeCount === fresh.length;
-    let pendingPublished = pendingRows.flatMap((row) =>
-      row.activationRevision
-        ? [
-            {
-              providerId: row.id,
-              providerKey: row.providerKey,
-              publishedRevision: row.activationRevision,
-            },
-          ]
-        : [],
-    );
-    if (allFreshInstancesActive && targetIdentityRevision && pendingRows.length > 0) {
-      const reconciled = await this.db.transaction(async (tx) => {
-        const ids = new Set<string>();
+    return this.db.transaction(async (tx) => {
+      await acquireIdentityProviderConvergenceLock(tx);
+      const target = await loadPublishedIdentityTarget(tx);
+      const instances = await tx
+        .select({
+          activeIdentityRevision: platformIdentityProviderInstances.activeIdentityRevision,
+          degradedCategory: platformIdentityProviderInstances.degradedCategory,
+          fresh: sql<boolean>`${platformIdentityProviderInstances.lastHeartbeat} >= clock_timestamp() - (${IDENTITY_PROVIDER_INSTANCE_STALE_MS} * interval '1 millisecond')`,
+          health: platformIdentityProviderInstances.health,
+          hostnameHash: platformIdentityProviderInstances.hostnameHash,
+          instanceId: platformIdentityProviderInstances.instanceId,
+          lastHeartbeat: platformIdentityProviderInstances.lastHeartbeat,
+          loadedAt: platformIdentityProviderInstances.loadedAt,
+          startedAt: platformIdentityProviderInstances.startedAt,
+          startupGeneration: platformIdentityProviderInstances.startupGeneration,
+          startupSource: platformIdentityProviderInstances.startupSource,
+        })
+        .from(platformIdentityProviderInstances)
+        .orderBy(desc(platformIdentityProviderInstances.lastHeartbeat));
+      const pendingRows = await tx
+        .select({
+          activationRevision: platformIdentityProviders.activationRevision,
+          id: platformIdentityProviders.id,
+          providerKey: platformIdentityProviders.providerKey,
+        })
+        .from(platformIdentityProviders)
+        .where(eq(platformIdentityProviders.status, 'pending_restart'));
+
+      const localRow = instances.find((instance) => instance.instanceId === local.instanceId);
+      const registrationFailed =
+        registrationState === 'failed' || (!localRow && registrationState !== 'registered');
+      const localProjection = {
+        activeIdentityRevision: artifact.identityRevision,
+        degradedCategory: registrationFailed
+          ? 'instance_status_unavailable'
+          : identityProviderDegradedCategory({
+              ...artifact,
+              databaseProviders: [],
+              providerIds: [],
+            }),
+        fresh: true,
+        health: registrationFailed ? ('degraded' as const) : artifact.health,
+        hostnameHash: local.hostnameHash,
+        instanceId: local.instanceId,
+        lastHeartbeat: localRow?.lastHeartbeat ?? this.now(),
+        loadedAt: artifact.loadedAt,
+        startedAt: local.startedAt,
+        startupGeneration: artifact.generation,
+        startupSource: artifact.source,
+      };
+      const instanceProjection = [
+        ...instances.filter((instance) => instance.instanceId !== local.instanceId),
+        localProjection,
+      ];
+      const fresh = instanceProjection.filter((instance) => instance.fresh);
+      const isActive = (instance: (typeof fresh)[number]) =>
+        Boolean(target.identityRevision) &&
+        instance.activeIdentityRevision === target.identityRevision &&
+        instance.health === 'healthy' &&
+        instance.startupSource === 'database';
+      const activeCount = fresh.filter(isActive).length;
+      const allFreshInstancesActive = fresh.length > 0 && activeCount === fresh.length;
+      let pendingPublished = pendingRows.flatMap((row) =>
+        row.activationRevision
+          ? [
+              {
+                providerId: row.id,
+                providerKey: row.providerKey,
+                publishedRevision: row.activationRevision,
+              },
+            ]
+          : [],
+      );
+      if (allFreshInstancesActive && target.identityRevision) {
+        const canonicalProviderIds = new Set(
+          target.providers.map((provider) => provider.providerId),
+        );
+        const reconciled = new Set<string>();
         for (const row of pendingRows) {
-          if (!row.activationRevision) continue;
+          if (!row.activationRevision || !canonicalProviderIds.has(row.id)) continue;
           const [updated] = await tx
             .update(platformIdentityProviders)
-            .set({ status: 'active', updatedAt: this.now() })
+            .set({ status: 'active', updatedAt: sql`clock_timestamp()` })
             .where(
               and(
                 eq(platformIdentityProviders.id, row.id),
@@ -223,41 +225,39 @@ export class IdentityProviderSystemService {
               ),
             )
             .returning({ id: platformIdentityProviders.id });
-          if (updated) ids.add(updated.id);
+          if (updated) reconciled.add(updated.id);
         }
-        return ids;
-      });
-      pendingPublished = pendingPublished.filter(
-        (provider) => !reconciled.has(provider.providerId),
-      );
-    }
-    // A failed reconciliation CAS remains pending even when runtime instances already agree.
-    const pendingRestart = pendingPublished.length > 0;
-    const capability = this.restartCapability();
-    return {
-      active: {
-        allFreshInstancesActive,
-        partial: activeCount > 0 && !allFreshInstancesActive,
-        staleInstances: instanceProjection.filter((instance) => !instance.fresh).length,
-      },
-      artifact: {
-        degradedCategory: localProjection.degradedCategory,
-        generation: artifact.generation,
-        health: localProjection.health,
-        identityRevision: artifact.identityRevision,
-        instanceId: local.instanceId,
-        loadedAt: artifact.loadedAt,
-        source: artifact.source,
-      },
-      instances: instanceProjection,
-      pendingPublished,
-      pendingRestart,
-      restart: {
-        reason: pendingRestart ? capability.reason : ('no_pending_restart' as const),
-        supported: pendingRestart && capability.supported,
-      },
-      targetIdentityRevision,
-    };
+        pendingPublished = pendingPublished.filter(
+          (provider) => !reconciled.has(provider.providerId),
+        );
+      }
+      const pendingRestart = pendingPublished.length > 0;
+      const capability = this.restartCapability();
+      return {
+        active: {
+          allFreshInstancesActive,
+          partial: activeCount > 0 && !allFreshInstancesActive,
+          staleInstances: instanceProjection.filter((instance) => !instance.fresh).length,
+        },
+        artifact: {
+          degradedCategory: localProjection.degradedCategory,
+          generation: artifact.generation,
+          health: localProjection.health,
+          identityRevision: artifact.identityRevision,
+          instanceId: local.instanceId,
+          loadedAt: artifact.loadedAt,
+          source: artifact.source,
+        },
+        instances: instanceProjection,
+        pendingPublished,
+        pendingRestart,
+        restart: {
+          reason: pendingRestart ? capability.reason : ('no_pending_restart' as const),
+          supported: pendingRestart && capability.supported,
+        },
+        targetIdentityRevision: target.identityRevision,
+      };
+    });
   };
 
   prepareRestart = async (actorId: string, input: AdminSystemPrepareRestartInput) => {
