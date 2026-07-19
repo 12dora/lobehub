@@ -60,7 +60,8 @@ describe('platform identity provider Better Auth adapter', () => {
       requireIssuerValidation: true,
     });
     expect(config).not.toHaveProperty('discoveryUrl');
-    expect(config).not.toHaveProperty('tokenUrl');
+    expect(config.tokenUrl).toBe('https://platform-oidc-token.invalid/');
+    expect(config.tokenUrl).not.toBe(provider.oidcMetadata.tokenEndpoint);
     expect(config).not.toHaveProperty('overrideUserInfo');
     expect(
       await config.mapProfileToUser!({
