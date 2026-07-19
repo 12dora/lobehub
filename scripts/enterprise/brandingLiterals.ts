@@ -452,6 +452,111 @@ const bindingMatches = (name: ts.BindingName | undefined, identifier: string): b
   );
 };
 
+interface StaticMemberResolution {
+  expression?: ts.Expression;
+  found: boolean;
+}
+
+const staticPropertyName = (
+  name: ts.PropertyName | undefined,
+  sourceFile: ts.SourceFile,
+  seen: Set<ts.Node>,
+): string | undefined => {
+  if (!name) return undefined;
+  if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name)) {
+    return name.text;
+  }
+  if (ts.isComputedPropertyName(name)) {
+    return evaluateStaticString(name.expression, sourceFile, new Set(seen));
+  }
+  return undefined;
+};
+
+const resolveObjectMember = (
+  object: ts.ObjectLiteralExpression,
+  propertyName: string,
+  sourceFile: ts.SourceFile,
+  seen: Set<ts.Node>,
+): StaticMemberResolution => {
+  for (let index = object.properties.length - 1; index >= 0; index -= 1) {
+    const property = object.properties[index]!;
+    if (ts.isSpreadAssignment(property)) return { found: true };
+    const name = staticPropertyName(property.name, sourceFile, seen);
+    if (name === undefined) return { found: true };
+    if (name !== propertyName) continue;
+    if (ts.isPropertyAssignment(property)) return { expression: property.initializer, found: true };
+    if (ts.isShorthandPropertyAssignment(property))
+      return { expression: property.name, found: true };
+    return { found: true };
+  }
+  return { found: false };
+};
+
+const resolveArrayMember = (
+  array: ts.ArrayLiteralExpression,
+  targetIndex: number,
+): StaticMemberResolution => {
+  for (let index = 0; index <= targetIndex; index += 1) {
+    const element = array.elements[index];
+    if (!element || ts.isOmittedExpression(element)) {
+      if (index === targetIndex) return { found: false };
+      continue;
+    }
+    if (ts.isSpreadElement(element)) return { found: true };
+    if (index === targetIndex) return { expression: element, found: true };
+  }
+  return { found: false };
+};
+
+const isStaticUndefined = (node: ts.Expression | undefined): boolean =>
+  Boolean(node && ts.isIdentifier(node) && node.text === 'undefined');
+
+const resolveBindingString = (
+  name: ts.BindingName,
+  initializer: ts.Expression | undefined,
+  identifier: string,
+  sourceFile: ts.SourceFile,
+  seen: Set<ts.Node>,
+): string | undefined => {
+  if (ts.isIdentifier(name)) {
+    return name.text === identifier && initializer
+      ? evaluateStaticString(initializer, sourceFile, seen)
+      : undefined;
+  }
+
+  if (ts.isObjectBindingPattern(name)) {
+    if (!initializer || !ts.isObjectLiteralExpression(initializer)) return undefined;
+    for (const element of name.elements) {
+      if (!bindingMatches(element.name, identifier)) continue;
+      const propertyName =
+        staticPropertyName(element.propertyName, sourceFile, seen) ??
+        (ts.isIdentifier(element.name) ? element.name.text : undefined);
+      if (!propertyName) return undefined;
+      const member = resolveObjectMember(initializer, propertyName, sourceFile, seen);
+      if (member.found && !member.expression) return undefined;
+      const selected =
+        !member.found || isStaticUndefined(member.expression)
+          ? element.initializer
+          : member.expression;
+      return resolveBindingString(element.name, selected, identifier, sourceFile, seen);
+    }
+    return undefined;
+  }
+
+  if (!initializer || !ts.isArrayLiteralExpression(initializer)) return undefined;
+  for (const [index, element] of name.elements.entries()) {
+    if (!ts.isBindingElement(element) || !bindingMatches(element.name, identifier)) continue;
+    const member = resolveArrayMember(initializer, index);
+    if (member.found && !member.expression) return undefined;
+    const selected =
+      !member.found || isStaticUndefined(member.expression)
+        ? element.initializer
+        : member.expression;
+    return resolveBindingString(element.name, selected, identifier, sourceFile, seen);
+  }
+  return undefined;
+};
+
 const resolveLexicalIdentifier = (
   identifier: ts.Identifier,
   sourceFile: ts.SourceFile,
@@ -472,7 +577,13 @@ const resolveLexicalIdentifier = (
             }
             return {
               found: true,
-              value: evaluateStaticString(declaration.initializer, sourceFile, seen),
+              value: resolveBindingString(
+                declaration.name,
+                declaration.initializer,
+                identifier.text,
+                sourceFile,
+                seen,
+              ),
             };
           }
         }

@@ -15,6 +15,7 @@ interface HtmlNodeLike {
   childNodes?: HtmlNodeLike[];
   data?: string;
   nodeType: number;
+  parentNode?: HtmlNodeLike | null;
 }
 
 interface HtmlAttributeLike {
@@ -241,6 +242,8 @@ export const collectCssFragments = (
 
   const parseRange = (start: number, end: number, ancestry: string[]) => {
     let cursor = start;
+    const atRuleOrdinals = new Map<string, number>();
+    const selectorOrdinals = new Map<string, number>();
     while (cursor < end) {
       const opening = sanitized.indexOf('{', cursor);
       if (opening < 0 || opening >= end) break;
@@ -251,13 +254,16 @@ export const collectCssFragments = (
       const closing = findMatchingCssBrace(sanitized, opening);
       if (closing > end) break;
       if (header.startsWith('@')) {
-        parseRange(opening + 1, closing, [
-          ...ancestry,
-          `at:${shortFingerprint(header.replaceAll(/\s+/gu, ' '))}`,
-        ]);
+        const atRuleFingerprint = shortFingerprint(header.replaceAll(/\s+/gu, ' '));
+        const ordinal = atRuleOrdinals.get(atRuleFingerprint) ?? 0;
+        atRuleOrdinals.set(atRuleFingerprint, ordinal + 1);
+        parseRange(opening + 1, closing, [...ancestry, `at:${atRuleFingerprint}:rule:${ordinal}`]);
       } else {
         const selector = header.replaceAll(/\s+/gu, ' ');
-        const selectorLocator = `selector:${shortFingerprint(selector)}`;
+        const selectorFingerprint = shortFingerprint(selector);
+        const ordinal = selectorOrdinals.get(selectorFingerprint) ?? 0;
+        selectorOrdinals.set(selectorFingerprint, ordinal + 1);
+        const selectorLocator = `selector:${selectorFingerprint}/rule:${ordinal}`;
         const body = sanitized.slice(opening + 1, closing);
         for (const declaration of splitCssDeclarations(body)) {
           const colon = findCssColon(declaration.text);
@@ -290,7 +296,7 @@ export const collectCssFragments = (
   return fragments;
 };
 
-const htmlDescriptor = (element: HtmlElementLike): string => {
+const htmlDescriptorBase = (element: HtmlElementLike): string => {
   const tag = (element.localName ?? 'element').toLocaleLowerCase('en-US');
   const id = element.id || element.getAttribute('id');
   const classNames = (element.getAttribute('class') || '')
@@ -300,11 +306,32 @@ const htmlDescriptor = (element: HtmlElementLike): string => {
   return `${tag}${id ? `#${id}` : ''}${classNames.map((name) => `.${name}`).join('')}`;
 };
 
+const htmlDescriptor = (
+  element: HtmlElementLike,
+  cache: WeakMap<HtmlElementLike, string>,
+): string => {
+  const cached = cache.get(element);
+  if (cached) return cached;
+  const counts = new Map<string, number>();
+  for (const node of element.parentNode?.childNodes ?? [element]) {
+    if (node.nodeType !== 1) continue;
+    const sibling = node as HtmlElementLike;
+    const descriptor = htmlDescriptorBase(sibling);
+    const ordinal = counts.get(descriptor) ?? 0;
+    counts.set(descriptor, ordinal + 1);
+    cache.set(sibling, `${descriptor}:same(${ordinal})`);
+  }
+  return cache.get(element) ?? `${htmlDescriptorBase(element)}:same(0)`;
+};
+
 export const collectHtmlFragments = (source: string): BrandingFormatFragment[] => {
   const { document } = parseHTML(source);
   const fragments: BrandingFormatFragment[] = [];
-  const root = document.documentElement as unknown as HtmlElementLike | null;
-  if (!root) return fragments;
+  const descriptorCache = new WeakMap<HtmlElementLike, string>();
+  const roots = (document.childNodes as unknown as HtmlNodeLike[]).filter(
+    (node): node is HtmlElementLike => node.nodeType === 1,
+  );
+  if (roots.length === 0) return fragments;
 
   const add = (text: string, locator: string) => {
     if (!text.trim()) return;
@@ -325,7 +352,7 @@ export const collectHtmlFragments = (source: string): BrandingFormatFragment[] =
     if (node.nodeType === 3) return node.data ?? '';
     if (node.nodeType !== 1) return '';
     const element = node as HtmlElementLike;
-    const descriptor = htmlDescriptor(element);
+    const descriptor = htmlDescriptor(element, descriptorCache);
     const nextAncestry = [...ancestry, descriptor];
     scanAttributes(element, nextAncestry);
     const tag = (element.localName ?? '').toLocaleLowerCase('en-US');
@@ -335,7 +362,7 @@ export const collectHtmlFragments = (source: string): BrandingFormatFragment[] =
   };
 
   const walk = (element: HtmlElementLike, ancestry: string[]) => {
-    const descriptor = htmlDescriptor(element);
+    const descriptor = htmlDescriptor(element, descriptorCache);
     const nextAncestry = [...ancestry, descriptor];
     scanAttributes(element, nextAncestry);
     const tag = (element.localName ?? '').toLocaleLowerCase('en-US');
@@ -372,7 +399,7 @@ export const collectHtmlFragments = (source: string): BrandingFormatFragment[] =
     flush();
   };
 
-  walk(root, []);
+  for (const root of roots) walk(root, []);
   return fragments;
 };
 
@@ -397,24 +424,24 @@ export const collectYamlFragments = (
     fragments.push({ column: position.col, line: position.line, locator, text: node.value });
   };
 
-  const visit = (node: YAMLNode | null, keyPath: string[]) => {
+  const visit = (node: YAMLNode | null, keyPath: Array<number | string>) => {
     if (!node) return;
     if (isMap(node)) {
       for (const pair of node.items) {
         const key = yamlKey(pair.key);
         if (isNode(pair.key))
-          addScalar(pair.key, `yaml:${keyPath.join('.') || '<root>'}/key:${key}`);
+          addScalar(pair.key, `yaml:path:${JSON.stringify(keyPath)}/key:${JSON.stringify(key)}`);
         visit(isNode(pair.value) ? pair.value : null, [...keyPath, key]);
       }
       return;
     }
     if (isSeq(node)) {
       for (const [index, item] of node.items.entries()) {
-        visit(isNode(item) ? item : null, [...keyPath, `[${index}]`]);
+        visit(isNode(item) ? item : null, [...keyPath, index]);
       }
       return;
     }
-    addScalar(node, `yaml:${keyPath.join('.') || '<root>'}/value`);
+    addScalar(node, `yaml:path:${JSON.stringify(keyPath)}/value`);
   };
 
   visit(isNode(document.contents) ? document.contents : null, []);
