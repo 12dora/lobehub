@@ -9,7 +9,11 @@ import {
 import type { LobeChatDatabase } from '@/database/type';
 import { type KeyProvider, PlatformSecretService } from '@/server/enterprise/security/secret';
 
-import { IdentityProviderTestAttemptStore } from './testAttemptStore';
+import {
+  IDENTITY_PROVIDER_TEST_PROCESSING_LEASE_MS,
+  IDENTITY_PROVIDER_TEST_TERMINAL_RETENTION_MS,
+  IdentityProviderTestAttemptStore,
+} from './testAttemptStore';
 
 const db: LobeChatDatabase = await getTestDB();
 const keyProvider: KeyProvider = {
@@ -144,7 +148,7 @@ describe('IdentityProviderTestAttemptStore', () => {
     });
   });
 
-  it('cleans expired attempts in bounded idempotent batches without deleting processing rows', async () => {
+  it('keeps an active processing lease and reaps stale processing plus retained terminal rows', async () => {
     const [provider] = await db
       .insert(platformIdentityProviders)
       .values({
@@ -155,8 +159,15 @@ describe('IdentityProviderTestAttemptStore', () => {
         secretUpdatedAt: new Date(),
       })
       .returning();
-    const createdAt = new Date(Date.now() - 10 * 60 * 1000);
+    const now = new Date();
+    const createdAt = new Date(now.getTime() - 30 * 60 * 1000);
     const expiresAt = new Date(createdAt.getTime() + 5 * 60 * 1000);
+    const staleReservedAt = new Date(
+      now.getTime() - IDENTITY_PROVIDER_TEST_PROCESSING_LEASE_MS - 1000,
+    );
+    const retainedUntil = new Date(
+      now.getTime() - IDENTITY_PROVIDER_TEST_TERMINAL_RETENTION_MS - 1000,
+    );
     const base = (index: number) => ({
       auditReason: 'cleanup expired identity provider test',
       createdAt,
@@ -177,24 +188,60 @@ describe('IdentityProviderTestAttemptStore', () => {
       ...Array.from({ length: 502 }, (_, index) => base(index + 1)),
       {
         ...base(503),
-        completedAt: new Date(),
+        completedAt: retainedUntil,
         errorCode: 'OIDC_TEST_FAILED',
         status: 'failed' as const,
       },
       {
         ...base(504),
-        completedAt: new Date(),
+        completedAt: retainedUntil,
         result: { claims: {}, issues: [], valid: true },
         status: 'succeeded' as const,
       },
-      { ...base(505), reservedAt: new Date(), status: 'processing' as const },
+      { ...base(505), reservedAt: staleReservedAt, status: 'processing' as const },
+      { ...base(506), reservedAt: now, status: 'processing' as const },
     ]);
 
-    await expect(store.cleanupExpired(1000)).resolves.toBe(500);
-    await expect(store.cleanupExpired(1000)).resolves.toBe(4);
-    await expect(store.cleanupExpired(1000)).resolves.toBe(0);
+    await expect(store.cleanupExpired(1000, now)).resolves.toBe(500);
+    await expect(store.cleanupExpired(1000, now)).resolves.toBe(5);
+    await expect(store.cleanupExpired(1000, now)).resolves.toBe(0);
     const remaining = await db.select().from(platformIdentityProviderTestAttempts);
     expect(remaining).toHaveLength(1);
     expect(remaining[0].status).toBe('processing');
+    expect(remaining[0].stateHash).toBe(base(506).stateHash);
+  });
+
+  it('preserves a callback outcome when callback wins the stale-lease interleaving', async () => {
+    const issued = await issue();
+    const reserved = await store.reserve(issued.state);
+    const now = new Date();
+    await db.update(platformIdentityProviderTestAttempts).set({
+      reservedAt: new Date(now.getTime() - IDENTITY_PROVIDER_TEST_PROCESSING_LEASE_MS - 1000),
+    });
+
+    await store.succeed(reserved, { claims: { sub: 'subject' }, issues: [], valid: true });
+
+    await expect(store.cleanupExpired(500, now)).resolves.toBe(0);
+    await expect(
+      store.getResult({ attemptId: issued.attemptId, sessionId: 'session-a', userId: 'user-a' }),
+    ).resolves.toMatchObject({ status: 'succeeded' });
+  });
+
+  it('prevents callback completion when the reaper wins the stale-lease interleaving', async () => {
+    const issued = await issue();
+    const reserved = await store.reserve(issued.state);
+    const now = new Date();
+    await db.update(platformIdentityProviderTestAttempts).set({
+      reservedAt: new Date(now.getTime() - IDENTITY_PROVIDER_TEST_PROCESSING_LEASE_MS - 1000),
+    });
+
+    await expect(store.cleanupExpired(500, now)).resolves.toBe(1);
+    await expect(
+      store.succeed(reserved, { claims: { sub: 'subject' }, issues: [], valid: true }),
+    ).rejects.toMatchObject({ code: 'OIDC_TEST_PROVIDER_CHANGED' });
+    await expect(store.cleanupExpired(500, now)).resolves.toBe(0);
+    await expect(
+      store.getResult({ attemptId: issued.attemptId, sessionId: 'session-a', userId: 'user-a' }),
+    ).resolves.toBeUndefined();
   });
 });

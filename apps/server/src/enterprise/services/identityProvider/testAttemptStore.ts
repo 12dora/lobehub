@@ -1,19 +1,24 @@
 import { createHash, randomBytes } from 'node:crypto';
 
 import type { PlatformIdentityProviderClaimPreview } from '@lobechat/types';
-import { and, asc, eq, exists, gt, inArray, lte, ne } from 'drizzle-orm';
+import { and, asc, eq, exists, gt, inArray, lte, or } from 'drizzle-orm';
 
 import {
   platformIdentityProviders,
   platformIdentityProviderTestAttempts,
 } from '@/database/schemas/platform';
-import type { LobeChatDatabase } from '@/database/type';
+import type { LobeChatDatabase, Transaction } from '@/database/type';
 
 import type { PlatformSecretService } from '../../security/secret';
 
 const ATTEMPT_TTL_MS = 5 * 60 * 1000;
 const CLEANUP_BATCH_SIZE = 500;
 const STATE_PREFIX = 'aihub-m11-test-v1.';
+
+/** Callbacks normally finish in seconds; this lease leaves ample room for bounded OIDC requests. */
+export const IDENTITY_PROVIDER_TEST_PROCESSING_LEASE_MS = 10 * 60 * 1000;
+/** Keep a completed preview briefly so the initiating admin session can fetch it. */
+export const IDENTITY_PROVIDER_TEST_TERMINAL_RETENTION_MS = 10 * 60 * 1000;
 
 const digest = (value: string): string => createHash('sha256').update(value).digest('hex');
 const randomToken = (): string => randomBytes(32).toString('base64url');
@@ -44,10 +49,59 @@ export interface ReservedIdentityProviderTestAttempt {
   userId: string;
 }
 
+type DatabaseExecutor = LobeChatDatabase | Transaction;
+
+const cleanupEligible = (now: Date) => {
+  const processingLeaseCutoff = new Date(
+    now.getTime() - IDENTITY_PROVIDER_TEST_PROCESSING_LEASE_MS,
+  );
+  const terminalRetentionCutoff = new Date(
+    now.getTime() - IDENTITY_PROVIDER_TEST_TERMINAL_RETENTION_MS,
+  );
+  return or(
+    and(
+      eq(platformIdentityProviderTestAttempts.status, 'pending'),
+      lte(platformIdentityProviderTestAttempts.expiresAt, now),
+    ),
+    and(
+      eq(platformIdentityProviderTestAttempts.status, 'processing'),
+      lte(platformIdentityProviderTestAttempts.reservedAt, processingLeaseCutoff),
+    ),
+    and(
+      inArray(platformIdentityProviderTestAttempts.status, ['failed', 'succeeded']),
+      lte(platformIdentityProviderTestAttempts.completedAt, terminalRetentionCutoff),
+    ),
+  );
+};
+
+/**
+ * Bounded lifecycle reaper. The lifecycle predicate is repeated on the outer DELETE so PostgreSQL
+ * rechecks it after a concurrent callback releases its row lock. Callback and reaper therefore
+ * have one winner: a fresh terminal outcome survives, while a reaped lease cannot be completed.
+ */
+export const cleanupExpiredIdentityProviderTestAttempts = async (
+  db: DatabaseExecutor,
+  limit = CLEANUP_BATCH_SIZE,
+  now = new Date(),
+): Promise<number> => {
+  const boundedLimit = Math.max(1, Math.min(limit, CLEANUP_BATCH_SIZE));
+  const expiredIds = db
+    .select({ id: platformIdentityProviderTestAttempts.id })
+    .from(platformIdentityProviderTestAttempts)
+    .where(cleanupEligible(now))
+    .orderBy(asc(platformIdentityProviderTestAttempts.expiresAt))
+    .limit(boundedLimit);
+  const deleted = await db
+    .delete(platformIdentityProviderTestAttempts)
+    .where(and(inArray(platformIdentityProviderTestAttempts.id, expiredIds), cleanupEligible(now)))
+    .returning({ id: platformIdentityProviderTestAttempts.id });
+  return deleted.length;
+};
+
 /** Durable, one-shot state store. State/nonce are persisted only as SHA-256 digests. */
 export class IdentityProviderTestAttemptStore {
   constructor(
-    private readonly db: LobeChatDatabase,
+    private readonly db: DatabaseExecutor,
     private readonly secrets: PlatformSecretService,
   ) {}
 
@@ -61,7 +115,6 @@ export class IdentityProviderTestAttemptStore {
     sessionId: string;
     userId: string;
   }) => {
-    await this.cleanupExpired();
     const state = `${STATE_PREFIX}${randomToken()}`;
     const nonce = randomToken();
     const pkceVerifier = randomToken();
@@ -190,10 +243,10 @@ export class IdentityProviderTestAttemptStore {
     if (!updated) throw new IdentityProviderTestAttemptError('OIDC_TEST_PROVIDER_CHANGED');
   };
 
-  fail = async (attemptId: string, errorCode: string): Promise<void> => {
+  fail = async (attemptId: string, errorCode: string): Promise<boolean> => {
     const safeCode = /^[A-Z0-9_]{1,128}$/.test(errorCode) ? errorCode : 'OIDC_TEST_FAILED';
     const now = new Date();
-    await this.db
+    const failed = await this.db
       .update(platformIdentityProviderTestAttempts)
       .set({ completedAt: now, errorCode: safeCode, status: 'failed', updatedAt: now })
       .where(
@@ -201,7 +254,9 @@ export class IdentityProviderTestAttemptStore {
           eq(platformIdentityProviderTestAttempts.id, attemptId),
           eq(platformIdentityProviderTestAttempts.status, 'processing'),
         ),
-      );
+      )
+      .returning({ id: platformIdentityProviderTestAttempts.id });
+    return failed.length === 1;
   };
 
   getResult = async (input: { attemptId: string; sessionId: string; userId: string }) => {
@@ -259,26 +314,8 @@ export class IdentityProviderTestAttemptStore {
     };
   };
 
-  cleanupExpired = async (limit = CLEANUP_BATCH_SIZE): Promise<number> => {
-    const boundedLimit = Math.max(1, Math.min(limit, CLEANUP_BATCH_SIZE));
-    const now = new Date();
-    const expiredIds = this.db
-      .select({ id: platformIdentityProviderTestAttempts.id })
-      .from(platformIdentityProviderTestAttempts)
-      .where(
-        and(
-          lte(platformIdentityProviderTestAttempts.expiresAt, now),
-          ne(platformIdentityProviderTestAttempts.status, 'processing'),
-        ),
-      )
-      .orderBy(asc(platformIdentityProviderTestAttempts.expiresAt))
-      .limit(boundedLimit);
-    const deleted = await this.db
-      .delete(platformIdentityProviderTestAttempts)
-      .where(inArray(platformIdentityProviderTestAttempts.id, expiredIds))
-      .returning({ id: platformIdentityProviderTestAttempts.id });
-    return deleted.length;
-  };
+  cleanupExpired = async (limit = CLEANUP_BATCH_SIZE, now = new Date()): Promise<number> =>
+    cleanupExpiredIdentityProviderTestAttempts(this.db, limit, now);
 }
 
 export const hashIdentityProviderTestValue = digest;
