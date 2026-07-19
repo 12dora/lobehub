@@ -27,6 +27,7 @@ import {
   buildPlatformIdentityProvider,
   type RuntimeIdentityProvider,
 } from '@/libs/better-auth/sso/platformIdentityProvider';
+import { platformIdentityProviderState } from '@/libs/better-auth/sso/platformIdentityProviderState';
 import { createSecondaryStorage, getTrustedOrigins } from '@/libs/better-auth/utils/config';
 import { parseSSOProviders } from '@/libs/better-auth/utils/server';
 import { EmailService } from '@/server/services/email';
@@ -218,6 +219,9 @@ export function defineConfig(
       // Keep a DB-backed fallback when Redis secondary storage entries are unexpectedly missing.
       storeSessionInDatabase: true,
     },
+    // Platform OAuth state nonce binding uses a database CAS. Keep verification rows in the
+    // database when this provider class is enabled, even if Redis secondary storage is configured.
+    ...(databaseProviders.length > 0 ? { verification: { storeInDatabase: true } } : {}),
     database: drizzleAdapter(serverDB, {
       provider: 'pg',
       // experimental joins feature needs schema to pass full relation
@@ -360,6 +364,9 @@ export function defineConfig(
         // Returns undefined if AUTH_URL is not set (e.g., in e2e tests)
         origin: getPasskeyOrigins(),
       }),
+      ...(databaseProviders.length > 0
+        ? [platformIdentityProviderState(databaseProviders.map((provider) => provider.providerId))]
+        : []),
       ...(genericOAuthProviders.length > 0
         ? [
             genericOAuth({

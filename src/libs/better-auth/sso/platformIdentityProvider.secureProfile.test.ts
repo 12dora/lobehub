@@ -4,7 +4,9 @@ import { createHash } from 'node:crypto';
 import { betterAuth } from 'better-auth';
 import type { MemoryDB } from 'better-auth/adapters/memory';
 import { memoryAdapter } from 'better-auth/adapters/memory';
+import { createAuthMiddleware } from 'better-auth/api';
 import { genericOAuth } from 'better-auth/plugins';
+import type { BetterAuthPlugin } from 'better-auth/types';
 import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -18,6 +20,7 @@ import {
   buildPlatformIdentityProvider,
   type RuntimeIdentityProvider,
 } from './platformIdentityProvider';
+import { platformIdentityProviderState } from './platformIdentityProviderState';
 
 const issuer = 'https://login.example.test/application/o/work/';
 const clientId = 'client-id';
@@ -88,6 +91,7 @@ const setup = async (options?: {
   };
   const provider = { ...baseProvider, issuer, oidcMetadata } satisfies RuntimeIdentityProvider;
   let tokenNonce: string | undefined = unitNonce;
+  const tokenNoncesByCode = new Map<string, string | undefined>();
   const now = Math.floor(Date.now() / 1000);
   const sign = (claims: Record<string, unknown> = {}, key = privateKey, kid = 'key-1') =>
     new SignJWT({
@@ -114,10 +118,15 @@ const setup = async (options?: {
     ...options?.userInfo,
   };
   const transport = vi.fn<PinnedTransport>(async (request) => {
-    if (request.url.pathname.endsWith('/token/'))
-      return jsonResponse(
-        options?.token ?? { access_token: 'access-token', id_token: await sign() },
-      );
+    if (request.url.pathname.endsWith('/token/')) {
+      const code = new URLSearchParams(request.body?.toString()).get('code');
+      const nonce = code && tokenNoncesByCode.has(code) ? tokenNoncesByCode.get(code) : tokenNonce;
+      const previousNonce = tokenNonce;
+      tokenNonce = nonce;
+      const idToken = await sign();
+      tokenNonce = previousNonce;
+      return jsonResponse(options?.token ?? { access_token: 'access-token', id_token: idToken });
+    }
     if (request.url.pathname.endsWith('/jwks/')) {
       return jsonResponse(options?.jwks ?? { keys: [publicJwk] });
     }
@@ -162,12 +171,19 @@ const setup = async (options?: {
     setTokenNonce: (nonce: string | undefined) => {
       tokenNonce = nonce;
     },
+    setTokenNonceForCode: (code: string, nonce: string | undefined) => {
+      tokenNoncesByCode.set(code, nonce);
+    },
     sign,
     transport,
   };
 };
 
-const createRouteHarness = async (options?: Parameters<typeof setup>[0]) => {
+interface RouteHarnessOptions extends NonNullable<Parameters<typeof setup>[0]> {
+  failLinkStateUpdate?: boolean;
+}
+
+const createRouteHarness = async (options?: RouteHarnessOptions) => {
   const setupResult = await setup({ ...options, useProtectedRouteState: true });
   const database: MemoryDB = {
     account: [],
@@ -175,19 +191,61 @@ const createRouteHarness = async (options?: Parameters<typeof setup>[0]) => {
     user: [],
     verification: [],
   };
+  const secondaryStorage = new Map<string, string>();
   const nativeFetch = vi
     .spyOn(globalThis, 'fetch')
     .mockRejectedValue(new Error('Unexpected native OAuth fetch'));
   const customGetToken = vi.spyOn(setupResult.config, 'getToken');
   const mapProfileToUser = vi.spyOn(setupResult.config, 'mapProfileToUser');
   const baseURL = 'https://app.example.test/api/auth';
+  const failLinkStateUpdatePlugin: BetterAuthPlugin = {
+    hooks: {
+      before: [
+        {
+          handler: createAuthMiddleware(async (ctx) => {
+            if (!options?.failLinkStateUpdate) return;
+            const updateMany = ctx.context.adapter.updateMany.bind(ctx.context.adapter);
+            ctx.context.adapter.updateMany = async (input) => {
+              if (
+                input.model === 'verification' &&
+                input.where.some((where) => where.field === 'value')
+              ) {
+                return 0;
+              }
+              return updateMany(input);
+            };
+          }),
+          matcher: (ctx) => ctx.path === '/oauth2/link',
+        },
+      ],
+    },
+    id: 'fail-platform-state-update-test',
+  };
   const createAuthInstance = () =>
     betterAuth({
-      account: { storeStateStrategy: 'database' },
+      account: {
+        accountLinking: { allowDifferentEmails: true, enabled: true },
+        storeStateStrategy: 'database',
+      },
       baseURL,
       database: memoryAdapter(database),
-      plugins: [genericOAuth({ config: [setupResult.config] })],
+      emailAndPassword: { enabled: true },
+      plugins: [
+        failLinkStateUpdatePlugin,
+        platformIdentityProviderState(['corp-oidc']),
+        genericOAuth({ config: [setupResult.config] }),
+      ],
+      secondaryStorage: {
+        delete: async (key) => {
+          secondaryStorage.delete(key);
+        },
+        get: async (key) => secondaryStorage.get(key) ?? null,
+        set: async (key, value) => {
+          secondaryStorage.set(key, value);
+        },
+      },
       secret: 'platform-oidc-route-regression-secret',
+      verification: { storeInDatabase: true },
     });
   const signInAuth = createAuthInstance();
   const callbackAuth = createAuthInstance();
@@ -217,11 +275,11 @@ const createRouteHarness = async (options?: Parameters<typeof setup>[0]) => {
     };
   };
   const callback = async (
-    flow: Awaited<ReturnType<typeof start>>,
-    overrides: { cookie?: string; state?: string | null } = {},
+    flow: { authorizationUrl: URL; cookie: string },
+    overrides: { code?: string; cookie?: string; state?: string | null } = {},
   ) => {
     const callbackUrl = new URL(`${baseURL}/oauth2/callback/corp-oidc`);
-    callbackUrl.searchParams.set('code', 'authorization-code');
+    callbackUrl.searchParams.set('code', overrides.code ?? 'authorization-code');
     callbackUrl.searchParams.set('iss', issuer);
     const state =
       overrides.state === undefined
@@ -232,15 +290,61 @@ const createRouteHarness = async (options?: Parameters<typeof setup>[0]) => {
       new Request(callbackUrl, { headers: { Cookie: overrides.cookie ?? flow.cookie } }),
     );
   };
+  const authenticate = async () => {
+    const response = await signInAuth.handler(
+      new Request(`${baseURL}/sign-up/email`, {
+        body: JSON.stringify({
+          email: 'ada@example.test',
+          name: 'Ada',
+          password: 'correct-horse-battery-staple',
+        }),
+        headers: { 'Content-Type': 'application/json' },
+        method: 'POST',
+      }),
+    );
+    expect(response.status).toBe(200);
+    return response.headers
+      .getSetCookie()
+      .map((value) => value.split(';', 1)[0])
+      .join('; ');
+  };
+  const startLink = async (sessionCookie: string) => {
+    const response = await signInAuth.handler(
+      new Request(`${baseURL}/oauth2/link`, {
+        body: JSON.stringify({
+          callbackURL: 'https://app.example.test/after-link',
+          providerId: 'corp-oidc',
+        }),
+        headers: { 'Content-Type': 'application/json', 'Cookie': sessionCookie },
+        method: 'POST',
+      }),
+    );
+    const responseText = await response.text();
+    const body = (responseText ? JSON.parse(responseText) : {}) as {
+      redirect?: boolean;
+      url?: string;
+    };
+    return {
+      authorizationUrl: body.url ? new URL(body.url) : null,
+      body,
+      cookie: response.headers
+        .getSetCookie()
+        .map((value) => value.split(';', 1)[0])
+        .join('; '),
+      response,
+    };
+  };
 
   return {
     ...setupResult,
+    authenticate,
     callback,
     customGetToken,
     database,
     mapProfileToUser,
     nativeFetch,
     start,
+    startLink,
   };
 };
 
@@ -271,12 +375,14 @@ describe('platform identity provider trusted profile', () => {
 
   it('binds unique nonces to database state across concurrent Better Auth route flows', async () => {
     const harness = await createRouteHarness();
-    const first = await harness.start({
-      platformOidcNonceHash: 'client-controlled-hash',
-      platformOidcProviderId: 'attacker-provider',
-      reauth: true,
-    });
-    const second = await harness.start();
+    const [first, second] = await Promise.all([
+      harness.start({
+        platformOidcNonceHash: 'client-controlled-hash',
+        platformOidcProviderId: 'attacker-provider',
+        reauth: true,
+      }),
+      harness.start(),
+    ]);
     const firstNonce = first.authorizationUrl.searchParams.get('nonce');
     const secondNonce = second.authorizationUrl.searchParams.get('nonce');
 
@@ -306,32 +412,181 @@ describe('platform identity provider trusted profile', () => {
     expect(JSON.stringify(harness.database)).not.toContain(secondNonce);
     expect(harness.transport).not.toHaveBeenCalled();
 
-    harness.setTokenNonce(firstNonce!);
-    const firstCallback = await harness.callback(first);
-    harness.setTokenNonce(secondNonce!);
-    const secondCallback = await harness.callback(second);
+    harness.setTokenNonceForCode('first-code', firstNonce!);
+    harness.setTokenNonceForCode('second-code', secondNonce!);
+    const [firstCallback, secondCallback] = await Promise.all([
+      harness.callback(first, { code: 'first-code' }),
+      harness.callback(second, { code: 'second-code' }),
+    ]);
 
     expect(firstCallback.status).toBe(302);
     expect(firstCallback.headers.get('location')).toBe('https://app.example.test/after-login');
     expect(secondCallback.status).toBe(302);
     expect(secondCallback.headers.get('location')).toBe('https://app.example.test/after-login');
     expect(harness.customGetToken).toHaveBeenCalledTimes(2);
-    expect(harness.transport.mock.calls.map(([request]) => request.url.pathname)).toEqual([
-      '/application/o/token/',
-      '/application/o/work/jwks/',
-      '/application/o/userinfo/',
-      '/application/o/token/',
-      '/application/o/work/jwks/',
-      '/application/o/userinfo/',
-    ]);
+    expect(
+      harness.transport.mock.calls
+        .map(([request]) => request.url.pathname)
+        .sort((left, right) => left.localeCompare(right)),
+    ).toEqual(
+      [
+        '/application/o/token/',
+        '/application/o/work/jwks/',
+        '/application/o/userinfo/',
+        '/application/o/token/',
+        '/application/o/work/jwks/',
+        '/application/o/userinfo/',
+      ].sort((left, right) => left.localeCompare(right)),
+    );
     expect(
       harness.transport.mock.calls.some(([request]) => request.url.hostname.endsWith('.invalid')),
     ).toBe(false);
     expect(harness.nativeFetch).not.toHaveBeenCalled();
     expect(JSON.stringify(harness.database)).not.toContain(firstNonce);
     expect(JSON.stringify(harness.database)).not.toContain(secondNonce);
+    expect(harness.database.account).toHaveLength(2);
+    expect(harness.database.account?.every((account) => account.idToken === undefined)).toBe(true);
+  });
+
+  it('binds link nonce to persisted state before returning the URL and completes cross-instance callback', async () => {
+    const harness = await createRouteHarness();
+    const sessionCookie = await harness.authenticate();
+    const flow = await harness.startLink(sessionCookie);
+
+    expect(flow.response.status).toBe(200);
+    expect(flow.body.redirect).toBe(true);
+    expect(flow.authorizationUrl).not.toBeNull();
+    const state = flow.authorizationUrl!.searchParams.get('state');
+    const nonce = flow.authorizationUrl!.searchParams.get('nonce');
+    expect(state).toBeTruthy();
+    expect(nonce).toBeTruthy();
+    expect(flow.cookie).toContain('better-auth.state=');
+
+    const verification = harness.database.verification?.find((entry) => entry.identifier === state);
+    expect(verification).toBeDefined();
+    const persistedState = JSON.parse(verification!.value) as Record<string, unknown>;
+    expect(persistedState).toMatchObject({
+      callbackURL: 'https://app.example.test/after-link',
+      expiresAt: expect.any(Number),
+      link: { email: 'ada@example.test', userId: expect.any(String) },
+      oauthState: state,
+      platformOidcNonceHash: createHash('sha256').update(nonce!).digest('hex'),
+      platformOidcProviderId: 'corp-oidc',
+    });
+    expect(persistedState.codeVerifier).toEqual(expect.any(String));
+    expect(verification!.expiresAt).toBeInstanceOf(Date);
+    expect(verification!.value).not.toContain(nonce!);
+
+    harness.setTokenNonce(nonce!);
+    const response = await harness.callback({ ...flow, authorizationUrl: flow.authorizationUrl! });
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get('location')).toBe('https://app.example.test/after-link');
+    expect(harness.customGetToken).toHaveBeenCalledOnce();
+    expect(harness.mapProfileToUser).toHaveBeenCalledOnce();
+    expect(harness.database.account).toHaveLength(2);
+    expect(
+      harness.database.account?.find((account) => account.providerId === 'corp-oidc'),
+    ).toBeDefined();
+    expect(harness.nativeFetch).not.toHaveBeenCalled();
+  });
+
+  it('fails the real link handler closed when nonce-state CAS publication fails', async () => {
+    const harness = await createRouteHarness({ failLinkStateUpdate: true });
+    const sessionCookie = await harness.authenticate();
+
+    const flow = await harness.startLink(sessionCookie);
+
+    expect(flow.response.status).toBe(500);
+    expect(flow.body).not.toHaveProperty('url');
+    expect(JSON.stringify(flow.body)).not.toContain('login.example.test');
+    expect(harness.transport).not.toHaveBeenCalled();
+    expect(harness.customGetToken).not.toHaveBeenCalled();
+    expect(harness.mapProfileToUser).not.toHaveBeenCalled();
+    expect(JSON.stringify(harness.database)).not.toContain('platformOidcNonceHash');
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['wrong', 'attacker-link-nonce'],
+  ])('rejects a linked account ID token with a %s nonce', async (_label, tokenNonce) => {
+    const harness = await createRouteHarness();
+    const sessionCookie = await harness.authenticate();
+    const flow = await harness.startLink(sessionCookie);
+    expect(flow.authorizationUrl).not.toBeNull();
+    harness.setTokenNonce(tokenNonce);
+
+    const response = await harness.callback({ ...flow, authorizationUrl: flow.authorizationUrl! });
+
+    expect(response.status).toBeGreaterThanOrEqual(300);
+    expect(response.headers.get('location')).not.toBe('https://app.example.test/after-link');
+    expect(harness.customGetToken).toHaveBeenCalledOnce();
+    expect(harness.mapProfileToUser).not.toHaveBeenCalled();
     expect(harness.database.account).toHaveLength(1);
-    expect(harness.database.account?.[0]?.idToken).toBeUndefined();
+  });
+
+  it('consumes linked-account database state once before token exchange replay', async () => {
+    const harness = await createRouteHarness();
+    const sessionCookie = await harness.authenticate();
+    const flow = await harness.startLink(sessionCookie);
+    expect(flow.authorizationUrl).not.toBeNull();
+    harness.setTokenNonce(flow.authorizationUrl!.searchParams.get('nonce')!);
+
+    const first = await harness.callback({ ...flow, authorizationUrl: flow.authorizationUrl! });
+    const callsAfterSuccess = harness.transport.mock.calls.length;
+    const replay = await harness.callback({ ...flow, authorizationUrl: flow.authorizationUrl! });
+
+    expect(first.headers.get('location')).toBe('https://app.example.test/after-link');
+    expect(replay.headers.get('location')).not.toBe('https://app.example.test/after-link');
+    expect(harness.customGetToken).toHaveBeenCalledOnce();
+    expect(harness.transport).toHaveBeenCalledTimes(callsAfterSuccess);
+    expect(harness.mapProfileToUser).toHaveBeenCalledOnce();
+  });
+
+  it('isolates concurrent link nonce state and callbacks across auth instances', async () => {
+    const harness = await createRouteHarness();
+    const sessionCookie = await harness.authenticate();
+    const [first, second] = await Promise.all([
+      harness.startLink(sessionCookie),
+      harness.startLink(sessionCookie),
+    ]);
+    expect(first.authorizationUrl).not.toBeNull();
+    expect(second.authorizationUrl).not.toBeNull();
+    const firstNonce = first.authorizationUrl!.searchParams.get('nonce');
+    const secondNonce = second.authorizationUrl!.searchParams.get('nonce');
+    const firstState = first.authorizationUrl!.searchParams.get('state');
+    const secondState = second.authorizationUrl!.searchParams.get('state');
+    expect(firstNonce).toBeTruthy();
+    expect(secondNonce).toBeTruthy();
+    expect(firstNonce).not.toBe(secondNonce);
+    expect(firstState).not.toBe(secondState);
+    expect(JSON.stringify(harness.database)).not.toContain(firstNonce);
+    expect(JSON.stringify(harness.database)).not.toContain(secondNonce);
+    harness.setTokenNonceForCode('first-link-code', firstNonce!);
+    harness.setTokenNonceForCode('second-link-code', secondNonce!);
+
+    const [firstCallback, secondCallback] = await Promise.all([
+      harness.callback(
+        { ...first, authorizationUrl: first.authorizationUrl! },
+        {
+          code: 'first-link-code',
+        },
+      ),
+      harness.callback(
+        { ...second, authorizationUrl: second.authorizationUrl! },
+        {
+          code: 'second-link-code',
+        },
+      ),
+    ]);
+
+    expect(firstCallback.headers.get('location')).toBe('https://app.example.test/after-link');
+    expect(secondCallback.headers.get('location')).toBe('https://app.example.test/after-link');
+    expect(harness.customGetToken).toHaveBeenCalledTimes(2);
+    expect(harness.mapProfileToUser).toHaveBeenCalledTimes(2);
+    expect(harness.database.account?.every((account) => account.idToken === undefined)).toBe(true);
+    expect(JSON.stringify(harness.database)).not.toContain(firstNonce);
+    expect(JSON.stringify(harness.database)).not.toContain(secondNonce);
   });
 
   it.each([
