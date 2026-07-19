@@ -46,14 +46,14 @@ interface LobeHubEnterpriseProcessState {
   identityProviderStartupArtifact?: IdentityProviderStartupArtifactState;
 }
 
-const startupArtifactGlobal = globalThis as typeof globalThis & {
+const startupArtifactProcess = process as NodeJS.Process & {
   __lobehubEnterpriseProcessState?: LobeHubEnterpriseProcessState;
 };
 
 // Next instrumentation and route handlers can evaluate this module in different
 // Turbopack chunks. The process-global cell is the rendezvous point between them.
 const enterpriseProcessState = (): LobeHubEnterpriseProcessState =>
-  (startupArtifactGlobal.__lobehubEnterpriseProcessState ??= {});
+  (startupArtifactProcess.__lobehubEnterpriseProcessState ??= {});
 
 const startupArtifactState = (): IdentityProviderStartupArtifactState =>
   (enterpriseProcessState().identityProviderStartupArtifact ??= {

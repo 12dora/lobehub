@@ -7,6 +7,7 @@ import {
   resolvePlatformPublicSnapshot,
   resolveServerRuntimeBrandingFromPublicSnapshot,
 } from '@/server/enterprise/services/branding';
+import { bootstrapIdentityProviderRuntime } from '@/server/enterprise/services/identityProvider/bootstrap';
 import { getServerAuthConfig } from '@/server/globalConfig/getServerAuthConfig';
 import { buildAnalyticsConfig, fetchViteDevTemplate, renderSpaHtml } from '@/server/spaHtml';
 import { type AuthSPAServerConfig } from '@/types/spaServerConfig';
@@ -33,6 +34,7 @@ export async function GET(
   _request: Request,
   { params }: { params: Promise<{ locale: string; path?: string[] }> },
 ) {
+  await bootstrapIdentityProviderRuntime();
   const { locale: rawLocale, path } = await params;
   const locale = normalizeLocale(rawLocale);
   const platformPublicSnapshot = await resolvePlatformPublicSnapshot({
