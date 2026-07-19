@@ -323,11 +323,13 @@ describe('EasyauthSyncService', () => {
     const fetch = vi.fn(async () => sampleSnapshot());
     client.fetchPermissionSnapshot = fetch;
     const service = new EasyauthSyncService(db, { client });
+    const longRandomSecret = 'aB3dE5fG7hJ9kL2mN4pQ6rS8tU0vW1xY';
     const unsafeReasons = [
-      'token=opaque-value',
+      'eat_live_ABCDEF1234567890',
+      `client_secret=${longRandomSecret}`,
       'password=hunter2',
-      'client_secret=opaque-value',
-      'private key=opaque-value',
+      'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyLTEyMzQ1NiJ9.c2lnbmF0dXJlX3ZhbHVlXzEyMzQ1Ng',
+      '-----BEGIN PRIVATE KEY-----\nfake\n-----END PRIVATE KEY-----',
     ];
 
     for (const reason of unsafeReasons) {
