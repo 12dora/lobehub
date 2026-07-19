@@ -31,6 +31,7 @@ export {
 export {
   RuntimeBrandingProvider,
   type RuntimeBrandingProviderProps,
+  useBranding,
   useRuntimeBranding,
 } from './providers/RuntimeBrandingProvider';
 export {

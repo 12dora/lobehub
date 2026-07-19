@@ -1,5 +1,6 @@
 import { expo } from '@better-auth/expo';
 import { passkey } from '@better-auth/passkey';
+import { BRANDING_NAME } from '@lobechat/business-const';
 import { createNanoId, idGenerator, serverDB } from '@lobechat/database';
 import * as schema from '@lobechat/database/schemas';
 import bcrypt from 'bcryptjs';
@@ -145,13 +146,11 @@ export function defineConfig(customOptions: CustomBetterAuthOptions) {
       },
 
       sendResetPassword: async ({ user, url }) => {
-        const template = getResetPasswordEmailTemplate({ url });
-
         const emailService = new EmailService();
-        await emailService.sendMail({
+        await emailService.sendBrandedMail(({ branding }) => ({
           to: user.email,
-          ...template,
-        });
+          ...getResetPasswordEmailTemplate({ platformName: branding.name, url }),
+        }));
       },
     },
     emailVerification: {
@@ -166,23 +165,23 @@ export function defineConfig(customOptions: CustomBetterAuthOptions) {
 
         // Use different template for change-email vs signup verification
         const isChangeEmail = request?.url?.includes('/change-email');
-        const template = isChangeEmail
-          ? getChangeEmailVerificationTemplate({
-              expiresInSeconds: VERIFICATION_LINK_EXPIRES_IN,
-              url,
-              userName: user.name,
-            })
-          : getVerificationEmailTemplate({
-              expiresInSeconds: VERIFICATION_LINK_EXPIRES_IN,
-              url,
-              userName: user.name,
-            });
-
         const emailService = new EmailService();
-        await emailService.sendMail({
+        await emailService.sendBrandedMail(({ branding }) => ({
           to: user.email,
-          ...template,
-        });
+          ...(isChangeEmail
+            ? getChangeEmailVerificationTemplate({
+                expiresInSeconds: VERIFICATION_LINK_EXPIRES_IN,
+                platformName: branding.name,
+                url,
+                userName: user.name,
+              })
+            : getVerificationEmailTemplate({
+                expiresInSeconds: VERIFICATION_LINK_EXPIRES_IN,
+                platformName: branding.name,
+                url,
+                userName: user.name,
+              })),
+        }));
       },
     },
     onAPIError: {
@@ -304,20 +303,20 @@ export function defineConfig(customOptions: CustomBetterAuthOptions) {
 
           // For all OTP types, use the same template
           // userName is optional and will be null since we don't have user context here
-          const template = getVerificationOTPEmailTemplate({
-            expiresInSeconds: OTP_EXPIRES_IN,
-            otp,
-            userName: null,
-          });
-
-          await emailService.sendMail({
+          await emailService.sendBrandedMail(({ branding }) => ({
             to: email,
-            ...template,
-          });
+            ...getVerificationOTPEmailTemplate({
+              expiresInSeconds: OTP_EXPIRES_IN,
+              otp,
+              platformName: branding.name,
+              userName: null,
+            }),
+          }));
         },
       }),
       passkey({
-        rpName: 'LobeHub',
+        // WebAuthn RP metadata is captured at Better Auth startup and intentionally does not hot-update.
+        rpName: BRANDING_NAME,
         // Extract rpID from auth URL (e.g., 'lobehub.com' from 'https://lobehub.com')
         // Returns undefined if AUTH_URL is not set (e.g., in e2e tests)
         rpID: getPasskeyRpID(),
@@ -338,16 +337,15 @@ export function defineConfig(customOptions: CustomBetterAuthOptions) {
             magicLink({
               expiresIn: MAGIC_LINK_EXPIRES_IN,
               sendMagicLink: async ({ email, url }) => {
-                const template = getMagicLinkEmailTemplate({
-                  expiresInSeconds: MAGIC_LINK_EXPIRES_IN,
-                  url,
-                });
-
                 const emailService = new EmailService();
-                await emailService.sendMail({
+                await emailService.sendBrandedMail(({ branding }) => ({
                   to: email,
-                  ...template,
-                });
+                  ...getMagicLinkEmailTemplate({
+                    expiresInSeconds: MAGIC_LINK_EXPIRES_IN,
+                    platformName: branding.name,
+                    url,
+                  }),
+                }));
               },
             }),
           ]

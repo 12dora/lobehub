@@ -1,14 +1,8 @@
 // @vitest-environment node
-import { BRANDING_LOGO_URL } from '@lobechat/business-const';
 import qs from 'query-string';
 import { describe, expect, it, vi } from 'vitest';
 
 import { Manifest, manifestModule } from './manifest';
-
-// Mock external dependencies
-vi.mock('@/const/branding', () => ({
-  BRANDING_LOGO_URL: 'https://example.com/logo.png',
-}));
 
 vi.mock('@/server/utils/url', () => ({
   getCanonicalUrl: vi.fn().mockReturnValue('https://example.com/manifest.webmanifest'),
@@ -22,7 +16,9 @@ describe('Manifest', () => {
       const input = {
         color: '#FF0000',
         description: 'Test description',
+        iconUrl: 'https://brand.example.com/icon.png',
         name: 'Test App',
+        shortName: 'Test',
         id: 'test-app',
         icons: [{ purpose: 'any' as const, sizes: '192x192', url: 'icon.png' }],
         screenshots: [{ form_factor: 'wide' as const, url: 'screenshot.png' }],
@@ -34,6 +30,7 @@ describe('Manifest', () => {
         background_color: input.color,
         description: input.description,
         name: input.name,
+        short_name: input.shortName,
         id: input.id,
         icons: expect.arrayContaining([
           expect.objectContaining({
@@ -48,6 +45,8 @@ describe('Manifest', () => {
           }),
         ]),
       });
+      expect(result.icons[0].src).toBe('https://brand.example.com/icon.png?v=1');
+      expect(result.screenshots[0].src).toBe('screenshot.png?v=1');
     });
 
     it('should use default color if not provided', () => {
@@ -78,7 +77,7 @@ describe('Manifest', () => {
         cache_busting_mode: 'query',
         immutable: 'true',
         max_age: 31536000,
-        src: qs.stringifyUrl({ query: { v: version }, url: BRANDING_LOGO_URL || url }),
+        src: qs.stringifyUrl({ query: { v: version }, url }),
       });
     });
 
@@ -147,7 +146,7 @@ describe('Manifest', () => {
         form_factor: 'narrow',
         immutable: 'true',
         max_age: 31536000,
-        sizes: '1280x676',
+        sizes: '320x569',
         src: 'https://example.com/screenshot.png?v=1',
         type: 'image/png',
       });
