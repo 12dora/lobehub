@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as ZodModule from 'zod';
 
+import DefaultInboxBrandingSync from '@/business/client/DefaultInboxBrandingSync';
 import { initServerConfigStore, Provider } from '@/store/serverConfig/store';
 import { DISABLED_PLATFORM_CAPABILITIES } from '@/types/platform/capabilities';
 import type { PlatformPublicSnapshot } from '@/types/platform/publicSnapshot';
@@ -17,6 +18,28 @@ vi.mock('zod', async (importOriginal) => {
 const serverConfigState = vi.hoisted(() => ({
   enterpriseEnabled: false,
   serverConfigInit: true,
+}));
+
+const inboxSyncMocks = vi.hoisted(() => ({
+  isLogin: true,
+  useInitBuiltinAgent: vi.fn(),
+}));
+
+vi.mock('@/store/agent', () => ({
+  useAgentStore: (
+    selector: (state: {
+      useInitBuiltinAgent: typeof inboxSyncMocks.useInitBuiltinAgent;
+    }) => unknown,
+  ) => selector({ useInitBuiltinAgent: inboxSyncMocks.useInitBuiltinAgent }),
+}));
+
+vi.mock('@/store/user', () => ({
+  useUserStore: (selector: (state: { isLogin: boolean }) => unknown) =>
+    selector({ isLogin: inboxSyncMocks.isLogin }),
+}));
+
+vi.mock('@/store/user/selectors', () => ({
+  authSelectors: { isLogin: (state: { isLogin: boolean }) => state.isLogin },
 }));
 
 const platformSkillMocks = vi.hoisted(() => ({
@@ -98,6 +121,7 @@ const renderProvider = (disableFetch = false, initialPublicSnapshot?: PlatformPu
         fetchPublicSnapshot={fetchPublicSnapshot}
         initialPublicSnapshot={initialPublicSnapshot}
       >
+        <DefaultInboxBrandingSync />
         <Probe />
       </EnterprisePlatformProvider>
     </Provider>,
@@ -106,6 +130,7 @@ const renderProvider = (disableFetch = false, initialPublicSnapshot?: PlatformPu
 describe('EnterprisePlatformProvider', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    inboxSyncMocks.isLogin = true;
     serverConfigState.enterpriseEnabled = false;
     serverConfigState.serverConfigInit = true;
     fetchCapabilities.mockReset().mockResolvedValue(DISABLED_PLATFORM_CAPABILITIES);
@@ -131,6 +156,10 @@ describe('EnterprisePlatformProvider', () => {
     renderProvider(true);
     expect(screen.getByText('child')).toBeTruthy();
     expect(screen.getByTestId('admin').textContent).toBe('false');
+    expect(inboxSyncMocks.useInitBuiltinAgent).toHaveBeenCalledWith('inbox', {
+      brandingRevision: null,
+      isLogin: true,
+    });
   });
 
   it('flags off: zero platform.* fetch calls after global config hydrates', async () => {
@@ -206,6 +235,64 @@ describe('EnterprisePlatformProvider', () => {
     );
     expect(screen.getByTestId('brand-revision')).toHaveTextContent('4');
     expect(fetchPublicSnapshot).toHaveBeenCalledOnce();
+    expect(inboxSyncMocks.useInitBuiltinAgent).toHaveBeenCalledWith('inbox', {
+      brandingRevision: '3',
+      isLogin: true,
+    });
+    expect(inboxSyncMocks.useInitBuiltinAgent).toHaveBeenCalledWith('inbox', {
+      brandingRevision: '4',
+      isLogin: true,
+    });
+  });
+
+  it('drives inbox synchronization across publish, rollback, and null revisions', async () => {
+    serverConfigState.enterpriseEnabled = true;
+    const snapshot = (revision: string | null, name: string): PlatformPublicSnapshot => ({
+      branding:
+        revision === null
+          ? null
+          : {
+              defaultAgentDisplayName: null,
+              emailFrom: null,
+              emailSenderName: null,
+              faviconUrl: null,
+              homeUrl: null,
+              iconUrl: null,
+              legalName: null,
+              logoUrl: null,
+              name,
+              ogImageUrl: null,
+              pageTitleTemplate: null,
+              privacyUrl: null,
+              revision,
+              shortName: null,
+              supportUrl: null,
+              termsUrl: null,
+            },
+      brandingRevision: revision,
+      configRevision: revision ?? '0',
+      login: { workAccountEnabled: false },
+      logoUrl: null,
+      platformName: revision === null ? null : name,
+    });
+    fetchPublicSnapshot
+      .mockResolvedValueOnce(snapshot('B', 'Brand B'))
+      .mockResolvedValueOnce(snapshot('A', 'Brand A'))
+      .mockResolvedValueOnce(snapshot(null, 'LobeHub'));
+
+    renderProvider(false, snapshot('A', 'Brand A'));
+    await waitFor(() => expect(screen.getByTestId('brand-revision')).toHaveTextContent('B'));
+    fireEvent.click(screen.getByRole('button', { name: 'refresh' }));
+    await waitFor(() => expect(screen.getByTestId('brand-revision')).toHaveTextContent('A'));
+    fireEvent.click(screen.getByRole('button', { name: 'refresh' }));
+    await waitFor(() => expect(screen.getByTestId('brand-revision')).toHaveTextContent('built-in'));
+
+    for (const revision of ['A', 'B', 'A', null]) {
+      expect(inboxSyncMocks.useInitBuiltinAgent).toHaveBeenCalledWith('inbox', {
+        brandingRevision: revision,
+        isLogin: true,
+      });
+    }
   });
 
   it('loads the single platform catalog authority in ui-only managed mode', async () => {

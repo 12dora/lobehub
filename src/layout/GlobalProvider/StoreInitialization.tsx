@@ -1,12 +1,10 @@
 'use client';
 
-import { INBOX_SESSION_ID } from '@lobechat/const';
 import { lazy, memo, Suspense } from 'react';
 import { useTranslation } from 'react-i18next';
 import { createStoreUpdater } from 'zustand-utils';
 
 import { useIsMobile } from '@/hooks/useIsMobile';
-import { useAgentStore } from '@/store/agent';
 import { useGlobalStore } from '@/store/global';
 import { useServerConfigStore } from '@/store/serverConfig';
 import { serverConfigSelectors } from '@/store/serverConfig/selectors';
@@ -33,8 +31,6 @@ const StoreInitialization = memo(() => {
     s.useCheckServerVersion,
   ]);
 
-  const useInitBuiltinAgent = useAgentStore((s) => s.useInitBuiltinAgent);
-
   // init the system preference
   useInitSystemStatus();
 
@@ -59,9 +55,6 @@ const StoreInitialization = memo(() => {
    * which would cause unnecessary API requests with invalid login state.
    */
   const isLoginOnInit = Boolean(isLogin);
-
-  // init inbox agent via builtin agent mechanism
-  useInitBuiltinAgent(INBOX_SESSION_ID, { isLogin: isLoginOnInit });
 
   const onUserStateSuccess = useUserStateRedirect();
 
