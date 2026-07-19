@@ -1,4 +1,3 @@
-import { BRANDING_LOGO_URL, BRANDING_NAME } from '@lobechat/business-const';
 import { type IconType } from '@lobehub/icons';
 import { type FlexboxProps } from '@lobehub/ui';
 import { Flexbox } from '@lobehub/ui';
@@ -19,37 +18,30 @@ const styles = createStaticStyles(({ css }) => {
   };
 });
 
-const CustomTextLogo = memo<FlexboxProps & { size: number }>(({ size, style, ...rest }) => {
-  return (
-    <Flexbox
-      height={size}
-      style={{
-        fontSize: size / 1.5,
-        fontWeight: 'bolder',
-        userSelect: 'none',
-        ...style,
-      }}
-      {...rest}
-    >
-      {BRANDING_NAME}
-    </Flexbox>
-  );
-});
-
-const CustomImageLogo = memo<Omit<ImageProps, 'alt' | 'src'> & { size: number }>(
-  ({ size, ...rest }) => {
+const CustomTextLogo = memo<FlexboxProps & { name: string; size: number }>(
+  ({ name, size, style, ...rest }) => {
     return (
-      <Image
-        alt={BRANDING_NAME}
+      <Flexbox
         height={size}
-        src={BRANDING_LOGO_URL}
-        unoptimized={true}
-        width={size}
+        style={{
+          fontSize: size / 1.5,
+          fontWeight: 'bolder',
+          userSelect: 'none',
+          ...style,
+        }}
         {...rest}
-      />
+      >
+        {name}
+      </Flexbox>
     );
   },
 );
+
+const CustomImageLogo = memo<
+  Omit<ImageProps, 'alt' | 'src'> & { logoUrl: string; name: string; size: number }
+>(({ logoUrl, name, size, ...rest }) => {
+  return <Image alt={name} height={size} src={logoUrl} unoptimized={true} width={size} {...rest} />;
+});
 
 const Divider: IconType = (({ ref, size = '1em', style, ...rest }) => (
   <svg
@@ -69,61 +61,86 @@ const Divider: IconType = (({ ref, size = '1em', style, ...rest }) => (
   </svg>
 )) as IconType;
 
-const CustomLogo = memo<LobeChatProps>(({ extra, size = 32, className, style, type, ...rest }) => {
-  let logoComponent: ReactNode;
+interface CustomLogoProps extends LobeChatProps {
+  logoUrl: string | null;
+  name: string;
+}
 
-  switch (type) {
-    case '3d':
-    case 'flat': {
-      logoComponent = <CustomImageLogo size={size} style={style} {...rest} />;
-      break;
+const CustomLogo = memo<CustomLogoProps>(
+  ({ extra, logoUrl, name, size = 32, className, style, type, ...rest }) => {
+    let logoComponent: ReactNode;
+
+    if (!logoUrl) {
+      logoComponent = <CustomTextLogo name={name} size={size} style={style} {...rest} />;
+    } else {
+      switch (type) {
+        case '3d':
+        case 'flat': {
+          logoComponent = (
+            <CustomImageLogo logoUrl={logoUrl} name={name} size={size} style={style} {...rest} />
+          );
+          break;
+        }
+        case 'mono': {
+          logoComponent = (
+            <CustomImageLogo
+              logoUrl={logoUrl}
+              name={name}
+              size={size}
+              style={{ filter: 'grayscale(100%)', ...style }}
+              {...rest}
+            />
+          );
+          break;
+        }
+        case 'text': {
+          logoComponent = <CustomTextLogo name={name} size={size} style={style} {...rest} />;
+          break;
+        }
+        case 'combine': {
+          logoComponent = (
+            <>
+              <CustomImageLogo logoUrl={logoUrl} name={name} size={size} />
+              <CustomTextLogo
+                name={name}
+                size={size}
+                style={{ marginLeft: Math.round(size / 4) }}
+              />
+            </>
+          );
+
+          if (!extra)
+            logoComponent = (
+              <Flexbox horizontal align={'center'} flex={'none'} {...rest}>
+                {logoComponent}
+              </Flexbox>
+            );
+
+          break;
+        }
+        default: {
+          logoComponent = (
+            <CustomImageLogo logoUrl={logoUrl} name={name} size={size} style={style} {...rest} />
+          );
+          break;
+        }
+      }
     }
-    case 'mono': {
-      logoComponent = (
-        <CustomImageLogo size={size} style={{ filter: 'grayscale(100%)', ...style }} {...rest} />
-      );
-      break;
-    }
-    case 'text': {
-      logoComponent = <CustomTextLogo size={size} style={style} {...rest} />;
-      break;
-    }
-    case 'combine': {
-      logoComponent = (
-        <>
-          <CustomImageLogo size={size} />
-          <CustomTextLogo size={size} style={{ marginLeft: Math.round(size / 4) }} />
-        </>
-      );
 
-      if (!extra)
-        logoComponent = (
-          <Flexbox horizontal align={'center'} flex={'none'} {...rest}>
-            {logoComponent}
-          </Flexbox>
-        );
+    if (!extra) return logoComponent;
 
-      break;
-    }
-    default: {
-      logoComponent = <CustomImageLogo size={size} style={style} {...rest} />;
-      break;
-    }
-  }
+    const extraSize = Math.round((size / 3) * 1.9);
 
-  if (!extra) return logoComponent;
-
-  const extraSize = Math.round((size / 3) * 1.9);
-
-  return (
-    <Flexbox horizontal align={'center'} className={className} flex={'none'} {...rest}>
-      {logoComponent}
-      <Divider size={extraSize} style={{ color: cssVar.colorFill }} />
-      <div className={styles.extraTitle} style={{ fontSize: extraSize }}>
-        {extra}
-      </div>
-    </Flexbox>
-  );
-});
+    return (
+      <Flexbox horizontal align={'center'} className={className} flex={'none'} {...rest}>
+        {logoComponent}
+        <Divider size={extraSize} style={{ color: cssVar.colorFill }} />
+        <div className={styles.extraTitle} style={{ fontSize: extraSize }}>
+          {extra}
+        </div>
+      </Flexbox>
+    );
+  },
+);
 
 export default CustomLogo;

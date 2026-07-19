@@ -1,11 +1,11 @@
 'use client';
 
-import { BRANDING_NAME } from '@lobechat/business-const';
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useLocation, useMatches } from 'react-router';
 
 import { isDesktop } from '@/const/version';
+import { useBranding } from '@/enterprise/client';
 import {
   type DynamicRouteMeta,
   getRouteMetaFromHandle,
@@ -13,6 +13,7 @@ import {
   type RouteMetaParams,
 } from '@/spa/router/routeMeta';
 import { useElectronStore } from '@/store/electron';
+import { formatRuntimePageTitle } from '@/types/platform/branding';
 
 import DynamicMetaRunner from './DynamicMetaRunner';
 import { mergeSearchParams } from './params';
@@ -54,6 +55,7 @@ const translateTitleKey = (titleKey: string | undefined, translate: Translate) =
 
 const RouteMetaBridge = memo(() => {
   const { t } = useTranslation('electron');
+  const branding = useBranding();
   const location = useLocation();
   const setCurrentRouteMeta = useElectronStore((s) => s.setCurrentRouteMeta);
   const matched = useMatchedRouteMeta();
@@ -97,8 +99,8 @@ const RouteMetaBridge = memo(() => {
   }, [DynamicMeta, matchedRouteId, currentUrl, publishRouteMeta, setCurrentRouteMeta]);
 
   useEffect(() => {
-    document.title = title ? `${title} · ${BRANDING_NAME}` : BRANDING_NAME;
-  }, [title]);
+    document.title = formatRuntimePageTitle(title, branding);
+  }, [branding, title]);
 
   if (!matched || !DynamicMeta) return null;
 

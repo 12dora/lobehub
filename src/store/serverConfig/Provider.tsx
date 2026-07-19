@@ -15,10 +15,18 @@ interface GlobalStoreProviderProps {
   isMobile?: boolean;
   segmentVariants?: string;
   serverConfig?: GlobalServerConfig;
+  serverConfigInit?: boolean;
 }
 
 export const ServerConfigStoreProvider = memo<GlobalStoreProviderProps>(
-  ({ children, featureFlags, serverConfig, isMobile, segmentVariants }) => (
+  ({
+    children,
+    featureFlags,
+    serverConfig,
+    serverConfigInit = false,
+    isMobile,
+    segmentVariants,
+  }) => (
     <Provider
       createStore={() =>
         createServerConfigStore({
@@ -26,6 +34,7 @@ export const ServerConfigStoreProvider = memo<GlobalStoreProviderProps>(
           isMobile,
           segmentVariants,
           serverConfig,
+          serverConfigInit,
         })
       }
     >

@@ -2,12 +2,17 @@
  * Email OTP verification template for mobile
  * Sent to users when they need to verify their email using OTP code
  */
-export const getVerificationOTPEmailTemplate = (params: {
-  expiresInSeconds: number;
-  otp: string;
-  userName?: string | null;
-}) => {
+import { type EmailBrandingParams, resolveEmailBranding } from './branding';
+
+export const getVerificationOTPEmailTemplate = (
+  params: EmailBrandingParams & {
+    expiresInSeconds: number;
+    otp: string;
+    userName?: string | null;
+  },
+) => {
   const { otp, userName, expiresInSeconds } = params;
+  const { htmlPlatformName, platformName } = resolveEmailBranding(params.platformName);
 
   // Format expiration time in a human-readable way
   const expiresInMinutes = expiresInSeconds / 60;
@@ -33,7 +38,7 @@ export const getVerificationOTPEmailTemplate = (params: {
     <div style="text-align: center; margin-bottom: 32px;">
       <div style="display: inline-flex; align-items: center; justify-content: center; background-color: #ffffff; border-radius: 12px; padding: 8px 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.04);">
         <span style="font-size: 24px; line-height: 1; margin-right: 10px;">🤯</span>
-        <span style="font-size: 18px; font-weight: 700; color: #000000; letter-spacing: -0.5px;">LobeHub</span>
+        <span style="font-size: 18px; font-weight: 700; color: #000000; letter-spacing: -0.5px;">${htmlPlatformName}</span>
       </div>
     </div>
 
@@ -55,7 +60,7 @@ export const getVerificationOTPEmailTemplate = (params: {
         ${userName ? `<p style="margin: 0 0 16px 0;">Hi <strong>${userName}</strong>,</p>` : ''}
 
         <p style="margin: 0 0 24px 0;">
-          Thanks for creating an account with LobeHub. To verify your email address, please use the verification code below:
+          Thanks for creating an account with ${htmlPlatformName}. To verify your email address, please use the verification code below:
         </p>
 
         <!-- OTP Code Box -->
@@ -93,14 +98,14 @@ export const getVerificationOTPEmailTemplate = (params: {
     <!-- Footer -->
     <div style="text-align: center; margin-top: 32px;">
       <p style="color: #a1a1aa; font-size: 13px; margin: 0;">
-        © 2026 LobeHub. All rights reserved.
+        © 2026 ${htmlPlatformName}. All rights reserved.
       </p>
     </div>
   </div>
 </body>
 </html>
     `,
-    subject: 'Verify Your Email - LobeHub',
+    subject: `Verify Your Email - ${platformName}`,
     text: `Your verification code is: ${otp}\n\nThis code will expire in ${expirationText}.\n\nIf you didn't request this code, you can safely ignore this email.`,
   };
 };

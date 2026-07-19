@@ -14,8 +14,6 @@ import AuthProvider from '@/layout/AuthProvider';
 import { MarketAuthProvider } from '@/layout/AuthProvider/MarketAuth';
 import AppTheme from '@/layout/GlobalProvider/AppTheme';
 import CacheHydrationGate from '@/layout/GlobalProvider/CacheHydrationGate';
-import DynamicFavicon from '@/layout/GlobalProvider/DynamicFavicon';
-import { FaviconProvider } from '@/layout/GlobalProvider/FaviconProvider';
 import { GroupWizardProvider } from '@/layout/GlobalProvider/GroupWizardProvider';
 import QueryProvider from '@/layout/GlobalProvider/Query';
 import ServerVersionOutdatedAlert from '@/layout/GlobalProvider/ServerVersionOutdatedAlert';
@@ -55,28 +53,25 @@ const SPAGlobalProvider = memo<PropsWithChildren>(({ children }) => {
                 <StoreInitialization />
 
                 {isDesktop && <ServerVersionOutdatedAlert />}
-                <FaviconProvider>
-                  <DynamicFavicon />
-                  <GroupWizardProvider>
-                    <DragUploadProvider>
-                      <LazyMotion features={domMax}>
-                        <TooltipGroup layoutAnimation={false}>
-                          <StyleProvider speedy={import.meta.env.PROD}>
-                            <LobeAnalyticsProviderWrapper>
-                              <CacheHydrationGate>{children}</CacheHydrationGate>
-                            </LobeAnalyticsProviderWrapper>
-                          </StyleProvider>
-                        </TooltipGroup>
-                        <Suspense>
-                          <ModalHost />
-                          <BaseModalHost />
-                          <ToastHost />
-                          <ContextMenuHost />
-                        </Suspense>
-                      </LazyMotion>
-                    </DragUploadProvider>
-                  </GroupWizardProvider>
-                </FaviconProvider>
+                <GroupWizardProvider>
+                  <DragUploadProvider>
+                    <LazyMotion features={domMax}>
+                      <TooltipGroup layoutAnimation={false}>
+                        <StyleProvider speedy={import.meta.env.PROD}>
+                          <LobeAnalyticsProviderWrapper>
+                            <CacheHydrationGate>{children}</CacheHydrationGate>
+                          </LobeAnalyticsProviderWrapper>
+                        </StyleProvider>
+                      </TooltipGroup>
+                      <Suspense>
+                        <ModalHost />
+                        <BaseModalHost />
+                        <ToastHost />
+                        <ContextMenuHost />
+                      </Suspense>
+                    </LazyMotion>
+                  </DragUploadProvider>
+                </GroupWizardProvider>
               </MarketAuthProvider>
             </AuthProvider>
           </QueryProvider>

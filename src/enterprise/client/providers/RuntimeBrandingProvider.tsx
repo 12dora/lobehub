@@ -27,3 +27,6 @@ export const RuntimeBrandingProvider = ({
 };
 
 export const useRuntimeBranding = (): RuntimeBranding => use(RuntimeBrandingContext);
+
+/** Preferred concise consumer hook; the long name remains for compatibility. */
+export const useBranding = useRuntimeBranding;

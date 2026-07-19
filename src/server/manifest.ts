@@ -1,7 +1,7 @@
-import { BRANDING_LOGO_URL } from '@lobechat/business-const';
 import qs from 'query-string';
 
 import { getCanonicalUrl } from '@/server/utils/url';
+import { withRuntimeBrandingRevision } from '@/utils/favicon';
 
 const MAX_AGE = 31_536_000;
 const COLOR = '#000000';
@@ -25,15 +25,21 @@ export class Manifest {
     color = COLOR,
     description,
     name,
+    shortName,
     id,
     icons,
+    iconRevision,
+    iconUrl,
     screenshots,
   }: {
     color?: string;
     description: string;
     icons: IconItem[];
+    iconRevision?: string | null;
+    iconUrl?: string | null;
     id: string;
     name: string;
+    shortName?: string;
     screenshots: ScreenshotItem[];
   }) {
     return {
@@ -47,7 +53,9 @@ export class Manifest {
         preferred_width: 480,
       },
       handle_links: 'auto',
-      icons: icons.map((item) => this._getIcon(item)),
+      icons: iconUrl
+        ? [{ src: withRuntimeBrandingRevision(iconUrl, iconRevision ?? null) }]
+        : icons.map((item) => this._getIcon(item)),
       id,
       immutable: 'true',
       max_age: MAX_AGE,
@@ -61,7 +69,7 @@ export class Manifest {
       ],
       scope: '/',
       screenshots: screenshots.map((item) => this._getScreenshot(item)),
-      short_name: name,
+      short_name: shortName ?? name,
       splash_pages: null,
       start_url: '/',
       tab_strip: {
@@ -77,7 +85,7 @@ export class Manifest {
     cache_busting_mode: 'query',
     immutable: 'true',
     max_age: MAX_AGE,
-    src: qs.stringifyUrl({ query: { v: version }, url: BRANDING_LOGO_URL || url }),
+    src: qs.stringifyUrl({ query: { v: version }, url }),
   });
 
   private _getIcon = ({ url, version, sizes, purpose }: IconItem) => ({
@@ -90,7 +98,7 @@ export class Manifest {
   private _getScreenshot = ({ form_factor, url, version, sizes }: ScreenshotItem) => ({
     ...this._getImage(url, version),
     form_factor,
-    sizes: sizes || form_factor === 'wide' ? '1280x676' : '640x1138',
+    sizes: sizes ?? (form_factor === 'wide' ? '1280x676' : '640x1138'),
     type: 'image/png',
   });
 }
