@@ -164,6 +164,18 @@ export class AdminBrandingAssetService {
 
   isStorageConfigured = (): boolean => this.storage.isConfigured();
 
+  private finalizeReplaySuccess = async (
+    asset: PlatformBrandingAssetItem,
+    options: AdminBrandingAssetUploadOptions,
+  ): Promise<ReturnType<typeof uploadResult>> => {
+    const result = uploadResult(asset);
+    const finalizeSuccess = options.finalizeSuccess;
+    if (finalizeSuccess) {
+      await this.db.transaction((tx) => finalizeSuccess(tx, result));
+    }
+    return result;
+  };
+
   private acquireRequestLock = async (
     tx: Transaction,
     actorUserId: string,
@@ -339,23 +351,17 @@ export class AdminBrandingAssetService {
 
     let reservation = await this.reserve({ actorUserId, asset, fingerprint, input });
     if (reservation.status === 'replay') {
-      const result = uploadResult(reservation.asset);
-      if (options.finalizeSuccess) {
-        await this.db.transaction((tx) => options.finalizeSuccess!(tx, result));
-      }
-      return result;
+      return this.finalizeReplaySuccess(reservation.asset, options);
     }
     if (reservation.status === 'wait') {
       const replay = await this.waitForReplay(reservation.asset.id);
       if (replay) {
-        const result = uploadResult(replay);
-        if (options.finalizeSuccess) {
-          await this.db.transaction((tx) => options.finalizeSuccess!(tx, result));
-        }
-        return result;
+        return this.finalizeReplaySuccess(replay, options);
       }
       reservation = await this.reserve({ actorUserId, asset, fingerprint, input });
-      if (reservation.status === 'replay') return uploadResult(reservation.asset);
+      if (reservation.status === 'replay') {
+        return this.finalizeReplaySuccess(reservation.asset, options);
+      }
       if (reservation.status === 'wait') throw new BrandingAssetUploadInProgressError();
     }
 
