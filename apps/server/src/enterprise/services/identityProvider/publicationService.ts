@@ -2,7 +2,11 @@ import { createHash, randomBytes } from 'node:crypto';
 
 import { and, desc, eq, gt, inArray, isNull, lte, sql } from 'drizzle-orm';
 
-import { checksumPayload, PlatformRevisionConflictError } from '@/database/models/platform';
+import {
+  checksumPayload,
+  type PlatformIdentityProviderInternalDraft,
+  PlatformRevisionConflictError,
+} from '@/database/models/platform';
 import {
   platformAuditLogs,
   platformIdentityProviders,
@@ -14,7 +18,6 @@ import type { LobeChatDatabase, Transaction } from '@/database/type';
 import { identityProviderDraftSchema } from '@/server/enterprise/contracts/identityProviders';
 import {
   parsePlatformIdentityProviderClaimMapping,
-  type PlatformIdentityProviderDraft,
   type PlatformIdentityProviderType,
 } from '@/types/platform/identityProvider';
 
@@ -26,7 +29,7 @@ const IDEMPOTENCY_LEASE_MS = 5 * 60 * 1000;
 export interface PublishedIdentityProviderPayload {
   autoProvision: boolean;
   buttonLabel: string;
-  claimMapping: PlatformIdentityProviderDraft['claimMapping'];
+  claimMapping: PlatformIdentityProviderInternalDraft['claimMapping'];
   clientId: string;
   displayName: string;
   domainAllowlist: string[];
@@ -186,7 +189,7 @@ export const parsePublishedIdentityProviderPayload = (
 };
 
 const toPublishedPayload = (
-  draft: PlatformIdentityProviderDraft,
+  draft: PlatformIdentityProviderInternalDraft,
 ): PublishedIdentityProviderPayload => {
   if (
     draft.migrationRequired ||
@@ -265,7 +268,9 @@ const idempotencyContext = (input: {
   };
 };
 
-const toIdempotentResponse = (draft: PlatformIdentityProviderDraft): Record<string, unknown> => {
+const toIdempotentResponse = (
+  draft: PlatformIdentityProviderInternalDraft,
+): Record<string, unknown> => {
   const { secret, ...safeDraft } = draft;
   return {
     ...safeDraft,
@@ -275,7 +280,7 @@ const toIdempotentResponse = (draft: PlatformIdentityProviderDraft): Record<stri
   };
 };
 
-const parseIdempotentResponse = (value: unknown): PlatformIdentityProviderDraft => {
+const parseIdempotentResponse = (value: unknown): PlatformIdentityProviderInternalDraft => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_IDEMPOTENCY_CONFLICT');
   }
@@ -294,14 +299,17 @@ const parseIdempotentResponse = (value: unknown): PlatformIdentityProviderDraft 
     ...safeDraft,
     secret: {
       configured: isConfigured,
-      fingerprint,
       updatedAt: fingerprintUpdatedAt,
     },
   });
-  if (!parsed.success) {
+  if (
+    !parsed.success ||
+    (fingerprint !== null &&
+      (typeof fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(fingerprint)))
+  ) {
     throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_IDEMPOTENCY_CONFLICT');
   }
-  return parsed.data;
+  return { ...parsed.data, secret: { ...parsed.data.secret, fingerprint } };
 };
 
 interface IdempotencyRequest {
@@ -326,7 +334,7 @@ interface IdempotencyLease extends IdempotencyOwnerFence {
 
 type IdempotencyReservation =
   | { fence: IdempotencyOwnerFence; kind: 'owner' }
-  | { kind: 'replay'; response: PlatformIdentityProviderDraft };
+  | { kind: 'replay'; response: PlatformIdentityProviderInternalDraft };
 
 export interface IdentityProviderPublicationTestHooks {
   afterDraftLock?: (fence: IdempotencyOwnerFence) => Promise<void>;
@@ -355,7 +363,7 @@ const assertAuditScope = (
 const findTerminalReplay = async (
   tx: Transaction,
   input: IdempotencyRequest,
-): Promise<PlatformIdentityProviderDraft | null> => {
+): Promise<PlatformIdentityProviderInternalDraft | null> => {
   const [terminal] = await tx
     .select()
     .from(platformAuditLogs)
@@ -548,7 +556,7 @@ const finalizeIdempotentFailure = async (
   input: IdempotencyRequest,
   fence: IdempotencyOwnerFence,
   error: unknown,
-): Promise<PlatformIdentityProviderDraft | null> =>
+): Promise<PlatformIdentityProviderInternalDraft | null> =>
   db.transaction(async (tx) => {
     await lockIdempotencyTarget(tx, input.targetId);
     const replay = await findTerminalReplay(tx, input);
@@ -587,9 +595,9 @@ const appendSuccessTerminal = async (
     afterDiff: Record<string, unknown>;
     beforeDiff: Record<string, unknown>;
     configRevision: number;
-    response: PlatformIdentityProviderDraft;
+    response: PlatformIdentityProviderInternalDraft;
   },
-): Promise<PlatformIdentityProviderDraft> => {
+): Promise<PlatformIdentityProviderInternalDraft> => {
   await assertOwnerFence(tx, input, fence);
   const [inserted] = await tx
     .insert(platformAuditLogs)
@@ -664,7 +672,7 @@ export class IdentityProviderPublicationService {
     if (!row) {
       throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_NOT_FOUND');
     }
-    const draft: PlatformIdentityProviderDraft = {
+    const draft: PlatformIdentityProviderInternalDraft = {
       activationRevision: row.activationRevision,
       autoProvision: row.autoProvision,
       buttonLabel: row.buttonLabel,
@@ -700,7 +708,7 @@ export class IdentityProviderPublicationService {
   publish = async (
     actorUserId: string,
     input: { expectedRevision: number; id: string; reason: string; requestId: string },
-  ): Promise<PlatformIdentityProviderDraft> => {
+  ): Promise<PlatformIdentityProviderInternalDraft> => {
     const reason = assertReason(input.reason);
     const requestId = assertRequestId(input.requestId);
     const action = 'admin.identityProviders.publish';
@@ -823,7 +831,7 @@ export class IdentityProviderPublicationService {
           )
           .returning();
         if (!updated) throw new PlatformRevisionConflictError();
-        const result: PlatformIdentityProviderDraft = {
+        const result: PlatformIdentityProviderInternalDraft = {
           ...draft,
           activationRevision: nextRevision,
           enabled: true,
@@ -882,7 +890,7 @@ export class IdentityProviderPublicationService {
       requestId: string;
       targetRevision: number;
     },
-  ): Promise<PlatformIdentityProviderDraft> => {
+  ): Promise<PlatformIdentityProviderInternalDraft> => {
     const reason = assertReason(input.reason);
     const requestId = assertRequestId(input.requestId);
     const action = 'admin.identityProviders.rollback';
@@ -1006,7 +1014,7 @@ export class IdentityProviderPublicationService {
           )
           .returning();
         if (!updated) throw new PlatformRevisionConflictError();
-        const result: PlatformIdentityProviderDraft = {
+        const result: PlatformIdentityProviderInternalDraft = {
           ...draft,
           activationRevision: null,
           autoProvision: payload.autoProvision,

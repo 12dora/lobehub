@@ -664,7 +664,7 @@
   "identityProviders.save.title": "保存身份提供商草稿",
   "identityProviders.secret.clear": "保存时清除已配置的密钥",
   "identityProviders.secret.configured": "密钥已配置；仅在替换时输入新值",
-  "identityProviders.secret.fingerprint": "已配置密钥指纹：{{fingerprint}}…",
+  "identityProviders.secret.updatedAt": "密钥已配置 · 更新于 {{updatedAt}}",
   "identityProviders.steps.basic": "基础",
   "identityProviders.steps.claims": "声明",
   "identityProviders.steps.client": "客户端",

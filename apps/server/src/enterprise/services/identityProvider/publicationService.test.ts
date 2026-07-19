@@ -145,10 +145,14 @@ describe('IdentityProviderPublicationService', () => {
       status: 'pending_restart',
     });
     const [revision] = await db.select().from(platformResourceRevisions);
+    const [provider] = await db
+      .select({ fingerprint: platformIdentityProviders.secretFingerprint })
+      .from(platformIdentityProviders)
+      .where(eq(platformIdentityProviders.id, draft.id));
     expect(revision).toMatchObject({
       resourceId: draft.id,
       resourceType: 'oidc',
-      secretFingerprint: draft.secret.fingerprint,
+      secretFingerprint: provider.fingerprint,
       status: 'published',
     });
     const serialized = JSON.stringify(revision);
@@ -409,7 +413,11 @@ describe('IdentityProviderPublicationService', () => {
       revision: published.revision + 1,
       status: 'draft',
     });
-    expect(restored.secret.fingerprint).toBe(draft.secret.fingerprint);
+    const [restoredRow] = await db
+      .select({ fingerprint: platformIdentityProviders.secretFingerprint })
+      .from(platformIdentityProviders)
+      .where(eq(platformIdentityProviders.id, draft.id));
+    expect(restored.secret.fingerprint).toBe(restoredRow.fingerprint);
     await expect(
       admin.delete('admin-1', {
         expectedRevision: restored.revision,

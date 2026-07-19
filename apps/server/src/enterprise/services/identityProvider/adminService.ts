@@ -1,8 +1,9 @@
-import type { PlatformIdentityProviderDraft } from '@lobechat/types';
 import { and, eq } from 'drizzle-orm';
 
 import {
+  type PlatformIdentityProviderInternalDraft,
   PlatformIdentityProviderModel,
+  toPublicIdentityProviderDraft,
   toSafeIdentityProviderDraftFromList,
 } from '@/database/models/platform';
 import { PlatformIdentityProviderRepository } from '@/database/repositories/platformIdentityProvider';
@@ -43,14 +44,14 @@ const editableValues = (
   usePkce: true as const,
 });
 
-const requireDraft = (draft: PlatformIdentityProviderDraft | undefined) => {
+const requireDraft = (draft: PlatformIdentityProviderInternalDraft | undefined) => {
   if (!draft) throw new Error('PLATFORM_IDENTITY_PROVIDER_NOT_FOUND');
   if (draft.migrationRequired) throw new Error('PLATFORM_IDENTITY_PROVIDER_MIGRATION_REQUIRED');
   if (draft.status !== 'draft') throw new Error('PLATFORM_IDENTITY_PROVIDER_NOT_DRAFT');
   return draft;
 };
 
-const requireProvider = (provider: PlatformIdentityProviderDraft | undefined) => {
+const requireProvider = (provider: PlatformIdentityProviderInternalDraft | undefined) => {
   if (!provider) throw new Error('PLATFORM_IDENTITY_PROVIDER_NOT_FOUND');
   if (provider.migrationRequired) throw new Error('PLATFORM_IDENTITY_PROVIDER_MIGRATION_REQUIRED');
   return provider;
@@ -75,13 +76,17 @@ export class AdminIdentityProviderService {
     private readonly appUrl: string,
   ) {}
 
-  get = async (id: string): Promise<PlatformIdentityProviderDraft> =>
-    requireProvider(await new PlatformIdentityProviderModel(this.db).get(id));
+  get = async (id: string) =>
+    toPublicIdentityProviderDraft(
+      requireProvider(await new PlatformIdentityProviderModel(this.db).get(id)),
+    );
 
   list = async (input: AdminIdentityProviderListInput) => {
     const page = await new PlatformIdentityProviderRepository(this.db).listPage(input);
     return {
-      items: page.items.map(toSafeIdentityProviderDraftFromList),
+      items: page.items.map((item) =>
+        toPublicIdentityProviderDraft(toSafeIdentityProviderDraftFromList(item)),
+      ),
       nextCursor: page.nextCursor,
     };
   };
@@ -141,7 +146,10 @@ export class AdminIdentityProviderService {
             })
           ).revision;
         }
-        const draft = requireDraft(await new PlatformIdentityProviderModel(tx).get(created.id));
+        const internalDraft = requireDraft(
+          await new PlatformIdentityProviderModel(tx).get(created.id),
+        );
+        const draft = toPublicIdentityProviderDraft(internalDraft);
         await new PlatformAuditService(tx).append({
           action: 'admin.identityProviders.create',
           actorUserId,
@@ -164,7 +172,8 @@ export class AdminIdentityProviderService {
       reason: input.reason,
       run: async (tx) => {
         const model = new PlatformIdentityProviderModel(tx);
-        const before = requireProvider(await model.get(input.id));
+        const internalBefore = requireProvider(await model.get(input.id));
+        const before = toPublicIdentityProviderDraft(internalBefore);
         if (before.status === 'archived') {
           throw new Error('PLATFORM_IDENTITY_PROVIDER_NOT_EDITABLE');
         }
@@ -210,7 +219,7 @@ export class AdminIdentityProviderService {
           )
           .returning({ id: platformIdentityProviders.id });
         if (!updated) throw new Error('PLATFORM_REVISION_CONFLICT');
-        const after = requireDraft(await model.get(input.id));
+        const after = toPublicIdentityProviderDraft(requireDraft(await model.get(input.id)));
         await new PlatformAuditService(tx).append({
           action: 'admin.identityProviders.update',
           actorUserId,

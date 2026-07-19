@@ -525,8 +525,8 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
               </label>
               {provider?.secret.configured ? (
                 <Text type="secondary">
-                  {t('identityProviders.secret.fingerprint', {
-                    fingerprint: provider.secret.fingerprint?.slice(0, 12),
+                  {t('identityProviders.secret.updatedAt', {
+                    updatedAt: provider.secret.updatedAt?.toLocaleString() ?? '—',
                   })}
                 </Text>
               ) : null}
