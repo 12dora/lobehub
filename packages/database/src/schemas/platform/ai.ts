@@ -98,6 +98,8 @@ export const platformAiProviders = pgTable(
     config: jsonb('config').$type<PlatformAiProviderConfig>().notNull().default({}),
     /** Envelope-encrypted credentials; never returned via API. */
     encryptedKeyVaults: text('encrypted_key_vaults'),
+    /** KEK id embedded in encryptedKeyVaults; nullable for pre-M13 legacy rows. */
+    secretKeyId: varchar('secret_key_id', { length: 256 }),
     secretKeyVersion: integer('secret_key_version'),
     secretUpdatedAt: timestamptz('secret_updated_at'),
     secretFingerprint: text('secret_fingerprint'),
@@ -129,6 +131,7 @@ export const platformAiProviders = pgTable(
     uniqueIndex('platform_ai_providers_provider_key_unique').on(t.providerKey),
     index('platform_ai_providers_status_idx').on(t.status),
     index('platform_ai_providers_enabled_sort_idx').on(t.enabled, t.sort),
+    index('platform_ai_providers_secret_key_id_idx').on(t.secretKeyId),
   ],
 );
 
@@ -152,6 +155,8 @@ export const platformAiProviderSecrets = pgTable(
     fingerprint: text('fingerprint').notNull(),
     /** Envelope ciphertext only; never selected by public/admin response projections. */
     ciphertext: text('ciphertext').notNull(),
+    /** KEK id embedded in ciphertext; nullable for pre-M13 immutable versions. */
+    keyId: varchar('key_id', { length: 256 }),
     keyVersion: integer('key_version').notNull().default(1),
     createdAt: createdAt(),
   },
@@ -161,6 +166,7 @@ export const platformAiProviderSecrets = pgTable(
       t.fingerprint,
     ),
     index('platform_ai_provider_secrets_provider_id_idx').on(t.providerId),
+    index('platform_ai_provider_secrets_key_id_idx').on(t.keyId),
   ],
 );
 

@@ -114,6 +114,7 @@ export class PlatformAiCatalogRepository {
   storeProviderSecretVersion = async (params: {
     ciphertext: string;
     fingerprint: string;
+    keyId: string;
     keyVersion: number;
     providerId: string;
   }): Promise<PlatformAiProviderSecretItem> => {
@@ -121,7 +122,11 @@ export class PlatformAiCatalogRepository {
       .insert(platformAiProviderSecrets)
       .values(params)
       .onConflictDoUpdate({
-        set: { ciphertext: params.ciphertext, keyVersion: params.keyVersion },
+        set: {
+          ciphertext: params.ciphertext,
+          keyId: params.keyId,
+          keyVersion: params.keyVersion,
+        },
         target: [platformAiProviderSecrets.providerId, platformAiProviderSecrets.fingerprint],
       })
       .returning();

@@ -12,6 +12,7 @@ export type AiSecretMutation = z.infer<typeof aiSecretMutationSchema>;
 export interface AppliedAiSecret {
   encryptedKeyVaults: string | null;
   secretFingerprint: string | null;
+  secretKeyId: string | null;
   secretKeyVersion: number | null;
   secretUpdatedAt: Date | null;
 }
@@ -57,14 +58,20 @@ export class AiCatalogSecretManager {
   applyMutation = async (
     current: Pick<
       PlatformAiProviderItem,
-      'encryptedKeyVaults' | 'secretFingerprint' | 'secretKeyVersion' | 'secretUpdatedAt'
+      | 'encryptedKeyVaults'
+      | 'secretFingerprint'
+      | 'secretKeyId'
+      | 'secretKeyVersion'
+      | 'secretUpdatedAt'
     > | null,
     mutation: AiSecretMutation | undefined,
   ): Promise<AppliedAiSecret> => {
     if (!mutation || mutation.operation === 'keep') {
+      const encryptedKeyVaults = current?.encryptedKeyVaults ?? null;
       return {
-        encryptedKeyVaults: current?.encryptedKeyVaults ?? null,
+        encryptedKeyVaults,
         secretFingerprint: current?.secretFingerprint ?? null,
+        secretKeyId: encryptedKeyVaults ? this.secrets.peekKeyId(encryptedKeyVaults) : null,
         secretKeyVersion: current?.secretKeyVersion ?? null,
         secretUpdatedAt: current?.secretUpdatedAt ?? null,
       };
@@ -74,6 +81,7 @@ export class AiCatalogSecretManager {
       return {
         encryptedKeyVaults: null,
         secretFingerprint: null,
+        secretKeyId: null,
         secretKeyVersion: null,
         secretUpdatedAt: null,
       };
@@ -86,6 +94,7 @@ export class AiCatalogSecretManager {
     return {
       encryptedKeyVaults,
       secretFingerprint: fingerprintSecret(serialized),
+      secretKeyId: this.secrets.peekKeyId(encryptedKeyVaults),
       secretKeyVersion: 1,
       secretUpdatedAt: new Date(),
     };
@@ -110,4 +119,7 @@ export class AiCatalogSecretManager {
     }
     return parsed as PlatformProviderKeyVaults;
   };
+
+  /** Extract the envelope KEK id without exposing key material or plaintext. */
+  peekKeyId = (ciphertext: string): string => this.secrets.peekKeyId(ciphertext);
 }
