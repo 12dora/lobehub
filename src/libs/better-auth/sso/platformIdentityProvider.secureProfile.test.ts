@@ -5,7 +5,7 @@ import { betterAuth } from 'better-auth';
 import type { MemoryDB } from 'better-auth/adapters/memory';
 import { memoryAdapter } from 'better-auth/adapters/memory';
 import { createAuthMiddleware } from 'better-auth/api';
-import { genericOAuth } from 'better-auth/plugins';
+import { genericOAuth, type GenericOAuthConfig } from 'better-auth/plugins';
 import type { BetterAuthPlugin } from 'better-auth/types';
 import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -180,7 +180,8 @@ const setup = async (options?: {
 };
 
 interface RouteHarnessOptions extends NonNullable<Parameters<typeof setup>[0]> {
-  failLinkStateUpdate?: boolean;
+  linkStateUpdateFailure?: 'stale-read' | 'throw';
+  useSecondaryStorage?: boolean;
 }
 
 const createRouteHarness = async (options?: RouteHarnessOptions) => {
@@ -198,28 +199,34 @@ const createRouteHarness = async (options?: RouteHarnessOptions) => {
   const customGetToken = vi.spyOn(setupResult.config, 'getToken');
   const mapProfileToUser = vi.spyOn(setupResult.config, 'mapProfileToUser');
   const baseURL = 'https://app.example.test/api/auth';
-  const failLinkStateUpdatePlugin: BetterAuthPlugin = {
+  const nonPlatformProvider: GenericOAuthConfig = {
+    authorizationUrl: 'https://other-login.example.test/authorize',
+    clientId: 'other-client-id',
+    clientSecret: 'other-client-secret',
+    providerId: 'other-oauth',
+    scopes: ['openid'],
+    tokenUrl: 'https://other-login.example.test/token',
+  };
+  const injectLinkStateUpdateFailurePlugin: BetterAuthPlugin = {
     hooks: {
       before: [
         {
           handler: createAuthMiddleware(async (ctx) => {
-            if (!options?.failLinkStateUpdate) return;
-            const updateMany = ctx.context.adapter.updateMany.bind(ctx.context.adapter);
-            ctx.context.adapter.updateMany = async (input) => {
-              if (
-                input.model === 'verification' &&
-                input.where.some((where) => where.field === 'value')
-              ) {
-                return 0;
+            if (!options?.linkStateUpdateFailure) return;
+            ctx.context.internalAdapter.updateVerificationByIdentifier = async (identifier) => {
+              if (options.linkStateUpdateFailure === 'throw') {
+                throw new Error('INJECTED_VERIFICATION_UPDATE_FAILURE');
               }
-              return updateMany(input);
+              const unchanged = await ctx.context.internalAdapter.findVerificationValue(identifier);
+              if (!unchanged) throw new Error('INJECTED_VERIFICATION_STATE_MISSING');
+              return unchanged;
             };
           }),
           matcher: (ctx) => ctx.path === '/oauth2/link',
         },
       ],
     },
-    id: 'fail-platform-state-update-test',
+    id: 'inject-platform-state-update-failure-test',
   };
   const createAuthInstance = () =>
     betterAuth({
@@ -231,21 +238,24 @@ const createRouteHarness = async (options?: RouteHarnessOptions) => {
       database: memoryAdapter(database),
       emailAndPassword: { enabled: true },
       plugins: [
-        failLinkStateUpdatePlugin,
+        injectLinkStateUpdateFailurePlugin,
         platformIdentityProviderState(['corp-oidc']),
-        genericOAuth({ config: [setupResult.config] }),
+        genericOAuth({ config: [setupResult.config, nonPlatformProvider] }),
       ],
-      secondaryStorage: {
-        delete: async (key) => {
-          secondaryStorage.delete(key);
-        },
-        get: async (key) => secondaryStorage.get(key) ?? null,
-        set: async (key, value) => {
-          secondaryStorage.set(key, value);
-        },
-      },
+      ...(options?.useSecondaryStorage === false
+        ? {}
+        : {
+            secondaryStorage: {
+              delete: async (key: string) => {
+                secondaryStorage.delete(key);
+              },
+              get: async (key: string) => secondaryStorage.get(key) ?? null,
+              set: async (key: string, value: string) => {
+                secondaryStorage.set(key, value);
+              },
+            },
+          }),
       secret: 'platform-oidc-route-regression-secret',
-      verification: { storeInDatabase: true },
     });
   const signInAuth = createAuthInstance();
   const callbackAuth = createAuthInstance();
@@ -308,12 +318,12 @@ const createRouteHarness = async (options?: RouteHarnessOptions) => {
       .map((value) => value.split(';', 1)[0])
       .join('; ');
   };
-  const startLink = async (sessionCookie: string) => {
+  const startLink = async (sessionCookie: string, providerId = 'corp-oidc') => {
     const response = await signInAuth.handler(
       new Request(`${baseURL}/oauth2/link`, {
         body: JSON.stringify({
           callbackURL: 'https://app.example.test/after-link',
-          providerId: 'corp-oidc',
+          providerId,
         }),
         headers: { 'Content-Type': 'application/json', 'Cookie': sessionCookie },
         method: 'POST',
@@ -343,8 +353,18 @@ const createRouteHarness = async (options?: RouteHarnessOptions) => {
     database,
     mapProfileToUser,
     nativeFetch,
+    readVerification: (state: string) => {
+      const cached = secondaryStorage.get(`verification:${state}`);
+      if (cached) return JSON.parse(cached) as { expiresAt: Date | string; value: string };
+      return database.verification?.find((entry) => entry.identifier === state);
+    },
     start,
     startLink,
+    verificationStore: () =>
+      JSON.stringify({
+        database: database.verification,
+        secondary: [...secondaryStorage.values()],
+      }),
   };
 };
 
@@ -373,7 +393,7 @@ describe('platform identity provider trusted profile', () => {
     expect(transport.mock.calls[0]![0].url.pathname).toBe('/application/o/token/');
   });
 
-  it('binds unique nonces to database state across concurrent Better Auth route flows', async () => {
+  it('binds unique nonces to shared verification state across concurrent route flows', async () => {
     const harness = await createRouteHarness();
     const [first, second] = await Promise.all([
       harness.start({
@@ -403,13 +423,13 @@ describe('platform identity provider trusted profile', () => {
     expect(first.authorizationUrl.searchParams.get('state')).not.toBe(
       second.authorizationUrl.searchParams.get('state'),
     );
-    expect(JSON.stringify(harness.database)).toContain(
+    expect(harness.verificationStore()).toContain(
       createHash('sha256').update(firstNonce!).digest('hex'),
     );
-    expect(JSON.stringify(harness.database)).not.toContain('client-controlled-hash');
-    expect(JSON.stringify(harness.database)).not.toContain('attacker-provider');
-    expect(JSON.stringify(harness.database)).not.toContain(firstNonce);
-    expect(JSON.stringify(harness.database)).not.toContain(secondNonce);
+    expect(harness.verificationStore()).not.toContain('client-controlled-hash');
+    expect(harness.verificationStore()).not.toContain('attacker-provider');
+    expect(harness.verificationStore()).not.toContain(firstNonce);
+    expect(harness.verificationStore()).not.toContain(secondNonce);
     expect(harness.transport).not.toHaveBeenCalled();
 
     harness.setTokenNonceForCode('first-code', firstNonce!);
@@ -442,68 +462,102 @@ describe('platform identity provider trusted profile', () => {
       harness.transport.mock.calls.some(([request]) => request.url.hostname.endsWith('.invalid')),
     ).toBe(false);
     expect(harness.nativeFetch).not.toHaveBeenCalled();
-    expect(JSON.stringify(harness.database)).not.toContain(firstNonce);
-    expect(JSON.stringify(harness.database)).not.toContain(secondNonce);
+    expect(harness.verificationStore()).not.toContain(firstNonce);
+    expect(harness.verificationStore()).not.toContain(secondNonce);
     expect(harness.database.account).toHaveLength(2);
     expect(harness.database.account?.every((account) => account.idToken === undefined)).toBe(true);
   });
 
-  it('binds link nonce to persisted state before returning the URL and completes cross-instance callback', async () => {
-    const harness = await createRouteHarness();
+  it.each([
+    ['shared secondary storage', true],
+    ['database fallback', false],
+  ])(
+    'binds link nonce in %s before returning the URL and completes cross-instance callback',
+    async (_label, useSecondaryStorage) => {
+      const harness = await createRouteHarness({ useSecondaryStorage });
+      const sessionCookie = await harness.authenticate();
+      const flow = await harness.startLink(sessionCookie);
+
+      expect(flow.response.status).toBe(200);
+      expect(flow.body.redirect).toBe(true);
+      expect(flow.authorizationUrl).not.toBeNull();
+      const state = flow.authorizationUrl!.searchParams.get('state');
+      const nonce = flow.authorizationUrl!.searchParams.get('nonce');
+      expect(state).toBeTruthy();
+      expect(nonce).toBeTruthy();
+      expect(flow.cookie).toContain('better-auth.state=');
+
+      const verification = harness.readVerification(state!);
+      expect(verification).toBeDefined();
+      expect(harness.database.verification).toHaveLength(useSecondaryStorage ? 0 : 1);
+      const persistedState = JSON.parse(verification!.value) as Record<string, unknown>;
+      expect(persistedState).toMatchObject({
+        callbackURL: 'https://app.example.test/after-link',
+        expiresAt: expect.any(Number),
+        link: { email: 'ada@example.test', userId: expect.any(String) },
+        oauthState: state,
+        platformOidcNonceHash: createHash('sha256').update(nonce!).digest('hex'),
+        platformOidcProviderId: 'corp-oidc',
+      });
+      expect(persistedState.codeVerifier).toEqual(expect.any(String));
+      expect(
+        verification!.expiresAt instanceof Date
+          ? verification!.expiresAt.getTime()
+          : new Date(verification!.expiresAt).getTime(),
+      ).toBeGreaterThan(Date.now());
+      expect(verification!.value).not.toContain(nonce!);
+
+      harness.setTokenNonce(nonce!);
+      const response = await harness.callback({
+        ...flow,
+        authorizationUrl: flow.authorizationUrl!,
+      });
+
+      expect(response.status).toBe(302);
+      expect(response.headers.get('location')).toBe('https://app.example.test/after-link');
+      expect(harness.customGetToken).toHaveBeenCalledOnce();
+      expect(harness.mapProfileToUser).toHaveBeenCalledOnce();
+      expect(harness.database.account).toHaveLength(2);
+      expect(
+        harness.database.account?.find((account) => account.providerId === 'corp-oidc'),
+      ).toBeDefined();
+      expect(harness.nativeFetch).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ['update exception', 'throw'],
+    ['stale post-update read', 'stale-read'],
+  ] as const)(
+    'fails the real link handler closed on %s',
+    async (_label, linkStateUpdateFailure) => {
+      const harness = await createRouteHarness({ linkStateUpdateFailure });
+      const sessionCookie = await harness.authenticate();
+
+      const flow = await harness.startLink(sessionCookie);
+
+      expect(flow.response.status).toBe(500);
+      expect(flow.body).not.toHaveProperty('url');
+      expect(JSON.stringify(flow.body)).not.toContain('login.example.test');
+      expect(harness.transport).not.toHaveBeenCalled();
+      expect(harness.customGetToken).not.toHaveBeenCalled();
+      expect(harness.mapProfileToUser).not.toHaveBeenCalled();
+      expect(harness.verificationStore()).not.toContain('platformOidcNonceHash');
+    },
+  );
+
+  it('does not bind or fail a non-platform OAuth link', async () => {
+    const harness = await createRouteHarness({ linkStateUpdateFailure: 'throw' });
     const sessionCookie = await harness.authenticate();
-    const flow = await harness.startLink(sessionCookie);
+
+    const flow = await harness.startLink(sessionCookie, 'other-oauth');
 
     expect(flow.response.status).toBe(200);
-    expect(flow.body.redirect).toBe(true);
-    expect(flow.authorizationUrl).not.toBeNull();
-    const state = flow.authorizationUrl!.searchParams.get('state');
-    const nonce = flow.authorizationUrl!.searchParams.get('nonce');
-    expect(state).toBeTruthy();
-    expect(nonce).toBeTruthy();
-    expect(flow.cookie).toContain('better-auth.state=');
-
-    const verification = harness.database.verification?.find((entry) => entry.identifier === state);
-    expect(verification).toBeDefined();
-    const persistedState = JSON.parse(verification!.value) as Record<string, unknown>;
-    expect(persistedState).toMatchObject({
-      callbackURL: 'https://app.example.test/after-link',
-      expiresAt: expect.any(Number),
-      link: { email: 'ada@example.test', userId: expect.any(String) },
-      oauthState: state,
-      platformOidcNonceHash: createHash('sha256').update(nonce!).digest('hex'),
-      platformOidcProviderId: 'corp-oidc',
-    });
-    expect(persistedState.codeVerifier).toEqual(expect.any(String));
-    expect(verification!.expiresAt).toBeInstanceOf(Date);
-    expect(verification!.value).not.toContain(nonce!);
-
-    harness.setTokenNonce(nonce!);
-    const response = await harness.callback({ ...flow, authorizationUrl: flow.authorizationUrl! });
-
-    expect(response.status).toBe(302);
-    expect(response.headers.get('location')).toBe('https://app.example.test/after-link');
-    expect(harness.customGetToken).toHaveBeenCalledOnce();
-    expect(harness.mapProfileToUser).toHaveBeenCalledOnce();
-    expect(harness.database.account).toHaveLength(2);
-    expect(
-      harness.database.account?.find((account) => account.providerId === 'corp-oidc'),
-    ).toBeDefined();
-    expect(harness.nativeFetch).not.toHaveBeenCalled();
-  });
-
-  it('fails the real link handler closed when nonce-state CAS publication fails', async () => {
-    const harness = await createRouteHarness({ failLinkStateUpdate: true });
-    const sessionCookie = await harness.authenticate();
-
-    const flow = await harness.startLink(sessionCookie);
-
-    expect(flow.response.status).toBe(500);
-    expect(flow.body).not.toHaveProperty('url');
-    expect(JSON.stringify(flow.body)).not.toContain('login.example.test');
-    expect(harness.transport).not.toHaveBeenCalled();
-    expect(harness.customGetToken).not.toHaveBeenCalled();
-    expect(harness.mapProfileToUser).not.toHaveBeenCalled();
-    expect(JSON.stringify(harness.database)).not.toContain('platformOidcNonceHash');
+    expect(flow.authorizationUrl?.origin).toBe('https://other-login.example.test');
+    expect(flow.authorizationUrl?.searchParams.get('state')).toBeTruthy();
+    expect(flow.authorizationUrl?.searchParams.get('nonce')).toBeNull();
+    expect(harness.verificationStore()).not.toContain('platformOidcNonceHash');
+    expect(harness.verificationStore()).not.toContain('platformOidcProviderId');
   });
 
   it.each([
@@ -525,7 +579,7 @@ describe('platform identity provider trusted profile', () => {
     expect(harness.database.account).toHaveLength(1);
   });
 
-  it('consumes linked-account database state once before token exchange replay', async () => {
+  it('consumes linked-account verification state once before token exchange replay', async () => {
     const harness = await createRouteHarness();
     const sessionCookie = await harness.authenticate();
     const flow = await harness.startLink(sessionCookie);
@@ -560,8 +614,8 @@ describe('platform identity provider trusted profile', () => {
     expect(secondNonce).toBeTruthy();
     expect(firstNonce).not.toBe(secondNonce);
     expect(firstState).not.toBe(secondState);
-    expect(JSON.stringify(harness.database)).not.toContain(firstNonce);
-    expect(JSON.stringify(harness.database)).not.toContain(secondNonce);
+    expect(harness.verificationStore()).not.toContain(firstNonce);
+    expect(harness.verificationStore()).not.toContain(secondNonce);
     harness.setTokenNonceForCode('first-link-code', firstNonce!);
     harness.setTokenNonceForCode('second-link-code', secondNonce!);
 
@@ -585,8 +639,8 @@ describe('platform identity provider trusted profile', () => {
     expect(harness.customGetToken).toHaveBeenCalledTimes(2);
     expect(harness.mapProfileToUser).toHaveBeenCalledTimes(2);
     expect(harness.database.account?.every((account) => account.idToken === undefined)).toBe(true);
-    expect(JSON.stringify(harness.database)).not.toContain(firstNonce);
-    expect(JSON.stringify(harness.database)).not.toContain(secondNonce);
+    expect(harness.verificationStore()).not.toContain(firstNonce);
+    expect(harness.verificationStore()).not.toContain(secondNonce);
   });
 
   it.each([
@@ -643,7 +697,7 @@ describe('platform identity provider trusted profile', () => {
     expect(harness.mapProfileToUser).not.toHaveBeenCalled();
   });
 
-  it('consumes database OAuth state once before token exchange', async () => {
+  it('consumes OAuth verification state once before token exchange', async () => {
     const harness = await createRouteHarness();
     const flow = await harness.start();
     harness.setTokenNonce(flow.authorizationUrl.searchParams.get('nonce')!);
@@ -660,7 +714,7 @@ describe('platform identity provider trusted profile', () => {
     expect(harness.mapProfileToUser).toHaveBeenCalledOnce();
   });
 
-  it('rejects expired database OAuth state before token exchange', async () => {
+  it('rejects expired OAuth verification state before token exchange', async () => {
     const harness = await createRouteHarness();
     const flow = await harness.start();
     vi.useFakeTimers({ now: Date.now() });

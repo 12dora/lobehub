@@ -219,9 +219,6 @@ export function defineConfig(
       // Keep a DB-backed fallback when Redis secondary storage entries are unexpectedly missing.
       storeSessionInDatabase: true,
     },
-    // Platform OAuth state nonce binding uses a database CAS. Keep verification rows in the
-    // database when this provider class is enabled, even if Redis secondary storage is configured.
-    ...(databaseProviders.length > 0 ? { verification: { storeInDatabase: true } } : {}),
     database: drizzleAdapter(serverDB, {
       provider: 'pg',
       // experimental joins feature needs schema to pass full relation
