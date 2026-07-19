@@ -157,7 +157,7 @@ describe('IdentityProviderPublicationService', () => {
     expect(serialized).not.toContain('ciphertext');
   });
 
-  it('returns the original publish result for exact and concurrent request retries', async () => {
+  it('reserves concurrent requests and returns the exact result after completion', async () => {
     const draft = await createDraft();
     await recordSuccessfulTest(draft.id);
     const input = {
@@ -166,14 +166,23 @@ describe('IdentityProviderPublicationService', () => {
       reason: 'idempotent publish',
       requestId: requestId(20),
     };
-    const [first, replay] = await Promise.all([
+    const concurrent = await Promise.allSettled([
       publication.publish('admin-1', input),
       publication.publish('admin-1', input),
     ]);
+    const first = concurrent.find((result) => result.status === 'fulfilled');
+    const pending = concurrent.find((result) => result.status === 'rejected');
+    expect(first?.status).toBe('fulfilled');
+    expect(pending?.status).toBe('rejected');
+    if (first?.status !== 'fulfilled' || pending?.status !== 'rejected') {
+      throw new Error('expected one owner and one pending request');
+    }
+    expect(pending.reason).toMatchObject({
+      code: 'PLATFORM_IDENTITY_PROVIDER_REQUEST_PENDING',
+    });
     const laterReplay = await publication.publish('admin-1', input);
 
-    expect(replay).toEqual(first);
-    expect(laterReplay).toEqual(first);
+    expect(laterReplay).toEqual(first.value);
     expect(await db.select().from(platformResourceRevisions)).toHaveLength(1);
     const audits = await db.select().from(platformAuditLogs);
     const publishAudits = audits.filter(
@@ -204,6 +213,37 @@ describe('IdentityProviderPublicationService', () => {
       }),
     ).rejects.toThrow('PLATFORM_IDENTITY_PROVIDER_IDEMPOTENCY_CONFLICT');
     expect(await db.select().from(platformResourceRevisions)).toHaveLength(1);
+  });
+
+  it('durably replays the same failure and rejects a different failed payload', async () => {
+    const draft = await createDraft();
+    const request = requestId(24);
+    const input = {
+      expectedRevision: draft.revision,
+      id: draft.id,
+      reason: 'failure payload A',
+      requestId: request,
+    };
+
+    await expect(publication.publish('admin-1', input)).rejects.toThrow(
+      'PLATFORM_IDENTITY_PROVIDER_NOT_TESTED',
+    );
+    await expect(publication.publish('admin-1', input)).rejects.toThrow(
+      'PLATFORM_IDENTITY_PROVIDER_NOT_TESTED',
+    );
+    await expect(
+      publication.publish('admin-1', { ...input, reason: 'failure payload B' }),
+    ).rejects.toThrow('PLATFORM_IDENTITY_PROVIDER_IDEMPOTENCY_CONFLICT');
+
+    const audits = await db.select().from(platformAuditLogs);
+    expect(
+      audits.filter(
+        (audit) => audit.action === 'admin.identityProviders.publish' && audit.result === 'failure',
+      ),
+    ).toHaveLength(1);
+    expect(
+      audits.filter((audit) => audit.action === 'admin.identityProviders.publish.requestReserved'),
+    ).toHaveLength(1);
   });
 
   it('rejects missing, stale, or mismatched tests without changing the provider pointer', async () => {
