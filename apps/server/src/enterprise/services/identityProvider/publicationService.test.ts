@@ -188,7 +188,8 @@ describe('IdentityProviderPublicationService', () => {
     const laterReplay = await publication.publish('admin-1', input);
 
     expect(laterReplay).toEqual(first.value);
-    expect(await db.select().from(platformResourceRevisions)).toHaveLength(1);
+    const revisions = await db.select().from(platformResourceRevisions);
+    expect(revisions).toHaveLength(1);
     const audits = await db.select().from(platformAuditLogs);
     const publishAudits = audits.filter(
       (audit) => audit.action === 'admin.identityProviders.publish',
@@ -196,7 +197,7 @@ describe('IdentityProviderPublicationService', () => {
     expect(publishAudits.filter((audit) => audit.result === 'success')).toHaveLength(1);
     expect(publishAudits.filter((audit) => audit.result === 'failure')).toHaveLength(0);
     expect(publishAudits[0]?.requestId).toBe(input.requestId);
-    expect(JSON.stringify(publishAudits[0])).not.toContain(draft.secret.fingerprint!);
+    expect(JSON.stringify(publishAudits[0])).not.toContain(revisions[0]!.secretFingerprint!);
     expect(JSON.stringify(publishAudits[0])).not.toMatch(/fingerprint/i);
   });
 
@@ -463,7 +464,8 @@ describe('IdentityProviderPublicationService', () => {
     );
     expect(rollbackAudits).toHaveLength(1);
     expect(rollbackAudits[0]?.requestId).toBe(input.requestId);
-    expect(JSON.stringify(rollbackAudits[0])).not.toContain(draft.secret.fingerprint!);
+    const [revision] = await db.select().from(platformResourceRevisions);
+    expect(JSON.stringify(rollbackAudits[0])).not.toContain(revision!.secretFingerprint!);
     expect(JSON.stringify(rollbackAudits[0])).not.toMatch(/fingerprint/i);
   });
 
