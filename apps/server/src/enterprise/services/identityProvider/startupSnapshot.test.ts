@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { eq } from 'drizzle-orm';
+import { drizzle } from 'drizzle-orm/node-postgres';
+import { Client, Pool } from 'pg';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
@@ -17,10 +19,17 @@ import {
 import type { LobeChatDatabase } from '@/database/type';
 import { PlatformSecretService } from '@/server/enterprise/security/secret';
 
+import {
+  identityProviderLkgGeneration,
+  identityProviderLkgIdentity,
+  readIdentityProviderLkg,
+} from './lkg';
 import type { PublishedIdentityProviderPayload } from './publicationService';
 import {
+  acquireIdentityProviderLkgAdvisoryLock,
   loadIdentityProviderStartupSnapshot,
   resetIdentityProviderStartupSnapshotForTest,
+  withIdentityProviderLkgAdvisoryLock,
 } from './startupSnapshot';
 
 const db: LobeChatDatabase = await getTestDB();
@@ -122,6 +131,39 @@ beforeEach(cleanup);
 afterEach(cleanup);
 
 describe('identity provider startup snapshot', () => {
+  it.runIf(process.env.TEST_SERVER_DB === '1' && Boolean(process.env.DATABASE_TEST_URL))(
+    'releases the cross-instance advisory lock when the owning PG connection crashes',
+    async () => {
+      const ownerClient = new Client({ connectionString: process.env.DATABASE_TEST_URL });
+      const waiterPool = new Pool({ connectionString: process.env.DATABASE_TEST_URL });
+      const adminPool = new Pool({ connectionString: process.env.DATABASE_TEST_URL });
+      const waiterDb = drizzle(waiterPool) as unknown as LobeChatDatabase;
+      ownerClient.on('error', () => undefined);
+      let waiterEntered = false;
+      try {
+        await ownerClient.connect();
+        await ownerClient.query('BEGIN');
+        const ownerDb = drizzle(ownerClient) as unknown as LobeChatDatabase;
+        await acquireIdentityProviderLkgAdvisoryLock(ownerDb);
+        const ownerPid = Number(
+          (await ownerClient.query('SELECT pg_backend_pid() AS pid')).rows[0].pid,
+        );
+        const waiter = withIdentityProviderLkgAdvisoryLock(waiterDb, async () => {
+          waiterEntered = true;
+          return 'acquired';
+        });
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect(waiterEntered).toBe(false);
+
+        await adminPool.query('SELECT pg_terminate_backend($1)', [ownerPid]);
+        await expect(waiter).resolves.toBe('acquired');
+      } finally {
+        await ownerClient.end().catch(() => undefined);
+        await Promise.all([waiterPool.end(), adminPool.end()]);
+      }
+    },
+  );
+
   it('has a flag-off zero DB/LKG path', async () => {
     const snapshot = await loadIdentityProviderStartupSnapshot({
       cache: false,
@@ -170,6 +212,20 @@ describe('identity provider startup snapshot', () => {
     expect(snapshot.providerIds).toEqual(['authentik', 'work']);
     expect(snapshot.databaseProviders).toHaveLength(1);
     expect(snapshot.databaseProviders[0]?.providerKey).toBe('work');
+  });
+
+  it('uses the immutable published key when the current draft key was renamed', async () => {
+    const env = { ...(await baseEnv()), AUTH_SSO_PROVIDERS: 'corp' };
+    const { provider } = await seedPublished(env, 'corp');
+    await seedPublished(env, 'work');
+    await db
+      .update(platformIdentityProviders)
+      .set({ providerKey: 'corp-new', status: 'draft' })
+      .where(eq(platformIdentityProviders.id, provider.id));
+
+    const snapshot = await loadIdentityProviderStartupSnapshot({ cache: false, db, env });
+    expect(snapshot.providerIds).toEqual(['corp', 'work']);
+    expect(snapshot.databaseProviders.map((item) => item.providerKey)).toEqual(['work']);
   });
 
   it.each([
@@ -239,6 +295,32 @@ describe('identity provider startup snapshot', () => {
     });
     expect(fallback).toMatchObject({ health: 'degraded', source: 'lkg' });
     expect(fallback.databaseProviders[0]?.clientSecret).toBe(clientSecret);
+  });
+
+  it('recomputes LKG identity and generation after an environment override filters a provider', async () => {
+    const env = await baseEnv();
+    await seedPublished(env, 'corp');
+    await seedPublished(env, 'work');
+    const full = await loadIdentityProviderStartupSnapshot({ cache: false, db, env });
+    const secretService = PlatformSecretService.tryFromEnv(env)!;
+    const lkg = await readIdentityProviderLkg({ env, secrets: secretService });
+    const retained = lkg!.providers.filter((provider) => provider.payload.providerKey === 'work');
+    const unavailableDb = new Proxy({} as LobeChatDatabase, {
+      get: () => {
+        throw new Error('DATABASE_UNAVAILABLE');
+      },
+    });
+
+    const fallback = await loadIdentityProviderStartupSnapshot({
+      cache: false,
+      db: unavailableDb,
+      env: { ...env, AUTH_SSO_PROVIDERS: 'corp' },
+    });
+
+    expect(fallback.databaseProviders.map((provider) => provider.providerKey)).toEqual(['work']);
+    expect(fallback.identityRevision).toBe(identityProviderLkgIdentity(retained));
+    expect(fallback.generation).toBe(identityProviderLkgGeneration(retained));
+    expect(fallback.identityRevision).not.toBe(full.identityRevision);
   });
 
   it('falls back only to break-glass providers when both DB and LKG are unavailable', async () => {

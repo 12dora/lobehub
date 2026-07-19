@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import { lstat, mkdir, open, realpath, rename, unlink } from 'node:fs/promises';
-import { hostname } from 'node:os';
 import pathModule from 'node:path';
 
 import { checksumPayload } from '@/database/models/platform';
@@ -12,14 +11,12 @@ const LKG_DOMAIN = 'platform-oidc-lkg';
 const LKG_FORMAT = 'aihub.platform.oidc-lkg';
 const LKG_VERSION = 1;
 const DEFAULT_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
-const DEFAULT_STALE_LOCK_MS = 30_000;
-const DEFAULT_REMOTE_STALE_LOCK_MS = 5 * 60_000;
 const EMPTY_GENERATION = '0000-01-01T00:00:00.000Z:';
 const MAX_FILE_BYTES = 4 * 1024 * 1024;
-const MAX_LOCK_BYTES = 4096;
 
 export interface IdentityProviderLkgProvider {
   checksum: string;
+  generation: string;
   payload: Record<string, unknown>;
   providerId: string;
   revision: number;
@@ -43,31 +40,15 @@ interface IdentityProviderLkgEnvelope {
   version: typeof LKG_VERSION;
 }
 
-interface LkgLockRecord {
-  createdAt: string;
-  generation: string;
-  host: string;
-  nonce: string;
-  pid: number;
-  version: typeof LKG_VERSION;
-}
-
-interface AcquiredLock {
-  handle: OpenHandle;
-  record: LkgLockRecord;
-  stat: FileStat;
-}
-
 export interface IdentityProviderLkgTestHooks {
   afterFileStat?: (path: string) => Promise<void>;
-  beforeLockRelease?: (path: string) => Promise<void>;
+  beforeRename?: (path: string) => Promise<void>;
 }
 
 type OpenHandle = Awaited<ReturnType<typeof open>>;
 type FileStat = Awaited<ReturnType<OpenHandle['stat']>>;
 
-export type IdentityProviderLkgWriteResult =
-  'busy' | 'cleanup_failed' | 'rejected' | 'unchanged' | 'written';
+export type IdentityProviderLkgWriteResult = 'rejected' | 'unchanged' | 'written';
 
 export class IdentityProviderLkgError extends Error {
   constructor(public readonly code: string) {
@@ -81,19 +62,28 @@ export const emptyIdentityProviderLkgGeneration = EMPTY_GENERATION;
 export const identityProviderLkgIdentity = (
   providers: Pick<
     IdentityProviderLkgProvider,
-    'checksum' | 'payload' | 'providerId' | 'revision' | 'secretFingerprint'
+    'checksum' | 'generation' | 'payload' | 'providerId' | 'revision' | 'secretFingerprint'
   >[],
 ): string =>
   checksumPayload(
     providers
       .map((provider) => ({
         checksum: provider.checksum,
+        generation: provider.generation,
         providerId: provider.providerId,
         providerKey: provider.payload.providerKey,
         revision: provider.revision,
         secretFingerprint: provider.secretFingerprint,
       }))
       .sort((left, right) => left.providerId.localeCompare(right.providerId)),
+  );
+
+export const identityProviderLkgGeneration = (
+  providers: Pick<IdentityProviderLkgProvider, 'generation'>[],
+): string =>
+  providers.reduce(
+    (latest, provider) => (provider.generation > latest ? provider.generation : latest),
+    EMPTY_GENERATION,
   );
 
 const resolveLkgPath = (env: Record<string, string | undefined>): string => {
@@ -123,7 +113,7 @@ const assertSecureDirectory = async (directory: string, create: boolean): Promis
   }
 };
 
-const assertSecureFile = (stat: FileStat, maximum = MAX_FILE_BYTES): void => {
+const assertSecureFile = (stat: FileStat): void => {
   if (!stat.isFile() || stat.isSymbolicLink()) {
     throw new IdentityProviderLkgError('OIDC_LKG_FILE_INVALID');
   }
@@ -136,7 +126,7 @@ const assertSecureFile = (stat: FileStat, maximum = MAX_FILE_BYTES): void => {
   if (typeof process.getuid === 'function' && Number(stat.uid) !== process.getuid()) {
     throw new IdentityProviderLkgError('OIDC_LKG_FILE_OWNER_INVALID');
   }
-  if (Number(stat.size) <= 0 || Number(stat.size) > maximum) {
+  if (Number(stat.size) <= 0 || Number(stat.size) > MAX_FILE_BYTES) {
     throw new IdentityProviderLkgError('OIDC_LKG_FILE_SIZE_INVALID');
   }
 };
@@ -149,13 +139,9 @@ const sameFile = (before: FileStat, after: FileStat): boolean =>
   Number(before.size) === Number(after.size) &&
   Number(before.uid) === Number(after.uid);
 
-const readBoundedHandle = async (
-  handle: OpenHandle,
-  maximum = MAX_FILE_BYTES,
-  afterStat?: () => Promise<void>,
-) => {
+const readBoundedHandle = async (handle: OpenHandle, afterStat?: () => Promise<void>) => {
   const before = await handle.stat();
-  assertSecureFile(before, maximum);
+  assertSecureFile(before);
   await afterStat?.();
   const expected = Number(before.size);
   const buffer = Buffer.alloc(expected + 1);
@@ -169,20 +155,16 @@ const readBoundedHandle = async (
   if (offset !== expected || !sameFile(before, after)) {
     throw new IdentityProviderLkgError('OIDC_LKG_FILE_CHANGED_DURING_READ');
   }
-  return { raw: buffer.subarray(0, expected).toString('utf8'), stat: after };
+  return buffer.subarray(0, expected).toString('utf8');
 };
 
-const openAndReadSecure = async (
-  path: string,
-  maximum = MAX_FILE_BYTES,
-  afterStat?: (path: string) => Promise<void>,
-) => {
+const openAndReadSecure = async (path: string, afterStat?: (path: string) => Promise<void>) => {
   const handle = await open(
     /* turbopackIgnore: true */ path,
     constants.O_RDONLY | constants.O_NOFOLLOW,
   );
   try {
-    return await readBoundedHandle(handle, maximum, () => afterStat?.(path) ?? Promise.resolve());
+    return await readBoundedHandle(handle, () => afterStat?.(path) ?? Promise.resolve());
   } finally {
     await handle.close();
   }
@@ -211,9 +193,12 @@ const parseProvider = (value: unknown): IdentityProviderLkgProvider => {
   }
   const row = value as Record<string, unknown>;
   if (
-    Object.keys(row).length !== 6 ||
+    Object.keys(row).length !== 7 ||
     typeof row.checksum !== 'string' ||
     !/^[a-f0-9]{64}$/.test(row.checksum) ||
+    typeof row.generation !== 'string' ||
+    row.generation.length === 0 ||
+    row.generation.length > 512 ||
     !row.payload ||
     typeof row.payload !== 'object' ||
     Array.isArray(row.payload) ||
@@ -258,136 +243,18 @@ const parsePayload = (value: unknown): IdentityProviderLkgPayload => {
   const providers = payload.providers.map(parseProvider);
   if (
     new Set(providers.map((provider) => provider.providerId)).size !== providers.length ||
-    identityProviderLkgIdentity(providers) !== payload.identityRevision
+    identityProviderLkgIdentity(providers) !== payload.identityRevision ||
+    identityProviderLkgGeneration(providers) !== payload.generation
   ) {
     throw new IdentityProviderLkgError('OIDC_LKG_IDENTITY_INVALID');
   }
   return { ...payload, providers } as unknown as IdentityProviderLkgPayload;
 };
 
-const parseLock = (value: unknown): LkgLockRecord => {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new IdentityProviderLkgError('OIDC_LKG_LOCK_INVALID');
-  }
-  const lock = value as Record<string, unknown>;
-  if (
-    Object.keys(lock).length !== 6 ||
-    lock.version !== LKG_VERSION ||
-    typeof lock.createdAt !== 'string' ||
-    Number.isNaN(new Date(lock.createdAt).getTime()) ||
-    typeof lock.generation !== 'string' ||
-    typeof lock.host !== 'string' ||
-    lock.host.length === 0 ||
-    typeof lock.nonce !== 'string' ||
-    !/^[0-9a-f-]{36}$/.test(lock.nonce) ||
-    !Number.isInteger(lock.pid) ||
-    Number(lock.pid) <= 0
-  ) {
-    throw new IdentityProviderLkgError('OIDC_LKG_LOCK_INVALID');
-  }
-  return lock as unknown as LkgLockRecord;
-};
-
 const maxAgeMs = (env: Record<string, string | undefined>): number => {
   const raw = Number(env.PLATFORM_OIDC_LKG_MAX_AGE_SECONDS ?? DEFAULT_MAX_AGE_SECONDS);
   const seconds = Number.isFinite(raw) && raw > 0 ? Math.min(raw, 365 * 24 * 60 * 60) : 0;
   return seconds * 1000;
-};
-
-const lockAgeMs = (env: Record<string, string | undefined>, remote: boolean): number => {
-  const fallback = remote ? DEFAULT_REMOTE_STALE_LOCK_MS : DEFAULT_STALE_LOCK_MS;
-  const key = remote ? 'PLATFORM_OIDC_LKG_REMOTE_STALE_LOCK_MS' : 'PLATFORM_OIDC_LKG_STALE_LOCK_MS';
-  const raw = Number(env[key] ?? fallback);
-  return Number.isFinite(raw) && raw >= 1000 ? Math.min(raw, 24 * 60 * 60_000) : fallback;
-};
-
-const processExists = (pid: number): boolean => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code !== 'ESRCH';
-  }
-};
-
-const canTakeOverLock = (lock: LkgLockRecord, env: Record<string, string | undefined>): boolean => {
-  const age = Date.now() - new Date(lock.createdAt).getTime();
-  if (age < 0) return false;
-  if (lock.host === hostname()) {
-    return age >= lockAgeMs(env, false) && !processExists(lock.pid);
-  }
-  return age >= lockAgeMs(env, true);
-};
-
-const removeStaleLock = async (
-  lockPath: string,
-  observed: { lock: LkgLockRecord; stat: FileStat },
-): Promise<boolean> => {
-  const current = await openAndReadSecure(lockPath, MAX_LOCK_BYTES);
-  const lock = parseLock(JSON.parse(current.raw));
-  if (lock.nonce !== observed.lock.nonce || !sameFile(current.stat, observed.stat)) return false;
-  await unlink(lockPath);
-  return true;
-};
-
-const acquireLock = async (input: {
-  env: Record<string, string | undefined>;
-  generation: string;
-  lockPath: string;
-}): Promise<AcquiredLock | null> => {
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    let created: OpenHandle | null = null;
-    try {
-      created = await open(
-        input.lockPath,
-        constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW,
-        0o600,
-      );
-      const record: LkgLockRecord = {
-        createdAt: new Date().toISOString(),
-        generation: input.generation,
-        host: hostname(),
-        nonce: randomUUID(),
-        pid: process.pid,
-        version: LKG_VERSION,
-      };
-      await created.writeFile(JSON.stringify(record), { encoding: 'utf8' });
-      await created.sync();
-      const stat = await created.stat();
-      assertSecureFile(stat, MAX_LOCK_BYTES);
-      return { handle: created, record, stat };
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
-        await created?.close().catch(() => undefined);
-        if (created) await removeIfPresent(input.lockPath);
-        throw error;
-      }
-      const observed = await openAndReadSecure(input.lockPath, MAX_LOCK_BYTES);
-      const lock = parseLock(JSON.parse(observed.raw));
-      if (!canTakeOverLock(lock, input.env)) return null;
-      if (!(await removeStaleLock(input.lockPath, { lock, stat: observed.stat }))) return null;
-    }
-  }
-  return null;
-};
-
-const releaseOwnedLock = async (lockPath: string, owned: AcquiredLock): Promise<boolean> => {
-  let closeSucceeded = true;
-  try {
-    await owned.handle.close();
-  } catch {
-    closeSucceeded = false;
-  }
-  try {
-    const current = await openAndReadSecure(lockPath, MAX_LOCK_BYTES);
-    const record = parseLock(JSON.parse(current.raw));
-    if (record.nonce !== owned.record.nonce || !sameFile(current.stat, owned.stat)) return false;
-    await unlink(lockPath);
-    return closeSucceeded;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
-    return false;
-  }
 };
 
 const decodePayload = async (input: {
@@ -397,11 +264,7 @@ const decodePayload = async (input: {
   secrets: PlatformSecretService;
   testHooks?: IdentityProviderLkgTestHooks;
 }): Promise<IdentityProviderLkgPayload> => {
-  const { raw } = await openAndReadSecure(
-    input.path,
-    MAX_FILE_BYTES,
-    input.testHooks?.afterFileStat,
-  );
+  const raw = await openAndReadSecure(input.path, input.testHooks?.afterFileStat);
   const envelope = parseEnvelope(JSON.parse(raw));
   if (!(await input.secrets.verifyArtifact(LKG_DOMAIN, envelope.ciphertext, envelope.signature))) {
     throw new IdentityProviderLkgError('OIDC_LKG_SIGNATURE_INVALID');
@@ -447,7 +310,8 @@ const compareSnapshots = (
     if (next.revision === existing.revision) {
       if (
         next.checksum !== existing.checksum ||
-        next.secretFingerprint !== existing.secretFingerprint
+        next.secretFingerprint !== existing.secretFingerprint ||
+        next.generation !== existing.generation
       ) {
         return 'rejected';
       }
@@ -471,12 +335,30 @@ const ensureExistingTargetIsSecure = async (path: string): Promise<void> => {
   }
 };
 
-const removeIfPresent = async (path: string): Promise<boolean> => {
+const removeIfPresent = async (path: string): Promise<void> => {
   try {
     await unlink(path);
-    return true;
   } catch (error) {
-    return (error as NodeJS.ErrnoException).code === 'ENOENT';
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+};
+
+const writeQueues = new Map<string, Promise<void>>();
+
+const withProcessWriteLock = async <T>(path: string, work: () => Promise<T>): Promise<T> => {
+  const previous = writeQueues.get(path) ?? Promise.resolve();
+  let release = (): void => undefined;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const queued = previous.catch(() => undefined).then(() => gate);
+  writeQueues.set(path, queued);
+  await previous.catch(() => undefined);
+  try {
+    return await work();
+  } finally {
+    release();
+    if (writeQueues.get(path) === queued) writeQueues.delete(path);
   }
 };
 
@@ -488,17 +370,9 @@ export const writeIdentityProviderLkg = async (input: {
 }): Promise<IdentityProviderLkgWriteResult> => {
   const payload = parsePayload(input.payload);
   const path = resolveLkgPath(input.env);
-  const directory = pathModule.dirname(path);
-  await assertSecureDirectory(directory, true);
-  const lockPath = `${path}.lock`;
-  const lock = await acquireLock({ env: input.env, generation: payload.generation, lockPath });
-  if (!lock) return 'busy';
-
-  const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
-  let result: IdentityProviderLkgWriteResult = 'written';
-  let failure: unknown;
-  let temporaryCreated = false;
-  try {
+  return withProcessWriteLock(path, async () => {
+    const directory = pathModule.dirname(path);
+    await assertSecureDirectory(directory, true);
     await ensureExistingTargetIsSecure(path);
     try {
       const current = await decodePayload({
@@ -508,65 +382,48 @@ export const writeIdentityProviderLkg = async (input: {
         secrets: input.secrets,
       });
       const comparison = compareSnapshots(current, payload);
-      if (comparison === 'unchanged' || comparison === 'rejected') {
-        result = comparison;
-      }
-      if (comparison !== 'upgrade') {
-        // Unchanged/rejected snapshots only need the lock-protected comparison.
-        // The cleanup below still has to run and report failures.
-        throw new IdentityProviderLkgError('OIDC_LKG_WRITE_SKIPPED');
-      }
+      if (comparison !== 'upgrade') return comparison;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
 
-    const plaintext = JSON.stringify(payload);
-    const ciphertext = await input.secrets.encrypt(plaintext);
-    const envelope: IdentityProviderLkgEnvelope = {
-      ciphertext,
-      format: LKG_FORMAT,
-      signature: await input.secrets.signArtifact(LKG_DOMAIN, ciphertext),
-      version: LKG_VERSION,
-    };
-    const temporary = await open(
-      temporaryPath,
-      constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW,
-      0o600,
-    );
-    temporaryCreated = true;
+    const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
+    let temporaryCreated = false;
     try {
-      await temporary.writeFile(JSON.stringify(envelope), { encoding: 'utf8' });
-      await temporary.sync();
-      assertSecureFile(await temporary.stat());
+      const plaintext = JSON.stringify(payload);
+      const ciphertext = await input.secrets.encrypt(plaintext);
+      const envelope: IdentityProviderLkgEnvelope = {
+        ciphertext,
+        format: LKG_FORMAT,
+        signature: await input.secrets.signArtifact(LKG_DOMAIN, ciphertext),
+        version: LKG_VERSION,
+      };
+      const temporary = await open(
+        temporaryPath,
+        constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW,
+        0o600,
+      );
+      temporaryCreated = true;
+      try {
+        await temporary.writeFile(JSON.stringify(envelope), { encoding: 'utf8' });
+        await temporary.sync();
+        assertSecureFile(await temporary.stat());
+      } finally {
+        await temporary.close();
+      }
+      await input.testHooks?.beforeRename?.(temporaryPath);
+      await rename(temporaryPath, path);
+      temporaryCreated = false;
+      await openAndReadSecure(path);
+      const directoryHandle = await open(directory, constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        await directoryHandle.sync();
+      } finally {
+        await directoryHandle.close();
+      }
+      return 'written';
     } finally {
-      await temporary.close();
+      if (temporaryCreated) await removeIfPresent(temporaryPath);
     }
-    await rename(temporaryPath, path);
-    temporaryCreated = false;
-    await openAndReadSecure(path);
-    const directoryHandle = await open(directory, constants.O_RDONLY | constants.O_NOFOLLOW);
-    try {
-      await directoryHandle.sync();
-    } finally {
-      await directoryHandle.close();
-    }
-  } catch (error) {
-    if (error instanceof IdentityProviderLkgError && error.code === 'OIDC_LKG_WRITE_SKIPPED') {
-      // Preserve the comparison result while sharing the cleanup path.
-    } else {
-      failure = error;
-    }
-  } finally {
-    let cleanupFailed = false;
-    try {
-      await input.testHooks?.beforeLockRelease?.(lockPath);
-    } catch {
-      cleanupFailed = true;
-    }
-    if (!(await releaseOwnedLock(lockPath, lock))) cleanupFailed = true;
-    if (temporaryCreated && !(await removeIfPresent(temporaryPath))) cleanupFailed = true;
-    if (!failure && cleanupFailed) result = 'cleanup_failed';
-  }
-  if (failure) throw failure;
-  return result;
+  });
 };

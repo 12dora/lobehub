@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import { and, desc, eq, inArray, isNull } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 
 import { checksumPayload } from '@/database/models/platform';
 import {
@@ -8,13 +8,13 @@ import {
   platformIdentityProviderSecrets,
   platformResourceRevisions,
 } from '@/database/schemas/platform';
-import type { LobeChatDatabase } from '@/database/type';
+import type { LobeChatDatabase, Transaction } from '@/database/type';
 import type { RuntimeIdentityProvider } from '@/libs/better-auth/sso/platformIdentityProvider';
 
 import { parseEnterpriseFeatureFlags } from '../../featureFlags';
 import { PlatformSecretService } from '../../security/secret';
 import {
-  emptyIdentityProviderLkgGeneration,
+  identityProviderLkgGeneration,
   identityProviderLkgIdentity,
   type IdentityProviderLkgPayload,
   readIdentityProviderLkg,
@@ -67,6 +67,7 @@ const fingerprint = (value: string): string =>
 const identityRevision = (
   providers: Array<{
     checksum: string;
+    generation: string;
     payload: { providerKey: string; secretFingerprint: string };
     providerId: string;
     revision: number;
@@ -74,8 +75,18 @@ const identityRevision = (
   }>,
 ): string => identityProviderLkgIdentity(providers);
 
+const publishedProviderKey = (value: unknown): string | null => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const providerKey = (value as Record<string, unknown>).providerKey;
+  return typeof providerKey === 'string' && /^[a-z0-9][a-z0-9._-]{0,127}$/.test(providerKey)
+    ? providerKey
+    : null;
+};
+
+type DatabaseExecutor = LobeChatDatabase | Transaction;
+
 const loadDatabasePayload = async (input: {
-  db: LobeChatDatabase;
+  db: DatabaseExecutor;
   environmentProviderIds: Set<string>;
 }) => {
   const rows = await input.db
@@ -84,16 +95,11 @@ const loadDatabasePayload = async (input: {
       id: platformResourceRevisions.id,
       payload: platformResourceRevisions.payload,
       publishedAt: platformResourceRevisions.publishedAt,
-      providerKey: platformIdentityProviders.providerKey,
       resourceId: platformResourceRevisions.resourceId,
       revision: platformResourceRevisions.revision,
       secretFingerprint: platformResourceRevisions.secretFingerprint,
     })
     .from(platformResourceRevisions)
-    .leftJoin(
-      platformIdentityProviders,
-      eq(platformIdentityProviders.id, platformResourceRevisions.resourceId),
-    )
     .where(
       and(
         eq(platformResourceRevisions.resourceType, 'oidc'),
@@ -119,7 +125,8 @@ const loadDatabasePayload = async (input: {
     // An environment provider is the break-glass authority. Skip its database
     // counterpart before strict snapshot parsing so a damaged shadow row cannot
     // prevent the explicitly configured provider from starting.
-    if (row.providerKey && input.environmentProviderIds.has(row.providerKey.toLowerCase())) {
+    const providerKey = publishedProviderKey(row.payload);
+    if (providerKey && input.environmentProviderIds.has(providerKey.toLowerCase())) {
       continue;
     }
     const payload = parsePublishedIdentityProviderPayload(row.payload);
@@ -174,10 +181,7 @@ const loadDatabasePayload = async (input: {
 };
 
 const snapshotGeneration = (rows: Awaited<ReturnType<typeof loadDatabasePayload>>): string =>
-  rows.reduce(
-    (latest, row) => (row.generation > latest ? row.generation : latest),
-    emptyIdentityProviderLkgGeneration,
-  );
+  identityProviderLkgGeneration(rows);
 
 const materializeProviders = async (
   rows: Awaited<ReturnType<typeof loadDatabasePayload>>,
@@ -202,6 +206,7 @@ const toLkgPayload = (
   identityRevision: identityRevision(rows),
   providers: rows.map((row) => ({
     checksum: row.checksum,
+    generation: row.generation,
     payload: row.payload as unknown as Record<string, unknown>,
     providerId: row.providerId,
     revision: row.revision,
@@ -231,7 +236,7 @@ const fromLkgPayload = (payload: IdentityProviderLkgPayload, environmentProvider
     return [
       {
         checksum: provider.checksum,
-        generation: payload.generation,
+        generation: provider.generation,
         payload: parsed,
         providerId: provider.providerId,
         revision: provider.revision,
@@ -242,7 +247,7 @@ const fromLkgPayload = (payload: IdentityProviderLkgPayload, environmentProvider
   });
 
 const activateLoadedRevisions = async (
-  db: LobeChatDatabase,
+  db: DatabaseExecutor,
   providers: RuntimeIdentityProvider[],
 ): Promise<void> => {
   for (const provider of providers) {
@@ -263,6 +268,26 @@ const loadDatabase = async (): Promise<LobeChatDatabase> => {
   const database = await import('@lobechat/database');
   return database.serverDB;
 };
+
+const LKG_ADVISORY_LOCK_NAMESPACE = 1_278_874_436;
+const LKG_ADVISORY_LOCK_RESOURCE = 1_223_953_479;
+
+export const acquireIdentityProviderLkgAdvisoryLock = async (
+  db: DatabaseExecutor,
+): Promise<void> => {
+  await db.execute(
+    sql`SELECT pg_advisory_xact_lock(${LKG_ADVISORY_LOCK_NAMESPACE}, ${LKG_ADVISORY_LOCK_RESOURCE})`,
+  );
+};
+
+export const withIdentityProviderLkgAdvisoryLock = async <T>(
+  db: LobeChatDatabase,
+  work: (tx: Transaction) => Promise<T>,
+): Promise<T> =>
+  db.transaction(async (tx) => {
+    await acquireIdentityProviderLkgAdvisoryLock(tx);
+    return work(tx);
+  });
 
 const loadUncached = async (options: LoadOptions): Promise<IdentityProviderStartupSnapshot> => {
   const env = options.env ?? process.env;
@@ -286,47 +311,50 @@ const loadUncached = async (options: LoadOptions): Promise<IdentityProviderStart
   if (secrets) {
     try {
       const db = options.db ?? (await loadDatabase());
-      const rows = await loadDatabasePayload({
-        db,
-        environmentProviderIds: new Set(environmentProviderIds),
-      });
-      const databaseProviders = await materializeProviders(rows, secrets);
-      const revision = identityRevision(rows);
-      const generation = snapshotGeneration(rows);
-      let lastError: string | null = null;
-      try {
-        const writeResult = await writeIdentityProviderLkg({
-          env,
-          payload: toLkgPayload(rows),
-          secrets,
+      const loaded = await withIdentityProviderLkgAdvisoryLock(db, async (tx) => {
+        const rows = await loadDatabasePayload({
+          db: tx,
+          environmentProviderIds: new Set(environmentProviderIds),
         });
-        if (writeResult !== 'written' && writeResult !== 'unchanged') {
-          lastError = `lkg_write_${writeResult}`;
+        const databaseProviders = await materializeProviders(rows, secrets);
+        const revision = identityRevision(rows);
+        const generation = snapshotGeneration(rows);
+        let lastError: string | null = null;
+        try {
+          const writeResult = await writeIdentityProviderLkg({
+            env,
+            payload: toLkgPayload(rows),
+            secrets,
+          });
+          if (writeResult !== 'written' && writeResult !== 'unchanged') {
+            lastError = `lkg_write_${writeResult}`;
+          }
+        } catch (error) {
+          console.error('[identityProviderStartup] LKG write unavailable', {
+            errorClass: error instanceof Error ? error.name : 'UnknownError',
+          });
+          lastError = 'lkg_write_unavailable';
         }
-      } catch (error) {
-        console.error('[identityProviderStartup] LKG write unavailable', {
-          errorClass: error instanceof Error ? error.name : 'UnknownError',
-        });
-        lastError = 'lkg_write_unavailable';
-      }
-      try {
-        await activateLoadedRevisions(db, databaseProviders);
-      } catch (error) {
-        console.error('[identityProviderStartup] activation status update unavailable', {
-          errorClass: error instanceof Error ? error.name : 'UnknownError',
-        });
-        lastError = lastError ?? 'activation_status_update_unavailable';
-      }
+        try {
+          await activateLoadedRevisions(tx, databaseProviders);
+        } catch (error) {
+          console.error('[identityProviderStartup] activation status update unavailable', {
+            errorClass: error instanceof Error ? error.name : 'UnknownError',
+          });
+          lastError = lastError ?? 'activation_status_update_unavailable';
+        }
+        return { databaseProviders, generation, lastError, revision };
+      });
       return {
-        databaseProviders,
-        generation,
-        health: lastError ? 'degraded' : 'healthy',
-        identityRevision: revision,
-        lastError,
+        databaseProviders: loaded.databaseProviders,
+        generation: loaded.generation,
+        health: loaded.lastError ? 'degraded' : 'healthy',
+        identityRevision: loaded.revision,
+        lastError: loaded.lastError,
         loadedAt,
         providerIds: [
           ...environmentProviderIds,
-          ...databaseProviders.map((provider) => provider.providerKey),
+          ...loaded.databaseProviders.map((provider) => provider.providerKey),
         ],
         source: 'database',
       };
@@ -340,15 +368,13 @@ const loadUncached = async (options: LoadOptions): Promise<IdentityProviderStart
     try {
       const lkg = await readIdentityProviderLkg({ env, secrets });
       if (lkg) {
-        const databaseProviders = await materializeProviders(
-          fromLkgPayload(lkg, new Set(environmentProviderIds)),
-          secrets,
-        );
+        const rows = fromLkgPayload(lkg, new Set(environmentProviderIds));
+        const databaseProviders = await materializeProviders(rows, secrets);
         return {
           databaseProviders,
-          generation: lkg.generation,
+          generation: snapshotGeneration(rows),
           health: 'degraded',
-          identityRevision: lkg.identityRevision,
+          identityRevision: identityRevision(rows),
           lastError: errorCategory(databaseError),
           loadedAt,
           providerIds: [

@@ -7,12 +7,11 @@ import {
   readFile,
   realpath,
   rm,
-  stat,
   symlink,
   unlink,
   writeFile,
 } from 'node:fs/promises';
-import { hostname, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import pathModule from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
@@ -42,9 +41,11 @@ const createPath = async () => {
 
 const payload = (createdAt = new Date().toISOString(), revision = 3) => {
   const published = { providerKey: 'corp', secretFingerprint: 'a'.repeat(64) };
+  const generation = `2026-01-01T00:00:00.000Z:${revision}`;
   const providers = [
     {
       checksum: checksumPayload(published),
+      generation,
       payload: published,
       providerId: 'provider-1',
       revision,
@@ -55,7 +56,7 @@ const payload = (createdAt = new Date().toISOString(), revision = 3) => {
   return {
     createdAt,
     domain: 'platform-oidc-lkg' as const,
-    generation: `2026-01-01T00:00:00.000Z:${revision}`,
+    generation,
     identityRevision: identityProviderLkgIdentity(providers),
     providers,
     version: 1 as const,
@@ -191,71 +192,61 @@ describe('identity provider LKG', () => {
     await expect(readIdentityProviderLkg({ env, secrets: secrets() })).resolves.toEqual(newer);
   });
 
-  it('returns busy for a live lock and safely takes over a stale dead-owner lock', async () => {
-    const path = await createPath();
-    const env = {
-      PLATFORM_OIDC_LKG_PATH: path,
-      PLATFORM_OIDC_LKG_STALE_LOCK_MS: '1000',
-    };
-    const lockPath = `${path}.lock`;
-    const lock = (pid: number, createdAt: string) => ({
-      createdAt,
-      generation: 'generation',
-      host: hostname(),
-      nonce: '00000000-0000-4000-8000-000000000001',
-      pid,
-      version: 1,
-    });
-    await writeFile(lockPath, JSON.stringify(lock(process.pid, new Date().toISOString())), {
-      mode: 0o600,
-    });
-    await expect(
-      writeIdentityProviderLkg({ env, payload: payload(), secrets: secrets() }),
-    ).resolves.toBe('busy');
-
-    await writeFile(
-      lockPath,
-      JSON.stringify(lock(2_000_000_000, new Date(Date.now() - 5000).toISOString())),
-    );
-    await expect(
-      writeIdentityProviderLkg({ env, payload: payload(), secrets: secrets() }),
-    ).resolves.toBe('written');
-  });
-
-  it('does not unlink a replacement lock and can recover after cleanup', async () => {
+  it('serializes old/new writes and cannot downgrade after interleaving', async () => {
     const path = await createPath();
     const env = { PLATFORM_OIDC_LKG_PATH: path };
-    const lockPath = `${path}.lock`;
+    let enterRename = (): void => undefined;
+    const entered = new Promise<void>((resolve) => {
+      enterRename = resolve;
+    });
+    let releaseRename = (): void => undefined;
+    const released = new Promise<void>((resolve) => {
+      releaseRename = resolve;
+    });
+    const older = payload(new Date().toISOString(), 3);
+    const newer = payload(new Date().toISOString(), 4);
+    const oldWrite = writeIdentityProviderLkg({
+      env,
+      payload: older,
+      secrets: secrets(),
+      testHooks: {
+        beforeRename: async () => {
+          enterRename();
+          await released;
+        },
+      },
+    });
+    await entered;
+    const newWrite = writeIdentityProviderLkg({ env, payload: newer, secrets: secrets() });
+    releaseRename();
+
+    await expect(oldWrite).resolves.toBe('written');
+    await expect(newWrite).resolves.toBe('written');
+    await expect(readIdentityProviderLkg({ env, secrets: secrets() })).resolves.toEqual(newer);
+    await expect(
+      writeIdentityProviderLkg({ env, payload: older, secrets: secrets() }),
+    ).resolves.toBe('rejected');
+  });
+
+  it('cleans an interrupted unique temporary write without a recoverable lock file', async () => {
+    const path = await createPath();
+    const env = { PLATFORM_OIDC_LKG_PATH: path };
     await expect(
       writeIdentityProviderLkg({
         env,
         payload: payload(),
         secrets: secrets(),
         testHooks: {
-          beforeLockRelease: async () => {
-            await unlink(lockPath);
-            await writeFile(
-              lockPath,
-              JSON.stringify({
-                createdAt: new Date().toISOString(),
-                generation: 'replacement',
-                host: hostname(),
-                nonce: '00000000-0000-4000-8000-000000000002',
-                pid: process.pid,
-                version: 1,
-              }),
-              { flag: 'wx', mode: 0o600 },
-            );
+          beforeRename: async () => {
+            throw new Error('SIMULATED_PROCESS_INTERRUPTION');
           },
         },
       }),
-    ).resolves.toBe('cleanup_failed');
-    await expect(stat(lockPath)).resolves.toBeDefined();
+    ).rejects.toThrow('SIMULATED_PROCESS_INTERRUPTION');
 
-    await unlink(lockPath);
     await expect(
       writeIdentityProviderLkg({ env, payload: payload(), secrets: secrets() }),
-    ).resolves.toBe('unchanged');
+    ).resolves.toBe('written');
   });
 
   it('refuses a symlink target and leaves the link destination untouched', async () => {
