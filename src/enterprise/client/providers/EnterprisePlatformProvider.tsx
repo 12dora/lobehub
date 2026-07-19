@@ -1,14 +1,6 @@
 'use client';
 
-import {
-  createContext,
-  type ReactNode,
-  use,
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-} from 'react';
+import { createContext, type ReactNode, use, useEffect, useMemo } from 'react';
 
 import { useServerConfigStore } from '@/store/serverConfig';
 import { useToolStore } from '@/store/tool';
@@ -23,6 +15,8 @@ import {
 
 import { usePublishedSkillCatalog } from '../features/skills';
 import { fetchPlatformCapabilities, fetchPlatformPublicSnapshot } from '../services/platform';
+import { RuntimeBrandingProvider } from './RuntimeBrandingProvider';
+import { useEnterprisePlatformData } from './useEnterprisePlatformData';
 
 export interface EnterprisePlatformContextValue {
   capabilities: PlatformCapabilities;
@@ -65,56 +59,19 @@ export default function EnterprisePlatformProvider({
     (s) => s.serverConfig.enterprise?.enabled === true,
   );
 
-  const [capabilities, setCapabilities] = useState<PlatformCapabilities>(
-    DISABLED_PLATFORM_CAPABILITIES,
-  );
-  const [publicSnapshot, setPublicSnapshot] = useState<PlatformPublicSnapshot>(
-    DISABLED_PLATFORM_PUBLIC_SNAPSHOT,
-  );
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<Error | null>(null);
+  const { capabilities, error, loading, publicSnapshot, refresh } = useEnterprisePlatformData({
+    disableFetch,
+    enterpriseEnabled,
+    fetchCapabilities,
+    fetchPublicSnapshot,
+    serverConfigInit,
+  });
 
   usePublishedSkillCatalog(capabilities.managedResources.skills);
 
-  const refresh = useCallback(async () => {
-    if (disableFetch) return;
-    // Gate: only hit platform.* when global config says enterprise is on.
-    if (!enterpriseEnabled) return;
-
-    setLoading(true);
-    setError(null);
-    try {
-      const [nextCapabilities, nextPublic] = await Promise.all([
-        fetchCapabilities(),
-        fetchPublicSnapshot(),
-      ]);
-      useToolStore
-        .getState()
-        .configurePlatformSkillManagement(nextCapabilities.managedResources.skills);
-      setCapabilities(nextCapabilities);
-      setPublicSnapshot(nextPublic);
-    } catch (err) {
-      // Keep last-known / disabled snapshot so the app stays usable when enterprise is off.
-      setError(err instanceof Error ? err : new Error(String(err)));
-    } finally {
-      setLoading(false);
-    }
-  }, [disableFetch, enterpriseEnabled, fetchCapabilities, fetchPublicSnapshot]);
-
   useEffect(() => {
-    if (disableFetch) return;
-    if (!serverConfigInit) return;
-    if (!enterpriseEnabled) {
-      // Explicitly stay on disabled snapshots — no network.
-      setCapabilities(DISABLED_PLATFORM_CAPABILITIES);
-      setPublicSnapshot(DISABLED_PLATFORM_PUBLIC_SNAPSHOT);
-      useToolStore.getState().configurePlatformSkillManagement(false);
-      setLoading(false);
-      setError(null);
-      return;
-    }
-    void refresh();
-  }, [disableFetch, serverConfigInit, enterpriseEnabled, refresh]);
+    useToolStore.getState().configurePlatformSkillManagement(capabilities.managedResources.skills);
+  }, [capabilities.managedResources.skills]);
 
   const value = useMemo<EnterprisePlatformContextValue>(
     () => ({
@@ -127,7 +84,11 @@ export default function EnterprisePlatformProvider({
     [capabilities, error, loading, publicSnapshot, refresh],
   );
 
-  return <EnterprisePlatformContext value={value}>{children}</EnterprisePlatformContext>;
+  return (
+    <EnterprisePlatformContext value={value}>
+      <RuntimeBrandingProvider publicSnapshot={publicSnapshot}>{children}</RuntimeBrandingProvider>
+    </EnterprisePlatformContext>
+  );
 }
 
 export const useEnterprisePlatform = (): EnterprisePlatformContextValue => {

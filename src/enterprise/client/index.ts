@@ -24,6 +24,16 @@ export {
   useEnterprisePlatform,
 } from './providers/EnterprisePlatformProvider';
 export {
+  BUILT_IN_RUNTIME_BRANDING,
+  resolveRuntimeBranding,
+  type RuntimeBranding,
+} from './providers/runtimeBranding';
+export {
+  RuntimeBrandingProvider,
+  type RuntimeBrandingProviderProps,
+  useRuntimeBranding,
+} from './providers/RuntimeBrandingProvider';
+export {
   createEnterpriseModuleRegistry,
   type EnterpriseMenuItem,
   type EnterpriseModuleRegistration,

@@ -1,18 +1,16 @@
 import type { EnterpriseFeatureFlags } from '@/const/platform/featureFlags';
+import type { PlatformBrandingPublished } from '@/types/platform/branding';
 import {
   DISABLED_PLATFORM_PUBLIC_SNAPSHOT,
   type PlatformPublicSnapshot,
+  platformPublicSnapshotSchema,
 } from '@/types/platform/publicSnapshot';
 
 import { getEnterpriseFeatureFlags } from '../featureFlags';
 
 export interface BuildPlatformPublicSnapshotInput {
   /** Published branding fields (M12). Never pass secrets here. */
-  branding?: {
-    logoUrl?: string | null;
-    platformName?: string | null;
-    revision?: string | null;
-  };
+  branding?: PlatformBrandingPublished | null;
   configRevision?: string;
   flags?: EnterpriseFeatureFlags;
   /** Whether a published work-account IdP is active (M11). */
@@ -30,19 +28,23 @@ export const buildPlatformPublicSnapshot = (
   const brandingOn = flags.ENABLE_RUNTIME_BRANDING;
   const oidcOn = flags.ENABLE_DATABASE_OIDC;
 
-  return {
-    brandingRevision: brandingOn ? (input.branding?.revision ?? null) : null,
+  const branding = brandingOn ? (input.branding ?? null) : null;
+
+  return platformPublicSnapshotSchema.parse({
+    branding,
+    brandingRevision: branding?.revision ?? null,
     configRevision: input.configRevision ?? DISABLED_PLATFORM_PUBLIC_SNAPSHOT.configRevision,
     login: {
       // Work-account button only when OIDC feature is on AND a published IdP exists.
       workAccountEnabled: oidcOn && Boolean(input.workAccountEnabled),
     },
-    logoUrl: brandingOn ? (input.branding?.logoUrl ?? null) : null,
-    platformName: brandingOn ? (input.branding?.platformName ?? null) : null,
-  };
+    logoUrl: branding?.logoUrl ?? null,
+    platformName: branding?.name ?? null,
+  });
 };
 
 export const getDisabledPlatformPublicSnapshot = (): PlatformPublicSnapshot => ({
   ...DISABLED_PLATFORM_PUBLIC_SNAPSHOT,
+  branding: null,
   login: { ...DISABLED_PLATFORM_PUBLIC_SNAPSHOT.login },
 });

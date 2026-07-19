@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DISABLED_PLATFORM_CAPABILITIES } from '@/types/platform/capabilities';
-import { DISABLED_PLATFORM_PUBLIC_SNAPSHOT } from '@/types/platform/publicSnapshot';
 
 import { fetchPlatformCapabilities, fetchPlatformPublicSnapshot } from './platform';
 
@@ -25,10 +24,8 @@ describe('enterprise platform client service', () => {
     await expect(fetchPlatformCapabilities(query)).rejects.toThrow('offline');
   });
 
-  it('falls back for public snapshot failures', async () => {
+  it('propagates public snapshot failures so SWR can retain fallback or last-known data', async () => {
     const query = vi.fn().mockRejectedValue(new Error('x'));
-    await expect(fetchPlatformPublicSnapshot(query)).resolves.toEqual(
-      DISABLED_PLATFORM_PUBLIC_SNAPSHOT,
-    );
+    await expect(fetchPlatformPublicSnapshot(query)).rejects.toThrow('x');
   });
 });
