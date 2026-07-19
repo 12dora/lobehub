@@ -5,6 +5,7 @@ import { type PartialDeep } from 'type-fest';
 
 import { useOnlyFetchOnceSWR } from '@/libs/swr';
 import { builtinAgentKeys } from '@/libs/swr/keys';
+import { useCacheScope } from '@/libs/swr/useCacheScope';
 import { agentService } from '@/services/agent';
 import { type StoreSetter } from '@/store/types';
 
@@ -58,9 +59,11 @@ export class BuiltinAgentSliceActionImpl {
     slug: string,
     context?: UseInitBuiltinAgentContext,
   ): SWRResponse<AgentItem | null> => {
+    const cacheScope = useCacheScope();
     const cacheKey = builtinAgentKeys.init(
       slug,
       slug === INBOX_SESSION_ID ? (context?.brandingRevision ?? null) : undefined,
+      slug === INBOX_SESSION_ID ? cacheScope : undefined,
     );
 
     return useOnlyFetchOnceSWR(
