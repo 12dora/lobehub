@@ -66,6 +66,13 @@ describe.skipIf(!runPostgresMigration)('M11 PostgreSQL identity instance migrati
             WHERE request_id = '550e8400-e29b-41d4-a716-446655440130'`,
         ),
       ).rejects.toThrow();
+      await expect(
+        client.query(
+          `UPDATE platform_identity_provider_restart_requests
+              SET status = 'failed', failed_at = now(), result_category = 'schedule_failed'
+            WHERE request_id = '550e8400-e29b-41d4-a716-446655440130'`,
+        ),
+      ).rejects.toThrow();
     } finally {
       await client.query('ROLLBACK');
       client.release();

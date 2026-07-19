@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS "platform_identity_provider_restart_requests" (
           AND "platform_identity_provider_restart_requests"."accepted_at" IS NOT NULL AND "platform_identity_provider_restart_requests"."signaled_at" IS NOT NULL AND "platform_identity_provider_restart_requests"."failed_at" IS NULL
           AND "platform_identity_provider_restart_requests"."result_category" = 'signal_scheduled')
         OR ("platform_identity_provider_restart_requests"."status" = 'failed'
-          AND "platform_identity_provider_restart_requests"."signaled_at" IS NULL AND "platform_identity_provider_restart_requests"."failed_at" IS NOT NULL
+          AND "platform_identity_provider_restart_requests"."accepted_at" IS NOT NULL AND "platform_identity_provider_restart_requests"."signaled_at" IS NULL AND "platform_identity_provider_restart_requests"."failed_at" IS NOT NULL
           AND "platform_identity_provider_restart_requests"."result_category" IS NOT NULL)),
 	CONSTRAINT "platform_identity_provider_restart_requests_time_check" CHECK ("platform_identity_provider_restart_requests"."expires_at" > "platform_identity_provider_restart_requests"."created_at"
         AND "platform_identity_provider_restart_requests"."expires_at" <= "platform_identity_provider_restart_requests"."created_at" + interval '10 minutes'

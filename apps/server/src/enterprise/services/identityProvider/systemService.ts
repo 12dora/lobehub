@@ -8,7 +8,6 @@ import {
   platformIdentityProviderInstances,
   platformIdentityProviderRestartRequests,
   platformIdentityProviders,
-  platformResourceRevisions,
 } from '@/database/schemas/platform';
 import type { LobeChatDatabase, Transaction } from '@/database/type';
 import type {
@@ -18,6 +17,7 @@ import type {
 
 import { containsEnterpriseSecretMaterial } from '../../security/redaction';
 import {
+  getIdentityProviderInstanceRegistrationState,
   getIdentityProviderProcessInstance,
   IDENTITY_PROVIDER_INSTANCE_STALE_MS,
   identityProviderDegradedCategory,
@@ -25,8 +25,14 @@ import {
 import { identityProviderLkgIdentity } from './lkg';
 import { ProcessRestartController, type RestartController } from './restartController';
 import { getIdentityProviderStartupArtifactHealth } from './startupArtifact';
+import {
+  loadCanonicalPublishedIdentityProviders,
+  parseEnvironmentIdentityProviderIds,
+} from './startupSnapshot';
 
 const RESTART_INTENT_TTL_MS = 5 * 60 * 1000;
+
+export type IdentityProviderAfterResponseHook = (task: () => Promise<void>) => void;
 
 export class IdentityProviderSystemError extends Error {
   constructor(
@@ -53,55 +59,41 @@ const normalizeReason = (reason: string): string => {
   return normalized;
 };
 
-const providerKey = (payload: Record<string, unknown>): string => {
-  const value = payload.providerKey;
-  if (typeof value !== 'string' || !/^[a-z0-9][a-z0-9._-]{0,127}$/.test(value)) {
+export const loadPublishedIdentityTarget = async (
+  db: LobeChatDatabase | Transaction,
+  env: Record<string, string | undefined> = process.env,
+) => {
+  let selected: Awaited<ReturnType<typeof loadCanonicalPublishedIdentityProviders>>;
+  try {
+    selected = await loadCanonicalPublishedIdentityProviders({
+      db,
+      environmentProviderIds: new Set(parseEnvironmentIdentityProviderIds(env)),
+    });
+  } catch {
     throw new IdentityProviderSystemError('PLATFORM_IDENTITY_RESTART_STATUS_UNAVAILABLE');
   }
-  return value;
-};
-
-export const loadPublishedIdentityTarget = async (db: LobeChatDatabase | Transaction) => {
-  const revisions = await db
-    .select({
-      checksum: platformResourceRevisions.checksum,
-      id: platformResourceRevisions.id,
-      payload: platformResourceRevisions.payload,
-      publishedAt: platformResourceRevisions.publishedAt,
-      resourceId: platformResourceRevisions.resourceId,
-      revision: platformResourceRevisions.revision,
-      secretFingerprint: platformResourceRevisions.secretFingerprint,
-    })
-    .from(platformResourceRevisions)
-    .where(
-      and(
-        eq(platformResourceRevisions.resourceType, 'oidc'),
-        eq(platformResourceRevisions.status, 'published'),
-      ),
-    )
-    .orderBy(desc(platformResourceRevisions.revision));
-
-  const selected = new Map<string, (typeof revisions)[number]>();
-  for (const revision of revisions) {
-    if (!selected.has(revision.resourceId)) selected.set(revision.resourceId, revision);
-  }
-  const providers = [...selected.values()].map((revision) => {
-    if (!revision.publishedAt || !revision.secretFingerprint) {
-      throw new IdentityProviderSystemError('PLATFORM_IDENTITY_RESTART_STATUS_UNAVAILABLE');
-    }
+  const providers = selected.map((revision) => {
     return {
       checksum: revision.checksum,
-      generation: `${revision.publishedAt.toISOString()}:${revision.id}`,
+      generation: revision.generation,
       payload: revision.payload,
-      providerId: revision.resourceId,
-      providerKey: providerKey(revision.payload),
+      providerId: revision.providerId,
+      providerKey: revision.payload.providerKey,
       publishedRevision: revision.revision,
       revision: revision.revision,
       secretFingerprint: revision.secretFingerprint,
     };
   });
   return {
-    identityRevision: providers.length > 0 ? identityProviderLkgIdentity(providers) : null,
+    identityRevision:
+      providers.length > 0
+        ? identityProviderLkgIdentity(
+            providers.map((provider) => ({
+              ...provider,
+              payload: provider.payload as unknown as Record<string, unknown>,
+            })),
+          )
+        : null,
     providers,
   };
 };
@@ -123,7 +115,15 @@ export class IdentityProviderSystemService {
     private readonly db: LobeChatDatabase,
     private readonly restartController: RestartController = new ProcessRestartController(),
     private readonly now: () => Date = () => new Date(),
+    private readonly afterResponse?: IdentityProviderAfterResponseHook,
   ) {}
+
+  private restartCapability = () => {
+    const capability = this.restartController.capability();
+    return capability.supported && !this.afterResponse
+      ? ({ reason: 'supervisor_not_configured', supported: false } as const)
+      : capability;
+  };
 
   getAuthSnapshotStatus = async () => {
     const artifact = getIdentityProviderStartupArtifactHealth();
@@ -148,7 +148,7 @@ export class IdentityProviderSystemService {
           .where(eq(platformIdentityProviders.status, 'pending_restart')),
       ]);
     const now = this.now().getTime();
-    const instanceProjection = instances.map((instance) => ({
+    let instanceProjection = instances.map((instance) => ({
       activeIdentityRevision: instance.activeIdentityRevision,
       degradedCategory: instance.degradedCategory,
       fresh: now - instance.lastHeartbeat.getTime() <= IDENTITY_PROVIDER_INSTANCE_STALE_MS,
@@ -161,6 +161,32 @@ export class IdentityProviderSystemService {
       startupGeneration: instance.startupGeneration,
       startupSource: instance.startupSource,
     }));
+    const local = getIdentityProviderProcessInstance();
+    const localRow = instanceProjection.find(
+      (instance) => instance.instanceId === local.instanceId,
+    );
+    const registrationState = getIdentityProviderInstanceRegistrationState();
+    const registrationFailed =
+      registrationState === 'failed' || (!localRow && registrationState !== 'registered');
+    const localProjection = {
+      activeIdentityRevision: artifact.identityRevision,
+      degradedCategory: registrationFailed
+        ? 'instance_status_unavailable'
+        : identityProviderDegradedCategory({ ...artifact, databaseProviders: [], providerIds: [] }),
+      fresh: true,
+      health: registrationFailed ? ('degraded' as const) : artifact.health,
+      hostnameHash: local.hostnameHash,
+      instanceId: local.instanceId,
+      lastHeartbeat: localRow?.lastHeartbeat ?? this.now(),
+      loadedAt: artifact.loadedAt,
+      startedAt: local.startedAt,
+      startupGeneration: artifact.generation,
+      startupSource: artifact.source,
+    };
+    instanceProjection = [
+      ...instanceProjection.filter((instance) => instance.instanceId !== local.instanceId),
+      localProjection,
+    ];
     const fresh = instanceProjection.filter((instance) => instance.fresh);
     const isActive = (instance: (typeof fresh)[number]) =>
       Boolean(targetIdentityRevision) &&
@@ -169,7 +195,7 @@ export class IdentityProviderSystemService {
       instance.startupSource === 'database';
     const activeCount = fresh.filter(isActive).length;
     const allFreshInstancesActive = fresh.length > 0 && activeCount === fresh.length;
-    const pendingPublished = pendingRows.flatMap((row) =>
+    let pendingPublished = pendingRows.flatMap((row) =>
       row.activationRevision
         ? [
             {
@@ -180,9 +206,34 @@ export class IdentityProviderSystemService {
           ]
         : [],
     );
-    const pendingRestart = pendingPublished.length > 0 && !allFreshInstancesActive;
-    const capability = this.restartController.capability();
-    const local = getIdentityProviderProcessInstance();
+    if (allFreshInstancesActive && targetIdentityRevision && pendingRows.length > 0) {
+      const reconciled = await this.db.transaction(async (tx) => {
+        const ids = new Set<string>();
+        for (const row of pendingRows) {
+          if (!row.activationRevision) continue;
+          const [updated] = await tx
+            .update(platformIdentityProviders)
+            .set({ status: 'active', updatedAt: this.now() })
+            .where(
+              and(
+                eq(platformIdentityProviders.id, row.id),
+                eq(platformIdentityProviders.status, 'pending_restart'),
+                eq(platformIdentityProviders.activationRevision, row.activationRevision),
+                eq(platformIdentityProviders.revision, row.activationRevision),
+              ),
+            )
+            .returning({ id: platformIdentityProviders.id });
+          if (updated) ids.add(updated.id);
+        }
+        return ids;
+      });
+      pendingPublished = pendingPublished.filter(
+        (provider) => !reconciled.has(provider.providerId),
+      );
+    }
+    // A failed reconciliation CAS remains pending even when runtime instances already agree.
+    const pendingRestart = pendingPublished.length > 0;
+    const capability = this.restartCapability();
     return {
       active: {
         allFreshInstancesActive,
@@ -190,13 +241,9 @@ export class IdentityProviderSystemService {
         staleInstances: instanceProjection.filter((instance) => !instance.fresh).length,
       },
       artifact: {
-        degradedCategory: identityProviderDegradedCategory({
-          ...artifact,
-          databaseProviders: [],
-          providerIds: [],
-        }),
+        degradedCategory: localProjection.degradedCategory,
         generation: artifact.generation,
-        health: artifact.health,
+        health: localProjection.health,
         identityRevision: artifact.identityRevision,
         instanceId: local.instanceId,
         loadedAt: artifact.loadedAt,
@@ -336,7 +383,7 @@ export class IdentityProviderSystemService {
         if (request.expiresAt.getTime() <= now.getTime()) {
           throw new IdentityProviderSystemError('PLATFORM_IDENTITY_RESTART_INTENT_EXPIRED');
         }
-        const capability = this.restartController.capability();
+        const capability = this.restartCapability();
         if (!capability.supported) {
           throw new IdentityProviderSystemError('PLATFORM_IDENTITY_RESTART_UNSUPPORTED');
         }
@@ -399,34 +446,20 @@ export class IdentityProviderSystemService {
     }
 
     if (accepted.duplicate) {
+      if (accepted.status === 'accepted') {
+        try {
+          this.afterResponse!(() =>
+            this.signalAcceptedRestart(accepted!.ownerFence, accepted!.requestId),
+          );
+        } catch {
+          throw new IdentityProviderSystemError('PLATFORM_IDENTITY_RESTART_UNSUPPORTED');
+        }
+      }
       return { accepted: true as const, ...accepted };
     }
 
     try {
-      await this.restartController.schedule({ ownerFence: accepted.ownerFence, requestId });
-      const now = this.now();
-      const [signaled] = await this.db
-        .update(platformIdentityProviderRestartRequests)
-        .set({
-          resultCategory: 'signal_scheduled',
-          signaledAt: now,
-          status: 'signaled',
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(platformIdentityProviderRestartRequests.requestId, requestId),
-            eq(platformIdentityProviderRestartRequests.status, 'accepted'),
-            eq(platformIdentityProviderRestartRequests.ownerFence, accepted.ownerFence),
-          ),
-        )
-        .returning({ requestId: platformIdentityProviderRestartRequests.requestId });
-      if (!signaled) {
-        console.error('[admin.system] restart signal outcome persistence lost owner fence', {
-          requestId,
-        });
-      }
-      return { accepted: true as const, duplicate: false, requestId, status: 'signaled' as const };
+      this.afterResponse!(() => this.signalAcceptedRestart(accepted!.ownerFence, requestId));
     } catch {
       const now = this.now();
       await this.db
@@ -445,6 +478,52 @@ export class IdentityProviderSystemService {
           ),
         );
       throw new IdentityProviderSystemError('PLATFORM_IDENTITY_RESTART_UNSUPPORTED');
+    }
+    return { accepted: true as const, duplicate: false, requestId, status: 'accepted' as const };
+  };
+
+  private signalAcceptedRestart = async (ownerFence: string, requestId: string): Promise<void> => {
+    const now = this.now();
+    const [persisted] = await this.db
+      .update(platformIdentityProviderRestartRequests)
+      .set({
+        resultCategory: 'signal_scheduled',
+        signaledAt: now,
+        status: 'signaled',
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(platformIdentityProviderRestartRequests.requestId, requestId),
+          eq(platformIdentityProviderRestartRequests.status, 'accepted'),
+          eq(platformIdentityProviderRestartRequests.ownerFence, ownerFence),
+        ),
+      )
+      .returning({ requestId: platformIdentityProviderRestartRequests.requestId });
+    if (!persisted) return;
+
+    try {
+      // Persistence deliberately precedes timer creation; this callback itself is registered
+      // with Next's post-response lifecycle by the router.
+      await this.restartController.schedule({ ownerFence, requestId });
+    } catch {
+      const failedAt = this.now();
+      await this.db
+        .update(platformIdentityProviderRestartRequests)
+        .set({
+          failedAt,
+          resultCategory: 'signal_schedule_failed',
+          signaledAt: null,
+          status: 'failed',
+          updatedAt: failedAt,
+        })
+        .where(
+          and(
+            eq(platformIdentityProviderRestartRequests.requestId, requestId),
+            eq(platformIdentityProviderRestartRequests.status, 'signaled'),
+            eq(platformIdentityProviderRestartRequests.ownerFence, ownerFence),
+          ),
+        );
     }
   };
 }

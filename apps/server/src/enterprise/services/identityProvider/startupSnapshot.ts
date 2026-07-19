@@ -42,7 +42,9 @@ interface LoadOptions {
   env?: Record<string, string | undefined>;
 }
 
-const parseEnvironmentProviderIds = (env: Record<string, string | undefined>): string[] => [
+export const parseEnvironmentIdentityProviderIds = (
+  env: Record<string, string | undefined>,
+): string[] => [
   ...new Set(
     (env.AUTH_SSO_PROVIDERS ?? '')
       .split(',')
@@ -84,7 +86,7 @@ const publishedProviderKey = (value: unknown): string | null => {
 
 type DatabaseExecutor = LobeChatDatabase | Transaction;
 
-const loadDatabasePayload = async (input: {
+export const loadCanonicalPublishedIdentityProviders = async (input: {
   db: DatabaseExecutor;
   environmentProviderIds: Set<string>;
 }) => {
@@ -150,6 +152,14 @@ const loadDatabasePayload = async (input: {
   if (new Set(selected.map((row) => row.payload.providerKey)).size !== selected.length) {
     throw new Error('PLATFORM_IDENTITY_PROVIDER_DUPLICATE_KEY');
   }
+  return selected;
+};
+
+const loadDatabasePayload = async (input: {
+  db: DatabaseExecutor;
+  environmentProviderIds: Set<string>;
+}) => {
+  const selected = await loadCanonicalPublishedIdentityProviders(input);
   if (selected.length === 0) return [];
   const providerIds = selected.map((provider) => provider.providerId);
   const secrets = await input.db
@@ -272,7 +282,7 @@ export const withIdentityProviderLkgAdvisoryLock = async <T>(
 
 const loadUncached = async (options: LoadOptions): Promise<IdentityProviderStartupSnapshot> => {
   const env = options.env ?? process.env;
-  const environmentProviderIds = parseEnvironmentProviderIds(env);
+  const environmentProviderIds = parseEnvironmentIdentityProviderIds(env);
   const loadedAt = new Date();
   if (!parseEnterpriseFeatureFlags(env).ENABLE_DATABASE_OIDC) {
     return {

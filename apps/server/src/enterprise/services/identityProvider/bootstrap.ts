@@ -1,5 +1,8 @@
 import { parseEnterpriseFeatureFlags } from '../../featureFlags';
-import { registerIdentityProviderInstance } from './instanceRegistry';
+import {
+  markIdentityProviderInstanceRegistrationFailed,
+  registerIdentityProviderInstance,
+} from './instanceRegistry';
 import { loadIdentityProviderStartupSnapshot } from './startupSnapshot';
 
 let bootstrapPromise: Promise<void> | null = null;
@@ -12,6 +15,7 @@ export const bootstrapIdentityProviderRuntime = (): Promise<void> => {
       const { serverDB } = await import('@lobechat/database');
       await registerIdentityProviderInstance({ db: serverDB, snapshot });
     } catch (error) {
+      markIdentityProviderInstanceRegistrationFailed();
       console.error('[identityProviderInstance] startup report unavailable', {
         errorClass: error instanceof Error ? error.name : 'UnknownError',
       });

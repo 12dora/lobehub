@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE } from '@lobechat/types';
 import { and, eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -13,7 +14,11 @@ import {
 } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 
-import { getIdentityProviderProcessInstance } from './instanceRegistry';
+import {
+  getIdentityProviderProcessInstance,
+  markIdentityProviderInstanceRegistrationFailed,
+  stopIdentityProviderHeartbeatForTest,
+} from './instanceRegistry';
 import type { RestartController } from './restartController';
 import {
   commitIdentityProviderStartupSnapshot,
@@ -32,13 +37,30 @@ const cleanup = async () => {
   await db.delete(platformResourceRevisions);
   await db.delete(platformAuditLogs);
   resetIdentityProviderStartupArtifactForTest();
+  stopIdentityProviderHeartbeatForTest();
 };
 
 beforeEach(cleanup);
 afterEach(cleanup);
 
 const seedPendingTarget = async () => {
-  const payload = { providerKey: 'work' };
+  const payload = {
+    autoProvision: true,
+    buttonLabel: 'Work account',
+    claimMapping: GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE.claimMapping,
+    clientId: 'client-id',
+    displayName: 'Work',
+    domainAllowlist: [],
+    enabled: true,
+    groupRoleMapping: {},
+    icon: null,
+    issuer: 'https://login.example.test',
+    providerKey: 'work',
+    scopes: [...GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE.scopes],
+    secretFingerprint: 'b'.repeat(64),
+    type: 'generic_oidc' as const,
+    usePkce: true as const,
+  };
   await db.insert(platformIdentityProviders).values({
     activationRevision: 1,
     buttonLabel: 'Work account',
@@ -101,7 +123,7 @@ describe('IdentityProviderSystemService', () => {
     commitArtifact('a'.repeat(64));
     await insertInstance({ activeIdentityRevision: target, instanceId: local.instanceId });
     await insertInstance({
-      activeIdentityRevision: 'a'.repeat(64),
+      activeIdentityRevision: target,
       instanceId: `oidci_${'d'.repeat(48)}`,
     });
     await insertInstance({
@@ -117,6 +139,7 @@ describe('IdentityProviderSystemService', () => {
       db,
       controller,
       () => now,
+      () => undefined,
     ).getAuthSnapshotStatus();
     expect(status).toMatchObject({
       active: { allFreshInstancesActive: false, partial: true, staleInstances: 1 },
@@ -154,7 +177,13 @@ describe('IdentityProviderSystemService', () => {
         observations.push(`${row.status}:${audits.length}`);
       },
     };
-    const service = new IdentityProviderSystemService(db, controller, () => new Date());
+    const afterResponse: Array<() => Promise<void>> = [];
+    const service = new IdentityProviderSystemService(
+      db,
+      controller,
+      () => new Date(),
+      (task) => afterResponse.push(task),
+    );
     const prepared = await service.prepareRestart('admin-1', {
       reason: 'Activate the tested work login',
       requestId,
@@ -164,14 +193,21 @@ describe('IdentityProviderSystemService', () => {
       reason: 'Activate the tested work login',
       requestId,
     });
+    expect(first).toMatchObject({ accepted: true, duplicate: false, status: 'accepted' });
+    expect(observations).toEqual([]);
+    const [acceptedRow] = await db
+      .select()
+      .from(platformIdentityProviderRestartRequests)
+      .where(eq(platformIdentityProviderRestartRequests.requestId, requestId));
+    expect(acceptedRow.status).toBe('accepted');
+    await afterResponse.shift()!();
     const duplicate = await service.requestRestart('admin-1', {
       intentToken: prepared.intentToken,
       reason: 'Activate the tested work login',
       requestId,
     });
-    expect(first).toMatchObject({ accepted: true, duplicate: false, status: 'signaled' });
     expect(duplicate).toMatchObject({ accepted: true, duplicate: true, status: 'signaled' });
-    expect(observations).toEqual(['accepted:1']);
+    expect(observations).toEqual(['signaled:1']);
   });
 
   it('fails closed when restart is unsupported and never schedules', async () => {
@@ -186,10 +222,88 @@ describe('IdentityProviderSystemService', () => {
         signals += 1;
       },
     };
-    const service = new IdentityProviderSystemService(db, controller, () => now);
+    const service = new IdentityProviderSystemService(
+      db,
+      controller,
+      () => now,
+      () => undefined,
+    );
     await expect(
       service.prepareRestart('admin-1', { reason: 'Activate work login', requestId }),
     ).rejects.toMatchObject({ code: 'PLATFORM_IDENTITY_RESTART_UNSUPPORTED' });
     expect(signals).toBe(0);
+  });
+
+  it('uses startup canonical selection for environment overrides and damaged shadows', async () => {
+    await seedPendingTarget();
+    await expect(loadPublishedIdentityTarget(db, { AUTH_SSO_PROVIDERS: 'work' })).resolves.toEqual({
+      identityRevision: null,
+      providers: [],
+    });
+
+    await db
+      .update(platformResourceRevisions)
+      .set({ payload: { providerKey: 'work', secretFingerprint: 'broken' } })
+      .where(eq(platformResourceRevisions.resourceId, 'provider-work'));
+    await expect(loadPublishedIdentityTarget(db, { AUTH_SSO_PROVIDERS: 'work' })).resolves.toEqual({
+      identityRevision: null,
+      providers: [],
+    });
+    await expect(loadPublishedIdentityTarget(db, {})).rejects.toMatchObject({
+      code: 'PLATFORM_IDENTITY_RESTART_STATUS_UNAVAILABLE',
+    });
+  });
+
+  it('keeps the current responder fail-closed when instance registration failed', async () => {
+    const target = await seedPendingTarget();
+    const local = getIdentityProviderProcessInstance();
+    commitArtifact(target);
+    await insertInstance({ activeIdentityRevision: target, instanceId: local.instanceId });
+    markIdentityProviderInstanceRegistrationFailed();
+    const controller: RestartController = {
+      capability: () => ({ reason: null, supported: true }),
+      schedule: async () => undefined,
+    };
+    const status = await new IdentityProviderSystemService(
+      db,
+      controller,
+      () => now,
+      () => undefined,
+    ).getAuthSnapshotStatus();
+    expect(status.active.allFreshInstancesActive).toBe(false);
+    expect(status.pendingRestart).toBe(true);
+    expect(status.artifact).toMatchObject({
+      degradedCategory: 'instance_status_unavailable',
+      health: 'degraded',
+    });
+  });
+
+  it('reconciles pending providers after every fresh instance is active', async () => {
+    const target = await seedPendingTarget();
+    const local = getIdentityProviderProcessInstance();
+    commitArtifact(target);
+    await insertInstance({ activeIdentityRevision: target, instanceId: local.instanceId });
+    await insertInstance({
+      activeIdentityRevision: 'a'.repeat(64),
+      instanceId: `oidci_${'f'.repeat(48)}`,
+      lastHeartbeat: new Date(now.getTime() - 100_000),
+    });
+    const controller: RestartController = {
+      capability: () => ({ reason: null, supported: true }),
+      schedule: async () => undefined,
+    };
+    const status = await new IdentityProviderSystemService(
+      db,
+      controller,
+      () => now,
+      () => undefined,
+    ).getAuthSnapshotStatus();
+    expect(status).toMatchObject({
+      active: { allFreshInstancesActive: true, staleInstances: 1 },
+      pendingPublished: [],
+      pendingRestart: false,
+    });
+    const [provider] = await db.select().from(platformIdentityProviders);
+    expect(provider.status).toBe('active');
   });
 });

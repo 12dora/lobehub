@@ -1,3 +1,5 @@
+import { after } from 'next/server';
+
 import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { enterpriseAccessGate, preAccessAuthedProcedure, router } from '@/libs/trpc/lambda';
@@ -20,6 +22,9 @@ import {
 } from '../../services/identityProvider/systemService';
 import { PlatformAuditService } from '../../services/platformAudit';
 import { isIdentityProviderFeatureEnabled } from './identityProvidersSupport';
+
+const createSystemService = (db: ConstructorParameters<typeof IdentityProviderSystemService>[0]) =>
+  new IdentityProviderSystemService(db, undefined, undefined, (task) => after(task));
 
 const systemProcedure = preAccessAuthedProcedure
   .use(({ next }) => {
@@ -111,9 +116,7 @@ const assertRestartReauth = async (
 export const adminSystemRouter = router({
   getAuthSnapshotStatus: systemProcedure
     .output(adminSystemAuthSnapshotStatusOutputSchema)
-    .query(({ ctx }) =>
-      execute(() => new IdentityProviderSystemService(ctx.serverDB).getAuthSnapshotStatus()),
-    ),
+    .query(({ ctx }) => execute(() => createSystemService(ctx.serverDB).getAuthSnapshotStatus())),
 
   prepareRestart: systemProcedure
     .input(adminSystemPrepareRestartInputSchema)
@@ -128,9 +131,7 @@ export const adminSystemRouter = router({
         },
         input,
       );
-      return execute(() =>
-        new IdentityProviderSystemService(ctx.serverDB).prepareRestart(ctx.userId!, input),
-      );
+      return execute(() => createSystemService(ctx.serverDB).prepareRestart(ctx.userId!, input));
     }),
 
   requestRestart: systemProcedure
@@ -146,8 +147,6 @@ export const adminSystemRouter = router({
         },
         input,
       );
-      return execute(() =>
-        new IdentityProviderSystemService(ctx.serverDB).requestRestart(ctx.userId!, input),
-      );
+      return execute(() => createSystemService(ctx.serverDB).requestRestart(ctx.userId!, input));
     }),
 });
