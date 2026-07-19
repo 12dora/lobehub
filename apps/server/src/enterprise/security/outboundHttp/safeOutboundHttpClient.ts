@@ -52,6 +52,7 @@ export class SafeOutboundHttpClient {
     const configuredPolicy = {
       allowlist: options.allowlist ?? DEFAULT_OUTBOUND_POLICY.allowlist,
       mode: options.mode ?? DEFAULT_OUTBOUND_POLICY.mode,
+      translationPrefixes: options.translationPrefixes,
     };
     this.policyProvider =
       options.policyProvider ?? (() => ({ policy: configuredPolicy, version: 'static' }));

@@ -9,10 +9,11 @@ import { ssrfBlocked } from './errors';
  *
  * - allow-private (default): private/loopback allowed; public allowed;
  *   cloud Metadata endpoints always blocked.
+ * - public-only: public Internet addresses only; private/loopback/link-local and Metadata denied.
  * - allowlist: only hostnames/IPs in allowlist (after DNS); Metadata still
  *   always blocked even if listed.
  */
-export type OutboundPolicyMode = 'allow-private' | 'allowlist';
+export type OutboundPolicyMode = 'allow-private' | 'allowlist' | 'public-only';
 
 export interface OutboundPolicy {
   /**
@@ -23,12 +24,22 @@ export interface OutboundPolicy {
    */
   allowlist: string[];
   mode: OutboundPolicyMode;
+  /** RFC 6052 translation prefixes used by this deployment. */
+  translationPrefixes?: string[];
 }
+
+const translationPrefixSchema = z
+  .string()
+  .trim()
+  .max(64)
+  .regex(/^[0-9a-f:]+\/(?:32|40|48|56|64|96)$/i)
+  .refine((value) => isIP(value.slice(0, value.lastIndexOf('/'))) === 6, 'invalid IPv6 prefix');
 
 export const outboundPolicySchema = z
   .object({
     allowlist: z.array(z.string().trim().min(1).max(255)).max(256),
-    mode: z.enum(['allow-private', 'allowlist']),
+    mode: z.enum(['allow-private', 'allowlist', 'public-only']),
+    translationPrefixes: z.array(translationPrefixSchema).max(32).optional(),
   })
   .strict();
 
@@ -43,6 +54,8 @@ export const DEFAULT_OUTBOUND_POLICY: OutboundPolicy = {
   allowlist: [],
   mode: 'allow-private',
 };
+
+export const DEFAULT_PUBLIC_TRANSLATION_PREFIXES = ['64:ff9b::/96', '64:ff9b:1::/48'];
 
 /** Hostnames that always resolve to cloud instance metadata. */
 const METADATA_HOSTNAMES = new Set([
@@ -140,6 +153,32 @@ export const extractRfc6052Ipv4Candidates = (ip: string): string[] => {
   return [...candidates];
 };
 
+const RFC6052_LAYOUTS = new Map<number, readonly number[]>([
+  [32, [4, 5, 6, 7]],
+  [40, [5, 6, 7, 9]],
+  [48, [6, 7, 9, 10]],
+  [56, [7, 9, 10, 11]],
+  [64, [9, 10, 11, 12]],
+  [96, [12, 13, 14, 15]],
+]);
+
+/** Decode an embedded IPv4 only when the IPv6 address matches an explicit RFC 6052 prefix. */
+export const extractRfc6052Ipv4 = (ip: string, prefixCidr: string): string | null => {
+  const separator = prefixCidr.lastIndexOf('/');
+  const prefixLength = Number(prefixCidr.slice(separator + 1));
+  const indexes = RFC6052_LAYOUTS.get(prefixLength);
+  const addressBytes = ipv6Bytes(ip);
+  const prefixBytes = ipv6Bytes(prefixCidr.slice(0, separator));
+  if (!indexes || !addressBytes || !prefixBytes) return null;
+  const fullBytes = Math.floor(prefixLength / 8);
+  for (let index = 0; index < fullBytes; index += 1) {
+    if (addressBytes[index] !== prefixBytes[index]) return null;
+  }
+  if (prefixLength !== 96 && addressBytes[8] !== 0) return null;
+  const candidate = indexes.map((index) => addressBytes[index]).join('.');
+  return isIP(candidate) === 4 ? candidate : null;
+};
+
 export const isMetadataIp = (ip: string): boolean => {
   const mappedV4 = extractMappedIpv4(ip);
   if (mappedV4 && METADATA_IPV4.has(mappedV4)) return true;
@@ -234,6 +273,63 @@ export const isPrivateIp = (ip: string): boolean => {
   return false;
 };
 
+const ipv4ToInteger = (ip: string): number =>
+  ip
+    .split('.')
+    .map(Number)
+    .reduce((value, octet) => (value * 256 + octet) >>> 0, 0);
+
+const isIpv4InCidr = (ip: string, network: string, prefix: number): boolean => {
+  const shift = 32 - prefix;
+  return ipv4ToInteger(ip) >>> shift === ipv4ToInteger(network) >>> shift;
+};
+
+const NON_PUBLIC_IPV4_CIDRS = [
+  ['0.0.0.0', 8],
+  ['10.0.0.0', 8],
+  ['100.64.0.0', 10],
+  ['127.0.0.0', 8],
+  ['169.254.0.0', 16],
+  ['172.16.0.0', 12],
+  ['192.0.0.0', 24],
+  ['192.0.2.0', 24],
+  ['192.88.99.0', 24],
+  ['192.168.0.0', 16],
+  ['198.18.0.0', 15],
+  ['198.51.100.0', 24],
+  ['203.0.113.0', 24],
+  ['224.0.0.0', 4],
+  ['240.0.0.0', 4],
+] as const;
+
+/** Conservative global-unicast classifier used only by the public-only policy. */
+export const isPubliclyRoutableIp = (
+  ip: string,
+  translationPrefixes = DEFAULT_PUBLIC_TRANSLATION_PREFIXES,
+): boolean => {
+  const normalized = normalizeIp(ip);
+  if (!normalized) return false;
+  if (isIP(normalized) === 4) {
+    return !NON_PUBLIC_IPV4_CIDRS.some(([network, prefix]) =>
+      isIpv4InCidr(normalized, network, prefix),
+    );
+  }
+
+  for (const prefix of translationPrefixes) {
+    const embedded = extractRfc6052Ipv4(normalized, prefix);
+    if (embedded) return isPubliclyRoutableIp(embedded, []);
+  }
+
+  const parts = normalized.split(':').map((part) => Number.parseInt(part, 16));
+  const [first = 0, second = 0] = parts;
+  if ((first & 0xe000) !== 0x2000) return false; // IPv6 global unicast 2000::/3 only
+  if (first === 0x2001 && second <= 0x01ff) return false; // transition/special-purpose block
+  if (first === 0x2001 && second === 0x0db8) return false; // documentation
+  if (first === 0x2002) return false; // 6to4 embeds an otherwise unchecked IPv4 destination
+  if (first === 0x3fff && second <= 0x0fff) return false; // documentation 3fff::/20
+  return true;
+};
+
 export const isAllowlistedHostOrIp = (value: string, allowlist: string[]): boolean => {
   if (allowlist.length === 0) return false;
   const needle = value.replaceAll(/^\[|\]$/g, '').toLowerCase();
@@ -298,6 +394,19 @@ export const assertResolvedIpAllowed = (
 
   if (isMetadataIp(normalized)) {
     throw ssrfBlocked('cloud metadata IP is permanently blocked', { ip: normalized });
+  }
+
+  if (
+    policy.mode === 'public-only' &&
+    !isPubliclyRoutableIp(
+      normalized,
+      policy.translationPrefixes ?? DEFAULT_PUBLIC_TRANSLATION_PREFIXES,
+    )
+  ) {
+    throw ssrfBlocked('non-public address not permitted under public-only mode', {
+      ip: normalized,
+      mode: policy.mode,
+    });
   }
 
   if (policy.mode === 'allowlist') {

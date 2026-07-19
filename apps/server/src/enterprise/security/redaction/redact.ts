@@ -10,6 +10,7 @@
 
 import {
   containsSensitiveMaterial,
+  isCredentialBearingUrl,
   isSensitiveKey,
   REDACTED_PLACEHOLDER,
   redactSensitive,
@@ -17,35 +18,15 @@ import {
 
 import type { RedactOptions } from './types';
 
-export { containsSensitiveMaterial, isSensitiveKey, REDACTED_PLACEHOLDER, redactSensitive };
+export {
+  containsSensitiveMaterial,
+  isCredentialBearingUrl,
+  isSensitiveKey,
+  REDACTED_PLACEHOLDER,
+  redactSensitive,
+};
 
 export type { RedactOptions } from './types';
-
-const SIGNED_URL_QUERY_KEYS = new Set([
-  'key',
-  'ocpapimsubscriptionkey',
-  'sig',
-  'signature',
-  'subscriptionkey',
-  'xamzsignature',
-]);
-
-const isSensitiveUrlQueryKey = (key: string): boolean => {
-  const normalized = key.toLowerCase().replaceAll(/[^a-z0-9]/g, '');
-  return isSensitiveKey(key) || SIGNED_URL_QUERY_KEYS.has(normalized);
-};
-
-export const isCredentialBearingUrl = (value: string): boolean => {
-  try {
-    const url = new URL(value);
-    return (
-      Boolean(url.username || url.password) ||
-      [...url.searchParams.keys()].some(isSensitiveUrlQueryKey)
-    );
-  } catch {
-    return false;
-  }
-};
 
 /**
  * Deep-redact with optional benign-key allowlist (wrapper over M01 rules).
