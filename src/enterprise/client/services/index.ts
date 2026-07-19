@@ -5,6 +5,7 @@ export {
   getAdminAccessErrorCode,
   isAdminAccessErrorRetryable,
 } from './adminAuth';
+export { adminBrandingService } from './adminBranding';
 export { adminManagedResourcesService } from './adminManagedResources';
 export { adminSettingsService } from './adminSettings';
 export { adminSkillsService } from './adminSkills';

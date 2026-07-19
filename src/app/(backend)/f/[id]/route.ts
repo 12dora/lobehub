@@ -1,10 +1,24 @@
 import debug from 'debug';
+import { and, eq, isNull } from 'drizzle-orm';
 
 import { FileModel } from '@/database/models/file';
+import { platformBrandingAssets } from '@/database/schemas/platform';
 import { getServerDB } from '@/database/server';
+import { isPlatformBrandingAssetId } from '@/server/enterprise/contracts/adminBranding';
 import { FileService } from '@/server/services/file';
+import { createFileServiceModule } from '@/server/services/file/impls';
 
 const log = debug('lobe-file:proxy');
+const redirectToObject = (location: string, mimeType: string): Response =>
+  new Response(null, {
+    headers: {
+      'Cache-Control': 'private, no-store',
+      'Content-Type': mimeType,
+      'Location': location,
+      'X-Content-Type-Options': 'nosniff',
+    },
+    status: 302,
+  });
 
 type Params = Promise<{ id: string }>;
 
@@ -31,6 +45,29 @@ export const GET = async (_req: Request, segmentData: { params: Params }) => {
 
     // Get database connection
     const db = await getServerDB();
+
+    if (id.startsWith('pba_')) {
+      if (!isPlatformBrandingAssetId(id)) return new Response('File not found', { status: 404 });
+      const [asset] = await db
+        .select({
+          mimeType: platformBrandingAssets.mimeType,
+          objectKey: platformBrandingAssets.objectKey,
+        })
+        .from(platformBrandingAssets)
+        .where(
+          and(
+            eq(platformBrandingAssets.id, id),
+            eq(platformBrandingAssets.status, 'ready'),
+            isNull(platformBrandingAssets.objectDeletedAt),
+          ),
+        )
+        .limit(1);
+      if (!asset) return new Response('File not found', { status: 404 });
+      const redirectUrl = await createFileServiceModule(db).createCachedPreSignedUrlForPreview(
+        asset.objectKey,
+      );
+      return redirectToObject(redirectUrl, asset.mimeType);
+    }
 
     // Query file record without userId filter (public access)
     const file = await FileModel.getFileById(db, id);

@@ -46,6 +46,7 @@ const AgentListPage = lazy(() => import('@/enterprise/client/features/admin/agen
 const AgentDetailPage = lazy(
   () => import('@/enterprise/client/features/admin/agents/AgentDetailPage'),
 );
+const BrandingPage = lazy(() => import('@/enterprise/client/features/admin/branding/BrandingPage'));
 
 /** Honest localized loading surface for lazy admin pages (no blank frame). */
 const AdminLazyFallback = () => {
@@ -103,6 +104,9 @@ const resolveAdminLeafElement = (id: string): ReactNode => {
     }
     case 'agents-detail': {
       return withLazy(<AgentDetailPage />);
+    }
+    case 'branding': {
+      return withLazy(<BrandingPage />);
     }
     default: {
       return <PlaceholderPage />;
