@@ -8,8 +8,8 @@ import { defineConfig } from './define-config';
 
 const getSessionMock = vi.hoisted(() => vi.fn());
 
-vi.mock('@/auth', () => ({
-  auth: { api: { getSession: getSessionMock } },
+vi.mock('@/auth.proxy', () => ({
+  proxyAuth: { api: { getSession: getSessionMock } },
 }));
 
 const { middleware } = defineConfig();

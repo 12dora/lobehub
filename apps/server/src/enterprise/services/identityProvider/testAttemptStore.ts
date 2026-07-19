@@ -27,6 +27,7 @@ export class IdentityProviderTestAttemptError extends Error {
   constructor(
     public readonly code:
       | 'OIDC_TEST_EXPIRED'
+      | 'OIDC_TEST_CLAIM_VALIDATION_FAILED'
       | 'OIDC_TEST_INVALID_STATE'
       | 'OIDC_TEST_PROVIDER_CHANGED'
       | 'OIDC_TEST_REPLAYED',
@@ -38,6 +39,7 @@ export class IdentityProviderTestAttemptError extends Error {
 
 export interface ReservedIdentityProviderTestAttempt {
   auditReason: string;
+  expiresAt: Date;
   id: string;
   nonceHash: string;
   pkceVerifier: string;
@@ -164,6 +166,7 @@ export class IdentityProviderTestAttemptStore {
       )
       .returning({
         auditReason: platformIdentityProviderTestAttempts.auditReason,
+        expiresAt: platformIdentityProviderTestAttempts.expiresAt,
         id: platformIdentityProviderTestAttempts.id,
         nonceHash: platformIdentityProviderTestAttempts.nonceHash,
         pkceCiphertext: platformIdentityProviderTestAttempts.pkceCiphertext,
@@ -191,6 +194,7 @@ export class IdentityProviderTestAttemptStore {
     try {
       return {
         auditReason: row.auditReason,
+        expiresAt: row.expiresAt,
         id: row.id,
         nonceHash: row.nonceHash,
         pkceVerifier: await this.secrets.decrypt(row.pkceCiphertext),
@@ -211,7 +215,15 @@ export class IdentityProviderTestAttemptStore {
     attempt: ReservedIdentityProviderTestAttempt,
     result: PlatformIdentityProviderClaimPreview,
   ): Promise<void> => {
+    if (!result.valid) {
+      await this.fail(attempt.id, 'OIDC_TEST_CLAIM_VALIDATION_FAILED');
+      throw new IdentityProviderTestAttemptError('OIDC_TEST_CLAIM_VALIDATION_FAILED');
+    }
     const now = new Date();
+    if (attempt.expiresAt <= now) {
+      await this.fail(attempt.id, 'OIDC_TEST_EXPIRED');
+      throw new IdentityProviderTestAttemptError('OIDC_TEST_EXPIRED');
+    }
     const [updated] = await this.db
       .update(platformIdentityProviderTestAttempts)
       .set({ completedAt: now, result, status: 'succeeded', updatedAt: now })
@@ -219,6 +231,7 @@ export class IdentityProviderTestAttemptStore {
         and(
           eq(platformIdentityProviderTestAttempts.id, attempt.id),
           eq(platformIdentityProviderTestAttempts.status, 'processing'),
+          gt(platformIdentityProviderTestAttempts.expiresAt, now),
           exists(
             this.db
               .select({ id: platformIdentityProviders.id })
@@ -240,7 +253,21 @@ export class IdentityProviderTestAttemptStore {
         ),
       )
       .returning({ id: platformIdentityProviderTestAttempts.id });
-    if (!updated) throw new IdentityProviderTestAttemptError('OIDC_TEST_PROVIDER_CHANGED');
+    if (!updated) {
+      const [current] = await this.db
+        .select({
+          expiresAt: platformIdentityProviderTestAttempts.expiresAt,
+          status: platformIdentityProviderTestAttempts.status,
+        })
+        .from(platformIdentityProviderTestAttempts)
+        .where(eq(platformIdentityProviderTestAttempts.id, attempt.id))
+        .limit(1);
+      if (current?.status === 'processing' && current.expiresAt <= now) {
+        await this.fail(attempt.id, 'OIDC_TEST_EXPIRED');
+        throw new IdentityProviderTestAttemptError('OIDC_TEST_EXPIRED');
+      }
+      throw new IdentityProviderTestAttemptError('OIDC_TEST_PROVIDER_CHANGED');
+    }
   };
 
   fail = async (attemptId: string, errorCode: string): Promise<boolean> => {

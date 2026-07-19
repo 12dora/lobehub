@@ -42,7 +42,7 @@ export async function GET(
 
   const authConfig: AuthSPAServerConfig = {
     analyticsConfig: buildAnalyticsConfig(),
-    config: getServerAuthConfig(),
+    config: await getServerAuthConfig(),
     enableOIDC: authEnv.ENABLE_OIDC,
     featureFlags: getServerFeatureFlagsValue(),
     globalCDN: appEnv.CDN_USE_GLOBAL,

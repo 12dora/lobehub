@@ -463,10 +463,13 @@ export class IdentityProviderTestFlowService {
       }
       const preview = buildIdentityProviderClaimPreview(claims, provider.claimMapping);
       await this.db.transaction(async (tx) => {
-        await new IdentityProviderTestAttemptStore(tx, this.secretService).succeed(
-          attempt,
-          preview,
-        );
+        const store = new IdentityProviderTestAttemptStore(tx, this.secretService);
+        if (preview.valid) {
+          await store.succeed(attempt, preview);
+        } else {
+          const changed = await store.fail(attempt.id, 'OIDC_TEST_CLAIM_VALIDATION_FAILED');
+          if (!changed) throw new Error('OIDC_TEST_PROVIDER_CHANGED');
+        }
         await this.appendAudit(tx, {
           action: 'admin.identityProviders.testTerminal',
           actorUserId: attempt.userId,

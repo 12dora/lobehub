@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   adminIdentityProviderCreateInputSchema,
+  adminIdentityProviderPublishInputSchema,
   adminIdentityProviderTestStartInputSchema,
   identityProviderClaimMappingSchema,
   identityProviderClaimPreviewSchema,
@@ -177,6 +178,20 @@ describe('identity provider contracts', () => {
         expectedRevision: 1,
         id: 'provider',
       }).success,
+    ).toBe(false);
+  });
+
+  it('requires a strict UUID request ID for publication idempotency', () => {
+    const input = {
+      expectedRevision: 1,
+      id: 'provider',
+      reason: 'publish work login',
+      requestId: '550e8400-e29b-41d4-a716-446655440001',
+    };
+    expect(adminIdentityProviderPublishInputSchema.safeParse(input).success).toBe(true);
+    expect(
+      adminIdentityProviderPublishInputSchema.safeParse({ ...input, requestId: 'request-1' })
+        .success,
     ).toBe(false);
   });
 });

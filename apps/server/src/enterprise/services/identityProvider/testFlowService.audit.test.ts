@@ -3,6 +3,7 @@ import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
+import { account, users } from '@/database/schemas';
 import {
   platformAuditLogs,
   platformIdentityProviders,
@@ -124,6 +125,8 @@ const createFlowFixture = async (auditAppender?: AuditAppender) => {
 describe('IdentityProviderTestFlowService audit and provider binding', () => {
   it('audits terminal success, claim rejection, and provider-revision failure without credentials', async () => {
     const { flow, signForStart, start } = await createFlowFixture();
+    const userCountBefore = (await db.select({ id: users.id }).from(users)).length;
+    const accountCountBefore = (await db.select({ id: account.id }).from(account)).length;
 
     const successStart = await start('verify successful work login');
     const successState = await signForStart(successStart.authorizationUrl, true);
@@ -134,6 +137,8 @@ describe('IdentityProviderTestFlowService audit and provider binding', () => {
         state: successState,
       }),
     ).resolves.toMatchObject({ valid: true });
+    expect(await db.select({ id: users.id }).from(users)).toHaveLength(userCountBefore);
+    expect(await db.select({ id: account.id }).from(account)).toHaveLength(accountCountBefore);
 
     const rejectedStart = await start('verify required claims');
     const rejectedState = await signForStart(rejectedStart.authorizationUrl, false);

@@ -62,7 +62,9 @@ for (const definition of providerDefinitions) {
   definition.aliases?.forEach((alias) => providerRegistry.set(alias, definition));
 }
 
-export const initBetterAuthSSOProviders = () => {
+export const initBetterAuthSSOProviders = (options?: {
+  additionalGenericOAuthProviders?: GenericOAuthConfig[];
+}) => {
   const enabledProviders = parseSSOProviders(authEnv.AUTH_SSO_PROVIDERS);
 
   const socialProviders: SocialProviders = {};
@@ -123,6 +125,17 @@ export const initBetterAuthSSOProviders = () => {
       };
       genericOAuthProviders.push(config);
     }
+  }
+
+  const configuredIds = new Set([
+    ...Object.keys(socialProviders),
+    ...genericOAuthProviders.map((provider) => provider.providerId),
+  ]);
+  for (const provider of options?.additionalGenericOAuthProviders ?? []) {
+    // Environment providers are the explicit break-glass authority and always win.
+    if (configuredIds.has(provider.providerId)) continue;
+    configuredIds.add(provider.providerId);
+    genericOAuthProviders.push(provider);
   }
 
   return {

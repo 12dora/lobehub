@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
@@ -105,6 +106,41 @@ describe('IdentityProviderTestAttemptStore', () => {
     await expect(
       store.getResult({ attemptId: issued.attemptId, sessionId: 'session-a', userId: 'user-a' }),
     ).resolves.toMatchObject({ status: 'succeeded' });
+  });
+
+  it('cannot persist an invalid claim preview as a successful test', async () => {
+    const issued = await issue();
+    const reserved = await store.reserve(issued.state);
+    await expect(
+      store.succeed(reserved, {
+        claims: {},
+        issues: [{ code: 'required_claim_missing', field: 'subject' }],
+        valid: false,
+      }),
+    ).rejects.toMatchObject({ code: 'OIDC_TEST_CLAIM_VALIDATION_FAILED' });
+    await expect(
+      store.getResult({ attemptId: issued.attemptId, sessionId: 'session-a', userId: 'user-a' }),
+    ).resolves.toMatchObject({
+      errorCode: 'OIDC_TEST_CLAIM_VALIDATION_FAILED',
+      status: 'failed',
+    });
+  });
+
+  it('turns an expired in-flight callback into a terminal failure', async () => {
+    const issued = await issue();
+    const reserved = await store.reserve(issued.state);
+    const createdAt = new Date(Date.now() - 10 * 60_000);
+    await db
+      .update(platformIdentityProviderTestAttempts)
+      .set({ createdAt, expiresAt: new Date(createdAt.getTime() + 5 * 60_000) })
+      .where(eq(platformIdentityProviderTestAttempts.id, issued.attemptId));
+
+    await expect(
+      store.succeed(reserved, { claims: { sub: 'subject' }, issues: [], valid: true }),
+    ).rejects.toMatchObject({ code: 'OIDC_TEST_EXPIRED' });
+    await expect(
+      store.getResult({ attemptId: issued.attemptId, sessionId: 'session-a', userId: 'user-a' }),
+    ).resolves.toMatchObject({ errorCode: 'OIDC_TEST_EXPIRED', status: 'failed' });
   });
 
   it('atomically rejects provider revision and secret-version races', async () => {

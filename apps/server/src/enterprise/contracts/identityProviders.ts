@@ -327,6 +327,21 @@ export const adminIdentityProviderTestResultOutputSchema = z
 
 export const adminIdentityProviderMutationOutputSchema = identityProviderDraftSchema;
 
+export const adminIdentityProviderPublishInputSchema = z
+  .object({
+    expectedRevision: z.number().int().nonnegative(),
+    id: z.string().min(1).max(128),
+    reason: reasonSchema,
+    requestId: z.string().uuid(),
+  })
+  .strict();
+export const adminIdentityProviderPublishOutputSchema = identityProviderDraftSchema;
+
+export const adminIdentityProviderRollbackInputSchema = adminIdentityProviderPublishInputSchema
+  .extend({ targetRevision: z.number().int().positive() })
+  .strict();
+export const adminIdentityProviderRollbackOutputSchema = identityProviderDraftSchema;
+
 export type AdminIdentityProviderCreateInput = z.infer<
   typeof adminIdentityProviderCreateInputSchema
 >;
