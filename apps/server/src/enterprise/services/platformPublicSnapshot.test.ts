@@ -51,6 +51,18 @@ describe('buildPlatformPublicSnapshot', () => {
     expect(snap.platformName).toBe('AIHub');
     expect(snap.logoUrl).toBe('/logo.png');
     expect(snap.brandingRevision).toBe('2');
+    expect(snap.configRevision).toBe('2');
+  });
+
+  it('uses an explicit effective public configuration revision when supplied', () => {
+    const snap = buildPlatformPublicSnapshot({
+      branding,
+      configRevision: 'public-config-7',
+      flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_RUNTIME_BRANDING: true },
+    });
+
+    expect(snap.brandingRevision).toBe('2');
+    expect(snap.configRevision).toBe('public-config-7');
   });
 
   it('enables work account only when OIDC flag and published IdP are both true', () => {

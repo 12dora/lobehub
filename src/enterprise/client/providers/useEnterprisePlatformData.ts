@@ -53,7 +53,11 @@ export const useEnterprisePlatformData = ({
   const enabled = !disableFetch && serverConfigInit && enterpriseEnabled;
   const safeInitialPublicSnapshot = resolveSafePlatformPublicSnapshot(initialPublicSnapshot);
   const publicSnapshotKey = enabled
-    ? ([PLATFORM_PUBLIC_SNAPSHOT_SWR_KEY, safeInitialPublicSnapshot.configRevision] as const)
+    ? ([
+        PLATFORM_PUBLIC_SNAPSHOT_SWR_KEY,
+        safeInitialPublicSnapshot.configRevision,
+        safeInitialPublicSnapshot.brandingRevision,
+      ] as const)
     : null;
   const capabilitiesFetcher = useCallback(() => fetchCapabilities(), [fetchCapabilities]);
   const publicSnapshotFetcher = useCallback(() => fetchPublicSnapshot(), [fetchPublicSnapshot]);
