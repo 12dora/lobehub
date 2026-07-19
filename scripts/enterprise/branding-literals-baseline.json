@@ -1,0 +1,1191 @@
+{
+  "entries": [
+    {
+      "LobeHub": 2,
+      "category": "legacy-user-visible",
+      "path": "apps/cli/package.json"
+    },
+    {
+      "LobeHub": 2,
+      "category": "legacy-user-visible",
+      "path": "apps/cli/src/auth/resolveToken.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/cli/src/commands/config.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/cli/src/commands/connect.ts"
+    },
+    {
+      "LobeHub": 2,
+      "category": "legacy-user-visible",
+      "path": "apps/cli/src/commands/login.ts"
+    },
+    {
+      "LobeHub": 2,
+      "category": "legacy-user-visible",
+      "path": "apps/cli/src/commands/provider.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/cli/src/commands/update.ts"
+    },
+    {
+      "LobeHub": 2,
+      "category": "legacy-user-visible",
+      "path": "apps/cli/src/program.ts"
+    },
+    {
+      "LobeHub": 2,
+      "category": "legacy-user-visible",
+      "path": "apps/cli/src/service/connect.ts"
+    },
+    {
+      "LobeHub": 3,
+      "category": "legacy-user-visible",
+      "path": "apps/cli/src/tools/heteroTask.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/cli/src/tools/localSystemRuntime.ts"
+    },
+    {
+      "LobeHub": 6,
+      "category": "legacy-user-visible",
+      "path": "apps/cli/src/utils/completion.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/dev-app-update.yml"
+    },
+    {
+      "LobeHub": 3,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/electron-builder.mjs"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/index.html"
+    },
+    {
+      "LobeHub": 2,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/package.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/popup.html"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/error.html"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/ar/common.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/ar/dialog.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/ar/menu.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/bg-BG/common.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/bg-BG/dialog.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/bg-BG/menu.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/de-DE/common.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/de-DE/dialog.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/de-DE/menu.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/en/common.json"
+    },
+    {
+      "LobeHub": 2,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/en/dialog.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/en/menu.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/es-ES/common.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/es-ES/dialog.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/es-ES/menu.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/fa-IR/common.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/fa-IR/dialog.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/fa-IR/menu.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/fr-FR/common.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/fr-FR/dialog.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/fr-FR/menu.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/it-IT/common.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/it-IT/dialog.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/it-IT/menu.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/ja-JP/common.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/ja-JP/dialog.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/ja-JP/menu.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/ko-KR/common.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/ko-KR/dialog.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/ko-KR/menu.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/nl-NL/common.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/nl-NL/dialog.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/nl-NL/menu.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/pl-PL/common.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/pl-PL/dialog.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/pl-PL/menu.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/pt-BR/common.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/pt-BR/dialog.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/pt-BR/menu.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/ru-RU/common.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/ru-RU/dialog.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/ru-RU/menu.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/tr-TR/common.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/tr-TR/dialog.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/tr-TR/menu.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/vi-VN/common.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/vi-VN/dialog.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/vi-VN/menu.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/zh-CN/common.json"
+    },
+    {
+      "LobeHub": 2,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/zh-CN/dialog.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/zh-CN/menu.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/zh-TW/common.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/zh-TW/dialog.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/locales/zh-TW/menu.json"
+    },
+    {
+      "LobeHub": 2,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/resources/splash.html"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/scripts/update-test/dev-app-update.local.yml"
+    },
+    {
+      "LobeHub": 2,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/scripts/update-test/generate-manifest.sh"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/scripts/update-test/run-test.sh"
+    },
+    {
+      "LobeHub": 4,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/scripts/update-test/setup.sh"
+    },
+    {
+      "LobeHub": 2,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/src/main/controllers/CliCtr.ts"
+    },
+    {
+      "LobeHub": 3,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/src/main/controllers/GatewayConnectionCtr.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/src/main/controllers/NotificationCtr.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/src/main/core/App.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/src/main/locales/default/common.ts"
+    },
+    {
+      "LobeHub": 2,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/src/main/locales/default/dialog.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/src/main/locales/default/menu.ts"
+    },
+    {
+      "LobeHub": 3,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/src/main/modules/binaries/runtimeEnvironmentBinaries.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/src/main/modules/heterogeneousAgent/codexQuota.ts"
+    },
+    {
+      "LobeHub": 2,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/src/main/services/imessageBridgeSrv.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/src/main/utils/user-agent.ts"
+    },
+    {
+      "LobeHub": 2,
+      "category": "legacy-user-visible",
+      "path": "apps/desktop/stubs/business-const/src/index.ts"
+    },
+    {
+      "LobeHub": 2,
+      "category": "legacy-user-visible",
+      "path": "apps/server/src/modules/AgentRuntime/adapters/serverCallLlmContextBuilder.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/server/src/modules/GitHub/index.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/server/src/services/agentRuntime/HumanInterventionHandler.ts"
+    },
+    {
+      "LobeHub": 4,
+      "category": "legacy-user-visible",
+      "path": "apps/server/src/services/aiAgent/index.ts"
+    },
+    {
+      "LobeHub": 3,
+      "category": "legacy-user-visible",
+      "path": "apps/server/src/services/bot/BotMessageRouter.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/server/src/services/bot/platforms/imessage/definition.ts"
+    },
+    {
+      "LobeHub": 8,
+      "category": "legacy-user-visible",
+      "path": "apps/server/src/services/bot/replyTemplate.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/server/src/services/connector/oauth.ts"
+    },
+    {
+      "LobeHub": 3,
+      "category": "legacy-user-visible",
+      "path": "apps/server/src/services/discover/index.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/server/src/services/heterogeneousAgent/cloudHeteroContext.ts"
+    },
+    {
+      "LobeHub": 3,
+      "category": "legacy-user-visible",
+      "path": "apps/server/src/services/heterogeneousAgent/sandboxRunner.ts"
+    },
+    {
+      "LobeHub": 11,
+      "category": "legacy-user-visible",
+      "path": "apps/server/src/services/market/index.ts"
+    },
+    {
+      "LobeHub": 15,
+      "category": "legacy-user-visible",
+      "path": "apps/server/src/services/messenger/MessengerRouter.ts"
+    },
+    {
+      "LobeHub": 4,
+      "category": "legacy-user-visible",
+      "path": "apps/server/src/services/messenger/platforms/discord/binder.ts"
+    },
+    {
+      "LobeHub": 6,
+      "category": "legacy-user-visible",
+      "path": "apps/server/src/services/messenger/platforms/slack/binder.ts"
+    },
+    {
+      "LobeHub": 6,
+      "category": "legacy-user-visible",
+      "path": "apps/server/src/services/messenger/platforms/telegram/binder.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/server/src/services/skill/importer.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/server/src/services/toolExecution/builtin.ts"
+    },
+    {
+      "LobeHub": 3,
+      "category": "legacy-user-visible",
+      "path": "apps/server/src/services/toolExecution/preprocessLhCommand.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "apps/server/src/services/toolExecution/serverRuntimes/agentBuilder.ts"
+    },
+    {
+      "LobeHub": 2,
+      "category": "legacy-user-visible",
+      "path": "apps/server/src/services/toolExecution/serverRuntimes/skills.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "packages/agent-gateway-client/package.json"
+    },
+    {
+      "LobeHub": 4,
+      "category": "legacy-user-visible",
+      "path": "packages/agent-manager-runtime/src/AgentManagerRuntime.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "packages/builtin-agents/src/agents/agent-builder/systemRole.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "packages/builtin-agents/src/agents/group-supervisor/systemRole.ts"
+    },
+    {
+      "LobeHub": 4,
+      "category": "legacy-user-visible",
+      "path": "packages/builtin-skills/src/lobehub/content.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "packages/builtin-skills/src/lobehub/index.ts"
+    },
+    {
+      "LobeHub": 2,
+      "category": "legacy-user-visible",
+      "path": "packages/builtin-skills/src/lobehub/references/bot-telegram.ts"
+    },
+    {
+      "LobeHub": 6,
+      "category": "legacy-user-visible",
+      "path": "packages/builtin-skills/src/lobehub/references/generate.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "packages/builtin-tool-agent-builder/src/client/Intervention/InstallPlugin.tsx"
+    },
+    {
+      "LobeHub": 2,
+      "category": "legacy-user-visible",
+      "path": "packages/builtin-tool-agent-builder/src/manifest.ts"
+    },
+    {
+      "LobeChat": 1,
+      "LobeHub": 9,
+      "category": "legacy-user-visible",
+      "path": "packages/builtin-tool-agent-builder/src/systemRole.ts"
+    },
+    {
+      "LobeHub": 2,
+      "category": "legacy-user-visible",
+      "path": "packages/builtin-tool-agent-management/src/manifest.ts"
+    },
+    {
+      "LobeHub": 8,
+      "category": "legacy-user-visible",
+      "path": "packages/builtin-tool-agent-management/src/systemRole.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "packages/builtin-tool-cloud-sandbox/src/systemRole.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "packages/builtin-tool-creds/src/ExecutionRuntime/index.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "packages/builtin-tool-creds/src/manifest.ts"
+    },
+    {
+      "LobeHub": 4,
+      "category": "legacy-user-visible",
+      "path": "packages/builtin-tool-creds/src/systemRole.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "packages/builtin-tool-group-agent-builder/src/systemRole.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "packages/builtin-tool-memory/src/systemRole.ts"
+    },
+    {
+      "LobeHub": 2,
+      "category": "legacy-user-visible",
+      "path": "packages/builtin-tool-message/src/manifest.ts"
+    },
+    {
+      "LobeHub": 7,
+      "category": "legacy-user-visible",
+      "path": "packages/builtin-tool-message/src/systemRole.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "packages/builtin-tool-self-iteration/src/systemRole.ts"
+    },
+    {
+      "LobeHub": 4,
+      "category": "legacy-user-visible",
+      "path": "packages/builtin-tool-skill-store/src/manifest.ts"
+    },
+    {
+      "LobeHub": 8,
+      "category": "legacy-user-visible",
+      "path": "packages/builtin-tool-skill-store/src/systemRole.ts"
+    },
+    {
+      "LobeHub": 2,
+      "category": "legacy-user-visible",
+      "path": "packages/builtin-tool-skills/src/resolveManifest.ts"
+    },
+    {
+      "LobeHub": 2,
+      "category": "legacy-user-visible",
+      "path": "packages/builtin-tool-skills/src/systemRole.ts"
+    },
+    {
+      "LobeHub": 3,
+      "category": "legacy-user-visible",
+      "path": "packages/business/const/src/branding.ts"
+    },
+    {
+      "LobeHub": 7,
+      "category": "legacy-user-visible",
+      "path": "packages/const/src/lobehubSkill.ts"
+    },
+    {
+      "LobeHub": 2,
+      "category": "legacy-user-visible",
+      "path": "packages/const/src/version.ts"
+    },
+    {
+      "LobeChat": 1,
+      "category": "legacy-user-visible",
+      "path": "packages/context-engine/package.json"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "packages/context-engine/src/engine/tools/types.ts"
+    },
+    {
+      "LobeHub": 3,
+      "category": "legacy-user-visible",
+      "path": "packages/context-engine/src/providers/AgentBuilderContextInjector.ts"
+    },
+    {
+      "LobeHub": 2,
+      "category": "legacy-user-visible",
+      "path": "packages/context-engine/src/providers/AgentManagementContextInjector.ts"
+    },
+    {
+      "LobeHub": 2,
+      "category": "legacy-user-visible",
+      "path": "packages/context-engine/src/providers/GroupAgentBuilderContextInjector.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "packages/database/src/models/messengerAccountLink.ts"
+    },
+    {
+      "LobeHub": 12,
+      "category": "legacy-user-visible",
+      "path": "packages/locales/src/default/agent.ts"
+    },
+    {
+      "LobeHub": 9,
+      "category": "legacy-user-visible",
+      "path": "packages/locales/src/default/chat.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "packages/locales/src/default/common.ts"
+    },
+    {
+      "LobeHub": 7,
+      "category": "legacy-user-visible",
+      "path": "packages/locales/src/default/desktop-onboarding.ts"
+    },
+    {
+      "LobeChat": 1,
+      "LobeHub": 9,
+      "category": "legacy-user-visible",
+      "path": "packages/locales/src/default/discover.ts"
+    },
+    {
+      "LobeHub": 3,
+      "category": "legacy-user-visible",
+      "path": "packages/locales/src/default/electron.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "packages/locales/src/default/error.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "packages/locales/src/default/file.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "packages/locales/src/default/home.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "packages/locales/src/default/image.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "packages/locales/src/default/labs.ts"
+    },
+    {
+      "LobeHub": 2,
+      "category": "legacy-user-visible",
+      "path": "packages/locales/src/default/marketAuth.ts"
+    },
+    {
+      "LobeHub": 27,
+      "category": "legacy-user-visible",
+      "path": "packages/locales/src/default/messenger.ts"
+    },
+    {
+      "LobeHub": 2,
+      "category": "legacy-user-visible",
+      "path": "packages/locales/src/default/notification.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "packages/locales/src/default/oauth.ts"
+    },
+    {
+      "LobeHub": 5,
+      "category": "legacy-user-visible",
+      "path": "packages/locales/src/default/plugin.ts"
+    },
+    {
+      "LobeHub": 18,
+      "category": "legacy-user-visible",
+      "path": "packages/locales/src/default/setting.ts"
+    },
+    {
+      "LobeHub": 2,
+      "category": "legacy-user-visible",
+      "path": "packages/model-bank/src/modelProviders/lobehub.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "packages/model-runtime/src/errors/patterns.ts"
+    },
+    {
+      "LobeHub": 3,
+      "category": "legacy-user-visible",
+      "path": "packages/model-runtime/src/errors/specs.ts"
+    },
+    {
+      "LobeHub": 2,
+      "category": "legacy-user-visible",
+      "path": "packages/model-runtime/src/providers/aihubmix/index.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "packages/model-runtime/src/providers/higress/index.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "packages/model-runtime/src/providers/newapi/index.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "packages/model-runtime/src/providers/openrouter/index.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "packages/model-runtime/src/providers/vercelaigateway/index.ts"
+    },
+    {
+      "LobeChat": 2,
+      "category": "legacy-user-visible",
+      "path": "packages/prompts/src/chains/summaryDescription.ts"
+    },
+    {
+      "LobeHub": 2,
+      "category": "legacy-user-visible",
+      "path": "packages/prompts/src/prompts/agentSkillManager/consolidate.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "packages/prompts/src/prompts/agentSkillManager/create.ts"
+    },
+    {
+      "LobeChat": 4,
+      "category": "legacy-user-visible",
+      "path": "packages/trpc/src/async/context.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "packages/types/src/fetch.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "packages/types/src/message/common/tools.ts"
+    },
+    {
+      "LobeChat": 1,
+      "category": "legacy-user-visible",
+      "path": "packages/web-crawler/src/crawImpl/jina.ts"
+    },
+    {
+      "LobeChat": 6,
+      "LobeHub": 28,
+      "category": "legacy-user-visible",
+      "path": "packages/web-crawler/src/utils/html/terms.html"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "src/app/[variants]/metadata.ts"
+    },
+    {
+      "LobeHub": 3,
+      "category": "legacy-user-visible",
+      "path": "src/app/manifest.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "src/app/spa-auth/[locale]/[[...path]]/seoMeta.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "src/app/spa/[variants]/[[...path]]/route.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "src/business/client/handleLobeHubModelDeprecatedError.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "src/components/Plugins/PluginTag.tsx"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "src/components/SkillSourceTag/index.tsx"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "src/features/AuthShell/AuthContainer.tsx"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "src/features/ChatInput/ActionBar/Tools/LobehubSkillIcon.tsx"
+    },
+    {
+      "LobeHub": 6,
+      "category": "legacy-user-visible",
+      "path": "src/features/ChatInput/ActionBar/Tools/LobehubSkillServerItem.tsx"
+    },
+    {
+      "LobeHub": 4,
+      "category": "legacy-user-visible",
+      "path": "src/features/ChatInput/ActionBar/Tools/useControls.tsx"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "src/features/Conversation/Error/DeprecatedModelError.tsx"
+    },
+    {
+      "LobeHub": 6,
+      "category": "legacy-user-visible",
+      "path": "src/features/Downloads/index.tsx"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "src/features/EditorCanvas/LinearFilePlugin.tsx"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "src/features/EditorCanvas/registerAttachmentClickOpen.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "src/features/LibraryModal/AssignKnowledgeBase/Item/PluginTag.tsx"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "src/features/Messenger/Verify/Body/Discord.tsx"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "src/features/Messenger/Verify/Body/Slack.tsx"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "src/features/Messenger/Verify/Body/Telegram.tsx"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "src/features/PluginDevModal/LocalForm.tsx"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "src/features/RecommendTaskTemplates/useConnectorConnection.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "src/features/SkillStore/SkillDetail/BuiltinAgentSkillDetailProvider.tsx"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "src/features/SkillStore/SkillDetail/BuiltinDetailProvider.tsx"
+    },
+    {
+      "LobeHub": 2,
+      "category": "legacy-user-visible",
+      "path": "src/features/SkillStore/SkillList/LobeHub/index.tsx"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "src/features/SkillStore/SkillList/LobeHub/Item.tsx"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "src/helpers/toolEngineering/index.ts"
+    },
+    {
+      "LobeChat": 1,
+      "category": "legacy-user-visible",
+      "path": "src/layout/AuthProvider/MarketAuth/MarketAuthProvider.tsx"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "src/libs/better-auth/define-config.ts"
+    },
+    {
+      "LobeHub": 5,
+      "category": "legacy-user-visible",
+      "path": "src/libs/better-auth/email-templates/change-email.ts"
+    },
+    {
+      "LobeHub": 5,
+      "category": "legacy-user-visible",
+      "path": "src/libs/better-auth/email-templates/magic-link.ts"
+    },
+    {
+      "LobeHub": 4,
+      "category": "legacy-user-visible",
+      "path": "src/libs/better-auth/email-templates/reset-password.ts"
+    },
+    {
+      "LobeHub": 4,
+      "category": "legacy-user-visible",
+      "path": "src/libs/better-auth/email-templates/verification-otp.ts"
+    },
+    {
+      "LobeHub": 4,
+      "category": "legacy-user-visible",
+      "path": "src/libs/better-auth/email-templates/verification.ts"
+    },
+    {
+      "LobeHub": 6,
+      "category": "legacy-user-visible",
+      "path": "src/libs/better-auth/email-templates/workspace-invite.ts"
+    },
+    {
+      "LobeHub": 5,
+      "category": "legacy-user-visible",
+      "path": "src/libs/better-auth/email-templates/workspace-member-removed.ts"
+    },
+    {
+      "LobeHub": 4,
+      "category": "legacy-user-visible",
+      "path": "src/libs/oidc-provider/config.ts"
+    },
+    {
+      "LobeHub": 2,
+      "category": "legacy-user-visible",
+      "path": "src/libs/oidc-provider/provider.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "src/routes/(desktop)/desktop-onboarding/_layout/index.tsx"
+    },
+    {
+      "LobeHub": 2,
+      "category": "legacy-user-visible",
+      "path": "src/routes/(main)/community/(detail)/agent/features/Details/Capabilities/PluginItem.tsx"
+    },
+    {
+      "LobeHub": 3,
+      "category": "legacy-user-visible",
+      "path": "src/routes/(main)/community/(detail)/skill/features/Sidebar/Platform.tsx"
+    },
+    {
+      "LobeHub": 4,
+      "category": "legacy-user-visible",
+      "path": "src/routes/(main)/settings/skill/features/LobehubSkillItem.tsx"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "src/routes/(main)/settings/skill/features/SkillDetail/index.tsx"
+    },
+    {
+      "LobeHub": 2,
+      "category": "legacy-user-visible",
+      "path": "src/routes/(main)/settings/system-tools/features/CliTestSection.tsx"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "src/routes/share/t/[id]/_layout/HeaderMenu.tsx"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "src/server/agent-hono/handlers/messengerInstall.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "src/server/agent-hono/handlers/messengerOAuthCallback.ts"
+    },
+    {
+      "LobeHub": 5,
+      "category": "legacy-user-visible",
+      "path": "src/server/ld.ts"
+    },
+    {
+      "LobeChat": 1,
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "src/server/metadata.ts"
+    },
+    {
+      "LobeHub": 2,
+      "category": "legacy-user-visible",
+      "path": "src/services/chat/index.ts"
+    },
+    {
+      "LobeHub": 2,
+      "category": "legacy-user-visible",
+      "path": "src/services/chat/mecha/contextEngineering.ts"
+    },
+    {
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "src/store/chat/slices/plugin/actions/exector.ts"
+    },
+    {
+      "LobeHub": 2,
+      "category": "legacy-user-visible",
+      "path": "src/store/chat/slices/plugin/actions/internals.ts"
+    },
+    {
+      "LobeHub": 3,
+      "category": "legacy-user-visible",
+      "path": "src/store/chat/slices/plugin/actions/pluginTypes.ts"
+    },
+    {
+      "LobeHub": 3,
+      "category": "legacy-user-visible",
+      "path": "src/store/tool/slices/builtin/selectors.ts"
+    },
+    {
+      "LobeHub": 9,
+      "category": "legacy-user-visible",
+      "path": "src/store/tool/slices/lobehubSkillStore/action.ts"
+    },
+    {
+      "LobeHub": 3,
+      "category": "legacy-user-visible",
+      "path": "src/store/tool/slices/lobehubSkillStore/selectors.ts"
+    },
+    {
+      "LobeChat": 2,
+      "LobeHub": 1,
+      "category": "legacy-user-visible",
+      "path": "src/store/tool/slices/mcpStore/action.ts"
+    },
+    {
+      "LobeHub": 2,
+      "category": "legacy-user-visible",
+      "path": "src/utils/deviceFingerprint.ts"
+    }
+  ],
+  "policy": "Known legacy user-visible literals, keyed by repository-relative path and count so line moves stay stable. Any increase or decrease requires a reviewed baseline diff.",
+  "version": 1
+}
