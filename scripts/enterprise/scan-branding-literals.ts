@@ -5,7 +5,8 @@
  * Usage: bun run enterprise:check-branding
  * Baseline refresh (review the diff): bun run enterprise:check-branding --update-baseline
  */
-import { readFile, realpath, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { lstat, open, readFile, realpath, rename, unlink } from 'node:fs/promises';
 import path from 'node:path';
 
 import type { BrandingRepositoryScanResult } from './brandingLiteralFiles';
@@ -47,6 +48,10 @@ export const parseBrandingScanArgs = (args: string[], cwd: string): CliOptions =
 };
 
 const resolveInsideRoot = async (root: string, target: string): Promise<string> => {
+  const rootInfo = await lstat(root);
+  if (rootInfo.isSymbolicLink() || !rootInfo.isDirectory()) {
+    throw new Error('repository root must be a real directory, not a symlink');
+  }
   const canonicalRoot = await realpath(root);
   const safeTarget = normalizeRepositoryPath(target);
   const absoluteTarget = path.resolve(canonicalRoot, safeTarget);
@@ -54,12 +59,67 @@ const resolveInsideRoot = async (root: string, target: string): Promise<string> 
   if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
     throw new Error(`baseline must stay inside repository root: ${target}`);
   }
-  return absoluteTarget;
+  const targetInfo = await lstat(absoluteTarget);
+  if (targetInfo.isSymbolicLink() || !targetInfo.isFile()) {
+    throw new Error(`baseline must be a regular non-symlink file: ${target}`);
+  }
+  const canonicalTarget = await realpath(absoluteTarget);
+  const canonicalRelative = path.relative(canonicalRoot, canonicalTarget);
+  if (
+    canonicalRelative === '..' ||
+    canonicalRelative.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(canonicalRelative)
+  ) {
+    throw new Error(`baseline canonical path must stay inside repository root: ${target}`);
+  }
+  return canonicalTarget;
 };
 
 const readBaseline = async (baselinePath: string): Promise<BrandingBaseline> => {
   const source = await readFile(baselinePath, 'utf8');
   return JSON.parse(source) as BrandingBaseline;
+};
+
+export const serializeBrandingBaseline = (baseline: BrandingBaseline): string =>
+  [
+    '{',
+    '  "entries": [',
+    baseline.entries.map((entry) => `    ${JSON.stringify(entry)}`).join(',\n'),
+    '  ],',
+    `  "policy": ${JSON.stringify(baseline.policy)},`,
+    `  "version": ${baseline.version}`,
+    '}',
+    '',
+  ].join('\n');
+
+const atomicWriteBaseline = async (baselinePath: string, baseline: BrandingBaseline) => {
+  const temporaryPath = path.join(
+    path.dirname(baselinePath),
+    `.${path.basename(baselinePath)}.${process.pid}.${randomUUID()}.tmp`,
+  );
+  let handle;
+  try {
+    handle = await open(temporaryPath, 'wx', 0o644);
+    await handle.writeFile(serializeBrandingBaseline(baseline), 'utf8');
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    const targetInfo = await lstat(baselinePath);
+    if (targetInfo.isSymbolicLink() || !targetInfo.isFile()) {
+      throw new Error('baseline changed type before atomic replacement');
+    }
+    await rename(temporaryPath, baselinePath);
+  } catch (error) {
+    if (handle) await handle.close();
+    try {
+      await unlink(temporaryPath);
+    } catch (cleanupError) {
+      const nodeError = cleanupError as NodeJS.ErrnoException;
+      if (nodeError.code !== 'ENOENT')
+        console.error('Failed to clean branding baseline temp file', cleanupError);
+    }
+    throw error;
+  }
 };
 
 export const formatBrandingScanResult = (result: BrandingRepositoryScanResult): string => {
@@ -74,7 +134,7 @@ export const formatBrandingScanResult = (result: BrandingRepositoryScanResult): 
       '❌ unclassified runtime-branding literals:',
       ...result.violations.map(
         (violation) =>
-          `- ${violation.path}:${violation.line}:${violation.column} [${violation.brand}] ${violation.reason}\n  ${violation.preview}`,
+          `- ${violation.path}:${violation.line}:${violation.column} [${violation.brand}] ${violation.reason}\n  locator: ${violation.locator}\n  ${violation.preview}`,
       ),
       '',
       'Use runtime branding/i18n, classify a stable internal identifier in code, or update the reviewed baseline.',
@@ -95,10 +155,10 @@ export const runBrandingScanCli = async (
 
     if (result.errors.length > 0) return { code: 2, output: formatBrandingScanResult(result) };
     if (options.updateBaseline) {
-      await writeFile(baselinePath, `${JSON.stringify(result.baseline, undefined, 2)}\n`, 'utf8');
+      await atomicWriteBaseline(baselinePath, result.baseline);
       return {
         code: 0,
-        output: `✅ updated branding baseline (${result.baseline.entries.length} files, ${result.candidates.length} literals); review the diff`,
+        output: `✅ updated branding baseline (${result.baseline.entries.length} occurrence identities, ${result.candidates.length} literals); review the diff`,
       };
     }
     return {

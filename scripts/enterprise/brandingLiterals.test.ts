@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   BRANDING_BASELINE_POLICY,
+  brandingOccurrenceKey,
   createBrandingBaseline,
   decodeBrandingText,
   isExcludedBrandingPath,
@@ -11,26 +12,61 @@ import {
 } from './brandingLiterals';
 
 describe('branding literal policy', () => {
-  it('finds user-visible literals in runtime strings, templates, and JSX', () => {
-    const source = `
-      export const title = 'LobeHub';
-      export const description = \`Welcome to LobeChat, \${name}\`;
-      export const View = () => <span>Open LOBEHUB now</span>;
-      // LobeHub in source documentation is not a runtime literal.
-      type LobeChatDatabase = unknown;
-    `;
-
-    const result = scanBrandingFile('src/features/Branding.tsx', source);
+  it('finds runtime strings, templates, JSX text, and object keys while ignoring comments/types', () => {
+    const result = scanBrandingFile(
+      'src/features/Branding.tsx',
+      `
+        export const title = 'LobeHub';
+        export const description = \`Welcome to LobeChat, \${name}\`;
+        export const labels = { LobeHub: 'value' };
+        export const View = () => <span>Open LOBEHUB now</span>;
+        // LobeHub in source documentation is not runtime text.
+        type LobeChatDatabase = unknown;
+      `,
+    );
 
     expect(result.errors).toEqual([]);
-    expect(result.candidates.map(({ brand, line }) => ({ brand, line }))).toEqual([
-      { brand: 'LobeHub', line: 2 },
-      { brand: 'LobeChat', line: 3 },
-      { brand: 'LobeHub', line: 4 },
+    expect(result.candidates.map(({ brand }) => brand)).toEqual([
+      'LobeHub',
+      'LobeChat',
+      'LobeHub',
+      'LobeHub',
+    ]);
+    expect(result.candidates.every(({ locator }) => !locator.includes('line'))).toBe(true);
+  });
+
+  it('folds finite static concatenations, template spans, JSX expressions, and computed keys', () => {
+    const result = scanBrandingFile(
+      'src/static.tsx',
+      `
+        const concatenated = 'Lobe' + 'Hub';
+        const templated = \`Lobe\${'Chat'}\`;
+        const suffix = 'Hub';
+        const identifierSpan = \`Lobe\${suffix}\`;
+        const values = { ['Lobe' + 'Hub']: true };
+        const View = () => <span>{'Lobe' + 'Chat'}</span>;
+      `,
+    );
+
+    expect(result.candidates.map(({ brand }) => brand)).toEqual([
+      'LobeHub',
+      'LobeChat',
+      'LobeHub',
+      'LobeHub',
+      'LobeChat',
     ]);
   });
 
-  it('allows stable package paths, protocol ids, URLs, email addresses, and legal attribution', () => {
+  it('detects HTML and CSS comment-split literals without executing content', () => {
+    expect(
+      scanBrandingFile('public/view.html', '<h1>Lobe<!-- split -->Hub</h1>').candidates,
+    ).toHaveLength(1);
+    expect(
+      scanBrandingFile('src/view.css', '.x::after { content: "Lobe/*x*/Chat" }').candidates,
+    ).toHaveLength(1);
+  });
+
+  it('allows only exact stable package, protocol, database, URL, email, and legal tokens', () => {
     const source = `
       import type { Config } from '@lobechat/types';
       const provider = 'lobehub';
@@ -40,47 +76,81 @@ describe('branding literal policy', () => {
       const homepage = 'https://github.com/lobehub/lobehub';
       const email = 'support@lobehub.com';
     `;
-
     const result = scanBrandingFile('src/internal.ts', source);
-    const legal = scanBrandingFile('packages/example/LICENSE.txt', 'Copyright LobeHub');
     const database = scanBrandingFile(
       'packages/database/src/schemas/legacy.ts',
-      `export const tableName = 'lobechat_messages';`,
+      `export const table = pgTable('lobechat_messages', {});`,
     );
+    const sqlDatabase = scanBrandingFile(
+      'packages/database/migrations/legacy.sql',
+      'CREATE TABLE lobehub_messages (id text);',
+    );
+    const databaseLookalike = scanBrandingFile(
+      'packages/database/src/schemas/label.ts',
+      `export const label = 'lobechat_messages';`,
+    );
+    const legal = scanBrandingFile('packages/example/LICENSE.txt', 'Copyright LobeHub');
 
     expect(result.candidates).toEqual([]);
     expect(new Set(result.allowed.map(({ category }) => category))).toEqual(
       new Set(['internal-package-or-path', 'stable-protocol-or-storage-id', 'stable-url-or-email']),
     );
-    expect(legal.allowed[0]?.category).toBe('legal-attribution');
     expect(database.allowed[0]?.category).toBe('stable-database-id');
+    expect(sqlDatabase.allowed[0]?.category).toBe('stable-database-id');
+    expect(databaseLookalike.candidates).toHaveLength(1);
+    expect(legal.allowed[0]?.category).toBe('legal-attribution');
   });
 
-  it('detects case, Unicode, zero-width, escaped, entity, and percent-encoded disguises', () => {
+  it('does not let mixed fragments or brand-like marketing slugs inherit an allowed category', () => {
+    const source = [
+      'Welcome to LobeHub; docs: https://lobehub.com',
+      '@lobechat/types plus LobeHub',
+      'License notice for LobeHub',
+      'LobeHub/Welcome',
+      'lobehub-welcome',
+    ]
+      .map((value, index) => `export const value${index} = ${JSON.stringify(value)};`)
+      .join('\n');
+    const result = scanBrandingFile('packages/database/src/mixed.ts', source);
+
+    expect(result.allowed).toEqual([]);
+    expect(result.candidates).toHaveLength(7);
+    expect(result.candidates.map(({ preview }) => preview)).toContain('lobehub-welcome');
+  });
+
+  it('decodes UTF-8 percent sequences, double encoding, NFKC, and default-ignorables', () => {
     const encoded = [
       'LoBeHuB',
       'ＬｏｂｅＣｈａｔ',
       'Lobe\u200BHub',
+      'Lobe\uFE0FHub',
+      'Lobe\u180BChat',
       String.raw`\u004cobeHub`,
       String.raw`\x4cobeChat`,
       '&#x4c;obeHub',
-      '%4cobeChat',
+      '%EF%BC%AC%EF%BD%8F%EF%BD%82%EF%BD%85%EF%BC%A8%EF%BD%95%EF%BD%82',
+      '%254cobeChat',
     ];
 
-    expect(encoded.map(decodeBrandingText)).toEqual([
-      'LoBeHuB',
-      'LobeChat',
-      'LobeHub',
-      'LobeHub',
-      'LobeChat',
-      'LobeHub',
-      'LobeChat',
-    ]);
-
-    for (const [index, text] of encoded.entries()) {
-      const result = scanBrandingFile(`src/disguise-${index}.yaml`, `title: ${text}`);
-      expect(result.candidates, text).toHaveLength(1);
+    for (const [index, value] of encoded.entries()) {
+      const decoded = decodeBrandingText(value);
+      expect(decoded, value).toMatch(/lobehub|lobechat/i);
+      expect(
+        scanBrandingFile(`src/disguise-${index}.txt`, `title: ${value}`).candidates,
+        value,
+      ).toHaveLength(1);
     }
+  });
+
+  it('uses YAML key paths and TS semantic positions instead of line numbers', () => {
+    const yaml = scanBrandingFile('src/branding.yaml', 'brand:\n  title: LobeHub\n');
+    const first = scanBrandingFile('src/title.ts', `export const title = 'LobeHub';`);
+    const moved = scanBrandingFile('src/title.ts', `\n\nexport const title = 'LobeHub';`);
+
+    expect(yaml.candidates[0]?.locator).toBe('yaml:brand.title');
+    expect(brandingOccurrenceKey(first.candidates[0]!)).toBe(
+      brandingOccurrenceKey(moved.candidates[0]!),
+    );
   });
 
   it('rejects absolute, traversing, encoded, Windows, and Unicode-slash repository paths', () => {
@@ -102,43 +172,23 @@ describe('branding literal policy', () => {
     expect(isExcludedBrandingPath('src/branding.ts')).toBe(false);
   });
 
-  it('fails closed on branded unknown extensions and binary content masquerading as text', () => {
-    const unknown = scanBrandingFile('src/view.unknown', 'title=LobeHub', {
-      supportedExtension: false,
-    });
-    const disguisedBinary = scanBrandingFile('src/view.unknown', 'Lobe\0Hub', {
-      supportedExtension: false,
-    });
+  it('creates a deterministic occurrence multiset and rejects case-colliding paths', () => {
+    const candidates = scanBrandingFile(
+      'src/z.ts',
+      `export const title = 'LobeHub'; export const title2 = 'LobeHub';`,
+    ).candidates;
+    const baseline = createBrandingBaseline([...candidates].reverse());
 
-    expect(unknown.errors[0]).toContain('unsupported text extension');
-    expect(disguisedBinary.errors[0]).toContain('NUL byte');
-  });
-
-  it('creates a deterministic line-independent baseline and validates stale metadata', () => {
-    const baseline = createBrandingBaseline([
-      { brand: 'LobeHub', column: 20, line: 99, path: 'src/z.ts', preview: 'LobeHub' },
-      { brand: 'LobeChat', column: 1, line: 1, path: 'src/a.ts', preview: 'LobeChat' },
-      { brand: 'LobeHub', column: 1, line: 2, path: 'src/z.ts', preview: 'LobeHub' },
-    ]);
-
-    expect(baseline).toEqual({
-      entries: [
-        { LobeChat: 1, category: 'legacy-user-visible', path: 'src/a.ts' },
-        { LobeHub: 2, category: 'legacy-user-visible', path: 'src/z.ts' },
-      ],
-      policy: BRANDING_BASELINE_POLICY,
-      version: 1,
-    });
+    expect(baseline.version).toBe(2);
+    expect(baseline.policy).toBe(BRANDING_BASELINE_POLICY);
     expect(validateBrandingBaseline(baseline)).toEqual([]);
-    expect(
-      validateBrandingBaseline({
-        entries: [
-          { LobeHub: 1, category: 'legacy-user-visible', path: 'src/z.ts' },
-          { LobeHub: 1, category: 'legacy-user-visible', path: 'src/a.ts' },
-        ],
-        policy: BRANDING_BASELINE_POLICY,
-        version: 1,
-      }),
-    ).toContain('baseline entries must be sorted: src/z.ts before src/a.ts');
+    const collision = structuredClone(baseline);
+    collision.entries.push({ ...collision.entries[0]!, path: 'SRC/z.ts' });
+    collision.entries.sort((left, right) =>
+      brandingOccurrenceKey(left).localeCompare(brandingOccurrenceKey(right), 'en'),
+    );
+    expect(validateBrandingBaseline(collision)).toContain(
+      'case-colliding baseline paths: SRC/z.ts and src/z.ts',
+    );
   });
 });
