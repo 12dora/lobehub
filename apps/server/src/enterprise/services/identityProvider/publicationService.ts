@@ -310,12 +310,14 @@ const reconstructIdempotentResponse = async (
   const isPublish = input.action === 'admin.identityProviders.publish';
   const isRollback = input.action === 'admin.identityProviders.rollback';
   const resultRevision = afterDiff.revision;
+  const expectedResultRevision = input.expectedRevision + 1;
   const sourceRevision = isPublish ? resultRevision : input.rollbackTargetRevision;
   if (
     !parsed.success ||
     (!isPublish && !isRollback) ||
     !Number.isInteger(resultRevision) ||
     Number(resultRevision) <= 0 ||
+    resultRevision !== expectedResultRevision ||
     !Number.isInteger(sourceRevision) ||
     Number(sourceRevision) <= 0 ||
     terminalConfigRevision !== resultRevision ||
@@ -421,6 +423,7 @@ const reconstructIdempotentResponse = async (
 interface IdempotencyRequest {
   action: string;
   actorUserId: string;
+  expectedRevision: number;
   payloadHash: string;
   reason: string;
   requestId: string;
@@ -829,6 +832,7 @@ export class IdentityProviderPublicationService {
     const request: IdempotencyRequest = {
       action,
       actorUserId,
+      expectedRevision: input.expectedRevision,
       ...idempotency,
       reason,
       requestId,
@@ -1019,6 +1023,7 @@ export class IdentityProviderPublicationService {
     const request: IdempotencyRequest = {
       action,
       actorUserId,
+      expectedRevision: input.expectedRevision,
       ...idempotency,
       reason,
       requestId,

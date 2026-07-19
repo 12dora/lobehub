@@ -41,10 +41,7 @@ const requestId = (index: number) =>
 
 type AuditResponseMutation = (response: Record<string, unknown>) => Record<string, unknown>;
 
-const tamperTerminalAfterDiff = async (
-  idempotencyRequestId: string,
-  mutation: (afterDiff: Record<string, unknown>) => Record<string, unknown>,
-) => {
+const findTerminalAudit = async (idempotencyRequestId: string) => {
   const terminal = (await db.select().from(platformAuditLogs)).find(
     (audit) =>
       audit.requestId === idempotencyRequestId &&
@@ -54,6 +51,14 @@ const tamperTerminalAfterDiff = async (
   if (!terminal?.afterDiff || typeof terminal.afterDiff !== 'object') {
     throw new Error('terminal audit is required');
   }
+  return terminal;
+};
+
+const tamperTerminalAfterDiff = async (
+  idempotencyRequestId: string,
+  mutation: (afterDiff: Record<string, unknown>) => Record<string, unknown>,
+) => {
+  const terminal = await findTerminalAudit(idempotencyRequestId);
   const afterDiff = terminal.afterDiff as Record<string, unknown>;
   await db
     .update(platformAuditLogs)
@@ -266,6 +271,59 @@ describe('IdentityProviderPublicationService', () => {
     await tamperTerminalResponse(input.requestId, mutation);
 
     await expect(publication.publish('admin-1', input)).rejects.toMatchObject({
+      code: 'PLATFORM_IDENTITY_PROVIDER_IDEMPOTENCY_CONFLICT',
+    });
+  });
+
+  it('binds publish replay result revision to the original expected revision', async () => {
+    const draft = await createDraft();
+    await recordSuccessfulTest(draft.id);
+    const firstInput = {
+      expectedRevision: draft.revision,
+      id: draft.id,
+      reason: 'publish request-bound result',
+      requestId: requestId(47),
+    };
+    const firstPublished = await publication.publish('admin-1', firstInput);
+    const restored = await publication.rollback('admin-1', {
+      expectedRevision: firstPublished.revision,
+      id: draft.id,
+      reason: 'prepare another legitimate publication',
+      requestId: requestId(48),
+      targetRevision: firstPublished.revision,
+    });
+    const secondDraftRevision = restored.revision + 1;
+    await db
+      .update(platformIdentityProviders)
+      .set({ displayName: 'Another published source', revision: secondDraftRevision })
+      .where(eq(platformIdentityProviders.id, draft.id));
+    await recordSuccessfulTest(draft.id);
+    await publication.publish('admin-1', {
+      expectedRevision: secondDraftRevision,
+      id: draft.id,
+      reason: 'publish another legitimate source',
+      requestId: requestId(49),
+    });
+    const firstTerminal = await findTerminalAudit(firstInput.requestId);
+    const secondTerminal = await findTerminalAudit(requestId(49));
+    const firstAfterDiff = firstTerminal.afterDiff as Record<string, unknown>;
+    const secondAfterDiff = secondTerminal.afterDiff as Record<string, unknown>;
+    await db
+      .update(platformAuditLogs)
+      .set({
+        afterDiff: {
+          ...firstAfterDiff,
+          activation: secondAfterDiff.activation,
+          checksum: secondAfterDiff.checksum,
+          providerKey: secondAfterDiff.providerKey,
+          response: secondAfterDiff.response,
+          revision: secondAfterDiff.revision,
+        },
+        configRevision: secondTerminal.configRevision,
+      })
+      .where(eq(platformAuditLogs.id, firstTerminal.id));
+
+    await expect(publication.publish('admin-1', firstInput)).rejects.toMatchObject({
       code: 'PLATFORM_IDENTITY_PROVIDER_IDEMPOTENCY_CONFLICT',
     });
   });
@@ -622,6 +680,44 @@ describe('IdentityProviderPublicationService', () => {
         displayName: 'Second canonical source',
       },
     }));
+
+    await expect(publication.rollback('admin-1', input)).rejects.toMatchObject({
+      code: 'PLATFORM_IDENTITY_PROVIDER_IDEMPOTENCY_CONFLICT',
+    });
+  });
+
+  it('binds rollback replay result revision to the original expected revision', async () => {
+    const draft = await createDraft();
+    await recordSuccessfulTest(draft.id);
+    const published = await publication.publish('admin-1', {
+      expectedRevision: draft.revision,
+      id: draft.id,
+      reason: 'publish for request-bound rollback result',
+      requestId: requestId(50),
+    });
+    const input = {
+      expectedRevision: published.revision,
+      id: draft.id,
+      reason: 'rollback with request-bound result',
+      requestId: requestId(51),
+      targetRevision: published.revision,
+    };
+    const result = await publication.rollback('admin-1', input);
+    const terminal = await findTerminalAudit(input.requestId);
+    const afterDiff = terminal.afterDiff as Record<string, unknown>;
+    const response = afterDiff.response as Record<string, unknown>;
+    const tamperedResultRevision = result.revision + 10;
+    await db
+      .update(platformAuditLogs)
+      .set({
+        afterDiff: {
+          ...afterDiff,
+          response: { ...response, revision: tamperedResultRevision },
+          revision: tamperedResultRevision,
+        },
+        configRevision: tamperedResultRevision,
+      })
+      .where(eq(platformAuditLogs.id, terminal.id));
 
     await expect(publication.rollback('admin-1', input)).rejects.toMatchObject({
       code: 'PLATFORM_IDENTITY_PROVIDER_IDEMPOTENCY_CONFLICT',
