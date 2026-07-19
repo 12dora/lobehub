@@ -6,6 +6,7 @@ import { PlatformRevisionConflictError } from '@/database/models/platform';
 import {
   platformAiModels,
   platformAiProviders,
+  platformAiProviderSecrets,
   platformAuditLogs,
   platformResourceRevisions,
 } from '@/database/schemas';
@@ -281,8 +282,12 @@ describe('AiCatalogAdminService provider draft mutations', () => {
     expect(JSON.stringify(created)).not.toContain(credential);
 
     const [stored] = await db.select().from(platformAiProviders);
+    const [immutable] = await db.select().from(platformAiProviderSecrets);
     expect(stored.encryptedKeyVaults).toMatch(/^aihub\.secret\.v1\./);
     expect(stored.encryptedKeyVaults).not.toContain(credential);
+    expect(stored.secretKeyId).toBe('draft-test');
+    expect(immutable.keyId).toBe('draft-test');
+    expect(stored.secretFingerprint).not.toBe(stored.secretKeyId);
 
     const detail = await service.getDetail(created.id);
     expect(detail.baseRevision).toBe(0);
@@ -376,7 +381,9 @@ describe('AiCatalogAdminService provider draft mutations', () => {
       secret: { operation: 'clear' },
     });
     expect(cleared.secret).toEqual({ configured: false, fingerprint: null, updatedAt: null });
-    expect((await db.select().from(platformAiProviders))[0].encryptedKeyVaults).toBeNull();
+    const [clearedRow] = await db.select().from(platformAiProviders);
+    expect(clearedRow.encryptedKeyVaults).toBeNull();
+    expect(clearedRow.secretKeyId).toBeNull();
     expect(await db.select().from(platformAuditLogs)).toContainEqual(
       expect.objectContaining({ action: 'admin.aiProviders.updateDraft', result: 'failure' }),
     );
