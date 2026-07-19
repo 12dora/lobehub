@@ -49,7 +49,9 @@ const baseEnv = async () => {
   };
 };
 
-const payload = (providerKey = 'work'): PublishedIdentityProviderPayload => ({
+const payload = (
+  providerKey = 'work',
+): PublishedIdentityProviderPayload & { secretUpdatedAt: string } => ({
   autoProvision: true,
   buttonLabel: 'Sign in with work',
   claimMapping: {
@@ -70,6 +72,7 @@ const payload = (providerKey = 'work'): PublishedIdentityProviderPayload => ({
   providerKey,
   scopes: ['openid', 'profile', 'email', 'dingtalk'],
   secretFingerprint: '',
+  secretUpdatedAt: '2026-07-19T00:00:00.000Z',
   type: 'authentik',
   usePkce: true,
 });
@@ -77,7 +80,12 @@ const payload = (providerKey = 'work'): PublishedIdentityProviderPayload => ({
 const seedPublished = async (env: Record<string, string | undefined>, providerKey = 'work') => {
   const clientSecret = 'fake-startup-client-secret';
   const secretFingerprint = createHash('sha256').update(clientSecret).digest('hex');
-  const published = { ...payload(providerKey), secretFingerprint };
+  const secretUpdatedAt = new Date();
+  const published = {
+    ...payload(providerKey),
+    secretFingerprint,
+    secretUpdatedAt: secretUpdatedAt.toISOString(),
+  };
   const secretService = PlatformSecretService.tryFromEnv(env)!;
   const ciphertext = await secretService.encrypt(clientSecret);
   const [provider] = await db
@@ -85,6 +93,7 @@ const seedPublished = async (env: Record<string, string | undefined>, providerKe
     .values({
       activationRevision: 2,
       clientId: published.clientId,
+      createdAt: secretUpdatedAt,
       displayName: published.displayName,
       enabled: true,
       issuer: published.issuer,
@@ -92,13 +101,14 @@ const seedPublished = async (env: Record<string, string | undefined>, providerKe
       revision: 2,
       secretFingerprint,
       secretRef: `kms://platform-identity-providers/${providerKey}/secret`,
-      secretUpdatedAt: new Date(),
+      secretUpdatedAt,
       status: 'pending_restart',
       type: published.type,
     })
     .returning();
   await db.insert(platformIdentityProviderSecrets).values({
     ciphertext,
+    createdAt: secretUpdatedAt,
     fingerprint: secretFingerprint,
     keyId: secretService.peekKeyId(ciphertext),
     providerId: provider.id,
@@ -197,6 +207,36 @@ describe('identity provider startup snapshot', () => {
     });
     const [activated] = await db.select().from(platformIdentityProviders);
     expect(activated).toMatchObject({ id: provider.id, status: 'pending_restart' });
+  });
+
+  it('loads a legacy DB snapshot and its LKG without secretUpdatedAt', async () => {
+    const env = await baseEnv();
+    const { clientSecret } = await seedPublished(env);
+    const [revision] = await db.select().from(platformResourceRevisions);
+    const { secretUpdatedAt: _secretUpdatedAt, ...legacyPayload } = revision.payload as Record<
+      string,
+      unknown
+    >;
+    await db
+      .update(platformResourceRevisions)
+      .set({ checksum: checksumPayload(legacyPayload), payload: legacyPayload })
+      .where(eq(platformResourceRevisions.id, revision.id));
+
+    const database = await loadIdentityProviderStartupSnapshot({ cache: false, db, env });
+    expect(database).toMatchObject({ health: 'healthy', source: 'database' });
+    expect(database.databaseProviders[0]?.clientSecret).toBe(clientSecret);
+    const unavailableDb = new Proxy({} as LobeChatDatabase, {
+      get: () => {
+        throw new Error('DATABASE_UNAVAILABLE');
+      },
+    });
+    const lkg = await loadIdentityProviderStartupSnapshot({
+      cache: false,
+      db: unavailableDb,
+      env,
+    });
+    expect(lkg).toMatchObject({ health: 'degraded', source: 'lkg' });
+    expect(lkg.databaseProviders[0]?.clientSecret).toBe(clientSecret);
   });
 
   it('keeps an environment provider authoritative over a conflicting DB provider', async () => {

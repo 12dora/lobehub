@@ -63,6 +63,7 @@ const seedPendingTarget = async () => {
     providerKey: 'work',
     scopes: [...GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE.scopes],
     secretFingerprint: 'b'.repeat(64),
+    secretUpdatedAt: now.toISOString(),
     type: 'generic_oidc' as const,
     usePkce: true as const,
   };
