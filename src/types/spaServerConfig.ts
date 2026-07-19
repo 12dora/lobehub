@@ -1,4 +1,5 @@
 import type { IFeatureFlags } from '@/config/featureFlags';
+import type { PlatformPublicSnapshot } from '@/types/platform/publicSnapshot';
 import type { GlobalServerConfig } from '@/types/serverConfig';
 
 export interface AnalyticsConfig {
@@ -30,6 +31,7 @@ export interface AuthSPAServerConfig {
   enableOIDC: boolean;
   featureFlags: Partial<IFeatureFlags>;
   globalCDN?: boolean;
+  platformPublicSnapshot: PlatformPublicSnapshot;
 }
 
 export interface SPAServerConfig {
@@ -38,4 +40,5 @@ export interface SPAServerConfig {
   config: GlobalServerConfig;
   featureFlags: Partial<IFeatureFlags>;
   isMobile: boolean;
+  platformPublicSnapshot: PlatformPublicSnapshot;
 }

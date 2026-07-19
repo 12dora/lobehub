@@ -35,6 +35,32 @@ describe('renderSpaHtml', () => {
 
     expect(await res.text()).not.toContain('</script>');
   });
+
+  it('injects the exact strict public snapshot without executable prototype content', async () => {
+    const template = 'window.__SERVER_CONFIG__ = undefined; /* SERVER_CONFIG */';
+    const publicSnapshot = {
+      branding: null,
+      brandingRevision: null,
+      configRevision: 'revision-7',
+      login: { workAccountEnabled: false },
+      logoUrl: null,
+      platformName: null,
+    };
+    const hostileConfig = JSON.parse(
+      '{"__proto__":{"polluted":true},"html":"</script><script>alert(1)</script>"}',
+    );
+    const res = renderSpaHtml(template, {
+      seoMeta: '',
+      serverConfig: { hostileConfig, platformPublicSnapshot: publicSnapshot },
+    });
+    const html = await res.text();
+
+    expect(html).toContain('"platformPublicSnapshot"');
+    expect(html).toContain('"configRevision":"revision-7"');
+    expect(html).toContain('"__proto__"');
+    expect(html).not.toContain('</script>');
+    expect(({} as { polluted?: boolean }).polluted).toBeUndefined();
+  });
 });
 
 describe('buildAnalyticsConfig', () => {

@@ -4,8 +4,10 @@ import type * as ZodModule from 'zod';
 
 import { initServerConfigStore, Provider } from '@/store/serverConfig/store';
 import { DISABLED_PLATFORM_CAPABILITIES } from '@/types/platform/capabilities';
+import type { PlatformPublicSnapshot } from '@/types/platform/publicSnapshot';
 
 import EnterprisePlatformProvider, { useEnterprisePlatform } from './EnterprisePlatformProvider';
+import { useBranding } from './RuntimeBrandingProvider';
 
 vi.mock('zod', async (importOriginal) => {
   const actual = await importOriginal<typeof ZodModule>();
@@ -48,7 +50,7 @@ vi.mock('@/store/tool', () => ({
 }));
 
 const fetchCapabilities = vi.fn(async () => DISABLED_PLATFORM_CAPABILITIES);
-const fetchPublicSnapshot = vi.fn(async () => ({
+const fetchPublicSnapshot = vi.fn(async (): Promise<PlatformPublicSnapshot> => ({
   branding: null,
   brandingRevision: null,
   configRevision: '0',
@@ -59,12 +61,15 @@ const fetchPublicSnapshot = vi.fn(async () => ({
 
 const Probe = () => {
   const { capabilities, error, loading, refresh } = useEnterprisePlatform();
+  const branding = useBranding();
   return (
     <div>
       <span data-testid="admin">{String(capabilities.adminAccess)}</span>
       <span data-testid="agents-managed">{String(capabilities.managedResources.agents)}</span>
       <span data-testid="error">{error?.message ?? ''}</span>
       <span data-testid="loading">{String(loading)}</span>
+      <span data-testid="brand-name">{branding.name}</span>
+      <span data-testid="brand-revision">{branding.publishedRevision ?? 'built-in'}</span>
       <button type="button" onClick={() => void refresh()}>
         refresh
       </button>
@@ -73,7 +78,7 @@ const Probe = () => {
   );
 };
 
-const renderProvider = (disableFetch = false) =>
+const renderProvider = (disableFetch = false, initialPublicSnapshot?: PlatformPublicSnapshot) =>
   render(
     <Provider
       createStore={() =>
@@ -91,6 +96,7 @@ const renderProvider = (disableFetch = false) =>
         disableFetch={disableFetch}
         fetchCapabilities={fetchCapabilities}
         fetchPublicSnapshot={fetchPublicSnapshot}
+        initialPublicSnapshot={initialPublicSnapshot}
       >
         <Probe />
       </EnterprisePlatformProvider>
@@ -154,6 +160,52 @@ describe('EnterprisePlatformProvider', () => {
       expect(fetchPublicSnapshot).toHaveBeenCalledTimes(1);
     });
     expect(platformSkillMocks.getPublishedCatalog).not.toHaveBeenCalled();
+  });
+
+  it('renders injected branding on the first paint and revalidates it in the background', async () => {
+    serverConfigState.enterpriseEnabled = true;
+    const initialPublicSnapshot: PlatformPublicSnapshot = {
+      branding: {
+        defaultAgentDisplayName: null,
+        emailFrom: null,
+        emailSenderName: null,
+        faviconUrl: null,
+        homeUrl: null,
+        iconUrl: null,
+        legalName: null,
+        logoUrl: '/initial.png',
+        name: 'Initial Brand',
+        ogImageUrl: null,
+        pageTitleTemplate: null,
+        privacyUrl: null,
+        revision: '3',
+        shortName: null,
+        supportUrl: null,
+        termsUrl: null,
+      },
+      brandingRevision: '3',
+      configRevision: 'config-3',
+      login: { workAccountEnabled: false },
+      logoUrl: '/initial.png',
+      platformName: 'Initial Brand',
+    };
+    fetchPublicSnapshot.mockResolvedValue({
+      ...initialPublicSnapshot,
+      branding: { ...initialPublicSnapshot.branding!, name: 'Updated Brand', revision: '4' },
+      brandingRevision: '4',
+      configRevision: 'config-4',
+      platformName: 'Updated Brand',
+    });
+
+    renderProvider(false, initialPublicSnapshot);
+
+    expect(screen.getByTestId('brand-name')).toHaveTextContent('Initial Brand');
+    expect(screen.getByTestId('brand-revision')).toHaveTextContent('3');
+    await waitFor(() =>
+      expect(screen.getByTestId('brand-name')).toHaveTextContent('Updated Brand'),
+    );
+    expect(screen.getByTestId('brand-revision')).toHaveTextContent('4');
+    expect(fetchPublicSnapshot).toHaveBeenCalledOnce();
   });
 
   it('loads the single platform catalog authority in ui-only managed mode', async () => {

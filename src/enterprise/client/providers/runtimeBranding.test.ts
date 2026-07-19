@@ -61,4 +61,33 @@ describe('resolveRuntimeBranding', () => {
     expect(formatRuntimePageTitle('Settings', branding)).toBe('[Settings] AIHub');
     expect(formatRuntimePageTitle('', branding)).toBe('AIHub');
   });
+
+  it('fails closed when an injected snapshot has inconsistent compatibility fields', () => {
+    const branding = resolveRuntimeBranding({
+      ...DISABLED_PLATFORM_PUBLIC_SNAPSHOT,
+      branding: {
+        defaultAgentDisplayName: null,
+        emailFrom: null,
+        emailSenderName: null,
+        faviconUrl: null,
+        homeUrl: 'https://attacker.example.com',
+        iconUrl: null,
+        legalName: null,
+        logoUrl: '/attacker.png',
+        name: 'Attacker',
+        ogImageUrl: null,
+        pageTitleTemplate: null,
+        privacyUrl: null,
+        revision: 'hostile',
+        shortName: null,
+        supportUrl: null,
+        termsUrl: null,
+      },
+      brandingRevision: 'different',
+      logoUrl: '/different.png',
+      platformName: 'Different',
+    });
+
+    expect(branding).toEqual(BUILT_IN_RUNTIME_BRANDING);
+  });
 });

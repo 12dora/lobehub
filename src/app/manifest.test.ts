@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import manifest from './manifest';
+import manifest, { revalidate } from './manifest';
 
 const mocks = vi.hoisted(() => ({
   resolveServerRuntimeBranding: vi.fn(),
@@ -38,7 +38,11 @@ describe('runtime web manifest', () => {
 
     expect(mocks.resolveServerRuntimeBranding).toHaveBeenCalledTimes(1);
     expect(result).toMatchObject({ id: 'lobe-hub', name: 'AIHub', short_name: 'AI' });
-    expect(result.icons?.[0]).toMatchObject({ src: '/runtime-icon.png?v=1' });
+    expect(result.icons).toEqual([{ src: '/runtime-icon.png?runtime_branding_revision=42' }]);
     expect(result.screenshots).toEqual([]);
+  });
+
+  it('uses a bounded Next manifest cache window', () => {
+    expect(revalidate).toBe(30);
   });
 });

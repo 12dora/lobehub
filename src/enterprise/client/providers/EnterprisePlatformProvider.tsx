@@ -37,6 +37,7 @@ export interface EnterprisePlatformProviderProps {
   disableFetch?: boolean;
   fetchCapabilities?: typeof fetchPlatformCapabilities;
   fetchPublicSnapshot?: typeof fetchPlatformPublicSnapshot;
+  initialPublicSnapshot?: PlatformPublicSnapshot;
 }
 
 /**
@@ -53,6 +54,7 @@ export default function EnterprisePlatformProvider({
   disableFetch = false,
   fetchCapabilities = fetchPlatformCapabilities,
   fetchPublicSnapshot = fetchPlatformPublicSnapshot,
+  initialPublicSnapshot = DISABLED_PLATFORM_PUBLIC_SNAPSHOT,
 }: EnterprisePlatformProviderProps) {
   const serverConfigInit = useServerConfigStore((s) => s.serverConfigInit);
   const enterpriseEnabled = useServerConfigStore(
@@ -64,6 +66,7 @@ export default function EnterprisePlatformProvider({
     enterpriseEnabled,
     fetchCapabilities,
     fetchPublicSnapshot,
+    initialPublicSnapshot,
     serverConfigInit,
   });
 

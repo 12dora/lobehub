@@ -1,6 +1,7 @@
 import qs from 'query-string';
 
 import { getCanonicalUrl } from '@/server/utils/url';
+import { withRuntimeBrandingRevision } from '@/utils/favicon';
 
 const MAX_AGE = 31_536_000;
 const COLOR = '#000000';
@@ -27,12 +28,14 @@ export class Manifest {
     shortName,
     id,
     icons,
+    iconRevision,
     iconUrl,
     screenshots,
   }: {
     color?: string;
     description: string;
     icons: IconItem[];
+    iconRevision?: string | null;
     iconUrl?: string | null;
     id: string;
     name: string;
@@ -50,7 +53,9 @@ export class Manifest {
         preferred_width: 480,
       },
       handle_links: 'auto',
-      icons: icons.map((item) => this._getIcon(item, iconUrl)),
+      icons: iconUrl
+        ? [{ src: withRuntimeBrandingRevision(iconUrl, iconRevision ?? null) }]
+        : icons.map((item) => this._getIcon(item)),
       id,
       immutable: 'true',
       max_age: MAX_AGE,
@@ -83,8 +88,8 @@ export class Manifest {
     src: qs.stringifyUrl({ query: { v: version }, url }),
   });
 
-  private _getIcon = ({ url, version, sizes, purpose }: IconItem, iconUrl?: string | null) => ({
-    ...this._getImage(iconUrl ?? url, version),
+  private _getIcon = ({ url, version, sizes, purpose }: IconItem) => ({
+    ...this._getImage(url, version),
     purpose,
     sizes,
     type: 'image/png',
