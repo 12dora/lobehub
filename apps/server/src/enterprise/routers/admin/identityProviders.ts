@@ -17,6 +17,7 @@ import {
   adminIdentityProviderMutationOutputSchema,
   adminIdentityProviderPublishInputSchema,
   adminIdentityProviderPublishOutputSchema,
+  adminIdentityProviderRevisionHistoryOutputSchema,
   adminIdentityProviderRollbackInputSchema,
   adminIdentityProviderRollbackOutputSchema,
   adminIdentityProviderTestResultInputSchema,
@@ -165,6 +166,16 @@ export const adminIdentityProvidersRouter = router({
     .input(adminIdentityProviderListInputSchema)
     .output(adminIdentityProviderListOutputSchema)
     .query(({ ctx, input }) => execute(() => ctx.getIdentityProviderRuntime().admin.list(input))),
+
+  listPublishedRevisions: identityProviderProcedure
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.IDENTITY_READ))
+    .input(adminIdentityProviderGetInputSchema)
+    .output(adminIdentityProviderRevisionHistoryOutputSchema)
+    .query(({ ctx, input }) =>
+      execute(() =>
+        new IdentityProviderPublicationService(ctx.serverDB).listPublishedRevisions(input.id),
+      ),
+    ),
 
   publish: identityProviderProcedure
     .use(withPlatformPermission(PLATFORM_PERMISSIONS.IDENTITY_PUBLISH))

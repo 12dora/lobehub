@@ -19,6 +19,7 @@ export const getServerAuthConfig = (): GlobalServerConfig => {
       appEnv.MARKET_TRUSTED_CLIENT_SECRET && appEnv.MARKET_TRUSTED_CLIENT_ID
     ),
     enterprise: { enabled: isAnyEnterpriseFeatureEnabled(), platformAdmin: false },
+    oAuthSSOProviderMetadata: identitySnapshot.providers,
     oAuthSSOProviders: identitySnapshot.providerIds,
     telemetry: {},
   };

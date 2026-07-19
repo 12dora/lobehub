@@ -393,6 +393,10 @@ describe('IdentityProviderPublicationService', () => {
       requestId: requestId(4),
     });
 
+    await expect(publication.listPublishedRevisions(draft.id)).resolves.toEqual([
+      { publishedAt: expect.any(Date), revision: published.revision },
+    ]);
+
     const restored = await publication.rollback('admin-1', {
       expectedRevision: published.revision,
       id: draft.id,

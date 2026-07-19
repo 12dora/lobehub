@@ -280,6 +280,15 @@ export const adminIdentityProviderCallbackUrlsOutputSchema = z
   .object({ production: z.string().url(), test: z.string().url() })
   .strict();
 
+export const adminIdentityProviderRevisionHistoryOutputSchema = z.array(
+  z
+    .object({
+      publishedAt: z.date(),
+      revision: z.number().int().positive(),
+    })
+    .strict(),
+);
+
 export const adminIdentityProviderTestStartInputSchema = z
   .object({
     expectedRevision: z.number().int().nonnegative(),

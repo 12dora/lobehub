@@ -68,6 +68,7 @@ describe('flag-off real Business route tree registration', () => {
     expect(matchRoutes(routes, '/admin/users')).toBeTruthy();
     expect(matchRoutes(routes, '/admin/users/u1')).toBeTruthy();
     expect(matchRoutes(routes, '/admin/ai/providers/p1')).toBeTruthy();
+    expect(matchRoutes(routes, '/admin/identity-providers')).toBeTruthy();
 
     const nestedUnknown = matchRoutes(routes, '/admin/does-not-exist');
     expect(nestedUnknown?.at(-1)?.route.path).toBe('*');
@@ -86,6 +87,7 @@ describe('flag-off real Business route tree registration', () => {
     expect(childPaths).toContain('users');
     expect(childPaths).toContain('users/:id');
     expect(childPaths).toContain('ai/providers/:id');
+    expect(childPaths).toContain('identity-providers');
   }, 20_000);
 
   it('flag off: zero admin.* adapter auto-calls on import', async () => {

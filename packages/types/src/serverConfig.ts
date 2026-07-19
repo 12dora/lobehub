@@ -102,6 +102,14 @@ export interface GlobalServerConfig {
   enterprise?: EnterprisePublicServerConfig;
   image?: PartialDeep<UserImageConfig>;
   memory?: GlobalMemoryConfig;
+  /** Secret-free provider presentation metadata in server-authoritative login order. */
+  oAuthSSOProviderMetadata?: Array<{
+    icon: string | null;
+    id: string;
+    label: string | null;
+    order: number;
+    providerKey: string;
+  }>;
   oAuthSSOProviders?: string[];
   systemAgent?: PartialDeep<UserServiceModelConfig>;
   telemetry: {

@@ -22,6 +22,7 @@ const SignIn = () => {
     lastAuthProvider,
     loading,
     oAuthSSOProviders,
+    oAuthSSOProviderMetadata,
     sending,
     sentInfo,
     serverConfigInit,
@@ -60,6 +61,7 @@ const SignIn = () => {
       isSocialOnly={isSocialOnly}
       lastAuthProvider={lastAuthProvider}
       loading={loading}
+      oAuthSSOProviderMetadata={oAuthSSOProviderMetadata}
       oAuthSSOProviders={oAuthSSOProviders}
       serverConfigInit={serverConfigInit}
       socialLoading={socialLoading}
