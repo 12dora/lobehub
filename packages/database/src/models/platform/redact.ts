@@ -157,4 +157,60 @@ export const containsSensitiveMaterial = (value: unknown): boolean => {
   return false;
 };
 
+const PEM_PRIVATE_KEY_PATTERN = /-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----/;
+const AWS_ACCESS_KEY_PATTERN = /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/;
+const GCP_API_KEY_PATTERN = /\bAIza[\w-]{35}\b/;
+const GCP_SERVICE_ACCOUNT_PATTERN = /["']type["']\s*:\s*["']service_account["']/i;
+
+const containsCredentialUrl = (value: string): boolean => {
+  const starts = [...value.matchAll(/[a-z][a-z0-9+.-]*:\/\//gi)].map((match) => match.index);
+  return starts.some((start, index) => {
+    const remainder = value.slice(start, starts[index + 1] ?? value.length);
+    const boundary = remainder.search(/[\s<>"']/u);
+    try {
+      const url = new URL(remainder.slice(0, boundary < 0 ? remainder.length : boundary));
+      return (
+        Boolean(url.username || url.password) || [...url.searchParams.keys()].some(isSensitiveKey)
+      );
+    } catch {
+      return false;
+    }
+  });
+};
+
+/** Complete fail-closed detector for values entering safe persistence projections. */
+export const containsPersistedSecretMaterial = (input: unknown): boolean => {
+  if (containsSensitiveMaterial(input)) return true;
+  const stack: unknown[] = [input];
+  const seen = new WeakSet<object>();
+  let visited = 0;
+  while (stack.length > 0 && visited < 10_000) {
+    const value = stack.pop();
+    visited += 1;
+    if (typeof value === 'string') {
+      if (
+        PEM_PRIVATE_KEY_PATTERN.test(value) ||
+        AWS_ACCESS_KEY_PATTERN.test(value) ||
+        GCP_API_KEY_PATTERN.test(value) ||
+        GCP_SERVICE_ACCOUNT_PATTERN.test(value) ||
+        containsCredentialUrl(value)
+      ) {
+        return true;
+      }
+      continue;
+    }
+    if (!value || typeof value !== 'object') continue;
+    if (seen.has(value)) continue;
+    seen.add(value);
+    if (Array.isArray(value)) stack.push(...value);
+    else {
+      for (const [key, child] of Object.entries(value)) {
+        if (isSensitiveKey(key) && child !== undefined && child !== null) return true;
+        stack.push(child);
+      }
+    }
+  }
+  return stack.length > 0;
+};
+
 export const REDACTED_PLACEHOLDER = REDACTED;

@@ -46,6 +46,21 @@ describe('PlatformIdentityProviderModel', () => {
     expect(result).not.toHaveProperty('secretRef');
   });
 
+  it('supports list, missing, and unconfigured safe projections', async () => {
+    const [provider] = await serverDB
+      .insert(platformIdentityProviders)
+      .values({ displayName: 'Unconfigured', providerKey: 'unconfigured' })
+      .returning();
+    await expect(model.get('missing')).resolves.toBeUndefined();
+    await expect(model.prepareRevisionPayload('missing')).resolves.toBeNull();
+    await expect(model.list()).resolves.toEqual([
+      expect.objectContaining({
+        id: provider.id,
+        secret: { configured: false, fingerprint: null, updatedAt: null },
+      }),
+    ]);
+  });
+
   it('fails closed when untrusted persisted config contains extra or credential material', async () => {
     const [row] = await serverDB
       .insert(platformIdentityProviders)
@@ -74,5 +89,17 @@ describe('PlatformIdentityProviderModel', () => {
         icon: 'https://example.com/icon?accessToken=value',
       }),
     ).toThrow('PLATFORM_IDENTITY_PROVIDER_INVALID_PERSISTED_CONFIG');
+    for (const malicious of [
+      '-----BEGIN PRIVATE KEY-----\nnot-a-real-key',
+      'AKIA1234567890ABCDEF',
+      `AIza${'A'.repeat(35)}`,
+    ]) {
+      expect(() =>
+        toSafeIdentityProviderDraft({
+          ...row,
+          groupRoleMapping: { nested: { label: malicious } } as unknown as Record<string, string>,
+        }),
+      ).toThrow('PLATFORM_IDENTITY_PROVIDER_INVALID_PERSISTED_CONFIG');
+    }
   });
 });

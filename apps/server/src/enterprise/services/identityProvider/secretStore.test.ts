@@ -180,6 +180,34 @@ describe('IdentityProviderSecretStore', () => {
     ).rejects.toMatchObject({ code: 'PLATFORM_REVISION_CONFLICT' });
   });
 
+  it('rejects migration-required and missing providers', async () => {
+    const [legacy] = await serverDB
+      .insert(platformIdentityProviders)
+      .values({ displayName: 'Legacy', migrationRequired: true, providerKey: 'legacy' })
+      .returning();
+    await expect(
+      store.persistClientSecret({
+        expectedRevision: 0,
+        providerId: legacy.id,
+        value: randomUUID(),
+      }),
+    ).rejects.toThrow('PLATFORM_IDENTITY_PROVIDER_MIGRATION_REQUIRED');
+    await expect(
+      store.clearCurrentClientSecret({ expectedRevision: 0, providerId: legacy.id }),
+    ).rejects.toThrow('PLATFORM_IDENTITY_PROVIDER_MIGRATION_REQUIRED');
+    await expect(
+      store.persistClientSecret({
+        expectedRevision: 0,
+        providerId: 'missing',
+        value: randomUUID(),
+      }),
+    ).rejects.toThrow('PLATFORM_IDENTITY_PROVIDER_NOT_FOUND');
+    await expect(
+      store.clearCurrentClientSecret({ expectedRevision: 0, providerId: 'missing' }),
+    ).rejects.toThrow('PLATFORM_IDENTITY_PROVIDER_NOT_FOUND');
+    await expect(store.resolveCurrentClientSecret('missing')).resolves.toBeNull();
+  });
+
   it('fails closed with a stable error when stored ciphertext cannot be decrypted', async () => {
     const ref = `kms://platform-identity-providers/provider/${randomUUID()}`;
     const [provider] = await serverDB

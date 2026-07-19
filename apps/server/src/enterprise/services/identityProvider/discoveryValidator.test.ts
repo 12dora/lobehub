@@ -106,6 +106,7 @@ describe('IdentityProviderDiscoveryValidator', () => {
       metadata({ issuer: 'https://other.example.com/application/o/work/' }),
       metadata({ token_endpoint: 'http://login.example.com/token' }),
       metadata({ id_token_signing_alg_values_supported: ['none'] }),
+      metadata({ id_token_signing_alg_values_supported: ['RS256', 'none'] }),
       metadata({ id_token_signing_alg_values_supported: ['HS256'] }),
       metadata({ id_token_signing_alg_values_supported: ['made-up'] }),
       metadata({ code_challenge_methods_supported: ['plain'] }),

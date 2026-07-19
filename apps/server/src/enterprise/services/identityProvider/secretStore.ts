@@ -141,11 +141,17 @@ export class IdentityProviderSecretStore {
     const { expectedRevision, providerId } = input;
     return this.inTransaction(async (tx) => {
       const [provider] = await tx
-        .select({ revision: platformIdentityProviders.revision })
+        .select({
+          migrationRequired: platformIdentityProviders.migrationRequired,
+          revision: platformIdentityProviders.revision,
+        })
         .from(platformIdentityProviders)
         .where(eq(platformIdentityProviders.id, providerId))
         .for('update');
       if (!provider) throw new Error('PLATFORM_IDENTITY_PROVIDER_NOT_FOUND');
+      if (provider.migrationRequired) {
+        throw new Error('PLATFORM_IDENTITY_PROVIDER_MIGRATION_REQUIRED');
+      }
       if (provider.revision !== expectedRevision) {
         throw new PlatformRevisionConflictError('Identity provider revision changed', {
           currentRevision: provider.revision,

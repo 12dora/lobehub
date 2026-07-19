@@ -3,48 +3,15 @@ import {
   type PlatformIdentityProviderDraft,
 } from '@lobechat/types';
 
-import { PlatformIdentityProviderRepository } from '../../repositories/platformIdentityProvider';
-import type { PlatformIdentityProviderItem } from '../../schemas/platform';
+import {
+  PlatformIdentityProviderRepository,
+  type SafePlatformIdentityProviderItem,
+} from '../../repositories/platformIdentityProvider';
 import type { LobeChatDatabase, Transaction } from '../../type';
-import { containsSensitiveMaterial, isSensitiveKey } from './redact';
-
-const hasCredentialBearingUrl = (value: string): boolean => {
-  const starts = [...value.matchAll(/[a-z][a-z0-9+.-]*:\/\//gi)].map((match) => match.index);
-  return starts.some((start, index) => {
-    const remainder = value.slice(start, starts[index + 1] ?? value.length);
-    const boundary = remainder.search(/[\s<>"']/u);
-    try {
-      const url = new URL(remainder.slice(0, boundary < 0 ? remainder.length : boundary));
-      return (
-        Boolean(url.username || url.password) || [...url.searchParams.keys()].some(isSensitiveKey)
-      );
-    } catch {
-      return false;
-    }
-  });
-};
-
-const containsCredentialMaterial = (input: unknown): boolean => {
-  if (containsSensitiveMaterial(input)) return true;
-  const stack: unknown[] = [input];
-  while (stack.length > 0) {
-    const value = stack.pop();
-    if (typeof value === 'string') {
-      if (hasCredentialBearingUrl(value)) return true;
-    } else if (Array.isArray(value)) {
-      stack.push(...value);
-    } else if (value && typeof value === 'object') {
-      for (const [key, child] of Object.entries(value)) {
-        if (isSensitiveKey(key) && child !== null && child !== undefined) return true;
-        stack.push(child);
-      }
-    }
-  }
-  return false;
-};
+import { containsPersistedSecretMaterial, isSensitiveKey } from './redact';
 
 export const toSafeIdentityProviderDraft = (
-  row: PlatformIdentityProviderItem,
+  row: SafePlatformIdentityProviderItem,
 ): PlatformIdentityProviderDraft => {
   const claimMapping = parsePlatformIdentityProviderClaimMapping(row.claimMapping);
   const publicConfig = {
@@ -66,7 +33,7 @@ export const toSafeIdentityProviderDraft = (
     !claimMapping ||
     hasCredentialClaim ||
     row.usePkce !== true ||
-    containsCredentialMaterial(publicConfig)
+    containsPersistedSecretMaterial(publicConfig)
   ) {
     throw new Error('PLATFORM_IDENTITY_PROVIDER_INVALID_PERSISTED_CONFIG');
   }

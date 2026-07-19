@@ -30,6 +30,39 @@ describe('PlatformIdentityProviderRepository', () => {
     ).rejects.toThrow();
   });
 
+  it('never exposes retained legacy columns through create/get/getByKey/list', async () => {
+    const discoveryMarker = 'https://legacy-marker.example/discovery';
+    const encryptedMarker = 'legacy-ciphertext-marker';
+    const created = await repository.create({ displayName: 'Created', providerKey: 'created' });
+    await serverDB.insert(platformIdentityProviders).values({
+      displayName: 'Legacy',
+      legacyDiscoveryUrl: discoveryMarker,
+      legacyEncryptedClientSecret: encryptedMarker,
+      migrationRequired: true,
+      providerKey: 'legacy',
+    });
+
+    const results = [
+      created,
+      await repository.get(created.id),
+      await repository.getByKey('legacy'),
+      ...(await repository.list()),
+    ];
+    for (const result of results) {
+      expect(result).not.toHaveProperty('legacyDiscoveryUrl');
+      expect(result).not.toHaveProperty('legacyEncryptedClientSecret');
+      expect(JSON.stringify(result)).not.toContain(discoveryMarker);
+      expect(JSON.stringify(result)).not.toContain(encryptedMarker);
+    }
+    await expect(
+      repository.create({
+        displayName: 'Forbidden',
+        legacyEncryptedClientSecret: encryptedMarker,
+        providerKey: 'forbidden',
+      } as never),
+    ).rejects.toThrow('PLATFORM_IDENTITY_PROVIDER_LEGACY_FIELDS_FORBIDDEN');
+  });
+
   it('persists every lifecycle status and structured defaults', async () => {
     for (const [index, status] of PLATFORM_IDENTITY_PROVIDER_STATUSES.entries()) {
       await repository.create({
