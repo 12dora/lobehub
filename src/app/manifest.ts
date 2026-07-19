@@ -1,5 +1,7 @@
 import { type MetadataRoute } from 'next';
 
+export const revalidate = 30;
+
 const manifest = async (): Promise<MetadataRoute.Manifest> => {
   const [{ BRANDING_NAME }, { resolveServerRuntimeBranding }, { kebabCase }, { manifestModule }] =
     await Promise.all([
@@ -36,6 +38,7 @@ const manifest = async (): Promise<MetadataRoute.Manifest> => {
       },
     ],
     iconUrl: branding.iconUrl ?? branding.logoUrl,
+    iconRevision: branding.publishedRevision,
     // The install identity is build-stable; changing Published branding must not fork the PWA.
     id: kebabCase(BRANDING_NAME),
     name: branding.name,

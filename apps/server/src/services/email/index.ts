@@ -1,7 +1,12 @@
 import debug from 'debug';
 
+import { getServerDB } from '@/database/core/db-adaptor';
 import { emailEnv } from '@/envs/email';
-import { resolveServerRuntimeBranding } from '@/server/enterprise/services/branding';
+import {
+  resolveServerRuntimeBrandingSnapshot,
+  type ServerRuntimeBrandingSnapshot,
+} from '@/server/enterprise/services/branding';
+import { PlatformAuditService } from '@/server/enterprise/services/platformAudit';
 import type { RuntimeBranding } from '@/types/platform/branding';
 
 import { type EmailPayload, type EmailResponse, type EmailServiceImpl } from './impls';
@@ -14,13 +19,35 @@ export interface EmailBrandingContext {
   revision: string | null;
 }
 
+export interface EmailBrandingAuditEvent {
+  messageId?: string;
+  result: 'failure' | 'success';
+  revision: string | null;
+}
+
 export interface EmailServiceOptions {
   onBrandedSend?: (context: EmailBrandingContext) => void;
-  resolveBranding?: () => Promise<RuntimeBranding>;
+  recordBrandingAudit?: (event: EmailBrandingAuditEvent) => Promise<void>;
+  resolveBrandingSnapshot?: () => Promise<ServerRuntimeBrandingSnapshot>;
 }
 
 const formatSender = (name: string, address: string): string =>
   `"${name.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}" <${address}>`;
+
+const recordBrandingAudit = async (event: EmailBrandingAuditEvent): Promise<void> => {
+  const db = await getServerDB();
+  await new PlatformAuditService(db).append({
+    action: 'system.email.send',
+    actorUserId: null,
+    afterDiff: {
+      brandingRevision: event.revision,
+      messageId: event.messageId ?? null,
+    },
+    result: event.result,
+    targetId: event.messageId ?? null,
+    targetType: 'email_delivery',
+  });
+};
 
 /**
  * Email service class
@@ -29,7 +56,10 @@ const formatSender = (name: string, address: string): string =>
 export class EmailService {
   private emailImpl: EmailServiceImpl;
   private readonly onBrandedSend?: EmailServiceOptions['onBrandedSend'];
-  private readonly resolveBranding: NonNullable<EmailServiceOptions['resolveBranding']>;
+  private readonly recordBrandingAudit: NonNullable<EmailServiceOptions['recordBrandingAudit']>;
+  private readonly resolveBrandingSnapshot: NonNullable<
+    EmailServiceOptions['resolveBrandingSnapshot']
+  >;
 
   constructor(implType?: EmailImplType, options: EmailServiceOptions = {}) {
     // Avoid client-side access to server env when executed in browser-like test environments
@@ -40,7 +70,9 @@ export class EmailService {
     const resolvedImplType = implType ?? envImplType ?? EmailImplType.Nodemailer;
 
     this.emailImpl = createEmailServiceImpl(resolvedImplType);
-    this.resolveBranding = options.resolveBranding ?? resolveServerRuntimeBranding;
+    this.resolveBrandingSnapshot =
+      options.resolveBrandingSnapshot ?? resolveServerRuntimeBrandingSnapshot;
+    this.recordBrandingAudit = options.recordBrandingAudit ?? recordBrandingAudit;
     this.onBrandedSend = options.onBrandedSend;
   }
 
@@ -55,28 +87,58 @@ export class EmailService {
   async sendBrandedMail(
     buildPayload: (context: EmailBrandingContext) => EmailPayload,
   ): Promise<EmailResponse> {
-    const branding = await this.resolveBranding();
+    const { branding, publicSnapshot } = await this.resolveBrandingSnapshot();
     const context = { branding, revision: branding.publishedRevision };
-    const payload = buildPayload(context);
-    const defaultAddress =
-      branding.emailFrom ??
-      (emailEnv.EMAIL_SERVICE_PROVIDER === EmailImplType.Resend
-        ? emailEnv.RESEND_FROM
-        : (emailEnv.SMTP_FROM ?? emailEnv.SMTP_USER));
-    const brandedPayload =
-      payload.from || !defaultAddress
-        ? payload
-        : {
-            ...payload,
-            from: formatSender(branding.emailSenderName ?? branding.name, defaultAddress),
-          };
+    const publishedEmailFrom = publicSnapshot.branding?.emailFrom ?? null;
 
-    const response = await this.emailImpl.sendMail(brandedPayload);
-    log('sent with Published branding revision=%s', context.revision ?? 'built-in');
-    this.onBrandedSend?.(context);
+    try {
+      const payload = buildPayload(context);
+      const brandedPayload =
+        payload.from || !publishedEmailFrom
+          ? payload
+          : {
+              ...payload,
+              from: formatSender(branding.emailSenderName ?? branding.name, publishedEmailFrom),
+            };
+      const response = await this.emailImpl.sendMail(brandedPayload);
+      await this.recordBrandingAuditBestEffort({
+        messageId: response.messageId,
+        result: 'success',
+        revision: context.revision,
+      });
+      log('sent with Published branding revision=%s', context.revision ?? 'built-in');
+      this.notifyBrandedSendBestEffort(context);
 
-    return response;
+      return response;
+    } catch (error) {
+      await this.recordBrandingAuditBestEffort({
+        result: 'failure',
+        revision: context.revision,
+      });
+      throw error;
+    }
   }
+
+  private notifyBrandedSendBestEffort = (context: EmailBrandingContext): void => {
+    try {
+      this.onBrandedSend?.(context);
+    } catch (error) {
+      console.error('[email-branding] observer failed', {
+        errorName: error instanceof Error ? error.name : 'unknown',
+      });
+    }
+  };
+
+  private recordBrandingAuditBestEffort = async (event: EmailBrandingAuditEvent): Promise<void> => {
+    try {
+      await this.recordBrandingAudit(event);
+    } catch (error) {
+      console.error('[email-branding] audit append failed', {
+        errorName: error instanceof Error ? error.name : 'unknown',
+        result: event.result,
+      });
+    }
+  };
 
   /**
    * Verify the email service configuration

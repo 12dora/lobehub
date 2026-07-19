@@ -1,6 +1,7 @@
 import { lambdaClient } from '@/libs/trpc/client';
 import { type PlatformCapabilities } from '@/types/platform/capabilities';
 import { type PlatformPublicSnapshot } from '@/types/platform/publicSnapshot';
+import { platformPublicSnapshotSchema } from '@/types/platform/publicSnapshot';
 
 /**
  * Client adapters for platform.* procedures.
@@ -14,4 +15,4 @@ export const fetchPlatformCapabilities = async (
 export const fetchPlatformPublicSnapshot = async (
   query: () => Promise<PlatformPublicSnapshot> = () =>
     lambdaClient.platform.getPublicSnapshot.query(),
-): Promise<PlatformPublicSnapshot> => query();
+): Promise<PlatformPublicSnapshot> => platformPublicSnapshotSchema.parse(await query());

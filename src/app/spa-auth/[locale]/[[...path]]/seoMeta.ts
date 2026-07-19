@@ -9,6 +9,7 @@ import { resolveServerRuntimeBranding } from '@/server/enterprise/services/brand
 import { translation } from '@/server/translation';
 import { escapeHtml } from '@/server/utils/html';
 import type { RuntimeBranding } from '@/types/platform/branding';
+import { withRuntimeBrandingRevision } from '@/utils/favicon';
 
 interface AuthSeoEntry {
   canonicalPath?: string;
@@ -63,6 +64,9 @@ export async function buildSeoMeta(
   const description = escapeHtml(entry.description);
   const ogUrl = canonicalPath ? urlJoin(OFFICIAL_URL, canonicalPath) : OFFICIAL_URL;
   const ogImage = escapeHtml(branding.ogImageUrl ?? OG_URL);
+  const favicon = branding.faviconUrl
+    ? escapeHtml(withRuntimeBrandingRevision(branding.faviconUrl, branding.publishedRevision))
+    : null;
 
   return [
     `<title>${title}</title>`,
@@ -79,5 +83,6 @@ export async function buildSeoMeta(
     `<meta name="twitter:description" content="${description}" />`,
     `<meta name="twitter:image" content="${ogImage}" />`,
     `<meta name="twitter:site" content="${isCustomORG ? `@${ORG_NAME}` : '@lobehub'}" />`,
+    ...(favicon ? [`<link rel="icon" href="${favicon}" />`] : []),
   ].join('\n    ');
 }

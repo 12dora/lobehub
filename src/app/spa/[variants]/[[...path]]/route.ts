@@ -8,13 +8,19 @@ import { appEnv } from '@/envs/app';
 import { fileEnv } from '@/envs/file';
 import { pythonEnv } from '@/envs/python';
 import { type Locales } from '@/locales/resources';
-import { resolveServerRuntimeBranding } from '@/server/enterprise/services/branding';
+import { parseEnterpriseFeatureFlags } from '@/server/enterprise/featureFlags';
+import {
+  resolvePlatformPublicSnapshot,
+  resolveServerRuntimeBranding,
+  resolveServerRuntimeBrandingFromPublicSnapshot,
+} from '@/server/enterprise/services/branding';
 import { getServerGlobalConfig } from '@/server/globalConfig';
 import { buildAnalyticsConfig, fetchViteDevTemplate, renderSpaHtml } from '@/server/spaHtml';
 import { translation } from '@/server/translation';
 import { escapeHtml } from '@/server/utils/html';
 import type { RuntimeBranding } from '@/types/platform/branding';
 import { type SPAClientEnv, type SPAServerConfig } from '@/types/spaServerConfig';
+import { withRuntimeBrandingRevision } from '@/utils/favicon';
 import { RouteVariants } from '@/utils/server/routeVariants';
 
 export function generateStaticParams() {
@@ -62,6 +68,9 @@ export async function buildSeoMeta(
   const title = escapeHtml(t('chat.title', { appName: branding.name }));
   const description = escapeHtml(t('chat.description', { appName: branding.name }));
   const ogImage = escapeHtml(branding.ogImageUrl ?? OG_URL);
+  const favicon = branding.faviconUrl
+    ? escapeHtml(withRuntimeBrandingRevision(branding.faviconUrl, branding.publishedRevision))
+    : null;
 
   return [
     `<title>${title}</title>`,
@@ -78,6 +87,7 @@ export async function buildSeoMeta(
     `<meta name="twitter:description" content="${description}" />`,
     `<meta name="twitter:image" content="${ogImage}" />`,
     `<meta name="twitter:site" content="${isCustomORG ? `@${ORG_NAME}` : '@lobehub'}" />`,
+    ...(favicon ? [`<link rel="icon" href="${favicon}" />`] : []),
   ].join('\n    ');
 }
 
@@ -87,6 +97,10 @@ export async function GET(
 ) {
   const { variants } = await params;
   const { locale, isMobile } = RouteVariants.deserializeVariants(variants);
+  const platformPublicSnapshot = await resolvePlatformPublicSnapshot({
+    flags: parseEnterpriseFeatureFlags(process.env),
+  });
+  const branding = resolveServerRuntimeBrandingFromPublicSnapshot(platformPublicSnapshot);
 
   const spaConfig: SPAServerConfig = {
     analyticsConfig: buildAnalyticsConfig({ desktop: true }),
@@ -94,10 +108,11 @@ export async function GET(
     config: await getServerGlobalConfig(),
     featureFlags: getServerFeatureFlagsValue(),
     isMobile,
+    platformPublicSnapshot,
   };
 
   const template = await getTemplate(isMobile);
-  const seoMeta = await buildSeoMeta(locale);
+  const seoMeta = await buildSeoMeta(locale, branding);
 
   return renderSpaHtml(template, { seoMeta, serverConfig: spaConfig });
 }

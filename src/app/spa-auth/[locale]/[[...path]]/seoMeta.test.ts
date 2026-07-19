@@ -65,6 +65,17 @@ describe('buildSeoMeta', () => {
     expect(meta).not.toContain('AI & Hub');
   });
 
+  it('emits the Published favicon with its revision while preserving its query', async () => {
+    const meta = await buildSeoMeta('en-US', '/signin', {
+      ...branding,
+      faviconUrl: '/favicon.webp?tenant=one',
+    });
+
+    expect(meta).toContain(
+      '<link rel="icon" href="/favicon.webp?tenant=one&amp;runtime_branding_revision=42" />',
+    );
+  });
+
   it('joins canonical path onto official url for mapped paths', async () => {
     const meta = await buildSeoMeta('en-US', '/signin');
 
