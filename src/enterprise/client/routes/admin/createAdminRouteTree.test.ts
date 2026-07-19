@@ -39,6 +39,7 @@ describe('createAdminRouteTree', () => {
     expect(paths).toContain('/admin/agents/:id');
     expect(paths).toContain('/admin/branding');
     expect(paths).toContain('/admin/identity-providers');
+    expect(paths).toContain('/admin/reauth-complete');
   });
 
   it('deep links match nested paths and nested 404', () => {
@@ -53,6 +54,12 @@ describe('createAdminRouteTree', () => {
     expect(matchRoutes(routes, '/admin/connectors/c-1')).toBeTruthy();
     expect(matchRoutes(routes, '/admin/agents/a-1')).toBeTruthy();
     expect(matchRoutes(routes, '/admin/identity-providers')).toBeTruthy();
+    const reauthComplete = matchRoutes(routes, '/admin/reauth-complete');
+    expect(reauthComplete).toHaveLength(1);
+    expect(reauthComplete?.[0].route.path).toBe('/admin/reauth-complete');
+
+    const adminRoot = routes.find((route) => route.path === '/admin');
+    expect(adminRoot?.children?.some((route) => route.path === 'reauth-complete')).toBe(false);
 
     const nestedUnknown = matchRoutes(routes, '/admin/does-not-exist');
     expect(nestedUnknown).toBeTruthy();
