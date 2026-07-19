@@ -270,6 +270,7 @@ export const platformIdentityProviderTestAttempts = pgTable(
       t.createdAt,
     ),
     index('platform_identity_provider_test_attempts_expires_idx').on(t.expiresAt),
+    index('platform_identity_provider_test_attempts_pkce_key_id_idx').on(t.pkceKeyId),
     check(
       'platform_identity_provider_test_attempts_hash_check',
       sql`${t.stateHash} ~ '^[a-f0-9]{64}$' AND ${t.nonceHash} ~ '^[a-f0-9]{64}$'`,
