@@ -9,10 +9,11 @@ import { ssrfBlocked } from './errors';
  *
  * - allow-private (default): private/loopback allowed; public allowed;
  *   cloud Metadata endpoints always blocked.
+ * - public-only: public Internet addresses only; private/loopback/link-local and Metadata denied.
  * - allowlist: only hostnames/IPs in allowlist (after DNS); Metadata still
  *   always blocked even if listed.
  */
-export type OutboundPolicyMode = 'allow-private' | 'allowlist';
+export type OutboundPolicyMode = 'allow-private' | 'allowlist' | 'public-only';
 
 export interface OutboundPolicy {
   /**
@@ -28,7 +29,7 @@ export interface OutboundPolicy {
 export const outboundPolicySchema = z
   .object({
     allowlist: z.array(z.string().trim().min(1).max(255)).max(256),
-    mode: z.enum(['allow-private', 'allowlist']),
+    mode: z.enum(['allow-private', 'allowlist', 'public-only']),
   })
   .strict();
 
@@ -234,6 +235,59 @@ export const isPrivateIp = (ip: string): boolean => {
   return false;
 };
 
+const ipv4ToInteger = (ip: string): number =>
+  ip
+    .split('.')
+    .map(Number)
+    .reduce((value, octet) => (value * 256 + octet) >>> 0, 0);
+
+const isIpv4InCidr = (ip: string, network: string, prefix: number): boolean => {
+  const shift = 32 - prefix;
+  return ipv4ToInteger(ip) >>> shift === ipv4ToInteger(network) >>> shift;
+};
+
+const NON_PUBLIC_IPV4_CIDRS = [
+  ['0.0.0.0', 8],
+  ['10.0.0.0', 8],
+  ['100.64.0.0', 10],
+  ['127.0.0.0', 8],
+  ['169.254.0.0', 16],
+  ['172.16.0.0', 12],
+  ['192.0.0.0', 24],
+  ['192.0.2.0', 24],
+  ['192.88.99.0', 24],
+  ['192.168.0.0', 16],
+  ['198.18.0.0', 15],
+  ['198.51.100.0', 24],
+  ['203.0.113.0', 24],
+  ['224.0.0.0', 4],
+  ['240.0.0.0', 4],
+] as const;
+
+/** Conservative global-unicast classifier used only by the public-only policy. */
+export const isPubliclyRoutableIp = (ip: string): boolean => {
+  const normalized = normalizeIp(ip);
+  if (!normalized) return false;
+  if (isIP(normalized) === 4) {
+    return !NON_PUBLIC_IPV4_CIDRS.some(([network, prefix]) =>
+      isIpv4InCidr(normalized, network, prefix),
+    );
+  }
+
+  const parts = normalized.split(':').map((part) => Number.parseInt(part, 16));
+  const [first = 0, second = 0, third = 0, fourth = 0] = parts;
+  if (first === 0x0064 && second === 0xff9b && third === 0 && fourth === 0) {
+    const embedded = `${parts[6]! >> 8}.${parts[6]! & 255}.${parts[7]! >> 8}.${parts[7]! & 255}`;
+    return isPubliclyRoutableIp(embedded);
+  }
+  if ((first & 0xe000) !== 0x2000) return false; // IPv6 global unicast 2000::/3 only
+  if (first === 0x2001 && second <= 0x01ff) return false; // transition/special-purpose block
+  if (first === 0x2001 && second === 0x0db8) return false; // documentation
+  if (first === 0x2002) return false; // 6to4 embeds an otherwise unchecked IPv4 destination
+  if (first === 0x3fff && second <= 0x0fff) return false; // documentation 3fff::/20
+  return true;
+};
+
 export const isAllowlistedHostOrIp = (value: string, allowlist: string[]): boolean => {
   if (allowlist.length === 0) return false;
   const needle = value.replaceAll(/^\[|\]$/g, '').toLowerCase();
@@ -298,6 +352,13 @@ export const assertResolvedIpAllowed = (
 
   if (isMetadataIp(normalized)) {
     throw ssrfBlocked('cloud metadata IP is permanently blocked', { ip: normalized });
+  }
+
+  if (policy.mode === 'public-only' && !isPubliclyRoutableIp(normalized)) {
+    throw ssrfBlocked('non-public address not permitted under public-only mode', {
+      ip: normalized,
+      mode: policy.mode,
+    });
   }
 
   if (policy.mode === 'allowlist') {

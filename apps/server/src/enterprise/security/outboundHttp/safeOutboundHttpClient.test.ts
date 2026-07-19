@@ -10,6 +10,7 @@ import {
   isMetadataHostname,
   isMetadataIp,
   isPrivateIp,
+  isPubliclyRoutableIp,
   SafeOutboundHttpClient,
   SafeOutboundHttpError,
   stripCredentialHeaders,
@@ -46,6 +47,25 @@ describe('policy helpers', () => {
     expect(isMetadataHostname('metadata.google.internal')).toBe(true);
     expect(isMetadataHostname('METADATA.GOOGLE.INTERNAL')).toBe(true);
     expect(isMetadataHostname('api.example.com')).toBe(false);
+  });
+
+  it('classifies only globally routable addresses for public-only callers', () => {
+    expect(isPubliclyRoutableIp('8.8.8.8')).toBe(true);
+    expect(isPubliclyRoutableIp('2606:4700:4700::1111')).toBe(true);
+    expect(isPubliclyRoutableIp('64:ff9b::808:808')).toBe(true);
+    expect(isPubliclyRoutableIp('64:ff9b::a00:1')).toBe(false);
+    for (const address of [
+      '100.64.0.1',
+      '192.0.2.1',
+      '198.18.0.1',
+      '203.0.113.1',
+      '224.0.0.1',
+      '2001:db8::1',
+      '2002:0808:0808::1',
+      '3fff::1',
+    ]) {
+      expect(isPubliclyRoutableIp(address)).toBe(false);
+    }
   });
 
   it('treats IPv4-mapped IPv6 encodings of IMDS as metadata', () => {
@@ -230,6 +250,31 @@ describe('SafeOutboundHttpClient', () => {
     });
     const res = await client.fetch('https://example.com/');
     expect(res.ok).toBe(true);
+  });
+
+  it('public-only mode blocks private/loopback while retaining DNS pinning for public hosts', async () => {
+    const transport = vi.fn<PinnedTransport>(async () => okResponse());
+    const privateClient = new SafeOutboundHttpClient({
+      mode: 'public-only',
+      resolve: resolveTo([{ address: '10.0.0.9' }]),
+      transport,
+    });
+    await expect(privateClient.fetch('https://login.example.com/')).rejects.toMatchObject({
+      code: PLATFORM_ERROR_CODES.PLATFORM_SSRF_BLOCKED,
+    });
+    expect(transport).not.toHaveBeenCalled();
+
+    const publicClient = new SafeOutboundHttpClient({
+      mode: 'public-only',
+      resolve: resolveTo([{ address: '93.184.216.34' }]),
+      transport,
+    });
+    await expect(publicClient.fetch('https://login.example.com/')).resolves.toMatchObject({
+      ok: true,
+    });
+    expect(transport).toHaveBeenCalledWith(
+      expect.objectContaining({ pinnedAddress: '93.184.216.34' }),
+    );
   });
 
   it('permanently blocks metadata IPv4 literal', async () => {

@@ -2021,26 +2021,49 @@ table platform_easyauth_grant_snapshots {
   }
 }
 
+table platform_identity_provider_secrets {
+  id text [pk, not null]
+  provider_id text [not null]
+  fingerprint varchar(64) [not null]
+  ref text [not null]
+  ciphertext text [not null]
+  key_id varchar(256) [not null]
+  revision integer [not null, default: 1]
+  revoked_at "timestamp with time zone"
+  created_at "timestamp with time zone" [not null, default: `now()`]
+
+  indexes {
+    ref [name: 'platform_identity_provider_secrets_ref_unique', unique]
+    (provider_id, fingerprint, created_at) [name: 'platform_identity_provider_secrets_lookup_idx']
+    key_id [name: 'platform_identity_provider_secrets_key_id_idx']
+
+
+
+  }
+}
+
 table platform_identity_providers {
   id text [pk, not null]
   provider_key varchar(128) [not null]
-  type varchar(32) [not null, default: 'oidc']
-  display_name text [not null]
-  button_label text
+  type varchar(32) [not null, default: 'generic_oidc']
+  display_name varchar(200) [not null]
+  button_label varchar(200) [not null, default: '使用工作账号登录']
   icon text
   issuer text
-  discovery_url text
-  client_id text
-  encrypted_client_secret text
-  secret_fingerprint text
-  scopes text
+  client_id varchar(1000)
+  secret_ref text
+  secret_fingerprint varchar(64)
+  secret_updated_at "timestamp with time zone"
+  scopes jsonb [not null, default: `["openid","profile","email"]`]
   use_pkce boolean [not null, default: true]
-  claim_mapping jsonb [default: `{}`]
-  domain_allowlist jsonb [default: `[]`]
+  claim_mapping jsonb [not null, default: `{"dingtalkTitle":[],"dingtalkUserId":[],"email":["email"],"name":["name","preferred_username"],"picture":["picture"],"subject":["sub"]}`]
+  domain_allowlist jsonb [not null, default: `[]`]
   auto_provision boolean [not null, default: true]
-  group_role_mapping jsonb [default: `{}`]
+  group_role_mapping jsonb [not null, default: `{}`]
+  enabled boolean [not null, default: false]
   status varchar(32) [not null, default: 'draft']
   revision integer [not null, default: 0]
+  activation_revision integer
   created_by text
   updated_by text
   created_at "timestamp with time zone" [not null, default: `now()`]
@@ -2049,6 +2072,16 @@ table platform_identity_providers {
   indexes {
     provider_key [name: 'platform_identity_providers_provider_key_unique', unique]
     status [name: 'platform_identity_providers_status_idx']
+    (enabled, status) [name: 'platform_identity_providers_enabled_status_idx']
+
+
+
+
+
+
+
+
+
   }
 }
 
