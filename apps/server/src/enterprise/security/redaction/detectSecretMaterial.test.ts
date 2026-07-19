@@ -1,3 +1,5 @@
+import { readFile } from 'node:fs/promises';
+
 import { describe, expect, it } from 'vitest';
 
 import { containsEnterpriseSecretMaterial } from './detectSecretMaterial';
@@ -53,6 +55,32 @@ describe('containsEnterpriseSecretMaterial', () => {
     ]) {
       expect(containsEnterpriseSecretMaterial(value)).toBe(true);
     }
+  });
+
+  it(
+    'handles a 200 KB adversarial placeholder-like assignment without backtracking',
+    { timeout: 2000 },
+    () => {
+      const value = `client_secret=${'your-'.repeat(40_000)}zzz`;
+      expect(value.length).toBeGreaterThan(200_000);
+      expect(containsEnterpriseSecretMaterial(value)).toBe(false);
+    },
+  );
+
+  it('scans a 200 KB multi-separator URL-like value only once', { timeout: 2000 }, () => {
+    const value = 'a://'.repeat(50_000);
+    expect(value.length).toBe(200_000);
+    expect(containsEnterpriseSecretMaterial(value)).toBe(false);
+  });
+
+  it('uses deterministic placeholder checks without an unbounded wildcard regex', async () => {
+    const source = await readFile(
+      new URL('../../../../../../packages/database/src/models/platform/redact.ts', import.meta.url),
+      'utf8',
+    );
+    expect(source).toContain('DOCUMENTATION_PLACEHOLDER_MARKERS');
+    expect(source).not.toContain('DOCUMENTATION_PLACEHOLDER_PATTERN');
+    expect(source).not.toContain('.*');
   });
 
   it('scans nested payloads and fails closed on excessive/cyclic input', () => {
