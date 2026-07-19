@@ -4,7 +4,13 @@ import sharp from 'sharp';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
-import { platformAuditLogs, platformBrandingAssets, users } from '@/database/schemas';
+import { checksumPayload } from '@/database/models/platform';
+import {
+  platformAuditLogs,
+  platformBrandingAssets,
+  platformBrandingOperations,
+  users,
+} from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
 
 import type { AdminBrandingUploadAssetInput } from '../../contracts/adminBranding';
@@ -12,6 +18,8 @@ import {
   AdminBrandingAssetService,
   BrandingIdempotencyConflictError,
 } from './adminBrandingAssetService';
+import { AdminBrandingOperationService } from './adminBrandingOperationService';
+import { AdminBrandingService } from './adminBrandingService';
 
 const db: LobeChatDatabase = await getTestDB();
 const actorUserId = 'branding-asset-admin';
@@ -34,6 +42,7 @@ const input = async (
 
 const cleanup = async () => {
   await db.delete(platformAuditLogs);
+  await db.delete(platformBrandingOperations);
   await db.delete(platformBrandingAssets);
   await db.delete(users).where(eq(users.id, actorUserId));
 };
@@ -75,6 +84,77 @@ describe('AdminBrandingAssetService', () => {
         (audit) => audit.action === 'admin.branding.uploadAsset' && audit.result === 'success',
       ),
     ).toHaveLength(1);
+  });
+
+  it('finalizes a recovered operation when the second reservation replays a completed upload', async () => {
+    let releaseUpload!: () => void;
+    const uploadGate = new Promise<void>((resolve) => {
+      releaseUpload = resolve;
+    });
+    const storage = {
+      delete: vi.fn(async () => {}),
+      isConfigured: () => true,
+      upload: vi.fn(async () => uploadGate),
+    };
+    const request = await input();
+    const { requestId: _requestId, ...payload } = request;
+    const operationParams = {
+      actorId: actorUserId,
+      fingerprint: checksumPayload(payload),
+      operation: 'admin.branding.uploadAsset' as const,
+      requestId: request.requestId,
+      resource: 'branding:global',
+    };
+    const operationService = new AdminBrandingOperationService(db);
+    const operation = await operationService.claim(operationParams);
+    if (operation.state !== 'acquired') throw new Error('expected operation claim');
+
+    const writerAssets = new AdminBrandingAssetService(db, { storage });
+    const writerUpload = writerAssets.upload(actorUserId, request);
+    await vi.waitFor(() => expect(storage.upload).toHaveBeenCalledOnce());
+
+    const recoveryAssets = new AdminBrandingAssetService(db, { storage });
+    const recoveryHarness = recoveryAssets as unknown as {
+      waitForReplay: (assetId: string) => Promise<null>;
+    };
+    vi.spyOn(recoveryHarness, 'waitForReplay').mockImplementation(async () => {
+      releaseUpload();
+      await writerUpload;
+      return null;
+    });
+
+    const recovered = await recoveryAssets.upload(actorUserId, request, {
+      finalizeSuccess: (tx, result) =>
+        operationService.succeed(tx, operation.claim, { kind: 'uploadAsset', ...result }),
+    });
+    const written = await writerUpload;
+    expect(recovered).toEqual(written);
+    expect(storage.upload).toHaveBeenCalledOnce();
+
+    const [persistedOperation] = await db.select().from(platformBrandingOperations);
+    expect(persistedOperation).toMatchObject({
+      leaseOwner: null,
+      leaseUntil: null,
+      result: { kind: 'uploadAsset', ...recovered },
+      status: 'succeeded',
+    });
+
+    const immediateService = new AdminBrandingService(db, {
+      assetService: recoveryAssets,
+      operationService,
+    });
+    await expect(immediateService.uploadAsset(actorUserId, request)).resolves.toEqual(recovered);
+
+    const expiredOperationService = new AdminBrandingOperationService(db, {
+      now: () => new Date('2099-01-01T00:00:00.000Z'),
+    });
+    const expiredService = new AdminBrandingService(db, {
+      assetService: recoveryAssets,
+      operationService: expiredOperationService,
+    });
+    await expect(expiredService.uploadAsset(actorUserId, request)).resolves.toEqual(recovered);
+    expect(storage.upload).toHaveBeenCalledOnce();
+    expect(await db.select().from(platformBrandingOperations)).toEqual([persistedOperation]);
   });
 
   it('rejects a reused request ID with different normalized payload before writes or audit', async () => {
