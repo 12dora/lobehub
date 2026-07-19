@@ -18,6 +18,7 @@ import type {
 import { containsEnterpriseSecretMaterial } from '../../security/redaction';
 import {
   acquireIdentityProviderConvergenceLock,
+  demoteEnvironmentShadowedIdentityProviders,
   getIdentityProviderInstanceRegistrationState,
   getIdentityProviderProcessInstance,
   IDENTITY_PROVIDER_INSTANCE_STALE_MS,
@@ -27,7 +28,7 @@ import { identityProviderLkgIdentity } from './lkg';
 import { ProcessRestartController, type RestartController } from './restartController';
 import { getIdentityProviderStartupArtifactHealth } from './startupArtifact';
 import {
-  loadCanonicalPublishedIdentityProviders,
+  loadPublishedIdentityProviderSelection,
   parseEnvironmentIdentityProviderIds,
 } from './startupSnapshot';
 
@@ -64,16 +65,16 @@ export const loadPublishedIdentityTarget = async (
   db: LobeChatDatabase | Transaction,
   env: Record<string, string | undefined> = process.env,
 ) => {
-  let selected: Awaited<ReturnType<typeof loadCanonicalPublishedIdentityProviders>>;
+  let selection: Awaited<ReturnType<typeof loadPublishedIdentityProviderSelection>>;
   try {
-    selected = await loadCanonicalPublishedIdentityProviders({
+    selection = await loadPublishedIdentityProviderSelection({
       db,
       environmentProviderIds: new Set(parseEnvironmentIdentityProviderIds(env)),
     });
   } catch {
     throw new IdentityProviderSystemError('PLATFORM_IDENTITY_RESTART_STATUS_UNAVAILABLE');
   }
-  const providers = selected.map((revision) => {
+  const providers = selection.selected.map((revision) => {
     return {
       checksum: revision.checksum,
       generation: revision.generation,
@@ -86,6 +87,7 @@ export const loadPublishedIdentityTarget = async (
     };
   });
   return {
+    environmentShadowed: selection.environmentShadowed,
     identityRevision:
       providers.length > 0
         ? identityProviderLkgIdentity(
@@ -117,6 +119,7 @@ export class IdentityProviderSystemService {
     private readonly restartController: RestartController = new ProcessRestartController(),
     private readonly now: () => Date = () => new Date(),
     private readonly afterResponse?: IdentityProviderAfterResponseHook,
+    private readonly env: Record<string, string | undefined> = process.env,
   ) {}
 
   private restartCapability = () => {
@@ -135,7 +138,8 @@ export class IdentityProviderSystemService {
     const registrationState = getIdentityProviderInstanceRegistrationState();
     return this.db.transaction(async (tx) => {
       await acquireIdentityProviderConvergenceLock(tx);
-      const target = await loadPublishedIdentityTarget(tx);
+      const target = await loadPublishedIdentityTarget(tx, this.env);
+      await demoteEnvironmentShadowedIdentityProviders(tx, target.environmentShadowed);
       const instances = await tx
         .select({
           activeIdentityRevision: platformIdentityProviderInstances.activeIdentityRevision,
@@ -199,6 +203,11 @@ export class IdentityProviderSystemService {
         row.activationRevision
           ? [
               {
+                blockedCategory: target.environmentShadowed.some(
+                  (provider) => provider.providerId === row.id,
+                )
+                  ? ('environment_provider_shadowed' as const)
+                  : null,
                 providerId: row.id,
                 providerKey: row.providerKey,
                 publishedRevision: row.activationRevision,
@@ -232,6 +241,9 @@ export class IdentityProviderSystemService {
         );
       }
       const pendingRestart = pendingPublished.length > 0;
+      const restartablePending = pendingPublished.some(
+        (provider) => provider.blockedCategory === null,
+      );
       const capability = this.restartCapability();
       return {
         active: {
@@ -252,8 +264,12 @@ export class IdentityProviderSystemService {
         pendingPublished,
         pendingRestart,
         restart: {
-          reason: pendingRestart ? capability.reason : ('no_pending_restart' as const),
-          supported: pendingRestart && capability.supported,
+          reason: !pendingRestart
+            ? ('no_pending_restart' as const)
+            : !restartablePending
+              ? ('environment_provider_shadowed' as const)
+              : capability.reason,
+          supported: restartablePending && capability.supported,
         },
         targetIdentityRevision: target.identityRevision,
       };

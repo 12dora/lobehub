@@ -54,6 +54,7 @@ export const adminSystemAuthSnapshotStatusOutputSchema = z
     ),
     pendingPublished: z.array(
       z.object({
+        blockedCategory: z.enum(['environment_provider_shadowed']).nullable(),
         providerId: z.string().min(1),
         providerKey: z.string().min(1),
         publishedRevision: z.number().int().positive(),
@@ -64,6 +65,7 @@ export const adminSystemAuthSnapshotStatusOutputSchema = z
       reason: z
         .enum([
           'edge_runtime',
+          'environment_provider_shadowed',
           'no_pending_restart',
           'serverless_runtime',
           'supervisor_not_configured',

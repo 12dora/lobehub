@@ -238,6 +238,7 @@ describe('IdentityProviderSystemService', () => {
   it('uses startup canonical selection for environment overrides and damaged shadows', async () => {
     await seedPendingTarget();
     await expect(loadPublishedIdentityTarget(db, { AUTH_SSO_PROVIDERS: 'work' })).resolves.toEqual({
+      environmentShadowed: [{ providerId: 'provider-work', providerKey: 'work' }],
       identityRevision: null,
       providers: [],
     });
@@ -247,6 +248,7 @@ describe('IdentityProviderSystemService', () => {
       .set({ payload: { providerKey: 'work', secretFingerprint: 'broken' } })
       .where(eq(platformResourceRevisions.resourceId, 'provider-work'));
     await expect(loadPublishedIdentityTarget(db, { AUTH_SSO_PROVIDERS: 'work' })).resolves.toEqual({
+      environmentShadowed: [{ providerId: 'provider-work', providerKey: 'work' }],
       identityRevision: null,
       providers: [],
     });
@@ -340,6 +342,99 @@ describe('IdentityProviderSystemService', () => {
       },
     });
     expect((await db.select().from(platformIdentityProviders))[0]?.status).toBe('pending_restart');
+  });
+
+  it('demotes an active DB provider blocked by a newly authoritative environment provider', async () => {
+    const target = await seedPendingTarget();
+    const local = getIdentityProviderProcessInstance();
+    commitArtifact(target);
+    await insertInstance({ activeIdentityRevision: target, instanceId: local.instanceId });
+    const controller: RestartController = {
+      capability: () => ({ reason: null, supported: true }),
+      schedule: async () => undefined,
+    };
+    await new IdentityProviderSystemService(
+      db,
+      controller,
+      () => now,
+      () => undefined,
+    ).getAuthSnapshotStatus();
+    expect((await db.select().from(platformIdentityProviders))[0]?.status).toBe('active');
+
+    const env = { AUTH_SSO_PROVIDERS: 'work', VERCEL: '1' };
+    await registerIdentityProviderInstance({
+      db,
+      env,
+      snapshot: {
+        databaseProviders: [],
+        generation: null,
+        health: 'healthy',
+        identityRevision: null,
+        lastError: null,
+        loadedAt: now,
+        providerIds: ['work'],
+        source: 'environment',
+      },
+    });
+    commitIdentityProviderStartupSnapshot({
+      databaseProviders: [],
+      generation: null,
+      health: 'healthy',
+      identityRevision: null,
+      lastError: null,
+      loadedAt: now,
+      providerIds: ['work'],
+      source: 'environment',
+    });
+
+    const status = await new IdentityProviderSystemService(
+      db,
+      controller,
+      () => now,
+      () => undefined,
+      env,
+    ).getAuthSnapshotStatus();
+    expect((await db.select().from(platformIdentityProviders))[0]?.status).toBe('pending_restart');
+    expect(status).toMatchObject({
+      pendingPublished: [
+        {
+          blockedCategory: 'environment_provider_shadowed',
+          providerId: 'provider-work',
+          providerKey: 'work',
+        },
+      ],
+      pendingRestart: true,
+      restart: { reason: 'environment_provider_shadowed', supported: false },
+      targetIdentityRevision: null,
+    });
+  });
+
+  it('does not demote an active row when no published DB revision exists', async () => {
+    await db.insert(platformIdentityProviders).values({
+      activationRevision: 1,
+      buttonLabel: 'Work account',
+      displayName: 'Work',
+      enabled: true,
+      id: 'provider-work',
+      providerKey: 'work',
+      revision: 1,
+      status: 'active',
+    });
+    await registerIdentityProviderInstance({
+      db,
+      env: { AUTH_SSO_PROVIDERS: 'work', VERCEL: '1' },
+      snapshot: {
+        databaseProviders: [],
+        generation: null,
+        health: 'healthy',
+        identityRevision: null,
+        lastError: null,
+        loadedAt: now,
+        providerIds: ['work'],
+        source: 'environment',
+      },
+    });
+    expect((await db.select().from(platformIdentityProviders))[0]?.status).toBe('active');
   });
 
   it('does not ignore a mismatched fresh instance beyond the old 200-row boundary', async () => {
