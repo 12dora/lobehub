@@ -72,6 +72,11 @@ export interface PublishDraftParams {
   beforeDiff?: Record<string, unknown> | null;
   comment?: string | null;
   expectedRevision: number;
+  /** Domain finalizer committed atomically after revision, materialization, and success audit. */
+  finalizeSuccess?: (
+    tx: Transaction,
+    result: { auditId: string; revision: number },
+  ) => Promise<void>;
   ipHash?: string | null;
   /** Raw payload — will be redacted before persistence. */
   payload: Record<string, unknown>;
@@ -263,6 +268,8 @@ export class PlatformRevisionModel {
         targetType: params.resourceType,
         userAgent: params.userAgent,
       });
+
+      await params.finalizeSuccess?.(tx, { auditId: audit.id, revision: nextRevision });
 
       return { auditId: audit.id, revision };
     });

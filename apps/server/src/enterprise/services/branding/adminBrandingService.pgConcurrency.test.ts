@@ -10,6 +10,7 @@ import {
   platformAuditLogs,
   platformBranding,
   platformBrandingAssets,
+  platformBrandingOperations,
   platformResourceRevisions,
 } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
@@ -61,6 +62,7 @@ describe.skipIf(!enabled)('AdminBrandingService advisory lock (PostgreSQL)', () 
     });
     const cleanup = async () => {
       await firstDb.delete(platformAuditLogs);
+      await firstDb.delete(platformBrandingOperations);
       await firstDb.delete(platformResourceRevisions);
       await firstDb.delete(platformBranding);
       await firstDb.delete(platformBrandingAssets);

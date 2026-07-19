@@ -6,12 +6,12 @@ import {
   PlatformRevisionModel,
   type ResourcePointerAdapter,
 } from '@/database/models/platform';
-import {
-  platformAuditLogs,
-  platformBranding,
-  platformResourceRevisions,
-} from '@/database/schemas/platform';
-import type { PlatformBrandingItem } from '@/database/schemas/platform/branding';
+import { platformBranding, platformResourceRevisions } from '@/database/schemas/platform';
+import type {
+  PlatformBrandingItem,
+  PlatformBrandingOperationErrorCategory,
+  PlatformBrandingOperationResult,
+} from '@/database/schemas/platform/branding';
 import type { LobeChatDatabase, Transaction } from '@/database/type';
 
 import {
@@ -19,11 +19,16 @@ import {
   adminBrandingDraftSchema,
   type AdminBrandingPublishInput,
   adminBrandingPublishInputSchema,
+  adminBrandingPublishOutputSchema,
   type AdminBrandingRollbackInput,
   adminBrandingRollbackInputSchema,
+  adminBrandingRollbackOutputSchema,
   type AdminBrandingSaveDraftInput,
   adminBrandingSaveDraftInputSchema,
+  adminBrandingSaveDraftOutputSchema,
   type AdminBrandingUploadAssetInput,
+  adminBrandingUploadAssetInputSchema,
+  adminBrandingUploadAssetOutputSchema,
   projectAdminBrandingPublished,
 } from '../../contracts/adminBranding';
 import { PlatformAuditService } from '../platformAudit';
@@ -34,12 +39,28 @@ import {
 import {
   AdminBrandingAssetService,
   type AdminBrandingAssetServiceOptions,
+  BrandingAssetCleanupClaimedError,
   BrandingAssetUploadInProgressError,
-  BrandingIdempotencyConflictError,
 } from './adminBrandingAssetService';
+import {
+  AdminBrandingOperationService,
+  BrandingIdempotencyConflictError,
+  type BrandingOperationClaim,
+  BrandingOperationFailedReplayError,
+  BrandingOperationInProgressError,
+  BrandingOperationRecoveryPendingError,
+} from './adminBrandingOperationService';
+import { BrandingAssetStorageUnavailableError, BrandingAssetValidationError } from './assetStorage';
 
 export { BrandingAssetStorageUnavailableError, BrandingAssetValidationError } from './assetStorage';
-export { BrandingAssetUploadInProgressError, BrandingIdempotencyConflictError };
+export {
+  BrandingAssetCleanupClaimedError,
+  BrandingAssetUploadInProgressError,
+  BrandingIdempotencyConflictError,
+  BrandingOperationFailedReplayError,
+  BrandingOperationInProgressError,
+  BrandingOperationRecoveryPendingError,
+};
 export { PlatformRevisionConflictError };
 
 export const BRANDING_RESOURCE_ID = 'global';
@@ -47,6 +68,7 @@ export const BRANDING_DRAFT_ROW_ID = 'branding:draft';
 export const BRANDING_PUBLISHED_ROW_ID = 'branding:published';
 
 const BRANDING_LOCK_NAMESPACE = 'aihub:platform-branding:global';
+const BRANDING_OPERATION_RESOURCE = 'branding:global';
 const BRANDING_ROW_IDS = [BRANDING_DRAFT_ROW_ID, BRANDING_PUBLISHED_ROW_ID] as const;
 
 const mutationFingerprint = <T extends { requestId: string }>(input: T): string => {
@@ -158,25 +180,41 @@ export class BrandingPersistenceInvariantError extends Error {
   }
 }
 
-class BrandingIdempotentPublish extends Error {
-  constructor(
-    readonly auditId: string,
-    readonly revision: number,
+const operationErrorCategory = (error: unknown): PlatformBrandingOperationErrorCategory => {
+  if (error instanceof PlatformRevisionConflictError) return 'revision_conflict';
+  if (
+    error instanceof BrandingDraftValidationError ||
+    error instanceof BrandingAssetCleanupClaimedError
   ) {
-    super('BRANDING_IDEMPOTENT_PUBLISH');
+    return 'draft_invalid';
   }
-}
+  if (error instanceof BrandingAssetValidationError) return 'asset_invalid';
+  if (error instanceof BrandingAssetStorageUnavailableError) return 'asset_storage_unavailable';
+  if (error instanceof BrandingAssetUploadInProgressError) return 'upload_in_progress';
+  if (error instanceof BrandingPersistenceInvariantError) return 'persistence_invariant';
+  return 'internal';
+};
+
+const assertOperationKind = <TKind extends PlatformBrandingOperationResult['kind']>(
+  result: PlatformBrandingOperationResult,
+  kind: TKind,
+): Extract<PlatformBrandingOperationResult, { kind: TKind }> => {
+  if (result.kind !== kind) throw new BrandingPersistenceInvariantError();
+  return result as Extract<PlatformBrandingOperationResult, { kind: TKind }>;
+};
 
 export interface AdminBrandingServiceOptions {
   assetService?: AdminBrandingAssetService;
   assetServiceOptions?: AdminBrandingAssetServiceOptions;
   invalidation?: PlatformConfigInvalidationPublisher;
+  operationService?: AdminBrandingOperationService;
 }
 
 export class AdminBrandingService {
   private readonly assets: AdminBrandingAssetService;
   private readonly db: LobeChatDatabase;
   private readonly invalidation: PlatformConfigInvalidationPublisher;
+  private readonly operations: AdminBrandingOperationService;
   private readonly revisions: PlatformRevisionModel;
 
   constructor(db: LobeChatDatabase, options: AdminBrandingServiceOptions = {}) {
@@ -184,6 +222,7 @@ export class AdminBrandingService {
     this.assets =
       options.assetService ?? new AdminBrandingAssetService(db, options.assetServiceOptions);
     this.invalidation = options.invalidation ?? getPlatformConfigInvalidationPublisher();
+    this.operations = options.operationService ?? new AdminBrandingOperationService(db);
     this.revisions = new PlatformRevisionModel(db);
   }
 
@@ -251,34 +290,15 @@ export class AdminBrandingService {
     }
   };
 
-  private findSuccessfulReplay = async (
-    tx: Transaction,
-    params: {
-      action: string;
-      actorUserId: string;
-      fingerprint: string;
-      requestId: string;
-    },
-  ) => {
-    const [prior] = await tx
-      .select()
-      .from(platformAuditLogs)
-      .where(
-        and(
-          eq(platformAuditLogs.action, params.action),
-          eq(platformAuditLogs.actorUserId, params.actorUserId),
-          eq(platformAuditLogs.requestId, params.requestId),
-          eq(platformAuditLogs.result, 'success'),
-          eq(platformAuditLogs.targetType, 'branding'),
-          eq(platformAuditLogs.targetId, BRANDING_RESOURCE_ID),
-        ),
-      )
-      .limit(1);
-    if (!prior) return null;
-    if (prior.afterDiff?.requestFingerprint !== params.fingerprint) {
-      throw new BrandingIdempotencyConflictError();
-    }
-    return prior;
+  private recordOperationFailure = async (
+    claim: BrandingOperationClaim,
+    error: unknown,
+    action: string,
+    actorUserId: string,
+    input: { reason: string; requestId: string },
+  ): Promise<void> => {
+    await this.operations.fail(claim, operationErrorCategory(error));
+    await this.appendFailureAudit(action, actorUserId, input);
   };
 
   getDraft = async () => {
@@ -322,25 +342,26 @@ export class AdminBrandingService {
     const input = parsed.data;
     const nextDraft = input.draft;
     const fingerprint = mutationFingerprint(input);
-    await this.ensureDraft();
+    const operation = await this.operations.claim({
+      actorId: actorUserId,
+      fingerprint,
+      operation: 'admin.branding.saveDraft',
+      requestId: input.requestId,
+      resource: BRANDING_OPERATION_RESOURCE,
+    });
+    if (operation.state === 'pending') throw new BrandingOperationInProgressError();
+    if (operation.state === 'failed') {
+      throw new BrandingOperationFailedReplayError(operation.errorCategory);
+    }
+    if (operation.state === 'succeeded') {
+      const { kind: _kind, ...result } = assertOperationKind(operation.result, 'saveDraft');
+      return adminBrandingSaveDraftOutputSchema.parse(result);
+    }
+    const { claim } = operation;
     try {
+      await this.ensureDraft();
       const saved = await this.db.transaction(async (tx) => {
         await this.acquireLock(tx);
-        const prior = await this.findSuccessfulReplay(tx, {
-          action: 'admin.branding.saveDraft',
-          actorUserId,
-          fingerprint,
-          requestId: input.requestId,
-        });
-        const priorToken = prior?.afterDiff?.draftChecksum;
-        if (prior && typeof priorToken === 'string' && priorToken.length === 64) {
-          return {
-            baseRevision: prior.configRevision ?? 0,
-            draftToken: priorToken,
-            ok: true as const,
-          };
-        }
-        if (prior) throw new BrandingPersistenceInvariantError();
         await this.assertNoLegacyActiveRows(tx);
         const rows = await this.getFixedRows(tx);
         if (!rows.draft) throw new BrandingPersistenceInvariantError();
@@ -372,12 +393,19 @@ export class AdminBrandingService {
           targetId: BRANDING_RESOURCE_ID,
           targetType: 'branding',
         });
-        return { baseRevision: rows.draft.revision, draftToken: token, ok: true as const };
+        const result = { baseRevision: rows.draft.revision, draftToken: token, ok: true as const };
+        await this.operations.succeed(tx, claim, { kind: 'saveDraft', ...result });
+        return result;
       });
       return saved;
     } catch (error) {
-      if (error instanceof BrandingIdempotencyConflictError) throw error;
-      await this.appendFailureAudit('admin.branding.saveDraft', actorUserId, input);
+      await this.recordOperationFailure(
+        claim,
+        error,
+        'admin.branding.saveDraft',
+        actorUserId,
+        input,
+      );
       throw error;
     }
   };
@@ -386,23 +414,12 @@ export class AdminBrandingService {
     actorUserId: string;
     expectedDraftToken: string;
     fingerprint: string;
-    requestId: string;
   }): ResourcePointerAdapter => {
     let lockedDraft: AdminBrandingDraft | null = null;
     let lockedAssetIds: string[] = [];
     return {
       lockAndGetRevision: async (tx) => {
         await this.acquireLock(tx);
-        const prior = await this.findSuccessfulReplay(tx, {
-          action: 'platform.branding.publish',
-          actorUserId: params.actorUserId,
-          fingerprint: params.fingerprint,
-          requestId: params.requestId,
-        });
-        if (prior?.configRevision) {
-          throw new BrandingIdempotentPublish(prior.id, prior.configRevision);
-        }
-
         await this.assertNoLegacyActiveRows(tx);
         const rows = await this.getFixedRows(tx);
         if (!rows.draft) throw new BrandingPersistenceInvariantError();
@@ -464,19 +481,36 @@ export class AdminBrandingService {
     if (!parsed.success) throw new BrandingDraftValidationError();
     const input = parsed.data;
     const fingerprint = mutationFingerprint(input);
-    await this.ensureDraft();
+    const operation = await this.operations.claim({
+      actorId: actorUserId,
+      fingerprint,
+      operation: 'admin.branding.publish',
+      requestId: input.requestId,
+      resource: BRANDING_OPERATION_RESOURCE,
+    });
+    if (operation.state === 'pending') throw new BrandingOperationInProgressError();
+    if (operation.state === 'failed') {
+      throw new BrandingOperationFailedReplayError(operation.errorCategory);
+    }
+    if (operation.state === 'succeeded') {
+      const { kind: _kind, ...result } = assertOperationKind(operation.result, 'publish');
+      return adminBrandingPublishOutputSchema.parse(result);
+    }
+    const { claim } = operation;
     try {
+      await this.ensureDraft();
       const result = await this.revisions.publishDraft({
         actorUserId,
         beforeDiff: { revision: input.expectedRevision },
         comment: input.reason,
         expectedRevision: input.expectedRevision,
+        finalizeSuccess: (tx, published) =>
+          this.operations.succeed(tx, claim, { kind: 'publish', ...published }),
         payload: {},
         pointer: this.publishPointer({
           actorUserId,
           expectedDraftToken: input.expectedDraftToken,
           fingerprint,
-          requestId: input.requestId,
         }),
         reason: input.reason,
         requestId: input.requestId,
@@ -487,11 +521,13 @@ export class AdminBrandingService {
       await this.publishInvalidation(result.revision.revision);
       return { auditId: result.auditId, revision: result.revision.revision };
     } catch (error) {
-      if (error instanceof BrandingIdempotentPublish) {
-        return { auditId: error.auditId, revision: error.revision };
-      }
-      if (error instanceof BrandingIdempotencyConflictError) throw error;
-      await this.appendFailureAudit('platform.branding.publish', actorUserId, input);
+      await this.recordOperationFailure(
+        claim,
+        error,
+        'platform.branding.publish',
+        actorUserId,
+        input,
+      );
       throw error;
     }
   };
@@ -501,41 +537,26 @@ export class AdminBrandingService {
     if (!parsed.success) throw new BrandingDraftValidationError();
     const input = parsed.data;
     const fingerprint = mutationFingerprint(input);
-    await this.ensureDraft();
+    const operation = await this.operations.claim({
+      actorId: actorUserId,
+      fingerprint,
+      operation: 'admin.branding.rollback',
+      requestId: input.requestId,
+      resource: BRANDING_OPERATION_RESOURCE,
+    });
+    if (operation.state === 'pending') throw new BrandingOperationInProgressError();
+    if (operation.state === 'failed') {
+      throw new BrandingOperationFailedReplayError(operation.errorCategory);
+    }
+    if (operation.state === 'succeeded') {
+      const { kind: _kind, ...result } = assertOperationKind(operation.result, 'rollback');
+      return adminBrandingRollbackOutputSchema.parse(result);
+    }
+    const { claim } = operation;
     try {
+      await this.ensureDraft();
       return await this.db.transaction(async (tx) => {
         await this.acquireLock(tx);
-        const prior = await this.findSuccessfulReplay(tx, {
-          action: 'admin.branding.rollback',
-          actorUserId,
-          fingerprint,
-          requestId: input.requestId,
-        });
-        const priorTarget = prior?.afterDiff?.restoredFromRevision;
-        if (typeof priorTarget === 'number') {
-          const priorRevision = await tx
-            .select({ payload: platformResourceRevisions.payload })
-            .from(platformResourceRevisions)
-            .where(
-              and(
-                eq(platformResourceRevisions.resourceType, 'branding'),
-                eq(platformResourceRevisions.resourceId, BRANDING_RESOURCE_ID),
-                eq(platformResourceRevisions.revision, priorTarget),
-              ),
-            )
-            .limit(1);
-          if (prior && priorRevision[0]) {
-            const restoredDraft = adminBrandingDraftSchema.parse(priorRevision[0].payload);
-            const restoredBaseRevision = prior.configRevision ?? input.expectedRevision;
-            return {
-              baseRevision: restoredBaseRevision,
-              draft: restoredDraft,
-              draftToken: draftToken(restoredDraft, restoredBaseRevision),
-              restoredFromRevision: priorTarget,
-            };
-          }
-        }
-        if (prior) throw new BrandingPersistenceInvariantError();
         await this.assertNoLegacyActiveRows(tx);
         const rows = await this.getFixedRows(tx);
         if (!rows.draft) throw new BrandingPersistenceInvariantError();
@@ -584,26 +605,61 @@ export class AdminBrandingService {
           targetId: BRANDING_RESOURCE_ID,
           targetType: 'branding',
         });
-        return {
+        const result = {
           baseRevision: input.expectedRevision,
           draft: restored,
           draftToken: token,
           restoredFromRevision: input.targetRevision,
         };
+        await this.operations.succeed(tx, claim, { kind: 'rollback', ...result });
+        return result;
       });
     } catch (error) {
-      if (error instanceof BrandingIdempotencyConflictError) throw error;
-      await this.appendFailureAudit('admin.branding.rollback', actorUserId, input);
+      await this.recordOperationFailure(
+        claim,
+        error,
+        'admin.branding.rollback',
+        actorUserId,
+        input,
+      );
       throw error;
     }
   };
 
-  uploadAsset = async (actorUserId: string, input: AdminBrandingUploadAssetInput) => {
+  uploadAsset = async (actorUserId: string, rawInput: AdminBrandingUploadAssetInput) => {
+    const parsed = adminBrandingUploadAssetInputSchema.safeParse(rawInput);
+    if (!parsed.success) throw new BrandingAssetValidationError();
+    const input = parsed.data;
+    const fingerprint = mutationFingerprint(input);
+    const operation = await this.operations.claim({
+      actorId: actorUserId,
+      fingerprint,
+      operation: 'admin.branding.uploadAsset',
+      requestId: input.requestId,
+      resource: BRANDING_OPERATION_RESOURCE,
+    });
+    if (operation.state === 'pending') throw new BrandingOperationInProgressError();
+    if (operation.state === 'failed') {
+      throw new BrandingOperationFailedReplayError(operation.errorCategory);
+    }
+    if (operation.state === 'succeeded') {
+      const { kind: _kind, ...result } = assertOperationKind(operation.result, 'uploadAsset');
+      return adminBrandingUploadAssetOutputSchema.parse(result);
+    }
+    const { claim } = operation;
     try {
-      return await this.assets.upload(actorUserId, input);
+      return await this.assets.upload(actorUserId, input, {
+        finalizeSuccess: (tx, result) =>
+          this.operations.succeed(tx, claim, { kind: 'uploadAsset', ...result }),
+      });
     } catch (error) {
-      if (error instanceof BrandingIdempotencyConflictError) throw error;
-      await this.appendFailureAudit('admin.branding.uploadAsset', actorUserId, input);
+      await this.recordOperationFailure(
+        claim,
+        error,
+        'admin.branding.uploadAsset',
+        actorUserId,
+        input,
+      );
       throw error;
     }
   };

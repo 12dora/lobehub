@@ -23,11 +23,15 @@ import { withPlatformPermission } from '../../guards/platformPermission';
 import { assertRecentReauth } from '../../guards/reauth';
 import {
   AdminBrandingService,
+  BrandingAssetCleanupClaimedError,
   BrandingAssetStorageUnavailableError,
   BrandingAssetUploadInProgressError,
   BrandingAssetValidationError,
   BrandingDraftValidationError,
   BrandingIdempotencyConflictError,
+  BrandingOperationFailedReplayError,
+  BrandingOperationInProgressError,
+  BrandingOperationRecoveryPendingError,
   BrandingPersistenceInvariantError,
   PlatformRevisionConflictError,
 } from '../../services/branding/adminBrandingService';
@@ -65,6 +69,43 @@ const mapBrandingError = (error: unknown): never => {
       httpCode: 'CONFLICT',
     });
   }
+  if (error instanceof BrandingOperationFailedReplayError) {
+    if (error.category === 'revision_conflict') {
+      return throwEnterpriseError({
+        code: PLATFORM_ERROR_CODES.PLATFORM_REVISION_CONFLICT,
+        httpCode: 'CONFLICT',
+      });
+    }
+    if (error.category === 'asset_storage_unavailable') {
+      return throwEnterpriseError({
+        code: PLATFORM_ERROR_CODES.PLATFORM_ASSET_STORAGE_UNAVAILABLE,
+        httpCode: 'PRECONDITION_FAILED',
+      });
+    }
+    if (error.category === 'asset_invalid' || error.category === 'draft_invalid') {
+      return throwEnterpriseError({
+        code: PLATFORM_ERROR_CODES.PLATFORM_CONFIG_VALIDATION_FAILED,
+        httpCode: 'BAD_REQUEST',
+      });
+    }
+    if (error.category === 'upload_in_progress') {
+      return throwEnterpriseError({
+        code: PLATFORM_ERROR_CODES.PLATFORM_REVISION_CONFLICT,
+        httpCode: 'CONFLICT',
+      });
+    }
+    throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'Branding operation failed' });
+  }
+  if (
+    error instanceof BrandingOperationInProgressError ||
+    error instanceof BrandingOperationRecoveryPendingError
+  ) {
+    return throwEnterpriseError({
+      code: PLATFORM_ERROR_CODES.PLATFORM_REVISION_CONFLICT,
+      httpCode: 'CONFLICT',
+      message: 'Branding operation is pending recovery',
+    });
+  }
   if (error instanceof BrandingAssetStorageUnavailableError) {
     return throwEnterpriseError({
       code: PLATFORM_ERROR_CODES.PLATFORM_ASSET_STORAGE_UNAVAILABLE,
@@ -81,6 +122,7 @@ const mapBrandingError = (error: unknown): never => {
   }
   if (
     error instanceof BrandingAssetValidationError ||
+    error instanceof BrandingAssetCleanupClaimedError ||
     error instanceof BrandingDraftValidationError
   ) {
     return throwEnterpriseError({
