@@ -917,6 +917,13 @@
       "when": 1784451593483,
       "tag": "0130_m11_identity_provider_instances",
       "breakpoints": true
+    },
+    {
+      "idx": 131,
+      "version": "7",
+      "when": 1784466409124,
+      "tag": "0131_m11_user_dingtalk_claims",
+      "breakpoints": true
     }
   ],
   "version": "6"
