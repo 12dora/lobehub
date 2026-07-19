@@ -1,5 +1,5 @@
 {
-  "id": "f6a47ea0-485c-46f0-b092-dc41620d6b70",
+  "id": "bd33afa6-24f0-474d-b768-8a03f780c743",
   "prevId": "a9339b93-6632-4047-a43f-3e00d0ff4ef9",
   "version": "7",
   "dialect": "postgresql",
@@ -16938,6 +16938,27 @@
           "method": "btree",
           "with": {}
         },
+        "platform_identity_provider_secrets_provider_fingerprint_unique": {
+          "name": "platform_identity_provider_secrets_provider_fingerprint_unique",
+          "columns": [
+            {
+              "expression": "provider_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "fingerprint",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "platform_identity_provider_secrets_lookup_idx": {
           "name": "platform_identity_provider_secrets_lookup_idx",
           "columns": [
@@ -17027,7 +17048,7 @@
         },
         "provider_key": {
           "name": "provider_key",
-          "type": "varchar(128)",
+          "type": "text",
           "primaryKey": false,
           "notNull": true
         },
@@ -17040,13 +17061,13 @@
         },
         "display_name": {
           "name": "display_name",
-          "type": "varchar(200)",
+          "type": "text",
           "primaryKey": false,
           "notNull": true
         },
         "button_label": {
           "name": "button_label",
-          "type": "varchar(200)",
+          "type": "text",
           "primaryKey": false,
           "notNull": true,
           "default": "'使用工作账号登录'"
@@ -17065,9 +17086,28 @@
         },
         "client_id": {
           "name": "client_id",
-          "type": "varchar(1000)",
+          "type": "text",
           "primaryKey": false,
           "notNull": false
+        },
+        "discovery_url": {
+          "name": "discovery_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "encrypted_client_secret": {
+          "name": "encrypted_client_secret",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "migration_required": {
+          "name": "migration_required",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         },
         "secret_ref": {
           "name": "secret_ref",
@@ -17077,7 +17117,7 @@
         },
         "secret_fingerprint": {
           "name": "secret_fingerprint",
-          "type": "varchar(64)",
+          "type": "text",
           "primaryKey": false,
           "notNull": false
         },
@@ -17243,7 +17283,7 @@
       "checkConstraints": {
         "platform_identity_providers_key_check": {
           "name": "platform_identity_providers_key_check",
-          "value": "\"platform_identity_providers\".\"provider_key\" ~ '^[a-z0-9][a-z0-9._-]{0,127}$'"
+          "value": "\"platform_identity_providers\".\"migration_required\" OR \"platform_identity_providers\".\"provider_key\" ~ '^[a-z0-9][a-z0-9._-]{0,127}$'"
         },
         "platform_identity_providers_type_check": {
           "name": "platform_identity_providers_type_check",
@@ -17257,6 +17297,10 @@
           "name": "platform_identity_providers_revision_check",
           "value": "\"platform_identity_providers\".\"revision\" >= 0 AND (\"platform_identity_providers\".\"activation_revision\" IS NULL OR \"platform_identity_providers\".\"activation_revision\" > 0)"
         },
+        "platform_identity_providers_migration_state_check": {
+          "name": "platform_identity_providers_migration_state_check",
+          "value": "NOT \"platform_identity_providers\".\"migration_required\" OR (\n        NOT \"platform_identity_providers\".\"enabled\"\n        AND \"platform_identity_providers\".\"activation_revision\" IS NULL\n        AND \"platform_identity_providers\".\"secret_ref\" IS NULL\n        AND \"platform_identity_providers\".\"secret_fingerprint\" IS NULL\n        AND \"platform_identity_providers\".\"secret_updated_at\" IS NULL\n        AND \"platform_identity_providers\".\"status\" IN ('draft', 'error', 'disabled', 'archived')\n      )"
+        },
         "platform_identity_providers_secret_state_check": {
           "name": "platform_identity_providers_secret_state_check",
           "value": "(\"platform_identity_providers\".\"secret_ref\" IS NULL AND \"platform_identity_providers\".\"secret_fingerprint\" IS NULL AND \"platform_identity_providers\".\"secret_updated_at\" IS NULL)\n        OR (\"platform_identity_providers\".\"secret_ref\" IS NOT NULL\n          AND \"platform_identity_providers\".\"secret_fingerprint\" ~ '^[a-f0-9]{64}$'\n          AND \"platform_identity_providers\".\"secret_updated_at\" IS NOT NULL)"
@@ -17267,11 +17311,15 @@
         },
         "platform_identity_providers_scopes_check": {
           "name": "platform_identity_providers_scopes_check",
-          "value": "jsonb_typeof(\"platform_identity_providers\".\"scopes\") = 'array'\n        AND jsonb_array_length(CASE WHEN jsonb_typeof(\"platform_identity_providers\".\"scopes\") = 'array' THEN \"platform_identity_providers\".\"scopes\" ELSE '[]'::jsonb END) BETWEEN 1 AND 32\n        AND \"platform_identity_providers\".\"scopes\" ? 'openid'\n        AND octet_length(\"platform_identity_providers\".\"scopes\"::text) <= 4096"
+          "value": "jsonb_typeof(\"platform_identity_providers\".\"scopes\") = 'array'\n        AND jsonb_array_length(CASE WHEN jsonb_typeof(\"platform_identity_providers\".\"scopes\") = 'array' THEN \"platform_identity_providers\".\"scopes\" ELSE '[]'::jsonb END) BETWEEN 1 AND 32\n        AND \"platform_identity_providers\".\"scopes\" ? 'openid'\n        AND NOT jsonb_path_exists(\"platform_identity_providers\".\"scopes\", '$[*] ? (@.type() != \"string\")')\n        AND octet_length(\"platform_identity_providers\".\"scopes\"::text) <= 4096"
+        },
+        "platform_identity_providers_pkce_check": {
+          "name": "platform_identity_providers_pkce_check",
+          "value": "\"platform_identity_providers\".\"use_pkce\""
         },
         "platform_identity_providers_claim_mapping_check": {
           "name": "platform_identity_providers_claim_mapping_check",
-          "value": "jsonb_typeof(\"platform_identity_providers\".\"claim_mapping\") = 'object'\n        AND jsonb_typeof(\"platform_identity_providers\".\"claim_mapping\"->'subject') = 'array'\n        AND jsonb_array_length(CASE WHEN jsonb_typeof(\"platform_identity_providers\".\"claim_mapping\"->'subject') = 'array' THEN \"platform_identity_providers\".\"claim_mapping\"->'subject' ELSE '[]'::jsonb END) > 0\n        AND jsonb_typeof(\"platform_identity_providers\".\"claim_mapping\"->'name') = 'array'\n        AND jsonb_array_length(CASE WHEN jsonb_typeof(\"platform_identity_providers\".\"claim_mapping\"->'name') = 'array' THEN \"platform_identity_providers\".\"claim_mapping\"->'name' ELSE '[]'::jsonb END) > 0\n        AND octet_length(\"platform_identity_providers\".\"claim_mapping\"::text) <= 8192\n        AND \"platform_identity_providers\".\"claim_mapping\"::text !~* '\"(secret|token|password|authorization)\"[[:space:]]*:'"
+          "value": "jsonb_typeof(\"platform_identity_providers\".\"claim_mapping\") = 'object'\n        AND \"platform_identity_providers\".\"claim_mapping\" = jsonb_build_object(\n          'dingtalkTitle', \"platform_identity_providers\".\"claim_mapping\"->'dingtalkTitle',\n          'dingtalkUserId', \"platform_identity_providers\".\"claim_mapping\"->'dingtalkUserId',\n          'email', \"platform_identity_providers\".\"claim_mapping\"->'email',\n          'name', \"platform_identity_providers\".\"claim_mapping\"->'name',\n          'picture', \"platform_identity_providers\".\"claim_mapping\"->'picture',\n          'subject', \"platform_identity_providers\".\"claim_mapping\"->'subject'\n        )\n        AND jsonb_typeof(\"platform_identity_providers\".\"claim_mapping\"->'dingtalkTitle') = 'array'\n        AND jsonb_typeof(\"platform_identity_providers\".\"claim_mapping\"->'dingtalkUserId') = 'array'\n        AND jsonb_typeof(\"platform_identity_providers\".\"claim_mapping\"->'email') = 'array'\n        AND jsonb_typeof(\"platform_identity_providers\".\"claim_mapping\"->'picture') = 'array'\n        AND jsonb_typeof(\"platform_identity_providers\".\"claim_mapping\"->'subject') = 'array'\n        AND jsonb_array_length(CASE WHEN jsonb_typeof(\"platform_identity_providers\".\"claim_mapping\"->'subject') = 'array' THEN \"platform_identity_providers\".\"claim_mapping\"->'subject' ELSE '[]'::jsonb END) > 0\n        AND jsonb_typeof(\"platform_identity_providers\".\"claim_mapping\"->'name') = 'array'\n        AND jsonb_array_length(CASE WHEN jsonb_typeof(\"platform_identity_providers\".\"claim_mapping\"->'name') = 'array' THEN \"platform_identity_providers\".\"claim_mapping\"->'name' ELSE '[]'::jsonb END) > 0\n        AND jsonb_array_length(CASE WHEN jsonb_typeof(\"platform_identity_providers\".\"claim_mapping\"->'dingtalkTitle') = 'array' THEN \"platform_identity_providers\".\"claim_mapping\"->'dingtalkTitle' ELSE '[]'::jsonb END) <= 8\n        AND jsonb_array_length(CASE WHEN jsonb_typeof(\"platform_identity_providers\".\"claim_mapping\"->'dingtalkUserId') = 'array' THEN \"platform_identity_providers\".\"claim_mapping\"->'dingtalkUserId' ELSE '[]'::jsonb END) <= 8\n        AND jsonb_array_length(CASE WHEN jsonb_typeof(\"platform_identity_providers\".\"claim_mapping\"->'email') = 'array' THEN \"platform_identity_providers\".\"claim_mapping\"->'email' ELSE '[]'::jsonb END) <= 8\n        AND jsonb_array_length(CASE WHEN jsonb_typeof(\"platform_identity_providers\".\"claim_mapping\"->'name') = 'array' THEN \"platform_identity_providers\".\"claim_mapping\"->'name' ELSE '[]'::jsonb END) <= 8\n        AND jsonb_array_length(CASE WHEN jsonb_typeof(\"platform_identity_providers\".\"claim_mapping\"->'picture') = 'array' THEN \"platform_identity_providers\".\"claim_mapping\"->'picture' ELSE '[]'::jsonb END) <= 8\n        AND jsonb_array_length(CASE WHEN jsonb_typeof(\"platform_identity_providers\".\"claim_mapping\"->'subject') = 'array' THEN \"platform_identity_providers\".\"claim_mapping\"->'subject' ELSE '[]'::jsonb END) <= 8\n        AND NOT jsonb_path_exists(\"platform_identity_providers\".\"claim_mapping\", '$.*[*] ? (@.type() != \"string\")')\n        AND NOT jsonb_path_exists(\"platform_identity_providers\".\"claim_mapping\", '$.*[*] ? (@ ! like_regex \"^[A-Za-z0-9_.:-]{1,128}$\")')\n        AND octet_length(\"platform_identity_providers\".\"claim_mapping\"::text) <= 8192\n        AND \"platform_identity_providers\".\"claim_mapping\"::text !~* '(client.?secret|api.?key|access.?token|refresh.?token|id.?token|password|authorization|bearer|credential)'"
         },
         "platform_identity_providers_policy_json_check": {
           "name": "platform_identity_providers_policy_json_check",

@@ -24,12 +24,22 @@ export interface OutboundPolicy {
    */
   allowlist: string[];
   mode: OutboundPolicyMode;
+  /** RFC 6052 translation prefixes used by this deployment. */
+  translationPrefixes?: string[];
 }
+
+const translationPrefixSchema = z
+  .string()
+  .trim()
+  .max(64)
+  .regex(/^[0-9a-f:]+\/(?:32|40|48|56|64|96)$/i)
+  .refine((value) => isIP(value.slice(0, value.lastIndexOf('/'))) === 6, 'invalid IPv6 prefix');
 
 export const outboundPolicySchema = z
   .object({
     allowlist: z.array(z.string().trim().min(1).max(255)).max(256),
     mode: z.enum(['allow-private', 'allowlist', 'public-only']),
+    translationPrefixes: z.array(translationPrefixSchema).max(32).optional(),
   })
   .strict();
 
@@ -44,6 +54,8 @@ export const DEFAULT_OUTBOUND_POLICY: OutboundPolicy = {
   allowlist: [],
   mode: 'allow-private',
 };
+
+export const DEFAULT_PUBLIC_TRANSLATION_PREFIXES = ['64:ff9b::/96', '64:ff9b:1::/48'];
 
 /** Hostnames that always resolve to cloud instance metadata. */
 const METADATA_HOSTNAMES = new Set([
@@ -139,6 +151,32 @@ export const extractRfc6052Ipv4Candidates = (ip: string): string[] => {
     if (isIP(candidate) === 4) candidates.add(candidate);
   }
   return [...candidates];
+};
+
+const RFC6052_LAYOUTS = new Map<number, readonly number[]>([
+  [32, [4, 5, 6, 7]],
+  [40, [5, 6, 7, 9]],
+  [48, [6, 7, 9, 10]],
+  [56, [7, 9, 10, 11]],
+  [64, [9, 10, 11, 12]],
+  [96, [12, 13, 14, 15]],
+]);
+
+/** Decode an embedded IPv4 only when the IPv6 address matches an explicit RFC 6052 prefix. */
+export const extractRfc6052Ipv4 = (ip: string, prefixCidr: string): string | null => {
+  const separator = prefixCidr.lastIndexOf('/');
+  const prefixLength = Number(prefixCidr.slice(separator + 1));
+  const indexes = RFC6052_LAYOUTS.get(prefixLength);
+  const addressBytes = ipv6Bytes(ip);
+  const prefixBytes = ipv6Bytes(prefixCidr.slice(0, separator));
+  if (!indexes || !addressBytes || !prefixBytes) return null;
+  const fullBytes = Math.floor(prefixLength / 8);
+  for (let index = 0; index < fullBytes; index += 1) {
+    if (addressBytes[index] !== prefixBytes[index]) return null;
+  }
+  if (prefixLength !== 96 && addressBytes[8] !== 0) return null;
+  const candidate = indexes.map((index) => addressBytes[index]).join('.');
+  return isIP(candidate) === 4 ? candidate : null;
 };
 
 export const isMetadataIp = (ip: string): boolean => {
@@ -265,7 +303,10 @@ const NON_PUBLIC_IPV4_CIDRS = [
 ] as const;
 
 /** Conservative global-unicast classifier used only by the public-only policy. */
-export const isPubliclyRoutableIp = (ip: string): boolean => {
+export const isPubliclyRoutableIp = (
+  ip: string,
+  translationPrefixes = DEFAULT_PUBLIC_TRANSLATION_PREFIXES,
+): boolean => {
   const normalized = normalizeIp(ip);
   if (!normalized) return false;
   if (isIP(normalized) === 4) {
@@ -274,12 +315,13 @@ export const isPubliclyRoutableIp = (ip: string): boolean => {
     );
   }
 
-  const parts = normalized.split(':').map((part) => Number.parseInt(part, 16));
-  const [first = 0, second = 0, third = 0, fourth = 0] = parts;
-  if (first === 0x0064 && second === 0xff9b && third === 0 && fourth === 0) {
-    const embedded = `${parts[6]! >> 8}.${parts[6]! & 255}.${parts[7]! >> 8}.${parts[7]! & 255}`;
-    return isPubliclyRoutableIp(embedded);
+  for (const prefix of translationPrefixes) {
+    const embedded = extractRfc6052Ipv4(normalized, prefix);
+    if (embedded) return isPubliclyRoutableIp(embedded, []);
   }
+
+  const parts = normalized.split(':').map((part) => Number.parseInt(part, 16));
+  const [first = 0, second = 0] = parts;
   if ((first & 0xe000) !== 0x2000) return false; // IPv6 global unicast 2000::/3 only
   if (first === 0x2001 && second <= 0x01ff) return false; // transition/special-purpose block
   if (first === 0x2001 && second === 0x0db8) return false; // documentation
@@ -354,7 +396,13 @@ export const assertResolvedIpAllowed = (
     throw ssrfBlocked('cloud metadata IP is permanently blocked', { ip: normalized });
   }
 
-  if (policy.mode === 'public-only' && !isPubliclyRoutableIp(normalized)) {
+  if (
+    policy.mode === 'public-only' &&
+    !isPubliclyRoutableIp(
+      normalized,
+      policy.translationPrefixes ?? DEFAULT_PUBLIC_TRANSLATION_PREFIXES,
+    )
+  ) {
     throw ssrfBlocked('non-public address not permitted under public-only mode', {
       ip: normalized,
       mode: policy.mode,

@@ -11,6 +11,7 @@ export {
   DEFAULT_OUTBOUND_POLICY,
   expandIpv6,
   extractMappedIpv4,
+  extractRfc6052Ipv4,
   extractRfc6052Ipv4Candidates,
   isAllowlistedHostOrIp,
   isLoopbackIp,

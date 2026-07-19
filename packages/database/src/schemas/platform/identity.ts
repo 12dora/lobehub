@@ -27,20 +27,24 @@ export const platformIdentityProviders = pgTable(
       .$defaultFn(() => idGenerator('platformIdentityProviders', 16))
       .primaryKey()
       .notNull(),
-    providerKey: varchar('provider_key', { length: 128 }).notNull(),
+    providerKey: text('provider_key').notNull(),
     type: varchar('type', { length: 32 })
       .$type<PlatformIdentityProviderType>()
       .notNull()
       .default('generic_oidc'),
-    displayName: varchar('display_name', { length: 200 }).notNull(),
-    buttonLabel: varchar('button_label', { length: 200 }).notNull().default('使用工作账号登录'),
+    displayName: text('display_name').notNull(),
+    buttonLabel: text('button_label').notNull().default('使用工作账号登录'),
     icon: text('icon'),
     /** Canonical HTTPS issuer without query, fragment, or embedded credentials. */
     issuer: text('issuer'),
-    clientId: varchar('client_id', { length: 1000 }),
+    clientId: text('client_id'),
+    /** Preserved legacy columns. They are never exposed by safe projections. */
+    legacyDiscoveryUrl: text('discovery_url'),
+    legacyEncryptedClientSecret: text('encrypted_client_secret'),
+    migrationRequired: boolean('migration_required').notNull().default(false),
     /** Opaque handle only. Ciphertext lives in platform_identity_provider_secrets. */
     secretRef: text('secret_ref'),
-    secretFingerprint: varchar('secret_fingerprint', { length: 64 }),
+    secretFingerprint: text('secret_fingerprint'),
     secretUpdatedAt: timestamptz('secret_updated_at'),
     scopes: jsonb('scopes').$type<string[]>().notNull().default(['openid', 'profile', 'email']),
     usePkce: boolean('use_pkce').notNull().default(true),
@@ -81,7 +85,7 @@ export const platformIdentityProviders = pgTable(
     index('platform_identity_providers_enabled_status_idx').on(t.enabled, t.status),
     check(
       'platform_identity_providers_key_check',
-      sql`${t.providerKey} ~ '^[a-z0-9][a-z0-9._-]{0,127}$'`,
+      sql`${t.migrationRequired} OR ${t.providerKey} ~ '^[a-z0-9][a-z0-9._-]{0,127}$'`,
     ),
     check(
       'platform_identity_providers_type_check',
@@ -94,6 +98,17 @@ export const platformIdentityProviders = pgTable(
     check(
       'platform_identity_providers_revision_check',
       sql`${t.revision} >= 0 AND (${t.activationRevision} IS NULL OR ${t.activationRevision} > 0)`,
+    ),
+    check(
+      'platform_identity_providers_migration_state_check',
+      sql`NOT ${t.migrationRequired} OR (
+        NOT ${t.enabled}
+        AND ${t.activationRevision} IS NULL
+        AND ${t.secretRef} IS NULL
+        AND ${t.secretFingerprint} IS NULL
+        AND ${t.secretUpdatedAt} IS NULL
+        AND ${t.status} IN ('draft', 'error', 'disabled', 'archived')
+      )`,
     ),
     check(
       'platform_identity_providers_secret_state_check',
@@ -111,17 +126,39 @@ export const platformIdentityProviders = pgTable(
       sql`jsonb_typeof(${t.scopes}) = 'array'
         AND jsonb_array_length(CASE WHEN jsonb_typeof(${t.scopes}) = 'array' THEN ${t.scopes} ELSE '[]'::jsonb END) BETWEEN 1 AND 32
         AND ${t.scopes} ? 'openid'
+        AND NOT jsonb_path_exists(${t.scopes}, '$[*] ? (@.type() != "string")')
         AND octet_length(${t.scopes}::text) <= 4096`,
     ),
+    check('platform_identity_providers_pkce_check', sql`${t.usePkce}`),
     check(
       'platform_identity_providers_claim_mapping_check',
       sql`jsonb_typeof(${t.claimMapping}) = 'object'
+        AND ${t.claimMapping} = jsonb_build_object(
+          'dingtalkTitle', ${t.claimMapping}->'dingtalkTitle',
+          'dingtalkUserId', ${t.claimMapping}->'dingtalkUserId',
+          'email', ${t.claimMapping}->'email',
+          'name', ${t.claimMapping}->'name',
+          'picture', ${t.claimMapping}->'picture',
+          'subject', ${t.claimMapping}->'subject'
+        )
+        AND jsonb_typeof(${t.claimMapping}->'dingtalkTitle') = 'array'
+        AND jsonb_typeof(${t.claimMapping}->'dingtalkUserId') = 'array'
+        AND jsonb_typeof(${t.claimMapping}->'email') = 'array'
+        AND jsonb_typeof(${t.claimMapping}->'picture') = 'array'
         AND jsonb_typeof(${t.claimMapping}->'subject') = 'array'
         AND jsonb_array_length(CASE WHEN jsonb_typeof(${t.claimMapping}->'subject') = 'array' THEN ${t.claimMapping}->'subject' ELSE '[]'::jsonb END) > 0
         AND jsonb_typeof(${t.claimMapping}->'name') = 'array'
         AND jsonb_array_length(CASE WHEN jsonb_typeof(${t.claimMapping}->'name') = 'array' THEN ${t.claimMapping}->'name' ELSE '[]'::jsonb END) > 0
+        AND jsonb_array_length(CASE WHEN jsonb_typeof(${t.claimMapping}->'dingtalkTitle') = 'array' THEN ${t.claimMapping}->'dingtalkTitle' ELSE '[]'::jsonb END) <= 8
+        AND jsonb_array_length(CASE WHEN jsonb_typeof(${t.claimMapping}->'dingtalkUserId') = 'array' THEN ${t.claimMapping}->'dingtalkUserId' ELSE '[]'::jsonb END) <= 8
+        AND jsonb_array_length(CASE WHEN jsonb_typeof(${t.claimMapping}->'email') = 'array' THEN ${t.claimMapping}->'email' ELSE '[]'::jsonb END) <= 8
+        AND jsonb_array_length(CASE WHEN jsonb_typeof(${t.claimMapping}->'name') = 'array' THEN ${t.claimMapping}->'name' ELSE '[]'::jsonb END) <= 8
+        AND jsonb_array_length(CASE WHEN jsonb_typeof(${t.claimMapping}->'picture') = 'array' THEN ${t.claimMapping}->'picture' ELSE '[]'::jsonb END) <= 8
+        AND jsonb_array_length(CASE WHEN jsonb_typeof(${t.claimMapping}->'subject') = 'array' THEN ${t.claimMapping}->'subject' ELSE '[]'::jsonb END) <= 8
+        AND NOT jsonb_path_exists(${t.claimMapping}, '$.*[*] ? (@.type() != "string")')
+        AND NOT jsonb_path_exists(${t.claimMapping}, '$.*[*] ? (!(@ like_regex "^[A-Za-z0-9_.:-]{1,128}$"))')
         AND octet_length(${t.claimMapping}::text) <= 8192
-        AND ${t.claimMapping}::text !~* '"(secret|token|password|authorization)"[[:space:]]*:'`,
+        AND ${t.claimMapping}::text !~* '(client.?secret|api.?key|access.?token|refresh.?token|id.?token|password|authorization|bearer|credential)'`,
     ),
     check(
       'platform_identity_providers_policy_json_check',
@@ -160,6 +197,10 @@ export const platformIdentityProviderSecrets = pgTable(
   },
   (t) => [
     uniqueIndex('platform_identity_provider_secrets_ref_unique').on(t.ref),
+    uniqueIndex('platform_identity_provider_secrets_provider_fingerprint_unique').on(
+      t.providerId,
+      t.fingerprint,
+    ),
     index('platform_identity_provider_secrets_lookup_idx').on(
       t.providerId,
       t.fingerprint,

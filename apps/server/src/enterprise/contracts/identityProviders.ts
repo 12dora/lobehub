@@ -4,12 +4,15 @@ import {
 } from '@lobechat/types';
 import { z } from 'zod';
 
+import { containsEnterpriseSecretMaterial, isSensitiveKey } from '../security/redaction';
+
 const claimNameSchema = z
   .string()
   .trim()
   .min(1)
   .max(128)
-  .regex(/^[\w.:-]+$/);
+  .regex(/^[\w.:-]+$/)
+  .refine((value) => !isSensitiveKey(value), 'credential claim names are not allowed');
 
 const claimCandidatesSchema = (minimum = 0) =>
   z
@@ -104,6 +107,27 @@ export const identityProviderDraftSchema = z
     secret: identityProviderSecretStateSchema,
     status: identityProviderStatusSchema,
     type: identityProviderTypeSchema,
-    usePkce: z.boolean(),
+    migrationRequired: z.boolean(),
+    usePkce: z.literal(true),
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    const publicConfig = {
+      buttonLabel: value.buttonLabel,
+      claimMapping: value.claimMapping,
+      clientId: value.clientId,
+      displayName: value.displayName,
+      domainAllowlist: value.domainAllowlist,
+      groupRoleMapping: value.groupRoleMapping,
+      icon: value.icon,
+      issuer: value.issuer,
+      providerKey: value.providerKey,
+      scopes: value.scopes,
+    };
+    if (containsEnterpriseSecretMaterial(publicConfig)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'credential material is not allowed in identity provider drafts',
+      });
+    }
+  });
