@@ -6,9 +6,12 @@ import {
   ORG_NAME,
 } from './branding';
 
+/** Immutable product fallback for the stable builtin inbox display identity. */
+export const BUILT_IN_DEFAULT_AGENT_DISPLAY_NAME = 'Lobe AI';
+
 /** Immutable fallback for request-time Runtime Branding consumers. */
 export const BUILT_IN_RUNTIME_BRANDING = {
-  defaultAgentDisplayName: `${BRANDING_NAME} AI`,
+  defaultAgentDisplayName: BUILT_IN_DEFAULT_AGENT_DISPLAY_NAME,
   emailFrom: BRANDING_EMAIL.support,
   emailSenderName: BRANDING_NAME,
   faviconUrl: null,

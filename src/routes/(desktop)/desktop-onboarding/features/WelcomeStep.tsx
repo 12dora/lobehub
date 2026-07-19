@@ -11,6 +11,7 @@ import { memo, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { ProductLogo } from '@/components/Branding';
+import { useDefaultInboxDisplayName } from '@/hooks/useDefaultInboxDisplayName';
 import { useUserStore } from '@/store/user';
 
 interface WelcomeStepProps {
@@ -20,6 +21,7 @@ interface WelcomeStepProps {
 const WelcomeStep = memo<WelcomeStepProps>(({ onNext }) => {
   const { t, i18n } = useTranslation('onboarding');
   const locale = i18n.language;
+  const inboxDisplayName = useDefaultInboxDisplayName();
   const updateGeneralConfig = useUserStore((s) => s.updateGeneralConfig);
 
   const handleNext = () => {
@@ -60,7 +62,7 @@ const WelcomeStep = memo<WelcomeStepProps>(({ onNext }) => {
             pauseDuration={16_000}
             typingSpeed={64}
             sentences={[
-              t('telemetry.title', { name: 'Lobe AI' }),
+              t('telemetry.title', { name: inboxDisplayName }),
               t('telemetry.title2'),
               t('telemetry.title3'),
             ]}

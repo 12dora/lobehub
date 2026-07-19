@@ -9,6 +9,7 @@ import { useTranslation } from 'react-i18next';
 import AsyncBoundary from '@/components/AsyncBoundary';
 import { DEFAULT_AVATAR, DEFAULT_INBOX_AVATAR } from '@/const/meta';
 import SkeletonList from '@/features/NavPanel/components/SkeletonList';
+import { useDefaultInboxDisplayName } from '@/hooks/useDefaultInboxDisplayName';
 import { useAgentStore } from '@/store/agent';
 import { agentSelectors, builtinAgentSelectors } from '@/store/agent/selectors';
 import { useHomeStore } from '@/store/home';
@@ -54,6 +55,7 @@ const AgentList = memo<AgentListProps>(({ activeAgentId, error, onRetry, onSelec
   const isInit = useHomeStore(homeAgentListSelectors.isAgentListInit);
   const inboxAgentId = useAgentStore(builtinAgentSelectors.inboxAgentId);
   const inboxMeta = useAgentStore(agentSelectors.getAgentMetaById(inboxAgentId ?? ''));
+  const inboxDisplayName = useDefaultInboxDisplayName(inboxMeta?.title);
   const allAgents = useHomeStore(homeAgentListSelectors.allAgents);
 
   // Flat list: inbox first, then all sidebar agents (pinned + grouped + ungrouped)
@@ -69,7 +71,7 @@ const AgentList = memo<AgentListProps>(({ activeAgentId, error, onRetry, onSelec
           DEFAULT_INBOX_AVATAR,
         backgroundColor: inboxMeta?.backgroundColor || undefined,
         id: inboxAgentId,
-        title: inboxMeta?.title || 'Lobe AI',
+        title: inboxDisplayName,
       });
       seen.add(inboxAgentId);
     }
@@ -89,7 +91,7 @@ const AgentList = memo<AgentListProps>(({ activeAgentId, error, onRetry, onSelec
     }
 
     return out;
-  }, [inboxAgentId, inboxMeta, allAgents, t]);
+  }, [inboxAgentId, inboxMeta, inboxDisplayName, allAgents, t]);
 
   // Error gated ahead of the skeleton so a failed list fetch shows Retry instead
   // of a permanent skeleton (`isAgentListInit` only flips on success).

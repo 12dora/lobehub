@@ -1,12 +1,12 @@
+import { INBOX_SESSION_ID } from '@lobechat/const';
 import { type MetaData } from '@lobechat/types';
 import { useMemo } from 'react';
 
+import { useDefaultInboxDisplayName } from '@/hooks/useDefaultInboxDisplayName';
 import { useAgentStore } from '@/store/agent';
 import { agentSelectors } from '@/store/agent/selectors';
 
 import { contextSelectors, useConversationStore } from '../store';
-
-const LOBE_AI_TITLE = 'Lobe AI';
 
 /**
  * Hook to get agent meta data for a specific agent or the current conversation.
@@ -23,19 +23,16 @@ export const useAgentMeta = (messageAgentId?: string | null): MetaData => {
   const agentId = messageAgentId || contextAgentId;
   const agentMeta = useAgentStore(agentSelectors.getAgentMetaById(agentId));
   const builtinAgentIdMap = useAgentStore((s) => s.builtinAgentIdMap);
+  const inboxDisplayName = useDefaultInboxDisplayName(agentMeta.title);
 
   return useMemo(() => {
     // Check if the current agent is a builtin agent
-    const builtinAgentIds = Object.values(builtinAgentIdMap);
-    const isBuiltinAgent = builtinAgentIds.includes(agentId);
+    const isInboxAgent = builtinAgentIdMap[INBOX_SESSION_ID] === agentId;
 
-    if (isBuiltinAgent) {
-      // Use DB-stored title if customized (e.g. via onboarding), otherwise fallback to Lobe AI
-      return { ...agentMeta, title: agentMeta.title || LOBE_AI_TITLE };
-    }
+    if (isInboxAgent) return { ...agentMeta, title: inboxDisplayName };
 
     return agentMeta;
-  }, [agentId, agentMeta, builtinAgentIdMap]);
+  }, [agentId, agentMeta, builtinAgentIdMap, inboxDisplayName]);
 };
 
 /**

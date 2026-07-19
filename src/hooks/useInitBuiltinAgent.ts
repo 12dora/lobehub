@@ -1,5 +1,6 @@
 import { type BuiltinAgentSlug } from '@lobechat/builtin-agents';
 
+import { useCacheScope } from '@/libs/swr/useCacheScope';
 import { useAgentStore } from '@/store/agent';
 import { useUserStore } from '@/store/user';
 import { authSelectors } from '@/store/user/selectors';
@@ -11,7 +12,8 @@ import { authSelectors } from '@/store/user/selectors';
 export const useInitBuiltinAgent = (slug: BuiltinAgentSlug) => {
   const useInitBuiltinAgent = useAgentStore((s) => s.useInitBuiltinAgent);
 
+  const cacheScope = useCacheScope();
   const isLogin = useUserStore(authSelectors.isLogin);
 
-  useInitBuiltinAgent(slug, { isLogin });
+  useInitBuiltinAgent(slug, { cacheScope, isLogin });
 };

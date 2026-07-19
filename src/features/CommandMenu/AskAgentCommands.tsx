@@ -4,7 +4,9 @@ import { Command } from 'cmdk';
 import { memo, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { useDefaultInboxDisplayName } from '@/hooks/useDefaultInboxDisplayName';
 import { useAgentStore } from '@/store/agent';
+import { agentSelectors } from '@/store/agent/selectors';
 import { builtinAgentSelectors } from '@/store/agent/selectors/builtinAgentSelectors';
 import { useHomeStore } from '@/store/home';
 import { homeAgentListSelectors } from '@/store/home/selectors';
@@ -17,6 +19,8 @@ const AskAgentCommands = memo(() => {
   const { search, setSearch, setSelectedAgent } = useCommandMenuContext();
 
   const inboxAgentId = useAgentStore(builtinAgentSelectors.inboxAgentId);
+  const inboxMeta = useAgentStore(agentSelectors.getAgentMetaById(inboxAgentId));
+  const inboxDisplayName = useDefaultInboxDisplayName(inboxMeta.title);
   const allAgents = useHomeStore(homeAgentListSelectors.allAgents);
 
   // Check if search starts with "@"
@@ -54,21 +58,19 @@ const AskAgentCommands = memo(() => {
   // Only show when user types "@"
   if (!isAtMention) return null;
 
-  // Check if Lobe AI matches the query
-  const showLobeAI = !mentionQuery || 'lobe ai'.includes(mentionQuery);
+  const showInbox = !mentionQuery || inboxDisplayName.toLowerCase().includes(mentionQuery);
 
   return (
     <Command.Group heading={t('cmdk.mentionAgent')}>
-      {/* @Lobe AI option */}
-      {showLobeAI && (
+      {showInbox && (
         <Command.Item
           value="@lobe-ai"
           onMouseDown={preventDefault}
-          onSelect={() => handleAgentSelect(inboxAgentId, 'Lobe AI', DEFAULT_INBOX_AVATAR)}
+          onSelect={() => handleAgentSelect(inboxAgentId, inboxDisplayName, DEFAULT_INBOX_AVATAR)}
         >
           <Avatar emojiScaleWithBackground avatar={DEFAULT_INBOX_AVATAR} shape="square" size={18} />
           <div className={styles.itemContent}>
-            <div className={styles.itemLabel}>@Lobe AI</div>
+            <div className={styles.itemLabel}>@{inboxDisplayName}</div>
           </div>
         </Command.Item>
       )}

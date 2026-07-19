@@ -1,23 +1,24 @@
 'use client';
 
 import { INBOX_SESSION_ID } from '@lobechat/const';
-import { memo, useLayoutEffect, useMemo } from 'react';
+import { memo, useLayoutEffect, useMemo, useRef } from 'react';
 import { useParams } from 'react-router';
 
 import Loading from '@/components/Loading/BrandTextLoading';
 import { WelcomeExtraProvider } from '@/features/AgentHome/WelcomeExtraContext';
+import { useCurrentInboxAgentId } from '@/hooks/useCurrentInboxAgent';
 import { useFetchTopics } from '@/hooks/useFetchTopics';
 import { useInitAgentConfig } from '@/hooks/useInitAgentConfig';
 import Conversation from '@/routes/(main)/agent/features/Conversation';
 import { useAgentStore } from '@/store/agent';
-import { builtinAgentSelectors } from '@/store/agent/selectors';
 import { useChatStore } from '@/store/chat';
 
 import QuickChatAgentSwitcher from './QuickChatAgentSwitcher';
 
 const PopupAgentQuickPage = memo(() => {
   const { aid } = useParams<{ aid: string }>();
-  const inboxAgentId = useAgentStore(builtinAgentSelectors.inboxAgentId);
+  const inboxAgentId = useCurrentInboxAgentId();
+  const previousInboxAgentIdRef = useRef<string | undefined>(undefined);
 
   // The inbox slug is not a real agent id. Resolve it through
   // `builtinAgentIdMap` so `activeAgentId` points at the actual entity in
@@ -30,7 +31,26 @@ const PopupAgentQuickPage = memo(() => {
   useInitAgentConfig(isInboxSlug ? undefined : aid);
 
   useLayoutEffect(() => {
-    if (!effectiveAgentId) return;
+    const previousInboxAgentId = previousInboxAgentIdRef.current;
+
+    if (!effectiveAgentId) {
+      if (!isInboxSlug || !previousInboxAgentId) return;
+
+      if (useAgentStore.getState().activeAgentId === previousInboxAgentId)
+        useAgentStore.setState(
+          { activeAgentId: undefined },
+          false,
+          'PopupAgentQuickPage/clearStaleInbox',
+        );
+      if (useChatStore.getState().activeAgentId === previousInboxAgentId)
+        useChatStore.setState(
+          { activeAgentId: undefined },
+          false,
+          'PopupAgentQuickPage/clearStaleInbox',
+        );
+      return;
+    }
+
     useAgentStore.setState({ activeAgentId: effectiveAgentId }, false, 'PopupAgentQuickPage/sync');
     useChatStore.setState(
       {
@@ -42,9 +62,14 @@ const PopupAgentQuickPage = memo(() => {
       false,
       'PopupAgentQuickPage/sync',
     );
-  }, [effectiveAgentId]);
 
-  useFetchTopics();
+    if (isInboxSlug) previousInboxAgentIdRef.current = effectiveAgentId;
+  }, [effectiveAgentId, isInboxSlug]);
+
+  useFetchTopics({
+    enabled: Boolean(effectiveAgentId),
+    session: { agentId: effectiveAgentId, isInbox: isInboxSlug },
+  });
 
   const welcomeExtra = useMemo(() => ({ extra: <QuickChatAgentSwitcher /> }), []);
 

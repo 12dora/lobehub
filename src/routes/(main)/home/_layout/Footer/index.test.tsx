@@ -9,24 +9,27 @@ const analyticsTrack = vi.fn();
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     i18n: { language: 'en-US' },
-    t: (key: string) =>
-      ({
-        'agentOnboardingPromo.actionLabel': 'Try it now',
-        'agentOnboardingPromo.description':
-          'Set up your agent teams in a quick chat with Lobe AI. Your existing agents remain unchanged.',
-        'agentOnboardingPromo.title': 'Quick Wizard',
-        'changelog': 'Changelog',
-        'getApp': 'Get App',
-        'productHunt.actionLabel': 'Support us',
-        'productHunt.description': 'Support us on Product Hunt.',
-        'productHunt.title': "We're on Product Hunt!",
-        'userPanel.discord': 'Discord',
-        'userPanel.docs': 'Docs',
-        'userPanel.feedback': 'Feedback',
-        'userPanel.help': 'Help',
-        'userPanel.inviteFriend': 'Invite a friend',
-        'userPanel.setting': 'Settings',
-      })[key] || key,
+    t: (key: string, options?: { name?: string }) => {
+      const value =
+        {
+          'agentOnboardingPromo.actionLabel': 'Try it now',
+          'agentOnboardingPromo.description':
+            'Set up your agent teams in a quick chat with {{name}}. Your existing agents remain unchanged.',
+          'agentOnboardingPromo.title': 'Quick Wizard',
+          'changelog': 'Changelog',
+          'getApp': 'Get App',
+          'productHunt.actionLabel': 'Support us',
+          'productHunt.description': 'Support us on Product Hunt.',
+          'productHunt.title': "We're on Product Hunt!",
+          'userPanel.discord': 'Discord',
+          'userPanel.docs': 'Docs',
+          'userPanel.feedback': 'Feedback',
+          'userPanel.help': 'Help',
+          'userPanel.inviteFriend': 'Invite a friend',
+          'userPanel.setting': 'Settings',
+        }[key] || key;
+      return value.replace('{{name}}', options?.name ?? '{{name}}');
+    },
   }),
 }));
 
@@ -34,18 +37,21 @@ interface RenderFooterOptions {
   agentFinished?: boolean;
   agentStarted?: boolean;
   billboardItems?: unknown[];
+  brandingName?: string;
   classicFinished?: boolean;
   desktop?: boolean;
   enableBusinessFeatures?: boolean;
   enabled?: boolean;
   hideGitHub?: boolean;
   homeSidebar?: boolean;
+  inboxTitle?: string;
   mobile?: boolean;
   readSlugs?: string[];
   serverConfigInit?: boolean;
 }
 
 let mockGlobalState: Record<string, unknown>;
+let mockAgentState: Record<string, unknown>;
 let mockServerConfigState: Record<string, unknown>;
 let mockUserState: Record<string, unknown>;
 
@@ -73,11 +79,13 @@ const renderFooter = async ({
   agentFinished = false,
   agentStarted = false,
   billboardItems = [],
+  brandingName = 'AIHub AI',
   classicFinished = true,
   desktop = false,
   enabled = true,
   enableBusinessFeatures = false,
   homeSidebar = false,
+  inboxTitle = '',
   hideGitHub = true,
   mobile = false,
   readSlugs = [],
@@ -92,6 +100,11 @@ const renderFooter = async ({
   });
 
   mockGlobalState = createGlobalState(readSlugs);
+  mockAgentState = {
+    agentMap: { 'inbox-agent': { title: inboxTitle } },
+    builtinAgentIdMap: { inbox: 'inbox-agent' },
+    inboxProjectionScope: 'user-a:personal',
+  };
   mockServerConfigState = {
     enableBusinessFeatures,
     featureFlags: { enableAgentOnboarding: enabled },
@@ -106,6 +119,7 @@ const renderFooter = async ({
     defaultSettings: {},
     onboarding: classicFinished ? { finishedAt: '2026-04-14T00:00:00.000Z' } : undefined,
     settings: { general: { isDevMode: false } },
+    isSignedIn: true,
   };
 
   vi.doMock('@lobechat/const', async (importOriginal) => {
@@ -180,6 +194,9 @@ const renderFooter = async ({
       <a href={to}>{children}</a>
     ),
   }));
+  vi.doMock('@/enterprise/client/providers/RuntimeBrandingProvider', () => ({
+    useBranding: () => ({ defaultAgentDisplayName: brandingName }),
+  }));
   function createNavLayoutState() {
     return {
       bottomMenuItems: [],
@@ -198,6 +215,24 @@ const renderFooter = async ({
   }
   vi.doMock('@/hooks/useNavLayout', () => ({
     useNavLayout: createNavLayoutState,
+  }));
+  vi.doMock('@/libs/swr/useCacheScope', () => ({
+    useCacheScope: () => 'user-a:personal',
+  }));
+  function selectFromAgentStore(selector: (state: Record<string, unknown>) => unknown) {
+    return selector(mockAgentState);
+  }
+  vi.doMock('@/store/agent', () => ({
+    useAgentStore: selectFromAgentStore,
+  }));
+  vi.doMock('@/store/agent/selectors', () => ({
+    builtinAgentSelectors: {
+      inboxAgentMetaForScope: (scope?: string) => (state: Record<string, unknown>) => {
+        if (state.inboxProjectionScope !== scope) return undefined;
+        const id = (state.builtinAgentIdMap as Record<string, string>).inbox;
+        return (state.agentMap as Record<string, Record<string, unknown>>)[id];
+      },
+    },
   }));
   const selectFromGlobalStore = ((selector: (state: Record<string, unknown>) => unknown) =>
     selector(mockGlobalState)) as MockStoreHook;
@@ -247,13 +282,49 @@ afterEach(() => {
   vi.doUnmock('@/features/NavPanel');
   vi.doUnmock('@/features/User/UserPanel/ThemeButton');
   vi.doUnmock('@/features/Workspace/WorkspaceLink');
+  vi.doUnmock('@/enterprise/client/providers/RuntimeBrandingProvider');
   vi.doUnmock('@/hooks/useNavLayout');
+  vi.doUnmock('@/libs/swr/useCacheScope');
+  vi.doUnmock('@/store/agent');
+  vi.doUnmock('@/store/agent/selectors');
   vi.doUnmock('@/store/global');
   vi.doUnmock('@/store/serverConfig');
   vi.doUnmock('@/store/user');
 });
 
 describe('Footer agent onboarding promotion', () => {
+  it.each([
+    {
+      brandingName: 'AIHub AI',
+      expected:
+        'Set up your agent teams in a quick chat with Managed Assistant. Your existing agents remain unchanged.',
+      inboxTitle: 'Managed Assistant',
+      scenario: 'managed normalized title',
+    },
+    {
+      brandingName: 'AIHub AI',
+      expected:
+        'Set up your agent teams in a quick chat with Lobe AI. Your existing agents remain unchanged.',
+      inboxTitle: 'Lobe AI',
+      scenario: 'literal explicit Lobe AI title',
+    },
+    {
+      brandingName: 'AIHub AI',
+      expected:
+        'Set up your agent teams in a quick chat with AIHub AI. Your existing agents remain unchanged.',
+      inboxTitle: '',
+      scenario: 'branding fallback while inbox metadata is empty',
+    },
+  ])(
+    'uses $scenario before rendering the promo copy',
+    async ({ brandingName, expected, inboxTitle }) => {
+      await renderFooter({ brandingName, inboxTitle });
+
+      expect(screen.getByText(expected)).toBeInTheDocument();
+    },
+    40000,
+  );
+
   it('shows the agent onboarding promotion for eligible web users', async () => {
     await renderFooter();
 

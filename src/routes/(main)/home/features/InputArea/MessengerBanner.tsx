@@ -8,6 +8,7 @@ import React, { memo, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
+import { useScopedDefaultInboxDisplayName } from '@/hooks/useDefaultInboxDisplayName';
 import { getPlatformIcon } from '@/routes/(main)/agent/channel/const';
 import { useGlobalStore } from '@/store/global';
 
@@ -74,6 +75,7 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
 const MessengerBanner = memo(() => {
   const { t } = useTranslation('common');
   const navigate = useWorkspaceAwareNavigate();
+  const inboxDisplayName = useScopedDefaultInboxDisplayName();
 
   const updateSystemStatus = useGlobalStore((s) => s.updateSystemStatus);
 
@@ -117,7 +119,9 @@ const MessengerBanner = memo(() => {
     >
       <Flexbox horizontal align="center" gap={8}>
         <Icon className={styles.icon} icon={MessageCircleIcon} size={18} />
-        <span className={styles.text}>{t('messengerBanner.title')}</span>
+        <span className={styles.text}>
+          {t('messengerBanner.title', { name: inboxDisplayName })}
+        </span>
       </Flexbox>
       <Flexbox horizontal align="center" gap={8}>
         {platformIcons.length > 0 && (
