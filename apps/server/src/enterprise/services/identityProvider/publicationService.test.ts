@@ -196,6 +196,8 @@ describe('IdentityProviderPublicationService', () => {
     expect(publishAudits.filter((audit) => audit.result === 'success')).toHaveLength(1);
     expect(publishAudits.filter((audit) => audit.result === 'failure')).toHaveLength(0);
     expect(publishAudits[0]?.requestId).toBe(input.requestId);
+    expect(JSON.stringify(publishAudits[0])).not.toContain(draft.secret.fingerprint!);
+    expect(JSON.stringify(publishAudits[0])).not.toMatch(/fingerprint/i);
   });
 
   it('fences a paused expired owner after a recovery owner completes', async () => {
@@ -461,6 +463,8 @@ describe('IdentityProviderPublicationService', () => {
     );
     expect(rollbackAudits).toHaveLength(1);
     expect(rollbackAudits[0]?.requestId).toBe(input.requestId);
+    expect(JSON.stringify(rollbackAudits[0])).not.toContain(draft.secret.fingerprint!);
+    expect(JSON.stringify(rollbackAudits[0])).not.toMatch(/fingerprint/i);
   });
 
   it.each([
