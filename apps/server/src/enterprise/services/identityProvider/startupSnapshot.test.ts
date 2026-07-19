@@ -160,14 +160,66 @@ describe('identity provider startup snapshot', () => {
   it('keeps an environment provider authoritative over a conflicting DB provider', async () => {
     const env = { ...(await baseEnv()), AUTH_SSO_PROVIDERS: 'authentik' };
     const { provider } = await seedPublished(env, 'authentik');
+    await seedPublished(env, 'work');
     await db
       .update(platformResourceRevisions)
       .set({ payload: { providerKey: 'authentik', unexpectedSecret: 'damaged-shadow-row' } })
       .where(eq(platformResourceRevisions.resourceId, provider.id));
 
     const snapshot = await loadIdentityProviderStartupSnapshot({ cache: false, db, env });
-    expect(snapshot.providerIds).toEqual(['authentik']);
-    expect(snapshot.databaseProviders).toEqual([]);
+    expect(snapshot.providerIds).toEqual(['authentik', 'work']);
+    expect(snapshot.databaseProviders).toHaveLength(1);
+    expect(snapshot.databaseProviders[0]?.providerKey).toBe('work');
+  });
+
+  it.each([
+    [
+      'revision checksum',
+      async (providerId: string) => {
+        await db
+          .update(platformResourceRevisions)
+          .set({ checksum: 'f'.repeat(64) })
+          .where(eq(platformResourceRevisions.resourceId, providerId));
+      },
+    ],
+    [
+      'independent revision secret fingerprint',
+      async (providerId: string) => {
+        await db
+          .update(platformResourceRevisions)
+          .set({ secretFingerprint: 'f'.repeat(64) })
+          .where(eq(platformResourceRevisions.resourceId, providerId));
+      },
+    ],
+  ])('rejects a published snapshot with a tampered %s', async (_label, tamper) => {
+    const env = await baseEnv();
+    const { provider } = await seedPublished(env);
+    await tamper(provider.id);
+
+    const snapshot = await loadIdentityProviderStartupSnapshot({ cache: false, db, env });
+    expect(snapshot).toMatchObject({
+      databaseProviders: [],
+      health: 'degraded',
+      source: 'break_glass',
+    });
+  });
+
+  it('rejects a decrypted secret that does not match the exact published fingerprint', async () => {
+    const env = await baseEnv();
+    const { provider } = await seedPublished(env);
+    const secretService = PlatformSecretService.tryFromEnv(env)!;
+    const wrongCiphertext = await secretService.encrypt('wrong-secret');
+    await db
+      .update(platformIdentityProviderSecrets)
+      .set({ ciphertext: wrongCiphertext })
+      .where(eq(platformIdentityProviderSecrets.providerId, provider.id));
+
+    const snapshot = await loadIdentityProviderStartupSnapshot({ cache: false, db, env });
+    expect(snapshot).toMatchObject({
+      databaseProviders: [],
+      health: 'degraded',
+      source: 'break_glass',
+    });
   });
 
   it('uses LKG when DB becomes unavailable and never substitutes a wrong new secret', async () => {

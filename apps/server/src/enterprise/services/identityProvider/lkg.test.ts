@@ -1,21 +1,30 @@
 // @vitest-environment node
 import {
+  appendFile,
   chmod,
+  link,
   mkdtemp,
   readFile,
   realpath,
   rm,
+  stat,
   symlink,
   unlink,
   writeFile,
 } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import pathModule from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { checksumPayload } from '@/database/models/platform';
+
 import { PlatformSecretService } from '../../security/secret';
-import { readIdentityProviderLkg, writeIdentityProviderLkg } from './lkg';
+import {
+  identityProviderLkgIdentity,
+  readIdentityProviderLkg,
+  writeIdentityProviderLkg,
+} from './lkg';
 
 const directories: string[] = [];
 const masterKey = Buffer.alloc(32, 61).toString('base64');
@@ -31,19 +40,27 @@ const createPath = async () => {
   return pathModule.join(directory, 'snapshot.json');
 };
 
-const payload = (createdAt = new Date().toISOString()) => ({
-  createdAt,
-  domain: 'platform-oidc-lkg' as const,
-  identityRevision: 'a'.repeat(64),
-  providers: [
+const payload = (createdAt = new Date().toISOString(), revision = 3) => {
+  const published = { providerKey: 'corp', secretFingerprint: 'a'.repeat(64) };
+  const providers = [
     {
-      payload: { providerKey: 'corp' },
-      revision: 3,
+      checksum: checksumPayload(published),
+      payload: published,
+      providerId: 'provider-1',
+      revision,
       secretCiphertext: 'aihub.secret.v1.test',
+      secretFingerprint: published.secretFingerprint,
     },
-  ],
-  version: 1 as const,
-});
+  ];
+  return {
+    createdAt,
+    domain: 'platform-oidc-lkg' as const,
+    generation: `2026-01-01T00:00:00.000Z:${revision}`,
+    identityRevision: identityProviderLkgIdentity(providers),
+    providers,
+    version: 1 as const,
+  };
+};
 
 afterEach(async () => {
   await Promise.all(
@@ -103,6 +120,142 @@ describe('identity provider LKG', () => {
         secrets: secrets(),
       }),
     ).rejects.toThrow('OIDC_LKG_DIRECTORY_PERMISSIONS_INVALID');
+  });
+
+  it('requires exact directory and file modes', async () => {
+    const path = await createPath();
+    const env = { PLATFORM_OIDC_LKG_PATH: path };
+    await chmod(pathModule.dirname(path), 0o500);
+    await expect(
+      writeIdentityProviderLkg({ env, payload: payload(), secrets: secrets() }),
+    ).rejects.toThrow('OIDC_LKG_DIRECTORY_PERMISSIONS_INVALID');
+
+    await chmod(pathModule.dirname(path), 0o700);
+    await writeIdentityProviderLkg({ env, payload: payload(), secrets: secrets() });
+    await chmod(path, 0o400);
+    await expect(readIdentityProviderLkg({ env, secrets: secrets() })).rejects.toThrow(
+      'OIDC_LKG_FILE_PERMISSIONS_INVALID',
+    );
+  });
+
+  it('rejects hard-linked snapshots', async () => {
+    const path = await createPath();
+    const env = { PLATFORM_OIDC_LKG_PATH: path };
+    const secondLink = `${path}.copy`;
+    await writeIdentityProviderLkg({ env, payload: payload(), secrets: secrets() });
+    await link(path, secondLink);
+
+    await expect(readIdentityProviderLkg({ env, secrets: secrets() })).rejects.toThrow(
+      'OIDC_LKG_FILE_LINK_INVALID',
+    );
+  });
+
+  it('rejects a file that grows after the verified descriptor stat', async () => {
+    const path = await createPath();
+    const env = { PLATFORM_OIDC_LKG_PATH: path };
+    await writeIdentityProviderLkg({ env, payload: payload(), secrets: secrets() });
+
+    await expect(
+      readIdentityProviderLkg({
+        env,
+        secrets: secrets(),
+        testHooks: { afterFileStat: async () => appendFile(path, 'x') },
+      }),
+    ).rejects.toThrow('OIDC_LKG_FILE_CHANGED_DURING_READ');
+  });
+
+  it('refuses a checksum-valid shape whose full-set identity was not updated', async () => {
+    const path = await createPath();
+    const env = { PLATFORM_OIDC_LKG_PATH: path };
+    const original = payload();
+    await writeIdentityProviderLkg({ env, payload: original, secrets: secrets() });
+    const tampered = structuredClone(payload(new Date().toISOString(), 4));
+    tampered.providers[0].payload.providerKey = 'tampered';
+    tampered.providers[0].checksum = checksumPayload(tampered.providers[0].payload);
+
+    await expect(
+      writeIdentityProviderLkg({ env, payload: tampered, secrets: secrets() }),
+    ).rejects.toThrow('OIDC_LKG_IDENTITY_INVALID');
+    await expect(readIdentityProviderLkg({ env, secrets: secrets() })).resolves.toEqual(original);
+  });
+
+  it('does not let a lower generation overwrite the current LKG', async () => {
+    const path = await createPath();
+    const env = { PLATFORM_OIDC_LKG_PATH: path };
+    const newer = payload(new Date().toISOString(), 4);
+    await writeIdentityProviderLkg({ env, payload: newer, secrets: secrets() });
+
+    await expect(
+      writeIdentityProviderLkg({ env, payload: payload(), secrets: secrets() }),
+    ).resolves.toBe('rejected');
+    await expect(readIdentityProviderLkg({ env, secrets: secrets() })).resolves.toEqual(newer);
+  });
+
+  it('returns busy for a live lock and safely takes over a stale dead-owner lock', async () => {
+    const path = await createPath();
+    const env = {
+      PLATFORM_OIDC_LKG_PATH: path,
+      PLATFORM_OIDC_LKG_STALE_LOCK_MS: '1000',
+    };
+    const lockPath = `${path}.lock`;
+    const lock = (pid: number, createdAt: string) => ({
+      createdAt,
+      generation: 'generation',
+      host: hostname(),
+      nonce: '00000000-0000-4000-8000-000000000001',
+      pid,
+      version: 1,
+    });
+    await writeFile(lockPath, JSON.stringify(lock(process.pid, new Date().toISOString())), {
+      mode: 0o600,
+    });
+    await expect(
+      writeIdentityProviderLkg({ env, payload: payload(), secrets: secrets() }),
+    ).resolves.toBe('busy');
+
+    await writeFile(
+      lockPath,
+      JSON.stringify(lock(2_000_000_000, new Date(Date.now() - 5000).toISOString())),
+    );
+    await expect(
+      writeIdentityProviderLkg({ env, payload: payload(), secrets: secrets() }),
+    ).resolves.toBe('written');
+  });
+
+  it('does not unlink a replacement lock and can recover after cleanup', async () => {
+    const path = await createPath();
+    const env = { PLATFORM_OIDC_LKG_PATH: path };
+    const lockPath = `${path}.lock`;
+    await expect(
+      writeIdentityProviderLkg({
+        env,
+        payload: payload(),
+        secrets: secrets(),
+        testHooks: {
+          beforeLockRelease: async () => {
+            await unlink(lockPath);
+            await writeFile(
+              lockPath,
+              JSON.stringify({
+                createdAt: new Date().toISOString(),
+                generation: 'replacement',
+                host: hostname(),
+                nonce: '00000000-0000-4000-8000-000000000002',
+                pid: process.pid,
+                version: 1,
+              }),
+              { flag: 'wx', mode: 0o600 },
+            );
+          },
+        },
+      }),
+    ).resolves.toBe('cleanup_failed');
+    await expect(stat(lockPath)).resolves.toBeDefined();
+
+    await unlink(lockPath);
+    await expect(
+      writeIdentityProviderLkg({ env, payload: payload(), secrets: secrets() }),
+    ).resolves.toBe('unchanged');
   });
 
   it('refuses a symlink target and leaves the link destination untouched', async () => {
