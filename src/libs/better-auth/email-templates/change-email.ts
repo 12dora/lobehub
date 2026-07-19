@@ -2,12 +2,17 @@
  * Change email verification template
  * Sent to users when they request to change their email address
  */
-export const getChangeEmailVerificationTemplate = (params: {
-  expiresInSeconds: number;
-  url: string;
-  userName?: string | null;
-}) => {
+import { type EmailBrandingParams, resolveEmailBranding } from './branding';
+
+export const getChangeEmailVerificationTemplate = (
+  params: EmailBrandingParams & {
+    expiresInSeconds: number;
+    url: string;
+    userName?: string | null;
+  },
+) => {
   const { url, userName, expiresInSeconds } = params;
+  const { htmlPlatformName, platformName } = resolveEmailBranding(params.platformName);
 
   // Format expiration time in a human-readable way
   const expiresInHours = expiresInSeconds / 3600;
@@ -33,7 +38,7 @@ export const getChangeEmailVerificationTemplate = (params: {
     <div style="text-align: center; margin-bottom: 32px;">
       <div style="display: inline-flex; align-items: center; justify-content: center; background-color: #ffffff; border-radius: 12px; padding: 8px 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.04);">
         <span style="font-size: 24px; line-height: 1; margin-right: 10px;">🤯</span>
-        <span style="font-size: 18px; font-weight: 700; color: #000000; letter-spacing: -0.5px;">LobeHub</span>
+        <span style="font-size: 18px; font-weight: 700; color: #000000; letter-spacing: -0.5px;">${htmlPlatformName}</span>
       </div>
     </div>
 
@@ -55,7 +60,7 @@ export const getChangeEmailVerificationTemplate = (params: {
         ${userName ? `<p style="margin: 0 0 16px 0;">Hi <strong>${userName}</strong>,</p>` : ''}
 
         <p style="margin: 0 0 24px 0;">
-          We received a request to change your LobeHub account email to this address. Please confirm by clicking the button below.
+          We received a request to change your ${htmlPlatformName} account email to this address. Please confirm by clicking the button below.
         </p>
 
         <!-- Button -->
@@ -95,14 +100,14 @@ export const getChangeEmailVerificationTemplate = (params: {
     <!-- Footer -->
     <div style="text-align: center; margin-top: 32px;">
       <p style="color: #a1a1aa; font-size: 13px; margin: 0;">
-        © 2026 LobeHub. All rights reserved.
+        © 2026 ${htmlPlatformName}. All rights reserved.
       </p>
     </div>
   </div>
 </body>
 </html>
     `,
-    subject: 'Confirm Your New Email - LobeHub',
-    text: `You requested to change your LobeHub account email. Please confirm by clicking this link: ${url}\n\nThis link will expire in ${expirationText}.\n\nIf you didn't request this change, you can safely ignore this email.`,
+    subject: `Confirm Your New Email - ${platformName}`,
+    text: `You requested to change your ${platformName} account email. Please confirm by clicking this link: ${url}\n\nThis link will expire in ${expirationText}.\n\nIf you didn't request this change, you can safely ignore this email.`,
   };
 };

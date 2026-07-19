@@ -1,4 +1,4 @@
-import { BRANDING_NAME, ORG_NAME } from '@lobechat/business-const';
+import { ORG_NAME } from '@lobechat/business-const';
 import { OG_URL } from '@lobechat/const';
 
 import { getServerFeatureFlagsValue } from '@/config/featureFlags';
@@ -8,9 +8,12 @@ import { appEnv } from '@/envs/app';
 import { fileEnv } from '@/envs/file';
 import { pythonEnv } from '@/envs/python';
 import { type Locales } from '@/locales/resources';
+import { resolveServerRuntimeBranding } from '@/server/enterprise/services/branding';
 import { getServerGlobalConfig } from '@/server/globalConfig';
 import { buildAnalyticsConfig, fetchViteDevTemplate, renderSpaHtml } from '@/server/spaHtml';
 import { translation } from '@/server/translation';
+import { escapeHtml } from '@/server/utils/html';
+import type { RuntimeBranding } from '@/types/platform/branding';
 import { type SPAClientEnv, type SPAServerConfig } from '@/types/spaServerConfig';
 import { RouteVariants } from '@/utils/server/routeVariants';
 
@@ -50,10 +53,15 @@ function buildClientEnv(): SPAClientEnv {
   };
 }
 
-async function buildSeoMeta(locale: string): Promise<string> {
+export async function buildSeoMeta(
+  locale: string,
+  inputBranding?: RuntimeBranding,
+): Promise<string> {
+  const branding = inputBranding ?? (await resolveServerRuntimeBranding());
   const { t } = await translation('metadata', locale);
-  const title = t('chat.title', { appName: BRANDING_NAME });
-  const description = t('chat.description', { appName: BRANDING_NAME });
+  const title = escapeHtml(t('chat.title', { appName: branding.name }));
+  const description = escapeHtml(t('chat.description', { appName: branding.name }));
+  const ogImage = escapeHtml(branding.ogImageUrl ?? OG_URL);
 
   return [
     `<title>${title}</title>`,
@@ -62,13 +70,13 @@ async function buildSeoMeta(locale: string): Promise<string> {
     `<meta property="og:description" content="${description}" />`,
     `<meta property="og:type" content="website" />`,
     `<meta property="og:url" content="${OFFICIAL_URL}" />`,
-    `<meta property="og:image" content="${OG_URL}" />`,
-    `<meta property="og:site_name" content="${BRANDING_NAME}" />`,
-    `<meta property="og:locale" content="${locale}" />`,
+    `<meta property="og:image" content="${ogImage}" />`,
+    `<meta property="og:site_name" content="${escapeHtml(branding.name)}" />`,
+    `<meta property="og:locale" content="${escapeHtml(locale)}" />`,
     `<meta name="twitter:card" content="summary_large_image" />`,
     `<meta name="twitter:title" content="${title}" />`,
     `<meta name="twitter:description" content="${description}" />`,
-    `<meta name="twitter:image" content="${OG_URL}" />`,
+    `<meta name="twitter:image" content="${ogImage}" />`,
     `<meta name="twitter:site" content="${isCustomORG ? `@${ORG_NAME}` : '@lobehub'}" />`,
   ].join('\n    ');
 }

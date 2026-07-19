@@ -138,3 +138,45 @@ export const platformBrandingPublishedSchema = platformBrandingFieldsSchema.exte
 
 export type PlatformBrandingDraft = z.infer<typeof platformBrandingDraftSchema>;
 export type PlatformBrandingPublished = z.infer<typeof platformBrandingPublishedSchema>;
+
+export interface RuntimeBranding extends Omit<PlatformBrandingPublished, 'revision'> {
+  publishedRevision: string | null;
+}
+
+/** Resolves one Published revision against the immutable product fallback. */
+export const resolveRuntimeBranding = (
+  published: PlatformBrandingPublished | null,
+  fallback: RuntimeBranding,
+): RuntimeBranding => {
+  if (!published) return { ...fallback };
+
+  return {
+    defaultAgentDisplayName: published.defaultAgentDisplayName ?? `${published.name} AI`,
+    emailFrom: published.emailFrom ?? fallback.emailFrom,
+    emailSenderName: published.emailSenderName ?? published.name,
+    faviconUrl: published.faviconUrl ?? fallback.faviconUrl,
+    homeUrl: published.homeUrl ?? fallback.homeUrl,
+    iconUrl: published.iconUrl ?? published.logoUrl ?? fallback.iconUrl,
+    legalName: published.legalName ?? fallback.legalName,
+    logoUrl: published.logoUrl ?? fallback.logoUrl,
+    name: published.name,
+    ogImageUrl: published.ogImageUrl ?? fallback.ogImageUrl,
+    pageTitleTemplate: published.pageTitleTemplate?.includes('%s')
+      ? published.pageTitleTemplate
+      : `%s · ${published.name}`,
+    privacyUrl: published.privacyUrl ?? fallback.privacyUrl,
+    publishedRevision: published.revision,
+    shortName: published.shortName ?? published.name,
+    supportUrl: published.supportUrl ?? fallback.supportUrl,
+    termsUrl: published.termsUrl ?? fallback.termsUrl,
+  };
+};
+
+export const formatRuntimePageTitle = (title: string, branding: RuntimeBranding): string => {
+  if (!title) return branding.name;
+  if (!branding.pageTitleTemplate) return `${title} · ${branding.name}`;
+
+  return branding.pageTitleTemplate.includes('%s')
+    ? branding.pageTitleTemplate.replaceAll('%s', title)
+    : `${title} · ${branding.name}`;
+};

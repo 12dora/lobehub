@@ -119,6 +119,51 @@ describe('EmailService', () => {
     });
   });
 
+  describe('sendBrandedMail', () => {
+    it('uses one exact revision for template, sender and observability', async () => {
+      const onBrandedSend = vi.fn();
+      const branding = {
+        defaultAgentDisplayName: 'AIHub AI',
+        emailFrom: 'mail@example.com',
+        emailSenderName: 'AI "Hub"',
+        faviconUrl: null,
+        homeUrl: null,
+        iconUrl: null,
+        legalName: null,
+        logoUrl: null,
+        name: 'AIHub',
+        ogImageUrl: null,
+        pageTitleTemplate: '%s · AIHub',
+        privacyUrl: null,
+        publishedRevision: '42',
+        shortName: 'AIHub',
+        supportUrl: null,
+        termsUrl: null,
+      };
+      const resolveBranding = vi.fn().mockResolvedValue(branding);
+      emailService = new EmailService(EmailImplType.Nodemailer, {
+        onBrandedSend,
+        resolveBranding,
+      });
+      mockEmailImpl.sendMail.mockResolvedValue({ messageId: 'message-id' });
+
+      const result = await emailService.sendBrandedMail(({ branding: captured, revision }) => ({
+        subject: `${captured.name}:${revision}`,
+        to: 'recipient@example.com',
+      }));
+
+      expect(resolveBranding).toHaveBeenCalledTimes(1);
+      expect(mockEmailImpl.sendMail).toHaveBeenCalledWith({
+        from: '"AI \\"Hub\\"" <mail@example.com>',
+        subject: 'AIHub:42',
+        to: 'recipient@example.com',
+      });
+      expect(onBrandedSend).toHaveBeenCalledWith({ branding, revision: '42' });
+      expect(result).toEqual({ messageId: 'message-id' });
+      expect(result).not.toHaveProperty('brandingRevision');
+    });
+  });
+
   describe('verify', () => {
     it('should call emailImpl.verify if available', async () => {
       mockEmailImpl.verify.mockResolvedValue(true);

@@ -1,4 +1,3 @@
-import { BRANDING_NAME } from '@lobechat/business-const';
 import { Alert, Button, Flexbox, Icon, Input, Text } from '@lobehub/ui';
 import { type FormInstance, type InputRef } from 'antd';
 import { Badge, Divider, Form } from 'antd';
@@ -8,6 +7,7 @@ import { type CSSProperties, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import AuthIcons from '@/components/AuthIcons';
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import AuthCard from '@/features/AuthCard';
 import { AuthAgreement } from '@/features/AuthShell';
 
@@ -62,6 +62,7 @@ export const SignInEmailStep = ({
   onSocialSignIn,
 }: SignInEmailStepProps) => {
   const { t } = useTranslation('auth');
+  const branding = useBranding();
   const emailInputRef = useRef<InputRef>(null);
 
   useEffect(() => {
@@ -88,7 +89,7 @@ export const SignInEmailStep = ({
   const showEmailForm = !disableEmailPassword && !isSocialOnly;
 
   return (
-    <AuthCard title={t('signin.subtitle', { appName: BRANDING_NAME })}>
+    <AuthCard title={t('signin.subtitle', { appName: branding.name })}>
       {serverConfigInit && oAuthSSOProviders.length > 0 && (
         <Flexbox gap={12}>
           {oAuthSSOProviders.map((provider) => {

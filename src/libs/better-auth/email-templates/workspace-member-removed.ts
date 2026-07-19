@@ -1,14 +1,19 @@
-export const getWorkspaceMemberRemovedEmailTemplate = (params: {
-  reason: 'downgrade' | 'removed_by_owner';
-  workspaceName: string;
-}) => {
+import { type EmailBrandingParams, resolveEmailBranding } from './branding';
+
+export const getWorkspaceMemberRemovedEmailTemplate = (
+  params: EmailBrandingParams & {
+    reason: 'downgrade' | 'removed_by_owner';
+    workspaceName: string;
+  },
+) => {
   const { workspaceName, reason } = params;
+  const { htmlPlatformName, platformName } = resolveEmailBranding(params.platformName);
 
   const isDowngrade = reason === 'downgrade';
 
   const subject = isDowngrade
-    ? `You have been removed from ${workspaceName} on LobeHub`
-    : `You have been removed from ${workspaceName} on LobeHub`;
+    ? `You have been removed from ${workspaceName} on ${platformName}`
+    : `You have been removed from ${workspaceName} on ${platformName}`;
 
   const heading = isDowngrade
     ? `Removed from <strong>${workspaceName}</strong>`
@@ -34,7 +39,7 @@ export const getWorkspaceMemberRemovedEmailTemplate = (params: {
     <div style="text-align: center; margin-bottom: 32px;">
       <div style="display: inline-flex; align-items: center; justify-content: center; background-color: #ffffff; border-radius: 12px; padding: 8px 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.04);">
         <span style="font-size: 24px; line-height: 1; margin-right: 10px;">🤯</span>
-        <span style="font-size: 18px; font-weight: 700; color: #000000; letter-spacing: -0.5px;">LobeHub</span>
+        <span style="font-size: 18px; font-weight: 700; color: #000000; letter-spacing: -0.5px;">${htmlPlatformName}</span>
       </div>
     </div>
 
@@ -68,7 +73,7 @@ export const getWorkspaceMemberRemovedEmailTemplate = (params: {
       <!-- Footer note -->
       <div style="text-align: center;">
         <p style="color: #9ca3af; font-size: 13px; margin: 0;">
-          You can continue using LobeHub with your personal workspace.
+          You can continue using ${htmlPlatformName} with your personal workspace.
         </p>
       </div>
     </div>
@@ -76,7 +81,7 @@ export const getWorkspaceMemberRemovedEmailTemplate = (params: {
     <!-- Footer -->
     <div style="text-align: center; margin-top: 32px;">
       <p style="color: #a1a1aa; font-size: 13px; margin: 0;">
-        This is an automated message from LobeHub.
+        This is an automated message from ${htmlPlatformName}.
       </p>
     </div>
   </div>

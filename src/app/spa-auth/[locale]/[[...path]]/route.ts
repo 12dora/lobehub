@@ -2,6 +2,7 @@ import { getServerFeatureFlagsValue } from '@/config/featureFlags';
 import { appEnv } from '@/envs/app';
 import { authEnv } from '@/envs/auth';
 import { type Locales, normalizeLocale } from '@/locales/resources';
+import { resolveServerRuntimeBranding } from '@/server/enterprise/services/branding';
 import { getServerAuthConfig } from '@/server/globalConfig/getServerAuthConfig';
 import { buildAnalyticsConfig, fetchViteDevTemplate, renderSpaHtml } from '@/server/spaHtml';
 import { type AuthSPAServerConfig } from '@/types/spaServerConfig';
@@ -41,7 +42,8 @@ export async function GET(
 
   const template = await getTemplate();
   const pathname = `/${(path ?? []).join('/')}`;
-  const seoMeta = await buildSeoMeta(locale, pathname);
+  const branding = await resolveServerRuntimeBranding();
+  const seoMeta = await buildSeoMeta(locale, pathname, branding);
 
   return renderSpaHtml(template, { seoMeta, serverConfig: authConfig });
 }
