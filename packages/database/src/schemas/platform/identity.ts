@@ -438,7 +438,7 @@ export const platformIdentityProviderRestartRequests = pgTable(
           AND ${t.acceptedAt} IS NOT NULL AND ${t.signaledAt} IS NOT NULL AND ${t.failedAt} IS NULL
           AND ${t.resultCategory} = 'signal_scheduled')
         OR (${t.status} = 'failed'
-          AND ${t.signaledAt} IS NULL AND ${t.failedAt} IS NOT NULL
+          AND ${t.acceptedAt} IS NOT NULL AND ${t.signaledAt} IS NULL AND ${t.failedAt} IS NOT NULL
           AND ${t.resultCategory} IS NOT NULL)`,
     ),
     check(

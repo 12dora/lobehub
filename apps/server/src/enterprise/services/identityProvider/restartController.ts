@@ -41,8 +41,8 @@ export interface ProcessRestartControllerOptions {
 }
 
 /**
- * Schedules SIGTERM for this process only. The delay lets the committed tRPC response flush; the
- * configured supervisor owns the subsequent start. No PID or command is accepted from callers.
+ * Schedules SIGTERM for this process only. Callers must invoke this from an explicit post-response
+ * lifecycle hook after durable outcome persistence. No PID or command is accepted from callers.
  */
 export class ProcessRestartController implements RestartController {
   private readonly delayMs: number;

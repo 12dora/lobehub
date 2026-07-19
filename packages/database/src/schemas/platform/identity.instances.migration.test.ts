@@ -32,6 +32,9 @@ describe('M11 identity provider instance migration', () => {
     expect(migrationSql).toContain('"request_id" uuid PRIMARY KEY');
     expect(migrationSql).toContain('"intent_token_hash" varchar(64)');
     expect(migrationSql).toContain('"owner_fence" varchar(64)');
+    expect(migrationSql).toMatch(
+      /status" = 'failed'[\s\S]+accepted_at" IS NOT NULL[\s\S]+signaled_at" IS NULL/,
+    );
   });
 
   it('keeps the generated journal and snapshot aligned at 0130', () => {

@@ -17,6 +17,7 @@ const processHostnameHash = createHash('sha256').update(hostname(), 'utf8').dige
 
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let registered = false;
+let registrationState: 'failed' | 'registered' | 'unknown' = 'unknown';
 
 const isServerlessRuntime = (env: Record<string, string | undefined>): boolean =>
   Boolean(
@@ -47,6 +48,13 @@ export const getIdentityProviderProcessInstance = () => ({
   instanceId: processInstanceId,
   startedAt: processStartedAt,
 });
+
+export const getIdentityProviderInstanceRegistrationState = () => registrationState;
+
+export const markIdentityProviderInstanceRegistrationFailed = (): void => {
+  registrationState = 'failed';
+  registered = false;
+};
 
 const heartbeat = async (db: LobeChatDatabase): Promise<void> => {
   if (!registered) return;
@@ -92,6 +100,7 @@ export const registerIdentityProviderInstance = async (input: {
       target: platformIdentityProviderInstances.instanceId,
     });
   registered = true;
+  registrationState = 'registered';
 
   const env = input.env ?? process.env;
   if (heartbeatTimer || isServerlessRuntime(env)) return;
@@ -110,4 +119,5 @@ export const stopIdentityProviderHeartbeatForTest = (): void => {
   if (heartbeatTimer) clearInterval(heartbeatTimer);
   heartbeatTimer = null;
   registered = false;
+  registrationState = 'unknown';
 };
