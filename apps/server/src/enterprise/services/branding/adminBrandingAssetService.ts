@@ -18,6 +18,7 @@ import {
   platformBrandingAssetIdFromUrl,
 } from '../../contracts/adminBranding';
 import { PlatformAuditService } from '../platformAudit';
+import { BrandingIdempotencyConflictError } from './adminBrandingOperationService';
 import type { BrandingAssetStorage, ValidatedBrandingAsset } from './assetStorage';
 import {
   BrandingAssetStorageUnavailableError,
@@ -25,12 +26,15 @@ import {
   validateBrandingAsset,
 } from './assetStorage';
 
+export { BrandingIdempotencyConflictError } from './adminBrandingOperationService';
+
 const ASSET_OPERATION = 'admin.branding.uploadAsset';
 const ASSET_ID_PREFIX = 'pba_';
 const ASSET_UPLOAD_LEASE_MS = 5 * 60 * 1000;
 const ASSET_REPLAY_WAIT_MS = 15 * 1000;
 const ASSET_REPLAY_POLL_MS = 100;
 const ASSET_GRACE_MS = 24 * 60 * 60 * 1000;
+const CLEANUP_LEASE_MS = 5 * 60 * 1000;
 const CLEANUP_RETRY_BASE_MS = 60 * 1000;
 const CLEANUP_RETRY_MAX_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_SWEEP_LIMIT = 10;
@@ -40,13 +44,6 @@ type AuditAppend = (
   db: LobeChatDatabase | Transaction,
   params: CreatePlatformAuditLogParams,
 ) => Promise<PlatformAuditLogItem>;
-
-export class BrandingIdempotencyConflictError extends Error {
-  constructor() {
-    super('BRANDING_IDEMPOTENCY_CONFLICT');
-    this.name = 'BrandingIdempotencyConflictError';
-  }
-}
 
 export class BrandingAssetUploadInProgressError extends Error {
   constructor() {
@@ -86,10 +83,20 @@ export interface AdminBrandingAssetServiceOptions {
     db: LobeChatDatabase | Transaction,
     ids: string[],
   ) => Promise<
-    Pick<PlatformBrandingAssetItem, 'id' | 'kind' | 'mimeType' | 'objectDeletedAt' | 'status'>[]
+    Pick<
+      PlatformBrandingAssetItem,
+      'cleanupOwner' | 'id' | 'kind' | 'mimeType' | 'objectDeletedAt' | 'status'
+    >[]
   >;
   sleep?: (milliseconds: number) => Promise<void>;
   storage?: BrandingAssetStorage;
+}
+
+export class BrandingAssetCleanupClaimedError extends Error {
+  constructor() {
+    super('BRANDING_ASSET_CLEANUP_CLAIMED');
+    this.name = 'BrandingAssetCleanupClaimedError';
+  }
 }
 
 const defaultSleep = (milliseconds: number): Promise<void> =>
@@ -111,6 +118,10 @@ const uploadResult = (asset: PlatformBrandingAssetItem) => ({
   url: `/f/${asset.id}`,
   width: asset.width,
 });
+
+interface AdminBrandingAssetUploadOptions {
+  finalizeSuccess?: (tx: Transaction, result: ReturnType<typeof uploadResult>) => Promise<void>;
+}
 
 const requestFingerprint = (input: AdminBrandingUploadAssetInput): string => {
   const { requestId: _requestId, ...payload } = input;
@@ -139,6 +150,7 @@ export class AdminBrandingAssetService {
         targetDb
           .select({
             id: platformBrandingAssets.id,
+            cleanupOwner: platformBrandingAssets.cleanupOwner,
             kind: platformBrandingAssets.kind,
             mimeType: platformBrandingAssets.mimeType,
             objectDeletedAt: platformBrandingAssets.objectDeletedAt,
@@ -184,6 +196,7 @@ export class AdminBrandingAssetService {
         if (existing.requestFingerprint !== params.fingerprint) {
           throw new BrandingIdempotencyConflictError();
         }
+        if (existing.cleanupOwner) throw new BrandingAssetCleanupClaimedError();
         if (existing.status === 'ready') return { asset: existing, status: 'replay' };
         const now = this.now();
         if (
@@ -206,8 +219,14 @@ export class AdminBrandingAssetService {
             uploadLeaseUntil: leaseUntil,
             uploadOwner: owner,
           })
-          .where(eq(platformBrandingAssets.id, existing.id))
+          .where(
+            and(
+              eq(platformBrandingAssets.id, existing.id),
+              isNull(platformBrandingAssets.cleanupOwner),
+            ),
+          )
           .returning();
+        if (!claimed) throw new BrandingAssetCleanupClaimedError();
         return { asset: claimed, owner, status: 'acquired' };
       }
 
@@ -308,17 +327,33 @@ export class AdminBrandingAssetService {
     await this.markCompensated(reservation, deletionError);
   };
 
-  upload = async (actorUserId: string, rawInput: AdminBrandingUploadAssetInput) => {
+  upload = async (
+    actorUserId: string,
+    rawInput: AdminBrandingUploadAssetInput,
+    options: AdminBrandingAssetUploadOptions = {},
+  ) => {
     if (!this.storage.isConfigured()) throw new BrandingAssetStorageUnavailableError();
     const input = adminBrandingUploadAssetInputSchema.parse(rawInput);
     const asset = await validateBrandingAsset(input);
     const fingerprint = requestFingerprint(input);
 
     let reservation = await this.reserve({ actorUserId, asset, fingerprint, input });
-    if (reservation.status === 'replay') return uploadResult(reservation.asset);
+    if (reservation.status === 'replay') {
+      const result = uploadResult(reservation.asset);
+      if (options.finalizeSuccess) {
+        await this.db.transaction((tx) => options.finalizeSuccess!(tx, result));
+      }
+      return result;
+    }
     if (reservation.status === 'wait') {
       const replay = await this.waitForReplay(reservation.asset.id);
-      if (replay) return uploadResult(replay);
+      if (replay) {
+        const result = uploadResult(replay);
+        if (options.finalizeSuccess) {
+          await this.db.transaction((tx) => options.finalizeSuccess!(tx, result));
+        }
+        return result;
+      }
       reservation = await this.reserve({ actorUserId, asset, fingerprint, input });
       if (reservation.status === 'replay') return uploadResult(reservation.asset);
       if (reservation.status === 'wait') throw new BrandingAssetUploadInProgressError();
@@ -348,6 +383,7 @@ export class AdminBrandingAssetService {
               eq(platformBrandingAssets.id, reservation.asset.id),
               eq(platformBrandingAssets.requestFingerprint, fingerprint),
               eq(platformBrandingAssets.status, 'uploading'),
+              isNull(platformBrandingAssets.cleanupOwner),
               eq(platformBrandingAssets.uploadOwner, reservation.owner),
             ),
           )
@@ -371,6 +407,7 @@ export class AdminBrandingAssetService {
           targetId: 'global',
           targetType: 'branding',
         });
+        await options.finalizeSuccess?.(tx, uploadResult(updated));
         return updated;
       });
       return uploadResult(ready);
@@ -394,6 +431,7 @@ export class AdminBrandingAssetService {
       const row = rows.find((item) => item.id === id);
       if (
         !row ||
+        row.cleanupOwner !== null ||
         row.status !== 'ready' ||
         row.objectDeletedAt !== null ||
         row.kind !== reference.kind ||
@@ -420,21 +458,27 @@ export class AdminBrandingAssetService {
           isNull(platformBrandingAssets.firstPublishedRevision),
         ),
       );
-    if (assetIds.length === 0) return;
-    await tx
+    const uniqueAssetIds = [...new Set(assetIds)];
+    if (uniqueAssetIds.length === 0) return;
+    const pinned = await tx
       .update(platformBrandingAssets)
       .set({ draftPinned: true, updatedAt: now })
       .where(
         and(
-          inArray(platformBrandingAssets.id, assetIds),
+          inArray(platformBrandingAssets.id, uniqueAssetIds),
           eq(platformBrandingAssets.status, 'ready'),
+          isNull(platformBrandingAssets.objectDeletedAt),
+          isNull(platformBrandingAssets.cleanupOwner),
         ),
-      );
+      )
+      .returning({ id: platformBrandingAssets.id });
+    if (pinned.length !== uniqueAssetIds.length) throw new BrandingAssetCleanupClaimedError();
   };
 
   pinPublished = async (tx: Transaction, assetIds: string[], revision: number): Promise<void> => {
-    if (assetIds.length === 0) return;
-    await tx
+    const uniqueAssetIds = [...new Set(assetIds)];
+    if (uniqueAssetIds.length === 0) return;
+    const pinned = await tx
       .update(platformBrandingAssets)
       .set({
         draftPinned: true,
@@ -443,44 +487,110 @@ export class AdminBrandingAssetService {
       })
       .where(
         and(
-          inArray(platformBrandingAssets.id, assetIds),
+          inArray(platformBrandingAssets.id, uniqueAssetIds),
           eq(platformBrandingAssets.status, 'ready'),
+          isNull(platformBrandingAssets.objectDeletedAt),
+          isNull(platformBrandingAssets.cleanupOwner),
         ),
-      );
+      )
+      .returning({ id: platformBrandingAssets.id });
+    if (pinned.length !== uniqueAssetIds.length) throw new BrandingAssetCleanupClaimedError();
   };
+
+  private claimCleanupCandidates = async (
+    now: Date,
+    limit: number,
+  ): Promise<PlatformBrandingAssetItem[]> =>
+    this.db.transaction(async (tx) => {
+      const candidates = await tx
+        .select()
+        .from(platformBrandingAssets)
+        .where(
+          and(
+            lte(platformBrandingAssets.cleanupAfter, now),
+            isNull(platformBrandingAssets.objectDeletedAt),
+            eq(platformBrandingAssets.draftPinned, false),
+            isNull(platformBrandingAssets.firstPublishedRevision),
+            or(
+              isNull(platformBrandingAssets.cleanupOwner),
+              lte(platformBrandingAssets.cleanupLeaseUntil, now),
+            ),
+            or(
+              eq(platformBrandingAssets.status, 'ready'),
+              eq(platformBrandingAssets.status, 'orphaned'),
+              and(
+                eq(platformBrandingAssets.status, 'uploading'),
+                or(
+                  isNull(platformBrandingAssets.uploadLeaseUntil),
+                  lte(platformBrandingAssets.uploadLeaseUntil, now),
+                ),
+              ),
+            ),
+          ),
+        )
+        .limit(limit);
+
+      const claimed: PlatformBrandingAssetItem[] = [];
+      for (const candidate of candidates) {
+        const owner = randomUUID();
+        const [asset] = await tx
+          .update(platformBrandingAssets)
+          .set({
+            cleanupLeaseUntil: new Date(now.getTime() + CLEANUP_LEASE_MS),
+            cleanupOwner: owner,
+            draftPinned: false,
+            status: 'orphaned',
+            updatedAt: now,
+            uploadLeaseUntil: null,
+            uploadOwner: null,
+          })
+          .where(
+            and(
+              eq(platformBrandingAssets.id, candidate.id),
+              lte(platformBrandingAssets.cleanupAfter, now),
+              isNull(platformBrandingAssets.objectDeletedAt),
+              eq(platformBrandingAssets.draftPinned, false),
+              isNull(platformBrandingAssets.firstPublishedRevision),
+              or(
+                isNull(platformBrandingAssets.cleanupOwner),
+                lte(platformBrandingAssets.cleanupLeaseUntil, now),
+              ),
+              or(
+                eq(platformBrandingAssets.status, 'ready'),
+                eq(platformBrandingAssets.status, 'orphaned'),
+                and(
+                  eq(platformBrandingAssets.status, 'uploading'),
+                  or(
+                    isNull(platformBrandingAssets.uploadLeaseUntil),
+                    lte(platformBrandingAssets.uploadLeaseUntil, now),
+                  ),
+                ),
+              ),
+            ),
+          )
+          .returning();
+        if (asset) claimed.push(asset);
+      }
+      return claimed;
+    });
 
   sweep = async ({ limit = DEFAULT_SWEEP_LIMIT }: { limit?: number } = {}) => {
     const boundedLimit = Math.max(1, Math.min(limit, MAX_SWEEP_LIMIT));
     const now = this.now();
-    const candidates = await this.db
-      .select()
-      .from(platformBrandingAssets)
-      .where(
-        and(
-          lte(platformBrandingAssets.cleanupAfter, now),
-          isNull(platformBrandingAssets.objectDeletedAt),
-          or(
-            eq(platformBrandingAssets.status, 'uploading'),
-            eq(platformBrandingAssets.status, 'orphaned'),
-            and(
-              eq(platformBrandingAssets.status, 'ready'),
-              eq(platformBrandingAssets.draftPinned, false),
-              isNull(platformBrandingAssets.firstPublishedRevision),
-            ),
-          ),
-        ),
-      )
-      .limit(boundedLimit);
+    const candidates = await this.claimCleanupCandidates(now, boundedLimit);
 
     let deleted = 0;
     let failed = 0;
     for (const candidate of candidates) {
       try {
         await this.storage.delete(candidate.objectKey);
-        await this.db
+        const deletedRows = await this.db
           .update(platformBrandingAssets)
           .set({
             cleanupAttempts: sql`${platformBrandingAssets.cleanupAttempts} + 1`,
+            cleanupLeaseUntil: null,
+            cleanupOwner: null,
+            draftPinned: false,
             lastCleanupError: null,
             objectDeletedAt: now,
             status: 'orphaned',
@@ -488,24 +598,40 @@ export class AdminBrandingAssetService {
             uploadLeaseUntil: null,
             uploadOwner: null,
           })
-          .where(eq(platformBrandingAssets.id, candidate.id));
-        deleted += 1;
+          .where(
+            and(
+              eq(platformBrandingAssets.id, candidate.id),
+              eq(platformBrandingAssets.cleanupOwner, candidate.cleanupOwner!),
+              eq(platformBrandingAssets.status, 'orphaned'),
+            ),
+          )
+          .returning({ id: platformBrandingAssets.id });
+        if (deletedRows.length === 1) deleted += 1;
       } catch (error) {
         const attempts = candidate.cleanupAttempts + 1;
         const retryMs = Math.min(CLEANUP_RETRY_BASE_MS * 2 ** (attempts - 1), CLEANUP_RETRY_MAX_MS);
-        await this.db
+        const retryAt = new Date(now.getTime() + retryMs);
+        const failedRows = await this.db
           .update(platformBrandingAssets)
           .set({
-            cleanupAfter: new Date(now.getTime() + retryMs),
+            cleanupAfter: retryAt,
             cleanupAttempts: attempts,
+            cleanupLeaseUntil: retryAt,
             lastCleanupError: error instanceof Error ? error.name.slice(0, 128) : 'UnknownError',
             status: 'orphaned',
             updatedAt: now,
             uploadLeaseUntil: null,
             uploadOwner: null,
           })
-          .where(eq(platformBrandingAssets.id, candidate.id));
-        failed += 1;
+          .where(
+            and(
+              eq(platformBrandingAssets.id, candidate.id),
+              eq(platformBrandingAssets.cleanupOwner, candidate.cleanupOwner!),
+              eq(platformBrandingAssets.status, 'orphaned'),
+            ),
+          )
+          .returning({ id: platformBrandingAssets.id });
+        if (failedRows.length === 1) failed += 1;
       }
     }
     return { deleted, failed, scanned: candidates.length };

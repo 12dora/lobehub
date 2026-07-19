@@ -19,6 +19,63 @@ import type { PlatformResourceStatus } from './common';
 
 export type PlatformBrandingAssetKind = 'desktopIcon' | 'favicon' | 'icon' | 'logo' | 'ogImage';
 export type PlatformBrandingAssetStatus = 'orphaned' | 'ready' | 'uploading';
+export type PlatformBrandingOperationStatus = 'failed' | 'pending' | 'succeeded';
+export type PlatformBrandingOperationErrorCategory =
+  | 'asset_invalid'
+  | 'asset_storage_unavailable'
+  | 'draft_invalid'
+  | 'internal'
+  | 'persistence_invariant'
+  | 'revision_conflict'
+  | 'upload_in_progress';
+
+export interface PlatformBrandingOperationDraftResult {
+  defaultAgentDisplayName: string | null;
+  desktop: { iconUrl: string | null; productName: string | null };
+  emailFrom: string | null;
+  emailSenderName: string | null;
+  faviconUrl: string | null;
+  homeUrl: string | null;
+  iconUrl: string | null;
+  legalName: string | null;
+  logoUrl: string | null;
+  name: string | null;
+  ogImageUrl: string | null;
+  pageTitleTemplate: string | null;
+  privacyUrl: string | null;
+  shortName: string | null;
+  supportUrl: string | null;
+  termsUrl: string | null;
+  themeDefaults: { primaryColor: string | null };
+}
+
+export type PlatformBrandingOperationResult =
+  | {
+      baseRevision: number;
+      draftToken: string;
+      kind: 'saveDraft';
+      ok: true;
+    }
+  | {
+      auditId: string;
+      kind: 'publish';
+      revision: number;
+    }
+  | {
+      baseRevision: number;
+      draft: PlatformBrandingOperationDraftResult;
+      draftToken: string;
+      kind: 'rollback';
+      restoredFromRevision: number;
+    }
+  | {
+      height: number;
+      kind: 'uploadAsset';
+      mimeType: 'image/jpeg' | 'image/png' | 'image/webp';
+      orphanPolicy: 'bounded_sweep';
+      url: string;
+      width: number;
+    };
 
 /**
  * Platform branding draft / published config (M12). Empty shell in Migration 0.
@@ -100,6 +157,10 @@ export const platformBrandingAssets = pgTable(
     uploadOwner: uuid('upload_owner'),
     uploadLeaseUntil: timestamptz('upload_lease_until'),
 
+    /** Once claimed, the object cannot be pinned; expired claims are cleanup-only recoverable. */
+    cleanupOwner: uuid('cleanup_owner'),
+    cleanupLeaseUntil: timestamptz('cleanup_lease_until'),
+
     cleanupAttempts: integer('cleanup_attempts').notNull().default(0),
     cleanupAfter: timestamptz('cleanup_after').notNull(),
     lastCleanupError: varchar('last_cleanup_error', { length: 128 }),
@@ -131,3 +192,46 @@ export const platformBrandingAssets = pgTable(
 
 export type PlatformBrandingAssetItem = typeof platformBrandingAssets.$inferSelect;
 export type NewPlatformBrandingAsset = typeof platformBrandingAssets.$inferInsert;
+
+/** Durable idempotency lane for every runtime Branding mutation. */
+export const platformBrandingOperations = pgTable(
+  'platform_branding_operations',
+  {
+    id: uuid('id').defaultRandom().primaryKey().notNull(),
+    actorId: text('actor_id').notNull(),
+    operation: varchar('operation', { length: 64 }).notNull(),
+    resource: varchar('resource', { length: 128 }).notNull(),
+    requestId: uuid('request_id').notNull(),
+    fingerprint: varchar('fingerprint', { length: 64 }).notNull(),
+    status: varchar('status', { length: 32 })
+      .$type<PlatformBrandingOperationStatus>()
+      .notNull()
+      .default('pending'),
+    result: jsonb('result').$type<PlatformBrandingOperationResult>(),
+    errorCategory: varchar('error_category', {
+      length: 64,
+    }).$type<PlatformBrandingOperationErrorCategory>(),
+    leaseOwner: uuid('lease_owner'),
+    leaseUntil: timestamptz('lease_until'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    uniqueIndex('platform_branding_operations_request_lane_unique').on(
+      t.actorId,
+      t.operation,
+      t.resource,
+      t.requestId,
+    ),
+    index('platform_branding_operations_pending_lease_idx').on(t.status, t.leaseUntil),
+    check(
+      'platform_branding_operations_terminal_shape',
+      sql`(${t.status} = 'pending' AND ${t.result} IS NULL AND ${t.errorCategory} IS NULL AND ${t.leaseOwner} IS NOT NULL AND ${t.leaseUntil} IS NOT NULL)
+        OR (${t.status} = 'succeeded' AND ${t.result} IS NOT NULL AND ${t.errorCategory} IS NULL AND ${t.leaseOwner} IS NULL AND ${t.leaseUntil} IS NULL)
+        OR (${t.status} = 'failed' AND ${t.result} IS NULL AND ${t.errorCategory} IS NOT NULL AND ${t.leaseOwner} IS NULL AND ${t.leaseUntil} IS NULL)`,
+    ),
+  ],
+);
+
+export type PlatformBrandingOperationItem = typeof platformBrandingOperations.$inferSelect;
+export type NewPlatformBrandingOperation = typeof platformBrandingOperations.$inferInsert;

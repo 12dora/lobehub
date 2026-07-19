@@ -1,5 +1,5 @@
 {
-  "id": "3a0bfe40-c7fb-4cb6-8471-644791bcc2f5",
+  "id": "21d82959-bc94-40d6-bbab-c275fa37f688",
   "prevId": "1770ebf9-37a5-4c12-87eb-c4dfd833cdd9",
   "version": "7",
   "dialect": "postgresql",
@@ -15483,6 +15483,18 @@
           "primaryKey": false,
           "notNull": false
         },
+        "cleanup_owner": {
+          "name": "cleanup_owner",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "cleanup_lease_until": {
+          "name": "cleanup_lease_until",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
         "cleanup_attempts": {
           "name": "cleanup_attempts",
           "type": "integer",
@@ -15656,6 +15668,161 @@
         "platform_branding_assets_first_revision_positive": {
           "name": "platform_branding_assets_first_revision_positive",
           "value": "\"platform_branding_assets\".\"first_published_revision\" IS NULL OR \"platform_branding_assets\".\"first_published_revision\" > 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.platform_branding_operations": {
+      "name": "platform_branding_operations",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "actor_id": {
+          "name": "actor_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "operation": {
+          "name": "operation",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "resource": {
+          "name": "resource",
+          "type": "varchar(128)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "request_id": {
+          "name": "request_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "fingerprint": {
+          "name": "fingerprint",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "result": {
+          "name": "result",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "error_category": {
+          "name": "error_category",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lease_owner": {
+          "name": "lease_owner",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "lease_until": {
+          "name": "lease_until",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "platform_branding_operations_request_lane_unique": {
+          "name": "platform_branding_operations_request_lane_unique",
+          "columns": [
+            {
+              "expression": "actor_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "operation",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "resource",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "request_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "platform_branding_operations_pending_lease_idx": {
+          "name": "platform_branding_operations_pending_lease_idx",
+          "columns": [
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "lease_until",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "platform_branding_operations_terminal_shape": {
+          "name": "platform_branding_operations_terminal_shape",
+          "value": "(\"platform_branding_operations\".\"status\" = 'pending' AND \"platform_branding_operations\".\"result\" IS NULL AND \"platform_branding_operations\".\"error_category\" IS NULL AND \"platform_branding_operations\".\"lease_owner\" IS NOT NULL AND \"platform_branding_operations\".\"lease_until\" IS NOT NULL)\n        OR (\"platform_branding_operations\".\"status\" = 'succeeded' AND \"platform_branding_operations\".\"result\" IS NOT NULL AND \"platform_branding_operations\".\"error_category\" IS NULL AND \"platform_branding_operations\".\"lease_owner\" IS NULL AND \"platform_branding_operations\".\"lease_until\" IS NULL)\n        OR (\"platform_branding_operations\".\"status\" = 'failed' AND \"platform_branding_operations\".\"result\" IS NULL AND \"platform_branding_operations\".\"error_category\" IS NOT NULL AND \"platform_branding_operations\".\"lease_owner\" IS NULL AND \"platform_branding_operations\".\"lease_until\" IS NULL)"
         }
       },
       "isRLSEnabled": false

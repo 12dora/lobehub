@@ -196,4 +196,77 @@ describe('AdminBrandingAssetService', () => {
     );
     expect(storage.delete).not.toHaveBeenCalledWith(expect.stringContaining(publishedId));
   });
+
+  it('rejects a draft pin after cleanup has atomically claimed the asset', async () => {
+    let now = new Date('2026-07-19T00:00:00.000Z');
+    let deleteEntered!: () => void;
+    let allowDelete!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      deleteEntered = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      allowDelete = resolve;
+    });
+    const storage = {
+      delete: vi.fn(async () => {
+        deleteEntered();
+        await gate;
+      }),
+      isConfigured: () => true,
+      upload: vi.fn(async () => {}),
+    };
+    const service = new AdminBrandingAssetService(db, { now: () => now, storage });
+    const uploaded = await service.upload(actorUserId, await input());
+    const id = uploaded.url.slice('/f/'.length);
+    const [ready] = await db.select().from(platformBrandingAssets);
+    now = new Date(ready.cleanupAfter.getTime() + 1);
+    const sweep = service.sweep({ limit: 1 });
+    await entered;
+
+    await expect(db.transaction((tx) => service.updateDraftPins(tx, [id]))).rejects.toThrow(
+      'BRANDING_ASSET_CLEANUP_CLAIMED',
+    );
+    allowDelete();
+    await expect(sweep).resolves.toEqual({ deleted: 1, failed: 0, scanned: 1 });
+    expect(await db.select().from(platformBrandingAssets)).toEqual([
+      expect.objectContaining({ draftPinned: false, objectDeletedAt: expect.any(Date) }),
+    ]);
+  });
+
+  it('keeps a failed cleanup claim fenced through backoff and recovers it after lease expiry', async () => {
+    let now = new Date('2026-07-19T00:00:00.000Z');
+    const storage = {
+      delete: vi
+        .fn()
+        .mockRejectedValueOnce(new Error('S3_DELETE_FAILED'))
+        .mockResolvedValue(undefined),
+      isConfigured: () => true,
+      upload: vi.fn(async () => {}),
+    };
+    const service = new AdminBrandingAssetService(db, { now: () => now, storage });
+    const uploaded = await service.upload(actorUserId, await input());
+    const id = uploaded.url.slice('/f/'.length);
+    let [asset] = await db.select().from(platformBrandingAssets);
+    now = new Date(asset.cleanupAfter.getTime() + 1);
+
+    await expect(service.sweep({ limit: 1 })).resolves.toEqual({
+      deleted: 0,
+      failed: 1,
+      scanned: 1,
+    });
+    [asset] = await db.select().from(platformBrandingAssets);
+    expect(asset).toMatchObject({ cleanupOwner: expect.any(String), objectDeletedAt: null });
+    await expect(db.transaction((tx) => service.updateDraftPins(tx, [id]))).rejects.toThrow(
+      'BRANDING_ASSET_CLEANUP_CLAIMED',
+    );
+
+    now = new Date(asset.cleanupLeaseUntil!.getTime() + 1);
+    await expect(service.sweep({ limit: 1 })).resolves.toEqual({
+      deleted: 1,
+      failed: 0,
+      scanned: 1,
+    });
+    [asset] = await db.select().from(platformBrandingAssets);
+    expect(asset).toMatchObject({ cleanupOwner: null, objectDeletedAt: expect.any(Date) });
+  });
 });

@@ -6,6 +6,7 @@ import {
   platformAuditLogs,
   platformBranding,
   platformBrandingAssets,
+  platformBrandingOperations,
   platformResourceRevisions,
 } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
@@ -19,6 +20,7 @@ import {
   BRANDING_PUBLISHED_ROW_ID,
   BrandingDraftValidationError,
   BrandingIdempotencyConflictError,
+  BrandingOperationFailedReplayError,
   BrandingPersistenceInvariantError,
   PlatformRevisionConflictError,
 } from './adminBrandingService';
@@ -58,6 +60,7 @@ const request = () => ({ reason: 'operator approved', requestId: crypto.randomUU
 
 const cleanup = async () => {
   await db.delete(platformAuditLogs);
+  await db.delete(platformBrandingOperations);
   await db.delete(platformResourceRevisions);
   await db.delete(platformBranding);
   await db.delete(platformBrandingAssets);
@@ -143,19 +146,29 @@ describe('AdminBrandingService', () => {
 
   it('rejects stale draft tokens and records a redacted best-effort failure audit', async () => {
     const initial = await service.getDraft();
-    await expect(
-      service.saveDraft('admin-1', {
-        ...request(),
-        draft: draft('Acme'),
-        expectedDraftToken: '0'.repeat(64),
-      }),
-    ).rejects.toBeInstanceOf(PlatformRevisionConflictError);
+    const failedRequest = {
+      ...request(),
+      draft: draft('Acme'),
+      expectedDraftToken: '0'.repeat(64),
+    };
+    await expect(service.saveDraft('admin-1', failedRequest)).rejects.toBeInstanceOf(
+      PlatformRevisionConflictError,
+    );
 
     const after = await service.getDraft();
     expect(after.draft).toEqual(initial.draft);
     expect(await db.select().from(platformAuditLogs)).toContainEqual(
       expect.objectContaining({ action: 'admin.branding.saveDraft', result: 'failure' }),
     );
+    await db.delete(platformAuditLogs);
+    await expect(service.saveDraft('admin-1', failedRequest)).rejects.toMatchObject({
+      category: 'revision_conflict',
+      name: BrandingOperationFailedReplayError.name,
+    });
+    await expect(
+      service.saveDraft('admin-1', { ...failedRequest, draft: draft('Different') }),
+    ).rejects.toBeInstanceOf(BrandingIdempotencyConflictError);
+    expect((await service.getDraft()).draft).toEqual(initial.draft);
   });
 
   it('binds save and publish request IDs to their normalized payload without extra writes', async () => {
@@ -256,6 +269,7 @@ describe('AdminBrandingService', () => {
     ] as const);
     const lookup = vi.fn(async (_db, requestedIds: string[]) =>
       requestedIds.map((id) => ({
+        cleanupOwner: null,
         id,
         kind: kindById.get(id)!,
         mimeType: 'image/png',
@@ -268,6 +282,24 @@ describe('AdminBrandingService', () => {
       assetService: targetAssets,
       invalidation,
     });
+    await db.insert(platformBrandingAssets).values(
+      Object.entries(ids).map(([name, id]) => ({
+        cleanupAfter: new Date('2099-01-01T00:00:00.000Z'),
+        height: 16,
+        id,
+        kind: kindById.get(id)!,
+        mimeType: 'image/png',
+        objectKey: `branding/test/${name}.png`,
+        operation: 'admin.branding.uploadAsset',
+        requestActorId: 'admin-1',
+        requestFingerprint: name.padEnd(64, '0'),
+        requestId: crypto.randomUUID(),
+        sha256: name.padEnd(64, 'a'),
+        size: 68,
+        status: 'ready' as const,
+        width: 16,
+      })),
+    );
     const initial = await target.getDraft();
     await target.saveDraft('admin-1', {
       ...request(),

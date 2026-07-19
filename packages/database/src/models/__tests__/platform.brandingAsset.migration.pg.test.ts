@@ -10,7 +10,7 @@ import { getTestDB } from '../../core/getTestDB';
 const runPostgresMigration = process.env.TEST_SERVER_DB === '1';
 const migrationPath = path.join(
   __dirname,
-  '../../../migrations/0129_m12_platform_branding_assets.sql',
+  '../../../migrations/0129_m12_platform_branding_lifecycle.sql',
 );
 
 describe.skipIf(!runPostgresMigration)('M12 PostgreSQL branding asset migration', () => {
@@ -45,6 +45,14 @@ describe.skipIf(!runPostgresMigration)('M12 PostgreSQL branding asset migration'
            '22222222-2222-4222-8222-222222222222', repeat('b', 64), now())
       `);
       await client.query(`DELETE FROM users WHERE id = 'm12-branding-admin'`);
+      await client.query(`
+        INSERT INTO platform_branding_operations
+          (actor_id, operation, resource, request_id, fingerprint, status, error_category)
+        VALUES
+          ('m12-branding-admin', 'admin.branding.saveDraft', 'branding:global',
+           '33333333-3333-4333-8333-333333333333', repeat('c', 64), 'failed',
+           'revision_conflict')
+      `);
 
       const result = await client.query<{
         created_by: string | null;
@@ -62,6 +70,31 @@ describe.skipIf(!runPostgresMigration)('M12 PostgreSQL branding asset migration'
           status: 'ready',
         },
       ]);
+      const operations = await client.query<{
+        actor_id: string;
+        error_category: string;
+        status: string;
+      }>(`
+        SELECT actor_id, error_category, status
+        FROM platform_branding_operations
+        WHERE request_id = '33333333-3333-4333-8333-333333333333'
+      `);
+      expect(operations.rows).toEqual([
+        {
+          actor_id: 'm12-branding-admin',
+          error_category: 'revision_conflict',
+          status: 'failed',
+        },
+      ]);
+      await expect(
+        client.query(`
+          INSERT INTO platform_branding_operations
+            (actor_id, operation, resource, request_id, fingerprint, status)
+          VALUES
+            ('m12-branding-admin', 'admin.branding.saveDraft', 'branding:global',
+             '44444444-4444-4444-8444-444444444444', repeat('d', 64), 'pending')
+        `),
+      ).rejects.toMatchObject({ constraint: 'platform_branding_operations_terminal_shape' });
     } finally {
       await client.query('ROLLBACK');
       client.release();
