@@ -268,6 +268,18 @@ export function defineConfig(
         enabled: true,
       },
       additionalFields: {
+        dingtalkTitle: {
+          input: false,
+          required: false,
+          returned: false,
+          type: 'string',
+        },
+        dingtalkUserId: {
+          input: false,
+          required: false,
+          returned: false,
+          type: 'string',
+        },
         username: {
           required: false,
           type: 'string',

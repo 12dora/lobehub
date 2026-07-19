@@ -44,21 +44,44 @@ describe('platform identity provider Better Auth adapter', () => {
       issuer: provider.issuer,
       pkce: true,
       providerId: 'corp-oidc',
-      redirectURI: 'https://app.example.test/api/auth/callback/corp-oidc',
+      redirectURI: 'https://app.example.test/api/auth/oauth2/callback/corp-oidc',
       requireIssuerValidation: true,
     });
+    expect(config).not.toHaveProperty('overrideUserInfo');
     expect(
       await config.mapProfileToUser!({
         avatar: 'https://cdn.example.test/ada.png',
         display_name: 'Ada',
+        dingtalk_title: 'Engineering Manager',
+        dingtalk_user_id: 'ding-user-1',
         employee_id: 'employee-1',
         mail: 'ada@example.test',
       }),
     ).toEqual({
+      dingtalkTitle: 'Engineering Manager',
+      dingtalkUserId: 'ding-user-1',
       email: 'ada@example.test',
       id: 'employee-1',
       image: 'https://cdn.example.test/ada.png',
       name: 'Ada',
+    });
+  });
+
+  it('falls back to preferred_username and keeps absent optional claims nullable', async () => {
+    const config = buildPlatformIdentityProvider(provider, 'https://app.example.test');
+    expect(
+      config.mapProfileToUser!({
+        employee_id: 'employee-2',
+        mail: 'grace@example.test',
+        preferred_username: 'grace',
+      }),
+    ).toEqual({
+      dingtalkTitle: null,
+      dingtalkUserId: null,
+      email: 'grace@example.test',
+      id: 'employee-2',
+      image: undefined,
+      name: 'grace',
     });
   });
 
@@ -76,6 +99,15 @@ describe('platform identity provider Better Auth adapter', () => {
     await expect(
       Promise.resolve().then(() =>
         config.mapProfileToUser!({ display_name: 'Ada', mail: 'ada@example.test' }),
+      ),
+    ).rejects.toThrow('PLATFORM_OIDC_CLAIM_VALIDATION_FAILED');
+    await expect(
+      Promise.resolve().then(() =>
+        config.mapProfileToUser!({
+          display_name: 'Ada',
+          employee_id: 'employee-1',
+          mail: 'not-an-email',
+        }),
       ),
     ).rejects.toThrow('PLATFORM_OIDC_CLAIM_VALIDATION_FAILED');
   });
