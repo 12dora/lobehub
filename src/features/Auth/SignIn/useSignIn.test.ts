@@ -705,5 +705,17 @@ describe('useSignIn', () => {
       expect(result.current.oAuthSSOProviders).toEqual(['google', 'github']);
       expect(result.current.oAuthSSOProviderMetadata).toEqual(mockProviderMetadata);
     });
+
+    it('keeps non-artifact business SSO providers after the authoritative OIDC order', () => {
+      mockEnableBusinessFeatures = true;
+      mockBusinessSignin.ssoProviders = ['saml', 'work', 'enterprise-sso'];
+      mockProviderMetadata = [
+        { icon: null, id: 'work', label: 'Work account', order: 0, providerKey: 'work' },
+      ];
+
+      const { result } = renderHook(() => useSignIn());
+
+      expect(result.current.oAuthSSOProviders).toEqual(['work', 'saml', 'enterprise-sso']);
+    });
   });
 });

@@ -383,7 +383,10 @@ export const useSignIn = () => {
   const orderedArtifactProviders = [...oAuthSSOProviderMetadata].sort((a, b) => a.order - b.order);
   const artifactProviderIds = orderedArtifactProviders.map((provider) => provider.id);
   const providersInArtifactOrder = artifactProviderIds.length
-    ? artifactProviderIds
+    ? [
+        ...artifactProviderIds,
+        ...resolvedProviders.filter((provider) => !artifactProviderIds.includes(provider)),
+      ]
     : resolvedProviders;
   const sortedProviders =
     lastAuthProvider && artifactProviderIds.length === 0

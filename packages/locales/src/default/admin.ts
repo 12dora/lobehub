@@ -1321,11 +1321,22 @@ export default {
   'identityProviders.actions.startTest': 'Start safe login test',
   'identityProviders.callback.production': 'Production callback URL (read-only)',
   'identityProviders.callback.test': 'Test callback URL (read-only)',
+  'identityProviders.callback.loadError': 'Callback URLs could not be loaded.',
+  'identityProviders.conflict.description':
+    'This provider changed on the server. The latest revision was fetched while your local draft and write-only secret input were preserved.',
+  'identityProviders.conflict.discard': 'Discard local draft',
+  'identityProviders.conflict.rebased':
+    'Your local draft is now based on the latest server revision. Review it, then retry save.',
+  'identityProviders.conflict.refresh': 'Refresh latest revision',
+  'identityProviders.conflict.refreshFailed':
+    'The latest server revision could not be loaded. Your local draft is still preserved; retry refresh before saving.',
   'identityProviders.description':
     'Configure, test, publish, and activate controlled work-account sign-in.',
   'identityProviders.discovery.valid': 'Discovery metadata and outbound network policy are valid.',
   'identityProviders.empty': 'No identity providers yet. Create a draft to begin.',
   'identityProviders.errors.forbidden': 'You do not have permission to view identity providers.',
+  'identityProviders.errors.generic':
+    'The identity provider operation could not be completed. Review the current state and retry.',
   'identityProviders.errors.invalidJson': 'Enter valid JSON before continuing.',
   'identityProviders.errors.load': 'Identity providers could not be loaded.',
   'identityProviders.errors.required':
@@ -1352,6 +1363,8 @@ export default {
   'identityProviders.publish.title': 'Publish identity provider',
   'identityProviders.restart.accepted':
     'Restart accepted. Waiting for instances to load the published revision.',
+  'identityProviders.restart.activated':
+    'Activation complete. Every fresh instance is running the target published revision.',
   'identityProviders.restart.cancel': 'Keep current runtime',
   'identityProviders.restart.confirm': 'Restart safely',
   'identityProviders.restart.impact':
@@ -1360,6 +1373,8 @@ export default {
   'identityProviders.restart.reauthFailed': 'Recent authentication is required before restart.',
   'identityProviders.restart.reconnecting':
     'Restart accepted. The server is reconnecting; status checks will resume automatically.',
+  'identityProviders.restart.failed':
+    'Activation status could not converge or the runtime no longer supports this restart. Review the status and retry the check.',
   'identityProviders.restart.target': 'Identity provider runtime',
   'identityProviders.restart.title': 'Activate published identity configuration?',
   'identityProviders.restart.unsupported':
@@ -1367,20 +1382,23 @@ export default {
   'identityProviders.rollback.impact':
     'Restore the previous published identity revision. A restart may still be required.',
   'identityProviders.rollback.success': 'Previous identity provider revision restored.',
+  'identityProviders.rollback.historyLoadError': 'Published revision history could not be loaded.',
   'identityProviders.rollback.target': 'Published rollback target',
   'identityProviders.rollback.targetRequired': 'Choose an existing published revision to restore.',
   'identityProviders.rollback.title': 'Rollback identity provider',
   'identityProviders.runtime.degraded':
     'This instance is using last-known-good or break-glass configuration ({{category}}).',
   'identityProviders.runtime.environmentShadowed':
-    'Database provider {{provider}} is blocked by the authoritative environment provider ({{category}}). Restarting cannot activate this database revision.',
+    'Database provider {{provider}} is blocked by the authoritative environment provider ({{categoryLabel}}). Restarting cannot activate this database revision.',
   'identityProviders.runtime.fresh': 'Fresh',
   'identityProviders.runtime.loadError': 'Runtime activation status could not be loaded.',
   'identityProviders.runtime.partial':
     'Only some fresh instances have activated the target revision.',
   'identityProviders.runtime.pending': '{{count}} published provider revision(s) await activation.',
+  'identityProviders.runtime.instanceRevision': 'Active revision: {{revision}}',
   'identityProviders.runtime.source': 'Startup source: {{source}}',
   'identityProviders.runtime.stale': 'Stale',
+  'identityProviders.runtime.targetRevision': 'Target published revision: {{revision}}',
   'identityProviders.runtime.title': 'Runtime activation',
   'identityProviders.save.description':
     'Save this server-side draft. The active login configuration does not change.',
@@ -1397,12 +1415,62 @@ export default {
   'identityProviders.steps.publish': 'Publish',
   'identityProviders.steps.test': 'Test',
   'identityProviders.test.description':
-    'The isolated test callback previews mapped claims without changing production login.',
+    'The isolated test callback reports claim presence without exposing claim values or changing production login.',
+  'identityProviders.test.claimPresent': '{{claim}} present ({{type}})',
   'identityProviders.test.popupBlocked': 'The test popup was blocked. Allow popups and try again.',
+  'identityProviders.test.resultLoadError': 'The isolated test result could not be loaded.',
   'identityProviders.test.status': 'Test status: {{status}}',
   'identityProviders.test.timeout':
     'The test timed out. Close the old popup and start a new attempt.',
   'identityProviders.test.title': 'Test identity provider login',
   'identityProviders.title': 'Identity providers',
   'identityProviders.unsaved': 'Unsaved local changes',
+  'identityProviders.unsaved.description':
+    'Your local draft may include a write-only secret. Leaving or switching providers discards it permanently.',
+  'identityProviders.unsaved.discard': 'Discard local draft',
+  'identityProviders.unsaved.stay': 'Keep editing',
+  'identityProviders.unsaved.title': 'Discard unsaved identity provider changes?',
+  'identityProviders.revision': 'Revision {{revision}}',
+  'identityProviders.values.claimType.string': 'text',
+  'identityProviders.values.degraded.break_glass_fallback': 'break-glass fallback',
+  'identityProviders.values.degraded.environment_provider_shadowed':
+    'blocked by environment configuration',
+  'identityProviders.values.degraded.instance_status_unavailable': 'instance status unavailable',
+  'identityProviders.values.degraded.lkg_fallback': 'last-known-good fallback',
+  'identityProviders.values.degraded.lkg_permissions_invalid':
+    'last-known-good file permissions invalid',
+  'identityProviders.values.degraded.lkg_signature_invalid': 'last-known-good signature invalid',
+  'identityProviders.values.degraded.lkg_stale': 'last-known-good snapshot stale',
+  'identityProviders.values.degraded.lkg_write_unavailable':
+    'last-known-good snapshot could not be written',
+  'identityProviders.values.degraded.secret_unavailable': 'client secret unavailable',
+  'identityProviders.values.degraded.startup_snapshot_unavailable': 'startup snapshot unavailable',
+  'identityProviders.values.degraded.unknown': 'unknown runtime degradation',
+  'identityProviders.values.health.degraded': 'Needs attention',
+  'identityProviders.values.health.healthy': 'Healthy',
+  'identityProviders.values.providerStatus.active': 'Active',
+  'identityProviders.values.providerStatus.archived': 'Archived',
+  'identityProviders.values.providerStatus.disabled': 'Disabled',
+  'identityProviders.values.providerStatus.draft': 'Draft',
+  'identityProviders.values.providerStatus.error': 'Error',
+  'identityProviders.values.providerStatus.pending_restart': 'Awaiting activation',
+  'identityProviders.values.providerStatus.published': 'Published',
+  'identityProviders.values.restartReason.edge_runtime': 'edge runtime cannot restart',
+  'identityProviders.values.restartReason.environment_provider_shadowed':
+    'environment configuration has authority',
+  'identityProviders.values.restartReason.no_pending_restart': 'no revision awaits activation',
+  'identityProviders.values.restartReason.serverless_runtime':
+    'serverless runtime controls replacement',
+  'identityProviders.values.restartReason.supervisor_not_configured':
+    'process supervisor is not configured',
+  'identityProviders.values.restartReason.test_runtime': 'restart is disabled in test runtime',
+  'identityProviders.values.restartReason.unknown': 'restart capability is unavailable',
+  'identityProviders.values.source.break_glass': 'break-glass configuration',
+  'identityProviders.values.source.database': 'database snapshot',
+  'identityProviders.values.source.environment': 'environment configuration',
+  'identityProviders.values.source.lkg': 'last-known-good snapshot',
+  'identityProviders.values.testStatus.failed': 'Failed',
+  'identityProviders.values.testStatus.pending': 'Waiting to start',
+  'identityProviders.values.testStatus.processing': 'Checking callback',
+  'identityProviders.values.testStatus.succeeded': 'Succeeded',
 };
