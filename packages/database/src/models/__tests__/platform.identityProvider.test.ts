@@ -8,6 +8,7 @@ import { platformIdentityProviders, platformIdentityProviderSecrets } from '../.
 import type { LobeChatDatabase } from '../../type';
 import {
   PlatformIdentityProviderModel,
+  toPublicIdentityProviderDraft,
   toSafeIdentityProviderDraft,
 } from '../platform/identityProvider';
 
@@ -36,13 +37,18 @@ describe('PlatformIdentityProviderModel', () => {
       })
       .returning();
 
-    const result = await model.prepareRevisionPayload(provider.id);
-    expect(result?.secret).toEqual({
+    const internal = await model.prepareRevisionPayload(provider.id);
+    expect(internal?.secret).toEqual({
       configured: true,
       fingerprint: 'a'.repeat(64),
       updatedAt: new Date('2026-07-19T00:00:00Z'),
     });
-    expect(JSON.stringify(result)).not.toContain(privateMarker);
+    const result = toPublicIdentityProviderDraft(internal!);
+    expect(result.secret).toEqual({
+      configured: true,
+      updatedAt: new Date('2026-07-19T00:00:00Z'),
+    });
+    expect(JSON.stringify(result)).not.toMatch(new RegExp(`${privateMarker}|fingerprint|digest`));
     expect(result).not.toHaveProperty('secretRef');
   });
 

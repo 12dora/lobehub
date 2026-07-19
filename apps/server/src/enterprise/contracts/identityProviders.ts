@@ -1,4 +1,5 @@
 import {
+  PLATFORM_IDENTITY_PROVIDER_PREVIEW_CLAIMS,
   PLATFORM_IDENTITY_PROVIDER_STATUSES,
   PLATFORM_IDENTITY_PROVIDER_TEST_ATTEMPT_STATUSES,
   PLATFORM_IDENTITY_PROVIDER_TYPES,
@@ -79,10 +80,6 @@ export const identityProviderSecretMutationSchema = z.discriminatedUnion('operat
 export const identityProviderSecretStateSchema = z
   .object({
     configured: z.boolean(),
-    fingerprint: z
-      .string()
-      .regex(/^[a-f0-9]{64}$/)
-      .nullable(),
     updatedAt: z.date().nullable(),
   })
   .strict();
@@ -280,6 +277,15 @@ export const adminIdentityProviderCallbackUrlsOutputSchema = z
   .object({ production: z.string().url(), test: z.string().url() })
   .strict();
 
+export const adminIdentityProviderRevisionHistoryOutputSchema = z.array(
+  z
+    .object({
+      publishedAt: z.date(),
+      revision: z.number().int().positive(),
+    })
+    .strict(),
+);
+
 export const adminIdentityProviderTestStartInputSchema = z
   .object({
     expectedRevision: z.number().int().nonnegative(),
@@ -291,19 +297,23 @@ export const adminIdentityProviderTestStartOutputSchema = z
   .object({ attemptId: z.string().min(1), authorizationUrl: z.string().url(), expiresAt: z.date() })
   .strict();
 
-const previewClaimValueSchema = z.string().max(4096);
+const previewClaimSummarySchema = z
+  .object({ present: z.literal(true), type: z.literal('string') })
+  .strict();
 export const identityProviderClaimPreviewSchema = z
   .object({
     claims: z
-      .object({
-        dingtalk_title: previewClaimValueSchema.optional(),
-        dingtalk_user_id: previewClaimValueSchema.optional(),
-        email: previewClaimValueSchema.optional(),
-        name: previewClaimValueSchema.optional(),
-        picture: previewClaimValueSchema.optional(),
-        preferred_username: previewClaimValueSchema.optional(),
-        sub: previewClaimValueSchema.optional(),
-      })
+      .object(
+        Object.fromEntries(
+          PLATFORM_IDENTITY_PROVIDER_PREVIEW_CLAIMS.map((claim) => [
+            claim,
+            previewClaimSummarySchema.optional(),
+          ]),
+        ) as Record<
+          (typeof PLATFORM_IDENTITY_PROVIDER_PREVIEW_CLAIMS)[number],
+          z.ZodOptional<typeof previewClaimSummarySchema>
+        >,
+      )
       .strict(),
     issues: z.array(
       z

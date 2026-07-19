@@ -4,7 +4,6 @@ import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 
 import { checksumPayload } from '@/database/models/platform';
 import {
-  platformIdentityProviders,
   platformIdentityProviderSecrets,
   platformResourceRevisions,
 } from '@/database/schemas/platform';
@@ -43,7 +42,9 @@ interface LoadOptions {
   env?: Record<string, string | undefined>;
 }
 
-const parseEnvironmentProviderIds = (env: Record<string, string | undefined>): string[] => [
+export const parseEnvironmentIdentityProviderIds = (
+  env: Record<string, string | undefined>,
+): string[] => [
   ...new Set(
     (env.AUTH_SSO_PROVIDERS ?? '')
       .split(',')
@@ -85,7 +86,7 @@ const publishedProviderKey = (value: unknown): string | null => {
 
 type DatabaseExecutor = LobeChatDatabase | Transaction;
 
-const loadDatabasePayload = async (input: {
+export const loadPublishedIdentityProviderSelection = async (input: {
   db: DatabaseExecutor;
   environmentProviderIds: Set<string>;
 }) => {
@@ -118,6 +119,7 @@ const loadDatabasePayload = async (input: {
       secretFingerprint: string;
     }
   >();
+  const environmentShadowed: Array<{ providerId: string; providerKey: string }> = [];
   const seenResourceIds = new Set<string>();
   for (const row of rows) {
     if (seenResourceIds.has(row.resourceId)) continue;
@@ -127,6 +129,7 @@ const loadDatabasePayload = async (input: {
     // prevent the explicitly configured provider from starting.
     const providerKey = publishedProviderKey(row.payload);
     if (providerKey && input.environmentProviderIds.has(providerKey.toLowerCase())) {
+      environmentShadowed.push({ providerId: row.resourceId, providerKey });
       continue;
     }
     const payload = parsePublishedIdentityProviderPayload(row.payload);
@@ -151,6 +154,19 @@ const loadDatabasePayload = async (input: {
   if (new Set(selected.map((row) => row.payload.providerKey)).size !== selected.length) {
     throw new Error('PLATFORM_IDENTITY_PROVIDER_DUPLICATE_KEY');
   }
+  return { environmentShadowed, selected };
+};
+
+export const loadCanonicalPublishedIdentityProviders = async (input: {
+  db: DatabaseExecutor;
+  environmentProviderIds: Set<string>;
+}) => (await loadPublishedIdentityProviderSelection(input)).selected;
+
+const loadDatabasePayload = async (input: {
+  db: DatabaseExecutor;
+  environmentProviderIds: Set<string>;
+}) => {
+  const selected = await loadCanonicalPublishedIdentityProviders(input);
   if (selected.length === 0) return [];
   const providerIds = selected.map((provider) => provider.providerId);
   const secrets = await input.db
@@ -246,24 +262,6 @@ const fromLkgPayload = (payload: IdentityProviderLkgPayload, environmentProvider
     ];
   });
 
-const activateLoadedRevisions = async (
-  db: DatabaseExecutor,
-  providers: RuntimeIdentityProvider[],
-): Promise<void> => {
-  for (const provider of providers) {
-    await db
-      .update(platformIdentityProviders)
-      .set({ status: 'active', updatedAt: new Date() })
-      .where(
-        and(
-          eq(platformIdentityProviders.providerKey, provider.providerKey),
-          eq(platformIdentityProviders.activationRevision, provider.revision),
-          eq(platformIdentityProviders.status, 'pending_restart'),
-        ),
-      );
-  }
-};
-
 const loadDatabase = async (): Promise<LobeChatDatabase> => {
   const database = await import('@lobechat/database');
   return database.serverDB;
@@ -291,7 +289,7 @@ export const withIdentityProviderLkgAdvisoryLock = async <T>(
 
 const loadUncached = async (options: LoadOptions): Promise<IdentityProviderStartupSnapshot> => {
   const env = options.env ?? process.env;
-  const environmentProviderIds = parseEnvironmentProviderIds(env);
+  const environmentProviderIds = parseEnvironmentIdentityProviderIds(env);
   const loadedAt = new Date();
   if (!parseEnterpriseFeatureFlags(env).ENABLE_DATABASE_OIDC) {
     return {
@@ -334,14 +332,6 @@ const loadUncached = async (options: LoadOptions): Promise<IdentityProviderStart
             errorClass: error instanceof Error ? error.name : 'UnknownError',
           });
           lastError = 'lkg_write_unavailable';
-        }
-        try {
-          await activateLoadedRevisions(tx, databaseProviders);
-        } catch (error) {
-          console.error('[identityProviderStartup] activation status update unavailable', {
-            errorClass: error instanceof Error ? error.name : 'UnknownError',
-          });
-          lastError = lastError ?? 'activation_status_update_unavailable';
         }
         return { databaseProviders, generation, lastError, revision };
       });

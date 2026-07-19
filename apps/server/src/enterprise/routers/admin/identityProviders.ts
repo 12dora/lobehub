@@ -1,5 +1,6 @@
 import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
+import { toPublicIdentityProviderDraft } from '@/database/models/platform';
 import { enterpriseAccessGate, preAccessAuthedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 
@@ -17,6 +18,7 @@ import {
   adminIdentityProviderMutationOutputSchema,
   adminIdentityProviderPublishInputSchema,
   adminIdentityProviderPublishOutputSchema,
+  adminIdentityProviderRevisionHistoryOutputSchema,
   adminIdentityProviderRollbackInputSchema,
   adminIdentityProviderRollbackOutputSchema,
   adminIdentityProviderTestResultInputSchema,
@@ -166,6 +168,16 @@ export const adminIdentityProvidersRouter = router({
     .output(adminIdentityProviderListOutputSchema)
     .query(({ ctx, input }) => execute(() => ctx.getIdentityProviderRuntime().admin.list(input))),
 
+  listPublishedRevisions: identityProviderProcedure
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.IDENTITY_READ))
+    .input(adminIdentityProviderGetInputSchema)
+    .output(adminIdentityProviderRevisionHistoryOutputSchema)
+    .query(({ ctx, input }) =>
+      execute(() =>
+        new IdentityProviderPublicationService(ctx.serverDB).listPublishedRevisions(input.id),
+      ),
+    ),
+
   publish: identityProviderProcedure
     .use(withPlatformPermission(PLATFORM_PERMISSIONS.IDENTITY_PUBLISH))
     .input(adminIdentityProviderPublishInputSchema)
@@ -180,8 +192,10 @@ export const adminIdentityProvidersRouter = router({
         serverDB: ctx.serverDB,
         targetId: input.id,
       });
-      return execute(() =>
-        new IdentityProviderPublicationService(ctx.serverDB).publish(ctx.userId!, input),
+      return execute(async () =>
+        toPublicIdentityProviderDraft(
+          await new IdentityProviderPublicationService(ctx.serverDB).publish(ctx.userId!, input),
+        ),
       );
     }),
 
@@ -199,8 +213,10 @@ export const adminIdentityProvidersRouter = router({
         serverDB: ctx.serverDB,
         targetId: input.id,
       });
-      return execute(() =>
-        new IdentityProviderPublicationService(ctx.serverDB).rollback(ctx.userId!, input),
+      return execute(async () =>
+        toPublicIdentityProviderDraft(
+          await new IdentityProviderPublicationService(ctx.serverDB).rollback(ctx.userId!, input),
+        ),
       );
     }),
 
