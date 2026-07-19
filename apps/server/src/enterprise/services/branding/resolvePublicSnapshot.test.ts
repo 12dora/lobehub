@@ -56,8 +56,25 @@ describe('resolvePlatformPublicSnapshot', () => {
     expect(snapshot).toMatchObject({
       branding: publishedBranding,
       brandingRevision: '5',
+      configRevision: '5',
       logoUrl: '/logo.png',
       platformName: 'AIHub',
+    });
+  });
+
+  it('keeps the disabled revision contract when no Published branding exists', async () => {
+    const snapshot = await resolvePlatformPublicSnapshot({
+      flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_RUNTIME_BRANDING: true },
+      getDatabase: async () => ({}) as LobeChatDatabase,
+      getPublishedBranding: async () => null,
+    });
+
+    expect(snapshot).toMatchObject({
+      branding: null,
+      brandingRevision: null,
+      configRevision: '0',
+      logoUrl: null,
+      platformName: null,
     });
   });
 
@@ -74,6 +91,7 @@ describe('resolvePlatformPublicSnapshot', () => {
 
       expect(snapshot.branding).toBeNull();
       expect(snapshot.brandingRevision).toBeNull();
+      expect(snapshot.configRevision).toBe('0');
       expect(snapshot.platformName).toBeNull();
     },
   );

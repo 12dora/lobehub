@@ -112,7 +112,7 @@ describe('useEnterprisePlatformData', () => {
     );
     expect(vi.mocked(useClientDataSWR)).toHaveBeenNthCalledWith(
       2,
-      [PLATFORM_PUBLIC_SNAPSHOT_SWR_KEY, '0'],
+      [PLATFORM_PUBLIC_SNAPSHOT_SWR_KEY, '0', null],
       expect.any(Function),
       expect.objectContaining({
         dedupingInterval: PLATFORM_PUBLIC_SNAPSHOT_REFRESH_INTERVAL,
@@ -144,7 +144,7 @@ describe('useEnterprisePlatformData', () => {
     expect(result.current.publicSnapshot).toEqual(initialPublicSnapshot);
     expect(vi.mocked(useClientDataSWR)).toHaveBeenNthCalledWith(
       2,
-      [PLATFORM_PUBLIC_SNAPSHOT_SWR_KEY, 'config-3'],
+      [PLATFORM_PUBLIC_SNAPSHOT_SWR_KEY, 'config-3', '3'],
       expect.any(Function),
       expect.objectContaining({ fallbackData: initialPublicSnapshot }),
     );

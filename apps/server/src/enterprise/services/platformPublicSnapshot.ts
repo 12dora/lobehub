@@ -11,6 +11,10 @@ import { getEnterpriseFeatureFlags } from '../featureFlags';
 export interface BuildPlatformPublicSnapshotInput {
   /** Published branding fields (M12). Never pass secrets here. */
   branding?: PlatformBrandingPublished | null;
+  /**
+   * Effective revision for every public configuration domain included by the caller.
+   * When omitted, the Published branding revision is the public revision authority.
+   */
   configRevision?: string;
   flags?: EnterpriseFeatureFlags;
   /** Whether a published work-account IdP is active (M11). */
@@ -29,11 +33,13 @@ export const buildPlatformPublicSnapshot = (
   const oidcOn = flags.ENABLE_DATABASE_OIDC;
 
   const branding = brandingOn ? (input.branding ?? null) : null;
+  const configRevision =
+    input.configRevision ?? branding?.revision ?? DISABLED_PLATFORM_PUBLIC_SNAPSHOT.configRevision;
 
   return platformPublicSnapshotSchema.parse({
     branding,
     brandingRevision: branding?.revision ?? null,
-    configRevision: input.configRevision ?? DISABLED_PLATFORM_PUBLIC_SNAPSHOT.configRevision,
+    configRevision,
     login: {
       // Work-account button only when OIDC feature is on AND a published IdP exists.
       workAccountEnabled: oidcOn && Boolean(input.workAccountEnabled),
