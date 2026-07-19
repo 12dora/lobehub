@@ -135,6 +135,37 @@ describe('branding literal scan CLI', () => {
     expect(result.output).toContain('new-user-visible-literal');
   });
 
+  it('detects equal-count HTML, CSS, and YAML structural moves while ignoring blank lines', async () => {
+    const assertMoved = async (filePath: string, stableSource: string, movedSource: string) => {
+      await writeFile(filePath, stableSource, 'utf8');
+      expect((await run(['--update-baseline'])).code).toBe(0);
+      await writeFile(filePath, `\n\n${stableSource}`, 'utf8');
+      expect((await run()).code).toBe(0);
+      await writeFile(filePath, movedSource, 'utf8');
+      const result = await run();
+      expect(result.code).toBe(1);
+      expect(result.output).toContain('baseline-occurrence-missing');
+      expect(result.output).toContain('new-user-visible-literal');
+      await rm(filePath);
+    };
+
+    await assertMoved(
+      path.join(repositoryRoot, 'public/siblings.html'),
+      '<section><p>LobeHub</p></section><section><p>AIHub</p></section>',
+      '<section><p>AIHub</p></section><section><p>LobeHub</p></section>',
+    );
+    await assertMoved(
+      path.join(repositoryRoot, 'src/rules.css'),
+      '.same { content: "LobeHub"; }\n.same { content: "AIHub"; }',
+      '.same { content: "AIHub"; }\n.same { content: "LobeHub"; }',
+    );
+    await assertMoved(
+      path.join(repositoryRoot, 'src/paths.yaml'),
+      '"a.b": LobeHub\na:\n  b: AIHub\n',
+      '"a.b": AIHub\na:\n  b: LobeHub\n',
+    );
+  });
+
   it('scans locale, root HTML, and public HTML runtime roots and exits one for additions', async () => {
     await mkdir(path.join(repositoryRoot, 'locales/en-US'), { recursive: true });
     await Promise.all([

@@ -84,6 +84,34 @@ describe('branding literal policy', () => {
     expect(result.candidates.map(({ brand }) => brand)).toEqual(['LobeHub', 'LobeChat', 'LobeHub']);
   });
 
+  it('folds static object, array, aliased, and defaulted destructuring bindings', () => {
+    const result = scanBrandingFile(
+      'src/destructuring.ts',
+      `
+        const { suffix: renamed } = { suffix: 'Hub' };
+        const { direct } = { direct: 'Chat' };
+        const { missing: objectDefault = 'Chat' } = {};
+        const [arraySuffix] = ['Hub'];
+        const [, arrayDefault = 'Chat'] = [];
+        const { dynamicSuffix } = getConfig();
+        export const one = \`Lobe\${renamed}\`;
+        export const two = \`Lobe\${direct}\`;
+        export const three = \`Lobe\${objectDefault}\`;
+        export const four = \`Lobe\${arraySuffix}\`;
+        export const five = \`Lobe\${arrayDefault}\`;
+        export const dynamic = \`Lobe\${dynamicSuffix}\`;
+      `,
+    );
+
+    expect(result.candidates.map(({ brand }) => brand)).toEqual([
+      'LobeHub',
+      'LobeChat',
+      'LobeChat',
+      'LobeHub',
+      'LobeChat',
+    ]);
+  });
+
   it('detects HTML and CSS comment-split literals without executing content', () => {
     expect(
       scanBrandingFile('public/view.html', '<h1>Lobe<!-- split -->Hub</h1>').candidates,
@@ -104,9 +132,37 @@ describe('branding literal policy', () => {
     );
 
     expect(first.candidates).toHaveLength(1);
-    expect(first.candidates[0]?.locator).toContain('section#first/p.copy');
+    expect(first.candidates[0]?.locator).toContain('section#first:same(0)/p.copy:same(0)');
     expect(brandingOccurrenceKey(first.candidates[0]!)).not.toBe(
       brandingOccurrenceKey(moved.candidates[0]!),
+    );
+  });
+
+  it('distinguishes same-description HTML siblings and identical CSS rules', () => {
+    const htmlFirst = scanBrandingFile(
+      'public/view.html',
+      '<section><p>LobeHub</p></section><section><p>AIHub</p></section>',
+    );
+    const htmlSecond = scanBrandingFile(
+      'public/view.html',
+      '<section><p>AIHub</p></section><section><p>LobeHub</p></section>',
+    );
+    const cssFirst = scanBrandingFile(
+      'src/view.css',
+      '.same { content: "LobeHub"; } .same { content: "AIHub"; }',
+    );
+    const cssSecond = scanBrandingFile(
+      'src/view.css',
+      '.same { content: "AIHub"; } .same { content: "LobeHub"; }',
+    );
+
+    expect(htmlFirst.candidates[0]?.locator).toContain('section:same(0)');
+    expect(brandingOccurrenceKey(htmlFirst.candidates[0]!)).not.toBe(
+      brandingOccurrenceKey(htmlSecond.candidates[0]!),
+    );
+    expect(cssFirst.candidates[0]?.locator).toContain('rule:0');
+    expect(brandingOccurrenceKey(cssFirst.candidates[0]!)).not.toBe(
+      brandingOccurrenceKey(cssSecond.candidates[0]!),
     );
   });
 
@@ -241,14 +297,21 @@ describe('branding literal policy', () => {
     );
     const first = scanBrandingFile('src/title.ts', `export const title = 'LobeHub';`);
     const moved = scanBrandingFile('src/title.ts', `\n\nexport const title = 'LobeHub';`);
+    const flat = scanBrandingFile('src/collision.yaml', '"a.b": LobeHub\na:\n  b: AIHub\n');
+    const nested = scanBrandingFile('src/collision.yaml', '"a.b": AIHub\na:\n  b: LobeHub\n');
 
     expect(yaml.candidates.map(({ locator }) => locator)).toEqual([
-      'yaml:<root>/key:LobeHubKey',
-      'yaml:LobeHubKey/value',
-      'yaml:brand.title/value',
+      'yaml:path:[]/key:"LobeHubKey"',
+      'yaml:path:["LobeHubKey"]/value',
+      'yaml:path:["brand","title"]/value',
     ]);
     expect(brandingOccurrenceKey(first.candidates[0]!)).toBe(
       brandingOccurrenceKey(moved.candidates[0]!),
+    );
+    expect(flat.candidates[0]?.locator).toBe('yaml:path:["a.b"]/value');
+    expect(nested.candidates[0]?.locator).toBe('yaml:path:["a","b"]/value');
+    expect(brandingOccurrenceKey(flat.candidates[0]!)).not.toBe(
+      brandingOccurrenceKey(nested.candidates[0]!),
     );
   });
 
