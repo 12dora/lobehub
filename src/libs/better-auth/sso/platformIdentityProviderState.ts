@@ -74,23 +74,10 @@ export const platformIdentityProviderState = (
               ...parsedState.data,
               ...createPlatformOidcNonceBinding(nonce, providerId),
             });
-            const updated = await ctx.context.adapter.updateMany({
-              model: 'verification',
-              update: { value: updatedValue },
-              where: [
-                { field: 'id', value: verification.id },
-                { field: 'identifier', value: state },
-                { field: 'value', value: verification.value },
-              ],
-            });
-            // Adapter implementations are inconsistent here: the public contract is a count,
-            // while the memory and Drizzle adapters return their driver result. A numeric result
-            // must still report exactly one row; the mandatory re-read below proves publication
-            // for driver-shaped results.
-            if (typeof updated === 'number' && updated !== 1) return failStateBinding();
-
-            // Keep Better Auth secondary storage coherent with the CAS-published database row.
-            // defineConfig enables verification.storeInDatabase so this updates both copies.
+            // The random state and nonce have not left this request yet, so no external caller can
+            // address this verification row during publication. Use Better Auth's shared store:
+            // Redis when configured, otherwise the database. The exact re-read is the publication
+            // barrier and prevents a failed/no-op update from releasing the authorization URL.
             await ctx.context.internalAdapter.updateVerificationByIdentifier(state, {
               value: updatedValue,
             });

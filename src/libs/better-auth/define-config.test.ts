@@ -160,7 +160,7 @@ describe('defineConfig', () => {
     );
   });
 
-  it('dual-writes verification state only when a database identity provider needs CAS', async () => {
+  it('registers platform state binding without changing global verification storage', async () => {
     const { defineConfig } = await import('./define-config');
 
     await defineConfig({ plugins: [] });
@@ -175,7 +175,7 @@ describe('defineConfig', () => {
     );
 
     const options = mocks.betterAuth.mock.calls.at(-1)?.[0];
-    expect(options.verification).toEqual({ storeInDatabase: true });
+    expect(options.verification).toBeUndefined();
     expect(options.plugins).toContainEqual({
       id: 'platform-identity-provider-state',
       providerIds: ['corp-oidc'],
