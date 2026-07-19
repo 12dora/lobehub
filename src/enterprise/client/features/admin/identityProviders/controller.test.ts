@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  acceptIdentityProviderRestart,
+  IDENTITY_PROVIDER_RESTART_TIMEOUT_MS,
   IdentityProviderTestPopupBlockedError,
   isIdentityProviderTestTerminal,
   openIdentityProviderTestPopup,
@@ -74,6 +76,16 @@ describe('identity provider editor controller', () => {
   });
 
   it('stops restart polling on activation, failure, and unsupported convergence', () => {
+    const acceptedAt = 1_000;
+    const attempt = acceptIdentityProviderRestart(
+      { expectedIdentityRevision: 'a'.repeat(64), requestId: 'request-1' },
+      {
+        accepted: true,
+        acceptedAt: new Date(acceptedAt),
+        expectedIdentityRevision: 'a'.repeat(64),
+        requestId: 'request-1',
+      },
+    )!;
     const pending = {
       active: { allFreshInstancesActive: false },
       pendingRestart: true,
@@ -81,11 +93,19 @@ describe('identity provider editor controller', () => {
       targetIdentityRevision: 'a'.repeat(64),
     };
     expect(
-      resolveIdentityProviderRestartPhase({ error: null, phase: 'accepted', status: pending }),
+      resolveIdentityProviderRestartPhase({
+        attempt,
+        error: null,
+        now: acceptedAt,
+        phase: 'accepted',
+        status: pending,
+      }),
     ).toBe('accepted');
     expect(
       resolveIdentityProviderRestartPhase({
         error: null,
+        attempt,
+        now: acceptedAt,
         phase: 'accepted',
         status: {
           ...pending,
@@ -96,24 +116,64 @@ describe('identity provider editor controller', () => {
     ).toBe('activated');
     expect(
       resolveIdentityProviderRestartPhase({
+        attempt,
         error: new Error('offline'),
+        now: acceptedAt,
         phase: 'accepted',
       }),
-    ).toBe('failed');
+    ).toBe('accepted');
     expect(
       resolveIdentityProviderRestartPhase({
+        attempt,
         error: new Error('background refresh failed'),
+        now: acceptedAt,
         phase: 'accepted',
         status: pending,
       }),
     ).toBe('accepted');
     expect(
       resolveIdentityProviderRestartPhase({
+        attempt,
         error: null,
+        now: acceptedAt,
         phase: 'accepted',
         status: { ...pending, restart: { supported: false } },
       }),
     ).toBe('failed');
+    expect(
+      resolveIdentityProviderRestartPhase({
+        attempt,
+        error: null,
+        now: acceptedAt + IDENTITY_PROVIDER_RESTART_TIMEOUT_MS,
+        phase: 'accepted',
+        status: pending,
+      }),
+    ).toBe('failed');
+  });
+
+  it('accepts restart polling only for matching server evidence', () => {
+    const prepared = { expectedIdentityRevision: 'a'.repeat(64), requestId: 'request-1' };
+    const accepted = {
+      accepted: true,
+      acceptedAt: new Date(1_000),
+      expectedIdentityRevision: prepared.expectedIdentityRevision,
+      requestId: prepared.requestId,
+    };
+    expect(acceptIdentityProviderRestart(prepared, accepted)).toEqual({
+      acceptedAt: 1_000,
+      deadlineAt: 1_000 + IDENTITY_PROVIDER_RESTART_TIMEOUT_MS,
+      requestId: prepared.requestId,
+      targetIdentityRevision: prepared.expectedIdentityRevision,
+    });
+    expect(
+      acceptIdentityProviderRestart(prepared, { ...accepted, requestId: 'different-request' }),
+    ).toBeNull();
+    expect(
+      acceptIdentityProviderRestart(prepared, {
+        ...accepted,
+        expectedIdentityRevision: 'b'.repeat(64),
+      }),
+    ).toBeNull();
   });
 
   it('preserves a local draft for the conflict refresh and hydrates later revisions', () => {

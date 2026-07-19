@@ -1374,7 +1374,9 @@ export default {
   'identityProviders.restart.reconnecting':
     'Restart accepted. The server is reconnecting; status checks will resume automatically.',
   'identityProviders.restart.failed':
-    'Activation status could not converge or the runtime no longer supports this restart. Review the status and retry the check.',
+    'The controlled restart was not accepted. Review the runtime status and retry the restart.',
+  'identityProviders.restart.failedAccepted':
+    'Restart request {{requestId}} did not converge to revision {{revision}} before its deadline. Retry starts a new controlled restart.',
   'identityProviders.restart.target': 'Identity provider runtime',
   'identityProviders.restart.title': 'Activate published identity configuration?',
   'identityProviders.restart.unsupported':

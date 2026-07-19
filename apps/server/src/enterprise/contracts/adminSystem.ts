@@ -96,7 +96,9 @@ export const adminSystemRequestRestartInputSchema = adminSystemPrepareRestartInp
 export const adminSystemRequestRestartOutputSchema = z
   .object({
     accepted: z.literal(true),
+    acceptedAt: z.date(),
     duplicate: z.boolean(),
+    expectedIdentityRevision: identityRevisionSchema,
     requestId: z.string().uuid(),
     status: z.enum(['accepted', 'signaled']),
   })
