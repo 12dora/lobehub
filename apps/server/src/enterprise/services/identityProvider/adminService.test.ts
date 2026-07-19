@@ -108,6 +108,37 @@ describe('AdminIdentityProviderService', () => {
       }),
     ).resolves.toEqual({ deleted: true });
     await expect(service.get(created.id)).rejects.toThrow('PLATFORM_IDENTITY_PROVIDER_NOT_FOUND');
+    const failureAudits = (await db.select().from(platformAuditLogs)).filter(
+      ({ action, result }) => action === 'admin.identityProviders.update' && result === 'failure',
+    );
+    expect(failureAudits).toContainEqual(
+      expect.objectContaining({
+        afterDiff: { category: 'revision_conflict' },
+        reason: 'configure work login',
+      }),
+    );
+    expect(JSON.stringify(failureAudits)).not.toMatch(/client-secret|not-returned|ciphertext/);
+  });
+
+  it('lists 100 safe drafts with one query and stable cursor pagination', async () => {
+    await db.insert(platformIdentityProviders).values(
+      Array.from({ length: 101 }, (_, index) => ({
+        displayName: `Provider ${index.toString().padStart(3, '0')}`,
+        providerKey: `provider-${index.toString().padStart(3, '0')}`,
+      })),
+    );
+    const select = vi.spyOn(db, 'select');
+    const first = await service.list({ limit: 100 });
+    expect(select).toHaveBeenCalledTimes(1);
+    expect(first.items).toHaveLength(100);
+    expect(first.nextCursor).toBe('provider-099');
+    select.mockClear();
+    await expect(service.list({ cursor: first.nextCursor!, limit: 100 })).resolves.toMatchObject({
+      items: [{ providerKey: 'provider-100' }],
+      nextCursor: null,
+    });
+    expect(select).toHaveBeenCalledTimes(1);
+    select.mockRestore();
   });
 
   it('exposes canonical callback URLs and delegates public-only discovery checks', async () => {

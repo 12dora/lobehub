@@ -281,7 +281,11 @@ export const adminIdentityProviderCallbackUrlsOutputSchema = z
   .strict();
 
 export const adminIdentityProviderTestStartInputSchema = z
-  .object({ id: z.string().min(1).max(128), expectedRevision: z.number().int().nonnegative() })
+  .object({
+    expectedRevision: z.number().int().nonnegative(),
+    id: z.string().min(1).max(128),
+    reason: reasonSchema,
+  })
   .strict();
 export const adminIdentityProviderTestStartOutputSchema = z
   .object({ attemptId: z.string().min(1), authorizationUrl: z.string().url(), expiresAt: z.date() })

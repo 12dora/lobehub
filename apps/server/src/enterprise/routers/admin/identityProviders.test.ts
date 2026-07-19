@@ -3,6 +3,7 @@ import { eq, inArray, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
+import { getServerDB } from '@/database/core/db-adaptor';
 import { getTestDB } from '@/database/core/getTestDB';
 import {
   permissions,
@@ -19,6 +20,7 @@ import type { LobeChatDatabase } from '@/database/type';
 import { seedPlatformRoles } from '@/database/utils/seedPlatformRoles';
 import { createCallerFactory } from '@/libs/trpc/lambda';
 import { createContextInner } from '@/libs/trpc/lambda/context';
+import { PlatformSecretService } from '@/server/enterprise/security/secret';
 
 import { adminRouter } from '../admin';
 
@@ -128,9 +130,17 @@ describe('admin.identityProviders RBAC and feature gate', () => {
     const reader = await callerFor(ids.reader);
     vi.stubEnv('ENABLE_DATABASE_OIDC', '0');
     vi.stubEnv('PLATFORM_MASTER_KEY', 'not-a-key');
+    vi.mocked(getServerDB).mockClear();
+    const select = vi.spyOn(db, 'select');
+    const secretFactory = vi.spyOn(PlatformSecretService, 'fromEnvOrThrowIfEnterprise');
     await expect(reader.list({ limit: 10 })).rejects.toMatchObject({
       code: 'FORBIDDEN',
       message: 'PLATFORM_FEATURE_DISABLED',
     });
+    expect(getServerDB).not.toHaveBeenCalled();
+    expect(select).not.toHaveBeenCalled();
+    expect(secretFactory).not.toHaveBeenCalled();
+    select.mockRestore();
+    secretFactory.mockRestore();
   });
 });

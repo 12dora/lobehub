@@ -17,6 +17,8 @@ const keyProvider: KeyProvider = {
   providerId: 'test',
 };
 const store = new IdentityProviderTestAttemptStore(db, new PlatformSecretService({ keyProvider }));
+const secretFingerprint = 'a'.repeat(64);
+const secretRef = 'kms://platform-identity-providers/test/secret';
 
 const cleanup = async () => {
   await db.delete(platformIdentityProviderTestAttempts);
@@ -29,11 +31,20 @@ afterEach(cleanup);
 const issue = async () => {
   const [provider] = await db
     .insert(platformIdentityProviders)
-    .values({ displayName: 'Work', providerKey: 'work' })
+    .values({
+      displayName: 'Work',
+      providerKey: 'work',
+      secretFingerprint,
+      secretRef,
+      secretUpdatedAt: new Date(),
+    })
     .returning();
   return store.issue({
+    auditReason: 'test work identity provider',
     providerId: provider.id,
     providerRevision: provider.revision,
+    providerSecretFingerprint: secretFingerprint,
+    providerSecretRef: secretRef,
     redirectUri: 'https://app.example.test/oauth/identity-provider/test/callback',
     sessionId: 'session-a',
     userId: 'user-a',
@@ -80,7 +91,7 @@ describe('IdentityProviderTestAttemptStore', () => {
   it('binds result reads to both authenticated user and session', async () => {
     const issued = await issue();
     const reserved = await store.reserve(issued.state);
-    await store.succeed(reserved.id, { claims: { sub: 'subject' }, issues: [], valid: true });
+    await store.succeed(reserved, { claims: { sub: 'subject' }, issues: [], valid: true });
     await expect(
       store.getResult({ attemptId: issued.attemptId, sessionId: 'session-b', userId: 'user-a' }),
     ).resolves.toBeUndefined();
@@ -90,5 +101,100 @@ describe('IdentityProviderTestAttemptStore', () => {
     await expect(
       store.getResult({ attemptId: issued.attemptId, sessionId: 'session-a', userId: 'user-a' }),
     ).resolves.toMatchObject({ status: 'succeeded' });
+  });
+
+  it('atomically rejects provider revision and secret-version races', async () => {
+    const issued = await issue();
+    const reserved = await store.reserve(issued.state);
+    await db
+      .update(platformIdentityProviders)
+      .set({ revision: 1, secretFingerprint: 'b'.repeat(64), secretRef: `${secretRef}-rotated` });
+    await expect(
+      store.succeed(reserved, { claims: { sub: 'subject' }, issues: [], valid: true }),
+    ).rejects.toMatchObject({ code: 'OIDC_TEST_PROVIDER_CHANGED' });
+    await store.fail(reserved.id, 'OIDC_TEST_PROVIDER_CHANGED');
+    await expect(
+      store.getResult({ attemptId: issued.attemptId, sessionId: 'session-a', userId: 'user-a' }),
+    ).resolves.toMatchObject({ errorCode: 'OIDC_TEST_PROVIDER_CHANGED', status: 'failed' });
+  });
+
+  it('rejects a secret-only race even when the provider revision was not advanced', async () => {
+    const issued = await issue();
+    const reserved = await store.reserve(issued.state);
+    await db
+      .update(platformIdentityProviders)
+      .set({ secretFingerprint: 'c'.repeat(64), secretRef: `${secretRef}-other` });
+    await expect(
+      store.succeed(reserved, { claims: { sub: 'subject' }, issues: [], valid: true }),
+    ).rejects.toMatchObject({ code: 'OIDC_TEST_PROVIDER_CHANGED' });
+  });
+
+  it('treats a previously succeeded result as stale after provider mutation', async () => {
+    const issued = await issue();
+    const reserved = await store.reserve(issued.state);
+    await store.succeed(reserved, { claims: { sub: 'subject' }, issues: [], valid: true });
+    await db.update(platformIdentityProviders).set({ revision: 1 });
+    await expect(
+      store.getResult({ attemptId: issued.attemptId, sessionId: 'session-a', userId: 'user-a' }),
+    ).resolves.toEqual({
+      attemptId: issued.attemptId,
+      errorCode: 'OIDC_TEST_PROVIDER_CHANGED',
+      result: null,
+      status: 'failed',
+    });
+  });
+
+  it('cleans expired attempts in bounded idempotent batches without deleting processing rows', async () => {
+    const [provider] = await db
+      .insert(platformIdentityProviders)
+      .values({
+        displayName: 'Cleanup',
+        providerKey: 'cleanup',
+        secretFingerprint,
+        secretRef,
+        secretUpdatedAt: new Date(),
+      })
+      .returning();
+    const createdAt = new Date(Date.now() - 10 * 60 * 1000);
+    const expiresAt = new Date(createdAt.getTime() + 5 * 60 * 1000);
+    const base = (index: number) => ({
+      auditReason: 'cleanup expired identity provider test',
+      createdAt,
+      expiresAt,
+      nonceHash: 'b'.repeat(64),
+      pkceCiphertext: 'encrypted',
+      pkceKeyId: 'test-key',
+      providerId: provider.id,
+      providerRevision: 0,
+      providerSecretFingerprint: secretFingerprint,
+      providerSecretRef: secretRef,
+      redirectUri: 'https://app.example.test/oauth/identity-provider/test/callback',
+      sessionId: 'cleanup-session',
+      stateHash: index.toString(16).padStart(64, '0'),
+      userId: 'cleanup-user',
+    });
+    await db.insert(platformIdentityProviderTestAttempts).values([
+      ...Array.from({ length: 502 }, (_, index) => base(index + 1)),
+      {
+        ...base(503),
+        completedAt: new Date(),
+        errorCode: 'OIDC_TEST_FAILED',
+        status: 'failed' as const,
+      },
+      {
+        ...base(504),
+        completedAt: new Date(),
+        result: { claims: {}, issues: [], valid: true },
+        status: 'succeeded' as const,
+      },
+      { ...base(505), reservedAt: new Date(), status: 'processing' as const },
+    ]);
+
+    await expect(store.cleanupExpired(1000)).resolves.toBe(500);
+    await expect(store.cleanupExpired(1000)).resolves.toBe(4);
+    await expect(store.cleanupExpired(1000)).resolves.toBe(0);
+    const remaining = await db.select().from(platformIdentityProviderTestAttempts);
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].status).toBe('processing');
   });
 });

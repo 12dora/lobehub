@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   adminIdentityProviderCreateInputSchema,
+  adminIdentityProviderTestStartInputSchema,
   identityProviderClaimMappingSchema,
   identityProviderClaimPreviewSchema,
   identityProviderDraftSchema,
@@ -159,6 +160,22 @@ describe('identity provider contracts', () => {
         claims: { access_token: 'leak' },
         issues: [],
         valid: true,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('requires a secret-safe reason for testStart', () => {
+    expect(
+      adminIdentityProviderTestStartInputSchema.safeParse({
+        expectedRevision: 1,
+        id: 'provider',
+        reason: 'validate work login',
+      }).success,
+    ).toBe(true);
+    expect(
+      adminIdentityProviderTestStartInputSchema.safeParse({
+        expectedRevision: 1,
+        id: 'provider',
       }).success,
     ).toBe(false);
   });
