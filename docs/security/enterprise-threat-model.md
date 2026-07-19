@@ -35,9 +35,10 @@ fail-closed behavior when a security dependency cannot establish a trustworthy r
 3. **Server → remote identity, connector, and model endpoints.** Remote names, DNS answers,
    redirects, response sizes, and response bodies are attacker controlled. A successful TLS or HTTP
    response is not proof that the endpoint is safe or semantically valid.
-4. **Server → key provider.** Key material and signing operations are highly trusted. The current
-   environment provider is suitable only for controlled deployments; the Vault provider is a
-   fail-closed stub, not a completed production integration.
+4. **Server → key provider.** Key material and signing operations are highly trusted. The
+   environment provider is suitable only for controlled deployments. The Vault provider supports
+   AppRole (preferred) or an explicit scoped token, verifies every client token with `lookup-self`,
+   rejects any token carrying the `root` policy, and reads active and historical KEKs from KV v2.
 5. **Published database state → process startup/runtime cache.** Database revisions are authoritative.
    Local caches and LKG files are derived data and must be authenticated, bounded, and rejected when
    stale or inconsistent.
@@ -110,10 +111,13 @@ authoritative database record; validation and bounded probes create no runtime s
 branding asset recovery uses its object-storage operation records. Catalogs that expose immutable
 revisions may offer explicit rollback, but the registry does not label that mechanism as an LKG.
 Serving a previous value after an uncertain write is not permitted unless that resource defines a
-separate authenticated, bounded recovery rule. Vault unavailability, sealing, authorization denial,
-timeout, or malformed key data must not trigger a production fallback to an environment key. The
-current Vault adapter is still a rejecting stub, so real Vault authentication, leases, rotation, and
-historical-key reads remain W8 work.
+separate authenticated, bounded recovery rule. Selecting Vault never falls back to the environment
+KEK. The provider caches bounded KV v2 active/history key sets, renews or reacquires leased AppRole
+tokens, and single-flights concurrent authentication and key reads. SecretID provider calls have
+their own bounded deadline, while each Vault HTTP request has a separate bounded deadline. The size
+limit applies only to the streamed HTTP response body. Vault sealed, permission, network, timeout,
+or schema failures all fail closed. Full-domain re-wrap/job orchestration and production credential
+rotation, alerting, and disaster-recovery evidence remain required.
 
 ## Audit and data minimization
 
@@ -138,12 +142,17 @@ historical-key reads remain W8 work.
 ## Verification and release evidence
 
 Repository verification for this baseline consists of the registry reconciliation test, existing
-focused router/service security tests, TypeScript checking, linting, and diff checks. Subsequent W8
-acceptance must add shared admin rate-limit tests, complete reauth/audit coverage for registry gaps,
-real Vault integration and rotation tests, real PostgreSQL migration/rollback evidence,
-multi-instance cache and failure drills, dependency/penetration scanning, and enterprise browser E2E
-evidence. External identity tenants and signed production release/rollback drills must be reported as
-unexecuted unless real credentials and release authority were used.
+focused router/service security tests, TypeScript checking, linting, and diff checks. The Vault fake
+suite's default run recorded `61 passed / 1 real gate skipped`; an independent gate against an
+ephemeral Vault recorded `1 passed`. That gate used root only to bootstrap temporary resources and
+used the temporary AppRole for application reads. It verifies the integration path, but does not
+constitute production Vault or actual release acceptance. Subsequent W8 acceptance must add shared
+admin rate-limit tests, complete reauth/audit coverage for registry gaps, full-domain re-wrap/job
+evidence, production Vault credential rotation/alerting/disaster-recovery drills, real PostgreSQL
+migration/rollback evidence, multi-instance cache and failure drills, dependency/penetration
+scanning, and enterprise browser E2E evidence. External identity tenants and signed production
+release/rollback drills must be reported as unexecuted unless real credentials and release authority
+were used.
 
 ## Review triggers
 
