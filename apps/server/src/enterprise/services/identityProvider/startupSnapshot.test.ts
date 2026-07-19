@@ -182,7 +182,7 @@ describe('identity provider startup snapshot', () => {
     });
   });
 
-  it('loads a complete DB snapshot once, verifies the secret, and marks it active', async () => {
+  it('loads a complete DB snapshot once without fabricating global multi-instance activation', async () => {
     const env = await baseEnv();
     const { clientSecret, provider } = await seedPublished(env);
     const first = await loadIdentityProviderStartupSnapshot({ db, env });
@@ -196,7 +196,7 @@ describe('identity provider startup snapshot', () => {
       revision: 2,
     });
     const [activated] = await db.select().from(platformIdentityProviders);
-    expect(activated).toMatchObject({ id: provider.id, status: 'active' });
+    expect(activated).toMatchObject({ id: provider.id, status: 'pending_restart' });
   });
 
   it('keeps an environment provider authoritative over a conflicting DB provider', async () => {
