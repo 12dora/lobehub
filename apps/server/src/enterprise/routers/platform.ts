@@ -11,6 +11,7 @@ import { publishedAiCatalogSchema } from '../contracts/aiCatalog';
 import { parseEnterpriseFeatureFlags } from '../featureFlags';
 import { resolveAccessStatus } from '../guards/accessGrant';
 import { ensurePlatformAgentRolloutWorkerStarted } from '../jobs/agentRollout';
+import { ensureIdentityProviderTestAttemptCleanupStarted } from '../jobs/identityProviderTestAttemptCleanup';
 import { AiCatalogReadService, getEmptyPublishedAiCatalog } from '../services/aiCatalog';
 import { resolvePlatformPublicSnapshot } from '../services/branding';
 import { ensureConnectorRuntimeAuditWorkerStarted } from '../services/connectorCatalog/runtimeAuditWorker';
@@ -27,6 +28,8 @@ ensureSkillCatalogReadinessRegistered();
 ensureConnectorRuntimeAuditWorkerStarted();
 
 ensurePlatformAgentRolloutWorkerStarted();
+
+ensureIdentityProviderTestAttemptCleanupStarted();
 
 /**
  * Platform router (M00 read-only + M02 access status / descriptor).

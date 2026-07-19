@@ -1,4 +1,5 @@
-import { asc, eq } from 'drizzle-orm';
+import type { PlatformIdentityProviderStatus, PlatformIdentityProviderType } from '@lobechat/types';
+import { and, asc, eq, gt, ilike, or, type SQL, sql } from 'drizzle-orm';
 
 import {
   type NewPlatformIdentityProvider,
@@ -16,6 +17,19 @@ export type SafePlatformIdentityProviderItem = Omit<
   PlatformIdentityProviderItem,
   'legacyDiscoveryUrl' | 'legacyEncryptedClientSecret'
 >;
+
+export interface ListPlatformIdentityProvidersParams {
+  cursor?: string;
+  limit: number;
+  query?: string;
+  status?: PlatformIdentityProviderStatus;
+  type?: PlatformIdentityProviderType;
+}
+
+export type SafePlatformIdentityProviderListItem = Omit<
+  SafePlatformIdentityProviderItem,
+  'secretRef'
+> & { secretConfigured: boolean };
 
 /** Deliberately excludes both retained legacy compatibility columns. */
 const safeColumns = {
@@ -46,6 +60,12 @@ const safeColumns = {
   updatedBy: platformIdentityProviders.updatedBy,
   usePkce: platformIdentityProviders.usePkce,
 } satisfies Record<keyof SafePlatformIdentityProviderItem, unknown>;
+
+const { secretRef: _secretRef, ...safeColumnsWithoutSecretRef } = safeColumns;
+const safeListColumns = {
+  ...safeColumnsWithoutSecretRef,
+  secretConfigured: sql<boolean>`${platformIdentityProviders.secretRef} IS NOT NULL`,
+} satisfies Record<keyof SafePlatformIdentityProviderListItem, unknown>;
 
 /** Persistence boundary for external login provider drafts. */
 export class PlatformIdentityProviderRepository {
@@ -87,4 +107,30 @@ export class PlatformIdentityProviderRepository {
       .select(safeColumns)
       .from(platformIdentityProviders)
       .orderBy(asc(platformIdentityProviders.providerKey));
+
+  listPage = async (input: ListPlatformIdentityProvidersParams) => {
+    const filters: SQL[] = [];
+    if (input.cursor) filters.push(gt(platformIdentityProviders.providerKey, input.cursor));
+    if (input.status) filters.push(eq(platformIdentityProviders.status, input.status));
+    if (input.type) filters.push(eq(platformIdentityProviders.type, input.type));
+    if (input.query) {
+      const search = or(
+        ilike(platformIdentityProviders.providerKey, `%${input.query}%`),
+        ilike(platformIdentityProviders.displayName, `%${input.query}%`),
+      );
+      if (search) filters.push(search);
+    }
+    const rows = await this.db
+      .select(safeListColumns)
+      .from(platformIdentityProviders)
+      .where(filters.length > 0 ? and(...filters) : undefined)
+      .orderBy(asc(platformIdentityProviders.providerKey))
+      .limit(input.limit + 1);
+    const hasMore = rows.length > input.limit;
+    const items = hasMore ? rows.slice(0, input.limit) : rows;
+    return {
+      items,
+      nextCursor: hasMore ? items.at(-1)!.providerKey : null,
+    };
+  };
 }

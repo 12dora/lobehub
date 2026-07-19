@@ -45,6 +45,7 @@ const prefixes = {
   platformEasyauthGrantSnapshots: 'peas',
   platformIdentityProviders: 'pidp',
   platformIdentityProviderSecrets: 'pids',
+  platformIdentityProviderTestAttempts: 'pita',
   platformJobs: 'pjob',
   platformManagedResourcePolicies: 'pmrp',
   platformResourceRevisions: 'prev',

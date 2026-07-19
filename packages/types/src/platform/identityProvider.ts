@@ -166,3 +166,37 @@ export interface PlatformOidcDiscoveryMetadata {
   tokenEndpointAuthMethodsSupported: string[];
   userinfoEndpoint: string | null;
 }
+
+export const PLATFORM_IDENTITY_PROVIDER_TEST_ATTEMPT_STATUSES = [
+  'pending',
+  'processing',
+  'succeeded',
+  'failed',
+] as const;
+
+export type PlatformIdentityProviderTestAttemptStatus =
+  (typeof PLATFORM_IDENTITY_PROVIDER_TEST_ATTEMPT_STATUSES)[number];
+
+export const PLATFORM_IDENTITY_PROVIDER_PREVIEW_CLAIMS = [
+  'dingtalk_title',
+  'dingtalk_user_id',
+  'email',
+  'name',
+  'picture',
+  'preferred_username',
+  'sub',
+] as const;
+
+export type PlatformIdentityProviderPreviewClaim =
+  (typeof PLATFORM_IDENTITY_PROVIDER_PREVIEW_CLAIMS)[number];
+
+export interface PlatformIdentityProviderClaimValidationIssue {
+  code: 'required_claim_missing';
+  field: 'name' | 'subject';
+}
+
+export interface PlatformIdentityProviderClaimPreview {
+  claims: Partial<Record<PlatformIdentityProviderPreviewClaim, string>>;
+  issues: PlatformIdentityProviderClaimValidationIssue[];
+  valid: boolean;
+}
