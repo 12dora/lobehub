@@ -7,9 +7,12 @@ describe('admin system restart acceptance output', () => {
     const accepted = {
       accepted: true,
       acceptedAt: new Date('2026-07-19T00:00:00Z'),
+      convergenceDeadlineAt: new Date('2026-07-19T00:02:00Z'),
       duplicate: false,
       expectedIdentityRevision: 'a'.repeat(64),
+      remainingMs: 120_000,
       requestId: '550e8400-e29b-41d4-a716-446655440056',
+      serverNow: new Date('2026-07-19T00:00:00Z'),
       status: 'accepted',
     };
     expect(adminSystemRequestRestartOutputSchema.parse(accepted)).toEqual(accepted);

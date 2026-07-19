@@ -183,10 +183,12 @@ describe('IdentityProviderSystemService', () => {
       },
     };
     const afterResponse: Array<() => Promise<void>> = [];
+    const acceptedServerTime = new Date(Date.now() + 1000);
+    let serverNow = acceptedServerTime;
     const service = new IdentityProviderSystemService(
       db,
       controller,
-      () => new Date(),
+      () => serverNow,
       (task) => afterResponse.push(task),
     );
     const prepared = await service.prepareRestart('admin-1', {
@@ -201,9 +203,12 @@ describe('IdentityProviderSystemService', () => {
     expect(first).toMatchObject({
       accepted: true,
       acceptedAt: expect.any(Date),
+      convergenceDeadlineAt: new Date(acceptedServerTime.getTime() + 120_000),
       duplicate: false,
       expectedIdentityRevision: prepared.expectedIdentityRevision,
+      remainingMs: 120_000,
       requestId,
+      serverNow: acceptedServerTime,
       status: 'accepted',
     });
     expect(observations).toEqual([]);
@@ -213,6 +218,7 @@ describe('IdentityProviderSystemService', () => {
       .where(eq(platformIdentityProviderRestartRequests.requestId, requestId));
     expect(acceptedRow.status).toBe('accepted');
     await afterResponse.shift()!();
+    serverNow = new Date(acceptedServerTime.getTime() + 30_000);
     const duplicate = await service.requestRestart('admin-1', {
       intentToken: prepared.intentToken,
       reason: 'Activate the tested work login',
@@ -220,7 +226,10 @@ describe('IdentityProviderSystemService', () => {
     });
     expect(duplicate).toMatchObject({ accepted: true, duplicate: true, status: 'signaled' });
     expect(duplicate.acceptedAt).toEqual(first.acceptedAt);
+    expect(duplicate.convergenceDeadlineAt).toEqual(first.convergenceDeadlineAt);
     expect(duplicate.expectedIdentityRevision).toBe(prepared.expectedIdentityRevision);
+    expect(duplicate.remainingMs).toBe(90_000);
+    expect(duplicate.serverNow).toEqual(serverNow);
     expect(observations).toEqual(['signaled:1']);
   });
 

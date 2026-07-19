@@ -33,6 +33,7 @@ import {
 } from './startupSnapshot';
 
 const RESTART_INTENT_TTL_MS = 5 * 60 * 1000;
+export const IDENTITY_PROVIDER_RESTART_CONVERGENCE_TIMEOUT_MS = 120_000;
 export const IDENTITY_PROVIDER_RECENT_STALE_DIAGNOSTIC_LIMIT = 10;
 
 export type IdentityProviderAfterResponseHook = (task: () => Promise<void>) => void;
@@ -128,6 +129,21 @@ export class IdentityProviderSystemService {
     return capability.supported && !this.afterResponse
       ? ({ reason: 'supervisor_not_configured', supported: false } as const)
       : capability;
+  };
+
+  private restartAcceptanceTiming = (acceptedAt: Date) => {
+    const serverNow = this.now();
+    const convergenceDeadlineAt = new Date(
+      acceptedAt.getTime() + IDENTITY_PROVIDER_RESTART_CONVERGENCE_TIMEOUT_MS,
+    );
+    return {
+      convergenceDeadlineAt,
+      remainingMs: Math.min(
+        IDENTITY_PROVIDER_RESTART_CONVERGENCE_TIMEOUT_MS,
+        Math.max(0, convergenceDeadlineAt.getTime() - serverNow.getTime()),
+      ),
+      serverNow,
+    };
   };
 
   getAuthSnapshotStatus = async () => {
@@ -498,6 +514,7 @@ export class IdentityProviderSystemService {
       return {
         accepted: true as const,
         acceptedAt: accepted.acceptedAt,
+        ...this.restartAcceptanceTiming(accepted.acceptedAt),
         duplicate: true,
         expectedIdentityRevision: accepted.expectedIdentityRevision,
         requestId: accepted.requestId,
@@ -529,6 +546,7 @@ export class IdentityProviderSystemService {
     return {
       accepted: true as const,
       acceptedAt: accepted.acceptedAt,
+      ...this.restartAcceptanceTiming(accepted.acceptedAt),
       duplicate: false,
       expectedIdentityRevision: accepted.expectedIdentityRevision,
       requestId,
