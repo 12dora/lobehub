@@ -17,6 +17,7 @@ export {
   isMetadataHostname,
   isMetadataIp,
   isPrivateIp,
+  isPubliclyRoutableIp,
   normalizeIp,
   type OutboundPolicy,
   type OutboundPolicyMode,

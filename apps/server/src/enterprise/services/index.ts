@@ -2,6 +2,7 @@ export * from './adminUserService';
 export * from './easyauthClient';
 export * from './easyauthManifest';
 export * from './easyauthSync';
+export * from './identityProvider';
 export * from './managedResourceCapabilities';
 export * from './managedResourceGuardMetrics';
 export * from './managedResourcePolicy';
