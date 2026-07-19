@@ -25,11 +25,11 @@ path "aihub/data/platform/master-key" {
 }
 ```
 
-不要授予 `sys/*`、policy、auth 管理、list、create、update 或 delete 权限。AppRole 的 Secret ID 应通过受控部署通道交付，设置有限 TTL / 使用次数；生产 Vault 应启用 TLS 并校验证书。不要把 token、Role ID、Secret ID 或 KEK 写入仓库、命令历史、日志、监控标签和错误报告。
+不要授予 `sys/*`、policy、auth 管理、list、create、update 或 delete 权限。生产 Vault 应启用 TLS 并校验证书。不要把 token、Role ID、Secret ID 或 KEK 写入仓库、命令历史、日志、监控标签和错误报告。
 
 ## 应用配置
 
-AppRole（优先）：
+AppRole（优先，以下静态环境变量模式只适用于 Vault 中配置为可重复使用、且由进程重启完成轮换的 SecretID）：
 
 ```dotenv
 PLATFORM_KEY_PROVIDER=vault
@@ -43,6 +43,21 @@ VAULT_KV_SECRET_PATH=platform/master-key
 
 低权限 token 可用 `VAULT_TOKEN` 替代两个 AppRole 变量。若同时给出完整 AppRole 与 token，AppRole 优先。Provider 会对登录所得 token 和显式 token 调用 `lookup-self`，任何包含 `root` policy 的 token 都会被拒绝。
 
+生产环境推荐为 AppRole 设置有限 TTL / 使用次数，并通过 `secretIdProvider` 注入可刷新的 SecretID，而不是长期保存静态 `VAULT_APPROLE_SECRET_ID`：
+
+```ts
+const keyProvider = new VaultKeyProvider({
+  address: '<from validated config>',
+  auth: {
+    method: 'approle',
+    roleId: '<from secure config>',
+    secretIdProvider: async () => secretIdAgent.readFreshSecretId(),
+  },
+});
+```
+
+`secretIdAgent` 应是受控的 response-wrapping 解包器、Vault Agent、sidecar，或读取原子轮换且权限收紧文件的适配器。回调每次 AppRole 登录调用一次；token 续租失败或达到 max TTL 后，Provider 会通过回调取得新 SecretID 再登录。同一时刻的并发请求共享一次刷新，回调失败会脱敏并 fail closed。不要让业务进程持有生成 SecretID 或管理 AppRole 的权限。
+
 ## 轮换与回滚
 
 1. 生成新的随机 32-byte KEK，并选择新的唯一 keyId。
@@ -51,7 +66,7 @@ VAULT_KV_SECRET_PATH=platform/master-key
 4. 分批调用 Platform Secret Service `rotate` 重新封装旧密文，并统计仍引用旧 keyId 的记录。
 5. 只有确认无任何密文引用旧 keyId 且回滚窗口结束后，才移除对应 historical 项。
 
-若轮换数据格式错误、Vault sealed 或权限丢失，停止发布并恢复上一 KV 版本；不要启用环境 KEK 回退。Vault token 续租失败时 AppRole 会重新登录，显式 token 会直接 fail closed；过期 token 不会继续使用。
+若轮换数据格式错误、Vault sealed 或权限丢失，停止发布并恢复上一 KV 版本；不要启用环境 KEK 回退。Vault token 续租失败时 AppRole 会先获取新 SecretID 再登录，显式 token 会直接 fail closed；过期 token 不会继续使用。
 
 ## 本地真实 Vault 验证
 

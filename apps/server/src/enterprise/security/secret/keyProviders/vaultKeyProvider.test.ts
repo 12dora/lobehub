@@ -11,6 +11,8 @@ const ROLE_ID = 'test-role-id-do-not-use';
 const SECRET_ID = 'test-secret-id-do-not-use';
 const ACTIVE_KEY = Buffer.alloc(32, 0x11).toString('base64');
 const HISTORICAL_KEY = Buffer.alloc(32, 0x22).toString('base64');
+const MAX_TEST_RESPONSE_BYTES = 1024 * 1024;
+const encoder = new TextEncoder();
 
 const jsonResponse = (payload: unknown, status = 200) =>
   new Response(JSON.stringify(payload), {
@@ -43,6 +45,46 @@ const keyResponse = (
       metadata: { version: 2 },
     },
   });
+
+const streamedResponse = (
+  chunks: Uint8Array[],
+  options: {
+    contentLength?: string;
+    failAfterChunks?: number;
+    onCancel?: () => void;
+    onPull?: () => void;
+  } = {},
+) => {
+  let index = 0;
+  const stream = new ReadableStream<Uint8Array>(
+    {
+      cancel: () => options.onCancel?.(),
+      pull: (controller) => {
+        options.onPull?.();
+        if (options.failAfterChunks === index) {
+          controller.error(new Error(`stream-failure-${TOKEN}`));
+          return;
+        }
+        const chunk = chunks[index];
+        index += 1;
+        if (chunk) controller.enqueue(chunk);
+        else controller.close();
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  return new Response(stream, {
+    headers: options.contentLength ? { 'content-length': options.contentLength } : undefined,
+  });
+};
+
+const splitBytes = (value: Uint8Array, chunkBytes: number): Uint8Array[] => {
+  const chunks: Uint8Array[] = [];
+  for (let offset = 0; offset < value.byteLength; offset += chunkBytes) {
+    chunks.push(value.slice(offset, Math.min(offset + chunkBytes, value.byteLength)));
+  }
+  return chunks;
+};
 
 const tokenProvider = (fetcher: typeof fetch, options: Record<string, unknown> = {}) =>
   new VaultKeyProvider({
@@ -211,14 +253,17 @@ describe('VaultKeyProvider', () => {
     expect(lookupCalls).toBe(2);
   });
 
-  it('relogs with AppRole after renewal failure and never retains an expired token', async () => {
+  it('gets a fresh SecretID and relogs when renewal is denied at token max lifetime', async () => {
     let now = 0;
     let loginCalls = 0;
     let renewCalls = 0;
-    const fetcher = vi.fn<typeof fetch>(async (input) => {
+    let secretIdProviderCalls = 0;
+    const suppliedSecretIds: string[] = [];
+    const fetcher = vi.fn<typeof fetch>(async (input, init) => {
       const url = String(input);
       if (url.endsWith('/login')) {
         loginCalls += 1;
+        suppliedSecretIds.push(JSON.parse(String(init?.body)).secret_id);
         return jsonResponse({ auth: { client_token: `${TOKEN}-${loginCalls}` } });
       }
       if (url.endsWith('/lookup-self')) return lookupResponse({ ttl: 1 });
@@ -229,7 +274,14 @@ describe('VaultKeyProvider', () => {
       return keyResponse();
     });
     const provider = new VaultKeyProvider({
-      auth: { method: 'approle', roleId: ROLE_ID, secretId: SECRET_ID },
+      auth: {
+        method: 'approle',
+        roleId: ROLE_ID,
+        secretIdProvider: async () => {
+          secretIdProviderCalls += 1;
+          return `${SECRET_ID}-${secretIdProviderCalls}`;
+        },
+      },
       clock: () => now,
       fetch: fetcher,
       keyCacheTtlMs: 100,
@@ -242,6 +294,38 @@ describe('VaultKeyProvider', () => {
     await provider.getKek();
     expect(renewCalls).toBe(1);
     expect(loginCalls).toBe(2);
+    expect(secretIdProviderCalls).toBe(2);
+    expect(suppliedSecretIds).toEqual([`${SECRET_ID}-1`, `${SECRET_ID}-2`]);
+  });
+
+  it('single-flights and sanitizes SecretID provider failures', async () => {
+    let providerCalls = 0;
+    const leakedProviderError = `provider-failed-${SECRET_ID}`;
+    const provider = new VaultKeyProvider({
+      auth: {
+        method: 'approle',
+        roleId: ROLE_ID,
+        secretIdProvider: async () => {
+          providerCalls += 1;
+          await Promise.resolve();
+          throw new Error(leakedProviderError);
+        },
+      },
+      fetch: vi.fn<typeof fetch>(),
+    });
+
+    const results = await Promise.allSettled(Array.from({ length: 20 }, () => provider.getKek()));
+    expect(providerCalls).toBe(1);
+    expect(results.every(({ status }) => status === 'rejected')).toBe(true);
+    for (const result of results) {
+      if (result.status === 'fulfilled') throw new Error('Expected SecretID failure');
+      expect(result.reason).toMatchObject({
+        details: { reason: 'secret-id-provider-error' },
+        message: 'Vault key material is unavailable',
+      });
+      expect(JSON.stringify(result.reason)).not.toContain(SECRET_ID);
+      expect(JSON.stringify(result.reason)).not.toContain(leakedProviderError);
+    }
   });
 
   it('fails closed when renewal of an explicit token fails', async () => {
@@ -351,6 +435,116 @@ describe('VaultKeyProvider', () => {
     await pending;
   });
 
+  it('accepts chunked JSON without content-length and exactly at the byte limit', async () => {
+    const lookupJson = JSON.stringify({
+      data: { policies: ['aihub-kek-read'], renewable: true, ttl: 60 },
+    });
+    const exactBody = encoder.encode(
+      lookupJson + ' '.repeat(MAX_TEST_RESPONSE_BYTES - Buffer.byteLength(lookupJson)),
+    );
+    expect(exactBody.byteLength).toBe(MAX_TEST_RESPONSE_BYTES);
+    const fetcher = vi.fn<typeof fetch>(async (input) =>
+      String(input).endsWith('/lookup-self')
+        ? streamedResponse(splitBytes(exactBody, 64 * 1024))
+        : keyResponse(),
+    );
+
+    await expect(tokenProvider(fetcher).getKek()).resolves.toMatchObject({
+      keyId: 'vault:key-2',
+    });
+  });
+
+  it.each([
+    { declaredLength: undefined, label: 'missing content-length' },
+    { declaredLength: '1', label: 'falsely small content-length' },
+  ])(
+    'cancels before fully reading an over-limit stream with $label',
+    async ({ declaredLength }) => {
+      let cancelCalls = 0;
+      let pullCalls = 0;
+      const chunks = Array.from({ length: 4 }, () => new Uint8Array(400 * 1024));
+      const fetcher = vi.fn<typeof fetch>(async () =>
+        streamedResponse(chunks, {
+          contentLength: declaredLength,
+          onCancel: () => {
+            cancelCalls += 1;
+          },
+          onPull: () => {
+            pullCalls += 1;
+          },
+        }),
+      );
+
+      await expect(tokenProvider(fetcher).getKek()).rejects.toMatchObject({
+        details: { reason: 'response-too-large' },
+      });
+      expect(cancelCalls).toBe(1);
+      expect(pullCalls).toBe(3);
+      expect(pullCalls).toBeLessThan(chunks.length);
+    },
+  );
+
+  it('cancels a declared oversized response before pulling any body chunk', async () => {
+    let cancelCalls = 0;
+    let pullCalls = 0;
+    const fetcher = vi.fn<typeof fetch>(async () =>
+      streamedResponse([encoder.encode('{}')], {
+        contentLength: String(MAX_TEST_RESPONSE_BYTES + 1),
+        onCancel: () => {
+          cancelCalls += 1;
+        },
+        onPull: () => {
+          pullCalls += 1;
+        },
+      }),
+    );
+
+    await expect(tokenProvider(fetcher).getKek()).rejects.toMatchObject({
+      details: { reason: 'response-too-large' },
+    });
+    expect(cancelCalls).toBe(1);
+    expect(pullCalls).toBe(0);
+  });
+
+  it('rejects the first byte over the response limit and cancels the stream', async () => {
+    let cancelCalls = 0;
+    const body = new Uint8Array(MAX_TEST_RESPONSE_BYTES + 1);
+    const fetcher = vi.fn<typeof fetch>(async () =>
+      streamedResponse(splitBytes(body, MAX_TEST_RESPONSE_BYTES), {
+        onCancel: () => {
+          cancelCalls += 1;
+        },
+      }),
+    );
+
+    await expect(tokenProvider(fetcher).getKek()).rejects.toMatchObject({
+      details: { reason: 'response-too-large' },
+    });
+    expect(cancelCalls).toBe(1);
+  });
+
+  it('fails closed and sanitizes stream read errors and invalid UTF-8', async () => {
+    const streamError = tokenProvider(
+      vi.fn<typeof fetch>(async () =>
+        streamedResponse([encoder.encode('{')], { failAfterChunks: 1 }),
+      ),
+    );
+    const error = await streamError.getKek().catch((reason: unknown) => reason);
+    expect(error).toMatchObject({
+      details: { reason: 'network-error' },
+      message: 'Vault key material is unavailable',
+    });
+    expect(JSON.stringify(error)).not.toContain(TOKEN);
+
+    const invalidUtf8 = tokenProvider(
+      vi.fn<typeof fetch>(async () => streamedResponse([new Uint8Array([0xff])])),
+    );
+    await expect(invalidUtf8.getKek()).rejects.toMatchObject({
+      details: { reason: 'invalid-utf8' },
+      message: 'Vault key material is unavailable',
+    });
+  });
+
   it.each([
     undefined,
     null,
@@ -442,5 +636,15 @@ describe('VaultKeyProvider', () => {
     expect(serialized).not.toContain(ACTIVE_KEY);
     expect(JSON.stringify({ ...provider })).not.toContain(TOKEN);
     expect(JSON.stringify({ ...provider })).not.toContain(ACTIVE_KEY);
+
+    const dynamic = new VaultKeyProvider({
+      auth: {
+        method: 'approle',
+        roleId: ROLE_ID,
+        secretIdProvider: () => SECRET_ID,
+      },
+    });
+    expect(JSON.stringify(dynamic)).toBe('{"providerId":"vault"}');
+    expect(JSON.stringify({ ...dynamic })).not.toContain(SECRET_ID);
   });
 });

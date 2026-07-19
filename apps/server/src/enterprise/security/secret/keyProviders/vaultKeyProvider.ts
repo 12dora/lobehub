@@ -34,12 +34,23 @@ const SAFE_KEY_ID = /^[A-Z0-9][\w.:@+-]{0,127}$/i;
 const BASE64_KEY = /^[A-Z0-9+/]{43}=$/i;
 const GENERIC_UNAVAILABLE_MESSAGE = 'Vault key material is unavailable';
 
-export interface VaultAppRoleAuth {
+export type VaultAppRoleSecretIdProvider = () => Promise<string> | string;
+
+interface VaultAppRoleAuthBase {
   authMountPath?: string;
   method: 'approle';
   roleId: string;
-  secretId: string;
 }
+
+/**
+ * Static SecretID is supported for reusable credentials. Production deployments
+ * with limited-use/short-lived SecretIDs should inject a refreshable provider.
+ */
+export type VaultAppRoleAuth = VaultAppRoleAuthBase &
+  (
+    | { secretId: string; secretIdProvider?: never }
+    | { secretId?: never; secretIdProvider: VaultAppRoleSecretIdProvider }
+  );
 
 export interface VaultTokenAuth {
   method: 'token';
@@ -86,6 +97,15 @@ interface TokenMetadata {
   leaseDurationSeconds: number;
   renewable: boolean;
 }
+
+type NormalizedVaultAuth =
+  | {
+      authMountPath: string;
+      getSecretId: VaultAppRoleSecretIdProvider;
+      method: 'approle';
+      roleId: string;
+    }
+  | VaultTokenAuth;
 
 const validateBoundedInteger = (value: number, name: string, minimum: number, maximum: number) => {
   if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
@@ -250,6 +270,42 @@ const parseKeySnapshot = (payload: unknown, expiresAt: number): KeySnapshot => {
   return { activeKeyId: active.keyId, expiresAt, keys };
 };
 
+const readBoundedResponseBody = async (response: Response): Promise<string> => {
+  if (!response.body) return '';
+  const reader = response.body.getReader();
+  try {
+    const declaredLength = response.headers.get('content-length');
+    if (declaredLength !== null) {
+      const parsedLength = Number(declaredLength);
+      if (Number.isFinite(parsedLength) && parsedLength > MAX_RESPONSE_BYTES) {
+        await reader.cancel('response-too-large');
+        throw secretNotReadable(GENERIC_UNAVAILABLE_MESSAGE, { reason: 'response-too-large' });
+      }
+    }
+
+    const chunks: Uint8Array[] = [];
+    let totalBytes = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > MAX_RESPONSE_BYTES) {
+        await reader.cancel('response-too-large');
+        throw secretNotReadable(GENERIC_UNAVAILABLE_MESSAGE, { reason: 'response-too-large' });
+      }
+      chunks.push(value);
+    }
+
+    try {
+      return new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks, totalBytes));
+    } catch {
+      throw secretNotReadable(GENERIC_UNAVAILABLE_MESSAGE, { reason: 'invalid-utf8' });
+    }
+  } finally {
+    reader.releaseLock();
+  }
+};
+
 /**
  * Production Vault KV v2 key provider.
  *
@@ -261,7 +317,7 @@ export class VaultKeyProvider implements KeyProvider {
   readonly providerId = 'vault';
 
   private readonly address: URL;
-  private readonly auth: VaultAuth;
+  private readonly auth: NormalizedVaultAuth;
   private readonly clock: () => number;
   private readonly fetcher: typeof fetch;
   private readonly keyCacheTtlMs: number;
@@ -309,14 +365,32 @@ export class VaultKeyProvider implements KeyProvider {
       MAX_TOKEN_CACHE_TTL_MS,
     );
     if (options.auth.method === 'approle') {
+      const staticSecretId = options.auth.secretId;
+      const injectedSecretIdProvider = options.auth.secretIdProvider;
+      if (typeof staticSecretId === 'string' && typeof injectedSecretIdProvider === 'function') {
+        throw secretInvalidInput(
+          'Vault AppRole requires exactly one SecretID or SecretID provider',
+        );
+      }
+      let getSecretId: VaultAppRoleSecretIdProvider;
+      if (typeof injectedSecretIdProvider === 'function') {
+        getSecretId = injectedSecretIdProvider;
+      } else if (typeof staticSecretId === 'string') {
+        const validatedSecretId = validateCredential(staticSecretId, 'Vault AppRole secret ID');
+        getSecretId = () => validatedSecretId;
+      } else {
+        throw secretInvalidInput(
+          'Vault AppRole requires exactly one SecretID or SecretID provider',
+        );
+      }
       this.auth = {
         authMountPath: validateMountPath(
           options.auth.authMountPath ?? DEFAULT_AUTH_MOUNT_PATH,
           'Vault AppRole auth mount',
         ),
+        getSecretId,
         method: 'approle',
         roleId: validateCredential(options.auth.roleId, 'Vault AppRole role ID'),
-        secretId: validateCredential(options.auth.secretId, 'Vault AppRole secret ID'),
       };
     } else {
       this.auth = {
@@ -438,14 +512,27 @@ export class VaultKeyProvider implements KeyProvider {
 
     if (this.auth.method === 'token') return this.validateToken(this.auth.token);
 
+    const secretId = await this.resolveAppRoleSecretId(this.auth.getSecretId);
     const payload = await this.request(
       `v1/auth/${encodeURIComponent(this.auth.authMountPath ?? DEFAULT_AUTH_MOUNT_PATH)}/login`,
       {
-        body: JSON.stringify({ role_id: this.auth.roleId, secret_id: this.auth.secretId }),
+        body: JSON.stringify({ role_id: this.auth.roleId, secret_id: secretId }),
         method: 'POST',
       },
     );
     return this.validateToken(parseLoginToken(payload));
+  };
+
+  private resolveAppRoleSecretId = async (
+    provider: VaultAppRoleSecretIdProvider,
+  ): Promise<string> => {
+    try {
+      return validateCredential(await provider(), 'Vault AppRole secret ID');
+    } catch {
+      throw secretNotReadable(GENERIC_UNAVAILABLE_MESSAGE, {
+        reason: 'secret-id-provider-error',
+      });
+    }
   };
 
   private validateToken = async (value: string): Promise<ValidatedToken> => {
@@ -479,19 +566,13 @@ export class VaultKeyProvider implements KeyProvider {
         signal: controller.signal,
       });
       if (!response.ok) {
+        controller.abort();
         throw secretNotReadable(GENERIC_UNAVAILABLE_MESSAGE, {
           reason: response.status === 403 ? 'permission-denied' : 'vault-http-error',
           status: response.status,
         });
       }
-      const contentLength = Number(response.headers.get('content-length') ?? '0');
-      if (contentLength > MAX_RESPONSE_BYTES) {
-        throw secretNotReadable(GENERIC_UNAVAILABLE_MESSAGE, { reason: 'response-too-large' });
-      }
-      const body = await response.text();
-      if (Buffer.byteLength(body, 'utf8') > MAX_RESPONSE_BYTES) {
-        throw secretNotReadable(GENERIC_UNAVAILABLE_MESSAGE, { reason: 'response-too-large' });
-      }
+      const body = await readBoundedResponseBody(response);
       try {
         return JSON.parse(body) as unknown;
       } catch {

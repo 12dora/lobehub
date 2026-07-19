@@ -2,6 +2,7 @@ export { DEFAULT_ENV_KEY_ID, EnvKeyProvider, type EnvKeyProviderOptions } from '
 export type { KekMaterial, KeyProvider } from './types';
 export {
   type VaultAppRoleAuth,
+  type VaultAppRoleSecretIdProvider,
   type VaultAuth,
   VaultKeyProvider,
   type VaultKeyProviderOptions,
