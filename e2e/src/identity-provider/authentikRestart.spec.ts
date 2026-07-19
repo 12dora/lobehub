@@ -214,6 +214,7 @@ test.beforeAll(async () => {
   fixture = await startAuthentikFixture({
     clientSecret: CLIENT_SECRET,
     expectedRedirectUri: `${appUrl}/api/auth/oauth2/callback/${IDENTITY_PROVIDER_KEY}`,
+    requireNonce: true,
   });
   proxy = await startFixtureProxy(fixture.port);
   const env = {
@@ -403,9 +404,19 @@ test('activates a published Authentik provider across a real supervised restart'
     await reasonDialog.locator('textarea').fill('Activate reviewed E2E identity revision');
     await recordRestartFrames(page, async () => {
       await reasonDialog.getByRole('button', { name: /Restart safely|安全重启|确认/ }).click();
-      await expect(page.getByText(/Restart accepted|重启请求已接受/)).toBeVisible();
+      const reconnectingAlert = page.getByRole('alert').filter({
+        hasText:
+          /^(Restart accepted\. The server is reconnecting; status checks will resume automatically\.|重启请求已接受，服务器正在重连；状态检查会自动恢复。)$/,
+      });
+      await expect(reconnectingAlert).toHaveCount(1);
+      await expect(reconnectingAlert).toBeVisible();
       await supervisor!.waitForGeneration(2);
-      await expect(page.getByText(/Activation complete|激活完成/)).toBeVisible({
+      const activatedAlert = page.getByRole('alert').filter({
+        hasText:
+          /^(Activation complete\. Every fresh instance is running the target published revision\.|激活完成，所有在线实例均已运行目标发布版本。)$/,
+      });
+      await expect(activatedAlert).toHaveCount(1, { timeout: 120_000 });
+      await expect(activatedAlert).toBeVisible({
         timeout: 120_000,
       });
       await expect(page.getByTestId('identity-runtime-status')).toContainText(
