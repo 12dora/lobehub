@@ -57,13 +57,105 @@ describe('branding literal policy', () => {
     ]);
   });
 
+  it('uses block lexical bindings and respects parameter, arrow, and local shadowing', () => {
+    const result = scanBrandingFile(
+      'src/scopes.ts',
+      `
+        const suffix = 'Hub';
+        export const outer = \`Lobe\${suffix}\`;
+        export function dynamic(suffix: string) { return \`Lobe\${suffix}\`; }
+        export const arrow = (suffix: string) => \`Lobe\${suffix}\`;
+        export const destructuredArrow = ({ suffix }: { suffix: string }) => \`Lobe\${suffix}\`;
+        export function local() {
+          const suffix = 'Chat';
+          return \`Lobe\${suffix}\`;
+        }
+        export function destructuredLocal() {
+          const { suffix } = { suffix: getSuffix() };
+          return \`Lobe\${suffix}\`;
+        }
+        {
+          const suffix = 'Hub';
+          const nested = \`Lobe\${suffix}\`;
+        }
+      `,
+    );
+
+    expect(result.candidates.map(({ brand }) => brand)).toEqual(['LobeHub', 'LobeChat', 'LobeHub']);
+  });
+
   it('detects HTML and CSS comment-split literals without executing content', () => {
     expect(
       scanBrandingFile('public/view.html', '<h1>Lobe<!-- split -->Hub</h1>').candidates,
     ).toHaveLength(1);
     expect(
-      scanBrandingFile('src/view.css', '.x::after { content: "Lobe/*x*/Chat" }').candidates,
+      scanBrandingFile('src/view.css', '.x::after { content: Lobe/*x*/Chat }').candidates,
     ).toHaveLength(1);
+  });
+
+  it('parses nested HTML text, named entities, wbr boundaries, and DOM ancestry', () => {
+    const first = scanBrandingFile(
+      'public/view.html',
+      '<section id="first"><p class="copy">Lobe<span>&Hfr;</span><wbr>ub</p></section>',
+    );
+    const moved = scanBrandingFile(
+      'public/view.html',
+      '<section id="second"><p class="copy">Lobe<span>&Hfr;</span><wbr>ub</p></section>',
+    );
+
+    expect(first.candidates).toHaveLength(1);
+    expect(first.candidates[0]?.locator).toContain('section#first/p.copy');
+    expect(brandingOccurrenceKey(first.candidates[0]!)).not.toBe(
+      brandingOccurrenceKey(moved.candidates[0]!),
+    );
+  });
+
+  it('parses CSS escapes, adjacent content strings, and comments with selector/property identity', () => {
+    const first = scanBrandingFile(
+      'src/view.css',
+      String.raw`
+        .escaped { content: "Lobe\48 ub"; }
+        .adjacent { content: "Lobe" "Hub"; }
+        .inside { content: "Lobe/* literal */Hub"; }
+        .outside { content: Lobe/**/Hub; }
+      `,
+    );
+    const moved = scanBrandingFile('src/view.css', String.raw`.renamed { content: "Lobe\48 ub"; }`);
+
+    expect(first.candidates).toHaveLength(3);
+    expect(first.candidates.map(({ locator }) => locator)).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('property:content'),
+        expect.stringContaining('selector:'),
+      ]),
+    );
+    expect(brandingOccurrenceKey(first.candidates[0]!)).not.toBe(
+      brandingOccurrenceKey(moved.candidates[0]!),
+    );
+  });
+
+  it('includes control-flow condition fingerprints and JSX DOM identity in TS locators', () => {
+    const first = scanBrandingFile(
+      'src/branch.tsx',
+      `if (a) { render('LobeHub'); } const view = <section id="one"><span>LobeChat</span></section>;`,
+    );
+    const changed = scanBrandingFile(
+      'src/branch.tsx',
+      `if (b) { render('LobeHub'); } const view = <section id="two"><span>LobeChat</span></section>;`,
+    );
+    const whitespace = scanBrandingFile(
+      'src/branch.tsx',
+      `\n\nif ( /* stable */ a ) { render('LobeHub'); }\nconst view = <section id="one"><span>LobeChat</span></section>;`,
+    );
+
+    expect(first.candidates[0]?.locator).toContain('if:');
+    expect(first.candidates[1]?.locator).toContain('section#one');
+    expect(first.candidates.map(brandingOccurrenceKey)).not.toEqual(
+      changed.candidates.map(brandingOccurrenceKey),
+    );
+    expect(first.candidates.map(brandingOccurrenceKey)).toEqual(
+      whitespace.candidates.map(brandingOccurrenceKey),
+    );
   });
 
   it('allows only exact stable package, protocol, database, URL, email, and legal tokens', () => {
@@ -143,11 +235,18 @@ describe('branding literal policy', () => {
   });
 
   it('uses YAML key paths and TS semantic positions instead of line numbers', () => {
-    const yaml = scanBrandingFile('src/branding.yaml', 'brand:\n  title: LobeHub\n');
+    const yaml = scanBrandingFile(
+      'src/branding.yaml',
+      'LobeHubKey: LobeChat value\nbrand:\n  title: LobeHub\n',
+    );
     const first = scanBrandingFile('src/title.ts', `export const title = 'LobeHub';`);
     const moved = scanBrandingFile('src/title.ts', `\n\nexport const title = 'LobeHub';`);
 
-    expect(yaml.candidates[0]?.locator).toBe('yaml:brand.title');
+    expect(yaml.candidates.map(({ locator }) => locator)).toEqual([
+      'yaml:<root>/key:LobeHubKey',
+      'yaml:LobeHubKey/value',
+      'yaml:brand.title/value',
+    ]);
     expect(brandingOccurrenceKey(first.candidates[0]!)).toBe(
       brandingOccurrenceKey(moved.candidates[0]!),
     );

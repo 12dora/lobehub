@@ -13,6 +13,7 @@ import {
   BRANDING_ROOT_HTML_FILES,
   brandingOccurrenceKey,
   createBrandingBaseline,
+  decodeBrandingText,
   isExcludedBrandingPath,
   isExplicitTextFile,
   MAX_BRANDING_BINARY_FILE_BYTES,
@@ -139,6 +140,22 @@ export const hasValidBinarySignature = (extension: string, content: Uint8Array):
       return false;
     }
   }
+};
+
+const hasSuspiciousBinaryBrandPayload = (content: Uint8Array): boolean => {
+  const buffer = Buffer.from(content);
+  const candidates = [buffer.toString('latin1')];
+  if (isUtf8(buffer)) candidates.push(buffer.toString('utf8'));
+  if (buffer.length >= 4) {
+    candidates.push(buffer.toString('utf16le'));
+    const swapped = Buffer.allocUnsafe(buffer.length - (buffer.length % 2));
+    for (let index = 0; index < swapped.length; index += 2) {
+      swapped[index] = buffer[index + 1] ?? 0;
+      swapped[index + 1] = buffer[index] ?? 0;
+    }
+    candidates.push(swapped.toString('utf16le'));
+  }
+  return candidates.some((candidate) => /lobehub|lobechat/iu.test(decodeBrandingText(candidate)));
 };
 
 const collectFiles = async (
@@ -330,6 +347,10 @@ export const scanBrandingRepository = async ({
         const extension = path.extname(file.path).toLowerCase();
         if (!hasValidBinarySignature(extension, content)) {
           errors.push(`${file.path}: invalid ${extension} binary signature`);
+        } else if (hasSuspiciousBinaryBrandPayload(content)) {
+          errors.push(
+            `${file.path}: valid ${extension} magic contains suspicious branding payload`,
+          );
         } else skippedFiles += 1;
         continue;
       }

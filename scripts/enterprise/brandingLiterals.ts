@@ -2,8 +2,14 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 
 import ts from 'typescript';
-import type { Node as YAMLNode } from 'yaml';
-import { isMap, isNode, isScalar, isSeq, LineCounter, parseDocument } from 'yaml';
+
+import type { BrandingFormatFragment } from './brandingFormatFragments';
+import {
+  collectCssFragments,
+  collectHtmlFragments,
+  collectPlainTextFragments,
+  collectYamlFragments,
+} from './brandingFormatFragments';
 
 export const BRANDING_BASELINE_VERSION = 2;
 export const BRANDING_BASELINE_POLICY =
@@ -188,16 +194,14 @@ interface LiteralContext {
   moduleSpecifier?: boolean;
 }
 
-interface LiteralFragment {
-  column: number;
+interface LiteralFragment extends BrandingFormatFragment {
   context: LiteralContext;
-  line: number;
-  locator: string;
-  text: string;
 }
 
 const fingerprint = (input: string): string =>
   createHash('sha256').update(input).digest('hex').slice(0, 24);
+
+const syntaxPrinter = ts.createPrinter({ removeComments: true });
 
 const decodeCodePoint = (value: string, radix: number): string => {
   const codePoint = Number.parseInt(value, radix);
@@ -220,12 +224,7 @@ const decodePercentSequences = (input: string): string =>
 
 /** Deterministic, non-executing canonicalization used only for literal detection. */
 export const decodeBrandingText = (input: string): string => {
-  let value = input
-    .normalize('NFKC')
-    .replaceAll(DEFAULT_IGNORABLE_RE, '')
-    .replaceAll('\0', '')
-    .replaceAll(/<!--[\s\S]*?-->/gu, '')
-    .replaceAll(/\/\*[\s\S]*?\*\//gu, '');
+  let value = input.normalize('NFKC').replaceAll(DEFAULT_IGNORABLE_RE, '').replaceAll('\0', '');
 
   for (let iteration = 0; iteration < 3; iteration += 1) {
     const decoded = decodePercentSequences(
@@ -323,6 +322,32 @@ const nodeName = (node: ts.Node, sourceFile: ts.SourceFile): string | undefined 
 const callExpressionName = (node: ts.CallExpression, sourceFile: ts.SourceFile): string =>
   node.expression.getText(sourceFile).replaceAll(/\s+/gu, '').slice(0, 100);
 
+const syntaxFingerprint = (node: ts.Node | undefined, sourceFile: ts.SourceFile): string =>
+  fingerprint(
+    node
+      ? syntaxPrinter.printNode(ts.EmitHint.Unspecified, node, sourceFile).replaceAll(/\s+/gu, ' ')
+      : '<none>',
+  );
+
+const jsxDescriptor = (node: ts.JsxElement, sourceFile: ts.SourceFile): string => {
+  const opening = node.openingElement;
+  let id = '';
+  const classes: string[] = [];
+  for (const property of opening.attributes.properties) {
+    if (!ts.isJsxAttribute(property) || !property.initializer) continue;
+    const name = property.name.getText(sourceFile);
+    const value = ts.isStringLiteral(property.initializer) ? property.initializer.text : undefined;
+    if (!value) continue;
+    if (name === 'id') id = value;
+    if (name === 'class' || name === 'className') classes.push(...value.split(/\s+/u));
+  }
+  classes.sort((left, right) => left.localeCompare(right, 'en'));
+  return `${opening.tagName.getText(sourceFile)}${id ? `#${id}` : ''}${classes
+    .filter(Boolean)
+    .map((name) => `.${name}`)
+    .join('')}`;
+};
+
 const buildScriptLocator = (
   node: ts.Node,
   sourceFile: ts.SourceFile,
@@ -356,7 +381,45 @@ const buildScriptLocator = (
     } else if (ts.isJsxAttribute(parent)) {
       parts.push(`jsx-attribute:${parent.name.getText(sourceFile)}`);
     } else if (ts.isJsxElement(parent)) {
-      parts.push(`jsx:${parent.openingElement.tagName.getText(sourceFile)}`);
+      parts.push(`jsx:${jsxDescriptor(parent, sourceFile)}`);
+    } else if (ts.isIfStatement(parent)) {
+      const branch =
+        current === parent.thenStatement
+          ? 'then'
+          : current === parent.elseStatement
+            ? 'else'
+            : 'condition';
+      parts.push(`if:${syntaxFingerprint(parent.expression, sourceFile)}:${branch}`);
+    } else if (ts.isConditionalExpression(parent)) {
+      const branch =
+        current === parent.whenTrue ? 'true' : current === parent.whenFalse ? 'false' : 'condition';
+      parts.push(`conditional:${syntaxFingerprint(parent.condition, sourceFile)}:${branch}`);
+    } else if (ts.isCaseClause(parent)) {
+      parts.push(`case:${syntaxFingerprint(parent.expression, sourceFile)}`);
+    } else if (ts.isDefaultClause(parent)) {
+      parts.push('case:default');
+    } else if (ts.isWhileStatement(parent) || ts.isDoStatement(parent)) {
+      parts.push(
+        `loop:${ts.SyntaxKind[parent.kind]}:${syntaxFingerprint(parent.expression, sourceFile)}`,
+      );
+    } else if (ts.isForStatement(parent)) {
+      parts.push(`loop:for:${syntaxFingerprint(parent.condition, sourceFile)}`);
+    } else if (ts.isForInStatement(parent) || ts.isForOfStatement(parent)) {
+      parts.push(
+        `loop:${ts.SyntaxKind[parent.kind]}:${syntaxFingerprint(parent.expression, sourceFile)}`,
+      );
+    } else if (
+      ts.isBinaryExpression(parent) &&
+      [
+        ts.SyntaxKind.AmpersandAmpersandToken,
+        ts.SyntaxKind.BarBarToken,
+        ts.SyntaxKind.QuestionQuestionToken,
+      ].includes(parent.operatorToken.kind)
+    ) {
+      const branch = current === parent.left ? 'left' : 'right';
+      parts.push(
+        `logical:${ts.SyntaxKind[parent.operatorToken.kind]}:${syntaxFingerprint(parent.left, sourceFile)}:${branch}`,
+      );
     }
 
     if (
@@ -376,24 +439,99 @@ const buildScriptLocator = (
   };
 };
 
+interface LexicalResolution {
+  found: boolean;
+  value?: string;
+}
+
+const bindingMatches = (name: ts.BindingName | undefined, identifier: string): boolean => {
+  if (!name) return false;
+  if (ts.isIdentifier(name)) return name.text === identifier;
+  return name.elements.some(
+    (element) => ts.isBindingElement(element) && bindingMatches(element.name, identifier),
+  );
+};
+
+const resolveLexicalIdentifier = (
+  identifier: ts.Identifier,
+  sourceFile: ts.SourceFile,
+  seen: Set<ts.Node>,
+): LexicalResolution => {
+  let scope: ts.Node | undefined = identifier.parent;
+  while (scope) {
+    if (ts.isBlock(scope) || ts.isSourceFile(scope)) {
+      for (const statement of scope.statements) {
+        if (ts.isVariableStatement(statement)) {
+          for (const declaration of statement.declarationList.declarations) {
+            if (!bindingMatches(declaration.name, identifier.text)) continue;
+            if (
+              !(statement.declarationList.flags & ts.NodeFlags.Const) ||
+              !declaration.initializer
+            ) {
+              return { found: true };
+            }
+            return {
+              found: true,
+              value: evaluateStaticString(declaration.initializer, sourceFile, seen),
+            };
+          }
+        }
+        if (
+          (ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement)) &&
+          statement.name?.text === identifier.text
+        ) {
+          return { found: true };
+        }
+      }
+    }
+    if (ts.isFunctionLike(scope)) {
+      if (scope.parameters.some((parameter) => bindingMatches(parameter.name, identifier.text))) {
+        return { found: true };
+      }
+      if (
+        'name' in scope &&
+        scope.name &&
+        ts.isIdentifier(scope.name) &&
+        scope.name.text === identifier.text
+      ) {
+        return { found: true };
+      }
+    }
+    if (
+      ts.isCatchClause(scope) &&
+      bindingMatches(scope.variableDeclaration?.name, identifier.text)
+    ) {
+      return { found: true };
+    }
+    scope = scope.parent;
+  }
+  return { found: false };
+};
+
 const evaluateStaticString = (
   node: ts.Node,
-  constants: ReadonlyMap<string, string> = new Map(),
+  sourceFile: ts.SourceFile,
+  seen = new Set<ts.Node>(),
 ): string | undefined => {
+  if (seen.has(node)) return undefined;
+  seen.add(node);
   if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text;
-  if (ts.isIdentifier(node)) return constants.get(node.text);
-  if (ts.isParenthesizedExpression(node)) return evaluateStaticString(node.expression, constants);
+  if (ts.isIdentifier(node)) {
+    return resolveLexicalIdentifier(node, sourceFile, seen).value;
+  }
+  if (ts.isParenthesizedExpression(node))
+    return evaluateStaticString(node.expression, sourceFile, seen);
   if (ts.isJsxExpression(node) && node.expression)
-    return evaluateStaticString(node.expression, constants);
+    return evaluateStaticString(node.expression, sourceFile, seen);
   if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
-    const left = evaluateStaticString(node.left, constants);
-    const right = evaluateStaticString(node.right, constants);
+    const left = evaluateStaticString(node.left, sourceFile, new Set(seen));
+    const right = evaluateStaticString(node.right, sourceFile, new Set(seen));
     return left === undefined || right === undefined ? undefined : left + right;
   }
   if (ts.isTemplateExpression(node)) {
     let value = node.head.text;
     for (const span of node.templateSpans) {
-      const expression = evaluateStaticString(span.expression, constants);
+      const expression = evaluateStaticString(span.expression, sourceFile, new Set(seen));
       if (expression === undefined) return undefined;
       value += expression + span.literal.text;
     }
@@ -411,19 +549,6 @@ const collectScriptFragments = (filePath: string, source: string): LiteralFragme
     getScriptKind(filePath),
   );
   const fragments: LiteralFragment[] = [];
-  const constants = new Map<string, string>();
-
-  for (let iteration = 0; iteration < 3; iteration += 1) {
-    for (const statement of sourceFile.statements) {
-      if (!ts.isVariableStatement(statement)) continue;
-      if (!(statement.declarationList.flags & ts.NodeFlags.Const)) continue;
-      for (const declaration of statement.declarationList.declarations) {
-        if (!ts.isIdentifier(declaration.name) || !declaration.initializer) continue;
-        const value = evaluateStaticString(declaration.initializer, constants);
-        if (value !== undefined) constants.set(declaration.name.text, value);
-      }
-    }
-  }
 
   const addFragment = (node: ts.Node, text: string) => {
     const position = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
@@ -441,7 +566,7 @@ const collectScriptFragments = (filePath: string, source: string): LiteralFragme
     const isComposite =
       ts.isBinaryExpression(node) || ts.isTemplateExpression(node) || ts.isJsxExpression(node);
     if (isComposite) {
-      const value = evaluateStaticString(node, constants);
+      const value = evaluateStaticString(node, sourceFile);
       if (value !== undefined) {
         addFragment(node, value);
         return;
@@ -474,74 +599,8 @@ const collectScriptFragments = (filePath: string, source: string): LiteralFragme
   return fragments;
 };
 
-const yamlKey = (node: unknown): string => {
-  if (isScalar(node)) return String(node.value);
-  if (isNode(node)) return node.toString();
-  return String(node);
-};
-
-const collectYamlFragments = (
-  filePath: string,
-  source: string,
-): { errors: string[]; fragments: LiteralFragment[] } => {
-  const lineCounter = new LineCounter();
-  const document = parseDocument(source, { lineCounter, prettyErrors: false, strict: true });
-  const errors = document.errors.map((error) => `${filePath}: invalid YAML: ${error.message}`);
-  const fragments: LiteralFragment[] = [];
-
-  const visit = (node: YAMLNode | null, keyPath: string[]) => {
-    if (!node) return;
-    if (isMap(node)) {
-      for (const pair of node.items)
-        visit(isNode(pair.value) ? pair.value : null, [...keyPath, yamlKey(pair.key)]);
-      return;
-    }
-    if (isSeq(node)) {
-      for (const [index, item] of node.items.entries()) {
-        visit(isNode(item) ? item : null, [...keyPath, `[${index}]`]);
-      }
-      return;
-    }
-    if (!isScalar(node) || typeof node.value !== 'string') return;
-    const offset = node.range?.[0] ?? 0;
-    const position = lineCounter.linePos(offset);
-    fragments.push({
-      column: position.col,
-      context: {},
-      line: position.line,
-      locator: `yaml:${keyPath.join('.') || '<root>'}`,
-      text: node.value,
-    });
-  };
-
-  visit(isNode(document.contents) ? document.contents : null, []);
-  return { errors, fragments };
-};
-
 const normalizeFragment = (text: string): string =>
   decodeBrandingText(text).replaceAll(/\s+/gu, ' ').trim();
-
-const collectPlainTextFragments = (source: string): LiteralFragment[] => {
-  const fragments: LiteralFragment[] = [];
-  for (const [index, text] of source.split(/\r?\n/u).entries()) {
-    const normalized = normalizeFragment(text);
-    if (!BRAND_RE.test(normalized)) {
-      BRAND_RE.lastIndex = 0;
-      continue;
-    }
-    BRAND_RE.lastIndex = 0;
-    const locatorShape = normalized.replaceAll(BRAND_RE, '<brand>');
-    BRAND_RE.lastIndex = 0;
-    fragments.push({
-      column: 1,
-      context: {},
-      line: index + 1,
-      locator: `text:${fingerprint(locatorShape)}`,
-      text,
-    });
-  }
-  return fragments;
-};
 
 const classifyAllowedOccurrence = (
   filePath: string,
@@ -615,9 +674,15 @@ export const scanBrandingFile = (filePath: string, source: string): BrandingFile
   if (SCRIPT_EXTENSIONS.has(extension)) fragments = collectScriptFragments(normalizedPath, source);
   else if (YAML_EXTENSIONS.has(extension)) {
     const yaml = collectYamlFragments(normalizedPath, source);
-    fragments = yaml.fragments;
+    fragments = yaml.fragments.map((fragment) => ({ ...fragment, context: {} }));
     errors = yaml.errors;
-  } else fragments = collectPlainTextFragments(source);
+  } else if (extension === '.html') {
+    fragments = collectHtmlFragments(source).map((fragment) => ({ ...fragment, context: {} }));
+  } else if (['.css', '.less', '.scss'].includes(extension)) {
+    fragments = collectCssFragments(source).map((fragment) => ({ ...fragment, context: {} }));
+  } else {
+    fragments = collectPlainTextFragments(source).map((fragment) => ({ ...fragment, context: {} }));
+  }
 
   const allowed: BrandingAllowedLiteral[] = [];
   const candidates: BrandingLiteralCandidate[] = [];
