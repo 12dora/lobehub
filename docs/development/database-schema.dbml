@@ -3119,6 +3119,8 @@ table users {
   ban_expires "timestamp with time zone"
   auth_invalidated_at "timestamp with time zone"
   auth_invalidated_excluded_session_id text
+  dingtalk_title text
+  dingtalk_user_id text
   two_factor_enabled boolean [default: false]
   phone_number_verified boolean
   last_active_at "timestamp with time zone" [not null, default: `now()`]

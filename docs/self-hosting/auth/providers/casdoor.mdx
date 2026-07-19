@@ -26,7 +26,7 @@ tags:
      - Redirect URLs: Add your callback URL
 
   <Callout type={'info'}>
-    **Callback URL Format**: `https://your-domain.com/api/auth/callback/casdoor`
+    **Callback URL Format**: `https://your-domain.com/api/auth/oauth2/callback/casdoor`
   </Callout>
 
   4. Save and note down the **Client ID** and **Client Secret**
@@ -127,7 +127,7 @@ This configuration affects LobeHub's login authentication service. Ensure the Ca
 In Casdoor's Web panel under `Authentication -> Applications` -> `<Application ID, default is app-built-in>` -> `Redirect URLs`, add:
 
 ```
-https://lobe.example.com/api/auth/callback/casdoor
+https://lobe.example.com/api/auth/oauth2/callback/casdoor
 ```
 
 3. Casdoor needs Origin information in environment variables:

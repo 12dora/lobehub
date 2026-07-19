@@ -26,7 +26,7 @@ tags:
           client_name: 'LobeHub'
           client_secret: 'your-client-secret'
           redirect_uris:
-            - 'https://your-domain.com/api/auth/callback/authelia'
+            - 'https://your-domain.com/api/auth/oauth2/callback/authelia'
           scopes:
             - 'openid'
             - 'profile'
@@ -34,7 +34,7 @@ tags:
   ```
 
   <Callout type={'info'}>
-    **回调 URL 格式**: `https://your-domain.com/api/auth/callback/authelia`
+    **回调 URL 格式**: `https://your-domain.com/api/auth/oauth2/callback/authelia`
   </Callout>
 
   ### 配置环境变量

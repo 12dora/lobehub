@@ -1643,7 +1643,7 @@ Connector 名称 | 管理员说明 | 状态 | 授权 / 重新授权 / 断开
 - 展示服务器计算出的 Callback URI：
 
 ```text
-{APP_URL}/api/auth/callback/{providerKey}
+{APP_URL}/api/auth/oauth2/callback/{providerKey}
 ```
 
 #### 步骤 4：Claim 映射
