@@ -12,3 +12,13 @@ export {
   type EnterprisePlatformProviderProps,
   useEnterprisePlatform,
 } from './EnterprisePlatformProvider';
+export {
+  BUILT_IN_RUNTIME_BRANDING,
+  resolveRuntimeBranding,
+  type RuntimeBranding,
+} from './runtimeBranding';
+export {
+  RuntimeBrandingProvider,
+  type RuntimeBrandingProviderProps,
+  useRuntimeBranding,
+} from './RuntimeBrandingProvider';

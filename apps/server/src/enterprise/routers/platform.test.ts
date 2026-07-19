@@ -25,6 +25,22 @@ describe('platformRouter (read-only, flags default off)', () => {
     const caller = createCaller(ctx);
     const snap = await caller.getPublicSnapshot();
 
+    expect(snap).toEqual({
+      branding: null,
+      brandingRevision: null,
+      configRevision: '0',
+      login: { workAccountEnabled: false },
+      logoUrl: null,
+      platformName: null,
+    });
+    expect(Object.keys(snap).sort()).toEqual([
+      'branding',
+      'brandingRevision',
+      'configRevision',
+      'login',
+      'logoUrl',
+      'platformName',
+    ]);
     expect(snap.platformName).toBeNull();
     expect(snap.login.workAccountEnabled).toBe(false);
     expect(snap).not.toHaveProperty('adminAccess');

@@ -49,6 +49,7 @@ vi.mock('@/store/tool', () => ({
 
 const fetchCapabilities = vi.fn(async () => DISABLED_PLATFORM_CAPABILITIES);
 const fetchPublicSnapshot = vi.fn(async () => ({
+  branding: null,
   brandingRevision: null,
   configRevision: '0',
   login: { workAccountEnabled: false },
@@ -111,6 +112,7 @@ describe('EnterprisePlatformProvider', () => {
     platformSkillMocks.configurePlatformSkillManagement.mockReset();
     platformSkillMocks.failPlatformSkillCatalogRequest.mockReset();
     fetchPublicSnapshot.mockReset().mockResolvedValue({
+      branding: null,
       brandingRevision: null,
       configRevision: '0',
       login: { workAccountEnabled: false },

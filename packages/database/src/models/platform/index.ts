@@ -1,6 +1,7 @@
 export * from './accessStatus';
 export * from './aiCatalog';
 export * from './auditLog';
+export * from './branding';
 export * from './checksum';
 export * from './easyauthGrantSnapshot';
 export * from './easyauthLoginSync';
