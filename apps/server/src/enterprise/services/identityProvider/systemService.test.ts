@@ -489,7 +489,11 @@ describe('IdentityProviderSystemService', () => {
     const target = await seedPendingTarget();
     const local = getIdentityProviderProcessInstance();
     commitArtifact(target);
-    await insertInstance({ activeIdentityRevision: target, instanceId: local.instanceId });
+    await insertInstance({
+      activeIdentityRevision: target,
+      instanceId: local.instanceId,
+      lastHeartbeat: new Date(now.getTime() - 100_000),
+    });
     const remoteFreshId = `oidci_${(900).toString(16).padStart(48, '0')}`;
     await insertInstance({ activeIdentityRevision: target, instanceId: remoteFreshId });
     const staleIds: string[] = [];
@@ -513,6 +517,9 @@ describe('IdentityProviderSystemService', () => {
       () => undefined,
     ).getAuthSnapshotStatus();
     expect(status.active.staleInstances).toBe(staleIds.length);
+    expect(
+      status.instances.find(({ instanceId }) => instanceId === local.instanceId),
+    ).toMatchObject({ fresh: true });
     expect(
       status.instances.filter(({ fresh }) => fresh).map(({ instanceId }) => instanceId),
     ).toEqual(expect.arrayContaining([local.instanceId, remoteFreshId]));

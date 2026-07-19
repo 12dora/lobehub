@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 
-import { and, asc, desc, eq, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gte, lt, ne, sql } from 'drizzle-orm';
 
 import { checksumPayload } from '@/database/models/platform';
 import {
@@ -157,25 +157,55 @@ export class IdentityProviderSystemService {
       await acquireIdentityProviderConvergenceLock(tx);
       const target = await loadPublishedIdentityTarget(tx, this.env);
       await demoteEnvironmentShadowedIdentityProviders(tx, target.environmentShadowed);
-      const instances = await tx
-        .select({
-          activeIdentityRevision: platformIdentityProviderInstances.activeIdentityRevision,
-          degradedCategory: platformIdentityProviderInstances.degradedCategory,
-          fresh: sql<boolean>`${platformIdentityProviderInstances.lastHeartbeat} >= clock_timestamp() - (${IDENTITY_PROVIDER_INSTANCE_STALE_MS} * interval '1 millisecond')`,
-          health: platformIdentityProviderInstances.health,
-          hostnameHash: platformIdentityProviderInstances.hostnameHash,
-          instanceId: platformIdentityProviderInstances.instanceId,
-          lastHeartbeat: platformIdentityProviderInstances.lastHeartbeat,
-          loadedAt: platformIdentityProviderInstances.loadedAt,
-          startedAt: platformIdentityProviderInstances.startedAt,
-          startupGeneration: platformIdentityProviderInstances.startupGeneration,
-          startupSource: platformIdentityProviderInstances.startupSource,
-        })
+      const snapshotClock = await tx.execute<{ cutoff: Date | string }>(
+        sql`SELECT clock_timestamp() - (${IDENTITY_PROVIDER_INSTANCE_STALE_MS} * interval '1 millisecond') AS cutoff`,
+      );
+      const rawCutoff = snapshotClock.rows[0]?.cutoff;
+      const cutoff = rawCutoff instanceof Date ? rawCutoff : new Date(rawCutoff ?? Number.NaN);
+      if (Number.isNaN(cutoff.getTime())) {
+        throw new IdentityProviderSystemError('PLATFORM_IDENTITY_RESTART_STATUS_UNAVAILABLE');
+      }
+      const freshInstances = await tx
+        .select()
         .from(platformIdentityProviderInstances)
+        .where(
+          and(
+            gte(platformIdentityProviderInstances.lastHeartbeat, cutoff),
+            ne(platformIdentityProviderInstances.instanceId, local.instanceId),
+          ),
+        )
         .orderBy(
           desc(platformIdentityProviderInstances.lastHeartbeat),
           asc(platformIdentityProviderInstances.instanceId),
         );
+      const [localRow] = await tx
+        .select()
+        .from(platformIdentityProviderInstances)
+        .where(eq(platformIdentityProviderInstances.instanceId, local.instanceId))
+        .limit(1);
+      const [staleAggregate] = await tx
+        .select({ count: count() })
+        .from(platformIdentityProviderInstances)
+        .where(
+          and(
+            lt(platformIdentityProviderInstances.lastHeartbeat, cutoff),
+            ne(platformIdentityProviderInstances.instanceId, local.instanceId),
+          ),
+        );
+      const staleInstances = await tx
+        .select()
+        .from(platformIdentityProviderInstances)
+        .where(
+          and(
+            lt(platformIdentityProviderInstances.lastHeartbeat, cutoff),
+            ne(platformIdentityProviderInstances.instanceId, local.instanceId),
+          ),
+        )
+        .orderBy(
+          desc(platformIdentityProviderInstances.lastHeartbeat),
+          asc(platformIdentityProviderInstances.instanceId),
+        )
+        .limit(IDENTITY_PROVIDER_RECENT_STALE_DIAGNOSTIC_LIMIT);
       const pendingRows = await tx
         .select({
           activationRevision: platformIdentityProviders.activationRevision,
@@ -185,7 +215,6 @@ export class IdentityProviderSystemService {
         .from(platformIdentityProviders)
         .where(eq(platformIdentityProviders.status, 'pending_restart'));
 
-      const localRow = instances.find((instance) => instance.instanceId === local.instanceId);
       const registrationFailed =
         registrationState === 'failed' || (!localRow && registrationState !== 'registered');
       const localProjection = {
@@ -207,22 +236,19 @@ export class IdentityProviderSystemService {
         startupGeneration: artifact.generation,
         startupSource: artifact.source,
       };
-      const instanceProjection = [
-        ...instances.filter((instance) => instance.instanceId !== local.instanceId),
+      const fresh = [
+        ...freshInstances.map((instance) => ({ ...instance, fresh: true })),
         localProjection,
       ];
-      const sortedInstanceProjection = [...instanceProjection].sort(
+      const sortedFreshInstances = [...fresh].sort(
         (left, right) =>
           right.lastHeartbeat.getTime() - left.lastHeartbeat.getTime() ||
           left.instanceId.localeCompare(right.instanceId),
       );
       const diagnosticInstances = [
-        ...sortedInstanceProjection.filter((instance) => instance.fresh),
-        ...sortedInstanceProjection
-          .filter((instance) => !instance.fresh)
-          .slice(0, IDENTITY_PROVIDER_RECENT_STALE_DIAGNOSTIC_LIMIT),
+        ...sortedFreshInstances,
+        ...staleInstances.map((instance) => ({ ...instance, fresh: false })),
       ];
-      const fresh = instanceProjection.filter((instance) => instance.fresh);
       const isActive = (instance: (typeof fresh)[number]) =>
         Boolean(target.identityRevision) &&
         instance.activeIdentityRevision === target.identityRevision &&
@@ -280,7 +306,7 @@ export class IdentityProviderSystemService {
         active: {
           allFreshInstancesActive,
           partial: activeCount > 0 && !allFreshInstancesActive,
-          staleInstances: instanceProjection.filter((instance) => !instance.fresh).length,
+          staleInstances: staleAggregate?.count ?? 0,
         },
         artifact: {
           degradedCategory: localProjection.degradedCategory,
