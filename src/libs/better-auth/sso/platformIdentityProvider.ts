@@ -1,4 +1,7 @@
+import { createHash, randomBytes } from 'node:crypto';
+
 import type { PlatformOidcDiscoveryMetadata } from '@lobechat/types';
+import { getOAuthState } from 'better-auth/api';
 import type { GenericOAuthConfig } from 'better-auth/plugins';
 import { z } from 'zod';
 
@@ -11,11 +14,19 @@ import { mergeReauthAuthorizationParams } from './reauthAuthorizationParams';
 
 const USERINFO_TIMEOUT_MS = 5000;
 const USERINFO_MAX_BYTES = 64 * 1024;
+const PLATFORM_OIDC_NONCE_HASH_STATE_KEY = 'platformOidcNonceHash';
+const PLATFORM_OIDC_PROVIDER_STATE_KEY = 'platformOidcProviderId';
 // Better Auth 1.6 requires a tokenUrl before it will create the sign-in URL, even when
 // getToken owns the callback exchange. Keep this fixed .invalid sentinel provider-agnostic:
 // it satisfies that structural contract and fails closed if Better Auth ever bypasses getToken.
 const BETTER_AUTH_UNUSED_TOKEN_ENDPOINT = 'https://platform-oidc-token.invalid/';
 const userInfoSchema = z.record(z.string(), z.unknown());
+
+const stripNonceClaim = (claims: Record<string, unknown>): Record<string, unknown> => {
+  const sanitized = { ...claims };
+  delete sanitized.nonce;
+  return sanitized;
+};
 
 export interface RuntimeIdentityProvider extends PublishedIdentityProviderPayload {
   clientSecret: string;
@@ -60,6 +71,7 @@ export const buildPlatformIdentityProvider = (
   provider: RuntimeIdentityProvider,
   appUrl: string,
   outbound = new SafeOutboundHttpClient({ mode: 'public-only' }),
+  readOAuthState: typeof getOAuthState = getOAuthState,
 ): GenericOAuthConfig => {
   if (provider.oidcMetadata.issuer !== provider.issuer) {
     throw new Error('PLATFORM_IDENTITY_PROVIDER_INVALID_SNAPSHOT');
@@ -68,7 +80,19 @@ export const buildPlatformIdentityProvider = (
 
   return {
     authorizationUrl: provider.oidcMetadata.authorizationEndpoint,
-    authorizationUrlParams: (ctx) => mergeReauthAuthorizationParams({}, ctx?.body?.additionalData),
+    authorizationUrlParams: (ctx) => {
+      const nonce = randomBytes(32).toString('base64url');
+      const additionalData = ctx.body?.additionalData ?? {};
+      ctx.body.additionalData = {
+        ...additionalData,
+        [PLATFORM_OIDC_NONCE_HASH_STATE_KEY]: createHash('sha256').update(nonce).digest('hex'),
+        [PLATFORM_OIDC_PROVIDER_STATE_KEY]: provider.providerKey,
+      };
+      return {
+        ...mergeReauthAuthorizationParams({}, additionalData),
+        nonce,
+      };
+    },
     clientId: provider.clientId,
     clientSecret: provider.clientSecret,
     disableImplicitSignUp: !provider.autoProvision,
@@ -102,6 +126,15 @@ export const buildPlatformIdentityProvider = (
       if (!tokens.idToken || !tokens.accessToken) {
         throw new Error('PLATFORM_OIDC_TOKEN_INVALID');
       }
+      const oauthState = await readOAuthState();
+      const expectedNonceHash = oauthState?.[PLATFORM_OIDC_NONCE_HASH_STATE_KEY];
+      if (
+        typeof expectedNonceHash !== 'string' ||
+        !/^[\da-f]{64}$/.test(expectedNonceHash) ||
+        oauthState?.[PLATFORM_OIDC_PROVIDER_STATE_KEY] !== provider.providerKey
+      ) {
+        throw new Error('PLATFORM_OIDC_NONCE_INVALID');
+      }
 
       const metadata = provider.oidcMetadata;
       if (!metadata.userinfoEndpoint) {
@@ -111,7 +144,7 @@ export const buildPlatformIdentityProvider = (
         clientId: provider.clientId,
         idToken: tokens.idToken,
         metadata,
-        nonce: { mode: 'not_requested' },
+        nonce: { expectedHash: expectedNonceHash, mode: 'required' },
         outbound,
       });
       const response = await outbound.fetch(metadata.userinfoEndpoint, {
@@ -143,9 +176,9 @@ export const buildPlatformIdentityProvider = (
         throw new Error('PLATFORM_OIDC_USERINFO_SUBJECT_MISMATCH');
       }
 
-      return {
-        ...idTokenClaims,
-        ...userInfo,
+      const profile = {
+        ...stripNonceClaim(idTokenClaims),
+        ...stripNonceClaim(userInfo),
         emailVerified:
           typeof userInfo.email_verified === 'boolean'
             ? userInfo.email_verified
@@ -153,6 +186,8 @@ export const buildPlatformIdentityProvider = (
         id: idTokenClaims.sub,
         sub: idTokenClaims.sub,
       };
+      tokens.idToken = undefined;
+      return profile;
     },
     issuer: provider.issuer,
     mapProfileToUser: (profile) => {
