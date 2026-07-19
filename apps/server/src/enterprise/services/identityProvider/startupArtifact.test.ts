@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   commitIdentityProviderStartupSnapshot,
@@ -76,5 +76,28 @@ describe('identity provider startup artifact', () => {
     expect(getIdentityProviderRuntimeArtifact().databaseProviders[0]?.clientSecret).toBe(
       'must-not-be-public',
     );
+  });
+
+  it('shares the committed artifact across independently evaluated server chunks', async () => {
+    resetIdentityProviderStartupArtifactForTest();
+    commitIdentityProviderStartupSnapshot({
+      databaseProviders: [],
+      generation: 'cross-chunk-generation',
+      health: 'healthy',
+      identityRevision: null,
+      lastError: null,
+      loadedAt: new Date(),
+      providerIds: ['work'],
+      source: 'environment',
+    });
+
+    vi.resetModules();
+    const isolatedChunk = await import('./startupArtifact');
+    expect(isolatedChunk.getInitializedIdentityProviderPublicArtifact()).toMatchObject({
+      generation: 'cross-chunk-generation',
+      phase: 'ready',
+      providerIds: ['work'],
+    });
+    isolatedChunk.resetIdentityProviderStartupArtifactForTest();
   });
 });
