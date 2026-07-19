@@ -279,10 +279,11 @@ const toIdempotentResponse = (
   };
 };
 
-const parseIdempotentResponse = async (
+const reconstructIdempotentResponse = async (
   tx: Transaction,
   input: IdempotencyRequest,
   afterDiff: Record<string, unknown>,
+  terminalConfigRevision: number | null,
 ): Promise<PlatformIdentityProviderInternalDraft> => {
   const value = afterDiff.response;
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -306,11 +307,22 @@ const parseIdempotentResponse = async (
       updatedAt: fingerprintUpdatedAt,
     },
   });
-  const sourceRevision =
-    input.action === 'admin.identityProviders.publish'
-      ? afterDiff.revision
-      : afterDiff.restoredFromRevision;
-  if (!parsed.success || !Number.isInteger(sourceRevision) || Number(sourceRevision) <= 0) {
+  const isPublish = input.action === 'admin.identityProviders.publish';
+  const isRollback = input.action === 'admin.identityProviders.rollback';
+  const resultRevision = afterDiff.revision;
+  const sourceRevision = isPublish ? resultRevision : input.rollbackTargetRevision;
+  if (
+    !parsed.success ||
+    (!isPublish && !isRollback) ||
+    !Number.isInteger(resultRevision) ||
+    Number(resultRevision) <= 0 ||
+    !Number.isInteger(sourceRevision) ||
+    Number(sourceRevision) <= 0 ||
+    terminalConfigRevision !== resultRevision ||
+    (secretUpdatedAt !== undefined &&
+      legacyFingerprintUpdatedAt !== undefined &&
+      secretUpdatedAt !== legacyFingerprintUpdatedAt)
+  ) {
     throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_IDEMPOTENCY_CONFLICT');
   }
   const [source] = await tx
@@ -338,10 +350,72 @@ const parseIdempotentResponse = async (
   ) {
     throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_IDEMPOTENCY_CONFLICT');
   }
-  return {
+  const [secret] = await tx
+    .select({
+      createdAt: platformIdentityProviderSecrets.createdAt,
+      fingerprint: platformIdentityProviderSecrets.fingerprint,
+      providerId: platformIdentityProviderSecrets.providerId,
+    })
+    .from(platformIdentityProviderSecrets)
+    .where(
+      and(
+        eq(platformIdentityProviderSecrets.providerId, input.targetId),
+        eq(platformIdentityProviderSecrets.fingerprint, payload.secretFingerprint),
+      ),
+    )
+    .limit(1);
+  if (!secret) {
+    throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_IDEMPOTENCY_CONFLICT');
+  }
+
+  if (
+    (isPublish &&
+      (afterDiff.activation !== 'pending_restart' ||
+        afterDiff.checksum !== source.checksum ||
+        afterDiff.providerKey !== payload.providerKey)) ||
+    (isRollback &&
+      (afterDiff.restoredFromRevision !== input.rollbackTargetRevision ||
+        afterDiff.status !== 'draft'))
+  ) {
+    throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_IDEMPOTENCY_CONFLICT');
+  }
+  const canonical: PlatformIdentityProviderInternalDraft = {
+    activationRevision: isPublish ? Number(resultRevision) : null,
+    autoProvision: payload.autoProvision,
+    buttonLabel: payload.buttonLabel,
+    claimMapping: payload.claimMapping,
+    clientId: payload.clientId,
+    displayName: payload.displayName,
+    domainAllowlist: payload.domainAllowlist,
+    enabled: isPublish,
+    groupRoleMapping: payload.groupRoleMapping,
+    icon: payload.icon,
+    id: input.targetId,
+    issuer: payload.issuer,
+    migrationRequired: false,
+    providerKey: payload.providerKey,
+    revision: Number(resultRevision),
+    scopes: payload.scopes,
+    secret: {
+      configured: true,
+      fingerprint: secret.fingerprint,
+      updatedAt: secret.createdAt,
+    },
+    status: isPublish ? 'pending_restart' : 'draft',
+    type: payload.type,
+    usePkce: true,
+  };
+  const normalizedAuditResponse: PlatformIdentityProviderInternalDraft = {
     ...parsed.data,
     secret: { ...parsed.data.secret, fingerprint: payload.secretFingerprint },
   };
+  if (
+    checksumPayload(toIdempotentResponse(normalizedAuditResponse)) !==
+    checksumPayload(toIdempotentResponse(canonical))
+  ) {
+    throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_IDEMPOTENCY_CONFLICT');
+  }
+  return canonical;
 };
 
 interface IdempotencyRequest {
@@ -351,6 +425,7 @@ interface IdempotencyRequest {
   reason: string;
   requestId: string;
   reservationAuditId: string;
+  rollbackTargetRevision?: number;
   targetId: string;
   terminalAuditId: string;
 }
@@ -404,7 +479,7 @@ const findTerminalReplay = async (
   if (!terminal) return null;
   const afterDiff = assertAuditScope(terminal, input, input.action);
   if (terminal.result === 'success' && afterDiff.outcome === 'success') {
-    return parseIdempotentResponse(tx, input, afterDiff);
+    return reconstructIdempotentResponse(tx, input, afterDiff, terminal.configRevision);
   }
   if (
     terminal.result !== 'failure' ||
@@ -785,7 +860,10 @@ export class IdentityProviderPublicationService {
         }
         const payload = toPublishedPayload(draft);
         const [secret] = await tx
-          .select({ id: platformIdentityProviderSecrets.id })
+          .select({
+            createdAt: platformIdentityProviderSecrets.createdAt,
+            id: platformIdentityProviderSecrets.id,
+          })
           .from(platformIdentityProviderSecrets)
           .where(
             and(
@@ -868,6 +946,7 @@ export class IdentityProviderPublicationService {
           activationRevision: nextRevision,
           enabled: true,
           revision: nextRevision,
+          secret: { ...draft.secret, updatedAt: secret.createdAt },
           status: 'pending_restart',
         };
         return appendSuccessTerminal(tx, request, fence, {
@@ -943,6 +1022,7 @@ export class IdentityProviderPublicationService {
       ...idempotency,
       reason,
       requestId,
+      rollbackTargetRevision: input.targetRevision,
       targetId: input.id,
     };
     const reservation = await reserveIdempotentRequest(
