@@ -8,10 +8,8 @@ import React, { memo, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
-import { useDefaultInboxDisplayName } from '@/hooks/useDefaultInboxDisplayName';
+import { useScopedDefaultInboxDisplayName } from '@/hooks/useDefaultInboxDisplayName';
 import { getPlatformIcon } from '@/routes/(main)/agent/channel/const';
-import { useAgentStore } from '@/store/agent';
-import { agentSelectors, builtinAgentSelectors } from '@/store/agent/selectors';
 import { useGlobalStore } from '@/store/global';
 
 // Bump this id when the banner content changes so dismissing the old
@@ -77,9 +75,7 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
 const MessengerBanner = memo(() => {
   const { t } = useTranslation('common');
   const navigate = useWorkspaceAwareNavigate();
-  const inboxAgentId = useAgentStore(builtinAgentSelectors.inboxAgentId);
-  const inboxMeta = useAgentStore(agentSelectors.getAgentMetaById(inboxAgentId));
-  const inboxDisplayName = useDefaultInboxDisplayName(inboxMeta.title);
+  const inboxDisplayName = useScopedDefaultInboxDisplayName();
 
   const updateSystemStatus = useGlobalStore((s) => s.updateSystemStatus);
 

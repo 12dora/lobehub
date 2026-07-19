@@ -40,6 +40,16 @@ const groupAgentBuilderId = (s: AgentStoreState) =>
  */
 const inboxAgentId = (s: AgentStoreState) => s.builtinAgentIdMap[INBOX_SESSION_ID];
 
+/** Return the Inbox id only when its projection belongs to the current identity/workspace. */
+const inboxAgentIdForScope = (scope: string | undefined) => (s: AgentStoreState) =>
+  scope && s.inboxProjectionScope === scope ? inboxAgentId(s) : undefined;
+
+/** Return Inbox metadata only from the projection owned by the current identity/workspace. */
+const inboxAgentMetaForScope = (scope: string | undefined) => (s: AgentStoreState) => {
+  const id = inboxAgentIdForScope(scope)(s);
+  return id ? s.agentMap[id] : undefined;
+};
+
 /**
  * Check if inbox agent is initialized
  */
@@ -72,6 +82,8 @@ export const builtinAgentSelectors = {
   getBuiltinAgentId,
   groupAgentBuilderId,
   inboxAgentId,
+  inboxAgentIdForScope,
+  inboxAgentMetaForScope,
   isBuiltinAgentInit,
   isInboxAgent,
   isInboxAgentConfigInit,

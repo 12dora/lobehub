@@ -21,16 +21,27 @@ const serverConfigState = vi.hoisted(() => ({
 }));
 
 const inboxSyncMocks = vi.hoisted(() => ({
+  cacheScope: 'user-a:personal',
   isLogin: true,
+  syncInboxProjectionScope: vi.fn(),
   useInitBuiltinAgent: vi.fn(),
+}));
+
+vi.mock('@/libs/swr/useCacheScope', () => ({
+  useCacheScope: () => inboxSyncMocks.cacheScope,
 }));
 
 vi.mock('@/store/agent', () => ({
   useAgentStore: (
     selector: (state: {
+      syncInboxProjectionScope: typeof inboxSyncMocks.syncInboxProjectionScope;
       useInitBuiltinAgent: typeof inboxSyncMocks.useInitBuiltinAgent;
     }) => unknown,
-  ) => selector({ useInitBuiltinAgent: inboxSyncMocks.useInitBuiltinAgent }),
+  ) =>
+    selector({
+      syncInboxProjectionScope: inboxSyncMocks.syncInboxProjectionScope,
+      useInitBuiltinAgent: inboxSyncMocks.useInitBuiltinAgent,
+    }),
 }));
 
 vi.mock('@/store/user', () => ({
@@ -130,6 +141,7 @@ const renderProvider = (disableFetch = false, initialPublicSnapshot?: PlatformPu
 describe('EnterprisePlatformProvider', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    inboxSyncMocks.cacheScope = 'user-a:personal';
     inboxSyncMocks.isLogin = true;
     serverConfigState.enterpriseEnabled = false;
     serverConfigState.serverConfigInit = true;
@@ -160,6 +172,7 @@ describe('EnterprisePlatformProvider', () => {
       brandingRevision: null,
       isLogin: true,
     });
+    expect(inboxSyncMocks.syncInboxProjectionScope).toHaveBeenCalledWith('user-a:personal', true);
   });
 
   it('flags off: zero platform.* fetch calls after global config hydrates', async () => {

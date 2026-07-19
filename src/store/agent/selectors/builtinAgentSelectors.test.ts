@@ -123,6 +123,52 @@ describe('builtinAgentSelectors', () => {
     });
   });
 
+  describe('scope-owned inbox projection', () => {
+    const loadedInWorkspaceA = createState({
+      agentMap: { 'inbox-agent-a': { id: 'inbox-agent-a', title: 'Workspace A Assistant' } },
+      builtinAgentIdMap: { [INBOX_SESSION_ID]: 'inbox-agent-a' },
+      inboxProjectionScope: 'user-a:workspace-a',
+    });
+
+    it('does not return workspace A while workspace B is pending at the same revision', () => {
+      expect(
+        builtinAgentSelectors.inboxAgentIdForScope('user-a:workspace-b')(loadedInWorkspaceA),
+      ).toBeUndefined();
+      expect(
+        builtinAgentSelectors.inboxAgentMetaForScope('user-a:workspace-b')(loadedInWorkspaceA),
+      ).toBeUndefined();
+    });
+
+    it('does not return user A through logout, persisted, anonymous, or user B transitions', () => {
+      for (const scope of [undefined, 'anon:personal', 'user-b:workspace-a']) {
+        expect(
+          builtinAgentSelectors.inboxAgentMetaForScope(scope)(loadedInWorkspaceA),
+        ).toBeUndefined();
+      }
+    });
+
+    it('returns the projection only to its owning scope', () => {
+      expect(
+        builtinAgentSelectors.inboxAgentIdForScope('user-a:workspace-a')(loadedInWorkspaceA),
+      ).toBe('inbox-agent-a');
+      expect(
+        builtinAgentSelectors.inboxAgentMetaForScope('user-a:workspace-a')(loadedInWorkspaceA),
+      ).toMatchObject({ title: 'Workspace A Assistant' });
+    });
+
+    it('does not change non-inbox projections', () => {
+      const state = createState({
+        ...loadedInWorkspaceA,
+        builtinAgentIdMap: {
+          ...loadedInWorkspaceA.builtinAgentIdMap,
+          'page-agent': 'page-agent-123',
+        },
+      });
+
+      expect(builtinAgentSelectors.getBuiltinAgentId('page-agent')(state)).toBe('page-agent-123');
+    });
+  });
+
   describe('isInboxAgentConfigInit', () => {
     it('should return true when inbox agent is in builtinAgentIdMap', () => {
       const state = createState({
