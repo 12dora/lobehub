@@ -157,7 +157,7 @@ describe('IdentityProviderPublicationService', () => {
     expect(serialized).not.toContain('ciphertext');
   });
 
-  it('reserves concurrent requests and returns the exact result after completion', async () => {
+  it('returns one exact result for concurrent requests with a single revision and terminal', async () => {
     const draft = await createDraft();
     await recordSuccessfulTest(draft.id);
     const input = {
@@ -170,16 +170,17 @@ describe('IdentityProviderPublicationService', () => {
       publication.publish('admin-1', input),
       publication.publish('admin-1', input),
     ]);
-    const first = concurrent.find((result) => result.status === 'fulfilled');
-    const pending = concurrent.find((result) => result.status === 'rejected');
-    expect(first?.status).toBe('fulfilled');
-    expect(pending?.status).toBe('rejected');
-    if (first?.status !== 'fulfilled' || pending?.status !== 'rejected') {
-      throw new Error('expected one owner and one pending request');
+    const fulfilled = concurrent.filter((result) => result.status === 'fulfilled');
+    const rejected = concurrent.filter((result) => result.status === 'rejected');
+    expect(fulfilled.length).toBeGreaterThanOrEqual(1);
+    expect(fulfilled).toHaveLength(2 - rejected.length);
+    for (const result of rejected) {
+      expect(result.reason).toMatchObject({
+        code: 'PLATFORM_IDENTITY_PROVIDER_REQUEST_PENDING',
+      });
     }
-    expect(pending.reason).toMatchObject({
-      code: 'PLATFORM_IDENTITY_PROVIDER_REQUEST_PENDING',
-    });
+    const first = fulfilled[0]!;
+    for (const result of fulfilled) expect(result.value).toEqual(first.value);
     const laterReplay = await publication.publish('admin-1', input);
 
     expect(laterReplay).toEqual(first.value);
@@ -191,6 +192,95 @@ describe('IdentityProviderPublicationService', () => {
     expect(publishAudits.filter((audit) => audit.result === 'success')).toHaveLength(1);
     expect(publishAudits.filter((audit) => audit.result === 'failure')).toHaveLength(0);
     expect(publishAudits[0]?.requestId).toBe(input.requestId);
+  });
+
+  it('fences a paused expired owner after a recovery owner completes', async () => {
+    const draft = await createDraft();
+    await recordSuccessfulTest(draft.id);
+    let pauseOld = (): void => undefined;
+    const oldPaused = new Promise<void>((resolve) => {
+      pauseOld = resolve;
+    });
+    let resumeOld = (): void => undefined;
+    const oldResumed = new Promise<void>((resolve) => {
+      resumeOld = resolve;
+    });
+    const fencedPublication = new IdentityProviderPublicationService(db, {
+      afterReservation: async (fence) => {
+        if (fence.generation !== 1) return;
+        pauseOld();
+        await oldResumed;
+      },
+      leaseMs: 20,
+    });
+    const input = {
+      expectedRevision: draft.revision,
+      id: draft.id,
+      reason: 'fenced recovery publish',
+      requestId: requestId(25),
+    };
+    const oldOutcome = fencedPublication.publish('admin-1', input).then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error }),
+    );
+    await oldPaused;
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const recovered = await fencedPublication.publish('admin-1', input);
+    resumeOld();
+    const old = await oldOutcome;
+
+    expect(old).toMatchObject({
+      error: { code: 'PLATFORM_IDENTITY_PROVIDER_REQUEST_PENDING' },
+    });
+    expect(recovered).toMatchObject({ revision: draft.revision + 1 });
+    expect(await db.select().from(platformResourceRevisions)).toHaveLength(1);
+    const terminal = (await db.select().from(platformAuditLogs)).filter(
+      (audit) => audit.action === 'admin.identityProviders.publish',
+    );
+    expect(terminal).toHaveLength(1);
+    expect(terminal[0]).toMatchObject({ result: 'success' });
+  });
+
+  it('lets the transaction-first owner finish while recovery waits and replays terminal', async () => {
+    const draft = await createDraft();
+    await recordSuccessfulTest(draft.id);
+    let pauseTransaction = (): void => undefined;
+    const transactionPaused = new Promise<void>((resolve) => {
+      pauseTransaction = resolve;
+    });
+    let resumeTransaction = (): void => undefined;
+    const transactionResumed = new Promise<void>((resolve) => {
+      resumeTransaction = resolve;
+    });
+    const fencedPublication = new IdentityProviderPublicationService(db, {
+      afterDraftLock: async (fence) => {
+        if (fence.generation !== 1) return;
+        pauseTransaction();
+        await transactionResumed;
+      },
+      leaseMs: 20,
+    });
+    const input = {
+      expectedRevision: draft.revision,
+      id: draft.id,
+      reason: 'transaction first publish',
+      requestId: requestId(26),
+    };
+    const owner = fencedPublication.publish('admin-1', input);
+    await transactionPaused;
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const recovery = fencedPublication.publish('admin-1', input);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    resumeTransaction();
+    const [ownerResult, recoveryResult] = await Promise.all([owner, recovery]);
+
+    expect(recoveryResult).toEqual(ownerResult);
+    expect(await db.select().from(platformResourceRevisions)).toHaveLength(1);
+    const terminal = (await db.select().from(platformAuditLogs)).filter(
+      (audit) => audit.action === 'admin.identityProviders.publish',
+    );
+    expect(terminal).toHaveLength(1);
+    expect(terminal[0]).toMatchObject({ result: 'success' });
   });
 
   it('fails closed when the same publish request ID is reused for a different payload', async () => {
