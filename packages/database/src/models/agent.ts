@@ -204,14 +204,14 @@ export class AgentModel {
     }
   };
 
-  getAgentConfigById = async (id: string) => {
+  getAgentConfigById = async (id: string, options?: { inboxTitleFallback?: string | null }) => {
     const agent = await this.db.query.agents.findFirst({
       where: and(eq(agents.id, id), this.ownership()),
     });
 
     if (!agent) return null;
 
-    return this.enrichAgentWithKnowledge(agent);
+    return this.enrichAgentWithKnowledge(agent, options?.inboxTitleFallback);
   };
 
   /**
@@ -437,6 +437,7 @@ export class AgentModel {
    */
   listMessengerBindableAgents = async (options?: {
     fallbackTitle?: string | null;
+    inboxTitleFallback?: string | null;
   }): Promise<
     Array<{
       avatar: string | null;
@@ -463,7 +464,7 @@ export class AgentModel {
     const normalized = rows
       .filter((row) => row.id)
       .map(({ slug, ...row }) => {
-        const meta = normalizeInboxAgentMeta(row, { slug });
+        const meta = normalizeInboxAgentMeta(row, { slug }, options?.inboxTitleFallback);
         return {
           avatar: meta.avatar,
           backgroundColor: meta.backgroundColor,
@@ -489,7 +490,7 @@ export class AgentModel {
   /**
    * Get agent config by ID or slug (single query with OR condition)
    */
-  getAgentConfig = async (idOrSlug: string) => {
+  getAgentConfig = async (idOrSlug: string, options?: { inboxTitleFallback?: string | null }) => {
     // Prefer an exact ID match over a slug match. The combined `or(id, slug)`
     // query has no inherent ordering, so resolve ID first for determinism.
     const agent =
@@ -502,15 +503,22 @@ export class AgentModel {
 
     if (!agent) return null;
 
-    return this.enrichAgentWithKnowledge(agent);
+    return this.enrichAgentWithKnowledge(agent, options?.inboxTitleFallback);
   };
 
   /**
    * Enrich agent with knowledge base and files data
    */
-  private enrichAgentWithKnowledge = async (agent: AgentItem) => {
+  private enrichAgentWithKnowledge = async (
+    agent: AgentItem,
+    inboxTitleFallback?: string | null,
+  ) => {
     const knowledge = await this.getAgentAssignedKnowledge(agent.id);
-    const normalizedAgent = normalizeInboxAgentMeta(agent, { slug: agent.slug });
+    const normalizedAgent = normalizeInboxAgentMeta(
+      agent,
+      { slug: agent.slug },
+      inboxTitleFallback,
+    );
 
     // Fetch document content for enabled files
     const enabledFileIds = knowledge.files
@@ -1097,13 +1105,22 @@ export class AgentModel {
    * Builtin agents are standalone agents not bound to sessions.
    *
    */
-  getBuiltinAgent = async (slug: string): Promise<AgentItem | null> => {
+  getBuiltinAgent = async (
+    slug: string,
+    options?: { inboxTitleFallback?: string | null },
+  ): Promise<AgentItem | null> => {
     // 1. First try to find existing agent by slug
     const existing = await this.db.query.agents.findFirst({
       where: and(eq(agents.slug, slug), this.ownership()),
     });
 
-    if (existing) return normalizeInboxAgentMeta(existing, { slug: existing.slug });
+    if (existing) {
+      return normalizeInboxAgentMeta(
+        existing,
+        { slug: existing.slug },
+        options?.inboxTitleFallback,
+      );
+    }
 
     // For inbox agent, it has special compatibility handling:
     // Historical inbox was stored as session with slug='inbox' and linked agent via agentsToSessions
@@ -1127,7 +1144,11 @@ export class AgentModel {
           .where(eq(agents.id, result[0].agent.id))
           .returning();
 
-        return normalizeInboxAgentMeta(updatedAgent, { slug: updatedAgent.slug });
+        return normalizeInboxAgentMeta(
+          updatedAgent,
+          { slug: updatedAgent.slug },
+          options?.inboxTitleFallback,
+        );
       }
     }
 
@@ -1164,13 +1185,21 @@ export class AgentModel {
       .onConflictDoNothing()
       .returning();
 
-    if (result[0]) return normalizeInboxAgentMeta(result[0], { slug: result[0].slug });
+    if (result[0]) {
+      return normalizeInboxAgentMeta(
+        result[0],
+        { slug: result[0].slug },
+        options?.inboxTitleFallback,
+      );
+    }
 
     const agent = await this.db.query.agents.findFirst({
       where: and(eq(agents.slug, slug), this.ownership()),
     });
 
-    return agent ? normalizeInboxAgentMeta(agent, { slug: agent.slug }) : null;
+    return agent
+      ? normalizeInboxAgentMeta(agent, { slug: agent.slug }, options?.inboxTitleFallback)
+      : null;
   };
 
   /**

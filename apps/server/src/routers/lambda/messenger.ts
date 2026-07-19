@@ -11,7 +11,6 @@ import {
   isMessengerPlatformEnabled,
   type MessengerPlatform,
 } from '@/config/messenger';
-import { AgentModel } from '@/database/models/agent';
 import {
   MessengerAccountLinkConflictError,
   MessengerAccountLinkModel,
@@ -27,6 +26,7 @@ import { authedProcedure, publicProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 import { getServerFeatureFlagsStateFromRuntimeConfig } from '@/server/featureFlags';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
+import { AgentService } from '@/server/services/agent';
 import { SlackApi } from '@/server/services/bot/platforms/slack/api';
 import {
   consumeLinkToken,
@@ -125,8 +125,8 @@ const messengerProcedure = authedProcedure.use(serverDatabase).use(async (opts) 
       // picker passes the workspace via input, not the ambient header — so
       // expose a workspace-parameterized AgentModel factory rather than a
       // single pre-scoped instance.
-      getAgentModel: (workspaceId?: string | null) =>
-        new AgentModel(ctx.serverDB, ctx.userId, workspaceId ?? undefined),
+      getAgentService: (workspaceId?: string | null) =>
+        new AgentService(ctx.serverDB, ctx.userId, workspaceId ?? undefined),
     },
   });
 });
@@ -462,7 +462,7 @@ export const messengerRouter = router({
       // Inbox meta fallback, the virtual-or-inbox filter, inbox pinning, and the
       // `isInbox` flag all live in the model. Blank non-inbox titles stay null
       // here so the web picker can apply its own i18n default.
-      return ctx.getAgentModel(workspaceId).listMessengerBindableAgents();
+      return ctx.getAgentService(workspaceId).listMessengerBindableAgents();
     }),
 
   /**
