@@ -112,6 +112,29 @@ describe('branding literal scan CLI', () => {
     expect(result.output).toContain('packages/title.ts');
   });
 
+  it('treats control-flow and DOM ancestry changes as reviewed moves', async () => {
+    const branchPath = path.join(repositoryRoot, 'src/branch.ts');
+    await writeFile(branchPath, `if (a) render('LobeHub');`, 'utf8');
+    await run(['--update-baseline']);
+    await writeFile(branchPath, `if (b) render('LobeHub');`, 'utf8');
+
+    let result = await run();
+    expect(result.code).toBe(1);
+    expect(result.output).toContain('baseline-occurrence-missing');
+    expect(result.output).toContain('new-user-visible-literal');
+
+    await rm(branchPath);
+    const htmlPath = path.join(repositoryRoot, 'public/view.html');
+    await writeFile(htmlPath, '<section id="first"><p>LobeChat</p></section>', 'utf8');
+    await run(['--update-baseline']);
+    await writeFile(htmlPath, '<section id="second"><p>LobeChat</p></section>', 'utf8');
+
+    result = await run();
+    expect(result.code).toBe(1);
+    expect(result.output).toContain('baseline-occurrence-missing');
+    expect(result.output).toContain('new-user-visible-literal');
+  });
+
   it('scans locale, root HTML, and public HTML runtime roots and exits one for additions', async () => {
     await mkdir(path.join(repositoryRoot, 'locales/en-US'), { recursive: true });
     await Promise.all([
@@ -148,6 +171,13 @@ describe('branding literal scan CLI', () => {
         path.join(repositoryRoot, 'src/valid.png'),
         new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
       ),
+      writeFile(
+        path.join(repositoryRoot, 'src/payload.png'),
+        Buffer.concat([
+          Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+          Buffer.from('LobeHub'),
+        ]),
+      ),
     ]);
 
     const result = await run();
@@ -155,6 +185,7 @@ describe('branding literal scan CLI', () => {
     expect(result.output).toContain('unclassified file extension');
     expect(result.output).toContain('invalid UTF-8');
     expect(result.output).toContain('invalid .png binary signature');
+    expect(result.output).toContain('valid .png magic contains suspicious branding payload');
     expect(result.output).toContain('byte limit');
     expect(result.output).not.toContain('valid.png');
   });
