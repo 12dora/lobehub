@@ -2,12 +2,52 @@ import { getCookieCache } from 'better-auth/cookies';
 
 const COOKIE_CACHE_MAX_AGE_MS = 2 * 60 * 1000;
 const CLOCK_SKEW_MS = 5000;
+const MAX_FORWARDED_COOKIE_BYTES = 4096;
+const SESSION_COOKIE_NAMES = new Set([
+  '__Secure-better-auth.dont_remember',
+  '__Secure-better-auth.session_data',
+  '__Secure-better-auth.session_token',
+  'better-auth.dont_remember',
+  'better-auth.session_data',
+  'better-auth.session_token',
+]);
 
 interface ProxySession {
   session: Record<string, unknown>;
   updatedAt?: number;
   user: Record<string, unknown> & { id: string };
 }
+
+const parseTrustedOrigin = (value: string | undefined, allowInternalHttp: boolean): URL | null => {
+  if (!value || value !== value.trim()) return null;
+  try {
+    const url = new URL(value);
+    const localHttp =
+      url.protocol === 'http:' &&
+      (url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]');
+    if (
+      (url.protocol !== 'https:' &&
+        !localHttp &&
+        !(allowInternalHttp && url.protocol === 'http:')) ||
+      url.username ||
+      url.password ||
+      url.pathname !== '/' ||
+      url.search ||
+      url.hash
+    ) {
+      return null;
+    }
+    return new URL(url.origin);
+  } catch {
+    return null;
+  }
+};
+
+// Resolved exactly once from deployment-controlled configuration. Request headers
+// and request URLs are never authority inputs for this privileged internal call.
+const TRUSTED_AUTH_ORIGIN = process.env.INTERNAL_APP_URL
+  ? parseTrustedOrigin(process.env.INTERNAL_APP_URL, true)
+  : parseTrustedOrigin(process.env.APP_URL, false);
 
 const validDateAfterNow = (value: unknown): boolean => {
   const timestamp =
@@ -38,42 +78,57 @@ const isProxySession = (value: unknown): value is ProxySession => {
   );
 };
 
-const readSignedCookieCache = async (
-  headers: Headers,
-  requestUrl: string,
-): Promise<ProxySession | null> => {
+const sessionCookieBaseName = (name: string): string => name.replace(/\.\d+$/, '');
+
+const selectSessionCookies = (rawCookie: string): string | null => {
+  if (rawCookie.length > 32 * 1024) return null;
+  const selected: string[] = [];
+  for (const segment of rawCookie.split(';')) {
+    const separator = segment.indexOf('=');
+    if (separator <= 0) continue;
+    const name = segment.slice(0, separator).trim();
+    const value = segment.slice(separator + 1).trim();
+    if (!SESSION_COOKIE_NAMES.has(sessionCookieBaseName(name)) || !value || /[\r\n;]/.test(value)) {
+      continue;
+    }
+    selected.push(`${name}=${value}`);
+  }
+  if (selected.length === 0) return null;
+  const cookie = selected.join('; ');
+  return new TextEncoder().encode(cookie).byteLength <= MAX_FORWARDED_COOKIE_BYTES ? cookie : null;
+};
+
+const readSignedCookieCache = async (headers: Headers): Promise<ProxySession | null> => {
   const secret = process.env.AUTH_SECRET;
-  if (!secret) return null;
+  if (!secret || !TRUSTED_AUTH_ORIGIN) return null;
   const cache = await getCookieCache(headers, {
-    isSecure: new URL(process.env.APP_URL || requestUrl).protocol === 'https:',
+    isSecure: TRUSTED_AUTH_ORIGIN.protocol === 'https:',
     secret,
     strategy: 'compact',
   });
   if (!isProxySession(cache)) return null;
   const updatedAt = cache.updatedAt;
+  const now = Date.now();
   if (
     typeof updatedAt !== 'number' ||
-    updatedAt > Date.now() + CLOCK_SKEW_MS ||
-    Date.now() - updatedAt > COOKIE_CACHE_MAX_AGE_MS + CLOCK_SKEW_MS
+    updatedAt > now + CLOCK_SKEW_MS ||
+    now - updatedAt > COOKIE_CACHE_MAX_AGE_MS + CLOCK_SKEW_MS
   ) {
     return null;
   }
   return cache;
 };
 
-const readAuthoritativeSession = async (
-  headers: Headers,
-  requestUrl: string,
-): Promise<ProxySession | null> => {
-  const cookie = headers.get('cookie');
+const readAuthoritativeSession = async (headers: Headers): Promise<ProxySession | null> => {
+  if (!TRUSTED_AUTH_ORIGIN) return null;
+  const cookie = selectSessionCookies(headers.get('cookie') ?? '');
   if (!cookie) return null;
-  const baseUrl = process.env.APP_URL || requestUrl;
-  const endpoint = new URL('/api/auth/get-session?disableCookieCache=true', baseUrl);
+  const endpoint = new URL('/api/auth/get-session?disableCookieCache=true', TRUSTED_AUTH_ORIGIN);
   const response = await fetch(endpoint, {
     cache: 'no-store',
     headers: { cookie },
     method: 'GET',
-    redirect: 'manual',
+    redirect: 'error',
     signal: AbortSignal.timeout(3000),
   });
   if (!response.ok || !response.headers.get('content-type')?.includes('application/json')) {
@@ -87,17 +142,16 @@ const getSession = async (input: {
   headers: Headers;
   requestUrl?: string;
 }): Promise<ProxySession | null> => {
-  const requestUrl = input.requestUrl || process.env.APP_URL;
-  if (!requestUrl) return null;
+  if (!TRUSTED_AUTH_ORIGIN) return null;
   try {
     return (
-      (await readSignedCookieCache(input.headers, requestUrl)) ??
-      (await readAuthoritativeSession(input.headers, requestUrl))
+      (await readSignedCookieCache(input.headers)) ??
+      (await readAuthoritativeSession(input.headers))
     );
   } catch {
     return null;
   }
 };
 
-/** Edge-safe session reader: signed cookie first, internal Better Auth endpoint on cache miss. */
+/** Edge-safe session reader: signed cookie first, trusted internal Better Auth endpoint on miss. */
 export const proxyAuth = { api: { getSession } };
