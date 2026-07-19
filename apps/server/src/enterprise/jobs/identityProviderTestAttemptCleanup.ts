@@ -1,17 +1,42 @@
-import { getServerDB } from '@/database/core/db-adaptor';
-import type { LobeChatDatabase } from '@/database/type';
+import type { LobeChatDatabase, Transaction } from '@/database/type';
 
 import { parseEnterpriseFeatureFlags } from '../featureFlags';
-import { cleanupExpiredIdentityProviderTestAttempts } from '../services/identityProvider/testAttemptStore';
 
 const CLEANUP_INTERVAL_MS = 60 * 1000;
+const CLEANUP_LOCK_NAMESPACE = 'aihub:identity-provider-test-attempt-cleanup:v1';
 
-/** Scheduler-compatible, bounded cleanup entry point. */
+interface IdentityProviderTestAttemptCleanupDependencies {
+  acquireDatabase?: () => Promise<LobeChatDatabase>;
+  acquireLock?: (tx: Transaction) => Promise<void>;
+  cleanup?: (tx: Transaction) => Promise<number>;
+}
+
+const acquireDatabase = async (): Promise<LobeChatDatabase> => {
+  const { getServerDB } = await import('@/database/core/db-adaptor');
+  return getServerDB();
+};
+
+const acquireCleanupLock = async (tx: Transaction): Promise<void> => {
+  const { sql } = await import('drizzle-orm');
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${CLEANUP_LOCK_NAMESPACE})::bigint)`);
+};
+
+const cleanupAttempts = async (tx: Transaction): Promise<number> => {
+  const { cleanupExpiredIdentityProviderTestAttempts } =
+    await import('../services/identityProvider/testAttemptStore');
+  return cleanupExpiredIdentityProviderTestAttempts(tx);
+};
+
+/** Scheduler-compatible cleanup entry point. Feature-off returns before any DB module is loaded. */
 export const runIdentityProviderTestAttemptCleanup = async (
-  db: LobeChatDatabase,
+  dependencies: IdentityProviderTestAttemptCleanupDependencies = {},
 ): Promise<number> => {
   if (!parseEnterpriseFeatureFlags(process.env).ENABLE_DATABASE_OIDC) return 0;
-  return cleanupExpiredIdentityProviderTestAttempts(db);
+  const db = await (dependencies.acquireDatabase ?? acquireDatabase)();
+  return db.transaction(async (tx) => {
+    await (dependencies.acquireLock ?? acquireCleanupLock)(tx);
+    return (dependencies.cleanup ?? cleanupAttempts)(tx);
+  });
 };
 
 let workerStarted = false;
@@ -35,7 +60,7 @@ export const ensureIdentityProviderTestAttemptCleanupStarted = (): void => {
   };
   const run = async () => {
     try {
-      await runIdentityProviderTestAttemptCleanup(await getServerDB());
+      await runIdentityProviderTestAttemptCleanup();
     } catch (error) {
       console.error('[identity-provider-test-attempt-reaper] cleanup failed', {
         errorClass: error instanceof Error ? error.name : 'UnknownError',
