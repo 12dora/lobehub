@@ -13,6 +13,7 @@ import { Trans, useTranslation } from 'react-i18next';
 
 import { ProductLogo } from '@/components/Branding';
 import { PRIVACY_URL, TERMS_URL } from '@/const/url';
+import { useDefaultInboxDisplayName } from '@/hooks/useDefaultInboxDisplayName';
 import { useUserStore } from '@/store/user';
 
 interface TelemetryStepProps {
@@ -24,6 +25,7 @@ const TelemetryStep = memo<TelemetryStepProps>(({ onNext }) => {
   const locale = i18n.language;
   const [check, setCheck] = useState(true);
   const [isNavigating, setIsNavigating] = useState(false);
+  const inboxDisplayName = useDefaultInboxDisplayName();
   const isNavigatingRef = useRef(false);
   const updateGeneralConfig = useUserStore((s) => s.updateGeneralConfig);
 
@@ -70,7 +72,7 @@ const TelemetryStep = memo<TelemetryStepProps>(({ onNext }) => {
             pauseDuration={16_000}
             typingSpeed={64}
             sentences={[
-              t('telemetry.title', { name: 'Lobe AI' }),
+              t('telemetry.title', { name: inboxDisplayName }),
               t('telemetry.title2'),
               t('telemetry.title3'),
             ]}

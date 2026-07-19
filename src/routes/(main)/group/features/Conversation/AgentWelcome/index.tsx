@@ -7,6 +7,7 @@ import { useTranslation } from 'react-i18next';
 
 import { useConversationStore } from '@/features/Conversation';
 import { contextSelectors } from '@/features/Conversation/store';
+import { useDefaultInboxDisplayName } from '@/hooks/useDefaultInboxDisplayName';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import SupervisorAvatar from '@/routes/(main)/group/features/GroupAvatar';
 import { useAgentStore } from '@/store/agent';
@@ -24,6 +25,7 @@ const InboxWelcome = memo(() => {
   const isInbox = useAgentStore(builtinAgentSelectors.isInboxAgent);
   const fontSize = useUserStore(userGeneralSettingsSelectors.fontSize);
   const meta = useAgentStore(agentSelectors.currentAgentMeta, isEqual);
+  const inboxDisplayName = useDefaultInboxDisplayName(meta.title);
   const groupId = useConversationStore(contextSelectors.groupId);
   const [groupMeta] = useAgentGroupStore((s) => [
     agentGroupSelectors.getGroupMeta(groupId ?? '')(s),
@@ -55,7 +57,7 @@ const InboxWelcome = memo(() => {
   const message = useMemo(() => {
     if (openingMessage) return openingMessage;
     return agentSystemRoleMsg;
-  }, [openingMessage, agentSystemRoleMsg, meta.description]);
+  }, [openingMessage, agentSystemRoleMsg]);
 
   const displayTitle = groupMeta.title;
 
@@ -75,7 +77,9 @@ const InboxWelcome = memo(() => {
         </Text>
         <Flexbox width={'min(100%, 640px)'}>
           <Markdown fontSize={fontSize} variant={'chat'}>
-            {isInbox ? t('guide.defaultMessageWithoutCreate', { appName: 'Lobe AI' }) : message}
+            {isInbox
+              ? t('guide.defaultMessageWithoutCreate', { appName: inboxDisplayName })
+              : message}
           </Markdown>
         </Flexbox>
         {openingQuestions.length > 0 && (

@@ -8,6 +8,7 @@ describe('overlaySnapshot', () => {
     const agentOptions = resolveOverlayAgentOptions({
       agents: [{ avatar: 'A', id: 'agent-1', title: 'Agent 1' }],
       inboxAgentId: 'inbox-agent',
+      inboxDisplayName: 'AIHub AI',
       inboxMeta: { title: null },
     });
 
@@ -16,7 +17,7 @@ describe('overlaySnapshot', () => {
         avatar: DEFAULT_INBOX_AVATAR,
         backgroundColor: undefined,
         id: 'inbox-agent',
-        title: 'Lobe AI',
+        title: 'AIHub AI',
       },
       {
         avatar: 'A',
@@ -31,6 +32,7 @@ describe('overlaySnapshot', () => {
     const agentOptions = resolveOverlayAgentOptions({
       agents: [{ avatar: 'A', id: 'agent-1', title: 'Agent 1' }],
       inboxAgentId: 'inbox-agent',
+      inboxDisplayName: 'AIHub AI',
       inboxMeta: { avatar: '🤖', title: 'Lobe AI' },
     });
 
@@ -50,6 +52,7 @@ describe('overlaySnapshot', () => {
         { avatar: 'B', id: 'agent-2', title: 'Agent 2' },
       ],
       inboxAgentId: 'inbox-agent',
+      inboxDisplayName: 'AIHub AI',
     });
 
     const defaultAgentId = resolveOverlayDefaultAgentId({
@@ -64,6 +67,7 @@ describe('overlaySnapshot', () => {
   it('applies App fallback title and avatar for untitled agents', () => {
     const agentOptions = resolveOverlayAgentOptions({
       agents: [{ avatar: null, id: 'agent-1', title: '' }],
+      inboxDisplayName: 'AIHub AI',
     });
 
     expect(agentOptions).toEqual([
@@ -79,6 +83,7 @@ describe('overlaySnapshot', () => {
   it('preserves heterogeneousType for overlay agent options', () => {
     const agentOptions = resolveOverlayAgentOptions({
       agents: [{ avatar: 'A', heterogeneousType: 'codex', id: 'agent-1', title: 'Agent 1' }],
+      inboxDisplayName: 'AIHub AI',
     });
 
     expect(agentOptions).toEqual([

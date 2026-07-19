@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next';
 import { DEFAULT_AVATAR, DEFAULT_INBOX_AVATAR } from '@/const/meta';
 import GroupAvatar from '@/features/GroupAvatar';
 import WorkspaceLink from '@/features/Workspace/WorkspaceLink';
+import { useDefaultInboxDisplayName } from '@/hooks/useDefaultInboxDisplayName';
 import { type SharedTopicData } from '@/types/topic';
 
 interface ActionBarProps {
@@ -16,8 +17,9 @@ const ActionBar = memo<ActionBarProps>(({ data }) => {
   const { t } = useTranslation('chat');
   const isGroup = !!data?.groupId;
   const isInboxAgent = !isGroup && data?.agentMeta?.slug === 'inbox';
+  const inboxDisplayName = useDefaultInboxDisplayName(data?.agentMeta?.title);
   const agentOrGroupTitle =
-    data?.groupMeta?.title || (isInboxAgent ? 'Lobe AI' : data?.agentMeta?.title);
+    data?.groupMeta?.title || (isInboxAgent ? inboxDisplayName : data?.agentMeta?.title);
   const agentMarketIdentifier = data?.agentMeta?.marketIdentifier;
 
   // Build group avatars for GroupAvatar component
