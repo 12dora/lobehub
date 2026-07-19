@@ -78,9 +78,66 @@ export interface RedactSensitiveOptions {
   isBenignKey?: (key: string) => boolean;
 }
 
-/** Known fake placeholders used only in tests — never real material. */
-const SENSITIVE_VALUE_PATTERN =
-  /bearer\s+[\w.~+/=-]+|sk-[a-z0-9]{8,}|ghp_[a-z0-9]{20,}|xox[baprs]-[a-z0-9-]{10,}/i;
+const EASYAUTH_APP_TOKEN_PATTERN = /(?<![\w-])eat_(?:live|test)_[\w-]{15,}[a-z0-9](?![\w-])/iu;
+const PREFIXED_SECRET_PATTERN =
+  /(?<![\w-])(?:ghp_[a-z0-9]{20,}|sk-[\w-]{19,}[a-z0-9]|xox[baprs]-[a-z0-9-]{10,})(?![\w-])/iu;
+const JWT_PATTERN = /(?<![\w-])eyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]{8,}(?![\w-])/iu;
+const BEARER_VALUE_PATTERN = /\bbearer\s+([\w.~+/-]+)/giu;
+const SECRET_PLACEHOLDER_PATTERN =
+  /^(?:<[^>]+>|\[redacted\]|\.{3}|available|bearer|configured|disabled|enabled|expired|failed|invalid|missing|none|null|required|reset|revoked|unknown|undefined|not[-_ ]?set)$/iu;
+const DOCUMENTATION_PLACEHOLDER_MARKERS = [
+  'change me',
+  'change-me',
+  'change_me',
+  'changeme',
+  'dummy',
+  'example',
+  'fake',
+  'not real',
+  'not-real',
+  'not_real',
+  'notreal',
+  'placeholder',
+  'replace me',
+  'replace with',
+  'replace-me',
+  'replace-with',
+  'replace_me',
+  'replace_with',
+  'sample',
+] as const;
+const YOUR_PLACEHOLDER_PREFIXES = ['your ', 'your-', 'your_'] as const;
+const SECRET_SCALAR_PATTERN = /^[\w.~+/-]+$/iu;
+
+const isDocumentationPlaceholder = (value: string): boolean => {
+  const normalized = value.toLowerCase();
+  if (DOCUMENTATION_PLACEHOLDER_MARKERS.some((marker) => normalized.includes(marker))) return true;
+  return YOUR_PLACEHOLDER_PREFIXES.some((prefix) => normalized.startsWith(prefix));
+};
+
+const isKnownSecretScalar = (value: string): boolean =>
+  EASYAUTH_APP_TOKEN_PATTERN.test(value) ||
+  PREFIXED_SECRET_PATTERN.test(value) ||
+  JWT_PATTERN.test(value);
+
+const isExplicitCredentialScalar = (value: string): boolean =>
+  isKnownSecretScalar(value) ||
+  (SECRET_SCALAR_PATTERN.test(value) &&
+    !SECRET_PLACEHOLDER_PATTERN.test(value) &&
+    !isDocumentationPlaceholder(value));
+
+const containsSecretValueShape = (value: string): boolean => {
+  if (
+    EASYAUTH_APP_TOKEN_PATTERN.test(value) ||
+    PREFIXED_SECRET_PATTERN.test(value) ||
+    JWT_PATTERN.test(value)
+  ) {
+    return true;
+  }
+  return [...value.matchAll(BEARER_VALUE_PATTERN)].some((match) =>
+    match[1] ? isExplicitCredentialScalar(match[1]) : false,
+  );
+};
 
 export const isSensitiveKey = (key: string): boolean => {
   const normalized = normalizeKey(key);
@@ -99,7 +156,7 @@ export const isSensitiveKey = (key: string): boolean => {
 };
 
 const redactString = (value: string): string => {
-  if (SENSITIVE_VALUE_PATTERN.test(value)) return REDACTED;
+  if (containsSecretValueShape(value)) return REDACTED;
   return value;
 };
 
@@ -142,7 +199,7 @@ const redactValue = (value: unknown, options: RedactSensitiveOptions): unknown =
 export const containsSensitiveMaterial = (value: unknown): boolean => {
   if (value === null || value === undefined) return false;
   if (typeof value === 'string') {
-    return SENSITIVE_VALUE_PATTERN.test(value) && value !== REDACTED;
+    return containsSecretValueShape(value) && value !== REDACTED;
   }
   if (Array.isArray(value)) return value.some((v) => containsSensitiveMaterial(v));
   if (typeof value === 'object') {
@@ -161,6 +218,14 @@ const PEM_PRIVATE_KEY_PATTERN = /-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----/;
 const AWS_ACCESS_KEY_PATTERN = /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/;
 const GCP_API_KEY_PATTERN = /\bAIza[\w-]{35}\b/;
 const GCP_SERVICE_ACCOUNT_PATTERN = /["']type["']\s*:\s*["']service_account["']/i;
+const INLINE_SECRET_ASSIGNMENT_PATTERN =
+  /\b(?:api[-_ ]?key|api[-_ ]?secret|api[-_ ]?token|access[-_ ]?token|authorization|bearer|client[-_ ]?secret|credential|id[-_ ]?token|password|passwd|private[-_ ]?key|refresh[-_ ]?token|secret[-_ ]?access[-_ ]?key|token)\s*[:=]\s*(?:"([^"]+)"|'([^']+)'|([^\s,;]+))/giu;
+
+const stringContainsSensitiveAssignment = (value: string): boolean =>
+  [...value.matchAll(INLINE_SECRET_ASSIGNMENT_PATTERN)].some((match) => {
+    const assignedValue = match[1] ?? match[2] ?? match[3];
+    return assignedValue ? isExplicitCredentialScalar(assignedValue) : false;
+  });
 
 const SIGNED_URL_QUERY_KEYS = new Set([
   'key',
@@ -189,12 +254,28 @@ export const isCredentialBearingUrl = (value: string): boolean => {
 };
 
 const stringContainsCredentialUrl = (value: string): boolean => {
-  const starts = [...value.matchAll(/[a-z][a-z0-9+.-]*:\/\//gi)].map((match) => match.index);
-  return starts.some((start, index) => {
-    const remainder = value.slice(start, starts[index + 1] ?? value.length);
-    const boundary = remainder.search(/[\s<>"']/u);
-    return isCredentialBearingUrl(remainder.slice(0, boundary < 0 ? remainder.length : boundary));
-  });
+  const separator = '://';
+  let searchFrom = 0;
+  while (searchFrom < value.length) {
+    const separatorIndex = value.indexOf(separator, searchFrom);
+    if (separatorIndex < 0) return false;
+
+    const minimumSchemeIndex = Math.max(0, separatorIndex - 64);
+    let schemeStart = separatorIndex;
+    while (schemeStart > minimumSchemeIndex && /[a-z0-9+.-]/iu.test(value[schemeStart - 1])) {
+      schemeStart -= 1;
+    }
+
+    if (schemeStart < separatorIndex && /[a-z]/iu.test(value[schemeStart])) {
+      let urlEnd = separatorIndex + separator.length;
+      while (urlEnd < value.length && !/[\s<>"']/u.test(value[urlEnd])) urlEnd += 1;
+      if (isCredentialBearingUrl(value.slice(schemeStart, urlEnd))) return true;
+      searchFrom = urlEnd;
+      continue;
+    }
+    searchFrom = separatorIndex + separator.length;
+  }
+  return false;
 };
 
 /** Complete fail-closed detector for values entering safe persistence projections. */
@@ -212,6 +293,7 @@ export const containsEnterpriseSecretMaterial = (input: unknown): boolean => {
         AWS_ACCESS_KEY_PATTERN.test(value) ||
         GCP_API_KEY_PATTERN.test(value) ||
         GCP_SERVICE_ACCOUNT_PATTERN.test(value) ||
+        stringContainsSensitiveAssignment(value) ||
         stringContainsCredentialUrl(value)
       ) {
         return true;

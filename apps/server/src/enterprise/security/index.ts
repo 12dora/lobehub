@@ -8,5 +8,6 @@
  * No tRPC routes are mounted here — consumer modules wire as needed.
  */
 export * from './outboundHttp';
+export * from './policy';
 export * from './redaction';
 export * from './secret';
