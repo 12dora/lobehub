@@ -1,4 +1,6 @@
-import { and, desc, eq, gt, isNull } from 'drizzle-orm';
+import { createHash } from 'node:crypto';
+
+import { and, desc, eq, gt, isNull, lte, sql } from 'drizzle-orm';
 
 import { checksumPayload, PlatformRevisionConflictError } from '@/database/models/platform';
 import {
@@ -9,6 +11,7 @@ import {
   platformResourceRevisions,
 } from '@/database/schemas/platform';
 import type { LobeChatDatabase, Transaction } from '@/database/type';
+import { identityProviderDraftSchema } from '@/server/enterprise/contracts/identityProviders';
 import {
   parsePlatformIdentityProviderClaimMapping,
   type PlatformIdentityProviderDraft,
@@ -16,6 +19,7 @@ import {
 } from '@/types/platform/identityProvider';
 
 import { containsEnterpriseSecretMaterial } from '../../security/redaction';
+import { PlatformAuditService } from '../platformAudit';
 
 const SUCCESSFUL_TEST_MAX_AGE_MS = 10 * 60 * 1000;
 
@@ -41,6 +45,7 @@ export class IdentityProviderPublicationError extends Error {
   constructor(
     public readonly code:
       | 'PLATFORM_IDENTITY_PROVIDER_INVALID_SNAPSHOT'
+      | 'PLATFORM_IDENTITY_PROVIDER_IDEMPOTENCY_CONFLICT'
       | 'PLATFORM_IDENTITY_PROVIDER_NOT_FOUND'
       | 'PLATFORM_IDENTITY_PROVIDER_NOT_TESTED'
       | 'PLATFORM_IDENTITY_PROVIDER_SECRET_UNAVAILABLE',
@@ -224,9 +229,122 @@ const assertReason = (reason: string): string => {
   return normalized;
 };
 
+const assertRequestId = (requestId: string): string => {
+  const normalized = requestId.toLowerCase();
+  if (
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(normalized)
+  ) {
+    throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_IDEMPOTENCY_CONFLICT');
+  }
+  return normalized;
+};
+
+const digest = (value: string): string => createHash('sha256').update(value).digest('hex');
+
+const idempotencyContext = (input: {
+  action: string;
+  actorUserId: string;
+  payload: Record<string, unknown>;
+  requestId: string;
+  targetId: string;
+}) => {
+  const scopeHash = digest(
+    JSON.stringify({
+      action: input.action,
+      actorUserId: input.actorUserId,
+      requestId: input.requestId,
+      targetId: input.targetId,
+    }),
+  );
+  const payloadHash = checksumPayload(input.payload);
+  return {
+    failureAuditId: `oidc-idempotency-${digest(`${scopeHash}:${payloadHash}:failure`)}`,
+    payloadHash,
+    successAuditId: `oidc-idempotency-${scopeHash}`,
+  };
+};
+
+const toIdempotentResponse = (draft: PlatformIdentityProviderDraft): Record<string, unknown> => {
+  const { secret, ...safeDraft } = draft;
+  return {
+    ...safeDraft,
+    fingerprint: secret.fingerprint,
+    fingerprintUpdatedAt: secret.updatedAt?.toISOString() ?? null,
+    isConfigured: secret.configured,
+  };
+};
+
+const parseIdempotentResponse = (value: unknown): PlatformIdentityProviderDraft => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_IDEMPOTENCY_CONFLICT');
+  }
+  const response = value as Record<string, unknown>;
+  const {
+    fingerprint,
+    fingerprintUpdatedAt: rawFingerprintUpdatedAt,
+    isConfigured,
+    ...safeDraft
+  } = response;
+  const fingerprintUpdatedAt =
+    typeof rawFingerprintUpdatedAt === 'string'
+      ? new Date(rawFingerprintUpdatedAt)
+      : rawFingerprintUpdatedAt;
+  const parsed = identityProviderDraftSchema.safeParse({
+    ...safeDraft,
+    secret: {
+      configured: isConfigured,
+      fingerprint,
+      updatedAt: fingerprintUpdatedAt,
+    },
+  });
+  if (!parsed.success) {
+    throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_IDEMPOTENCY_CONFLICT');
+  }
+  return parsed.data;
+};
+
+const findIdempotentReplay = async (
+  tx: Transaction,
+  input: {
+    action: string;
+    actorUserId: string;
+    auditId: string;
+    payloadHash: string;
+    requestId: string;
+    targetId: string;
+  },
+): Promise<PlatformIdentityProviderDraft | null> => {
+  const [audit] = await tx
+    .select()
+    .from(platformAuditLogs)
+    .where(eq(platformAuditLogs.id, input.auditId))
+    .limit(1);
+  if (!audit) return null;
+  const afterDiff = audit.afterDiff as Record<string, unknown> | null;
+  if (
+    audit.action !== input.action ||
+    audit.actorUserId !== input.actorUserId ||
+    audit.requestId !== input.requestId ||
+    audit.result !== 'success' ||
+    audit.targetId !== input.targetId ||
+    afterDiff?.payloadHash !== input.payloadHash
+  ) {
+    throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_IDEMPOTENCY_CONFLICT');
+  }
+  return parseIdempotentResponse(afterDiff.response);
+};
+
 const appendFailureAudit = async (
   db: LobeChatDatabase,
-  input: { action: string; actorUserId: string; error: unknown; reason: string; targetId: string },
+  input: {
+    action: string;
+    actorUserId: string;
+    auditId: string;
+    error: unknown;
+    reason: string;
+    requestId: string;
+    targetId: string;
+  },
 ) => {
   try {
     const category =
@@ -235,11 +353,13 @@ const appendFailureAudit = async (
         : input.error instanceof PlatformRevisionConflictError
           ? 'revision_conflict'
           : 'identity_provider_publication_failed';
-    await db.insert(platformAuditLogs).values({
+    await new PlatformAuditService(db).append({
       action: input.action,
       actorUserId: input.actorUserId,
       afterDiff: { category },
+      id: input.auditId,
       reason: input.reason,
+      requestId: input.requestId,
       result: 'failure',
       targetId: input.targetId,
       targetType: 'identity_provider',
@@ -300,12 +420,30 @@ export class IdentityProviderPublicationService {
 
   publish = async (
     actorUserId: string,
-    input: { expectedRevision: number; id: string; reason: string },
+    input: { expectedRevision: number; id: string; reason: string; requestId: string },
   ): Promise<PlatformIdentityProviderDraft> => {
     const reason = assertReason(input.reason);
+    const requestId = assertRequestId(input.requestId);
+    const action = 'admin.identityProviders.publish';
+    const idempotency = idempotencyContext({
+      action,
+      actorUserId,
+      payload: { expectedRevision: input.expectedRevision, id: input.id, reason },
+      requestId,
+      targetId: input.id,
+    });
     try {
       return await this.db.transaction(async (tx) => {
         const { draft, secretRef } = await this.lockedDraft(tx, input.id);
+        const replay = await findIdempotentReplay(tx, {
+          action,
+          actorUserId,
+          auditId: idempotency.successAuditId,
+          payloadHash: idempotency.payloadHash,
+          requestId,
+          targetId: input.id,
+        });
+        if (replay) return replay;
         if (draft.revision !== input.expectedRevision) {
           throw new PlatformRevisionConflictError('Identity provider revision changed', {
             currentRevision: draft.revision,
@@ -335,6 +473,8 @@ export class IdentityProviderPublicationService {
             'PLATFORM_IDENTITY_PROVIDER_SECRET_UNAVAILABLE',
           );
         }
+        const testCutoff = new Date(Date.now() - SUCCESSFUL_TEST_MAX_AGE_MS);
+        const testNow = new Date();
         const [successfulTest] = await tx
           .select({ id: platformIdentityProviderTestAttempts.id })
           .from(platformIdentityProviderTestAttempts)
@@ -348,10 +488,10 @@ export class IdentityProviderPublicationService {
               ),
               eq(platformIdentityProviderTestAttempts.providerSecretRef, secretRef!),
               eq(platformIdentityProviderTestAttempts.status, 'succeeded'),
-              gt(
-                platformIdentityProviderTestAttempts.completedAt,
-                new Date(Date.now() - SUCCESSFUL_TEST_MAX_AGE_MS),
-              ),
+              sql`${platformIdentityProviderTestAttempts.result}->>'valid' = 'true'`,
+              gt(platformIdentityProviderTestAttempts.expiresAt, testNow),
+              gt(platformIdentityProviderTestAttempts.completedAt, testCutoff),
+              lte(platformIdentityProviderTestAttempts.completedAt, testNow),
             ),
           )
           .orderBy(desc(platformIdentityProviderTestAttempts.completedAt))
@@ -395,37 +535,44 @@ export class IdentityProviderPublicationService {
           )
           .returning();
         if (!updated) throw new PlatformRevisionConflictError();
-        await tx.insert(platformAuditLogs).values({
-          action: 'admin.identityProviders.publish',
-          actorUserId,
-          afterDiff: {
-            activation: 'pending_restart',
-            checksum,
-            providerKey: payload.providerKey,
-            revision: nextRevision,
-            secretFingerprint: payload.secretFingerprint,
-          },
-          beforeDiff: { revision: draft.revision, status: draft.status },
-          configRevision: nextRevision,
-          reason,
-          result: 'success',
-          targetId: input.id,
-          targetType: 'identity_provider',
-        });
-        return {
+        const result: PlatformIdentityProviderDraft = {
           ...draft,
           activationRevision: nextRevision,
           enabled: true,
           revision: nextRevision,
           status: 'pending_restart',
         };
+        await new PlatformAuditService(tx).append({
+          action,
+          actorUserId,
+          afterDiff: {
+            activation: 'pending_restart',
+            checksum,
+            payloadHash: idempotency.payloadHash,
+            providerKey: payload.providerKey,
+            response: toIdempotentResponse(result),
+            revision: nextRevision,
+            secretFingerprint: payload.secretFingerprint,
+          },
+          beforeDiff: { revision: draft.revision, status: draft.status },
+          configRevision: nextRevision,
+          id: idempotency.successAuditId,
+          reason,
+          requestId,
+          result: 'success',
+          targetId: input.id,
+          targetType: 'identity_provider',
+        });
+        return result;
       });
     } catch (error) {
       await appendFailureAudit(this.db, {
-        action: 'admin.identityProviders.publish',
+        action,
         actorUserId,
+        auditId: idempotency.failureAuditId,
         error,
         reason,
+        requestId,
         targetId: input.id,
       });
       throw error;
@@ -438,12 +585,41 @@ export class IdentityProviderPublicationService {
    */
   rollback = async (
     actorUserId: string,
-    input: { expectedRevision: number; id: string; reason: string; targetRevision: number },
+    input: {
+      expectedRevision: number;
+      id: string;
+      reason: string;
+      requestId: string;
+      targetRevision: number;
+    },
   ): Promise<PlatformIdentityProviderDraft> => {
     const reason = assertReason(input.reason);
+    const requestId = assertRequestId(input.requestId);
+    const action = 'admin.identityProviders.rollback';
+    const idempotency = idempotencyContext({
+      action,
+      actorUserId,
+      payload: {
+        expectedRevision: input.expectedRevision,
+        id: input.id,
+        reason,
+        targetRevision: input.targetRevision,
+      },
+      requestId,
+      targetId: input.id,
+    });
     try {
       return await this.db.transaction(async (tx) => {
         const { draft } = await this.lockedDraft(tx, input.id);
+        const replay = await findIdempotentReplay(tx, {
+          action,
+          actorUserId,
+          auditId: idempotency.successAuditId,
+          payloadHash: idempotency.payloadHash,
+          requestId,
+          targetId: input.id,
+        });
+        if (replay) return replay;
         if (draft.revision !== input.expectedRevision) {
           throw new PlatformRevisionConflictError('Identity provider revision changed', {
             currentRevision: draft.revision,
@@ -453,7 +629,11 @@ export class IdentityProviderPublicationService {
           });
         }
         const [target] = await tx
-          .select({ payload: platformResourceRevisions.payload })
+          .select({
+            checksum: platformResourceRevisions.checksum,
+            payload: platformResourceRevisions.payload,
+            secretFingerprint: platformResourceRevisions.secretFingerprint,
+          })
           .from(platformResourceRevisions)
           .where(
             and(
@@ -465,7 +645,11 @@ export class IdentityProviderPublicationService {
           )
           .limit(1);
         const payload = parsePublishedIdentityProviderPayload(target?.payload);
-        if (!payload) {
+        if (
+          !payload ||
+          target.checksum !== checksumPayload(target.payload) ||
+          target.secretFingerprint !== payload.secretFingerprint
+        ) {
           throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_INVALID_SNAPSHOT');
         }
         const [secret] = await tx
@@ -523,22 +707,7 @@ export class IdentityProviderPublicationService {
           )
           .returning();
         if (!updated) throw new PlatformRevisionConflictError();
-        await tx.insert(platformAuditLogs).values({
-          action: 'admin.identityProviders.rollback',
-          actorUserId,
-          afterDiff: {
-            restoredFromRevision: input.targetRevision,
-            revision: nextRevision,
-            status: 'draft',
-          },
-          beforeDiff: { revision: draft.revision, status: draft.status },
-          configRevision: nextRevision,
-          reason,
-          result: 'success',
-          targetId: input.id,
-          targetType: 'identity_provider',
-        });
-        return {
+        const result: PlatformIdentityProviderDraft = {
           ...draft,
           activationRevision: null,
           autoProvision: payload.autoProvision,
@@ -563,13 +732,35 @@ export class IdentityProviderPublicationService {
           type: payload.type,
           usePkce: true,
         };
+        await new PlatformAuditService(tx).append({
+          action,
+          actorUserId,
+          afterDiff: {
+            payloadHash: idempotency.payloadHash,
+            response: toIdempotentResponse(result),
+            restoredFromRevision: input.targetRevision,
+            revision: nextRevision,
+            status: 'draft',
+          },
+          beforeDiff: { revision: draft.revision, status: draft.status },
+          configRevision: nextRevision,
+          id: idempotency.successAuditId,
+          reason,
+          requestId,
+          result: 'success',
+          targetId: input.id,
+          targetType: 'identity_provider',
+        });
+        return result;
       });
     } catch (error) {
       await appendFailureAudit(this.db, {
-        action: 'admin.identityProviders.rollback',
+        action,
         actorUserId,
+        auditId: idempotency.failureAuditId,
         error,
         reason,
+        requestId,
         targetId: input.id,
       });
       throw error;

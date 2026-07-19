@@ -332,6 +332,7 @@ export const adminIdentityProviderPublishInputSchema = z
     expectedRevision: z.number().int().nonnegative(),
     id: z.string().min(1).max(128),
     reason: reasonSchema,
+    requestId: z.string().uuid(),
   })
   .strict();
 export const adminIdentityProviderPublishOutputSchema = identityProviderDraftSchema;
