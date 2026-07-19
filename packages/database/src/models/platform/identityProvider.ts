@@ -6,12 +6,14 @@ import {
 import {
   PlatformIdentityProviderRepository,
   type SafePlatformIdentityProviderItem,
+  type SafePlatformIdentityProviderListItem,
 } from '../../repositories/platformIdentityProvider';
 import type { LobeChatDatabase, Transaction } from '../../type';
 import { containsEnterpriseSecretMaterial, isSensitiveKey } from './redact';
 
-export const toSafeIdentityProviderDraft = (
-  row: SafePlatformIdentityProviderItem,
+const toSafeDraft = (
+  row: Omit<SafePlatformIdentityProviderItem, 'secretRef'>,
+  secretConfigured: boolean,
 ): PlatformIdentityProviderDraft => {
   const claimMapping = parsePlatformIdentityProviderClaimMapping(row.claimMapping);
   const publicConfig = {
@@ -55,7 +57,7 @@ export const toSafeIdentityProviderDraft = (
     revision: row.revision,
     scopes: row.scopes,
     secret: {
-      configured: row.secretRef !== null,
+      configured: secretConfigured,
       fingerprint: row.secretFingerprint ?? null,
       updatedAt: row.secretUpdatedAt ?? null,
     },
@@ -64,6 +66,14 @@ export const toSafeIdentityProviderDraft = (
     usePkce: true,
   };
 };
+
+export const toSafeIdentityProviderDraft = (
+  row: SafePlatformIdentityProviderItem,
+): PlatformIdentityProviderDraft => toSafeDraft(row, row.secretRef !== null);
+
+export const toSafeIdentityProviderDraftFromList = (
+  row: SafePlatformIdentityProviderListItem,
+): PlatformIdentityProviderDraft => toSafeDraft(row, row.secretConfigured);
 
 /** Secret-safe database model used by every future API/revision projection. */
 export class PlatformIdentityProviderModel {

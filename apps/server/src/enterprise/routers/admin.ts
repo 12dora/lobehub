@@ -23,6 +23,7 @@ import { ensureSkillCatalogReadinessRegistered } from '../services/skillCatalog'
 import { adminAgentsRouter } from './admin/agents';
 import { adminAiModelsRouter, adminAiProvidersRouter } from './admin/aiCatalog';
 import { adminConnectorsRouter } from './admin/connectors';
+import { adminIdentityProvidersRouter } from './admin/identityProviders';
 import { adminManagedResourcesRouter } from './admin/managedResources';
 import { adminSettingsRouter } from './admin/settings';
 import { adminSkillsRouter } from './admin/skills';
@@ -232,6 +233,7 @@ export const adminRouter = router({
   auth: adminAuthRouter,
   connectors: adminConnectorsRouter,
   easyauth: adminEasyauthRouter,
+  identityProviders: adminIdentityProvidersRouter,
   managedResources: adminManagedResourcesRouter,
   roles: adminRolesRouter,
   settings: adminSettingsRouter,

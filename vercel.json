@@ -1,5 +1,11 @@
 {
   "buildCommand": "bun run build:vercel",
+  "crons": [
+    {
+      "path": "/api/cron/identity-provider-test-attempt-cleanup",
+      "schedule": "*/5 * * * *"
+    }
+  ],
   "headers": [
     {
       "source": "/_spa/(.*)",
