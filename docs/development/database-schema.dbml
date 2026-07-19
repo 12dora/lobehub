@@ -2047,8 +2047,11 @@ table platform_identity_provider_test_attempts {
   id text [pk, not null]
   provider_id text [not null]
   provider_revision integer [not null]
+  provider_secret_fingerprint varchar(64) [not null]
+  provider_secret_ref text [not null]
   user_id text [not null]
   session_id text [not null]
+  audit_reason text [not null]
   state_hash varchar(64) [not null]
   nonce_hash varchar(64) [not null]
   pkce_ciphertext text [not null]
@@ -2067,6 +2070,8 @@ table platform_identity_provider_test_attempts {
     state_hash [name: 'platform_identity_provider_test_attempts_state_hash_unique', unique]
     (user_id, provider_id, created_at) [name: 'platform_identity_provider_test_attempts_user_provider_idx']
     expires_at [name: 'platform_identity_provider_test_attempts_expires_idx']
+
+
 
 
 

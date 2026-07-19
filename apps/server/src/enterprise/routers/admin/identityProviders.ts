@@ -1,6 +1,6 @@
 import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
-import { authedProcedure, router } from '@/libs/trpc/lambda';
+import { enterpriseAccessGate, preAccessAuthedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 
 import {
@@ -58,8 +58,8 @@ const execute = async <T>(operation: () => Promise<T> | T): Promise<T> => {
 };
 
 /** The flag middleware intentionally precedes DB/user/RBAC middleware: flag-off is a zero-I/O path. */
-const identityProviderProcedure = authedProcedure
-  .use(async ({ next }) => {
+const identityProviderProcedure = preAccessAuthedProcedure
+  .use(({ next }) => {
     if (!isIdentityProviderFeatureEnabled()) {
       throwEnterpriseError({
         code: PLATFORM_ERROR_CODES.PLATFORM_FEATURE_DISABLED,
@@ -68,6 +68,7 @@ const identityProviderProcedure = authedProcedure
     }
     return next();
   })
+  .use(enterpriseAccessGate)
   .use(serverDatabase)
   .use(withActiveUser())
   .use(async ({ ctx, next }) =>

@@ -237,8 +237,12 @@ export const platformIdentityProviderTestAttempts = pgTable(
       .notNull()
       .references(() => platformIdentityProviders.id, { onDelete: 'cascade' }),
     providerRevision: integer('provider_revision').notNull(),
+    /** Exact secret version bound at testStart; callback success CAS must still match both. */
+    providerSecretFingerprint: varchar('provider_secret_fingerprint', { length: 64 }).notNull(),
+    providerSecretRef: text('provider_secret_ref').notNull(),
     userId: text('user_id').notNull(),
     sessionId: text('session_id').notNull(),
+    auditReason: text('audit_reason').notNull(),
     stateHash: varchar('state_hash', { length: 64 }).notNull(),
     nonceHash: varchar('nonce_hash', { length: 64 }).notNull(),
     /** Envelope-encrypted PKCE verifier; never selected by admin result projections. */
@@ -276,6 +280,16 @@ export const platformIdentityProviderTestAttempts = pgTable(
     check(
       'platform_identity_provider_test_attempts_revision_check',
       sql`${t.providerRevision} >= 0`,
+    ),
+    check(
+      'platform_identity_provider_test_attempts_secret_binding_check',
+      sql`${t.providerSecretFingerprint} ~ '^[a-f0-9]{64}$'
+        AND ${t.providerSecretRef} LIKE 'kms://platform-identity-providers/%'`,
+    ),
+    check(
+      'platform_identity_provider_test_attempts_reason_check',
+      sql`octet_length(${t.auditReason}) BETWEEN 1 AND 4096
+        AND ${t.auditReason} !~* '(client.?secret|api.?key|access.?token|refresh.?token|id.?token|password|authorization|bearer|credential)'`,
     ),
     check(
       'platform_identity_provider_test_attempts_terminal_check',

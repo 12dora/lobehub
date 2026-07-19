@@ -1,5 +1,5 @@
 {
-  "id": "fe458aae-6de8-489f-b6f5-aa633aaf08b7",
+  "id": "1770ebf9-37a5-4c12-87eb-c4dfd833cdd9",
   "prevId": "bd33afa6-24f0-474d-b768-8a03f780c743",
   "version": "7",
   "dialect": "postgresql",
@@ -17058,6 +17058,18 @@
           "primaryKey": false,
           "notNull": true
         },
+        "provider_secret_fingerprint": {
+          "name": "provider_secret_fingerprint",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider_secret_ref": {
+          "name": "provider_secret_ref",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
         "user_id": {
           "name": "user_id",
           "type": "text",
@@ -17066,6 +17078,12 @@
         },
         "session_id": {
           "name": "session_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "audit_reason": {
+          "name": "audit_reason",
           "type": "text",
           "primaryKey": false,
           "notNull": true
@@ -17241,6 +17259,14 @@
         "platform_identity_provider_test_attempts_revision_check": {
           "name": "platform_identity_provider_test_attempts_revision_check",
           "value": "\"platform_identity_provider_test_attempts\".\"provider_revision\" >= 0"
+        },
+        "platform_identity_provider_test_attempts_secret_binding_check": {
+          "name": "platform_identity_provider_test_attempts_secret_binding_check",
+          "value": "\"platform_identity_provider_test_attempts\".\"provider_secret_fingerprint\" ~ '^[a-f0-9]{64}$'\n        AND \"platform_identity_provider_test_attempts\".\"provider_secret_ref\" LIKE 'kms://platform-identity-providers/%'"
+        },
+        "platform_identity_provider_test_attempts_reason_check": {
+          "name": "platform_identity_provider_test_attempts_reason_check",
+          "value": "octet_length(\"platform_identity_provider_test_attempts\".\"audit_reason\") BETWEEN 1 AND 4096\n        AND \"platform_identity_provider_test_attempts\".\"audit_reason\" !~* '(client.?secret|api.?key|access.?token|refresh.?token|id.?token|password|authorization|bearer|credential)'"
         },
         "platform_identity_provider_test_attempts_terminal_check": {
           "name": "platform_identity_provider_test_attempts_terminal_check",
