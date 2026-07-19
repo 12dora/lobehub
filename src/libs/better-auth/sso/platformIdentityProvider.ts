@@ -1,12 +1,12 @@
+import type { PlatformOidcDiscoveryMetadata } from '@lobechat/types';
 import type { GenericOAuthConfig } from 'better-auth/plugins';
 import { z } from 'zod';
 
 import { SafeOutboundHttpClient } from '@/server/enterprise/security/outboundHttp';
-import { IdentityProviderDiscoveryValidator } from '@/server/enterprise/services/identityProvider/discoveryValidator';
 import { verifyPlatformOidcIdToken } from '@/server/enterprise/services/identityProvider/idTokenVerifier';
 import type { PublishedIdentityProviderPayload } from '@/server/enterprise/services/identityProvider/publicationService';
+import { exchangePlatformOidcAuthorizationCode } from '@/server/enterprise/services/identityProvider/tokenExchange';
 
-import { createDiscoveryUrl } from './helpers';
 import { mergeReauthAuthorizationParams } from './reauthAuthorizationParams';
 
 const USERINFO_TIMEOUT_MS = 5000;
@@ -15,6 +15,7 @@ const userInfoSchema = z.record(z.string(), z.unknown());
 
 export interface RuntimeIdentityProvider extends PublishedIdentityProviderPayload {
   clientSecret: string;
+  oidcMetadata: PlatformOidcDiscoveryMetadata;
   revision: number;
 }
 
@@ -56,21 +57,49 @@ export const buildPlatformIdentityProvider = (
   appUrl: string,
   outbound = new SafeOutboundHttpClient({ mode: 'public-only' }),
 ): GenericOAuthConfig => {
-  const discovery = new IdentityProviderDiscoveryValidator(outbound);
+  if (provider.oidcMetadata.issuer !== provider.issuer) {
+    throw new Error('PLATFORM_IDENTITY_PROVIDER_INVALID_SNAPSHOT');
+  }
+  const redirectURI = `${appUrl}/api/auth/oauth2/callback/${provider.providerKey}`;
 
   return {
+    authorizationUrl: provider.oidcMetadata.authorizationEndpoint,
     authorizationUrlParams: (ctx) => mergeReauthAuthorizationParams({}, ctx?.body?.additionalData),
     clientId: provider.clientId,
     clientSecret: provider.clientSecret,
     disableImplicitSignUp: !provider.autoProvision,
     disableSignUp: !provider.autoProvision,
-    discoveryUrl: createDiscoveryUrl(provider.issuer),
+    getToken: async ({ code, codeVerifier, redirectURI: callbackRedirectURI }) => {
+      const token = await exchangePlatformOidcAuthorizationCode({
+        clientId: provider.clientId,
+        clientSecret: provider.clientSecret,
+        code,
+        expectedRedirectUri: redirectURI,
+        metadata: provider.oidcMetadata,
+        outbound,
+        pkceVerifier: codeVerifier,
+        redirectUri: callbackRedirectURI,
+      });
+      if (!token.access_token) throw new Error('PLATFORM_OIDC_TOKEN_RESPONSE_INVALID');
+      return {
+        accessToken: token.access_token,
+        accessTokenExpiresAt: token.expires_in
+          ? new Date(Date.now() + token.expires_in * 1000)
+          : undefined,
+        expiresIn: token.expires_in,
+        idToken: token.id_token,
+        raw: token,
+        refreshToken: token.refresh_token,
+        scopes: token.scope?.split(' ').filter(Boolean) ?? [],
+        tokenType: token.token_type ?? 'Bearer',
+      };
+    },
     getUserInfo: async (tokens) => {
       if (!tokens.idToken || !tokens.accessToken) {
         throw new Error('PLATFORM_OIDC_TOKEN_INVALID');
       }
 
-      const metadata = await discovery.discover(provider.issuer);
+      const metadata = provider.oidcMetadata;
       if (!metadata.userinfoEndpoint) {
         throw new Error('PLATFORM_OIDC_USERINFO_REQUIRED');
       }
@@ -139,7 +168,7 @@ export const buildPlatformIdentityProvider = (
     },
     pkce: true,
     providerId: provider.providerKey,
-    redirectURI: `${appUrl}/api/auth/oauth2/callback/${provider.providerKey}`,
+    redirectURI,
     requireIssuerValidation: true,
     scopes: provider.scopes,
   };
