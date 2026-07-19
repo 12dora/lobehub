@@ -12,6 +12,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getTestDB } from '@/database/core/getTestDB';
 import { checksumPayload } from '@/database/models/platform';
 import {
+  acquireIdentityProviderPublishedRevisionLock,
+  withIdentityProviderPublishedRevisionLock,
+} from '@/database/models/platform/identityProviderPublishedRevisionLock';
+import {
   platformIdentityProviders,
   platformIdentityProviderSecrets,
   platformResourceRevisions,
@@ -26,10 +30,8 @@ import {
 } from './lkg';
 import type { PublishedIdentityProviderPayload } from './publicationService';
 import {
-  acquireIdentityProviderLkgAdvisoryLock,
   loadIdentityProviderStartupSnapshot,
   resetIdentityProviderStartupSnapshotForTest,
-  withIdentityProviderLkgAdvisoryLock,
 } from './startupSnapshot';
 
 const db: LobeChatDatabase = await getTestDB();
@@ -199,11 +201,11 @@ describe('identity provider startup snapshot', () => {
         await ownerClient.connect();
         await ownerClient.query('BEGIN');
         const ownerDb = drizzle(ownerClient) as unknown as LobeChatDatabase;
-        await acquireIdentityProviderLkgAdvisoryLock(ownerDb);
+        await acquireIdentityProviderPublishedRevisionLock(ownerDb);
         const ownerPid = Number(
           (await ownerClient.query('SELECT pg_backend_pid() AS pid')).rows[0].pid,
         );
-        const waiter = withIdentityProviderLkgAdvisoryLock(waiterDb, async () => {
+        const waiter = withIdentityProviderPublishedRevisionLock(waiterDb, async () => {
           waiterEntered = true;
           return 'acquired';
         });

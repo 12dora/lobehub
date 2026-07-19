@@ -3,6 +3,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { and, desc, eq, gt, inArray, isNull, lte, sql } from 'drizzle-orm';
 
 import {
+  acquireIdentityProviderPublishedRevisionLock,
   checksumPayload,
   type PlatformIdentityProviderInternalDraft,
   PlatformRevisionConflictError,
@@ -465,6 +466,7 @@ type IdempotencyReservation =
 
 export interface IdentityProviderPublicationTestHooks {
   afterDraftLock?: (fence: IdempotencyOwnerFence) => Promise<void>;
+  afterPublishedRevisionLock?: (fence: IdempotencyOwnerFence) => Promise<void>;
   afterReservation?: (fence: IdempotencyOwnerFence) => Promise<void>;
   leaseMs?: number;
 }
@@ -865,6 +867,8 @@ export class IdentityProviderPublicationService {
     await this.testHooks.afterReservation?.(fence);
     try {
       return await this.db.transaction(async (tx) => {
+        await acquireIdentityProviderPublishedRevisionLock(tx);
+        await this.testHooks.afterPublishedRevisionLock?.(fence);
         const { draft, secretRef } = await this.lockedDraft(tx, input.id);
         await this.testHooks.afterDraftLock?.(fence);
         await assertOwnerFence(tx, request, fence);
