@@ -4,6 +4,12 @@ export async function register() {
     await import('./libs/debug-file-logger');
   }
 
+  if (process.env.NEXT_RUNTIME === 'nodejs') {
+    const { bootstrapIdentityProviderRuntime } =
+      await import('@/server/enterprise/services/identityProvider/bootstrap');
+    await bootstrapIdentityProviderRuntime();
+  }
+
   // Auto-start GatewayManager on server start for non-Vercel environments (Docker, local).
   // Persistent bots need reconnection after restart.
   // On Vercel, the cron job at /api/agent/gateway handles this reliably instead.

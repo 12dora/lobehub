@@ -2,11 +2,11 @@ import { ENABLE_BUSINESS_FEATURES } from '@lobechat/business-const';
 
 import { appEnv } from '@/envs/app';
 import { authEnv } from '@/envs/auth';
-import { loadIdentityProviderStartupSnapshot } from '@/server/enterprise/services/identityProvider/startupSnapshot';
+import { getInitializedIdentityProviderPublicArtifact } from '@/server/enterprise/services/identityProvider/startupArtifact';
 import { type GlobalServerConfig } from '@/types/serverConfig';
 
 export const getServerAuthConfig = async (): Promise<GlobalServerConfig> => {
-  const identitySnapshot = await loadIdentityProviderStartupSnapshot();
+  const identitySnapshot = getInitializedIdentityProviderPublicArtifact();
   return {
     aiProvider: {},
     disableEmailPassword: authEnv.AUTH_DISABLE_EMAIL_PASSWORD,

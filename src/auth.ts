@@ -1,7 +1,7 @@
 import { defineConfig } from '@/libs/better-auth/define-config';
-import { loadIdentityProviderStartupSnapshot } from '@/server/enterprise/services/identityProvider/startupSnapshot';
+import { getInitializedIdentityProviderRuntimeArtifact } from '@/server/enterprise/services/identityProvider/startupArtifact';
 
-const identitySnapshot = await loadIdentityProviderStartupSnapshot();
+const identitySnapshot = getInitializedIdentityProviderRuntimeArtifact();
 
 export const auth = defineConfig(
   { plugins: [] },
