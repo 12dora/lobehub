@@ -7,6 +7,7 @@ import { SessionModel } from '@/database/models/session';
 import { UserModel } from '@/database/models/user';
 import type * as RedisModule from '@/libs/redis';
 import { initializeRedisWithPrefix, isRedisEnabled, RedisKeys } from '@/libs/redis';
+import type { PlatformDefaultInboxService as PlatformDefaultInboxServiceContract } from '@/server/enterprise/services/agentCatalog/defaultInbox';
 import { resolveServerRuntimeBranding } from '@/server/enterprise/services/branding/runtimeBranding';
 import { parseAgentConfig } from '@/server/globalConfig/parseDefaultAgent';
 
@@ -35,7 +36,9 @@ vi.mock('@/server/enterprise/services/branding/runtimeBranding', () => ({
 
 vi.mock('@/server/enterprise/services/agentCatalog/defaultInbox', () => ({
   PlatformDefaultInboxService: class PlatformDefaultInboxService {
-    getEffectiveBuiltinConfig = (...args: any[]) => mockGetEffectiveBuiltinConfig(...args);
+    getEffectiveBuiltinConfig = (
+      base: Parameters<PlatformDefaultInboxServiceContract['getEffectiveBuiltinConfig']>[0],
+    ) => mockGetEffectiveBuiltinConfig(base);
   },
 }));
 
