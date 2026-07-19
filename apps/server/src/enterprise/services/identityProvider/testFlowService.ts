@@ -13,11 +13,11 @@ import { z } from 'zod';
 
 import { PlatformIdentityProviderModel } from '@/database/models/platform';
 import { platformIdentityProviders } from '@/database/schemas/platform';
-import type { LobeChatDatabase } from '@/database/type';
+import type { LobeChatDatabase, Transaction } from '@/database/type';
 
 import type { SafeOutboundHttpClient } from '../../security/outboundHttp';
 import type { PlatformSecretService } from '../../security/secret';
-import { PlatformAuditService } from '../platformAudit';
+import { type CreatePlatformAuditLogParams, PlatformAuditService } from '../platformAudit';
 import type { IdentityProviderDiscoveryValidator } from './discoveryValidator';
 import { IdentityProviderSecretStore } from './secretStore';
 import {
@@ -30,6 +30,15 @@ const TOKEN_MAX_BYTES = 64 * 1024;
 const ID_TOKEN_MAX_AGE_SECONDS = 10 * 60;
 const ID_TOKEN_MAX_LIFETIME_SECONDS = 60 * 60;
 const ID_TOKEN_CLOCK_TOLERANCE_SECONDS = 60;
+
+type AuditAppender = (
+  db: LobeChatDatabase | Transaction,
+  input: CreatePlatformAuditLogParams,
+) => Promise<void>;
+
+const appendPlatformAudit: AuditAppender = async (db, input) => {
+  await new PlatformAuditService(db).append(input);
+};
 
 const tokenResponseSchema = z
   .object({
@@ -199,25 +208,29 @@ export class IdentityProviderTestFlowService {
 
   constructor(
     private readonly db: LobeChatDatabase,
-    secretService: PlatformSecretService,
+    private readonly secretService: PlatformSecretService,
     private readonly discovery: IdentityProviderDiscoveryValidator,
     private readonly outbound: SafeOutboundHttpClient,
+    private readonly auditAppender: AuditAppender = appendPlatformAudit,
   ) {
-    this.attempts = new IdentityProviderTestAttemptStore(db, secretService);
-    this.secretStore = new IdentityProviderSecretStore(db, secretService);
+    this.attempts = new IdentityProviderTestAttemptStore(db, this.secretService);
+    this.secretStore = new IdentityProviderSecretStore(db, this.secretService);
   }
 
   private readonly secretStore: IdentityProviderSecretStore;
 
-  private appendAudit = async (input: {
-    action: string;
-    actorUserId: string;
-    category?: string;
-    reason: string;
-    result: 'denied' | 'failure' | 'success';
-    targetId: string;
-  }): Promise<void> => {
-    await new PlatformAuditService(this.db).append({
+  private appendAudit = async (
+    db: LobeChatDatabase | Transaction,
+    input: {
+      action: string;
+      actorUserId: string;
+      category?: string;
+      reason: string;
+      result: 'denied' | 'failure' | 'success';
+      targetId: string;
+    },
+  ): Promise<void> => {
+    await this.auditAppender(db, {
       action: input.action,
       actorUserId: input.actorUserId,
       afterDiff: input.category ? { category: input.category } : null,
@@ -236,14 +249,16 @@ export class IdentityProviderTestFlowService {
     targetId: string;
   }): Promise<void> => {
     try {
-      await this.appendAudit({
-        action: input.action,
-        actorUserId: input.actorUserId,
-        category: failureCategory(input.error),
-        reason: input.reason,
-        result: 'failure',
-        targetId: input.targetId,
-      });
+      await this.db.transaction((tx) =>
+        this.appendAudit(tx, {
+          action: input.action,
+          actorUserId: input.actorUserId,
+          category: failureCategory(input.error),
+          reason: input.reason,
+          result: 'failure',
+          targetId: input.targetId,
+        }),
+      );
     } catch (auditError) {
       console.error('[identityProviderTest] failure audit unavailable', {
         action: input.action,
@@ -252,15 +267,12 @@ export class IdentityProviderTestFlowService {
     }
   };
 
-  private appendAuditBestEffort = async (
-    input: Parameters<IdentityProviderTestFlowService['appendAudit']>[0],
-  ): Promise<void> => {
+  private reapExpiredBestEffort = async (): Promise<void> => {
     try {
-      await this.appendAudit(input);
-    } catch (auditError) {
-      console.error('[identityProviderTest] terminal audit unavailable', {
-        action: input.action,
-        errorClass: auditError instanceof Error ? auditError.name : 'UnknownError',
+      await this.attempts.cleanupExpired();
+    } catch (error) {
+      console.error('[identityProviderTest] attempt cleanup unavailable', {
+        errorClass: error instanceof Error ? error.name : 'UnknownError',
       });
     }
   };
@@ -273,6 +285,7 @@ export class IdentityProviderTestFlowService {
     sessionId: string;
     userId: string;
   }) => {
+    await this.reapExpiredBestEffort();
     try {
       const provider = await new PlatformIdentityProviderModel(this.db).get(input.id);
       if (!provider) throw new Error('PLATFORM_IDENTITY_PROVIDER_NOT_FOUND');
@@ -298,31 +311,55 @@ export class IdentityProviderTestFlowService {
       if (reserved.some((key) => authorizationUrl.searchParams.has(key))) {
         throw new Error('OIDC_TEST_DISCOVERY_INVALID');
       }
-      const [binding] = await this.db
-        .select({
-          fingerprint: platformIdentityProviders.secretFingerprint,
-          ref: platformIdentityProviders.secretRef,
-        })
-        .from(platformIdentityProviders)
-        .where(
-          and(
-            eq(platformIdentityProviders.id, provider.id),
-            eq(platformIdentityProviders.revision, provider.revision),
-            eq(platformIdentityProviders.status, 'draft'),
-            eq(platformIdentityProviders.migrationRequired, false),
-          ),
-        )
-        .limit(1);
-      if (!binding?.ref || !binding.fingerprint) throw new Error('OIDC_TEST_PROVIDER_CHANGED');
-      const attempt = await this.attempts.issue({
-        auditReason: input.reason,
-        providerId: provider.id,
-        providerRevision: provider.revision,
-        providerSecretFingerprint: binding.fingerprint,
-        providerSecretRef: binding.ref,
-        redirectUri: input.redirectUri,
-        sessionId: input.sessionId,
-        userId: input.userId,
+      const attempt = await this.db.transaction(async (tx) => {
+        const currentProvider = await new PlatformIdentityProviderModel(tx).get(provider.id);
+        if (
+          !currentProvider ||
+          currentProvider.status !== 'draft' ||
+          currentProvider.migrationRequired ||
+          currentProvider.revision !== provider.revision ||
+          !currentProvider.issuer ||
+          !currentProvider.clientId ||
+          !currentProvider.secret.configured
+        ) {
+          throw new Error('OIDC_TEST_PROVIDER_CHANGED');
+        }
+        const [binding] = await tx
+          .select({
+            fingerprint: platformIdentityProviders.secretFingerprint,
+            ref: platformIdentityProviders.secretRef,
+          })
+          .from(platformIdentityProviders)
+          .where(
+            and(
+              eq(platformIdentityProviders.id, currentProvider.id),
+              eq(platformIdentityProviders.revision, currentProvider.revision),
+              eq(platformIdentityProviders.status, 'draft'),
+              eq(platformIdentityProviders.migrationRequired, false),
+            ),
+          )
+          .limit(1);
+        if (!binding?.ref || !binding.fingerprint) {
+          throw new Error('OIDC_TEST_PROVIDER_CHANGED');
+        }
+        const issued = await new IdentityProviderTestAttemptStore(tx, this.secretService).issue({
+          auditReason: input.reason,
+          providerId: currentProvider.id,
+          providerRevision: currentProvider.revision,
+          providerSecretFingerprint: binding.fingerprint,
+          providerSecretRef: binding.ref,
+          redirectUri: input.redirectUri,
+          sessionId: input.sessionId,
+          userId: input.userId,
+        });
+        await this.appendAudit(tx, {
+          action: 'admin.identityProviders.testStart',
+          actorUserId: input.userId,
+          reason: input.reason,
+          result: 'success',
+          targetId: issued.attemptId,
+        });
+        return issued;
       });
       authorizationUrl.searchParams.set('client_id', provider.clientId);
       authorizationUrl.searchParams.set('code_challenge', attempt.codeChallenge);
@@ -332,13 +369,6 @@ export class IdentityProviderTestFlowService {
       authorizationUrl.searchParams.set('response_type', 'code');
       authorizationUrl.searchParams.set('scope', provider.scopes.join(' '));
       authorizationUrl.searchParams.set('state', attempt.state);
-      await this.appendAuditBestEffort({
-        action: 'admin.identityProviders.testStart',
-        actorUserId: input.userId,
-        reason: input.reason,
-        result: 'success',
-        targetId: attempt.attemptId,
-      });
       return {
         attemptId: attempt.attemptId,
         authorizationUrl: authorizationUrl.toString(),
@@ -361,6 +391,7 @@ export class IdentityProviderTestFlowService {
     effectiveOrigin: string;
     state: string;
   }): Promise<{ attemptId: string; valid: boolean }> => {
+    await this.reapExpiredBestEffort();
     const attempt = await this.attempts.reserve(input.state);
     try {
       assertIdentityProviderAttemptCallbackOrigin(attempt.redirectUri, input.effectiveOrigin);
@@ -431,14 +462,19 @@ export class IdentityProviderTestFlowService {
         claims = { ...idClaims, ...userinfo };
       }
       const preview = buildIdentityProviderClaimPreview(claims, provider.claimMapping);
-      await this.attempts.succeed(attempt, preview);
-      await this.appendAuditBestEffort({
-        action: 'admin.identityProviders.testTerminal',
-        actorUserId: attempt.userId,
-        category: preview.valid ? undefined : 'claim_validation_rejected',
-        reason: attempt.auditReason,
-        result: preview.valid ? 'success' : 'denied',
-        targetId: attempt.id,
+      await this.db.transaction(async (tx) => {
+        await new IdentityProviderTestAttemptStore(tx, this.secretService).succeed(
+          attempt,
+          preview,
+        );
+        await this.appendAudit(tx, {
+          action: 'admin.identityProviders.testTerminal',
+          actorUserId: attempt.userId,
+          category: preview.valid ? undefined : 'claim_validation_rejected',
+          reason: attempt.auditReason,
+          result: preview.valid ? 'success' : 'denied',
+          targetId: attempt.id,
+        });
       });
       return { attemptId: attempt.id, valid: preview.valid };
     } catch (error) {
@@ -459,6 +495,7 @@ export class IdentityProviderTestFlowService {
   };
 
   abandon = async (state: string, effectiveOrigin: string): Promise<void> => {
+    await this.reapExpiredBestEffort();
     const attempt = await this.attempts.reserve(state);
     try {
       assertIdentityProviderAttemptCallbackOrigin(attempt.redirectUri, effectiveOrigin);
@@ -473,18 +510,37 @@ export class IdentityProviderTestFlowService {
       });
       throw error;
     }
-    await this.attempts.fail(attempt.id, 'OIDC_TEST_AUTHORIZATION_FAILED');
-    await this.appendAuditBestEffort({
-      action: 'admin.identityProviders.testTerminal',
-      actorUserId: attempt.userId,
-      category: 'authorization_rejected',
-      reason: attempt.auditReason,
-      result: 'denied',
-      targetId: attempt.id,
-    });
+    try {
+      await this.db.transaction(async (tx) => {
+        const changed = await new IdentityProviderTestAttemptStore(tx, this.secretService).fail(
+          attempt.id,
+          'OIDC_TEST_AUTHORIZATION_FAILED',
+        );
+        if (!changed) throw new Error('OIDC_TEST_REPLAYED');
+        await this.appendAudit(tx, {
+          action: 'admin.identityProviders.testTerminal',
+          actorUserId: attempt.userId,
+          category: 'authorization_rejected',
+          reason: attempt.auditReason,
+          result: 'denied',
+          targetId: attempt.id,
+        });
+      });
+    } catch (error) {
+      await this.attempts.fail(attempt.id, 'OIDC_TEST_FAILED');
+      await this.appendFailureAudit({
+        action: 'admin.identityProviders.testTerminal',
+        actorUserId: attempt.userId,
+        error,
+        reason: attempt.auditReason,
+        targetId: attempt.id,
+      });
+      throw error;
+    }
   };
 
   result = async (input: { attemptId: string; sessionId: string; userId: string }) => {
+    await this.reapExpiredBestEffort();
     const result = await this.attempts.getResult(input);
     if (!result) throw new Error('PLATFORM_IDENTITY_PROVIDER_NOT_FOUND');
     return result;
