@@ -3,6 +3,7 @@
 import { Flexbox, Text } from '@lobehub/ui';
 import { memo } from 'react';
 
+import { useDefaultInboxDisplayName } from '@/hooks/useDefaultInboxDisplayName';
 import { useAgentStore } from '@/store/agent';
 import { agentSelectors, builtinAgentSelectors } from '@/store/agent/selectors';
 
@@ -12,7 +13,8 @@ const HeaderInfo = memo(() => {
   const isInbox = useAgentStore(builtinAgentSelectors.isInboxAgent);
   const title = useAgentStore(agentSelectors.currentAgentTitle);
 
-  const displayTitle = isInbox ? 'Lobe AI' : title;
+  const inboxDisplayName = useDefaultInboxDisplayName(title);
+  const displayTitle = isInbox ? inboxDisplayName : title;
 
   return (
     <Flexbox

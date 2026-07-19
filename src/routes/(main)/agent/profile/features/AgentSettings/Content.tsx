@@ -12,6 +12,7 @@ import {
   SettingsModalLayout,
   type SettingsModalTabItem,
 } from '@/features/AgentSetting';
+import { useDefaultInboxDisplayName } from '@/hooks/useDefaultInboxDisplayName';
 import { usePermission } from '@/hooks/usePermission';
 import { useAgentStore } from '@/store/agent';
 import { agentSelectors, builtinAgentSelectors } from '@/store/agent/selectors';
@@ -81,7 +82,10 @@ const Content = memo(() => {
     [availableTabs, t],
   );
 
-  const displayTitle = isInbox ? 'Lobe AI' : meta.title || t('defaultSession', { ns: 'common' });
+  const inboxDisplayName = useDefaultInboxDisplayName(meta.title);
+  const displayTitle = isInbox
+    ? inboxDisplayName
+    : meta.title || t('defaultSession', { ns: 'common' });
 
   return (
     <SettingsModalLayout

@@ -7,6 +7,7 @@ import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
+import { useDefaultInboxDisplayName } from '@/hooks/useDefaultInboxDisplayName';
 import { useHomeStore } from '@/store/home';
 import { homeAgentListSelectors } from '@/store/home/selectors';
 
@@ -20,6 +21,7 @@ const AskAIMenu = memo(() => {
   const navigate = useWorkspaceAwareNavigate();
   const { handleAskLobeAI, handleAIPainting, closeCommandMenu } = useCommandMenu();
   const { search } = useCommandMenuContext();
+  const inboxDisplayName = useDefaultInboxDisplayName();
 
   // Get agent list (limit to first 20 items for simplicity)
   const allAgents = useHomeStore(homeAgentListSelectors.allAgents);
@@ -62,7 +64,7 @@ const AskAIMenu = memo(() => {
       <Command.Item value="lobe-ai" onSelect={handleAskLobeAI}>
         <Avatar emojiScaleWithBackground avatar={DEFAULT_INBOX_AVATAR} shape="square" size={18} />
         <div className={styles.itemContent}>
-          <div className={styles.itemLabel}>Lobe AI</div>
+          <div className={styles.itemLabel}>{inboxDisplayName}</div>
         </div>
       </Command.Item>
       <Command.Item value="agent-builder" onSelect={handleAgentBuilder}>

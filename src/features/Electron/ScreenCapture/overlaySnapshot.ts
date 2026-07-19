@@ -1,7 +1,6 @@
 import { DEFAULT_AVATAR, DEFAULT_INBOX_AVATAR } from '@lobechat/const';
 import type { ScreenCaptureAgentOption } from '@lobechat/electron-client-ipc';
 
-const LOBE_AI_TITLE = 'Lobe AI';
 const UNTITLED_AGENT_TITLE = 'Untitled Agent';
 
 interface OverlayAgentSource {
@@ -21,6 +20,7 @@ interface OverlayInboxMeta {
 interface ResolveOverlayAgentOptionsParams {
   agents: readonly OverlayAgentSource[];
   inboxAgentId?: string;
+  inboxDisplayName: string;
   inboxMeta?: OverlayInboxMeta;
 }
 
@@ -46,16 +46,18 @@ const toOverlayAgentOption = ({
 
 const createInboxOverlayAgentOption = (
   inboxAgentId: string,
+  inboxDisplayName: string,
   inboxMeta?: OverlayInboxMeta,
 ): ScreenCaptureAgentOption => ({
   avatar: inboxMeta?.avatar || DEFAULT_INBOX_AVATAR,
   backgroundColor: inboxMeta?.backgroundColor ?? undefined,
   id: inboxAgentId,
-  title: inboxMeta?.title || LOBE_AI_TITLE,
+  title: inboxMeta?.title?.trim() || inboxDisplayName,
 });
 
 export const resolveOverlayAgentOptions = ({
   agents,
+  inboxDisplayName,
   inboxAgentId,
   inboxMeta,
 }: ResolveOverlayAgentOptionsParams): ScreenCaptureAgentOption[] => {
@@ -64,7 +66,10 @@ export const resolveOverlayAgentOptions = ({
   if (!inboxAgentId) return agentOptions;
   if (agentOptions.some((item) => item.id === inboxAgentId)) return agentOptions;
 
-  return [createInboxOverlayAgentOption(inboxAgentId, inboxMeta), ...agentOptions];
+  return [
+    createInboxOverlayAgentOption(inboxAgentId, inboxDisplayName, inboxMeta),
+    ...agentOptions,
+  ];
 };
 
 export const resolveOverlayDefaultAgentId = ({
