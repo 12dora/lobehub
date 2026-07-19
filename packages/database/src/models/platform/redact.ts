@@ -78,9 +78,40 @@ export interface RedactSensitiveOptions {
   isBenignKey?: (key: string) => boolean;
 }
 
-/** Known fake placeholders used only in tests — never real material. */
-const SENSITIVE_VALUE_PATTERN =
-  /bearer\s+[\w.~+/=-]+|sk-[a-z0-9]{8,}|ghp_[a-z0-9]{20,}|xox[baprs]-[a-z0-9-]{10,}/i;
+const EASYAUTH_APP_TOKEN_PATTERN = /(?<![\w-])eat_(?:live|test)_[\w-]{15,}[a-z0-9](?![\w-])/iu;
+const PREFIXED_SECRET_PATTERN =
+  /(?<![\w-])(?:ghp_[a-z0-9]{20,}|sk-[\w-]{19,}[a-z0-9]|xox[baprs]-[a-z0-9-]{10,})(?![\w-])/iu;
+const JWT_PATTERN = /(?<![\w-])eyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]{8,}(?![\w-])/iu;
+const BEARER_VALUE_PATTERN = /\bbearer\s+([\w.~+/-]+)/giu;
+const SECRET_PLACEHOLDER_PATTERN =
+  /^(?:<[^>]+>|\[redacted\]|\.{3}|available|bearer|configured|disabled|enabled|expired|failed|invalid|missing|none|null|required|reset|revoked|unknown|undefined|not[-_ ]?set)$/iu;
+const DOCUMENTATION_PLACEHOLDER_PATTERN =
+  /change[-_ ]?me|dummy|example|fake|not[-_ ]?real|placeholder|replace[-_ ]?(?:me|with)|sample|your[-_ ].*(?:key|password|secret|token)/iu;
+const SECRET_SCALAR_PATTERN = /^[\w.~+/-]+$/iu;
+
+const isKnownSecretScalar = (value: string): boolean =>
+  EASYAUTH_APP_TOKEN_PATTERN.test(value) ||
+  PREFIXED_SECRET_PATTERN.test(value) ||
+  JWT_PATTERN.test(value);
+
+const isExplicitCredentialScalar = (value: string): boolean =>
+  isKnownSecretScalar(value) ||
+  (SECRET_SCALAR_PATTERN.test(value) &&
+    !SECRET_PLACEHOLDER_PATTERN.test(value) &&
+    !DOCUMENTATION_PLACEHOLDER_PATTERN.test(value));
+
+const containsSecretValueShape = (value: string): boolean => {
+  if (
+    EASYAUTH_APP_TOKEN_PATTERN.test(value) ||
+    PREFIXED_SECRET_PATTERN.test(value) ||
+    JWT_PATTERN.test(value)
+  ) {
+    return true;
+  }
+  return [...value.matchAll(BEARER_VALUE_PATTERN)].some((match) =>
+    match[1] ? isExplicitCredentialScalar(match[1]) : false,
+  );
+};
 
 export const isSensitiveKey = (key: string): boolean => {
   const normalized = normalizeKey(key);
@@ -99,7 +130,7 @@ export const isSensitiveKey = (key: string): boolean => {
 };
 
 const redactString = (value: string): string => {
-  if (SENSITIVE_VALUE_PATTERN.test(value)) return REDACTED;
+  if (containsSecretValueShape(value)) return REDACTED;
   return value;
 };
 
@@ -142,7 +173,7 @@ const redactValue = (value: unknown, options: RedactSensitiveOptions): unknown =
 export const containsSensitiveMaterial = (value: unknown): boolean => {
   if (value === null || value === undefined) return false;
   if (typeof value === 'string') {
-    return SENSITIVE_VALUE_PATTERN.test(value) && value !== REDACTED;
+    return containsSecretValueShape(value) && value !== REDACTED;
   }
   if (Array.isArray(value)) return value.some((v) => containsSensitiveMaterial(v));
   if (typeof value === 'object') {
@@ -162,7 +193,13 @@ const AWS_ACCESS_KEY_PATTERN = /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/;
 const GCP_API_KEY_PATTERN = /\bAIza[\w-]{35}\b/;
 const GCP_SERVICE_ACCOUNT_PATTERN = /["']type["']\s*:\s*["']service_account["']/i;
 const INLINE_SECRET_ASSIGNMENT_PATTERN =
-  /\b(?:api[-_ ]?key|api[-_ ]?secret|api[-_ ]?token|access[-_ ]?token|authorization|bearer|client[-_ ]?secret|credential|id[-_ ]?token|password|passwd|private[-_ ]?key|refresh[-_ ]?token|secret[-_ ]?access[-_ ]?key|token)\s*[:=]\s*(?:"[^"]+"|'[^']+'|[^\s,;]+)/iu;
+  /\b(?:api[-_ ]?key|api[-_ ]?secret|api[-_ ]?token|access[-_ ]?token|authorization|bearer|client[-_ ]?secret|credential|id[-_ ]?token|password|passwd|private[-_ ]?key|refresh[-_ ]?token|secret[-_ ]?access[-_ ]?key|token)\s*[:=]\s*(?:"([^"]+)"|'([^']+)'|([^\s,;]+))/giu;
+
+const stringContainsSensitiveAssignment = (value: string): boolean =>
+  [...value.matchAll(INLINE_SECRET_ASSIGNMENT_PATTERN)].some((match) => {
+    const assignedValue = match[1] ?? match[2] ?? match[3];
+    return assignedValue ? isExplicitCredentialScalar(assignedValue) : false;
+  });
 
 const SIGNED_URL_QUERY_KEYS = new Set([
   'key',
@@ -214,7 +251,7 @@ export const containsEnterpriseSecretMaterial = (input: unknown): boolean => {
         AWS_ACCESS_KEY_PATTERN.test(value) ||
         GCP_API_KEY_PATTERN.test(value) ||
         GCP_SERVICE_ACCOUNT_PATTERN.test(value) ||
-        INLINE_SECRET_ASSIGNMENT_PATTERN.test(value) ||
+        stringContainsSensitiveAssignment(value) ||
         stringContainsCredentialUrl(value)
       ) {
         return true;
