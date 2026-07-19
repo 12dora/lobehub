@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 
 import type { PlatformOidcDiscoveryMetadata } from '@lobechat/types';
 import { getOAuthState } from 'better-auth/api';
@@ -10,12 +10,15 @@ import { verifyPlatformOidcIdToken } from '@/server/enterprise/services/identity
 import type { PublishedIdentityProviderPayload } from '@/server/enterprise/services/identityProvider/publicationService';
 import { exchangePlatformOidcAuthorizationCode } from '@/server/enterprise/services/identityProvider/tokenExchange';
 
+import {
+  createPlatformOidcNonceBinding,
+  PLATFORM_OIDC_NONCE_HASH_STATE_KEY,
+  PLATFORM_OIDC_PROVIDER_STATE_KEY,
+} from './platformIdentityProviderState';
 import { mergeReauthAuthorizationParams } from './reauthAuthorizationParams';
 
 const USERINFO_TIMEOUT_MS = 5000;
 const USERINFO_MAX_BYTES = 64 * 1024;
-const PLATFORM_OIDC_NONCE_HASH_STATE_KEY = 'platformOidcNonceHash';
-const PLATFORM_OIDC_PROVIDER_STATE_KEY = 'platformOidcProviderId';
 // Better Auth 1.6 requires a tokenUrl before it will create the sign-in URL, even when
 // getToken owns the callback exchange. Keep this fixed .invalid sentinel provider-agnostic:
 // it satisfies that structural contract and fails closed if Better Auth ever bypasses getToken.
@@ -83,11 +86,12 @@ export const buildPlatformIdentityProvider = (
     authorizationUrlParams: (ctx) => {
       const nonce = randomBytes(32).toString('base64url');
       const additionalData = ctx.body?.additionalData ?? {};
-      ctx.body.additionalData = {
-        ...additionalData,
-        [PLATFORM_OIDC_NONCE_HASH_STATE_KEY]: createHash('sha256').update(nonce).digest('hex'),
-        [PLATFORM_OIDC_PROVIDER_STATE_KEY]: provider.providerKey,
-      };
+      if (ctx.path === '/sign-in/oauth2') {
+        ctx.body.additionalData = {
+          ...additionalData,
+          ...createPlatformOidcNonceBinding(nonce, provider.providerKey),
+        };
+      }
       return {
         ...mergeReauthAuthorizationParams({}, additionalData),
         nonce,
