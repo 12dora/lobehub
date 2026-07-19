@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
 
-import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull } from 'drizzle-orm';
 
 import { checksumPayload } from '@/database/models/platform';
+import { withIdentityProviderPublishedRevisionLock } from '@/database/models/platform/identityProviderPublishedRevisionLock';
 import {
   platformIdentityProviderSecrets,
   platformResourceRevisions,
@@ -11,7 +12,9 @@ import type { LobeChatDatabase, Transaction } from '@/database/type';
 import type { RuntimeIdentityProvider } from '@/libs/better-auth/sso/platformIdentityProvider';
 
 import { parseEnterpriseFeatureFlags } from '../../featureFlags';
+import { SafeOutboundHttpClient } from '../../security/outboundHttp';
 import { PlatformSecretService } from '../../security/secret';
+import { IdentityProviderDiscoveryValidator } from './discoveryValidator';
 import {
   identityProviderLkgGeneration,
   identityProviderLkgIdentity,
@@ -39,7 +42,11 @@ export type {
 interface LoadOptions {
   cache?: boolean;
   db?: LobeChatDatabase;
+  discovery?: Pick<IdentityProviderDiscoveryValidator, 'discover'>;
   env?: Record<string, string | undefined>;
+  testHooks?: {
+    afterCanonicalRecheck?: () => Promise<void>;
+  };
 }
 
 export const parseEnvironmentIdentityProviderIds = (
@@ -199,10 +206,12 @@ const loadDatabasePayload = async (input: {
 const snapshotGeneration = (rows: Awaited<ReturnType<typeof loadDatabasePayload>>): string =>
   identityProviderLkgGeneration(rows);
 
+type MaterializedIdentityProvider = Omit<RuntimeIdentityProvider, 'oidcMetadata'>;
+
 const materializeProviders = async (
   rows: Awaited<ReturnType<typeof loadDatabasePayload>>,
   secrets: PlatformSecretService,
-): Promise<RuntimeIdentityProvider[]> =>
+): Promise<MaterializedIdentityProvider[]> =>
   Promise.all(
     rows.map(async (row) => {
       const clientSecret = await secrets.decrypt(row.secretCiphertext);
@@ -212,6 +221,37 @@ const materializeProviders = async (
       return { ...row.payload, clientSecret, revision: row.revision };
     }),
   );
+
+const enrichRuntimeProviders = async (
+  providers: MaterializedIdentityProvider[],
+  discovery: Pick<IdentityProviderDiscoveryValidator, 'discover'>,
+): Promise<RuntimeIdentityProvider[]> =>
+  Promise.all(
+    providers.map(async (provider) => ({
+      ...provider,
+      oidcMetadata: await discovery.discover(provider.issuer),
+    })),
+  );
+
+const databasePayloadMatches = (
+  candidate: Awaited<ReturnType<typeof loadDatabasePayload>>,
+  current: Awaited<ReturnType<typeof loadDatabasePayload>>,
+): boolean =>
+  snapshotGeneration(candidate) === snapshotGeneration(current) &&
+  identityRevision(candidate) === identityRevision(current) &&
+  candidate.length === current.length &&
+  candidate.every((row, index) => {
+    const currentRow = current[index];
+    return (
+      currentRow !== undefined &&
+      row.checksum === currentRow.checksum &&
+      row.generation === currentRow.generation &&
+      row.providerId === currentRow.providerId &&
+      row.revision === currentRow.revision &&
+      row.secretCiphertext === currentRow.secretCiphertext &&
+      row.secretFingerprint === currentRow.secretFingerprint
+    );
+  });
 
 const toLkgPayload = (
   rows: Awaited<ReturnType<typeof loadDatabasePayload>>,
@@ -267,26 +307,6 @@ const loadDatabase = async (): Promise<LobeChatDatabase> => {
   return database.serverDB;
 };
 
-const LKG_ADVISORY_LOCK_NAMESPACE = 1_278_874_436;
-const LKG_ADVISORY_LOCK_RESOURCE = 1_223_953_479;
-
-export const acquireIdentityProviderLkgAdvisoryLock = async (
-  db: DatabaseExecutor,
-): Promise<void> => {
-  await db.execute(
-    sql`SELECT pg_advisory_xact_lock(${LKG_ADVISORY_LOCK_NAMESPACE}, ${LKG_ADVISORY_LOCK_RESOURCE})`,
-  );
-};
-
-export const withIdentityProviderLkgAdvisoryLock = async <T>(
-  db: LobeChatDatabase,
-  work: (tx: Transaction) => Promise<T>,
-): Promise<T> =>
-  db.transaction(async (tx) => {
-    await acquireIdentityProviderLkgAdvisoryLock(tx);
-    return work(tx);
-  });
-
 const loadUncached = async (options: LoadOptions): Promise<IdentityProviderStartupSnapshot> => {
   const env = options.env ?? process.env;
   const environmentProviderIds = parseEnvironmentIdentityProviderIds(env);
@@ -305,49 +325,74 @@ const loadUncached = async (options: LoadOptions): Promise<IdentityProviderStart
   }
 
   const secrets = PlatformSecretService.tryFromEnv(env);
+  const discovery =
+    options.discovery ??
+    new IdentityProviderDiscoveryValidator(new SafeOutboundHttpClient({ mode: 'public-only' }));
   let databaseError: unknown = new Error('PLATFORM_IDENTITY_PROVIDER_SECRET_UNAVAILABLE');
   if (secrets) {
     try {
       const db = options.db ?? (await loadDatabase());
-      const loaded = await withIdentityProviderLkgAdvisoryLock(db, async (tx) => {
+      const environmentProviderIdSet = new Set(environmentProviderIds);
+      for (let attempt = 0; attempt < 2; attempt++) {
         const rows = await loadDatabasePayload({
-          db: tx,
-          environmentProviderIds: new Set(environmentProviderIds),
+          db,
+          environmentProviderIds: environmentProviderIdSet,
         });
-        const databaseProviders = await materializeProviders(rows, secrets);
-        const revision = identityRevision(rows);
-        const generation = snapshotGeneration(rows);
-        let lastError: string | null = null;
-        try {
-          const writeResult = await writeIdentityProviderLkg({
-            env,
-            payload: toLkgPayload(rows),
-            secrets,
+        // Secret integrity and every remote endpoint are validated before the
+        // candidate is allowed to replace the last-known-good snapshot.
+        const databaseProviders = await enrichRuntimeProviders(
+          await materializeProviders(rows, secrets),
+          discovery,
+        );
+        const committed = await withIdentityProviderPublishedRevisionLock(db, async (tx) => {
+          const currentRows = await loadDatabasePayload({
+            db: tx,
+            environmentProviderIds: environmentProviderIdSet,
           });
-          if (writeResult !== 'written' && writeResult !== 'unchanged') {
-            lastError = `lkg_write_${writeResult}`;
+          if (!databasePayloadMatches(rows, currentRows)) return null;
+          await options.testHooks?.afterCanonicalRecheck?.();
+
+          let lastError: string | null = null;
+          try {
+            const writeResult = await writeIdentityProviderLkg({
+              env,
+              payload: toLkgPayload(currentRows),
+              secrets,
+            });
+            if (writeResult !== 'written' && writeResult !== 'unchanged') {
+              lastError = `lkg_write_${writeResult}`;
+            }
+          } catch (error) {
+            console.error('[identityProviderStartup] LKG write unavailable', {
+              errorClass: error instanceof Error ? error.name : 'UnknownError',
+            });
+            lastError = 'lkg_write_unavailable';
           }
-        } catch (error) {
-          console.error('[identityProviderStartup] LKG write unavailable', {
-            errorClass: error instanceof Error ? error.name : 'UnknownError',
-          });
-          lastError = 'lkg_write_unavailable';
+          return {
+            generation: snapshotGeneration(currentRows),
+            lastError,
+            revision: identityRevision(currentRows),
+          };
+        });
+        if (!committed) {
+          if (attempt === 0) continue;
+          throw new Error('PLATFORM_IDENTITY_PROVIDER_SNAPSHOT_CHANGED');
         }
-        return { databaseProviders, generation, lastError, revision };
-      });
-      return {
-        databaseProviders: loaded.databaseProviders,
-        generation: loaded.generation,
-        health: loaded.lastError ? 'degraded' : 'healthy',
-        identityRevision: loaded.revision,
-        lastError: loaded.lastError,
-        loadedAt,
-        providerIds: [
-          ...environmentProviderIds,
-          ...loaded.databaseProviders.map((provider) => provider.providerKey),
-        ],
-        source: 'database',
-      };
+        return {
+          databaseProviders,
+          generation: committed.generation,
+          health: committed.lastError ? 'degraded' : 'healthy',
+          identityRevision: committed.revision,
+          lastError: committed.lastError,
+          loadedAt,
+          providerIds: [
+            ...environmentProviderIds,
+            ...databaseProviders.map((provider) => provider.providerKey),
+          ],
+          source: 'database',
+        };
+      }
+      throw new Error('PLATFORM_IDENTITY_PROVIDER_SNAPSHOT_CHANGED');
     } catch (error) {
       databaseError = error;
       console.error('[identityProviderStartup] critical database snapshot failure', {
@@ -359,7 +404,10 @@ const loadUncached = async (options: LoadOptions): Promise<IdentityProviderStart
       const lkg = await readIdentityProviderLkg({ env, secrets });
       if (lkg) {
         const rows = fromLkgPayload(lkg, new Set(environmentProviderIds));
-        const databaseProviders = await materializeProviders(rows, secrets);
+        const databaseProviders = await enrichRuntimeProviders(
+          await materializeProviders(rows, secrets),
+          discovery,
+        );
         return {
           databaseProviders,
           generation: snapshotGeneration(rows),

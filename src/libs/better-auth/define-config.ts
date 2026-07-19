@@ -27,6 +27,7 @@ import {
   buildPlatformIdentityProvider,
   type RuntimeIdentityProvider,
 } from '@/libs/better-auth/sso/platformIdentityProvider';
+import { platformIdentityProviderState } from '@/libs/better-auth/sso/platformIdentityProviderState';
 import { createSecondaryStorage, getTrustedOrigins } from '@/libs/better-auth/utils/config';
 import { parseSSOProviders } from '@/libs/better-auth/utils/server';
 import { EmailService } from '@/server/services/email';
@@ -134,6 +135,9 @@ export function defineConfig(
         enabled: true,
         trustedProviders: enabledSSOProviders,
       },
+      // OAuth state carries the per-login OIDC nonce hash. Database strategy makes it
+      // shared across instances and consumes the verification row before token exchange.
+      storeStateStrategy: 'database',
     },
 
     baseURL: appEnv.APP_URL,
@@ -357,6 +361,9 @@ export function defineConfig(
         // Returns undefined if AUTH_URL is not set (e.g., in e2e tests)
         origin: getPasskeyOrigins(),
       }),
+      ...(databaseProviders.length > 0
+        ? [platformIdentityProviderState(databaseProviders.map((provider) => provider.providerId))]
+        : []),
       ...(genericOAuthProviders.length > 0
         ? [
             genericOAuth({

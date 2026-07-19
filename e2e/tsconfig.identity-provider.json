@@ -1,0 +1,12 @@
+{
+  "compilerOptions": {
+    "incremental": false,
+    "types": ["node", "@playwright/test", "vitest/globals"]
+  },
+  "extends": "../tsconfig.json",
+  "include": [
+    "../src/types/global.d.ts",
+    "src/identity-provider/**/*.ts",
+    "*.identity-provider.config.ts"
+  ]
+}

@@ -125,7 +125,11 @@ const resolveAdminLeafElement = (id: string): ReactNode => {
  * Paths come from the same nav metadata catalog used for menus and guards.
  */
 export const createAdminRouteTree = (): RouteObject[] => {
-  const leafPaths = ADMIN_NAV_FLAT.filter((item) => item.path !== '/admin').map((item) => {
+  const reauthComplete = ADMIN_NAV_FLAT.find((item) => item.id === 'reauth-complete');
+  if (!reauthComplete) throw new Error('ADMIN_REAUTH_COMPLETE_ROUTE_MISSING');
+  const leafPaths = ADMIN_NAV_FLAT.filter(
+    (item) => item.path !== '/admin' && item.id !== 'reauth-complete',
+  ).map((item) => {
     // Convert absolute /admin/foo to relative foo under the /admin parent
     // Preserve :param segments for React Router
     const relative = item.path.replace(/^\/admin\/?/, '');
@@ -143,6 +147,19 @@ export const createAdminRouteTree = (): RouteObject[] => {
   });
 
   return [
+    {
+      element: (
+        <AdminErrorBoundary>{resolveAdminLeafElement(reauthComplete.id)}</AdminErrorBoundary>
+      ),
+      handle: {
+        admin: {
+          id: reauthComplete.id,
+          placeholder: false,
+          requiredPermissions: reauthComplete.requiredPermissions,
+        },
+      },
+      path: reauthComplete.path,
+    },
     {
       children: [
         {

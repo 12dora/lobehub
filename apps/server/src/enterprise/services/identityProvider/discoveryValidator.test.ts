@@ -63,6 +63,17 @@ describe('IdentityProviderDiscoveryValidator', () => {
     expect(result).not.toHaveProperty('unknown_server_field');
   });
 
+  it('uses the OIDC client_secret_basic default only when the auth-method field is absent', async () => {
+    const validator = validatorFor({
+      transport: async () =>
+        response(metadata({ token_endpoint_auth_methods_supported: undefined })),
+    });
+
+    await expect(
+      validator.discover('https://login.example.com/application/o/work/'),
+    ).resolves.toMatchObject({ tokenEndpointAuthMethodsSupported: ['client_secret_basic'] });
+  });
+
   it.each([
     'http://login.example.com/application/o/work/',
     'https://login.example.com:8443/application/o/work/',
@@ -110,6 +121,10 @@ describe('IdentityProviderDiscoveryValidator', () => {
       metadata({ id_token_signing_alg_values_supported: ['HS256'] }),
       metadata({ id_token_signing_alg_values_supported: ['made-up'] }),
       metadata({ code_challenge_methods_supported: ['plain'] }),
+      metadata({ token_endpoint_auth_methods_supported: [] }),
+      metadata({ token_endpoint_auth_methods_supported: ['none'] }),
+      metadata({ token_endpoint_auth_methods_supported: ['private_key_jwt'] }),
+      metadata({ token_endpoint_auth_methods_supported: ['client_secret_basic', 'none'] }),
     ];
     for (const body of cases) {
       const validator = validatorFor({ transport: async () => response(body) });
