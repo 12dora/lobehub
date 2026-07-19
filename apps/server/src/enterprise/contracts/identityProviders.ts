@@ -95,7 +95,7 @@ export const oidcDiscoveryMetadataSchema = z
     scopes_supported: z.array(oidcScopeSchema).max(64).default([]),
     subject_types_supported: z.array(z.string().min(1).max(128)).min(1).max(16),
     token_endpoint: z.string().url().max(4096),
-    token_endpoint_auth_methods_supported: z.array(z.string().min(1).max(128)).max(32).default([]),
+    token_endpoint_auth_methods_supported: z.array(z.string().min(1).max(128)).max(32).optional(),
     userinfo_endpoint: z.string().url().max(4096).optional(),
   })
   .passthrough();
