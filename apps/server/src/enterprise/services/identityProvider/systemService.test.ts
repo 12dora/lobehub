@@ -194,7 +194,14 @@ describe('IdentityProviderSystemService', () => {
       reason: 'Activate the tested work login',
       requestId,
     });
-    expect(first).toMatchObject({ accepted: true, duplicate: false, status: 'accepted' });
+    expect(first).toMatchObject({
+      accepted: true,
+      acceptedAt: expect.any(Date),
+      duplicate: false,
+      expectedIdentityRevision: prepared.expectedIdentityRevision,
+      requestId,
+      status: 'accepted',
+    });
     expect(observations).toEqual([]);
     const [acceptedRow] = await db
       .select()
@@ -208,6 +215,8 @@ describe('IdentityProviderSystemService', () => {
       requestId,
     });
     expect(duplicate).toMatchObject({ accepted: true, duplicate: true, status: 'signaled' });
+    expect(duplicate.acceptedAt).toEqual(first.acceptedAt);
+    expect(duplicate.expectedIdentityRevision).toBe(prepared.expectedIdentityRevision);
     expect(observations).toEqual(['signaled:1']);
   });
 

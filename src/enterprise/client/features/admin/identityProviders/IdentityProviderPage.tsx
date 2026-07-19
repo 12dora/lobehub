@@ -13,11 +13,8 @@ import { adminIdentityProvidersService } from '@/enterprise/client/services/admi
 
 import AdminPageTemplate from '../primitives/AdminPageTemplate';
 import { openReasonModal } from '../users/modals/openReasonModal';
-import {
-  type IdentityProviderRestartPhase,
-  resolveIdentityProviderRestartPhase,
-} from './controller';
 import IdentityProviderWizard from './IdentityProviderWizard';
+import { useIdentityProviderRestartLifecycle } from './useIdentityProviderRestartLifecycle';
 import {
   useAuthSnapshotStatus,
   useIdentityProviderCallbacks,
@@ -82,13 +79,15 @@ const IdentityProviderPage = memo(() => {
   const [creating, setCreating] = useState(false);
   const [editorDirty, setEditorDirty] = useState(false);
   const [editorEpoch, setEditorEpoch] = useState(0);
-  const [restartPhase, setRestartPhase] = useState<IdentityProviderRestartPhase>('idle');
   const [restartError, setRestartError] = useState<string | null>(null);
+  const runtimeEnabled = accessStatus === 'allowed' && canRestart;
+  const [restartPolling, setRestartPolling] = useState(false);
   // This privileged query is never mounted for read-only identity administrators.
-  const runtime = useAuthSnapshotStatus(
-    accessStatus === 'allowed' && canRestart,
-    restartPhase === 'accepted',
-  );
+  const runtime = useAuthSnapshotStatus(runtimeEnabled, restartPolling);
+  const restartLifecycle = useIdentityProviderRestartLifecycle({
+    error: runtime.error,
+    status: runtime.data,
+  });
   const selected = useMemo(
     () => providers.data?.items.find((item) => item.id === selectedId) ?? providers.data?.items[0],
     [providers.data?.items, selectedId],
@@ -122,14 +121,8 @@ const IdentityProviderPage = memo(() => {
   );
 
   useEffect(() => {
-    setRestartPhase((phase) =>
-      resolveIdentityProviderRestartPhase({
-        error: runtime.error,
-        phase,
-        status: runtime.data,
-      }),
-    );
-  }, [runtime.data, runtime.error]);
+    setRestartPolling(restartLifecycle.phase === 'accepted');
+  }, [restartLifecycle.phase]);
 
   const requestRestart = () => {
     if (!runtime.data?.pendingRestart || !runtime.data.restart.supported) return;
@@ -155,15 +148,16 @@ const IdentityProviderPage = memo(() => {
                   ...input,
                   intentToken: prepared.intentToken,
                 });
-                if (result.accepted) {
+                if (restartLifecycle.accept(prepared, result)) {
                   // The controller signals only after this committed response and a grace delay.
                   // A failed follow-up status fetch is a reconnect state, not a rejected restart.
-                  setRestartPhase('accepted');
                   await runtime.mutate().catch(() => undefined);
                   toast.success(t('identityProviders.restart.accepted'));
+                } else {
+                  throw new Error('restart acceptance mismatch');
                 }
               } catch (cause) {
-                setRestartPhase('failed');
+                restartLifecycle.fail();
                 setRestartError(t('identityProviders.errors.generic'));
                 throw cause;
               }
@@ -209,32 +203,26 @@ const IdentityProviderPage = memo(() => {
         </Flexbox>
       }
       banner={
-        restartPhase === 'accepted' ? (
+        restartLifecycle.phase === 'accepted' ? (
           <Alert showIcon description={t('identityProviders.restart.reconnecting')} type="info" />
-        ) : restartPhase === 'activated' ? (
+        ) : restartLifecycle.phase === 'activated' ? (
           <Alert showIcon description={t('identityProviders.restart.activated')} type="success" />
-        ) : restartPhase === 'failed' ? (
+        ) : restartLifecycle.phase === 'failed' ? (
           <Alert
             showIcon
-            description={t('identityProviders.restart.failed')}
             type="error"
             action={
-              <Button
-                size="small"
-                onClick={async () => {
-                  setRestartPhase('idle');
-                  const status = await runtime.mutate().catch(() => undefined);
-                  setRestartPhase(
-                    resolveIdentityProviderRestartPhase({
-                      error: status ? null : new Error('status unavailable'),
-                      phase: 'accepted',
-                      status,
-                    }),
-                  );
-                }}
-              >
+              <Button size="small" onClick={() => restartLifecycle.retry(requestRestart)}>
                 {t('identityProviders.actions.retry')}
               </Button>
+            }
+            description={
+              restartLifecycle.attempt
+                ? t('identityProviders.restart.failedAccepted', {
+                    requestId: restartLifecycle.attempt.requestId,
+                    revision: restartLifecycle.attempt.targetIdentityRevision,
+                  })
+                : t('identityProviders.restart.failed')
             }
           />
         ) : runtime.error && canRestart ? (

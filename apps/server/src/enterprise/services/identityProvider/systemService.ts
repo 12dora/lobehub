@@ -355,6 +355,8 @@ export class IdentityProviderSystemService {
     let accepted:
       | {
           duplicate: boolean;
+          acceptedAt: Date;
+          expectedIdentityRevision: string;
           ownerFence: string;
           requestId: string;
           status: 'accepted' | 'signaled';
@@ -385,8 +387,13 @@ export class IdentityProviderSystemService {
           throw new IdentityProviderSystemError('PLATFORM_IDENTITY_RESTART_INTENT_INVALID');
         }
         if (request.status === 'accepted' || request.status === 'signaled') {
+          if (!request.acceptedAt) {
+            throw new IdentityProviderSystemError('PLATFORM_IDENTITY_RESTART_CONFLICT');
+          }
           return {
+            acceptedAt: request.acceptedAt,
             duplicate: true,
+            expectedIdentityRevision: request.expectedIdentityRevision,
             ownerFence: request.ownerFence,
             requestId,
             status: request.status,
@@ -446,7 +453,9 @@ export class IdentityProviderSystemService {
           targetType: 'system',
         });
         return {
+          acceptedAt: now,
           duplicate: false,
+          expectedIdentityRevision: request.expectedIdentityRevision,
           ownerFence: request.ownerFence,
           requestId,
           status: 'accepted' as const,
@@ -471,7 +480,14 @@ export class IdentityProviderSystemService {
           throw new IdentityProviderSystemError('PLATFORM_IDENTITY_RESTART_UNSUPPORTED');
         }
       }
-      return { accepted: true as const, ...accepted };
+      return {
+        accepted: true as const,
+        acceptedAt: accepted.acceptedAt,
+        duplicate: true,
+        expectedIdentityRevision: accepted.expectedIdentityRevision,
+        requestId: accepted.requestId,
+        status: accepted.status,
+      };
     }
 
     try {
@@ -495,7 +511,14 @@ export class IdentityProviderSystemService {
         );
       throw new IdentityProviderSystemError('PLATFORM_IDENTITY_RESTART_UNSUPPORTED');
     }
-    return { accepted: true as const, duplicate: false, requestId, status: 'accepted' as const };
+    return {
+      accepted: true as const,
+      acceptedAt: accepted.acceptedAt,
+      duplicate: false,
+      expectedIdentityRevision: accepted.expectedIdentityRevision,
+      requestId,
+      status: 'accepted' as const,
+    };
   };
 
   private signalAcceptedRestart = async (ownerFence: string, requestId: string): Promise<void> => {
