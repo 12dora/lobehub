@@ -50,9 +50,6 @@ const styles = createStaticStyles(({ css }) => ({
     gap: 14px;
     min-width: 0;
   `,
-  error: css`
-    color: ${cssVar.colorError};
-  `,
   history: css`
     display: flex;
     flex-direction: column;
@@ -120,6 +117,7 @@ const BrandingPage = memo(() => {
   const {
     baseRevision,
     draft,
+    draftMatchesPublished,
     draftToken,
     editorState,
     hydrate,
@@ -130,12 +128,17 @@ const BrandingPage = memo(() => {
     syncServer,
   } = useBrandingEditorStore();
   const [actionError, setActionError] = useState<string | null>(null);
+  const [actionNotice, setActionNotice] = useState<string | null>(null);
+  const observedServerSnapshot = useRef<string | null>(null);
   const leaveModal = useRef<ReturnType<typeof confirmModal> | null>(null);
   const dirty = editorState === 'dirty';
   const conflict = editorState === 'conflict';
 
   useEffect(() => {
     if (!data) return;
+    const snapshotKey = `${data.baseRevision}:${data.draftToken}:${data.published?.revision ?? ''}`;
+    if (observedServerSnapshot.current === snapshotKey) return;
+    observedServerSnapshot.current = snapshotKey;
     if (!draft) {
       hydrate(data);
       return;
@@ -231,10 +234,11 @@ const BrandingPage = memo(() => {
   );
 
   const refreshAuthoritative = useCallback(async () => {
-    reset();
     setActionError(null);
-    await mutate();
-  }, [mutate, reset]);
+    setActionNotice(null);
+    const refreshed = await mutate();
+    if (refreshed) hydrate(refreshed);
+  }, [hydrate, mutate]);
 
   const save = useCallback(() => {
     if (!draft || !canUpdate || !dirty || conflict) return;
@@ -254,10 +258,13 @@ const BrandingPage = memo(() => {
           );
           syncServer(result);
           setActionError(null);
+          setActionNotice(t('branding.status.draftSaved'));
           void mutate();
         } catch (cause) {
-          if (mapEnterpriseError(cause)?.code === 'PLATFORM_REVISION_CONFLICT') markConflict();
-          setEditorState('dirty');
+          const isConflict = mapEnterpriseError(cause)?.code === 'PLATFORM_REVISION_CONFLICT';
+          if (isConflict) markConflict();
+          setActionError(formatError(cause));
+          if (!isConflict) setEditorState('dirty');
           throw cause;
         }
       },
@@ -271,6 +278,7 @@ const BrandingPage = memo(() => {
     dirty,
     draft,
     draftToken,
+    formatError,
     markConflict,
     mutate,
     setEditorState,
@@ -294,10 +302,16 @@ const BrandingPage = memo(() => {
         setEditorState('publishing');
         try {
           await adminBrandingService.publish(payload as AdminBrandingPublishInput);
-          reset();
           setActionError(null);
-          await Promise.allSettled([mutate(), platform.refresh()]);
+          setActionNotice(t('branding.status.published'));
+          const [brandingRefresh] = await Promise.allSettled([mutate(), platform.refresh()]);
+          if (brandingRefresh.status === 'fulfilled' && brandingRefresh.value) {
+            hydrate(brandingRefresh.value);
+          } else {
+            setEditorState('idle');
+          }
         } catch (cause) {
+          setActionError(formatError(cause));
           setEditorState('idle');
           throw cause;
         }
@@ -314,9 +328,10 @@ const BrandingPage = memo(() => {
     dirty,
     draft,
     draftToken,
+    formatError,
+    hydrate,
     mutate,
     platform,
-    reset,
     setEditorState,
     t,
   ]);
@@ -341,12 +356,13 @@ const BrandingPage = memo(() => {
             const result = await adminBrandingService.rollback(
               payload as AdminBrandingRollbackInput,
             );
-            hydrate(result);
-            setEditorState('dirty');
+            hydrate({ ...result, draftMatchesPublished: false });
             setActionError(null);
+            setActionNotice(t('branding.status.restoredDraft'));
             void mutate();
           } catch (cause) {
             if (mapEnterpriseError(cause)?.code === 'PLATFORM_REVISION_CONFLICT') markConflict();
+            setActionError(formatError(cause));
             throw cause;
           }
         },
@@ -363,10 +379,10 @@ const BrandingPage = memo(() => {
       dirty,
       draft,
       draftToken,
+      formatError,
       hydrate,
       markConflict,
       mutate,
-      setEditorState,
       t,
     ],
   );
@@ -386,19 +402,26 @@ const BrandingPage = memo(() => {
           }),
           description: t('branding.upload.description'),
           onSubmit: async (payload) => {
-            const result = await adminBrandingService.uploadAsset(
-              payload as AdminBrandingUploadAssetInput,
-            );
-            if (kind === 'desktopIcon') {
-              patch({ desktop: { ...draft!.desktop, iconUrl: result.url } });
-            } else {
-              const field = {
-                favicon: 'faviconUrl',
-                icon: 'iconUrl',
-                logo: 'logoUrl',
-                ogImage: 'ogImageUrl',
-              }[kind] as 'faviconUrl' | 'iconUrl' | 'logoUrl' | 'ogImageUrl';
-              patch({ [field]: result.url });
+            try {
+              const result = await adminBrandingService.uploadAsset(
+                payload as AdminBrandingUploadAssetInput,
+              );
+              if (kind === 'desktopIcon') {
+                patch({ desktop: { ...draft!.desktop, iconUrl: result.url } });
+              } else {
+                const field = {
+                  favicon: 'faviconUrl',
+                  icon: 'iconUrl',
+                  logo: 'logoUrl',
+                  ogImage: 'ogImageUrl',
+                }[kind] as 'faviconUrl' | 'iconUrl' | 'logoUrl' | 'ogImageUrl';
+                patch({ [field]: result.url });
+              }
+              setActionError(null);
+              setActionNotice(t('branding.status.assetUploaded'));
+            } catch (cause) {
+              setActionError(formatError(cause));
+              throw cause;
             }
           },
           submitLabel: t('branding.actions.upload'),
@@ -428,6 +451,7 @@ const BrandingPage = memo(() => {
   if (!data || !draft) return <Text>{t('branding.empty')}</Text>;
 
   const busy = editorState === 'saving' || editorState === 'publishing';
+  const pendingPublish = !dirty && !conflict && !draftMatchesPublished && Boolean(draft.name);
   return (
     <AdminPageTemplate
       description={t('branding.description')}
@@ -451,7 +475,9 @@ const BrandingPage = memo(() => {
           conflict={conflict}
           draftRevision={baseRevision}
           publishedRevision={data.published?.revision ?? null}
-          status={dirty ? 'draft' : data.published ? 'published' : 'draft'}
+          status={
+            dirty ? 'draft' : pendingPublish ? 'pending' : data.published ? 'published' : 'draft'
+          }
           onRefresh={() => void refreshAuthoritative()}
         />
       }
@@ -459,7 +485,12 @@ const BrandingPage = memo(() => {
       {!data.storageConfigured ? (
         <Alert showIcon message={t('branding.storageUnavailable')} type="warning" />
       ) : null}
-      {actionError ? <Text className={styles.error}>{actionError}</Text> : null}
+      {!canUpdate ? <Alert showIcon message={t('branding.readOnly')} type="info" /> : null}
+      {pendingPublish ? (
+        <Alert showIcon message={t('branding.status.pendingPublish')} type="info" />
+      ) : null}
+      {actionNotice ? <Alert showIcon message={actionNotice} type="success" /> : null}
+      {actionError ? <Alert showIcon message={actionError} type="error" /> : null}
       <div className={styles.content}>
         <div className={styles.editor}>
           <BrandingFields

@@ -65,7 +65,12 @@ export interface FileServiceImpl {
   /**
    * Upload buffer with specified content type (for any file type)
    */
-  uploadBuffer: (key: string, buffer: Buffer, contentType: string) => Promise<{ key: string }>;
+  uploadBuffer: (
+    key: string,
+    buffer: Buffer,
+    contentType: string,
+    cacheControl?: string,
+  ) => Promise<{ key: string }>;
 
   /**
    * Upload content

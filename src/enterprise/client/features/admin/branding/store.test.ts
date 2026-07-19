@@ -29,12 +29,18 @@ beforeEach(() => useBrandingEditorStore.getState().reset());
 describe('Branding editor store', () => {
   it('keeps server CAS state separate from dirty form edits', () => {
     const state = useBrandingEditorStore.getState();
-    state.hydrate({ baseRevision: 2, draft: draft('Server'), draftToken: 'server-token' });
+    state.hydrate({
+      baseRevision: 2,
+      draft: draft('Server'),
+      draftMatchesPublished: true,
+      draftToken: 'server-token',
+    });
     useBrandingEditorStore.getState().patch({ name: 'Local' });
 
     expect(useBrandingEditorStore.getState()).toMatchObject({
       baseRevision: 2,
       draft: { name: 'Local' },
+      draftMatchesPublished: true,
       draftToken: 'server-token',
       editorState: 'dirty',
     });
@@ -44,6 +50,7 @@ describe('Branding editor store', () => {
     useBrandingEditorStore.getState().hydrate({
       baseRevision: 2,
       draft: draft('Local'),
+      draftMatchesPublished: false,
       draftToken: 'old-token',
     });
     useBrandingEditorStore.getState().patch({ name: 'Unsaved' });
@@ -53,6 +60,22 @@ describe('Branding editor store', () => {
       draft: { name: 'Unsaved' },
       draftToken: 'old-token',
       editorState: 'conflict',
+    });
+  });
+
+  it('marks a successful save as pending publication', () => {
+    useBrandingEditorStore.getState().hydrate({
+      baseRevision: 2,
+      draft: draft('Local'),
+      draftMatchesPublished: true,
+      draftToken: 'old-token',
+    });
+    useBrandingEditorStore.getState().syncServer({ baseRevision: 2, draftToken: 'new-token' });
+
+    expect(useBrandingEditorStore.getState()).toMatchObject({
+      draftMatchesPublished: false,
+      draftToken: 'new-token',
+      editorState: 'idle',
     });
   });
 });

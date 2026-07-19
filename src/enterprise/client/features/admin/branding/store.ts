@@ -10,12 +10,14 @@ export type BrandingEditorState = 'conflict' | 'dirty' | 'idle' | 'publishing' |
 interface BrandingEditorStore {
   baseRevision: number;
   draft: AdminBrandingDraft | null;
+  draftMatchesPublished: boolean;
   draftToken: string;
   editorState: BrandingEditorState;
   hydrate: (params: {
     baseRevision: number;
     draft: AdminBrandingDraft;
     draftToken: string;
+    draftMatchesPublished: boolean;
   }) => void;
   markConflict: () => void;
   patch: (patch: Partial<AdminBrandingDraft>) => void;
@@ -29,6 +31,7 @@ const initialState = {
   baseRevision: 0,
   draft: null,
   draftToken: '',
+  draftMatchesPublished: false,
   editorState: 'idle' as const,
 };
 
@@ -46,7 +49,7 @@ export const useBrandingEditorStore = createWithEqualityFn<BrandingEditorStore>(
     reset: () => set(initialState),
     setEditorState: (editorState) => set({ editorState }),
     syncServer: ({ baseRevision, draftToken }) =>
-      set({ baseRevision, draftToken, editorState: 'idle' }),
+      set({ baseRevision, draftMatchesPublished: false, draftToken, editorState: 'idle' }),
   }),
   shallow,
 );

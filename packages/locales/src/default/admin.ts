@@ -1280,6 +1280,7 @@ export default {
   'branding.publish.impact':
     'Web surfaces refresh after publication. Desktop package fields remain rebuild-only.',
   'branding.publish.title': 'Publish Branding revision',
+  'branding.readOnly': 'You can inspect Branding, but you do not have permission to edit it.',
   'branding.rollback.description': 'Restore revision #{{revision}} into the editable draft.',
   'branding.rollback.impact':
     'Published Branding does not change now. Review and publish the restored draft separately.',
@@ -1287,6 +1288,12 @@ export default {
   'branding.save.description':
     'Save these values to the server draft. Public Branding remains unchanged.',
   'branding.save.title': 'Save Branding draft',
+  'branding.status.assetUploaded': 'Asset uploaded. Save the draft to retain this reference.',
+  'branding.status.draftSaved': 'Draft saved. Publish it when you are ready for it to go live.',
+  'branding.status.pendingPublish': 'Draft saved · Pending publish',
+  'branding.status.published': 'Branding published.',
+  'branding.status.restoredDraft':
+    'Historical revision restored as a draft. Review and publish it separately.',
   'branding.storageUnavailable':
     'Asset storage is not configured. Text and controlled existing asset URLs can still be edited; uploads fail closed.',
   'branding.title': 'Runtime Branding',
@@ -1300,4 +1307,6 @@ export default {
   'branding.upload.title': 'Upload controlled Branding asset',
   'enterprise.error.PLATFORM_ASSET_STORAGE_UNAVAILABLE':
     'Branding asset storage is unavailable. Ask an operator to configure object storage.',
+  'enterprise.error.PLATFORM_IDEMPOTENCY_CONFLICT':
+    'This request ID was already used for different changes. Retry as a new action.',
 };

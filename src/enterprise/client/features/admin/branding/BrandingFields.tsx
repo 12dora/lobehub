@@ -108,7 +108,7 @@ const AssetField = memo<AssetFieldProps>((props) => {
         </Button>
         <input
           hidden
-          accept=".ico,.jpeg,.jpg,.png,.webp,image/jpeg,image/png,image/webp,image/x-icon"
+          accept=".jpeg,.jpg,.png,.webp,image/jpeg,image/png,image/webp"
           ref={inputRef}
           type="file"
           onChange={handleFile}
