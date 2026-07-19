@@ -9,6 +9,7 @@ import { PlatformIdentityProviderRepository } from '@/database/repositories/plat
 import {
   platformIdentityProviders,
   platformIdentityProviderSecrets,
+  platformResourceRevisions,
 } from '@/database/schemas/platform';
 import type { LobeChatDatabase, Transaction } from '@/database/type';
 
@@ -49,6 +50,12 @@ const requireDraft = (draft: PlatformIdentityProviderDraft | undefined) => {
   return draft;
 };
 
+const requireProvider = (provider: PlatformIdentityProviderDraft | undefined) => {
+  if (!provider) throw new Error('PLATFORM_IDENTITY_PROVIDER_NOT_FOUND');
+  if (provider.migrationRequired) throw new Error('PLATFORM_IDENTITY_PROVIDER_MIGRATION_REQUIRED');
+  return provider;
+};
+
 const mutationFailureCategory = (error: unknown): string => {
   if (!(error instanceof Error)) return 'identity_provider_mutation_failed';
   if (error.message.includes('REVISION')) return 'revision_conflict';
@@ -59,7 +66,7 @@ const mutationFailureCategory = (error: unknown): string => {
   return 'identity_provider_mutation_failed';
 };
 
-/** Draft-only administration. Published/activation lifecycle is deliberately out of scope. */
+/** Draft administration; editing an activated provider forks its published snapshot into a draft. */
 export class AdminIdentityProviderService {
   constructor(
     private readonly db: LobeChatDatabase,
@@ -69,7 +76,7 @@ export class AdminIdentityProviderService {
   ) {}
 
   get = async (id: string): Promise<PlatformIdentityProviderDraft> =>
-    requireDraft(await new PlatformIdentityProviderModel(this.db).get(id));
+    requireProvider(await new PlatformIdentityProviderModel(this.db).get(id));
 
   list = async (input: AdminIdentityProviderListInput) => {
     const page = await new PlatformIdentityProviderRepository(this.db).listPage(input);
@@ -157,7 +164,10 @@ export class AdminIdentityProviderService {
       reason: input.reason,
       run: async (tx) => {
         const model = new PlatformIdentityProviderModel(tx);
-        const before = requireDraft(await model.get(input.id));
+        const before = requireProvider(await model.get(input.id));
+        if (before.status === 'archived') {
+          throw new Error('PLATFORM_IDENTITY_PROVIDER_NOT_EDITABLE');
+        }
         if (before.revision !== input.expectedRevision) {
           throw new Error('PLATFORM_REVISION_CONFLICT');
         }
@@ -183,6 +193,7 @@ export class AdminIdentityProviderService {
           .set({
             ...editableValues(input, actorUserId),
             activationRevision: null,
+            enabled: false,
             revision: nextRevision,
             status: 'draft',
             updatedAt: new Date(),
@@ -194,7 +205,7 @@ export class AdminIdentityProviderService {
                 platformIdentityProviders.revision,
                 input.secret.operation === 'keep' ? input.expectedRevision : nextRevision,
               ),
-              eq(platformIdentityProviders.status, 'draft'),
+              eq(platformIdentityProviders.status, before.status),
             ),
           )
           .returning({ id: platformIdentityProviders.id });
@@ -228,6 +239,20 @@ export class AdminIdentityProviderService {
         const before = requireDraft(await new PlatformIdentityProviderModel(tx).get(input.id));
         if (before.revision !== input.expectedRevision)
           throw new Error('PLATFORM_REVISION_CONFLICT');
+        const [published] = await tx
+          .select({ id: platformResourceRevisions.id })
+          .from(platformResourceRevisions)
+          .where(
+            and(
+              eq(platformResourceRevisions.resourceType, 'oidc'),
+              eq(platformResourceRevisions.resourceId, input.id),
+              eq(platformResourceRevisions.status, 'published'),
+            ),
+          )
+          .limit(1);
+        if (published) {
+          throw new Error('PLATFORM_IDENTITY_PROVIDER_HAS_PUBLISHED_REVISION');
+        }
         await tx
           .delete(platformIdentityProviderSecrets)
           .where(eq(platformIdentityProviderSecrets.providerId, input.id));
