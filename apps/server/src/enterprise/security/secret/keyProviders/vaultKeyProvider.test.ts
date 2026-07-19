@@ -328,6 +328,75 @@ describe('VaultKeyProvider', () => {
     }
   });
 
+  it('bounds a hung SecretID provider, ignores late results, and recovers on retry', async () => {
+    vi.useFakeTimers();
+    let providerCalls = 0;
+    let loginCalls = 0;
+    let firstSignal: AbortSignal | undefined;
+    let resolveLate: ((value: string) => void) | undefined;
+    const loginSecretIds: string[] = [];
+    const lateSecretId = `${SECRET_ID}-late`;
+    const freshSecretId = `${SECRET_ID}-fresh`;
+    const fetcher = vi.fn<typeof fetch>(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith('/login')) {
+        loginCalls += 1;
+        loginSecretIds.push(JSON.parse(String(init?.body)).secret_id);
+        return jsonResponse({ auth: { client_token: TOKEN } });
+      }
+      if (url.endsWith('/lookup-self')) return lookupResponse();
+      return keyResponse();
+    });
+    const provider = new VaultKeyProvider({
+      auth: {
+        method: 'approle',
+        roleId: ROLE_ID,
+        secretIdProvider: (signal) => {
+          providerCalls += 1;
+          if (providerCalls === 1) {
+            firstSignal = signal;
+            return new Promise<string>((resolve) => {
+              resolveLate = resolve;
+            });
+          }
+          return freshSecretId;
+        },
+      },
+      fetch: fetcher,
+      requestTimeoutMs: 100,
+    });
+
+    const firstBatch = Promise.allSettled(Array.from({ length: 20 }, () => provider.getKek()));
+    await Promise.resolve();
+    expect(providerCalls).toBe(1);
+    await vi.advanceTimersByTimeAsync(100);
+    const timedOut = await firstBatch;
+    expect(timedOut.every(({ status }) => status === 'rejected')).toBe(true);
+    for (const result of timedOut) {
+      if (result.status === 'fulfilled') throw new Error('Expected SecretID timeout');
+      expect(result.reason).toMatchObject({
+        details: { reason: 'secret-id-provider-timeout' },
+        message: 'Vault key material is unavailable',
+      });
+      expect(JSON.stringify(result.reason)).not.toContain(SECRET_ID);
+    }
+    expect(firstSignal?.aborted).toBe(true);
+    expect(loginCalls).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+
+    resolveLate?.(lateSecretId);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(loginCalls).toBe(0);
+    expect(loginSecretIds).not.toContain(lateSecretId);
+
+    await expect(provider.getKek()).resolves.toMatchObject({ keyId: 'vault:key-2' });
+    expect(providerCalls).toBe(2);
+    expect(loginCalls).toBe(1);
+    expect(loginSecretIds).toEqual([freshSecretId]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('fails closed when renewal of an explicit token fails', async () => {
     let now = 0;
     const fetcher = vi.fn<typeof fetch>(async (input) => {
