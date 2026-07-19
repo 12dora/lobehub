@@ -1,4 +1,8 @@
 // @vitest-environment node
+import { mkdtemp, realpath, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
 import { GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE } from '@lobechat/types';
 import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -22,9 +26,15 @@ import {
   parsePublishedIdentityProviderPayload,
 } from './publicationService';
 import { IdentityProviderSecretStore } from './secretStore';
+import {
+  loadIdentityProviderStartupSnapshot,
+  resetIdentityProviderStartupSnapshotForTest,
+} from './startupSnapshot';
 import { IdentityProviderTestAttemptStore } from './testAttemptStore';
 
 const db: LobeChatDatabase = await getTestDB();
+const runPostgres = process.env.TEST_SERVER_DB === '1' && Boolean(process.env.DATABASE_TEST_URL);
+const directories: string[] = [];
 const keyProvider: KeyProvider = {
   getKek: async () => ({ key: new Uint8Array(32).fill(73), keyId: 'test-key' }),
   providerId: 'test',
@@ -83,11 +93,15 @@ const tamperTerminalResponse = async (
   });
 
 const cleanup = async () => {
+  resetIdentityProviderStartupSnapshotForTest();
   await db.delete(platformIdentityProviderTestAttempts);
   await db.delete(platformIdentityProviderSecrets);
   await db.delete(platformIdentityProviders);
   await db.delete(platformResourceRevisions);
   await db.delete(platformAuditLogs);
+  await Promise.all(
+    directories.splice(0).map((directory) => rm(directory, { force: true, recursive: true })),
+  );
 };
 
 beforeEach(cleanup);
@@ -114,6 +128,34 @@ const createDraft = () =>
     type: 'generic_oidc',
     usePkce: true,
   });
+
+const startupEnv = async () => {
+  const directory = await mkdtemp(path.join(await realpath(tmpdir()), 'aihub-oidc-publish-lock-'));
+  directories.push(directory);
+  return {
+    AUTH_SSO_PROVIDERS: '',
+    ENABLE_DATABASE_OIDC: '1',
+    PLATFORM_MASTER_KEY: Buffer.from(new Uint8Array(32).fill(73)).toString('base64'),
+    PLATFORM_MASTER_KEY_ID: 'test-key',
+    PLATFORM_OIDC_LKG_PATH: path.join(directory, 'snapshot.json'),
+  };
+};
+
+const discovery = {
+  discover: async (issuer: string) => ({
+    authorizationEndpoint: 'https://login.example.test/authorize',
+    codeChallengeMethodsSupported: ['S256'],
+    idTokenSigningAlgValuesSupported: ['RS256'],
+    issuer,
+    jwksUri: 'https://login.example.test/jwks',
+    responseTypesSupported: ['code'],
+    scopesSupported: ['openid', 'profile', 'email'],
+    subjectTypesSupported: ['public'],
+    tokenEndpoint: 'https://login.example.test/token',
+    tokenEndpointAuthMethodsSupported: ['client_secret_basic'],
+    userinfoEndpoint: 'https://login.example.test/userinfo',
+  }),
+};
 
 const recordSuccessfulTest = async (providerId: string) => {
   const [provider] = await db
@@ -218,6 +260,126 @@ describe('IdentityProviderPublicationService', () => {
     expect(serialized).not.toContain('kms://');
     expect(serialized).not.toContain('ciphertext');
   });
+
+  it('acquires the OIDC published-revision lock before the provider row lock', async () => {
+    const draft = await createDraft();
+    await recordSuccessfulTest(draft.id);
+    const order: string[] = [];
+    const lockedPublication = new IdentityProviderPublicationService(db, {
+      afterDraftLock: async () => {
+        order.push('draft');
+      },
+      afterPublishedRevisionLock: async () => {
+        order.push('published-revision');
+      },
+    });
+
+    await lockedPublication.publish('admin-1', {
+      expectedRevision: draft.revision,
+      id: draft.id,
+      reason: 'verify canonical lock order',
+      requestId: requestId(56),
+    });
+
+    expect(order).toEqual(['published-revision', 'draft']);
+  });
+
+  it.runIf(runPostgres)(
+    'blocks a real concurrent publish between startup recheck and LKG write',
+    async () => {
+      const draft = await createDraft();
+      await recordSuccessfulTest(draft.id);
+      const firstPublished = await publication.publish('admin-1', {
+        expectedRevision: draft.revision,
+        id: draft.id,
+        reason: 'publish baseline for startup race',
+        requestId: requestId(57),
+      });
+      const nextDraft = await admin.update('admin-1', {
+        autoProvision: true,
+        buttonLabel: 'Sign in with updated work',
+        claimMapping: GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE.claimMapping,
+        clientId: 'client-id',
+        displayName: 'Updated work login',
+        domainAllowlist: [],
+        expectedRevision: firstPublished.revision,
+        groupRoleMapping: {},
+        icon: null,
+        id: draft.id,
+        issuer: 'https://login.example.test',
+        providerKey: 'work',
+        reason: 'prepare second publication',
+        scopes: [...GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE.scopes],
+        secret: { operation: 'keep' },
+        type: 'generic_oidc',
+        usePkce: true,
+      });
+      await recordSuccessfulTest(nextDraft.id);
+      const env = await startupEnv();
+      let signalStartupLocked = (): void => undefined;
+      const startupLocked = new Promise<void>((resolve) => {
+        signalStartupLocked = resolve;
+      });
+      let releaseStartup = (): void => undefined;
+      const startupReleased = new Promise<void>((resolve) => {
+        releaseStartup = resolve;
+      });
+      const startup = loadIdentityProviderStartupSnapshot({
+        cache: false,
+        db,
+        discovery,
+        env,
+        testHooks: {
+          afterCanonicalRecheck: async () => {
+            signalStartupLocked();
+            await startupReleased;
+          },
+        },
+      });
+      await startupLocked;
+
+      let publishEnteredLockedTransaction = false;
+      let publishSettled = false;
+      const concurrentPublication = new IdentityProviderPublicationService(db, {
+        afterPublishedRevisionLock: async () => {
+          publishEnteredLockedTransaction = true;
+        },
+      });
+      const publish = concurrentPublication
+        .publish('admin-1', {
+          expectedRevision: nextDraft.revision,
+          id: nextDraft.id,
+          reason: 'publish only after startup releases canonical lock',
+          requestId: requestId(58),
+        })
+        .finally(() => {
+          publishSettled = true;
+        });
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect(publishEnteredLockedTransaction).toBe(false);
+        expect(publishSettled).toBe(false);
+      } finally {
+        releaseStartup();
+      }
+      const firstStartup = await startup;
+      const secondPublished = await publish;
+      expect(publishEnteredLockedTransaction).toBe(true);
+      expect(firstStartup).toMatchObject({ source: 'database' });
+      expect(secondPublished.revision).toBe(nextDraft.revision + 1);
+
+      const secondStartup = await loadIdentityProviderStartupSnapshot({
+        cache: false,
+        db,
+        discovery,
+        env,
+      });
+      expect(secondStartup).toMatchObject({ source: 'database' });
+      expect(secondStartup.identityRevision).not.toBe(firstStartup.identityRevision);
+      expect(secondStartup.databaseProviders[0]?.displayName).toBe('Updated work login');
+    },
+    15_000,
+  );
 
   it('replays publish and rollback with the immutable timestamp after storing the same secret again', async () => {
     const draft = await createDraft();

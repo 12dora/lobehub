@@ -11,6 +11,7 @@ import type { LobeChatDatabase, Transaction } from '../../type';
 import { PlatformAuditLogModel } from './auditLog';
 import { checksumPayload } from './checksum';
 import { PlatformRevisionConflictError, PlatformRevisionImmutableError } from './errors';
+import { acquireIdentityProviderPublishedRevisionLock } from './identityProviderPublishedRevisionLock';
 import { redactSensitive, type RedactSensitiveOptions } from './redact';
 
 export type { PlatformResourceRevisionItem, PlatformResourceType, PlatformRevisionStatus };
@@ -198,6 +199,9 @@ export class PlatformRevisionModel {
     const nextRevision = params.expectedRevision + 1;
 
     return this.db.transaction(async (tx) => {
+      if (params.resourceType === 'oidc') {
+        await acquireIdentityProviderPublishedRevisionLock(tx);
+      }
       const current = await params.pointer.lockAndGetRevision(tx);
       if (current !== params.expectedRevision) {
         throw new PlatformRevisionConflictError(undefined, {
@@ -282,6 +286,9 @@ export class PlatformRevisionModel {
    */
   rollbackToRevision = async (params: RollbackToRevisionParams): Promise<PublishResult> => {
     return this.db.transaction(async (tx) => {
+      if (params.resourceType === 'oidc') {
+        await acquireIdentityProviderPublishedRevisionLock(tx);
+      }
       const current = await params.pointer.lockAndGetRevision(tx);
       if (current !== params.expectedRevision) {
         throw new PlatformRevisionConflictError(undefined, {

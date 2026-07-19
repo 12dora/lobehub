@@ -7,6 +7,7 @@ export * from './easyauthGrantSnapshot';
 export * from './easyauthLoginSync';
 export * from './errors';
 export * from './identityProvider';
+export * from './identityProviderPublishedRevisionLock';
 export * from './job';
 export * from './managedResourcePolicy';
 export * from './redact';
