@@ -42,17 +42,11 @@ export interface DangerousAdminMutationDefinition extends AdminMutationDefinitio
 
 export interface RegularAdminMutationDefinition extends AdminMutationDefinitionBase {
   dangerous: false;
-  risk: AdminMutationRisk;
+  risk: 'low' | 'medium';
 }
 
 export type AdminMutationDefinition =
   DangerousAdminMutationDefinition | RegularAdminMutationDefinition;
-
-export interface AdminMutationRouterSource {
-  file: string;
-  prefix: string;
-  router: string;
-}
 
 const enforced = (evidence: string): ImplementedControl => ({ evidence, status: 'enforced' });
 const conditional = (evidence: string, limitation: string): ImplementedControl => ({
@@ -75,31 +69,48 @@ const conditionalReauth = conditional(
   'Ordinary draft variants do not require the check.',
 );
 const missingReauth = gap('No recent-authentication check is wired for this dangerous operation.');
+const sensitiveInputReauthGap = gap(
+  'Protected-value replace or clear variants do not require recent authentication.',
+);
 const missingAdminRateLimit = planned(
   'No shared administrative mutation limiter is wired; W8 must add one.',
 );
 const noRemoteRequest = notApplicable('The operation does not make a server-side remote request.');
-const noLkg = notApplicable('The resource uses transactional revision history instead of LKG.');
+const databaseStateNoLkg = notApplicable(
+  'The procedure reads or changes authoritative database state and has no derived LKG path.',
+);
+const validationNoLkg = notApplicable(
+  'Validation creates no runtime state that requires recovery.',
+);
+const remoteProbeNoLkg = notApplicable(
+  'The bounded remote probe creates no published runtime state that requires recovery.',
+);
+const assetNoLkg = notApplicable(
+  'Asset recovery uses object-storage operation records rather than an LKG file.',
+);
 const noReason = notApplicable('The validation operation does not persist business configuration.');
 const noAudit = gap('Successful execution has no dedicated platform audit outcome.');
 const safeOutbound = enforced('Remote requests use the enterprise outbound policy boundary.');
 const outboundGap = gap(
   'Remote connection testing is not yet on the enterprise outbound boundary.',
 );
+const directFetchOutboundGap = gap(
+  'The integration performs a direct remote fetch outside the enterprise outbound boundary.',
+);
 const identityLkg = conditional(
-  'Startup validates and signs a local LKG snapshot before accepting it.',
-  'Publication does not atomically refresh the local snapshot on every instance.',
+  'Startup verifies signature, age, ownership, and permissions before reading a local LKG.',
+  'A valid database candidate remains active when the local LKG write fails; startup reports degraded.',
 );
 
 const regularMutation = (
   procedure: `admin.${string}`,
-  risk: AdminMutationRisk,
+  risk: RegularAdminMutationDefinition['risk'],
   summary: string,
   overrides: Partial<AdminMutationControls> = {},
 ): RegularAdminMutationDefinition => ({
   controls: {
     audit: serviceAudit,
-    lastKnownGood: noLkg,
+    lastKnownGood: databaseStateNoLkg,
     outbound: noRemoteRequest,
     rateLimit: missingAdminRateLimit,
     reason: reasonInput,
@@ -125,7 +136,7 @@ const dangerousMutation = (
 ): DangerousAdminMutationDefinition => ({
   controls: {
     audit: options.audit ?? serviceAudit,
-    lastKnownGood: options.lastKnownGood ?? noLkg,
+    lastKnownGood: options.lastKnownGood ?? databaseStateNoLkg,
     outbound: options.outbound ?? noRemoteRequest,
     rateLimit: missingAdminRateLimit,
     reason: reasonInput,
@@ -144,39 +155,10 @@ const validationMutation = (
 ) =>
   regularMutation(procedure, 'low', summary, {
     audit: noAudit,
+    lastKnownGood: validationNoLkg,
     reason: noReason,
     ...overrides,
   });
-
-/**
- * Router declarations that own mutations. The reconciliation test scans the entire admin router
- * directory and rejects an unmapped declaration, so this list cannot silently hide a new router.
- */
-export const ADMIN_MUTATION_ROUTER_SOURCES = [
-  { file: 'admin.ts', prefix: 'roles', router: 'adminRolesRouter' },
-  { file: 'admin.ts', prefix: 'easyauth', router: 'adminEasyauthRouter' },
-  { file: 'admin/agents.ts', prefix: 'agents.assignments', router: 'assignmentsRouter' },
-  { file: 'admin/agents.ts', prefix: 'agents.rollouts', router: 'rolloutsRouter' },
-  { file: 'admin/agents.ts', prefix: 'agents', router: 'adminAgentsRouter' },
-  { file: 'admin/aiCatalog.ts', prefix: 'aiProviders', router: 'adminAiProvidersRouter' },
-  { file: 'admin/aiCatalog.ts', prefix: 'aiModels', router: 'adminAiModelsRouter' },
-  { file: 'admin/branding.ts', prefix: 'branding', router: 'adminBrandingRouter' },
-  { file: 'admin/connectors.ts', prefix: 'connectors', router: 'adminConnectorsRouter' },
-  {
-    file: 'admin/identityProviders.ts',
-    prefix: 'identityProviders',
-    router: 'adminIdentityProvidersRouter',
-  },
-  {
-    file: 'admin/managedResources.ts',
-    prefix: 'managedResources',
-    router: 'adminManagedResourcesRouter',
-  },
-  { file: 'admin/settings.ts', prefix: 'settings', router: 'adminSettingsRouter' },
-  { file: 'admin/skills.ts', prefix: 'skills', router: 'adminSkillsRouter' },
-  { file: 'admin/system.ts', prefix: 'system', router: 'adminSystemRouter' },
-  { file: 'admin/users.ts', prefix: 'users', router: 'adminUsersRouter' },
-] as const satisfies readonly AdminMutationRouterSource[];
 
 export const ADMIN_MUTATION_REGISTRY = {
   'admin.agents.appendVersion': regularMutation(
@@ -284,6 +266,7 @@ export const ADMIN_MUTATION_REGISTRY = {
     'admin.aiProviders.createDraft',
     'medium',
     'Create an AI provider draft.',
+    { reauth: sensitiveInputReauthGap },
   ),
   'admin.aiProviders.publish': dangerousMutation(
     'admin.aiProviders.publish',
@@ -301,12 +284,13 @@ export const ADMIN_MUTATION_REGISTRY = {
     'admin.aiProviders.test',
     'medium',
     'Test an AI provider connection.',
-    { outbound: outboundGap },
+    { lastKnownGood: remoteProbeNoLkg, outbound: outboundGap },
   ),
   'admin.aiProviders.updateDraft': regularMutation(
     'admin.aiProviders.updateDraft',
     'medium',
     'Change an AI provider draft.',
+    { reauth: sensitiveInputReauthGap },
   ),
   'admin.branding.publish': dangerousMutation(
     'admin.branding.publish',
@@ -329,6 +313,7 @@ export const ADMIN_MUTATION_REGISTRY = {
     'admin.branding.uploadAsset',
     'medium',
     'Upload and validate a branding asset.',
+    { lastKnownGood: assetNoLkg },
   ),
   'admin.connectors.archive': dangerousMutation(
     'admin.connectors.archive',
@@ -351,7 +336,7 @@ export const ADMIN_MUTATION_REGISTRY = {
     'admin.connectors.discover',
     'medium',
     'Discover connector tools through the guarded remote boundary.',
-    { outbound: safeOutbound },
+    { lastKnownGood: remoteProbeNoLkg, outbound: safeOutbound },
   ),
   'admin.connectors.publish': dangerousMutation(
     'admin.connectors.publish',
@@ -375,7 +360,7 @@ export const ADMIN_MUTATION_REGISTRY = {
     'admin.connectors.test',
     'medium',
     'Test a connector through the guarded remote boundary.',
-    { outbound: safeOutbound },
+    { lastKnownGood: remoteProbeNoLkg, outbound: safeOutbound },
   ),
   'admin.connectors.updateDraft': regularMutation(
     'admin.connectors.updateDraft',
@@ -387,12 +372,13 @@ export const ADMIN_MUTATION_REGISTRY = {
     'admin.easyauth.triggerSync',
     'high',
     'Synchronize externally managed global role grants for a user.',
-    { reauth: missingReauth },
+    { outbound: directFetchOutboundGap, reauth: missingReauth },
   ),
   'admin.identityProviders.create': regularMutation(
     'admin.identityProviders.create',
     'medium',
     'Create an identity provider draft.',
+    { reauth: sensitiveInputReauthGap },
   ),
   'admin.identityProviders.delete': dangerousMutation(
     'admin.identityProviders.delete',
@@ -403,7 +389,7 @@ export const ADMIN_MUTATION_REGISTRY = {
   'admin.identityProviders.discover': validationMutation(
     'admin.identityProviders.discover',
     'Discover identity metadata through the guarded remote boundary.',
-    { outbound: safeOutbound },
+    { lastKnownGood: remoteProbeNoLkg, outbound: safeOutbound },
   ),
   'admin.identityProviders.publish': dangerousMutation(
     'admin.identityProviders.publish',
@@ -421,16 +407,18 @@ export const ADMIN_MUTATION_REGISTRY = {
     'admin.identityProviders.testStart',
     'medium',
     'Start an isolated identity provider login test.',
+    { lastKnownGood: remoteProbeNoLkg, outbound: safeOutbound },
   ),
   'admin.identityProviders.update': regularMutation(
     'admin.identityProviders.update',
     'medium',
     'Change an identity provider draft.',
+    { reauth: sensitiveInputReauthGap },
   ),
   'admin.identityProviders.validateNetwork': validationMutation(
     'admin.identityProviders.validateNetwork',
     'Validate identity endpoints through the guarded remote boundary.',
-    { outbound: safeOutbound },
+    { lastKnownGood: remoteProbeNoLkg, outbound: safeOutbound },
   ),
   'admin.managedResources.publish': dangerousMutation(
     'admin.managedResources.publish',
