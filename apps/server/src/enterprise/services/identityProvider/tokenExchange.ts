@@ -44,7 +44,6 @@ export const exchangePlatformOidcAuthorizationCode = async (input: {
   if (!pkceVerifier || input.redirectUri !== input.expectedRedirectUri) throw failure(errorCode);
 
   const body = new URLSearchParams({
-    client_id: input.clientId,
     code: input.code,
     code_verifier: pkceVerifier,
     grant_type: 'authorization_code',
@@ -60,6 +59,7 @@ export const exchangePlatformOidcAuthorizationCode = async (input: {
       input.clientSecret,
     );
   } else if (input.metadata.tokenEndpointAuthMethodsSupported.includes('client_secret_post')) {
+    body.set('client_id', input.clientId);
     body.set('client_secret', input.clientSecret);
   } else {
     throw failure(errorCode);

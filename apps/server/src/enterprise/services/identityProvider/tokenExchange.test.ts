@@ -7,7 +7,10 @@ import {
   type PinnedTransportResponse,
   SafeOutboundHttpClient,
 } from '../../security/outboundHttp';
-import { exchangePlatformOidcAuthorizationCode } from './tokenExchange';
+import {
+  createClientSecretBasicAuthorization,
+  exchangePlatformOidcAuthorizationCode,
+} from './tokenExchange';
 
 const publicAddress = '93.184.216.34';
 const redirectUri = 'https://app.example.test/api/auth/oauth2/callback/work';
@@ -69,13 +72,25 @@ describe('safe platform OIDC token exchange', () => {
       const transport = vi.fn<PinnedTransport>(async (request) => {
         expect(request.url.toString()).toBe('https://login.example.test/token');
         expect(request.method).toBe('POST');
-        expect(request.headers.Accept).toBe('application/json');
-        expect(request.headers['Content-Type']).toBe('application/x-www-form-urlencoded');
         const body = new URLSearchParams(request.body?.toString());
-        expect(body.get('code_verifier')).toBe('pkce-verifier');
-        expect(body.get('redirect_uri')).toBe(redirectUri);
-        expect(body.get('client_secret') !== null).toBe(postsSecret);
-        expect(Boolean(request.headers.Authorization)).toBe(!postsSecret);
+        expect(body.get('client_id')).toBe(postsSecret ? 'client:id' : null);
+        expect(body.get('client_secret')).toBe(postsSecret ? 's&e:cret' : null);
+        expect(Object.fromEntries(body)).toEqual({
+          ...(postsSecret ? { client_id: 'client:id', client_secret: 's&e:cret' } : {}),
+          code: 'authorization-code',
+          code_verifier: 'pkce-verifier',
+          grant_type: 'authorization_code',
+          redirect_uri: redirectUri,
+        });
+        expect(request.headers).toEqual({
+          'Accept': 'application/json',
+          ...(postsSecret
+            ? {}
+            : {
+                Authorization: createClientSecretBasicAuthorization('client:id', 's&e:cret'),
+              }),
+          'Content-Type': 'application/x-www-form-urlencoded',
+        });
         return response({ access_token: 'access-token', id_token: 'id-token' });
       });
 
@@ -98,6 +113,34 @@ describe('safe platform OIDC token exchange', () => {
     },
   );
 
+  it('prefers client_secret_basic without mixing body credentials when both methods are advertised', async () => {
+    const transport = vi.fn<PinnedTransport>(async (request) => {
+      expect(request.url.toString()).toBe('https://login.example.test/token');
+      const body = new URLSearchParams(request.body?.toString());
+      expect(body.get('client_id')).toBeNull();
+      expect(body.get('client_secret')).toBeNull();
+      expect(Object.fromEntries(body)).toEqual({
+        code: 'authorization-code',
+        code_verifier: 'pkce-verifier',
+        grant_type: 'authorization_code',
+        redirect_uri: redirectUri,
+      });
+      expect(request.headers).toEqual({
+        'Accept': 'application/json',
+        'Authorization': createClientSecretBasicAuthorization('client:id', 's&e:cret'),
+        'Content-Type': 'application/x-www-form-urlencoded',
+      });
+      return response({ access_token: 'access-token', id_token: 'id-token' });
+    });
+
+    await expect(
+      exchange(setup(transport), {
+        metadata: metadata(['client_secret_post', 'client_secret_basic']),
+      }),
+    ).resolves.toMatchObject({ access_token: 'access-token', id_token: 'id-token' });
+    expect(transport).toHaveBeenCalledOnce();
+  });
+
   it.each([
     ['missing PKCE', { pkceVerifier: undefined }],
     ['redirect substitution', { redirectUri: 'https://attacker.example.test/callback' }],
@@ -113,7 +156,6 @@ describe('safe platform OIDC token exchange', () => {
   it.each([
     ['non-JSON', response({}, { headers: { 'content-type': 'text/html' } })],
     ['oversized', response({}, { truncated: true })],
-    ['HTTP error', response({}, { status: 400 })],
     [
       'redirect',
       response({}, { headers: { location: 'https://login.example.test/other' }, status: 302 }),
@@ -123,6 +165,24 @@ describe('safe platform OIDC token exchange', () => {
     await expect(exchange(setup(async () => tokenResponse))).rejects.toThrow(
       'PLATFORM_OIDC_TOKEN_RESPONSE_INVALID',
     );
+  });
+
+  it('maps an OAuth HTTP error to the uniform safe error without leaking response details', async () => {
+    const transport = vi.fn<PinnedTransport>(async () =>
+      response(
+        { error: 'invalid_grant', error_description: 'token request rejected' },
+        { status: 400, statusText: 'Bad Request' },
+      ),
+    );
+
+    const result = await exchange(setup(transport)).catch((error: unknown) => error);
+
+    expect(result).toBeInstanceOf(Error);
+    expect((result as Error).message).toBe('PLATFORM_OIDC_TOKEN_RESPONSE_INVALID');
+    expect(String(result)).not.toContain('invalid_grant');
+    expect(String(result)).not.toContain('token request rejected');
+    expect(String(result)).not.toContain('s&e:cret');
+    expect(transport).toHaveBeenCalledOnce();
   });
 
   it('enforces the absolute token endpoint deadline', async () => {
