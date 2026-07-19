@@ -11,6 +11,7 @@ import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
 import { useEnterprisePlatform } from '@/enterprise/client/providers/EnterprisePlatformProvider';
+import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
 import { adminBrandingService } from '@/enterprise/client/services/adminBranding';
 import type {
   AdminBrandingPublishInput,
@@ -98,6 +99,7 @@ const readFileBase64 = (file: File): Promise<string> =>
 
 const BrandingPage = memo(() => {
   const { t } = useTranslation('admin');
+  const branding = useBranding();
   const formatError = useCallback(
     (cause: unknown): string => {
       const mapped = mapEnterpriseError(cause);
@@ -454,8 +456,8 @@ const BrandingPage = memo(() => {
   const pendingPublish = !dirty && !conflict && !draftMatchesPublished && Boolean(draft.name);
   return (
     <AdminPageTemplate
-      description={t('branding.description')}
-      title={t('branding.title')}
+      description={t('branding.description', { platformName: branding.name })}
+      title={t('branding.title', { platformName: branding.name })}
       actions={
         <div className={styles.actions}>
           <Button disabled={!canUpdate || !dirty || conflict || busy} onClick={save}>
