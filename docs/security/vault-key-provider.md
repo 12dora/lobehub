@@ -51,12 +51,12 @@ const keyProvider = new VaultKeyProvider({
   auth: {
     method: 'approle',
     roleId: '<from secure config>',
-    secretIdProvider: async () => secretIdAgent.readFreshSecretId(),
+    secretIdProvider: async (signal) => secretIdAgent.readFreshSecretId({ signal }),
   },
 });
 ```
 
-`secretIdAgent` 应是受控的 response-wrapping 解包器、Vault Agent、sidecar，或读取原子轮换且权限收紧文件的适配器。回调每次 AppRole 登录调用一次；token 续租失败或达到 max TTL 后，Provider 会通过回调取得新 SecretID 再登录。同一时刻的并发请求共享一次刷新，回调失败会脱敏并 fail closed。不要让业务进程持有生成 SecretID 或管理 AppRole 的权限。
+`secretIdAgent` 应是受控的 response-wrapping 解包器、Vault Agent、sidecar，或读取原子轮换且权限收紧文件的适配器。回调每次 AppRole 登录调用一次，并接收一个 `AbortSignal`；实现必须在 signal abort 后停止 I/O。回调与 Vault HTTP 请求共用有界 deadline（默认 5 秒），超时会脱敏、fail closed 并释放 single-flight，后续调用可以重试；迟到结果不会触发登录。token 续租失败或达到 max TTL 后，Provider 会通过回调取得新 SecretID 再登录。同一时刻的并发请求共享一次刷新。不要让业务进程持有生成 SecretID 或管理 AppRole 的权限。
 
 ## 轮换与回滚
 

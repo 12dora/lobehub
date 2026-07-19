@@ -34,7 +34,7 @@ const SAFE_KEY_ID = /^[A-Z0-9][\w.:@+-]{0,127}$/i;
 const BASE64_KEY = /^[A-Z0-9+/]{43}=$/i;
 const GENERIC_UNAVAILABLE_MESSAGE = 'Vault key material is unavailable';
 
-export type VaultAppRoleSecretIdProvider = () => Promise<string> | string;
+export type VaultAppRoleSecretIdProvider = (signal: AbortSignal) => Promise<string> | string;
 
 interface VaultAppRoleAuthBase {
   authMountPath?: string;
@@ -377,7 +377,7 @@ export class VaultKeyProvider implements KeyProvider {
         getSecretId = injectedSecretIdProvider;
       } else if (typeof staticSecretId === 'string') {
         const validatedSecretId = validateCredential(staticSecretId, 'Vault AppRole secret ID');
-        getSecretId = () => validatedSecretId;
+        getSecretId = (_signal) => validatedSecretId;
       } else {
         throw secretInvalidInput(
           'Vault AppRole requires exactly one SecretID or SecretID provider',
@@ -526,12 +526,33 @@ export class VaultKeyProvider implements KeyProvider {
   private resolveAppRoleSecretId = async (
     provider: VaultAppRoleSecretIdProvider,
   ): Promise<string> => {
+    const controller = new AbortController();
+    const timeoutMarker = Symbol('secret-id-provider-timeout');
+    let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
-      return validateCredential(await provider(), 'Vault AppRole secret ID');
-    } catch {
+      const deadline = new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => {
+          controller.abort();
+          reject(timeoutMarker);
+        }, this.requestTimeoutMs);
+      });
+      const value = await Promise.race([
+        Promise.resolve().then(() => provider(controller.signal)),
+        deadline,
+      ]);
+      return validateCredential(value, 'Vault AppRole secret ID');
+    } catch (error) {
+      if (error === timeoutMarker) {
+        throw secretNotReadable(GENERIC_UNAVAILABLE_MESSAGE, {
+          reason: 'secret-id-provider-timeout',
+        });
+      }
       throw secretNotReadable(GENERIC_UNAVAILABLE_MESSAGE, {
         reason: 'secret-id-provider-error',
       });
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      controller.abort();
     }
   };
 
