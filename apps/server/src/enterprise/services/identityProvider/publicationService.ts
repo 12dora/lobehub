@@ -1,6 +1,6 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 
-import { and, desc, eq, gt, isNull, lte, sql } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray, isNull, lte, sql } from 'drizzle-orm';
 
 import { checksumPayload, PlatformRevisionConflictError } from '@/database/models/platform';
 import {
@@ -19,7 +19,6 @@ import {
 } from '@/types/platform/identityProvider';
 
 import { containsEnterpriseSecretMaterial } from '../../security/redaction';
-import { PlatformAuditService } from '../platformAudit';
 
 const SUCCESSFUL_TEST_MAX_AGE_MS = 10 * 60 * 1000;
 const IDEMPOTENCY_LEASE_MS = 5 * 60 * 1000;
@@ -260,10 +259,9 @@ const idempotencyContext = (input: {
   );
   const payloadHash = checksumPayload(input.payload);
   return {
-    failureAuditId: `oidc-idempotency-${digest(`${scopeHash}:failure`)}`,
     payloadHash,
     reservationAuditId: `oidc-idempotency-${scopeHash}`,
-    successAuditId: `oidc-idempotency-${digest(`${scopeHash}:success`)}`,
+    terminalAuditId: `oidc-idempotency-${digest(`${scopeHash}:terminal`)}`,
   };
 };
 
@@ -309,13 +307,31 @@ const parseIdempotentResponse = (value: unknown): PlatformIdentityProviderDraft 
 interface IdempotencyRequest {
   action: string;
   actorUserId: string;
-  failureAuditId: string;
   payloadHash: string;
   reason: string;
   requestId: string;
   reservationAuditId: string;
-  successAuditId: string;
   targetId: string;
+  terminalAuditId: string;
+}
+
+export interface IdempotencyOwnerFence {
+  generation: number;
+  ownerToken: string;
+}
+
+interface IdempotencyLease extends IdempotencyOwnerFence {
+  leaseExpiresAt: string;
+}
+
+type IdempotencyReservation =
+  | { fence: IdempotencyOwnerFence; kind: 'owner' }
+  | { kind: 'replay'; response: PlatformIdentityProviderDraft };
+
+export interface IdentityProviderPublicationTestHooks {
+  afterDraftLock?: (fence: IdempotencyOwnerFence) => Promise<void>;
+  afterReservation?: (fence: IdempotencyOwnerFence) => Promise<void>;
+  leaseMs?: number;
 }
 
 const assertAuditScope = (
@@ -340,27 +356,21 @@ const findTerminalReplay = async (
   tx: Transaction,
   input: IdempotencyRequest,
 ): Promise<PlatformIdentityProviderDraft | null> => {
-  const [success] = await tx
+  const [terminal] = await tx
     .select()
     .from(platformAuditLogs)
-    .where(eq(platformAuditLogs.id, input.successAuditId))
+    .where(eq(platformAuditLogs.id, input.terminalAuditId))
     .limit(1);
-  if (success) {
-    const afterDiff = assertAuditScope(success, input, input.action);
-    if (success.result !== 'success') {
-      throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_IDEMPOTENCY_CONFLICT');
-    }
+  if (!terminal) return null;
+  const afterDiff = assertAuditScope(terminal, input, input.action);
+  if (terminal.result === 'success' && afterDiff.outcome === 'success') {
     return parseIdempotentResponse(afterDiff.response);
   }
-
-  const [failure] = await tx
-    .select()
-    .from(platformAuditLogs)
-    .where(eq(platformAuditLogs.id, input.failureAuditId))
-    .limit(1);
-  if (!failure) return null;
-  const afterDiff = assertAuditScope(failure, input, input.action);
-  if (failure.result !== 'failure' || typeof afterDiff.errorCode !== 'string') {
+  if (
+    terminal.result !== 'failure' ||
+    afterDiff.outcome !== 'failure' ||
+    typeof afterDiff.errorCode !== 'string'
+  ) {
     throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_IDEMPOTENCY_CONFLICT');
   }
   if (afterDiff.errorCode === 'PLATFORM_REVISION_CONFLICT') {
@@ -374,19 +384,106 @@ const findTerminalReplay = async (
   throw new Error(afterDiff.errorCode);
 };
 
+const lockIdempotencyTarget = async (tx: Transaction, targetId: string): Promise<void> => {
+  await tx
+    .select({ id: platformIdentityProviders.id })
+    .from(platformIdentityProviders)
+    .where(eq(platformIdentityProviders.id, targetId))
+    .for('update');
+};
+
+const parseLease = (
+  audit: typeof platformAuditLogs.$inferSelect,
+  input: IdempotencyRequest,
+): IdempotencyLease => {
+  const action =
+    audit.action === `${input.action}.requestReserved`
+      ? `${input.action}.requestReserved`
+      : `${input.action}.requestLease`;
+  const afterDiff = assertAuditScope(audit, input, action);
+  if (
+    !Number.isInteger(afterDiff.generation) ||
+    Number(afterDiff.generation) <= 0 ||
+    typeof afterDiff.ownerToken !== 'string' ||
+    !/^[a-f0-9]{64}$/.test(afterDiff.ownerToken) ||
+    typeof afterDiff.leaseExpiresAt !== 'string' ||
+    Number.isNaN(Date.parse(afterDiff.leaseExpiresAt))
+  ) {
+    throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_IDEMPOTENCY_CONFLICT');
+  }
+  return {
+    generation: Number(afterDiff.generation),
+    leaseExpiresAt: afterDiff.leaseExpiresAt,
+    ownerToken: afterDiff.ownerToken,
+  };
+};
+
+const findLatestLease = async (
+  tx: Transaction,
+  input: IdempotencyRequest,
+): Promise<IdempotencyLease> => {
+  const audits = await tx
+    .select()
+    .from(platformAuditLogs)
+    .where(
+      and(
+        inArray(platformAuditLogs.action, [
+          `${input.action}.requestLease`,
+          `${input.action}.requestReserved`,
+        ]),
+        eq(platformAuditLogs.actorUserId, input.actorUserId),
+        eq(platformAuditLogs.requestId, input.requestId),
+        eq(platformAuditLogs.targetId, input.targetId),
+      ),
+    );
+  if (audits.length === 0) {
+    throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_IDEMPOTENCY_CONFLICT');
+  }
+  return audits
+    .map((audit) => parseLease(audit, input))
+    .reduce((latest, candidate) => (candidate.generation > latest.generation ? candidate : latest));
+};
+
+const assertOwnerFence = async (
+  tx: Transaction,
+  input: IdempotencyRequest,
+  fence: IdempotencyOwnerFence,
+): Promise<void> => {
+  const latest = await findLatestLease(tx, input);
+  if (latest.generation !== fence.generation || latest.ownerToken !== fence.ownerToken) {
+    throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_REQUEST_PENDING');
+  }
+};
+
+const databaseNow = async (tx: Transaction): Promise<Date> => {
+  const result = await tx.execute<{ now: Date | string }>(sql`SELECT clock_timestamp() AS now`);
+  const value = result.rows[0]?.now;
+  const now = value instanceof Date ? value : new Date(value ?? Number.NaN);
+  if (Number.isNaN(now.getTime())) {
+    throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_IDEMPOTENCY_CONFLICT');
+  }
+  return now;
+};
+
 const reserveIdempotentRequest = async (
   db: LobeChatDatabase,
   input: IdempotencyRequest,
-): Promise<PlatformIdentityProviderDraft | null> => {
-  const now = Date.now();
-  const leaseExpiresAt = new Date(now + IDEMPOTENCY_LEASE_MS).toISOString();
+  leaseMs: number,
+): Promise<IdempotencyReservation> => {
+  const initialFence = { generation: 1, ownerToken: randomBytes(32).toString('hex') };
   return db.transaction(async (tx) => {
+    const initialNow = await databaseNow(tx);
+    const initialLeaseExpiresAt = new Date(initialNow.getTime() + leaseMs).toISOString();
     const [inserted] = await tx
       .insert(platformAuditLogs)
       .values({
         action: `${input.action}.requestReserved`,
         actorUserId: input.actorUserId,
-        afterDiff: { leaseExpiresAt, payloadHash: input.payloadHash },
+        afterDiff: {
+          ...initialFence,
+          leaseExpiresAt: initialLeaseExpiresAt,
+          payloadHash: input.payloadHash,
+        },
         id: input.reservationAuditId,
         reason: input.reason,
         requestId: input.requestId,
@@ -396,54 +493,34 @@ const reserveIdempotentRequest = async (
       })
       .onConflictDoNothing({ target: platformAuditLogs.id })
       .returning({ id: platformAuditLogs.id });
-    if (inserted) return null;
+    if (inserted) return { fence: initialFence, kind: 'owner' };
 
-    const [reservation] = await tx
-      .select()
-      .from(platformAuditLogs)
-      .where(eq(platformAuditLogs.id, input.reservationAuditId))
-      .limit(1);
-    if (!reservation) {
-      throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_IDEMPOTENCY_CONFLICT');
-    }
-    const reservationDiff = assertAuditScope(reservation, input, `${input.action}.requestReserved`);
+    await lockIdempotencyTarget(tx, input.targetId);
     const replay = await findTerminalReplay(tx, input);
-    if (replay) return replay;
+    if (replay) return { kind: 'replay', response: replay };
 
-    const [latestLease] = await tx
-      .select()
-      .from(platformAuditLogs)
-      .where(
-        and(
-          eq(platformAuditLogs.action, `${input.action}.requestLease`),
-          eq(platformAuditLogs.actorUserId, input.actorUserId),
-          eq(platformAuditLogs.requestId, input.requestId),
-          eq(platformAuditLogs.targetId, input.targetId),
-        ),
-      )
-      .orderBy(desc(platformAuditLogs.createdAt))
-      .limit(1);
-    const currentDiff = latestLease
-      ? assertAuditScope(latestLease, input, `${input.action}.requestLease`)
-      : reservationDiff;
-    const currentLeaseExpiry = currentDiff.leaseExpiresAt;
-    if (
-      typeof currentLeaseExpiry !== 'string' ||
-      Number.isNaN(Date.parse(currentLeaseExpiry)) ||
-      Date.parse(currentLeaseExpiry) > now
-    ) {
+    const latestLease = await findLatestLease(tx, input);
+    const recoveryNow = await databaseNow(tx);
+    if (Date.parse(latestLease.leaseExpiresAt) > recoveryNow.getTime()) {
       throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_REQUEST_PENDING');
     }
 
-    const recoveryId = `oidc-idempotency-${digest(
-      `${input.reservationAuditId}:${currentLeaseExpiry}:recovery`,
-    )}`;
+    const recoveredFence = {
+      generation: latestLease.generation + 1,
+      ownerToken: randomBytes(32).toString('hex'),
+    };
+    const recoveredLeaseExpiresAt = new Date(recoveryNow.getTime() + leaseMs).toISOString();
+    const recoveryId = `oidc-idempotency-${digest(`${input.reservationAuditId}:lease:${recoveredFence.generation}`)}`;
     const [recovered] = await tx
       .insert(platformAuditLogs)
       .values({
         action: `${input.action}.requestLease`,
         actorUserId: input.actorUserId,
-        afterDiff: { leaseExpiresAt, payloadHash: input.payloadHash },
+        afterDiff: {
+          ...recoveredFence,
+          leaseExpiresAt: recoveredLeaseExpiresAt,
+          payloadHash: input.payloadHash,
+        },
         id: recoveryId,
         reason: input.reason,
         requestId: input.requestId,
@@ -456,7 +533,7 @@ const reserveIdempotentRequest = async (
     if (!recovered) {
       throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_REQUEST_PENDING');
     }
-    return null;
+    return { fence: recoveredFence, kind: 'owner' };
   });
 };
 
@@ -469,24 +546,89 @@ const failureCode = (error: unknown): string => {
 const finalizeIdempotentFailure = async (
   db: LobeChatDatabase,
   input: IdempotencyRequest,
+  fence: IdempotencyOwnerFence,
   error: unknown,
-): Promise<void> => {
-  await new PlatformAuditService(db).append({
-    action: input.action,
-    actorUserId: input.actorUserId,
-    afterDiff: { errorCode: failureCode(error), payloadHash: input.payloadHash },
-    id: input.failureAuditId,
-    reason: input.reason,
-    requestId: input.requestId,
-    result: 'failure',
-    targetId: input.targetId,
-    targetType: 'identity_provider',
+): Promise<PlatformIdentityProviderDraft | null> =>
+  db.transaction(async (tx) => {
+    await lockIdempotencyTarget(tx, input.targetId);
+    const replay = await findTerminalReplay(tx, input);
+    if (replay) return replay;
+    await assertOwnerFence(tx, input, fence);
+    const [inserted] = await tx
+      .insert(platformAuditLogs)
+      .values({
+        action: input.action,
+        actorUserId: input.actorUserId,
+        afterDiff: {
+          errorCode: failureCode(error),
+          generation: fence.generation,
+          outcome: 'failure',
+          ownerToken: fence.ownerToken,
+          payloadHash: input.payloadHash,
+        },
+        id: input.terminalAuditId,
+        reason: input.reason,
+        requestId: input.requestId,
+        result: 'failure',
+        targetId: input.targetId,
+        targetType: 'identity_provider',
+      })
+      .onConflictDoNothing({ target: platformAuditLogs.id })
+      .returning({ id: platformAuditLogs.id });
+    if (!inserted) return findTerminalReplay(tx, input);
+    return null;
   });
+
+const appendSuccessTerminal = async (
+  tx: Transaction,
+  input: IdempotencyRequest,
+  fence: IdempotencyOwnerFence,
+  values: {
+    afterDiff: Record<string, unknown>;
+    beforeDiff: Record<string, unknown>;
+    configRevision: number;
+    response: PlatformIdentityProviderDraft;
+  },
+): Promise<PlatformIdentityProviderDraft> => {
+  await assertOwnerFence(tx, input, fence);
+  const [inserted] = await tx
+    .insert(platformAuditLogs)
+    .values({
+      action: input.action,
+      actorUserId: input.actorUserId,
+      afterDiff: {
+        ...values.afterDiff,
+        generation: fence.generation,
+        outcome: 'success',
+        ownerToken: fence.ownerToken,
+        payloadHash: input.payloadHash,
+        response: toIdempotentResponse(values.response),
+      },
+      beforeDiff: values.beforeDiff,
+      configRevision: values.configRevision,
+      id: input.terminalAuditId,
+      reason: input.reason,
+      requestId: input.requestId,
+      result: 'success',
+      targetId: input.targetId,
+      targetType: 'identity_provider',
+    })
+    .onConflictDoNothing({ target: platformAuditLogs.id })
+    .returning({ id: platformAuditLogs.id });
+  if (inserted) return values.response;
+  const replay = await findTerminalReplay(tx, input);
+  if (!replay) {
+    throw new IdentityProviderPublicationError('PLATFORM_IDENTITY_PROVIDER_REQUEST_PENDING');
+  }
+  return replay;
 };
 
 /** Atomic publication and rollback control plane for restart-activated OIDC providers. */
 export class IdentityProviderPublicationService {
-  constructor(private readonly db: LobeChatDatabase) {}
+  constructor(
+    private readonly db: LobeChatDatabase,
+    private readonly testHooks: IdentityProviderPublicationTestHooks = {},
+  ) {}
 
   private lockedDraft = async (tx: Transaction, id: string) => {
     const [row] = await tx
@@ -552,11 +694,19 @@ export class IdentityProviderPublicationService {
       requestId,
       targetId: input.id,
     };
-    const replay = await reserveIdempotentRequest(this.db, request);
-    if (replay) return replay;
+    const reservation = await reserveIdempotentRequest(
+      this.db,
+      request,
+      this.testHooks.leaseMs ?? IDEMPOTENCY_LEASE_MS,
+    );
+    if (reservation.kind === 'replay') return reservation.response;
+    const { fence } = reservation;
+    await this.testHooks.afterReservation?.(fence);
     try {
       return await this.db.transaction(async (tx) => {
         const { draft, secretRef } = await this.lockedDraft(tx, input.id);
+        await this.testHooks.afterDraftLock?.(fence);
+        await assertOwnerFence(tx, request, fence);
         if (draft.revision !== input.expectedRevision) {
           throw new PlatformRevisionConflictError('Identity provider revision changed', {
             currentRevision: draft.revision,
@@ -655,33 +805,36 @@ export class IdentityProviderPublicationService {
           revision: nextRevision,
           status: 'pending_restart',
         };
-        await new PlatformAuditService(tx).append({
-          action,
-          actorUserId,
+        return appendSuccessTerminal(tx, request, fence, {
           afterDiff: {
             activation: 'pending_restart',
             checksum,
-            payloadHash: idempotency.payloadHash,
             providerKey: payload.providerKey,
-            response: toIdempotentResponse(result),
             revision: nextRevision,
             secretFingerprint: payload.secretFingerprint,
           },
           beforeDiff: { revision: draft.revision, status: draft.status },
           configRevision: nextRevision,
-          id: idempotency.successAuditId,
-          reason,
-          requestId,
-          result: 'success',
-          targetId: input.id,
-          targetType: 'identity_provider',
+          response: result,
         });
-        return result;
       });
     } catch (error) {
+      if (
+        error instanceof IdentityProviderPublicationError &&
+        error.code === 'PLATFORM_IDENTITY_PROVIDER_REQUEST_PENDING'
+      ) {
+        throw error;
+      }
       try {
-        await finalizeIdempotentFailure(this.db, request, error);
+        const replay = await finalizeIdempotentFailure(this.db, request, fence, error);
+        if (replay) return replay;
       } catch (auditError) {
+        if (
+          auditError instanceof IdentityProviderPublicationError &&
+          auditError.code === 'PLATFORM_IDENTITY_PROVIDER_REQUEST_PENDING'
+        ) {
+          throw auditError;
+        }
         console.error('[admin.identityProviders] idempotency failure remains pending', {
           action,
           errorClass: auditError instanceof Error ? auditError.name : 'UnknownError',
@@ -728,11 +881,19 @@ export class IdentityProviderPublicationService {
       requestId,
       targetId: input.id,
     };
-    const replay = await reserveIdempotentRequest(this.db, request);
-    if (replay) return replay;
+    const reservation = await reserveIdempotentRequest(
+      this.db,
+      request,
+      this.testHooks.leaseMs ?? IDEMPOTENCY_LEASE_MS,
+    );
+    if (reservation.kind === 'replay') return reservation.response;
+    const { fence } = reservation;
+    await this.testHooks.afterReservation?.(fence);
     try {
       return await this.db.transaction(async (tx) => {
         const { draft } = await this.lockedDraft(tx, input.id);
+        await this.testHooks.afterDraftLock?.(fence);
+        await assertOwnerFence(tx, request, fence);
         if (draft.revision !== input.expectedRevision) {
           throw new PlatformRevisionConflictError('Identity provider revision changed', {
             currentRevision: draft.revision,
@@ -845,31 +1006,34 @@ export class IdentityProviderPublicationService {
           type: payload.type,
           usePkce: true,
         };
-        await new PlatformAuditService(tx).append({
-          action,
-          actorUserId,
+        return appendSuccessTerminal(tx, request, fence, {
           afterDiff: {
-            payloadHash: idempotency.payloadHash,
-            response: toIdempotentResponse(result),
             restoredFromRevision: input.targetRevision,
             revision: nextRevision,
             status: 'draft',
           },
           beforeDiff: { revision: draft.revision, status: draft.status },
           configRevision: nextRevision,
-          id: idempotency.successAuditId,
-          reason,
-          requestId,
-          result: 'success',
-          targetId: input.id,
-          targetType: 'identity_provider',
+          response: result,
         });
-        return result;
       });
     } catch (error) {
+      if (
+        error instanceof IdentityProviderPublicationError &&
+        error.code === 'PLATFORM_IDENTITY_PROVIDER_REQUEST_PENDING'
+      ) {
+        throw error;
+      }
       try {
-        await finalizeIdempotentFailure(this.db, request, error);
+        const replay = await finalizeIdempotentFailure(this.db, request, fence, error);
+        if (replay) return replay;
       } catch (auditError) {
+        if (
+          auditError instanceof IdentityProviderPublicationError &&
+          auditError.code === 'PLATFORM_IDENTITY_PROVIDER_REQUEST_PENDING'
+        ) {
+          throw auditError;
+        }
         console.error('[admin.identityProviders] idempotency failure remains pending', {
           action,
           errorClass: auditError instanceof Error ? auditError.name : 'UnknownError',
