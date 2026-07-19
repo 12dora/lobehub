@@ -38,6 +38,7 @@ export {
   type KekMaterial,
   type KeyProvider,
   type VaultAppRoleAuth,
+  type VaultAppRoleSecretIdProvider,
   type VaultAuth,
   VaultKeyProvider,
   type VaultKeyProviderOptions,
