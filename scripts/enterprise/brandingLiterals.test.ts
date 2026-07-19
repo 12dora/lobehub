@@ -12,7 +12,7 @@ import {
 } from './brandingLiterals';
 
 describe('branding literal policy', () => {
-  it('finds runtime strings, templates, JSX text, and object keys while ignoring comments/types', () => {
+  it('finds runtime strings, templates, and JSX text while classifying object keys', () => {
     const result = scanBrandingFile(
       'src/features/Branding.tsx',
       `
@@ -26,11 +26,9 @@ describe('branding literal policy', () => {
     );
 
     expect(result.errors).toEqual([]);
-    expect(result.candidates.map(({ brand }) => brand)).toEqual([
-      'LobeHub',
-      'LobeChat',
-      'LobeHub',
-      'LobeHub',
+    expect(result.candidates.map(({ brand }) => brand)).toEqual(['LobeHub', 'LobeChat', 'LobeHub']);
+    expect(result.allowed).toEqual([
+      expect.objectContaining({ brand: 'LobeHub', category: 'stable-code-key' }),
     ]);
     expect(result.candidates.every(({ locator }) => !locator.includes('line'))).toBe(true);
   });
@@ -52,8 +50,31 @@ describe('branding literal policy', () => {
       'LobeHub',
       'LobeChat',
       'LobeHub',
-      'LobeHub',
       'LobeChat',
+    ]);
+    expect(result.allowed).toEqual([
+      expect.objectContaining({ brand: 'LobeHub', category: 'stable-code-key' }),
+    ]);
+  });
+
+  it('does not flag runtime interpolation but still rejects a new visible brand literal', () => {
+    const locale = scanBrandingFile(
+      'locales/en-US/common.json',
+      JSON.stringify({ 'tools.lobehubSkill.title': '{{platformName}}', 'title': 'LobeHub' }),
+    );
+    const ui = scanBrandingFile(
+      'src/NewSurface.tsx',
+      `export const NewSurface = () => <button aria-label="LobeHub">{{platformName}}</button>;`,
+    );
+
+    expect(locale.allowed).toEqual([
+      expect.objectContaining({ category: 'stable-code-key', preview: 'tools.lobehubSkill.title' }),
+    ]);
+    expect(locale.candidates).toEqual([
+      expect.objectContaining({ brand: 'LobeHub', preview: 'LobeHub' }),
+    ]);
+    expect(ui.candidates).toEqual([
+      expect.objectContaining({ brand: 'LobeHub', preview: 'LobeHub' }),
     ]);
   });
 
