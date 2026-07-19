@@ -134,6 +134,7 @@ export class IdentityProviderDiscoveryValidator {
       metadata.issuer !== issuer ||
       !metadata.responseTypesSupported.includes('code') ||
       !metadata.subjectTypesSupported.some((value) => value === 'public' || value === 'pairwise') ||
+      metadata.idTokenSigningAlgValuesSupported.includes('none') ||
       !metadata.idTokenSigningAlgValuesSupported.some((algorithm) =>
         OIDC_ALLOWED_ID_TOKEN_SIGNING_ALGORITHMS.includes(
           algorithm as (typeof OIDC_ALLOWED_ID_TOKEN_SIGNING_ALGORITHMS)[number],
