@@ -22,6 +22,7 @@ import {
   type PlatformIdentityProviderType,
 } from '@/types/platform/identityProvider';
 
+import { classifyEnterpriseError, observeEnterprisePlatformEvent } from '../../observability';
 import { containsEnterpriseSecretMaterial } from '../../security/redaction';
 
 const SUCCESSFUL_TEST_MAX_AGE_MS = 10 * 60 * 1000;
@@ -767,6 +768,22 @@ export class IdentityProviderPublicationService {
     private readonly testHooks: IdentityProviderPublicationTestHooks = {},
   ) {}
 
+  private observePublish = (startedAt: number, error?: unknown): void => {
+    const conflict = error instanceof PlatformRevisionConflictError;
+    observeEnterprisePlatformEvent({
+      domain: 'identity',
+      durationMs: Date.now() - startedAt,
+      ...(error
+        ? {
+            errorClass: conflict ? ('ConflictError' as const) : classifyEnterpriseError(error),
+          }
+        : {}),
+      operation: 'publish',
+      outcome: error ? (conflict ? 'conflict' : 'failure') : 'success',
+      type: 'config_publish',
+    });
+  };
+
   /** Minimal secret-free history used to choose an exact rollback target. */
   listPublishedRevisions = async (
     id: string,
@@ -838,6 +855,7 @@ export class IdentityProviderPublicationService {
     actorUserId: string,
     input: { expectedRevision: number; id: string; reason: string; requestId: string },
   ): Promise<PlatformIdentityProviderInternalDraft> => {
+    const startedAt = Date.now();
     const reason = assertReason(input.reason);
     const requestId = assertRequestId(input.requestId);
     const action = 'admin.identityProviders.publish';
@@ -866,7 +884,7 @@ export class IdentityProviderPublicationService {
     const { fence } = reservation;
     await this.testHooks.afterReservation?.(fence);
     try {
-      return await this.db.transaction(async (tx) => {
+      const result = await this.db.transaction(async (tx) => {
         await acquireIdentityProviderPublishedRevisionLock(tx);
         await this.testHooks.afterPublishedRevisionLock?.(fence);
         const { draft, secretRef } = await this.lockedDraft(tx, input.id);
@@ -982,6 +1000,8 @@ export class IdentityProviderPublicationService {
           response: result,
         });
       });
+      this.observePublish(startedAt);
+      return result;
     } catch (error) {
       if (
         error instanceof IdentityProviderPublicationError &&
@@ -1004,6 +1024,7 @@ export class IdentityProviderPublicationService {
           errorClass: auditError instanceof Error ? auditError.name : 'UnknownError',
         });
       }
+      this.observePublish(startedAt, error);
       throw error;
     }
   };
