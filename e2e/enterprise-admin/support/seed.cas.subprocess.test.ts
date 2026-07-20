@@ -4,7 +4,7 @@
  */
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -594,7 +594,7 @@ describe('CAS real signal subprocess + foreign concurrent links', () => {
     );
   }, 90_000);
 
-  it('link ownership: delete+reinsert same user_role id path refuses CAS delete', async () => {
+  it('link ownership: delete+reinsert same user_role id with different full state refuses CAS', async () => {
     const harness = await startCasPostgres();
     cleanups.push(harness.stop);
     const before = await snapshotGlobalDbDigest(harness.databaseUrl);
@@ -605,8 +605,8 @@ describe('CAS real signal subprocess + foreign concurrent links', () => {
     const pool = new Pool({ connectionString: harness.databaseUrl });
     await pool.query(`DELETE FROM rbac_user_roles WHERE id = $1::uuid`, [suiteLink.id]);
     await pool.query(
-      `INSERT INTO rbac_user_roles (id, user_id, role_id, workspace_id, created_at)
-       VALUES ($1::uuid, $2, $3, $4, $5::timestamptz + interval '2 days')`,
+      `INSERT INTO rbac_user_roles (id, user_id, role_id, workspace_id, created_at, expires_at)
+       VALUES ($1::uuid, $2, $3, $4, $5::timestamptz + interval '2 days', NOW() + interval '30 days')`,
       [
         suiteLink.id,
         suiteLink.userId,
@@ -618,7 +618,7 @@ describe('CAS real signal subprocess + foreign concurrent links', () => {
     await pool.end();
 
     await expect(casRestoreGlobalDb(harness.databaseUrl, manifest)).rejects.toThrow(
-      /after-state drifted|CAS restore conflict/,
+      /after-state drifted|CAS restore conflict|fingerprint/,
     );
 
     const pool2 = new Pool({ connectionString: harness.databaseUrl });
@@ -626,13 +626,103 @@ describe('CAS real signal subprocess + foreign concurrent links', () => {
       (await pool2.query(`SELECT id FROM rbac_user_roles WHERE id = $1::uuid`, [suiteLink.id]))
         .rows,
     ).toHaveLength(1);
+    // Restore full after-state so cleanup can succeed
     await pool2.query(
-      `UPDATE rbac_user_roles SET created_at = $2::timestamptz WHERE id = $1::uuid`,
-      [suiteLink.id, suiteLink.createdAt],
+      `UPDATE rbac_user_roles
+          SET created_at = $2::timestamptz, expires_at = $3::timestamptz
+        WHERE id = $1::uuid`,
+      [suiteLink.id, suiteLink.createdAt, suiteLink.expiresAt],
     );
     await pool2.end();
 
     const { cleanupEnterpriseAdminSuite } = await import('./seed');
+    await cleanupEnterpriseAdminSuite(harness.databaseUrl, seed, manifest);
+    expect(digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl))).toBe(
+      digestFingerprint(before),
+    );
+  }, 90_000);
+
+  it('user_role expires_at-only drift refuses CAS and preserves link', async () => {
+    const harness = await startCasPostgres();
+    cleanups.push(harness.stop);
+    const before = await snapshotGlobalDbDigest(harness.databaseUrl);
+    const { manifest, seed } = await seedEnterpriseAdminSuite(harness.databaseUrl);
+    const suiteLink = manifest.createdUserRoles[0];
+    expect(suiteLink).toBeTruthy();
+    expect(suiteLink.expiresAt).toBeNull();
+
+    const pool = new Pool({ connectionString: harness.databaseUrl });
+    await pool.query(
+      `UPDATE rbac_user_roles SET expires_at = NOW() + interval '7 days' WHERE id = $1::uuid`,
+      [suiteLink.id],
+    );
+    await pool.end();
+
+    await expect(casRestoreGlobalDb(harness.databaseUrl, manifest)).rejects.toThrow(
+      /after-state drifted|CAS restore conflict|fingerprint/,
+    );
+
+    const pool2 = new Pool({ connectionString: harness.databaseUrl });
+    const still = await pool2.query(
+      `SELECT id, expires_at FROM rbac_user_roles WHERE id = $1::uuid`,
+      [suiteLink.id],
+    );
+    expect(still.rows).toHaveLength(1);
+    expect(still.rows[0].expires_at).not.toBeNull();
+    await pool2.query(`UPDATE rbac_user_roles SET expires_at = NULL WHERE id = $1::uuid`, [
+      suiteLink.id,
+    ]);
+    await pool2.end();
+
+    const { cleanupEnterpriseAdminSuite } = await import('./seed');
+    await cleanupEnterpriseAdminSuite(harness.databaseUrl, seed, manifest);
+    expect(digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl))).toBe(
+      digestFingerprint(before),
+    );
+  }, 90_000);
+
+  it('foreign role→suite-user link not in RETURNING journal survives cleanup refuse', async () => {
+    const harness = await startCasPostgres();
+    cleanups.push(harness.stop);
+    const before = await snapshotGlobalDbDigest(harness.databaseUrl);
+    const { manifest, seed } = await seedEnterpriseAdminSuite(harness.databaseUrl);
+    const suiteUserId = seed.ordinary.id;
+    const foreignRoleId = 'role_foreign_to_suite_user';
+
+    const pool = new Pool({ connectionString: harness.databaseUrl });
+    await pool.query(
+      `INSERT INTO rbac_roles (id, name, display_name, description, is_system, is_active, metadata, workspace_id, created_at, updated_at)
+       VALUES ($1, 'foreign_to_user', 'F', 'x', false, true, '{}'::jsonb, NULL, NOW(), NOW())
+       ON CONFLICT DO NOTHING`,
+      [foreignRoleId],
+    );
+    const foreignLinkId = randomUUID();
+    await pool.query(
+      `INSERT INTO rbac_user_roles (id, user_id, role_id, workspace_id, created_at, expires_at)
+       VALUES ($1::uuid, $2, $3, NULL, NOW(), NULL)`,
+      [foreignLinkId, suiteUserId, foreignRoleId],
+    );
+    expect(manifest.createdUserRoles.some((l) => l.id === foreignLinkId)).toBe(false);
+    await pool.end();
+
+    const { cleanupEnterpriseAdminSuite } = await import('./seed');
+    await expect(cleanupEnterpriseAdminSuite(harness.databaseUrl, seed, manifest)).rejects.toThrow(
+      /non-owned user_role|CAS cleanup conflict|CAS restore conflict/,
+    );
+
+    const pool2 = new Pool({ connectionString: harness.databaseUrl });
+    // Foreign link and suite user must still exist
+    expect(
+      (await pool2.query(`SELECT id FROM rbac_user_roles WHERE id = $1::uuid`, [foreignLinkId]))
+        .rows,
+    ).toHaveLength(1);
+    expect(
+      (await pool2.query(`SELECT id FROM users WHERE id = $1`, [suiteUserId])).rows,
+    ).toHaveLength(1);
+    await pool2.query(`DELETE FROM rbac_user_roles WHERE id = $1::uuid`, [foreignLinkId]);
+    await pool2.query(`DELETE FROM rbac_roles WHERE id = $1`, [foreignRoleId]);
+    await pool2.end();
+
     await cleanupEnterpriseAdminSuite(harness.databaseUrl, seed, manifest);
     expect(digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl))).toBe(
       digestFingerprint(before),
@@ -761,12 +851,72 @@ describe('CAS real signal subprocess + foreign concurrent links', () => {
     expect(digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl))).toBe(beforeFp);
   }, 90_000);
 
-  it('ambiguous COMMIT timeout: fail-closed reconcile via lifecycle hook', async () => {
+  it('server COMMIT landed, client result withheld: lifecycle reconcile restores digest', async () => {
     const harness = await startCasPostgres();
     cleanups.push(harness.stop);
     const beforeFp = digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl));
     const {
       createDurableRestoreHandle,
+      getActiveSettleTimerCount,
+      registerSeedRestoreOnLifecycle,
+      seedEnterpriseAdminSuite: seedFn,
+    } = await import('./seed');
+    const {
+      createLifecycleState,
+      createRunToken,
+      installLifecycleSignalHandlers,
+      cleanupLifecycle,
+    } = await import('./lifecycle');
+
+    const hangDir = mkdtempSync(path.join(tmpdir(), 'cas-commit-landed-'));
+    const durable = createDurableRestoreHandle(harness.databaseUrl);
+    const state = createLifecycleState(createRunToken());
+    const baseSig = process.listenerCount('SIGINT');
+    const baseTerm = process.listenerCount('SIGTERM');
+    const timersBefore = getActiveSettleTimerCount();
+    installLifecycleSignalHandlers(state);
+    expect(process.listenerCount('SIGINT')).toBe(baseSig + 1);
+    expect(process.listenerCount('SIGTERM')).toBe(baseTerm + 1);
+    registerSeedRestoreOnLifecycle(state, durable, { settleTimeoutMs: 2_000 });
+
+    process.env.E2E_CAS_COMMIT_LANDED_CLIENT_UNKNOWN = '1';
+    process.env.E2E_CAS_COMMIT_LANDED_HANG_DIR = hangDir;
+    const seedPromise = seedFn(harness.databaseUrl, durable).catch((e) => e);
+
+    // Wait until server COMMIT landed (marker) while client still hanging
+    const marker = path.join(hangDir, 'commit-landed');
+    const deadline = Date.now() + 30_000;
+    while (!existsSync(marker) && Date.now() < deadline) {
+      await sleep(50);
+    }
+    expect(existsSync(marker)).toBe(true);
+    // Pollution present (COMMIT landed)
+    expect(digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl))).not.toBe(beforeFp);
+    expect(durable.commitPhase).toBe('ambiguous');
+    expect(durable.manifest).toBeTruthy();
+
+    // Real lifecycle cleanup while seed pending/ambiguous — must restore
+    await cleanupLifecycle(state);
+    expect(digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl))).toBe(beforeFp);
+    expect(process.listenerCount('SIGINT')).toBe(baseSig);
+    expect(process.listenerCount('SIGTERM')).toBe(baseTerm);
+    expect(getActiveSettleTimerCount()).toBe(timersBefore);
+
+    // Release hang so seed promise settles (no dangling connection)
+    writeFileSync(path.join(hangDir, 'release'), '1', 'utf8');
+    await seedPromise;
+    delete process.env.E2E_CAS_COMMIT_LANDED_CLIENT_UNKNOWN;
+    delete process.env.E2E_CAS_COMMIT_LANDED_HANG_DIR;
+    rmSync(hangDir, { force: true, recursive: true });
+  }, 90_000);
+
+  it('commit attempt server ROLLBACK: reconcile sees before-state, no destructive restore', async () => {
+    const harness = await startCasPostgres();
+    cleanups.push(harness.stop);
+    const beforeFp = digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl));
+    const {
+      createDurableRestoreHandle,
+      getActiveSettleTimerCount,
       registerSeedRestoreOnLifecycle,
       seedEnterpriseAdminSuite: seedFn,
     } = await import('./seed');
@@ -779,22 +929,77 @@ describe('CAS real signal subprocess + foreign concurrent links', () => {
 
     const durable = createDurableRestoreHandle(harness.databaseUrl);
     const state = createLifecycleState(createRunToken());
+    const timersBefore = getActiveSettleTimerCount();
     installLifecycleSignalHandlers(state);
     registerSeedRestoreOnLifecycle(state, durable, { settleTimeoutMs: 2_000 });
 
-    process.env.E2E_CAS_FORCE_COMMIT_TIMEOUT = '1';
+    process.env.E2E_CAS_COMMIT_ATTEMPT_ROLLBACK = '1';
     try {
       await expect(seedFn(harness.databaseUrl, durable)).rejects.toThrow(
-        /forced COMMIT timeout|ambiguous/,
+        /server ROLLBACK|ambiguous/,
       );
     } finally {
-      delete process.env.E2E_CAS_FORCE_COMMIT_TIMEOUT;
+      delete process.env.E2E_CAS_COMMIT_ATTEMPT_ROLLBACK;
     }
     expect(durable.commitPhase).toBe('ambiguous');
-    expect(durable.manifest).toBeTruthy(); // journal preserved
-    // COMMIT never landed — reconcile should treat as rolledBack
+    expect(durable.manifest).toBeTruthy();
+    // No pollution — COMMIT never landed
+    expect(digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl))).toBe(beforeFp);
+
     await cleanupLifecycle(state);
     expect(digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl))).toBe(beforeFp);
+    expect(getActiveSettleTimerCount()).toBe(timersBefore);
+  }, 60_000);
+
+  it('pending commitStarted crosses settle timeout: fail-closed reconcile, short bound', async () => {
+    const harness = await startCasPostgres();
+    cleanups.push(harness.stop);
+    const beforeFp = digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl));
+    const {
+      createDurableRestoreHandle,
+      getActiveSettleTimerCount,
+      registerSeedRestoreOnLifecycle,
+      seedEnterpriseAdminSuite: seedFn,
+    } = await import('./seed');
+    const {
+      createLifecycleState,
+      createRunToken,
+      installLifecycleSignalHandlers,
+      cleanupLifecycle,
+    } = await import('./lifecycle');
+
+    const hangDir = mkdtempSync(path.join(tmpdir(), 'cas-commit-pending-'));
+    const durable = createDurableRestoreHandle(harness.databaseUrl);
+    const state = createLifecycleState(createRunToken());
+    const timersBefore = getActiveSettleTimerCount();
+    const baseSig = process.listenerCount('SIGINT');
+    installLifecycleSignalHandlers(state);
+    registerSeedRestoreOnLifecycle(state, durable, { settleTimeoutMs: 1_500 });
+
+    process.env.E2E_CAS_COMMIT_PENDING_HANG_DIR = hangDir;
+    const seedPromise = seedFn(harness.databaseUrl, durable).catch((e) => e);
+
+    const marker = path.join(hangDir, 'commit-started');
+    const deadline = Date.now() + 20_000;
+    while (!existsSync(marker) && Date.now() < deadline) {
+      await sleep(50);
+    }
+    expect(existsSync(marker)).toBe(true);
+    expect(durable.commitPhase).toBe('commitStarted');
+    // No COMMIT yet — no pollution
+    expect(digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl))).toBe(beforeFp);
+
+    const started = Date.now();
+    await cleanupLifecycle(state);
+    expect(Date.now() - started).toBeLessThan(8_000);
+    expect(digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl))).toBe(beforeFp);
+    expect(process.listenerCount('SIGINT')).toBe(baseSig);
+    expect(getActiveSettleTimerCount()).toBe(timersBefore);
+
+    writeFileSync(path.join(hangDir, 'release'), '1', 'utf8');
+    await seedPromise;
+    delete process.env.E2E_CAS_COMMIT_PENDING_HANG_DIR;
+    rmSync(hangDir, { force: true, recursive: true });
   }, 60_000);
 
   for (const signal of ['SIGTERM', 'SIGINT'] as const) {
