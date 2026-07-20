@@ -2249,6 +2249,43 @@ table platform_identity_providers {
   }
 }
 
+table platform_instance_heartbeats {
+  instance_id varchar(64) [pk, not null]
+  last_heartbeat_at "timestamp with time zone" [not null, default: `statement_timestamp()`]
+  started_at "timestamp with time zone" [not null, default: `statement_timestamp()`]
+
+  indexes {
+    last_heartbeat_at [name: 'platform_instance_heartbeats_freshness_idx']
+
+
+  }
+}
+
+table platform_instance_revision_states {
+  domain varchar(32) [not null]
+  instance_id varchar(64) [not null]
+  error_category varchar(64)
+  health varchar(32) [not null, default: 'unavailable']
+  load_mode varchar(32) [not null, default: 'request_scoped']
+  loaded_at "timestamp with time zone" [not null, default: `clock_timestamp()`]
+  loaded_revision integer
+  loaded_revision_id varchar(128)
+  source varchar(32) [not null, default: 'unavailable']
+
+  indexes {
+    (instance_id, domain) [pk]
+    (domain, loaded_at) [name: 'platform_instance_revision_states_domain_loaded_idx']
+
+
+
+
+
+
+
+
+  }
+}
+
 table platform_jobs {
   id text [pk, not null]
   type varchar(128) [not null]
