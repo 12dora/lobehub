@@ -45,7 +45,10 @@ export const resolveSkillCatalogRuntimeReadiness = async (
   const db = params.db ?? (await getServerDB());
   const service =
     params.service ??
-    new SkillCatalogReadService(db, { builtinSkills: getBuiltinSkillDefinitions() });
+    new SkillCatalogReadService(db, {
+      builtinSkills: getBuiltinSkillDefinitions(),
+      runtimeReporting: { database: db },
+    });
   const catalog = await service.getPublishedCatalog();
   return isPublishedSkillCatalogExecutionReady({ catalog, service });
 };

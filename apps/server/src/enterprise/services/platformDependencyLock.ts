@@ -1,8 +1,9 @@
 import { isRecord } from '@lobechat/utils/object';
 import { sql } from 'drizzle-orm';
 
-import { PlatformAiCatalogRepository } from '@/database/repositories/platformAiCatalog';
 import type { Transaction } from '@/database/type';
+
+import { loadCurrentAiCatalogSnapshot } from './platformInstance/catalogAuthority';
 
 const PLATFORM_DEPENDENCY_LOCK_NAMESPACE = 'aihub:platform-published-dependencies:v1';
 const PLATFORM_DEFAULT_INBOX_LOCK_NAMESPACE = 'aihub:platform-default-inbox:v1';
@@ -87,9 +88,7 @@ export const assertPublishedPlatformAiReferences = async (
 ): Promise<void> => {
   const references = [...collectNestedAiReferences(value), ...collectPathAiReferences(value)];
   if (references.length === 0) return;
-  const revisions = await new PlatformAiCatalogRepository(
-    tx,
-  ).listLatestPublishedProviderRevisions();
+  const { revisions } = await loadCurrentAiCatalogSnapshot(tx);
   const published = new Set(
     revisions.flatMap((revision) => {
       if (!isRecord(revision.payload.provider) || !Array.isArray(revision.payload.models))
