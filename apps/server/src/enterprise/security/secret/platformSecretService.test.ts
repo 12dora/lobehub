@@ -175,6 +175,7 @@ describe('PlatformSecretService', () => {
         },
       });
 
+      expect(rotator.keyProviderId).toBe('env');
       await expect(rotator.getActiveKeyId()).resolves.toBe('env:new');
       const rotated = await rotator.rotateToKeyId(ciphertext, 'env:new');
       expect(rotator.peekKeyId(rotated)).toBe('env:new');

@@ -2275,6 +2275,7 @@ table platform_jobs {
     (type, idempotency_key) [name: 'platform_jobs_type_idempotency_key_unique', unique]
     (status, lease_until) [name: 'platform_jobs_status_lease_until_idx']
     (type, status) [name: 'platform_jobs_type_status_idx']
+    (input, input, input) [name: 'platform_jobs_secret_rewrap_failure_parent_domain_row_idx']
     (input, id) [name: 'platform_jobs_rollout_agent_id_id_idx']
     (input, status, input) [name: 'platform_jobs_rollout_transition_parent_status_user_idx']
     created_at [name: 'platform_jobs_created_at_idx']
