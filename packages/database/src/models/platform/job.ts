@@ -1,4 +1,5 @@
-import { and, asc, eq, inArray, lte, or } from 'drizzle-orm';
+import type { AnyColumn, SQL } from 'drizzle-orm';
+import { and, asc, eq, inArray, lte, or, sql } from 'drizzle-orm';
 
 import {
   type NewPlatformJob,
@@ -44,6 +45,25 @@ export interface FailJobParams {
   /** When true (or maxAttempts exceeded), move to `dead` instead of `pending` retry. */
   terminal?: boolean;
   workerId: string;
+}
+
+export const PLATFORM_JOB_BACKLOG_STATES = [
+  'pending',
+  'reserved_expired',
+  'running_lease_expired',
+] as const;
+
+export type PlatformJobBacklogState = (typeof PLATFORM_JOB_BACKLOG_STATES)[number];
+
+export interface PlatformJobBacklogEntry {
+  count: number;
+  oldestAgeSeconds: number;
+  state: PlatformJobBacklogState;
+}
+
+export interface PlatformJobBacklogSnapshot {
+  entries: PlatformJobBacklogEntry[];
+  snapshotAt: Date;
 }
 
 const DEFAULT_LEASE_MS = 30_000;
@@ -117,6 +137,75 @@ export class PlatformJobModel {
     return this.db.query.platformJobs.findFirst({
       where: and(eq(platformJobs.type, type), eq(platformJobs.idempotencyKey, idempotencyKey)),
     });
+  };
+
+  /**
+   * Reads only work that a worker can claim or clean up now. Terminal rows and active leases are
+   * excluded so transition/failure ledgers cannot inflate the operational backlog.
+   */
+  getBacklogSnapshot = async (): Promise<PlatformJobBacklogSnapshot> => {
+    const databaseNow = sql`statement_timestamp()`;
+    const pending = eq(platformJobs.status, 'pending');
+    const reservedExpired = and(
+      eq(platformJobs.status, 'reserved'),
+      lte(platformJobs.leaseUntil, databaseNow),
+    )!;
+    const runningLeaseExpired = and(
+      eq(platformJobs.status, 'running'),
+      lte(platformJobs.leaseUntil, databaseNow),
+    )!;
+    const ageSeconds = (timestamp: AnyColumn, condition: SQL) =>
+      sql<number>`greatest(
+        0,
+        coalesce(
+          extract(epoch from ${databaseNow} - min(${timestamp}) filter (where ${condition})),
+          0
+        )
+      )::double precision`;
+
+    const [row] = await this.db
+      .select({
+        pendingCount: sql<number>`count(*) filter (where ${pending})::int`,
+        pendingOldestAgeSeconds: ageSeconds(platformJobs.updatedAt, pending),
+        reservedExpiredCount: sql<number>`count(*) filter (where ${reservedExpired})::int`,
+        reservedExpiredOldestAgeSeconds: ageSeconds(platformJobs.leaseUntil, reservedExpired),
+        runningLeaseExpiredCount: sql<number>`count(*) filter (where ${runningLeaseExpired})::int`,
+        runningLeaseExpiredOldestAgeSeconds: ageSeconds(
+          platformJobs.leaseUntil,
+          runningLeaseExpired,
+        ),
+        snapshotAt: sql<Date | string>`${databaseNow}`,
+      })
+      .from(platformJobs)
+      .where(or(pending, reservedExpired, runningLeaseExpired));
+
+    const rawSnapshotAt = row?.snapshotAt;
+    const snapshotAt =
+      rawSnapshotAt instanceof Date ? rawSnapshotAt : new Date(rawSnapshotAt ?? NaN);
+    if (Number.isNaN(snapshotAt.getTime())) {
+      throw new Error('PLATFORM_JOB_BACKLOG_CLOCK_UNAVAILABLE');
+    }
+
+    return {
+      entries: [
+        {
+          count: Number(row?.pendingCount ?? 0),
+          oldestAgeSeconds: Number(row?.pendingOldestAgeSeconds ?? 0),
+          state: 'pending',
+        },
+        {
+          count: Number(row?.reservedExpiredCount ?? 0),
+          oldestAgeSeconds: Number(row?.reservedExpiredOldestAgeSeconds ?? 0),
+          state: 'reserved_expired',
+        },
+        {
+          count: Number(row?.runningLeaseExpiredCount ?? 0),
+          oldestAgeSeconds: Number(row?.runningLeaseExpiredOldestAgeSeconds ?? 0),
+          state: 'running_lease_expired',
+        },
+      ],
+      snapshotAt,
+    };
   };
 
   /**

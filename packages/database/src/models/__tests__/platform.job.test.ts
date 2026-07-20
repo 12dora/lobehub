@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { getTestDB } from '../../core/getTestDB';
@@ -15,6 +15,93 @@ afterEach(async () => {
 });
 
 describe('PlatformJobModel', () => {
+  describe('operational backlog snapshot', () => {
+    it('returns fixed zero-valued states with a database-authored clock when empty', async () => {
+      const before = Date.now();
+      const snapshot = await jobModel.getBacklogSnapshot();
+
+      expect(snapshot.entries).toEqual([
+        { count: 0, oldestAgeSeconds: 0, state: 'pending' },
+        { count: 0, oldestAgeSeconds: 0, state: 'reserved_expired' },
+        { count: 0, oldestAgeSeconds: 0, state: 'running_lease_expired' },
+      ]);
+      expect(snapshot.snapshotAt.getTime()).toBeGreaterThanOrEqual(before);
+      expect(snapshot.snapshotAt.getTime()).toBeLessThanOrEqual(Date.now());
+    });
+
+    it('counts only claimable or cleanable work and measures age from its availability clock', async () => {
+      await serverDB.insert(platformJobs).values([
+        {
+          createdAt: sql`statement_timestamp() - interval '1 day'`,
+          idempotencyKey: 'backlog-pending-old',
+          status: 'pending',
+          type: 'platform.agent.rollout.v1',
+          updatedAt: sql`statement_timestamp() - interval '20 seconds'`,
+        },
+        {
+          idempotencyKey: 'backlog-pending-new',
+          status: 'pending',
+          type: 'connector.runtime.shared-call.v1',
+          updatedAt: sql`statement_timestamp() - interval '2 seconds'`,
+        },
+        {
+          idempotencyKey: 'backlog-reserved-expired',
+          leaseUntil: sql`statement_timestamp() - interval '12 seconds'`,
+          status: 'reserved',
+          type: 'connector.runtime.shared-call.v1',
+        },
+        {
+          idempotencyKey: 'backlog-running-expired',
+          leaseUntil: sql`statement_timestamp() - interval '7 seconds'`,
+          status: 'running',
+          type: 'platform.secret.rewrap.v1',
+        },
+        {
+          idempotencyKey: 'backlog-reserved-active',
+          leaseUntil: sql`statement_timestamp() + interval '1 minute'`,
+          status: 'reserved',
+          type: 'connector.runtime.shared-call.v1',
+        },
+        {
+          idempotencyKey: 'backlog-running-active',
+          leaseUntil: sql`statement_timestamp() + interval '1 minute'`,
+          status: 'running',
+          type: 'platform.agent.rollout.v1',
+        },
+        {
+          idempotencyKey: 'backlog-transition-ledger',
+          status: 'failed',
+          type: 'platform.agent.rollout.transition.v1',
+          updatedAt: sql`statement_timestamp() - interval '2 days'`,
+        },
+        {
+          idempotencyKey: 'backlog-failure-ledger',
+          status: 'failed',
+          type: 'platform.secret.rewrap.failure.v1',
+          updatedAt: sql`statement_timestamp() - interval '2 days'`,
+        },
+        ...(['succeeded', 'dead', 'cancelled'] as const).map((status) => ({
+          idempotencyKey: `backlog-terminal-${status}`,
+          status,
+          type: 'platform.agent.rollout.v1',
+          updatedAt: sql`statement_timestamp() - interval '2 days'`,
+        })),
+      ]);
+
+      const snapshot = await jobModel.getBacklogSnapshot();
+      const byState = new Map(snapshot.entries.map((entry) => [entry.state, entry]));
+
+      expect(byState.get('pending')?.count).toBe(2);
+      expect(byState.get('pending')?.oldestAgeSeconds).toBeGreaterThanOrEqual(20);
+      expect(byState.get('pending')?.oldestAgeSeconds).toBeLessThan(60);
+      expect(byState.get('reserved_expired')?.count).toBe(1);
+      expect(byState.get('reserved_expired')?.oldestAgeSeconds).toBeGreaterThanOrEqual(12);
+      expect(byState.get('running_lease_expired')?.count).toBe(1);
+      expect(byState.get('running_lease_expired')?.oldestAgeSeconds).toBeGreaterThanOrEqual(7);
+      expect(snapshot.entries.every(({ oldestAgeSeconds }) => oldestAgeSeconds >= 0)).toBe(true);
+    });
+  });
+
   describe('enqueue idempotency', () => {
     it('returns the same job for duplicate (type, idempotencyKey) without side effects', async () => {
       const first = await jobModel.enqueue({
