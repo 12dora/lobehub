@@ -274,22 +274,24 @@ describe('analyzeRebase', () => {
     expect(report.requiredGates.map(({ id }) => id)).toContain('patch-ledger-update');
   });
 
-  it('reports drift when a registered upstream path is renamed to an unregistered destination', async () => {
-    const body =
-      'export const stableRenameBody = "unique-rename-payload-for-similarity-detection";\n';
-    const { repositoryRoot } = await createRepository(['src/registered.ts']);
-    await writeRepositoryFile(repositoryRoot, 'src/registered.ts', body);
-    const baseWithRegistered = await commitAll(repositoryRoot, 'register source path');
-
-    // Rebuild upstream from the file-bearing base so the explicit base remains the merge-base.
-    await runGit(repositoryRoot, 'branch', '--force', 'upstream', baseWithRegistered);
+  const rebuildUpstreamFromBase = async (repositoryRoot: string, baseCommit: string) => {
+    await runGit(repositoryRoot, 'branch', '--force', 'upstream', baseCommit);
     await runGit(repositoryRoot, 'switch', '--quiet', 'upstream');
     await writeRepositoryFile(
       repositoryRoot,
       'upstream-only.ts',
       'export const upstream = true;\n',
     );
-    const upstream = await commitAll(repositoryRoot, 'upstream from registered base');
+    return commitAll(repositoryRoot, 'upstream from prepared base');
+  };
+
+  it('scores rename source hotspot and destination drift for registered -> unregistered', async () => {
+    const body =
+      'export const stableRenameBody = "unique-rename-payload-for-similarity-detection";\n';
+    const { repositoryRoot } = await createRepository(['src/registered.ts']);
+    await writeRepositoryFile(repositoryRoot, 'src/registered.ts', body);
+    const baseWithRegistered = await commitAll(repositoryRoot, 'register source path');
+    const upstream = await rebuildUpstreamFromBase(repositoryRoot, baseWithRegistered);
 
     await runGit(repositoryRoot, 'switch', '--quiet', '-C', 'candidate', baseWithRegistered);
     await runGit(repositoryRoot, 'mv', 'src/registered.ts', 'src/unregistered-destination.ts');
@@ -303,11 +305,95 @@ describe('analyzeRebase', () => {
     });
 
     expect(report.status).toBe('drift');
+    // Destination is unregistered drift; registered source is still a hotspot (deleted by rename).
     expect(report.patchDrift).toEqual([
       { path: 'src/unregistered-destination.ts', reason: 'unregistered-upstream-direct-edit' },
     ]);
-    expect(report.directModificationHotspots).toEqual([]);
+    expect(report.directModificationHotspots).toEqual([
+      {
+        modules: ['M15'],
+        path: 'src/registered.ts',
+        risk: 'high',
+        upstreamChanged: false,
+      },
+    ]);
     expect(report.requiredGates.map(({ id }) => id)).toContain('patch-ledger-update');
+  });
+
+  it('reports drift when an unregistered source is renamed into enterprise-owned destination', async () => {
+    const body =
+      'export const stableRenameEnterprise = "unique-rename-to-enterprise-destination-body";\n';
+    // Ledger pattern is unrelated so the source path stays unregistered.
+    const { repositoryRoot } = await createRepository(['src/other-registered.ts']);
+    await writeRepositoryFile(repositoryRoot, 'src/unregistered-source.ts', body);
+    const baseCommit = await commitAll(repositoryRoot, 'unregistered rename source');
+    const upstream = await rebuildUpstreamFromBase(repositoryRoot, baseCommit);
+
+    await runGit(repositoryRoot, 'switch', '--quiet', '-C', 'candidate', baseCommit);
+    // Ensure destination parent exists; git mv does not create intermediate directories.
+    await mkdir(path.join(repositoryRoot, 'src/enterprise'), { recursive: true });
+    await runGit(
+      repositoryRoot,
+      'mv',
+      'src/unregistered-source.ts',
+      'src/enterprise/absorbed-from-upstream.ts',
+    );
+    const candidate = await commitAll(repositoryRoot, 'rename unregistered into enterprise');
+
+    const report = await analyzeRebase({
+      baseRef: baseCommit,
+      candidateRef: candidate,
+      repositoryRoot,
+      upstreamRef: upstream,
+    });
+
+    expect(report.status).toBe('drift');
+    expect(report.patchDrift).toEqual([
+      { path: 'src/unregistered-source.ts', reason: 'unregistered-upstream-direct-edit' },
+    ]);
+    // Enterprise-owned destination is not scored as a direct edit hotspot/drift.
+    expect(report.directModificationHotspots).toEqual([]);
+    expect(report.patchDrift.map(({ path: value }) => value)).not.toContain(
+      'src/enterprise/absorbed-from-upstream.ts',
+    );
+  });
+
+  it('scores unregistered rename source as drift and registered destination as hotspot', async () => {
+    const body =
+      'export const stableRenameRegisteredDest = "unique-rename-to-registered-destination";\n';
+    const { repositoryRoot } = await createRepository(['src/registered-destination.ts']);
+    await writeRepositoryFile(repositoryRoot, 'src/unregistered-source.ts', body);
+    const baseCommit = await commitAll(repositoryRoot, 'unregistered source for rename');
+    const upstream = await rebuildUpstreamFromBase(repositoryRoot, baseCommit);
+
+    await runGit(repositoryRoot, 'switch', '--quiet', '-C', 'candidate', baseCommit);
+    await runGit(
+      repositoryRoot,
+      'mv',
+      'src/unregistered-source.ts',
+      'src/registered-destination.ts',
+    );
+    const candidate = await commitAll(repositoryRoot, 'rename unregistered to registered dest');
+
+    const report = await analyzeRebase({
+      baseRef: baseCommit,
+      candidateRef: candidate,
+      repositoryRoot,
+      upstreamRef: upstream,
+    });
+
+    expect(report.status).toBe('drift');
+    expect(report.patchDrift).toEqual([
+      { path: 'src/unregistered-source.ts', reason: 'unregistered-upstream-direct-edit' },
+    ]);
+    expect(report.directModificationHotspots).toEqual([
+      {
+        modules: ['M15'],
+        path: 'src/registered-destination.ts',
+        risk: 'high',
+        upstreamChanged: false,
+      },
+    ]);
   });
 
   it('does not treat a copy source as a direct edit while requiring destination ledger coverage', async () => {
@@ -319,15 +405,7 @@ describe('analyzeRebase', () => {
     ]);
     await writeRepositoryFile(repositoryRoot, 'src/registered.ts', body);
     const baseWithRegistered = await commitAll(repositoryRoot, 'register copy source');
-
-    await runGit(repositoryRoot, 'branch', '--force', 'upstream', baseWithRegistered);
-    await runGit(repositoryRoot, 'switch', '--quiet', 'upstream');
-    await writeRepositoryFile(
-      repositoryRoot,
-      'upstream-only.ts',
-      'export const upstream = true;\n',
-    );
-    const upstream = await commitAll(repositoryRoot, 'upstream from copy base');
+    const upstream = await rebuildUpstreamFromBase(repositoryRoot, baseWithRegistered);
 
     await runGit(repositoryRoot, 'switch', '--quiet', '-C', 'candidate', baseWithRegistered);
     await writeRepositoryFile(repositoryRoot, 'src/copied-destination.ts', body);
@@ -382,6 +460,78 @@ describe('analyzeRebase', () => {
     );
     expect(driftReport.patchDrift.map(({ path: value }) => value)).not.toContain(
       'src/registered.ts',
+    );
+  });
+
+  it('does not false-positive an unregistered unchanged copy source while applying destination rules', async () => {
+    const body =
+      'export const stableUnregisteredCopy = "unique-unregistered-copy-source-body-0123456789";\n';
+    // Destination is registered; source path is intentionally absent from the ledger.
+    const { repositoryRoot } = await createRepository(['src/copied-destination.ts']);
+    await writeRepositoryFile(repositoryRoot, 'src/unregistered-source.ts', body);
+    const baseCommit = await commitAll(repositoryRoot, 'unregistered copy source present');
+    const upstream = await rebuildUpstreamFromBase(repositoryRoot, baseCommit);
+
+    await runGit(repositoryRoot, 'switch', '--quiet', '-C', 'candidate', baseCommit);
+    await writeRepositoryFile(repositoryRoot, 'src/copied-destination.ts', body);
+    const candidate = await commitAll(
+      repositoryRoot,
+      'copy unregistered source to registered destination',
+    );
+
+    const report = await analyzeRebase({
+      baseRef: baseCommit,
+      candidateRef: candidate,
+      repositoryRoot,
+      upstreamRef: upstream,
+    });
+
+    // Source is unchanged so it must not appear as hotspot or drift.
+    expect(report.patchDrift.map(({ path: value }) => value)).not.toContain(
+      'src/unregistered-source.ts',
+    );
+    expect(report.directModificationHotspots.map(({ path: value }) => value)).not.toContain(
+      'src/unregistered-source.ts',
+    );
+    // Destination rules still apply: registered destination is a hotspot, status stays clean.
+    expect(report.status).toBe('clean');
+    expect(report.directModificationHotspots).toEqual([
+      {
+        modules: ['M15'],
+        path: 'src/copied-destination.ts',
+        risk: 'high',
+        upstreamChanged: false,
+      },
+    ]);
+
+    await runGit(
+      repositoryRoot,
+      'switch',
+      '--quiet',
+      '-C',
+      'candidate-unregistered-dest',
+      baseCommit,
+    );
+    await writeRepositoryFile(repositoryRoot, 'src/unregistered-copy-dest.ts', body);
+    const unregisteredDestCandidate = await commitAll(
+      repositoryRoot,
+      'copy unregistered source to unregistered destination',
+    );
+    const driftReport = await analyzeRebase({
+      baseRef: baseCommit,
+      candidateRef: unregisteredDestCandidate,
+      repositoryRoot,
+      upstreamRef: upstream,
+    });
+    expect(driftReport.status).toBe('drift');
+    expect(driftReport.patchDrift).toEqual([
+      { path: 'src/unregistered-copy-dest.ts', reason: 'unregistered-upstream-direct-edit' },
+    ]);
+    expect(driftReport.patchDrift.map(({ path: value }) => value)).not.toContain(
+      'src/unregistered-source.ts',
+    );
+    expect(driftReport.directModificationHotspots.map(({ path: value }) => value)).not.toContain(
+      'src/unregistered-source.ts',
     );
   });
 
