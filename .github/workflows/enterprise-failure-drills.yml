@@ -42,19 +42,13 @@ jobs:
         env:
           POSTGRES_PASSWORD: postgres
         options: >-
-          --health-cmd pg_isready
-          --health-interval 5s
-          --health-retries 10
-          --health-timeout 5s
+          --health-cmd pg_isready --health-interval 5s --health-retries 10 --health-timeout 5s
         ports:
           - 5432:5432
       redis:
         image: redis:7-alpine
         options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-retries 10
-          --health-timeout 5s
+          --health-cmd "redis-cli ping" --health-interval 5s --health-retries 10 --health-timeout 5s
         ports:
           - 6379:6379
 
