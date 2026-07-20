@@ -1,4 +1,5 @@
 import type {
+  EnterpriseAgentMaterializationOutcome,
   EnterpriseCacheDomain,
   EnterpriseCacheEpochOutcome,
   EnterpriseCacheLoadOutcome,
@@ -14,6 +15,9 @@ import type {
   EnterpriseHeartbeatOutcome,
   EnterpriseInvalidationBackend,
   EnterpriseInvalidationOutcome,
+  EnterpriseOidcFailureCategory,
+  EnterpriseOidcLoginStage,
+  EnterpriseSsrfDenialCategory,
 } from '@lobechat/observability-otel/modules/enterprise-platform';
 
 export type EnterpriseObservabilityErrorClass =
@@ -72,14 +76,61 @@ export interface EnterpriseInstanceHeartbeatEvent {
   type: 'instance_heartbeat';
 }
 
+export interface EnterpriseSsrfDenialEvent {
+  category: EnterpriseSsrfDenialCategory;
+  outcome?: never;
+  type: 'ssrf_denial';
+}
+
+export type EnterpriseOidcLoginEvent =
+  | {
+      outcome: 'success';
+      stage: EnterpriseOidcLoginStage;
+      type: 'oidc_login';
+    }
+  | {
+      failureCategory: EnterpriseOidcFailureCategory;
+      outcome: 'failure';
+      stage: EnterpriseOidcLoginStage;
+      type: 'oidc_login';
+    };
+
+export interface EnterpriseAgentMaterializationEvent {
+  durationMs: number;
+  outcome: EnterpriseAgentMaterializationOutcome;
+  type: 'agent_materialization';
+}
+
 export type EnterpriseObservabilityEvent =
+  | EnterpriseAgentMaterializationEvent
   | EnterpriseCacheEvent
   | EnterpriseConfigPublishEvent
   | EnterpriseGuardDecisionEvent
   | EnterpriseInstanceHeartbeatEvent
-  | EnterpriseInvalidationEvent;
+  | EnterpriseInvalidationEvent
+  | EnterpriseOidcLoginEvent
+  | EnterpriseSsrfDenialEvent;
+
+const ERROR_CODE_CLASSES = {
+  ABORT_ERR: 'TimeoutError',
+  ECONNREFUSED: 'UnavailableError',
+  ECONNRESET: 'UnavailableError',
+  ETIMEDOUT: 'TimeoutError',
+  PLATFORM_CONFIG_VALIDATION_FAILED: 'ValidationError',
+  PLATFORM_REVISION_CONFLICT: 'ConflictError',
+} as const satisfies Readonly<Record<string, EnterpriseObservabilityErrorClass>>;
+
+const stableErrorCode = (error: unknown): keyof typeof ERROR_CODE_CLASSES | undefined => {
+  if (!(error instanceof Error) || !Object.hasOwn(error, 'code')) return undefined;
+  const code: unknown = Object.getOwnPropertyDescriptor(error, 'code')?.value;
+  return typeof code === 'string' && Object.hasOwn(ERROR_CODE_CLASSES, code)
+    ? (code as keyof typeof ERROR_CODE_CLASSES)
+    : undefined;
+};
 
 export const classifyEnterpriseError = (error: unknown): EnterpriseObservabilityErrorClass => {
+  const errorCode = stableErrorCode(error);
+  if (errorCode) return ERROR_CODE_CLASSES[errorCode];
   const name = error instanceof Error ? error.name.toLowerCase() : '';
   if (name.includes('conflict')) return 'ConflictError';
   if (name.includes('abort') || name.includes('timeout')) return 'TimeoutError';

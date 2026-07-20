@@ -1,4 +1,25 @@
 import {
+  ENTERPRISE_AGENT_MATERIALIZATION_OUTCOMES,
+  ENTERPRISE_CACHE_DOMAINS,
+  ENTERPRISE_CACHE_EPOCH_OUTCOMES,
+  ENTERPRISE_CACHE_LOAD_OUTCOMES,
+  ENTERPRISE_CACHE_REQUEST_OUTCOMES,
+  ENTERPRISE_CONFIG_DOMAINS,
+  ENTERPRISE_CONFIG_PUBLISH_OPERATIONS,
+  ENTERPRISE_CONFIG_PUBLISH_OUTCOMES,
+  ENTERPRISE_GUARD_CLASSIFICATIONS,
+  ENTERPRISE_GUARD_MODES,
+  ENTERPRISE_GUARD_OUTCOMES,
+  ENTERPRISE_GUARD_RESOURCES,
+  ENTERPRISE_HEARTBEAT_OPERATIONS,
+  ENTERPRISE_HEARTBEAT_OUTCOMES,
+  ENTERPRISE_INVALIDATION_BACKENDS,
+  ENTERPRISE_INVALIDATION_OUTCOMES,
+  ENTERPRISE_OIDC_FAILURE_CATEGORIES,
+  ENTERPRISE_OIDC_LOGIN_OUTCOMES,
+  ENTERPRISE_OIDC_LOGIN_STAGES,
+  ENTERPRISE_SSRF_DENIAL_CATEGORIES,
+  recordAgentMaterializationMetric,
   recordCacheEpochMetric,
   recordCacheLoadMetric,
   recordCacheRequestMetric,
@@ -6,6 +27,8 @@ import {
   recordGuardDecisionMetric,
   recordHeartbeatMetric,
   recordInvalidationMetric,
+  recordOidcLoginMetric,
+  recordSsrfDenialMetric,
 } from '@lobechat/observability-otel/modules/enterprise-platform';
 
 import { logEnterpriseObservation } from './structuredLogger';
@@ -29,9 +52,20 @@ const normalizedErrorClass = (
       ? 'UnexpectedError'
       : undefined;
 
-const normalizeEvent = (event: EnterpriseObservabilityEvent): EnterpriseObservabilityEvent => {
+const isClosedValue = <T extends string>(value: unknown, allowed: readonly T[]): value is T =>
+  typeof value === 'string' && allowed.includes(value as T);
+
+const normalizeEvent = (
+  event: EnterpriseObservabilityEvent,
+): EnterpriseObservabilityEvent | null => {
   switch (event.type) {
     case 'config_publish': {
+      if (
+        !isClosedValue(event.domain, ENTERPRISE_CONFIG_DOMAINS) ||
+        !isClosedValue(event.operation, ENTERPRISE_CONFIG_PUBLISH_OPERATIONS) ||
+        !isClosedValue(event.outcome, ENTERPRISE_CONFIG_PUBLISH_OUTCOMES)
+      )
+        return null;
       return {
         domain: event.domain,
         durationMs: Number.isFinite(event.durationMs) ? Math.max(0, event.durationMs) : 0,
@@ -44,6 +78,11 @@ const normalizeEvent = (event: EnterpriseObservabilityEvent): EnterpriseObservab
       };
     }
     case 'invalidation': {
+      if (
+        !isClosedValue(event.backend, ENTERPRISE_INVALIDATION_BACKENDS) ||
+        !isClosedValue(event.outcome, ENTERPRISE_INVALIDATION_OUTCOMES)
+      )
+        return null;
       return {
         backend: event.backend,
         ...(normalizedErrorClass(event.errorClass)
@@ -54,7 +93,9 @@ const normalizeEvent = (event: EnterpriseObservabilityEvent): EnterpriseObservab
       };
     }
     case 'cache': {
+      if (!isClosedValue(event.domain, ENTERPRISE_CACHE_DOMAINS)) return null;
       if (event.operation === 'load') {
+        if (!isClosedValue(event.outcome, ENTERPRISE_CACHE_LOAD_OUTCOMES)) return null;
         return {
           domain: event.domain,
           ...(normalizedErrorClass(event.errorClass)
@@ -66,6 +107,7 @@ const normalizeEvent = (event: EnterpriseObservabilityEvent): EnterpriseObservab
         };
       }
       if (event.operation === 'epoch') {
+        if (!isClosedValue(event.outcome, ENTERPRISE_CACHE_EPOCH_OUTCOMES)) return null;
         return {
           domain: event.domain,
           operation: event.operation,
@@ -73,6 +115,11 @@ const normalizeEvent = (event: EnterpriseObservabilityEvent): EnterpriseObservab
           type: event.type,
         };
       }
+      if (
+        event.operation !== 'request' ||
+        !isClosedValue(event.outcome, ENTERPRISE_CACHE_REQUEST_OUTCOMES)
+      )
+        return null;
       return {
         domain: event.domain,
         operation: event.operation,
@@ -81,6 +128,13 @@ const normalizeEvent = (event: EnterpriseObservabilityEvent): EnterpriseObservab
       };
     }
     case 'guard_decision': {
+      if (
+        !isClosedValue(event.classification, ENTERPRISE_GUARD_CLASSIFICATIONS) ||
+        !isClosedValue(event.mode, ENTERPRISE_GUARD_MODES) ||
+        !isClosedValue(event.outcome, ENTERPRISE_GUARD_OUTCOMES) ||
+        !isClosedValue(event.resource, ENTERPRISE_GUARD_RESOURCES)
+      )
+        return null;
       return {
         classification: event.classification,
         mode: event.mode,
@@ -90,12 +144,46 @@ const normalizeEvent = (event: EnterpriseObservabilityEvent): EnterpriseObservab
       };
     }
     case 'instance_heartbeat': {
+      if (
+        !isClosedValue(event.operation, ENTERPRISE_HEARTBEAT_OPERATIONS) ||
+        !isClosedValue(event.outcome, ENTERPRISE_HEARTBEAT_OUTCOMES)
+      )
+        return null;
       return {
         durationMs: Number.isFinite(event.durationMs) ? Math.max(0, event.durationMs) : 0,
         ...(normalizedErrorClass(event.errorClass)
           ? { errorClass: normalizedErrorClass(event.errorClass) }
           : {}),
         operation: event.operation,
+        outcome: event.outcome,
+        type: event.type,
+      };
+    }
+    case 'ssrf_denial': {
+      if (!isClosedValue(event.category, ENTERPRISE_SSRF_DENIAL_CATEGORIES)) return null;
+      return { category: event.category, type: event.type };
+    }
+    case 'oidc_login': {
+      if (
+        !isClosedValue(event.stage, ENTERPRISE_OIDC_LOGIN_STAGES) ||
+        !isClosedValue(event.outcome, ENTERPRISE_OIDC_LOGIN_OUTCOMES)
+      )
+        return null;
+      if (event.outcome === 'failure') {
+        if (!isClosedValue(event.failureCategory, ENTERPRISE_OIDC_FAILURE_CATEGORIES)) return null;
+        return {
+          failureCategory: event.failureCategory,
+          outcome: event.outcome,
+          stage: event.stage,
+          type: event.type,
+        };
+      }
+      return { outcome: event.outcome, stage: event.stage, type: event.type };
+    }
+    case 'agent_materialization': {
+      if (!isClosedValue(event.outcome, ENTERPRISE_AGENT_MATERIALIZATION_OUTCOMES)) return null;
+      return {
+        durationMs: Number.isFinite(event.durationMs) ? Math.max(0, event.durationMs) : 0,
         outcome: event.outcome,
         type: event.type,
       };
@@ -134,6 +222,18 @@ export class OpenTelemetryEnterprisePlatformObserver implements EnterprisePlatfo
       }
       case 'instance_heartbeat': {
         recordHeartbeatMetric(event);
+        return;
+      }
+      case 'ssrf_denial': {
+        recordSsrfDenialMetric(event);
+        return;
+      }
+      case 'oidc_login': {
+        recordOidcLoginMetric(event);
+        return;
+      }
+      case 'agent_materialization': {
+        recordAgentMaterializationMetric(event);
       }
     }
   };
@@ -147,6 +247,7 @@ export const getEnterprisePlatformObserver = (): EnterprisePlatformObserver =>
 
 export const observeEnterprisePlatformEvent = (event: EnterpriseObservabilityEvent): void => {
   const normalized = normalizeEvent(event);
+  if (!normalized) return;
   try {
     getEnterprisePlatformObserver().record(normalized);
   } catch (error) {

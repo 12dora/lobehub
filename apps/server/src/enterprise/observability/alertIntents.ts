@@ -1,10 +1,13 @@
 export type EnterpriseAlertIntentKey =
+  | 'materialization_failure_rate'
+  | 'oidc_login_failure_ratio'
   | 'cache_failure_rate'
   | 'guard_denial_spike'
   | 'heartbeat_failure'
   | 'invalidation_degraded'
   | 'publish_conflict_ratio'
-  | 'publish_failure_ratio';
+  | 'publish_failure_ratio'
+  | 'ssrf_denial_spike';
 
 export interface EnterpriseAlertIntent {
   description: string;
@@ -49,6 +52,24 @@ export const ENTERPRISE_ALERT_INTENTS = [
     description: 'Persistent instance registration or heartbeat ticks fail.',
     key: 'heartbeat_failure',
     metric: 'enterprise_platform_instance_heartbeat_total',
+    status: 'intent-only',
+  },
+  {
+    description: 'Outbound-policy SSRF denials spike above a deployment-defined baseline.',
+    key: 'ssrf_denial_spike',
+    metric: 'enterprise_platform_ssrf_denial_total',
+    status: 'intent-only',
+  },
+  {
+    description: 'OIDC login failures exceed the deployment-defined ratio.',
+    key: 'oidc_login_failure_ratio',
+    metric: 'enterprise_platform_oidc_login_total',
+    status: 'intent-only',
+  },
+  {
+    description: 'Agent materialization failures exceed the deployment-defined rate.',
+    key: 'materialization_failure_rate',
+    metric: 'enterprise_platform_agent_materialization_total',
     status: 'intent-only',
   },
 ] as const satisfies readonly EnterpriseAlertIntent[];
