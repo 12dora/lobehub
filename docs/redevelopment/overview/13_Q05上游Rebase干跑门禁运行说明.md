@@ -22,7 +22,9 @@
 2. 校验 `upstream_repository`（`owner/name`）与 `upstream_ref`；拒绝任意 URL、凭据与 shell 元字符；仅构造 `https://github.com/<owner>/<name>.git`。
 3. 在 **临时 clone** 中 bounded-depth fetch；merge-base 不足时 deepen /unshallow 升级。
 4. 解析 base /upstream/candidate SHA，调用 rebase-report；冲突、patch drift、未验证 freshness、缺 gate、畸形 / 含密报告均失败。
-5. 按报告 `requiredGates` 确定性映射执行本地门禁（至少 permission /migration/ SPA route /auth/privacy /type/changed；未知 gate 失败闭合）。
+5. 按报告 `requiredGates` 在 **集成树** 上确定性映射执行本地门禁：
+   - `migration-upgrade-rollback` **仅**接受 reviewed Q03 `verify-migration` 合成 foundation 证据（owned PG upgrade/apply/rerun；overall 保持 unverified）。**禁止** journal / Migration-0 弱替代；Q03 缺失或 synthetic/rerun 不完整则失败闭合。**不**宣称 app-version rollback 或生产 dump overall-pass。
+   - `failure-drills` 仅在具备 disposable PG/Redis（`TEST_SERVER_DB` + `DATABASE_TEST_URL` + `TEST_REDIS_URL`）时跑 reviewed 多 suite 真演练并经 `scripts/enterprise/failure-drills` collect/verify；否则明确 unavailable/failed。**禁止**仅用 runner/contract 单元测试冒充通过。
 6. `continue-on-error` 步骤必须经最终 outcome 断言；缺报告、skip、0 assertion 不计通过。
 7. 上传 **脱敏** evidence artifact；删除临时 clone 与 raw 输出；cleanup 失败即失败。
 
