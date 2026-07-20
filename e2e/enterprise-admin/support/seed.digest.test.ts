@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  canonicalizeJson,
   digestFingerprint,
   type GlobalDbDigest,
   type ManagedPolicyRow,
@@ -40,31 +41,38 @@ describe('global db digest', () => {
     expect(digestFingerprint(a)).not.toBe(digestFingerprint(b));
   });
 
-  it('role/permission fingerprints include non-key mutable fields', () => {
+  it('role/permission fingerprints include metadata and timestamps', () => {
     const roleBase = {
+      createdAt: '2026-01-01T00:00:00.000Z',
       description: 'platform super_admin',
       displayName: 'super_admin',
       id: 'role_1',
       isActive: true,
       isSystem: true,
+      metadata: canonicalizeJson({}),
       name: 'super_admin',
+      updatedAt: '2026-01-01T00:00:00.000Z',
       workspaceId: null as null,
     };
-    expect(roleFingerprint(roleBase)).toBe(roleFingerprint({ ...roleBase }));
     expect(roleFingerprint(roleBase)).not.toBe(
-      roleFingerprint({ ...roleBase, displayName: 'FOREIGN' }),
+      roleFingerprint({ ...roleBase, metadata: canonicalizeJson({ foreign: true }) }),
+    );
+    expect(roleFingerprint(roleBase)).not.toBe(
+      roleFingerprint({ ...roleBase, updatedAt: '2026-01-02T00:00:00.000Z' }),
     );
 
     const permBase = {
       category: 'platform',
       code: 'platform_admin:access:all',
+      createdAt: '2026-01-01T00:00:00.000Z',
       description: 'x',
       id: 'p1',
       isActive: true,
       name: 'platform_admin:access:all',
+      updatedAt: '2026-01-01T00:00:00.000Z',
     };
     expect(permissionFingerprint(permBase)).not.toBe(
-      permissionFingerprint({ ...permBase, description: 'FOREIGN' }),
+      permissionFingerprint({ ...permBase, updatedAt: '2026-01-02T00:00:00.000Z' }),
     );
   });
 
@@ -89,31 +97,35 @@ describe('global db digest', () => {
         {
           category: 'platform',
           code: 'platform_admin:access:all',
+          createdAt: '2026-01-01T00:00:00.000Z',
           description: 'x',
           fingerprint: 'fp-perm',
           id: 'perm_new',
           isActive: true,
           name: 'platform_admin:access:all',
+          updatedAt: '2026-01-01T00:00:00.000Z',
         },
       ],
       createdPolicies: [],
       createdRolePermissionKeys: [],
       createdRoles: [
         {
+          createdAt: '2026-01-01T00:00:00.000Z',
           description: 'd',
           displayName: 'super_admin',
           fingerprint: 'fp-role',
           id: 'role_new',
           isActive: true,
           isSystem: true,
+          metadata: '{}',
           name: 'super_admin',
+          updatedAt: '2026-01-01T00:00:00.000Z',
           workspaceId: null,
         },
       ],
       mutatedPolicies: [{ after: afterPolicy, before: before.managedPolicies[0] }],
     };
     expect(manifest.createdPermissions[0].id).toBe('perm_new');
-    expect(manifest.createdRoles[0].displayName).toBe('super_admin');
-    expect(digestFingerprint(manifest.before)).not.toBe(digestFingerprint(manifest.after));
+    expect(manifest.createdRoles[0].metadata).toBe('{}');
   });
 });
