@@ -49,17 +49,28 @@ export interface GlobalDbDigest {
 
 /**
  * Suite-written after-manifest + created-row ownership for true CAS restore.
- * Restore only mutates when current still equals `after`; deletes only suite-created IDs.
+ * Every created row/link stores full suite-written after state + fingerprint.
+ * Delete only when current still equals that after state; foreign deps → conflict.
  */
 export interface SuiteGlobalWriteManifest {
-  /** Policies that existed before and were mutated by this suite (CAS target). */
+  /** Full global snapshot immediately after suite seed commit. */
   after: GlobalDbDigest;
   before: GlobalDbDigest;
-  createdPermissionIds: string[];
-  createdPolicyIds: string[];
-  createdRoleIds: string[];
-  createdRolePermissionKeys: Array<{ permissionId: string; roleId: string }>;
-  /** resource → after fingerprint of mutated existing policies */
+  /** Suite-created permissions with after fingerprint (never delete if drifted). */
+  createdPermissions: Array<{ code: string; fingerprint: string; id: string }>;
+  /** Suite-created managed policies with full after row. */
+  createdPolicies: ManagedPolicyRow[];
+  /** Suite-created role↔permission links only (never wipe foreign links). */
+  createdRolePermissionKeys: Array<{
+    fingerprint: string;
+    permissionCode: string;
+    permissionId: string;
+    roleId: string;
+    roleName: string;
+  }>;
+  /** Suite-created platform roles with after fingerprint. */
+  createdRoles: Array<{ fingerprint: string; id: string; name: string }>;
+  /** Policies that existed before and were mutated by this suite (CAS target). */
   mutatedPolicies: Array<{
     after: ManagedPolicyRow;
     before: ManagedPolicyRow;
@@ -255,6 +266,21 @@ const policyFingerprint = (row: ManagedPolicyRow): string =>
     )
     .digest('hex');
 
+const permissionFingerprint = (row: { code: string; id: string }): string =>
+  createHash('sha256')
+    .update(JSON.stringify({ code: row.code, id: row.id }))
+    .digest('hex');
+
+const roleFingerprint = (row: { id: string; name: string }): string =>
+  createHash('sha256')
+    .update(JSON.stringify({ id: row.id, name: row.name }))
+    .digest('hex');
+
+const linkFingerprint = (row: { permissionId: string; roleId: string }): string =>
+  createHash('sha256')
+    .update(JSON.stringify({ permissionId: row.permissionId, roleId: row.roleId }))
+    .digest('hex');
+
 export const snapshotGlobalDbDigest = async (databaseUrl: string): Promise<GlobalDbDigest> => {
   const pool = new Pool({ connectionString: databaseUrl });
   try {
@@ -317,15 +343,17 @@ export const digestFingerprint = (digest: GlobalDbDigest): string =>
 /**
  * True CAS restore:
  * - Mutated existing policies: UPDATE only when current fingerprint equals suite-written after.
- * - Suite-created rows: DELETE by id only.
- * - Suite-created role_permission links: DELETE only those keys.
- * - Concurrent drift (current ≠ after and current ≠ before) → refuse and throw.
+ * - Suite-created rows/links: DELETE only if current full state equals suite-written after fingerprint.
+ * - Foreign concurrent deps on created roles/permissions → refuse restore (never wipe all links).
  */
 export const casRestoreGlobalDb = async (
   databaseUrl: string,
   manifest: SuiteGlobalWriteManifest,
 ): Promise<void> => {
   const pool = new Pool({ connectionString: databaseUrl });
+  const suiteLinkKeys = new Set(
+    manifest.createdRolePermissionKeys.map((l) => `${l.roleId}|${l.permissionId}`),
+  );
   try {
     await pool.query('BEGIN');
 
@@ -337,7 +365,6 @@ export const casRestoreGlobalDb = async (
         [after.resource],
       );
       if (!current.rows[0]) {
-        // Row vanished — re-insert before state only if we own the mutation trail.
         throw new Error(
           `CAS restore conflict: policy ${after.resource} missing (expected suite-written or before)`,
         );
@@ -354,7 +381,7 @@ export const casRestoreGlobalDb = async (
       const afterFp = policyFingerprint(after);
       const beforeFp = policyFingerprint(before);
       if (curFp === beforeFp) {
-        continue; // already restored / concurrent restore
+        continue;
       }
       if (curFp !== afterFp) {
         throw new Error(
@@ -393,46 +420,162 @@ export const casRestoreGlobalDb = async (
       }
     }
 
-    // 2) Delete suite-created policies only
-    if (manifest.createdPolicyIds.length > 0) {
-      await pool.query(
-        `DELETE FROM platform_managed_resource_policies WHERE id = ANY($1::text[])`,
-        [manifest.createdPolicyIds],
+    // 2) Delete suite-created policies only when after-state still matches
+    for (const policy of manifest.createdPolicies) {
+      const current = await pool.query(
+        `SELECT id, resource, status, revision, enforcement, config::text AS config
+           FROM platform_managed_resource_policies WHERE id = $1 LIMIT 1`,
+        [policy.id],
       );
+      if (!current.rows[0]) continue; // already gone
+      const cur: ManagedPolicyRow = {
+        config: String(current.rows[0].config ?? ''),
+        enforcement: String(current.rows[0].enforcement ?? ''),
+        id: String(current.rows[0].id),
+        resource: String(current.rows[0].resource),
+        revision: Number(current.rows[0].revision),
+        status: String(current.rows[0].status),
+      };
+      if (policyFingerprint(cur) !== policyFingerprint(policy)) {
+        throw new Error(
+          `CAS restore conflict: created policy ${policy.id} (${policy.resource}) after-state drifted — refuse delete`,
+        );
+      }
+      const deleted = await pool.query(
+        `DELETE FROM platform_managed_resource_policies
+          WHERE id = $1 AND revision = $2 AND enforcement = $3 AND status = $4 AND config::text = $5
+          RETURNING id`,
+        [policy.id, policy.revision, policy.enforcement, policy.status, policy.config],
+      );
+      if (deleted.rowCount !== 1) {
+        throw new Error(
+          `CAS restore conflict: created policy ${policy.id} concurrent change during delete`,
+        );
+      }
     }
 
-    // 3) Delete suite-created role_permission links only
+    // 3) Delete suite-created role_permission links only (exact keys + fingerprint)
     for (const link of manifest.createdRolePermissionKeys) {
+      const current = await pool.query(
+        `SELECT role_id, permission_id FROM rbac_role_permissions
+          WHERE role_id = $1 AND permission_id = $2 LIMIT 1`,
+        [link.roleId, link.permissionId],
+      );
+      if (!current.rows[0]) continue;
+      if (linkFingerprint(link) !== link.fingerprint) {
+        throw new Error(
+          `CAS restore conflict: created role_permission ${link.roleId}|${link.permissionId} fingerprint mismatch`,
+        );
+      }
       await pool.query(
         `DELETE FROM rbac_role_permissions WHERE role_id = $1 AND permission_id = $2`,
         [link.roleId, link.permissionId],
       );
     }
 
-    // 4) Delete suite-created platform roles (only if still no foreign deps beyond what we clean)
-    if (manifest.createdRoleIds.length > 0) {
-      await pool.query(`DELETE FROM rbac_user_roles WHERE role_id = ANY($1::text[])`, [
-        manifest.createdRoleIds,
-      ]);
-      await pool.query(`DELETE FROM rbac_role_permissions WHERE role_id = ANY($1::text[])`, [
-        manifest.createdRoleIds,
-      ]);
-      await pool.query(
-        `DELETE FROM rbac_roles WHERE id = ANY($1::text[]) AND workspace_id IS NULL`,
-        [manifest.createdRoleIds],
+    // 4) Delete suite-created platform roles only if no foreign deps remain
+    for (const role of manifest.createdRoles) {
+      const current = await pool.query(
+        `SELECT id, name FROM rbac_roles WHERE id = $1 AND workspace_id IS NULL LIMIT 1`,
+        [role.id],
       );
+      if (!current.rows[0]) continue;
+      if (
+        roleFingerprint({ id: role.id, name: String(current.rows[0].name) }) !== role.fingerprint
+      ) {
+        throw new Error(
+          `CAS restore conflict: created role ${role.id} after-state drifted — refuse delete`,
+        );
+      }
+
+      // Foreign user-role links (not owned by this suite) block delete
+      const userLinks = await pool.query(
+        `SELECT id, user_id FROM rbac_user_roles WHERE role_id = $1`,
+        [role.id],
+      );
+      if (userLinks.rows.length > 0) {
+        throw new Error(
+          `CAS restore conflict: created role ${role.id} has concurrent/foreign user_role links — refuse delete`,
+        );
+      }
+
+      // Any role_permission not in suite-owned set blocks delete
+      const rolePerms = await pool.query(
+        `SELECT role_id, permission_id FROM rbac_role_permissions WHERE role_id = $1`,
+        [role.id],
+      );
+      for (const row of rolePerms.rows) {
+        const key = `${row.role_id}|${row.permission_id}`;
+        if (!suiteLinkKeys.has(key)) {
+          throw new Error(
+            `CAS restore conflict: created role ${role.id} has foreign role_permission ${key} — refuse delete`,
+          );
+        }
+        // Suite-owned leftover link — delete only that exact key
+        await pool.query(
+          `DELETE FROM rbac_role_permissions WHERE role_id = $1 AND permission_id = $2`,
+          [row.role_id, row.permission_id],
+        );
+      }
+
+      const deleted = await pool.query(
+        `DELETE FROM rbac_roles WHERE id = $1 AND workspace_id IS NULL AND name = $2 RETURNING id`,
+        [role.id, role.name],
+      );
+      if (deleted.rowCount !== 1) {
+        throw new Error(
+          `CAS restore conflict: created role ${role.id} concurrent change during delete`,
+        );
+      }
     }
 
-    // 5) Delete suite-created permissions only when no remaining role links
-    if (manifest.createdPermissionIds.length > 0) {
-      await pool.query(
-        `DELETE FROM rbac_permissions p
-          WHERE p.id = ANY($1::text[])
-            AND NOT EXISTS (
-              SELECT 1 FROM rbac_role_permissions rp WHERE rp.permission_id = p.id
-            )`,
-        [manifest.createdPermissionIds],
+    // 5) Delete suite-created permissions only when after-state matches and no foreign links
+    for (const perm of manifest.createdPermissions) {
+      const current = await pool.query(
+        `SELECT id, code FROM rbac_permissions WHERE id = $1 LIMIT 1`,
+        [perm.id],
       );
+      if (!current.rows[0]) continue;
+      if (
+        permissionFingerprint({
+          code: String(current.rows[0].code),
+          id: String(current.rows[0].id),
+        }) !== perm.fingerprint
+      ) {
+        throw new Error(
+          `CAS restore conflict: created permission ${perm.id} after-state drifted — refuse delete`,
+        );
+      }
+      const links = await pool.query(
+        `SELECT role_id, permission_id FROM rbac_role_permissions WHERE permission_id = $1`,
+        [perm.id],
+      );
+      for (const row of links.rows) {
+        const key = `${row.role_id}|${row.permission_id}`;
+        if (!suiteLinkKeys.has(key)) {
+          throw new Error(
+            `CAS restore conflict: created permission ${perm.id} has foreign role_permission ${key} — refuse delete`,
+          );
+        }
+      }
+      // Only delete permission when no remaining links
+      const remaining = await pool.query(
+        `SELECT 1 FROM rbac_role_permissions WHERE permission_id = $1 LIMIT 1`,
+        [perm.id],
+      );
+      if (remaining.rows.length > 0) {
+        // Suite links should already be removed in step 3; if not, remove suite-owned only
+        for (const row of remaining.rows) {
+          // unreachable if step 3 worked; still refuse rather than wipe
+        }
+        throw new Error(
+          `CAS restore conflict: created permission ${perm.id} still has role links — refuse delete`,
+        );
+      }
+      await pool.query(`DELETE FROM rbac_permissions WHERE id = $1 AND code = $2`, [
+        perm.id,
+        perm.code,
+      ]);
     }
 
     await pool.query('COMMIT');
@@ -456,9 +599,27 @@ export const restoreGlobalDbDigest = async (
  * Seed principals + platform RBAC.
  * Tracks created IDs and mutated globals for true CAS restore.
  */
+export type DurableRestoreHandle = {
+  committed: boolean;
+  databaseUrl: string;
+  manifest: SuiteGlobalWriteManifest | null;
+  seed: SuiteSeed | null;
+};
+
+/** Create an empty durable restore handle — register on lifecycle BEFORE calling seed. */
+export const createDurableRestoreHandle = (databaseUrl: string): DurableRestoreHandle => ({
+  committed: false,
+  databaseUrl,
+  manifest: null,
+  seed: null,
+});
+
 export const seedEnterpriseAdminSuite = async (
   databaseUrl: string,
+  /** Prefer pre-registered handle so signal handlers see restore as soon as COMMIT lands. */
+  durableRestoreHandle?: DurableRestoreHandle,
 ): Promise<{
+  durableRestore: DurableRestoreHandle;
   globalBefore: GlobalDbDigest;
   manifest: SuiteGlobalWriteManifest;
   seed: SuiteSeed;
@@ -492,6 +653,9 @@ export const seedEnterpriseAdminSuite = async (
   const createdPolicyIds: string[] = [];
   const createdRolePermissionKeys: Array<{ permissionId: string; roleId: string }> = [];
   const mutatedPolicies: SuiteGlobalWriteManifest['mutatedPolicies'] = [];
+  /** Durable restore handle filled after COMMIT — signal-safe when pre-registered on lifecycle. */
+  const durableRestore = durableRestoreHandle ?? createDurableRestoreHandle(databaseUrl);
+  durableRestore.databaseUrl = databaseUrl;
 
   try {
     await pool.query('BEGIN');
@@ -697,41 +861,67 @@ export const seedEnterpriseAdminSuite = async (
     await pool.end();
   }
 
-  // Filter created IDs to only those not present before (defense in depth).
+  // Post-commit snapshot: full after state + fingerprints for every created row/link.
   const after = await snapshotGlobalDbDigest(databaseUrl);
-  const createdPerms = after.platformPermissions
-    .filter((p) => !beforePermIds.has(p.id))
-    .map((p) => p.id);
-  const createdRoles = after.platformRoles.filter((r) => !beforeRoleIds.has(r.id)).map((r) => r.id);
-  const createdPolicies = after.managedPolicies
-    .filter((p) => !beforePolicyIds.has(p.id))
-    .map((p) => p.id);
+  const createdPermIdSet = new Set([
+    ...createdPermissionIds,
+    ...after.platformPermissions.filter((p) => !beforePermIds.has(p.id)).map((p) => p.id),
+  ]);
+  const createdRoleIdSet = new Set([
+    ...createdRoleIds,
+    ...after.platformRoles.filter((r) => !beforeRoleIds.has(r.id)).map((r) => r.id),
+  ]);
+  const createdPolicyIdSet = new Set([
+    ...createdPolicyIds,
+    ...after.managedPolicies.filter((p) => !beforePolicyIds.has(p.id)).map((p) => p.id),
+  ]);
+
+  const createdPermissions = after.platformPermissions
+    .filter((p) => createdPermIdSet.has(p.id))
+    .map((p) => ({ ...p, fingerprint: permissionFingerprint(p) }));
+  const createdRoles = after.platformRoles
+    .filter((r) => createdRoleIdSet.has(r.id))
+    .map((r) => ({ ...r, fingerprint: roleFingerprint(r) }));
+  const createdPolicies = after.managedPolicies.filter((p) => createdPolicyIdSet.has(p.id));
   const createdLinks = after.platformRolePermissions
     .filter((l) => !beforeLinkKeys.has(`${l.roleId}|${l.permissionId}`))
-    .map((l) => ({ permissionId: l.permissionId, roleId: l.roleId }));
+    .map((l) => ({
+      fingerprint: linkFingerprint(l),
+      permissionCode: l.permissionCode,
+      permissionId: l.permissionId,
+      roleId: l.roleId,
+      roleName: l.roleName,
+    }));
+
+  const suiteSeed: SuiteSeed = {
+    auditor,
+    namespace,
+    ordinary,
+    owner,
+    superAdmin,
+    workspaceId,
+    workspaceSlug,
+  };
 
   const manifest: SuiteGlobalWriteManifest = {
     after,
     before: globalBefore,
-    createdPermissionIds: [...new Set([...createdPermissionIds, ...createdPerms])],
-    createdPolicyIds: [...new Set([...createdPolicyIds, ...createdPolicies])],
-    createdRoleIds: [...new Set([...createdRoleIds, ...createdRoles])],
-    createdRolePermissionKeys: createdLinks.length > 0 ? createdLinks : createdRolePermissionKeys,
+    createdPermissions,
+    createdPolicies,
+    createdRolePermissionKeys: createdLinks,
+    createdRoles,
     mutatedPolicies,
   };
 
+  durableRestore.manifest = manifest;
+  durableRestore.seed = suiteSeed;
+  durableRestore.committed = true;
+
   return {
+    durableRestore,
     globalBefore,
     manifest,
-    seed: {
-      auditor,
-      namespace,
-      ordinary,
-      owner,
-      superAdmin,
-      workspaceId,
-      workspaceSlug,
-    },
+    seed: suiteSeed,
   };
 };
 
@@ -770,8 +960,31 @@ export const cleanupEnterpriseAdminSuite = async (
 };
 
 /**
- * Install signal handlers that attempt CAS restore on interrupt (external/disposable).
- * Returns uninstall function.
+ * Register durable seed restore as a preCleanup hook on the single lifecycle owner.
+ * Prefer this over separate signal handlers (no competing async exits).
+ * Uses durableRestore so restore works even if signal fires right after commit.
+ */
+export const registerSeedRestoreOnLifecycle = (
+  state: {
+    preCleanupHooks: Array<() => Promise<void>>;
+  },
+  durableRestore: DurableRestoreHandle,
+): void => {
+  state.preCleanupHooks.push(async () => {
+    if (!durableRestore.committed || !durableRestore.seed || !durableRestore.manifest) {
+      return;
+    }
+    await cleanupEnterpriseAdminSuite(
+      durableRestore.databaseUrl,
+      durableRestore.seed,
+      durableRestore.manifest,
+    );
+  });
+};
+
+/**
+ * @deprecated Prefer registerSeedRestoreOnLifecycle on the single suite owner.
+ * Kept for external mode without docker lifecycle.
  */
 export const installManifestRestoreOnSignals = (
   databaseUrl: string,

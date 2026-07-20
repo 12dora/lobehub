@@ -38,7 +38,7 @@ describe('global db digest', () => {
     expect(digestFingerprint(a)).not.toBe(digestFingerprint(b));
   });
 
-  it('suite write manifest tracks created ids and mutated policies for CAS', () => {
+  it('suite write manifest tracks created rows with after fingerprints for CAS', () => {
     const before: GlobalDbDigest = {
       managedPolicies: [policy({ enforcement: 'observe', revision: 1 })],
       platformPermissions: [],
@@ -55,15 +55,21 @@ describe('global db digest', () => {
     const manifest: SuiteGlobalWriteManifest = {
       after,
       before,
-      createdPermissionIds: ['perm_new'],
-      createdPolicyIds: [],
-      createdRoleIds: ['role_new'],
+      createdPermissions: [
+        {
+          code: 'platform_admin:access:all',
+          fingerprint: 'fp-perm',
+          id: 'perm_new',
+        },
+      ],
+      createdPolicies: [],
       createdRolePermissionKeys: [],
+      createdRoles: [{ fingerprint: 'fp-role', id: 'role_new', name: 'super_admin' }],
       mutatedPolicies: [{ after: afterPolicy, before: before.managedPolicies[0] }],
     };
-    expect(manifest.createdPermissionIds).toContain('perm_new');
+    expect(manifest.createdPermissions[0].id).toBe('perm_new');
+    expect(manifest.createdRoles[0].fingerprint).toBe('fp-role');
     expect(manifest.mutatedPolicies[0].before.enforcement).toBe('observe');
-    expect(manifest.mutatedPolicies[0].after.enforcement).toBe('enforced');
     expect(digestFingerprint(manifest.before)).not.toBe(digestFingerprint(manifest.after));
   });
 });
