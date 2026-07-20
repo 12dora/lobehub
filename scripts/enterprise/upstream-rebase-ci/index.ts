@@ -4,8 +4,19 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 
 import { analyzeRebase, formatRebaseReport } from '../rebase-report';
-import { assertEvidencePassing, collectUpstreamRebaseEvidence, loadRebaseReport } from './collect';
-import { prepareIsolatedAnalysisRepository, removeDirectoryExact } from './fetchUpstream';
+import { removeDirectoryExact } from './cleanup';
+import {
+  assertEvidencePassing,
+  collectUpstreamRebaseEvidence,
+  loadCommitsFile,
+  loadGateResultsFile,
+  loadRebaseReport,
+} from './collect';
+import {
+  assertSourceUnchanged,
+  captureSourceSnapshot,
+  prepareIsolatedAnalysisRepository,
+} from './fetchUpstream';
 import { runSelectedGates, writeGateResults } from './gates';
 import { validateUpstreamInputs } from './validateInputs';
 
@@ -14,7 +25,7 @@ type Command = 'collect' | 'fetch' | 'run-gates' | 'validate-inputs';
 const usage = `Usage:
   bun scripts/enterprise/upstream-rebase-ci/index.ts validate-inputs --repository <owner/name> --ref <ref>
   bun scripts/enterprise/upstream-rebase-ci/index.ts fetch --candidate-repo <path> --temp-dir <path> --repository <owner/name> --ref <ref> [--candidate-ref <ref>] --output <json>
-  bun scripts/enterprise/upstream-rebase-ci/index.ts run-gates --repo <path> --report <json> --raw-dir <path> --output <json>
+  bun scripts/enterprise/upstream-rebase-ci/index.ts run-gates --repo <path> --report <json> --raw-dir <path> --output <json> --changed-paths <json> [--raw-report-text-file <path>]
   bun scripts/enterprise/upstream-rebase-ci/index.ts collect --report <json> --gates <json> --commits <json> --cleanup-result <passed|failed> --upstream-repository <owner/name> --upstream-ref <ref> --upstream-freshness <verified-by-ci-fetch|unverified> --output-dir <path>
 `;
 
@@ -33,8 +44,6 @@ const runValidateInputs = async (values: Record<string, string | boolean | undef
     ref: typeof values.ref === 'string' ? values.ref : undefined,
     repository: typeof values.repository === 'string' ? values.repository : undefined,
   });
-  // Never print the fetch URL to GITHUB_OUTPUT in a way that gets uploaded.
-  // Workflow may use repository+ref only; fetch URL is rebuilt inside fetch.
   process.stdout.write(
     `${JSON.stringify({ ref: validated.ref, repository: validated.repository })}\n`,
   );
@@ -57,6 +66,8 @@ const runFetch = async (values: Record<string, string | boolean | undefined>) =>
       ? values['candidate-ref']
       : undefined;
 
+  const sourceSnapshot = await captureSourceSnapshot(candidateRepository);
+
   const resolved = await prepareIsolatedAnalysisRepository({
     candidateRef,
     candidateRepository,
@@ -64,7 +75,6 @@ const runFetch = async (values: Record<string, string | boolean | undefined>) =>
     upstream,
   });
 
-  // Run the reviewed rebase-report against the isolated analysis repository only.
   const report = await analyzeRebase({
     baseRef: resolved.base,
     candidateRef: resolved.candidate,
@@ -76,14 +86,20 @@ const runFetch = async (values: Record<string, string | boolean | undefined>) =>
   const reportPath = path.join(temporaryDirectory, 'rebase-report.json');
   await writeFile(reportPath, formatRebaseReport(report, 'json'), 'utf8');
 
+  await assertSourceUnchanged(candidateRepository, sourceSnapshot);
+
   await writeJson(output, {
     analysisRepository: resolved.analysisRepository,
     base: resolved.base,
     candidate: resolved.candidate,
+    changedPaths: resolved.changedPaths,
+    integratedTree: resolved.integratedTree,
+    integrationRepository: resolved.integrationRepository,
     mergeBase: resolved.mergeBase,
     reportPath,
     reportStatus: report.status,
     requiredGateIds: report.requiredGates.map((gate) => gate.id),
+    sourceHead: sourceSnapshot.head,
     upstream: resolved.upstream,
     upstreamFreshness: resolved.upstreamFreshness,
     upstreamRef: upstream.ref,
@@ -102,13 +118,22 @@ const runGates = async (values: Record<string, string | boolean | undefined>) =>
     requireString(values['raw-dir'] as string | undefined, 'raw-dir'),
   );
   const output = path.resolve(requireString(values.output as string | undefined, 'output'));
+  const changedPathsPath = path.resolve(
+    requireString(values['changed-paths'] as string | undefined, 'changed-paths'),
+  );
 
-  const report = await loadRebaseReport(reportPath);
+  const { rawText, report } = await loadRebaseReport(reportPath);
   const requiredGateIds = report.requiredGates.map((gate) => gate.id);
+  const changedPaths = JSON.parse(await readFile(changedPathsPath, 'utf8')) as string[];
+  if (!Array.isArray(changedPaths)) {
+    throw new Error('changed-paths must be a JSON array of strings');
+  }
 
   const gateResults = await runSelectedGates({
+    changedPaths,
     privacyTargets: [report],
     rawDirectory,
+    rawReportText: rawText,
     repositoryRoot,
     requiredGateIds,
   });
@@ -146,20 +171,17 @@ const runCollect = async (values: Record<string, string | boolean | undefined>) 
     throw new Error('--upstream-freshness must be verified-by-ci-fetch or unverified');
   }
 
-  const report = await loadRebaseReport(reportPath);
-  const gateResults = JSON.parse(await readFile(gatesPath, 'utf8'));
-  const commits = JSON.parse(await readFile(commitsPath, 'utf8')) as {
-    base: string;
-    candidate: string;
-    mergeBase: string;
-    upstream: string;
-  };
+  const { rawText, report } = await loadRebaseReport(reportPath);
+  const commits = await loadCommitsFile(commitsPath);
+  const requiredGateIds = report.requiredGates.map((gate) => gate.id);
+  const gateResults = await loadGateResultsFile(gatesPath, requiredGateIds);
 
   const evidence = await collectUpstreamRebaseEvidence({
     cleanupResult,
     fullCommits: commits,
     gateResults,
     outputDirectory,
+    rawReportText: rawText,
     report,
     upstreamFreshness,
     upstreamRef,
@@ -175,6 +197,7 @@ const main = async () => {
     options: {
       'candidate-ref': { type: 'string' },
       'candidate-repo': { type: 'string' },
+      'changed-paths': { type: 'string' },
       'cleanup-result': { type: 'string' },
       'commits': { type: 'string' },
       'gates': { type: 'string' },
