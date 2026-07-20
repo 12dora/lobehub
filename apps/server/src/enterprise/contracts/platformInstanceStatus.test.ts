@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  PLATFORM_CONVERGENCE_DOMAIN_DESCRIPTORS,
   PLATFORM_CONVERGENCE_DOMAINS,
   platformDomainTargetSchema,
   platformInstanceStatusSnapshotSchema,
@@ -20,13 +21,8 @@ const domainSnapshot = PLATFORM_CONVERGENCE_DOMAINS.map((domain) => ({
   counts: zeroCounts,
   domain,
   errorCategory: null,
-  fallbackPolicy: domain === 'identity' ? ('lkg_then_break_glass' as const) : ('none' as const),
-  loadMode:
-    domain === 'identity'
-      ? ('restart_activated' as const)
-      : domain === 'agent_catalog' || domain === 'connector_catalog' || domain === 'managed_policy'
-        ? ('request_scoped' as const)
-        : ('process_cached' as const),
+  fallbackPolicy: PLATFORM_CONVERGENCE_DOMAIN_DESCRIPTORS[domain].fallbackPolicy,
+  loadMode: PLATFORM_CONVERGENCE_DOMAIN_DESCRIPTORS[domain].loadMode,
   status: 'disabled' as const,
   targetToken: null,
 }));
@@ -59,6 +55,51 @@ const snapshot = {
 } as const;
 
 describe('platform instance status internal contract', () => {
+  it('pins one load, fallback and token descriptor for every domain', () => {
+    expect(PLATFORM_CONVERGENCE_DOMAIN_DESCRIPTORS).toEqual({
+      agent_catalog: {
+        fallbackPolicy: 'none',
+        loadMode: 'request_scoped',
+        tokenKind: 'immutable_id',
+      },
+      ai_catalog: {
+        fallbackPolicy: 'none',
+        loadMode: 'process_cached',
+        tokenKind: 'immutable_id',
+      },
+      branding: {
+        fallbackPolicy: 'builtin',
+        loadMode: 'process_cached',
+        tokenKind: 'revision',
+      },
+      connector_catalog: {
+        fallbackPolicy: 'none',
+        loadMode: 'request_scoped',
+        tokenKind: 'immutable_id',
+      },
+      identity: {
+        fallbackPolicy: 'lkg_then_break_glass',
+        loadMode: 'restart_activated',
+        tokenKind: 'immutable_id_or_null',
+      },
+      managed_policy: {
+        fallbackPolicy: 'none',
+        loadMode: 'request_scoped',
+        tokenKind: 'revision',
+      },
+      settings: {
+        fallbackPolicy: 'none',
+        loadMode: 'process_cached',
+        tokenKind: 'revision',
+      },
+      skill_catalog: {
+        fallbackPolicy: 'none',
+        loadMode: 'process_cached',
+        tokenKind: 'immutable_id',
+      },
+    });
+  });
+
   it('accepts only discriminated revision or immutable-id tokens', () => {
     expect(platformRevisionTokenSchema.safeParse({ kind: 'revision', value: 0 }).success).toBe(
       true,
@@ -122,6 +163,29 @@ describe('platform instance status internal contract', () => {
     ).toBe(false);
   });
 
+  it('rejects domain metadata and token kinds that drift from the descriptor', () => {
+    expect(
+      platformDomainTargetSchema.safeParse({
+        domain: 'settings',
+        errorCategory: null,
+        fallbackPolicy: 'lkg_then_break_glass',
+        loadMode: 'restart_activated',
+        status: 'available',
+        token: { kind: 'revision', value: 1 },
+      }).success,
+    ).toBe(false);
+    expect(
+      platformDomainTargetSchema.safeParse({
+        domain: 'identity',
+        errorCategory: null,
+        fallbackPolicy: 'lkg_then_break_glass',
+        loadMode: 'process_cached',
+        status: 'available',
+        token: { kind: 'revision', value: 1 },
+      }).success,
+    ).toBe(false);
+  });
+
   it('accepts a bounded secret-free status snapshot', () => {
     expect(platformInstanceStatusSnapshotSchema.safeParse(snapshot).success).toBe(true);
   });
@@ -136,6 +200,135 @@ describe('platform instance status internal contract', () => {
               ? { ...domain, status, targetToken: { kind: 'revision', value: 1 } }
               : domain,
           ),
+        }).success,
+      ).toBe(false);
+    }
+  });
+
+  it('rejects unavailable targets and domain summaries that carry a token', () => {
+    expect(
+      platformDomainTargetSchema.safeParse({
+        domain: 'settings',
+        errorCategory: 'database_unavailable',
+        fallbackPolicy: 'none',
+        loadMode: 'process_cached',
+        status: 'unavailable',
+        token: { kind: 'revision', value: 1 },
+      }).success,
+    ).toBe(false);
+    expect(
+      platformInstanceStatusSnapshotSchema.safeParse({
+        ...snapshot,
+        domains: snapshot.domains.map((domain) =>
+          domain.domain === 'settings'
+            ? {
+                ...domain,
+                errorCategory: 'database_unavailable',
+                status: 'unavailable',
+                targetToken: { kind: 'revision', value: 1 },
+              }
+            : domain,
+        ),
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects impossible converged diagnostic outcome combinations', () => {
+    expect(
+      platformInstanceStatusSnapshotSchema.safeParse({
+        ...snapshot,
+        freshDiagnostics: [
+          {
+            ...snapshot.freshDiagnostics[0],
+            domains: [
+              {
+                domain: 'settings',
+                errorCategory: 'load_failed',
+                loadedAt: null,
+                loadedToken: null,
+                loadMode: 'process_cached',
+                source: 'unavailable',
+                status: 'converged',
+              },
+            ],
+          },
+        ],
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects settings restart/LKG and identity process-cached/revision diagnostics', () => {
+    const invalidDiagnostics = [
+      {
+        ...snapshot.freshDiagnostics[0],
+        domains: [
+          {
+            domain: 'settings',
+            errorCategory: 'lkg_unavailable',
+            loadedAt: new Date('2026-07-20T00:00:00Z'),
+            loadedToken: { kind: 'revision', value: 1 },
+            loadMode: 'restart_activated',
+            source: 'lkg',
+            status: 'degraded',
+          },
+        ],
+      },
+      {
+        ...snapshot.freshDiagnostics[0],
+        domains: [
+          {
+            domain: 'identity',
+            errorCategory: null,
+            loadedAt: new Date('2026-07-20T00:00:00Z'),
+            loadedToken: { kind: 'revision', value: 1 },
+            loadMode: 'process_cached',
+            source: 'database',
+            status: 'converged',
+          },
+        ],
+        instanceId: `oidci_${'e'.repeat(48)}`,
+        instanceKind: 'identity_startup',
+      },
+    ];
+    for (const diagnostic of invalidDiagnostics) {
+      expect(
+        platformInstanceStatusSnapshotSchema.safeParse({
+          ...snapshot,
+          freshDiagnostics: [diagnostic],
+        }).success,
+      ).toBe(false);
+    }
+  });
+
+  it('rejects duplicate and cross-namespace diagnostic domains', () => {
+    const settings = snapshot.freshDiagnostics[0].domains[0];
+    for (const diagnostic of [
+      { ...snapshot.freshDiagnostics[0], domains: [settings, settings] },
+      {
+        ...snapshot.freshDiagnostics[0],
+        domains: [
+          {
+            domain: 'identity',
+            errorCategory: null,
+            loadedAt: new Date('2026-07-20T00:00:00Z'),
+            loadedToken: null,
+            loadMode: 'restart_activated',
+            source: 'database',
+            status: 'converged',
+          },
+        ],
+      },
+      {
+        ...snapshot.freshDiagnostics[0],
+        domains: [settings],
+        instanceId: `oidci_${'d'.repeat(48)}`,
+        instanceKind: 'identity_startup',
+      },
+    ]) {
+      expect(
+        platformInstanceStatusSnapshotSchema.safeParse({
+          ...snapshot,
+          freshDiagnostics: [diagnostic],
         }).success,
       ).toBe(false);
     }
