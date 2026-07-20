@@ -26,6 +26,7 @@ export interface PlatformOidcObservationStore {
 }
 
 type PlatformOidcObservationFlow = 'link' | 'sign_in';
+export type PlatformOidcCallbackObservationResult = 'matched' | 'mismatch' | 'unknown';
 
 interface PlatformOidcObservationMarker {
   flow: PlatformOidcObservationFlow;
@@ -84,27 +85,13 @@ const equalProviderHash = (left: string, right: string): boolean => {
   return timingSafeEqual(Buffer.from(left, 'hex'), Buffer.from(right, 'hex'));
 };
 
+export const isPlatformOidcProviderId = (value: string): boolean =>
+  /^[a-z\d][a-z\d._-]{0,127}$/.test(value);
+
 const callbackProviderId = (pathname: string): string | null => {
   const match = /\/oauth2\/callback\/([^/]+)$/.exec(pathname);
-  const encoded = match?.[1];
-  if (!encoded || encoded.length > 512) return null;
-  try {
-    const decoded = decodeURIComponent(encoded);
-    if (
-      !decoded ||
-      decoded.length > 128 ||
-      decoded.includes('/') ||
-      [...decoded].some((character) => {
-        const code = character.charCodeAt(0);
-        return code < 32 || code === 127;
-      })
-    ) {
-      return null;
-    }
-    return decoded;
-  } catch {
-    return null;
-  }
+  const providerId = match?.[1];
+  return providerId && isPlatformOidcProviderId(providerId) ? providerId : null;
 };
 
 const reportObservationFailure = (): void => {
@@ -143,37 +130,29 @@ export const registerPlatformOidcFlow = async (
 export const enterPlatformOidcCallbackObservation = async (
   store: PlatformOidcObservationStore,
   state: string | null,
-): Promise<void> => {
-  if (!state) {
-    await attemptState.set({
-      failureCategory: 'state_invalid',
-      stage: 'state_validation',
-      terminal: false,
-    });
-    return;
-  }
+  providerId: string,
+): Promise<PlatformOidcCallbackObservationResult> => {
+  if (!state) return 'unknown';
   const identifiers = observationIdentifiers(state);
   try {
     const marker = await store.findVerificationValue(identifiers.known);
     const parsedMarker = marker && parseMarker(marker.value);
-    if (!parsedMarker) {
-      // Never persist attacker-controlled random state. It has no durable attempt to deduplicate.
-      await attemptState.set({
-        failureCategory: 'state_invalid',
-        stage: 'state_validation',
-        terminal: false,
-      });
-      return;
-    }
-    if (parsedMarker?.flow === 'link') return;
+    const callbackProviderHash = providerHash(providerId);
+    // Unknown attacker-controlled state has no durable attempt to deduplicate. Do not create
+    // request-local observation state or turn it into an event amplification path.
+    if (!marker) return 'unknown';
+    if (!parsedMarker) return 'mismatch';
+    if (!equalProviderHash(parsedMarker.providerHash, callbackProviderHash)) return 'mismatch';
+    if (parsedMarker.flow === 'link') return 'matched';
     const pending = await store.findVerificationValue(identifiers.pending);
     const parsedPending = pending && parseMarker(pending.value);
+    if (!parsedPending) return pending ? 'mismatch' : 'matched';
     if (
-      !parsedPending ||
-      parsedPending.flow !== parsedMarker?.flow ||
-      parsedPending.providerHash !== parsedMarker.providerHash
+      parsedPending.flow !== parsedMarker.flow ||
+      !equalProviderHash(parsedPending.providerHash, callbackProviderHash) ||
+      !equalProviderHash(parsedPending.providerHash, parsedMarker.providerHash)
     ) {
-      return;
+      return 'mismatch';
     }
     await attemptState.set({
       failureCategory: 'state_invalid',
@@ -182,8 +161,10 @@ export const enterPlatformOidcCallbackObservation = async (
       store,
       terminal: false,
     });
+    return 'matched';
   } catch {
     reportObservationFailure();
+    return 'unknown';
   }
 };
 
