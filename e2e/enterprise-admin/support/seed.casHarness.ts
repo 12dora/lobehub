@@ -46,6 +46,7 @@ export const createCasMinimalSchema = async (databaseUrl: string): Promise<void>
       CREATE TABLE IF NOT EXISTS rbac_role_permissions (
         role_id text NOT NULL REFERENCES rbac_roles(id) ON DELETE CASCADE,
         permission_id text NOT NULL REFERENCES rbac_permissions(id) ON DELETE CASCADE,
+        created_at timestamptz NOT NULL DEFAULT NOW(),
         PRIMARY KEY (role_id, permission_id)
       );
       CREATE TABLE IF NOT EXISTS platform_managed_resource_policies (
