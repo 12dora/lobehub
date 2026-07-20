@@ -322,257 +322,373 @@ describe('CAS real signal subprocess + foreign concurrent links', () => {
     );
   }, 90_000);
 
-  it('FOR UPDATE race: concurrent user_role insert cannot cascade-delete unnoticed', async () => {
+  it('FOR UPDATE race: committed foreign user_role forces restore refuse (unconditional)', async () => {
     const harness = await startCasPostgres();
     cleanups.push(harness.stop);
-    const before = await snapshotGlobalDbDigest(harness.databaseUrl);
     const { manifest, seed } = await seedEnterpriseAdminSuite(harness.databaseUrl);
     const roleId = manifest.createdRoles[0].id;
-    const foreignUserId = 'user_race_foreign';
+    const foreignUserId = 'user_race_foreign_b_first';
     const suiteUserIds = [seed.ordinary.id, seed.owner.id, seed.superAdmin.id, seed.auditor.id];
+    const foreignLinkId = randomUUID();
 
     const poolSetup = new Pool({ connectionString: harness.databaseUrl });
-    // Drop suite-owned principal links so CAS reaches FOR UPDATE on created roles.
     await poolSetup.query(`DELETE FROM rbac_user_roles WHERE user_id = ANY($1::text[])`, [
       suiteUserIds,
     ]);
     await poolSetup.query(
       `INSERT INTO users (id, email, normalized_email, username, full_name, email_verified, onboarding, created_at, updated_at, last_active_at)
-       VALUES ($1, 'race@test', 'race@test', 'race', 'Race', true, '{}', NOW(), NOW(), NOW())
+       VALUES ($1, 'raceb@test', 'raceb@test', 'raceb', 'RaceB', true, '{}', NOW(), NOW(), NOW())
        ON CONFLICT DO NOTHING`,
       [foreignUserId],
     );
     await poolSetup.end();
 
-    let lockedResolve!: () => void;
-    const locked = new Promise<void>((r) => {
-      lockedResolve = r;
-    });
-    let proceedResolve!: () => void;
-    const proceed = new Promise<void>((r) => {
-      proceedResolve = r;
-    });
-
+    // B first: BEGIN + INSERT uncommitted (holds FK KEY SHARE on role parent).
     const poolB = new Pool({ connectionString: harness.databaseUrl });
-    let insertError: unknown;
-    const insertPromise = (async () => {
-      await locked;
-      try {
-        await poolB.query(`SET lock_timeout = '2s'`);
-        await poolB.query(
-          `INSERT INTO rbac_user_roles (id, user_id, role_id, workspace_id, created_at)
-           VALUES ($1::uuid, $2, $3, NULL, NOW())`,
-          [randomUUID(), foreignUserId, roleId],
-        );
-      } catch (error) {
-        insertError = error;
-      }
-    })();
+    const clientB = await poolB.connect();
+    await clientB.query('BEGIN');
+    await clientB.query(
+      `INSERT INTO rbac_user_roles (id, user_id, role_id, workspace_id, created_at)
+       VALUES ($1::uuid, $2, $3, NULL, NOW())`,
+      [foreignLinkId, foreignUserId, roleId],
+    );
+    // B insert succeeded (uncommitted)
 
-    // Restore holds FOR UPDATE then pauses — concurrent insert blocks or times out.
-    // After we proceed, DELETE either sees no committed foreign link or refuses if inserted.
+    const appName = `cas_restore_role_${Date.now()}`;
     const restorePromise = casRestoreGlobalDb(harness.databaseUrl, manifest, {
-      afterRoleLocked: async (id) => {
-        if (id === roleId) {
-          lockedResolve();
-          await proceed;
-        }
-      },
+      applicationName: appName,
     });
 
-    await locked;
-    // Give conn B a moment to hit lock_timeout while A holds FOR UPDATE
-    await sleep(500);
-    proceedResolve();
-
-    // Either restore succeeds (insert blocked/failed) or refuses foreign link
-    let restoreError: unknown;
-    try {
-      await restorePromise;
-    } catch (error) {
-      restoreError = error;
+    // Deterministically prove A is waiting on the parent lock (not sleep-only).
+    const observe = new Pool({ connectionString: harness.databaseUrl });
+    const waitDeadline = Date.now() + 10_000;
+    let waiting = false;
+    while (Date.now() < waitDeadline) {
+      const rows = await observe.query(
+        `SELECT wait_event_type, wait_event, state, query
+           FROM pg_stat_activity
+          WHERE application_name = $1
+            AND pid <> pg_backend_pid()`,
+        [appName],
+      );
+      if (
+        rows.rows.some(
+          (r) =>
+            r.wait_event_type === 'Lock' ||
+            (typeof r.query === 'string' && /FOR UPDATE/i.test(r.query) && r.state === 'active'),
+        )
+      ) {
+        waiting = true;
+        break;
+      }
+      await sleep(50);
     }
-    await insertPromise;
+    await observe.end();
+    expect(waiting).toBe(true);
+
+    // COMMIT B — foreign link becomes visible; A must observe and refuse.
+    await clientB.query('COMMIT');
+    clientB.release();
     await poolB.end();
 
-    // No unnoticed cascade: if insert committed, restore must have refused and link remains
+    await expect(restorePromise).rejects.toThrow(/foreign user_role|CAS restore conflict/);
+
     const poolCheck = new Pool({ connectionString: harness.databaseUrl });
+    const role = await poolCheck.query(`SELECT id FROM rbac_roles WHERE id = $1`, [roleId]);
     const links = await poolCheck.query(
-      `SELECT 1 FROM rbac_user_roles WHERE role_id = $1 AND user_id = $2`,
-      [roleId, foreignUserId],
+      `SELECT id FROM rbac_user_roles WHERE id = $1::uuid AND role_id = $2 AND user_id = $3`,
+      [foreignLinkId, roleId, foreignUserId],
     );
-    if (links.rows.length > 0) {
-      expect(restoreError).toBeTruthy();
-      expect(String(restoreError)).toMatch(/foreign user_role|CAS restore conflict/);
-      await poolCheck.query(`DELETE FROM rbac_user_roles WHERE user_id = $1`, [foreignUserId]);
-    } else {
-      // insert blocked/failed; restore should have completed or failed for other reasons
-      expect(insertError || !restoreError).toBeTruthy();
-    }
+    expect(role.rows).toHaveLength(1);
+    expect(links.rows).toHaveLength(1);
+    await poolCheck.query(`DELETE FROM rbac_user_roles WHERE id = $1::uuid`, [foreignLinkId]);
     await poolCheck.query(`DELETE FROM users WHERE id = $1`, [foreignUserId]);
     await poolCheck.end();
 
     const { cleanupEnterpriseAdminSuite } = await import('./seed');
-    await cleanupEnterpriseAdminSuite(harness.databaseUrl, seed, manifest).catch(async () => {
-      const p = new Pool({ connectionString: harness.databaseUrl });
-      await p.query(`DELETE FROM rbac_user_roles WHERE user_id = ANY($1::text[])`, [
-        [seed.ordinary.id, seed.owner.id, seed.superAdmin.id, seed.auditor.id, foreignUserId],
-      ]);
-      await p.end();
-    });
-    void before;
+    await cleanupEnterpriseAdminSuite(harness.databaseUrl, seed, manifest);
   }, 90_000);
 
-  it('FOR UPDATE race: concurrent role_permission insert cannot cascade-delete unnoticed', async () => {
+  it('FOR UPDATE race: committed foreign role_permission forces restore refuse (unconditional)', async () => {
     const harness = await startCasPostgres();
     cleanups.push(harness.stop);
-    const before = await snapshotGlobalDbDigest(harness.databaseUrl);
     const { manifest, seed } = await seedEnterpriseAdminSuite(harness.databaseUrl);
     const permissionId = manifest.createdPermissions[0].id;
-    const foreignRoleId = 'role_race_foreign_perm';
+    const foreignRoleId = 'role_race_foreign_b_first';
     const suiteUserIds = [seed.ordinary.id, seed.owner.id, seed.superAdmin.id, seed.auditor.id];
 
     const poolSetup = new Pool({ connectionString: harness.databaseUrl });
-    // Clear suite user_roles so role CAS can finish and reach permission FOR UPDATE.
     await poolSetup.query(`DELETE FROM rbac_user_roles WHERE user_id = ANY($1::text[])`, [
       suiteUserIds,
     ]);
     await poolSetup.query(
       `INSERT INTO rbac_roles (id, name, display_name, description, is_system, is_active, metadata, workspace_id, created_at, updated_at)
-       VALUES ($1, 'race_foreign_role', 'Race', 'x', false, true, '{}'::jsonb, NULL, NOW(), NOW())
+       VALUES ($1, 'race_foreign_role_b', 'RaceB', 'x', false, true, '{}'::jsonb, NULL, NOW(), NOW())
        ON CONFLICT DO NOTHING`,
       [foreignRoleId],
     );
     await poolSetup.end();
 
-    let lockedResolve!: () => void;
-    const locked = new Promise<void>((r) => {
-      lockedResolve = r;
-    });
-    let proceedResolve!: () => void;
-    const proceed = new Promise<void>((r) => {
-      proceedResolve = r;
-    });
-
     const poolB = new Pool({ connectionString: harness.databaseUrl });
-    let insertError: unknown;
-    const insertPromise = (async () => {
-      await locked;
-      try {
-        await poolB.query(`SET lock_timeout = '2s'`);
-        await poolB.query(
-          `INSERT INTO rbac_role_permissions (role_id, permission_id) VALUES ($1, $2)`,
-          [foreignRoleId, permissionId],
-        );
-      } catch (error) {
-        insertError = error;
-      }
-    })();
+    const clientB = await poolB.connect();
+    await clientB.query('BEGIN');
+    await clientB.query(
+      `INSERT INTO rbac_role_permissions (role_id, permission_id, created_at)
+       VALUES ($1, $2, NOW())`,
+      [foreignRoleId, permissionId],
+    );
 
+    const appName = `cas_restore_perm_${Date.now()}`;
     const restorePromise = casRestoreGlobalDb(harness.databaseUrl, manifest, {
-      afterPermissionLocked: async (id) => {
-        if (id === permissionId) {
-          lockedResolve();
-          await proceed;
-        }
-      },
+      applicationName: appName,
     });
 
-    await Promise.race([
-      locked,
-      sleep(15_000).then(() => {
-        throw new Error('permission FOR UPDATE barrier never reached');
-      }),
-    ]);
-    await sleep(500);
-    proceedResolve();
-
-    let restoreError: unknown;
-    try {
-      await restorePromise;
-    } catch (error) {
-      restoreError = error;
+    const observe = new Pool({ connectionString: harness.databaseUrl });
+    const waitDeadline = Date.now() + 10_000;
+    let waiting = false;
+    while (Date.now() < waitDeadline) {
+      const rows = await observe.query(
+        `SELECT wait_event_type, wait_event, state, query
+           FROM pg_stat_activity
+          WHERE application_name = $1
+            AND pid <> pg_backend_pid()`,
+        [appName],
+      );
+      if (
+        rows.rows.some(
+          (r) =>
+            r.wait_event_type === 'Lock' ||
+            (typeof r.query === 'string' && /FOR UPDATE/i.test(r.query) && r.state === 'active'),
+        )
+      ) {
+        waiting = true;
+        break;
+      }
+      await sleep(50);
     }
-    await insertPromise;
+    await observe.end();
+    expect(waiting).toBe(true);
+
+    await clientB.query('COMMIT');
+    clientB.release();
     await poolB.end();
 
+    await expect(restorePromise).rejects.toThrow(/foreign role_permission|CAS restore conflict/);
+
     const poolCheck = new Pool({ connectionString: harness.databaseUrl });
+    const perm = await poolCheck.query(`SELECT id FROM rbac_permissions WHERE id = $1`, [
+      permissionId,
+    ]);
     const links = await poolCheck.query(
       `SELECT 1 FROM rbac_role_permissions WHERE role_id = $1 AND permission_id = $2`,
       [foreignRoleId, permissionId],
     );
-    if (links.rows.length > 0) {
-      expect(restoreError).toBeTruthy();
-      expect(String(restoreError)).toMatch(/foreign role_permission|CAS restore conflict/);
-      await poolCheck.query(
-        `DELETE FROM rbac_role_permissions WHERE role_id = $1 AND permission_id = $2`,
-        [foreignRoleId, permissionId],
-      );
-    } else {
-      expect(insertError || !restoreError).toBeTruthy();
-    }
+    expect(perm.rows).toHaveLength(1);
+    expect(links.rows).toHaveLength(1);
+    await poolCheck.query(
+      `DELETE FROM rbac_role_permissions WHERE role_id = $1 AND permission_id = $2`,
+      [foreignRoleId, permissionId],
+    );
     await poolCheck.query(`DELETE FROM rbac_roles WHERE id = $1`, [foreignRoleId]);
     await poolCheck.end();
 
     const { cleanupEnterpriseAdminSuite } = await import('./seed');
-    await cleanupEnterpriseAdminSuite(harness.databaseUrl, seed, manifest).catch(async () => {
-      const p = new Pool({ connectionString: harness.databaseUrl });
-      await p.query(`DELETE FROM rbac_role_permissions WHERE role_id = $1`, [foreignRoleId]);
-      await p.query(`DELETE FROM rbac_roles WHERE id = $1`, [foreignRoleId]);
-      await p.end();
-    });
-    void before;
+    await cleanupEnterpriseAdminSuite(harness.databaseUrl, seed, manifest);
   }, 90_000);
 
-  it('early seed failure before transaction settles without committed pollution', async () => {
+  it('link ownership: foreign role_permission not in RETURNING journal survives cleanup refuse', async () => {
     const harness = await startCasPostgres();
     cleanups.push(harness.stop);
-    const beforeFp = digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl));
-    const { createDurableRestoreHandle } = await import('./seed');
-    const durable = createDurableRestoreHandle(harness.databaseUrl);
-    process.env.E2E_CAS_FORCE_EARLY_FAIL = '1';
-    try {
-      await expect(seedEnterpriseAdminSuite(harness.databaseUrl, durable)).rejects.toThrow(
-        /forced early seed failure/,
-      );
-    } finally {
-      delete process.env.E2E_CAS_FORCE_EARLY_FAIL;
-    }
-    expect(durable.settled).toBe(true);
-    expect(durable.committed).toBe(false);
-    expect(durable.manifest).toBeNull();
-    expect(digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl))).toBe(beforeFp);
-    await durable.whenSettled;
-  }, 60_000);
+    const before = await snapshotGlobalDbDigest(harness.databaseUrl);
+    const { manifest, seed } = await seedEnterpriseAdminSuite(harness.databaseUrl);
+    const createdRole = manifest.createdRoles[0];
+    expect(createdRole).toBeTruthy();
 
-  it('mid-transaction rollback settles without committed pollution', async () => {
+    const foreignPermId = 'perm_foreign_not_in_journal';
+    const pool = new Pool({ connectionString: harness.databaseUrl });
+    await pool.query(
+      `INSERT INTO rbac_permissions (id, code, name, category, description, is_active, created_at, updated_at)
+       VALUES ($1, 'platform_foreign:journal:all', 'x', 'platform', 'x', true, NOW(), NOW())
+       ON CONFLICT DO NOTHING`,
+      [foreignPermId],
+    );
+    await pool.query(
+      `INSERT INTO rbac_role_permissions (role_id, permission_id, created_at) VALUES ($1, $2, NOW())`,
+      [createdRole.id, foreignPermId],
+    );
+    // Foreign link must NOT be in suite manifest (RETURNING-only ownership)
+    expect(
+      manifest.createdRolePermissionKeys.some(
+        (l) => l.roleId === createdRole.id && l.permissionId === foreignPermId,
+      ),
+    ).toBe(false);
+    await pool.end();
+
+    await expect(casRestoreGlobalDb(harness.databaseUrl, manifest)).rejects.toThrow(
+      /foreign role_permission|CAS restore conflict/,
+    );
+
+    const pool2 = new Pool({ connectionString: harness.databaseUrl });
+    const still = await pool2.query(
+      `SELECT 1 FROM rbac_role_permissions WHERE role_id = $1 AND permission_id = $2`,
+      [createdRole.id, foreignPermId],
+    );
+    expect(still.rows).toHaveLength(1);
+    await pool2.query(
+      `DELETE FROM rbac_role_permissions WHERE role_id = $1 AND permission_id = $2`,
+      [createdRole.id, foreignPermId],
+    );
+    await pool2.query(`DELETE FROM rbac_permissions WHERE id = $1`, [foreignPermId]);
+    await pool2.end();
+
+    const { cleanupEnterpriseAdminSuite } = await import('./seed');
+    await cleanupEnterpriseAdminSuite(harness.databaseUrl, seed, manifest);
+    expect(digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl))).toBe(
+      digestFingerprint(before),
+    );
+  }, 90_000);
+
+  it('link ownership: delete+reinsert same role_permission key refuses CAS delete', async () => {
     const harness = await startCasPostgres();
     cleanups.push(harness.stop);
-    const beforeFp = digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl));
-    const { createDurableRestoreHandle } = await import('./seed');
-    const durable = createDurableRestoreHandle(harness.databaseUrl);
-    process.env.E2E_CAS_FORCE_TXN_ROLLBACK = '1';
-    try {
-      await expect(seedEnterpriseAdminSuite(harness.databaseUrl, durable)).rejects.toThrow(
-        /forced mid-transaction rollback/,
-      );
-    } finally {
-      delete process.env.E2E_CAS_FORCE_TXN_ROLLBACK;
-    }
-    expect(durable.settled).toBe(true);
-    expect(durable.committed).toBe(false);
-    expect(durable.manifest).toBeNull();
-    expect(digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl))).toBe(beforeFp);
-  }, 60_000);
+    const before = await snapshotGlobalDbDigest(harness.databaseUrl);
+    const { manifest, seed } = await seedEnterpriseAdminSuite(harness.databaseUrl);
+    const suiteLink = manifest.createdRolePermissionKeys[0];
+    expect(suiteLink).toBeTruthy();
 
-  it('forced post-COMMIT reporting failure still leaves restorable journal', async () => {
+    const pool = new Pool({ connectionString: harness.databaseUrl });
+    await pool.query(
+      `DELETE FROM rbac_role_permissions WHERE role_id = $1 AND permission_id = $2`,
+      [suiteLink.roleId, suiteLink.permissionId],
+    );
+    // Reinsert same composite key with a new created_at (foreign reinsert)
+    await pool.query(
+      `INSERT INTO rbac_role_permissions (role_id, permission_id, created_at)
+       VALUES ($1, $2, $3::timestamptz + interval '1 day')`,
+      [suiteLink.roleId, suiteLink.permissionId, suiteLink.createdAt],
+    );
+    await pool.end();
+
+    await expect(casRestoreGlobalDb(harness.databaseUrl, manifest)).rejects.toThrow(
+      /created_at drifted|CAS restore conflict|after-state/,
+    );
+
+    const pool2 = new Pool({ connectionString: harness.databaseUrl });
+    const still = await pool2.query(
+      `SELECT created_at FROM rbac_role_permissions WHERE role_id = $1 AND permission_id = $2`,
+      [suiteLink.roleId, suiteLink.permissionId],
+    );
+    expect(still.rows).toHaveLength(1);
+    // Restore original created_at so cleanup can succeed
+    await pool2.query(
+      `UPDATE rbac_role_permissions SET created_at = $3::timestamptz
+        WHERE role_id = $1 AND permission_id = $2`,
+      [suiteLink.roleId, suiteLink.permissionId, suiteLink.createdAt],
+    );
+    await pool2.end();
+
+    const { cleanupEnterpriseAdminSuite } = await import('./seed');
+    await cleanupEnterpriseAdminSuite(harness.databaseUrl, seed, manifest);
+    expect(digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl))).toBe(
+      digestFingerprint(before),
+    );
+  }, 90_000);
+
+  it('link ownership: delete+reinsert same user_role id path refuses CAS delete', async () => {
+    const harness = await startCasPostgres();
+    cleanups.push(harness.stop);
+    const before = await snapshotGlobalDbDigest(harness.databaseUrl);
+    const { manifest, seed } = await seedEnterpriseAdminSuite(harness.databaseUrl);
+    const suiteLink = manifest.createdUserRoles[0];
+    expect(suiteLink).toBeTruthy();
+
+    const pool = new Pool({ connectionString: harness.databaseUrl });
+    await pool.query(`DELETE FROM rbac_user_roles WHERE id = $1::uuid`, [suiteLink.id]);
+    await pool.query(
+      `INSERT INTO rbac_user_roles (id, user_id, role_id, workspace_id, created_at)
+       VALUES ($1::uuid, $2, $3, $4, $5::timestamptz + interval '2 days')`,
+      [
+        suiteLink.id,
+        suiteLink.userId,
+        suiteLink.roleId,
+        suiteLink.workspaceId,
+        suiteLink.createdAt,
+      ],
+    );
+    await pool.end();
+
+    await expect(casRestoreGlobalDb(harness.databaseUrl, manifest)).rejects.toThrow(
+      /after-state drifted|CAS restore conflict/,
+    );
+
+    const pool2 = new Pool({ connectionString: harness.databaseUrl });
+    expect(
+      (await pool2.query(`SELECT id FROM rbac_user_roles WHERE id = $1::uuid`, [suiteLink.id]))
+        .rows,
+    ).toHaveLength(1);
+    await pool2.query(
+      `UPDATE rbac_user_roles SET created_at = $2::timestamptz WHERE id = $1::uuid`,
+      [suiteLink.id, suiteLink.createdAt],
+    );
+    await pool2.end();
+
+    const { cleanupEnterpriseAdminSuite } = await import('./seed');
+    await cleanupEnterpriseAdminSuite(harness.databaseUrl, seed, manifest);
+    expect(digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl))).toBe(
+      digestFingerprint(before),
+    );
+  }, 90_000);
+
+  it('early seed failure: real lifecycle hook leaves before digest (no manual cleanup)', async () => {
     const harness = await startCasPostgres();
     cleanups.push(harness.stop);
     const beforeFp = digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl));
     const {
       createDurableRestoreHandle,
       registerSeedRestoreOnLifecycle,
-      cleanupEnterpriseAdminSuite,
+      seedEnterpriseAdminSuite: seedFn,
+    } = await import('./seed');
+    const {
+      createLifecycleState,
+      createRunToken,
+      installLifecycleSignalHandlers,
+      cleanupLifecycle,
+    } = await import('./lifecycle');
+
+    const durable = createDurableRestoreHandle(harness.databaseUrl);
+    const state = createLifecycleState(createRunToken());
+    const beforeListeners = process.listenerCount('SIGINT');
+    installLifecycleSignalHandlers(state);
+    expect(process.listenerCount('SIGINT')).toBe(beforeListeners + 1);
+    expect(state.signalHandlersInstalled).toBe(true);
+    registerSeedRestoreOnLifecycle(state, durable, { settleTimeoutMs: 2_000 });
+
+    process.env.E2E_CAS_FORCE_EARLY_FAIL = '1';
+    try {
+      await expect(seedFn(harness.databaseUrl, durable)).rejects.toThrow(
+        /forced early seed failure/,
+      );
+    } finally {
+      delete process.env.E2E_CAS_FORCE_EARLY_FAIL;
+    }
+    expect(durable.settled).toBe(true);
+    expect(durable.commitPhase).toBe('notStarted');
+    expect(durable.committed).toBe(false);
+
+    await cleanupLifecycle(state);
+    expect(state.signalHandlersInstalled).toBe(false);
+    expect(process.listenerCount('SIGINT')).toBe(beforeListeners);
+    expect(digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl))).toBe(beforeFp);
+  }, 60_000);
+
+  it('mid-transaction rollback: real lifecycle hook leaves before digest', async () => {
+    const harness = await startCasPostgres();
+    cleanups.push(harness.stop);
+    const beforeFp = digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl));
+    const {
+      createDurableRestoreHandle,
+      registerSeedRestoreOnLifecycle,
+      seedEnterpriseAdminSuite: seedFn,
     } = await import('./seed');
     const {
       createLifecycleState,
@@ -584,24 +700,102 @@ describe('CAS real signal subprocess + foreign concurrent links', () => {
     const durable = createDurableRestoreHandle(harness.databaseUrl);
     const state = createLifecycleState(createRunToken());
     installLifecycleSignalHandlers(state);
-    registerSeedRestoreOnLifecycle(state, durable);
+    registerSeedRestoreOnLifecycle(state, durable, { settleTimeoutMs: 2_000 });
+
+    process.env.E2E_CAS_FORCE_TXN_ROLLBACK = '1';
+    try {
+      await expect(seedFn(harness.databaseUrl, durable)).rejects.toThrow(
+        /forced mid-transaction rollback/,
+      );
+    } finally {
+      delete process.env.E2E_CAS_FORCE_TXN_ROLLBACK;
+    }
+    expect(durable.commitPhase).toBe('rolledBack');
+    expect(durable.committed).toBe(false);
+    expect(durable.manifest).toBeNull();
+
+    await cleanupLifecycle(state);
+    expect(digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl))).toBe(beforeFp);
+  }, 60_000);
+
+  it('forced post-COMMIT reporting failure: real cleanupLifecycle restores via hook only', async () => {
+    const harness = await startCasPostgres();
+    cleanups.push(harness.stop);
+    const beforeFp = digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl));
+    const {
+      createDurableRestoreHandle,
+      registerSeedRestoreOnLifecycle,
+      seedEnterpriseAdminSuite: seedFn,
+    } = await import('./seed');
+    const {
+      createLifecycleState,
+      createRunToken,
+      installLifecycleSignalHandlers,
+      cleanupLifecycle,
+    } = await import('./lifecycle');
+
+    const durable = createDurableRestoreHandle(harness.databaseUrl);
+    const state = createLifecycleState(createRunToken());
+    const beforeSig = process.listenerCount('SIGTERM');
+    installLifecycleSignalHandlers(state);
+    expect(process.listenerCount('SIGTERM')).toBe(beforeSig + 1);
+    registerSeedRestoreOnLifecycle(state, durable, { settleTimeoutMs: 2_000 });
 
     process.env.E2E_CAS_FORCE_POST_COMMIT_FAIL = '1';
     try {
-      await expect(seedEnterpriseAdminSuite(harness.databaseUrl, durable)).rejects.toThrow(
-        /forced post-COMMIT/,
-      );
+      await expect(seedFn(harness.databaseUrl, durable)).rejects.toThrow(/forced post-COMMIT/);
     } finally {
       delete process.env.E2E_CAS_FORCE_POST_COMMIT_FAIL;
     }
     expect(durable.committed).toBe(true);
+    expect(durable.commitPhase).toBe('committed');
     expect(durable.manifest).toBeTruthy();
     expect(durable.seed).toBeTruthy();
-    await cleanupEnterpriseAdminSuite(harness.databaseUrl, durable.seed!, durable.manifest!);
+    // Pollution present before lifecycle restore
+    expect(digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl))).not.toBe(beforeFp);
+
+    // Production path only — no manual cleanupEnterpriseAdminSuite, no clearing hooks
+    await cleanupLifecycle(state);
+    expect(state.signalHandlersInstalled).toBe(false);
+    expect(process.listenerCount('SIGTERM')).toBe(beforeSig);
     expect(digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl))).toBe(beforeFp);
-    state.preCleanupHooks.length = 0;
-    await cleanupLifecycle(state).catch(() => undefined);
   }, 90_000);
+
+  it('ambiguous COMMIT timeout: fail-closed reconcile via lifecycle hook', async () => {
+    const harness = await startCasPostgres();
+    cleanups.push(harness.stop);
+    const beforeFp = digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl));
+    const {
+      createDurableRestoreHandle,
+      registerSeedRestoreOnLifecycle,
+      seedEnterpriseAdminSuite: seedFn,
+    } = await import('./seed');
+    const {
+      createLifecycleState,
+      createRunToken,
+      installLifecycleSignalHandlers,
+      cleanupLifecycle,
+    } = await import('./lifecycle');
+
+    const durable = createDurableRestoreHandle(harness.databaseUrl);
+    const state = createLifecycleState(createRunToken());
+    installLifecycleSignalHandlers(state);
+    registerSeedRestoreOnLifecycle(state, durable, { settleTimeoutMs: 2_000 });
+
+    process.env.E2E_CAS_FORCE_COMMIT_TIMEOUT = '1';
+    try {
+      await expect(seedFn(harness.databaseUrl, durable)).rejects.toThrow(
+        /forced COMMIT timeout|ambiguous/,
+      );
+    } finally {
+      delete process.env.E2E_CAS_FORCE_COMMIT_TIMEOUT;
+    }
+    expect(durable.commitPhase).toBe('ambiguous');
+    expect(durable.manifest).toBeTruthy(); // journal preserved
+    // COMMIT never landed — reconcile should treat as rolledBack
+    await cleanupLifecycle(state);
+    expect(digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl))).toBe(beforeFp);
+  }, 60_000);
 
   for (const signal of ['SIGTERM', 'SIGINT'] as const) {
     it(`real ${signal} after ready restores exact before digest`, async () => {
