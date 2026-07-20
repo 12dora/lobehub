@@ -10,7 +10,7 @@ import { randomBytes } from 'node:crypto';
 import { eq, sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
 import * as schema from '@/database/schemas';
@@ -97,6 +97,7 @@ run('Platform secret rewrap — true multi-connection PostgreSQL', () => {
     });
   });
   afterEach(async () => {
+    vi.useRealTimers();
     await Promise.all(pools.splice(0).map((pool) => pool.end()));
     await cleanup();
   });
@@ -130,5 +131,36 @@ run('Platform secret rewrap — true multi-connection PostgreSQL', () => {
     expect(result.rows.map(({ indexname }) => indexname)).toEqual([
       'platform_jobs_secret_rewrap_failure_parent_domain_row_idx',
     ]);
+  });
+
+  it('ignores forward/backward node clock skew when protecting and reclaiming a lease', async () => {
+    const [job] = await db.select().from(platformJobs).limit(1);
+    await db
+      .update(platformJobs)
+      .set({
+        heartbeatAt: sql`clock_timestamp()`,
+        leaseOwner: 'pg-existing-owner',
+        leaseUntil: sql`clock_timestamp() + interval '1 hour'`,
+        startedAt: sql`clock_timestamp()`,
+        status: 'running',
+      })
+      .where(eq(platformJobs.id, job.id));
+
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2100-01-01T00:00:00.000Z'));
+    await expect(
+      processNextPlatformSecretRewrapBatch(workerDb(), secrets, 'pg-future-skew'),
+    ).resolves.toEqual({ claimed: false });
+    vi.useRealTimers();
+
+    await db
+      .update(platformJobs)
+      .set({ leaseUntil: sql`clock_timestamp() - interval '1 second'` })
+      .where(eq(platformJobs.id, job.id));
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2000-01-01T00:00:00.000Z'));
+    await expect(
+      processNextPlatformSecretRewrapBatch(workerDb(), secrets, 'pg-past-skew'),
+    ).resolves.toMatchObject({ claimed: true, terminal: true });
   });
 });

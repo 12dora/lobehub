@@ -2,7 +2,7 @@
 import { randomBytes } from 'node:crypto';
 
 import { and, eq, sql } from 'drizzle-orm';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
 import {
@@ -78,7 +78,10 @@ beforeEach(async () => {
   provider.activeKeyId = oldKeyId;
   provider.unavailable = false;
 });
-afterEach(cleanup);
+afterEach(async () => {
+  vi.useRealTimers();
+  await cleanup();
+});
 
 const encrypt = (value: string) => secrets.encrypt(value);
 
@@ -449,5 +452,48 @@ describe('PlatformSecretRewrapCoordinator and worker', () => {
       },
     });
     expect(competingClaim).toEqual({ claimed: false });
+  });
+
+  it('protects a DB-live lease and reclaims it only after DB expiry', async () => {
+    await seedFiveDomains();
+    const job = await enqueue();
+    await db
+      .update(platformJobs)
+      .set({
+        heartbeatAt: sql`clock_timestamp()`,
+        leaseOwner: 'existing-owner',
+        leaseUntil: sql`clock_timestamp() + interval '1 hour'`,
+        startedAt: sql`clock_timestamp()`,
+        status: 'running',
+      })
+      .where(eq(platformJobs.id, job.jobId));
+
+    await expect(
+      processNextPlatformSecretRewrapBatch(db, secrets, 'live-lease-contender'),
+    ).resolves.toEqual({ claimed: false });
+
+    await db
+      .update(platformJobs)
+      .set({ leaseUntil: sql`clock_timestamp() - interval '1 second'` })
+      .where(eq(platformJobs.id, job.jobId));
+    let reclaimedClaim: typeof platformJobs.$inferSelect | undefined;
+    await expect(
+      processNextPlatformSecretRewrapBatch(db, secrets, 'expired-lease-reclaimer', {
+        lifecycle: {
+          afterClaim: async (claimed) => {
+            reclaimedClaim = claimed;
+          },
+        },
+      }),
+    ).resolves.toMatchObject({ claimed: true, terminal: true });
+
+    expect(reclaimedClaim).toBeDefined();
+    expect(reclaimedClaim!.heartbeatAt!.getUTCFullYear()).toBeGreaterThan(2025);
+    expect(reclaimedClaim!.leaseUntil!.getTime()).toBeGreaterThan(
+      reclaimedClaim!.heartbeatAt!.getTime(),
+    );
+    const completed = await getJob(job.jobId);
+    expect(completed.status).toBe('succeeded');
+    expect(completed.leaseOwner).toBeNull();
   });
 });
