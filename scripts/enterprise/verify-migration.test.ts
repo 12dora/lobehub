@@ -1,11 +1,9 @@
 // @vitest-environment node
 import { createHash } from 'node:crypto';
-import { rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { MigrationCompatReportCore } from './verify-migration/index';
 import {
@@ -101,22 +99,6 @@ const failedReportInput = (): MigrationCompatReportCore => ({
   rerun: { mode: 'idempotent', result: 'skipped' },
   schemaVersion: 1,
   syntheticResult: 'failed',
-});
-
-/** Only exact test-owned dump dirs under os.tmpdir(); never recursive beyond that prefix. */
-const removeExactOwnedDumpLeftovers = async (): Promise<void> => {
-  const { readdir } = await import('node:fs/promises');
-  const base = tmpdir();
-  const entries = await readdir(base, { withFileTypes: true }).catch(() => []);
-  await Promise.all(
-    entries
-      .filter((entry) => entry.isDirectory() && entry.name.startsWith('m15q03-dump-'))
-      .map((entry) => rm(path.join(base, entry.name), { force: true, recursive: true })),
-  );
-};
-
-afterEach(async () => {
-  await removeExactOwnedDumpLeftovers();
 });
 
 describe('migration compat baseline (2.2.10 / 0000-0116)', () => {
