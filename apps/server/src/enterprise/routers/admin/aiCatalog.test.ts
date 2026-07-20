@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { inArray } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
@@ -9,6 +9,7 @@ import {
   permissions,
   platformAiModels,
   platformAiProviders,
+  platformAiProviderSecrets,
   platformAuditLogs,
   platformResourceRevisions,
   rolePermissions,
@@ -40,6 +41,7 @@ const cleanup = async () => {
   await db.delete(platformAuditLogs);
   await db.delete(platformResourceRevisions);
   await db.delete(platformAiModels);
+  await db.delete(platformAiProviderSecrets);
   await db.delete(platformAiProviders);
   await db.delete(userRoles);
   await db.delete(rolePermissions);
@@ -106,13 +108,195 @@ afterEach(async () => {
   vi.unstubAllEnvs();
 });
 
-const callerFor = async (userId: string, authenticatedAt: Date | null = new Date()) =>
-  createCaller({
-    ...(await createContextInner({ authenticatedAt, authMethod: 'better-auth', userId })),
+const callerFor = async (
+  userId: string,
+  auth: Date | null | { authenticatedAt?: Date | null; authMethod?: 'api-key' | 'better-auth' } = {
+    authenticatedAt: new Date(),
+    authMethod: 'better-auth',
+  },
+) => {
+  const resolved =
+    auth instanceof Date || auth === null
+      ? { authenticatedAt: auth, authMethod: 'better-auth' as const }
+      : auth;
+  return createCaller({
+    ...(await createContextInner({
+      authenticatedAt: resolved.authenticatedAt,
+      authMethod: resolved.authMethod ?? 'better-auth',
+      userId,
+    })),
     serverDB: db,
   } as never);
+};
+
+const createProviderInput = (
+  providerKey: string,
+  secret?: { operation: 'clear' | 'keep' } | { operation: 'replace'; value: string },
+  reason = 'create provider draft',
+) => ({ displayName: providerKey, providerKey, reason, secret });
 
 describe('admin AI catalog permission and reauth gates', () => {
+  it('conditionally gates create secret replace and clear for every unsupported auth state', async () => {
+    const authStates = [
+      { authenticatedAt: null, authMethod: 'better-auth' as const },
+      {
+        authenticatedAt: new Date(Date.now() - 60 * 60 * 1000),
+        authMethod: 'better-auth' as const,
+      },
+      { authenticatedAt: new Date(), authMethod: 'api-key' as const },
+    ];
+    let attempt = 0;
+    for (const auth of authStates) {
+      for (const operation of ['replace', 'clear'] as const) {
+        const providerKey = `guarded-create-${attempt++}`;
+        const secretValue = `router-create-value-${attempt}`;
+        const secret =
+          operation === 'replace'
+            ? ({ operation, value: secretValue } as const)
+            : ({ operation } as const);
+        await expect(
+          (await callerFor(ids.aiAdmin, auth)).aiProviders.createDraft(
+            createProviderInput(
+              providerKey,
+              secret,
+              operation === 'replace' ? `denied ${secretValue}` : 'denied clear',
+            ),
+          ),
+        ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+      }
+    }
+
+    expect(await db.select().from(platformAiProviders)).toEqual([]);
+    expect(await db.select().from(platformAiProviderSecrets)).toEqual([]);
+    const audits = (await db.select().from(platformAuditLogs)).filter(
+      ({ action }) => action === 'admin.aiProviders.createDraft',
+    );
+    expect(audits).toHaveLength(6);
+    expect(audits).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          actorUserId: ids.aiAdmin,
+          afterDiff: { error: 'reauth_required' },
+          reason: null,
+          result: 'denied',
+          targetId: 'guarded-create-0',
+          targetType: 'provider',
+        }),
+      ]),
+    );
+    expect(JSON.stringify(audits)).not.toContain('router-create-value');
+  });
+
+  it('conditionally gates update secret replace and clear before draft or secret writes', async () => {
+    const fresh = await callerFor(ids.aiAdmin);
+    const provider = await fresh.aiProviders.createDraft(createProviderInput('guarded-update'));
+    const detail = await fresh.aiProviders.get({ id: provider.id });
+    const authStates = [
+      { authenticatedAt: null, authMethod: 'better-auth' as const },
+      {
+        authenticatedAt: new Date(Date.now() - 60 * 60 * 1000),
+        authMethod: 'better-auth' as const,
+      },
+      { authenticatedAt: new Date(), authMethod: 'api-key' as const },
+    ];
+    let attempt = 0;
+    for (const auth of authStates) {
+      for (const operation of ['replace', 'clear'] as const) {
+        const secretValue = `router-update-value-${attempt++}`;
+        const secret =
+          operation === 'replace'
+            ? ({ operation, value: secretValue } as const)
+            : ({ operation } as const);
+        await expect(
+          (await callerFor(ids.aiAdmin, auth)).aiProviders.updateDraft({
+            displayName: `denied-${attempt}`,
+            expectedDraftToken: detail.draftToken,
+            expectedRevision: provider.revision,
+            id: provider.id,
+            reason: operation === 'replace' ? `denied ${secretValue}` : 'denied clear',
+            secret,
+          }),
+        ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+      }
+    }
+
+    expect(
+      await db
+        .select({
+          displayName: platformAiProviders.displayName,
+          revision: platformAiProviders.revision,
+        })
+        .from(platformAiProviders)
+        .where(eq(platformAiProviders.id, provider.id)),
+    ).toEqual([{ displayName: 'guarded-update', revision: 0 }]);
+    expect(await db.select().from(platformAiProviderSecrets)).toEqual([]);
+    const audits = (await db.select().from(platformAuditLogs)).filter(
+      ({ action }) => action === 'admin.aiProviders.updateDraft',
+    );
+    expect(audits).toHaveLength(6);
+    expect(
+      audits.every(
+        ({ actorUserId, afterDiff, result, targetId, targetType }) =>
+          actorUserId === ids.aiAdmin &&
+          JSON.stringify(afterDiff) === JSON.stringify({ error: 'reauth_required' }) &&
+          result === 'denied' &&
+          targetId === provider.id &&
+          targetType === 'provider',
+      ),
+    ).toBe(true);
+    expect(JSON.stringify(audits)).not.toContain('router-update-value');
+  });
+
+  it('does not over-gate absent or keep operations and permits fresh replacement', async () => {
+    const ordinary = await callerFor(ids.aiAdmin, { authenticatedAt: null });
+    const absent = await ordinary.aiProviders.createDraft(createProviderInput('ordinary-absent'));
+    const keep = await ordinary.aiProviders.createDraft(
+      createProviderInput('ordinary-keep', { operation: 'keep' }),
+    );
+    const keepDetail = await ordinary.aiProviders.get({ id: keep.id });
+    await expect(
+      ordinary.aiProviders.updateDraft({
+        expectedDraftToken: keepDetail.draftToken,
+        expectedRevision: keep.revision,
+        id: keep.id,
+        reason: 'ordinary keep update',
+        secret: { operation: 'keep' },
+      }),
+    ).resolves.toMatchObject({ id: keep.id, secret: { configured: false } });
+
+    const fresh = await callerFor(ids.aiAdmin);
+    const absentDetail = await fresh.aiProviders.get({ id: absent.id });
+    const replaced = await fresh.aiProviders.updateDraft({
+      expectedDraftToken: absentDetail.draftToken,
+      expectedRevision: absent.revision,
+      id: absent.id,
+      reason: 'fresh replacement',
+      secret: { operation: 'replace', value: 'fresh-router-replacement' },
+    });
+    expect(replaced.secret.configured).toBe(true);
+    expect(await db.select().from(platformAiProviderSecrets)).toHaveLength(1);
+  });
+
+  it('still rejects create replacement when the denied audit sink fails', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const insert = vi.spyOn(db, 'insert').mockImplementationOnce(() => {
+      throw new Error('audit sink unavailable');
+    });
+    await expect(
+      (await callerFor(ids.aiAdmin, { authenticatedAt: null })).aiProviders.createDraft(
+        createProviderInput('audit-failure', {
+          operation: 'replace',
+          value: 'never-written-secret',
+        }),
+      ),
+    ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    expect(await db.select().from(platformAiProviders)).toEqual([]);
+    expect(await db.select().from(platformAiProviderSecrets)).toEqual([]);
+    expect(JSON.stringify(consoleError.mock.calls)).not.toContain('never-written-secret');
+    insert.mockRestore();
+    consoleError.mockRestore();
+  });
+
   it('denies ordinary users and writes a sanitized permission audit', async () => {
     const caller = await callerFor(ids.normal);
     await expect(caller.aiProviders.list({ limit: 10 })).rejects.toMatchObject({
