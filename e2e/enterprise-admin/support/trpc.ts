@@ -21,7 +21,9 @@ export const trpcQuery = async (
 ): Promise<{ ok: boolean; status: number; text: string; json: unknown }> => {
   const encoded =
     input === null ? emptyInput : encodeURIComponent(JSON.stringify({ 0: { json: input } }));
-  const response = await request.get(`/trpc/lambda/${path}?batch=1&input=${encoded}`);
+  const response = await request.get(`/trpc/lambda/${path}?batch=1&input=${encoded}`, {
+    timeout: 120_000,
+  });
   const text = await response.text();
   return { json: parseJsonBody(text), ok: response.ok(), status: response.status(), text };
 };
@@ -36,6 +38,7 @@ export const trpcMutation = async (
     headers: {
       'content-type': 'application/json',
     },
+    timeout: 120_000,
   });
   const text = await response.text();
   return { json: parseJsonBody(text), ok: response.ok(), status: response.status(), text };
