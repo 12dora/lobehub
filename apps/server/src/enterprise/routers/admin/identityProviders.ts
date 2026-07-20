@@ -33,8 +33,10 @@ import { throwEnterpriseError } from '../../guards/enterpriseErrors';
 import { withPlatformPermission } from '../../guards/platformPermission';
 import { assertRecentReauth } from '../../guards/reauth';
 import { containsEnterpriseSecretMaterial } from '../../security/redaction';
+import { PlatformSecretService } from '../../security/secret';
 import { IdentityProviderValidationError } from '../../services/identityProvider/discoveryValidator';
 import { IdentityProviderPublicationService } from '../../services/identityProvider/publicationService';
+import { IdentityProviderSecretStore } from '../../services/identityProvider/secretStore';
 import { PlatformAuditService } from '../../services/platformAudit';
 import {
   createAdminIdentityProviderRuntime,
@@ -77,15 +79,36 @@ export const identitySecretMutationRequiresReauth = (mutation: {
   operation: 'clear' | 'keep' | 'replace';
 }): boolean => mutation.operation === 'replace' || mutation.operation === 'clear';
 
-const safeIdentityDeniedReason = (
-  reason: string,
-  replacementSecrets: unknown[] = [],
-): string | null => {
-  if (containsEnterpriseSecretMaterial(reason)) return null;
-  const replacementValues = replacementSecrets.filter(
+const safeIdentityDeniedReason = async (input: {
+  currentSecretTargetId?: string | null;
+  reason: string;
+  replacementSecrets?: unknown[];
+  serverDB: Parameters<typeof createAdminIdentityProviderRuntime>[0];
+}): Promise<string | null> => {
+  if (containsEnterpriseSecretMaterial(input.reason)) return null;
+  const credentialValues = (input.replacementSecrets ?? []).filter(
     (value): value is string => typeof value === 'string' && value.length > 0,
   );
-  return replacementValues.some((value) => reason.includes(value)) ? null : reason;
+  if (input.currentSecretTargetId) {
+    try {
+      const secretService = PlatformSecretService.fromEnvOrThrowIfEnterprise();
+      if (!secretService) return null;
+      const currentSecret = await new IdentityProviderSecretStore(
+        input.serverDB,
+        secretService,
+      ).resolveCurrentClientSecret(input.currentSecretTargetId);
+      if (!currentSecret) return null;
+      credentialValues.push(currentSecret);
+    } catch {
+      return null;
+    }
+  }
+
+  let reason = input.reason;
+  for (const value of credentialValues.sort((a, b) => b.length - a.length)) {
+    reason = reason.replaceAll(value, '[REDACTED]');
+  }
+  return containsEnterpriseSecretMaterial(reason) ? null : reason;
 };
 
 const assertIdentityDangerousReauth = async (input: {
@@ -93,6 +116,7 @@ const assertIdentityDangerousReauth = async (input: {
   actorUserId: string;
   authenticatedAt?: Date | null;
   authMethod?: Parameters<typeof assertRecentReauth>[0]['authMethod'];
+  currentSecretTargetId?: string | null;
   reason: string;
   replacementSecrets?: unknown[];
   serverDB: Parameters<typeof createAdminIdentityProviderRuntime>[0];
@@ -106,7 +130,7 @@ const assertIdentityDangerousReauth = async (input: {
         action: input.action,
         actorUserId: input.actorUserId,
         afterDiff: { error: 'reauth_required' },
-        reason: safeIdentityDeniedReason(input.reason, input.replacementSecrets),
+        reason: await safeIdentityDeniedReason(input),
         result: 'denied',
         targetId: input.targetId,
         targetType: 'identity_provider',
@@ -160,6 +184,7 @@ export const adminIdentityProvidersRouter = router({
           actorUserId: ctx.userId!,
           authenticatedAt: ctx.authenticatedAt,
           authMethod: ctx.authMethod,
+          currentSecretTargetId: null,
           reason: input.reason,
           replacementSecrets: input.secret.operation === 'replace' ? [input.secret.value] : [],
           serverDB: ctx.serverDB,
@@ -305,6 +330,7 @@ export const adminIdentityProvidersRouter = router({
           actorUserId: ctx.userId!,
           authenticatedAt: ctx.authenticatedAt,
           authMethod: ctx.authMethod,
+          currentSecretTargetId: input.id,
           reason: input.reason,
           replacementSecrets: input.secret.operation === 'replace' ? [input.secret.value] : [],
           serverDB: ctx.serverDB,

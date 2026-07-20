@@ -173,7 +173,7 @@ describe('admin.identityProviders RBAC and feature gate', () => {
         expect.objectContaining({
           actorUserId: ids.creator,
           afterDiff: { error: 'reauth_required' },
-          reason: null,
+          reason: 'denied [REDACTED]',
           result: 'denied',
           targetId: 'guarded-create-0',
           targetType: 'identity_provider',
@@ -233,6 +233,7 @@ describe('admin.identityProviders RBAC and feature gate', () => {
       ({ action }) => action === 'admin.identityProviders.update',
     );
     expect(audits).toHaveLength(6);
+    expect(audits.every(({ reason }) => reason === null)).toBe(true);
     expect(
       audits.every(
         ({ actorUserId, afterDiff, result, targetId, targetType }) =>
@@ -244,6 +245,71 @@ describe('admin.identityProviders RBAC and feature gate', () => {
       ),
     ).toBe(true);
     expect(JSON.stringify(audits)).not.toContain('identity-update-value');
+  });
+
+  it('redacts the current identity secret and fails closed when ciphertext is unreadable', async () => {
+    const currentSecret = 'opaque-current-value-7319';
+    const nextSecret = 'opaque-next-value-8421';
+    const provider = await (
+      await callerFor(ids.creator)
+    ).create(identityInput('current-secret-guard', { operation: 'replace', value: currentSecret }));
+    const stale = await callerFor(ids.updater, {
+      authenticatedAt: new Date(Date.now() - 60 * 60 * 1000),
+      authMethod: 'better-auth',
+    });
+
+    await expect(
+      stale.update({
+        ...identityInput('current-secret-guard', { operation: 'clear' }, `denied ${currentSecret}`),
+        expectedRevision: provider.revision,
+        id: provider.id,
+      }),
+    ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    await expect(
+      stale.update({
+        ...identityInput(
+          'current-secret-guard',
+          { operation: 'replace', value: nextSecret },
+          `denied ${currentSecret} and ${nextSecret}`,
+        ),
+        expectedRevision: provider.revision,
+        id: provider.id,
+      }),
+    ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+
+    await db
+      .update(platformIdentityProviderSecrets)
+      .set({ ciphertext: 'not-readable-ciphertext' })
+      .where(eq(platformIdentityProviderSecrets.providerId, provider.id));
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await expect(
+      stale.update({
+        ...identityInput('current-secret-guard', { operation: 'clear' }, 'denied unreadable'),
+        expectedRevision: provider.revision,
+        id: provider.id,
+      }),
+    ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+
+    const audits = (await db.select().from(platformAuditLogs)).filter(
+      ({ action, result }) => action === 'admin.identityProviders.update' && result === 'denied',
+    );
+    expect(audits).toHaveLength(3);
+    expect(audits.slice(0, 2).map(({ reason }) => reason)).toEqual([
+      'denied [REDACTED]',
+      'denied [REDACTED] and [REDACTED]',
+    ]);
+    expect(audits[2]?.reason).toBeNull();
+    expect(JSON.stringify(audits)).not.toContain(currentSecret);
+    expect(JSON.stringify(audits)).not.toContain(nextSecret);
+    expect(JSON.stringify(consoleError.mock.calls)).not.toContain(currentSecret);
+    expect(JSON.stringify(consoleError.mock.calls)).not.toContain(nextSecret);
+    expect(
+      await db
+        .select({ revision: platformIdentityProviders.revision })
+        .from(platformIdentityProviders)
+        .where(eq(platformIdentityProviders.id, provider.id)),
+    ).toEqual([{ revision: provider.revision }]);
+    consoleError.mockRestore();
   });
 
   it('does not over-gate update keep, permits fresh replacement, and still forbids create keep', async () => {
