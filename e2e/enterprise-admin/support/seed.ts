@@ -1056,17 +1056,135 @@ export const reconcileAmbiguousCommit = async (durable: DurableRestoreHandle): P
   }
 };
 
-/** Terminate only the owned seed PostgreSQL backend (never foreign backends). */
-export const terminateOwnedSeedBackend = async (durable: DurableRestoreHandle): Promise<void> => {
+/**
+ * Terminate only the owned seed PostgreSQL backend (never foreign backends).
+ * Failures are NOT swallowed — preserve sanitized cause and backend identity.
+ */
+export const terminateOwnedSeedBackend = async (
+  durable: DurableRestoreHandle,
+  options?: { databaseUrl?: string },
+): Promise<void> => {
   const pid = durable.ownedBackendPid;
-  if (!pid) return;
-  const pool = new Pool({ connectionString: durable.databaseUrl });
+  if (!pid) {
+    throw new Error('fail-closed: no ownedBackendPid to terminate');
+  }
+  if (process.env.E2E_CAS_FORCE_TERMINATE_FAIL === '1') {
+    const err = new Error(
+      `forced owned-backend terminate connection/permission failure (backend=${pid})`,
+    );
+    durable.reconcileError = err.message;
+    throw err;
+  }
+  const url = options?.databaseUrl ?? durable.databaseUrl;
+  const pool = new Pool({ connectionString: url });
   try {
-    await pool.query(`SELECT pg_terminate_backend($1::int)`, [pid]);
-  } catch {
-    // backend may already be gone
+    const res = await pool.query<{ pg_terminate_backend: boolean }>(
+      `SELECT pg_terminate_backend($1::int) AS pg_terminate_backend`,
+      [pid],
+    );
+    // false means backend not found (already gone) — acceptable
+    void res.rows[0];
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    // Sanitize: do not embed connection strings
+    const sanitized = msg.replaceAll(url, '[DATABASE_URL]').slice(0, 400);
+    durable.reconcileError = `terminate owned backend ${pid} failed: ${sanitized}`;
+    throw new Error(durable.reconcileError, { cause: error });
   } finally {
     await pool.end().catch(() => undefined);
+  }
+};
+
+const awaitWithBound = async <T>(
+  promise: Promise<T>,
+  boundMs: number,
+  label: string,
+): Promise<T> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error(`${label} exceeded bound ${boundMs}ms`));
+        }, boundMs);
+        if (typeof timer === 'object' && 'unref' in timer) {
+          (timer as { unref: () => void }).unref();
+        }
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+};
+
+/**
+ * Single auditable resolution for commitIssued / in-flight COMMIT on cleanup/signal.
+ * - Wait first settle bound for natural completion.
+ * - If still pending: attempt owned-backend terminate (failures not swallowed).
+ * - Await commitInFlight with a second explicit bound (never unbounded).
+ * - Reconcile only after query is finished; preserve journal on failure.
+ */
+export const resolveIssuedCommitOnCleanup = async (
+  durable: DurableRestoreHandle,
+  options: {
+    postTerminateBoundMs?: number;
+    settleTimeoutMs: number;
+    waitBounded: () => Promise<'settled' | 'timeout'>;
+  },
+): Promise<void> => {
+  const postBound = options.postTerminateBoundMs ?? Math.max(2_000, options.settleTimeoutMs);
+  const outcome = await options.waitBounded();
+  const inflight: Promise<unknown> | null = durable.commitInFlight;
+
+  if (!inflight) {
+    // Query already finished — reconcile if needed
+    if (
+      !durable.committed &&
+      durable.commitPhase !== 'committed' &&
+      durable.commitPhase !== 'rolledBack'
+    ) {
+      await reconcileAmbiguousCommit(durable);
+    }
+    return;
+  }
+
+  if (outcome === 'timeout') {
+    try {
+      await terminateOwnedSeedBackend(durable);
+    } catch (termError) {
+      // Fail closed: keep journal + backend identity; do not clear recovery evidence.
+      durable.commitPhase = 'ambiguous';
+      durable.committed = false;
+      throw new Error(
+        `fail-closed: owned-backend terminate failed after settle timeout; journal preserved (backend=${durable.ownedBackendPid ?? 'unknown'})`,
+        { cause: termError },
+      );
+    }
+  }
+
+  try {
+    await awaitWithBound(
+      Promise.resolve(inflight).then(
+        () => undefined,
+        () => undefined,
+      ),
+      postBound,
+      'commitInFlight post-termination wait',
+    );
+  } catch (boundError) {
+    durable.commitPhase = 'ambiguous';
+    durable.committed = false;
+    durable.commitInFlight = null;
+    throw new Error(
+      `fail-closed: commitInFlight still pending after bounded post-termination wait; journal preserved (backend=${durable.ownedBackendPid ?? 'unknown'})`,
+      { cause: boundError },
+    );
+  }
+  durable.commitInFlight = null;
+
+  if (!durable.committed) {
+    await reconcileAmbiguousCommit(durable);
   }
 };
 
@@ -1756,22 +1874,13 @@ export const registerSeedRestoreOnLifecycle = (
       return;
     }
 
-    // COMMIT issued / in-flight: wait bounded settle; NEVER reconcile as rolledBack while pending.
+    // COMMIT issued / in-flight: single auditable resolution (never unbounded await).
     if (phaseOf(durableRestore) === 'commitIssued' || durableRestore.commitInFlight) {
-      const outcome = await waitBounded(settleTimeoutMs);
-      const inflight: Promise<unknown> | null = durableRestore.commitInFlight;
-      if (inflight) {
-        // Still pending after settle timeout — fail-closed: terminate only owned backend.
-        if (outcome === 'timeout') {
-          await terminateOwnedSeedBackend(durableRestore);
-        }
-        await inflight.catch(() => undefined);
-        durableRestore.commitInFlight = null;
-      }
-      // Query finished (or backend terminated). Reconcile only now.
-      if (!isFullyCommitted(durableRestore)) {
-        await reconcileAmbiguousCommit(durableRestore);
-      }
+      await resolveIssuedCommitOnCleanup(durableRestore, {
+        postTerminateBoundMs: Math.max(2_000, settleTimeoutMs),
+        settleTimeoutMs,
+        waitBounded: () => waitBounded(settleTimeoutMs),
+      });
       if (isFullyCommitted(durableRestore)) {
         await restoreOnce();
         return;
@@ -1780,7 +1889,6 @@ export const registerSeedRestoreOnLifecycle = (
         return;
       }
       if (phaseOf(durableRestore) === 'ambiguous' && durableRestore.manifest) {
-        // Keep journal; attempt restore if after-state appeared mid-race.
         try {
           await restoreOnce();
         } catch {
@@ -1807,27 +1915,21 @@ export const registerSeedRestoreOnLifecycle = (
       );
     }
 
-    // notStarted (or other pre-issue states): wait for settle with bounded fail-closed timeout.
+    // notStarted: wait for settle with bounded fail-closed timeout.
     const outcome = await waitBounded(settleTimeoutMs);
 
-    // Seed may have advanced to commitIssued/committed while we waited.
-    const advancedPhase = phaseOf(durableRestore);
-    const pendingCommit = durableRestore.commitInFlight as Promise<unknown> | null;
-    if (advancedPhase === 'commitIssued' || pendingCommit) {
-      if (pendingCommit) {
-        if (outcome === 'timeout') {
-          await terminateOwnedSeedBackend(durableRestore);
-        }
-        await Promise.resolve(pendingCommit).then(
-          () => undefined,
-          () => undefined,
-        );
-        durableRestore.commitInFlight = null;
-      }
-      if (!isFullyCommitted(durableRestore)) {
-        await reconcileAmbiguousCommit(durableRestore);
-      }
-    } else if (advancedPhase === 'ambiguous') {
+    // Seed may have advanced to commitIssued while we waited.
+    if (phaseOf(durableRestore) === 'commitIssued' || durableRestore.commitInFlight) {
+      await resolveIssuedCommitOnCleanup(durableRestore, {
+        postTerminateBoundMs: Math.max(2_000, settleTimeoutMs),
+        settleTimeoutMs,
+        // already waited once — use a short bound for any remaining wait
+        waitBounded: async () => {
+          if (!durableRestore.commitInFlight) return 'settled';
+          return waitBounded(Math.min(500, settleTimeoutMs));
+        },
+      });
+    } else if (phaseOf(durableRestore) === 'ambiguous') {
       await reconcileAmbiguousCommit(durableRestore);
     }
 
