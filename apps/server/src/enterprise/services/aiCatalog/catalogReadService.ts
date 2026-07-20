@@ -3,7 +3,6 @@ import { createHash } from 'node:crypto';
 import { isRecord } from '@lobechat/utils/object';
 import { AiModelTypeSchema } from 'model-bank';
 
-import { PlatformAiCatalogRepository } from '@/database/repositories/platformAiCatalog';
 import type { LobeChatDatabase } from '@/database/type';
 
 import {
@@ -11,6 +10,7 @@ import {
   publishedAiCatalogSchema,
   type PublishedAiProvider,
 } from '../../contracts/aiCatalog';
+import { loadCurrentAiCatalogSnapshot } from '../platformInstance/catalogAuthority';
 
 const EMPTY_CATALOG_REVISION = createHash('sha256').update('[]').digest('hex');
 
@@ -92,14 +92,10 @@ const toPublishedProvider = (
 
 /** Published, client-safe AI catalog. Ciphertext and runtime endpoint config never cross this API. */
 export class AiCatalogReadService {
-  private readonly repository: PlatformAiCatalogRepository;
-
-  constructor(db: LobeChatDatabase) {
-    this.repository = new PlatformAiCatalogRepository(db);
-  }
+  constructor(private readonly db: LobeChatDatabase) {}
 
   getPublished = async (): Promise<PublishedAiCatalog> => {
-    const revisions = await this.repository.listLatestPublishedProviderRevisions();
+    const { revisions } = await loadCurrentAiCatalogSnapshot(this.db);
     const providers = revisions
       .map((revision) => toPublishedProvider(revision.payload, revision.revision))
       .filter((provider): provider is PublishedAiProvider => provider !== null)

@@ -128,6 +128,34 @@ describe('platform instance runtime reporter', () => {
     });
   });
 
+  it('persists an immutable catalog token without either catalog coordinates or a number token', async () => {
+    const target = createTarget();
+    const revisionId = 'b'.repeat(64);
+
+    reportPlatformRuntimeMaterialization(
+      database,
+      { domain: 'ai_catalog', health: 'healthy', revisionId, source: 'database' },
+      {
+        createRepository: () => target,
+        env: productionEnv(),
+        getInstanceId: () => instanceId,
+      },
+    );
+    await waitForPlatformRuntimeReportsForTest();
+
+    expect(target.upsertRevisionState).toHaveBeenCalledWith({
+      domain: 'ai_catalog',
+      errorCategory: null,
+      health: 'healthy',
+      instanceId,
+      loadedRevision: null,
+      loadedRevisionId: revisionId,
+      loadMode: 'process_cached',
+      source: 'database',
+    });
+    expect(JSON.stringify(target.upsertRevisionState.mock.calls)).not.toContain('providerKey');
+  });
+
   it('preserves failure to success convergence for the same target revision', async () => {
     const target = createTarget();
     const options = {

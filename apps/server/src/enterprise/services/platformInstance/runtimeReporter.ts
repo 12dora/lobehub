@@ -10,13 +10,22 @@ import { getPlatformInstanceId, shouldStartPlatformInstanceHeartbeat } from './h
 
 const log = debug('lobe-server:platform-instance-runtime');
 
-export type PlatformRuntimeReportedDomain = 'branding' | 'settings';
+export type PlatformRuntimeReportedDomain =
+  'ai_catalog' | 'branding' | 'settings' | 'skill_catalog';
 
 export type PlatformRuntimeMaterializationState =
   | {
       domain: PlatformRuntimeReportedDomain;
       health: 'healthy';
       revision: number;
+      revisionId?: never;
+      source: 'database';
+    }
+  | {
+      domain: PlatformRuntimeReportedDomain;
+      health: 'healthy';
+      revision?: never;
+      revisionId: string;
       source: 'database';
     }
   | {
@@ -59,8 +68,13 @@ const domainState = (domain: PlatformRuntimeReportedDomain): DomainReportState =
 
 const signatureOf = (state: PlatformRuntimeMaterializationState): string =>
   state.health === 'healthy'
-    ? `${state.health}|${state.source}|revision:${state.revision}`
+    ? 'revisionId' in state
+      ? `${state.health}|${state.source}|immutable_id:${state.revisionId}`
+      : `${state.health}|${state.source}|revision:${state.revision}`
     : `${state.health}|${state.source}|${state.errorCategory}`;
+
+const isImmutableId = (value: string | undefined): value is string =>
+  typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 
 export interface RuntimeReporterFailureObservation {
   domain: PlatformRuntimeReportedDomain;
@@ -119,8 +133,12 @@ export const reportPlatformRuntimeMaterialization = (
   options: PlatformRuntimeReporterOptions = {},
 ): void => {
   if (!shouldStartPlatformInstanceHeartbeat(options.env ?? process.env)) return;
-  if (input.health === 'healthy' && (!Number.isSafeInteger(input.revision) || input.revision < 0)) {
-    return;
+  if (input.health === 'healthy') {
+    if ('revisionId' in input) {
+      if (!isImmutableId(input.revisionId)) return;
+    } else if (!Number.isSafeInteger(input.revision) || input.revision < 0) {
+      return;
+    }
   }
 
   const state = domainState(input.domain);
@@ -139,8 +157,10 @@ export const reportPlatformRuntimeMaterialization = (
         errorCategory: input.health === 'unavailable' ? input.errorCategory : null,
         health: input.health,
         instanceId: (options.getInstanceId ?? getPlatformInstanceId)(),
-        loadedRevision: input.health === 'healthy' ? input.revision : null,
-        loadedRevisionId: null,
+        loadedRevision:
+          input.health === 'healthy' && !('revisionId' in input) ? input.revision : null,
+        loadedRevisionId:
+          input.health === 'healthy' && 'revisionId' in input ? input.revisionId : null,
         loadMode: 'process_cached',
         source: input.source,
       });
