@@ -266,4 +266,19 @@ describe('PlatformSecretRotationRepository', () => {
     expect(page.items).toHaveLength(50);
     expect(page.nextCursor).not.toBeNull();
   });
+
+  it('supports transaction-scoped getById without making ciphertext enumerable', async () => {
+    await seedFiveDomains();
+    await db.transaction(async (tx) => {
+      const candidate = await PlatformSecretRotationRepository.forTransaction(tx).getById(
+        'connector',
+        'connector-secret-a',
+      );
+      expect(candidate).toBeDefined();
+      expect(candidate?.domain).toBe('connector');
+      expect(candidate?.ciphertext).toBe(opaque('connector-old'));
+      expect(Object.keys(candidate!)).toEqual([]);
+      expect(JSON.stringify(candidate)).toBe('{}');
+    });
+  });
 });

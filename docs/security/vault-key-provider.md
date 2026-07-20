@@ -63,8 +63,12 @@ const keyProvider = new VaultKeyProvider({
 1. 生成新的随机 32-byte KEK，并选择新的唯一 keyId。
 2. 原 active 项原样移入 historical，将新 KEK 写为 active；保留所有仍被密文引用的历史项。
 3. 用读取接口确认新写入的数据版本可用，再让应用重新读取。新密文会使用 active keyId，旧密文继续按 envelope keyId 解密。
-4. 分批调用 Platform Secret Service `rotate` 重新封装旧密文，并统计仍引用旧 keyId 的记录。
-5. 只有确认无任何密文引用旧 keyId 且回滚窗口结束后，才移除对应 historical 项。
+4. 由持久化 Node worker 执行内部 `platform.secret.rewrap.v1` 作业，以不超过 50 条的事务批次重新封装旧密文。Vercel/serverless 实例不得启动该轮询器；部署必须为它提供独立的持久进程入口。
+5. 查看父作业的稳定计数与失败分类；逐条失败只记录在内部 `platform.secret.rewrap.failure.v1` ledger。当前阶段没有管理员 API，调用方也不得绕过后续 S02c2 的同事务审计封装直接暴露这些内部原语。
+6. 父作业成功仍只表示数据库 envelope 已完成扫描。固定结果门为 `externalArtifactGate=identity_lkg_instance_convergence_required`，且 `historicalKeyRemovalReady=false`；OIDC LKG 与实例收敛属于外部检查，worker 不会更新或确认它们。
+7. 本作业绝不删除 KEK。只有后续受审计流程同时证明数据库无旧 keyId 引用、OIDC LKG / 实例均已收敛并且回滚窗口结束，才可另行批准移除 historical 项。
+
+取消只会停止后续批次，不会回滚已经提交的 envelope；失败重试只处理该父作业 ledger 中仍为 `failed` 的精确行。作业执行期间 active keyId 必须始终等于冻结的 target keyId；Vault 不可用或 active 漂移时，当前批次（包括数据、ledger、游标与 checkpoint）整体回滚。
 
 若轮换数据格式错误、Vault sealed 或权限丢失，停止发布并恢复上一 KV 版本；不要启用环境 KEK 回退。Vault token 续租失败时 AppRole 会先获取新 SecretID 再登录，显式 token 会直接 fail closed；过期 token 不会继续使用。
 
