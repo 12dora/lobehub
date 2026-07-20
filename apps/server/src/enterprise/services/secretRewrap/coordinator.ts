@@ -71,6 +71,25 @@ export class PlatformSecretRewrapCoordinator {
       throw new PlatformSecretRewrapProviderError('active_key_changed');
     }
 
+    const [active] = await db
+      .select()
+      .from(platformJobs)
+      .where(
+        and(
+          eq(platformJobs.type, PLATFORM_SECRET_REWRAP_JOB_TYPE),
+          sql`${platformJobs.status} IN ('pending', 'reserved', 'running')`,
+        ),
+      )
+      .for('update')
+      .limit(1);
+    if (active) {
+      const activeInput = parsePlatformSecretRewrapInput(active);
+      if (activeInput.targetKeyId !== input.targetKeyId) {
+        throw new PlatformSecretRewrapConflictError();
+      }
+      return projectJob(active);
+    }
+
     const idempotencyKey = `rewrap:${input.targetKeyId}`;
     const [inserted] = await db
       .insert(platformJobs)
@@ -83,7 +102,9 @@ export class PlatformSecretRewrapCoordinator {
         status: 'pending',
         type: PLATFORM_SECRET_REWRAP_JOB_TYPE,
       })
-      .onConflictDoNothing({ target: [platformJobs.type, platformJobs.idempotencyKey] })
+      // Both unique constraints are intentional arbitration points: same target is idempotent;
+      // a different target losing the single-active race is mapped below to a stable conflict.
+      .onConflictDoNothing()
       .returning();
     if (inserted) return projectJob(inserted);
 
@@ -97,7 +118,7 @@ export class PlatformSecretRewrapCoordinator {
         ),
       )
       .limit(1);
-    if (!existing) throw new PlatformSecretRewrapInvalidError();
+    if (!existing) throw new PlatformSecretRewrapConflictError();
     const existingInput = parsePlatformSecretRewrapInput(existing);
     if (existingInput.targetKeyId !== input.targetKeyId) {
       throw new PlatformSecretRewrapInvalidError();

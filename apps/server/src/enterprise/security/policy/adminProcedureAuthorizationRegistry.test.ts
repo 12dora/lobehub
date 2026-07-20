@@ -58,14 +58,14 @@ describe('admin procedure authorization registry', () => {
   it('reconciles all live procedures, middleware gates, root mounts, and mutation risks', () => {
     expect(() => reconcile()).not.toThrow();
 
-    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(109);
+    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(114);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'query'),
-    ).toHaveLength(43);
+    ).toHaveLength(45);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'mutation'),
-    ).toHaveLength(66);
-    expect(mutationPaths).toHaveLength(66);
+    ).toHaveLength(69);
+    expect(mutationPaths).toHaveLength(69);
     expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter((entry) => 'selfAccess' in entry)).toEqual(
       [{ kind: 'query', path: 'admin.auth.getMyAccess', selfAccess: true }],
     );
@@ -180,7 +180,7 @@ describe('admin procedure authorization registry', () => {
     }
   });
 
-  it('fails when the 66-mutation risk registry is missing or stale', () => {
+  it('fails when the 69-mutation risk registry is missing or stale', () => {
     expect(() => reconcile({ mutationPaths: mutationPaths.slice(1) })).toThrow(
       'missing mutation risk entry',
     );

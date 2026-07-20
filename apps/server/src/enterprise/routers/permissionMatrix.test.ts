@@ -51,9 +51,9 @@ const createProbeCaller = createCallerFactory(authorizationProbeRouter);
 const fixture = createAdminAuthorizationFixture({ namespace: 'permission-matrix' });
 
 const roleCases = [
-  { expected: 109, role: PLATFORM_SYSTEM_ROLES.SUPER_ADMIN },
+  { expected: 114, role: PLATFORM_SYSTEM_ROLES.SUPER_ADMIN },
   { expected: 76, role: PLATFORM_SYSTEM_ROLES.AI_ADMIN },
-  { expected: 37, role: PLATFORM_SYSTEM_ROLES.AUDITOR },
+  { expected: 39, role: PLATFORM_SYSTEM_ROLES.AUDITOR },
   { expected: 27, role: PLATFORM_SYSTEM_ROLES.IDENTITY_ADMIN },
   { expected: 15, role: PLATFORM_SYSTEM_ROLES.USER_ADMIN },
   { expected: 1, role: PLATFORM_SYSTEM_ROLES.PLATFORM_USER },
@@ -155,7 +155,7 @@ describe('admin permission matrix', () => {
   });
 
   for (const { expected, role } of roleCases) {
-    it(`${role} authorizes exactly ${expected} of 109 procedures`, () => {
+    it(`${role} authorizes exactly ${expected} of 114 procedures`, () => {
       const permissions = new Set(PLATFORM_ROLE_PERMISSIONS[role]);
       const allowed = ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter((authorization) =>
         isAuthorizedByPlatformPermissions(authorization, permissions),

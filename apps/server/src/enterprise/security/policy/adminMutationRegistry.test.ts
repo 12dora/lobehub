@@ -501,6 +501,37 @@ describe('enterprise admin mutation policy registry', () => {
     }
   });
 
+  it('keeps all secret rotation mutations critical with enforced intent controls', () => {
+    const entries = Object.values(ADMIN_MUTATION_REGISTRY).filter(({ procedure }) =>
+      procedure.startsWith('admin.security.secretRotation.'),
+    );
+    expect(entries).toHaveLength(3);
+    for (const entry of entries) {
+      expect(entry).toMatchObject({
+        dangerous: true,
+        risk: 'critical',
+        controls: {
+          audit: { status: 'enforced' },
+          rateLimit: { status: 'planned' },
+          reason: { status: 'enforced' },
+          reauth: { status: 'enforced' },
+        },
+      });
+    }
+    expect(ADMIN_MUTATION_REGISTRY['admin.security.secretRotation.start'].controls).toMatchObject({
+      lastKnownGood: { status: 'conditional' },
+      outbound: { status: 'enforced' },
+    });
+    expect(ADMIN_MUTATION_REGISTRY['admin.security.secretRotation.retry'].controls).toMatchObject({
+      lastKnownGood: { status: 'conditional' },
+      outbound: { status: 'not-applicable' },
+    });
+    expect(ADMIN_MUTATION_REGISTRY['admin.security.secretRotation.cancel'].controls).toMatchObject({
+      lastKnownGood: { status: 'not-applicable' },
+      outbound: { status: 'not-applicable' },
+    });
+  });
+
   it('keeps high risks dangerous and regular risks below high at the type boundary', () => {
     expectTypeOf<DangerousAdminMutationDefinition['risk']>().toEqualTypeOf<'critical' | 'high'>();
     expectTypeOf<RegularAdminMutationDefinition['risk']>().toEqualTypeOf<'low' | 'medium'>();
