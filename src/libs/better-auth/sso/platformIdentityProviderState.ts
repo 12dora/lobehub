@@ -6,6 +6,7 @@ import { z } from 'zod';
 
 import {
   enterPlatformOidcCallbackObservation,
+  isPlatformOidcProviderId,
   observePlatformOidcLoginFailure,
   observePlatformOidcLoginSuccess,
   registerPlatformOidcFlow,
@@ -52,10 +53,23 @@ export const platformIdentityProviderState = (
         {
           handler: createAuthMiddleware(async (ctx) => {
             const providerId = ctx.params?.providerId;
-            if (typeof providerId !== 'string' || !providerIds.has(providerId)) return;
+            if (
+              typeof providerId !== 'string' ||
+              !isPlatformOidcProviderId(providerId) ||
+              !providerIds.has(providerId)
+            ) {
+              return;
+            }
 
             const state = typeof ctx.query?.state === 'string' ? ctx.query.state : null;
-            await enterPlatformOidcCallbackObservation(ctx.context.internalAdapter, state);
+            const entry = await enterPlatformOidcCallbackObservation(
+              ctx.context.internalAdapter,
+              state,
+              providerId,
+            );
+            if (entry === 'mismatch') {
+              throw new Error('PLATFORM_OIDC_CALLBACK_PROVIDER_MISMATCH');
+            }
           }),
           matcher: (ctx) => ctx.path === '/oauth2/callback/:providerId',
         },

@@ -205,6 +205,7 @@ const captureObservations = () => {
 };
 
 interface RouteHarnessOptions extends NonNullable<Parameters<typeof setup>[0]> {
+  databaseProviderB?: boolean;
   linkStateUpdateFailure?: 'stale-read' | 'throw';
   markerWriteFailure?: boolean;
   persistenceFailure?: 'account' | 'cookie' | 'session' | 'user';
@@ -242,6 +243,17 @@ const createRouteHarness = async (options?: RouteHarnessOptions) => {
     scopes: ['openid'],
     tokenUrl: 'https://other-login.example.test/token',
   };
+  const databaseProviderBGetToken = vi.fn(async () => {
+    throw new Error('UNEXPECTED_DATABASE_PROVIDER_B_TOKEN_EXCHANGE');
+  });
+  const databaseProviderB: GenericOAuthConfig = {
+    ...setupResult.config,
+    getToken: databaseProviderBGetToken,
+    providerId: 'partner-oidc',
+  };
+  const databaseProviders = options?.databaseProviderB
+    ? [setupResult.config, databaseProviderB]
+    : [setupResult.config];
   const injectLinkStateUpdateFailurePlugin: BetterAuthPlugin = {
     hooks: {
       before: [
@@ -272,6 +284,23 @@ const createRouteHarness = async (options?: RouteHarnessOptions) => {
           }),
           matcher: (ctx) => ctx.path === '/oauth2/link',
         },
+      ],
+      after: [
+        {
+          handler: createAuthMiddleware(async () => {
+            if (options?.rawCallbackFailure === 'handler-tail') {
+              throw new Error('INJECTED_HANDLER_TAIL_FAILURE');
+            }
+          }),
+          matcher: (ctx) => ctx.path === '/oauth2/callback/:providerId',
+        },
+      ],
+    },
+    id: 'inject-platform-state-update-failure-test',
+  };
+  const injectCallbackFailurePlugin: BetterAuthPlugin = {
+    hooks: {
+      before: [
         {
           handler: createAuthMiddleware(async (ctx) => {
             if (
@@ -338,18 +367,8 @@ const createRouteHarness = async (options?: RouteHarnessOptions) => {
           matcher: (ctx) => ctx.path === '/oauth2/callback/:providerId',
         },
       ],
-      after: [
-        {
-          handler: createAuthMiddleware(async () => {
-            if (options?.rawCallbackFailure === 'handler-tail') {
-              throw new Error('INJECTED_HANDLER_TAIL_FAILURE');
-            }
-          }),
-          matcher: (ctx) => ctx.path === '/oauth2/callback/:providerId',
-        },
-      ],
     },
-    id: 'inject-platform-state-update-failure-test',
+    id: 'inject-platform-callback-failure-test',
   };
   const createAuthInstance = () =>
     betterAuth({
@@ -366,8 +385,9 @@ const createRouteHarness = async (options?: RouteHarnessOptions) => {
       emailAndPassword: { enabled: true },
       plugins: [
         injectLinkStateUpdateFailurePlugin,
-        platformIdentityProviderState(['corp-oidc']),
-        genericOAuth({ config: [setupResult.config, nonPlatformProvider] }),
+        platformIdentityProviderState(databaseProviders.map(({ providerId }) => providerId)),
+        injectCallbackFailurePlugin,
+        genericOAuth({ config: [...databaseProviders, nonPlatformProvider] }),
       ],
       ...(options?.useSecondaryStorage === false
         ? {}
@@ -501,6 +521,7 @@ const createRouteHarness = async (options?: RouteHarnessOptions) => {
       overrides: CallbackOverrides = {},
     ) => callbackWithAuth(createAuthInstance(), flow, overrides),
     customGetToken,
+    databaseProviderBGetToken,
     database,
     mapProfileToUser,
     nativeFetch,
@@ -661,6 +682,53 @@ describe('platform identity provider trusted profile', () => {
     },
   );
 
+  it('does not let a second registered database provider claim the first provider attempt', async () => {
+    const events = captureObservations();
+    const harness = await createRouteHarness({ databaseProviderB: true });
+    const flow = await harness.start();
+    const state = flow.authorizationUrl.searchParams.get('state')!;
+    const nonce = flow.authorizationUrl.searchParams.get('nonce')!;
+
+    const providerBResponse = await harness.callback(flow, { providerId: 'partner-oidc' });
+    await harness.flushRawObservations();
+
+    expect(providerBResponse.status).toBe(500);
+    expect(providerBResponse.headers.get('location')).not.toBe(
+      'https://app.example.test/after-login',
+    );
+    expect(harness.databaseProviderBGetToken).not.toHaveBeenCalled();
+    expect(events).toEqual([]);
+    expect(harness.observationMarkers()).toContain('"flow":"sign_in"');
+
+    harness.setTokenNonce(nonce);
+    const providerAResponse = await harness.callback(flow, { state });
+    await harness.flushRawObservations();
+
+    expect(providerAResponse.headers.get('location')).toBe('https://app.example.test/after-login');
+    expect(events).toEqual([{ outcome: 'success', stage: 'authenticated', type: 'oidc_login' }]);
+  });
+
+  it('rejects a non-canonical encoded alias of a registered callback provider', async () => {
+    const events = captureObservations();
+    const harness = await createRouteHarness({ rawCallbackFailure: 'foreign-provider' });
+    const flow = await harness.start();
+    const nonce = flow.authorizationUrl.searchParams.get('nonce')!;
+
+    const encodedResponse = await harness.callback(flow, { providerId: 'corp%2Doidc' });
+    await harness.flushRawObservations();
+
+    expect(encodedResponse.status).toBe(500);
+    expect(events).toEqual([]);
+    expect(harness.observationMarkers()).toContain('"flow":"sign_in"');
+
+    harness.setTokenNonce(nonce);
+    const canonicalResponse = await harness.callback(flow);
+    await harness.flushRawObservations();
+
+    expect(canonicalResponse.headers.get('location')).toBe('https://app.example.test/after-login');
+    expect(events).toEqual([{ outcome: 'success', stage: 'authenticated', type: 'oidc_login' }]);
+  });
+
   it('does not let an environment provider raw failure claim a database-provider attempt', async () => {
     const events = captureObservations();
     const harness = await createRouteHarness({ rawCallbackFailure: 'foreign-provider' });
@@ -699,11 +767,16 @@ describe('platform identity provider trusted profile', () => {
     const wrongProviderResponse = await harness.callback(flow, {
       providerId: 'wrong-db-provider',
     });
+    const encodedSlashResponse = await harness.callback(flow, { providerId: 'corp%2Foidc' });
+    const encodedControlResponse = await harness.callback(flow, { providerId: 'corp%00oidc' });
+    const malformedResponse = await harness.callback(flow, { providerId: '%E0%A4%A' });
     await harness.flushRawObservations();
-    await harness.observeRawFailureForPath('/oauth2/callback/%E0%A4%A', state);
     await harness.observeRawFailureForPath(`/oauth2/callback/${'x'.repeat(513)}`, state);
 
     expect(wrongProviderResponse.status).toBe(500);
+    expect(encodedSlashResponse.ok).toBe(false);
+    expect(encodedControlResponse.ok).toBe(false);
+    expect(malformedResponse.ok).toBe(false);
     expect(events).toEqual([]);
     expect(harness.observationMarkers()).toContain('"flow":"sign_in"');
 
@@ -1128,10 +1201,10 @@ describe('platform identity provider trusted profile', () => {
   });
 
   it.each([
-    ['missing state', null, undefined],
-    ['wrong state', 'attacker-state', undefined],
-    ['state/cookie mismatch', undefined, 'better-auth.state=attacker-cookie'],
-  ])('rejects %s before token exchange', async (_label, state, cookie) => {
+    ['missing state', null, undefined, false],
+    ['wrong state', 'attacker-state', undefined, false],
+    ['state/cookie mismatch', undefined, 'better-auth.state=attacker-cookie', true],
+  ])('rejects %s before token exchange', async (_label, state, cookie, observed) => {
     const events = captureObservations();
     const harness = await createRouteHarness();
     const flow = await harness.start();
@@ -1143,14 +1216,18 @@ describe('platform identity provider trusted profile', () => {
     expect(harness.customGetToken).not.toHaveBeenCalled();
     expect(harness.transport).not.toHaveBeenCalled();
     expect(harness.mapProfileToUser).not.toHaveBeenCalled();
-    expect(events).toEqual([
-      {
-        failureCategory: 'state_invalid',
-        outcome: 'failure',
-        stage: 'state_validation',
-        type: 'oidc_login',
-      },
-    ]);
+    expect(events).toEqual(
+      observed
+        ? [
+            {
+              failureCategory: 'state_invalid',
+              outcome: 'failure',
+              stage: 'state_validation',
+              type: 'oidc_login',
+            },
+          ]
+        : [],
+    );
   });
 
   it('consumes OAuth verification state once before token exchange', async () => {
