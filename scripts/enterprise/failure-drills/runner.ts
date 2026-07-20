@@ -26,6 +26,12 @@ const vitestReportSchema = z
     success: z.boolean(),
     testResults: z.array(
       z.object({
+        assertionResults: z.array(
+          z.object({
+            status: z.enum(['failed', 'passed', 'pending', 'skipped', 'todo']),
+            title: z.string(),
+          }),
+        ),
         endTime: z.number().finite().nonnegative(),
       }),
     ),
@@ -51,16 +57,32 @@ const parseReport = (
   reportDefinition: FailureDrillReport,
 ) => {
   const report = vitestReportSchema.parse(JSON.parse(source));
-  const skipped = report.numPendingTests + report.numTodoTests;
-  const countedTotal = report.numPassedTests + report.numFailedTests + skipped;
+  const selectedAssertions = reportDefinition.assertionTitles
+    ? report.testResults
+        .flatMap(({ assertionResults }) => assertionResults)
+        .filter(({ title }) => reportDefinition.assertionTitles?.includes(title))
+    : undefined;
+  const passed = selectedAssertions
+    ? selectedAssertions.filter(({ status }) => status === 'passed').length
+    : report.numPassedTests;
+  const failed = selectedAssertions
+    ? selectedAssertions.filter(({ status }) => status === 'failed').length
+    : report.numFailedTests;
+  const skipped = selectedAssertions
+    ? selectedAssertions.filter(
+        ({ status }) => status === 'pending' || status === 'skipped' || status === 'todo',
+      ).length
+    : report.numPendingTests + report.numTodoTests;
+  const total = selectedAssertions?.length ?? report.numTotalTests;
+  const countedTotal = passed + failed + skipped;
 
-  if (countedTotal !== report.numTotalTests) {
+  if (countedTotal !== total) {
     throw new Error(`${scenario.scenarioId}: Vitest assertion counts are inconsistent`);
   }
 
-  if (report.numTotalTests !== reportDefinition.expectedAssertions) {
+  if (total !== reportDefinition.expectedAssertions) {
     throw new Error(
-      `${scenario.scenarioId}: expected ${reportDefinition.expectedAssertions} assertions, received ${report.numTotalTests}`,
+      `${scenario.scenarioId}: expected ${reportDefinition.expectedAssertions} assertions, received ${total}`,
     );
   }
 
@@ -71,13 +93,13 @@ const parseReport = (
 
   return {
     assertions: {
-      failed: report.numFailedTests,
-      passed: report.numPassedTests,
+      failed,
+      passed,
       skipped,
-      total: report.numTotalTests,
+      total,
     },
     elapsedMilliseconds: Math.max(0, endTime - report.startTime),
-    reportSuccess: report.success,
+    reportSuccess: report.success && failed === 0,
   };
 };
 

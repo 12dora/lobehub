@@ -96,9 +96,9 @@ run('Platform Agent rollout — true multi-connection PostgreSQL', () => {
       currentVersionId: null,
       id: 'pg-agent',
       migrationRequired: false,
-      publishedAt: new Date(),
-      revision: 2,
-      status: 'published',
+      publishedAt: null,
+      revision: 1,
+      status: 'draft',
       title: 'PG rollout',
     });
     await db.insert(platformAgentVersions).values([
@@ -121,7 +121,12 @@ run('Platform Agent rollout — true multi-connection PostgreSQL', () => {
     ]);
     await db
       .update(platformAgents)
-      .set({ currentVersionId: 'pg-version-2' })
+      .set({
+        currentVersionId: 'pg-version-2',
+        publishedAt: new Date(),
+        revision: 2,
+        status: 'published',
+      })
       .where(eq(platformAgents.id, 'pg-agent'));
     await db.insert(platformAgentAssignments).values({
       agentId: 'pg-agent',
