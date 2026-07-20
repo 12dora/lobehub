@@ -271,42 +271,90 @@ test('managed resources confirmation: reason required and cancel does not publis
   try {
     await signInContext(context, s.superAdmin);
     await expectSignedIn(context.request);
+
+    // Baseline published revision via API before UI mutation attempts.
+    const before = await trpcQuery(context.request, 'admin.managedResources.get');
+    expect(before.ok, `managedResources.get failed: ${before.text.slice(0, 200)}`).toBe(true);
+    const beforeRevisionMatch = before.text.match(/"baseRevision"\s*:\s*(\d+)/);
+    const beforeRevision = beforeRevisionMatch ? Number(beforeRevisionMatch[1]) : null;
+
     const page = await context.newPage();
     await page.goto('/admin/managed-resources');
-    // Page title from i18n — allow either heading or template title
-    await expect(
-      page.getByText(/Managed resources|托管资源|managedResources/i).first(),
-    ).toBeVisible({ timeout: 60_000 });
+    // Wait for loaded page body (not sidebar/nav shell text alone).
+    await expect(page.getByRole('heading', { name: 'Managed resources' })).toBeVisible({
+      timeout: 90_000,
+    });
+    await expect(page.getByText('Change reason', { exact: true })).toBeVisible({
+      timeout: 30_000,
+    });
+    // Switches must be interactive for super_admin with policy:update.
+    const switches = page.getByRole('switch');
+    await expect(switches.first()).toBeVisible({ timeout: 30_000 });
+    await switches.first().click();
+    await expect(page.getByText('Unsaved changes')).toBeVisible({ timeout: 15_000 });
 
-    // Toggle a non-skills resource to create a draft delta when editable
-    const switches = page.locator('[role="switch"]');
-    const switchCount = await switches.count();
-    if (switchCount > 0) {
-      await switches.first().click();
-    }
+    // Primary save without reason → hard validation (exact product copy).
+    const saveButton = page.getByRole('button', { name: /^Save draft$|^Save$|^Retry save$/i });
+    await expect(saveButton).toBeVisible({ timeout: 15_000 });
+    await saveButton.click();
+    await expect(page.getByText('Enter a reason (1–2000 characters).')).toBeVisible({
+      timeout: 10_000,
+    });
 
-    const reason = page.getByPlaceholder(/reason|理由/i);
-    if (await reason.count()) {
-      // Attempt save/publish without reason → validation
-      const primary = page.getByRole('button', { name: /Save|Publish|保存|发布/i }).first();
-      if (await primary.isVisible()) {
-        await primary.click();
-        await expect(page.getByText(/required|必填|reason/i).first()).toBeVisible({
-          timeout: 10_000,
-        });
+    // Fill reason then abandon via leave confirmation (do not publish).
+    const reason = page.getByPlaceholder('Explain why this policy is changing…');
+    await expect(reason).toBeVisible();
+    await reason.fill('e2e confirmation cancel — do not publish');
+
+    // Dirty navigation should open the leave confirm modal; dismiss it to stay, then leave via discard path.
+    const leaveClick = page.getByRole('link', { name: ADMIN_COPY.systemNav }).first().click();
+    const leaveModal = page.getByRole('dialog').or(page.getByText(/unsaved|leave|discard/i));
+    // Prefer modal cancel/stay if present; otherwise force system navigation after brief wait.
+    try {
+      await expect(leaveModal.first()).toBeVisible({ timeout: 5_000 });
+      const stay = page.getByRole('button', { name: /Stay|Cancel|Keep editing|继续编辑/i });
+      if ((await stay.count()) > 0) {
+        await stay.first().click();
+        await expect(page.getByRole('heading', { name: 'Managed resources' })).toBeVisible();
       }
-      // Fill reason then abandon (cancel path) — do not publish
-      await reason.fill('e2e confirmation cancel — do not publish');
-      // Navigate away with possible leave confirm
-      page.once('dialog', (dialog) => dialog.dismiss().catch(() => undefined));
-      await page.goto('/admin/system');
-      await expect(page.getByRole('heading', { name: ADMIN_COPY.systemTitle })).toBeVisible({
-        timeout: 45_000,
-      });
+    } catch {
+      // Modal may not appear for same-shell client routing; continue with explicit discard.
+    }
+    await leaveClick.catch(() => undefined);
+
+    // Explicit discard of local draft if still on page, then leave without publish.
+    const discard = page.getByRole('button', { name: /Discard|丢弃/i });
+    if (
+      (await discard.count()) > 0 &&
+      (await discard
+        .first()
+        .isVisible()
+        .catch(() => false))
+    ) {
+      await discard.first().click();
     }
 
+    await page.goto('/admin/system');
+    await expect(page.getByRole('heading', { name: ADMIN_COPY.systemTitle })).toBeVisible({
+      timeout: 45_000,
+    });
+
+    // Publish did not advance the managed-resources revision.
+    const after = await trpcQuery(context.request, 'admin.managedResources.get');
+    expect(after.ok).toBe(true);
+    if (beforeRevision !== null) {
+      const afterRevisionMatch = after.text.match(/"baseRevision"\s*:\s*(\d+)/);
+      const afterRevision = afterRevisionMatch ? Number(afterRevisionMatch[1]) : null;
+      expect(afterRevision).toBe(beforeRevision);
+    }
+
+    await page.goto('/admin/managed-resources');
+    await expect(page.getByRole('heading', { name: 'Managed resources' })).toBeVisible({
+      timeout: 60_000,
+    });
+    await expect(page.getByText('Change reason', { exact: true })).toBeVisible();
     await captureEvidence(page, 'managed-resources-confirmation');
-    log('confirmation / managed guard flow exercised');
+    log('confirmation: reason-required + no revision bump after cancel path');
   } finally {
     await context.close();
   }
@@ -325,13 +373,12 @@ test('evidence matrix: light/dark × desktop/mobile with stable waits', async ({
       prepare: async (page) => {
         await page.goto('/admin/system');
         await page.waitForLoadState('domcontentloaded');
-        // Mobile → Desktop required; desktop → System shell. Prefer stable copy anchors.
+        // Mobile → Desktop required; desktop → System heading (not sidebar-only).
         const surface = page
-          .getByText(ADMIN_COPY.mobileUnsupportedTitle)
-          .or(page.getByText(ADMIN_COPY.accessDeniedTitle))
-          .or(page.getByText(ADMIN_COPY.featureOffTitle))
-          .or(page.getByRole('heading', { name: ADMIN_COPY.systemTitle }))
-          .or(page.getByText(ADMIN_COPY.systemTitle, { exact: true }));
+          .getByRole('heading', { name: ADMIN_COPY.mobileUnsupportedTitle })
+          .or(page.getByRole('heading', { name: ADMIN_COPY.accessDeniedTitle }))
+          .or(page.getByRole('heading', { name: ADMIN_COPY.featureOffTitle }))
+          .or(page.getByRole('heading', { name: ADMIN_COPY.systemTitle }));
         await expect(surface.first()).toBeVisible({ timeout: 90_000 });
       },
       slug: 'admin-system',
