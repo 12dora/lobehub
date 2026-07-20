@@ -40,11 +40,15 @@ describe('M10 rollout job indexes migration', () => {
     expect(predeploy).not.toContain("client.query('COMMIT')");
   });
 
-  it('advances journal and snapshots exactly once to 0126', () => {
-    expect(journal.entries).toHaveLength(127);
-    expect(journal.entries.at(-1)).toMatchObject({ idx: 126, tag: migrationName });
-    expect(
-      readdirSync(path.join(migrations, 'meta')).filter((file) => file.endsWith('_snapshot.json')),
-    ).toHaveLength(127);
+  it('keeps 0126 unique and ordered after its M10 schema predecessor', () => {
+    const journalPosition = journal.entries.findIndex(({ tag }) => tag === migrationName);
+    expect(journalPosition).toBe(126);
+    expect(journal.entries.slice(journalPosition - 1, journalPosition + 1)).toMatchObject([
+      { idx: 125, tag: '0125_m10_platform_agent_contract_expand' },
+      { idx: 126, tag: migrationName },
+    ]);
+    expect(journal.entries.filter(({ idx }) => idx === 126)).toHaveLength(1);
+    expect(journal.entries.filter(({ tag }) => tag === migrationName)).toHaveLength(1);
+    expect(readdirSync(path.join(migrations, 'meta'))).toContain('0126_snapshot.json');
   });
 });
