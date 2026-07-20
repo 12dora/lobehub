@@ -17,6 +17,8 @@ import {
 import type { LobeChatDatabase } from '@/database/type';
 
 import type { SkillManifest } from '../../contracts/skillCatalog';
+import { PlatformDomainTargetResolver } from '../platformInstance/domainTargets';
+import type { PlatformRuntimeMaterializationReporter } from '../platformInstance/runtimeReporter';
 import {
   type BuiltinSkillDefinition,
   invalidatePublishedSkillCatalogReadCache,
@@ -26,6 +28,16 @@ import {
 import { resolvePinnedPlatformSkillRuntimeSnapshot } from './runtimeSnapshot';
 
 const db: LobeChatDatabase = await getTestDB();
+
+const deferred = <T>() => {
+  let reject!: (reason?: unknown) => void;
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    reject = promiseReject;
+    resolve = promiseResolve;
+  });
+  return { promise, reject, resolve };
+};
 
 const manifest = {
   description: 'Published Skill',
@@ -55,6 +67,7 @@ afterEach(async () => {
 
 const publish = async (params: {
   allowBuiltinOverride?: boolean;
+  contentRef?: string | null;
   revision?: number;
   skillId?: string;
   skillKey: string;
@@ -70,7 +83,7 @@ const publish = async (params: {
         skillKey: params.skillKey,
       });
   const content = `# ${params.version}`;
-  const contentRef = 'opaque:skill-content-1';
+  const contentRef = params.contentRef === undefined ? 'opaque:skill-content-1' : params.contentRef;
   const resources = [
     {
       checksum: 'a'.repeat(64),
@@ -319,6 +332,187 @@ describe('SkillCatalogReadService', () => {
     invalidatePublishedSkillCatalogReadCache();
     await new SkillCatalogReadService(db, { model }).getPublishedCatalog();
     expect(listPublished).toHaveBeenCalledTimes(2);
+  });
+
+  it('reports only a new execution-ready runtime projection with the exact target token', async () => {
+    await publish({ contentRef: null, skillKey: 'runtime.skill', version: '1.0.0' });
+    const reportRuntimeState = vi.fn<PlatformRuntimeMaterializationReporter>();
+    const service = new SkillCatalogReadService(db, {
+      runtimeReporting: { database: db, reporter: reportRuntimeState },
+    });
+
+    await service.getPublishedCatalog();
+    await service.getPublishedCatalog();
+    const target = await new PlatformDomainTargetResolver(db, {
+      env: { ENABLE_PLATFORM_MANAGED_SKILLS: '1' },
+      loadBuiltinSkillTokenEntries: () => [],
+    }).resolve('skill_catalog');
+
+    expect(reportRuntimeState).toHaveBeenCalledOnce();
+    expect(reportRuntimeState.mock.calls[0]?.[1]).toEqual({
+      domain: 'skill_catalog',
+      health: 'healthy',
+      revisionId: target.token?.value,
+      source: 'database',
+    });
+    expect(JSON.stringify(reportRuntimeState.mock.calls.map(([, state]) => state))).not.toContain(
+      'runtime.skill',
+    );
+  });
+
+  it('reports a changed active token after publication invalidation', async () => {
+    const { skill } = await publish({
+      contentRef: null,
+      skillKey: 'changing.skill',
+      version: '1.0.0',
+    });
+    const reportRuntimeState = vi.fn<PlatformRuntimeMaterializationReporter>();
+    const service = new SkillCatalogReadService(db, {
+      runtimeReporting: { database: db, reporter: reportRuntimeState },
+    });
+    await service.getPublishedCatalog();
+
+    await publish({
+      contentRef: null,
+      revision: 2,
+      skillId: skill.id,
+      skillKey: 'changing.skill',
+      version: '2.0.0',
+    });
+    invalidatePublishedSkillCatalogReadCache();
+    await service.getPublishedCatalog();
+
+    const revisionIds = reportRuntimeState.mock.calls.flatMap(([, state]) =>
+      state.health === 'healthy' ? [state.revisionId] : [],
+    );
+    expect(revisionIds).toHaveLength(2);
+    expect(revisionIds[1]).not.toBe(revisionIds[0]);
+  });
+
+  it('coalesces a runtime cold load and ignores an old-epoch late failure', async () => {
+    await publish({ contentRef: null, skillKey: 'singleflight.skill', version: '1.0.0' });
+    const page = await new PlatformSkillCatalogModel(db).listPublished();
+    const oldRead = deferred<typeof page>();
+    const newRead = deferred<typeof page>();
+    const listPublished = vi
+      .fn<() => Promise<typeof page>>()
+      .mockReturnValueOnce(oldRead.promise)
+      .mockReturnValueOnce(newRead.promise);
+    const model = { listPublished, resolvePublishedVersion: vi.fn(async () => undefined) };
+    let epoch = 'old';
+    const reportRuntimeState = vi.fn<PlatformRuntimeMaterializationReporter>();
+    const service = new SkillCatalogReadService(db, {
+      getCacheEpoch: async () => epoch,
+      model,
+      runtimeReporting: { database: db, reporter: reportRuntimeState },
+    });
+
+    const oldRequest = service.getPublishedCatalog();
+    const coalesced = service.getPublishedCatalog();
+    await vi.waitFor(() => expect(listPublished).toHaveBeenCalledOnce());
+    epoch = 'new';
+    const currentRequest = service.getPublishedCatalog();
+    await vi.waitFor(() => expect(listPublished).toHaveBeenCalledTimes(2));
+    newRead.resolve(page);
+    await expect(currentRequest).resolves.toMatchObject({
+      skills: [expect.objectContaining({ skillKey: 'singleflight.skill' })],
+    });
+
+    const oldError = new Error('late old Skill catalog failure');
+    const oldResults = Promise.all([
+      expect(oldRequest).rejects.toBe(oldError),
+      expect(coalesced).rejects.toBe(oldError),
+    ]);
+    oldRead.reject(oldError);
+    await oldResults;
+
+    expect(reportRuntimeState.mock.calls.map(([, state]) => state.health)).toEqual(['healthy']);
+    await expect(service.getPublishedCatalog()).resolves.toMatchObject({
+      skills: [expect.objectContaining({ skillKey: 'singleflight.skill' })],
+    });
+    expect(listPublished).toHaveBeenCalledTimes(2);
+  });
+
+  it('reports a current load failure then rebuilds the same active token', async () => {
+    await publish({ contentRef: null, skillKey: 'recovery.skill', version: '1.0.0' });
+    const page = await new PlatformSkillCatalogModel(db).listPublished();
+    const original = Object.assign(new Error('raw Skill database detail'), {
+      code: 'ECONNREFUSED',
+    });
+    const listPublished = vi
+      .fn<() => Promise<typeof page>>()
+      .mockRejectedValueOnce(original)
+      .mockResolvedValueOnce(page);
+    const reportRuntimeState = vi.fn<PlatformRuntimeMaterializationReporter>();
+    const service = new SkillCatalogReadService(db, {
+      model: { listPublished, resolvePublishedVersion: vi.fn(async () => undefined) },
+      runtimeReporting: { database: db, reporter: reportRuntimeState },
+    });
+
+    await expect(service.getPublishedCatalog()).rejects.toBe(original);
+    await service.getPublishedCatalog();
+
+    expect(reportRuntimeState.mock.calls.map(([, state]) => state.health)).toEqual([
+      'unavailable',
+      'healthy',
+    ]);
+    expect(JSON.stringify(reportRuntimeState.mock.calls.map(([, state]) => state))).not.toContain(
+      'raw Skill database detail',
+    );
+  });
+
+  it('reports a stored but execution-incomplete projection as unavailable', async () => {
+    await publish({ skillKey: 'external-content.skill', version: '1.0.0' });
+    const reportRuntimeState = vi.fn<PlatformRuntimeMaterializationReporter>();
+
+    await new SkillCatalogReadService(db, {
+      runtimeReporting: { database: db, reporter: reportRuntimeState },
+    }).getPublishedCatalog();
+
+    expect(reportRuntimeState.mock.calls.map(([, state]) => state)).toEqual([
+      {
+        domain: 'skill_catalog',
+        errorCategory: 'configuration_invalid',
+        health: 'unavailable',
+        source: 'unavailable',
+      },
+    ]);
+  });
+
+  it('contains reporter failure and historical exact resolution does not move active state', async () => {
+    const { skill, version: v1 } = await publish({
+      contentRef: null,
+      skillKey: 'historical.runtime',
+      version: '1.0.0',
+    });
+    await publish({
+      contentRef: null,
+      revision: 2,
+      skillId: skill.id,
+      skillKey: 'historical.runtime',
+      version: '2.0.0',
+    });
+    const reportRuntimeState = vi.fn<PlatformRuntimeMaterializationReporter>(() => {
+      throw new Error('raw Skill reporter detail');
+    });
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const service = new SkillCatalogReadService(db, {
+      runtimeReporting: { database: db, reporter: reportRuntimeState },
+    });
+
+    await service.getPublishedCatalog();
+    await expect(
+      service.resolvePinnedForExecution({
+        checksum: v1.checksum,
+        skillKey: 'historical.runtime',
+        version: '1.0.0',
+      }),
+    ).resolves.toMatchObject({ version: '1.0.0' });
+
+    expect(reportRuntimeState).toHaveBeenCalledOnce();
+    expect(consoleError).toHaveBeenCalledWith('[platform-instance-runtime] reporter unavailable');
+    expect(JSON.stringify(consoleError.mock.calls)).not.toContain('raw Skill reporter detail');
+    consoleError.mockRestore();
   });
 
   it('invalidates a warm projection on another instance through the shared epoch', async () => {

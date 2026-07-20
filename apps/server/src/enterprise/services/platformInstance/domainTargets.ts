@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, or } from 'drizzle-orm';
+import { and, asc, eq, gt, inArray, sql } from 'drizzle-orm';
 
 import { MANAGED_RESOURCE_KINDS } from '@/const/platform/managedResources';
 import { checksumPayload } from '@/database/models/platform/checksum';
@@ -27,6 +27,13 @@ import {
 
 import { parseEnterpriseFeatureFlags } from '../../featureFlags';
 import { loadPublishedIdentityTarget } from '../identityProvider/systemService';
+import { getBuiltinSkillDefinitions } from '../skillCatalog/builtinAdapter';
+import type { SkillCatalogBuiltinTokenEntry } from './catalogTokens';
+import {
+  buildAiCatalogRevisionToken,
+  buildSkillCatalogRevisionToken,
+  PlatformCatalogTokenInvariantError,
+} from './catalogTokens';
 
 type DomainEnabled = (flags: ReturnType<typeof parseEnterpriseFeatureFlags>) => boolean;
 
@@ -63,9 +70,11 @@ const isChecksum = (value: string | null | undefined): value is string =>
   typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 
 type IdentityTargetLoader = typeof loadPublishedIdentityTarget;
+type SkillBuiltinTokenLoader = () => SkillCatalogBuiltinTokenEntry[];
 
 export interface PlatformDomainTargetResolverOptions {
   env?: Record<string, string | undefined>;
+  loadBuiltinSkillTokenEntries?: SkillBuiltinTokenLoader;
   loadIdentityTarget?: IdentityTargetLoader;
 }
 
@@ -73,6 +82,7 @@ export interface PlatformDomainTargetResolverOptions {
 export class PlatformDomainTargetResolver {
   private readonly env: Record<string, string | undefined>;
   private readonly flags: ReturnType<typeof parseEnterpriseFeatureFlags>;
+  private readonly loadBuiltinSkillTokenEntries: SkillBuiltinTokenLoader;
   private readonly loadIdentityTarget: IdentityTargetLoader;
 
   constructor(
@@ -81,6 +91,14 @@ export class PlatformDomainTargetResolver {
   ) {
     this.env = options.env ?? process.env;
     this.flags = parseEnterpriseFeatureFlags(this.env);
+    this.loadBuiltinSkillTokenEntries =
+      options.loadBuiltinSkillTokenEntries ??
+      (() =>
+        getBuiltinSkillDefinitions().map(({ checksum, skillKey, version }) => ({
+          checksum,
+          skillKey,
+          version,
+        })));
     this.loadIdentityTarget = options.loadIdentityTarget ?? loadPublishedIdentityTarget;
   }
 
@@ -151,56 +169,77 @@ export class PlatformDomainTargetResolver {
       )
       .where(eq(platformAiProviders.status, 'published'))
       .orderBy(asc(platformAiProviders.providerKey), asc(platformAiProviders.id));
-    if (rows.some(({ checksum, revision }) => revision <= 0 || !isChecksum(checksum))) {
-      throw new PlatformDomainTargetInvariantError();
-    }
-    return immutableToken(rows);
+    return buildAiCatalogRevisionToken(rows);
   };
 
   private resolveSkillCatalog = async (): Promise<PlatformRevisionToken> => {
+    const snapshotAllowBuiltinOverride = sql<boolean>`COALESCE((${platformResourceRevisions.payload}->'skill'->>'allowBuiltinOverride')::boolean, false)`;
+    const snapshotBuiltinOverrideTombstone = sql<boolean>`COALESCE((${platformResourceRevisions.payload}->>'builtinOverrideTombstone')::boolean, false)`;
+    const snapshotEnabled = sql<boolean>`COALESCE((${platformResourceRevisions.payload}->'skill'->>'enabled')::boolean, false)`;
+    const snapshotSkillKey = sql<string>`${platformResourceRevisions.payload}->'skill'->>'skillKey'`;
     const rows = await this.db
       .select({
-        allowBuiltinOverride: platformSkills.allowBuiltinOverride,
+        allowBuiltinOverride: snapshotAllowBuiltinOverride,
+        builtinOverrideTombstone: snapshotBuiltinOverrideTombstone,
         checksum: platformSkillVersions.checksum,
-        currentVersionId: platformSkills.currentVersionId,
-        revision: platformSkills.revision,
+        currentVersionId: platformSkillVersions.id,
+        enabled: snapshotEnabled,
+        revision: platformResourceRevisions.revision,
         skillId: platformSkills.id,
-        skillKey: platformSkills.skillKey,
-        status: platformSkills.status,
+        skillKey: snapshotSkillKey,
+        status: platformResourceRevisions.status,
       })
       .from(platformSkills)
+      .leftJoin(
+        platformResourceRevisions,
+        and(
+          eq(platformResourceRevisions.resourceType, 'skill'),
+          eq(platformResourceRevisions.resourceId, platformSkills.id),
+          eq(platformResourceRevisions.revision, platformSkills.revision),
+        ),
+      )
       .leftJoin(
         platformSkillVersions,
         and(
           eq(platformSkillVersions.skillId, platformSkills.id),
-          eq(platformSkillVersions.id, platformSkills.currentVersionId),
+          eq(
+            platformSkillVersions.id,
+            sql<string>`${platformResourceRevisions.payload}->>'versionId'`,
+          ),
         ),
       )
-      .where(
-        or(
-          and(eq(platformSkills.status, 'published'), eq(platformSkills.enabled, true)),
-          and(eq(platformSkills.status, 'archived'), eq(platformSkills.allowBuiltinOverride, true)),
-        ),
-      )
-      .orderBy(asc(platformSkills.skillKey), asc(platformSkills.id));
-    if (
-      rows.some(
-        ({ checksum, currentVersionId, revision }) =>
-          revision <= 0 || !currentVersionId || !isChecksum(checksum),
-      )
-    ) {
-      throw new PlatformDomainTargetInvariantError();
-    }
-    return immutableToken(
-      rows.map((row) => ({
-        checksum: row.checksum,
-        currentVersionId: row.currentVersionId,
-        revision: row.revision,
-        skillId: row.skillId,
-        skillKey: row.skillKey,
-        tombstone: row.status === 'archived' && row.allowBuiltinOverride,
-      })),
-    );
+      .where(gt(platformSkills.revision, 0))
+      .orderBy(asc(snapshotSkillKey), asc(platformSkills.id));
+    return buildSkillCatalogRevisionToken({
+      builtins: this.loadBuiltinSkillTokenEntries(),
+      platform: rows.flatMap((row) => {
+        if (row.revision === null) {
+          return [
+            {
+              checksum: null,
+              currentVersionId: null,
+              revision: 0,
+              skillId: row.skillId,
+              skillKey: row.skillKey,
+              tombstone: false,
+            },
+          ];
+        }
+        const tombstone =
+          row.status === 'archived' && row.allowBuiltinOverride && row.builtinOverrideTombstone;
+        if (!row.enabled || (row.status !== 'published' && !tombstone)) return [];
+        return [
+          {
+            checksum: row.checksum,
+            currentVersionId: row.currentVersionId,
+            revision: row.revision,
+            skillId: row.skillId,
+            skillKey: row.skillKey,
+            tombstone,
+          },
+        ];
+      }),
+    });
   };
 
   private resolveConnectorCatalog = async (): Promise<PlatformRevisionToken> => {
@@ -349,7 +388,11 @@ export class PlatformDomainTargetResolver {
     try {
       return this.available(domain, await this.resolveToken(domain));
     } catch (error) {
-      return this.unavailable(domain, error instanceof PlatformDomainTargetInvariantError);
+      return this.unavailable(
+        domain,
+        error instanceof PlatformDomainTargetInvariantError ||
+          error instanceof PlatformCatalogTokenInvariantError,
+      );
     }
   };
 

@@ -17,6 +17,14 @@ import {
 } from '../../contracts/skillCatalog';
 import { DomainConfigCache, invalidateDomainConfigCacheNamespace } from '../../runtimeConfig';
 import { getPlatformConfigScopeVersion } from '../platformConfigInvalidation';
+import type { SkillCatalogTokenEntry } from '../platformInstance/catalogTokens';
+import { buildSkillCatalogRevisionToken } from '../platformInstance/catalogTokens';
+import type { PlatformRuntimeMaterializationReporter } from '../platformInstance/runtimeReporter';
+import {
+  classifyRuntimeMaterializationError,
+  reportPlatformRuntimeMaterialization,
+  reportPlatformRuntimeMaterializationSafely,
+} from '../platformInstance/runtimeReporter';
 
 export interface BuiltinSkillDefinition extends PublishedSkill {
   content: string;
@@ -31,6 +39,10 @@ export interface SkillCatalogReadOptions {
   getCacheEpoch?: () => Promise<string>;
   model?: Pick<PlatformSkillCatalogModel, 'listPublished' | 'resolvePublishedVersion'>;
   now?: () => number;
+  runtimeReporting?: {
+    database: LobeChatDatabase;
+    reporter?: PlatformRuntimeMaterializationReporter;
+  };
 }
 
 export const builtinSkillDefinitionSchema = serverResolvedSkillSchema
@@ -52,6 +64,7 @@ interface CachedPublishedProjection {
   catalog: { revision: string; skills: PublishedSkill[] };
   executionIndex: Map<string, ResolvedSkill>;
   executionReady: boolean;
+  targetRevisionId: string;
 }
 
 const projectionByRevision = new Map<string, CachedPublishedProjection>();
@@ -140,8 +153,10 @@ export class SkillCatalogReadService {
     const source = options.model ?? db;
     const builtinRevision = checksumPayload({ builtinSkills: this.builtinSkills });
     this.projectionSource = `${getSourceId(source as object)}:${builtinRevision}`;
+    const runtimeReporting = options.runtimeReporting;
+    const reportRuntimeState = runtimeReporting?.reporter ?? reportPlatformRuntimeMaterialization;
     this.activeProjectionCache = new DomainConfigCache({
-      cacheId: builtinRevision,
+      cacheId: `${builtinRevision}:${runtimeReporting ? 'runtime' : 'read'}`,
       cacheKey: source as object,
       cacheTtlMs: options.cacheTtlMs,
       cloneValue: (value) => value,
@@ -151,6 +166,48 @@ export class SkillCatalogReadService {
       namespace: SKILL_ACTIVE_PROJECTION_CACHE_NAMESPACE,
       now: options.now,
       observabilityDomain: 'skill_catalog',
+      onEntryStored: runtimeReporting
+        ? (projectionKey) => {
+            const projection = projectionKey ? projectionByRevision.get(projectionKey) : undefined;
+            if (!projection?.executionReady) {
+              reportPlatformRuntimeMaterializationSafely(
+                reportRuntimeState,
+                runtimeReporting.database,
+                {
+                  domain: 'skill_catalog',
+                  errorCategory: 'configuration_invalid',
+                  health: 'unavailable',
+                  source: 'unavailable',
+                },
+              );
+              return;
+            }
+            reportPlatformRuntimeMaterializationSafely(
+              reportRuntimeState,
+              runtimeReporting.database,
+              {
+                domain: 'skill_catalog',
+                health: 'healthy',
+                revisionId: projection.targetRevisionId,
+                source: 'database',
+              },
+            );
+          }
+        : undefined,
+      onLoadFailure: runtimeReporting
+        ? (error) => {
+            reportPlatformRuntimeMaterializationSafely(
+              reportRuntimeState,
+              runtimeReporting.database,
+              {
+                domain: 'skill_catalog',
+                errorCategory: classifyRuntimeMaterializationError(error),
+                health: 'unavailable',
+                source: 'unavailable',
+              },
+            );
+          }
+        : undefined,
     });
   }
 
@@ -158,6 +215,7 @@ export class SkillCatalogReadService {
     const platformItems: Awaited<ReturnType<PlatformSkillCatalogModel['listPublished']>>['items'] =
       [];
     const builtinOverrideTombstones = new Set<string>();
+    const catalogTokenEntries: SkillCatalogTokenEntry[] = [];
     const seenCursors = new Set<string>();
     let cursor: string | undefined;
     let pageCount = 0;
@@ -170,9 +228,23 @@ export class SkillCatalogReadService {
       for (const skillKey of page.builtinOverrideTombstones ?? []) {
         builtinOverrideTombstones.add(skillKey);
       }
+      if (!page.catalogTokenEntries && (page.builtinOverrideTombstones?.length ?? 0) > 0) {
+        throw new Error('Published Skill tombstone token metadata is unavailable');
+      }
       if (platformItems.length + page.items.length > MAX_PUBLISHED_SKILLS) {
         throw new Error('Published Skill item limit was exceeded');
       }
+      catalogTokenEntries.push(
+        ...(page.catalogTokenEntries ??
+          page.items.map((item) => ({
+            checksum: item.version.checksum,
+            currentVersionId: item.version.id,
+            revision: item.revision,
+            skillId: item.skillId,
+            skillKey: item.skillKey,
+            tombstone: false,
+          }))),
+      );
       platformItems.push(...page.items);
       if (!page.nextCursor) break;
       if (seenCursors.has(page.nextCursor))
@@ -232,7 +304,14 @@ export class SkillCatalogReadService {
     if (skills.length > MAX_PUBLISHED_SKILLS) {
       throw new Error('Published Skill item limit was exceeded after builtin merge');
     }
-    const revision = checksumPayload({ skills });
+    const revision = buildSkillCatalogRevisionToken({
+      builtins: this.builtinSkills.map(({ checksum, skillKey, version }) => ({
+        checksum,
+        skillKey,
+        version,
+      })),
+      platform: catalogTokenEntries,
+    }).value;
     const executionIndex = new Map<string, ResolvedSkill>();
     let executionReady = true;
     for (const skill of skills) {
@@ -283,6 +362,7 @@ export class SkillCatalogReadService {
       catalog: cloneCatalog(catalog),
       executionIndex: cloneExecutionIndex(executionIndex),
       executionReady: ready,
+      targetRevisionId: revision,
     });
     while (projectionByRevision.size > MAX_READINESS_REVISIONS) {
       const oldest = projectionByRevision.keys().next().value;
