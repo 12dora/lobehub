@@ -13,6 +13,7 @@ import {
   installLifecycleSignalHandlers,
   type LifecycleEvidence,
   type LifecycleState,
+  refreshOwnedProcessGroupEvidence,
   registerOwnedDir,
   registerOwnedPort,
   snapshotLifecycleEvidence,
@@ -100,27 +101,58 @@ const waitForPostgres = async (url: string) => {
 
 /**
  * Run a one-shot command as a detached process group registered on the lifecycle.
+ * While running, refresh process-group descendant evidence (narrow pgrep -g only).
  */
 export const runOwnedCommand = async (
   state: LifecycleState,
   command: string,
   args: readonly string[],
   env: NodeJS.ProcessEnv,
-): Promise<void> =>
-  new Promise((resolveCommand, reject) => {
-    const child = spawnOwned(state, command, args, {
-      cwd: PROJECT_ROOT,
-      env,
-      stdio: 'inherit',
-    });
-    child.once('error', reject);
-    child.once('exit', (code, signal) => {
-      const idx = state.processes.indexOf(child);
-      if (idx >= 0) state.processes.splice(idx, 1);
-      if (code === 0) return resolveCommand();
-      reject(new Error(`${command} failed (code=${code ?? 'null'}, signal=${signal ?? 'null'})`));
-    });
+): Promise<void> => {
+  const child = spawnOwned(state, command, args, {
+    cwd: PROJECT_ROOT,
+    env,
+    stdio: 'inherit',
   });
+
+  let pollTimer: ReturnType<typeof setInterval> | undefined;
+  const stopPoll = () => {
+    if (pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = undefined;
+    }
+  };
+
+  const startPoll = () => {
+    const leader = child.pid;
+    if (!leader) return;
+    pollTimer = setInterval(() => {
+      void refreshOwnedProcessGroupEvidence(state, leader);
+    }, 250);
+    if (typeof pollTimer === 'object' && 'unref' in pollTimer) {
+      (pollTimer as { unref: () => void }).unref();
+    }
+    void refreshOwnedProcessGroupEvidence(state, leader);
+  };
+  if (child.pid) startPoll();
+  else child.once('spawn', startPoll);
+
+  try {
+    await new Promise<void>((resolveCommand, reject) => {
+      child.once('error', reject);
+      child.once('exit', (code, signal) => {
+        const idx = state.processes.indexOf(child);
+        if (idx >= 0) state.processes.splice(idx, 1);
+        // Final group snapshot before members fully reap (best-effort).
+        if (child.pid) void refreshOwnedProcessGroupEvidence(state, child.pid);
+        if (code === 0) return resolveCommand();
+        reject(new Error(`${command} failed (code=${code ?? 'null'}, signal=${signal ?? 'null'})`));
+      });
+    });
+  } finally {
+    stopPoll();
+  }
+};
 
 const waitForHttp = async (
   url: string,

@@ -1,4 +1,14 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  type Stats,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
@@ -11,6 +21,7 @@ import {
 import {
   isLocalPortListening,
   isPidAlive,
+  isProcessGroupAlive,
   type LifecycleEvidence,
   listContainersByRunToken,
 } from './lifecycle';
@@ -60,10 +71,22 @@ describe('startEnterpriseAdminRuntime fault injection — all stages', () => {
     for (const pid of before!.evidencePids) {
       expect(isPidAlive(pid)).toBe(false);
     }
+    for (const leader of before!.evidenceLeaders) {
+      expect(isPidAlive(leader)).toBe(false);
+    }
+    for (const desc of before!.evidenceDescendants) {
+      expect(isPidAlive(desc)).toBe(false);
+    }
+    for (const pgid of before!.evidencePgids) {
+      expect(isProcessGroupAlive(pgid)).toBe(false);
+    }
     for (const port of before!.ownedPorts) {
       expect(await isLocalPortListening(port)).toBe(false);
     }
     expect(after!.signalHandlersInstalled).toBe(false);
+    // Exact baseline restoration for SIGINT/SIGTERM listener counts
+    expect(after!.signalListenerCurrent.SIGINT).toBe(before!.signalListenerBaseline.SIGINT);
+    expect(after!.signalListenerCurrent.SIGTERM).toBe(before!.signalListenerBaseline.SIGTERM);
     expect(after!.containers).toHaveLength(0);
     expect(await listContainersByRunToken(runToken)).toEqual([]);
     const suffix = runToken.replaceAll(/[^a-z0-9-]/gi, '').slice(-24);
@@ -101,52 +124,105 @@ describe('startEnterpriseAdminRuntime fault injection — all stages', () => {
     await runFault('after-migrate');
   }, 180_000);
 
-  it('after-build runs default bun run build then cleans processes/ports/handlers (no SKIP, no custom cmd)', async () => {
+  it('after-build runs default bun run build then cleans process groups/handlers (no SKIP, no custom cmd)', async () => {
     process.env.E2E_ENTERPRISE_ADMIN_MODE = 'start';
     delete process.env.E2E_ENTERPRISE_ADMIN_SKIP_BUILD;
     const fault = await runFault('after-build');
-    // Build must have registered at least one owned process (bun run build parent)
-    expect(fault.lifecycleEvidenceBefore!.evidencePids.length).toBeGreaterThan(0);
+    const before = fault.lifecycleEvidenceBefore!;
+    // Build parent/leader + PGID evidence captured while running
+    expect(before.evidenceLeaders.length).toBeGreaterThan(0);
+    expect(before.evidencePgids.length).toBeGreaterThan(0);
+    expect(before.evidencePids.length).toBeGreaterThan(0);
+    // Handler install recorded as +1 over baseline (not boolean alone)
+    expect(before.signalListenerInstalled.SIGINT).toBe(before.signalListenerBaseline.SIGINT + 1);
+    expect(before.signalListenerInstalled.SIGTERM).toBe(before.signalListenerBaseline.SIGTERM + 1);
   }, 1_200_000);
 
   it('after-app-spawn cleans owned resources', async () => {
     await runFault('after-app-spawn');
   }, 240_000);
 
-  it('production start build never mutates global .next/lock sentinel', async () => {
+  it('production start build never mutates global .next/lock (safe sentinel protocol)', async () => {
     const lockDir = path.join(PROJECT_ROOT, '.next');
     const lockPath = path.join(lockDir, 'lock');
     mkdirSync(lockDir, { recursive: true });
-    const sentinel = `foreign-global-lock-sentinel-${Date.now()}-exact-bytes\n`;
-    const existed = existsSync(lockPath);
-    const previous = existed ? readFileSync(lockPath) : null;
-    writeFileSync(lockPath, sentinel, 'utf8');
-    const beforeBytes = readFileSync(lockPath);
 
-    process.env.E2E_ENTERPRISE_ADMIN_MODE = 'start';
-    delete process.env.E2E_ENTERPRISE_ADMIN_SKIP_BUILD;
-    process.env.E2E_ENTERPRISE_ADMIN_FAULT_STAGE = 'after-build';
+    type Snapshot = {
+      bytes: Buffer;
+      ino: number;
+      mode: number;
+      size: number;
+      uid: number;
+      gid: number;
+    };
+    const capture = (p: string): Snapshot => {
+      const st: Stats = statSync(p);
+      return {
+        bytes: readFileSync(p),
+        gid: st.gid,
+        ino: st.ino,
+        mode: st.mode,
+        size: st.size,
+        uid: st.uid,
+      };
+    };
+
+    let weCreated = false;
+    let ownedIno: number | undefined;
+    let baseline: Snapshot | undefined;
+
     try {
-      await startEnterpriseAdminRuntime();
-      throw new Error('expected start to fail');
-    } catch (error) {
-      expect(String(error)).toMatch(/injected startup fault/);
+      if (existsSync(lockPath)) {
+        // Foreign / pre-existing lock — never write, truncate, chmod, or rename.
+        baseline = capture(lockPath);
+        weCreated = false;
+      } else {
+        // Exclusive create only when absent (O_EXCL).
+        const fd = openSync(lockPath, 'wx');
+        try {
+          writeFileSync(fd, `e2e-owned-lock-sentinel-${Date.now()}\n`, 'utf8');
+        } finally {
+          closeSync(fd);
+        }
+        weCreated = true;
+        baseline = capture(lockPath);
+        ownedIno = baseline.ino;
+      }
+
+      process.env.E2E_ENTERPRISE_ADMIN_MODE = 'start';
+      delete process.env.E2E_ENTERPRISE_ADMIN_SKIP_BUILD;
+      process.env.E2E_ENTERPRISE_ADMIN_FAULT_STAGE = 'after-build';
+      try {
+        await startEnterpriseAdminRuntime();
+        throw new Error('expected start to fail');
+      } catch (error) {
+        expect(String(error)).toMatch(/injected startup fault/);
+      } finally {
+        delete process.env.E2E_ENTERPRISE_ADMIN_FAULT_STAGE;
+        delete process.env.E2E_ENTERPRISE_ADMIN_MODE;
+      }
+
+      // Global lock unchanged: exact bytes + stable identity metadata.
+      expect(existsSync(lockPath)).toBe(true);
+      const after = capture(lockPath);
+      expect(after.bytes.equals(baseline.bytes)).toBe(true);
+      expect(after.ino).toBe(baseline.ino);
+      expect(after.mode).toBe(baseline.mode);
+      expect(after.uid).toBe(baseline.uid);
+      expect(after.gid).toBe(baseline.gid);
+      expect(after.size).toBe(baseline.size);
     } finally {
-      delete process.env.E2E_ENTERPRISE_ADMIN_FAULT_STAGE;
-      delete process.env.E2E_ENTERPRISE_ADMIN_MODE;
-    }
-
-    // Global lock must be byte-for-byte unchanged (suite only touches owned distDir).
-    expect(existsSync(lockPath)).toBe(true);
-    expect(readFileSync(lockPath)).toEqual(beforeBytes);
-    expect(readFileSync(lockPath, 'utf8')).toBe(sentinel);
-
-    // Restore exact prior state (or remove our sentinel if none existed)
-    if (previous === null) {
-      const { rm } = await import('node:fs/promises');
-      await rm(lockPath, { force: true });
-    } else {
-      writeFileSync(lockPath, previous);
+      // Outermost finally: only remove the exact sentinel inode we created.
+      if (weCreated && ownedIno !== undefined && existsSync(lockPath)) {
+        try {
+          const st = statSync(lockPath);
+          if (st.ino === ownedIno) {
+            unlinkSync(lockPath);
+          }
+        } catch {
+          // best-effort
+        }
+      }
     }
   }, 1_200_000);
 });
