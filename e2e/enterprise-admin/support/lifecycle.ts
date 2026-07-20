@@ -19,23 +19,43 @@ export interface OwnedContainer {
   name: string;
 }
 
+/**
+ * Durable ownership of a detached process group — independent of live ChildProcess registry.
+ * Cleanup authority: only these records (never foreign PGIDs).
+ */
+export interface OwnedProcessGroup {
+  /** Leader pid at registration (detached spawn: equals pgid on POSIX). */
+  leaderPid: number;
+  /** Process group id to signal with kill(-pgid, …). */
+  pgid: number;
+  /** When this ownership was recorded (ms epoch) — lifetime bound for cleanup. */
+  registeredAtMs: number;
+  /** Provenance: only this run may clean this group. */
+  runToken: string;
+}
+
 export interface LifecycleState {
   containers: OwnedContainer[];
   /** Observed descendant PIDs in owned process groups (subset of evidencePids). */
   evidenceDescendants: number[];
   /** Process group leaders (detached spawn parents). */
   evidenceLeaders: number[];
-  /** Process group IDs (POSIX: leader pid when detached). */
+  /** Process group IDs (POSIX: leader pid when detached) — observational evidence. */
   evidencePgids: number[];
   /**
    * Read-only evidence: every owned parent PID + known descendants captured at spawn.
-   * Never used to kill foreign processes — only for assertions after cleanup.
+   * Observational only — cleanup authority is ownedProcessGroups.
    */
   evidencePids: number[];
   /** Owned temp dirs (e.g. isolated Next distDir) removed on cleanup. */
   ownedDirs: string[];
   /** Host ports this run held/probed (for residue assertions only). */
   ownedPorts: number[];
+  /**
+   * Durable owned process groups (cleanup authority). Survives leader exit.
+   * Never kill a PGID not present here.
+   */
+  ownedProcessGroups: OwnedProcessGroup[];
   /**
    * Hooks run BEFORE process/container teardown (e.g. DB CAS restore).
    * Single coordinated owner: signal handler awaits these then destroys resources.
@@ -80,6 +100,7 @@ export const createLifecycleState = (runToken: string): LifecycleState => ({
   evidencePgids: [],
   evidencePids: [],
   ownedDirs: [],
+  ownedProcessGroups: [],
   ownedPorts: [],
   preCleanupHooks: [],
   processes: [],
@@ -129,6 +150,18 @@ export const isProcessGroupAlive = (pgid: number | undefined): boolean => {
  * - ENOENT / permission / other tooling failures → verified `ps` fallback or fail loud
  * Never silently returns empty on tooling failure.
  */
+/** Injectable exec for pgrep/ps — tests inject failures without bypassing production logic. */
+export type ProcessEnumExec = (
+  file: string,
+  args: readonly string[],
+) => Promise<{ stdout: string | Buffer }>;
+
+let processEnumExec: ProcessEnumExec = async (file, args) => execute(file, args as string[]);
+
+export const setProcessEnumExecForTests = (fn: ProcessEnumExec | null): void => {
+  processEnumExec = fn ?? (async (file, args) => execute(file, args as string[]));
+};
+
 export const listPidsInProcessGroup = async (pgid: number): Promise<number[]> => {
   const parsePgrep = (stdout: string): number[] =>
     String(stdout)
@@ -137,7 +170,7 @@ export const listPidsInProcessGroup = async (pgid: number): Promise<number[]> =>
       .filter((n) => Number.isFinite(n) && n > 0);
 
   const viaPs = async (): Promise<number[]> => {
-    const { stdout } = await execute('ps', ['-ax', '-o', 'pid=,pgid=']);
+    const { stdout } = await processEnumExec('ps', ['-ax', '-o', 'pid=,pgid=']);
     const out: number[] = [];
     for (const line of String(stdout).split('\n')) {
       const parts = line.trim().split(/\s+/);
@@ -150,7 +183,7 @@ export const listPidsInProcessGroup = async (pgid: number): Promise<number[]> =>
   };
 
   try {
-    const { stdout } = await execute('pgrep', ['-g', String(pgid)]);
+    const { stdout } = await processEnumExec('pgrep', ['-g', String(pgid)]);
     return parsePgrep(String(stdout));
   } catch (error: unknown) {
     const err = error as { code?: string | number; status?: number; errno?: string };
@@ -170,21 +203,7 @@ export const listPidsInProcessGroup = async (pgid: number): Promise<number[]> =>
   }
 };
 
-/** Test seam: force listPids path (null = normal). */
-let listPidsInProcessGroupOverride: null | ((pgid: number) => Promise<number[]>) = null;
-
-export const setListPidsInProcessGroupOverride = (
-  fn: null | ((pgid: number) => Promise<number[]>),
-): void => {
-  listPidsInProcessGroupOverride = fn;
-};
-
-export const listPidsInProcessGroupForTests = async (pgid: number): Promise<number[]> => {
-  if (listPidsInProcessGroupOverride) {
-    return listPidsInProcessGroupOverride(pgid);
-  }
-  return listPidsInProcessGroup(pgid);
-};
+export const listPidsInProcessGroupForTests = listPidsInProcessGroup;
 
 /** Refresh descendant/PGID evidence for a detached group leader while it may still be running. */
 export const refreshOwnedProcessGroupEvidence = async (
@@ -349,12 +368,31 @@ export const inspectPublishedHostPort = async (
   return port;
 };
 
+/** Register durable ownership of a detached process group for this run. */
+export const registerOwnedProcessGroup = (
+  state: LifecycleState,
+  leaderPid: number,
+): OwnedProcessGroup => {
+  const pgid = leaderPid; // detached spawn: leader is process group id on POSIX
+  const existing = state.ownedProcessGroups.find((g) => g.pgid === pgid);
+  if (existing) return existing;
+  const rec: OwnedProcessGroup = {
+    leaderPid,
+    pgid,
+    registeredAtMs: Date.now(),
+    runToken: state.runToken,
+  };
+  state.ownedProcessGroups.push(rec);
+  if (!state.evidencePids.includes(leaderPid)) state.evidencePids.push(leaderPid);
+  if (!state.evidenceLeaders.includes(leaderPid)) state.evidenceLeaders.push(leaderPid);
+  if (!state.evidencePgids.includes(pgid)) state.evidencePgids.push(pgid);
+  return rec;
+};
+
 export const registerProcess = (state: LifecycleState, child: ChildProcess): void => {
   state.processes.push(child);
   const recordLeader = (pid: number) => {
-    if (!state.evidencePids.includes(pid)) state.evidencePids.push(pid);
-    if (!state.evidenceLeaders.includes(pid)) state.evidenceLeaders.push(pid);
-    if (!state.evidencePgids.includes(pid)) state.evidencePgids.push(pid);
+    registerOwnedProcessGroup(state, pid);
     void refreshOwnedProcessGroupEvidence(state, pid);
   };
   if (child.pid) recordLeader(child.pid);
@@ -381,43 +419,63 @@ export const spawnOwned = (
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-const killProcessGroup = async (child: ChildProcess, timeoutMs = 8_000): Promise<void> => {
-  if (!child.pid) return;
-  const pid = child.pid;
-  const waitExit = new Promise<void>((resolve) => {
-    if (child.exitCode !== null || child.signalCode !== null) {
-      resolve();
-      return;
-    }
-    child.once('exit', () => resolve());
-  });
+/**
+ * Kill an exact owned process group by PGID (not by live ChildProcess).
+ * SIGTERM → re-enumerate until empty or grace → SIGKILL exact PGID → recheck empty.
+ * Fails loudly if enumeration fails or members remain after SIGKILL bound.
+ */
+export const killOwnedProcessGroupByPgid = async (
+  pgid: number,
+  options?: { graceMs?: number; killGraceMs?: number },
+): Promise<void> => {
+  if (!pgid || pgid <= 0) {
+    throw new Error(`refusing to kill invalid pgid=${pgid}`);
+  }
+  const graceMs = options?.graceMs ?? 3_000;
+  const killGraceMs = options?.killGraceMs ?? 2_000;
+
+  const groupEmpty = async (): Promise<boolean> => {
+    const members = await listPidsInProcessGroup(pgid);
+    return members.length === 0;
+  };
 
   try {
-    process.kill(-pid, 'SIGTERM');
+    process.kill(-pgid, 'SIGTERM');
   } catch {
-    try {
-      child.kill('SIGTERM');
-    } catch {
-      // already gone
-    }
+    // group may already be gone
   }
 
-  const timedOut = await Promise.race([
-    waitExit.then(() => false),
-    sleep(timeoutMs).then(() => true),
-  ]);
-  if (timedOut) {
-    try {
-      process.kill(-pid, 'SIGKILL');
-    } catch {
-      try {
-        child.kill('SIGKILL');
-      } catch {
-        // gone
-      }
-    }
-    await Promise.race([waitExit, sleep(2_000)]);
+  const termDeadline = Date.now() + graceMs;
+  while (Date.now() < termDeadline) {
+    if (await groupEmpty()) return;
+    await sleep(50);
   }
+
+  // Members remain (including SIGTERM-ignoring descendants) — SIGKILL exact owned PGID.
+  try {
+    process.kill(-pgid, 'SIGKILL');
+  } catch {
+    // may already be gone
+  }
+
+  const killDeadline = Date.now() + killGraceMs;
+  while (Date.now() < killDeadline) {
+    if (await groupEmpty()) return;
+    await sleep(50);
+  }
+
+  const remaining = await listPidsInProcessGroup(pgid);
+  if (remaining.length > 0) {
+    throw new Error(
+      `owned process group pgid=${pgid} still has members after SIGKILL: ${remaining.join(',')}`,
+    );
+  }
+};
+
+const killProcessGroup = async (child: ChildProcess, timeoutMs = 8_000): Promise<void> => {
+  if (!child.pid) return;
+  // Prefer durable PGID kill path (handles descendants after leader exit).
+  await killOwnedProcessGroupByPgid(child.pid, { graceMs: timeoutMs, killGraceMs: 2_000 });
 };
 
 /**
@@ -484,15 +542,36 @@ export const cleanupLifecycle = async (state: LifecycleState): Promise<void> => 
   }
   state.preCleanupHooks.length = 0;
 
-  // 2) Process groups
+  // 2) Process groups — kill live ChildProcess handles, then ALL durable owned PGIDs
+  // (survives leader exit / empty registry).
   for (const child of [...state.processes].reverse()) {
     try {
-      await killProcessGroup(child);
+      if (child.pid) {
+        await killOwnedProcessGroupByPgid(child.pid);
+      } else {
+        await killProcessGroup(child);
+      }
     } catch (error) {
       failures.push(error);
     }
   }
   state.processes.length = 0;
+
+  // Durable owned groups (may include groups whose leaders already exited).
+  for (const group of state.ownedProcessGroups) {
+    if (group.runToken !== state.runToken) {
+      failures.push(
+        new Error(`refusing to kill process group pgid=${group.pgid}: runToken mismatch (foreign)`),
+      );
+      continue;
+    }
+    try {
+      await killOwnedProcessGroupByPgid(group.pgid);
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  state.ownedProcessGroups.length = 0;
 
   // 3) Containers
   for (const container of [...state.containers].reverse()) {
