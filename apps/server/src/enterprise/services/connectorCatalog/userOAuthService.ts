@@ -413,13 +413,14 @@ export class UserConnectorOAuthService {
     binding: PlatformUserConnectorBindingItem,
   ): Promise<{ jobId: string; owner: string }> => {
     const owner = randomUUID();
-    const now = new Date();
+    const databaseNow = sql<Date>`statement_timestamp()`;
+    const databaseInfiniteLease = sql<Date>`timestamptz '9999-12-31 23:59:59.999+00'`;
     const idempotencyKey = hash(`${binding.id}:${binding.revision}`);
     const [created] = await this.db
       .insert(platformJobs)
       .values({
         attempt: 1,
-        heartbeatAt: now,
+        heartbeatAt: databaseNow,
         idempotencyKey,
         input: {
           bindingId: binding.id,
@@ -428,9 +429,9 @@ export class UserConnectorOAuthService {
           userId: binding.userId,
         },
         leaseOwner: owner,
-        leaseUntil: new Date('9999-12-31T23:59:59.999Z'),
+        leaseUntil: databaseInfiniteLease,
         requestedBy: binding.userId,
-        startedAt: now,
+        startedAt: databaseNow,
         status: 'running',
         type: OAUTH_REFRESH_JOB_TYPE,
       })
@@ -442,11 +443,11 @@ export class UserConnectorOAuthService {
       .update(platformJobs)
       .set({
         attempt: sql`${platformJobs.attempt} + 1`,
-        heartbeatAt: now,
+        heartbeatAt: databaseNow,
         leaseOwner: owner,
-        leaseUntil: new Date('9999-12-31T23:59:59.999Z'),
+        leaseUntil: databaseInfiniteLease,
         status: 'running',
-        updatedAt: now,
+        updatedAt: databaseNow,
       })
       .where(
         and(

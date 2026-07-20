@@ -34,6 +34,7 @@ import {
 import { processNextPlatformAgentRolloutBatch } from './rolloutWorker';
 
 const db: LobeChatDatabase = await getTestDB();
+const runPostgres = process.env.TEST_SERVER_DB === '1' && Boolean(process.env.DATABASE_TEST_URL);
 const checksum = 'a'.repeat(64);
 const dependencies = {
   connectors: [],
@@ -120,6 +121,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.useRealTimers();
   vi.unstubAllEnvs();
   await cleanup();
 });
@@ -596,6 +598,46 @@ describe('PlatformAgentRolloutService control plane', () => {
       service.get({ agentId: 'agent-support', jobId: started.jobId }),
     ).resolves.toMatchObject({ completed: 3, failed: 0, status: 'completed' });
   });
+
+  it.runIf(runPostgres)('uses the database clock when the worker clock is in 2099', async () => {
+    vi.stubEnv('ENABLE_PLATFORM_MANAGED_AGENTS', '1');
+    const service = new PlatformAgentRolloutService(db);
+    const started = await service.start('admin', await startInput());
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2099-01-01T00:00:00.000Z'));
+
+    await expect(processNextPlatformAgentRolloutBatch(db, 'forward-skew-worker')).resolves.toEqual({
+      claimed: true,
+      jobId: started.jobId,
+      terminal: true,
+    });
+    await expect(
+      service.get({ agentId: 'agent-support', jobId: started.jobId }),
+    ).resolves.toMatchObject({ completed: 3, failed: 0, status: 'completed' });
+  });
+
+  it.runIf(runPostgres)(
+    'rejects an expired checkpoint when the worker clock is in 2000',
+    async () => {
+      vi.stubEnv('ENABLE_PLATFORM_MANAGED_AGENTS', '1');
+      const service = new PlatformAgentRolloutService(db);
+      const started = await service.start('admin', await startInput());
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date('2000-01-01T00:00:00.000Z'));
+
+      await expect(
+        processNextPlatformAgentRolloutBatch(db, 'backward-skew-worker', {
+          leaseMs: 20,
+          lifecycle: {
+            beforeBulkWrite: async () => {
+              await new Promise((resolve) => setTimeout(resolve, 50));
+            },
+          },
+        }),
+      ).resolves.toEqual({ claimed: true, jobId: started.jobId, terminal: false });
+      expect(await db.select().from(platformUserAgentMaterializations)).toHaveLength(0);
+    },
+  );
 
   it('keeps cancellation terminal when a previously leased worker completes late', async () => {
     const service = new PlatformAgentRolloutService(db);
