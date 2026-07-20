@@ -84,6 +84,7 @@
     "e2e:ui": "playwright test --ui",
     "enterprise:check-branding": "bun run scripts/enterprise/scan-branding-literals.ts",
     "enterprise:check-paths": "bun run scripts/enterprise/check-path-boundaries.ts",
+    "enterprise:verify-migration": "bun run scripts/enterprise/verify-migration.ts",
     "hotfix:branch": "tsx ./scripts/hotfixWorkflow/index.ts",
     "i18n": "npm run workflow:i18n && lobe-i18n && prettier -c --write \"locales/**\"",
     "i18n:unused": "tsx ./scripts/i18nWorkflow/analyzeUnusedKeys.ts",

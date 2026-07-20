@@ -113,10 +113,16 @@ export const platformIdentityProviders = pgTable(
         AND ${t.status} IN ('draft', 'error', 'disabled', 'archived')
       )`,
     ),
+    /**
+     * All-null or all-present secret triple.
+     * Explicit IS NOT NULL guards are required: PostgreSQL CHECK treats UNKNOWN as pass,
+     * so `NULL ~ regex` alone would accept a non-null secret_ref with a NULL fingerprint.
+     */
     check(
       'platform_identity_providers_secret_state_check',
       sql`(${t.secretRef} IS NULL AND ${t.secretFingerprint} IS NULL AND ${t.secretUpdatedAt} IS NULL)
         OR (${t.secretRef} IS NOT NULL
+          AND ${t.secretFingerprint} IS NOT NULL
           AND ${t.secretFingerprint} ~ '^[a-f0-9]{64}$'
           AND ${t.secretUpdatedAt} IS NOT NULL)`,
     ),
