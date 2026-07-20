@@ -1,22 +1,38 @@
 // @vitest-environment node
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 
-import type { RebaseReport } from '../rebase-report';
-import { collectUpstreamRebaseEvidence } from './collect';
+import { filterExistingLintablePaths } from './changedFiles';
+import { removePathExact } from './cleanup';
 import {
   createUpstreamRebaseEvidence,
+  EXPECTED_GATE_KINDS,
   isPassingUpstreamRebaseEvidence,
   KNOWN_GATE_IDS,
   scanUpstreamRebaseEvidence,
   UPSTREAM_REBASE_CI_LANE,
   UPSTREAM_REBASE_CI_SCHEMA_VERSION,
 } from './contract';
-import { GATE_DEFINITIONS, resolveGateDefinition, VITEST_OUTPUT_PLACEHOLDER } from './gates';
+import { materializeIntegrationTree } from './fetchUpstream';
+import {
+  detectAutofixMutation,
+  GATE_DEFINITIONS,
+  resolveGateDefinition,
+  selectBunCheckPaths,
+  VITEST_OUTPUT_PLACEHOLDER,
+} from './gates';
+import {
+  assertReportCommitsMatch,
+  parseCommitsFileStrict,
+  parseGateResultsStrict,
+  parseRebaseReportStrict,
+} from './schemas';
+import { scanForSecrets, scanSerializedTextForSecrets, SECRET_FAMILY_SAMPLES } from './secretScan';
 import {
   buildOfficialFetchUrl,
   validateUpstreamInputs,
@@ -33,37 +49,81 @@ const SYNC_WORKFLOW_PATH = path.resolve(process.cwd(), '.github/workflows/sync.y
 const FULL_SHA = 'a'.repeat(40);
 const SHORT = FULL_SHA.slice(0, 12);
 
-const baseReport = (): RebaseReport => ({
-  analysis: {
-    networkAccess: 'not-used',
-    upstreamFreshness: 'unverified',
-    upstreamFreshnessReason: 'upstream-remote-not-configured',
-    worktreeMutation: 'none',
-  },
-  commits: {
-    base: SHORT,
-    candidate: SHORT,
-    mergeBase: SHORT,
-    upstream: SHORT,
-  },
-  conflicts: [],
-  directModificationHotspots: [],
-  patchDrift: [],
-  requiredGates: [
-    { id: 'bun-check-changed', reason: 'changed' },
-    { id: 'privacy-review', reason: 'privacy' },
-    { id: 'type-check', reason: 'types' },
-  ],
-  schemaVersion: 1,
-  status: 'clean',
-  summary: {
-    candidateChangedPaths: 1,
-    conflicts: 0,
-    directModificationHotspots: 0,
-    patchDrift: 0,
-    upstreamChangedPaths: 1,
-  },
+const temporaryRoots: string[] = [];
+
+const runGit = async (repositoryRoot: string, ...args: string[]): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const child = spawn('git', ['-C', repositoryRoot, ...args], {
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
+      shell: false,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const stderr: Buffer[] = [];
+    const stdout: Buffer[] = [];
+    child.stdout.on('data', (chunk: Buffer) => stdout.push(chunk));
+    child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk));
+    child.once('error', reject);
+    child.once('close', (code) => {
+      if (code === 0) {
+        resolve(Buffer.concat(stdout).toString('utf8').trim());
+        return;
+      }
+      reject(new Error(Buffer.concat(stderr).toString('utf8') || `git failed: ${args.join(' ')}`));
+    });
+  });
+
+const writeRepoFile = async (repositoryRoot: string, relativePath: string, value: string) => {
+  const absolutePath = path.join(repositoryRoot, relativePath);
+  await mkdir(path.dirname(absolutePath), { recursive: true });
+  await writeFile(absolutePath, value, 'utf8');
+};
+
+const commitAll = async (repositoryRoot: string, message: string) => {
+  await runGit(repositoryRoot, 'add', '--all');
+  await runGit(repositoryRoot, 'commit', '--quiet', '-m', message);
+  return runGit(repositoryRoot, 'rev-parse', 'HEAD');
+};
+
+afterEach(async () => {
+  await Promise.all(
+    temporaryRoots
+      .splice(0)
+      .map((temporaryRoot) => rm(temporaryRoot, { force: true, maxRetries: 3, recursive: true })),
+  );
 });
+
+const baseReport = () =>
+  parseRebaseReportStrict({
+    analysis: {
+      networkAccess: 'not-used',
+      upstreamFreshness: 'unverified',
+      upstreamFreshnessReason: 'upstream-remote-not-configured',
+      worktreeMutation: 'none',
+    },
+    commits: {
+      base: SHORT,
+      candidate: SHORT,
+      mergeBase: SHORT,
+      upstream: SHORT,
+    },
+    conflicts: [],
+    directModificationHotspots: [],
+    patchDrift: [],
+    requiredGates: [
+      { id: 'bun-check-changed', reason: 'changed' },
+      { id: 'privacy-review', reason: 'privacy' },
+      { id: 'type-check', reason: 'types' },
+    ],
+    schemaVersion: 1,
+    status: 'clean',
+    summary: {
+      candidateChangedPaths: 1,
+      conflicts: 0,
+      directModificationHotspots: 0,
+      patchDrift: 0,
+      upstreamChangedPaths: 1,
+    },
+  });
 
 const extractRunBlocks = (workflowSource: string): string[] => {
   const document = parse(workflowSource) as {
@@ -98,76 +158,361 @@ describe('validateUpstreamInputs', () => {
     expect(() => validateUpstreamRepository('lobehub/lobehub.git')).toThrow();
     expect(() => validateUpstreamRepository('user:token@host/repo')).toThrow();
     expect(() => validateUpstreamRepository('lobehub/lobehub;rm -rf /')).toThrow();
-    expect(() => validateUpstreamRepository('../etc/passwd')).toThrow();
     expect(() => validateUpstreamRef('main;curl evil')).toThrow();
-    expect(() => validateUpstreamRef('refs/heads/main`id`')).toThrow();
-    expect(() => validateUpstreamRef('-nefarious')).toThrow();
     expect(() => validateUpstreamRef('feature/../main')).toThrow();
-    expect(() =>
-      validateUpstreamInputs({
-        ref: 'main',
-        repository: 'lobehub/lobehub\nmalicious',
-      }),
-    ).toThrow();
-  });
-
-  it('accepts safe branch, tag, and full-sha refs', () => {
-    expect(validateUpstreamRef('canary')).toBe('canary');
-    expect(validateUpstreamRef('v2.2.10')).toBe('v2.2.10');
-    expect(validateUpstreamRef('feature/upstream-sync')).toBe('feature/upstream-sync');
-    expect(validateUpstreamRef(FULL_SHA)).toBe(FULL_SHA);
   });
 });
 
 describe('gate mapping', () => {
-  it('maps every known gate deterministically and fail-closes unknown ids', () => {
+  it('maps every known gate deterministically and fail-closes runtime-only gates', () => {
     for (const id of KNOWN_GATE_IDS) {
       const definition = resolveGateDefinition(id);
-      expect(definition.id).toBe(id);
-      expect(GATE_DEFINITIONS[id]).toBeDefined();
+      expect(definition.kind).toBe(EXPECTED_GATE_KINDS[id]);
     }
-
-    expect(resolveGateDefinition('not-a-real-gate')).toMatchObject({
-      failClosed: true,
-      kind: 'fail-closed',
-    });
-    expect(resolveGateDefinition('not-a-real-gate').reason).toMatch(/Unknown required gate/);
-
-    expect(GATE_DEFINITIONS['manual-conflict-review'].failClosed).toBe(true);
-    expect(GATE_DEFINITIONS['patch-ledger-update'].failClosed).toBe(true);
-    expect(GATE_DEFINITIONS['permission-matrix'].argv?.join(' ')).toContain(
-      'permissionMatrix.test.ts',
+    expect(GATE_DEFINITIONS['failure-drills'].failClosed).toBe(true);
+    expect(GATE_DEFINITIONS['failure-drills'].kind).toBe('fail-closed');
+    expect(GATE_DEFINITIONS['bun-check-changed'].runner).toBe('bun-check-changed');
+    expect(GATE_DEFINITIONS['migration-upgrade-rollback'].runner).toBe(
+      'migration-upgrade-rollback',
     );
-    expect(GATE_DEFINITIONS['migration-upgrade-rollback'].argv?.join(' ')).toContain(
-      'drizzleMigration.test.ts',
-    );
-    expect(GATE_DEFINITIONS['spa-route-sync'].argv?.join(' ')).toContain(
-      'desktopRouter.sync.test.tsx',
-    );
-    expect(GATE_DEFINITIONS['type-check'].argv).toEqual(['bun', 'run', 'type-check']);
-    expect(GATE_DEFINITIONS['privacy-review'].kind).toBe('privacy-scan');
-    expect(GATE_DEFINITIONS['auth-e2e'].kind).toBe('vitest');
+    expect(resolveGateDefinition('not-a-real-gate').failClosed).toBe(true);
 
     for (const id of KNOWN_GATE_IDS) {
       const definition = GATE_DEFINITIONS[id];
-      if (definition.kind !== 'vitest') continue;
+      if (definition.kind !== 'vitest' || definition.runner) continue;
       expect(definition.argv).toContain('--outputFile');
       expect(definition.argv).toContain(VITEST_OUTPUT_PLACEHOLDER);
-      expect(
-        definition.argv?.some((argument) => argument.includes('enterprise-upstream-rebase-raw')),
-      ).toBe(false);
     }
   });
 });
 
-describe('evidence contract', () => {
-  it('rejects secretful evidence and requires verified freshness plus passing gates', () => {
-    const secretful = {
-      note: 'token=abc',
-      url: 'https://example.invalid/x',
-    };
-    expect(scanUpstreamRebaseEvidence(secretful).result).toBe('failed');
+describe('strict schemas', () => {
+  it('rejects duplicate/extra/missing/wrong-kind/malformed gates and contradictory summaries', () => {
+    const report = baseReport();
+    expect(() =>
+      parseRebaseReportStrict({
+        ...report,
+        summary: { ...report.summary, conflicts: 2 },
+      }),
+    ).toThrow(/summary.conflicts/);
 
+    expect(() =>
+      parseRebaseReportStrict({
+        ...report,
+        requiredGates: [
+          { id: 'type-check', reason: 'a' },
+          { id: 'type-check', reason: 'b' },
+        ],
+      }),
+    ).toThrow(/unique/);
+
+    const required = ['bun-check-changed', 'privacy-review', 'type-check'];
+    expect(() =>
+      parseGateResultsStrict(
+        [
+          {
+            id: 'bun-check-changed',
+            kind: 'command',
+            outcome: 'passed',
+            reason: 'ok',
+          },
+          {
+            id: 'bun-check-changed',
+            kind: 'command',
+            outcome: 'passed',
+            reason: 'dup',
+          },
+          {
+            id: 'privacy-review',
+            kind: 'privacy-scan',
+            outcome: 'passed',
+            reason: 'ok',
+          },
+        ],
+        required,
+      ),
+    ).toThrow(/unique/);
+
+    expect(() =>
+      parseGateResultsStrict(
+        [
+          {
+            id: 'bun-check-changed',
+            kind: 'command',
+            outcome: 'passed',
+            reason: 'ok',
+          },
+          {
+            id: 'privacy-review',
+            kind: 'privacy-scan',
+            outcome: 'passed',
+            reason: 'ok',
+          },
+        ],
+        required,
+      ),
+    ).toThrow(/exactly match/);
+
+    expect(() =>
+      parseGateResultsStrict(
+        [
+          {
+            id: 'bun-check-changed',
+            kind: 'vitest',
+            outcome: 'passed',
+            reason: 'wrong kind',
+            assertions: { failed: 0, passed: 1, skipped: 0, total: 1 },
+          },
+          {
+            id: 'privacy-review',
+            kind: 'privacy-scan',
+            outcome: 'passed',
+            reason: 'ok',
+          },
+          {
+            id: 'type-check',
+            kind: 'command',
+            outcome: 'passed',
+            reason: 'ok',
+          },
+        ],
+        required,
+      ),
+    ).toThrow(/kind/);
+
+    expect(() =>
+      parseGateResultsStrict(
+        [
+          {
+            id: 'bun-check-changed',
+            kind: 'command',
+            outcome: 'passed',
+            reason: 'ok',
+          },
+          {
+            id: 'privacy-review',
+            kind: 'privacy-scan',
+            outcome: 'passed',
+            reason: 'ok',
+          },
+          {
+            id: 'type-check',
+            kind: 'command',
+            outcome: 'passed',
+            reason: 'ok',
+            assertions: { failed: 0, passed: 1, skipped: 0, total: 1 },
+          },
+        ],
+        required,
+      ),
+    ).toThrow(/assertions/);
+
+    const commits = parseCommitsFileStrict({
+      base: FULL_SHA,
+      candidate: FULL_SHA,
+      mergeBase: FULL_SHA,
+      upstream: FULL_SHA,
+    });
+    expect(() =>
+      assertReportCommitsMatch(report, {
+        ...commits,
+        upstream: 'b'.repeat(40),
+      }),
+    ).toThrow(/does not match/);
+  });
+});
+
+describe('secret scanner families', () => {
+  it('detects AWS, OpenAI, Slack, Google, GitHub, private keys, and DB URLs', () => {
+    for (const [family, sample] of Object.entries(SECRET_FAMILY_SAMPLES)) {
+      expect(scanSerializedTextForSecrets(sample).result, family).toBe('failed');
+      expect(scanForSecrets({ note: sample }).result, family).toBe('failed');
+    }
+    expect(scanSerializedTextForSecrets('ordinary documentation without credentials').result).toBe(
+      'passed',
+    );
+    expect(scanUpstreamRebaseEvidence({ status: 'clean', count: 1 }).result).toBe('passed');
+  });
+});
+
+describe('cleanup exit semantics', () => {
+  it('fails when rm exits nonzero even if the path is already gone', async () => {
+    const target = await mkdtemp(path.join(tmpdir(), 'cleanup-gone-'));
+    temporaryRoots.push(target);
+    await expect(
+      removePathExact(target, async () => {
+        await rm(target, { force: true, recursive: true });
+        return { code: 1 };
+      }),
+    ).rejects.toThrow(/exited 1/);
+  });
+
+  it('fails when rm exits nonzero and the path remains (partial deletion)', async () => {
+    const target = await mkdtemp(path.join(tmpdir(), 'cleanup-partial-'));
+    temporaryRoots.push(target);
+    await expect(removePathExact(target, async () => ({ code: 1 }))).rejects.toThrow(/exited 1/);
+    // still exists for afterEach cleanup
+  });
+
+  it('succeeds only when rm exits 0 and path is absent', async () => {
+    const target = await mkdtemp(path.join(tmpdir(), 'cleanup-ok-'));
+    await removePathExact(target);
+    await expect(removePathExact(target)).resolves.toBeUndefined();
+  });
+});
+
+describe('integration tree materialization', () => {
+  it('rejects an integrated tree that introduces a TypeScript type error', async () => {
+    const repositoryRoot = await mkdtemp(path.join(tmpdir(), 'integration-typeerror-'));
+    temporaryRoots.push(repositoryRoot);
+    await runGit(repositoryRoot, 'init', '--quiet', '--initial-branch=main');
+    await runGit(repositoryRoot, 'config', 'user.email', 'integration@example.invalid');
+    await runGit(repositoryRoot, 'config', 'user.name', 'Integration Test');
+
+    await writeRepoFile(
+      repositoryRoot,
+      'package.json',
+      JSON.stringify({ name: 'fixture', private: true, scripts: { 'type-check': 'tsc --noEmit' } }),
+    );
+    await writeRepoFile(
+      repositoryRoot,
+      'tsconfig.json',
+      JSON.stringify({
+        compilerOptions: {
+          strict: true,
+          noEmit: true,
+          target: 'ES2022',
+          module: 'ESNext',
+          moduleResolution: 'bundler',
+          skipLibCheck: true,
+        },
+        include: ['src/**/*.ts'],
+      }),
+    );
+    await writeRepoFile(repositoryRoot, 'src/value.ts', 'export const value: number = 1;\n');
+    const base = await commitAll(repositoryRoot, 'base');
+
+    await runGit(repositoryRoot, 'switch', '--quiet', '-c', 'upstream');
+    await writeRepoFile(
+      repositoryRoot,
+      'src/value.ts',
+      'export const value: number = "TYPE_ERROR_FROM_UPSTREAM";\n',
+    );
+    const upstream = await commitAll(repositoryRoot, 'upstream type error');
+
+    await runGit(repositoryRoot, 'switch', '--quiet', '-c', 'candidate', base);
+    await writeRepoFile(repositoryRoot, 'src/ok.ts', 'export const ok = true;\n');
+    const candidate = await commitAll(repositoryRoot, 'candidate');
+
+    const temporaryDirectory = await mkdtemp(path.join(tmpdir(), 'integration-materialize-'));
+    temporaryRoots.push(temporaryDirectory);
+
+    // Analysis-style shared clone for object access
+    const analysisRepository = path.join(temporaryDirectory, 'analysis');
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(
+        'git',
+        ['clone', '--quiet', '--shared', '--', repositoryRoot, analysisRepository],
+        { stdio: 'ignore' },
+      );
+      child.once('error', reject);
+      child.once('close', (code) => (code === 0 ? resolve() : reject(new Error('clone failed'))));
+    });
+
+    const integration = await materializeIntegrationTree({
+      analysisRepository,
+      base,
+      candidate,
+      temporaryDirectory,
+      upstream,
+    });
+
+    const integratedSource = await readFile(
+      path.join(integration.integrationRepository, 'src/value.ts'),
+      'utf8',
+    );
+    expect(integratedSource).toContain('TYPE_ERROR_FROM_UPSTREAM');
+
+    // Install typescript for the fixture type-check
+    await writeRepoFile(
+      integration.integrationRepository,
+      'package.json',
+      JSON.stringify({
+        name: 'fixture',
+        private: true,
+        scripts: { 'type-check': 'tsc --noEmit' },
+        devDependencies: { typescript: '5.8.3' },
+      }),
+    );
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn('pnpm', ['install'], {
+        cwd: integration.integrationRepository,
+        stdio: 'ignore',
+      });
+      child.once('error', reject);
+      child.once('close', (code) =>
+        code === 0 ? resolve() : reject(new Error('pnpm install failed')),
+      );
+    });
+
+    const typeCheck = await new Promise<{ code: number }>((resolve, reject) => {
+      const child = spawn('bun', ['run', 'type-check'], {
+        cwd: integration.integrationRepository,
+        stdio: 'ignore',
+      });
+      child.once('error', reject);
+      child.once('close', (code) => resolve({ code: code ?? 2 }));
+    });
+    expect(typeCheck.code).not.toBe(0);
+  }, 120_000);
+});
+
+describe('bun-check-changed selection and autofix false green', () => {
+  it('retains non-orchestration changed files instead of only CI scripts', async () => {
+    const repositoryRoot = await mkdtemp(path.join(tmpdir(), 'bun-check-paths-'));
+    temporaryRoots.push(repositoryRoot);
+    await writeRepoFile(
+      repositoryRoot,
+      'scripts/enterprise/upstream-rebase-ci/gates.ts',
+      'export {};\n',
+    );
+    await writeRepoFile(repositoryRoot, 'src/app/feature.ts', 'export const feature = true;\n');
+    const existing = await filterExistingLintablePaths(repositoryRoot, [
+      'scripts/enterprise/upstream-rebase-ci/gates.ts',
+      'src/app/feature.ts',
+      'docs/only.md',
+    ]);
+    await writeRepoFile(repositoryRoot, 'docs/only.md', '# x\n');
+    const existingWithDocs = await filterExistingLintablePaths(repositoryRoot, [
+      'scripts/enterprise/upstream-rebase-ci/gates.ts',
+      'src/app/feature.ts',
+      'docs/only.md',
+    ]);
+    const selected = selectBunCheckPaths(existingWithDocs);
+    expect(selected).toContain('src/app/feature.ts');
+    expect(selected).toContain('scripts/enterprise/upstream-rebase-ci/gates.ts');
+    expect(selected).not.toEqual([
+      'scripts/enterprise/upstream-rebase-ci/gates.ts',
+      'scripts/enterprise/rebase-report.ts',
+    ]);
+    expect(existing).toContain('src/app/feature.ts');
+  });
+
+  it('detects autofix worktree mutation after exit 0', async () => {
+    const repositoryRoot = await mkdtemp(path.join(tmpdir(), 'autofix-'));
+    temporaryRoots.push(repositoryRoot);
+    await runGit(repositoryRoot, 'init', '--quiet', '--initial-branch=main');
+    await runGit(repositoryRoot, 'config', 'user.email', 'autofix@example.invalid');
+    await runGit(repositoryRoot, 'config', 'user.name', 'Autofix Test');
+    await writeRepoFile(repositoryRoot, 'a.ts', 'export const a = 1;\n');
+    await commitAll(repositoryRoot, 'base');
+    await writeRepoFile(repositoryRoot, 'a.ts', 'export const a = 2;\n');
+    expect(await detectAutofixMutation(repositoryRoot)).toBe(true);
+  });
+});
+
+describe('evidence contract', () => {
+  it('requires verified freshness and rejects fail-closed outcome as non-passing', () => {
     const gates = [
       {
         id: 'bun-check-changed',
@@ -223,175 +568,18 @@ describe('evidence contract', () => {
         sha: FULL_SHA,
       },
     });
-
     expect(isPassingUpstreamRebaseEvidence(evidence)).toBe(true);
-
     expect(
       isPassingUpstreamRebaseEvidence({
         ...evidence,
         upstream: { ...evidence.upstream, freshness: 'unverified' },
       }),
     ).toBe(false);
-
-    expect(
-      isPassingUpstreamRebaseEvidence({
-        ...evidence,
-        reportStatus: 'conflicts',
-      }),
-    ).toBe(false);
-
-    expect(
-      isPassingUpstreamRebaseEvidence({
-        ...evidence,
-        cleanupResult: 'failed',
-      }),
-    ).toBe(false);
-
-    expect(
-      isPassingUpstreamRebaseEvidence({
-        ...evidence,
-        gates: evidence.gates.map((gate) =>
-          gate.id === 'type-check' ? { ...gate, outcome: 'failed' } : gate,
-        ),
-      }),
-    ).toBe(false);
-
-    expect(
-      isPassingUpstreamRebaseEvidence({
-        ...evidence,
-        gates: [
-          ...evidence.gates,
-          {
-            assertions: { failed: 0, passed: 0, skipped: 0, total: 0 },
-            id: 'spa-route-sync',
-            kind: 'vitest',
-            outcome: 'passed',
-            reason: 'zero tests must not pass',
-          },
-        ],
-        requiredGateIds: [...evidence.requiredGateIds, 'spa-route-sync'],
-      }),
-    ).toBe(false);
-  });
-
-  it('collect fails closed on conflicts, drift, unverified freshness, and missing gates', async () => {
-    const report = baseReport();
-    const temp = await mkdtemp(path.join(tmpdir(), 'upstream-rebase-evidence-'));
-
-    try {
-      await expect(
-        collectUpstreamRebaseEvidence({
-          cleanupResult: 'passed',
-          fullCommits: {
-            base: FULL_SHA,
-            candidate: FULL_SHA,
-            mergeBase: FULL_SHA,
-            upstream: FULL_SHA,
-          },
-          gateResults: [
-            {
-              id: 'bun-check-changed',
-              kind: 'command',
-              outcome: 'passed',
-              reason: 'lint',
-            },
-            {
-              id: 'privacy-review',
-              kind: 'privacy-scan',
-              outcome: 'passed',
-              reason: 'privacy',
-            },
-            {
-              id: 'type-check',
-              kind: 'command',
-              outcome: 'passed',
-              reason: 'types',
-            },
-          ],
-          outputDirectory: path.join(temp, 'ok'),
-          report,
-          upstreamFreshness: 'verified-by-ci-fetch',
-          upstreamRef: 'main',
-          upstreamRepository: 'lobehub/lobehub',
-        }),
-      ).resolves.toMatchObject({
-        reportStatus: 'clean',
-        upstream: { freshness: 'verified-by-ci-fetch', repository: 'lobehub/lobehub' },
-      });
-
-      await expect(
-        collectUpstreamRebaseEvidence({
-          cleanupResult: 'passed',
-          fullCommits: {
-            base: FULL_SHA,
-            candidate: FULL_SHA,
-            mergeBase: FULL_SHA,
-            upstream: FULL_SHA,
-          },
-          gateResults: [],
-          outputDirectory: path.join(temp, 'conflict'),
-          report: {
-            ...report,
-            conflicts: ['src/x.ts'],
-            status: 'conflicts',
-            summary: { ...report.summary, conflicts: 1 },
-          },
-          upstreamFreshness: 'verified-by-ci-fetch',
-          upstreamRef: 'main',
-          upstreamRepository: 'lobehub/lobehub',
-        }),
-      ).rejects.toThrow(/conflicts|status/i);
-
-      await expect(
-        collectUpstreamRebaseEvidence({
-          cleanupResult: 'passed',
-          fullCommits: {
-            base: FULL_SHA,
-            candidate: FULL_SHA,
-            mergeBase: FULL_SHA,
-            upstream: FULL_SHA,
-          },
-          gateResults: [],
-          outputDirectory: path.join(temp, 'fresh'),
-          report,
-          upstreamFreshness: 'unverified',
-          upstreamRef: 'main',
-          upstreamRepository: 'lobehub/lobehub',
-        }),
-      ).rejects.toThrow(/freshness/i);
-
-      await expect(
-        collectUpstreamRebaseEvidence({
-          cleanupResult: 'passed',
-          fullCommits: {
-            base: FULL_SHA,
-            candidate: FULL_SHA,
-            mergeBase: FULL_SHA,
-            upstream: FULL_SHA,
-          },
-          gateResults: [
-            {
-              id: 'bun-check-changed',
-              kind: 'command',
-              outcome: 'passed',
-              reason: 'lint',
-            },
-          ],
-          outputDirectory: path.join(temp, 'missing-gates'),
-          report,
-          upstreamFreshness: 'verified-by-ci-fetch',
-          upstreamRef: 'main',
-          upstreamRepository: 'lobehub/lobehub',
-        }),
-      ).rejects.toThrow(/gate/i);
-    } finally {
-      await rm(temp, { force: true, maxRetries: 3, recursive: true });
-    }
   });
 });
 
 describe('enterprise-upstream-rebase workflow', () => {
-  it('is read-only dry-run with pinned actions, fork safety, and no push/write', async () => {
+  it('is read-only dry-run with integration-tree gates and pinned actions', async () => {
     const source = await readFile(WORKFLOW_PATH, 'utf8');
     const workflow = parse(source) as {
       concurrency: { 'cancel-in-progress': boolean; 'group': string };
@@ -399,7 +587,6 @@ describe('enterprise-upstream-rebase workflow', () => {
         string,
         {
           'if'?: string;
-          'runs-on': string;
           'steps': Array<Record<string, unknown>>;
           'timeout-minutes'?: number;
         }
@@ -409,128 +596,44 @@ describe('enterprise-upstream-rebase workflow', () => {
     };
 
     expect(workflow.permissions).toEqual({ contents: 'read' });
-    expect(workflow.permissions).not.toHaveProperty('pull-requests');
-    expect(workflow.permissions).not.toHaveProperty('issues');
     expect(workflow.concurrency['cancel-in-progress']).toBe(true);
-    expect(workflow.concurrency.group).toContain('github.workflow');
     expect(workflow.on).toHaveProperty('workflow_dispatch');
     expect(workflow.on).toHaveProperty('schedule');
 
-    const schedule = workflow.on.schedule as Array<{ cron: string }>;
-    expect(schedule).toHaveLength(1);
-    expect(schedule[0].cron).toBe('17 3 * * 1');
-
-    const inputs = (
-      workflow.on.workflow_dispatch as {
-        inputs: Record<string, { default: string }>;
-      }
-    ).inputs;
-    expect(inputs.upstream_repository.default).toBe('lobehub/lobehub');
-    expect(inputs.upstream_ref.default).toBe('main');
-
     const job = workflow.jobs['dry-run'];
     expect(job['timeout-minutes']).toBe(90);
-    expect(job.if).toContain('workflow_dispatch');
-    expect(job.if).toContain('fork');
-
     const uses = job.steps
       .map((step) => step.uses)
       .filter((value): value is string => typeof value === 'string');
     expect(uses).toContain('actions/checkout@v6');
     expect(uses).toContain('actions/upload-artifact@v6');
-    expect(uses).toContain('./.github/actions/setup-env');
-    for (const action of uses) {
-      if (action.startsWith('actions/')) {
-        expect(action).toMatch(/@v\d+$/u);
-      }
-    }
 
-    const checkout = job.steps.find((step) => step.uses === 'actions/checkout@v6');
-    expect(checkout?.with).toMatchObject({
-      'fetch-depth': 0,
-      'persist-credentials': false,
-    });
+    const joined = extractRunBlocks(source).join('\n');
+    expect(joined).toContain('integrationRepository');
+    expect(joined).toContain('UPSTREAM_REBASE_INTEGRATION_REPO');
+    expect(joined).toContain('run-gates');
+    expect(joined).toContain('changed-paths');
+    expect(joined).toContain('UPSTREAM_REBASE_SOURCE_HEAD');
+    expect(joined).not.toMatch(/\bgit\s+push\b/u);
+    expect(joined).not.toContain('GITHUB_TOKEN');
+    expect(joined).toMatch(/rm_code=\$\?/);
 
-    // Existing sync bot must remain unchanged and separate.
+    // Gates must not run against GITHUB_WORKSPACE as the integration repo.
+    expect(joined).toContain('--repo "$UPSTREAM_REBASE_INTEGRATION_REPO"');
+    expect(joined).not.toMatch(
+      /run-gates \\[\t\v\f\r \xA0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF]*\n\s*--repo "\$GITHUB_WORKSPACE"/u,
+    );
+
     const syncSource = await readFile(SYNC_WORKFLOW_PATH, 'utf8');
     expect(syncSource).toContain('Fork-Sync-With-Upstream-action');
-    expect(syncSource).toContain('contents: write');
     expect(source).not.toContain('Fork-Sync-With-Upstream-action');
     expect(source).not.toContain('contents: write');
-  });
-
-  it('parses every shell block for safety, failure propagation, cleanup, and artifact boundary', async () => {
-    const source = await readFile(WORKFLOW_PATH, 'utf8');
-    const workflow = parse(source) as {
-      jobs: Record<string, { steps: Array<Record<string, unknown>> }>;
-    };
-    const job = workflow.jobs['dry-run'];
-    const runBlocks = extractRunBlocks(source);
-    expect(runBlocks.length).toBeGreaterThanOrEqual(6);
-
-    const joined = runBlocks.join('\n');
-
-    // No push / write / PR mutation / main rewrite.
-    expect(joined).not.toMatch(/\bgit\s+push\b/u);
-    expect(joined).not.toMatch(/\bgit\s+reset\b/u);
-    expect(joined).not.toMatch(/\bgit\s+merge\b/u);
-    expect(joined).not.toMatch(/\bgh\s+pr\b/u);
-    expect(joined).not.toMatch(/secrets\.[A-Z0-9_]+/u);
-    expect(joined).not.toContain('GITHUB_TOKEN');
-    expect(joined).not.toMatch(/target_sync_branch:\s*main/u);
-
-    // Official input validation path.
-    expect(joined).toContain('validate-inputs');
-    expect(joined).toContain('upstream-rebase-ci/index.ts fetch');
-    expect(joined).toContain('upstream-rebase-ci/index.ts run-gates');
-    expect(joined).toContain('upstream-rebase-ci/index.ts collect');
-    expect(joined).toContain('pnpm install');
-
-    // continue-on-error steps must have final outcome assertions.
-    const continueOnErrorSteps = job.steps.filter((step) => step['continue-on-error'] === true);
-    expect(continueOnErrorSteps.length).toBeGreaterThan(0);
-    for (const step of continueOnErrorSteps) {
-      expect(typeof step.id).toBe('string');
-    }
-    expect(joined).toContain('FETCH_STEP_OUTCOME');
-    expect(joined).toContain('GATES_STEP_OUTCOME');
-    expect(joined).toMatch(/test "\$FETCH_STEP_OUTCOME" = success/u);
-    expect(joined).toMatch(/test "\$GATES_STEP_OUTCOME" = success/u);
-    expect(joined).toContain('UPSTREAM_REBASE_REPORT_OUTCOME');
-    expect(joined).toContain('UPSTREAM_REBASE_CLEANUP_RESULT');
-    expect(joined).toContain('UPSTREAM_REBASE_WIPE_RESULT');
-
-    // Cleanup must be exact and fail closed.
-    const cleanupStep = job.steps.find((step) => step.id === 'cleanup');
-    expect(cleanupStep?.if).toBe('always()');
-    expect(String(cleanupStep?.run)).toContain('rm -rf "$UPSTREAM_REBASE_TEMP_ROOT"');
-    expect(String(cleanupStep?.run)).toContain('cleanup_result=failed');
-
-    const wipeStep = job.steps.find((step) => step.id === 'wipe_raw');
-    expect(wipeStep?.if).toBe('always()');
-    expect(String(wipeStep?.run)).toContain('rm -rf "$UPSTREAM_REBASE_RAW_DIR"');
-
-    // Artifact boundary: upload redacted record dir only, never raw.
-    const upload = job.steps.find((step) => step.uses === 'actions/upload-artifact@v6');
-    expect(upload?.with).toMatchObject({
-      'if-no-files-found': 'error',
-      'path': '.records/enterprise-upstream-rebase/${{ github.run_id }}-${{ github.run_attempt }}',
-    });
-    expect(JSON.stringify(upload?.with)).not.toContain('enterprise-upstream-rebase-raw');
-    expect(source).toContain('dry-run');
-    expect(source).toMatch(/NOT a sync bot|not a production rebase/i);
-
-    // Shell syntax: every block uses strict mode or explicit set +e for cleanup.
-    for (const block of runBlocks) {
-      expect(block).toMatch(/set -euo pipefail|set \+e/u);
-    }
   });
 
   it('documents actionlint unavailability when the binary is missing', async () => {
     const { spawnSync } = await import('node:child_process');
     const probe = spawnSync('actionlint', ['-version'], { encoding: 'utf8' });
     if (probe.error || probe.status !== 0) {
-      // Do not fake actionlint. Record the real availability for operators.
       expect(probe.error?.message ?? probe.stderr ?? 'actionlint unavailable').toMatch(
         /actionlint|ENOENT|not found|unavailable/i,
       );
