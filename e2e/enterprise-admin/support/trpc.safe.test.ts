@@ -1,13 +1,59 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  ADMIN_SYSTEM_STATUS_ALLOWED_KEYS,
+  assertExactAccessNotGranted,
   assertExactManagedResourceDenied,
   assertExactPermissionDenied,
   assertSafeProjection,
   extractBatchData,
   extractTrpcErrorMessage,
+  extractTrpcErrorParts,
 } from './trpc';
+
+const validStatus = {
+  build: { gitSha: 'abcdef1', version: '2.0.0' },
+  dependencies: {
+    database: { errorCategory: null, status: 'healthy' },
+    keyManagement: { errorCategory: null, status: 'healthy' },
+    mail: { errorCategory: null, status: 'disabled' },
+    objectStorage: { errorCategory: null, status: 'unknown' },
+    redis: { errorCategory: null, status: 'healthy' },
+  },
+  domains: [],
+  featureFlags: {
+    databaseOidc: true,
+    managedAgents: true,
+    managedAi: true,
+    managedConnectors: true,
+    managedSkills: true,
+    platformAdmin: true,
+    runtimeBranding: true,
+    settingsPolicy: true,
+  },
+  instanceStatus: { errorCategory: null, status: 'healthy' },
+  jobs: {
+    active: 0,
+    completed: 0,
+    errorCategory: null,
+    failed: 0,
+    status: 'healthy',
+    total: 0,
+  },
+  oidc: {
+    activeRevision: null,
+    configured: false,
+    pendingRestart: false,
+    source: 'disabled',
+    status: 'disabled',
+  },
+  recentPublishFailures: {
+    count: 0,
+    errorCategory: null,
+    items: [],
+    status: 'healthy',
+  },
+  snapshotAt: '2026-07-20T00:01:00.000Z',
+};
 
 describe('trpc helpers', () => {
   it('extracts batch data and fails on error envelopes', () => {
@@ -19,20 +65,57 @@ describe('trpc helpers', () => {
     );
   });
 
-  it('parses enterprise error messages from batch errors', () => {
+  it('parses enterprise error parts from batch errors', () => {
     expect(
       extractTrpcErrorMessage([
-        { error: { json: { data: { code: 'FORBIDDEN' }, message: 'PLATFORM_PERMISSION_DENIED' } } },
+        {
+          error: {
+            json: {
+              data: {
+                code: 'FORBIDDEN',
+                errorData: { code: 'PLATFORM_PERMISSION_DENIED' },
+              },
+              message: 'PLATFORM_PERMISSION_DENIED',
+            },
+          },
+        },
       ]),
     ).toBe('PLATFORM_PERMISSION_DENIED');
+    expect(
+      extractTrpcErrorParts([
+        {
+          error: {
+            json: {
+              data: {
+                code: 'FORBIDDEN',
+                errorData: { code: 'PLATFORM_PERMISSION_DENIED' },
+              },
+              message: 'PLATFORM_PERMISSION_DENIED',
+            },
+          },
+        },
+      ]),
+    ).toEqual({
+      enterpriseCode: 'PLATFORM_PERMISSION_DENIED',
+      message: 'PLATFORM_PERMISSION_DENIED',
+      trpcCode: 'FORBIDDEN',
+    });
   });
 
-  it('requires exact 403 permission denial', () => {
+  it('requires exact 403 + FORBIDDEN + PLATFORM_PERMISSION_DENIED', () => {
     expect(() =>
       assertExactPermissionDenied({
         json: [
           {
-            error: { json: { data: { code: 'FORBIDDEN' }, message: 'PLATFORM_PERMISSION_DENIED' } },
+            error: {
+              json: {
+                data: {
+                  code: 'FORBIDDEN',
+                  errorData: { code: 'PLATFORM_PERMISSION_DENIED' },
+                },
+                message: 'PLATFORM_PERMISSION_DENIED',
+              },
+            },
           },
         ],
         ok: false,
@@ -40,6 +123,42 @@ describe('trpc helpers', () => {
         text: 'PLATFORM_PERMISSION_DENIED',
       }),
     ).not.toThrow();
+
+    // Counterexample: HTTP 403 + FORBIDDEN tRPC but unrelated enterprise code
+    expect(() =>
+      assertExactPermissionDenied({
+        json: [
+          {
+            error: {
+              json: {
+                data: { code: 'FORBIDDEN', errorData: { code: 'PLATFORM_ACCESS_NOT_GRANTED' } },
+                message: 'PLATFORM_ACCESS_NOT_GRANTED',
+              },
+            },
+          },
+        ],
+        ok: false,
+        status: 403,
+        text: 'PLATFORM_ACCESS_NOT_GRANTED',
+      }),
+    ).toThrow(/PLATFORM_PERMISSION_DENIED/);
+
+    // Counterexample: bare FORBIDDEN message without enterprise code
+    expect(() =>
+      assertExactPermissionDenied({
+        json: [
+          {
+            error: {
+              json: { data: { code: 'FORBIDDEN' }, message: 'FORBIDDEN' },
+            },
+          },
+        ],
+        ok: false,
+        status: 403,
+        text: 'FORBIDDEN',
+      }),
+    ).toThrow(/PLATFORM_PERMISSION_DENIED/);
+
     expect(() =>
       assertExactPermissionDenied({
         json: null,
@@ -50,32 +169,110 @@ describe('trpc helpers', () => {
     ).toThrow(/403/);
   });
 
-  it('requires RESOURCE_MANAGED_BY_PLATFORM for managed denial', () => {
+  it('requires exact access-not-granted for ordinary principals', () => {
+    expect(() =>
+      assertExactAccessNotGranted({
+        json: [
+          {
+            error: {
+              json: {
+                data: {
+                  code: 'FORBIDDEN',
+                  errorData: { code: 'PLATFORM_ACCESS_NOT_GRANTED' },
+                },
+                message: 'PLATFORM_ACCESS_NOT_GRANTED',
+              },
+            },
+          },
+        ],
+        ok: false,
+        status: 403,
+        text: 'PLATFORM_ACCESS_NOT_GRANTED',
+      }),
+    ).not.toThrow();
+  });
+
+  it('requires exact RESOURCE_MANAGED_BY_PLATFORM for managed denial', () => {
     expect(() =>
       assertExactManagedResourceDenied({
-        json: [{ error: { json: { message: 'RESOURCE_MANAGED_BY_PLATFORM' } } }],
+        json: [
+          {
+            error: {
+              json: {
+                data: {
+                  code: 'FORBIDDEN',
+                  errorData: { code: 'RESOURCE_MANAGED_BY_PLATFORM' },
+                },
+                message: 'RESOURCE_MANAGED_BY_PLATFORM',
+              },
+            },
+          },
+        ],
         ok: false,
         status: 403,
         text: 'RESOURCE_MANAGED_BY_PLATFORM',
       }),
     ).not.toThrow();
+
+    // substring-only body is not enough without exact enterprise code
+    expect(() =>
+      assertExactManagedResourceDenied({
+        json: [
+          {
+            error: {
+              json: {
+                data: { code: 'FORBIDDEN' },
+                message: 'something RESOURCE_MANAGED_BY_PLATFORM extra',
+              },
+            },
+          },
+        ],
+        ok: false,
+        status: 403,
+        text: 'something RESOURCE_MANAGED_BY_PLATFORM extra',
+      }),
+    ).toThrow(/RESOURCE_MANAGED_BY_PLATFORM exactly/);
   });
 
-  it('rejects unknown keys and secret substrings in safe projections', () => {
+  it('strict hierarchical DTO rejects wrong-path keys and nested credentials', () => {
+    expect(() => assertSafeProjection(validStatus)).not.toThrow();
+
+    // Nested redis.token must fail (flat allowlist used to accept "token")
     expect(() =>
-      assertSafeProjection(
-        { build: { version: '1.0.0' }, featureFlags: { platformAdmin: true } },
-        { allowedKeys: ADMIN_SYSTEM_STATUS_ALLOWED_KEYS },
-      ),
-    ).not.toThrow();
+      assertSafeProjection({
+        ...validStatus,
+        dependencies: {
+          ...validStatus.dependencies,
+          redis: {
+            errorCategory: null,
+            status: 'healthy',
+            token: 'redis://secret@host:6379',
+          },
+        },
+      }),
+    ).toThrow(/strict DTO|unrecognized|token/i);
+
+    // Wrong-path top-level secret
     expect(() =>
-      assertSafeProjection({ secretToken: 'x' }, { allowedKeys: ADMIN_SYSTEM_STATUS_ALLOWED_KEYS }),
-    ).toThrow(/unknown key/);
+      assertSafeProjection({
+        ...validStatus,
+        databaseUrl: 'postgres://secret',
+      }),
+    ).toThrow();
+
+    // Extra dependency field
     expect(() =>
-      assertSafeProjection(
-        { build: { version: 'postgres:postgres@host' } },
-        { allowedKeys: ADMIN_SYSTEM_STATUS_ALLOWED_KEYS },
-      ),
-    ).toThrow(/forbidden substring/);
+      assertSafeProjection({
+        ...validStatus,
+        dependencies: {
+          ...validStatus.dependencies,
+          redis: {
+            errorCategory: null,
+            password: 'x',
+            status: 'healthy',
+          },
+        },
+      }),
+    ).toThrow();
   });
 });

@@ -8,13 +8,22 @@
 import Redis from 'ioredis';
 import { Pool } from 'pg';
 
-const OUTAGE_SKILL_ID = 'pskill_e2e_outage_probe';
-const OUTAGE_SKILL_KEY = 'e2e.skill.outage.probe';
+export const OUTAGE_SKILL_ID = 'pskill_e2e_outage_probe';
+export const OUTAGE_SKILL_KEY = 'e2e.skill.outage.probe';
 
 export interface SkillOutageHandle {
   databaseUrl: string;
   redisUrl: string;
   restore: () => Promise<void>;
+}
+
+export interface UserSkillArtifacts {
+  agentSkillIds: string[];
+  agentSkills: number;
+  documentIds: string[];
+  documents: number;
+  /** Rows matching a suite identifier (must stay absent after denied create). */
+  matchingIdentifiers: string[];
 }
 
 const bumpSkillCatalogEpoch = async (redisUrl: string): Promise<void> => {
@@ -74,7 +83,6 @@ export const restoreSkillCatalogOutage = async (params: {
 }): Promise<void> => {
   const pool = new Pool({ connectionString: params.databaseUrl });
   try {
-    // Soft-delete the probe row so authority scan no longer includes it.
     await pool.query(`DELETE FROM platform_skills WHERE id = $1 OR skill_key = $2`, [
       OUTAGE_SKILL_ID,
       OUTAGE_SKILL_KEY,
@@ -85,23 +93,38 @@ export const restoreSkillCatalogOutage = async (params: {
   await bumpSkillCatalogEpoch(params.redisUrl);
 };
 
-/** Count legacy skill rows for a user (must stay unchanged after denied mutation). */
+/**
+ * Exact user skill/document inventory. Query failures hard-fail (no swallowed catches).
+ * Prefer suite identifiers over only total counts.
+ */
 export const countUserSkillArtifacts = async (
   databaseUrl: string,
   userId: string,
-): Promise<{ agentSkills: number; documents: number }> => {
+  suiteIdentifier?: string,
+): Promise<UserSkillArtifacts> => {
   const pool = new Pool({ connectionString: databaseUrl });
   try {
     const skills = await pool.query(
-      `SELECT count(*)::int AS count FROM agent_skills WHERE user_id = $1`,
+      `SELECT id, identifier FROM agent_skills WHERE user_id = $1 ORDER BY id`,
       [userId],
     );
-    const docs = await pool
-      .query(`SELECT count(*)::int AS count FROM documents WHERE user_id = $1`, [userId])
-      .catch(() => ({ rows: [{ count: 0 }] }));
+    const docs = await pool.query(`SELECT id FROM documents WHERE user_id = $1 ORDER BY id`, [
+      userId,
+    ]);
+    const agentSkillIds = skills.rows.map((r) => String(r.id));
+    const identifiers = skills.rows
+      .map((r) => (r.identifier == null ? null : String(r.identifier)))
+      .filter((v): v is string => Boolean(v));
+    const documentIds = docs.rows.map((r) => String(r.id));
+    const matchingIdentifiers = suiteIdentifier
+      ? identifiers.filter((id) => id === suiteIdentifier)
+      : [];
     return {
-      agentSkills: Number(skills.rows[0]?.count ?? 0),
-      documents: Number(docs.rows[0]?.count ?? 0),
+      agentSkillIds,
+      agentSkills: agentSkillIds.length,
+      documentIds,
+      documents: documentIds.length,
+      matchingIdentifiers,
     };
   } finally {
     await pool.end();
