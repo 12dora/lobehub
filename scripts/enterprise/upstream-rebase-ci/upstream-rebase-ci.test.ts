@@ -16,7 +16,7 @@ import {
   UPSTREAM_REBASE_CI_LANE,
   UPSTREAM_REBASE_CI_SCHEMA_VERSION,
 } from './contract';
-import { GATE_DEFINITIONS, resolveGateDefinition } from './gates';
+import { GATE_DEFINITIONS, resolveGateDefinition, VITEST_OUTPUT_PLACEHOLDER } from './gates';
 import {
   buildOfficialFetchUrl,
   validateUpstreamInputs,
@@ -147,6 +147,16 @@ describe('gate mapping', () => {
     expect(GATE_DEFINITIONS['type-check'].argv).toEqual(['bun', 'run', 'type-check']);
     expect(GATE_DEFINITIONS['privacy-review'].kind).toBe('privacy-scan');
     expect(GATE_DEFINITIONS['auth-e2e'].kind).toBe('vitest');
+
+    for (const id of KNOWN_GATE_IDS) {
+      const definition = GATE_DEFINITIONS[id];
+      if (definition.kind !== 'vitest') continue;
+      expect(definition.argv).toContain('--outputFile');
+      expect(definition.argv).toContain(VITEST_OUTPUT_PLACEHOLDER);
+      expect(
+        definition.argv?.some((argument) => argument.includes('enterprise-upstream-rebase-raw')),
+      ).toBe(false);
+    }
   });
 });
 
