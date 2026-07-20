@@ -8,7 +8,7 @@ import {
 
 const draftToken = 'a'.repeat(64);
 const safeReason = '  review global settings change  ';
-const secretReason = 'Authorization: Bearer sk-live-settings-secret-0123456789';
+const secretReason = 'Authorization: Bearer test-only-settings-credential';
 
 describe('admin settings reason contract', () => {
   it('trims the shared bounded reason for save, publish and rollback', () => {

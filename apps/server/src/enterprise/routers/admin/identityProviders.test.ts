@@ -26,8 +26,12 @@ import { adminRouter } from '../admin';
 
 const db: LobeChatDatabase = await getTestDB();
 const createCaller = createCallerFactory(adminRouter);
-const ids = { reader: 'm11-idp-reader', updater: 'm11-idp-updater' };
-const roleNames = ['m11_idp_reader', 'm11_idp_updater'];
+const ids = {
+  deleter: 'm11-idp-deleter',
+  reader: 'm11-idp-reader',
+  updater: 'm11-idp-updater',
+};
+const roleNames = ['m11_idp_reader', 'm11_idp_updater', 'm11_idp_deleter'];
 
 vi.mock('@/database/core/db-adaptor', () => ({
   getServerDB: vi.fn(async () => db),
@@ -72,6 +76,7 @@ beforeEach(async () => {
   await seedPlatformRoles(db);
   await grant(ids.reader, roleNames[0], PLATFORM_PERMISSIONS.IDENTITY_READ);
   await grant(ids.updater, roleNames[1], PLATFORM_PERMISSIONS.IDENTITY_UPDATE);
+  await grant(ids.deleter, roleNames[2], PLATFORM_PERMISSIONS.IDENTITY_DELETE);
 });
 
 afterEach(async () => {
@@ -79,10 +84,16 @@ afterEach(async () => {
   vi.unstubAllEnvs();
 });
 
-const callerFor = async (userId: string) => {
+const callerFor = async (
+  userId: string,
+  auth: {
+    authenticatedAt?: Date | null;
+    authMethod?: 'api-key' | 'better-auth';
+  } = { authenticatedAt: new Date(), authMethod: 'better-auth' },
+) => {
   const context = await createContextInner({
-    authenticatedAt: new Date(),
-    authMethod: 'better-auth',
+    authenticatedAt: auth.authenticatedAt,
+    authMethod: auth.authMethod ?? 'better-auth',
     sessionId: `session-${userId}`,
     userId,
   });
@@ -143,5 +154,75 @@ describe('admin.identityProviders RBAC and feature gate', () => {
     expect(secretFactory).not.toHaveBeenCalled();
     select.mockRestore();
     secretFactory.mockRestore();
+  });
+
+  it('requires recent reauth before deleting a draft and remains denied if audit fails', async () => {
+    const [provider] = await db
+      .insert(platformIdentityProviders)
+      .values({ displayName: 'Delete guarded provider', providerKey: 'delete-guarded' })
+      .returning();
+    const input = {
+      expectedRevision: provider.revision,
+      id: provider.id,
+      reason: 'delete unused identity provider draft',
+    };
+    for (const auth of [
+      { authenticatedAt: null, authMethod: 'better-auth' as const },
+      {
+        authenticatedAt: new Date(Date.now() - 60 * 60 * 1000),
+        authMethod: 'better-auth' as const,
+      },
+      { authenticatedAt: new Date(), authMethod: 'api-key' as const },
+    ]) {
+      await expect((await callerFor(ids.deleter, auth)).delete(input)).rejects.toMatchObject({
+        code: 'UNAUTHORIZED',
+      });
+    }
+    await expect(
+      db
+        .select()
+        .from(platformIdentityProviders)
+        .where(eq(platformIdentityProviders.id, provider.id)),
+    ).resolves.toHaveLength(1);
+    expect(
+      (await db.select().from(platformAuditLogs)).filter(
+        ({ action }) => action === 'admin.identityProviders.delete',
+      ),
+    ).toMatchObject([
+      { afterDiff: { error: 'reauth_required' }, result: 'denied' },
+      { afterDiff: { error: 'reauth_required' }, result: 'denied' },
+      { afterDiff: { error: 'reauth_required' }, result: 'denied' },
+    ]);
+
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const insert = vi.spyOn(db, 'insert').mockImplementationOnce(() => {
+      throw new Error('audit sink unavailable');
+    });
+    await expect(
+      (await callerFor(ids.deleter, { authenticatedAt: null })).delete(input),
+    ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    await expect(
+      db
+        .select()
+        .from(platformIdentityProviders)
+        .where(eq(platformIdentityProviders.id, provider.id)),
+    ).resolves.toHaveLength(1);
+    expect(consoleError).toHaveBeenCalledWith(
+      '[admin.identityProviders] reauth denied audit unavailable',
+      expect.objectContaining({
+        action: 'admin.identityProviders.delete',
+        errorClass: 'Error',
+      }),
+    );
+    expect(JSON.stringify(consoleError.mock.calls)).not.toContain(provider.id);
+    insert.mockRestore();
+    consoleError.mockRestore();
+    await expect((await callerFor(ids.deleter)).delete(input)).resolves.toEqual({ deleted: true });
+    await expect(
+      db
+        .select()
+        .from(platformIdentityProviders)
+        .where(eq(platformIdentityProviders.id, provider.id)),
+    ).resolves.toEqual([]);
   });
 });
