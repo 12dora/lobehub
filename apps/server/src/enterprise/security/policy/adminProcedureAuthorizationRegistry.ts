@@ -441,6 +441,31 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY = [
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.ROLE_UPDATE] },
   },
   {
+    kind: 'mutation',
+    path: 'admin.security.secretRotation.cancel',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SYSTEM_OPERATE] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.security.secretRotation.get',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SYSTEM_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.security.secretRotation.list',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SYSTEM_READ] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.security.secretRotation.retry',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SYSTEM_OPERATE] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.security.secretRotation.start',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SYSTEM_OPERATE] },
+  },
+  {
     kind: 'query',
     path: 'admin.settings.getDraft',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SETTINGS_READ] },

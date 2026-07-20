@@ -107,6 +107,16 @@ const identityLkg = conditional(
   'Startup verifies signature, age, ownership, and permissions before reading a local LKG.',
   'A valid database candidate remains active when the local LKG write fails; startup reports degraded.',
 );
+const secretRotationExternalGate = conditional(
+  'API and worker results always report historicalKeyRemovalReady=false and require identity LKG instance convergence.',
+  'OIDC LKG convergence and historical KEK removal approval remain external operational gates.',
+);
+const secretRotationAudit = enforced(
+  'Coordinator mutation and sanitized success audit share one transaction; failure and reauth denial audits are best effort after rollback.',
+);
+const vaultKeyProviderBoundary = enforced(
+  'Start verifies the selected Vault provider and exact active key through its bounded fail-closed client.',
+);
 
 const regularMutation = (
   procedure: `admin.${string}`,
@@ -448,6 +458,33 @@ export const ADMIN_MUTATION_REGISTRY = {
     'critical',
     'Replace the global roles assigned to a user.',
     { reauth: recentReauth },
+  ),
+  'admin.security.secretRotation.cancel': dangerousMutation(
+    'admin.security.secretRotation.cancel',
+    'critical',
+    'Stop future batches of an active secret re-wrap job without reverting committed envelopes.',
+    { audit: secretRotationAudit, reauth: recentReauth },
+  ),
+  'admin.security.secretRotation.retry': dangerousMutation(
+    'admin.security.secretRotation.retry',
+    'critical',
+    'Retry the exact failed ledger of a secret re-wrap job.',
+    {
+      audit: secretRotationAudit,
+      lastKnownGood: secretRotationExternalGate,
+      reauth: recentReauth,
+    },
+  ),
+  'admin.security.secretRotation.start': dangerousMutation(
+    'admin.security.secretRotation.start',
+    'critical',
+    'Start a Vault-backed full-domain secret re-wrap job.',
+    {
+      audit: secretRotationAudit,
+      lastKnownGood: secretRotationExternalGate,
+      outbound: vaultKeyProviderBoundary,
+      reauth: recentReauth,
+    },
   ),
   'admin.settings.publish': dangerousMutation(
     'admin.settings.publish',

@@ -16,14 +16,19 @@ const addSecretIssue = (value: string, context: z.RefinementCtx) => {
   }
 };
 
-const safeReasonSchema = z.string().trim().min(1).max(1000).superRefine(addSecretIssue);
-const keyIdSchema = z.string().regex(/^[A-Z0-9][\w.:@+-]{0,127}$/i);
+export const platformSecretRewrapReasonSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(1000)
+  .superRefine(addSecretIssue);
+export const platformSecretRewrapKeyIdSchema = z.string().regex(/^[A-Z0-9][\w.:@+-]{0,127}$/i);
 const rowIdSchema = z
   .string()
   .min(1)
   .max(256)
   .regex(/^[\w-]+$/);
-const jobIdSchema = z
+export const platformSecretRewrapJobIdSchema = z
   .string()
   .min(1)
   .max(256)
@@ -57,10 +62,10 @@ export const platformSecretRewrapJobInputSchema = z
         revision: z.number().int().nonnegative(),
       })
       .strict(),
-    reason: safeReasonSchema,
+    reason: platformSecretRewrapReasonSchema,
     requestId: z.string().uuid(),
     schemaVersion: z.literal(1),
-    targetKeyId: keyIdSchema,
+    targetKeyId: platformSecretRewrapKeyIdSchema,
   })
   .strict();
 
@@ -70,12 +75,12 @@ export const platformSecretRewrapFailureInputSchema = z
   .object({
     category: platformSecretRewrapFailureCategorySchema,
     domain: z.enum(PLATFORM_SECRET_ROTATION_DOMAINS),
-    parentJobId: jobIdSchema,
+    parentJobId: platformSecretRewrapJobIdSchema,
     parentRevision: z.number().int().nonnegative(),
     requestId: z.string().uuid(),
     rowId: rowIdSchema,
     schemaVersion: z.literal(1),
-    targetKeyId: keyIdSchema,
+    targetKeyId: platformSecretRewrapKeyIdSchema,
   })
   .strict();
 
