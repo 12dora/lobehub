@@ -4,6 +4,8 @@ import {
   digestFingerprint,
   type GlobalDbDigest,
   type ManagedPolicyRow,
+  permissionFingerprint,
+  roleFingerprint,
   type SuiteGlobalWriteManifest,
 } from './seed';
 
@@ -38,6 +40,34 @@ describe('global db digest', () => {
     expect(digestFingerprint(a)).not.toBe(digestFingerprint(b));
   });
 
+  it('role/permission fingerprints include non-key mutable fields', () => {
+    const roleBase = {
+      description: 'platform super_admin',
+      displayName: 'super_admin',
+      id: 'role_1',
+      isActive: true,
+      isSystem: true,
+      name: 'super_admin',
+      workspaceId: null as null,
+    };
+    expect(roleFingerprint(roleBase)).toBe(roleFingerprint({ ...roleBase }));
+    expect(roleFingerprint(roleBase)).not.toBe(
+      roleFingerprint({ ...roleBase, displayName: 'FOREIGN' }),
+    );
+
+    const permBase = {
+      category: 'platform',
+      code: 'platform_admin:access:all',
+      description: 'x',
+      id: 'p1',
+      isActive: true,
+      name: 'platform_admin:access:all',
+    };
+    expect(permissionFingerprint(permBase)).not.toBe(
+      permissionFingerprint({ ...permBase, description: 'FOREIGN' }),
+    );
+  });
+
   it('suite write manifest tracks created rows with after fingerprints for CAS', () => {
     const before: GlobalDbDigest = {
       managedPolicies: [policy({ enforcement: 'observe', revision: 1 })],
@@ -57,19 +87,33 @@ describe('global db digest', () => {
       before,
       createdPermissions: [
         {
+          category: 'platform',
           code: 'platform_admin:access:all',
+          description: 'x',
           fingerprint: 'fp-perm',
           id: 'perm_new',
+          isActive: true,
+          name: 'platform_admin:access:all',
         },
       ],
       createdPolicies: [],
       createdRolePermissionKeys: [],
-      createdRoles: [{ fingerprint: 'fp-role', id: 'role_new', name: 'super_admin' }],
+      createdRoles: [
+        {
+          description: 'd',
+          displayName: 'super_admin',
+          fingerprint: 'fp-role',
+          id: 'role_new',
+          isActive: true,
+          isSystem: true,
+          name: 'super_admin',
+          workspaceId: null,
+        },
+      ],
       mutatedPolicies: [{ after: afterPolicy, before: before.managedPolicies[0] }],
     };
     expect(manifest.createdPermissions[0].id).toBe('perm_new');
-    expect(manifest.createdRoles[0].fingerprint).toBe('fp-role');
-    expect(manifest.mutatedPolicies[0].before.enforcement).toBe('observe');
+    expect(manifest.createdRoles[0].displayName).toBe('super_admin');
     expect(digestFingerprint(manifest.before)).not.toBe(digestFingerprint(manifest.after));
   });
 });

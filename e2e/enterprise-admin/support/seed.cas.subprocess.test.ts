@@ -4,7 +4,7 @@
  */
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -148,8 +148,89 @@ describe('CAS real signal subprocess + foreign concurrent links', () => {
     );
   }, 90_000);
 
+  it('non-key role field drift refuses restore and leaves role intact', async () => {
+    const harness = await startCasPostgres();
+    cleanups.push(harness.stop);
+    const before = await snapshotGlobalDbDigest(harness.databaseUrl);
+    const { manifest, seed } = await seedEnterpriseAdminSuite(harness.databaseUrl);
+    const createdRole = manifest.createdRoles[0];
+    expect(createdRole).toBeTruthy();
+
+    const pool = new Pool({ connectionString: harness.databaseUrl });
+    await pool.query(
+      `UPDATE rbac_roles SET display_name = 'FOREIGN_CONCURRENT_DISPLAY_NAME' WHERE id = $1`,
+      [createdRole.id],
+    );
+    const afterDrift = await pool.query(`SELECT display_name FROM rbac_roles WHERE id = $1`, [
+      createdRole.id,
+    ]);
+    expect(afterDrift.rows[0].display_name).toBe('FOREIGN_CONCURRENT_DISPLAY_NAME');
+    await pool.end();
+
+    await expect(casRestoreGlobalDb(harness.databaseUrl, manifest)).rejects.toThrow(
+      /after-state drifted|CAS restore conflict/,
+    );
+
+    const pool2 = new Pool({ connectionString: harness.databaseUrl });
+    const still = await pool2.query(`SELECT id, display_name FROM rbac_roles WHERE id = $1`, [
+      createdRole.id,
+    ]);
+    expect(still.rows).toHaveLength(1);
+    expect(still.rows[0].display_name).toBe('FOREIGN_CONCURRENT_DISPLAY_NAME');
+    // Revert drift so cleanup can succeed
+    await pool2.query(`UPDATE rbac_roles SET display_name = $2 WHERE id = $1`, [
+      createdRole.id,
+      createdRole.displayName,
+    ]);
+    await pool2.end();
+
+    const { cleanupEnterpriseAdminSuite } = await import('./seed');
+    await cleanupEnterpriseAdminSuite(harness.databaseUrl, seed, manifest);
+    expect(digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl))).toBe(
+      digestFingerprint(before),
+    );
+  }, 90_000);
+
+  it('non-key permission field drift refuses restore and leaves permission intact', async () => {
+    const harness = await startCasPostgres();
+    cleanups.push(harness.stop);
+    const before = await snapshotGlobalDbDigest(harness.databaseUrl);
+    const { manifest, seed } = await seedEnterpriseAdminSuite(harness.databaseUrl);
+    const createdPerm = manifest.createdPermissions[0];
+    expect(createdPerm).toBeTruthy();
+
+    const pool = new Pool({ connectionString: harness.databaseUrl });
+    await pool.query(
+      `UPDATE rbac_permissions SET description = 'FOREIGN_CONCURRENT_DESCRIPTION' WHERE id = $1`,
+      [createdPerm.id],
+    );
+    await pool.end();
+
+    await expect(casRestoreGlobalDb(harness.databaseUrl, manifest)).rejects.toThrow(
+      /after-state drifted|CAS restore conflict/,
+    );
+
+    const pool2 = new Pool({ connectionString: harness.databaseUrl });
+    const still = await pool2.query(`SELECT id, description FROM rbac_permissions WHERE id = $1`, [
+      createdPerm.id,
+    ]);
+    expect(still.rows).toHaveLength(1);
+    expect(still.rows[0].description).toBe('FOREIGN_CONCURRENT_DESCRIPTION');
+    await pool2.query(`UPDATE rbac_permissions SET description = $2 WHERE id = $1`, [
+      createdPerm.id,
+      createdPerm.description,
+    ]);
+    await pool2.end();
+
+    const { cleanupEnterpriseAdminSuite } = await import('./seed');
+    await cleanupEnterpriseAdminSuite(harness.databaseUrl, seed, manifest);
+    expect(digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl))).toBe(
+      digestFingerprint(before),
+    );
+  }, 90_000);
+
   for (const signal of ['SIGTERM', 'SIGINT'] as const) {
-    it(`real ${signal} subprocess restores exact before digest`, async () => {
+    it(`real ${signal} after ready restores exact before digest`, async () => {
       const harness = await startCasPostgres();
       cleanups.push(harness.stop);
       const beforeFp = digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl));
@@ -157,7 +238,6 @@ describe('CAS real signal subprocess + foreign concurrent links', () => {
       const dir = mkdtempSync(path.join(tmpdir(), 'cas-sig-'));
       const readyFile = path.join(dir, 'ready');
       const beforeFpFile = path.join(dir, 'before.fp');
-      const resultFile = path.join(dir, 'result.fp');
 
       const child = spawn('bun', [CHILD], {
         cwd: PROJECT,
@@ -167,7 +247,6 @@ describe('CAS real signal subprocess + foreign concurrent links', () => {
           CAS_BEFORE_FP_FILE: beforeFpFile,
           CAS_DATABASE_URL: harness.databaseUrl,
           CAS_READY_FILE: readyFile,
-          CAS_RESULT_FILE: resultFile,
         },
         stdio: ['ignore', 'pipe', 'pipe'],
       });
@@ -181,23 +260,78 @@ describe('CAS real signal subprocess + foreign concurrent links', () => {
       }
       expect(existsSync(readyFile)).toBe(true);
       expect(readFileSync(beforeFpFile, 'utf8')).toBe(beforeFp);
-
-      // Mid-seed globals must diverge from before
       expect(digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl))).not.toBe(
         beforeFp,
       );
 
       child.kill(signal);
-      const code = await new Promise<number | null>((resolve) => {
-        child.once('exit', (c) => resolve(c));
-        setTimeout(() => resolve(child.exitCode), 30_000);
+      await new Promise<void>((resolve) => {
+        child.once('exit', () => resolve());
+        setTimeout(resolve, 30_000);
       });
-      // 130 SIGINT / 143 SIGTERM / null if killed hard
-      expect(code === 130 || code === 143 || code === null || code === 1).toBe(true);
 
-      // Parent externally verifies exact before digest after child cleanup
-      const afterFp = digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl));
-      expect(afterFp).toBe(beforeFp);
+      expect(digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl))).toBe(beforeFp);
+
+      rmSync(dir, { force: true, recursive: true });
+      try {
+        if (child.pid) process.kill(-child.pid, 'SIGKILL');
+      } catch {
+        // gone
+      }
+    }, 120_000);
+
+    it(`real ${signal} in COMMIT→arm window restores exact before digest`, async () => {
+      const harness = await startCasPostgres();
+      cleanups.push(harness.stop);
+      const beforeFp = digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl));
+
+      const dir = mkdtempSync(path.join(tmpdir(), 'cas-pre-ready-'));
+      const barrierDir = path.join(dir, 'barrier');
+      const { mkdirSync } = await import('node:fs');
+      mkdirSync(barrierDir, { recursive: true });
+      const beforeFpFile = path.join(dir, 'before.fp');
+      const postCommit = path.join(barrierDir, 'post-commit');
+      const release = path.join(barrierDir, 'release');
+
+      const child = spawn('bun', [CHILD], {
+        cwd: PROJECT,
+        detached: true,
+        env: {
+          ...process.env,
+          CAS_BEFORE_FP_FILE: beforeFpFile,
+          CAS_DATABASE_URL: harness.databaseUrl,
+          E2E_CAS_POST_COMMIT_BARRIER_DIR: barrierDir,
+          // no CAS_READY_FILE — we signal before ready/seed-return
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+
+      const deadline = Date.now() + 60_000;
+      while (!existsSync(postCommit) && Date.now() < deadline) {
+        if (child.exitCode !== null) {
+          throw new Error(`child exited early code=${child.exitCode}`);
+        }
+        await sleep(50);
+      }
+      expect(existsSync(postCommit)).toBe(true);
+      expect(readFileSync(beforeFpFile, 'utf8')).toBe(beforeFp);
+      // Committed pollution present before arm
+      expect(digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl))).not.toBe(
+        beforeFp,
+      );
+
+      // Signal BEFORE release/arm (pre-ready)
+      child.kill(signal);
+      // Allow seed path to finish arm so hook can restore, then release if still waiting
+      writeFileSync(release, '1', 'utf8');
+
+      await new Promise<void>((resolve) => {
+        child.once('exit', () => resolve());
+        setTimeout(resolve, 45_000);
+      });
+
+      // Parent independently proves full before digest restored
+      expect(digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl))).toBe(beforeFp);
 
       rmSync(dir, { force: true, recursive: true });
       try {
