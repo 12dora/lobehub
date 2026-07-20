@@ -21,6 +21,12 @@ export interface OwnedContainer {
 
 export interface LifecycleState {
   containers: OwnedContainer[];
+  /** Observed descendant PIDs in owned process groups (subset of evidencePids). */
+  evidenceDescendants: number[];
+  /** Process group leaders (detached spawn parents). */
+  evidenceLeaders: number[];
+  /** Process group IDs (POSIX: leader pid when detached). */
+  evidencePgids: number[];
   /**
    * Read-only evidence: every owned parent PID + known descendants captured at spawn.
    * Never used to kill foreign processes — only for assertions after cleanup.
@@ -39,6 +45,10 @@ export interface LifecycleState {
   runToken: string;
   /** True while suite-installed SIGINT/SIGTERM handlers are registered. */
   signalHandlersInstalled: boolean;
+  /** listenerCount before suite handlers installed. */
+  signalListenerBaseline: { SIGINT: number; SIGTERM: number };
+  /** listenerCount after suite handlers installed. */
+  signalListenerInstalled: { SIGINT: number; SIGTERM: number };
   /** uninstall signal handlers when stop completes successfully */
   uninstallSignals?: () => void;
 }
@@ -46,12 +56,18 @@ export interface LifecycleState {
 /** Read-only snapshot of this run's owned resources (for fault-stage regressions). */
 export interface LifecycleEvidence {
   containers: string[];
+  evidenceDescendants: number[];
+  evidenceLeaders: number[];
+  evidencePgids: number[];
   evidencePids: number[];
   ownedDirs: string[];
   ownedPorts: number[];
   processRegistryPids: Array<number | undefined>;
   runToken: string;
   signalHandlersInstalled: boolean;
+  signalListenerBaseline: { SIGINT: number; SIGTERM: number };
+  signalListenerCurrent: { SIGINT: number; SIGTERM: number };
+  signalListenerInstalled: { SIGINT: number; SIGTERM: number };
 }
 
 export const createRunToken = (): string =>
@@ -59,6 +75,9 @@ export const createRunToken = (): string =>
 
 export const createLifecycleState = (runToken: string): LifecycleState => ({
   containers: [],
+  evidenceDescendants: [],
+  evidenceLeaders: [],
+  evidencePgids: [],
   evidencePids: [],
   ownedDirs: [],
   ownedPorts: [],
@@ -66,6 +85,8 @@ export const createLifecycleState = (runToken: string): LifecycleState => ({
   processes: [],
   runToken,
   signalHandlersInstalled: false,
+  signalListenerBaseline: { SIGINT: 0, SIGTERM: 0 },
+  signalListenerInstalled: { SIGINT: 0, SIGTERM: 0 },
 });
 
 export const registerOwnedPort = (state: LifecycleState, port: number): void => {
@@ -74,13 +95,68 @@ export const registerOwnedPort = (state: LifecycleState, port: number): void => 
 
 export const snapshotLifecycleEvidence = (state: LifecycleState): LifecycleEvidence => ({
   containers: state.containers.map((c) => c.id),
+  evidenceDescendants: [...state.evidenceDescendants],
+  evidenceLeaders: [...state.evidenceLeaders],
+  evidencePgids: [...state.evidencePgids],
   evidencePids: [...state.evidencePids],
   ownedDirs: [...state.ownedDirs],
   ownedPorts: [...state.ownedPorts],
   processRegistryPids: state.processes.map((p) => p.pid),
   runToken: state.runToken,
   signalHandlersInstalled: state.signalHandlersInstalled,
+  signalListenerBaseline: { ...state.signalListenerBaseline },
+  signalListenerCurrent: {
+    SIGINT: process.listenerCount('SIGINT'),
+    SIGTERM: process.listenerCount('SIGTERM'),
+  },
+  signalListenerInstalled: { ...state.signalListenerInstalled },
 });
+
+/** True if any process remains in the owned process group (POSIX). */
+export const isProcessGroupAlive = (pgid: number | undefined): boolean => {
+  if (!pgid || pgid <= 0) return false;
+  try {
+    process.kill(-pgid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Narrow scan of members of an owned process group (pgid). Uses `pgrep -g` only —
+ * does not scan or kill unrelated user processes.
+ */
+export const listPidsInProcessGroup = async (pgid: number): Promise<number[]> => {
+  try {
+    const { stdout } = await execute('pgrep', ['-g', String(pgid)]);
+    return String(stdout)
+      .split('\n')
+      .map((s) => Number(s.trim()))
+      .filter((n) => Number.isFinite(n) && n > 0);
+  } catch {
+    // pgrep exits 1 when no matches
+    return [];
+  }
+};
+
+/** Refresh descendant/PGID evidence for a detached group leader while it may still be running. */
+export const refreshOwnedProcessGroupEvidence = async (
+  state: LifecycleState,
+  leaderPid: number,
+): Promise<void> => {
+  const pgid = leaderPid; // detached spawn: leader is process group id
+  if (!state.evidenceLeaders.includes(leaderPid)) state.evidenceLeaders.push(leaderPid);
+  if (!state.evidencePgids.includes(pgid)) state.evidencePgids.push(pgid);
+  if (!state.evidencePids.includes(leaderPid)) state.evidencePids.push(leaderPid);
+  const members = await listPidsInProcessGroup(pgid);
+  for (const pid of members) {
+    if (!state.evidencePids.includes(pid)) state.evidencePids.push(pid);
+    if (pid !== leaderPid && !state.evidenceDescendants.includes(pid)) {
+      state.evidenceDescendants.push(pid);
+    }
+  }
+};
 
 export const isPidAlive = (pid: number | undefined): boolean => {
   if (!pid || pid <= 0) return false;
@@ -144,6 +220,10 @@ const isDockerNotFoundError = (error: unknown): boolean => {
  */
 export const installLifecycleSignalHandlers = (state: LifecycleState): (() => void) => {
   let cleaning = false;
+  state.signalListenerBaseline = {
+    SIGINT: process.listenerCount('SIGINT'),
+    SIGTERM: process.listenerCount('SIGTERM'),
+  };
   const onSignal = (signal: NodeJS.Signals) => {
     if (cleaning) return;
     cleaning = true;
@@ -160,6 +240,10 @@ export const installLifecycleSignalHandlers = (state: LifecycleState): (() => vo
   process.on('SIGINT', sigint);
   process.on('SIGTERM', sigterm);
   state.signalHandlersInstalled = true;
+  state.signalListenerInstalled = {
+    SIGINT: process.listenerCount('SIGINT'),
+    SIGTERM: process.listenerCount('SIGTERM'),
+  };
   const uninstall = () => {
     process.off('SIGINT', sigint);
     process.off('SIGTERM', sigterm);
@@ -221,14 +305,16 @@ export const inspectPublishedHostPort = async (
 
 export const registerProcess = (state: LifecycleState, child: ChildProcess): void => {
   state.processes.push(child);
-  if (child.pid && !state.evidencePids.includes(child.pid)) {
-    state.evidencePids.push(child.pid);
-  }
+  const recordLeader = (pid: number) => {
+    if (!state.evidencePids.includes(pid)) state.evidencePids.push(pid);
+    if (!state.evidenceLeaders.includes(pid)) state.evidenceLeaders.push(pid);
+    if (!state.evidencePgids.includes(pid)) state.evidencePgids.push(pid);
+    void refreshOwnedProcessGroupEvidence(state, pid);
+  };
+  if (child.pid) recordLeader(child.pid);
   // Detached group leader uses same pid as process group id on POSIX.
   child.once('spawn', () => {
-    if (child.pid && !state.evidencePids.includes(child.pid)) {
-      state.evidencePids.push(child.pid);
-    }
+    if (child.pid) recordLeader(child.pid);
   });
 };
 
