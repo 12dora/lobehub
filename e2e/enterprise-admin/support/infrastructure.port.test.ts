@@ -1,3 +1,4 @@
+import type { ChildProcess } from 'node:child_process';
 import { spawn } from 'node:child_process';
 import { createServer, type Server } from 'node:net';
 
@@ -12,11 +13,18 @@ import {
   registerProcess,
 } from './lifecycle';
 
+const pidAlive = (pid: number | undefined): boolean => {
+  if (!pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 /**
- * Deterministic delayed bind collision through production startAppWithPortRetry.
- * Competitor grabs port after release; spawn delayed 1200ms (>800ms). Production
- * orchestration must detect failure, reap first child, retry on a new port, and
- * return a healthy second attempt under a short bound.
+ * Production startAppWithPortRetry with delayed collision + first-child reap proof.
  */
 describe('app port handoff delayed TOCTOU via startAppWithPortRetry', () => {
   const open: LifecycleState[] = [];
@@ -33,7 +41,7 @@ describe('app port handoff delayed TOCTOU via startAppWithPortRetry', () => {
     }
   });
 
-  it('production startAppWithPortRetry reaps failed attempt and retries promptly', async () => {
+  it('production startAppWithPortRetry reaps first child before returning second', async () => {
     const runToken = createRunToken();
     const state = createLifecycleState(runToken);
     open.push(state);
@@ -41,6 +49,15 @@ describe('app port handoff delayed TOCTOU via startAppWithPortRetry', () => {
     let attempt = 0;
     let firstPort: number | undefined;
     let competitor: Server | undefined;
+    const spawned: ChildProcess[] = [];
+    const failedAttempts: ChildProcess[] = [];
+    /** Snapshots taken inside production hooks BEFORE success returns. */
+    const reapProofBeforeReturn: Array<{
+      exitCode: number | null;
+      pidAlive: boolean;
+      signalCode: NodeJS.Signals | null;
+      stillInLifecycle: boolean;
+    }> = [];
     const started = Date.now();
 
     const result = await startAppWithPortRetry({
@@ -58,17 +75,38 @@ describe('app port handoff delayed TOCTOU via startAppWithPortRetry', () => {
               competitor!.listen(appPort, '127.0.0.1', () => resolve());
             });
           } else if (competitor) {
-            // Release competitor so second attempt can bind.
             await new Promise<void>((resolve) => competitor!.close(() => resolve()));
             const idx = competitors.indexOf(competitor);
             if (idx >= 0) competitors.splice(idx, 1);
             competitor = undefined;
           }
         },
-        bindDelayMs: 1200, // >800ms old false-pass window
+        bindDelayMs: 1200,
         bindProbeTimeoutMs: 2500,
+        onAttemptFailed: (child, failedAttempt) => {
+          failedAttempts.push(child);
+          // Production killOwnedChild has already waited for exit before this observer.
+          reapProofBeforeReturn.push({
+            exitCode: child.exitCode,
+            pidAlive: pidAlive(child.pid),
+            signalCode: child.signalCode,
+            stillInLifecycle: state.processes.includes(child),
+          });
+          expect(failedAttempt).toBe(0);
+          expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
+          expect(pidAlive(child.pid)).toBe(false);
+          expect(state.processes).not.toContain(child);
+        },
+        onSpawn: (child, spawnAttempt) => {
+          spawned.push(child);
+          // Second (healthy) spawn only happens after first was reaped.
+          if (spawnAttempt >= 1 && spawned[0]) {
+            expect(spawned[0].exitCode !== null || spawned[0].signalCode !== null).toBe(true);
+            expect(pidAlive(spawned[0].pid)).toBe(false);
+            expect(state.processes).not.toContain(spawned[0]);
+          }
+        },
         spawnApp: ({ appPort, env, state: st }) => {
-          // Controlled HTTP server: fails if port taken; succeeds when free.
           const child = spawn(
             process.execPath,
             [
@@ -92,14 +130,30 @@ describe('app port handoff delayed TOCTOU via startAppWithPortRetry', () => {
 
     const elapsed = Date.now() - started;
     expect(elapsed).toBeLessThan(30_000);
+    expect(spawned.length).toBeGreaterThanOrEqual(2);
+    expect(failedAttempts.length).toBeGreaterThanOrEqual(1);
+    expect(reapProofBeforeReturn.length).toBeGreaterThanOrEqual(1);
+    expect(reapProofBeforeReturn[0].pidAlive).toBe(false);
+    expect(reapProofBeforeReturn[0].stillInLifecycle).toBe(false);
+    expect(
+      reapProofBeforeReturn[0].exitCode !== null || reapProofBeforeReturn[0].signalCode !== null,
+    ).toBe(true);
+
+    const first = spawned[0];
+    // At resolve: only the healthy second child remains in lifecycle state.
+    expect(first.exitCode !== null || first.signalCode !== null).toBe(true);
+    expect(pidAlive(first.pid)).toBe(false);
+    expect(state.processes).not.toContain(first);
+    expect(state.processes).toEqual([result.child]);
+
+    expect(result.child).toBe(spawned.at(-1));
+    expect(result.child.exitCode).toBeNull();
     expect(firstPort).toBeDefined();
     expect(result.appPort).not.toBe(firstPort);
-    expect(result.child.exitCode).toBeNull();
-    expect(state.processes).toContain(result.child);
 
-    // Reap healthy child via lifecycle
     await cleanupLifecycle(state);
     open.pop();
     expect(state.processes).toHaveLength(0);
+    expect(pidAlive(result.child.pid)).toBe(false);
   }, 45_000);
 });
