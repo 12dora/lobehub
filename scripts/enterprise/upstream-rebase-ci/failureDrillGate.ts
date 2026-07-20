@@ -301,9 +301,17 @@ export const runFailureDrillsGate = async ({
   rawDirectory,
   repositoryRoot,
 }: FailureDrillGateOptions): Promise<GateResult> => {
+  const failedAssertions = {
+    failed: 1,
+    passed: 0,
+    skipped: 0,
+    total: 1,
+  } as const;
+
   const runnerEntry = path.join(repositoryRoot, 'scripts/enterprise/failure-drills/index.ts');
   if (!(await pathExists(runnerEntry))) {
     return {
+      assertions: { ...failedAssertions },
       id: 'failure-drills',
       kind: 'command',
       outcome: 'failed',
@@ -315,6 +323,7 @@ export const runFailureDrillsGate = async ({
     const verified = await evaluateFailureDrillEvidenceDirectory(injectedEvidenceDirectory);
     if (!verified) {
       return {
+        assertions: { ...failedAssertions },
         id: 'failure-drills',
         kind: 'command',
         outcome: 'failed',
@@ -339,6 +348,7 @@ export const runFailureDrillsGate = async ({
   const readiness = assessFailureDrillReadiness();
   if (!readiness.ok) {
     return {
+      assertions: { ...failedAssertions },
       id: 'failure-drills',
       kind: 'command',
       outcome: 'failed',
@@ -394,6 +404,7 @@ export const runFailureDrillsGate = async ({
   const verified = await evaluateFailureDrillEvidenceDirectory(evidenceDirectory);
   if (collect.code !== 0 || suiteFailed || !verified) {
     return {
+      assertions: { ...failedAssertions },
       id: 'failure-drills',
       kind: 'command',
       outcome: 'failed',

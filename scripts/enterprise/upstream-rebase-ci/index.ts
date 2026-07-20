@@ -20,12 +20,20 @@ import {
 import { runSelectedGates, writeGateResults } from './gates';
 import { validateUpstreamInputs } from './validateInputs';
 
-type Command = 'collect' | 'fetch' | 'run-gates' | 'validate-inputs';
+type Command =
+  | 'assert-source-unchanged'
+  | 'collect'
+  | 'fetch'
+  | 'run-gates'
+  | 'snapshot-source'
+  | 'validate-inputs';
 
 const usage = `Usage:
   bun scripts/enterprise/upstream-rebase-ci/index.ts validate-inputs --repository <owner/name> --ref <ref>
+  bun scripts/enterprise/upstream-rebase-ci/index.ts snapshot-source --repo <path> --output <json>
+  bun scripts/enterprise/upstream-rebase-ci/index.ts assert-source-unchanged --repo <path> --snapshot <json>
   bun scripts/enterprise/upstream-rebase-ci/index.ts fetch --candidate-repo <path> --temp-dir <path> --repository <owner/name> --ref <ref> [--candidate-ref <ref>] --output <json>
-  bun scripts/enterprise/upstream-rebase-ci/index.ts run-gates --repo <path> --report <json> --raw-dir <path> --output <json> --changed-paths <json> [--raw-report-text-file <path>]
+  bun scripts/enterprise/upstream-rebase-ci/index.ts run-gates --repo <path> --report <json> --raw-dir <path> --output <json> --changed-paths <json>
   bun scripts/enterprise/upstream-rebase-ci/index.ts collect --report <json> --gates <json> --commits <json> --cleanup-result <passed|failed> --upstream-repository <owner/name> --upstream-ref <ref> --upstream-freshness <verified-by-ci-fetch|unverified> --output-dir <path>
 `;
 
@@ -47,6 +55,29 @@ const runValidateInputs = async (values: Record<string, string | boolean | undef
   process.stdout.write(
     `${JSON.stringify({ ref: validated.ref, repository: validated.repository })}\n`,
   );
+};
+
+const runSnapshotSource = async (values: Record<string, string | boolean | undefined>) => {
+  const repositoryRoot = path.resolve(requireString(values.repo as string | undefined, 'repo'));
+  const output = path.resolve(requireString(values.output as string | undefined, 'output'));
+  const snapshot = await captureSourceSnapshot(repositoryRoot);
+  await writeJson(output, snapshot);
+  process.stdout.write(`${JSON.stringify(snapshot)}\n`);
+};
+
+const runAssertSourceUnchanged = async (values: Record<string, string | boolean | undefined>) => {
+  const repositoryRoot = path.resolve(requireString(values.repo as string | undefined, 'repo'));
+  const snapshotPath = path.resolve(
+    requireString(values.snapshot as string | undefined, 'snapshot'),
+  );
+  const snapshot = JSON.parse(await readFile(snapshotPath, 'utf8')) as {
+    head: string;
+    statusDigest: string;
+  };
+  if (!snapshot.head || !snapshot.statusDigest) {
+    throw new Error('Source snapshot is missing head or statusDigest');
+  }
+  await assertSourceUnchanged(repositoryRoot, snapshot);
 };
 
 const runFetch = async (values: Record<string, string | boolean | undefined>) => {
@@ -208,6 +239,7 @@ const main = async () => {
       'repo': { type: 'string' },
       'report': { type: 'string' },
       'repository': { type: 'string' },
+      'snapshot': { type: 'string' },
       'temp-dir': { type: 'string' },
       'upstream-freshness': { type: 'string' },
       'upstream-ref': { type: 'string' },
@@ -227,6 +259,14 @@ const main = async () => {
     switch (command) {
       case 'validate-inputs': {
         await runValidateInputs(values);
+        break;
+      }
+      case 'snapshot-source': {
+        await runSnapshotSource(values);
+        break;
+      }
+      case 'assert-source-unchanged': {
+        await runAssertSourceUnchanged(values);
         break;
       }
       case 'fetch': {

@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -66,9 +67,16 @@ export interface FetchUpstreamOptions {
 
 export interface SourceSnapshot {
   head: string;
-  statusFingerprint: string;
+  /** SHA-256 of the exact `git status --porcelain=v1 -z` bytes (not a length). */
+  statusDigest: string;
 }
 
+export const digestPorcelainStatus = (porcelain: string): string =>
+  createHash('sha256').update(porcelain, 'utf8').digest('hex');
+
+/**
+ * Capture HEAD + porcelain digest. Source must already be clean (empty porcelain).
+ */
 export const captureSourceSnapshot = async (repositoryRoot: string): Promise<SourceSnapshot> => {
   const head = await gitOutput(
     repositoryRoot,
@@ -80,19 +88,35 @@ export const captureSourceSnapshot = async (repositoryRoot: string): Promise<Sou
     ['status', '--porcelain=v1', '-z', '--untracked-files=all'],
     'Unable to read source status',
   );
-  return { head, statusFingerprint: status };
+  if (status.length > 0) {
+    throw new Error('Source worktree must be clean before dry-run integration work');
+  }
+  return { head, statusDigest: digestPorcelainStatus(status) };
 };
 
 export const assertSourceUnchanged = async (
   repositoryRoot: string,
   snapshot: SourceSnapshot,
 ): Promise<void> => {
-  const current = await captureSourceSnapshot(repositoryRoot);
-  if (current.head !== snapshot.head) {
+  const head = await gitOutput(
+    repositoryRoot,
+    ['rev-parse', '--verify', '--quiet', '--end-of-options', 'HEAD^{commit}'],
+    'Unable to read source HEAD',
+  );
+  const status = await gitOutput(
+    repositoryRoot,
+    ['status', '--porcelain=v1', '-z', '--untracked-files=all'],
+    'Unable to read source status',
+  );
+  const statusDigest = digestPorcelainStatus(status);
+  if (head !== snapshot.head) {
     throw new Error('Source worktree HEAD changed during dry-run');
   }
-  if (current.statusFingerprint !== snapshot.statusFingerprint) {
-    throw new Error('Source worktree status changed during dry-run');
+  if (statusDigest !== snapshot.statusDigest) {
+    throw new Error('Source worktree porcelain status changed during dry-run');
+  }
+  if (status.length > 0) {
+    throw new Error('Source worktree is dirty after dry-run step');
   }
 };
 

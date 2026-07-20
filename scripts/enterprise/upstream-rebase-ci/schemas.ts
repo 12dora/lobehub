@@ -5,6 +5,8 @@ import {
   FAIL_CLOSED_GATE_IDS,
   KNOWN_GATE_IDS,
   type KnownGateId,
+  refineGateResultAssertions,
+  STRUCTURED_COMMAND_GATE_IDS,
 } from './contract';
 
 const SHORT_HASH_LENGTH = 12;
@@ -176,40 +178,7 @@ export const gateResultSchema = z
   })
   .strict()
   .superRefine((gate, context) => {
-    if (gate.kind === 'vitest' && !gate.assertions) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'vitest gates require assertions',
-        path: ['assertions'],
-      });
-      return;
-    }
-    // Structured command gates (Q03 migration / failure-drills) may carry assertion counts.
-    if (gate.assertions && gate.outcome === 'passed') {
-      const { assertions } = gate;
-      if (
-        assertions.total <= 0 ||
-        assertions.passed !== assertions.total ||
-        assertions.failed !== 0 ||
-        assertions.skipped !== 0
-      ) {
-        context.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: 'passing gate with assertions requires positive all-pass counts',
-          path: ['assertions'],
-        });
-      }
-    }
-    if (
-      (gate.kind === 'fail-closed' || gate.kind === 'privacy-scan') &&
-      gate.assertions !== undefined
-    ) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: `${gate.kind} gates must not include assertions`,
-        path: ['assertions'],
-      });
-    }
+    refineGateResultAssertions(gate, context);
   });
 
 export type ParsedGateResult = z.infer<typeof gateResultSchema>;
@@ -281,6 +250,9 @@ export const parseGateResultsStrict = (
       (gate.kind !== 'fail-closed' || gate.outcome !== 'failed')
     ) {
       throw new Error(`Fail-closed gate "${gate.id}" must report fail-closed failed`);
+    }
+    if (STRUCTURED_COMMAND_GATE_IDS.has(gate.id as KnownGateId) && gate.assertions === undefined) {
+      throw new Error(`Structured command gate "${gate.id}" requires assertions`);
     }
   }
 

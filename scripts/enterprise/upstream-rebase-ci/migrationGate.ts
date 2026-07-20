@@ -188,8 +188,16 @@ export const runMigrationUpgradeRollbackGate = async ({
   repositoryRoot,
 }: MigrationGateOptions): Promise<GateResult> => {
   const present = await isQ03VerifierPresent(repositoryRoot);
+  const failedAssertions = {
+    failed: 1,
+    passed: 0,
+    skipped: 0,
+    total: 1,
+  } as const;
+
   if (!present && injectedReport === undefined) {
     return {
+      assertions: { ...failedAssertions },
       id: 'migration-upgrade-rollback',
       kind: 'command',
       outcome: 'failed',
@@ -208,6 +216,7 @@ export const runMigrationUpgradeRollbackGate = async ({
     if (processResult.code !== 0 && processResult.code !== 1) {
       // exit 0 = synthetic foundation ok; 1 = synthetic failed; 2 = privacy
       return {
+        assertions: { ...failedAssertions },
         id: 'migration-upgrade-rollback',
         kind: 'command',
         outcome: 'failed',
@@ -218,6 +227,7 @@ export const runMigrationUpgradeRollbackGate = async ({
       report = JSON.parse(processResult.stdout);
     } catch {
       return {
+        assertions: { ...failedAssertions },
         id: 'migration-upgrade-rollback',
         kind: 'command',
         outcome: 'failed',
@@ -239,6 +249,7 @@ export const runMigrationUpgradeRollbackGate = async ({
         ? String((report as { syntheticResult?: string }).syntheticResult ?? 'unknown')
         : 'unknown';
     return {
+      assertions: { ...failedAssertions },
       id: 'migration-upgrade-rollback',
       kind: 'command',
       outcome: 'failed',

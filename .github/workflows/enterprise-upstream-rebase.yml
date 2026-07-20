@@ -67,14 +67,19 @@ jobs:
           raw_dir="${GITHUB_WORKSPACE}/.records/enterprise-upstream-rebase-raw/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           record_dir="${GITHUB_WORKSPACE}/.records/enterprise-upstream-rebase/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           mkdir -p "$temp_root" "$raw_dir" "$record_dir"
-          source_head="$(git rev-parse HEAD)"
-          source_status="$(git status --porcelain=v1 -z --untracked-files=all | wc -c | tr -d ' ')"
+          # Source must be clean; capture HEAD + SHA-256 of porcelain (never length-only).
+          bun scripts/enterprise/upstream-rebase-ci/index.ts snapshot-source \
+            --repo "$GITHUB_WORKSPACE" \
+            --output "$raw_dir/source-snapshot.json"
+          source_head="$(node -e "const fs=require('fs');const j=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));process.stdout.write(j.head)" "$raw_dir/source-snapshot.json")"
+          source_digest="$(node -e "const fs=require('fs');const j=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));process.stdout.write(j.statusDigest)" "$raw_dir/source-snapshot.json")"
           {
             echo "UPSTREAM_REBASE_TEMP_ROOT=${temp_root}"
             echo "UPSTREAM_REBASE_RAW_DIR=${raw_dir}"
             echo "UPSTREAM_REBASE_RECORD_DIR=${record_dir}"
+            echo "UPSTREAM_REBASE_SOURCE_SNAPSHOT=${raw_dir}/source-snapshot.json"
             echo "UPSTREAM_REBASE_SOURCE_HEAD=${source_head}"
-            echo "UPSTREAM_REBASE_SOURCE_STATUS_BYTES=${source_status}"
+            echo "UPSTREAM_REBASE_SOURCE_STATUS_DIGEST=${source_digest}"
             echo "UPSTREAM_REBASE_CLEANUP_RESULT=failed"
             echo "UPSTREAM_REBASE_FETCH_OUTCOME=failed"
             echo "UPSTREAM_REBASE_REPORT_OUTCOME=failed"
@@ -114,9 +119,10 @@ jobs:
             --ref "$UPSTREAM_REF" \
             --output "$UPSTREAM_REBASE_RAW_DIR/fetch-result.json"
 
-          # Source worktree must remain byte-stable (HEAD + porcelain status).
-          test "$(git rev-parse HEAD)" = "$UPSTREAM_REBASE_SOURCE_HEAD"
-          test "$(git status --porcelain=v1 -z --untracked-files=all | wc -c | tr -d ' ')" = "$UPSTREAM_REBASE_SOURCE_STATUS_BYTES"
+          # Source worktree must remain immutable (HEAD + porcelain SHA-256).
+          bun scripts/enterprise/upstream-rebase-ci/index.ts assert-source-unchanged \
+            --repo "$GITHUB_WORKSPACE" \
+            --snapshot "$UPSTREAM_REBASE_SOURCE_SNAPSHOT"
 
           report_path="$(node -e "const fs=require('fs');const j=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));process.stdout.write(j.reportPath)" "$UPSTREAM_REBASE_RAW_DIR/fetch-result.json")"
           cp "$report_path" "$UPSTREAM_REBASE_RAW_DIR/rebase-report.json"
@@ -151,8 +157,9 @@ jobs:
             (cd "$integration_repo" && pnpm install)
           fi
           # Source must still be unchanged after install side effects in temp only.
-          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$UPSTREAM_REBASE_SOURCE_HEAD"
-          test "$(git -C "$GITHUB_WORKSPACE" status --porcelain=v1 -z --untracked-files=all | wc -c | tr -d ' ')" = "$UPSTREAM_REBASE_SOURCE_STATUS_BYTES"
+          bun scripts/enterprise/upstream-rebase-ci/index.ts assert-source-unchanged \
+            --repo "$GITHUB_WORKSPACE" \
+            --snapshot "$UPSTREAM_REBASE_SOURCE_SNAPSHOT"
 
       - name: Run report-selected local gates on integration tree
         id: gates
@@ -166,8 +173,9 @@ jobs:
             --raw-dir "$UPSTREAM_REBASE_RAW_DIR" \
             --changed-paths "$UPSTREAM_REBASE_RAW_DIR/changed-paths.json" \
             --output "$UPSTREAM_REBASE_RAW_DIR/gate-results.json"
-          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$UPSTREAM_REBASE_SOURCE_HEAD"
-          test "$(git -C "$GITHUB_WORKSPACE" status --porcelain=v1 -z --untracked-files=all | wc -c | tr -d ' ')" = "$UPSTREAM_REBASE_SOURCE_STATUS_BYTES"
+          bun scripts/enterprise/upstream-rebase-ci/index.ts assert-source-unchanged \
+            --repo "$GITHUB_WORKSPACE" \
+            --snapshot "$UPSTREAM_REBASE_SOURCE_SNAPSHOT"
           echo "UPSTREAM_REBASE_GATES_OUTCOME=success" >> "$GITHUB_ENV"
 
       - name: Cleanup temporary clones
@@ -235,8 +243,9 @@ jobs:
           fi
 
           # Source worktree still unchanged after all work.
-          test "$(git rev-parse HEAD)" = "$UPSTREAM_REBASE_SOURCE_HEAD"
-          test "$(git status --porcelain=v1 -z --untracked-files=all | wc -c | tr -d ' ')" = "$UPSTREAM_REBASE_SOURCE_STATUS_BYTES"
+          bun scripts/enterprise/upstream-rebase-ci/index.ts assert-source-unchanged \
+            --repo "$GITHUB_WORKSPACE" \
+            --snapshot "$UPSTREAM_REBASE_SOURCE_SNAPSHOT"
 
           upstream_repository="$(node -e "const fs=require('fs');const j=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));process.stdout.write(j.repository)" "$UPSTREAM_REBASE_RAW_DIR/validated-inputs.json")"
           upstream_ref="$(node -e "const fs=require('fs');const j=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));process.stdout.write(j.ref)" "$UPSTREAM_REBASE_RAW_DIR/validated-inputs.json")"
@@ -314,8 +323,12 @@ jobs:
           test -f "$UPSTREAM_REBASE_RECORD_DIR/evidence.json"
           test ! -e "${UPSTREAM_REBASE_RAW_DIR:-/tmp/aihub-upstream-rebase-raw-missing}"
           test ! -e "${UPSTREAM_REBASE_TEMP_ROOT:-/tmp/aihub-upstream-rebase-temp-missing}"
+          # Snapshot JSON is wiped with raw_dir; compare HEAD + porcelain SHA-256 from env digests.
           test "$(git rev-parse HEAD)" = "$UPSTREAM_REBASE_SOURCE_HEAD"
-          test "$(git status --porcelain=v1 -z --untracked-files=all | wc -c | tr -d ' ')" = "$UPSTREAM_REBASE_SOURCE_STATUS_BYTES"
+          porcelain="$(git status --porcelain=v1 -z --untracked-files=all)"
+          test -z "$porcelain"
+          digest="$(printf '%s' "$porcelain" | sha256sum | awk '{print $1}')"
+          test "$digest" = "$UPSTREAM_REBASE_SOURCE_STATUS_DIGEST"
 
       - name: Upload redacted dry-run evidence
         if: always() && hashFiles('.records/enterprise-upstream-rebase/**/evidence.json') != ''
