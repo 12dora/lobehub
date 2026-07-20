@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   analyzeRebase,
+  expandBraces,
   formatRebaseReport,
   parsePatchLedger,
   parseRebaseReportArgs,
@@ -91,6 +92,53 @@ afterEach(async () => {
   );
 });
 
+describe('expandBraces', () => {
+  it('expands top-level alternatives without corrupting nested groups', () => {
+    expect(expandBraces('src/{auth,redis}/**')).toEqual(['src/auth/**', 'src/redis/**']);
+    expect(
+      expandBraces(
+        'apps/server/src/enterprise/{jobs/agentRollout.ts,services/agentCatalog/{rolloutService,rolloutWorker}.ts}',
+      ),
+    ).toEqual([
+      'apps/server/src/enterprise/jobs/agentRollout.ts',
+      'apps/server/src/enterprise/services/agentCatalog/rolloutService.ts',
+      'apps/server/src/enterprise/services/agentCatalog/rolloutWorker.ts',
+    ]);
+    expect(
+      expandBraces(
+        'src/enterprise/client/{services/adminAgents.ts,features/admin/agents/{AgentDetailPage,RolloutPanel,useAdminAgents,types}.tsx}',
+      ),
+    ).toEqual([
+      'src/enterprise/client/services/adminAgents.ts',
+      'src/enterprise/client/features/admin/agents/AgentDetailPage.tsx',
+      'src/enterprise/client/features/admin/agents/RolloutPanel.tsx',
+      'src/enterprise/client/features/admin/agents/useAdminAgents.tsx',
+      'src/enterprise/client/features/admin/agents/types.tsx',
+    ]);
+  });
+
+  it('fails closed on unbalanced or unparseable brace patterns', () => {
+    expect(() => expandBraces('src/{auth,redis/**')).toThrow(
+      'Patch ledger contains an unbalanced brace pattern',
+    );
+    expect(() => expandBraces('src/auth,redis}/**')).toThrow(
+      'Patch ledger contains an unbalanced brace pattern',
+    );
+    expect(() => expandBraces('src/{auth,{redis}/**')).toThrow(
+      'Patch ledger contains an unbalanced brace pattern',
+    );
+    expect(() => expandBraces('src/{}/**')).toThrow(
+      'Patch ledger contains an unparseable brace pattern',
+    );
+    expect(() => expandBraces('src/{auth,}/**')).toThrow(
+      'Patch ledger contains an unparseable brace pattern',
+    );
+    expect(() => expandBraces('src/{only}/**')).toThrow(
+      'Patch ledger contains an unparseable brace pattern',
+    );
+  });
+});
+
 describe('parsePatchLedger', () => {
   it('expands brace patterns and preserves module risk metadata', () => {
     const entries = parsePatchLedger(
@@ -105,6 +153,34 @@ describe('parsePatchLedger', () => {
       { module: 'M13/M14', pattern: 'src/auth/**', risk: 'high' },
       { module: 'M13/M14', pattern: 'src/redis/**', risk: 'high' },
     ]);
+  });
+
+  it('expands nested brace ledger lines exactly', () => {
+    const entries = parsePatchLedger(
+      [
+        '| 上游文件 / 区域 | 修改目的 | 模块 | 冲突风险 | 控制方式 |',
+        '| --- | --- | --- | --- | --- |',
+        '| `apps/server/src/enterprise/{jobs/agentRollout.ts,services/agentCatalog/{rolloutService,rolloutWorker}.ts}` | rollout | M10 | 高 | test |',
+      ].join('\n'),
+    );
+
+    expect(entries.map(({ pattern }) => pattern)).toEqual([
+      'apps/server/src/enterprise/jobs/agentRollout.ts',
+      'apps/server/src/enterprise/services/agentCatalog/rolloutService.ts',
+      'apps/server/src/enterprise/services/agentCatalog/rolloutWorker.ts',
+    ]);
+  });
+
+  it('fails closed when a ledger line contains a malformed brace pattern', () => {
+    expect(() =>
+      parsePatchLedger(
+        [
+          '| 上游文件 / 区域 | 修改目的 | 模块 | 冲突风险 | 控制方式 |',
+          '| --- | --- | --- | --- | --- |',
+          '| `src/{auth,redis/**` | broken | M15 | 高 | test |',
+        ].join('\n'),
+      ),
+    ).toThrow('Patch ledger contains an unbalanced brace pattern');
   });
 });
 
@@ -196,6 +272,174 @@ describe('analyzeRebase', () => {
       { path: 'src/core.ts', reason: 'unregistered-upstream-direct-edit' },
     ]);
     expect(report.requiredGates.map(({ id }) => id)).toContain('patch-ledger-update');
+  });
+
+  it('reports drift when a registered upstream path is renamed to an unregistered destination', async () => {
+    const body =
+      'export const stableRenameBody = "unique-rename-payload-for-similarity-detection";\n';
+    const { repositoryRoot } = await createRepository(['src/registered.ts']);
+    await writeRepositoryFile(repositoryRoot, 'src/registered.ts', body);
+    const baseWithRegistered = await commitAll(repositoryRoot, 'register source path');
+
+    // Rebuild upstream from the file-bearing base so the explicit base remains the merge-base.
+    await runGit(repositoryRoot, 'branch', '--force', 'upstream', baseWithRegistered);
+    await runGit(repositoryRoot, 'switch', '--quiet', 'upstream');
+    await writeRepositoryFile(
+      repositoryRoot,
+      'upstream-only.ts',
+      'export const upstream = true;\n',
+    );
+    const upstream = await commitAll(repositoryRoot, 'upstream from registered base');
+
+    await runGit(repositoryRoot, 'switch', '--quiet', '-C', 'candidate', baseWithRegistered);
+    await runGit(repositoryRoot, 'mv', 'src/registered.ts', 'src/unregistered-destination.ts');
+    const candidate = await commitAll(repositoryRoot, 'rename registered to unregistered');
+
+    const report = await analyzeRebase({
+      baseRef: baseWithRegistered,
+      candidateRef: candidate,
+      repositoryRoot,
+      upstreamRef: upstream,
+    });
+
+    expect(report.status).toBe('drift');
+    expect(report.patchDrift).toEqual([
+      { path: 'src/unregistered-destination.ts', reason: 'unregistered-upstream-direct-edit' },
+    ]);
+    expect(report.directModificationHotspots).toEqual([]);
+    expect(report.requiredGates.map(({ id }) => id)).toContain('patch-ledger-update');
+  });
+
+  it('does not treat a copy source as a direct edit while requiring destination ledger coverage', async () => {
+    const body =
+      'export const stableCopyBody = "unique-copy-payload-for-similarity-detection-0123456789";\n';
+    const { repositoryRoot } = await createRepository([
+      'src/registered.ts',
+      'src/copied-destination.ts',
+    ]);
+    await writeRepositoryFile(repositoryRoot, 'src/registered.ts', body);
+    const baseWithRegistered = await commitAll(repositoryRoot, 'register copy source');
+
+    await runGit(repositoryRoot, 'branch', '--force', 'upstream', baseWithRegistered);
+    await runGit(repositoryRoot, 'switch', '--quiet', 'upstream');
+    await writeRepositoryFile(
+      repositoryRoot,
+      'upstream-only.ts',
+      'export const upstream = true;\n',
+    );
+    const upstream = await commitAll(repositoryRoot, 'upstream from copy base');
+
+    await runGit(repositoryRoot, 'switch', '--quiet', '-C', 'candidate', baseWithRegistered);
+    await writeRepositoryFile(repositoryRoot, 'src/copied-destination.ts', body);
+    const candidate = await commitAll(repositoryRoot, 'copy registered to registered destination');
+
+    const cleanReport = await analyzeRebase({
+      baseRef: baseWithRegistered,
+      candidateRef: candidate,
+      repositoryRoot,
+      upstreamRef: upstream,
+    });
+    expect(cleanReport.status).toBe('clean');
+    expect(cleanReport.patchDrift).toEqual([]);
+    expect(cleanReport.directModificationHotspots).toEqual([
+      {
+        modules: ['M15'],
+        path: 'src/copied-destination.ts',
+        risk: 'high',
+        upstreamChanged: false,
+      },
+    ]);
+    // Source remains unchanged and must not be scored as a direct edit.
+    expect(cleanReport.directModificationHotspots.map(({ path: value }) => value)).not.toContain(
+      'src/registered.ts',
+    );
+
+    await runGit(
+      repositoryRoot,
+      'switch',
+      '--quiet',
+      '-C',
+      'candidate-unregistered',
+      baseWithRegistered,
+    );
+    await writeRepositoryFile(repositoryRoot, 'src/unregistered-copy.ts', body);
+    const unregisteredCandidate = await commitAll(
+      repositoryRoot,
+      'copy registered to unregistered destination',
+    );
+    const driftReport = await analyzeRebase({
+      baseRef: baseWithRegistered,
+      candidateRef: unregisteredCandidate,
+      repositoryRoot,
+      upstreamRef: upstream,
+    });
+    expect(driftReport.status).toBe('drift');
+    expect(driftReport.patchDrift).toEqual([
+      { path: 'src/unregistered-copy.ts', reason: 'unregistered-upstream-direct-edit' },
+    ]);
+    expect(driftReport.directModificationHotspots.map(({ path: value }) => value)).not.toContain(
+      'src/registered.ts',
+    );
+    expect(driftReport.patchDrift.map(({ path: value }) => value)).not.toContain(
+      'src/registered.ts',
+    );
+  });
+
+  it('derives post-upgrade gates from enterprise candidate paths and upstream changes', async () => {
+    const { base, repositoryRoot } = await createRepository(['src/core.ts']);
+
+    await runGit(repositoryRoot, 'switch', '--quiet', 'upstream');
+    await writeRepositoryFile(
+      repositoryRoot,
+      'packages/database/migrations/meta/_journal.json',
+      '{"version":"7","entries":[]}\n',
+    );
+    await writeRepositoryFile(
+      repositoryRoot,
+      'src/libs/redis/runtimeConfig.ts',
+      'export const runtime = true;\n',
+    );
+    const upstreamWithGates = await commitAll(repositoryRoot, 'upstream migration and runtime');
+
+    await runGit(repositoryRoot, 'switch', '--quiet', 'candidate');
+    await writeRepositoryFile(
+      repositoryRoot,
+      'apps/server/src/enterprise/routers/admin/rbacPermissions.ts',
+      'export const permissionMatrix = true;\n',
+    );
+    await writeRepositoryFile(
+      repositoryRoot,
+      'src/spa/router/desktopRouter.config.tsx',
+      'export const createAdminRouteTree = () => null;\n',
+    );
+    const candidate = await commitAll(repositoryRoot, 'enterprise router and spa routes');
+
+    const report = await analyzeRebase({
+      baseRef: base,
+      candidateRef: candidate,
+      repositoryRoot,
+      upstreamRef: upstreamWithGates,
+    });
+
+    const gateIds = report.requiredGates.map(({ id }) => id);
+    expect(report.status).toBe('clean');
+    expect(gateIds).toEqual(
+      expect.arrayContaining([
+        'bun-check-changed',
+        'failure-drills',
+        'migration-upgrade-rollback',
+        'permission-matrix',
+        'privacy-review',
+        'spa-route-sync',
+        'type-check',
+      ]),
+    );
+    expect(gateIds).not.toContain('manual-conflict-review');
+    expect(gateIds).not.toContain('patch-ledger-update');
+    // Enterprise-owned candidate paths drive gates without becoming direct-edit hotspots.
+    expect(report.directModificationHotspots).toEqual([]);
+    expect(report.summary.candidateChangedPaths).toBeGreaterThan(0);
+    expect(report.summary.upstreamChangedPaths).toBeGreaterThan(0);
   });
 
   it('rejects a dirty worktree before resolving refs', async () => {
