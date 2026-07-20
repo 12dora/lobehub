@@ -19,6 +19,99 @@ afterEach(async () => {
 });
 
 describe('PlatformJobModel', () => {
+  describe('admin operations projection', () => {
+    it('uses a stable createdAt/id cursor and hides ledgers and raw payload columns', async () => {
+      const createdAt = new Date('2026-07-20T00:00:00.000Z');
+      await serverDB.insert(platformJobs).values([
+        {
+          createdAt,
+          id: 'pjob_0000000000000003',
+          idempotencyKey: 'admin-page-3',
+          input: { control: { revision: 3 }, secret: 'never-return' },
+          lastError: { message: 'private endpoint detail' },
+          leaseOwner: 'private-worker',
+          requestedBy: 'private-user',
+          resultSummary: { failed: 2, private: 'never-return' },
+          status: 'failed',
+          type: 'platform.agent.rollout.v1',
+        },
+        {
+          createdAt,
+          id: 'pjob_0000000000000002',
+          idempotencyKey: 'admin-page-2',
+          input: { control: { revision: 2 } },
+          status: 'running',
+          type: 'platform.secret.rewrap.v1',
+        },
+        {
+          createdAt,
+          id: 'pjob_0000000000000001',
+          idempotencyKey: 'admin-page-1',
+          status: 'pending',
+          type: 'connector.runtime.shared-call.v1',
+        },
+        {
+          createdAt,
+          id: 'pjob_0000000000000000',
+          idempotencyKey: 'admin-ledger-hidden',
+          status: 'failed',
+          type: PLATFORM_SECRET_REWRAP_FAILURE_TYPE,
+        },
+      ]);
+
+      const first = await jobModel.listForAdmin({ limit: 2 });
+      expect(first.items.map(({ id }) => id)).toEqual([
+        'pjob_0000000000000003',
+        'pjob_0000000000000002',
+      ]);
+      expect(first.nextCursor).toEqual({ createdAt, id: 'pjob_0000000000000002' });
+      const second = await jobModel.listForAdmin({ cursor: first.nextCursor!, limit: 2 });
+      expect(second.items.map(({ id }) => id)).toEqual(['pjob_0000000000000001']);
+      expect(second.nextCursor).toBeNull();
+
+      expect(first.items[0]).toMatchObject({ failedCount: 2, hasError: true, revision: 3 });
+      const rawFields = [
+        'cursor',
+        'idempotencyKey',
+        'input',
+        'lastError',
+        'leaseOwner',
+        'requestedBy',
+        'resultSummary',
+      ];
+      expect(Object.keys(first.items[0]!).filter((key) => rawFields.includes(key))).toEqual([]);
+    });
+
+    it('summarizes executable jobs without counting transition or failure ledgers', async () => {
+      await serverDB.insert(platformJobs).values([
+        ...(
+          ['pending', 'reserved', 'running', 'succeeded', 'cancelled', 'failed', 'dead'] as const
+        ).map((status, index) => ({
+          idempotencyKey: `admin-summary-${index}`,
+          status,
+          type: 'platform.agent.rollout.v1',
+        })),
+        {
+          idempotencyKey: 'admin-summary-ledger-1',
+          status: 'failed',
+          type: PLATFORM_AGENT_ROLLOUT_TRANSITION_TYPE,
+        },
+        {
+          idempotencyKey: 'admin-summary-ledger-2',
+          status: 'running',
+          type: PLATFORM_SECRET_REWRAP_FAILURE_TYPE,
+        },
+      ]);
+
+      await expect(jobModel.getAdminSummary()).resolves.toEqual({
+        active: 3,
+        completed: 2,
+        failed: 2,
+        total: 7,
+      });
+    });
+  });
+
   describe('operational backlog snapshot', () => {
     it('returns fixed zero-valued states with a database-authored clock when empty', async () => {
       const before = Date.now();
