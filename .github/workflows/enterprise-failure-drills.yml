@@ -1,0 +1,232 @@
+name: Enterprise Failure Drills
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/enterprise-failure-drills.yml'
+      - 'apps/server/src/enterprise/**'
+      - 'packages/database/**'
+      - 'scripts/enterprise/failure-drills/**'
+  push:
+    branches:
+      - canary
+    paths:
+      - '.github/workflows/enterprise-failure-drills.yml'
+      - 'apps/server/src/enterprise/**'
+      - 'packages/database/**'
+      - 'scripts/enterprise/failure-drills/**'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+
+jobs:
+  real-postgres-redis:
+    name: Real PostgreSQL and Redis gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      APP_URL: https://example.test
+      DATABASE_DRIVER: node
+      KEY_VAULTS_SECRET: Kix2wcUONd4CX51E/ZPAd36BqM4wzJgKjPtz2sGztqQ=
+      PGPASSWORD: postgres
+      S3_PUBLIC_DOMAIN: https://example.test
+      TEST_SERVER_DB: '1'
+    services:
+      postgres:
+        image: paradedb/paradedb:latest-pg17
+        env:
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-retries 10 --health-timeout 5s
+        ports:
+          - 5432:5432
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s --health-retries 10 --health-timeout 5s
+        ports:
+          - 6379:6379
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-env
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Create isolated stores and record dependency versions
+        env:
+          POSTGRES_SERVICE_ID: ${{ job.services.postgres.id }}
+          REDIS_SERVICE_ID: ${{ job.services.redis.id }}
+        run: |
+          set -euo pipefail
+          suffix="$(openssl rand -hex 6)"
+          database="failure_drill_${suffix}"
+          redis_db="$((16#${suffix:0:2} % 15 + 1))"
+          docker exec "$POSTGRES_SERVICE_ID" createdb --username postgres "$database"
+
+          postgres_version="$(docker exec "$POSTGRES_SERVICE_ID" psql --username postgres --dbname postgres --tuples-only --no-align --command 'SHOW server_version')"
+          postgres_version="${postgres_version%% *}"
+          redis_version="$(docker exec "$REDIS_SERVICE_ID" redis-cli --no-auth-warning --raw INFO server | sed -n 's/^redis_version://p' | tr -d '\r')"
+
+          echo "DATABASE_TEST_URL=postgresql://postgres:postgres@127.0.0.1:5432/${database}" >> "$GITHUB_ENV"
+          echo "FAILURE_DRILL_BUN_VERSION=$(bun --version)" >> "$GITHUB_ENV"
+          echo "FAILURE_DRILL_CLEANUP_RESULT=failed" >> "$GITHUB_ENV"
+          echo "FAILURE_DRILL_DATABASE=${database}" >> "$GITHUB_ENV"
+          echo "FAILURE_DRILL_NODE_VERSION=$(node --version | sed 's/^v//')" >> "$GITHUB_ENV"
+          echo "FAILURE_DRILL_POSTGRES_VERSION=${postgres_version}" >> "$GITHUB_ENV"
+          echo "FAILURE_DRILL_RAW_DIR=${GITHUB_WORKSPACE}/.records/enterprise-failure-drills-raw/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_ENV"
+          echo "FAILURE_DRILL_REDIS_VERSION=${redis_version}" >> "$GITHUB_ENV"
+          echo "FAILURE_DRILL_RECORD_DIR=${GITHUB_WORKSPACE}/.records/enterprise-failure-drills/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_ENV"
+          echo "TEST_REDIS_URL=redis://127.0.0.1:6379/${redis_db}" >> "$GITHUB_ENV"
+
+          mkdir -p \
+            "${GITHUB_WORKSPACE}/.records/enterprise-failure-drills-raw/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            "${GITHUB_WORKSPACE}/.records/enterprise-failure-drills/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+      - name: Run 18 server multi-connection assertions
+        id: pg_server
+        continue-on-error: true
+        run: |
+          set +e
+          status=0
+          run_suite() {
+            bunx vitest run --config vitest.config.mts --silent='passed-only' \
+              --fileParallelism=false --hookTimeout=60000 --maxWorkers=1 \
+              --reporter=json --testTimeout=60000 \
+              --outputFile="$1" "$2"
+            suite_status="$?"
+            if [ "$suite_status" -ne 0 ]; then status="$suite_status"; fi
+          }
+
+          run_suite \
+            "$FAILURE_DRILL_RAW_DIR/postgres-agent-materialization.json" \
+            apps/server/src/enterprise/services/agentCatalog/materialization.multiconn.pg.test.ts
+          run_suite \
+            "$FAILURE_DRILL_RAW_DIR/postgres-agent-rollout.json" \
+            apps/server/src/enterprise/services/agentCatalog/rolloutService.multiconn.pg.test.ts
+          run_suite \
+            "$FAILURE_DRILL_RAW_DIR/postgres-identity-attempt.json" \
+            apps/server/src/enterprise/services/identityProvider/testAttemptStore.multiconn.pg.test.ts
+          run_suite \
+            "$FAILURE_DRILL_RAW_DIR/postgres-secret-rewrap.json" \
+            apps/server/src/enterprise/services/secretRewrap/worker.multiconn.pg.test.ts
+          exit "$status"
+
+      - name: Run database server-config multi-connection assertion
+        id: pg_database
+        continue-on-error: true
+        working-directory: packages/database
+        run: |
+          bunx vitest run --config vitest.config.server.mts --silent='passed-only' \
+            --hookTimeout=60000 --reporter=json --testTimeout=60000 \
+            --outputFile="$FAILURE_DRILL_RAW_DIR/postgres-platform-instance.json" \
+            src/repositories/platformInstance/index.multiconn.pg.test.ts
+
+      - name: Run identity convergence assertions
+        id: identity_convergence
+        continue-on-error: true
+        run: |
+          bunx vitest run --config vitest.config.mts --silent='passed-only' \
+            --fileParallelism=false --hookTimeout=60000 --maxWorkers=1 \
+            --reporter=json --testTimeout=60000 \
+            --outputFile="$FAILURE_DRILL_RAW_DIR/identity-convergence.json" \
+            apps/server/src/enterprise/services/identityProvider/convergence.pg.test.ts
+
+      - name: Run identity startup lock crash assertion
+        id: identity_startup_lock
+        continue-on-error: true
+        run: |
+          bunx vitest run --config vitest.config.mts --silent='passed-only' \
+            --fileParallelism=false --hookTimeout=60000 --maxWorkers=1 \
+            --reporter=json --testTimeout=60000 \
+            --outputFile="$FAILURE_DRILL_RAW_DIR/identity-startup-lock-release.json" \
+            --testNamePattern='releases the cross-instance advisory lock when the owning PG connection crashes' \
+            apps/server/src/enterprise/services/identityProvider/startupSnapshot.test.ts
+
+      - name: Run real Redis database-rebuild assertion
+        id: redis_rebuild
+        continue-on-error: true
+        run: |
+          bunx vitest run --config vitest.config.mts --silent='passed-only' \
+            --fileParallelism=false --hookTimeout=60000 --maxWorkers=1 \
+            --reporter=json --testTimeout=60000 \
+            --outputFile="$FAILURE_DRILL_RAW_DIR/redis-database-rebuild.json" \
+            --testNamePattern='converges through request-time version reads across two independent clients' \
+            apps/server/src/enterprise/runtimeConfig/domainCache.redis.integration.test.ts
+
+      - name: Verify and clean isolated stores
+        env:
+          POSTGRES_SERVICE_ID: ${{ job.services.postgres.id }}
+          REDIS_SERVICE_ID: ${{ job.services.redis.id }}
+        if: always()
+        run: |
+          set +e
+          cleanup_result=passed
+
+          redis_db="${TEST_REDIS_URL##*/}"
+          redis_keys="$(docker exec "$REDIS_SERVICE_ID" redis-cli --no-auth-warning --raw -n "$redis_db" DBSIZE 2>/dev/null)"
+          if [ "$?" -ne 0 ] || [ "$redis_keys" != '0' ]; then
+            cleanup_result=failed
+            docker exec "$REDIS_SERVICE_ID" redis-cli --no-auth-warning --raw -n "$redis_db" FLUSHDB >/dev/null 2>&1
+          fi
+
+          docker exec "$POSTGRES_SERVICE_ID" dropdb --force --if-exists --username postgres "$FAILURE_DRILL_DATABASE"
+          if [ "$?" -ne 0 ]; then
+            cleanup_result=failed
+          fi
+
+          echo "FAILURE_DRILL_CLEANUP_RESULT=${cleanup_result}" >> "$GITHUB_ENV"
+          exit 0
+
+      - name: Build and validate redacted evidence
+        if: always()
+        run: |
+          set -euo pipefail
+          bun scripts/enterprise/failure-drills/index.ts collect \
+            --bun-version "$FAILURE_DRILL_BUN_VERSION" \
+            --cleanup-result "$FAILURE_DRILL_CLEANUP_RESULT" \
+            --git-sha "$(git rev-parse HEAD)" \
+            --node-version "$FAILURE_DRILL_NODE_VERSION" \
+            --output-dir "$FAILURE_DRILL_RECORD_DIR" \
+            --postgres-version "$FAILURE_DRILL_POSTGRES_VERSION" \
+            --redis-version "$FAILURE_DRILL_REDIS_VERSION" \
+            --reports-dir "$FAILURE_DRILL_RAW_DIR"
+
+          test '${{ steps.pg_server.outcome }}' = success
+          test '${{ steps.pg_database.outcome }}' = success
+          test '${{ steps.identity_convergence.outcome }}' = success
+          test '${{ steps.identity_startup_lock.outcome }}' = success
+          test '${{ steps.redis_rebuild.outcome }}' = success
+
+          bun scripts/enterprise/failure-drills/index.ts verify \
+            --output-dir "$FAILURE_DRILL_RECORD_DIR"
+
+          if rg -n -i \
+            'https?://|postgres(?:ql)?://|rediss?://|hostname|instanceId|payload|ciphertext|secret' \
+            "$FAILURE_DRILL_RECORD_DIR"; then
+            echo 'Forbidden evidence content detected' >&2
+            exit 1
+          fi
+
+      - name: Remove raw reports
+        if: always()
+        run: rm -rf "$FAILURE_DRILL_RAW_DIR"
+
+      - name: Upload redacted failure-drill evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          if-no-files-found: error
+          include-hidden-files: true
+          name: enterprise-failure-drills-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .records/enterprise-failure-drills/${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 14
