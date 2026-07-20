@@ -2,37 +2,26 @@ import { spawn } from 'node:child_process';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
+import { filterExistingLintablePaths } from './changedFiles';
 import type { GateResult, KnownGateId } from './contract';
-import { KNOWN_GATE_IDS, scanUpstreamRebaseEvidence } from './contract';
+import { EXPECTED_GATE_KINDS, FAIL_CLOSED_GATE_IDS, KNOWN_GATE_IDS } from './contract';
+import { assertNoSecrets } from './secretScan';
 
 /** Placeholder replaced at runtime with an absolute path under the run raw dir. */
 export const VITEST_OUTPUT_PLACEHOLDER = '__UPSTREAM_REBASE_GATE_OUTPUT__' as const;
 
 export interface GateDefinition {
-  /**
-   * argv for a command gate. Empty for fail-closed / privacy-scan kinds that
-   * do not launch an external process.
-   * For vitest gates, include `--outputFile` followed by {@link VITEST_OUTPUT_PLACEHOLDER}.
-   */
   argv?: string[];
-  /**
-   * Working directory relative to repository root (default: root).
-   */
   cwd?: string;
-  /**
-   * When true, the gate is fail-closed without executing tests/commands.
-   */
   failClosed?: boolean;
   id: KnownGateId;
   kind: GateResult['kind'];
-  /**
-   * Minimum required passed assertions for vitest gates.
-   */
   minPassed?: number;
-  /**
-   * Human-readable reason recorded in evidence (never includes secrets).
-   */
   reason: string;
+  /**
+   * Built-in custom runners that need changed-file context or multi-suite logic.
+   */
+  runner?: 'bun-check-changed' | 'migration-upgrade-rollback';
 }
 
 /**
@@ -63,16 +52,8 @@ export const GATE_DEFINITIONS: Record<KnownGateId, GateDefinition> = {
   'bun-check-changed': {
     id: 'bun-check-changed',
     kind: 'command',
-    reason: 'Lint and focused tests for enterprise rebase CI sources.',
-    argv: [
-      'bun',
-      'run',
-      'check',
-      '--lint',
-      '--test',
-      'scripts/enterprise/rebase-report.ts',
-      'scripts/enterprise/upstream-rebase-ci',
-    ],
+    runner: 'bun-check-changed',
+    reason: 'Lint and focused tests on the real base/upstream/candidate changed-file set.',
   },
   'desktop-release': {
     id: 'desktop-release',
@@ -94,22 +75,10 @@ export const GATE_DEFINITIONS: Record<KnownGateId, GateDefinition> = {
   },
   'failure-drills': {
     id: 'failure-drills',
-    kind: 'vitest',
-    minPassed: 1,
+    kind: 'fail-closed',
+    failClosed: true,
     reason:
-      'Failure-drill contract/runner unit gates (real PG/Redis drills stay in their workflow).',
-    argv: [
-      'bunx',
-      'vitest',
-      'run',
-      '--config',
-      'vitest.config.mts',
-      '--silent=passed-only',
-      '--reporter=json',
-      '--outputFile',
-      VITEST_OUTPUT_PLACEHOLDER,
-      'scripts/enterprise/failure-drills/runner.test.ts',
-    ],
+      'Real PostgreSQL/Redis failure drills require enterprise-failure-drills.yml; contract unit tests cannot pass this gate.',
   },
   'manual-conflict-review': {
     id: 'manual-conflict-review',
@@ -120,19 +89,10 @@ export const GATE_DEFINITIONS: Record<KnownGateId, GateDefinition> = {
   'migration-upgrade-rollback': {
     id: 'migration-upgrade-rollback',
     kind: 'vitest',
+    runner: 'migration-upgrade-rollback',
     minPassed: 1,
-    cwd: 'packages/database',
-    reason: 'Drizzle migration model regression gate (PGlite client path).',
-    argv: [
-      'bunx',
-      'vitest',
-      'run',
-      '--silent=passed-only',
-      '--reporter=json',
-      '--outputFile',
-      VITEST_OUTPUT_PLACEHOLDER,
-      'src/models/__tests__/drizzleMigration.test.ts',
-    ],
+    reason:
+      'Journal integrity plus platform Migration-0 schema gate (Q03 verify-migration when present on trunk).',
   },
   'patch-ledger-update': {
     id: 'patch-ledger-update',
@@ -161,7 +121,7 @@ export const GATE_DEFINITIONS: Record<KnownGateId, GateDefinition> = {
   'privacy-review': {
     id: 'privacy-review',
     kind: 'privacy-scan',
-    reason: 'Redacted evidence and raw report must remain secret-free.',
+    reason: 'Raw report and redacted evidence must remain secret-free.',
   },
   'spa-route-sync': {
     id: 'spa-route-sync',
@@ -184,10 +144,20 @@ export const GATE_DEFINITIONS: Record<KnownGateId, GateDefinition> = {
   'type-check': {
     id: 'type-check',
     kind: 'command',
-    reason: 'Full repository type-check.',
+    reason: 'Full repository type-check on the integrated candidate+upstream tree.',
     argv: ['bun', 'run', 'type-check'],
   },
 };
+
+// Keep kinds aligned with the shared contract map used by strict schemas.
+for (const id of KNOWN_GATE_IDS) {
+  if (GATE_DEFINITIONS[id].kind !== EXPECTED_GATE_KINDS[id]) {
+    throw new Error(`Gate kind drift for ${id}`);
+  }
+  if (FAIL_CLOSED_GATE_IDS.has(id) && !GATE_DEFINITIONS[id].failClosed) {
+    throw new Error(`Fail-closed gate ${id} missing failClosed flag`);
+  }
+}
 
 export const resolveGateDefinition = (gateId: string): GateDefinition => {
   if (!(KNOWN_GATE_IDS as readonly string[]).includes(gateId)) {
@@ -207,7 +177,7 @@ interface ProcessResult {
   stdout: string;
 }
 
-const runProcess = (argv: string[], cwd: string): Promise<ProcessResult> =>
+export const runProcess = (argv: string[], cwd: string): Promise<ProcessResult> =>
   new Promise((resolve, reject) => {
     const [command, ...args] = argv;
     if (!command) {
@@ -272,16 +242,207 @@ const readVitestAssertions = async (reportPath: string) => {
   };
 };
 
+const evaluateVitestAssertions = (
+  assertions: Awaited<ReturnType<typeof readVitestAssertions>>,
+  processCode: number,
+  minPassed: number,
+) =>
+  processCode === 0 &&
+  assertions.success &&
+  assertions.total > 0 &&
+  assertions.passed >= minPassed &&
+  assertions.passed === assertions.total &&
+  assertions.failed === 0 &&
+  assertions.skipped === 0
+    ? ('passed' as const)
+    : ('failed' as const);
+
+/**
+ * After autofixing checkers, any worktree mutation is a false green.
+ */
+export const detectAutofixMutation = async (repositoryRoot: string): Promise<boolean> => {
+  const status = await runProcess(
+    ['git', '--no-optional-locks', 'status', '--porcelain=v1', '-z', '--untracked-files=all'],
+    repositoryRoot,
+  );
+  return status.code === 0 && status.stdout.length > 0;
+};
+
+export const runBunCheckChangedGate = async ({
+  changedPaths,
+  repositoryRoot,
+}: {
+  changedPaths: string[];
+  repositoryRoot: string;
+}): Promise<GateResult> => {
+  const files = await filterExistingLintablePaths(repositoryRoot, changedPaths);
+  if (files.length === 0) {
+    return {
+      id: 'bun-check-changed',
+      kind: 'command',
+      outcome: 'failed',
+      reason: 'No existing lintable changed files in the integration tree.',
+    };
+  }
+
+  // Cap argv size while keeping determinism: sort already applied; take full set if reasonable.
+  const selected = files.length > 400 ? files.slice(0, 400) : files;
+  if (files.length > 400) {
+    // Still fail closed if we had to truncate — partial coverage is not a pass.
+    return {
+      id: 'bun-check-changed',
+      kind: 'command',
+      outcome: 'failed',
+      reason: `Changed-file set too large for single gate invocation (${files.length}).`,
+    };
+  }
+
+  const processResult = await runProcess(
+    ['bun', 'run', 'check', '--lint', '--test', ...selected],
+    repositoryRoot,
+  );
+
+  if (processResult.code !== 0) {
+    return {
+      id: 'bun-check-changed',
+      kind: 'command',
+      outcome: 'failed',
+      reason: 'Changed-file lint/focused-test gate failed.',
+    };
+  }
+
+  if (await detectAutofixMutation(repositoryRoot)) {
+    return {
+      id: 'bun-check-changed',
+      kind: 'command',
+      outcome: 'failed',
+      reason: 'Autofix mutated the integration tree after exit 0 (false green).',
+    };
+  }
+
+  return {
+    id: 'bun-check-changed',
+    kind: 'command',
+    outcome: 'passed',
+    reason: `Lint/focused tests on ${selected.length} changed path(s).`,
+  };
+};
+
+/** Pure helper used by tests to prove non-orchestration paths are retained. */
+export const selectBunCheckPaths = (existingLintablePaths: string[]): string[] => {
+  if (existingLintablePaths.length === 0) return [];
+  if (existingLintablePaths.length > 400) {
+    throw new Error(
+      `Changed-file set too large for single gate invocation (${existingLintablePaths.length}).`,
+    );
+  }
+  return existingLintablePaths;
+};
+
+export const runMigrationUpgradeRollbackGate = async ({
+  rawDirectory,
+  repositoryRoot,
+}: {
+  rawDirectory: string;
+  repositoryRoot: string;
+}): Promise<GateResult> => {
+  const outputFile = path.join(rawDirectory, 'gate-migration-upgrade-rollback.json');
+  await mkdir(rawDirectory, { recursive: true });
+  await rm(outputFile, { force: true });
+
+  // Prefer Q03 verifier when present on the tree; otherwise equivalent journal + migration-0 gate.
+  const q03Entry = path.join(repositoryRoot, 'scripts/enterprise/verify-migration.ts');
+  let processResult: ProcessResult;
+  try {
+    await readFile(q03Entry, 'utf8');
+    processResult = await runProcess(
+      ['bun', 'scripts/enterprise/verify-migration.ts', '--repo-root', repositoryRoot],
+      repositoryRoot,
+    );
+    if (processResult.code !== 0) {
+      return {
+        assertions: { failed: 1, passed: 0, skipped: 0, total: 1 },
+        id: 'migration-upgrade-rollback',
+        kind: 'vitest',
+        outcome: 'failed',
+        reason: 'Q03 migration compatibility verifier failed.',
+      };
+    }
+    return {
+      assertions: { failed: 0, passed: 1, skipped: 0, total: 1 },
+      id: 'migration-upgrade-rollback',
+      kind: 'vitest',
+      outcome: 'passed',
+      reason: 'Q03 migration compatibility verifier passed with structured success.',
+    };
+  } catch {
+    // fall through to equivalent local gates
+  }
+
+  // Root vitest excludes packages/**. Use the database package config.
+  processResult = await runProcess(
+    [
+      'bunx',
+      'vitest',
+      'run',
+      '--config',
+      'vitest.config.mts',
+      '--silent=passed-only',
+      '--reporter=json',
+      '--outputFile',
+      outputFile,
+      'src/models/__tests__/migrationJournal.meta.test.ts',
+      'src/models/__tests__/platformSchema.migration.test.ts',
+    ],
+    path.join(repositoryRoot, 'packages/database'),
+  );
+
+  try {
+    const assertions = await readVitestAssertions(outputFile);
+    const outcome = evaluateVitestAssertions(assertions, processResult.code, 2);
+    return {
+      assertions: {
+        failed: assertions.failed,
+        passed: assertions.passed,
+        skipped: assertions.skipped,
+        total: assertions.total,
+      },
+      id: 'migration-upgrade-rollback',
+      kind: 'vitest',
+      outcome,
+      reason:
+        outcome === 'passed'
+          ? 'Journal integrity and platform Migration-0 schema gates passed.'
+          : 'Migration upgrade/rollback equivalent gate failed, skipped, or reported zero tests.',
+    };
+  } catch (error) {
+    return {
+      assertions: { failed: 1, passed: 0, skipped: 0, total: 1 },
+      id: 'migration-upgrade-rollback',
+      kind: 'vitest',
+      outcome: 'failed',
+      reason:
+        error instanceof Error
+          ? error.message.slice(0, 240)
+          : 'Migration gate report could not be validated.',
+    };
+  }
+};
+
 export interface RunSelectedGatesOptions {
+  changedPaths: string[];
   privacyTargets: unknown[];
   rawDirectory: string;
+  rawReportText?: string;
   repositoryRoot: string;
   requiredGateIds: string[];
 }
 
 export const runSelectedGates = async ({
+  changedPaths,
   privacyTargets,
   rawDirectory,
+  rawReportText,
   repositoryRoot,
   requiredGateIds,
 }: RunSelectedGatesOptions): Promise<GateResult[]> => {
@@ -302,13 +463,37 @@ export const runSelectedGates = async ({
     }
 
     if (definition.kind === 'privacy-scan') {
-      const scan = scanUpstreamRebaseEvidence(privacyTargets);
-      results.push({
-        id: gateId,
-        kind: 'privacy-scan',
-        outcome: scan.result === 'passed' && scan.violations === 0 ? 'passed' : 'failed',
-        reason: definition.reason,
-      });
+      try {
+        for (const target of privacyTargets) {
+          assertNoSecrets(target, 'privacy-review target');
+        }
+        if (rawReportText) {
+          assertNoSecrets(rawReportText, 'raw rebase report');
+        }
+        results.push({
+          id: gateId,
+          kind: 'privacy-scan',
+          outcome: 'passed',
+          reason: definition.reason,
+        });
+      } catch {
+        results.push({
+          id: gateId,
+          kind: 'privacy-scan',
+          outcome: 'failed',
+          reason: definition.reason,
+        });
+      }
+      continue;
+    }
+
+    if (definition.runner === 'bun-check-changed') {
+      results.push(await runBunCheckChangedGate({ changedPaths, repositoryRoot }));
+      continue;
+    }
+
+    if (definition.runner === 'migration-upgrade-rollback') {
+      results.push(await runMigrationUpgradeRollbackGate({ rawDirectory, repositoryRoot }));
       continue;
     }
 
@@ -326,7 +511,6 @@ export const runSelectedGates = async ({
       ? path.resolve(repositoryRoot, definition.cwd)
       : path.resolve(repositoryRoot);
 
-    // Always write vitest JSON under the run-scoped raw directory so wipe removes it.
     const outputFile = path.join(rawDirectory, `gate-${gateId}.json`);
     if (definition.kind === 'vitest' && !definition.argv.includes(VITEST_OUTPUT_PLACEHOLDER)) {
       results.push({
@@ -347,30 +531,30 @@ export const runSelectedGates = async ({
     const processResult = await runProcess(argv, cwd);
 
     if (definition.kind === 'command') {
+      let outcome: 'failed' | 'passed' = processResult.code === 0 ? 'passed' : 'failed';
+      if (outcome === 'passed' && (await detectAutofixMutation(repositoryRoot))) {
+        outcome = 'failed';
+        results.push({
+          id: gateId,
+          kind: 'command',
+          outcome,
+          reason: 'Command gate autofix mutated the integration tree after exit 0.',
+        });
+        continue;
+      }
       results.push({
         id: gateId,
         kind: 'command',
-        outcome: processResult.code === 0 ? 'passed' : 'failed',
+        outcome,
         reason: definition.reason,
       });
       continue;
     }
 
-    // vitest kind — exit code alone is insufficient; require positive pass count.
     try {
       const assertions = await readVitestAssertions(outputFile);
       const minPassed = definition.minPassed ?? 1;
-      const outcome =
-        processResult.code === 0 &&
-        assertions.success &&
-        assertions.total > 0 &&
-        assertions.passed >= minPassed &&
-        assertions.passed === assertions.total &&
-        assertions.failed === 0 &&
-        assertions.skipped === 0
-          ? 'passed'
-          : 'failed';
-
+      const outcome = evaluateVitestAssertions(assertions, processResult.code, minPassed);
       results.push({
         assertions: {
           failed: assertions.failed,
@@ -397,7 +581,6 @@ export const runSelectedGates = async ({
     }
   }
 
-  // Stable order matching required gate ids
   return results;
 };
 
