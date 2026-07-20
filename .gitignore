@@ -135,6 +135,8 @@ scripts/clerk-to-betterauth/prod/*.json
 *.doc*
 *.xls*
 e2e/reports
+e2e/enterprise-admin/reports
+e2e/screenshots
 out
 i18n-unused-keys-report.json
 .vitest-reports
