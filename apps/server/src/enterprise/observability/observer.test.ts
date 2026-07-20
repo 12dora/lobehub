@@ -102,6 +102,14 @@ describe('enterprise observability boundary', () => {
       type: 'agent_materialization',
       ...extras,
     } as never);
+    observeEnterprisePlatformEvent({
+      collector: 'revision_lag',
+      durationMs: Number.NaN,
+      errorClass: 'tenant-error',
+      outcome: 'failure',
+      type: 'operational_collection',
+      ...extras,
+    } as never);
 
     expect(events).toEqual([
       { category: 'metadata_endpoint', type: 'ssrf_denial' },
@@ -113,6 +121,13 @@ describe('enterprise observability boundary', () => {
         type: 'oidc_login',
       },
       { durationMs: 0, outcome: 'race_reused', type: 'agent_materialization' },
+      {
+        collector: 'revision_lag',
+        durationMs: 0,
+        errorClass: 'UnexpectedError',
+        outcome: 'failure',
+        type: 'operational_collection',
+      },
     ]);
     expect(JSON.stringify(events)).not.toContain('raw');
   });
@@ -133,6 +148,12 @@ describe('enterprise observability boundary', () => {
         type: 'oidc_login',
       },
       { durationMs: 1, outcome: 'agent-id', type: 'agent_materialization' },
+      {
+        collector: 'job-id',
+        durationMs: 1,
+        outcome: 'failure',
+        type: 'operational_collection',
+      },
       {
         domain: 'tenant-id',
         durationMs: 1,
@@ -204,6 +225,12 @@ describe('enterprise observability boundary', () => {
         outcome: 'created',
         type: 'agent_materialization',
       },
+      {
+        collector: 'job_backlog',
+        durationMs: 1,
+        outcome: 'success',
+        type: 'operational_collection',
+      },
     ] satisfies EnterpriseObservabilityEvent[]) {
       observeEnterprisePlatformEvent(event);
     }
@@ -233,7 +260,14 @@ describe('enterprise observability boundary', () => {
       type: 'agent_materialization',
     });
     observeEnterprisePlatformEvent({ category: 'allowlist_denied', type: 'ssrf_denial' });
-    expect(mocks.debugLog).toHaveBeenCalledTimes(4);
+    observeEnterprisePlatformEvent({
+      collector: 'job_backlog',
+      durationMs: 2,
+      errorClass: 'UnavailableError',
+      outcome: 'failure',
+      type: 'operational_collection',
+    });
+    expect(mocks.debugLog).toHaveBeenCalledTimes(5);
   });
 
   it('classifies only fixed error codes without exposing the raw code', () => {

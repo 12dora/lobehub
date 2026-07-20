@@ -5,8 +5,11 @@ export type EnterpriseAlertIntentKey =
   | 'guard_denial_spike'
   | 'heartbeat_failure'
   | 'invalidation_degraded'
+  | 'job_backlog_stalled'
+  | 'operational_collection_stale'
   | 'publish_conflict_ratio'
   | 'publish_failure_ratio'
+  | 'revision_lag'
   | 'ssrf_denial_spike';
 
 export interface EnterpriseAlertIntent {
@@ -70,6 +73,27 @@ export const ENTERPRISE_ALERT_INTENTS = [
     description: 'Agent materialization failures exceed the deployment-defined rate.',
     key: 'materialization_failure_rate',
     metric: 'enterprise_platform_agent_materialization_total',
+    status: 'intent-only',
+  },
+  {
+    description:
+      'The max cluster job backlog age remains above a deployment-defined service window.',
+    key: 'job_backlog_stalled',
+    metric: 'enterprise_platform_job_backlog_oldest_age_seconds',
+    status: 'intent-only',
+  },
+  {
+    description:
+      'The max cluster identity revision-lag instance count remains above zero after rollout.',
+    key: 'revision_lag',
+    metric: 'enterprise_platform_revision_lag_instances',
+    status: 'intent-only',
+  },
+  {
+    description:
+      'The max cluster operational snapshot age exceeds a deployment-defined collection window.',
+    key: 'operational_collection_stale',
+    metric: 'enterprise_platform_operational_snapshot_age_seconds',
     status: 'intent-only',
   },
 ] as const satisfies readonly EnterpriseAlertIntent[];
