@@ -264,9 +264,6 @@ export class SafeOutboundHttpClient {
         protocol: url.protocol,
       });
     }
-    if (!url.hostname) {
-      throw ssrfBlocked('invalid_url', 'URL missing hostname');
-    }
     return url;
   }
 

@@ -60,10 +60,7 @@ afterEach(() => {
 
 describe('SafeOutboundHttp denial observability', () => {
   it('maps URL, protocol, credential, and DNS denials to closed categories', async () => {
-    await expectSingleDenial(
-      () => new SafeOutboundHttpClient().fetch('not a URL with tenant.example'),
-      'invalid_url',
-    );
+    await expectSingleDenial(() => new SafeOutboundHttpClient().fetch('https://'), 'invalid_url');
     await expectSingleDenial(
       () => new SafeOutboundHttpClient().fetch('file:///etc/passwd'),
       'protocol_denied',
