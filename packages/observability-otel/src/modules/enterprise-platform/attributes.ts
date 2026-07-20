@@ -214,15 +214,22 @@ export type OidcLoginMetricAttributes =
       stage: EnterpriseOidcLoginStage;
     };
 
-export const buildOidcLoginAttributes = (input: OidcLoginMetricAttributes): Attributes =>
-  compact({
-    'enterprise.failure_category':
-      input.outcome === 'failure'
-        ? closedValue(input.failureCategory, ENTERPRISE_OIDC_FAILURE_CATEGORIES)
-        : undefined,
-    'enterprise.outcome': closedValue(input.outcome, ENTERPRISE_OIDC_LOGIN_OUTCOMES),
-    'enterprise.stage': closedValue(input.stage, ENTERPRISE_OIDC_LOGIN_STAGES),
-  });
+export const buildOidcLoginAttributes = (input: OidcLoginMetricAttributes): Attributes => {
+  const outcome = closedValue(input.outcome, ENTERPRISE_OIDC_LOGIN_OUTCOMES);
+  const stage = closedValue(input.stage, ENTERPRISE_OIDC_LOGIN_STAGES);
+  if (!outcome || !stage) return {};
+
+  if (input.outcome === 'failure') {
+    return {
+      'enterprise.failure_category':
+        closedValue(input.failureCategory, ENTERPRISE_OIDC_FAILURE_CATEGORIES) ?? 'unexpected',
+      'enterprise.outcome': outcome,
+      'enterprise.stage': stage,
+    };
+  }
+
+  return { 'enterprise.outcome': outcome, 'enterprise.stage': stage };
+};
 
 export interface AgentMaterializationMetricAttributes {
   outcome: EnterpriseAgentMaterializationOutcome;
