@@ -12,6 +12,8 @@ import {
 import type { LobeChatDatabase } from '@/database/type';
 
 import type { AdminBrandingDraft } from '../../contracts/adminBranding';
+import type { EnterpriseObservabilityEvent } from '../../observability';
+import { setEnterprisePlatformObserverForTest } from '../../observability';
 import { InMemoryPlatformConfigInvalidationPublisher } from '../platformConfigInvalidation';
 import { AdminBrandingAssetService } from './adminBrandingAssetService';
 import {
@@ -35,6 +37,8 @@ const storage = {
 };
 const assetService = new AdminBrandingAssetService(db, { storage });
 const service = new AdminBrandingService(db, { assetService, invalidation });
+const observed: EnterpriseObservabilityEvent[] = [];
+const publishEvents = () => observed.filter((event) => event.type === 'config_publish');
 
 const draft = (name: string): AdminBrandingDraft => ({
   defaultAgentDisplayName: `${name} AI`,
@@ -70,8 +74,13 @@ beforeEach(async () => {
   await cleanup();
   invalidation.events.length = 0;
   invalidation.versions.clear();
+  observed.length = 0;
+  setEnterprisePlatformObserverForTest({ record: (event) => observed.push(event) });
 });
-afterEach(cleanup);
+afterEach(async () => {
+  setEnterprisePlatformObserverForTest(null);
+  await cleanup();
+});
 
 describe('AdminBrandingService', () => {
   it('creates only the fixed draft row and never invents a public snapshot', async () => {
@@ -142,6 +151,112 @@ describe('AdminBrandingService', () => {
     expect(invalidation.events).toEqual([
       expect.objectContaining({ resourceId: 'global', revision: 1, scopes: ['branding'] }),
     ]);
+    expect(publishEvents()).toEqual([
+      {
+        domain: 'branding',
+        durationMs: expect.any(Number),
+        operation: 'publish',
+        outcome: 'success',
+        type: 'config_publish',
+      },
+    ]);
+    expect(Object.keys(publishEvents()[0]!).sort()).toEqual([
+      'domain',
+      'durationMs',
+      'operation',
+      'outcome',
+      'type',
+    ]);
+    expect(JSON.stringify(publishEvents())).not.toContain('operator approved');
+    expect(JSON.stringify(publishEvents())).not.toContain(publishRequest.requestId);
+  });
+
+  it('observes a publication conflict once and not its failed replay', async () => {
+    const initial = await service.getDraft();
+    const saved = await service.saveDraft('admin-1', {
+      ...request(),
+      draft: draft('Acme'),
+      expectedDraftToken: initial.draftToken,
+    });
+    const publishRequest = {
+      ...request(),
+      expectedDraftToken: saved.draftToken,
+      expectedRevision: 1,
+    };
+
+    await expect(service.publish('admin-1', publishRequest)).rejects.toBeInstanceOf(
+      PlatformRevisionConflictError,
+    );
+    await expect(service.publish('admin-1', publishRequest)).rejects.toBeInstanceOf(
+      BrandingOperationFailedReplayError,
+    );
+
+    expect(publishEvents()).toEqual([
+      {
+        domain: 'branding',
+        durationMs: expect.any(Number),
+        errorClass: 'ConflictError',
+        operation: 'publish',
+        outcome: 'conflict',
+        type: 'config_publish',
+      },
+    ]);
+  });
+
+  it('observes a publication failure once and not its failed replay', async () => {
+    const initial = await service.getDraft();
+    const publishRequest = {
+      ...request(),
+      expectedDraftToken: initial.draftToken,
+      expectedRevision: 0,
+    };
+
+    await expect(service.publish('admin-1', publishRequest)).rejects.toBeInstanceOf(
+      BrandingDraftValidationError,
+    );
+    await expect(service.publish('admin-1', publishRequest)).rejects.toBeInstanceOf(
+      BrandingOperationFailedReplayError,
+    );
+
+    expect(publishEvents()).toEqual([
+      {
+        domain: 'branding',
+        durationMs: expect.any(Number),
+        errorClass: 'ValidationError',
+        operation: 'publish',
+        outcome: 'failure',
+        type: 'config_publish',
+      },
+    ]);
+  });
+
+  it('keeps a committed publication successful when the observer throws', async () => {
+    const initial = await service.getDraft();
+    const saved = await service.saveDraft('admin-1', {
+      ...request(),
+      draft: draft('Acme'),
+      expectedDraftToken: initial.draftToken,
+    });
+    const publishRequest = {
+      ...request(),
+      expectedDraftToken: saved.draftToken,
+      expectedRevision: 0,
+    };
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    setEnterprisePlatformObserverForTest({
+      record: () => {
+        throw new Error('observer unavailable');
+      },
+    });
+
+    const published = await service.publish('admin-1', publishRequest);
+
+    await expect(service.publish('admin-1', publishRequest)).resolves.toEqual(published);
+    expect((await service.getDraft()).published).toMatchObject({ name: 'Acme', revision: 1 });
+    expect(consoleError).toHaveBeenCalledWith(
+      '[enterprise-observability] metric sink failed',
+      expect.objectContaining({ errorClass: 'UnexpectedError' }),
+    );
   });
 
   it('rejects stale draft tokens and records a redacted best-effort failure audit', async () => {
@@ -342,6 +457,7 @@ describe('AdminBrandingService', () => {
       expectedRevision: 1,
     });
     const beforeRollback = await service.getDraft();
+    observed.length = 0;
     const rollbackRequest = {
       ...request(),
       expectedDraftToken: beforeRollback.draftToken,
@@ -362,6 +478,7 @@ describe('AdminBrandingService', () => {
     expect(after.published).toMatchObject({ name: 'Second', revision: 2 });
     expect(await db.select().from(platformAuditLogs)).toHaveLength(auditCount);
     expect(invalidation.events).toHaveLength(2);
+    expect(observed).toEqual([]);
   });
 
   it('fails closed instead of silently adopting an active random shell row', async () => {
