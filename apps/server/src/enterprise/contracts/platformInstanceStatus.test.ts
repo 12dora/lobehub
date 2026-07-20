@@ -104,6 +104,16 @@ describe('platform instance status internal contract', () => {
       platformDomainTargetSchema.safeParse({
         domain: 'settings',
         errorCategory: null,
+        fallbackPolicy: 'none',
+        loadMode: 'process_cached',
+        status: 'available',
+        token: null,
+      }).success,
+    ).toBe(false);
+    expect(
+      platformDomainTargetSchema.safeParse({
+        domain: 'settings',
+        errorCategory: null,
         fallbackPolicy: 'unknown',
         loadMode: 'process_cached',
         status: 'available',
@@ -114,6 +124,21 @@ describe('platform instance status internal contract', () => {
 
   it('accepts a bounded secret-free status snapshot', () => {
     expect(platformInstanceStatusSnapshotSchema.safeParse(snapshot).success).toBe(true);
+  });
+
+  it('rejects target tokens on disabled and request-scoped not-applicable domains', () => {
+    for (const status of ['disabled', 'not_applicable'] as const) {
+      expect(
+        platformInstanceStatusSnapshotSchema.safeParse({
+          ...snapshot,
+          domains: snapshot.domains.map((domain, index) =>
+            index === 0
+              ? { ...domain, status, targetToken: { kind: 'revision', value: 1 } }
+              : domain,
+          ),
+        }).success,
+      ).toBe(false);
+    }
   });
 
   it.each([

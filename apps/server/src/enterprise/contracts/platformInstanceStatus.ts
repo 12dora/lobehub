@@ -79,6 +79,13 @@ export const platformDomainTargetSchema = z
   })
   .strict()
   .superRefine((target, context) => {
+    if (target.status === 'available' && target.domain !== 'identity' && !target.token) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'non-identity available target requires token',
+        path: ['token'],
+      });
+    }
     if (target.status === 'unavailable' && !target.errorCategory) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
@@ -120,7 +127,33 @@ export const platformDomainConvergenceSchema = z
     status: platformConvergenceStatusSchema,
     targetToken: platformRevisionTokenSchema.nullable(),
   })
-  .strict();
+  .strict()
+  .superRefine((domain, context) => {
+    if (domain.status === 'unavailable' && !domain.errorCategory) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'unavailable domain requires error category',
+        path: ['errorCategory'],
+      });
+    }
+    if (domain.status !== 'unavailable' && domain.errorCategory) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'only unavailable domain may contain error category',
+        path: ['errorCategory'],
+      });
+    }
+    if (
+      (domain.status === 'disabled' || domain.status === 'not_applicable') &&
+      domain.targetToken
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'disabled or not-applicable domain cannot contain target token',
+        path: ['targetToken'],
+      });
+    }
+  });
 
 const platformInstanceDomainDiagnosticSchema = z
   .object({
