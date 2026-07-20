@@ -2,37 +2,35 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import type { RebaseReport } from '../rebase-report';
 import {
   createUpstreamRebaseEvidence,
-  type GateResult,
   isPassingUpstreamRebaseEvidence,
   UPSTREAM_REBASE_CI_LANE,
   UPSTREAM_REBASE_CI_SCHEMA_VERSION,
   type UpstreamRebaseEvidence,
 } from './contract';
+import {
+  assertReportCommitsMatch,
+  parseCommitsFileStrict,
+  type ParsedCommitsFile,
+  type ParsedGateResult,
+  type ParsedRebaseReport,
+  parseGateResultsStrict,
+  parseRebaseReportStrict,
+} from './schemas';
+import { assertNoSecrets } from './secretScan';
 
 const SHORT_HASH_LENGTH = 12;
-const FULL_HASH_PATTERN = /^(?:[a-f\d]{40}|[a-f\d]{64})$/u;
 
-const shortHash = (hash: string) => {
-  if (!FULL_HASH_PATTERN.test(hash) && !/^[a-f\d]{12}$/u.test(hash)) {
-    throw new Error('Commit hash is invalid');
-  }
-  return hash.slice(0, SHORT_HASH_LENGTH);
-};
+const shortHash = (hash: string) => hash.slice(0, SHORT_HASH_LENGTH);
 
 export interface CollectEvidenceOptions {
   cleanupResult: 'failed' | 'passed';
-  fullCommits: {
-    base: string;
-    candidate: string;
-    mergeBase: string;
-    upstream: string;
-  };
-  gateResults: GateResult[];
+  fullCommits: ParsedCommitsFile;
+  gateResults: ParsedGateResult[];
   outputDirectory: string;
-  report: RebaseReport;
+  rawReportText: string;
+  report: ParsedRebaseReport;
   upstreamFreshness: 'unverified' | 'verified-by-ci-fetch';
   upstreamRef: string;
   upstreamRepository: string;
@@ -47,14 +45,14 @@ export const collectUpstreamRebaseEvidence = async ({
   fullCommits,
   gateResults,
   outputDirectory,
+  rawReportText,
   report,
   upstreamFreshness,
   upstreamRef,
   upstreamRepository,
 }: CollectEvidenceOptions): Promise<UpstreamRebaseEvidence> => {
-  if (report.schemaVersion !== 1) {
-    throw new Error('Rebase report schemaVersion is unsupported');
-  }
+  assertNoSecrets(rawReportText, 'raw rebase report');
+  assertNoSecrets(report, 'parsed rebase report');
 
   if (report.status !== 'clean') {
     throw new Error(`Rebase report status is ${report.status}; dry-run fails closed`);
@@ -72,29 +70,13 @@ export const collectUpstreamRebaseEvidence = async ({
     throw new Error('Upstream freshness is unverified; dry-run fails closed');
   }
 
-  if (!report.requiredGates || report.requiredGates.length === 0) {
-    throw new Error('Rebase report is missing required gates');
-  }
+  assertReportCommitsMatch(report, fullCommits);
 
   const requiredGateIds = report.requiredGates
     .map((gate) => gate.id)
     .sort((a, b) => a.localeCompare(b, 'en'));
-  const sortedGateResults = [...gateResults].sort((left, right) =>
-    left.id.localeCompare(right.id, 'en'),
-  );
+  const sortedGateResults = parseGateResultsStrict(gateResults, requiredGateIds);
 
-  if (sortedGateResults.length !== requiredGateIds.length) {
-    throw new Error('Gate result count does not match required gates');
-  }
-
-  for (const id of requiredGateIds) {
-    if (!sortedGateResults.some((gate) => gate.id === id)) {
-      throw new Error(`Missing gate result for required gate ${id}`);
-    }
-  }
-
-  // Evidence never retains path lists, conflict bodies, or full commit messages —
-  // only short SHAs, counts, gate outcomes, and classification fields.
   const core = {
     analysis: {
       mode: 'dry-run-evidence' as const,
@@ -136,11 +118,14 @@ export const collectUpstreamRebaseEvidence = async ({
     },
   };
 
+  assertNoSecrets(core, 'evidence core before redaction seal');
   const evidence = createUpstreamRebaseEvidence(core);
+  assertNoSecrets(evidence, 'final evidence artifact');
 
   await mkdir(outputDirectory, { recursive: true });
   const evidencePath = path.join(outputDirectory, 'evidence.json');
   const serialized = `${JSON.stringify(evidence, null, 2)}\n`;
+  assertNoSecrets(serialized, 'serialized evidence artifact');
   await writeFile(evidencePath, serialized, 'utf8');
 
   const digest = createHash('sha256').update(serialized).digest('hex');
@@ -149,28 +134,44 @@ export const collectUpstreamRebaseEvidence = async ({
   return evidence;
 };
 
-export const loadRebaseReport = async (reportPath: string): Promise<RebaseReport> => {
-  const raw = await readFile(reportPath, 'utf8');
+export const loadRebaseReport = async (
+  reportPath: string,
+): Promise<{ rawText: string; report: ParsedRebaseReport }> => {
+  const rawText = await readFile(reportPath, 'utf8');
+  assertNoSecrets(rawText, 'raw rebase report file');
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawText);
+  } catch {
+    throw new Error('Rebase report is malformed JSON');
+  }
+  const report = parseRebaseReportStrict(parsed);
+  return { rawText, report };
+};
+
+export const loadCommitsFile = async (commitsPath: string): Promise<ParsedCommitsFile> => {
+  const raw = await readFile(commitsPath, 'utf8');
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    throw new Error('Rebase report is malformed JSON');
+    throw new Error('Commits file is malformed JSON');
   }
+  return parseCommitsFileStrict(parsed);
+};
 
-  if (!parsed || typeof parsed !== 'object') {
-    throw new Error('Rebase report must be an object');
+export const loadGateResultsFile = async (
+  gatesPath: string,
+  requiredGateIds: string[],
+): Promise<ParsedGateResult[]> => {
+  const raw = await readFile(gatesPath, 'utf8');
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error('Gate results file is malformed JSON');
   }
-
-  const report = parsed as RebaseReport;
-  if (report.schemaVersion !== 1) {
-    throw new Error('Rebase report schemaVersion is unsupported');
-  }
-  if (!report.status || !report.summary || !report.commits || !report.requiredGates) {
-    throw new Error('Rebase report is missing required fields');
-  }
-
-  return report;
+  return parseGateResultsStrict(parsed, requiredGateIds);
 };
 
 export const assertEvidencePassing = (evidence: UpstreamRebaseEvidence) => {
