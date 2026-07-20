@@ -6,15 +6,59 @@ import { PlatformSecretService } from '@/server/enterprise/security/secret';
 
 import { throwEnterpriseError } from '../../guards/enterpriseErrors';
 import { assertRecentReauth } from '../../guards/reauth';
+import { containsEnterpriseSecretMaterial } from '../../security/redaction';
 import {
   AiCatalogAdminService,
   AiCatalogNotFoundError,
   AiCatalogResourceInUseError,
   AiCatalogValidationError,
 } from '../../services/aiCatalog/adminService';
+import { credentialStringLeaves } from '../../services/aiCatalog/credentialAdapter';
 import { sanitizeAiCatalogPersistedText } from '../../services/aiCatalog/persistentText';
-import { AiCatalogSecretManager } from '../../services/aiCatalog/secretManager';
+import {
+  AiCatalogSecretManager,
+  type AiSecretMutation,
+} from '../../services/aiCatalog/secretManager';
 import { PlatformAuditService } from '../../services/platformAudit';
+
+export const aiSecretMutationRequiresReauth = (mutation?: AiSecretMutation): boolean =>
+  mutation?.operation === 'replace' || mutation?.operation === 'clear';
+
+const safeDeniedReason = async (params: {
+  existingSecretTargetId?: string | null;
+  reason: string;
+  replacementSecrets?: unknown[];
+  serverDB: LobeChatDatabase;
+  targetId: string;
+}): Promise<string | null> => {
+  if (containsEnterpriseSecretMaterial(params.reason)) return null;
+
+  const credentials = [...(params.replacementSecrets ?? [])];
+  const replacementLeaves = credentials.flatMap(credentialStringLeaves).filter(Boolean);
+  if (replacementLeaves.some((value) => params.reason.includes(value))) return null;
+
+  const existingSecretTargetId =
+    params.existingSecretTargetId === undefined ? params.targetId : params.existingSecretTargetId;
+  if (existingSecretTargetId) {
+    try {
+      const provider = await new PlatformAiCatalogRepository(params.serverDB).getProvider(
+        existingSecretTargetId,
+      );
+      if (provider?.encryptedKeyVaults) {
+        const secretService = PlatformSecretService.fromEnvOrThrowIfEnterprise();
+        if (!secretService) return null;
+        credentials.push(
+          await new AiCatalogSecretManager(secretService).decrypt(provider.encryptedKeyVaults),
+        );
+      }
+    } catch {
+      return null;
+    }
+  }
+
+  const reason = sanitizeAiCatalogPersistedText(params.reason, credentials);
+  return containsEnterpriseSecretMaterial(reason) ? null : reason;
+};
 
 export const createService = (db: LobeChatDatabase): AiCatalogAdminService => {
   const secrets = PlatformSecretService.fromEnvOrThrowIfEnterprise();
@@ -63,7 +107,9 @@ export const assertDangerousReauth = async (params: {
   actorUserId: string;
   authenticatedAt?: Date | null;
   authMethod?: Parameters<typeof assertRecentReauth>[0]['authMethod'];
+  existingSecretTargetId?: string | null;
   reason: string;
+  replacementSecrets?: unknown[];
   serverDB: LobeChatDatabase;
   targetId: string;
 }) => {
@@ -74,21 +120,7 @@ export const assertDangerousReauth = async (params: {
     });
   } catch (error) {
     try {
-      let reason = sanitizeAiCatalogPersistedText(params.reason);
-      const secretService = PlatformSecretService.fromEnvOrThrowIfEnterprise();
-      const provider = await new PlatformAiCatalogRepository(params.serverDB).getProvider(
-        params.targetId,
-      );
-      if (secretService && provider?.encryptedKeyVaults) {
-        try {
-          const keyVaults = await new AiCatalogSecretManager(secretService).decrypt(
-            provider.encryptedKeyVaults,
-          );
-          reason = sanitizeAiCatalogPersistedText(reason, [keyVaults]);
-        } catch {
-          // Generic redaction above still applies when the stored secret is unreadable.
-        }
-      }
+      const reason = await safeDeniedReason(params);
       await new PlatformAuditService(params.serverDB).append({
         action: params.action,
         actorUserId: params.actorUserId,

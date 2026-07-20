@@ -74,9 +74,6 @@ const conditionalReauth = conditional(
   'Router checks recent authentication for sensitive input variants.',
   'Ordinary draft variants do not require the check.',
 );
-const sensitiveInputReauthGap = gap(
-  'Protected-value replace or clear variants do not require recent authentication.',
-);
 const missingAdminRateLimit = planned(
   'No shared administrative mutation limiter is wired; W8 must add one.',
 );
@@ -282,7 +279,7 @@ export const ADMIN_MUTATION_REGISTRY = {
     'admin.aiProviders.createDraft',
     'medium',
     'Create an AI provider draft.',
-    { reauth: sensitiveInputReauthGap },
+    { reauth: conditionalReauth },
   ),
   'admin.aiProviders.publish': dangerousMutation(
     'admin.aiProviders.publish',
@@ -306,7 +303,7 @@ export const ADMIN_MUTATION_REGISTRY = {
     'admin.aiProviders.updateDraft',
     'medium',
     'Change an AI provider draft.',
-    { reauth: sensitiveInputReauthGap },
+    { reauth: conditionalReauth },
   ),
   'admin.branding.publish': dangerousMutation(
     'admin.branding.publish',
@@ -399,7 +396,7 @@ export const ADMIN_MUTATION_REGISTRY = {
     'admin.identityProviders.create',
     'medium',
     'Create an identity provider draft.',
-    { reauth: sensitiveInputReauthGap },
+    { reauth: conditionalReauth },
   ),
   'admin.identityProviders.delete': dangerousMutation(
     'admin.identityProviders.delete',
@@ -434,7 +431,7 @@ export const ADMIN_MUTATION_REGISTRY = {
     'admin.identityProviders.update',
     'medium',
     'Change an identity provider draft.',
-    { reauth: sensitiveInputReauthGap },
+    { reauth: conditionalReauth },
   ),
   'admin.identityProviders.validateNetwork': validationMutation(
     'admin.identityProviders.validateNetwork',
