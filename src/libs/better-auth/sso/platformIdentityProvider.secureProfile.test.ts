@@ -11,6 +11,8 @@ import type { BetterAuthPlugin } from 'better-auth/types';
 import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import type { EnterpriseObservabilityEvent } from '@/server/enterprise/observability';
+import { setEnterprisePlatformObserverForTest } from '@/server/enterprise/observability';
 import {
   type PinnedTransport,
   type PinnedTransportResponse,
@@ -29,6 +31,7 @@ const publicAddress = '93.184.216.34';
 const unitNonce = 'unit-test-platform-oidc-nonce';
 
 afterEach(() => {
+  setEnterprisePlatformObserverForTest(null);
   vi.restoreAllMocks();
 });
 
@@ -72,6 +75,7 @@ const setup = async (options?: {
   omitStateProviderId?: boolean;
   stateProviderId?: string;
   token?: Record<string, unknown>;
+  transportFailurePath?: 'jwks' | 'token' | 'userinfo';
   userInfo?: Record<string, unknown>;
   useProtectedRouteState?: boolean;
 }) => {
@@ -120,6 +124,9 @@ const setup = async (options?: {
   };
   const transport = vi.fn<PinnedTransport>(async (request) => {
     if (request.url.pathname.endsWith('/token/')) {
+      if (options?.transportFailurePath === 'token') {
+        throw Object.assign(new Error('opaque transport failure'), { code: 'ECONNRESET' });
+      }
       const code = new URLSearchParams(request.body?.toString()).get('code');
       const nonce = code && tokenNoncesByCode.has(code) ? tokenNoncesByCode.get(code) : tokenNonce;
       const previousNonce = tokenNonce;
@@ -129,9 +136,15 @@ const setup = async (options?: {
       return jsonResponse(options?.token ?? { access_token: 'access-token', id_token: idToken });
     }
     if (request.url.pathname.endsWith('/jwks/')) {
+      if (options?.transportFailurePath === 'jwks') {
+        throw Object.assign(new Error('opaque transport failure'), { code: 'ECONNRESET' });
+      }
       return jsonResponse(options?.jwks ?? { keys: [publicJwk] });
     }
     if (request.url.pathname.endsWith('/userinfo/')) {
+      if (options?.transportFailurePath === 'userinfo') {
+        throw Object.assign(new Error('opaque transport failure'), { code: 'ECONNRESET' });
+      }
       expect(request.headers.Authorization).toBe('Bearer access-token');
       return jsonResponse(userInfo);
     }
@@ -178,6 +191,16 @@ const setup = async (options?: {
     sign,
     transport,
   };
+};
+
+const captureObservations = () => {
+  const events: EnterpriseObservabilityEvent[] = [];
+  setEnterprisePlatformObserverForTest({
+    record: (event) => {
+      events.push(event);
+    },
+  });
+  return events;
 };
 
 interface RouteHarnessOptions extends NonNullable<Parameters<typeof setup>[0]> {
@@ -370,6 +393,142 @@ const createRouteHarness = async (options?: RouteHarnessOptions) => {
 };
 
 describe('platform identity provider trusted profile', () => {
+  it('records one low-cardinality authenticated terminal for a production sign-in', async () => {
+    const events = captureObservations();
+    const harness = await createRouteHarness();
+    const flow = await harness.start();
+    harness.setTokenNonce(flow.authorizationUrl.searchParams.get('nonce')!);
+
+    const response = await harness.callback(flow);
+
+    expect(response.headers.get('location')).toBe('https://app.example.test/after-login');
+    expect(events).toEqual([{ outcome: 'success', stage: 'authenticated', type: 'oidc_login' }]);
+    expect(Object.keys(events[0]!).sort()).toEqual(['outcome', 'stage', 'type']);
+  });
+
+  it('isolates concurrent sign-in and account-link callbacks without counting the link', async () => {
+    const events = captureObservations();
+    const harness = await createRouteHarness();
+    const sessionCookie = await harness.authenticate();
+    const [signInFlow, linkFlow] = await Promise.all([
+      harness.start(),
+      harness.startLink(sessionCookie),
+    ]);
+    expect(linkFlow.authorizationUrl).not.toBeNull();
+    const signInNonce = signInFlow.authorizationUrl.searchParams.get('nonce')!;
+    const linkNonce = linkFlow.authorizationUrl!.searchParams.get('nonce')!;
+    harness.setTokenNonceForCode('sign-in-code', signInNonce);
+    harness.setTokenNonceForCode('link-code', linkNonce);
+
+    const [signInResponse, linkResponse] = await Promise.all([
+      harness.callback(signInFlow, { code: 'sign-in-code' }),
+      harness.callback(
+        { ...linkFlow, authorizationUrl: linkFlow.authorizationUrl! },
+        { code: 'link-code' },
+      ),
+    ]);
+
+    expect(signInResponse.headers.get('location')).toBe('https://app.example.test/after-login');
+    expect(linkResponse.headers.get('location')).toBe('https://app.example.test/after-link');
+    expect(events).toEqual([{ outcome: 'success', stage: 'authenticated', type: 'oidc_login' }]);
+  });
+
+  it.each([
+    [
+      'token response',
+      { token: { id_token: 'id-token-without-access-token' } },
+      { failureCategory: 'token_invalid', stage: 'token_exchange' },
+    ],
+    [
+      'token network',
+      { transportFailurePath: 'token' },
+      { failureCategory: 'network_failure', stage: 'token_exchange' },
+    ],
+    [
+      'JWKS network',
+      { transportFailurePath: 'jwks' },
+      { failureCategory: 'network_failure', stage: 'id_token_verification' },
+    ],
+    [
+      'userinfo network',
+      { transportFailurePath: 'userinfo' },
+      { failureCategory: 'network_failure', stage: 'userinfo' },
+    ],
+    [
+      'userinfo subject',
+      { userInfo: { sub: 'attacker-subject' } },
+      { failureCategory: 'subject_mismatch', stage: 'userinfo' },
+    ],
+    [
+      'mapped claims',
+      { userInfo: { mail: 'ada@attacker.test' } },
+      { failureCategory: 'claim_invalid', stage: 'authenticated' },
+    ],
+  ] as const)(
+    'records one sanitized terminal for a failed %s stage',
+    async (_label, options, expected) => {
+      const events = captureObservations();
+      const harness = await createRouteHarness(options);
+      const flow = await harness.start();
+      harness.setTokenNonce(flow.authorizationUrl.searchParams.get('nonce')!);
+
+      const response = await harness.callback(flow);
+
+      expect(response.headers.get('location')).not.toBe('https://app.example.test/after-login');
+      expect(events).toEqual([{ ...expected, outcome: 'failure', type: 'oidc_login' }]);
+      expect(Object.keys(events[0]!).sort()).toEqual([
+        'failureCategory',
+        'outcome',
+        'stage',
+        'type',
+      ]);
+      expect(JSON.stringify(events)).not.toMatch(
+        /corp-oidc|employee|ada|example\.test|authorization|nonce|state|code|secret/i,
+      );
+    },
+  );
+
+  it('keeps a throwing observer best-effort and preserves the successful callback', async () => {
+    const record = vi.fn(() => {
+      throw new Error('observer failure');
+    });
+    setEnterprisePlatformObserverForTest({ record });
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const harness = await createRouteHarness();
+    const flow = await harness.start();
+    harness.setTokenNonce(flow.authorizationUrl.searchParams.get('nonce')!);
+
+    const response = await harness.callback(flow);
+
+    expect(response.headers.get('location')).toBe('https://app.example.test/after-login');
+    expect(record).toHaveBeenCalledOnce();
+    expect(record).toHaveBeenCalledWith({
+      outcome: 'success',
+      stage: 'authenticated',
+      type: 'oidc_login',
+    });
+    expect(consoleError).toHaveBeenCalledOnce();
+  });
+
+  it('classifies a sign-in nonce mismatch once at ID-token verification', async () => {
+    const events = captureObservations();
+    const harness = await createRouteHarness();
+    const flow = await harness.start();
+    harness.setTokenNonce('wrong-sign-in-nonce');
+
+    const response = await harness.callback(flow);
+
+    expect(response.headers.get('location')).not.toBe('https://app.example.test/after-login');
+    expect(events).toEqual([
+      {
+        failureCategory: 'nonce_invalid',
+        outcome: 'failure',
+        stage: 'id_token_verification',
+        type: 'oidc_login',
+      },
+    ]);
+  });
+
   it('creates authorization and exchanges tokens without Better Auth discovery or token fetches', async () => {
     const { oauthProvider, transport } = await setup({
       token: { access_token: 'access-token', id_token: 'id-token' },
