@@ -2,6 +2,7 @@ import debug from 'debug';
 
 import type { PlatformResourceType } from '@/database/schemas/platform';
 import { getRedisConfig } from '@/envs/redis';
+import type { BaseRedisProvider, RedisConfig } from '@/libs/redis';
 import { initializeRedis } from '@/libs/redis';
 
 const log = debug('lobe-server:platform-config-invalidation');
@@ -52,6 +53,16 @@ export interface PlatformConfigVersionReader {
   getScopeVersion: (scope: string) => Promise<string>;
 }
 
+export interface PlatformConfigRedisDependencies {
+  getRedisConfig: () => RedisConfig;
+  initializeRedis: (config: RedisConfig) => Promise<BaseRedisProvider | null>;
+}
+
+const defaultRedisDependencies: PlatformConfigRedisDependencies = {
+  getRedisConfig,
+  initializeRedis,
+};
+
 /** Redis key builders for platform config versioning (local to enterprise). */
 export const platformConfigKeys = {
   globalVersion: () => 'platform:config:version',
@@ -93,14 +104,19 @@ export class InMemoryPlatformConfigInvalidationPublisher
  * Failures are logged and swallowed so publish transactions are not rolled back.
  */
 export class RedisPlatformConfigInvalidationPublisher implements PlatformConfigInvalidationPublisher {
+  constructor(
+    private readonly redisDependencies: PlatformConfigRedisDependencies = defaultRedisDependencies,
+  ) {}
+
   publish = async (event: PlatformConfigInvalidationEvent): Promise<void> => {
     try {
-      if (!getRedisConfig().enabled) {
+      const config = this.redisDependencies.getRedisConfig();
+      if (!config.enabled) {
         log('redis disabled; invalidation degraded resourceType=%s', event.resourceType);
         return;
       }
 
-      const redis = await initializeRedis(getRedisConfig());
+      const redis = await this.redisDependencies.initializeRedis(config);
       if (!redis) {
         log('redis unavailable; invalidation degraded resourceType=%s', event.resourceType);
         return;
@@ -154,6 +170,28 @@ export class RedisPlatformConfigInvalidationPublisher implements PlatformConfigI
   };
 }
 
+/** Redis-backed scope version reader used by the process-wide cache epoch helper. */
+export class RedisPlatformConfigVersionReader implements PlatformConfigVersionReader {
+  constructor(
+    private readonly redisDependencies: PlatformConfigRedisDependencies = defaultRedisDependencies,
+  ) {}
+
+  getScopeVersion = async (scope: string): Promise<string> => {
+    const [normalizedScope] = normalizeScopes([scope]);
+    if (!normalizedScope) return '0';
+
+    try {
+      const config = this.redisDependencies.getRedisConfig();
+      if (!config.enabled) return '0';
+      const redis = await this.redisDependencies.initializeRedis(config);
+      return (await redis?.get(platformConfigKeys.scopeVersion(normalizedScope))) ?? '0';
+    } catch (error) {
+      log('scope version read degraded errorClass=%s', getErrorClass(error));
+      return '0';
+    }
+  };
+}
+
 let defaultPublisher: PlatformConfigInvalidationPublisher | null = null;
 
 /**
@@ -195,12 +233,5 @@ export const getPlatformConfigScopeVersion = async (scope: string): Promise<stri
   if ('getScopeVersion' in publisher) {
     return (publisher as PlatformConfigVersionReader).getScopeVersion(normalizedScope);
   }
-  try {
-    if (!getRedisConfig().enabled) return '0';
-    const redis = await initializeRedis(getRedisConfig());
-    return (await redis?.get(platformConfigKeys.scopeVersion(normalizedScope))) ?? '0';
-  } catch (error) {
-    log('scope version read degraded errorClass=%s', getErrorClass(error));
-    return '0';
-  }
+  return new RedisPlatformConfigVersionReader().getScopeVersion(normalizedScope);
 };
