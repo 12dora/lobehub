@@ -16,6 +16,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  containOwnedLockSentinelOrFail,
   createOwnedLockSentinel,
   snapshotLockPath,
   snapshotsEqual,
@@ -28,11 +29,12 @@ describe('safe lock sentinel ownership protocol', () => {
   afterEach(() => {
     while (temps.length > 0) {
       const d = temps.pop()!;
+      // Exclusive owner of disposable isolated root removes whole root (owned + artifacts).
       rmSync(d, { force: true, recursive: true });
     }
   });
 
-  it('owned sentinel success: exclusive create, metadata stable, recovery-artifact cleanup', () => {
+  it('owned sentinel success: contained recovery artifact; lockPath NOT unlinked', () => {
     const root = mkdtempSync(path.join(tmpdir(), 'e2e-lock-owned-'));
     temps.push(root);
     const owned = createOwnedLockSentinel(root);
@@ -41,19 +43,27 @@ describe('safe lock sentinel ownership protocol', () => {
       const mid = snapshotLockPath(owned.lockPath);
       expect(snapshotsEqual(owned.snapshot, mid)).toBe(true);
       expect(readFileSync(owned.lockPath, 'utf8')).toBe(owned.token);
-      const result = unlinkOwnedLockSentinelOrFail(owned);
+
+      const result = containOwnedLockSentinelOrFail(owned);
       expect(result.status).toBe('contained');
-      expect(result.lockPathCleared).toBe(true);
-      expect(existsSync(owned.lockPath)).toBe(false);
-      // Proven owned content lives as recovery artifact (no final pathname-unlink race).
+      // Honest contract: contained ≠ path cleared
+      expect(result.originalLockPathUnlinked).toBe(false);
+      // Original lock pathname still present (hardlink of owned inode) until outer root cleanup
+      expect(existsSync(owned.lockPath)).toBe(true);
+      expect(readFileSync(owned.lockPath, 'utf8')).toBe(owned.token);
+      // Proven owned content also lives as recovery artifact
       expect(existsSync(result.quarantinePath)).toBe(true);
       expect(readFileSync(result.quarantinePath, 'utf8')).toBe(owned.token);
-      // Outer exclusive owner of isolated root removes the artifact.
-      rmSync(result.quarantineDir, { force: true, recursive: true });
-      expect(existsSync(result.quarantinePath)).toBe(false);
+      // Alias export remains the same implementation
+      expect(unlinkOwnedLockSentinelOrFail).toBe(containOwnedLockSentinelOrFail);
     } finally {
       owned.closeFd();
     }
+    // Outer exclusive owner of unique mkdtemp root removes residual paths
+    rmSync(root, { force: true, recursive: true });
+    const idx = temps.indexOf(root);
+    if (idx >= 0) temps.splice(idx, 1);
+    expect(existsSync(root)).toBe(false);
   });
 
   it('foreign pre-existing lock: read-only, never write or unlink', () => {
@@ -80,7 +90,9 @@ describe('safe lock sentinel ownership protocol', () => {
       unlinkSync(owned.lockPath);
       symlinkSync(foreignTarget, owned.lockPath);
 
-      expect(() => unlinkOwnedLockSentinelOrFail(owned)).toThrow(/symlink|mismatch|token/i);
+      expect(() => containOwnedLockSentinelOrFail(owned)).toThrow(
+        /symlink|mismatch|token|contain/i,
+      );
       expect(existsSync(foreignTarget)).toBe(true);
       expect(readFileSync(foreignTarget, 'utf8')).toBe('foreign\n');
     } finally {
@@ -95,13 +107,13 @@ describe('safe lock sentinel ownership protocol', () => {
     const foreignBytes = 'FOREIGN_REPLACEMENT_REGULAR_FILE\n';
     try {
       expect(() =>
-        unlinkOwnedLockSentinelOrFail(owned, {
+        containOwnedLockSentinelOrFail(owned, {
           afterVerifyBeforeDestructive: () => {
             unlinkSync(owned.lockPath);
             writeFileSync(owned.lockPath, foreignBytes, 'utf8');
           },
         }),
-      ).toThrow(/refusing unlink|replaced|identity|mismatch/i);
+      ).toThrow(/refusing contain|replaced|identity|mismatch/i);
 
       expect(existsSync(owned.lockPath)).toBe(true);
       expect(readFileSync(owned.lockPath, 'utf8')).toBe(foreignBytes);
@@ -118,13 +130,13 @@ describe('safe lock sentinel ownership protocol', () => {
     writeFileSync(foreignTarget, 'foreign-symlink-target\n', 'utf8');
     try {
       expect(() =>
-        unlinkOwnedLockSentinelOrFail(owned, {
+        containOwnedLockSentinelOrFail(owned, {
           afterVerifyBeforeDestructive: () => {
             unlinkSync(owned.lockPath);
             symlinkSync(foreignTarget, owned.lockPath);
           },
         }),
-      ).toThrow(/refusing unlink|symlink|replaced|identity|mismatch/i);
+      ).toThrow(/refusing contain|symlink|replaced|identity|mismatch/i);
 
       expect(existsSync(foreignTarget)).toBe(true);
       expect(readFileSync(foreignTarget, 'utf8')).toBe('foreign-symlink-target\n');
@@ -141,19 +153,18 @@ describe('safe lock sentinel ownership protocol', () => {
     let stagedPath = '';
     try {
       expect(() =>
-        unlinkOwnedLockSentinelOrFail(owned, {
+        containOwnedLockSentinelOrFail(owned, {
           afterVerifyBeforeDestructive: (ctx) => {
             stagedPath = ctx.quarantinePath;
             mkdirSync(ctx.quarantineDir, { recursive: false, mode: 0o700 });
             writeFileSync(ctx.quarantinePath, foreignQuarantine, 'utf8');
           },
         }),
-      ).toThrow(/quarantine dir collision|no-replace|refusing unlink/i);
+      ).toThrow(/quarantine dir collision|no-replace|refusing contain/i);
 
       expect(stagedPath).toBeTruthy();
       expect(existsSync(stagedPath)).toBe(true);
       expect(readFileSync(stagedPath, 'utf8')).toBe(foreignQuarantine);
-      // Owned lock path untouched
       expect(existsSync(owned.lockPath)).toBe(true);
       expect(readFileSync(owned.lockPath, 'utf8')).toBe(owned.token);
     } finally {
@@ -161,53 +172,98 @@ describe('safe lock sentinel ownership protocol', () => {
     }
   });
 
-  it('boundary: foreign regular/symlink at lockPath before clear — both preserved, no overwrite', () => {
+  it('boundary: foreign regular at lockPath after containment (RR11 before-clear seam) — both preserved', () => {
     const root = mkdtempSync(path.join(tmpdir(), 'e2e-lock-foreign-before-clear-'));
     temps.push(root);
     const owned = createOwnedLockSentinel(root);
     const foreignBytes = 'FOREIGN_BEFORE_CLEAR\n';
     try {
-      const result = unlinkOwnedLockSentinelOrFail(owned, {
+      const result = containOwnedLockSentinelOrFail(owned, {
         afterProofBeforeClear: (ctx) => {
-          // Owned hardlinked to quarantine; replace original lock path with foreign.
           unlinkSync(ctx.lockPath);
           writeFileSync(ctx.lockPath, foreignBytes, 'utf8');
         },
       });
       expect(result.status).toBe('contained');
-      expect(result.lockPathCleared).toBe(false);
-      // Foreign at original path survives (clear skipped — identity mismatch)
+      expect(result.originalLockPathUnlinked).toBe(false);
       expect(existsSync(owned.lockPath)).toBe(true);
       expect(readFileSync(owned.lockPath, 'utf8')).toBe(foreignBytes);
-      // Owned recovery artifact also survives
       expect(existsSync(result.quarantinePath)).toBe(true);
       expect(readFileSync(result.quarantinePath, 'utf8')).toBe(owned.token);
-      rmSync(result.quarantineDir, { force: true, recursive: true });
     } finally {
       owned.closeFd();
     }
   });
 
-  it('boundary: foreign symlink at lockPath before clear — symlink+target survive', () => {
+  it('boundary: foreign symlink at lockPath after containment (RR11 before-clear seam) — target survives', () => {
     const root = mkdtempSync(path.join(tmpdir(), 'e2e-lock-sym-before-clear-'));
     temps.push(root);
     const owned = createOwnedLockSentinel(root);
     const foreignTarget = path.join(root, 'foreign-sym-target');
     writeFileSync(foreignTarget, 'foreign-sym-target-bytes\n', 'utf8');
     try {
-      const result = unlinkOwnedLockSentinelOrFail(owned, {
+      const result = containOwnedLockSentinelOrFail(owned, {
         afterProofBeforeClear: (ctx) => {
           unlinkSync(ctx.lockPath);
           symlinkSync(foreignTarget, ctx.lockPath);
         },
       });
       expect(result.status).toBe('contained');
-      expect(result.lockPathCleared).toBe(false);
+      expect(result.originalLockPathUnlinked).toBe(false);
       expect(lstatSync(owned.lockPath).isSymbolicLink()).toBe(true);
       expect(existsSync(foreignTarget)).toBe(true);
       expect(readFileSync(foreignTarget, 'utf8')).toBe('foreign-sym-target-bytes\n');
       expect(readFileSync(result.quarantinePath, 'utf8')).toBe(owned.token);
-      rmSync(result.quarantineDir, { force: true, recursive: true });
+    } finally {
+      owned.closeFd();
+    }
+  });
+
+  it('final-window: foreign regular replaces lockPath after last identity observation — not removed', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'e2e-lock-final-window-file-'));
+    temps.push(root);
+    const owned = createOwnedLockSentinel(root);
+    const foreignBytes = 'FOREIGN_FINAL_WINDOW_REGULAR\n';
+    try {
+      // Hook sits exactly at the former check-then-unlink site (after last quarantine proof).
+      const result = containOwnedLockSentinelOrFail(owned, {
+        afterContainmentProofBeforeReturn: (ctx) => {
+          unlinkSync(ctx.lockPath);
+          writeFileSync(ctx.lockPath, foreignBytes, 'utf8');
+        },
+      });
+      expect(result.status).toBe('contained');
+      expect(result.originalLockPathUnlinked).toBe(false);
+      // Production must not remove/overwrite the foreign file
+      expect(existsSync(owned.lockPath)).toBe(true);
+      expect(readFileSync(owned.lockPath, 'utf8')).toBe(foreignBytes);
+      expect(readFileSync(result.quarantinePath, 'utf8')).toBe(owned.token);
+    } finally {
+      owned.closeFd();
+    }
+  });
+
+  it('final-window: foreign symlink replaces lockPath after last identity observation — target survives', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'e2e-lock-final-window-sym-'));
+    temps.push(root);
+    const owned = createOwnedLockSentinel(root);
+    const foreignTarget = path.join(root, 'foreign-final-window-target');
+    writeFileSync(foreignTarget, 'foreign-final-window-target-bytes\n', 'utf8');
+    try {
+      const result = containOwnedLockSentinelOrFail(owned, {
+        afterContainmentProofBeforeReturn: (ctx) => {
+          unlinkSync(ctx.lockPath);
+          symlinkSync(foreignTarget, ctx.lockPath);
+        },
+      });
+      expect(result.status).toBe('contained');
+      expect(result.originalLockPathUnlinked).toBe(false);
+      expect(lstatSync(owned.lockPath).isSymbolicLink()).toBe(true);
+      expect(existsSync(foreignTarget)).toBe(true);
+      expect(readFileSync(foreignTarget, 'utf8')).toBe('foreign-final-window-target-bytes\n');
+      // Symlink itself not removed
+      expect(existsSync(owned.lockPath)).toBe(true);
+      expect(readFileSync(result.quarantinePath, 'utf8')).toBe(owned.token);
     } finally {
       owned.closeFd();
     }
@@ -221,20 +277,19 @@ describe('safe lock sentinel ownership protocol', () => {
     let swappedPath = '';
     try {
       expect(() =>
-        unlinkOwnedLockSentinelOrFail(owned, {
+        containOwnedLockSentinelOrFail(owned, {
           afterProofBeforeDispose: (ctx) => {
             swappedPath = ctx.quarantinePath;
             unlinkSync(ctx.quarantinePath);
             writeFileSync(ctx.quarantinePath, foreignBytes, 'utf8');
           },
         }),
-      ).toThrow(/swapped after proof|refusing unlink/i);
+      ).toThrow(/swapped after proof|refusing contain/i);
 
       expect(swappedPath).toBeTruthy();
       expect(existsSync(swappedPath)).toBe(true);
       expect(readFileSync(swappedPath, 'utf8')).toBe(foreignBytes);
-      // No uncontrolled destruction of foreign; lock path was cleared of owned before swap
-      // Owned fd still held by caller — no claim of foreign deletion.
+      // lockPath still never unlinked by production (owned hardlink or residual)
       expect(
         readdirSync(path.join(root, '.next'), { withFileTypes: true }).some((d) => d.isDirectory()),
       ).toBe(true);
