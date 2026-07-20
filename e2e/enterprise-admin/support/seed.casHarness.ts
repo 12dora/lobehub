@@ -94,7 +94,8 @@ export const createCasMinimalSchema = async (databaseUrl: string): Promise<void>
         user_id text,
         role_id text REFERENCES rbac_roles(id) ON DELETE CASCADE,
         workspace_id text,
-        created_at timestamptz
+        created_at timestamptz NOT NULL DEFAULT NOW(),
+        expires_at timestamptz
       );
       CREATE TABLE IF NOT EXISTS auth_sessions (
         id text PRIMARY KEY,
