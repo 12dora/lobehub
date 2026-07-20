@@ -719,19 +719,26 @@ export const casRestoreGlobalDb = async (
       }
     }
 
-    // 3b) Delete suite-created user_role links — full after-state CAS incl. created_at
+    // 3b) Delete suite-created user_role links — full after-state CAS (every stored column)
     for (const link of manifest.createdUserRoles ?? []) {
       const current = await query(
-        `SELECT id, user_id, role_id, workspace_id, created_at
+        `SELECT id, user_id, role_id, workspace_id, created_at, expires_at
            FROM rbac_user_roles WHERE id = $1::uuid LIMIT 1`,
         [link.id],
       );
       if (!current.rows[0]) continue;
       const cur = current.rows[0];
-      const curCreatedAt = tsIso(cur.created_at);
-      if (curCreatedAt !== link.createdAt || String(cur.user_id) !== link.userId) {
+      const curBase = {
+        createdAt: tsIso(cur.created_at),
+        expiresAt: cur.expires_at == null ? null : tsIso(cur.expires_at),
+        id: String(cur.id),
+        roleId: String(cur.role_id),
+        userId: String(cur.user_id),
+        workspaceId: cur.workspace_id == null ? null : String(cur.workspace_id),
+      };
+      if (userRoleLinkFingerprint(curBase) !== link.fingerprint) {
         throw new Error(
-          `CAS restore conflict: user_role ${link.id} after-state drifted — refuse delete`,
+          `CAS restore conflict: user_role ${link.id} after-state drifted (fingerprint) — refuse delete`,
         );
       }
       const deleted = await query(
@@ -741,8 +748,9 @@ export const casRestoreGlobalDb = async (
             AND role_id = $3
             AND workspace_id IS NOT DISTINCT FROM $4
             AND created_at = $5::timestamptz
+            AND expires_at IS NOT DISTINCT FROM $6::timestamptz
           RETURNING id`,
-        [link.id, link.userId, link.roleId, link.workspaceId, link.createdAt],
+        [link.id, link.userId, link.roleId, link.workspaceId, link.createdAt, link.expiresAt],
       );
       if (deleted.rowCount !== 1) {
         throw new Error(
@@ -938,7 +946,13 @@ export type DurableRestoreHandle = {
   abortRestoreWait: () => void;
   /** Last reconcile error when ambiguous outcome cannot be proven. */
   reconcileError?: string;
+  /** Read-only: number of active settle timers owned by restore hooks. */
+  activeSettleTimers: number;
 };
+
+/** Module-level settle timer bookkeeping for tests (owned restore timers only). */
+let globalActiveSettleTimers = 0;
+export const getActiveSettleTimerCount = (): number => globalActiveSettleTimers;
 
 /** Create an empty durable restore handle — register on lifecycle BEFORE calling seed. */
 export const createDurableRestoreHandle = (databaseUrl: string): DurableRestoreHandle => {
@@ -951,6 +965,7 @@ export const createDurableRestoreHandle = (databaseUrl: string): DurableRestoreH
     abortRestoreWait: () => {
       handle.markSettled();
     },
+    activeSettleTimers: 0,
     commitPhase: 'notStarted',
     committed: false,
     databaseUrl,
@@ -966,6 +981,20 @@ export const createDurableRestoreHandle = (databaseUrl: string): DurableRestoreH
     whenSettled,
   };
   return handle;
+};
+
+/**
+ * Wait for optional filesystem barrier (test seam for hang after commitStarted / post-COMMIT).
+ * Release file aborts wait; deadline prevents infinite hang in production misuse.
+ */
+const waitBarrierDir = async (dir: string, markerName: string, maxMs: number): Promise<void> => {
+  const { writeFileSync, existsSync } = await import('node:fs');
+  writeFileSync(`${dir}/${markerName}`, '1', 'utf8');
+  const release = `${dir}/release`;
+  const deadline = Date.now() + maxMs;
+  while (!existsSync(release) && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
 };
 
 /**
@@ -1192,18 +1221,19 @@ const seedEnterpriseAdminSuiteInner = async (
       workspaceId: null | string;
     }) => {
       const linkId = randomUUID();
+      // RETURN every stored column (id, user_id, role_id, workspace_id, created_at, expires_at).
       const inserted = await pool.query(
-        `INSERT INTO rbac_user_roles (id, user_id, role_id, workspace_id, created_at)
-         VALUES ($1::uuid, $2, $3, $4, $5)
+        `INSERT INTO rbac_user_roles (id, user_id, role_id, workspace_id, created_at, expires_at)
+         VALUES ($1::uuid, $2, $3, $4, $5, NULL)
          ON CONFLICT DO NOTHING
-         RETURNING id, user_id, role_id, workspace_id, created_at`,
+         RETURNING id, user_id, role_id, workspace_id, created_at, expires_at`,
         [linkId, params.userId, params.roleId, params.workspaceId, now],
       );
       if (inserted.rows[0]) {
         const row = inserted.rows[0];
         const base = {
           createdAt: tsIso(row.created_at),
-          expiresAt: null as null,
+          expiresAt: row.expires_at == null ? null : tsIso(row.expires_at),
           id: String(row.id),
           roleId: String(row.role_id),
           userId: String(row.user_id),
@@ -1417,24 +1447,57 @@ const seedEnterpriseAdminSuiteInner = async (
     durableRestore.manifest = journal;
     durableRestore.seed = suiteSeed;
 
-    // State machine: mark commitStarted BEFORE issuing COMMIT (no silent "not committed").
+    // State machine: mark commitStarted synchronously BEFORE sending COMMIT SQL.
     durableRestore.commitPhase = 'commitStarted';
 
-    if (process.env.E2E_CAS_FORCE_COMMIT_TIMEOUT === '1') {
-      // Simulate COMMIT timeout after it was issued: journal kept, phase ambiguous.
+    // --- Deterministic commit protocol seams (default path: real COMMIT then arm) ---
+    // 1) Pending commitStarted without server COMMIT (settle-timeout / hang tests).
+    if (process.env.E2E_CAS_COMMIT_PENDING_HANG_DIR) {
+      durableRestore.commitPhase = 'commitStarted';
+      await waitBarrierDir(process.env.E2E_CAS_COMMIT_PENDING_HANG_DIR, 'commit-started', 120_000);
+      // If released without force-abort, fall through is not used — tests release after cleanup.
+      throw new Error(
+        'commitStarted hang released without COMMIT (journal preserved, phase commitStarted/ambiguous)',
+      );
+    }
+
+    // 2) Real server ROLLBACK after commitStarted (COMMIT attempt path ends rolled-back on server).
+    //    Sends a real end-of-txn query; does not mark committed; reconcile sees before-state.
+    if (process.env.E2E_CAS_COMMIT_ATTEMPT_ROLLBACK === '1') {
+      await pool.query('ROLLBACK');
       durableRestore.commitPhase = 'ambiguous';
-      throw new Error('forced COMMIT timeout after commitStarted (journal preserved, ambiguous)');
+      durableRestore.committed = false;
+      throw new Error(
+        'commit attempt terminated with server ROLLBACK (ambiguous; journal preserved)',
+      );
     }
 
     try {
+      // 3) Production path: send COMMIT to PostgreSQL (must complete on server before arm).
       await pool.query('COMMIT');
-      // Synchronous arm — no await between COMMIT resolve and committed=true.
+
+      // 4) Server COMMIT landed; optionally withhold client arm (ambiguous until reconcile).
+      if (process.env.E2E_CAS_COMMIT_LANDED_CLIENT_UNKNOWN === '1') {
+        durableRestore.commitPhase = 'ambiguous';
+        durableRestore.committed = false;
+        const hangDir = process.env.E2E_CAS_COMMIT_LANDED_HANG_DIR;
+        if (hangDir) {
+          await waitBarrierDir(hangDir, 'commit-landed', 120_000);
+        }
+        throw new Error(
+          'server COMMIT landed but client result withheld (ambiguous; journal restorable)',
+        );
+      }
+
+      // Synchronous arm — no await between COMMIT resolve and committed=true (default path).
       durableRestore.commitPhase = 'committed';
       durableRestore.committed = true;
     } catch (commitError) {
-      // COMMIT rejected after being issued — never infer rolledBack without reconcile.
-      durableRestore.commitPhase = 'ambiguous';
-      durableRestore.committed = false;
+      // COMMIT rejected or withheld after being issued — never infer rolledBack without reconcile.
+      if (durableRestore.commitPhase !== 'committed') {
+        durableRestore.commitPhase = 'ambiguous';
+        durableRestore.committed = false;
+      }
       throw commitError;
     }
   } catch (error) {
@@ -1506,19 +1569,36 @@ export const cleanupEnterpriseAdminSuite = async (
   manifest?: SuiteGlobalWriteManifest,
 ): Promise<void> => {
   if (!seed) return;
-  // CAS-delete suite-owned links/roles/permissions first (full after-state).
+  // CAS-delete suite-owned links/roles/permissions first (full after-state only).
   if (manifest) {
     await casRestoreGlobalDb(databaseUrl, manifest);
   }
 
   const pool = new Pool({ connectionString: databaseUrl });
   const ids = [seed.ordinary.id, seed.owner.id, seed.superAdmin.id, seed.auditor.id];
+  const ownedUserRoleIds = new Set((manifest?.createdUserRoles ?? []).map((l) => l.id));
   try {
     await pool.query('BEGIN');
     await pool.query(`DELETE FROM auth_sessions WHERE user_id = ANY($1::text[])`, [ids]);
-    // Residual suite user_roles only (tracked ones already CAS-deleted). Foreign links on
-    // non-suite users are never matched by this predicate.
-    await pool.query(`DELETE FROM rbac_user_roles WHERE user_id = ANY($1::text[])`, [ids]);
+
+    // Never broad-delete user_roles by suite user_id — only RETURNING-owned rows (via CAS above).
+    // Any remaining row on a suite user means foreign dependency or incomplete CAS: fail closed.
+    const residual = await pool.query(
+      `SELECT id, user_id, role_id FROM rbac_user_roles WHERE user_id = ANY($1::text[])`,
+      [ids],
+    );
+    if (residual.rows.length > 0) {
+      const foreign = residual.rows.filter((r) => !ownedUserRoleIds.has(String(r.id)));
+      if (foreign.length > 0) {
+        throw new Error(
+          `CAS cleanup conflict: non-owned user_role ${foreign[0].id} still references suite user ${foreign[0].user_id} — refuse user delete`,
+        );
+      }
+      throw new Error(
+        `CAS cleanup conflict: suite-owned user_role ${residual.rows[0].id} still present after CAS restore — refuse user delete`,
+      );
+    }
+
     await pool.query(`DELETE FROM accounts WHERE user_id = ANY($1::text[])`, [ids]);
     await pool.query(`DELETE FROM users WHERE id = ANY($1::text[])`, [ids]);
     await pool.query(`DELETE FROM rbac_roles WHERE workspace_id = $1`, [seed.workspaceId]);
@@ -1604,13 +1684,19 @@ export const registerSeedRestoreOnLifecycle = (
             timedOut = true;
             resolve();
           }, settleTimeoutMs);
+          globalActiveSettleTimers += 1;
+          durableRestore.activeSettleTimers += 1;
           if (typeof timer === 'object' && 'unref' in timer) {
             (timer as { unref: () => void }).unref();
           }
         }),
       ]);
     } finally {
-      if (timer) clearTimeout(timer);
+      if (timer) {
+        clearTimeout(timer);
+        globalActiveSettleTimers = Math.max(0, globalActiveSettleTimers - 1);
+        durableRestore.activeSettleTimers = Math.max(0, durableRestore.activeSettleTimers - 1);
+      }
     }
 
     if (needsReconcile(durableRestore)) {
