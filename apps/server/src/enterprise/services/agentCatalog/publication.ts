@@ -8,6 +8,7 @@ import type {
   AdminPlatformAgentPublishInput,
   AdminPlatformAgentRollbackInput,
 } from '../../contracts/platformAgents';
+import { classifyEnterpriseError, observeEnterprisePlatformEvent } from '../../observability';
 import { PlatformAuditService } from '../platformAudit';
 import {
   getPlatformConfigInvalidationPublisher,
@@ -128,7 +129,30 @@ export class PlatformAgentPublicationService {
     }
   };
 
+  private observePublication = (params: {
+    error?: unknown;
+    operation: 'publish' | 'rollback';
+    startedAt: number;
+  }): void => {
+    const conflict = params.error instanceof PlatformAgentRevisionConflictError;
+    observeEnterprisePlatformEvent({
+      domain: 'agent_catalog',
+      durationMs: Date.now() - params.startedAt,
+      ...(params.error
+        ? {
+            errorClass: conflict
+              ? ('ConflictError' as const)
+              : classifyEnterpriseError(params.error),
+          }
+        : {}),
+      operation: params.operation,
+      outcome: params.error ? (conflict ? 'conflict' : 'failure') : 'success',
+      type: 'config_publish',
+    });
+  };
+
   publish = async (actorUserId: string, input: AdminPlatformAgentPublishInput) => {
+    const startedAt = Date.now();
     try {
       const result = await this.db.transaction(async (tx) => {
         const repository = new PlatformAgentCatalogRepository(tx);
@@ -181,6 +205,7 @@ export class PlatformAgentPublicationService {
         return { agentId: locked.id, revision: identity.revision, versionId: version.id };
       });
       await this.invalidate(result.agentId, result.revision);
+      this.observePublication({ operation: 'publish', startedAt });
       return result;
     } catch (error) {
       await this.appendFailureAudit({
@@ -189,11 +214,13 @@ export class PlatformAgentPublicationService {
         reason: input.reason,
         targetId: input.agentId,
       });
+      this.observePublication({ error, operation: 'publish', startedAt });
       throw error;
     }
   };
 
   rollback = async (actorUserId: string, input: AdminPlatformAgentRollbackInput) => {
+    const startedAt = Date.now();
     try {
       const result = await this.db.transaction(async (tx) => {
         const repository = new PlatformAgentCatalogRepository(tx);
@@ -242,6 +269,7 @@ export class PlatformAgentPublicationService {
         return { agentId: locked.id, revision: identity.revision, versionId: target.id };
       });
       await this.invalidate(result.agentId, result.revision);
+      this.observePublication({ operation: 'rollback', startedAt });
       return result;
     } catch (error) {
       await this.appendFailureAudit({
@@ -250,6 +278,7 @@ export class PlatformAgentPublicationService {
         reason: input.reason,
         targetId: input.agentId,
       });
+      this.observePublication({ error, operation: 'rollback', startedAt });
       throw error;
     }
   };
