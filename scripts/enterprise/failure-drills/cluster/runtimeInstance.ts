@@ -19,7 +19,11 @@ import {
 } from '@/server/enterprise/services/platformInstance/runtimeReporter';
 import { PlatformInstanceStatusService } from '@/server/enterprise/services/platformInstance/statusService';
 
-import type { ClusterRuntimeRequest, ClusterRuntimeValue } from './protocol';
+import {
+  type ClusterRuntimeRequest,
+  type ClusterRuntimeValue,
+  decodeClusterRuntimeRequestFrame,
+} from './protocol';
 
 const CLEANUP_TIMEOUT_MS = 5_000;
 const SAFE_SCHEMA = /^o05b_[a-f0-9]{24}$/;
@@ -50,15 +54,6 @@ const withTimeout = async (operation: Promise<unknown>): Promise<void> => {
 
 const writeMessage = (message: unknown): void => {
   process.stdout.write(`${JSON.stringify(message)}\n`);
-};
-
-const isRequest = (value: unknown): value is ClusterRuntimeRequest => {
-  if (!value || typeof value !== 'object') return false;
-  const request = value as Record<string, unknown>;
-  return (
-    Number.isSafeInteger(request.id) &&
-    (request.type === 'load' || request.type === 'shutdown' || request.type === 'status')
-  );
 };
 
 const main = async (): Promise<void> => {
@@ -135,6 +130,7 @@ const main = async (): Promise<void> => {
         return {
           branding: {
             degraded: domain.counts.degraded,
+            domain: 'branding',
             diverged: domain.counts.diverged,
             fresh: domain.counts.fresh,
             matching: domain.counts.matching,
@@ -153,15 +149,23 @@ const main = async (): Promise<void> => {
 
   const lines = createInterface({ input: process.stdin, terminal: false });
   let tail = Promise.resolve();
+  const terminateForProtocolError = (): void => {
+    process.stderr.write('cluster_runtime_protocol_error\n');
+    process.exitCode = 1;
+    lines.close();
+  };
   lines.on('line', (line) => {
     tail = tail.then(async () => {
-      let request: unknown;
-      try {
-        request = JSON.parse(line);
-      } catch {
+      const frame = decodeClusterRuntimeRequestFrame(line);
+      if (frame.kind === 'terminate') {
+        terminateForProtocolError();
         return;
       }
-      if (!isRequest(request)) return;
+      if (frame.kind === 'reject') {
+        writeMessage({ errorCategory: 'protocol_error', id: frame.id, ok: false, type: 'result' });
+        return;
+      }
+      const { request } = frame;
       try {
         const value = await execute(request.type);
         writeMessage({ id: request.id, ok: true, type: 'result', value });
