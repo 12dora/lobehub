@@ -17,7 +17,13 @@ interface GitResult {
   stdout: string;
 }
 
-const runGit = (cwd: string | undefined, args: string[]): Promise<GitResult> =>
+interface GitBufferResult {
+  code: number;
+  stderr: Buffer;
+  stdout: Buffer;
+}
+
+const runGitBuffers = (cwd: string | undefined, args: string[]): Promise<GitBufferResult> =>
   new Promise((resolve, reject) => {
     const child = spawn('git', ['--no-optional-locks', ...(cwd ? ['-C', cwd] : []), ...args], {
       env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
@@ -32,11 +38,20 @@ const runGit = (cwd: string | undefined, args: string[]): Promise<GitResult> =>
     child.once('close', (code) => {
       resolve({
         code: code ?? 2,
-        stderr: Buffer.concat(stderr).toString('utf8'),
-        stdout: Buffer.concat(stdout).toString('utf8'),
+        stderr: Buffer.concat(stderr),
+        stdout: Buffer.concat(stdout),
       });
     });
   });
+
+const runGit = async (cwd: string | undefined, args: string[]): Promise<GitResult> => {
+  const result = await runGitBuffers(cwd, args);
+  return {
+    code: result.code,
+    stderr: result.stderr.toString('utf8'),
+    stdout: result.stdout.toString('utf8'),
+  };
+};
 
 const gitOutput = async (cwd: string | undefined, args: string[], failure: string) => {
   const result = await runGit(cwd, args);
@@ -44,6 +59,23 @@ const gitOutput = async (cwd: string | undefined, args: string[], failure: strin
     throw new Error(failure);
   }
   return result.stdout.trim();
+};
+
+/**
+ * Read raw `git status --porcelain=v1 -z` stdout bytes.
+ * Never UTF-8-decode or trim — leading spaces and non-UTF8 path bytes must be preserved.
+ */
+export const readRawPorcelainStatus = async (repositoryRoot: string): Promise<Buffer> => {
+  const result = await runGitBuffers(repositoryRoot, [
+    'status',
+    '--porcelain=v1',
+    '-z',
+    '--untracked-files=all',
+  ]);
+  if (result.code !== 0) {
+    throw new Error('Unable to read source status');
+  }
+  return result.stdout;
 };
 
 export interface ResolvedCommits {
@@ -67,15 +99,16 @@ export interface FetchUpstreamOptions {
 
 export interface SourceSnapshot {
   head: string;
-  /** SHA-256 of the exact `git status --porcelain=v1 -z` bytes (not a length). */
+  /** SHA-256 of the exact raw `git status --porcelain=v1 -z` stdout Buffer (not a length). */
   statusDigest: string;
 }
 
-export const digestPorcelainStatus = (porcelain: string): string =>
-  createHash('sha256').update(porcelain, 'utf8').digest('hex');
+/** Hash raw porcelain status bytes. Accept Buffer only — never decode/trim first. */
+export const digestPorcelainStatus = (porcelain: Buffer): string =>
+  createHash('sha256').update(porcelain).digest('hex');
 
 /**
- * Capture HEAD + porcelain digest. Source must already be clean (empty porcelain).
+ * Capture HEAD + raw porcelain digest. Source must already be clean (empty porcelain).
  */
 export const captureSourceSnapshot = async (repositoryRoot: string): Promise<SourceSnapshot> => {
   const head = await gitOutput(
@@ -83,11 +116,7 @@ export const captureSourceSnapshot = async (repositoryRoot: string): Promise<Sou
     ['rev-parse', '--verify', '--quiet', '--end-of-options', 'HEAD^{commit}'],
     'Unable to read source HEAD',
   );
-  const status = await gitOutput(
-    repositoryRoot,
-    ['status', '--porcelain=v1', '-z', '--untracked-files=all'],
-    'Unable to read source status',
-  );
+  const status = await readRawPorcelainStatus(repositoryRoot);
   if (status.length > 0) {
     throw new Error('Source worktree must be clean before dry-run integration work');
   }
@@ -103,11 +132,7 @@ export const assertSourceUnchanged = async (
     ['rev-parse', '--verify', '--quiet', '--end-of-options', 'HEAD^{commit}'],
     'Unable to read source HEAD',
   );
-  const status = await gitOutput(
-    repositoryRoot,
-    ['status', '--porcelain=v1', '-z', '--untracked-files=all'],
-    'Unable to read source status',
-  );
+  const status = await readRawPorcelainStatus(repositoryRoot);
   const statusDigest = digestPorcelainStatus(status);
   if (head !== snapshot.head) {
     throw new Error('Source worktree HEAD changed during dry-run');
