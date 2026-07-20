@@ -1,7 +1,7 @@
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 
-import type { Browser, Page } from '@playwright/test';
+import type { Browser, Cookie, Page } from '@playwright/test';
 import { expect } from '@playwright/test';
 
 import { VIEWPORTS } from './selectors';
@@ -45,7 +45,7 @@ export type DeviceMode = 'desktop' | 'mobile';
 export const captureThemeDeviceMatrix = async (params: {
   browser: Browser;
   baseURL: string;
-  cookies: Awaited<ReturnType<Page['context']>['cookies']> | undefined;
+  cookies: Cookie[] | undefined;
   prepare: (page: Page) => Promise<void>;
   slug: string;
 }): Promise<string[]> => {
