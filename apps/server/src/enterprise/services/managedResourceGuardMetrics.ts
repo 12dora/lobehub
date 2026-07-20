@@ -3,6 +3,7 @@ import debug from 'debug';
 import type { ManagedResourceKind } from '@/const/platform/managedResources';
 
 import type { ManagedMutationClassification } from '../guards/managedResourceMutationRegistry';
+import { observeEnterprisePlatformEvent } from '../observability';
 
 const log = debug('lobe-server:managed-resource-guard');
 
@@ -47,12 +48,25 @@ export class InMemoryManagedResourceGuardMetricSink implements ManagedResourceGu
   reset = (): void => this.counters.clear();
 }
 
-let metricSink: ManagedResourceGuardMetricSink = new InMemoryManagedResourceGuardMetricSink();
+export class EnterpriseManagedResourceGuardMetricSink implements ManagedResourceGuardMetricSink {
+  increment = (metric: ManagedResourceGuardMetric): void => {
+    if (metric.classification !== 'deny' && metric.classification !== 'input-sensitive') return;
+    observeEnterprisePlatformEvent({
+      classification: metric.classification,
+      mode: metric.mode,
+      outcome: metric.outcome,
+      resource: metric.resource,
+      type: 'guard_decision',
+    });
+  };
+}
+
+let metricSink: ManagedResourceGuardMetricSink = new EnterpriseManagedResourceGuardMetricSink();
 
 export const getManagedResourceGuardMetricSink = (): ManagedResourceGuardMetricSink => metricSink;
 
 export const setManagedResourceGuardMetricSink = (
   sink: ManagedResourceGuardMetricSink | null,
 ): void => {
-  metricSink = sink ?? new InMemoryManagedResourceGuardMetricSink();
+  metricSink = sink ?? new EnterpriseManagedResourceGuardMetricSink();
 };

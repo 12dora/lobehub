@@ -12,6 +12,8 @@ import {
 } from '@/database/repositories/platformInstance';
 import type { LobeChatDatabase } from '@/database/type';
 
+import { classifyEnterpriseError, observeEnterprisePlatformEvent } from '../../observability';
+
 const log = debug('lobe-server:platform-instance-heartbeat');
 
 interface PlatformInstanceHeartbeatTimer {
@@ -47,6 +49,7 @@ export interface PlatformInstanceHeartbeatRuntimeOptions {
   env?: Record<string, string | undefined>;
   getDatabase?: () => Promise<LobeChatDatabase>;
   logFailure?: (event: { errorClass: string }) => void;
+  now?: () => number;
   schedule?: (callback: () => void, delay: number) => PlatformInstanceHeartbeatTimer;
 }
 
@@ -107,19 +110,45 @@ export const ensurePlatformInstanceHeartbeatStarted = async (
 
   const start = async (): Promise<boolean> => {
     const reportFailure = options.logFailure ?? defaultLogFailure;
+    const now = options.now ?? Date.now;
+    const registerStartedAt = now();
     try {
       const db = await (options.getDatabase ?? defaultGetDatabase)();
       const repository = options.createRepository
         ? options.createRepository(db)
         : new PlatformInstanceRepository(db);
       await repository.registerInstance(state.instanceId);
+      observeEnterprisePlatformEvent({
+        durationMs: now() - registerStartedAt,
+        operation: 'register',
+        outcome: 'success',
+        type: 'instance_heartbeat',
+      });
 
       const heartbeat = (): void => {
         if (state.heartbeatInFlight) return;
         state.heartbeatInFlight = true;
+        const heartbeatStartedAt = now();
         void repository
           .upsertHeartbeat(state.instanceId)
-          .catch((error) => reportFailure({ errorClass: errorClassOf(error) }))
+          .then(() => {
+            observeEnterprisePlatformEvent({
+              durationMs: now() - heartbeatStartedAt,
+              operation: 'tick',
+              outcome: 'success',
+              type: 'instance_heartbeat',
+            });
+          })
+          .catch((error) => {
+            observeEnterprisePlatformEvent({
+              durationMs: now() - heartbeatStartedAt,
+              errorClass: classifyEnterpriseError(error),
+              operation: 'tick',
+              outcome: 'failure',
+              type: 'instance_heartbeat',
+            });
+            reportFailure({ errorClass: errorClassOf(error) });
+          })
           .finally(() => {
             state.heartbeatInFlight = false;
           });
@@ -131,6 +160,13 @@ export const ensurePlatformInstanceHeartbeatStarted = async (
       state.timer.unref?.();
       return true;
     } catch (error) {
+      observeEnterprisePlatformEvent({
+        durationMs: now() - registerStartedAt,
+        errorClass: classifyEnterpriseError(error),
+        operation: 'register',
+        outcome: 'failure',
+        type: 'instance_heartbeat',
+      });
       reportFailure({ errorClass: errorClassOf(error) });
       return false;
     }

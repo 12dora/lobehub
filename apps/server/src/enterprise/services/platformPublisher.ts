@@ -9,6 +9,7 @@ import {
 } from '@/database/models/platform';
 import type { LobeChatDatabase } from '@/database/type';
 
+import { classifyEnterpriseError, observeEnterprisePlatformEvent } from '../observability';
 import {
   getPlatformConfigInvalidationPublisher,
   type PlatformConfigInvalidationPublisher,
@@ -23,6 +24,36 @@ export type PublishResourceParams = PublishDraftParams & {
 
 export type RollbackResourceParams = RollbackToRevisionParams & {
   invalidationScopes?: string[];
+};
+
+const observabilityDomain = (resourceType: PlatformResourceType) => {
+  switch (resourceType) {
+    case 'agent': {
+      return 'agent_catalog' as const;
+    }
+    case 'branding': {
+      return 'branding' as const;
+    }
+    case 'connector': {
+      return 'connector_catalog' as const;
+    }
+    case 'managed_policy': {
+      return 'managed_resource' as const;
+    }
+    case 'model':
+    case 'provider': {
+      return 'ai_catalog' as const;
+    }
+    case 'settings': {
+      return 'settings' as const;
+    }
+    case 'skill': {
+      return 'skill_catalog' as const;
+    }
+    default: {
+      return 'unknown' as const;
+    }
+  }
 };
 
 /**
@@ -47,33 +78,73 @@ export class PlatformPublisherService {
   }
 
   publish = async (params: PublishResourceParams): Promise<PublishResult> => {
-    const { invalidationScopes, ...publishParams } = params;
-    const result = await this.revisions.publishDraft(publishParams);
+    const startedAt = Date.now();
+    try {
+      const { invalidationScopes, ...publishParams } = params;
+      const result = await this.revisions.publishDraft(publishParams);
 
-    await this.publishInvalidation({
-      at: new Date().toISOString(),
-      resourceId: params.resourceId,
-      resourceType: params.resourceType,
-      revision: result.revision.revision,
-      scopes: invalidationScopes ?? [params.resourceType],
-    });
+      await this.publishInvalidation({
+        at: new Date().toISOString(),
+        resourceId: params.resourceId,
+        resourceType: params.resourceType,
+        revision: result.revision.revision,
+        scopes: invalidationScopes ?? [params.resourceType],
+      });
 
-    return result;
+      observeEnterprisePlatformEvent({
+        domain: observabilityDomain(params.resourceType),
+        durationMs: Date.now() - startedAt,
+        operation: 'publish',
+        outcome: 'success',
+        type: 'config_publish',
+      });
+      return result;
+    } catch (error) {
+      observeEnterprisePlatformEvent({
+        domain: observabilityDomain(params.resourceType),
+        durationMs: Date.now() - startedAt,
+        errorClass: classifyEnterpriseError(error),
+        operation: 'publish',
+        outcome: error instanceof PlatformRevisionConflictError ? 'conflict' : 'failure',
+        type: 'config_publish',
+      });
+      throw error;
+    }
   };
 
   rollback = async (params: RollbackResourceParams): Promise<PublishResult> => {
-    const { invalidationScopes, ...rollbackParams } = params;
-    const result = await this.revisions.rollbackToRevision(rollbackParams);
+    const startedAt = Date.now();
+    try {
+      const { invalidationScopes, ...rollbackParams } = params;
+      const result = await this.revisions.rollbackToRevision(rollbackParams);
 
-    await this.publishInvalidation({
-      at: new Date().toISOString(),
-      resourceId: params.resourceId,
-      resourceType: params.resourceType,
-      revision: result.revision.revision,
-      scopes: invalidationScopes ?? [params.resourceType],
-    });
+      await this.publishInvalidation({
+        at: new Date().toISOString(),
+        resourceId: params.resourceId,
+        resourceType: params.resourceType,
+        revision: result.revision.revision,
+        scopes: invalidationScopes ?? [params.resourceType],
+      });
 
-    return result;
+      observeEnterprisePlatformEvent({
+        domain: observabilityDomain(params.resourceType),
+        durationMs: Date.now() - startedAt,
+        operation: 'rollback',
+        outcome: 'success',
+        type: 'config_publish',
+      });
+      return result;
+    } catch (error) {
+      observeEnterprisePlatformEvent({
+        domain: observabilityDomain(params.resourceType),
+        durationMs: Date.now() - startedAt,
+        errorClass: classifyEnterpriseError(error),
+        operation: 'rollback',
+        outcome: error instanceof PlatformRevisionConflictError ? 'conflict' : 'failure',
+        type: 'config_publish',
+      });
+      throw error;
+    }
   };
 
   private publishInvalidation = async (
@@ -86,7 +157,6 @@ export class PlatformPublisherService {
       // from the DB/version probes and must never turn a committed publish into failure.
       console.error('[platformPublisher] invalidation delivery failed', {
         errorClass: error instanceof Error ? error.name : 'UnknownError',
-        resourceId: event.resourceId,
         resourceType: event.resourceType,
         revision: event.revision,
       });
