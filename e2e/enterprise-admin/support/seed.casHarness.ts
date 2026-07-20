@@ -105,6 +105,33 @@ export const createCasMinimalSchema = async (databaseUrl: string): Promise<void>
         id text PRIMARY KEY,
         skill_key text
       );
+
+      -- Test-only: deferred constraint trigger fires at COMMIT for real in-flight/abort tests.
+      CREATE TABLE IF NOT EXISTS e2e_cas_commit_probe (
+        id int PRIMARY KEY,
+        note text
+      );
+      CREATE OR REPLACE FUNCTION e2e_cas_commit_probe_fn() RETURNS trigger AS $$
+      DECLARE
+        mode text := current_setting('e2e.cas_commit_mode', true);
+        sleep_ms text := current_setting('e2e.cas_commit_sleep_ms', true);
+        ms int;
+      BEGIN
+        IF mode = 'raise' THEN
+          RAISE EXCEPTION 'e2e deferred COMMIT abort (real COMMIT query failed)';
+        END IF;
+        IF mode = 'sleep' AND sleep_ms IS NOT NULL AND sleep_ms <> '' THEN
+          ms := GREATEST(1, sleep_ms::int);
+          PERFORM pg_sleep(ms / 1000.0);
+        END IF;
+        RETURN NULL;
+      END;
+      $$ LANGUAGE plpgsql;
+      DROP TRIGGER IF EXISTS e2e_cas_commit_probe_trg ON e2e_cas_commit_probe;
+      CREATE CONSTRAINT TRIGGER e2e_cas_commit_probe_trg
+        AFTER INSERT OR UPDATE ON e2e_cas_commit_probe
+        DEFERRABLE INITIALLY DEFERRED
+        FOR EACH ROW EXECUTE PROCEDURE e2e_cas_commit_probe_fn();
     `);
   } finally {
     await pool.end();
