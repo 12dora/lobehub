@@ -50,13 +50,51 @@ const authorizationProbeRouter = router({
 const createProbeCaller = createCallerFactory(authorizationProbeRouter);
 const fixture = createAdminAuthorizationFixture({ namespace: 'permission-matrix' });
 
+const o04SystemProcedurePaths = [
+  'admin.system.cancelJob',
+  'admin.system.getInstanceRevisions',
+  'admin.system.getJobs',
+  'admin.system.getStatus',
+  'admin.system.retryJob',
+] as const;
+const o04SystemProcedurePathSet = new Set<string>(o04SystemProcedurePaths);
+const o04SystemReadProcedurePaths = [
+  'admin.system.getInstanceRevisions',
+  'admin.system.getJobs',
+  'admin.system.getStatus',
+] as const;
+
 const roleCases = [
-  { expected: 114, role: PLATFORM_SYSTEM_ROLES.SUPER_ADMIN },
-  { expected: 76, role: PLATFORM_SYSTEM_ROLES.AI_ADMIN },
-  { expected: 39, role: PLATFORM_SYSTEM_ROLES.AUDITOR },
-  { expected: 27, role: PLATFORM_SYSTEM_ROLES.IDENTITY_ADMIN },
-  { expected: 15, role: PLATFORM_SYSTEM_ROLES.USER_ADMIN },
-  { expected: 1, role: PLATFORM_SYSTEM_ROLES.PLATFORM_USER },
+  {
+    expectedBeforeO04System: null,
+    expectedO04SystemPaths: o04SystemProcedurePaths,
+    role: PLATFORM_SYSTEM_ROLES.SUPER_ADMIN,
+  },
+  {
+    expectedBeforeO04System: 76,
+    expectedO04SystemPaths: [],
+    role: PLATFORM_SYSTEM_ROLES.AI_ADMIN,
+  },
+  {
+    expectedBeforeO04System: 39,
+    expectedO04SystemPaths: o04SystemReadProcedurePaths,
+    role: PLATFORM_SYSTEM_ROLES.AUDITOR,
+  },
+  {
+    expectedBeforeO04System: 27,
+    expectedO04SystemPaths: [],
+    role: PLATFORM_SYSTEM_ROLES.IDENTITY_ADMIN,
+  },
+  {
+    expectedBeforeO04System: 15,
+    expectedO04SystemPaths: [],
+    role: PLATFORM_SYSTEM_ROLES.USER_ADMIN,
+  },
+  {
+    expectedBeforeO04System: 1,
+    expectedO04SystemPaths: [],
+    role: PLATFORM_SYSTEM_ROLES.PLATFORM_USER,
+  },
 ] as const;
 
 beforeAll(async () => {
@@ -154,13 +192,22 @@ describe('admin permission matrix', () => {
     vi.unstubAllEnvs();
   });
 
-  for (const { expected, role } of roleCases) {
-    it(`${role} authorizes exactly ${expected} of 114 procedures`, () => {
+  for (const { expectedBeforeO04System, expectedO04SystemPaths, role } of roleCases) {
+    it(`${role} authorizes the declared procedure package`, () => {
       const permissions = new Set(PLATFORM_ROLE_PERMISSIONS[role]);
       const allowed = ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter((authorization) =>
         isAuthorizedByPlatformPermissions(authorization, permissions),
       );
-      expect(allowed).toHaveLength(expected);
+      const allowedO04SystemPaths = allowed
+        .map(({ path }) => path)
+        .filter((path) => o04SystemProcedurePathSet.has(path));
+
+      expect(allowedO04SystemPaths).toEqual(expectedO04SystemPaths);
+      expect(allowed).toHaveLength(
+        expectedBeforeO04System === null
+          ? ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.length
+          : expectedBeforeO04System + expectedO04SystemPaths.length,
+      );
     });
   }
 
