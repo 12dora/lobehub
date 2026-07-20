@@ -1,4 +1,8 @@
+import type { EnterpriseSsrfDenialCategory } from '@lobechat/observability-otel/modules/enterprise-platform';
+
 import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
+
+import { observeEnterprisePlatformEvent } from '../../observability';
 
 /**
  * SSRF / outbound policy violation.
@@ -16,5 +20,16 @@ export class SafeOutboundHttpError extends Error {
   }
 }
 
-export const ssrfBlocked = (reason: string, details?: Record<string, unknown>) =>
-  new SafeOutboundHttpError(`SSRF blocked: ${reason}`, details);
+export const ssrfBlocked = (
+  category: EnterpriseSsrfDenialCategory,
+  reason: string,
+  details?: Record<string, unknown>,
+) => {
+  const error = new SafeOutboundHttpError(`SSRF blocked: ${reason}`, details);
+  try {
+    observeEnterprisePlatformEvent({ category, type: 'ssrf_denial' });
+  } catch {
+    console.error('[safe-outbound-http] denial observation failed');
+  }
+  return error;
+};
