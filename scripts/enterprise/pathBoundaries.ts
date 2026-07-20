@@ -3,7 +3,18 @@
  * Used by CLI and unit tests.
  */
 
-/** Upstream files allowed to import enterprise mounts (stable seams). */
+/** Repo-relative roots scanned by enterprise:check-paths (no node_modules/build artifacts). */
+export const ENTERPRISE_PATH_BOUNDARY_SCAN_ROOTS = [
+  'src',
+  'apps/server/src',
+  'apps/desktop/src',
+  'apps/cli/src',
+  'packages',
+  'scripts/enterprise',
+  'e2e',
+] as const;
+
+/** Upstream files allowed to import enterprise mounts freely (stable whole-file seams). */
 export const ENTERPRISE_UPSTREAM_MOUNT_POINTS = [
   'src/business/client/BusinessDesktopRoutes.tsx',
   'src/business/client/BusinessGlobalProvider.tsx',
@@ -11,8 +22,6 @@ export const ENTERPRISE_UPSTREAM_MOUNT_POINTS = [
   'src/business/client/BusinessMobileRoutes.tsx',
   // M12 / auth shell: SPA auth session provider mirrors GlobalProvider mount
   'src/business/client/BusinessAuthProvider.tsx',
-  // M12: default inbox title sync with runtime branding
-  'src/business/client/DefaultInboxBrandingSync.tsx',
   'apps/server/src/routers/lambda/index.ts',
   // M00 mount #4: enterprise gate on GlobalServerConfig
   'apps/server/src/globalConfig/index.ts',
@@ -93,228 +102,555 @@ export const ENTERPRISE_UPSTREAM_MOUNT_POINTS = [
   'src/app/spa-auth/[locale]/[[...path]]/seoMeta.ts',
   'src/app/manifest.ts',
   'src/app/[variants]/metadata.ts',
-  // M12: runtime branding consumers (useBranding / resolveServerRuntimeBranding)
-  'src/layout/GlobalProvider/FaviconProvider.tsx',
-  'src/components/Branding/ProductLogo/index.tsx',
-  'src/hooks/useDefaultInboxDisplayName.ts',
-  'src/features/AuthShell/AuthContainer.tsx',
-  'src/features/AuthShell/AuthFooterLinks.tsx',
-  'src/features/AuthShell/AuthAgreement.tsx',
-  'src/features/Auth/SignIn/SignInEmailStep.tsx',
-  'src/features/Auth/SignUp/BetterAuthSignUpForm.tsx',
-  'src/features/Auth/OAuthConsent/Consent/index.tsx',
-  'src/features/PluginDevModal/LocalForm.tsx',
-  'src/features/Recommendations/RecommendationCard.tsx',
-  'src/features/RouteMeta/RouteMetaBridge.tsx',
-  'src/features/Setting/Footer.tsx',
-  'src/features/Electron/HeterogeneousAgent/StatusGuide/states/CliInstallState.tsx',
-  'src/features/Downloads/index.tsx',
-  'src/routes/(main)/settings/memory/features/Memory.tsx',
-  'src/routes/(main)/(create)/image/NotSupportClient.tsx',
-  'src/routes/(desktop)/desktop-onboarding/_layout/index.tsx',
   // script entry only
   'package.json',
 ] as const;
 
 /**
- * Exact (file, importSpecifier) allowlist for non-enterprise tests.
+ * Exact (file, importSpecifier) allowlist for non-mount production / E2E support.
  *
- * Replaces the former global `*.test.*` / `__tests__` exemption so arbitrary new
- * tests cannot import enterprise implementation or business-slot internals.
- * Add a row only for audited contract / mount-colocated / test-support seams.
+ * Ordinary UI branding consumers and audited e2e seed helpers use this instead of
+ * whole-file mount treatment so they cannot import unrelated enterprise modules.
  */
-export interface EnterpriseTestImportAllowance {
+export interface EnterpriseImportAllowance {
   /** Repo-relative file path (posix). */
   file: string;
   /** Exact import specifier string as written in source. */
   importSpecifier: string;
   /** Owning milestone / surface for audit. */
   owner: string;
-  /** Why this pair is a legitimate test-support or contract seam. */
+  /** Why this pair is a legitimate seam. */
   reason: string;
 }
 
+export const ENTERPRISE_PRODUCTION_IMPORT_ALLOWLIST = [
+  {
+    file: 'src/layout/GlobalProvider/FaviconProvider.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason: 'Ordinary UI consumer of useBranding; not a whole-file mount',
+  },
+  {
+    file: 'src/components/Branding/ProductLogo/index.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason: 'Ordinary UI consumer of useBranding; not a whole-file mount',
+  },
+  {
+    file: 'src/hooks/useDefaultInboxDisplayName.ts',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason: 'Ordinary UI consumer of useBranding; not a whole-file mount',
+  },
+  {
+    file: 'src/features/AuthShell/AuthContainer.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason: 'Ordinary UI consumer of useBranding; not a whole-file mount',
+  },
+  {
+    file: 'src/features/AuthShell/AuthFooterLinks.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason: 'Ordinary UI consumer of useBranding; not a whole-file mount',
+  },
+  {
+    file: 'src/features/AuthShell/AuthAgreement.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason: 'Ordinary UI consumer of useBranding; not a whole-file mount',
+  },
+  {
+    file: 'src/features/Auth/SignIn/SignInEmailStep.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason: 'Ordinary UI consumer of useBranding; not a whole-file mount',
+  },
+  {
+    file: 'src/features/Auth/SignUp/BetterAuthSignUpForm.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason: 'Ordinary UI consumer of useBranding; not a whole-file mount',
+  },
+  {
+    file: 'src/features/Auth/OAuthConsent/Consent/index.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason: 'Ordinary UI consumer of useBranding; not a whole-file mount',
+  },
+  {
+    file: 'src/features/PluginDevModal/LocalForm.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason: 'Ordinary UI consumer of useBranding; not a whole-file mount',
+  },
+  {
+    file: 'src/features/Recommendations/RecommendationCard.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason: 'Ordinary UI consumer of useBranding; not a whole-file mount',
+  },
+  {
+    file: 'src/features/Setting/Footer.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason: 'Ordinary UI consumer of useBranding; not a whole-file mount',
+  },
+  {
+    file: 'src/features/Electron/HeterogeneousAgent/StatusGuide/states/CliInstallState.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason: 'Ordinary UI consumer of useBranding; not a whole-file mount',
+  },
+  {
+    file: 'src/features/Downloads/index.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason: 'Ordinary UI consumer of useBranding; not a whole-file mount',
+  },
+  {
+    file: 'src/routes/(main)/settings/memory/features/Memory.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason: 'Ordinary UI consumer of useBranding; not a whole-file mount',
+  },
+  {
+    file: 'src/routes/(main)/(create)/image/NotSupportClient.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason: 'Ordinary UI consumer of useBranding; not a whole-file mount',
+  },
+  {
+    file: 'src/routes/(desktop)/desktop-onboarding/_layout/index.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason: 'Ordinary UI consumer of useBranding; not a whole-file mount',
+  },
+  {
+    file: 'src/business/client/DefaultInboxBrandingSync.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason: 'Ordinary UI consumer of useBranding; not a whole-file mount',
+  },
+  {
+    file: 'src/features/RouteMeta/RouteMetaBridge.tsx',
+    importSpecifier: '@/enterprise/client',
+    owner: 'M12',
+    reason: 'Ordinary route meta uses useBranding from enterprise client barrel',
+  },
+  {
+    file: 'e2e/src/identity-provider/seedIdentityProvider.ts',
+    importSpecifier: '@/server/enterprise/security/secret',
+    owner: 'M11',
+    reason: 'E2E seed encrypts identity-provider client secret via PlatformSecretService',
+  },
+  {
+    file: 'e2e/src/identity-provider/seedIdentityProvider.ts',
+    importSpecifier: '@/server/enterprise/services/identityProvider/publicationService',
+    owner: 'M11',
+    reason: 'E2E seed builds PublishedIdentityProviderPayload via publication contract',
+  },
+] as const satisfies readonly EnterpriseImportAllowance[];
+
+/**
+ * Exact (file, importSpecifier) allowlist for non-enterprise tests.
+ *
+ * Covers static `from` / `import()` / `require` / side-effect `import` and
+ * executable `vi.mock` / `vi.doMock` / `jest.mock` / `jest.doMock` references.
+ * No wildcards — new tests must register each pair.
+ */
+export type EnterpriseTestImportAllowance = EnterpriseImportAllowance;
+
 export const ENTERPRISE_TEST_IMPORT_ALLOWLIST = [
-  // --- M05 settings badge / control wiring ---
-  {
-    file: 'src/features/PlatformSettingSourceBadge/usePlatformSettingMeta.test.ts',
-    importSpecifier: '@/enterprise/client/providers/EnterprisePlatformProvider',
-    owner: 'M05',
-    reason: 'Unit-tests allowlisted meta hook against platform provider seam',
-  },
-  {
-    file: 'src/features/PlatformSettingSourceBadge/usePlatformSettingMeta.test.ts',
-    importSpecifier: '@/enterprise/client/services/userSettings',
-    owner: 'M05',
-    reason: 'Mocks userSettings client service used by the meta hook',
-  },
-  {
-    file: 'src/features/PlatformSettingSourceBadge/usePlatformSettingMeta.test.ts',
-    importSpecifier: '@/server/enterprise/contracts/userSettings',
-    owner: 'M05',
-    reason: 'Types fixture data from published userSettings contract',
-  },
-  {
-    file: 'src/features/PlatformSettingSourceBadge/controlWiring.test.ts',
-    importSpecifier: '@/server/enterprise/services/settings/registry',
-    owner: 'M05',
-    reason: 'Static wiring audit against canonical settings registry coverage table',
-  },
-  // --- M11 identity / auth ---
-  {
-    file: 'src/auth.startupArtifact.test.ts',
-    importSpecifier: '@/server/enterprise/services/identityProvider/startupArtifact',
-    owner: 'M11',
-    reason: 'Resets startup artifact between Better Auth handoff unit tests',
-  },
-  {
-    file: 'src/libs/better-auth/sso/platformIdentityProvider.secureProfile.test.ts',
-    importSpecifier: '@/server/enterprise/observability',
-    owner: 'M11',
-    reason: 'Injects test observer for OIDC secure-profile observability events',
-  },
-  {
-    file: 'src/libs/better-auth/sso/platformIdentityProvider.secureProfile.test.ts',
-    importSpecifier: '@/server/enterprise/security/outboundHttp',
-    owner: 'M11',
-    reason: 'Types/pins SafeOutboundHttpClient transport used by identity provider',
-  },
-  {
-    file: 'src/app/(backend)/api/cron/identity-provider-test-attempt-cleanup/route.test.ts',
-    importSpecifier: '@/server/enterprise/jobs/identityProviderTestAttemptCleanup',
-    owner: 'M11',
-    reason: 'Covers allowlisted cron route job entry',
-  },
-  {
-    file: 'src/app/(backend)/api/cron/identity-provider-test-attempt-cleanup/route.test.ts',
-    importSpecifier: '@/server/enterprise/services/identityProvider/testAttemptStore',
-    owner: 'M11',
-    reason: 'Asserts cleanup against testAttemptStore contract used by cron job',
-  },
-  // --- M12 branding consumers ---
-  {
-    file: 'src/app/spa-auth/[locale]/[[...path]]/seoMeta.test.ts',
-    importSpecifier: '@/enterprise/client/providers/runtimeBranding',
-    owner: 'M12',
-    reason: 'Asserts spa-auth SEO meta uses built-in runtime branding constants',
-  },
-  {
-    file: 'src/features/AuthShell/resolveAuthFooterLinks.test.ts',
-    importSpecifier: '@/enterprise/client/providers/runtimeBranding',
-    owner: 'M12',
-    reason: 'Resolves footer links against runtime branding contract helpers',
-  },
-  // --- M07 AI catalog runtime (mount-adjacent server tests) ---
   {
     file: 'apps/server/src/modules/ModelRuntime/index.test.ts',
     importSpecifier: '@/server/enterprise/security/secret',
     owner: 'M07',
-    reason: 'Mocks PlatformSecretService boundary for model runtime key vaults',
+    reason: 'Mocks PlatformSecretService boundary at runtime/catalog test',
   },
   {
     file: 'apps/server/src/modules/ModelRuntime/index.test.ts',
     importSpecifier: '@/server/enterprise/services/aiCatalog',
     owner: 'M07',
-    reason: 'Mocks AiCatalogExecutionResolver at model runtime seam',
+    reason: 'Mocks AI catalog resolver at runtime path test',
   },
   {
-    file: 'apps/server/src/routers/lambda/__tests__/aiProvider.test.ts',
-    importSpecifier: '@/server/enterprise/security/secret',
-    owner: 'M07',
-    reason: 'Mocks secret service for aiProvider lambda mount tests',
+    file: 'apps/server/src/routers/lambda/__tests__/agentSkills.resolvePlatformPinned.test.ts',
+    importSpecifier: '@/server/enterprise/featureFlags',
+    owner: 'M08',
+    reason: 'Mocks enterprise feature flags at mount-adjacent test',
   },
   {
-    file: 'apps/server/src/routers/lambda/__tests__/aiProvider.test.ts',
-    importSpecifier: '@/server/enterprise/services/aiCatalog',
-    owner: 'M07',
-    reason: 'Mocks AI catalog services for aiProvider lambda mount tests',
+    file: 'apps/server/src/routers/lambda/__tests__/agentSkills.resolvePlatformPinned.test.ts',
+    importSpecifier: '@/server/enterprise/services/managedResourceCapabilities',
+    owner: 'M08',
+    reason: 'Mocks managed resource capability snapshot at mount-adjacent test',
   },
-  {
-    file: 'apps/server/src/services/memory/userMemory/__tests__/extract.runtime.test.ts',
-    importSpecifier: '@/server/enterprise/security/secret',
-    owner: 'M07',
-    reason: 'Mocks secret service for memory extract runtime settings path',
-  },
-  {
-    file: 'apps/server/src/services/memory/userMemory/__tests__/extract.runtime.test.ts',
-    importSpecifier: '@/server/enterprise/services/aiCatalog',
-    owner: 'M07',
-    reason: 'Mocks AI catalog resolver for memory extract runtime path',
-  },
-  {
-    file: 'apps/server/src/services/memory/userMemory/persona/__tests__/service.test.ts',
-    importSpecifier: '@/server/enterprise/security/secret',
-    owner: 'M07',
-    reason: 'Mocks secret service for persona service runtime path',
-  },
-  {
-    file: 'apps/server/src/services/memory/userMemory/persona/__tests__/service.test.ts',
-    importSpecifier: '@/server/enterprise/services/aiCatalog',
-    owner: 'M07',
-    reason: 'Mocks AI catalog resolver for persona service runtime path',
-  },
-  // --- M08 skill catalog ---
   {
     file: 'apps/server/src/routers/lambda/__tests__/agentSkills.resolvePlatformPinned.test.ts',
     importSpecifier: '@/server/enterprise/services/skillCatalog',
     owner: 'M08',
-    reason: 'Covers allowlisted agentSkills platform-pinned skill resolution',
+    reason: 'Mocks skill catalog / public skills hook at mount-adjacent test',
   },
-  // --- M09 connectors ---
+  {
+    file: 'apps/server/src/routers/lambda/__tests__/aiProvider.test.ts',
+    importSpecifier: '@/server/enterprise/security/secret',
+    owner: 'M07',
+    reason: 'Mocks PlatformSecretService boundary at runtime/catalog test',
+  },
+  {
+    file: 'apps/server/src/routers/lambda/__tests__/aiProvider.test.ts',
+    importSpecifier: '@/server/enterprise/services/aiCatalog',
+    owner: 'M07',
+    reason: 'Mocks AI catalog resolver at runtime path test',
+  },
   {
     file: 'apps/server/src/routers/lambda/__tests__/connector.syncPluginTools.test.ts',
     importSpecifier: '@/server/enterprise/services/connectorCatalog/errors',
     owner: 'M09',
-    reason: 'Asserts PlatformConnectorContractError at connector sync mount',
+    reason: 'Mocks connector catalog seam at mount-adjacent test',
   },
-  // --- M10 platform agents ---
   {
     file: 'apps/server/src/routers/lambda/__tests__/managedAgentActiveUser.guard.test.ts',
     importSpecifier: '@/server/enterprise/guards/activeUser',
     owner: 'M10',
-    reason: 'Regression for withActiveUserWhenManagedAgents on lambda mounts',
+    reason: 'Covers managed-agent guard at lambda mount test',
+  },
+  {
+    file: 'apps/server/src/routers/lambda/__tests__/managedAgentActiveUser.guard.test.ts',
+    importSpecifier: '@/server/enterprise/services/agentCatalog',
+    owner: 'M10',
+    reason: 'Mocks platform agent catalog at mount-adjacent test',
   },
   {
     file: 'apps/server/src/routers/lambda/__tests__/user.test.ts',
     importSpecifier: '@/server/enterprise/guards/managedPlatformAgent',
     owner: 'M10',
-    reason: 'Covers default-inbox managed-agent guard on user router',
+    reason: 'Covers managed-agent guard at lambda mount test',
+  },
+  {
+    file: 'apps/server/src/routers/tools/market.test.ts',
+    importSpecifier: '@/server/enterprise/featureFlags',
+    owner: 'M08',
+    reason: 'Mocks enterprise feature flags at mount-adjacent test',
+  },
+  {
+    file: 'apps/server/src/routers/tools/market.test.ts',
+    importSpecifier: '@/server/enterprise/services/managedResourceCapabilities',
+    owner: 'M08',
+    reason: 'Mocks managed resource capability snapshot at mount-adjacent test',
+  },
+  {
+    file: 'apps/server/src/routers/tools/market.test.ts',
+    importSpecifier: '@/server/enterprise/services/skillCatalog',
+    owner: 'M08',
+    reason: 'Mocks skill catalog / public skills hook at mount-adjacent test',
   },
   {
     file: 'apps/server/src/services/agent/index.test.ts',
     importSpecifier: '@/server/enterprise/services/agentCatalog/defaultInbox',
     owner: 'M10',
-    reason: 'Mocks PlatformDefaultInboxService at agent service mount',
+    reason: 'Mocks platform agent catalog at mount-adjacent test',
   },
   {
     file: 'apps/server/src/services/agent/index.test.ts',
     importSpecifier: '@/server/enterprise/services/branding/runtimeBranding',
     owner: 'M10',
-    reason: 'Mocks server runtime branding at agent service mount',
+    reason: 'Mocks/asserts runtime branding provider at consumer surface',
+  },
+  {
+    file: 'apps/server/src/services/aiAgent/__tests__/execAgent.headlessDefault.test.ts',
+    importSpecifier: '@/server/enterprise/services/settings/runtimeSettingsAdapter',
+    owner: 'M10',
+    reason: 'Mocks effective settings adapter at runtime path test',
+  },
+  {
+    file: 'apps/server/src/services/aiAgent/__tests__/execAgent.modelOverride.test.ts',
+    importSpecifier: '@/server/enterprise/services/agentCatalog',
+    owner: 'M10',
+    reason: 'Mocks platform agent catalog at mount-adjacent test',
+  },
+  {
+    file: 'apps/server/src/services/aiAgent/__tests__/execAgent.modelOverride.test.ts',
+    importSpecifier: '@/server/enterprise/services/connectorCatalog/runtimeIntegration',
+    owner: 'M10',
+    reason: 'Mocks connector catalog seam at mount-adjacent test',
+  },
+  {
+    file: 'apps/server/src/services/aiAgent/__tests__/execAgent.modelOverride.test.ts',
+    importSpecifier: '@/server/enterprise/services/skillCatalog',
+    owner: 'M10',
+    reason: 'Mocks skill catalog / public skills hook at mount-adjacent test',
+  },
+  {
+    file: 'apps/server/src/services/aiAgent/__tests__/execAgent.pluginTriState.test.ts',
+    importSpecifier: '@/server/enterprise/services/managedResourceCapabilities',
+    owner: 'M10',
+    reason: 'Mocks managed resource capability snapshot at mount-adjacent test',
+  },
+  {
+    file: 'apps/server/src/services/aiAgent/__tests__/execAgent.pluginTriState.test.ts',
+    importSpecifier: '@/server/enterprise/services/skillCatalog',
+    owner: 'M10',
+    reason: 'Mocks skill catalog / public skills hook at mount-adjacent test',
   },
   {
     file: 'apps/server/src/services/aiAgent/__tests__/execAgentPlatform.test.ts',
     importSpecifier: '@/server/enterprise/services/agentCatalog',
     owner: 'M10',
-    reason: 'Integration coverage for platform execAgent catalog chain',
+    reason: 'Mocks platform agent catalog at mount-adjacent test',
+  },
+  {
+    file: 'apps/server/src/services/aiAgent/__tests__/execAgentPlatform.test.ts',
+    importSpecifier: '@/server/enterprise/services/connectorCatalog/runtimeIntegration',
+    owner: 'M10',
+    reason: 'Mocks connector catalog seam at mount-adjacent test',
+  },
+  {
+    file: 'apps/server/src/services/aiAgent/__tests__/execAgentPlatform.test.ts',
+    importSpecifier: '@/server/enterprise/services/skillCatalog',
+    owner: 'M10',
+    reason: 'Mocks skill catalog / public skills hook at mount-adjacent test',
   },
   {
     file: 'apps/server/src/services/aiAgent/__tests__/platformServiceChain.integration.test.ts',
     importSpecifier: '@/server/enterprise/services/agentCatalog',
     owner: 'M10',
-    reason: 'Integration coverage for platform service chain via agentCatalog',
+    reason: 'Mocks platform agent catalog at mount-adjacent test',
   },
   {
-    file: 'apps/server/src/services/onboarding/index.test.ts',
-    importSpecifier: '@/server/enterprise/services/agentCatalog/defaultInbox',
-    owner: 'M10',
-    reason: 'Mocks default-inbox service at onboarding mount',
+    file: 'apps/server/src/services/connector/exec.test.ts',
+    importSpecifier: '@/server/enterprise/services/connectorCatalog/legacyMcpTransport',
+    owner: 'M09',
+    reason: 'Mocks connector catalog seam at mount-adjacent test',
+  },
+  {
+    file: 'apps/server/src/services/connector/sync.test.ts',
+    importSpecifier: '@/server/enterprise/services/connectorCatalog/runtimeIntegration',
+    owner: 'M09',
+    reason: 'Mocks connector catalog seam at mount-adjacent test',
   },
   {
     file: 'apps/server/src/services/email/index.test.ts',
     importSpecifier: '@/server/enterprise/services/branding',
     owner: 'M12',
-    reason: 'Mocks branding snapshot types/helpers at email service mount',
+    reason: 'Mocks branding service at shell/metadata test',
+  },
+  {
+    file: 'apps/server/src/services/email/index.test.ts',
+    importSpecifier: '@/server/enterprise/services/platformAudit',
+    owner: 'M12',
+    reason: 'Mocks platform audit service at email service test',
+  },
+  {
+    file: 'apps/server/src/services/memory/userMemory/__tests__/extract.runtime.test.ts',
+    importSpecifier: '@/server/enterprise/security/secret',
+    owner: 'M07',
+    reason: 'Mocks PlatformSecretService boundary at runtime/catalog test',
+  },
+  {
+    file: 'apps/server/src/services/memory/userMemory/__tests__/extract.runtime.test.ts',
+    importSpecifier: '@/server/enterprise/services/aiCatalog',
+    owner: 'M07',
+    reason: 'Mocks AI catalog resolver at runtime path test',
+  },
+  {
+    file: 'apps/server/src/services/memory/userMemory/persona/__tests__/service.test.ts',
+    importSpecifier: '@/server/enterprise/security/secret',
+    owner: 'M07',
+    reason: 'Mocks PlatformSecretService boundary at runtime/catalog test',
+  },
+  {
+    file: 'apps/server/src/services/memory/userMemory/persona/__tests__/service.test.ts',
+    importSpecifier: '@/server/enterprise/services/aiCatalog',
+    owner: 'M07',
+    reason: 'Mocks AI catalog resolver at runtime path test',
+  },
+  {
+    file: 'apps/server/src/services/onboarding/index.test.ts',
+    importSpecifier: '@/server/enterprise/services/agentCatalog/defaultInbox',
+    owner: 'M10',
+    reason: 'Mocks platform agent catalog at mount-adjacent test',
+  },
+  {
+    file: 'apps/server/src/services/toolExecution/__tests__/index.test.ts',
+    importSpecifier: '@/server/enterprise/services/connectorCatalog/legacyMcpTransport',
+    owner: 'M08',
+    reason: 'Mocks connector catalog seam at mount-adjacent test',
+  },
+  {
+    file: 'apps/server/src/services/toolExecution/serverRuntimes/__tests__/activator.test.ts',
+    importSpecifier: '@/server/enterprise/services/skillCatalog',
+    owner: 'M08',
+    reason: 'Mocks skill catalog / public skills hook at mount-adjacent test',
+  },
+  {
+    file: 'apps/server/src/services/toolExecution/serverRuntimes/__tests__/platformSkillWorkspace.test.ts',
+    importSpecifier: '@/server/enterprise/services/skillCatalog',
+    owner: 'M08',
+    reason: 'Mocks skill catalog / public skills hook at mount-adjacent test',
+  },
+  {
+    file: 'apps/server/src/services/toolExecution/serverRuntimes/__tests__/skills.test.ts',
+    importSpecifier: '@/server/enterprise/services/skillCatalog',
+    owner: 'M08',
+    reason: 'Mocks skill catalog / public skills hook at mount-adjacent test',
+  },
+  {
+    file: 'src/app/(backend)/api/cron/identity-provider-test-attempt-cleanup/route.test.ts',
+    importSpecifier: '@/server/enterprise/jobs/identityProviderTestAttemptCleanup',
+    owner: 'M11',
+    reason: 'Identity provider test-attempt cleanup cron coverage',
+  },
+  {
+    file: 'src/app/(backend)/api/cron/identity-provider-test-attempt-cleanup/route.test.ts',
+    importSpecifier: '@/server/enterprise/services/identityProvider/testAttemptStore',
+    owner: 'M11',
+    reason: 'Identity provider test-attempt cleanup cron coverage',
+  },
+  {
+    file: 'src/app/(backend)/oauth/connector/callback/route.test.ts',
+    importSpecifier: '@/server/enterprise/services/connectorCatalog/oauthRuntime',
+    owner: 'M09',
+    reason: 'Mocks connector catalog seam at mount-adjacent test',
+  },
+  {
+    file: 'src/app/(backend)/oauth/connector/callback/route.test.ts',
+    importSpecifier: '@/server/enterprise/services/connectorCatalog/userOAuthService',
+    owner: 'M09',
+    reason: 'Mocks connector catalog seam at mount-adjacent test',
+  },
+  {
+    file: 'src/app/[variants]/metadata.test.ts',
+    importSpecifier: '@/server/enterprise/services/branding',
+    owner: 'M12',
+    reason: 'Mocks branding service at shell/metadata test',
+  },
+  {
+    file: 'src/app/manifest.test.ts',
+    importSpecifier: '@/server/enterprise/services/branding',
+    owner: 'M12',
+    reason: 'Mocks branding service at shell/metadata test',
+  },
+  {
+    file: 'src/app/spa-auth/[locale]/[[...path]]/route.test.ts',
+    importSpecifier: '@/server/enterprise/services/branding',
+    owner: 'M11',
+    reason: 'Mocks branding service at shell/metadata test',
+  },
+  {
+    file: 'src/app/spa-auth/[locale]/[[...path]]/route.test.ts',
+    importSpecifier: '@/server/enterprise/services/identityProvider/bootstrap',
+    owner: 'M11',
+    reason: 'Mocks identity/observability bootstrap seam for instrumentation/auth tests',
+  },
+  {
+    file: 'src/app/spa-auth/[locale]/[[...path]]/seoMeta.test.ts',
+    importSpecifier: '@/enterprise/client/providers/runtimeBranding',
+    owner: 'M11',
+    reason: 'Mocks/asserts runtime branding provider at consumer surface',
+  },
+  {
+    file: 'src/app/spa/[variants]/[[...path]]/route.test.ts',
+    importSpecifier: '@/server/enterprise/services/branding',
+    owner: 'M12',
+    reason: 'Mocks branding service at shell/metadata test',
+  },
+  {
+    file: 'src/auth.startupArtifact.test.ts',
+    importSpecifier: '@/server/enterprise/services/identityProvider/startupArtifact',
+    owner: 'M11',
+    reason: 'Mocks identity/observability bootstrap seam for instrumentation/auth tests',
+  },
+  {
+    file: 'src/features/AuthShell/resolveAuthFooterLinks.test.ts',
+    importSpecifier: '@/enterprise/client/providers/runtimeBranding',
+    owner: 'M12',
+    reason: 'Mocks/asserts runtime branding provider at consumer surface',
+  },
+  {
+    file: 'src/features/CommandMenu/AskAIMenu.test.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason: 'Mocks/asserts runtime branding provider at consumer surface',
+  },
+  {
+    file: 'src/features/PlatformSettingSourceBadge/controlWiring.test.ts',
+    importSpecifier: '@/server/enterprise/services/settings/registry',
+    owner: 'M05',
+    reason: 'Settings badge / control wiring test support',
+  },
+  {
+    file: 'src/features/PlatformSettingSourceBadge/usePlatformSettingMeta.test.ts',
+    importSpecifier: '@/enterprise/client/providers/EnterprisePlatformProvider',
+    owner: 'M05',
+    reason: 'Settings badge / control wiring test support',
+  },
+  {
+    file: 'src/features/PlatformSettingSourceBadge/usePlatformSettingMeta.test.ts',
+    importSpecifier: '@/enterprise/client/services/userSettings',
+    owner: 'M05',
+    reason: 'Settings badge / control wiring test support',
+  },
+  {
+    file: 'src/features/PlatformSettingSourceBadge/usePlatformSettingMeta.test.ts',
+    importSpecifier: '@/server/enterprise/contracts/userSettings',
+    owner: 'M05',
+    reason: 'Settings badge / control wiring test support',
+  },
+  {
+    file: 'src/instrumentation.test.ts',
+    importSpecifier: '@/server/enterprise/services/identityProvider/bootstrap',
+    owner: 'M11',
+    reason: 'Mocks identity/observability bootstrap seam for instrumentation/auth tests',
+  },
+  {
+    file: 'src/instrumentation.test.ts',
+    importSpecifier: '@/server/enterprise/services/platformInstance/heartbeatRuntime',
+    owner: 'M11',
+    reason: 'Mocks identity/observability bootstrap seam for instrumentation/auth tests',
+  },
+  {
+    file: 'src/instrumentation.test.ts',
+    importSpecifier: '@/server/enterprise/services/platformObservability/operationalMetricsRuntime',
+    owner: 'M11',
+    reason: 'Mocks identity/observability bootstrap seam for instrumentation/auth tests',
+  },
+  {
+    file: 'src/libs/better-auth/sso/platformIdentityProvider.secureProfile.test.ts',
+    importSpecifier: '@/server/enterprise/observability',
+    owner: 'M11',
+    reason: 'OIDC secure-profile observability / outbound HTTP test support',
+  },
+  {
+    file: 'src/libs/better-auth/sso/platformIdentityProvider.secureProfile.test.ts',
+    importSpecifier: '@/server/enterprise/security/outboundHttp',
+    owner: 'M11',
+    reason: 'OIDC secure-profile observability / outbound HTTP test support',
+  },
+  {
+    file: 'src/routes/(main)/home/_layout/Footer/index.test.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason: 'Mocks/asserts runtime branding provider at consumer surface',
+  },
+  {
+    file: 'src/routes/(main)/home/features/InputArea/MessengerBanner.test.tsx',
+    importSpecifier: '@/enterprise/client/providers/RuntimeBrandingProvider',
+    owner: 'M12',
+    reason: 'Mocks/asserts runtime branding provider at consumer surface',
+  },
+  {
+    file: 'src/routes/(main)/settings/skill/features/PlatformSkillList.test.tsx',
+    importSpecifier: '@/enterprise/client/features/skills',
+    owner: 'M08',
+    reason: 'Mocks skill catalog / public skills hook at mount-adjacent test',
+  },
+  {
+    file: 'src/routes/(main)/settings/skill/features/SkillDetail/PlatformSkillDetail.test.tsx',
+    importSpecifier: '@/enterprise/client/features/skills',
+    owner: 'M08',
+    reason: 'Mocks skill catalog / public skills hook at mount-adjacent test',
   },
 ] as const satisfies readonly EnterpriseTestImportAllowance[];
 
@@ -354,30 +690,53 @@ export const isAllowedUpstreamMountPoint = (filePath: string): boolean => {
 
 /**
  * File-level production exemption: enterprise-owned trees and audited mount points.
- * Tests are NOT exempt at file level — use {@link isAllowedEnterpriseTestImport}.
+ * Ordinary consumers and tests use exact (file, specifier) allowlists instead.
  */
 export const isAllowedEnterpriseImporter = (filePath: string): boolean =>
   isEnterpriseOwnedPath(filePath) || isAllowedUpstreamMountPoint(filePath);
 
-/** Exact (file, specifier) match against the audited test-support allowlist. */
-export const isAllowedEnterpriseTestImport = (
+const matchesAllowance = (
+  allowlist: readonly EnterpriseImportAllowance[],
   filePath: string,
   importSpecifier: string,
 ): boolean => {
   const path = normalizeRepoPath(filePath);
-  return ENTERPRISE_TEST_IMPORT_ALLOWLIST.some(
+  return allowlist.some(
     (entry) => entry.file === path && entry.importSpecifier === importSpecifier,
   );
 };
 
+/** Exact (file, specifier) match against the audited production / E2E allowlist. */
+export const isAllowedEnterpriseProductionImport = (
+  filePath: string,
+  importSpecifier: string,
+): boolean => matchesAllowance(ENTERPRISE_PRODUCTION_IMPORT_ALLOWLIST, filePath, importSpecifier);
+
+/** Exact (file, specifier) match against the audited test-support allowlist. */
+export const isAllowedEnterpriseTestImport = (filePath: string, importSpecifier: string): boolean =>
+  matchesAllowance(ENTERPRISE_TEST_IMPORT_ALLOWLIST, filePath, importSpecifier);
+
+/**
+ * Extract static module references that can bind enterprise code.
+ *
+ * Supported forms:
+ * - `from '…'` / `from "…"`
+ * - dynamic `import('…')` / `import("…")`
+ * - `require('…')` / `require("…")`
+ * - side-effect `import '…'` / `import "…"`
+ * - executable mocks: `vi.mock` / `vi.doMock` / `jest.mock` / `jest.doMock` with static string first arg
+ */
 const IMPORT_RE =
-  /from\s+['"]([^'"]+)['"]|import\s*\(\s*['"]([^'"]+)['"]\s*\)|require\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
+  /from\s+['"]([^'"]+)['"]|import\s*\(\s*['"]([^'"]+)['"]\s*\)|require\s*\(\s*['"]([^'"]+)['"]\s*\)|import\s+['"]([^'"]+)['"]|(?:vi|jest)\.(?:do)?[Mm]ock\(\s*['"]([^'"]+)['"]/g;
 
 export const extractImportSpecifiers = (source: string): string[] => {
   const specs: string[] = [];
+  const seen = new Set<string>();
   for (const match of source.matchAll(IMPORT_RE)) {
-    const spec = match[1] ?? match[2] ?? match[3];
-    if (spec) specs.push(spec);
+    const spec = match[1] ?? match[2] ?? match[3] ?? match[4] ?? match[5];
+    if (!spec || seen.has(spec)) continue;
+    seen.add(spec);
+    specs.push(spec);
   }
   return specs;
 };
@@ -404,13 +763,13 @@ export const findEnterpriseImportViolations = (
 
     for (const spec of extractImportSpecifiers(file.source)) {
       if (!isEnterpriseImport(spec)) continue;
-      // Exact test-support pairs only — no *.test.* / __tests__ wildcard.
+      if (isAllowedEnterpriseProductionImport(file.path, spec)) continue;
       if (isAllowedEnterpriseTestImport(file.path, spec)) continue;
       violations.push({
         file: normalizeRepoPath(file.path),
         importSpecifier: spec,
         reason:
-          'Only enterprise-owned paths, allowlisted upstream mount points, or exact ENTERPRISE_TEST_IMPORT_ALLOWLIST (file+specifier) pairs may import enterprise modules',
+          'Only enterprise-owned paths, allowlisted upstream mount points, or exact ENTERPRISE_PRODUCTION_IMPORT_ALLOWLIST / ENTERPRISE_TEST_IMPORT_ALLOWLIST (file+specifier) pairs may import enterprise modules',
       });
     }
   }
