@@ -45,6 +45,15 @@ export const FAIL_CLOSED_GATE_IDS = new Set<KnownGateId>([
   'patch-ledger-update',
 ]);
 
+/**
+ * Command gates that always carry structured assertion counts (Q03 / failure-drills).
+ * Both passed and failed outcomes require assertions.
+ */
+export const STRUCTURED_COMMAND_GATE_IDS = new Set<KnownGateId>([
+  'failure-drills',
+  'migration-upgrade-rollback',
+]);
+
 const shortShaSchema = z.string().regex(/^[a-f\d]{12}$/u, 'must be a 12-char lowercase git sha');
 const fullShaSchema = z.string().regex(/^[a-f\d]{40}$/u, 'must be a full lowercase git sha');
 const repositorySlugSchema = z.string().regex(/^[\w.-]+\/[\w.-]+$/u, 'must be owner/name');
@@ -69,7 +78,7 @@ export const validatedUpstreamInputSchema = z
 
 export type ValidatedUpstreamInput = z.infer<typeof validatedUpstreamInputSchema>;
 
-const assertionSummarySchema = z
+export const assertionSummarySchema = z
   .object({
     failed: z.number().int().nonnegative(),
     passed: z.number().int().nonnegative(),
@@ -86,7 +95,79 @@ const assertionSummarySchema = z
     }
   });
 
-const gateResultSchema = z
+const isAllPassAssertions = (assertions: {
+  failed: number;
+  passed: number;
+  skipped: number;
+  total: number;
+}) =>
+  assertions.total > 0 &&
+  assertions.passed === assertions.total &&
+  assertions.failed === 0 &&
+  assertions.skipped === 0;
+
+/**
+ * Shared per-gate assertion rules used by both raw gate-result and final evidence schemas.
+ */
+export const refineGateResultAssertions = (
+  gate: {
+    assertions?: {
+      failed: number;
+      passed: number;
+      skipped: number;
+      total: number;
+    };
+    id: string;
+    kind: 'command' | 'fail-closed' | 'privacy-scan' | 'vitest';
+    outcome: 'failed' | 'passed';
+  },
+  context: z.RefinementCtx,
+) => {
+  const structured =
+    (KNOWN_GATE_IDS as readonly string[]).includes(gate.id) &&
+    STRUCTURED_COMMAND_GATE_IDS.has(gate.id as KnownGateId);
+  const requiresAssertions = gate.kind === 'vitest' || structured;
+
+  if (requiresAssertions && !gate.assertions) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `gate "${gate.id}" requires assertions`,
+      path: ['assertions'],
+    });
+    return;
+  }
+
+  if (
+    (gate.kind === 'fail-closed' || gate.kind === 'privacy-scan') &&
+    gate.assertions !== undefined
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `${gate.kind} gates must not include assertions`,
+      path: ['assertions'],
+    });
+  }
+
+  if (!gate.assertions) return;
+
+  if (gate.outcome === 'passed' && !isAllPassAssertions(gate.assertions)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'passing gate with assertions requires positive all-pass counts',
+      path: ['assertions'],
+    });
+  }
+
+  if (gate.outcome === 'failed' && isAllPassAssertions(gate.assertions)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'failed gate must not claim all-pass assertions',
+      path: ['assertions'],
+    });
+  }
+};
+
+export const evidenceGateResultSchema = z
   .object({
     assertions: assertionSummarySchema.optional(),
     id: z.string().min(1).max(64),
@@ -94,9 +175,100 @@ const gateResultSchema = z
     outcome: z.enum(['failed', 'passed']),
     reason: z.string().min(1).max(240),
   })
-  .strict();
+  .strict()
+  .superRefine((gate, context) => {
+    refineGateResultAssertions(gate, context);
+  });
 
-const evidenceCoreSchema = z
+const refineEvidenceGateBijection = (
+  value: {
+    gates: Array<{
+      assertions?: {
+        failed: number;
+        passed: number;
+        skipped: number;
+        total: number;
+      };
+      id: string;
+      kind: 'command' | 'fail-closed' | 'privacy-scan' | 'vitest';
+      outcome: 'failed' | 'passed';
+    }>;
+    requiredGateIds: string[];
+  },
+  context: z.RefinementCtx,
+) => {
+  const required = value.requiredGateIds;
+  if (new Set(required).size !== required.length) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'requiredGateIds must be unique',
+      path: ['requiredGateIds'],
+    });
+  }
+
+  const resultIds = value.gates.map((gate) => gate.id);
+  if (new Set(resultIds).size !== resultIds.length) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'gate result ids must be unique',
+      path: ['gates'],
+    });
+  }
+
+  if (required.length !== value.gates.length) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'gates length must equal requiredGateIds length',
+      path: ['gates'],
+    });
+  }
+
+  const requiredSet = new Set(required);
+  const resultSet = new Set(resultIds);
+  if (requiredSet.size !== resultSet.size || required.some((id) => !resultSet.has(id))) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'gate result ids must exactly match requiredGateIds',
+      path: ['gates'],
+    });
+  }
+
+  for (const [index, gate] of value.gates.entries()) {
+    const known = (KNOWN_GATE_IDS as readonly string[]).includes(gate.id);
+    if (!known) {
+      if (gate.kind !== 'fail-closed' || gate.outcome !== 'failed') {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `unknown gate "${gate.id}" must be fail-closed failed`,
+          path: ['gates', index],
+        });
+      }
+      continue;
+    }
+
+    const expectedKind = EXPECTED_GATE_KINDS[gate.id as KnownGateId];
+    if (gate.kind !== expectedKind) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `gate "${gate.id}" kind ${gate.kind} does not match ${expectedKind}`,
+        path: ['gates', index, 'kind'],
+      });
+    }
+
+    if (
+      FAIL_CLOSED_GATE_IDS.has(gate.id as KnownGateId) &&
+      (gate.kind !== 'fail-closed' || gate.outcome !== 'failed')
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `fail-closed gate "${gate.id}" cannot pass`,
+        path: ['gates', index, 'outcome'],
+      });
+    }
+  }
+};
+
+const evidenceCoreObjectSchema = z
   .object({
     analysis: z
       .object({
@@ -116,7 +288,7 @@ const evidenceCoreSchema = z
         upstream: shortShaSchema,
       })
       .strict(),
-    gates: z.array(gateResultSchema).max(32),
+    gates: z.array(evidenceGateResultSchema).max(32),
     lane: z.literal(UPSTREAM_REBASE_CI_LANE),
     reportStatus: z.enum(['clean', 'conflicts', 'drift']),
     requiredGateIds: z.array(z.string().min(1).max(64)).max(32),
@@ -141,7 +313,9 @@ const evidenceCoreSchema = z
   })
   .strict();
 
-export const upstreamRebaseEvidenceSchema = evidenceCoreSchema
+export const evidenceCoreSchema = evidenceCoreObjectSchema.superRefine(refineEvidenceGateBijection);
+
+export const upstreamRebaseEvidenceSchema = evidenceCoreObjectSchema
   .extend({
     redactionScan: z
       .object({
@@ -150,11 +324,12 @@ export const upstreamRebaseEvidenceSchema = evidenceCoreSchema
       })
       .strict(),
   })
-  .strict();
+  .strict()
+  .superRefine(refineEvidenceGateBijection);
 
 export type UpstreamRebaseEvidence = z.infer<typeof upstreamRebaseEvidenceSchema>;
-export type UpstreamRebaseEvidenceCore = z.infer<typeof evidenceCoreSchema>;
-export type GateResult = z.infer<typeof gateResultSchema>;
+export type UpstreamRebaseEvidenceCore = z.infer<typeof evidenceCoreObjectSchema>;
+export type GateResult = z.infer<typeof evidenceGateResultSchema>;
 
 export const scanUpstreamRebaseEvidence = (value: unknown) => scanForSecrets(value);
 
@@ -175,7 +350,11 @@ export const createUpstreamRebaseEvidence = (
   });
 };
 
-export const isPassingUpstreamRebaseEvidence = (evidence: UpstreamRebaseEvidence): boolean => {
+/**
+ * Passing evidence must satisfy the strict schema (including unique/bijection rules)
+ * plus clean report status, cleanup, verified freshness, redaction, and all-gate pass.
+ */
+export const isPassingUpstreamRebaseEvidence = (evidence: unknown): boolean => {
   const parsed = upstreamRebaseEvidenceSchema.safeParse(evidence);
   if (!parsed.success) return false;
 
@@ -187,23 +366,6 @@ export const isPassingUpstreamRebaseEvidence = (evidence: UpstreamRebaseEvidence
   if (upstream.freshness !== 'verified-by-ci-fetch') return false;
   if (redactionScan.result !== 'passed' || redactionScan.violations !== 0) return false;
   if (requiredGateIds.length === 0) return false;
-  if (gates.length !== requiredGateIds.length) return false;
 
-  const gateIds = new Set(gates.map((gate) => gate.id));
-  if (requiredGateIds.some((id) => !gateIds.has(id))) return false;
-
-  return gates.every((gate) => {
-    if (gate.outcome !== 'passed') return false;
-    if (gate.kind === 'vitest' || gate.assertions) {
-      const assertions = gate.assertions;
-      return (
-        !!assertions &&
-        assertions.total > 0 &&
-        assertions.passed === assertions.total &&
-        assertions.failed === 0 &&
-        assertions.skipped === 0
-      );
-    }
-    return true;
-  });
+  return gates.every((gate) => gate.outcome === 'passed');
 };
