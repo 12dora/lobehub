@@ -92,6 +92,16 @@ describe('platform instance status internal contract', () => {
     ).toBe(true);
     expect(
       platformDomainTargetSchema.safeParse({
+        domain: 'identity',
+        errorCategory: null,
+        fallbackPolicy: 'lkg_then_break_glass',
+        loadMode: 'restart_activated',
+        status: 'available',
+        token: null,
+      }).success,
+    ).toBe(true);
+    expect(
+      platformDomainTargetSchema.safeParse({
         domain: 'settings',
         errorCategory: null,
         fallbackPolicy: 'unknown',
