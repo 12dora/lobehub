@@ -76,6 +76,7 @@ export class BrandingPublishedReadService {
       },
       namespace: BRANDING_CACHE_NAMESPACE,
       now: options.now,
+      observabilityDomain: 'branding',
     });
   }
 

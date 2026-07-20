@@ -150,6 +150,7 @@ export class SkillCatalogReadService {
       load: this.loadPublishedProjection,
       namespace: SKILL_ACTIVE_PROJECTION_CACHE_NAMESPACE,
       now: options.now,
+      observabilityDomain: 'skill_catalog',
     });
   }
 

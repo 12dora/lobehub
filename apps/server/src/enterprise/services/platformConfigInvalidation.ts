@@ -5,6 +5,8 @@ import { getRedisConfig } from '@/envs/redis';
 import type { BaseRedisProvider, RedisConfig } from '@/libs/redis';
 import { initializeRedis } from '@/libs/redis';
 
+import { classifyEnterpriseError, observeEnterprisePlatformEvent } from '../observability';
+
 const log = debug('lobe-server:platform-config-invalidation');
 const LAST_EVENT_TTL_SECONDS = 86_400;
 const MAX_IN_MEMORY_EVENTS = 256;
@@ -93,6 +95,7 @@ export class InMemoryPlatformConfigInvalidationPublisher
       const key = `scope:${scope}`;
       this.versions.set(key, Math.max((this.versions.get(key) ?? 0) + 1, event.revision));
     }
+    observeEnterprisePlatformEvent({ backend: 'memory', outcome: 'success', type: 'invalidation' });
   };
 
   getScopeVersion = async (scope: string): Promise<string> =>
@@ -112,12 +115,22 @@ export class RedisPlatformConfigInvalidationPublisher implements PlatformConfigI
     try {
       const config = this.redisDependencies.getRedisConfig();
       if (!config.enabled) {
+        observeEnterprisePlatformEvent({
+          backend: 'redis',
+          outcome: 'disabled',
+          type: 'invalidation',
+        });
         log('redis disabled; invalidation degraded resourceType=%s', event.resourceType);
         return;
       }
 
       const redis = await this.redisDependencies.initializeRedis(config);
       if (!redis) {
+        observeEnterprisePlatformEvent({
+          backend: 'redis',
+          outcome: 'unavailable',
+          type: 'invalidation',
+        });
         log('redis unavailable; invalidation degraded resourceType=%s', event.resourceType);
         return;
       }
@@ -145,6 +158,11 @@ export class RedisPlatformConfigInvalidationPublisher implements PlatformConfigI
           Math.max(0, expectedCommands - results.length)
         : expectedCommands;
       if (failedCommands > 0) {
+        observeEnterprisePlatformEvent({
+          backend: 'redis',
+          outcome: 'partial_failure',
+          type: 'invalidation',
+        });
         log(
           'invalidation degraded resourceType=%s revision=%d failedCommands=%d',
           event.resourceType,
@@ -159,6 +177,11 @@ export class RedisPlatformConfigInvalidationPublisher implements PlatformConfigI
         event.revision,
         scopes.length,
       );
+      observeEnterprisePlatformEvent({
+        backend: 'redis',
+        outcome: 'success',
+        type: 'invalidation',
+      });
     } catch (error) {
       // Best-effort: never break the publish path.
       log(
@@ -166,6 +189,12 @@ export class RedisPlatformConfigInvalidationPublisher implements PlatformConfigI
         event.resourceType,
         getErrorClass(error),
       );
+      observeEnterprisePlatformEvent({
+        backend: 'redis',
+        errorClass: classifyEnterpriseError(error),
+        outcome: 'error',
+        type: 'invalidation',
+      });
     }
   };
 }

@@ -9,7 +9,7 @@ import {
 } from '@lobechat/observability-otel/modules/enterprise-platform';
 
 import { logEnterpriseObservation } from './structuredLogger';
-import type { EnterpriseObservabilityEvent } from './types';
+import type { EnterpriseObservabilityErrorClass, EnterpriseObservabilityEvent } from './types';
 import { classifyEnterpriseError } from './types';
 
 const ERROR_CLASSES = new Set([
@@ -21,8 +21,8 @@ const ERROR_CLASSES = new Set([
 ]);
 
 const normalizedErrorClass = (
-  errorClass: EnterpriseObservabilityEvent['errorClass'],
-): EnterpriseObservabilityEvent['errorClass'] =>
+  errorClass: EnterpriseObservabilityErrorClass | undefined,
+): EnterpriseObservabilityErrorClass | undefined =>
   errorClass && ERROR_CLASSES.has(errorClass)
     ? errorClass
     : errorClass
@@ -35,7 +35,9 @@ const normalizeEvent = (event: EnterpriseObservabilityEvent): EnterpriseObservab
       return {
         domain: event.domain,
         durationMs: Number.isFinite(event.durationMs) ? Math.max(0, event.durationMs) : 0,
-        errorClass: normalizedErrorClass(event.errorClass),
+        ...(normalizedErrorClass(event.errorClass)
+          ? { errorClass: normalizedErrorClass(event.errorClass) }
+          : {}),
         operation: event.operation,
         outcome: event.outcome,
         type: event.type,
@@ -44,26 +46,39 @@ const normalizeEvent = (event: EnterpriseObservabilityEvent): EnterpriseObservab
     case 'invalidation': {
       return {
         backend: event.backend,
-        errorClass: normalizedErrorClass(event.errorClass),
+        ...(normalizedErrorClass(event.errorClass)
+          ? { errorClass: normalizedErrorClass(event.errorClass) }
+          : {}),
         outcome: event.outcome,
         type: event.type,
       };
     }
     case 'cache': {
-      return event.operation === 'load'
-        ? {
-            domain: event.domain,
-            errorClass: normalizedErrorClass(event.errorClass),
-            operation: event.operation,
-            outcome: event.outcome,
-            type: event.type,
-          }
-        : {
-            domain: event.domain,
-            operation: event.operation,
-            outcome: event.outcome,
-            type: event.type,
-          };
+      if (event.operation === 'load') {
+        return {
+          domain: event.domain,
+          ...(normalizedErrorClass(event.errorClass)
+            ? { errorClass: normalizedErrorClass(event.errorClass) }
+            : {}),
+          operation: event.operation,
+          outcome: event.outcome,
+          type: event.type,
+        };
+      }
+      if (event.operation === 'epoch') {
+        return {
+          domain: event.domain,
+          operation: event.operation,
+          outcome: event.outcome,
+          type: event.type,
+        };
+      }
+      return {
+        domain: event.domain,
+        operation: event.operation,
+        outcome: event.outcome,
+        type: event.type,
+      };
     }
     case 'guard_decision': {
       return {
@@ -77,7 +92,9 @@ const normalizeEvent = (event: EnterpriseObservabilityEvent): EnterpriseObservab
     case 'instance_heartbeat': {
       return {
         durationMs: Number.isFinite(event.durationMs) ? Math.max(0, event.durationMs) : 0,
-        errorClass: normalizedErrorClass(event.errorClass),
+        ...(normalizedErrorClass(event.errorClass)
+          ? { errorClass: normalizedErrorClass(event.errorClass) }
+          : {}),
         operation: event.operation,
         outcome: event.outcome,
         type: event.type,
