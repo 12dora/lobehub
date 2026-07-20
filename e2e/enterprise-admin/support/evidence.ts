@@ -90,7 +90,7 @@ export const assertEvidenceImageNotBlank = async (filePath: string): Promise<voi
     );
   }
   const isPng =
-    buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47 && buf[4] === 0x0d;
+    buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47 && buf[4] === 0x0D;
   if (!isPng) {
     throw new Error(`evidence image is not a PNG: ${filePath}`);
   }
