@@ -214,13 +214,6 @@ describe('admin procedure authorization registry', () => {
     const dangerousReauthGaps = Object.values(ADMIN_MUTATION_REGISTRY).filter(
       (entry) => entry.dangerous && entry.controls.reauth.status === 'gap',
     );
-    expect(dangerousReauthGaps.map(({ procedure }) => procedure).sort()).toEqual([
-      'admin.agents.assignments.remove',
-      'admin.agents.assignments.upsert',
-      'admin.easyauth.triggerSync',
-      'admin.identityProviders.delete',
-      'admin.settings.publish',
-      'admin.settings.rollback',
-    ]);
+    expect(dangerousReauthGaps.map(({ procedure }) => procedure).sort()).toEqual([]);
   });
 });

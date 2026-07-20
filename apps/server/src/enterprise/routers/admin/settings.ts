@@ -19,6 +19,7 @@ import { getEnterpriseFeatureFlags } from '../../featureFlags';
 import { withActiveUser } from '../../guards/activeUser';
 import { throwEnterpriseError } from '../../guards/enterpriseErrors';
 import { withPlatformPermission } from '../../guards/platformPermission';
+import { assertRecentReauth } from '../../guards/reauth';
 import { PlatformAuditService } from '../../services/platformAudit';
 import {
   AdminSettingsService,
@@ -54,6 +55,40 @@ const assertSettingsFeature = async (params: {
       httpCode: 'FORBIDDEN',
       message: 'Platform settings policy is disabled',
     });
+  }
+};
+
+const assertSettingsDangerousReauth = async (params: {
+  action: 'admin.settings.publish' | 'admin.settings.rollback';
+  actorUserId: string;
+  authenticatedAt?: Date | null;
+  authMethod?: Parameters<typeof assertRecentReauth>[0]['authMethod'];
+  reason: string;
+  serverDB: LobeChatDatabase;
+}) => {
+  try {
+    assertRecentReauth({
+      authenticatedAt: params.authenticatedAt,
+      authMethod: params.authMethod,
+    });
+  } catch (error) {
+    try {
+      await new PlatformAuditService(params.serverDB).append({
+        action: params.action,
+        actorUserId: params.actorUserId,
+        afterDiff: { error: 'reauth_required' },
+        reason: params.reason,
+        result: 'denied',
+        targetId: 'global',
+        targetType: 'settings',
+      });
+    } catch (auditError) {
+      console.error('[admin.settings] reauth denied audit unavailable', {
+        action: params.action,
+        errorClass: auditError instanceof Error ? auditError.name : 'UnknownError',
+      });
+    }
+    throw error;
   }
 };
 
@@ -140,6 +175,14 @@ export const adminSettingsRouter = router({
         actorUserId: ctx.userId!,
         serverDB: ctx.serverDB,
       });
+      await assertSettingsDangerousReauth({
+        action: 'admin.settings.publish',
+        actorUserId: ctx.userId!,
+        authenticatedAt: ctx.authenticatedAt,
+        authMethod: ctx.authMethod,
+        reason: input.reason,
+        serverDB: ctx.serverDB,
+      });
       const service = new AdminSettingsService(ctx.serverDB);
       try {
         return await service.publish({
@@ -176,6 +219,14 @@ export const adminSettingsRouter = router({
       await assertSettingsFeature({
         action: 'admin.settings.rollback',
         actorUserId: ctx.userId!,
+        serverDB: ctx.serverDB,
+      });
+      await assertSettingsDangerousReauth({
+        action: 'admin.settings.rollback',
+        actorUserId: ctx.userId!,
+        authenticatedAt: ctx.authenticatedAt,
+        authMethod: ctx.authMethod,
+        reason: input.reason,
         serverDB: ctx.serverDB,
       });
       const service = new AdminSettingsService(ctx.serverDB);
