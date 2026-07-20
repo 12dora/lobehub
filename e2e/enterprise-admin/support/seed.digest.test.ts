@@ -108,6 +108,7 @@ describe('global db digest', () => {
       ],
       createdPolicies: [],
       createdRolePermissionKeys: [],
+      createdUserRoles: [],
       createdRoles: [
         {
           createdAt: '2026-01-01T00:00:00.000Z',
