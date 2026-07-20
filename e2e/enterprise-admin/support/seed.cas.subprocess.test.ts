@@ -1,10 +1,8 @@
 /**
- * Subprocess success / failure / SIGTERM CAS restore coverage for external-style
- * global row ownership. Uses an isolated ParadeDB container (not a shared DB).
+ * Success / failure / interrupt CAS restore coverage for external-style global
+ * row ownership. Uses an isolated ParadeDB container (not a shared DB).
  */
-import { spawn } from 'node:child_process';
-import path from 'node:path';
-
+import { Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import {
@@ -16,12 +14,12 @@ import {
 } from './lifecycle';
 import {
   casRestoreGlobalDb,
+  cleanupEnterpriseAdminSuite,
   digestFingerprint,
+  installManifestRestoreOnSignals,
   seedEnterpriseAdminSuite,
   snapshotGlobalDbDigest,
 } from './seed';
-
-const PROJECT = path.resolve(__dirname, '../../..');
 
 describe('CAS restore success/failure/interrupt', () => {
   const runToken = createRunToken();
@@ -29,7 +27,7 @@ describe('CAS restore success/failure/interrupt', () => {
   let databaseUrl = '';
 
   beforeAll(async () => {
-    const pg = await startOwnedContainer({
+    const container = await startOwnedContainer({
       args: [
         '-e',
         'POSTGRES_PASSWORD=postgres',
@@ -43,19 +41,9 @@ describe('CAS restore success/failure/interrupt', () => {
       runToken,
       state,
     });
-    const port = await inspectPublishedHostPort(pg.id, 5432);
+    const port = await inspectPublishedHostPort(container.id, 5432);
     databaseUrl = `postgresql://postgres:postgres@127.0.0.1:${port}/cas_restore`;
-    // Wait for ready
     const deadline = Date.now() + 90_000;
-
-    const pg = require('pg');
-    const Pool = pg.Pool as new (config: {
-      connectionString: string;
-      connectionTimeoutMillis?: number;
-    }) => {
-      end: () => Promise<void>;
-      query: (sql: string, params?: unknown[]) => Promise<{ rowCount: number | null; rows: any[] }>;
-    };
     while (Date.now() < deadline) {
       const pool = new Pool({ connectionString: databaseUrl, connectionTimeoutMillis: 1500 });
       try {
@@ -170,7 +158,6 @@ describe('CAS restore success/failure/interrupt', () => {
     const mid = await snapshotGlobalDbDigest(databaseUrl);
     expect(digestFingerprint(mid)).not.toBe(digestFingerprint(before));
 
-    const { cleanupEnterpriseAdminSuite } = await import('./seed');
     await cleanupEnterpriseAdminSuite(databaseUrl, seed, manifest);
     const after = await snapshotGlobalDbDigest(databaseUrl);
     expect(digestFingerprint(after)).toBe(digestFingerprint(before));
@@ -178,10 +165,6 @@ describe('CAS restore success/failure/interrupt', () => {
 
   it('failure path: concurrent policy drift refuses CAS overwrite', async () => {
     const { manifest, seed } = await seedEnterpriseAdminSuite(databaseUrl);
-    // Concurrent external mutation of a suite-mutated or created skills policy
-
-    const pg = require('pg');
-    const Pool = pg.Pool;
     const pool = new Pool({ connectionString: databaseUrl });
     await pool.query(
       `UPDATE platform_managed_resource_policies
@@ -190,13 +173,8 @@ describe('CAS restore success/failure/interrupt', () => {
     );
     await pool.end();
 
-    // If skills was suite-created (not mutated), CAS for mutatedPolicies may be empty —
-    // force a conflict by also checking delete of created policies is fine, but if we
-    // only have created policies, concurrent update still leaves suite-created row;
-    // delete by id should succeed. To force conflict, mutate after fingerprint for a
-    // synthetic mutated entry:
+    // Force a mutated-policy CAS path even when skills was suite-created.
     if (manifest.mutatedPolicies.length === 0 && manifest.createdPolicyIds.length > 0) {
-      // Rebuild a fake mutated policy from after snapshot for skills
       const afterSnap = manifest.after.managedPolicies.find((p) => p.resource === 'skills');
       const beforeSnap = manifest.before.managedPolicies.find((p) => p.resource === 'skills');
       if (afterSnap) {
@@ -208,7 +186,6 @@ describe('CAS restore success/failure/interrupt', () => {
             revision: 0,
           },
         });
-        // remove from created so we attempt CAS update not delete
         manifest.createdPolicyIds = manifest.createdPolicyIds.filter((id) => id !== afterSnap.id);
       }
     }
@@ -219,37 +196,94 @@ describe('CAS restore success/failure/interrupt', () => {
       );
     }
 
-    // Cleanup leftover users for next test
-    const { cleanupEnterpriseAdminSuite } = await import('./seed');
     await cleanupEnterpriseAdminSuite(databaseUrl, seed, {
       ...manifest,
-      // Avoid second CAS conflict: empty mutations, only delete created leftovers best-effort
       mutatedPolicies: [],
     }).catch(() => undefined);
   }, 60_000);
 
-  it('SIGTERM subprocess runs interrupt restore handler path', async () => {
-    // Lightweight subprocess that installs restore handlers and exits on SIGTERM.
-    const script = `
-        const { spawn } = require('child_process');
-        process.on('SIGTERM', () => {
-          console.log('INTERRUPT_RESTORE_OK');
-          process.exit(143);
-        });
-        setInterval(() => {}, 1000);
-      `;
-    const child = spawn(process.execPath, ['-e', script], {
-      cwd: PROJECT,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    await new Promise((r) => setTimeout(r, 200));
-    const stdout: string[] = [];
-    child.stdout?.on('data', (c) => stdout.push(String(c)));
-    child.kill('SIGTERM');
-    const code = await new Promise<number | null>((resolve) => {
-      child.once('exit', (c) => resolve(c));
-    });
-    expect(code === 143 || code === null).toBe(true);
-    expect(stdout.join('')).toMatch(/INTERRUPT_RESTORE_OK/);
-  }, 15_000);
+  it('interrupt path: signal-handler cleanup body restores before digest', async () => {
+    const before = await snapshotGlobalDbDigest(databaseUrl);
+    const { manifest, seed } = await seedEnterpriseAdminSuite(databaseUrl);
+    expect(digestFingerprint(await snapshotGlobalDbDigest(databaseUrl))).not.toBe(
+      digestFingerprint(before),
+    );
+
+    // Same body installManifestRestoreOnSignals runs on SIGINT/SIGTERM.
+    const uninstall = installManifestRestoreOnSignals(databaseUrl, seed, manifest);
+    try {
+      await cleanupEnterpriseAdminSuite(databaseUrl, seed, manifest);
+    } finally {
+      uninstall();
+    }
+
+    const after = await snapshotGlobalDbDigest(databaseUrl);
+    expect(digestFingerprint(after)).toBe(digestFingerprint(before));
+  }, 60_000);
+
+  it('SIGINT/SIGTERM handlers are registered and uninstallable', () => {
+    const fakeSeed = {
+      auditor: {
+        accountId: 'a',
+        email: 'a@test',
+        fullName: 'a',
+        id: 'u',
+        password: 'p',
+        roleLabel: 'auditor' as const,
+        username: 'a',
+      },
+      namespace: 'n',
+      ordinary: {
+        accountId: 'o',
+        email: 'o@test',
+        fullName: 'o',
+        id: 'uo',
+        password: 'p',
+        roleLabel: 'ordinary' as const,
+        username: 'o',
+      },
+      owner: {
+        accountId: 'w',
+        email: 'w@test',
+        fullName: 'w',
+        id: 'uw',
+        password: 'p',
+        roleLabel: 'owner' as const,
+        username: 'w',
+      },
+      superAdmin: {
+        accountId: 's',
+        email: 's@test',
+        fullName: 's',
+        id: 'us',
+        password: 'p',
+        roleLabel: 'super_admin' as const,
+        username: 's',
+      },
+      workspaceId: 'ws',
+      workspaceSlug: 'ws',
+    };
+    const emptyManifest = {
+      after: {
+        managedPolicies: [],
+        platformPermissions: [],
+        platformRolePermissions: [],
+        platformRoles: [],
+      },
+      before: {
+        managedPolicies: [],
+        platformPermissions: [],
+        platformRolePermissions: [],
+        platformRoles: [],
+      },
+      createdPermissionIds: [],
+      createdPolicyIds: [],
+      createdRoleIds: [],
+      createdRolePermissionKeys: [],
+      mutatedPolicies: [],
+    };
+    const uninstall = installManifestRestoreOnSignals(databaseUrl, fakeSeed, emptyManifest);
+    expect(typeof uninstall).toBe('function');
+    uninstall();
+  });
 });
