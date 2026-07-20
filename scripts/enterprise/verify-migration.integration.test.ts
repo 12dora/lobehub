@@ -118,9 +118,9 @@ describe.skipIf(!enabled)('migration compat integration (owned disposable Postgr
     }
   }, 600_000);
 
-  it('official migrator rerun leaves journal count and content unchanged at 136', async () => {
+  it('official migrator rerun leaves journal count and content unchanged at head count', async () => {
     const official = loadOfficialMigrations(repoRoot);
-    expect(official.length).toBe(136);
+    expect(official.length).toBeGreaterThanOrEqual(137);
     const owned = await createOwnedPostgres();
     try {
       await owned.handle.withPool(async (pool, client) => {
@@ -131,11 +131,47 @@ describe.skipIf(!enabled)('migration compat integration (owned disposable Postgr
         await applyOfficialPostBaselineMigrations(client, repoRoot);
         await seedPlatformProbes(client);
         const before = await snapshotMigrationJournal(client);
-        expect(before.count).toBe(136);
+        expect(before.count).toBe(official.length);
         const rerun = await verifyOfficialMigratorRerun(pool, repoRoot);
         expect(rerun.match).toBe(true);
-        expect(rerun.beforeCount).toBe(136);
-        expect(rerun.afterCount).toBe(136);
+        expect(rerun.beforeCount).toBe(official.length);
+        expect(rerun.afterCount).toBe(official.length);
+      });
+    } finally {
+      expect(await owned.cleanup()).toBe('passed');
+    }
+  }, 600_000);
+
+  it('rejects NULL secret_fingerprint when secret_ref is set (missing-fingerprint regression)', async () => {
+    const owned = await createOwnedPostgres();
+    try {
+      await owned.handle.withClient(async (client) => {
+        await applyOfficialBaselineMigrations(client, repoRoot);
+        for (const statement of buildSyntheticFixtureStatements()) {
+          await client.query(statement);
+        }
+        await applyOfficialPostBaselineMigrations(client, repoRoot);
+        await seedPlatformProbes(client);
+
+        await expect(
+          client.query(
+            `UPDATE platform_identity_providers
+             SET secret_fingerprint = NULL, secret_updated_at = now()
+             WHERE id = $1`,
+            ['pidp_m15q03_probe_01'],
+          ),
+        ).rejects.toThrow(/secret_state_check|check constraint/i);
+
+        const row = await client.query<{
+          secret_fingerprint: string | null;
+          secret_ref: string | null;
+        }>(
+          `SELECT secret_ref, secret_fingerprint
+           FROM platform_identity_providers WHERE id = $1`,
+          ['pidp_m15q03_probe_01'],
+        );
+        expect(row.rows[0]?.secret_ref).toMatch(/^kms:\/\/platform-identity-providers\//);
+        expect(row.rows[0]?.secret_fingerprint).toMatch(/^[a-f0-9]{64}$/);
       });
     } finally {
       expect(await owned.cleanup()).toBe('passed');
