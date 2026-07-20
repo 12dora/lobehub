@@ -198,6 +198,16 @@ export type StartAppHooks = {
   bindDelayMs?: number;
   /** How long to probe for bind failure before accepting the spawn attempt. */
   bindProbeTimeoutMs?: number;
+  /**
+   * Test seam: spawn a controlled app process through the same orchestration as production.
+   * When omitted, production next/bun spawn is used.
+   */
+  spawnApp?: (args: {
+    appPort: number;
+    env: NodeJS.ProcessEnv;
+    spaPort?: number;
+    state: LifecycleState;
+  }) => ChildProcess;
 };
 
 const killOwnedChild = async (state: LifecycleState, child: ChildProcess): Promise<void> => {
@@ -303,7 +313,14 @@ export const startAppWithPortRetry = async (params: {
       }
 
       let child: ChildProcess;
-      if (params.mode === 'start') {
+      if (params.hooks?.spawnApp) {
+        child = params.hooks.spawnApp({
+          appPort,
+          env: { ...env, PORT: String(appPort) },
+          spaPort,
+          state: params.state,
+        });
+      } else if (params.mode === 'start') {
         child = spawnOwned(
           params.state,
           process.execPath,
@@ -465,14 +482,25 @@ export const startEnterpriseAdminRuntime = async (): Promise<SuiteRuntime> => {
     const mode = (process.env.E2E_ENTERPRISE_ADMIN_MODE as 'dev' | 'start' | undefined) ?? 'dev';
 
     if (mode === 'start') {
+      // Build is never skipped for fault-stage after-build evidence unless explicitly
+      // SKIP_BUILD=1 for local speed of other start-mode paths. after-build tests must
+      // NOT set SKIP_BUILD; they may set E2E_ENTERPRISE_ADMIN_BUILD_COMMAND to a
+      // verifiable seam (real shell command that must succeed before the fault).
       if (process.env.E2E_ENTERPRISE_ADMIN_SKIP_BUILD !== '1') {
-        await runOwnedCommand(state, 'bun', ['run', 'build'], {
-          ...migrateEnv,
-          NODE_ENV: 'production',
-          SKIP_LINT: '1',
-        });
+        const buildCmd = process.env.E2E_ENTERPRISE_ADMIN_BUILD_COMMAND;
+        if (buildCmd) {
+          await runOwnedCommand(state, 'sh', ['-c', buildCmd], {
+            ...migrateEnv,
+            NODE_ENV: 'production',
+          });
+        } else {
+          await runOwnedCommand(state, 'bun', ['run', 'build'], {
+            ...migrateEnv,
+            NODE_ENV: 'production',
+            SKIP_LINT: '1',
+          });
+        }
       }
-      // Fault point always reachable in start mode (even when build skipped).
       maybeInjectFault('after-build', runToken);
     }
 

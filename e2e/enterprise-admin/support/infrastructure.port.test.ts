@@ -3,7 +3,7 @@ import { createServer, type Server } from 'node:net';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { holdPort, probeAppBindOrFail } from './infrastructure';
+import { startAppWithPortRetry } from './infrastructure';
 import {
   cleanupLifecycle,
   createLifecycleState,
@@ -13,89 +13,93 @@ import {
 } from './lifecycle';
 
 /**
- * Deterministic delayed bind collision: competitor grabs port after release,
- * spawn delayed >800ms. Must fail the attempt promptly and retry on a free port
- * — never hang for 240s.
+ * Deterministic delayed bind collision through production startAppWithPortRetry.
+ * Competitor grabs port after release; spawn delayed 1200ms (>800ms). Production
+ * orchestration must detect failure, reap first child, retry on a new port, and
+ * return a healthy second attempt under a short bound.
  */
-describe('app port handoff delayed TOCTOU', () => {
+describe('app port handoff delayed TOCTOU via startAppWithPortRetry', () => {
   const open: LifecycleState[] = [];
+  const competitors: Server[] = [];
 
   afterEach(async () => {
+    while (competitors.length > 0) {
+      const c = competitors.pop()!;
+      await new Promise<void>((resolve) => c.close(() => resolve()));
+    }
     while (open.length > 0) {
       const state = open.pop()!;
       await cleanupLifecycle(state).catch(() => undefined);
     }
   });
 
-  it('retries promptly when competitor grabs port after release with delayed bind', async () => {
+  it('production startAppWithPortRetry reaps failed attempt and retries promptly', async () => {
     const runToken = createRunToken();
     const state = createLifecycleState(runToken);
     open.push(state);
 
+    let attempt = 0;
+    let firstPort: number | undefined;
+    let competitor: Server | undefined;
     const started = Date.now();
 
-    // Attempt 1: release → competitor → delayed spawn → bind fail → kill
-    const held = await holdPort();
-    const firstPort = held.port;
-    await held.release();
-
-    const competitor: Server = createServer();
-    await new Promise<void>((resolve, reject) => {
-      competitor.once('error', reject);
-      competitor.listen(firstPort, '127.0.0.1', () => resolve());
+    const result = await startAppWithPortRetry({
+      attempts: 4,
+      databaseUrl: 'postgresql://unused',
+      hooks: {
+        afterPortRelease: async ({ appPort }) => {
+          attempt += 1;
+          if (attempt === 1) {
+            firstPort = appPort;
+            competitor = createServer();
+            competitors.push(competitor);
+            await new Promise<void>((resolve, reject) => {
+              competitor!.once('error', reject);
+              competitor!.listen(appPort, '127.0.0.1', () => resolve());
+            });
+          } else if (competitor) {
+            // Release competitor so second attempt can bind.
+            await new Promise<void>((resolve) => competitor!.close(() => resolve()));
+            const idx = competitors.indexOf(competitor);
+            if (idx >= 0) competitors.splice(idx, 1);
+            competitor = undefined;
+          }
+        },
+        bindDelayMs: 1200, // >800ms old false-pass window
+        bindProbeTimeoutMs: 2500,
+        spawnApp: ({ appPort, env, state: st }) => {
+          // Controlled HTTP server: fails if port taken; succeeds when free.
+          const child = spawn(
+            process.execPath,
+            [
+              '-e',
+              `require('http').createServer((q,s)=>s.end('ok')).listen(Number(process.env.PORT),'127.0.0.1').on('error',e=>{console.error(e);process.exit(1)})`,
+            ],
+            {
+              detached: true,
+              env: { ...env, PORT: String(appPort) },
+              stdio: ['ignore', 'pipe', 'pipe'],
+            },
+          );
+          registerProcess(st, child);
+          return child;
+        },
+      },
+      mode: 'dev',
+      redisUrl: 'redis://unused',
+      state,
     });
 
-    await new Promise((r) => setTimeout(r, 1200)); // >800ms delay (old false-pass window)
-
-    const child1 = spawn(
-      process.execPath,
-      [
-        '-e',
-        `require('http').createServer((q,s)=>s.end('ok')).listen(Number(process.env.PORT),'127.0.0.1').on('error',e=>{console.error(e);process.exit(1)})`,
-      ],
-      {
-        detached: true,
-        env: { ...process.env, PORT: String(firstPort) },
-        stdio: ['ignore', 'pipe', 'pipe'],
-      },
-    );
-    registerProcess(state, child1);
-
-    await expect(
-      probeAppBindOrFail({ appPort: firstPort, child: child1, timeoutMs: 3_000 }),
-    ).rejects.toThrow(/EADDRINUSE|exited|bind/i);
-
-    try {
-      if (child1.pid) process.kill(-child1.pid, 'SIGKILL');
-    } catch {
-      //
-    }
-    await new Promise<void>((resolve) => competitor.close(() => resolve()));
-
-    // Attempt 2: free port succeeds quickly
-    const held2 = await holdPort();
-    const port2 = held2.port;
-    await held2.release();
-    const child2 = spawn(
-      process.execPath,
-      [
-        '-e',
-        `require('http').createServer((q,s)=>s.end('ok')).listen(Number(process.env.PORT),'127.0.0.1')`,
-      ],
-      {
-        detached: true,
-        env: { ...process.env, PORT: String(port2) },
-        stdio: ['ignore', 'pipe', 'pipe'],
-      },
-    );
-    registerProcess(state, child2);
-    await probeAppBindOrFail({ appPort: port2, child: child2, timeoutMs: 3_000 });
-
     const elapsed = Date.now() - started;
-    expect(elapsed).toBeLessThan(30_000); // prompt retry, not 240s hang
-    expect(port2).not.toBe(firstPort);
+    expect(elapsed).toBeLessThan(30_000);
+    expect(firstPort).toBeDefined();
+    expect(result.appPort).not.toBe(firstPort);
+    expect(result.child.exitCode).toBeNull();
+    expect(state.processes).toContain(result.child);
 
+    // Reap healthy child via lifecycle
     await cleanupLifecycle(state);
     open.pop();
+    expect(state.processes).toHaveLength(0);
   }, 45_000);
 });
