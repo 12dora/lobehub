@@ -3,7 +3,11 @@ import { eq, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { getTestDB } from '../../core/getTestDB';
-import { platformInstanceHeartbeats, platformInstanceRevisionStates } from '../../schemas/platform';
+import {
+  platformIdentityProviderInstances,
+  platformInstanceHeartbeats,
+  platformInstanceRevisionStates,
+} from '../../schemas/platform';
 import type { LobeChatDatabase } from '../../type';
 import {
   PLATFORM_INSTANCE_FRESH_DIAGNOSTIC_CANDIDATE_LIMIT,
@@ -17,6 +21,7 @@ const repository = new PlatformInstanceRepository(db);
 const instanceId = (digit: string) => `pinst_${digit.repeat(48)}`;
 
 const cleanup = async () => {
+  await db.delete(platformIdentityProviderInstances);
   await db.delete(platformInstanceRevisionStates);
   await db.delete(platformInstanceHeartbeats);
 };
@@ -81,6 +86,105 @@ describe('PlatformInstanceRepository', () => {
       freshId,
     ]);
     expect(await db.select().from(platformInstanceHeartbeats)).toHaveLength(2);
+  });
+
+  it('aggregates only fresh production identity revisions without returning instance identifiers', async () => {
+    const snapshotAt = new Date('2030-01-01T00:10:00.000Z');
+    const cutoff = new Date(snapshotAt.getTime() - PLATFORM_INSTANCE_STALE_AFTER_MS);
+    const targetRevision = 'a'.repeat(64);
+    const otherRevision = 'b'.repeat(64);
+    const rows = [
+      {
+        activeIdentityRevision: targetRevision,
+        health: 'healthy' as const,
+        instanceId: `oidci_${'1'.repeat(48)}`,
+        startupSource: 'database' as const,
+      },
+      {
+        activeIdentityRevision: otherRevision,
+        health: 'healthy' as const,
+        instanceId: `oidci_${'2'.repeat(48)}`,
+        startupSource: 'database' as const,
+      },
+      {
+        activeIdentityRevision: targetRevision,
+        degradedCategory: 'startup_snapshot_unavailable',
+        health: 'degraded' as const,
+        instanceId: `oidci_${'3'.repeat(48)}`,
+        startupSource: 'database' as const,
+      },
+      {
+        activeIdentityRevision: targetRevision,
+        health: 'healthy' as const,
+        instanceId: `oidci_${'4'.repeat(48)}`,
+        startupSource: 'lkg' as const,
+      },
+      {
+        activeIdentityRevision: otherRevision,
+        health: 'healthy' as const,
+        instanceId: `oidci_${'5'.repeat(48)}`,
+        lastHeartbeat: new Date(cutoff.getTime() - 1),
+        startupSource: 'database' as const,
+      },
+    ];
+    await db.insert(platformIdentityProviderInstances).values(
+      rows.map((row) => ({
+        ...row,
+        hostnameHash: 'c'.repeat(64),
+        lastHeartbeat: row.lastHeartbeat ?? cutoff,
+        loadedAt: new Date(cutoff.getTime() - 10_000),
+        startedAt: new Date(cutoff.getTime() - 20_000),
+      })),
+    );
+
+    const snapshot = await repository.getIdentityRevisionLagSnapshot(targetRevision, snapshotAt);
+
+    expect(snapshot).toEqual({
+      freshInstances: 4,
+      laggingInstances: [
+        { count: 2, reason: 'degraded' },
+        { count: 1, reason: 'diverged' },
+      ],
+      snapshotAt,
+    });
+    expect(JSON.stringify(snapshot)).not.toContain('oidci_');
+    expect(JSON.stringify(snapshot)).not.toContain(targetRevision);
+  });
+
+  it('treats a null published identity target as a real convergence target', async () => {
+    const snapshotAt = new Date('2030-01-01T00:10:00.000Z');
+    const startedAt = new Date(snapshotAt.getTime() - 10_000);
+    await db.insert(platformIdentityProviderInstances).values([
+      {
+        activeIdentityRevision: null,
+        health: 'healthy',
+        hostnameHash: 'd'.repeat(64),
+        instanceId: `oidci_${'6'.repeat(48)}`,
+        lastHeartbeat: snapshotAt,
+        loadedAt: startedAt,
+        startedAt,
+        startupSource: 'database',
+      },
+      {
+        activeIdentityRevision: 'e'.repeat(64),
+        health: 'healthy',
+        hostnameHash: 'f'.repeat(64),
+        instanceId: `oidci_${'7'.repeat(48)}`,
+        lastHeartbeat: snapshotAt,
+        loadedAt: startedAt,
+        startedAt,
+        startupSource: 'database',
+      },
+    ]);
+
+    await expect(repository.getIdentityRevisionLagSnapshot(null, snapshotAt)).resolves.toEqual({
+      freshInstances: 2,
+      laggingInstances: [
+        { count: 0, reason: 'degraded' },
+        { count: 1, reason: 'diverged' },
+      ],
+      snapshotAt,
+    });
   });
 
   it('upserts normalized revision state with database-authored loadedAt', async () => {

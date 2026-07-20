@@ -38,6 +38,9 @@ const shouldLog = (event: EnterpriseObservabilityEvent): boolean => {
     case 'agent_materialization': {
       return event.outcome === 'failure';
     }
+    case 'operational_collection': {
+      return event.outcome === 'failure';
+    }
   }
 };
 

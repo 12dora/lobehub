@@ -5,6 +5,19 @@ import { idGenerator } from '../../utils/idGenerator';
 import { createdAt, timestamptz, updatedAt } from '../_helpers';
 import type { PlatformJobStatus } from './common';
 
+export const PLATFORM_AGENT_ROLLOUT_TRANSITION_TYPE = 'platform.agent.rollout.transition.v1';
+export const PLATFORM_SECRET_REWRAP_FAILURE_TYPE = 'platform.secret.rewrap.failure.v1';
+
+/**
+ * Append-only records stored beside jobs for transactional consistency, but never claimed by a
+ * worker. Keep this as a denylist: the job type namespace is open-ended, so an allowlist would
+ * silently hide newly introduced executable queues from operational backlog metrics.
+ */
+export const PLATFORM_JOB_LEDGER_TYPES = [
+  PLATFORM_AGENT_ROLLOUT_TRANSITION_TYPE,
+  PLATFORM_SECRET_REWRAP_FAILURE_TYPE,
+] as const;
+
 /**
  * Platform background jobs: distribution, migration, connector sync, bulk ops.
  *

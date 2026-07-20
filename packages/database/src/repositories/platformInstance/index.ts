@@ -1,6 +1,7 @@
-import { and, asc, desc, eq, gte, inArray, isNull, lt, ne, not, or, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gte, inArray, isNull, lt, ne, not, or, sql } from 'drizzle-orm';
 
 import {
+  platformIdentityProviderInstances,
   type PlatformInstanceDomain,
   type PlatformInstanceHeartbeatItem,
   platformInstanceHeartbeats,
@@ -60,6 +61,17 @@ export interface UpsertPlatformInstanceRevisionStateInput {
   loadedRevisionId?: string | null;
   loadMode: PlatformInstanceLoadMode;
   source: PlatformInstanceRevisionSource;
+}
+
+export const PLATFORM_IDENTITY_REVISION_LAG_REASONS = ['degraded', 'diverged'] as const;
+
+export type PlatformIdentityRevisionLagReason =
+  (typeof PLATFORM_IDENTITY_REVISION_LAG_REASONS)[number];
+
+export interface PlatformIdentityRevisionLagSnapshot {
+  freshInstances: number;
+  laggingInstances: Array<{ count: number; reason: PlatformIdentityRevisionLagReason }>;
+  snapshotAt: Date;
 }
 
 /**
@@ -282,6 +294,45 @@ export class PlatformInstanceRepository {
       snapshotAt: clock,
       staleCandidates,
       staleCount,
+    };
+  };
+
+  /** Read-only aggregate over the production OIDC startup registry; no diagnostics or IDs leave. */
+  getIdentityRevisionLagSnapshot = async (
+    targetRevision: string | null,
+    snapshotAt?: Date,
+  ): Promise<PlatformIdentityRevisionLagSnapshot> => {
+    const clock = snapshotAt ?? (await this.readSnapshotAt());
+    const cutoff = new Date(clock.getTime() - PLATFORM_INSTANCE_STALE_AFTER_MS);
+    const fallback = inArray(platformIdentityProviderInstances.startupSource, [
+      'break_glass',
+      'lkg',
+    ]);
+    const matches = targetRevision
+      ? eq(platformIdentityProviderInstances.activeIdentityRevision, targetRevision)
+      : isNull(platformIdentityProviderInstances.activeIdentityRevision);
+    const [aggregate] = await this.db
+      .select({
+        degraded: sql<number>`count(*) filter (
+          where ${platformIdentityProviderInstances.health} = 'degraded' or ${fallback}
+        )::int`,
+        diverged: sql<number>`count(*) filter (
+          where ${platformIdentityProviderInstances.health} = 'healthy'
+            and not (${fallback})
+            and not (${matches})
+        )::int`,
+        fresh: count(),
+      })
+      .from(platformIdentityProviderInstances)
+      .where(gte(platformIdentityProviderInstances.lastHeartbeat, cutoff));
+
+    return {
+      freshInstances: Number(aggregate?.fresh ?? 0),
+      laggingInstances: [
+        { count: Number(aggregate?.degraded ?? 0), reason: 'degraded' },
+        { count: Number(aggregate?.diverged ?? 0), reason: 'diverged' },
+      ],
+      snapshotAt: clock,
     };
   };
 

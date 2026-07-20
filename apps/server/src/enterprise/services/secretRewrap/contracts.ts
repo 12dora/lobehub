@@ -1,12 +1,15 @@
 import { z } from 'zod';
 
 import { PLATFORM_SECRET_ROTATION_DOMAINS } from '@/database/repositories/platformSecretRotation';
-import type { PlatformJobItem } from '@/database/schemas/platform';
+import {
+  PLATFORM_SECRET_REWRAP_FAILURE_TYPE,
+  type PlatformJobItem,
+} from '@/database/schemas/platform';
 
 import { containsEnterpriseSecretMaterial } from '../../security/redaction';
 
 export const PLATFORM_SECRET_REWRAP_JOB_TYPE = 'platform.secret.rewrap.v1';
-export const PLATFORM_SECRET_REWRAP_FAILURE_TYPE = 'platform.secret.rewrap.failure.v1';
+export { PLATFORM_SECRET_REWRAP_FAILURE_TYPE };
 export const PLATFORM_SECRET_REWRAP_BATCH_SIZE = 50;
 export const PLATFORM_SECRET_REWRAP_EXTERNAL_GATE = 'identity_lkg_instance_convergence_required';
 
