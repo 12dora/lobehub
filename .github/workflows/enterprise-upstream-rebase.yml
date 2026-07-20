@@ -5,8 +5,9 @@
 # repository main. It only:
 #   1. Fetches an official HTTPS GitHub upstream ref into a temporary clone
 #   2. Runs the reviewed scripts/enterprise/rebase-report.ts analyzer
-#   3. Executes report-selected local gates with deterministic mapping
-#   4. Uploads a redacted evidence artifact
+#   3. Materializes the clean candidate+upstream merge-tree in a temp worktree
+#   4. Executes report-selected local gates against that integrated tree
+#   5. Uploads a redacted evidence artifact
 #
 # Evidence is dry-run only — not a production rebase or push authorization.
 name: Enterprise Upstream Rebase Dry-Run
@@ -54,22 +55,26 @@ jobs:
       - name: Setup environment
         uses: ./.github/actions/setup-env
 
-      - name: Install dependencies
+      - name: Install dependencies on candidate (for tooling + node_modules reuse)
         run: |
           set -euo pipefail
           pnpm install
 
-      - name: Prepare isolated directories
+      - name: Prepare isolated directories and snapshot source worktree
         run: |
           set -euo pipefail
           temp_root="${RUNNER_TEMP}/aihub-upstream-rebase-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           raw_dir="${GITHUB_WORKSPACE}/.records/enterprise-upstream-rebase-raw/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           record_dir="${GITHUB_WORKSPACE}/.records/enterprise-upstream-rebase/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           mkdir -p "$temp_root" "$raw_dir" "$record_dir"
+          source_head="$(git rev-parse HEAD)"
+          source_status="$(git status --porcelain=v1 -z --untracked-files=all | wc -c | tr -d ' ')"
           {
             echo "UPSTREAM_REBASE_TEMP_ROOT=${temp_root}"
             echo "UPSTREAM_REBASE_RAW_DIR=${raw_dir}"
             echo "UPSTREAM_REBASE_RECORD_DIR=${record_dir}"
+            echo "UPSTREAM_REBASE_SOURCE_HEAD=${source_head}"
+            echo "UPSTREAM_REBASE_SOURCE_STATUS_BYTES=${source_status}"
             echo "UPSTREAM_REBASE_CLEANUP_RESULT=failed"
             echo "UPSTREAM_REBASE_FETCH_OUTCOME=failed"
             echo "UPSTREAM_REBASE_REPORT_OUTCOME=failed"
@@ -94,7 +99,7 @@ jobs:
           echo "repository=${repository}" >> "$GITHUB_OUTPUT"
           echo "ref=${ref}" >> "$GITHUB_OUTPUT"
 
-      - name: Fetch upstream into temporary clone and run rebase report
+      - name: Fetch upstream, report, and materialize integration tree
         id: fetch_report
         continue-on-error: true
         env:
@@ -108,12 +113,20 @@ jobs:
             --repository "$UPSTREAM_REPOSITORY" \
             --ref "$UPSTREAM_REF" \
             --output "$UPSTREAM_REBASE_RAW_DIR/fetch-result.json"
-          # Copy report into raw dir for gate/collect steps; temp clone is deleted later.
+
+          # Source worktree must remain byte-stable (HEAD + porcelain status).
+          test "$(git rev-parse HEAD)" = "$UPSTREAM_REBASE_SOURCE_HEAD"
+          test "$(git status --porcelain=v1 -z --untracked-files=all | wc -c | tr -d ' ')" = "$UPSTREAM_REBASE_SOURCE_STATUS_BYTES"
+
           report_path="$(node -e "const fs=require('fs');const j=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));process.stdout.write(j.reportPath)" "$UPSTREAM_REBASE_RAW_DIR/fetch-result.json")"
           cp "$report_path" "$UPSTREAM_REBASE_RAW_DIR/rebase-report.json"
-          node -e "const fs=require('fs');const j=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));const c={base:j.base,candidate:j.candidate,mergeBase:j.mergeBase,upstream:j.upstream};fs.writeFileSync(process.argv[2],JSON.stringify(c,null,2)+'\n');" \
+          node -e "const fs=require('fs');const j=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));const c={base:j.base,candidate:j.candidate,mergeBase:j.mergeBase,upstream:j.upstream};fs.writeFileSync(process.argv[2],JSON.stringify(c,null,2)+'\n');fs.writeFileSync(process.argv[3],JSON.stringify(j.changedPaths||[],null,2)+'\n');" \
             "$UPSTREAM_REBASE_RAW_DIR/fetch-result.json" \
-            "$UPSTREAM_REBASE_RAW_DIR/commits.json"
+            "$UPSTREAM_REBASE_RAW_DIR/commits.json" \
+            "$UPSTREAM_REBASE_RAW_DIR/changed-paths.json"
+          integration_repo="$(node -e "const fs=require('fs');const j=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));process.stdout.write(j.integrationRepository)" "$UPSTREAM_REBASE_RAW_DIR/fetch-result.json")"
+          echo "integration_repo=${integration_repo}" >> "$GITHUB_OUTPUT"
+          echo "UPSTREAM_REBASE_INTEGRATION_REPO=${integration_repo}" >> "$GITHUB_ENV"
           echo "UPSTREAM_REBASE_FETCH_OUTCOME=success" >> "$GITHUB_ENV"
           status="$(node -e "const fs=require('fs');const j=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));process.stdout.write(j.reportStatus)" "$UPSTREAM_REBASE_RAW_DIR/fetch-result.json")"
           if [ "$status" != "clean" ]; then
@@ -122,17 +135,39 @@ jobs:
           fi
           echo "UPSTREAM_REBASE_REPORT_OUTCOME=success" >> "$GITHUB_ENV"
 
-      - name: Run report-selected local gates
-        id: gates
+      - name: Install dependencies in integration tree
+        id: integration_install
         continue-on-error: true
         if: steps.fetch_report.outcome == 'success'
         run: |
           set -euo pipefail
+          integration_repo="$UPSTREAM_REBASE_INTEGRATION_REPO"
+          test -d "$integration_repo"
+          test -f "$integration_repo/package.json"
+          # Prefer linking candidate node_modules when the lockfile matches to save time.
+          if [ -f "$integration_repo/pnpm-lock.yaml" ] && cmp -s "$GITHUB_WORKSPACE/pnpm-lock.yaml" "$integration_repo/pnpm-lock.yaml"; then
+            ln -sfn "$GITHUB_WORKSPACE/node_modules" "$integration_repo/node_modules"
+          else
+            (cd "$integration_repo" && pnpm install)
+          fi
+          # Source must still be unchanged after install side effects in temp only.
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$UPSTREAM_REBASE_SOURCE_HEAD"
+          test "$(git -C "$GITHUB_WORKSPACE" status --porcelain=v1 -z --untracked-files=all | wc -c | tr -d ' ')" = "$UPSTREAM_REBASE_SOURCE_STATUS_BYTES"
+
+      - name: Run report-selected local gates on integration tree
+        id: gates
+        continue-on-error: true
+        if: steps.fetch_report.outcome == 'success' && steps.integration_install.outcome == 'success'
+        run: |
+          set -euo pipefail
           bun scripts/enterprise/upstream-rebase-ci/index.ts run-gates \
-            --repo "$GITHUB_WORKSPACE" \
+            --repo "$UPSTREAM_REBASE_INTEGRATION_REPO" \
             --report "$UPSTREAM_REBASE_RAW_DIR/rebase-report.json" \
             --raw-dir "$UPSTREAM_REBASE_RAW_DIR" \
+            --changed-paths "$UPSTREAM_REBASE_RAW_DIR/changed-paths.json" \
             --output "$UPSTREAM_REBASE_RAW_DIR/gate-results.json"
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" = "$UPSTREAM_REBASE_SOURCE_HEAD"
+          test "$(git -C "$GITHUB_WORKSPACE" status --porcelain=v1 -z --untracked-files=all | wc -c | tr -d ' ')" = "$UPSTREAM_REBASE_SOURCE_STATUS_BYTES"
           echo "UPSTREAM_REBASE_GATES_OUTCOME=success" >> "$GITHUB_ENV"
 
       - name: Cleanup temporary clones
@@ -142,12 +177,27 @@ jobs:
           set +e
           cleanup_result=passed
 
-          # Exact temporary clone removal. Failure fails the job via final assertion.
-          if [ -n "${UPSTREAM_REBASE_TEMP_ROOT:-}" ] && [ -e "$UPSTREAM_REBASE_TEMP_ROOT" ]; then
-            rm -rf "$UPSTREAM_REBASE_TEMP_ROOT"
-            if [ -e "$UPSTREAM_REBASE_TEMP_ROOT" ]; then
-              cleanup_result=failed
+          remove_exact() {
+            target="$1"
+            if [ -z "$target" ]; then
+              return 0
             fi
+            if [ ! -e "$target" ]; then
+              return 0
+            fi
+            rm -rf -- "$target"
+            rm_code=$?
+            if [ "$rm_code" -ne 0 ]; then
+              return 1
+            fi
+            if [ -e "$target" ]; then
+              return 1
+            fi
+            return 0
+          }
+
+          if ! remove_exact "${UPSTREAM_REBASE_TEMP_ROOT:-}"; then
+            cleanup_result=failed
           fi
 
           echo "UPSTREAM_REBASE_CLEANUP_RESULT=${cleanup_result}" >> "$GITHUB_ENV"
@@ -162,6 +212,7 @@ jobs:
         env:
           FETCH_STEP_OUTCOME: ${{ steps.fetch_report.outcome }}
           GATES_STEP_OUTCOME: ${{ steps.gates.outcome }}
+          INSTALL_STEP_OUTCOME: ${{ steps.integration_install.outcome }}
           VALIDATE_STEP_OUTCOME: ${{ steps.validate.outcome }}
           CLEANUP_STEP_OUTCOME: ${{ steps.cleanup.outcome }}
         run: |
@@ -171,18 +222,21 @@ jobs:
           test "$CLEANUP_STEP_OUTCOME" = success
           test "${UPSTREAM_REBASE_CLEANUP_RESULT}" = passed
 
-          # Final outcome assertions for continue-on-error steps.
           test "$FETCH_STEP_OUTCOME" = success
           test "${UPSTREAM_REBASE_FETCH_OUTCOME}" = success
           test "${UPSTREAM_REBASE_REPORT_OUTCOME}" = success
+          test "$INSTALL_STEP_OUTCOME" = success
           test "$GATES_STEP_OUTCOME" = success
           test "${UPSTREAM_REBASE_GATES_OUTCOME}" = success
 
-          # Collect needs raw report/gates still present. Collect first, then wipe raw.
           if [ ! -f "$UPSTREAM_REBASE_RAW_DIR/rebase-report.json" ] || [ ! -f "$UPSTREAM_REBASE_RAW_DIR/gate-results.json" ] || [ ! -f "$UPSTREAM_REBASE_RAW_DIR/commits.json" ] || [ ! -f "$UPSTREAM_REBASE_RAW_DIR/fetch-result.json" ]; then
             echo 'Required raw dry-run outputs missing before collect' >&2
             exit 1
           fi
+
+          # Source worktree still unchanged after all work.
+          test "$(git rev-parse HEAD)" = "$UPSTREAM_REBASE_SOURCE_HEAD"
+          test "$(git status --porcelain=v1 -z --untracked-files=all | wc -c | tr -d ' ')" = "$UPSTREAM_REBASE_SOURCE_STATUS_BYTES"
 
           upstream_repository="$(node -e "const fs=require('fs');const j=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));process.stdout.write(j.repository)" "$UPSTREAM_REBASE_RAW_DIR/validated-inputs.json")"
           upstream_ref="$(node -e "const fs=require('fs');const j=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));process.stdout.write(j.ref)" "$UPSTREAM_REBASE_RAW_DIR/validated-inputs.json")"
@@ -198,9 +252,8 @@ jobs:
             --upstream-freshness "$upstream_freshness" \
             --output-dir "$UPSTREAM_REBASE_RECORD_DIR"
 
-          # Privacy boundary: redacted evidence only; no remote URLs, tokens, full messages.
           if rg -n -i \
-            'https?://|git@|gh[pousr]_|github_pat_|BEGIN [A-Z ]*PRIVATE KEY|password\s*[:=]|secret\s*[:=]|token\s*[:=]' \
+            'https?://|git@|gh[pousr]_|github_pat_|AKIA|ASIA|sk-proj-|xox[baprs]-|AIza|BEGIN [A-Z ]*PRIVATE KEY|postgres(?:ql)?://|password\s*[:=]|secret\s*[:=]|token\s*[:=]' \
             "$UPSTREAM_REBASE_RECORD_DIR"; then
             echo 'Forbidden evidence content detected' >&2
             exit 1
@@ -214,13 +267,29 @@ jobs:
         run: |
           set +e
           wipe_result=passed
-          if [ -n "${UPSTREAM_REBASE_RAW_DIR:-}" ] && [ -e "$UPSTREAM_REBASE_RAW_DIR" ]; then
-            rm -rf "$UPSTREAM_REBASE_RAW_DIR"
-            if [ -e "$UPSTREAM_REBASE_RAW_DIR" ]; then
-              wipe_result=failed
+
+          remove_exact() {
+            target="$1"
+            if [ -z "$target" ]; then
+              return 0
             fi
+            if [ ! -e "$target" ]; then
+              return 0
+            fi
+            rm -rf -- "$target"
+            rm_code=$?
+            if [ "$rm_code" -ne 0 ]; then
+              return 1
+            fi
+            if [ -e "$target" ]; then
+              return 1
+            fi
+            return 0
+          }
+
+          if ! remove_exact "${UPSTREAM_REBASE_RAW_DIR:-}"; then
+            wipe_result=failed
           fi
-          # Temp root must stay gone after the cleanup step.
           if [ -n "${UPSTREAM_REBASE_TEMP_ROOT:-}" ] && [ -e "$UPSTREAM_REBASE_TEMP_ROOT" ]; then
             wipe_result=failed
           fi
@@ -245,6 +314,8 @@ jobs:
           test -f "$UPSTREAM_REBASE_RECORD_DIR/evidence.json"
           test ! -e "${UPSTREAM_REBASE_RAW_DIR:-/tmp/aihub-upstream-rebase-raw-missing}"
           test ! -e "${UPSTREAM_REBASE_TEMP_ROOT:-/tmp/aihub-upstream-rebase-temp-missing}"
+          test "$(git rev-parse HEAD)" = "$UPSTREAM_REBASE_SOURCE_HEAD"
+          test "$(git status --porcelain=v1 -z --untracked-files=all | wc -c | tr -d ' ')" = "$UPSTREAM_REBASE_SOURCE_STATUS_BYTES"
 
       - name: Upload redacted dry-run evidence
         if: always() && hashFiles('.records/enterprise-upstream-rebase/**/evidence.json') != ''

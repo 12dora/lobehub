@@ -2,6 +2,8 @@ import { spawn } from 'node:child_process';
 import { mkdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 
+import { listChangedPathsForGates } from './changedFiles';
+import { removePathExact } from './cleanup';
 import type { ValidatedUpstreamInput } from './contract';
 
 const HASH_PATTERN = /^(?:[a-f\d]{40}|[a-f\d]{64})$/u;
@@ -47,6 +49,9 @@ export interface ResolvedCommits {
   analysisRepository: string;
   base: string;
   candidate: string;
+  changedPaths: string[];
+  integratedTree: string;
+  integrationRepository: string;
   mergeBase: string;
   upstream: string;
   upstreamFreshness: 'verified-by-ci-fetch';
@@ -59,10 +64,160 @@ export interface FetchUpstreamOptions {
   upstream: ValidatedUpstreamInput;
 }
 
+export interface SourceSnapshot {
+  head: string;
+  statusFingerprint: string;
+}
+
+export const captureSourceSnapshot = async (repositoryRoot: string): Promise<SourceSnapshot> => {
+  const head = await gitOutput(
+    repositoryRoot,
+    ['rev-parse', '--verify', '--quiet', '--end-of-options', 'HEAD^{commit}'],
+    'Unable to read source HEAD',
+  );
+  const status = await gitOutput(
+    repositoryRoot,
+    ['status', '--porcelain=v1', '-z', '--untracked-files=all'],
+    'Unable to read source status',
+  );
+  return { head, statusFingerprint: status };
+};
+
+export const assertSourceUnchanged = async (
+  repositoryRoot: string,
+  snapshot: SourceSnapshot,
+): Promise<void> => {
+  const current = await captureSourceSnapshot(repositoryRoot);
+  if (current.head !== snapshot.head) {
+    throw new Error('Source worktree HEAD changed during dry-run');
+  }
+  if (current.statusFingerprint !== snapshot.statusFingerprint) {
+    throw new Error('Source worktree status changed during dry-run');
+  }
+};
+
+/**
+ * Materialize the clean merge-tree result of candidate+upstream into an owned
+ * temporary detached repository under temporaryDirectory only.
+ */
+export const materializeIntegrationTree = async ({
+  analysisRepository,
+  base,
+  candidate,
+  temporaryDirectory,
+  upstream,
+}: {
+  analysisRepository: string;
+  base: string;
+  candidate: string;
+  temporaryDirectory: string;
+  upstream: string;
+}): Promise<{
+  changedPaths: string[];
+  integratedTree: string;
+  integrationRepository: string;
+}> => {
+  const mergeTree = await runGit(analysisRepository, [
+    'merge-tree',
+    '--write-tree',
+    '--name-only',
+    '--messages',
+    '--end-of-options',
+    candidate,
+    upstream,
+  ]);
+  if (mergeTree.code === 1) {
+    throw new Error('Integration merge-tree reported conflicts');
+  }
+  if (mergeTree.code !== 0) {
+    throw new Error('Unable to write integration merge-tree');
+  }
+
+  const lines = mergeTree.stdout.split('\n');
+  const treeOid = lines[0]?.trim();
+  if (!treeOid || !HASH_PATTERN.test(treeOid)) {
+    throw new Error('Integration merge-tree did not return a tree oid');
+  }
+
+  const integrationRepository = path.join(temporaryDirectory, 'integration');
+  await rm(integrationRepository, { force: true, maxRetries: 3, recursive: true });
+
+  const clone = await runGit(undefined, [
+    'clone',
+    '--quiet',
+    '--shared',
+    '--no-checkout',
+    '--',
+    analysisRepository,
+    integrationRepository,
+  ]);
+  if (clone.code !== 0) {
+    throw new Error('Unable to create isolated integration repository');
+  }
+
+  // Create a disposable commit object for the integrated tree (fixed message, no secrets).
+  const integratedCommit = await gitOutput(
+    integrationRepository,
+    ['commit-tree', treeOid, '-m', 'integration-dry-run'],
+    'Unable to create integration commit from merge-tree',
+  );
+  if (!HASH_PATTERN.test(integratedCommit)) {
+    throw new Error('Integrated commit oid is invalid');
+  }
+
+  const checkout = await runGit(integrationRepository, [
+    'checkout',
+    '--quiet',
+    '--force',
+    '--detach',
+    '--end-of-options',
+    integratedCommit,
+  ]);
+  if (checkout.code !== 0) {
+    // Fallback: read-tree into an empty index/worktree
+    await runGit(integrationRepository, [
+      'read-tree',
+      '--reset',
+      '-u',
+      '--end-of-options',
+      treeOid,
+    ]);
+    const statusAfterRead = await gitOutput(
+      integrationRepository,
+      ['status', '--porcelain=v1', '-z', '--untracked-files=all'],
+      'Unable to inspect integration repository after read-tree',
+    );
+    if (statusAfterRead.length > 0) {
+      throw new Error('Integration repository is dirty after read-tree materialization');
+    }
+  }
+
+  const status = await gitOutput(
+    integrationRepository,
+    ['status', '--porcelain=v1', '-z', '--untracked-files=all'],
+    'Unable to inspect integration repository status',
+  );
+  if (status.length > 0) {
+    throw new Error('Integration repository worktree is not clean');
+  }
+
+  const changedPaths = await listChangedPathsForGates(
+    analysisRepository,
+    base,
+    candidate,
+    upstream,
+  );
+
+  return {
+    changedPaths,
+    integratedTree: treeOid,
+    integrationRepository,
+  };
+};
+
 /**
  * Build an isolated analysis clone, fetch the official upstream ref into it only,
- * and resolve base/upstream/candidate SHAs. Never mutates the source worktree refs
- * with checkout/reset/merge onto main.
+ * resolve SHAs, and materialize the candidate+upstream integration tree for gates.
  */
 export const prepareIsolatedAnalysisRepository = async ({
   candidateRef,
@@ -90,7 +245,6 @@ export const prepareIsolatedAnalysisRepository = async ({
     throw new Error('Candidate SHA is invalid');
   }
 
-  // Shared clone reuses local objects; checkout keeps worktree clean for the report.
   const clone = await runGit(undefined, [
     'clone',
     '--quiet',
@@ -125,7 +279,6 @@ export const prepareIsolatedAnalysisRepository = async ({
     throw new Error('Isolated analysis repository worktree is not clean');
   }
 
-  // Fetch official upstream into the temporary clone only (not the source worktree).
   const addRemote = await runGit(analysisRepository, [
     'remote',
     'add',
@@ -159,7 +312,6 @@ export const prepareIsolatedAnalysisRepository = async ({
     throw new Error('Fetched upstream SHA is invalid');
   }
 
-  // Ensure candidate is fully present under a named ref for merge-base clarity.
   const candidatePoint = await runGit(analysisRepository, [
     'update-ref',
     'refs/dry-run/candidate',
@@ -198,7 +350,6 @@ export const prepareIsolatedAnalysisRepository = async ({
 
   let mergeBase = await resolveMergeBase();
   if (!mergeBase) {
-    // Escalate history depth for both ends when the bounded fetch is insufficient.
     const deepenUpstream = await runGit(analysisRepository, [
       'fetch',
       '--quiet',
@@ -209,7 +360,6 @@ export const prepareIsolatedAnalysisRepository = async ({
       upstream.ref,
     ]);
     if (deepenUpstream.code !== 0) {
-      // Fall back to full upstream history when deepen is unsupported/insufficient.
       const fullUpstream = await runGit(analysisRepository, [
         'fetch',
         '--quiet',
@@ -220,7 +370,6 @@ export const prepareIsolatedAnalysisRepository = async ({
         upstream.ref,
       ]);
       if (fullUpstream.code !== 0) {
-        // Some clones are already full-depth; retry a plain fetch of the ref.
         const plain = await runGit(analysisRepository, [
           'fetch',
           '--quiet',
@@ -242,7 +391,6 @@ export const prepareIsolatedAnalysisRepository = async ({
     );
     await runGit(analysisRepository, ['update-ref', 'refs/dry-run/upstream', upstreamSha]);
 
-    // Candidate may also be shallow in CI; unshallow the shared object source via this clone.
     const unshallowCandidate = await runGit(analysisRepository, [
       'fetch',
       '--quiet',
@@ -251,7 +399,6 @@ export const prepareIsolatedAnalysisRepository = async ({
       'origin',
     ]);
     if (unshallowCandidate.code !== 0) {
-      // origin may already be full-depth when checkout used fetch-depth: 0.
       await runGit(analysisRepository, ['fetch', '--quiet', '--end-of-options', 'origin']);
     }
 
@@ -262,24 +409,27 @@ export const prepareIsolatedAnalysisRepository = async ({
     throw new Error('Unable to resolve a unique merge-base between upstream and candidate');
   }
 
-  // Drop the remote URL from the isolated clone config before analysis/report.
-  // Evidence must not retain raw remote URLs; objects/refs already resolved.
   await runGit(analysisRepository, ['remote', 'remove', 'official-upstream']);
+
+  const integration = await materializeIntegrationTree({
+    analysisRepository,
+    base: mergeBase,
+    candidate: candidateSha,
+    temporaryDirectory,
+    upstream: upstreamSha,
+  });
 
   return {
     analysisRepository,
     base: mergeBase,
     candidate: candidateSha,
+    changedPaths: integration.changedPaths,
+    integratedTree: integration.integratedTree,
+    integrationRepository: integration.integrationRepository,
     mergeBase,
     upstream: upstreamSha,
     upstreamFreshness: 'verified-by-ci-fetch',
   };
 };
 
-export const removeDirectoryExact = async (target: string) => {
-  await rm(target, { force: true, maxRetries: 3, recursive: true });
-  const probe = await runGit(undefined, ['-C', target, 'rev-parse', '--is-inside-work-tree']);
-  if (probe.code === 0) {
-    throw new Error('Cleanup failed: temporary repository still present');
-  }
-};
+export const removeDirectoryExact = (target: string) => removePathExact(target);
