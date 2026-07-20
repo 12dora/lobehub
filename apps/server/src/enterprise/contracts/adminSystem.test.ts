@@ -50,7 +50,14 @@ describe('admin system operational contracts', () => {
         settingsPolicy: true,
       },
       instanceStatus: { errorCategory: null, status: 'healthy' },
-      jobs: { active: 2, completed: 3, failed: 1, total: 6 },
+      jobs: {
+        active: 2,
+        completed: 3,
+        errorCategory: null,
+        failed: 1,
+        status: 'healthy',
+        total: 6,
+      },
       oidc: {
         activeRevision: 'a'.repeat(64),
         configured: true,
@@ -60,6 +67,7 @@ describe('admin system operational contracts', () => {
       },
       recentPublishFailures: {
         count: 1,
+        errorCategory: null,
         items: [
           {
             category: 'validation',
@@ -67,6 +75,7 @@ describe('admin system operational contracts', () => {
             occurredAt: new Date('2026-07-20T00:00:00Z'),
           },
         ],
+        status: 'healthy',
       },
       snapshotAt: new Date('2026-07-20T00:01:00Z'),
     };
