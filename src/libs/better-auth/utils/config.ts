@@ -97,6 +97,14 @@ export const createSecondaryStorage = () => {
       const redisClient = await getRedisClient();
       return (await redisClient.get(buildKey(key))) ?? null;
     },
+    getAndDelete: async (key: string) => {
+      const redisClient = await getRedisClient();
+      return await redisClient.eval<string | null>(
+        "local value = redis.call('GET', KEYS[1]); if value then redis.call('DEL', KEYS[1]) end; return value",
+        1,
+        buildKey(key),
+      );
+    },
     set: async (key: string, value: string, ttl?: number) => {
       const redisClient = await getRedisClient();
       if (typeof ttl === 'number') {
