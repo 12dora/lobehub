@@ -18,6 +18,8 @@ import {
   ENTERPRISE_OIDC_FAILURE_CATEGORIES,
   ENTERPRISE_OIDC_LOGIN_OUTCOMES,
   ENTERPRISE_OIDC_LOGIN_STAGES,
+  ENTERPRISE_OPERATIONAL_COLLECTION_OUTCOMES,
+  ENTERPRISE_OPERATIONAL_COLLECTORS,
   ENTERPRISE_SSRF_DENIAL_CATEGORIES,
   recordAgentMaterializationMetric,
   recordCacheEpochMetric,
@@ -28,6 +30,7 @@ import {
   recordHeartbeatMetric,
   recordInvalidationMetric,
   recordOidcLoginMetric,
+  recordOperationalCollectionMetric,
   recordSsrfDenialMetric,
 } from '@lobechat/observability-otel/modules/enterprise-platform';
 
@@ -188,6 +191,22 @@ const normalizeEvent = (
         type: event.type,
       };
     }
+    case 'operational_collection': {
+      if (
+        !isClosedValue(event.collector, ENTERPRISE_OPERATIONAL_COLLECTORS) ||
+        !isClosedValue(event.outcome, ENTERPRISE_OPERATIONAL_COLLECTION_OUTCOMES)
+      )
+        return null;
+      return {
+        collector: event.collector,
+        durationMs: Number.isFinite(event.durationMs) ? Math.max(0, event.durationMs) : 0,
+        ...(normalizedErrorClass(event.errorClass)
+          ? { errorClass: normalizedErrorClass(event.errorClass) }
+          : {}),
+        outcome: event.outcome,
+        type: event.type,
+      };
+    }
   }
 };
 
@@ -234,6 +253,10 @@ export class OpenTelemetryEnterprisePlatformObserver implements EnterprisePlatfo
       }
       case 'agent_materialization': {
         recordAgentMaterializationMetric(event);
+        return;
+      }
+      case 'operational_collection': {
+        recordOperationalCollectionMetric(event);
       }
     }
   };

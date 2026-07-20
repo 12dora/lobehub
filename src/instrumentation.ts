@@ -48,4 +48,8 @@ export async function register() {
   }
 
   await import('./instrumentation.node');
+
+  const { ensureOperationalMetricsRuntimeStarted } =
+    await import('@/server/enterprise/services/platformObservability/operationalMetricsRuntime');
+  await ensureOperationalMetricsRuntimeStarted();
 }

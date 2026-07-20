@@ -10,6 +10,17 @@ thresholds, windows, routing, and ownership before any of these intents become a
 The SSRF-denial, OIDC-login-failure, and agent-materialization-failure intents are likewise inactive
 metadata; this change does not install or connect a live alerting backend.
 
+The operational collector reads aggregate-only job backlog and production OIDC startup-instance
+facts once per minute, then exposes the last successful in-memory snapshot through synchronous
+observable gauges. Gauge callbacks never query the database. Revision lag is intentionally limited
+to `identity` until other domains have production revision reporters; no status-service diagnostic
+or cache-loading path is invoked for metrics.
+
+Operational gauges use `enterprise.scope=cluster`. Every persistent process may publish the same
+cluster snapshot, so dashboards and alert rules must aggregate replicas with `max` or select the
+latest sample. Never `sum` these gauges across server replicas. Job type, instance ID, revision
+token, and diagnostic identifiers are deliberately absent from metric labels.
+
 Metrics never accept user, actor, resource, instance, request, IP, URL, error-message, or arbitrary
 string labels. Structured logs are reserved for failures and degraded outcomes and pass through the
 enterprise log redactor.

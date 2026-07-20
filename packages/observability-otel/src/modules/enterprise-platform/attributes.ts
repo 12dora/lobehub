@@ -82,6 +82,15 @@ export const ENTERPRISE_GUARD_MODES = ['enforced', 'observe', 'ui-only'] as cons
 export const ENTERPRISE_GUARD_OUTCOMES = ['catalog_not_ready', 'denied', 'would_deny'] as const;
 export const ENTERPRISE_HEARTBEAT_OPERATIONS = ['register', 'tick'] as const;
 export const ENTERPRISE_HEARTBEAT_OUTCOMES = ['failure', 'success'] as const;
+export const ENTERPRISE_JOB_BACKLOG_STATES = [
+  'pending',
+  'reserved_expired',
+  'running_lease_expired',
+] as const;
+export const ENTERPRISE_OPERATIONAL_COLLECTORS = ['job_backlog', 'revision_lag'] as const;
+export const ENTERPRISE_OPERATIONAL_COLLECTION_OUTCOMES = ['failure', 'success'] as const;
+export const ENTERPRISE_REVISION_LAG_DOMAINS = ['identity'] as const;
+export const ENTERPRISE_REVISION_LAG_REASONS = ['degraded', 'diverged'] as const;
 
 export type EnterpriseCacheDomain = (typeof ENTERPRISE_CACHE_DOMAINS)[number];
 export type EnterpriseCacheEpochOutcome = 'changed' | 'failure' | 'success';
@@ -99,6 +108,12 @@ export type EnterpriseHeartbeatOutcome = 'failure' | 'success';
 export type EnterpriseInvalidationBackend = 'memory' | 'redis';
 export type EnterpriseInvalidationOutcome =
   'disabled' | 'error' | 'partial_failure' | 'success' | 'unavailable';
+export type EnterpriseJobBacklogState = (typeof ENTERPRISE_JOB_BACKLOG_STATES)[number];
+export type EnterpriseOperationalCollector = (typeof ENTERPRISE_OPERATIONAL_COLLECTORS)[number];
+export type EnterpriseOperationalCollectionOutcome =
+  (typeof ENTERPRISE_OPERATIONAL_COLLECTION_OUTCOMES)[number];
+export type EnterpriseRevisionLagDomain = (typeof ENTERPRISE_REVISION_LAG_DOMAINS)[number];
+export type EnterpriseRevisionLagReason = (typeof ENTERPRISE_REVISION_LAG_REASONS)[number];
 export type EnterpriseSsrfDenialCategory = (typeof ENTERPRISE_SSRF_DENIAL_CATEGORIES)[number];
 export type EnterpriseOidcLoginStage = (typeof ENTERPRISE_OIDC_LOGIN_STAGES)[number];
 export type EnterpriseOidcLoginOutcome = (typeof ENTERPRISE_OIDC_LOGIN_OUTCOMES)[number];
@@ -240,4 +255,54 @@ export const buildAgentMaterializationAttributes = (
 ): Attributes =>
   compact({
     'enterprise.outcome': closedValue(input.outcome, ENTERPRISE_AGENT_MATERIALIZATION_OUTCOMES),
+  });
+
+export interface JobBacklogMetricAttributes {
+  state: EnterpriseJobBacklogState;
+}
+
+export const buildJobBacklogAttributes = (input: JobBacklogMetricAttributes): Attributes =>
+  compact({
+    'enterprise.scope': 'cluster',
+    'enterprise.state': closedValue(input.state, ENTERPRISE_JOB_BACKLOG_STATES),
+  });
+
+export interface OperationalCollectionMetricAttributes {
+  collector: EnterpriseOperationalCollector;
+  outcome: EnterpriseOperationalCollectionOutcome;
+}
+
+export const buildOperationalCollectionAttributes = (
+  input: OperationalCollectionMetricAttributes,
+): Attributes =>
+  compact({
+    'enterprise.collector': closedValue(input.collector, ENTERPRISE_OPERATIONAL_COLLECTORS),
+    'enterprise.outcome': closedValue(input.outcome, ENTERPRISE_OPERATIONAL_COLLECTION_OUTCOMES),
+    'enterprise.scope': 'cluster',
+  });
+
+export const buildOperationalCollectorAttributes = (input: {
+  collector: EnterpriseOperationalCollector;
+}): Attributes =>
+  compact({
+    'enterprise.collector': closedValue(input.collector, ENTERPRISE_OPERATIONAL_COLLECTORS),
+    'enterprise.scope': 'cluster',
+  });
+
+export const buildRevisionLagAttributes = (input: {
+  domain: EnterpriseRevisionLagDomain;
+  reason: EnterpriseRevisionLagReason;
+}): Attributes =>
+  compact({
+    'enterprise.domain': closedValue(input.domain, ENTERPRISE_REVISION_LAG_DOMAINS),
+    'enterprise.reason': closedValue(input.reason, ENTERPRISE_REVISION_LAG_REASONS),
+    'enterprise.scope': 'cluster',
+  });
+
+export const buildRevisionFreshAttributes = (input: {
+  domain: EnterpriseRevisionLagDomain;
+}): Attributes =>
+  compact({
+    'enterprise.domain': closedValue(input.domain, ENTERPRISE_REVISION_LAG_DOMAINS),
+    'enterprise.scope': 'cluster',
   });
