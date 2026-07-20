@@ -17,6 +17,7 @@ import {
   PlatformSecretRewrapInvalidError,
   PlatformSecretRewrapProviderError,
 } from './errors';
+import { translatePlatformSecretRewrapPgError } from './pgErrors';
 
 type CoordinatorDatabase = LobeChatDatabase | Transaction;
 
@@ -71,20 +72,44 @@ export class PlatformSecretRewrapCoordinator {
       throw new PlatformSecretRewrapProviderError('active_key_changed');
     }
 
+    const [active] = await db
+      .select()
+      .from(platformJobs)
+      .where(
+        and(
+          eq(platformJobs.type, PLATFORM_SECRET_REWRAP_JOB_TYPE),
+          sql`${platformJobs.status} IN ('pending', 'reserved', 'running')`,
+        ),
+      )
+      .for('update')
+      .limit(1);
+    if (active) {
+      const activeInput = parsePlatformSecretRewrapInput(active);
+      if (activeInput.targetKeyId !== input.targetKeyId) {
+        throw new PlatformSecretRewrapConflictError();
+      }
+      return projectJob(active);
+    }
+
     const idempotencyKey = `rewrap:${input.targetKeyId}`;
-    const [inserted] = await db
-      .insert(platformJobs)
-      .values({
-        idempotencyKey,
-        input,
-        maxAttempts: null,
-        requestedBy: params.requestedBy,
-        resultSummary: EMPTY_PLATFORM_SECRET_REWRAP_RESULT,
-        status: 'pending',
-        type: PLATFORM_SECRET_REWRAP_JOB_TYPE,
-      })
-      .onConflictDoNothing({ target: [platformJobs.type, platformJobs.idempotencyKey] })
-      .returning();
+    let inserted: typeof platformJobs.$inferSelect | undefined;
+    try {
+      [inserted] = await db
+        .insert(platformJobs)
+        .values({
+          idempotencyKey,
+          input,
+          maxAttempts: null,
+          requestedBy: params.requestedBy,
+          resultSummary: EMPTY_PLATFORM_SECRET_REWRAP_RESULT,
+          status: 'pending',
+          type: PLATFORM_SECRET_REWRAP_JOB_TYPE,
+        })
+        .onConflictDoNothing({ target: [platformJobs.type, platformJobs.idempotencyKey] })
+        .returning();
+    } catch (error) {
+      throw translatePlatformSecretRewrapPgError(error);
+    }
     if (inserted) return projectJob(inserted);
 
     const [existing] = await db
@@ -213,29 +238,34 @@ export class PlatformSecretRewrapCoordinator {
       .limit(1);
     if (!ledger) throw new PlatformSecretRewrapConflictError();
     const input = parsePlatformSecretRewrapInput(current);
-    const [updated] = await db
-      .update(platformJobs)
-      .set({
-        cursor: null,
-        finishedAt: null,
-        input: {
-          ...input,
-          control: { phase: 'failed', revision: input.control.revision + 1 },
-        },
-        lastError: null,
-        leaseOwner: null,
-        leaseUntil: null,
-        status: 'pending',
-        updatedAt: sql`clock_timestamp()`,
-      })
-      .where(
-        and(
-          eq(platformJobs.id, current.id),
-          eq(platformJobs.status, params.expectedStatus),
-          eq(platformSecretRewrapJobRevision, params.expectedRevision),
-        ),
-      )
-      .returning();
+    let updated: typeof platformJobs.$inferSelect | undefined;
+    try {
+      [updated] = await db
+        .update(platformJobs)
+        .set({
+          cursor: null,
+          finishedAt: null,
+          input: {
+            ...input,
+            control: { phase: 'failed', revision: input.control.revision + 1 },
+          },
+          lastError: null,
+          leaseOwner: null,
+          leaseUntil: null,
+          status: 'pending',
+          updatedAt: sql`clock_timestamp()`,
+        })
+        .where(
+          and(
+            eq(platformJobs.id, current.id),
+            eq(platformJobs.status, params.expectedStatus),
+            eq(platformSecretRewrapJobRevision, params.expectedRevision),
+          ),
+        )
+        .returning();
+    } catch (error) {
+      throw translatePlatformSecretRewrapPgError(error);
+    }
     if (!updated) throw new PlatformSecretRewrapConflictError();
     return projectJob(updated);
   };

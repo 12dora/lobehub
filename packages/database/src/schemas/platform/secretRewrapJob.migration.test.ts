@@ -24,7 +24,7 @@ describe('M13 secret rewrap failure-ledger expand migration', () => {
   });
 
   it('keeps generated journal and snapshot aligned at 0133', () => {
-    expect(journal.entries).toHaveLength(134);
+    expect(journal.entries).toHaveLength(135);
     expect(journal.entries.find(({ idx }) => idx === 133)).toMatchObject({
       idx: 133,
       tag: migrationName,
