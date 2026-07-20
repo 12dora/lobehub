@@ -109,7 +109,7 @@ export const platformIdentityProviderState = (
               return failStateBinding();
             }
 
-            await registerPlatformOidcFlow(ctx.context.internalAdapter, state, 'link');
+            await registerPlatformOidcFlow(ctx.context.internalAdapter, state, 'link', providerId);
           }),
           matcher: (ctx) => ctx.path === '/oauth2/link',
         },
@@ -122,7 +122,12 @@ export const platformIdentityProviderState = (
             if (!response.success) return;
             const state = new URL(response.data.url).searchParams.get('state');
             if (!state) return;
-            await registerPlatformOidcFlow(ctx.context.internalAdapter, state, 'sign_in');
+            await registerPlatformOidcFlow(
+              ctx.context.internalAdapter,
+              state,
+              'sign_in',
+              providerId,
+            );
           }),
           matcher: (ctx) => ctx.path === '/sign-in/oauth2',
         },

@@ -208,8 +208,15 @@ interface RouteHarnessOptions extends NonNullable<Parameters<typeof setup>[0]> {
   linkStateUpdateFailure?: 'stale-read' | 'throw';
   markerWriteFailure?: boolean;
   persistenceFailure?: 'account' | 'cookie' | 'session' | 'user';
-  rawCallbackFailure?: 'api-error' | 'handler-tail' | 'set-new-session';
+  rawCallbackFailure?: 'api-error' | 'foreign-provider' | 'handler-tail' | 'set-new-session';
   useSecondaryStorage?: boolean;
+}
+
+interface CallbackOverrides {
+  code?: string;
+  cookie?: string;
+  providerId?: string;
+  state?: string | null;
 }
 
 const createRouteHarness = async (options?: RouteHarnessOptions) => {
@@ -267,6 +274,12 @@ const createRouteHarness = async (options?: RouteHarnessOptions) => {
         },
         {
           handler: createAuthMiddleware(async (ctx) => {
+            if (
+              options?.rawCallbackFailure === 'foreign-provider' &&
+              ctx.params?.providerId !== 'corp-oidc'
+            ) {
+              throw new Error('INJECTED_FOREIGN_PROVIDER_CALLBACK_FAILURE');
+            }
             switch (options?.persistenceFailure) {
               case 'account': {
                 ctx.context.internalAdapter.linkAccount = async () => {
@@ -407,9 +420,11 @@ const createRouteHarness = async (options?: RouteHarnessOptions) => {
   const callbackWithAuth = async (
     auth: ReturnType<typeof createAuthInstance>,
     flow: { authorizationUrl: URL; cookie: string },
-    overrides: { code?: string; cookie?: string; state?: string | null } = {},
+    overrides: CallbackOverrides = {},
   ) => {
-    const callbackUrl = new URL(`${baseURL}/oauth2/callback/corp-oidc`);
+    const callbackUrl = new URL(
+      `${baseURL}/oauth2/callback/${overrides.providerId ?? 'corp-oidc'}`,
+    );
     callbackUrl.searchParams.set('code', overrides.code ?? 'authorization-code');
     callbackUrl.searchParams.set('iss', issuer);
     const state =
@@ -430,7 +445,7 @@ const createRouteHarness = async (options?: RouteHarnessOptions) => {
   };
   const callback = (
     flow: { authorizationUrl: URL; cookie: string },
-    overrides: { code?: string; cookie?: string; state?: string | null } = {},
+    overrides: CallbackOverrides = {},
   ) => callbackWithAuth(callbackAuth, flow, overrides);
   const authenticate = async () => {
     const response = await signInAuth.handler(
@@ -483,13 +498,33 @@ const createRouteHarness = async (options?: RouteHarnessOptions) => {
     callback,
     callbackFromNewInstance: (
       flow: { authorizationUrl: URL; cookie: string },
-      overrides: { code?: string; cookie?: string; state?: string | null } = {},
+      overrides: CallbackOverrides = {},
     ) => callbackWithAuth(createAuthInstance(), flow, overrides),
     customGetToken,
     database,
     mapProfileToUser,
     nativeFetch,
     flushRawObservations: () => Promise.all(pendingRawObservations),
+    observationMarkers: () =>
+      JSON.stringify([
+        ...[...secondaryStorage.entries()]
+          .filter(([key]) => key.startsWith('verification:platform-oidc-observation:'))
+          .map(([, value]) => {
+            const verification = JSON.parse(value) as { value: string };
+            return JSON.parse(verification.value) as Record<string, unknown>;
+          }),
+        ...(database.verification ?? [])
+          .filter((entry) => entry.identifier.startsWith('platform-oidc-observation:'))
+          .map((entry) => JSON.parse(entry.value) as Record<string, unknown>),
+      ]),
+    observeRawFailureForPath: async (pathname: string, state: string) => {
+      const ctx = await callbackAuth.$context;
+      await observePlatformOidcRawCallbackFailure(
+        ctx.internalAdapter,
+        new Request(`${baseURL}${pathname}?state=${encodeURIComponent(state)}`),
+        new Response(null, { status: 500 }),
+      );
+    },
     readVerification: (state: string) => {
       const cached = secondaryStorage.get(`verification:${state}`);
       if (cached) return JSON.parse(cached) as { expiresAt: Date | string; value: string };
@@ -625,6 +660,60 @@ describe('platform identity provider trusted profile', () => {
       ]);
     },
   );
+
+  it('does not let an environment provider raw failure claim a database-provider attempt', async () => {
+    const events = captureObservations();
+    const harness = await createRouteHarness({ rawCallbackFailure: 'foreign-provider' });
+    const flow = await harness.start();
+    const state = flow.authorizationUrl.searchParams.get('state')!;
+    const nonce = flow.authorizationUrl.searchParams.get('nonce')!;
+
+    const foreignResponse = await harness.callback(flow, { providerId: 'other-oauth' });
+    await harness.flushRawObservations();
+
+    expect(foreignResponse.status).toBe(500);
+    expect(events).toEqual([]);
+    expect(harness.observationMarkers()).toContain('"flow":"sign_in"');
+    expect(harness.observationMarkers()).toContain(
+      createHash('sha256').update('corp-oidc').digest('hex'),
+    );
+    expect(harness.observationMarkers()).not.toContain('corp-oidc');
+
+    harness.setTokenNonce(nonce);
+    const databaseProviderResponse = await harness.callback(flow, { state });
+    await harness.flushRawObservations();
+
+    expect(databaseProviderResponse.headers.get('location')).toBe(
+      'https://app.example.test/after-login',
+    );
+    expect(events).toEqual([{ outcome: 'success', stage: 'authenticated', type: 'oidc_login' }]);
+  });
+
+  it('does not claim a database-provider attempt for a wrong or malformed callback path', async () => {
+    const events = captureObservations();
+    const harness = await createRouteHarness({ rawCallbackFailure: 'foreign-provider' });
+    const flow = await harness.start();
+    const state = flow.authorizationUrl.searchParams.get('state')!;
+    const nonce = flow.authorizationUrl.searchParams.get('nonce')!;
+
+    const wrongProviderResponse = await harness.callback(flow, {
+      providerId: 'wrong-db-provider',
+    });
+    await harness.flushRawObservations();
+    await harness.observeRawFailureForPath('/oauth2/callback/%E0%A4%A', state);
+    await harness.observeRawFailureForPath(`/oauth2/callback/${'x'.repeat(513)}`, state);
+
+    expect(wrongProviderResponse.status).toBe(500);
+    expect(events).toEqual([]);
+    expect(harness.observationMarkers()).toContain('"flow":"sign_in"');
+
+    harness.setTokenNonce(nonce);
+    const response = await harness.callback(flow);
+    await harness.flushRawObservations();
+
+    expect(response.headers.get('location')).toBe('https://app.example.test/after-login');
+    expect(events).toEqual([{ outcome: 'success', stage: 'authenticated', type: 'oidc_login' }]);
+  });
 
   it('keeps a throwing observer best-effort and preserves the successful callback', async () => {
     const record = vi.fn(() => {
