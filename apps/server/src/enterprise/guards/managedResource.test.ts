@@ -44,6 +44,7 @@ import {
 import type { ManagedResourceMutationProcedure } from './managedResourceMutationRegistry';
 
 const serverDB: LobeChatDatabase = await getTestDB();
+const legacySkillMutation = vi.fn(() => true);
 const directProcedure = trpc.procedure.use(({ next }) => next({ ctx: { serverDB } }));
 const directRouter = trpc.router({
   agentWrite: directProcedure
@@ -75,7 +76,7 @@ const directRouter = trpc.router({
   readAgent: directProcedure.query(() => true),
   skillWrite: directProcedure
     .use(withManagedResourceGuard('agentSkills.update'))
-    .mutation(() => true),
+    .mutation(() => legacySkillMutation()),
 });
 
 const guardedProcedure: Record<ManagedResourceKind, ManagedResourceMutationProcedure> = {
@@ -115,6 +116,7 @@ const materialize = async (
 };
 
 beforeEach(async () => {
+  vi.clearAllMocks();
   clearManagedResourceReadinessForTest();
   vi.unstubAllEnvs();
   await serverDB.delete(platformAuditLogs);
@@ -185,10 +187,10 @@ describe('ManagedResourceGuard policy matrix', () => {
       }
     });
 
-    it(`${resource}: enforced fails safe when catalog is not ready and denies when ready`, async () => {
+    it(`${resource}: enforced applies its declared catalog-outage behavior and denies when ready`, async () => {
       await materialize(resource, { enforcementMode: 'enforced', managed: true });
       const sink = new InMemoryManagedResourceGuardMetricSink();
-      await expect(
+      const catalogOutageDecision = () =>
         enforceManagedResourceMutation({
           db: serverDB,
           options: {
@@ -197,9 +199,18 @@ describe('ManagedResourceGuard policy matrix', () => {
             readiness: readinessFor(resource, false),
           },
           procedure: guardedProcedure[resource],
-        }),
-      ).resolves.toBeUndefined();
-      expect(Object.keys(sink.snapshot())[0]).toContain('catalog_not_ready');
+        });
+
+      if (resource === 'skills') {
+        await expect(catalogOutageDecision()).rejects.toMatchObject({
+          code: 'FORBIDDEN',
+          message: MANAGED_ERROR_CODES.RESOURCE_MANAGED_BY_PLATFORM,
+        });
+        expect(Object.keys(sink.snapshot())[0]).toContain('denied');
+      } else {
+        await expect(catalogOutageDecision()).resolves.toBeUndefined();
+        expect(Object.keys(sink.snapshot())[0]).toContain('catalog_not_ready');
+      }
 
       try {
         await enforceManagedResourceMutation({
@@ -220,6 +231,35 @@ describe('ManagedResourceGuard policy matrix', () => {
       }
     });
   }
+});
+
+describe('ManagedResourceGuard catalog outage regression', () => {
+  it('fails closed before invoking a legacy Skill mutation', async () => {
+    vi.stubEnv('ENABLE_PLATFORM_MANAGED_SKILLS', '1');
+    await materialize('skills', { enforcementMode: 'enforced', managed: true });
+    registerManagedResourceReadiness('skills', () => false);
+    const caller = directRouter.createCaller({ userId: 'direct-user' });
+
+    try {
+      await caller.skillWrite();
+      expect.unreachable('managed Skill catalog outage must reject the legacy mutation');
+    } catch (error) {
+      expect((error as { code: string }).code).toBe('FORBIDDEN');
+      expect(getEnterpriseErrorBody(error)?.code).toBe(
+        MANAGED_ERROR_CODES.RESOURCE_MANAGED_BY_PLATFORM,
+      );
+    }
+
+    expect(legacySkillMutation).not.toHaveBeenCalled();
+    expect(await serverDB.select().from(platformAuditLogs)).toEqual([
+      expect.objectContaining({
+        action: 'managedResource.legacyMutation',
+        result: 'denied',
+        targetId: 'agentSkills.update',
+        targetType: 'managed_policy',
+      }),
+    ]);
+  });
 });
 
 describe('ManagedResourceGuard compatibility and bypass resistance', () => {
