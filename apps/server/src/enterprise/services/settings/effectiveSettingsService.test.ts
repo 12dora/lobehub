@@ -12,8 +12,13 @@ import {
 } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 
+import type { PlatformRuntimeMaterializationReporter } from '../platformInstance/runtimeReporter';
 import { AdminSettingsService } from './adminSettingsService';
-import { EffectiveSettingsService, SettingsPathError } from './effectiveSettingsService';
+import {
+  EffectiveSettingsService,
+  resetEffectiveSettingsCacheForTest,
+  SettingsPathError,
+} from './effectiveSettingsService';
 
 const serverDB: LobeChatDatabase = await getTestDB();
 
@@ -35,6 +40,7 @@ const service = new EffectiveSettingsService(serverDB);
 const admin = new AdminSettingsService(serverDB);
 
 beforeEach(async () => {
+  resetEffectiveSettingsCacheForTest();
   await serverDB.delete(platformAuditLogs);
   await serverDB.delete(platformResourceRevisions);
   await serverDB.delete(userSettingOverrides);
@@ -87,6 +93,138 @@ const publishDefault = async () => {
 };
 
 describe('EffectiveSettingsService (flag ON)', () => {
+  it('reports only a newly materialized process cache entry and not its cache hit', async () => {
+    await publishDefault();
+    const runtimeReporter = vi.fn<PlatformRuntimeMaterializationReporter>();
+    const runtimeService = new EffectiveSettingsService(serverDB, undefined, {}, runtimeReporter);
+
+    await runtimeService.getEffectiveSettings({ userId: 'runtime-user' });
+    await runtimeService.getEffectiveSettings({ userId: 'runtime-user' });
+
+    expect(runtimeReporter).toHaveBeenCalledOnce();
+    expect(runtimeReporter).toHaveBeenCalledWith(serverDB, {
+      domain: 'settings',
+      health: 'healthy',
+      revision: 1,
+      source: 'database',
+    });
+  });
+
+  it('reports a database failure then recovers at the same target without replacing the error', async () => {
+    await publishDefault();
+    const original = Object.assign(new Error('raw settings database detail'), {
+      code: 'ECONNREFUSED',
+    });
+    const runtimeReporter = vi.fn<PlatformRuntimeMaterializationReporter>();
+    const runtimeService = new EffectiveSettingsService(serverDB, undefined, {}, runtimeReporter);
+    const getBundle = vi
+      .spyOn(runtimeService['model'], 'getBundle')
+      .mockRejectedValueOnce(original);
+
+    await expect(runtimeService.getEffectiveSettings({ userId: 'recovery-user' })).rejects.toBe(
+      original,
+    );
+    getBundle.mockRestore();
+    await runtimeService.getEffectiveSettings({ userId: 'recovery-user' });
+
+    expect(runtimeReporter.mock.calls.map(([, state]) => state)).toEqual([
+      {
+        domain: 'settings',
+        errorCategory: 'database_unavailable',
+        health: 'unavailable',
+        source: 'unavailable',
+      },
+      { domain: 'settings', health: 'healthy', revision: 1, source: 'database' },
+    ]);
+  });
+
+  it('reports failures across both user-override materialization reads', async () => {
+    await publishDefault();
+    const revisionError = Object.assign(new Error('raw override revision detail'), {
+      code: 'ECONNREFUSED',
+    });
+    const rowsError = Object.assign(new Error('raw override rows detail'), {
+      code: 'ECONNREFUSED',
+    });
+    const runtimeReporter = vi.fn<PlatformRuntimeMaterializationReporter>();
+    const runtimeService = new EffectiveSettingsService(serverDB, undefined, {}, runtimeReporter);
+    await runtimeService.getEffectiveSettings({ userId: 'override-user' });
+
+    const getUserOverrideRevision = vi
+      .spyOn(runtimeService['model'], 'getUserOverrideRevision')
+      .mockRejectedValueOnce(revisionError);
+    await expect(runtimeService.getEffectiveSettings({ userId: 'override-user' })).rejects.toBe(
+      revisionError,
+    );
+    getUserOverrideRevision.mockRestore();
+    await runtimeService.getEffectiveSettings({ userId: 'override-user' });
+
+    const listUserOverrides = vi
+      .spyOn(runtimeService['model'], 'listUserOverrides')
+      .mockRejectedValueOnce(rowsError);
+    await expect(
+      runtimeService.getEffectiveSettings({ userId: 'override-rows-user' }),
+    ).rejects.toBe(rowsError);
+    listUserOverrides.mockRestore();
+    await runtimeService.getEffectiveSettings({ userId: 'override-rows-user' });
+
+    expect(runtimeReporter.mock.calls.map(([, state]) => state)).toEqual([
+      { domain: 'settings', health: 'healthy', revision: 1, source: 'database' },
+      {
+        domain: 'settings',
+        errorCategory: 'database_unavailable',
+        health: 'unavailable',
+        source: 'unavailable',
+      },
+      { domain: 'settings', health: 'healthy', revision: 1, source: 'database' },
+      {
+        domain: 'settings',
+        errorCategory: 'database_unavailable',
+        health: 'unavailable',
+        source: 'unavailable',
+      },
+      { domain: 'settings', health: 'healthy', revision: 1, source: 'database' },
+    ]);
+  });
+
+  it('preserves an override read error when its reporter also fails', async () => {
+    await publishDefault();
+    const original = new Error('raw override database detail');
+    const runtimeReporter = vi.fn<PlatformRuntimeMaterializationReporter>(() => {
+      throw new Error('raw failure reporter detail');
+    });
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const runtimeService = new EffectiveSettingsService(serverDB, undefined, {}, runtimeReporter);
+    const listUserOverrides = vi
+      .spyOn(runtimeService['model'], 'listUserOverrides')
+      .mockRejectedValueOnce(original);
+
+    await expect(
+      runtimeService.getEffectiveSettings({ userId: 'observer-failure-user' }),
+    ).rejects.toBe(original);
+
+    expect(consoleError).toHaveBeenCalledWith('[platform-instance-runtime] reporter unavailable');
+    expect(JSON.stringify(consoleError.mock.calls)).not.toContain('raw failure reporter detail');
+    listUserOverrides.mockRestore();
+    consoleError.mockRestore();
+  });
+
+  it('contains an injected reporter failure and returns the original effective settings', async () => {
+    await publishDefault();
+    const runtimeReporter = vi.fn<PlatformRuntimeMaterializationReporter>(() => {
+      throw new Error('raw settings reporter detail');
+    });
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const runtimeService = new EffectiveSettingsService(serverDB, undefined, {}, runtimeReporter);
+
+    await expect(
+      runtimeService.getEffectiveSettings({ userId: 'observer-user' }),
+    ).resolves.toMatchObject({ platformRevision: 1 });
+    expect(consoleError).toHaveBeenCalledWith('[platform-instance-runtime] reporter unavailable');
+    expect(JSON.stringify(consoleError.mock.calls)).not.toContain('raw settings reporter detail');
+    consoleError.mockRestore();
+  });
+
   it('inherits platform default without override', async () => {
     await publishDefault();
     const effective = await service.getEffectiveSettings({ userId: 'u1' });
@@ -189,7 +327,8 @@ describe('EffectiveSettingsService (flag ON)', () => {
 describe('EffectiveSettingsService flag OFF parity', () => {
   it('does not require platform tables and uses legacy only', async () => {
     // Re-mock flag off for this suite by constructing with a stub isPolicyEnabled
-    const offService = new EffectiveSettingsService(serverDB);
+    const runtimeReporter = vi.fn<PlatformRuntimeMaterializationReporter>();
+    const offService = new EffectiveSettingsService(serverDB, undefined, {}, runtimeReporter);
     vi.spyOn(offService, 'isPolicyEnabled').mockReturnValue(false);
 
     const result = await offService.getEffectiveSettings({
@@ -199,6 +338,7 @@ describe('EffectiveSettingsService flag OFF parity', () => {
     expect(result.effectiveValues['general.fontSize']).toBe(15);
     expect(result.pathMeta['general.fontSize']?.source).toBe('legacy');
     expect(result.platformRevision).toBe(0);
+    expect(runtimeReporter).not.toHaveBeenCalled();
 
     await expect(
       offService.patchSettingOverride({ path: 'general.fontSize', userId: 'u1', value: 16 }),
