@@ -23,12 +23,14 @@ describe('M13 secret rewrap failure-ledger expand migration', () => {
     expect(migrationSql).not.toMatch(/\b(?:DROP|RENAME|DELETE|ALTER)\b/i);
   });
 
-  it('keeps generated journal and snapshot aligned at 0133', () => {
-    expect(journal.entries).toHaveLength(135);
-    expect(journal.entries.find(({ idx }) => idx === 133)).toMatchObject({
-      idx: 133,
-      tag: migrationName,
-    });
+  it('keeps 0133 between its M13 predecessor and successor with a matching snapshot', () => {
+    const journalPosition = journal.entries.findIndex(({ tag }) => tag === migrationName);
+    expect(journalPosition).toBe(133);
+    expect(journal.entries.slice(journalPosition - 1, journalPosition + 2)).toMatchObject([
+      { idx: 132, tag: '0132_m13_platform_secret_rotation' },
+      { idx: 133, tag: migrationName },
+      { idx: 134, tag: '0134_m13_secret_rewrap_single_active' },
+    ]);
     expect(readdirSync(path.join(migrations, 'meta'))).toContain('0133_snapshot.json');
   });
 });

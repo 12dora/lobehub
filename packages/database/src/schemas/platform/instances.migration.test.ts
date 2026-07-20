@@ -98,19 +98,25 @@ describe('M14 platform instance revision migration', () => {
     }
   });
 
-  it('keeps the generated journal and snapshot counts aligned at 136', () => {
+  it('keeps 0135 unique and ordered after the final M13 migration', () => {
     const snapshots = readdirSync(path.join(migrations, 'meta')).filter((file) =>
       file.endsWith('_snapshot.json'),
     );
-    expect(journal.entries).toHaveLength(136);
-    expect(snapshots).toHaveLength(136);
-    expect(journal.entries.at(-1)).toEqual({
+    const journalPosition = journal.entries.findIndex(({ tag }) => tag === migrationName);
+    expect(journalPosition).toBe(135);
+    expect(journal.entries[journalPosition - 1]).toMatchObject({
+      idx: 134,
+      tag: '0134_m13_secret_rewrap_single_active',
+    });
+    expect(journal.entries[journalPosition]).toEqual({
       breakpoints: true,
       idx: 135,
       tag: migrationName,
       version: '7',
       when: expect.any(Number),
     });
+    expect(journal.entries.filter(({ idx }) => idx === 135)).toHaveLength(1);
+    expect(journal.entries.filter(({ tag }) => tag === migrationName)).toHaveLength(1);
     expect(snapshots).toContain('0135_snapshot.json');
   });
 });
