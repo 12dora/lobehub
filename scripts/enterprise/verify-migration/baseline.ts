@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import path from 'node:path';
 
 import {
   BASELINE_COMMIT,
@@ -15,6 +15,8 @@ import {
 export interface JournalEntry {
   idx: number;
   tag: string;
+  /** Drizzle journal `when` — used as folderMillis / created_at. */
+  when: number;
 }
 
 export interface JournalFile {
@@ -64,11 +66,11 @@ export const isBaselineMigrationPath = (relativePath: string): boolean => {
 };
 
 export const loadJournal = (repoRoot: string): JournalFile =>
-  readJson<JournalFile>(join(repoRoot, JOURNAL_RELATIVE_PATH));
+  readJson<JournalFile>(path.join(repoRoot, JOURNAL_RELATIVE_PATH));
 
 export const listBaselineMigrationFiles = (repoRoot: string): string[] => {
-  const migrationsRoot = join(repoRoot, MIGRATIONS_DIR);
-  const metaRoot = join(migrationsRoot, 'meta');
+  const migrationsRoot = path.join(repoRoot, MIGRATIONS_DIR);
+  const metaRoot = path.join(migrationsRoot, 'meta');
   const files: string[] = [];
 
   for (let idx = 0; idx <= BASELINE_MIGRATION_LAST_IDX; idx += 1) {
@@ -77,11 +79,11 @@ export const listBaselineMigrationFiles = (repoRoot: string): string[] => {
       (name) => name.startsWith(`${prefix}_`) && name.endsWith('.sql'),
     );
     for (const name of sqlMatches) {
-      files.push(join(MIGRATIONS_DIR, name));
+      files.push(path.join(MIGRATIONS_DIR, name));
     }
     const snapshot = `${prefix}_snapshot.json`;
-    if (existsSync(join(metaRoot, snapshot))) {
-      files.push(join(MIGRATIONS_DIR, 'meta', snapshot));
+    if (existsSync(path.join(metaRoot, snapshot))) {
+      files.push(path.join(MIGRATIONS_DIR, 'meta', snapshot));
     }
   }
 
@@ -210,7 +212,7 @@ export const verifyJournalSnapshotAlignment = (
   repoRoot: string,
 ): { match: boolean; totalEntries: number } => {
   const journal = loadJournal(repoRoot);
-  const metaDir = join(repoRoot, MIGRATIONS_DIR, 'meta');
+  const metaDir = path.join(repoRoot, MIGRATIONS_DIR, 'meta');
   const snapshots = readdirSync(metaDir).filter((name) => name.endsWith('_snapshot.json'));
   const expected = journal.entries.map(
     ({ idx }) => `${String(idx).padStart(4, '0')}_snapshot.json`,

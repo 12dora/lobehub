@@ -25,12 +25,26 @@ export interface OwnedPostgresHandle {
   /** Opaque report token only — never a connection string. */
   resourceToken: string;
   withClient: <T>(fn: (client: PoolClient) => Promise<T>) => Promise<T>;
+  /**
+   * Borrow a Pool + client for migrator-style APIs that need a Pool.
+   * Connection string never leaves this module.
+   */
+  withPool: <T>(fn: (pool: Pool, client: PoolClient) => Promise<T>) => Promise<T>;
 }
 
 export interface OwnedPostgresLifecycle {
   cleanup: () => Promise<'failed' | 'passed'>;
   handle: OwnedPostgresHandle;
 }
+
+/** Test/observability counter: increments only when createOwnedPostgres starts provisioning. */
+let ownedPostgresCreateCount = 0;
+
+export const getOwnedPostgresCreateCount = (): number => ownedPostgresCreateCount;
+
+export const resetOwnedPostgresCreateCount = (): void => {
+  ownedPostgresCreateCount = 0;
+};
 
 interface DockerInspect {
   Config?: { Labels?: Record<string, string> };
@@ -118,6 +132,7 @@ const verifyOwnership = (
  * Never targets shared phase0 (aihub-dev) resources.
  */
 export const createOwnedPostgres = async (): Promise<OwnedPostgresLifecycle> => {
+  ownedPostgresCreateCount += 1;
   const resourceToken = buildResourceToken();
   const ownershipToken = buildOwnershipToken();
   const password = randomBytes(18).toString('base64url');
@@ -194,6 +209,18 @@ export const createOwnedPostgres = async (): Promise<OwnedPostgresLifecycle> => 
         const client = await pool.connect();
         try {
           return await fn(client);
+        } finally {
+          client.release();
+          await pool.end();
+        }
+      },
+      withPool: async (fn) => {
+        // max>=2: official migrator must borrow a connection without deadlocking
+        // a held client from the same pool.
+        const pool = new Pool({ connectionString, max: 2 });
+        const client = await pool.connect();
+        try {
+          return await fn(pool, client);
         } finally {
           client.release();
           await pool.end();

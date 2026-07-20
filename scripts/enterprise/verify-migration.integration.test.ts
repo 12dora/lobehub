@@ -1,7 +1,7 @@
 // @vitest-environment node
 /**
  * Optional full-chain integration: random owned Postgres container, synthetic
- * 2.2.10 fixture, complete migration apply, invariants, cleanup.
+ * 2.2.10 fixture, complete migration apply, official migrator rerun, cleanup.
  *
  * Enabled when MIGRATION_COMPAT_INTEGRATION=1 (requires Docker).
  * Never uses shared phase0 databases.
@@ -14,7 +14,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   createMigrationCompatReport,
-  isPassingSyntheticReport,
+  gatePassed,
   migrationCompatReportSchema,
   runMigrationCompatVerification,
   scanForForbiddenReportContent,
@@ -34,9 +34,9 @@ const dockerAvailable = (() => {
 const enabled = process.env.MIGRATION_COMPAT_INTEGRATION === '1' && dockerAvailable;
 
 describe.skipIf(!enabled)('migration compat integration (owned disposable Postgres)', () => {
-  it('applies 2.2.10 synthetic fixture through current migrations with secret-free report', async () => {
+  it('applies 2.2.10 synthetic fixture through current migrations with official rerun', async () => {
     const { report } = await runMigrationCompatVerification({
-      idempotentRerun: true,
+      officialRerun: true,
       repoRoot,
     });
 
@@ -46,19 +46,29 @@ describe.skipIf(!enabled)('migration compat integration (owned disposable Postgr
     expect(report.baseline.match).toBe('passed');
     expect(report.cleanupResult).toBe('passed');
     expect(report.syntheticResult).toBe('passed');
-    expect(isPassingSyntheticReport(report)).toBe(true);
+    expect(report.rerun.result).toBe('passed');
+    expect(gatePassed(report)).toBe(true);
     // Missing real production dump must remain unverified, never pass overall.
     expect(report.externalDump.status).toBe('absent');
     expect(report.overall).toBe('unverified');
     expect(report.ownedResource.kind).toBe('container-database');
     expect(report.ownedResource.resourceId).toMatch(/^m15q03_[a-f0-9]{16}$/);
 
+    const byCategory = Object.fromEntries(
+      report.checks.map((check) => [check.category, check.result]),
+    );
+    expect(byCategory['apply-baseline']).toBe('passed');
+    expect(byCategory['apply-post-baseline']).toBe('passed');
+    expect(byCategory.revision).toBe('passed');
+    expect(byCategory.audit).toBe('passed');
+    expect(byCategory['secret-reference']).toBe('passed');
+    expect(byCategory.rerun).toBe('passed');
+
     const serialized = JSON.stringify(report);
     expect(serialized).not.toMatch(/postgres(?:ql)?:\/\//i);
     expect(serialized).not.toMatch(/password|connectionString|DATABASE_URL/i);
     expect(serialized).not.toMatch(/127\.0\.0\.1/);
 
-    // Core fields remain acceptable to the secret-free schema factory.
     const { redactionScan: _redactionScan, ...core } = report;
     expect(() => createMigrationCompatReport(core)).not.toThrow();
   }, 600_000);

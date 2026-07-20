@@ -1,7 +1,11 @@
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
 
-import { scanDumpPrivacy } from './privacy';
+import {
+  DUMP_MAX_BYTES,
+  scanDumpPrivacyBuffer,
+  scanDumpPrivacyFile,
+  scanDumpPrivacyStream,
+} from './privacy';
 
 /**
  * External sanitized dump intake contract.
@@ -46,22 +50,31 @@ export const hashDumpContent = (
   };
 };
 
-export const assessExternalDumpContent = (content: Buffer | string): ExternalDumpAssessment => {
-  const { byteLength, sha256 } = hashDumpContent(content);
-  const privacy = scanDumpPrivacy(content);
-
-  if (privacy === 'failed') {
+export const assessExternalDumpContent = async (
+  content: Buffer | string,
+): Promise<ExternalDumpAssessment> => {
+  const buffer = typeof content === 'string' ? Buffer.from(content, 'utf8') : content;
+  const scan = await scanDumpPrivacyStream(buffer);
+  if (scan.byteLength > DUMP_MAX_BYTES || scan.privacy === 'failed') {
     return {
-      byteLength,
-      contentSha256: sha256,
+      byteLength: scan.byteLength,
+      contentSha256: scan.contentSha256,
       privacy: 'failed',
       status: 'privacy-rejected',
     };
   }
-
+  // Defense in depth: buffer path also runs full-window scanner.
+  if (scanDumpPrivacyBuffer(buffer) === 'failed') {
+    return {
+      byteLength: scan.byteLength,
+      contentSha256: scan.contentSha256,
+      privacy: 'failed',
+      status: 'privacy-rejected',
+    };
+  }
   return {
-    byteLength,
-    contentSha256: sha256,
+    byteLength: scan.byteLength,
+    contentSha256: scan.contentSha256,
     privacy: 'passed',
     status: 'privacy-verified',
   };
@@ -72,23 +85,36 @@ export const loadExternalDump = async (
 ): Promise<ExternalDumpResult> => {
   if (!input) return { status: 'absent' };
 
-  let content: Buffer | string | undefined = input.content;
-  if (content === undefined && input.localPath) {
-    // Path is used only to read; never returned.
-    content = await readFile(input.localPath);
+  if (input.content !== undefined) {
+    return assessExternalDumpContent(input.content);
   }
 
-  if (content === undefined) {
-    // Explicit request without payload stays unverified (never pass).
+  if (input.localPath) {
+    // Path is used only to stream; never returned.
+    const scan = await scanDumpPrivacyFile(input.localPath);
+    if (scan.privacy === 'failed') {
+      return {
+        byteLength: scan.byteLength,
+        contentSha256: scan.contentSha256,
+        privacy: 'failed',
+        status: 'privacy-rejected',
+      };
+    }
     return {
-      byteLength: 0,
-      contentSha256: createHash('sha256').update('').digest('hex'),
-      privacy: 'failed',
-      status: 'unverified',
+      byteLength: scan.byteLength,
+      contentSha256: scan.contentSha256,
+      privacy: 'passed',
+      status: 'privacy-verified',
     };
   }
 
-  return assessExternalDumpContent(content);
+  // Explicit request without payload stays unverified (never pass).
+  return {
+    byteLength: 0,
+    contentSha256: createHash('sha256').update('').digest('hex'),
+    privacy: 'failed',
+    status: 'unverified',
+  };
 };
 
 /** Safe report slice — no path, URL, credentials, or body. */

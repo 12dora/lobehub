@@ -21,10 +21,14 @@ export {
 } from './constants';
 export type { CheckEntry, MigrationCompatReport, MigrationCompatReportCore } from './contract';
 export {
+  buildFullPassingChecks,
   createMigrationCompatReport,
   deriveOverallResult,
+  gatePassed,
   isPassingSyntheticReport,
   migrationCompatReportSchema,
+  REQUIRED_GATE_CATEGORIES,
+  REQUIRED_PASSING_CATEGORIES,
   toReportCommitShort,
 } from './contract';
 export type { ExternalDumpInput, ExternalDumpResult } from './dump';
@@ -43,15 +47,36 @@ export {
 } from './fixture';
 export {
   baselineEntries,
+  isLegacyTagIdxJournalStyle,
+  loadOfficialMigrations,
   postBaselineEntries,
   verifyExpandOnlyPostBaselineSql,
 } from './migrations';
-export { isOwnedResourceToken } from './ownedPostgres';
+export {
+  getOwnedPostgresCreateCount,
+  isOwnedResourceToken,
+  resetOwnedPostgresCreateCount,
+} from './ownedPostgres';
 export {
   countForbiddenValues,
+  DUMP_MAX_BYTES,
+  DUMP_SCAN_CHUNK_BYTES,
+  DUMP_SCAN_OVERLAP_BYTES,
   scanDumpPrivacy,
+  scanDumpPrivacyBuffer,
+  scanDumpPrivacyFile,
+  scanDumpPrivacyStream,
   scanForForbiddenReportContent,
   shortSha,
 } from './privacy';
+export {
+  buildPlatformProbeStatements,
+  PLATFORM_PROBE_IDS,
+  PROBE_SECRET_FINGERPRINT,
+  PROBE_SECRET_REF,
+  verifyAuditProbes,
+  verifyRevisionProbes,
+  verifySecretReferenceProbes,
+} from './probes';
 export type { VerifyMigrationOptions, VerifyMigrationResult } from './runner';
 export { runMigrationCompatVerification } from './runner';

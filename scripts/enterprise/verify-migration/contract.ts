@@ -10,6 +10,14 @@ import { isFullGitSha, scanForForbiddenReportContent, shortSha } from './privacy
 
 export { scanForForbiddenReportContent };
 
+/** Categories that must appear exactly once on a Wave2-A synthetic foundation report. */
+export const REQUIRED_GATE_CATEGORIES = CHECK_CATEGORIES;
+
+/** Categories that must result in `passed` for gatePassed (external-dump may be unverified). */
+export const REQUIRED_PASSING_CATEGORIES = CHECK_CATEGORIES.filter(
+  (category) => category !== 'external-dump',
+);
+
 const shortShaSchema = z.string().regex(/^[a-f\d]{7,12}$/u, 'must be a short lowercase git sha');
 
 const sha256Schema = z.string().regex(/^[a-f\d]{64}$/u, 'must be a lowercase SHA-256 digest');
@@ -85,6 +93,215 @@ const reportCoreSchema = z
   })
   .strict();
 
+const checkCategoryIndex = (checks: Array<{ category: string; result: string }>) => {
+  const byCategory = new Map<string, string>();
+  for (const check of checks) {
+    if (byCategory.has(check.category)) {
+      return { duplicate: check.category as (typeof CHECK_CATEGORIES)[number], map: byCategory };
+    }
+    byCategory.set(check.category, check.result);
+  }
+  return { duplicate: undefined, map: byCategory };
+};
+
+const refineReportConsistency = (
+  value: z.infer<typeof reportCoreSchema>,
+  context: z.RefinementCtx,
+): void => {
+  // Wave2-A: external dump is never applied — overall may never be passed.
+  if (value.overall === 'passed') {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Wave2-A overall cannot be passed (external dump not applied)',
+      path: ['overall'],
+    });
+  }
+
+  const { duplicate, map } = checkCategoryIndex(value.checks);
+  if (duplicate) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `duplicate check category: ${duplicate}`,
+      path: ['checks'],
+    });
+  }
+
+  // Owned resource pairing.
+  if (value.ownedResource.kind === 'none' && value.ownedResource.resourceId) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'ownedResource.kind=none cannot carry resourceId',
+      path: ['ownedResource'],
+    });
+  }
+  if (value.ownedResource.kind === 'container-database' && !value.ownedResource.resourceId) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'container-database requires resourceId',
+      path: ['ownedResource'],
+    });
+  }
+
+  // Cross-field: cleanupResult must match cleanup check when present.
+  const cleanupCheck = map.get('cleanup');
+  if (cleanupCheck) {
+    if (value.cleanupResult === 'passed' && cleanupCheck !== 'passed') {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'cleanupResult/check mismatch',
+        path: ['cleanupResult'],
+      });
+    }
+    if (value.cleanupResult === 'failed' && cleanupCheck === 'passed') {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'cleanupResult/check mismatch',
+        path: ['cleanupResult'],
+      });
+    }
+  }
+
+  // Cross-field: rerun.result must match rerun check when present.
+  const rerunCheck = map.get('rerun');
+  if (rerunCheck && value.rerun.result !== rerunCheck) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'rerun.result/check mismatch',
+      path: ['rerun'],
+    });
+  }
+
+  // Cross-field: baseline.match must match baseline check when present.
+  const baselineCheck = map.get('baseline');
+  if (baselineCheck) {
+    if (value.baseline.match === 'passed' && baselineCheck !== 'passed') {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'baseline.match/check mismatch',
+        path: ['baseline'],
+      });
+    }
+    if (value.baseline.match === 'failed' && baselineCheck === 'passed') {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'baseline.match/check mismatch',
+        path: ['baseline'],
+      });
+    }
+  }
+
+  // Synthetic success requires the full gate shape.
+  if (value.syntheticResult === 'passed') {
+    if (value.overall !== 'unverified') {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'synthetic success must leave overall=unverified',
+        path: ['overall'],
+      });
+    }
+    if (value.baseline.match !== 'passed') {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'synthetic success requires baseline.match=passed',
+        path: ['baseline'],
+      });
+    }
+    if (value.fixture.status !== 'loaded' || value.fixture.source !== 'synthetic') {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'synthetic success requires loaded synthetic fixture',
+        path: ['fixture'],
+      });
+    }
+    if (value.cleanupResult !== 'passed') {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'synthetic success requires cleanupResult=passed',
+        path: ['cleanupResult'],
+      });
+    }
+    if (value.rerun.result !== 'passed') {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'synthetic success requires rerun.result=passed',
+        path: ['rerun'],
+      });
+    }
+    if (value.ownedResource.kind !== 'container-database' || !value.ownedResource.resourceId) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'synthetic success requires owned container-database resourceId',
+        path: ['ownedResource'],
+      });
+    }
+    if (
+      value.externalDump.status === 'privacy-rejected' ||
+      value.externalDump.privacy === 'failed'
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'synthetic success cannot pair with rejected dump privacy',
+        path: ['externalDump'],
+      });
+    }
+
+    for (const category of REQUIRED_GATE_CATEGORIES) {
+      if (!map.has(category)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `missing required check category: ${category}`,
+          path: ['checks'],
+        });
+      }
+    }
+
+    for (const category of REQUIRED_PASSING_CATEGORIES) {
+      if (map.get(category) !== 'passed') {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `required check must pass: ${category}`,
+          path: ['checks'],
+        });
+      }
+    }
+
+    const externalDumpResult = map.get('external-dump');
+    if (externalDumpResult !== 'passed' && externalDumpResult !== 'unverified') {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'external-dump must be passed or unverified for synthetic success',
+        path: ['checks'],
+      });
+    }
+
+    // No extra categories beyond the required set when synthetic passed.
+    if (value.checks.length !== REQUIRED_GATE_CATEGORIES.length) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'synthetic success requires exactly the required check categories',
+        path: ['checks'],
+      });
+    }
+  }
+
+  // Failed synthetic: overall must be failed when cleanup/privacy failed or checks failed hard.
+  if (
+    value.syntheticResult === 'failed' &&
+    value.overall === 'unverified' && // Allowed only if we never claimed success; overall should still be failed when
+    // cleanup or privacy rejection happened.
+    (value.cleanupResult === 'failed' || value.externalDump.status === 'privacy-rejected')
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'failed cleanup/privacy must set overall=failed',
+      path: ['overall'],
+    });
+  }
+};
+
+export const migrationCompatReportCoreSchema =
+  reportCoreSchema.superRefine(refineReportConsistency);
+
 export const migrationCompatReportSchema = reportCoreSchema
   .extend({
     redactionScan: z
@@ -94,7 +311,21 @@ export const migrationCompatReportSchema = reportCoreSchema
       })
       .strict(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    refineReportConsistency(value, context);
+    if (
+      (value.redactionScan.result !== 'passed' || value.redactionScan.violations !== 0) && // Still allow constructing reports that failed redaction only via createMigrationCompatReport throw.
+      // If present on a synthetic success, reject.
+      value.syntheticResult === 'passed'
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'synthetic success requires redactionScan.passed',
+        path: ['redactionScan'],
+      });
+    }
+  });
 
 export type MigrationCompatReport = z.infer<typeof migrationCompatReportSchema>;
 export type MigrationCompatReportCore = z.infer<typeof reportCoreSchema>;
@@ -110,31 +341,55 @@ export const createMigrationCompatReport = (
     );
   }
 
-  const core = reportCoreSchema.parse(input);
+  const core = migrationCompatReportCoreSchema.parse(input);
   return migrationCompatReportSchema.parse({
     ...core,
     redactionScan,
   });
 };
 
-export const isPassingSyntheticReport = (report: MigrationCompatReport): boolean => {
+/**
+ * Gate semantics for Wave2-A synthetic foundation success.
+ * External dump remains unapplied → overall must be unverified (never passed).
+ */
+export const gatePassed = (report: MigrationCompatReport): boolean => {
   const parsed = migrationCompatReportSchema.safeParse(report);
   if (!parsed.success) return false;
-  const { cleanupResult, redactionScan, syntheticResult } = parsed.data;
-  return (
-    syntheticResult === 'passed' &&
-    cleanupResult === 'passed' &&
-    redactionScan.result === 'passed' &&
-    redactionScan.violations === 0
-  );
+  const data = parsed.data;
+  if (data.overall === 'passed') return false;
+  if (data.syntheticResult !== 'passed') return false;
+  if (data.overall !== 'unverified') return false;
+  if (data.baseline.match !== 'passed') return false;
+  if (data.fixture.status !== 'loaded' || data.fixture.source !== 'synthetic') return false;
+  if (data.cleanupResult !== 'passed') return false;
+  if (data.rerun.result !== 'passed') return false;
+  if (data.redactionScan.result !== 'passed' || data.redactionScan.violations !== 0) return false;
+  if (data.ownedResource.kind !== 'container-database' || !data.ownedResource.resourceId) {
+    return false;
+  }
+  if (data.externalDump.status === 'privacy-rejected') return false;
+
+  const { duplicate, map } = checkCategoryIndex(data.checks);
+  if (duplicate) return false;
+  if (data.checks.length !== REQUIRED_GATE_CATEGORIES.length) return false;
+  for (const category of REQUIRED_GATE_CATEGORIES) {
+    if (!map.has(category)) return false;
+  }
+  for (const category of REQUIRED_PASSING_CATEGORIES) {
+    if (map.get(category) !== 'passed') return false;
+  }
+  const externalDumpResult = map.get('external-dump');
+  if (externalDumpResult !== 'passed' && externalDumpResult !== 'unverified') return false;
+  return true;
 };
+
+/** @deprecated Prefer gatePassed — same synthetic foundation gate. */
+export const isPassingSyntheticReport = (report: MigrationCompatReport): boolean =>
+  gatePassed(report);
 
 /**
  * Overall "passed" is reserved for a future dump-restore + upgrade path.
- * This Wave2-A foundation never claims production-dump success:
- * - synthetic success + absent/unverified dump → overall=unverified
- * - privacy-verified dump (intake only, not applied) → overall=unverified
- * - privacy-rejected dump or synthetic/cleanup failure → overall=failed
+ * This Wave2-A foundation never claims production-dump success.
  */
 export const deriveOverallResult = (input: {
   cleanupResult: 'failed' | 'passed';
@@ -153,3 +408,15 @@ export const toReportCommitShort = (fullSha: string): string => {
   }
   return shortSha(fullSha.toLowerCase());
 };
+
+/** Build a complete checks array for unit fixtures (every required category once). */
+export const buildFullPassingChecks = (
+  overrides: Partial<Record<(typeof CHECK_CATEGORIES)[number], CheckEntry['result']>> = {},
+): CheckEntry[] =>
+  CHECK_CATEGORIES.map((category) => ({
+    category,
+    durationMs: 1,
+    result:
+      overrides[category] ??
+      (category === 'external-dump' ? ('unverified' as const) : ('passed' as const)),
+  }));

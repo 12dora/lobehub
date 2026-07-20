@@ -14,7 +14,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
-import { isPassingSyntheticReport, runMigrationCompatVerification } from './verify-migration/index';
+import { gatePassed, runMigrationCompatVerification } from './verify-migration/index';
 
 const usage = () => {
   console.error(
@@ -79,7 +79,7 @@ const main = async () => {
     process.exitCode = 2;
     return;
   }
-  if (!isPassingSyntheticReport(report) || report.cleanupResult === 'failed') {
+  if (!gatePassed(report) || report.cleanupResult === 'failed') {
     process.exitCode = 1;
     return;
   }
