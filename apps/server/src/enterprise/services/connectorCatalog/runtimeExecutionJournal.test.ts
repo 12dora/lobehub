@@ -213,19 +213,23 @@ describe('DatabaseConnectorRuntimeExecutionJournal', () => {
       await expect(journal.reconcileNext(async () => {})).resolves.toBe(false);
       await expect(journal.arm(acquired.token)).resolves.toBeUndefined();
 
-      const [databaseClock] = await db.select({ now: sql<Date>`statement_timestamp()` });
-      const armed = await db.query.platformJobs.findFirst({
-        where: eq(platformJobs.id, acquired.token.jobId),
-      });
+      const [armed] = await db
+        .select({
+          heartbeatAt: platformJobs.heartbeatAt,
+          leaseUntil: platformJobs.leaseUntil,
+          now: sql<Date>`statement_timestamp()`,
+          startedAt: platformJobs.startedAt,
+          status: platformJobs.status,
+        })
+        .from(platformJobs)
+        .where(eq(platformJobs.id, acquired.token.jobId));
       expect(armed).toMatchObject({
         heartbeatAt: expect.any(Date),
         leaseUntil: expect.any(Date),
         startedAt: expect.any(Date),
         status: 'running',
       });
-      expect(Math.abs(armed!.heartbeatAt!.getTime() - databaseClock.now.getTime())).toBeLessThan(
-        5000,
-      );
+      expect(Math.abs(armed!.heartbeatAt!.getTime() - armed!.now.getTime())).toBeLessThan(5000);
       expect(armed!.leaseUntil!.getTime() - armed!.heartbeatAt!.getTime()).toBe(30_000);
     },
   );
