@@ -27,8 +27,8 @@ export type AdminProcedureAuthorization =
 /**
  * Current authorization facts for every procedure exported by adminRouter.
  *
- * This intentionally records the existing OIDC_PUBLISH gate on all three system procedures.
- * The desired SYSTEM_READ / SYSTEM_OPERATE split remains a policy gap; Q01 does not change it.
+ * OIDC restart procedures retain their dedicated OIDC_PUBLISH gate. Platform diagnostics and
+ * generic job controls use the narrower SYSTEM_READ / SYSTEM_OPERATE split.
  */
 export const ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY = [
   {
