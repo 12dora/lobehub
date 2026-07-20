@@ -140,7 +140,7 @@ describe('migration compat report contract', () => {
         externalDumpStatus: 'privacy-verified',
         syntheticResult: 'passed',
       }),
-    ).toBe('passed');
+    ).toBe('unverified');
     expect(
       deriveOverallResult({
         cleanupResult: 'failed',

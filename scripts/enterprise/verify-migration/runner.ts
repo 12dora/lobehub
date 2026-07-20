@@ -328,7 +328,8 @@ export const runMigrationCompatVerification = async (
     externalDump: externalDumpFields,
     fixture: {
       rowCounts: fixtureRowCounts,
-      source: dumpResult.status === 'privacy-verified' ? 'external-dump' : 'synthetic',
+      // Wave2-A only loads the synthetic fixture; dump intake is privacy-only.
+      source: 'synthetic',
       status: fixtureStatus,
     },
     head: {

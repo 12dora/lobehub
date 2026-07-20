@@ -130,8 +130,11 @@ export const isPassingSyntheticReport = (report: MigrationCompatReport): boolean
 };
 
 /**
- * Full overall "passed" requires a privacy-verified external dump.
- * Synthetic-only success stays overall=unverified (never pretends production dump passed).
+ * Overall "passed" is reserved for a future dump-restore + upgrade path.
+ * This Wave2-A foundation never claims production-dump success:
+ * - synthetic success + absent/unverified dump → overall=unverified
+ * - privacy-verified dump (intake only, not applied) → overall=unverified
+ * - privacy-rejected dump or synthetic/cleanup failure → overall=failed
  */
 export const deriveOverallResult = (input: {
   cleanupResult: 'failed' | 'passed';
@@ -140,10 +143,7 @@ export const deriveOverallResult = (input: {
 }): MigrationCompatReportCore['overall'] => {
   if (input.syntheticResult === 'failed' || input.cleanupResult === 'failed') return 'failed';
   if (input.externalDumpStatus === 'privacy-rejected') return 'failed';
-  if (input.externalDumpStatus === 'absent' || input.externalDumpStatus === 'unverified') {
-    return 'unverified';
-  }
-  if (input.externalDumpStatus === 'privacy-verified') return 'passed';
+  // Foundation does not apply external dumps yet — never overall=passed.
   return 'unverified';
 };
 
