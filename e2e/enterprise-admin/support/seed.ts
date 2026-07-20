@@ -1550,11 +1550,20 @@ export const registerSeedRestoreOnLifecycle = (
 ): void => {
   let restored = false;
   const settleTimeoutMs = options?.settleTimeoutMs ?? 8_000;
+  // Helpers re-read handle fields so TS does not freeze commitPhase after control-flow narrowing.
+  const phaseOf = (d: DurableRestoreHandle): CommitPhase => d.commitPhase;
+  const isFullyCommitted = (d: DurableRestoreHandle): boolean =>
+    d.committed || phaseOf(d) === 'committed';
+  const needsReconcile = (d: DurableRestoreHandle): boolean => {
+    const p = phaseOf(d);
+    return p === 'ambiguous' || p === 'commitStarted';
+  };
+
   state.preCleanupHooks.push(async () => {
     const restoreOnce = async () => {
       if (restored) return;
       if (!durableRestore.seed || !durableRestore.manifest) return;
-      if (!isRestorablePhase(durableRestore.commitPhase) && !durableRestore.committed) {
+      if (!isRestorablePhase(phaseOf(durableRestore)) && !durableRestore.committed) {
         return;
       }
       restored = true;
@@ -1566,24 +1575,17 @@ export const registerSeedRestoreOnLifecycle = (
     };
 
     // Prefer immediate restore when already restorable (even if seed hangs post-commit).
-    if (
-      (durableRestore.committed || durableRestore.commitPhase === 'committed') &&
-      durableRestore.manifest &&
-      durableRestore.seed
-    ) {
+    if (isFullyCommitted(durableRestore) && durableRestore.manifest && durableRestore.seed) {
       await restoreOnce();
       return;
     }
-    if (
-      durableRestore.commitPhase === 'ambiguous' ||
-      durableRestore.commitPhase === 'commitStarted'
-    ) {
+    if (needsReconcile(durableRestore)) {
       await reconcileAmbiguousCommit(durableRestore);
-      if (durableRestore.committed || durableRestore.commitPhase === 'committed') {
+      if (isFullyCommitted(durableRestore)) {
         await restoreOnce();
         return;
       }
-      if (durableRestore.commitPhase === 'ambiguous') {
+      if (phaseOf(durableRestore) === 'ambiguous') {
         throw new Error(
           'fail-closed: ambiguous COMMIT with unrecovered journal — refuse silent return',
         );
@@ -1611,34 +1613,27 @@ export const registerSeedRestoreOnLifecycle = (
       if (timer) clearTimeout(timer);
     }
 
-    if (
-      durableRestore.commitPhase === 'ambiguous' ||
-      durableRestore.commitPhase === 'commitStarted'
-    ) {
+    if (needsReconcile(durableRestore)) {
       await reconcileAmbiguousCommit(durableRestore);
     }
 
-    if (
-      (durableRestore.committed || durableRestore.commitPhase === 'committed') &&
-      durableRestore.manifest &&
-      durableRestore.seed
-    ) {
+    if (isFullyCommitted(durableRestore) && durableRestore.manifest && durableRestore.seed) {
       await restoreOnce();
       return;
     }
 
-    if (timedOut && durableRestore.commitPhase === 'notStarted') {
+    if (timedOut && phaseOf(durableRestore) === 'notStarted') {
       // Never started commit — fail-closed no-op.
       return;
     }
-    if (timedOut && isRestorablePhase(durableRestore.commitPhase)) {
+    if (timedOut && isRestorablePhase(phaseOf(durableRestore))) {
       await restoreOnce();
       return;
     }
     if (timedOut && durableRestore.manifest && durableRestore.seed) {
       // Fail hard: refuse silent return with unrecovered journal evidence.
       throw new Error(
-        `fail-closed: seed settle timeout with phase=${durableRestore.commitPhase}; journal preserved`,
+        `fail-closed: seed settle timeout with phase=${phaseOf(durableRestore)}; journal preserved`,
       );
     }
   });
