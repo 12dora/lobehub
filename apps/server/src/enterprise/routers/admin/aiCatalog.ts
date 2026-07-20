@@ -39,7 +39,12 @@ import {
 import { withActiveUser } from '../../guards/activeUser';
 import { throwEnterpriseError } from '../../guards/enterpriseErrors';
 import { withPlatformPermission } from '../../guards/platformPermission';
-import { assertDangerousReauth, createService, mapServiceError } from './aiCatalogSupport';
+import {
+  aiSecretMutationRequiresReauth,
+  assertDangerousReauth,
+  createService,
+  mapServiceError,
+} from './aiCatalogSupport';
 
 const adminBase = authedProcedure.use(serverDatabase).use(withActiveUser());
 
@@ -70,6 +75,19 @@ export const adminAiProvidersRouter = router({
     .input(adminAiProviderCreateDraftInputSchema)
     .output(adminAiProviderMutationOutputSchema)
     .mutation(async ({ ctx, input }) => {
+      if (aiSecretMutationRequiresReauth(input.secret)) {
+        await assertDangerousReauth({
+          action: 'admin.aiProviders.createDraft',
+          actorUserId: ctx.userId!,
+          authenticatedAt: ctx.authenticatedAt,
+          authMethod: ctx.authMethod,
+          existingSecretTargetId: null,
+          reason: input.reason,
+          replacementSecrets: input.secret?.operation === 'replace' ? [input.secret.value] : [],
+          serverDB: ctx.serverDB,
+          targetId: input.providerKey,
+        });
+      }
       try {
         return await createService(ctx.serverDB).createProviderDraft(ctx.userId!, input);
       } catch (error) {
@@ -166,6 +184,18 @@ export const adminAiProvidersRouter = router({
     .input(adminAiProviderUpdateDraftInputSchema)
     .output(adminAiProviderMutationOutputSchema)
     .mutation(async ({ ctx, input }) => {
+      if (aiSecretMutationRequiresReauth(input.secret)) {
+        await assertDangerousReauth({
+          action: 'admin.aiProviders.updateDraft',
+          actorUserId: ctx.userId!,
+          authenticatedAt: ctx.authenticatedAt,
+          authMethod: ctx.authMethod,
+          reason: input.reason,
+          replacementSecrets: input.secret?.operation === 'replace' ? [input.secret.value] : [],
+          serverDB: ctx.serverDB,
+          targetId: input.id,
+        });
+      }
       try {
         return await createService(ctx.serverDB).updateProviderDraft(ctx.userId!, input);
       } catch (error) {
