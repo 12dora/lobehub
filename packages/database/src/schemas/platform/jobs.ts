@@ -66,6 +66,13 @@ export const platformJobs = pgTable(
     uniqueIndex('platform_jobs_type_idempotency_key_unique').on(t.type, t.idempotencyKey),
     index('platform_jobs_status_lease_until_idx').on(t.status, t.leaseUntil),
     index('platform_jobs_type_status_idx').on(t.type, t.status),
+    index('platform_jobs_secret_rewrap_failure_parent_domain_row_idx')
+      .on(
+        sql`(${t.input}->>'parentJobId')`,
+        sql`(${t.input}->>'domain')`,
+        sql`(${t.input}->>'rowId')`,
+      )
+      .where(sql`${t.type} = 'platform.secret.rewrap.failure.v1' AND ${t.status} = 'failed'`),
     index('platform_jobs_rollout_agent_id_id_idx')
       .on(sql`(${t.input}->'snapshot'->>'agentId')`, t.id)
       .where(sql`${t.type} = 'platform.agent.rollout.v1'`),
