@@ -239,11 +239,26 @@ describe('enterprise observability boundary', () => {
   it('classifies only fixed error codes without exposing the raw code', () => {
     const timeout = Object.assign(new Error('secret message'), { code: 'ETIMEDOUT' });
     const unknown = Object.assign(new Error('secret message'), { code: 'TENANT_ERROR_123' });
+    const inherited = new Error('secret message');
+    Object.setPrototypeOf(
+      inherited,
+      Object.create(Error.prototype, { code: { value: 'ETIMEDOUT' } }),
+    );
 
     expect(classifyEnterpriseError(timeout)).toBe('TimeoutError');
     expect(classifyEnterpriseError(unknown)).toBe('UnexpectedError');
+    expect(classifyEnterpriseError(inherited)).toBe('UnexpectedError');
+    for (const code of ['constructor', 'toString', '__proto__']) {
+      expect(classifyEnterpriseError(Object.assign(new Error('secret message'), { code }))).toBe(
+        'UnexpectedError',
+      );
+    }
     expect(
-      JSON.stringify([classifyEnterpriseError(timeout), classifyEnterpriseError(unknown)]),
+      JSON.stringify([
+        classifyEnterpriseError(timeout),
+        classifyEnterpriseError(unknown),
+        classifyEnterpriseError(inherited),
+      ]),
     ).not.toContain('TENANT_ERROR_123');
   });
 
