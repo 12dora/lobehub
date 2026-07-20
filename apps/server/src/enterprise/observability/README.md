@@ -7,6 +7,8 @@ credentials; without an installed OpenTelemetry provider the API is naturally a 
 `ENTERPRISE_ALERT_INTENTS` is backend-neutral design metadata only. No alert rules, receivers,
 notifications, or production alert backend are installed by this module. Deployments must select
 thresholds, windows, routing, and ownership before any of these intents become active alerts.
+The SSRF-denial, OIDC-login-failure, and agent-materialization-failure intents are likewise inactive
+metadata; this change does not install or connect a live alerting backend.
 
 Metrics never accept user, actor, resource, instance, request, IP, URL, error-message, or arbitrary
 string labels. Structured logs are reserved for failures and degraded outcomes and pass through the

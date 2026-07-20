@@ -29,6 +29,15 @@ const shouldLog = (event: EnterpriseObservabilityEvent): boolean => {
     case 'instance_heartbeat': {
       return event.outcome === 'failure';
     }
+    case 'ssrf_denial': {
+      return true;
+    }
+    case 'oidc_login': {
+      return event.outcome === 'failure';
+    }
+    case 'agent_materialization': {
+      return event.outcome === 'failure';
+    }
   }
 };
 
