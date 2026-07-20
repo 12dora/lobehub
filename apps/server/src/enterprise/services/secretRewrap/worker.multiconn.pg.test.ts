@@ -29,14 +29,20 @@ const enabled = process.env.TEST_SERVER_DB === '1' && Boolean(process.env.DATABA
 const run = enabled ? describe : describe.skip;
 const oldKeyId = 'vault:pg-old';
 const targetKeyId = 'vault:pg-target';
+const secondTargetKeyId = 'vault:pg-target-second';
 
 class PgVaultProvider implements KeyProvider {
-  activeKeyId = oldKeyId;
+  activeKeyId: string;
   readonly providerId = 'vault';
   readonly #keys = new Map([
     [oldKeyId, randomBytes(32)],
     [targetKeyId, randomBytes(32)],
+    [secondTargetKeyId, randomBytes(32)],
   ]);
+
+  constructor(activeKeyId: string = oldKeyId) {
+    this.activeKeyId = activeKeyId;
+  }
 
   getKek = async (keyId?: string): Promise<KekMaterial> => {
     const resolvedKeyId = keyId ?? this.activeKeyId;
@@ -119,18 +125,106 @@ run('Platform secret rewrap — true multi-connection PostgreSQL', () => {
     expect(secrets.peekKeyId(stored.ciphertext)).toBe(targetKeyId);
   });
 
-  it('installs the failed-ledger partial expression index', async () => {
+  it('installs both secret-rewrap partial indexes', async () => {
     const pool = new Pool({ connectionString, max: 1 });
     pools.push(pool);
     const result = await pool.query<{ indexname: string }>(`
       SELECT indexname
       FROM pg_indexes
       WHERE schemaname = current_schema()
-        AND indexname = 'platform_jobs_secret_rewrap_failure_parent_domain_row_idx'
+        AND indexname IN (
+          'platform_jobs_secret_rewrap_failure_parent_domain_row_idx',
+          'platform_jobs_secret_rewrap_single_active_unique'
+        )
+      ORDER BY indexname
     `);
     expect(result.rows.map(({ indexname }) => indexname)).toEqual([
       'platform_jobs_secret_rewrap_failure_parent_domain_row_idx',
+      'platform_jobs_secret_rewrap_single_active_unique',
     ]);
+  });
+
+  it('lets the database admit exactly one cross-target enqueue from independent sessions', async () => {
+    await cleanup();
+    const coordinatorA = new PlatformSecretRewrapCoordinator(
+      new PlatformSecretService({ keyProvider: new PgVaultProvider(targetKeyId) }),
+    );
+    const coordinatorB = new PlatformSecretRewrapCoordinator(
+      new PlatformSecretService({ keyProvider: new PgVaultProvider(secondTargetKeyId) }),
+    );
+    const results = await Promise.allSettled([
+      coordinatorA.enqueue(workerDb(), {
+        reason: 'first concurrent target',
+        requestId: '44444444-4444-4444-8444-444444444444',
+        requestedBy: 'pg-concurrent-a',
+        targetKeyId,
+      }),
+      coordinatorB.enqueue(workerDb(), {
+        reason: 'second concurrent target',
+        requestId: '55555555-5555-4555-8555-555555555555',
+        requestedBy: 'pg-concurrent-b',
+        targetKeyId: secondTargetKeyId,
+      }),
+    ]);
+
+    expect(results.filter(({ status }) => status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter(({ status }) => status === 'rejected')).toHaveLength(1);
+    const rejected = results.find(
+      (result): result is PromiseRejectedResult => result.status === 'rejected',
+    );
+    expect(rejected?.reason).toMatchObject({ name: 'PlatformSecretRewrapConflictError' });
+    expect(
+      await db
+        .select()
+        .from(platformJobs)
+        .where(eq(platformJobs.type, 'platform.secret.rewrap.v1')),
+    ).toHaveLength(1);
+  });
+
+  it('maps failed-A retry against active-B to a stable revision conflict', async () => {
+    await cleanup();
+    const coordinatorA = new PlatformSecretRewrapCoordinator(
+      new PlatformSecretService({ keyProvider: new PgVaultProvider(targetKeyId) }),
+    );
+    const failedA = await coordinatorA.enqueue(workerDb(), {
+      reason: 'seed failed rotation A',
+      requestId: '66666666-6666-4666-8666-666666666666',
+      requestedBy: 'pg-retry-a',
+      targetKeyId,
+    });
+    await db
+      .update(platformJobs)
+      .set({ status: 'failed' })
+      .where(eq(platformJobs.id, failedA.jobId));
+    await db.insert(platformJobs).values({
+      idempotencyKey: 'pg-retry-a-ledger',
+      input: { parentJobId: failedA.jobId },
+      status: 'failed',
+      type: 'platform.secret.rewrap.failure.v1',
+    });
+
+    const coordinatorB = new PlatformSecretRewrapCoordinator(
+      new PlatformSecretService({ keyProvider: new PgVaultProvider(secondTargetKeyId) }),
+    );
+    const activeB = await coordinatorB.enqueue(workerDb(), {
+      reason: 'seed active rotation B',
+      requestId: '77777777-7777-4777-8777-777777777777',
+      requestedBy: 'pg-retry-b',
+      targetKeyId: secondTargetKeyId,
+    });
+
+    await expect(
+      coordinatorA.retry(workerDb(), {
+        expectedRevision: failedA.revision,
+        expectedStatus: 'failed',
+        jobId: failedA.jobId,
+      }),
+    ).rejects.toMatchObject({
+      message: 'PLATFORM_SECRET_REWRAP_CONFLICT',
+      name: 'PlatformSecretRewrapConflictError',
+    });
+    await expect(coordinatorA.get(db, failedA.jobId)).resolves.toMatchObject({ status: 'failed' });
+    await expect(coordinatorB.get(db, activeB.jobId)).resolves.toMatchObject({ status: 'pending' });
   });
 
   it('ignores forward/backward node clock skew when protecting and reclaiming a lease', async () => {

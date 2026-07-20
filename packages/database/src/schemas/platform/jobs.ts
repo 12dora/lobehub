@@ -73,6 +73,11 @@ export const platformJobs = pgTable(
         sql`(${t.input}->>'rowId')`,
       )
       .where(sql`${t.type} = 'platform.secret.rewrap.failure.v1' AND ${t.status} = 'failed'`),
+    uniqueIndex('platform_jobs_secret_rewrap_single_active_unique')
+      .on(t.type)
+      .where(
+        sql`${t.type} = 'platform.secret.rewrap.v1' AND ${t.status} IN ('pending', 'reserved', 'running')`,
+      ),
     index('platform_jobs_rollout_agent_id_id_idx')
       .on(sql`(${t.input}->'snapshot'->>'agentId')`, t.id)
       .where(sql`${t.type} = 'platform.agent.rollout.v1'`),

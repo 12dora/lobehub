@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 const migrations = path.join(import.meta.dirname, '../../../migrations');
 const migrationName = '0132_m13_platform_secret_rotation';
-const latestMigrationName = '0133_m13_secret_rewrap_failure_index';
+const latestMigrationName = '0134_m13_secret_rewrap_single_active';
 const migrationSql = readFileSync(path.join(migrations, `${migrationName}.sql`), 'utf8');
 const journal = JSON.parse(readFileSync(path.join(migrations, 'meta/_journal.json'), 'utf8')) as {
   entries: Array<{ idx: number; tag: string }>;
@@ -23,18 +23,18 @@ describe('M13 platform secret rotation expand migration', () => {
     expect(migrationSql).not.toMatch(/platform_jobs|failure/i);
   });
 
-  it('keeps 0132 and the latest 0133 journal entries and snapshots aligned', () => {
-    expect(journal.entries).toHaveLength(134);
+  it('keeps 0132 and the latest migration journal entries and snapshots aligned', () => {
+    expect(journal.entries).toHaveLength(135);
     expect(journal.entries.find(({ idx }) => idx === 132)).toMatchObject({
       idx: 132,
       tag: migrationName,
     });
-    expect(journal.entries.find(({ idx }) => idx === 133)).toMatchObject({
-      idx: 133,
+    expect(journal.entries.find(({ idx }) => idx === 134)).toMatchObject({
+      idx: 134,
       tag: latestMigrationName,
     });
     expect(readdirSync(path.join(migrations, 'meta'))).toEqual(
-      expect.arrayContaining(['0132_snapshot.json', '0133_snapshot.json']),
+      expect.arrayContaining(['0132_snapshot.json', '0134_snapshot.json']),
     );
   });
 });
