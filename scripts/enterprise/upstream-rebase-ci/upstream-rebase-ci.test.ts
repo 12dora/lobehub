@@ -948,7 +948,8 @@ describe('source immutability snapshot', () => {
 
     // Non-UTF8 filename where the filesystem accepts the bytes.
     await runGit(repositoryRoot, 'checkout', '--', 'a.ts');
-    const weirdRelative = Buffer.from([0xff, 0xfe, 0x62, 0x2e, 0x74, 0x73]); // invalid UTF-8 + "b.ts"
+    // prettier-ignore
+    const weirdRelative = Buffer.from([0xFF, 0xFE, 0x62, 0x2E, 0x74, 0x73]); // invalid UTF-8 + "b.ts"
     const weirdPath = path.join(repositoryRoot, weirdRelative.toString('latin1'));
     await writeFile(weirdPath, 'export const weird = true;\n');
     await runGit(repositoryRoot, 'add', '--', weirdRelative.toString('latin1'));
