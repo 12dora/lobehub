@@ -97,6 +97,12 @@ describe('admin system operational contracts', () => {
         featureFlags: { ...status.featureFlags, arbitraryFlag: true },
       }).success,
     ).toBe(false);
+    expect(
+      adminSystemGetStatusOutputSchema.safeParse({
+        ...status,
+        jobs: { ...status.jobs, errorCategory: null, status: 'unavailable' },
+      }).success,
+    ).toBe(false);
   });
 
   it('keeps the job DTO strict and free of raw job payload fields', () => {

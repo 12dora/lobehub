@@ -58,14 +58,14 @@ describe('admin procedure authorization registry', () => {
   it('reconciles all live procedures, middleware gates, root mounts, and mutation risks', () => {
     expect(() => reconcile()).not.toThrow();
 
-    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(114);
+    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(119);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'query'),
-    ).toHaveLength(45);
+    ).toHaveLength(48);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'mutation'),
-    ).toHaveLength(69);
-    expect(mutationPaths).toHaveLength(69);
+    ).toHaveLength(71);
+    expect(mutationPaths).toHaveLength(71);
     expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter((entry) => 'selfAccess' in entry)).toEqual(
       [{ kind: 'query', path: 'admin.auth.getMyAccess', selfAccess: true }],
     );
@@ -180,7 +180,7 @@ describe('admin procedure authorization registry', () => {
     }
   });
 
-  it('fails when the 69-mutation risk registry is missing or stale', () => {
+  it('fails when the 71-mutation risk registry is missing or stale', () => {
     expect(() => reconcile({ mutationPaths: mutationPaths.slice(1) })).toThrow(
       'missing mutation risk entry',
     );
@@ -189,18 +189,25 @@ describe('admin procedure authorization registry', () => {
     );
   });
 
-  it('records current policy gaps without changing production authorization', () => {
+  it('records the OIDC and system-operation permissions independently', () => {
     const systemEntries = ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ path }) =>
       path.startsWith('admin.system.'),
     );
-    expect(systemEntries).toHaveLength(3);
+    expect(systemEntries).toHaveLength(8);
     expect(
-      systemEntries.every(
-        (entry) =>
-          'permission' in entry &&
-          entry.permission.permissions[0] === PLATFORM_PERMISSIONS.OIDC_PUBLISH,
+      systemEntries.map((entry) =>
+        'permission' in entry ? [entry.path, entry.permission.permissions[0]] : [entry.path, null],
       ),
-    ).toBe(true);
+    ).toEqual([
+      ['admin.system.cancelJob', PLATFORM_PERMISSIONS.SYSTEM_OPERATE],
+      ['admin.system.getAuthSnapshotStatus', PLATFORM_PERMISSIONS.OIDC_PUBLISH],
+      ['admin.system.getInstanceRevisions', PLATFORM_PERMISSIONS.SYSTEM_READ],
+      ['admin.system.getJobs', PLATFORM_PERMISSIONS.SYSTEM_READ],
+      ['admin.system.getStatus', PLATFORM_PERMISSIONS.SYSTEM_READ],
+      ['admin.system.prepareRestart', PLATFORM_PERMISSIONS.OIDC_PUBLISH],
+      ['admin.system.requestRestart', PLATFORM_PERMISSIONS.OIDC_PUBLISH],
+      ['admin.system.retryJob', PLATFORM_PERMISSIONS.SYSTEM_OPERATE],
+    ]);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.some((entry) =>
         'permission' in entry

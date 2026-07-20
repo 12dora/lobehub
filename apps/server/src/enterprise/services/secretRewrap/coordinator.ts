@@ -41,7 +41,7 @@ const projectJob = (job: typeof platformJobs.$inferSelect) => {
  * exposing it through an API. This class intentionally writes no audit row.
  */
 export class PlatformSecretRewrapCoordinator {
-  constructor(private readonly secrets: PlatformSecretService) {}
+  constructor(private readonly secrets?: PlatformSecretService) {}
 
   enqueue = async (
     db: CoordinatorDatabase,
@@ -52,7 +52,7 @@ export class PlatformSecretRewrapCoordinator {
       targetKeyId: string;
     },
   ) => {
-    if (this.secrets.keyProviderId !== 'vault') {
+    if (!this.secrets || this.secrets.keyProviderId !== 'vault') {
       throw new PlatformSecretRewrapProviderError('vault_required');
     }
     const input = platformSecretRewrapJobInputSchema.parse({
