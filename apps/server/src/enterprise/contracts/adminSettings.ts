@@ -4,6 +4,18 @@
 
 import { z } from 'zod';
 
+import { containsEnterpriseSecretMaterial } from '../security/redaction';
+
+const settingsAuditReasonSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(2000)
+  .refine(
+    (value) => !containsEnterpriseSecretMaterial(value),
+    'credential material is not allowed in audit reasons',
+  );
+
 export const settingPolicyModeSchema = z.enum(['user', 'default', 'locked']);
 export const settingPolicyVisibilitySchema = z.enum(['visible', 'hidden']);
 
@@ -47,7 +59,7 @@ export const adminSettingsSaveDraftInputSchema = z
   .object({
     draft: z.record(settingDraftPolicySchema),
     expectedDraftToken: z.string().length(64),
-    reason: z.string().min(1).max(2000),
+    reason: settingsAuditReasonSchema,
   })
   .strict();
 
@@ -83,7 +95,7 @@ export const adminSettingsPublishInputSchema = z
   .object({
     expectedDraftToken: z.string().length(64),
     expectedRevision: z.number().int().nonnegative(),
-    reason: z.string().min(1).max(2000),
+    reason: settingsAuditReasonSchema,
     comment: z.string().max(2000).optional(),
   })
   .strict();
@@ -97,7 +109,7 @@ export const adminSettingsRollbackInputSchema = z
   .object({
     expectedDraftToken: z.string().length(64),
     expectedRevision: z.number().int().nonnegative(),
-    reason: z.string().min(1).max(2000),
+    reason: settingsAuditReasonSchema,
     targetRevision: z.number().int().positive(),
   })
   .strict();
