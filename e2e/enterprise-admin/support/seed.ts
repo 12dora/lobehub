@@ -23,18 +23,50 @@ export interface SuiteSeed {
   workspaceSlug: string;
 }
 
-/** Digest of global rows the suite must not permanently alter. */
+export interface ManagedPolicyRow {
+  config: string;
+  enforcement: string;
+  id: string;
+  resource: string;
+  revision: number;
+  status: string;
+}
+
+export interface RolePermissionLink {
+  permissionCode: string;
+  permissionId: string;
+  roleId: string;
+  roleName: string;
+}
+
+/** Full global digest used for before/after equality. */
 export interface GlobalDbDigest {
-  managedPolicies: Array<{
-    config: string;
-    enforcement: string;
-    resource: string;
-    revision: number;
-    status: string;
-  }>;
-  platformRolePermissions: Array<{ permissionCode: string; roleName: string }>;
+  managedPolicies: ManagedPolicyRow[];
+  platformPermissions: Array<{ code: string; id: string }>;
+  platformRolePermissions: RolePermissionLink[];
   platformRoles: Array<{ id: string; name: string }>;
 }
+
+/**
+ * Suite-written after-manifest + created-row ownership for true CAS restore.
+ * Restore only mutates when current still equals `after`; deletes only suite-created IDs.
+ */
+export interface SuiteGlobalWriteManifest {
+  /** Policies that existed before and were mutated by this suite (CAS target). */
+  after: GlobalDbDigest;
+  before: GlobalDbDigest;
+  createdPermissionIds: string[];
+  createdPolicyIds: string[];
+  createdRoleIds: string[];
+  createdRolePermissionKeys: Array<{ permissionId: string; roleId: string }>;
+  /** resource → after fingerprint of mutated existing policies */
+  mutatedPolicies: Array<{
+    after: ManagedPolicyRow;
+    before: ManagedPolicyRow;
+  }>;
+}
+
+const MANAGED_RESOURCES = ['agents', 'aiModels', 'aiProviders', 'connectors', 'skills'] as const;
 
 /** Mirrors packages/const/src/platform/permissions.ts PLATFORM_PERMISSION_LIST. */
 const PLATFORM_PERMISSIONS = [
@@ -209,18 +241,33 @@ const makePrincipal = (
 export const createSuiteNamespace = (): string =>
   `m15q04_${Date.now().toString(36)}_${nano(3)}`.replaceAll(/\W/g, '_');
 
-/**
- * Snapshot global rows that bootstrap may touch. Used for CAS restore + digest equality.
- */
+const policyFingerprint = (row: ManagedPolicyRow): string =>
+  createHash('sha256')
+    .update(
+      JSON.stringify({
+        config: row.config,
+        enforcement: row.enforcement,
+        id: row.id,
+        resource: row.resource,
+        revision: row.revision,
+        status: row.status,
+      }),
+    )
+    .digest('hex');
+
 export const snapshotGlobalDbDigest = async (databaseUrl: string): Promise<GlobalDbDigest> => {
   const pool = new Pool({ connectionString: databaseUrl });
   try {
+    const perms = await pool.query(
+      `SELECT id, code FROM rbac_permissions WHERE code = ANY($1::text[]) ORDER BY code`,
+      [PLATFORM_PERMISSIONS],
+    );
     const roles = await pool.query(
       `SELECT id, name FROM rbac_roles WHERE workspace_id IS NULL AND name = ANY($1::text[]) ORDER BY name`,
       [PLATFORM_ROLES],
     );
     const rolePerms = await pool.query(
-      `SELECT r.name AS role_name, p.code AS permission_code
+      `SELECT r.id AS role_id, r.name AS role_name, p.id AS permission_id, p.code AS permission_code
          FROM rbac_role_permissions rp
          JOIN rbac_roles r ON r.id = rp.role_id
          JOIN rbac_permissions p ON p.id = rp.permission_id
@@ -229,22 +276,29 @@ export const snapshotGlobalDbDigest = async (databaseUrl: string): Promise<Globa
       [PLATFORM_ROLES],
     );
     const policies = await pool.query(
-      `SELECT resource, status, revision, enforcement, config::text AS config
+      `SELECT id, resource, status, revision, enforcement, config::text AS config
          FROM platform_managed_resource_policies
         WHERE resource = ANY($1::text[])
         ORDER BY resource`,
-      [['agents', 'aiModels', 'aiProviders', 'connectors', 'skills']],
+      [MANAGED_RESOURCES],
     );
     return {
       managedPolicies: policies.rows.map((row) => ({
         config: String(row.config ?? ''),
         enforcement: String(row.enforcement ?? ''),
+        id: String(row.id),
         resource: String(row.resource),
         revision: Number(row.revision),
         status: String(row.status),
       })),
+      platformPermissions: perms.rows.map((row) => ({
+        code: String(row.code),
+        id: String(row.id),
+      })),
       platformRolePermissions: rolePerms.rows.map((row) => ({
         permissionCode: String(row.permission_code),
+        permissionId: String(row.permission_id),
+        roleId: String(row.role_id),
         roleName: String(row.role_name),
       })),
       platformRoles: roles.rows.map((row) => ({
@@ -261,15 +315,165 @@ export const digestFingerprint = (digest: GlobalDbDigest): string =>
   createHash('sha256').update(JSON.stringify(digest)).digest('hex');
 
 /**
- * Seed principals + platform RBAC for an isolated disposable DB only.
- * Does not DELETE existing role permissions when roles already match package maps;
- * uses ON CONFLICT DO NOTHING for permissions/roles and only inserts missing role_permission links.
- * Managed policies: insert if missing; if rows exist with different values, restore is required (snapshot).
+ * True CAS restore:
+ * - Mutated existing policies: UPDATE only when current fingerprint equals suite-written after.
+ * - Suite-created rows: DELETE by id only.
+ * - Suite-created role_permission links: DELETE only those keys.
+ * - Concurrent drift (current ≠ after and current ≠ before) → refuse and throw.
+ */
+export const casRestoreGlobalDb = async (
+  databaseUrl: string,
+  manifest: SuiteGlobalWriteManifest,
+): Promise<void> => {
+  const pool = new Pool({ connectionString: databaseUrl });
+  try {
+    await pool.query('BEGIN');
+
+    // 1) CAS-restore mutated existing policies
+    for (const { before, after } of manifest.mutatedPolicies) {
+      const current = await pool.query(
+        `SELECT id, resource, status, revision, enforcement, config::text AS config
+           FROM platform_managed_resource_policies WHERE resource = $1 LIMIT 1`,
+        [after.resource],
+      );
+      if (!current.rows[0]) {
+        // Row vanished — re-insert before state only if we own the mutation trail.
+        throw new Error(
+          `CAS restore conflict: policy ${after.resource} missing (expected suite-written or before)`,
+        );
+      }
+      const cur: ManagedPolicyRow = {
+        config: String(current.rows[0].config ?? ''),
+        enforcement: String(current.rows[0].enforcement ?? ''),
+        id: String(current.rows[0].id),
+        resource: String(current.rows[0].resource),
+        revision: Number(current.rows[0].revision),
+        status: String(current.rows[0].status),
+      };
+      const curFp = policyFingerprint(cur);
+      const afterFp = policyFingerprint(after);
+      const beforeFp = policyFingerprint(before);
+      if (curFp === beforeFp) {
+        continue; // already restored / concurrent restore
+      }
+      if (curFp !== afterFp) {
+        throw new Error(
+          `CAS restore conflict on policy ${after.resource}: current fingerprint diverged from suite-written after (refusing overwrite)`,
+        );
+      }
+      const updated = await pool.query(
+        `UPDATE platform_managed_resource_policies
+            SET status = $2,
+                revision = $3,
+                enforcement = $4,
+                config = $5::jsonb,
+                updated_at = NOW()
+          WHERE resource = $1
+            AND revision = $6
+            AND enforcement = $7
+            AND status = $8
+            AND config::text = $9
+          RETURNING id`,
+        [
+          after.resource,
+          before.status,
+          before.revision,
+          before.enforcement,
+          before.config,
+          after.revision,
+          after.enforcement,
+          after.status,
+          after.config,
+        ],
+      );
+      if (updated.rowCount !== 1) {
+        throw new Error(
+          `CAS restore conflict on policy ${after.resource}: WHERE match failed (concurrent change)`,
+        );
+      }
+    }
+
+    // 2) Delete suite-created policies only
+    if (manifest.createdPolicyIds.length > 0) {
+      await pool.query(
+        `DELETE FROM platform_managed_resource_policies WHERE id = ANY($1::text[])`,
+        [manifest.createdPolicyIds],
+      );
+    }
+
+    // 3) Delete suite-created role_permission links only
+    for (const link of manifest.createdRolePermissionKeys) {
+      await pool.query(
+        `DELETE FROM rbac_role_permissions WHERE role_id = $1 AND permission_id = $2`,
+        [link.roleId, link.permissionId],
+      );
+    }
+
+    // 4) Delete suite-created platform roles (only if still no foreign deps beyond what we clean)
+    if (manifest.createdRoleIds.length > 0) {
+      await pool.query(`DELETE FROM rbac_user_roles WHERE role_id = ANY($1::text[])`, [
+        manifest.createdRoleIds,
+      ]);
+      await pool.query(`DELETE FROM rbac_role_permissions WHERE role_id = ANY($1::text[])`, [
+        manifest.createdRoleIds,
+      ]);
+      await pool.query(
+        `DELETE FROM rbac_roles WHERE id = ANY($1::text[]) AND workspace_id IS NULL`,
+        [manifest.createdRoleIds],
+      );
+    }
+
+    // 5) Delete suite-created permissions only when no remaining role links
+    if (manifest.createdPermissionIds.length > 0) {
+      await pool.query(
+        `DELETE FROM rbac_permissions p
+          WHERE p.id = ANY($1::text[])
+            AND NOT EXISTS (
+              SELECT 1 FROM rbac_role_permissions rp WHERE rp.permission_id = p.id
+            )`,
+        [manifest.createdPermissionIds],
+      );
+    }
+
+    await pool.query('COMMIT');
+  } catch (error) {
+    await pool.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  } finally {
+    await pool.end();
+  }
+};
+
+/** @deprecated use casRestoreGlobalDb with full manifest */
+export const restoreGlobalDbDigest = async (
+  _databaseUrl: string,
+  _digest: GlobalDbDigest,
+): Promise<void> => {
+  throw new Error('restoreGlobalDbDigest removed — use casRestoreGlobalDb(manifest)');
+};
+
+/**
+ * Seed principals + platform RBAC.
+ * Tracks created IDs and mutated globals for true CAS restore.
  */
 export const seedEnterpriseAdminSuite = async (
   databaseUrl: string,
-): Promise<{ seed: SuiteSeed; globalBefore: GlobalDbDigest }> => {
+): Promise<{
+  globalBefore: GlobalDbDigest;
+  manifest: SuiteGlobalWriteManifest;
+  seed: SuiteSeed;
+}> => {
   const globalBefore = await snapshotGlobalDbDigest(databaseUrl);
+  const beforePermIds = new Set(globalBefore.platformPermissions.map((p) => p.id));
+  const beforeRoleIds = new Set(globalBefore.platformRoles.map((r) => r.id));
+  const beforePolicyIds = new Set(globalBefore.managedPolicies.map((p) => p.id));
+  const beforeLinkKeys = new Set(
+    globalBefore.platformRolePermissions.map((l) => `${l.roleId}|${l.permissionId}`),
+  );
+  const beforePoliciesByResource = new Map(
+    globalBefore.managedPolicies.map((p) => [p.resource, p] as const),
+  );
+
   const namespace = createSuiteNamespace();
   const password = `E2e!${nano(8)}A1`;
   const ordinary = makePrincipal(namespace, 'ordinary', password);
@@ -283,28 +487,43 @@ export const seedEnterpriseAdminSuite = async (
   const now = new Date().toISOString();
   const onboarding = JSON.stringify({ finishedAt: now, version: 1 });
 
+  const createdPermissionIds: string[] = [];
+  const createdRoleIds: string[] = [];
+  const createdPolicyIds: string[] = [];
+  const createdRolePermissionKeys: Array<{ permissionId: string; roleId: string }> = [];
+  const mutatedPolicies: SuiteGlobalWriteManifest['mutatedPolicies'] = [];
+
   try {
     await pool.query('BEGIN');
 
     for (const code of PLATFORM_PERMISSIONS) {
       const category = code.split(':')[0] || 'platform';
-      await pool.query(
+      const candidateId = `perm_${nano(8)}`;
+      const inserted = await pool.query(
         `INSERT INTO rbac_permissions (id, code, name, category, description, is_active, created_at, updated_at)
          VALUES ($1, $2, $3, $4, $5, true, $6, $6)
-         ON CONFLICT (code) DO NOTHING`,
-        [`perm_${nano(8)}`, code, code, category, code, now],
+         ON CONFLICT (code) DO NOTHING
+         RETURNING id`,
+        [candidateId, code, code, category, code, now],
       );
+      if (inserted.rows[0]?.id) {
+        createdPermissionIds.push(String(inserted.rows[0].id));
+      }
     }
 
     const roleIds = new Map<string, string>();
     for (const roleName of PLATFORM_ROLES) {
       const candidateId = `role_${roleName}_${nano(4)}`;
-      await pool.query(
+      const inserted = await pool.query(
         `INSERT INTO rbac_roles (id, name, display_name, description, is_system, is_active, workspace_id, created_at, updated_at)
          VALUES ($1, $2, $3, $4, true, true, NULL, $5, $5)
-         ON CONFLICT DO NOTHING`,
+         ON CONFLICT DO NOTHING
+         RETURNING id`,
         [candidateId, roleName, roleName, `platform ${roleName}`, now],
       );
+      if (inserted.rows[0]?.id) {
+        createdRoleIds.push(String(inserted.rows[0].id));
+      }
       const found = await pool.query(
         `SELECT id FROM rbac_roles WHERE name = $1 AND workspace_id IS NULL LIMIT 1`,
         [roleName],
@@ -313,19 +532,25 @@ export const seedEnterpriseAdminSuite = async (
       const id = found.rows[0].id as string;
       roleIds.set(roleName, id);
 
-      // Insert missing role-permission links only — never DELETE existing packages.
       for (const code of ROLE_PERMISSION_MAP[roleName]) {
         const perm = await pool.query(`SELECT id FROM rbac_permissions WHERE code = $1 LIMIT 1`, [
           code,
         ]);
         const permissionId = perm.rows[0]?.id as string | undefined;
         if (!permissionId) continue;
-        await pool.query(
+        const link = await pool.query(
           `INSERT INTO rbac_role_permissions (role_id, permission_id)
            VALUES ($1, $2)
-           ON CONFLICT DO NOTHING`,
+           ON CONFLICT DO NOTHING
+           RETURNING role_id, permission_id`,
           [id, permissionId],
         );
+        if (link.rows[0]) {
+          const key = `${id}|${permissionId}`;
+          if (!beforeLinkKeys.has(key)) {
+            createdRolePermissionKeys.push({ permissionId, roleId: id });
+          }
+        }
       }
     }
 
@@ -397,40 +622,72 @@ export const seedEnterpriseAdminSuite = async (
       [randomUUID(), owner.id, resolvedOwnerRoleId, workspaceId, now],
     );
 
-    // Managed policies: only INSERT when missing. Never overwrite existing published rows.
-    for (const resource of ['agents', 'aiModels', 'aiProviders', 'connectors', 'skills']) {
+    // Managed policies: INSERT when missing. Mutate skills only when needed, with before/after CAS.
+    for (const resource of MANAGED_RESOURCES) {
       const managed = resource === 'skills';
       const item = { enforcementMode: managed ? 'enforced' : 'observe', managed };
       const config = JSON.stringify({ draft: item, published: item });
-      await pool.query(
+      const policyId = `pmrp_${resource}_${nano(4)}`;
+      const inserted = await pool.query(
         `INSERT INTO platform_managed_resource_policies
            (id, resource, status, revision, enforcement, config, created_at, updated_at)
          VALUES ($1, $2, 'published', 1, $3, $4::jsonb, $5, $5)
-         ON CONFLICT (resource) DO NOTHING`,
-        [`pmrp_${resource}_${nano(4)}`, resource, managed ? 'enforced' : 'observe', config, now],
+         ON CONFLICT (resource) DO NOTHING
+         RETURNING id`,
+        [policyId, resource, managed ? 'enforced' : 'observe', config, now],
       );
+      if (inserted.rows[0]?.id) {
+        createdPolicyIds.push(String(inserted.rows[0].id));
+      }
     }
 
-    // Ensure skills is managed+enforced for fail-closed tests on disposable DBs
-    // where the insert above created the row. If a prior row existed with different
-    // config, snapshot/restore keeps ownership reversible.
-    await pool.query(
-      `UPDATE platform_managed_resource_policies
-          SET status = 'published',
-              revision = GREATEST(revision, 1),
-              enforcement = 'enforced',
-              config = jsonb_build_object(
-                'draft', jsonb_build_object('enforcementMode', 'enforced', 'managed', true),
-                'published', jsonb_build_object('enforcementMode', 'enforced', 'managed', true)
-              ),
-              updated_at = $1
-        WHERE resource = 'skills'
-          AND (
-            enforcement <> 'enforced'
-            OR COALESCE(config->'published'->>'managed', 'false') <> 'true'
-          )`,
-      [now],
+    // Skills must be managed+enforced for fail-closed tests.
+    const skillsBefore = beforePoliciesByResource.get('skills');
+    const skillsCurrent = await pool.query(
+      `SELECT id, resource, status, revision, enforcement, config::text AS config
+         FROM platform_managed_resource_policies WHERE resource = 'skills' LIMIT 1`,
     );
+    if (skillsCurrent.rows[0]) {
+      const cur: ManagedPolicyRow = {
+        config: String(skillsCurrent.rows[0].config ?? ''),
+        enforcement: String(skillsCurrent.rows[0].enforcement ?? ''),
+        id: String(skillsCurrent.rows[0].id),
+        resource: 'skills',
+        revision: Number(skillsCurrent.rows[0].revision),
+        status: String(skillsCurrent.rows[0].status),
+      };
+      const managedTrue =
+        cur.config.includes('"managed":true') || cur.config.includes('"managed": true');
+      const needsMutation = cur.enforcement !== 'enforced' || !managedTrue;
+      if (needsMutation && skillsBefore && !createdPolicyIds.includes(cur.id)) {
+        const desiredConfig = JSON.stringify({
+          draft: { enforcementMode: 'enforced', managed: true },
+          published: { enforcementMode: 'enforced', managed: true },
+        });
+        const updated = await pool.query(
+          `UPDATE platform_managed_resource_policies
+              SET status = 'published',
+                  revision = GREATEST(revision, 1),
+                  enforcement = 'enforced',
+                  config = $2::jsonb,
+                  updated_at = $1
+            WHERE id = $3 AND resource = 'skills'
+            RETURNING id, resource, status, revision, enforcement, config::text AS config`,
+          [now, desiredConfig, cur.id],
+        );
+        if (updated.rows[0]) {
+          const after: ManagedPolicyRow = {
+            config: String(updated.rows[0].config ?? ''),
+            enforcement: String(updated.rows[0].enforcement ?? ''),
+            id: String(updated.rows[0].id),
+            resource: 'skills',
+            revision: Number(updated.rows[0].revision),
+            status: String(updated.rows[0].status),
+          };
+          mutatedPolicies.push({ after, before: skillsBefore });
+        }
+      }
+    }
 
     await pool.query('COMMIT');
   } catch (error) {
@@ -440,8 +697,32 @@ export const seedEnterpriseAdminSuite = async (
     await pool.end();
   }
 
+  // Filter created IDs to only those not present before (defense in depth).
+  const after = await snapshotGlobalDbDigest(databaseUrl);
+  const createdPerms = after.platformPermissions
+    .filter((p) => !beforePermIds.has(p.id))
+    .map((p) => p.id);
+  const createdRoles = after.platformRoles.filter((r) => !beforeRoleIds.has(r.id)).map((r) => r.id);
+  const createdPolicies = after.managedPolicies
+    .filter((p) => !beforePolicyIds.has(p.id))
+    .map((p) => p.id);
+  const createdLinks = after.platformRolePermissions
+    .filter((l) => !beforeLinkKeys.has(`${l.roleId}|${l.permissionId}`))
+    .map((l) => ({ permissionId: l.permissionId, roleId: l.roleId }));
+
+  const manifest: SuiteGlobalWriteManifest = {
+    after,
+    before: globalBefore,
+    createdPermissionIds: [...new Set([...createdPermissionIds, ...createdPerms])],
+    createdPolicyIds: [...new Set([...createdPolicyIds, ...createdPolicies])],
+    createdRoleIds: [...new Set([...createdRoleIds, ...createdRoles])],
+    createdRolePermissionKeys: createdLinks.length > 0 ? createdLinks : createdRolePermissionKeys,
+    mutatedPolicies,
+  };
+
   return {
     globalBefore,
+    manifest,
     seed: {
       auditor,
       namespace,
@@ -454,58 +735,11 @@ export const seedEnterpriseAdminSuite = async (
   };
 };
 
-/**
- * Restore global managed-policy rows from snapshot (CAS-style overwrite of the five fixed resources).
- */
-export const restoreGlobalDbDigest = async (
-  databaseUrl: string,
-  digest: GlobalDbDigest,
-): Promise<void> => {
-  const pool = new Pool({ connectionString: databaseUrl });
-  try {
-    await pool.query('BEGIN');
-    for (const policy of digest.managedPolicies) {
-      await pool.query(
-        `UPDATE platform_managed_resource_policies
-            SET status = $2,
-                revision = $3,
-                enforcement = $4,
-                config = $5::jsonb,
-                updated_at = NOW()
-          WHERE resource = $1`,
-        [policy.resource, policy.status, policy.revision, policy.enforcement, policy.config],
-      );
-    }
-    // Role permission packages: only restore if snapshot had them (isolated DB often empty at start).
-    for (const role of digest.platformRoles) {
-      await pool.query(`DELETE FROM rbac_role_permissions WHERE role_id = $1`, [role.id]);
-      const desired = digest.platformRolePermissions.filter((r) => r.roleName === role.name);
-      for (const link of desired) {
-        const perm = await pool.query(`SELECT id FROM rbac_permissions WHERE code = $1 LIMIT 1`, [
-          link.permissionCode,
-        ]);
-        const permissionId = perm.rows[0]?.id as string | undefined;
-        if (!permissionId) continue;
-        await pool.query(
-          `INSERT INTO rbac_role_permissions (role_id, permission_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-          [role.id, permissionId],
-        );
-      }
-    }
-    await pool.query('COMMIT');
-  } catch (error) {
-    await pool.query('ROLLBACK').catch(() => undefined);
-    throw error;
-  } finally {
-    await pool.end();
-  }
-};
-
-/** Exact cleanup of suite namespace data (users, roles, workspace, sessions). */
+/** Exact cleanup of suite namespace data + CAS restore of globals. */
 export const cleanupEnterpriseAdminSuite = async (
   databaseUrl: string,
   seed: SuiteSeed | undefined,
-  globalBefore?: GlobalDbDigest,
+  manifest?: SuiteGlobalWriteManifest,
 ): Promise<void> => {
   if (!seed) return;
   const pool = new Pool({ connectionString: databaseUrl });
@@ -518,6 +752,10 @@ export const cleanupEnterpriseAdminSuite = async (
     await pool.query(`DELETE FROM users WHERE id = ANY($1::text[])`, [ids]);
     await pool.query(`DELETE FROM rbac_roles WHERE workspace_id = $1`, [seed.workspaceId]);
     await pool.query(`DELETE FROM workspaces WHERE id = $1`, [seed.workspaceId]);
+    // Suite outage probe skill if left behind
+    await pool
+      .query(`DELETE FROM platform_skills WHERE skill_key = 'e2e.skill.outage.probe'`)
+      .catch(() => undefined);
     await pool.query('COMMIT');
   } catch (error) {
     await pool.query('ROLLBACK').catch(() => undefined);
@@ -526,7 +764,34 @@ export const cleanupEnterpriseAdminSuite = async (
     await pool.end();
   }
 
-  if (globalBefore) {
-    await restoreGlobalDbDigest(databaseUrl, globalBefore);
+  if (manifest) {
+    await casRestoreGlobalDb(databaseUrl, manifest);
   }
+};
+
+/**
+ * Install signal handlers that attempt CAS restore on interrupt (external/disposable).
+ * Returns uninstall function.
+ */
+export const installManifestRestoreOnSignals = (
+  databaseUrl: string,
+  seed: SuiteSeed,
+  manifest: SuiteGlobalWriteManifest,
+): (() => void) => {
+  let running = false;
+  const handler = () => {
+    if (running) return;
+    running = true;
+    void cleanupEnterpriseAdminSuite(databaseUrl, seed, manifest)
+      .catch((error) => console.error('[seed-cas] interrupt restore failed', error))
+      .finally(() => {
+        process.exit(143);
+      });
+  };
+  process.on('SIGINT', handler);
+  process.on('SIGTERM', handler);
+  return () => {
+    process.off('SIGINT', handler);
+    process.off('SIGTERM', handler);
+  };
 };
