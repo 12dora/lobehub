@@ -3,7 +3,7 @@ import {
   type EnterpriseErrorCode,
   PLATFORM_ERROR_CODES,
 } from '@/const/platform/errorCodes';
-import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
+import { PLATFORM_PERMISSIONS, type PlatformPermission } from '@/const/platform/permissions';
 import { RbacModel } from '@/database/models/rbac';
 import type { LobeChatDatabase } from '@/database/type';
 import { trpc } from '@/libs/trpc/lambda/init';
@@ -17,6 +17,60 @@ export interface PlatformAuthContext {
   permissions: string[];
   requestId?: string;
 }
+
+export type PlatformPermissionMode = 'all' | 'any';
+
+export interface PlatformPermissionMetadata {
+  mode: PlatformPermissionMode;
+  permissions: readonly PlatformPermission[];
+}
+
+interface TrpcProcedureWithMiddleware {
+  _def?: {
+    middlewares?: readonly unknown[];
+  };
+}
+
+const PLATFORM_PERMISSION_METADATA = Symbol('platformPermissionMetadata');
+
+const attachPlatformPermissionMetadata = (
+  middleware: unknown,
+  metadata: PlatformPermissionMetadata,
+): void => {
+  if (typeof middleware !== 'function') {
+    throw new TypeError('Platform permission middleware must be a function');
+  }
+
+  Object.defineProperty(middleware, PLATFORM_PERMISSION_METADATA, {
+    configurable: false,
+    enumerable: false,
+    value: Object.freeze({
+      mode: metadata.mode,
+      permissions: Object.freeze([...metadata.permissions]),
+    }),
+    writable: false,
+  });
+};
+
+/**
+ * Read server-only authorization metadata from the actual middleware chain of a final procedure.
+ * The Symbol property is deliberately private and non-enumerable, so it cannot become API output.
+ */
+export const getPlatformPermissionMetadata = (
+  procedure: unknown,
+): readonly PlatformPermissionMetadata[] => {
+  if (typeof procedure !== 'function') return [];
+
+  const middlewares = (procedure as TrpcProcedureWithMiddleware)._def?.middlewares;
+  if (!Array.isArray(middlewares)) return [];
+
+  return middlewares.flatMap((middleware) => {
+    if (typeof middleware !== 'function') return [];
+    const descriptor = Object.getOwnPropertyDescriptor(middleware, PLATFORM_PERMISSION_METADATA);
+    if (!descriptor) return [];
+    return [descriptor.value as PlatformPermissionMetadata];
+  });
+};
 
 const resolveServerDb = (ctx: { serverDB?: LobeChatDatabase }): LobeChatDatabase => {
   if (!ctx.serverDB) {
@@ -107,8 +161,8 @@ const auditPermissionDenied = async (params: {
   }
 };
 
-export const withPlatformPermission = (code: string) =>
-  trpc.middleware(async ({ ctx, next, path }) => {
+export const withPlatformPermission = (code: PlatformPermission) => {
+  const middleware = trpc.middleware(async ({ ctx, next, path }) => {
     const rawUserId = ctx.userId;
     if (typeof rawUserId !== 'string' || rawUserId.length === 0) {
       return throwEnterpriseError({
@@ -152,8 +206,15 @@ export const withPlatformPermission = (code: string) =>
     });
   });
 
-export const withAnyPlatformPermission = (codes: string[]) =>
-  trpc.middleware(async ({ ctx, next, path }) => {
+  attachPlatformPermissionMetadata(middleware._middlewares.at(-1), {
+    mode: 'all',
+    permissions: [code],
+  });
+  return middleware;
+};
+
+export const withAnyPlatformPermission = (codes: readonly PlatformPermission[]) => {
+  const middleware = trpc.middleware(async ({ ctx, next, path }) => {
     const rawUserId = ctx.userId;
     if (typeof rawUserId !== 'string' || rawUserId.length === 0) {
       return throwEnterpriseError({
@@ -196,6 +257,13 @@ export const withAnyPlatformPermission = (codes: string[]) =>
       },
     });
   });
+
+  attachPlatformPermissionMetadata(middleware._middlewares.at(-1), {
+    mode: 'any',
+    permissions: codes,
+  });
+  return middleware;
+};
 
 /**
  * Admin procedure base: authed + serverDB. Permission middleware is composed per-route.
