@@ -205,7 +205,7 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
     id: 'system',
     labelKey: 'nav.system',
     path: '/admin/system',
-    placeholder: true,
+    placeholder: false,
     requiredPermissions: [PLATFORM_PERMISSIONS.SYSTEM_READ],
   },
 ] as const;

@@ -39,6 +39,7 @@ describe('createAdminRouteTree', () => {
     expect(paths).toContain('/admin/agents/:id');
     expect(paths).toContain('/admin/branding');
     expect(paths).toContain('/admin/identity-providers');
+    expect(paths).toContain('/admin/system');
     expect(paths).toContain('/admin/reauth-complete');
   });
 
@@ -54,6 +55,7 @@ describe('createAdminRouteTree', () => {
     expect(matchRoutes(routes, '/admin/connectors/c-1')).toBeTruthy();
     expect(matchRoutes(routes, '/admin/agents/a-1')).toBeTruthy();
     expect(matchRoutes(routes, '/admin/identity-providers')).toBeTruthy();
+    expect(matchRoutes(routes, '/admin/system')).toBeTruthy();
     const reauthComplete = matchRoutes(routes, '/admin/reauth-complete');
     expect(reauthComplete).toHaveLength(1);
     expect(reauthComplete?.[0].route.path).toBe('/admin/reauth-complete');
@@ -86,6 +88,7 @@ describe('createAdminRouteTree', () => {
     const agentDetail = children.find((c) => c.path === 'agents/:id');
     const branding = children.find((c) => c.path === 'branding');
     const identityProviders = children.find((c) => c.path === 'identity-providers');
+    const system = children.find((c) => c.path === 'system');
 
     expect((users?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder).toBe(
       false,
@@ -132,6 +135,9 @@ describe('createAdminRouteTree', () => {
     expect(
       (identityProviders?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder,
     ).toBe(false);
+    expect((system?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder).toBe(
+      false,
+    );
 
     // Element is not the shared PlaceholderPage for users (lazy wrapper present)
     expect(users?.element).toBeTruthy();
@@ -154,7 +160,8 @@ describe('createAdminRouteTree', () => {
           i.id !== 'agents' &&
           i.id !== 'agents-detail' &&
           i.id !== 'branding' &&
-          i.id !== 'identity-providers',
+          i.id !== 'identity-providers' &&
+          i.id !== 'system',
       ),
     ).toBe(true);
   });
