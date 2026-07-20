@@ -1,41 +1,92 @@
 // @vitest-environment node
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   InMemoryPlatformConfigInvalidationPublisher,
   platformConfigKeys,
+  RedisPlatformConfigInvalidationPublisher,
   setPlatformConfigInvalidationPublisher,
 } from '../platformConfigInvalidation';
 
+const mocks = vi.hoisted(() => ({
+  initializeRedis: vi.fn(),
+  log: vi.fn(),
+  redisEnabled: false,
+}));
+
+vi.mock('debug', () => ({ default: () => mocks.log }));
+vi.mock('@/envs/redis', () => ({
+  getRedisConfig: () => ({
+    enabled: mocks.redisEnabled,
+    prefix: 'test',
+    tls: false,
+    url: mocks.redisEnabled ? 'redis://test' : '',
+  }),
+}));
+vi.mock('@/libs/redis', () => ({ initializeRedis: mocks.initializeRedis }));
+
+const event = (scopes: string[] = ['branding']) => ({
+  at: new Date(0).toISOString(),
+  resourceId: 'singleton',
+  resourceType: 'branding',
+  revision: 3,
+  scopes,
+});
+
+const createFakeRedis = (execResults?: [Error | null, unknown][] | null) => {
+  const commands: { args: unknown[]; command: string }[] = [];
+  const pipeline = {
+    exec: vi.fn(async () => execResults ?? commands.map(() => [null, 'OK'])),
+    incr: vi.fn((...args: unknown[]) => {
+      commands.push({ args, command: 'incr' });
+      return pipeline;
+    }),
+    set: vi.fn((...args: unknown[]) => {
+      commands.push({ args, command: 'set' });
+      return pipeline;
+    }),
+  };
+  return { commands, pipeline, redis: { pipeline: () => pipeline } };
+};
+
 describe('platformConfigInvalidation', () => {
   beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.redisEnabled = false;
     setPlatformConfigInvalidationPublisher(null);
   });
 
-  it('records versions in the in-memory publisher', async () => {
-    const pub = new InMemoryPlatformConfigInvalidationPublisher();
-    await pub.publish({
-      at: new Date().toISOString(),
-      resourceId: 'singleton',
-      resourceType: 'branding',
-      revision: 3,
-      scopes: ['branding'],
-    });
+  it('records bounded, deduplicated versions in the in-memory publisher', async () => {
+    const publisher = new InMemoryPlatformConfigInvalidationPublisher();
+    const scopes = [
+      'branding',
+      'branding',
+      ...Array.from({ length: 40 }, (_, index) => `scope-${index}`),
+      'x'.repeat(129),
+    ];
+    await publisher.publish(event(scopes));
 
-    expect(pub.versions.get('branding:singleton')).toBe(3);
-    expect(pub.versions.get('global')).toBe(3);
-    expect(pub.versions.get('scope:branding')).toBe(3);
+    expect(publisher.versions.get('branding:singleton')).toBe(3);
+    expect(publisher.versions.get('global')).toBe(3);
+    expect(publisher.events[0]?.scopes).toHaveLength(32);
+    expect(publisher.events[0]?.scopes?.filter((scope) => scope === 'branding')).toHaveLength(1);
+    expect(publisher.versions.has(`scope:${'x'.repeat(129)}`)).toBe(false);
 
-    await pub.publish({
-      at: new Date().toISOString(),
-      resourceId: 'other',
-      resourceType: 'branding',
-      revision: 1,
-      scopes: ['branding'],
-    });
-    expect(pub.versions.get('global')).toBe(4);
-    expect(pub.versions.get('scope:branding')).toBe(4);
-    await expect(pub.getScopeVersion('branding')).resolves.toBe('4');
+    await publisher.publish({ ...event(['branding']), resourceId: 'other', revision: 1 });
+    expect(publisher.versions.get('global')).toBe(4);
+    expect(publisher.versions.get('scope:branding')).toBe(4);
+    await expect(publisher.getScopeVersion('branding')).resolves.toBe('4');
+  });
+
+  it('bounds retained in-memory diagnostics without losing version counters', async () => {
+    const publisher = new InMemoryPlatformConfigInvalidationPublisher();
+    for (let revision = 1; revision <= 300; revision += 1) {
+      await publisher.publish({ ...event(), revision });
+    }
+
+    expect(publisher.events).toHaveLength(256);
+    expect(publisher.events[0]?.revision).toBe(45);
+    expect(publisher.versions.get('scope:branding')).toBe(300);
   });
 
   it('builds stable redis key names', () => {
@@ -46,5 +97,69 @@ describe('platformConfigInvalidation', () => {
     expect(platformConfigKeys.scopeVersion('branding')).toBe(
       'platform:config:scope:branding:version',
     );
+  });
+
+  it('degrades without initializing Redis when it is disabled', async () => {
+    await expect(new RedisPlatformConfigInvalidationPublisher().publish(event())).resolves.toBe(
+      undefined,
+    );
+    expect(mocks.initializeRedis).not.toHaveBeenCalled();
+    expect(mocks.log).toHaveBeenCalledWith(expect.stringContaining('degraded'), 'branding');
+  });
+
+  it('degrades when Redis initialization is unavailable', async () => {
+    mocks.redisEnabled = true;
+    mocks.initializeRedis.mockResolvedValue(null);
+
+    await expect(new RedisPlatformConfigInvalidationPublisher().publish(event())).resolves.toBe(
+      undefined,
+    );
+    expect(mocks.log).toHaveBeenCalledWith(expect.stringContaining('degraded'), 'branding');
+  });
+
+  it('recognizes a partial pipeline error as degraded instead of reporting complete', async () => {
+    mocks.redisEnabled = true;
+    const results: [Error | null, unknown][] = [
+      [null, 1],
+      [null, 'OK'],
+      [new Error('scope increment failed'), undefined],
+      [null, 'OK'],
+    ];
+    const fake = createFakeRedis(results);
+    mocks.initializeRedis.mockResolvedValue(fake.redis);
+
+    await new RedisPlatformConfigInvalidationPublisher().publish(event());
+
+    expect(mocks.log).toHaveBeenCalledWith(expect.stringContaining('degraded'), 'branding', 3, 1);
+    expect(mocks.log.mock.calls.some(([message]) => String(message).includes('complete'))).toBe(
+      false,
+    );
+  });
+
+  it('bounds Redis scopes and gives the diagnostic envelope a TTL', async () => {
+    mocks.redisEnabled = true;
+    const fake = createFakeRedis();
+    mocks.initializeRedis.mockResolvedValue(fake.redis);
+    const scopes = [
+      'scope-0',
+      'scope-0',
+      ...Array.from({ length: 40 }, (_, index) => `scope-${index + 1}`),
+      'x'.repeat(129),
+    ];
+
+    await new RedisPlatformConfigInvalidationPublisher().publish(event(scopes));
+
+    const scopeIncrements = fake.commands.filter(
+      ({ args, command }) =>
+        command === 'incr' && String(args[0]).startsWith('platform:config:scope:'),
+    );
+    expect(scopeIncrements).toHaveLength(32);
+    expect(new Set(scopeIncrements.map(({ args }) => args[0])).size).toBe(32);
+    const diagnostic = fake.commands.find(
+      ({ args, command }) => command === 'set' && String(args[0]).includes(':last_event:'),
+    );
+    expect(diagnostic?.args[2]).toEqual({ ex: 86_400 });
+    expect(JSON.parse(String(diagnostic?.args[1])).scopes).toHaveLength(32);
+    expect(mocks.log).toHaveBeenCalledWith(expect.stringContaining('complete'), 'branding', 3, 32);
   });
 });
