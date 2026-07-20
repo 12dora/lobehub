@@ -25,10 +25,27 @@ export class IoRedisRedisProvider implements BaseRedisProvider {
 
   constructor(private config: RedisConfig) {}
 
+  private handleClientError = (error: Error) => {
+    // Keep ioredis from printing its raw "Unhandled error event" (which can contain endpoints or
+    // auth details). Operators only need the secret-free error class in debug output.
+    log('Redis provider emitted error class: %s', error.name);
+  };
+
+  private forceDisconnect(client: Redis) {
+    try {
+      client.disconnect(false);
+    } catch (cleanupError) {
+      log(
+        'Forced Redis disconnect failed with error class: %s',
+        cleanupError instanceof Error ? cleanupError.name : 'UnknownError',
+      );
+    }
+  }
+
   async initialize() {
     const IORedis = await import('ioredis');
 
-    this.client = new IORedis.default(this.config.url, {
+    const client = new IORedis.default(this.config.url, {
       commandTimeout: REDIS_COMMAND_TIMEOUT_MS,
       connectTimeout: REDIS_CONNECT_TIMEOUT_MS,
       db: this.config.database,
@@ -39,15 +56,49 @@ export class IoRedisRedisProvider implements BaseRedisProvider {
       tls: this.config.tls ? {} : undefined,
       username: this.config.username,
     });
+    this.client = client;
+    client.on('error', this.handleClientError);
 
-    await this.client.connect();
-    await this.client.ping();
+    let rejectOnError: (error: Error) => void = () => undefined;
+    const firstClientError = new Promise<never>((_, reject) => {
+      rejectOnError = reject;
+    });
+    client.once('error', rejectOnError);
+
+    try {
+      await Promise.race([
+        (async () => {
+          await client.connect();
+          await client.ping();
+        })(),
+        firstClientError,
+      ]);
+    } catch (error) {
+      // ioredis can keep a reconnect timer alive after connect/auth/TLS failures. The provider
+      // owns the partially initialized client, so stop it synchronously before rethrowing.
+      this.forceDisconnect(client);
+      if (this.client === client) this.client = null;
+      throw error;
+    } finally {
+      client.off('error', rejectOnError);
+    }
 
     log('Connected to Redis provider with prefix "%s"', this.config.prefix);
   }
 
   async disconnect() {
-    await this.client?.quit();
+    const client = this.client;
+    this.client = null;
+    if (!client) return;
+
+    try {
+      await client.quit();
+      client.off('error', this.handleClientError);
+    } catch (error) {
+      // A failed graceful shutdown must not leave retries or sockets owned by the provider.
+      this.forceDisconnect(client);
+      throw error;
+    }
   }
 
   private ensureClient(): Redis {

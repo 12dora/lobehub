@@ -10,6 +10,7 @@ import {
   platformAuditLogs,
   platformIdentityProviderInstances,
   platformIdentityProviderRestartRequests,
+  platformJobs,
   rolePermissions,
   roles,
   userRoles,
@@ -26,14 +27,19 @@ const db: LobeChatDatabase = await getTestDB();
 const createCaller = createCallerFactory(adminRouter);
 const ids = { operator: 'm11-system-operator', reader: 'm11-system-reader' };
 const roleName = 'm11_oidc_restart_operator';
+const readerRoleName = 'm11_system_unrelated_reader';
 
 vi.mock('@/database/core/db-adaptor', () => ({ getServerDB: vi.fn(async () => db) }));
 
 const cleanup = async () => {
   await db.delete(platformIdentityProviderRestartRequests);
   await db.delete(platformIdentityProviderInstances);
+  await db.delete(platformJobs);
   await db.delete(platformAuditLogs);
-  const ownedRoles = await db.select({ id: roles.id }).from(roles).where(eq(roles.name, roleName));
+  const ownedRoles = await db
+    .select({ id: roles.id })
+    .from(roles)
+    .where(inArray(roles.name, [readerRoleName, roleName]));
   if (ownedRoles.length > 0) {
     const roleIds = ownedRoles.map(({ id }) => id);
     await db.delete(userRoles).where(inArray(userRoles.roleId, roleIds));
@@ -54,12 +60,34 @@ beforeEach(async () => {
     .insert(roles)
     .values({ displayName: roleName, name: roleName })
     .returning();
-  const [permission] = await db
+  const grantedPermissions = await db
     .select({ id: permissions.id })
     .from(permissions)
-    .where(eq(permissions.code, PLATFORM_PERMISSIONS.OIDC_PUBLISH));
-  await db.insert(rolePermissions).values({ permissionId: permission.id, roleId: role.id });
+    .where(
+      inArray(permissions.code, [
+        PLATFORM_PERMISSIONS.OIDC_PUBLISH,
+        PLATFORM_PERMISSIONS.SYSTEM_OPERATE,
+        PLATFORM_PERMISSIONS.SYSTEM_READ,
+      ]),
+    );
+  await db
+    .insert(rolePermissions)
+    .values(grantedPermissions.map(({ id }) => ({ permissionId: id, roleId: role.id })));
   await db.insert(userRoles).values({ roleId: role.id, userId: ids.operator, workspaceId: null });
+  const [readerRole] = await db
+    .insert(roles)
+    .values({ displayName: readerRoleName, name: readerRoleName })
+    .returning();
+  const [readerPermission] = await db
+    .select({ id: permissions.id })
+    .from(permissions)
+    .where(eq(permissions.code, PLATFORM_PERMISSIONS.AUDIT_READ));
+  await db
+    .insert(rolePermissions)
+    .values({ permissionId: readerPermission.id, roleId: readerRole.id });
+  await db
+    .insert(userRoles)
+    .values({ roleId: readerRole.id, userId: ids.reader, workspaceId: null });
 });
 
 afterEach(async () => {
@@ -112,5 +140,42 @@ describe('admin.system OIDC restart gate', () => {
         result: 'denied',
       }),
     );
+  });
+});
+
+describe('admin.system operations gate', () => {
+  it('allows a system reader and denies a user without platform_system:read:all', async () => {
+    const operator = await callerFor(ids.operator);
+    await expect(operator.getJobs()).resolves.toEqual({ items: [], nextCursor: null });
+
+    const reader = await callerFor(ids.reader);
+    await expect(reader.getJobs()).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+      message: 'PLATFORM_PERMISSION_DENIED',
+    });
+  });
+
+  it('denies job mutation before touching state when system operate permission is absent', async () => {
+    await db.insert(platformJobs).values({
+      id: 'pjob_0000000000000099',
+      idempotencyKey: 'router-system-denied',
+      status: 'pending',
+      type: 'connector.runtime.shared-call.v1',
+    });
+    const reader = await callerFor(ids.reader);
+    await expect(
+      reader.cancelJob({
+        expectedRevision: 0,
+        expectedStatus: 'pending',
+        jobId: 'pjob_0000000000000099',
+        reason: 'permission denied test',
+        requestId: '550e8400-e29b-41d4-a716-446655440061',
+      }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN', message: 'PLATFORM_PERMISSION_DENIED' });
+    const [job] = await db
+      .select({ status: platformJobs.status })
+      .from(platformJobs)
+      .where(eq(platformJobs.id, 'pjob_0000000000000099'));
+    expect(job?.status).toBe('pending');
   });
 });

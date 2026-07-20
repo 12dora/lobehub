@@ -8,6 +8,7 @@ import {
   type PlatformInstanceInventoryDiagnostic,
   type PlatformInstanceInventoryTarget,
   PlatformInstanceRepository,
+  type PlatformInstanceRevisionInventoryCursor,
 } from '@/database/repositories/platformInstance';
 import {
   type PlatformIdentityProviderInstanceItem,
@@ -201,15 +202,17 @@ const identityDiagnostic = (
     : null;
   const fallback = row.startupSource === 'lkg' || row.startupSource === 'break_glass';
   const status: PlatformConvergenceStatus =
-    target.status === 'unavailable'
-      ? 'unavailable'
-      : registrationFailed
+    target.status === 'disabled'
+      ? 'disabled'
+      : target.status === 'unavailable'
         ? 'unavailable'
-        : row.health === 'degraded' || fallback
-          ? 'degraded'
-          : tokensEqual(loadedToken, target.token)
-            ? 'converged'
-            : 'diverged';
+        : registrationFailed
+          ? 'unavailable'
+          : row.health === 'degraded' || fallback
+            ? 'degraded'
+            : tokensEqual(loadedToken, target.token)
+              ? 'converged'
+              : 'diverged';
   return {
     domains: [
       {
@@ -226,10 +229,11 @@ const identityDiagnostic = (
                   source: row.startupSource,
                 })
               : null,
-        loadedAt: row.loadedAt,
-        loadedToken: status === 'unavailable' ? null : loadedToken,
+        loadedAt: status === 'disabled' ? null : row.loadedAt,
+        loadedToken: status === 'disabled' || status === 'unavailable' ? null : loadedToken,
         loadMode: 'restart_activated',
-        source: status === 'unavailable' ? 'unavailable' : row.startupSource,
+        source:
+          status === 'disabled' || status === 'unavailable' ? 'unavailable' : row.startupSource,
         status,
       },
     ],
@@ -398,6 +402,32 @@ export class PlatformInstanceStatusService {
       staleCandidates: staleRows.map((row) => identityDiagnostic(row, target)),
     };
   };
+
+  getRevisionInventoryPage = async (input: {
+    cursor?: PlatformInstanceRevisionInventoryCursor;
+    limit?: number;
+  }) =>
+    this.db.transaction(async (tx) => {
+      const targets = await new PlatformDomainTargetResolver(tx, {
+        env: this.env,
+        loadIdentityTarget: this.options.loadIdentityTarget,
+      }).resolveAll();
+      const repository = new PlatformInstanceRepository(tx);
+      const page = await repository.listRevisionInventoryPage(input);
+      const identityTarget = targets.find(({ domain }) => domain === 'identity')!;
+      const cutoff = new Date(page.snapshotAt.getTime() - PLATFORM_INSTANCE_STALE_AFTER_MS);
+      return {
+        items: page.items.map((item) => {
+          const diagnostic =
+            item.instanceKind === 'platform'
+              ? platformDiagnostic({ instance: item.instance, states: item.states }, targets)
+              : identityDiagnostic(item.instance, identityTarget);
+          return { fresh: diagnostic.lastHeartbeatAt >= cutoff, item: diagnostic };
+        }),
+        nextCursor: page.nextCursor,
+        snapshotAt: page.snapshotAt,
+      };
+    });
 
   getStatus = async (): Promise<PlatformInstanceStatusSnapshot> =>
     this.db.transaction(async (tx) => {
