@@ -19,6 +19,7 @@ import type { AgentItem } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
 import type { AgentConfigWithId } from '@/server/services/agent';
 
+import { observeEnterprisePlatformEvent } from '../../observability';
 import type { PlatformAgentOperationSnapshot } from './effectiveResolver';
 import {
   PlatformAgentMaterializationError,
@@ -28,6 +29,17 @@ import {
 } from './errors';
 
 const CHECKSUM_PATTERN = /^[a-f0-9]{64}$/;
+
+type MaterializationSuccessOutcome = 'created' | 'race_reused' | 'reused';
+
+interface MaterializedOperation {
+  outcome: MaterializationSuccessOutcome;
+  value: {
+    agentId: string;
+    config: AgentConfigWithId;
+    dependencySnapshot: PlatformAgentDependencySnapshot;
+  };
+}
 
 /** A model reference is usable only with a concrete provider + model key and a valid checksum. */
 const isValidModelRef = (ref: PlatformAgentModelDependencyRef | undefined): boolean =>
@@ -89,20 +101,7 @@ export class PlatformAgentMaterializationService {
     agentId: string;
     config: AgentConfigWithId;
     dependencySnapshot: PlatformAgentDependencySnapshot;
-  }> => {
-    const fetched = await this.getExactVersion(snapshot);
-    const version = this.resolveExactVersion(fetched, snapshot);
-    const model = version.dependencySnapshot.model;
-
-    const agentId = await this.attachLocalAgent(snapshot, model);
-    return {
-      agentId,
-      config: this.buildRuntimeConfig(agentId, snapshot, version.dependencySnapshot),
-      // The exact, immutable dependency snapshot bound to this operation. The caller validates it
-      // against the published catalog at the pinned revision (fail-closed, no latest fallback).
-      dependencySnapshot: version.dependencySnapshot,
-    };
-  };
+  }> => this.observeMaterialization(() => this.materializeSnapshot(snapshot));
 
   /**
    * Resolve an exact platform snapshot while preserving an existing local Agent attribution id.
@@ -138,18 +137,19 @@ export class PlatformAgentMaterializationService {
     agentId: string;
     config: AgentConfigWithId;
     dependencySnapshot: PlatformAgentDependencySnapshot;
-  }> => {
-    const fetched = await this.getExactVersion(pin);
-    if (!fetched || fetched.checksum !== pin.checksum) {
-      throw new PlatformAgentMaterializationError();
-    }
-    return this.materializeForOperation({
-      checksum: fetched.checksum,
-      config: fetched.config,
-      platformAgentId: pin.platformAgentId,
-      versionId: pin.versionId,
+  }> =>
+    this.observeMaterialization(async () => {
+      const fetched = await this.getExactVersion(pin);
+      if (!fetched || fetched.checksum !== pin.checksum) {
+        throw new PlatformAgentMaterializationError();
+      }
+      return this.materializeSnapshot({
+        checksum: fetched.checksum,
+        config: fetched.config,
+        platformAgentId: pin.platformAgentId,
+        versionId: pin.versionId,
+      });
     });
-  };
 
   /** Exact paused-resume replay while preserving the builtin inbox attribution id. */
   resolveFromPinForExistingAgent = async (
@@ -191,6 +191,47 @@ export class PlatformAgentMaterializationService {
     }
   };
 
+  private materializeSnapshot = async (
+    snapshot: PlatformAgentOperationSnapshot,
+  ): Promise<MaterializedOperation> => {
+    const fetched = await this.getExactVersion(snapshot);
+    const version = this.resolveExactVersion(fetched, snapshot);
+    const model = version.dependencySnapshot.model;
+    const attached = await this.attachLocalAgent(snapshot, model);
+    return {
+      outcome: attached.outcome,
+      value: {
+        agentId: attached.agentId,
+        config: this.buildRuntimeConfig(attached.agentId, snapshot, version.dependencySnapshot),
+        // The exact, immutable dependency snapshot bound to this operation. The caller validates it
+        // against the published catalog at the pinned revision (fail-closed, no latest fallback).
+        dependencySnapshot: version.dependencySnapshot,
+      },
+    };
+  };
+
+  private observeMaterialization = async (
+    operation: () => Promise<MaterializedOperation>,
+  ): Promise<MaterializedOperation['value']> => {
+    const startedAt = Date.now();
+    try {
+      const result = await operation();
+      observeEnterprisePlatformEvent({
+        durationMs: Date.now() - startedAt,
+        outcome: result.outcome,
+        type: 'agent_materialization',
+      });
+      return result.value;
+    } catch (error) {
+      observeEnterprisePlatformEvent({
+        durationMs: Date.now() - startedAt,
+        outcome: error instanceof PlatformAgentNotFoundError ? 'archived' : 'failure',
+        type: 'agent_materialization',
+      });
+      throw error;
+    }
+  };
+
   /** Fail-closed validation that the fetched version exactly matches the pinned snapshot. */
   private resolveExactVersion = (
     version: ExactPlatformAgentVersion | undefined,
@@ -214,7 +255,7 @@ export class PlatformAgentMaterializationService {
   private attachLocalAgent = async (
     snapshot: PlatformAgentOperationSnapshot,
     model: PlatformAgentModelDependencyRef,
-  ): Promise<string> => {
+  ): Promise<{ agentId: string; outcome: MaterializationSuccessOutcome }> => {
     const localRow = this.buildLocalAgentRow(snapshot.config, model);
     try {
       const result = await this.repository.materializeLocalAgent({
@@ -226,7 +267,7 @@ export class PlatformAgentMaterializationService {
       });
       // Archived between authorization and materialize (lost archive race) → not entitled.
       if (!result.ok) throw new PlatformAgentNotFoundError();
-      return result.agentId;
+      return { agentId: result.agentId, outcome: result.created ? 'created' : 'reused' };
     } catch (error) {
       if (error instanceof PlatformAgentNotFoundError) throw error;
       if (error instanceof PlatformAgentMaterializationRaceError) {
@@ -236,7 +277,7 @@ export class PlatformAgentMaterializationService {
           snapshot.platformAgentId,
         );
         if (!existing?.materializedAgentId) throw new PlatformAgentMaterializationError();
-        return existing.materializedAgentId;
+        return { agentId: existing.materializedAgentId, outcome: 'race_reused' };
       }
       // Redact any raw DB / driver failure at the boundary.
       throw new PlatformAgentMaterializationError();
