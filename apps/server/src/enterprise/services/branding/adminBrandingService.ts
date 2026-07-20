@@ -31,6 +31,7 @@ import {
   adminBrandingUploadAssetOutputSchema,
   projectAdminBrandingPublished,
 } from '../../contracts/adminBranding';
+import { classifyEnterpriseError, observeEnterprisePlatformEvent } from '../../observability';
 import { PlatformAuditService } from '../platformAudit';
 import {
   getPlatformConfigInvalidationPublisher,
@@ -301,6 +302,22 @@ export class AdminBrandingService {
     await this.appendFailureAudit(action, actorUserId, input);
   };
 
+  private observePublish = (startedAt: number, error?: unknown): void => {
+    const conflict = error instanceof PlatformRevisionConflictError;
+    observeEnterprisePlatformEvent({
+      domain: 'branding',
+      durationMs: Date.now() - startedAt,
+      ...(error
+        ? {
+            errorClass: conflict ? ('ConflictError' as const) : classifyEnterpriseError(error),
+          }
+        : {}),
+      operation: 'publish',
+      outcome: error ? (conflict ? 'conflict' : 'failure') : 'success',
+      type: 'config_publish',
+    });
+  };
+
   getDraft = async () => {
     await this.ensureDraft();
     await this.assertNoLegacyActiveRows(this.db);
@@ -477,6 +494,7 @@ export class AdminBrandingService {
   };
 
   publish = async (actorUserId: string, rawInput: AdminBrandingPublishInput) => {
+    const startedAt = Date.now();
     const parsed = adminBrandingPublishInputSchema.safeParse(rawInput);
     if (!parsed.success) throw new BrandingDraftValidationError();
     const input = parsed.data;
@@ -519,15 +537,20 @@ export class AdminBrandingService {
         sanitizePayload: (payload) => adminBrandingDraftSchema.parse(payload),
       });
       await this.publishInvalidation(result.revision.revision);
+      this.observePublish(startedAt);
       return { auditId: result.auditId, revision: result.revision.revision };
     } catch (error) {
-      await this.recordOperationFailure(
-        claim,
-        error,
-        'platform.branding.publish',
-        actorUserId,
-        input,
-      );
+      try {
+        await this.recordOperationFailure(
+          claim,
+          error,
+          'platform.branding.publish',
+          actorUserId,
+          input,
+        );
+      } finally {
+        this.observePublish(startedAt, error);
+      }
       throw error;
     }
   };

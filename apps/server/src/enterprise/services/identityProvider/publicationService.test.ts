@@ -8,7 +8,7 @@ import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
-import { checksumPayload } from '@/database/models/platform';
+import { checksumPayload, PlatformRevisionConflictError } from '@/database/models/platform';
 import {
   platformAuditLogs,
   platformIdentityProviders,
@@ -19,6 +19,8 @@ import {
 import type { LobeChatDatabase } from '@/database/type';
 import { type KeyProvider, PlatformSecretService } from '@/server/enterprise/security/secret';
 
+import type { EnterpriseObservabilityEvent } from '../../observability';
+import { setEnterprisePlatformObserverForTest } from '../../observability';
 import { AdminIdentityProviderService } from './adminService';
 import type { IdentityProviderDiscoveryValidator } from './discoveryValidator';
 import {
@@ -48,6 +50,8 @@ const admin = new AdminIdentityProviderService(
 );
 const publication = new IdentityProviderPublicationService(db);
 const attempts = new IdentityProviderTestAttemptStore(db, secrets);
+const observed: EnterpriseObservabilityEvent[] = [];
+const publishEvents = () => observed.filter((event) => event.type === 'config_publish');
 const requestId = (index: number) =>
   `550e8400-e29b-41d4-a716-${index.toString().padStart(12, '0')}`;
 
@@ -104,8 +108,13 @@ const cleanup = async () => {
   );
 };
 
-beforeEach(cleanup);
+beforeEach(async () => {
+  await cleanup();
+  observed.length = 0;
+  setEnterprisePlatformObserverForTest({ record: (event) => observed.push(event) });
+});
 afterEach(async () => {
+  setEnterprisePlatformObserverForTest(null);
   vi.useRealTimers();
   await cleanup();
 });
@@ -259,6 +268,53 @@ describe('IdentityProviderPublicationService', () => {
     expect(serialized).not.toContain('fake-client-secret-for-test');
     expect(serialized).not.toContain('kms://');
     expect(serialized).not.toContain('ciphertext');
+    expect(publishEvents()).toEqual([
+      {
+        domain: 'identity',
+        durationMs: expect.any(Number),
+        operation: 'publish',
+        outcome: 'success',
+        type: 'config_publish',
+      },
+    ]);
+    expect(Object.keys(publishEvents()[0]!).sort()).toEqual([
+      'domain',
+      'durationMs',
+      'operation',
+      'outcome',
+      'type',
+    ]);
+    expect(JSON.stringify(publishEvents())).not.toContain(draft.id);
+    expect(JSON.stringify(publishEvents())).not.toContain(requestId(1));
+    expect(JSON.stringify(publishEvents())).not.toContain('activate verified work login');
+  });
+
+  it('keeps a committed pending-restart publication successful when the observer throws', async () => {
+    const draft = await createDraft();
+    await recordSuccessfulTest(draft.id);
+    const input = {
+      expectedRevision: draft.revision,
+      id: draft.id,
+      reason: 'observer isolation publication',
+      requestId: requestId(58),
+    };
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    setEnterprisePlatformObserverForTest({
+      record: () => {
+        throw new Error('observer unavailable');
+      },
+    });
+
+    const published = await publication.publish('admin-1', input);
+
+    expect(published).toMatchObject({ status: 'pending_restart' });
+    await expect(publication.publish('admin-1', input)).resolves.toEqual(published);
+    const [provider] = await db.select().from(platformIdentityProviders);
+    expect(provider).toMatchObject({ revision: published.revision, status: 'pending_restart' });
+    expect(consoleError).toHaveBeenCalledWith(
+      '[enterprise-observability] metric sink failed',
+      expect.objectContaining({ errorClass: 'UnexpectedError' }),
+    );
   });
 
   it('acquires the OIDC published-revision lock before the provider row lock', async () => {
@@ -558,6 +614,44 @@ describe('IdentityProviderPublicationService', () => {
     expect(publishAudits[0]?.requestId).toBe(input.requestId);
     expect(JSON.stringify(publishAudits[0])).not.toContain(revisions[0]!.secretFingerprint!);
     expect(JSON.stringify(publishAudits[0])).not.toMatch(/fingerprint/i);
+    expect(publishEvents()).toEqual([
+      {
+        domain: 'identity',
+        durationMs: expect.any(Number),
+        operation: 'publish',
+        outcome: 'success',
+        type: 'config_publish',
+      },
+    ]);
+  });
+
+  it('observes a revision conflict once and not its failed replay', async () => {
+    const draft = await createDraft();
+    await recordSuccessfulTest(draft.id);
+    const input = {
+      expectedRevision: draft.revision + 1,
+      id: draft.id,
+      reason: 'stale publication revision',
+      requestId: requestId(59),
+    };
+
+    await expect(publication.publish('admin-1', input)).rejects.toBeInstanceOf(
+      PlatformRevisionConflictError,
+    );
+    await expect(publication.publish('admin-1', input)).rejects.toBeInstanceOf(
+      PlatformRevisionConflictError,
+    );
+
+    expect(publishEvents()).toEqual([
+      {
+        domain: 'identity',
+        durationMs: expect.any(Number),
+        errorClass: 'ConflictError',
+        operation: 'publish',
+        outcome: 'conflict',
+        type: 'config_publish',
+      },
+    ]);
   });
 
   it.each<[string, AuditResponseMutation]>([
@@ -782,6 +876,16 @@ describe('IdentityProviderPublicationService', () => {
     expect(
       audits.filter((audit) => audit.action === 'admin.identityProviders.publish.requestReserved'),
     ).toHaveLength(1);
+    expect(publishEvents()).toEqual([
+      {
+        domain: 'identity',
+        durationMs: expect.any(Number),
+        errorClass: 'UnexpectedError',
+        operation: 'publish',
+        outcome: 'failure',
+        type: 'config_publish',
+      },
+    ]);
   });
 
   it('rejects missing, stale, or mismatched tests without changing the provider pointer', async () => {
@@ -896,6 +1000,7 @@ describe('IdentityProviderPublicationService', () => {
       requestId: requestId(23),
       targetRevision: published.revision,
     };
+    observed.length = 0;
     const first = await publication.rollback('admin-1', input);
     await db
       .update(platformIdentityProviders)
@@ -912,6 +1017,7 @@ describe('IdentityProviderPublicationService', () => {
     const [revision] = await db.select().from(platformResourceRevisions);
     expect(JSON.stringify(rollbackAudits[0])).not.toContain(revision!.secretFingerprint!);
     expect(JSON.stringify(rollbackAudits[0])).not.toMatch(/fingerprint/i);
+    expect(observed).toEqual([]);
   });
 
   it.each<[string, AuditResponseMutation]>([

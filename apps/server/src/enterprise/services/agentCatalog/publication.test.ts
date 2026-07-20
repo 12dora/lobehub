@@ -1,7 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { LobeChatDatabase, Transaction } from '@/database/type';
 
+import type { EnterpriseObservabilityEvent } from '../../observability';
+import { setEnterprisePlatformObserverForTest } from '../../observability';
 import { PlatformAgentRevisionConflictError } from './errors';
 import { platformAgentDraftToken, PlatformAgentPublicationService } from './publication';
 
@@ -68,10 +70,14 @@ const db = {
     operation(transaction),
   ),
 } as unknown as LobeChatDatabase;
+const observed: EnterpriseObservabilityEvent[] = [];
 
 describe('PlatformAgentPublicationService', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    observed.length = 0;
+    setEnterprisePlatformObserverForTest({ record: (event) => observed.push(event) });
+    mocks.assertDependencies.mockResolvedValue(undefined);
     mocks.lockIdentity.mockResolvedValue(identity);
     mocks.getExactVersion.mockResolvedValue({
       checksum: 'f'.repeat(64),
@@ -81,6 +87,8 @@ describe('PlatformAgentPublicationService', () => {
     });
     mocks.pointToVersionCas.mockResolvedValue({ revision: 1 });
   });
+
+  afterEach(() => setEnterprisePlatformObserverForTest(null));
 
   it('locks, revalidates an existing version, points and audits before invalidation', async () => {
     const publish = vi.fn();
@@ -101,6 +109,15 @@ describe('PlatformAgentPublicationService', () => {
     expect(publish).toHaveBeenCalledWith(
       expect.objectContaining({ resourceId: 'agent-id', revision: 1 }),
     );
+    expect(observed).toEqual([
+      {
+        domain: 'agent_catalog',
+        durationMs: expect.any(Number),
+        operation: 'publish',
+        outcome: 'success',
+        type: 'config_publish',
+      },
+    ]);
   });
 
   it('rolls back the transaction path on stale CAS and does not invalidate', async () => {
@@ -117,6 +134,16 @@ describe('PlatformAgentPublicationService', () => {
     expect(mocks.appendAudit).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'admin.agents.publish', result: 'failure' }),
     );
+    expect(observed).toEqual([
+      {
+        domain: 'agent_catalog',
+        durationMs: expect.any(Number),
+        errorClass: 'ConflictError',
+        operation: 'publish',
+        outcome: 'conflict',
+        type: 'config_publish',
+      },
+    ]);
   });
 
   it('does not convert a committed publish into failure when invalidation throws', async () => {
@@ -128,5 +155,76 @@ describe('PlatformAgentPublicationService', () => {
       ),
     ).resolves.toEqual({ agentId: 'agent-id', revision: 1, versionId: 'version-id' });
     expect(mocks.appendAudit).toHaveBeenCalledTimes(1);
+    expect(observed).toHaveLength(1);
+    expect(observed[0]).toMatchObject({ outcome: 'success' });
+  });
+
+  it('records rollback and keeps the event low-cardinality', async () => {
+    await new PlatformAgentPublicationService(db, { invalidation: { publish: vi.fn() } }).rollback(
+      'sensitive-admin',
+      {
+        agentId: identity.id,
+        expectedDraftToken: platformAgentDraftToken(identity),
+        expectedRevision: 0,
+        reason: 'sensitive rollback reason',
+        targetVersionId: 'version-id',
+      },
+    );
+
+    expect(observed).toEqual([
+      {
+        domain: 'agent_catalog',
+        durationMs: expect.any(Number),
+        operation: 'rollback',
+        outcome: 'success',
+        type: 'config_publish',
+      },
+    ]);
+    expect(Object.keys(observed[0]!).sort()).toEqual([
+      'domain',
+      'durationMs',
+      'operation',
+      'outcome',
+      'type',
+    ]);
+    expect(JSON.stringify(observed)).not.toContain('sensitive');
+    expect(JSON.stringify(observed)).not.toContain('agent-id');
+  });
+
+  it('records non-conflict failures without changing the thrown error', async () => {
+    const failure = new Error('raw dependency detail');
+    mocks.assertDependencies.mockRejectedValue(failure);
+
+    await expect(new PlatformAgentPublicationService(db).publish('admin-id', input)).rejects.toBe(
+      failure,
+    );
+    expect(observed).toEqual([
+      {
+        domain: 'agent_catalog',
+        durationMs: expect.any(Number),
+        errorClass: 'UnexpectedError',
+        operation: 'publish',
+        outcome: 'failure',
+        type: 'config_publish',
+      },
+    ]);
+    expect(JSON.stringify(observed)).not.toContain('raw dependency detail');
+  });
+
+  it('does not change a committed publication when the observer throws', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    setEnterprisePlatformObserverForTest({
+      record: () => {
+        throw new Error('observer unavailable');
+      },
+    });
+
+    await expect(
+      new PlatformAgentPublicationService(db).publish('admin-id', input),
+    ).resolves.toEqual({ agentId: 'agent-id', revision: 1, versionId: 'version-id' });
+    expect(consoleError).toHaveBeenCalledWith(
+      '[enterprise-observability] metric sink failed',
+      expect.objectContaining({ errorClass: 'UnexpectedError' }),
+    );
   });
 });
