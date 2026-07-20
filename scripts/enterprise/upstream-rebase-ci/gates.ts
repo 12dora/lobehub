@@ -1,11 +1,15 @@
-import { spawn } from 'node:child_process';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { filterExistingLintablePaths } from './changedFiles';
 import type { GateResult, KnownGateId } from './contract';
 import { EXPECTED_GATE_KINDS, FAIL_CLOSED_GATE_IDS, KNOWN_GATE_IDS } from './contract';
+import { runFailureDrillsGate } from './failureDrillGate';
+import { runMigrationUpgradeRollbackGate } from './migrationGate';
+import { runProcess } from './process';
 import { assertNoSecrets } from './secretScan';
+
+export { runProcess };
 
 /** Placeholder replaced at runtime with an absolute path under the run raw dir. */
 export const VITEST_OUTPUT_PLACEHOLDER = '__UPSTREAM_REBASE_GATE_OUTPUT__' as const;
@@ -21,7 +25,7 @@ export interface GateDefinition {
   /**
    * Built-in custom runners that need changed-file context or multi-suite logic.
    */
-  runner?: 'bun-check-changed' | 'migration-upgrade-rollback';
+  runner?: 'bun-check-changed' | 'failure-drills' | 'migration-upgrade-rollback';
 }
 
 /**
@@ -75,10 +79,10 @@ export const GATE_DEFINITIONS: Record<KnownGateId, GateDefinition> = {
   },
   'failure-drills': {
     id: 'failure-drills',
-    kind: 'fail-closed',
-    failClosed: true,
+    kind: 'command',
+    runner: 'failure-drills',
     reason:
-      'Real PostgreSQL/Redis failure drills require enterprise-failure-drills.yml; contract unit tests cannot pass this gate.',
+      'Real multi-connection PostgreSQL/Redis drills with reviewed structured evidence (never unit/contract-only).',
   },
   'manual-conflict-review': {
     id: 'manual-conflict-review',
@@ -88,11 +92,10 @@ export const GATE_DEFINITIONS: Record<KnownGateId, GateDefinition> = {
   },
   'migration-upgrade-rollback': {
     id: 'migration-upgrade-rollback',
-    kind: 'vitest',
+    kind: 'command',
     runner: 'migration-upgrade-rollback',
-    minPassed: 1,
     reason:
-      'Journal integrity plus platform Migration-0 schema gate (Q03 verify-migration when present on trunk).',
+      'Q03 migration compatibility synthetic foundation (owned PG upgrade/apply/rerun). Does not claim app-version rollback or production-dump overall pass; weak journal-only substitutes are rejected.',
   },
   'patch-ledger-update': {
     id: 'patch-ledger-update',
@@ -170,39 +173,6 @@ export const resolveGateDefinition = (gateId: string): GateDefinition => {
   }
   return GATE_DEFINITIONS[gateId as KnownGateId];
 };
-
-interface ProcessResult {
-  code: number;
-  stderr: string;
-  stdout: string;
-}
-
-export const runProcess = (argv: string[], cwd: string): Promise<ProcessResult> =>
-  new Promise((resolve, reject) => {
-    const [command, ...args] = argv;
-    if (!command) {
-      reject(new Error('Gate command is empty'));
-      return;
-    }
-    const child = spawn(command, args, {
-      cwd,
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
-      shell: false,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    const stderr: Buffer[] = [];
-    const stdout: Buffer[] = [];
-    child.stdout.on('data', (chunk: Buffer) => stdout.push(chunk));
-    child.stderr.on('data', (chunk: Buffer) => stderr.push(chunk));
-    child.once('error', reject);
-    child.once('close', (code) => {
-      resolve({
-        code: code ?? 2,
-        stderr: Buffer.concat(stderr).toString('utf8'),
-        stdout: Buffer.concat(stdout).toString('utf8'),
-      });
-    });
-  });
 
 interface VitestJsonReport {
   numFailedTests?: number;
@@ -339,96 +309,6 @@ export const selectBunCheckPaths = (existingLintablePaths: string[]): string[] =
   return existingLintablePaths;
 };
 
-export const runMigrationUpgradeRollbackGate = async ({
-  rawDirectory,
-  repositoryRoot,
-}: {
-  rawDirectory: string;
-  repositoryRoot: string;
-}): Promise<GateResult> => {
-  const outputFile = path.join(rawDirectory, 'gate-migration-upgrade-rollback.json');
-  await mkdir(rawDirectory, { recursive: true });
-  await rm(outputFile, { force: true });
-
-  // Prefer Q03 verifier when present on the tree; otherwise equivalent journal + migration-0 gate.
-  const q03Entry = path.join(repositoryRoot, 'scripts/enterprise/verify-migration.ts');
-  let processResult: ProcessResult;
-  try {
-    await readFile(q03Entry, 'utf8');
-    processResult = await runProcess(
-      ['bun', 'scripts/enterprise/verify-migration.ts', '--repo-root', repositoryRoot],
-      repositoryRoot,
-    );
-    if (processResult.code !== 0) {
-      return {
-        assertions: { failed: 1, passed: 0, skipped: 0, total: 1 },
-        id: 'migration-upgrade-rollback',
-        kind: 'vitest',
-        outcome: 'failed',
-        reason: 'Q03 migration compatibility verifier failed.',
-      };
-    }
-    return {
-      assertions: { failed: 0, passed: 1, skipped: 0, total: 1 },
-      id: 'migration-upgrade-rollback',
-      kind: 'vitest',
-      outcome: 'passed',
-      reason: 'Q03 migration compatibility verifier passed with structured success.',
-    };
-  } catch {
-    // fall through to equivalent local gates
-  }
-
-  // Root vitest excludes packages/**. Use the database package config.
-  processResult = await runProcess(
-    [
-      'bunx',
-      'vitest',
-      'run',
-      '--config',
-      'vitest.config.mts',
-      '--silent=passed-only',
-      '--reporter=json',
-      '--outputFile',
-      outputFile,
-      'src/models/__tests__/migrationJournal.meta.test.ts',
-      'src/models/__tests__/platformSchema.migration.test.ts',
-    ],
-    path.join(repositoryRoot, 'packages/database'),
-  );
-
-  try {
-    const assertions = await readVitestAssertions(outputFile);
-    const outcome = evaluateVitestAssertions(assertions, processResult.code, 2);
-    return {
-      assertions: {
-        failed: assertions.failed,
-        passed: assertions.passed,
-        skipped: assertions.skipped,
-        total: assertions.total,
-      },
-      id: 'migration-upgrade-rollback',
-      kind: 'vitest',
-      outcome,
-      reason:
-        outcome === 'passed'
-          ? 'Journal integrity and platform Migration-0 schema gates passed.'
-          : 'Migration upgrade/rollback equivalent gate failed, skipped, or reported zero tests.',
-    };
-  } catch (error) {
-    return {
-      assertions: { failed: 1, passed: 0, skipped: 0, total: 1 },
-      id: 'migration-upgrade-rollback',
-      kind: 'vitest',
-      outcome: 'failed',
-      reason:
-        error instanceof Error
-          ? error.message.slice(0, 240)
-          : 'Migration gate report could not be validated.',
-    };
-  }
-};
-
 export interface RunSelectedGatesOptions {
   changedPaths: string[];
   privacyTargets: unknown[];
@@ -494,6 +374,11 @@ export const runSelectedGates = async ({
 
     if (definition.runner === 'migration-upgrade-rollback') {
       results.push(await runMigrationUpgradeRollbackGate({ rawDirectory, repositoryRoot }));
+      continue;
+    }
+
+    if (definition.runner === 'failure-drills') {
+      results.push(await runFailureDrillsGate({ rawDirectory, repositoryRoot }));
       continue;
     }
 
