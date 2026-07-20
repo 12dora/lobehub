@@ -6,8 +6,8 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 
-const root = path.resolve(import.meta.dir, '../../..');
-const e2eDir = path.resolve(import.meta.dir, '../..');
+const root = path.resolve(__dirname, '../../..');
+const e2eDir = path.resolve(__dirname, '../..');
 
 const fail = (message: string): never => {
   console.error(`[enterprise-admin-e2e] preflight BLOCKED: ${message}`);
