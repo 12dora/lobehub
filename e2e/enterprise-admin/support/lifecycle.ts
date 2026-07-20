@@ -3,7 +3,13 @@
  * Only removes resources labeled with this run's ownership token.
  * Ownership inspect failures (including label mismatch) never reach docker rm.
  */
-import { type ChildProcess, execFile, spawn, type SpawnOptions } from 'node:child_process';
+import {
+  type ChildProcess,
+  execFile,
+  execFileSync,
+  spawn,
+  type SpawnOptions,
+} from 'node:child_process';
 import { promisify } from 'node:util';
 
 const execute = promisify(execFile);
@@ -20,19 +26,40 @@ export interface OwnedContainer {
 }
 
 /**
+ * OS-verifiable process birth identity (pid + kernel start time).
+ * A recycled PID gets a new startKey — numeric pid alone is never ownership proof.
+ */
+export interface ProcessStartIdentity {
+  pgid: number;
+  pid: number;
+  /** `ps` lstart field — stable for one OS process lifetime. */
+  startKey: string;
+}
+
+/**
  * Durable ownership of a detached process group — independent of live ChildProcess registry.
  * Cleanup authority: only these records (never foreign PGIDs).
+ * Signals require proveOwnedProcessGroupLifetime against memberIdentities.
  */
 export interface OwnedProcessGroup {
   /** Leader pid at registration (detached spawn: equals pgid on POSIX). */
   leaderPid: number;
-  /** Process group id to signal with kill(-pgid, …). */
+  /**
+   * Members known to belong to this ownership lifetime (pid+startKey).
+   * Captured at registration and extended only while lifetime is still proved.
+   * A JS-only timestamp is NOT identity — startKey comes from the OS.
+   */
+  memberIdentities: ProcessStartIdentity[];
+  /** Process group id to signal with kill(-pgid, …) only after lifetime proof. */
   pgid: number;
-  /** When this ownership was recorded (ms epoch) — lifetime bound for cleanup. */
+  /** When this ownership was recorded (ms epoch) — bookkeeping only, not OS proof. */
   registeredAtMs: number;
   /** Provenance: only this run may clean this group. */
   runToken: string;
 }
+
+/** Outcome of identity-bound process-group cleanup. */
+export type KillOwnedGroupResult = 'reaped' | 'already-empty' | 'stale-recycled-pgid';
 
 export interface LifecycleState {
   containers: OwnedContainer[];
@@ -205,6 +232,82 @@ export const listPidsInProcessGroup = async (pgid: number): Promise<number[]> =>
 
 export const listPidsInProcessGroupForTests = listPidsInProcessGroup;
 
+const parseProcessIdentityLine = (line: string): null | ProcessStartIdentity => {
+  // Avoid super-linear backtracking: split on whitespace, rejoin start fields.
+  const trimmed = line.trim();
+  if (!trimmed) return null;
+  const parts = trimmed.split(/\s+/);
+  if (parts.length < 3) return null;
+  const pid = Number(parts[0]);
+  const pgid = Number(parts[1]);
+  const startKey = parts.slice(2).join(' ');
+  if (!Number.isFinite(pid) || pid <= 0 || !Number.isFinite(pgid) || !startKey) return null;
+  return { pgid, pid, startKey };
+};
+
+const identityKey = (id: ProcessStartIdentity): string => `${id.pid}\0${id.startKey}`;
+
+/**
+ * Capture OS start identities for every live member of a process group.
+ * Failures throw — never returns empty on tooling failure (empty only means no members).
+ */
+export const listProcessIdentitiesInGroup = async (
+  pgid: number,
+): Promise<ProcessStartIdentity[]> => {
+  if (!pgid || pgid <= 0) {
+    throw new Error(`refusing to list identities for invalid pgid=${pgid}`);
+  }
+  try {
+    const { stdout } = await processEnumExec('ps', ['-ax', '-o', 'pid=,pgid=,lstart=']);
+    const out: ProcessStartIdentity[] = [];
+    for (const line of String(stdout).split('\n')) {
+      const id = parseProcessIdentityLine(line);
+      if (id && id.pgid === pgid) out.push(id);
+    }
+    return out;
+  } catch (error) {
+    throw new Error(`failed to capture process identities for pgid=${pgid}: ${String(error)}`, {
+      cause: error,
+    });
+  }
+};
+
+/**
+ * Prove the numeric PGID still refers to the same owned lifetime.
+ * - empty: no live members (group gone; do not signal)
+ * - owned: at least one captured member identity still present (safe to signal group)
+ * - stale: live members exist but none match owned birth identities (PGID recycled — never signal)
+ *
+ * Enumeration/identity capture failures throw (fail-closed; never kill-by-number).
+ * While owned, newly observed members are absorbed (descendants; PGID cannot be reused
+ * while any original member still exists).
+ */
+export const proveOwnedProcessGroupLifetime = async (
+  group: OwnedProcessGroup,
+): Promise<'empty' | 'owned' | 'stale'> => {
+  const current = await listProcessIdentitiesInGroup(group.pgid);
+  if (current.length === 0) return 'empty';
+
+  if (group.memberIdentities.length === 0) {
+    // No OS birth evidence → cannot authorize signals against live members.
+    return 'stale';
+  }
+
+  const owned = new Set(group.memberIdentities.map(identityKey));
+  const matched = current.filter((c) => owned.has(identityKey(c)));
+  if (matched.length === 0) return 'stale';
+
+  // Same lifetime: absorb new descendants into the ownership identity set.
+  for (const c of current) {
+    const key = identityKey(c);
+    if (!owned.has(key)) {
+      group.memberIdentities.push(c);
+      owned.add(key);
+    }
+  }
+  return 'owned';
+};
+
 /** Refresh descendant/PGID evidence for a detached group leader while it may still be running. */
 export const refreshOwnedProcessGroupEvidence = async (
   state: LifecycleState,
@@ -219,6 +322,15 @@ export const refreshOwnedProcessGroupEvidence = async (
     if (!state.evidencePids.includes(pid)) state.evidencePids.push(pid);
     if (pid !== leaderPid && !state.evidenceDescendants.includes(pid)) {
       state.evidenceDescendants.push(pid);
+    }
+  }
+  // Extend OS identity set while the ownership lifetime is still proved.
+  const group = state.ownedProcessGroups.find((g) => g.pgid === pgid);
+  if (group) {
+    try {
+      await proveOwnedProcessGroupLifetime(group);
+    } catch {
+      // Observational only — kill path fails loud on identity errors.
     }
   }
 };
@@ -368,7 +480,11 @@ export const inspectPublishedHostPort = async (
   return port;
 };
 
-/** Register durable ownership of a detached process group for this run. */
+/**
+ * Register durable ownership of a detached process group for this run.
+ * Captures OS member identities synchronously at registration (fail-loud if capture fails
+ * while the leader is expected to be alive). Numeric PGID alone is never sufficient.
+ */
 export const registerOwnedProcessGroup = (
   state: LifecycleState,
   leaderPid: number,
@@ -376,8 +492,51 @@ export const registerOwnedProcessGroup = (
   const pgid = leaderPid; // detached spawn: leader is process group id on POSIX
   const existing = state.ownedProcessGroups.find((g) => g.pgid === pgid);
   if (existing) return existing;
+
+  const memberIdentities: ProcessStartIdentity[] = [];
+  try {
+    // Synchronous capture so ownership is never stored as bare numeric PGID.
+    const stdout = execFileSync('ps', ['-ax', '-o', 'pid=,pgid=,lstart='], {
+      encoding: 'utf8',
+    });
+    for (const line of String(stdout).split('\n')) {
+      const id = parseProcessIdentityLine(line);
+      if (id && id.pgid === pgid) memberIdentities.push(id);
+    }
+  } catch (error) {
+    throw new Error(
+      `failed to capture OS process identities at ownership registration pgid=${pgid}: ${String(error)}`,
+      { cause: error },
+    );
+  }
+
+  // Leader may not appear in the full scan briefly — read by pid.
+  if (memberIdentities.length === 0) {
+    try {
+      const stdout = execFileSync('ps', ['-p', String(leaderPid), '-o', 'pid=,pgid=,lstart='], {
+        encoding: 'utf8',
+      });
+      for (const line of String(stdout).split('\n')) {
+        const id = parseProcessIdentityLine(line);
+        if (id) memberIdentities.push(id);
+      }
+    } catch (error) {
+      throw new Error(
+        `failed to capture leader identity at ownership registration pid=${leaderPid}: ${String(error)}`,
+        { cause: error },
+      );
+    }
+  }
+
+  if (memberIdentities.length === 0) {
+    throw new Error(
+      `refusing to register process group ownership without OS identity evidence (pgid=${pgid})`,
+    );
+  }
+
   const rec: OwnedProcessGroup = {
     leaderPid,
+    memberIdentities,
     pgid,
     registeredAtMs: Date.now(),
     runToken: state.runToken,
@@ -389,11 +548,70 @@ export const registerOwnedProcessGroup = (
   return rec;
 };
 
+/**
+ * Stage a durable ownership record for tests (e.g. stale numeric PGID reuse).
+ * Production registration always captures live OS identities via registerOwnedProcessGroup.
+ */
+export const stageOwnedProcessGroupForTests = (
+  state: LifecycleState,
+  group: OwnedProcessGroup,
+): OwnedProcessGroup => {
+  const existing = state.ownedProcessGroups.find((g) => g.pgid === group.pgid);
+  if (existing) {
+    Object.assign(existing, group);
+    return existing;
+  }
+  state.ownedProcessGroups.push(group);
+  return group;
+};
+
+/** Sync merge of live OS identities into an owned group while lifetime still proves. */
+const mergeLiveIdentitiesIntoGroup = (group: OwnedProcessGroup): void => {
+  try {
+    const stdout = execFileSync('ps', ['-ax', '-o', 'pid=,pgid=,lstart='], { encoding: 'utf8' });
+    const current: ProcessStartIdentity[] = [];
+    for (const line of String(stdout).split('\n')) {
+      const id = parseProcessIdentityLine(line);
+      if (id && id.pgid === group.pgid) current.push(id);
+    }
+    if (current.length === 0) return;
+    const owned = new Set(group.memberIdentities.map(identityKey));
+    const matched = current.some((c) => owned.has(identityKey(c)));
+    // Absorb new members only while at least one known identity is still live.
+    if (!matched && group.memberIdentities.length > 0) return;
+    for (const c of current) {
+      const key = identityKey(c);
+      if (!owned.has(key)) {
+        group.memberIdentities.push(c);
+        owned.add(key);
+      }
+    }
+  } catch {
+    // Kill path fails loud; spawn-time merge is best-effort.
+  }
+};
+
 export const registerProcess = (state: LifecycleState, child: ChildProcess): void => {
   state.processes.push(child);
   const recordLeader = (pid: number) => {
-    registerOwnedProcessGroup(state, pid);
+    const group = registerOwnedProcessGroup(state, pid);
+    mergeLiveIdentitiesIntoGroup(group);
     void refreshOwnedProcessGroupEvidence(state, pid);
+    // Short-lived leaders may spawn descendants and exit before the 250ms infra poll.
+    // Burst-capture identities so leader-exit cleanup still has OS proof of descendants.
+    let ticks = 0;
+    const burst = setInterval(() => {
+      ticks += 1;
+      const g = state.ownedProcessGroups.find((x) => x.pgid === pid);
+      if (g) mergeLiveIdentitiesIntoGroup(g);
+      void refreshOwnedProcessGroupEvidence(state, pid);
+      if (ticks >= 40 || (child.exitCode !== null && ticks >= 8)) {
+        clearInterval(burst);
+      }
+    }, 25);
+    if (typeof burst === 'object' && 'unref' in burst) {
+      (burst as { unref: () => void }).unref();
+    }
   };
   if (child.pid) recordLeader(child.pid);
   // Detached group leader uses same pid as process group id on POSIX.
@@ -420,62 +638,105 @@ export const spawnOwned = (
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
- * Kill an exact owned process group by PGID (not by live ChildProcess).
- * SIGTERM → re-enumerate until empty or grace → SIGKILL exact PGID → recheck empty.
- * Fails loudly if enumeration fails or members remain after SIGKILL bound.
+ * Kill an owned process group only after OS lifetime proof.
+ * SIGTERM → re-prove until empty/stale or grace → SIGKILL only if still proved owned.
+ * Stale/recycled numeric PGID: never signal; return stale-recycled-pgid.
+ * Identity enumeration failures throw (fail-closed).
  */
-export const killOwnedProcessGroupByPgid = async (
-  pgid: number,
+export const killOwnedProcessGroup = async (
+  group: OwnedProcessGroup,
   options?: { graceMs?: number; killGraceMs?: number },
-): Promise<void> => {
-  if (!pgid || pgid <= 0) {
-    throw new Error(`refusing to kill invalid pgid=${pgid}`);
+): Promise<KillOwnedGroupResult> => {
+  if (!group.pgid || group.pgid <= 0) {
+    throw new Error(`refusing to kill invalid pgid=${group.pgid}`);
   }
   const graceMs = options?.graceMs ?? 3_000;
   const killGraceMs = options?.killGraceMs ?? 2_000;
 
-  const groupEmpty = async (): Promise<boolean> => {
-    const members = await listPidsInProcessGroup(pgid);
-    return members.length === 0;
-  };
+  let status = await proveOwnedProcessGroupLifetime(group);
+  if (status === 'empty') return 'already-empty';
+  if (status === 'stale') return 'stale-recycled-pgid';
 
   try {
-    process.kill(-pgid, 'SIGTERM');
+    process.kill(-group.pgid, 'SIGTERM');
   } catch {
     // group may already be gone
   }
 
   const termDeadline = Date.now() + graceMs;
   while (Date.now() < termDeadline) {
-    if (await groupEmpty()) return;
+    status = await proveOwnedProcessGroupLifetime(group);
+    if (status === 'empty') return 'reaped';
+    if (status === 'stale') return 'stale-recycled-pgid';
     await sleep(50);
   }
 
-  // Members remain (including SIGTERM-ignoring descendants) — SIGKILL exact owned PGID.
+  // Re-prove immediately before SIGKILL — never kill-by-number on recycled PGID.
+  status = await proveOwnedProcessGroupLifetime(group);
+  if (status === 'empty') return 'reaped';
+  if (status === 'stale') return 'stale-recycled-pgid';
+
   try {
-    process.kill(-pgid, 'SIGKILL');
+    process.kill(-group.pgid, 'SIGKILL');
   } catch {
     // may already be gone
   }
 
   const killDeadline = Date.now() + killGraceMs;
   while (Date.now() < killDeadline) {
-    if (await groupEmpty()) return;
+    status = await proveOwnedProcessGroupLifetime(group);
+    if (status === 'empty') return 'reaped';
+    if (status === 'stale') return 'stale-recycled-pgid';
     await sleep(50);
   }
 
-  const remaining = await listPidsInProcessGroup(pgid);
-  if (remaining.length > 0) {
-    throw new Error(
-      `owned process group pgid=${pgid} still has members after SIGKILL: ${remaining.join(',')}`,
-    );
-  }
+  status = await proveOwnedProcessGroupLifetime(group);
+  if (status === 'empty') return 'reaped';
+  if (status === 'stale') return 'stale-recycled-pgid';
+
+  const remaining = await listPidsInProcessGroup(group.pgid);
+  throw new Error(
+    `owned process group pgid=${group.pgid} still has proved members after SIGKILL: ${remaining.join(',')}`,
+  );
 };
 
-const killProcessGroup = async (child: ChildProcess, timeoutMs = 8_000): Promise<void> => {
+/**
+ * Kill by PGID only when the caller supplies the durable ownership record.
+ * Bare numeric PGID is never sufficient (recycled PGID must not authorize signals).
+ */
+export const killOwnedProcessGroupByPgid = async (
+  pgid: number,
+  options: { graceMs?: number; killGraceMs?: number; ownership: OwnedProcessGroup },
+): Promise<KillOwnedGroupResult> => {
+  if (!options?.ownership) {
+    throw new Error(
+      `refusing to kill pgid=${pgid} without durable ownership identity (never kill-by-number)`,
+    );
+  }
+  if (options.ownership.pgid !== pgid) {
+    throw new Error(
+      `ownership pgid mismatch: ownership=${options.ownership.pgid} requested=${pgid}`,
+    );
+  }
+  return killOwnedProcessGroup(options.ownership, options);
+};
+
+const killProcessGroup = async (
+  state: LifecycleState,
+  child: ChildProcess,
+  timeoutMs = 8_000,
+): Promise<void> => {
   if (!child.pid) return;
-  // Prefer durable PGID kill path (handles descendants after leader exit).
-  await killOwnedProcessGroupByPgid(child.pid, { graceMs: timeoutMs, killGraceMs: 2_000 });
+  const group =
+    state.ownedProcessGroups.find((g) => g.pgid === child.pid || g.leaderPid === child.pid) ?? null;
+  if (group) {
+    await killOwnedProcessGroup(group, { graceMs: timeoutMs, killGraceMs: 2_000 });
+    return;
+  }
+  // No durable record — refuse bare kill-by-number.
+  throw new Error(
+    `refusing to kill process group without durable ownership identity (pid=${child.pid})`,
+  );
 };
 
 /**
@@ -542,14 +803,24 @@ export const cleanupLifecycle = async (state: LifecycleState): Promise<void> => 
   }
   state.preCleanupHooks.length = 0;
 
-  // 2) Process groups — kill live ChildProcess handles, then ALL durable owned PGIDs
-  // (survives leader exit / empty registry).
+  // 2) Process groups — kill via durable ownership identity only (never bare numeric PGID).
+  // Live ChildProcess handles map to ownedProcessGroups; leader-exit survivors remain there.
+  const killedPgids = new Set<number>();
   for (const child of [...state.processes].reverse()) {
     try {
       if (child.pid) {
-        await killOwnedProcessGroupByPgid(child.pid);
-      } else {
-        await killProcessGroup(child);
+        const group = state.ownedProcessGroups.find(
+          (g) => g.pgid === child.pid || g.leaderPid === child.pid,
+        );
+        if (group) {
+          const result = await killOwnedProcessGroup(group);
+          killedPgids.add(group.pgid);
+          if (result === 'stale-recycled-pgid') {
+            // Correct refuse: do not treat as hard failure; ownership released below.
+          }
+        } else {
+          await killProcessGroup(state, child);
+        }
       }
     } catch (error) {
       failures.push(error);
@@ -565,8 +836,11 @@ export const cleanupLifecycle = async (state: LifecycleState): Promise<void> => 
       );
       continue;
     }
+    if (killedPgids.has(group.pgid)) continue;
     try {
-      await killOwnedProcessGroupByPgid(group.pgid);
+      const result = await killOwnedProcessGroup(group);
+      // stale-recycled-pgid / already-empty are successful non-destructive outcomes
+      void result;
     } catch (error) {
       failures.push(error);
     }

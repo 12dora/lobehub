@@ -8,13 +8,16 @@ import {
   createRunToken,
   isPidAlive,
   isProcessGroupAlive,
-  killOwnedProcessGroupByPgid,
+  killOwnedProcessGroup,
   listPidsInProcessGroup,
+  listProcessIdentitiesInGroup,
+  proveOwnedProcessGroupLifetime,
   refreshOwnedProcessGroupEvidence,
   registerOwnedProcessGroup,
   registerProcess,
   setProcessEnumExecForTests,
   spawnOwned,
+  stageOwnedProcessGroupForTests,
 } from './lifecycle';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -159,11 +162,93 @@ describe('owned process group enumeration and cleanup', () => {
       stdio: 'ignore',
     });
     expect(child.pid).toBeTruthy();
-    registerOwnedProcessGroup(state, child.pid!);
+    const owned = registerOwnedProcessGroup(state, child.pid!);
+    expect(owned.memberIdentities.length).toBeGreaterThan(0);
     // Empty registry but durable ownership remains
     state.processes.length = 0;
     expect(state.ownedProcessGroups).toHaveLength(1);
-    await killOwnedProcessGroupByPgid(child.pid!);
+    const result = await killOwnedProcessGroup(owned);
+    expect(result === 'reaped' || result === 'already-empty').toBe(true);
+    expect(isPidAlive(child.pid)).toBe(false);
+  }, 15_000);
+
+  it('stale numeric PGID reuse: cleanup must not signal foreign group with recycled PGID', async () => {
+    const state = createLifecycleState(createRunToken());
+    // Foreign real process group (detached) — will share only the numeric PGID with a staged stale record.
+    const foreign = spawn(process.execPath, ['-e', 'setInterval(()=>{},200)'], {
+      detached: true,
+      stdio: 'ignore',
+    });
+    await sleep(80);
+    expect(foreign.pid).toBeTruthy();
+    const simulatedReusedPgid = foreign.pid!;
+    expect(isPidAlive(simulatedReusedPgid)).toBe(true);
+
+    const liveIds = await listProcessIdentitiesInGroup(simulatedReusedPgid);
+    expect(liveIds.length).toBeGreaterThan(0);
+
+    // Stage stale ownership: same numeric PGID, but birth identities that do not match the live group.
+    stageOwnedProcessGroupForTests(state, {
+      leaderPid: simulatedReusedPgid,
+      memberIdentities: [
+        {
+          pgid: simulatedReusedPgid,
+          pid: simulatedReusedPgid,
+          startKey: 'Wed Dec 31 23:59:59 1969',
+        },
+      ],
+      pgid: simulatedReusedPgid,
+      registeredAtMs: Date.now() - 60_000,
+      runToken: state.runToken,
+    });
+
+    const proof = await proveOwnedProcessGroupLifetime(state.ownedProcessGroups[0]!);
+    expect(proof).toBe('stale');
+
+    let cleanupError: unknown;
+    try {
+      await cleanupLifecycle(state);
+    } catch (error) {
+      cleanupError = error;
+    }
+
+    // Foreign group must remain alive — never kill-by-recycled-number.
+    expect(isPidAlive(foreign.pid)).toBe(true);
+    expect(isProcessGroupAlive(simulatedReusedPgid)).toBe(true);
+    // Ownership released; stale refuse is not a hard lifecycle failure.
+    expect(state.ownedProcessGroups).toHaveLength(0);
+    expect(cleanupError).toBeFalsy();
+
+    try {
+      if (foreign.pid) process.kill(-foreign.pid, 'SIGKILL');
+    } catch {
+      // gone
+    }
+  }, 15_000);
+
+  it('identity enumeration failure fails closed (never kill-by-number)', async () => {
+    const state = createLifecycleState(createRunToken());
+    const child = spawnOwned(state, process.execPath, ['-e', 'setInterval(()=>{},200)'], {
+      stdio: 'ignore',
+    });
+    await sleep(50);
+    const owned = state.ownedProcessGroups[0]!;
+    expect(owned).toBeTruthy();
+
+    setProcessEnumExecForTests(async (file) => {
+      if (file === 'ps') throw Object.assign(new Error('ps broken'), { code: 'ENOENT' });
+      // pgrep path unused by identity capture
+      throw Object.assign(new Error('broken'), { code: 'ENOENT' });
+    });
+
+    await expect(killOwnedProcessGroup(owned)).rejects.toThrow(
+      /failed to capture process identities|failed to enumerate/i,
+    );
+    // Process still alive — we did not fail-open into kill-by-number.
+    expect(isPidAlive(child.pid)).toBe(true);
+
+    setProcessEnumExecForTests(null);
+    await killOwnedProcessGroup(owned);
     expect(isPidAlive(child.pid)).toBe(false);
   }, 15_000);
 });
