@@ -21,6 +21,11 @@ const vercelConfig = {
 };
 const nextConfig = defineConfig({
   ...(isVercel ? vercelConfig : {}),
+  // Enterprise-admin E2E sets this to an owned per-run distDir so suite teardown
+  // never leaves corrupted types under the main `.next` tree (root type-check safe).
+  ...(process.env.E2E_ENTERPRISE_ADMIN_NEXT_DIST_DIR
+    ? { distDir: process.env.E2E_ENTERPRISE_ADMIN_NEXT_DIST_DIR }
+    : {}),
 });
 
 export default nextConfig;

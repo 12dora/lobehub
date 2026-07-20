@@ -12,6 +12,7 @@ import {
   inspectPublishedHostPort,
   installLifecycleSignalHandlers,
   type LifecycleState,
+  registerOwnedDir,
   spawnOwned,
   startOwnedContainer,
 } from './lifecycle';
@@ -21,7 +22,10 @@ export const PROJECT_ROOT = path.resolve(__dirname, '../../..');
 export interface SuiteRuntime {
   appUrl: string;
   databaseUrl: string;
+  lifecycle: LifecycleState;
   mode: 'dev' | 'start' | 'external';
+  /** Isolated Next distDir relative to project root (owned; cleaned on stop). */
+  nextDistDir?: string;
   redisUrl: string;
   runToken: string;
   stop: () => Promise<void>;
@@ -67,6 +71,8 @@ export const freePort = async (): Promise<number> => {
   return held.port;
 };
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 const waitForPostgres = async (url: string) => {
   const deadline = Date.now() + 90_000;
   while (Date.now() < deadline) {
@@ -77,7 +83,7 @@ const waitForPostgres = async (url: string) => {
       return;
     } catch {
       await pool.end().catch(() => undefined);
-      await new Promise((r) => setTimeout(r, 500));
+      await sleep(500);
     }
   }
   throw new Error('isolated PostgreSQL failed to start within 90s');
@@ -100,7 +106,6 @@ export const runOwnedCommand = async (
     });
     child.once('error', reject);
     child.once('exit', (code, signal) => {
-      // Drop from process list once exited so cleanup does not re-kill.
       const idx = state.processes.indexOf(child);
       if (idx >= 0) state.processes.splice(idx, 1);
       if (code === 0) return resolveCommand();
@@ -121,7 +126,7 @@ const waitForHttp = async (
     } catch {
       // booting
     }
-    await new Promise((r) => setTimeout(r, 750));
+    await sleep(750);
   }
   throw new Error(`app health check failed: ${url}`);
 };
@@ -129,6 +134,7 @@ const waitForHttp = async (
 export const buildEnterpriseEnv = (params: {
   appUrl: string;
   databaseUrl: string;
+  nextDistDir?: string;
   port: number;
   redisUrl: string;
 }): NodeJS.ProcessEnv => ({
@@ -143,6 +149,8 @@ export const buildEnterpriseEnv = (params: {
   EASYAUTH_APP_TOKEN_FILE: '/dev/null',
   EASYAUTH_BASE_URL: 'http://127.0.0.1:9',
   EASYAUTH_PORTAL_URL: 'http://127.0.0.1:9',
+  // Isolate Next output so suite never corrupts the user's main .next (type-check safe).
+  ...(params.nextDistDir ? { E2E_ENTERPRISE_ADMIN_NEXT_DIST_DIR: params.nextDistDir } : {}),
   ENABLE_PLATFORM_ADMIN: '1',
   ENABLE_PLATFORM_MANAGED_AGENTS: '1',
   ENABLE_PLATFORM_MANAGED_AI: '1',
@@ -152,7 +160,6 @@ export const buildEnterpriseEnv = (params: {
   FEATURE_FLAGS: '-agent_self_iteration',
   KEY_VAULTS_SECRET,
   NODE_OPTIONS: '--max-old-space-size=6144',
-  // Short config cache so skill-catalog readiness outage becomes observable quickly.
   PLATFORM_CONFIG_CACHE_TTL_SECONDS: '1',
   PLATFORM_MASTER_KEY: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
   PLATFORM_MASTER_KEY_ID: 'enterprise-admin-e2e-key',
@@ -164,12 +171,6 @@ export const buildEnterpriseEnv = (params: {
   S3_SECRET_ACCESS_KEY: 'e2e-placeholder',
 });
 
-/**
- * External mode requires BOTH:
- * - E2E_ENTERPRISE_ADMIN_EXTERNAL=1
- * - E2E_ENTERPRISE_ADMIN_DISPOSABLE_DB=1
- * BASE_URL alone never selects external mode (prevents accidental shared-DB mutation).
- */
 export const resolveRuntimeMode = (
   env: NodeJS.ProcessEnv = process.env,
 ): 'isolated' | 'external' => {
@@ -184,22 +185,98 @@ export const resolveRuntimeMode = (
     }
     return 'external';
   }
-  // BASE_URL without explicit external gate is ignored — always isolate.
   return 'isolated';
 };
 
+export type StartAppHooks = {
+  /**
+   * Called after ports are released and before spawn (tests inject competitors / delay).
+   * Production path leaves this undefined.
+   */
+  afterPortRelease?: (ports: { appPort: number; spaPort?: number }) => Promise<void> | void;
+  /** Artificial delay after release before spawn (deterministic TOCTOU regression). */
+  bindDelayMs?: number;
+  /** How long to probe for bind failure before accepting the spawn attempt. */
+  bindProbeTimeoutMs?: number;
+};
+
+const killOwnedChild = async (state: LifecycleState, child: ChildProcess): Promise<void> => {
+  const idx = state.processes.indexOf(child);
+  if (idx >= 0) state.processes.splice(idx, 1);
+  if (!child.pid) return;
+  try {
+    process.kill(-child.pid, 'SIGKILL');
+  } catch {
+    try {
+      child.kill('SIGKILL');
+    } catch {
+      // gone
+    }
+  }
+  await Promise.race([new Promise<void>((r) => child.once('exit', () => r())), sleep(2_000)]);
+};
+
 /**
- * Start app process with held-port reservation + bounded retry on EADDRINUSE.
+ * Probe spawn for bind failure (EADDRINUSE / early exit) without requiring full HTTP ready.
+ * Delayed bind failures beyond 800ms are still detected for the full probe window.
+ * A port held by a competitor is NOT treated as success — only child exit / EADDRINUSE fail,
+ * and surviving the full window without those means "spawn looks stable" (outer health wait decides).
  */
-const startAppWithPortRetry = async (params: {
+export const probeAppBindOrFail = async (params: {
+  appPort: number;
+  child: ChildProcess;
+  timeoutMs: number;
+}): Promise<void> => {
+  let stderr = '';
+  let stdout = '';
+  const onErr = (chunk: Buffer | string) => {
+    stderr += String(chunk);
+  };
+  const onOut = (chunk: Buffer | string) => {
+    stdout += String(chunk);
+  };
+  params.child.stderr?.on('data', onErr);
+  params.child.stdout?.on('data', onOut);
+
+  const deadline = Date.now() + params.timeoutMs;
+  try {
+    while (Date.now() < deadline) {
+      if (params.child.exitCode !== null || params.child.signalCode !== null) {
+        throw new Error(
+          `app exited before bind stable (code=${params.child.exitCode} signal=${params.child.signalCode}): ${stderr.slice(-500)}`,
+        );
+      }
+      const combined = `${stderr}\n${stdout}`;
+      if (/EADDRINUSE|address already in use/i.test(combined)) {
+        throw new Error(`app bind EADDRINUSE: ${combined.slice(-400)}`);
+      }
+      await sleep(100);
+    }
+    // Still alive without EADDRINUSE for the full probe window — accept.
+    // (Port may not be listening yet; outer waitForHttp covers readiness.)
+  } finally {
+    params.child.stderr?.off('data', onErr);
+    params.child.stdout?.off('data', onOut);
+  }
+};
+
+/**
+ * Start app with held-port reservation + bounded choose/start/retry.
+ * On EADDRINUSE / late bind failure: kill owned group, choose new ports, restart promptly.
+ */
+export const startAppWithPortRetry = async (params: {
   databaseUrl: string;
+  hooks?: StartAppHooks;
   mode: 'dev' | 'start';
+  nextDistDir?: string;
   redisUrl: string;
   state: LifecycleState;
   attempts?: number;
 }): Promise<{ appPort: number; appUrl: string; child: ChildProcess }> => {
   const maxAttempts = params.attempts ?? 5;
+  const bindProbeTimeoutMs = params.hooks?.bindProbeTimeoutMs ?? 4_000;
   let lastError: unknown;
+
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const heldApp = await holdPort();
     const heldSpa = params.mode === 'dev' ? await holdPort() : undefined;
@@ -209,12 +286,21 @@ const startAppWithPortRetry = async (params: {
     const env = buildEnterpriseEnv({
       appUrl,
       databaseUrl: params.databaseUrl,
+      nextDistDir: params.nextDistDir,
       port: appPort,
       redisUrl: params.redisUrl,
     });
+
     try {
       await heldApp.release();
       if (heldSpa) await heldSpa.release();
+
+      if (params.hooks?.afterPortRelease) {
+        await params.hooks.afterPortRelease({ appPort, spaPort });
+      }
+      if (params.hooks?.bindDelayMs && params.hooks.bindDelayMs > 0) {
+        await sleep(params.hooks.bindDelayMs);
+      }
 
       let child: ChildProcess;
       if (params.mode === 'start') {
@@ -245,18 +331,18 @@ const startAppWithPortRetry = async (params: {
         });
       }
 
-      // Detect immediate bind failure
-      const earlyExit = await Promise.race([
-        new Promise<'alive'>((r) => setTimeout(() => r('alive'), 800)),
-        new Promise<'dead'>((r) => child.once('exit', () => r('dead'))),
-      ]);
-      if (earlyExit === 'dead') {
-        const idx = params.state.processes.indexOf(child);
-        if (idx >= 0) params.state.processes.splice(idx, 1);
-        lastError = new Error(`app exited immediately on port ${appPort}`);
+      try {
+        await probeAppBindOrFail({
+          appPort,
+          child,
+          timeoutMs: bindProbeTimeoutMs,
+        });
+        return { appPort, appUrl, child };
+      } catch (error) {
+        lastError = error;
+        await killOwnedChild(params.state, child);
         continue;
       }
-      return { appPort, appUrl, child };
     } catch (error) {
       lastError = error;
       await heldApp.release().catch(() => undefined);
@@ -286,6 +372,7 @@ const maybeInjectFault = (stage: StartupFaultStage, runToken: string): void => {
  * Start isolated postgres + redis + migrate + app (dev full-stack by default).
  * Lifecycle owner + signal handlers installed before first docker run.
  * Docker publishes ephemeral host ports (no freePort TOCTOU).
+ * Next distDir is suite-owned and cleaned on stop (never touches main .next).
  */
 export const startEnterpriseAdminRuntime = async (): Promise<SuiteRuntime> => {
   const modeChoice = resolveRuntimeMode();
@@ -293,9 +380,11 @@ export const startEnterpriseAdminRuntime = async (): Promise<SuiteRuntime> => {
     const appUrl = process.env.BASE_URL!.replace(/\/$/, '');
     const databaseUrl = process.env.DATABASE_URL!;
     await waitForHttp(`${appUrl}/signin`, 30_000);
+    const lifecycle = createLifecycleState('external');
     return {
       appUrl,
       databaseUrl,
+      lifecycle,
       mode: 'external',
       redisUrl: process.env.REDIS_URL || '',
       runToken: 'external',
@@ -325,8 +414,10 @@ export const startEnterpriseAdminRuntime = async (): Promise<SuiteRuntime> => {
   try {
     const suffix = runToken.replaceAll(/[^a-z0-9-]/gi, '').slice(-24);
     const databaseName = `aihub_admin_${suffix}`;
+    const nextDistDir = `.next-e2e-admin-${suffix}`;
+    const nextDistAbs = path.join(PROJECT_ROOT, nextDistDir);
+    registerOwnedDir(state, nextDistAbs);
 
-    // Docker assigns host ports — no freePort race with parallel suites.
     const pg = await startOwnedContainer({
       args: [
         '-e',
@@ -358,10 +449,10 @@ export const startEnterpriseAdminRuntime = async (): Promise<SuiteRuntime> => {
     const redisUrl = `redis://127.0.0.1:${redisPort}`;
     await waitForPostgres(databaseUrl);
 
-    // Temporary env for migrate (port placeholder; migrate does not listen).
     const migrateEnv = buildEnterpriseEnv({
       appUrl: 'http://localhost:9',
       databaseUrl,
+      nextDistDir,
       port: 9,
       redisUrl,
     });
@@ -373,18 +464,22 @@ export const startEnterpriseAdminRuntime = async (): Promise<SuiteRuntime> => {
 
     const mode = (process.env.E2E_ENTERPRISE_ADMIN_MODE as 'dev' | 'start' | undefined) ?? 'dev';
 
-    if (mode === 'start' && process.env.E2E_ENTERPRISE_ADMIN_SKIP_BUILD !== '1') {
-      await runOwnedCommand(state, 'bun', ['run', 'build'], {
-        ...migrateEnv,
-        NODE_ENV: 'production',
-        SKIP_LINT: '1',
-      });
+    if (mode === 'start') {
+      if (process.env.E2E_ENTERPRISE_ADMIN_SKIP_BUILD !== '1') {
+        await runOwnedCommand(state, 'bun', ['run', 'build'], {
+          ...migrateEnv,
+          NODE_ENV: 'production',
+          SKIP_LINT: '1',
+        });
+      }
+      // Fault point always reachable in start mode (even when build skipped).
       maybeInjectFault('after-build', runToken);
     }
 
     const { appUrl, child } = await startAppWithPortRetry({
       databaseUrl,
       mode,
+      nextDistDir,
       redisUrl,
       state,
     });
@@ -396,6 +491,7 @@ export const startEnterpriseAdminRuntime = async (): Promise<SuiteRuntime> => {
       console.error(`[admin-e2e-app] exited code=${code} signal=${signal}`);
     });
 
+    // Full suite health (already had short readiness during bind).
     await waitForHttp(`${appUrl}/signin`, 240_000, (status) => status === 200);
     const prewarmInput = encodeURIComponent(JSON.stringify({ 0: { json: null } }));
     await waitForHttp(
@@ -407,7 +503,9 @@ export const startEnterpriseAdminRuntime = async (): Promise<SuiteRuntime> => {
     return {
       appUrl,
       databaseUrl,
+      lifecycle: state,
       mode,
+      nextDistDir,
       redisUrl,
       runToken,
       stop,
