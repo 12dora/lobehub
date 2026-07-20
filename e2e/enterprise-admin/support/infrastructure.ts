@@ -198,6 +198,10 @@ export type StartAppHooks = {
   bindDelayMs?: number;
   /** How long to probe for bind failure before accepting the spawn attempt. */
   bindProbeTimeoutMs?: number;
+  /** Observer: each spawn attempt (does not alter cleanup). */
+  onSpawn?: (child: ChildProcess, attempt: number) => void;
+  /** Observer: after a failed attempt is fully reaped. */
+  onAttemptFailed?: (child: ChildProcess, attempt: number) => void;
   /**
    * Test seam: spawn a controlled app process through the same orchestration as production.
    * When omitted, production next/bun spawn is used.
@@ -347,6 +351,7 @@ export const startAppWithPortRetry = async (params: {
           stdio: ['ignore', 'pipe', 'pipe'],
         });
       }
+      params.hooks?.onSpawn?.(child, attempt);
 
       try {
         await probeAppBindOrFail({
@@ -358,6 +363,7 @@ export const startAppWithPortRetry = async (params: {
       } catch (error) {
         lastError = error;
         await killOwnedChild(params.state, child);
+        params.hooks?.onAttemptFailed?.(child, attempt);
         continue;
       }
     } catch (error) {
@@ -482,24 +488,19 @@ export const startEnterpriseAdminRuntime = async (): Promise<SuiteRuntime> => {
     const mode = (process.env.E2E_ENTERPRISE_ADMIN_MODE as 'dev' | 'start' | undefined) ?? 'dev';
 
     if (mode === 'start') {
-      // Build is never skipped for fault-stage after-build evidence unless explicitly
-      // SKIP_BUILD=1 for local speed of other start-mode paths. after-build tests must
-      // NOT set SKIP_BUILD; they may set E2E_ENTERPRISE_ADMIN_BUILD_COMMAND to a
-      // verifiable seam (real shell command that must succeed before the fault).
+      // Production default build only. SKIP_BUILD is for local start-mode convenience of
+      // non-after-build paths; after-build fault tests must not set it.
       if (process.env.E2E_ENTERPRISE_ADMIN_SKIP_BUILD !== '1') {
-        const buildCmd = process.env.E2E_ENTERPRISE_ADMIN_BUILD_COMMAND;
-        if (buildCmd) {
-          await runOwnedCommand(state, 'sh', ['-c', buildCmd], {
-            ...migrateEnv,
-            NODE_ENV: 'production',
-          });
-        } else {
-          await runOwnedCommand(state, 'bun', ['run', 'build'], {
-            ...migrateEnv,
-            NODE_ENV: 'production',
-            SKIP_LINT: '1',
-          });
-        }
+        // Next may leave a stale project-level `.next/lock` from interrupted builds;
+        // remove only the lock file (not the whole .next tree) before owned build.
+        await import('node:fs/promises').then(({ rm }) =>
+          rm(path.join(PROJECT_ROOT, '.next', 'lock'), { force: true }),
+        );
+        await runOwnedCommand(state, 'bun', ['run', 'build'], {
+          ...migrateEnv,
+          NODE_ENV: 'production',
+          SKIP_LINT: '1',
+        });
       }
       maybeInjectFault('after-build', runToken);
     }
