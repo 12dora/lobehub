@@ -18,6 +18,13 @@ import {
   UPSTREAM_REBASE_CI_LANE,
   UPSTREAM_REBASE_CI_SCHEMA_VERSION,
 } from './contract';
+import {
+  assessFailureDrillReadiness,
+  buildPassingFailureDrillEvidenceFixture,
+  evaluateFailureDrillEvidenceDirectory,
+  runFailureDrillsGate,
+  writeFailureDrillEvidenceFixture,
+} from './failureDrillGate';
 import { materializeIntegrationTree } from './fetchUpstream';
 import {
   detectAutofixMutation,
@@ -26,6 +33,11 @@ import {
   selectBunCheckPaths,
   VITEST_OUTPUT_PLACEHOLDER,
 } from './gates';
+import {
+  buildQ03PassingFixtureReport,
+  evaluateQ03MigrationCompatEvidence,
+  runMigrationUpgradeRollbackGate,
+} from './migrationGate';
 import {
   assertReportCommitsMatch,
   parseCommitsFileStrict,
@@ -169,11 +181,17 @@ describe('gate mapping', () => {
       const definition = resolveGateDefinition(id);
       expect(definition.kind).toBe(EXPECTED_GATE_KINDS[id]);
     }
-    expect(GATE_DEFINITIONS['failure-drills'].failClosed).toBe(true);
-    expect(GATE_DEFINITIONS['failure-drills'].kind).toBe('fail-closed');
+    expect(GATE_DEFINITIONS['failure-drills'].kind).toBe('command');
+    expect(GATE_DEFINITIONS['failure-drills'].runner).toBe('failure-drills');
+    expect(GATE_DEFINITIONS['failure-drills'].failClosed).toBeUndefined();
     expect(GATE_DEFINITIONS['bun-check-changed'].runner).toBe('bun-check-changed');
+    expect(GATE_DEFINITIONS['migration-upgrade-rollback'].kind).toBe('command');
     expect(GATE_DEFINITIONS['migration-upgrade-rollback'].runner).toBe(
       'migration-upgrade-rollback',
+    );
+    expect(GATE_DEFINITIONS['migration-upgrade-rollback'].reason).toMatch(/Q03/);
+    expect(GATE_DEFINITIONS['migration-upgrade-rollback'].reason).toMatch(
+      /weak journal-only substitutes are rejected/i,
     );
     expect(resolveGateDefinition('not-a-real-gate').failClosed).toBe(true);
 
@@ -294,18 +312,45 @@ describe('strict schemas', () => {
             kind: 'privacy-scan',
             outcome: 'passed',
             reason: 'ok',
+            assertions: { failed: 0, passed: 1, skipped: 0, total: 1 },
           },
           {
             id: 'type-check',
             kind: 'command',
             outcome: 'passed',
             reason: 'ok',
-            assertions: { failed: 0, passed: 1, skipped: 0, total: 1 },
           },
         ],
         required,
       ),
     ).toThrow(/assertions/);
+
+    expect(() =>
+      parseGateResultsStrict(
+        [
+          {
+            id: 'bun-check-changed',
+            kind: 'command',
+            outcome: 'passed',
+            reason: 'ok',
+            assertions: { failed: 0, passed: 0, skipped: 0, total: 0 },
+          },
+          {
+            id: 'privacy-review',
+            kind: 'privacy-scan',
+            outcome: 'passed',
+            reason: 'ok',
+          },
+          {
+            id: 'type-check',
+            kind: 'command',
+            outcome: 'passed',
+            reason: 'ok',
+          },
+        ],
+        required,
+      ),
+    ).toThrow(/positive all-pass|assertions/);
 
     const commits = parseCommitsFileStrict({
       base: FULL_SHA,
@@ -508,6 +553,128 @@ describe('bun-check-changed selection and autofix false green', () => {
     await commitAll(repositoryRoot, 'base');
     await writeRepoFile(repositoryRoot, 'a.ts', 'export const a = 2;\n');
     expect(await detectAutofixMutation(repositoryRoot)).toBe(true);
+  });
+});
+
+describe('migration-upgrade-rollback Q03-only', () => {
+  it('fails closed when Q03 verifier is absent (no journal fallback)', async () => {
+    const repositoryRoot = await mkdtemp(path.join(tmpdir(), 'migration-absent-'));
+    temporaryRoots.push(repositoryRoot);
+    const result = await runMigrationUpgradeRollbackGate({
+      rawDirectory: path.join(repositoryRoot, 'raw'),
+      repositoryRoot,
+    });
+    expect(result.outcome).toBe('failed');
+    expect(result.kind).toBe('command');
+    expect(result.reason).toMatch(/absent|fails closed/i);
+    expect(result.reason).toMatch(/without a weak substitute/i);
+  });
+
+  it('passes only with strict Q03 synthetic foundation evidence', async () => {
+    const fixture = buildQ03PassingFixtureReport();
+    expect(evaluateQ03MigrationCompatEvidence(fixture)).toBe(true);
+    expect(
+      evaluateQ03MigrationCompatEvidence({
+        ...fixture,
+        syntheticResult: 'failed',
+        overall: 'failed',
+      }),
+    ).toBe(false);
+    expect(
+      evaluateQ03MigrationCompatEvidence({
+        ...fixture,
+        overall: 'passed',
+      }),
+    ).toBe(false);
+    expect(
+      evaluateQ03MigrationCompatEvidence({
+        ...fixture,
+        rerun: { mode: 'idempotent', result: 'skipped' },
+      }),
+    ).toBe(false);
+
+    const repositoryRoot = await mkdtemp(path.join(tmpdir(), 'migration-fixture-'));
+    temporaryRoots.push(repositoryRoot);
+    const result = await runMigrationUpgradeRollbackGate({
+      injectedReport: fixture,
+      rawDirectory: path.join(repositoryRoot, 'raw'),
+      repositoryRoot,
+    });
+    expect(result.outcome).toBe('passed');
+    expect(result.assertions?.total).toBeGreaterThan(0);
+    expect(result.assertions?.passed).toBe(result.assertions?.total);
+    expect(result.reason).toMatch(/Q03|synthetic foundation/i);
+    expect(result.reason).not.toMatch(/app-version rollback|overall pass/i);
+  });
+});
+
+describe('failure-drills structured evidence', () => {
+  it('rejects unit-only / incomplete evidence and accepts multi-scenario fixtures', async () => {
+    const incompleteDir = await mkdtemp(path.join(tmpdir(), 'drill-incomplete-'));
+    temporaryRoots.push(incompleteDir);
+    await writeFile(
+      path.join(incompleteDir, 'not-a-scenario.json'),
+      `${JSON.stringify({ lane: 'enterprise-failure-drills' })}\n`,
+      'utf8',
+    );
+    expect(await evaluateFailureDrillEvidenceDirectory(incompleteDir)).toBe(false);
+
+    const emptyDir = await mkdtemp(path.join(tmpdir(), 'drill-empty-'));
+    temporaryRoots.push(emptyDir);
+    expect(await evaluateFailureDrillEvidenceDirectory(emptyDir)).toBe(false);
+
+    const fullDir = await mkdtemp(path.join(tmpdir(), 'drill-full-'));
+    temporaryRoots.push(fullDir);
+    await writeFailureDrillEvidenceFixture(fullDir, buildPassingFailureDrillEvidenceFixture());
+    expect(await evaluateFailureDrillEvidenceDirectory(fullDir)).toBe(true);
+
+    const gatePass = await runFailureDrillsGate({
+      injectedEvidenceDirectory: fullDir,
+      rawDirectory: path.join(fullDir, 'raw'),
+      repositoryRoot: process.cwd(),
+    });
+    expect(gatePass.outcome).toBe('passed');
+    expect(gatePass.assertions?.total).toBeGreaterThan(0);
+
+    const gateFail = await runFailureDrillsGate({
+      injectedEvidenceDirectory: incompleteDir,
+      rawDirectory: path.join(incompleteDir, 'raw'),
+      repositoryRoot: process.cwd(),
+    });
+    expect(gateFail.outcome).toBe('failed');
+    expect(gateFail.reason).toMatch(/unit-only|verify|failed/i);
+  });
+
+  it('reports unavailable/failed when disposable PG/Redis are not configured', async () => {
+    const readiness = assessFailureDrillReadiness({
+      ...process.env,
+      DATABASE_TEST_URL: undefined,
+      TEST_REDIS_URL: undefined,
+      TEST_SERVER_DB: undefined,
+    });
+    expect(readiness.ok).toBe(false);
+    expect(readiness.reason).toMatch(/TEST_SERVER_DB|DATABASE_TEST_URL|TEST_REDIS_URL/i);
+
+    const previous = {
+      DATABASE_TEST_URL: process.env.DATABASE_TEST_URL,
+      TEST_REDIS_URL: process.env.TEST_REDIS_URL,
+      TEST_SERVER_DB: process.env.TEST_SERVER_DB,
+    };
+    delete process.env.DATABASE_TEST_URL;
+    delete process.env.TEST_REDIS_URL;
+    delete process.env.TEST_SERVER_DB;
+    try {
+      const result = await runFailureDrillsGate({
+        rawDirectory: path.join(tmpdir(), `drill-unavail-${Date.now()}`),
+        repositoryRoot: process.cwd(),
+      });
+      expect(result.outcome).toBe('failed');
+      expect(result.reason).toMatch(/unavailable|required/i);
+    } finally {
+      if (previous.DATABASE_TEST_URL) process.env.DATABASE_TEST_URL = previous.DATABASE_TEST_URL;
+      if (previous.TEST_REDIS_URL) process.env.TEST_REDIS_URL = previous.TEST_REDIS_URL;
+      if (previous.TEST_SERVER_DB) process.env.TEST_SERVER_DB = previous.TEST_SERVER_DB;
+    }
   });
 });
 
