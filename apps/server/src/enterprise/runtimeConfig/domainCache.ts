@@ -188,6 +188,11 @@ export class DomainConfigCache<T> {
     const generation = state.generation;
     const request = this.load();
     state.inflight = { generation, promise: request };
+    const isAuthoritativeFlight = (): boolean =>
+      getStoredState(this.cacheKey, this.stateKey) === state &&
+      state.generation === generation &&
+      state.namespaceGeneration === getNamespaceGeneration(this.namespace) &&
+      state.inflight?.promise === request;
 
     try {
       const value = await request;
@@ -197,14 +202,7 @@ export class DomainConfigCache<T> {
         outcome: value === null ? 'loaded_negative' : 'loaded',
         type: 'cache',
       });
-      const currentNamespaceGeneration = getNamespaceGeneration(this.namespace);
-      const storedState = getStoredState(this.cacheKey, this.stateKey);
-      if (
-        storedState === state &&
-        state.generation === generation &&
-        state.namespaceGeneration === currentNamespaceGeneration &&
-        state.inflight?.promise === request
-      ) {
+      if (isAuthoritativeFlight()) {
         state.entry = {
           expiresAt: this.now() + this.cacheTtlMs,
           value: cloneNullable(value, this.cloneValue),
@@ -226,12 +224,14 @@ export class DomainConfigCache<T> {
         outcome: 'load_failure',
         type: 'cache',
       });
-      try {
-        this.onLoadFailure?.(error);
-      } catch (observerError) {
-        console.error('[PlatformRuntimeConfig] cache failure observer unavailable', {
-          errorClass: errorClass(observerError),
-        });
+      if (isAuthoritativeFlight()) {
+        try {
+          this.onLoadFailure?.(error);
+        } catch (observerError) {
+          console.error('[PlatformRuntimeConfig] cache failure observer unavailable', {
+            errorClass: errorClass(observerError),
+          });
+        }
       }
       throw error;
     } finally {

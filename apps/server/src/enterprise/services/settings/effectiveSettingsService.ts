@@ -162,7 +162,13 @@ export class EffectiveSettingsService {
       throw error;
     }
     const platformRevision = bundle?.revision ?? 0;
-    const userOverrideRevision = await this.model.getUserOverrideRevision(params.userId);
+    let userOverrideRevision: number;
+    try {
+      userOverrideRevision = await this.model.getUserOverrideRevision(params.userId);
+    } catch (error) {
+      this.reportUnavailable(error);
+      throw error;
+    }
 
     const cacheKey = buildSettingsCacheKey({
       platformRevision,
@@ -201,7 +207,13 @@ export class EffectiveSettingsService {
       };
     }
 
-    const overrideRows = await this.model.listUserOverrides(params.userId);
+    let overrideRows: Awaited<ReturnType<PlatformSettingsModel['listUserOverrides']>>;
+    try {
+      overrideRows = await this.model.listUserOverrides(params.userId);
+    } catch (error) {
+      this.reportUnavailable(error);
+      throw error;
+    }
     const overrides: Record<string, { value: unknown }> = {};
     for (const row of overrideRows) {
       overrides[row.path] = { value: row.value };
@@ -227,6 +239,9 @@ export class EffectiveSettingsService {
   };
 
   private reportUnavailable = (error: unknown): void => {
+    // Force recovery through a new materialization instead of leaving the reporter unavailable
+    // while subsequent requests keep serving a pre-failure cache hit at the same revision.
+    softCache.clear();
     reportPlatformRuntimeMaterializationSafely(this.runtimeReporter, this.db, {
       domain: 'settings',
       errorCategory: classifyRuntimeMaterializationError(error),
