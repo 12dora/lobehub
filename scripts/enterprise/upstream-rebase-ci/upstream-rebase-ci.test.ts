@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -31,6 +32,7 @@ import {
   captureSourceSnapshot,
   digestPorcelainStatus,
   materializeIntegrationTree,
+  readRawPorcelainStatus,
 } from './fetchUpstream';
 import {
   detectAutofixMutation,
@@ -916,7 +918,7 @@ describe('evidence contract', () => {
 });
 
 describe('source immutability snapshot', () => {
-  it('rejects initially dirty worktrees and equal-length different porcelain content', async () => {
+  it('hashes raw porcelain Buffer bytes matching direct git status Buffer digests', async () => {
     const repositoryRoot = await mkdtemp(path.join(tmpdir(), 'source-immut-'));
     temporaryRoots.push(repositoryRoot);
     await runGit(repositoryRoot, 'init', '--quiet', '--initial-branch=main');
@@ -926,21 +928,46 @@ describe('source immutability snapshot', () => {
     await commitAll(repositoryRoot, 'base');
 
     const clean = await captureSourceSnapshot(repositoryRoot);
-    expect(clean.statusDigest).toBe(digestPorcelainStatus(''));
+    expect(clean.statusDigest).toBe(digestPorcelainStatus(Buffer.alloc(0)));
     await assertSourceUnchanged(repositoryRoot, clean);
 
+    // Leading-space tracked modification: porcelain is " M a.ts\0" — never trim leading space.
     await writeRepoFile(repositoryRoot, 'a.ts', 'export const a = 2;\n');
+    const modified = await readRawPorcelainStatus(repositoryRoot);
+    expect(modified[0]).toBe(0x20); // leading space of " M"
+    expect(modified.includes(0)).toBe(true); // NUL terminator from -z
+    const directDigest = createHash('sha256').update(modified).digest('hex');
+    expect(digestPorcelainStatus(modified)).toBe(directDigest);
     await expect(captureSourceSnapshot(repositoryRoot)).rejects.toThrow(/must be clean/i);
 
-    // Equal-length different porcelain content must change the digest (not length equality).
-    const left = ' M a.ts\0';
-    const right = ' M b.ts\0';
+    // Equal-length different statuses (Buffer, not string).
+    const left = Buffer.from(' M a.ts\0', 'utf8');
+    const right = Buffer.from(' M b.ts\0', 'utf8');
     expect(left.length).toBe(right.length);
     expect(digestPorcelainStatus(left)).not.toBe(digestPorcelainStatus(right));
 
-    await writeRepoFile(repositoryRoot, 'b.ts', 'export const b = 1;\n');
-    // Dirty with two modified files still cannot capture.
-    await expect(captureSourceSnapshot(repositoryRoot)).rejects.toThrow(/must be clean/i);
+    // Non-UTF8 filename where the filesystem accepts the bytes.
+    await runGit(repositoryRoot, 'checkout', '--', 'a.ts');
+    const weirdRelative = Buffer.from([0xff, 0xfe, 0x62, 0x2e, 0x74, 0x73]); // invalid UTF-8 + "b.ts"
+    const weirdPath = path.join(repositoryRoot, weirdRelative.toString('latin1'));
+    await writeFile(weirdPath, 'export const weird = true;\n');
+    await runGit(repositoryRoot, 'add', '--', weirdRelative.toString('latin1'));
+    await runGit(repositoryRoot, 'commit', '--quiet', '-m', 'weird name');
+    // Modify tracked weird file
+    await writeFile(weirdPath, 'export const weird = false;\n');
+    const weirdStatus = await readRawPorcelainStatus(repositoryRoot);
+    expect(weirdStatus.length).toBeGreaterThan(0);
+    const weirdHelper = digestPorcelainStatus(weirdStatus);
+    const weirdDirect = createHash('sha256').update(weirdStatus).digest('hex');
+    expect(weirdHelper).toBe(weirdDirect);
+    // Must not equal a UTF-8-decoded-and-trimmed digest of the same buffer.
+    const corrupted = createHash('sha256')
+      .update(weirdStatus.toString('utf8').trim(), 'utf8')
+      .digest('hex');
+    // When bytes are invalid UTF-8, replacement or truncation makes digests diverge.
+    if (!weirdStatus.equals(Buffer.from(weirdStatus.toString('utf8'), 'utf8'))) {
+      expect(weirdHelper).not.toBe(corrupted);
+    }
   });
 });
 
@@ -980,9 +1007,9 @@ describe('enterprise-upstream-rebase workflow', () => {
     expect(joined).toContain('run-gates');
     expect(joined).toContain('changed-paths');
     expect(joined).toContain('UPSTREAM_REBASE_SOURCE_HEAD');
-    expect(joined).toContain('snapshot-source');
-    expect(joined).toContain('assert-source-unchanged');
-    expect(joined).toContain('statusDigest');
+    expect(joined).toContain('UPSTREAM_REBASE_SOURCE_STATUS_DIGEST');
+    expect(joined).toMatch(/git status --porcelain=v1 -z/);
+    expect(joined).toMatch(/sha256sum/);
     expect(joined).not.toMatch(/\bwc\s+-c\b/u);
     expect(joined).not.toContain('UPSTREAM_REBASE_SOURCE_STATUS_BYTES');
     expect(joined).not.toMatch(/\bgit\s+push\b/u);
@@ -999,6 +1026,48 @@ describe('enterprise-upstream-rebase workflow', () => {
     expect(syncSource).toContain('Fork-Sync-With-Upstream-action');
     expect(source).not.toContain('Fork-Sync-With-Upstream-action');
     expect(source).not.toContain('contents: write');
+  });
+
+  it('captures pristine snapshot before setup-env and pnpm install with runner-native tools only', async () => {
+    const source = await readFile(WORKFLOW_PATH, 'utf8');
+    const workflow = parse(source) as {
+      jobs: Record<string, { steps: Array<{ name?: string; run?: string; uses?: string }> }>;
+    };
+    const steps = workflow.jobs['dry-run'].steps;
+    const names = steps.map((step) => step.name ?? '');
+    const checkout = names.indexOf('Checkout candidate');
+    const pristine = names.indexOf('Capture pristine source snapshot');
+    const setup = names.indexOf('Setup environment');
+    const install = names.findIndex((name) => name.includes('Install dependencies on candidate'));
+
+    expect(checkout).toBeGreaterThanOrEqual(0);
+    expect(pristine).toBe(checkout + 1);
+    expect(pristine).toBeLessThan(setup);
+    expect(pristine).toBeLessThan(install);
+
+    const pristineStep = steps[pristine];
+    expect(pristineStep.run).toBeDefined();
+    expect(pristineStep.uses).toBeUndefined();
+    // Runner-native only: no candidate-owned scripts, setup-env, bun, or node.
+    expect(pristineStep.run).not.toContain('bun ');
+    expect(pristineStep.run).not.toContain('node ');
+    expect(pristineStep.run).not.toContain('scripts/enterprise');
+    expect(pristineStep.run).not.toContain('setup-env');
+    expect(pristineStep.run).not.toContain('pnpm install');
+    expect(pristineStep.run).toContain('git status --porcelain=v1 -z');
+    expect(pristineStep.run).toContain('sha256sum');
+    expect(pristineStep.run).toContain('git rev-parse HEAD');
+
+    // Counterexample: a post-setup snapshot must not be the first trusted baseline.
+    // If setup/install ran first, a candidate hook could commit and re-baseline.
+    const firstCandidateAction = Math.min(setup, install);
+    expect(pristine).toBeLessThan(firstCandidateAction);
+    const prepareIndex = names.findIndex((name) => name.includes('Prepare isolated'));
+    expect(prepareIndex).toBeGreaterThan(install);
+    // Prepare must re-assert the *initial* digest, not capture a new baseline.
+    const prepareRun = steps[prepareIndex].run ?? '';
+    expect(prepareRun).toContain('UPSTREAM_REBASE_SOURCE_STATUS_DIGEST');
+    expect(prepareRun).not.toMatch(/snapshot-source/);
   });
 
   it('documents actionlint unavailability when the binary is missing', async () => {
