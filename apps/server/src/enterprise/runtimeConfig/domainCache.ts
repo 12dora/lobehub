@@ -37,6 +37,8 @@ export interface DomainConfigCacheOptions<T> {
   namespace: string;
   now?: () => number;
   observabilityDomain: EnterpriseCacheDomain;
+  onEntryStored?: (value: T | null) => void;
+  onLoadFailure?: (error: unknown) => void;
 }
 
 let statesByCacheKey = new WeakMap<object, Map<string, StoredDomainCacheState>>();
@@ -103,6 +105,8 @@ export class DomainConfigCache<T> {
   private readonly namespace: string;
   private readonly now: () => number;
   private readonly observabilityDomain: EnterpriseCacheDomain;
+  private readonly onEntryStored?: (value: T | null) => void;
+  private readonly onLoadFailure?: (error: unknown) => void;
   private readonly stateKey: string;
 
   constructor(options: DomainConfigCacheOptions<T>) {
@@ -114,6 +118,8 @@ export class DomainConfigCache<T> {
     this.namespace = options.namespace;
     this.now = options.now ?? Date.now;
     this.observabilityDomain = options.observabilityDomain;
+    this.onEntryStored = options.onEntryStored;
+    this.onLoadFailure = options.onLoadFailure;
     this.stateKey = `${options.namespace}\0${options.cacheId}`;
   }
 
@@ -203,6 +209,13 @@ export class DomainConfigCache<T> {
           expiresAt: this.now() + this.cacheTtlMs,
           value: cloneNullable(value, this.cloneValue),
         };
+        try {
+          this.onEntryStored?.(cloneNullable(value, this.cloneValue));
+        } catch (error) {
+          console.error('[PlatformRuntimeConfig] cache entry observer unavailable', {
+            errorClass: errorClass(error),
+          });
+        }
       }
       return cloneNullable(value, this.cloneValue);
     } catch (error) {
@@ -213,6 +226,13 @@ export class DomainConfigCache<T> {
         outcome: 'load_failure',
         type: 'cache',
       });
+      try {
+        this.onLoadFailure?.(error);
+      } catch (observerError) {
+        console.error('[PlatformRuntimeConfig] cache failure observer unavailable', {
+          errorClass: errorClass(observerError),
+        });
+      }
       throw error;
     } finally {
       if (state.generation === generation && state.inflight?.promise === request) {

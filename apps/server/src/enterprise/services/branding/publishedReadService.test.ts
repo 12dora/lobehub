@@ -6,6 +6,7 @@ import type { PlatformBrandingPublishedRow } from '@/database/repositories/platf
 import { platformBranding } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 
+import type { PlatformRuntimeMaterializationReporter } from '../platformInstance/runtimeReporter';
 import { BrandingPublishedReadService, resetBrandingPublishedCache } from './publishedReadService';
 
 const serverDB: LobeChatDatabase = await getTestDB();
@@ -124,6 +125,41 @@ describe('BrandingPublishedReadService', () => {
     expect(getPublished).toHaveBeenCalledTimes(3);
   });
 
+  it('reports only real database materializations and never refreshes state on a cache hit', async () => {
+    let epoch = '0';
+    const reportRuntimeState = vi.fn<PlatformRuntimeMaterializationReporter>();
+    const getPublished = vi
+      .fn<() => Promise<PlatformBrandingPublishedRow | undefined>>()
+      .mockResolvedValueOnce(publishedRow(1))
+      .mockResolvedValueOnce(publishedRow(2));
+    const service = new BrandingPublishedReadService(serverDB, {
+      cacheKey: {},
+      getCacheEpoch: async () => epoch,
+      model: { getPublished },
+      reportRuntimeState,
+    });
+
+    await expect(service.getPublished()).resolves.toMatchObject({ revision: '1' });
+    await expect(service.getPublished()).resolves.toMatchObject({ revision: '1' });
+    expect(reportRuntimeState).toHaveBeenCalledOnce();
+    expect(reportRuntimeState).toHaveBeenLastCalledWith(serverDB, {
+      domain: 'branding',
+      health: 'healthy',
+      revision: 1,
+      source: 'database',
+    });
+
+    epoch = '1';
+    await expect(service.getPublished()).resolves.toMatchObject({ revision: '2' });
+    expect(reportRuntimeState).toHaveBeenCalledTimes(2);
+    expect(reportRuntimeState).toHaveBeenLastCalledWith(serverDB, {
+      domain: 'branding',
+      health: 'healthy',
+      revision: 2,
+      source: 'database',
+    });
+  });
+
   it('caches the absence of Published branding without inventing a revision', async () => {
     const getPublished = vi.fn(async () => undefined);
     const service = new BrandingPublishedReadService(serverDB, {
@@ -135,6 +171,28 @@ describe('BrandingPublishedReadService', () => {
     await expect(service.getPublished()).resolves.toBeNull();
     await expect(service.getPublished()).resolves.toBeNull();
     expect(getPublished).toHaveBeenCalledOnce();
+  });
+
+  it('reports missing Published branding as unavailable without inventing healthy fallback state', async () => {
+    const reportRuntimeState = vi.fn<PlatformRuntimeMaterializationReporter>();
+    const service = new BrandingPublishedReadService(serverDB, {
+      cacheKey: {},
+      getCacheEpoch: async () => '0',
+      model: { getPublished: vi.fn(async () => undefined) },
+      reportRuntimeState,
+    });
+
+    await expect(service.getPublished()).resolves.toBeNull();
+    await expect(service.getPublished()).resolves.toBeNull();
+
+    expect(reportRuntimeState).toHaveBeenCalledOnce();
+    expect(reportRuntimeState).toHaveBeenCalledWith(serverDB, {
+      domain: 'branding',
+      errorCategory: 'load_failed',
+      health: 'unavailable',
+      source: 'unavailable',
+    });
+    expect(reportRuntimeState.mock.calls.map(([, state]) => state.health)).toEqual(['unavailable']);
   });
 
   it('shares one cold-miss read for concurrent callers with the same cache key and epoch', async () => {
@@ -208,6 +266,52 @@ describe('BrandingPublishedReadService', () => {
     expect(failures.every((result) => result.status === 'rejected')).toBe(true);
     await expect(service.getPublished()).resolves.toMatchObject({ revision: '2' });
     expect(getPublished).toHaveBeenCalledTimes(2);
+  });
+
+  it('reports a real load failure then same-target recovery without changing the thrown error', async () => {
+    const original = Object.assign(new Error('raw database detail'), { code: 'ECONNREFUSED' });
+    const reportRuntimeState = vi.fn<PlatformRuntimeMaterializationReporter>();
+    const getPublished = vi
+      .fn<() => Promise<PlatformBrandingPublishedRow | undefined>>()
+      .mockRejectedValueOnce(original)
+      .mockResolvedValueOnce(publishedRow(3));
+    const service = new BrandingPublishedReadService(serverDB, {
+      cacheKey: {},
+      getCacheEpoch: async () => '0',
+      model: { getPublished },
+      reportRuntimeState,
+    });
+
+    await expect(service.getPublished()).rejects.toBe(original);
+    await expect(service.getPublished()).resolves.toMatchObject({ revision: '3' });
+
+    expect(reportRuntimeState.mock.calls.map(([, state]) => state)).toEqual([
+      {
+        domain: 'branding',
+        errorCategory: 'database_unavailable',
+        health: 'unavailable',
+        source: 'unavailable',
+      },
+      { domain: 'branding', health: 'healthy', revision: 3, source: 'database' },
+    ]);
+  });
+
+  it('contains an injected reporter failure and returns the original branding projection', async () => {
+    const reportRuntimeState = vi.fn<PlatformRuntimeMaterializationReporter>(() => {
+      throw new Error('raw reporter detail');
+    });
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const service = new BrandingPublishedReadService(serverDB, {
+      cacheKey: {},
+      getCacheEpoch: async () => '0',
+      model: { getPublished: vi.fn(async () => publishedRow(4)) },
+      reportRuntimeState,
+    });
+
+    await expect(service.getPublished()).resolves.toMatchObject({ revision: '4' });
+    expect(consoleError).toHaveBeenCalledWith('[platform-instance-runtime] reporter unavailable');
+    expect(JSON.stringify(consoleError.mock.calls)).not.toContain('raw reporter detail');
+    consoleError.mockRestore();
   });
 
   it('reset clears cached and in-flight state without an old request deleting new work', async () => {

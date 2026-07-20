@@ -25,6 +25,12 @@ import {
   getPlatformConfigInvalidationPublisher,
   type PlatformConfigInvalidationPublisher,
 } from '../platformConfigInvalidation';
+import {
+  classifyRuntimeMaterializationError,
+  type PlatformRuntimeMaterializationReporter,
+  reportPlatformRuntimeMaterialization,
+  reportPlatformRuntimeMaterializationSafely,
+} from '../platformInstance/runtimeReporter';
 import { buildSettingsCacheKey, resolveEffectiveSettings } from './effectiveResolver';
 import { validateLegacySettingsUpdate } from './legacySettingsCatalog';
 import { flattenLeaves, getByPath } from './pathUtils';
@@ -66,16 +72,19 @@ export class EffectiveSettingsService {
   private readonly model: PlatformSettingsModel;
   private readonly invalidation: PlatformConfigInvalidationPublisher;
   private readonly lifecycle: SettingsMutationLifecycle;
+  private readonly runtimeReporter: PlatformRuntimeMaterializationReporter;
 
   constructor(
     db: LobeChatDatabase,
     invalidation: PlatformConfigInvalidationPublisher = getPlatformConfigInvalidationPublisher(),
     lifecycle: SettingsMutationLifecycle = {},
+    runtimeReporter: PlatformRuntimeMaterializationReporter = reportPlatformRuntimeMaterialization,
   ) {
     this.db = db;
     this.model = new PlatformSettingsModel(db);
     this.invalidation = invalidation;
     this.lifecycle = lifecycle;
+    this.runtimeReporter = runtimeReporter;
   }
 
   isPolicyEnabled = (): boolean => getEnterpriseFeatureFlags().ENABLE_PLATFORM_SETTINGS_POLICY;
@@ -145,7 +154,13 @@ export class EffectiveSettingsService {
       });
     }
 
-    const bundle = await this.model.getBundle();
+    let bundle: Awaited<ReturnType<PlatformSettingsModel['getBundle']>>;
+    try {
+      bundle = await this.model.getBundle();
+    } catch (error) {
+      this.reportUnavailable(error);
+      throw error;
+    }
     const platformRevision = bundle?.revision ?? 0;
     const userOverrideRevision = await this.model.getUserOverrideRevision(params.userId);
 
@@ -161,7 +176,13 @@ export class EffectiveSettingsService {
       return cached.value;
     }
 
-    const published = await this.model.listPublishedPolicies();
+    let published: Awaited<ReturnType<PlatformSettingsModel['listPublishedPolicies']>>;
+    try {
+      published = await this.model.listPublishedPolicies();
+    } catch (error) {
+      this.reportUnavailable(error);
+      throw error;
+    }
     const policies: Record<
       string,
       {
@@ -196,7 +217,22 @@ export class EffectiveSettingsService {
     });
 
     softCache.set(cacheKey, { at: Date.now(), value: result });
+    reportPlatformRuntimeMaterializationSafely(this.runtimeReporter, this.db, {
+      domain: 'settings',
+      health: 'healthy',
+      revision: platformRevision,
+      source: 'database',
+    });
     return result;
+  };
+
+  private reportUnavailable = (error: unknown): void => {
+    reportPlatformRuntimeMaterializationSafely(this.runtimeReporter, this.db, {
+      domain: 'settings',
+      errorCategory: classifyRuntimeMaterializationError(error),
+      health: 'unavailable',
+      source: 'unavailable',
+    });
   };
 
   patchSettingOverride = async (params: {
@@ -501,6 +537,10 @@ export class EffectiveSettingsService {
     }
   };
 }
+
+export const resetEffectiveSettingsCacheForTest = (): void => {
+  softCache.clear();
+};
 
 /** Helper for tests / diagnostics — read a leaf from nested settings. */
 export const readEffectivePath = (effective: EffectiveSettingsResult, path: string): unknown =>

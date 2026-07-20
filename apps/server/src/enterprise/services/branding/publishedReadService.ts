@@ -8,6 +8,12 @@ import {
 
 import { DomainConfigCache, invalidateDomainConfigCacheNamespace } from '../../runtimeConfig';
 import { getPlatformConfigScopeVersion } from '../platformConfigInvalidation';
+import {
+  classifyRuntimeMaterializationError,
+  type PlatformRuntimeMaterializationReporter,
+  reportPlatformRuntimeMaterialization,
+  reportPlatformRuntimeMaterializationSafely,
+} from '../platformInstance/runtimeReporter';
 
 const BRANDING_CACHE_SCOPE = 'branding';
 const BRANDING_CACHE_ID = 'published';
@@ -23,6 +29,7 @@ export interface BrandingPublishedReadServiceOptions {
   getCacheEpoch?: () => Promise<string>;
   model?: PublishedBrandingReader;
   now?: () => number;
+  reportRuntimeState?: PlatformRuntimeMaterializationReporter;
 }
 
 const clonePublishedBranding = (
@@ -63,6 +70,7 @@ export class BrandingPublishedReadService {
 
   constructor(db: LobeChatDatabase, options: BrandingPublishedReadServiceOptions = {}) {
     this.model = options.model ?? new PlatformBrandingModel(db);
+    const reportRuntimeState = options.reportRuntimeState ?? reportPlatformRuntimeMaterialization;
     this.cache = new DomainConfigCache({
       cacheId: BRANDING_CACHE_ID,
       cacheKey: options.cacheKey ?? db,
@@ -77,6 +85,31 @@ export class BrandingPublishedReadService {
       namespace: BRANDING_CACHE_NAMESPACE,
       now: options.now,
       observabilityDomain: 'branding',
+      onEntryStored: (branding) => {
+        if (!branding) {
+          reportPlatformRuntimeMaterializationSafely(reportRuntimeState, db, {
+            domain: 'branding',
+            errorCategory: 'load_failed',
+            health: 'unavailable',
+            source: 'unavailable',
+          });
+          return;
+        }
+        reportPlatformRuntimeMaterializationSafely(reportRuntimeState, db, {
+          domain: 'branding',
+          health: 'healthy',
+          revision: Number(branding.revision),
+          source: 'database',
+        });
+      },
+      onLoadFailure: (error) => {
+        reportPlatformRuntimeMaterializationSafely(reportRuntimeState, db, {
+          domain: 'branding',
+          errorCategory: classifyRuntimeMaterializationError(error),
+          health: 'unavailable',
+          source: 'unavailable',
+        });
+      },
     });
   }
 
