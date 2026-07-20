@@ -142,8 +142,6 @@ describe('DatabaseConnectorRuntimeExecutionJournal', () => {
     });
     if (acquired.status !== 'acquired') throw new Error('journal was not acquired');
     createdIds.push(acquired.token.jobId);
-    const beforeArm = new Date();
-
     await journal.arm(acquired.token);
 
     await expect(
@@ -157,8 +155,8 @@ describe('DatabaseConnectorRuntimeExecutionJournal', () => {
     const armed = await db.query.platformJobs.findFirst({
       where: eq(platformJobs.id, acquired.token.jobId),
     });
-    expect(armed!.leaseUntil!.getTime()).toBeGreaterThan(beforeArm.getTime() + 29_000);
-    expect(armed!.startedAt!.getTime()).toBeGreaterThanOrEqual(beforeArm.getTime());
+    expect(armed!.startedAt!.getTime()).toBe(armed!.heartbeatAt!.getTime());
+    expect(armed!.leaseUntil!.getTime() - armed!.heartbeatAt!.getTime()).toBe(30_000);
   });
 
   it('lets cleanup win at the expiry boundary and never arms or audits the reservation', async () => {
@@ -229,7 +227,9 @@ describe('DatabaseConnectorRuntimeExecutionJournal', () => {
         startedAt: expect.any(Date),
         status: 'running',
       });
-      expect(Math.abs(armed!.heartbeatAt!.getTime() - armed!.now.getTime())).toBeLessThan(5000);
+      expect(
+        Math.abs(armed!.heartbeatAt!.getTime() - new Date(String(armed!.now)).getTime()),
+      ).toBeLessThan(5000);
       expect(armed!.leaseUntil!.getTime() - armed!.heartbeatAt!.getTime()).toBe(30_000);
     },
   );
