@@ -551,9 +551,29 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY = [
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SKILL_UPDATE] },
   },
   {
+    kind: 'mutation',
+    path: 'admin.system.cancelJob',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SYSTEM_OPERATE] },
+  },
+  {
     kind: 'query',
     path: 'admin.system.getAuthSnapshotStatus',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.OIDC_PUBLISH] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.system.getInstanceRevisions',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SYSTEM_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.system.getJobs',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SYSTEM_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.system.getStatus',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SYSTEM_READ] },
   },
   {
     kind: 'mutation',
@@ -564,6 +584,11 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY = [
     kind: 'mutation',
     path: 'admin.system.requestRestart',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.OIDC_PUBLISH] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.system.retryJob',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SYSTEM_OPERATE] },
   },
   {
     kind: 'mutation',
