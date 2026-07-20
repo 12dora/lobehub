@@ -10,6 +10,7 @@ import { readdir, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 import {
+  ENTERPRISE_PATH_BOUNDARY_SCAN_ROOTS,
   findEnterpriseImportViolations,
   findPackageReverseImportViolations,
   type PathBoundaryViolation,
@@ -27,6 +28,10 @@ const SKIP_DIR_NAMES = new Set([
   'tmp',
   'temp',
   '.temp',
+  // generated / vendored artifacts
+  'out',
+  '.turbo',
+  'storybook-static',
 ]);
 
 const SOURCE_EXT = new Set(['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs']);
@@ -54,9 +59,7 @@ async function walk(dir: string, acc: string[] = []): Promise<string[]> {
 }
 
 async function main() {
-  const scanRoots = ['src', 'apps/server/src', 'packages', 'scripts/enterprise'].map((p) =>
-    path.join(ROOT, p),
-  );
+  const scanRoots = ENTERPRISE_PATH_BOUNDARY_SCAN_ROOTS.map((p) => path.join(ROOT, p));
 
   const files: string[] = [];
   for (const root of scanRoots) {
@@ -73,6 +76,7 @@ async function main() {
     const rel = path.relative(ROOT, absolute).replaceAll('\\', '/');
     // Skip generated / heavy vendored trees under packages if any
     if (rel.includes('/node_modules/')) continue;
+    if (rel.includes('/dist/') || rel.includes('/build/') || rel.includes('/.next/')) continue;
     const source = await readFile(absolute, 'utf8');
     payloads.push({ path: rel, source });
   }
@@ -83,7 +87,9 @@ async function main() {
   ];
 
   if (violations.length === 0) {
-    console.log(`✅ enterprise path boundaries ok (${payloads.length} files scanned)`);
+    console.log(
+      `✅ enterprise path boundaries ok (${payloads.length} files scanned; roots: ${ENTERPRISE_PATH_BOUNDARY_SCAN_ROOTS.join(', ')})`,
+    );
     process.exit(0);
   }
 
