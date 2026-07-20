@@ -15,6 +15,7 @@ import {
 } from '@/database/schemas/platform';
 import type { LobeChatDatabase, Transaction } from '@/database/type';
 import {
+  PLATFORM_CONVERGENCE_DOMAIN_DESCRIPTORS,
   PLATFORM_CONVERGENCE_DOMAINS,
   type PlatformConvergenceErrorCategory,
   type PlatformConvergenceStatus,
@@ -80,6 +81,15 @@ const tokenFromState = (state: {
 const tokensEqual = (left: PlatformRevisionToken | null, right: PlatformRevisionToken | null) =>
   left?.kind === right?.kind && left?.value === right?.value;
 
+const tokenFitsDomain = (
+  domain: PlatformDomainTarget['domain'],
+  token: PlatformRevisionToken | null,
+): token is PlatformRevisionToken => {
+  if (!token) return false;
+  const tokenKind = PLATFORM_CONVERGENCE_DOMAIN_DESCRIPTORS[domain].tokenKind;
+  return token.kind === (tokenKind === 'immutable_id_or_null' ? 'immutable_id' : tokenKind);
+};
+
 const convergenceStatus = (
   target: PlatformDomainTarget,
   counts: PlatformInstanceInventoryCounts,
@@ -120,12 +130,15 @@ const platformDiagnostic = (
     .filter(({ domain }) => domain !== 'identity')
     .map((target) => {
       const state = diagnostic.states.find(({ domain }) => domain === target.domain);
-      const loadedToken = state ? tokenFromState(state) : null;
+      const candidateToken = state ? tokenFromState(state) : null;
+      const loadedToken = tokenFitsDomain(target.domain, candidateToken) ? candidateToken : null;
+      const invalidFallbackSource = target.domain !== 'identity' && state?.source === 'lkg';
       let status: PlatformConvergenceStatus;
       if (target.status === 'disabled') status = 'disabled';
       else if (target.loadMode === 'request_scoped') status = 'not_applicable';
       else if (target.status === 'unavailable') status = 'unavailable';
       else if (!state) status = 'unreported';
+      else if (invalidFallbackSource) status = 'unavailable';
       else if (state.health === 'unavailable') status = 'unavailable';
       else if (state.health === 'degraded') status = 'degraded';
       else status = tokensEqual(loadedToken, target.token) ? 'converged' : 'diverged';
@@ -133,12 +146,29 @@ const platformDiagnostic = (
         domain: target.domain,
         errorCategory:
           status === 'unavailable' || status === 'degraded'
-            ? safeErrorCategory(state?.errorCategory ?? target.errorCategory)
+            ? invalidFallbackSource
+              ? 'configuration_invalid'
+              : safeErrorCategory(state?.errorCategory ?? target.errorCategory)
             : null,
-        loadedAt: state?.loadedAt ?? null,
-        loadedToken,
+        loadedAt:
+          status === 'disabled' || status === 'not_applicable' || status === 'unreported'
+            ? null
+            : (state?.loadedAt ?? null),
+        loadedToken:
+          status === 'disabled' ||
+          status === 'not_applicable' ||
+          status === 'unreported' ||
+          status === 'unavailable'
+            ? null
+            : loadedToken,
         loadMode: target.loadMode,
-        source: state?.source ?? 'unavailable',
+        source:
+          status === 'disabled' ||
+          status === 'not_applicable' ||
+          status === 'unreported' ||
+          status === 'unavailable'
+            ? 'unavailable'
+            : (state?.source ?? 'unavailable'),
         status,
       };
     }),
@@ -174,7 +204,7 @@ const identityDiagnostic = (
     target.status === 'unavailable'
       ? 'unavailable'
       : registrationFailed
-        ? 'degraded'
+        ? 'unavailable'
         : row.health === 'degraded' || fallback
           ? 'degraded'
           : tokensEqual(loadedToken, target.token)
@@ -186,7 +216,9 @@ const identityDiagnostic = (
         domain: 'identity',
         errorCategory:
           status === 'unavailable'
-            ? target.errorCategory
+            ? registrationFailed
+              ? 'instance_status_unavailable'
+              : target.errorCategory
             : status === 'degraded'
               ? identityErrorCategory({
                   degradedCategory: row.degradedCategory,
@@ -195,9 +227,9 @@ const identityDiagnostic = (
                 })
               : null,
         loadedAt: row.loadedAt,
-        loadedToken,
+        loadedToken: status === 'unavailable' ? null : loadedToken,
         loadMode: 'restart_activated',
-        source: registrationFailed ? 'unavailable' : row.startupSource,
+        source: status === 'unavailable' ? 'unavailable' : row.startupSource,
         status,
       },
     ],

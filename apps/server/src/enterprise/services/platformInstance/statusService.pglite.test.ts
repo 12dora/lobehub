@@ -226,7 +226,8 @@ describe('PlatformInstanceStatusService (PGlite)', () => {
     });
     expect(failed.freshDiagnostics[0]?.domains[0]).toMatchObject({
       errorCategory: 'instance_status_unavailable',
-      status: 'degraded',
+      source: 'unavailable',
+      status: 'unavailable',
     });
 
     const absent = await service(false).getStatus();

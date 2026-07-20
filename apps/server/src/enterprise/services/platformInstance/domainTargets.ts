@@ -17,68 +17,33 @@ import {
 import type { LobeChatDatabase, Transaction } from '@/database/type';
 import type {
   PlatformConvergenceDomain,
-  PlatformConvergenceFallbackPolicy,
-  PlatformConvergenceLoadMode,
   PlatformDomainTarget,
   PlatformRevisionToken,
 } from '@/server/enterprise/contracts/platformInstanceStatus';
-import { PLATFORM_CONVERGENCE_DOMAINS } from '@/server/enterprise/contracts/platformInstanceStatus';
+import {
+  PLATFORM_CONVERGENCE_DOMAIN_DESCRIPTORS,
+  PLATFORM_CONVERGENCE_DOMAINS,
+} from '@/server/enterprise/contracts/platformInstanceStatus';
 
 import { parseEnterpriseFeatureFlags } from '../../featureFlags';
 import { loadPublishedIdentityTarget } from '../identityProvider/systemService';
 
-interface DomainDescriptor {
-  enabled: (flags: ReturnType<typeof parseEnterpriseFeatureFlags>) => boolean;
-  fallbackPolicy: PlatformConvergenceFallbackPolicy;
-  loadMode: PlatformConvergenceLoadMode;
-}
+type DomainEnabled = (flags: ReturnType<typeof parseEnterpriseFeatureFlags>) => boolean;
 
-const DOMAIN_DESCRIPTORS = {
-  agent_catalog: {
-    enabled: (flags) => flags.ENABLE_PLATFORM_MANAGED_AGENTS,
-    fallbackPolicy: 'none',
-    loadMode: 'request_scoped',
-  },
-  ai_catalog: {
-    enabled: (flags) => flags.ENABLE_PLATFORM_MANAGED_AI,
-    fallbackPolicy: 'none',
-    loadMode: 'process_cached',
-  },
-  branding: {
-    enabled: (flags) => flags.ENABLE_RUNTIME_BRANDING,
-    fallbackPolicy: 'builtin',
-    loadMode: 'process_cached',
-  },
-  connector_catalog: {
-    enabled: (flags) => flags.ENABLE_PLATFORM_MANAGED_CONNECTORS,
-    fallbackPolicy: 'none',
-    loadMode: 'request_scoped',
-  },
-  identity: {
-    enabled: (flags) => flags.ENABLE_DATABASE_OIDC,
-    fallbackPolicy: 'lkg_then_break_glass',
-    loadMode: 'restart_activated',
-  },
-  managed_policy: {
-    enabled: (flags) =>
-      flags.ENABLE_PLATFORM_MANAGED_AGENTS ||
-      flags.ENABLE_PLATFORM_MANAGED_AI ||
-      flags.ENABLE_PLATFORM_MANAGED_CONNECTORS ||
-      flags.ENABLE_PLATFORM_MANAGED_SKILLS,
-    fallbackPolicy: 'none',
-    loadMode: 'request_scoped',
-  },
-  settings: {
-    enabled: (flags) => flags.ENABLE_PLATFORM_SETTINGS_POLICY,
-    fallbackPolicy: 'none',
-    loadMode: 'process_cached',
-  },
-  skill_catalog: {
-    enabled: (flags) => flags.ENABLE_PLATFORM_MANAGED_SKILLS,
-    fallbackPolicy: 'none',
-    loadMode: 'process_cached',
-  },
-} as const satisfies Record<PlatformConvergenceDomain, DomainDescriptor>;
+const DOMAIN_ENABLED = {
+  agent_catalog: (flags) => flags.ENABLE_PLATFORM_MANAGED_AGENTS,
+  ai_catalog: (flags) => flags.ENABLE_PLATFORM_MANAGED_AI,
+  branding: (flags) => flags.ENABLE_RUNTIME_BRANDING,
+  connector_catalog: (flags) => flags.ENABLE_PLATFORM_MANAGED_CONNECTORS,
+  identity: (flags) => flags.ENABLE_DATABASE_OIDC,
+  managed_policy: (flags) =>
+    flags.ENABLE_PLATFORM_MANAGED_AGENTS ||
+    flags.ENABLE_PLATFORM_MANAGED_AI ||
+    flags.ENABLE_PLATFORM_MANAGED_CONNECTORS ||
+    flags.ENABLE_PLATFORM_MANAGED_SKILLS,
+  settings: (flags) => flags.ENABLE_PLATFORM_SETTINGS_POLICY,
+  skill_catalog: (flags) => flags.ENABLE_PLATFORM_MANAGED_SKILLS,
+} as const satisfies Record<PlatformConvergenceDomain, DomainEnabled>;
 
 class PlatformDomainTargetInvariantError extends Error {
   constructor() {
@@ -125,8 +90,8 @@ export class PlatformDomainTargetResolver {
   ): PlatformDomainTarget => ({
     domain,
     errorCategory: null,
-    fallbackPolicy: DOMAIN_DESCRIPTORS[domain].fallbackPolicy,
-    loadMode: DOMAIN_DESCRIPTORS[domain].loadMode,
+    fallbackPolicy: PLATFORM_CONVERGENCE_DOMAIN_DESCRIPTORS[domain].fallbackPolicy,
+    loadMode: PLATFORM_CONVERGENCE_DOMAIN_DESCRIPTORS[domain].loadMode,
     status: 'available',
     token,
   });
@@ -134,8 +99,8 @@ export class PlatformDomainTargetResolver {
   private disabled = (domain: PlatformConvergenceDomain): PlatformDomainTarget => ({
     domain,
     errorCategory: null,
-    fallbackPolicy: DOMAIN_DESCRIPTORS[domain].fallbackPolicy,
-    loadMode: DOMAIN_DESCRIPTORS[domain].loadMode,
+    fallbackPolicy: PLATFORM_CONVERGENCE_DOMAIN_DESCRIPTORS[domain].fallbackPolicy,
+    loadMode: PLATFORM_CONVERGENCE_DOMAIN_DESCRIPTORS[domain].loadMode,
     status: 'disabled',
     token: null,
   });
@@ -146,8 +111,8 @@ export class PlatformDomainTargetResolver {
   ): PlatformDomainTarget => ({
     domain,
     errorCategory: configurationInvalid ? 'configuration_invalid' : 'database_unavailable',
-    fallbackPolicy: DOMAIN_DESCRIPTORS[domain].fallbackPolicy,
-    loadMode: DOMAIN_DESCRIPTORS[domain].loadMode,
+    fallbackPolicy: PLATFORM_CONVERGENCE_DOMAIN_DESCRIPTORS[domain].fallbackPolicy,
+    loadMode: PLATFORM_CONVERGENCE_DOMAIN_DESCRIPTORS[domain].loadMode,
     status: 'unavailable',
     token: null,
   });
@@ -380,7 +345,7 @@ export class PlatformDomainTargetResolver {
   };
 
   resolve = async (domain: PlatformConvergenceDomain): Promise<PlatformDomainTarget> => {
-    if (!DOMAIN_DESCRIPTORS[domain].enabled(this.flags)) return this.disabled(domain);
+    if (!DOMAIN_ENABLED[domain](this.flags)) return this.disabled(domain);
     try {
       return this.available(domain, await this.resolveToken(domain));
     } catch (error) {
