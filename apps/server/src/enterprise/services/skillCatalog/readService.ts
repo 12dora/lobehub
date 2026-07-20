@@ -17,6 +17,8 @@ import {
 } from '../../contracts/skillCatalog';
 import { DomainConfigCache, invalidateDomainConfigCacheNamespace } from '../../runtimeConfig';
 import { getPlatformConfigScopeVersion } from '../platformConfigInvalidation';
+import type { CurrentSkillCatalogSnapshot } from '../platformInstance/catalogAuthority';
+import { loadCurrentSkillCatalogSnapshot } from '../platformInstance/catalogAuthority';
 import type { SkillCatalogTokenEntry } from '../platformInstance/catalogTokens';
 import { buildSkillCatalogRevisionToken } from '../platformInstance/catalogTokens';
 import type { PlatformRuntimeMaterializationReporter } from '../platformInstance/runtimeReporter';
@@ -37,7 +39,8 @@ export interface SkillCatalogReadOptions {
   builtinSkills?: BuiltinSkillDefinition[];
   cacheTtlMs?: number;
   getCacheEpoch?: () => Promise<string>;
-  model?: Pick<PlatformSkillCatalogModel, 'listPublished' | 'resolvePublishedVersion'>;
+  loadCurrentSnapshot?: () => Promise<CurrentSkillCatalogSnapshot>;
+  model?: Pick<PlatformSkillCatalogModel, 'resolvePublishedVersion'>;
   now?: () => number;
   runtimeReporting?: {
     database: LobeChatDatabase;
@@ -54,7 +57,6 @@ export const builtinSkillDefinitionSchema = serverResolvedSkillSchema
   .extend({ source: z.literal('builtin') })
   .strict();
 export const builtinSkillDefinitionsSchema = z.array(builtinSkillDefinitionSchema).max(100);
-const MAX_PUBLISHED_SKILL_PAGES = 100;
 const MAX_PUBLISHED_SKILLS = 10_000;
 const MAX_READINESS_REVISIONS = 32;
 const SKILL_ACTIVE_PROJECTION_CACHE_NAMESPACE = 'skill-catalog-active-projection';
@@ -132,16 +134,16 @@ const compareCodepoint = (left: string, right: string) =>
 export class SkillCatalogReadService {
   private readonly activeProjectionCache: DomainConfigCache<string>;
   private readonly builtinSkills: BuiltinSkillDefinition[];
-  private readonly model: Pick<
-    PlatformSkillCatalogModel,
-    'listPublished' | 'resolvePublishedVersion'
-  >;
+  private readonly loadCurrentSnapshot: () => Promise<CurrentSkillCatalogSnapshot>;
+  private readonly model: Pick<PlatformSkillCatalogModel, 'resolvePublishedVersion'>;
   private publishedExecutionIndex = new Map<string, ResolvedSkill>();
   private publishedExecutionRevision: string | undefined;
   private readonly projectionSource: string;
 
   constructor(db: LobeChatDatabase | Transaction, options: SkillCatalogReadOptions = {}) {
     this.model = options.model ?? new PlatformSkillCatalogModel(db);
+    this.loadCurrentSnapshot =
+      options.loadCurrentSnapshot ?? (() => loadCurrentSkillCatalogSnapshot(db));
     const parsedBuiltins = builtinSkillDefinitionsSchema.parse(
       (options.builtinSkills ?? []).map((skill) => ({
         ...skill,
@@ -212,48 +214,14 @@ export class SkillCatalogReadService {
   }
 
   private loadPublishedProjection = async (): Promise<string> => {
-    const platformItems: Awaited<ReturnType<PlatformSkillCatalogModel['listPublished']>>['items'] =
-      [];
-    const builtinOverrideTombstones = new Set<string>();
-    const catalogTokenEntries: SkillCatalogTokenEntry[] = [];
-    const seenCursors = new Set<string>();
-    let cursor: string | undefined;
-    let pageCount = 0;
-    do {
-      if (pageCount >= MAX_PUBLISHED_SKILL_PAGES) {
-        throw new Error('Published Skill page limit was exceeded');
-      }
-      pageCount += 1;
-      const page = await this.model.listPublished({ cursor, limit: 100 });
-      for (const skillKey of page.builtinOverrideTombstones ?? []) {
-        builtinOverrideTombstones.add(skillKey);
-      }
-      if (!page.catalogTokenEntries && (page.builtinOverrideTombstones?.length ?? 0) > 0) {
-        throw new Error('Published Skill tombstone token metadata is unavailable');
-      }
-      if (platformItems.length + page.items.length > MAX_PUBLISHED_SKILLS) {
-        throw new Error('Published Skill item limit was exceeded');
-      }
-      catalogTokenEntries.push(
-        ...(page.catalogTokenEntries ??
-          page.items.map((item) => ({
-            checksum: item.version.checksum,
-            currentVersionId: item.version.id,
-            revision: item.revision,
-            skillId: item.skillId,
-            skillKey: item.skillKey,
-            tombstone: false,
-          }))),
-      );
-      platformItems.push(...page.items);
-      if (!page.nextCursor) break;
-      if (seenCursors.has(page.nextCursor))
-        throw new Error('Published Skill cursor did not advance');
-      seenCursors.add(page.nextCursor);
-      cursor = page.nextCursor;
-    } while (cursor);
+    const snapshot = await this.loadCurrentSnapshot();
+    if (snapshot.items.length > MAX_PUBLISHED_SKILLS) {
+      throw new Error('Published Skill item limit was exceeded');
+    }
+    const platformItems = snapshot.items;
+    const catalogTokenEntries: SkillCatalogTokenEntry[] = snapshot.tokenEntries;
     const builtins = new Map(this.builtinSkills.map((skill) => [skill.skillKey, skill] as const));
-    for (const skillKey of builtinOverrideTombstones) builtins.delete(skillKey);
+    for (const skillKey of snapshot.builtinOverrideTombstones) builtins.delete(skillKey);
     const platformSkills: PublishedSkill[] = [];
     const platformResolvedByKey = new Map<string, ResolvedSkill>();
     for (const item of platformItems) {

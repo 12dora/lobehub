@@ -133,7 +133,9 @@ const versionView = (
   version: row.version,
 });
 
-const publishedSnapshot = (value: unknown): PlatformPublishedSkillSnapshot | undefined => {
+export const parsePlatformPublishedSkillSnapshot = (
+  value: unknown,
+): PlatformPublishedSkillSnapshot | undefined => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
   const candidate = value as Partial<PlatformPublishedSkillSnapshot>;
   if (!candidate.skill || typeof candidate.skill !== 'object' || Array.isArray(candidate.skill)) {
@@ -158,7 +160,7 @@ const publishedSnapshot = (value: unknown): PlatformPublishedSkillSnapshot | und
 };
 
 const publishedView = (row: PlatformPublishedSkillRow): PlatformPublishedSkillView | undefined => {
-  const payload = publishedSnapshot(row.payload);
+  const payload = parsePlatformPublishedSkillSnapshot(row.payload);
   if (
     row.status !== 'published' ||
     !payload ||
@@ -429,7 +431,7 @@ export class PlatformSkillCatalogModel {
   ): Promise<PlatformPublishedSkillPageView> => {
     const page = await new PlatformSkillCatalogRepository(this.db).listPublished(params);
     const builtinOverrideTombstones = page.items.flatMap((row) => {
-      const snapshot = publishedSnapshot(row.payload);
+      const snapshot = parsePlatformPublishedSkillSnapshot(row.payload);
       return row.status === 'archived' &&
         snapshot?.builtinOverrideTombstone === true &&
         snapshot.skill.allowBuiltinOverride
@@ -437,7 +439,7 @@ export class PlatformSkillCatalogModel {
         : [];
     });
     const catalogTokenEntries = page.items.flatMap((row) => {
-      const snapshot = publishedSnapshot(row.payload);
+      const snapshot = parsePlatformPublishedSkillSnapshot(row.payload);
       const tombstone =
         row.status === 'archived' &&
         snapshot?.builtinOverrideTombstone === true &&
@@ -534,7 +536,7 @@ export const createPlatformSkillPointerAdapter = (
       return lockedDraft.revision;
     },
     materializePublished: async (tx, { payload, revision, status }) => {
-      const snapshot = publishedSnapshot(payload);
+      const snapshot = parsePlatformPublishedSkillSnapshot(payload);
       if (!lockedDraft || !snapshot || snapshot.skill.skillKey !== lockedDraft.skillKey) {
         throw new Error('Published Skill snapshot is invalid');
       }

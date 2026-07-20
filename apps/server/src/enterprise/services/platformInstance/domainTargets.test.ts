@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { LobeChatDatabase } from '@/database/type';
 import { PLATFORM_CONVERGENCE_DOMAINS } from '@/server/enterprise/contracts/platformInstanceStatus';
 
+import { buildAiCatalogRevisionToken } from './catalogTokens';
 import { PlatformDomainTargetResolver } from './domainTargets';
 
 const CHECKSUM = 'a'.repeat(64);
@@ -146,7 +147,33 @@ describe('PlatformDomainTargetResolver', () => {
     const { db } = fakeDatabase(rows);
     const target = await new PlatformDomainTargetResolver(db, {
       env: ALL_FLAGS,
+      loadAiCatalogSnapshot: async () => ({
+        revisions: [],
+        token: buildAiCatalogRevisionToken([
+          {
+            checksum: CHECKSUM,
+            providerId: 'provider-1',
+            providerKey: 'provider',
+            revision: 1,
+            secretFingerprint: null,
+          },
+        ]),
+      }),
       loadBuiltinSkillTokenEntries: () => [],
+      loadSkillCatalogSnapshot: async () => ({
+        builtinOverrideTombstones: [],
+        items: [],
+        tokenEntries: [
+          {
+            checksum: CHECKSUM,
+            currentVersionId: 'skill-version-1',
+            revision: 1,
+            skillId: 'skill-1',
+            skillKey: 'skill',
+            tombstone: false,
+          },
+        ],
+      }),
     }).resolve(domain);
     expect(target.status).toBe('available');
     expect(target.token).toMatchObject({ kind: 'immutable_id' });
