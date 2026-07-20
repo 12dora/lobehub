@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX IF NOT EXISTS "platform_jobs_secret_rewrap_single_active_unique" ON "platform_jobs" USING btree ("type") WHERE "platform_jobs"."type" = 'platform.secret.rewrap.v1' AND "platform_jobs"."status" IN ('pending', 'reserved', 'running');
