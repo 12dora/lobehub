@@ -1,6 +1,22 @@
-import { and, asc, count, desc, eq, gte, inArray, isNull, lt, ne, not, or, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  gt,
+  gte,
+  inArray,
+  isNull,
+  lt,
+  ne,
+  not,
+  or,
+  sql,
+} from 'drizzle-orm';
 
 import {
+  type PlatformIdentityProviderInstanceItem,
   platformIdentityProviderInstances,
   type PlatformInstanceDomain,
   type PlatformInstanceHeartbeatItem,
@@ -50,6 +66,28 @@ export interface PlatformInstanceInventorySnapshot {
   snapshotAt: Date;
   staleCandidates: PlatformInstanceInventoryDiagnostic[];
   staleCount: number;
+}
+
+export interface PlatformInstanceRevisionInventoryCursor {
+  instanceId: string;
+  lastHeartbeatAt: Date;
+}
+
+export type PlatformInstanceRevisionInventoryItem =
+  | {
+      instance: PlatformIdentityProviderInstanceItem;
+      instanceKind: 'identity_startup';
+    }
+  | {
+      instance: PlatformInstanceHeartbeatItem;
+      instanceKind: 'platform';
+      states: PlatformInstanceRevisionStateItem[];
+    };
+
+export interface PlatformInstanceRevisionInventoryPage {
+  items: PlatformInstanceRevisionInventoryItem[];
+  nextCursor: PlatformInstanceRevisionInventoryCursor | null;
+  snapshotAt: Date;
 }
 
 export interface UpsertPlatformInstanceRevisionStateInput {
@@ -294,6 +332,111 @@ export class PlatformInstanceRepository {
       snapshotAt: clock,
       staleCandidates,
       staleCount,
+    };
+  };
+
+  /**
+   * Complete, stable operational inventory ordered by (heartbeat DESC, instance id ASC).
+   * Unlike convergence diagnostics, this path is not issue-first and is never sample-truncated.
+   */
+  listRevisionInventoryPage = async (
+    params: {
+      cursor?: PlatformInstanceRevisionInventoryCursor;
+      limit?: number;
+      snapshotAt?: Date;
+    } = {},
+  ): Promise<PlatformInstanceRevisionInventoryPage> => {
+    const limit = Math.min(Math.max(Math.floor(params.limit ?? 50), 1), 50);
+    const snapshotAt = params.snapshotAt ?? (await this.readSnapshotAt());
+    const platformCursor = params.cursor
+      ? or(
+          lt(platformInstanceHeartbeats.lastHeartbeatAt, params.cursor.lastHeartbeatAt),
+          and(
+            eq(platformInstanceHeartbeats.lastHeartbeatAt, params.cursor.lastHeartbeatAt),
+            gt(platformInstanceHeartbeats.instanceId, params.cursor.instanceId),
+          ),
+        )
+      : undefined;
+    const identityCursor = params.cursor
+      ? or(
+          lt(platformIdentityProviderInstances.lastHeartbeat, params.cursor.lastHeartbeatAt),
+          and(
+            eq(platformIdentityProviderInstances.lastHeartbeat, params.cursor.lastHeartbeatAt),
+            gt(platformIdentityProviderInstances.instanceId, params.cursor.instanceId),
+          ),
+        )
+      : undefined;
+    const [platformRows, identityRows] = await Promise.all([
+      this.db
+        .select()
+        .from(platformInstanceHeartbeats)
+        .where(platformCursor)
+        .orderBy(
+          desc(platformInstanceHeartbeats.lastHeartbeatAt),
+          asc(platformInstanceHeartbeats.instanceId),
+        )
+        .limit(limit + 1),
+      this.db
+        .select()
+        .from(platformIdentityProviderInstances)
+        .where(identityCursor)
+        .orderBy(
+          desc(platformIdentityProviderInstances.lastHeartbeat),
+          asc(platformIdentityProviderInstances.instanceId),
+        )
+        .limit(limit + 1),
+    ]);
+    const candidates = [
+      ...platformRows.map((instance) => ({
+        heartbeat: instance.lastHeartbeatAt,
+        instance,
+        instanceId: instance.instanceId,
+        instanceKind: 'platform' as const,
+      })),
+      ...identityRows.map((instance) => ({
+        heartbeat: instance.lastHeartbeat,
+        instance,
+        instanceId: instance.instanceId,
+        instanceKind: 'identity_startup' as const,
+      })),
+    ]
+      .sort(
+        (left, right) =>
+          right.heartbeat.getTime() - left.heartbeat.getTime() ||
+          left.instanceId.localeCompare(right.instanceId),
+      )
+      .slice(0, limit + 1);
+    const hasMore = candidates.length > limit;
+    const visible = hasMore ? candidates.slice(0, limit) : candidates;
+    const platformIds = visible
+      .filter(({ instanceKind }) => instanceKind === 'platform')
+      .map(({ instanceId }) => instanceId);
+    const states =
+      platformIds.length === 0
+        ? []
+        : await this.db
+            .select()
+            .from(platformInstanceRevisionStates)
+            .where(inArray(platformInstanceRevisionStates.instanceId, platformIds))
+            .orderBy(
+              asc(platformInstanceRevisionStates.instanceId),
+              asc(platformInstanceRevisionStates.domain),
+            );
+    const items: PlatformInstanceRevisionInventoryItem[] = visible.map((candidate) =>
+      candidate.instanceKind === 'platform'
+        ? {
+            instance: candidate.instance,
+            instanceKind: candidate.instanceKind,
+            states: states.filter(({ instanceId }) => instanceId === candidate.instanceId),
+          }
+        : { instance: candidate.instance, instanceKind: candidate.instanceKind },
+    );
+    const last = visible.at(-1);
+    return {
+      items,
+      nextCursor:
+        hasMore && last ? { instanceId: last.instanceId, lastHeartbeatAt: last.heartbeat } : null,
+      snapshotAt,
     };
   };
 
