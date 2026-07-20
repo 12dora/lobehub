@@ -17,6 +17,8 @@ import type {
   EnterpriseInvalidationOutcome,
   EnterpriseOidcFailureCategory,
   EnterpriseOidcLoginStage,
+  EnterpriseOperationalCollectionOutcome,
+  EnterpriseOperationalCollector,
   EnterpriseSsrfDenialCategory,
 } from '@lobechat/observability-otel/modules/enterprise-platform';
 
@@ -101,6 +103,14 @@ export interface EnterpriseAgentMaterializationEvent {
   type: 'agent_materialization';
 }
 
+export interface EnterpriseOperationalCollectionEvent {
+  collector: EnterpriseOperationalCollector;
+  durationMs: number;
+  errorClass?: EnterpriseObservabilityErrorClass;
+  outcome: EnterpriseOperationalCollectionOutcome;
+  type: 'operational_collection';
+}
+
 export type EnterpriseObservabilityEvent =
   | EnterpriseAgentMaterializationEvent
   | EnterpriseCacheEvent
@@ -109,6 +119,7 @@ export type EnterpriseObservabilityEvent =
   | EnterpriseInstanceHeartbeatEvent
   | EnterpriseInvalidationEvent
   | EnterpriseOidcLoginEvent
+  | EnterpriseOperationalCollectionEvent
   | EnterpriseSsrfDenialEvent;
 
 const ERROR_CODE_CLASSES = {

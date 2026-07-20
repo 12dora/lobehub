@@ -7,6 +7,7 @@ import {
   PlatformAgentCatalogRepository,
 } from '@/database/repositories/platformAgentCatalog';
 import {
+  PLATFORM_AGENT_ROLLOUT_TRANSITION_TYPE,
   platformAgentAssignments,
   type PlatformJobItem,
   platformJobs,
@@ -38,7 +39,7 @@ import {
 import { assertExpectedPlatformAgentIdentity } from './publication';
 
 export const PLATFORM_AGENT_ROLLOUT_JOB_TYPE = 'platform.agent.rollout.v1';
-export const PLATFORM_AGENT_ROLLOUT_TRANSITION_TYPE = 'platform.agent.rollout.transition.v1';
+export { PLATFORM_AGENT_ROLLOUT_TRANSITION_TYPE };
 export const PLATFORM_AGENT_ROLLOUT_BATCH_SIZE = 100;
 
 const log = debug('lobe-server:platform-agent-rollout');

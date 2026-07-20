@@ -14,6 +14,9 @@ describe('enterprise alert intents', () => {
       'ssrf_denial_spike',
       'oidc_login_failure_ratio',
       'materialization_failure_rate',
+      'job_backlog_stalled',
+      'revision_lag',
+      'operational_collection_stale',
     ]);
     expect(ENTERPRISE_ALERT_INTENTS.map(({ metric }) => metric)).toEqual([
       'enterprise_platform_config_publish_total',
@@ -25,6 +28,9 @@ describe('enterprise alert intents', () => {
       'enterprise_platform_ssrf_denial_total',
       'enterprise_platform_oidc_login_total',
       'enterprise_platform_agent_materialization_total',
+      'enterprise_platform_job_backlog_oldest_age_seconds',
+      'enterprise_platform_revision_lag_instances',
+      'enterprise_platform_operational_snapshot_age_seconds',
     ]);
     expect(ENTERPRISE_ALERT_INTENTS.every(({ status }) => status === 'intent-only')).toBe(true);
   });
