@@ -67,8 +67,18 @@ export interface PlatformPublishedSkillView {
 
 export interface PlatformPublishedSkillPageView {
   builtinOverrideTombstones: string[];
+  catalogTokenEntries?: PlatformSkillCatalogTokenEntryView[];
   items: PlatformPublishedSkillView[];
   nextCursor: string | null;
+}
+
+export interface PlatformSkillCatalogTokenEntryView {
+  checksum: string;
+  currentVersionId: string;
+  revision: number;
+  skillId: string;
+  skillKey: string;
+  tombstone: boolean;
 }
 
 export class PlatformSkillBuiltinOverrideError extends Error {
@@ -426,8 +436,27 @@ export class PlatformSkillCatalogModel {
         ? [snapshot.skill.skillKey]
         : [];
     });
+    const catalogTokenEntries = page.items.flatMap((row) => {
+      const snapshot = publishedSnapshot(row.payload);
+      const tombstone =
+        row.status === 'archived' &&
+        snapshot?.builtinOverrideTombstone === true &&
+        snapshot.skill.allowBuiltinOverride;
+      if (!snapshot || (row.status !== 'published' && !tombstone)) return [];
+      return [
+        {
+          checksum: row.version.checksum,
+          currentVersionId: row.version.id,
+          revision: row.revision,
+          skillId: row.skillId,
+          skillKey: snapshot.skill.skillKey,
+          tombstone,
+        },
+      ];
+    });
     return {
       builtinOverrideTombstones,
+      catalogTokenEntries,
       items: page.items.flatMap((row) => {
         const view = publishedView(row);
         return view ? [view] : [];

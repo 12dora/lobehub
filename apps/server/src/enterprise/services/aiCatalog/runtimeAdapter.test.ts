@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DEFAULT_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
 import { getTestDB } from '@/database/core/getTestDB';
+import { PlatformAiCatalogRepository } from '@/database/repositories/platformAiCatalog';
 import {
   platformAiModels,
   platformAiProviders,
@@ -16,6 +17,8 @@ import {
 import type { LobeChatDatabase } from '@/database/type';
 import { type KeyProvider, PlatformSecretService } from '@/server/enterprise/security/secret';
 
+import { PlatformDomainTargetResolver } from '../platformInstance/domainTargets';
+import type { PlatformRuntimeMaterializationReporter } from '../platformInstance/runtimeReporter';
 import { AiCatalogAdminService } from './adminService';
 import {
   AiCatalogExecutionResolver,
@@ -57,6 +60,16 @@ const upstreamState: AiProviderRuntimeState = {
     'alpha': { config: {}, keyVaults: { apiKey: 'user-key-must-not-win' }, settings: {} },
     'user-provider': { config: {}, keyVaults: { apiKey: 'user-only' }, settings: {} },
   },
+};
+
+const deferred = <T>() => {
+  let reject!: (reason?: unknown) => void;
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    reject = promiseReject;
+    resolve = promiseResolve;
+  });
+  return { promise, reject, resolve };
 };
 
 const cleanup = async () => {
@@ -125,6 +138,179 @@ describe('AiCatalogRuntimeAdapter', () => {
       upstreamState,
     });
     expect(result).toBe(upstreamState);
+  });
+
+  it('reports one new immutable runtime build with the exact authoritative target token', async () => {
+    const { provider } = await createPublishedProvider();
+    const reportRuntimeState = vi.fn<PlatformRuntimeMaterializationReporter>();
+    const adapter = new AiCatalogRuntimeAdapter(db, { reportRuntimeState });
+
+    await adapter.resolve({ flags, upstreamState });
+    await adapter.resolve({ flags, upstreamState });
+    const target = await new PlatformDomainTargetResolver(db, {
+      env: { ENABLE_PLATFORM_MANAGED_AI: '1' },
+    }).resolve('ai_catalog');
+
+    expect(reportRuntimeState).toHaveBeenCalledOnce();
+    expect(reportRuntimeState.mock.calls[0]?.[1]).toEqual({
+      domain: 'ai_catalog',
+      health: 'healthy',
+      revisionId: target.token?.value,
+      source: 'database',
+    });
+    expect(target.token?.value).toMatch(/^[a-f0-9]{64}$/);
+    expect(JSON.stringify(reportRuntimeState.mock.calls.map(([, state]) => state))).not.toContain(
+      'alpha',
+    );
+
+    const [published] = await new PlatformAiCatalogRepository(
+      db,
+    ).listLatestPublishedProviderRevisions();
+    await db.insert(platformResourceRevisions).values({
+      checksum: 'd'.repeat(64),
+      payload: published.payload,
+      resourceId: provider.id,
+      resourceType: 'provider',
+      revision: 2,
+      secretFingerprint: published.secretFingerprint,
+      status: 'published',
+    });
+    await db
+      .update(platformAiProviders)
+      .set({ revision: 2 })
+      .where(eq(platformAiProviders.id, provider.id));
+    await adapter.resolve({ flags, upstreamState });
+    const changedTarget = await new PlatformDomainTargetResolver(db, {
+      env: { ENABLE_PLATFORM_MANAGED_AI: '1' },
+    }).resolve('ai_catalog');
+
+    expect(reportRuntimeState).toHaveBeenCalledTimes(2);
+    expect(reportRuntimeState.mock.calls[1]?.[1]).toMatchObject({
+      revisionId: changedTarget.token?.value,
+    });
+    expect(changedTarget.token?.value).not.toBe(target.token?.value);
+  });
+
+  it('coalesces a concurrent cold build and reports it once', async () => {
+    await createPublishedProvider();
+    const revisions = await new PlatformAiCatalogRepository(
+      db,
+    ).listLatestPublishedProviderRevisions();
+    const pending = deferred<typeof revisions>();
+    const listLatestPublishedProviderRevisions = vi.fn(() => pending.promise);
+    const reportRuntimeState = vi.fn<PlatformRuntimeMaterializationReporter>();
+    const adapter = new AiCatalogRuntimeAdapter(db, {
+      reportRuntimeState,
+      repository: { listLatestPublishedProviderRevisions },
+    });
+
+    const first = adapter.resolve({ flags, upstreamState });
+    const second = adapter.resolve({ flags, upstreamState });
+    await vi.waitFor(() => expect(listLatestPublishedProviderRevisions).toHaveBeenCalledOnce());
+    pending.resolve(revisions);
+    await expect(Promise.all([first, second])).resolves.toHaveLength(2);
+
+    expect(listLatestPublishedProviderRevisions).toHaveBeenCalledOnce();
+    expect(reportRuntimeState).toHaveBeenCalledOnce();
+  });
+
+  it('does not let a stale invalidated load failure overwrite a newer healthy build', async () => {
+    await createPublishedProvider();
+    const revisions = await new PlatformAiCatalogRepository(
+      db,
+    ).listLatestPublishedProviderRevisions();
+    const oldRead = deferred<typeof revisions>();
+    const reportRuntimeState = vi.fn<PlatformRuntimeMaterializationReporter>();
+    const oldAdapter = new AiCatalogRuntimeAdapter(db, {
+      reportRuntimeState,
+      repository: { listLatestPublishedProviderRevisions: () => oldRead.promise },
+    });
+    const oldRequest = oldAdapter.resolve({ flags, upstreamState });
+    await Promise.resolve();
+
+    clearAiCatalogRuntimeCache();
+    const listLatestPublishedProviderRevisions = vi.fn(async () => revisions);
+    const currentAdapter = new AiCatalogRuntimeAdapter(db, {
+      reportRuntimeState,
+      repository: { listLatestPublishedProviderRevisions },
+    });
+    await currentAdapter.resolve({ flags, upstreamState });
+
+    const oldError = new Error('late old catalog failure');
+    const oldResult = expect(oldRequest).rejects.toBe(oldError);
+    oldRead.reject(oldError);
+    await oldResult;
+    await currentAdapter.resolve({ flags, upstreamState });
+
+    expect(reportRuntimeState.mock.calls.map(([, state]) => state.health)).toEqual(['healthy']);
+    expect(listLatestPublishedProviderRevisions).toHaveBeenCalledTimes(2);
+  });
+
+  it('reports a failed load then rebuilds the same token without changing the original error', async () => {
+    await createPublishedProvider();
+    const revisions = await new PlatformAiCatalogRepository(
+      db,
+    ).listLatestPublishedProviderRevisions();
+    const original = Object.assign(new Error('raw AI catalog database detail'), {
+      code: 'ECONNREFUSED',
+    });
+    const listLatestPublishedProviderRevisions = vi
+      .fn<() => Promise<typeof revisions>>()
+      .mockRejectedValueOnce(original)
+      .mockResolvedValueOnce(revisions);
+    const reportRuntimeState = vi.fn<PlatformRuntimeMaterializationReporter>();
+    const adapter = new AiCatalogRuntimeAdapter(db, {
+      reportRuntimeState,
+      repository: { listLatestPublishedProviderRevisions },
+    });
+
+    await expect(adapter.resolve({ flags, upstreamState })).rejects.toBe(original);
+    await adapter.resolve({ flags, upstreamState });
+
+    expect(reportRuntimeState.mock.calls.map(([, state]) => state.health)).toEqual([
+      'unavailable',
+      'healthy',
+    ]);
+    expect(JSON.stringify(reportRuntimeState.mock.calls.map(([, state]) => state))).not.toContain(
+      'raw AI catalog database detail',
+    );
+  });
+
+  it('isolates reporter failure and never reports request-scoped secret resolution errors', async () => {
+    await createPublishedProvider();
+    const reportRuntimeState = vi.fn<PlatformRuntimeMaterializationReporter>(() => {
+      throw new Error('raw reporter detail');
+    });
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const adapter = new AiCatalogRuntimeAdapter(db, { reportRuntimeState });
+
+    await expect(adapter.resolve({ flags, upstreamState })).resolves.toMatchObject({
+      enabledAiProviders: [expect.objectContaining({ id: 'alpha' })],
+    });
+    await db.delete(platformAiProviderSecrets);
+    await expect(
+      new AiCatalogExecutionResolver(db, secretService).resolveProviderExecutionConfig('alpha'),
+    ).rejects.toThrow();
+
+    expect(reportRuntimeState).toHaveBeenCalledOnce();
+    expect(consoleError).toHaveBeenCalledWith('[platform-instance-runtime] reporter unavailable');
+    expect(JSON.stringify(consoleError.mock.calls)).not.toContain('raw reporter detail');
+    consoleError.mockRestore();
+  });
+
+  it('performs zero repository and reporter work while the managed AI flag is off', async () => {
+    const listLatestPublishedProviderRevisions = vi.fn();
+    const reportRuntimeState = vi.fn<PlatformRuntimeMaterializationReporter>();
+    const adapter = new AiCatalogRuntimeAdapter(db, {
+      reportRuntimeState,
+      repository: { listLatestPublishedProviderRevisions },
+    });
+
+    await expect(
+      adapter.resolve({ flags: DEFAULT_ENTERPRISE_FEATURE_FLAGS, upstreamState }),
+    ).resolves.toBe(upstreamState);
+    expect(listLatestPublishedProviderRevisions).not.toHaveBeenCalled();
+    expect(reportRuntimeState).not.toHaveBeenCalled();
   });
 
   it('separates public metadata cache from server execution secrets across publish and rollback', async () => {
@@ -251,7 +437,7 @@ describe('AiCatalogRuntimeAdapter', () => {
   it('merges safe Model Bank metadata before published overrides for Azure and Spark', async () => {
     await db.insert(platformResourceRevisions).values([
       {
-        checksum: 'azure-safe-metadata',
+        checksum: 'a'.repeat(64),
         payload: {
           models: [
             {
@@ -280,7 +466,7 @@ describe('AiCatalogRuntimeAdapter', () => {
         status: 'published',
       },
       {
-        checksum: 'spark-safe-metadata',
+        checksum: 'b'.repeat(64),
         payload: {
           models: [
             {

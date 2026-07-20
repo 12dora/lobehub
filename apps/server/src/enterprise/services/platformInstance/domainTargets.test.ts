@@ -111,6 +111,7 @@ describe('PlatformDomainTargetResolver', () => {
           allowBuiltinOverride: false,
           checksum: CHECKSUM,
           currentVersionId: 'skill-version-1',
+          enabled: true,
           revision: 1,
           skillId: 'skill-1',
           skillKey: 'skill',
@@ -143,7 +144,10 @@ describe('PlatformDomainTargetResolver', () => {
     },
   ])('resolves $domain as an opaque immutable token', async ({ domain, rows }) => {
     const { db } = fakeDatabase(rows);
-    const target = await new PlatformDomainTargetResolver(db, { env: ALL_FLAGS }).resolve(domain);
+    const target = await new PlatformDomainTargetResolver(db, {
+      env: ALL_FLAGS,
+      loadBuiltinSkillTokenEntries: () => [],
+    }).resolve(domain);
     expect(target.status).toBe('available');
     expect(target.token).toMatchObject({ kind: 'immutable_id' });
     expect(target.token?.value).toMatch(/^[a-f0-9]{64}$/);

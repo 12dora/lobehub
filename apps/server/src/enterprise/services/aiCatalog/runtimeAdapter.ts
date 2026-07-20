@@ -18,6 +18,14 @@ import type { LobeChatDatabase } from '@/database/type';
 
 import { parseEnterpriseFeatureFlags } from '../../featureFlags';
 import { type PlatformSecretService, secretNotReadable } from '../../security/secret';
+import type { AiCatalogTokenEntry } from '../platformInstance/catalogTokens';
+import { buildAiCatalogRevisionToken } from '../platformInstance/catalogTokens';
+import type { PlatformRuntimeMaterializationReporter } from '../platformInstance/runtimeReporter';
+import {
+  classifyRuntimeMaterializationError,
+  reportPlatformRuntimeMaterialization,
+  reportPlatformRuntimeMaterializationSafely,
+} from '../platformInstance/runtimeReporter';
 import { normalizeAiCatalogExecutionCredentials } from './credentialAdapter';
 import { AiCatalogModelNotPublishedError, AiCatalogNotFoundError } from './errors';
 import type { PlatformProviderKeyVaults } from './secretManager';
@@ -109,6 +117,8 @@ export const compareAiCatalogRuntimeStates = (
 
 const runtimeCache = new Map<string, AiProviderRuntimeState>();
 const MAX_RUNTIME_CACHE_ENTRIES = 20;
+let activeRuntimeLoad: { generation: number; promise: Promise<AiProviderRuntimeState> } | undefined;
+let runtimeCacheGeneration = 0;
 const builtinModelMap = new Map(
   LOBE_DEFAULT_MODEL_LIST.map((model) => [`${model.providerId}:${model.id}`, model]),
 );
@@ -128,14 +138,30 @@ const cacheState = (key: string, state: AiProviderRuntimeState): AiProviderRunti
 
 export const clearAiCatalogRuntimeCache = (): void => {
   lastShadowComparison = null;
+  activeRuntimeLoad = undefined;
+  runtimeCacheGeneration += 1;
   runtimeCache.clear();
 };
 
-export class AiCatalogRuntimeAdapter {
-  private readonly db: LobeChatDatabase;
+interface AiCatalogRuntimeRepository {
+  listLatestPublishedProviderRevisions: () => Promise<PlatformResourceRevisionItem[]>;
+}
 
-  constructor(db: LobeChatDatabase) {
-    this.db = db;
+export interface AiCatalogRuntimeAdapterOptions {
+  reportRuntimeState?: PlatformRuntimeMaterializationReporter;
+  repository?: AiCatalogRuntimeRepository;
+}
+
+export class AiCatalogRuntimeAdapter {
+  private readonly reportRuntimeState: PlatformRuntimeMaterializationReporter;
+  private readonly repository: AiCatalogRuntimeRepository;
+
+  constructor(
+    private readonly db: LobeChatDatabase,
+    options: AiCatalogRuntimeAdapterOptions = {},
+  ) {
+    this.repository = options.repository ?? new PlatformAiCatalogRepository(db);
+    this.reportRuntimeState = options.reportRuntimeState ?? reportPlatformRuntimeMaterialization;
   }
 
   resolve = async (params: {
@@ -146,112 +172,165 @@ export class AiCatalogRuntimeAdapter {
     // Exact rollback compatibility: no catalog DB read, decrypt, or cache access.
     if (!flags.ENABLE_PLATFORM_MANAGED_AI) return params.upstreamState;
 
-    const repository = new PlatformAiCatalogRepository(this.db);
-    const revisions = await repository.listLatestPublishedProviderRevisions();
-    const cacheKey = revisions
-      .map(
-        (revision) =>
-          `${revision.resourceId}:${revision.revision}:${revision.checksum}:${revision.secretFingerprint ?? ''}`,
-      )
-      .join('|');
-    const cached = runtimeCache.get(cacheKey);
-    if (cached) return cached;
+    const current = activeRuntimeLoad;
+    if (current?.generation === runtimeCacheGeneration) return current.promise;
 
-    const sortedProviders: Array<{ provider: EnabledProvider; sort: number }> = [];
-    const models: EnabledAiModel[] = [];
-    const runtimeConfig: Record<string, AiProviderRuntimeConfig> = {};
+    const generation = runtimeCacheGeneration;
+    const promise = this.loadRuntimeState(generation);
+    const flight = { generation, promise };
+    activeRuntimeLoad = flight;
+    try {
+      return await promise;
+    } finally {
+      if (activeRuntimeLoad === flight) activeRuntimeLoad = undefined;
+    }
+  };
 
-    for (const revision of revisions) {
-      if (!isRecord(revision.payload.provider) || !Array.isArray(revision.payload.models)) continue;
-      const provider = revision.payload.provider;
-      if (
-        provider.enabled !== true ||
-        typeof provider.providerKey !== 'string' ||
-        typeof provider.displayName !== 'string'
-      ) {
-        continue;
-      }
-      const providerKey = provider.providerKey;
-      sortedProviders.push({
-        provider: {
-          id: providerKey,
-          logo: typeof provider.logo === 'string' ? provider.logo : undefined,
-          name: provider.displayName,
-          source: provider.source === 'builtin' ? 'builtin' : 'custom',
-        },
-        sort: typeof provider.sort === 'number' ? provider.sort : Number.MAX_SAFE_INTEGER,
-      });
-      runtimeConfig[providerKey] = {
-        config: {},
-        fetchOnClient: false,
-        keyVaults: {},
-        settings: {},
-      };
+  private loadRuntimeState = async (generation: number): Promise<AiProviderRuntimeState> => {
+    try {
+      const revisions = await this.repository.listLatestPublishedProviderRevisions();
+      const tokenEntries: AiCatalogTokenEntry[] = revisions.map((revision) => ({
+        checksum: revision.checksum,
+        providerId: revision.resourceId,
+        providerKey:
+          isRecord(revision.payload.provider) &&
+          typeof revision.payload.provider.providerKey === 'string'
+            ? revision.payload.provider.providerKey
+            : '',
+        revision: revision.revision,
+        secretFingerprint: revision.secretFingerprint ?? null,
+      }));
+      const token = buildAiCatalogRevisionToken(tokenEntries);
+      const cacheKey = token.value;
+      const cached = runtimeCache.get(cacheKey);
+      if (cached) return cached;
 
-      for (const rawModel of revision.payload.models) {
+      const sortedProviders: Array<{ provider: EnabledProvider; sort: number }> = [];
+      const models: EnabledAiModel[] = [];
+      const runtimeConfig: Record<string, AiProviderRuntimeConfig> = {};
+
+      for (const revision of revisions) {
+        if (!isRecord(revision.payload.provider) || !Array.isArray(revision.payload.models))
+          continue;
+        const provider = revision.payload.provider;
         if (
-          !isRecord(rawModel) ||
-          rawModel.enabled !== true ||
-          typeof rawModel.modelKey !== 'string'
+          provider.enabled !== true ||
+          typeof provider.providerKey !== 'string' ||
+          typeof provider.displayName !== 'string'
         ) {
           continue;
         }
-        const builtin = builtinModelMap.get(`${providerKey}:${rawModel.modelKey}`);
-        const publishedConfig = isRecord(rawModel.config) ? rawModel.config : {};
-        const deploymentName =
-          typeof publishedConfig.deploymentName === 'string'
-            ? publishedConfig.deploymentName
-            : undefined;
-        models.push({
-          ...builtin,
-          abilities: hasPublishedMetadata(rawModel.abilities)
-            ? rawModel.abilities
-            : (builtin?.abilities ?? {}),
-          config: {
-            ...builtin?.config,
-            ...(deploymentName ? { deploymentName } : {}),
+        const providerKey = provider.providerKey;
+        sortedProviders.push({
+          provider: {
+            id: providerKey,
+            logo: typeof provider.logo === 'string' ? provider.logo : undefined,
+            name: provider.displayName,
+            source: provider.source === 'builtin' ? 'builtin' : 'custom',
           },
-          contextWindowTokens:
-            typeof rawModel.contextWindowTokens === 'number'
-              ? rawModel.contextWindowTokens
-              : builtin?.contextWindowTokens,
-          description:
-            typeof rawModel.description === 'string' ? rawModel.description : builtin?.description,
-          displayName:
-            typeof rawModel.displayName === 'string' ? rawModel.displayName : builtin?.displayName,
-          enabled: true,
-          id: rawModel.modelKey,
-          parameters: hasPublishedMetadata(rawModel.parameters)
-            ? rawModel.parameters
-            : builtin?.parameters,
-          pricing: hasPublishedMetadata(rawModel.pricing) ? rawModel.pricing : builtin?.pricing,
-          providerId: providerKey,
-          settings: hasPublishedMetadata(rawModel.settings) ? rawModel.settings : builtin?.settings,
-          sort: typeof rawModel.sort === 'number' ? rawModel.sort : undefined,
-          source: builtin ? 'builtin' : 'custom',
-          type: typeof rawModel.type === 'string' ? rawModel.type : 'chat',
-        } as EnabledAiModel);
-      }
-    }
+          sort: typeof provider.sort === 'number' ? provider.sort : Number.MAX_SAFE_INTEGER,
+        });
+        runtimeConfig[providerKey] = {
+          config: {},
+          fetchOnClient: false,
+          keyVaults: {},
+          settings: {},
+        };
 
-    sortedProviders.sort((a, b) => a.sort - b.sort || a.provider.id.localeCompare(b.provider.id));
-    const providers = sortedProviders.map(({ provider }) => provider);
-    models.sort(
-      (a, b) =>
-        (a.sort ?? Number.MAX_SAFE_INTEGER) - (b.sort ?? Number.MAX_SAFE_INTEGER) ||
-        a.providerId.localeCompare(b.providerId) ||
-        a.id.localeCompare(b.id),
-    );
-    const providerHasType = (provider: EnabledProvider, type: string) =>
-      models.some((model) => model.providerId === provider.id && model.type === type);
-    return cacheState(cacheKey, {
-      enabledAiModels: models,
-      enabledAiProviders: providers,
-      enabledChatAiProviders: providers.filter((provider) => providerHasType(provider, 'chat')),
-      enabledImageAiProviders: providers.filter((provider) => providerHasType(provider, 'image')),
-      enabledVideoAiProviders: providers.filter((provider) => providerHasType(provider, 'video')),
-      runtimeConfig,
-    });
+        for (const rawModel of revision.payload.models) {
+          if (
+            !isRecord(rawModel) ||
+            rawModel.enabled !== true ||
+            typeof rawModel.modelKey !== 'string'
+          ) {
+            continue;
+          }
+          const builtin = builtinModelMap.get(`${providerKey}:${rawModel.modelKey}`);
+          const publishedConfig = isRecord(rawModel.config) ? rawModel.config : {};
+          const deploymentName =
+            typeof publishedConfig.deploymentName === 'string'
+              ? publishedConfig.deploymentName
+              : undefined;
+          models.push({
+            ...builtin,
+            abilities: hasPublishedMetadata(rawModel.abilities)
+              ? rawModel.abilities
+              : (builtin?.abilities ?? {}),
+            config: {
+              ...builtin?.config,
+              ...(deploymentName ? { deploymentName } : {}),
+            },
+            contextWindowTokens:
+              typeof rawModel.contextWindowTokens === 'number'
+                ? rawModel.contextWindowTokens
+                : builtin?.contextWindowTokens,
+            description:
+              typeof rawModel.description === 'string'
+                ? rawModel.description
+                : builtin?.description,
+            displayName:
+              typeof rawModel.displayName === 'string'
+                ? rawModel.displayName
+                : builtin?.displayName,
+            enabled: true,
+            id: rawModel.modelKey,
+            parameters: hasPublishedMetadata(rawModel.parameters)
+              ? rawModel.parameters
+              : builtin?.parameters,
+            pricing: hasPublishedMetadata(rawModel.pricing) ? rawModel.pricing : builtin?.pricing,
+            providerId: providerKey,
+            settings: hasPublishedMetadata(rawModel.settings)
+              ? rawModel.settings
+              : builtin?.settings,
+            sort: typeof rawModel.sort === 'number' ? rawModel.sort : undefined,
+            source: builtin ? 'builtin' : 'custom',
+            type: typeof rawModel.type === 'string' ? rawModel.type : 'chat',
+          } as EnabledAiModel);
+        }
+      }
+
+      sortedProviders.sort((a, b) => a.sort - b.sort || a.provider.id.localeCompare(b.provider.id));
+      const providers = sortedProviders.map(({ provider }) => provider);
+      models.sort(
+        (a, b) =>
+          (a.sort ?? Number.MAX_SAFE_INTEGER) - (b.sort ?? Number.MAX_SAFE_INTEGER) ||
+          a.providerId.localeCompare(b.providerId) ||
+          a.id.localeCompare(b.id),
+      );
+      const providerHasType = (provider: EnabledProvider, type: string) =>
+        models.some((model) => model.providerId === provider.id && model.type === type);
+      const state = {
+        enabledAiModels: models,
+        enabledAiProviders: providers,
+        enabledChatAiProviders: providers.filter((provider) => providerHasType(provider, 'chat')),
+        enabledImageAiProviders: providers.filter((provider) => providerHasType(provider, 'image')),
+        enabledVideoAiProviders: providers.filter((provider) => providerHasType(provider, 'video')),
+        runtimeConfig,
+      } satisfies AiProviderRuntimeState;
+      if (generation !== runtimeCacheGeneration) return state;
+
+      const materialized = cacheState(cacheKey, state);
+      reportPlatformRuntimeMaterializationSafely(this.reportRuntimeState, this.db, {
+        domain: 'ai_catalog',
+        health: 'healthy',
+        revisionId: token.value,
+        source: 'database',
+      });
+      return materialized;
+    } catch (error) {
+      if (generation === runtimeCacheGeneration) {
+        activeRuntimeLoad = undefined;
+        runtimeCache.clear();
+        runtimeCacheGeneration += 1;
+        reportPlatformRuntimeMaterializationSafely(this.reportRuntimeState, this.db, {
+          domain: 'ai_catalog',
+          errorCategory: classifyRuntimeMaterializationError(error),
+          health: 'unavailable',
+          source: 'unavailable',
+        });
+      }
+      throw error;
+    }
   };
 }
 
