@@ -350,4 +350,69 @@ describe('PlatformInstanceRepository', () => {
     expect(snapshot.counts[0]?.counts).toMatchObject({ diverged: 1, matching: total - 1 });
     expect(snapshot.freshCandidates.every(({ states }) => states.length <= 8)).toBe(true);
   });
+
+  it('keyset-paginates the complete mixed revision inventory across equal heartbeats', async () => {
+    const freshHeartbeat = new Date('2030-01-01T00:10:00.000Z');
+    const staleHeartbeat = new Date('2030-01-01T00:08:00.000Z');
+    const startedAt = new Date('2030-01-01T00:00:00.000Z');
+    const platformFreshIds = Array.from(
+      { length: 103 },
+      (_, index) => `pinst_${index.toString(16).padStart(48, '0')}`,
+    );
+    const identityFreshIds = Array.from(
+      { length: 3 },
+      (_, index) => `oidci_${index.toString(16).padStart(48, '0')}`,
+    );
+    const platformStaleIds = Array.from(
+      { length: 12 },
+      (_, index) => `pinst_${(1000 + index).toString(16).padStart(48, '0')}`,
+    );
+    const identityStaleIds = Array.from(
+      { length: 2 },
+      (_, index) => `oidci_${(1000 + index).toString(16).padStart(48, '0')}`,
+    );
+    await db.insert(platformInstanceHeartbeats).values([
+      ...platformFreshIds.map((instanceId) => ({
+        instanceId,
+        lastHeartbeatAt: freshHeartbeat,
+        startedAt,
+      })),
+      ...platformStaleIds.map((instanceId) => ({
+        instanceId,
+        lastHeartbeatAt: staleHeartbeat,
+        startedAt,
+      })),
+    ]);
+    await db.insert(platformIdentityProviderInstances).values(
+      [...identityFreshIds, ...identityStaleIds].map((instanceId, index) => ({
+        activeIdentityRevision: null,
+        health: 'healthy' as const,
+        hostnameHash: index.toString(16).padStart(64, '0'),
+        instanceId,
+        lastHeartbeat: index < identityFreshIds.length ? freshHeartbeat : staleHeartbeat,
+        loadedAt: startedAt,
+        startedAt,
+        startupSource: 'database' as const,
+      })),
+    );
+
+    const collected: string[] = [];
+    let cursor: { instanceId: string; lastHeartbeatAt: Date } | undefined;
+    do {
+      const page = await repository.listRevisionInventoryPage({ cursor, limit: 17 });
+      collected.push(...page.items.map(({ instance }) => instance.instanceId));
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor);
+
+    const expected = [
+      ...identityFreshIds.sort(),
+      ...platformFreshIds.sort(),
+      ...identityStaleIds.sort(),
+      ...platformStaleIds.sort(),
+    ];
+    expect(collected).toEqual(expected);
+    expect(new Set(collected).size).toBe(expected.length);
+    expect(collected.at(0)).toBe(identityFreshIds[0]);
+    expect(collected.at(-1)).toBe(platformStaleIds.at(-1));
+  });
 });
