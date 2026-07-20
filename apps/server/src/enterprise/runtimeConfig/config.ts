@@ -2,6 +2,10 @@ const DEFAULT_PLATFORM_CONFIG_CACHE_TTL_SECONDS = 30;
 const MIN_PLATFORM_CONFIG_CACHE_TTL_SECONDS = 1;
 const MAX_PLATFORM_CONFIG_CACHE_TTL_SECONDS = 300;
 
+interface PlatformConfigCacheEnv {
+  PLATFORM_CONFIG_CACHE_TTL_SECONDS?: string;
+}
+
 export const PLATFORM_CONFIG_CACHE_TTL_BOUNDS = {
   defaultSeconds: DEFAULT_PLATFORM_CONFIG_CACHE_TTL_SECONDS,
   maxSeconds: MAX_PLATFORM_CONFIG_CACHE_TTL_SECONDS,
@@ -25,5 +29,7 @@ const parseTtlSeconds = (value: string | undefined): number => {
 
 /** Read lazily so importing runtime-config code never validates or captures process env. */
 export const getPlatformConfigCacheTtlMs = (
-  env: Pick<NodeJS.ProcessEnv, 'PLATFORM_CONFIG_CACHE_TTL_SECONDS'> = process.env,
+  env: PlatformConfigCacheEnv = {
+    PLATFORM_CONFIG_CACHE_TTL_SECONDS: process.env.PLATFORM_CONFIG_CACHE_TTL_SECONDS,
+  },
 ): number => parseTtlSeconds(env.PLATFORM_CONFIG_CACHE_TTL_SECONDS) * 1000;
