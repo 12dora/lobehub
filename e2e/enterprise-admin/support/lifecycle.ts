@@ -21,6 +21,13 @@ export interface OwnedContainer {
 
 export interface LifecycleState {
   containers: OwnedContainer[];
+  /** Owned temp dirs (e.g. isolated Next distDir) removed on cleanup. */
+  ownedDirs: string[];
+  /**
+   * Hooks run BEFORE process/container teardown (e.g. DB CAS restore).
+   * Single coordinated owner: signal handler awaits these then destroys resources.
+   */
+  preCleanupHooks: Array<() => Promise<void>>;
   processes: ChildProcess[];
   runToken: string;
   /** uninstall signal handlers when stop completes successfully */
@@ -32,9 +39,19 @@ export const createRunToken = (): string =>
 
 export const createLifecycleState = (runToken: string): LifecycleState => ({
   containers: [],
+  ownedDirs: [],
+  preCleanupHooks: [],
   processes: [],
   runToken,
 });
+
+export const registerPreCleanupHook = (state: LifecycleState, hook: () => Promise<void>): void => {
+  state.preCleanupHooks.push(hook);
+};
+
+export const registerOwnedDir = (state: LifecycleState, dir: string): void => {
+  if (!state.ownedDirs.includes(dir)) state.ownedDirs.push(dir);
+};
 
 const isDockerNotFoundError = (error: unknown): boolean => {
   const msg = error instanceof Error ? error.message : String(error);
@@ -53,6 +70,10 @@ const isDockerNotFoundError = (error: unknown): boolean => {
 /**
  * Install SIGINT/SIGTERM handlers that clean owned resources before exit.
  * Must be called before the first docker run / process spawn.
+ */
+/**
+ * Single coordinated signal owner. Awaits preCleanupHooks (DB CAS) then resource teardown
+ * before exit — never races competing async handlers.
  */
 export const installLifecycleSignalHandlers = (state: LifecycleState): (() => void) => {
   let cleaning = false;
@@ -237,11 +258,23 @@ export const listContainersByRunToken = async (runToken: string): Promise<string
 
 /**
  * Stop every process and container owned by this lifecycle state.
+ * Order: preCleanupHooks (DB CAS) → process groups → containers → owned dirs.
  * Safe to call multiple times; errors are collected and rethrown as AggregateError.
  */
 export const cleanupLifecycle = async (state: LifecycleState): Promise<void> => {
   const failures: unknown[] = [];
 
+  // 1) DB / durable restore first (must finish before destroying containers that host the DB).
+  for (const hook of state.preCleanupHooks) {
+    try {
+      await hook();
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  state.preCleanupHooks.length = 0;
+
+  // 2) Process groups
   for (const child of [...state.processes].reverse()) {
     try {
       await killProcessGroup(child);
@@ -251,6 +284,7 @@ export const cleanupLifecycle = async (state: LifecycleState): Promise<void> => 
   }
   state.processes.length = 0;
 
+  // 3) Containers
   for (const container of [...state.containers].reverse()) {
     try {
       await removeOwnedContainer(container);
@@ -276,6 +310,17 @@ export const cleanupLifecycle = async (state: LifecycleState): Promise<void> => 
   } catch (error) {
     failures.push(error);
   }
+
+  // 4) Owned temp dirs (isolated Next distDir etc.) — never touch global .next
+  const { rm } = await import('node:fs/promises');
+  for (const dir of [...state.ownedDirs].reverse()) {
+    try {
+      await rm(dir, { force: true, recursive: true });
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  state.ownedDirs.length = 0;
 
   state.uninstallSignals?.();
   state.uninstallSignals = undefined;

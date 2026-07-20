@@ -14,7 +14,9 @@ import {
 import { startEnterpriseAdminRuntime, type SuiteRuntime } from '../support/infrastructure';
 import {
   cleanupEnterpriseAdminSuite,
+  createDurableRestoreHandle,
   digestFingerprint,
+  registerSeedRestoreOnLifecycle,
   seedEnterpriseAdminSuite,
   snapshotGlobalDbDigest,
   type SuiteGlobalWriteManifest,
@@ -39,7 +41,6 @@ import {
 let runtime: SuiteRuntime | undefined;
 let seed: SuiteSeed | undefined;
 let writeManifest: SuiteGlobalWriteManifest | undefined;
-let uninstallSeedSignals: (() => void) | undefined;
 
 const reportLines: string[] = [];
 const log = (line: string) => {
@@ -69,24 +70,25 @@ test.beforeAll(async () => {
   await rm(EVIDENCE_ROOT, { force: true, recursive: true });
   await ensureEvidenceDir();
   runtime = await startEnterpriseAdminRuntime();
-  const seeded = await seedEnterpriseAdminSuite(runtime.databaseUrl);
+  // Single lifecycle owner: register durable restore BEFORE seed so COMMIT→handler has no gap.
+  const durableRestore = createDurableRestoreHandle(runtime.databaseUrl);
+  registerSeedRestoreOnLifecycle(runtime.lifecycle, durableRestore);
+  const seeded = await seedEnterpriseAdminSuite(runtime.databaseUrl, durableRestore);
   seed = seeded.seed;
   writeManifest = seeded.manifest;
-  // Restore on process interrupt (external disposable + isolated safety).
-  const { installManifestRestoreOnSignals } = await import('../support/seed');
-  uninstallSeedSignals = installManifestRestoreOnSignals(runtime.databaseUrl, seed, writeManifest);
   log(
-    `[enterprise-admin-e2e] namespace=${seed.namespace} app=${runtime.appUrl} mode=${runtime.mode} run=${runtime.runToken}`,
+    `[enterprise-admin-e2e] namespace=${seed.namespace} app=${runtime.appUrl} mode=${runtime.mode} run=${runtime.runToken} dist=${runtime.nextDistDir ?? 'n/a'}`,
   );
 });
 
 test.afterAll(async () => {
   const failures: unknown[] = [];
   try {
-    uninstallSeedSignals?.();
-    uninstallSeedSignals = undefined;
     if (runtime && seed) {
+      // Normal path: CAS restore then stop (hooks also cover signal path).
       await cleanupEnterpriseAdminSuite(runtime.databaseUrl, seed, writeManifest);
+      // Clear hooks so stop does not double-restore.
+      runtime.lifecycle.preCleanupHooks.length = 0;
       if (writeManifest && runtime.mode === 'external') {
         const after = await snapshotGlobalDbDigest(runtime.databaseUrl);
         expect(digestFingerprint(after)).toBe(digestFingerprint(writeManifest.before));
