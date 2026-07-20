@@ -20,12 +20,14 @@ describe('M13 secret rewrap single-active expand migration', () => {
     expect(migrationSql).not.toMatch(/\b(?:DROP|RENAME|DELETE|ALTER)\b/i);
   });
 
-  it('keeps generated journal and snapshot aligned at 0134', () => {
-    expect(journal.entries).toHaveLength(135);
-    expect(journal.entries.find(({ idx }) => idx === 134)).toMatchObject({
-      idx: 134,
-      tag: migrationName,
-    });
+  it('keeps 0134 between the M13 failure index and M14 instance migration', () => {
+    const journalPosition = journal.entries.findIndex(({ tag }) => tag === migrationName);
+    expect(journalPosition).toBe(134);
+    expect(journal.entries.slice(journalPosition - 1, journalPosition + 2)).toMatchObject([
+      { idx: 133, tag: '0133_m13_secret_rewrap_failure_index' },
+      { idx: 134, tag: migrationName },
+      { idx: 135, tag: '0135_m14_platform_instance_revisions' },
+    ]);
     expect(readdirSync(path.join(migrations, 'meta'))).toContain('0134_snapshot.json');
   });
 });

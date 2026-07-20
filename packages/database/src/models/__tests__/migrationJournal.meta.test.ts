@@ -13,25 +13,24 @@ const { join } = path;
 describe('drizzle migration journal ↔ meta snapshots', () => {
   const migrationsDir = join(__dirname, '../../../migrations');
   const metaDir = join(migrationsDir, 'meta');
+  const journal = JSON.parse(readFileSync(join(metaDir, '_journal.json'), 'utf8')) as {
+    entries: { tag: string; idx: number }[];
+  };
+  const snapshots = readdirSync(metaDir).filter((file) => file.endsWith('_snapshot.json'));
 
-  it('journal entry count equals *_snapshot.json count', () => {
-    const journal = JSON.parse(readFileSync(join(metaDir, '_journal.json'), 'utf8')) as {
-      entries: { tag: string; idx: number }[];
-    };
-    const snapshots = readdirSync(metaDir).filter((f) => f.endsWith('_snapshot.json'));
-    expect(journal.entries.length).toBe(snapshots.length);
+  it('maps every journal entry to exactly one snapshot without orphans', () => {
+    const expectedSnapshots = journal.entries.map(
+      ({ idx }) => `${String(idx).padStart(4, '0')}_snapshot.json`,
+    );
+    expect(snapshots.toSorted()).toEqual(expectedSnapshots);
   });
 
-  it('each journal tag has a matching snapshot file', () => {
-    const journal = JSON.parse(readFileSync(join(metaDir, '_journal.json'), 'utf8')) as {
-      entries: { tag: string; idx: number }[];
-    };
-    for (const entry of journal.entries) {
-      // tags like 0118_add_platform_easyauth_snapshots → 0118_snapshot.json
-      const prefix = entry.tag.split('_')[0];
-      const snapName = `${prefix}_snapshot.json`;
-      expect(readdirSync(metaDir)).toContain(snapName);
-    }
+  it('keeps journal indexes contiguous and tags unique with matching prefixes', () => {
+    expect(journal.entries.map(({ idx }) => idx)).toEqual(journal.entries.map((_, idx) => idx));
+    expect(new Set(journal.entries.map(({ tag }) => tag)).size).toBe(journal.entries.length);
+    journal.entries.forEach(({ idx, tag }) => {
+      expect(tag.startsWith(`${String(idx).padStart(4, '0')}_`)).toBe(true);
+    });
   });
 
   it('0118 SQL only creates platform_easyauth_grant_snapshots objects', () => {
