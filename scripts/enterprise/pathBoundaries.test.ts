@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  ENTERPRISE_PATH_BOUNDARY_SCAN_ROOTS,
+  ENTERPRISE_PRODUCTION_IMPORT_ALLOWLIST,
   ENTERPRISE_TEST_IMPORT_ALLOWLIST,
   ENTERPRISE_UPSTREAM_MOUNT_POINTS,
   extractImportSpecifiers,
   findEnterpriseImportViolations,
   findPackageReverseImportViolations,
   isAllowedEnterpriseImporter,
+  isAllowedEnterpriseProductionImport,
   isAllowedEnterpriseTestImport,
   isEnterpriseOwnedPath,
 } from './pathBoundaries';
@@ -58,6 +61,13 @@ describe('enterprise path boundaries', () => {
       true,
     );
     expect(isAllowedEnterpriseImporter('src/features/Chat/index.tsx')).toBe(false);
+    // Ordinary branding consumers are not whole-file mounts.
+    expect(isAllowedEnterpriseImporter('src/layout/GlobalProvider/FaviconProvider.tsx')).toBe(
+      false,
+    );
+    expect(isAllowedEnterpriseImporter('src/components/Branding/ProductLogo/index.tsx')).toBe(
+      false,
+    );
     // Tests are not file-level exempt — only exact (file, specifier) pairs.
     expect(
       isAllowedEnterpriseImporter(
@@ -67,14 +77,26 @@ describe('enterprise path boundaries', () => {
     expect(isAllowedEnterpriseImporter('src/features/Chat/index.test.tsx')).toBe(false);
   });
 
-  it('extracts import specifiers', () => {
+  it('extracts import / require / side-effect / mock static string specifiers', () => {
     const src = `
       import x from '@/enterprise/client';
       const y = await import('@/server/enterprise/routers/platform');
+      require('@/server/enterprise/featureFlags');
+      import '@/enterprise/client/side-effect';
+      vi.mock('@/server/enterprise/security/secret', () => ({}));
+      vi.doMock('@/server/enterprise/services/aiCatalog');
+      jest.mock('@/enterprise/client/providers');
+      jest.doMock('@/server/enterprise/observability');
     `;
     expect(extractImportSpecifiers(src)).toEqual([
       '@/enterprise/client',
       '@/server/enterprise/routers/platform',
+      '@/server/enterprise/featureFlags',
+      '@/enterprise/client/side-effect',
+      '@/server/enterprise/security/secret',
+      '@/server/enterprise/services/aiCatalog',
+      '@/enterprise/client/providers',
+      '@/server/enterprise/observability',
     ]);
   });
 
@@ -101,6 +123,46 @@ describe('enterprise path boundaries', () => {
       },
     ]);
     expect(violations).toHaveLength(1);
+  });
+
+  describe('scan roots include e2e and other source trees', () => {
+    it('exports e2e among audited repository source/test roots', () => {
+      expect(ENTERPRISE_PATH_BOUNDARY_SCAN_ROOTS).toContain('e2e');
+      expect(ENTERPRISE_PATH_BOUNDARY_SCAN_ROOTS).toContain('src');
+      expect(ENTERPRISE_PATH_BOUNDARY_SCAN_ROOTS).toContain('apps/server/src');
+      expect(ENTERPRISE_PATH_BOUNDARY_SCAN_ROOTS).toContain('apps/desktop/src');
+      expect(ENTERPRISE_PATH_BOUNDARY_SCAN_ROOTS).toContain('apps/cli/src');
+      expect(ENTERPRISE_PATH_BOUNDARY_SCAN_ROOTS).toContain('packages');
+      expect(ENTERPRISE_PATH_BOUNDARY_SCAN_ROOTS).toContain('scripts/enterprise');
+      // Do not silently widen to generated trees via this constant.
+      expect(ENTERPRISE_PATH_BOUNDARY_SCAN_ROOTS as readonly string[]).not.toContain(
+        'node_modules',
+      );
+      expect(ENTERPRISE_PATH_BOUNDARY_SCAN_ROOTS as readonly string[]).not.toContain('dist');
+      expect(ENTERPRISE_PATH_BOUNDARY_SCAN_ROOTS as readonly string[]).not.toContain('.next');
+    });
+
+    it('flags a new e2e enterprise import that is not registered (scan-root regression)', () => {
+      const violations = findEnterpriseImportViolations([
+        {
+          path: 'e2e/src/identity-provider/newArbitrarySeed.ts',
+          source: `import { PlatformSecretService } from '@/server/enterprise/security/secret';`,
+        },
+        {
+          // Existing audited e2e seed remains allowed for its registered pair only.
+          path: 'e2e/src/identity-provider/seedIdentityProvider.ts',
+          source: `
+            import { PlatformSecretService } from '@/server/enterprise/security/secret';
+            import { parsePublishedIdentityProviderPayload } from '@/server/enterprise/services/identityProvider/publicationService';
+          `,
+        },
+      ]);
+      expect(violations).toHaveLength(1);
+      expect(violations[0]).toMatchObject({
+        file: 'e2e/src/identity-provider/newArbitrarySeed.ts',
+        importSpecifier: '@/server/enterprise/security/secret',
+      });
+    });
   });
 
   describe('test import allowlist (no global *.test.* / __tests__ exemption)', () => {
@@ -136,13 +198,16 @@ describe('enterprise path boundaries', () => {
         },
         {
           path: 'apps/server/src/routers/lambda/__tests__/managedAgentActiveUser.guard.test.ts',
-          source: `import { withActiveUserWhenManagedAgents } from '@/server/enterprise/guards/activeUser';`,
+          source: `
+            import { withActiveUserWhenManagedAgents } from '@/server/enterprise/guards/activeUser';
+            vi.mock('@/server/enterprise/services/agentCatalog', async () => ({}));
+          `,
         },
       ]);
       expect(violations).toEqual([]);
     });
 
-    it('rejects an arbitrary new test that imports enterprise (negative)', () => {
+    it('rejects an arbitrary new test that imports enterprise via from (negative)', () => {
       const violations = findEnterpriseImportViolations([
         {
           path: 'src/features/Chat/arbitraryNewBoundary.test.ts',
@@ -154,10 +219,26 @@ describe('enterprise path boundaries', () => {
         },
       ]);
       expect(violations).toHaveLength(2);
-      expect(violations.map((v) => v.file).sort()).toEqual([
-        'apps/server/src/services/foo/__tests__/sneaky.test.ts',
-        'src/features/Chat/arbitraryNewBoundary.test.ts',
+    });
+
+    it.each([
+      ['side-effect import', `import '@/server/enterprise/security/secret';`],
+      ['vi.mock', `vi.mock('@/server/enterprise/security/secret', () => ({}));`],
+      ['vi.doMock', `vi.doMock('@/server/enterprise/security/secret');`],
+      ['jest.mock', `jest.mock('@/server/enterprise/security/secret');`],
+      ['jest.doMock', `jest.doMock('@/server/enterprise/security/secret');`],
+    ] as const)('rejects arbitrary test using %s (negative)', (_label, source) => {
+      const violations = findEnterpriseImportViolations([
+        {
+          path: 'src/features/Chat/arbitraryMockBypass.test.ts',
+          source,
+        },
       ]);
+      expect(violations).toHaveLength(1);
+      expect(violations[0]).toMatchObject({
+        file: 'src/features/Chat/arbitraryMockBypass.test.ts',
+        importSpecifier: '@/server/enterprise/security/secret',
+      });
     });
 
     it('rejects allowlisted test file with a non-allowlisted specifier (negative)', () => {
@@ -195,6 +276,68 @@ describe('enterprise path boundaries', () => {
         },
       ]);
       expect(violations).toHaveLength(2);
+    });
+  });
+
+  describe('production exact allowlist for ordinary branding consumers', () => {
+    it('registers ordinary branding consumers with exact RuntimeBrandingProvider pairs only', () => {
+      expect(ENTERPRISE_PRODUCTION_IMPORT_ALLOWLIST.length).toBeGreaterThan(0);
+      for (const entry of ENTERPRISE_PRODUCTION_IMPORT_ALLOWLIST) {
+        expect(entry.file).not.toMatch(/[*?]/);
+        expect(entry.importSpecifier).not.toMatch(/[*?]/);
+        expect(entry.owner.length).toBeGreaterThan(0);
+        expect(entry.reason.length).toBeGreaterThan(0);
+      }
+
+      // Not whole-file mounts.
+      for (const file of [
+        'src/layout/GlobalProvider/FaviconProvider.tsx',
+        'src/components/Branding/ProductLogo/index.tsx',
+        'src/hooks/useDefaultInboxDisplayName.ts',
+        'src/features/AuthShell/AuthContainer.tsx',
+        'src/features/RouteMeta/RouteMetaBridge.tsx',
+        'src/routes/(desktop)/desktop-onboarding/_layout/index.tsx',
+      ] as const) {
+        expect(ENTERPRISE_UPSTREAM_MOUNT_POINTS as readonly string[]).not.toContain(file);
+      }
+
+      expect(
+        isAllowedEnterpriseProductionImport(
+          'src/layout/GlobalProvider/FaviconProvider.tsx',
+          '@/enterprise/client/providers/RuntimeBrandingProvider',
+        ),
+      ).toBe(true);
+    });
+
+    it('allows the audited branding import but rejects unrelated server enterprise secret (negative)', () => {
+      const violations = findEnterpriseImportViolations([
+        {
+          path: 'src/layout/GlobalProvider/FaviconProvider.tsx',
+          source: `
+            import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';
+            import { PlatformSecretService } from '@/server/enterprise/security/secret';
+          `,
+        },
+      ]);
+      expect(violations).toHaveLength(1);
+      expect(violations[0]).toMatchObject({
+        file: 'src/layout/GlobalProvider/FaviconProvider.tsx',
+        importSpecifier: '@/server/enterprise/security/secret',
+      });
+    });
+
+    it('allows legitimate branding-only consumers (positive)', () => {
+      const violations = findEnterpriseImportViolations([
+        {
+          path: 'src/components/Branding/ProductLogo/index.tsx',
+          source: `import { useBranding } from '@/enterprise/client/providers/RuntimeBrandingProvider';`,
+        },
+        {
+          path: 'src/features/RouteMeta/RouteMetaBridge.tsx',
+          source: `import { useBranding } from '@/enterprise/client';`,
+        },
+      ]);
+      expect(violations).toEqual([]);
     });
   });
 });
