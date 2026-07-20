@@ -108,6 +108,36 @@
 | `src/routes/(main)/settings/stats/features/components/StatsFormGroup.tsx` | Compatibility adapter → `@/components/SectionGroup`   | M03    | PR-017 | Settings callers unchanged                  |
 | `scripts/enterprise/pathBoundaries.ts`                                    | Allow mobile business mount                           | M03    | PR-014 | Mirror desktop mount point                  |
 
+## M13 security hardening applied (W8)
+
+| Upstream file / area                                                                                           | Change                                                                | Module | Batch | Notes                                                                                             |
+| -------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- | ------ | ----- | ------------------------------------------------------------------------------------------------- |
+| `src/app/(backend)/api/auth/[...all]/route.ts`                                                                 | Observe terminal database-OIDC callback failures at the auth boundary | M13/14 | W8    | Status/category only; request body, token, callback code and raw error are never recorded         |
+| `src/libs/better-auth/sso/platformIdentityProvider*.ts` + `src/libs/better-auth/utils/config.ts`               | Conditional secret reauth plus provider-bound login observations      | M13/14 | W8    | Cross-provider callbacks fail closed; state/nonce/token and upstream response bodies stay private |
+| `apps/server/src/enterprise/security/**` + `apps/server/src/enterprise/services/secretRewrap/**`               | Vault key provider, secret rotation/rewrap and centralized policy     | M13    | W8    | New enterprise-owned implementation; fail closed and audit only stable redacted categories        |
+| `packages/database/src/{schemas,models,repositories}/platform/**` + `packages/database/migrations/013{2,3,4}*` | Rotation state, single-active rewrap jobs and failure index           | M13    | W8    | Expand-only migrations; real PostgreSQL concurrency and replay gates                              |
+
+## M14 consistency and observability applied (W8)
+
+| Upstream file / area                                                                                     | Change                                                               | Module | Batch | Notes                                                                                      |
+| -------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- | ------ | ----- | ------------------------------------------------------------------------------------------ |
+| `src/instrumentation.ts`                                                                                 | Start persistent instance heartbeat and operational metrics runtime  | M14    | W8    | Narrow dynamic imports; server runtime only; existing instrumentation startup remains      |
+| `src/libs/redis/{manager,redis}*.ts`                                                                     | Bounded Redis initialization, cleanup and secret-free error handling | M14    | W8    | Source and sibling regressions cover failed-instance cleanup; only error class is logged   |
+| `packages/observability-otel/package.json`                                                               | Export the enterprise-platform observability module                  | M14    | W8    | Additive package export; existing module exports remain unchanged                          |
+| `packages/database/src/{schemas,models,repositories}/platform/**` + `packages/database/migrations/0135*` | Instance revision heartbeats and convergence projections             | M14    | W8    | Enterprise namespace; migration replay and multi-connection tests                          |
+| `packages/locales/src/default/admin.ts` + `locales/{en-US,zh-CN}/admin.json`                             | Admin System health/convergence/job-control copy                     | M14    | W8    | Hand-authored EN/ZH only; no runtime identifiers or secrets                                |
+| `src/enterprise/client/{routes,nav,features/admin/system,services/adminSystem*}/**`                      | Mount the reviewed Admin System operations console                   | M14    | W8    | Enterprise-owned UI; authoritative active-job polling and explicit partial-availability UX |
+| `.github/workflows/enterprise-failure-drills.yml` + `scripts/enterprise/failure-drills/**`               | Real PostgreSQL/Redis failure-drill evidence gate                    | M14/15 | W8    | Raw Vitest JSON is deleted; uploaded evidence is bounded, redacted and assertion-counted   |
+
+## M15 upstream-sync foundation applied (W8)
+
+| Upstream file / area                               | Change                                                           | Module | Batch | Notes                                                                                     |
+| -------------------------------------------------- | ---------------------------------------------------------------- | ------ | ----- | ----------------------------------------------------------------------------------------- |
+| `AGENTS.md`                                        | Preserve Next.js 16 generated agent guidance                     | M15    | W8    | Generated by Next.js; committing it avoids recurring dirty-tree drift                     |
+| `package.json`                                     | Add the exact Better Auth core dependency used by OIDC lifecycle | M14/15 | W8    | Version matches the Better Auth family; no sync/fetch/push command is added               |
+| `scripts/enterprise/rebase-report.ts`              | Local-only rebase, hotspot and patch-drift report                | M15    | Q05-1 | Explicit refs only; no fetch/push/checkout; isolated temporary clone is always removed    |
+| `docs/redevelopment/list/07_上游直接修改点台账.md` | Authoritative M13/M14/W8 direct-edit registry                    | M15    | Q05-1 | Report parser consumes path cells only; prose and private implementation content stay out |
+
 ## Rules
 
 1. Any new upstream direct edit **must** add a row here and in `07_上游直接修改点台账.md`.
