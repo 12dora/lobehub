@@ -1,11 +1,16 @@
 // @vitest-environment node
+import { randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
+import { drizzle } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
 import { describe, expect, it } from 'vitest';
 
-import { getTestDB } from '../../core/getTestDB';
+import { ensureServerTestDatabase } from '../../../tests/ensureServerTestDatabase';
+import { PlatformInstanceRepository } from '../../repositories/platformInstance';
+import * as schema from '../../schemas';
+import type { LobeChatDatabase } from '../../type';
 
 const runPostgresMigration =
   process.env.TEST_SERVER_DB === '1' && Boolean(process.env.DATABASE_TEST_URL);
@@ -16,9 +21,9 @@ const migrationPath = path.join(
 
 describe.skipIf(!runPostgresMigration)('M14 PostgreSQL platform instance migration', () => {
   it('replays twice and enforces the opaque heartbeat and revision-state contract', async () => {
-    await getTestDB();
     const connectionString = process.env.DATABASE_TEST_URL;
     if (!connectionString) throw new Error('DATABASE_TEST_URL is required');
+    await ensureServerTestDatabase(connectionString);
     const pool = new Pool({ connectionString, max: 1 });
     const client = await pool.connect();
 
@@ -31,10 +36,41 @@ describe.skipIf(!runPostgresMigration)('M14 PostgreSQL platform instance migrati
         }
       }
 
-      const instanceId = `pinst_${'a'.repeat(48)}`;
+      const instanceId = `pinst_${randomBytes(24).toString('hex')}`;
       await client.query(`INSERT INTO platform_instance_heartbeats (instance_id) VALUES ($1)`, [
         instanceId,
       ]);
+
+      const batchIds = Array.from({ length: 32 }, () => `pinst_${randomBytes(24).toString('hex')}`);
+      const batch = await client.query<{
+        last_heartbeat_at: Date;
+        started_at: Date;
+      }>(
+        `INSERT INTO platform_instance_heartbeats (instance_id)
+         SELECT unnest($1::text[])
+         RETURNING last_heartbeat_at, started_at`,
+        [batchIds],
+      );
+      expect(batch.rows).toHaveLength(batchIds.length);
+      expect(
+        batch.rows.every(
+          ({ last_heartbeat_at, started_at }) =>
+            last_heartbeat_at.getTime() === started_at.getTime(),
+        ),
+      ).toBe(true);
+
+      const repository = new PlatformInstanceRepository(
+        drizzle(client, { schema }) as unknown as LobeChatDatabase,
+      );
+      const repositoryId = `pinst_${randomBytes(24).toString('hex')}`;
+      const registered = await repository.upsertHeartbeat(repositoryId);
+      const heartbeat = await repository.upsertHeartbeat(repositoryId);
+      expect(registered.lastHeartbeatAt).toEqual(registered.startedAt);
+      expect(heartbeat.startedAt).toEqual(registered.startedAt);
+      expect(heartbeat.lastHeartbeatAt.getTime()).toBeGreaterThanOrEqual(
+        heartbeat.startedAt.getTime(),
+      );
+
       await client.query(
         `INSERT INTO platform_instance_revision_states
           (instance_id, domain, load_mode, source, health)
@@ -63,7 +99,7 @@ describe.skipIf(!runPostgresMigration)('M14 PostgreSQL platform instance migrati
         client.query(
           `INSERT INTO platform_instance_revision_states
             (instance_id, domain, load_mode, source, health, error_category)
-           VALUES ($1, 'identity', 'process_cached', 'unavailable', 'healthy', NULL)`,
+           VALUES ($1, 'identity', 'request_scoped', 'unavailable', 'healthy', NULL)`,
           [instanceId],
         ),
       ).rejects.toMatchObject({

@@ -1,9 +1,12 @@
 // @vitest-environment node
+import { randomUUID } from 'node:crypto';
+
+import { and, eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
 import { describe, expect, it } from 'vitest';
 
-import { getTestDB } from '../../core/getTestDB';
+import { ensureServerTestDatabase } from '../../../tests/ensureServerTestDatabase';
 import * as schema from '../../schemas';
 import { platformInstanceHeartbeats, platformInstanceRevisionStates } from '../../schemas/platform';
 import type { LobeChatDatabase } from '../../type';
@@ -13,18 +16,17 @@ const enabled = process.env.TEST_SERVER_DB === '1' && Boolean(process.env.DATABA
 
 describe.skipIf(!enabled)('PlatformInstanceRepository PostgreSQL multi-connection', () => {
   it('converges independent connection upserts without duplicating inventory or state', async () => {
-    await getTestDB();
     const connectionString = process.env.DATABASE_TEST_URL;
     if (!connectionString) throw new Error('DATABASE_TEST_URL is required');
+    await ensureServerTestDatabase(connectionString);
     const firstPool = new Pool({ connectionString, max: 1 });
     const secondPool = new Pool({ connectionString, max: 1 });
     const firstDb = drizzle(firstPool, { schema }) as unknown as LobeChatDatabase;
     const secondDb = drizzle(secondPool, { schema }) as unknown as LobeChatDatabase;
-    const id = `pinst_${'b'.repeat(48)}`;
+    const testNamespace = randomUUID().replaceAll('-', '');
+    const id = `pinst_${testNamespace}${testNamespace.slice(0, 16)}`;
 
     try {
-      await firstDb.delete(platformInstanceRevisionStates);
-      await firstDb.delete(platformInstanceHeartbeats);
       const first = new PlatformInstanceRepository(firstDb);
       const second = new PlatformInstanceRepository(secondDb);
 
@@ -48,11 +50,35 @@ describe.skipIf(!enabled)('PlatformInstanceRepository PostgreSQL multi-connectio
         }),
       ]);
 
-      expect(await firstDb.select().from(platformInstanceHeartbeats)).toHaveLength(1);
-      expect(await firstDb.select().from(platformInstanceRevisionStates)).toHaveLength(1);
+      expect(
+        await firstDb
+          .select()
+          .from(platformInstanceHeartbeats)
+          .where(eq(platformInstanceHeartbeats.instanceId, id)),
+      ).toHaveLength(1);
+      expect(
+        await firstDb
+          .select()
+          .from(platformInstanceRevisionStates)
+          .where(
+            and(
+              eq(platformInstanceRevisionStates.instanceId, id),
+              eq(platformInstanceRevisionStates.domain, 'settings'),
+            ),
+          ),
+      ).toHaveLength(1);
     } finally {
-      await firstDb.delete(platformInstanceRevisionStates);
-      await firstDb.delete(platformInstanceHeartbeats);
+      await firstDb
+        .delete(platformInstanceRevisionStates)
+        .where(
+          and(
+            eq(platformInstanceRevisionStates.instanceId, id),
+            eq(platformInstanceRevisionStates.domain, 'settings'),
+          ),
+        );
+      await firstDb
+        .delete(platformInstanceHeartbeats)
+        .where(eq(platformInstanceHeartbeats.instanceId, id));
       await Promise.all([firstPool.end(), secondPool.end()]);
     }
   }, 20_000);

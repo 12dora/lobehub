@@ -1,7 +1,7 @@
 CREATE TABLE IF NOT EXISTS "platform_instance_heartbeats" (
 	"instance_id" varchar(64) PRIMARY KEY NOT NULL,
-	"last_heartbeat_at" timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
-	"started_at" timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+	"last_heartbeat_at" timestamp with time zone DEFAULT statement_timestamp() NOT NULL,
+	"started_at" timestamp with time zone DEFAULT statement_timestamp() NOT NULL,
 	CONSTRAINT "platform_instance_heartbeats_id_check" CHECK ("platform_instance_heartbeats"."instance_id" ~ '^pinst_[a-f0-9]{48}$'),
 	CONSTRAINT "platform_instance_heartbeats_time_check" CHECK ("platform_instance_heartbeats"."last_heartbeat_at" >= "platform_instance_heartbeats"."started_at")
 );

@@ -35,8 +35,8 @@ describe('PlatformInstanceRepository', () => {
     await db
       .update(platformInstanceHeartbeats)
       .set({
-        lastHeartbeatAt: sql`clock_timestamp() - interval '5 minutes'`,
-        startedAt: sql`clock_timestamp() - interval '5 minutes'`,
+        lastHeartbeatAt: sql`statement_timestamp() - interval '5 minutes'`,
+        startedAt: sql`statement_timestamp() - interval '5 minutes'`,
       })
       .where(eq(platformInstanceHeartbeats.instanceId, id));
 
@@ -71,8 +71,8 @@ describe('PlatformInstanceRepository', () => {
     await db
       .update(platformInstanceHeartbeats)
       .set({
-        lastHeartbeatAt: sql`clock_timestamp() - interval '91 seconds'`,
-        startedAt: sql`clock_timestamp() - interval '5 minutes'`,
+        lastHeartbeatAt: sql`statement_timestamp() - interval '91 seconds'`,
+        startedAt: sql`statement_timestamp() - interval '5 minutes'`,
       })
       .where(eq(platformInstanceHeartbeats.instanceId, staleId));
 

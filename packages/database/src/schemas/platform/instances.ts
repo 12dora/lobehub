@@ -61,10 +61,10 @@ export const platformInstanceHeartbeats = pgTable(
   {
     instanceId: varchar('instance_id', { length: 64 }).primaryKey().notNull(),
     lastHeartbeatAt: timestamptz('last_heartbeat_at')
-      .default(sql`clock_timestamp()`)
+      .default(sql`statement_timestamp()`)
       .notNull(),
     startedAt: timestamptz('started_at')
-      .default(sql`clock_timestamp()`)
+      .default(sql`statement_timestamp()`)
       .notNull(),
   },
   (t) => [
