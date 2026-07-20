@@ -115,6 +115,7 @@ const rolloutResultSchema = z
   .passthrough();
 
 export const platformAgentRolloutJobRevision = sql<number>`COALESCE((${platformJobs.input}->'control'->>'revision')::int, 0)`;
+const databaseNow = sql<Date>`statement_timestamp()`;
 
 export const parsePlatformAgentRolloutInput = (
   job: PlatformJobItem,
@@ -147,7 +148,6 @@ export interface PlatformAgentRolloutControlInput {
   expectedRevision: number;
   expectedStatus: PlatformJobItem['status'];
   jobId: string;
-  now?: () => Date;
 }
 
 /** Shared authoritative cancel/retry state machine for every administrative API surface. */
@@ -189,18 +189,17 @@ export const controlPlatformAgentRolloutJob = async (
       revision: currentInput.control.revision + 1,
     },
   };
-  const now = input.now ?? (() => new Date());
   const [updated] = await db
     .update(platformJobs)
     .set(
       input.action === 'cancel'
         ? {
-            finishedAt: now(),
+            finishedAt: databaseNow,
             input: nextInput,
             leaseOwner: null,
             leaseUntil: null,
             status: 'cancelled',
-            updatedAt: now(),
+            updatedAt: databaseNow,
           }
         : {
             cursor: current.status === 'failed' ? null : current.cursor,
@@ -213,7 +212,7 @@ export const controlPlatformAgentRolloutJob = async (
             progressDone: current.progressDone,
             resultSummary: current.resultSummary,
             status: 'pending',
-            updatedAt: now(),
+            updatedAt: databaseNow,
           },
     )
     .where(
@@ -676,7 +675,7 @@ export class PlatformAgentRolloutService {
         };
         const [consumed] = await tx
           .update(platformJobs)
-          .set({ input: consumedInput, updatedAt: new Date() })
+          .set({ input: consumedInput, updatedAt: databaseNow })
           .where(
             and(
               eq(platformJobs.id, original.id),

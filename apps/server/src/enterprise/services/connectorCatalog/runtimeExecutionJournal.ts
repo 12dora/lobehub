@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 
-import { and, eq, gt, lte } from 'drizzle-orm';
+import { and, eq, gt, lte, sql } from 'drizzle-orm';
 import { z } from 'zod';
 
 import { PlatformJobModel } from '@/database/models/platform/job';
@@ -9,6 +9,8 @@ import type { LobeChatDatabase } from '@/database/type';
 
 const JOURNAL_TYPE = 'connector.runtime.shared-call.v1';
 const AUDIT_LEASE_MS = 30_000;
+const databaseNow = sql<Date>`statement_timestamp()`;
+const databaseAuditLeaseUntil = sql<Date>`statement_timestamp() + (${AUDIT_LEASE_MS} * interval '1 millisecond')`;
 const journalInputSchema = z
   .object({
     connectorId: z.string(),
@@ -99,12 +101,11 @@ export class DatabaseConnectorRuntimeExecutionJournal implements ConnectorRuntim
       )
       .digest('hex');
     const owner = randomUUID();
-    const now = new Date();
     const [created] = await this.db
       .insert(platformJobs)
       .values({
         attempt: 1,
-        heartbeatAt: now,
+        heartbeatAt: databaseNow,
         idempotencyKey,
         input: {
           connectorId: params.connectorId,
@@ -117,7 +118,7 @@ export class DatabaseConnectorRuntimeExecutionJournal implements ConnectorRuntim
         leaseOwner: owner,
         // Expiry transfers only terminal reconciliation ownership. Workers
         // never redispatch the remote call.
-        leaseUntil: new Date(now.getTime() + AUDIT_LEASE_MS),
+        leaseUntil: databaseAuditLeaseUntil,
         requestedBy: params.userId,
         status: 'reserved',
         type: JOURNAL_TYPE,
@@ -149,22 +150,21 @@ export class DatabaseConnectorRuntimeExecutionJournal implements ConnectorRuntim
   };
 
   arm: ConnectorRuntimeExecutionJournal['arm'] = async (token) => {
-    const now = new Date();
     const [armed] = await this.db
       .update(platformJobs)
       .set({
-        heartbeatAt: now,
-        leaseUntil: new Date(now.getTime() + AUDIT_LEASE_MS),
-        startedAt: now,
+        heartbeatAt: databaseNow,
+        leaseUntil: databaseAuditLeaseUntil,
+        startedAt: databaseNow,
         status: 'running',
-        updatedAt: now,
+        updatedAt: databaseNow,
       })
       .where(
         and(
           eq(platformJobs.id, token.jobId),
           eq(platformJobs.leaseOwner, token.owner),
           eq(platformJobs.status, 'reserved'),
-          gt(platformJobs.leaseUntil, now),
+          gt(platformJobs.leaseUntil, databaseNow),
         ),
       )
       .returning({ id: platformJobs.id });
@@ -186,22 +186,22 @@ export class DatabaseConnectorRuntimeExecutionJournal implements ConnectorRuntim
   };
 
   complete: ConnectorRuntimeExecutionJournal['complete'] = async (token, result) => {
-    const now = new Date();
     const [completed] = await this.db
       .update(platformJobs)
       .set({
-        finishedAt: now,
+        finishedAt: databaseNow,
         leaseOwner: null,
         leaseUntil: null,
         resultSummary: { ...result, auditStatus: 'pending' },
         status: 'pending',
-        updatedAt: now,
+        updatedAt: databaseNow,
       })
       .where(
         and(
           eq(platformJobs.id, token.jobId),
           eq(platformJobs.leaseOwner, token.owner),
           eq(platformJobs.status, 'running'),
+          gt(platformJobs.leaseUntil, databaseNow),
         ),
       )
       .returning({ id: platformJobs.id });
@@ -235,20 +235,21 @@ export class DatabaseConnectorRuntimeExecutionJournal implements ConnectorRuntim
         userId: input.data.userId,
       });
       if (result.success) {
-        await this.jobs.complete({
+        const completed = await this.jobs.complete({
           jobId: job.id,
           resultSummary: { ...result.data, auditStatus: 'complete' },
           workerId,
         });
+        return Boolean(completed);
       } else {
-        await this.jobs.fail({
+        const failed = await this.jobs.fail({
           error: { code: 'CONNECTOR_RUNTIME_OUTCOME_UNKNOWN' },
           jobId: job.id,
           terminal: true,
           workerId,
         });
+        return Boolean(failed);
       }
-      return true;
     } catch (error) {
       await this.jobs.fail({
         error: { code: 'CONNECTOR_RUNTIME_AUDIT_DELIVERY_FAILED' },
@@ -261,17 +262,16 @@ export class DatabaseConnectorRuntimeExecutionJournal implements ConnectorRuntim
 
   deliverAudit: ConnectorRuntimeExecutionJournal['deliverAudit'] = async (token, delivery) => {
     const workerId = randomUUID();
-    const now = new Date();
     const [claimed] = await this.db
       .update(platformJobs)
       .set({
         attempt: 2,
-        heartbeatAt: now,
+        heartbeatAt: databaseNow,
         leaseOwner: workerId,
-        leaseUntil: new Date(now.getTime() + AUDIT_LEASE_MS),
-        startedAt: now,
+        leaseUntil: databaseAuditLeaseUntil,
+        startedAt: databaseNow,
         status: 'running',
-        updatedAt: now,
+        updatedAt: databaseNow,
       })
       .where(and(eq(platformJobs.id, token.jobId), eq(platformJobs.status, 'pending')))
       .returning();
@@ -290,7 +290,7 @@ export class DatabaseConnectorRuntimeExecutionJournal implements ConnectorRuntim
         and(
           eq(platformJobs.type, JOURNAL_TYPE),
           eq(platformJobs.status, 'reserved'),
-          lte(platformJobs.leaseUntil, new Date()),
+          lte(platformJobs.leaseUntil, databaseNow),
         ),
       )
       .returning({ id: platformJobs.id });
