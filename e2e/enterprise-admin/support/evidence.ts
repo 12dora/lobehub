@@ -89,8 +89,8 @@ export const assertEvidenceImageNotBlank = async (filePath: string): Promise<voi
       `evidence image too small (likely blank/loading): ${filePath} (${buf.length}b)`,
     );
   }
-  const isPng =
-    buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47 && buf[4] === 0x0D;
+  // PNG signature: 89 50 4E 47 0D … (compare as bytes to avoid prettier/eslint hex-case clash)
+  const isPng = buf.subarray(0, 5).equals(Buffer.from([137, 80, 78, 71, 13]));
   if (!isPng) {
     throw new Error(`evidence image is not a PNG: ${filePath}`);
   }
