@@ -231,9 +231,17 @@ export const attemptIllegalSecretMutations = async (client: PoolClient): Promise
         ['not-a-kms-ref', PLATFORM_PROBE_IDS.identityId],
       );
     },
+    // Missing fingerprint with non-null secret_ref (secret_state_check).
+    // Requires explicit IS NOT NULL guards in the production CHECK (0136).
+    async () => {
+      await client.query(
+        `UPDATE platform_identity_providers
+         SET secret_fingerprint = NULL, secret_updated_at = now()
+         WHERE id = $1`,
+        [PLATFORM_PROBE_IDS.identityId],
+      );
+    },
     // Non-hex fingerprint with non-null ref (secret_state_check).
-    // Note: NULL fingerprint is SQL-unknown under CHECK and is not rejected by PG;
-    // production CHECK only fails non-matching non-null fingerprints.
     async () => {
       await client.query(
         `UPDATE platform_identity_providers
