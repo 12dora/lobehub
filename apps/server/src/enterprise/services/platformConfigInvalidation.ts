@@ -5,6 +5,28 @@ import { getRedisConfig } from '@/envs/redis';
 import { initializeRedis } from '@/libs/redis';
 
 const log = debug('lobe-server:platform-config-invalidation');
+const LAST_EVENT_TTL_SECONDS = 86_400;
+const MAX_IN_MEMORY_EVENTS = 256;
+const MAX_INVALIDATION_SCOPES = 32;
+const MAX_INVALIDATION_SCOPE_LENGTH = 128;
+
+const getErrorClass = (error: unknown): string =>
+  error instanceof Error && error.name ? error.name : 'UnknownError';
+
+const normalizeScopes = (scopes: string[] | undefined): string[] => {
+  if (!scopes) return [];
+
+  const normalized: string[] = [];
+  const seen = new Set<string>();
+  for (const rawScope of scopes) {
+    const scope = rawScope.trim();
+    if (!scope || scope.length > MAX_INVALIDATION_SCOPE_LENGTH || seen.has(scope)) continue;
+    seen.add(scope);
+    normalized.push(scope);
+    if (normalized.length === MAX_INVALIDATION_SCOPES) break;
+  }
+  return normalized;
+};
 
 /**
  * Event emitted after a successful platform publish / rollback.
@@ -49,10 +71,14 @@ export class InMemoryPlatformConfigInvalidationPublisher
   readonly versions = new Map<string, number>();
 
   publish = async (event: PlatformConfigInvalidationEvent): Promise<void> => {
-    this.events.push(event);
+    const scopes = normalizeScopes(event.scopes);
+    this.events.push({ ...event, scopes });
+    if (this.events.length > MAX_IN_MEMORY_EVENTS) {
+      this.events.splice(0, this.events.length - MAX_IN_MEMORY_EVENTS);
+    }
     this.versions.set(`${event.resourceType}:${event.resourceId}`, event.revision);
     this.versions.set('global', Math.max((this.versions.get('global') ?? 0) + 1, event.revision));
-    for (const scope of event.scopes ?? []) {
+    for (const scope of scopes) {
       const key = `scope:${scope}`;
       this.versions.set(key, Math.max((this.versions.get(key) ?? 0) + 1, event.revision));
     }
@@ -70,41 +96,60 @@ export class RedisPlatformConfigInvalidationPublisher implements PlatformConfigI
   publish = async (event: PlatformConfigInvalidationEvent): Promise<void> => {
     try {
       if (!getRedisConfig().enabled) {
-        log('redis disabled; skip invalidation for %s:%s', event.resourceType, event.resourceId);
+        log('redis disabled; invalidation degraded resourceType=%s', event.resourceType);
         return;
       }
 
       const redis = await initializeRedis(getRedisConfig());
       if (!redis) {
-        log('redis unavailable; skip invalidation for %s:%s', event.resourceType, event.resourceId);
+        log('redis unavailable; invalidation degraded resourceType=%s', event.resourceType);
         return;
       }
 
+      const scopes = normalizeScopes(event.scopes);
       const pipeline = redis.pipeline();
       pipeline.incr(platformConfigKeys.globalVersion());
       pipeline.set(
         platformConfigKeys.resourceVersion(event.resourceType, event.resourceId),
         String(event.revision),
       );
-      for (const scope of event.scopes ?? []) {
+      for (const scope of scopes) {
         pipeline.incr(platformConfigKeys.scopeVersion(scope));
       }
       // Store a small envelope for diagnostics / multi-instance watchers.
       pipeline.set(
         `platform:config:last_event:${event.resourceType}:${event.resourceId}`,
-        JSON.stringify(event),
+        JSON.stringify({ ...event, scopes }),
+        { ex: LAST_EVENT_TTL_SECONDS },
       );
-      await pipeline.exec();
+      const results = await pipeline.exec();
+      const expectedCommands = scopes.length + 3;
+      const failedCommands = results
+        ? results.filter(([error]) => error !== null).length +
+          Math.max(0, expectedCommands - results.length)
+        : expectedCommands;
+      if (failedCommands > 0) {
+        log(
+          'invalidation degraded resourceType=%s revision=%d failedCommands=%d',
+          event.resourceType,
+          event.revision,
+          failedCommands,
+        );
+        return;
+      }
       log(
-        'invalidated %s:%s revision=%d scopes=%o',
+        'invalidation complete resourceType=%s revision=%d scopeCount=%d',
         event.resourceType,
-        event.resourceId,
         event.revision,
-        event.scopes,
+        scopes.length,
       );
     } catch (error) {
       // Best-effort: never break the publish path.
-      log('invalidation failed for %s:%s %O', event.resourceType, event.resourceId, error);
+      log(
+        'invalidation degraded resourceType=%s errorClass=%s',
+        event.resourceType,
+        getErrorClass(error),
+      );
     }
   };
 }
@@ -143,16 +188,19 @@ export const setPlatformConfigInvalidationPublisher = (
  * epoch; consumers still apply a bounded TTL before rebuilding from the DB.
  */
 export const getPlatformConfigScopeVersion = async (scope: string): Promise<string> => {
+  const [normalizedScope] = normalizeScopes([scope]);
+  if (!normalizedScope) return '0';
+
   const publisher = getPlatformConfigInvalidationPublisher();
   if ('getScopeVersion' in publisher) {
-    return (publisher as PlatformConfigVersionReader).getScopeVersion(scope);
+    return (publisher as PlatformConfigVersionReader).getScopeVersion(normalizedScope);
   }
   try {
     if (!getRedisConfig().enabled) return '0';
     const redis = await initializeRedis(getRedisConfig());
-    return (await redis?.get(platformConfigKeys.scopeVersion(scope))) ?? '0';
+    return (await redis?.get(platformConfigKeys.scopeVersion(normalizedScope))) ?? '0';
   } catch (error) {
-    log('scope version read failed for %s: %O', scope, error);
+    log('scope version read degraded errorClass=%s', getErrorClass(error));
     return '0';
   }
 };
