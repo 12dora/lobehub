@@ -1,6 +1,7 @@
 import { metrics } from '@opentelemetry/api';
 
 import type {
+  AgentMaterializationMetricAttributes,
   ConfigPublishMetricAttributes,
   EnterpriseCacheDomain,
   EnterpriseCacheEpochOutcome,
@@ -9,8 +10,11 @@ import type {
   GuardDecisionMetricAttributes,
   HeartbeatMetricAttributes,
   InvalidationMetricAttributes,
+  OidcLoginMetricAttributes,
+  SsrfDenialMetricAttributes,
 } from './attributes';
 import {
+  buildAgentMaterializationAttributes,
   buildCacheEpochAttributes,
   buildCacheLoadAttributes,
   buildCacheRequestAttributes,
@@ -18,6 +22,8 @@ import {
   buildGuardDecisionAttributes,
   buildHeartbeatAttributes,
   buildInvalidationAttributes,
+  buildOidcLoginAttributes,
+  buildSsrfDenialAttributes,
 } from './attributes';
 
 export * from './attributes';
@@ -57,6 +63,20 @@ export const instanceHeartbeatCounter = meter.createCounter(
 export const instanceHeartbeatDuration = meter.createHistogram(
   'enterprise_platform_instance_heartbeat_duration_ms',
   { description: 'Enterprise instance registration and heartbeat duration.', unit: 'ms' },
+);
+export const ssrfDenialCounter = meter.createCounter('enterprise_platform_ssrf_denial_total', {
+  description: 'Enterprise outbound-policy SSRF denials by stable category.',
+});
+export const oidcLoginCounter = meter.createCounter('enterprise_platform_oidc_login_total', {
+  description: 'Enterprise OIDC login stage outcomes.',
+});
+export const agentMaterializationCounter = meter.createCounter(
+  'enterprise_platform_agent_materialization_total',
+  { description: 'Enterprise agent materialization outcomes.' },
+);
+export const agentMaterializationDuration = meter.createHistogram(
+  'enterprise_platform_agent_materialization_duration_ms',
+  { description: 'Enterprise agent materialization duration.', unit: 'ms' },
 );
 
 const boundedDuration = (durationMs: number): number =>
@@ -99,4 +119,20 @@ export const recordHeartbeatMetric = (
   const attributes = buildHeartbeatAttributes(input);
   instanceHeartbeatCounter.add(1, attributes);
   instanceHeartbeatDuration.record(boundedDuration(input.durationMs), attributes);
+};
+
+export const recordSsrfDenialMetric = (input: SsrfDenialMetricAttributes): void => {
+  ssrfDenialCounter.add(1, buildSsrfDenialAttributes(input));
+};
+
+export const recordOidcLoginMetric = (input: OidcLoginMetricAttributes): void => {
+  oidcLoginCounter.add(1, buildOidcLoginAttributes(input));
+};
+
+export const recordAgentMaterializationMetric = (
+  input: AgentMaterializationMetricAttributes & { durationMs: number },
+): void => {
+  const attributes = buildAgentMaterializationAttributes(input);
+  agentMaterializationCounter.add(1, attributes);
+  agentMaterializationDuration.record(boundedDuration(input.durationMs), attributes);
 };
