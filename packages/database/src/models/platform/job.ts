@@ -1,5 +1,5 @@
 import type { AnyColumn, SQL } from 'drizzle-orm';
-import { and, asc, desc, eq, inArray, lt, lte, notInArray, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, lt, lte, notInArray, or, sql } from 'drizzle-orm';
 
 import {
   type NewPlatformJob,
@@ -102,6 +102,9 @@ export interface AdminPlatformJobSummary {
 }
 
 const DEFAULT_LEASE_MS = 30_000;
+const databaseNow = sql<Date>`statement_timestamp()`;
+const databaseLeaseUntil = (leaseMs: number) =>
+  sql<Date>`statement_timestamp() + (${leaseMs} * interval '1 millisecond')`;
 
 /**
  * Platform job state machine with idempotent enqueue, lease claim, heartbeat, and retry.
@@ -327,14 +330,12 @@ export class PlatformJobModel {
    */
   claimNext = async (params: ClaimJobParams): Promise<PlatformJobItem | null> => {
     const leaseMs = params.leaseMs ?? DEFAULT_LEASE_MS;
-    const now = new Date();
-    const leaseUntil = new Date(now.getTime() + leaseMs);
 
     return this.db.transaction(async (tx) => {
       const conditions = [
         or(
           eq(platformJobs.status, 'pending'),
-          and(eq(platformJobs.status, 'running'), lte(platformJobs.leaseUntil, now)),
+          and(eq(platformJobs.status, 'running'), lte(platformJobs.leaseUntil, databaseNow)),
         )!,
       ];
 
@@ -362,14 +363,22 @@ export class PlatformJobModel {
         .update(platformJobs)
         .set({
           attempt: nextAttempt,
-          heartbeatAt: now,
+          heartbeatAt: databaseNow,
           leaseOwner: params.workerId,
-          leaseUntil,
-          startedAt: candidate.startedAt ?? now,
+          leaseUntil: databaseLeaseUntil(leaseMs),
+          startedAt: sql<Date>`coalesce(${platformJobs.startedAt}, ${databaseNow})`,
           status: 'running',
-          updatedAt: now,
+          updatedAt: databaseNow,
         })
-        .where(eq(platformJobs.id, candidate.id))
+        .where(
+          and(
+            eq(platformJobs.id, candidate.id),
+            or(
+              eq(platformJobs.status, 'pending'),
+              and(eq(platformJobs.status, 'running'), lte(platformJobs.leaseUntil, databaseNow)),
+            ),
+          ),
+        )
         .returning();
 
       return claimed ?? null;
@@ -382,8 +391,6 @@ export class PlatformJobModel {
    */
   checkpoint = async (params: CheckpointJobParams): Promise<PlatformJobItem | null> => {
     const leaseMs = params.leaseMs ?? DEFAULT_LEASE_MS;
-    const now = new Date();
-    const leaseUntil = new Date(now.getTime() + leaseMs);
 
     const [row] = await this.db
       .update(platformJobs)
@@ -391,15 +398,16 @@ export class PlatformJobModel {
         ...(params.cursor !== undefined ? { cursor: params.cursor } : {}),
         ...(params.progressDone !== undefined ? { progressDone: params.progressDone } : {}),
         ...(params.progressTotal !== undefined ? { progressTotal: params.progressTotal } : {}),
-        heartbeatAt: now,
-        leaseUntil,
-        updatedAt: now,
+        heartbeatAt: databaseNow,
+        leaseUntil: databaseLeaseUntil(leaseMs),
+        updatedAt: databaseNow,
       })
       .where(
         and(
           eq(platformJobs.id, params.jobId),
           eq(platformJobs.leaseOwner, params.workerId),
           eq(platformJobs.status, 'running'),
+          gt(platformJobs.leaseUntil, databaseNow),
         ),
       )
       .returning();
@@ -416,23 +424,23 @@ export class PlatformJobModel {
   };
 
   complete = async (params: CompleteJobParams): Promise<PlatformJobItem | null> => {
-    const now = new Date();
     const [row] = await this.db
       .update(platformJobs)
       .set({
-        finishedAt: now,
+        finishedAt: databaseNow,
         lastError: null,
         leaseOwner: null,
         leaseUntil: null,
         resultSummary: params.resultSummary ?? null,
         status: 'succeeded',
-        updatedAt: now,
+        updatedAt: databaseNow,
       })
       .where(
         and(
           eq(platformJobs.id, params.jobId),
           eq(platformJobs.leaseOwner, params.workerId),
           eq(platformJobs.status, 'running'),
+          gt(platformJobs.leaseUntil, databaseNow),
         ),
       )
       .returning();
@@ -445,35 +453,30 @@ export class PlatformJobModel {
    * When maxAttempts is exceeded or `terminal` is set, status becomes `dead`.
    */
   fail = async (params: FailJobParams): Promise<PlatformJobItem | null> => {
-    const current = await this.findById(params.jobId);
-    if (!current) return null;
-    if (current.leaseOwner !== params.workerId || current.status !== 'running') {
-      return null;
-    }
-
-    const now = new Date();
-    const hitMax =
-      current.maxAttempts !== null &&
-      current.maxAttempts !== undefined &&
-      current.attempt >= current.maxAttempts;
-    const terminal = params.terminal || hitMax;
-    const nextStatus: PlatformJobStatus = terminal ? 'dead' : 'pending';
+    const shouldTerminate = sql<boolean>`(
+      ${Boolean(params.terminal)}
+      OR (
+        ${platformJobs.maxAttempts} IS NOT NULL
+        AND ${platformJobs.attempt} >= ${platformJobs.maxAttempts}
+      )
+    )`;
 
     const [row] = await this.db
       .update(platformJobs)
       .set({
-        finishedAt: terminal ? now : null,
+        finishedAt: sql<Date | null>`case when ${shouldTerminate} then ${databaseNow} else null end`,
         lastError: params.error,
         leaseOwner: null,
         leaseUntil: null,
-        status: nextStatus,
-        updatedAt: now,
+        status: sql<PlatformJobStatus>`case when ${shouldTerminate} then 'dead' else 'pending' end`,
+        updatedAt: databaseNow,
       })
       .where(
         and(
           eq(platformJobs.id, params.jobId),
           eq(platformJobs.leaseOwner, params.workerId),
           eq(platformJobs.status, 'running'),
+          gt(platformJobs.leaseUntil, databaseNow),
         ),
       )
       .returning();
@@ -482,15 +485,14 @@ export class PlatformJobModel {
   };
 
   cancel = async (jobId: string): Promise<PlatformJobItem | null> => {
-    const now = new Date();
     const [row] = await this.db
       .update(platformJobs)
       .set({
-        finishedAt: now,
+        finishedAt: databaseNow,
         leaseOwner: null,
         leaseUntil: null,
         status: 'cancelled',
-        updatedAt: now,
+        updatedAt: databaseNow,
       })
       .where(
         and(

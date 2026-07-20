@@ -401,7 +401,6 @@ export class PlatformSystemAdminService {
           expectedRevision: input.expectedRevision,
           expectedStatus: input.expectedStatus,
           jobId: input.jobId,
-          now: this.now,
         });
       }
       if (current.type !== PLATFORM_SECRET_REWRAP_JOB_TYPE) {

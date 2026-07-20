@@ -27,6 +27,7 @@ import {
 } from './rolloutService';
 
 const transitionUserId = sql<string>`${platformJobs.input}->>'userId'`;
+const databaseNow = sql<Date>`statement_timestamp()`;
 
 class PlatformAgentRolloutLeaseLostError extends Error {
   constructor() {
@@ -120,7 +121,7 @@ const upsertTransitionLedger = async (
       versionPolicy: snapshot.versionPolicy,
     };
     return {
-      finishedAt: succeeded ? new Date() : null,
+      finishedAt: succeeded ? databaseNow : null,
       idempotencyKey: `${params.job.id}:${target.userId}`,
       input,
       lastError: succeeded ? null : { category: 'materialization_failed' },
@@ -141,7 +142,7 @@ const upsertTransitionLedger = async (
         lastError: sql`CASE WHEN ${platformJobs.status} = 'succeeded' THEN NULL ELSE excluded.last_error END`,
         progressDone: sql`CASE WHEN ${platformJobs.status} = 'succeeded' THEN 1 ELSE excluded.progress_done END`,
         status: sql`CASE WHEN ${platformJobs.status} = 'succeeded' THEN 'succeeded' ELSE excluded.status END`,
-        updatedAt: new Date(),
+        updatedAt: databaseNow,
       },
       target: [platformJobs.type, platformJobs.idempotencyKey],
       where: and(
@@ -201,34 +202,24 @@ const markClaimedDead = async (
   db: LobeChatDatabase,
   params: { category: string; jobId: string; workerId: string },
 ) => {
-  const now = new Date();
-  await db.transaction(async (tx) => {
-    const [locked] = await tx
-      .select({ id: platformJobs.id })
-      .from(platformJobs)
-      .where(
-        and(
-          eq(platformJobs.id, params.jobId),
-          eq(platformJobs.status, 'running'),
-          eq(platformJobs.leaseOwner, params.workerId),
-          gt(platformJobs.leaseUntil, now),
-        ),
-      )
-      .for('update')
-      .limit(1);
-    if (!locked) return;
-    await tx
-      .update(platformJobs)
-      .set({
-        finishedAt: now,
-        lastError: { category: params.category },
-        leaseOwner: null,
-        leaseUntil: null,
-        status: 'dead',
-        updatedAt: now,
-      })
-      .where(eq(platformJobs.id, locked.id));
-  });
+  await db
+    .update(platformJobs)
+    .set({
+      finishedAt: databaseNow,
+      lastError: { category: params.category },
+      leaseOwner: null,
+      leaseUntil: null,
+      status: 'dead',
+      updatedAt: databaseNow,
+    })
+    .where(
+      and(
+        eq(platformJobs.id, params.jobId),
+        eq(platformJobs.status, 'running'),
+        eq(platformJobs.leaseOwner, params.workerId),
+        gt(platformJobs.leaseUntil, databaseNow),
+      ),
+    );
 };
 
 const validateSnapshot = async (tx: Transaction, input: PlatformAgentRolloutJobInput) => {
@@ -293,7 +284,6 @@ export const processNextPlatformAgentRolloutBatch = async (
 
   try {
     return await db.transaction(async (tx) => {
-      const startedAt = new Date();
       const [current] = await tx
         .select()
         .from(platformJobs)
@@ -304,7 +294,7 @@ export const processNextPlatformAgentRolloutBatch = async (
             eq(platformJobs.status, 'running'),
             eq(platformJobs.leaseOwner, workerId),
             eq(platformAgentRolloutJobRevision, claimedInput.control.revision),
-            gt(platformJobs.leaseUntil, startedAt),
+            gt(platformJobs.leaseUntil, databaseNow),
           ),
         )
         .for('update')
@@ -400,21 +390,20 @@ export const processNextPlatformAgentRolloutBatch = async (
         ...input,
         control: { ...input.control, revision: input.control.revision + 1 },
       };
-      const checkpointAt = new Date();
       const [checkpointed] = await tx
         .update(platformJobs)
         .set({
           cursor,
           ...(terminal
             ? {
-                finishedAt: checkpointAt,
+                finishedAt: databaseNow,
                 lastError: failed > 0 ? { category: 'rollout_items_failed' } : null,
                 leaseOwner: null,
                 leaseUntil: null,
                 status: failed > 0 ? ('failed' as const) : ('succeeded' as const),
               }
             : {
-                heartbeatAt: checkpointAt,
+                heartbeatAt: databaseNow,
                 leaseOwner: null,
                 leaseUntil: null,
                 status: 'pending' as const,
@@ -427,7 +416,7 @@ export const processNextPlatformAgentRolloutBatch = async (
             previousVersionChecksum: previous.checksum,
             previousVersionId: previous.versionId,
           },
-          updatedAt: checkpointAt,
+          updatedAt: databaseNow,
         })
         .where(
           and(
@@ -435,7 +424,7 @@ export const processNextPlatformAgentRolloutBatch = async (
             eq(platformJobs.status, 'running'),
             eq(platformJobs.leaseOwner, workerId),
             eq(platformAgentRolloutJobRevision, input.control.revision),
-            gt(platformJobs.leaseUntil, checkpointAt),
+            gt(platformJobs.leaseUntil, databaseNow),
           ),
         )
         .returning({ id: platformJobs.id });
