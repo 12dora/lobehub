@@ -181,6 +181,52 @@ run('Platform secret rewrap — true multi-connection PostgreSQL', () => {
     ).toHaveLength(1);
   });
 
+  it('maps failed-A retry against active-B to a stable revision conflict', async () => {
+    await cleanup();
+    const coordinatorA = new PlatformSecretRewrapCoordinator(
+      new PlatformSecretService({ keyProvider: new PgVaultProvider(targetKeyId) }),
+    );
+    const failedA = await coordinatorA.enqueue(workerDb(), {
+      reason: 'seed failed rotation A',
+      requestId: '66666666-6666-4666-8666-666666666666',
+      requestedBy: 'pg-retry-a',
+      targetKeyId,
+    });
+    await db
+      .update(platformJobs)
+      .set({ status: 'failed' })
+      .where(eq(platformJobs.id, failedA.jobId));
+    await db.insert(platformJobs).values({
+      idempotencyKey: 'pg-retry-a-ledger',
+      input: { parentJobId: failedA.jobId },
+      status: 'failed',
+      type: 'platform.secret.rewrap.failure.v1',
+    });
+
+    const coordinatorB = new PlatformSecretRewrapCoordinator(
+      new PlatformSecretService({ keyProvider: new PgVaultProvider(secondTargetKeyId) }),
+    );
+    const activeB = await coordinatorB.enqueue(workerDb(), {
+      reason: 'seed active rotation B',
+      requestId: '77777777-7777-4777-8777-777777777777',
+      requestedBy: 'pg-retry-b',
+      targetKeyId: secondTargetKeyId,
+    });
+
+    await expect(
+      coordinatorA.retry(workerDb(), {
+        expectedRevision: failedA.revision,
+        expectedStatus: 'failed',
+        jobId: failedA.jobId,
+      }),
+    ).rejects.toMatchObject({
+      message: 'PLATFORM_SECRET_REWRAP_CONFLICT',
+      name: 'PlatformSecretRewrapConflictError',
+    });
+    await expect(coordinatorA.get(db, failedA.jobId)).resolves.toMatchObject({ status: 'failed' });
+    await expect(coordinatorB.get(db, activeB.jobId)).resolves.toMatchObject({ status: 'pending' });
+  });
+
   it('ignores forward/backward node clock skew when protecting and reclaiming a lease', async () => {
     const [job] = await db.select().from(platformJobs).limit(1);
     await db

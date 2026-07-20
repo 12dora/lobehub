@@ -14,6 +14,7 @@ import {
   PlatformSecretService,
 } from '@/server/enterprise/security/secret';
 
+import { getEnterpriseErrorBody } from '../../guards/enterpriseErrors';
 import { PLATFORM_SECRET_REWRAP_JOB_TYPE } from '../../services/secretRewrap/contracts';
 import { createAdminAuthorizationFixture } from '../../testing/adminAuthorizationFixture';
 import { adminRouter } from '../admin';
@@ -22,11 +23,13 @@ let db: LobeChatDatabase;
 const createCaller = createCallerFactory(adminRouter);
 const fixture = createAdminAuthorizationFixture({ namespace: 'secret-rotation-router' });
 const targetKeyId = 'vault:router-next';
+const secondTargetKeyId = 'vault:router-second';
+let activeTargetKeyId = targetKeyId;
 
 const keyProvider: KeyProvider = {
   getKek: async (): Promise<KekMaterial> => ({
     key: new Uint8Array(randomBytes(32)),
-    keyId: targetKeyId,
+    keyId: activeTargetKeyId,
   }),
   providerId: 'vault',
 };
@@ -61,6 +64,7 @@ const cleanupJobs = async () => {
 beforeEach(async () => {
   vi.unstubAllEnvs();
   vi.stubEnv('ENABLE_PLATFORM_ADMIN', '1');
+  activeTargetKeyId = targetKeyId;
   await cleanupJobs();
   await fixture.setup(db);
   vi.spyOn(PlatformSecretService, 'tryFromEnv').mockReturnValue(secrets);
@@ -150,5 +154,46 @@ describe('admin.security.secretRotation router', () => {
       targetType: 'secret_rotation',
     });
     expect(JSON.stringify(audit)).not.toMatch(/ciphertext|secret=|Bearer|stack/i);
+  });
+
+  it('maps retry of failed A while B is active to PLATFORM_REVISION_CONFLICT', async () => {
+    const contexts = await fixture.createContexts(db);
+    const caller = createCaller(contexts.superAdmin as never).security.secretRotation;
+    const failedA = await caller.start({
+      reason: 'start rotation A',
+      requestId: randomUUID(),
+      targetKeyId,
+    });
+    await db
+      .update(platformJobs)
+      .set({ status: 'failed' })
+      .where(eq(platformJobs.id, failedA.jobId));
+    await db.insert(platformJobs).values({
+      idempotencyKey: `${fixture.namespace}-retry-ledger`,
+      input: { parentJobId: failedA.jobId },
+      status: 'failed',
+      type: 'platform.secret.rewrap.failure.v1',
+    });
+
+    activeTargetKeyId = secondTargetKeyId;
+    await caller.start({
+      reason: 'start rotation B',
+      requestId: randomUUID(),
+      targetKeyId: secondTargetKeyId,
+    });
+
+    try {
+      await caller.retry({
+        expectedRevision: failedA.revision,
+        expectedStatus: 'failed',
+        jobId: failedA.jobId,
+        reason: 'retry rotation A',
+        requestId: randomUUID(),
+      });
+      expect.fail('retrying failed A while B is active must conflict');
+    } catch (error) {
+      expect(error).toMatchObject({ code: 'CONFLICT' });
+      expect(getEnterpriseErrorBody(error)?.code).toBe('PLATFORM_REVISION_CONFLICT');
+    }
   });
 });
