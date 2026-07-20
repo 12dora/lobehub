@@ -79,9 +79,6 @@ export const platformDomainTargetSchema = z
   })
   .strict()
   .superRefine((target, context) => {
-    if (target.status === 'available' && !target.token) {
-      context.addIssue({ code: z.ZodIssueCode.custom, message: 'available target requires token' });
-    }
     if (target.status === 'unavailable' && !target.errorCategory) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
