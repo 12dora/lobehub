@@ -32,8 +32,11 @@ import { withActiveUser } from '../../guards/activeUser';
 import { throwEnterpriseError } from '../../guards/enterpriseErrors';
 import { withPlatformPermission } from '../../guards/platformPermission';
 import { assertRecentReauth } from '../../guards/reauth';
+import { containsEnterpriseSecretMaterial } from '../../security/redaction';
+import { PlatformSecretService } from '../../security/secret';
 import { IdentityProviderValidationError } from '../../services/identityProvider/discoveryValidator';
 import { IdentityProviderPublicationService } from '../../services/identityProvider/publicationService';
+import { IdentityProviderSecretStore } from '../../services/identityProvider/secretStore';
 import { PlatformAuditService } from '../../services/platformAudit';
 import {
   createAdminIdentityProviderRuntime,
@@ -72,12 +75,50 @@ const execute = async <T>(operation: () => Promise<T> | T): Promise<T> => {
   }
 };
 
+export const identitySecretMutationRequiresReauth = (mutation: {
+  operation: 'clear' | 'keep' | 'replace';
+}): boolean => mutation.operation === 'replace' || mutation.operation === 'clear';
+
+const safeIdentityDeniedReason = async (input: {
+  currentSecretTargetId?: string | null;
+  reason: string;
+  replacementSecrets?: unknown[];
+  serverDB: Parameters<typeof createAdminIdentityProviderRuntime>[0];
+}): Promise<string | null> => {
+  if (containsEnterpriseSecretMaterial(input.reason)) return null;
+  const credentialValues = (input.replacementSecrets ?? []).filter(
+    (value): value is string => typeof value === 'string' && value.length > 0,
+  );
+  if (input.currentSecretTargetId) {
+    try {
+      const secretService = PlatformSecretService.fromEnvOrThrowIfEnterprise();
+      if (!secretService) return null;
+      const currentSecret = await new IdentityProviderSecretStore(
+        input.serverDB,
+        secretService,
+      ).resolveCurrentClientSecret(input.currentSecretTargetId);
+      if (!currentSecret) return null;
+      credentialValues.push(currentSecret);
+    } catch {
+      return null;
+    }
+  }
+
+  let reason = input.reason;
+  for (const value of credentialValues.sort((a, b) => b.length - a.length)) {
+    reason = reason.replaceAll(value, '[REDACTED]');
+  }
+  return containsEnterpriseSecretMaterial(reason) ? null : reason;
+};
+
 const assertIdentityDangerousReauth = async (input: {
   action: string;
   actorUserId: string;
   authenticatedAt?: Date | null;
   authMethod?: Parameters<typeof assertRecentReauth>[0]['authMethod'];
+  currentSecretTargetId?: string | null;
   reason: string;
+  replacementSecrets?: unknown[];
   serverDB: Parameters<typeof createAdminIdentityProviderRuntime>[0];
   targetId: string;
 }) => {
@@ -89,7 +130,7 @@ const assertIdentityDangerousReauth = async (input: {
         action: input.action,
         actorUserId: input.actorUserId,
         afterDiff: { error: 'reauth_required' },
-        reason: input.reason,
+        reason: await safeIdentityDeniedReason(input),
         result: 'denied',
         targetId: input.targetId,
         targetType: 'identity_provider',
@@ -136,9 +177,22 @@ export const adminIdentityProvidersRouter = router({
     .use(withPlatformPermission(PLATFORM_PERMISSIONS.IDENTITY_CREATE))
     .input(adminIdentityProviderCreateInputSchema)
     .output(adminIdentityProviderMutationOutputSchema)
-    .mutation(({ ctx, input }) =>
-      execute(() => ctx.getIdentityProviderRuntime().admin.create(ctx.userId!, input)),
-    ),
+    .mutation(async ({ ctx, input }) => {
+      if (identitySecretMutationRequiresReauth(input.secret)) {
+        await assertIdentityDangerousReauth({
+          action: 'admin.identityProviders.create',
+          actorUserId: ctx.userId!,
+          authenticatedAt: ctx.authenticatedAt,
+          authMethod: ctx.authMethod,
+          currentSecretTargetId: null,
+          reason: input.reason,
+          replacementSecrets: input.secret.operation === 'replace' ? [input.secret.value] : [],
+          serverDB: ctx.serverDB,
+          targetId: input.providerKey,
+        });
+      }
+      return execute(() => ctx.getIdentityProviderRuntime().admin.create(ctx.userId!, input));
+    }),
 
   delete: identityProviderProcedure
     .use(withPlatformPermission(PLATFORM_PERMISSIONS.IDENTITY_DELETE))
@@ -269,9 +323,22 @@ export const adminIdentityProvidersRouter = router({
     .use(withPlatformPermission(PLATFORM_PERMISSIONS.IDENTITY_UPDATE))
     .input(adminIdentityProviderUpdateInputSchema)
     .output(adminIdentityProviderMutationOutputSchema)
-    .mutation(({ ctx, input }) =>
-      execute(() => ctx.getIdentityProviderRuntime().admin.update(ctx.userId!, input)),
-    ),
+    .mutation(async ({ ctx, input }) => {
+      if (identitySecretMutationRequiresReauth(input.secret)) {
+        await assertIdentityDangerousReauth({
+          action: 'admin.identityProviders.update',
+          actorUserId: ctx.userId!,
+          authenticatedAt: ctx.authenticatedAt,
+          authMethod: ctx.authMethod,
+          currentSecretTargetId: input.id,
+          reason: input.reason,
+          replacementSecrets: input.secret.operation === 'replace' ? [input.secret.value] : [],
+          serverDB: ctx.serverDB,
+          targetId: input.id,
+        });
+      }
+      return execute(() => ctx.getIdentityProviderRuntime().admin.update(ctx.userId!, input));
+    }),
 
   validateNetwork: identityProviderProcedure
     .use(withPlatformPermission(PLATFORM_PERMISSIONS.IDENTITY_TEST))
