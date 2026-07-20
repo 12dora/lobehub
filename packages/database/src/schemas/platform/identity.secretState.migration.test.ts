@@ -17,6 +17,30 @@ const snapshot = JSON.parse(
 };
 
 describe('M11 identity secret_state null-guard migration', () => {
+  it('quarantines invalid secret triples before strengthening the CHECK', () => {
+    // Fail-closed data transition must run before ADD CONSTRAINT.
+    const quarantineIdx = migrationSql.indexOf('UPDATE "platform_identity_providers"');
+    const dropIdx = migrationSql.indexOf(
+      'DROP CONSTRAINT IF EXISTS "platform_identity_providers_secret_state_check"',
+    );
+    const addIdx = migrationSql.indexOf(
+      'ADD CONSTRAINT "platform_identity_providers_secret_state_check"',
+    );
+    expect(quarantineIdx).toBeGreaterThanOrEqual(0);
+    expect(dropIdx).toBeGreaterThan(quarantineIdx);
+    expect(addIdx).toBeGreaterThan(dropIdx);
+
+    expect(migrationSql).toContain('"secret_ref" = NULL');
+    expect(migrationSql).toContain('"secret_fingerprint" = NULL');
+    expect(migrationSql).toContain('"secret_updated_at" = NULL');
+    expect(migrationSql).toContain('"enabled" = false');
+    expect(migrationSql).toContain('"activation_revision" = NULL');
+    expect(migrationSql).toContain('"migration_required" = true');
+    expect(migrationSql).toContain("ELSE 'error'");
+    // Never invent fingerprints.
+    expect(migrationSql).not.toMatch(/secret_fingerprint"\s*=\s*'[a-f0-9]{64}'/i);
+  });
+
   it('strengthens secret_state_check with explicit IS NOT NULL guards', () => {
     expect(migrationSql).toContain(
       'DROP CONSTRAINT IF EXISTS "platform_identity_providers_secret_state_check"',
