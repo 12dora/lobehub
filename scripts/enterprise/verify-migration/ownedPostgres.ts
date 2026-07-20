@@ -37,15 +37,6 @@ export interface OwnedPostgresLifecycle {
   handle: OwnedPostgresHandle;
 }
 
-/** Test/observability counter: increments only when createOwnedPostgres starts provisioning. */
-let ownedPostgresCreateCount = 0;
-
-export const getOwnedPostgresCreateCount = (): number => ownedPostgresCreateCount;
-
-export const resetOwnedPostgresCreateCount = (): void => {
-  ownedPostgresCreateCount = 0;
-};
-
 interface DockerInspect {
   Config?: { Labels?: Record<string, string> };
   Id?: string;
@@ -132,7 +123,6 @@ const verifyOwnership = (
  * Never targets shared phase0 (aihub-dev) resources.
  */
 export const createOwnedPostgres = async (): Promise<OwnedPostgresLifecycle> => {
-  ownedPostgresCreateCount += 1;
   const resourceToken = buildResourceToken();
   const ownershipToken = buildOwnershipToken();
   const password = randomBytes(18).toString('base64url');

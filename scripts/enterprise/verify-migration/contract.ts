@@ -190,6 +190,33 @@ const refineReportConsistency = (
     }
   }
 
+  // Every schemaVersion=1 report must list each required category exactly once.
+  for (const category of REQUIRED_GATE_CATEGORIES) {
+    if (!map.has(category)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `missing required check category: ${category}`,
+        path: ['checks'],
+      });
+    }
+  }
+  if (value.checks.length !== REQUIRED_GATE_CATEGORIES.length) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'report requires exactly the required check categories (no extras)',
+      path: ['checks'],
+    });
+  }
+
+  // syntheticResult=failed always forces overall=failed (align with deriveOverallResult).
+  if (value.syntheticResult === 'failed' && value.overall !== 'failed') {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'syntheticResult=failed requires overall=failed',
+      path: ['overall'],
+    });
+  }
+
   // Synthetic success requires the full gate shape.
   if (value.syntheticResult === 'passed') {
     if (value.overall !== 'unverified') {
@@ -245,16 +272,6 @@ const refineReportConsistency = (
       });
     }
 
-    for (const category of REQUIRED_GATE_CATEGORIES) {
-      if (!map.has(category)) {
-        context.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: `missing required check category: ${category}`,
-          path: ['checks'],
-        });
-      }
-    }
-
     for (const category of REQUIRED_PASSING_CATEGORIES) {
       if (map.get(category) !== 'passed') {
         context.addIssue({
@@ -273,29 +290,6 @@ const refineReportConsistency = (
         path: ['checks'],
       });
     }
-
-    // No extra categories beyond the required set when synthetic passed.
-    if (value.checks.length !== REQUIRED_GATE_CATEGORIES.length) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'synthetic success requires exactly the required check categories',
-        path: ['checks'],
-      });
-    }
-  }
-
-  // Failed synthetic: overall must be failed when cleanup/privacy failed or checks failed hard.
-  if (
-    value.syntheticResult === 'failed' &&
-    value.overall === 'unverified' && // Allowed only if we never claimed success; overall should still be failed when
-    // cleanup or privacy rejection happened.
-    (value.cleanupResult === 'failed' || value.externalDump.status === 'privacy-rejected')
-  ) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: 'failed cleanup/privacy must set overall=failed',
-      path: ['overall'],
-    });
   }
 };
 
@@ -419,4 +413,25 @@ export const buildFullPassingChecks = (
     result:
       overrides[category] ??
       (category === 'external-dump' ? ('unverified' as const) : ('passed' as const)),
+  }));
+
+/**
+ * Complete failed-path fixture: all 14 categories present; most skipped/failed.
+ * Used to prove schema accepts only full-shape failure reports.
+ */
+export const buildFullFailedChecks = (
+  overrides: Partial<Record<(typeof CHECK_CATEGORIES)[number], CheckEntry['result']>> = {},
+): CheckEntry[] =>
+  CHECK_CATEGORIES.map((category) => ({
+    category,
+    durationMs: 1,
+    result:
+      overrides[category] ??
+      (category === 'baseline' || category === 'journal-snapshot' || category === 'expand-only'
+        ? ('passed' as const)
+        : category === 'external-dump'
+          ? ('failed' as const)
+          : category === 'cleanup'
+            ? ('passed' as const)
+            : ('skipped' as const)),
   }));
