@@ -17,6 +17,16 @@ import {
 } from '../../contracts/skillCatalog';
 import { DomainConfigCache, invalidateDomainConfigCacheNamespace } from '../../runtimeConfig';
 import { getPlatformConfigScopeVersion } from '../platformConfigInvalidation';
+import type { CurrentSkillCatalogSnapshot } from '../platformInstance/catalogAuthority';
+import { loadCurrentSkillCatalogSnapshot } from '../platformInstance/catalogAuthority';
+import type { SkillCatalogTokenEntry } from '../platformInstance/catalogTokens';
+import { buildSkillCatalogRevisionToken } from '../platformInstance/catalogTokens';
+import type { PlatformRuntimeMaterializationReporter } from '../platformInstance/runtimeReporter';
+import {
+  classifyRuntimeMaterializationError,
+  reportPlatformRuntimeMaterialization,
+  reportPlatformRuntimeMaterializationSafely,
+} from '../platformInstance/runtimeReporter';
 
 export interface BuiltinSkillDefinition extends PublishedSkill {
   content: string;
@@ -29,8 +39,13 @@ export interface SkillCatalogReadOptions {
   builtinSkills?: BuiltinSkillDefinition[];
   cacheTtlMs?: number;
   getCacheEpoch?: () => Promise<string>;
-  model?: Pick<PlatformSkillCatalogModel, 'listPublished' | 'resolvePublishedVersion'>;
+  loadCurrentSnapshot?: () => Promise<CurrentSkillCatalogSnapshot>;
+  model?: Pick<PlatformSkillCatalogModel, 'resolvePublishedVersion'>;
   now?: () => number;
+  runtimeReporting?: {
+    database: LobeChatDatabase;
+    reporter?: PlatformRuntimeMaterializationReporter;
+  };
 }
 
 export const builtinSkillDefinitionSchema = serverResolvedSkillSchema
@@ -42,7 +57,6 @@ export const builtinSkillDefinitionSchema = serverResolvedSkillSchema
   .extend({ source: z.literal('builtin') })
   .strict();
 export const builtinSkillDefinitionsSchema = z.array(builtinSkillDefinitionSchema).max(100);
-const MAX_PUBLISHED_SKILL_PAGES = 100;
 const MAX_PUBLISHED_SKILLS = 10_000;
 const MAX_READINESS_REVISIONS = 32;
 const SKILL_ACTIVE_PROJECTION_CACHE_NAMESPACE = 'skill-catalog-active-projection';
@@ -52,6 +66,7 @@ interface CachedPublishedProjection {
   catalog: { revision: string; skills: PublishedSkill[] };
   executionIndex: Map<string, ResolvedSkill>;
   executionReady: boolean;
+  targetRevisionId: string;
 }
 
 const projectionByRevision = new Map<string, CachedPublishedProjection>();
@@ -119,16 +134,16 @@ const compareCodepoint = (left: string, right: string) =>
 export class SkillCatalogReadService {
   private readonly activeProjectionCache: DomainConfigCache<string>;
   private readonly builtinSkills: BuiltinSkillDefinition[];
-  private readonly model: Pick<
-    PlatformSkillCatalogModel,
-    'listPublished' | 'resolvePublishedVersion'
-  >;
+  private readonly loadCurrentSnapshot: () => Promise<CurrentSkillCatalogSnapshot>;
+  private readonly model: Pick<PlatformSkillCatalogModel, 'resolvePublishedVersion'>;
   private publishedExecutionIndex = new Map<string, ResolvedSkill>();
   private publishedExecutionRevision: string | undefined;
   private readonly projectionSource: string;
 
   constructor(db: LobeChatDatabase | Transaction, options: SkillCatalogReadOptions = {}) {
     this.model = options.model ?? new PlatformSkillCatalogModel(db);
+    this.loadCurrentSnapshot =
+      options.loadCurrentSnapshot ?? (() => loadCurrentSkillCatalogSnapshot(db));
     const parsedBuiltins = builtinSkillDefinitionsSchema.parse(
       (options.builtinSkills ?? []).map((skill) => ({
         ...skill,
@@ -140,8 +155,10 @@ export class SkillCatalogReadService {
     const source = options.model ?? db;
     const builtinRevision = checksumPayload({ builtinSkills: this.builtinSkills });
     this.projectionSource = `${getSourceId(source as object)}:${builtinRevision}`;
+    const runtimeReporting = options.runtimeReporting;
+    const reportRuntimeState = runtimeReporting?.reporter ?? reportPlatformRuntimeMaterialization;
     this.activeProjectionCache = new DomainConfigCache({
-      cacheId: builtinRevision,
+      cacheId: `${builtinRevision}:${runtimeReporting ? 'runtime' : 'read'}`,
       cacheKey: source as object,
       cacheTtlMs: options.cacheTtlMs,
       cloneValue: (value) => value,
@@ -151,37 +168,60 @@ export class SkillCatalogReadService {
       namespace: SKILL_ACTIVE_PROJECTION_CACHE_NAMESPACE,
       now: options.now,
       observabilityDomain: 'skill_catalog',
+      onEntryStored: runtimeReporting
+        ? (projectionKey) => {
+            const projection = projectionKey ? projectionByRevision.get(projectionKey) : undefined;
+            if (!projection?.executionReady) {
+              reportPlatformRuntimeMaterializationSafely(
+                reportRuntimeState,
+                runtimeReporting.database,
+                {
+                  domain: 'skill_catalog',
+                  errorCategory: 'configuration_invalid',
+                  health: 'unavailable',
+                  source: 'unavailable',
+                },
+              );
+              return;
+            }
+            reportPlatformRuntimeMaterializationSafely(
+              reportRuntimeState,
+              runtimeReporting.database,
+              {
+                domain: 'skill_catalog',
+                health: 'healthy',
+                revisionId: projection.targetRevisionId,
+                source: 'database',
+              },
+            );
+          }
+        : undefined,
+      onLoadFailure: runtimeReporting
+        ? (error) => {
+            reportPlatformRuntimeMaterializationSafely(
+              reportRuntimeState,
+              runtimeReporting.database,
+              {
+                domain: 'skill_catalog',
+                errorCategory: classifyRuntimeMaterializationError(error),
+                health: 'unavailable',
+                source: 'unavailable',
+              },
+            );
+          }
+        : undefined,
     });
   }
 
   private loadPublishedProjection = async (): Promise<string> => {
-    const platformItems: Awaited<ReturnType<PlatformSkillCatalogModel['listPublished']>>['items'] =
-      [];
-    const builtinOverrideTombstones = new Set<string>();
-    const seenCursors = new Set<string>();
-    let cursor: string | undefined;
-    let pageCount = 0;
-    do {
-      if (pageCount >= MAX_PUBLISHED_SKILL_PAGES) {
-        throw new Error('Published Skill page limit was exceeded');
-      }
-      pageCount += 1;
-      const page = await this.model.listPublished({ cursor, limit: 100 });
-      for (const skillKey of page.builtinOverrideTombstones ?? []) {
-        builtinOverrideTombstones.add(skillKey);
-      }
-      if (platformItems.length + page.items.length > MAX_PUBLISHED_SKILLS) {
-        throw new Error('Published Skill item limit was exceeded');
-      }
-      platformItems.push(...page.items);
-      if (!page.nextCursor) break;
-      if (seenCursors.has(page.nextCursor))
-        throw new Error('Published Skill cursor did not advance');
-      seenCursors.add(page.nextCursor);
-      cursor = page.nextCursor;
-    } while (cursor);
+    const snapshot = await this.loadCurrentSnapshot();
+    if (snapshot.items.length > MAX_PUBLISHED_SKILLS) {
+      throw new Error('Published Skill item limit was exceeded');
+    }
+    const platformItems = snapshot.items;
+    const catalogTokenEntries: SkillCatalogTokenEntry[] = snapshot.tokenEntries;
     const builtins = new Map(this.builtinSkills.map((skill) => [skill.skillKey, skill] as const));
-    for (const skillKey of builtinOverrideTombstones) builtins.delete(skillKey);
+    for (const skillKey of snapshot.builtinOverrideTombstones) builtins.delete(skillKey);
     const platformSkills: PublishedSkill[] = [];
     const platformResolvedByKey = new Map<string, ResolvedSkill>();
     for (const item of platformItems) {
@@ -232,7 +272,14 @@ export class SkillCatalogReadService {
     if (skills.length > MAX_PUBLISHED_SKILLS) {
       throw new Error('Published Skill item limit was exceeded after builtin merge');
     }
-    const revision = checksumPayload({ skills });
+    const revision = buildSkillCatalogRevisionToken({
+      builtins: this.builtinSkills.map(({ checksum, skillKey, version }) => ({
+        checksum,
+        skillKey,
+        version,
+      })),
+      platform: catalogTokenEntries,
+    }).value;
     const executionIndex = new Map<string, ResolvedSkill>();
     let executionReady = true;
     for (const skill of skills) {
@@ -283,6 +330,7 @@ export class SkillCatalogReadService {
       catalog: cloneCatalog(catalog),
       executionIndex: cloneExecutionIndex(executionIndex),
       executionReady: ready,
+      targetRevisionId: revision,
     });
     while (projectionByRevision.size > MAX_READINESS_REVISIONS) {
       const oldest = projectionByRevision.keys().next().value;

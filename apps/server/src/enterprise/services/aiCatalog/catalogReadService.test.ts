@@ -28,7 +28,12 @@ describe('AiCatalogReadService', () => {
   it('returns only enabled public fields from latest published snapshots', async () => {
     const [provider] = await serverDB
       .insert(platformAiProviders)
-      .values({ displayName: 'Alpha', providerKey: 'alpha' })
+      .values({
+        displayName: 'Alpha',
+        providerKey: 'alpha',
+        revision: 1,
+        status: 'published',
+      })
       .returning();
     const payload = {
       models: [
@@ -51,7 +56,7 @@ describe('AiCatalogReadService', () => {
           status: 'draft',
           type: 'chat',
         },
-        { enabled: false, modelKey: 'disabled' },
+        { enabled: false, modelKey: 'disabled', type: 'chat' },
       ],
       provider: {
         config: { endpoint: 'https://private.example.test', headers: { authorization: 'secret' } },

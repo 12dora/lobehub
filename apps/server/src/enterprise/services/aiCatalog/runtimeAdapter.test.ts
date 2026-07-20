@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DEFAULT_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
 import { getTestDB } from '@/database/core/getTestDB';
+import { checksumPayload } from '@/database/models/platform/checksum';
 import {
   platformAiModels,
   platformAiProviders,
@@ -16,6 +17,10 @@ import {
 import type { LobeChatDatabase } from '@/database/type';
 import { type KeyProvider, PlatformSecretService } from '@/server/enterprise/security/secret';
 
+import { loadCurrentAiCatalogSnapshot } from '../platformInstance/catalogAuthority';
+import { PlatformCatalogTokenInvariantError } from '../platformInstance/catalogTokens';
+import { PlatformDomainTargetResolver } from '../platformInstance/domainTargets';
+import type { PlatformRuntimeMaterializationReporter } from '../platformInstance/runtimeReporter';
 import { AiCatalogAdminService } from './adminService';
 import {
   AiCatalogExecutionResolver,
@@ -57,6 +62,16 @@ const upstreamState: AiProviderRuntimeState = {
     'alpha': { config: {}, keyVaults: { apiKey: 'user-key-must-not-win' }, settings: {} },
     'user-provider': { config: {}, keyVaults: { apiKey: 'user-only' }, settings: {} },
   },
+};
+
+const deferred = <T>() => {
+  let reject!: (reason?: unknown) => void;
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    reject = promiseReject;
+    resolve = promiseResolve;
+  });
+  return { promise, reject, resolve };
 };
 
 const cleanup = async () => {
@@ -125,6 +140,269 @@ describe('AiCatalogRuntimeAdapter', () => {
       upstreamState,
     });
     expect(result).toBe(upstreamState);
+  });
+
+  it('reports one new immutable runtime build with the exact authoritative target token', async () => {
+    const { provider } = await createPublishedProvider();
+    const reportRuntimeState = vi.fn<PlatformRuntimeMaterializationReporter>();
+    const adapter = new AiCatalogRuntimeAdapter(db, { reportRuntimeState });
+
+    await adapter.resolve({ flags, upstreamState });
+    await adapter.resolve({ flags, upstreamState });
+    const target = await new PlatformDomainTargetResolver(db, {
+      env: { ENABLE_PLATFORM_MANAGED_AI: '1' },
+    }).resolve('ai_catalog');
+
+    expect(reportRuntimeState).toHaveBeenCalledOnce();
+    expect(reportRuntimeState.mock.calls[0]?.[1]).toEqual({
+      domain: 'ai_catalog',
+      health: 'healthy',
+      revisionId: target.token?.value,
+      source: 'database',
+    });
+    expect(target.token?.value).toMatch(/^[a-f0-9]{64}$/);
+    expect(JSON.stringify(reportRuntimeState.mock.calls.map(([, state]) => state))).not.toContain(
+      'alpha',
+    );
+
+    const [published] = (await loadCurrentAiCatalogSnapshot(db)).revisions;
+    await db.insert(platformResourceRevisions).values({
+      checksum: checksumPayload(published.payload),
+      payload: published.payload,
+      resourceId: provider.id,
+      resourceType: 'provider',
+      revision: 2,
+      secretFingerprint: published.secretFingerprint,
+      status: 'published',
+    });
+    await db
+      .update(platformAiProviders)
+      .set({ revision: 2 })
+      .where(eq(platformAiProviders.id, provider.id));
+    await adapter.resolve({ flags, upstreamState });
+    const changedTarget = await new PlatformDomainTargetResolver(db, {
+      env: { ENABLE_PLATFORM_MANAGED_AI: '1' },
+    }).resolve('ai_catalog');
+
+    expect(reportRuntimeState).toHaveBeenCalledTimes(2);
+    expect(reportRuntimeState.mock.calls[1]?.[1]).toMatchObject({
+      revisionId: changedTarget.token?.value,
+    });
+    expect(changedTarget.token?.value).not.toBe(target.token?.value);
+  });
+
+  it('ignores higher history, follows rollback pointers, and keeps target/runtime exact', async () => {
+    const { provider } = await createPublishedProvider();
+    const initial = await loadCurrentAiCatalogSnapshot(db);
+    const v1 = initial.revisions[0]!;
+    const v2Payload = {
+      ...v1.payload,
+      provider: { ...(v1.payload.provider as Record<string, unknown>), displayName: 'History v2' },
+    };
+    await db.insert(platformResourceRevisions).values({
+      checksum: checksumPayload(v2Payload),
+      payload: v2Payload,
+      resourceId: provider.id,
+      resourceType: 'provider',
+      revision: 2,
+      secretFingerprint: v1.secretFingerprint,
+      status: 'published',
+    });
+
+    clearAiCatalogRuntimeCache();
+    const orphanState = await new AiCatalogRuntimeAdapter(db).resolve({ flags, upstreamState });
+    expect(orphanState.enabledAiProviders[0]?.name).toBe('Platform Alpha');
+    expect((await loadCurrentAiCatalogSnapshot(db)).token.value).toBe(initial.token.value);
+
+    await db
+      .update(platformAiProviders)
+      .set({ revision: 2 })
+      .where(eq(platformAiProviders.id, provider.id));
+    clearAiCatalogRuntimeCache();
+    const forward = await loadCurrentAiCatalogSnapshot(db);
+    expect(forward.revisions[0]?.revision).toBe(2);
+    expect(
+      (await new AiCatalogRuntimeAdapter(db).resolve({ flags, upstreamState }))
+        .enabledAiProviders[0]?.name,
+    ).toBe('History v2');
+
+    await db
+      .update(platformAiProviders)
+      .set({ revision: 1 })
+      .where(eq(platformAiProviders.id, provider.id));
+    clearAiCatalogRuntimeCache();
+    const rolledBack = await loadCurrentAiCatalogSnapshot(db);
+    const target = await new PlatformDomainTargetResolver(db, {
+      env: { ENABLE_PLATFORM_MANAGED_AI: '1' },
+    }).resolve('ai_catalog');
+    expect(rolledBack.token.value).toBe(initial.token.value);
+    expect(target.token?.value).toBe(initial.token.value);
+    expect(
+      (await new AiCatalogRuntimeAdapter(db).resolve({ flags, upstreamState }))
+        .enabledAiProviders[0]?.name,
+    ).toBe('Platform Alpha');
+  });
+
+  it('fails a broken current pointer as one catalog and recovers the exact token after repair', async () => {
+    const { provider } = await createPublishedProvider();
+    const [savedRevision] = await db
+      .select()
+      .from(platformResourceRevisions)
+      .where(
+        and(
+          eq(platformResourceRevisions.resourceId, provider.id),
+          eq(platformResourceRevisions.revision, 1),
+        ),
+      );
+    await db
+      .delete(platformResourceRevisions)
+      .where(
+        and(
+          eq(platformResourceRevisions.resourceId, provider.id),
+          eq(platformResourceRevisions.revision, 1),
+        ),
+      );
+    const reportRuntimeState = vi.fn<PlatformRuntimeMaterializationReporter>();
+    const adapter = new AiCatalogRuntimeAdapter(db, { reportRuntimeState });
+
+    await expect(adapter.resolve({ flags, upstreamState })).rejects.toBeInstanceOf(
+      PlatformCatalogTokenInvariantError,
+    );
+    await expect(
+      new PlatformDomainTargetResolver(db, {
+        env: { ENABLE_PLATFORM_MANAGED_AI: '1' },
+      }).resolve('ai_catalog'),
+    ).resolves.toMatchObject({ errorCategory: 'configuration_invalid', status: 'unavailable' });
+    expect(reportRuntimeState.mock.calls.map(([, state]) => state.health)).toEqual(['unavailable']);
+
+    await db.insert(platformResourceRevisions).values(savedRevision!);
+    const repairedTarget = await new PlatformDomainTargetResolver(db, {
+      env: { ENABLE_PLATFORM_MANAGED_AI: '1' },
+    }).resolve('ai_catalog');
+    await adapter.resolve({ flags, upstreamState });
+    expect(reportRuntimeState.mock.calls.map(([, state]) => state.health)).toEqual([
+      'unavailable',
+      'healthy',
+    ]);
+    expect(reportRuntimeState.mock.calls[1]?.[1]).toMatchObject({
+      revisionId: repairedTarget.token?.value,
+    });
+  });
+
+  it('coalesces a concurrent cold build and reports it once', async () => {
+    await createPublishedProvider();
+    const snapshot = await loadCurrentAiCatalogSnapshot(db);
+    const pending = deferred<typeof snapshot>();
+    const loadCurrentSnapshot = vi.fn(() => pending.promise);
+    const reportRuntimeState = vi.fn<PlatformRuntimeMaterializationReporter>();
+    const adapter = new AiCatalogRuntimeAdapter(db, {
+      reportRuntimeState,
+      loadCurrentSnapshot,
+    });
+
+    const first = adapter.resolve({ flags, upstreamState });
+    const second = adapter.resolve({ flags, upstreamState });
+    await vi.waitFor(() => expect(loadCurrentSnapshot).toHaveBeenCalledOnce());
+    pending.resolve(snapshot);
+    await expect(Promise.all([first, second])).resolves.toHaveLength(2);
+
+    expect(loadCurrentSnapshot).toHaveBeenCalledOnce();
+    expect(reportRuntimeState).toHaveBeenCalledOnce();
+  });
+
+  it('does not let a stale invalidated load failure overwrite a newer healthy build', async () => {
+    await createPublishedProvider();
+    const snapshot = await loadCurrentAiCatalogSnapshot(db);
+    const oldRead = deferred<typeof snapshot>();
+    const reportRuntimeState = vi.fn<PlatformRuntimeMaterializationReporter>();
+    const oldAdapter = new AiCatalogRuntimeAdapter(db, {
+      reportRuntimeState,
+      loadCurrentSnapshot: () => oldRead.promise,
+    });
+    const oldRequest = oldAdapter.resolve({ flags, upstreamState });
+    await Promise.resolve();
+
+    clearAiCatalogRuntimeCache();
+    const loadCurrentSnapshot = vi.fn(async () => snapshot);
+    const currentAdapter = new AiCatalogRuntimeAdapter(db, {
+      reportRuntimeState,
+      loadCurrentSnapshot,
+    });
+    await currentAdapter.resolve({ flags, upstreamState });
+
+    const oldError = new Error('late old catalog failure');
+    const oldResult = expect(oldRequest).rejects.toBe(oldError);
+    oldRead.reject(oldError);
+    await oldResult;
+    await currentAdapter.resolve({ flags, upstreamState });
+
+    expect(reportRuntimeState.mock.calls.map(([, state]) => state.health)).toEqual(['healthy']);
+    expect(loadCurrentSnapshot).toHaveBeenCalledTimes(2);
+  });
+
+  it('reports a failed load then rebuilds the same token without changing the original error', async () => {
+    await createPublishedProvider();
+    const snapshot = await loadCurrentAiCatalogSnapshot(db);
+    const original = Object.assign(new Error('raw AI catalog database detail'), {
+      code: 'ECONNREFUSED',
+    });
+    const loadCurrentSnapshot = vi
+      .fn<() => Promise<typeof snapshot>>()
+      .mockRejectedValueOnce(original)
+      .mockResolvedValueOnce(snapshot);
+    const reportRuntimeState = vi.fn<PlatformRuntimeMaterializationReporter>();
+    const adapter = new AiCatalogRuntimeAdapter(db, {
+      reportRuntimeState,
+      loadCurrentSnapshot,
+    });
+
+    await expect(adapter.resolve({ flags, upstreamState })).rejects.toBe(original);
+    await adapter.resolve({ flags, upstreamState });
+
+    expect(reportRuntimeState.mock.calls.map(([, state]) => state.health)).toEqual([
+      'unavailable',
+      'healthy',
+    ]);
+    expect(JSON.stringify(reportRuntimeState.mock.calls.map(([, state]) => state))).not.toContain(
+      'raw AI catalog database detail',
+    );
+  });
+
+  it('isolates reporter failure and never reports request-scoped secret resolution errors', async () => {
+    await createPublishedProvider();
+    const reportRuntimeState = vi.fn<PlatformRuntimeMaterializationReporter>(() => {
+      throw new Error('raw reporter detail');
+    });
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const adapter = new AiCatalogRuntimeAdapter(db, { reportRuntimeState });
+
+    await expect(adapter.resolve({ flags, upstreamState })).resolves.toMatchObject({
+      enabledAiProviders: [expect.objectContaining({ id: 'alpha' })],
+    });
+    await db.delete(platformAiProviderSecrets);
+    await expect(
+      new AiCatalogExecutionResolver(db, secretService).resolveProviderExecutionConfig('alpha'),
+    ).rejects.toThrow();
+
+    expect(reportRuntimeState).toHaveBeenCalledOnce();
+    expect(consoleError).toHaveBeenCalledWith('[platform-instance-runtime] reporter unavailable');
+    expect(JSON.stringify(consoleError.mock.calls)).not.toContain('raw reporter detail');
+    consoleError.mockRestore();
+  });
+
+  it('performs zero repository and reporter work while the managed AI flag is off', async () => {
+    const loadCurrentSnapshot = vi.fn();
+    const reportRuntimeState = vi.fn<PlatformRuntimeMaterializationReporter>();
+    const adapter = new AiCatalogRuntimeAdapter(db, {
+      reportRuntimeState,
+      loadCurrentSnapshot,
+    });
+
+    await expect(
+      adapter.resolve({ flags: DEFAULT_ENTERPRISE_FEATURE_FLAGS, upstreamState }),
+    ).resolves.toBe(upstreamState);
+    expect(loadCurrentSnapshot).not.toHaveBeenCalled();
+    expect(reportRuntimeState).not.toHaveBeenCalled();
   });
 
   it('separates public metadata cache from server execution secrets across publish and rollback', async () => {
@@ -249,55 +527,75 @@ describe('AiCatalogRuntimeAdapter', () => {
   });
 
   it('merges safe Model Bank metadata before published overrides for Azure and Spark', async () => {
+    const azurePayload = {
+      models: [
+        {
+          abilities: {},
+          config: {},
+          enabled: true,
+          modelKey: 'gpt-5.4',
+          pricing: {},
+          settings: {},
+          sort: 0,
+          type: 'chat',
+        },
+      ],
+      provider: {
+        config: { endpoint: 'https://private-azure.example.test' },
+        displayName: 'Azure',
+        enabled: true,
+        providerKey: 'azure',
+        sort: 0,
+        source: 'builtin',
+      },
+    };
+    const sparkPayload = {
+      models: [
+        {
+          enabled: true,
+          modelKey: 'spark-x2-flash',
+          sort: 0,
+          type: 'chat',
+        },
+      ],
+      provider: {
+        displayName: 'Spark',
+        enabled: true,
+        providerKey: 'spark',
+        sort: 1,
+        source: 'builtin',
+      },
+    };
+    await db.insert(platformAiProviders).values([
+      {
+        displayName: 'Azure',
+        enabled: true,
+        id: 'azure-provider',
+        providerKey: 'azure',
+        revision: 1,
+        status: 'published',
+      },
+      {
+        displayName: 'Spark',
+        enabled: true,
+        id: 'spark-provider',
+        providerKey: 'spark',
+        revision: 1,
+        status: 'published',
+      },
+    ]);
     await db.insert(platformResourceRevisions).values([
       {
-        checksum: 'azure-safe-metadata',
-        payload: {
-          models: [
-            {
-              abilities: {},
-              config: {},
-              enabled: true,
-              modelKey: 'gpt-5.4',
-              pricing: {},
-              settings: {},
-              sort: 0,
-              type: 'chat',
-            },
-          ],
-          provider: {
-            config: { endpoint: 'https://private-azure.example.test' },
-            displayName: 'Azure',
-            enabled: true,
-            providerKey: 'azure',
-            sort: 0,
-            source: 'builtin',
-          },
-        },
+        checksum: checksumPayload(azurePayload),
+        payload: azurePayload,
         resourceId: 'azure-provider',
         resourceType: 'provider',
         revision: 1,
         status: 'published',
       },
       {
-        checksum: 'spark-safe-metadata',
-        payload: {
-          models: [
-            {
-              enabled: true,
-              modelKey: 'spark-x2-flash',
-              sort: 0,
-              type: 'chat',
-            },
-          ],
-          provider: {
-            displayName: 'Spark',
-            enabled: true,
-            providerKey: 'spark',
-            sort: 1,
-            source: 'builtin',
-          },
-        },
+        checksum: checksumPayload(sparkPayload),
+        payload: sparkPayload,
         resourceId: 'spark-provider',
         resourceType: 'provider',
         revision: 1,
