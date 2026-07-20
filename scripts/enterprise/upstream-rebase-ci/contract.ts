@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { scanForSecrets } from './secretScan';
+
 export const UPSTREAM_REBASE_CI_SCHEMA_VERSION = 1 as const;
 export const UPSTREAM_REBASE_CI_LANE = 'enterprise-upstream-rebase-dry-run' as const;
 export const DEFAULT_UPSTREAM_REPOSITORY = 'lobehub/lobehub' as const;
@@ -22,6 +24,27 @@ export const KNOWN_GATE_IDS = [
 ] as const;
 
 export type KnownGateId = (typeof KNOWN_GATE_IDS)[number];
+
+/** Deterministic kind expected for each known gate (shared by runner + schema). */
+export const EXPECTED_GATE_KINDS = {
+  'auth-e2e': 'vitest',
+  'bun-check-changed': 'command',
+  'desktop-release': 'vitest',
+  'failure-drills': 'fail-closed',
+  'manual-conflict-review': 'fail-closed',
+  'migration-upgrade-rollback': 'vitest',
+  'patch-ledger-update': 'fail-closed',
+  'permission-matrix': 'vitest',
+  'privacy-review': 'privacy-scan',
+  'spa-route-sync': 'vitest',
+  'type-check': 'command',
+} as const satisfies Record<KnownGateId, 'command' | 'fail-closed' | 'privacy-scan' | 'vitest'>;
+
+export const FAIL_CLOSED_GATE_IDS = new Set<KnownGateId>([
+  'failure-drills',
+  'manual-conflict-review',
+  'patch-ledger-update',
+]);
 
 const shortShaSchema = z.string().regex(/^[a-f\d]{12}$/u, 'must be a 12-char lowercase git sha');
 const fullShaSchema = z.string().regex(/^[a-f\d]{40}$/u, 'must be a full lowercase git sha');
@@ -134,46 +157,7 @@ export type UpstreamRebaseEvidence = z.infer<typeof upstreamRebaseEvidenceSchema
 export type UpstreamRebaseEvidenceCore = z.infer<typeof evidenceCoreSchema>;
 export type GateResult = z.infer<typeof gateResultSchema>;
 
-const FORBIDDEN_KEY_PATTERN =
-  /ciphertext|connectionstring|credential|hostname|password|payload|secret|token|uri|url/iu;
-const FORBIDDEN_VALUE_PATTERNS = [
-  /(?:https?|postgres(?:ql)?|rediss?):\/\//iu,
-  /git@[\w.-]+/u,
-  /(?:^|[^a-z\d])(?:localhost|host\.docker\.internal)(?:[^a-z\d]|$)/iu,
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----/u,
-  /(?:bearer|password|secret|token)\s*[:=]\s*\S+/iu,
-  /gh[pousr]_\w{20,}/u,
-  /github_pat_\w{20,}/u,
-] as const;
-
-const countForbiddenEvidenceValues = (value: unknown, key?: string): number => {
-  const violations = key && FORBIDDEN_KEY_PATTERN.test(key) ? 1 : 0;
-
-  if (typeof value === 'string') {
-    return violations + FORBIDDEN_VALUE_PATTERNS.filter((pattern) => pattern.test(value)).length;
-  }
-
-  if (Array.isArray(value)) {
-    return value.reduce((total, item) => total + countForbiddenEvidenceValues(item), violations);
-  }
-
-  if (value && typeof value === 'object') {
-    return Object.entries(value).reduce(
-      (total, [childKey, childValue]) => total + countForbiddenEvidenceValues(childValue, childKey),
-      violations,
-    );
-  }
-
-  return violations;
-};
-
-export const scanUpstreamRebaseEvidence = (value: unknown) => {
-  const violations = countForbiddenEvidenceValues(value);
-  return {
-    result: violations === 0 ? ('passed' as const) : ('failed' as const),
-    violations,
-  };
-};
+export const scanUpstreamRebaseEvidence = (value: unknown) => scanForSecrets(value);
 
 export const createUpstreamRebaseEvidence = (
   input: UpstreamRebaseEvidenceCore,
