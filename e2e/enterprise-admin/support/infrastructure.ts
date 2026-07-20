@@ -1,24 +1,26 @@
-import { type ChildProcess, execFile, spawn } from 'node:child_process';
+import { type ChildProcess, spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import path from 'node:path';
-import { promisify } from 'node:util';
 
 import { Pool } from 'pg';
 
-const execute = promisify(execFile);
-export const PROJECT_ROOT = path.resolve(__dirname, '../../..');
+import {
+  cleanupLifecycle,
+  createLifecycleState,
+  createRunToken,
+  type LifecycleState,
+  registerProcess,
+  startOwnedContainer,
+} from './lifecycle';
 
-export interface ContainerHandle {
-  name: string;
-}
+export const PROJECT_ROOT = path.resolve(__dirname, '../../..');
 
 export interface SuiteRuntime {
   appUrl: string;
   databaseUrl: string;
   mode: 'dev' | 'start' | 'external';
-  postgres?: ContainerHandle;
-  redis?: ContainerHandle;
   redisUrl: string;
+  runToken: string;
   stop: () => Promise<void>;
 }
 
@@ -38,20 +40,6 @@ export const freePort = async (): Promise<number> =>
       server.close((error) => (error ? reject(error) : resolvePort(address.port)));
     });
   });
-
-const startContainer = async (input: {
-  args: string[];
-  image: string;
-  name: string;
-}): Promise<ContainerHandle> => {
-  await execute('docker', ['run', '--detach', '--name', input.name, ...input.args, input.image]);
-  return { name: input.name };
-};
-
-const stopContainer = async (container: ContainerHandle | undefined) => {
-  if (!container) return;
-  await execute('docker', ['rm', '--force', container.name]).catch(() => undefined);
-};
 
 const waitForPostgres = async (url: string) => {
   const deadline = Date.now() + 90_000;
@@ -83,31 +71,22 @@ const runCommand = async (command: string, args: readonly string[], env: NodeJS.
     });
   });
 
-const waitForHttp = async (url: string, timeoutMs = 180_000) => {
+const waitForHttp = async (
+  url: string,
+  timeoutMs = 180_000,
+  accept: (status: number) => boolean = (status) => status >= 200 && status < 400,
+) => {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
       const response = await fetch(url, { redirect: 'manual' });
-      if (response.status > 0 && response.status < 500) return;
+      if (accept(response.status)) return;
     } catch {
       // booting
     }
     await new Promise((r) => setTimeout(r, 750));
   }
   throw new Error(`app health check failed: ${url}`);
-};
-
-const terminateTree = (child: ChildProcess | undefined) => {
-  if (!child?.pid) return;
-  try {
-    process.kill(-child.pid, 'SIGTERM');
-  } catch {
-    try {
-      child.kill('SIGTERM');
-    } catch {
-      // already gone
-    }
-  }
 };
 
 export const buildEnterpriseEnv = (params: {
@@ -120,10 +99,9 @@ export const buildEnterpriseEnv = (params: {
   APP_URL: params.appUrl,
   AUTH_EMAIL_VERIFICATION: '0',
   AUTH_SECRET,
-  AUTH_TRUSTED_ORIGINS: params.appUrl,
+  AUTH_TRUSTED_ORIGINS: `${params.appUrl},http://127.0.0.1:${params.port},http://localhost:${params.port}`,
   DATABASE_DRIVER: 'node',
   DATABASE_URL: params.databaseUrl,
-  // Keep EasyAuth offline: no token file, closed loopback base (fail-fast, no prod IAM).
   EASYAUTH_APP_TOKEN: '',
   EASYAUTH_APP_TOKEN_FILE: '/dev/null',
   EASYAUTH_BASE_URL: 'http://127.0.0.1:9',
@@ -137,7 +115,8 @@ export const buildEnterpriseEnv = (params: {
   FEATURE_FLAGS: '-agent_self_iteration',
   KEY_VAULTS_SECRET,
   NODE_OPTIONS: '--max-old-space-size=6144',
-  // Deterministic local KEK for enterprise secret-dependent readiness probes (not a production secret).
+  // Short config cache so skill-catalog readiness outage becomes observable quickly.
+  PLATFORM_CONFIG_CACHE_TTL_SECONDS: '1',
   PLATFORM_MASTER_KEY: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
   PLATFORM_MASTER_KEY_ID: 'enterprise-admin-e2e-key',
   PORT: String(params.port),
@@ -149,129 +128,165 @@ export const buildEnterpriseEnv = (params: {
 });
 
 /**
- * Start isolated postgres + redis + migrate + app (dev full-stack by default).
- * External mode reuses BASE_URL + DATABASE_URL (caller owns lifecycle).
+ * External mode requires BOTH:
+ * - E2E_ENTERPRISE_ADMIN_EXTERNAL=1
+ * - E2E_ENTERPRISE_ADMIN_DISPOSABLE_DB=1
+ * BASE_URL alone never selects external mode (prevents accidental shared-DB mutation).
  */
-export const startEnterpriseAdminRuntime = async (): Promise<SuiteRuntime> => {
-  if (process.env.E2E_ENTERPRISE_ADMIN_EXTERNAL === '1' || process.env.BASE_URL) {
-    const appUrl = process.env.BASE_URL;
-    const databaseUrl = process.env.DATABASE_URL;
-    if (!appUrl || !databaseUrl) {
+export const resolveRuntimeMode = (
+  env: NodeJS.ProcessEnv = process.env,
+): 'isolated' | 'external' => {
+  if (env.E2E_ENTERPRISE_ADMIN_EXTERNAL === '1') {
+    if (env.E2E_ENTERPRISE_ADMIN_DISPOSABLE_DB !== '1') {
       throw new Error(
-        'external mode requires BASE_URL and DATABASE_URL (missing env is blocked, not skipped)',
+        'external mode blocked: set E2E_ENTERPRISE_ADMIN_DISPOSABLE_DB=1 only for a disposable database you own',
       );
     }
-    await waitForHttp(`${appUrl.replace(/\/$/, '')}/signin`, 30_000);
+    if (!env.BASE_URL || !env.DATABASE_URL) {
+      throw new Error('external mode requires BASE_URL and DATABASE_URL');
+    }
+    return 'external';
+  }
+  // BASE_URL without explicit external gate is ignored — always isolate.
+  return 'isolated';
+};
+
+/**
+ * Start isolated postgres + redis + migrate + app (dev full-stack by default).
+ * Entire lifecycle from first docker run is under try/finally ownership cleanup.
+ */
+export const startEnterpriseAdminRuntime = async (): Promise<SuiteRuntime> => {
+  const modeChoice = resolveRuntimeMode();
+  if (modeChoice === 'external') {
+    const appUrl = process.env.BASE_URL!.replace(/\/$/, '');
+    const databaseUrl = process.env.DATABASE_URL!;
+    await waitForHttp(`${appUrl}/signin`, 30_000);
     return {
-      appUrl: appUrl.replace(/\/$/, ''),
+      appUrl,
       databaseUrl,
       mode: 'external',
       redisUrl: process.env.REDIS_URL || '',
+      runToken: 'external',
       stop: async () => undefined,
     };
   }
 
-  const suffix = `${process.pid}-${Date.now()}`;
-  const databaseName = `aihub_admin_${suffix.replaceAll('-', '_')}`;
-  const postgresPort = await freePort();
-  const redisPort = await freePort();
-  const appPort = await freePort();
-  const postgres = await startContainer({
-    args: [
-      '-e',
-      'POSTGRES_PASSWORD=postgres',
-      '-e',
-      `POSTGRES_DB=${databaseName}`,
-      '-p',
-      `127.0.0.1:${postgresPort}:5432`,
-    ],
-    image: 'paradedb/paradedb:latest-pg17',
-    name: `aihub-admin-pg-${suffix}`,
-  });
-  const redis = await startContainer({
-    args: ['-p', `127.0.0.1:${redisPort}:6379`],
-    image: 'redis:7-alpine',
-    name: `aihub-admin-redis-${suffix}`,
-  });
-  const databaseUrl = `postgresql://postgres:postgres@127.0.0.1:${postgresPort}/${databaseName}`;
-  const redisUrl = `redis://127.0.0.1:${redisPort}`;
-  // Prefer localhost so better-auth cookie + Next host stay consistent with the dev server banner.
-  const appUrl = `http://localhost:${appPort}`;
-  await waitForPostgres(databaseUrl);
-
-  const env = buildEnterpriseEnv({ appUrl, databaseUrl, port: appPort, redisUrl });
-  await runCommand('bun', ['run', 'db:migrate'], { ...env, NODE_ENV: 'agenttest' });
-
-  const mode = (process.env.E2E_ENTERPRISE_ADMIN_MODE as 'dev' | 'start' | undefined) ?? 'dev';
+  const runToken = createRunToken();
+  const state: LifecycleState = createLifecycleState(runToken);
   let child: ChildProcess | undefined;
+  let settled = false;
 
-  if (mode === 'start') {
-    if (process.env.E2E_ENTERPRISE_ADMIN_SKIP_BUILD !== '1') {
-      await runCommand('bun', ['run', 'build'], { ...env, NODE_ENV: 'production', SKIP_LINT: '1' });
-    }
-    child = spawn(
-      process.execPath,
-      [
-        path.resolve(PROJECT_ROOT, 'node_modules/next/dist/bin/next'),
-        'start',
-        '-p',
-        String(appPort),
-      ],
-      {
-        cwd: PROJECT_ROOT,
-        detached: true,
-        env: { ...env, NODE_ENV: 'production' },
-        stdio: ['ignore', 'pipe', 'pipe'],
-      },
-    );
-  } else {
-    // Full-stack SPA + Next (admin shell is SPA).
-    child = spawn('bun', ['run', 'dev'], {
-      cwd: PROJECT_ROOT,
-      detached: true,
-      env: {
-        ...env,
-        // Pin SPA proxy targets to free ports alongside the app port.
-        SERVER_PORT: String(appPort),
-        SPA_PORT: String(await freePort()),
-      },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-  }
-
-  child.stdout?.on('data', (chunk) => process.stdout.write(`[admin-e2e-app] ${chunk}`));
-  child.stderr?.on('data', (chunk) => process.stderr.write(`[admin-e2e-app] ${chunk}`));
-  child.once('exit', (code, signal) => {
-    console.error(`[admin-e2e-app] exited code=${code} signal=${signal}`);
-  });
+  const stop = async () => {
+    if (settled) return;
+    settled = true;
+    await cleanupLifecycle(state);
+  };
 
   try {
-    await waitForHttp(`${appUrl}/signin`, 240_000);
-    // Cold-compile the lambda tRPC route once so scenario requests do not burn the 20s action budget.
+    const suffix = runToken.replaceAll(/[^a-z0-9-]/gi, '').slice(-24);
+    const databaseName = `aihub_admin_${suffix}`;
+    const postgresPort = await freePort();
+    const redisPort = await freePort();
+    const appPort = await freePort();
+
+    await startOwnedContainer({
+      args: [
+        '-e',
+        'POSTGRES_PASSWORD=postgres',
+        '-e',
+        `POSTGRES_DB=${databaseName}`,
+        '-p',
+        `127.0.0.1:${postgresPort}:5432`,
+      ],
+      image: 'paradedb/paradedb:latest-pg17',
+      name: `aihub-admin-pg-${suffix}`,
+      runToken,
+      state,
+    });
+    await startOwnedContainer({
+      args: ['-p', `127.0.0.1:${redisPort}:6379`],
+      image: 'redis:7-alpine',
+      name: `aihub-admin-redis-${suffix}`,
+      runToken,
+      state,
+    });
+
+    const databaseUrl = `postgresql://postgres:postgres@127.0.0.1:${postgresPort}/${databaseName}`;
+    const redisUrl = `redis://127.0.0.1:${redisPort}`;
+    const appUrl = `http://localhost:${appPort}`;
+    await waitForPostgres(databaseUrl);
+
+    const env = buildEnterpriseEnv({ appUrl, databaseUrl, port: appPort, redisUrl });
+    await runCommand('bun', ['run', 'db:migrate'], { ...env, NODE_ENV: 'agenttest' });
+
+    const mode = (process.env.E2E_ENTERPRISE_ADMIN_MODE as 'dev' | 'start' | undefined) ?? 'dev';
+
+    if (mode === 'start') {
+      if (process.env.E2E_ENTERPRISE_ADMIN_SKIP_BUILD !== '1') {
+        await runCommand('bun', ['run', 'build'], {
+          ...env,
+          NODE_ENV: 'production',
+          SKIP_LINT: '1',
+        });
+      }
+      child = spawn(
+        process.execPath,
+        [
+          path.resolve(PROJECT_ROOT, 'node_modules/next/dist/bin/next'),
+          'start',
+          '-p',
+          String(appPort),
+        ],
+        {
+          cwd: PROJECT_ROOT,
+          detached: true,
+          env: { ...env, NODE_ENV: 'production' },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        },
+      );
+    } else {
+      child = spawn('bun', ['run', 'dev'], {
+        cwd: PROJECT_ROOT,
+        detached: true,
+        env: {
+          ...env,
+          SERVER_PORT: String(appPort),
+          SPA_PORT: String(await freePort()),
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    }
+
+    registerProcess(state, child);
+    child.stdout?.on('data', (chunk) => process.stdout.write(`[admin-e2e-app] ${chunk}`));
+    child.stderr?.on('data', (chunk) => process.stderr.write(`[admin-e2e-app] ${chunk}`));
+    child.once('exit', (code, signal) => {
+      console.error(`[admin-e2e-app] exited code=${code} signal=${signal}`);
+    });
+
+    await waitForHttp(`${appUrl}/signin`, 240_000, (status) => status === 200);
     const prewarmInput = encodeURIComponent(JSON.stringify({ 0: { json: null } }));
     await waitForHttp(
       `${appUrl}/trpc/lambda/platform.getPublicSnapshot?batch=1&input=${prewarmInput}`,
       180_000,
-    ).catch(() => undefined);
+      (status) => status === 200,
+    );
+
+    return {
+      appUrl,
+      databaseUrl,
+      mode,
+      redisUrl,
+      runToken,
+      stop,
+    };
   } catch (error) {
-    terminateTree(child);
-    await stopContainer(redis);
-    await stopContainer(postgres);
+    await stop().catch((cleanupError) => {
+      throw new AggregateError(
+        [error, cleanupError],
+        'enterprise-admin runtime start failed and cleanup failed',
+      );
+    });
     throw error;
   }
-
-  return {
-    appUrl,
-    databaseUrl,
-    mode,
-    postgres,
-    redis,
-    redisUrl,
-    stop: async () => {
-      terminateTree(child);
-      await new Promise((r) => setTimeout(r, 500));
-      await stopContainer(redis);
-      await stopContainer(postgres);
-    },
-  };
 };
