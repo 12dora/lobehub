@@ -141,6 +141,93 @@ const persistenceStatus = (
   status: 'cancelled' | 'completed' | 'dead' | 'failed' | 'pending' | 'running',
 ) => (status === 'completed' ? ('succeeded' as const) : status);
 
+export interface PlatformAgentRolloutControlInput {
+  action: 'cancel' | 'retry';
+  agentId?: string;
+  expectedRevision: number;
+  expectedStatus: PlatformJobItem['status'];
+  jobId: string;
+  now?: () => Date;
+}
+
+/** Shared authoritative cancel/retry state machine for every administrative API surface. */
+export const controlPlatformAgentRolloutJob = async (
+  db: Transaction,
+  input: PlatformAgentRolloutControlInput,
+): Promise<PlatformJobItem> => {
+  const [current] = await db
+    .select()
+    .from(platformJobs)
+    .where(
+      and(
+        eq(platformJobs.id, input.jobId),
+        eq(platformJobs.type, PLATFORM_AGENT_ROLLOUT_JOB_TYPE),
+        eq(platformJobs.status, input.expectedStatus),
+        eq(platformAgentRolloutJobRevision, input.expectedRevision),
+        input.agentId
+          ? sql`${platformJobs.input}->'snapshot'->>'agentId' = ${input.agentId}`
+          : undefined,
+      ),
+    )
+    .for('update')
+    .limit(1);
+  if (!current) throw new PlatformAgentRevisionConflictError();
+  if (
+    (input.action === 'cancel' && !['pending', 'running'].includes(current.status)) ||
+    (input.action === 'retry' && !['cancelled', 'dead', 'failed'].includes(current.status))
+  ) {
+    throw new PlatformAgentRevisionConflictError();
+  }
+  const currentInput = parsePlatformAgentRolloutInput(current);
+  const nextInput = {
+    ...currentInput,
+    control: {
+      phase:
+        input.action === 'retry' && current.status === 'failed'
+          ? ('failed' as const)
+          : currentInput.control.phase,
+      revision: currentInput.control.revision + 1,
+    },
+  };
+  const now = input.now ?? (() => new Date());
+  const [updated] = await db
+    .update(platformJobs)
+    .set(
+      input.action === 'cancel'
+        ? {
+            finishedAt: now(),
+            input: nextInput,
+            leaseOwner: null,
+            leaseUntil: null,
+            status: 'cancelled',
+            updatedAt: now(),
+          }
+        : {
+            cursor: current.status === 'failed' ? null : current.cursor,
+            finishedAt: null,
+            input: nextInput,
+            lastError: null,
+            leaseOwner: null,
+            leaseUntil: null,
+            maxAttempts: Math.max(current.maxAttempts ?? 0, current.attempt + 3),
+            progressDone: current.progressDone,
+            resultSummary: current.resultSummary,
+            status: 'pending',
+            updatedAt: now(),
+          },
+    )
+    .where(
+      and(
+        eq(platformJobs.id, current.id),
+        eq(platformJobs.status, current.status),
+        eq(platformAgentRolloutJobRevision, currentInput.control.revision),
+      ),
+    )
+    .returning();
+  if (!updated) throw new PlatformAgentRevisionConflictError();
+  return updated;
+};
+
 export const projectPlatformAgentRollout = (job: PlatformJobItem) => {
   const input = parsePlatformAgentRolloutInput(job);
   const { snapshot } = input;
@@ -633,76 +720,14 @@ export class PlatformAgentRolloutService {
       action: `admin.agents.rollouts.${action}`,
       actorUserId,
       reason: input.reason,
-      run: async (tx) => {
-        const [current] = await tx
-          .select()
-          .from(platformJobs)
-          .where(
-            and(
-              eq(platformJobs.id, input.jobId),
-              eq(platformJobs.type, PLATFORM_AGENT_ROLLOUT_JOB_TYPE),
-              eq(platformJobs.status, persistenceStatus(input.expectedStatus)),
-              eq(platformAgentRolloutJobRevision, input.expectedJobRevision),
-              sql`${platformJobs.input}->'snapshot'->>'agentId' = ${input.agentId}`,
-            ),
-          )
-          .for('update')
-          .limit(1);
-        if (!current) throw new PlatformAgentRevisionConflictError();
-        if (
-          (action === 'cancel' && !['pending', 'running'].includes(current.status)) ||
-          (action === 'retry' && !['cancelled', 'dead', 'failed'].includes(current.status))
-        ) {
-          throw new PlatformAgentRevisionConflictError();
-        }
-        const currentInput = parsePlatformAgentRolloutInput(current);
-        const nextInput = {
-          ...currentInput,
-          control: {
-            phase:
-              action === 'retry' && current.status === 'failed'
-                ? ('failed' as const)
-                : currentInput.control.phase,
-            revision: currentInput.control.revision + 1,
-          },
-        };
-        const [updated] = await tx
-          .update(platformJobs)
-          .set(
-            action === 'cancel'
-              ? {
-                  finishedAt: new Date(),
-                  input: nextInput,
-                  leaseOwner: null,
-                  leaseUntil: null,
-                  status: 'cancelled',
-                  updatedAt: new Date(),
-                }
-              : {
-                  cursor: current.status === 'failed' ? null : current.cursor,
-                  finishedAt: null,
-                  input: nextInput,
-                  lastError: null,
-                  leaseOwner: null,
-                  leaseUntil: null,
-                  maxAttempts: Math.max(current.maxAttempts ?? 0, current.attempt + 3),
-                  progressDone: current.progressDone,
-                  resultSummary: current.resultSummary,
-                  status: 'pending',
-                  updatedAt: new Date(),
-                },
-          )
-          .where(
-            and(
-              eq(platformJobs.id, current.id),
-              eq(platformJobs.status, current.status),
-              eq(platformAgentRolloutJobRevision, currentInput.control.revision),
-            ),
-          )
-          .returning();
-        if (!updated) throw new PlatformAgentRevisionConflictError();
-        return updated;
-      },
+      run: (tx) =>
+        controlPlatformAgentRolloutJob(tx, {
+          action,
+          agentId: input.agentId,
+          expectedRevision: input.expectedJobRevision,
+          expectedStatus: persistenceStatus(input.expectedStatus),
+          jobId: input.jobId,
+        }),
       summarize: (updated) => ({
         jobId: updated.id,
         revision: parsePlatformAgentRolloutInput(updated).control.revision,

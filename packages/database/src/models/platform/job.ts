@@ -1,5 +1,5 @@
 import type { AnyColumn, SQL } from 'drizzle-orm';
-import { and, asc, eq, inArray, lte, notInArray, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, lt, lte, notInArray, or, sql } from 'drizzle-orm';
 
 import {
   type NewPlatformJob,
@@ -65,6 +65,40 @@ export interface PlatformJobBacklogEntry {
 export interface PlatformJobBacklogSnapshot {
   entries: PlatformJobBacklogEntry[];
   snapshotAt: Date;
+}
+
+export interface AdminPlatformJobCursor {
+  createdAt: Date;
+  id: string;
+}
+
+export interface AdminPlatformJobListParams {
+  cursor?: AdminPlatformJobCursor;
+  limit?: number;
+}
+
+export interface AdminPlatformJobListItem {
+  attempt: number;
+  createdAt: Date;
+  failedCount: number | null;
+  finishedAt: Date | null;
+  hasError: boolean;
+  id: string;
+  maxAttempts: number | null;
+  progressDone: number;
+  progressTotal: number | null;
+  revision: number | null;
+  startedAt: Date | null;
+  status: PlatformJobStatus;
+  type: string;
+  updatedAt: Date;
+}
+
+export interface AdminPlatformJobSummary {
+  active: number;
+  completed: number;
+  failed: number;
+  total: number;
 }
 
 const DEFAULT_LEASE_MS = 30_000;
@@ -209,6 +243,81 @@ export class PlatformJobModel {
         },
       ],
       snapshotAt,
+    };
+  };
+
+  /**
+   * Secret-free operational projection. Raw inputs, cursors, leases, errors, request principals,
+   * result summaries, and idempotency keys never cross this model boundary.
+   */
+  listForAdmin = async (
+    params: AdminPlatformJobListParams = {},
+  ): Promise<{ items: AdminPlatformJobListItem[]; nextCursor: AdminPlatformJobCursor | null }> => {
+    const limit = Math.min(Math.max(Math.floor(params.limit ?? 50), 1), 50);
+    const executable = notInArray(platformJobs.type, [...PLATFORM_JOB_LEDGER_TYPES]);
+    const cursor = params.cursor
+      ? or(
+          lt(platformJobs.createdAt, params.cursor.createdAt),
+          and(
+            eq(platformJobs.createdAt, params.cursor.createdAt),
+            lt(platformJobs.id, params.cursor.id),
+          ),
+        )
+      : undefined;
+    const rows = await this.db
+      .select({
+        attempt: platformJobs.attempt,
+        createdAt: platformJobs.createdAt,
+        failedCount: sql<number | null>`case
+          when ${platformJobs.resultSummary}->>'failed' ~ '^[0-9]{1,9}$'
+            then (${platformJobs.resultSummary}->>'failed')::int
+          else null
+        end`,
+        finishedAt: platformJobs.finishedAt,
+        hasError: sql<boolean>`${platformJobs.lastError} is not null`,
+        id: platformJobs.id,
+        maxAttempts: platformJobs.maxAttempts,
+        progressDone: platformJobs.progressDone,
+        progressTotal: platformJobs.progressTotal,
+        revision: sql<number | null>`case
+          when ${platformJobs.input}->'control'->>'revision' ~ '^[0-9]{1,9}$'
+            then (${platformJobs.input}->'control'->>'revision')::int
+          else null
+        end`,
+        startedAt: platformJobs.startedAt,
+        status: platformJobs.status,
+        type: platformJobs.type,
+        updatedAt: platformJobs.updatedAt,
+      })
+      .from(platformJobs)
+      .where(and(executable, cursor))
+      .orderBy(desc(platformJobs.createdAt), desc(platformJobs.id))
+      .limit(limit + 1);
+    const hasMore = rows.length > limit;
+    const items = hasMore ? rows.slice(0, limit) : rows;
+    const last = items.at(-1);
+    return {
+      items,
+      nextCursor: hasMore && last ? { createdAt: last.createdAt, id: last.id } : null,
+    };
+  };
+
+  getAdminSummary = async (): Promise<AdminPlatformJobSummary> => {
+    const executable = notInArray(platformJobs.type, [...PLATFORM_JOB_LEDGER_TYPES]);
+    const [row] = await this.db
+      .select({
+        active: sql<number>`count(*) filter (where ${platformJobs.status} in ('pending', 'reserved', 'running'))::int`,
+        completed: sql<number>`count(*) filter (where ${platformJobs.status} in ('succeeded', 'cancelled'))::int`,
+        failed: sql<number>`count(*) filter (where ${platformJobs.status} in ('failed', 'dead'))::int`,
+        total: sql<number>`count(*)::int`,
+      })
+      .from(platformJobs)
+      .where(executable);
+    return {
+      active: Number(row?.active ?? 0),
+      completed: Number(row?.completed ?? 0),
+      failed: Number(row?.failed ?? 0),
+      total: Number(row?.total ?? 0),
     };
   };
 

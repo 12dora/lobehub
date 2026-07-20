@@ -542,6 +542,12 @@ export const ADMIN_MUTATION_REGISTRY = {
     'low',
     'Validate a stored platform skill version.',
   ),
+  'admin.system.cancelJob': dangerousMutation(
+    'admin.system.cancelJob',
+    'high',
+    'Cancel an eligible active platform job with atomic compare-and-set.',
+    { reauth: recentReauth },
+  ),
   'admin.system.prepareRestart': dangerousMutation(
     'admin.system.prepareRestart',
     'critical',
@@ -553,6 +559,12 @@ export const ADMIN_MUTATION_REGISTRY = {
     'critical',
     'Request process restart to activate identity configuration.',
     { lastKnownGood: identityLkg, reauth: recentReauth },
+  ),
+  'admin.system.retryJob': dangerousMutation(
+    'admin.system.retryJob',
+    'high',
+    'Retry an eligible terminal platform job with atomic compare-and-set.',
+    { reauth: recentReauth },
   ),
   'admin.users.ban': dangerousMutation(
     'admin.users.ban',
