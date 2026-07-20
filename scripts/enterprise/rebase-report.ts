@@ -582,15 +582,30 @@ export const analyzeRebase = async ({
   /**
    * Paths that represent candidate-side direct edits of non-enterprise-owned content.
    * Renames/copies preserve source/destination semantics:
-   * - rename/copy: only the destination is scored (source is not a false "edit")
-   * - any non-enterprise-owned destination must be ledger-covered even when absent from baseTree
+   * - rename: score BOTH source and destination independently
+   *   - source existed in base and was deleted/moved; non-enterprise sources need ledger coverage
+   *   - destination must independently satisfy enterprise ownership or ledger coverage
+   * - copy: score destination only (source is unchanged; do not false-positive)
    * - ordinary edits still require presence in the base tree
    */
   const directEditPaths: string[] = [];
   for (const change of candidateChanges) {
-    if (isRenameOrCopyStatus(change.status)) {
+    if (isRenameStatus(change.status)) {
+      const sourcePath = change.sourcePath;
       const destinationPath = change.destinationPath ?? change.path;
-      if (!isEnterpriseOwnedPath(destinationPath)) directEditPaths.push(destinationPath);
+      if (sourcePath && baseTree.has(sourcePath) && !isEnterpriseOwnedPath(sourcePath)) {
+        directEditPaths.push(sourcePath);
+      }
+      if (!isEnterpriseOwnedPath(destinationPath)) {
+        directEditPaths.push(destinationPath);
+      }
+      continue;
+    }
+    if (isCopyStatus(change.status)) {
+      const destinationPath = change.destinationPath ?? change.path;
+      if (!isEnterpriseOwnedPath(destinationPath)) {
+        directEditPaths.push(destinationPath);
+      }
       continue;
     }
     if (baseTree.has(change.path) && !isEnterpriseOwnedPath(change.path)) {
