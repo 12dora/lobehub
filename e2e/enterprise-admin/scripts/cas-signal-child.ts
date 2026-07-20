@@ -3,9 +3,10 @@
  * Independent CAS restore child for real SIGINT/SIGTERM coverage.
  * Env:
  *   CAS_DATABASE_URL — postgres URL
- *   CAS_READY_FILE — written when seed committed and handlers armed
+ *   CAS_READY_FILE — written when seed fully armed (optional; post-commit tests use barrier)
  *   CAS_BEFORE_FP_FILE — written with before digest fingerprint
- *   CAS_RESULT_FILE — written after restore with after fingerprint
+ *   E2E_CAS_POST_COMMIT_BARRIER_DIR — if set, seed pauses after COMMIT before arm;
+ *     child writes post-commit marker there for parent to signal pre-ready.
  */
 import { writeFileSync } from 'node:fs';
 
@@ -26,10 +27,9 @@ import {
 const databaseUrl = process.env.CAS_DATABASE_URL;
 const readyFile = process.env.CAS_READY_FILE;
 const beforeFpFile = process.env.CAS_BEFORE_FP_FILE;
-const resultFile = process.env.CAS_RESULT_FILE;
 
-if (!databaseUrl || !readyFile || !beforeFpFile || !resultFile) {
-  console.error('missing CAS_* env');
+if (!databaseUrl || !beforeFpFile) {
+  console.error('missing CAS_DATABASE_URL or CAS_BEFORE_FP_FILE');
   process.exit(2);
 }
 
@@ -45,7 +45,10 @@ const main = async () => {
   writeFileSync(beforeFpFile, digestFingerprint(before), 'utf8');
 
   await seedEnterpriseAdminSuite(databaseUrl, durable);
-  writeFileSync(readyFile, 'ready', 'utf8');
+
+  if (readyFile) {
+    writeFileSync(readyFile, 'ready', 'utf8');
+  }
 
   // Stay alive until parent signals.
   setInterval(() => {}, 60_000);
@@ -53,11 +56,7 @@ const main = async () => {
 
 main().catch(async (error) => {
   console.error(error);
+  durable.markSettled();
   await cleanupLifecycle(state).catch(() => undefined);
   process.exit(1);
-});
-
-// On graceful path (should not reach), write result
-process.on('exit', () => {
-  // best-effort: parent also snapshots
 });
