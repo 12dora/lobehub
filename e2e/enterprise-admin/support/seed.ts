@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 
 import bcrypt from 'bcryptjs';
 import { Pool } from 'pg';
@@ -21,6 +21,19 @@ export interface SuiteSeed {
   superAdmin: SuitePrincipal;
   workspaceId: string;
   workspaceSlug: string;
+}
+
+/** Digest of global rows the suite must not permanently alter. */
+export interface GlobalDbDigest {
+  managedPolicies: Array<{
+    config: string;
+    enforcement: string;
+    resource: string;
+    revision: number;
+    status: string;
+  }>;
+  platformRolePermissions: Array<{ permissionCode: string; roleName: string }>;
+  platformRoles: Array<{ id: string; name: string }>;
 }
 
 /** Mirrors packages/const/src/platform/permissions.ts PLATFORM_PERMISSION_LIST. */
@@ -197,10 +210,66 @@ export const createSuiteNamespace = (): string =>
   `m15q04_${Date.now().toString(36)}_${nano(3)}`.replaceAll(/\W/g, '_');
 
 /**
- * Seed randomized principals + platform RBAC + one workspace_owner via official tables.
- * SQL against the migrated schema only — no production bootstrap HTTP backdoor.
+ * Snapshot global rows that bootstrap may touch. Used for CAS restore + digest equality.
  */
-export const seedEnterpriseAdminSuite = async (databaseUrl: string): Promise<SuiteSeed> => {
+export const snapshotGlobalDbDigest = async (databaseUrl: string): Promise<GlobalDbDigest> => {
+  const pool = new Pool({ connectionString: databaseUrl });
+  try {
+    const roles = await pool.query(
+      `SELECT id, name FROM rbac_roles WHERE workspace_id IS NULL AND name = ANY($1::text[]) ORDER BY name`,
+      [PLATFORM_ROLES],
+    );
+    const rolePerms = await pool.query(
+      `SELECT r.name AS role_name, p.code AS permission_code
+         FROM rbac_role_permissions rp
+         JOIN rbac_roles r ON r.id = rp.role_id
+         JOIN rbac_permissions p ON p.id = rp.permission_id
+        WHERE r.workspace_id IS NULL AND r.name = ANY($1::text[])
+        ORDER BY r.name, p.code`,
+      [PLATFORM_ROLES],
+    );
+    const policies = await pool.query(
+      `SELECT resource, status, revision, enforcement, config::text AS config
+         FROM platform_managed_resource_policies
+        WHERE resource = ANY($1::text[])
+        ORDER BY resource`,
+      [['agents', 'aiModels', 'aiProviders', 'connectors', 'skills']],
+    );
+    return {
+      managedPolicies: policies.rows.map((row) => ({
+        config: String(row.config ?? ''),
+        enforcement: String(row.enforcement ?? ''),
+        resource: String(row.resource),
+        revision: Number(row.revision),
+        status: String(row.status),
+      })),
+      platformRolePermissions: rolePerms.rows.map((row) => ({
+        permissionCode: String(row.permission_code),
+        roleName: String(row.role_name),
+      })),
+      platformRoles: roles.rows.map((row) => ({
+        id: String(row.id),
+        name: String(row.name),
+      })),
+    };
+  } finally {
+    await pool.end();
+  }
+};
+
+export const digestFingerprint = (digest: GlobalDbDigest): string =>
+  createHash('sha256').update(JSON.stringify(digest)).digest('hex');
+
+/**
+ * Seed principals + platform RBAC for an isolated disposable DB only.
+ * Does not DELETE existing role permissions when roles already match package maps;
+ * uses ON CONFLICT DO NOTHING for permissions/roles and only inserts missing role_permission links.
+ * Managed policies: insert if missing; if rows exist with different values, restore is required (snapshot).
+ */
+export const seedEnterpriseAdminSuite = async (
+  databaseUrl: string,
+): Promise<{ seed: SuiteSeed; globalBefore: GlobalDbDigest }> => {
+  const globalBefore = await snapshotGlobalDbDigest(databaseUrl);
   const namespace = createSuiteNamespace();
   const password = `E2e!${nano(8)}A1`;
   const ordinary = makePrincipal(namespace, 'ordinary', password);
@@ -244,7 +313,7 @@ export const seedEnterpriseAdminSuite = async (databaseUrl: string): Promise<Sui
       const id = found.rows[0].id as string;
       roleIds.set(roleName, id);
 
-      await pool.query(`DELETE FROM rbac_role_permissions WHERE role_id = $1`, [id]);
+      // Insert missing role-permission links only — never DELETE existing packages.
       for (const code of ROLE_PERMISSION_MAP[roleName]) {
         const perm = await pool.query(`SELECT id FROM rbac_permissions WHERE code = $1 LIMIT 1`, [
           code,
@@ -328,6 +397,7 @@ export const seedEnterpriseAdminSuite = async (databaseUrl: string): Promise<Sui
       [randomUUID(), owner.id, resolvedOwnerRoleId, workspaceId, now],
     );
 
+    // Managed policies: only INSERT when missing. Never overwrite existing published rows.
     for (const resource of ['agents', 'aiModels', 'aiProviders', 'connectors', 'skills']) {
       const managed = resource === 'skills';
       const item = { enforcementMode: managed ? 'enforced' : 'observe', managed };
@@ -336,15 +406,31 @@ export const seedEnterpriseAdminSuite = async (databaseUrl: string): Promise<Sui
         `INSERT INTO platform_managed_resource_policies
            (id, resource, status, revision, enforcement, config, created_at, updated_at)
          VALUES ($1, $2, 'published', 1, $3, $4::jsonb, $5, $5)
-         ON CONFLICT (resource) DO UPDATE SET
-           status = 'published',
-           revision = 1,
-           enforcement = EXCLUDED.enforcement,
-           config = EXCLUDED.config,
-           updated_at = EXCLUDED.updated_at`,
+         ON CONFLICT (resource) DO NOTHING`,
         [`pmrp_${resource}_${nano(4)}`, resource, managed ? 'enforced' : 'observe', config, now],
       );
     }
+
+    // Ensure skills is managed+enforced for fail-closed tests on disposable DBs
+    // where the insert above created the row. If a prior row existed with different
+    // config, snapshot/restore keeps ownership reversible.
+    await pool.query(
+      `UPDATE platform_managed_resource_policies
+          SET status = 'published',
+              revision = GREATEST(revision, 1),
+              enforcement = 'enforced',
+              config = jsonb_build_object(
+                'draft', jsonb_build_object('enforcementMode', 'enforced', 'managed', true),
+                'published', jsonb_build_object('enforcementMode', 'enforced', 'managed', true)
+              ),
+              updated_at = $1
+        WHERE resource = 'skills'
+          AND (
+            enforcement <> 'enforced'
+            OR COALESCE(config->'published'->>'managed', 'false') <> 'true'
+          )`,
+      [now],
+    );
 
     await pool.query('COMMIT');
   } catch (error) {
@@ -355,20 +441,71 @@ export const seedEnterpriseAdminSuite = async (databaseUrl: string): Promise<Sui
   }
 
   return {
-    auditor,
-    namespace,
-    ordinary,
-    owner,
-    superAdmin,
-    workspaceId,
-    workspaceSlug,
+    globalBefore,
+    seed: {
+      auditor,
+      namespace,
+      ordinary,
+      owner,
+      superAdmin,
+      workspaceId,
+      workspaceSlug,
+    },
   };
+};
+
+/**
+ * Restore global managed-policy rows from snapshot (CAS-style overwrite of the five fixed resources).
+ */
+export const restoreGlobalDbDigest = async (
+  databaseUrl: string,
+  digest: GlobalDbDigest,
+): Promise<void> => {
+  const pool = new Pool({ connectionString: databaseUrl });
+  try {
+    await pool.query('BEGIN');
+    for (const policy of digest.managedPolicies) {
+      await pool.query(
+        `UPDATE platform_managed_resource_policies
+            SET status = $2,
+                revision = $3,
+                enforcement = $4,
+                config = $5::jsonb,
+                updated_at = NOW()
+          WHERE resource = $1`,
+        [policy.resource, policy.status, policy.revision, policy.enforcement, policy.config],
+      );
+    }
+    // Role permission packages: only restore if snapshot had them (isolated DB often empty at start).
+    for (const role of digest.platformRoles) {
+      await pool.query(`DELETE FROM rbac_role_permissions WHERE role_id = $1`, [role.id]);
+      const desired = digest.platformRolePermissions.filter((r) => r.roleName === role.name);
+      for (const link of desired) {
+        const perm = await pool.query(`SELECT id FROM rbac_permissions WHERE code = $1 LIMIT 1`, [
+          link.permissionCode,
+        ]);
+        const permissionId = perm.rows[0]?.id as string | undefined;
+        if (!permissionId) continue;
+        await pool.query(
+          `INSERT INTO rbac_role_permissions (role_id, permission_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+          [role.id, permissionId],
+        );
+      }
+    }
+    await pool.query('COMMIT');
+  } catch (error) {
+    await pool.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  } finally {
+    await pool.end();
+  }
 };
 
 /** Exact cleanup of suite namespace data (users, roles, workspace, sessions). */
 export const cleanupEnterpriseAdminSuite = async (
   databaseUrl: string,
   seed: SuiteSeed | undefined,
+  globalBefore?: GlobalDbDigest,
 ): Promise<void> => {
   if (!seed) return;
   const pool = new Pool({ connectionString: databaseUrl });
@@ -387,5 +524,9 @@ export const cleanupEnterpriseAdminSuite = async (
     throw error;
   } finally {
     await pool.end();
+  }
+
+  if (globalBefore) {
+    await restoreGlobalDbDigest(databaseUrl, globalBefore);
   }
 };

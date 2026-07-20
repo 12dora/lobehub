@@ -32,13 +32,16 @@ enterprise-admin-e2e:
 
 ## Local vs CI flags
 
-| Env                                 | Meaning                                                                       |
-| ----------------------------------- | ----------------------------------------------------------------------------- |
-| `E2E_ENTERPRISE_ADMIN_EXTERNAL=1`   | Reuse existing `BASE_URL` + `DATABASE_URL` (no Docker/app bootstrap)          |
-| `E2E_ENTERPRISE_ADMIN_SKIP_BUILD=1` | Skip production build when using `next start` path and `.next` already exists |
-| `E2E_ENTERPRISE_ADMIN_MODE=dev`     | Prefer full-stack `bun run dev` (default for local)                           |
-| `E2E_ENTERPRISE_ADMIN_MODE=start`   | Production `next start` after build (closer to release)                       |
-| `CI=true`                           | Stricter timeouts; never reuse stray local ports/containers                   |
+| Env                                    | Meaning                                                                                  |
+| -------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `E2E_ENTERPRISE_ADMIN_EXTERNAL=1`      | External app mode (requires disposable-db gate)                                          |
+| `E2E_ENTERPRISE_ADMIN_DISPOSABLE_DB=1` | Explicit disposable-DB consent — required with external mode; refuses shared DB mutation |
+| `E2E_ENTERPRISE_ADMIN_SKIP_BUILD=1`    | Skip production build when using `next start` path and `.next` already exists            |
+| `E2E_ENTERPRISE_ADMIN_MODE=dev`        | Prefer full-stack `bun run dev` (default for local)                                      |
+| `E2E_ENTERPRISE_ADMIN_MODE=start`      | Production `next start` after build (closer to release)                                  |
+| `CI=true`                              | Stricter timeouts; never reuse stray local ports/containers                              |
+
+`BASE_URL` alone never selects external mode.
 
 ## Secrets / PII policy
 
