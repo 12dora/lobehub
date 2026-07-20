@@ -4,6 +4,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PlatformInstanceRepository } from '@/database/repositories/platformInstance';
 import type { LobeChatDatabase } from '@/database/type';
 
+import type { EnterpriseObservabilityEvent } from '../../observability';
+import {
+  NOOP_ENTERPRISE_STRUCTURED_LOGGER,
+  setEnterprisePlatformObserverForTest,
+  setEnterpriseStructuredLoggerForTest,
+} from '../../observability';
 import {
   ensurePlatformInstanceHeartbeatStarted,
   getPlatformInstanceId,
@@ -31,8 +37,19 @@ const repository = () => ({
   }),
 });
 
-beforeEach(resetPlatformInstanceHeartbeatForTest);
-afterEach(resetPlatformInstanceHeartbeatForTest);
+let observations: EnterpriseObservabilityEvent[];
+
+beforeEach(() => {
+  resetPlatformInstanceHeartbeatForTest();
+  observations = [];
+  setEnterprisePlatformObserverForTest({ record: (event) => observations.push(event) });
+  setEnterpriseStructuredLoggerForTest(NOOP_ENTERPRISE_STRUCTURED_LOGGER);
+});
+afterEach(() => {
+  resetPlatformInstanceHeartbeatForTest();
+  setEnterprisePlatformObserverForTest(null);
+  setEnterpriseStructuredLoggerForTest(null);
+});
 
 describe('platform instance heartbeat runtime', () => {
   it('accepts only persistent production Node with a database and any enterprise flag', () => {
@@ -108,6 +125,14 @@ describe('platform instance heartbeat runtime', () => {
     expect(schedule).toHaveBeenCalledTimes(1);
     expect(schedule).toHaveBeenCalledWith(expect.any(Function), 30_000);
     expect(unref).toHaveBeenCalledTimes(1);
+    expect(observations).toContainEqual(
+      expect.objectContaining({
+        operation: 'register',
+        outcome: 'success',
+        type: 'instance_heartbeat',
+      }),
+    );
+    expect(JSON.stringify(observations)).not.toContain('pinst_');
   });
 
   it('changes identity after a simulated process restart', () => {
@@ -140,6 +165,14 @@ describe('platform instance heartbeat runtime', () => {
     expect(JSON.stringify(logFailure.mock.calls)).not.toContain('contains-sensitive-detail');
     expect(JSON.stringify(logFailure.mock.calls)).not.toContain('pinst_');
     expect(schedule).not.toHaveBeenCalled();
+    expect(observations).toContainEqual(
+      expect.objectContaining({
+        errorClass: 'UnexpectedError',
+        operation: 'register',
+        outcome: 'failure',
+        type: 'instance_heartbeat',
+      }),
+    );
   });
 
   it('serializes timer ticks and reduces heartbeat failures to error class', async () => {
@@ -170,5 +203,44 @@ describe('platform instance heartbeat runtime', () => {
     rejectHeartbeat?.(new RangeError('raw-heartbeat-detail'));
     await vi.waitFor(() => expect(logFailure).toHaveBeenCalledWith({ errorClass: 'RangeError' }));
     expect(JSON.stringify(logFailure.mock.calls)).not.toContain('raw-heartbeat-detail');
+    expect(observations).toContainEqual(
+      expect.objectContaining({
+        errorClass: 'UnexpectedError',
+        operation: 'tick',
+        outcome: 'failure',
+        type: 'instance_heartbeat',
+      }),
+    );
+    expect(JSON.stringify(observations)).not.toContain('pinst_');
+    expect(JSON.stringify(observations)).not.toContain('raw-heartbeat-detail');
+  });
+
+  it('records successful generic heartbeat ticks with duration but no instance id', async () => {
+    const target = repository();
+    let tick: (() => void) | undefined;
+    let now = 10;
+    await ensurePlatformInstanceHeartbeatStarted({
+      createRepository: () => target,
+      env: productionEnv(),
+      getDatabase: async () => ({}) as LobeChatDatabase,
+      now: () => now,
+      schedule: (callback) => {
+        tick = callback;
+        return { unref: vi.fn() };
+      },
+    });
+
+    now = 20;
+    tick?.();
+    now = 27;
+    await vi.waitFor(() =>
+      expect(observations).toContainEqual({
+        durationMs: 7,
+        operation: 'tick',
+        outcome: 'success',
+        type: 'instance_heartbeat',
+      }),
+    );
+    expect(JSON.stringify(observations)).not.toContain('pinst_');
   });
 });

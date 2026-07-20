@@ -130,6 +130,7 @@ describe.skipIf(!testRedisUrl)('DomainConfigCache real Redis convergence', () =>
       getScopeEpoch: () => versionReader.getScopeVersion(TEST_SCOPE),
       load: loadFromDatabase,
       namespace: 'o01b-real-redis',
+      observabilityDomain: 'branding',
     });
     const publish = (revision: number) =>
       publisher.publish({

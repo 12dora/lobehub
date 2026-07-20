@@ -1,6 +1,12 @@
 // @vitest-environment node
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { EnterpriseObservabilityEvent } from '../observability';
+import {
+  NOOP_ENTERPRISE_STRUCTURED_LOGGER,
+  setEnterprisePlatformObserverForTest,
+  setEnterpriseStructuredLoggerForTest,
+} from '../observability';
 import { DomainConfigCache, resetDomainConfigCachesForTest } from './domainCache';
 
 const deferred = <T>() => {
@@ -33,10 +39,16 @@ const createCache = (options: {
     load: options.load,
     namespace: 'test-domain',
     now: options.now,
+    observabilityDomain: 'branding',
   });
 
 beforeEach(() => {
   resetDomainConfigCachesForTest();
+});
+
+afterEach(() => {
+  setEnterprisePlatformObserverForTest(null);
+  setEnterpriseStructuredLoggerForTest(null);
 });
 
 describe('DomainConfigCache', () => {
@@ -71,6 +83,7 @@ describe('DomainConfigCache', () => {
       getScopeEpoch: async () => '1',
       load: async () => ({ revision: 2 }),
       namespace: 'other-domain',
+      observabilityDomain: 'skill_catalog',
     });
 
     await expect(first.get()).resolves.toEqual({ revision: 1 });
@@ -199,5 +212,77 @@ describe('DomainConfigCache', () => {
       { revision: 2 },
     ]);
     await expect(cache.get()).resolves.toEqual({ revision: 2 });
+  });
+
+  it('classifies every cache request, load, and epoch outcome without cache identifiers', async () => {
+    const events: EnterpriseObservabilityEvent[] = [];
+    setEnterprisePlatformObserverForTest({ record: (event) => events.push(event) });
+    setEnterpriseStructuredLoggerForTest(NOOP_ENTERPRISE_STRUCTURED_LOGGER);
+    let epoch = '1';
+    let now = 0;
+    const firstLoad = deferred<MutableValue | null>();
+    const load = vi
+      .fn<() => Promise<MutableValue | null>>()
+      .mockReturnValueOnce(firstLoad.promise)
+      .mockResolvedValueOnce(null)
+      .mockRejectedValueOnce(new Error('database detail'));
+    const cache = createCache({ epoch: async () => epoch, load, now: () => now, ttl: 10 });
+
+    const first = cache.get();
+    await vi.waitFor(() => expect(load).toHaveBeenCalledOnce());
+    const coalesced = cache.get();
+    await vi.waitFor(() =>
+      expect(events).toContainEqual({
+        domain: 'branding',
+        operation: 'request',
+        outcome: 'coalesced',
+        type: 'cache',
+      }),
+    );
+    firstLoad.resolve({ revision: 1 });
+    await expect(Promise.all([first, coalesced])).resolves.toEqual([
+      { revision: 1 },
+      { revision: 1 },
+    ]);
+    await expect(cache.get()).resolves.toEqual({ revision: 1 });
+    epoch = '2';
+    await expect(cache.get()).resolves.toBeNull();
+    await expect(cache.get()).resolves.toBeNull();
+    epoch = '3';
+    now = 10;
+    await expect(cache.get()).rejects.toThrow('database detail');
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const failedEpochCache = createCache({
+      cacheKey: {},
+      epoch: async () => {
+        throw new Error('redis detail');
+      },
+      load: async () => ({ revision: 4 }),
+    });
+    await failedEpochCache.get();
+    consoleError.mockRestore();
+
+    const cacheEvents = events.filter(({ type }) => type === 'cache');
+    expect(cacheEvents).toEqual(
+      expect.arrayContaining([
+        { domain: 'branding', operation: 'request', outcome: 'coalesced', type: 'cache' },
+        { domain: 'branding', operation: 'request', outcome: 'hit', type: 'cache' },
+        { domain: 'branding', operation: 'request', outcome: 'negative', type: 'cache' },
+        { domain: 'branding', operation: 'load', outcome: 'loaded', type: 'cache' },
+        { domain: 'branding', operation: 'load', outcome: 'loaded_negative', type: 'cache' },
+        {
+          domain: 'branding',
+          errorClass: 'UnexpectedError',
+          operation: 'load',
+          outcome: 'load_failure',
+          type: 'cache',
+        },
+        { domain: 'branding', operation: 'epoch', outcome: 'success', type: 'cache' },
+        { domain: 'branding', operation: 'epoch', outcome: 'changed', type: 'cache' },
+        { domain: 'branding', operation: 'epoch', outcome: 'failure', type: 'cache' },
+      ]),
+    );
+    expect(JSON.stringify(cacheEvents)).not.toContain('test-domain');
+    expect(JSON.stringify(cacheEvents)).not.toContain('database detail');
   });
 });

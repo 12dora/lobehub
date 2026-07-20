@@ -10,6 +10,12 @@ import {
 } from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
 
+import type { EnterpriseObservabilityEvent } from '../../observability';
+import {
+  NOOP_ENTERPRISE_STRUCTURED_LOGGER,
+  setEnterprisePlatformObserverForTest,
+  setEnterpriseStructuredLoggerForTest,
+} from '../../observability';
 import {
   InMemoryPlatformConfigInvalidationPublisher,
   PlatformPublisherService,
@@ -21,8 +27,12 @@ const invalidation = new InMemoryPlatformConfigInvalidationPublisher();
 const publisher = new PlatformPublisherService(serverDB, invalidation);
 
 let brandingId: string;
+let observations: EnterpriseObservabilityEvent[];
 
 beforeEach(async () => {
+  observations = [];
+  setEnterprisePlatformObserverForTest({ record: (event) => observations.push(event) });
+  setEnterpriseStructuredLoggerForTest(NOOP_ENTERPRISE_STRUCTURED_LOGGER);
   invalidation.events.length = 0;
   invalidation.versions.clear();
   await serverDB.delete(platformAuditLogs);
@@ -37,6 +47,8 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  setEnterprisePlatformObserverForTest(null);
+  setEnterpriseStructuredLoggerForTest(null);
   await serverDB.delete(platformAuditLogs);
   await serverDB.delete(platformResourceRevisions);
   await serverDB.delete(platformBranding);
@@ -65,6 +77,14 @@ describe('PlatformPublisherService', () => {
       scopes: ['branding'],
     });
     expect(invalidation.versions.get(`branding:${brandingId}`)).toBe(1);
+    expect(observations).toContainEqual(
+      expect.objectContaining({
+        domain: 'branding',
+        operation: 'publish',
+        outcome: 'success',
+        type: 'config_publish',
+      }),
+    );
 
     const snapshot = await publisher.getPublishedSnapshot('branding', brandingId);
     expect(snapshot?.payload).toMatchObject({ displayName: 'AIHub Corp' });
@@ -91,6 +111,15 @@ describe('PlatformPublisherService', () => {
     ).rejects.toBeInstanceOf(PlatformRevisionConflictError);
 
     expect(invalidation.events).toHaveLength(0);
+    expect(observations).toContainEqual(
+      expect.objectContaining({
+        domain: 'branding',
+        errorClass: 'ConflictError',
+        operation: 'publish',
+        outcome: 'conflict',
+        type: 'config_publish',
+      }),
+    );
   });
 
   it('returns committed success when best-effort invalidation delivery fails', async () => {
@@ -153,5 +182,112 @@ describe('PlatformPublisherService', () => {
     expect(rolled.revision.payload).toMatchObject({ displayName: 'v1' });
     expect(invalidation.events).toHaveLength(1);
     expect(invalidation.events[0].revision).toBe(3);
+    expect(observations).toContainEqual(
+      expect.objectContaining({
+        domain: 'branding',
+        operation: 'rollback',
+        outcome: 'success',
+        type: 'config_publish',
+      }),
+    );
+  });
+
+  it('classifies non-conflict publish failures without exposing resource ids', async () => {
+    const rawResourceId = 'raw-branding-resource-id';
+    await expect(
+      publisher.publish({
+        expectedRevision: 0,
+        payload: { displayName: 'failure' },
+        pointer: {
+          lockAndGetRevision: async () => {
+            throw new TypeError('raw database detail');
+          },
+          updatePointer: async () => {},
+        },
+        resourceId: rawResourceId,
+        resourceType: 'branding',
+      }),
+    ).rejects.toThrow('raw database detail');
+
+    const event = observations.find(
+      ({ type, outcome }) => type === 'config_publish' && outcome === 'failure',
+    );
+    expect(event).toMatchObject({
+      domain: 'branding',
+      errorClass: 'UnexpectedError',
+      operation: 'publish',
+      type: 'config_publish',
+    });
+    expect(JSON.stringify(event)).not.toContain(rawResourceId);
+    expect(JSON.stringify(event)).not.toContain('database detail');
+  });
+
+  it('keeps a committed publish successful when the observability sink fails', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    setEnterprisePlatformObserverForTest({
+      record: () => {
+        throw new Error('raw sink detail');
+      },
+    });
+
+    await expect(
+      publisher.publish({
+        expectedRevision: 0,
+        payload: { displayName: 'observed' },
+        pointer: createBrandingPointerAdapter(brandingId),
+        resourceId: brandingId,
+        resourceType: 'branding',
+      }),
+    ).resolves.toMatchObject({ revision: { revision: 1 } });
+    expect(await serverDB.select().from(platformResourceRevisions)).toHaveLength(1);
+    expect(JSON.stringify(consoleError.mock.calls)).not.toContain('raw sink detail');
+    expect(JSON.stringify(consoleError.mock.calls)).not.toContain(brandingId);
+    consoleError.mockRestore();
+  });
+
+  it('classifies rollback conflicts and failures while preserving the original errors', async () => {
+    const pointer = createBrandingPointerAdapter(brandingId);
+    await publisher.publish({
+      expectedRevision: 0,
+      payload: { displayName: 'v1' },
+      pointer,
+      resourceId: brandingId,
+      resourceType: 'branding',
+    });
+    observations.length = 0;
+
+    await expect(
+      publisher.rollback({
+        expectedRevision: 0,
+        pointer,
+        resourceId: brandingId,
+        resourceType: 'branding',
+        targetRevision: 1,
+      }),
+    ).rejects.toBeInstanceOf(PlatformRevisionConflictError);
+    const rawFailure = new TypeError('raw rollback database detail');
+    await expect(
+      publisher.rollback({
+        expectedRevision: 1,
+        pointer: {
+          lockAndGetRevision: async () => {
+            throw rawFailure;
+          },
+          updatePointer: async () => {},
+        },
+        resourceId: brandingId,
+        resourceType: 'branding',
+        targetRevision: 1,
+      }),
+    ).rejects.toBe(rawFailure);
+
+    expect(observations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ operation: 'rollback', outcome: 'conflict' }),
+        expect.objectContaining({ operation: 'rollback', outcome: 'failure' }),
+      ]),
+    );
+    expect(JSON.stringify(observations)).not.toContain(brandingId);
+    expect(JSON.stringify(observations)).not.toContain('database detail');
   });
 });
