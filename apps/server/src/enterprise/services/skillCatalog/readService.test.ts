@@ -1,13 +1,10 @@
 // @vitest-environment node
-import { sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DEFAULT_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
 import { getTestDB } from '@/database/core/getTestDB';
-import {
-  PlatformSkillCatalogModel,
-  platformSkillVersionChecksum,
-} from '@/database/models/platform';
+import { checksumPayload, platformSkillVersionChecksum } from '@/database/models/platform';
 import { PlatformSkillCatalogRepository } from '@/database/repositories/platformSkillCatalog';
 import {
   platformResourceRevisions,
@@ -17,6 +14,8 @@ import {
 import type { LobeChatDatabase } from '@/database/type';
 
 import type { SkillManifest } from '../../contracts/skillCatalog';
+import { loadCurrentSkillCatalogSnapshot } from '../platformInstance/catalogAuthority';
+import { PlatformCatalogTokenInvariantError } from '../platformInstance/catalogTokens';
 import { PlatformDomainTargetResolver } from '../platformInstance/domainTargets';
 import type { PlatformRuntimeMaterializationReporter } from '../platformInstance/runtimeReporter';
 import {
@@ -103,20 +102,21 @@ const publish = async (params: {
     version: params.version,
   });
   const revision = params.revision ?? 1;
-  await db.insert(platformResourceRevisions).values({
-    checksum: `revision-${revision}`,
-    payload: {
-      skill: {
-        allowBuiltinOverride: params.allowBuiltinOverride ?? false,
-        description: 'Immutable published description',
-        displayName: 'Immutable published name',
-        distribution: 'default',
-        enabled: true,
-        skillKey: params.skillKey,
-        source: 'uploaded',
-      },
-      versionId: version.id,
+  const payload = {
+    skill: {
+      allowBuiltinOverride: params.allowBuiltinOverride ?? false,
+      description: 'Immutable published description',
+      displayName: 'Immutable published name',
+      distribution: 'default',
+      enabled: true,
+      skillKey: params.skillKey,
+      source: 'uploaded',
     },
+    versionId: version.id,
+  } as const;
+  await db.insert(platformResourceRevisions).values({
+    checksum: checksumPayload(payload),
+    payload,
     resourceId: skill.id,
     resourceType: 'skill',
     revision,
@@ -152,10 +152,22 @@ describe('SkillCatalogReadService', () => {
   });
 
   it('keeps an exact historical version resolvable after the current head is archived', async () => {
-    const { skill } = await publish({ skillKey: 'historical', version: '1.0.0' });
+    const { skill, version } = await publish({ skillKey: 'historical', version: '1.0.0' });
+    const archivedPayload = {
+      skill: {
+        allowBuiltinOverride: false,
+        description: 'Immutable published description',
+        displayName: 'Immutable published name',
+        distribution: 'default',
+        enabled: true,
+        skillKey: 'historical',
+        source: 'uploaded',
+      },
+      versionId: version.id,
+    } as const;
     await db.insert(platformResourceRevisions).values({
-      checksum: 'archived-head',
-      payload: {},
+      checksum: checksumPayload(archivedPayload),
+      payload: archivedPayload,
       resourceId: skill.id,
       resourceType: 'skill',
       revision: 2,
@@ -237,7 +249,7 @@ describe('SkillCatalogReadService', () => {
     expect(afterOverride.revision).not.toBe(beforeOverride.revision);
   });
 
-  it('reads every bounded repository page and preserves global codepoint ordering', async () => {
+  it('loads the complete strict authority set and preserves global codepoint ordering', async () => {
     for (let index = 100; index >= 0; index -= 1) {
       await publish({ skillKey: `paged-${String(index).padStart(3, '0')}`, version: '1.0.0' });
     }
@@ -289,49 +301,32 @@ describe('SkillCatalogReadService', () => {
     ).toThrow();
   });
 
-  it('fails closed on unique-cursor pagination and aggregate item growth attacks', async () => {
-    let page = 0;
-    const uniqueCursorModel = {
-      listPublished: async () => ({
-        builtinOverrideTombstones: [],
-        items: [],
-        nextCursor: `unique-${page++}`,
-      }),
-      resolvePublishedVersion: async () => undefined,
-    };
+  it('rejects aggregate item growth only after the strict authority load completes', async () => {
+    const loadCurrentSnapshot = vi.fn(async () => ({
+      builtinOverrideTombstones: [],
+      items: Array.from({ length: 10_001 }, () => ({}) as never),
+      tokenEntries: [],
+    }));
     await expect(
-      new SkillCatalogReadService(db, { model: uniqueCursorModel }).getPublishedCatalog(),
-    ).rejects.toThrow('page limit');
-    expect(page).toBe(100);
-
-    const oversizedModel = {
-      listPublished: async () => ({
-        builtinOverrideTombstones: [],
-        items: Array.from({ length: 10_001 }, () => ({}) as never),
-        nextCursor: null,
-      }),
-      resolvePublishedVersion: async () => undefined,
-    };
-    await expect(
-      new SkillCatalogReadService(db, { model: oversizedModel }).getPublishedCatalog(),
+      new SkillCatalogReadService(db, { loadCurrentSnapshot }).getPublishedCatalog(),
     ).rejects.toThrow('item limit');
+    expect(loadCurrentSnapshot).toHaveBeenCalledOnce();
   });
 
   it('reuses the revision projection until explicit publication invalidation', async () => {
     await publish({ skillKey: 'cached.skill', version: '1.0.0' });
-    const model = new PlatformSkillCatalogModel(db);
-    const listPublished = vi.spyOn(model, 'listPublished');
+    const loadCurrentSnapshot = vi.fn(() => loadCurrentSkillCatalogSnapshot(db));
 
-    const first = new SkillCatalogReadService(db, { model });
-    const second = new SkillCatalogReadService(db, { model });
+    const first = new SkillCatalogReadService(db, { loadCurrentSnapshot });
+    const second = new SkillCatalogReadService(db, { loadCurrentSnapshot });
     const firstCatalog = await first.getPublishedCatalog();
     const secondCatalog = await second.getPublishedCatalog();
     expect(secondCatalog).toEqual(firstCatalog);
-    expect(listPublished).toHaveBeenCalledTimes(1);
+    expect(loadCurrentSnapshot).toHaveBeenCalledTimes(1);
 
     invalidatePublishedSkillCatalogReadCache();
-    await new SkillCatalogReadService(db, { model }).getPublishedCatalog();
-    expect(listPublished).toHaveBeenCalledTimes(2);
+    await new SkillCatalogReadService(db, { loadCurrentSnapshot }).getPublishedCatalog();
+    expect(loadCurrentSnapshot).toHaveBeenCalledTimes(2);
   });
 
   it('reports only a new execution-ready runtime projection with the exact target token', async () => {
@@ -359,6 +354,187 @@ describe('SkillCatalogReadService', () => {
       'runtime.skill',
     );
   });
+
+  it('follows a normal current-pointer rollback and keeps target/runtime tokens exact', async () => {
+    const v1 = await publish({ contentRef: null, skillKey: 'rollback.skill', version: '1.0.0' });
+    await publish({
+      contentRef: null,
+      revision: 2,
+      skillId: v1.skill.id,
+      skillKey: 'rollback.skill',
+      version: '2.0.0',
+    });
+    await new PlatformSkillCatalogRepository(db).updateSkill(v1.skill.id, {
+      currentVersionId: v1.version.id,
+      revision: 1,
+      status: 'published',
+    });
+    const reportRuntimeState = vi.fn<PlatformRuntimeMaterializationReporter>();
+    const service = new SkillCatalogReadService(db, {
+      runtimeReporting: { database: db, reporter: reportRuntimeState },
+    });
+
+    const catalog = await service.getPublishedCatalog();
+    const target = await new PlatformDomainTargetResolver(db, {
+      env: { ENABLE_PLATFORM_MANAGED_SKILLS: '1' },
+      loadBuiltinSkillTokenEntries: () => [],
+    }).resolve('skill_catalog');
+    expect(catalog.skills).toEqual([
+      expect.objectContaining({ skillKey: 'rollback.skill', version: '1.0.0' }),
+    ]);
+    expect(catalog.revision).toBe(target.token?.value);
+    expect(reportRuntimeState.mock.calls[0]?.[1]).toMatchObject({
+      revisionId: target.token?.value,
+    });
+  });
+
+  it('includes a valid builtin tombstone in the same current-pointer token', async () => {
+    const builtin: BuiltinSkillDefinition = {
+      checksum: 'b'.repeat(64),
+      content: '# builtin',
+      description: 'Builtin',
+      displayName: 'Builtin',
+      distribution: 'default',
+      manifest,
+      skillKey: 'builtin.tombstone',
+      source: 'builtin',
+      version: '1.0.0',
+    };
+    const { skill, version } = await publish({
+      allowBuiltinOverride: true,
+      contentRef: null,
+      skillKey: builtin.skillKey,
+      version: '2.0.0',
+    });
+    const tombstonePayload = {
+      builtinOverrideTombstone: true,
+      skill: {
+        allowBuiltinOverride: true,
+        description: 'Archived override',
+        displayName: 'Archived override',
+        distribution: 'default',
+        enabled: true,
+        skillKey: builtin.skillKey,
+        source: 'uploaded',
+      },
+      versionId: version.id,
+    } as const;
+    await db.insert(platformResourceRevisions).values({
+      checksum: checksumPayload(tombstonePayload),
+      payload: tombstonePayload,
+      resourceId: skill.id,
+      resourceType: 'skill',
+      revision: 2,
+      status: 'archived',
+    });
+    await new PlatformSkillCatalogRepository(db).updateSkill(skill.id, {
+      currentVersionId: version.id,
+      revision: 2,
+      status: 'archived',
+    });
+    const reportRuntimeState = vi.fn<PlatformRuntimeMaterializationReporter>();
+    const catalog = await new SkillCatalogReadService(db, {
+      builtinSkills: [builtin],
+      runtimeReporting: { database: db, reporter: reportRuntimeState },
+    }).getPublishedCatalog();
+    const target = await new PlatformDomainTargetResolver(db, {
+      env: { ENABLE_PLATFORM_MANAGED_SKILLS: '1' },
+      loadBuiltinSkillTokenEntries: () => [builtin],
+    }).resolve('skill_catalog');
+
+    expect(catalog.skills).toEqual([]);
+    expect(catalog.revision).toBe(target.token?.value);
+    expect((await loadCurrentSkillCatalogSnapshot(db)).tokenEntries).toEqual([
+      expect.objectContaining({ skillKey: builtin.skillKey, tombstone: true }),
+    ]);
+    expect(reportRuntimeState.mock.calls[0]?.[1]).toMatchObject({
+      revisionId: target.token?.value,
+    });
+  });
+
+  it('fails a missing current revision as one catalog and recovers exactly after repair', async () => {
+    const { skill } = await publish({
+      contentRef: null,
+      skillKey: 'broken-revision.skill',
+      version: '1.0.0',
+    });
+    const [savedRevision] = await db
+      .select()
+      .from(platformResourceRevisions)
+      .where(eq(platformResourceRevisions.resourceId, skill.id));
+    await db
+      .delete(platformResourceRevisions)
+      .where(eq(platformResourceRevisions.resourceId, skill.id));
+    const reportRuntimeState = vi.fn<PlatformRuntimeMaterializationReporter>();
+    const service = new SkillCatalogReadService(db, {
+      runtimeReporting: { database: db, reporter: reportRuntimeState },
+    });
+
+    await expect(service.getPublishedCatalog()).rejects.toBeInstanceOf(
+      PlatformCatalogTokenInvariantError,
+    );
+    await expect(
+      new PlatformDomainTargetResolver(db, {
+        env: { ENABLE_PLATFORM_MANAGED_SKILLS: '1' },
+        loadBuiltinSkillTokenEntries: () => [],
+      }).resolve('skill_catalog'),
+    ).resolves.toMatchObject({ errorCategory: 'configuration_invalid', status: 'unavailable' });
+    expect(reportRuntimeState.mock.calls.map(([, state]) => state.health)).toEqual(['unavailable']);
+
+    await db.insert(platformResourceRevisions).values(savedRevision!);
+    const repairedTarget = await new PlatformDomainTargetResolver(db, {
+      env: { ENABLE_PLATFORM_MANAGED_SKILLS: '1' },
+      loadBuiltinSkillTokenEntries: () => [],
+    }).resolve('skill_catalog');
+    await service.getPublishedCatalog();
+    expect(reportRuntimeState.mock.calls.map(([, state]) => state.health)).toEqual([
+      'unavailable',
+      'healthy',
+    ]);
+    expect(reportRuntimeState.mock.calls[1]?.[1]).toMatchObject({
+      revisionId: repairedTarget.token?.value,
+    });
+  });
+
+  it.each(['mismatch', 'missing'] as const)(
+    'fails closed when the current version pointer is %s',
+    async (mode) => {
+      const v1 = await publish({
+        contentRef: null,
+        skillKey: `broken-version-${mode}.skill`,
+        version: '1.0.0',
+      });
+      if (mode === 'mismatch') {
+        const v2 = await new PlatformSkillCatalogRepository(db).createVersion({
+          checksum: v1.version.checksum,
+          content: v1.version.content,
+          contentRef: v1.version.contentRef,
+          manifest,
+          resources: v1.version.resources,
+          skillId: v1.skill.id,
+          version: '2.0.0',
+        });
+        await new PlatformSkillCatalogRepository(db).updateSkill(v1.skill.id, {
+          currentVersionId: v2.id,
+        });
+      } else {
+        await new PlatformSkillCatalogRepository(db).updateSkill(v1.skill.id, {
+          currentVersionId: null,
+          status: 'draft',
+        });
+      }
+
+      await expect(new SkillCatalogReadService(db).getPublishedCatalog()).rejects.toBeInstanceOf(
+        PlatformCatalogTokenInvariantError,
+      );
+      await expect(
+        new PlatformDomainTargetResolver(db, {
+          env: { ENABLE_PLATFORM_MANAGED_SKILLS: '1' },
+          loadBuiltinSkillTokenEntries: () => [],
+        }).resolve('skill_catalog'),
+      ).resolves.toMatchObject({ errorCategory: 'configuration_invalid', status: 'unavailable' });
+    },
+  );
 
   it('reports a changed active token after publication invalidation', async () => {
     const { skill } = await publish({
@@ -391,29 +567,28 @@ describe('SkillCatalogReadService', () => {
 
   it('coalesces a runtime cold load and ignores an old-epoch late failure', async () => {
     await publish({ contentRef: null, skillKey: 'singleflight.skill', version: '1.0.0' });
-    const page = await new PlatformSkillCatalogModel(db).listPublished();
-    const oldRead = deferred<typeof page>();
-    const newRead = deferred<typeof page>();
-    const listPublished = vi
-      .fn<() => Promise<typeof page>>()
+    const snapshot = await loadCurrentSkillCatalogSnapshot(db);
+    const oldRead = deferred<typeof snapshot>();
+    const newRead = deferred<typeof snapshot>();
+    const loadCurrentSnapshot = vi
+      .fn<() => Promise<typeof snapshot>>()
       .mockReturnValueOnce(oldRead.promise)
       .mockReturnValueOnce(newRead.promise);
-    const model = { listPublished, resolvePublishedVersion: vi.fn(async () => undefined) };
     let epoch = 'old';
     const reportRuntimeState = vi.fn<PlatformRuntimeMaterializationReporter>();
     const service = new SkillCatalogReadService(db, {
       getCacheEpoch: async () => epoch,
-      model,
+      loadCurrentSnapshot,
       runtimeReporting: { database: db, reporter: reportRuntimeState },
     });
 
     const oldRequest = service.getPublishedCatalog();
     const coalesced = service.getPublishedCatalog();
-    await vi.waitFor(() => expect(listPublished).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(loadCurrentSnapshot).toHaveBeenCalledOnce());
     epoch = 'new';
     const currentRequest = service.getPublishedCatalog();
-    await vi.waitFor(() => expect(listPublished).toHaveBeenCalledTimes(2));
-    newRead.resolve(page);
+    await vi.waitFor(() => expect(loadCurrentSnapshot).toHaveBeenCalledTimes(2));
+    newRead.resolve(snapshot);
     await expect(currentRequest).resolves.toMatchObject({
       skills: [expect.objectContaining({ skillKey: 'singleflight.skill' })],
     });
@@ -430,22 +605,22 @@ describe('SkillCatalogReadService', () => {
     await expect(service.getPublishedCatalog()).resolves.toMatchObject({
       skills: [expect.objectContaining({ skillKey: 'singleflight.skill' })],
     });
-    expect(listPublished).toHaveBeenCalledTimes(2);
+    expect(loadCurrentSnapshot).toHaveBeenCalledTimes(2);
   });
 
   it('reports a current load failure then rebuilds the same active token', async () => {
     await publish({ contentRef: null, skillKey: 'recovery.skill', version: '1.0.0' });
-    const page = await new PlatformSkillCatalogModel(db).listPublished();
+    const snapshot = await loadCurrentSkillCatalogSnapshot(db);
     const original = Object.assign(new Error('raw Skill database detail'), {
       code: 'ECONNREFUSED',
     });
-    const listPublished = vi
-      .fn<() => Promise<typeof page>>()
+    const loadCurrentSnapshot = vi
+      .fn<() => Promise<typeof snapshot>>()
       .mockRejectedValueOnce(original)
-      .mockResolvedValueOnce(page);
+      .mockResolvedValueOnce(snapshot);
     const reportRuntimeState = vi.fn<PlatformRuntimeMaterializationReporter>();
     const service = new SkillCatalogReadService(db, {
-      model: { listPublished, resolvePublishedVersion: vi.fn(async () => undefined) },
+      loadCurrentSnapshot,
       runtimeReporting: { database: db, reporter: reportRuntimeState },
     });
 
@@ -517,13 +692,12 @@ describe('SkillCatalogReadService', () => {
 
   it('invalidates a warm projection on another instance through the shared epoch', async () => {
     const { skill } = await publish({ skillKey: 'cross-instance.skill', version: '1.0.0' });
-    const model = new PlatformSkillCatalogModel(db);
-    const listPublished = vi.spyOn(model, 'listPublished');
+    const loadCurrentSnapshot = vi.fn(() => loadCurrentSkillCatalogSnapshot(db));
     let epoch = '1';
     const options = {
       cacheTtlMs: 60_000,
       getCacheEpoch: async () => epoch,
-      model,
+      loadCurrentSnapshot,
     };
     const firstInstance = new SkillCatalogReadService(db, options);
     await expect(firstInstance.getPublishedCatalog()).resolves.toMatchObject({
@@ -542,46 +716,42 @@ describe('SkillCatalogReadService', () => {
     await expect(secondInstance.getPublishedCatalog()).resolves.toMatchObject({
       skills: [expect.objectContaining({ version: '2.0.0' })],
     });
-    expect(listPublished).toHaveBeenCalledTimes(2);
+    expect(loadCurrentSnapshot).toHaveBeenCalledTimes(2);
   });
 
   it('bounds a warm projection when the epoch reader is unavailable', async () => {
     await publish({ skillKey: 'ttl.skill', version: '1.0.0' });
-    const model = new PlatformSkillCatalogModel(db);
-    const listPublished = vi.spyOn(model, 'listPublished');
+    const loadCurrentSnapshot = vi.fn(() => loadCurrentSkillCatalogSnapshot(db));
     let now = 1_000;
     const options = {
       cacheTtlMs: 100,
       getCacheEpoch: async () => {
         throw new Error('redis unavailable');
       },
-      model,
+      loadCurrentSnapshot,
       now: () => now,
     };
     await new SkillCatalogReadService(db, options).getPublishedCatalog();
     await new SkillCatalogReadService(db, options).getPublishedCatalog();
-    expect(listPublished).toHaveBeenCalledTimes(1);
+    expect(loadCurrentSnapshot).toHaveBeenCalledTimes(1);
 
     now += 101;
     await new SkillCatalogReadService(db, options).getPublishedCatalog();
-    expect(listPublished).toHaveBeenCalledTimes(2);
+    expect(loadCurrentSnapshot).toHaveBeenCalledTimes(2);
   });
 
   it('rejects a final catalog over 10,000 after builtin merging', async () => {
     await publish({ skillKey: 'seed.skill', version: '1.0.0' });
-    const page = await new PlatformSkillCatalogModel(db).listPublished({ limit: 1 });
-    const seed = page.items[0]!;
-    const model = {
-      listPublished: vi.fn(async () => ({
-        builtinOverrideTombstones: [],
-        items: Array.from({ length: 10_000 }, (_, index) => ({
-          ...seed,
-          skillKey: `uploaded-${String(index).padStart(5, '0')}`,
-        })),
-        nextCursor: null,
+    const snapshot = await loadCurrentSkillCatalogSnapshot(db);
+    const seed = snapshot.items[0]!;
+    const loadCurrentSnapshot = vi.fn(async () => ({
+      builtinOverrideTombstones: [],
+      items: Array.from({ length: 10_000 }, (_, index) => ({
+        ...seed,
+        skillKey: `uploaded-${String(index).padStart(5, '0')}`,
       })),
-      resolvePublishedVersion: vi.fn(async () => undefined),
-    };
+      tokenEntries: snapshot.tokenEntries,
+    }));
     const builtin: BuiltinSkillDefinition = {
       checksum: 'b'.repeat(64),
       content: '# builtin',
@@ -595,7 +765,10 @@ describe('SkillCatalogReadService', () => {
     };
 
     await expect(
-      new SkillCatalogReadService(db, { builtinSkills: [builtin], model }).getPublishedCatalog(),
+      new SkillCatalogReadService(db, {
+        builtinSkills: [builtin],
+        loadCurrentSnapshot,
+      }).getPublishedCatalog(),
     ).rejects.toThrow('after builtin merge');
   });
 

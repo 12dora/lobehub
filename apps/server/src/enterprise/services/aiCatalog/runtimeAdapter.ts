@@ -18,8 +18,8 @@ import type { LobeChatDatabase } from '@/database/type';
 
 import { parseEnterpriseFeatureFlags } from '../../featureFlags';
 import { type PlatformSecretService, secretNotReadable } from '../../security/secret';
-import type { AiCatalogTokenEntry } from '../platformInstance/catalogTokens';
-import { buildAiCatalogRevisionToken } from '../platformInstance/catalogTokens';
+import type { CurrentAiCatalogSnapshot } from '../platformInstance/catalogAuthority';
+import { loadCurrentAiCatalogSnapshot } from '../platformInstance/catalogAuthority';
 import type { PlatformRuntimeMaterializationReporter } from '../platformInstance/runtimeReporter';
 import {
   classifyRuntimeMaterializationError,
@@ -143,24 +143,21 @@ export const clearAiCatalogRuntimeCache = (): void => {
   runtimeCache.clear();
 };
 
-interface AiCatalogRuntimeRepository {
-  listLatestPublishedProviderRevisions: () => Promise<PlatformResourceRevisionItem[]>;
-}
-
 export interface AiCatalogRuntimeAdapterOptions {
+  loadCurrentSnapshot?: () => Promise<CurrentAiCatalogSnapshot>;
   reportRuntimeState?: PlatformRuntimeMaterializationReporter;
-  repository?: AiCatalogRuntimeRepository;
 }
 
 export class AiCatalogRuntimeAdapter {
+  private readonly loadCurrentSnapshot: () => Promise<CurrentAiCatalogSnapshot>;
   private readonly reportRuntimeState: PlatformRuntimeMaterializationReporter;
-  private readonly repository: AiCatalogRuntimeRepository;
 
   constructor(
     private readonly db: LobeChatDatabase,
     options: AiCatalogRuntimeAdapterOptions = {},
   ) {
-    this.repository = options.repository ?? new PlatformAiCatalogRepository(db);
+    this.loadCurrentSnapshot =
+      options.loadCurrentSnapshot ?? (() => loadCurrentAiCatalogSnapshot(this.db));
     this.reportRuntimeState = options.reportRuntimeState ?? reportPlatformRuntimeMaterialization;
   }
 
@@ -188,19 +185,7 @@ export class AiCatalogRuntimeAdapter {
 
   private loadRuntimeState = async (generation: number): Promise<AiProviderRuntimeState> => {
     try {
-      const revisions = await this.repository.listLatestPublishedProviderRevisions();
-      const tokenEntries: AiCatalogTokenEntry[] = revisions.map((revision) => ({
-        checksum: revision.checksum,
-        providerId: revision.resourceId,
-        providerKey:
-          isRecord(revision.payload.provider) &&
-          typeof revision.payload.provider.providerKey === 'string'
-            ? revision.payload.provider.providerKey
-            : '',
-        revision: revision.revision,
-        secretFingerprint: revision.secretFingerprint ?? null,
-      }));
-      const token = buildAiCatalogRevisionToken(tokenEntries);
+      const { revisions, token } = await this.loadCurrentSnapshot();
       const cacheKey = token.value;
       const cached = runtimeCache.get(cacheKey);
       if (cached) return cached;
@@ -393,7 +378,7 @@ export class AiCatalogExecutionResolver {
     providerKey: string,
   ): Promise<AiCatalogProviderExecutionConfig> {
     const repository = new PlatformAiCatalogRepository(this.db);
-    const revisions = await repository.listLatestPublishedProviderRevisions();
+    const { revisions } = await loadCurrentAiCatalogSnapshot(this.db);
     const revision = revisions.find(
       (item) =>
         isRecord(item.payload.provider) && item.payload.provider.providerKey === providerKey,
