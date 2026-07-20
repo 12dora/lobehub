@@ -15,9 +15,9 @@ import { startEnterpriseAdminRuntime, type SuiteRuntime } from '../support/infra
 import {
   cleanupEnterpriseAdminSuite,
   digestFingerprint,
-  type GlobalDbDigest,
   seedEnterpriseAdminSuite,
   snapshotGlobalDbDigest,
+  type SuiteGlobalWriteManifest,
   type SuiteSeed,
 } from '../support/seed';
 import { ADMIN_COPY, VIEWPORTS } from '../support/selectors';
@@ -27,7 +27,7 @@ import {
   type SkillOutageHandle,
 } from '../support/skillOutage';
 import {
-  ADMIN_SYSTEM_STATUS_ALLOWED_KEYS,
+  assertExactAccessNotGranted,
   assertExactManagedResourceDenied,
   assertExactPermissionDenied,
   assertSafeProjection,
@@ -38,7 +38,8 @@ import {
 
 let runtime: SuiteRuntime | undefined;
 let seed: SuiteSeed | undefined;
-let globalBefore: GlobalDbDigest | undefined;
+let writeManifest: SuiteGlobalWriteManifest | undefined;
+let uninstallSeedSignals: (() => void) | undefined;
 
 const reportLines: string[] = [];
 const log = (line: string) => {
@@ -70,7 +71,10 @@ test.beforeAll(async () => {
   runtime = await startEnterpriseAdminRuntime();
   const seeded = await seedEnterpriseAdminSuite(runtime.databaseUrl);
   seed = seeded.seed;
-  globalBefore = seeded.globalBefore;
+  writeManifest = seeded.manifest;
+  // Restore on process interrupt (external disposable + isolated safety).
+  const { installManifestRestoreOnSignals } = await import('../support/seed');
+  uninstallSeedSignals = installManifestRestoreOnSignals(runtime.databaseUrl, seed, writeManifest);
   log(
     `[enterprise-admin-e2e] namespace=${seed.namespace} app=${runtime.appUrl} mode=${runtime.mode} run=${runtime.runToken}`,
   );
@@ -79,15 +83,13 @@ test.beforeAll(async () => {
 test.afterAll(async () => {
   const failures: unknown[] = [];
   try {
+    uninstallSeedSignals?.();
+    uninstallSeedSignals = undefined;
     if (runtime && seed) {
-      await cleanupEnterpriseAdminSuite(runtime.databaseUrl, seed, globalBefore);
-      if (globalBefore) {
+      await cleanupEnterpriseAdminSuite(runtime.databaseUrl, seed, writeManifest);
+      if (writeManifest && runtime.mode === 'external') {
         const after = await snapshotGlobalDbDigest(runtime.databaseUrl);
-        // Namespaced user cleanup must not leave divergent global packages when we own restore.
-        // Isolated containers are destroyed next; external disposable must match snapshot.
-        if (runtime.mode === 'external') {
-          expect(digestFingerprint(after)).toBe(digestFingerprint(globalBefore));
-        }
+        expect(digestFingerprint(after)).toBe(digestFingerprint(writeManifest.before));
       }
     }
   } catch (error) {
@@ -148,7 +150,8 @@ test('ordinary user and workspace owner are denied /admin and admin APIs', async
 
       const system = await trpcQuery(context.request, 'admin.system.getStatus');
       expect(system.ok).toBe(false);
-      assertExactPermissionDenied(system);
+      // Ordinary/owner hit the access gate, not operate-permission denial.
+      assertExactAccessNotGranted(system);
 
       const page = await context.newPage();
       await page.goto('/admin');
@@ -186,7 +189,7 @@ test('super admin opens Admin Shell / System with safe projections', async ({ br
     const status = await trpcQuery(context.request, 'admin.system.getStatus');
     expect(status.ok, `getStatus failed: ${status.text.slice(0, 240)}`).toBe(true);
     const statusData = extractBatchData(status.json);
-    assertSafeProjection(statusData, { allowedKeys: ADMIN_SYSTEM_STATUS_ALLOWED_KEYS });
+    assertSafeProjection(statusData);
     const flags = (statusData as { featureFlags?: { platformAdmin?: boolean } }).featureFlags;
     expect(flags?.platformAdmin).toBe(true);
 
@@ -204,7 +207,6 @@ test('super admin opens Admin Shell / System with safe projections', async ({ br
       heading: ADMIN_COPY.systemTitle,
       requiredTexts: [ADMIN_COPY.systemTitle],
     });
-    // Dependency grid present on stable System page
     await expect(page.getByRole('heading', { name: 'Dependencies' })).toBeVisible();
     log('super admin shell + system ok');
   } finally {
@@ -237,20 +239,18 @@ test('auditor is read-only: dangerous job ops absent and operate API denied', as
 
     const readStatus = await trpcQuery(context.request, 'admin.system.getStatus');
     expect(readStatus.ok, `auditor read status: ${readStatus.text.slice(0, 200)}`).toBe(true);
-    assertSafeProjection(extractBatchData(readStatus.json), {
-      allowedKeys: ADMIN_SYSTEM_STATUS_ALLOWED_KEYS,
-    });
+    assertSafeProjection(extractBatchData(readStatus.json));
 
     const retry = await trpcMutation(context.request, 'admin.system.retryJob', {
       expectedStatus: 'failed',
-      jobId: '00000000-0000-0000-0000-000000000001',
+      jobId: 'pjob_0000000000000001',
       reason: 'auditor must not retry',
     });
     assertExactPermissionDenied(retry);
 
     const cancel = await trpcMutation(context.request, 'admin.system.cancelJob', {
       expectedStatus: 'running',
-      jobId: '00000000-0000-0000-0000-000000000002',
+      jobId: 'pjob_0000000000000002',
       reason: 'auditor must not cancel',
     });
     assertExactPermissionDenied(cancel);
@@ -263,7 +263,6 @@ test('auditor is read-only: dangerous job ops absent and operate API denied', as
     });
     await expect(page.getByRole('button', { name: /^Retry$/i })).toHaveCount(0);
     await expect(page.getByRole('button', { name: /^Cancel$/i })).toHaveCount(0);
-    // Stable jobs table / panel present
     await expect(page.getByRole('heading', { name: 'Recent jobs' })).toBeVisible();
     log('auditor read-only ok');
   } finally {
@@ -275,18 +274,23 @@ test('skill catalog outage fails closed for legacy skill mutations', async ({ br
   const { runtime: rt, seed: s } = requireRuntime();
   let outage: SkillOutageHandle | undefined;
   const context = await browser.newContext({ baseURL: rt.appUrl });
+  const blockedIdentifier = `blocked-skill-${s.namespace}`;
   try {
     await signInContext(context, s.superAdmin, rt.appUrl);
     await expectSignedIn(context.request);
 
-    const beforeArtifacts = await countUserSkillArtifacts(rt.databaseUrl, s.superAdmin.id);
+    const beforeArtifacts = await countUserSkillArtifacts(
+      rt.databaseUrl,
+      s.superAdmin.id,
+      blockedIdentifier,
+    );
+    expect(beforeArtifacts.matchingIdentifiers).toEqual([]);
 
     outage = await induceSkillCatalogOutage({
       databaseUrl: rt.databaseUrl,
       redisUrl: rt.redisUrl,
     });
 
-    // Poll readiness until the broken skill pointer is observed (1s cache TTL + epoch bump).
     let readiness: Record<string, boolean> | undefined;
     for (let attempt = 0; attempt < 30; attempt++) {
       const readinessProbe = await trpcQuery(context.request, 'admin.managedResources.get');
@@ -303,14 +307,19 @@ test('skill catalog outage fails closed for legacy skill mutations', async ({ br
     const create = await trpcMutation(context.request, 'agentSkills.create', {
       content: '# Skill\n\nBlocked by skill catalog outage fail-closed.',
       description: 'Must not install while skill catalog is out',
-      identifier: `blocked-skill-${s.namespace}`,
+      identifier: blockedIdentifier,
       name: 'Blocked Skill Outage',
     });
     assertExactManagedResourceDenied(create);
 
-    const afterArtifacts = await countUserSkillArtifacts(rt.databaseUrl, s.superAdmin.id);
-    expect(afterArtifacts.agentSkills).toBe(beforeArtifacts.agentSkills);
-    expect(afterArtifacts.documents).toBe(beforeArtifacts.documents);
+    const afterArtifacts = await countUserSkillArtifacts(
+      rt.databaseUrl,
+      s.superAdmin.id,
+      blockedIdentifier,
+    );
+    expect(afterArtifacts.agentSkillIds).toEqual(beforeArtifacts.agentSkillIds);
+    expect(afterArtifacts.documentIds).toEqual(beforeArtifacts.documentIds);
+    expect(afterArtifacts.matchingIdentifiers).toEqual([]);
 
     await outage.restore();
     outage = undefined;
@@ -394,19 +403,30 @@ test('managed resources confirmation: reason required and cancel does not publis
     const afterRevision = parseManagedRevision(after.json);
     expect(afterRevision).toBe(beforeRevision);
 
-    // Leave-without-saving does not auto-clear localStorage recovery draft; clear the
-    // product key so re-entry reflects server state (dirty must not reappear).
-    await page.evaluate(() => {
-      window.localStorage.removeItem('aihub.admin.managedResources.draft');
-    });
+    // Product contract: leave-without-saving retains recovery draft in localStorage.
+    // Never mutate/remove the product key — re-enter and assert real recovery behavior.
     await page.goto('/admin/managed-resources');
-    await captureEvidence(page, 'managed-resources-confirmation', {
+    await assertStableAdminSurface(page, {
       heading: 'Managed resources',
       requiredTexts: ['Change reason'],
     });
-    await expect(page.getByText('Unsaved changes', { exact: true })).toHaveCount(0);
-    await expect(page.getByText('No unsaved changes', { exact: true })).toBeVisible();
-    log('confirmation: reason-required + stay + leave + revision unchanged');
+    // Recovery draft rehydrates dirty state (product intentional crash-recovery contract).
+    await expect(page.getByText('Unsaved changes', { exact: true })).toBeVisible({
+      timeout: 30_000,
+    });
+    const recoveryKeyPresent = await page.evaluate(() =>
+      Boolean(window.localStorage.getItem('aihub.admin.managedResources.draft')),
+    );
+    expect(recoveryKeyPresent).toBe(true);
+
+    await captureEvidence(page, 'managed-resources-confirmation', {
+      heading: 'Managed resources',
+      requiredTexts: ['Unsaved changes', 'Change reason'],
+    });
+    // Server revision still unchanged (no publish).
+    const final = await trpcQuery(context.request, 'admin.managedResources.get');
+    expect(parseManagedRevision(final.json)).toBe(beforeRevision);
+    log('confirmation: reason-required + stay + leave + revision unchanged + recovery retained');
   } finally {
     await context.close();
   }

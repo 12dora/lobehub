@@ -1,8 +1,12 @@
 import type { APIRequestContext } from '@playwright/test';
+import { z } from 'zod';
 
 /**
  * tRPC lambda HTTP helpers (batch=1 query shape used by the product client).
  * Cookie jar is owned by the Playwright request/context — never logged.
+ *
+ * Safe projection validation mirrors apps/server adminSystemGetStatusOutputSchema
+ * (hierarchical .strict()), with SuperJSON wire dates accepted as ISO string | Date.
  */
 const emptyInput = encodeURIComponent(JSON.stringify({ 0: { json: null } }));
 
@@ -70,217 +74,301 @@ export const extractBatchData = (json: unknown): unknown => {
   return data;
 };
 
-export const extractTrpcErrorMessage = (json: unknown): string | undefined => {
-  if (!Array.isArray(json) || json.length === 0) return undefined;
+/** Wire date: SuperJSON may leave ISO strings on HTTP JSON without client rehydrate. */
+const wireDate = z.union([
+  z.date(),
+  z.string().refine((value) => !Number.isNaN(Date.parse(value)), 'invalid date string'),
+]);
+
+const dependencyHealth = z
+  .object({
+    errorCategory: z
+      .enum(['configuration_incomplete', 'operation_unavailable', 'passive_check_only', 'timeout'])
+      .nullable(),
+    status: z.enum(['degraded', 'disabled', 'healthy', 'unavailable', 'unknown']),
+  })
+  .strict();
+
+const revisionToken = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('revision'), value: z.number().int().nonnegative() }).strict(),
+  z.object({ kind: z.literal('immutable_id'), value: z.string().regex(/^[a-f0-9]{64}$/) }).strict(),
+]);
+
+/** Mirrors platformDomainConvergenceSchema (apps/server contracts) — hierarchical .strict(). */
+const domainConvergence = z
+  .object({
+    counts: z
+      .object({
+        degraded: z.number().int().nonnegative(),
+        diverged: z.number().int().nonnegative(),
+        fresh: z.number().int().nonnegative(),
+        matching: z.number().int().nonnegative(),
+        stale: z.number().int().nonnegative(),
+        unreported: z.number().int().nonnegative(),
+      })
+      .strict(),
+    domain: z.enum([
+      'agent_catalog',
+      'ai_catalog',
+      'branding',
+      'connector_catalog',
+      'identity',
+      'managed_policy',
+      'settings',
+      'skill_catalog',
+    ]),
+    errorCategory: z
+      .enum([
+        'cache_unavailable',
+        'configuration_invalid',
+        'database_unavailable',
+        'instance_status_unavailable',
+        'lkg_invalid',
+        'lkg_unavailable',
+        'load_failed',
+        'secret_unavailable',
+        'startup_unavailable',
+      ])
+      .nullable(),
+    fallbackPolicy: z.enum(['none', 'builtin', 'lkg_then_break_glass']),
+    loadMode: z.enum(['process_cached', 'request_scoped', 'restart_activated']),
+    status: z.enum([
+      'disabled',
+      'not_applicable',
+      'converged',
+      'diverged',
+      'degraded',
+      'unreported',
+      'unavailable',
+    ]),
+    targetToken: revisionToken.nullable(),
+  })
+  .strict();
+
+/**
+ * Hierarchical DTO equivalent of adminSystemGetStatusOutputSchema (.strict() at every object).
+ * Derived from apps/server/src/enterprise/contracts/adminSystem.ts — rejects wrong-path keys
+ * and nested credential/token/url fields that the flat allowlist used to accept.
+ */
+export const adminSystemStatusWireSchema = z
+  .object({
+    build: z
+      .object({
+        gitSha: z
+          .string()
+          .regex(/^[a-f0-9]{7,40}$/)
+          .nullable(),
+        version: z.string().trim().min(1).max(64),
+      })
+      .strict(),
+    dependencies: z
+      .object({
+        database: dependencyHealth,
+        keyManagement: dependencyHealth,
+        mail: dependencyHealth,
+        objectStorage: dependencyHealth,
+        redis: dependencyHealth,
+      })
+      .strict(),
+    domains: z.array(domainConvergence).max(8),
+    featureFlags: z
+      .object({
+        databaseOidc: z.boolean(),
+        managedAgents: z.boolean(),
+        managedAi: z.boolean(),
+        managedConnectors: z.boolean(),
+        managedSkills: z.boolean(),
+        platformAdmin: z.boolean(),
+        runtimeBranding: z.boolean(),
+        settingsPolicy: z.boolean(),
+      })
+      .strict(),
+    instanceStatus: dependencyHealth,
+    jobs: z
+      .object({
+        active: z.number().int().nonnegative(),
+        completed: z.number().int().nonnegative(),
+        errorCategory: z.enum(['operation_unavailable']).nullable(),
+        failed: z.number().int().nonnegative(),
+        status: z.enum(['healthy', 'unavailable']),
+        total: z.number().int().nonnegative(),
+      })
+      .strict(),
+    oidc: z
+      .object({
+        activeRevision: z
+          .string()
+          .regex(/^[a-f0-9]{64}$/)
+          .nullable(),
+        configured: z.boolean(),
+        pendingRestart: z.boolean(),
+        source: z.enum(['break_glass', 'database', 'disabled', 'environment', 'lkg', 'unknown']),
+        status: z.enum(['degraded', 'disabled', 'healthy', 'unavailable', 'unknown']),
+      })
+      .strict(),
+    recentPublishFailures: z
+      .object({
+        count: z.number().int().nonnegative(),
+        errorCategory: z.enum(['operation_unavailable']).nullable(),
+        items: z
+          .array(
+            z
+              .object({
+                category: z.enum([
+                  'conflict',
+                  'dependency_unavailable',
+                  'operation_unavailable',
+                  'unknown',
+                  'validation',
+                ]),
+                domain: z.enum([
+                  'agent_catalog',
+                  'ai_catalog',
+                  'branding',
+                  'connector_catalog',
+                  'identity',
+                  'managed_policy',
+                  'settings',
+                  'skill_catalog',
+                ]),
+                occurredAt: wireDate,
+              })
+              .strict(),
+          )
+          .max(10),
+        status: z.enum(['healthy', 'unavailable']),
+      })
+      .strict(),
+    snapshotAt: wireDate,
+  })
+  .strict();
+
+export const assertSafeProjection = (value: unknown): void => {
+  const parsed = adminSystemStatusWireSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new Error(
+      `admin.system.getStatus failed strict DTO validation: ${parsed.error.issues
+        .slice(0, 6)
+        .map((i) => `${i.path.join('.')}: ${i.message}`)
+        .join('; ')}`,
+    );
+  }
+};
+
+/** @deprecated flat allowlist removed — use assertSafeProjection hierarchical DTO */
+export const ADMIN_SYSTEM_STATUS_ALLOWED_KEYS = new Set<string>();
+
+export interface TrpcErrorParts {
+  enterpriseCode?: string;
+  message?: string;
+  trpcCode?: string;
+}
+
+/**
+ * Parse tRPC batch error envelope including SuperJSON-shaped cause data (errorData).
+ */
+export const extractTrpcErrorParts = (json: unknown): TrpcErrorParts => {
+  if (!Array.isArray(json) || json.length === 0) return {};
   const first = json[0] as {
-    error?: { json?: { message?: string; data?: { code?: string; message?: string } } };
+    error?: {
+      json?: {
+        code?: number | string;
+        data?: {
+          code?: string;
+          errorData?: { code?: string; message?: string };
+          httpStatus?: number;
+          message?: string;
+        };
+        message?: string;
+      };
+    };
   };
   const err = first.error?.json;
-  if (!err) return undefined;
-  if (typeof err.message === 'string') return err.message;
-  if (typeof err.data?.message === 'string') return err.data.message;
-  if (typeof err.data?.code === 'string') return err.data.code;
-  return undefined;
+  if (!err) return {};
+  const trpcCode =
+    typeof err.data?.code === 'string'
+      ? err.data.code
+      : typeof err.code === 'string'
+        ? err.code
+        : undefined;
+  const enterpriseCode =
+    (typeof err.data?.errorData?.code === 'string' && err.data.errorData.code) ||
+    (typeof err.data?.errorData?.message === 'string' && err.data.errorData.message) ||
+    undefined;
+  const message = typeof err.message === 'string' ? err.message : undefined;
+  return { enterpriseCode, message, trpcCode };
 };
 
-export const extractTrpcHttpErrorCode = (json: unknown): string | undefined => {
-  if (!Array.isArray(json) || json.length === 0) return undefined;
-  const first = json[0] as {
-    error?: { json?: { data?: { code?: string }; code?: number } };
-  };
-  const dataCode = first.error?.json?.data?.code;
-  if (typeof dataCode === 'string') return dataCode;
-  return undefined;
+export const extractTrpcErrorMessage = (json: unknown): string | undefined => {
+  const parts = extractTrpcErrorParts(json);
+  return parts.message ?? parts.enterpriseCode;
 };
 
-/** Exact denial: HTTP 403 and enterprise/permission code (not arbitrary uppercase codes). */
+export const extractTrpcHttpErrorCode = (json: unknown): string | undefined =>
+  extractTrpcErrorParts(json).trpcCode;
+
+/**
+ * Exact permission denial:
+ * HTTP 403 + tRPC code FORBIDDEN + enterprise code/message PLATFORM_PERMISSION_DENIED.
+ * Does NOT accept bare FORBIDDEN or unrelated enterprise codes.
+ */
 export const assertExactPermissionDenied = (result: TrpcResult): void => {
   if (result.status !== 403) {
     throw new Error(`expected HTTP 403, got ${result.status}: ${result.text.slice(0, 300)}`);
   }
-  const message = extractTrpcErrorMessage(result.json) ?? result.text;
-  const httpCode = extractTrpcHttpErrorCode(result.json);
-  const ok =
-    message.includes('PLATFORM_PERMISSION_DENIED') ||
-    message.includes('FORBIDDEN') ||
-    httpCode === 'FORBIDDEN';
-  if (!ok) {
+  const parts = extractTrpcErrorParts(result.json);
+  if (parts.trpcCode !== 'FORBIDDEN') {
     throw new Error(
-      `expected PLATFORM_PERMISSION_DENIED/FORBIDDEN, got message=${message} code=${httpCode}`,
+      `expected tRPC code FORBIDDEN, got ${parts.trpcCode ?? '<missing>'}: ${result.text.slice(0, 300)}`,
     );
   }
-};
-
-export const assertExactManagedResourceDenied = (result: TrpcResult): void => {
-  if (result.status !== 403) {
-    throw new Error(`expected HTTP 403, got ${result.status}: ${result.text.slice(0, 300)}`);
-  }
-  const message = extractTrpcErrorMessage(result.json) ?? result.text;
-  if (
-    !message.includes('RESOURCE_MANAGED_BY_PLATFORM') &&
-    !result.text.includes('RESOURCE_MANAGED_BY_PLATFORM')
-  ) {
-    throw new Error(`expected RESOURCE_MANAGED_BY_PLATFORM, got: ${result.text.slice(0, 400)}`);
+  const enterprise = parts.enterpriseCode ?? parts.message;
+  if (enterprise !== 'PLATFORM_PERMISSION_DENIED') {
+    throw new Error(
+      `expected enterprise code PLATFORM_PERMISSION_DENIED exactly, got ${enterprise ?? '<missing>'}: ${result.text.slice(0, 300)}`,
+    );
   }
 };
 
 /**
- * Recursively allowlist object keys and value types for safe status projections.
- * Unknown keys or secret-like string patterns fail.
+ * Access gate denial (ordinary / no platform role): PLATFORM_ACCESS_NOT_GRANTED.
  */
-export const assertSafeProjection = (
-  value: unknown,
-  options: {
-    allowedKeys: ReadonlySet<string>;
-    path?: string;
-  },
-): void => {
-  const path = options.path ?? '$';
-  const forbiddenSubstrings = [
-    'postgres:postgres',
-    'secret-',
-    'VAULT_TOKEN',
-    'Bearer ',
-    'sk-',
-    'password=',
-    'ACCESS_KEY',
-    'PRIVATE_KEY',
-  ];
-
-  if (value === null || value === undefined) return;
-  if (typeof value === 'boolean' || typeof value === 'number') return;
-  if (typeof value === 'string') {
-    for (const bad of forbiddenSubstrings) {
-      if (value.includes(bad)) {
-        throw new Error(`safe projection leak at ${path}: forbidden substring`);
-      }
-    }
-    return;
+export const assertExactAccessNotGranted = (result: TrpcResult): void => {
+  if (result.status !== 403) {
+    throw new Error(`expected HTTP 403, got ${result.status}: ${result.text.slice(0, 300)}`);
   }
-  if (value instanceof Date) return;
-  if (Array.isArray(value)) {
-    value.forEach((item, index) =>
-      assertSafeProjection(item, { allowedKeys: options.allowedKeys, path: `${path}[${index}]` }),
+  const parts = extractTrpcErrorParts(result.json);
+  if (parts.trpcCode !== 'FORBIDDEN') {
+    throw new Error(
+      `expected tRPC code FORBIDDEN, got ${parts.trpcCode ?? '<missing>'}: ${result.text.slice(0, 300)}`,
     );
-    return;
   }
-  if (typeof value === 'object') {
-    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-      if (!options.allowedKeys.has(key)) {
-        throw new Error(`safe projection unknown key at ${path}.${key}`);
-      }
-      assertSafeProjection(child, {
-        allowedKeys: options.allowedKeys,
-        path: `${path}.${key}`,
-      });
-    }
-    return;
+  const enterprise = parts.enterpriseCode ?? parts.message;
+  if (enterprise !== 'PLATFORM_ACCESS_NOT_GRANTED') {
+    throw new Error(
+      `expected enterprise code PLATFORM_ACCESS_NOT_GRANTED exactly, got ${enterprise ?? '<missing>'}`,
+    );
   }
-  throw new Error(`safe projection invalid type at ${path}: ${typeof value}`);
 };
 
-/** Keys permitted in admin.system.getStatus safe projection (contract-aligned, recursive). */
-export const ADMIN_SYSTEM_STATUS_ALLOWED_KEYS = new Set([
-  'build',
-  'gitSha',
-  'version',
-  'dependencies',
-  'database',
-  'keyManagement',
-  'mail',
-  'objectStorage',
-  'redis',
-  'errorCategory',
-  'status',
-  'domains',
-  'domain',
-  'featureFlags',
-  'databaseOidc',
-  'managedAgents',
-  'managedAi',
-  'managedConnectors',
-  'managedSkills',
-  'platformAdmin',
-  'runtimeBranding',
-  'settingsPolicy',
-  'instanceStatus',
-  'jobs',
-  'active',
-  'completed',
-  'failed',
-  'total',
-  'oidc',
-  'activeRevision',
-  'configured',
-  'pendingRestart',
-  'source',
-  'recentPublishFailures',
-  'count',
-  'counts',
-  'items',
-  'category',
-  'occurredAt',
-  'snapshotAt',
-  'loadedAt',
-  'loadedToken',
-  'loadMode',
-  'lastErrorCategory',
-  'revision',
-  'token',
-  'health',
-  'convergence',
-  'publishedRevision',
-  'runtimeRevision',
-  'lag',
-  'instances',
-  'healthy',
-  'degraded',
-  'unavailable',
-  'unknown',
-  'draft',
-  'archived',
-  'published',
-  'targetRevisionId',
-  'loadedRevisionId',
-  'generation',
-  'message',
-  'detail',
-  'reason',
-  'mode',
-  'observedAt',
-  'updatedAt',
-  'createdAt',
-  'startedAt',
-  'finishedAt',
-  'name',
-  'id',
-  'kind',
-  'type',
-  'value',
-  'label',
-  'ok',
-  'ready',
-  'enabled',
-  'disabled',
-  'pending',
-  'running',
-  'success',
-  'failure',
-  'error',
-  'warning',
-  'info',
-  'degraded',
-  'diverged',
-  'fresh',
-  'matching',
-  'stale',
-  'unreported',
-  'fallbackPolicy',
-  'targetToken',
-  'available',
-  'unavailable',
-  'unknown',
-  'break_glass',
-  'environment',
-  'lkg',
-]);
+/**
+ * Managed-resource denial: HTTP 403 + FORBIDDEN + RESOURCE_MANAGED_BY_PLATFORM exactly.
+ */
+export const assertExactManagedResourceDenied = (result: TrpcResult): void => {
+  if (result.status !== 403) {
+    throw new Error(`expected HTTP 403, got ${result.status}: ${result.text.slice(0, 300)}`);
+  }
+  const parts = extractTrpcErrorParts(result.json);
+  if (parts.trpcCode !== 'FORBIDDEN') {
+    throw new Error(
+      `expected tRPC code FORBIDDEN, got ${parts.trpcCode ?? '<missing>'}: ${result.text.slice(0, 300)}`,
+    );
+  }
+  const enterprise = parts.enterpriseCode ?? parts.message;
+  if (enterprise !== 'RESOURCE_MANAGED_BY_PLATFORM') {
+    // Some envelopes put the code only in message with extra text — require exact match.
+    throw new Error(
+      `expected enterprise code RESOURCE_MANAGED_BY_PLATFORM exactly, got ${enterprise ?? '<missing>'}: ${result.text.slice(0, 400)}`,
+    );
+  }
+};
