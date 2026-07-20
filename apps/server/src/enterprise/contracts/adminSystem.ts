@@ -50,6 +50,26 @@ const adminSystemDependencyHealthSchema = z
   })
   .strict();
 
+const validateAvailability = (
+  value: { errorCategory: 'operation_unavailable' | null; status: 'healthy' | 'unavailable' },
+  context: z.RefinementCtx,
+): void => {
+  if (value.status === 'healthy' && value.errorCategory) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'healthy data cannot contain an error category',
+      path: ['errorCategory'],
+    });
+  }
+  if (value.status === 'unavailable' && !value.errorCategory) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'unavailable data requires an error category',
+      path: ['errorCategory'],
+    });
+  }
+};
+
 const adminSystemJobStatusSchema = z.enum([
   'cancelled',
   'dead',
@@ -131,10 +151,13 @@ export const adminSystemGetStatusOutputSchema = z
       .object({
         active: z.number().int().nonnegative(),
         completed: z.number().int().nonnegative(),
+        errorCategory: z.enum(['operation_unavailable']).nullable(),
         failed: z.number().int().nonnegative(),
+        status: z.enum(['healthy', 'unavailable']),
         total: z.number().int().nonnegative(),
       })
-      .strict(),
+      .strict()
+      .superRefine(validateAvailability),
     oidc: z
       .object({
         activeRevision: identityRevisionSchema.nullable(),
@@ -147,6 +170,7 @@ export const adminSystemGetStatusOutputSchema = z
     recentPublishFailures: z
       .object({
         count: z.number().int().nonnegative(),
+        errorCategory: z.enum(['operation_unavailable']).nullable(),
         items: z
           .array(
             z
@@ -164,8 +188,10 @@ export const adminSystemGetStatusOutputSchema = z
               .strict(),
           )
           .max(10),
+        status: z.enum(['healthy', 'unavailable']),
       })
-      .strict(),
+      .strict()
+      .superRefine(validateAvailability),
     snapshotAt: z.date(),
   })
   .strict();
