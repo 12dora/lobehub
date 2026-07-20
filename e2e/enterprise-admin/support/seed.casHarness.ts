@@ -24,8 +24,8 @@ export const createCasMinimalSchema = async (databaseUrl: string): Promise<void>
         category text,
         description text,
         is_active boolean,
-        created_at timestamptz,
-        updated_at timestamptz
+        created_at timestamptz NOT NULL DEFAULT NOW(),
+        updated_at timestamptz NOT NULL DEFAULT NOW()
       );
       CREATE TABLE IF NOT EXISTS rbac_roles (
         id text PRIMARY KEY,
@@ -34,17 +34,18 @@ export const createCasMinimalSchema = async (databaseUrl: string): Promise<void>
         description text,
         is_system boolean,
         is_active boolean,
+        metadata jsonb DEFAULT '{}'::jsonb,
         workspace_id text,
-        created_at timestamptz,
-        updated_at timestamptz
+        created_at timestamptz NOT NULL DEFAULT NOW(),
+        updated_at timestamptz NOT NULL DEFAULT NOW()
       );
       CREATE UNIQUE INDEX IF NOT EXISTS rbac_roles_platform_name_uidx
         ON rbac_roles (name) WHERE workspace_id IS NULL;
       CREATE UNIQUE INDEX IF NOT EXISTS rbac_roles_ws_name_uidx
         ON rbac_roles (workspace_id, name) WHERE workspace_id IS NOT NULL;
       CREATE TABLE IF NOT EXISTS rbac_role_permissions (
-        role_id text NOT NULL,
-        permission_id text NOT NULL,
+        role_id text NOT NULL REFERENCES rbac_roles(id) ON DELETE CASCADE,
+        permission_id text NOT NULL REFERENCES rbac_permissions(id) ON DELETE CASCADE,
         PRIMARY KEY (role_id, permission_id)
       );
       CREATE TABLE IF NOT EXISTS platform_managed_resource_policies (
@@ -90,7 +91,7 @@ export const createCasMinimalSchema = async (databaseUrl: string): Promise<void>
       CREATE TABLE IF NOT EXISTS rbac_user_roles (
         id uuid PRIMARY KEY,
         user_id text,
-        role_id text,
+        role_id text REFERENCES rbac_roles(id) ON DELETE CASCADE,
         workspace_id text,
         created_at timestamptz
       );
