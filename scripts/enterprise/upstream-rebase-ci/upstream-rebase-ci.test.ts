@@ -15,6 +15,7 @@ import {
   isPassingUpstreamRebaseEvidence,
   KNOWN_GATE_IDS,
   scanUpstreamRebaseEvidence,
+  STRUCTURED_COMMAND_GATE_IDS,
   UPSTREAM_REBASE_CI_LANE,
   UPSTREAM_REBASE_CI_SCHEMA_VERSION,
 } from './contract';
@@ -25,7 +26,12 @@ import {
   runFailureDrillsGate,
   writeFailureDrillEvidenceFixture,
 } from './failureDrillGate';
-import { materializeIntegrationTree } from './fetchUpstream';
+import {
+  assertSourceUnchanged,
+  captureSourceSnapshot,
+  digestPorcelainStatus,
+  materializeIntegrationTree,
+} from './fetchUpstream';
 import {
   detectAutofixMutation,
   GATE_DEFINITIONS,
@@ -679,8 +685,22 @@ describe('failure-drills structured evidence', () => {
 });
 
 describe('evidence contract', () => {
-  it('requires verified freshness and rejects fail-closed outcome as non-passing', () => {
-    const gates = [
+  const baseEvidenceInput = () => ({
+    analysis: {
+      mode: 'dry-run-evidence' as const,
+      networkAccess: 'ci-fetch-only' as const,
+      productionRebase: false as const,
+      push: false as const,
+      worktreeMutation: 'isolated-temp-only' as const,
+    },
+    cleanupResult: 'passed' as const,
+    commits: {
+      base: SHORT,
+      candidate: SHORT,
+      mergeBase: SHORT,
+      upstream: SHORT,
+    },
+    gates: [
       {
         id: 'bun-check-changed',
         kind: 'command' as const,
@@ -699,42 +719,28 @@ describe('evidence contract', () => {
         outcome: 'passed' as const,
         reason: 'types',
       },
-    ];
+    ],
+    lane: UPSTREAM_REBASE_CI_LANE,
+    reportStatus: 'clean' as const,
+    requiredGateIds: ['bun-check-changed', 'privacy-review', 'type-check'],
+    schemaVersion: UPSTREAM_REBASE_CI_SCHEMA_VERSION,
+    summary: {
+      candidateChangedPaths: 1,
+      conflicts: 0,
+      directModificationHotspots: 0,
+      patchDrift: 0,
+      upstreamChangedPaths: 1,
+    },
+    upstream: {
+      freshness: 'verified-by-ci-fetch' as const,
+      ref: 'main',
+      repository: 'lobehub/lobehub',
+      sha: FULL_SHA,
+    },
+  });
 
-    const evidence = createUpstreamRebaseEvidence({
-      analysis: {
-        mode: 'dry-run-evidence',
-        networkAccess: 'ci-fetch-only',
-        productionRebase: false,
-        push: false,
-        worktreeMutation: 'isolated-temp-only',
-      },
-      cleanupResult: 'passed',
-      commits: {
-        base: SHORT,
-        candidate: SHORT,
-        mergeBase: SHORT,
-        upstream: SHORT,
-      },
-      gates,
-      lane: UPSTREAM_REBASE_CI_LANE,
-      reportStatus: 'clean',
-      requiredGateIds: ['bun-check-changed', 'privacy-review', 'type-check'],
-      schemaVersion: UPSTREAM_REBASE_CI_SCHEMA_VERSION,
-      summary: {
-        candidateChangedPaths: 1,
-        conflicts: 0,
-        directModificationHotspots: 0,
-        patchDrift: 0,
-        upstreamChangedPaths: 1,
-      },
-      upstream: {
-        freshness: 'verified-by-ci-fetch',
-        ref: 'main',
-        repository: 'lobehub/lobehub',
-        sha: FULL_SHA,
-      },
-    });
+  it('requires verified freshness and rejects fail-closed outcome as non-passing', () => {
+    const evidence = createUpstreamRebaseEvidence(baseEvidenceInput());
     expect(isPassingUpstreamRebaseEvidence(evidence)).toBe(true);
     expect(
       isPassingUpstreamRebaseEvidence({
@@ -742,6 +748,199 @@ describe('evidence contract', () => {
         upstream: { ...evidence.upstream, freshness: 'unverified' },
       }),
     ).toBe(false);
+  });
+
+  it('rejects duplicate required ids and duplicate gate results at the final evidence layer', () => {
+    expect(() =>
+      createUpstreamRebaseEvidence({
+        ...baseEvidenceInput(),
+        gates: [
+          {
+            id: 'type-check',
+            kind: 'command',
+            outcome: 'passed',
+            reason: 'a',
+          },
+          {
+            id: 'type-check',
+            kind: 'command',
+            outcome: 'passed',
+            reason: 'b',
+          },
+        ],
+        requiredGateIds: ['type-check', 'type-check'],
+      }),
+    ).toThrow(/unique|exactly match/i);
+
+    expect(
+      isPassingUpstreamRebaseEvidence({
+        ...baseEvidenceInput(),
+        gates: [
+          {
+            id: 'type-check',
+            kind: 'command',
+            outcome: 'passed',
+            reason: 'a',
+          },
+          {
+            id: 'type-check',
+            kind: 'command',
+            outcome: 'passed',
+            reason: 'b',
+          },
+        ],
+        requiredGateIds: ['type-check', 'type-check'],
+        redactionScan: { result: 'passed', violations: 0 },
+      }),
+    ).toBe(false);
+  });
+
+  it('rejects extra, missing, and wrong-kind gates at the final evidence layer', () => {
+    expect(() =>
+      createUpstreamRebaseEvidence({
+        ...baseEvidenceInput(),
+        gates: [
+          ...baseEvidenceInput().gates,
+          {
+            id: 'spa-route-sync',
+            kind: 'vitest',
+            outcome: 'passed',
+            reason: 'extra',
+            assertions: { failed: 0, passed: 1, skipped: 0, total: 1 },
+          },
+        ],
+      }),
+    ).toThrow(/exactly match|length/i);
+
+    expect(() =>
+      createUpstreamRebaseEvidence({
+        ...baseEvidenceInput(),
+        gates: baseEvidenceInput().gates.slice(0, 2),
+      }),
+    ).toThrow(/exactly match|length/i);
+
+    expect(() =>
+      createUpstreamRebaseEvidence({
+        ...baseEvidenceInput(),
+        gates: [
+          {
+            id: 'bun-check-changed',
+            kind: 'vitest',
+            outcome: 'passed',
+            reason: 'wrong kind',
+            assertions: { failed: 0, passed: 1, skipped: 0, total: 1 },
+          },
+          {
+            id: 'privacy-review',
+            kind: 'privacy-scan',
+            outcome: 'passed',
+            reason: 'privacy',
+          },
+          {
+            id: 'type-check',
+            kind: 'command',
+            outcome: 'passed',
+            reason: 'types',
+          },
+        ],
+      }),
+    ).toThrow(/kind/i);
+
+    expect(() =>
+      createUpstreamRebaseEvidence({
+        ...baseEvidenceInput(),
+        gates: [
+          {
+            id: 'manual-conflict-review',
+            kind: 'fail-closed',
+            outcome: 'passed',
+            reason: 'must not pass',
+          },
+        ],
+        requiredGateIds: ['manual-conflict-review'],
+      }),
+    ).toThrow(/cannot pass|fail-closed/i);
+  });
+
+  it('requires assertions for structured command gates on pass and fail', () => {
+    expect(STRUCTURED_COMMAND_GATE_IDS.has('migration-upgrade-rollback')).toBe(true);
+    expect(STRUCTURED_COMMAND_GATE_IDS.has('failure-drills')).toBe(true);
+
+    for (const id of ['migration-upgrade-rollback', 'failure-drills'] as const) {
+      expect(() =>
+        createUpstreamRebaseEvidence({
+          ...baseEvidenceInput(),
+          gates: [
+            {
+              id,
+              kind: 'command',
+              outcome: 'passed',
+              reason: 'missing assertions',
+            },
+          ],
+          requiredGateIds: [id],
+        }),
+      ).toThrow(/assertions/i);
+
+      expect(() =>
+        createUpstreamRebaseEvidence({
+          ...baseEvidenceInput(),
+          gates: [
+            {
+              id,
+              kind: 'command',
+              outcome: 'failed',
+              reason: 'missing assertions',
+            },
+          ],
+          requiredGateIds: [id],
+        }),
+      ).toThrow(/assertions/i);
+
+      expect(() =>
+        parseGateResultsStrict(
+          [
+            {
+              id,
+              kind: 'command',
+              outcome: 'failed',
+              reason: 'contradictory all-pass on failed',
+              assertions: { failed: 0, passed: 2, skipped: 0, total: 2 },
+            },
+          ],
+          [id],
+        ),
+      ).toThrow(/all-pass|assertions/i);
+    }
+  });
+});
+
+describe('source immutability snapshot', () => {
+  it('rejects initially dirty worktrees and equal-length different porcelain content', async () => {
+    const repositoryRoot = await mkdtemp(path.join(tmpdir(), 'source-immut-'));
+    temporaryRoots.push(repositoryRoot);
+    await runGit(repositoryRoot, 'init', '--quiet', '--initial-branch=main');
+    await runGit(repositoryRoot, 'config', 'user.email', 'immut@example.invalid');
+    await runGit(repositoryRoot, 'config', 'user.name', 'Immut Test');
+    await writeRepoFile(repositoryRoot, 'a.ts', 'export const a = 1;\n');
+    await commitAll(repositoryRoot, 'base');
+
+    const clean = await captureSourceSnapshot(repositoryRoot);
+    expect(clean.statusDigest).toBe(digestPorcelainStatus(''));
+    await assertSourceUnchanged(repositoryRoot, clean);
+
+    await writeRepoFile(repositoryRoot, 'a.ts', 'export const a = 2;\n');
+    await expect(captureSourceSnapshot(repositoryRoot)).rejects.toThrow(/must be clean/i);
+
+    // Equal-length different porcelain content must change the digest (not length equality).
+    const left = ' M a.ts\0';
+    const right = ' M b.ts\0';
+    expect(left.length).toBe(right.length);
+    expect(digestPorcelainStatus(left)).not.toBe(digestPorcelainStatus(right));
+
+    await writeRepoFile(repositoryRoot, 'b.ts', 'export const b = 1;\n');
+    // Dirty with two modified files still cannot capture.
+    await expect(captureSourceSnapshot(repositoryRoot)).rejects.toThrow(/must be clean/i);
   });
 });
 
@@ -781,6 +980,11 @@ describe('enterprise-upstream-rebase workflow', () => {
     expect(joined).toContain('run-gates');
     expect(joined).toContain('changed-paths');
     expect(joined).toContain('UPSTREAM_REBASE_SOURCE_HEAD');
+    expect(joined).toContain('snapshot-source');
+    expect(joined).toContain('assert-source-unchanged');
+    expect(joined).toContain('statusDigest');
+    expect(joined).not.toMatch(/\bwc\s+-c\b/u);
+    expect(joined).not.toContain('UPSTREAM_REBASE_SOURCE_STATUS_BYTES');
     expect(joined).not.toMatch(/\bgit\s+push\b/u);
     expect(joined).not.toContain('GITHUB_TOKEN');
     expect(joined).toMatch(/rm_code=\$\?/);
