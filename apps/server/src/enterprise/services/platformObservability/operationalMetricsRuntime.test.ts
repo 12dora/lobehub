@@ -15,6 +15,7 @@ import {
   OPERATIONAL_METRICS_COLLECTION_INTERVAL_MS,
   resetOperationalMetricsRuntimeForTest,
   shouldStartOperationalMetricsRuntime,
+  stopOperationalMetricsRuntime,
 } from './operationalMetricsRuntime';
 
 const db = {} as LobeChatDatabase;
@@ -39,6 +40,16 @@ const metricSink = () => ({
   setJobBacklog: vi.fn(),
   setRevisionLag: vi.fn(),
 });
+const deferred = <T>() => {
+  let reject!: (reason?: unknown) => void;
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+
+  return { promise, reject, resolve };
+};
 
 let observations: EnterpriseObservabilityEvent[];
 
@@ -175,6 +186,130 @@ describe('operational metrics runtime', () => {
         { count: 1, reason: 'diverged' },
       ],
     });
+  });
+
+  it.each([
+    ['reset', resetOperationalMetricsRuntimeForTest],
+    ['stop', stopOperationalMetricsRuntime],
+  ])(
+    'retires an initial in-flight collection on %s without publishing or scheduling',
+    async (_name, retire) => {
+      const sink = metricSink();
+      const initial = deferred<ReturnType<typeof backlogSnapshot>>();
+      const getBacklogSnapshot = vi.fn().mockReturnValue(initial.promise);
+      const schedule = vi.fn();
+      const start = ensureOperationalMetricsRuntimeStarted({
+        createJobModel: () => ({ getBacklogSnapshot }),
+        env: productionEnv(),
+        getDatabase: async () => db,
+        metricSink: sink,
+        schedule,
+      });
+      await vi.waitFor(() => expect(getBacklogSnapshot).toHaveBeenCalledTimes(1));
+
+      retire();
+      initial.resolve(backlogSnapshot());
+
+      await expect(start).resolves.toBe(false);
+      expect(sink.setJobBacklog).not.toHaveBeenCalled();
+      expect(schedule).not.toHaveBeenCalled();
+      expect(observations).toHaveLength(0);
+    },
+  );
+
+  it('keeps a restarted generation independent from a retired in-flight tick', async () => {
+    const oldSink = metricSink();
+    const oldTickSnapshot = deferred<ReturnType<typeof backlogSnapshot>>();
+    const oldGetBacklogSnapshot = vi
+      .fn()
+      .mockResolvedValueOnce(backlogSnapshot())
+      .mockReturnValueOnce(oldTickSnapshot.promise);
+    const oldClear = vi.fn();
+    let oldTick: (() => void) | undefined;
+    await ensureOperationalMetricsRuntimeStarted({
+      createJobModel: () => ({ getBacklogSnapshot: oldGetBacklogSnapshot }),
+      env: productionEnv(),
+      getDatabase: async () => db,
+      metricSink: oldSink,
+      schedule: (callback) => {
+        oldTick = callback;
+        return { clear: oldClear, unref: vi.fn() };
+      },
+    });
+
+    oldTick?.();
+    await vi.waitFor(() => expect(oldGetBacklogSnapshot).toHaveBeenCalledTimes(2));
+    resetOperationalMetricsRuntimeForTest();
+
+    const newSink = metricSink();
+    const newGetBacklogSnapshot = vi
+      .fn()
+      .mockResolvedValueOnce(backlogSnapshot(30_000))
+      .mockResolvedValueOnce(backlogSnapshot(40_000));
+    let newTick: (() => void) | undefined;
+    await expect(
+      ensureOperationalMetricsRuntimeStarted({
+        createJobModel: () => ({ getBacklogSnapshot: newGetBacklogSnapshot }),
+        env: productionEnv(),
+        getDatabase: async () => db,
+        metricSink: newSink,
+        schedule: (callback) => {
+          newTick = callback;
+          return { unref: vi.fn() };
+        },
+      }),
+    ).resolves.toBe(true);
+
+    oldTickSnapshot.resolve(backlogSnapshot(20_000));
+    await oldTickSnapshot.promise;
+    await Promise.resolve();
+    expect(oldClear).toHaveBeenCalledTimes(1);
+    expect(oldSink.setJobBacklog).toHaveBeenCalledTimes(1);
+    expect(newSink.setJobBacklog).toHaveBeenLastCalledWith(
+      expect.objectContaining({ collectedAtMs: 30_000 }),
+    );
+
+    oldTick?.();
+    expect(oldGetBacklogSnapshot).toHaveBeenCalledTimes(2);
+    newTick?.();
+    await vi.waitFor(() => expect(newGetBacklogSnapshot).toHaveBeenCalledTimes(2));
+    expect(newSink.setJobBacklog).toHaveBeenLastCalledWith(
+      expect.objectContaining({ collectedAtMs: 40_000 }),
+    );
+    await vi.waitFor(() =>
+      expect(
+        observations.filter(
+          (event) => event.type === 'operational_collection' && event.outcome === 'success',
+        ),
+      ).toHaveLength(3),
+    );
+  });
+
+  it('stops an active generation idempotently', async () => {
+    const sink = metricSink();
+    const clear = vi.fn();
+    const getBacklogSnapshot = vi.fn().mockResolvedValue(backlogSnapshot());
+    let tick: (() => void) | undefined;
+    await ensureOperationalMetricsRuntimeStarted({
+      createJobModel: () => ({ getBacklogSnapshot }),
+      env: productionEnv(),
+      getDatabase: async () => db,
+      metricSink: sink,
+      schedule: (callback) => {
+        tick = callback;
+        return { clear, unref: vi.fn() };
+      },
+    });
+
+    stopOperationalMetricsRuntime();
+    stopOperationalMetricsRuntime();
+    tick?.();
+
+    expect(clear).toHaveBeenCalledTimes(1);
+    expect(sink.activate).toHaveBeenNthCalledWith(1, ['job_backlog']);
+    expect(sink.activate).toHaveBeenNthCalledWith(2, []);
+    expect(sink.activate).toHaveBeenCalledTimes(2);
+    expect(getBacklogSnapshot).toHaveBeenCalledTimes(1);
   });
 
   it('skips overlapping ticks and resumes collection after the in-flight tick settles', async () => {

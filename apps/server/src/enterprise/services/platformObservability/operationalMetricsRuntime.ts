@@ -34,22 +34,42 @@ interface OperationalMetricsTimer {
 
 interface OperationalMetricsProcessState {
   collectionInFlight: boolean;
+  generation: number;
+  metricSink: OperationalMetricSink | null;
+  retired: boolean;
   startPromise: Promise<boolean> | null;
   timer: OperationalMetricsTimer | null;
 }
 
 const operationalMetricsProcess = process as NodeJS.Process & {
+  __lobehubEnterpriseOperationalMetricsGeneration?: number;
   __lobehubEnterpriseOperationalMetricsState?: OperationalMetricsProcessState;
 };
 
 const createProcessState = (): OperationalMetricsProcessState => ({
   collectionInFlight: false,
+  generation: (operationalMetricsProcess.__lobehubEnterpriseOperationalMetricsGeneration ?? 0) + 1,
+  metricSink: null,
+  retired: false,
   startPromise: null,
   timer: null,
 });
 
-const processState = (): OperationalMetricsProcessState =>
-  (operationalMetricsProcess.__lobehubEnterpriseOperationalMetricsState ??= createProcessState());
+const processState = (): OperationalMetricsProcessState => {
+  if (operationalMetricsProcess.__lobehubEnterpriseOperationalMetricsState) {
+    return operationalMetricsProcess.__lobehubEnterpriseOperationalMetricsState;
+  }
+
+  const state = createProcessState();
+  operationalMetricsProcess.__lobehubEnterpriseOperationalMetricsGeneration = state.generation;
+  operationalMetricsProcess.__lobehubEnterpriseOperationalMetricsState = state;
+  return state;
+};
+
+const isCurrentGeneration = (state: OperationalMetricsProcessState): boolean => {
+  const current = operationalMetricsProcess.__lobehubEnterpriseOperationalMetricsState;
+  return !state.retired && current === state && current.generation === state.generation;
+};
 
 interface OperationalMetricSink {
   activate: (collectors: readonly EnterpriseOperationalCollector[]) => void;
@@ -135,12 +155,15 @@ export const ensureOperationalMetricsRuntimeStarted = async (
     const metricSink = options.metricSink ?? defaultMetricSink;
     const now = options.now ?? Date.now;
     const reportFailure = options.logFailure ?? defaultLogFailure;
+    if (!isCurrentGeneration(state)) return false;
+    state.metricSink = metricSink;
     metricSink.activate(collectors);
 
     let db: LobeChatDatabase;
     try {
       db = await (options.getDatabase ?? defaultGetDatabase)();
     } catch (error) {
+      if (!isCurrentGeneration(state)) return false;
       const errorClass = classifyEnterpriseError(error);
       for (const collector of collectors) {
         observeEnterprisePlatformEvent({
@@ -154,6 +177,7 @@ export const ensureOperationalMetricsRuntimeStarted = async (
       }
       return false;
     }
+    if (!isCurrentGeneration(state)) return false;
 
     const jobs = options.createJobModel ? options.createJobModel(db) : new PlatformJobModel(db);
     const instances = options.createInstanceRepository
@@ -168,6 +192,7 @@ export const ensureOperationalMetricsRuntimeStarted = async (
       const startedAt = now();
       try {
         await collect();
+        if (!isCurrentGeneration(state)) return;
         observeEnterprisePlatformEvent({
           collector,
           durationMs: now() - startedAt,
@@ -175,6 +200,7 @@ export const ensureOperationalMetricsRuntimeStarted = async (
           type: 'operational_collection',
         });
       } catch (error) {
+        if (!isCurrentGeneration(state)) return;
         const errorClass = classifyEnterpriseError(error);
         observeEnterprisePlatformEvent({
           collector,
@@ -188,12 +214,13 @@ export const ensureOperationalMetricsRuntimeStarted = async (
     };
 
     const collect = async (): Promise<void> => {
-      if (state.collectionInFlight) return;
+      if (!isCurrentGeneration(state) || state.collectionInFlight) return;
       state.collectionInFlight = true;
       try {
         const tasks = [
           collectOne('job_backlog', async () => {
             const snapshot = await jobs.getBacklogSnapshot();
+            if (!isCurrentGeneration(state)) return;
             metricSink.setJobBacklog({
               collectedAtMs: snapshot.snapshotAt.getTime(),
               entries: snapshot.entries,
@@ -204,9 +231,11 @@ export const ensureOperationalMetricsRuntimeStarted = async (
           tasks.push(
             collectOne('revision_lag', async () => {
               const target = await resolveIdentityTarget(db, env);
+              if (!isCurrentGeneration(state)) return;
               const snapshot = await instances.getIdentityRevisionLagSnapshot(
                 target.identityRevision,
               );
+              if (!isCurrentGeneration(state)) return;
               metricSink.setRevisionLag({
                 collectedAtMs: snapshot.snapshotAt.getTime(),
                 domain: 'identity',
@@ -223,6 +252,7 @@ export const ensureOperationalMetricsRuntimeStarted = async (
     };
 
     await collect();
+    if (!isCurrentGeneration(state)) return false;
     state.timer = (options.schedule ?? defaultSchedule)(
       () => void collect(),
       OPERATIONAL_METRICS_COLLECTION_INTERVAL_MS,
@@ -240,8 +270,20 @@ export const ensureOperationalMetricsRuntimeStarted = async (
   }
 };
 
+export const stopOperationalMetricsRuntime = (): void => {
+  const state = operationalMetricsProcess.__lobehubEnterpriseOperationalMetricsState;
+  if (!state) return;
+
+  state.retired = true;
+  state.timer?.clear?.();
+  state.timer = null;
+  state.metricSink?.activate([]);
+  if (operationalMetricsProcess.__lobehubEnterpriseOperationalMetricsState === state) {
+    delete operationalMetricsProcess.__lobehubEnterpriseOperationalMetricsState;
+  }
+};
+
 export const resetOperationalMetricsRuntimeForTest = (): void => {
-  operationalMetricsProcess.__lobehubEnterpriseOperationalMetricsState?.timer?.clear?.();
-  delete operationalMetricsProcess.__lobehubEnterpriseOperationalMetricsState;
+  stopOperationalMetricsRuntime();
   resetEnterpriseOperationalMetricsForTest();
 };

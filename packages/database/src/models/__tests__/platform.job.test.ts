@@ -3,7 +3,11 @@ import { eq, sql } from 'drizzle-orm';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { getTestDB } from '../../core/getTestDB';
-import { platformJobs } from '../../schemas/platform';
+import {
+  PLATFORM_AGENT_ROLLOUT_TRANSITION_TYPE,
+  PLATFORM_SECRET_REWRAP_FAILURE_TYPE,
+  platformJobs,
+} from '../../schemas/platform';
 import type { LobeChatDatabase } from '../../type';
 import { PlatformJobModel } from '../platform/job';
 
@@ -68,18 +72,28 @@ describe('PlatformJobModel', () => {
           status: 'running',
           type: 'platform.agent.rollout.v1',
         },
-        {
-          idempotencyKey: 'backlog-transition-ledger',
-          status: 'failed',
-          type: 'platform.agent.rollout.transition.v1',
-          updatedAt: sql`statement_timestamp() - interval '2 days'`,
-        },
-        {
-          idempotencyKey: 'backlog-failure-ledger',
-          status: 'failed',
-          type: 'platform.secret.rewrap.failure.v1',
-          updatedAt: sql`statement_timestamp() - interval '2 days'`,
-        },
+        ...[PLATFORM_AGENT_ROLLOUT_TRANSITION_TYPE, PLATFORM_SECRET_REWRAP_FAILURE_TYPE].flatMap(
+          (type, typeIndex) => [
+            {
+              idempotencyKey: `backlog-ledger-${typeIndex}-pending`,
+              status: 'pending' as const,
+              type,
+              updatedAt: sql`statement_timestamp() - interval '2 days'`,
+            },
+            {
+              idempotencyKey: `backlog-ledger-${typeIndex}-reserved`,
+              leaseUntil: sql`statement_timestamp() - interval '2 days'`,
+              status: 'reserved' as const,
+              type,
+            },
+            {
+              idempotencyKey: `backlog-ledger-${typeIndex}-running`,
+              leaseUntil: sql`statement_timestamp() - interval '2 days'`,
+              status: 'running' as const,
+              type,
+            },
+          ],
+        ),
         ...(['succeeded', 'dead', 'cancelled'] as const).map((status) => ({
           idempotencyKey: `backlog-terminal-${status}`,
           status,
@@ -96,8 +110,10 @@ describe('PlatformJobModel', () => {
       expect(byState.get('pending')?.oldestAgeSeconds).toBeLessThan(60);
       expect(byState.get('reserved_expired')?.count).toBe(1);
       expect(byState.get('reserved_expired')?.oldestAgeSeconds).toBeGreaterThanOrEqual(12);
+      expect(byState.get('reserved_expired')?.oldestAgeSeconds).toBeLessThan(60);
       expect(byState.get('running_lease_expired')?.count).toBe(1);
       expect(byState.get('running_lease_expired')?.oldestAgeSeconds).toBeGreaterThanOrEqual(7);
+      expect(byState.get('running_lease_expired')?.oldestAgeSeconds).toBeLessThan(60);
       expect(snapshot.entries.every(({ oldestAgeSeconds }) => oldestAgeSeconds >= 0)).toBe(true);
     });
   });
