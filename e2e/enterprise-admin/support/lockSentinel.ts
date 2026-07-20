@@ -2,14 +2,16 @@
  * Safe ownership protocol for lock-file sentinel tests.
  * Never follows symlinks; never unlinks foreign/replacement files.
  *
- * Protocol (no-replace, no pathname-unlink race on final dispose):
+ * Protocol (fully non-destructive on pathnames):
  * 1) prove ownership via original fd + O_NOFOLLOW verify fd (dev/ino/type/token)
  * 2) create an exclusive private quarantine directory (mkdir fails if exists)
  * 3) hard-link owned path into that dir (link fails with EEXIST — never overwrites)
- * 4) prove quarantine path is the same inode as the owned fd
- * 5) remove original path only when lstat still matches owned identity (else leave foreign)
- * 6) leave the proven object as an owned recovery artifact in the exclusive dir
- *    (no final pathname unlink — eliminates post-proof swap → foreign-unlink race)
+ * 4) prove quarantine path is the same inode as the owned fd + token
+ * 5) return contained recovery-artifact state — never pathname-unlink lockPath
+ *    or any other replaceable path (plain Node unlink after checks is prohibited)
+ *
+ * Outer exclusive owner of the disposable isolated project root (unique mkdtemp)
+ * removes the whole root after the test lifecycle.
  *
  * Global PROJECT_ROOT/.next/lock remains strictly read-only (this module only
  * operates under caller-provided isolated project roots).
@@ -29,7 +31,6 @@ import {
   readSync,
   rmdirSync,
   type Stats,
-  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import path from 'node:path';
@@ -151,91 +152,103 @@ export const createOwnedLockSentinel = (
   };
 };
 
-export type UnlinkOwnedLockRaceContext = {
+export type ContainOwnedLockRaceContext = {
   lockPath: string;
   quarantineDir: string;
   quarantinePath: string;
 };
 
-export type UnlinkOwnedLockHooks = {
+/** @deprecated Alias for test-hook naming; same as ContainOwnedLockRaceContext. */
+export type UnlinkOwnedLockRaceContext = ContainOwnedLockRaceContext;
+
+export type ContainOwnedLockHooks = {
   /**
    * Invoked after full identity/token verification, with quarantine paths pre-chosen,
    * immediately before exclusive mkdir + no-replace link.
    * Production never sets this. Tests may stage collisions/races without bypassing verification.
    */
-  afterVerifyBeforeDestructive?: (ctx: UnlinkOwnedLockRaceContext) => void;
+  afterVerifyBeforeDestructive?: (ctx: ContainOwnedLockRaceContext) => void;
   /**
-   * Invoked after quarantine identity proof, immediately before original-path clear.
-   * Tests may place a foreign regular/symlink at lockPath — production must not overwrite it.
+   * Invoked after the last successful identity observation of the quarantine artifact
+   * (token proof via open fd), at the site of the former check-then-unlink of lockPath.
+   * Production never unlinks lockPath. Tests inject foreign regular/symlink here to prove
+   * this exact final window cannot destroy replacements.
    */
-  afterProofBeforeClear?: (ctx: UnlinkOwnedLockRaceContext) => void;
+  afterContainmentProofBeforeReturn?: (ctx: ContainOwnedLockRaceContext) => void;
   /**
-   * Invoked after optional original-path clear, before returning the recovery-artifact contract.
-   * Tests may swap the quarantine path here — production must not destroy foreign objects.
+   * @deprecated Same seam as afterContainmentProofBeforeReturn (former clear site).
+   * Kept so RR11 foreign-before-clear tests retain an explicit hook name.
    */
-  afterProofBeforeDispose?: (ctx: UnlinkOwnedLockRaceContext) => void;
+  afterProofBeforeClear?: (ctx: ContainOwnedLockRaceContext) => void;
+  /**
+   * Invoked after containment proof (+ optional afterContainmentProofBeforeReturn),
+   * before final artifact re-validation / return.
+   * Tests may swap the quarantine path — production must not destroy foreign objects.
+   */
+  afterProofBeforeDispose?: (ctx: ContainOwnedLockRaceContext) => void;
 };
 
-export type UnlinkOwnedLockResult = {
-  /** True when owned content is no longer at lockPath (cleared or never reappeared). */
-  lockPathCleared: boolean;
+/** @deprecated Alias — production API is containOwnedLockSentinelOrFail. */
+export type UnlinkOwnedLockHooks = ContainOwnedLockHooks;
+
+export type ContainOwnedLockResult = {
+  /**
+   * Always false. This protocol never pathname-unlinks lockPath.
+   * Callers must not treat `contained` as "path cleared".
+   * Outer exclusive owner of the isolated mkdtemp root removes residual paths.
+   */
+  originalLockPathUnlinked: false;
   /** Exclusive private directory holding the proven owned recovery artifact. */
   quarantineDir: string;
   /** Path of the proven owned recovery artifact (hardlink of owned inode). */
   quarantinePath: string;
   /**
-   * `contained` — owned object safely held as recovery artifact; lock path cleared when possible.
-   * Never uses a final pathname unlink of a replaceable path.
+   * `contained` — owned inode is hardlinked into the exclusive quarantine dir.
+   * Does NOT mean lockPath was cleared or unlinked.
    */
   status: 'contained';
 };
 
+/** @deprecated Use ContainOwnedLockResult (lockPathCleared removed — never claimed). */
+export type UnlinkOwnedLockResult = ContainOwnedLockResult;
+
 const identityMatches = (a: Stats, b: { dev: number | bigint; ino: number | bigint }): boolean =>
   a.dev === b.dev && a.ino === b.ino && a.isFile();
 
-const pathIsAbsent = (p: string): boolean => {
-  try {
-    lstatSync(p);
-    return false;
-  } catch {
-    return true;
-  }
-};
-
 /**
- * Race-safe removal of an owned sentinel from the lock path.
- * Final disposition is a recovery artifact in an exclusive private directory —
- * never a pathname unlink that could destroy a swapped-in foreign object.
+ * Race-safe containment of an owned sentinel.
+ * Establishes a hardlinked recovery artifact in an exclusive private directory.
+ * Never pathname-unlinks lockPath or any replaceable path (no check-then-unlink).
  */
-export const unlinkOwnedLockSentinelOrFail = (
+export const containOwnedLockSentinelOrFail = (
   params: {
     fd: number;
     lockPath: string;
     snapshot: LockSnapshot;
     token: string;
   },
-  hooks?: UnlinkOwnedLockHooks,
-): UnlinkOwnedLockResult => {
+  hooks?: ContainOwnedLockHooks,
+): ContainOwnedLockResult => {
   const ownedFdStat = fstatSync(params.fd) as Stats;
   if (!ownedFdStat.isFile()) {
-    throw new Error('refusing unlink: owned fd is not a regular file');
+    throw new Error('refusing contain: owned fd is not a regular file');
   }
   if (ownedFdStat.ino !== params.snapshot.ino || ownedFdStat.dev !== params.snapshot.dev) {
-    throw new Error('refusing unlink: owned fd identity drifted from snapshot');
+    throw new Error('refusing contain: owned fd identity drifted from snapshot');
   }
 
   const lst = lstatSync(params.lockPath);
   if (lst.isSymbolicLink()) {
-    throw new Error(`refusing unlink: path is a symlink ${params.lockPath}`);
+    throw new Error(`refusing contain: path is a symlink ${params.lockPath}`);
   }
   if (!lst.isFile()) {
-    throw new Error(`refusing unlink: not a regular file ${params.lockPath}`);
+    throw new Error(`refusing contain: not a regular file ${params.lockPath}`);
   }
   if (!identityMatches(lst, params.snapshot)) {
-    throw new Error('refusing unlink: path lstat identity mismatch vs owned snapshot');
+    throw new Error('refusing contain: path lstat identity mismatch vs owned snapshot');
   }
   if (!identityMatches(ownedFdStat, { dev: lst.dev, ino: lst.ino })) {
-    throw new Error('refusing unlink: owned fd vs path lstat identity mismatch');
+    throw new Error('refusing contain: owned fd vs path lstat identity mismatch');
   }
 
   // O_NOFOLLOW verification open — compare verifyFd identity to owned fd
@@ -243,13 +256,13 @@ export const unlinkOwnedLockSentinelOrFail = (
   try {
     const vst = fstatSync(verifyFd) as Stats;
     if (!identityMatches(vst, params.snapshot) || !identityMatches(vst, ownedFdStat)) {
-      throw new Error('refusing unlink: verifyFd identity mismatch');
+      throw new Error('refusing contain: verifyFd identity mismatch');
     }
     const buf = Buffer.alloc(params.token.length + 8);
     const n = readSync(verifyFd, buf, 0, buf.length, 0);
     const got = buf.subarray(0, n).toString('utf8');
     if (got !== params.token) {
-      throw new Error('refusing unlink: token/bytes mismatch (foreign replacement)');
+      throw new Error('refusing contain: token/bytes mismatch (foreign replacement)');
     }
   } finally {
     closeSync(verifyFd);
@@ -262,7 +275,7 @@ export const unlinkOwnedLockSentinelOrFail = (
     `.e2e-q-${randomBytes(8).toString('hex')}`,
   );
   const quarantinePath = path.join(quarantineDir, 'owned-lock');
-  const raceCtx: UnlinkOwnedLockRaceContext = {
+  const raceCtx: ContainOwnedLockRaceContext = {
     lockPath: params.lockPath,
     quarantineDir,
     quarantinePath,
@@ -279,7 +292,7 @@ export const unlinkOwnedLockSentinelOrFail = (
         ? String((error as { code?: unknown }).code)
         : '';
     throw new Error(
-      `refusing unlink: quarantine dir collision or create failed (${code || String(error)}); foreign paths preserved`,
+      `refusing contain: quarantine dir collision or create failed (${code || String(error)}); foreign paths preserved`,
       { cause: error },
     );
   }
@@ -288,6 +301,7 @@ export const unlinkOwnedLockSentinelOrFail = (
   try {
     linkSync(params.lockPath, quarantinePath);
   } catch (error) {
+    // Only remove the empty exclusive dir we just created (no file unlink).
     try {
       rmdirSync(quarantineDir);
     } catch {
@@ -298,7 +312,7 @@ export const unlinkOwnedLockSentinelOrFail = (
         ? String((error as { code?: unknown }).code)
         : '';
     throw new Error(
-      `refusing unlink: no-replace quarantine link failed (${code || String(error)}); foreign paths preserved`,
+      `refusing contain: no-replace quarantine link failed (${code || String(error)}); foreign paths preserved`,
       { cause: error },
     );
   }
@@ -308,46 +322,38 @@ export const unlinkOwnedLockSentinelOrFail = (
   try {
     qst = lstatSync(quarantinePath);
   } catch (error) {
-    throw new Error(`refusing unlink: quarantine path missing after link: ${String(error)}`, {
+    throw new Error(`refusing contain: quarantine path missing after link: ${String(error)}`, {
       cause: error,
     });
   }
 
   if (qst.isSymbolicLink() || !qst.isFile() || !identityMatches(qst, ownedFdStat)) {
-    // Linked a foreign object — remove only the hardlink we created at quarantine.
-    // Foreign remains at lockPath (and any other names). Never delete foreign content.
-    try {
-      unlinkSync(quarantinePath);
-    } catch {
-      // leave quarantine for inspection
-    }
-    try {
-      rmdirSync(quarantineDir);
-    } catch {
-      // leave
-    }
+    // Linked a foreign object — leave quarantine hardlink for inspection.
+    // Never pathname-unlink quarantine (check-then-unlink could destroy a later swap).
+    // Foreign remains at lockPath (and quarantine hardlink if still same inode).
     throw new Error(
-      'refusing unlink: quarantine identity ≠ owned fd (pathname was replaced; foreign preserved at lock path)',
+      'refusing contain: quarantine identity ≠ owned fd (pathname was replaced; foreign preserved at lock path and quarantine for inspection)',
     );
   }
 
-  // Token proof via open of quarantine (same inode as owned fd)
+  // Token proof via open of quarantine (same inode as owned fd) — last identity observation
+  // of the owned recovery artifact before return.
   const qfd = openSync(quarantinePath, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const qfst = fstatSync(qfd) as Stats;
     if (!identityMatches(qfst, ownedFdStat)) {
-      throw new Error('refusing unlink: quarantine open fd identity mismatch');
+      throw new Error('refusing contain: quarantine open fd identity mismatch');
     }
     const buf = Buffer.alloc(params.token.length + 8);
     const n = readSync(qfd, buf, 0, buf.length, 0);
     if (buf.subarray(0, n).toString('utf8') !== params.token) {
-      throw new Error('refusing unlink: quarantine token mismatch');
+      throw new Error('refusing contain: quarantine token mismatch');
     }
   } catch (error) {
     // Proof failed after we linked owned inode — keep recovery artifact, do not destroy.
-    throw error instanceof Error && error.message.startsWith('refusing unlink:')
+    throw error instanceof Error && error.message.startsWith('refusing contain:')
       ? error
-      : new Error(`refusing unlink: post-quarantine proof failed: ${String(error)}`, {
+      : new Error(`refusing contain: post-quarantine proof failed: ${String(error)}`, {
           cause: error,
         });
   } finally {
@@ -358,61 +364,46 @@ export const unlinkOwnedLockSentinelOrFail = (
     }
   }
 
-  // Test seam after proof, before clear — may place foreign at lockPath.
+  // Exact former check-then-unlink site: production never unlinks lockPath.
+  // Tests inject foreign regular/symlink here to prove the final window is non-destructive.
+  hooks?.afterContainmentProofBeforeReturn?.(raceCtx);
   hooks?.afterProofBeforeClear?.(raceCtx);
 
-  // Clear original path only when it is still our inode. If a foreign object arrived,
-  // leave it untouched (no overwrite / no delete). Never rename artifact onto lockPath.
-  let lockPathCleared = false;
-  if (!pathIsAbsent(params.lockPath)) {
-    try {
-      const cur = lstatSync(params.lockPath);
-      if (
-        !cur.isSymbolicLink() &&
-        cur.isFile() &&
-        identityMatches(cur, ownedFdStat) &&
-        identityMatches(cur, params.snapshot)
-      ) {
-        unlinkSync(params.lockPath);
-        lockPathCleared = true;
-      }
-      // else: foreign regular/symlink at lockPath — preserve both (artifact + foreign)
-    } catch {
-      // path vanished between checks
-      lockPathCleared = pathIsAbsent(params.lockPath);
-    }
-  } else {
-    lockPathCleared = true;
-  }
-
-  // Test seam after clear — may swap quarantine path with foreign content.
+  // Test seam — may swap quarantine path with foreign content after containment proof.
   hooks?.afterProofBeforeDispose?.(raceCtx);
 
   // Re-validate artifact still matches owned inode. If swapped, refuse any destructive
-  // action on the foreign path; report both objects preserved.
+  // action on the foreign path; report both objects preserved (no unlink of foreign).
   try {
     const after = lstatSync(quarantinePath);
     if (after.isSymbolicLink() || !after.isFile() || !identityMatches(after, ownedFdStat)) {
       throw new Error(
-        `refusing unlink: quarantine path swapped after proof (foreign preserved at ${quarantinePath}; owned fd still held by caller)`,
+        `refusing contain: quarantine path swapped after proof (foreign preserved at ${quarantinePath}; owned fd still held by caller; lockPath never unlinked)`,
       );
     }
   } catch (error) {
-    if (error instanceof Error && error.message.startsWith('refusing unlink:')) {
+    if (error instanceof Error && error.message.startsWith('refusing contain:')) {
       throw error;
     }
     throw new Error(
-      `refusing unlink: quarantine artifact missing or unreadable after proof: ${String(error)}`,
+      `refusing contain: quarantine artifact missing or unreadable after proof: ${String(error)}`,
       { cause: error },
     );
   }
 
-  // Success contract: owned content contained as recovery artifact (no final pathname unlink).
-  // Outer exclusive owner of the isolated project root removes the artifact directory.
+  // Success: owned content contained as recovery artifact. lockPath is intentionally left
+  // alone (may still name the owned inode or a later foreign). Outer exclusive owner of the
+  // isolated project root removes residual paths after the test lifecycle.
   return {
-    lockPathCleared,
+    originalLockPathUnlinked: false,
     quarantineDir,
     quarantinePath,
     status: 'contained',
   };
 };
+
+/**
+ * @deprecated Name retained for call-site continuity. Does not unlink pathnames —
+ * see containOwnedLockSentinelOrFail (same implementation).
+ */
+export const unlinkOwnedLockSentinelOrFail = containOwnedLockSentinelOrFail;
