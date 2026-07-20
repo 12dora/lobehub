@@ -1,5 +1,9 @@
+import debug from 'debug';
+
 import { IoRedisRedisProvider } from './redis';
 import { type BaseRedisProvider, type RedisConfig } from './types';
+
+const log = debug('lobe-server:redis-manager');
 
 export const isRedisDisabledByEnv = () => !!process.env.DISABLE_REDIS;
 
@@ -10,6 +14,24 @@ const createProvider = (config: RedisConfig, prefix?: string): BaseRedisProvider
 
   const actualPrefix = prefix ?? config.prefix;
   return new IoRedisRedisProvider({ ...config, prefix: actualPrefix });
+};
+
+const initializeProvider = async (provider: BaseRedisProvider): Promise<BaseRedisProvider> => {
+  try {
+    await provider.initialize();
+    return provider;
+  } catch (error) {
+    try {
+      await provider.disconnect();
+    } catch (cleanupError) {
+      // Preserve the initialization error while recording only a secret-free error class.
+      log(
+        'Redis provider cleanup after initialization failure also failed: %s',
+        cleanupError instanceof Error ? cleanupError.name : 'UnknownError',
+      );
+    }
+    throw error;
+  }
 };
 
 class RedisManager {
@@ -30,10 +52,9 @@ class RedisManager {
         return null;
       }
 
-      await provider.initialize();
-      RedisManager.instance = provider;
+      RedisManager.instance = await initializeProvider(provider);
 
-      return provider;
+      return RedisManager.instance;
     })().catch((error) => {
       RedisManager.initPromise = null;
       throw error;
@@ -73,8 +94,7 @@ export const createRedisWithPrefix = async (
   const provider = createProvider(config, prefix);
   if (!provider) return null;
 
-  await provider.initialize();
-  return provider;
+  return initializeProvider(provider);
 };
 
 /**
@@ -95,9 +115,9 @@ class PrefixedRedisManager {
       const provider = createProvider(config, prefix);
       if (!provider) return null;
 
-      await provider.initialize();
-      this.instances.set(prefix, provider);
-      return provider;
+      const initializedProvider = await initializeProvider(provider);
+      this.instances.set(prefix, initializedProvider);
+      return initializedProvider;
     })().catch((error) => {
       this.initPromises.delete(prefix);
       throw error;

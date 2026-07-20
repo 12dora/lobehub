@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { initializeRedis, RedisManager, resetRedisClient } from './manager';
+import { createRedisWithPrefix, initializeRedis, RedisManager, resetRedisClient } from './manager';
 import { type RedisConfig } from './types';
 
 const { mockIoRedisInitialize, mockIoRedisDisconnect } = vi.hoisted(() => ({
@@ -67,5 +67,22 @@ describe('RedisManager', () => {
     await resetRedisClient();
 
     expect(mockIoRedisDisconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it('cleans up a failed independent initialization and preserves the original error', async () => {
+    const initializationError = new Error('redis initialization failed');
+    mockIoRedisInitialize.mockRejectedValueOnce(initializationError);
+    mockIoRedisDisconnect.mockRejectedValueOnce(new Error('cleanup also failed'));
+    const config = {
+      enabled: true,
+      prefix: 'test',
+      tls: false,
+      url: 'redis://localhost:6379',
+    } satisfies RedisConfig;
+
+    await expect(createRedisWithPrefix(config, 'health')).rejects.toBe(initializationError);
+
+    expect(mockIoRedisInitialize).toHaveBeenCalledOnce();
+    expect(mockIoRedisDisconnect).toHaveBeenCalledOnce();
   });
 });
