@@ -11,8 +11,11 @@ import {
   createRunToken,
   inspectPublishedHostPort,
   installLifecycleSignalHandlers,
+  type LifecycleEvidence,
   type LifecycleState,
   registerOwnedDir,
+  registerOwnedPort,
+  snapshotLifecycleEvidence,
   spawnOwned,
   startOwnedContainer,
 } from './lifecycle';
@@ -63,6 +66,12 @@ export const holdPort = async (host = '127.0.0.1'): Promise<HeldPort> =>
       });
     });
   });
+
+export type StartupFaultError = Error & {
+  lifecycleEvidenceAfter?: LifecycleEvidence;
+  lifecycleEvidenceBefore?: LifecycleEvidence;
+  runToken?: string;
+};
 
 /** @deprecated Prefer holdPort / Docker ephemeral publish — kept for unit helpers only. */
 export const freePort = async (): Promise<number> => {
@@ -296,6 +305,8 @@ export const startAppWithPortRetry = async (params: {
     const heldSpa = params.mode === 'dev' ? await holdPort() : undefined;
     const appPort = heldApp.port;
     const spaPort = heldSpa?.port;
+    registerOwnedPort(params.state, appPort);
+    if (spaPort) registerOwnedPort(params.state, spaPort);
     const appUrl = `http://localhost:${appPort}`;
     const env = buildEnterpriseEnv({
       appUrl,
@@ -381,12 +392,17 @@ export const startAppWithPortRetry = async (params: {
 export type StartupFaultStage =
   'after-postgres' | 'after-redis' | 'after-migrate' | 'after-build' | 'after-app-spawn';
 
-const maybeInjectFault = (stage: StartupFaultStage, runToken: string): void => {
+const maybeInjectFault = (
+  stage: StartupFaultStage,
+  runToken: string,
+  state?: LifecycleState,
+): void => {
   if (process.env.E2E_ENTERPRISE_ADMIN_FAULT_STAGE === stage) {
-    const error = new Error(`injected startup fault at ${stage}`) as Error & {
-      runToken?: string;
-    };
+    const error = new Error(`injected startup fault at ${stage}`) as StartupFaultError;
     error.runToken = runToken;
+    if (state) {
+      error.lifecycleEvidenceBefore = snapshotLifecycleEvidence(state);
+    }
     throw error;
   }
 };
@@ -455,7 +471,7 @@ export const startEnterpriseAdminRuntime = async (): Promise<SuiteRuntime> => {
       runToken,
       state,
     });
-    maybeInjectFault('after-postgres', runToken);
+    maybeInjectFault('after-postgres', runToken, state);
 
     const redis = await startOwnedContainer({
       args: ['-p', '127.0.0.1::6379'],
@@ -464,10 +480,12 @@ export const startEnterpriseAdminRuntime = async (): Promise<SuiteRuntime> => {
       runToken,
       state,
     });
-    maybeInjectFault('after-redis', runToken);
+    maybeInjectFault('after-redis', runToken, state);
 
     const postgresPort = await inspectPublishedHostPort(pg.id, 5432);
     const redisPort = await inspectPublishedHostPort(redis.id, 6379);
+    registerOwnedPort(state, postgresPort);
+    registerOwnedPort(state, redisPort);
     const databaseUrl = `postgresql://postgres:postgres@127.0.0.1:${postgresPort}/${databaseName}`;
     const redisUrl = `redis://127.0.0.1:${redisPort}`;
     await waitForPostgres(databaseUrl);
@@ -483,7 +501,7 @@ export const startEnterpriseAdminRuntime = async (): Promise<SuiteRuntime> => {
       ...migrateEnv,
       NODE_ENV: 'agenttest',
     });
-    maybeInjectFault('after-migrate', runToken);
+    maybeInjectFault('after-migrate', runToken, state);
 
     const mode = (process.env.E2E_ENTERPRISE_ADMIN_MODE as 'dev' | 'start' | undefined) ?? 'dev';
 
@@ -491,10 +509,10 @@ export const startEnterpriseAdminRuntime = async (): Promise<SuiteRuntime> => {
       // Production default build only. SKIP_BUILD is for local start-mode convenience of
       // non-after-build paths; after-build fault tests must not set it.
       if (process.env.E2E_ENTERPRISE_ADMIN_SKIP_BUILD !== '1') {
-        // Next may leave a stale project-level `.next/lock` from interrupted builds;
-        // remove only the lock file (not the whole .next tree) before owned build.
+        // Never touch the user's global `.next/lock`. Operate only on the owned distDir
+        // (and its own lock if Next creates one under the isolated path).
         await import('node:fs/promises').then(({ rm }) =>
-          rm(path.join(PROJECT_ROOT, '.next', 'lock'), { force: true }),
+          rm(path.join(nextDistAbs, 'lock'), { force: true }),
         );
         await runOwnedCommand(state, 'bun', ['run', 'build'], {
           ...migrateEnv,
@@ -502,7 +520,7 @@ export const startEnterpriseAdminRuntime = async (): Promise<SuiteRuntime> => {
           SKIP_LINT: '1',
         });
       }
-      maybeInjectFault('after-build', runToken);
+      maybeInjectFault('after-build', runToken, state);
     }
 
     const { appUrl, child } = await startAppWithPortRetry({
@@ -512,7 +530,7 @@ export const startEnterpriseAdminRuntime = async (): Promise<SuiteRuntime> => {
       redisUrl,
       state,
     });
-    maybeInjectFault('after-app-spawn', runToken);
+    maybeInjectFault('after-app-spawn', runToken, state);
 
     child.stdout?.on('data', (chunk) => process.stdout.write(`[admin-e2e-app] ${chunk}`));
     child.stderr?.on('data', (chunk) => process.stderr.write(`[admin-e2e-app] ${chunk}`));
@@ -540,12 +558,26 @@ export const startEnterpriseAdminRuntime = async (): Promise<SuiteRuntime> => {
       stop,
     };
   } catch (error) {
+    const before =
+      error && typeof error === 'object' && 'lifecycleEvidenceBefore' in error
+        ? (error as StartupFaultError).lifecycleEvidenceBefore
+        : snapshotLifecycleEvidence(state);
     await stop().catch((cleanupError) => {
-      throw new AggregateError(
+      const after = snapshotLifecycleEvidence(state);
+      const aggregate = new AggregateError(
         [error, cleanupError],
         'enterprise-admin runtime start failed and cleanup failed',
-      );
+      ) as AggregateError & StartupFaultError;
+      aggregate.runToken = runToken;
+      aggregate.lifecycleEvidenceBefore = before;
+      aggregate.lifecycleEvidenceAfter = after;
+      throw aggregate;
     });
+    if (error && typeof error === 'object') {
+      (error as StartupFaultError).runToken = runToken;
+      (error as StartupFaultError).lifecycleEvidenceBefore = before;
+      (error as StartupFaultError).lifecycleEvidenceAfter = snapshotLifecycleEvidence(state);
+    }
     throw error;
   }
 };

@@ -21,8 +21,15 @@ export interface OwnedContainer {
 
 export interface LifecycleState {
   containers: OwnedContainer[];
+  /**
+   * Read-only evidence: every owned parent PID + known descendants captured at spawn.
+   * Never used to kill foreign processes — only for assertions after cleanup.
+   */
+  evidencePids: number[];
   /** Owned temp dirs (e.g. isolated Next distDir) removed on cleanup. */
   ownedDirs: string[];
+  /** Host ports this run held/probed (for residue assertions only). */
+  ownedPorts: number[];
   /**
    * Hooks run BEFORE process/container teardown (e.g. DB CAS restore).
    * Single coordinated owner: signal handler awaits these then destroys resources.
@@ -30,8 +37,21 @@ export interface LifecycleState {
   preCleanupHooks: Array<() => Promise<void>>;
   processes: ChildProcess[];
   runToken: string;
+  /** True while suite-installed SIGINT/SIGTERM handlers are registered. */
+  signalHandlersInstalled: boolean;
   /** uninstall signal handlers when stop completes successfully */
   uninstallSignals?: () => void;
+}
+
+/** Read-only snapshot of this run's owned resources (for fault-stage regressions). */
+export interface LifecycleEvidence {
+  containers: string[];
+  evidencePids: number[];
+  ownedDirs: string[];
+  ownedPorts: number[];
+  processRegistryPids: Array<number | undefined>;
+  runToken: string;
+  signalHandlersInstalled: boolean;
 }
 
 export const createRunToken = (): string =>
@@ -39,11 +59,58 @@ export const createRunToken = (): string =>
 
 export const createLifecycleState = (runToken: string): LifecycleState => ({
   containers: [],
+  evidencePids: [],
   ownedDirs: [],
+  ownedPorts: [],
   preCleanupHooks: [],
   processes: [],
   runToken,
+  signalHandlersInstalled: false,
 });
+
+export const registerOwnedPort = (state: LifecycleState, port: number): void => {
+  if (!state.ownedPorts.includes(port)) state.ownedPorts.push(port);
+};
+
+export const snapshotLifecycleEvidence = (state: LifecycleState): LifecycleEvidence => ({
+  containers: state.containers.map((c) => c.id),
+  evidencePids: [...state.evidencePids],
+  ownedDirs: [...state.ownedDirs],
+  ownedPorts: [...state.ownedPorts],
+  processRegistryPids: state.processes.map((p) => p.pid),
+  runToken: state.runToken,
+  signalHandlersInstalled: state.signalHandlersInstalled,
+});
+
+export const isPidAlive = (pid: number | undefined): boolean => {
+  if (!pid || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/** True if any process is listening on 127.0.0.1:port (read-only check). */
+export const isLocalPortListening = async (port: number): Promise<boolean> => {
+  const { createConnection } = await import('node:net');
+  return new Promise((resolve) => {
+    const socket = createConnection({ host: '127.0.0.1', port });
+    socket.setTimeout(200);
+    socket.once('connect', () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once('timeout', () => {
+      socket.destroy();
+      resolve(false);
+    });
+    socket.once('error', () => {
+      resolve(false);
+    });
+  });
+};
 
 export const registerPreCleanupHook = (state: LifecycleState, hook: () => Promise<void>): void => {
   state.preCleanupHooks.push(hook);
@@ -92,9 +159,11 @@ export const installLifecycleSignalHandlers = (state: LifecycleState): (() => vo
   const sigterm = () => onSignal('SIGTERM');
   process.on('SIGINT', sigint);
   process.on('SIGTERM', sigterm);
+  state.signalHandlersInstalled = true;
   const uninstall = () => {
     process.off('SIGINT', sigint);
     process.off('SIGTERM', sigterm);
+    state.signalHandlersInstalled = false;
   };
   state.uninstallSignals = uninstall;
   return uninstall;
@@ -152,6 +221,15 @@ export const inspectPublishedHostPort = async (
 
 export const registerProcess = (state: LifecycleState, child: ChildProcess): void => {
   state.processes.push(child);
+  if (child.pid && !state.evidencePids.includes(child.pid)) {
+    state.evidencePids.push(child.pid);
+  }
+  // Detached group leader uses same pid as process group id on POSIX.
+  child.once('spawn', () => {
+    if (child.pid && !state.evidencePids.includes(child.pid)) {
+      state.evidencePids.push(child.pid);
+    }
+  });
 };
 
 /** Spawn a detached process group and register it for ownership cleanup. */
@@ -324,6 +402,9 @@ export const cleanupLifecycle = async (state: LifecycleState): Promise<void> => 
 
   state.uninstallSignals?.();
   state.uninstallSignals = undefined;
+  state.signalHandlersInstalled = false;
+  state.ownedPorts.length = 0;
+  // evidencePids retained for post-cleanup death assertions (read-only)
 
   if (failures.length > 0) {
     throw new AggregateError(failures, 'lifecycle cleanup failed');
