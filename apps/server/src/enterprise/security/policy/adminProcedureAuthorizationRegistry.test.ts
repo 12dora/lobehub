@@ -215,5 +215,9 @@ describe('admin procedure authorization registry', () => {
       (entry) => entry.dangerous && entry.controls.reauth.status === 'gap',
     );
     expect(dangerousReauthGaps.map(({ procedure }) => procedure).sort()).toEqual([]);
+    const regularReauthGaps = Object.values(ADMIN_MUTATION_REGISTRY).filter(
+      (entry) => !entry.dangerous && entry.controls.reauth.status === 'gap',
+    );
+    expect(regularReauthGaps.map(({ procedure }) => procedure).sort()).toEqual([]);
   });
 });
