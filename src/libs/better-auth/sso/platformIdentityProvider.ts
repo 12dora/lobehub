@@ -17,6 +17,7 @@ import { exchangePlatformOidcAuthorizationCode } from '@/server/enterprise/servi
 import {
   markPlatformOidcLoginStage,
   observePlatformOidcLoginFailure,
+  suppressPlatformOidcLoginObservation,
 } from './platformIdentityProviderObservation';
 import {
   createPlatformOidcNonceBinding,
@@ -108,6 +109,25 @@ interface PlatformIdentityProviderUser {
   name: string;
 }
 
+const mapPlatformProfileToUser = (
+  provider: RuntimeIdentityProvider,
+  profile: Record<string, unknown>,
+): PlatformIdentityProviderUser => {
+  const subject = firstStringClaim(profile, provider.claimMapping.subject);
+  const name = firstStringClaim(profile, [...provider.claimMapping.name, 'preferred_username']);
+  const email = firstStringClaim(profile, provider.claimMapping.email);
+  if (!subject || !name || !email || !emailAllowed(email, provider.domainAllowlist)) {
+    throw new Error('PLATFORM_OIDC_CLAIM_VALIDATION_FAILED');
+  }
+  return {
+    ...getStableDingTalkClaims(provider, profile),
+    email,
+    id: subject,
+    image: firstStringClaim(profile, provider.claimMapping.picture),
+    name,
+  };
+};
+
 /** The only DB/LKG → Better Auth provider adapter. */
 export const buildPlatformIdentityProvider = (
   provider: RuntimeIdentityProvider,
@@ -140,7 +160,14 @@ export const buildPlatformIdentityProvider = (
     disableImplicitSignUp: !provider.autoProvision,
     disableSignUp: !provider.autoProvision,
     getToken: async ({ code, codeVerifier, redirectURI: callbackRedirectURI }) => {
-      await markPlatformOidcLoginStage('token_exchange');
+      let isAccountLink = false;
+      try {
+        isAccountLink = (await readOAuthState())?.link !== undefined;
+      } catch {
+        // Direct adapter calls have no Better Auth request state; observability stays best-effort.
+      }
+      if (isAccountLink) await suppressPlatformOidcLoginObservation();
+      else await markPlatformOidcLoginStage('token_exchange');
       try {
         const token = await exchangePlatformOidcAuthorizationCode({
           clientId: provider.clientId,
@@ -178,6 +205,7 @@ export const buildPlatformIdentityProvider = (
         throw new Error('PLATFORM_OIDC_TOKEN_INVALID');
       }
       const oauthState = await readOAuthState();
+      if (oauthState?.link !== undefined) await suppressPlatformOidcLoginObservation();
       const expectedNonceHash = oauthState?.[PLATFORM_OIDC_NONCE_HASH_STATE_KEY];
       if (
         typeof expectedNonceHash !== 'string' ||
@@ -268,36 +296,19 @@ export const buildPlatformIdentityProvider = (
         id: idTokenClaims.sub,
         sub: idTokenClaims.sub,
       };
-      tokens.idToken = undefined;
-      return profile;
-    },
-    issuer: provider.issuer,
-    mapProfileToUser: async (profile) => {
       await markPlatformOidcLoginStage('authenticated');
       try {
-        const subject = firstStringClaim(profile, provider.claimMapping.subject);
-        const name = firstStringClaim(profile, [
-          ...provider.claimMapping.name,
-          'preferred_username',
-        ]);
-        const email = firstStringClaim(profile, provider.claimMapping.email);
-        if (!subject || !name || !email || !emailAllowed(email, provider.domainAllowlist)) {
-          throw new Error('PLATFORM_OIDC_CLAIM_VALIDATION_FAILED');
-        }
-        const user = {
-          ...getStableDingTalkClaims(provider, profile),
-          email,
-          id: subject,
-          image: firstStringClaim(profile, provider.claimMapping.picture),
-          name,
-        } satisfies PlatformIdentityProviderUser;
-        return user;
+        mapPlatformProfileToUser(provider, profile);
       } catch (error) {
         await markPlatformOidcLoginStage('authenticated', 'claim_invalid');
         await observePlatformOidcLoginFailure();
         throw error;
       }
+      tokens.idToken = undefined;
+      return profile;
     },
+    issuer: provider.issuer,
+    mapProfileToUser: (profile) => mapPlatformProfileToUser(provider, profile),
     pkce: true,
     providerId: provider.providerKey,
     redirectURI,

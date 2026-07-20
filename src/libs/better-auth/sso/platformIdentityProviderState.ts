@@ -6,7 +6,6 @@ import { z } from 'zod';
 
 import {
   enterPlatformOidcCallbackObservation,
-  markPlatformOidcLoginStage,
   observePlatformOidcLoginFailure,
   observePlatformOidcLoginSuccess,
   registerPlatformOidcFlow,
@@ -35,38 +34,6 @@ const failStateBinding = (): never => {
   throw new Error('PLATFORM_OIDC_STATE_BINDING_FAILED');
 };
 
-const GUARDED_PERSISTENCE_METHODS = new Set([
-  'createOAuthUser',
-  'createSession',
-  'findOAuthUser',
-  'linkAccount',
-  'updateAccount',
-  'updateUser',
-]);
-
-const guardCallbackPersistence = <T extends object>(adapter: T): T =>
-  new Proxy(adapter, {
-    get(target, property, receiver) {
-      const value = Reflect.get(target, property, receiver) as unknown;
-      if (
-        typeof property !== 'string' ||
-        !GUARDED_PERSISTENCE_METHODS.has(property) ||
-        typeof value !== 'function'
-      ) {
-        return value;
-      }
-      return async (...args: unknown[]) => {
-        try {
-          return await Reflect.apply(value, target, args);
-        } catch (error) {
-          await markPlatformOidcLoginStage('authenticated', 'unexpected');
-          await observePlatformOidcLoginFailure();
-          throw error;
-        }
-      };
-    },
-  });
-
 const hasSessionCookie = (headers?: Headers): boolean =>
   headers?.getSetCookie().some((cookie) => /(?:^|\s)[^=]*session_token=/.test(cookie)) ?? false;
 
@@ -89,46 +56,6 @@ export const platformIdentityProviderState = (
 
             const state = typeof ctx.query?.state === 'string' ? ctx.query.state : null;
             await enterPlatformOidcCallbackObservation(ctx.context.internalAdapter, state);
-            ctx.context.internalAdapter = guardCallbackPersistence(ctx.context.internalAdapter);
-
-            const cookieCache = ctx.context.options.session?.cookieCache;
-            const cookieVersion = cookieCache?.version;
-            if (typeof cookieVersion === 'function') {
-              ctx.context.options = {
-                ...ctx.context.options,
-                session: {
-                  ...ctx.context.options.session,
-                  cookieCache: {
-                    ...cookieCache,
-                    version: async (session, user) => {
-                      try {
-                        return await cookieVersion(session, user);
-                      } catch (error) {
-                        await markPlatformOidcLoginStage('authenticated', 'unexpected');
-                        await observePlatformOidcLoginFailure();
-                        throw error;
-                      }
-                    },
-                  },
-                },
-              };
-            }
-
-            const setCookie = ctx.setCookie;
-            return {
-              context: {
-                setCookie: (...args: Parameters<typeof setCookie>) => {
-                  try {
-                    return setCookie(...args);
-                  } catch (error) {
-                    void markPlatformOidcLoginStage('authenticated', 'unexpected').then(() =>
-                      observePlatformOidcLoginFailure(),
-                    );
-                    throw error;
-                  }
-                },
-              },
-            };
           }),
           matcher: (ctx) => ctx.path === '/oauth2/callback/:providerId',
         },

@@ -8,6 +8,7 @@ type RouteHandler = (request: Request) => Promise<Response>;
 
 const mocks = vi.hoisted(() => ({
   get: vi.fn<RouteHandler>(async () => Response.json({ ok: true })),
+  observeRawCallbackFailure: vi.fn(),
   post: vi.fn<RouteHandler>(async () => Response.json({ ok: true })),
 }));
 
@@ -19,7 +20,11 @@ vi.mock('better-auth/next-js', () => ({
 }));
 
 vi.mock('@/auth', () => ({
-  auth: {},
+  auth: { $context: Promise.resolve({ internalAdapter: { id: 'adapter' } }) },
+}));
+
+vi.mock('@/libs/better-auth/sso/platformIdentityProviderObservation', () => ({
+  observePlatformOidcRawCallbackFailure: mocks.observeRawCallbackFailure,
 }));
 
 const createPostRequest = (body: string, contentType = 'application/json') =>
@@ -80,6 +85,31 @@ describe('/api/auth/[...all] route', () => {
 
     expect(response.status).toBe(200);
     expect(mocks.post).toHaveBeenCalledTimes(1);
+  });
+
+  it('fire-and-forgets raw callback failure observation without changing the response', async () => {
+    const responseFromHandler = Response.json({ code: 'INTERNAL_SERVER_ERROR' }, { status: 500 });
+    let finishObservation: (() => void) | undefined;
+    mocks.observeRawCallbackFailure.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        finishObservation = resolve;
+      }),
+    );
+    mocks.get.mockResolvedValueOnce(responseFromHandler);
+    const request = new Request(
+      'https://localhost/api/auth/oauth2/callback/corp-oidc?state=opaque',
+    ) as NextRequest;
+
+    const response = await GET(request);
+    await vi.waitFor(() => expect(mocks.observeRawCallbackFailure).toHaveBeenCalledOnce());
+
+    expect(response).toBe(responseFromHandler);
+    expect(mocks.observeRawCallbackFailure).toHaveBeenCalledWith(
+      { id: 'adapter' },
+      request,
+      responseFromHandler,
+    );
+    finishObservation?.();
   });
 
   it('delegates GET requests to Better Auth', async () => {
