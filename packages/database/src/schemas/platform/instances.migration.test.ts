@@ -2,6 +2,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
+import { PGlite } from '@electric-sql/pglite';
 import { describe, expect, it } from 'vitest';
 
 const migrations = path.join(import.meta.dirname, '../../../migrations');
@@ -71,6 +72,29 @@ describe('M14 platform instance revision migration', () => {
     delete normalizedPrevious.prevId;
     expect(normalizedSnapshot).toEqual(normalizedPrevious);
     expect(snapshot.prevId).toBe(previousSnapshot.id);
+  });
+
+  it('replays twice from an empty PostgreSQL-compatible database', async () => {
+    const db = new PGlite();
+    try {
+      for (let pass = 0; pass < 2; pass += 1) {
+        for (const statement of migrationSql.split('--> statement-breakpoint')) {
+          if (statement.trim()) await db.exec(statement);
+        }
+      }
+      const result = await db.query<{ table_name: string }>(`
+        SELECT table_name
+        FROM information_schema.tables
+        WHERE table_schema = 'public' AND table_name LIKE 'platform_instance_%'
+        ORDER BY table_name
+      `);
+      expect(result.rows.map(({ table_name }) => table_name)).toEqual([
+        'platform_instance_heartbeats',
+        'platform_instance_revision_states',
+      ]);
+    } finally {
+      await db.close();
+    }
   });
 
   it('keeps the generated journal and snapshot counts aligned at 136', () => {
