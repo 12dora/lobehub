@@ -24,6 +24,58 @@ const resourceKey = platformConfigKeys.resourceVersion(TEST_RESOURCE_TYPE, TEST_
 const diagnosticKey = `platform:config:last_event:${TEST_RESOURCE_TYPE}:${TEST_RESOURCE_ID}`;
 const ownedKeys = [platformConfigKeys.globalVersion(), resourceKey, versionKey, diagnosticKey];
 
+interface RedisGateDisconnectable {
+  disconnect: () => Promise<void>;
+}
+
+interface RedisGatePublisherClient extends RedisGateDisconnectable {
+  del: (...keys: string[]) => Promise<number>;
+}
+
+const cleanupRedisGateClients = async (
+  publisherClient: RedisGatePublisherClient | undefined,
+  readerClient: RedisGateDisconnectable | undefined,
+): Promise<void> => {
+  resetDomainConfigCachesForTest();
+  const errors: unknown[] = [];
+
+  try {
+    if (publisherClient) await publisherClient.del(...ownedKeys);
+  } catch (error) {
+    errors.push(error);
+  } finally {
+    const disconnectResults = await Promise.allSettled([
+      Promise.resolve().then(() => publisherClient?.disconnect()),
+      Promise.resolve().then(() => readerClient?.disconnect()),
+    ]);
+    for (const result of disconnectResults) {
+      if (result.status === 'rejected') errors.push(result.reason);
+    }
+  }
+
+  if (errors.length > 0) {
+    throw new AggregateError(errors, 'Real Redis gate cleanup failed');
+  }
+};
+
+describe('real Redis gate cleanup', () => {
+  it('disconnects both clients when key deletion and one disconnect fail', async () => {
+    const publisherClient = {
+      del: vi.fn().mockRejectedValue(new Error('delete failed')),
+      disconnect: vi.fn().mockRejectedValue(new Error('publisher disconnect failed')),
+    };
+    const readerClient = { disconnect: vi.fn().mockResolvedValue(undefined) };
+
+    await expect(cleanupRedisGateClients(publisherClient, readerClient)).rejects.toMatchObject({
+      errors: [expect.any(Error), expect.any(Error)],
+      message: 'Real Redis gate cleanup failed',
+    });
+    expect(publisherClient.del).toHaveBeenCalledWith(...ownedKeys);
+    expect(publisherClient.disconnect).toHaveBeenCalledOnce();
+    expect(readerClient.disconnect).toHaveBeenCalledOnce();
+  });
+});
+
 describe.skipIf(!testRedisUrl)('DomainConfigCache real Redis convergence', () => {
   let publisherClient: IoRedisRedisProvider | undefined;
   let readerClient: IoRedisRedisProvider | undefined;
@@ -46,9 +98,7 @@ describe.skipIf(!testRedisUrl)('DomainConfigCache real Redis convergence', () =>
   });
 
   afterAll(async () => {
-    resetDomainConfigCachesForTest();
-    if (publisherClient) await publisherClient.del(...ownedKeys);
-    await Promise.all([publisherClient?.disconnect(), readerClient?.disconnect()]);
+    await cleanupRedisGateClients(publisherClient, readerClient);
   });
 
   it('converges through request-time version reads across two independent clients', async () => {
