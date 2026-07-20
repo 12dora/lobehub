@@ -108,7 +108,12 @@ export interface SuiteUserRoleLink {
  * Explicit commit state machine — never infer "not committed" after COMMIT is issued.
  * ambiguous: COMMIT timed out/rejected after start; journal kept; reconcile required.
  */
-export type CommitPhase = 'notStarted' | 'commitStarted' | 'committed' | 'rolledBack' | 'ambiguous';
+export type CommitPhase =
+  | 'notStarted' // pre-send; no COMMIT SQL yet
+  | 'commitIssued' // COMMIT query sent, still in-flight or outcome not yet armed
+  | 'committed' // known successful commit
+  | 'rolledBack' // known rollback / no pollution
+  | 'ambiguous'; // query finished without client certainty; journal kept until reconcile
 
 /** Full global digest used for before/after equality. */
 export interface GlobalDbDigest {
@@ -948,6 +953,10 @@ export type DurableRestoreHandle = {
   reconcileError?: string;
   /** Read-only: number of active settle timers owned by restore hooks. */
   activeSettleTimers: number;
+  /** PostgreSQL backend pid for the owned seed connection (for fail-closed terminate). */
+  ownedBackendPid: null | number;
+  /** In-flight COMMIT promise while phase is commitIssued. */
+  commitInFlight: null | Promise<unknown>;
 };
 
 /** Module-level settle timer bookkeeping for tests (owned restore timers only). */
@@ -966,10 +975,12 @@ export const createDurableRestoreHandle = (databaseUrl: string): DurableRestoreH
       handle.markSettled();
     },
     activeSettleTimers: 0,
+    commitInFlight: null,
     commitPhase: 'notStarted',
     committed: false,
     databaseUrl,
     manifest: null,
+    ownedBackendPid: null,
     markSettled: () => {
       if (settled) return;
       settled = true;
@@ -1002,7 +1013,13 @@ const waitBarrierDir = async (dir: string, markerName: string, maxMs: number): P
  * Sets phase to committed (restorable) or rolledBack; if unprovable, keeps ambiguous and throws.
  */
 export const reconcileAmbiguousCommit = async (durable: DurableRestoreHandle): Promise<void> => {
-  if (durable.commitPhase !== 'ambiguous' && durable.commitPhase !== 'commitStarted') {
+  // Never reconcile an in-flight COMMIT as rolledBack — uncommitted rows are invisible.
+  if (durable.commitPhase === 'commitIssued' && durable.commitInFlight) {
+    throw new Error(
+      'fail-closed: cannot reconcile while COMMIT is still in-flight on owned backend',
+    );
+  }
+  if (durable.commitPhase !== 'ambiguous' && durable.commitPhase !== 'commitIssued') {
     return;
   }
   if (!durable.manifest || !durable.seed) {
@@ -1012,7 +1029,7 @@ export const reconcileAmbiguousCommit = async (durable: DurableRestoreHandle): P
   }
   const pool = new Pool({ connectionString: durable.databaseUrl });
   try {
-    // Prove commit landed by checking a suite-created principal exists.
+    // Prove commit landed by checking a suite-created principal exists (after-state).
     const users = await pool.query(`SELECT id FROM users WHERE id = $1 LIMIT 1`, [
       durable.seed.ordinary.id,
     ]);
@@ -1021,7 +1038,8 @@ export const reconcileAmbiguousCommit = async (durable: DurableRestoreHandle): P
       durable.committed = true;
       return;
     }
-    // No suite principal → treat as rolled back (no pollution).
+    // No suite principal after query finished → known rolled back / no pollution.
+    // Only clear journal once COMMIT is no longer in-flight.
     durable.commitPhase = 'rolledBack';
     durable.committed = false;
     durable.manifest = null;
@@ -1038,8 +1056,22 @@ export const reconcileAmbiguousCommit = async (durable: DurableRestoreHandle): P
   }
 };
 
+/** Terminate only the owned seed PostgreSQL backend (never foreign backends). */
+export const terminateOwnedSeedBackend = async (durable: DurableRestoreHandle): Promise<void> => {
+  const pid = durable.ownedBackendPid;
+  if (!pid) return;
+  const pool = new Pool({ connectionString: durable.databaseUrl });
+  try {
+    await pool.query(`SELECT pg_terminate_backend($1::int)`, [pid]);
+  } catch {
+    // backend may already be gone
+  } finally {
+    await pool.end().catch(() => undefined);
+  }
+};
+
 const isRestorablePhase = (phase: CommitPhase): boolean =>
-  phase === 'committed' || phase === 'ambiguous' || phase === 'commitStarted';
+  phase === 'committed' || phase === 'ambiguous' || phase === 'commitIssued';
 
 export const seedEnterpriseAdminSuite = async (
   databaseUrl: string,
@@ -1092,6 +1124,11 @@ const seedEnterpriseAdminSuiteInner = async (
   const workspaceSlug = `ws-${namespace}`.slice(0, 80);
   const passwordHash = await bcrypt.hash(password, 10);
   const pool = new Pool({ connectionString: databaseUrl });
+  // Single owned client for the full seed transaction (backend pid + in-flight COMMIT).
+  const client = await pool.connect();
+  // Suppress unhandled 'error' when lifecycle terminates this backend mid-COMMIT.
+  client.on('error', () => undefined);
+  const q = (text: string, params?: unknown[]) => client.query(text, params);
   const now = new Date().toISOString();
   const onboarding = JSON.stringify({ finishedAt: now, version: 1 });
 
@@ -1107,7 +1144,9 @@ const seedEnterpriseAdminSuiteInner = async (
   const permCodeById = new Map<string, string>();
 
   try {
-    await pool.query('BEGIN');
+    await q('BEGIN');
+    const pidRow = await q('SELECT pg_backend_pid() AS pid');
+    durableRestore.ownedBackendPid = Number(pidRow.rows[0]?.pid ?? 0) || null;
 
     if (process.env.E2E_CAS_FORCE_TXN_ROLLBACK === '1') {
       throw new Error('forced mid-transaction rollback');
@@ -1116,7 +1155,7 @@ const seedEnterpriseAdminSuiteInner = async (
     for (const code of PLATFORM_PERMISSIONS) {
       const category = code.split(':')[0] || 'platform';
       const candidateId = `perm_${nano(8)}`;
-      const inserted = await pool.query(
+      const inserted = await q(
         `INSERT INTO rbac_permissions (id, code, name, category, description, is_active, created_at, updated_at)
          VALUES ($1, $2, $3, $4, $5, true, $6, $6)
          ON CONFLICT (code) DO NOTHING
@@ -1127,10 +1166,9 @@ const seedEnterpriseAdminSuiteInner = async (
         createdPermissionIds.push(String(inserted.rows[0].id));
         permCodeById.set(String(inserted.rows[0].id), String(inserted.rows[0].code));
       } else {
-        const existing = await pool.query(
-          `SELECT id, code FROM rbac_permissions WHERE code = $1 LIMIT 1`,
-          [code],
-        );
+        const existing = await q(`SELECT id, code FROM rbac_permissions WHERE code = $1 LIMIT 1`, [
+          code,
+        ]);
         if (existing.rows[0]?.id) {
           permCodeById.set(String(existing.rows[0].id), String(existing.rows[0].code));
         }
@@ -1140,7 +1178,7 @@ const seedEnterpriseAdminSuiteInner = async (
     const roleIds = new Map<string, string>();
     for (const roleName of PLATFORM_ROLES) {
       const candidateId = `role_${roleName}_${nano(4)}`;
-      const inserted = await pool.query(
+      const inserted = await q(
         `INSERT INTO rbac_roles (id, name, display_name, description, is_system, is_active, metadata, workspace_id, created_at, updated_at)
          VALUES ($1, $2, $3, $4, true, true, '{}'::jsonb, NULL, $5, $5)
          ON CONFLICT DO NOTHING
@@ -1150,7 +1188,7 @@ const seedEnterpriseAdminSuiteInner = async (
       if (inserted.rows[0]?.id) {
         createdRoleIds.push(String(inserted.rows[0].id));
       }
-      const found = await pool.query(
+      const found = await q(
         `SELECT id FROM rbac_roles WHERE name = $1 AND workspace_id IS NULL LIMIT 1`,
         [roleName],
       );
@@ -1160,13 +1198,11 @@ const seedEnterpriseAdminSuiteInner = async (
       roleNameById.set(id, roleName);
 
       for (const code of ROLE_PERMISSION_MAP[roleName]) {
-        const perm = await pool.query(`SELECT id FROM rbac_permissions WHERE code = $1 LIMIT 1`, [
-          code,
-        ]);
+        const perm = await q(`SELECT id FROM rbac_permissions WHERE code = $1 LIMIT 1`, [code]);
         const permissionId = perm.rows[0]?.id as string | undefined;
         if (!permissionId) continue;
         // Ownership ONLY from RETURNING — never claim pre-existing rows.
-        const link = await pool.query(
+        const link = await q(
           `INSERT INTO rbac_role_permissions (role_id, permission_id, created_at)
            VALUES ($1, $2, $3)
            ON CONFLICT DO NOTHING
@@ -1189,7 +1225,7 @@ const seedEnterpriseAdminSuiteInner = async (
     }
 
     const insertUser = async (user: SuitePrincipal) => {
-      await pool.query(
+      await q(
         `INSERT INTO users (id, email, normalized_email, username, full_name, email_verified, onboarding, created_at, updated_at, last_active_at)
          VALUES ($1, $2, $3, $4, $5, true, $6, $7, $7, $7)
          ON CONFLICT (id) DO UPDATE SET onboarding = $6, updated_at = $7`,
@@ -1203,7 +1239,7 @@ const seedEnterpriseAdminSuiteInner = async (
           now,
         ],
       );
-      await pool.query(
+      await q(
         `INSERT INTO accounts (id, user_id, account_id, provider_id, password, created_at, updated_at)
          VALUES ($1, $2, $3, 'credential', $4, $5, $5)
          ON CONFLICT (id) DO UPDATE SET password = $4, updated_at = $5`,
@@ -1222,7 +1258,7 @@ const seedEnterpriseAdminSuiteInner = async (
     }) => {
       const linkId = randomUUID();
       // RETURN every stored column (id, user_id, role_id, workspace_id, created_at, expires_at).
-      const inserted = await pool.query(
+      const inserted = await q(
         `INSERT INTO rbac_user_roles (id, user_id, role_id, workspace_id, created_at, expires_at)
          VALUES ($1::uuid, $2, $3, $4, $5, NULL)
          ON CONFLICT DO NOTHING
@@ -1255,7 +1291,7 @@ const seedEnterpriseAdminSuiteInner = async (
     await assignGlobal(superAdmin.id, 'super_admin');
     await assignGlobal(auditor.id, 'auditor');
 
-    await pool.query(
+    await q(
       `INSERT INTO workspaces (id, slug, name, description, primary_owner_id, created_at, updated_at)
        VALUES ($1, $2, $3, $4, $5, $6, $6)
        ON CONFLICT (id) DO NOTHING`,
@@ -1263,13 +1299,13 @@ const seedEnterpriseAdminSuiteInner = async (
     );
 
     const ownerRoleCandidate = `role_ws_owner_${nano(4)}`;
-    await pool.query(
+    await q(
       `INSERT INTO rbac_roles (id, name, display_name, description, is_system, is_active, workspace_id, created_at, updated_at)
        VALUES ($1, 'workspace_owner', 'Workspace Owner', 'workspace owner', true, true, $2, $3, $3)
        ON CONFLICT DO NOTHING`,
       [ownerRoleCandidate, workspaceId, now],
     );
-    const ownerRole = await pool.query(
+    const ownerRole = await q(
       `SELECT id FROM rbac_roles WHERE name = 'workspace_owner' AND workspace_id = $1 LIMIT 1`,
       [workspaceId],
     );
@@ -1287,7 +1323,7 @@ const seedEnterpriseAdminSuiteInner = async (
       const item = { enforcementMode: managed ? 'enforced' : 'observe', managed };
       const config = JSON.stringify({ draft: item, published: item });
       const policyId = `pmrp_${resource}_${nano(4)}`;
-      const inserted = await pool.query(
+      const inserted = await q(
         `INSERT INTO platform_managed_resource_policies
            (id, resource, status, revision, enforcement, config, created_at, updated_at)
          VALUES ($1, $2, 'published', 1, $3, $4::jsonb, $5, $5)
@@ -1302,7 +1338,7 @@ const seedEnterpriseAdminSuiteInner = async (
 
     // Skills must be managed+enforced for fail-closed tests.
     const skillsBefore = beforePoliciesByResource.get('skills');
-    const skillsCurrent = await pool.query(
+    const skillsCurrent = await q(
       `SELECT id, resource, status, revision, enforcement, config::text AS config
          FROM platform_managed_resource_policies WHERE resource = 'skills' LIMIT 1`,
     );
@@ -1323,7 +1359,7 @@ const seedEnterpriseAdminSuiteInner = async (
           draft: { enforcementMode: 'enforced', managed: true },
           published: { enforcementMode: 'enforced', managed: true },
         });
-        const updated = await pool.query(
+        const updated = await q(
           `UPDATE platform_managed_resource_policies
               SET status = 'published',
                   revision = GREATEST(revision, 1),
@@ -1356,7 +1392,7 @@ const seedEnterpriseAdminSuiteInner = async (
     let createdPermissions: PlatformPermissionRow[] = [];
     let createdRoles: PlatformRoleRow[] = [];
     if (createdPermIdSet.size > 0) {
-      const permRows = await pool.query(
+      const permRows = await q(
         `SELECT id, code, name, category, description, is_active, created_at, updated_at
            FROM rbac_permissions WHERE id = ANY($1::text[])`,
         [[...createdPermIdSet]],
@@ -1364,7 +1400,7 @@ const seedEnterpriseAdminSuiteInner = async (
       createdPermissions = permRows.rows.map((r) => mapPermissionRow(r as Record<string, unknown>));
     }
     if (createdRoleIdSet.size > 0) {
-      const roleRows = await pool.query(
+      const roleRows = await q(
         `SELECT id, name, display_name, description, is_system, is_active, workspace_id,
                 metadata, created_at, updated_at
            FROM rbac_roles WHERE id = ANY($1::text[]) AND workspace_id IS NULL`,
@@ -1373,7 +1409,7 @@ const seedEnterpriseAdminSuiteInner = async (
       createdRoles = roleRows.rows.map((r) => mapRoleRow(r as Record<string, unknown>));
     }
 
-    const policyRows = await pool.query(
+    const policyRows = await q(
       `SELECT id, resource, status, revision, enforcement, config::text AS config
          FROM platform_managed_resource_policies
         WHERE id = ANY($1::text[]) OR resource = ANY($2::text[])`,
@@ -1447,36 +1483,49 @@ const seedEnterpriseAdminSuiteInner = async (
     durableRestore.manifest = journal;
     durableRestore.seed = suiteSeed;
 
-    // State machine: mark commitStarted synchronously BEFORE sending COMMIT SQL.
-    durableRestore.commitPhase = 'commitStarted';
+    // Optional deferred-commit probe (tests only): insert row that fires DEFERRABLE trigger at COMMIT.
+    if (
+      process.env.E2E_CAS_COMMIT_DEFERRED_RAISE === '1' ||
+      process.env.E2E_CAS_COMMIT_DEFERRED_SLEEP_MS
+    ) {
+      await q(
+        `INSERT INTO e2e_cas_commit_probe (id, note) VALUES (1, $1)
+         ON CONFLICT (id) DO UPDATE SET note = EXCLUDED.note`,
+        [process.env.E2E_CAS_COMMIT_DEFERRED_SLEEP_MS || 'raise'],
+      );
+      if (process.env.E2E_CAS_COMMIT_DEFERRED_SLEEP_MS) {
+        await q(`SELECT set_config('e2e.cas_commit_sleep_ms', $1, true)`, [
+          process.env.E2E_CAS_COMMIT_DEFERRED_SLEEP_MS,
+        ]);
+      }
+      if (process.env.E2E_CAS_COMMIT_DEFERRED_RAISE === '1') {
+        await q(`SELECT set_config('e2e.cas_commit_mode', 'raise', true)`);
+      } else {
+        await q(`SELECT set_config('e2e.cas_commit_mode', 'sleep', true)`);
+      }
+    }
 
-    // --- Deterministic commit protocol seams (default path: real COMMIT then arm) ---
-    // 1) Pending commitStarted without server COMMIT (settle-timeout / hang tests).
-    if (process.env.E2E_CAS_COMMIT_PENDING_HANG_DIR) {
-      durableRestore.commitPhase = 'commitStarted';
-      await waitBarrierDir(process.env.E2E_CAS_COMMIT_PENDING_HANG_DIR, 'commit-started', 120_000);
-      // If released without force-abort, fall through is not used — tests release after cleanup.
-      throw new Error(
-        'commitStarted hang released without COMMIT (journal preserved, phase commitStarted/ambiguous)',
+    // Mark COMMIT issued synchronously IMMEDIATELY before sending the real COMMIT query.
+    durableRestore.commitPhase = 'commitIssued';
+    const hangAfterIssue = process.env.E2E_CAS_COMMIT_ISSUED_MARKER_DIR;
+    if (hangAfterIssue) {
+      const { writeFileSync } = await import('node:fs');
+      writeFileSync(
+        `${hangAfterIssue}/commit-issued`,
+        String(durableRestore.ownedBackendPid ?? ''),
+        'utf8',
       );
     }
 
-    // 2) Real server ROLLBACK after commitStarted (COMMIT attempt path ends rolled-back on server).
-    //    Sends a real end-of-txn query; does not mark committed; reconcile sees before-state.
-    if (process.env.E2E_CAS_COMMIT_ATTEMPT_ROLLBACK === '1') {
-      await pool.query('ROLLBACK');
-      durableRestore.commitPhase = 'ambiguous';
-      durableRestore.committed = false;
-      throw new Error(
-        'commit attempt terminated with server ROLLBACK (ambiguous; journal preserved)',
-      );
-    }
+    const commitPromise = q('COMMIT');
+    durableRestore.commitInFlight = commitPromise;
 
     try {
-      // 3) Production path: send COMMIT to PostgreSQL (must complete on server before arm).
-      await pool.query('COMMIT');
+      await commitPromise;
+      durableRestore.commitInFlight = null;
 
-      // 4) Server COMMIT landed; optionally withhold client arm (ambiguous until reconcile).
+      // Server COMMIT completed successfully (or deferred path allowed it).
+      // Optionally withhold client arm so lifecycle must reconcile landed after-state.
       if (process.env.E2E_CAS_COMMIT_LANDED_CLIENT_UNKNOWN === '1') {
         durableRestore.commitPhase = 'ambiguous';
         durableRestore.committed = false;
@@ -1493,7 +1542,8 @@ const seedEnterpriseAdminSuiteInner = async (
       durableRestore.commitPhase = 'committed';
       durableRestore.committed = true;
     } catch (commitError) {
-      // COMMIT rejected or withheld after being issued — never infer rolledBack without reconcile.
+      durableRestore.commitInFlight = null;
+      // COMMIT rejected after being issued (e.g. deferred RAISE) — never infer rolledBack without reconcile.
       if (durableRestore.commitPhase !== 'committed') {
         durableRestore.commitPhase = 'ambiguous';
         durableRestore.committed = false;
@@ -1503,25 +1553,39 @@ const seedEnterpriseAdminSuiteInner = async (
   } catch (error) {
     const phase = durableRestore.commitPhase;
     if (phase === 'notStarted') {
-      await pool.query('ROLLBACK').catch(() => undefined);
+      await q('ROLLBACK').catch(() => undefined);
       durableRestore.commitPhase = 'rolledBack';
       durableRestore.manifest = null;
       durableRestore.seed = null;
       durableRestore.committed = false;
-    } else if (phase === 'commitStarted' || phase === 'ambiguous') {
-      // Do not discard journal. Leave phase ambiguous for restore/reconcile.
-      durableRestore.commitPhase = 'ambiguous';
-      await pool.query('ROLLBACK').catch(() => undefined);
+    } else if (phase === 'commitIssued') {
+      // In-flight or just-finished without arm: keep journal; do not ROLLBACK if already decided.
+      const inflight: Promise<unknown> | null = durableRestore.commitInFlight;
+      if (inflight) {
+        // Let in-flight settle; outer lifecycle may terminate owned backend.
+        await inflight.catch(() => undefined);
+        durableRestore.commitInFlight = null;
+      }
+      if (durableRestore.commitPhase !== 'committed') {
+        durableRestore.commitPhase = 'ambiguous';
+      }
+    } else if (phase === 'ambiguous') {
+      // Keep journal; best-effort rollback only if txn still open.
+      await q('ROLLBACK').catch(() => undefined);
     } else if (phase === 'committed') {
       // Post-commit errors must not clear restorable journal.
     } else {
-      await pool.query('ROLLBACK').catch(() => undefined);
+      await q('ROLLBACK').catch(() => undefined);
     }
     throw error;
   } finally {
-    await pool.end();
+    try {
+      client.release();
+    } catch {
+      // connection may be terminated
+    }
+    await pool.end().catch(() => undefined);
   }
-
   if (!durableRestore.manifest || !durableRestore.seed) {
     throw new Error('seed completed without durable journal');
   }
@@ -1634,9 +1698,41 @@ export const registerSeedRestoreOnLifecycle = (
   const phaseOf = (d: DurableRestoreHandle): CommitPhase => d.commitPhase;
   const isFullyCommitted = (d: DurableRestoreHandle): boolean =>
     d.committed || phaseOf(d) === 'committed';
-  const needsReconcile = (d: DurableRestoreHandle): boolean => {
-    const p = phaseOf(d);
-    return p === 'ambiguous' || p === 'commitStarted';
+
+  const waitBounded = async (ms: number): Promise<'settled' | 'timeout'> => {
+    let timedOut = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const racers: Array<Promise<'settled' | 'timeout'>> = [
+      durableRestore.whenSettled.then(() => 'settled' as const),
+      new Promise<'timeout'>((resolve) => {
+        timer = setTimeout(() => {
+          timedOut = true;
+          resolve('timeout');
+        }, ms);
+        globalActiveSettleTimers += 1;
+        durableRestore.activeSettleTimers += 1;
+        if (typeof timer === 'object' && 'unref' in timer) {
+          (timer as { unref: () => void }).unref();
+        }
+      }),
+    ];
+    if (durableRestore.commitInFlight) {
+      racers.push(
+        durableRestore.commitInFlight
+          .then(() => 'settled' as const)
+          .catch(() => 'settled' as const),
+      );
+    }
+    try {
+      await Promise.race(racers);
+    } finally {
+      if (timer) {
+        clearTimeout(timer);
+        globalActiveSettleTimers = Math.max(0, globalActiveSettleTimers - 1);
+        durableRestore.activeSettleTimers = Math.max(0, durableRestore.activeSettleTimers - 1);
+      }
+    }
+    return timedOut ? 'timeout' : 'settled';
   };
 
   state.preCleanupHooks.push(async () => {
@@ -1659,47 +1755,79 @@ export const registerSeedRestoreOnLifecycle = (
       await restoreOnce();
       return;
     }
-    if (needsReconcile(durableRestore)) {
+
+    // COMMIT issued / in-flight: wait bounded settle; NEVER reconcile as rolledBack while pending.
+    if (phaseOf(durableRestore) === 'commitIssued' || durableRestore.commitInFlight) {
+      const outcome = await waitBounded(settleTimeoutMs);
+      const inflight: Promise<unknown> | null = durableRestore.commitInFlight;
+      if (inflight) {
+        // Still pending after settle timeout — fail-closed: terminate only owned backend.
+        if (outcome === 'timeout') {
+          await terminateOwnedSeedBackend(durableRestore);
+        }
+        await inflight.catch(() => undefined);
+        durableRestore.commitInFlight = null;
+      }
+      // Query finished (or backend terminated). Reconcile only now.
+      if (!isFullyCommitted(durableRestore)) {
+        await reconcileAmbiguousCommit(durableRestore);
+      }
+      if (isFullyCommitted(durableRestore)) {
+        await restoreOnce();
+        return;
+      }
+      if (phaseOf(durableRestore) === 'rolledBack') {
+        return;
+      }
+      if (phaseOf(durableRestore) === 'ambiguous' && durableRestore.manifest) {
+        // Keep journal; attempt restore if after-state appeared mid-race.
+        try {
+          await restoreOnce();
+        } catch {
+          throw new Error(
+            'fail-closed: ambiguous COMMIT after owned-backend resolution; journal preserved',
+          );
+        }
+      }
+      return;
+    }
+
+    // Outcome known ambiguous (e.g. deferred raise / client withhold after query finished).
+    if (phaseOf(durableRestore) === 'ambiguous') {
       await reconcileAmbiguousCommit(durableRestore);
       if (isFullyCommitted(durableRestore)) {
         await restoreOnce();
         return;
       }
-      if (phaseOf(durableRestore) === 'ambiguous') {
-        throw new Error(
-          'fail-closed: ambiguous COMMIT with unrecovered journal — refuse silent return',
+      if (phaseOf(durableRestore) === 'rolledBack') {
+        return;
+      }
+      throw new Error(
+        'fail-closed: ambiguous COMMIT with unrecovered journal — refuse silent return',
+      );
+    }
+
+    // notStarted (or other pre-issue states): wait for settle with bounded fail-closed timeout.
+    const outcome = await waitBounded(settleTimeoutMs);
+
+    // Seed may have advanced to commitIssued/committed while we waited.
+    const advancedPhase = phaseOf(durableRestore);
+    const pendingCommit = durableRestore.commitInFlight as Promise<unknown> | null;
+    if (advancedPhase === 'commitIssued' || pendingCommit) {
+      if (pendingCommit) {
+        if (outcome === 'timeout') {
+          await terminateOwnedSeedBackend(durableRestore);
+        }
+        await Promise.resolve(pendingCommit).then(
+          () => undefined,
+          () => undefined,
         );
+        durableRestore.commitInFlight = null;
       }
-      return;
-    }
-
-    // Not yet committed: wait for settle with bounded fail-closed timeout (timer cancelled).
-    let timedOut = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      await Promise.race([
-        durableRestore.whenSettled,
-        new Promise<void>((resolve) => {
-          timer = setTimeout(() => {
-            timedOut = true;
-            resolve();
-          }, settleTimeoutMs);
-          globalActiveSettleTimers += 1;
-          durableRestore.activeSettleTimers += 1;
-          if (typeof timer === 'object' && 'unref' in timer) {
-            (timer as { unref: () => void }).unref();
-          }
-        }),
-      ]);
-    } finally {
-      if (timer) {
-        clearTimeout(timer);
-        globalActiveSettleTimers = Math.max(0, globalActiveSettleTimers - 1);
-        durableRestore.activeSettleTimers = Math.max(0, durableRestore.activeSettleTimers - 1);
+      if (!isFullyCommitted(durableRestore)) {
+        await reconcileAmbiguousCommit(durableRestore);
       }
-    }
-
-    if (needsReconcile(durableRestore)) {
+    } else if (advancedPhase === 'ambiguous') {
       await reconcileAmbiguousCommit(durableRestore);
     }
 
@@ -1708,16 +1836,14 @@ export const registerSeedRestoreOnLifecycle = (
       return;
     }
 
-    if (timedOut && phaseOf(durableRestore) === 'notStarted') {
-      // Never started commit — fail-closed no-op.
+    if (outcome === 'timeout' && phaseOf(durableRestore) === 'notStarted') {
       return;
     }
-    if (timedOut && isRestorablePhase(phaseOf(durableRestore))) {
+    if (isFullyCommitted(durableRestore)) {
       await restoreOnce();
       return;
     }
-    if (timedOut && durableRestore.manifest && durableRestore.seed) {
-      // Fail hard: refuse silent return with unrecovered journal evidence.
+    if (outcome === 'timeout' && durableRestore.manifest && durableRestore.seed) {
       throw new Error(
         `fail-closed: seed settle timeout with phase=${phaseOf(durableRestore)}; journal preserved`,
       );

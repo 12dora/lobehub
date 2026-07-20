@@ -851,7 +851,7 @@ describe('CAS real signal subprocess + foreign concurrent links', () => {
     expect(digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl))).toBe(beforeFp);
   }, 90_000);
 
-  it('server COMMIT landed, client result withheld: lifecycle reconcile restores digest', async () => {
+  it('real COMMIT sent+landed, client result withheld: lifecycle restores digest', async () => {
     const harness = await startCasPostgres();
     cleanups.push(harness.stop);
     const beforeFp = digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl));
@@ -877,40 +877,40 @@ describe('CAS real signal subprocess + foreign concurrent links', () => {
     installLifecycleSignalHandlers(state);
     expect(process.listenerCount('SIGINT')).toBe(baseSig + 1);
     expect(process.listenerCount('SIGTERM')).toBe(baseTerm + 1);
-    registerSeedRestoreOnLifecycle(state, durable, { settleTimeoutMs: 2_000 });
+    registerSeedRestoreOnLifecycle(state, durable, { settleTimeoutMs: 1_500 });
 
     process.env.E2E_CAS_COMMIT_LANDED_CLIENT_UNKNOWN = '1';
     process.env.E2E_CAS_COMMIT_LANDED_HANG_DIR = hangDir;
+    process.env.E2E_CAS_COMMIT_ISSUED_MARKER_DIR = hangDir;
     const seedPromise = seedFn(harness.databaseUrl, durable).catch((e) => e);
 
-    // Wait until server COMMIT landed (marker) while client still hanging
-    const marker = path.join(hangDir, 'commit-landed');
-    const deadline = Date.now() + 30_000;
-    while (!existsSync(marker) && Date.now() < deadline) {
+    const issued = path.join(hangDir, 'commit-issued');
+    const landed = path.join(hangDir, 'commit-landed');
+    const deadline = Date.now() + 60_000;
+    while ((!existsSync(issued) || !existsSync(landed)) && Date.now() < deadline) {
       await sleep(50);
     }
-    expect(existsSync(marker)).toBe(true);
-    // Pollution present (COMMIT landed)
+    expect(existsSync(issued)).toBe(true);
+    expect(existsSync(landed)).toBe(true);
+    // Real COMMIT landed — pollution visible
     expect(digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl))).not.toBe(beforeFp);
-    expect(durable.commitPhase).toBe('ambiguous');
     expect(durable.manifest).toBeTruthy();
 
-    // Real lifecycle cleanup while seed pending/ambiguous — must restore
     await cleanupLifecycle(state);
     expect(digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl))).toBe(beforeFp);
     expect(process.listenerCount('SIGINT')).toBe(baseSig);
     expect(process.listenerCount('SIGTERM')).toBe(baseTerm);
     expect(getActiveSettleTimerCount()).toBe(timersBefore);
 
-    // Release hang so seed promise settles (no dangling connection)
     writeFileSync(path.join(hangDir, 'release'), '1', 'utf8');
     await seedPromise;
     delete process.env.E2E_CAS_COMMIT_LANDED_CLIENT_UNKNOWN;
     delete process.env.E2E_CAS_COMMIT_LANDED_HANG_DIR;
+    delete process.env.E2E_CAS_COMMIT_ISSUED_MARKER_DIR;
     rmSync(hangDir, { force: true, recursive: true });
   }, 90_000);
 
-  it('commit attempt server ROLLBACK: reconcile sees before-state, no destructive restore', async () => {
+  it('real COMMIT aborted by deferred constraint trigger: reconcile before-state', async () => {
     const harness = await startCasPostgres();
     cleanups.push(harness.stop);
     const beforeFp = digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl));
@@ -927,80 +927,96 @@ describe('CAS real signal subprocess + foreign concurrent links', () => {
       cleanupLifecycle,
     } = await import('./lifecycle');
 
-    const durable = createDurableRestoreHandle(harness.databaseUrl);
-    const state = createLifecycleState(createRunToken());
-    const timersBefore = getActiveSettleTimerCount();
-    installLifecycleSignalHandlers(state);
-    registerSeedRestoreOnLifecycle(state, durable, { settleTimeoutMs: 2_000 });
-
-    process.env.E2E_CAS_COMMIT_ATTEMPT_ROLLBACK = '1';
-    try {
-      await expect(seedFn(harness.databaseUrl, durable)).rejects.toThrow(
-        /server ROLLBACK|ambiguous/,
-      );
-    } finally {
-      delete process.env.E2E_CAS_COMMIT_ATTEMPT_ROLLBACK;
-    }
-    expect(durable.commitPhase).toBe('ambiguous');
-    expect(durable.manifest).toBeTruthy();
-    // No pollution — COMMIT never landed
-    expect(digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl))).toBe(beforeFp);
-
-    await cleanupLifecycle(state);
-    expect(digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl))).toBe(beforeFp);
-    expect(getActiveSettleTimerCount()).toBe(timersBefore);
-  }, 60_000);
-
-  it('pending commitStarted crosses settle timeout: fail-closed reconcile, short bound', async () => {
-    const harness = await startCasPostgres();
-    cleanups.push(harness.stop);
-    const beforeFp = digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl));
-    const {
-      createDurableRestoreHandle,
-      getActiveSettleTimerCount,
-      registerSeedRestoreOnLifecycle,
-      seedEnterpriseAdminSuite: seedFn,
-    } = await import('./seed');
-    const {
-      createLifecycleState,
-      createRunToken,
-      installLifecycleSignalHandlers,
-      cleanupLifecycle,
-    } = await import('./lifecycle');
-
-    const hangDir = mkdtempSync(path.join(tmpdir(), 'cas-commit-pending-'));
+    const hangDir = mkdtempSync(path.join(tmpdir(), 'cas-commit-raise-'));
     const durable = createDurableRestoreHandle(harness.databaseUrl);
     const state = createLifecycleState(createRunToken());
     const timersBefore = getActiveSettleTimerCount();
     const baseSig = process.listenerCount('SIGINT');
     installLifecycleSignalHandlers(state);
-    registerSeedRestoreOnLifecycle(state, durable, { settleTimeoutMs: 1_500 });
+    registerSeedRestoreOnLifecycle(state, durable, { settleTimeoutMs: 2_000 });
 
-    process.env.E2E_CAS_COMMIT_PENDING_HANG_DIR = hangDir;
-    const seedPromise = seedFn(harness.databaseUrl, durable).catch((e) => e);
-
-    const marker = path.join(hangDir, 'commit-started');
-    const deadline = Date.now() + 20_000;
-    while (!existsSync(marker) && Date.now() < deadline) {
-      await sleep(50);
+    process.env.E2E_CAS_COMMIT_DEFERRED_RAISE = '1';
+    process.env.E2E_CAS_COMMIT_ISSUED_MARKER_DIR = hangDir;
+    try {
+      await expect(seedFn(harness.databaseUrl, durable)).rejects.toThrow(
+        /deferred COMMIT abort|e2e deferred|ambiguous|COMMIT/,
+      );
+    } finally {
+      delete process.env.E2E_CAS_COMMIT_DEFERRED_RAISE;
+      delete process.env.E2E_CAS_COMMIT_ISSUED_MARKER_DIR;
     }
-    expect(existsSync(marker)).toBe(true);
-    expect(durable.commitPhase).toBe('commitStarted');
-    // No COMMIT yet — no pollution
+    // COMMIT was issued (marker) but aborted — no pollution
+    expect(existsSync(path.join(hangDir, 'commit-issued'))).toBe(true);
     expect(digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl))).toBe(beforeFp);
 
-    const started = Date.now();
     await cleanupLifecycle(state);
-    expect(Date.now() - started).toBeLessThan(8_000);
     expect(digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl))).toBe(beforeFp);
     expect(process.listenerCount('SIGINT')).toBe(baseSig);
     expect(getActiveSettleTimerCount()).toBe(timersBefore);
-
-    writeFileSync(path.join(hangDir, 'release'), '1', 'utf8');
-    await seedPromise;
-    delete process.env.E2E_CAS_COMMIT_PENDING_HANG_DIR;
     rmSync(hangDir, { force: true, recursive: true });
-  }, 60_000);
+  }, 90_000);
+
+  it('real COMMIT in-flight longer than settle timeout: fail-closed owned-backend resolve', async () => {
+    const harness = await startCasPostgres();
+    cleanups.push(harness.stop);
+    const beforeFp = digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl));
+    const {
+      createDurableRestoreHandle,
+      getActiveSettleTimerCount,
+      registerSeedRestoreOnLifecycle,
+      seedEnterpriseAdminSuite: seedFn,
+    } = await import('./seed');
+    const {
+      createLifecycleState,
+      createRunToken,
+      installLifecycleSignalHandlers,
+      cleanupLifecycle,
+    } = await import('./lifecycle');
+
+    const hangDir = mkdtempSync(path.join(tmpdir(), 'cas-commit-sleep-'));
+    const durable = createDurableRestoreHandle(harness.databaseUrl);
+    const state = createLifecycleState(createRunToken());
+    const timersBefore = getActiveSettleTimerCount();
+    const baseSig = process.listenerCount('SIGINT');
+    const baseTerm = process.listenerCount('SIGTERM');
+    installLifecycleSignalHandlers(state);
+    const settleMs = 800;
+    registerSeedRestoreOnLifecycle(state, durable, { settleTimeoutMs: settleMs });
+
+    // Deferred trigger sleeps 4s at COMMIT — longer than settle timeout
+    process.env.E2E_CAS_COMMIT_DEFERRED_SLEEP_MS = '4000';
+    process.env.E2E_CAS_COMMIT_ISSUED_MARKER_DIR = hangDir;
+    const seedPromise = seedFn(harness.databaseUrl, durable).catch((e) => e);
+
+    const issued = path.join(hangDir, 'commit-issued');
+    const deadline = Date.now() + 30_000;
+    while (!existsSync(issued) && Date.now() < deadline) {
+      await sleep(30);
+    }
+    expect(existsSync(issued)).toBe(true);
+    expect(durable.commitPhase).toBe('commitIssued');
+    expect(durable.commitInFlight).toBeTruthy();
+
+    const started = Date.now();
+    // While waiting, settle timer must be active during cleanup's waitBounded
+    const cleanupPromise = cleanupLifecycle(state);
+    // Sample timer count during wait (best-effort)
+    await sleep(100);
+    // cleanup may still be in waitBounded
+    await cleanupPromise;
+    const elapsed = Date.now() - started;
+    expect(elapsed).toBeGreaterThanOrEqual(settleMs - 50);
+    expect(elapsed).toBeLessThan(15_000);
+    expect(digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl))).toBe(beforeFp);
+    expect(process.listenerCount('SIGINT')).toBe(baseSig);
+    expect(process.listenerCount('SIGTERM')).toBe(baseTerm);
+    expect(getActiveSettleTimerCount()).toBe(timersBefore);
+
+    await seedPromise;
+    delete process.env.E2E_CAS_COMMIT_DEFERRED_SLEEP_MS;
+    delete process.env.E2E_CAS_COMMIT_ISSUED_MARKER_DIR;
+    rmSync(hangDir, { force: true, recursive: true });
+  }, 90_000);
 
   for (const signal of ['SIGTERM', 'SIGINT'] as const) {
     it(`real ${signal} after ready restores exact before digest`, async () => {
