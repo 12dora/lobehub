@@ -998,21 +998,117 @@ describe('CAS real signal subprocess + foreign concurrent links', () => {
     expect(durable.commitInFlight).toBeTruthy();
 
     const started = Date.now();
-    // While waiting, settle timer must be active during cleanup's waitBounded
-    const cleanupPromise = cleanupLifecycle(state);
-    // Sample timer count during wait (best-effort)
-    await sleep(100);
-    // cleanup may still be in waitBounded
-    await cleanupPromise;
+    // Sample timer while cleanup is waiting
+    let sawActiveTimer = false;
+    const poll = setInterval(() => {
+      if (getActiveSettleTimerCount() > timersBefore || durable.activeSettleTimers > 0) {
+        sawActiveTimer = true;
+      }
+    }, 20);
+    await cleanupLifecycle(state);
+    clearInterval(poll);
     const elapsed = Date.now() - started;
     expect(elapsed).toBeGreaterThanOrEqual(settleMs - 50);
     expect(elapsed).toBeLessThan(15_000);
+    expect(sawActiveTimer).toBe(true);
+    expect(durable.activeSettleTimers).toBe(0);
+    expect(getActiveSettleTimerCount()).toBe(timersBefore);
     expect(digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl))).toBe(beforeFp);
     expect(process.listenerCount('SIGINT')).toBe(baseSig);
     expect(process.listenerCount('SIGTERM')).toBe(baseTerm);
-    expect(getActiveSettleTimerCount()).toBe(timersBefore);
 
     await seedPromise;
+    delete process.env.E2E_CAS_COMMIT_DEFERRED_SLEEP_MS;
+    delete process.env.E2E_CAS_COMMIT_ISSUED_MARKER_DIR;
+    rmSync(hangDir, { force: true, recursive: true });
+  }, 90_000);
+
+  it('COMMIT in-flight + forced terminate failure: bounded fail-closed, journal preserved', async () => {
+    const harness = await startCasPostgres();
+    cleanups.push(harness.stop);
+    const beforeFp = digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl));
+    const {
+      createDurableRestoreHandle,
+      getActiveSettleTimerCount,
+      registerSeedRestoreOnLifecycle,
+      seedEnterpriseAdminSuite: seedFn,
+      terminateOwnedSeedBackend,
+    } = await import('./seed');
+    const {
+      createLifecycleState,
+      createRunToken,
+      installLifecycleSignalHandlers,
+      cleanupLifecycle,
+    } = await import('./lifecycle');
+
+    const hangDir = mkdtempSync(path.join(tmpdir(), 'cas-term-fail-'));
+    const durable = createDurableRestoreHandle(harness.databaseUrl);
+    const state = createLifecycleState(createRunToken());
+    const timersBefore = getActiveSettleTimerCount();
+    const baseSig = process.listenerCount('SIGINT');
+    installLifecycleSignalHandlers(state);
+    registerSeedRestoreOnLifecycle(state, durable, { settleTimeoutMs: 600 });
+
+    process.env.E2E_CAS_COMMIT_DEFERRED_SLEEP_MS = '8000';
+    process.env.E2E_CAS_COMMIT_ISSUED_MARKER_DIR = hangDir;
+    process.env.E2E_CAS_FORCE_TERMINATE_FAIL = '1';
+    const seedPromise = seedFn(harness.databaseUrl, durable).catch((e) => e);
+
+    const issued = path.join(hangDir, 'commit-issued');
+    const deadline = Date.now() + 30_000;
+    while (!existsSync(issued) && Date.now() < deadline) {
+      await sleep(30);
+    }
+    expect(existsSync(issued)).toBe(true);
+    expect(durable.commitPhase).toBe('commitIssued');
+    const backendPid = durable.ownedBackendPid;
+    expect(backendPid).toBeTruthy();
+
+    const started = Date.now();
+    let cleanupError: unknown;
+    try {
+      await cleanupLifecycle(state);
+    } catch (error) {
+      cleanupError = error;
+    }
+    const elapsed = Date.now() - started;
+    // Must finish within bound (settle + short overhead), not hang for full 8s sleep
+    expect(elapsed).toBeLessThan(5_000);
+    expect(cleanupError).toBeTruthy();
+    const cleanupMsg =
+      cleanupError instanceof AggregateError
+        ? `${cleanupError.message} ${cleanupError.errors.map(String).join(' | ')}`
+        : String(cleanupError);
+    expect(cleanupMsg).toMatch(
+      /terminate failed|fail-closed|journal preserved|forced owned-backend/i,
+    );
+    // Recovery evidence preserved
+    expect(durable.manifest).toBeTruthy();
+    expect(durable.ownedBackendPid).toBe(backendPid);
+    expect(durable.commitPhase).toBe('ambiguous');
+    expect(getActiveSettleTimerCount()).toBe(timersBefore);
+    expect(durable.activeSettleTimers).toBe(0);
+    expect(process.listenerCount('SIGINT')).toBe(baseSig);
+
+    // Explicit authorized cleanup of stuck backend so no residue remains
+    delete process.env.E2E_CAS_FORCE_TERMINATE_FAIL;
+    try {
+      await terminateOwnedSeedBackend(durable);
+    } catch {
+      // may already be gone after later settlement
+    }
+    await seedPromise;
+    // Digest should still be before (COMMIT aborted or terminated mid-way without full land)
+    // If land raced, CAS restore may still be needed — force cleanup with superuser terminate
+    const afterFp = digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl));
+    if (afterFp !== beforeFp && durable.seed && durable.manifest) {
+      const { cleanupEnterpriseAdminSuite } = await import('./seed');
+      await cleanupEnterpriseAdminSuite(harness.databaseUrl, durable.seed, durable.manifest).catch(
+        () => undefined,
+      );
+    }
+    expect(digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl))).toBe(beforeFp);
+
     delete process.env.E2E_CAS_COMMIT_DEFERRED_SLEEP_MS;
     delete process.env.E2E_CAS_COMMIT_ISSUED_MARKER_DIR;
     rmSync(hangDir, { force: true, recursive: true });
