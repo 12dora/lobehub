@@ -5,28 +5,30 @@
  *
  * @vitest-environment node
  */
+import { and, eq } from 'drizzle-orm';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ADMIN_ERROR_CODES, PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { PLATFORM_PERMISSIONS, type PlatformPermission } from '@/const/platform/permissions';
 import { PLATFORM_ROLE_PERMISSIONS, PLATFORM_SYSTEM_ROLES } from '@/const/platform/roles';
 import { getTestDB } from '@/database/core/getTestDB';
+import { platformAuditLogs, userRoles, users, workspaces } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
 import { authedProcedure, createCallerFactory, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 
 import { withActiveUser } from '../guards/activeUser';
 import { getEnterpriseErrorBody } from '../guards/enterpriseErrors';
-import { loadPlatformAuthContext, withPlatformPermission } from '../guards/platformPermission';
+import {
+  assertPlatformPermission,
+  loadPlatformAuthContext,
+  withPlatformPermission,
+} from '../guards/platformPermission';
 import {
   ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY,
   isAuthorizedByPlatformPermissions,
 } from '../security/policy/adminProcedureAuthorizationRegistry';
-import {
-  cleanupAdminAuthorizationFixture,
-  createAdminAuthorizationContexts,
-  setupAdminAuthorizationFixture,
-} from '../testing/adminAuthorizationFixture';
+import { createAdminAuthorizationFixture } from '../testing/adminAuthorizationFixture';
 
 let db: LobeChatDatabase;
 
@@ -46,6 +48,7 @@ const authorizationProbeRouter = router({
     .query(() => ({ ok: true })),
 });
 const createProbeCaller = createCallerFactory(authorizationProbeRouter);
+const fixture = createAdminAuthorizationFixture({ namespace: 'permission-matrix' });
 
 const roleCases = [
   { expected: 109, role: PLATFORM_SYSTEM_ROLES.SUPER_ADMIN },
@@ -60,18 +63,97 @@ beforeAll(async () => {
   db = await getTestDB();
 });
 
-beforeEach(async () => {
-  vi.unstubAllEnvs();
-  vi.stubEnv('ENABLE_PLATFORM_ADMIN', '1');
-  await setupAdminAuthorizationFixture(db);
-});
+describe('admin authorization fixture isolation', () => {
+  it('keeps concurrent fixtures isolated on the same database', async () => {
+    const fixtureA = createAdminAuthorizationFixture({ namespace: 'parallel-a' });
+    const fixtureB = createAdminAuthorizationFixture({ namespace: 'parallel-b' });
 
-afterEach(async () => {
-  await cleanupAdminAuthorizationFixture(db);
-  vi.unstubAllEnvs();
+    expect(fixtureA.namespace).not.toBe(fixtureB.namespace);
+    expect(fixtureA.namespace).toMatch(/^admin-auth-parallel-a-[\da-f]{32}$/);
+    expect(Math.max(...Object.values(fixtureA.actors).map((id) => id.length))).toBeLessThanOrEqual(
+      100,
+    );
+    expect(fixtureA.workspaceId.length).toBeLessThanOrEqual(100);
+    await Promise.all([fixtureA.setup(db), fixtureB.setup(db)]);
+
+    try {
+      await db.insert(platformAuditLogs).values([
+        {
+          action: 'test.admin-authorization.denied',
+          actorUserId: fixtureA.actors.normal,
+          result: 'denied',
+          targetType: 'permission',
+        },
+        {
+          action: 'test.admin-authorization.denied',
+          actorUserId: fixtureB.actors.normal,
+          result: 'denied',
+          targetType: 'permission',
+        },
+      ]);
+
+      await fixtureA.cleanup(db);
+
+      const [actorA, auditA, actorB, auditB, workspaceB, workspaceBindingB] = await Promise.all([
+        db.query.users.findFirst({ where: eq(users.id, fixtureA.actors.normal) }),
+        db.query.platformAuditLogs.findFirst({
+          where: eq(platformAuditLogs.actorUserId, fixtureA.actors.normal),
+        }),
+        db.query.users.findFirst({ where: eq(users.id, fixtureB.actors.normal) }),
+        db.query.platformAuditLogs.findFirst({
+          where: eq(platformAuditLogs.actorUserId, fixtureB.actors.normal),
+        }),
+        db.query.workspaces.findFirst({ where: eq(workspaces.id, fixtureB.workspaceId) }),
+        db.query.userRoles.findFirst({
+          where: and(
+            eq(userRoles.userId, fixtureB.actors.workspaceOwner),
+            eq(userRoles.workspaceId, fixtureB.workspaceId),
+          ),
+        }),
+      ]);
+      expect({ actorA, auditA }).toEqual({ actorA: undefined, auditA: undefined });
+      expect(actorB?.id).toBe(fixtureB.actors.normal);
+      expect(auditB?.actorUserId).toBe(fixtureB.actors.normal);
+      expect(workspaceB?.id).toBe(fixtureB.workspaceId);
+      expect(workspaceBindingB?.userId).toBe(fixtureB.actors.workspaceOwner);
+
+      const authB = await loadPlatformAuthContext({
+        db,
+        userId: fixtureB.actors.userAdmin,
+      });
+      expect(() => assertPlatformPermission(authB, PLATFORM_PERMISSIONS.USER_BAN)).not.toThrow();
+    } finally {
+      await fixtureA.cleanup(db);
+      await fixtureB.cleanup(db);
+    }
+
+    const [actorB, auditB, workspaceB] = await Promise.all([
+      db.query.users.findFirst({ where: eq(users.id, fixtureB.actors.normal) }),
+      db.query.platformAuditLogs.findFirst({
+        where: eq(platformAuditLogs.actorUserId, fixtureB.actors.normal),
+      }),
+      db.query.workspaces.findFirst({ where: eq(workspaces.id, fixtureB.workspaceId) }),
+    ]);
+    expect({ actorB, auditB, workspaceB }).toEqual({
+      actorB: undefined,
+      auditB: undefined,
+      workspaceB: undefined,
+    });
+  });
 });
 
 describe('admin permission matrix', () => {
+  beforeEach(async () => {
+    vi.unstubAllEnvs();
+    vi.stubEnv('ENABLE_PLATFORM_ADMIN', '1');
+    await fixture.setup(db);
+  });
+
+  afterEach(async () => {
+    await fixture.cleanup(db);
+    vi.unstubAllEnvs();
+  });
+
   for (const { expected, role } of roleCases) {
     it(`${role} authorizes exactly ${expected} of 109 procedures`, () => {
       const permissions = new Set(PLATFORM_ROLE_PERMISSIONS[role]);
@@ -92,7 +174,7 @@ describe('admin permission matrix', () => {
       [PLATFORM_SYSTEM_ROLES.USER_ADMIN]: 'userAdmin',
     } as const;
 
-    const contexts = await createAdminAuthorizationContexts(db);
+    const contexts = await fixture.createContexts(db);
     for (const { role } of roleCases) {
       const userId = contexts[contextByRole[role]].userId!;
       const auth = await loadPlatformAuthContext({ db, userId });
@@ -108,7 +190,7 @@ describe('admin permission matrix', () => {
       ),
     ).toEqual([{ kind: 'query', path: 'admin.auth.getMyAccess', selfAccess: true }]);
 
-    const contexts = await createAdminAuthorizationContexts(db);
+    const contexts = await fixture.createContexts(db);
     const caller = createProbeCaller(contexts.workspaceOwner as never);
 
     await expect(caller.selfAccess()).resolves.toEqual({ ok: true });
@@ -123,7 +205,7 @@ describe('admin permission matrix', () => {
   });
 
   it('normal user has only self access; super admin passes the pure permission probe', async () => {
-    const contexts = await createAdminAuthorizationContexts(db);
+    const contexts = await fixture.createContexts(db);
 
     await expect(createProbeCaller(contexts.normal as never).selfAccess()).resolves.toEqual({
       ok: true,
@@ -138,7 +220,7 @@ describe('admin permission matrix', () => {
 
   it('rejects anonymous and flag-off callers before the probe resolver', async () => {
     expect.assertions(3);
-    const contexts = await createAdminAuthorizationContexts(db);
+    const contexts = await fixture.createContexts(db);
     await expect(createProbeCaller(contexts.anonymous as never).selfAccess()).rejects.toMatchObject(
       {
         code: 'UNAUTHORIZED',
@@ -156,7 +238,7 @@ describe('admin permission matrix', () => {
   });
 
   it('provides reusable API-key and stale-reauth super contexts without claiming reauth coverage', async () => {
-    const contexts = await createAdminAuthorizationContexts(db);
+    const contexts = await fixture.createContexts(db);
 
     expect(contexts.apiKeySuper.authMethod).toBe('api-key');
     expect(contexts.apiKeySuper.authenticatedAt).toBeNull();
