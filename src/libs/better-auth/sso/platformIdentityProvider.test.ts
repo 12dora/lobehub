@@ -63,16 +63,16 @@ describe('platform identity provider Better Auth adapter', () => {
     expect(config.tokenUrl).toBe('https://platform-oidc-token.invalid/');
     expect(config.tokenUrl).not.toBe(provider.oidcMetadata.tokenEndpoint);
     expect(config).not.toHaveProperty('overrideUserInfo');
-    expect(
-      await config.mapProfileToUser!({
-        avatar: 'https://cdn.example.test/ada.png',
-        display_name: 'Ada',
-        dingtalk_title: 'Engineering Manager',
-        dingtalk_user_id: 'ding-user-1',
-        employee_id: 'employee-1',
-        mail: 'ada@example.test',
-      }),
-    ).toEqual({
+    const mapped = config.mapProfileToUser!({
+      avatar: 'https://cdn.example.test/ada.png',
+      display_name: 'Ada',
+      dingtalk_title: 'Engineering Manager',
+      dingtalk_user_id: 'ding-user-1',
+      employee_id: 'employee-1',
+      mail: 'ada@example.test',
+    });
+    expect(mapped).not.toBeInstanceOf(Promise);
+    expect(mapped).toEqual({
       dingtalkTitle: 'Engineering Manager',
       dingtalkUserId: 'ding-user-1',
       email: 'ada@example.test',
@@ -84,13 +84,13 @@ describe('platform identity provider Better Auth adapter', () => {
 
   it('falls back to preferred_username and keeps absent optional claims nullable', async () => {
     const config = buildPlatformIdentityProvider(provider, 'https://app.example.test');
-    expect(
-      await config.mapProfileToUser!({
-        employee_id: 'employee-2',
-        mail: 'grace@example.test',
-        preferred_username: 'grace',
-      }),
-    ).toEqual({
+    const mapped = config.mapProfileToUser!({
+      employee_id: 'employee-2',
+      mail: 'grace@example.test',
+      preferred_username: 'grace',
+    });
+    expect(mapped).not.toBeInstanceOf(Promise);
+    expect(mapped).toEqual({
       dingtalkTitle: null,
       dingtalkUserId: null,
       email: 'grace@example.test',
@@ -100,31 +100,47 @@ describe('platform identity provider Better Auth adapter', () => {
     });
   });
 
-  it('fails closed for missing identity claims or a disallowed email domain', async () => {
+  it('fails closed synchronously for missing identity claims or a disallowed email domain', () => {
     const config = buildPlatformIdentityProvider(provider, 'https://app.example.test');
-    await expect(
-      Promise.resolve().then(() =>
-        config.mapProfileToUser!({
-          display_name: 'Ada',
-          employee_id: 'employee-1',
-          mail: 'ada@attacker.test',
-        }),
-      ),
-    ).rejects.toThrow('PLATFORM_OIDC_CLAIM_VALIDATION_FAILED');
-    await expect(
-      Promise.resolve().then(() =>
-        config.mapProfileToUser!({ display_name: 'Ada', mail: 'ada@example.test' }),
-      ),
-    ).rejects.toThrow('PLATFORM_OIDC_CLAIM_VALIDATION_FAILED');
-    await expect(
-      Promise.resolve().then(() =>
-        config.mapProfileToUser!({
-          display_name: 'Ada',
-          employee_id: 'employee-1',
-          mail: 'not-an-email',
-        }),
-      ),
-    ).rejects.toThrow('PLATFORM_OIDC_CLAIM_VALIDATION_FAILED');
+    expect(() =>
+      config.mapProfileToUser!({
+        display_name: 'Ada',
+        employee_id: 'employee-1',
+        mail: 'ada@attacker.test',
+      }),
+    ).toThrow('PLATFORM_OIDC_CLAIM_VALIDATION_FAILED');
+    expect(() =>
+      config.mapProfileToUser!({ display_name: 'Ada', mail: 'ada@example.test' }),
+    ).toThrow('PLATFORM_OIDC_CLAIM_VALIDATION_FAILED');
+    expect(() =>
+      config.mapProfileToUser!({
+        display_name: 'Ada',
+        employee_id: 'employee-1',
+        mail: 'not-an-email',
+      }),
+    ).toThrow('PLATFORM_OIDC_CLAIM_VALIDATION_FAILED');
+  });
+
+  it('rethrows the original profile access error synchronously', () => {
+    const config = buildPlatformIdentityProvider(provider, 'https://app.example.test');
+    const originalError = new Error('PROFILE_ACCESS_FAILURE');
+    const profile = new Proxy<Record<string, unknown>>(
+      {},
+      {
+        get: () => {
+          throw originalError;
+        },
+      },
+    );
+
+    let thrown: unknown;
+    try {
+      config.mapProfileToUser!(profile);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBe(originalError);
   });
 
   it('keeps the Authentik/EasyTrade DingTalk claim names stable', () => {

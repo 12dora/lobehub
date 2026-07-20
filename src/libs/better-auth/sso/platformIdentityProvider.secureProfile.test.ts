@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { betterAuth } from 'better-auth';
 import type { MemoryDB } from 'better-auth/adapters/memory';
 import { memoryAdapter } from 'better-auth/adapters/memory';
-import { createAuthMiddleware } from 'better-auth/api';
+import { APIError, createAuthMiddleware } from 'better-auth/api';
 import type { GenericOAuthConfig } from 'better-auth/plugins';
 import { genericOAuth } from 'better-auth/plugins';
 import type { BetterAuthPlugin } from 'better-auth/types';
@@ -23,6 +23,7 @@ import {
   buildPlatformIdentityProvider,
   type RuntimeIdentityProvider,
 } from './platformIdentityProvider';
+import { observePlatformOidcRawCallbackFailure } from './platformIdentityProviderObservation';
 import { platformIdentityProviderState } from './platformIdentityProviderState';
 
 const issuer = 'https://login.example.test/application/o/work/';
@@ -205,7 +206,9 @@ const captureObservations = () => {
 
 interface RouteHarnessOptions extends NonNullable<Parameters<typeof setup>[0]> {
   linkStateUpdateFailure?: 'stale-read' | 'throw';
+  markerWriteFailure?: boolean;
   persistenceFailure?: 'account' | 'cookie' | 'session' | 'user';
+  rawCallbackFailure?: 'api-error' | 'handler-tail' | 'set-new-session';
   useSecondaryStorage?: boolean;
 }
 
@@ -237,15 +240,28 @@ const createRouteHarness = async (options?: RouteHarnessOptions) => {
       before: [
         {
           handler: createAuthMiddleware(async (ctx) => {
-            if (!options?.linkStateUpdateFailure) return;
-            ctx.context.internalAdapter.updateVerificationByIdentifier = async (identifier) => {
-              if (options.linkStateUpdateFailure === 'throw') {
-                throw new Error('INJECTED_VERIFICATION_UPDATE_FAILURE');
-              }
-              const unchanged = await ctx.context.internalAdapter.findVerificationValue(identifier);
-              if (!unchanged) throw new Error('INJECTED_VERIFICATION_STATE_MISSING');
-              return unchanged;
-            };
+            if (options?.linkStateUpdateFailure) {
+              ctx.context.internalAdapter.updateVerificationByIdentifier = async (identifier) => {
+                if (options.linkStateUpdateFailure === 'throw') {
+                  throw new Error('INJECTED_VERIFICATION_UPDATE_FAILURE');
+                }
+                const unchanged =
+                  await ctx.context.internalAdapter.findVerificationValue(identifier);
+                if (!unchanged) throw new Error('INJECTED_VERIFICATION_STATE_MISSING');
+                return unchanged;
+              };
+            }
+            if (options?.markerWriteFailure) {
+              const createVerificationValue = ctx.context.internalAdapter.createVerificationValue;
+              let failed = false;
+              ctx.context.internalAdapter.createVerificationValue = async (value) => {
+                if (!failed && value.identifier.startsWith('platform-oidc-observation:')) {
+                  failed = true;
+                  throw new Error('INJECTED_OBSERVATION_MARKER_FAILURE');
+                }
+                return createVerificationValue(value);
+              };
+            }
           }),
           matcher: (ctx) => ctx.path === '/oauth2/link',
         },
@@ -285,6 +301,35 @@ const createRouteHarness = async (options?: RouteHarnessOptions) => {
                   throw new Error('INJECTED_USER_PERSISTENCE_FAILURE');
                 };
               }
+            }
+
+            switch (options?.rawCallbackFailure) {
+              case 'api-error': {
+                ctx.context.setNewSession = () => {
+                  throw new APIError('INTERNAL_SERVER_ERROR', {
+                    message: 'INJECTED_CALLBACK_API_ERROR',
+                  });
+                };
+                return;
+              }
+              case 'handler-tail': {
+                return;
+              }
+              case 'set-new-session': {
+                ctx.context.setNewSession = () => {
+                  throw new Error('INJECTED_SET_NEW_SESSION_FAILURE');
+                };
+              }
+            }
+          }),
+          matcher: (ctx) => ctx.path === '/oauth2/callback/:providerId',
+        },
+      ],
+      after: [
+        {
+          handler: createAuthMiddleware(async () => {
+            if (options?.rawCallbackFailure === 'handler-tail') {
+              throw new Error('INJECTED_HANDLER_TAIL_FAILURE');
             }
           }),
           matcher: (ctx) => ctx.path === '/oauth2/callback/:providerId',
@@ -333,6 +378,7 @@ const createRouteHarness = async (options?: RouteHarnessOptions) => {
     });
   const signInAuth = createAuthInstance();
   const callbackAuth = createAuthInstance();
+  const pendingRawObservations: Promise<void>[] = [];
   const start = async (additionalData?: Record<string, unknown>) => {
     const response = await signInAuth.handler(
       new Request(`${baseURL}/sign-in/oauth2`, {
@@ -371,9 +417,16 @@ const createRouteHarness = async (options?: RouteHarnessOptions) => {
         ? flow.authorizationUrl.searchParams.get('state')
         : overrides.state;
     if (state !== null) callbackUrl.searchParams.set('state', state);
-    return auth.handler(
-      new Request(callbackUrl, { headers: { Cookie: overrides.cookie ?? flow.cookie } }),
+    const request = new Request(callbackUrl, {
+      headers: { Cookie: overrides.cookie ?? flow.cookie },
+    });
+    const response = await auth.handler(request);
+    const observation = auth.$context.then((ctx) =>
+      observePlatformOidcRawCallbackFailure(ctx.internalAdapter, request, response),
     );
+    pendingRawObservations.push(observation);
+    void observation;
+    return response;
   };
   const callback = (
     flow: { authorizationUrl: URL; cookie: string },
@@ -436,6 +489,7 @@ const createRouteHarness = async (options?: RouteHarnessOptions) => {
     database,
     mapProfileToUser,
     nativeFetch,
+    flushRawObservations: () => Promise.all(pendingRawObservations),
     readVerification: (state: string) => {
       const cached = secondaryStorage.get(`verification:${state}`);
       if (cached) return JSON.parse(cached) as { expiresAt: Date | string; value: string };
@@ -532,6 +586,7 @@ describe('platform identity provider trusted profile', () => {
       harness.setTokenNonce(flow.authorizationUrl.searchParams.get('nonce')!);
 
       const response = await harness.callback(flow);
+      await harness.flushRawObservations();
 
       expect(response.headers.get('location')).not.toBe('https://app.example.test/after-login');
       expect(events).toEqual([{ ...expected, outcome: 'failure', type: 'oidc_login' }]);
@@ -544,6 +599,30 @@ describe('platform identity provider trusted profile', () => {
       expect(JSON.stringify(events)).not.toMatch(
         /corp-oidc|employee|ada|example\.test|authorization|nonce|state|code|secret/i,
       );
+    },
+  );
+
+  it.each(['set-new-session', 'handler-tail', 'api-error'] as const)(
+    'records one terminal for a real callback %s failure without changing the 500 response',
+    async (rawCallbackFailure) => {
+      const events = captureObservations();
+      const harness = await createRouteHarness({ rawCallbackFailure });
+      const flow = await harness.start();
+      harness.setTokenNonce(flow.authorizationUrl.searchParams.get('nonce')!);
+
+      const response = await harness.callback(flow);
+      await harness.flushRawObservations();
+
+      expect(response.status).toBe(500);
+      expect(response.headers.get('location')).not.toBe('https://app.example.test/after-login');
+      expect(events).toEqual([
+        {
+          failureCategory: 'unexpected',
+          outcome: 'failure',
+          stage: 'authenticated',
+          type: 'oidc_login',
+        },
+      ]);
     },
   );
 
@@ -606,6 +685,7 @@ describe('platform identity provider trusted profile', () => {
       harness.setTokenNonce(flow.authorizationUrl.searchParams.get('nonce')!);
 
       const response = await harness.callback(flow);
+      await harness.flushRawObservations();
 
       expect(response.headers.get('location')).not.toBe('https://app.example.test/after-login');
       expect(events).toEqual([
@@ -621,6 +701,29 @@ describe('platform identity provider trusted profile', () => {
       );
     },
   );
+
+  it('keeps a link callback unobserved when its best-effort marker write fails', async () => {
+    const events = captureObservations();
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const harness = await createRouteHarness({ markerWriteFailure: true });
+    const sessionCookie = await harness.authenticate();
+    const linkFlow = await harness.startLink(sessionCookie);
+    expect(linkFlow.authorizationUrl).not.toBeNull();
+    harness.setTokenNonce(linkFlow.authorizationUrl!.searchParams.get('nonce')!);
+
+    const response = await harness.callback({
+      ...linkFlow,
+      authorizationUrl: linkFlow.authorizationUrl!,
+    });
+    await harness.flushRawObservations();
+
+    expect(linkFlow.response.status).toBe(200);
+    expect(response.headers.get('location')).toBe('https://app.example.test/after-link');
+    expect(events).toEqual([]);
+    expect(consoleError).toHaveBeenCalledWith(
+      '[platform-oidc-observation] shared terminal state unavailable',
+    );
+  });
 
   it('creates authorization and exchanges tokens without Better Auth discovery or token fetches', async () => {
     const { oauthProvider, transport } = await setup({

@@ -151,6 +151,11 @@ export const markPlatformOidcLoginStage = (
     attempt.failureCategory = failureCategory;
   });
 
+export const suppressPlatformOidcLoginObservation = async (): Promise<void> => {
+  const attempt = await getAttempt();
+  if (attempt) attempt.terminal = true;
+};
+
 const observeTerminal = async (
   outcome: 'failure' | 'success',
   fallbackFailureCategory?: EnterpriseOidcFailureCategory,
@@ -190,3 +195,29 @@ export const observePlatformOidcLoginFailure = async (
 
 export const observePlatformOidcLoginSuccess = async (): Promise<void> =>
   observeTerminal('success');
+
+export const observePlatformOidcRawCallbackFailure = async (
+  store: PlatformOidcObservationStore,
+  request: Request,
+  response: Response,
+): Promise<void> => {
+  if (response.status < 500) return;
+  const url = new URL(request.url);
+  if (!/\/oauth2\/callback\/[^/]+$/.test(url.pathname)) return;
+  const state = url.searchParams.get('state');
+  if (!state) return;
+
+  try {
+    const pendingIdentifier = observationIdentifiers(state).pending;
+    const claimed = await store.consumeVerificationValue(pendingIdentifier);
+    if (!claimed || parseMarker(claimed.value)?.flow !== 'sign_in') return;
+    observeEnterprisePlatformEvent({
+      failureCategory: 'unexpected',
+      outcome: 'failure',
+      stage: 'authenticated',
+      type: 'oidc_login',
+    });
+  } catch {
+    reportObservationFailure();
+  }
+};
