@@ -16,6 +16,7 @@ import {
 
 import { LoopbackFaultProxy } from '../../../../../scripts/enterprise/failure-drills/cluster/faultProxy';
 import { ClusterProcessHarness } from '../../../../../scripts/enterprise/failure-drills/cluster/processHarness';
+import { waitForRedisHostReady } from '../../../../../scripts/enterprise/failure-drills/cluster/redisReadiness';
 
 const execFileAsync = promisify(execFile);
 const DATABASE_SCHEMA_PATTERN = /^o05b_[a-f0-9]{24}$/;
@@ -308,6 +309,7 @@ describe.skipIf(!enabled)('Branding cache three-process Redis/Postgres failure d
       !publisher ||
       !publisherRedis ||
       !publisherRedisConfig ||
+      !redisUrl ||
       !redisContainerId
     ) {
       throw safeError('ClusterDrillNotInitialized');
@@ -347,12 +349,7 @@ describe.skipIf(!enabled)('Branding cache three-process Redis/Postgres failure d
     await runDocker(['stop', '--time', '10', redisContainerId]);
     await runDocker(['start', redisContainerId]);
 
-    await expect
-      .poll(() => runDocker(['exec', redisContainerId, 'redis-cli', 'ping']), {
-        interval: 250,
-        timeout: 20_000,
-      })
-      .toBe('PONG');
+    await waitForRedisHostReady({ connectionUrl: redisUrl, timeoutMs: 20_000 });
     publisherRedis = new IoRedisRedisProvider(publisherRedisConfig);
     await publisherRedis.initialize();
     await expect(
@@ -379,6 +376,7 @@ describe.skipIf(!enabled)('Branding cache three-process Redis/Postgres failure d
     expect(status).toEqual({
       branding: {
         degraded: 0,
+        domain: 'branding',
         diverged: 0,
         fresh: 3,
         matching: 3,

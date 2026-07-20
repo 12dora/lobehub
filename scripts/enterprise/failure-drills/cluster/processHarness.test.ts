@@ -78,6 +78,29 @@ describe('ClusterProcessHarness', () => {
     expect(child.isRunning()).toBe(false);
   });
 
+  it('rejects a malformed success frame and terminates its process group', async () => {
+    const source = `
+      const readline = require('node:readline');
+      process.stdout.write(JSON.stringify({ type: 'ready' }) + '\\n');
+      readline.createInterface({ input: process.stdin }).on('line', (line) => {
+        const request = JSON.parse(line);
+        process.stdout.write(JSON.stringify({
+          id: request.id,
+          ok: true,
+          type: 'result',
+          value: { extra: true, kind: 'load', revision: 1 },
+        }) + '\\n');
+      });
+    `;
+    const child = harness(source);
+    await child.start();
+
+    await expect(child.request('load')).rejects.toMatchObject({
+      name: 'ClusterRuntimeProtocolViolation',
+    });
+    await expect.poll(() => child.isRunning(), { interval: 10, timeout: 2_000 }).toBe(false);
+  });
+
   it('redacts connection strings, instance identifiers and process coordinates', () => {
     const redacted = redactClusterDiagnostic(
       'postgresql://user:secret@db.internal:5432/app redis://:secret@127.0.0.1:6379 pinst_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa pid=123 port: 4567',
