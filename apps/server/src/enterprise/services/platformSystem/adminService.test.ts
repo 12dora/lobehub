@@ -338,6 +338,39 @@ describe('PlatformSystemAdminService status', () => {
     expect(JSON.stringify(status)).not.toContain('private.example');
   });
 
+  it('reports unavailable without leaking config when Redis cleanup fails', async () => {
+    const config = {
+      database: 7,
+      enabled: true,
+      password: 'sensitive-password',
+      prefix: 'lobechat',
+      tls: true,
+      url: 'redis://private.example:6379',
+      username: 'sensitive-user',
+    };
+    const disconnect = vi.fn(async () => {
+      throw new Error('failed to close redis://sensitive-user@private.example');
+    });
+    const status = await new PlatformSystemAdminService(db, {
+      env: {},
+      redisDependencies: {
+        createRedisWithPrefix: vi.fn(async () => ({ disconnect }) as never),
+        getRedisConfig: () => config,
+        isRedisEnabled,
+      },
+    }).getStatus();
+
+    expect(status.dependencies.redis).toEqual({
+      errorCategory: 'operation_unavailable',
+      status: 'unavailable',
+    });
+    expect(disconnect).toHaveBeenCalledOnce();
+    const serialized = JSON.stringify(status);
+    expect(serialized).not.toContain('sensitive-password');
+    expect(serialized).not.toContain('sensitive-user');
+    expect(serialized).not.toContain('private.example');
+  });
+
   it('is fail-soft and never returns configured endpoints or credentials', async () => {
     await db.insert(platformAuditLogs).values({
       action: 'admin.settings.publish',

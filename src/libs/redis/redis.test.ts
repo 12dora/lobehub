@@ -1,3 +1,5 @@
+import { EventEmitter } from 'node:events';
+
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { type RedisConfig } from './types';
@@ -55,6 +57,7 @@ const createMockedProvider = async () => {
     connect: vi.fn().mockResolvedValue(undefined),
     ping: vi.fn().mockResolvedValue('PONG'),
     quit: vi.fn().mockResolvedValue(undefined),
+    disconnect: vi.fn(),
     get: vi.fn().mockResolvedValue('mock-value'),
     set: vi.fn().mockResolvedValue('OK'),
     setex: vi.fn().mockResolvedValue('OK'),
@@ -77,16 +80,18 @@ const createMockedProvider = async () => {
 
   vi.resetModules();
   vi.doMock('ioredis', () => {
-    class FakeRedis {
+    class FakeRedis extends EventEmitter {
       constructor(
         public url: string,
         public options: Record<PropertyKey, unknown>,
       ) {
+        super();
         instances.push({ options, url });
       }
       connect = mocks.connect;
       ping = mocks.ping;
       quit = mocks.quit;
+      disconnect = mocks.disconnect;
       get = mocks.get;
       set = mocks.set;
       setex = mocks.setex;
@@ -169,6 +174,73 @@ describe('integrated', (test) => {
 });
 
 describe('mocked', () => {
+  it('force-closes a failed initialization before rethrowing the authentication error', async () => {
+    vi.useFakeTimers();
+    const authenticationError = new Error('WRONGPASS invalid username-password pair');
+    const disconnect = vi.fn();
+    const ping = vi.fn();
+    let reconnectAttempts = 0;
+
+    vi.resetModules();
+    vi.doMock('ioredis', () => {
+      class FailingRedis extends EventEmitter {
+        private reconnectTimer: ReturnType<typeof setInterval> | undefined;
+
+        connect = vi.fn(() => {
+          this.reconnectTimer = setInterval(() => {
+            reconnectAttempts += 1;
+            throw new Error('unexpected reconnect after failed initialization');
+          }, 10);
+          queueMicrotask(() => this.emit('error', authenticationError));
+          return new Promise<void>(() => undefined);
+        });
+
+        disconnect = (reconnect?: boolean) => {
+          disconnect(reconnect);
+          clearInterval(this.reconnectTimer);
+        };
+
+        ping = ping;
+      }
+
+      return { default: FailingRedis };
+    });
+
+    try {
+      const IoRedisRedisProvider = await loadRedisProvider();
+      const provider = new IoRedisRedisProvider({
+        enabled: true,
+        password: 'sensitive-password',
+        prefix: 'health',
+        tls: true,
+        url: 'redis://private.example:6379',
+        username: 'sensitive-user',
+      });
+
+      await expect(provider.initialize()).rejects.toBe(authenticationError);
+      await vi.advanceTimersByTimeAsync(50);
+
+      expect(disconnect).toHaveBeenCalledWith(false);
+      expect(ping).not.toHaveBeenCalled();
+      expect(reconnectAttempts).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+      await expect(provider.get('key')).rejects.toThrow('Redis client is not initialized');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('force-closes the client when graceful disconnect fails', async () => {
+    const { mocks, provider } = await createMockedProvider();
+    const cleanupError = new Error('graceful disconnect failed');
+    mocks.quit.mockRejectedValueOnce(cleanupError);
+
+    await expect(provider.disconnect()).rejects.toBe(cleanupError);
+
+    expect(mocks.disconnect).toHaveBeenCalledWith(false);
+    await expect(provider.get('key')).rejects.toThrow('Redis client is not initialized');
+  });
+
   it('sets bounded ioredis connection and command timeouts', async () => {
     const { instances, provider } = await createMockedProvider();
 
