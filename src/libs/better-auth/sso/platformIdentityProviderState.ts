@@ -4,10 +4,19 @@ import { createAuthMiddleware } from 'better-auth/api';
 import type { BetterAuthPlugin } from 'better-auth/types';
 import { z } from 'zod';
 
+import {
+  enterPlatformOidcCallbackObservation,
+  markPlatformOidcLoginStage,
+  observePlatformOidcLoginFailure,
+  observePlatformOidcLoginSuccess,
+  registerPlatformOidcFlow,
+} from './platformIdentityProviderObservation';
+
 export const PLATFORM_OIDC_NONCE_HASH_STATE_KEY = 'platformOidcNonceHash';
 export const PLATFORM_OIDC_PROVIDER_STATE_KEY = 'platformOidcProviderId';
 
 const linkResponseSchema = z.object({ url: z.string().url() });
+const signInResponseSchema = z.object({ url: z.string().url() });
 const persistedOAuthStateSchema = z
   .object({
     expiresAt: z.number(),
@@ -26,6 +35,41 @@ const failStateBinding = (): never => {
   throw new Error('PLATFORM_OIDC_STATE_BINDING_FAILED');
 };
 
+const GUARDED_PERSISTENCE_METHODS = new Set([
+  'createOAuthUser',
+  'createSession',
+  'findOAuthUser',
+  'linkAccount',
+  'updateAccount',
+  'updateUser',
+]);
+
+const guardCallbackPersistence = <T extends object>(adapter: T): T =>
+  new Proxy(adapter, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver) as unknown;
+      if (
+        typeof property !== 'string' ||
+        !GUARDED_PERSISTENCE_METHODS.has(property) ||
+        typeof value !== 'function'
+      ) {
+        return value;
+      }
+      return async (...args: unknown[]) => {
+        try {
+          return await Reflect.apply(value, target, args);
+        } catch (error) {
+          await markPlatformOidcLoginStage('authenticated', 'unexpected');
+          await observePlatformOidcLoginFailure();
+          throw error;
+        }
+      };
+    },
+  });
+
+const hasSessionCookie = (headers?: Headers): boolean =>
+  headers?.getSetCookie().some((cookie) => /(?:^|\s)[^=]*session_token=/.test(cookie)) ?? false;
+
 /**
  * Better Auth creates link state before calling authorizationUrlParams. Bind the nonce to that
  * already-persisted state before the link URL can leave the server.
@@ -37,6 +81,58 @@ export const platformIdentityProviderState = (
 
   return {
     hooks: {
+      before: [
+        {
+          handler: createAuthMiddleware(async (ctx) => {
+            const providerId = ctx.params?.providerId;
+            if (typeof providerId !== 'string' || !providerIds.has(providerId)) return;
+
+            const state = typeof ctx.query?.state === 'string' ? ctx.query.state : null;
+            await enterPlatformOidcCallbackObservation(ctx.context.internalAdapter, state);
+            ctx.context.internalAdapter = guardCallbackPersistence(ctx.context.internalAdapter);
+
+            const cookieCache = ctx.context.options.session?.cookieCache;
+            const cookieVersion = cookieCache?.version;
+            if (typeof cookieVersion === 'function') {
+              ctx.context.options = {
+                ...ctx.context.options,
+                session: {
+                  ...ctx.context.options.session,
+                  cookieCache: {
+                    ...cookieCache,
+                    version: async (session, user) => {
+                      try {
+                        return await cookieVersion(session, user);
+                      } catch (error) {
+                        await markPlatformOidcLoginStage('authenticated', 'unexpected');
+                        await observePlatformOidcLoginFailure();
+                        throw error;
+                      }
+                    },
+                  },
+                },
+              };
+            }
+
+            const setCookie = ctx.setCookie;
+            return {
+              context: {
+                setCookie: (...args: Parameters<typeof setCookie>) => {
+                  try {
+                    return setCookie(...args);
+                  } catch (error) {
+                    void markPlatformOidcLoginStage('authenticated', 'unexpected').then(() =>
+                      observePlatformOidcLoginFailure(),
+                    );
+                    throw error;
+                  }
+                },
+              },
+            };
+          }),
+          matcher: (ctx) => ctx.path === '/oauth2/callback/:providerId',
+        },
+      ],
       after: [
         {
           handler: createAuthMiddleware(async (ctx) => {
@@ -85,8 +181,37 @@ export const platformIdentityProviderState = (
             if (!published || published.identifier !== state || published.value !== updatedValue) {
               return failStateBinding();
             }
+
+            await registerPlatformOidcFlow(ctx.context.internalAdapter, state, 'link');
           }),
           matcher: (ctx) => ctx.path === '/oauth2/link',
+        },
+        {
+          handler: createAuthMiddleware(async (ctx) => {
+            const providerId = ctx.body?.providerId;
+            if (typeof providerId !== 'string' || !providerIds.has(providerId)) return;
+
+            const response = signInResponseSchema.safeParse(ctx.context.returned);
+            if (!response.success) return;
+            const state = new URL(response.data.url).searchParams.get('state');
+            if (!state) return;
+            await registerPlatformOidcFlow(ctx.context.internalAdapter, state, 'sign_in');
+          }),
+          matcher: (ctx) => ctx.path === '/sign-in/oauth2',
+        },
+        {
+          handler: createAuthMiddleware(async (ctx) => {
+            const providerId = ctx.params?.providerId;
+            if (typeof providerId !== 'string' || !providerIds.has(providerId)) return;
+
+            const headers = ctx.context.responseHeaders;
+            if (hasSessionCookie(headers) && headers?.has('location')) {
+              await observePlatformOidcLoginSuccess();
+              return;
+            }
+            await observePlatformOidcLoginFailure('unexpected');
+          }),
+          matcher: (ctx) => ctx.path === '/oauth2/callback/:providerId',
         },
       ],
     },

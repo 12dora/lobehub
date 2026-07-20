@@ -205,6 +205,7 @@ const captureObservations = () => {
 
 interface RouteHarnessOptions extends NonNullable<Parameters<typeof setup>[0]> {
   linkStateUpdateFailure?: 'stale-read' | 'throw';
+  persistenceFailure?: 'account' | 'cookie' | 'session' | 'user';
   useSecondaryStorage?: boolean;
 }
 
@@ -248,6 +249,46 @@ const createRouteHarness = async (options?: RouteHarnessOptions) => {
           }),
           matcher: (ctx) => ctx.path === '/oauth2/link',
         },
+        {
+          handler: createAuthMiddleware(async (ctx) => {
+            switch (options?.persistenceFailure) {
+              case 'account': {
+                ctx.context.internalAdapter.linkAccount = async () => {
+                  throw new Error('INJECTED_ACCOUNT_PERSISTENCE_FAILURE');
+                };
+                return;
+              }
+              case 'cookie': {
+                ctx.context.options = {
+                  ...ctx.context.options,
+                  session: {
+                    ...ctx.context.options.session,
+                    cookieCache: {
+                      ...ctx.context.options.session?.cookieCache,
+                      enabled: true,
+                      version: () => {
+                        throw new Error('INJECTED_SESSION_COOKIE_FAILURE');
+                      },
+                    },
+                  },
+                };
+                return;
+              }
+              case 'session': {
+                ctx.context.internalAdapter.createSession = async () => {
+                  throw new Error('INJECTED_SESSION_PERSISTENCE_FAILURE');
+                };
+                return;
+              }
+              case 'user': {
+                ctx.context.internalAdapter.createOAuthUser = async () => {
+                  throw new Error('INJECTED_USER_PERSISTENCE_FAILURE');
+                };
+              }
+            }
+          }),
+          matcher: (ctx) => ctx.path === '/oauth2/callback/:providerId',
+        },
       ],
     },
     id: 'inject-platform-state-update-failure-test',
@@ -255,7 +296,11 @@ const createRouteHarness = async (options?: RouteHarnessOptions) => {
   const createAuthInstance = () =>
     betterAuth({
       account: {
-        accountLinking: { allowDifferentEmails: true, enabled: true },
+        accountLinking: {
+          allowDifferentEmails: true,
+          enabled: true,
+          requireLocalEmailVerified: false,
+        },
         storeStateStrategy: 'database',
       },
       baseURL,
@@ -274,6 +319,11 @@ const createRouteHarness = async (options?: RouteHarnessOptions) => {
                 secondaryStorage.delete(key);
               },
               get: async (key: string) => secondaryStorage.get(key) ?? null,
+              getAndDelete: async (key: string) => {
+                const value = secondaryStorage.get(key) ?? null;
+                secondaryStorage.delete(key);
+                return value;
+              },
               set: async (key: string, value: string) => {
                 secondaryStorage.set(key, value);
               },
@@ -308,7 +358,8 @@ const createRouteHarness = async (options?: RouteHarnessOptions) => {
       response,
     };
   };
-  const callback = async (
+  const callbackWithAuth = async (
+    auth: ReturnType<typeof createAuthInstance>,
     flow: { authorizationUrl: URL; cookie: string },
     overrides: { code?: string; cookie?: string; state?: string | null } = {},
   ) => {
@@ -320,10 +371,14 @@ const createRouteHarness = async (options?: RouteHarnessOptions) => {
         ? flow.authorizationUrl.searchParams.get('state')
         : overrides.state;
     if (state !== null) callbackUrl.searchParams.set('state', state);
-    return callbackAuth.handler(
+    return auth.handler(
       new Request(callbackUrl, { headers: { Cookie: overrides.cookie ?? flow.cookie } }),
     );
   };
+  const callback = (
+    flow: { authorizationUrl: URL; cookie: string },
+    overrides: { code?: string; cookie?: string; state?: string | null } = {},
+  ) => callbackWithAuth(callbackAuth, flow, overrides);
   const authenticate = async () => {
     const response = await signInAuth.handler(
       new Request(`${baseURL}/sign-up/email`, {
@@ -373,6 +428,10 @@ const createRouteHarness = async (options?: RouteHarnessOptions) => {
     ...setupResult,
     authenticate,
     callback,
+    callbackFromNewInstance: (
+      flow: { authorizationUrl: URL; cookie: string },
+      overrides: { code?: string; cookie?: string; state?: string | null } = {},
+    ) => callbackWithAuth(createAuthInstance(), flow, overrides),
     customGetToken,
     database,
     mapProfileToUser,
@@ -529,6 +588,40 @@ describe('platform identity provider trusted profile', () => {
     ]);
   });
 
+  it.each([
+    ['user', false],
+    ['account', true],
+    ['session', false],
+    ['cookie', false],
+  ] as const)(
+    'records one authenticated unexpected terminal when %s persistence fails',
+    async (persistenceFailure, existingUser) => {
+      const events = captureObservations();
+      const harness = await createRouteHarness({
+        persistenceFailure,
+        ...(persistenceFailure === 'account' ? { userInfo: { email_verified: true } } : {}),
+      });
+      if (existingUser) await harness.authenticate();
+      const flow = await harness.start();
+      harness.setTokenNonce(flow.authorizationUrl.searchParams.get('nonce')!);
+
+      const response = await harness.callback(flow);
+
+      expect(response.headers.get('location')).not.toBe('https://app.example.test/after-login');
+      expect(events).toEqual([
+        {
+          failureCategory: 'unexpected',
+          outcome: 'failure',
+          stage: 'authenticated',
+          type: 'oidc_login',
+        },
+      ]);
+      expect(JSON.stringify(events)).not.toMatch(
+        /corp-oidc|employee|ada|example\.test|authorization|nonce|state|code|secret/i,
+      );
+    },
+  );
+
   it('creates authorization and exchanges tokens without Better Auth discovery or token fetches', async () => {
     const { oauthProvider, transport } = await setup({
       token: { access_token: 'access-token', id_token: 'id-token' },
@@ -649,7 +742,9 @@ describe('platform identity provider trusted profile', () => {
 
       const verification = harness.readVerification(state!);
       expect(verification).toBeDefined();
-      expect(harness.database.verification).toHaveLength(useSecondaryStorage ? 0 : 1);
+      expect(
+        harness.database.verification?.filter((entry) => entry.identifier === state),
+      ).toHaveLength(useSecondaryStorage ? 0 : 1);
       const persistedState = JSON.parse(verification!.value) as Record<string, unknown>;
       expect(persistedState).toMatchObject({
         callbackURL: 'https://app.example.test/after-link',
@@ -845,6 +940,7 @@ describe('platform identity provider trusted profile', () => {
     ['wrong state', 'attacker-state', undefined],
     ['state/cookie mismatch', undefined, 'better-auth.state=attacker-cookie'],
   ])('rejects %s before token exchange', async (_label, state, cookie) => {
+    const events = captureObservations();
     const harness = await createRouteHarness();
     const flow = await harness.start();
 
@@ -855,16 +951,25 @@ describe('platform identity provider trusted profile', () => {
     expect(harness.customGetToken).not.toHaveBeenCalled();
     expect(harness.transport).not.toHaveBeenCalled();
     expect(harness.mapProfileToUser).not.toHaveBeenCalled();
+    expect(events).toEqual([
+      {
+        failureCategory: 'state_invalid',
+        outcome: 'failure',
+        stage: 'state_validation',
+        type: 'oidc_login',
+      },
+    ]);
   });
 
   it('consumes OAuth verification state once before token exchange', async () => {
+    const events = captureObservations();
     const harness = await createRouteHarness();
     const flow = await harness.start();
     harness.setTokenNonce(flow.authorizationUrl.searchParams.get('nonce')!);
     const first = await harness.callback(flow);
     const callsAfterSuccess = harness.transport.mock.calls.length;
 
-    const replay = await harness.callback(flow);
+    const replay = await harness.callbackFromNewInstance(flow);
 
     expect(first.headers.get('location')).toBe('https://app.example.test/after-login');
     expect(replay.status).toBe(302);
@@ -872,9 +977,11 @@ describe('platform identity provider trusted profile', () => {
     expect(harness.customGetToken).toHaveBeenCalledOnce();
     expect(harness.transport).toHaveBeenCalledTimes(callsAfterSuccess);
     expect(harness.mapProfileToUser).toHaveBeenCalledOnce();
+    expect(events).toEqual([{ outcome: 'success', stage: 'authenticated', type: 'oidc_login' }]);
   });
 
   it('rejects expired OAuth verification state before token exchange', async () => {
+    const events = captureObservations();
     const harness = await createRouteHarness();
     const flow = await harness.start();
     vi.useFakeTimers({ now: Date.now() });
@@ -887,6 +994,14 @@ describe('platform identity provider trusted profile', () => {
       expect(harness.customGetToken).not.toHaveBeenCalled();
       expect(harness.transport).not.toHaveBeenCalled();
       expect(harness.mapProfileToUser).not.toHaveBeenCalled();
+      expect(events).toEqual([
+        {
+          failureCategory: 'state_invalid',
+          outcome: 'failure',
+          stage: 'state_validation',
+          type: 'oidc_login',
+        },
+      ]);
     } finally {
       vi.useRealTimers();
     }
