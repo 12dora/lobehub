@@ -255,6 +255,44 @@ describe('DomainConfigCache', () => {
     expect(onEntryStored).toHaveBeenCalledWith({ revision: 2 });
   });
 
+  it('does not report a late failure from an old epoch after the new flight is stored', async () => {
+    let epoch = 'old';
+    const oldLoad = deferred<MutableValue | null>();
+    const newLoad = deferred<MutableValue | null>();
+    const load = vi
+      .fn<() => Promise<MutableValue | null>>()
+      .mockReturnValueOnce(oldLoad.promise)
+      .mockReturnValueOnce(newLoad.promise);
+    const onEntryStored = vi.fn();
+    const onLoadFailure = vi.fn();
+    const cache = createCache({
+      cacheKey: {},
+      epoch: async () => epoch,
+      load,
+      onEntryStored,
+      onLoadFailure,
+    });
+
+    const oldRequest = cache.get();
+    await vi.waitFor(() => expect(load).toHaveBeenCalledOnce());
+    epoch = 'new';
+    const newRequest = cache.get();
+    await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(2));
+    newLoad.resolve({ revision: 2 });
+    await expect(newRequest).resolves.toEqual({ revision: 2 });
+
+    const oldError = new Error('late old database failure');
+    const oldResult = expect(oldRequest).rejects.toBe(oldError);
+    oldLoad.reject(oldError);
+    await oldResult;
+
+    expect(onEntryStored).toHaveBeenCalledOnce();
+    expect(onEntryStored).toHaveBeenCalledWith({ revision: 2 });
+    expect(onLoadFailure).not.toHaveBeenCalled();
+    await expect(cache.get()).resolves.toEqual({ revision: 2 });
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+
   it('does not let an in-flight request from before reset delete or populate new work', async () => {
     const oldLoad = deferred<MutableValue | null>();
     const newLoad = deferred<MutableValue | null>();
