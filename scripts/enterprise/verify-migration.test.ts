@@ -1,11 +1,11 @@
 // @vitest-environment node
-import { createHash, randomBytes } from 'node:crypto';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { MigrationCompatReportCore } from './verify-migration/index';
 import {
@@ -14,6 +14,7 @@ import {
   BASELINE_COMMIT,
   BASELINE_MIGRATION_COUNT,
   BASELINE_VERSION,
+  buildFullFailedChecks,
   buildFullPassingChecks,
   buildSyntheticFixtureStatements,
   createMigrationCompatReport,
@@ -21,7 +22,6 @@ import {
   DUMP_SCAN_CHUNK_BYTES,
   DUMP_SCAN_OVERLAP_BYTES,
   gatePassed,
-  getOwnedPostgresCreateCount,
   hashDumpContent,
   isLegacyTagIdxJournalStyle,
   isOwnedResourceToken,
@@ -29,7 +29,7 @@ import {
   loadExternalDump,
   loadOfficialMigrations,
   migrationCompatReportSchema,
-  resetOwnedPostgresCreateCount,
+  REQUIRED_IDENTITY_SECRET_CONSTRAINTS,
   runMigrationCompatVerification,
   scanDumpPrivacy,
   scanDumpPrivacyBuffer,
@@ -73,8 +73,50 @@ const baseReportInput = (): MigrationCompatReportCore => ({
   syntheticResult: 'passed',
 });
 
-afterEach(() => {
-  resetOwnedPostgresCreateCount();
+const failedReportInput = (): MigrationCompatReportCore => ({
+  baseline: {
+    commitShort: shortSha(BASELINE_COMMIT),
+    lastTag: '0116_add_task_connector_message_and_verify_updates',
+    match: 'passed',
+    migrationCount: BASELINE_MIGRATION_COUNT,
+    version: BASELINE_VERSION,
+  },
+  checks: buildFullFailedChecks(),
+  cleanupResult: 'passed',
+  elapsed: { milliseconds: 10 },
+  externalDump: { privacy: 'failed', status: 'privacy-rejected' },
+  fixture: {
+    rowCounts: {},
+    source: 'synthetic',
+    status: 'skipped',
+  },
+  head: {
+    commitShort: '8b0a0d8',
+    postBaselineMigrationCount: 19,
+    totalMigrationCount: 136,
+  },
+  lane: 'enterprise-migration-compat',
+  ownedResource: { kind: 'none' },
+  overall: 'failed',
+  rerun: { mode: 'idempotent', result: 'skipped' },
+  schemaVersion: 1,
+  syntheticResult: 'failed',
+});
+
+/** Only exact test-owned dump dirs under os.tmpdir(); never recursive beyond that prefix. */
+const removeExactOwnedDumpLeftovers = async (): Promise<void> => {
+  const { readdir } = await import('node:fs/promises');
+  const base = tmpdir();
+  const entries = await readdir(base, { withFileTypes: true }).catch(() => []);
+  await Promise.all(
+    entries
+      .filter((entry) => entry.isDirectory() && entry.name.startsWith('m15q03-dump-'))
+      .map((entry) => rm(path.join(base, entry.name), { force: true, recursive: true })),
+  );
+};
+
+afterEach(async () => {
+  await removeExactOwnedDumpLeftovers();
 });
 
 describe('migration compat baseline (2.2.10 / 0000-0116)', () => {
@@ -110,11 +152,8 @@ describe('official drizzle migration semantics', () => {
     expect(first.hash.startsWith('tag:')).toBe(false);
     expect(first.folderMillis).toBeGreaterThan(10_000);
     expect(isLegacyTagIdxJournalStyle(first.hash, first.folderMillis)).toBe(false);
-    // Legacy false-green style that the old hand-built migrator used.
     expect(isLegacyTagIdxJournalStyle(`tag:${first.tag}`, 0)).toBe(true);
     expect(isLegacyTagIdxJournalStyle('tag:0116_x', 116)).toBe(true);
-
-    // hash is over the raw file contents (with breakpoints), not join reconstruction alone
     expect(first.hash).toHaveLength(64);
     expect(first.sql.length).toBeGreaterThan(0);
   });
@@ -189,6 +228,50 @@ describe('migration compat report contract', () => {
     ).toThrow();
   });
 
+  it('requires complete 14-category shape for failed reports and overall=failed when synthetic fails', () => {
+    const failed = createMigrationCompatReport(failedReportInput());
+    expect(failed.syntheticResult).toBe('failed');
+    expect(failed.overall).toBe('failed');
+    expect(failed.checks).toHaveLength(14);
+    expect(gatePassed(failed)).toBe(false);
+
+    // Missing categories on failed path rejected.
+    expect(() =>
+      createMigrationCompatReport({
+        ...failedReportInput(),
+        checks: buildFullFailedChecks().slice(0, 1),
+      }),
+    ).toThrow(/missing required check category|exactly the required/i);
+
+    // Duplicate categories on failed path rejected.
+    expect(() =>
+      createMigrationCompatReport({
+        ...failedReportInput(),
+        checks: [
+          ...buildFullFailedChecks(),
+          { category: 'cleanup', durationMs: 1, result: 'passed' },
+        ],
+      }),
+    ).toThrow(/duplicate/i);
+
+    // synthetic=failed + overall=unverified is contradictory.
+    expect(() =>
+      createMigrationCompatReport({
+        ...failedReportInput(),
+        overall: 'unverified',
+      }),
+    ).toThrow(/syntheticResult=failed requires overall=failed/i);
+
+    // Cross-field cleanup mismatch on failed path.
+    expect(() =>
+      createMigrationCompatReport({
+        ...failedReportInput(),
+        cleanupResult: 'failed',
+        checks: buildFullFailedChecks({ cleanup: 'passed' }),
+      }),
+    ).toThrow(/cleanupResult\/check mismatch/i);
+  });
+
   it('derives overall=unverified when production dump is absent (never pass)', () => {
     expect(
       deriveOverallResult({
@@ -209,6 +292,13 @@ describe('migration compat report contract', () => {
         cleanupResult: 'failed',
         externalDumpStatus: 'privacy-verified',
         syntheticResult: 'passed',
+      }),
+    ).toBe('failed');
+    expect(
+      deriveOverallResult({
+        cleanupResult: 'passed',
+        externalDumpStatus: 'absent',
+        syntheticResult: 'failed',
       }),
     ).toBe('failed');
   });
@@ -248,8 +338,8 @@ describe('external dump privacy contract (full-file + boundaries)', () => {
 
   it('detects a secret at offset ~500000 in a ~2MB dump (not window sampling)', async () => {
     const secret = 'password=supersecret-midfile-token';
-    const prefix = Buffer.alloc(500_000, 0x61); // 'a'
-    const suffix = Buffer.alloc(1_500_000, 0x62); // 'b'
+    const prefix = Buffer.alloc(500_000, 0x61);
+    const suffix = Buffer.alloc(1_500_000, 0x62);
     const dump = Buffer.concat([prefix, Buffer.from(secret, 'utf8'), suffix]);
     expect(dump.byteLength).toBeGreaterThan(1_900_000);
     expect(scanDumpPrivacyBuffer(dump)).toBe('failed');
@@ -260,28 +350,29 @@ describe('external dump privacy contract (full-file + boundaries)', () => {
     const marker = 'password=boundary-cross-secret';
     const left = marker.slice(0, Math.floor(marker.length / 2));
     const right = marker.slice(Math.floor(marker.length / 2));
-    // Place split exactly across a chunk boundary with overlap consideration.
     const pad = DUMP_SCAN_CHUNK_BYTES - left.length;
     const dump = `${'x'.repeat(pad)}${left}${right}${'y'.repeat(1024)}`;
     expect(scanDumpPrivacyBuffer(Buffer.from(dump, 'utf8'))).toBe('failed');
-    // Overlap constant is large enough for the marker.
     expect(DUMP_SCAN_OVERLAP_BYTES).toBeGreaterThanOrEqual(marker.length);
   });
 
-  it('privacy reject never creates an owned database', async () => {
-    resetOwnedPostgresCreateCount();
-    const before = getOwnedPostgresCreateCount();
-    const dir = await mkdtemp(path.join(tmpdir(), 'm15q03-dump-'));
-    const dumpPath = path.join(dir, 'bad.dump');
-    await writeFile(dumpPath, ` innocuous\npassword=leaked\n`);
+  it('privacy reject never provisions owned DB (factory injection, in-memory dump)', async () => {
+    const createOwned = vi.fn(async () => {
+      throw new Error('owned factory must not be called on privacy reject');
+    });
+
     const { report } = await runMigrationCompatVerification({
-      externalDump: { localPath: dumpPath },
+      createOwnedPostgres: createOwned,
+      externalDump: { content: 'innocuous\npassword=leaked\n' },
       repoRoot,
     });
+
     expect(report.externalDump.status).toBe('privacy-rejected');
     expect(report.overall).toBe('failed');
-    expect(getOwnedPostgresCreateCount()).toBe(before);
+    expect(report.syntheticResult).toBe('failed');
+    expect(report.checks).toHaveLength(14);
     expect(report.ownedResource.kind).toBe('none');
+    expect(createOwned).toHaveBeenCalledTimes(0);
   });
 });
 
@@ -325,19 +416,34 @@ describe('hash stability', () => {
   });
 });
 
-describe('probe zero-row false-green guard (unit shape)', () => {
-  it('platform probe SQL is secret-free and pairs ref with fingerprint', async () => {
-    const { buildPlatformProbeStatements, PROBE_SECRET_REF, PROBE_SECRET_FINGERPRINT } =
-      await import('./verify-migration/probes');
+describe('probe secret history + constraints (unit shape)', () => {
+  it('seeds history row and lists production constraint names', async () => {
+    const {
+      buildPlatformProbeStatements,
+      PROBE_SECRET_REF,
+      PROBE_SECRET_FINGERPRINT,
+      PROBE_SECRET_ENVELOPE_PLACEHOLDER,
+      PLATFORM_PROBE_IDS,
+    } = await import('./verify-migration/probes');
     const sql = buildPlatformProbeStatements().join('\n');
     expect(sql).toContain(PROBE_SECRET_REF);
     expect(sql).toContain(PROBE_SECRET_FINGERPRINT);
+    expect(sql).toContain(PROBE_SECRET_ENVELOPE_PLACEHOLDER);
+    expect(sql).toContain('platform_identity_provider_secrets');
+    expect(sql).toContain(PLATFORM_PROBE_IDS.secretHistoryId);
     expect(sql).not.toMatch(/BEGIN PRIVATE KEY/);
     expect(sql).not.toMatch(/postgres:\/\//i);
-    expect(PROBE_SECRET_FINGERPRINT).toMatch(/^[a-f0-9]{64}$/);
-    expect(PROBE_SECRET_REF.startsWith('kms://platform-identity-providers/')).toBe(true);
+    expect(REQUIRED_IDENTITY_SECRET_CONSTRAINTS).toContain(
+      'platform_identity_providers_secret_state_check',
+    );
+    expect(REQUIRED_IDENTITY_SECRET_CONSTRAINTS).toContain(
+      'platform_identity_providers_secret_ref_check',
+    );
+    expect(REQUIRED_IDENTITY_SECRET_CONSTRAINTS).toContain(
+      'platform_identity_provider_secrets_ref_check',
+    );
+    expect(REQUIRED_IDENTITY_SECRET_CONSTRAINTS).toContain(
+      'platform_identity_provider_secrets_fingerprint_check',
+    );
   });
 });
-
-// silence unused in case of tree-shaking noise
-void randomBytes;

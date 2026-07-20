@@ -21,6 +21,7 @@ export {
 } from './constants';
 export type { CheckEntry, MigrationCompatReport, MigrationCompatReportCore } from './contract';
 export {
+  buildFullFailedChecks,
   buildFullPassingChecks,
   createMigrationCompatReport,
   deriveOverallResult,
@@ -52,11 +53,7 @@ export {
   postBaselineEntries,
   verifyExpandOnlyPostBaselineSql,
 } from './migrations';
-export {
-  getOwnedPostgresCreateCount,
-  isOwnedResourceToken,
-  resetOwnedPostgresCreateCount,
-} from './ownedPostgres';
+export { isOwnedResourceToken } from './ownedPostgres';
 export {
   countForbiddenValues,
   DUMP_MAX_BYTES,
@@ -70,11 +67,15 @@ export {
   shortSha,
 } from './privacy';
 export {
+  attemptIllegalSecretMutations,
   buildPlatformProbeStatements,
   PLATFORM_PROBE_IDS,
+  PROBE_SECRET_ENVELOPE_PLACEHOLDER,
   PROBE_SECRET_FINGERPRINT,
   PROBE_SECRET_REF,
+  REQUIRED_IDENTITY_SECRET_CONSTRAINTS,
   verifyAuditProbes,
+  verifyIdentitySecretConstraintsPresent,
   verifyRevisionProbes,
   verifySecretReferenceProbes,
 } from './probes';
