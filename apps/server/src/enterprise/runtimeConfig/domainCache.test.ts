@@ -28,6 +28,8 @@ const createCache = (options: {
   epoch: () => Promise<string>;
   load: () => Promise<MutableValue | null>;
   now?: () => number;
+  onEntryStored?: (value: MutableValue | null) => void;
+  onLoadFailure?: (error: unknown) => void;
   ttl?: number;
 }) =>
   new DomainConfigCache<MutableValue>({
@@ -40,6 +42,8 @@ const createCache = (options: {
     namespace: 'test-domain',
     now: options.now,
     observabilityDomain: 'branding',
+    onEntryStored: options.onEntryStored,
+    onLoadFailure: options.onLoadFailure,
   });
 
 beforeEach(() => {
@@ -165,6 +169,66 @@ describe('DomainConfigCache', () => {
     expect(load).toHaveBeenCalledTimes(3);
   });
 
+  it('observes only real cache stores, never hits or coalesced callers', async () => {
+    let epoch = '1';
+    const pending = deferred<MutableValue | null>();
+    const load = vi
+      .fn<() => Promise<MutableValue | null>>()
+      .mockReturnValueOnce(pending.promise)
+      .mockResolvedValueOnce({ revision: 2 });
+    const onEntryStored = vi.fn();
+    const cache = createCache({ epoch: async () => epoch, load, onEntryStored });
+
+    const first = cache.get();
+    const coalesced = cache.get();
+    await vi.waitFor(() => expect(load).toHaveBeenCalledOnce());
+    pending.resolve({ revision: 1 });
+    await expect(Promise.all([first, coalesced])).resolves.toEqual([
+      { revision: 1 },
+      { revision: 1 },
+    ]);
+    await expect(cache.get()).resolves.toEqual({ revision: 1 });
+    expect(onEntryStored).toHaveBeenCalledOnce();
+    expect(onEntryStored).toHaveBeenLastCalledWith({ revision: 1 });
+
+    epoch = '2';
+    await expect(cache.get()).resolves.toEqual({ revision: 2 });
+    expect(onEntryStored).toHaveBeenCalledTimes(2);
+    expect(onEntryStored).toHaveBeenLastCalledWith({ revision: 2 });
+  });
+
+  it('observes each loader failure once and preserves the original error when observers throw', async () => {
+    const original = new Error('database detail');
+    const onLoadFailure = vi.fn(() => {
+      throw new Error('observer detail');
+    });
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const cache = createCache({
+      epoch: async () => '1',
+      load: async () => {
+        throw original;
+      },
+      onLoadFailure,
+    });
+
+    const first = cache.get();
+    const coalesced = cache.get();
+    const results = await Promise.allSettled([first, coalesced]);
+
+    expect(results).toEqual([
+      { reason: original, status: 'rejected' },
+      { reason: original, status: 'rejected' },
+    ]);
+    expect(onLoadFailure).toHaveBeenCalledOnce();
+    expect(onLoadFailure).toHaveBeenCalledWith(original);
+    expect(consoleError).toHaveBeenCalledWith(
+      '[PlatformRuntimeConfig] cache failure observer unavailable',
+      { errorClass: 'Error' },
+    );
+    expect(JSON.stringify(consoleError.mock.calls)).not.toContain('observer detail');
+    consoleError.mockRestore();
+  });
+
   it('prevents an old epoch generation from contaminating newer cache state', async () => {
     let epoch = 'old';
     const oldLoad = deferred<MutableValue | null>();
@@ -174,7 +238,8 @@ describe('DomainConfigCache', () => {
       .mockReturnValueOnce(oldLoad.promise)
       .mockReturnValueOnce(newLoad.promise);
     const cacheKey = {};
-    const cache = createCache({ cacheKey, epoch: async () => epoch, load });
+    const onEntryStored = vi.fn();
+    const cache = createCache({ cacheKey, epoch: async () => epoch, load, onEntryStored });
 
     const oldRequest = cache.get();
     await vi.waitFor(() => expect(load).toHaveBeenCalledOnce());
@@ -186,6 +251,8 @@ describe('DomainConfigCache', () => {
     oldLoad.resolve({ revision: 1 });
     await expect(oldRequest).resolves.toEqual({ revision: 1 });
     await expect(cache.get()).resolves.toEqual({ revision: 2 });
+    expect(onEntryStored).toHaveBeenCalledOnce();
+    expect(onEntryStored).toHaveBeenCalledWith({ revision: 2 });
   });
 
   it('does not let an in-flight request from before reset delete or populate new work', async () => {
