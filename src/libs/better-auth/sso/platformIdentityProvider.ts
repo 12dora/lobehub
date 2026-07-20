@@ -1,15 +1,24 @@
 import { randomBytes } from 'node:crypto';
 
+import type { EnterpriseOidcFailureCategory } from '@lobechat/observability-otel/modules/enterprise-platform';
 import type { PlatformOidcDiscoveryMetadata } from '@lobechat/types';
 import { getOAuthState } from 'better-auth/api';
 import type { GenericOAuthConfig } from 'better-auth/plugins';
 import { z } from 'zod';
 
-import { SafeOutboundHttpClient } from '@/server/enterprise/security/outboundHttp';
+import {
+  SafeOutboundHttpClient,
+  SafeOutboundHttpError,
+} from '@/server/enterprise/security/outboundHttp';
 import { verifyPlatformOidcIdToken } from '@/server/enterprise/services/identityProvider/idTokenVerifier';
 import type { PublishedIdentityProviderPayload } from '@/server/enterprise/services/identityProvider/publicationService';
 import { exchangePlatformOidcAuthorizationCode } from '@/server/enterprise/services/identityProvider/tokenExchange';
 
+import {
+  markPlatformOidcLoginStage,
+  observePlatformOidcLoginFailure,
+  suppressPlatformOidcLoginObservation,
+} from './platformIdentityProviderObservation';
 import {
   createPlatformOidcNonceBinding,
   PLATFORM_OIDC_NONCE_HASH_STATE_KEY,
@@ -24,6 +33,37 @@ const USERINFO_MAX_BYTES = 64 * 1024;
 // it satisfies that structural contract and fails closed if Better Auth ever bypasses getToken.
 const BETTER_AUTH_UNUSED_TOKEN_ENDPOINT = 'https://platform-oidc-token.invalid/';
 const userInfoSchema = z.record(z.string(), z.unknown());
+
+const isNetworkError = (error: unknown): boolean => {
+  const visited = new Set<Error>();
+  let current = error;
+  while (current instanceof Error && !visited.has(current)) {
+    visited.add(current);
+    if (current instanceof SafeOutboundHttpError) return true;
+    if (current.name === 'AbortError' || current.name === 'TimeoutError') return true;
+    const code = Object.getOwnPropertyDescriptor(current, 'code')?.value;
+    if (
+      code === 'ECONNREFUSED' ||
+      code === 'ECONNRESET' ||
+      code === 'ENOTFOUND' ||
+      code === 'ETIMEDOUT'
+    ) {
+      return true;
+    }
+    current = Object.getOwnPropertyDescriptor(current, 'cause')?.value;
+  }
+  return false;
+};
+
+const tokenFailureCategory = (error: unknown): EnterpriseOidcFailureCategory =>
+  isNetworkError(error) ? 'network_failure' : 'token_invalid';
+
+const idTokenFailureCategory = (error: unknown): EnterpriseOidcFailureCategory => {
+  if (error instanceof Error && error.message === 'PLATFORM_OIDC_NONCE_INVALID') {
+    return 'nonce_invalid';
+  }
+  return isNetworkError(error) ? 'network_failure' : 'id_token_invalid';
+};
 
 const stripNonceClaim = (claims: Record<string, unknown>): Record<string, unknown> => {
   const sanitized = { ...claims };
@@ -69,6 +109,25 @@ interface PlatformIdentityProviderUser {
   name: string;
 }
 
+const mapPlatformProfileToUser = (
+  provider: RuntimeIdentityProvider,
+  profile: Record<string, unknown>,
+): PlatformIdentityProviderUser => {
+  const subject = firstStringClaim(profile, provider.claimMapping.subject);
+  const name = firstStringClaim(profile, [...provider.claimMapping.name, 'preferred_username']);
+  const email = firstStringClaim(profile, provider.claimMapping.email);
+  if (!subject || !name || !email || !emailAllowed(email, provider.domainAllowlist)) {
+    throw new Error('PLATFORM_OIDC_CLAIM_VALIDATION_FAILED');
+  }
+  return {
+    ...getStableDingTalkClaims(provider, profile),
+    email,
+    id: subject,
+    image: firstStringClaim(profile, provider.claimMapping.picture),
+    name,
+  };
+};
+
 /** The only DB/LKG → Better Auth provider adapter. */
 export const buildPlatformIdentityProvider = (
   provider: RuntimeIdentityProvider,
@@ -80,7 +139,6 @@ export const buildPlatformIdentityProvider = (
     throw new Error('PLATFORM_IDENTITY_PROVIDER_INVALID_SNAPSHOT');
   }
   const redirectURI = `${appUrl}/api/auth/oauth2/callback/${provider.providerKey}`;
-
   return {
     authorizationUrl: provider.oidcMetadata.authorizationEndpoint,
     authorizationUrlParams: (ctx) => {
@@ -102,66 +160,103 @@ export const buildPlatformIdentityProvider = (
     disableImplicitSignUp: !provider.autoProvision,
     disableSignUp: !provider.autoProvision,
     getToken: async ({ code, codeVerifier, redirectURI: callbackRedirectURI }) => {
-      const token = await exchangePlatformOidcAuthorizationCode({
-        clientId: provider.clientId,
-        clientSecret: provider.clientSecret,
-        code,
-        expectedRedirectUri: redirectURI,
-        metadata: provider.oidcMetadata,
-        outbound,
-        pkceVerifier: codeVerifier,
-        redirectUri: callbackRedirectURI,
-      });
-      if (!token.access_token) throw new Error('PLATFORM_OIDC_TOKEN_RESPONSE_INVALID');
-      return {
-        accessToken: token.access_token,
-        accessTokenExpiresAt: token.expires_in
-          ? new Date(Date.now() + token.expires_in * 1000)
-          : undefined,
-        expiresIn: token.expires_in,
-        idToken: token.id_token,
-        raw: token,
-        refreshToken: token.refresh_token,
-        scopes: token.scope?.split(' ').filter(Boolean) ?? [],
-        tokenType: token.token_type ?? 'Bearer',
-      };
+      let isAccountLink = false;
+      try {
+        isAccountLink = (await readOAuthState())?.link !== undefined;
+      } catch {
+        // Direct adapter calls have no Better Auth request state; observability stays best-effort.
+      }
+      if (isAccountLink) await suppressPlatformOidcLoginObservation();
+      else await markPlatformOidcLoginStage('token_exchange');
+      try {
+        const token = await exchangePlatformOidcAuthorizationCode({
+          clientId: provider.clientId,
+          clientSecret: provider.clientSecret,
+          code,
+          expectedRedirectUri: redirectURI,
+          metadata: provider.oidcMetadata,
+          outbound,
+          pkceVerifier: codeVerifier,
+          redirectUri: callbackRedirectURI,
+        });
+        if (!token.access_token) throw new Error('PLATFORM_OIDC_TOKEN_RESPONSE_INVALID');
+        return {
+          accessToken: token.access_token,
+          accessTokenExpiresAt: token.expires_in
+            ? new Date(Date.now() + token.expires_in * 1000)
+            : undefined,
+          expiresIn: token.expires_in,
+          idToken: token.id_token,
+          raw: token,
+          refreshToken: token.refresh_token,
+          scopes: token.scope?.split(' ').filter(Boolean) ?? [],
+          tokenType: token.token_type ?? 'Bearer',
+        };
+      } catch (error) {
+        await markPlatformOidcLoginStage('token_exchange', tokenFailureCategory(error));
+        await observePlatformOidcLoginFailure();
+        throw error;
+      }
     },
     getUserInfo: async (tokens) => {
       if (!tokens.idToken || !tokens.accessToken) {
+        await markPlatformOidcLoginStage('token_exchange', 'token_invalid');
+        await observePlatformOidcLoginFailure();
         throw new Error('PLATFORM_OIDC_TOKEN_INVALID');
       }
       const oauthState = await readOAuthState();
+      if (oauthState?.link !== undefined) await suppressPlatformOidcLoginObservation();
       const expectedNonceHash = oauthState?.[PLATFORM_OIDC_NONCE_HASH_STATE_KEY];
       if (
         typeof expectedNonceHash !== 'string' ||
         !/^[\da-f]{64}$/.test(expectedNonceHash) ||
         oauthState?.[PLATFORM_OIDC_PROVIDER_STATE_KEY] !== provider.providerKey
       ) {
+        await markPlatformOidcLoginStage('state_validation', 'state_invalid');
+        await observePlatformOidcLoginFailure();
         throw new Error('PLATFORM_OIDC_NONCE_INVALID');
       }
 
       const metadata = provider.oidcMetadata;
       if (!metadata.userinfoEndpoint) {
+        await markPlatformOidcLoginStage('userinfo', 'userinfo_invalid');
+        await observePlatformOidcLoginFailure();
         throw new Error('PLATFORM_OIDC_USERINFO_REQUIRED');
       }
-      const idTokenClaims = await verifyPlatformOidcIdToken({
-        clientId: provider.clientId,
-        idToken: tokens.idToken,
-        metadata,
-        nonce: { expectedHash: expectedNonceHash, mode: 'required' },
-        outbound,
-      });
-      const response = await outbound.fetch(metadata.userinfoEndpoint, {
-        headers: {
-          Accept: 'application/json',
-          Authorization: `Bearer ${tokens.accessToken}`,
-        },
-        maxRedirects: 0,
-        maxResponseBytes: USERINFO_MAX_BYTES,
-        method: 'GET',
-        secretBearing: true,
-        timeoutMs: USERINFO_TIMEOUT_MS,
-      });
+      await markPlatformOidcLoginStage('id_token_verification');
+      let idTokenClaims: Awaited<ReturnType<typeof verifyPlatformOidcIdToken>>;
+      try {
+        idTokenClaims = await verifyPlatformOidcIdToken({
+          clientId: provider.clientId,
+          idToken: tokens.idToken,
+          metadata,
+          nonce: { expectedHash: expectedNonceHash, mode: 'required' },
+          outbound,
+        });
+      } catch (error) {
+        await markPlatformOidcLoginStage('id_token_verification', idTokenFailureCategory(error));
+        await observePlatformOidcLoginFailure();
+        throw error;
+      }
+      await markPlatformOidcLoginStage('userinfo');
+      let response: Awaited<ReturnType<SafeOutboundHttpClient['fetch']>>;
+      try {
+        response = await outbound.fetch(metadata.userinfoEndpoint, {
+          headers: {
+            Accept: 'application/json',
+            Authorization: `Bearer ${tokens.accessToken}`,
+          },
+          maxRedirects: 0,
+          maxResponseBytes: USERINFO_MAX_BYTES,
+          method: 'GET',
+          secretBearing: true,
+          timeoutMs: USERINFO_TIMEOUT_MS,
+        });
+      } catch (error) {
+        await markPlatformOidcLoginStage('userinfo', 'network_failure');
+        await observePlatformOidcLoginFailure();
+        throw error;
+      }
       const contentType = response.headers
         .get('content-type')
         ?.split(';', 1)[0]
@@ -172,11 +267,22 @@ export const buildPlatformIdentityProvider = (
         response.truncated ||
         (contentType !== 'application/json' && !contentType?.endsWith('+json'))
       ) {
+        await markPlatformOidcLoginStage('userinfo', 'userinfo_invalid');
+        await observePlatformOidcLoginFailure();
         throw new Error('PLATFORM_OIDC_USERINFO_INVALID');
       }
-      const userInfo = userInfoSchema.parse(await response.json());
+      let userInfo: z.infer<typeof userInfoSchema>;
+      try {
+        userInfo = userInfoSchema.parse(await response.json());
+      } catch (error) {
+        await markPlatformOidcLoginStage('userinfo', 'userinfo_invalid');
+        await observePlatformOidcLoginFailure();
+        throw error;
+      }
       const userInfoSubject = firstStringClaim(userInfo, ['sub']);
       if (userInfoSubject !== idTokenClaims.sub) {
+        await markPlatformOidcLoginStage('userinfo', 'subject_mismatch');
+        await observePlatformOidcLoginFailure();
         throw new Error('PLATFORM_OIDC_USERINFO_SUBJECT_MISMATCH');
       }
 
@@ -190,25 +296,19 @@ export const buildPlatformIdentityProvider = (
         id: idTokenClaims.sub,
         sub: idTokenClaims.sub,
       };
+      await markPlatformOidcLoginStage('authenticated');
+      try {
+        mapPlatformProfileToUser(provider, profile);
+      } catch (error) {
+        await markPlatformOidcLoginStage('authenticated', 'claim_invalid');
+        await observePlatformOidcLoginFailure();
+        throw error;
+      }
       tokens.idToken = undefined;
       return profile;
     },
     issuer: provider.issuer,
-    mapProfileToUser: (profile) => {
-      const subject = firstStringClaim(profile, provider.claimMapping.subject);
-      const name = firstStringClaim(profile, [...provider.claimMapping.name, 'preferred_username']);
-      const email = firstStringClaim(profile, provider.claimMapping.email);
-      if (!subject || !name || !email || !emailAllowed(email, provider.domainAllowlist)) {
-        throw new Error('PLATFORM_OIDC_CLAIM_VALIDATION_FAILED');
-      }
-      return {
-        ...getStableDingTalkClaims(provider, profile),
-        email,
-        id: subject,
-        image: firstStringClaim(profile, provider.claimMapping.picture),
-        name,
-      } satisfies PlatformIdentityProviderUser;
-    },
+    mapProfileToUser: (profile) => mapPlatformProfileToUser(provider, profile),
     pkce: true,
     providerId: provider.providerKey,
     redirectURI,

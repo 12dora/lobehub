@@ -4,13 +4,15 @@ import { createHash } from 'node:crypto';
 import { betterAuth } from 'better-auth';
 import type { MemoryDB } from 'better-auth/adapters/memory';
 import { memoryAdapter } from 'better-auth/adapters/memory';
-import { createAuthMiddleware } from 'better-auth/api';
+import { APIError, createAuthMiddleware } from 'better-auth/api';
 import type { GenericOAuthConfig } from 'better-auth/plugins';
 import { genericOAuth } from 'better-auth/plugins';
 import type { BetterAuthPlugin } from 'better-auth/types';
 import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import type { EnterpriseObservabilityEvent } from '@/server/enterprise/observability';
+import { setEnterprisePlatformObserverForTest } from '@/server/enterprise/observability';
 import {
   type PinnedTransport,
   type PinnedTransportResponse,
@@ -21,6 +23,7 @@ import {
   buildPlatformIdentityProvider,
   type RuntimeIdentityProvider,
 } from './platformIdentityProvider';
+import { observePlatformOidcRawCallbackFailure } from './platformIdentityProviderObservation';
 import { platformIdentityProviderState } from './platformIdentityProviderState';
 
 const issuer = 'https://login.example.test/application/o/work/';
@@ -29,6 +32,7 @@ const publicAddress = '93.184.216.34';
 const unitNonce = 'unit-test-platform-oidc-nonce';
 
 afterEach(() => {
+  setEnterprisePlatformObserverForTest(null);
   vi.restoreAllMocks();
 });
 
@@ -72,6 +76,7 @@ const setup = async (options?: {
   omitStateProviderId?: boolean;
   stateProviderId?: string;
   token?: Record<string, unknown>;
+  transportFailurePath?: 'jwks' | 'token' | 'userinfo';
   userInfo?: Record<string, unknown>;
   useProtectedRouteState?: boolean;
 }) => {
@@ -120,6 +125,9 @@ const setup = async (options?: {
   };
   const transport = vi.fn<PinnedTransport>(async (request) => {
     if (request.url.pathname.endsWith('/token/')) {
+      if (options?.transportFailurePath === 'token') {
+        throw Object.assign(new Error('opaque transport failure'), { code: 'ECONNRESET' });
+      }
       const code = new URLSearchParams(request.body?.toString()).get('code');
       const nonce = code && tokenNoncesByCode.has(code) ? tokenNoncesByCode.get(code) : tokenNonce;
       const previousNonce = tokenNonce;
@@ -129,9 +137,15 @@ const setup = async (options?: {
       return jsonResponse(options?.token ?? { access_token: 'access-token', id_token: idToken });
     }
     if (request.url.pathname.endsWith('/jwks/')) {
+      if (options?.transportFailurePath === 'jwks') {
+        throw Object.assign(new Error('opaque transport failure'), { code: 'ECONNRESET' });
+      }
       return jsonResponse(options?.jwks ?? { keys: [publicJwk] });
     }
     if (request.url.pathname.endsWith('/userinfo/')) {
+      if (options?.transportFailurePath === 'userinfo') {
+        throw Object.assign(new Error('opaque transport failure'), { code: 'ECONNRESET' });
+      }
       expect(request.headers.Authorization).toBe('Bearer access-token');
       return jsonResponse(userInfo);
     }
@@ -180,9 +194,30 @@ const setup = async (options?: {
   };
 };
 
+const captureObservations = () => {
+  const events: EnterpriseObservabilityEvent[] = [];
+  setEnterprisePlatformObserverForTest({
+    record: (event) => {
+      events.push(event);
+    },
+  });
+  return events;
+};
+
 interface RouteHarnessOptions extends NonNullable<Parameters<typeof setup>[0]> {
+  databaseProviderB?: boolean;
   linkStateUpdateFailure?: 'stale-read' | 'throw';
+  markerWriteFailure?: boolean;
+  persistenceFailure?: 'account' | 'cookie' | 'session' | 'user';
+  rawCallbackFailure?: 'api-error' | 'foreign-provider' | 'handler-tail' | 'set-new-session';
   useSecondaryStorage?: boolean;
+}
+
+interface CallbackOverrides {
+  code?: string;
+  cookie?: string;
+  providerId?: string;
+  state?: string | null;
 }
 
 const createRouteHarness = async (options?: RouteHarnessOptions) => {
@@ -208,31 +243,141 @@ const createRouteHarness = async (options?: RouteHarnessOptions) => {
     scopes: ['openid'],
     tokenUrl: 'https://other-login.example.test/token',
   };
+  const databaseProviderBGetToken = vi.fn(async () => {
+    throw new Error('UNEXPECTED_DATABASE_PROVIDER_B_TOKEN_EXCHANGE');
+  });
+  const databaseProviderB: GenericOAuthConfig = {
+    ...setupResult.config,
+    getToken: databaseProviderBGetToken,
+    providerId: 'partner-oidc',
+  };
+  const databaseProviders = options?.databaseProviderB
+    ? [setupResult.config, databaseProviderB]
+    : [setupResult.config];
   const injectLinkStateUpdateFailurePlugin: BetterAuthPlugin = {
     hooks: {
       before: [
         {
           handler: createAuthMiddleware(async (ctx) => {
-            if (!options?.linkStateUpdateFailure) return;
-            ctx.context.internalAdapter.updateVerificationByIdentifier = async (identifier) => {
-              if (options.linkStateUpdateFailure === 'throw') {
-                throw new Error('INJECTED_VERIFICATION_UPDATE_FAILURE');
-              }
-              const unchanged = await ctx.context.internalAdapter.findVerificationValue(identifier);
-              if (!unchanged) throw new Error('INJECTED_VERIFICATION_STATE_MISSING');
-              return unchanged;
-            };
+            if (options?.linkStateUpdateFailure) {
+              ctx.context.internalAdapter.updateVerificationByIdentifier = async (identifier) => {
+                if (options.linkStateUpdateFailure === 'throw') {
+                  throw new Error('INJECTED_VERIFICATION_UPDATE_FAILURE');
+                }
+                const unchanged =
+                  await ctx.context.internalAdapter.findVerificationValue(identifier);
+                if (!unchanged) throw new Error('INJECTED_VERIFICATION_STATE_MISSING');
+                return unchanged;
+              };
+            }
+            if (options?.markerWriteFailure) {
+              const createVerificationValue = ctx.context.internalAdapter.createVerificationValue;
+              let failed = false;
+              ctx.context.internalAdapter.createVerificationValue = async (value) => {
+                if (!failed && value.identifier.startsWith('platform-oidc-observation:')) {
+                  failed = true;
+                  throw new Error('INJECTED_OBSERVATION_MARKER_FAILURE');
+                }
+                return createVerificationValue(value);
+              };
+            }
           }),
           matcher: (ctx) => ctx.path === '/oauth2/link',
+        },
+      ],
+      after: [
+        {
+          handler: createAuthMiddleware(async () => {
+            if (options?.rawCallbackFailure === 'handler-tail') {
+              throw new Error('INJECTED_HANDLER_TAIL_FAILURE');
+            }
+          }),
+          matcher: (ctx) => ctx.path === '/oauth2/callback/:providerId',
         },
       ],
     },
     id: 'inject-platform-state-update-failure-test',
   };
+  const injectCallbackFailurePlugin: BetterAuthPlugin = {
+    hooks: {
+      before: [
+        {
+          handler: createAuthMiddleware(async (ctx) => {
+            if (
+              options?.rawCallbackFailure === 'foreign-provider' &&
+              ctx.params?.providerId !== 'corp-oidc'
+            ) {
+              throw new Error('INJECTED_FOREIGN_PROVIDER_CALLBACK_FAILURE');
+            }
+            switch (options?.persistenceFailure) {
+              case 'account': {
+                ctx.context.internalAdapter.linkAccount = async () => {
+                  throw new Error('INJECTED_ACCOUNT_PERSISTENCE_FAILURE');
+                };
+                return;
+              }
+              case 'cookie': {
+                ctx.context.options = {
+                  ...ctx.context.options,
+                  session: {
+                    ...ctx.context.options.session,
+                    cookieCache: {
+                      ...ctx.context.options.session?.cookieCache,
+                      enabled: true,
+                      version: () => {
+                        throw new Error('INJECTED_SESSION_COOKIE_FAILURE');
+                      },
+                    },
+                  },
+                };
+                return;
+              }
+              case 'session': {
+                ctx.context.internalAdapter.createSession = async () => {
+                  throw new Error('INJECTED_SESSION_PERSISTENCE_FAILURE');
+                };
+                return;
+              }
+              case 'user': {
+                ctx.context.internalAdapter.createOAuthUser = async () => {
+                  throw new Error('INJECTED_USER_PERSISTENCE_FAILURE');
+                };
+              }
+            }
+
+            switch (options?.rawCallbackFailure) {
+              case 'api-error': {
+                ctx.context.setNewSession = () => {
+                  throw new APIError('INTERNAL_SERVER_ERROR', {
+                    message: 'INJECTED_CALLBACK_API_ERROR',
+                  });
+                };
+                return;
+              }
+              case 'handler-tail': {
+                return;
+              }
+              case 'set-new-session': {
+                ctx.context.setNewSession = () => {
+                  throw new Error('INJECTED_SET_NEW_SESSION_FAILURE');
+                };
+              }
+            }
+          }),
+          matcher: (ctx) => ctx.path === '/oauth2/callback/:providerId',
+        },
+      ],
+    },
+    id: 'inject-platform-callback-failure-test',
+  };
   const createAuthInstance = () =>
     betterAuth({
       account: {
-        accountLinking: { allowDifferentEmails: true, enabled: true },
+        accountLinking: {
+          allowDifferentEmails: true,
+          enabled: true,
+          requireLocalEmailVerified: false,
+        },
         storeStateStrategy: 'database',
       },
       baseURL,
@@ -240,8 +385,9 @@ const createRouteHarness = async (options?: RouteHarnessOptions) => {
       emailAndPassword: { enabled: true },
       plugins: [
         injectLinkStateUpdateFailurePlugin,
-        platformIdentityProviderState(['corp-oidc']),
-        genericOAuth({ config: [setupResult.config, nonPlatformProvider] }),
+        platformIdentityProviderState(databaseProviders.map(({ providerId }) => providerId)),
+        injectCallbackFailurePlugin,
+        genericOAuth({ config: [...databaseProviders, nonPlatformProvider] }),
       ],
       ...(options?.useSecondaryStorage === false
         ? {}
@@ -251,6 +397,11 @@ const createRouteHarness = async (options?: RouteHarnessOptions) => {
                 secondaryStorage.delete(key);
               },
               get: async (key: string) => secondaryStorage.get(key) ?? null,
+              getAndDelete: async (key: string) => {
+                const value = secondaryStorage.get(key) ?? null;
+                secondaryStorage.delete(key);
+                return value;
+              },
               set: async (key: string, value: string) => {
                 secondaryStorage.set(key, value);
               },
@@ -260,6 +411,7 @@ const createRouteHarness = async (options?: RouteHarnessOptions) => {
     });
   const signInAuth = createAuthInstance();
   const callbackAuth = createAuthInstance();
+  const pendingRawObservations: Promise<void>[] = [];
   const start = async (additionalData?: Record<string, unknown>) => {
     const response = await signInAuth.handler(
       new Request(`${baseURL}/sign-in/oauth2`, {
@@ -285,11 +437,14 @@ const createRouteHarness = async (options?: RouteHarnessOptions) => {
       response,
     };
   };
-  const callback = async (
+  const callbackWithAuth = async (
+    auth: ReturnType<typeof createAuthInstance>,
     flow: { authorizationUrl: URL; cookie: string },
-    overrides: { code?: string; cookie?: string; state?: string | null } = {},
+    overrides: CallbackOverrides = {},
   ) => {
-    const callbackUrl = new URL(`${baseURL}/oauth2/callback/corp-oidc`);
+    const callbackUrl = new URL(
+      `${baseURL}/oauth2/callback/${overrides.providerId ?? 'corp-oidc'}`,
+    );
     callbackUrl.searchParams.set('code', overrides.code ?? 'authorization-code');
     callbackUrl.searchParams.set('iss', issuer);
     const state =
@@ -297,10 +452,21 @@ const createRouteHarness = async (options?: RouteHarnessOptions) => {
         ? flow.authorizationUrl.searchParams.get('state')
         : overrides.state;
     if (state !== null) callbackUrl.searchParams.set('state', state);
-    return callbackAuth.handler(
-      new Request(callbackUrl, { headers: { Cookie: overrides.cookie ?? flow.cookie } }),
+    const request = new Request(callbackUrl, {
+      headers: { Cookie: overrides.cookie ?? flow.cookie },
+    });
+    const response = await auth.handler(request);
+    const observation = auth.$context.then((ctx) =>
+      observePlatformOidcRawCallbackFailure(ctx.internalAdapter, request, response),
     );
+    pendingRawObservations.push(observation);
+    void observation;
+    return response;
   };
+  const callback = (
+    flow: { authorizationUrl: URL; cookie: string },
+    overrides: CallbackOverrides = {},
+  ) => callbackWithAuth(callbackAuth, flow, overrides);
   const authenticate = async () => {
     const response = await signInAuth.handler(
       new Request(`${baseURL}/sign-up/email`, {
@@ -350,10 +516,36 @@ const createRouteHarness = async (options?: RouteHarnessOptions) => {
     ...setupResult,
     authenticate,
     callback,
+    callbackFromNewInstance: (
+      flow: { authorizationUrl: URL; cookie: string },
+      overrides: CallbackOverrides = {},
+    ) => callbackWithAuth(createAuthInstance(), flow, overrides),
     customGetToken,
+    databaseProviderBGetToken,
     database,
     mapProfileToUser,
     nativeFetch,
+    flushRawObservations: () => Promise.all(pendingRawObservations),
+    observationMarkers: () =>
+      JSON.stringify([
+        ...[...secondaryStorage.entries()]
+          .filter(([key]) => key.startsWith('verification:platform-oidc-observation:'))
+          .map(([, value]) => {
+            const verification = JSON.parse(value) as { value: string };
+            return JSON.parse(verification.value) as Record<string, unknown>;
+          }),
+        ...(database.verification ?? [])
+          .filter((entry) => entry.identifier.startsWith('platform-oidc-observation:'))
+          .map((entry) => JSON.parse(entry.value) as Record<string, unknown>),
+      ]),
+    observeRawFailureForPath: async (pathname: string, state: string) => {
+      const ctx = await callbackAuth.$context;
+      await observePlatformOidcRawCallbackFailure(
+        ctx.internalAdapter,
+        new Request(`${baseURL}${pathname}?state=${encodeURIComponent(state)}`),
+        new Response(null, { status: 500 }),
+      );
+    },
     readVerification: (state: string) => {
       const cached = secondaryStorage.get(`verification:${state}`);
       if (cached) return JSON.parse(cached) as { expiresAt: Date | string; value: string };
@@ -370,6 +562,331 @@ const createRouteHarness = async (options?: RouteHarnessOptions) => {
 };
 
 describe('platform identity provider trusted profile', () => {
+  it('records one low-cardinality authenticated terminal for a production sign-in', async () => {
+    const events = captureObservations();
+    const harness = await createRouteHarness();
+    const flow = await harness.start();
+    harness.setTokenNonce(flow.authorizationUrl.searchParams.get('nonce')!);
+
+    const response = await harness.callback(flow);
+
+    expect(response.headers.get('location')).toBe('https://app.example.test/after-login');
+    expect(events).toEqual([{ outcome: 'success', stage: 'authenticated', type: 'oidc_login' }]);
+    expect(Object.keys(events[0]!).sort()).toEqual(['outcome', 'stage', 'type']);
+  });
+
+  it('isolates concurrent sign-in and account-link callbacks without counting the link', async () => {
+    const events = captureObservations();
+    const harness = await createRouteHarness();
+    const sessionCookie = await harness.authenticate();
+    const [signInFlow, linkFlow] = await Promise.all([
+      harness.start(),
+      harness.startLink(sessionCookie),
+    ]);
+    expect(linkFlow.authorizationUrl).not.toBeNull();
+    const signInNonce = signInFlow.authorizationUrl.searchParams.get('nonce')!;
+    const linkNonce = linkFlow.authorizationUrl!.searchParams.get('nonce')!;
+    harness.setTokenNonceForCode('sign-in-code', signInNonce);
+    harness.setTokenNonceForCode('link-code', linkNonce);
+
+    const [signInResponse, linkResponse] = await Promise.all([
+      harness.callback(signInFlow, { code: 'sign-in-code' }),
+      harness.callback(
+        { ...linkFlow, authorizationUrl: linkFlow.authorizationUrl! },
+        { code: 'link-code' },
+      ),
+    ]);
+
+    expect(signInResponse.headers.get('location')).toBe('https://app.example.test/after-login');
+    expect(linkResponse.headers.get('location')).toBe('https://app.example.test/after-link');
+    expect(events).toEqual([{ outcome: 'success', stage: 'authenticated', type: 'oidc_login' }]);
+  });
+
+  it.each([
+    [
+      'token response',
+      { token: { id_token: 'id-token-without-access-token' } },
+      { failureCategory: 'token_invalid', stage: 'token_exchange' },
+    ],
+    [
+      'token network',
+      { transportFailurePath: 'token' },
+      { failureCategory: 'network_failure', stage: 'token_exchange' },
+    ],
+    [
+      'JWKS network',
+      { transportFailurePath: 'jwks' },
+      { failureCategory: 'network_failure', stage: 'id_token_verification' },
+    ],
+    [
+      'userinfo network',
+      { transportFailurePath: 'userinfo' },
+      { failureCategory: 'network_failure', stage: 'userinfo' },
+    ],
+    [
+      'userinfo subject',
+      { userInfo: { sub: 'attacker-subject' } },
+      { failureCategory: 'subject_mismatch', stage: 'userinfo' },
+    ],
+    [
+      'mapped claims',
+      { userInfo: { mail: 'ada@attacker.test' } },
+      { failureCategory: 'claim_invalid', stage: 'authenticated' },
+    ],
+  ] as const)(
+    'records one sanitized terminal for a failed %s stage',
+    async (_label, options, expected) => {
+      const events = captureObservations();
+      const harness = await createRouteHarness(options);
+      const flow = await harness.start();
+      harness.setTokenNonce(flow.authorizationUrl.searchParams.get('nonce')!);
+
+      const response = await harness.callback(flow);
+      await harness.flushRawObservations();
+
+      expect(response.headers.get('location')).not.toBe('https://app.example.test/after-login');
+      expect(events).toEqual([{ ...expected, outcome: 'failure', type: 'oidc_login' }]);
+      expect(Object.keys(events[0]!).sort()).toEqual([
+        'failureCategory',
+        'outcome',
+        'stage',
+        'type',
+      ]);
+      expect(JSON.stringify(events)).not.toMatch(
+        /corp-oidc|employee|ada|example\.test|authorization|nonce|state|code|secret/i,
+      );
+    },
+  );
+
+  it.each(['set-new-session', 'handler-tail', 'api-error'] as const)(
+    'records one terminal for a real callback %s failure without changing the 500 response',
+    async (rawCallbackFailure) => {
+      const events = captureObservations();
+      const harness = await createRouteHarness({ rawCallbackFailure });
+      const flow = await harness.start();
+      harness.setTokenNonce(flow.authorizationUrl.searchParams.get('nonce')!);
+
+      const response = await harness.callback(flow);
+      await harness.flushRawObservations();
+
+      expect(response.status).toBe(500);
+      expect(response.headers.get('location')).not.toBe('https://app.example.test/after-login');
+      expect(events).toEqual([
+        {
+          failureCategory: 'unexpected',
+          outcome: 'failure',
+          stage: 'authenticated',
+          type: 'oidc_login',
+        },
+      ]);
+    },
+  );
+
+  it('does not let a second registered database provider claim the first provider attempt', async () => {
+    const events = captureObservations();
+    const harness = await createRouteHarness({ databaseProviderB: true });
+    const flow = await harness.start();
+    const state = flow.authorizationUrl.searchParams.get('state')!;
+    const nonce = flow.authorizationUrl.searchParams.get('nonce')!;
+
+    const providerBResponse = await harness.callback(flow, { providerId: 'partner-oidc' });
+    await harness.flushRawObservations();
+
+    expect(providerBResponse.status).toBe(500);
+    expect(providerBResponse.headers.get('location')).not.toBe(
+      'https://app.example.test/after-login',
+    );
+    expect(harness.databaseProviderBGetToken).not.toHaveBeenCalled();
+    expect(events).toEqual([]);
+    expect(harness.observationMarkers()).toContain('"flow":"sign_in"');
+
+    harness.setTokenNonce(nonce);
+    const providerAResponse = await harness.callback(flow, { state });
+    await harness.flushRawObservations();
+
+    expect(providerAResponse.headers.get('location')).toBe('https://app.example.test/after-login');
+    expect(events).toEqual([{ outcome: 'success', stage: 'authenticated', type: 'oidc_login' }]);
+  });
+
+  it('rejects a non-canonical encoded alias of a registered callback provider', async () => {
+    const events = captureObservations();
+    const harness = await createRouteHarness({ rawCallbackFailure: 'foreign-provider' });
+    const flow = await harness.start();
+    const nonce = flow.authorizationUrl.searchParams.get('nonce')!;
+
+    const encodedResponse = await harness.callback(flow, { providerId: 'corp%2Doidc' });
+    await harness.flushRawObservations();
+
+    expect(encodedResponse.status).toBe(500);
+    expect(events).toEqual([]);
+    expect(harness.observationMarkers()).toContain('"flow":"sign_in"');
+
+    harness.setTokenNonce(nonce);
+    const canonicalResponse = await harness.callback(flow);
+    await harness.flushRawObservations();
+
+    expect(canonicalResponse.headers.get('location')).toBe('https://app.example.test/after-login');
+    expect(events).toEqual([{ outcome: 'success', stage: 'authenticated', type: 'oidc_login' }]);
+  });
+
+  it('does not let an environment provider raw failure claim a database-provider attempt', async () => {
+    const events = captureObservations();
+    const harness = await createRouteHarness({ rawCallbackFailure: 'foreign-provider' });
+    const flow = await harness.start();
+    const state = flow.authorizationUrl.searchParams.get('state')!;
+    const nonce = flow.authorizationUrl.searchParams.get('nonce')!;
+
+    const foreignResponse = await harness.callback(flow, { providerId: 'other-oauth' });
+    await harness.flushRawObservations();
+
+    expect(foreignResponse.status).toBe(500);
+    expect(events).toEqual([]);
+    expect(harness.observationMarkers()).toContain('"flow":"sign_in"');
+    expect(harness.observationMarkers()).toContain(
+      createHash('sha256').update('corp-oidc').digest('hex'),
+    );
+    expect(harness.observationMarkers()).not.toContain('corp-oidc');
+
+    harness.setTokenNonce(nonce);
+    const databaseProviderResponse = await harness.callback(flow, { state });
+    await harness.flushRawObservations();
+
+    expect(databaseProviderResponse.headers.get('location')).toBe(
+      'https://app.example.test/after-login',
+    );
+    expect(events).toEqual([{ outcome: 'success', stage: 'authenticated', type: 'oidc_login' }]);
+  });
+
+  it('does not claim a database-provider attempt for a wrong or malformed callback path', async () => {
+    const events = captureObservations();
+    const harness = await createRouteHarness({ rawCallbackFailure: 'foreign-provider' });
+    const flow = await harness.start();
+    const state = flow.authorizationUrl.searchParams.get('state')!;
+    const nonce = flow.authorizationUrl.searchParams.get('nonce')!;
+
+    const wrongProviderResponse = await harness.callback(flow, {
+      providerId: 'wrong-db-provider',
+    });
+    const encodedSlashResponse = await harness.callback(flow, { providerId: 'corp%2Foidc' });
+    const encodedControlResponse = await harness.callback(flow, { providerId: 'corp%00oidc' });
+    const malformedResponse = await harness.callback(flow, { providerId: '%E0%A4%A' });
+    await harness.flushRawObservations();
+    await harness.observeRawFailureForPath(`/oauth2/callback/${'x'.repeat(513)}`, state);
+
+    expect(wrongProviderResponse.status).toBe(500);
+    expect(encodedSlashResponse.ok).toBe(false);
+    expect(encodedControlResponse.ok).toBe(false);
+    expect(malformedResponse.ok).toBe(false);
+    expect(events).toEqual([]);
+    expect(harness.observationMarkers()).toContain('"flow":"sign_in"');
+
+    harness.setTokenNonce(nonce);
+    const response = await harness.callback(flow);
+    await harness.flushRawObservations();
+
+    expect(response.headers.get('location')).toBe('https://app.example.test/after-login');
+    expect(events).toEqual([{ outcome: 'success', stage: 'authenticated', type: 'oidc_login' }]);
+  });
+
+  it('keeps a throwing observer best-effort and preserves the successful callback', async () => {
+    const record = vi.fn(() => {
+      throw new Error('observer failure');
+    });
+    setEnterprisePlatformObserverForTest({ record });
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const harness = await createRouteHarness();
+    const flow = await harness.start();
+    harness.setTokenNonce(flow.authorizationUrl.searchParams.get('nonce')!);
+
+    const response = await harness.callback(flow);
+
+    expect(response.headers.get('location')).toBe('https://app.example.test/after-login');
+    expect(record).toHaveBeenCalledOnce();
+    expect(record).toHaveBeenCalledWith({
+      outcome: 'success',
+      stage: 'authenticated',
+      type: 'oidc_login',
+    });
+    expect(consoleError).toHaveBeenCalledOnce();
+  });
+
+  it('classifies a sign-in nonce mismatch once at ID-token verification', async () => {
+    const events = captureObservations();
+    const harness = await createRouteHarness();
+    const flow = await harness.start();
+    harness.setTokenNonce('wrong-sign-in-nonce');
+
+    const response = await harness.callback(flow);
+
+    expect(response.headers.get('location')).not.toBe('https://app.example.test/after-login');
+    expect(events).toEqual([
+      {
+        failureCategory: 'nonce_invalid',
+        outcome: 'failure',
+        stage: 'id_token_verification',
+        type: 'oidc_login',
+      },
+    ]);
+  });
+
+  it.each([
+    ['user', false],
+    ['account', true],
+    ['session', false],
+    ['cookie', false],
+  ] as const)(
+    'records one authenticated unexpected terminal when %s persistence fails',
+    async (persistenceFailure, existingUser) => {
+      const events = captureObservations();
+      const harness = await createRouteHarness({
+        persistenceFailure,
+        ...(persistenceFailure === 'account' ? { userInfo: { email_verified: true } } : {}),
+      });
+      if (existingUser) await harness.authenticate();
+      const flow = await harness.start();
+      harness.setTokenNonce(flow.authorizationUrl.searchParams.get('nonce')!);
+
+      const response = await harness.callback(flow);
+      await harness.flushRawObservations();
+
+      expect(response.headers.get('location')).not.toBe('https://app.example.test/after-login');
+      expect(events).toEqual([
+        {
+          failureCategory: 'unexpected',
+          outcome: 'failure',
+          stage: 'authenticated',
+          type: 'oidc_login',
+        },
+      ]);
+      expect(JSON.stringify(events)).not.toMatch(
+        /corp-oidc|employee|ada|example\.test|authorization|nonce|state|code|secret/i,
+      );
+    },
+  );
+
+  it('keeps a link callback unobserved when its best-effort marker write fails', async () => {
+    const events = captureObservations();
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const harness = await createRouteHarness({ markerWriteFailure: true });
+    const sessionCookie = await harness.authenticate();
+    const linkFlow = await harness.startLink(sessionCookie);
+    expect(linkFlow.authorizationUrl).not.toBeNull();
+    harness.setTokenNonce(linkFlow.authorizationUrl!.searchParams.get('nonce')!);
+
+    const response = await harness.callback({
+      ...linkFlow,
+      authorizationUrl: linkFlow.authorizationUrl!,
+    });
+    await harness.flushRawObservations();
+
+    expect(linkFlow.response.status).toBe(200);
+    expect(response.headers.get('location')).toBe('https://app.example.test/after-link');
+    expect(events).toEqual([]);
+    expect(consoleError).toHaveBeenCalledWith(
+      '[platform-oidc-observation] shared terminal state unavailable',
+    );
+  });
+
   it('creates authorization and exchanges tokens without Better Auth discovery or token fetches', async () => {
     const { oauthProvider, transport } = await setup({
       token: { access_token: 'access-token', id_token: 'id-token' },
@@ -490,7 +1007,9 @@ describe('platform identity provider trusted profile', () => {
 
       const verification = harness.readVerification(state!);
       expect(verification).toBeDefined();
-      expect(harness.database.verification).toHaveLength(useSecondaryStorage ? 0 : 1);
+      expect(
+        harness.database.verification?.filter((entry) => entry.identifier === state),
+      ).toHaveLength(useSecondaryStorage ? 0 : 1);
       const persistedState = JSON.parse(verification!.value) as Record<string, unknown>;
       expect(persistedState).toMatchObject({
         callbackURL: 'https://app.example.test/after-link',
@@ -682,10 +1201,11 @@ describe('platform identity provider trusted profile', () => {
   });
 
   it.each([
-    ['missing state', null, undefined],
-    ['wrong state', 'attacker-state', undefined],
-    ['state/cookie mismatch', undefined, 'better-auth.state=attacker-cookie'],
-  ])('rejects %s before token exchange', async (_label, state, cookie) => {
+    ['missing state', null, undefined, false],
+    ['wrong state', 'attacker-state', undefined, false],
+    ['state/cookie mismatch', undefined, 'better-auth.state=attacker-cookie', true],
+  ])('rejects %s before token exchange', async (_label, state, cookie, observed) => {
+    const events = captureObservations();
     const harness = await createRouteHarness();
     const flow = await harness.start();
 
@@ -696,16 +1216,29 @@ describe('platform identity provider trusted profile', () => {
     expect(harness.customGetToken).not.toHaveBeenCalled();
     expect(harness.transport).not.toHaveBeenCalled();
     expect(harness.mapProfileToUser).not.toHaveBeenCalled();
+    expect(events).toEqual(
+      observed
+        ? [
+            {
+              failureCategory: 'state_invalid',
+              outcome: 'failure',
+              stage: 'state_validation',
+              type: 'oidc_login',
+            },
+          ]
+        : [],
+    );
   });
 
   it('consumes OAuth verification state once before token exchange', async () => {
+    const events = captureObservations();
     const harness = await createRouteHarness();
     const flow = await harness.start();
     harness.setTokenNonce(flow.authorizationUrl.searchParams.get('nonce')!);
     const first = await harness.callback(flow);
     const callsAfterSuccess = harness.transport.mock.calls.length;
 
-    const replay = await harness.callback(flow);
+    const replay = await harness.callbackFromNewInstance(flow);
 
     expect(first.headers.get('location')).toBe('https://app.example.test/after-login');
     expect(replay.status).toBe(302);
@@ -713,9 +1246,11 @@ describe('platform identity provider trusted profile', () => {
     expect(harness.customGetToken).toHaveBeenCalledOnce();
     expect(harness.transport).toHaveBeenCalledTimes(callsAfterSuccess);
     expect(harness.mapProfileToUser).toHaveBeenCalledOnce();
+    expect(events).toEqual([{ outcome: 'success', stage: 'authenticated', type: 'oidc_login' }]);
   });
 
   it('rejects expired OAuth verification state before token exchange', async () => {
+    const events = captureObservations();
     const harness = await createRouteHarness();
     const flow = await harness.start();
     vi.useFakeTimers({ now: Date.now() });
@@ -728,6 +1263,14 @@ describe('platform identity provider trusted profile', () => {
       expect(harness.customGetToken).not.toHaveBeenCalled();
       expect(harness.transport).not.toHaveBeenCalled();
       expect(harness.mapProfileToUser).not.toHaveBeenCalled();
+      expect(events).toEqual([
+        {
+          failureCategory: 'state_invalid',
+          outcome: 'failure',
+          stage: 'state_validation',
+          type: 'oidc_login',
+        },
+      ]);
     } finally {
       vi.useRealTimers();
     }

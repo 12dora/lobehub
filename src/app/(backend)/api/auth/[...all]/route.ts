@@ -2,11 +2,21 @@ import { toNextJsHandler } from 'better-auth/next-js';
 import type { NextRequest } from 'next/server';
 
 import { auth } from '@/auth';
+import { observePlatformOidcRawCallbackFailure } from '@/libs/better-auth/sso/platformIdentityProviderObservation';
 import { maybeBlockBetterAuthAdminMutation } from '@/server/enterprise/security/betterAuthAdminBlock';
 
 const jsonContentTypeRegex = /^application\/(?:[a-z0-9.+-]*\+)?json/i;
 
 const handler = toNextJsHandler(auth);
+
+const observeRawCallbackFailure = (request: Request, response: Response): void => {
+  if (response.status < 500) return;
+  void auth.$context
+    .then((ctx) => observePlatformOidcRawCallbackFailure(ctx.internalAdapter, request, response))
+    .catch(() => {
+      console.error('[platform-oidc-observation] auth context unavailable');
+    });
+};
 
 const malformedJsonResponse = () =>
   Response.json({ code: 'INVALID_JSON', message: 'Malformed JSON request body' }, { status: 400 });
@@ -30,7 +40,9 @@ const validateJsonBody = async (request: Request) => {
 export const GET = async (request: NextRequest) => {
   const blocked = maybeBlockBetterAuthAdminMutation(request.url);
   if (blocked) return blocked;
-  return handler.GET(request);
+  const response = await handler.GET(request);
+  observeRawCallbackFailure(request, response);
+  return response;
 };
 
 export const POST = async (request: NextRequest) => {
@@ -40,5 +52,7 @@ export const POST = async (request: NextRequest) => {
   const invalidJsonResponse = await validateJsonBody(request);
   if (invalidJsonResponse) return invalidJsonResponse;
 
-  return handler.POST(request);
+  const response = await handler.POST(request);
+  observeRawCallbackFailure(request, response);
+  return response;
 };
