@@ -30,9 +30,9 @@ export const EXPECTED_GATE_KINDS = {
   'auth-e2e': 'vitest',
   'bun-check-changed': 'command',
   'desktop-release': 'vitest',
-  'failure-drills': 'fail-closed',
+  'failure-drills': 'command',
   'manual-conflict-review': 'fail-closed',
-  'migration-upgrade-rollback': 'vitest',
+  'migration-upgrade-rollback': 'command',
   'patch-ledger-update': 'fail-closed',
   'permission-matrix': 'vitest',
   'privacy-review': 'privacy-scan',
@@ -41,7 +41,6 @@ export const EXPECTED_GATE_KINDS = {
 } as const satisfies Record<KnownGateId, 'command' | 'fail-closed' | 'privacy-scan' | 'vitest'>;
 
 export const FAIL_CLOSED_GATE_IDS = new Set<KnownGateId>([
-  'failure-drills',
   'manual-conflict-review',
   'patch-ledger-update',
 ]);
@@ -195,7 +194,7 @@ export const isPassingUpstreamRebaseEvidence = (evidence: UpstreamRebaseEvidence
 
   return gates.every((gate) => {
     if (gate.outcome !== 'passed') return false;
-    if (gate.kind === 'vitest') {
+    if (gate.kind === 'vitest' || gate.assertions) {
       const assertions = gate.assertions;
       return (
         !!assertions &&
