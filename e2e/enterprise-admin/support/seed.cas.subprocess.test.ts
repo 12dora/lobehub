@@ -5,6 +5,7 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer, type Server, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -32,7 +33,7 @@ describe('CAS real signal subprocess + foreign concurrent links', () => {
       const stop = cleanups.pop()!;
       await stop().catch(() => undefined);
     }
-  });
+  }, 60_000);
 
   it('success path: seed + CAS restore returns exact before digest (self-cleaned)', async () => {
     const harness = await startCasPostgres();
@@ -1111,6 +1112,168 @@ describe('CAS real signal subprocess + foreign concurrent links', () => {
 
     delete process.env.E2E_CAS_COMMIT_DEFERRED_SLEEP_MS;
     delete process.env.E2E_CAS_COMMIT_ISSUED_MARKER_DIR;
+    rmSync(hangDir, { force: true, recursive: true });
+  }, 90_000);
+
+  it('unresponsive TCP terminate endpoint: bounded fail-closed, pending COMMIT stays guarded', async () => {
+    const harness = await startCasPostgres();
+    cleanups.push(harness.stop);
+    const beforeFp = digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl));
+    const {
+      createDurableRestoreHandle,
+      getActiveSettleTimerCount,
+      reconcileAmbiguousCommit,
+      registerSeedRestoreOnLifecycle,
+      seedEnterpriseAdminSuite: seedFn,
+      terminateOwnedSeedBackend,
+    } = await import('./seed');
+    const {
+      createLifecycleState,
+      createRunToken,
+      installLifecycleSignalHandlers,
+      cleanupLifecycle,
+    } = await import('./lifecycle');
+
+    // Real TCP endpoint: accept connection, never reply (hangs pg client after connect).
+    const openSockets = new Set<Socket>();
+    let blackhole: Server | undefined;
+    const destroyBlackhole = async () => {
+      for (const s of openSockets) {
+        try {
+          s.destroy();
+        } catch {
+          // ignore
+        }
+      }
+      openSockets.clear();
+      if (blackhole) {
+        const srv = blackhole;
+        blackhole = undefined;
+        await new Promise<void>((resolve) => {
+          srv.close(() => resolve());
+          // Force-close if close waits on half-open clients
+          setTimeout(() => resolve(), 500).unref?.();
+        });
+      }
+    };
+    const blackholePort = await new Promise<number>((resolve, reject) => {
+      const srv = createServer((socket) => {
+        openSockets.add(socket);
+        socket.on('close', () => openSockets.delete(socket));
+        // Accept but never write — connection stays open without PostgreSQL response.
+        socket.pause();
+      });
+      blackhole = srv;
+      srv.once('error', reject);
+      srv.listen(0, '127.0.0.1', () => {
+        const addr = srv.address();
+        if (addr && typeof addr === 'object') resolve(addr.port);
+        else reject(new Error('no port'));
+      });
+    });
+    cleanups.push(destroyBlackhole);
+
+    const hangDir = mkdtempSync(path.join(tmpdir(), 'cas-term-tcp-'));
+    const durable = createDurableRestoreHandle(harness.databaseUrl);
+    const state = createLifecycleState(createRunToken());
+    const timersBefore = getActiveSettleTimerCount();
+    const baseSig = process.listenerCount('SIGINT');
+    const baseTerm = process.listenerCount('SIGTERM');
+    installLifecycleSignalHandlers(state);
+    // Short settle so cleanup reaches terminate quickly; terminate itself must bound.
+    registerSeedRestoreOnLifecycle(state, durable, { settleTimeoutMs: 400 });
+
+    // Tight product terminate bounds for this regression (still production code paths).
+    process.env.E2E_CAS_TERMINATE_CONNECT_MS = '200';
+    process.env.E2E_CAS_TERMINATE_QUERY_MS = '300';
+    process.env.E2E_CAS_TERMINATE_OUTER_MS = '700';
+    process.env.E2E_CAS_COMMIT_DEFERRED_SLEEP_MS = '20000';
+    process.env.E2E_CAS_COMMIT_ISSUED_MARKER_DIR = hangDir;
+    const seedPromise = seedFn(harness.databaseUrl, durable).catch((e) => e);
+
+    const issued = path.join(hangDir, 'commit-issued');
+    const deadline = Date.now() + 30_000;
+    while (!existsSync(issued) && Date.now() < deadline) {
+      await sleep(30);
+    }
+    expect(existsSync(issued)).toBe(true);
+    expect(durable.commitPhase).toBe('commitIssued');
+    expect(durable.commitInFlight).toBeTruthy();
+    expect(durable.commitInFlightPending).toBe(true);
+    const backendPid = durable.ownedBackendPid;
+    expect(backendPid).toBeTruthy();
+    const pendingRef = durable.commitInFlight;
+
+    // Point terminate at the blackhole so post-connect query hangs until product bound.
+    const blackholeUrl = `postgresql://u:p@127.0.0.1:${blackholePort}/db`;
+    const realDbUrl = durable.databaseUrl;
+    durable.databaseUrl = blackholeUrl;
+
+    const started = Date.now();
+    let cleanupError: unknown;
+    try {
+      await cleanupLifecycle(state);
+    } catch (error) {
+      cleanupError = error;
+    }
+    const elapsed = Date.now() - started;
+
+    // settle(400) + terminate outer(700) + overhead ≪ deferred sleep; must not hang.
+    expect(elapsed).toBeLessThan(3_500);
+    expect(cleanupError).toBeTruthy();
+    const cleanupMsg =
+      cleanupError instanceof AggregateError
+        ? `${cleanupError.message} ${cleanupError.errors.map(String).join(' | ')}`
+        : String(cleanupError);
+    expect(cleanupMsg).toMatch(
+      /terminate failed|fail-closed|journal preserved|exceeded bound|timeout/i,
+    );
+
+    // Restore real URL for authorized residual cleanup only after product assertions.
+    durable.databaseUrl = realDbUrl;
+
+    // Pending COMMIT reference/evidence remains guarded — never cleared while pending.
+    expect(durable.commitInFlight).toBe(pendingRef);
+    expect(durable.commitInFlightPending).toBe(true);
+    expect(durable.manifest).toBeTruthy();
+    expect(durable.ownedBackendPid).toBe(backendPid);
+    expect(durable.commitPhase).toBe('ambiguous');
+    // Phase transition to ambiguous must not weaken reconcile guard.
+    await expect(reconcileAmbiguousCommit(durable)).rejects.toThrow(
+      /cannot reconcile while COMMIT is still in-flight/i,
+    );
+    expect(getActiveSettleTimerCount()).toBe(timersBefore);
+    expect(durable.activeSettleTimers).toBe(0);
+    expect(process.listenerCount('SIGINT')).toBe(baseSig);
+    expect(process.listenerCount('SIGTERM')).toBe(baseTerm);
+
+    // Destroy blackhole sockets so no leftover listeners/handles.
+    await destroyBlackhole();
+
+    // Explicit authorized cleanup AFTER all product assertions — must not mask residual state.
+    try {
+      await terminateOwnedSeedBackend(durable, {
+        databaseUrl: realDbUrl,
+        outerBoundMs: 3_000,
+      });
+    } catch {
+      // backend may already be in bad state
+    }
+    await seedPromise;
+    const afterFp = digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl));
+    if (afterFp !== beforeFp && durable.seed && durable.manifest) {
+      const { cleanupEnterpriseAdminSuite } = await import('./seed');
+      await cleanupEnterpriseAdminSuite(harness.databaseUrl, durable.seed, durable.manifest).catch(
+        () => undefined,
+      );
+    }
+    expect(digestFingerprint(await snapshotGlobalDbDigest(harness.databaseUrl))).toBe(beforeFp);
+
+    delete process.env.E2E_CAS_COMMIT_DEFERRED_SLEEP_MS;
+    delete process.env.E2E_CAS_COMMIT_ISSUED_MARKER_DIR;
+    delete process.env.E2E_CAS_TERMINATE_CONNECT_MS;
+    delete process.env.E2E_CAS_TERMINATE_QUERY_MS;
+    delete process.env.E2E_CAS_TERMINATE_OUTER_MS;
     rmSync(hangDir, { force: true, recursive: true });
   }, 90_000);
 
