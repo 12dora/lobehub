@@ -15,6 +15,7 @@ import {
   type SkillManifest,
   type SkillResource,
 } from '../../contracts/skillCatalog';
+import { DomainConfigCache, invalidateDomainConfigCacheNamespace } from '../../runtimeConfig';
 import { getPlatformConfigScopeVersion } from '../platformConfigInvalidation';
 
 export interface BuiltinSkillDefinition extends PublishedSkill {
@@ -44,12 +45,8 @@ export const builtinSkillDefinitionsSchema = z.array(builtinSkillDefinitionSchem
 const MAX_PUBLISHED_SKILL_PAGES = 100;
 const MAX_PUBLISHED_SKILLS = 10_000;
 const MAX_READINESS_REVISIONS = 32;
-const PUBLISHED_PROJECTION_CACHE_TTL_MS = 30_000;
+const SKILL_ACTIVE_PROJECTION_CACHE_NAMESPACE = 'skill-catalog-active-projection';
 const readinessByRevision = new Map<string, boolean>();
-const activeProjectionRevisionBySource = new Map<
-  string,
-  { epoch: string; expiresAt: number; projectionKey: string }
->();
 
 interface CachedPublishedProjection {
   catalog: { revision: string; skills: PublishedSkill[] };
@@ -82,11 +79,11 @@ const cloneCatalog = (catalog: CachedPublishedProjection['catalog']) => structur
  * retain their already captured revision without observing a partially rebuilt projection.
  */
 export const invalidatePublishedSkillCatalogReadCache = () => {
-  activeProjectionRevisionBySource.clear();
+  invalidateDomainConfigCacheNamespace(SKILL_ACTIVE_PROJECTION_CACHE_NAMESPACE);
 };
 
 export const resetPublishedSkillCatalogReadCacheForTest = () => {
-  activeProjectionRevisionBySource.clear();
+  invalidatePublishedSkillCatalogReadCache();
   projectionByRevision.clear();
   readinessByRevision.clear();
 };
@@ -120,9 +117,8 @@ const compareCodepoint = (left: string, right: string) =>
   left < right ? -1 : left > right ? 1 : 0;
 
 export class SkillCatalogReadService {
+  private readonly activeProjectionCache: DomainConfigCache<string>;
   private readonly builtinSkills: BuiltinSkillDefinition[];
-  private readonly cacheTtlMs: number;
-  private readonly getCacheEpoch: () => Promise<string>;
   private readonly model: Pick<
     PlatformSkillCatalogModel,
     'listPublished' | 'resolvePublishedVersion'
@@ -130,14 +126,9 @@ export class SkillCatalogReadService {
   private publishedExecutionIndex = new Map<string, ResolvedSkill>();
   private publishedExecutionRevision: string | undefined;
   private readonly projectionSource: string;
-  private readonly now: () => number;
 
   constructor(db: LobeChatDatabase | Transaction, options: SkillCatalogReadOptions = {}) {
     this.model = options.model ?? new PlatformSkillCatalogModel(db);
-    this.cacheTtlMs = options.cacheTtlMs ?? PUBLISHED_PROJECTION_CACHE_TTL_MS;
-    this.getCacheEpoch =
-      options.getCacheEpoch ?? (() => getPlatformConfigScopeVersion('skill-catalog'));
-    this.now = options.now ?? Date.now;
     const parsedBuiltins = builtinSkillDefinitionsSchema.parse(
       (options.builtinSkills ?? []).map((skill) => ({
         ...skill,
@@ -149,24 +140,20 @@ export class SkillCatalogReadService {
     const source = options.model ?? db;
     const builtinRevision = checksumPayload({ builtinSkills: this.builtinSkills });
     this.projectionSource = `${getSourceId(source as object)}:${builtinRevision}`;
+    this.activeProjectionCache = new DomainConfigCache({
+      cacheId: builtinRevision,
+      cacheKey: source as object,
+      cacheTtlMs: options.cacheTtlMs,
+      cloneValue: (value) => value,
+      getScopeEpoch:
+        options.getCacheEpoch ?? (() => getPlatformConfigScopeVersion('skill-catalog')),
+      load: this.loadPublishedProjection,
+      namespace: SKILL_ACTIVE_PROJECTION_CACHE_NAMESPACE,
+      now: options.now,
+    });
   }
 
-  getPublishedCatalog = async () => {
-    const epoch = await this.getCacheEpoch().catch(() => 'unavailable');
-    const activeProjection = activeProjectionRevisionBySource.get(this.projectionSource);
-    const cached =
-      activeProjection &&
-      activeProjection.epoch === epoch &&
-      activeProjection.expiresAt > this.now()
-        ? projectionByRevision.get(activeProjection.projectionKey)
-        : undefined;
-    if (cached) {
-      this.publishedExecutionIndex = cloneExecutionIndex(cached.executionIndex);
-      this.publishedExecutionRevision = cached.catalog.revision;
-      cacheReadiness(cached.catalog.revision, cached.executionReady);
-      return cloneCatalog(cached.catalog);
-    }
-
+  private loadPublishedProjection = async (): Promise<string> => {
     const platformItems: Awaited<ReturnType<PlatformSkillCatalogModel['listPublished']>>['items'] =
       [];
     const builtinOverrideTombstones = new Set<string>();
@@ -283,8 +270,6 @@ export class SkillCatalogReadService {
       }
       executionIndex.set(exactRefKey(ref), structuredClone(resolved));
     }
-    this.publishedExecutionIndex = cloneExecutionIndex(executionIndex);
-    this.publishedExecutionRevision = revision;
     const ready = executionReady && executionIndex.size === skills.length;
     cacheReadiness(revision, ready);
     const catalog = {
@@ -298,17 +283,31 @@ export class SkillCatalogReadService {
       executionIndex: cloneExecutionIndex(executionIndex),
       executionReady: ready,
     });
-    activeProjectionRevisionBySource.set(this.projectionSource, {
-      epoch,
-      expiresAt: this.now() + this.cacheTtlMs,
-      projectionKey,
-    });
     while (projectionByRevision.size > MAX_READINESS_REVISIONS) {
       const oldest = projectionByRevision.keys().next().value;
       if (!oldest) break;
       projectionByRevision.delete(oldest);
     }
-    return cloneCatalog(catalog);
+    return projectionKey;
+  };
+
+  getPublishedCatalog = async () => {
+    let projectionKey = await this.activeProjectionCache.get();
+    let cached = projectionKey ? projectionByRevision.get(projectionKey) : undefined;
+
+    // Immutable projections are independently bounded. If its active pointer outlives the
+    // projection, rebuild from the database instead of returning an incomplete catalog.
+    if (!cached) {
+      this.activeProjectionCache.invalidate();
+      projectionKey = await this.activeProjectionCache.get();
+      cached = projectionKey ? projectionByRevision.get(projectionKey) : undefined;
+    }
+    if (!cached) throw new Error('Published Skill projection could not be rebuilt');
+
+    this.publishedExecutionIndex = cloneExecutionIndex(cached.executionIndex);
+    this.publishedExecutionRevision = cached.catalog.revision;
+    cacheReadiness(cached.catalog.revision, cached.executionReady);
+    return cloneCatalog(cached.catalog);
   };
 
   isPublishedCatalogExecutionReady = (catalog: { revision: string; skills: PublishedSkill[] }) => {
