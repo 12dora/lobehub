@@ -1,18 +1,15 @@
-import { and, asc, eq, inArray, or } from 'drizzle-orm';
+import { and, asc, eq, inArray } from 'drizzle-orm';
 
 import { MANAGED_RESOURCE_KINDS } from '@/const/platform/managedResources';
 import { checksumPayload } from '@/database/models/platform/checksum';
 import {
   platformAgents,
   platformAgentVersions,
-  platformAiProviders,
   platformBranding,
   platformConnectors,
   platformManagedResourcePolicies,
   platformResourceRevisions,
   platformSettingsBundle,
-  platformSkills,
-  platformSkillVersions,
 } from '@/database/schemas/platform';
 import type { LobeChatDatabase, Transaction } from '@/database/type';
 import type {
@@ -27,6 +24,14 @@ import {
 
 import { parseEnterpriseFeatureFlags } from '../../featureFlags';
 import { loadPublishedIdentityTarget } from '../identityProvider/systemService';
+import { getBuiltinSkillDefinitions } from '../skillCatalog/builtinAdapter';
+import type { CurrentAiCatalogSnapshot, CurrentSkillCatalogSnapshot } from './catalogAuthority';
+import { loadCurrentAiCatalogSnapshot, loadCurrentSkillCatalogSnapshot } from './catalogAuthority';
+import type { SkillCatalogBuiltinTokenEntry } from './catalogTokens';
+import {
+  buildSkillCatalogRevisionToken,
+  PlatformCatalogTokenInvariantError,
+} from './catalogTokens';
 
 type DomainEnabled = (flags: ReturnType<typeof parseEnterpriseFeatureFlags>) => boolean;
 
@@ -63,17 +68,26 @@ const isChecksum = (value: string | null | undefined): value is string =>
   typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 
 type IdentityTargetLoader = typeof loadPublishedIdentityTarget;
+type AiCatalogSnapshotLoader = () => Promise<CurrentAiCatalogSnapshot>;
+type SkillBuiltinTokenLoader = () => SkillCatalogBuiltinTokenEntry[];
+type SkillCatalogSnapshotLoader = () => Promise<CurrentSkillCatalogSnapshot>;
 
 export interface PlatformDomainTargetResolverOptions {
   env?: Record<string, string | undefined>;
+  loadAiCatalogSnapshot?: AiCatalogSnapshotLoader;
+  loadBuiltinSkillTokenEntries?: SkillBuiltinTokenLoader;
   loadIdentityTarget?: IdentityTargetLoader;
+  loadSkillCatalogSnapshot?: SkillCatalogSnapshotLoader;
 }
 
 /** Resolves only normalized, authoritative current pointers; immutable history is never scanned. */
 export class PlatformDomainTargetResolver {
   private readonly env: Record<string, string | undefined>;
   private readonly flags: ReturnType<typeof parseEnterpriseFeatureFlags>;
+  private readonly loadAiCatalogSnapshot: AiCatalogSnapshotLoader;
+  private readonly loadBuiltinSkillTokenEntries: SkillBuiltinTokenLoader;
   private readonly loadIdentityTarget: IdentityTargetLoader;
+  private readonly loadSkillCatalogSnapshot: SkillCatalogSnapshotLoader;
 
   constructor(
     private readonly db: LobeChatDatabase | Transaction,
@@ -81,7 +95,19 @@ export class PlatformDomainTargetResolver {
   ) {
     this.env = options.env ?? process.env;
     this.flags = parseEnterpriseFeatureFlags(this.env);
+    this.loadAiCatalogSnapshot =
+      options.loadAiCatalogSnapshot ?? (() => loadCurrentAiCatalogSnapshot(this.db));
+    this.loadBuiltinSkillTokenEntries =
+      options.loadBuiltinSkillTokenEntries ??
+      (() =>
+        getBuiltinSkillDefinitions().map(({ checksum, skillKey, version }) => ({
+          checksum,
+          skillKey,
+          version,
+        })));
     this.loadIdentityTarget = options.loadIdentityTarget ?? loadPublishedIdentityTarget;
+    this.loadSkillCatalogSnapshot =
+      options.loadSkillCatalogSnapshot ?? (() => loadCurrentSkillCatalogSnapshot(this.db));
   }
 
   private available = (
@@ -131,76 +157,15 @@ export class PlatformDomainTargetResolver {
   };
 
   private resolveAiCatalog = async (): Promise<PlatformRevisionToken> => {
-    const rows = await this.db
-      .select({
-        checksum: platformResourceRevisions.checksum,
-        providerId: platformAiProviders.id,
-        providerKey: platformAiProviders.providerKey,
-        revision: platformAiProviders.revision,
-        secretFingerprint: platformResourceRevisions.secretFingerprint,
-      })
-      .from(platformAiProviders)
-      .leftJoin(
-        platformResourceRevisions,
-        and(
-          eq(platformResourceRevisions.resourceType, 'provider'),
-          eq(platformResourceRevisions.resourceId, platformAiProviders.id),
-          eq(platformResourceRevisions.revision, platformAiProviders.revision),
-          eq(platformResourceRevisions.status, 'published'),
-        ),
-      )
-      .where(eq(platformAiProviders.status, 'published'))
-      .orderBy(asc(platformAiProviders.providerKey), asc(platformAiProviders.id));
-    if (rows.some(({ checksum, revision }) => revision <= 0 || !isChecksum(checksum))) {
-      throw new PlatformDomainTargetInvariantError();
-    }
-    return immutableToken(rows);
+    return (await this.loadAiCatalogSnapshot()).token;
   };
 
   private resolveSkillCatalog = async (): Promise<PlatformRevisionToken> => {
-    const rows = await this.db
-      .select({
-        allowBuiltinOverride: platformSkills.allowBuiltinOverride,
-        checksum: platformSkillVersions.checksum,
-        currentVersionId: platformSkills.currentVersionId,
-        revision: platformSkills.revision,
-        skillId: platformSkills.id,
-        skillKey: platformSkills.skillKey,
-        status: platformSkills.status,
-      })
-      .from(platformSkills)
-      .leftJoin(
-        platformSkillVersions,
-        and(
-          eq(platformSkillVersions.skillId, platformSkills.id),
-          eq(platformSkillVersions.id, platformSkills.currentVersionId),
-        ),
-      )
-      .where(
-        or(
-          and(eq(platformSkills.status, 'published'), eq(platformSkills.enabled, true)),
-          and(eq(platformSkills.status, 'archived'), eq(platformSkills.allowBuiltinOverride, true)),
-        ),
-      )
-      .orderBy(asc(platformSkills.skillKey), asc(platformSkills.id));
-    if (
-      rows.some(
-        ({ checksum, currentVersionId, revision }) =>
-          revision <= 0 || !currentVersionId || !isChecksum(checksum),
-      )
-    ) {
-      throw new PlatformDomainTargetInvariantError();
-    }
-    return immutableToken(
-      rows.map((row) => ({
-        checksum: row.checksum,
-        currentVersionId: row.currentVersionId,
-        revision: row.revision,
-        skillId: row.skillId,
-        skillKey: row.skillKey,
-        tombstone: row.status === 'archived' && row.allowBuiltinOverride,
-      })),
-    );
+    const snapshot = await this.loadSkillCatalogSnapshot();
+    return buildSkillCatalogRevisionToken({
+      builtins: this.loadBuiltinSkillTokenEntries(),
+      platform: snapshot.tokenEntries,
+    });
   };
 
   private resolveConnectorCatalog = async (): Promise<PlatformRevisionToken> => {
@@ -349,7 +314,11 @@ export class PlatformDomainTargetResolver {
     try {
       return this.available(domain, await this.resolveToken(domain));
     } catch (error) {
-      return this.unavailable(domain, error instanceof PlatformDomainTargetInvariantError);
+      return this.unavailable(
+        domain,
+        error instanceof PlatformDomainTargetInvariantError ||
+          error instanceof PlatformCatalogTokenInvariantError,
+      );
     }
   };
 

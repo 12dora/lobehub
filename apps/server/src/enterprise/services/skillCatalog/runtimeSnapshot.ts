@@ -77,7 +77,10 @@ export const resolvePlatformSkillRuntimeSnapshot = async (params: {
 
   const catalogService =
     params.options?.catalogService ??
-    new SkillCatalogReadService(params.db, { builtinSkills: getBuiltinSkillDefinitions() });
+    new SkillCatalogReadService(params.db, {
+      builtinSkills: getBuiltinSkillDefinitions(),
+      runtimeReporting: { database: params.db },
+    });
   const published = await catalogService.getPublishedCatalog();
   if (published.skills.length > MAX_OPERATION_SKILLS) {
     throw new Error('Published Skill operation snapshot limit was exceeded');

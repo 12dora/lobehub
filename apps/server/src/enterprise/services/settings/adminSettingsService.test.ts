@@ -1,8 +1,11 @@
 // @vitest-environment node
+import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
+import { checksumPayload } from '@/database/models/platform';
 import {
+  platformAiProviders,
   platformAuditLogs,
   platformResourceRevisions,
   platformSettingPolicies,
@@ -30,6 +33,7 @@ beforeEach(async () => {
   await serverDB.delete(userSettingOverrideRevisions);
   await serverDB.delete(platformSettingPolicies);
   await serverDB.delete(platformSettingsBundle);
+  await serverDB.delete(platformAiProviders);
 });
 
 afterEach(async () => {
@@ -39,6 +43,7 @@ afterEach(async () => {
   await serverDB.delete(userSettingOverrideRevisions);
   await serverDB.delete(platformSettingPolicies);
   await serverDB.delete(platformSettingsBundle);
+  await serverDB.delete(platformAiProviders);
 });
 
 const validDraft = {
@@ -142,6 +147,160 @@ describe('AdminSettingsService', () => {
       }),
     ).rejects.toBeInstanceOf(PlatformDependencyTargetNotPublishedError);
     expect(await serverDB.select().from(platformSettingPolicies)).toEqual([]);
+  });
+
+  it('rejects an orphan higher AI revision when the current pointer lacks the model', async () => {
+    const currentPayload = {
+      models: [{ enabled: true, modelKey: 'current-only', type: 'chat' }],
+      provider: {
+        displayName: 'Alpha',
+        enabled: true,
+        providerKey: 'alpha',
+      },
+    };
+    const orphanPayload = {
+      models: [{ enabled: true, modelKey: 'orphan-only', type: 'chat' }],
+      provider: {
+        displayName: 'Alpha',
+        enabled: true,
+        providerKey: 'alpha',
+      },
+    };
+    await serverDB.insert(platformAiProviders).values({
+      displayName: 'Alpha',
+      enabled: true,
+      id: 'provider-alpha',
+      providerKey: 'alpha',
+      revision: 1,
+      status: 'published',
+    });
+    await serverDB.insert(platformResourceRevisions).values([
+      {
+        checksum: checksumPayload(currentPayload),
+        payload: currentPayload,
+        resourceId: 'provider-alpha',
+        resourceType: 'provider',
+        revision: 1,
+        status: 'published',
+      },
+      {
+        checksum: checksumPayload(orphanPayload),
+        payload: orphanPayload,
+        resourceId: 'provider-alpha',
+        resourceType: 'provider',
+        revision: 2,
+        status: 'published',
+      },
+    ]);
+    await saveCurrentDraft(service, {
+      actorUserId: 'admin-1',
+      draft: {
+        'systemAgent.topic.model': {
+          mode: 'default',
+          schemaVersion: 1,
+          value: 'orphan-only',
+          visibility: 'visible',
+        },
+        'systemAgent.topic.provider': {
+          mode: 'default',
+          schemaVersion: 1,
+          value: 'alpha',
+          visibility: 'visible',
+        },
+      },
+      reason: 'orphan history must not authorize settings',
+    });
+
+    await expect(
+      service.publish({
+        actorUserId: 'admin-1',
+        expectedDraftToken: (await service.getDraft()).draftToken,
+        expectedRevision: 0,
+        reason: 'must use current pointer',
+      }),
+    ).rejects.toBeInstanceOf(PlatformDependencyTargetNotPublishedError);
+    expect(await serverDB.select().from(platformSettingPolicies)).toEqual([]);
+  });
+
+  it('accepts the rolled-back AI pointer even when higher history lacks the model', async () => {
+    const rollbackPayload = {
+      models: [{ enabled: true, modelKey: 'rollback-model', type: 'chat' }],
+      provider: {
+        displayName: 'Alpha',
+        enabled: true,
+        providerKey: 'alpha',
+      },
+    };
+    const higherPayload = {
+      models: [{ enabled: true, modelKey: 'higher-only', type: 'chat' }],
+      provider: {
+        displayName: 'Alpha',
+        enabled: true,
+        providerKey: 'alpha',
+      },
+    };
+    await serverDB.insert(platformAiProviders).values({
+      displayName: 'Alpha',
+      enabled: true,
+      id: 'provider-alpha',
+      providerKey: 'alpha',
+      revision: 2,
+      status: 'published',
+    });
+    await serverDB.insert(platformResourceRevisions).values([
+      {
+        checksum: checksumPayload(rollbackPayload),
+        payload: rollbackPayload,
+        resourceId: 'provider-alpha',
+        resourceType: 'provider',
+        revision: 1,
+        status: 'published',
+      },
+      {
+        checksum: checksumPayload(higherPayload),
+        payload: higherPayload,
+        resourceId: 'provider-alpha',
+        resourceType: 'provider',
+        revision: 2,
+        status: 'published',
+      },
+    ]);
+    await serverDB
+      .update(platformAiProviders)
+      .set({ revision: 1 })
+      .where(eq(platformAiProviders.id, 'provider-alpha'));
+    await saveCurrentDraft(service, {
+      actorUserId: 'admin-1',
+      draft: {
+        'systemAgent.topic.model': {
+          mode: 'default',
+          schemaVersion: 1,
+          value: 'rollback-model',
+          visibility: 'visible',
+        },
+        'systemAgent.topic.provider': {
+          mode: 'default',
+          schemaVersion: 1,
+          value: 'alpha',
+          visibility: 'visible',
+        },
+      },
+      reason: 'rolled back model is current',
+    });
+
+    await expect(
+      service.publish({
+        actorUserId: 'admin-1',
+        expectedDraftToken: (await service.getDraft()).draftToken,
+        expectedRevision: 0,
+        reason: 'publish against rollback pointer',
+      }),
+    ).resolves.toMatchObject({ revision: 1 });
+    expect(await serverDB.select().from(platformSettingPolicies)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: 'systemAgent.topic.model', value: 'rollback-model' }),
+      ]),
+    );
   });
 
   it('saveDraft + publish + rollback append-only flow', async () => {
