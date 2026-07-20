@@ -931,6 +931,13 @@
       "when": 1784502628386,
       "tag": "0132_m13_platform_secret_rotation",
       "breakpoints": true
+    },
+    {
+      "idx": 133,
+      "version": "7",
+      "when": 1784505145892,
+      "tag": "0133_m13_secret_rewrap_failure_index",
+      "breakpoints": true
     }
   ],
   "version": "6"

@@ -32,6 +32,11 @@ export class PlatformSecretService {
     this.keyProvider = options.keyProvider;
   }
 
+  /** Safe provider discriminator for policy gates; never exposes KEK material. */
+  get keyProviderId(): string {
+    return this.keyProvider.providerId;
+  }
+
   /**
    * Encrypt plaintext → self-describing ciphertext
    * (`aihub.secret.v1.<payload>` with kid/alg for rotation).

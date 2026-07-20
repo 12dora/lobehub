@@ -12,6 +12,7 @@ import { parseEnterpriseFeatureFlags } from '../featureFlags';
 import { resolveAccessStatus } from '../guards/accessGrant';
 import { ensurePlatformAgentRolloutWorkerStarted } from '../jobs/agentRollout';
 import { ensureIdentityProviderTestAttemptCleanupStarted } from '../jobs/identityProviderTestAttemptCleanup';
+import { ensurePlatformSecretRewrapWorkerStarted } from '../jobs/secretRewrap';
 import { AiCatalogReadService, getEmptyPublishedAiCatalog } from '../services/aiCatalog';
 import { resolvePlatformPublicSnapshot } from '../services/branding';
 import { ensureConnectorRuntimeAuditWorkerStarted } from '../services/connectorCatalog/runtimeAuditWorker';
@@ -30,6 +31,8 @@ ensureConnectorRuntimeAuditWorkerStarted();
 ensurePlatformAgentRolloutWorkerStarted();
 
 ensureIdentityProviderTestAttemptCleanupStarted();
+
+ensurePlatformSecretRewrapWorkerStarted();
 
 /**
  * Platform router (M00 read-only + M02 access status / descriptor).

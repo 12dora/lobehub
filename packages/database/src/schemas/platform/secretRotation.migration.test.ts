@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 const migrations = path.join(import.meta.dirname, '../../../migrations');
 const migrationName = '0132_m13_platform_secret_rotation';
+const latestMigrationName = '0133_m13_secret_rewrap_failure_index';
 const migrationSql = readFileSync(path.join(migrations, `${migrationName}.sql`), 'utf8');
 const journal = JSON.parse(readFileSync(path.join(migrations, 'meta/_journal.json'), 'utf8')) as {
   entries: Array<{ idx: number; tag: string }>;
@@ -22,12 +23,18 @@ describe('M13 platform secret rotation expand migration', () => {
     expect(migrationSql).not.toMatch(/platform_jobs|failure/i);
   });
 
-  it('keeps generated journal and snapshot aligned at 0132', () => {
-    expect(journal.entries).toHaveLength(133);
+  it('keeps 0132 and the latest 0133 journal entries and snapshots aligned', () => {
+    expect(journal.entries).toHaveLength(134);
     expect(journal.entries.find(({ idx }) => idx === 132)).toMatchObject({
       idx: 132,
       tag: migrationName,
     });
-    expect(readdirSync(path.join(migrations, 'meta'))).toContain('0132_snapshot.json');
+    expect(journal.entries.find(({ idx }) => idx === 133)).toMatchObject({
+      idx: 133,
+      tag: latestMigrationName,
+    });
+    expect(readdirSync(path.join(migrations, 'meta'))).toEqual(
+      expect.arrayContaining(['0132_snapshot.json', '0133_snapshot.json']),
+    );
   });
 });
