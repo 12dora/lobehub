@@ -5,10 +5,14 @@ import path from 'node:path';
 import type { GateResult, KnownGateId } from './contract';
 import { KNOWN_GATE_IDS, scanUpstreamRebaseEvidence } from './contract';
 
+/** Placeholder replaced at runtime with an absolute path under the run raw dir. */
+export const VITEST_OUTPUT_PLACEHOLDER = '__UPSTREAM_REBASE_GATE_OUTPUT__' as const;
+
 export interface GateDefinition {
   /**
    * argv for a command gate. Empty for fail-closed / privacy-scan kinds that
    * do not launch an external process.
+   * For vitest gates, include `--outputFile` followed by {@link VITEST_OUTPUT_PLACEHOLDER}.
    */
   argv?: string[];
   /**
@@ -49,7 +53,8 @@ export const GATE_DEFINITIONS: Record<KnownGateId, GateDefinition> = {
       'vitest.config.mts',
       '--silent=passed-only',
       '--reporter=json',
-      '--outputFile=.records/enterprise-upstream-rebase-raw/gate-auth-e2e.json',
+      '--outputFile',
+      VITEST_OUTPUT_PLACEHOLDER,
       'src/libs/better-auth/sso/platformIdentityProvider.secureProfile.test.ts',
       'src/app/(backend)/api/auth/[...all]/route.test.ts',
       'apps/server/src/enterprise/guards/reauth.test.ts',
@@ -82,7 +87,8 @@ export const GATE_DEFINITIONS: Record<KnownGateId, GateDefinition> = {
       'vitest.config.mts',
       '--silent=passed-only',
       '--reporter=json',
-      '--outputFile=.records/enterprise-upstream-rebase-raw/gate-desktop-release.json',
+      '--outputFile',
+      VITEST_OUTPUT_PLACEHOLDER,
       'tests/electronWorkflow/desktopBrandingWorkflow.test.ts',
     ],
   },
@@ -100,7 +106,8 @@ export const GATE_DEFINITIONS: Record<KnownGateId, GateDefinition> = {
       'vitest.config.mts',
       '--silent=passed-only',
       '--reporter=json',
-      '--outputFile=.records/enterprise-upstream-rebase-raw/gate-failure-drills.json',
+      '--outputFile',
+      VITEST_OUTPUT_PLACEHOLDER,
       'scripts/enterprise/failure-drills/runner.test.ts',
     ],
   },
@@ -122,7 +129,8 @@ export const GATE_DEFINITIONS: Record<KnownGateId, GateDefinition> = {
       'run',
       '--silent=passed-only',
       '--reporter=json',
-      '--outputFile=../../.records/enterprise-upstream-rebase-raw/gate-migration.json',
+      '--outputFile',
+      VITEST_OUTPUT_PLACEHOLDER,
       'src/models/__tests__/drizzleMigration.test.ts',
     ],
   },
@@ -145,7 +153,8 @@ export const GATE_DEFINITIONS: Record<KnownGateId, GateDefinition> = {
       'vitest.config.mts',
       '--silent=passed-only',
       '--reporter=json',
-      '--outputFile=.records/enterprise-upstream-rebase-raw/gate-permission-matrix.json',
+      '--outputFile',
+      VITEST_OUTPUT_PLACEHOLDER,
       'apps/server/src/enterprise/routers/permissionMatrix.test.ts',
     ],
   },
@@ -167,7 +176,8 @@ export const GATE_DEFINITIONS: Record<KnownGateId, GateDefinition> = {
       'vitest.config.mts',
       '--silent=passed-only',
       '--reporter=json',
-      '--outputFile=.records/enterprise-upstream-rebase-raw/gate-spa-route-sync.json',
+      '--outputFile',
+      VITEST_OUTPUT_PLACEHOLDER,
       'src/spa/router/desktopRouter.sync.test.tsx',
     ],
   },
@@ -316,27 +326,20 @@ export const runSelectedGates = async ({
       ? path.resolve(repositoryRoot, definition.cwd)
       : path.resolve(repositoryRoot);
 
-    // Rewrite relative outputFile paths against repository root when needed.
-    const argv = definition.argv.map((argument) => {
-      if (!argument.includes('enterprise-upstream-rebase-raw/')) return argument;
-      if (argument.startsWith('../../')) {
-        return path.resolve(repositoryRoot, argument.slice('../../'.length));
-      }
-      if (argument.startsWith('.records/')) {
-        return path.resolve(repositoryRoot, argument);
-      }
-      return argument;
-    });
-
-    const outputFileIndex = argv.indexOf('--outputFile');
-    const outputFile =
-      outputFileIndex >= 0 && argv[outputFileIndex + 1]
-        ? argv[outputFileIndex + 1]
-        : path.join(rawDirectory, `gate-${gateId}.json`);
-
-    if (outputFileIndex >= 0) {
-      argv[outputFileIndex + 1] = outputFile;
+    // Always write vitest JSON under the run-scoped raw directory so wipe removes it.
+    const outputFile = path.join(rawDirectory, `gate-${gateId}.json`);
+    if (definition.kind === 'vitest' && !definition.argv.includes(VITEST_OUTPUT_PLACEHOLDER)) {
+      results.push({
+        id: gateId,
+        kind: 'fail-closed',
+        outcome: 'failed',
+        reason: `Gate "${gateId}" vitest mapping is missing output placeholder.`,
+      });
+      continue;
     }
+    const argv = definition.argv.map((argument) =>
+      argument === VITEST_OUTPUT_PLACEHOLDER ? outputFile : argument,
+    );
 
     await mkdir(path.dirname(outputFile), { recursive: true });
     await rm(outputFile, { force: true });
