@@ -350,17 +350,24 @@ export const isAllowlistedHostOrIp = (value: string, allowlist: string[]): boole
  */
 export const assertHostnamePolicy = (hostname: string, policy: OutboundPolicy): void => {
   if (isMetadataHostname(hostname)) {
-    throw ssrfBlocked('cloud metadata hostname is permanently blocked', { hostname });
+    throw ssrfBlocked('metadata_endpoint', 'cloud metadata hostname is permanently blocked', {
+      hostname,
+    });
   }
 
   if (policy.mode === 'allowlist') {
     // Literal IP in hostname can be checked now; DNS names checked after resolve too
     const asIp = normalizeIp(hostname);
     if (asIp && isMetadataIp(asIp)) {
-      throw ssrfBlocked('cloud metadata IP is permanently blocked', { ip: asIp });
+      throw ssrfBlocked('metadata_endpoint', 'cloud metadata IP is permanently blocked', {
+        ip: asIp,
+      });
     }
     if (!isAllowlistedHostOrIp(hostname, policy.allowlist)) {
-      throw ssrfBlocked('hostname not in allowlist', { hostname, mode: policy.mode });
+      throw ssrfBlocked('allowlist_denied', 'hostname not in allowlist', {
+        hostname,
+        mode: policy.mode,
+      });
     }
   }
 
@@ -389,11 +396,13 @@ export const assertResolvedIpAllowed = (
 ): void => {
   const normalized = normalizeIp(ip);
   if (!normalized) {
-    throw ssrfBlocked('invalid resolved IP', { ip });
+    throw ssrfBlocked('invalid_address', 'invalid resolved IP', { ip });
   }
 
   if (isMetadataIp(normalized)) {
-    throw ssrfBlocked('cloud metadata IP is permanently blocked', { ip: normalized });
+    throw ssrfBlocked('metadata_endpoint', 'cloud metadata IP is permanently blocked', {
+      ip: normalized,
+    });
   }
 
   if (
@@ -403,16 +412,20 @@ export const assertResolvedIpAllowed = (
       policy.translationPrefixes ?? DEFAULT_PUBLIC_TRANSLATION_PREFIXES,
     )
   ) {
-    throw ssrfBlocked('non-public address not permitted under public-only mode', {
-      ip: normalized,
-      mode: policy.mode,
-    });
+    throw ssrfBlocked(
+      'non_public_address',
+      'non-public address not permitted under public-only mode',
+      {
+        ip: normalized,
+        mode: policy.mode,
+      },
+    );
   }
 
   if (policy.mode === 'allowlist') {
     const ipOnList = isAllowlistedHostOrIp(normalized, policy.allowlist);
     if (!hostnameAllowListed && !ipOnList) {
-      throw ssrfBlocked('resolved IP not permitted under allowlist mode', {
+      throw ssrfBlocked('allowlist_denied', 'resolved IP not permitted under allowlist mode', {
         ip: normalized,
         mode: policy.mode,
       });

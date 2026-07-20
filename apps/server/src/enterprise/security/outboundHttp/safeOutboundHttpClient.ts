@@ -135,7 +135,10 @@ export class SafeOutboundHttpClient {
 
         if (!isSameOrigin(previous, current)) {
           if (secretBearing) {
-            throw ssrfBlocked('cross-origin redirect rejected for secret-bearing request');
+            throw ssrfBlocked(
+              'secret_redirect',
+              'cross-origin redirect rejected for secret-bearing request',
+            );
           }
           stripCredentialHeaders(baseHeaders);
         }
@@ -149,7 +152,10 @@ export class SafeOutboundHttpClient {
       }
 
       if (REDIRECT_STATUSES.has(response.status) && redirects >= maxRedirects) {
-        throw ssrfBlocked('too many redirects', { maxRedirects, url: current.toString() });
+        throw ssrfBlocked('redirect_limit', 'too many redirects', {
+          maxRedirects,
+          url: current.toString(),
+        });
       }
 
       return this.toResponse(response, current);
@@ -191,7 +197,10 @@ export class SafeOutboundHttpClient {
       if (![301, 302, 303, 307, 308].includes(response.status)) return response;
       if (redirects >= maxRedirects) {
         await response.body?.cancel();
-        throw ssrfBlocked('too many redirects', { maxRedirects, url: current.toString() });
+        throw ssrfBlocked('redirect_limit', 'too many redirects', {
+          maxRedirects,
+          url: current.toString(),
+        });
       }
       const location = response.headers.get('location');
       if (!location) return response;
@@ -201,7 +210,10 @@ export class SafeOutboundHttpClient {
       redirects += 1;
       if (!isSameOrigin(previous, current)) {
         if (init.secretBearing || Object.keys(headers).length > 0 || body) {
-          throw ssrfBlocked('cross-origin redirect rejected for secret-bearing request');
+          throw ssrfBlocked(
+            'secret_redirect',
+            'cross-origin redirect rejected for secret-bearing request',
+          );
         }
         stripCredentialHeaders(headers);
       }
@@ -231,7 +243,7 @@ export class SafeOutboundHttpClient {
     const addresses = await this.resolveHost(hostname, deadlineAt);
     const after = this.getPolicySnapshot();
     if (after.version !== before.version) {
-      throw ssrfBlocked('outbound policy changed during preflight');
+      throw ssrfBlocked('policy_changed', 'outbound policy changed during preflight');
     }
     this.assertResolvedAddresses(url, addresses, after.policy);
     return after.version;
@@ -245,22 +257,22 @@ export class SafeOutboundHttpClient {
     try {
       url = typeof input === 'string' ? new URL(input) : new URL(input.toString());
     } catch {
-      throw ssrfBlocked('invalid URL');
+      throw ssrfBlocked('invalid_url', 'invalid URL');
     }
     if (!ALLOWED_PROTOCOLS.has(url.protocol)) {
-      throw ssrfBlocked(`protocol not allowed: ${url.protocol}`, {
+      throw ssrfBlocked('protocol_denied', `protocol not allowed: ${url.protocol}`, {
         protocol: url.protocol,
       });
     }
     if (!url.hostname) {
-      throw ssrfBlocked('URL missing hostname');
+      throw ssrfBlocked('invalid_url', 'URL missing hostname');
     }
     return url;
   }
 
   private assertUrlPolicy(url: URL, policy: OutboundPolicy): void {
     if (isCredentialBearingUrl(url.toString())) {
-      throw ssrfBlocked('credential-bearing URL rejected');
+      throw ssrfBlocked('credential_url', 'credential-bearing URL rejected');
     }
     assertHostnamePolicy(url.hostname, policy);
   }
@@ -274,7 +286,9 @@ export class SafeOutboundHttpClient {
 
     const addresses = await this.withDeadline(this.resolve(host), deadlineAt, signal);
     if (!addresses.length) {
-      throw ssrfBlocked('DNS resolution returned no addresses', { hostname: host });
+      throw ssrfBlocked('dns_unavailable', 'DNS resolution returned no addresses', {
+        hostname: host,
+      });
     }
     return addresses;
   }
@@ -300,13 +314,13 @@ export class SafeOutboundHttpClient {
     try {
       return outboundPolicySnapshotSchema.parse(this.policyProvider());
     } catch {
-      throw ssrfBlocked('outbound policy snapshot unavailable');
+      throw ssrfBlocked('policy_unavailable', 'outbound policy snapshot unavailable');
     }
   }
 
   private remainingMs(deadlineAt: number): number {
     const remaining = deadlineAt - Date.now();
-    if (remaining <= 0) throw ssrfBlocked('absolute deadline exceeded');
+    if (remaining <= 0) throw ssrfBlocked('deadline_exceeded', 'absolute deadline exceeded');
     return remaining;
   }
 
@@ -322,7 +336,10 @@ export class SafeOutboundHttpClient {
       return await Promise.race([
         operation,
         new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(ssrfBlocked('absolute deadline exceeded')), remaining);
+          timer = setTimeout(
+            () => reject(ssrfBlocked('deadline_exceeded', 'absolute deadline exceeded')),
+            remaining,
+          );
         }),
         new Promise<never>((_, reject) => {
           onAbort = () => reject(new DOMException('The operation was aborted', 'AbortError'));
