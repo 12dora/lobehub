@@ -1,7 +1,6 @@
-import { and, asc, eq, gt, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, lte, or, sql } from 'drizzle-orm';
 
 import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
-import { PlatformJobModel } from '@/database/models/platform/job';
 import {
   PLATFORM_SECRET_ROTATION_DOMAINS,
   type PlatformSecretRotationCandidate,
@@ -43,7 +42,7 @@ class PlatformSecretRewrapLeaseLostError extends Error {
 }
 
 export interface PlatformSecretRewrapWorkerLifecycle {
-  /** Test/fault seam after the generic claim and before the dedicated transaction. */
+  /** Test/fault seam after the DB-clock claim and before the dedicated transaction. */
   afterClaim?: (job: PlatformJobItem) => Promise<void>;
   /** Test/fault seam after encryption but before the exact data CAS. */
   beforeCandidateCas?: (params: {
@@ -81,6 +80,50 @@ type CandidateOutcome =
   | { kind: 'failed'; category: PlatformSecretRewrapFailureCategory }
   | { kind: 'no_op' }
   | { kind: 'rotated' };
+
+/**
+ * S02c1-specific claim lane. Eligibility and every lease timestamp use the
+ * PostgreSQL clock so application-node skew cannot steal or strand a lease.
+ */
+const claimNextPlatformSecretRewrapJob = async (
+  db: LobeChatDatabase,
+  params: { leaseMs: number; workerId: string },
+): Promise<PlatformJobItem | null> =>
+  db.transaction(async (tx) => {
+    const available = or(
+      eq(platformJobs.status, 'pending'),
+      and(eq(platformJobs.status, 'running'), lte(platformJobs.leaseUntil, sql`clock_timestamp()`)),
+    );
+    const [candidate] = await tx
+      .select()
+      .from(platformJobs)
+      .where(and(eq(platformJobs.type, PLATFORM_SECRET_REWRAP_JOB_TYPE), available))
+      .orderBy(asc(platformJobs.createdAt))
+      .limit(1)
+      .for('update', { skipLocked: true });
+    if (!candidate) return null;
+
+    const [claimed] = await tx
+      .update(platformJobs)
+      .set({
+        attempt: sql`${platformJobs.attempt} + 1`,
+        heartbeatAt: sql`clock_timestamp()`,
+        leaseOwner: params.workerId,
+        leaseUntil: sql`clock_timestamp() + (${params.leaseMs} * interval '1 millisecond')`,
+        startedAt: sql`COALESCE(${platformJobs.startedAt}, clock_timestamp())`,
+        status: 'running',
+        updatedAt: sql`clock_timestamp()`,
+      })
+      .where(
+        and(
+          eq(platformJobs.id, candidate.id),
+          eq(platformJobs.type, PLATFORM_SECRET_REWRAP_JOB_TYPE),
+          available,
+        ),
+      )
+      .returning();
+    return claimed ?? null;
+  });
 
 const markClaimedDead = async (
   db: LobeChatDatabase,
@@ -376,10 +419,9 @@ export const processNextPlatformSecretRewrapBatch = async (
     Math.max(Math.floor(options.batchSize ?? PLATFORM_SECRET_REWRAP_BATCH_SIZE), 1),
     PLATFORM_SECRET_REWRAP_BATCH_SIZE,
   );
-  const jobs = new PlatformJobModel(db);
-  const claimed = await jobs.claimNext({
-    leaseMs: options.leaseMs ?? DEFAULT_LEASE_MS,
-    types: [PLATFORM_SECRET_REWRAP_JOB_TYPE],
+  const leaseMs = Math.max(Math.floor(options.leaseMs ?? DEFAULT_LEASE_MS), 1);
+  const claimed = await claimNextPlatformSecretRewrapJob(db, {
+    leaseMs,
     workerId,
   });
   if (!claimed) return { claimed: false };
