@@ -10,12 +10,7 @@ import type { LobeChatDatabase } from '@/database/type';
 import { authedProcedure, createCallerFactory, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 
-import {
-  ADMIN_AUTHORIZATION_FIXTURE_IDS,
-  cleanupAdminAuthorizationFixture,
-  createAdminAuthorizationContexts,
-  setupAdminAuthorizationFixture,
-} from '../testing/adminAuthorizationFixture';
+import { createAdminAuthorizationFixture } from '../testing/adminAuthorizationFixture';
 import { getEnterpriseErrorBody } from './enterpriseErrors';
 import { withPlatformPermission } from './platformPermission';
 
@@ -33,27 +28,28 @@ const testRouter = router({
 });
 
 const createCaller = createCallerFactory(testRouter);
+const fixture = createAdminAuthorizationFixture({ namespace: 'platform-permission' });
 
 beforeEach(async () => {
   vi.unstubAllEnvs();
   vi.stubEnv('ENABLE_PLATFORM_ADMIN', '1');
-  await setupAdminAuthorizationFixture(db);
+  await fixture.setup(db);
 });
 
 afterEach(async () => {
-  await cleanupAdminAuthorizationFixture(db);
+  await fixture.cleanup(db);
   vi.unstubAllEnvs();
 });
 
 describe('withPlatformPermission', () => {
   it('allows when user has the global permission', async () => {
-    const contexts = await createAdminAuthorizationContexts(db);
+    const contexts = await fixture.createContexts(db);
     const caller = createCaller(contexts.userAdmin as never);
     await expect(caller.needsUserBan()).resolves.toEqual({ ok: true });
   });
 
   it('denies with structured PLATFORM_PERMISSION_DENIED', async () => {
-    const contexts = await createAdminAuthorizationContexts(db);
+    const contexts = await fixture.createContexts(db);
     const caller = createCaller(contexts.normal as never);
     try {
       await caller.needsUserBan();
@@ -68,11 +64,11 @@ describe('withPlatformPermission', () => {
     const deniedAudit = await db.query.platformAuditLogs.findFirst({
       where: and(
         eq(platformAuditLogs.action, 'admin.permission.denied'),
-        eq(platformAuditLogs.actorUserId, ADMIN_AUTHORIZATION_FIXTURE_IDS.normal),
+        eq(platformAuditLogs.actorUserId, fixture.actors.normal),
       ),
     });
     expect(deniedAudit).toMatchObject({
-      actorUserId: ADMIN_AUTHORIZATION_FIXTURE_IDS.normal,
+      actorUserId: fixture.actors.normal,
       result: 'denied',
       targetType: 'permission',
     });
@@ -80,7 +76,7 @@ describe('withPlatformPermission', () => {
 
   it('feature flag off → ADMIN_FEATURE_DISABLED', async () => {
     vi.stubEnv('ENABLE_PLATFORM_ADMIN', '0');
-    const contexts = await createAdminAuthorizationContexts(db);
+    const contexts = await fixture.createContexts(db);
     const caller = createCaller(contexts.superAdmin as never);
     await expect(caller.needsUserBan()).rejects.toMatchObject({ code: 'FORBIDDEN' });
   });
