@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type {
   ExactPlatformAgentVersion,
@@ -7,11 +7,16 @@ import type {
 import { PlatformAgentMaterializationRaceError } from '@/database/repositories/platformAgentCatalog';
 import type { LobeChatDatabase } from '@/database/type';
 
+import type { EnterpriseObservabilityEvent } from '../../observability';
+import { setEnterprisePlatformObserverForTest } from '../../observability';
 import type { PlatformAgentOperationSnapshot } from './effectiveResolver';
 import { PlatformAgentMaterializationError, PlatformAgentNotFoundError } from './errors';
 import { PlatformAgentMaterializationService } from './materialization';
 
 const CHECKSUM = 'a'.repeat(64);
+const observed: EnterpriseObservabilityEvent[] = [];
+const materializationEvents = () =>
+  observed.filter((event) => event.type === 'agent_materialization');
 
 const config = (displayName: string): PlatformAgentOperationSnapshot['config'] => ({
   avatar: 'avatar.png',
@@ -75,7 +80,16 @@ const makeService = (repo: Partial<PlatformAgentCatalogRepository>) =>
   );
 
 describe('PlatformAgentMaterializationService', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    observed.length = 0;
+    setEnterprisePlatformObserverForTest({ record: (event) => observed.push(event) });
+  });
+
+  afterEach(() => {
+    setEnterprisePlatformObserverForTest(null);
+    vi.restoreAllMocks();
+  });
 
   it('maps the pinned snapshot to a runtime config bound to the materialized Agent id', async () => {
     const service = makeService({
@@ -107,6 +121,17 @@ describe('PlatformAgentMaterializationService', () => {
     });
     // camelCase managed params are lowered to the runtime snake_case shape.
     expect(runtime.params).toMatchObject({ max_tokens: 4096, temperature: 0.4, top_p: 0.9 });
+    expect(materializationEvents()).toEqual([
+      { durationMs: expect.any(Number), outcome: 'created', type: 'agent_materialization' },
+    ]);
+    expect(Object.keys(materializationEvents()[0]!).sort()).toEqual([
+      'durationMs',
+      'outcome',
+      'type',
+    ]);
+    expect(JSON.stringify(materializationEvents())).not.toMatch(
+      /user-a|pagt_1|pav_1|agt_new|Research Agent|internal-provider|checksum|secret|path/i,
+    );
   });
 
   it('reuses an existing local Agent id without creating a second one, still config from snapshot', async () => {
@@ -124,6 +149,9 @@ describe('PlatformAgentMaterializationService', () => {
     expect(result.agentId).toBe('agt_existing');
     expect(result.config.id).toBe('agt_existing');
     expect(result.config.title).toBe('Research Agent');
+    expect(materializationEvents()).toEqual([
+      { durationMs: expect.any(Number), outcome: 'reused', type: 'agent_materialization' },
+    ]);
   });
 
   it('resolves the exact snapshot onto the stable builtin inbox id without creating a row or mapping', async () => {
@@ -146,8 +174,7 @@ describe('PlatformAgentMaterializationService', () => {
       title: 'Research Agent',
     });
     expect(materializeLocalAgent).not.toHaveBeenCalled();
-
-    expect(materializeLocalAgent).not.toHaveBeenCalled();
+    expect(materializationEvents()).toEqual([]);
   });
 
   it('keeps a null avatar as an authoritative managed clear', async () => {
@@ -183,6 +210,10 @@ describe('PlatformAgentMaterializationService', () => {
     expect(v2.config.title).toBe('Agent v2');
     expect(getExactVersion).toHaveBeenNthCalledWith(1, 'pagt_1', 'pav_1');
     expect(getExactVersion).toHaveBeenNthCalledWith(2, 'pagt_1', 'pav_2');
+    expect(materializationEvents()).toEqual([
+      { durationMs: expect.any(Number), outcome: 'created', type: 'agent_materialization' },
+      { durationMs: expect.any(Number), outcome: 'created', type: 'agent_materialization' },
+    ]);
   });
 
   it('fails closed when the exact pinned version is missing', async () => {
@@ -190,6 +221,9 @@ describe('PlatformAgentMaterializationService', () => {
     await expect(service.materializeForOperation(snapshot())).rejects.toBeInstanceOf(
       PlatformAgentMaterializationError,
     );
+    expect(materializationEvents()).toEqual([
+      { durationMs: expect.any(Number), outcome: 'failure', type: 'agent_materialization' },
+    ]);
   });
 
   it('fails closed on a checksum mismatch (tampered / stale pin)', async () => {
@@ -229,6 +263,9 @@ describe('PlatformAgentMaterializationService', () => {
     await expect(service.materializeForOperation(snapshot())).rejects.toBeInstanceOf(
       PlatformAgentNotFoundError,
     );
+    expect(materializationEvents()).toEqual([
+      { durationMs: expect.any(Number), outcome: 'archived', type: 'agent_materialization' },
+    ]);
   });
 
   it('recovers from the rollback race by reusing the winning owner-scoped mapping', async () => {
@@ -241,6 +278,9 @@ describe('PlatformAgentMaterializationService', () => {
     });
     const result = await service.materializeForOperation(snapshot());
     expect(result.agentId).toBe('agt_winner');
+    expect(materializationEvents()).toEqual([
+      { durationMs: expect.any(Number), outcome: 'race_reused', type: 'agent_materialization' },
+    ]);
   });
 
   it('redacts a raw DB failure into a stable materialization error', async () => {
@@ -252,6 +292,62 @@ describe('PlatformAgentMaterializationService', () => {
     });
     await expect(service.materializeForOperation(snapshot())).rejects.toBeInstanceOf(
       PlatformAgentMaterializationError,
+    );
+    expect(materializationEvents()).toEqual([
+      { durationMs: expect.any(Number), outcome: 'failure', type: 'agent_materialization' },
+    ]);
+  });
+
+  it('preserves a successful result when the observer throws', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    setEnterprisePlatformObserverForTest({
+      record: (event) => {
+        observed.push(event);
+        throw new Error('observer unavailable');
+      },
+    });
+    const service = makeService({
+      getExactVersion: vi.fn(async () => exactVersion()),
+      materializeLocalAgent: vi.fn(
+        async () => ({ agentId: 'agt_observed', created: true, ok: true }) as const,
+      ),
+    });
+
+    await expect(service.materializeForOperation(snapshot())).resolves.toMatchObject({
+      agentId: 'agt_observed',
+      config: { id: 'agt_observed' },
+    });
+    expect(materializationEvents()).toEqual([
+      { durationMs: expect.any(Number), outcome: 'created', type: 'agent_materialization' },
+    ]);
+    expect(consoleError).toHaveBeenCalledWith(
+      '[enterprise-observability] metric sink failed',
+      expect.objectContaining({ errorClass: 'UnexpectedError' }),
+    );
+  });
+
+  it('preserves the original failure object when the observer throws', async () => {
+    const failure = new PlatformAgentMaterializationError();
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    setEnterprisePlatformObserverForTest({
+      record: (event) => {
+        observed.push(event);
+        throw new Error('observer unavailable');
+      },
+    });
+    const service = makeService({
+      getExactVersion: vi.fn(async () => {
+        throw failure;
+      }),
+    });
+
+    await expect(service.materializeForOperation(snapshot())).rejects.toBe(failure);
+    expect(materializationEvents()).toEqual([
+      { durationMs: expect.any(Number), outcome: 'failure', type: 'agent_materialization' },
+    ]);
+    expect(consoleError).toHaveBeenCalledWith(
+      '[enterprise-observability] metric sink failed',
+      expect.objectContaining({ errorClass: 'UnexpectedError' }),
     );
   });
 
@@ -270,6 +366,9 @@ describe('PlatformAgentMaterializationService', () => {
       const result = await service.materializeFromPin(pin);
       expect(result.agentId).toBe('agt_reuse');
       expect(result.config.title).toBe('Research Agent');
+      expect(materializationEvents()).toEqual([
+        { durationMs: expect.any(Number), outcome: 'reused', type: 'agent_materialization' },
+      ]);
     });
 
     it('fails closed when the pinned version is missing', async () => {
@@ -277,6 +376,9 @@ describe('PlatformAgentMaterializationService', () => {
       await expect(service.materializeFromPin(pin)).rejects.toBeInstanceOf(
         PlatformAgentMaterializationError,
       );
+      expect(materializationEvents()).toEqual([
+        { durationMs: expect.any(Number), outcome: 'failure', type: 'agent_materialization' },
+      ]);
     });
 
     it('fails closed when the persisted pin checksum no longer matches the version (tampered)', async () => {
@@ -308,6 +410,7 @@ describe('PlatformAgentMaterializationService', () => {
 
       expect(oldOperation.config).toMatchObject({ id: 'builtin-inbox-id', title: 'Inbox V2' });
       expect(afterRollback.config).toMatchObject({ id: 'builtin-inbox-id', title: 'Inbox V1' });
+      expect(materializationEvents()).toEqual([]);
     });
   });
 
