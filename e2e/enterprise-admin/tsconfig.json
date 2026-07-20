@@ -11,7 +11,7 @@
     "target": "ES2020",
     "types": ["node", "@playwright/test"]
   },
-  "exclude": ["node_modules", "reports"],
+  "exclude": ["node_modules", "reports", "vitest.config.ts", "**/*.test.ts"],
   "extends": "../../tsconfig.json",
   "include": ["./**/*.ts", "./**/*.tsx"]
 }

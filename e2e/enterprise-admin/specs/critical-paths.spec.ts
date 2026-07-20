@@ -5,6 +5,7 @@ import { expect, test } from '@playwright/test';
 
 import { expectSignedIn, signInContext } from '../support/auth';
 import {
+  assertStableAdminSurface,
   captureEvidence,
   captureThemeDeviceMatrix,
   ensureEvidenceDir,
@@ -13,14 +14,31 @@ import {
 import { startEnterpriseAdminRuntime, type SuiteRuntime } from '../support/infrastructure';
 import {
   cleanupEnterpriseAdminSuite,
+  digestFingerprint,
+  type GlobalDbDigest,
   seedEnterpriseAdminSuite,
+  snapshotGlobalDbDigest,
   type SuiteSeed,
 } from '../support/seed';
 import { ADMIN_COPY, VIEWPORTS } from '../support/selectors';
-import { bodyHasForbidden, extractTrpcErrorCode, trpcMutation, trpcQuery } from '../support/trpc';
+import {
+  countUserSkillArtifacts,
+  induceSkillCatalogOutage,
+  type SkillOutageHandle,
+} from '../support/skillOutage';
+import {
+  ADMIN_SYSTEM_STATUS_ALLOWED_KEYS,
+  assertExactManagedResourceDenied,
+  assertExactPermissionDenied,
+  assertSafeProjection,
+  extractBatchData,
+  trpcMutation,
+  trpcQuery,
+} from '../support/trpc';
 
 let runtime: SuiteRuntime | undefined;
 let seed: SuiteSeed | undefined;
+let globalBefore: GlobalDbDigest | undefined;
 
 const reportLines: string[] = [];
 const log = (line: string) => {
@@ -28,20 +46,50 @@ const log = (line: string) => {
   console.log(line);
 };
 
+const parseManagedRevision = (json: unknown): number => {
+  const data = extractBatchData(json) as { baseRevision?: unknown };
+  if (typeof data?.baseRevision !== 'number' || !Number.isFinite(data.baseRevision)) {
+    throw new Error(
+      `baseRevision missing/invalid in managedResources.get: ${JSON.stringify(data)}`,
+    );
+  }
+  return data.baseRevision;
+};
+
+const parseManagedReadiness = (json: unknown): Record<string, boolean> => {
+  const data = extractBatchData(json) as { readiness?: Record<string, boolean> };
+  if (!data?.readiness || typeof data.readiness !== 'object') {
+    throw new Error('readiness missing in managedResources.get');
+  }
+  return data.readiness;
+};
+
 test.beforeAll(async () => {
   await rm(EVIDENCE_ROOT, { force: true, recursive: true });
   await ensureEvidenceDir();
   runtime = await startEnterpriseAdminRuntime();
-  seed = await seedEnterpriseAdminSuite(runtime.databaseUrl);
+  const seeded = await seedEnterpriseAdminSuite(runtime.databaseUrl);
+  seed = seeded.seed;
+  globalBefore = seeded.globalBefore;
   log(
-    `[enterprise-admin-e2e] namespace=${seed.namespace} app=${runtime.appUrl} mode=${runtime.mode}`,
+    `[enterprise-admin-e2e] namespace=${seed.namespace} app=${runtime.appUrl} mode=${runtime.mode} run=${runtime.runToken}`,
   );
 });
 
 test.afterAll(async () => {
   const failures: unknown[] = [];
   try {
-    if (runtime && seed) await cleanupEnterpriseAdminSuite(runtime.databaseUrl, seed);
+    if (runtime && seed) {
+      await cleanupEnterpriseAdminSuite(runtime.databaseUrl, seed, globalBefore);
+      if (globalBefore) {
+        const after = await snapshotGlobalDbDigest(runtime.databaseUrl);
+        // Namespaced user cleanup must not leave divergent global packages when we own restore.
+        // Isolated containers are destroyed next; external disposable must match snapshot.
+        if (runtime.mode === 'external') {
+          expect(digestFingerprint(after)).toBe(digestFingerprint(globalBefore));
+        }
+      }
+    }
   } catch (error) {
     failures.push(error);
   }
@@ -79,7 +127,6 @@ const requireRuntime = () => {
   return { runtime, seed };
 };
 
-// Keep scenarios ordered for shared runtime, but do not skip remaining cases after one failure.
 test.describe.configure({ mode: 'default' });
 
 test('ordinary user and workspace owner are denied /admin and admin APIs', async ({ browser }) => {
@@ -91,23 +138,24 @@ test('ordinary user and workspace owner are denied /admin and admin APIs', async
       viewport: VIEWPORTS.desktop,
     });
     try {
-      await signInContext(context, principal);
+      await signInContext(context, principal, rt.appUrl);
       await expectSignedIn(context.request);
 
       const access = await trpcQuery(context.request, 'admin.auth.getMyAccess');
       expect(access.ok, `${principal.roleLabel} getMyAccess http`).toBe(true);
-      expect(access.text).toContain('"hasAdminAccess":false');
+      const accessData = extractBatchData(access.json) as { hasAdminAccess?: boolean };
+      expect(accessData.hasAdminAccess).toBe(false);
 
       const system = await trpcQuery(context.request, 'admin.system.getStatus');
-      expect(system.ok, `${principal.roleLabel} system.getStatus must be denied`).toBe(false);
-      expect(bodyHasForbidden(system.text)).toBe(true);
+      expect(system.ok).toBe(false);
+      assertExactPermissionDenied(system);
 
       const page = await context.newPage();
       await page.goto('/admin');
-      await expect(page.getByRole('heading', { name: ADMIN_COPY.accessDeniedTitle })).toBeVisible({
-        timeout: 45_000,
+      await captureEvidence(page, `denied-${principal.roleLabel}-admin`, {
+        heading: ADMIN_COPY.accessDeniedTitle,
+        requiredTexts: [ADMIN_COPY.accessDeniedTitle],
       });
-      await captureEvidence(page, `denied-${principal.roleLabel}-admin`);
       await page.close();
       log(`denied ${principal.roleLabel}`);
     } finally {
@@ -123,45 +171,46 @@ test('super admin opens Admin Shell / System with safe projections', async ({ br
     viewport: VIEWPORTS.desktop,
   });
   try {
-    await signInContext(context, s.superAdmin);
+    await signInContext(context, s.superAdmin, rt.appUrl);
     await expectSignedIn(context.request);
 
     const access = await trpcQuery(context.request, 'admin.auth.getMyAccess');
     expect(access.ok).toBe(true);
-    expect(access.text).toContain('"hasAdminAccess":true');
-    expect(access.text).toMatch(/super_admin/);
+    const accessData = extractBatchData(access.json) as {
+      hasAdminAccess?: boolean;
+      roles?: Array<{ name?: string }>;
+    };
+    expect(accessData.hasAdminAccess).toBe(true);
+    expect(accessData.roles?.some((r) => r.name === 'super_admin')).toBe(true);
 
     const status = await trpcQuery(context.request, 'admin.system.getStatus');
     expect(status.ok, `getStatus failed: ${status.text.slice(0, 240)}`).toBe(true);
-    // Safe projection: no raw secrets / private endpoints
-    for (const forbidden of [
-      'secret-access-key',
-      'e2e-placeholder',
-      'VAULT_TOKEN',
-      'postgres:postgres',
-      KEY_FRAGMENT,
-    ]) {
-      expect(status.text).not.toContain(forbidden);
-    }
-    expect(status.text).toMatch(/featureFlags|platformAdmin|dependencies|build/);
+    const statusData = extractBatchData(status.json);
+    assertSafeProjection(statusData, { allowedKeys: ADMIN_SYSTEM_STATUS_ALLOWED_KEYS });
+    const flags = (statusData as { featureFlags?: { platformAdmin?: boolean } }).featureFlags;
+    expect(flags?.platformAdmin).toBe(true);
 
     const page = await context.newPage();
     await page.goto('/admin');
-    await expect(page.getByText(ADMIN_COPY.systemNav).first()).toBeVisible({ timeout: 60_000 });
-    await page.getByText(ADMIN_COPY.systemNav).first().click();
+    await expect(
+      page
+        .getByRole('link', { name: ADMIN_COPY.systemNav })
+        .or(page.getByText(ADMIN_COPY.systemNav, { exact: true }))
+        .first(),
+    ).toBeVisible({ timeout: 60_000 });
+    await page.getByText(ADMIN_COPY.systemNav, { exact: true }).first().click();
     await page.waitForURL(/\/admin\/system/, { timeout: 30_000 });
-    await expect(page.getByRole('heading', { name: ADMIN_COPY.systemTitle })).toBeVisible({
-      timeout: 45_000,
+    await captureEvidence(page, 'super-admin-system', {
+      heading: ADMIN_COPY.systemTitle,
+      requiredTexts: [ADMIN_COPY.systemTitle],
     });
-    await captureEvidence(page, 'super-admin-system');
+    // Dependency grid present on stable System page
+    await expect(page.getByRole('heading', { name: 'Dependencies' })).toBeVisible();
     log('super admin shell + system ok');
   } finally {
     await context.close();
   }
 });
-
-// Placeholder constant used only as a negative assertion token (not a real secret value under test).
-const KEY_FRAGMENT = 'enterprise-admin-e2e-auth-secret';
 
 test('auditor is read-only: dangerous job ops absent and operate API denied', async ({
   browser,
@@ -172,90 +221,112 @@ test('auditor is read-only: dangerous job ops absent and operate API denied', as
     viewport: VIEWPORTS.desktop,
   });
   try {
-    await signInContext(context, s.auditor);
+    await signInContext(context, s.auditor, rt.appUrl);
     await expectSignedIn(context.request);
 
     const access = await trpcQuery(context.request, 'admin.auth.getMyAccess');
     expect(access.ok).toBe(true);
-    expect(access.text).toContain('"hasAdminAccess":true');
-    expect(access.text).toMatch(/auditor/);
-    // Operate permission must not be present
-    expect(access.text).not.toContain('platform_system:operate:all');
+    const accessData = extractBatchData(access.json) as {
+      hasAdminAccess?: boolean;
+      permissions?: string[];
+      roles?: Array<{ name?: string }>;
+    };
+    expect(accessData.hasAdminAccess).toBe(true);
+    expect(accessData.roles?.some((r) => r.name === 'auditor')).toBe(true);
+    expect(accessData.permissions ?? []).not.toContain('platform_system:operate:all');
 
     const readStatus = await trpcQuery(context.request, 'admin.system.getStatus');
     expect(readStatus.ok, `auditor read status: ${readStatus.text.slice(0, 200)}`).toBe(true);
+    assertSafeProjection(extractBatchData(readStatus.json), {
+      allowedKeys: ADMIN_SYSTEM_STATUS_ALLOWED_KEYS,
+    });
 
     const retry = await trpcMutation(context.request, 'admin.system.retryJob', {
       expectedStatus: 'failed',
       jobId: '00000000-0000-0000-0000-000000000001',
       reason: 'auditor must not retry',
     });
-    expect(retry.ok).toBe(false);
-    expect(bodyHasForbidden(retry.text) || extractTrpcErrorCode(retry.text)).toBeTruthy();
+    assertExactPermissionDenied(retry);
 
     const cancel = await trpcMutation(context.request, 'admin.system.cancelJob', {
       expectedStatus: 'running',
       jobId: '00000000-0000-0000-0000-000000000002',
       reason: 'auditor must not cancel',
     });
-    expect(cancel.ok).toBe(false);
-    expect(bodyHasForbidden(cancel.text) || extractTrpcErrorCode(cancel.text)).toBeTruthy();
+    assertExactPermissionDenied(cancel);
 
     const page = await context.newPage();
     await page.goto('/admin/system');
-    await expect(page.getByRole('heading', { name: ADMIN_COPY.systemTitle })).toBeVisible({
-      timeout: 60_000,
+    await captureEvidence(page, 'auditor-system-readonly', {
+      heading: ADMIN_COPY.systemTitle,
+      requiredTexts: [ADMIN_COPY.systemJobsReadOnly, ADMIN_COPY.systemTitle],
     });
-    await expect(page.getByText(ADMIN_COPY.systemJobsReadOnly)).toBeVisible({ timeout: 30_000 });
-    // Dangerous action buttons must not render for read-only operators
     await expect(page.getByRole('button', { name: /^Retry$/i })).toHaveCount(0);
     await expect(page.getByRole('button', { name: /^Cancel$/i })).toHaveCount(0);
-    await captureEvidence(page, 'auditor-system-readonly');
+    // Stable jobs table / panel present
+    await expect(page.getByRole('heading', { name: 'Recent jobs' })).toBeVisible();
     log('auditor read-only ok');
   } finally {
     await context.close();
   }
 });
 
-test('skill catalog managed policy fails closed for legacy skill mutations', async ({
-  browser,
-}) => {
+test('skill catalog outage fails closed for legacy skill mutations', async ({ browser }) => {
   const { runtime: rt, seed: s } = requireRuntime();
+  let outage: SkillOutageHandle | undefined;
   const context = await browser.newContext({ baseURL: rt.appUrl });
   try {
-    // Super admin still cannot bypass managed guard on ordinary skill routers
-    await signInContext(context, s.superAdmin);
+    await signInContext(context, s.superAdmin, rt.appUrl);
     await expectSignedIn(context.request);
 
-    // agentSkills.create is a classified legacy mutation under managed skills.
-    const create = await trpcMutation(context.request, 'agentSkills.create', {
-      content: '# Skill\n\nBlocked by managed catalog fail-closed.',
-      description: 'Must not install while skills are platform-managed',
-      identifier: `blocked-skill-${s.namespace}`,
-      name: 'Blocked Skill',
-    });
-    expect(create.ok, 'managed skill create must fail closed').toBe(false);
-    expect(create.text).toMatch(/RESOURCE_MANAGED_BY_PLATFORM|FORBIDDEN/);
+    const beforeArtifacts = await countUserSkillArtifacts(rt.databaseUrl, s.superAdmin.id);
 
-    const ordinaryContext = await browser.newContext({ baseURL: rt.appUrl });
-    try {
-      await signInContext(ordinaryContext, s.ordinary);
-      const ordinaryCreate = await trpcMutation(ordinaryContext.request, 'agentSkills.create', {
-        content: '# Skill\n\nBlocked for ordinary principal.',
-        description: 'Ordinary user must not write managed skills',
-        identifier: `blocked-skill-user-${s.namespace}`,
-        name: 'Blocked Skill User',
-      });
-      expect(ordinaryCreate.ok).toBe(false);
-      // Access gate or managed guard — either is a closed failure path.
-      expect(ordinaryCreate.text).toMatch(
-        /RESOURCE_MANAGED_BY_PLATFORM|PLATFORM_ACCESS_NOT_GRANTED|FORBIDDEN/,
-      );
-    } finally {
-      await ordinaryContext.close();
+    outage = await induceSkillCatalogOutage({
+      databaseUrl: rt.databaseUrl,
+      redisUrl: rt.redisUrl,
+    });
+
+    // Poll readiness until the broken skill pointer is observed (1s cache TTL + epoch bump).
+    let readiness: Record<string, boolean> | undefined;
+    for (let attempt = 0; attempt < 30; attempt++) {
+      const readinessProbe = await trpcQuery(context.request, 'admin.managedResources.get');
+      expect(readinessProbe.ok, readinessProbe.text.slice(0, 300)).toBe(true);
+      readiness = parseManagedReadiness(readinessProbe.json);
+      if (readiness.skills === false) break;
+      await new Promise((r) => setTimeout(r, 400));
     }
-    log('skill catalog fail-closed ok');
+    expect(
+      readiness?.skills,
+      `expected skills readiness false, got ${JSON.stringify(readiness)}`,
+    ).toBe(false);
+
+    const create = await trpcMutation(context.request, 'agentSkills.create', {
+      content: '# Skill\n\nBlocked by skill catalog outage fail-closed.',
+      description: 'Must not install while skill catalog is out',
+      identifier: `blocked-skill-${s.namespace}`,
+      name: 'Blocked Skill Outage',
+    });
+    assertExactManagedResourceDenied(create);
+
+    const afterArtifacts = await countUserSkillArtifacts(rt.databaseUrl, s.superAdmin.id);
+    expect(afterArtifacts.agentSkills).toBe(beforeArtifacts.agentSkills);
+    expect(afterArtifacts.documents).toBe(beforeArtifacts.documents);
+
+    await outage.restore();
+    outage = undefined;
+
+    const restored = await trpcQuery(context.request, 'admin.managedResources.get');
+    expect(restored.ok).toBe(true);
+    const readinessAfter = parseManagedReadiness(restored.json);
+    expect(readinessAfter.skills).toBe(true);
+
+    log('skill catalog outage fail-closed + restore ok');
   } finally {
+    if (outage) {
+      await outage.restore().catch((error) => {
+        console.error('[skill-outage] restore failed', error);
+      });
+    }
     await context.close();
   }
 });
@@ -269,92 +340,73 @@ test('managed resources confirmation: reason required and cancel does not publis
     viewport: VIEWPORTS.desktop,
   });
   try {
-    await signInContext(context, s.superAdmin);
+    await signInContext(context, s.superAdmin, rt.appUrl);
     await expectSignedIn(context.request);
 
-    // Baseline published revision via API before UI mutation attempts.
     const before = await trpcQuery(context.request, 'admin.managedResources.get');
     expect(before.ok, `managedResources.get failed: ${before.text.slice(0, 200)}`).toBe(true);
-    const beforeRevisionMatch = before.text.match(/"baseRevision"\s*:\s*(\d+)/);
-    const beforeRevision = beforeRevisionMatch ? Number(beforeRevisionMatch[1]) : null;
+    const beforeRevision = parseManagedRevision(before.json);
 
     const page = await context.newPage();
     await page.goto('/admin/managed-resources');
-    // Wait for loaded page body (not sidebar/nav shell text alone).
-    await expect(page.getByRole('heading', { name: 'Managed resources' })).toBeVisible({
-      timeout: 90_000,
+    await assertStableAdminSurface(page, {
+      heading: 'Managed resources',
+      requiredTexts: ['Change reason'],
     });
-    await expect(page.getByText('Change reason', { exact: true })).toBeVisible({
-      timeout: 30_000,
-    });
-    // Switches must be interactive for super_admin with policy:update.
+
     const switches = page.getByRole('switch');
     await expect(switches.first()).toBeVisible({ timeout: 30_000 });
     await switches.first().click();
-    await expect(page.getByText('Unsaved changes')).toBeVisible({ timeout: 15_000 });
-
-    // Primary save without reason → hard validation (exact product copy).
-    const saveButton = page.getByRole('button', { name: /^Save draft$|^Save$|^Retry save$/i });
-    await expect(saveButton).toBeVisible({ timeout: 15_000 });
-    await saveButton.click();
-    await expect(page.getByText('Enter a reason (1–2000 characters).')).toBeVisible({
-      timeout: 10_000,
+    await expect(page.getByText('Unsaved changes', { exact: true })).toBeVisible({
+      timeout: 15_000,
     });
 
-    // Fill reason then abandon via leave confirmation (do not publish).
+    const saveButton = page.getByRole('button', { name: 'Save draft' });
+    await expect(saveButton).toBeVisible({ timeout: 15_000 });
+    await saveButton.click();
+    await expect(
+      page.getByText('Enter a reason (1–2000 characters).', { exact: true }),
+    ).toBeVisible({ timeout: 10_000 });
+
     const reason = page.getByPlaceholder('Explain why this policy is changing…');
     await expect(reason).toBeVisible();
     await reason.fill('e2e confirmation cancel — do not publish');
 
-    // Dirty navigation should open the leave confirm modal; dismiss it to stay, then leave via discard path.
-    const leaveClick = page.getByRole('link', { name: ADMIN_COPY.systemNav }).first().click();
-    const leaveModal = page.getByRole('dialog').or(page.getByText(/unsaved|leave|discard/i));
-    // Prefer modal cancel/stay if present; otherwise force system navigation after brief wait.
-    try {
-      await expect(leaveModal.first()).toBeVisible({ timeout: 5_000 });
-      const stay = page.getByRole('button', { name: /Stay|Cancel|Keep editing|继续编辑/i });
-      if ((await stay.count()) > 0) {
-        await stay.first().click();
-        await expect(page.getByRole('heading', { name: 'Managed resources' })).toBeVisible();
-      }
-    } catch {
-      // Modal may not appear for same-shell client routing; continue with explicit discard.
-    }
-    await leaveClick.catch(() => undefined);
+    // Leave dialog: Stay
+    await page.getByText(ADMIN_COPY.systemNav, { exact: true }).first().click();
+    await expect(page.getByRole('dialog')).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText('Unsaved managed resource changes', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Keep editing' }).click();
+    await expect(page.getByRole('heading', { name: 'Managed resources' })).toBeVisible();
+    await expect(page.getByText('Unsaved changes', { exact: true })).toBeVisible();
 
-    // Explicit discard of local draft if still on page, then leave without publish.
-    const discard = page.getByRole('button', { name: /Discard|丢弃/i });
-    if (
-      (await discard.count()) > 0 &&
-      (await discard
-        .first()
-        .isVisible()
-        .catch(() => false))
-    ) {
-      await discard.first().click();
-    }
-
-    await page.goto('/admin/system');
+    // Leave dialog: Leave without saving
+    await page.getByText(ADMIN_COPY.systemNav, { exact: true }).first().click();
+    await expect(page.getByRole('dialog')).toBeVisible({ timeout: 10_000 });
+    await page.getByRole('button', { name: 'Leave without saving' }).click();
+    await page.waitForURL(/\/admin\/system/, { timeout: 30_000 });
     await expect(page.getByRole('heading', { name: ADMIN_COPY.systemTitle })).toBeVisible({
       timeout: 45_000,
     });
 
-    // Publish did not advance the managed-resources revision.
     const after = await trpcQuery(context.request, 'admin.managedResources.get');
     expect(after.ok).toBe(true);
-    if (beforeRevision !== null) {
-      const afterRevisionMatch = after.text.match(/"baseRevision"\s*:\s*(\d+)/);
-      const afterRevision = afterRevisionMatch ? Number(afterRevisionMatch[1]) : null;
-      expect(afterRevision).toBe(beforeRevision);
-    }
+    const afterRevision = parseManagedRevision(after.json);
+    expect(afterRevision).toBe(beforeRevision);
 
-    await page.goto('/admin/managed-resources');
-    await expect(page.getByRole('heading', { name: 'Managed resources' })).toBeVisible({
-      timeout: 60_000,
+    // Leave-without-saving does not auto-clear localStorage recovery draft; clear the
+    // product key so re-entry reflects server state (dirty must not reappear).
+    await page.evaluate(() => {
+      window.localStorage.removeItem('aihub.admin.managedResources.draft');
     });
-    await expect(page.getByText('Change reason', { exact: true })).toBeVisible();
-    await captureEvidence(page, 'managed-resources-confirmation');
-    log('confirmation: reason-required + no revision bump after cancel path');
+    await page.goto('/admin/managed-resources');
+    await captureEvidence(page, 'managed-resources-confirmation', {
+      heading: 'Managed resources',
+      requiredTexts: ['Change reason'],
+    });
+    await expect(page.getByText('Unsaved changes', { exact: true })).toHaveCount(0);
+    await expect(page.getByText('No unsaved changes', { exact: true })).toBeVisible();
+    log('confirmation: reason-required + stay + leave + revision unchanged');
   } finally {
     await context.close();
   }
@@ -364,22 +416,26 @@ test('evidence matrix: light/dark × desktop/mobile with stable waits', async ({
   const { runtime: rt, seed: s } = requireRuntime();
   const bootstrap = await browser.newContext({ baseURL: rt.appUrl });
   try {
-    await signInContext(bootstrap, s.superAdmin);
+    await signInContext(bootstrap, s.superAdmin, rt.appUrl);
     const cookies = await bootstrap.cookies();
     const files = await captureThemeDeviceMatrix({
       baseURL: rt.appUrl,
       browser,
       cookies,
-      prepare: async (page) => {
+      prepare: async (page, _theme, device) => {
         await page.goto('/admin/system');
         await page.waitForLoadState('domcontentloaded');
-        // Mobile → Desktop required; desktop → System heading (not sidebar-only).
-        const surface = page
-          .getByRole('heading', { name: ADMIN_COPY.mobileUnsupportedTitle })
-          .or(page.getByRole('heading', { name: ADMIN_COPY.accessDeniedTitle }))
-          .or(page.getByRole('heading', { name: ADMIN_COPY.featureOffTitle }))
-          .or(page.getByRole('heading', { name: ADMIN_COPY.systemTitle }));
-        await expect(surface.first()).toBeVisible({ timeout: 90_000 });
+        if (device === 'mobile') {
+          await assertStableAdminSurface(page, {
+            forbiddenTexts: [ADMIN_COPY.systemTitle, ADMIN_COPY.accessDeniedTitle],
+            heading: ADMIN_COPY.mobileUnsupportedTitle,
+          });
+        } else {
+          await assertStableAdminSurface(page, {
+            forbiddenTexts: [ADMIN_COPY.mobileUnsupportedTitle, ADMIN_COPY.accessDeniedTitle],
+            heading: ADMIN_COPY.systemTitle,
+          });
+        }
       },
       slug: 'admin-system',
     });
