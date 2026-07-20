@@ -121,9 +121,9 @@ const ERROR_CODE_CLASSES = {
 } as const satisfies Readonly<Record<string, EnterpriseObservabilityErrorClass>>;
 
 const stableErrorCode = (error: unknown): keyof typeof ERROR_CODE_CLASSES | undefined => {
-  if (!(error instanceof Error) || !('code' in error)) return undefined;
-  const code = error.code;
-  return typeof code === 'string' && code in ERROR_CODE_CLASSES
+  if (!(error instanceof Error) || !Object.hasOwn(error, 'code')) return undefined;
+  const code: unknown = Object.getOwnPropertyDescriptor(error, 'code')?.value;
+  return typeof code === 'string' && Object.hasOwn(ERROR_CODE_CLASSES, code)
     ? (code as keyof typeof ERROR_CODE_CLASSES)
     : undefined;
 };
