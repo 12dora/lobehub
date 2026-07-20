@@ -1,8 +1,9 @@
 import type { AnyColumn, SQL } from 'drizzle-orm';
-import { and, asc, eq, inArray, lte, or, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, lte, notInArray, or, sql } from 'drizzle-orm';
 
 import {
   type NewPlatformJob,
+  PLATFORM_JOB_LEDGER_TYPES,
   type PlatformJobItem,
   platformJobs,
   type PlatformJobStatus,
@@ -145,12 +146,15 @@ export class PlatformJobModel {
    */
   getBacklogSnapshot = async (): Promise<PlatformJobBacklogSnapshot> => {
     const databaseNow = sql`statement_timestamp()`;
-    const pending = eq(platformJobs.status, 'pending');
+    const isExecutableJob = notInArray(platformJobs.type, [...PLATFORM_JOB_LEDGER_TYPES]);
+    const pending = and(isExecutableJob, eq(platformJobs.status, 'pending'))!;
     const reservedExpired = and(
+      isExecutableJob,
       eq(platformJobs.status, 'reserved'),
       lte(platformJobs.leaseUntil, databaseNow),
     )!;
     const runningLeaseExpired = and(
+      isExecutableJob,
       eq(platformJobs.status, 'running'),
       lte(platformJobs.leaseUntil, databaseNow),
     )!;
