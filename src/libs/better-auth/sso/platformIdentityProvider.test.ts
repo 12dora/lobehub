@@ -85,7 +85,7 @@ describe('platform identity provider Better Auth adapter', () => {
   it('falls back to preferred_username and keeps absent optional claims nullable', async () => {
     const config = buildPlatformIdentityProvider(provider, 'https://app.example.test');
     expect(
-      config.mapProfileToUser!({
+      await config.mapProfileToUser!({
         employee_id: 'employee-2',
         mail: 'grace@example.test',
         preferred_username: 'grace',

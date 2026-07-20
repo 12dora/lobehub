@@ -1,15 +1,11 @@
 import { randomBytes } from 'node:crypto';
 
-import type {
-  EnterpriseOidcFailureCategory,
-  EnterpriseOidcLoginStage,
-} from '@lobechat/observability-otel/modules/enterprise-platform';
+import type { EnterpriseOidcFailureCategory } from '@lobechat/observability-otel/modules/enterprise-platform';
 import type { PlatformOidcDiscoveryMetadata } from '@lobechat/types';
 import { getOAuthState } from 'better-auth/api';
 import type { GenericOAuthConfig } from 'better-auth/plugins';
 import { z } from 'zod';
 
-import { observeEnterprisePlatformEvent } from '@/server/enterprise/observability';
 import {
   SafeOutboundHttpClient,
   SafeOutboundHttpError,
@@ -18,6 +14,10 @@ import { verifyPlatformOidcIdToken } from '@/server/enterprise/services/identity
 import type { PublishedIdentityProviderPayload } from '@/server/enterprise/services/identityProvider/publicationService';
 import { exchangePlatformOidcAuthorizationCode } from '@/server/enterprise/services/identityProvider/tokenExchange';
 
+import {
+  markPlatformOidcLoginStage,
+  observePlatformOidcLoginFailure,
+} from './platformIdentityProviderObservation';
 import {
   createPlatformOidcNonceBinding,
   PLATFORM_OIDC_NONCE_HASH_STATE_KEY,
@@ -32,26 +32,6 @@ const USERINFO_MAX_BYTES = 64 * 1024;
 // it satisfies that structural contract and fails closed if Better Auth ever bypasses getToken.
 const BETTER_AUTH_UNUSED_TOKEN_ENDPOINT = 'https://platform-oidc-token.invalid/';
 const userInfoSchema = z.record(z.string(), z.unknown());
-
-const observeOidcLoginFailure = (
-  stage: EnterpriseOidcLoginStage,
-  failureCategory: EnterpriseOidcFailureCategory,
-): void => {
-  observeEnterprisePlatformEvent({
-    failureCategory,
-    outcome: 'failure',
-    stage,
-    type: 'oidc_login',
-  });
-};
-
-const observeOidcLoginSuccess = (): void => {
-  observeEnterprisePlatformEvent({
-    outcome: 'success',
-    stage: 'authenticated',
-    type: 'oidc_login',
-  });
-};
 
 const isNetworkError = (error: unknown): boolean => {
   const visited = new Set<Error>();
@@ -139,10 +119,6 @@ export const buildPlatformIdentityProvider = (
     throw new Error('PLATFORM_IDENTITY_PROVIDER_INVALID_SNAPSHOT');
   }
   const redirectURI = `${appUrl}/api/auth/oauth2/callback/${provider.providerKey}`;
-  // Correlate only profiles that completed the trusted sign-in userinfo path. Weak identity keeps
-  // concurrent sign-in/link callbacks isolated without retaining abandoned profile objects.
-  const observedSignInProfiles = new WeakSet<Record<string, unknown>>();
-
   return {
     authorizationUrl: provider.oidcMetadata.authorizationEndpoint,
     authorizationUrlParams: (ctx) => {
@@ -164,14 +140,7 @@ export const buildPlatformIdentityProvider = (
     disableImplicitSignUp: !provider.autoProvision,
     disableSignUp: !provider.autoProvision,
     getToken: async ({ code, codeVerifier, redirectURI: callbackRedirectURI }) => {
-      let observedSignIn = false;
-      try {
-        const oauthState = await readOAuthState();
-        observedSignIn = oauthState !== null && oauthState.link === undefined;
-      } catch {
-        // Observability classification is best-effort and must not affect the token exchange.
-      }
-
+      await markPlatformOidcLoginStage('token_exchange');
       try {
         const token = await exchangePlatformOidcAuthorizationCode({
           clientId: provider.clientId,
@@ -197,39 +166,36 @@ export const buildPlatformIdentityProvider = (
           tokenType: token.token_type ?? 'Bearer',
         };
       } catch (error) {
-        if (observedSignIn) observeOidcLoginFailure('token_exchange', tokenFailureCategory(error));
+        await markPlatformOidcLoginStage('token_exchange', tokenFailureCategory(error));
+        await observePlatformOidcLoginFailure();
         throw error;
       }
     },
     getUserInfo: async (tokens) => {
       if (!tokens.idToken || !tokens.accessToken) {
-        try {
-          const oauthState = await readOAuthState();
-          if (oauthState !== null && oauthState.link === undefined) {
-            observeOidcLoginFailure('token_exchange', 'token_invalid');
-          }
-        } catch {
-          // Preserve the original token validation failure if state observation is unavailable.
-        }
+        await markPlatformOidcLoginStage('token_exchange', 'token_invalid');
+        await observePlatformOidcLoginFailure();
         throw new Error('PLATFORM_OIDC_TOKEN_INVALID');
       }
       const oauthState = await readOAuthState();
-      const observedSignIn = oauthState !== null && oauthState.link === undefined;
       const expectedNonceHash = oauthState?.[PLATFORM_OIDC_NONCE_HASH_STATE_KEY];
       if (
         typeof expectedNonceHash !== 'string' ||
         !/^[\da-f]{64}$/.test(expectedNonceHash) ||
         oauthState?.[PLATFORM_OIDC_PROVIDER_STATE_KEY] !== provider.providerKey
       ) {
-        if (observedSignIn) observeOidcLoginFailure('state_validation', 'state_invalid');
+        await markPlatformOidcLoginStage('state_validation', 'state_invalid');
+        await observePlatformOidcLoginFailure();
         throw new Error('PLATFORM_OIDC_NONCE_INVALID');
       }
 
       const metadata = provider.oidcMetadata;
       if (!metadata.userinfoEndpoint) {
-        if (observedSignIn) observeOidcLoginFailure('userinfo', 'userinfo_invalid');
+        await markPlatformOidcLoginStage('userinfo', 'userinfo_invalid');
+        await observePlatformOidcLoginFailure();
         throw new Error('PLATFORM_OIDC_USERINFO_REQUIRED');
       }
+      await markPlatformOidcLoginStage('id_token_verification');
       let idTokenClaims: Awaited<ReturnType<typeof verifyPlatformOidcIdToken>>;
       try {
         idTokenClaims = await verifyPlatformOidcIdToken({
@@ -240,11 +206,11 @@ export const buildPlatformIdentityProvider = (
           outbound,
         });
       } catch (error) {
-        if (observedSignIn) {
-          observeOidcLoginFailure('id_token_verification', idTokenFailureCategory(error));
-        }
+        await markPlatformOidcLoginStage('id_token_verification', idTokenFailureCategory(error));
+        await observePlatformOidcLoginFailure();
         throw error;
       }
+      await markPlatformOidcLoginStage('userinfo');
       let response: Awaited<ReturnType<SafeOutboundHttpClient['fetch']>>;
       try {
         response = await outbound.fetch(metadata.userinfoEndpoint, {
@@ -259,7 +225,8 @@ export const buildPlatformIdentityProvider = (
           timeoutMs: USERINFO_TIMEOUT_MS,
         });
       } catch (error) {
-        if (observedSignIn) observeOidcLoginFailure('userinfo', 'network_failure');
+        await markPlatformOidcLoginStage('userinfo', 'network_failure');
+        await observePlatformOidcLoginFailure();
         throw error;
       }
       const contentType = response.headers
@@ -272,19 +239,22 @@ export const buildPlatformIdentityProvider = (
         response.truncated ||
         (contentType !== 'application/json' && !contentType?.endsWith('+json'))
       ) {
-        if (observedSignIn) observeOidcLoginFailure('userinfo', 'userinfo_invalid');
+        await markPlatformOidcLoginStage('userinfo', 'userinfo_invalid');
+        await observePlatformOidcLoginFailure();
         throw new Error('PLATFORM_OIDC_USERINFO_INVALID');
       }
       let userInfo: z.infer<typeof userInfoSchema>;
       try {
         userInfo = userInfoSchema.parse(await response.json());
       } catch (error) {
-        if (observedSignIn) observeOidcLoginFailure('userinfo', 'userinfo_invalid');
+        await markPlatformOidcLoginStage('userinfo', 'userinfo_invalid');
+        await observePlatformOidcLoginFailure();
         throw error;
       }
       const userInfoSubject = firstStringClaim(userInfo, ['sub']);
       if (userInfoSubject !== idTokenClaims.sub) {
-        if (observedSignIn) observeOidcLoginFailure('userinfo', 'subject_mismatch');
+        await markPlatformOidcLoginStage('userinfo', 'subject_mismatch');
+        await observePlatformOidcLoginFailure();
         throw new Error('PLATFORM_OIDC_USERINFO_SUBJECT_MISMATCH');
       }
 
@@ -298,13 +268,12 @@ export const buildPlatformIdentityProvider = (
         id: idTokenClaims.sub,
         sub: idTokenClaims.sub,
       };
-      if (observedSignIn) observedSignInProfiles.add(profile);
       tokens.idToken = undefined;
       return profile;
     },
     issuer: provider.issuer,
-    mapProfileToUser: (profile) => {
-      const observedSignIn = observedSignInProfiles.delete(profile);
+    mapProfileToUser: async (profile) => {
+      await markPlatformOidcLoginStage('authenticated');
       try {
         const subject = firstStringClaim(profile, provider.claimMapping.subject);
         const name = firstStringClaim(profile, [
@@ -322,10 +291,10 @@ export const buildPlatformIdentityProvider = (
           image: firstStringClaim(profile, provider.claimMapping.picture),
           name,
         } satisfies PlatformIdentityProviderUser;
-        if (observedSignIn) observeOidcLoginSuccess();
         return user;
       } catch (error) {
-        if (observedSignIn) observeOidcLoginFailure('authenticated', 'claim_invalid');
+        await markPlatformOidcLoginStage('authenticated', 'claim_invalid');
+        await observePlatformOidcLoginFailure();
         throw error;
       }
     },
