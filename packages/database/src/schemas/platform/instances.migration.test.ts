@@ -26,7 +26,8 @@ describe('M14 platform instance revision migration', () => {
     );
     expect(migrationSql).toContain('DROP CONSTRAINT IF EXISTS');
     expect(migrationSql).toContain('CREATE INDEX IF NOT EXISTS');
-    expect(migrationSql.match(/DEFAULT clock_timestamp\(\)/g)).toHaveLength(3);
+    expect(migrationSql.match(/DEFAULT statement_timestamp\(\)/g)).toHaveLength(2);
+    expect(migrationSql.match(/DEFAULT clock_timestamp\(\)/g)).toHaveLength(1);
     expect(migrationSql).not.toMatch(/DROP\s+(?:TABLE|COLUMN)|DELETE\s+FROM|(?:^|\n)UPDATE\s+/i);
   });
 

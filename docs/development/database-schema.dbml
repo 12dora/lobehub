@@ -2251,8 +2251,8 @@ table platform_identity_providers {
 
 table platform_instance_heartbeats {
   instance_id varchar(64) [pk, not null]
-  last_heartbeat_at "timestamp with time zone" [not null, default: `clock_timestamp()`]
-  started_at "timestamp with time zone" [not null, default: `clock_timestamp()`]
+  last_heartbeat_at "timestamp with time zone" [not null, default: `statement_timestamp()`]
+  started_at "timestamp with time zone" [not null, default: `statement_timestamp()`]
 
   indexes {
     last_heartbeat_at [name: 'platform_instance_heartbeats_freshness_idx']
