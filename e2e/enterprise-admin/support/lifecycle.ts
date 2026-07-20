@@ -124,20 +124,66 @@ export const isProcessGroupAlive = (pgid: number | undefined): boolean => {
 };
 
 /**
- * Narrow scan of members of an owned process group (pgid). Uses `pgrep -g` only —
- * does not scan or kill unrelated user processes.
+ * Narrow scan of members of an owned process group (pgid).
+ * - pgrep exit 1 → no matches (empty)
+ * - ENOENT / permission / other tooling failures → verified `ps` fallback or fail loud
+ * Never silently returns empty on tooling failure.
  */
 export const listPidsInProcessGroup = async (pgid: number): Promise<number[]> => {
-  try {
-    const { stdout } = await execute('pgrep', ['-g', String(pgid)]);
-    return String(stdout)
+  const parsePgrep = (stdout: string): number[] =>
+    String(stdout)
       .split('\n')
       .map((s) => Number(s.trim()))
       .filter((n) => Number.isFinite(n) && n > 0);
-  } catch {
-    // pgrep exits 1 when no matches
-    return [];
+
+  const viaPs = async (): Promise<number[]> => {
+    const { stdout } = await execute('ps', ['-ax', '-o', 'pid=,pgid=']);
+    const out: number[] = [];
+    for (const line of String(stdout).split('\n')) {
+      const parts = line.trim().split(/\s+/);
+      if (parts.length < 2) continue;
+      const pid = Number(parts[0]);
+      const group = Number(parts[1]);
+      if (group === pgid && Number.isFinite(pid) && pid > 0) out.push(pid);
+    }
+    return out;
+  };
+
+  try {
+    const { stdout } = await execute('pgrep', ['-g', String(pgid)]);
+    return parsePgrep(String(stdout));
+  } catch (error: unknown) {
+    const err = error as { code?: string | number; status?: number; errno?: string };
+    // pgrep: exit status 1 means no process matched
+    if (err?.code === 1 || err?.status === 1) {
+      return [];
+    }
+    // Tooling failure (ENOENT, EACCES, etc.) — try portable ps filtered to exact PGID
+    try {
+      return await viaPs();
+    } catch (psError) {
+      throw new Error(
+        `failed to enumerate process group ${pgid}: pgrep error=${String(error)}; ps fallback error=${String(psError)}`,
+        { cause: psError },
+      );
+    }
   }
+};
+
+/** Test seam: force listPids path (null = normal). */
+let listPidsInProcessGroupOverride: null | ((pgid: number) => Promise<number[]>) = null;
+
+export const setListPidsInProcessGroupOverride = (
+  fn: null | ((pgid: number) => Promise<number[]>),
+): void => {
+  listPidsInProcessGroupOverride = fn;
+};
+
+export const listPidsInProcessGroupForTests = async (pgid: number): Promise<number[]> => {
+  if (listPidsInProcessGroupOverride) {
+    return listPidsInProcessGroupOverride(pgid);
+  }
+  return listPidsInProcessGroup(pgid);
 };
 
 /** Refresh descendant/PGID evidence for a detached group leader while it may still be running. */
@@ -149,7 +195,7 @@ export const refreshOwnedProcessGroupEvidence = async (
   if (!state.evidenceLeaders.includes(leaderPid)) state.evidenceLeaders.push(leaderPid);
   if (!state.evidencePgids.includes(pgid)) state.evidencePgids.push(pgid);
   if (!state.evidencePids.includes(leaderPid)) state.evidencePids.push(leaderPid);
-  const members = await listPidsInProcessGroup(pgid);
+  const members = await listPidsInProcessGroupForTests(pgid);
   for (const pid of members) {
     if (!state.evidencePids.includes(pid)) state.evidencePids.push(pid);
     if (pid !== leaderPid && !state.evidenceDescendants.includes(pid)) {
