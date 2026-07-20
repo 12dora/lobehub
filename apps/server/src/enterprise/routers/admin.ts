@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
+import type { LobeChatDatabase } from '@/database/type';
 import { authedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 
@@ -16,7 +17,7 @@ import { assertRecentReauth } from '../guards/reauth';
 import { AdminUserNotFoundError, AdminUserService } from '../services/adminUserService';
 import { ensureAiCatalogReadinessRegistered } from '../services/aiCatalog';
 import { ensureConnectorCatalogReadinessRegistered } from '../services/connectorCatalog/runtimeReadiness';
-import { EasyauthSyncService } from '../services/easyauthSync';
+import { EasyauthSyncService, normalizeEasyauthSyncReason } from '../services/easyauthSync';
 import { PlatformAuditService } from '../services/platformAudit';
 import { LastSuperAdminError, PlatformRbacService } from '../services/platformRbac';
 import { ensureSkillCatalogReadinessRegistered } from '../services/skillCatalog';
@@ -37,6 +38,49 @@ const adminBase = authedProcedure.use(serverDatabase).use(withActiveUser());
 ensureAiCatalogReadinessRegistered();
 ensureConnectorCatalogReadinessRegistered();
 ensureSkillCatalogReadinessRegistered();
+
+const EASYAUTH_INVALID_REASON_AUDIT_REASON = 'easyauth_sync_invalid_reason';
+
+const safeEasyauthReauthReason = (reason: string): string => {
+  try {
+    return normalizeEasyauthSyncReason(reason);
+  } catch {
+    return EASYAUTH_INVALID_REASON_AUDIT_REASON;
+  }
+};
+
+const assertEasyauthDangerousReauth = async (params: {
+  actorUserId: string;
+  authenticatedAt?: Date | null;
+  authMethod?: Parameters<typeof assertRecentReauth>[0]['authMethod'];
+  reason: string;
+  serverDB: LobeChatDatabase;
+  targetId: string;
+}) => {
+  try {
+    assertRecentReauth({
+      authenticatedAt: params.authenticatedAt,
+      authMethod: params.authMethod,
+    });
+  } catch (error) {
+    try {
+      await new PlatformAuditService(params.serverDB).append({
+        action: 'admin.easyauth.triggerSync',
+        actorUserId: params.actorUserId,
+        afterDiff: { error: 'reauth_required' },
+        reason: params.reason,
+        result: 'denied',
+        targetId: params.targetId,
+        targetType: 'user',
+      });
+    } catch (auditError) {
+      console.error('[admin.easyauth] reauth denied audit unavailable', {
+        errorClass: auditError instanceof Error ? auditError.name : 'UnknownError',
+      });
+    }
+    throw error;
+  }
+};
 
 export const adminAuthRouter = router({
   /**
@@ -174,6 +218,14 @@ export const adminEasyauthRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
+      await assertEasyauthDangerousReauth({
+        actorUserId: ctx.userId!,
+        authenticatedAt: ctx.authenticatedAt,
+        authMethod: ctx.authMethod,
+        reason: safeEasyauthReauthReason(input.reason),
+        serverDB: ctx.serverDB,
+        targetId: input.userId,
+      });
       const service = new EasyauthSyncService(ctx.serverDB);
       return service.syncUser({
         actorUserId: ctx.userId!,

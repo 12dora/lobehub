@@ -112,6 +112,15 @@ const assignmentsRouter = router({
     .output(adminPlatformAgentAssignmentRemoveOutputSchema)
     .mutation(async ({ ctx, input }) => {
       assertAgentFeatureEnabled();
+      await assertAgentDangerousReauth({
+        action: 'admin.agents.assignments.remove',
+        actorUserId: ctx.userId!,
+        authenticatedAt: ctx.authenticatedAt,
+        authMethod: ctx.authMethod,
+        reason: input.reason,
+        serverDB: ctx.serverDB,
+        targetId: input.agentId,
+      });
       try {
         return await new PlatformAgentAdminService(ctx.serverDB).removeAssignment(
           ctx.userId!,
@@ -128,6 +137,15 @@ const assignmentsRouter = router({
     .output(adminPlatformAgentAssignmentUpsertOutputSchema)
     .mutation(async ({ ctx, input }) => {
       assertAgentFeatureEnabled();
+      await assertAgentDangerousReauth({
+        action: 'admin.agents.assignments.upsert',
+        actorUserId: ctx.userId!,
+        authenticatedAt: ctx.authenticatedAt,
+        authMethod: ctx.authMethod,
+        reason: input.reason,
+        serverDB: ctx.serverDB,
+        targetId: input.agentId,
+      });
       try {
         return await new PlatformAgentAdminService(ctx.serverDB).upsertAssignment(
           ctx.userId!,

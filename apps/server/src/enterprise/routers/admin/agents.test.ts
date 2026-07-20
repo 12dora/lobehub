@@ -76,11 +76,15 @@ const grantPermissions = async (userId: string, name: string, codes: string[]) =
   await db.insert(userRoles).values({ roleId: role.id, userId, workspaceId: null });
 };
 
-const callerFor = async (params: { authenticatedAt?: Date | null; userId?: string }) =>
+const callerFor = async (params: {
+  authenticatedAt?: Date | null;
+  authMethod?: 'api-key' | 'better-auth';
+  userId?: string;
+}) =>
   createCaller({
     ...(await createContextInner({
       authenticatedAt: params.authenticatedAt,
-      authMethod: 'better-auth',
+      authMethod: params.authMethod ?? 'better-auth',
       userId: params.userId,
     })),
     serverDB: db,
@@ -242,6 +246,145 @@ describe('adminAgentsRouter security gates', () => {
         expect.objectContaining({ action: 'admin.agents.rollouts.start', result: 'denied' }),
       ]),
     );
+  });
+
+  it('guards assignment create, update and remove before business writes', async () => {
+    const creator = await callerFor({ authenticatedAt: new Date(), userId: ids.creator });
+    const created = await creator.create({
+      agentKey: 'reauth-assignment-agent',
+      reason: 'create assignment test Agent',
+    });
+    const createInput = {
+      agentId: created.identity.id,
+      enabled: true,
+      expectedDraftToken: created.draftToken,
+      expectedRevision: created.identity.revision,
+      mode: 'optional' as const,
+      pinnedVersionId: null,
+      reason: 'create guarded assignment',
+      targetId: '__global__',
+      targetType: 'global' as const,
+      versionPolicy: 'latest_published' as const,
+    };
+    for (const auth of [
+      { authenticatedAt: null, authMethod: 'better-auth' as const },
+      {
+        authenticatedAt: new Date(Date.now() - 60 * 60 * 1000),
+        authMethod: 'better-auth' as const,
+      },
+      { authenticatedAt: new Date(), authMethod: 'api-key' as const },
+    ]) {
+      const caller = await callerFor({ ...auth, userId: ids.assigner });
+      await expect(caller.assignments.upsert(createInput)).rejects.toMatchObject({
+        code: 'UNAUTHORIZED',
+      });
+    }
+    expect(await db.select().from(platformAgentAssignments)).toEqual([]);
+    await expect(
+      db
+        .select()
+        .from(platformAgents)
+        .where(sql`${platformAgents.id} = ${created.identity.id}`),
+    ).resolves.toMatchObject([
+      { draftSequence: created.identity.draftSequence, revision: created.identity.revision },
+    ]);
+    expect(
+      (await db.select().from(platformAuditLogs)).filter(
+        ({ action }) => action === 'admin.agents.assignments.upsert',
+      ),
+    ).toHaveLength(3);
+
+    const insert = vi.spyOn(db, 'insert').mockImplementationOnce(() => {
+      throw new Error('audit sink unavailable');
+    });
+    await expect(
+      (
+        await callerFor({
+          authenticatedAt: null,
+          authMethod: 'better-auth',
+          userId: ids.assigner,
+        })
+      ).assignments.upsert(createInput),
+    ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    expect(await db.select().from(platformAgentAssignments)).toEqual([]);
+    insert.mockRestore();
+
+    const assigner = await callerFor({ authenticatedAt: new Date(), userId: ids.assigner });
+    const assignment = await assigner.assignments.upsert(createInput);
+    expect(await db.select().from(platformAgentAssignments)).toMatchObject([
+      { enabled: true, id: assignment.id },
+    ]);
+    const afterCreate = await (
+      await callerFor({ authenticatedAt: new Date(), userId: ids.reader })
+    ).get({ id: created.identity.id });
+    const updated = await assigner.assignments.upsert({
+      ...createInput,
+      assignmentId: assignment.id,
+      enabled: false,
+      expectedDraftToken: afterCreate.draftToken,
+      expectedRevision: afterCreate.identity.revision,
+      reason: 'update guarded assignment',
+    });
+    expect(updated).toMatchObject({ enabled: false, id: assignment.id });
+    expect(await db.select().from(platformAgentAssignments)).toMatchObject([
+      { enabled: false, id: assignment.id },
+    ]);
+
+    const afterUpdate = await (
+      await callerFor({ authenticatedAt: new Date(), userId: ids.reader })
+    ).get({ id: created.identity.id });
+    const removeInput = {
+      agentId: created.identity.id,
+      assignmentId: assignment.id,
+      expectedDraftToken: afterUpdate.draftToken,
+      expectedRevision: afterUpdate.identity.revision,
+      reason: 'remove guarded assignment',
+    };
+    for (const auth of [
+      { authenticatedAt: null, authMethod: 'better-auth' as const },
+      {
+        authenticatedAt: new Date(Date.now() - 60 * 60 * 1000),
+        authMethod: 'better-auth' as const,
+      },
+      { authenticatedAt: new Date(), authMethod: 'api-key' as const },
+    ]) {
+      await expect(
+        (
+          await callerFor({
+            ...auth,
+            userId: ids.assigner,
+          })
+        ).assignments.remove(removeInput),
+      ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    }
+    expect(await db.select().from(platformAgentAssignments)).toMatchObject([
+      { enabled: false, id: assignment.id },
+    ]);
+    expect(
+      (await db.select().from(platformAuditLogs)).filter(
+        ({ action }) => action === 'admin.agents.assignments.remove',
+      ),
+    ).toHaveLength(3);
+
+    const removeInsert = vi.spyOn(db, 'insert').mockImplementationOnce(() => {
+      throw new Error('audit sink unavailable');
+    });
+    await expect(
+      (
+        await callerFor({
+          authenticatedAt: null,
+          authMethod: 'better-auth',
+          userId: ids.assigner,
+        })
+      ).assignments.remove(removeInput),
+    ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    expect(await db.select().from(platformAgentAssignments)).toMatchObject([
+      { enabled: false, id: assignment.id },
+    ]);
+    removeInsert.mockRestore();
+
+    await expect(assigner.assignments.remove(removeInput)).resolves.toEqual({ removed: true });
+    expect(await db.select().from(platformAgentAssignments)).toEqual([]);
   });
 
   it('short-circuits disabled Admin endpoints', async () => {

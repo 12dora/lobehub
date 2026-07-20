@@ -18,6 +18,7 @@ import type { LobeChatDatabase } from '@/database/type';
 import { seedPlatformRoles } from '@/database/utils/seedPlatformRoles';
 import { createContextInner } from '@/libs/trpc/lambda/context';
 
+import { getPlatformConfigInvalidationPublisher } from '../../services/platformConfigInvalidation';
 import { adminSettingsRouter } from './settings';
 
 const { policyState } = vi.hoisted(() => ({ policyState: { enabled: false } }));
@@ -81,13 +82,24 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await cleanup();
   vi.unstubAllEnvs();
 });
 
-const caller = async (userId: string) =>
+const caller = async (
+  userId: string,
+  auth: {
+    authenticatedAt?: Date | null;
+    authMethod?: 'api-key' | 'better-auth';
+  } = { authenticatedAt: new Date(), authMethod: 'better-auth' },
+) =>
   adminSettingsRouter.createCaller({
-    ...(await createContextInner({ userId })),
+    ...(await createContextInner({
+      authenticatedAt: auth.authenticatedAt,
+      authMethod: auth.authMethod ?? 'better-auth',
+      userId,
+    })),
     serverDB,
   } as never);
 
@@ -133,5 +145,102 @@ describe('admin.settings denied audit outcomes', () => {
     expect(audits).not.toContainEqual(
       expect.objectContaining({ action: 'admin.settings.getDraft', result: 'success' }),
     );
+  });
+
+  it('guards publish and rollback before state writes or invalidation', async () => {
+    policyState.enabled = true;
+    const publishInput = {
+      expectedDraftToken: 'a'.repeat(64),
+      expectedRevision: 0,
+      reason: 'publish guarded settings',
+    };
+    const rollbackInput = {
+      expectedDraftToken: 'a'.repeat(64),
+      expectedRevision: 1,
+      reason: 'rollback guarded settings',
+      targetRevision: 1,
+    };
+    const invalidation = vi.spyOn(getPlatformConfigInvalidationPublisher(), 'publish');
+
+    for (const auth of [
+      { authenticatedAt: null, authMethod: 'better-auth' as const },
+      {
+        authenticatedAt: new Date(Date.now() - 60 * 60 * 1000),
+        authMethod: 'better-auth' as const,
+      },
+      { authenticatedAt: new Date(), authMethod: 'api-key' as const },
+    ]) {
+      const denied = await caller(ids.allowed, auth);
+      await expect(denied.publish(publishInput)).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+      await expect(denied.rollback(rollbackInput)).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    }
+    expect(invalidation).not.toHaveBeenCalled();
+    await expect(serverDB.select().from(platformResourceRevisions)).resolves.toEqual([]);
+    await expect(serverDB.select().from(platformSettingPolicies)).resolves.toEqual([]);
+    await expect(serverDB.select().from(platformSettingsBundle)).resolves.toEqual([]);
+    const deniedAudits = (await serverDB.select().from(platformAuditLogs)).filter(
+      ({ result }) => result === 'denied',
+    );
+    expect(deniedAudits.filter(({ action }) => action === 'admin.settings.publish')).toHaveLength(
+      3,
+    );
+    expect(deniedAudits.filter(({ action }) => action === 'admin.settings.rollback')).toHaveLength(
+      3,
+    );
+    expect(deniedAudits).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ afterDiff: { error: 'reauth_required' }, result: 'denied' }),
+      ]),
+    );
+
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const insert = vi
+      .spyOn(serverDB, 'insert')
+      .mockImplementationOnce(() => {
+        throw new Error('publish audit unavailable');
+      })
+      .mockImplementationOnce(() => {
+        throw new Error('rollback audit unavailable');
+      });
+    const missingReauth = await caller(ids.allowed, { authenticatedAt: null });
+    await expect(missingReauth.publish(publishInput)).rejects.toMatchObject({
+      code: 'UNAUTHORIZED',
+    });
+    await expect(missingReauth.rollback(rollbackInput)).rejects.toMatchObject({
+      code: 'UNAUTHORIZED',
+    });
+    expect(invalidation).not.toHaveBeenCalled();
+    expect(JSON.stringify(consoleError.mock.calls)).not.toMatch(
+      /publish guarded settings|rollback guarded settings|settings-audit-allowed/,
+    );
+    insert.mockRestore();
+    consoleError.mockRestore();
+
+    const fresh = await caller(ids.allowed);
+    const draft = await fresh.getDraft();
+    const published = await fresh.publish({
+      ...publishInput,
+      expectedDraftToken: draft.draftToken,
+      expectedRevision: draft.baseRevision,
+    });
+    expect(published).toMatchObject({ auditId: expect.any(String), revision: 1 });
+    expect(invalidation).toHaveBeenCalledTimes(1);
+    const afterPublish = await fresh.getDraft();
+    const secondPublished = await fresh.publish({
+      ...publishInput,
+      expectedDraftToken: afterPublish.draftToken,
+      expectedRevision: published.revision,
+      reason: 'publish second guarded settings revision',
+    });
+    const afterSecondPublish = await fresh.getDraft();
+    await expect(
+      fresh.rollback({
+        ...rollbackInput,
+        expectedDraftToken: afterSecondPublish.draftToken,
+        expectedRevision: secondPublished.revision,
+        targetRevision: published.revision,
+      }),
+    ).resolves.toMatchObject({ auditId: expect.any(String), revision: 3 });
+    expect(invalidation).toHaveBeenCalledTimes(3);
   });
 });
