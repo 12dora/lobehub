@@ -1,3 +1,6 @@
+import type { EnterpriseCacheDomain } from '@lobechat/observability-otel/modules/enterprise-platform';
+
+import { classifyEnterpriseError, observeEnterprisePlatformEvent } from '../observability';
 import { getPlatformConfigCacheTtlMs } from './config';
 
 const MIN_CACHE_TTL_MS = 1;
@@ -33,6 +36,7 @@ export interface DomainConfigCacheOptions<T> {
   load: () => Promise<T | null>;
   namespace: string;
   now?: () => number;
+  observabilityDomain: EnterpriseCacheDomain;
 }
 
 let statesByCacheKey = new WeakMap<object, Map<string, StoredDomainCacheState>>();
@@ -98,6 +102,7 @@ export class DomainConfigCache<T> {
   private readonly load: () => Promise<T | null>;
   private readonly namespace: string;
   private readonly now: () => number;
+  private readonly observabilityDomain: EnterpriseCacheDomain;
   private readonly stateKey: string;
 
   constructor(options: DomainConfigCacheOptions<T>) {
@@ -108,27 +113,43 @@ export class DomainConfigCache<T> {
     this.load = options.load;
     this.namespace = options.namespace;
     this.now = options.now ?? Date.now;
+    this.observabilityDomain = options.observabilityDomain;
     this.stateKey = `${options.namespace}\0${options.cacheId}`;
   }
 
-  private readScopeEpoch = async (): Promise<string> => {
+  private readScopeEpoch = async (): Promise<{ epoch: string; failed: boolean }> => {
     try {
-      return await this.getScopeEpoch();
+      return { epoch: await this.getScopeEpoch(), failed: false };
     } catch (error) {
       console.error('[PlatformRuntimeConfig] scope epoch unavailable; using TTL fallback', {
         errorClass: errorClass(error),
       });
-      return UNAVAILABLE_SCOPE_EPOCH;
+      observeEnterprisePlatformEvent({
+        domain: this.observabilityDomain,
+        operation: 'epoch',
+        outcome: 'failure',
+        type: 'cache',
+      });
+      return { epoch: UNAVAILABLE_SCOPE_EPOCH, failed: true };
     }
   };
 
   get = async (): Promise<T | null> => {
-    const epoch = await this.readScopeEpoch();
+    const { epoch, failed } = await this.readScopeEpoch();
     const namespaceGeneration = getNamespaceGeneration(this.namespace);
     const state = getOrCreateState<T>(this.cacheKey, this.stateKey, namespaceGeneration);
 
     if (state.namespaceGeneration !== namespaceGeneration) {
       expireState(state, namespaceGeneration);
+    }
+    const epochChanged = state.epoch !== undefined && state.epoch !== epoch;
+    if (!failed) {
+      observeEnterprisePlatformEvent({
+        domain: this.observabilityDomain,
+        operation: 'epoch',
+        outcome: epochChanged ? 'changed' : 'success',
+        type: 'cache',
+      });
     }
     if (state.epoch !== epoch) {
       state.entry = undefined;
@@ -139,10 +160,22 @@ export class DomainConfigCache<T> {
 
     const now = this.now();
     if (state.entry && state.entry.expiresAt > now) {
+      observeEnterprisePlatformEvent({
+        domain: this.observabilityDomain,
+        operation: 'request',
+        outcome: state.entry.value === null ? 'negative' : 'hit',
+        type: 'cache',
+      });
       return cloneNullable(state.entry.value, this.cloneValue);
     }
 
     if (state.inflight?.generation === state.generation) {
+      observeEnterprisePlatformEvent({
+        domain: this.observabilityDomain,
+        operation: 'request',
+        outcome: 'coalesced',
+        type: 'cache',
+      });
       return cloneNullable(await state.inflight.promise, this.cloneValue);
     }
 
@@ -152,6 +185,12 @@ export class DomainConfigCache<T> {
 
     try {
       const value = await request;
+      observeEnterprisePlatformEvent({
+        domain: this.observabilityDomain,
+        operation: 'load',
+        outcome: value === null ? 'loaded_negative' : 'loaded',
+        type: 'cache',
+      });
       const currentNamespaceGeneration = getNamespaceGeneration(this.namespace);
       const storedState = getStoredState(this.cacheKey, this.stateKey);
       if (
@@ -166,6 +205,15 @@ export class DomainConfigCache<T> {
         };
       }
       return cloneNullable(value, this.cloneValue);
+    } catch (error) {
+      observeEnterprisePlatformEvent({
+        domain: this.observabilityDomain,
+        errorClass: classifyEnterpriseError(error),
+        operation: 'load',
+        outcome: 'load_failure',
+        type: 'cache',
+      });
+      throw error;
     } finally {
       if (state.generation === generation && state.inflight?.promise === request) {
         state.inflight = undefined;

@@ -1,6 +1,12 @@
 // @vitest-environment node
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { EnterpriseObservabilityEvent } from '../../observability';
+import {
+  NOOP_ENTERPRISE_STRUCTURED_LOGGER,
+  setEnterprisePlatformObserverForTest,
+  setEnterpriseStructuredLoggerForTest,
+} from '../../observability';
 import {
   InMemoryPlatformConfigInvalidationPublisher,
   platformConfigKeys,
@@ -50,10 +56,20 @@ const createFakeRedis = (execResults?: [Error | null, unknown][] | null) => {
 };
 
 describe('platformConfigInvalidation', () => {
+  let observations: EnterpriseObservabilityEvent[];
+
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.redisEnabled = false;
     setPlatformConfigInvalidationPublisher(null);
+    observations = [];
+    setEnterprisePlatformObserverForTest({ record: (event) => observations.push(event) });
+    setEnterpriseStructuredLoggerForTest(NOOP_ENTERPRISE_STRUCTURED_LOGGER);
+  });
+
+  afterEach(() => {
+    setEnterprisePlatformObserverForTest(null);
+    setEnterpriseStructuredLoggerForTest(null);
   });
 
   it('records bounded, deduplicated versions in the in-memory publisher', async () => {
@@ -161,5 +177,36 @@ describe('platformConfigInvalidation', () => {
     expect(diagnostic?.args[2]).toEqual({ ex: 86_400 });
     expect(JSON.parse(String(diagnostic?.args[1])).scopes).toHaveLength(32);
     expect(mocks.log).toHaveBeenCalledWith(expect.stringContaining('complete'), 'branding', 3, 32);
+  });
+
+  it('classifies every memory and Redis invalidation outcome', async () => {
+    await new InMemoryPlatformConfigInvalidationPublisher().publish(event());
+    await new RedisPlatformConfigInvalidationPublisher().publish(event());
+
+    mocks.redisEnabled = true;
+    mocks.initializeRedis.mockResolvedValueOnce(null);
+    await new RedisPlatformConfigInvalidationPublisher().publish(event());
+    mocks.initializeRedis.mockResolvedValueOnce(
+      createFakeRedis([[new Error('raw pipeline detail'), undefined]]).redis,
+    );
+    await new RedisPlatformConfigInvalidationPublisher().publish(event());
+    mocks.initializeRedis.mockResolvedValueOnce(createFakeRedis().redis);
+    await new RedisPlatformConfigInvalidationPublisher().publish(event());
+    mocks.initializeRedis.mockRejectedValueOnce(new Error('raw connection detail'));
+    await new RedisPlatformConfigInvalidationPublisher().publish(event());
+
+    const outcomes = observations
+      .filter(({ type }) => type === 'invalidation')
+      .map(({ outcome }) => outcome);
+    expect(outcomes).toEqual([
+      'success',
+      'disabled',
+      'unavailable',
+      'partial_failure',
+      'success',
+      'error',
+    ]);
+    expect(JSON.stringify(observations)).not.toContain('raw');
+    expect(observations.at(-1)).toMatchObject({ errorClass: 'UnexpectedError' });
   });
 });
