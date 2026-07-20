@@ -123,6 +123,11 @@ export const buildEnterpriseEnv = (params: {
   AUTH_TRUSTED_ORIGINS: params.appUrl,
   DATABASE_DRIVER: 'node',
   DATABASE_URL: params.databaseUrl,
+  // Keep EasyAuth offline: no token file, closed loopback base (fail-fast, no prod IAM).
+  EASYAUTH_APP_TOKEN: '',
+  EASYAUTH_APP_TOKEN_FILE: '/dev/null',
+  EASYAUTH_BASE_URL: 'http://127.0.0.1:9',
+  EASYAUTH_PORTAL_URL: 'http://127.0.0.1:9',
   ENABLE_PLATFORM_ADMIN: '1',
   ENABLE_PLATFORM_MANAGED_AGENTS: '1',
   ENABLE_PLATFORM_MANAGED_AI: '1',
@@ -132,6 +137,9 @@ export const buildEnterpriseEnv = (params: {
   FEATURE_FLAGS: '-agent_self_iteration',
   KEY_VAULTS_SECRET,
   NODE_OPTIONS: '--max-old-space-size=6144',
+  // Deterministic local KEK for enterprise secret-dependent readiness probes (not a production secret).
+  PLATFORM_MASTER_KEY: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+  PLATFORM_MASTER_KEY_ID: 'enterprise-admin-e2e-key',
   PORT: String(params.port),
   REDIS_URL: params.redisUrl,
   S3_ACCESS_KEY_ID: 'e2e-placeholder',
@@ -187,7 +195,8 @@ export const startEnterpriseAdminRuntime = async (): Promise<SuiteRuntime> => {
   });
   const databaseUrl = `postgresql://postgres:postgres@127.0.0.1:${postgresPort}/${databaseName}`;
   const redisUrl = `redis://127.0.0.1:${redisPort}`;
-  const appUrl = `http://127.0.0.1:${appPort}`;
+  // Prefer localhost so better-auth cookie + Next host stay consistent with the dev server banner.
+  const appUrl = `http://localhost:${appPort}`;
   await waitForPostgres(databaseUrl);
 
   const env = buildEnterpriseEnv({ appUrl, databaseUrl, port: appPort, redisUrl });
@@ -238,6 +247,12 @@ export const startEnterpriseAdminRuntime = async (): Promise<SuiteRuntime> => {
 
   try {
     await waitForHttp(`${appUrl}/signin`, 240_000);
+    // Cold-compile the lambda tRPC route once so scenario requests do not burn the 20s action budget.
+    const prewarmInput = encodeURIComponent(JSON.stringify({ 0: { json: null } }));
+    await waitForHttp(
+      `${appUrl}/trpc/lambda/platform.getPublicSnapshot?batch=1&input=${prewarmInput}`,
+      180_000,
+    ).catch(() => undefined);
   } catch (error) {
     terminateTree(child);
     await stopContainer(redis);

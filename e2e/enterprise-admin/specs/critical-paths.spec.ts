@@ -79,7 +79,8 @@ const requireRuntime = () => {
   return { runtime, seed };
 };
 
-test.describe.configure({ mode: 'serial' });
+// Keep scenarios ordered for shared runtime, but do not skip remaining cases after one failure.
+test.describe.configure({ mode: 'default' });
 
 test('ordinary user and workspace owner are denied /admin and admin APIs', async ({ browser }) => {
   const { runtime: rt, seed: s } = requireRuntime();
@@ -324,10 +325,14 @@ test('evidence matrix: light/dark × desktop/mobile with stable waits', async ({
       prepare: async (page) => {
         await page.goto('/admin/system');
         await page.waitForLoadState('domcontentloaded');
-        // Mobile surfaces the unsupported state; desktop shows System.
-        const denied = page.getByText(/Admin access denied|Use a desktop|Admin is unavailable/i);
-        const system = page.getByRole('heading', { name: ADMIN_COPY.systemTitle });
-        await expect(denied.or(system).first()).toBeVisible({ timeout: 60_000 });
+        // Mobile → Desktop required; desktop → System shell. Prefer stable copy anchors.
+        const surface = page
+          .getByText(ADMIN_COPY.mobileUnsupportedTitle)
+          .or(page.getByText(ADMIN_COPY.accessDeniedTitle))
+          .or(page.getByText(ADMIN_COPY.featureOffTitle))
+          .or(page.getByRole('heading', { name: ADMIN_COPY.systemTitle }))
+          .or(page.getByText(ADMIN_COPY.systemTitle, { exact: true }));
+        await expect(surface.first()).toBeVisible({ timeout: 90_000 });
       },
       slug: 'admin-system',
     });

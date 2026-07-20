@@ -16,11 +16,11 @@ export default defineConfig({
   retries: 0,
   testDir: './specs',
   testMatch: '**/*.spec.ts',
-  timeout: 180_000,
+  timeout: 240_000,
   use: {
-    actionTimeout: 20_000,
+    actionTimeout: 60_000,
     headless: process.env.HEADLESS !== 'false',
-    navigationTimeout: 45_000,
+    navigationTimeout: 90_000,
     screenshot: 'only-on-failure',
     // Avoid traces that can capture session cookies in CI artifacts.
     trace: 'off',
