@@ -7,7 +7,7 @@ import {
   platformIdentityProviderSecrets,
   platformIdentityProviderTestAttempts,
 } from '../../schemas/platform';
-import type { LobeChatDatabase } from '../../type';
+import type { LobeChatDatabase, Transaction } from '../../type';
 import {
   PLATFORM_SECRET_ROTATION_DOMAINS,
   type PlatformSecretRotationCandidate,
@@ -92,7 +92,101 @@ const keyIdCondition = (column: AnyColumn, storedKeyId: string | null) =>
  * external OIDC last-known-good health gate before changing runtime state.
  */
 export class PlatformSecretRotationRepository {
-  constructor(private readonly db: LobeChatDatabase) {}
+  private readonly db: LobeChatDatabase | Transaction;
+  private readonly transactionScoped: boolean;
+
+  constructor(db: LobeChatDatabase, transactionScoped?: false);
+  constructor(db: Transaction, transactionScoped: true);
+  constructor(db: LobeChatDatabase | Transaction, transactionScoped = false) {
+    this.db = db;
+    this.transactionScoped = transactionScoped;
+  }
+
+  /** Use inside an existing job transaction so data CAS and checkpoint commit atomically. */
+  static forTransaction = (tx: Transaction) => new PlatformSecretRotationRepository(tx, true);
+
+  getById = async (
+    domain: PlatformSecretRotationDomain,
+    id: string,
+  ): Promise<PlatformSecretRotationCandidate | undefined> => {
+    switch (domain) {
+      case 'aiCurrent': {
+        const [row] = await this.db
+          .select({
+            ciphertext: platformAiProviders.encryptedKeyVaults,
+            fingerprint: platformAiProviders.secretFingerprint,
+            id: platformAiProviders.id,
+            revision: platformAiProviders.secretKeyVersion,
+            storedKeyId: platformAiProviders.secretKeyId,
+          })
+          .from(platformAiProviders)
+          .where(
+            and(eq(platformAiProviders.id, id), isNotNull(platformAiProviders.encryptedKeyVaults)),
+          )
+          .limit(1);
+        return row
+          ? new InternalRotationCandidate({ ...row, ciphertext: row.ciphertext!, domain })
+          : undefined;
+      }
+      case 'aiImmutable': {
+        const [row] = await this.db
+          .select({
+            ciphertext: platformAiProviderSecrets.ciphertext,
+            fingerprint: platformAiProviderSecrets.fingerprint,
+            id: platformAiProviderSecrets.id,
+            ownerId: platformAiProviderSecrets.providerId,
+            revision: platformAiProviderSecrets.keyVersion,
+            storedKeyId: platformAiProviderSecrets.keyId,
+          })
+          .from(platformAiProviderSecrets)
+          .where(eq(platformAiProviderSecrets.id, id))
+          .limit(1);
+        return row ? new InternalRotationCandidate({ ...row, domain }) : undefined;
+      }
+      case 'connector': {
+        const [row] = await this.db
+          .select({
+            ciphertext: platformConnectorSecrets.ciphertext,
+            id: platformConnectorSecrets.id,
+            ownerId: platformConnectorSecrets.connectorId,
+            revision: platformConnectorSecrets.revision,
+            storedKeyId: platformConnectorSecrets.keyId,
+          })
+          .from(platformConnectorSecrets)
+          .where(eq(platformConnectorSecrets.id, id))
+          .limit(1);
+        return row ? new InternalRotationCandidate({ ...row, domain }) : undefined;
+      }
+      case 'identityProvider': {
+        const [row] = await this.db
+          .select({
+            ciphertext: platformIdentityProviderSecrets.ciphertext,
+            fingerprint: platformIdentityProviderSecrets.fingerprint,
+            id: platformIdentityProviderSecrets.id,
+            ownerId: platformIdentityProviderSecrets.providerId,
+            revision: platformIdentityProviderSecrets.revision,
+            storedKeyId: platformIdentityProviderSecrets.keyId,
+          })
+          .from(platformIdentityProviderSecrets)
+          .where(eq(platformIdentityProviderSecrets.id, id))
+          .limit(1);
+        return row ? new InternalRotationCandidate({ ...row, domain }) : undefined;
+      }
+      case 'identityProviderTestPkce': {
+        const [row] = await this.db
+          .select({
+            ciphertext: platformIdentityProviderTestAttempts.pkceCiphertext,
+            id: platformIdentityProviderTestAttempts.id,
+            ownerId: platformIdentityProviderTestAttempts.providerId,
+            storedKeyId: platformIdentityProviderTestAttempts.pkceKeyId,
+          })
+          .from(platformIdentityProviderTestAttempts)
+          .where(eq(platformIdentityProviderTestAttempts.id, id))
+          .limit(1);
+        return row ? new InternalRotationCandidate({ ...row, domain }) : undefined;
+      }
+    }
+  };
 
   private listDomain = async (params: {
     afterId?: string;
@@ -281,7 +375,7 @@ export class PlatformSecretRotationRepository {
       case 'aiImmutable': {
         if (candidate.revision === null) return noCurrent;
         const revision = candidate.revision;
-        return this.db.transaction(async (tx) => {
+        const rotate = async (tx: LobeChatDatabase | Transaction) => {
           const immutable = await tx
             .update(platformAiProviderSecrets)
             .set({ ciphertext, keyId: targetKeyId })
@@ -311,7 +405,9 @@ export class PlatformSecretRotationRepository {
             )
             .returning({ id: platformAiProviders.id });
           return { currentSynchronized: current.length === 1, updated: true };
-        });
+        };
+        if (this.transactionScoped) return rotate(this.db);
+        return (this.db as LobeChatDatabase).transaction(rotate);
       }
       case 'connector': {
         if (candidate.revision === null) return noCurrent;
