@@ -74,7 +74,6 @@ const conditionalReauth = conditional(
   'Router checks recent authentication for sensitive input variants.',
   'Ordinary draft variants do not require the check.',
 );
-const missingReauth = gap('No recent-authentication check is wired for this dangerous operation.');
 const sensitiveInputReauthGap = gap(
   'Protected-value replace or clear variants do not require recent authentication.',
 );
@@ -193,13 +192,13 @@ export const ADMIN_MUTATION_REGISTRY = {
     'admin.agents.assignments.remove',
     'high',
     'Remove an agent assignment from a target scope.',
-    { reauth: missingReauth },
+    { reauth: recentReauth },
   ),
   'admin.agents.assignments.upsert': dangerousMutation(
     'admin.agents.assignments.upsert',
     'high',
     'Create or change an agent assignment.',
-    { reauth: missingReauth },
+    { reauth: recentReauth },
   ),
   'admin.agents.create': regularMutation('admin.agents.create', 'medium', 'Create an agent draft.'),
   'admin.agents.publish': dangerousMutation(
@@ -393,7 +392,7 @@ export const ADMIN_MUTATION_REGISTRY = {
       audit: atomicOutcomeAudit,
       outbound: directFetchOutboundGap,
       reason: sensitiveSafeReason,
-      reauth: missingReauth,
+      reauth: recentReauth,
     },
   ),
   'admin.identityProviders.create': regularMutation(
@@ -406,7 +405,7 @@ export const ADMIN_MUTATION_REGISTRY = {
     'admin.identityProviders.delete',
     'high',
     'Delete an identity provider draft.',
-    { reauth: missingReauth },
+    { reauth: recentReauth },
   ),
   'admin.identityProviders.discover': validationMutation(
     'admin.identityProviders.discover',
@@ -490,13 +489,13 @@ export const ADMIN_MUTATION_REGISTRY = {
     'admin.settings.publish',
     'critical',
     'Publish global platform settings.',
-    { reauth: missingReauth },
+    { reauth: recentReauth },
   ),
   'admin.settings.rollback': dangerousMutation(
     'admin.settings.rollback',
     'critical',
     'Restore an earlier global settings revision.',
-    { reauth: missingReauth },
+    { reauth: recentReauth },
   ),
   'admin.settings.saveDraft': regularMutation(
     'admin.settings.saveDraft',

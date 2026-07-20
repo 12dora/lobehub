@@ -72,7 +72,7 @@ const execute = async <T>(operation: () => Promise<T> | T): Promise<T> => {
   }
 };
 
-const assertPublicationReauth = async (input: {
+const assertIdentityDangerousReauth = async (input: {
   action: string;
   actorUserId: string;
   authenticatedAt?: Date | null;
@@ -144,9 +144,18 @@ export const adminIdentityProvidersRouter = router({
     .use(withPlatformPermission(PLATFORM_PERMISSIONS.IDENTITY_DELETE))
     .input(adminIdentityProviderDeleteInputSchema)
     .output(adminIdentityProviderDeleteOutputSchema)
-    .mutation(({ ctx, input }) =>
-      execute(() => ctx.getIdentityProviderRuntime().admin.delete(ctx.userId!, input)),
-    ),
+    .mutation(async ({ ctx, input }) => {
+      await assertIdentityDangerousReauth({
+        action: 'admin.identityProviders.delete',
+        actorUserId: ctx.userId!,
+        authenticatedAt: ctx.authenticatedAt,
+        authMethod: ctx.authMethod,
+        reason: input.reason,
+        serverDB: ctx.serverDB,
+        targetId: input.id,
+      });
+      return execute(() => ctx.getIdentityProviderRuntime().admin.delete(ctx.userId!, input));
+    }),
 
   discover: identityProviderProcedure
     .use(withPlatformPermission(PLATFORM_PERMISSIONS.IDENTITY_TEST))
@@ -183,7 +192,7 @@ export const adminIdentityProvidersRouter = router({
     .input(adminIdentityProviderPublishInputSchema)
     .output(adminIdentityProviderPublishOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      await assertPublicationReauth({
+      await assertIdentityDangerousReauth({
         action: 'admin.identityProviders.publish',
         actorUserId: ctx.userId!,
         authenticatedAt: ctx.authenticatedAt,
@@ -204,7 +213,7 @@ export const adminIdentityProvidersRouter = router({
     .input(adminIdentityProviderRollbackInputSchema)
     .output(adminIdentityProviderRollbackOutputSchema)
     .mutation(async ({ ctx, input }) => {
-      await assertPublicationReauth({
+      await assertIdentityDangerousReauth({
         action: 'admin.identityProviders.rollback',
         actorUserId: ctx.userId!,
         authenticatedAt: ctx.authenticatedAt,
