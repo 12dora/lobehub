@@ -1,11 +1,21 @@
 // @vitest-environment node
 import { eq } from 'drizzle-orm';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
-import { platformAuditLogs, platformJobs } from '@/database/schemas/platform';
+import {
+  platformAuditLogs,
+  platformIdentityProviderInstances,
+  platformInstanceHeartbeats,
+  platformInstanceRevisionStates,
+  platformJobs,
+} from '@/database/schemas/platform';
 import type { LobeChatDatabase } from '@/database/type';
-import { adminSystemGetStatusOutputSchema } from '@/server/enterprise/contracts/adminSystem';
+import { isRedisEnabled } from '@/libs/redis/manager';
+import {
+  adminSystemGetInstanceRevisionsOutputSchema,
+  adminSystemGetStatusOutputSchema,
+} from '@/server/enterprise/contracts/adminSystem';
 
 import { PlatformSystemAdminService } from './adminService';
 import { PlatformSystemJobConflictError, PlatformSystemJobInvalidError } from './errors';
@@ -38,8 +48,83 @@ const rewrapInput = (revision: number) => ({
 });
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
+  await db.delete(platformIdentityProviderInstances);
+  await db.delete(platformInstanceRevisionStates);
+  await db.delete(platformInstanceHeartbeats);
   await db.delete(platformJobs);
   await db.delete(platformAuditLogs);
+});
+
+describe('PlatformSystemAdminService instance revisions', () => {
+  it('paginates the complete mixed inventory without omissions at diagnostic caps', async () => {
+    const freshHeartbeat = new Date(Date.now() - 1_000);
+    const staleHeartbeat = new Date(Date.now() - 120_000);
+    const startedAt = new Date(Date.now() - 300_000);
+    const platformFreshIds = Array.from(
+      { length: 103 },
+      (_, index) => `pinst_${index.toString(16).padStart(48, '0')}`,
+    );
+    const identityFreshIds = Array.from(
+      { length: 3 },
+      (_, index) => `oidci_${index.toString(16).padStart(48, '0')}`,
+    );
+    const platformStaleIds = Array.from(
+      { length: 12 },
+      (_, index) => `pinst_${(1000 + index).toString(16).padStart(48, '0')}`,
+    );
+    const identityStaleIds = Array.from(
+      { length: 2 },
+      (_, index) => `oidci_${(1000 + index).toString(16).padStart(48, '0')}`,
+    );
+    await db.insert(platformInstanceHeartbeats).values([
+      ...platformFreshIds.map((instanceId) => ({
+        instanceId,
+        lastHeartbeatAt: freshHeartbeat,
+        startedAt,
+      })),
+      ...platformStaleIds.map((instanceId) => ({
+        instanceId,
+        lastHeartbeatAt: staleHeartbeat,
+        startedAt,
+      })),
+    ]);
+    await db.insert(platformIdentityProviderInstances).values(
+      [...identityFreshIds, ...identityStaleIds].map((instanceId, index) => ({
+        activeIdentityRevision: null,
+        health: 'healthy' as const,
+        hostnameHash: index.toString(16).padStart(64, '0'),
+        instanceId,
+        lastHeartbeat: index < identityFreshIds.length ? freshHeartbeat : staleHeartbeat,
+        loadedAt: startedAt,
+        startedAt,
+        startupSource: 'database' as const,
+      })),
+    );
+
+    const service = new PlatformSystemAdminService(db, { env: {} });
+    const collected: Awaited<ReturnType<typeof service.getInstanceRevisions>>['items'] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await service.getInstanceRevisions({ cursor, limit: 17 });
+      expect(() => adminSystemGetInstanceRevisionsOutputSchema.parse(page)).not.toThrow();
+      collected.push(...page.items);
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor);
+
+    const expectedIds = [
+      ...identityFreshIds.sort(),
+      ...platformFreshIds.sort(),
+      ...identityStaleIds.sort(),
+      ...platformStaleIds.sort(),
+    ];
+    expect(collected.map(({ instanceId }) => instanceId)).toEqual(expectedIds);
+    expect(new Set(collected.map(({ instanceId }) => instanceId)).size).toBe(expectedIds.length);
+    expect(collected.filter(({ fresh }) => fresh)).toHaveLength(106);
+    expect(collected.filter(({ fresh }) => !fresh)).toHaveLength(14);
+    expect(collected.at(0)?.instanceId).toBe(identityFreshIds[0]);
+    expect(collected.at(-1)?.instanceId).toBe(platformStaleIds.at(-1));
+  });
 });
 
 describe('PlatformSystemAdminService jobs', () => {
@@ -203,6 +288,89 @@ describe('PlatformSystemAdminService jobs', () => {
 });
 
 describe('PlatformSystemAdminService status', () => {
+  it('honors the production DISABLE_REDIS switch without creating a client', async () => {
+    vi.stubEnv('DISABLE_REDIS', '1');
+    const createRedisWithPrefix = vi.fn();
+    const status = await new PlatformSystemAdminService(db, {
+      env: {},
+      redisDependencies: {
+        createRedisWithPrefix,
+        getRedisConfig: () => ({
+          enabled: true,
+          prefix: 'lobechat',
+          tls: false,
+          url: 'redis://private.example:6379',
+        }),
+        isRedisEnabled,
+      },
+    }).getStatus();
+
+    expect(status.dependencies.redis).toEqual({ errorCategory: null, status: 'disabled' });
+    expect(createRedisWithPrefix).not.toHaveBeenCalled();
+  });
+
+  it('passes credentials, TLS, and database through the production Redis config path', async () => {
+    const config = {
+      database: 7,
+      enabled: true,
+      password: 'sensitive-password',
+      prefix: 'lobechat',
+      tls: true,
+      url: 'redis://private.example:6379',
+      username: 'sensitive-user',
+    };
+    const disconnect = vi.fn(async () => undefined);
+    const createRedisWithPrefix = vi.fn(async () => ({ disconnect }) as never);
+    const status = await new PlatformSystemAdminService(db, {
+      env: {},
+      redisDependencies: {
+        createRedisWithPrefix,
+        getRedisConfig: () => config,
+        isRedisEnabled,
+      },
+    }).getStatus();
+
+    expect(status.dependencies.redis).toEqual({ errorCategory: null, status: 'healthy' });
+    expect(createRedisWithPrefix).toHaveBeenCalledWith(config, 'platformSystemHealth');
+    expect(disconnect).toHaveBeenCalledOnce();
+    expect(JSON.stringify(status)).not.toContain('sensitive-password');
+    expect(JSON.stringify(status)).not.toContain('sensitive-user');
+    expect(JSON.stringify(status)).not.toContain('private.example');
+  });
+
+  it('reports unavailable without leaking config when Redis cleanup fails', async () => {
+    const config = {
+      database: 7,
+      enabled: true,
+      password: 'sensitive-password',
+      prefix: 'lobechat',
+      tls: true,
+      url: 'redis://private.example:6379',
+      username: 'sensitive-user',
+    };
+    const disconnect = vi.fn(async () => {
+      throw new Error('failed to close redis://sensitive-user@private.example');
+    });
+    const status = await new PlatformSystemAdminService(db, {
+      env: {},
+      redisDependencies: {
+        createRedisWithPrefix: vi.fn(async () => ({ disconnect }) as never),
+        getRedisConfig: () => config,
+        isRedisEnabled,
+      },
+    }).getStatus();
+
+    expect(status.dependencies.redis).toEqual({
+      errorCategory: 'operation_unavailable',
+      status: 'unavailable',
+    });
+    expect(disconnect).toHaveBeenCalledOnce();
+    const serialized = JSON.stringify(status);
+    expect(serialized).not.toContain('sensitive-password');
+    expect(serialized).not.toContain('sensitive-user');
+    expect(serialized).not.toContain('private.example');
+  });
+
   it('is fail-soft and never returns configured endpoints or credentials', async () => {
     await db.insert(platformAuditLogs).values({
       action: 'admin.settings.publish',

@@ -2,7 +2,6 @@ import { Buffer } from 'node:buffer';
 
 import { CURRENT_VERSION } from '@lobechat/const';
 import { and, desc, eq, inArray, notInArray, sql } from 'drizzle-orm';
-import Redis from 'ioredis';
 
 import { PlatformJobModel } from '@/database/models/platform';
 import {
@@ -12,6 +11,9 @@ import {
   platformJobs,
 } from '@/database/schemas/platform';
 import type { LobeChatDatabase, Transaction } from '@/database/type';
+import { getRedisConfig } from '@/envs/redis';
+import { createRedisWithPrefix, isRedisEnabled } from '@/libs/redis/manager';
+import type { BaseRedisProvider, RedisConfig } from '@/libs/redis/types';
 import type {
   AdminSystemCancelJobInput,
   AdminSystemGetInstanceRevisionsInput,
@@ -53,7 +55,6 @@ import {
 const CONNECTOR_RUNTIME_JOB_TYPE = 'connector.runtime.shared-call.v1';
 const EASYAUTH_SYNC_JOB_TYPE = 'platform.easyauth.sync_user';
 const DEFAULT_PAGE_SIZE = 50;
-const REDIS_PROBE_TIMEOUT_MS = 1500;
 
 type DependencyHealth = {
   errorCategory:
@@ -76,8 +77,21 @@ interface PlatformSystemAdminServiceOptions {
     }[];
     status: 'healthy';
   }>;
-  redisProbe?: (env: Record<string, string | undefined>) => Promise<DependencyHealth>;
+  redisDependencies?: RedisHealthDependencies;
+  redisProbe?: () => Promise<DependencyHealth>;
 }
+
+interface RedisHealthDependencies {
+  createRedisWithPrefix: (config: RedisConfig, prefix: string) => Promise<BaseRedisProvider | null>;
+  getRedisConfig: () => RedisConfig;
+  isRedisEnabled: (config: RedisConfig) => boolean;
+}
+
+const defaultRedisHealthDependencies: RedisHealthDependencies = {
+  createRedisWithPrefix,
+  getRedisConfig,
+  isRedisEnabled,
+};
 
 const disabledHealth = (): DependencyHealth => ({ errorCategory: null, status: 'disabled' });
 const passiveHealth = (): DependencyHealth => ({
@@ -89,35 +103,24 @@ const incompleteHealth = (): DependencyHealth => ({
   status: 'degraded',
 });
 
-const probeRedis = async (env: Record<string, string | undefined>): Promise<DependencyHealth> => {
-  const url = env.REDIS_URL?.trim();
-  if (!url) return disabledHealth();
-  let client: Redis | null = null;
-  let timeout: ReturnType<typeof setTimeout> | undefined;
+const probeRedis = async (dependencies: RedisHealthDependencies): Promise<DependencyHealth> => {
+  const config = dependencies.getRedisConfig();
+  if (!dependencies.isRedisEnabled(config)) return disabledHealth();
+  let client: BaseRedisProvider | null = null;
   try {
-    client = new Redis(url, {
-      commandTimeout: REDIS_PROBE_TIMEOUT_MS,
-      connectTimeout: REDIS_PROBE_TIMEOUT_MS,
-      lazyConnect: true,
-      maxRetriesPerRequest: 0,
-      retryStrategy: () => null,
-    });
-    await Promise.race([
-      client.connect().then(() => client!.ping()),
-      new Promise<never>((_, reject) => {
-        timeout = setTimeout(() => reject(new Error('timeout')), REDIS_PROBE_TIMEOUT_MS);
-      }),
-    ]);
+    client = await dependencies.createRedisWithPrefix(config, 'platformSystemHealth');
+    if (!client) return disabledHealth();
     return { errorCategory: null, status: 'healthy' };
   } catch (error) {
     return {
       errorCategory:
-        error instanceof Error && error.message === 'timeout' ? 'timeout' : 'operation_unavailable',
+        error instanceof Error && /timeout/i.test(error.message)
+          ? 'timeout'
+          : 'operation_unavailable',
       status: 'unavailable',
     };
   } finally {
-    if (timeout) clearTimeout(timeout);
-    client?.disconnect(false);
+    if (client) await client.disconnect();
   }
 };
 
@@ -310,7 +313,9 @@ export class PlatformSystemAdminService {
     this.now = options.now ?? (() => new Date());
     this.publishFailureSummary =
       options.publishFailureSummary ?? (() => this.getRecentPublishFailures());
-    this.redisProbe = options.redisProbe ?? probeRedis;
+    this.redisProbe =
+      options.redisProbe ??
+      (() => probeRedis(options.redisDependencies ?? defaultRedisHealthDependencies));
   }
 
   private appendFailureAudit = async (
@@ -462,31 +467,22 @@ export class PlatformSystemAdminService {
     ) {
       throw new PlatformSystemJobInvalidError();
     }
-    const snapshot = await new PlatformInstanceStatusService(this.db, {
+    const statusService = new PlatformInstanceStatusService(this.db, {
       env: this.env,
-    }).getStatus();
-    const items = [
-      ...snapshot.freshDiagnostics.map((item) => ({ fresh: true, item })),
-      ...snapshot.recentStaleDiagnostics.map((item) => ({ fresh: false, item })),
-    ]
-      .sort(
-        (left, right) =>
-          right.item.lastHeartbeatAt.getTime() - left.item.lastHeartbeatAt.getTime() ||
-          left.item.instanceId.localeCompare(right.item.instanceId),
-      )
-      .filter(
-        ({ item }) =>
-          !cursorHeartbeat ||
-          item.lastHeartbeatAt < cursorHeartbeat ||
-          (item.lastHeartbeatAt.getTime() === cursorHeartbeat.getTime() &&
-            item.instanceId > String(cursor!.id)),
-      );
-    const page = items.slice(0, limit + 1);
-    const hasMore = page.length > limit;
-    const visible = hasMore ? page.slice(0, limit) : page;
+    });
+    const [snapshot, page] = await Promise.all([
+      statusService.getStatus(),
+      statusService.getRevisionInventoryPage({
+        cursor:
+          cursorHeartbeat && typeof cursor?.id === 'string'
+            ? { instanceId: cursor.id, lastHeartbeatAt: cursorHeartbeat }
+            : undefined,
+        limit,
+      }),
+    ]);
     return {
       domains: snapshot.domains,
-      items: visible.map(({ fresh, item }) => ({
+      items: page.items.map(({ fresh, item }) => ({
         domains: item.domains.map(({ errorCategory, ...domain }) => ({
           ...domain,
           lastErrorCategory: errorCategory,
@@ -502,14 +498,13 @@ export class PlatformSystemAdminService {
         ),
         startedAt: item.startedAt,
       })),
-      nextCursor:
-        hasMore && visible.at(-1)
-          ? encodeCursor({
-              id: visible.at(-1)!.item.instanceId,
-              lastHeartbeatAt: visible.at(-1)!.item.lastHeartbeatAt.toISOString(),
-            })
-          : null,
-      snapshotAt: snapshot.snapshotAt,
+      nextCursor: page.nextCursor
+        ? encodeCursor({
+            id: page.nextCursor.instanceId,
+            lastHeartbeatAt: page.nextCursor.lastHeartbeatAt.toISOString(),
+          })
+        : null,
+      snapshotAt: page.snapshotAt,
     };
   };
 
@@ -565,7 +560,7 @@ export class PlatformSystemAdminService {
         this.db.execute(sql`select 1`),
         new PlatformInstanceStatusService(this.db, { env: this.env }).getStatus(),
         this.jobSummary(),
-        this.redisProbe(this.env),
+        this.redisProbe(),
         this.publishFailureSummary(),
       ]);
     const instance = instanceResult.status === 'fulfilled' ? instanceResult.value : null;
