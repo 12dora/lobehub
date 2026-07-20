@@ -8,6 +8,10 @@ export async function register() {
     const { bootstrapIdentityProviderRuntime } =
       await import('@/server/enterprise/services/identityProvider/bootstrap');
     await bootstrapIdentityProviderRuntime();
+
+    const { ensurePlatformInstanceHeartbeatStarted } =
+      await import('@/server/enterprise/services/platformInstance/heartbeatRuntime');
+    await ensurePlatformInstanceHeartbeatStarted();
   }
 
   // Auto-start GatewayManager on server start for non-Vercel environments (Docker, local).

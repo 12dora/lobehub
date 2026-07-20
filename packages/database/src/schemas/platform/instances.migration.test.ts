@@ -53,12 +53,20 @@ describe('M14 platform instance revision migration', () => {
       'public.platform_instance_revision_states',
     ]);
 
-    const normalizedSnapshot = structuredClone(snapshot);
+    const normalizedSnapshot = structuredClone(snapshot) as Record<string, unknown> & {
+      id?: string;
+      prevId?: string;
+      tables: Record<string, unknown>;
+    };
     delete normalizedSnapshot.id;
     delete normalizedSnapshot.prevId;
     delete normalizedSnapshot.tables['public.platform_instance_heartbeats'];
     delete normalizedSnapshot.tables['public.platform_instance_revision_states'];
-    const normalizedPrevious = structuredClone(previousSnapshot);
+    const normalizedPrevious = structuredClone(previousSnapshot) as Record<string, unknown> & {
+      id?: string;
+      prevId?: string;
+      tables: Record<string, unknown>;
+    };
     delete normalizedPrevious.id;
     delete normalizedPrevious.prevId;
     expect(normalizedSnapshot).toEqual(normalizedPrevious);
