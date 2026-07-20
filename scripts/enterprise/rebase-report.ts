@@ -37,7 +37,18 @@ interface GitResult {
 }
 
 interface ChangedPath {
+  /**
+   * Present for rename (R*) and copy (C*) records from `git diff --name-status`.
+   */
+  destinationPath?: string;
+  /**
+   * Primary path for ordinary changes. For renames/copies this is the destination.
+   */
   path: string;
+  /**
+   * Present for rename (R*) and copy (C*) records from `git diff --name-status`.
+   */
+  sourcePath?: string;
   status: string;
 }
 
@@ -187,6 +198,17 @@ const resolveCommit = async (repositoryRoot: string, ref: string, label: string)
   return hash;
 };
 
+const isRenameStatus = (status: string) => status.startsWith('R');
+const isCopyStatus = (status: string) => status.startsWith('C');
+const isRenameOrCopyStatus = (status: string) => isRenameStatus(status) || isCopyStatus(status);
+
+const changePaths = (change: ChangedPath): string[] => {
+  if (change.sourcePath && change.destinationPath) {
+    return [change.sourcePath, change.destinationPath];
+  }
+  return [change.path];
+};
+
 const parseChangedPaths = (source: string): ChangedPath[] => {
   const fields = source.split('\0');
   if (fields.at(-1) === '') fields.pop();
@@ -195,24 +217,54 @@ const parseChangedPaths = (source: string): ChangedPath[] => {
   for (let index = 0; index < fields.length;) {
     const status = fields[index++];
     if (!status) throw new Error('Git returned an invalid change record');
-    const pathCount = status.startsWith('R') || status.startsWith('C') ? 2 : 1;
-    for (let pathIndex = 0; pathIndex < pathCount; pathIndex += 1) {
-      const changedPath = fields[index++];
-      if (!changedPath) throw new Error('Git returned an incomplete change record');
-      changes.push({ path: assertSafeRepositoryPath(changedPath), status });
+    if (isRenameOrCopyStatus(status)) {
+      const sourcePath = fields[index++];
+      const destinationPath = fields[index++];
+      if (!sourcePath || !destinationPath) {
+        throw new Error('Git returned an incomplete change record');
+      }
+      changes.push({
+        destinationPath: assertSafeRepositoryPath(destinationPath),
+        path: assertSafeRepositoryPath(destinationPath),
+        sourcePath: assertSafeRepositoryPath(sourcePath),
+        status,
+      });
+      continue;
     }
+
+    const changedPath = fields[index++];
+    if (!changedPath) throw new Error('Git returned an incomplete change record');
+    changes.push({ path: assertSafeRepositoryPath(changedPath), status });
   }
 
-  return [...new Map(changes.map((change) => [change.path, change])).values()].sort((left, right) =>
-    left.path.localeCompare(right.path, 'en'),
-  );
+  return changes.sort((left, right) => {
+    const byPath = left.path.localeCompare(right.path, 'en');
+    if (byPath !== 0) return byPath;
+    const leftSource = left.sourcePath ?? '';
+    const rightSource = right.sourcePath ?? '';
+    return (
+      leftSource.localeCompare(rightSource, 'en') || left.status.localeCompare(right.status, 'en')
+    );
+  });
 };
 
 const listChanges = async (repositoryRoot: string, from: string, to: string) =>
   parseChangedPaths(
     await gitOutput(
       repositoryRoot,
-      ['diff', '--name-status', '-z', '--find-renames', from, to, '--'],
+      // Detect renames and copies (including copies from unmodified sources) so
+      // destination paths keep ledger coverage without losing source/destination semantics.
+      [
+        'diff',
+        '--name-status',
+        '-z',
+        '--find-renames',
+        '--find-copies',
+        '--find-copies-harder',
+        from,
+        to,
+        '--',
+      ],
       'Unable to enumerate changed paths',
     ),
   );
@@ -226,17 +278,80 @@ const listTreePaths = async (repositoryRoot: string, commit: string) => {
   return new Set(source.split('\0').filter(Boolean).map(assertSafeRepositoryPath));
 };
 
-const expandBraces = (pattern: string): string[] => {
-  const openingIndex = pattern.indexOf('{');
-  if (openingIndex < 0) return [pattern];
-  const closingIndex = pattern.indexOf('}', openingIndex + 1);
-  if (closingIndex < 0) return [pattern];
-  const alternatives = pattern.slice(openingIndex + 1, closingIndex).split(',');
-  return alternatives.flatMap((alternative) =>
-    expandBraces(
-      `${pattern.slice(0, openingIndex)}${alternative}${pattern.slice(closingIndex + 1)}`,
-    ),
-  );
+/**
+ * Expand bash-style brace groups with balanced, depth-aware parsing.
+ * Top-level commas split alternatives; nested braces expand recursively.
+ * Unbalanced or unparseable patterns fail closed.
+ */
+export const expandBraces = (pattern: string): string[] => {
+  if (!pattern.includes('{') && !pattern.includes('}')) return [pattern];
+
+  let openingIndex = -1;
+  for (let index = 0; index < pattern.length; index += 1) {
+    const character = pattern[index];
+    if (character === '}') {
+      throw new Error('Patch ledger contains an unbalanced brace pattern');
+    }
+    if (character === '{') {
+      openingIndex = index;
+      break;
+    }
+  }
+  if (openingIndex < 0) {
+    throw new Error('Patch ledger contains an unbalanced brace pattern');
+  }
+
+  let depth = 0;
+  let closingIndex = -1;
+  for (let index = openingIndex; index < pattern.length; index += 1) {
+    const character = pattern[index];
+    if (character === '{') depth += 1;
+    if (character === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        closingIndex = index;
+        break;
+      }
+    }
+  }
+  if (closingIndex < 0 || depth !== 0) {
+    throw new Error('Patch ledger contains an unbalanced brace pattern');
+  }
+
+  const body = pattern.slice(openingIndex + 1, closingIndex);
+  if (body.length === 0) {
+    throw new Error('Patch ledger contains an unparseable brace pattern');
+  }
+
+  const alternatives: string[] = [];
+  let alternativeStart = 0;
+  let alternativeDepth = 0;
+  for (let index = 0; index < body.length; index += 1) {
+    const character = body[index];
+    if (character === '{') alternativeDepth += 1;
+    if (character === '}') {
+      alternativeDepth -= 1;
+      if (alternativeDepth < 0) {
+        throw new Error('Patch ledger contains an unbalanced brace pattern');
+      }
+    }
+    if (character === ',' && alternativeDepth === 0) {
+      alternatives.push(body.slice(alternativeStart, index));
+      alternativeStart = index + 1;
+    }
+  }
+  if (alternativeDepth !== 0) {
+    throw new Error('Patch ledger contains an unbalanced brace pattern');
+  }
+  alternatives.push(body.slice(alternativeStart));
+
+  if (alternatives.length < 2 || alternatives.some((alternative) => alternative.length === 0)) {
+    throw new Error('Patch ledger contains an unparseable brace pattern');
+  }
+
+  const prefix = pattern.slice(0, openingIndex);
+  const suffix = pattern.slice(closingIndex + 1);
+  return alternatives.flatMap((alternative) => expandBraces(`${prefix}${alternative}${suffix}`));
 };
 
 const globToRegularExpression = (pattern: string) => {
@@ -463,17 +578,32 @@ export const analyzeRebase = async ({
   const ledgerEntries = parsePatchLedger(ledgerSource);
   if (ledgerEntries.length === 0) throw new Error('Authoritative patch ledger has no path entries');
 
-  const upstreamChangedPaths = new Set(
-    upstreamChanges.map(({ path: repositoryPath }) => repositoryPath),
-  );
-  const directEdits = candidateChanges.filter(
-    ({ path: repositoryPath }) =>
-      baseTree.has(repositoryPath) && !isEnterpriseOwnedPath(repositoryPath),
-  );
+  const upstreamChangedPaths = new Set(upstreamChanges.flatMap(changePaths));
+  /**
+   * Paths that represent candidate-side direct edits of non-enterprise-owned content.
+   * Renames/copies preserve source/destination semantics:
+   * - rename/copy: only the destination is scored (source is not a false "edit")
+   * - any non-enterprise-owned destination must be ledger-covered even when absent from baseTree
+   * - ordinary edits still require presence in the base tree
+   */
+  const directEditPaths: string[] = [];
+  for (const change of candidateChanges) {
+    if (isRenameOrCopyStatus(change.status)) {
+      const destinationPath = change.destinationPath ?? change.path;
+      if (!isEnterpriseOwnedPath(destinationPath)) directEditPaths.push(destinationPath);
+      continue;
+    }
+    if (baseTree.has(change.path) && !isEnterpriseOwnedPath(change.path)) {
+      directEditPaths.push(change.path);
+    }
+  }
+
   const directModificationHotspots: RebaseReport['directModificationHotspots'] = [];
   const patchDrift: RebaseReport['patchDrift'] = [];
 
-  for (const { path: repositoryPath } of directEdits) {
+  for (const repositoryPath of [...new Set(directEditPaths)].sort((left, right) =>
+    left.localeCompare(right, 'en'),
+  )) {
     const matches = matchLedgerEntries(repositoryPath, ledgerEntries);
     if (matches.length === 0) {
       patchDrift.push({ path: repositoryPath, reason: 'unregistered-upstream-direct-edit' });
@@ -494,7 +624,15 @@ export const analyzeRebase = async ({
   }
 
   const conflicts = await analyzeMerge(canonicalRoot, upstream, candidate, temporaryDirectoryRoot);
-  const gatePaths = [...new Set([...directEdits.map(({ path: value }) => value), ...conflicts])];
+  // Post-upgrade gates consider every candidate and upstream path (including enterprise-owned),
+  // plus conflict paths. Drift/conflict-specific gates remain gated on those conditions.
+  const gatePaths = [
+    ...new Set([
+      ...candidateChanges.flatMap(changePaths),
+      ...upstreamChanges.flatMap(changePaths),
+      ...conflicts,
+    ]),
+  ];
   const requiredGates = buildRequiredGates(gatePaths, conflicts, patchDrift.length > 0);
   const reportStatus: ReportStatus =
     conflicts.length > 0 ? 'conflicts' : patchDrift.length > 0 ? 'drift' : 'clean';
