@@ -179,8 +179,64 @@ describe('enterprise platform OpenTelemetry instruments', () => {
         outcome: 'failure',
         stage: 'provider-123',
       } as never),
-    ).toEqual({ 'enterprise.outcome': 'failure' });
+    ).toEqual({});
+    expect(
+      buildOidcLoginAttributes({ outcome: 'provider-123', stage: 'userinfo' } as never),
+    ).toEqual({});
+    expect(
+      buildOidcLoginAttributes({
+        failureCategory: 'subject-123',
+        outcome: 'failure',
+        stage: 'userinfo',
+      } as never),
+    ).toEqual({
+      'enterprise.failure_category': 'unexpected',
+      'enterprise.outcome': 'failure',
+      'enterprise.stage': 'userinfo',
+    });
     expect(buildAgentMaterializationAttributes({ outcome: 'user-123' } as never)).toEqual({});
+  });
+
+  it('records OIDC events only when the runtime relationship is valid', () => {
+    recordOidcLoginMetric({ outcome: 'success', stage: 'provider-123' } as never);
+    recordOidcLoginMetric({ outcome: 'provider-123', stage: 'authenticated' } as never);
+    recordOidcLoginMetric({ outcome: 'failure', stage: 'userinfo' } as never);
+    recordOidcLoginMetric({
+      failureCategory: 'subject-123',
+      outcome: 'failure',
+      stage: 'userinfo',
+    } as never);
+    recordOidcLoginMetric({
+      failureCategory: 'subject_mismatch',
+      outcome: 'success',
+      stage: 'authenticated',
+    } as never);
+    recordOidcLoginMetric({
+      failureCategory: 'id_token_invalid',
+      outcome: 'failure',
+      stage: 'id_token_verification',
+    });
+
+    expect(mocks.add).toHaveBeenCalledTimes(4);
+    expect(mocks.add).toHaveBeenNthCalledWith(1, 1, {
+      'enterprise.failure_category': 'unexpected',
+      'enterprise.outcome': 'failure',
+      'enterprise.stage': 'userinfo',
+    });
+    expect(mocks.add).toHaveBeenNthCalledWith(2, 1, {
+      'enterprise.failure_category': 'unexpected',
+      'enterprise.outcome': 'failure',
+      'enterprise.stage': 'userinfo',
+    });
+    expect(mocks.add).toHaveBeenNthCalledWith(3, 1, {
+      'enterprise.outcome': 'success',
+      'enterprise.stage': 'authenticated',
+    });
+    expect(mocks.add).toHaveBeenNthCalledWith(4, 1, {
+      'enterprise.failure_category': 'id_token_invalid',
+      'enterprise.outcome': 'failure',
+      'enterprise.stage': 'id_token_verification',
+    });
   });
 
   it('records bounded durations with only closed attributes', () => {

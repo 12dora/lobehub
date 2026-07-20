@@ -126,7 +126,9 @@ export const recordSsrfDenialMetric = (input: SsrfDenialMetricAttributes): void 
 };
 
 export const recordOidcLoginMetric = (input: OidcLoginMetricAttributes): void => {
-  oidcLoginCounter.add(1, buildOidcLoginAttributes(input));
+  const attributes = buildOidcLoginAttributes(input);
+  if (!attributes['enterprise.outcome'] || !attributes['enterprise.stage']) return;
+  oidcLoginCounter.add(1, attributes);
 };
 
 export const recordAgentMaterializationMetric = (
