@@ -91,7 +91,6 @@ const errorClass = (error: unknown): string =>
  * event. Values (including null) are cached; loader failures are never cached.
  */
 export class DomainConfigCache<T> {
-  private readonly cacheId: string;
   private readonly cacheKey: object;
   private readonly cacheTtlMs: number;
   private readonly cloneValue: (value: T) => T;
@@ -99,9 +98,9 @@ export class DomainConfigCache<T> {
   private readonly load: () => Promise<T | null>;
   private readonly namespace: string;
   private readonly now: () => number;
+  private readonly stateKey: string;
 
   constructor(options: DomainConfigCacheOptions<T>) {
-    this.cacheId = options.cacheId;
     this.cacheKey = options.cacheKey;
     this.cacheTtlMs = normalizeTtlMs(options.cacheTtlMs);
     this.cloneValue = options.cloneValue;
@@ -109,6 +108,7 @@ export class DomainConfigCache<T> {
     this.load = options.load;
     this.namespace = options.namespace;
     this.now = options.now ?? Date.now;
+    this.stateKey = `${options.namespace}\0${options.cacheId}`;
   }
 
   private readScopeEpoch = async (): Promise<string> => {
@@ -125,7 +125,7 @@ export class DomainConfigCache<T> {
   get = async (): Promise<T | null> => {
     const epoch = await this.readScopeEpoch();
     const namespaceGeneration = getNamespaceGeneration(this.namespace);
-    const state = getOrCreateState<T>(this.cacheKey, this.cacheId, namespaceGeneration);
+    const state = getOrCreateState<T>(this.cacheKey, this.stateKey, namespaceGeneration);
 
     if (state.namespaceGeneration !== namespaceGeneration) {
       expireState(state, namespaceGeneration);
@@ -153,7 +153,7 @@ export class DomainConfigCache<T> {
     try {
       const value = await request;
       const currentNamespaceGeneration = getNamespaceGeneration(this.namespace);
-      const storedState = getStoredState(this.cacheKey, this.cacheId);
+      const storedState = getStoredState(this.cacheKey, this.stateKey);
       if (
         storedState === state &&
         state.generation === generation &&
@@ -174,7 +174,7 @@ export class DomainConfigCache<T> {
   };
 
   invalidate = (): void => {
-    const state = getStoredState(this.cacheKey, this.cacheId) as DomainCacheState<T> | undefined;
+    const state = getStoredState(this.cacheKey, this.stateKey) as DomainCacheState<T> | undefined;
     if (state) expireState(state, getNamespaceGeneration(this.namespace));
   };
 }

@@ -53,11 +53,28 @@ describe('DomainConfigCache', () => {
     await vi.waitFor(() => expect(load).toHaveBeenCalledOnce());
     pending.resolve({ revision: 7 });
 
-    await expect(Promise.all([first, second])).resolves.toEqual([
-      { revision: 7 },
-      { revision: 7 },
-    ]);
+    await expect(Promise.all([first, second])).resolves.toEqual([{ revision: 7 }, { revision: 7 }]);
     expect(load).toHaveBeenCalledOnce();
+  });
+
+  it('isolates domain namespaces that share a reader and cache id', async () => {
+    const cacheKey = {};
+    const first = createCache({
+      cacheKey,
+      epoch: async () => '1',
+      load: async () => ({ revision: 1 }),
+    });
+    const second = new DomainConfigCache<MutableValue>({
+      cacheId: 'published',
+      cacheKey,
+      cloneValue: (value) => ({ ...value }),
+      getScopeEpoch: async () => '1',
+      load: async () => ({ revision: 2 }),
+      namespace: 'other-domain',
+    });
+
+    await expect(first.get()).resolves.toEqual({ revision: 1 });
+    await expect(second.get()).resolves.toEqual({ revision: 2 });
   });
 
   it('refreshes for every opaque epoch change, including nonzero to zero', async () => {
@@ -112,10 +129,9 @@ describe('DomainConfigCache', () => {
     databaseRevision = 2;
     now = 50;
     await expect(cache.get()).resolves.toEqual({ revision: 2 });
-    expect(consoleError).toHaveBeenCalledWith(
-      expect.stringContaining('TTL fallback'),
-      { errorClass: 'Error' },
-    );
+    expect(consoleError).toHaveBeenCalledWith(expect.stringContaining('TTL fallback'), {
+      errorClass: 'Error',
+    });
     consoleError.mockRestore();
   });
 
