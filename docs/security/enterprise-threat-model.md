@@ -109,6 +109,9 @@ All live `admin.*` mutations share one multi-instance atomic limiter:
 - **PostgreSQL is the sole authoritative counter** (`platform_admin_mutation_rate_windows`), using the
   database clock for fixed windows. There is no independent Redis quota path that can reset or expand
   limits under failover.
+- Each active row stores `window_ms`. Expiry uses the persisted duration; a replica's local
+  `ADMIN_MUTATION_RATE_WINDOW_MS` only takes effect when a new window begins, never mid-window under
+  config drift.
 - Opportunistic bounded retention deletes expired windows without affecting consume decisions.
 - Failure of the shared store fails closed with the stable public error `ADMIN_RATE_LIMITED` mapped to
   tRPC `TOO_MANY_REQUESTS`. A limited request executes zero business mutation logic.

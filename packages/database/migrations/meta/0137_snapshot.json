@@ -18146,7 +18146,7 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true,
-          "default": "'使用工作账号登录'"
+          "default": "'\u4f7f\u7528\u5de5\u4f5c\u8d26\u53f7\u767b\u5f55'"
         },
         "icon": {
           "name": "icon",
@@ -30406,6 +30406,12 @@
         "window_start": {
           "name": "window_start",
           "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "window_ms": {
+          "name": "window_ms",
+          "type": "integer",
           "primaryKey": false,
           "notNull": true
         },
