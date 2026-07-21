@@ -512,7 +512,7 @@ describe('enterprise admin mutation policy registry', () => {
         risk: 'critical',
         controls: {
           audit: { status: 'enforced' },
-          rateLimit: { status: 'planned' },
+          rateLimit: { status: 'enforced' },
           reason: { status: 'enforced' },
           reauth: { status: 'enforced' },
         },
@@ -542,5 +542,19 @@ describe('enterprise admin mutation policy registry', () => {
     expect(serialized).not.toMatch(
       /(?:api[-_ ]?key|bearer|client[-_ ]?secret|credential|password|private[-_ ]?key|https?:\/\/)/i,
     );
+  });
+
+  it('has no remaining gap or planned controls on live admin mutations', () => {
+    const residual = Object.entries(ADMIN_MUTATION_REGISTRY).flatMap(([procedure, definition]) =>
+      Object.entries(definition.controls)
+        .filter(([, control]) => control.status === 'gap' || control.status === 'planned')
+        .map(([control, entry]) => ({
+          control,
+          detail: 'gap' in entry ? entry.gap : null,
+          procedure,
+          status: entry.status,
+        })),
+    );
+    expect(residual).toEqual([]);
   });
 });

@@ -4,6 +4,7 @@
  * M01 core: revisions / audit logs / jobs
  * Later modules own business population of the remaining tables.
  */
+export * from './adminMutationRate';
 export * from './agents';
 export * from './ai';
 export * from './auditLogs';

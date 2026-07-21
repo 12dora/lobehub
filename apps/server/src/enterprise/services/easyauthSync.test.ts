@@ -85,11 +85,6 @@ describe('EasyauthSyncService', () => {
         portalUrl: 'https://easyauth.test',
         timeoutMs: 1000,
       },
-      fetchImpl: async () =>
-        new Response(JSON.stringify(sampleSnapshot()), {
-          headers: { 'Content-Type': 'application/json' },
-          status: 200,
-        }),
     });
     // Override client method
     client.fetchPermissionSnapshot = fetch;

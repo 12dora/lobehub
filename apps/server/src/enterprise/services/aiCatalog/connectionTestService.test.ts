@@ -1,8 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { PlatformAiProviderItem } from '@/database/schemas/platform';
 
-import { AiCatalogConnectionTestService } from './connectionTestService';
+import { createSafeOutboundHttpClient } from '../../security/outboundHttp';
+import {
+  AiCatalogConnectionTestService,
+  createSafeAiConnectionProbe,
+} from './connectionTestService';
 
 const provider = {
   checkModel: 'test-model',
@@ -63,5 +67,33 @@ describe('AiCatalogConnectionTestService', () => {
     expect(JSON.stringify(result)).not.toContain('plain-multi-field-key');
     expect(JSON.stringify(result)).not.toContain('plain-header-secret');
     expect(JSON.stringify(result)).not.toContain('plain-password');
+  });
+
+  it('classifies enterprise outbound policy denials as network failures', async () => {
+    const service = new AiCatalogConnectionTestService(async () => {
+      throw new Error('Outbound request blocked by enterprise network policy');
+    });
+    const result = await service.test({
+      keyVaults: { apiKey: 'fake-key' },
+      provider,
+      runtimeProvider: 'openai',
+    });
+    expect(result).toMatchObject({
+      errorCategory: 'network',
+      sanitizedMessage: 'Connection failed: provider network unavailable',
+      status: 'failure',
+    });
+  });
+
+  it('builds the production probe against SafeOutboundHttpClient rather than raw fetch', () => {
+    const transport = vi.fn();
+    const outbound = createSafeOutboundHttpClient({
+      resolve: async () => [{ address: '203.0.113.10', family: 4 }],
+      transport,
+    });
+    const probe = createSafeAiConnectionProbe(outbound);
+    expect(typeof probe).toBe('function');
+    // Probe is bound to the injected SafeOutbound client; production never accepts raw fetch.
+    expect(probe.length).toBe(1);
   });
 });

@@ -682,6 +682,21 @@
     },
     {
       "category": "credential-assignment",
+      "lineDigest": "7642c46715824f8fc4d0c61adb0a7f9afd3125bf4d8edbf94409266979f4fbc8",
+      "path": "apps/server/src/enterprise/services/aiCatalog/connectionTestService.transport.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "e72de062d712c8d6e8832a36aebd002674f801fb87d7e22bbb9674fd8c587c10",
+      "path": "apps/server/src/enterprise/services/aiCatalog/connectionTestService.transport.test.ts"
+    },
+    {
+      "category": "pem-private-key",
+      "lineDigest": "b5d4e32437dd4025992f649cbf0280d44aeb721dd4823d58ec7592e179aaaa31",
+      "path": "apps/server/src/enterprise/services/aiCatalog/connectionTestService.transport.test.ts"
+    },
+    {
+      "category": "credential-assignment",
       "lineDigest": "64e09cbd0a42c3581291c2e3020d580765621808d75743ecd8dd0a13d7ae1e51",
       "path": "apps/server/src/enterprise/services/aiCatalog/credentialAdapter.test.ts"
     },

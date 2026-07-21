@@ -25,6 +25,8 @@ import type {
 import { AgentRuntimeErrorType } from '../../types/error';
 import type { CreateImagePayload, CreateImageResponse } from '../../types/image';
 import type { CreateVideoPayload, CreateVideoResponse } from '../../types/video';
+import type { FetchLike } from '../../utils/boundFetch';
+import { runWithBoundFetch } from '../../utils/boundFetch';
 import { AgentRuntimeError } from '../../utils/createError';
 import { debugStream } from '../../utils/debugStream';
 import { getModelPricing } from '../../utils/getModelPricing';
@@ -94,6 +96,12 @@ interface LobeGoogleAIParams extends ModelIdMappingOptions {
   baseURL?: string;
   client?: GoogleGenAI;
   defaultHeaders?: Record<string, any>;
+  /**
+   * Custom fetch for enterprise SafeOutbound (and tests).
+   * @google/genai's ApiClient uses global fetch only; when set, network methods
+   * run under a bound global fetch so traffic never bypasses the policy boundary.
+   */
+  fetch?: FetchLike;
   id?: string;
   isVertexAi?: boolean;
 }
@@ -116,6 +124,7 @@ export class LobeGoogleAI implements LobeRuntimeAI {
   apiKey?: string;
   provider: string;
   private readonly modelIdMappingOptions: ModelIdMappingOptions;
+  private readonly boundFetch?: FetchLike;
 
   constructor({
     apiKey,
@@ -125,6 +134,7 @@ export class LobeGoogleAI implements LobeRuntimeAI {
     id,
     defaultHeaders,
     modelIdMapping,
+    fetch: customFetch,
   }: LobeGoogleAIParams = {}) {
     if (!apiKey) throw AgentRuntimeError.createError(AgentRuntimeErrorType.InvalidProviderAPIKey);
 
@@ -137,11 +147,21 @@ export class LobeGoogleAI implements LobeRuntimeAI {
     this.baseURL = client ? undefined : baseURL || DEFAULT_BASE_URL;
     this.isVertexAi = isVertexAi || false;
     this.modelIdMappingOptions = { modelIdMapping };
+    this.boundFetch = customFetch;
 
     this.provider = id || (isVertexAi ? 'vertexai' : 'google');
   }
 
+  private withTransport = async <T>(fn: () => Promise<T>): Promise<T> => {
+    if (!this.boundFetch) return fn();
+    return runWithBoundFetch(this.boundFetch, fn);
+  };
+
   async chat(rawPayload: ChatStreamPayload, options?: ChatMethodOptions) {
+    return this.withTransport(() => this.chatUnbound(rawPayload, options));
+  }
+
+  private async chatUnbound(rawPayload: ChatStreamPayload, options?: ChatMethodOptions) {
     try {
       const payload = this.buildPayload(rawPayload);
       const { model, thinkingBudget, thinkingLevel, imageAspectRatio, imageResolution } = payload;
@@ -466,6 +486,10 @@ export class LobeGoogleAI implements LobeRuntimeAI {
   }
 
   async models(options?: { signal?: AbortSignal }) {
+    return this.withTransport(() => this.modelsUnbound(options));
+  }
+
+  private async modelsUnbound(options?: { signal?: AbortSignal }) {
     try {
       const url = `${this.baseURL}/v1beta/models`;
       const response = await fetch(url, {

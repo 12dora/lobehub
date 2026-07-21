@@ -18,6 +18,7 @@ import {
   adminSecretRotationStartOutputSchema,
 } from '../../contracts/adminSecretRotation';
 import { withActiveUser } from '../../guards/activeUser';
+import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
 import { throwEnterpriseError } from '../../guards/enterpriseErrors';
 import { withPlatformPermission } from '../../guards/platformPermission';
 import { assertRecentReauth } from '../../guards/reauth';
@@ -30,7 +31,10 @@ import {
   PlatformSecretRewrapProviderError,
 } from '../../services/secretRewrap/errors';
 
-const secretRotationBase = authedProcedure.use(serverDatabase).use(withActiveUser());
+const secretRotationBase = authedProcedure
+  .use(serverDatabase)
+  .use(withActiveUser())
+  .use(withAdminMutationRateLimit());
 
 const mapSecretRotationError = (error: unknown): never => {
   if (error instanceof PlatformSecretRewrapNotFoundError) {

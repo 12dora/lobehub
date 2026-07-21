@@ -23,6 +23,7 @@ import {
   adminSystemRetryJobOutputSchema,
 } from '../../contracts/adminSystem';
 import { withActiveUser } from '../../guards/activeUser';
+import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
 import { throwEnterpriseError } from '../../guards/enterpriseErrors';
 import { withPlatformPermission } from '../../guards/platformPermission';
 import { assertRecentReauth } from '../../guards/reauth';
@@ -55,12 +56,14 @@ const systemProcedure = preAccessAuthedProcedure
   .use(enterpriseAccessGate)
   .use(serverDatabase)
   .use(withActiveUser())
+  .use(withAdminMutationRateLimit())
   .use(withPlatformPermission(PLATFORM_PERMISSIONS.OIDC_PUBLISH));
 
 const platformSystemBase = preAccessAuthedProcedure
   .use(enterpriseAccessGate)
   .use(serverDatabase)
-  .use(withActiveUser());
+  .use(withActiveUser())
+  .use(withAdminMutationRateLimit());
 
 const execute = async <T>(operation: () => Promise<T>): Promise<T> => {
   try {
@@ -142,13 +145,14 @@ const assertRestartReauth = async (
     userId: string;
   },
   input: { reason: string; requestId: string },
+  action: 'admin.system.prepareRestart' | 'admin.system.requestRestart',
 ): Promise<void> => {
   try {
     assertRecentReauth({ authenticatedAt: ctx.authenticatedAt, authMethod: ctx.authMethod });
   } catch (error) {
     try {
       await new PlatformAuditService(ctx.serverDB).append({
-        action: 'admin.system.requestRestart',
+        action,
         actorUserId: ctx.userId,
         afterDiff: { error: 'reauth_required' },
         reason: input.reason,
@@ -162,6 +166,7 @@ const assertRestartReauth = async (
         errorClass: auditError instanceof Error ? auditError.name : 'UnknownError',
       });
     }
+    // Denial must still reject even if the audit write fails.
     throw error;
   }
 };
@@ -261,6 +266,7 @@ export const adminSystemRouter = router({
           userId: ctx.userId!,
         },
         input,
+        'admin.system.prepareRestart',
       );
       return execute(() => createSystemService(ctx.serverDB).prepareRestart(ctx.userId!, input));
     }),
@@ -277,6 +283,7 @@ export const adminSystemRouter = router({
           userId: ctx.userId!,
         },
         input,
+        'admin.system.requestRestart',
       );
       return execute(() => createSystemService(ctx.serverDB).requestRestart(ctx.userId!, input));
     }),
