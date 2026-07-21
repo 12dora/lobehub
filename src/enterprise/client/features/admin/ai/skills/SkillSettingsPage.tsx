@@ -479,7 +479,14 @@ const SkillSettingsPage = memo(() => {
             </Text>
             {canCreate && canPublish ? (
               <Flexbox horizontal gap={6}>
-                <Button icon={LinkIcon} size="small" title="Import from URL" onClick={onImport} />
+                <Button
+                  icon={LinkIcon}
+                  size="small"
+                  title={t('aiSkillSettings.import.title', {
+                    defaultValue: 'Import skill from URL',
+                  })}
+                  onClick={onImport}
+                />
                 <Button size="small" type="primary" onClick={onCreate}>
                   {t('aiSkillSettings.actions.create', { defaultValue: 'List skill' })}
                 </Button>
