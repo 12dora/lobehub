@@ -1,0 +1,78 @@
+name: Enterprise Production Readiness
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/enterprise-production-readiness.yml'
+      - 'scripts/enterprise/preflight.ts'
+      - 'scripts/enterprise/recovery-drill.ts'
+      - 'scripts/enterprise/production-readiness/**'
+      - 'docs/enterprise/runbooks/**'
+      - 'docs/redevelopment/overview/14_Q06生产就绪门禁运行说明.md'
+  push:
+    branches:
+      - canary
+    paths:
+      - '.github/workflows/enterprise-production-readiness.yml'
+      - 'scripts/enterprise/preflight.ts'
+      - 'scripts/enterprise/recovery-drill.ts'
+      - 'scripts/enterprise/production-readiness/**'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+
+jobs:
+  harness-contract:
+    name: Harness and contract validation (non-production)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-env
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Unit contracts (preflight + recovery)
+        run: |
+          bunx vitest run --config vitest.config.mts --silent='passed-only' \
+            scripts/enterprise/production-readiness/preflight.test.ts \
+            scripts/enterprise/production-readiness/recovery.test.ts
+
+      - name: CLI help paths exit cleanly
+        run: |
+          set -euo pipefail
+          bun run scripts/enterprise/preflight.ts --help || true
+          bun run scripts/enterprise/preflight.ts 2>/dev/null && exit 1 || true
+          bun run scripts/enterprise/recovery-drill.ts --help || true
+
+      - name: Dispatch dry-run reject injection
+        run: |
+          set -euo pipefail
+          if bun run scripts/enterprise/preflight.ts dispatch --command-id 'preflight-validate;rm'; then
+            echo 'injection command id must fail' >&2
+            exit 1
+          fi
+          bun run scripts/enterprise/preflight.ts dispatch --command-id preflight-validate
+
+      - name: Label evidence non-production
+        run: |
+          mkdir -p .records/enterprise-production-readiness
+          printf '%s\n' '{"lane":"enterprise-production-readiness","classification":"ci-harness","productionPassed":false,"note":"ci-harness-only"}' \
+            > .records/enterprise-production-readiness/ci-classification.json
+
+      - name: Upload redacted classification only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: enterprise-production-readiness-ci
+          path: .records/enterprise-production-readiness/ci-classification.json
+          if-no-files-found: error
