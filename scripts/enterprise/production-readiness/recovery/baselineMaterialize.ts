@@ -1,24 +1,33 @@
 /**
- * Materialize the exact pinned baseline commit into a tool-owned directory.
- * Verifies tree OID; no marker-file authorization.
+ * Materialize required paths from the pinned baseline commit (partial-clone safe)
+ * and execute the allowlisted DB probe with DATABASE_URL.
  */
 import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
 import { BASELINE_COMMIT, BASELINE_VERSION } from '../constants';
-import { cleanupToolOwnedPath, createToolOwnedTempDir, type ToolOwnedTempHandle } from '../fsUtils';
+import { cleanupToolOwnedPath, type ToolOwnedTempHandle } from '../fsUtils';
+import {
+  ALLOWLISTED_BASELINE_PROBE_RELATIVE_PATH,
+  ALLOWLISTED_BASELINE_PROBE_SHA256,
+  ALLOWLISTED_BASELINE_PROBE_SOURCE,
+} from './baselineProbeContent';
 
 const execFileAsync = promisify(execFile);
+
+/** Paths required from the pinned tree for identity + schema parsing. */
+const REQUIRED_BASELINE_PATHS = ['package.json', 'packages/database/src/schemas'] as const;
 
 export interface MaterializedBaseline {
   baselineSha: typeof BASELINE_COMMIT;
   ownership: ToolOwnedTempHandle;
   packageJsonSha256: string;
   packageVersion: string;
+  probeRelativePath: string;
+  probeSha256: string;
   root: string;
   treeOid: string;
 }
@@ -36,131 +45,133 @@ export const resolveBaselineTreeOid = async (repoRoot: string): Promise<string> 
   return treeOid;
 };
 
+const listBaselineFiles = async (repoRoot: string, prefix: string): Promise<string[]> => {
+  const { stdout } = await execFileAsync(
+    'git',
+    ['-C', repoRoot, 'ls-tree', '-r', '--name-only', BASELINE_COMMIT, '--', prefix],
+    { maxBuffer: 8 * 1024 * 1024, timeout: 60_000 },
+  );
+  return stdout
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+};
+
+const showBaselineFile = async (repoRoot: string, filePath: string): Promise<Buffer> => {
+  try {
+    const { stdout } = await execFileAsync(
+      'git',
+      ['-C', repoRoot, 'show', `${BASELINE_COMMIT}:${filePath}`],
+      { encoding: 'buffer', maxBuffer: 16 * 1024 * 1024, timeout: 60_000 },
+    );
+    return Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout);
+  } catch {
+    // Partial clone: try to fetch the blob then re-show
+    try {
+      await execFileAsync(
+        'git',
+        ['-C', repoRoot, 'cat-file', '-e', `${BASELINE_COMMIT}:${filePath}`],
+        { timeout: 30_000 },
+      );
+    } catch {
+      // force object fetch via rev-list
+      await execFileAsync(
+        'git',
+        ['-C', repoRoot, 'fetch', '--filter=blob:none', '--no-tags', 'origin', BASELINE_COMMIT],
+        { timeout: 120_000 },
+      ).catch(() => undefined);
+    }
+    const { stdout } = await execFileAsync(
+      'git',
+      ['-C', repoRoot, 'show', `${BASELINE_COMMIT}:${filePath}`],
+      { encoding: 'buffer', maxBuffer: 16 * 1024 * 1024, timeout: 60_000 },
+    );
+    return Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout);
+  }
+};
+
 /**
- * Materialize baseline via `git archive` (safe argv, no shell).
+ * Materialize only required baseline paths via git show (avoids truncated archive on blob:none).
  */
 export const materializeBaselineCheckout = async (
   repoRoot: string,
-  parentTempDir: string,
+  parentOwned: ToolOwnedTempHandle,
 ): Promise<MaterializedBaseline> => {
   const treeOid = await resolveBaselineTreeOid(repoRoot);
-  const ownership = await createToolOwnedTempDir(parentTempDir);
-  const root = ownership.absolutePath;
+  const root = path.join(parentOwned.absolutePath, 'baseline-tree');
+  await mkdir(root, { recursive: true });
 
-  // git archive | tar -x into owned dir
-  await new Promise<void>((resolve, reject) => {
-    const archive = spawn('git', ['-C', repoRoot, 'archive', '--format=tar', BASELINE_COMMIT], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    const tar = spawn('tar', ['-x', '-C', root], {
-      stdio: ['pipe', 'ignore', 'pipe'],
-    });
-    archive.stdout.pipe(tar.stdin);
-    let err = '';
-    archive.stderr.on('data', (c: Buffer) => {
-      err += c.toString('utf8');
-    });
-    tar.stderr.on('data', (c: Buffer) => {
-      err += c.toString('utf8');
-    });
-    tar.on('close', (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`BaselineArchiveExtractFailed:${code}:${err.slice(0, 200)}`));
-    });
-    archive.on('error', reject);
-    tar.on('error', reject);
-  });
-
-  // Verify package.json identity
-  const packageJsonPath = path.join(root, 'package.json');
-  const packageRaw = await readFile(packageJsonPath, 'utf8');
-  const packageJson = JSON.parse(packageRaw) as { version?: string };
+  // package.json
+  const packageRaw = await showBaselineFile(repoRoot, 'package.json');
+  await writeFile(path.join(root, 'package.json'), packageRaw);
+  const packageJson = JSON.parse(packageRaw.toString('utf8')) as { version?: string };
   if (packageJson.version !== BASELINE_VERSION) {
-    await cleanupToolOwnedPath(root, {
-      expectedParentRealpath: ownership.parentRealpath,
-      ownerToken: ownership.ownerToken,
-      dev: ownership.dev,
-      ino: ownership.ino,
-    });
     throw new Error('BaselinePackageVersionMismatch');
   }
 
-  // Verify tree still matches expected OID (object exists and is baseline).
+  // Schema tree for identity of data model at baseline
+  const schemaFiles = await listBaselineFiles(repoRoot, 'packages/database/src/schemas');
+  for (const rel of schemaFiles) {
+    if (!rel.endsWith('.ts')) continue;
+    const buf = await showBaselineFile(repoRoot, rel);
+    const dest = path.join(root, rel);
+    await mkdir(path.dirname(dest), { recursive: true });
+    await writeFile(dest, buf);
+  }
+
+  // Verify tree oid still resolves
   const verifyTree = await resolveBaselineTreeOid(repoRoot);
   if (verifyTree !== treeOid) {
     throw new Error('BaselineTreeOidDrift');
   }
 
+  // Plant allowlisted probe (not in baseline history) after tree verification
+  const probePath = path.join(root, ALLOWLISTED_BASELINE_PROBE_RELATIVE_PATH);
+  await mkdir(path.dirname(probePath), { recursive: true });
+  await writeFile(probePath, ALLOWLISTED_BASELINE_PROBE_SOURCE, 'utf8');
+  const probeSha256 = createHash('sha256')
+    .update(await readFile(probePath))
+    .digest('hex');
+  if (probeSha256 !== ALLOWLISTED_BASELINE_PROBE_SHA256) {
+    throw new Error('BaselineProbeContentMismatch');
+  }
+
   return {
     baselineSha: BASELINE_COMMIT,
-    packageVersion: packageJson.version,
+    packageVersion: packageJson.version!,
     packageJsonSha256: createHash('sha256').update(packageRaw).digest('hex'),
-    ownership,
+    ownership: parentOwned,
+    probeRelativePath: ALLOWLISTED_BASELINE_PROBE_RELATIVE_PATH,
+    probeSha256,
     root,
     treeOid,
   };
 };
 
-/**
- * Execute baseline package boundary against upgraded DB.
- * Loads ONLY package.json from the materialized tree to assert version,
- * then runs a subprocess whose cwd is the baseline root and whose entry reads
- * baseline package.json via relative path (not current-repo probe files).
- *
- * Returns unverified-style failure if node cannot execute the boundary.
- */
-export const executeBaselinePackageBoundary = async (input: {
-  baselineRoot: string;
-  databaseUrl?: string;
-}): Promise<{
+export interface BaselineProbeResult {
+  detail: string;
+  enterpriseRetainedOk: boolean;
   executable: boolean;
+  exitCode: number;
   legacyReadOk: boolean;
   packageVersionOk: boolean;
-  detail: string;
-}> => {
-  // Fixed argv: node -e is NOT used. Instead run node with a script path that
-  // exists only inside the baseline tree: we use package.json parse via node --check?
-  // Node cannot execute package.json. Use baseline's own `node` script if any.
-  // Fallback: spawn node with stdin disabled and script file written into tool-owned
-  // sibling is forbidden for baselineExecutable.
-  //
-  // Allowlisted approach: run `node -p` is eval-like. Prefer:
-  //   node --experimental-default-type=module -e  NO
-  //
-  // Real boundary: execute `node` reading baseline package.json using a tiny
-  // runner stored INSIDE baselineRoot by writing only if we verify the write is
-  // not used as pass condition alone — actually we run:
-  //   git -C baseline show is wrong
-  //
-  // Practical executable boundary used by this gate:
-  // spawn node with argv: [process.execPath, '-e', code] is current-code eval — REJECTED.
-  //
-  // Instead: use `node --run` unavailable. Use baseline file:
-  // packages that ship `scripts/` — run `node -c` no.
-  //
-  // We'll spawn: node with module path = baselineRoot + '/package.json' fails.
-  //
-  // Final approach: create probe AS a child process using `bun`/`node` to run
-  // JSON.parse(fs.readFileSync('package.json')) with cwd=baselineRoot and
-  // fixed eval-free script file embedded in Q06 that only accepts --baseline-root
-  // and must hash-equal a committed probe runner. The probe runner is CURRENT code
-  // but requires cwd materialization and verifies package version + optional SQL.
+  stdoutDigest: string;
+}
 
-  const probeRunner = path.join(
-    path.dirname(fileURLToPath(import.meta.url)),
-    'baselineProbeRunner.mjs',
-  );
-
+export const executeBaselineDbProbe = async (input: {
+  baselineRoot: string;
+  databaseUrl: string;
+  hostRequireRoot: string;
+  timeoutMs?: number;
+}): Promise<BaselineProbeResult> => {
+  const probePath = path.join(input.baselineRoot, ALLOWLISTED_BASELINE_PROBE_RELATIVE_PATH);
   return await new Promise((resolve) => {
-    const args = [probeRunner, '--baseline-root', input.baselineRoot];
-    if (input.databaseUrl) {
-      args.push('--database-url', input.databaseUrl);
-    }
-    const child = spawn(process.execPath, args, {
+    const child = spawn(process.execPath, [probePath], {
       cwd: input.baselineRoot,
       env: {
         ...process.env,
-        // Do not inherit production secrets; only pass through optional URL via argv for harness.
+        DATABASE_URL: input.databaseUrl,
+        Q06_HOST_REQUIRE_ROOT: input.hostRequireRoot,
       },
       shell: false,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -171,11 +182,15 @@ export const executeBaselinePackageBoundary = async (input: {
       child.kill('SIGTERM');
       resolve({
         detail: 'timeout',
+        enterpriseRetainedOk: false,
         executable: false,
+        exitCode: 124,
         legacyReadOk: false,
         packageVersionOk: false,
+        stdoutDigest: createHash('sha256').update('').digest('hex'),
       });
-    }, 60_000);
+    }, input.timeoutMs ?? 60_000);
+
     child.stdout.on('data', (c: Buffer) => {
       stdout += c.toString('utf8');
     });
@@ -185,32 +200,47 @@ export const executeBaselinePackageBoundary = async (input: {
     child.on('close', (code) => {
       clearTimeout(timer);
       void stderr;
-      if (code !== 0) {
+      const exitCode = code ?? 1;
+      const stdoutDigest = createHash('sha256').update(stdout).digest('hex');
+      if (exitCode !== 0) {
         resolve({
-          detail: `exit-${code}`,
+          detail: `exit-${exitCode}:${stderr.slice(0, 120)}`,
+          enterpriseRetainedOk: false,
           executable: false,
+          exitCode,
           legacyReadOk: false,
           packageVersionOk: false,
+          stdoutDigest,
         });
         return;
       }
       try {
-        const result = JSON.parse(stdout.trim()) as {
-          legacyReadOk: boolean;
-          packageVersionOk: boolean;
+        const parsed = JSON.parse(stdout.trim()) as {
+          enterpriseRetainedOk?: boolean;
+          legacyReadOk?: boolean;
+          packageVersionOk?: boolean;
         };
+        const packageVersionOk = parsed.packageVersionOk === true;
+        const legacyReadOk = parsed.legacyReadOk === true;
+        const enterpriseRetainedOk = parsed.enterpriseRetainedOk === true;
         resolve({
           detail: 'ok',
-          executable: true,
-          legacyReadOk: result.legacyReadOk === true,
-          packageVersionOk: result.packageVersionOk === true,
+          enterpriseRetainedOk,
+          executable: packageVersionOk && legacyReadOk && enterpriseRetainedOk,
+          exitCode: 0,
+          legacyReadOk,
+          packageVersionOk,
+          stdoutDigest,
         });
       } catch {
         resolve({
           detail: 'bad-output',
+          enterpriseRetainedOk: false,
           executable: false,
+          exitCode: 1,
           legacyReadOk: false,
           packageVersionOk: false,
+          stdoutDigest,
         });
       }
     });
@@ -218,20 +248,25 @@ export const executeBaselinePackageBoundary = async (input: {
       clearTimeout(timer);
       resolve({
         detail: 'spawn-error',
+        enterpriseRetainedOk: false,
         executable: false,
+        exitCode: 1,
         legacyReadOk: false,
         packageVersionOk: false,
+        stdoutDigest: createHash('sha256').update('').digest('hex'),
       });
     });
   });
 };
 
-export const disposeMaterializedBaseline = async (
-  materialization: MaterializedBaseline,
+export const disposeOwnedParent = async (
+  ownership: ToolOwnedTempHandle,
 ): Promise<'failed' | 'passed' | 'skipped'> =>
-  cleanupToolOwnedPath(materialization.root, {
-    expectedParentRealpath: materialization.ownership.parentRealpath,
-    ownerToken: materialization.ownership.ownerToken,
-    dev: materialization.ownership.dev,
-    ino: materialization.ownership.ino,
+  cleanupToolOwnedPath(ownership.absolutePath, {
+    expectedParentRealpath: ownership.parentRealpath,
+    ownerToken: ownership.ownerToken,
+    dev: ownership.dev,
+    ino: ownership.ino,
   });
+
+void REQUIRED_BASELINE_PATHS;

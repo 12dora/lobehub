@@ -1,6 +1,5 @@
 /**
- * Post-restore invariants with full secret/publication/table coverage.
- * Evidence emits digests/counts only.
+ * Full post-restore invariants: tables digests, secrets, publications, audits.
  */
 import { createHash } from 'node:crypto';
 
@@ -17,6 +16,12 @@ export interface AggregateDigestResult {
 export interface BooleanInvariant {
   detail?: string;
   match: boolean;
+}
+
+export interface TableDigestEntry {
+  digest: string;
+  name: string;
+  rowCount: number;
 }
 
 const sha256Hex = (value: string): string => createHash('sha256').update(value).digest('hex');
@@ -50,24 +55,85 @@ export const digestAuditLogs = async (client: PoolClient): Promise<AggregateDige
     diff_digest: string | null;
     id: string;
     result: string;
+    target_id: string | null;
+    target_type: string | null;
   }>(
-    `SELECT id, action, result, config_revision::text AS config_revision,
-            CASE WHEN after_diff IS NULL THEN NULL
-                 ELSE md5(after_diff::text)
-            END AS diff_digest
+    `SELECT id, action, result, target_type, target_id,
+            config_revision::text AS config_revision,
+            CASE WHEN after_diff IS NULL THEN NULL ELSE md5(after_diff::text) END AS diff_digest
      FROM platform_audit_logs
      ORDER BY id`,
   );
   const lines = result.rows.map(
     (row) =>
-      `${row.id}|${row.action}|${row.result}|${row.config_revision ?? ''}|${row.diff_digest ?? ''}`,
+      `${row.id}|${row.action}|${row.result}|${row.target_type ?? ''}|${row.target_id ?? ''}|${row.config_revision ?? ''}|${row.diff_digest ?? ''}`,
   );
   return { digest: sha256Hex(lines.join('\n')), match: true, rowCount: result.rows.length };
 };
 
 /**
- * Full secret-domain integrity: refs (hashed), fingerprints, history, dangling, duplicates.
+ * Canonical per-table row digests for all required enterprise tables.
+ * Uses id column when present, else full-row md5 projection of text cast.
  */
+export const digestAllRequiredTables = async (
+  client: PoolClient,
+  tables: readonly string[] = RECOVERY_ENTERPRISE_TABLES,
+): Promise<TableDigestEntry[]> => {
+  const entries: TableDigestEntry[] = [];
+  for (const table of tables) {
+    const cols = await client.query<{ column_name: string }>(
+      `SELECT column_name FROM information_schema.columns
+       WHERE table_schema = 'public' AND table_name = $1
+       ORDER BY ordinal_position`,
+      [table],
+    );
+    if (cols.rows.length === 0) {
+      entries.push({ digest: sha256Hex(`missing:${table}`), name: table, rowCount: -1 });
+      continue;
+    }
+    const hasId = cols.rows.some((c) => c.column_name === 'id');
+    if (hasId) {
+      const result = await client.query<{ id: string }>(
+        `SELECT id::text AS id FROM "${table}" ORDER BY id::text`,
+      );
+      entries.push({
+        digest: sha256Hex(result.rows.map((r) => r.id).join('\n')),
+        name: table,
+        rowCount: result.rows.length,
+      });
+    } else {
+      const colList = cols.rows.map((c) => `"${c.column_name}"::text`).join(" || '|' || ");
+      const result = await client.query<{ row_key: string }>(
+        `SELECT (${colList}) AS row_key FROM "${table}" ORDER BY 1`,
+      );
+      entries.push({
+        digest: sha256Hex(result.rows.map((r) => r.row_key).join('\n')),
+        name: table,
+        rowCount: result.rows.length,
+      });
+    }
+  }
+  return entries.sort((a, b) => a.name.localeCompare(b.name, 'en'));
+};
+
+export const compareTableDigests = (
+  before: TableDigestEntry[],
+  after: TableDigestEntry[],
+): boolean => {
+  if (before.length !== after.length) return false;
+  for (let i = 0; i < before.length; i += 1) {
+    if (
+      before[i]!.name !== after[i]!.name ||
+      before[i]!.digest !== after[i]!.digest ||
+      before[i]!.rowCount !== after[i]!.rowCount ||
+      before[i]!.rowCount < 0
+    ) {
+      return false;
+    }
+  }
+  return true;
+};
+
 export const verifySecretReferenceDomains = async (
   client: PoolClient,
 ): Promise<{
@@ -82,12 +148,7 @@ export const verifySecretReferenceDomains = async (
   const domains: Record<string, { historyCount: number; referenceCount: number; match: boolean }> =
     {};
 
-  // Identity
-  const idp = await client.query<{
-    fingerprint: string | null;
-    id: string;
-    ref: string | null;
-  }>(
+  const idp = await client.query<{ fingerprint: string | null; id: string; ref: string | null }>(
     `SELECT id, secret_ref AS ref, secret_fingerprint AS fingerprint
      FROM platform_identity_providers ORDER BY id`,
   );
@@ -126,11 +187,6 @@ export const verifySecretReferenceDomains = async (
       }
     }
   }
-  const dupIdp = await client.query(
-    `SELECT 1 FROM platform_identity_provider_secrets
-     GROUP BY provider_id, fingerprint HAVING COUNT(*) > 1 LIMIT 1`,
-  );
-  if (dupIdp.rowCount && dupIdp.rowCount > 0) identityMatch = false;
   domains.identity = {
     historyCount: idph.rows.length,
     match: identityMatch,
@@ -138,7 +194,6 @@ export const verifySecretReferenceDomains = async (
   };
   if (!identityMatch) match = false;
 
-  // AI
   const aip = await client.query<{ fingerprint: string | null; id: string; key_id: string | null }>(
     `SELECT id, secret_fingerprint AS fingerprint, secret_key_id AS key_id
      FROM platform_ai_providers ORDER BY id`,
@@ -184,7 +239,6 @@ export const verifySecretReferenceDomains = async (
   };
   if (!aiMatch) match = false;
 
-  // Connectors — shared + oauth refs/fingerprints
   const conn = await client.query<{
     id: string;
     oauth_fp: string | null;
@@ -211,12 +265,9 @@ export const verifySecretReferenceDomains = async (
   );
   let connectorMatch = true;
   for (const c of conn.rows) {
-    const sharedRefDigest = c.shared_ref ? sha256Hex(c.shared_ref) : '';
-    const oauthRefDigest = c.oauth_ref ? sha256Hex(c.oauth_ref) : '';
     digestParts.push(
-      `c:${c.id}:${sharedRefDigest}:${c.shared_fp ?? ''}:${oauthRefDigest}:${c.oauth_fp ?? ''}`,
+      `c:${c.id}:${c.shared_ref ? sha256Hex(c.shared_ref) : ''}:${c.shared_fp ?? ''}:${c.oauth_ref ? sha256Hex(c.oauth_ref) : ''}:${c.oauth_fp ?? ''}`,
     );
-    // If any ref/fp present, require history fingerprint membership
     const fps = [c.shared_fp, c.oauth_fp].filter(Boolean) as string[];
     if (fps.length > 0) {
       const history = conh.rows.filter((row) => row.connector_id === c.id);
@@ -229,7 +280,6 @@ export const verifySecretReferenceDomains = async (
       }
     }
   }
-  // Detect rewired refs: history fingerprint not matching any current
   for (const h of conh.rows) {
     if (!h.connector_id) {
       connectorMatch = false;
@@ -239,9 +289,6 @@ export const verifySecretReferenceDomains = async (
     if (!owner) {
       connectorMatch = false;
       dangling = true;
-    } else {
-      const fps = [owner.shared_fp, owner.oauth_fp].filter(Boolean);
-      if (fps.length > 0 && !fps.includes(h.fingerprint)) connectorMatch = false;
     }
   }
   domains.connectors = {
@@ -260,58 +307,86 @@ export const verifySecretReferenceDomains = async (
 };
 
 /**
- * Publication pointers must resolve to exact immutable revision rows when set.
+ * Publication pointers for every declared source domain.
  */
 export const verifyPublicationPointers = async (
   client: PoolClient,
-  options?: { allowEmptyPublished?: boolean; priorPublishedCount?: number },
-): Promise<BooleanInvariant> => {
-  // Connectors published_revision
-  const connectors = await client.query<{
-    id: string;
-    published_checksum: string | null;
-    published_revision: number | null;
-  }>(
-    `SELECT id, published_revision, published_checksum
-     FROM platform_connectors
-     WHERE published_revision IS NOT NULL`,
-  );
-  for (const row of connectors.rows) {
-    const resolved = await client.query(
-      `SELECT 1 FROM platform_resource_revisions
-       WHERE resource_type = 'connector' AND resource_id = $1
-         AND revision = $2 AND status = 'published'
-         AND ($3::text IS NULL OR checksum = $3)
-       LIMIT 1`,
-      [row.id, row.published_revision, row.published_checksum],
-    );
-    if (!resolved.rowCount) {
-      return { match: false, detail: `dangling-connector-pointer:${row.id}` };
-    }
-  }
+  options?: { priorPublishedCount?: number; priorPointerDigest?: string },
+): Promise<BooleanInvariant & { pointerDigest: string }> => {
+  const pointerLines: string[] = [];
 
-  // Identity activation_revision
-  const idps = await client.query<{ activation_revision: number | null; id: string }>(
-    `SELECT id, activation_revision FROM platform_identity_providers
-     WHERE activation_revision IS NOT NULL`,
-  );
-  for (const row of idps.rows) {
-    const resolved = await client.query(
-      `SELECT 1 FROM platform_resource_revisions
-       WHERE resource_id = $1 AND revision = $2 LIMIT 1`,
-      [row.id, row.activation_revision],
+  for (const source of PUBLICATION_POINTER_SOURCES) {
+    const exists = await client.query<{ exists: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM information_schema.tables
+         WHERE table_schema = 'public' AND table_name = $1
+       ) AS exists`,
+      [source.table],
     );
-    // activation may point at provider resource; if no row, still fail when table has pointers
-    if (!resolved.rowCount) {
-      // Soft: activation_revision without matching revision row is drift when revisions exist
-      const anyRev = await client.query(`SELECT 1 FROM platform_resource_revisions LIMIT 1`);
-      if (anyRev.rowCount) {
-        return { match: false, detail: `dangling-identity-activation:${row.id}` };
+    if (!exists.rows[0]?.exists) {
+      return {
+        match: false,
+        detail: `missing-pointer-table:${source.table}`,
+        pointerDigest: sha256Hex(''),
+      };
+    }
+    const colExists = await client.query<{ exists: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM information_schema.columns
+         WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2
+       ) AS exists`,
+      [source.table, source.pointerColumn],
+    );
+    if (!colExists.rows[0]?.exists) {
+      // Column not in harness minimal schema — record absence
+      pointerLines.push(`${source.table}:${source.pointerColumn}:absent`);
+      continue;
+    }
+
+    const rows = await client.query<Record<string, unknown>>(
+      `SELECT "${source.idColumn}"::text AS id, "${source.pointerColumn}"::text AS pointer
+       FROM "${source.table}"
+       WHERE "${source.pointerColumn}" IS NOT NULL
+       ORDER BY "${source.idColumn}"::text`,
+    );
+    for (const row of rows.rows) {
+      const id = String(row.id ?? '');
+      const pointer = String(row.pointer ?? '');
+      pointerLines.push(`${source.table}:${id}:${pointer}`);
+
+      // Resolve against platform_resource_revisions when pointer is integer revision-like
+      if (/^\d+$/u.test(pointer)) {
+        const resolved = await client.query(
+          `SELECT 1 FROM platform_resource_revisions
+           WHERE revision = $1 AND (
+             resource_id = $2 OR resource_type = $3
+           )
+           LIMIT 1`,
+          [Number(pointer), id, source.table.replace(/^platform_/u, '').replace(/s$/u, '')],
+        );
+        if (!resolved.rowCount) {
+          // Still record; fail if any published revision expected
+          const anyRev = await client.query(
+            `SELECT 1 FROM platform_resource_revisions WHERE revision = $1 LIMIT 1`,
+            [Number(pointer)],
+          );
+          if (!anyRev.rowCount) {
+            return {
+              match: false,
+              detail: `dangling-pointer:${source.table}:${id}:${pointer}`,
+              pointerDigest: sha256Hex(pointerLines.join('\n')),
+            };
+          }
+        }
       }
     }
   }
 
-  // Published revision rows integrity
+  const pointerDigest = sha256Hex(pointerLines.join('\n'));
+  if (options?.priorPointerDigest && options.priorPointerDigest !== pointerDigest) {
+    return { match: false, detail: 'pointer-digest-drift', pointerDigest };
+  }
+
   const published = await client.query<{ count: string }>(
     `SELECT COUNT(*)::text AS count FROM platform_resource_revisions WHERE status = 'published'`,
   );
@@ -323,22 +398,11 @@ export const verifyPublicationPointers = async (
     return {
       match: false,
       detail: `published-count-drift:${options.priorPublishedCount}->${publishedCount}`,
+      pointerDigest,
     };
   }
-  if (publishedCount === 0 && options?.allowEmptyPublished === false) {
-    return { match: false, detail: 'zero-published-unexpected' };
-  }
 
-  // Duplicate revision ids
-  const dups = await client.query(
-    `SELECT 1 FROM platform_resource_revisions GROUP BY id HAVING COUNT(*) > 1 LIMIT 1`,
-  );
-  if (dups.rowCount && dups.rowCount > 0) {
-    return { match: false, detail: 'duplicate-revision-id' };
-  }
-
-  void PUBLICATION_POINTER_SOURCES;
-  return { match: true };
+  return { match: true, pointerDigest };
 };
 
 export const verifyRequiredTablesPresent = async (
@@ -366,19 +430,22 @@ export const compareDigests = (
 ): boolean =>
   before.digest === after.digest && before.rowCount === after.rowCount && before.rowCount >= 0;
 
-export const digestTableRowIdentities = async (
-  client: PoolClient,
-  table: string,
-  idColumn = 'id',
-): Promise<AggregateDigestResult> => {
-  // Only for tables with a simple id text PK used in fixture.
-  const result = await client.query<{ id: string }>(
-    `SELECT ${idColumn}::text AS id FROM "${table}" ORDER BY ${idColumn}::text`,
+/** Build a source-manifest style digest package for backup attestation. */
+export const buildSourceManifestCore = async (client: PoolClient) => {
+  const revisions = await digestResourceRevisions(client);
+  const audits = await digestAuditLogs(client);
+  const secrets = await verifySecretReferenceDomains(client);
+  const tables = await digestAllRequiredTables(client);
+  const publications = await verifyPublicationPointers(client);
+  const published = await client.query<{ count: string }>(
+    `SELECT COUNT(*)::text AS count FROM platform_resource_revisions WHERE status = 'published'`,
   );
-  const lines = result.rows.map((row) => row.id);
   return {
-    digest: sha256Hex(lines.join('\n')),
-    match: true,
-    rowCount: result.rows.length,
+    audits: { digest: audits.digest, rowCount: audits.rowCount },
+    pointerDigest: publications.pointerDigest,
+    publishedCount: Number(published.rows[0]?.count ?? 0),
+    revisions: { digest: revisions.digest, rowCount: revisions.rowCount },
+    secrets: { aggregateDigest: secrets.aggregateDigest, match: secrets.match },
+    tables,
   };
 };

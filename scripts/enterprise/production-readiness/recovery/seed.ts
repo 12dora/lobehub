@@ -48,6 +48,19 @@ export const buildMinimalDrillSchemaStatements = (): string[] => {
   const stmts: string[] = [
     `CREATE TABLE IF NOT EXISTS users (
        id text PRIMARY KEY, username text, email text)`,
+    // Legacy 2.2.10 core tables (expand-only retention surface for baseline probe)
+    `CREATE TABLE IF NOT EXISTS sessions (
+       id text PRIMARY KEY, user_id text, title text)`,
+    `CREATE TABLE IF NOT EXISTS agents (
+       id text PRIMARY KEY, user_id text, title text)`,
+    `CREATE TABLE IF NOT EXISTS topics (
+       id text PRIMARY KEY, user_id text, title text)`,
+    `CREATE TABLE IF NOT EXISTS messages (
+       id text PRIMARY KEY, user_id text, content text)`,
+    `CREATE TABLE IF NOT EXISTS user_settings (
+       id text PRIMARY KEY, general jsonb)`,
+    `CREATE TABLE IF NOT EXISTS api_keys (
+       id text PRIMARY KEY, user_id text, name text)`,
     `CREATE TABLE IF NOT EXISTS platform_resource_revisions (
        id text PRIMARY KEY,
        resource_type text NOT NULL,
@@ -115,7 +128,7 @@ export const buildMinimalDrillSchemaStatements = (): string[] => {
     `CREATE TABLE IF NOT EXISTS platform_connector_tools (
        id text PRIMARY KEY, connector_id text)`,
     `CREATE TABLE IF NOT EXISTS platform_user_connector_bindings (
-       id text PRIMARY KEY, connector_id text, user_id text)`,
+       id text PRIMARY KEY, connector_id text, user_id text, published_revision integer)`,
     `CREATE TABLE IF NOT EXISTS platform_connector_oauth_states (
        id text PRIMARY KEY, connector_id text)`,
     `CREATE TABLE IF NOT EXISTS platform_branding (

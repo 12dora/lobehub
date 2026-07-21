@@ -5,30 +5,37 @@ export {
   BASELINE_REQUIRED_TABLES,
   DESTRUCTIVE_SQL_PATTERNS,
   executeCandidateReadContract,
-  executeSyntheticSqlContract,
   rejectDestructiveCommand,
   runAppRollbackDrill,
 } from './appRollback';
 export {
   type BackupRestoreDrillOptions,
   type BackupRestoreDrillResult,
+  buildSourceManifestCore,
   isCorruptedDump,
   isUnsafeBackupPath,
   rejectIdenticalSourceTarget,
   runBackupRestoreDrill,
 } from './backupRestore';
 export {
-  disposeMaterializedBaseline,
-  executeBaselinePackageBoundary,
+  disposeOwnedParent,
+  executeBaselineDbProbe,
   materializeBaselineCheckout,
   type MaterializedBaseline,
   resolveBaselineTreeOid,
 } from './baselineMaterialize';
 export {
+  ALLOWLISTED_BASELINE_PROBE_RELATIVE_PATH,
+  ALLOWLISTED_BASELINE_PROBE_SHA256,
+  ALLOWLISTED_BASELINE_PROBE_SOURCE,
+} from './baselineProbeContent';
+export { assertGateEvidenceShape, toPreflightGateEvidence } from './evidenceEnvelope';
+export {
   compareDigests,
+  compareTableDigests,
+  digestAllRequiredTables,
   digestAuditLogs,
   digestResourceRevisions,
-  digestTableRowIdentities,
   verifyPublicationPointers,
   verifyRequiredTablesPresent,
   verifySecretReferenceDomains,

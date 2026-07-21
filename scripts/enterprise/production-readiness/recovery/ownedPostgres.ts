@@ -35,6 +35,11 @@ export interface OwnedPostgresHandle {
   pgRestoreCustom: (dump: Buffer) => Promise<void>;
   resourceToken: string;
   withClient: <T>(fn: (client: PoolClient) => Promise<T>) => Promise<T>;
+  /**
+   * Borrow DATABASE_URL for a callback only. Never log or store the URL.
+   * Used to bind baseline probe processes to this owned DB.
+   */
+  withDatabaseUrl: <T>(fn: (databaseUrl: string) => Promise<T>) => Promise<T>;
   withPool: <T>(fn: (pool: Pool, client: PoolClient) => Promise<T>) => Promise<T>;
 }
 
@@ -181,6 +186,10 @@ export const createOwnedPostgres = async (): Promise<OwnedPostgresLifecycle> => 
   const handle: OwnedPostgresHandle = {
     identityDigest,
     resourceToken,
+    withDatabaseUrl: async (fn) => {
+      if (!connectionString) throw safeError('OwnedPostgresConnectionMissing');
+      return fn(connectionString);
+    },
     pgDumpCustom: async () => {
       try {
         const { stdout: buffer } = await execFileAsync(
