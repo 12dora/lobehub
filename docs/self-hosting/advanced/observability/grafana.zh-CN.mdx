@@ -40,18 +40,16 @@ docker compose up -d
 
 该目录至少应包含：
 
-| 路径                                     | 作用                             |
-| -------------------------------------- | ------------------------------ |
-| `docker-compose.yml`                   | 服务拓扑与镜像固定版本                    |
-| `.env`（由 `.env.example` 复制）            | 密钥与端口                          |
-| `prometheus/prometheus.yml`            | 抓取配置与 `rule_files`             |
-| `prometheus/rules/*.yml`               | 企业平台参考告警规则                     |
-| `otel-collector/collector-config.yaml` | OTLP → Prometheus remote-write |
-| `tempo/tempo.yaml`                     | 链路后端                           |
-| `grafana/datasources/*`                | Grafana 数据源                    |
-| `grafana/dashboards/`                  | 仪表盘 provisioning 根目录           |
-| `init_data.json`                       | Casdoor 初始化                    |
-| `searxng-settings.yml`                 | 搜索侧车配置                         |
+- `docker-compose.yml`：服务拓扑与镜像固定版本
+- `.env`（由 `.env.example` 复制）：密钥与端口
+- `prometheus/prometheus.yml`：抓取配置与 `rule_files`
+- `prometheus/rules/*.yml`：企业平台参考告警规则
+- `otel-collector/collector-config.yaml`：OTLP → Prometheus remote-write
+- `tempo/tempo.yaml`：链路后端
+- `grafana/datasources/*`：Grafana 数据源
+- `grafana/dashboards/`：仪表盘 provisioning 根目录
+- `init_data.json`：Casdoor 初始化
+- `searxng-settings.yml`：搜索侧车配置
 
 若无法克隆整仓，请下载完整的 `docker-compose/production/grafana` 目录树（例如 sparse checkout 或源码归档），不要只取 `docker-compose.yml` 与 `.env.example`。缺少兄弟配置时相对 volume 挂载会失败。
 
