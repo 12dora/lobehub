@@ -291,11 +291,78 @@ export class AdminIdentityProviderService {
       targetId: input.id,
     });
 
-  discoverIssuer = async (issuer: string) => this.discovery.discover(issuer);
+  discoverIssuer = async (actorUserId: string, issuer: string) => {
+    try {
+      const metadata = await this.discovery.discover(issuer);
+      try {
+        await new PlatformAuditService(this.db).append({
+          action: 'admin.identityProviders.discover',
+          actorUserId,
+          afterDiff: { outcome: 'discovered' },
+          result: 'success',
+          targetId: 'identity_provider_discovery',
+          targetType: 'identity_provider_validation',
+        });
+      } catch (auditError) {
+        console.error('[admin.identityProviders] discover audit unavailable', {
+          errorClass: auditError instanceof Error ? auditError.name : 'UnknownError',
+        });
+      }
+      return metadata;
+    } catch (error) {
+      try {
+        await new PlatformAuditService(this.db).append({
+          action: 'admin.identityProviders.discover',
+          actorUserId,
+          afterDiff: { error: 'discovery_failed' },
+          result: 'failure',
+          targetId: 'identity_provider_discovery',
+          targetType: 'identity_provider_validation',
+        });
+      } catch (auditError) {
+        console.error('[admin.identityProviders] discover failure audit unavailable', {
+          errorClass: auditError instanceof Error ? auditError.name : 'UnknownError',
+        });
+      }
+      throw error;
+    }
+  };
 
-  validateNetwork = async (issuer: string) => {
-    await this.discovery.validateNetwork(issuer);
-    return { valid: true as const };
+  validateNetwork = async (actorUserId: string, issuer: string) => {
+    try {
+      await this.discovery.validateNetwork(issuer);
+      try {
+        await new PlatformAuditService(this.db).append({
+          action: 'admin.identityProviders.validateNetwork',
+          actorUserId,
+          afterDiff: { valid: true },
+          result: 'success',
+          targetId: 'identity_provider_network',
+          targetType: 'identity_provider_validation',
+        });
+      } catch (auditError) {
+        console.error('[admin.identityProviders] validateNetwork audit unavailable', {
+          errorClass: auditError instanceof Error ? auditError.name : 'UnknownError',
+        });
+      }
+      return { valid: true as const };
+    } catch (error) {
+      try {
+        await new PlatformAuditService(this.db).append({
+          action: 'admin.identityProviders.validateNetwork',
+          actorUserId,
+          afterDiff: { error: 'network_validation_failed' },
+          result: 'failure',
+          targetId: 'identity_provider_network',
+          targetType: 'identity_provider_validation',
+        });
+      } catch (auditError) {
+        console.error('[admin.identityProviders] validateNetwork failure audit unavailable', {
+          errorClass: auditError instanceof Error ? auditError.name : 'UnknownError',
+        });
+      }
+      throw error;
+    }
   };
 
   getCallbackUrls = () => {

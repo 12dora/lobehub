@@ -148,12 +148,14 @@ describe('AdminIdentityProviderService', () => {
 
   it('exposes canonical callback URLs and delegates public-only discovery checks', async () => {
     discover.mockResolvedValueOnce({ issuer: 'https://login.example.test' });
-    await expect(service.discoverIssuer('https://login.example.test')).resolves.toEqual({
+    await expect(service.discoverIssuer('admin-1', 'https://login.example.test')).resolves.toEqual({
       issuer: 'https://login.example.test',
     });
-    await expect(service.validateNetwork('https://login.example.test')).resolves.toEqual({
-      valid: true,
-    });
+    await expect(service.validateNetwork('admin-1', 'https://login.example.test')).resolves.toEqual(
+      {
+        valid: true,
+      },
+    );
     expect(validateNetwork).toHaveBeenCalledWith('https://login.example.test');
     expect(service.getCallbackUrls()).toEqual({
       production: 'https://app.example.test/api/auth/oauth2/callback/{providerKey}',
