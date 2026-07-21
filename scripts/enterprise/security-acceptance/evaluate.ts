@@ -10,6 +10,7 @@ import {
   SECURITY_ACCEPTANCE_LANE,
   SECURITY_ACCEPTANCE_SCHEMA_VERSION,
 } from './constants';
+import { assertNoUndefinedDeep, omitUndefinedDeep } from './omitUndefined';
 import type { PenAdapterDefinition } from './penManifest';
 import { scanForForbiddenReportContent } from './privacy';
 import {
@@ -49,9 +50,10 @@ export interface EvaluateSecurityAcceptanceResult {
 export const evaluateSecurityAcceptance = (
   input: EvaluateSecurityAcceptanceInput,
 ): EvaluateSecurityAcceptanceResult => {
-  const dependency = dependencyScanArtifactSchema.parse(input.dependency);
-  const leakage = leakageScanArtifactSchema.parse(input.leakage);
-  const pen = penRegressionArtifactSchema.parse(input.pen);
+  // Strip explicit undefined before schema/digest so optional fields are absent, not nullish keys.
+  const dependency = dependencyScanArtifactSchema.parse(omitUndefinedDeep(input.dependency));
+  const leakage = leakageScanArtifactSchema.parse(omitUndefinedDeep(input.leakage));
+  const pen = penRegressionArtifactSchema.parse(omitUndefinedDeep(input.pen));
 
   if (!/^[a-f\d]{40}$/u.test(input.gitSha)) {
     throw new Error('gitSha must be a full lowercase 40-char sha');
@@ -64,31 +66,30 @@ export const evaluateSecurityAcceptance = (
     pen,
   });
 
-  if (derived.semanticError) {
-    // Still emit a report, but overall is unavailable and exit 2 — never pass.
-  }
+  const core: SecurityAcceptanceReportCore = securityAcceptanceReportCoreSchema.parse(
+    omitUndefinedDeep({
+      artifacts: {
+        'dependency-scan': dependency,
+        'leakage-scan': leakage,
+        'pen-regression': pen,
+      },
+      checks: derived.checks.map((check) => omitUndefinedDeep(check)),
+      evidenceClass: EVIDENCE_CLASS,
+      externalPenetrationTest: {
+        note: 'External human production penetration testing is residual and is not claimed by repository automation.',
+        status: EXTERNAL_PEN_TEST_STATUS,
+      },
+      gitSha: input.gitSha,
+      lane: SECURITY_ACCEPTANCE_LANE,
+      overall: derived.overall,
+      policy: {
+        dependencyFailSeverities: [...DEPENDENCY_FAIL_SEVERITIES],
+      },
+      schemaVersion: SECURITY_ACCEPTANCE_SCHEMA_VERSION,
+    }),
+  );
 
-  const core: SecurityAcceptanceReportCore = securityAcceptanceReportCoreSchema.parse({
-    artifacts: {
-      'dependency-scan': dependency,
-      'leakage-scan': leakage,
-      'pen-regression': pen,
-    },
-    checks: derived.checks,
-    evidenceClass: EVIDENCE_CLASS,
-    externalPenetrationTest: {
-      note: 'External human production penetration testing is residual and is not claimed by repository automation.',
-      status: EXTERNAL_PEN_TEST_STATUS,
-    },
-    gitSha: input.gitSha,
-    lane: SECURITY_ACCEPTANCE_LANE,
-    overall: derived.overall,
-    policy: {
-      dependencyFailSeverities: [...DEPENDENCY_FAIL_SEVERITIES],
-    },
-    schemaVersion: SECURITY_ACCEPTANCE_SCHEMA_VERSION,
-  });
-
+  assertNoUndefinedDeep(core);
   const reportCoreSha256 = digestCanonical(core);
   const generatedAt = input.nowIso ?? new Date().toISOString();
 
@@ -103,15 +104,15 @@ export const evaluateSecurityAcceptance = (
     );
   }
 
-  const candidate: SecurityAcceptanceReport = {
+  const candidate: SecurityAcceptanceReport = omitUndefinedDeep({
     ...core,
     generatedAt,
     integrity: {
       redactionScan,
       reportCoreSha256,
-      schemaValid: true,
+      schemaValid: true as const,
     },
-  };
+  });
 
   const report = securityAcceptanceReportSchema.parse(candidate);
   return {
@@ -128,12 +129,12 @@ export const verifySecurityAcceptanceReport = (
   value: unknown,
   options?: { penManifest?: readonly PenAdapterDefinition[] },
 ): { ok: true; report: SecurityAcceptanceReport } | { ok: false; reason: string } => {
-  const parsed = securityAcceptanceReportSchema.safeParse(value);
+  const parsed = securityAcceptanceReportSchema.safeParse(omitUndefinedDeep(value));
   if (!parsed.success) {
     return { ok: false, reason: 'schema-mismatch' };
   }
 
-  const report = parsed.data;
+  const report = omitUndefinedDeep(parsed.data);
 
   if (report.evidenceClass !== EVIDENCE_CLASS) {
     return { ok: false, reason: 'invalid-evidence-class' };
@@ -201,4 +202,16 @@ export const verifySecurityAcceptanceReport = (
   }
 
   return { ok: true, report };
+};
+
+/**
+ * Public pass predicate — only true after full semantic+digest verification.
+ * Never trust author-controlled summary fields alone.
+ */
+export const isSecurityAcceptancePassed = (
+  value: unknown,
+  options?: { penManifest?: readonly PenAdapterDefinition[] },
+): boolean => {
+  const verified = verifySecurityAcceptanceReport(value, options);
+  return verified.ok && verified.report.overall === 'passed';
 };

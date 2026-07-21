@@ -78,13 +78,15 @@ Exit codes:
 
 ### Leakage baseline policy
 
-| Action                             | Rule                                                                |
-| ---------------------------------- | ------------------------------------------------------------------- |
-| Accept known finding               | Exact `path` + `category` + `lineDigest` in `leakage-baseline.json` |
-| New or changed line content        | Fails until reviewed baseline update                                |
-| Path wildcard / whole-file allow   | **Forbidden**                                                       |
-| Raw secret text in baseline/report | **Forbidden**                                                       |
-| Regenerate                         | `generate-leakage-baseline` then human review of the diff           |
+| Action                             | Rule                                                                 |
+| ---------------------------------- | -------------------------------------------------------------------- |
+| Accept known finding               | Exact `path` + `category` + `lineDigest` in `leakage-baseline.json`  |
+| New or changed line content        | Fails until reviewed baseline update                                 |
+| Stale baseline entry (unobserved)  | Fails (`stale-baseline-entries`)                                     |
+| Duplicate baseline fingerprint     | Rejected at schema load                                              |
+| Path wildcard / whole-file allow   | **Forbidden**                                                        |
+| Raw secret text in baseline/report | **Forbidden**                                                        |
+| Regenerate                         | `generate-leakage-baseline`, review diff, confirm deterministic hash |
 
 ## Residual external human penetration testing
 

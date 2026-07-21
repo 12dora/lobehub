@@ -11,9 +11,13 @@ import {
   DEPENDENCY_SCANNER_ID,
   SECURITY_ACCEPTANCE_SCHEMA_VERSION,
 } from './constants';
+import { omitUndefinedDeep } from './omitUndefined';
 import { sha256Hex } from './privacy';
 import { extractFirstJsonObject, type ProcessRunner, runProcess } from './process';
 import type { DependencyScanArtifact } from './schemas';
+
+const artifact = (value: DependencyScanArtifact): DependencyScanArtifact =>
+  omitUndefinedDeep(value);
 
 export interface DependencyScanOptions {
   /** When true, attempt `pnpm install --lockfile-only` if lockfile is missing. */
@@ -140,7 +144,7 @@ export const runDependencyScan = async (
   const packageJsonPath = path.join(options.cwd, 'package.json');
 
   if (!(await fileExists(packageJsonPath))) {
-    return {
+    return artifact({
       checkId: 'dependency-scan',
       failSeverities: [...DEPENDENCY_FAIL_SEVERITIES],
       policyHits: 0,
@@ -149,14 +153,14 @@ export const runDependencyScan = async (
       status: 'unavailable',
       target: { kind: 'package-json', path: 'package.json' },
       tool: { id: DEPENDENCY_SCANNER_ID, version: 'unknown' },
-    };
+    });
   }
 
   const packageJsonSha256 = sha256Hex(await readFile(packageJsonPath));
   const toolVersion = (await resolveToolVersion(runner, options.cwd)) ?? 'unknown';
 
   if (toolVersion === 'unknown') {
-    return {
+    return artifact({
       checkId: 'dependency-scan',
       failSeverities: [...DEPENDENCY_FAIL_SEVERITIES],
       policyHits: 0,
@@ -169,12 +173,12 @@ export const runDependencyScan = async (
         path: 'package.json',
       },
       tool: { id: DEPENDENCY_SCANNER_ID, version: 'unknown' },
-    };
+    });
   }
 
   const lockfile = await ensureLockfile(options.cwd, runner, options.allowGenerateLockfile ?? true);
   if ('reason' in lockfile) {
-    return {
+    return artifact({
       checkId: 'dependency-scan',
       failSeverities: [...DEPENDENCY_FAIL_SEVERITIES],
       policyHits: 0,
@@ -187,7 +191,7 @@ export const runDependencyScan = async (
         path: 'package.json',
       },
       tool: { id: DEPENDENCY_SCANNER_ID, version: toolVersion },
-    };
+    });
   }
 
   let processResult;
@@ -197,7 +201,7 @@ export const runDependencyScan = async (
       timeoutMs: options.timeoutMs,
     });
   } catch {
-    return {
+    return artifact({
       checkId: 'dependency-scan',
       failSeverities: [...DEPENDENCY_FAIL_SEVERITIES],
       policyHits: 0,
@@ -211,11 +215,11 @@ export const runDependencyScan = async (
         path: lockfile.path,
       },
       tool: { id: DEPENDENCY_SCANNER_ID, version: toolVersion },
-    };
+    });
   }
 
   if (processResult.timedOut) {
-    return {
+    return artifact({
       checkId: 'dependency-scan',
       failSeverities: [...DEPENDENCY_FAIL_SEVERITIES],
       policyHits: 0,
@@ -229,11 +233,11 @@ export const runDependencyScan = async (
         path: lockfile.path,
       },
       tool: { id: DEPENDENCY_SCANNER_ID, version: toolVersion },
-    };
+    });
   }
 
   if (processResult.outputTruncated) {
-    return {
+    return artifact({
       checkId: 'dependency-scan',
       failSeverities: [...DEPENDENCY_FAIL_SEVERITIES],
       policyHits: 0,
@@ -247,7 +251,7 @@ export const runDependencyScan = async (
         path: lockfile.path,
       },
       tool: { id: DEPENDENCY_SCANNER_ID, version: toolVersion },
-    };
+    });
   }
 
   const combined = `${processResult.stdout}\n${processResult.stderr}`;
@@ -255,7 +259,7 @@ export const runDependencyScan = async (
   try {
     parsed = extractFirstJsonObject(combined);
   } catch {
-    return {
+    return artifact({
       checkId: 'dependency-scan',
       failSeverities: [...DEPENDENCY_FAIL_SEVERITIES],
       policyHits: 0,
@@ -269,7 +273,7 @@ export const runDependencyScan = async (
         path: lockfile.path,
       },
       tool: { id: DEPENDENCY_SCANNER_ID, version: toolVersion },
-    };
+    });
   }
 
   const target = {
@@ -290,7 +294,7 @@ export const runDependencyScan = async (
     // - any other nonzero (e.g. 99) even with parseable zero metadata → unavailable
     // - 0 + nonzero hits → failed (trust counts over exit)
     if (exitCode !== 0 && exitCode !== 1) {
-      return {
+      return artifact({
         checkId: 'dependency-scan',
         exitCode,
         failSeverities: [...DEPENDENCY_FAIL_SEVERITIES],
@@ -301,11 +305,11 @@ export const runDependencyScan = async (
         status: 'unavailable',
         target,
         tool: { id: DEPENDENCY_SCANNER_ID, version: toolVersion },
-      };
+      });
     }
 
     if (policyHits > 0) {
-      return {
+      return artifact({
         checkId: 'dependency-scan',
         exitCode,
         failSeverities: [...DEPENDENCY_FAIL_SEVERITIES],
@@ -316,11 +320,11 @@ export const runDependencyScan = async (
         status: 'failed',
         target,
         tool: { id: DEPENDENCY_SCANNER_ID, version: toolVersion },
-      };
+      });
     }
 
     if (exitCode === 1) {
-      return {
+      return artifact({
         checkId: 'dependency-scan',
         exitCode,
         failSeverities: [...DEPENDENCY_FAIL_SEVERITIES],
@@ -331,10 +335,10 @@ export const runDependencyScan = async (
         status: 'unavailable',
         target,
         tool: { id: DEPENDENCY_SCANNER_ID, version: toolVersion },
-      };
+      });
     }
 
-    return {
+    return artifact({
       checkId: 'dependency-scan',
       exitCode: 0,
       failSeverities: [...DEPENDENCY_FAIL_SEVERITIES],
@@ -344,9 +348,9 @@ export const runDependencyScan = async (
       status: 'passed',
       target,
       tool: { id: DEPENDENCY_SCANNER_ID, version: toolVersion },
-    };
+    });
   } catch {
-    return {
+    return artifact({
       checkId: 'dependency-scan',
       exitCode: processResult.code,
       failSeverities: [...DEPENDENCY_FAIL_SEVERITIES],
@@ -356,6 +360,6 @@ export const runDependencyScan = async (
       status: 'unavailable',
       target,
       tool: { id: DEPENDENCY_SCANNER_ID, version: toolVersion },
-    };
+    });
   }
 };

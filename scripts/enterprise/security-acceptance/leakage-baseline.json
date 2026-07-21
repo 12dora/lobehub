@@ -1417,7 +1417,7 @@
     },
     {
       "category": "connection-string",
-      "lineDigest": "85341283a0b85896bf0fcecc89486258d55944bd9407db2de753a39d5e636610",
+      "lineDigest": "790d544fbddad2bbb72b5b14a3ffe7475b1bf7dcfc6e2114a6641e12f16c81e4",
       "path": "scripts/enterprise/security-acceptance/leakageAllowlist.ts"
     },
     {
