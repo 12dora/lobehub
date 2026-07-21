@@ -316,7 +316,7 @@ export const buildAiSecretMutation = (
   value: string,
   format: 'json' | 'string' = 'string',
 ): AiSecretMutation | null => {
-  if (operation === 'replace') {
+  if (operation === 'replace' || operation === 'merge') {
     const replacement = parseAiSecretReplacement(value, format);
     return replacement.value ? { operation, value: replacement.value } : null;
   }

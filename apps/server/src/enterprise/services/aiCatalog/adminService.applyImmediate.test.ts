@@ -54,6 +54,7 @@ describe('AiCatalogAdminService applyImmediate first-publish retest', () => {
   it('auto retests and publishes on revision 0 when credentials + enabled model exist', async () => {
     const service = createService(async () => {});
     const created = await service.createProviderDraft('admin', {
+      source: 'custom',
       checkModel: 'chat',
       displayName: 'First',
       enabled: true,
@@ -88,6 +89,7 @@ describe('AiCatalogAdminService applyImmediate first-publish retest', () => {
       throw new Error('network down');
     });
     const created = await service.createProviderDraft('admin', {
+      source: 'custom',
       checkModel: 'chat',
       displayName: 'Fail test',
       enabled: true,
@@ -128,6 +130,7 @@ describe('AiCatalogAdminService applyImmediate first-publish retest', () => {
     });
     // Seed published provider
     const created = await service.createProviderDraft('admin', {
+      source: 'custom',
       checkModel: 'chat',
       displayName: 'Live',
       enabled: true,
@@ -169,6 +172,7 @@ describe('AiCatalogAdminService applyImmediate first-publish retest', () => {
   it('publishNow retests revision 0 and publishes', async () => {
     const service = createService(async () => {});
     const created = await service.createProviderDraft('admin', {
+      source: 'custom',
       checkModel: 'chat',
       displayName: 'Now',
       enabled: true,
@@ -197,6 +201,7 @@ describe('AiCatalogAdminService applyImmediate first-publish retest', () => {
   it('applyModelImmediate create then publishes with auto retest on revision 0', async () => {
     const service = createService(async () => {});
     const created = await service.createProviderDraft('admin', {
+      source: 'custom',
       checkModel: 'chat',
       displayName: 'Models',
       enabled: true,
@@ -222,6 +227,7 @@ describe('AiCatalogAdminService applyImmediate first-publish retest', () => {
   it('toggle-off published provider publishes enabled:false revision (global disable)', async () => {
     const service = createService(async () => {});
     const created = await service.createProviderDraft('admin', {
+      source: 'custom',
       checkModel: 'chat',
       displayName: 'Disable Me',
       enabled: true,
@@ -293,6 +299,7 @@ describe('AiCatalogAdminService applyImmediate first-publish retest', () => {
   it('revision 0 disable publish is still rejected (first publish must be enabled)', async () => {
     const service = createService(async () => {});
     const created = await service.createProviderDraft('admin', {
+      source: 'custom',
       displayName: 'Never Live',
       enabled: false,
       providerKey: 'rev0-off',
@@ -322,6 +329,7 @@ describe('AiCatalogAdminService applyImmediate first-publish retest', () => {
   it('update on published provider throws when publish validation fails (not soft-return)', async () => {
     const service = createService(async () => {});
     const created = await service.createProviderDraft('admin', {
+      source: 'custom',
       checkModel: 'chat',
       displayName: 'Throwing',
       enabled: true,
@@ -364,6 +372,7 @@ describe('AiCatalogAdminService applyImmediate first-publish retest', () => {
   it('secret merge keeps unsubmitted apiKey when only baseURL-equivalent fields are absent', async () => {
     const service = createService(async () => {});
     const created = await service.createProviderDraft('admin', {
+      source: 'custom',
       displayName: 'Merge',
       enabled: true,
       providerKey: 'merge-p',

@@ -61,7 +61,7 @@ const ModelAssignmentsForm = memo(() => {
       defaultAgent={defaultAgent}
       defaultAgentMetas={defaultAgentMetas}
       disabledReason={reason}
-      initError={isUserStateInitError}
+      initError={isUserStateInitError as Error | undefined}
       isInit={isUserStateInit}
       saveState={saveState}
       systemAgentMetas={systemAgentMetas}

@@ -66,7 +66,8 @@ export const buildSystemAgentFromPolicies = (policies: PolicyMap): UserServiceMo
       else delete next.contextLimit;
     }
 
-    result[key] = next as UserServiceModelConfig[typeof key];
+    // Union-keyed write: TS cannot narrow the per-key intersection value type here.
+    Object.assign(result, { [key]: next });
   }
 
   return result;
