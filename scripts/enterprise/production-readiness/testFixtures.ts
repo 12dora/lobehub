@@ -132,6 +132,18 @@ export const signGateEvidence = (
     runId: 'run-test-1',
     schemaVersion: 1,
     status: evidence.status,
+    ...(evidence.gate === 'backup-restore'
+      ? {
+          backupBinding: {
+            inventoryVersion: 1 as const,
+            manifestSchemaVersion: 1 as const,
+            sourceDbToolVersion: 'pg_dump-16',
+            sourceManifestSha256: sha256Of(`manifest-${evidence.artifactSha256}`),
+            sourceSchemaTag: FIXTURE_MIGRATION_TAG,
+          },
+          sourceManifestSha256: sha256Of(`manifest-${evidence.artifactSha256}`),
+        }
+      : {}),
   };
   const provenance = createSignedProvenance({
     payload,

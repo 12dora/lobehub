@@ -64,6 +64,9 @@ const main = async () => {
       args: rest,
       options: {
         'backup-file': { type: 'string' },
+        'source-manifest': { type: 'string' },
+        'provenance': { type: 'string' },
+        'release-id': { type: 'string' },
         'candidate-sha': { type: 'string' },
         'output': { type: 'string' },
         'schema-tag': { type: 'string' },
@@ -71,8 +74,16 @@ const main = async () => {
       },
       strict: true,
     });
+    let backupProvenance: unknown;
+    if (values.provenance) {
+      const { readFile } = await import('node:fs/promises');
+      backupProvenance = JSON.parse(await readFile(values.provenance, 'utf8'));
+    }
     const result = await runBackupRestoreDrill({
+      backupProvenance,
       backupFile: values['backup-file'],
+      sourceManifestPath: values['source-manifest'],
+      releaseId: values['release-id'],
       candidateSha: requireString(values['candidate-sha'], 'candidate-sha'),
       dbSchemaVersionTag: requireString(values['schema-tag'], 'schema-tag'),
       outputPath: path.resolve(requireString(values.output, 'output')),
