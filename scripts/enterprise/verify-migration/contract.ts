@@ -63,6 +63,13 @@ const reportCoreSchema = z
         status: z.enum(['failed', 'loaded', 'skipped']),
       })
       .strict(),
+    /** Full lowercase candidate SHA when known (Q06 binding). */
+    candidateSha: z
+      .string()
+      .regex(/^[a-f\d]{40}$/u)
+      .optional(),
+    /** Immutable seal time (ISO) for freshness (Q06). */
+    generatedAt: z.string().datetime({ offset: true }).or(z.string().datetime()).optional(),
     head: z
       .object({
         commitShort: shortShaSchema,

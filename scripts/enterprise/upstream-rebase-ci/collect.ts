@@ -86,6 +86,7 @@ export const collectUpstreamRebaseEvidence = async ({
       worktreeMutation: 'isolated-temp-only' as const,
     },
     cleanupResult,
+    candidateSha: fullCommits.candidate.toLowerCase(),
     commits: {
       base: shortHash(fullCommits.base),
       candidate: shortHash(fullCommits.candidate),
@@ -99,6 +100,7 @@ export const collectUpstreamRebaseEvidence = async ({
       outcome: gate.outcome,
       reason: gate.reason,
     })),
+    generatedAt: new Date().toISOString(),
     lane: UPSTREAM_REBASE_CI_LANE,
     reportStatus: report.status,
     requiredGateIds,
