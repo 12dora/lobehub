@@ -53,6 +53,7 @@ const buildBackupPayload = (
   const manifestSha = sha256Of('manifest-bytes');
   return {
     artifactSha256: dumpSha,
+    attestationRole: 'source-backup' as const,
     backupBinding: {
       inventoryVersion: 1 as const,
       manifestSchemaVersion: 1 as const,
@@ -87,6 +88,7 @@ describe('RR3: dump+manifest signed provenance binding', () => {
     });
     const verdict = verifySignedProvenance(envelope, {
       expectedArtifactSha256: payload.artifactSha256,
+      expectedAttestationRole: 'source-backup',
       expectedBackupBinding: {
         inventoryVersion: 1,
         manifestSchemaVersion: 1,
