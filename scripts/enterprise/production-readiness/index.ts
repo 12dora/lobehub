@@ -9,6 +9,18 @@ export {
   resolveAllowlistedArgv,
 } from './commands';
 export {
+  applyCommandTransition,
+  assertOwnedStateDir,
+  defaultCommandState,
+  digestCommandState,
+  HIGH_RISK_FLAG_BY_COMMAND,
+  loadCommandState,
+  type ReadinessCommandState,
+  resolveStatePath,
+  saveCommandState,
+  type TransitionResult,
+} from './commandState';
+export {
   ALLOWLISTED_COMMAND_IDS,
   type AllowlistedCommandId,
   APP_ROLLBACK_LANE,

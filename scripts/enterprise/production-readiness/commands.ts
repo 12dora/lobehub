@@ -6,10 +6,10 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 
 import {
+  applyCommandTransition,
   digestCommandState,
   HIGH_RISK_FLAG_BY_COMMAND,
   loadCommandState,
-  saveCommandState,
 } from './commandState';
 import { ALLOWLISTED_COMMAND_IDS, type AllowlistedCommandId } from './constants';
 import { buildDefaultReleasePlan as buildPlanInternal } from './releasePlan';
@@ -170,6 +170,8 @@ export interface DispatchOptions {
   confirmExecute: boolean;
   cwd?: string;
   execute: boolean;
+  /** Stable operation id for replay ledger (optional). */
+  operationId?: string;
   /** Directory for harness command state (required for flag/window/monitor execute). */
   stateDir?: string;
   /** Optional metric thresholds for monitor. */
@@ -183,6 +185,7 @@ export type DispatchMode =
   | 'executed'
   | 'no-change'
   | 'observed'
+  | 'replayed'
   | 'unavailable'
   | 'verified';
 
@@ -248,8 +251,6 @@ export const dispatchAllowlistedCommand = async (
 
   const stateDir =
     options.stateDir ?? path.join(process.cwd(), '.records/enterprise-production-readiness');
-  const state = await loadCommandState(stateDir);
-  const beforeDigest = digestCommandState(state);
 
   if (definition.kind === 'flag-toggle') {
     const flag = HIGH_RISK_FLAG_BY_COMMAND[commandId];
@@ -257,129 +258,133 @@ export const dispatchAllowlistedCommand = async (
       return { commandId, exitCode: 1, mode: 'unavailable', mutates: true };
     }
     const enable = commandId.startsWith('flag-enable-');
-    if (state.flags[flag] === enable) {
+    try {
+      const result = await applyCommandTransition({
+        baseDir: stateDir,
+        operationId: options.operationId,
+        mutate: (state) => {
+          if (state.flags[flag] === enable) {
+            return {
+              changed: false,
+              next: state,
+              postcondition: `flag:${flag}=${enable}:no-change`,
+            };
+          }
+          state.flags[flag] = enable;
+          return {
+            changed: true,
+            next: state,
+            postcondition: `flag:${flag}=${enable}`,
+          };
+        },
+      });
       return {
-        afterDigest: beforeDigest,
-        beforeDigest,
+        afterDigest: result.afterDigest,
+        beforeDigest: result.beforeDigest,
         commandId,
-        exitCode: 0,
-        mode: 'already-satisfied',
+        exitCode: result.mode === 'conflict' ? 1 : 0,
+        mode: result.mode === 'conflict' ? 'unavailable' : result.mode,
         mutates: true,
-        postcondition: `flag:${flag}=${enable}:no-change`,
+        postcondition: result.postcondition,
       };
-    }
-    state.flags[flag] = enable;
-    state.opSeq += 1;
-    await saveCommandState(stateDir, state);
-    const reloaded = await loadCommandState(stateDir);
-    const afterDigest = digestCommandState(reloaded);
-    if (reloaded.flags[flag] !== enable || afterDigest === beforeDigest) {
+    } catch (error) {
       return {
-        afterDigest,
-        beforeDigest,
         commandId,
         exitCode: 1,
-        mode: 'executed',
+        mode: 'unavailable',
         mutates: true,
-        postcondition: 'flag-postcondition-failed',
+        postcondition: error instanceof Error ? error.message : 'flag-transition-failed',
       };
     }
-    return {
-      afterDigest,
-      beforeDigest,
-      commandId,
-      exitCode: 0,
-      mode: 'executed',
-      mutates: true,
-      postcondition: `flag:${flag}=${enable}`,
-    };
   }
 
   if (definition.kind === 'window-control') {
     if (commandId === 'release-window-activate') {
       const windowId = options.windowId ?? 'milestone-a';
-      if (state.windowActive === windowId) {
+      try {
+        const result = await applyCommandTransition({
+          baseDir: stateDir,
+          operationId: options.operationId,
+          mutate: (state) => {
+            if (state.windowActive === windowId) {
+              return {
+                changed: false,
+                next: state,
+                postcondition: `windowActive=${windowId}:no-change`,
+              };
+            }
+            state.windowActive = windowId;
+            return {
+              changed: true,
+              next: state,
+              postcondition: `windowActive=${windowId}`,
+            };
+          },
+        });
         return {
-          afterDigest: beforeDigest,
-          beforeDigest,
+          afterDigest: result.afterDigest,
+          beforeDigest: result.beforeDigest,
           commandId,
-          exitCode: 0,
-          mode: 'already-satisfied',
+          exitCode: result.mode === 'conflict' ? 1 : 0,
+          mode: result.mode === 'conflict' ? 'unavailable' : result.mode,
           mutates: true,
-          postcondition: `windowActive=${windowId}:no-change`,
+          postcondition: result.postcondition,
         };
-      }
-      state.windowActive = windowId;
-      state.opSeq += 1;
-      await saveCommandState(stateDir, state);
-      const reloaded = await loadCommandState(stateDir);
-      const afterDigest = digestCommandState(reloaded);
-      if (reloaded.windowActive !== windowId || afterDigest === beforeDigest) {
+      } catch (error) {
         return {
-          afterDigest,
-          beforeDigest,
           commandId,
           exitCode: 1,
-          mode: 'executed',
+          mode: 'unavailable',
           mutates: true,
-          postcondition: 'window-activate-postcondition-failed',
+          postcondition: error instanceof Error ? error.message : 'window-transition-failed',
         };
       }
-      return {
-        afterDigest,
-        beforeDigest,
-        commandId,
-        exitCode: 0,
-        mode: 'executed',
-        mutates: true,
-        postcondition: `windowActive=${windowId}`,
-      };
     }
     if (commandId === 'release-window-rollback') {
-      if (state.windowActive === null && Object.values(state.flags).every((v) => v === false)) {
+      try {
+        const result = await applyCommandTransition({
+          baseDir: stateDir,
+          operationId: options.operationId,
+          mutate: (state) => {
+            if (
+              state.windowActive === null &&
+              Object.values(state.flags).every((value) => value === false)
+            ) {
+              return {
+                changed: false,
+                next: state,
+                postcondition: 'windowActive=null:no-change',
+              };
+            }
+            state.windowActive = null;
+            for (const key of Object.keys(state.flags)) state.flags[key] = false;
+            return { changed: true, next: state, postcondition: 'windowActive=null' };
+          },
+        });
         return {
-          afterDigest: beforeDigest,
-          beforeDigest,
+          afterDigest: result.afterDigest,
+          beforeDigest: result.beforeDigest,
           commandId,
-          exitCode: 0,
-          mode: 'already-satisfied',
+          exitCode: result.mode === 'conflict' ? 1 : 0,
+          mode: result.mode === 'conflict' ? 'unavailable' : result.mode,
           mutates: true,
-          postcondition: 'windowActive=null:no-change',
+          postcondition: result.postcondition,
         };
-      }
-      state.windowActive = null;
-      for (const key of Object.keys(state.flags)) state.flags[key] = false;
-      state.opSeq += 1;
-      await saveCommandState(stateDir, state);
-      const reloaded = await loadCommandState(stateDir);
-      const afterDigest = digestCommandState(reloaded);
-      if (reloaded.windowActive !== null) {
+      } catch (error) {
         return {
-          afterDigest,
-          beforeDigest,
           commandId,
           exitCode: 1,
-          mode: 'executed',
+          mode: 'unavailable',
           mutates: true,
-          postcondition: 'window-rollback-postcondition-failed',
+          postcondition: error instanceof Error ? error.message : 'window-rollback-failed',
         };
       }
-      return {
-        afterDigest,
-        beforeDigest,
-        commandId,
-        exitCode: 0,
-        mode: 'executed',
-        mutates: true,
-        postcondition: 'windowActive=null',
-      };
     }
-    // verify-rollback — read-only
     const reloaded = await loadCommandState(stateDir);
     const ok = reloaded.windowActive === null;
     return {
       afterDigest: digestCommandState(reloaded),
-      beforeDigest,
+      beforeDigest: digestCommandState(reloaded),
       commandId,
       exitCode: ok ? 0 : 1,
       mode: 'verified',
@@ -399,7 +404,7 @@ export const dispatchAllowlistedCommand = async (
       if (value > threshold) {
         return {
           afterDigest: digestCommandState(reloaded),
-          beforeDigest,
+          beforeDigest: digestCommandState(reloaded),
           commandId,
           exitCode: 1,
           mode: 'observed',
@@ -410,7 +415,7 @@ export const dispatchAllowlistedCommand = async (
     }
     return {
       afterDigest: digestCommandState(reloaded),
-      beforeDigest,
+      beforeDigest: digestCommandState(reloaded),
       commandId,
       exitCode: 0,
       mode: 'observed',
