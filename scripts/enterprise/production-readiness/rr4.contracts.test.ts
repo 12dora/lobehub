@@ -329,8 +329,9 @@ describe('RR4: publication pointers bind resource_type and domain versions', () 
         // Restore fixture and cross-owner agent version
         await seedRecoveryFixture(client);
         await client.query(
-          `INSERT INTO platform_agent_versions (id, agent_id, content_digest)
-           VALUES ('pagv_foreign', 'other-agent', 'x') ON CONFLICT (id) DO NOTHING`,
+          `INSERT INTO platform_agent_versions (id, agent_id, version, checksum)
+           VALUES ('pagv_foreign', 'other-agent', '9.9.9', $1) ON CONFLICT (id) DO NOTHING`,
+          [sha256Of('foreign-agent')],
         );
         await client.query(
           `UPDATE platform_agents SET current_version_id = 'pagv_foreign'
