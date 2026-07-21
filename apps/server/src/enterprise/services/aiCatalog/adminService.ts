@@ -51,6 +51,7 @@ import {
   type AiCatalogDependent,
   AiCatalogNotFoundError,
   AiCatalogResourceInUseError,
+  AiCatalogValidationError,
 } from './errors';
 import { sanitizeAiCatalogPersistedText } from './persistentText';
 import { AiCatalogPublicationService } from './publication';
@@ -714,21 +715,37 @@ export class AiCatalogAdminService {
     }
 
     const detail = await this.getDetail(providerId);
-    const published = await this.publishProvider(actorUserId, {
-      // First publish still requires a fresh connection test; subsequent admin UI
-      // auto-publish may use a stale test when only non-secret fields changed.
-      allowStaleConnectionTest: detail.baseRevision > 0,
-      expectedDraftToken: detail.draftToken,
-      expectedRevision: detail.baseRevision,
-      id: providerId,
-      reason: input.reason,
-    });
-    const after = await this.getDetail(providerId);
-    return {
-      auditId: published.auditId,
-      draft: after.draft,
-      revision: published.revision,
-    };
+    try {
+      const published = await this.publishProvider(actorUserId, {
+        // First publish still requires a fresh connection test; subsequent admin UI
+        // auto-publish may use a stale test when only non-secret fields changed.
+        allowStaleConnectionTest: detail.baseRevision > 0,
+        expectedDraftToken: detail.draftToken,
+        expectedRevision: detail.baseRevision,
+        id: providerId,
+        reason: input.reason,
+      });
+      const after = await this.getDetail(providerId);
+      return {
+        auditId: published.auditId,
+        draft: after.draft,
+        published: true,
+        revision: published.revision,
+      };
+    } catch (error) {
+      // Create often lacks models/connection test; keep draft and report unpublished.
+      // Updates on an already-live provider must still surface publish failures.
+      if (error instanceof AiCatalogValidationError && input.mode === 'create') {
+        const after = await this.getDetail(providerId);
+        return {
+          auditId: null,
+          draft: after.draft,
+          published: false,
+          revision: after.baseRevision,
+        };
+      }
+      throw error;
+    }
   };
 
   /**
