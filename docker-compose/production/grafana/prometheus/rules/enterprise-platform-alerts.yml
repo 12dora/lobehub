@@ -244,37 +244,57 @@ groups:
           runbook: docs/enterprise/runbooks/enterprise-prometheus-alerts.md#enterpriserevisionlag
 
       # --- operational_collection_stale ---
-      # Required collectors (closed vocab): job_backlog, revision_lag.
-      # Per-collector identity is preserved so a healthy job_backlog ready=1 cannot mask
-      # revision_lag ready=0 or absence. Replicas: max by enterprise_collector (cluster
-      # snapshot policy — any healthy replica is enough; never sum replicas).
-      # Absence: max(empty) is empty, so each required collector is checked with absent().
-      # Stale age after first success: max-by-collector age > 180s.
+      # Gated by enterprise_platform_operational_collector_enabled (0/1 for every known
+      # collector after operational runtime activate). Disabled collectors (enabled=0)
+      # must not false-alert — e.g. revision_lag when ENABLE_DATABASE_OIDC is off.
+      # job_backlog is always expected when the operational runtime runs; absent(enabled
+      # for job_backlog) means telemetry/app never configured the runtime (no-data branch).
+      # Per enabled collector: ready==0, absent(ready), or age>180 after max-by-replica.
       - alert: EnterpriseOperationalCollectionStale
         expr: |
+          absent(
+            enterprise_platform_operational_collector_enabled{enterprise_collector="job_backlog"}
+          )
+          or
           (
             max by (enterprise_collector) (
-              enterprise_platform_operational_snapshot_ready{enterprise_collector="job_backlog"}
-            ) == 0
-            or
-            absent(
-              enterprise_platform_operational_snapshot_ready{enterprise_collector="job_backlog"}
+              enterprise_platform_operational_collector_enabled{enterprise_collector="job_backlog"}
+            ) == 1
+            and
+            (
+              max by (enterprise_collector) (
+                enterprise_platform_operational_snapshot_ready{enterprise_collector="job_backlog"}
+              ) == 0
+              or
+              absent(
+                enterprise_platform_operational_snapshot_ready{enterprise_collector="job_backlog"}
+              )
+              or
+              max by (enterprise_collector) (
+                enterprise_platform_operational_snapshot_age_seconds{enterprise_collector="job_backlog"}
+              ) > 180
             )
           )
           or
           (
             max by (enterprise_collector) (
-              enterprise_platform_operational_snapshot_ready{enterprise_collector="revision_lag"}
-            ) == 0
-            or
-            absent(
-              enterprise_platform_operational_snapshot_ready{enterprise_collector="revision_lag"}
+              enterprise_platform_operational_collector_enabled{enterprise_collector="revision_lag"}
+            ) == 1
+            and
+            (
+              max by (enterprise_collector) (
+                enterprise_platform_operational_snapshot_ready{enterprise_collector="revision_lag"}
+              ) == 0
+              or
+              absent(
+                enterprise_platform_operational_snapshot_ready{enterprise_collector="revision_lag"}
+              )
+              or
+              max by (enterprise_collector) (
+                enterprise_platform_operational_snapshot_age_seconds{enterprise_collector="revision_lag"}
+              ) > 180
             )
           )
-          or
-          max by (enterprise_collector) (
-            enterprise_platform_operational_snapshot_age_seconds
-          ) > 180
         for: 5m
         labels:
           severity: warning
@@ -282,5 +302,5 @@ groups:
         annotations:
           summary: Enterprise operational metric collection is stale or never initialized
           description: >-
-            Fires for 5m when any required operational collector (job_backlog, revision_lag) has ready==0 after max-by-replica, is entirely absent, or has snapshot age > 180s (reference default). Per-collector identity prevents one healthy collector from masking another. Cluster snapshot gauges use max across replicas, never sum.
+            Fires for 5m when operational telemetry is missing for expected job_backlog enabled, or any enabled collector (enabled==1) has ready==0, absent ready, or age>180s after max-by-replica (reference default). Disabled collectors (enabled=0, e.g. revision_lag without DB OIDC) do not alert. Per-collector identity prevents masking; never sum replicas.
           runbook: docs/enterprise/runbooks/enterprise-prometheus-alerts.md#enterpriseoperationalcollectionstale

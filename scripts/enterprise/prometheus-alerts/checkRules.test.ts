@@ -16,8 +16,10 @@ import {
   resolveRepositoryRoot,
 } from './constants';
 import {
+  assertWrongMetricMatcherRejected,
   buildEmissionPointsFromSelectors,
-  reconcileSelectorsWithClosedVocab,
+  buildUnalteredAttributesForSelector,
+  reconcileSelectorsWithMetricDimensions,
 } from './emissionContract';
 import { assertRuleExprUsesPrometheusLabels } from './metricTranslation';
 import { runOtlpPrometheusTranslationProbe } from './otlpPrometheusProbe';
@@ -114,30 +116,41 @@ describe('enterprise prometheus — production selector parsing + emission', () 
     }
   });
 
-  it('EnterpriseOperationalCollectionStale preserves per-collector identity and absence', () => {
+  it('EnterpriseOperationalCollectionStale gates ready/age by collector enabled signal', () => {
     const rule = parsePrometheusAlertRulesFile(rulesPath).find(
       (entry) => entry.alert === 'EnterpriseOperationalCollectionStale',
     );
     expect(rule).toBeDefined();
+    expect(rule!.expr).toContain('enterprise_platform_operational_collector_enabled');
     expect(rule!.expr).toContain('enterprise_collector="job_backlog"');
     expect(rule!.expr).toContain('enterprise_collector="revision_lag"');
+    expect(rule!.expr).toMatch(/==\s*1/);
     expect(rule!.expr).toMatch(/absent\s*\(/);
-    expect(rule!.expr).toMatch(/max\s+by\s*\(\s*enterprise_collector\s*\)/);
-    expect(rule!.expr).not.toMatch(
-      /max\s*\(\s*enterprise_platform_operational_snapshot_ready\s*\)\s*==\s*0/,
+  });
+
+  it('never mutates unaltered builder output to satisfy matchers', () => {
+    const selectors = parseProductionRuleSelectors(rulesPath);
+    const cache = selectors.find(
+      (selector) =>
+        selector.metric === 'enterprise_platform_cache_load_total' &&
+        selector.matchers.some((matcher) => matcher.value === 'load_failure'),
     );
+    expect(cache).toBeDefined();
+    const attributes = buildUnalteredAttributesForSelector(cache!);
+    expect(attributes['enterprise.outcome']).toBe('load_failure');
+    expect(attributes['enterprise.stage']).toBeUndefined();
   });
 });
 
 describe('enterprise prometheus — mutation falsification', () => {
-  it('rejects mistyped conflict outcome outside closed vocabulary', () => {
+  it('rejects mistyped conflict outcome outside publish closed vocabulary', () => {
     const original = readFileSync(rulesPath, 'utf8');
     const mutatedPath = writeTempRules(
       original.replace('enterprise_outcome="conflict"', 'enterprise_outcome="conflictt"'),
     );
     const selectors = parseProductionRuleSelectors(mutatedPath);
-    expect(() => reconcileSelectorsWithClosedVocab(selectors)).toThrow(
-      /closed vocabulary|conflictt/i,
+    expect(() => reconcileSelectorsWithMetricDimensions(selectors)).toThrow(
+      /invalid for|unknown|conflictt/i,
     );
   });
 
@@ -150,7 +163,31 @@ describe('enterprise prometheus — mutation falsification', () => {
       ),
     );
     const selectors = parseProductionRuleSelectors(mutatedPath);
-    expect(() => reconcileSelectorsWithClosedVocab(selectors)).toThrow(/unknown instrument/i);
+    expect(() => reconcileSelectorsWithMetricDimensions(selectors)).toThrow(/unknown instrument/i);
+  });
+
+  it('rejects known-valid labels attached to the wrong metric', () => {
+    expect(() =>
+      assertWrongMetricMatcherRejected('enterprise_platform_cache_load_total', {
+        name: 'enterprise_stage',
+        op: '=',
+        value: 'token_exchange',
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertWrongMetricMatcherRejected('enterprise_platform_guard_decision_total', {
+        name: 'enterprise_operation',
+        op: '=',
+        value: 'publish',
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertWrongMetricMatcherRejected('enterprise_platform_job_backlog_oldest_age_seconds', {
+        name: 'enterprise_outcome',
+        op: '=',
+        value: 'failure',
+      }),
+    ).not.toThrow();
   });
 
   it('fails compose wiring when metrics pipeline drops otlp', () => {

@@ -54,20 +54,20 @@ All windows, thresholds, and `for` durations in the YAML are **reference default
 4. For **cluster snapshot gauges** (`job_backlog_oldest_age_seconds`, `revision_lag_instances`, `operational_snapshot_age_seconds`), aggregate with **`max`** (or `max by (...)` then `sum` for multi-reason lag). **Never `sum` across replicas** — every process may publish the same cluster snapshot.
 5. Do **not** add high-cardinality labels (user, tenant, instance id, URL, raw error).
 
-| Alert                                       | Intent key                     | Default signal (customize)                | Default `for` |
-| ------------------------------------------- | ------------------------------ | ----------------------------------------- | ------------- |
-| `EnterpriseConfigPublishFailureRatio`       | `publish_failure_ratio`        | failure ratio > 10% / 15m                 | 10m           |
-| `EnterpriseConfigPublishConflictRatio`      | `publish_conflict_ratio`       | conflict ratio > 20% / 15m                | 15m           |
-| `EnterpriseInvalidationDegraded`            | `invalidation_degraded`        | any degraded invalidation rate > 0 / 10m  | 10m           |
-| `EnterpriseCacheFailureRate`                | `cache_failure_rate`           | load\_failure ratio > 10% / 10m           | 10m           |
-| `EnterpriseGuardDenialSpike`                | `guard_denial_spike`           | denied rate > 1/s / 5m                    | 10m           |
-| `EnterpriseHeartbeatFailure`                | `heartbeat_failure`            | failure rate > 0 / 5m                     | 5m            |
-| `EnterpriseSsrfDenialSpike`                 | `ssrf_denial_spike`            | denial rate > 2/s / 5m                    | 10m           |
-| `EnterpriseOidcLoginFailureRatio`           | `oidc_login_failure_ratio`     | failure ratio > 20% / 15m                 | 10m           |
-| `EnterpriseAgentMaterializationFailureRate` | `materialization_failure_rate` | failure ratio > 10% / 15m                 | 10m           |
-| `EnterpriseJobBacklogStalled`               | `job_backlog_stalled`          | max oldest age > 1800s                    | 15m           |
-| `EnterpriseRevisionLag`                     | `revision_lag`                 | max-by-reason sum lag instances > 0       | 15m           |
-| `EnterpriseOperationalCollectionStale`      | `operational_collection_stale` | per-collector ready==0 / absent / age>180 | 5m            |
+| Alert                                       | Intent key                     | Default signal (customize)                           | Default `for` |
+| ------------------------------------------- | ------------------------------ | ---------------------------------------------------- | ------------- |
+| `EnterpriseConfigPublishFailureRatio`       | `publish_failure_ratio`        | failure ratio > 10% / 15m                            | 10m           |
+| `EnterpriseConfigPublishConflictRatio`      | `publish_conflict_ratio`       | conflict ratio > 20% / 15m                           | 15m           |
+| `EnterpriseInvalidationDegraded`            | `invalidation_degraded`        | any degraded invalidation rate > 0 / 10m             | 10m           |
+| `EnterpriseCacheFailureRate`                | `cache_failure_rate`           | load\_failure ratio > 10% / 10m                      | 10m           |
+| `EnterpriseGuardDenialSpike`                | `guard_denial_spike`           | denied rate > 1/s / 5m                               | 10m           |
+| `EnterpriseHeartbeatFailure`                | `heartbeat_failure`            | failure rate > 0 / 5m                                | 5m            |
+| `EnterpriseSsrfDenialSpike`                 | `ssrf_denial_spike`            | denial rate > 2/s / 5m                               | 10m           |
+| `EnterpriseOidcLoginFailureRatio`           | `oidc_login_failure_ratio`     | failure ratio > 20% / 15m                            | 10m           |
+| `EnterpriseAgentMaterializationFailureRate` | `materialization_failure_rate` | failure ratio > 10% / 15m                            | 10m           |
+| `EnterpriseJobBacklogStalled`               | `job_backlog_stalled`          | max oldest age > 1800s                               | 15m           |
+| `EnterpriseRevisionLag`                     | `revision_lag`                 | max-by-reason sum lag instances > 0                  | 15m           |
+| `EnterpriseOperationalCollectionStale`      | `operational_collection_stale` | enabled==1 and (ready/age/absent); telemetry no-data | 5m            |
 
 Severity labels (`critical` / `warning`) and `component` are stable defaults for routing keys — remap in the deployment overlay if your severity taxonomy differs.
 
@@ -158,15 +158,14 @@ Identity domain lag after the rollout window. `max by (enterprise_domain, enterp
 
 ### EnterpriseOperationalCollectionStale
 
-Required collectors (closed vocab): `job_backlog`, `revision_lag`.
+Authoritative enablement: `enterprise_platform_operational_collector_enabled{enterprise_collector=...}` is `1` or `0` for **every** known collector (`job_backlog`, `revision_lag`) once the operational metrics runtime calls `activate`. Optional collectors that are disabled (e.g. `revision_lag` when `ENABLE_DATABASE_OIDC` is off) emit **enabled=0** and must **not** alert.
 
-Fires when **any** of the following holds for 5m (reference defaults):
+Fires for 5m (reference defaults) when:
 
-1. **Per-collector never-initialized:** `max by (enterprise_collector) (ready{enterprise_collector="<name>"}) == 0` — ready emits 0 before first success; age is absent until then.
-2. **Per-collector absence:** `absent(ready{enterprise_collector="<name>"})` — total absence (no series) is not empty-max; each required collector is checked explicitly so one healthy collector cannot mask another.
-3. **Stale age after success:** `max by (enterprise_collector) (age) > 180`.
+1. **Telemetry no-data:** `absent(enabled{enterprise_collector="job_backlog"})` — the runtime always expects job\_backlog when it runs; complete absence of the enabled signal means operational telemetry is not configured (not “collector disabled”).
+2. **Enabled collector unhealthy:** `enabled==1` **and** (`ready==0` **or** `absent(ready)` **or** `age>180`) for that collector after **max by (enterprise\_collector)** across replicas.
 
-**Replica policy:** cluster snapshot gauges use **max by (enterprise\_collector)** across replicas (any healthy replica is enough). **Never sum** replicas. Semantic coverage is enforced by `promtool test rules` (`enterprise-platform-alerts.test.yml`).
+**Disabled collectors (enabled=0)** never contribute ready/age/absence firings. **Replica policy:** max-by-collector (never sum). Semantic coverage: `promtool test rules` (`enterprise-platform-alerts.test.yml`).
 
 ## Related
 
