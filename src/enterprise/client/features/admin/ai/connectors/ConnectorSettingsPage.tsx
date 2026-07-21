@@ -15,6 +15,11 @@ import { withAdminAiInfraErrorToast } from '@/enterprise/client/services/adminAi
 import { adminConnectorsService } from '@/enterprise/client/services/adminConnectors';
 import NavItem from '@/features/NavPanel/components/NavItem';
 
+import {
+  buildBuiltinConnectorListItems,
+  getBuiltinConnectorView,
+  isBuiltinConnectorId,
+} from '../../connectors/builtinConnectorCatalog';
 import { deriveAdminConnectorPermissions } from '../../connectors/controller';
 import { openCreateConnectorModal } from '../../connectors/openCreateConnectorModal';
 import type { AdminConnectorListItem } from '../../connectors/types';
@@ -126,6 +131,51 @@ const ConnectorListItem = memo<{
 }>(({ connector, isSelected, onSelect }) => (
   <NavItem active={isSelected} icon={Plug} title={connector.displayName} onClick={onSelect} />
 ));
+
+/** Read-only detail for a code-bundled built-in connector (never has a DB draft). */
+const BuiltinConnectorDetailPanel = memo<{ connectorId: string }>(({ connectorId }) => {
+  const { t } = useTranslation('admin');
+  const view = getBuiltinConnectorView(connectorId);
+
+  if (!view) {
+    return (
+      <div className={styles.detailBody}>
+        {t('aiConnectorSettings.detail.notFound', { defaultValue: 'Connector not found' })}
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <header className={styles.detailHeader}>
+        <Flexbox horizontal align="center" gap={8} justify="space-between">
+          <Text strong as="h2">
+            {view.displayName}
+          </Text>
+          <Tag color="processing">
+            {t('aiConnectorSettings.builtin.tag', { defaultValue: 'Built-in' })}
+          </Tag>
+        </Flexbox>
+        <Text type="secondary">
+          {view.description ||
+            t('aiConnectorSettings.detail.noDescription', { defaultValue: 'No description' })}
+        </Text>
+      </header>
+      <main className={styles.detailBody}>
+        <section className={styles.card}>
+          <Text type="secondary">{t('connectorCatalog.create.key')}</Text>
+          <Text code>{view.key}</Text>
+        </section>
+        <Text type="secondary">
+          {t('aiConnectorSettings.builtin.note', {
+            defaultValue:
+              'Built-in connectors are provided by the platform and available to all users by default — no listing needed.',
+          })}
+        </Text>
+      </main>
+    </>
+  );
+});
 
 const ConnectorDetailPanel = memo<{
   connectorId: string;
@@ -474,7 +524,23 @@ const ConnectorSettingsPage = memo(() => {
   );
   const { data, error, isLoading, mutate } = useFetchAdminConnectors(listInput, canRead);
   const selectedId = params.id;
-  const items = data?.items ?? [];
+  // Merge code-bundled built-in connectors so they appear alongside DB drafts; a
+  // real DB row with the same key shadows the built-in.
+  const items = useMemo(() => {
+    const dbItems = data?.items ?? [];
+    const dbKeys = new Set(dbItems.map((item) => item.key));
+    const q = query.trim().toLowerCase();
+    const builtins = buildBuiltinConnectorListItems().filter((builtin) => {
+      if (dbKeys.has(builtin.key)) return false;
+      if (!q) return true;
+      return (
+        builtin.displayName.toLowerCase().includes(q) ||
+        builtin.key.toLowerCase().includes(q) ||
+        (builtin.description ?? '').toLowerCase().includes(q)
+      );
+    });
+    return [...dbItems, ...builtins];
+  }, [data?.items, query]);
 
   const onSelect = (id: string) => {
     navigate(`/admin/ai/connectors/${encodeURIComponent(id)}`);
@@ -582,7 +648,7 @@ const ConnectorSettingsPage = memo(() => {
         <div className={styles.content}>
           <div style={{ padding: '12px 24px 0' }}>
             <DraftPublishBanner
-              activeConnectorId={selectedId}
+              activeConnectorId={isBuiltinConnectorId(selectedId) ? undefined : selectedId}
               onPublished={() => {
                 void mutate();
                 void refreshAdminConnectorLists();
@@ -590,16 +656,20 @@ const ConnectorSettingsPage = memo(() => {
             />
           </div>
           {selectedId ? (
-            <ConnectorDetailPanel
-              connectorId={selectedId}
-              onArchived={() => {
-                void mutate();
-                navigate('/admin/ai/connectors');
-              }}
-              onPublished={() => {
-                void mutate();
-              }}
-            />
+            isBuiltinConnectorId(selectedId) ? (
+              <BuiltinConnectorDetailPanel connectorId={selectedId} />
+            ) : (
+              <ConnectorDetailPanel
+                connectorId={selectedId}
+                onArchived={() => {
+                  void mutate();
+                  navigate('/admin/ai/connectors');
+                }}
+                onPublished={() => {
+                  void mutate();
+                }}
+              />
+            )
           ) : (
             <Center paddingBlock={64}>
               <Empty

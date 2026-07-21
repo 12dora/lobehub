@@ -5,6 +5,7 @@ import type {
   ToggleAiModelEnableParams,
   UpdateAiModelParams,
 } from 'model-bank';
+import { DEFAULT_MODEL_PROVIDER_LIST } from 'model-bank/modelProviders';
 
 import type { AdminAiProviderGetOutput } from '@/enterprise/client/features/admin/ai/types';
 import { withAdminReauthRetry } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
@@ -12,6 +13,7 @@ import { lambdaClient } from '@/libs/trpc/client';
 import type { GetAiProviderModelListParams } from '@/services/aiModel';
 import type {
   AiProviderDetailItem,
+  AiProviderListItem,
   AiProviderRuntimeState,
   AiProviderSortMap,
   CreateAiProviderParams,
@@ -79,6 +81,33 @@ const getDetail = async (providerKeyOrId: string): Promise<AdminAiProviderGetOut
   return lambdaClient.admin.aiProviders.get.query({ id: record.id });
 };
 
+/** Known built-in provider card (client catalog) used to seed the platform DB lazily. */
+const findBuiltinProviderCard = (id: string) =>
+  DEFAULT_MODEL_PROVIDER_LIST.find((card) => card.id === id);
+
+/**
+ * Resolve the platform detail for a provider, creating the platform DB row on the
+ * first write for a known built-in that hasn't been configured yet. Mirrors the user
+ * side, where the server auto-inserts the built-in row on read. For unknown providers
+ * the original "not found" error is preserved.
+ */
+const getOrCreateDetail = async (providerKeyOrId: string): Promise<AdminAiProviderGetOutput> => {
+  try {
+    return await getDetail(providerKeyOrId);
+  } catch (cause) {
+    const card = findBuiltinProviderCard(providerKeyOrId);
+    if (!card) throw cause;
+    await adminAiProviderService.createAiProvider({
+      description: card.description,
+      id: card.id,
+      name: card.name,
+      settings: card.settings as CreateAiProviderParams['settings'],
+      source: AiProviderSourceEnum.Builtin,
+    });
+    return getDetail(providerKeyOrId);
+  }
+};
+
 const withReauth = <T>(fn: () => Promise<T>): Promise<T> =>
   withAdminAiInfraErrorToast(() => withAdminReauthRetry(fn));
 
@@ -130,7 +159,21 @@ export class AdminAiProviderService {
       if (!result.nextCursor) break;
       cursor = result.nextCursor;
     }
-    return items.map(mapProviderListItem);
+    // Merge built-in provider catalog so the admin sees every provider the user does.
+    // DB rows win by id (providerKey); built-ins without a DB row are appended disabled.
+    const dbList = items.map(mapProviderListItem);
+    const seen = new Set(dbList.map((provider) => provider.id));
+    const builtins = DEFAULT_MODEL_PROVIDER_LIST.filter((card) => !seen.has(card.id)).map(
+      (card, index): AiProviderListItem => ({
+        description: card.description,
+        enabled: false,
+        id: card.id,
+        name: card.name,
+        sort: index,
+        source: AiProviderSourceEnum.Builtin,
+      }),
+    );
+    return [...dbList, ...builtins];
   };
 
   getAiProviderById = async (
@@ -140,12 +183,26 @@ export class AdminAiProviderService {
       const detail = await getDetail(id);
       return mapProviderDetail(detail);
     } catch {
-      return undefined;
+      // A known built-in without a DB row: return a synthetic detail from the catalog
+      // so the form renders (empty credentials) instead of a perpetual skeleton.
+      const card = findBuiltinProviderCard(id);
+      if (!card) return undefined;
+      return {
+        description: card.description,
+        enabled: false,
+        fetchOnClient: false,
+        id: card.id,
+        keyVaults: {},
+        name: card.name,
+        secretConfigured: false,
+        settings: card.settings,
+        source: AiProviderSourceEnum.Builtin,
+      };
     }
   };
 
   toggleProviderEnabled = async (id: string, enabled: boolean) => {
-    const detail = await getDetail(id);
+    const detail = await getOrCreateDetail(id);
     return withReauth(async () => {
       const result = await lambdaClient.admin.aiProviders.applyImmediate.mutate({
         enabled,
@@ -161,7 +218,7 @@ export class AdminAiProviderService {
   };
 
   updateAiProvider = async (id: string, value: UpdateAiProviderParams) => {
-    const detail = await getDetail(id);
+    const detail = await getOrCreateDetail(id);
     return withReauth(async () => {
       const result = await lambdaClient.admin.aiProviders.applyImmediate.mutate({
         description: value.description === null ? null : (value.description ?? undefined),
@@ -182,7 +239,7 @@ export class AdminAiProviderService {
   };
 
   updateAiProviderConfig = async (id: string, value: UpdateAiProviderConfigParams) => {
-    const detail = await getDetail(id);
+    const detail = await getOrCreateDetail(id);
     const { endpoint, secretParts } = splitFormKeyVaults(
       value.keyVaults as Record<string, unknown> | undefined,
     );
@@ -226,7 +283,7 @@ export class AdminAiProviderService {
 
   updateAiProviderOrder = async (items: AiProviderSortMap[]) => {
     for (const item of items) {
-      const detail = await getDetail(item.id);
+      const detail = await getOrCreateDetail(item.id);
       await withReauth(async () => {
         const result = await lambdaClient.admin.aiProviders.applyImmediate.mutate({
           expectedDraftToken: detail.draftToken,
