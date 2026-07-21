@@ -1,8 +1,11 @@
+import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { authedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 
 import {
+  adminConnectorApplyImmediateInputSchema,
+  adminConnectorApplyImmediateOutputSchema,
   adminConnectorArchiveInputSchema,
   adminConnectorCreateDraftInputSchema,
   adminConnectorDeleteDraftInputSchema,
@@ -17,6 +20,7 @@ import {
   adminConnectorListInputSchema,
   adminConnectorListOutputSchema,
   adminConnectorPublishInputSchema,
+  adminConnectorPublishNowInputSchema,
   adminConnectorRevisionOutputSchema,
   adminConnectorRevokeAllBindingsInputSchema,
   adminConnectorRevokeAllBindingsOutputSchema,
@@ -27,6 +31,7 @@ import {
 } from '../../contracts/platformConnectors';
 import { withActiveUser } from '../../guards/activeUser';
 import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
+import { throwEnterpriseError } from '../../guards/enterpriseErrors';
 import { withPlatformPermission } from '../../guards/platformPermission';
 import {
   assertAdminConnectorRuntimeDependency,
@@ -59,6 +64,122 @@ const replacementSecrets = (input: {
 ];
 
 export const adminConnectorsRouter = router({
+  /**
+   * Create/update draft then publish in one procedure (admin settings UI parity).
+   * Requires UPDATE+PUBLISH (or CREATE+PUBLISH for create mode). Rate-limit: 1 unit.
+   */
+  applyImmediate: adminConnectorProcedure
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.CONNECTOR_PUBLISH))
+    .input(adminConnectorApplyImmediateInputSchema)
+    .output(adminConnectorApplyImmediateOutputSchema)
+    .mutation(async ({ ctx, input }) =>
+      executeAdminConnectorOperation('admin.connectors.applyImmediate', async () => {
+        const required =
+          input.mode === 'create'
+            ? PLATFORM_PERMISSIONS.CONNECTOR_CREATE
+            : PLATFORM_PERMISSIONS.CONNECTOR_UPDATE;
+        const perms = (ctx as { platformAuth?: { permissions: string[] } }).platformAuth
+          ?.permissions;
+        if (!perms?.includes(required)) {
+          return throwEnterpriseError({
+            code: PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED,
+            details: { permission: required },
+            httpCode: 'FORBIDDEN',
+            message: PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED,
+          });
+        }
+        const targetId = input.mode === 'create' ? input.key : input.id;
+        const secrets = replacementSecrets(input as Parameters<typeof replacementSecrets>[0]);
+        const runtime = await resolveAdminConnectorMutationRuntime({
+          action: 'admin.connectors.applyImmediate',
+          actorUserId: ctx.userId!,
+          createRuntime: ctx.getAdminConnectorRuntime,
+          reason: input.reason,
+          replacementSecrets: secrets,
+          serverDB: ctx.serverDB,
+          targetId,
+        });
+        await assertConnectorDangerousReauth({
+          action: 'admin.connectors.applyImmediate',
+          actorUserId: ctx.userId!,
+          authenticatedAt: ctx.authenticatedAt,
+          authMethod: ctx.authMethod,
+          reason: input.reason,
+          replacementSecrets: secrets,
+          runtime,
+          serverDB: ctx.serverDB,
+          targetId,
+        });
+        if (input.mode === 'create' && input.credentialMode === 'per_user_oauth') {
+          await assertAdminConnectorRuntimeDependency({
+            action: 'admin.connectors.applyImmediate',
+            actorUserId: ctx.userId!,
+            category: 'redirect_unavailable',
+            operation: runtime.resolveRedirectUri,
+            reason: input.reason,
+            replacementSecrets: secrets,
+            runtime,
+            serverDB: ctx.serverDB,
+            targetId,
+          });
+        }
+        await assertAdminConnectorRuntimeDependency({
+          action: 'admin.connectors.applyImmediate',
+          actorUserId: ctx.userId!,
+          category: 'transport_unavailable',
+          operation: runtime.assertOutboundPolicyReady,
+          reason: input.reason,
+          replacementSecrets: secrets,
+          runtime,
+          serverDB: ctx.serverDB,
+          targetId,
+        });
+        return runtime.service.applyImmediate(ctx.userId!, input);
+      }),
+    ),
+
+  /**
+   * Banner "retry publish": re-run publish with soft-fail.
+   * Same guard combo as applyImmediate (PUBLISH + reauth + rate-limit).
+   */
+  publishNow: adminConnectorProcedure
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.CONNECTOR_PUBLISH))
+    .input(adminConnectorPublishNowInputSchema)
+    .output(adminConnectorApplyImmediateOutputSchema)
+    .mutation(async ({ ctx, input }) =>
+      executeAdminConnectorOperation('admin.connectors.publishNow', async () => {
+        const runtime = await resolveAdminConnectorMutationRuntime({
+          action: 'admin.connectors.publishNow',
+          actorUserId: ctx.userId!,
+          createRuntime: ctx.getAdminConnectorRuntime,
+          reason: input.reason,
+          serverDB: ctx.serverDB,
+          targetId: input.id,
+        });
+        await assertConnectorDangerousReauth({
+          action: 'admin.connectors.publishNow',
+          actorUserId: ctx.userId!,
+          authenticatedAt: ctx.authenticatedAt,
+          authMethod: ctx.authMethod,
+          reason: input.reason,
+          runtime,
+          serverDB: ctx.serverDB,
+          targetId: input.id,
+        });
+        await assertAdminConnectorRuntimeDependency({
+          action: 'admin.connectors.publishNow',
+          actorUserId: ctx.userId!,
+          category: 'transport_unavailable',
+          operation: runtime.assertOutboundPolicyReady,
+          reason: input.reason,
+          runtime,
+          serverDB: ctx.serverDB,
+          targetId: input.id,
+        });
+        return runtime.service.publishNow(ctx.userId!, input);
+      }),
+    ),
+
   archive: adminConnectorProcedure
     .use(withPlatformPermission(PLATFORM_PERMISSIONS.CONNECTOR_DELETE))
     .input(adminConnectorArchiveInputSchema)

@@ -1,6 +1,8 @@
 import type { z } from 'zod';
 
 import type {
+  adminConnectorApplyImmediateInputSchema,
+  adminConnectorApplyImmediateOutputSchema,
   adminConnectorArchiveInputSchema,
   adminConnectorCreateDraftInputSchema,
   adminConnectorDeleteDraftInputSchema,
@@ -15,6 +17,7 @@ import type {
   adminConnectorListInputSchema,
   adminConnectorListOutputSchema,
   adminConnectorPublishInputSchema,
+  adminConnectorPublishNowInputSchema,
   adminConnectorRevisionOutputSchema,
   adminConnectorRevokeAllBindingsInputSchema,
   adminConnectorRevokeAllBindingsOutputSchema,
@@ -28,6 +31,12 @@ import type {
   connectorToolDraftSchema,
 } from '@/server/enterprise/contracts/platformConnectors';
 
+export type AdminConnectorApplyImmediateInput = z.input<
+  typeof adminConnectorApplyImmediateInputSchema
+>;
+export type AdminConnectorApplyImmediateOutput = z.output<
+  typeof adminConnectorApplyImmediateOutputSchema
+>;
 export type AdminConnectorArchiveInput = z.infer<typeof adminConnectorArchiveInputSchema>;
 export type AdminConnectorCreateDraftInput = z.infer<typeof adminConnectorCreateDraftInputSchema>;
 export type AdminConnectorDeleteDraftInput = z.infer<typeof adminConnectorDeleteDraftInputSchema>;
@@ -49,6 +58,7 @@ export type AdminConnectorListInput = z.infer<typeof adminConnectorListInputSche
 export type AdminConnectorListOutput = z.infer<typeof adminConnectorListOutputSchema>;
 export type AdminConnectorListItem = AdminConnectorListOutput['items'][number];
 export type AdminConnectorPublishInput = z.infer<typeof adminConnectorPublishInputSchema>;
+export type AdminConnectorPublishNowInput = z.input<typeof adminConnectorPublishNowInputSchema>;
 export type AdminConnectorRevisionOutput = z.infer<typeof adminConnectorRevisionOutputSchema>;
 export type AdminConnectorRevokeAllBindingsInput = z.infer<
   typeof adminConnectorRevokeAllBindingsInputSchema

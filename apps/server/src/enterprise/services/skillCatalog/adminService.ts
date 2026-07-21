@@ -12,10 +12,12 @@ import { PlatformSkillCatalogRepository } from '@/database/repositories/platform
 import type { LobeChatDatabase, Transaction } from '@/database/type';
 
 import type {
+  adminSkillApplyImmediateInputSchema,
   adminSkillArchiveInputSchema,
   adminSkillCreateInputSchema,
   adminSkillCreateVersionInputSchema,
   adminSkillGetDependentsInputSchema,
+  adminSkillPublishNowInputSchema,
   adminSkillRollbackInputSchema,
   adminSkillUpdateDraftInputSchema,
   adminSkillValidateInputSchema,
@@ -24,7 +26,11 @@ import type {
 } from '../../contracts/skillCatalog';
 import { PlatformAuditService } from '../platformAudit';
 import type { PlatformConfigInvalidationPublisher } from '../platformConfigInvalidation';
-import { SkillCatalogInvalidCursorError, SkillCatalogNotFoundError } from './errors';
+import {
+  SkillCatalogInvalidCursorError,
+  SkillCatalogNotFoundError,
+  SkillCatalogValidationError,
+} from './errors';
 import {
   type PublishSkillInput,
   type SkillCatalogPublicationOptions,
@@ -40,6 +46,8 @@ type ValidateInput = z.infer<typeof adminSkillValidateInputSchema>;
 type ArchiveInput = z.infer<typeof adminSkillArchiveInputSchema>;
 type RollbackInput = z.infer<typeof adminSkillRollbackInputSchema>;
 type DependentsInput = z.infer<typeof adminSkillGetDependentsInputSchema>;
+type ApplyImmediateInput = z.infer<typeof adminSkillApplyImmediateInputSchema>;
+type PublishNowInput = z.infer<typeof adminSkillPublishNowInputSchema>;
 
 export interface SkillCatalogAdminServiceOptions {
   allowBuiltinOverride?: boolean;
@@ -493,4 +501,165 @@ export class SkillCatalogAdminService {
 
   rollback = (actorUserId: string, input: RollbackInput) =>
     this.publication.rollback(actorUserId, input);
+
+  /**
+   * Resolve the version id to publish: explicit > latestVersion > currentVersionId.
+   */
+  private resolvePublishVersionId = async (
+    skillId: string,
+    preferred?: string,
+  ): Promise<string | null> => {
+    if (preferred) return preferred;
+    const detail = await this.getDetail(skillId);
+    return detail.latestVersion?.id ?? detail.draft.currentVersionId ?? null;
+  };
+
+  /**
+   * Attempt publish; soft-fail returns published:false + publishError (never secrets).
+   * When softFail is false and baseRevision > 0, rethrows so the UI can surface failures.
+   */
+  private tryPublishImmediate = async (
+    actorUserId: string,
+    skillId: string,
+    reason: string,
+    versionId: string | null,
+    options?: { softFail?: boolean },
+  ) => {
+    const detail = await this.getDetail(skillId);
+    if (!versionId) {
+      return {
+        auditId: null as string | null,
+        draft: detail.draft,
+        draftToken: detail.draftToken,
+        published: false,
+        publishError: 'A skill version is required before publish',
+        revision: detail.baseRevision,
+        versionId: null as string | null,
+      };
+    }
+
+    try {
+      const published = await this.publish(actorUserId, {
+        expectedDraftToken: detail.draftToken,
+        expectedRevision: detail.baseRevision,
+        id: skillId,
+        reason,
+        versionId,
+      });
+      const after = await this.getDetail(skillId);
+      return {
+        auditId: published.auditId as string | null,
+        draft: after.draft,
+        draftToken: after.draftToken,
+        published: true,
+        publishError: null as string | null,
+        revision: published.revision,
+        versionId,
+      };
+    } catch (error) {
+      const after = await this.getDetail(skillId);
+      const reasonText =
+        error instanceof SkillCatalogValidationError
+          ? error.issues
+              .map((issue) => issue.message)
+              .join('; ')
+              .slice(0, 500)
+          : error instanceof Error
+            ? error.message.slice(0, 500)
+            : 'Publish failed';
+      if (options?.softFail || after.baseRevision === 0) {
+        return {
+          auditId: null as string | null,
+          draft: after.draft,
+          draftToken: after.draftToken,
+          published: false,
+          publishError: reasonText,
+          revision: after.baseRevision,
+          versionId,
+        };
+      }
+      throw error;
+    }
+  };
+
+  /**
+   * Apply a skill draft mutation then publish immediately (admin settings UI parity).
+   * Create soft-fails when version missing/invalid; update on already-published throws on publish fail.
+   */
+  applyImmediate = async (actorUserId: string, input: ApplyImmediateInput) => {
+    let skillId: string;
+    let versionId: string | null;
+    let softFail: boolean;
+
+    if (input.mode === 'create') {
+      softFail = true;
+      const { mode: _mode, version, ...createInput } = input;
+      const created = await this.create(actorUserId, createInput);
+      skillId = created.draft.id;
+      if (version) {
+        const detail = await this.getDetail(skillId);
+        const createdVersion = await this.createVersion(actorUserId, {
+          content: version.content,
+          contentRef: version.contentRef ?? null,
+          expectedDraftToken: detail.draftToken,
+          expectedRevision: detail.baseRevision,
+          manifest: version.manifest,
+          reason: input.reason,
+          resources: version.resources ?? [],
+          skillId,
+          version: version.version,
+        });
+        versionId = createdVersion.id;
+      } else {
+        versionId = await this.resolvePublishVersionId(skillId);
+      }
+    } else if (input.mode === 'update') {
+      const { mode: _mode, versionId: preferredVersionId, ...updateInput } = input;
+      await this.updateDraft(actorUserId, updateInput);
+      skillId = input.id;
+      versionId = await this.resolvePublishVersionId(skillId, preferredVersionId);
+      // Soft-fail only on first-publish path (revision 0).
+      const afterUpdate = await this.getDetail(skillId);
+      softFail = afterUpdate.baseRevision === 0;
+    } else {
+      // createVersion
+      const { mode: _mode, ...versionInput } = input;
+      const createdVersion = await this.createVersion(actorUserId, versionInput);
+      skillId = input.skillId;
+      versionId = createdVersion.id;
+      const after = await this.getDetail(skillId);
+      softFail = after.baseRevision === 0;
+    }
+
+    const result = await this.tryPublishImmediate(actorUserId, skillId, input.reason, versionId, {
+      softFail,
+    });
+
+    // Align with W10-P: update on already-published must surface publish failures.
+    if (!result.published && input.mode === 'update') {
+      const after = await this.getDetail(skillId);
+      if (after.baseRevision > 0 && result.publishError) {
+        throw new SkillCatalogValidationError([
+          {
+            code: 'manifest_invalid',
+            message: result.publishError,
+            path: [],
+            severity: 'error',
+          },
+        ]);
+      }
+    }
+
+    return result;
+  };
+
+  /**
+   * Banner "retry publish": re-publish latest (or specified) version with soft-fail.
+   */
+  publishNow = async (actorUserId: string, input: PublishNowInput) => {
+    const versionId = await this.resolvePublishVersionId(input.id, input.versionId);
+    return this.tryPublishImmediate(actorUserId, input.id, input.reason, versionId, {
+      softFail: true,
+    });
+  };
 }

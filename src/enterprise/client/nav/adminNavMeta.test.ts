@@ -28,11 +28,18 @@ describe('adminNavMeta', () => {
     expect(findAdminNavItemByPath('/admin/managed-resources')?.requiredPermissions).toEqual([
       PLATFORM_PERMISSIONS.POLICY_READ,
     ]);
+    expect(findAdminNavItemByPath('/admin/ai/skills')?.id).toBe('ai-skills');
+    expect(findAdminNavItemByPath('/admin/ai/skills/s1')?.id).toBe('ai-skill-detail');
+    expect(findAdminNavItemByPath('/admin/ai/skills/s1')?.requiredPermissions).toEqual([
+      PLATFORM_PERMISSIONS.SKILL_READ,
+    ]);
     expect(findAdminNavItemByPath('/admin/skills')?.id).toBe('skills');
     expect(findAdminNavItemByPath('/admin/skills/s1')?.id).toBe('skills-detail');
     expect(findAdminNavItemByPath('/admin/skills/s1')?.requiredPermissions).toEqual([
       PLATFORM_PERMISSIONS.SKILL_READ,
     ]);
+    expect(findAdminNavItemByPath('/admin/ai/connectors')?.id).toBe('ai-connectors');
+    expect(findAdminNavItemByPath('/admin/ai/connectors/c1')?.id).toBe('ai-connector-detail');
     expect(findAdminNavItemByPath('/admin/agents')?.id).toBe('agents');
     expect(findAdminNavItemByPath('/admin/agents/a1')?.id).toBe('agents-detail');
     expect(findAdminNavItemByPath('/admin/agents/a1')?.requiredPermissions).toEqual([
@@ -86,7 +93,10 @@ describe('adminNavMeta', () => {
     expect(flatIds).toContain('ai-providers');
     expect(flatIds).not.toContain('users-detail');
     expect(flatIds).not.toContain('ai-provider-detail');
+    expect(flatIds).not.toContain('ai-skill-detail');
+    expect(flatIds).not.toContain('skills');
     expect(flatIds).not.toContain('skills-detail');
+    expect(flatIds).not.toContain('connectors');
     expect(flatIds).not.toContain('audit');
 
     expect(canAccessAdminPath('/admin/users', granted)).toBe(true);

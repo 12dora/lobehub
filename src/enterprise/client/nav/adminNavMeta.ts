@@ -20,6 +20,10 @@ export type AdminNavLabelKey =
   | 'nav.aiCatalogProviderDetail'
   | 'nav.aiCatalogModels'
   | 'nav.aiCreds'
+  | 'nav.aiSkills'
+  | 'nav.aiSkillDetail'
+  | 'nav.aiConnectors'
+  | 'nav.aiConnectorDetail'
   | 'nav.skills'
   | 'nav.skillDetail'
   | 'nav.connectors'
@@ -142,6 +146,36 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
         requiredPermissions: [PLATFORM_PERMISSIONS.SETTINGS_READ],
       },
       {
+        id: 'ai-skills',
+        labelKey: 'nav.aiSkills',
+        path: '/admin/ai/skills',
+        placeholder: false,
+        requiredPermissions: [PLATFORM_PERMISSIONS.SKILL_READ],
+      },
+      {
+        hideFromNav: true,
+        id: 'ai-skill-detail',
+        labelKey: 'nav.aiSkillDetail',
+        path: '/admin/ai/skills/:id',
+        placeholder: false,
+        requiredPermissions: [PLATFORM_PERMISSIONS.SKILL_READ],
+      },
+      {
+        id: 'ai-connectors',
+        labelKey: 'nav.aiConnectors',
+        path: '/admin/ai/connectors',
+        placeholder: false,
+        requiredPermissions: [PLATFORM_PERMISSIONS.CONNECTOR_READ],
+      },
+      {
+        hideFromNav: true,
+        id: 'ai-connector-detail',
+        labelKey: 'nav.aiConnectorDetail',
+        path: '/admin/ai/connectors/:id',
+        placeholder: false,
+        requiredPermissions: [PLATFORM_PERMISSIONS.CONNECTOR_READ],
+      },
+      {
         id: 'ai-memory',
         labelKey: 'nav.aiMemory',
         path: '/admin/ai/memory',
@@ -187,7 +221,9 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
     placeholder: true,
     requiredPermissions: [],
   },
+  // Advanced catalog (former top-level) — routes kept, hidden from nav
   {
+    hideFromNav: true,
     id: 'skills',
     labelKey: 'nav.skills',
     path: '/admin/skills',
@@ -203,6 +239,7 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
     requiredPermissions: [PLATFORM_PERMISSIONS.SKILL_READ],
   },
   {
+    hideFromNav: true,
     id: 'connectors',
     labelKey: 'nav.connectors',
     path: '/admin/connectors',
