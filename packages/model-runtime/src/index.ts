@@ -80,6 +80,7 @@ export { LobeZhipuAI } from './providers/zhipu';
 export { providerRuntimeMap } from './runtimeMap';
 export * from './types';
 export * from './types/error';
+export { createAzureFetchHttpClient } from './utils/azureFetchHttpClient';
 export type { FetchLike } from './utils/boundFetch';
 export { getBoundFetch, resetBoundFetchPatchForTests, runWithBoundFetch } from './utils/boundFetch';
 export { consumeStreamUntilDone } from './utils/consumeStream';

@@ -160,7 +160,8 @@ export const buildPayloadFromKeyVaults = (
       };
     }
 
-    case ModelProvider.Azure: {
+    case ModelProvider.Azure:
+    case ModelProvider.AzureAI: {
       return {
         apiKey: keyVaults.apiKey,
         baseURL: keyVaults.baseURL || keyVaults.endpoint,

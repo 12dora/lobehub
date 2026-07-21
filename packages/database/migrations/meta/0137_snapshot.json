@@ -1,6 +1,6 @@
 {
-  "id": "0137_m13_admin_mutation_rate_windows",
-  "prevId": "21c23e1c-7d69-450a-9b39-be030ab9cc7d",
+  "id": "9a33d7c4-3082-4d69-8e3c-2ac9a61ab41f",
+  "prevId": "ea40e6dc-4f6b-4dd6-8eac-3db7f83d38ac",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -30428,9 +30428,17 @@
         "platform_admin_mutation_rate_windows_window_start_idx": {
           "name": "platform_admin_mutation_rate_windows_window_start_idx",
           "columns": [
-            "window_start"
+            {
+              "expression": "window_start",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
           ],
-          "isUnique": false
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {},

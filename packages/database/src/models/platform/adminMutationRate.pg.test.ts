@@ -72,4 +72,41 @@ describe('PlatformAdminMutationRateModel (PostgreSQL)', () => {
     expect(rows[0]!.scopeDigest).toBe('f'.repeat(64));
     expect(JSON.stringify(rows)).not.toMatch(/user-|admin\./);
   });
+
+  it('cleanupExpired deletes only stale windows in bounded batches without expanding live quota', async () => {
+    const model = new PlatformAdminMutationRateModel(db);
+    const live = { limit: 2, scopeDigest: '1'.repeat(64), windowMs: 60_000 };
+
+    // Live scope via normal consume (fresh window_start).
+    await model.consume(live);
+
+    // Stale rows: window_start far in the past so cleanup can select them by age.
+    const staleStart = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    for (let i = 0; i < 30; i++) {
+      const digest = `${i.toString(16).padStart(2, '0')}${'a'.repeat(62)}`;
+      await db.insert(platformAdminMutationRateWindows).values({
+        count: 1,
+        scopeDigest: digest,
+        updatedAt: staleStart,
+        windowStart: staleStart,
+      });
+    }
+
+    const deleted = await model.cleanupExpired({
+      limit: 10,
+      maxAgeMs: 24 * 60 * 60 * 1000,
+    });
+    expect(deleted).toBe(10);
+
+    // Live scope still exact: second consume allowed, third limited.
+    await expect(model.consume(live)).resolves.toMatchObject({ allowed: true, count: 2 });
+    await expect(model.consume(live)).resolves.toMatchObject({ allowed: false, count: 3 });
+
+    // Concurrent cleanup must not expand quota on a saturated scope.
+    await Promise.all([
+      model.cleanupExpired({ limit: 50, maxAgeMs: 24 * 60 * 60 * 1000 }),
+      model.cleanupExpired({ limit: 50, maxAgeMs: 24 * 60 * 60 * 1000 }),
+    ]);
+    await expect(model.consume(live)).resolves.toMatchObject({ allowed: false });
+  });
 });

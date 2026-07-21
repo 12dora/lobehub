@@ -1,7 +1,7 @@
 /**
  * tRPC middleware: multi-instance administrative mutation rate limit.
  * Queries skip enforcement (and must not consume quota).
- * Production limiter uses Redis then PostgreSQL (serverDB required for fallback).
+ * Production limiter uses PostgreSQL (serverDB required).
  */
 import { ADMIN_ERROR_CODES } from '@/const/platform/errorCodes';
 import type { LobeChatDatabase } from '@/database/type';

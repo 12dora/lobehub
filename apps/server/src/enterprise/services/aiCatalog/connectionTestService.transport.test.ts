@@ -130,6 +130,154 @@ describe('AI connection test SafeOutbound transport enforcement', () => {
     expect(JSON.stringify(safeCalls)).not.toContain('google-test-key-not-real');
   });
 
+  it('routes AzureAI chat through SafeOutbound httpClient without global/default Node HTTP', async () => {
+    const safeCalls: string[] = [];
+    const transport = vi.fn(async (req) => {
+      safeCalls.push(req.url.toString());
+      return okJson({
+        choices: [{ finish_reason: 'stop', message: { content: 'hi', role: 'assistant' } }],
+      });
+    });
+    const outbound = createSafeOutboundHttpClient({
+      resolve: async () => [{ address: '203.0.113.40', family: 4 }],
+      transport,
+    });
+    const probe = createSafeAiConnectionProbe(outbound);
+
+    try {
+      await probe({
+        keyVaults: {
+          apiKey: 'azure-key-not-real',
+          baseURL: 'https://example.openai.azure.com',
+          endpoint: 'https://example.openai.azure.com',
+        },
+        provider: {
+          checkModel: 'gpt-4o',
+          config: {},
+          displayName: 'Azure AI',
+          enabled: true,
+          fetchOnClient: false,
+          id: 'p-azure',
+          providerKey: 'azureai',
+          revision: 0,
+          settings: {},
+          sort: 0,
+          source: 'builtin',
+          status: 'draft',
+        } as never,
+        runtimeProvider: 'azureai',
+      });
+    } catch {
+      // Non-stream parsing may still throw; transport reachability is required.
+    }
+
+    expect(globalFetchCalls).toEqual([]);
+    expect(safeCalls.some((u) => u.includes('example.openai.azure.com'))).toBe(true);
+    expect(JSON.stringify(safeCalls)).not.toContain('azure-key-not-real');
+  });
+
+  it('routes Vertex auth token exchange through SafeOutbound when credentials require network', async () => {
+    const safeCalls: string[] = [];
+    const transport = vi.fn(async (req) => {
+      safeCalls.push(req.url.toString());
+      // Deny with a stable body — proves the auth hop hit SafeOutbound rather than Node http.
+      return {
+        body: Buffer.from(
+          JSON.stringify({ error: 'invalid_grant', error_description: 'test-deny' }),
+        ),
+        headers: { 'content-type': 'application/json' },
+        status: 400,
+        statusText: 'Bad Request',
+      };
+    });
+    const outbound = createSafeOutboundHttpClient({
+      resolve: async () => [{ address: '203.0.113.50', family: 4 }],
+      transport,
+    });
+    const probe = createSafeAiConnectionProbe(outbound);
+
+    // Synthetically generated RSA key for JWT construction only — never a production secret.
+    // Must be valid enough for google-auth to sign, so the OAuth token hop actually runs.
+    const fakeSa = JSON.stringify({
+      auth_uri: 'https://accounts.google.com/o/oauth2/auth',
+      client_email: 'vertex-test@example.iam.gserviceaccount.com',
+      client_id: '123456789012345678901',
+      private_key: `-----BEGIN PRIVATE KEY-----
+MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQCmDIwrvuzHbY6V
+VzMSeFiZpgkMQmy93/M23OftTgzWL0I2KHfPweLd14iZTgnmFOKPzSC5AiYvifU1
+73v6QT+9Gq9POnwA5+l0viIotFq3OUceIkIZY+6jOiOvDiFfVl7Q98SKVIvCSsEX
+MkWp02uqi/KJcnbZ3369dswo9MQvSpkqVxy7IhdEMAQq0spF7dtJN0w10CRagOSh
+G2HUiCUoI5jqQ+nM/0fiXhjn8RkNp/qIW2l0ueF/4Y3nGZK8pESMn8mfL9nbekr2
+lYucWq08iWyYNaZpSXb7fSNSWMt9J5hSVKtcVI18ReVIdUAqDIPHROqypISR+J1c
+sei1gOUlAgMBAAECggEAO3Yd0eKGbunkF8WIo/IVpDvpXIsC3sGuGjTkFr4O6bo1
+pyg5s1u2boOqxl9EOzC6aw1lTOsgmoB4H27ZgiXQedru8Vu7oSVrG+OkXtgq7hbk
+ST2yVt5KzAfbVGomeDn5LTK0nmalP5e+apyVhrmPghyoZyDmv6GBhL5gYMA56sbj
+xDJQBd5jcdkjb5AwdT1B0Ky997YttNYmFxwNVwmmMQTWP847SLLqiWL9BrE2bZPH
+TdH5xxsnA/JLhPp0p/Xc6y1EukdloUNoHs4XbemK+4TblnWHCASvhmCT14N1ohlP
+HvWc+wJBlUWYA6AxSOYqOxqBN9hhZ+DLA8T4scpg5wKBgQDP4b0iv/i/Eaey/JgZ
+zcEAnay1NsBKWvdHVXkVRrfPG1q0z2m0E8E4KBsS6CNfBcvc+7Sr9c2W/2mtt6Ll
+03nxhiZxKeQAGZJ7nDZJdDjFMxXgwt27fv0ephrP1C9Y971+PqFnkNxPQFffPIOP
+cFl8q6COHQNFiFXDgI6lRcfvBwKBgQDMe/ZI+gGWBdAxoFVhrhTVab4D4gRjTM7B
+0aEVVHxVsY8O3nyEnNzKRB1JjrRTVl6fdcNGbQ/AnBWkVv7MQaywo60RaCfs4h9i
+HZgzy8iaDwb25lTty2SPlURepqUA3LPrxL/TiWrwgzlegS8ARdDymPmiIEtYuUXh
+mqUTyrUTcwKBgEwGosUysCYwrsQm3PmS5iLzh1Y+z9RhsE3GVKITWuXDe0jlEiNp
+liCTilM/0q/NzuDirRC2tJmkj2GY51pmHRLXnPeF+nyO3aOXXcM/XgPAyx+IJM+N
+gcTTurqHP0mqUQL6pMzbjbbuMTTTTMoIrLGLkwxmT+v+EF+PhJutCZHBAoGAUgGo
+7O1us2bTbwOZGlqBOnF05gO/tL858BsNGgvO7WMPN2xczaZHGcslX7mecgmiWxsU
+XGsitSEjwMuu1eXExvZtUxzNXj/1TBkIUEV6xuYd6ejHyLIYO0kmqTr105mvgm9e
+awyiWaCW4mK2ocpeGNzmyHFhJkzvTKIDcCOMaScCgYApKo+O9wTEkDVDo54of50H
+HVUHcPQrpBQpm5yZqDQ1mXUmzYKg5HbFuz/x83GXA1PwXuG9xqGHZP5dyu6pjI81
+y3X92PnXl6vhQyGXn9wMpKC0onir14P2qCwXu4t85UGWL1BYYFSx49MCKThmgrqR
+L5cQAJVyU/9xX/AcEgAxKA==
+-----END PRIVATE KEY-----
+`,
+      private_key_id: 'test-key-id-not-real',
+      project_id: 'vertex-test-project',
+      token_uri: 'https://oauth2.googleapis.com/token',
+      type: 'service_account',
+    });
+
+    try {
+      await probe({
+        keyVaults: {
+          apiKey: fakeSa,
+          region: 'us-central1',
+        },
+        provider: {
+          checkModel: 'gemini-1.5-flash',
+          config: {},
+          displayName: 'Vertex',
+          enabled: true,
+          fetchOnClient: false,
+          id: 'p-vertex',
+          providerKey: 'vertexai',
+          revision: 0,
+          settings: {},
+          sort: 0,
+          source: 'builtin',
+          status: 'draft',
+        } as never,
+        runtimeProvider: 'vertexai',
+      });
+    } catch {
+      // Expected: auth is denied by SafeOutbound transport; the hop must still be recorded.
+    }
+
+    expect(globalFetchCalls).toEqual([]);
+    // Token exchange must hit SafeOutbound — empty safeCalls means a silent Node HTTP bypass.
+    expect(safeCalls.length).toBeGreaterThan(0);
+    expect(
+      safeCalls.some(
+        (u) =>
+          u.includes('oauth2.googleapis.com') ||
+          u.includes('accounts.google.com') ||
+          u.includes('googleapis.com'),
+      ),
+    ).toBe(true);
+    expect(JSON.stringify(safeCalls)).not.toContain('BEGIN PRIVATE KEY');
+    expect(JSON.stringify(safeCalls)).not.toContain('vertex-test@example');
+  });
+
   it('routes Bedrock through SafeOutbound-backed requestHandler without global fetch', async () => {
     const safeCalls: string[] = [];
     const transport = vi.fn(async (req) => {

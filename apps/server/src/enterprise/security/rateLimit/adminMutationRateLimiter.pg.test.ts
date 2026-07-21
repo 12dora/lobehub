@@ -8,6 +8,7 @@ import type { LobeChatDatabase } from '@/database/type';
 import {
   PostgresAdminMutationRateLimiter,
   resetSharedAdminMutationRateLimiter,
+  resolveAdminMutationRateLimitConfig,
   SharedAdminMutationRateLimiter,
 } from './adminMutationRateLimiter';
 
@@ -21,55 +22,36 @@ const cleanup = async () => {
 beforeEach(cleanup);
 afterEach(cleanup);
 
-describe('SharedAdminMutationRateLimiter PostgreSQL fallback (no Redis)', () => {
-  it('allows below the limit and denies at the boundary through PostgreSQL', async () => {
-    const limiter = new SharedAdminMutationRateLimiter({
-      config: { limit: 2, windowMs: 60_000 },
-      redis: { tryConsume: async () => 'unavailable' } as never,
-    });
+describe('SharedAdminMutationRateLimiter PostgreSQL authority', () => {
+  it('allows below the limit and denies at the boundary across independent instances', async () => {
+    const config = {
+      ...resolveAdminMutationRateLimitConfig({}),
+      cleanupMinIntervalMs: 60_000,
+      limit: 2,
+      windowMs: 60_000,
+    };
+    const first = new SharedAdminMutationRateLimiter({ config });
+    const second = new SharedAdminMutationRateLimiter({ config });
 
     await expect(
-      limiter.consume({ actorId: 'actor-1', db, procedure: 'admin.agents.create' }),
+      first.consume({ actorId: 'actor-1', db, procedure: 'admin.agents.create' }),
     ).resolves.toBe('allowed');
     await expect(
-      limiter.consume({ actorId: 'actor-1', db, procedure: 'admin.agents.create' }),
+      second.consume({ actorId: 'actor-1', db, procedure: 'admin.agents.create' }),
     ).resolves.toBe('allowed');
     await expect(
-      limiter.consume({ actorId: 'actor-1', db, procedure: 'admin.agents.create' }),
+      first.consume({ actorId: 'actor-1', db, procedure: 'admin.agents.create' }),
     ).resolves.toBe('limited');
 
-    // Independent procedure / actor scopes
     await expect(
-      limiter.consume({ actorId: 'actor-1', db, procedure: 'admin.agents.archive' }),
+      first.consume({ actorId: 'actor-1', db, procedure: 'admin.agents.archive' }),
     ).resolves.toBe('allowed');
     await expect(
-      limiter.consume({ actorId: 'actor-2', db, procedure: 'admin.agents.create' }),
+      second.consume({ actorId: 'actor-2', db, procedure: 'admin.agents.create' }),
     ).resolves.toBe('allowed');
   });
 
-  it('shares PostgreSQL state across independent limiter instances', async () => {
-    const redisUnavailable = { tryConsume: async () => 'unavailable' as const };
-    const first = new SharedAdminMutationRateLimiter({
-      config: { limit: 2, windowMs: 60_000 },
-      redis: redisUnavailable as never,
-    });
-    const second = new SharedAdminMutationRateLimiter({
-      config: { limit: 2, windowMs: 60_000 },
-      redis: redisUnavailable as never,
-    });
-
-    await expect(
-      first.consume({ actorId: 'actor-x', db, procedure: 'admin.system.prepareRestart' }),
-    ).resolves.toBe('allowed');
-    await expect(
-      second.consume({ actorId: 'actor-x', db, procedure: 'admin.system.prepareRestart' }),
-    ).resolves.toBe('allowed');
-    await expect(
-      first.consume({ actorId: 'actor-x', db, procedure: 'admin.system.prepareRestart' }),
-    ).resolves.toBe('limited');
-  });
-
-  it('fails closed when the PostgreSQL fallback throws', async () => {
+  it('never expands quota when the database is unavailable', async () => {
     const brokenDb = {
       execute: async () => {
         throw new Error('db down');
@@ -77,8 +59,48 @@ describe('SharedAdminMutationRateLimiter PostgreSQL fallback (no Redis)', () => 
     } as never;
     await expect(
       new PostgresAdminMutationRateLimiter({
-        config: { limit: 2, windowMs: 60_000 },
+        config: {
+          ...resolveAdminMutationRateLimitConfig({}),
+          limit: 2,
+          windowMs: 60_000,
+        },
       }).consume({ actorId: 'a', db: brokenDb, procedure: 'admin.x' }),
     ).resolves.toBe('unavailable');
+  });
+
+  it('runs bounded opportunistic cleanup without expanding quota', async () => {
+    const config = {
+      ...resolveAdminMutationRateLimitConfig({}),
+      cleanupBatchSize: 50,
+      cleanupMinIntervalMs: 0,
+      limit: 3,
+      retentionMs: 1,
+      windowMs: 30,
+    };
+    const limiter = new SharedAdminMutationRateLimiter({ config });
+
+    // Seed many expired-ish scopes by consuming then waiting for window+retention.
+    for (let i = 0; i < 10; i++) {
+      await limiter.consume({
+        actorId: `stale-${i}`,
+        db,
+        procedure: 'admin.agents.create',
+      });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    // Fresh scope still enforced exactly; cleanup is best-effort side channel.
+    await expect(
+      limiter.consume({ actorId: 'fresh', db, procedure: 'admin.agents.create' }),
+    ).resolves.toBe('allowed');
+    await expect(
+      limiter.consume({ actorId: 'fresh', db, procedure: 'admin.agents.create' }),
+    ).resolves.toBe('allowed');
+    await expect(
+      limiter.consume({ actorId: 'fresh', db, procedure: 'admin.agents.create' }),
+    ).resolves.toBe('allowed');
+    await expect(
+      limiter.consume({ actorId: 'fresh', db, procedure: 'admin.agents.create' }),
+    ).resolves.toBe('limited');
   });
 });

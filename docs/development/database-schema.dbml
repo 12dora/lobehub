@@ -1546,6 +1546,18 @@ table oidc_sessions {
   }
 }
 
+
+table platform_admin_mutation_rate_windows {
+  scope_digest text [pk, not null, note: 'SHA-256 digest of actor+procedure; raw IDs never stored']
+  window_start timestamptz [not null]
+  count integer [not null, default: 0]
+  updated_at timestamptz [not null, default: `now()`]
+
+  indexes {
+    window_start [name: 'platform_admin_mutation_rate_windows_window_start_idx']
+  }
+}
+
 table platform_agent_assignments {
   id text [pk, not null]
   agent_id text [not null]

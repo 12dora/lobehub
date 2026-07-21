@@ -10,6 +10,7 @@ import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 
 import {
   resetSharedAdminMutationRateLimiter,
+  resolveAdminMutationRateLimitConfig,
   setSharedAdminMutationRateLimiter,
   SharedAdminMutationRateLimiter,
 } from '../security/rateLimit/adminMutationRateLimiter';
@@ -23,17 +24,19 @@ vi.mock('@/database/core/db-adaptor', () => ({
 }));
 
 /**
- * Production-wiring integration: no Redis, PostgreSQL fallback via serverDatabase.
- * Does not install a process-local Map double as the production singleton default.
+ * Production-wiring integration: PostgreSQL-only limiter via serverDatabase.
  */
-describe('withAdminMutationRateLimit production wiring (PostgreSQL fallback)', () => {
+describe('withAdminMutationRateLimit production wiring (PostgreSQL)', () => {
   beforeEach(async () => {
     await db.delete(platformAdminMutationRateWindows);
     resetSharedAdminMutationRateLimiter();
     setSharedAdminMutationRateLimiter(
       new SharedAdminMutationRateLimiter({
-        config: { limit: 2, windowMs: 60_000 },
-        redis: { tryConsume: async () => 'unavailable' } as never,
+        config: {
+          ...resolveAdminMutationRateLimitConfig({}),
+          limit: 2,
+          windowMs: 60_000,
+        },
       }),
     );
   });
@@ -58,7 +61,7 @@ describe('withAdminMutationRateLimit production wiring (PostgreSQL fallback)', (
     return { business, createCaller: createCallerFactory(app) };
   };
 
-  it('allows mutations below the limit through PostgreSQL and denies at the boundary with zero business work', async () => {
+  it('allows mutations below the limit and denies at the boundary with zero business work', async () => {
     const { business, createCaller } = buildRouter();
     const caller = createCaller({ userId: 'actor-pg-1' } as never);
 
