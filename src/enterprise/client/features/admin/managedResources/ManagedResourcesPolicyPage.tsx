@@ -1,8 +1,9 @@
 'use client';
 
-import { Alert, Flexbox, Text, TextArea } from '@lobehub/ui';
+import { Alert, Flexbox, Icon, Tag, Text, TextArea } from '@lobehub/ui';
 import { Button, confirmModal, Select, Switch } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
+import { CircleCheck, CircleDashed } from 'lucide-react';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useBlocker } from 'react-router';
@@ -56,16 +57,43 @@ const styles = createStaticStyles(({ css }) => ({
   `,
   cardHeader: css`
     display: flex;
-    flex-wrap: wrap;
     gap: 12px;
     align-items: flex-start;
     justify-content: space-between;
   `,
+  cardHeading: css`
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 4px;
+
+    min-width: 0;
+  `,
+  statusTag: css`
+    flex-shrink: 0;
+    align-self: flex-start;
+    margin: 0;
+  `,
+  control: css`
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  `,
+  controlLabel: css`
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  `,
   controls: css`
     display: flex;
     flex-wrap: wrap;
-    gap: 12px;
-    align-items: center;
+    gap: 12px 20px;
+    align-items: flex-end;
+    justify-content: space-between;
+
+    margin-block-start: 4px;
+    padding-block-start: 12px;
+    border-block-start: 1px solid ${cssVar.colorBorderSecondary};
   `,
   footer: css`
     position: sticky;
@@ -501,38 +529,50 @@ const ManagedResourcesPolicyPage = memo(() => {
             return (
               <section className={styles.card} key={resource}>
                 <div className={styles.cardHeader}>
-                  <Flexbox gap={4}>
+                  <div className={styles.cardHeading}>
                     <Text strong>{t(`managedResources.resource.${resource}` as never)}</Text>
-                    <Text type="secondary">
+                    <Text fontSize={12} type="secondary">
                       {t(`managedResources.resource.${resource}.desc` as never)}
                     </Text>
-                  </Flexbox>
-                  <Text type={ready ? 'success' : 'warning'}>
+                  </div>
+                  <Tag
+                    className={styles.statusTag}
+                    color={ready ? 'success' : 'default'}
+                    icon={<Icon icon={ready ? CircleCheck : CircleDashed} size={12} />}
+                    size="small"
+                  >
                     {ready
                       ? t('managedResources.readiness.ready')
                       : t('managedResources.readiness.notReady')}
-                  </Text>
+                  </Tag>
                 </div>
                 <div className={styles.controls}>
-                  <Switch
-                    checked={item.managed}
-                    disabled={!canUpdate || conflict}
-                    onChange={(managed) => updatePolicy(resource, { managed })}
-                  />
-                  <Text>{t('managedResources.managed')}</Text>
-                  <Select
-                    disabled={!canUpdate || conflict}
-                    value={item.enforcementMode}
-                    options={MODE_VALUES.map((mode) => ({
-                      label: t(`managedResources.mode.${mode}` as never),
-                      value: mode,
-                    }))}
-                    onChange={(mode) =>
-                      updatePolicy(resource, {
-                        enforcementMode: mode as ManagedResourceEnforcementMode,
-                      })
-                    }
-                  />
+                  <label className={styles.control}>
+                    <Switch
+                      checked={item.managed}
+                      disabled={!canUpdate || conflict}
+                      onChange={(managed) => updatePolicy(resource, { managed })}
+                    />
+                    <Text>{t('managedResources.managed')}</Text>
+                  </label>
+                  <div className={styles.controlLabel}>
+                    <Text fontSize={12} type="secondary">
+                      {t('managedResources.mode.label')}
+                    </Text>
+                    <Select
+                      disabled={!canUpdate || conflict || !item.managed}
+                      value={item.enforcementMode}
+                      options={MODE_VALUES.map((mode) => ({
+                        label: t(`managedResources.mode.${mode}` as never),
+                        value: mode,
+                      }))}
+                      onChange={(mode) =>
+                        updatePolicy(resource, {
+                          enforcementMode: mode as ManagedResourceEnforcementMode,
+                        })
+                      }
+                    />
+                  </div>
                 </div>
               </section>
             );

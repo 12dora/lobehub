@@ -1,5 +1,6 @@
 'use client';
 
+import { builtinSkills as bundledBuiltinSkills } from '@lobechat/builtin-skills';
 import { Center, Empty, Flexbox, SearchBar, Tag, Text } from '@lobehub/ui';
 import { Button, confirmModal, toast } from '@lobehub/ui/base-ui';
 import { SkillsIcon } from '@lobehub/ui/icons';
@@ -133,6 +134,35 @@ const styles = createStaticStyles(({ css }) => ({
   `,
 }));
 
+/** Synthetic id prefix for code-bundled built-in skills (no platform DB row). */
+const BUILTIN_ID_PREFIX = 'builtin:';
+
+/**
+ * Build read-only list rows for the code-bundled built-in skills so the admin
+ * catalog shows the same built-ins the user Settings > Skill page does. These
+ * are always live in the runtime; a real DB draft/override shadows them (see the
+ * dedupe by skillKey in the page). Uses the full bundled set to match the
+ * server's unfiltered built-in catalog.
+ */
+const buildBuiltinSkillRows = (): AdminSkillListItem[] =>
+  bundledBuiltinSkills.map((skill) => ({
+    allowBuiltinOverride: false,
+    currentVersionId: null,
+    description: skill.description ?? null,
+    displayName: skill.name,
+    distribution: 'default',
+    draftSequence: 0,
+    enabled: true,
+    id: `${BUILTIN_ID_PREFIX}${skill.identifier}`,
+    revision: 0,
+    skillKey: skill.identifier,
+    source: 'builtin',
+    status: 'published',
+  }));
+
+const isBuiltinSkillId = (id: string | undefined): id is string =>
+  Boolean(id?.startsWith(BUILTIN_ID_PREFIX));
+
 const SkillListItem = memo<{
   isSelected: boolean;
   onSelect: () => void;
@@ -150,6 +180,53 @@ const SkillListItem = memo<{
     onSelect={onSelect}
   />
 ));
+
+/** Read-only detail for a code-bundled built-in skill (never has a DB draft). */
+const BuiltinSkillDetailPanel = memo<{ skillId: string }>(({ skillId }) => {
+  const { t } = useTranslation('admin');
+  const skill = bundledBuiltinSkills.find((s) => `${BUILTIN_ID_PREFIX}${s.identifier}` === skillId);
+
+  if (!skill) {
+    return (
+      <div className={styles.detailBody}>
+        {t('aiSkillSettings.detail.notFound', { defaultValue: 'Skill not found' })}
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <header className={styles.detailHeader}>
+        <Flexbox horizontal align="center" gap={8} justify="space-between">
+          <Text strong as="h2">
+            {skill.name}
+          </Text>
+          <Tag color="processing">
+            {t('aiSkillSettings.builtin.tag', { defaultValue: 'Built-in' })}
+          </Tag>
+        </Flexbox>
+        <Text type="secondary">
+          {skill.description ||
+            t('aiSkillSettings.detail.noDescription', { defaultValue: 'No description' })}
+        </Text>
+      </header>
+      <main className={styles.detailBody}>
+        <section className={styles.card}>
+          <Text type="secondary">{t('skillCatalog.detail.identity.key')}</Text>
+          <Text code>{skill.identifier}</Text>
+          <Text type="secondary">{t('skillCatalog.detail.identity.source')}</Text>
+          <Text>{skill.source}</Text>
+        </section>
+        <Text type="secondary">
+          {t('aiSkillSettings.builtin.note', {
+            defaultValue:
+              'Built-in skills are provided by the platform and available to all users by default — no listing needed.',
+          })}
+        </Text>
+      </main>
+    </>
+  );
+});
 
 const SkillDetailPanel = memo<{
   onArchived: () => void;
@@ -402,7 +479,23 @@ const SkillSettingsPage = memo(() => {
   );
   const { data, error, isLoading, mutate } = useFetchAdminSkills(listInput, canRead);
   const selectedId = params.id;
-  const items = data?.items ?? [];
+  // Merge code-bundled built-ins so they appear alongside DB drafts; a real DB
+  // row (draft/published/archived override) shadows the built-in by skillKey.
+  const items = useMemo(() => {
+    const dbItems = data?.items ?? [];
+    const dbKeys = new Set(dbItems.map((item) => item.skillKey));
+    const q = query.trim().toLowerCase();
+    const builtins = buildBuiltinSkillRows().filter((builtin) => {
+      if (dbKeys.has(builtin.skillKey)) return false;
+      if (!q) return true;
+      return (
+        builtin.displayName.toLowerCase().includes(q) ||
+        builtin.skillKey.toLowerCase().includes(q) ||
+        (builtin.description ?? '').toLowerCase().includes(q)
+      );
+    });
+    return [...dbItems, ...builtins];
+  }, [data?.items, query]);
 
   const onSelect = (id: string) => {
     navigate(`/admin/ai/skills/${encodeURIComponent(id)}`);
@@ -534,7 +627,7 @@ const SkillSettingsPage = memo(() => {
         <div className={styles.content}>
           <div style={{ padding: '12px 24px 0' }}>
             <DraftPublishBanner
-              activeSkillId={selectedId}
+              activeSkillId={isBuiltinSkillId(selectedId) ? undefined : selectedId}
               onPublished={() => {
                 void mutate();
                 void refreshAdminSkillLists();
@@ -542,16 +635,20 @@ const SkillSettingsPage = memo(() => {
             />
           </div>
           {selectedId ? (
-            <SkillDetailPanel
-              skillId={selectedId}
-              onArchived={() => {
-                void mutate();
-                navigate('/admin/ai/skills');
-              }}
-              onPublished={() => {
-                void mutate();
-              }}
-            />
+            isBuiltinSkillId(selectedId) ? (
+              <BuiltinSkillDetailPanel skillId={selectedId} />
+            ) : (
+              <SkillDetailPanel
+                skillId={selectedId}
+                onArchived={() => {
+                  void mutate();
+                  navigate('/admin/ai/skills');
+                }}
+                onPublished={() => {
+                  void mutate();
+                }}
+              />
+            )
           ) : (
             <Center paddingBlock={64}>
               <Empty

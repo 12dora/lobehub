@@ -38,6 +38,7 @@ vi.mock('@lobehub/ui', async () => {
     Accordion: ({ children }: any) => React.createElement('div', null, children),
     AccordionItem: ({ children, title }: any) => React.createElement('div', null, title, children),
     Flexbox: ({ children }: any) => React.createElement('div', null, children),
+    Icon: () => null,
     Text: ({ children }: any) => React.createElement('span', null, children),
   };
 });
@@ -45,7 +46,7 @@ vi.mock('@lobehub/ui', async () => {
 vi.mock('@/features/NavPanel/components/NavItem', async () => {
   const React = await import('react');
   return {
-    default: ({ title, active, ...rest }: any) =>
+    default: ({ title, active, icon, ...rest }: any) =>
       React.createElement(
         'div',
         { 'data-active': String(!!active), 'data-testid': 'nav-item', ...rest },
