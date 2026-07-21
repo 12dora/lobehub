@@ -236,11 +236,19 @@ const IdentityProviderPage = memo(() => {
               />
             ) : null}
 
-            {providers.isLoading ? (
+            {/*
+              Keep the create/edit column mounted while the list revalidates.
+              isLoading flips true on retry / SWR backoff even when creating;
+              unmounting would discard wizard input (including write-only secrets).
+            */}
+            {providers.isLoading && !creating ? (
               <Text role="status">{t('identityProviders.loading')}</Text>
             ) : (
               <div className={styles.columns}>
                 <Flexbox gap={8}>
+                  {providers.isLoading && creating ? (
+                    <Text role="status">{t('identityProviders.loading')}</Text>
+                  ) : null}
                   {providers.error ? (
                     <Alert
                       showIcon
@@ -253,19 +261,21 @@ const IdentityProviderPage = memo(() => {
                       }
                     />
                   ) : null}
-                  <IdentityProviderList
-                    canCreate={canCreate}
-                    items={providers.data?.items ?? []}
-                    selectedId={creating ? null : (selected?.id ?? null)}
-                    onCreate={startCreate}
-                    onSelect={(id) =>
-                      changeEditor(() => {
-                        setCreating(false);
-                        setCreateSeed(null);
-                        setSelectedId(id);
-                      })
-                    }
-                  />
+                  {!providers.isLoading || creating ? (
+                    <IdentityProviderList
+                      canCreate={canCreate}
+                      items={providers.data?.items ?? []}
+                      selectedId={creating ? null : (selected?.id ?? null)}
+                      onCreate={startCreate}
+                      onSelect={(id) =>
+                        changeEditor(() => {
+                          setCreating(false);
+                          setCreateSeed(null);
+                          setSelectedId(id);
+                        })
+                      }
+                    />
+                  ) : null}
                 </Flexbox>
 
                 {/* Wizard stays reachable even when list fails — required for "New". */}
