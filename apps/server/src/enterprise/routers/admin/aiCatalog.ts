@@ -37,6 +37,7 @@ import {
   aiConnectionTestResultSchema,
 } from '../../contracts/aiCatalog';
 import { withActiveUser } from '../../guards/activeUser';
+import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
 import { throwEnterpriseError } from '../../guards/enterpriseErrors';
 import { withPlatformPermission } from '../../guards/platformPermission';
 import {
@@ -46,7 +47,10 @@ import {
   mapServiceError,
 } from './aiCatalogSupport';
 
-const adminBase = authedProcedure.use(serverDatabase).use(withActiveUser());
+const adminBase = authedProcedure
+  .use(serverDatabase)
+  .use(withActiveUser())
+  .use(withAdminMutationRateLimit());
 
 export const adminAiProvidersRouter = router({
   archive: adminBase
