@@ -154,6 +154,21 @@ describe('AdminAiProviderService adapter', () => {
     expect(mocks.applyImmediate).toHaveBeenCalled();
   });
 
+  it('toggle-off success path does not toast error', async () => {
+    mocks.applyImmediate.mockResolvedValue({
+      auditId: 'a-off',
+      draft: { ...detailFixture.draft, enabled: false },
+      published: true,
+      publishError: null,
+      revision: 3,
+    });
+    await service.toggleProviderEnabled('prov', false);
+    expect(mocks.applyImmediate).toHaveBeenCalledWith(
+      expect.objectContaining({ enabled: false, mode: 'update' }),
+    );
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
   it('reauth cancel propagates and toasts', async () => {
     const { AdminReauthCancelledError } =
       await import('@/enterprise/client/features/admin/reauth/requestAdminReauth');

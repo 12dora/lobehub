@@ -2,6 +2,7 @@
 import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { DEFAULT_ENTERPRISE_FEATURE_FLAGS } from '@/const/platform/featureFlags';
 import { getTestDB } from '@/database/core/getTestDB';
 import {
   platformAiModels,
@@ -14,6 +15,11 @@ import type { LobeChatDatabase } from '@/database/type';
 import { type KeyProvider, PlatformSecretService } from '@/server/enterprise/security/secret';
 
 import { AiCatalogAdminService, AiCatalogValidationError } from './adminService';
+import {
+  AiCatalogRuntimeAdapter,
+  clearAiCatalogRuntimeCache,
+  getEmptyAiProviderRuntimeState,
+} from './runtimeAdapter';
 
 const db: LobeChatDatabase = await getTestDB();
 const keyProvider: KeyProvider = {
@@ -213,6 +219,106 @@ describe('AiCatalogAdminService applyImmediate first-publish retest', () => {
     expect(result.revision).toBeGreaterThan(0);
   });
 
+  it('toggle-off published provider publishes enabled:false revision (global disable)', async () => {
+    const service = createService(async () => {});
+    const created = await service.createProviderDraft('admin', {
+      checkModel: 'chat',
+      displayName: 'Disable Me',
+      enabled: true,
+      providerKey: 'disable-pub',
+      reason: 'create',
+      secret: { operation: 'replace', value: 'seed-key' },
+      settings: { sdkType: 'openai' },
+    });
+    let detail = await service.getDetail(created.id);
+    await service.createModel('admin', {
+      enabled: true,
+      expectedDraftToken: detail.draftToken,
+      modelKey: 'chat',
+      providerId: created.id,
+      reason: 'model',
+      type: 'chat',
+    });
+    await service.testProvider('admin', { id: created.id, reason: 'prime' });
+    detail = await service.getDetail(created.id);
+    const first = await service.publishProvider('admin', {
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.baseRevision,
+      id: created.id,
+      reason: 'first publish',
+    });
+    detail = await service.getDetail(created.id);
+    const off = await service.applyProviderImmediate('admin', {
+      enabled: false,
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.baseRevision,
+      id: created.id,
+      mode: 'update',
+      reason: 'global disable',
+    });
+    expect(off.published).toBe(true);
+    expect(off.draft.enabled).toBe(false);
+    expect(off.revision).toBeGreaterThan(first.revision);
+
+    // Runtime materialization must exclude published-disabled providers.
+    clearAiCatalogRuntimeCache();
+    const runtime = await new AiCatalogRuntimeAdapter(db).resolve({
+      flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AI: true },
+      upstreamState: getEmptyAiProviderRuntimeState(),
+    });
+    expect(runtime.enabledAiProviders.map((p) => p.id)).not.toContain('disable-pub');
+    expect(runtime.enabledAiModels.every((m) => m.providerId !== 'disable-pub')).toBe(true);
+
+    // OFF → ON recovers without extra obstacles (stale connection test allowed).
+    detail = await service.getDetail(created.id);
+    const on = await service.applyProviderImmediate('admin', {
+      enabled: true,
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.baseRevision,
+      id: created.id,
+      mode: 'update',
+      reason: 're-enable',
+    });
+    expect(on.published).toBe(true);
+    expect(on.draft.enabled).toBe(true);
+
+    clearAiCatalogRuntimeCache();
+    const runtimeOn = await new AiCatalogRuntimeAdapter(db).resolve({
+      flags: { ...DEFAULT_ENTERPRISE_FEATURE_FLAGS, ENABLE_PLATFORM_MANAGED_AI: true },
+      upstreamState: getEmptyAiProviderRuntimeState(),
+    });
+    expect(runtimeOn.enabledAiProviders.map((p) => p.id)).toContain('disable-pub');
+  });
+
+  it('revision 0 disable publish is still rejected (first publish must be enabled)', async () => {
+    const service = createService(async () => {});
+    const created = await service.createProviderDraft('admin', {
+      displayName: 'Never Live',
+      enabled: false,
+      providerKey: 'rev0-off',
+      reason: 'create disabled',
+      secret: { operation: 'replace', value: 'seed-key' },
+      settings: { sdkType: 'openai' },
+    });
+    const detail = await service.getDetail(created.id);
+    const result = await service.applyProviderImmediate('admin', {
+      enabled: false,
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.baseRevision,
+      id: created.id,
+      mode: 'update',
+      reason: 'cannot first-publish disabled',
+    });
+    // Soft path on revision 0: draft kept, not published.
+    expect(result.published).toBe(false);
+    expect(result.revision).toBe(0);
+  });
+
+  /**
+   * R2 "update failure visibility" — rewritten after F1 semantic change:
+   * disable is now a valid publish; use invalid endpoint on a still-enabled
+   * published provider so publish validation still throws (not soft-return).
+   */
   it('update on published provider throws when publish validation fails (not soft-return)', async () => {
     const service = createService(async () => {});
     const created = await service.createProviderDraft('admin', {
@@ -242,15 +348,15 @@ describe('AiCatalogAdminService applyImmediate first-publish retest', () => {
       reason: 'first publish',
     });
     detail = await service.getDetail(created.id);
-    // Disabling the provider makes publish validation fail (must stay enabled).
     await expect(
       service.applyProviderImmediate('admin', {
-        enabled: false,
+        config: { endpoint: 'not-a-valid-url' },
+        enabled: true,
         expectedDraftToken: detail.draftToken,
         expectedRevision: detail.baseRevision,
         id: created.id,
         mode: 'update',
-        reason: 'disable must not soft-return',
+        reason: 'invalid endpoint must throw',
       }),
     ).rejects.toBeInstanceOf(AiCatalogValidationError);
   });
