@@ -19,6 +19,7 @@
 | 00_实施总览/14_Q06生产就绪门禁运行说明.md                                  | 9199  | 60055320029b3f3d40c11520e5309e4619395e34c9e4c22cff06151ce49546f3 |
 | 00_实施总览/15_W8实施进度记录.md                                       | 12056 | 2138a356279dc93af5d2b1697ed356d609540c1ef65059e02c123b4eb8203c7f |
 | 00_实施总览/16_W9实施进度记录.md | 10495 | 1e6bb360b1ae9abd3ce4965f928bae20fbad1ebd822dd74e51f97930739954d3 |
+| 00_实施总览/17_W10实施进度记录.md | 5200 | 2089d7e6f12481a1c400df8d0ad76dc56da69b48747d46189c17dac9af8c4316 |
 | 01_实施模块/M00_企业扩展骨架与 Feature Flags.md                         | 4543  | f1b7cb45415bdab3fbece2be4c4b0afe7eccaa375ceae6e21f1d47a12c2e4157 |
 | 01_实施模块/M01_平台数据库、Revision、Audit 与 Job 基础设施.md               | 4724  | 7430b25dbc68a97dde265cc2b5fdf6980523768982586cd6faf2543507e7cc03 |
 | 01_实施模块/M02_Global RBAC、超级管理员与真实服务端鉴权.md                     | 8266  | 86d2d157e47278b657e1407cc37b7321f8661ff6434b3d868ff4c7688fa0dac9 |
@@ -41,7 +42,7 @@
 | 02_工程清单/04_权限矩阵.md                                           | 3198  | d3333493b9bbb644510d5a8b93d6cd857380213c68f037425e8b1285b35bfeea |
 | 02_工程清单/05_建议PR拆分.md                                         | 5331  | 684781b9fa76de37c6eefadf9acd2b7acfa8a15b00e8e2c76830c9ee60a69bd3 |
 | 02_工程清单/06_验收与回归矩阵.md                                        | 8923  | 1a8fb7fe1a2be734d098cdd48bdff3354076fea857b80c75cbe0e17e94c4ff3c |
-| 02_工程清单/07_上游直接修改点台账.md                                      | 50318 | 06ba1ec8bf8f46650ca7a1ef599eb6ecdd4a0196d02f882dc762838995ad36c0 |
+| 02_工程清单/07_上游直接修改点台账.md | 54721 | 177bf35c416e2ea9bd833b60c602602a915dd457520b92cccccf72f171cd10dc |
 | 03_参考资料/01_源码路径核验.md                                         | 1750  | 5556094e6c3e8ee9884e8f8fa4df239531e0fa71550f6cb4e7a04870c6b82995 |
 | 03_参考资料/02_LobeHub_企业内部版管理后台详细设计.md                          | 84215 | a517ad09eaf47ba72c75e816878e2d991853060318c2fcc0112f67e110ec262f |
 | README.md                                                    | 4275  | 51a5e8d252a01dc4d895b6d69d73a121e883a25c6f10f12a1f6df61fc179af6e |
