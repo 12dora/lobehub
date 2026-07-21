@@ -1,35 +1,39 @@
 /**
  * Automated adversarial security regression manifest.
  *
- * These are repository automation targets — not an external production penetration test.
- * `admin-rate-limit` is required and reserved for S06; missing coverage fails closed.
+ * Repository automation only — not an external production penetration test.
+ *
+ * S06 admin rate-limit targets (parallel commit 5fa953ca):
+ * - apps/server/src/enterprise/security/rateLimit/adminMutationRateLimiter.test.ts
+ * - apps/server/src/enterprise/guards/adminMutationRateLimit.test.ts
+ * Until those files exist on this branch, adapters fail closed with missing-test-target.
  */
 export type PenAdapterCategory =
   'admin-rate-limit' | 'auth-rbac-idor' | 'reauth' | 'replay-cas' | 'ssrf';
 
+export interface ExpectedSkip {
+  /** Stable vitest test title (assertion title, not fullName). */
+  reason: string;
+  title: string;
+}
+
 export interface PenAdapterDefinition {
   category: PenAdapterCategory;
   description: string;
+  /**
+   * Reviewed intentional skips. Unexpected skips fail closed.
+   * Zero skips is always allowed.
+   */
+  expectedSkips?: readonly ExpectedSkip[];
   /** Stable kebab id. */
   id: string;
   /**
    * When true, missing targets or failed adapters fail the pen-regression check.
-   * All current adapters are required.
    */
   required: boolean;
-  /**
-   * Relative test file paths. All must exist for the adapter to execute.
-   * Rate-limit path is reserved until S06 lands.
-   */
+  /** Relative test file paths. All must exist for the adapter to execute. */
   testFiles: readonly string[];
-  /**
-   * Vitest config relative to repo root. Defaults to root vitest.config.mts.
-   * Package-local suites may set their own config.
-   */
   vitestConfig?: string;
-  /**
-   * Optional working directory relative to repo root (for package-local vitest).
-   */
   workingDirectory?: string;
 }
 
@@ -49,6 +53,12 @@ export const PEN_REGRESSION_MANIFEST: readonly PenAdapterDefinition[] = [
     id: 'ssrf-safe-fetch',
     category: 'ssrf',
     description: 'Package-level SSRF-safe fetch regression suite',
+    expectedSkips: [
+      {
+        reason: 'gc-not-exposed',
+        title: 'heap delta stays bounded when a 50 MB body is fetched with a 1 MB cap',
+      },
+    ],
     required: true,
     testFiles: ['packages/ssrf-safe-fetch/index.test.ts'],
     vitestConfig: 'vitest.config.mts',
@@ -80,13 +90,20 @@ export const PEN_REGRESSION_MANIFEST: readonly PenAdapterDefinition[] = [
     testFiles: ['apps/server/src/enterprise/services/settings/r5.draftConcurrency.test.ts'],
   },
   {
-    id: 'admin-rate-limit',
+    id: 'admin-rate-limit-service',
     category: 'admin-rate-limit',
     description:
-      'Shared enterprise admin mutation rate limiting (required adapter; resolves after S06)',
+      'Admin mutation rate limiter service atomicity/boundary tests (S06 rateLimiter suite)',
     required: true,
-    // Reserved path: integration is a one-line path land when S06 ships.
-    testFiles: ['apps/server/src/enterprise/security/rateLimit/adminMutationRateLimit.test.ts'],
+    testFiles: ['apps/server/src/enterprise/security/rateLimit/adminMutationRateLimiter.test.ts'],
+  },
+  {
+    id: 'admin-rate-limit-guard',
+    category: 'admin-rate-limit',
+    description:
+      'Admin mutation rate-limit middleware integration/reconciliation (S06 guard suite)',
+    required: true,
+    testFiles: ['apps/server/src/enterprise/guards/adminMutationRateLimit.test.ts'],
   },
 ] as const;
 

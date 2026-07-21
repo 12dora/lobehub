@@ -150,11 +150,13 @@ constitute production Vault or actual release acceptance.
 
 **M13 PR-S05 repository security acceptance (automation only).** The harness under
 `scripts/enterprise/security-acceptance/` produces a versioned, fail-closed report for production
-dependency advisory scanning (`pnpm audit`), enterprise leakage regression scanning (secret-shaped
-material in owned source/config/report surfaces without dumping match text), and automated
-adversarial regression orchestration (SSRF, auth/RBAC/IDOR, reauth, replay/CAS, and a required
-admin rate-limit adapter reserved for S06). Reports are classified
-`evidenceClass: repository-automation` and always record
+dependency advisory scanning (`pnpm audit` with an explicit exit matrix), enterprise leakage
+regression scanning (secret-shaped material on required roots; exact path+category+lineDigest
+baseline; no secret text in reports; symlink/oversized/missing-root fail closed), and automated
+adversarial regression orchestration (SSRF with reviewed GC-skip allowlist, auth/RBAC/IDOR, reauth,
+replay/CAS, and required S06 admin rate-limit service + guard test targets). Integrity digests bind
+full check artifacts; verification recomputes overall/check semantics and rejects forgeries.
+Reports are classified `evidenceClass: repository-automation` and always record
 `externalPenetrationTest.status: not-executed`. A green unit-test or CI artifact from this harness
 is **not** an external human production penetration test and must not be re-labeled as one. See
 `docs/enterprise/runbooks/security-acceptance.md`.

@@ -1,5 +1,6 @@
 /**
  * Versioned strict Zod contract for security-acceptance reports and check artifacts.
+ * Integrity core binds full artifacts (excluding wall-clock envelope fields).
  */
 import { z } from 'zod';
 
@@ -53,10 +54,18 @@ const severityCountsSchema = z
   })
   .strict();
 
+const relativePathSchema = z
+  .string()
+  .min(1)
+  .max(512)
+  .regex(/^[\w.@/-]+$/u, 'must be a safe relative path');
+
 /** Dependency-scan check artifact (machine-readable evidence). */
 export const dependencyScanArtifactSchema = z
   .object({
     checkId: z.literal('dependency-scan'),
+    /** Process exit code from the scanner when a process ran. */
+    exitCode: z.number().int().min(0).max(255).optional(),
     failSeverities: z.array(z.enum(DEPENDENCY_FAIL_SEVERITIES)).min(1),
     policyHits: z.number().int().nonnegative(),
     reason: safeIdSchema.optional(),
@@ -68,11 +77,7 @@ export const dependencyScanArtifactSchema = z
         kind: z.enum(['pnpm-lock', 'package-json']),
         lockfileSha256: sha256Schema.optional(),
         packageJsonSha256: sha256Schema.optional(),
-        path: z
-          .string()
-          .min(1)
-          .max(256)
-          .regex(/^[\w./-]+$/u, 'must be a safe relative path'),
+        path: relativePathSchema,
       })
       .strict(),
     tool: z
@@ -95,18 +100,30 @@ const leakageFindingSchema = z
     category: safeIdSchema,
     line: z.number().int().positive(),
     lineDigest: sha256Schema,
-    path: z
-      .string()
-      .min(1)
-      .max(512)
-      .regex(/^[\w.@/-]+$/u, 'must be a safe relative path'),
+    path: relativePathSchema,
+  })
+  .strict();
+
+const leakageCoverageSchema = z
+  .object({
+    baselinedMatches: z.number().int().nonnegative(),
+    filesScanned: z.number().int().nonnegative(),
+    oversizedSkipped: z.number().int().nonnegative(),
+    rootsMissing: z.number().int().nonnegative(),
+    rootsPresent: z.number().int().nonnegative(),
+    rootsRequired: z.number().int().positive(),
+    symlinkEncounters: z.number().int().nonnegative(),
+    unreadableFiles: z.number().int().nonnegative(),
+    walkErrors: z.number().int().nonnegative(),
   })
   .strict();
 
 export const leakageScanArtifactSchema = z
   .object({
     allowlistedMatches: z.number().int().nonnegative(),
+    baselinedMatches: z.number().int().nonnegative(),
     checkId: z.literal('leakage-scan'),
+    coverage: leakageCoverageSchema,
     findings: z.array(leakageFindingSchema).max(500),
     filesScanned: z.number().int().nonnegative(),
     reason: safeIdSchema.optional(),
@@ -114,16 +131,7 @@ export const leakageScanArtifactSchema = z
     status: checkStatusSchema,
     violationCount: z.number().int().nonnegative(),
   })
-  .strict()
-  .superRefine((artifact, context) => {
-    if (artifact.violationCount !== artifact.findings.length) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'violationCount must equal findings length',
-        path: ['violationCount'],
-      });
-    }
-  });
+  .strict();
 
 export type LeakageScanArtifact = z.infer<typeof leakageScanArtifactSchema>;
 
@@ -134,17 +142,10 @@ const penAdapterResultSchema = z
     category: safeIdSchema,
     exitCode: z.number().int().min(0).max(255).optional(),
     reason: safeIdSchema.optional(),
+    /** Exact vitest assertion titles that were skipped (order stable by title). */
+    skippedTitles: z.array(z.string().min(1).max(256)).max(32).optional(),
     status: checkStatusSchema,
-    targets: z
-      .array(
-        z
-          .string()
-          .min(1)
-          .max(512)
-          .regex(/^[\w.@/-]+$/u, 'must be a safe relative path'),
-      )
-      .min(1)
-      .max(32),
+    targets: z.array(relativePathSchema).min(1).max(32),
   })
   .strict();
 
@@ -168,13 +169,21 @@ const checkSummarySchema = z
   })
   .strict();
 
-/**
- * Report core is digested without wall-clock fields.
- * `generatedAt` lives only on the envelope outside the core digest input.
- * Base object is kept extendable; refinements attach after extend.
- */
-const securityAcceptanceReportCoreObjectSchema = z
+const artifactsSchema = z
   .object({
+    'dependency-scan': dependencyScanArtifactSchema,
+    'leakage-scan': leakageScanArtifactSchema,
+    'pen-regression': penRegressionArtifactSchema,
+  })
+  .strict();
+
+/**
+ * Integrity core: deterministic, no wall-clock. Includes full artifacts so
+ * forgeries that change counts/status without rebinding digests fail verify.
+ */
+export const securityAcceptanceReportCoreObjectSchema = z
+  .object({
+    artifacts: artifactsSchema,
     checks: z.array(checkSummarySchema).length(REQUIRED_CHECK_IDS.length),
     evidenceClass: z.literal(EVIDENCE_CLASS),
     externalPenetrationTest: z
@@ -197,43 +206,12 @@ const securityAcceptanceReportCoreObjectSchema = z
   })
   .strict();
 
-const refineReportCore = (
-  core: z.infer<typeof securityAcceptanceReportCoreObjectSchema>,
-  context: z.RefinementCtx,
-) => {
-  const ids = core.checks.map((check) => check.checkId);
-  if (new Set(ids).size !== ids.length) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: 'check ids must be unique',
-      path: ['checks'],
-    });
-  }
-  for (const required of REQUIRED_CHECK_IDS) {
-    if (!ids.includes(required)) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: `missing required check: ${required}`,
-        path: ['checks'],
-      });
-    }
-  }
-};
-
-export const securityAcceptanceReportCoreSchema =
-  securityAcceptanceReportCoreObjectSchema.superRefine(refineReportCore);
+export const securityAcceptanceReportCoreSchema = securityAcceptanceReportCoreObjectSchema;
 
 export type SecurityAcceptanceReportCore = z.infer<typeof securityAcceptanceReportCoreSchema>;
 
 export const securityAcceptanceReportSchema = securityAcceptanceReportCoreObjectSchema
   .extend({
-    artifacts: z
-      .object({
-        'dependency-scan': dependencyScanArtifactSchema,
-        'leakage-scan': leakageScanArtifactSchema,
-        'pen-regression': penRegressionArtifactSchema,
-      })
-      .strict(),
     generatedAt: z.string().datetime({ offset: true }).or(z.string().datetime()),
     integrity: z
       .object({
@@ -250,28 +228,6 @@ export const securityAcceptanceReportSchema = securityAcceptanceReportCoreObject
   })
   .strict()
   .superRefine((report, context) => {
-    refineReportCore(report, context);
-
-    // Overall must never be passed when any required check is non-passing.
-    const nonPass = report.checks.filter((check) => check.status !== 'passed');
-    if (report.overall === 'passed' && nonPass.length > 0) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'overall=passed requires every required check to pass',
-        path: ['overall'],
-      });
-    }
-    // Artifacts must agree with summary statuses.
-    for (const check of report.checks) {
-      const artifact = report.artifacts[check.checkId];
-      if (artifact.status !== check.status) {
-        context.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: `artifact status mismatch for ${check.checkId}`,
-          path: ['artifacts', check.checkId, 'status'],
-        });
-      }
-    }
     if (report.integrity.redactionScan.result !== 'passed') {
       context.addIssue({
         code: z.ZodIssueCode.custom,
@@ -303,3 +259,23 @@ export const isSecurityAcceptancePassed = (report: SecurityAcceptanceReport): bo
     parsed.data.integrity.schemaValid === true
   );
 };
+
+/** Baseline file schema (reviewed exact fingerprints; no secret text). */
+export const leakageBaselineSchema = z
+  .object({
+    entries: z
+      .array(
+        z
+          .object({
+            category: safeIdSchema,
+            lineDigest: sha256Schema,
+            path: relativePathSchema,
+          })
+          .strict(),
+      )
+      .max(50_000),
+    schemaVersion: z.literal(1),
+  })
+  .strict();
+
+export type LeakageBaseline = z.infer<typeof leakageBaselineSchema>;

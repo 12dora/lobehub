@@ -1,23 +1,51 @@
 /**
- * Narrow, reviewed fixture allowlist for intentional synthetic secret samples.
- * Paths are relative to the repository root and matched exactly (posix).
+ * Exact fingerprint allowlist for reviewed synthetic fixture lines only.
+ * Path-wide wildcards are forbidden — each entry is path + category + lineDigest.
  *
- * Adding a path requires human review — do not auto-discover allowlist entries.
+ * Prefer leakage-baseline.json for bulk known findings; this list is for
+ * harness self-fixtures that must remain allowlisted independently of baseline regen.
  */
-export const LEAKAGE_FIXTURE_ALLOWLIST = [
-  // Harness self-fixtures (synthetic only).
-  'scripts/enterprise/security-acceptance/fixtures/synthetic-secret.fixture.txt',
-  'scripts/enterprise/security-acceptance/fixtures/allowlist-boundary.fixture.txt',
-  // Upstream-rebase secret family samples (synthetic regression strings).
-  'scripts/enterprise/upstream-rebase-ci/secretScan.ts',
-  'scripts/enterprise/upstream-rebase-ci/upstream-rebase-ci.test.ts',
-  // Redaction detector regression suite (synthetic samples).
-  'apps/server/src/enterprise/security/redaction/detectSecretMaterial.test.ts',
-  // Platform redaction unit samples.
-  'packages/database/src/models/platform/redact.ts',
+import { createHash } from 'node:crypto';
+
+import type { BaselineFingerprint } from './leakageBaseline';
+import { fingerprintKey } from './leakageBaseline';
+
+/** Precomputed digests of synthetic fixture lines (no secret text stored here). */
+const digest = (line: string): string => createHash('sha256').update(line).digest('hex');
+
+/**
+ * Exact allowlist fingerprints. Update only with human review when fixture content changes.
+ * Digests are of the full line content used by the scanner.
+ */
+export const LEAKAGE_EXACT_ALLOWLIST: readonly BaselineFingerprint[] = [
+  {
+    path: 'scripts/enterprise/security-acceptance/fixtures/synthetic-secret.fixture.txt',
+    category: 'credential-assignment',
+    lineDigest: digest('password=SyntheticFixtureHunter2Value99'),
+  },
+  {
+    path: 'scripts/enterprise/security-acceptance/fixtures/synthetic-secret.fixture.txt',
+    category: 'connection-string',
+    lineDigest: digest('postgres://fixture_admin:SyntheticPass99@fixture.invalid:5432/fixture_db'),
+  },
+  {
+    path: 'scripts/enterprise/security-acceptance/fixtures/synthetic-secret.fixture.txt',
+    category: 'pem-private-key',
+    lineDigest: digest('-----BEGIN PRIVATE KEY-----'),
+  },
+  {
+    path: 'scripts/enterprise/security-acceptance/fixtures/allowlist-boundary.fixture.txt',
+    category: 'credential-assignment',
+    lineDigest: digest('token=SyntheticAllowlistTokenValue99'),
+  },
+  {
+    path: 'scripts/enterprise/security-acceptance/fixtures/allowlist-boundary.fixture.txt',
+    category: 'token-or-api-key',
+    lineDigest: digest('ghp_abcdefghijklmnopqrstuvwxyz0123456789'),
+  },
 ] as const;
 
-export type LeakageAllowlistPath = (typeof LEAKAGE_FIXTURE_ALLOWLIST)[number];
+const ALLOWLIST_INDEX = new Set(LEAKAGE_EXACT_ALLOWLIST.map((entry) => fingerprintKey(entry)));
 
-export const isLeakageAllowlisted = (relativePath: string): boolean =>
-  (LEAKAGE_FIXTURE_ALLOWLIST as readonly string[]).includes(relativePath.replaceAll('\\', '/'));
+export const isExactAllowlistedFinding = (finding: BaselineFingerprint): boolean =>
+  ALLOWLIST_INDEX.has(fingerprintKey(finding));

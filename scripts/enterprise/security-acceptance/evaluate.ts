@@ -1,17 +1,16 @@
 /**
- * Fail-closed evaluation of security-acceptance check artifacts into a report.
- * Never emits overall=passed from planted self-asserted booleans without artifacts.
+ * Fail-closed evaluation: derive overall/checks from artifacts, bind full artifacts into core.
+ * Verification recomputes semantics and digests — author-controlled summaries alone never pass.
  */
 import { digestCanonical } from './canonical';
 import {
   DEPENDENCY_FAIL_SEVERITIES,
   EVIDENCE_CLASS,
   EXTERNAL_PEN_TEST_STATUS,
-  type OverallStatus,
-  REQUIRED_CHECK_IDS,
   SECURITY_ACCEPTANCE_LANE,
   SECURITY_ACCEPTANCE_SCHEMA_VERSION,
 } from './constants';
+import type { PenAdapterDefinition } from './penManifest';
 import { scanForForbiddenReportContent } from './privacy';
 import {
   type DependencyScanArtifact,
@@ -25,6 +24,7 @@ import {
   securityAcceptanceReportCoreSchema,
   securityAcceptanceReportSchema,
 } from './schemas';
+import { deriveChecksFromArtifacts, deriveExitCode } from './semantics';
 
 export interface EvaluateSecurityAcceptanceInput {
   dependency: DependencyScanArtifact;
@@ -33,6 +33,8 @@ export interface EvaluateSecurityAcceptanceInput {
   /** Optional fixed timestamp for tests (ISO). */
   nowIso?: string;
   pen: PenRegressionArtifact;
+  /** Inject manifest for tests. */
+  penManifest?: readonly PenAdapterDefinition[];
 }
 
 export interface EvaluateSecurityAcceptanceResult {
@@ -40,23 +42,9 @@ export interface EvaluateSecurityAcceptanceResult {
   report: SecurityAcceptanceReport;
 }
 
-const deriveOverall = (
-  statuses: Array<'passed' | 'failed' | 'unavailable' | 'not-executed'>,
-): OverallStatus => {
-  if (statuses.every((status) => status === 'passed')) return 'passed';
-  if (statuses.includes('unavailable')) return 'unavailable';
-  return 'failed';
-};
-
-const deriveExitCode = (overall: OverallStatus): number => {
-  if (overall === 'passed') return 0;
-  if (overall === 'unavailable') return 2;
-  return 1;
-};
-
 /**
  * Build and validate a security acceptance report from real check artifacts.
- * Schema mismatch / redaction failure / status disagreement → throws (fail closed).
+ * Semantic mismatch → unavailable overall (fail closed) rather than planted pass.
  */
 export const evaluateSecurityAcceptance = (
   input: EvaluateSecurityAcceptanceInput,
@@ -69,30 +57,24 @@ export const evaluateSecurityAcceptance = (
     throw new Error('gitSha must be a full lowercase 40-char sha');
   }
 
-  const toCheck = (
-    checkId: (typeof REQUIRED_CHECK_IDS)[number],
-    status: 'passed' | 'failed' | 'unavailable' | 'not-executed',
-    reason: string | undefined,
-  ) => {
-    // Omit undefined reason so canonical digests never include undefined keys.
-    return reason === undefined ? { checkId, status } : { checkId, reason, status };
-  };
+  const derived = deriveChecksFromArtifacts({
+    dependency,
+    leakage,
+    manifest: input.penManifest,
+    pen,
+  });
 
-  const checks = [
-    toCheck('dependency-scan', dependency.status, dependency.reason),
-    toCheck('leakage-scan', leakage.status, leakage.reason),
-    toCheck('pen-regression', pen.status, pen.reason),
-  ];
-
-  // Guard against incomplete required set (parse would also catch, but fail early).
-  if (checks.length !== REQUIRED_CHECK_IDS.length) {
-    throw new Error('incomplete required checks');
+  if (derived.semanticError) {
+    // Still emit a report, but overall is unavailable and exit 2 — never pass.
   }
 
-  const overall = deriveOverall(checks.map((check) => check.status));
-
   const core: SecurityAcceptanceReportCore = securityAcceptanceReportCoreSchema.parse({
-    checks,
+    artifacts: {
+      'dependency-scan': dependency,
+      'leakage-scan': leakage,
+      'pen-regression': pen,
+    },
+    checks: derived.checks,
     evidenceClass: EVIDENCE_CLASS,
     externalPenetrationTest: {
       note: 'External human production penetration testing is residual and is not claimed by repository automation.',
@@ -100,7 +82,7 @@ export const evaluateSecurityAcceptance = (
     },
     gitSha: input.gitSha,
     lane: SECURITY_ACCEPTANCE_LANE,
-    overall,
+    overall: derived.overall,
     policy: {
       dependencyFailSeverities: [...DEPENDENCY_FAIL_SEVERITIES],
     },
@@ -110,33 +92,26 @@ export const evaluateSecurityAcceptance = (
   const reportCoreSha256 = digestCanonical(core);
   const generatedAt = input.nowIso ?? new Date().toISOString();
 
+  const redactionScan = scanForForbiddenReportContent({
+    ...core,
+    generatedAt,
+  });
+
+  if (redactionScan.result !== 'passed') {
+    throw new Error(
+      `Security acceptance report redaction rejected ${redactionScan.violations} field(s)`,
+    );
+  }
+
   const candidate: SecurityAcceptanceReport = {
     ...core,
-    artifacts: {
-      'dependency-scan': dependency,
-      'leakage-scan': leakage,
-      'pen-regression': pen,
-    },
     generatedAt,
     integrity: {
-      redactionScan: scanForForbiddenReportContent({
-        ...core,
-        artifacts: {
-          'dependency-scan': dependency,
-          'leakage-scan': leakage,
-          'pen-regression': pen,
-        },
-      }),
+      redactionScan,
       reportCoreSha256,
       schemaValid: true,
     },
   };
-
-  if (candidate.integrity.redactionScan.result !== 'passed') {
-    throw new Error(
-      `Security acceptance report redaction rejected ${candidate.integrity.redactionScan.violations} field(s)`,
-    );
-  }
 
   const report = securityAcceptanceReportSchema.parse(candidate);
   return {
@@ -146,10 +121,12 @@ export const evaluateSecurityAcceptance = (
 };
 
 /**
- * Re-verify a report: schema, core digest, redaction, and no planted pass without artifact agreement.
+ * Re-verify a report: recompute semantics + core digest from artifacts.
+ * Does not trust author-controlled overall/checks when they disagree with artifacts.
  */
 export const verifySecurityAcceptanceReport = (
   value: unknown,
+  options?: { penManifest?: readonly PenAdapterDefinition[] },
 ): { ok: true; report: SecurityAcceptanceReport } | { ok: false; reason: string } => {
   const parsed = securityAcceptanceReportSchema.safeParse(value);
   if (!parsed.success) {
@@ -157,7 +134,47 @@ export const verifySecurityAcceptanceReport = (
   }
 
   const report = parsed.data;
+
+  if (report.evidenceClass !== EVIDENCE_CLASS) {
+    return { ok: false, reason: 'invalid-evidence-class' };
+  }
+  if (report.externalPenetrationTest.status !== EXTERNAL_PEN_TEST_STATUS) {
+    return { ok: false, reason: 'external-pen-test-self-asserted' };
+  }
+
+  const derived = deriveChecksFromArtifacts({
+    dependency: report.artifacts['dependency-scan'],
+    leakage: report.artifacts['leakage-scan'],
+    manifest: options?.penManifest,
+    pen: report.artifacts['pen-regression'],
+  });
+
+  if (derived.semanticError) {
+    return { ok: false, reason: `semantic-${derived.semanticError}` };
+  }
+
+  if (derived.overall !== report.overall) {
+    return { ok: false, reason: 'overall-mismatch' };
+  }
+
+  if (derived.checks.length !== report.checks.length) {
+    return { ok: false, reason: 'checks-length-mismatch' };
+  }
+
+  for (let i = 0; i < derived.checks.length; i += 1) {
+    const expected = derived.checks[i]!;
+    const actual = report.checks[i]!;
+    if (
+      expected.checkId !== actual.checkId ||
+      expected.status !== actual.status ||
+      expected.reason !== actual.reason
+    ) {
+      return { ok: false, reason: 'checks-mismatch' };
+    }
+  }
+
   const core: SecurityAcceptanceReportCore = {
+    artifacts: report.artifacts,
     checks: report.checks,
     evidenceClass: report.evidenceClass,
     externalPenetrationTest: report.externalPenetrationTest,
@@ -173,20 +190,14 @@ export const verifySecurityAcceptanceReport = (
     return { ok: false, reason: 'report-core-digest-mismatch' };
   }
 
-  if (report.integrity.redactionScan.result !== 'passed') {
+  // Recompute redaction over core+envelope fields that are stored.
+  const redaction = scanForForbiddenReportContent(report);
+  if (redaction.result !== 'passed' || report.integrity.redactionScan.result !== 'passed') {
     return { ok: false, reason: 'redaction-failed' };
   }
 
   if (report.overall === 'passed' && report.checks.some((check) => check.status !== 'passed')) {
     return { ok: false, reason: 'planted-overall-pass' };
-  }
-
-  if (report.evidenceClass !== EVIDENCE_CLASS) {
-    return { ok: false, reason: 'invalid-evidence-class' };
-  }
-
-  if (report.externalPenetrationTest.status !== EXTERNAL_PEN_TEST_STATUS) {
-    return { ok: false, reason: 'external-pen-test-self-asserted' };
   }
 
   return { ok: true, report };

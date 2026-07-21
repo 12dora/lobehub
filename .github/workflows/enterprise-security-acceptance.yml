@@ -1,26 +1,15 @@
+# Enterprise security acceptance evidence gate (M13 PR-S05).
+# Third-party actions pinned to full commit SHAs (immutable). Update provenance:
+#   git ls-remote https://github.com/<org>/<repo>.git refs/tags/<tag>
+# Runtime pins: Node 24.11.1, Bun 1.3.2, pnpm via packageManager field.
 name: Enterprise Security Acceptance
 
 on:
-  pull_request:
-    paths:
-      - '.github/workflows/enterprise-security-acceptance.yml'
-      - 'scripts/enterprise/security-acceptance/**'
-      - 'apps/server/src/enterprise/security/**'
-      - 'apps/server/src/enterprise/guards/**'
-      - 'packages/ssrf-safe-fetch/**'
-      - 'packages/database/src/models/platform/redact.ts'
-      - 'docs/security/**'
-      - 'docs/enterprise/runbooks/security-acceptance.md'
+  # Broad triggers: dependency/RBAC/router/security changes must not bypass the gate.
+  pull_request: {}
   push:
     branches:
       - canary
-    paths:
-      - '.github/workflows/enterprise-security-acceptance.yml'
-      - 'scripts/enterprise/security-acceptance/**'
-      - 'apps/server/src/enterprise/security/**'
-      - 'apps/server/src/enterprise/guards/**'
-      - 'packages/ssrf-safe-fetch/**'
-      - 'packages/database/src/models/platform/redact.ts'
   schedule:
     # Weekly dependency/leakage evidence refresh (UTC). Does not claim external pen-test.
     - cron: '17 6 * * 1'
@@ -37,13 +26,30 @@ jobs:
   harness-contract:
     name: Harness contract (falsifying unit tests)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
+      # actions/checkout@v6
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
 
-      - name: Setup environment
-        uses: ./.github/actions/setup-env
+      # pnpm/action-setup@v4
+      - name: Install pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        with:
+          run_install: false
+
+      # oven-sh/setup-bun@v2
+      - name: Install bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: '1.3.2'
+
+      # actions/setup-node@v6
+      - name: Setup Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: '24.11.1'
+          package-manager-cache: false
 
       - name: Install dependencies
         run: pnpm install
@@ -65,14 +71,31 @@ jobs:
   security-acceptance-evidence:
     name: Security acceptance evidence (fail-closed)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     needs: harness-contract
     steps:
+      # actions/checkout@v6
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
 
-      - name: Setup environment
-        uses: ./.github/actions/setup-env
+      # pnpm/action-setup@v4
+      - name: Install pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        with:
+          run_install: false
+
+      # oven-sh/setup-bun@v2
+      - name: Install bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: '1.3.2'
+
+      # actions/setup-node@v6
+      - name: Setup Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: '24.11.1'
+          package-manager-cache: false
 
       - name: Install dependencies
         run: pnpm install
@@ -89,24 +112,46 @@ jobs:
 
       - name: Run security acceptance harness
         id: acceptance
+        # continue-on-error so post steps always run; final gate fails the job.
         continue-on-error: true
         run: |
-          set -euo pipefail
+          set +e
+          set -u
           out="${GITHUB_WORKSPACE}/.records/enterprise-security-acceptance/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           mkdir -p "$out"
+          # Export OUTPUT_DIR before harness so failure evidence is always locatable.
+          echo "OUTPUT_DIR=$out" >> "$GITHUB_ENV"
           bun run scripts/enterprise/security-acceptance/index.ts run \
             --output-dir "$out" \
             --git-sha "$(git rev-parse HEAD)"
-          echo "OUTPUT_DIR=$out" >> "$GITHUB_ENV"
+          code=$?
+          echo "HARNESS_EXIT=$code" >> "$GITHUB_ENV"
+          # Write diagnostic if report missing so upload still has evidence.
+          if [ ! -f "$out/security-acceptance.report.json" ]; then
+            printf '%s\n' "{\"lane\":\"enterprise-security-acceptance\",\"error\":\"missing-report\",\"harnessExit\":${code}}" \
+              > "$out/diagnostic.json"
+          fi
+          exit 0
 
       - name: Verify report integrity
-        if: always() && env.OUTPUT_DIR != ''
+        id: verify
+        if: always()
+        continue-on-error: true
         run: |
-          set -euo pipefail
-          report="$OUTPUT_DIR/security-acceptance.report.json"
-          test -f "$report"
-          # Integrity verify must succeed as a parse/digest check even when overall=failed.
-          # Overall pass is not required here — evidence is truthful and fail-closed.
+          set +e
+          set -u
+          out="${OUTPUT_DIR:-}"
+          if [ -z "$out" ]; then
+            echo "OUTPUT_DIR unset" >&2
+            echo "VERIFY_OK=false" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          report="$out/security-acceptance.report.json"
+          if [ ! -f "$report" ]; then
+            echo "missing report at $report" >&2
+            echo "VERIFY_OK=false" >> "$GITHUB_ENV"
+            exit 0
+          fi
           bun -e '
             const { verifySecurityAcceptanceReport } = await import("./scripts/enterprise/security-acceptance/evaluate.ts");
             const report = JSON.parse(await Bun.file(process.env.REPORT).text());
@@ -124,36 +169,74 @@ jobs:
               reportCoreSha256: result.report.integrity.reportCoreSha256,
             }, null, 2));
           '
+          code=$?
+          if [ "$code" -eq 0 ]; then
+            echo "VERIFY_OK=true" >> "$GITHUB_ENV"
+          else
+            echo "VERIFY_OK=false" >> "$GITHUB_ENV"
+          fi
+          exit 0
         env:
           REPORT: ${{ env.OUTPUT_DIR }}/security-acceptance.report.json
 
       - name: Refuse secret-shaped evidence content
-        if: always() && env.OUTPUT_DIR != ''
+        id: secret_scan
+        if: always()
+        continue-on-error: true
         run: |
-          set -euo pipefail
+          set +e
+          set -u
+          out="${OUTPUT_DIR:-}"
+          if [ -z "$out" ] || [ ! -d "$out" ]; then
+            echo "SECRET_SCAN_OK=false" >> "$GITHUB_ENV"
+            exit 0
+          fi
           if rg -n -i \
             'password\s*[:=]\s*\S+|-----BEGIN [A-Z ]*PRIVATE KEY-----|postgres(?:ql)?://[^[:space:]]+:[^[:space:]]+@' \
-            "$OUTPUT_DIR"; then
+            "$out"; then
             echo 'Forbidden secret-shaped content in security acceptance artifacts' >&2
-            exit 1
+            echo "SECRET_SCAN_OK=false" >> "$GITHUB_ENV"
+            exit 0
           fi
+          echo "SECRET_SCAN_OK=true" >> "$GITHUB_ENV"
+          exit 0
 
+      # actions/upload-artifact@v4
       - name: Upload security acceptance evidence
-        if: always() && env.OUTPUT_DIR != ''
-        uses: actions/upload-artifact@v4
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: enterprise-security-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
           path: .records/enterprise-security-acceptance/${{ github.run_id }}-${{ github.run_attempt }}
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 30
 
-      - name: Fail job when acceptance overall is not passed
+      - name: Final fail-closed gate
         if: always()
         run: |
           set -euo pipefail
-          # Truthful fail-closed gate: missing rate-limit coverage (pre-S06), high/critical
-          # advisories, or leakage violations keep overall != passed.
-          if [ "${{ steps.acceptance.outcome }}" != "success" ]; then
-            echo "Security acceptance run exited non-zero (expected until S06 + advisory remediation)" >&2
+          harness="${HARNESS_EXIT:-2}"
+          verify_ok="${VERIFY_OK:-false}"
+          secret_ok="${SECRET_SCAN_OK:-false}"
+          out="${OUTPUT_DIR:-}"
+          if [ -z "$out" ] || [ ! -d "$out" ]; then
+            echo "No output directory — fail closed" >&2
+            exit 2
+          fi
+          if [ ! -f "$out/security-acceptance.report.json" ]; then
+            echo "Missing security acceptance report — fail closed" >&2
+            exit 2
+          fi
+          if [ "$verify_ok" != "true" ]; then
+            echo "Report integrity verify failed" >&2
             exit 1
           fi
+          if [ "$secret_ok" != "true" ]; then
+            echo "Secret-shaped content in artifacts" >&2
+            exit 1
+          fi
+          if [ "$harness" != "0" ]; then
+            echo "Security acceptance overall not passed (harness exit $harness)" >&2
+            exit "$harness"
+          fi
+          echo "Security acceptance passed under repository automation evidence class"

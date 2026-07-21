@@ -6,18 +6,25 @@
  *
  * Usage:
  *   bun scripts/enterprise/security-acceptance/index.ts run --output-dir <dir> [--git-sha <sha>]
- *   bun scripts/enterprise/security-acceptance/index.ts evaluate --checks-dir <dir> --output-dir <dir> [--git-sha <sha>]
+ *   bun scripts/enterprise/security-acceptance/index.ts evaluate --checks-dir <dir> --output-dir <dir>
  *   bun scripts/enterprise/security-acceptance/index.ts verify --report <file>
+ *   bun scripts/enterprise/security-acceptance/index.ts generate-leakage-baseline
  */
 import { parseArgs } from 'node:util';
 
-import { evaluateFromChecksDir, runSecurityAcceptance, verifyReportFile } from './runner';
+import {
+  evaluateFromChecksDir,
+  generateLeakageBaselineFile,
+  runSecurityAcceptance,
+  verifyReportFile,
+} from './runner';
 
 export * from './canonical';
 export * from './constants';
 export * from './dependencyScan';
 export * from './evaluate';
 export * from './leakageAllowlist';
+export * from './leakageBaseline';
 export * from './leakageScan';
 export * from './penManifest';
 export * from './penRegression';
@@ -25,12 +32,15 @@ export * from './privacy';
 export * from './process';
 export * from './runner';
 export * from './schemas';
+export * from './semantics';
+export * from './workflowShell';
 
 const usage = () => {
   console.error(`Usage:
   bun scripts/enterprise/security-acceptance/index.ts run --output-dir <dir> [--git-sha <sha>] [--no-generate-lockfile]
   bun scripts/enterprise/security-acceptance/index.ts evaluate --checks-dir <dir> --output-dir <dir> [--git-sha <sha>]
-  bun scripts/enterprise/security-acceptance/index.ts verify --report <file>`);
+  bun scripts/enterprise/security-acceptance/index.ts verify --report <file>
+  bun scripts/enterprise/security-acceptance/index.ts generate-leakage-baseline [--output <file>]`);
 };
 
 const requireOption = (value: string | undefined, option: string): string => {
@@ -68,11 +78,32 @@ const main = async () => {
       'checks-dir': { type: 'string' },
       'git-sha': { type: 'string' },
       'no-generate-lockfile': { type: 'boolean', default: false },
+      'output': { type: 'string' },
       'output-dir': { type: 'string' },
       'report': { type: 'string' },
     },
     strict: true,
   });
+
+  if (command === 'generate-leakage-baseline') {
+    const result = await generateLeakageBaselineFile({
+      cwd: process.cwd(),
+      outputPath: values.output,
+    });
+    console.log(
+      JSON.stringify(
+        {
+          baselinePath: result.path,
+          entryCount: result.count,
+          note: 'Review diff before commit. Entries are path+category+lineDigest only.',
+        },
+        null,
+        2,
+      ),
+    );
+    process.exitCode = 0;
+    return;
+  }
 
   if (command === 'verify') {
     const reportPath = requireOption(values.report, '--report');
@@ -153,7 +184,6 @@ const main = async () => {
   process.exitCode = 2;
 };
 
-// Only run CLI when executed directly (not when imported by tests).
 const isDirect =
   typeof process.argv[1] === 'string' &&
   (process.argv[1].endsWith('security-acceptance/index.ts') ||
