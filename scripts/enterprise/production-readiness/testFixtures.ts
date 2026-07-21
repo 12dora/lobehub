@@ -4,8 +4,17 @@
 import { createHash } from 'node:crypto';
 
 import { buildDefaultReleasePlan } from './commands';
-import { BASELINE_COMMIT } from './constants';
-import type { EvidenceEnvelope, ReleaseCandidate } from './schemas';
+import { BASELINE_COMMIT, type EvidenceGateId, REQUIRED_EVIDENCE_GATES } from './constants';
+import type { GateEvidenceInput } from './evaluate';
+import type { ReleaseCandidate } from './schemas';
+import {
+  createSignedProvenance,
+  generateEd25519KeyPair,
+  newNonce,
+  type SignedProvenancePayload,
+  type TrustedPublicKey,
+  type TrustPolicy,
+} from './trust';
 
 export const FIXTURE_CANDIDATE_SHA = 'a'.repeat(40);
 export const OTHER_CANDIDATE_SHA = 'b'.repeat(40);
@@ -31,169 +40,141 @@ export const buildPlan = (candidateSha = FIXTURE_CANDIDATE_SHA) =>
     releaseId: FIXTURE_RELEASE_ID,
   });
 
-const baseFreshness = (nowMs = Date.now()) => ({
-  generatedAt: freshTimestamp(nowMs),
-});
-
-export const buildPathBoundariesEvidence = (
-  overrides: Partial<Extract<EvidenceEnvelope, { gate: 'path-boundaries' }>> = {},
-): Extract<EvidenceEnvelope, { gate: 'path-boundaries' }> => ({
+export const buildGateEvidence = (
+  gate: EvidenceGateId,
+  overrides: Partial<GateEvidenceInput> = {},
+): GateEvidenceInput => ({
+  artifactSha256: sha256Of(`artifact-${gate}`),
+  assertions: { failed: 0, passed: 3, skipped: 0, total: 3 },
   candidateSha: FIXTURE_CANDIDATE_SHA,
-  filesScanned: 120,
-  freshness: baseFreshness(),
-  gate: 'path-boundaries',
-  schemaVersion: 1,
-  scope: 'ci-harness',
-  status: 'passed',
-  violationCount: 0,
-  ...overrides,
-});
-
-export const buildMigrationEvidence = (
-  overrides: Partial<Extract<EvidenceEnvelope, { gate: 'migration-compat' }>> = {},
-): Extract<EvidenceEnvelope, { gate: 'migration-compat' }> => ({
-  candidateSha: FIXTURE_CANDIDATE_SHA,
-  foundationGatePassed: true,
-  freshness: baseFreshness(),
-  gate: 'migration-compat',
-  headCommitShort: FIXTURE_CANDIDATE_SHA.slice(0, 12),
-  lane: 'enterprise-migration-compat',
-  overall: 'unverified',
-  reportSchemaVersion: 1,
-  rerunResult: 'passed',
-  schemaVersion: 1,
-  scope: 'ci-harness',
-  status: 'passed',
-  syntheticResult: 'passed',
-  totalMigrationCount: 136,
-  ...overrides,
-});
-
-export const buildE2eEvidence = (
-  overrides: Partial<Extract<EvidenceEnvelope, { gate: 'enterprise-admin-e2e' }>> = {},
-): Extract<EvidenceEnvelope, { gate: 'enterprise-admin-e2e' }> => ({
-  assertions: { failed: 0, passed: 8, skipped: 0, total: 8 },
-  candidateSha: FIXTURE_CANDIDATE_SHA,
-  freshness: baseFreshness(),
-  gate: 'enterprise-admin-e2e',
-  schemaVersion: 1,
-  scope: 'ci-harness',
-  screenshotCount: 4,
-  status: 'passed',
-  suite: 'enterprise-admin',
-  ...overrides,
-});
-
-export const buildUpstreamEvidence = (
-  overrides: Partial<Extract<EvidenceEnvelope, { gate: 'upstream-rebase' }>> = {},
-): Extract<EvidenceEnvelope, { gate: 'upstream-rebase' }> => ({
-  candidateSha: FIXTURE_CANDIDATE_SHA,
-  candidateShort: FIXTURE_CANDIDATE_SHA.slice(0, 12),
-  cleanupResult: 'passed',
-  freshness: baseFreshness(),
-  gate: 'upstream-rebase',
-  lane: 'enterprise-upstream-rebase-dry-run',
-  reportStatus: 'clean',
-  requiredGateCount: 3,
-  schemaVersion: 1,
-  scope: 'ci-harness',
-  status: 'passed',
-  upstreamFreshness: 'verified-by-ci-fetch',
-  ...overrides,
-});
-
-export const buildFailureDrillsEvidence = (
-  overrides: Partial<Extract<EvidenceEnvelope, { gate: 'failure-drills' }>> = {},
-): Extract<EvidenceEnvelope, { gate: 'failure-drills' }> => ({
-  assertions: { failed: 0, passed: 19, skipped: 0, total: 19 },
-  candidateSha: FIXTURE_CANDIDATE_SHA,
-  cleanupResult: 'passed',
-  freshness: baseFreshness(),
-  gate: 'failure-drills',
-  lane: 'enterprise-failure-drills',
-  scenarioCount: 4,
-  schemaVersion: 1,
+  gate,
+  generatedAt: freshTimestamp(),
   scope: 'ci-harness',
   status: 'passed',
   ...overrides,
 });
 
-export const buildBackupRestoreEvidence = (
-  overrides: Partial<Extract<EvidenceEnvelope, { gate: 'backup-restore' }>> = {},
-): Extract<EvidenceEnvelope, { gate: 'backup-restore' }> => ({
-  assertions: { failed: 0, passed: 6, skipped: 0, total: 6 },
-  candidateSha: FIXTURE_CANDIDATE_SHA,
-  cleanupResult: 'passed',
-  dbSchemaVersionTag: FIXTURE_MIGRATION_TAG,
-  freshness: baseFreshness(),
-  gate: 'backup-restore',
-  invariants: [
-    { id: 'audit-logs', result: 'passed' },
-    { id: 'publication-pointers', result: 'passed' },
-    { id: 'required-tables', result: 'passed' },
-    { id: 'resource-revisions', result: 'passed' },
-    { id: 'secret-references', result: 'passed' },
-    { id: 'source-preserved', result: 'passed' },
+export const buildFullCiEvidence = (nowMs = Date.now()): GateEvidenceInput[] =>
+  REQUIRED_EVIDENCE_GATES.map((gate) =>
+    buildGateEvidence(gate, {
+      generatedAt: freshTimestamp(nowMs),
+      scope: 'ci-harness',
+    }),
+  );
+
+/** Self-declared production JSON without provenance (forge attack). */
+export const buildForgedProductionEvidence = (nowMs = Date.now()): GateEvidenceInput[] =>
+  REQUIRED_EVIDENCE_GATES.map((gate) =>
+    buildGateEvidence(gate, {
+      generatedAt: freshTimestamp(nowMs),
+      scope: 'production-authorized',
+      status: 'passed',
+    }),
+  );
+
+export interface TestTrustBundle {
+  fingerprint: string;
+  issuer: string;
+  keyId: string;
+  policy: TrustPolicy;
+  privateKeyBase64: string;
+  publicKeyBase64: string;
+}
+
+export const createTestTrustBundle = (
+  environments: Array<'ci-harness' | 'local-harness' | 'production' | 'staging'> = [
+    'production',
+    'ci-harness',
   ],
-  lane: 'enterprise-backup-restore-drill',
-  reportSchemaVersion: 1,
-  schemaVersion: 1,
-  scope: 'ci-harness',
-  sourceBackupDigest: sha256Of('fixture-backup'),
-  sourcePreserved: true,
-  status: 'passed',
-  ...overrides,
-});
+): TestTrustBundle => {
+  const pair = generateEd25519KeyPair();
+  const keyId = 'test-key-1';
+  const issuer = 'test-issuer';
+  const trusted: TrustedPublicKey = {
+    environments,
+    fingerprint: pair.publicKeyFingerprint,
+    issuer,
+    keyId,
+    publicKeyBase64: pair.publicKeyBase64,
+    revoked: false,
+  };
+  return {
+    fingerprint: pair.publicKeyFingerprint,
+    issuer,
+    keyId,
+    policy: {
+      productionPassEnabled: environments.includes('production'),
+      schemaVersion: 1,
+      trustedKeys: [trusted],
+    },
+    privateKeyBase64: pair.privateKeyBase64,
+    publicKeyBase64: pair.publicKeyBase64,
+  };
+};
 
-export const buildAppRollbackEvidence = (
-  overrides: Partial<Extract<EvidenceEnvelope, { gate: 'app-rollback' }>> = {},
-): Extract<EvidenceEnvelope, { gate: 'app-rollback' }> => ({
+export const signGateEvidence = (
+  evidence: GateEvidenceInput,
+  bundle: TestTrustBundle,
+  environment: 'ci-harness' | 'local-harness' | 'production' | 'staging' = 'production',
+  releaseId = FIXTURE_RELEASE_ID,
+): GateEvidenceInput => {
+  const payload: SignedProvenancePayload = {
+    artifactSha256: evidence.artifactSha256,
+    assertions: evidence.assertions,
+    candidateSha: evidence.candidateSha,
+    environment,
+    gateId: evidence.gate,
+    generatedAt: evidence.generatedAt,
+    issuer: bundle.issuer,
+    keyId: bundle.keyId,
+    nonce: newNonce(),
+    releaseId,
+    runId: 'run-test-1',
+    schemaVersion: 1,
+    status: evidence.status,
+  };
+  const provenance = createSignedProvenance({
+    payload,
+    privateKeyBase64: bundle.privateKeyBase64,
+    publicKeyBase64: bundle.publicKeyBase64,
+  });
+  return {
+    ...evidence,
+    provenance,
+    // scope self-declaration is irrelevant when provenance is present
+    scope: 'local-harness',
+  };
+};
+
+export const buildFullSignedProductionEvidence = (
+  bundle: TestTrustBundle,
+  nowMs = Date.now(),
+): GateEvidenceInput[] =>
+  REQUIRED_EVIDENCE_GATES.map((gate) =>
+    signGateEvidence(
+      buildGateEvidence(gate, {
+        generatedAt: freshTimestamp(nowMs),
+        scope: 'local-harness',
+      }),
+      bundle,
+      'production',
+    ),
+  );
+
+export const buildAppRollbackEvidenceShape = () => ({
   assertions: { failed: 0, passed: 5, skipped: 0, total: 5 },
   baselineExecutable: true,
   baselineSha: BASELINE_COMMIT,
   candidateSha: FIXTURE_CANDIDATE_SHA,
-  cleanupResult: 'passed',
+  cleanupResult: 'passed' as const,
   destructiveCommandsRejected: true,
-  freshness: baseFreshness(),
-  gate: 'app-rollback',
-  lane: 'enterprise-app-rollback-drill',
+  freshness: { generatedAt: freshTimestamp() },
+  gate: 'app-rollback' as const,
+  lane: 'enterprise-app-rollback-drill' as const,
   newTablesRetained: true,
-  reportSchemaVersion: 1,
+  reportSchemaVersion: 1 as const,
   rollForwardOk: true,
-  schemaVersion: 1,
-  scope: 'ci-harness',
-  status: 'passed',
-  ...overrides,
+  schemaVersion: 1 as const,
+  scope: 'local-harness' as const,
+  status: 'passed' as const,
 });
-
-/** Full evidence set bound to fixture candidate (ci-harness; not production overall-pass). */
-export const buildFullCiEvidence = (nowMs = Date.now()): EvidenceEnvelope[] => {
-  const stamp = { freshness: baseFreshness(nowMs) };
-  return [
-    buildPathBoundariesEvidence(stamp),
-    buildMigrationEvidence(stamp),
-    buildE2eEvidence(stamp),
-    buildUpstreamEvidence(stamp),
-    buildFailureDrillsEvidence(stamp),
-    buildBackupRestoreEvidence(stamp),
-    buildAppRollbackEvidence(stamp),
-  ];
-};
-
-/** Full production-authorized evidence (requires dump-applied migration overall=passed). */
-export const buildFullProductionEvidence = (nowMs = Date.now()): EvidenceEnvelope[] => {
-  const stamp = { freshness: baseFreshness(nowMs), scope: 'production-authorized' as const };
-  return [
-    buildPathBoundariesEvidence(stamp),
-    buildMigrationEvidence({
-      ...stamp,
-      overall: 'passed',
-      status: 'passed',
-    }),
-    buildE2eEvidence(stamp),
-    buildUpstreamEvidence(stamp),
-    buildFailureDrillsEvidence(stamp),
-    buildBackupRestoreEvidence(stamp),
-    buildAppRollbackEvidence(stamp),
-  ];
-};
