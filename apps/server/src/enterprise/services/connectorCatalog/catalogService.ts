@@ -213,11 +213,13 @@ export class ConnectorCatalogService {
       softFail,
     });
 
-    // Align with W10-P: update on already-published must surface publish failures.
+    // Align with W10-P / skills: update on already-published must surface the real publishError.
     if (!result.published && input.mode === 'update') {
       const after = await this.getDraft(connectorId);
       if (after.baseRevision > 0 && result.publishError) {
-        throw new PlatformConnectorContractError('PLATFORM_CONNECTOR_NOT_PUBLISHED');
+        const error = new Error(result.publishError);
+        error.name = 'ConnectorPublishImmediateError';
+        throw error;
       }
     }
 
