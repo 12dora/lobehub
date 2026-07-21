@@ -19,12 +19,18 @@ const ProviderItem = memo<ProviderItemProps>(
   ({ id, name, source, enabled, logo, onClick = () => {} }) => {
     const location = useLocation();
 
-    // Extract providerId from pathname: /settings/provider/xxx -> xxx
+    // Extract providerId from pathname:
+    // - /settings/provider/xxx
+    // - /admin/ai/providers/xxx (admin parity page)
     const activeKey = useMemo(() => {
-      const pathParts = location.pathname.split('/');
-      // pathname is like /settings/provider/all or /settings/provider/openai
-      if (pathParts.length >= 4 && pathParts[2] === 'provider') {
-        return pathParts[3];
+      const pathParts = location.pathname.split('/').filter(Boolean);
+      const settingsIdx = pathParts.indexOf('provider');
+      if (settingsIdx >= 0 && pathParts[settingsIdx - 1] === 'settings') {
+        return pathParts[settingsIdx + 1] ?? null;
+      }
+      const adminIdx = pathParts.indexOf('providers');
+      if (adminIdx >= 0 && pathParts[adminIdx - 1] === 'ai' && pathParts[0] === 'admin') {
+        return pathParts[adminIdx + 1] ?? null;
       }
       return null;
     }, [location.pathname]);

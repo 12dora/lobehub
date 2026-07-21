@@ -13,7 +13,7 @@ import { ModelInfoTags } from '@/components/ModelSelect';
 import NewModelBadge from '@/components/ModelSelect/NewModelBadge';
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { usePermission } from '@/hooks/usePermission';
-import { aiModelSelectors, useAiInfraStore } from '@/store/aiInfra';
+import { aiModelSelectors, useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
 import { formatPriceByCurrency } from '@/utils/format';
 import {
   getAudioInputUnitRate,

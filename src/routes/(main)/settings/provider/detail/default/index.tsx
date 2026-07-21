@@ -3,7 +3,7 @@
 import { Flexbox } from '@lobehub/ui';
 import { memo } from 'react';
 
-import { useAiInfraStore } from '@/store/aiInfra';
+import { useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
 import { useServerConfigStore } from '@/store/serverConfig';
 
 import ModelList from '../../features/ModelList';

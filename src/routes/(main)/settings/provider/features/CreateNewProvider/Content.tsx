@@ -6,12 +6,14 @@ import { Select, useModalContext } from '@lobehub/ui/base-ui';
 import { App, Form } from 'antd';
 import { memo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useLocation } from 'react-router';
 
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
-import { useAiInfraStore } from '@/store/aiInfra/store';
+import { useAiInfraStoreApi, useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
 import { type CreateAiProviderParams } from '@/types/aiProvider';
 
 import { KeyVaultsConfigKey, LLMProviderApiTokenKey, LLMProviderBaseUrlKey } from '../../const';
+import { providerSettingsPath } from '../../providerRouteBase';
 import { CUSTOM_PROVIDER_SDK_OPTIONS } from '../customProviderSdkOptions';
 import { normalizeProviderSettings } from '../providerSettings';
 
@@ -25,9 +27,11 @@ const CreateNewProviderContent = memo(() => {
   const { t } = useTranslation('modelProvider');
   const [form] = Form.useForm<CreateAiProviderParams>();
   const [loading, setLoading] = useState(false);
+  const aiInfraStoreApi = useAiInfraStoreApi();
   const createNewAiProvider = useAiInfraStore((s) => s.createNewAiProvider);
   const { message } = App.useApp();
   const navigate = useWorkspaceAwareNavigate();
+  const location = useLocation();
   const { close } = useModalContext();
 
   const onFinish = async (values: CreateAiProviderParams) => {
@@ -44,7 +48,7 @@ const CreateNewProviderContent = memo(() => {
 
       await createNewAiProvider(finalValues);
       setLoading(false);
-      navigate(`/settings/provider/${values.id}`);
+      navigate(providerSettingsPath(location.pathname, values.id));
       message.success(t('createNewAiProvider.createSuccess'));
       close();
     } catch (e) {
@@ -80,7 +84,7 @@ const CreateNewProviderContent = memo(() => {
             {
               message: t('createNewAiProvider.id.duplicate'),
               validator: (_, value: string) => {
-                const list = useAiInfraStore.getState().aiProviderList;
+                const list = aiInfraStoreApi.getState().aiProviderList;
                 if (value && list.some((p) => p.id === value)) {
                   return Promise.reject();
                 }

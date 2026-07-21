@@ -4,21 +4,19 @@ import { Flexbox } from '@lobehub/ui';
 import { memo } from 'react';
 
 import Loading from '@/components/Loading/BrandTextLoading';
-import { useClientDataSWR } from '@/libs/swr';
-import { providerKeys } from '@/libs/swr/keys';
-import { aiProviderService } from '@/services/aiProvider';
-import { useAiInfraStore } from '@/store/aiInfra';
+import { aiProviderSelectors, useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
 
 import ModelList from '../../features/ModelList';
 import ProviderConfig from '../../features/ProviderConfig';
 
+/**
+ * Custom (user-defined) provider detail — data via scoped aiInfra store so admin
+ * adapter / SWR scope is respected (no direct user aiProviderService import).
+ */
 const CustomProviderDetail = memo<{ id: string }>(({ id }) => {
   const useFetchAiProviderItem = useAiInfraStore((s) => s.useFetchAiProviderItem);
-  useFetchAiProviderItem(id);
-
-  const { data, isLoading } = useClientDataSWR(providerKeys.clientConfig(id), () =>
-    aiProviderService.getAiProviderById(id),
-  );
+  const { isLoading } = useFetchAiProviderItem(id);
+  const data = useAiInfraStore(aiProviderSelectors.providerDetailById(id));
 
   if (isLoading || !data || !data.id) return <Loading debugId="Provider > CustomProviderDetail" />;
 

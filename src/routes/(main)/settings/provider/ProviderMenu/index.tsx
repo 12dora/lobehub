@@ -9,7 +9,7 @@ import { useTranslation } from 'react-i18next';
 
 import AsyncBoundary from '@/components/AsyncBoundary';
 import SkeletonList from '@/features/NavPanel/components/SkeletonList';
-import { useAiInfraStore } from '@/store/aiInfra/store';
+import { useAiInfraStoreApi, useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
 
 import AddNew from './AddNew';
 import ProviderList from './List';
@@ -22,6 +22,7 @@ interface ProviderMenuProps {
 const Layout = memo(({ children, mobile }: ProviderMenuProps) => {
   const { t } = useTranslation('modelProvider');
 
+  const aiInfraStoreApi = useAiInfraStoreApi();
   const providerSearchKeyword = useAiInfraStore((s) => s.providerSearchKeyword);
 
   const width = mobile ? undefined : 280;
@@ -73,7 +74,7 @@ const Layout = memo(({ children, mobile }: ProviderMenuProps) => {
             },
           }}
           onInputChange={(v) => {
-            useAiInfraStore.setState({ providerSearchKeyword: v });
+            aiInfraStoreApi.setState({ providerSearchKeyword: v });
           }}
         />
         <AddNew />

@@ -17,11 +17,13 @@ import { t as i18nT } from 'i18next';
 import { BrainIcon } from 'lucide-react';
 import { memo, type ReactNode, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useLocation } from 'react-router';
 
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
-import { useAiInfraStore } from '@/store/aiInfra/store';
+import { useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
 import { type AiProviderDetailItem, type UpdateAiProviderParams } from '@/types/aiProvider';
 
+import { providerSettingsPath } from '../../../providerRouteBase';
 import { CUSTOM_PROVIDER_SDK_OPTIONS } from '../../customProviderSdkOptions';
 import { isResponsesApiSupportedSdkType, normalizeProviderSettings } from '../../providerSettings';
 
@@ -51,6 +53,7 @@ const SettingContent = memo<SettingContentProps>(({ initialValues, id }) => {
 
   const { message } = App.useApp();
   const navigate = useWorkspaceAwareNavigate();
+  const location = useLocation();
   const { close } = useModalContext();
 
   const onFinish = async (values: UpdateAiProviderParams) => {
@@ -94,7 +97,7 @@ const SettingContent = memo<SettingContentProps>(({ initialValues, id }) => {
       okText: t('delete', { ns: 'common' }),
       onOk: async () => {
         await deleteAiProvider(id);
-        navigate('/settings/provider/all');
+        navigate(providerSettingsPath(location.pathname, 'all'));
         close();
         message.success(t('updateAiProvider.deleteSuccess'));
       },

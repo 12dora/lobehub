@@ -13,12 +13,12 @@ import {
   MicIcon,
   VideoIcon,
 } from 'lucide-react';
-import { memo, Suspense, useMemo, useState } from 'react';
+import { memo, Suspense, use, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import AsyncError from '@/components/AsyncError';
 import { useIsMobile } from '@/hooks/useIsMobile';
-import { aiModelSelectors, useAiInfraStore } from '@/store/aiInfra';
+import { aiModelSelectors, useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
 
 import DisabledModels from './DisabledModels';
 import EmptyModels from './EmptyModels';
@@ -160,13 +160,34 @@ interface ModelListProps extends ProviderSettingsContextValue {
 }
 
 const ModelList = memo<ModelListProps>(
-  ({ id, showModelFetcher, sdkType, showAddNewModel, showDeployName, modelEditable = true }) => {
+  ({
+    id,
+    showModelFetcher,
+    sdkType,
+    showAddNewModel,
+    showDeployName,
+    modelEditable = true,
+    hideFetchOnClient,
+  }) => {
     const mobile = useIsMobile();
+    /**
+     * Merge outer context with props. Admin-forced fields (showModelFetcher / hideFetchOnClient)
+     * prefer **outer** so built-in provider cards (e.g. openai settings with showModelFetcher:true)
+     * cannot re-enable fetch on the admin parity page. Default outer is `{}` → user path unchanged.
+     */
+    const outer = use(ProviderSettingsContext);
+    const merged: ProviderSettingsContextValue = {
+      ...outer,
+      hideFetchOnClient: outer.hideFetchOnClient ?? hideFetchOnClient,
+      modelEditable: outer.modelEditable ?? modelEditable,
+      sdkType: outer.sdkType ?? sdkType,
+      showAddNewModel: outer.showAddNewModel ?? showAddNewModel,
+      showDeployName: outer.showDeployName ?? showDeployName,
+      showModelFetcher: outer.showModelFetcher ?? showModelFetcher,
+    };
 
     return (
-      <ProviderSettingsContext
-        value={{ modelEditable, sdkType, showAddNewModel, showDeployName, showModelFetcher }}
-      >
+      <ProviderSettingsContext value={merged}>
         <Flexbox
           gap={16}
           paddingInline={mobile ? 12 : 0}
@@ -178,8 +199,8 @@ const ModelList = memo<ModelListProps>(
         >
           <ModelTitle
             provider={id}
-            showAddNewModel={showAddNewModel}
-            showModelFetcher={showModelFetcher}
+            showAddNewModel={merged.showAddNewModel}
+            showModelFetcher={merged.showModelFetcher}
           />
           <Suspense fallback={<SkeletonList />}>
             <Content id={id} />

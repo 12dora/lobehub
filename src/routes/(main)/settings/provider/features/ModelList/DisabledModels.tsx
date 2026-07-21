@@ -9,7 +9,7 @@ import useSWRInfinite from 'swr/infinite';
 
 import { aiModelKeys } from '@/libs/swr/keys';
 import { aiModelService } from '@/services/aiModel';
-import { useAiInfraStore } from '@/store/aiInfra';
+import { useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
 import { aiModelSelectors } from '@/store/aiInfra/selectors';
 import { useGlobalStore } from '@/store/global';
 import { systemStatusSelectors } from '@/store/global/selectors';

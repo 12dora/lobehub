@@ -5,7 +5,7 @@ import { use, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { usePermission } from '@/hooks/usePermission';
-import { useAiInfraStore } from '@/store/aiInfra';
+import { useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
 import { aiModelSelectors } from '@/store/aiInfra/selectors';
 
 import ModelItem from '../ModelItem';

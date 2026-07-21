@@ -133,26 +133,50 @@ export class AiCatalogPublicationService {
   private validatePublishDraft = async (
     tx: Transaction,
     providerId: string,
+    options?: {
+      /**
+       * Admin settings UI auto-publish: after a provider has already been published once,
+       * allow republishing non-secret draft edits without re-running the connection test.
+       * First publish still requires a fresh successful connection test.
+       */
+      allowStaleConnectionTest?: boolean;
+    },
   ): Promise<PlatformAiProviderDraftView> => {
     const repository = new PlatformAiCatalogRepository(tx);
     const draft = await new PlatformAiCatalogModel(tx).getProvider(providerId);
     if (!draft) throw new AiCatalogNotFoundError();
     const issues: string[] = [];
-    if (!draft.enabled) issues.push('Provider must be enabled');
+    // revision > 0 means at least one successful publish has landed on this provider.
+    const previouslyPublished = draft.revision > 0;
+    /**
+     * Global disable of an already-published provider: publish enabled:false without
+     * requiring live readiness (models / connection test). First publish (revision 0)
+     * still requires a fully ready draft.
+     */
+    const isDeactivatingPublished = previouslyPublished && draft.enabled === false;
     const enabledModels = draft.models.filter((model) => model.enabled);
-    if (enabledModels.length === 0) issues.push('At least one model must be enabled');
+
+    if (!isDeactivatingPublished) {
+      if (!draft.enabled) issues.push('Provider must be enabled');
+      if (enabledModels.length === 0) issues.push('At least one model must be enabled');
+      const connectionTestFresh =
+        draft.connectionTest?.status === 'success' && !draft.connectionTest.stale;
+      if (
+        !connectionTestFresh &&
+        !(options?.allowStaleConnectionTest === true && previouslyPublished)
+      ) {
+        issues.push('Current provider draft must pass connection testing before publish');
+      }
+      if (draft.checkModel) {
+        const checkModel = enabledModels.find((model) => model.modelKey === draft.checkModel);
+        if (!checkModel) issues.push('Check model must reference an enabled model');
+        else if (checkModel.type !== 'chat') {
+          issues.push('Check model must reference an enabled chat model');
+        }
+      }
+    }
     if (draft.secret.configured && draft.fetchOnClient) {
       issues.push('Secret-configured providers must disable fetchOnClient');
-    }
-    if (draft.connectionTest?.status !== 'success' || draft.connectionTest.stale) {
-      issues.push('Current provider draft must pass connection testing before publish');
-    }
-    if (draft.checkModel) {
-      const checkModel = enabledModels.find((model) => model.modelKey === draft.checkModel);
-      if (!checkModel) issues.push('Check model must reference an enabled model');
-      else if (checkModel.type !== 'chat') {
-        issues.push('Check model must reference an enabled chat model');
-      }
     }
     if (draft.config.endpoint) {
       try {
@@ -195,6 +219,7 @@ export class AiCatalogPublicationService {
     expectedDraftToken: string,
     validateForPublish = true,
     validateArchiveDependents = false,
+    allowStaleConnectionTest = false,
   ): ResourcePointerAdapter => {
     let currentPublishedPayload: Record<string, unknown> | null = null;
     return {
@@ -297,7 +322,7 @@ export class AiCatalogPublicationService {
       },
       prepareLockedPublish: async (tx) => {
         const draft = validateForPublish
-          ? await this.validatePublishDraft(tx, providerId)
+          ? await this.validatePublishDraft(tx, providerId, { allowStaleConnectionTest })
           : await new PlatformAiCatalogModel(tx).getProvider(providerId);
         if (!draft) throw new AiCatalogNotFoundError();
         const payload = await new PlatformAiCatalogModel(tx).prepareRevisionPayload(providerId);
@@ -340,7 +365,10 @@ export class AiCatalogPublicationService {
     };
   };
 
-  publishProvider = async (actorUserId: string, input: PublishProviderInput) => {
+  publishProvider = async (
+    actorUserId: string,
+    input: PublishProviderInput & { allowStaleConnectionTest?: boolean },
+  ) => {
     const reason = await this.sanitizeReason(input.id, input.reason);
     try {
       const draft = await new PlatformAiCatalogModel(this.db).getProvider(input.id);
@@ -350,7 +378,14 @@ export class AiCatalogPublicationService {
         expectedRevision: input.expectedRevision,
         invalidationScopes: ['ai-catalog', 'model-runtime'],
         payload: {},
-        pointer: this.createPointer(input.id, actorUserId, input.expectedDraftToken),
+        pointer: this.createPointer(
+          input.id,
+          actorUserId,
+          input.expectedDraftToken,
+          true,
+          false,
+          input.allowStaleConnectionTest === true,
+        ),
         reason,
         redactionOptions: M07_REDACTION_OPTIONS,
         resourceId: input.id,

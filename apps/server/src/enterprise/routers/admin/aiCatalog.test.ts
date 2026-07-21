@@ -22,6 +22,11 @@ import { assignGlobalPlatformRole, seedPlatformRoles } from '@/database/utils/se
 import { createCallerFactory } from '@/libs/trpc/lambda';
 import { createContextInner } from '@/libs/trpc/lambda/context';
 
+import {
+  InMemoryAdminMutationRateLimiter,
+  resetSharedAdminMutationRateLimiter,
+  setSharedAdminMutationRateLimiter,
+} from '../../security/rateLimit/adminMutationRateLimiter';
 import { adminRouter } from '../admin';
 
 const db: LobeChatDatabase = await getTestDB();
@@ -462,5 +467,234 @@ describe('admin AI catalog permission and reauth gates', () => {
     expect(JSON.stringify([first, second])).not.toContain('private-target');
     expect(JSON.stringify([first, second])).not.toContain('ciphertext');
     expect(Object.keys(first.items[0]).sort()).toEqual(['displayName', 'id', 'providerKey']);
+  });
+
+  /** Seed a first-publishable provider: enabled + model + fresh connection test row. */
+  const seedPublishableProvider = async (providerKey: string) => {
+    const caller = await callerFor(ids.aiAdmin);
+    const credential = `seed-credential-${providerKey}`;
+    const provider = await caller.aiProviders.createDraft({
+      checkModel: 'chat',
+      displayName: providerKey,
+      enabled: true,
+      providerKey,
+      reason: 'seed draft',
+      secret: { operation: 'replace', value: credential },
+      settings: { sdkType: 'openai' },
+    });
+    let detail = await caller.aiProviders.get({ id: provider.id });
+    await caller.aiModels.create({
+      enabled: true,
+      expectedDraftToken: detail.draftToken,
+      modelKey: 'chat',
+      providerId: provider.id,
+      reason: 'seed model',
+      type: 'chat',
+    });
+    detail = await caller.aiProviders.get({ id: provider.id });
+    // Mark connection test success bound to the current draft (no live network in unit tests).
+    await db
+      .update(platformAiProviders)
+      .set({
+        connectionTestErrorCategory: null,
+        connectionTestLatencyMs: 12,
+        connectionTestSanitizedMessage: 'ok',
+        connectionTestStatus: 'success',
+        connectionTestedAt: new Date(),
+        connectionTestedDraftToken: detail.draftToken,
+        connectionTestedRevision: detail.baseRevision,
+      })
+      .where(eq(platformAiProviders.id, provider.id));
+    detail = await caller.aiProviders.get({ id: provider.id });
+    const published = await caller.aiProviders.publish({
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.baseRevision,
+      id: provider.id,
+      reason: 'seed publish',
+    });
+    return { caller, credential, providerId: provider.id, published };
+  };
+
+  it('applyImmediate update republishes an already-published provider', async () => {
+    const { caller, credential, providerId } = await seedPublishableProvider('immediate-p');
+    const detail = await caller.aiProviders.get({ id: providerId });
+    const updated = await caller.aiProviders.applyImmediate({
+      displayName: 'Immediate Renamed',
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.baseRevision,
+      id: providerId,
+      mode: 'update',
+      reason: 'rename immediately',
+    });
+    expect(updated.draft.displayName).toBe('Immediate Renamed');
+    expect(updated.published).toBe(true);
+    expect(updated.revision).toBeGreaterThan(0);
+    expect(JSON.stringify(updated)).not.toContain(credential);
+  });
+
+  it('applyImmediate create keeps draft when first publish is not yet valid', async () => {
+    const caller = await callerFor(ids.aiAdmin);
+    const result = await caller.aiProviders.applyImmediate({
+      displayName: 'Draft Only',
+      mode: 'create',
+      providerKey: 'draft-only-p',
+      reason: 'create without models/test',
+      secret: { operation: 'replace', value: 'not-a-real-secret-value' },
+      settings: { sdkType: 'openai' },
+    });
+    expect(result.published).toBe(false);
+    expect(result.draft.providerKey).toBe('draft-only-p');
+    expect(result.revision).toBe(0);
+    expect(JSON.stringify(result)).not.toContain('not-a-real-secret-value');
+  });
+
+  it('applyImmediate denies callers without publish permission', async () => {
+    const caller = await callerFor(ids.modelEditor);
+    await expect(
+      caller.aiProviders.applyImmediate({
+        displayName: 'Nope',
+        mode: 'create',
+        providerKey: 'nope',
+        reason: 'denied',
+      }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  });
+
+  it('applyImmediate rejects stale reauth before mutating', async () => {
+    const { providerId } = await seedPublishableProvider('reauth-gate');
+    const fresh = await callerFor(ids.aiAdmin);
+    const detail = await fresh.aiProviders.get({ id: providerId });
+    const stale = await callerFor(ids.aiAdmin, new Date(Date.now() - 60 * 60 * 1000));
+    await expect(
+      stale.aiProviders.applyImmediate({
+        displayName: 'Blocked',
+        expectedDraftToken: detail.draftToken,
+        expectedRevision: detail.baseRevision,
+        id: providerId,
+        mode: 'update',
+        reason: 'stale reauth blocked',
+      }),
+    ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+  });
+
+  it('aiModels.applyImmediate create/update/delete/reorder/batch on published provider', async () => {
+    const { caller, providerId } = await seedPublishableProvider('models-ops');
+    let detail = await caller.aiProviders.get({ id: providerId });
+
+    const created = await caller.aiModels.applyImmediate({
+      enabled: true,
+      expectedDraftToken: detail.draftToken,
+      modelKey: 'extra',
+      operation: 'create',
+      providerId,
+      reason: 'create model',
+      type: 'chat',
+    });
+    expect(created.published).toBe(true);
+    detail = await caller.aiProviders.get({ id: providerId });
+    const extra = detail.draft.models.find((m) => m.modelKey === 'extra');
+    expect(extra).toBeTruthy();
+
+    const updated = await caller.aiModels.applyImmediate({
+      displayName: 'Extra Renamed',
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: extra!.revision,
+      id: extra!.id,
+      operation: 'update',
+      providerId,
+      reason: 'rename model',
+    });
+    expect(updated.published).toBe(true);
+
+    detail = await caller.aiProviders.get({ id: providerId });
+    const toggled = await caller.aiModels.applyImmediate({
+      enabled: false,
+      expectedDraftToken: detail.draftToken,
+      modelIds: [extra!.id],
+      operation: 'batchToggle',
+      providerId,
+      reason: 'batch toggle',
+    });
+    expect(toggled.published).toBe(true);
+
+    detail = await caller.aiProviders.get({ id: providerId });
+    const reorderItems = detail.draft.models.map((m, sort) => ({ id: m.id, sort }));
+    const reordered = await caller.aiModels.applyImmediate({
+      expectedDraftToken: detail.draftToken,
+      items: reorderItems,
+      operation: 'reorder',
+      providerId,
+      reason: 'reorder',
+    });
+    expect(reordered.published).toBe(true);
+
+    detail = await caller.aiProviders.get({ id: providerId });
+    const deleted = await caller.aiModels.applyImmediate({
+      expectedDraftToken: detail.draftToken,
+      id: extra!.id,
+      operation: 'delete',
+      providerId,
+      reason: 'delete model',
+    });
+    expect(deleted.published).toBe(true);
+  });
+
+  it('aiModels.applyImmediate denies model editor without publish permission', async () => {
+    const { providerId } = await seedPublishableProvider('models-deny');
+    const detail = await (await callerFor(ids.aiAdmin)).aiProviders.get({ id: providerId });
+    const modelEditor = await callerFor(ids.modelEditor);
+    await expect(
+      modelEditor.aiModels.applyImmediate({
+        enabled: true,
+        expectedDraftToken: detail.draftToken,
+        modelKey: 'nope',
+        operation: 'create',
+        providerId,
+        reason: 'denied',
+        type: 'chat',
+      }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  });
+
+  it('publishNow requires reauth like other publish mutations', async () => {
+    const { providerId } = await seedPublishableProvider('publish-now-reauth');
+    const stale = await callerFor(ids.aiAdmin, new Date(Date.now() - 60 * 60 * 1000));
+    await expect(
+      stale.aiProviders.publishNow({ id: providerId, reason: 'stale' }),
+    ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+  });
+
+  it('applyImmediate is rate-limited with ADMIN_RATE_LIMITED when window is exhausted', async () => {
+    setSharedAdminMutationRateLimiter(
+      new InMemoryAdminMutationRateLimiter({
+        config: { limit: 1, windowMs: 60_000 },
+      }),
+    );
+    try {
+      const caller = await callerFor(ids.aiAdmin);
+      // First mutation consumes the sole quota unit.
+      await caller.aiProviders.applyImmediate({
+        displayName: 'Rate Limited A',
+        mode: 'create',
+        providerKey: 'rate-limit-a',
+        reason: 'consume quota',
+        settings: { sdkType: 'openai' },
+      });
+      // Second hits the boundary regardless of business outcome.
+      await expect(
+        caller.aiProviders.applyImmediate({
+          displayName: 'Rate Limited B',
+          mode: 'create',
+          providerKey: 'rate-limit-b',
+          reason: 'should 429',
+          settings: { sdkType: 'openai' },
+        }),
+      ).rejects.toMatchObject({
+        code: 'TOO_MANY_REQUESTS',
+        message: expect.stringMatching(/ADMIN_RATE_LIMITED/),
+      });
+    } finally {
+      resetSharedAdminMutationRateLimiter();
+    }
   });
 });

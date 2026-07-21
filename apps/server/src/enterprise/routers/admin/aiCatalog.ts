@@ -5,6 +5,8 @@ import { authedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 
 import {
+  adminAiModelApplyImmediateInputSchema,
+  adminAiModelApplyImmediateOutputSchema,
   adminAiModelCreateInputSchema,
   adminAiModelCreateTargetListInputSchema,
   adminAiModelCreateTargetListOutputSchema,
@@ -20,6 +22,8 @@ import {
   adminAiModelReorderInputSchema,
   adminAiModelReorderOutputSchema,
   adminAiModelUpdateInputSchema,
+  adminAiProviderApplyImmediateInputSchema,
+  adminAiProviderApplyImmediateOutputSchema,
   adminAiProviderArchiveInputSchema,
   adminAiProviderCreateDraftInputSchema,
   adminAiProviderGetInputSchema,
@@ -28,6 +32,7 @@ import {
   adminAiProviderListOutputSchema,
   adminAiProviderMutationOutputSchema,
   adminAiProviderPublishInputSchema,
+  adminAiProviderPublishNowInputSchema,
   adminAiProviderRevisionHistoryInputSchema,
   adminAiProviderRevisionHistoryOutputSchema,
   adminAiProviderRevisionOutputSchema,
@@ -53,6 +58,75 @@ const adminBase = authedProcedure
   .use(withAdminMutationRateLimit());
 
 export const adminAiProvidersRouter = router({
+  /**
+   * Create/update draft then publish in one procedure (admin settings UI parity).
+   * Requires UPDATE+PUBLISH (or CREATE+PUBLISH for create mode). Rate-limit: 1 unit.
+   */
+  applyImmediate: adminBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AI_PROVIDER_PUBLISH))
+    .input(adminAiProviderApplyImmediateInputSchema)
+    .output(adminAiProviderApplyImmediateOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      // CREATE+PUBLISH or UPDATE+PUBLISH (PUBLISH already enforced by middleware).
+      const required =
+        input.mode === 'create'
+          ? PLATFORM_PERMISSIONS.AI_PROVIDER_CREATE
+          : PLATFORM_PERMISSIONS.AI_PROVIDER_UPDATE;
+      const perms = (ctx as { platformAuth?: { permissions: string[] } }).platformAuth?.permissions;
+      if (!perms?.includes(required)) {
+        return throwEnterpriseError({
+          code: PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED,
+          details: { permission: required },
+          httpCode: 'FORBIDDEN',
+          message: PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED,
+        });
+      }
+      // Publish always requires reauth; secret replace/clear also covered by the same gate.
+      await assertDangerousReauth({
+        action: 'admin.aiProviders.applyImmediate',
+        actorUserId: ctx.userId!,
+        authenticatedAt: ctx.authenticatedAt,
+        authMethod: ctx.authMethod,
+        reason: input.reason,
+        replacementSecrets:
+          input.secret?.operation === 'replace' || input.secret?.operation === 'merge'
+            ? [input.secret.value]
+            : undefined,
+        serverDB: ctx.serverDB,
+        targetId: input.mode === 'create' ? input.providerKey : input.id,
+      });
+      try {
+        return await createService(ctx.serverDB).applyProviderImmediate(ctx.userId!, input);
+      } catch (error) {
+        return mapServiceError(error);
+      }
+    }),
+
+  /**
+   * Banner "retry publish": re-run connection test when revision===0, then publish.
+   * Same guard combo as applyImmediate (PUBLISH + reauth + rate-limit).
+   */
+  publishNow: adminBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AI_PROVIDER_PUBLISH))
+    .input(adminAiProviderPublishNowInputSchema)
+    .output(adminAiProviderApplyImmediateOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      await assertDangerousReauth({
+        action: 'admin.aiProviders.publishNow',
+        actorUserId: ctx.userId!,
+        authenticatedAt: ctx.authenticatedAt,
+        authMethod: ctx.authMethod,
+        reason: input.reason,
+        serverDB: ctx.serverDB,
+        targetId: input.id,
+      });
+      try {
+        return await createService(ctx.serverDB).publishNow(ctx.userId!, input);
+      } catch (error) {
+        return mapServiceError(error);
+      }
+    }),
+
   archive: adminBase
     .use(withPlatformPermission(PLATFORM_PERMISSIONS.AI_PROVIDER_DELETE))
     .input(adminAiProviderArchiveInputSchema)
@@ -87,7 +161,10 @@ export const adminAiProvidersRouter = router({
           authMethod: ctx.authMethod,
           existingSecretTargetId: null,
           reason: input.reason,
-          replacementSecrets: input.secret?.operation === 'replace' ? [input.secret.value] : [],
+          replacementSecrets:
+            input.secret?.operation === 'replace' || input.secret?.operation === 'merge'
+              ? [input.secret.value]
+              : [],
           serverDB: ctx.serverDB,
           targetId: input.providerKey,
         });
@@ -195,7 +272,10 @@ export const adminAiProvidersRouter = router({
           authenticatedAt: ctx.authenticatedAt,
           authMethod: ctx.authMethod,
           reason: input.reason,
-          replacementSecrets: input.secret?.operation === 'replace' ? [input.secret.value] : [],
+          replacementSecrets:
+            input.secret?.operation === 'replace' || input.secret?.operation === 'merge'
+              ? [input.secret.value]
+              : [],
           serverDB: ctx.serverDB,
           targetId: input.id,
         });
@@ -209,6 +289,47 @@ export const adminAiProvidersRouter = router({
 });
 
 export const adminAiModelsRouter = router({
+  /**
+   * Model draft mutation(s) + immediate parent-provider publish (admin UI parity).
+   * Requires the operation's model permission + AI_PROVIDER_PUBLISH. Rate-limit: 1 unit.
+   */
+  applyImmediate: adminBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.AI_PROVIDER_PUBLISH))
+    .input(adminAiModelApplyImmediateInputSchema)
+    .output(adminAiModelApplyImmediateOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      const opPermission =
+        input.operation === 'create'
+          ? PLATFORM_PERMISSIONS.AI_MODEL_CREATE
+          : input.operation === 'delete' || input.operation === 'clear'
+            ? PLATFORM_PERMISSIONS.AI_MODEL_DELETE
+            : PLATFORM_PERMISSIONS.AI_MODEL_UPDATE;
+      const perms = (ctx as { platformAuth?: { permissions: string[] } }).platformAuth?.permissions;
+      if (!perms?.includes(opPermission)) {
+        return throwEnterpriseError({
+          code: PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED,
+          details: { permission: opPermission },
+          httpCode: 'FORBIDDEN',
+          message: PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED,
+        });
+      }
+      // Publish step requires reauth (aligned with admin.aiProviders.publish).
+      await assertDangerousReauth({
+        action: 'admin.aiModels.applyImmediate',
+        actorUserId: ctx.userId!,
+        authenticatedAt: ctx.authenticatedAt,
+        authMethod: ctx.authMethod,
+        reason: input.reason,
+        serverDB: ctx.serverDB,
+        targetId: input.providerId,
+      });
+      try {
+        return await createService(ctx.serverDB).applyModelImmediate(ctx.userId!, input);
+      } catch (error) {
+        return mapServiceError(error);
+      }
+    }),
+
   create: adminBase
     .use(withPlatformPermission(PLATFORM_PERMISSIONS.AI_MODEL_CREATE))
     .input(adminAiModelCreateInputSchema)

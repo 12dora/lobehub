@@ -97,6 +97,16 @@ export const aiSecretMutationSchema = z.discriminatedUnion('operation', [
       value: z.union([z.string().min(1).max(32_768), aiStructuredCredentialSchema]),
     })
     .strict(),
+  /**
+   * Overlay non-empty credential fields onto the existing vault.
+   * Empty strings are ignored; unsubmitted fields are retained (no delete semantics).
+   */
+  z
+    .object({
+      operation: z.literal('merge'),
+      value: z.union([z.string().min(1).max(32_768), aiStructuredCredentialSchema]),
+    })
+    .strict(),
   z.object({ operation: z.literal('clear') }).strict(),
 ]);
 
@@ -463,6 +473,120 @@ export const adminAiModelDeleteOutputSchema = z.object({ deleted: z.literal(true
 export const adminAiModelReorderOutputSchema = z
   .object({ draftToken: z.string().length(64), updated: z.number().int().nonnegative() })
   .strict();
+
+/** Draft mutation + immediate publish (admin UI parity; single rate-limit unit). */
+export const adminAiProviderApplyImmediateOutputSchema = z
+  .object({
+    auditId: z.string().min(1).nullable(),
+    draft: aiProviderDraftSchema,
+    /**
+     * false when draft was written but publish validation blocked first publish
+     * (e.g. create without models / connection test). Client must not treat as silent success for live catalog.
+     */
+    published: z.boolean(),
+    /** Structured human-safe reason when published is false (never secrets). */
+    publishError: z.string().max(500).nullable().optional(),
+    revision: z.number().int().nonnegative(),
+  })
+  .strict();
+
+export const adminAiProviderPublishNowInputSchema = z
+  .object({
+    id: z.string().min(1),
+    reason: z.string().trim().min(1).max(2000),
+  })
+  .strict();
+
+export const adminAiProviderApplyImmediateInputSchema = z.discriminatedUnion('mode', [
+  adminAiProviderCreateDraftInputSchema.extend({ mode: z.literal('create') }),
+  adminAiProviderUpdateDraftInputSchema.extend({ mode: z.literal('update') }),
+]);
+
+export const adminAiModelApplyImmediateOutputSchema = z
+  .object({
+    auditId: z.string().min(1).nullable(),
+    draftToken: z.string().length(64),
+    published: z.boolean(),
+    publishError: z.string().max(500).nullable().optional(),
+    revision: z.number().int().nonnegative(),
+  })
+  .strict();
+
+const modelApplyBase = z.object({
+  expectedDraftToken: z.string().length(64),
+  providerId: z.string().min(1),
+  reason: z.string().trim().min(1).max(2000),
+});
+
+export const adminAiModelApplyImmediateInputSchema = z.discriminatedUnion('operation', [
+  modelDraftFieldsSchema
+    .extend({
+      expectedDraftToken: z.string().length(64),
+      modelKey: modelKeySchema,
+      operation: z.literal('create'),
+      providerId: z.string().min(1),
+      reason: z.string().trim().min(1).max(2000),
+    })
+    .strict(),
+  modelDraftFieldsSchema
+    .extend({
+      expectedDraftToken: z.string().length(64),
+      expectedRevision: z.number().int().nonnegative(),
+      id: z.string().min(1),
+      operation: z.literal('update'),
+      providerId: z.string().min(1),
+      reason: z.string().trim().min(1).max(2000),
+    })
+    .strict(),
+  modelApplyBase
+    .extend({
+      id: z.string().min(1),
+      operation: z.literal('delete'),
+    })
+    .strict(),
+  modelApplyBase
+    .extend({
+      items: z
+        .array(z.object({ id: z.string().min(1), sort: z.number().int() }).strict())
+        .min(1)
+        .max(500),
+      operation: z.literal('reorder'),
+    })
+    .strict(),
+  modelApplyBase
+    .extend({
+      enabled: z.boolean(),
+      modelIds: z.array(z.string().min(1)).min(1).max(500),
+      operation: z.literal('batchToggle'),
+    })
+    .strict(),
+  modelApplyBase
+    .extend({
+      models: z
+        .array(
+          z
+            .object({
+              abilities: boundedJsonObjectSchema.optional(),
+              config: boundedJsonObjectSchema.nullable().optional(),
+              contextWindowTokens: z.number().int().positive().nullable().optional(),
+              description: z.string().trim().max(4000).nullable().optional(),
+              displayName: z.string().trim().max(200).nullable().optional(),
+              enabled: z.boolean().optional(),
+              id: z.string().min(1),
+              parameters: boundedJsonObjectSchema.optional(),
+              pricing: boundedJsonObjectSchema.nullable().optional(),
+              settings: boundedJsonObjectSchema.optional(),
+              type: AiModelTypeSchema.optional(),
+            })
+            .strict(),
+        )
+        .min(1)
+        .max(500),
+      operation: z.literal('batchUpdate'),
+    })
+    .strict(),
+  modelApplyBase.extend({ operation: z.literal('clear') }).strict(),
+]);
 
 export type AiModelDraft = z.infer<typeof aiModelDraftSchema>;
 export type AiProviderDraft = z.infer<typeof aiProviderDraftSchema>;
