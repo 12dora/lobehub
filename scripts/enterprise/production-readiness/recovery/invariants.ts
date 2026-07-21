@@ -72,10 +72,63 @@ export const digestAuditLogs = async (client: PoolClient): Promise<AggregateDige
 };
 
 /**
- * Canonical per-table digests: ALL columns in ordinal order (names + values).
- * Secret-bearing column values are hashed before inclusion; never emitted raw.
+ * Canonical per-table digests (encoding v1): unambiguous JSON projection.
+ * Never concatenate with unescaped delimiters (pipe/newline collisions).
+ * Secret-bearing values are pre-hashed; never emitted raw.
  */
 const SECRETISH_COLUMN = /secret|cipher|password|token|key_vault|fingerprint|ref$/iu;
+export const TABLE_DIGEST_ENCODING_VERSION = 1 as const;
+
+const normalizeCell = (value: unknown): string | number | boolean | null => {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'boolean' || typeof value === 'number') {
+    if (typeof value === 'number' && !Number.isFinite(value)) return String(value);
+    return value;
+  }
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === 'object') {
+    // Stable JSON (sorted keys recursively)
+    return JSON.stringify(value, (_k, v) => {
+      if (v && typeof v === 'object' && !Array.isArray(v)) {
+        return Object.fromEntries(
+          Object.entries(v as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b, 'en')),
+        );
+      }
+      return v;
+    });
+  }
+  if (typeof value === 'bigint') return value.toString();
+  if (Buffer.isBuffer(value)) return value.toString('base64');
+  return String(value);
+};
+
+/** Build one row's canonical projection (fixed column order + typed nulls). */
+export const canonicalizeTableRow = (
+  columns: ReadonlyArray<{ name: string; dataType: string }>,
+  row: Record<string, unknown>,
+): string => {
+  const cells = columns.map((col) => {
+    const raw = row[col.name];
+    if (raw === null || raw === undefined) {
+      return { c: col.name, k: 'null' as const, t: col.dataType };
+    }
+    if (SECRETISH_COLUMN.test(col.name)) {
+      return {
+        c: col.name,
+        d: sha256Hex(String(raw)),
+        k: 'secret' as const,
+        t: col.dataType,
+      };
+    }
+    return {
+      c: col.name,
+      k: 'plain' as const,
+      t: col.dataType,
+      v: normalizeCell(raw),
+    };
+  });
+  return JSON.stringify(cells);
+};
 
 export const digestAllRequiredTables = async (
   client: PoolClient,
@@ -93,25 +146,23 @@ export const digestAllRequiredTables = async (
       entries.push({ digest: sha256Hex(`missing:${table}`), name: table, rowCount: -1 });
       continue;
     }
-    const colNames = cols.rows.map((c) => c.column_name);
-    // Full semantic projection: every column as text, null as \0, secretish pre-hashed.
-    const selectList = colNames
-      .map((name) => {
-        if (SECRETISH_COLUMN.test(name)) {
-          return `CASE WHEN "${name}" IS NULL THEN '\\0' ELSE md5("${name}"::text) END`;
-        }
-        return `COALESCE("${name}"::text, '\\0')`;
-      })
-      .join(" || '|' || ");
-    const header = colNames.join(',');
-    const result = await client.query<{ row_key: string }>(
-      `SELECT (${selectList}) AS row_key FROM "${table}" ORDER BY 1`,
-    );
-    const body = result.rows.map((r) => r.row_key).join('\n');
+    const columns = cols.rows.map((c) => ({ dataType: c.data_type, name: c.column_name }));
+    const quoted = columns.map((c) => `"${c.name}"`).join(', ');
+    const result = await client.query<Record<string, unknown>>(`SELECT ${quoted} FROM "${table}"`);
+    const rowCanonicals = result.rows
+      .map((row) => canonicalizeTableRow(columns, row))
+      .sort((a, b) => a.localeCompare(b, 'en'));
+    const payload = {
+      columns: columns.map((c) => ({ name: c.name, type: c.dataType })),
+      encodingVersion: TABLE_DIGEST_ENCODING_VERSION,
+      rowCount: rowCanonicals.length,
+      rows: rowCanonicals,
+      table,
+    };
     entries.push({
-      digest: sha256Hex(`${header}\n${body}`),
+      digest: sha256Hex(JSON.stringify(payload)),
       name: table,
-      rowCount: result.rows.length,
+      rowCount: rowCanonicals.length,
     });
   }
   return entries.sort((a, b) => a.name.localeCompare(b.name, 'en'));
@@ -309,6 +360,7 @@ export const verifySecretReferenceDomains = async (
 
 /**
  * Publication pointers for every declared source domain.
+ * Binds exact resource_type (or domain version owner FK) + id + revision/version + checksum.
  */
 export const verifyPublicationPointers = async (
   client: PoolClient,
@@ -339,7 +391,6 @@ export const verifyPublicationPointers = async (
       [source.table, source.pointerColumn],
     );
     if (!colExists.rows[0]?.exists) {
-      // Column not in harness minimal schema — record absence
       pointerLines.push(`${source.table}:${source.pointerColumn}:absent`);
       continue;
     }
@@ -353,12 +404,16 @@ export const verifyPublicationPointers = async (
     for (const row of rows.rows) {
       const id = String(row.id ?? '');
       const pointer = String(row.pointer ?? '');
-      pointerLines.push(`${source.table}:${id}:${pointer}`);
 
-      // Integer revision pointers must resolve to exact owner type + resource_id +
-      // revision + immutable target checksum. Never fall back to "any same revision".
-      if (/^\d+$/u.test(pointer)) {
-        const resourceType = source.table.replace(/^platform_/u, '');
+      if (source.kind === 'resource-revision') {
+        if (!/^\d+$/u.test(pointer)) {
+          return {
+            match: false,
+            detail: `non-integer-revision-pointer:${source.table}:${id}:${pointer}`,
+            pointerDigest: sha256Hex(pointerLines.join('\n')),
+          };
+        }
+        // Exact type + owner + revision + checksum; no cross-type same-number fallback.
         const resolved = await client.query<{
           checksum: string;
           resource_id: string;
@@ -367,30 +422,103 @@ export const verifyPublicationPointers = async (
         }>(
           `SELECT resource_type, resource_id, revision::text AS revision, checksum
            FROM platform_resource_revisions
-           WHERE revision = $1 AND resource_id = $2
-           LIMIT 1`,
-          [Number(pointer), id],
+           WHERE revision = $1 AND resource_id = $2 AND resource_type = $3`,
+          [Number(pointer), id, source.resourceType],
         );
-        if (!resolved.rowCount) {
+        const resolvedCount = resolved.rowCount ?? 0;
+        if (resolvedCount === 0) {
           return {
             match: false,
-            detail: `dangling-pointer:${source.table}:${id}:${pointer}`,
+            detail: `dangling-pointer:${source.table}:${id}:${pointer}:${source.resourceType}`,
             pointerDigest: sha256Hex(pointerLines.join('\n')),
           };
         }
-        const row = resolved.rows[0]!;
-        // Bind immutable target checksum into pointer digest (no cross-resource reuse).
-        pointerLines[pointerLines.length - 1] =
-          `${source.table}:${id}:${pointer}:${row.resource_type}:${row.checksum}`;
-        if (row.resource_id !== id) {
+        if (resolvedCount > 1) {
           return {
             match: false,
-            detail: `pointer-owner-mismatch:${source.table}:${id}`,
+            detail: `ambiguous-pointer:${source.table}:${id}:${pointer}`,
             pointerDigest: sha256Hex(pointerLines.join('\n')),
           };
         }
-        void resourceType;
+        const target = resolved.rows[0]!;
+        if (target.resource_id !== id || target.resource_type !== source.resourceType) {
+          return {
+            match: false,
+            detail: `pointer-owner-or-type-mismatch:${source.table}:${id}`,
+            pointerDigest: sha256Hex(pointerLines.join('\n')),
+          };
+        }
+        pointerLines.push(
+          `${source.table}:${id}:${pointer}:${target.resource_type}:${target.checksum}`,
+        );
+        continue;
       }
+
+      // domain-version: join exact version table; target must belong to owner.
+      const versionExists = await client.query<{ exists: boolean }>(
+        `SELECT EXISTS (
+           SELECT 1 FROM information_schema.tables
+           WHERE table_schema = 'public' AND table_name = $1
+         ) AS exists`,
+        [source.versionTable],
+      );
+      if (!versionExists.rows[0]?.exists) {
+        return {
+          match: false,
+          detail: `missing-version-table:${source.versionTable}`,
+          pointerDigest: sha256Hex(pointerLines.join('\n')),
+        };
+      }
+      // Prefer content_digest when present (immutable target payload).
+      const hasContent = await client.query<{ exists: boolean }>(
+        `SELECT EXISTS (
+           SELECT 1 FROM information_schema.columns
+           WHERE table_schema = 'public' AND table_name = $1 AND column_name = 'content_digest'
+         ) AS exists`,
+        [source.versionTable],
+      );
+      const versionRows = hasContent.rows[0]?.exists
+        ? await client.query<{ content_digest: string | null; id: string; owner_id: string }>(
+            `SELECT id::text AS id, "${source.ownerColumn}"::text AS owner_id,
+                    content_digest::text AS content_digest
+             FROM "${source.versionTable}"
+             WHERE id::text = $1`,
+            [pointer],
+          )
+        : await client.query<{ content_digest: string | null; id: string; owner_id: string }>(
+            `SELECT id::text AS id, "${source.ownerColumn}"::text AS owner_id,
+                    NULL::text AS content_digest
+             FROM "${source.versionTable}"
+             WHERE id::text = $1`,
+            [pointer],
+          );
+      const versionCount = versionRows.rowCount ?? 0;
+      if (versionCount === 0) {
+        return {
+          match: false,
+          detail: `dangling-version-pointer:${source.table}:${id}:${pointer}`,
+          pointerDigest: sha256Hex(pointerLines.join('\n')),
+        };
+      }
+      if (versionCount > 1) {
+        return {
+          match: false,
+          detail: `ambiguous-version-pointer:${source.table}:${id}:${pointer}`,
+          pointerDigest: sha256Hex(pointerLines.join('\n')),
+        };
+      }
+      const version = versionRows.rows[0]!;
+      if (version.owner_id !== id) {
+        return {
+          match: false,
+          detail: `version-owner-mismatch:${source.table}:${id}:${pointer}:owner=${version.owner_id}`,
+          pointerDigest: sha256Hex(pointerLines.join('\n')),
+        };
+      }
+      const targetDigest = sha256Hex(
+        `${source.versionTable}|${version.id}|${version.owner_id}|${version.content_digest ?? ''}`,
+      );
+      pointerLines.push(`${source.table}:${id}:${pointer}:${source.versionTable}:${targetDigest}`);
     }
   }
 

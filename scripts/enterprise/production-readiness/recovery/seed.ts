@@ -9,6 +9,8 @@ import type { PoolClient } from 'pg';
 import { RECOVERY_ENTERPRISE_TABLES } from '../inventory';
 
 export const RECOVERY_PROBE_IDS = {
+  agentId: 'pagt_m15q06_probe_01',
+  agentVersionId: 'pagv_m15q06_probe_01',
   aiProviderId: 'paip_m15q06_probe_01',
   aiSecretId: 'pais_m15q06_probe_01',
   auditId: 'paud_m15q06_probe_01',
@@ -19,6 +21,8 @@ export const RECOVERY_PROBE_IDS = {
   resourceId: 'm15q06-probe-resource',
   revisionId: 'prev_m15q06_probe_01',
   revisionId2: 'prev_m15q06_probe_02',
+  skillId: 'pskl_m15q06_probe_01',
+  skillVersionId: 'pskv_m15q06_probe_01',
   userId: 'usr_m15q06_fixture_01',
 } as const;
 
@@ -140,11 +144,11 @@ export const buildMinimalDrillSchemaStatements = (): string[] => {
     `CREATE TABLE IF NOT EXISTS platform_skills (
        id text PRIMARY KEY, status text, current_version_id text)`,
     `CREATE TABLE IF NOT EXISTS platform_skill_versions (
-       id text PRIMARY KEY, skill_id text)`,
+       id text PRIMARY KEY, skill_id text NOT NULL, content_digest text)`,
     `CREATE TABLE IF NOT EXISTS platform_agents (
        id text PRIMARY KEY, status text, current_version_id text, published_at timestamptz)`,
     `CREATE TABLE IF NOT EXISTS platform_agent_versions (
-       id text PRIMARY KEY, agent_id text)`,
+       id text PRIMARY KEY, agent_id text NOT NULL, content_digest text)`,
     `CREATE TABLE IF NOT EXISTS platform_agent_assignments (
        id text PRIMARY KEY, agent_id text)`,
     `CREATE TABLE IF NOT EXISTS platform_user_agent_materializations (
@@ -237,6 +241,18 @@ export const buildRecoverySeedStatements = (): string[] => {
     `INSERT INTO platform_connector_secrets (id, connector_id, fingerprint, ciphertext, key_id)
      VALUES ('${ids.connectorSecretId}', '${ids.connectorId}', '${fp}',
              '${PROBE_ENVELOPE_PLACEHOLDER}', 'probe-key-id')
+     ON CONFLICT (id) DO NOTHING`,
+    `INSERT INTO platform_skill_versions (id, skill_id, content_digest)
+     VALUES ('${ids.skillVersionId}', '${ids.skillId}', '${PROBE_PAYLOAD_CHECKSUM}')
+     ON CONFLICT (id) DO NOTHING`,
+    `INSERT INTO platform_skills (id, status, current_version_id)
+     VALUES ('${ids.skillId}', 'published', '${ids.skillVersionId}')
+     ON CONFLICT (id) DO NOTHING`,
+    `INSERT INTO platform_agent_versions (id, agent_id, content_digest)
+     VALUES ('${ids.agentVersionId}', '${ids.agentId}', '${PROBE_PAYLOAD_CHECKSUM_V2}')
+     ON CONFLICT (id) DO NOTHING`,
+    `INSERT INTO platform_agents (id, status, current_version_id)
+     VALUES ('${ids.agentId}', 'published', '${ids.agentVersionId}')
      ON CONFLICT (id) DO NOTHING`,
   ];
 };
