@@ -5,6 +5,7 @@ import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 /** i18n keys used by the admin nav catalog (`admin` namespace). */
 export type AdminNavLabelKey =
   | 'nav.overview'
+  | 'nav.stats'
   | 'nav.users'
   | 'nav.userDetail'
   | 'nav.reauthComplete'
@@ -62,6 +63,13 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
     labelKey: 'nav.overview',
     path: '/admin',
     requiredPermissions: [],
+  },
+  {
+    id: 'stats',
+    labelKey: 'nav.stats',
+    path: '/admin/stats',
+    placeholder: false,
+    requiredPermissions: [PLATFORM_PERMISSIONS.STATS_READ],
   },
   {
     id: 'users',

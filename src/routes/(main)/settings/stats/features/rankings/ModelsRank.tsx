@@ -10,15 +10,17 @@ import AsyncBoundary from '@/components/AsyncBoundary';
 import ImperativeModal from '@/components/ImperativeModal';
 import { useClientDataSWR } from '@/libs/swr';
 import { statsKeys } from '@/libs/swr/keys';
-import { messageService } from '@/services/message';
 
 import StatsFormGroup from '../components/StatsFormGroup';
+import { scopeStatsKey, useStatsDataSource } from '../StatsDataSource';
 
 export const TopicsRank = memo(() => {
   const [open, setOpen] = useState(false);
   const { t } = useTranslation('auth');
-  const { data, isLoading, error, mutate } = useClientDataSWR(statsKeys.rankModels(), async () =>
-    messageService.rankModels(),
+  const { rankModels, scopeKey } = useStatsDataSource();
+  const { data, isLoading, error, mutate } = useClientDataSWR(
+    scopeStatsKey(statsKeys.rankModels(), scopeKey),
+    async () => rankModels(),
   );
 
   const showExtra = Boolean(data && data?.length > 5);

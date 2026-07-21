@@ -31,6 +31,7 @@ import { adminManagedResourcesRouter } from './admin/managedResources';
 import { adminSecurityRouter } from './admin/security';
 import { adminSettingsRouter } from './admin/settings';
 import { adminSkillsRouter } from './admin/skills';
+import { adminStatsRouter } from './admin/stats';
 import { adminSystemRouter } from './admin/system';
 import { adminUsersRouter } from './admin/users';
 
@@ -299,6 +300,7 @@ export const adminRouter = router({
   security: adminSecurityRouter,
   settings: adminSettingsRouter,
   skills: adminSkillsRouter,
+  stats: adminStatsRouter,
   system: adminSystemRouter,
   users: adminUsersRouter,
 });

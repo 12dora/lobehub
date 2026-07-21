@@ -9,24 +9,26 @@ import { useTranslation } from 'react-i18next';
 
 import { useClientDataSWR } from '@/libs/swr';
 import { statsKeys } from '@/libs/swr/keys';
-import { messageService } from '@/services/message';
 import { formatIntergerNumber, formatShortenNumber } from '@/utils/format';
 
 import { HeatmapType } from '../../types';
 import StatsFormGroup from '../components/StatsFormGroup';
+import { scopeStatsKey, useStatsDataSource } from '../StatsDataSource';
 import HeatmapStats from './HeatmapStats';
 
 const AiHeatmaps = memo<
   Omit<HeatmapsProps, 'data' | 'ref'> & { inShare?: boolean; mobile?: boolean }
 >(({ inShare, mobile, ...rest }) => {
   const { t } = useTranslation('auth');
+  const { getHeatmaps, getTokenHeatmaps, scopeKey } = useStatsDataSource();
   const [type, setType] = useState<HeatmapType>(
     inShare ? HeatmapType.Messages : HeatmapType.Tokens,
   );
   const isTokens = type === HeatmapType.Tokens;
 
-  const { data, isLoading } = useClientDataSWR(statsKeys.heatmaps(type), async () =>
-    isTokens ? messageService.getTokenHeatmaps() : messageService.getHeatmaps(),
+  const { data, isLoading } = useClientDataSWR(
+    scopeStatsKey(statsKeys.heatmaps(type), scopeKey),
+    async () => (isTokens ? getTokenHeatmaps() : getHeatmaps()),
   );
 
   const days = data?.filter((item) => item.level > 0).length || '--';
