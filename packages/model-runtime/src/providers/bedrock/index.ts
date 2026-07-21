@@ -439,8 +439,8 @@ export class LobeBedrockAI implements LobeRuntimeAI {
     });
 
     try {
-      // Ask Claude for a streaming chat completion given the prompt
-      const res = await this.client.send(command);
+      // Ask Meta/Llama for a streaming chat completion given the prompt
+      const res = await this.client.send(command, { abortSignal: options?.signal });
 
       const stream = createBedrockStream(res);
 
