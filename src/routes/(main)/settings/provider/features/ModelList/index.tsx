@@ -160,17 +160,30 @@ interface ModelListProps extends ProviderSettingsContextValue {
 }
 
 const ModelList = memo<ModelListProps>(
-  ({ id, showModelFetcher, sdkType, showAddNewModel, showDeployName, modelEditable = true }) => {
+  ({
+    id,
+    showModelFetcher,
+    sdkType,
+    showAddNewModel,
+    showDeployName,
+    modelEditable = true,
+    hideFetchOnClient,
+  }) => {
     const mobile = useIsMobile();
-    // Merge outer context (admin hideFetchOnClient / showModelFetcher) with local fields.
+    /**
+     * Merge outer context with props. Admin-forced fields (showModelFetcher / hideFetchOnClient)
+     * prefer **outer** so built-in provider cards (e.g. openai settings with showModelFetcher:true)
+     * cannot re-enable fetch on the admin parity page. Default outer is `{}` → user path unchanged.
+     */
     const outer = use(ProviderSettingsContext);
     const merged: ProviderSettingsContextValue = {
       ...outer,
-      modelEditable: modelEditable ?? outer.modelEditable,
-      sdkType: sdkType ?? outer.sdkType,
-      showAddNewModel: showAddNewModel ?? outer.showAddNewModel,
-      showDeployName: showDeployName ?? outer.showDeployName,
-      showModelFetcher: showModelFetcher ?? outer.showModelFetcher,
+      hideFetchOnClient: outer.hideFetchOnClient ?? hideFetchOnClient,
+      modelEditable: outer.modelEditable ?? modelEditable,
+      sdkType: outer.sdkType ?? sdkType,
+      showAddNewModel: outer.showAddNewModel ?? showAddNewModel,
+      showDeployName: outer.showDeployName ?? showDeployName,
+      showModelFetcher: outer.showModelFetcher ?? showModelFetcher,
     };
 
     return (

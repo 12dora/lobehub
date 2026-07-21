@@ -22,6 +22,11 @@ import { assignGlobalPlatformRole, seedPlatformRoles } from '@/database/utils/se
 import { createCallerFactory } from '@/libs/trpc/lambda';
 import { createContextInner } from '@/libs/trpc/lambda/context';
 
+import {
+  InMemoryAdminMutationRateLimiter,
+  resetSharedAdminMutationRateLimiter,
+  setSharedAdminMutationRateLimiter,
+} from '../../security/rateLimit/adminMutationRateLimiter';
 import { adminRouter } from '../admin';
 
 const db: LobeChatDatabase = await getTestDB();
@@ -657,5 +662,39 @@ describe('admin AI catalog permission and reauth gates', () => {
     await expect(
       stale.aiProviders.publishNow({ id: providerId, reason: 'stale' }),
     ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+  });
+
+  it('applyImmediate is rate-limited with ADMIN_RATE_LIMITED when window is exhausted', async () => {
+    setSharedAdminMutationRateLimiter(
+      new InMemoryAdminMutationRateLimiter({
+        config: { limit: 1, windowMs: 60_000 },
+      }),
+    );
+    try {
+      const caller = await callerFor(ids.aiAdmin);
+      // First mutation consumes the sole quota unit.
+      await caller.aiProviders.applyImmediate({
+        displayName: 'Rate Limited A',
+        mode: 'create',
+        providerKey: 'rate-limit-a',
+        reason: 'consume quota',
+        settings: { sdkType: 'openai' },
+      });
+      // Second hits the boundary regardless of business outcome.
+      await expect(
+        caller.aiProviders.applyImmediate({
+          displayName: 'Rate Limited B',
+          mode: 'create',
+          providerKey: 'rate-limit-b',
+          reason: 'should 429',
+          settings: { sdkType: 'openai' },
+        }),
+      ).rejects.toMatchObject({
+        code: 'TOO_MANY_REQUESTS',
+        message: expect.stringMatching(/ADMIN_RATE_LIMITED/),
+      });
+    } finally {
+      resetSharedAdminMutationRateLimiter();
+    }
   });
 });

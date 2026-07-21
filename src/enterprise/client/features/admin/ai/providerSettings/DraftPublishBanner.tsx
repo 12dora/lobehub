@@ -39,10 +39,9 @@ const DraftPublishBanner = memo(() => {
   // Re-read outcome when active provider changes or after retry (force tick via state).
   const [, setTick] = useState(0);
   const outcome = getLastAdminPublishOutcome();
+  // Show when last write left a draft unpublished; scope to active provider when known.
   const show =
-    outcome &&
-    !outcome.published &&
-    (!activeId || outcome.providerId === activeId || outcome.providerId === activeId);
+    Boolean(outcome && !outcome.published) && (!activeId || outcome!.providerId === activeId);
 
   const onRetry = useCallback(async () => {
     if (!outcome?.providerId) return;
