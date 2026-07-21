@@ -1,7 +1,8 @@
 /**
- * Bounded, shell-free subprocess runner for security-acceptance adapters.
+ * Bounded, shell-free subprocess runner with process-group timeout kill.
+ * On timeout: SIGTERM the process group, then SIGKILL after grace, then hard settlement.
  */
-import { spawn } from 'node:child_process';
+import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
 
 import { DEFAULT_PROCESS_TIMEOUT_MS, MAX_PROCESS_OUTPUT_BYTES } from './constants';
 
@@ -19,6 +20,11 @@ export type ProcessRunner = (
   argv: readonly string[],
   options: { cwd: string; env?: NodeJS.ProcessEnv; timeoutMs?: number },
 ) => Promise<ProcessResult>;
+
+/** Grace after SIGTERM before SIGKILL (ms). */
+export const PROCESS_KILL_GRACE_MS = 1_000;
+/** Hard settlement after timeout even if stdio/children hang (ms). */
+export const PROCESS_SETTLEMENT_MS = 2_000;
 
 const collectBounded = (
   stream: NodeJS.ReadableStream,
@@ -41,8 +47,42 @@ const collectBounded = (
   });
 };
 
+const killProcessTree = (child: ChildProcessWithoutNullStreams, signal: NodeJS.Signals): void => {
+  const pid = child.pid;
+  if (pid === undefined) return;
+
+  // POSIX: negative PID signals the process group when child was detached/group leader.
+  if (process.platform !== 'win32') {
+    try {
+      process.kill(-pid, signal);
+      return;
+    } catch {
+      // fall through to direct kill
+    }
+  }
+
+  try {
+    child.kill(signal);
+  } catch {
+    // already gone
+  }
+
+  // Windows fallback: taskkill tree
+  if (process.platform === 'win32') {
+    try {
+      spawn('taskkill', ['/PID', String(pid), '/T', '/F'], {
+        shell: false,
+        stdio: 'ignore',
+      });
+    } catch {
+      // best effort
+    }
+  }
+};
+
 /**
  * Spawn without shell. Captures stdout/stderr up to MAX_PROCESS_OUTPUT_BYTES total.
+ * Uses a detached process group on POSIX so timeout can kill the full tree.
  */
 export const runProcess: ProcessRunner = (argv, options) =>
   new Promise((resolve, reject) => {
@@ -52,12 +92,15 @@ export const runProcess: ProcessRunner = (argv, options) =>
       return;
     }
 
+    const useProcessGroup = process.platform !== 'win32';
     const child = spawn(command, args, {
       cwd: options.cwd,
+      // Detached + unref not for backgrounding — for process-group leadership on timeout kill.
+      detached: useProcessGroup,
       env: options.env ?? { ...process.env },
       shell: false,
       stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    }) as ChildProcessWithoutNullStreams;
 
     const budget = { remaining: MAX_PROCESS_OUTPUT_BYTES, truncated: false };
     const stdoutChunks: Buffer[] = [];
@@ -66,35 +109,67 @@ export const runProcess: ProcessRunner = (argv, options) =>
     if (child.stderr) collectBounded(child.stderr, budget, stderrChunks);
 
     let timedOut = false;
+    let settled = false;
     const timeoutMs = options.timeoutMs ?? DEFAULT_PROCESS_TIMEOUT_MS;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill('SIGTERM');
-      setTimeout(() => {
-        try {
-          child.kill('SIGKILL');
-        } catch {
-          // already exited
-        }
-      }, 1_000).unref();
-    }, timeoutMs);
 
-    child.once('error', (error) => {
+    const finish = (code: number) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
-      reject(error);
-    });
-
-    child.once('close', (code) => {
-      clearTimeout(timer);
+      clearTimeout(killTimer);
+      clearTimeout(settleTimer);
+      // Destroy pipes so we do not hang on retained grandchildren stdio.
+      try {
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+      } catch {
+        // ignore
+      }
       resolve({
-        code: code ?? 1,
+        code,
         outputTruncated: budget.truncated,
         stderr: Buffer.concat(stderrChunks).toString('utf8'),
         stdout: Buffer.concat(stdoutChunks).toString('utf8'),
         timedOut,
       });
+    };
+
+    let killTimer: ReturnType<typeof setTimeout>;
+    let settleTimer: ReturnType<typeof setTimeout>;
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      killProcessTree(child, 'SIGTERM');
+      killTimer = setTimeout(() => {
+        killProcessTree(child, 'SIGKILL');
+      }, PROCESS_KILL_GRACE_MS);
+      killTimer.unref?.();
+      // Hard settlement: do not wait forever for close if descendants retain pipes.
+      settleTimer = setTimeout(() => {
+        finish(codeFromChild(child) ?? 1);
+      }, PROCESS_KILL_GRACE_MS + PROCESS_SETTLEMENT_MS);
+      settleTimer.unref?.();
+    }, timeoutMs);
+
+    child.once('error', (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      clearTimeout(killTimer!);
+      clearTimeout(settleTimer!);
+      reject(error);
+    });
+
+    child.once('close', (code) => {
+      finish(code ?? 1);
     });
   });
+
+const codeFromChild = (child: ChildProcessWithoutNullStreams): number | null => {
+  if (typeof child.exitCode === 'number') return child.exitCode;
+  if (child.signalCode) return 1;
+  return null;
+};
 
 /**
  * Extract the first top-level JSON object from mixed tool output (pnpm may print warnings).
@@ -104,7 +179,6 @@ export const extractFirstJsonObject = (source: string): unknown => {
   if (start < 0) {
     throw new Error('No JSON object found in process output');
   }
-  // Walk braces; strings may contain braces — use a simple state machine.
   let depth = 0;
   let inString = false;
   let escape = false;

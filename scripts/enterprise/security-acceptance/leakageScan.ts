@@ -1,6 +1,6 @@
 /**
  * Enterprise secret/log/trace/audit leakage regression scan.
- * Fail-closed coverage: missing roots, symlinks, oversized, unreadable → not pass.
+ * Fail-closed coverage: missing roots, symlinks, oversized, unreadable, stale baseline.
  * Findings report path/category/line/lineDigest only — never matched secret text.
  */
 import { createReadStream } from 'node:fs';
@@ -19,10 +19,13 @@ import { isExactAllowlistedFinding } from './leakageAllowlist';
 import {
   type BaselineFingerprint,
   buildBaselineIndex,
+  fingerprintKey,
   isBaselinedFinding,
   tryLoadLeakageBaseline,
 } from './leakageBaseline';
+import { omitUndefinedDeep } from './omitUndefined';
 import { digestLine } from './privacy';
+import { isPathInside, resolveSafeRepoRoot } from './repoPaths';
 import type { LeakageScanArtifact } from './schemas';
 
 export interface LeakageScanOptions {
@@ -30,11 +33,11 @@ export interface LeakageScanOptions {
   baselineFindings?: BaselineFingerprint[];
   cwd: string;
   /**
-   * When true (default for real repo), require leakage-baseline.json.
-   * Tests may inject baselineFindings instead.
+   * When true (default for real repo), require leakage-baseline.json and enforce
+   * that every baseline entry is observed (no stale entries).
    */
   requireBaseline?: boolean;
-  /** Override roots (tests). Missing roots always fail closed. */
+  /** Override roots (tests). Missing/unsafe roots fail closed. */
   roots?: readonly string[];
 }
 
@@ -70,11 +73,6 @@ const shouldScanExtension = (relativePath: string): boolean => {
   return base.startsWith('.env') || base.endsWith('rc') || base.includes('Dockerfile');
 };
 
-const isInsideRoot = (absolutePath: string, rootAbs: string): boolean => {
-  const normalizedRoot = rootAbs.endsWith(path.sep) ? rootAbs : `${rootAbs}${path.sep}`;
-  return absolutePath === rootAbs || absolutePath.startsWith(normalizedRoot);
-};
-
 interface WalkCounters {
   oversizedSkipped: number;
   symlinkEncounters: number;
@@ -87,10 +85,6 @@ interface WalkResult {
   files: string[];
 }
 
-/**
- * Walk without following symlinks. Symlink files/dirs are counted and not scanned.
- * Realpath of each regular file must remain inside the configured root.
- */
 const walkFilesSecure = async (rootAbs: string, repoRoot: string): Promise<WalkResult> => {
   const counters: WalkCounters = {
     oversizedSkipped: 0,
@@ -135,8 +129,7 @@ const walkFilesSecure = async (rootAbs: string, repoRoot: string): Promise<WalkR
         ) {
           continue;
         }
-        // Ensure directory stays under root (no intermediate escape via rename races).
-        if (!isInsideRoot(abs, rootAbs)) {
+        if (!isPathInside(abs, rootAbs)) {
           counters.walkErrors += 1;
           continue;
         }
@@ -146,15 +139,16 @@ const walkFilesSecure = async (rootAbs: string, repoRoot: string): Promise<WalkR
 
       if (!st.isFile()) continue;
 
-      if (!isInsideRoot(abs, rootAbs)) {
+      if (!isPathInside(abs, rootAbs)) {
         counters.walkErrors += 1;
         continue;
       }
 
-      // Reject if realpath escapes root (hardlink/mount edge cases).
+      let resolvedFile: string;
       try {
-        const resolved = await realpath(abs);
-        if (!isInsideRoot(resolved, await realpath(rootAbs))) {
+        resolvedFile = await realpath(abs);
+        const rootReal = await realpath(rootAbs);
+        if (!isPathInside(resolvedFile, rootReal)) {
           counters.symlinkEncounters += 1;
           continue;
         }
@@ -163,7 +157,11 @@ const walkFilesSecure = async (rootAbs: string, repoRoot: string): Promise<WalkR
         continue;
       }
 
-      const relative = path.relative(repoRoot, abs).replaceAll('\\', '/');
+      const relative = path.relative(repoRoot, resolvedFile).replaceAll('\\', '/');
+      if (relative.startsWith('..') || path.isAbsolute(relative)) {
+        counters.walkErrors += 1;
+        continue;
+      }
       if (!shouldScanExtension(relative)) continue;
 
       if (st.size > MAX_LEAKAGE_FILE_BYTES) {
@@ -210,6 +208,8 @@ const emptyCoverage = (rootsRequired: number) => ({
   walkErrors: 0,
 });
 
+const artifact = (value: LeakageScanArtifact): LeakageScanArtifact => omitUndefinedDeep(value);
+
 /**
  * Scan enterprise-owned surfaces for secret-shaped material.
  */
@@ -225,18 +225,58 @@ export const runLeakageScan = async (options: LeakageScanOptions): Promise<Leaka
   let oversizedSkipped = 0;
   let unreadableFiles = 0;
   let walkErrors = 0;
+  let unsafeRoot = false;
 
-  // Resolve baseline index
+  // Canonical repo root so relative paths never escape via /var vs /private/var.
+  let repoRoot: string;
+  try {
+    repoRoot = await realpath(options.cwd);
+  } catch {
+    return artifact({
+      allowlistedMatches: 0,
+      baselinedMatches: 0,
+      checkId: 'leakage-scan',
+      coverage: emptyCoverage(roots.length),
+      findings: [],
+      filesScanned: 0,
+      reason: 'repo-root-unreadable',
+      schemaVersion: SECURITY_ACCEPTANCE_SCHEMA_VERSION,
+      status: 'unavailable',
+      violationCount: 0,
+    });
+  }
+
   let baselineIndex = new Set<string>();
+  let enforceBaselineConsumption = false;
+
   if (options.baselineFindings) {
+    // Injected baselines (tests): reject duplicates via index size vs list length.
+    if (
+      new Set(options.baselineFindings.map((entry) => fingerprintKey(entry))).size !==
+      options.baselineFindings.length
+    ) {
+      return artifact({
+        allowlistedMatches: 0,
+        baselinedMatches: 0,
+        checkId: 'leakage-scan',
+        coverage: emptyCoverage(roots.length),
+        findings: [],
+        filesScanned: 0,
+        reason: 'baseline-duplicate',
+        schemaVersion: SECURITY_ACCEPTANCE_SCHEMA_VERSION,
+        status: 'unavailable',
+        violationCount: 0,
+      });
+    }
     baselineIndex = buildBaselineIndex({
       entries: options.baselineFindings,
       schemaVersion: 1,
     });
+    enforceBaselineConsumption = options.baselineFindings.length > 0;
   } else if (options.requireBaseline !== false) {
     const loaded = await tryLoadLeakageBaseline(options.cwd);
     if ('error' in loaded) {
-      return {
+      return artifact({
         allowlistedMatches: 0,
         baselinedMatches: 0,
         checkId: 'leakage-scan',
@@ -247,16 +287,33 @@ export const runLeakageScan = async (options: LeakageScanOptions): Promise<Leaka
         schemaVersion: SECURITY_ACCEPTANCE_SCHEMA_VERSION,
         status: 'unavailable',
         violationCount: 0,
-      };
+      });
     }
     baselineIndex = buildBaselineIndex(loaded.baseline);
+    enforceBaselineConsumption = true;
   }
 
+  const unconsumedBaseline = new Set(baselineIndex);
+
   for (const root of roots) {
-    const rootAbs = path.join(options.cwd, root);
+    const resolved = await resolveSafeRepoRoot(repoRoot, root);
+    if ('error' in resolved) {
+      if (
+        resolved.error === 'root-escapes-repo' ||
+        resolved.error.includes('traversal') ||
+        resolved.error.includes('absolute') ||
+        resolved.error.includes('dot') ||
+        resolved.error.includes('unsafe')
+      ) {
+        unsafeRoot = true;
+      }
+      rootsMissing += 1;
+      continue;
+    }
+
     try {
-      await access(rootAbs);
-      const rootStat = await lstat(rootAbs);
+      await access(resolved.absolute);
+      const rootStat = await lstat(resolved.absolute);
       if (rootStat.isSymbolicLink()) {
         symlinkEncounters += 1;
         rootsMissing += 1;
@@ -273,14 +330,14 @@ export const runLeakageScan = async (options: LeakageScanOptions): Promise<Leaka
     }
     rootsPresent += 1;
 
-    const walked = await walkFilesSecure(rootAbs, options.cwd);
+    const walked = await walkFilesSecure(resolved.absolute, repoRoot);
     symlinkEncounters += walked.counters.symlinkEncounters;
     oversizedSkipped += walked.counters.oversizedSkipped;
     unreadableFiles += walked.counters.unreadableFiles;
     walkErrors += walked.counters.walkErrors;
 
     for (const relative of walked.files) {
-      const absolute = path.join(options.cwd, relative);
+      const absolute = path.join(repoRoot, relative);
       let st;
       try {
         st = await stat(absolute);
@@ -295,7 +352,7 @@ export const runLeakageScan = async (options: LeakageScanOptions): Promise<Leaka
       try {
         fileFindings = await scanFileLines(absolute);
       } catch {
-        return {
+        return artifact({
           allowlistedMatches,
           baselinedMatches,
           checkId: 'leakage-scan',
@@ -316,7 +373,7 @@ export const runLeakageScan = async (options: LeakageScanOptions): Promise<Leaka
           schemaVersion: SECURITY_ACCEPTANCE_SCHEMA_VERSION,
           status: 'unavailable',
           violationCount: 0,
-        };
+        });
       }
 
       for (const finding of fileFindings) {
@@ -331,6 +388,7 @@ export const runLeakageScan = async (options: LeakageScanOptions): Promise<Leaka
         }
         if (isBaselinedFinding(baselineIndex, fingerprint)) {
           baselinedMatches += 1;
+          unconsumedBaseline.delete(fingerprintKey(fingerprint));
           continue;
         }
         findings.push({
@@ -357,9 +415,22 @@ export const runLeakageScan = async (options: LeakageScanOptions): Promise<Leaka
     walkErrors,
   };
 
-  // Fail-closed coverage gates (never pass).
+  if (unsafeRoot) {
+    return artifact({
+      allowlistedMatches,
+      baselinedMatches,
+      checkId: 'leakage-scan',
+      coverage,
+      findings: capped,
+      filesScanned,
+      reason: 'unsafe-scan-root',
+      schemaVersion: SECURITY_ACCEPTANCE_SCHEMA_VERSION,
+      status: 'unavailable',
+      violationCount,
+    });
+  }
   if (rootsMissing > 0) {
-    return {
+    return artifact({
       allowlistedMatches,
       baselinedMatches,
       checkId: 'leakage-scan',
@@ -370,10 +441,10 @@ export const runLeakageScan = async (options: LeakageScanOptions): Promise<Leaka
       schemaVersion: SECURITY_ACCEPTANCE_SCHEMA_VERSION,
       status: 'unavailable',
       violationCount,
-    };
+    });
   }
   if (symlinkEncounters > 0) {
-    return {
+    return artifact({
       allowlistedMatches,
       baselinedMatches,
       checkId: 'leakage-scan',
@@ -384,10 +455,10 @@ export const runLeakageScan = async (options: LeakageScanOptions): Promise<Leaka
       schemaVersion: SECURITY_ACCEPTANCE_SCHEMA_VERSION,
       status: 'failed',
       violationCount,
-    };
+    });
   }
   if (oversizedSkipped > 0) {
-    return {
+    return artifact({
       allowlistedMatches,
       baselinedMatches,
       checkId: 'leakage-scan',
@@ -398,10 +469,10 @@ export const runLeakageScan = async (options: LeakageScanOptions): Promise<Leaka
       schemaVersion: SECURITY_ACCEPTANCE_SCHEMA_VERSION,
       status: 'failed',
       violationCount,
-    };
+    });
   }
   if (unreadableFiles > 0 || walkErrors > 0) {
-    return {
+    return artifact({
       allowlistedMatches,
       baselinedMatches,
       checkId: 'leakage-scan',
@@ -412,10 +483,10 @@ export const runLeakageScan = async (options: LeakageScanOptions): Promise<Leaka
       schemaVersion: SECURITY_ACCEPTANCE_SCHEMA_VERSION,
       status: 'unavailable',
       violationCount,
-    };
+    });
   }
   if (filesScanned === 0) {
-    return {
+    return artifact({
       allowlistedMatches,
       baselinedMatches,
       checkId: 'leakage-scan',
@@ -426,10 +497,24 @@ export const runLeakageScan = async (options: LeakageScanOptions): Promise<Leaka
       schemaVersion: SECURITY_ACCEPTANCE_SCHEMA_VERSION,
       status: 'unavailable',
       violationCount: 0,
-    };
+    });
+  }
+  if (enforceBaselineConsumption && unconsumedBaseline.size > 0) {
+    return artifact({
+      allowlistedMatches,
+      baselinedMatches,
+      checkId: 'leakage-scan',
+      coverage,
+      findings: capped,
+      filesScanned,
+      reason: 'stale-baseline-entries',
+      schemaVersion: SECURITY_ACCEPTANCE_SCHEMA_VERSION,
+      status: 'failed',
+      violationCount,
+    });
   }
   if (violationCount > 0) {
-    return {
+    return artifact({
       allowlistedMatches,
       baselinedMatches,
       checkId: 'leakage-scan',
@@ -440,10 +525,10 @@ export const runLeakageScan = async (options: LeakageScanOptions): Promise<Leaka
       schemaVersion: SECURITY_ACCEPTANCE_SCHEMA_VERSION,
       status: 'failed',
       violationCount,
-    };
+    });
   }
 
-  return {
+  return artifact({
     allowlistedMatches,
     baselinedMatches,
     checkId: 'leakage-scan',
@@ -453,12 +538,11 @@ export const runLeakageScan = async (options: LeakageScanOptions): Promise<Leaka
     schemaVersion: SECURITY_ACCEPTANCE_SCHEMA_VERSION,
     status: 'passed',
     violationCount: 0,
-  };
+  });
 };
 
 /**
  * Collect all raw findings (including baselinable) for baseline generation.
- * Still rejects secret text from output — only fingerprints.
  */
 export const collectLeakageFingerprints = async (options: {
   cwd: string;
@@ -466,17 +550,19 @@ export const collectLeakageFingerprints = async (options: {
 }): Promise<BaselineFingerprint[]> => {
   const roots = options.roots ?? LEAKAGE_SCAN_ROOTS;
   const collected: BaselineFingerprint[] = [];
+  const repoRoot = await realpath(options.cwd);
 
   for (const root of roots) {
-    const rootAbs = path.join(options.cwd, root);
+    const resolved = await resolveSafeRepoRoot(repoRoot, root);
+    if ('error' in resolved) continue;
     try {
-      await access(rootAbs);
+      await access(resolved.absolute);
     } catch {
       continue;
     }
-    const walked = await walkFilesSecure(rootAbs, options.cwd);
+    const walked = await walkFilesSecure(resolved.absolute, repoRoot);
     for (const relative of walked.files) {
-      const absolute = path.join(options.cwd, relative);
+      const absolute = path.join(repoRoot, relative);
       try {
         const fileFindings = await scanFileLines(absolute);
         for (const finding of fileFindings) {
@@ -487,7 +573,7 @@ export const collectLeakageFingerprints = async (options: {
           });
         }
       } catch {
-        // skip unreadable during generation; generator should surface incomplete walks
+        // skip unreadable during generation
       }
     }
   }

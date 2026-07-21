@@ -1,6 +1,7 @@
 /**
  * Orchestrate automated adversarial security regression adapters.
  * Records actual exit/results; never renames unit tests as external penetration tests.
+ * Optional fields are omitted entirely when absent (no explicit undefined keys).
  */
 import { access } from 'node:fs/promises';
 import path from 'node:path';
@@ -8,6 +9,7 @@ import path from 'node:path';
 import { z } from 'zod';
 
 import { SECURITY_ACCEPTANCE_SCHEMA_VERSION } from './constants';
+import { omitUndefinedDeep } from './omitUndefined';
 import { PEN_REGRESSION_MANIFEST, type PenAdapterDefinition } from './penManifest';
 import { type ProcessRunner, runProcess } from './process';
 import type { PenRegressionArtifact } from './schemas';
@@ -43,11 +45,12 @@ const vitestJsonReportSchema = z
 
 export interface PenRegressionOptions {
   cwd: string;
-  /** Inject manifest for tests. */
   manifest?: readonly PenAdapterDefinition[];
   runProcess?: ProcessRunner;
   timeoutMs?: number;
 }
+
+type PenAdapterResult = PenRegressionArtifact['adapters'][number];
 
 const fileExists = async (filePath: string): Promise<boolean> => {
   try {
@@ -105,6 +108,8 @@ const collectSkippedTitles = (report: z.infer<typeof vitestJsonReportSchema>): s
   return titles;
 };
 
+const adapterResult = (value: PenAdapterResult): PenAdapterResult => omitUndefinedDeep(value);
+
 const runOneAdapter = async (
   adapter: PenAdapterDefinition,
   options: {
@@ -112,20 +117,18 @@ const runOneAdapter = async (
     runner: ProcessRunner;
     timeoutMs?: number;
   },
-): Promise<PenRegressionArtifact['adapters'][number]> => {
+): Promise<PenAdapterResult> => {
   const { missing, present } = await resolveTargets(adapter, options.cwd);
-
-  // Always report exact manifest targets (not only present files).
   const targets = [...adapter.testFiles];
 
   if (missing.length > 0) {
-    return {
+    return adapterResult({
       adapterId: adapter.id,
       category: adapter.category,
       reason: 'missing-test-target',
       status: 'not-executed',
       targets,
-    };
+    });
   }
 
   const workDir = adapter.workingDirectory
@@ -154,35 +157,35 @@ const runOneAdapter = async (
       timeoutMs: options.timeoutMs,
     });
   } catch {
-    return {
+    return adapterResult({
       adapterId: adapter.id,
       category: adapter.category,
       reason: 'adapter-spawn-failed',
       status: 'unavailable',
       targets,
-    };
+    });
   }
 
   if (result.timedOut) {
-    return {
+    return adapterResult({
       adapterId: adapter.id,
       category: adapter.category,
       exitCode: result.code,
       reason: 'adapter-timeout',
       status: 'unavailable',
       targets,
-    };
+    });
   }
 
   if (result.outputTruncated) {
-    return {
+    return adapterResult({
       adapterId: adapter.id,
       category: adapter.category,
       exitCode: result.code,
       reason: 'adapter-output-truncated',
       status: 'unavailable',
       targets,
-    };
+    });
   }
 
   let assertions:
@@ -207,16 +210,16 @@ const runOneAdapter = async (
     };
     skippedTitles = collectSkippedTitles(summary);
     if (assertions.passed + assertions.failed + assertions.skipped !== assertions.total) {
-      return {
+      return adapterResult({
         adapterId: adapter.id,
         category: adapter.category,
         assertions,
         exitCode: result.code,
         reason: 'malformed-assertion-counts',
-        skippedTitles,
+        ...(skippedTitles.length > 0 ? { skippedTitles } : {}),
         status: 'failed',
         targets,
-      };
+      });
     }
   } catch {
     // Fall through using exit code.
@@ -229,25 +232,24 @@ const runOneAdapter = async (
     assertions.failed === 0 &&
     assertions.passed + assertions.skipped === assertions.total
   ) {
-    // Allowed skips only (reviewed titles).
     if (assertions.skipped > 0) {
       const expected = adapter.expectedSkips ?? [];
       const titles = skippedTitles ?? [];
       if (titles.length !== assertions.skipped) {
-        return {
+        return adapterResult({
           adapterId: adapter.id,
           category: adapter.category,
           assertions,
           exitCode: 0,
           reason: 'skipped-titles-incomplete',
-          skippedTitles: titles,
+          ...(titles.length > 0 ? { skippedTitles: titles } : {}),
           status: 'failed',
           targets,
-        };
+        });
       }
       for (const title of titles) {
         if (!expected.some((skip) => skip.title === title)) {
-          return {
+          return adapterResult({
             adapterId: adapter.id,
             category: adapter.category,
             assertions,
@@ -256,49 +258,53 @@ const runOneAdapter = async (
             skippedTitles: titles,
             status: 'failed',
             targets,
-          };
+          });
         }
       }
+      return adapterResult({
+        adapterId: adapter.id,
+        category: adapter.category,
+        assertions,
+        exitCode: 0,
+        skippedTitles: titles,
+        status: 'passed',
+        targets,
+      });
     }
 
-    return {
+    return adapterResult({
       adapterId: adapter.id,
       category: adapter.category,
       assertions,
       exitCode: 0,
-      skippedTitles: assertions.skipped > 0 ? skippedTitles : undefined,
       status: 'passed',
       targets,
-    };
+    });
   }
 
   if (result.code === 0 && !assertions) {
-    return {
+    return adapterResult({
       adapterId: adapter.id,
       category: adapter.category,
       exitCode: 0,
       reason: 'missing-assertions',
       status: 'failed',
       targets,
-    };
+    });
   }
 
-  return {
+  return adapterResult({
     adapterId: adapter.id,
     category: adapter.category,
-    assertions,
+    ...(assertions ? { assertions } : {}),
     exitCode: result.code,
     reason: result.code === 0 ? 'incomplete-pass-criteria' : 'adapter-failed',
-    skippedTitles,
+    ...(skippedTitles && skippedTitles.length > 0 ? { skippedTitles } : {}),
     status: 'failed',
     targets,
-  };
+  });
 };
 
-/**
- * Run all pen-regression adapters from the manifest.
- * Adapter order matches the manifest exactly for deterministic digests.
- */
 export const runPenRegression = async (
   options: PenRegressionOptions,
 ): Promise<PenRegressionArtifact> => {
@@ -317,21 +323,21 @@ export const runPenRegression = async (
   }
 
   if (adapters.length === 0) {
-    return {
+    return omitUndefinedDeep({
       adapters: [
         {
           adapterId: 'manifest-empty',
           category: 'ssrf',
           reason: 'empty-manifest',
-          status: 'not-executed',
+          status: 'not-executed' as const,
           targets: ['missing'],
         },
       ],
-      checkId: 'pen-regression',
+      checkId: 'pen-regression' as const,
       reason: 'empty-manifest',
       schemaVersion: SECURITY_ACCEPTANCE_SCHEMA_VERSION,
-      status: 'not-executed',
-    };
+      status: 'not-executed' as const,
+    });
   }
 
   const required = adapters.filter((adapter) => {
@@ -344,11 +350,18 @@ export const runPenRegression = async (
   const anyFailed = required.some((adapter) => adapter.status === 'failed');
   const allPassed = required.every((adapter) => adapter.status === 'passed');
 
-  let status: PenRegressionArtifact['status'];
-  let reason: string | undefined;
   if (allPassed) {
-    status = 'passed';
-  } else if (anyUnavailable) {
+    return omitUndefinedDeep({
+      adapters,
+      checkId: 'pen-regression' as const,
+      schemaVersion: SECURITY_ACCEPTANCE_SCHEMA_VERSION,
+      status: 'passed' as const,
+    });
+  }
+
+  let status: PenRegressionArtifact['status'];
+  let reason: string;
+  if (anyUnavailable) {
     status = 'unavailable';
     reason = 'adapter-unavailable';
   } else if (anyNotExecuted) {
@@ -362,11 +375,11 @@ export const runPenRegression = async (
     reason = 'incomplete-coverage';
   }
 
-  return {
+  return omitUndefinedDeep({
     adapters,
-    checkId: 'pen-regression',
+    checkId: 'pen-regression' as const,
     reason,
     schemaVersion: SECURITY_ACCEPTANCE_SCHEMA_VERSION,
     status,
-  };
+  });
 };

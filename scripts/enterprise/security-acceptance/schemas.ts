@@ -54,11 +54,12 @@ const severityCountsSchema = z
   })
   .strict();
 
+/** Repo-relative only: no absolute, no `..` segments. */
 const relativePathSchema = z
   .string()
   .min(1)
   .max(512)
-  .regex(/^[\w.@/-]+$/u, 'must be a safe relative path');
+  .regex(/^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[\w.@/-]+$/u, 'must be a safe repo-relative path');
 
 /** Dependency-scan check artifact (machine-readable evidence). */
 export const dependencyScanArtifactSchema = z
@@ -247,19 +248,6 @@ export const securityAcceptanceReportSchema = securityAcceptanceReportCoreObject
 
 export type SecurityAcceptanceReport = z.infer<typeof securityAcceptanceReportSchema>;
 
-export const isSecurityAcceptancePassed = (report: SecurityAcceptanceReport): boolean => {
-  const parsed = securityAcceptanceReportSchema.safeParse(report);
-  if (!parsed.success) return false;
-  return (
-    parsed.data.overall === 'passed' &&
-    parsed.data.evidenceClass === EVIDENCE_CLASS &&
-    parsed.data.externalPenetrationTest.status === EXTERNAL_PEN_TEST_STATUS &&
-    parsed.data.checks.every((check) => check.status === 'passed') &&
-    parsed.data.integrity.redactionScan.result === 'passed' &&
-    parsed.data.integrity.schemaValid === true
-  );
-};
-
 /** Baseline file schema (reviewed exact fingerprints; no secret text). */
 export const leakageBaselineSchema = z
   .object({
@@ -276,6 +264,20 @@ export const leakageBaselineSchema = z
       .max(50_000),
     schemaVersion: z.literal(1),
   })
-  .strict();
+  .strict()
+  .superRefine((baseline, context) => {
+    const seen = new Set<string>();
+    for (const [index, entry] of baseline.entries.entries()) {
+      const key = `${entry.path}\u0000${entry.category}\u0000${entry.lineDigest}`;
+      if (seen.has(key)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'duplicate baseline fingerprint',
+          path: ['entries', index],
+        });
+      }
+      seen.add(key);
+    }
+  });
 
 export type LeakageBaseline = z.infer<typeof leakageBaselineSchema>;

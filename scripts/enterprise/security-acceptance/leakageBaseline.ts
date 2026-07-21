@@ -43,9 +43,34 @@ export const tryLoadLeakageBaseline = async (
 export const buildBaselineIndex = (baseline: LeakageBaseline): Set<string> => {
   const index = new Set<string>();
   for (const entry of baseline.entries) {
-    index.add(fingerprintKey(entry));
+    const key = fingerprintKey(entry);
+    if (index.has(key)) {
+      throw new Error('duplicate baseline fingerprint');
+    }
+    index.add(key);
+  }
+  if (index.size !== baseline.entries.length) {
+    throw new Error('duplicate baseline fingerprint');
   }
   return index;
+};
+
+/** Compare two baseline documents for deterministic regeneration (stable sort + exact set). */
+export const baselinesEqual = (a: LeakageBaseline, b: LeakageBaseline): boolean => {
+  if (a.schemaVersion !== b.schemaVersion) return false;
+  if (a.entries.length !== b.entries.length) return false;
+  for (let i = 0; i < a.entries.length; i += 1) {
+    const left = a.entries[i]!;
+    const right = b.entries[i]!;
+    if (
+      left.path !== right.path ||
+      left.category !== right.category ||
+      left.lineDigest !== right.lineDigest
+    ) {
+      return false;
+    }
+  }
+  return true;
 };
 
 export const isBaselinedFinding = (index: Set<string>, finding: BaselineFingerprint): boolean =>
