@@ -1,21 +1,22 @@
 /**
- * Evidence freshness: explicit generated/observed times, max age, clock-skew.
+ * Evidence freshness: age is based on generatedAt only.
+ * observedAt is verification-time metadata and must never make stale evidence fresh.
  */
 import { DEFAULT_CLOCK_SKEW_MS, DEFAULT_MAX_EVIDENCE_AGE_MS } from './constants';
 
 export interface FreshnessInput {
   generatedAt: string;
+  /** Verification observation time — not used for age calculation. */
   observedAt?: string;
 }
 
 export interface FreshnessOptions {
   clockSkewMs?: number;
   maxAgeMs?: number;
-  /** Reference "now" — injectable for tests. */
   nowMs?: number;
 }
 
-export type FreshnessVerdict = 'fresh' | 'stale' | 'future' | 'invalid';
+export type FreshnessVerdict = 'fresh' | 'future' | 'invalid' | 'stale';
 
 export interface FreshnessAssessment {
   ageMs: number;
@@ -35,19 +36,16 @@ export const assessEvidenceFreshness = (
     return { ageMs: Number.NaN, verdict: 'invalid' };
   }
 
-  let effectiveMs = generatedMs;
-  if (input.observedAt) {
+  // Optional observedAt must parse if present, but never extends freshness.
+  if (input.observedAt !== undefined) {
     const observedMs = Date.parse(input.observedAt);
     if (Number.isNaN(observedMs)) {
       return { ageMs: Number.NaN, verdict: 'invalid' };
     }
-    // Prefer the later of generated/observed when both present (bounded capture).
-    effectiveMs = Math.max(generatedMs, observedMs);
   }
 
-  const ageMs = nowMs - effectiveMs;
+  const ageMs = nowMs - generatedMs;
 
-  // Future beyond allowed clock skew.
   if (ageMs < -clockSkewMs) {
     return { ageMs, verdict: 'future' };
   }

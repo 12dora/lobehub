@@ -1,13 +1,8 @@
 #!/usr/bin/env bun
 /**
  * M15 Q06 production preflight entrypoint.
- *
- * Usage:
- *   bun run scripts/enterprise/preflight.ts validate-harness --candidate <json> --plan <json> --evidence-dir <dir> --output <json>
- *   bun run scripts/enterprise/preflight.ts preflight --candidate <json> --plan <json> --evidence-dir <dir> --output <json>
- *   bun run scripts/enterprise/preflight.ts production-authorized --candidate <json> --plan <json> --evidence-dir <dir> --output <json>
- *   bun run scripts/enterprise/preflight.ts dispatch --command-id <id> [--execute] [--confirm-execute]
- *   bun run scripts/enterprise/preflight.ts emit-default-plan --candidate-sha <sha> --release-id <id> --output <json>
+ * Production overall pass requires repository-pinned cryptographic provenance.
+ * CLI never accepts alternate trust-policy paths or env overrides.
  */
 import { readdir } from 'node:fs/promises';
 import path from 'node:path';
@@ -15,7 +10,7 @@ import { parseArgs } from 'node:util';
 
 import {
   buildDefaultReleasePlan,
-  loadEvidenceFile,
+  loadGateEvidenceFile,
   loadReleaseCandidateFile,
   loadReleasePlanFile,
   type PreflightMode,
@@ -28,7 +23,7 @@ const usage = () => {
   console.error(`Usage:
   bun run scripts/enterprise/preflight.ts <validate-harness|preflight|production-authorized>
     --candidate <json> --plan <json> --evidence-dir <dir> --output <json>
-  bun run scripts/enterprise/preflight.ts dispatch --command-id <id> [--execute] [--confirm-execute]
+  bun run scripts/enterprise/preflight.ts dispatch --command-id <id> [--execute] [--confirm-execute] [--state-dir <dir>] [--window-id <id>]
   bun run scripts/enterprise/preflight.ts emit-default-plan --candidate-sha <sha> --release-id <id> --output <json>`);
 };
 
@@ -54,17 +49,18 @@ const loadEvidenceFromDir = async (directory: string) => {
   const evidence = [];
   for (const name of EVIDENCE_FILE_ORDER) {
     if (!present.has(name)) continue;
-    evidence.push(await loadEvidenceFile(path.join(absolute, name)));
+    evidence.push(await loadGateEvidenceFile(path.join(absolute, name)));
   }
-  // Also accept any additional *.json sorted deterministically.
   const extras = entries
     .filter(
       (name) =>
-        name.endsWith('.json') && !(EVIDENCE_FILE_ORDER as readonly string[]).includes(name),
+        name.endsWith('.json') &&
+        !(EVIDENCE_FILE_ORDER as readonly string[]).includes(name) &&
+        !name.endsWith('.sig.json'),
     )
     .sort((a, b) => a.localeCompare(b, 'en'));
   for (const name of extras) {
-    evidence.push(await loadEvidenceFile(path.join(absolute, name)));
+    evidence.push(await loadGateEvidenceFile(path.join(absolute, name)));
   }
   return evidence;
 };
@@ -84,6 +80,8 @@ const main = async () => {
         'command-id': { type: 'string' },
         'confirm-execute': { type: 'boolean' },
         'execute': { type: 'boolean' },
+        'state-dir': { type: 'string' },
+        'window-id': { type: 'string' },
       },
       strict: true,
     });
@@ -91,20 +89,26 @@ const main = async () => {
       commandId: requireString(values['command-id'], 'command-id'),
       confirmExecute: values['confirm-execute'] === true,
       execute: values.execute === true,
+      stateDir: values['state-dir'],
+      windowId: values['window-id'],
     });
     console.log(
       JSON.stringify(
         {
-          argv: result.argv,
           commandId: result.commandId,
           exitCode: result.exitCode,
           mode: result.mode,
           mutates: result.mutates,
+          postcondition: result.postcondition,
         },
         null,
         2,
       ),
     );
+    if (result.mode === 'unavailable') {
+      process.exitCode = result.exitCode ?? 1;
+      return;
+    }
     if (result.mode === 'executed' && result.exitCode !== 0) {
       process.exitCode = result.exitCode ?? 1;
     }
@@ -140,6 +144,7 @@ const main = async () => {
     return;
   }
 
+  // Reject trust-policy CLI overrides if present in argv (strict parseArgs will throw on unknown).
   const mode = command as PreflightMode;
   const { values } = parseArgs({
     args: rest,
@@ -157,6 +162,7 @@ const main = async () => {
   const evidence = await loadEvidenceFromDir(requireString(values['evidence-dir'], 'evidence-dir'));
   const outputPath = requireString(values.output, 'output');
 
+  // Never pass a custom trust policy from CLI — production uses PRODUCTION_TRUST_POLICY only.
   const result = await runProductionPreflight({
     candidate,
     evidence,
