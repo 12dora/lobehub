@@ -17,12 +17,12 @@
 
 ## Procedure
 
-| Step | Action | Command | Success | Stop |
-| ---- | ------ | ------- | ------- | ---- |
-| 1 | Run rollback drill (local harness) | `bun run enterprise:recovery-drill app-rollback --candidate-sha <sha> --scope local-harness --output <evidence.json>` | structured evidence written; destructive SQL rejected | tool failure → do not claim pass |
-| 2 | Production-authorized drill | same with `--scope production-authorized` and real baseline probe marker under `.records/enterprise-app-rollback/baseline-probe.ready` | `status=passed`, `baselineExecutable=true`, `newTablesRetained=true`, `rollForwardOk=true` | any mismatch → abort cutover |
-| 3 | Deploy previous app version | environment-specific (not invented here) | startup read contract healthy | re-deploy candidate; do not drop tables |
-| 4 | Verify retain + roll-forward | re-run step 2 after app rollback | tables present; candidate can start again later | escalate |
+| Step | Action                             | Command                                                                                                                                | Success                                                                                    | Stop                                    |
+| ---- | ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ | --------------------------------------- |
+| 1    | Run rollback drill (local harness) | `bun run enterprise:recovery-drill app-rollback --candidate-sha <sha> --scope local-harness --output <evidence.json>`                  | structured evidence written; destructive SQL rejected                                      | tool failure → do not claim pass        |
+| 2    | Production-authorized drill        | same with `--scope production-authorized` and real baseline probe marker under `.records/enterprise-app-rollback/baseline-probe.ready` | `status=passed`, `baselineExecutable=true`, `newTablesRetained=true`, `rollForwardOk=true` | any mismatch → abort cutover            |
+| 3    | Deploy previous app version        | environment-specific (not invented here)                                                                                               | startup read contract healthy                                                              | re-deploy candidate; do not drop tables |
+| 4    | Verify retain + roll-forward       | re-run step 2 after app rollback                                                                                                       | tables present; candidate can start again later                                            | escalate                                |
 
 ## Rollback verification
 
