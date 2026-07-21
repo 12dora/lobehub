@@ -63,34 +63,72 @@ const bodyToInit = async (body: unknown): Promise<BodyInit | undefined> => {
   return new TextEncoder().encode(String(body));
 };
 
+export interface AwsSdkHttpHandlerOptions {
+  abortSignal?: AbortSignal;
+  requestTimeout?: number;
+}
+
 /**
  * Minimal Smithy-compatible request handler. Accepts a fetch implementation so
  * Bedrock never falls back to the default Node HTTP stack during enterprise probes.
+ * Propagates Smithy abortSignal / requestTimeout without leaving timer listeners.
  */
 export const createFetchRequestHandler = (fetchImpl: FetchLike) => {
   return {
     destroy: () => undefined,
-    handle: async (request: AwsSdkHttpRequest): Promise<{ response: AwsSdkHttpResponse }> => {
+    handle: async (
+      request: AwsSdkHttpRequest,
+      options?: AwsSdkHttpHandlerOptions,
+    ): Promise<{ response: AwsSdkHttpResponse }> => {
+      if (options?.abortSignal?.aborted) {
+        const error = new Error('Request aborted') as Error & { name: string };
+        error.name = 'AbortError';
+        throw error;
+      }
+
       const url = buildUrl(request);
       const headers: Record<string, string> = { ...request.headers };
       const body = await bodyToInit(request.body);
-      const response = await fetchImpl(url, {
-        body: body && request.method !== 'GET' && request.method !== 'HEAD' ? body : undefined,
-        headers,
-        method: request.method,
-      });
-      const arrayBuffer = await response.arrayBuffer();
-      const responseHeaders: Record<string, string> = {};
-      response.headers.forEach((value, key) => {
-        responseHeaders[key] = value;
-      });
-      return {
-        response: {
-          body: Readable.from([Buffer.from(arrayBuffer)]),
-          headers: responseHeaders,
-          statusCode: response.status,
-        },
-      };
+
+      const controller = new AbortController();
+      const onAbort = () => controller.abort();
+      options?.abortSignal?.addEventListener('abort', onAbort, { once: true });
+
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
+      if (typeof options?.requestTimeout === 'number' && options.requestTimeout > 0) {
+        timeoutId = setTimeout(() => controller.abort(), options.requestTimeout);
+      }
+
+      try {
+        const response = await fetchImpl(url, {
+          body: body && request.method !== 'GET' && request.method !== 'HEAD' ? body : undefined,
+          headers,
+          method: request.method,
+          signal: controller.signal,
+        });
+        const arrayBuffer = await response.arrayBuffer();
+        const responseHeaders: Record<string, string> = {};
+        response.headers.forEach((value, key) => {
+          responseHeaders[key] = value;
+        });
+        return {
+          response: {
+            body: Readable.from([Buffer.from(arrayBuffer)]),
+            headers: responseHeaders,
+            statusCode: response.status,
+          },
+        };
+      } catch (error) {
+        if (controller.signal.aborted) {
+          const aborted = new Error('Request aborted') as Error & { name: string };
+          aborted.name = 'AbortError';
+          throw aborted;
+        }
+        throw error;
+      } finally {
+        if (timeoutId) clearTimeout(timeoutId);
+        options?.abortSignal?.removeEventListener('abort', onAbort);
+      }
     },
     httpHandlerConfigs: () => ({}),
     updateHttpClientConfig: () => undefined,

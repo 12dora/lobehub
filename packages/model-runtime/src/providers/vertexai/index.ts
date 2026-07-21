@@ -13,12 +13,55 @@ type VertexAIInitOptions = GoogleGenAIOptions &
     fetch?: FetchLike;
   };
 
+/**
+ * Force google-auth-library / gaxios token exchange onto a WHATWG fetch boundary.
+ * `clientOptions.transporterOptions` is applied to JWT/service-account AuthClients;
+ * top-level `transporterOptions` covers GoogleAuth's own transporter defaults.
+ */
+const withSafeAuthFetch = (
+  existingAuth: Record<string, unknown> | undefined,
+  customFetch: FetchLike,
+): Record<string, unknown> => {
+  const auth = { ...existingAuth };
+  const existingClientOptions = (auth.clientOptions as Record<string, unknown> | undefined) ?? {};
+  const existingClientTransporter =
+    (existingClientOptions.transporterOptions as Record<string, unknown> | undefined) ?? {};
+  const existingTopTransporter =
+    (auth.transporterOptions as Record<string, unknown> | undefined) ?? {};
+
+  return {
+    ...auth,
+    clientOptions: {
+      ...existingClientOptions,
+      transporterOptions: {
+        ...existingClientTransporter,
+        fetchImplementation: customFetch,
+      },
+    },
+    transporterOptions: {
+      ...existingTopTransporter,
+      fetchImplementation: customFetch,
+    },
+  };
+};
+
 export class LobeVertexAI extends LobeGoogleAI {
   static initFromVertexAI(params?: VertexAIInitOptions) {
     try {
       const { modelIdMapping, fetch: customFetch, ...googleOptions } = params ?? {};
+
+      // Route service-account token exchange and GenAI hops through SafeOutbound
+      // when a custom fetch is provided (enterprise connection tests / production probes).
+      const googleAuthOptions = customFetch
+        ? withSafeAuthFetch(
+            googleOptions.googleAuthOptions as Record<string, unknown> | undefined,
+            customFetch,
+          )
+        : googleOptions.googleAuthOptions;
+
       const client = new GoogleGenAI({
         ...googleOptions,
+        ...(googleAuthOptions ? { googleAuthOptions } : {}),
         location: googleOptions.location ?? DEFAULT_VERTEXAI_LOCATION, // @google/genai throws an error if location is not provided
         vertexai: true,
       });

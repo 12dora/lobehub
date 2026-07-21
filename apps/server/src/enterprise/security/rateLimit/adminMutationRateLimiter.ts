@@ -1,20 +1,13 @@
 /**
  * Multi-instance atomic rate limiter for enterprise admin mutations.
  *
- * Production path:
- * 1. Redis (deployment-prefixed) when available
- * 2. PostgreSQL atomic fallback when Redis is absent/unavailable/errors
- * 3. Fail closed only when both shared stores fail
- *
- * Process-local Map is a unit-test double only — never production wiring.
+ * PostgreSQL is the sole authoritative counter (admin mutations already require
+ * serverDatabase). Process-local Map is a unit-test double only.
  */
 import { createHash } from 'node:crypto';
 
 import { PlatformAdminMutationRateModel } from '@/database/models/platform';
 import type { LobeChatDatabase } from '@/database/type';
-import { getRedisConfig } from '@/envs/redis';
-import type { BaseRedisProvider } from '@/libs/redis';
-import { createRedisWithPrefix, isRedisEnabled } from '@/libs/redis/manager';
 
 export const ADMIN_MUTATION_RATE_LIMIT_DEFAULTS = {
   /** Maximum mutations per actor+procedure inside one window. */
@@ -27,32 +20,32 @@ export const ADMIN_MUTATION_RATE_LIMIT_DEFAULTS = {
   minLimit: 1,
   /** Absolute lower bound for configured window (1 second). */
   minWindowMs: 1000,
+  /**
+   * Retain expired windows this long after the window ends before cleanup may drop them.
+   * Cleanup is opportunistic and never expands quota.
+   */
+  retentionMs: 24 * 60 * 60 * 1000,
+  /** Max rows deleted per opportunistic cleanup batch. */
+  cleanupBatchSize: 200,
+  /** Minimum ms between opportunistic cleanup attempts on this process. */
+  cleanupMinIntervalMs: 60_000,
   /** Fixed window length in milliseconds. */
   windowMs: 60_000,
 } as const;
 
-/** Relative key under the deployment Redis prefix. */
-export const ADMIN_MUTATION_RATE_REDIS_RELATIVE_PREFIX = 'platform:admin-mutation:rate';
-
-const CONSUME_SCRIPT = `
-local count = redis.call('INCR', KEYS[1])
-if count == 1 then redis.call('PEXPIRE', KEYS[1], ARGV[1]) end
-return count
-`;
-
 export type AdminMutationRateLimitDecision = 'allowed' | 'limited' | 'unavailable';
 
 export interface AdminMutationRateLimitConfig {
+  cleanupBatchSize: number;
+  cleanupMinIntervalMs: number;
   limit: number;
+  retentionMs: number;
   windowMs: number;
 }
 
 export interface AdminMutationRateLimitScope {
   actorId: string;
-  /**
-   * Database used for the PostgreSQL atomic fallback.
-   * Required on the production middleware path.
-   */
+  /** Required on the production middleware path. */
   db?: LobeChatDatabase;
   /** Canonical `admin.*` procedure path. */
   procedure: string;
@@ -60,10 +53,6 @@ export interface AdminMutationRateLimitScope {
 
 export interface AdminMutationRateLimiter {
   consume: (scope: AdminMutationRateLimitScope) => Promise<AdminMutationRateLimitDecision>;
-}
-
-export interface RedisEvalClient {
-  eval: (script: string, numkeys: number, ...args: Array<string | number>) => Promise<unknown>;
 }
 
 const clampInt = (value: number, min: number, max: number, fallback: number): number => {
@@ -93,111 +82,27 @@ export const resolveAdminMutationRateLimitConfig = (
     ADMIN_MUTATION_RATE_LIMIT_DEFAULTS.maxWindowMs,
     ADMIN_MUTATION_RATE_LIMIT_DEFAULTS.windowMs,
   );
-  return { limit, windowMs };
+  return {
+    cleanupBatchSize: ADMIN_MUTATION_RATE_LIMIT_DEFAULTS.cleanupBatchSize,
+    cleanupMinIntervalMs: ADMIN_MUTATION_RATE_LIMIT_DEFAULTS.cleanupMinIntervalMs,
+    limit,
+    retentionMs: ADMIN_MUTATION_RATE_LIMIT_DEFAULTS.retentionMs,
+    windowMs,
+  };
 };
 
-/** Stable digest so raw actor identifiers never appear in Redis keys or PG rows. */
+/** Stable digest so raw actor identifiers never appear in PostgreSQL rows. */
 export const digestAdminMutationRateScope = (
   scope: Pick<AdminMutationRateLimitScope, 'actorId' | 'procedure'>,
 ): string =>
   createHash('sha256').update(`${scope.actorId}\0${scope.procedure}`, 'utf8').digest('hex');
 
 /**
- * Relative Redis key (ioredis keyPrefix supplies the deployment REDIS_PREFIX).
- * Never log the full deployment prefix as a secret/tenant identifier.
+ * PostgreSQL is the sole authoritative multi-instance counter.
  */
-export const adminMutationRateLimitRelativeRedisKey = (scopeDigest: string): string =>
-  `${ADMIN_MUTATION_RATE_REDIS_RELATIVE_PREFIX}:${scopeDigest}`;
-
-/** @deprecated use adminMutationRateLimitRelativeRedisKey — kept for focused unit tests */
-export const adminMutationRateLimitRedisKey = adminMutationRateLimitRelativeRedisKey;
-
-export interface AdminMutationRateRedisDependencies {
-  createRedisWithPrefix: (
-    config: ReturnType<typeof getRedisConfig>,
-    prefix: string,
-  ) => Promise<BaseRedisProvider | null>;
-  getRedisConfig: () => ReturnType<typeof getRedisConfig>;
-}
-
-const defaultRedisDependencies: AdminMutationRateRedisDependencies = {
-  createRedisWithPrefix,
-  getRedisConfig,
-};
-
-/**
- * Redis fast path. Returns `unavailable` when Redis is disabled, init fails, or eval errors.
- * Keys are namespaced under the deployment REDIS_PREFIX via createRedisWithPrefix.
- */
-export class RedisAdminMutationRateLimiter {
+export class PostgresAdminMutationRateLimiter implements AdminMutationRateLimiter {
   private readonly config: AdminMutationRateLimitConfig;
-  private readonly dependencies: AdminMutationRateRedisDependencies;
-  private clientPromise: Promise<RedisEvalClient | null> | null = null;
-  /** Optional inject for deterministic unit tests (already-prefixed client). */
-  private readonly getRedisOverride?: () => RedisEvalClient | null;
-
-  constructor(options?: {
-    config?: AdminMutationRateLimitConfig;
-    dependencies?: Partial<AdminMutationRateRedisDependencies>;
-    /** Test-only: bypass async Redis manager with a ready client (or null). */
-    getRedis?: () => RedisEvalClient | null;
-  }) {
-    this.config = options?.config ?? resolveAdminMutationRateLimitConfig();
-    this.dependencies = {
-      ...defaultRedisDependencies,
-      ...options?.dependencies,
-    };
-    this.getRedisOverride = options?.getRedis;
-  }
-
-  private resolveClient = async (): Promise<RedisEvalClient | null> => {
-    if (this.getRedisOverride) return this.getRedisOverride();
-    if (!this.clientPromise) {
-      this.clientPromise = (async () => {
-        try {
-          const config = this.dependencies.getRedisConfig();
-          if (!isRedisEnabled(config)) return null;
-          // Deployment isolation: ioredis keyPrefix = `${REDIS_PREFIX}:`
-          const prefix = config.prefix || 'lobechat';
-          const client = await this.dependencies.createRedisWithPrefix(config, prefix);
-          return client as RedisEvalClient | null;
-        } catch {
-          return null;
-        }
-      })();
-    }
-    return this.clientPromise;
-  };
-
-  /**
-   * Attempt Redis consumption. `unavailable` means caller should try PostgreSQL.
-   */
-  tryConsume = async (
-    scope: Pick<AdminMutationRateLimitScope, 'actorId' | 'procedure'>,
-  ): Promise<AdminMutationRateLimitDecision> => {
-    const redis = await this.resolveClient();
-    if (!redis) return 'unavailable';
-
-    const digest = digestAdminMutationRateScope(scope);
-    const key = adminMutationRateLimitRelativeRedisKey(digest);
-    try {
-      const count = await redis.eval(CONSUME_SCRIPT, 1, key, String(this.config.windowMs));
-      const numeric = Number(count);
-      if (!Number.isFinite(numeric) || numeric <= 0) return 'unavailable';
-      return numeric <= this.config.limit ? 'allowed' : 'limited';
-    } catch {
-      // Force next call to re-resolve when the client becomes unhealthy.
-      this.clientPromise = null;
-      return 'unavailable';
-    }
-  };
-}
-
-/**
- * PostgreSQL atomic fallback shared across server processes.
- */
-export class PostgresAdminMutationRateLimiter {
-  private readonly config: AdminMutationRateLimitConfig;
+  private lastCleanupAt = 0;
 
   constructor(options?: { config?: AdminMutationRateLimitConfig }) {
     this.config = options?.config ?? resolveAdminMutationRateLimitConfig();
@@ -207,43 +112,40 @@ export class PostgresAdminMutationRateLimiter {
     if (!scope.db) return 'unavailable';
     try {
       const digest = digestAdminMutationRateScope(scope);
-      const result = await new PlatformAdminMutationRateModel(scope.db).consume({
+      const model = new PlatformAdminMutationRateModel(scope.db);
+      const result = await model.consume({
         limit: this.config.limit,
         scopeDigest: digest,
         windowMs: this.config.windowMs,
       });
+      // Opportunistic bounded cleanup never affects the consume decision.
+      void this.maybeCleanup(model);
       return result.allowed ? 'allowed' : 'limited';
     } catch {
       return 'unavailable';
     }
   };
-}
 
-/**
- * Production composite: Redis first, PostgreSQL fallback, fail closed only if both fail.
- */
-export class SharedAdminMutationRateLimiter implements AdminMutationRateLimiter {
-  private readonly redis: RedisAdminMutationRateLimiter;
-  private readonly postgres: PostgresAdminMutationRateLimiter;
-
-  constructor(options?: {
-    config?: AdminMutationRateLimitConfig;
-    postgres?: PostgresAdminMutationRateLimiter;
-    redis?: RedisAdminMutationRateLimiter;
-  }) {
-    const config = options?.config ?? resolveAdminMutationRateLimitConfig();
-    this.redis = options?.redis ?? new RedisAdminMutationRateLimiter({ config });
-    this.postgres = options?.postgres ?? new PostgresAdminMutationRateLimiter({ config });
-  }
-
-  consume = async (scope: AdminMutationRateLimitScope): Promise<AdminMutationRateLimitDecision> => {
-    const redisDecision = await this.redis.tryConsume(scope);
-    if (redisDecision === 'allowed' || redisDecision === 'limited') {
-      return redisDecision;
+  private maybeCleanup = async (model: PlatformAdminMutationRateModel): Promise<void> => {
+    const now = Date.now();
+    if (now - this.lastCleanupAt < this.config.cleanupMinIntervalMs) return;
+    this.lastCleanupAt = now;
+    try {
+      await model.cleanupExpired({
+        limit: this.config.cleanupBatchSize,
+        maxAgeMs: this.config.windowMs + this.config.retentionMs,
+      });
+    } catch {
+      // Sanitized: cleanup failure must not expand quota or fail the request.
+      console.error('[admin-mutation-rate] cleanup unavailable', {
+        errorClass: 'CleanupError',
+      });
     }
-    return this.postgres.consume(scope);
   };
 }
+
+/** @deprecated Alias kept for callers; production uses PostgreSQL only. */
+export class SharedAdminMutationRateLimiter extends PostgresAdminMutationRateLimiter {}
 
 /**
  * Process-local test double only. Never used as the production enforcement path.
@@ -254,13 +156,13 @@ export class InMemoryAdminMutationRateLimiter implements AdminMutationRateLimite
   private readonly now: () => number;
 
   constructor(options?: {
-    config?: AdminMutationRateLimitConfig;
+    config?: Partial<AdminMutationRateLimitConfig>;
     now?: () => number;
     store?: Map<string, { count: number; resetAt: number }>;
   }) {
-    this.config = options?.config ?? {
-      limit: ADMIN_MUTATION_RATE_LIMIT_DEFAULTS.limit,
-      windowMs: ADMIN_MUTATION_RATE_LIMIT_DEFAULTS.windowMs,
+    this.config = {
+      ...resolveAdminMutationRateLimitConfig({}),
+      ...options?.config,
     };
     this.store = options?.store ?? new Map();
     this.now = options?.now ?? Date.now;
@@ -282,9 +184,8 @@ export class InMemoryAdminMutationRateLimiter implements AdminMutationRateLimite
 let sharedLimiter: AdminMutationRateLimiter | null = null;
 
 /**
- * Production singleton — always SharedAdminMutationRateLimiter (Redis → PostgreSQL).
- * Unit tests may inject a double via setSharedAdminMutationRateLimiter for isolation;
- * router/integration suites must not replace this globally.
+ * Production singleton — PostgreSQL-backed SharedAdminMutationRateLimiter.
+ * Unit tests may inject a double via setSharedAdminMutationRateLimiter for isolation.
  */
 export const getSharedAdminMutationRateLimiter = (): AdminMutationRateLimiter => {
   if (!sharedLimiter) {
