@@ -102,14 +102,18 @@ penetration testing.
 All live `admin.*` mutations share one multi-instance atomic limiter:
 
 - Scope is the authenticated actor digest plus the exact canonical procedure path. Raw user IDs never
-  appear in Redis keys, logs, or metrics.
+  appear in Redis keys, PostgreSQL rows, logs, or metrics.
 - Queries share procedure bases when convenient but do not consume quota (`type !== 'mutation'`).
 - Limits and windows are server-side bounded defaults (`ADMIN_MUTATION_RATE_LIMIT` /
   `ADMIN_MUTATION_RATE_WINDOW_MS`); clients cannot select quotas.
-- Redis absence, disablement, or eval failure fails closed with the stable public error
-  `ADMIN_RATE_LIMITED` mapped to tRPC `TOO_MANY_REQUESTS`. A limited request executes zero business
-  mutation logic.
-- Process-local Map limiters exist only as test doubles.
+- Redis (when enabled) is the fast shared path. Keys are relative under the deployment `REDIS_PREFIX`
+  via the repository Redis manager so two deployments sharing Redis cannot share counters.
+- Redis absence, disablement, or eval failure falls back to the PostgreSQL atomic window table
+  (`platform_admin_mutation_rate_windows`) using the database clock. Only failure of **both** shared
+  stores fails closed with the stable public error `ADMIN_RATE_LIMITED` mapped to tRPC
+  `TOO_MANY_REQUESTS`. A limited request executes zero business mutation logic.
+- Process-local Map limiters exist only as scoped unit-test doubles — never as a global production
+  substitute.
 
 ## LKG and fail-closed rules
 

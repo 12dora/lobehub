@@ -6,6 +6,7 @@ import { authedProcedure, createCallerFactory, router } from '@/libs/trpc/lambda
 
 import {
   InMemoryAdminMutationRateLimiter,
+  resetSharedAdminMutationRateLimiter,
   setSharedAdminMutationRateLimiter,
 } from '../security/rateLimit/adminMutationRateLimiter';
 import {
@@ -21,14 +22,7 @@ const createCaller = createCallerFactory(
   }),
 );
 
-const installHighLimitTestDouble = () =>
-  setSharedAdminMutationRateLimiter(
-    new InMemoryAdminMutationRateLimiter({
-      config: { limit: 10_000, windowMs: 60_000 },
-    }),
-  );
-
-describe('withAdminMutationRateLimit', () => {
+describe('withAdminMutationRateLimit (unit, scoped in-memory double)', () => {
   beforeEach(() => {
     setSharedAdminMutationRateLimiter(
       new InMemoryAdminMutationRateLimiter({
@@ -38,7 +32,8 @@ describe('withAdminMutationRateLimit', () => {
   });
 
   afterEach(() => {
-    installHighLimitTestDouble();
+    // Restore production singleton selection — never leave a double installed.
+    resetSharedAdminMutationRateLimiter();
   });
 
   it('allows mutations below the boundary and denies above without business work', async () => {

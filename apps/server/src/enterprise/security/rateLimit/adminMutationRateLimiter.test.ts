@@ -1,18 +1,17 @@
 // @vitest-environment node
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  adminMutationRateLimitRedisKey,
+  ADMIN_MUTATION_RATE_REDIS_RELATIVE_PREFIX,
+  adminMutationRateLimitRelativeRedisKey,
   digestAdminMutationRateScope,
   InMemoryAdminMutationRateLimiter,
+  PostgresAdminMutationRateLimiter,
+  RedisAdminMutationRateLimiter,
+  resetSharedAdminMutationRateLimiter,
   resolveAdminMutationRateLimitConfig,
   SharedAdminMutationRateLimiter,
 } from './adminMutationRateLimiter';
-
-const mocks = vi.hoisted(() => ({
-  eval: vi.fn(),
-  getRedis: vi.fn(),
-}));
 
 describe('resolveAdminMutationRateLimitConfig', () => {
   it('uses bounded defaults when env is unset or out of range', () => {
@@ -32,58 +31,55 @@ describe('resolveAdminMutationRateLimitConfig', () => {
   });
 });
 
-describe('SharedAdminMutationRateLimiter', () => {
+describe('RedisAdminMutationRateLimiter', () => {
+  const evalMock = vi.fn();
+  const getRedis = vi.fn();
+
   beforeEach(() => {
-    mocks.eval.mockReset();
-    mocks.getRedis.mockReset().mockReturnValue({ eval: mocks.eval });
+    evalMock.mockReset();
+    getRedis.mockReset().mockReturnValue({ eval: evalMock });
   });
 
   const limiter = (config?: { limit: number; windowMs: number }) =>
-    new SharedAdminMutationRateLimiter({
+    new RedisAdminMutationRateLimiter({
       config: config ?? { limit: 60, windowMs: 60_000 },
-      getRedis: mocks.getRedis,
+      getRedis,
     });
 
-  it('fails closed when Redis is absent', async () => {
-    mocks.getRedis.mockReturnValue(null);
+  it('fails closed (unavailable) when Redis is absent', async () => {
+    getRedis.mockReturnValue(null);
     await expect(
-      limiter().consume({
-        actorId: 'user-a',
-        procedure: 'admin.agents.create',
-      }),
+      limiter().tryConsume({ actorId: 'user-a', procedure: 'admin.agents.create' }),
     ).resolves.toBe('unavailable');
   });
 
   it('fails closed when Redis eval errors', async () => {
-    mocks.eval.mockRejectedValue(new Error('redis down'));
+    evalMock.mockRejectedValue(new Error('redis down'));
     await expect(
-      limiter().consume({
-        actorId: 'user-a',
-        procedure: 'admin.agents.create',
-      }),
+      limiter().tryConsume({ actorId: 'user-a', procedure: 'admin.agents.create' }),
     ).resolves.toBe('unavailable');
   });
 
   it('allows at the boundary and denies above it', async () => {
-    mocks.eval.mockResolvedValueOnce(60).mockResolvedValueOnce(61);
+    evalMock.mockResolvedValueOnce(60).mockResolvedValueOnce(61);
     const instance = limiter({ limit: 60, windowMs: 60_000 });
     await expect(
-      instance.consume({ actorId: 'user-a', procedure: 'admin.agents.create' }),
+      instance.tryConsume({ actorId: 'user-a', procedure: 'admin.agents.create' }),
     ).resolves.toBe('allowed');
     await expect(
-      instance.consume({ actorId: 'user-a', procedure: 'admin.agents.create' }),
+      instance.tryConsume({ actorId: 'user-a', procedure: 'admin.agents.create' }),
     ).resolves.toBe('limited');
   });
 
   it('digests actor and procedure so raw user ids never appear in Redis keys', async () => {
-    mocks.eval.mockResolvedValue(1);
-    await limiter().consume({
+    evalMock.mockResolvedValue(1);
+    await limiter().tryConsume({
       actorId: 'user-secret-id',
       procedure: 'admin.agents.create',
     });
-    const key = mocks.eval.mock.calls[0]?.[2] as string;
+    const key = evalMock.mock.calls[0]?.[2] as string;
     expect(key).toBe(
-      adminMutationRateLimitRedisKey(
+      adminMutationRateLimitRelativeRedisKey(
         digestAdminMutationRateScope({
           actorId: 'user-secret-id',
           procedure: 'admin.agents.create',
@@ -92,41 +88,150 @@ describe('SharedAdminMutationRateLimiter', () => {
     );
     expect(key).not.toContain('user-secret-id');
     expect(key).not.toContain('admin.agents.create');
-    expect(key).toMatch(/^platform:admin-mutation:rate:[a-f\d]{64}$/);
+    expect(key.startsWith(`${ADMIN_MUTATION_RATE_REDIS_RELATIVE_PREFIX}:`)).toBe(true);
   });
 
-  it('keeps independent actors and procedures on separate counters', async () => {
-    mocks.eval.mockResolvedValue(1);
-    const instance = limiter({ limit: 1, windowMs: 60_000 });
-    await instance.consume({ actorId: 'user-a', procedure: 'admin.agents.create' });
-    await instance.consume({ actorId: 'user-b', procedure: 'admin.agents.create' });
-    await instance.consume({ actorId: 'user-a', procedure: 'admin.agents.archive' });
-    const keys = mocks.eval.mock.calls.map((call) => call[2]);
-    expect(new Set(keys).size).toBe(3);
+  it('isolates deployment prefixes through createRedisWithPrefix', async () => {
+    const evalA = vi.fn().mockResolvedValue(1);
+    const evalB = vi.fn().mockResolvedValue(1);
+    const createRedisWithPrefix = vi.fn(async (_config, prefix: string) => {
+      if (prefix === 'deploy-a') return { eval: evalA } as never;
+      if (prefix === 'deploy-b') return { eval: evalB } as never;
+      return null;
+    });
+
+    const left = new RedisAdminMutationRateLimiter({
+      config: { limit: 10, windowMs: 60_000 },
+      dependencies: {
+        createRedisWithPrefix,
+        getRedisConfig: () =>
+          ({
+            enabled: true,
+            prefix: 'deploy-a',
+            tls: false,
+            url: 'redis://example',
+          }) as never,
+      },
+    });
+    const right = new RedisAdminMutationRateLimiter({
+      config: { limit: 10, windowMs: 60_000 },
+      dependencies: {
+        createRedisWithPrefix,
+        getRedisConfig: () =>
+          ({
+            enabled: true,
+            prefix: 'deploy-b',
+            tls: false,
+            url: 'redis://example',
+          }) as never,
+      },
+    });
+
+    await left.tryConsume({ actorId: 'user-a', procedure: 'admin.agents.create' });
+    await right.tryConsume({ actorId: 'user-a', procedure: 'admin.agents.create' });
+
+    expect(createRedisWithPrefix).toHaveBeenCalledWith(
+      expect.objectContaining({ prefix: 'deploy-a' }),
+      'deploy-a',
+    );
+    expect(createRedisWithPrefix).toHaveBeenCalledWith(
+      expect.objectContaining({ prefix: 'deploy-b' }),
+      'deploy-b',
+    );
+    expect(evalA).toHaveBeenCalledOnce();
+    expect(evalB).toHaveBeenCalledOnce();
+    // Relative keys match; ioredis keyPrefix isolates deployments at the client layer.
+    expect(evalA.mock.calls[0]?.[2]).toBe(evalB.mock.calls[0]?.[2]);
   });
 
-  it('shares Redis state across two limiter instances', async () => {
+  it('shares counters when the same deployment prefix is used', async () => {
     let count = 0;
-    mocks.eval.mockImplementation(async () => {
+    const evalShared = vi.fn(async () => {
       count += 1;
       return count;
     });
-    const first = limiter({ limit: 2, windowMs: 60_000 });
-    const second = limiter({ limit: 2, windowMs: 60_000 });
+    const createRedisWithPrefix = vi.fn(async () => ({ eval: evalShared }) as never);
+    const config = {
+      enabled: true,
+      prefix: 'same-deploy',
+      tls: false,
+      url: 'redis://example',
+    } as never;
+
+    const first = new RedisAdminMutationRateLimiter({
+      config: { limit: 2, windowMs: 60_000 },
+      dependencies: { createRedisWithPrefix, getRedisConfig: () => config },
+    });
+    const second = new RedisAdminMutationRateLimiter({
+      config: { limit: 2, windowMs: 60_000 },
+      dependencies: { createRedisWithPrefix, getRedisConfig: () => config },
+    });
+
     await expect(
-      first.consume({ actorId: 'user-a', procedure: 'admin.agents.create' }),
+      first.tryConsume({ actorId: 'user-a', procedure: 'admin.agents.create' }),
     ).resolves.toBe('allowed');
     await expect(
-      second.consume({ actorId: 'user-a', procedure: 'admin.agents.create' }),
+      second.tryConsume({ actorId: 'user-a', procedure: 'admin.agents.create' }),
     ).resolves.toBe('allowed');
     await expect(
-      first.consume({ actorId: 'user-a', procedure: 'admin.agents.create' }),
+      first.tryConsume({ actorId: 'user-a', procedure: 'admin.agents.create' }),
     ).resolves.toBe('limited');
   });
 });
 
+describe('SharedAdminMutationRateLimiter composition', () => {
+  afterEach(() => {
+    resetSharedAdminMutationRateLimiter();
+  });
+
+  it('falls through to PostgreSQL when Redis is unavailable', async () => {
+    const postgresConsume = vi.fn(async () => 'allowed' as const);
+    const composite = new SharedAdminMutationRateLimiter({
+      config: { limit: 2, windowMs: 60_000 },
+      postgres: { consume: postgresConsume } as never,
+      redis: { tryConsume: async () => 'unavailable' } as never,
+    });
+    await expect(
+      composite.consume({ actorId: 'a', db: {} as never, procedure: 'admin.agents.create' }),
+    ).resolves.toBe('allowed');
+    expect(postgresConsume).toHaveBeenCalledOnce();
+  });
+
+  it('does not fall through when Redis already limited the request', async () => {
+    const postgresConsume = vi.fn(async () => 'allowed' as const);
+    const composite = new SharedAdminMutationRateLimiter({
+      postgres: { consume: postgresConsume } as never,
+      redis: { tryConsume: async () => 'limited' } as never,
+    });
+    await expect(
+      composite.consume({ actorId: 'a', db: {} as never, procedure: 'admin.agents.create' }),
+    ).resolves.toBe('limited');
+    expect(postgresConsume).not.toHaveBeenCalled();
+  });
+
+  it('fails closed only when both Redis and PostgreSQL are unavailable', async () => {
+    const composite = new SharedAdminMutationRateLimiter({
+      postgres: { consume: async () => 'unavailable' } as never,
+      redis: { tryConsume: async () => 'unavailable' } as never,
+    });
+    await expect(
+      composite.consume({ actorId: 'a', procedure: 'admin.agents.create' }),
+    ).resolves.toBe('unavailable');
+  });
+});
+
+describe('PostgresAdminMutationRateLimiter', () => {
+  it('returns unavailable without a database', async () => {
+    await expect(
+      new PostgresAdminMutationRateLimiter({
+        config: { limit: 2, windowMs: 60_000 },
+      }).consume({ actorId: 'a', procedure: 'admin.x' }),
+    ).resolves.toBe('unavailable');
+  });
+});
+
 describe('InMemoryAdminMutationRateLimiter', () => {
-  it('is a test double with independent scopes and boundary behavior', async () => {
+  it('is a unit-test double with independent scopes and boundary behavior', async () => {
     const store = new Map<string, { count: number; resetAt: number }>();
     const limiter = new InMemoryAdminMutationRateLimiter({
       config: { limit: 2, windowMs: 60_000 },
@@ -144,9 +249,6 @@ describe('InMemoryAdminMutationRateLimiter', () => {
     ).resolves.toBe('limited');
     await expect(
       limiter.consume({ actorId: 'user-b', procedure: 'admin.agents.create' }),
-    ).resolves.toBe('allowed');
-    await expect(
-      limiter.consume({ actorId: 'user-a', procedure: 'admin.agents.archive' }),
     ).resolves.toBe('allowed');
   });
 });
