@@ -6,7 +6,7 @@ import { memo, use, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { usePermission } from '@/hooks/usePermission';
-import { useAiInfraStore } from '@/store/aiInfra';
+import { useAiInfraStoreApi, useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
 
 import { createCreateNewModelModal } from './CreateNewModelModal';
 import { ProviderSettingsContext } from './ProviderSettingsContext';
@@ -48,6 +48,7 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
 }));
 
 const EmptyState = memo<{ provider: string }>(({ provider }) => {
+  const aiInfraStoreApi = useAiInfraStoreApi();
   const { t } = useTranslation('modelProvider');
   const { message } = App.useApp();
   const { allowed: canManageProvider, reason } = usePermission('manage_provider_key');
@@ -75,7 +76,7 @@ const EmptyState = memo<{ provider: string }>(({ provider }) => {
             onClick={() => {
               if (!canManageProvider) return;
               createCreateNewModelModal({
-                existingModelIds: useAiInfraStore
+                existingModelIds: aiInfraStoreApi
                   .getState()
                   .aiProviderModelList.map((model) => model.id),
                 showDeployName,

@@ -8,7 +8,7 @@ import { memo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
-import { useAiInfraStore } from '@/store/aiInfra/store';
+import { useAiInfraStoreApi, useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
 import { type CreateAiProviderParams } from '@/types/aiProvider';
 
 import { KeyVaultsConfigKey, LLMProviderApiTokenKey, LLMProviderBaseUrlKey } from '../../const';
@@ -25,6 +25,7 @@ const CreateNewProviderContent = memo(() => {
   const { t } = useTranslation('modelProvider');
   const [form] = Form.useForm<CreateAiProviderParams>();
   const [loading, setLoading] = useState(false);
+  const aiInfraStoreApi = useAiInfraStoreApi();
   const createNewAiProvider = useAiInfraStore((s) => s.createNewAiProvider);
   const { message } = App.useApp();
   const navigate = useWorkspaceAwareNavigate();
@@ -80,7 +81,7 @@ const CreateNewProviderContent = memo(() => {
             {
               message: t('createNewAiProvider.id.duplicate'),
               validator: (_, value: string) => {
-                const list = useAiInfraStore.getState().aiProviderList;
+                const list = aiInfraStoreApi.getState().aiProviderList;
                 if (value && list.some((p) => p.id === value)) {
                   return Promise.reject();
                 }
