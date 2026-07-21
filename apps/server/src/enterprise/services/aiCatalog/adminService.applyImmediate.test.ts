@@ -13,7 +13,7 @@ import {
 import type { LobeChatDatabase } from '@/database/type';
 import { type KeyProvider, PlatformSecretService } from '@/server/enterprise/security/secret';
 
-import { AiCatalogAdminService } from './adminService';
+import { AiCatalogAdminService, AiCatalogValidationError } from './adminService';
 
 const db: LobeChatDatabase = await getTestDB();
 const keyProvider: KeyProvider = {
@@ -211,6 +211,48 @@ describe('AiCatalogAdminService applyImmediate first-publish retest', () => {
     });
     expect(result.published).toBe(true);
     expect(result.revision).toBeGreaterThan(0);
+  });
+
+  it('update on published provider throws when publish validation fails (not soft-return)', async () => {
+    const service = createService(async () => {});
+    const created = await service.createProviderDraft('admin', {
+      checkModel: 'chat',
+      displayName: 'Throwing',
+      enabled: true,
+      providerKey: 'throw-pub',
+      reason: 'create',
+      secret: { operation: 'replace', value: 'seed-key' },
+      settings: { sdkType: 'openai' },
+    });
+    let detail = await service.getDetail(created.id);
+    await service.createModel('admin', {
+      enabled: true,
+      expectedDraftToken: detail.draftToken,
+      modelKey: 'chat',
+      providerId: created.id,
+      reason: 'model',
+      type: 'chat',
+    });
+    await service.testProvider('admin', { id: created.id, reason: 'prime' });
+    detail = await service.getDetail(created.id);
+    await service.publishProvider('admin', {
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.baseRevision,
+      id: created.id,
+      reason: 'first publish',
+    });
+    detail = await service.getDetail(created.id);
+    // Disabling the provider makes publish validation fail (must stay enabled).
+    await expect(
+      service.applyProviderImmediate('admin', {
+        enabled: false,
+        expectedDraftToken: detail.draftToken,
+        expectedRevision: detail.baseRevision,
+        id: created.id,
+        mode: 'update',
+        reason: 'disable must not soft-return',
+      }),
+    ).rejects.toBeInstanceOf(AiCatalogValidationError);
   });
 
   it('secret merge keeps unsubmitted apiKey when only baseURL-equivalent fields are absent', async () => {
