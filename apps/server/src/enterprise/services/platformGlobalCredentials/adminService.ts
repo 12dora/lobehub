@@ -4,7 +4,7 @@
  * Encrypts via PlatformSecretService; public DTOs never include plaintext,
  * ciphertext, fingerprints, or refs.
  */
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 
 import {
   fingerprintPayload,
@@ -25,6 +25,9 @@ import type { PlatformSecretService } from '../../security/secret';
 import { PlatformAuditService } from '../platformAudit';
 
 const UPLOAD_TTL_MS = 60 * 60 * 1000;
+
+/** Fixed mask returned by get(decrypt) — never accept as a real secret value. */
+export const PLATFORM_GLOBAL_CREDENTIAL_MASK = '••••••••';
 
 export class PlatformGlobalCredentialOauthUnsupportedError extends Error {
   readonly code = 'PLATFORM_GLOBAL_CREDENTIAL_OAUTH_UNSUPPORTED';
@@ -75,7 +78,30 @@ const toSummary = (
   updatedAt: toIso(row.updatedAt),
 });
 
-const maskValue = (): string => '••••••••';
+const maskValue = (): string => PLATFORM_GLOBAL_CREDENTIAL_MASK;
+
+/** Reject any field whose value is the public mask string (prevents silent secret destruction). */
+export const assertNoMaskedSecretValues = (values: Record<string, string>): void => {
+  for (const [key, value] of Object.entries(values)) {
+    if (value === PLATFORM_GLOBAL_CREDENTIAL_MASK) {
+      throw new PlatformGlobalCredentialValidationError(
+        `Refusing to store masked placeholder for key "${key}". Leave the field empty to keep the existing value, or enter a new secret.`,
+      );
+    }
+  }
+};
+
+/** Drop empty values; empty object means "no secret rotation". */
+export const filterNonEmptySecretValues = (
+  values: Record<string, string>,
+): Record<string, string> => {
+  const next: Record<string, string> = {};
+  for (const [key, value] of Object.entries(values)) {
+    if (!key || value == null || value === '') continue;
+    next[key] = value;
+  }
+  return next;
+};
 
 export class PlatformGlobalCredentialAdminService {
   private readonly model: PlatformGlobalCredentialModel;
@@ -121,11 +147,13 @@ export class PlatformGlobalCredentialAdminService {
     type: 'kv-env' | 'kv-header';
     values: Record<string, string>;
   }): Promise<PlatformGlobalCredentialSummaryDto> => {
-    const valueKeys = Object.keys(params.values).filter((k) => k && params.values[k] != null);
+    assertNoMaskedSecretValues(params.values);
+    const valueMap = filterNonEmptySecretValues(params.values);
+    const valueKeys = Object.keys(valueMap);
     if (valueKeys.length === 0) {
       throw new PlatformGlobalCredentialValidationError('At least one key-value pair is required');
     }
-    const payload = JSON.stringify(params.values);
+    const payload = JSON.stringify(valueMap);
     const envelope = await this.encryptPayload(payload);
 
     const created = await this.model.create({
@@ -216,30 +244,16 @@ export class PlatformGlobalCredentialAdminService {
     key: string;
     name: string;
   }): Promise<PlatformGlobalCredentialSummaryDto> => {
-    const upload = await this.model.consumeUpload(params.fileHashId);
-    if (!upload) {
-      throw new PlatformGlobalCredentialValidationError(
-        'Uploaded file not found or expired; please re-upload',
-      );
-    }
-
-    const created = await this.model.create({
+    // Single TX: key conflict rolls back and keeps staging for retry.
+    const created = await this.model.createFromStagedUpload({
       createdBy: params.actorUserId,
-      envelope: {
-        ciphertext: upload.ciphertext,
-        fingerprint: upload.fingerprint,
-        keyId: upload.keyId,
-        ref: `kms://platform-global-credentials/${randomUUID()}`,
-      },
+      fileHashId: params.fileHashId,
       key: params.key,
       meta: {
         description: params.description,
-        fileName: params.fileName || upload.fileName,
-        fileSize: upload.fileSize,
-        maskedPreview: params.fileName || upload.fileName,
+        fileName: params.fileName,
       },
       name: params.name,
-      type: 'file',
     });
 
     await this.audit.append({
@@ -281,21 +295,24 @@ export class PlatformGlobalCredentialAdminService {
     let valueKeys = existing.valueKeys;
     let maskedPreview = existing.maskedPreview;
 
-    if (params.values) {
+    // values missing / empty after filter → metadata-only (do not touch secret).
+    if (params.values !== undefined) {
       if (existing.type !== 'kv-env' && existing.type !== 'kv-header') {
         throw new PlatformGlobalCredentialValidationError(
           'Values can only be updated for KV credentials',
         );
       }
-      const keys = Object.keys(params.values).filter((k) => k && params.values![k] != null);
-      if (keys.length === 0) {
-        throw new PlatformGlobalCredentialValidationError(
-          'At least one key-value pair is required',
-        );
+      assertNoMaskedSecretValues(params.values);
+      const submitted = filterNonEmptySecretValues(params.values);
+
+      if (Object.keys(submitted).length > 0) {
+        // Merge: rotate only submitted keys; keep remaining secrets from current envelope.
+        const current = await this.readCurrentKvMap(existing.id);
+        const merged = { ...current, ...submitted };
+        envelope = await this.encryptPayload(JSON.stringify(merged));
+        valueKeys = Object.keys(merged);
+        maskedPreview = 'configured';
       }
-      envelope = await this.encryptPayload(JSON.stringify(params.values));
-      valueKeys = keys;
-      maskedPreview = 'configured';
     }
 
     const updated = await this.model.update({
@@ -374,6 +391,25 @@ export class PlatformGlobalCredentialAdminService {
 
   createOAuth = async (): Promise<never> => {
     throw new PlatformGlobalCredentialOauthUnsupportedError();
+  };
+
+  private readCurrentKvMap = async (credentialId: number): Promise<Record<string, string>> => {
+    const active = await this.model.getActiveSecretEnvelope(credentialId);
+    if (!active) return {};
+    try {
+      const plain = await this.secrets.decrypt(active.ciphertext);
+      const parsed = JSON.parse(plain) as unknown;
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+      const out: Record<string, string> = {};
+      for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+        if (typeof v === 'string') out[k] = v;
+      }
+      return out;
+    } catch {
+      throw new PlatformGlobalCredentialValidationError(
+        'Unable to merge secret values: existing envelope is not readable',
+      );
+    }
   };
 
   private toGetDto = async (

@@ -106,9 +106,7 @@ const CredTypeSelector: FC<CredTypeSelectorProps> = ({ disabled, disabledTypes, 
               <div className={styles.title}>{t(`creds.types.${type}`)}</div>
               <div className={styles.description}>
                 {typeDisabled && disabledSet.has(type)
-                  ? t('creds.platformOauthUnsupported' as any, {
-                      defaultValue: 'Not available for platform global credentials',
-                    })
+                  ? t('creds.platformOauthUnsupported')
                   : t(description as any)}
               </div>
             </Flexbox>

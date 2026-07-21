@@ -7,7 +7,7 @@
  */
 import { createHash, randomUUID } from 'node:crypto';
 
-import { and, asc, eq, gt, isNull, sql } from 'drizzle-orm';
+import { and, asc, eq, gt, isNull, lt, sql } from 'drizzle-orm';
 
 import {
   type NewPlatformGlobalCredential,
@@ -366,41 +366,152 @@ export class PlatformGlobalCredentialModel {
     const ref =
       params.envelope.ref ?? `kms://platform-global-credentials/upload/${params.fileHashId}`;
 
-    await this.db
-      .insert(platformGlobalCredentialUploads)
-      .values({
-        ciphertext: params.envelope.ciphertext,
-        createdBy: params.createdBy ?? null,
-        expiresAt: params.expiresAt,
-        fileHashId: params.fileHashId,
-        fileName: params.fileName,
-        fileSize: params.fileSize,
-        fileType: params.fileType,
-        fingerprint: params.envelope.fingerprint,
-        keyId: params.envelope.keyId,
-        ref,
-      })
-      .onConflictDoUpdate({
-        set: {
+    return this.inTransaction(async (tx) => {
+      // Opportunistic GC of expired staging rows (same transaction).
+      await tx
+        .delete(platformGlobalCredentialUploads)
+        .where(lt(platformGlobalCredentialUploads.expiresAt, new Date()));
+
+      await tx
+        .insert(platformGlobalCredentialUploads)
+        .values({
           ciphertext: params.envelope.ciphertext,
           createdBy: params.createdBy ?? null,
           expiresAt: params.expiresAt,
+          fileHashId: params.fileHashId,
           fileName: params.fileName,
           fileSize: params.fileSize,
           fileType: params.fileType,
           fingerprint: params.envelope.fingerprint,
           keyId: params.envelope.keyId,
           ref,
-        },
-        target: platformGlobalCredentialUploads.fileHashId,
+        })
+        .onConflictDoUpdate({
+          set: {
+            ciphertext: params.envelope.ciphertext,
+            createdBy: params.createdBy ?? null,
+            expiresAt: params.expiresAt,
+            fileName: params.fileName,
+            fileSize: params.fileSize,
+            fileType: params.fileType,
+            fingerprint: params.envelope.fingerprint,
+            keyId: params.envelope.keyId,
+            ref,
+          },
+          target: platformGlobalCredentialUploads.fileHashId,
+        });
+
+      return { fileHashId: params.fileHashId, fileName: params.fileName };
+    });
+  };
+
+  /**
+   * Create a file credential from a staged upload in one transaction.
+   * On key conflict the TX rolls back and the staging row remains for retry.
+   * Staging is deleted only after credential+secret insert succeeds.
+   */
+  createFromStagedUpload = async (params: {
+    createdBy?: string | null;
+    fileHashId: string;
+    key: string;
+    meta?: PlatformGlobalCredentialMeta;
+    name: string;
+  }): Promise<PlatformGlobalCredentialPublicView> => {
+    this.assertKey(params.key);
+    this.assertName(params.name);
+
+    return this.inTransaction(async (tx) => {
+      const [upload] = await tx
+        .select()
+        .from(platformGlobalCredentialUploads)
+        .where(
+          and(
+            eq(platformGlobalCredentialUploads.fileHashId, params.fileHashId),
+            gt(platformGlobalCredentialUploads.expiresAt, new Date()),
+          ),
+        )
+        .for('update');
+      if (!upload) {
+        throw new PlatformGlobalCredentialValidationError(
+          'Uploaded file not found or expired; please re-upload',
+        );
+      }
+
+      const fileName = params.meta?.fileName ?? upload.fileName;
+      const meta: PlatformGlobalCredentialMeta = {
+        description: params.meta?.description,
+        fileName,
+        fileSize: upload.fileSize,
+        maskedPreview: params.meta?.maskedPreview ?? fileName,
+      };
+
+      let inserted: PlatformGlobalCredentialItem;
+      try {
+        const [row] = await tx
+          .insert(platformGlobalCredentials)
+          .values({
+            createdBy: params.createdBy ?? null,
+            enabled: true,
+            key: params.key,
+            meta,
+            name: params.name,
+            type: 'file',
+            updatedBy: params.createdBy ?? null,
+          } satisfies NewPlatformGlobalCredential)
+          .returning();
+        if (!row) throw new PlatformGlobalCredentialValidationError('Failed to insert credential');
+        inserted = row;
+      } catch (error) {
+        if (this.isUniqueViolation(error)) {
+          throw new PlatformGlobalCredentialConflictError(
+            `Credential key already exists: ${params.key}`,
+          );
+        }
+        throw error;
+      }
+
+      const ref = `kms://platform-global-credentials/${inserted.id}/${randomUUID()}`;
+      await tx.insert(platformGlobalCredentialSecrets).values({
+        ciphertext: upload.ciphertext,
+        credentialId: inserted.id,
+        fingerprint: upload.fingerprint,
+        keyId: upload.keyId,
+        ref,
+        revision: 1,
       });
 
-    return { fileHashId: params.fileHashId, fileName: params.fileName };
+      // Only remove staging after credential is durable.
+      await tx
+        .delete(platformGlobalCredentialUploads)
+        .where(eq(platformGlobalCredentialUploads.fileHashId, params.fileHashId));
+
+      return toPublicView(inserted);
+    });
+  };
+
+  /**
+   * Peek a staged upload without consuming it (tests / diagnostics).
+   * Internal only.
+   */
+  getStagedUpload = async (
+    fileHashId: string,
+  ): Promise<PlatformGlobalCredentialUploadItem | null> => {
+    const [row] = await this.db
+      .select()
+      .from(platformGlobalCredentialUploads)
+      .where(
+        and(
+          eq(platformGlobalCredentialUploads.fileHashId, fileHashId),
+          gt(platformGlobalCredentialUploads.expiresAt, new Date()),
+        ),
+      )
+      .limit(1);
+    return row ?? null;
   };
 
   /**
    * Consume a staged upload (delete + return envelope). Returns null if missing/expired.
-   * Internal only — never return through public APIs without decrypting in service.
+   * Prefer {@link createFromStagedUpload} for createFile to avoid destroying staging on conflict.
    */
   consumeUpload = async (
     fileHashId: string,
