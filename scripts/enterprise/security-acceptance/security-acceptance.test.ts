@@ -32,6 +32,7 @@ import { digestLine, scanForForbiddenReportContent } from './privacy';
 import {
   isProcessAbsent,
   makeSnapshotPidPpid,
+  parsePidPpidTable,
   type PidExistenceProbe,
   type PidTableSnapshotter,
   probePidExistence,
@@ -42,6 +43,7 @@ import {
   type ProcessRunner,
   runProcess,
   terminateProcessTree,
+  validateSnapshotCompleteness,
 } from './process';
 import { validateRepoRelativeRoot } from './repoPaths';
 import { evaluateFromChecksDir } from './runner';
@@ -1230,6 +1232,113 @@ describe('process-tree timeout', () => {
     const snap = await makeSnapshotPidPpid({ ...process.env, PATH: '/definitely-not-real' })();
     expect(snap.ok).toBe(false);
     if (!snap.ok) expect(snap.reason).toBe('snapshot-unavailable');
+  });
+
+  it('strict parse rejects mixed valid+malformed process table rows', () => {
+    const mixed = parsePidPpidTable('1 0\nmalformed-row\n');
+    expect(mixed.ok).toBe(false);
+    if (!mixed.ok) expect(mixed.reason).toBe('malformed-row');
+
+    const badPid = parsePidPpidTable('0 0\n');
+    expect(badPid.ok).toBe(false);
+
+    const dup = parsePidPpidTable('10 1\n10 2\n');
+    expect(dup.ok).toBe(false);
+
+    const good = parsePidPpidTable('1 0\n42 1\n43 42\n');
+    expect(good.ok).toBe(true);
+    if (good.ok) expect(good.map.get(43)).toBe(42);
+  });
+
+  it('empty ok:true snapshot cannot prove cleanup while owned root still present', async () => {
+    const snapshotPidTable: PidTableSnapshotter = async () => ({
+      map: new Map(),
+      ok: true,
+    });
+    const probeExistence: PidExistenceProbe = (pid) =>
+      pid === 777_001 ? 'alive' : probePidExistence(pid);
+    const result = await terminateProcessTree(777_001, {
+      deadlineMs: 150,
+      graceMs: 40,
+      probeExistence,
+      snapshotPidTable,
+    });
+    expect(result.cleanupFailed).toBe(true);
+  });
+
+  it('injected ok:true empty map with real detached grandchild fails closed', async () => {
+    if (process.platform === 'win32') return;
+    const pidFile = path.join(tmpdir(), `m13-s05-empty-${process.pid}-${Date.now()}.pid`);
+    let grandchildPid: number | undefined;
+    try {
+      const snapshotPidTable: PidTableSnapshotter = async () => ({
+        map: new Map(),
+        ok: true,
+      });
+      const result = await runProcess(
+        [
+          process.execPath,
+          '-e',
+          `
+            const {spawn} = require('child_process');
+            const fs = require('fs');
+            const pidFile = process.argv[1];
+            const g = spawn(process.execPath, ['-e',
+              "process.on('SIGTERM',()=>{}); setInterval(()=>{}, 1000);"], {
+              detached: true,
+              stdio: 'ignore',
+            });
+            fs.writeFileSync(pidFile, String(g.pid));
+            g.unref();
+            setInterval(() => {}, 1000);
+            `,
+          pidFile,
+        ],
+        { cwd: process.cwd(), snapshotPidTable, timeoutMs: 200 },
+      );
+      expect(result.timedOut).toBe(true);
+      expect(result.cleanupFailed).toBe(true);
+      const raw = await readFile(pidFile, 'utf8').catch(() => '');
+      grandchildPid = Number(raw.trim());
+      expect(Number.isInteger(grandchildPid) && (grandchildPid as number) > 1).toBe(true);
+    } finally {
+      if (grandchildPid && processExists(grandchildPid)) {
+        try {
+          process.kill(grandchildPid, 'SIGKILL');
+        } catch {
+          // cleanup
+        }
+      }
+      await rm(pidFile, { force: true }).catch(() => undefined);
+    }
+  }, 25_000);
+
+  it('mixed valid+malformed snapshot text fails closed for owned descendant tree', async () => {
+    // Fake ps: only init row + garbage — must not be treated as successful discovery.
+    const snapshotPidTable: PidTableSnapshotter = async () =>
+      parsePidPpidTable('1 0\nmalformed-row\n');
+    const probeExistence: PidExistenceProbe = (pid) => {
+      if (pid === 888_001 || pid === 888_002) return 'alive';
+      return 'absent';
+    };
+    // Pre-seed synthetic parent→child ownership via a map that would have been incomplete anyway.
+    const result = await terminateProcessTree(888_001, {
+      deadlineMs: 150,
+      graceMs: 40,
+      probeExistence,
+      snapshotPidTable,
+    });
+    expect(result.cleanupFailed).toBe(true);
+    const parsed = parsePidPpidTable('1 0\nmalformed-row\n');
+    expect(parsed.ok).toBe(false);
+  });
+
+  it('validateSnapshotCompleteness rejects empty map for still-present owned pid', () => {
+    const emptyOk = { map: new Map<number, number>(), ok: true as const };
+    const probe: PidExistenceProbe = (pid) => (pid === 55 ? 'alive' : 'absent');
+    const checked = validateSnapshotCompleteness(emptyOk, new Set([55]), probe);
+    expect(checked.ok).toBe(false);
+    if (!checked.ok) expect(checked.reason).toBe('owned-pid-missing-from-snapshot');
   });
 
   it('EPERM/unconfirmed existence never counts as absent', async () => {
