@@ -1,9 +1,12 @@
 /**
- * Representative non-secret platform seed data for backup/restore drills.
+ * Minimal full-inventory schema + representative seed for harness backup/restore.
+ * Covers every RECOVERY_ENTERPRISE_TABLES entry so required-tables can pass.
  */
 import { createHash } from 'node:crypto';
 
 import type { PoolClient } from 'pg';
+
+import { RECOVERY_ENTERPRISE_TABLES } from '../inventory';
 
 export const RECOVERY_PROBE_IDS = {
   aiProviderId: 'paip_m15q06_probe_01',
@@ -31,85 +34,142 @@ export const PROBE_PAYLOAD_CHECKSUM_V2 = createHash('sha256')
   .update('{"displayName":"Recovery Drill Probe v2"}')
   .digest('hex');
 
-/** Opaque placeholder — not live ciphertext. */
 export const PROBE_ENVELOPE_PLACEHOLDER = 'probe-envelope-placeholder-not-a-secret' as const;
 
+const REF_IDP = 'kms://platform-identity-providers/m15q06-probe';
+const REF_CONN_SHARED = 'kms://platform-connectors/m15q06-shared';
+const REF_CONN_OAUTH = 'kms://platform-connectors/m15q06-oauth';
+
 /**
- * Minimal DDL for drill tables when full migrations are not applied.
- * Used only for local-harness isolation; production-authorized mode expects real schema.
+ * Create every enterprise table with enough columns for invariant queries.
+ * Harness-only — production path never uses this against a real source.
  */
-export const buildMinimalDrillSchemaStatements = (): string[] => [
-  `CREATE TABLE IF NOT EXISTS platform_resource_revisions (
-     id text PRIMARY KEY,
-     resource_type text NOT NULL,
-     resource_id text NOT NULL,
-     revision integer NOT NULL,
-     status text NOT NULL,
-     payload jsonb NOT NULL DEFAULT '{}'::jsonb,
-     checksum text NOT NULL,
-     secret_fingerprint text
-   )`,
-  `CREATE UNIQUE INDEX IF NOT EXISTS platform_resource_revisions_type_id_revision_unique
-     ON platform_resource_revisions (resource_type, resource_id, revision)`,
-  `CREATE TABLE IF NOT EXISTS platform_audit_logs (
-     id text PRIMARY KEY,
-     action text NOT NULL,
-     target_type text,
-     target_id text,
-     result text NOT NULL,
-     after_diff jsonb,
-     config_revision integer
-   )`,
-  `CREATE TABLE IF NOT EXISTS platform_identity_providers (
-     id text PRIMARY KEY,
-     provider_key text NOT NULL,
-     secret_ref text,
-     secret_fingerprint text,
-     secret_updated_at timestamptz
-   )`,
-  `CREATE TABLE IF NOT EXISTS platform_identity_provider_secrets (
-     id text PRIMARY KEY,
-     provider_id text NOT NULL REFERENCES platform_identity_providers(id),
-     fingerprint text NOT NULL,
-     ref text NOT NULL,
-     ciphertext text NOT NULL,
-     key_id text NOT NULL,
-     revision integer NOT NULL
-   )`,
-  `CREATE TABLE IF NOT EXISTS platform_ai_providers (
-     id text PRIMARY KEY,
-     provider_key text NOT NULL,
-     secret_fingerprint text,
-     secret_key_id text
-   )`,
-  `CREATE TABLE IF NOT EXISTS platform_ai_provider_secrets (
-     id text PRIMARY KEY,
-     provider_id text NOT NULL REFERENCES platform_ai_providers(id),
-     fingerprint text NOT NULL,
-     ciphertext text NOT NULL,
-     key_id text NOT NULL
-   )`,
-  `CREATE TABLE IF NOT EXISTS platform_connectors (
-     id text PRIMARY KEY,
-     connector_key text NOT NULL,
-     shared_secret_ref text,
-     shared_secret_fingerprint text,
-     oauth_client_secret_ref text,
-     oauth_client_secret_fingerprint text
-   )`,
-  `CREATE TABLE IF NOT EXISTS platform_connector_secrets (
-     id text PRIMARY KEY,
-     connector_id text,
-     fingerprint text NOT NULL,
-     ciphertext text NOT NULL,
-     key_id text NOT NULL
-   )`,
-  `CREATE TABLE IF NOT EXISTS users (
-     id text PRIMARY KEY,
-     username text,
-     email text
-   )`,
-];
+export const buildMinimalDrillSchemaStatements = (): string[] => {
+  const stmts: string[] = [
+    `CREATE TABLE IF NOT EXISTS users (
+       id text PRIMARY KEY, username text, email text)`,
+    `CREATE TABLE IF NOT EXISTS platform_resource_revisions (
+       id text PRIMARY KEY,
+       resource_type text NOT NULL,
+       resource_id text NOT NULL,
+       revision integer NOT NULL,
+       status text NOT NULL,
+       payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+       checksum text NOT NULL,
+       secret_fingerprint text)`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS platform_resource_revisions_type_id_revision_unique
+       ON platform_resource_revisions (resource_type, resource_id, revision)`,
+    `CREATE TABLE IF NOT EXISTS platform_audit_logs (
+       id text PRIMARY KEY,
+       action text NOT NULL,
+       target_type text,
+       target_id text,
+       result text NOT NULL,
+       after_diff jsonb,
+       config_revision integer)`,
+    `CREATE TABLE IF NOT EXISTS platform_identity_providers (
+       id text PRIMARY KEY,
+       provider_key text NOT NULL,
+       secret_ref text,
+       secret_fingerprint text,
+       secret_updated_at timestamptz,
+       activation_revision integer)`,
+    `CREATE TABLE IF NOT EXISTS platform_identity_provider_secrets (
+       id text PRIMARY KEY,
+       provider_id text NOT NULL REFERENCES platform_identity_providers(id),
+       fingerprint text NOT NULL,
+       ref text NOT NULL,
+       ciphertext text NOT NULL,
+       key_id text NOT NULL,
+       revision integer NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS platform_ai_providers (
+       id text PRIMARY KEY,
+       provider_key text NOT NULL,
+       secret_fingerprint text,
+       secret_key_id text,
+       published_at timestamptz)`,
+    `CREATE TABLE IF NOT EXISTS platform_ai_provider_secrets (
+       id text PRIMARY KEY,
+       provider_id text NOT NULL REFERENCES platform_ai_providers(id),
+       fingerprint text NOT NULL,
+       ciphertext text NOT NULL,
+       key_id text NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS platform_ai_models (
+       id text PRIMARY KEY, provider_id text, model_key text)`,
+    `CREATE TABLE IF NOT EXISTS platform_connectors (
+       id text PRIMARY KEY,
+       connector_key text NOT NULL,
+       shared_secret_ref text,
+       shared_secret_fingerprint text,
+       oauth_client_secret_ref text,
+       oauth_client_secret_fingerprint text,
+       published_revision integer,
+       published_checksum text,
+       status text DEFAULT 'draft')`,
+    `CREATE TABLE IF NOT EXISTS platform_connector_secrets (
+       id text PRIMARY KEY,
+       connector_id text,
+       fingerprint text NOT NULL,
+       ciphertext text NOT NULL,
+       key_id text NOT NULL)`,
+    `CREATE TABLE IF NOT EXISTS platform_connector_tools (
+       id text PRIMARY KEY, connector_id text)`,
+    `CREATE TABLE IF NOT EXISTS platform_user_connector_bindings (
+       id text PRIMARY KEY, connector_id text, user_id text)`,
+    `CREATE TABLE IF NOT EXISTS platform_connector_oauth_states (
+       id text PRIMARY KEY, connector_id text)`,
+    `CREATE TABLE IF NOT EXISTS platform_branding (
+       id text PRIMARY KEY, display_name text)`,
+    `CREATE TABLE IF NOT EXISTS platform_branding_assets (
+       id text PRIMARY KEY, branding_id text, first_published_revision integer)`,
+    `CREATE TABLE IF NOT EXISTS platform_branding_operations (
+       id text PRIMARY KEY, branding_id text)`,
+    `CREATE TABLE IF NOT EXISTS platform_skills (
+       id text PRIMARY KEY, status text, current_version_id text)`,
+    `CREATE TABLE IF NOT EXISTS platform_skill_versions (
+       id text PRIMARY KEY, skill_id text)`,
+    `CREATE TABLE IF NOT EXISTS platform_agents (
+       id text PRIMARY KEY, status text, current_version_id text, published_at timestamptz)`,
+    `CREATE TABLE IF NOT EXISTS platform_agent_versions (
+       id text PRIMARY KEY, agent_id text)`,
+    `CREATE TABLE IF NOT EXISTS platform_agent_assignments (
+       id text PRIMARY KEY, agent_id text)`,
+    `CREATE TABLE IF NOT EXISTS platform_user_agent_materializations (
+       id text PRIMARY KEY, agent_id text, user_id text)`,
+    `CREATE TABLE IF NOT EXISTS platform_settings_bundle (
+       id text PRIMARY KEY, revision integer)`,
+    `CREATE TABLE IF NOT EXISTS platform_setting_policies (
+       id text PRIMARY KEY, path text)`,
+    `CREATE TABLE IF NOT EXISTS user_setting_overrides (
+       id text PRIMARY KEY, user_id text)`,
+    `CREATE TABLE IF NOT EXISTS user_setting_override_revisions (
+       user_id text PRIMARY KEY, revision integer)`,
+    `CREATE TABLE IF NOT EXISTS platform_jobs (
+       id text PRIMARY KEY, type text, status text)`,
+    `CREATE TABLE IF NOT EXISTS platform_managed_resource_policies (
+       id text PRIMARY KEY, resource_type text)`,
+    `CREATE TABLE IF NOT EXISTS platform_instance_heartbeats (
+       id text PRIMARY KEY, instance_id text)`,
+    `CREATE TABLE IF NOT EXISTS platform_instance_revision_states (
+       id text PRIMARY KEY, instance_id text)`,
+    `CREATE TABLE IF NOT EXISTS platform_easyauth_grant_snapshots (
+       id text PRIMARY KEY, subject text)`,
+    `CREATE TABLE IF NOT EXISTS platform_identity_provider_test_attempts (
+       id text PRIMARY KEY, provider_id text)`,
+    `CREATE TABLE IF NOT EXISTS platform_identity_provider_instances (
+       id text PRIMARY KEY, provider_id text)`,
+    `CREATE TABLE IF NOT EXISTS platform_identity_provider_restart_requests (
+       id text PRIMARY KEY, provider_id text)`,
+  ];
+
+  // Sanity: every inventory table must appear in CREATE statements.
+  for (const table of RECOVERY_ENTERPRISE_TABLES) {
+    if (!stmts.some((s) => s.includes(`CREATE TABLE IF NOT EXISTS ${table}`))) {
+      throw new Error(`seed schema missing table ${table}`);
+    }
+  }
+  return stmts;
+};
 
 export const buildRecoverySeedStatements = (): string[] => {
   const ids = RECOVERY_PROBE_IDS;
@@ -123,7 +183,7 @@ export const buildRecoverySeedStatements = (): string[] => {
      VALUES
        ('${ids.revisionId}', 'branding', '${ids.resourceId}', 1, 'draft',
         '{"displayName":"Recovery Drill Probe"}'::jsonb, '${PROBE_PAYLOAD_CHECKSUM}', '${fp}'),
-       ('${ids.revisionId2}', 'branding', '${ids.resourceId}', 2, 'published',
+       ('${ids.revisionId2}', 'connector', '${ids.connectorId}', 2, 'published',
         '{"displayName":"Recovery Drill Probe v2"}'::jsonb, '${PROBE_PAYLOAD_CHECKSUM_V2}', '${fp}')
      ON CONFLICT (id) DO NOTHING`,
     `INSERT INTO platform_audit_logs
@@ -133,17 +193,16 @@ export const buildRecoverySeedStatements = (): string[] => {
         'success', '{"revision":2,"redacted":true,"fields":["displayName"]}'::jsonb, 2)
      ON CONFLICT (id) DO NOTHING`,
     `INSERT INTO platform_identity_providers
-       (id, provider_key, secret_ref, secret_fingerprint, secret_updated_at)
+       (id, provider_key, secret_ref, secret_fingerprint, secret_updated_at, activation_revision)
      VALUES
        ('${ids.identityId}', 'm15q06-probe-idp',
-        'kms://platform-identity-providers/m15q06-probe', '${fp}', now())
+        '${REF_IDP}', '${fp}', now(), NULL)
      ON CONFLICT (id) DO NOTHING`,
     `INSERT INTO platform_identity_provider_secrets
        (id, provider_id, fingerprint, ref, ciphertext, key_id, revision)
      VALUES
        ('${ids.identitySecretId}', '${ids.identityId}', '${fp}',
-        'kms://platform-identity-providers/m15q06-probe',
-        '${PROBE_ENVELOPE_PLACEHOLDER}', 'probe-key-id', 1)
+        '${REF_IDP}', '${PROBE_ENVELOPE_PLACEHOLDER}', 'probe-key-id', 1)
      ON CONFLICT (id) DO NOTHING`,
     `INSERT INTO platform_ai_providers (id, provider_key, secret_fingerprint, secret_key_id)
      VALUES ('${ids.aiProviderId}', 'm15q06-ai', '${fp}', 'probe-key-id')
@@ -154,11 +213,13 @@ export const buildRecoverySeedStatements = (): string[] => {
      ON CONFLICT (id) DO NOTHING`,
     `INSERT INTO platform_connectors
        (id, connector_key, shared_secret_ref, shared_secret_fingerprint,
-        oauth_client_secret_ref, oauth_client_secret_fingerprint)
+        oauth_client_secret_ref, oauth_client_secret_fingerprint,
+        published_revision, published_checksum, status)
      VALUES
        ('${ids.connectorId}', 'm15q06-connector',
-        'kms://platform-connectors/m15q06-shared', '${fp}',
-        'kms://platform-connectors/m15q06-oauth', '${fp}')
+        '${REF_CONN_SHARED}', '${fp}',
+        '${REF_CONN_OAUTH}', '${fp}',
+        2, '${PROBE_PAYLOAD_CHECKSUM_V2}', 'published')
      ON CONFLICT (id) DO NOTHING`,
     `INSERT INTO platform_connector_secrets (id, connector_id, fingerprint, ciphertext, key_id)
      VALUES ('${ids.connectorSecretId}', '${ids.connectorId}', '${fp}',
@@ -176,13 +237,4 @@ export const seedRecoveryFixture = async (client: PoolClient): Promise<void> => 
   }
 };
 
-export const ENTERPRISE_TABLES_FOR_RETENTION = [
-  'platform_resource_revisions',
-  'platform_audit_logs',
-  'platform_identity_providers',
-  'platform_identity_provider_secrets',
-  'platform_ai_providers',
-  'platform_ai_provider_secrets',
-  'platform_connectors',
-  'platform_connector_secrets',
-] as const;
+export const ENTERPRISE_TABLES_FOR_RETENTION = RECOVERY_ENTERPRISE_TABLES;

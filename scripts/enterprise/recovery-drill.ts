@@ -1,12 +1,6 @@
 #!/usr/bin/env bun
 /**
- * M15 Q06 recovery drill entrypoint (backup/restore + app rollback).
- *
- * Usage:
- *   bun run scripts/enterprise/recovery-drill.ts backup-restore --candidate-sha <sha> --schema-tag <tag> --scope <local-harness|production-authorized> --output <json> [--production-ack]
- *   bun run scripts/enterprise/recovery-drill.ts app-rollback --candidate-sha <sha> --scope <local-harness|production-authorized> --output <json> [--repo-root <dir>]
- *   bun run scripts/enterprise/recovery-drill.ts select-backup --scope production-authorized
- *   bun run scripts/enterprise/recovery-drill.ts verify-invariants --scope production-authorized
+ * M15 Q06 recovery drill entrypoint.
  */
 import path from 'node:path';
 import { parseArgs } from 'node:util';
@@ -19,7 +13,7 @@ import {
 
 const usage = () => {
   console.error(`Usage:
-  bun run scripts/enterprise/recovery-drill.ts backup-restore --candidate-sha <sha> --schema-tag <tag> --scope <scope> --output <json> [--production-ack]
+  bun run scripts/enterprise/recovery-drill.ts backup-restore --candidate-sha <sha> --schema-tag <tag> --scope <scope> --output <json> [--backup-file <path>]
   bun run scripts/enterprise/recovery-drill.ts app-rollback --candidate-sha <sha> --scope <scope> --output <json> [--repo-root <dir>]
   bun run scripts/enterprise/recovery-drill.ts select-backup --scope production-authorized
   bun run scripts/enterprise/recovery-drill.ts verify-invariants --scope production-authorized`);
@@ -46,29 +40,15 @@ const main = async () => {
     return;
   }
 
-  if (command === 'select-backup') {
-    // Operator-facing stub: selection is environment-specific; never invent production paths.
+  if (command === 'select-backup' || command === 'verify-invariants') {
     console.log(
       JSON.stringify(
         {
           result: 'not-executed',
-          reason: 'operator-must-provide-source-backup-evidence',
-          scope: 'production-authorized',
-        },
-        null,
-        2,
-      ),
-    );
-    process.exitCode = 1;
-    return;
-  }
-
-  if (command === 'verify-invariants') {
-    console.log(
-      JSON.stringify(
-        {
-          result: 'not-executed',
-          reason: 'run-backup-restore-drill-for-invariant-evidence',
+          reason:
+            command === 'select-backup'
+              ? 'operator-must-provide-signed-backup-artifact'
+              : 'run-backup-restore-with-signed-provenance',
           scope: 'production-authorized',
         },
         null,
@@ -83,20 +63,20 @@ const main = async () => {
     const { values } = parseArgs({
       args: rest,
       options: {
+        'backup-file': { type: 'string' },
         'candidate-sha': { type: 'string' },
         'output': { type: 'string' },
-        'production-ack': { type: 'boolean' },
         'schema-tag': { type: 'string' },
         'scope': { type: 'string' },
       },
       strict: true,
     });
     const result = await runBackupRestoreDrill({
+      backupFile: values['backup-file'],
       candidateSha: requireString(values['candidate-sha'], 'candidate-sha'),
       dbSchemaVersionTag: requireString(values['schema-tag'], 'schema-tag'),
       outputPath: path.resolve(requireString(values.output, 'output')),
-      productionAcknowledgement: values['production-ack'] === true,
-      scope: parseScope(values.scope),
+      scope: parseScope(values.scope) as 'ci-harness' | 'local-harness' | 'production-authorized',
     });
     console.log(
       [

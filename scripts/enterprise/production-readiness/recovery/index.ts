@@ -4,23 +4,31 @@ export {
   assertBaselineNotCandidate,
   BASELINE_REQUIRED_TABLES,
   DESTRUCTIVE_SQL_PATTERNS,
-  executeBaselineReadContract,
   executeCandidateReadContract,
+  executeSyntheticSqlContract,
   rejectDestructiveCommand,
-  resolveBaselineProbeAvailability,
   runAppRollbackDrill,
 } from './appRollback';
 export {
   type BackupRestoreDrillOptions,
   type BackupRestoreDrillResult,
   isCorruptedDump,
+  isUnsafeBackupPath,
   rejectIdenticalSourceTarget,
   runBackupRestoreDrill,
 } from './backupRestore';
 export {
+  disposeMaterializedBaseline,
+  executeBaselinePackageBoundary,
+  materializeBaselineCheckout,
+  type MaterializedBaseline,
+  resolveBaselineTreeOid,
+} from './baselineMaterialize';
+export {
   compareDigests,
   digestAuditLogs,
   digestResourceRevisions,
+  digestTableRowIdentities,
   verifyPublicationPointers,
   verifyRequiredTablesPresent,
   verifySecretReferenceDomains,
