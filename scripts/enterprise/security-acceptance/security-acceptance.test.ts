@@ -32,6 +32,9 @@ import { digestLine, scanForForbiddenReportContent } from './privacy';
 import {
   isProcessAbsent,
   makeSnapshotPidPpid,
+  parseCanonicalPid,
+  parseCanonicalPpid,
+  parseCanonicalSafeNonNegInt,
   parsePidPpidTable,
   type PidExistenceProbe,
   type PidTableSnapshotter,
@@ -43,6 +46,7 @@ import {
   type ProcessRunner,
   runProcess,
   terminateProcessTree,
+  validatePidMapStructure,
   validateSnapshotCompleteness,
 } from './process';
 import { validateRepoRelativeRoot } from './repoPaths';
@@ -1248,6 +1252,140 @@ describe('process-tree timeout', () => {
     const good = parsePidPpidTable('1 0\n42 1\n43 42\n');
     expect(good.ok).toBe(true);
     if (good.ok) expect(good.map.get(43)).toBe(42);
+  });
+
+  it('rejects precision-losing and noncanonical PID/PPID text', () => {
+    // JS Number(9007199254740993) === 9007199254740992 — must reject at text parse.
+    expect(parseCanonicalSafeNonNegInt('9007199254740993')).toBeNull();
+    expect(parsePidPpidTable('9007199254740993 1\n').ok).toBe(false);
+
+    expect(parseCanonicalPid('01')).toBeNull();
+    expect(parseCanonicalPid('+1')).toBeNull();
+    expect(parseCanonicalPid('1e2')).toBeNull();
+    expect(parseCanonicalPid('0x10')).toBeNull();
+    expect(parseCanonicalPid('0')).toBeNull();
+    expect(parseCanonicalPpid('0')).toBe(0);
+    expect(parseCanonicalPpid('-1')).toBeNull();
+    expect(parseCanonicalPid('1')).toBe(1);
+    expect(parseCanonicalPid(String(Number.MAX_SAFE_INTEGER))).toBe(Number.MAX_SAFE_INTEGER);
+
+    expect(parsePidPpidTable('01 0\n').ok).toBe(false);
+    expect(parsePidPpidTable('1 -1\n').ok).toBe(false);
+    expect(parsePidPpidTable('+1 0\n').ok).toBe(false);
+    expect(parsePidPpidTable('1e2 0\n').ok).toBe(false);
+    // PPID 0 is legitimate on some platforms.
+    expect(parsePidPpidTable('42 0\n').ok).toBe(true);
+  });
+
+  it('deep-validates injected maps: illegal [0,-1] and unsafe keys fail closed', () => {
+    const withIllegal = validatePidMapStructure(
+      new Map<number, number>([
+        [42, 1],
+        [0, -1],
+      ]),
+    );
+    expect(withIllegal.ok).toBe(false);
+
+    const unsafe = validatePidMapStructure(
+      new Map<number, number>([[Number.MAX_SAFE_INTEGER + 1, 1]]),
+    );
+    expect(unsafe.ok).toBe(false);
+
+    const selfLoop = validatePidMapStructure(new Map<number, number>([[7, 7]]));
+    expect(selfLoop.ok).toBe(false);
+
+    const cycle = validatePidMapStructure(
+      new Map<number, number>([
+        [10, 11],
+        [11, 10],
+      ]),
+    );
+    expect(cycle.ok).toBe(false);
+
+    const ok = validatePidMapStructure(
+      new Map<number, number>([
+        [1, 0],
+        [42, 1],
+      ]),
+    );
+    expect(ok.ok).toBe(true);
+  });
+
+  it('injected map with real parent + illegal [0,-1] fails cleanup (grandchild residue)', async () => {
+    if (process.platform === 'win32') return;
+    const pidFile = path.join(tmpdir(), `m13-s05-illegal-${process.pid}-${Date.now()}.pid`);
+    let grandchildPid: number | undefined;
+    try {
+      // Snapshot returns the real root PID (discovered via side channel) plus illegal entry.
+      // Using a mutable box filled after spawn is awkward; instead include [0,-1] always
+      // and a placeholder that will not match — structure validation fails before completeness.
+      const snapshotPidTable: PidTableSnapshotter = async () => ({
+        map: new Map<number, number>([
+          // Include a plausible parent-shaped entry; illegal pair must fail-closed.
+          [process.pid, 1],
+          [0, -1],
+        ]),
+        ok: true,
+      });
+      const result = await runProcess(
+        [
+          process.execPath,
+          '-e',
+          `
+            const {spawn} = require('child_process');
+            const fs = require('fs');
+            const pidFile = process.argv[1];
+            const g = spawn(process.execPath, ['-e',
+              "process.on('SIGTERM',()=>{}); setInterval(()=>{}, 1000);"], {
+              detached: true,
+              stdio: 'ignore',
+            });
+            fs.writeFileSync(pidFile, String(g.pid));
+            g.unref();
+            setInterval(() => {}, 1000);
+            `,
+          pidFile,
+        ],
+        {
+          cwd: process.cwd(),
+          snapshotPidTable,
+          timeoutMs: 200,
+        },
+      );
+      expect(result.timedOut).toBe(true);
+      expect(result.cleanupFailed).toBe(true);
+      const raw = await readFile(pidFile, 'utf8').catch(() => '');
+      grandchildPid = Number(raw.trim());
+      expect(Number.isInteger(grandchildPid) && (grandchildPid as number) > 1).toBe(true);
+    } finally {
+      if (grandchildPid && processExists(grandchildPid)) {
+        try {
+          process.kill(grandchildPid, 'SIGKILL');
+        } catch {
+          // cleanup
+        }
+      }
+      await rm(pidFile, { force: true }).catch(() => undefined);
+    }
+  }, 25_000);
+
+  it('injected map with precision-rounded unsafe key fails closed', async () => {
+    const unsafeKey = Number('9007199254740993'); // rounds to MAX_SAFE
+    // Build a map that TypeScript types as number but uses illegal negative PPID.
+    const snapshotPidTable: PidTableSnapshotter = async () => ({
+      map: new Map<number, number>([
+        [123_456, 1],
+        [unsafeKey, -1],
+      ]),
+      ok: true,
+    });
+    const result = await terminateProcessTree(123_456, {
+      deadlineMs: 150,
+      graceMs: 40,
+      probeExistence: (pid) => (pid === 123_456 ? 'alive' : 'absent'),
+      snapshotPidTable,
+    });
+    expect(result.cleanupFailed).toBe(true);
   });
 
   it('empty ok:true snapshot cannot prove cleanup while owned root still present', async () => {
