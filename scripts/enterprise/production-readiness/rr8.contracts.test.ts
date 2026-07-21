@@ -3,7 +3,6 @@
  * RR8: direct canonical JSON (integer-index key order) + branding
  * pre-publish vs corrupt publication; source-manifest refuses invalid pointers.
  */
-import { createHash } from 'node:crypto';
 import { rm } from 'node:fs/promises';
 
 import type { PoolClient } from 'pg';
@@ -207,12 +206,12 @@ describe('RR8: branding pre-publish vs corrupt; source-manifest refuse', () => {
         await client.query(`DELETE FROM platform_branding WHERE id = 'branding:published'`);
         r = await verifyPublicationPointers(client);
         expect(r.match).toBe(false);
-        expect(r.detail).toMatch(/missing-fixed-holder-with-published-history/);
+        expect(r.detail).toMatch(/missing-fixed-holder-with-revision-history/);
         await expect(buildSourceManifestCore(client)).rejects.toThrow(
           /source-manifest-refuses-invalid-publications/,
         );
 
-        // --- genuine pre-publish: no holder AND no published branding claim
+        // --- genuine pre-publish: no holder AND zero branding/global history
         await client.query(
           `DELETE FROM platform_resource_revisions
            WHERE resource_type = 'branding' AND resource_id = 'global'`,
@@ -232,7 +231,7 @@ describe('RR8: branding pre-publish vs corrupt; source-manifest refuse', () => {
         );
         r = await verifyPublicationPointers(client);
         expect(r.match).toBe(false);
-        expect(r.detail).toMatch(/missing-fixed-holder-with-published-history/);
+        expect(r.detail).toMatch(/missing-fixed-holder-with-revision-history/);
 
         // --- extra published holder row
         await client.query(
@@ -274,5 +273,3 @@ describe('RR8: branding pre-publish vs corrupt; source-manifest refuse', () => {
     }
   }, 180_000);
 });
-
-void createHash;
