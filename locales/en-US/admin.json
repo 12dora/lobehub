@@ -399,6 +399,8 @@
   "aiServiceModel.noWritePermission": "You need settings update and publish permissions to edit platform defaults.",
   "aiServiceModel.page.desc": "Platform default models for new agents and system helpers. Changes publish immediately.",
   "aiServiceModel.page.title": "Service models",
+  "aiSettingsDefaults.dirtyDraft.desc": "The Settings Policy page has an unpublished draft outside this change. Resolve it on the <settingsLink>Settings Policy</settingsLink> page first, then retry.",
+  "aiSettingsDefaults.dirtyDraft.title": "Unpublished settings draft blocks save",
   "branding.actions.publish": "Publish",
   "branding.actions.restoreDraft": "Restore to draft",
   "branding.actions.retry": "Retry",

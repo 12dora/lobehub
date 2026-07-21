@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useMemo } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import useSWR from 'swr';
 
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
@@ -14,6 +14,7 @@ import {
   buildMemoryFromPolicies,
   buildSystemAgentFromPolicies,
   buildTtsFromPolicies,
+  isUnpublishedSettingsDraftError,
   systemAgentPatch,
 } from './platformDefaults';
 
@@ -27,6 +28,7 @@ export const usePlatformSettingsDefaults = () => {
   const canUpdate = permissions.includes(PLATFORM_PERMISSIONS.SETTINGS_UPDATE);
   const canPublish = permissions.includes(PLATFORM_PERMISSIONS.SETTINGS_PUBLISH);
   const canWrite = canUpdate && canPublish;
+  const [dirtyDraftBlocked, setDirtyDraftBlocked] = useState(false);
 
   const { data, error, isLoading, mutate } = useSWR(
     SWR_KEY,
@@ -45,14 +47,26 @@ export const usePlatformSettingsDefaults = () => {
   const tts = useMemo(() => buildTtsFromPolicies(published), [published]);
   const image = useMemo(() => buildImageFromPolicies(published), [published]);
 
+  const clearDirtyDraftBlocked = useCallback(() => setDirtyDraftBlocked(false), []);
+
   const applyPatch = useCallback(
     async (patch: Record<string, unknown>, reason?: string) => {
       if (!canWrite) {
         throw new Error('PLATFORM_PERMISSION_DENIED');
       }
-      const result = await adminSettingsService.applyImmediate({ patch, reason });
-      await mutate();
-      return result;
+      try {
+        const result = await adminSettingsService.applyImmediate({ patch, reason });
+        setDirtyDraftBlocked(false);
+        await mutate();
+        return result;
+      } catch (err) {
+        if (isUnpublishedSettingsDraftError(err)) {
+          setDirtyDraftBlocked(true);
+          // Re-throw so callers that care can still react; pages also read dirtyDraftBlocked.
+          throw err;
+        }
+        throw err;
+      }
     },
     [canWrite, mutate],
   );
@@ -111,7 +125,9 @@ export const usePlatformSettingsDefaults = () => {
   return {
     applyPatch,
     canWrite,
+    clearDirtyDraftBlocked,
     defaultAgent,
+    dirtyDraftBlocked,
     error: error instanceof Error ? error : error ? new Error(String(error)) : null,
     image,
     isInit: Boolean(data) && !isLoading,
