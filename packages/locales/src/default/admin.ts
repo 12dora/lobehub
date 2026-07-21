@@ -520,6 +520,21 @@ export default {
 
   'nav.aiProviderDetail': 'Provider detail',
   'nav.aiProviders': 'Providers',
+  'nav.aiServiceModel': 'Service models',
+  'nav.aiMemory': 'Memory settings',
+  'aiServiceModel.page.title': 'Service models',
+  'aiServiceModel.page.desc':
+    'Platform default models for new agents and system helpers. Changes publish immediately.',
+  'aiServiceModel.autoPublishNote':
+    'Edits save and publish as platform defaults. Users inherit these values unless they override them.',
+  'aiServiceModel.noWritePermission':
+    'You need settings update and publish permissions to edit platform defaults.',
+  'aiMemory.page.title': 'Memory settings',
+  'aiMemory.page.desc': 'Platform default memory preferences. Changes publish immediately.',
+  'aiMemory.autoPublishNote':
+    'Edits save and publish as platform defaults. Users inherit these values unless they override them.',
+  'aiMemory.noWritePermission':
+    'You need settings update and publish permissions to edit platform defaults.',
   'aiProviderSettings.advancedCatalog': 'Advanced catalog management',
   'aiProviderSettings.draftBanner.desc':
     'Publish requires credentials, at least one enabled model, and a successful connection test.',
@@ -1074,11 +1089,82 @@ export default {
   'settingsPolicy.paths.systemAgent.topic.model.desc': 'Model for topic naming.',
   'settingsPolicy.paths.systemAgent.topic.provider.title': 'Topic agent provider',
   'settingsPolicy.paths.systemAgent.topic.provider.desc': 'Provider for topic naming.',
+  'settingsPolicy.paths.systemAgent.generationTopic.model.title': 'Generation topic model',
+  'settingsPolicy.paths.systemAgent.generationTopic.model.desc':
+    'Model for generation topic naming.',
+  'settingsPolicy.paths.systemAgent.generationTopic.provider.title': 'Generation topic provider',
+  'settingsPolicy.paths.systemAgent.generationTopic.provider.desc':
+    'Provider for generation topic naming.',
   'settingsPolicy.paths.systemAgent.translation.model.title': 'Translation agent model',
   'settingsPolicy.paths.systemAgent.translation.model.desc': 'Model for translation helper.',
+  'settingsPolicy.paths.systemAgent.translation.provider.title': 'Translation agent provider',
+  'settingsPolicy.paths.systemAgent.translation.provider.desc': 'Provider for translation helper.',
   'settingsPolicy.paths.systemAgent.historyCompress.model.title': 'History compress model',
   'settingsPolicy.paths.systemAgent.historyCompress.model.desc':
     'Model for conversation history compression.',
+  'settingsPolicy.paths.systemAgent.historyCompress.provider.title': 'History compress provider',
+  'settingsPolicy.paths.systemAgent.historyCompress.provider.desc':
+    'Provider for conversation history compression.',
+  'settingsPolicy.paths.systemAgent.agentMeta.model.title': 'Agent meta model',
+  'settingsPolicy.paths.systemAgent.agentMeta.model.desc': 'Model for agent metadata generation.',
+  'settingsPolicy.paths.systemAgent.agentMeta.provider.title': 'Agent meta provider',
+  'settingsPolicy.paths.systemAgent.agentMeta.provider.desc':
+    'Provider for agent metadata generation.',
+  'settingsPolicy.paths.systemAgent.followUpAction.model.title': 'Follow-up action model',
+  'settingsPolicy.paths.systemAgent.followUpAction.model.desc': 'Model for follow-up suggestions.',
+  'settingsPolicy.paths.systemAgent.followUpAction.provider.title': 'Follow-up action provider',
+  'settingsPolicy.paths.systemAgent.followUpAction.provider.desc':
+    'Provider for follow-up suggestions.',
+  'settingsPolicy.paths.systemAgent.followUpAction.enabled.title': 'Enable follow-up actions',
+  'settingsPolicy.paths.systemAgent.followUpAction.enabled.desc':
+    'Whether follow-up action suggestions are enabled by default.',
+  'settingsPolicy.paths.systemAgent.inputCompletion.model.title': 'Input completion model',
+  'settingsPolicy.paths.systemAgent.inputCompletion.model.desc': 'Model for input completion.',
+  'settingsPolicy.paths.systemAgent.inputCompletion.provider.title': 'Input completion provider',
+  'settingsPolicy.paths.systemAgent.inputCompletion.provider.desc':
+    'Provider for input completion.',
+  'settingsPolicy.paths.systemAgent.inputCompletion.enabled.title': 'Enable input completion',
+  'settingsPolicy.paths.systemAgent.inputCompletion.enabled.desc':
+    'Whether input completion is enabled by default.',
+  'settingsPolicy.paths.systemAgent.promptRewrite.model.title': 'Prompt rewrite model',
+  'settingsPolicy.paths.systemAgent.promptRewrite.model.desc': 'Model for prompt rewriting.',
+  'settingsPolicy.paths.systemAgent.promptRewrite.provider.title': 'Prompt rewrite provider',
+  'settingsPolicy.paths.systemAgent.promptRewrite.provider.desc': 'Provider for prompt rewriting.',
+  'settingsPolicy.paths.systemAgent.promptRewrite.enabled.title': 'Enable prompt rewrite',
+  'settingsPolicy.paths.systemAgent.promptRewrite.enabled.desc':
+    'Whether prompt rewrite is enabled by default.',
+  'settingsPolicy.paths.systemAgent.memoryAnalysisAgentConfig.model.title': 'Memory analysis model',
+  'settingsPolicy.paths.systemAgent.memoryAnalysisAgentConfig.model.desc':
+    'Model for memory analysis.',
+  'settingsPolicy.paths.systemAgent.memoryAnalysisAgentConfig.provider.title':
+    'Memory analysis provider',
+  'settingsPolicy.paths.systemAgent.memoryAnalysisAgentConfig.provider.desc':
+    'Provider for memory analysis.',
+  'settingsPolicy.paths.systemAgent.memoryAnalysisAgentConfig.contextLimit.title':
+    'Memory analysis context limit',
+  'settingsPolicy.paths.systemAgent.memoryAnalysisAgentConfig.contextLimit.desc':
+    'Optional context token limit for memory analysis.',
+  'settingsPolicy.paths.systemAgent.userMemoryPersonaWriter.model.title': 'Persona writer model',
+  'settingsPolicy.paths.systemAgent.userMemoryPersonaWriter.model.desc':
+    'Model for user persona writing.',
+  'settingsPolicy.paths.systemAgent.userMemoryPersonaWriter.provider.title':
+    'Persona writer provider',
+  'settingsPolicy.paths.systemAgent.userMemoryPersonaWriter.provider.desc':
+    'Provider for user persona writing.',
+  'settingsPolicy.paths.systemAgent.userMemoryPersonaWriter.contextLimit.title':
+    'Persona writer context limit',
+  'settingsPolicy.paths.systemAgent.userMemoryPersonaWriter.contextLimit.desc':
+    'Optional context token limit for persona writing.',
+  'settingsPolicy.paths.systemAgent.userMemoryEmbedding.model.title': 'Memory embedding model',
+  'settingsPolicy.paths.systemAgent.userMemoryEmbedding.model.desc': 'Model for memory embeddings.',
+  'settingsPolicy.paths.systemAgent.userMemoryEmbedding.provider.title':
+    'Memory embedding provider',
+  'settingsPolicy.paths.systemAgent.userMemoryEmbedding.provider.desc':
+    'Provider for memory embeddings.',
+  'settingsPolicy.paths.systemAgent.userMemoryEmbedding.contextLimit.title':
+    'Memory embedding context limit',
+  'settingsPolicy.paths.systemAgent.userMemoryEmbedding.contextLimit.desc':
+    'Optional context token limit for memory embeddings.',
   'settingsPolicy.options.animation.disabled': 'Disabled',
   'settingsPolicy.options.animation.agile': 'Agile',
   'settingsPolicy.options.animation.elegant': 'Elegant',
