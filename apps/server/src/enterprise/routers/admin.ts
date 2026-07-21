@@ -2,10 +2,13 @@ import { z } from 'zod';
 
 import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
+import { EasyauthGrantSnapshotModel } from '@/database/models/platform/easyauthGrantSnapshot';
 import type { LobeChatDatabase } from '@/database/type';
 import { authedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 
+import { parseEasyauthConfig, redactEasyauthConfig } from '../config/easyauth';
+import { adminEasyauthGetStatusOutputSchema } from '../contracts/adminEasyauth';
 import {
   adminUsersReplaceGlobalRolesInputSchema,
   adminUsersReplaceGlobalRolesOutputSchema,
@@ -205,6 +208,35 @@ export const adminRolesRouter = router({
 });
 
 export const adminEasyauthRouter = router({
+  /**
+   * Redacted EasyAuth deployment + grant-snapshot aggregate for identity admin surfaces.
+   * Read-only; IDENTITY_READ; never returns token material.
+   */
+  getStatus: adminBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.IDENTITY_READ))
+    .output(adminEasyauthGetStatusOutputSchema)
+    .query(async ({ ctx }) => {
+      const config = parseEasyauthConfig();
+      const redacted = redactEasyauthConfig(config);
+      const aggregate = await new EasyauthGrantSnapshotModel(ctx.serverDB).aggregateStatus(
+        config.appKey,
+      );
+      return {
+        config: {
+          appKey: redacted.appKey,
+          baseUrl: redacted.baseUrl,
+          portalUrl: redacted.portalUrl || null,
+          tokenConfigured: redacted.hasAppToken,
+        },
+        sync: {
+          accessGrantedCount: aggregate.accessGrantedCount,
+          degradedCount: aggregate.degradedCount,
+          latestFetchedAt: aggregate.latestFetchedAt,
+          totalCount: aggregate.totalCount,
+        },
+      };
+    }),
+
   getSyncStatus: adminBase
     .use(
       withAnyPlatformPermission([PLATFORM_PERMISSIONS.ROLE_READ, PLATFORM_PERMISSIONS.SYSTEM_READ]),

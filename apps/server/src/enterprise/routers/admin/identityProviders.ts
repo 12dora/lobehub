@@ -57,6 +57,22 @@ const execute = async <T>(operation: () => Promise<T> | T): Promise<T> => {
       });
     }
     const message = error instanceof Error ? error.message : '';
+    if (message.includes('PLATFORM_FEATURE_DISABLED') || message === 'PLATFORM_FEATURE_DISABLED') {
+      return throwEnterpriseError({
+        code: PLATFORM_ERROR_CODES.PLATFORM_FEATURE_DISABLED,
+        httpCode: 'FORBIDDEN',
+      });
+    }
+    if (message.includes('PLATFORM_SECRET_REQUIRED') || message === 'PLATFORM_SECRET_REQUIRED') {
+      return throwEnterpriseError({ code: PLATFORM_ERROR_CODES.PLATFORM_SECRET_REQUIRED });
+    }
+    // APP_URL missing is a deploy-time config gap; preserve stable message for setup guidance UI.
+    if (message.includes('PLATFORM_APP_URL_INVALID') || message === 'PLATFORM_APP_URL_INVALID') {
+      return throwEnterpriseError({
+        code: PLATFORM_ERROR_CODES.PLATFORM_CONFIG_VALIDATION_FAILED,
+        message: 'PLATFORM_APP_URL_INVALID',
+      });
+    }
     if (message.includes('REVISION_CONFLICT') || message.includes('revision changed')) {
       return throwEnterpriseError({ code: PLATFORM_ERROR_CODES.PLATFORM_REVISION_CONFLICT });
     }

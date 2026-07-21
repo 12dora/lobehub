@@ -64,11 +64,12 @@ describe('admin procedure authorization registry', () => {
 
     // Prior baseline 119 + W10-S stats (12 queries) + W10-E creds (5 queries + 7 mutations)
     // + W10-P applyImmediate/publishNow (3) + W10-C settings.applyImmediate (1)
-    // + W10-D skills/connectors applyImmediate+publishNow (4) = 151
-    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(151);
+    // + W10-D skills/connectors applyImmediate+publishNow (4)
+    // + admin.easyauth.getStatus (1 query) = 152
+    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(152);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'query'),
-    ).toHaveLength(65);
+    ).toHaveLength(66);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'mutation'),
     ).toHaveLength(86);
