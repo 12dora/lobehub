@@ -1,14 +1,23 @@
 /**
  * Deterministic canonical JSON for signature payloads and recovery digests.
  *
- * Encoding rules (v1 bytes; deliberate security surface):
- * - Recursive plain objects / null-prototype objects only.
- * - All own enumerable string keys preserved, including `__proto__` / `constructor`.
- * - Keys sorted by exact UTF-16 code-unit order (`<`/`>`), never localeCompare.
- * - Arrays preserve order; undefined and non-finite numbers rejected.
+ * Encoding rules (v1.1 bytes — direct recursive serializer):
+ * - Primitives use strict JSON semantics (JSON.stringify for strings/numbers).
+ * - Arrays preserve order and recursively serialize elements.
+ * - Objects: plain Object.prototype or null prototype only; own enumerable
+ *   string keys only (including `__proto__`, integer-like keys, Unicode).
+ * - Keys sorted by exact UTF-16 code-unit order (`a < b` / `a > b`); equality
+ *   only for identical strings. Never localeCompare / Unicode normalization.
+ * - Emit `JSON.stringify(key) + ':' + canonical(value)` in sort order.
+ *   Do **not** rebuild a JS object and call `JSON.stringify` on it: ECMAScript
+ *   reorders integer-index keys numerically, which would break code-unit order
+ *   (e.g. keys "10" then "2" must stay `{"10":…,"2":…}`, not `{"2":…,"10":…}`).
+ * - Reject undefined, non-finite numbers, accessors, cycles, non-plain objects.
  *
- * Builds intermediate maps with Object.create(null) + defineProperty so assigning
- * the key "__proto__" never mutates Object.prototype.
+ * Version note: v1 intermediate-object + JSON.stringify mis-ordered integer-like
+ * keys. v1.1 fixes emission order without changing ordinary string-key payload
+ * shapes used by provenance signatures. Fixtures that depend on integer-like
+ * key order must assert exact bytes under this serializer.
  */
 import { createHash } from 'node:crypto';
 
@@ -22,52 +31,68 @@ export const compareCodeUnits = (a: string, b: string): number => {
   return 0;
 };
 
-export const canonicalize = (value: unknown): string => {
-  const normalized = normalize(value);
-  return JSON.stringify(normalized);
-};
+/**
+ * Direct recursive canonical JSON string. Safe for signature material.
+ */
+export const canonicalize = (value: unknown): string => serialize(value, new WeakSet<object>());
 
-const setOwn = (target: Record<string, JsonValue>, key: string, child: JsonValue): void => {
-  Object.defineProperty(target, key, {
-    value: child,
-    enumerable: true,
-    writable: true,
-    configurable: true,
-  });
-};
-
-const normalize = (value: unknown): JsonValue => {
-  if (value === null) return null;
-  if (typeof value === 'boolean' || typeof value === 'number' || typeof value === 'string') {
-    if (typeof value === 'number' && !Number.isFinite(value)) {
+const serialize = (value: unknown, seen: WeakSet<object>): string => {
+  if (value === null) return 'null';
+  if (typeof value === 'boolean') return value ? 'true' : 'false';
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) {
       throw new Error('Canonical JSON rejects non-finite numbers');
     }
-    return value;
+    // JSON number form (no leading +, no hex); matches JSON.stringify for finite numbers.
+    return JSON.stringify(value);
+  }
+  if (typeof value === 'string') {
+    return JSON.stringify(value);
   }
   if (Array.isArray(value)) {
-    return value.map((item) => normalize(item));
+    if (seen.has(value)) {
+      throw new Error('Canonical JSON rejects cyclic structures');
+    }
+    seen.add(value);
+    const parts: string[] = [];
+    for (let i = 0; i < value.length; i += 1) {
+      const item = value[i];
+      if (item === undefined) {
+        throw new Error(`Canonical JSON rejects undefined at array index ${i}`);
+      }
+      parts.push(serialize(item, seen));
+    }
+    seen.delete(value);
+    return `[${parts.join(',')}]`;
   }
   if (value && typeof value === 'object') {
     const proto = Object.getPrototypeOf(value);
     if (proto !== Object.prototype && proto !== null) {
       throw new Error('Canonical JSON rejects non-plain objects');
     }
+    if (seen.has(value)) {
+      throw new Error('Canonical JSON rejects cyclic structures');
+    }
+    seen.add(value);
+
     const record = value as Record<string, unknown>;
-    // Own enumerable keys only; includes __proto__ when it is an own data property
-    // (e.g. from JSON.parse('{"__proto__":1}')).
+    // Own enumerable string keys only; includes __proto__ when own data property.
     const keys = Object.keys(record).sort(compareCodeUnits);
-    const out = Object.create(null) as Record<string, JsonValue>;
+    const parts: string[] = [];
     for (const key of keys) {
-      // Use getOwnPropertyDescriptor to read own keys without prototype chain.
       const desc = Object.getOwnPropertyDescriptor(record, key);
       if (!desc || !desc.enumerable) continue;
+      if (typeof desc.get === 'function' || typeof desc.set === 'function') {
+        throw new Error(`Canonical JSON rejects accessor property at key ${key}`);
+      }
       const child = desc.value;
       if (child === undefined) {
         throw new Error(`Canonical JSON rejects undefined at key ${key}`);
       }
-      setOwn(out, key, normalize(child));
+      parts.push(`${JSON.stringify(key)}:${serialize(child, seen)}`);
     }
-    return out;
+    seen.delete(value);
+    return `{${parts.join(',')}}`;
   }
   throw new Error('Canonical JSON rejects unsupported value types');
 };
