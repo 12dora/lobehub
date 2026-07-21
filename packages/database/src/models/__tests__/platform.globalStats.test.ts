@@ -212,6 +212,45 @@ describe('PlatformGlobalStatsModel', () => {
 
       vi.useRealTimers();
     });
+
+    it('falls back to legacy flat metadata.tps / metadata.ttft when performance is absent', async () => {
+      vi.useFakeTimers();
+      const fixedDate = new Date('2024-06-15T12:00:00Z');
+      vi.setSystemTime(fixedDate);
+
+      const mo = dayjs(fixedDate).format('YYYY-MM');
+      const now = dayjs(fixedDate).startOf('month').add(3, 'day').toDate();
+      await serverDB.insert(messages).values([
+        {
+          content: 'legacy',
+          createdAt: now,
+          id: 'legacy-flat',
+          model: 'gpt-4',
+          // Pre-migration shape: tps/ttft on metadata root, not under performance
+          metadata: {
+            cost: 0.05,
+            totalInputTokens: 3,
+            totalOutputTokens: 7,
+            tps: 12.5,
+            ttft: 340,
+          },
+          provider: 'openai',
+          role: 'assistant',
+          userId: USER_A,
+        },
+      ]);
+
+      const rows = await globalStats.findByMonth(mo);
+      const legacy = rows.find((r) => r.id === 'legacy-flat');
+      expect(legacy).toBeDefined();
+      expect(legacy?.tps).toBe(12.5);
+      expect(legacy?.ttft).toBe(340);
+      expect(legacy?.totalInputTokens).toBe(3);
+      expect(legacy?.totalOutputTokens).toBe(7);
+      expect(legacy?.spend).toBe(0.05);
+
+      vi.useRealTimers();
+    });
   });
 
   describe('getMaxTaskDuration', () => {

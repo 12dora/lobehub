@@ -25,7 +25,8 @@ class AdminStatsService {
 
   rankAgents = async (limit?: number) => lambdaClient.admin.stats.rankAgents.query({ limit });
 
-  rankModels = async (limit?: number) => lambdaClient.admin.stats.rankModels.query({ limit });
+  /** Uses server default limit (10) — matches personal messageService.rankModels(). */
+  rankModels = async () => lambdaClient.admin.stats.rankModels.query();
 
   rankTopics = async (limit?: number) => lambdaClient.admin.stats.rankTopics.query({ limit });
 

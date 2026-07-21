@@ -2,7 +2,7 @@
 
 import type { AgentRankItem, ModelRankItem, TopicRankItem } from '@lobechat/types';
 import type { HeatmapsProps } from '@lobehub/charts';
-import { createContext, type ReactNode, use, useMemo } from 'react';
+import { createContext, type ReactNode, use } from 'react';
 
 import { agentService } from '@/services/agent';
 import { messageService } from '@/services/message';
@@ -36,7 +36,8 @@ export interface StatsDataSource {
   getMaxTaskDuration: () => Promise<number>;
   getTokenHeatmaps: () => Promise<HeatmapsProps['data']>;
   rankAgents: (limit?: number) => Promise<AgentRankItem[]>;
-  rankModels: (limit?: number) => Promise<ModelRankItem[]>;
+  /** No limit param — matches personal `messageService.rankModels()` (server default top 10). */
+  rankModels: () => Promise<ModelRankItem[]>;
   rankTopics: (limit?: number) => Promise<TopicRankItem[]>;
   /**
    * SWR cache scope. `personal` keeps historical key shapes; any other value is
@@ -62,6 +63,13 @@ export const personalStatsDataSource: StatsDataSource = {
 
 const StatsDataSourceContext = createContext<StatsDataSource>(personalStatsDataSource);
 
+/**
+ * Inject a non-default stats data source (e.g. admin global).
+ *
+ * `value` must be a stable reference (module-level constant or memoized object).
+ * Call sites today use module-level constants (`personalStatsDataSource`,
+ * `adminGlobalStatsDataSource`).
+ */
 export const StatsDataSourceProvider = ({
   children,
   value,
@@ -69,8 +77,7 @@ export const StatsDataSourceProvider = ({
   children: ReactNode;
   value: StatsDataSource;
 }) => {
-  const memo = useMemo(() => value, [value]);
-  return <StatsDataSourceContext value={memo}>{children}</StatsDataSourceContext>;
+  return <StatsDataSourceContext value={value}>{children}</StatsDataSourceContext>;
 };
 
 export const useStatsDataSource = (): StatsDataSource => use(StatsDataSourceContext);

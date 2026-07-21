@@ -11,6 +11,8 @@ import type { HeatmapsProps } from '@lobehub/charts';
 import dayjs from 'dayjs';
 import { and, asc, count, desc, eq, gt, gte, isNotNull, isNull, ne, or, sql } from 'drizzle-orm';
 
+import type { MessageMetadata } from '@/types/message';
+import type { UsageLog, UsageRecordItem } from '@/types/usage/usageRecord';
 import { today } from '@/utils/time';
 
 import { agents, messages, topics, users } from '../../schemas';
@@ -19,31 +21,11 @@ import type { LobeChatDatabase } from '../../type';
 import { genEndDateWhere, genRangeWhere, genStartDateWhere, genWhere } from '../../utils/genWhere';
 import { normalizeInboxAgentMeta } from '../../utils/inboxAgent';
 
-export type GlobalUsageRecordItem = {
-  createdAt: Date;
-  id: string;
-  metadata?: unknown;
-  model: string | null;
-  provider: string | null;
-  spend: number;
-  totalInputTokens: number;
-  totalOutputTokens: number;
-  totalTokens: number;
-  tps: number;
-  ttft: number;
-  type: string;
-  updatedAt: Date;
-  userDisplay: string;
-  userId: string;
-};
+/** Usage row with platform-global user display name (join users). */
+export type GlobalUsageRecordItem = UsageRecordItem & { userDisplay: string };
 
-export type GlobalUsageLog = {
-  date: number;
-  day: string;
+export type GlobalUsageLog = Omit<UsageLog, 'records'> & {
   records: GlobalUsageRecordItem[];
-  totalRequests: number;
-  totalSpend: number;
-  totalTokens: number;
 };
 
 export type GlobalStatsTotals = {
@@ -396,43 +378,31 @@ export class PlatformGlobalStatsModel {
       .orderBy(desc(messages.createdAt));
 
     return spends.map((spend) => {
-      const metadata = spend.metadata as {
-        cost?: number;
-        performance?: { tps?: number; ttft?: number };
-        totalInputTokens?: number;
-        totalOutputTokens?: number;
-        usage?: {
-          cost?: number;
-          totalInputTokens?: number;
-          totalOutputTokens?: number;
-        };
-      } | null;
-      const usage =
-        (spend.usage as {
-          cost?: number;
-          totalInputTokens?: number;
-          totalOutputTokens?: number;
-        } | null) ?? metadata?.usage;
+      const metadata = spend.metadata as MessageMetadata | null;
+      // Prefer the dedicated `usage` column, then nested metadata.usage /
+      // metadata.performance, then deprecated flat metadata fields (parity with
+      // UsageRecordService.findByDateRange).
+      const usage = spend.usage ?? metadata?.usage;
       const performance = metadata?.performance;
       const totalInputTokens = usage?.totalInputTokens ?? metadata?.totalInputTokens ?? 0;
       const totalOutputTokens = usage?.totalOutputTokens ?? metadata?.totalOutputTokens ?? 0;
       return {
         createdAt: spend.createdAt,
         id: spend.id,
-        metadata: spend.metadata,
-        model: spend.model,
-        provider: spend.provider,
+        metadata: spend.metadata as MessageMetadata | null,
+        model: spend.model ?? '',
+        provider: spend.provider ?? '',
         spend: usage?.cost ?? metadata?.cost ?? 0,
         totalInputTokens,
         totalOutputTokens,
         totalTokens: totalInputTokens + totalOutputTokens,
-        tps: performance?.tps ?? 0,
-        ttft: performance?.ttft ?? 0,
+        tps: performance?.tps ?? metadata?.tps ?? 0,
+        ttft: performance?.ttft ?? metadata?.ttft ?? 0,
         type: 'chat',
         updatedAt: spend.createdAt,
         userDisplay: spend.userDisplay || spend.userId,
         userId: spend.userId,
-      };
+      } satisfies GlobalUsageRecordItem;
     });
   };
 
