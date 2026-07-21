@@ -18,7 +18,7 @@
 | 00_实施总览/13_Q05上游Rebase干跑门禁运行说明.md                            | 3597  | 522b64ff7bb16a05723106df4b57fcb3d26bb77d6fb5c7fc08e70df8e60f3356 |
 | 00_实施总览/14_Q06生产就绪门禁运行说明.md                                  | 9199  | 60055320029b3f3d40c11520e5309e4619395e34c9e4c22cff06151ce49546f3 |
 | 00_实施总览/15_W8实施进度记录.md                                       | 12056 | 2138a356279dc93af5d2b1697ed356d609540c1ef65059e02c123b4eb8203c7f |
-| 00_实施总览/16_W9实施进度记录.md                                       | 10366 | 9d6b7182b17272cff789b7d362f82743b73e0705d8aa7cec555e34c24b7b58cd |
+| 00_实施总览/16_W9实施进度记录.md | 10495 | 1e6bb360b1ae9abd3ce4965f928bae20fbad1ebd822dd74e51f97930739954d3 |
 | 01_实施模块/M00_企业扩展骨架与 Feature Flags.md                         | 4543  | f1b7cb45415bdab3fbece2be4c4b0afe7eccaa375ceae6e21f1d47a12c2e4157 |
 | 01_实施模块/M01_平台数据库、Revision、Audit 与 Job 基础设施.md               | 4724  | 7430b25dbc68a97dde265cc2b5fdf6980523768982586cd6faf2543507e7cc03 |
 | 01_实施模块/M02_Global RBAC、超级管理员与真实服务端鉴权.md                     | 8266  | 86d2d157e47278b657e1407cc37b7321f8661ff6434b3d868ff4c7688fa0dac9 |
