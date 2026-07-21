@@ -30,6 +30,14 @@ const sha256Hex = (value: string): string => createHash('sha256').update(value).
 export const TABLE_DIGEST_ENCODING_VERSION = 1 as const;
 
 /**
+ * Domain rule for `platform_resource_revisions` publication pointers
+ * (connectors, bindings, oidc activation, branding:published):
+ * a current published/activation pointer must resolve to a target whose
+ * `status` is exactly this value. Archived/draft/other statuses are mismatches.
+ */
+export const RESOURCE_REVISION_PUBLISHED_STATUS = 'published' as const;
+
+/**
  * Shared versioned encoder for every recovery authorization digest.
  * Uses recursive canonicalize (sorted nested keys; preserves nested structure).
  * Never uses JSON.stringify replacer-array (which drops nested keys).
@@ -581,6 +589,7 @@ export const verifyPublicationPointers = async (
           resource_id: string;
           resource_type: string;
           revision: string;
+          status: string;
         };
 
         // Inventory-declared holderChecksumColumn is mandatory: never weak-fallback.
@@ -597,16 +606,17 @@ export const verifyPublicationPointers = async (
           };
         }
 
+        // Resolve by identity first, then enforce published status (explicit reason).
         const resolvedQuery =
           checksumCol !== null
             ? await client.query<RevRow>(
-                `SELECT resource_type, resource_id, revision::text AS revision, checksum
+                `SELECT resource_type, resource_id, revision::text AS revision, checksum, status
                  FROM platform_resource_revisions
                  WHERE revision = $1 AND resource_id = $2 AND resource_type = $3 AND checksum = $4`,
                 [Number(pointer), row.resource_owner_id, expectedType, row.holder_checksum],
               )
             : await client.query<RevRow>(
-                `SELECT resource_type, resource_id, revision::text AS revision, checksum
+                `SELECT resource_type, resource_id, revision::text AS revision, checksum, status
                  FROM platform_resource_revisions
                  WHERE revision = $1 AND resource_id = $2 AND resource_type = $3`,
                 [Number(pointer), row.resource_owner_id, expectedType],
@@ -644,12 +654,20 @@ export const verifyPublicationPointers = async (
             pointerDigest: digestCanonicalRecords('publication-pointers', pointerRecords),
           };
         }
+        if (targetRow.status !== RESOURCE_REVISION_PUBLISHED_STATUS) {
+          return {
+            match: false,
+            detail: `target-revision-status-mismatch:${source.table}:${row.holder_id}:${pointer}:status=${targetRow.status}:expected=${RESOURCE_REVISION_PUBLISHED_STATUS}`,
+            pointerDigest: digestCanonicalRecords('publication-pointers', pointerRecords),
+          };
+        }
         const targetDigest = digestCanonicalRecords('resource-revision-target', [
           {
             checksum: targetRow.checksum,
             resource_id: targetRow.resource_id,
             resource_type: targetRow.resource_type,
             revision: targetRow.revision,
+            status: targetRow.status,
           },
         ]);
         pointerRecords.push({
@@ -663,6 +681,7 @@ export const verifyPublicationPointers = async (
           table: source.table,
           target_checksum: targetRow.checksum,
           target_digest: targetDigest,
+          target_status: targetRow.status,
         });
       }
       continue;
@@ -670,9 +689,10 @@ export const verifyPublicationPointers = async (
 
     if (source.kind === 'fixed-holder-revision') {
       // platform_branding fixed row branding:published → branding/global.
-      // Distinguish genuine pre-publish (no fixed row AND no published claim)
-      // from corrupt/lost publication (wrong status, rev 0, missing holder with
-      // published history, extra published rows, dangling target).
+      // History = any immutable platform_resource_revisions row for (type, owner),
+      // independent of current status. Genuine pre-publish requires zero history
+      // and no fixed/extra published holders. Target of a published holder must
+      // itself have status = RESOURCE_REVISION_PUBLISHED_STATUS.
       const statusCol = source.holderStatusColumn;
       const hasStatus = (
         await client.query<{ exists: boolean }>(
@@ -724,28 +744,28 @@ export const verifyPublicationPointers = async (
         };
       }
 
-      // Published / current branding revision claims for the constant owner.
-      const publishedClaims = await client.query<{
+      // Any revision history for the constant owner (status-independent).
+      const historyRows = await client.query<{
         revision: string;
-        status: string;
+        status: string | null;
       }>(
         `SELECT revision::text AS revision, status
          FROM platform_resource_revisions
-         WHERE resource_type = $1 AND resource_id = $2 AND status = 'published'
+         WHERE resource_type = $1 AND resource_id = $2
          ORDER BY revision`,
         [source.resourceType, source.resourceOwnerConstant],
       );
-      const hasPublishedClaim = (publishedClaims.rowCount ?? 0) > 0;
+      const hasRevisionHistory = (historyRows.rowCount ?? 0) > 0;
 
       if (holders.rows.length === 0) {
-        if (hasPublishedClaim) {
+        if (hasRevisionHistory) {
           return {
             match: false,
-            detail: `missing-fixed-holder-with-published-history:${source.table}:${source.holderIdValue}:${source.resourceType}/${source.resourceOwnerConstant}`,
+            detail: `missing-fixed-holder-with-revision-history:${source.table}:${source.holderIdValue}:${source.resourceType}/${source.resourceOwnerConstant}:history=${historyRows.rowCount}`,
             pointerDigest: digestCanonicalRecords('publication-pointers', pointerRecords),
           };
         }
-        // Genuine pre-publish: no fixed published row and no published claim.
+        // Genuine pre-publish: no fixed row, no extra published holders, zero history.
         pointerRecords.push({
           holder_id: source.holderIdValue,
           kind: 'fixed-holder-revision',
@@ -788,9 +808,10 @@ export const verifyPublicationPointers = async (
         resource_id: string;
         resource_type: string;
         revision: string;
+        status: string;
       };
       const resolvedQuery = await client.query<RevRow>(
-        `SELECT resource_type, resource_id, revision::text AS revision, checksum
+        `SELECT resource_type, resource_id, revision::text AS revision, checksum, status
          FROM platform_resource_revisions
          WHERE revision = $1 AND resource_id = $2 AND resource_type = $3`,
         [Number(holder.pointer), source.resourceOwnerConstant, source.resourceType],
@@ -821,12 +842,30 @@ export const verifyPublicationPointers = async (
           pointerDigest: digestCanonicalRecords('publication-pointers', pointerRecords),
         };
       }
+      if (targetRow.status !== RESOURCE_REVISION_PUBLISHED_STATUS) {
+        return {
+          match: false,
+          detail: `fixed-target-revision-status-mismatch:${source.table}:${holder.holder_id}:${holder.pointer}:status=${targetRow.status}:expected=${RESOURCE_REVISION_PUBLISHED_STATUS}`,
+          pointerDigest: digestCanonicalRecords('publication-pointers', pointerRecords),
+        };
+      }
+      // History rows with missing/empty status violate the revision contract.
+      for (const hist of historyRows.rows) {
+        if (hist.status === null || hist.status === '') {
+          return {
+            match: false,
+            detail: `revision-history-status-invalid:${source.table}:${source.resourceType}/${source.resourceOwnerConstant}:rev=${hist.revision}`,
+            pointerDigest: digestCanonicalRecords('publication-pointers', pointerRecords),
+          };
+        }
+      }
       const targetDigest = digestCanonicalRecords('resource-revision-target', [
         {
           checksum: targetRow.checksum,
           resource_id: targetRow.resource_id,
           resource_type: targetRow.resource_type,
           revision: targetRow.revision,
+          status: targetRow.status,
         },
       ]);
       pointerRecords.push({
@@ -840,6 +879,7 @@ export const verifyPublicationPointers = async (
         table: source.table,
         target_checksum: targetRow.checksum,
         target_digest: targetDigest,
+        target_status: targetRow.status,
       });
       continue;
     }
@@ -1030,8 +1070,13 @@ export const buildSourceManifestCore = async (client: PoolClient) => {
     );
   }
   if (!secrets.match) {
+    // Typed failure reason from the existing return contract (no invented fields).
+    const domainFailures = Object.entries(secrets.domains)
+      .filter(([, domain]) => !domain.match)
+      .map(([name]) => name);
+    const reasons = [...(secrets.dangling ? (['dangling'] as const) : []), ...domainFailures];
     throw new Error(
-      `source-manifest-refuses-invalid-secrets:${secrets.detail ?? 'secret-domain-mismatch'}`,
+      `source-manifest-refuses-invalid-secrets:${reasons.length > 0 ? reasons.join(',') : 'secret-domain-mismatch'}`,
     );
   }
   const published = await client.query<{ count: string }>(
