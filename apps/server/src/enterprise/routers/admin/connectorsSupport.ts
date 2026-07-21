@@ -138,6 +138,74 @@ export const createAdminConnectorRuntime = (
   };
 };
 
+/**
+ * Connector list/get/published-batch reads are pure projections of persisted catalog rows and never
+ * resolve platform secrets (only publish/discover/test do). This null-object satisfies the
+ * `ConnectorCatalogService` secret contract so those reads can run without a PLATFORM_MASTER_KEY /
+ * Vault — which the full secret runtime (`createAdminConnectorRuntime`) hard-requires. Reaching any
+ * method here means a read path unexpectedly touched a secret, so every method fails closed.
+ */
+const readOnlyConnectorSecretStore: ConnectorCatalogSecretStore = {
+  loadCurrentSecretSources: () => {
+    throw new PlatformSecretError(
+      PLATFORM_ERROR_CODES.PLATFORM_SECRET_REQUIRED,
+      'connector read runtime does not resolve secrets',
+    );
+  },
+  persistSecret: () => {
+    throw new PlatformSecretError(
+      PLATFORM_ERROR_CODES.PLATFORM_SECRET_REQUIRED,
+      'connector read runtime does not resolve secrets',
+    );
+  },
+  resolveSecretRef: () => {
+    throw new PlatformSecretError(
+      PLATFORM_ERROR_CODES.PLATFORM_SECRET_REQUIRED,
+      'connector read runtime does not resolve secrets',
+    );
+  },
+  resolveSecretVersion: () => {
+    throw new PlatformSecretError(
+      PLATFORM_ERROR_CODES.PLATFORM_SECRET_REQUIRED,
+      'connector read runtime does not resolve secrets',
+    );
+  },
+};
+
+export interface AdminConnectorReadRuntime {
+  service: ConnectorCatalogService;
+}
+
+/**
+ * Secret-free read runtime for admin connector list / get / published-batch projections.
+ * Keeps the `ENABLE_PLATFORM_MANAGED_CONNECTORS` feature gate but skips secret-service creation, so
+ * an instance without a platform master key can still browse the org connector catalog. NEVER use
+ * this for mutations — secret-touching operations must go through `createAdminConnectorRuntime`.
+ */
+export const createAdminConnectorReadRuntime = (
+  db: LobeChatDatabase,
+  options: AdminConnectorRuntimeOptions = {},
+): AdminConnectorReadRuntime => {
+  const env = options.env ?? process.env;
+  const flags = parseEnterpriseFeatureFlags(env);
+  if (!flags.ENABLE_PLATFORM_MANAGED_CONNECTORS) {
+    throw new TRPCError({
+      code: 'FORBIDDEN',
+      message: PLATFORM_ERROR_CODES.PLATFORM_FEATURE_DISABLED,
+    });
+  }
+  const outbound = new ConnectorOutboundClient(
+    new SafeOutboundHttpClient({
+      policyProvider: options.outboundPolicyProvider ?? connectorOutboundPolicyProvider,
+    }),
+  );
+  return {
+    service: new ConnectorCatalogService(db, outbound, readOnlyConnectorSecretStore, {
+      redirectUri: () => undefined,
+    }),
+  };
+};
+
 export type AdminConnectorFactoryFailureCategory =
   'feature_disabled' | 'redirect_unavailable' | 'secret_unavailable' | 'transport_unavailable';
 

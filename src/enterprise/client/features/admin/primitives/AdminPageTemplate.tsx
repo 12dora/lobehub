@@ -51,6 +51,8 @@ export interface AdminPageTemplateProps {
   banner?: ReactNode;
   children: ReactNode;
   description?: ReactNode;
+  /** Suppress the page `<h1>` when embedded under an outer surface (e.g. a tab whose label already names it). */
+  hideTitle?: boolean;
   title: ReactNode;
   /** Filter bar / tabs above the main body */
   toolbar?: ReactNode;
@@ -64,14 +66,16 @@ export interface AdminPageTemplateProps {
  * settings-page refactor in M03.
  */
 const AdminPageTemplate = memo<AdminPageTemplateProps>(
-  ({ title, description, actions, toolbar, banner, children }) => {
+  ({ title, description, actions, toolbar, banner, children, hideTitle }) => {
     return (
       <Flexbox className={styles.body} gap={16}>
         <div className={styles.header}>
           <div className={styles.titleBlock}>
-            <Text as="h1" style={{ fontSize: 20, fontWeight: 700, margin: 0 }}>
-              {title}
-            </Text>
+            {hideTitle ? null : (
+              <Text as="h1" style={{ fontSize: 20, fontWeight: 700, margin: 0 }}>
+                {title}
+              </Text>
+            )}
             {description ? <Text type="secondary">{description}</Text> : null}
           </div>
           {actions ? <div className={styles.actions}>{actions}</div> : null}

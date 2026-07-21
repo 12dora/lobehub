@@ -54,6 +54,7 @@ const NAV_ICONS: Record<string, IconProps['icon']> = {
   'settings': SlidersHorizontal,
   'stats': ChartColumnBig,
   'system': Server,
+  'unified-management': SlidersHorizontal,
   'users': Users,
 };
 

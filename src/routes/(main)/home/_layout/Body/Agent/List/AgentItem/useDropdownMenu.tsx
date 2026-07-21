@@ -42,6 +42,12 @@ interface UseAgentDropdownMenuParams {
   backgroundColor?: string;
   group: string | undefined;
   id: string;
+  /**
+   * Platform-managed (org-distributed) agent. The server rejects every mutation on it, so the
+   * menu omits every mutating entry (pin/rename/duplicate/move/publish/makePrivate/delete) and
+   * keeps only the pure-read "open in new window".
+   */
+  managed?: boolean;
   openCreateGroupModal: () => void;
   pinned: boolean;
   slug?: string | null;
@@ -56,6 +62,7 @@ export const useAgentDropdownMenu = ({
   backgroundColor,
   group,
   id,
+  managed,
   openCreateGroupModal,
   pinned,
   slug,
@@ -120,8 +127,25 @@ export const useAgentDropdownMenu = ({
   const isDefault = group === SessionDefaultGroup.Default;
 
   return useMemo(
-    () => () =>
-      [
+    () => () => {
+      const openInNewWindowItem = {
+        icon: <Icon icon={PictureInPicture2Icon} />,
+        key: 'openInNewWindow',
+        label: t('openInNewWindow'),
+        onClick: ({ domEvent }: any) => {
+          domEvent.stopPropagation();
+          openAgentInNewWindow(id);
+        },
+      };
+
+      // Platform-managed (org-distributed) agents are read-only for the user: the server rejects
+      // every mutation (delete/rename/pin/move/visibility) — deleting one even hits a synthetic
+      // `platform-agent:<uuid>` id that matches no local row. Omit every mutating entry rather than
+      // render dead, always-failing (and previously false-success) affordances. Only the pure-read
+      // "open in new window" stays.
+      if (managed) return [openInNewWindowItem] as MenuProps['items'];
+
+      return [
         {
           disabled: !canEdit,
           icon: <Icon icon={pinned ? PinOff : Pin} />,
@@ -151,15 +175,7 @@ export const useAgentDropdownMenu = ({
             duplicateAgent(id);
           },
         },
-        {
-          icon: <Icon icon={PictureInPicture2Icon} />,
-          key: 'openInNewWindow',
-          label: t('openInNewWindow'),
-          onClick: ({ domEvent }: any) => {
-            domEvent.stopPropagation();
-            openAgentInNewWindow(id);
-          },
-        },
+        openInNewWindowItem,
         { type: 'divider' },
         {
           disabled: !canEdit,
@@ -288,11 +304,14 @@ export const useAgentDropdownMenu = ({
             });
           },
         },
-      ] as MenuProps['items'],
+      ] as MenuProps['items'];
+    },
     [
       anchor,
       canCreate,
       canEdit,
+      managed,
+      openAgentInNewWindow,
       pinned,
       id,
       avatar,

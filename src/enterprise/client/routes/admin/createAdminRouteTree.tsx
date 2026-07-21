@@ -23,6 +23,9 @@ const SettingsPolicyPage = lazy(
 const ManagedResourcesPolicyPage = lazy(
   () => import('@/enterprise/client/features/admin/managedResources/ManagedResourcesPolicyPage'),
 );
+const UnifiedManagementPage = lazy(
+  () => import('@/enterprise/client/features/admin/unified/UnifiedManagementPage'),
+);
 const AiProviderSettingsPage = lazy(
   () => import('@/enterprise/client/features/admin/ai/providerSettings/ProviderSettingsPage'),
 );
@@ -99,6 +102,9 @@ const resolveAdminLeafElement = (id: string): ReactNode => {
     }
     case 'managed-resources': {
       return withLazy(<ManagedResourcesPolicyPage />);
+    }
+    case 'unified-management': {
+      return withLazy(<UnifiedManagementPage />);
     }
     case 'ai-providers':
     case 'ai-provider-detail': {

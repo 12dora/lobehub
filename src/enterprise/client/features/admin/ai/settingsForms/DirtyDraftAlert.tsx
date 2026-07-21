@@ -24,7 +24,7 @@ const DirtyDraftAlert = memo<{ onDismiss?: () => void }>(({ onDismiss }) => {
             i18nKey="aiSettingsDefaults.dirtyDraft.desc"
             ns="admin"
             components={{
-              settingsLink: <Link to="/admin/settings" />,
+              settingsLink: <Link to="/admin/unified?tab=settings" />,
             }}
           />
         </Text>

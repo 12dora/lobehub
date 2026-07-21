@@ -48,6 +48,7 @@
   "agentSignal.receipts.skill.detail": "已自主优化处理相似请求的方式",
   "agentSignal.receipts.skill.title": "已自动习得新技能",
   "agents": "助理",
+  "agents.managedTag": "内置",
   "artifact.generating": "生成中",
   "artifact.inThread": "子话题中暂不支持查看。请回到主对话区打开",
   "artifact.thinking": "思考中",

@@ -82,6 +82,11 @@ const styles = createStaticStyles(({ css }) => ({
     flex-direction: column;
     gap: 10px;
   `,
+  grid: css`
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 12px;
+  `,
   path: css`
     font-family: ${cssVar.fontFamilyCode};
     font-size: 12px;
@@ -152,7 +157,7 @@ const isServiceModelManaged = (entry: { group: string; path: string }): boolean 
 
 const GROUPS = ['general', 'memory', 'tool', 'tts', 'notification', 'defaultAgent'] as const;
 
-const SettingsPolicyPage = memo(() => {
+const SettingsPolicyPage = memo<{ embedded?: boolean }>(({ embedded }) => {
   const { t } = useTranslation('admin');
   const platform = useEnterprisePlatform();
   const policyEnabled = platform.capabilities.userSettingsPolicyEnabled === true;
@@ -200,7 +205,19 @@ const SettingsPolicyPage = memo(() => {
     validatedForFingerprint: validatedFingerprint,
   });
 
-  const blocker = useBlocker(dirty);
+  // Only guard real page exits — a same-path `?tab=` switch inside the unified page must not prompt.
+  const blocker = useBlocker(
+    useCallback(
+      ({
+        currentLocation,
+        nextLocation,
+      }: {
+        currentLocation: { pathname: string };
+        nextLocation: { pathname: string };
+      }) => dirty && currentLocation.pathname !== nextLocation.pathname,
+      [dirty],
+    ),
+  );
   useEffect(() => {
     if (blocker.state !== 'blocked') return;
     const leave = window.confirm(t('settingsPolicy.unsavedLeave'));
@@ -699,7 +716,11 @@ const SettingsPolicyPage = memo(() => {
   // U1: policy flag off → disabled surface, zero getDraft
   if (!policyEnabled) {
     return (
-      <AdminPageTemplate description={t('settingsPolicy.desc')} title={t('settingsPolicy.title')}>
+      <AdminPageTemplate
+        description={t('settingsPolicy.desc')}
+        hideTitle={embedded}
+        title={t('settingsPolicy.title')}
+      >
         <Text type="secondary">{t('settingsPolicy.featureDisabled')}</Text>
       </AdminPageTemplate>
     );
@@ -711,6 +732,7 @@ const SettingsPolicyPage = memo(() => {
     return (
       <AdminPageTemplate
         description={t('settingsPolicy.desc')}
+        hideTitle={embedded}
         title={t('settingsPolicy.title')}
         actions={
           <Button
@@ -731,7 +753,11 @@ const SettingsPolicyPage = memo(() => {
 
   if (isLoading || !data) {
     return (
-      <AdminPageTemplate description={t('settingsPolicy.desc')} title={t('settingsPolicy.title')}>
+      <AdminPageTemplate
+        description={t('settingsPolicy.desc')}
+        hideTitle={embedded}
+        title={t('settingsPolicy.title')}
+      >
         <Text type="secondary">{t('primitives.dataTable.loading')}</Text>
       </AdminPageTemplate>
     );
@@ -780,6 +806,7 @@ const SettingsPolicyPage = memo(() => {
 
   return (
     <AdminPageTemplate
+      hideTitle={embedded}
       title={t('settingsPolicy.title')}
       actions={
         <Flexbox horizontal gap={8}>
@@ -966,71 +993,73 @@ const SettingsPolicyPage = memo(() => {
           return (
             <div className={styles.group} key={group}>
               <Text strong>{t(`settingsPolicy.groups.${group}` as never)}</Text>
-              {entries.map((entry) => {
-                const policy = getPolicy(entry.path);
-                return (
-                  <div className={styles.field} id={`setting-${entry.path}`} key={entry.path}>
-                    <div className={styles.fieldHeader}>
-                      <div>
-                        <Text strong>
-                          {t(entry.titleKey as never, { defaultValue: entry.path })}
-                        </Text>
-                        <div className={styles.path}>{entry.path}</div>
-                      </div>
-                      <div className={styles.row}>
-                        <Select
-                          disabled={!canUpdate}
-                          style={{ minWidth: 120 }}
-                          value={policy.mode}
-                          options={MODE_VALUES.map((value) => ({
-                            label: t(`settingsPolicy.mode.${value}` as never),
-                            value,
-                          }))}
-                          onChange={(v) =>
-                            updatePolicy(entry.path, { mode: v as DraftPolicy['mode'] })
-                          }
-                        />
-                        <Flexbox horizontal align="center" gap={6}>
-                          <Text type="secondary">{t('settingsPolicy.hidden')}</Text>
-                          <Switch
-                            checked={policy.visibility === 'hidden'}
+              <div className={styles.grid}>
+                {entries.map((entry) => {
+                  const policy = getPolicy(entry.path);
+                  return (
+                    <div className={styles.field} id={`setting-${entry.path}`} key={entry.path}>
+                      <div className={styles.fieldHeader}>
+                        <div>
+                          <Text strong>
+                            {t(entry.titleKey as never, { defaultValue: entry.path })}
+                          </Text>
+                          <div className={styles.path}>{entry.path}</div>
+                        </div>
+                        <div className={styles.row}>
+                          <Select
                             disabled={!canUpdate}
-                            onChange={(checked: boolean) =>
-                              updatePolicy(entry.path, {
-                                visibility: checked ? 'hidden' : 'visible',
-                              })
+                            style={{ minWidth: 120 }}
+                            value={policy.mode}
+                            options={MODE_VALUES.map((value) => ({
+                              label: t(`settingsPolicy.mode.${value}` as never),
+                              value,
+                            }))}
+                            onChange={(v) =>
+                              updatePolicy(entry.path, { mode: v as DraftPolicy['mode'] })
                             }
                           />
-                        </Flexbox>
+                          <Flexbox horizontal align="center" gap={6}>
+                            <Text type="secondary">{t('settingsPolicy.hidden')}</Text>
+                            <Switch
+                              checked={policy.visibility === 'hidden'}
+                              disabled={!canUpdate}
+                              onChange={(checked: boolean) =>
+                                updatePolicy(entry.path, {
+                                  visibility: checked ? 'hidden' : 'visible',
+                                })
+                              }
+                            />
+                          </Flexbox>
+                        </div>
                       </div>
-                    </div>
-                    <Text type="secondary">
-                      {t(entry.descriptionKey as never, { defaultValue: '' })}
-                    </Text>
-                    <PolicyValueEditor
-                      control={entry.control}
-                      disabled={!canUpdate}
-                      label={t(entry.titleKey as never, { defaultValue: entry.path })}
-                      max={entry.max}
-                      min={entry.min}
-                      options={entry.options}
-                      step={entry.step}
-                      value={policy.value}
-                      onChange={(value) => updatePolicy(entry.path, { value })}
-                    />
-                    {data.publishedPolicies[entry.path] ? (
                       <Text type="secondary">
-                        {t('settingsPolicy.publishedValue')}:{' '}
-                        {formatSettingValue({
-                          entry,
-                          t,
-                          value: data.publishedPolicies[entry.path]?.value,
-                        })}
+                        {t(entry.descriptionKey as never, { defaultValue: '' })}
                       </Text>
-                    ) : null}
-                  </div>
-                );
-              })}
+                      <PolicyValueEditor
+                        control={entry.control}
+                        disabled={!canUpdate}
+                        label={t(entry.titleKey as never, { defaultValue: entry.path })}
+                        max={entry.max}
+                        min={entry.min}
+                        options={entry.options}
+                        step={entry.step}
+                        value={policy.value}
+                        onChange={(value) => updatePolicy(entry.path, { value })}
+                      />
+                      {data.publishedPolicies[entry.path] ? (
+                        <Text type="secondary">
+                          {t('settingsPolicy.publishedValue')}:{' '}
+                          {formatSettingValue({
+                            entry,
+                            t,
+                            value: data.publishedPolicies[entry.path]?.value,
+                          })}
+                        </Text>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           );
         })}
