@@ -1,5 +1,5 @@
 /**
- * O05 failure-drill adapter: requires exact full scenario set.
+ * O05 adapter: exact four scenarios; uses generatedAt from producer when present.
  */
 import { createHash } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
@@ -28,7 +28,6 @@ export const adaptFailureDrillEvidenceDir = async (input: {
     throw new Error('failure-drills evidence directory has no scenario JSON files');
   }
 
-  const expectedIds = new Set(EXPECTED_SCENARIO_IDS);
   const seen = new Set<string>();
   let allPass = true;
   let totalPassed = 0;
@@ -50,26 +49,19 @@ export const adaptFailureDrillEvidenceDir = async (input: {
     if (evidence.gitSha !== input.candidateSha) {
       throw new Error('failure-drill gitSha does not match candidate');
     }
-    // Immutable event time: use elapsed-derived? Failure drill has no generatedAt.
-    // Evidence is unverified for freshness without immutable timestamp field.
-    // Use artifact content hash binding only; mark generatedAt from a required field if present.
-    const asRecord = JSON.parse(raw) as {
-      generatedAt?: string;
-      elapsed?: { milliseconds?: number };
-    };
-    if (typeof asRecord.generatedAt === 'string') {
-      const ms = Date.parse(asRecord.generatedAt);
+    if (evidence.generatedAt) {
+      const ms = Date.parse(evidence.generatedAt);
       if (!Number.isNaN(ms)) earliestGeneratedMs = Math.min(earliestGeneratedMs, ms);
     }
-    if (!isPassingFailureDrillEvidence(evidence)) allPass = false;
-    if (evidence.cleanupResult !== 'passed') allPass = false;
+    if (!isPassingFailureDrillEvidence(evidence) || evidence.cleanupResult !== 'passed') {
+      allPass = false;
+    }
     totalPassed += evidence.assertions.passed;
     totalFailed += evidence.assertions.failed;
     totalSkipped += evidence.assertions.skipped;
     total += evidence.assertions.total;
   }
 
-  // Exact full scenario set required
   const seenSorted = [...seen].sort((a, b) => a.localeCompare(b, 'en'));
   if (
     seenSorted.length !== EXPECTED_SCENARIO_IDS.length ||
@@ -79,24 +71,18 @@ export const adaptFailureDrillEvidenceDir = async (input: {
       `failure-drills scenarios incomplete: expected [${EXPECTED_SCENARIO_IDS.join(',')}] got [${seenSorted.join(',')}]`,
     );
   }
-  for (const id of seen) {
-    if (!expectedIds.has(id as (typeof EXPECTED_SCENARIO_IDS)[number])) {
-      throw new Error(`unknown failure-drill scenario id: ${id}`);
-    }
-  }
 
   const artifactSha256 = createHash('sha256').update(digests.join('\n')).digest('hex');
-  // Without immutable generatedAt across all scenarios, fail closed for production-quality freshness.
   if (!Number.isFinite(earliestGeneratedMs)) {
     return {
       artifactSha256,
       assertions: { failed: totalFailed, passed: totalPassed, skipped: totalSkipped, total },
       candidateSha: input.candidateSha,
-      details: { scenarioCount: seen.size, reason: 'missing-immutable-generatedAt' },
+      details: { scenarioCount: seen.size, reason: 'missing-generatedAt' },
       gate: 'failure-drills',
       generatedAt: new Date(0).toISOString(),
       harnessScope: 'ci-harness',
-      rawArtifactPaths: entries.map((name) => path.join(input.evidenceDir, name)),
+      rawArtifactPaths: entries.map((n) => path.join(input.evidenceDir, n)),
       status: 'unverified',
     };
   }
@@ -121,7 +107,7 @@ export const adaptFailureDrillEvidenceDir = async (input: {
     gate: 'failure-drills',
     generatedAt: new Date(earliestGeneratedMs).toISOString(),
     harnessScope: 'ci-harness',
-    rawArtifactPaths: entries.map((name) => path.join(input.evidenceDir, name)),
+    rawArtifactPaths: entries.map((n) => path.join(input.evidenceDir, n)),
     status,
   };
 };

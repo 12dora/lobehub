@@ -363,6 +363,8 @@ export const runMigrationCompatVerification = async (
         source: 'synthetic',
         status: fixtureStatus,
       },
+      candidateSha: /^[a-f\d]{40}$/u.test(headSha) ? headSha.toLowerCase() : undefined,
+      generatedAt: new Date().toISOString(),
       head: {
         commitShort: toReportCommitShort(headSha),
         postBaselineMigrationCount: postBaseline.length,

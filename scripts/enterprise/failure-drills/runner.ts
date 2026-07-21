@@ -151,6 +151,7 @@ export const collectFailureDrillEvidence = async ({
           0,
         ),
       },
+      generatedAt: new Date().toISOString(),
       gitSha,
       injection: scenario.injection,
       lane: FAILURE_DRILL_LANE,
