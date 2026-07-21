@@ -1,8 +1,7 @@
 ---
 title: 使用 Grafana、Prometheus 和 Tempo 进行可观测性监控
 description: >-
-  使用 Grafana、Prometheus 指标和 Tempo 链路追踪，监控和分析你的 LobeHub
-  实例。本指南涵盖自托管部署的搭建、配置和示例仪表盘。
+  使用 Grafana、Prometheus 指标和 Tempo 链路追踪，监控和分析你的 LobeHub 实例。本指南涵盖自托管部署的搭建、配置和示例仪表盘。
 tags:
   - 可观测性
   - Grafana
@@ -19,7 +18,7 @@ LobeHub 支持通过开源工具实现自托管部署的高级可观测性：
 - **Tempo**：分布式链路追踪
 - **otel-collector**：采集 OpenTelemetry 支持的数据
 
-我们提供了 Docker Compose (`docker-compose`) 预设文件，帮助你一键启动包含高级可观测性功能的自托管栈。
+仓库在 `docker-compose/production/grafana/` 提供 Compose 预设。该栈依赖**多个文件** （Prometheus 配置与规则、Collector 配置、Tempo 配置、Grafana 数据源 / 仪表盘目录、Casdoor 初始化数据、环境变量示例等）——**仅下载** `docker-compose.yml` 与 `.env.example` **不够**。
 
 ## 前置条件
 
@@ -27,22 +26,34 @@ LobeHub 支持通过开源工具实现自托管部署的高级可观测性：
 - OrbStack（macOS）或 Docker Desktop（Windows）
 - 启用 `docker-compose` 插件（可通过 `docker compose version` 检查）
 
-## 1. 部署
+## 1. 部署（完整目录包）
+
+**推荐**：使用完整仓库检出，确保所有挂载路径存在：
 
 ```bash
-curl -O https://raw.githubusercontent.com/lobehub/lobehub/HEAD/docker-compose/production/grafana/docker-compose.yml
-curl -O https://raw.githubusercontent.com/lobehub/lobehub/HEAD/docker-compose/production/grafana/.env.example
-mv .env.example .env
+git clone https://github.com/lobehub/lobehub.git
+cd lobehub/docker-compose/production/grafana
+cp .env.example .env
+# 按需修改 .env 中的密码与密钥
+docker compose up -d
 ```
 
-1. 根据需要修改 `.env` 文件中的密码和密钥。
-2. 使用如下命令启动服务：
+该目录至少应包含：
 
-   ```sh
-   docker compose up -d
-   ```
+- `docker-compose.yml`：服务拓扑与镜像固定版本
+- `.env`（由 `.env.example` 复制）：密钥与端口
+- `prometheus/prometheus.yml`：抓取配置与 `rule_files`
+- `prometheus/rules/*.yml`：企业平台参考告警规则
+- `otel-collector/collector-config.yaml`：OTLP → Prometheus remote-write
+- `tempo/tempo.yaml`：链路后端
+- `grafana/datasources/*`：Grafana 数据源
+- `grafana/dashboards/`：仪表盘 provisioning 根目录
+- `init_data.json`：Casdoor 初始化
+- `searxng-settings.yml`：搜索侧车配置
 
-   这将会启动 Grafana、Prometheus、Tempo、otel-collector 以及 LobeHub、Casdoor、Minio 等高级服务。
+若无法克隆整仓，请下载完整的 `docker-compose/production/grafana` 目录树（例如 sparse checkout 或源码归档），不要只取 `docker-compose.yml` 与 `.env.example`。缺少兄弟配置时相对 volume 挂载会失败。
+
+Compose 中固定了 Prometheus（`prom/prometheus:v2.55.1`）以及提供 `prometheusremotewrite` 的 OTel Collector contrib 镜像。应用指标经 Collector **remote write** 进入 Prometheus（Prometheus 进程本身不启用 OTLP 接收）。
 
 ## 2. 访问 Grafana 仪表盘
 
@@ -55,11 +66,27 @@ mv .env.example .env
 
 点击左侧边栏的 “Explore” 进入查询编辑器，可对 Prometheus 和 Tempo 数据源进行即席查询。
 
+## 3.1 企业平台参考告警规则
+
+Compose 示例会从只读挂载的 `prometheus/rules/enterprise-platform-alerts.yml` 加载企业平台指标的 Prometheus **参考**告警规则。可在 Prometheus 的 **Alerts** / **Rules** 中查看。
+
+**本示例不配置通知接收端。** 无 Alertmanager 时，触发中的规则仍可在 Prometheus UI 观察。生产环境的路由、阈值与值班归属由部署方配置，见仓库内 `docs/enterprise/runbooks/enterprise-prometheus-alerts.md`。在完整检出中校验：
+
+```sh
+bun run enterprise:check-prometheus-rules
+bun run enterprise:check-otel-collector
+bun run enterprise:probe-otlp-prometheus
+```
+
+Docker、固定镜像或校验不可用时命令失败（fail closed）。以上**不**宣称已部署生产，也**不**配置 Alertmanager 接收端。
+
 ## 4. 故障排查
 
 - 确认所有容器已运行：`docker compose ps`
 - 查看服务日志：`docker compose logs <服务名>`
 - 检查 Prometheus 和 Tempo 是否正常采集 LobeHub 及 otel-collector 的数据。
+- 确认企业规则已加载：打开 Prometheus `/rules`，查找 group `enterprise-platform`。
+- 若出现 `prometheus/`、`otel-collector/`、`tempo/` 或 `grafana/` 挂载错误，说明未使用完整目录包 — 请回到第 1 步。
 
 ## 相关链接
 

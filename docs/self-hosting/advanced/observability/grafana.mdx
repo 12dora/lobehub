@@ -1,9 +1,7 @@
 ---
 title: 'Observability with Grafana, Prometheus, and Tempo'
 description: >-
-  Monitor and analyze your LobeHub instance using Grafana dashboards, Prometheus
-  metrics, and Tempo traces. This guide covers setup, configuration for
-  self-hosted deployments.
+  Monitor and analyze your LobeHub instance using Grafana dashboards, Prometheus metrics, and Tempo traces. This guide covers setup, configuration for self-hosted deployments.
 tags:
   - Observability
   - Grafana
@@ -20,8 +18,7 @@ LobeHub supports advanced observability for self-hosted deployments using open-s
 - **Tempo** for distributed tracing
 - **otel-collector** ingesting other OpenTelemetry supported data
 
-We provided Docker Compose (`docker-compose`) file presets to bootstrap the observability stack with advanced self-hosting features.
-This guide will help you set up and use these tools to monitor your LobeHub instance.
+We provide a Docker Compose preset under `docker-compose/production/grafana/` that bootstraps the observability stack with advanced self-hosting features. The stack depends on **multiple files** (Prometheus config and rules, collector config, Tempo config, Grafana provisioning, Casdoor init data, env examples) — a single downloaded `docker-compose.yml` is **not** enough.
 
 ## Prerequisites
 
@@ -29,22 +26,36 @@ This guide will help you set up and use these tools to monitor your LobeHub inst
 - OrbStack (macOS), or Docker Desktop Windows
 - `docker-compose` plugin enabled (check through `docker compose version`)
 
-## 1. Deploy
+## 1. Deploy (full directory bundle)
+
+**Preferred:** use a repository checkout so every mounted path exists:
 
 ```bash
-curl -O https://raw.githubusercontent.com/lobehub/lobehub/HEAD/docker-compose/production/grafana/docker-compose.yml
-curl -O https://raw.githubusercontent.com/lobehub/lobehub/HEAD/docker-compose/production/grafana/.env.example
-mv .env.example .env
+git clone https://github.com/lobehub/lobehub.git
+cd lobehub/docker-compose/production/grafana
+cp .env.example .env
+# Edit secrets/passwords in .env as needed.
+docker compose up -d
 ```
 
-1. Update the password & secrets in the `.env` file as needed.
-2. Start the stack with the correct profile:
+This directory must include at least:
 
-   ```sh
-   docker compose up -d
-   ```
+| Path                                   | Role                             |
+| -------------------------------------- | -------------------------------- |
+| `docker-compose.yml`                   | Service graph and image pins     |
+| `.env` (from `.env.example`)           | Secrets and ports                |
+| `prometheus/prometheus.yml`            | Scrape + `rule_files`            |
+| `prometheus/rules/*.yml`               | Enterprise reference alert rules |
+| `otel-collector/collector-config.yaml` | OTLP → Prometheus remote-write   |
+| `tempo/tempo.yaml`                     | Trace backend                    |
+| `grafana/datasources/*`                | Grafana datasource provisioning  |
+| `grafana/dashboards/`                  | Dashboard provisioning root      |
+| `init_data.json`                       | Casdoor init                     |
+| `searxng-settings.yml`                 | Search sidecar settings          |
 
-   This will launch Grafana, Prometheus, Tempo, and the otel-collector alongside LobeHub with Casdoor, Minio, and other advanced services.
+If you cannot clone the full repo, download the **entire** `docker-compose/production/grafana` tree (for example via GitHub sparse checkout or archive), not only `docker-compose.yml` and `.env.example`. Relative volume mounts will fail if sibling configs are missing.
+
+Pinned runtimes in the compose file include Prometheus (`prom/prometheus:v2.55.1`) and the OTel Collector contrib image required for `prometheusremotewrite`. Prometheus accepts metrics via **remote write** from the collector (not OTLP on the Prometheus process itself).
 
 ## 2. Access Grafana Dashboards
 
@@ -57,11 +68,27 @@ mv .env.example .env
 
 Click on "Explore" in the left sidebar to access the query editor to run ad-hoc queries against your Prometheus and Tempo data sources.
 
+## 3.1 Enterprise platform reference alerts
+
+The compose stack loads checked-in Prometheus **reference** alert rules for enterprise platform metrics from `prometheus/rules/enterprise-platform-alerts.yml` (mounted read-only). Rules are visible under Prometheus **Alerts** / **Rules**.
+
+**Notification receivers are not configured** in this example. A firing rule is still observable in Prometheus without Alertmanager. Production routing, thresholds, and on-call ownership are deployment-owned — see `docs/enterprise/runbooks/enterprise-prometheus-alerts.md` in the repository. Validate from a full checkout:
+
+```sh
+bun run enterprise:check-prometheus-rules
+bun run enterprise:check-otel-collector
+bun run enterprise:probe-otlp-prometheus
+```
+
+These commands fail closed if Docker, pinned images, or validation are unavailable. They do **not** claim production deployment or configure Alertmanager receivers.
+
 ## 4. Troubleshooting
 
 - Ensure all containers are running: `docker compose ps`
 - Check logs for any service: `docker compose logs <service-name>`
 - Verify Prometheus and Tempo are scraping and receiving data from LobeHub and otel-collector.
+- Confirm enterprise rules loaded: open Prometheus `/rules` and look for group `enterprise-platform`.
+- If volume mount errors appear for `prometheus/`, `otel-collector/`, `tempo/`, or `grafana/`, you started compose without the full directory bundle — return to step 1.
 
 ## See Also
 
