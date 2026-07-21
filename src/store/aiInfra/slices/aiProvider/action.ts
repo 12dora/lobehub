@@ -16,7 +16,7 @@ import { isAiModelVisible } from 'model-bank';
 import { type SWRResponse } from 'swr';
 
 import { mutate, useClientDataSWR } from '@/libs/swr';
-import { aiProviderService } from '@/services/aiProvider';
+import { type AiInfraServices } from '@/store/aiInfra/services';
 import { type AiInfraStore } from '@/store/aiInfra/store';
 import { type StoreSetter } from '@/store/types';
 import { useUserStore } from '@/store/user';
@@ -316,26 +316,39 @@ export const buildAiProviderRuntimeStoreState = async (
 };
 
 type Setter = StoreSetter<AiInfraStore>;
-export const createAiProviderSlice = (set: Setter, get: () => AiInfraStore, _api?: unknown) =>
-  new AiProviderActionImpl(set, get, _api);
+
+export const createAiProviderSlice =
+  (services: AiInfraServices) => (set: Setter, get: () => AiInfraStore, _api?: unknown) =>
+    new AiProviderActionImpl(set, get, services);
 
 export class AiProviderActionImpl {
   readonly #get: () => AiInfraStore;
+  readonly #services: AiInfraServices;
   readonly #set: Setter;
 
-  constructor(set: Setter, get: () => AiInfraStore, _api?: unknown) {
-    void _api;
+  constructor(set: Setter, get: () => AiInfraStore, services: AiInfraServices) {
     this.#set = set;
     this.#get = get;
+    this.#services = services;
   }
 
+  #scopeKey = (key: string | readonly unknown[]): string | readonly unknown[] => {
+    const scope = this.#services.swrScope ?? 'user';
+    if (scope === 'user') return key;
+    if (typeof key === 'string') return `${scope}:${key}`;
+    return [scope, ...key];
+  };
+
   createNewAiProvider = async (params: CreateAiProviderParams): Promise<void> => {
-    await aiProviderService.createAiProvider({ ...params, source: AiProviderSourceEnum.Custom });
+    await this.#services.aiProvider.createAiProvider({
+      ...params,
+      source: AiProviderSourceEnum.Custom,
+    });
     await this.#get().refreshAiProviderList();
   };
 
   deleteAiProvider = async (id: string): Promise<void> => {
-    await aiProviderService.deleteAiProvider(id);
+    await this.#services.aiProvider.deleteAiProvider(id);
 
     await this.#get().refreshAiProviderList();
   };
@@ -368,19 +381,21 @@ export class AiProviderActionImpl {
   };
 
   refreshAiProviderDetail = async (): Promise<void> => {
-    await mutate([AiProviderSwrKey.fetchAiProviderItem, this.#get().activeAiProvider]);
+    await mutate(
+      this.#scopeKey([AiProviderSwrKey.fetchAiProviderItem, this.#get().activeAiProvider]),
+    );
     await this.#get().refreshAiProviderRuntimeState();
   };
 
   refreshAiProviderList = async (): Promise<void> => {
-    await mutate(AiProviderSwrKey.fetchAiProviderList);
+    await mutate(this.#scopeKey(AiProviderSwrKey.fetchAiProviderList));
     await this.#get().refreshAiProviderRuntimeState();
   };
 
   refreshAiProviderRuntimeState = async (): Promise<void> => {
     await Promise.all([
-      mutate([AiProviderSwrKey.fetchAiProviderRuntimeState, true]),
-      mutate([AiProviderSwrKey.fetchAiProviderRuntimeState, false]),
+      mutate(this.#scopeKey([AiProviderSwrKey.fetchAiProviderRuntimeState, true])),
+      mutate(this.#scopeKey([AiProviderSwrKey.fetchAiProviderRuntimeState, false])),
     ]);
   };
 
@@ -408,13 +423,13 @@ export class AiProviderActionImpl {
   };
 
   removeAiProvider = async (id: string): Promise<void> => {
-    await aiProviderService.deleteAiProvider(id);
+    await this.#services.aiProvider.deleteAiProvider(id);
     await this.#get().refreshAiProviderList();
   };
 
   toggleProviderEnabled = async (id: string, enabled: boolean): Promise<void> => {
     this.#get().internal_toggleAiProviderLoading(id, true);
-    await aiProviderService.toggleProviderEnabled(id, enabled);
+    await this.#services.aiProvider.toggleProviderEnabled(id, enabled);
 
     // Immediately update local aiProviderList to reflect the change
     // This ensures the switch displays correctly without waiting for SWR refresh
@@ -435,7 +450,7 @@ export class AiProviderActionImpl {
 
   updateAiProvider = async (id: string, value: UpdateAiProviderParams): Promise<void> => {
     this.#get().internal_toggleAiProviderLoading(id, true);
-    await aiProviderService.updateAiProvider(id, value);
+    await this.#services.aiProvider.updateAiProvider(id, value);
     await this.#get().refreshAiProviderList();
     await this.#get().refreshAiProviderDetail();
 
@@ -447,7 +462,7 @@ export class AiProviderActionImpl {
     value: UpdateAiProviderConfigParams,
   ): Promise<void> => {
     this.#get().internal_toggleAiProviderConfigUpdating(id, true);
-    await aiProviderService.updateAiProviderConfig(id, value);
+    await this.#services.aiProvider.updateAiProviderConfig(id, value);
 
     // Immediately update local state for instant UI feedback
     this.#set(
@@ -509,14 +524,14 @@ export class AiProviderActionImpl {
   };
 
   updateAiProviderSort = async (items: AiProviderSortMap[]): Promise<void> => {
-    await aiProviderService.updateAiProviderOrder(items);
+    await this.#services.aiProvider.updateAiProviderOrder(items);
     await this.#get().refreshAiProviderList();
   };
 
   useFetchAiProviderItem = (id: string): SWRResponse<AiProviderDetailItem | undefined> => {
     return useClientDataSWR<AiProviderDetailItem | undefined>(
-      [AiProviderSwrKey.fetchAiProviderItem, id],
-      () => aiProviderService.getAiProviderById(id),
+      this.#scopeKey([AiProviderSwrKey.fetchAiProviderItem, id]),
+      () => this.#services.aiProvider.getAiProviderById(id),
       {
         onSuccess: (data) => {
           if (!data) return;
@@ -536,8 +551,8 @@ export class AiProviderActionImpl {
 
   useFetchAiProviderList = (opts?: { enabled?: boolean }): SWRResponse<AiProviderListItem[]> => {
     return useClientDataSWR<AiProviderListItem[]>(
-      opts?.enabled === false ? null : AiProviderSwrKey.fetchAiProviderList,
-      () => aiProviderService.getAiProviderList(),
+      opts?.enabled === false ? null : this.#scopeKey(AiProviderSwrKey.fetchAiProviderList),
+      () => this.#services.aiProvider.getAiProviderList(),
       {
         onSuccess: (data) => {
           if (!this.#get().initAiProviderList) {
@@ -567,16 +582,18 @@ export class AiProviderActionImpl {
     const shouldFetch = isAuthLoaded && isLogin !== null && isLogin !== undefined;
 
     return useClientDataSWR<AiProviderRuntimeStateWithBuiltinModels | undefined>(
-      shouldFetch ? [AiProviderSwrKey.fetchAiProviderRuntimeState, isLogin] : null,
-      async ([, isLogin]) => {
+      shouldFetch ? this.#scopeKey([AiProviderSwrKey.fetchAiProviderRuntimeState, isLogin]) : null,
+      async () => {
+        // Close over isLogin — SWR key may be scoped with a leading scope segment.
+        const login = isLogin;
         const [{ loadModels }, { DEFAULT_MODEL_PROVIDER_LIST }] = await Promise.all([
           import('@/business/client/model-bank/loadModels'),
           import('model-bank/modelProviders'),
         ]);
         const builtinAiModelList = await loadModels();
 
-        if (isLogin) {
-          const data = await aiProviderService.getAiProviderRuntimeState();
+        if (login) {
+          const data = await this.#services.aiProvider.getAiProviderRuntimeState();
           return buildAiProviderRuntimeStoreState(data, builtinAiModelList);
         }
 
