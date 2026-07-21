@@ -35,7 +35,7 @@ const GlobalCredsPage = memo(() => {
   return (
     <AdminPageTemplate description={t('creds.page.desc')} title={t('creds.page.title')}>
       <CredsApiProvider value={adminCredsApi}>
-        <Page />
+        <Page showSettingHeader={false} />
       </CredsApiProvider>
     </AdminPageTemplate>
   );

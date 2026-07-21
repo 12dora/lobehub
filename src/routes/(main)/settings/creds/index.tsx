@@ -12,7 +12,17 @@ import { createCreateCredModal } from './features/CreateCredModal';
 import CredsList from './features/CredsList';
 import { useCredsApi } from './features/useCredsApi';
 
-const Page = () => {
+export interface CredsSettingPageProps {
+  /**
+   * When false, hide the page SettingHeader title row (admin shell already
+   * provides title). Create action still renders via `headerExtra` / default
+   * create button path when header is hidden — see `createButton`.
+   * Default true (market / workspace pages).
+   */
+  showSettingHeader?: boolean;
+}
+
+const Page = ({ showSettingHeader = true }: CredsSettingPageProps = {}) => {
   const { t } = useTranslation('setting');
   const { allowed: canManageCredentials, reason } = usePermission('manage_provider_key');
   const [refreshKey, setRefreshKey] = useState(0);
@@ -26,23 +36,29 @@ const Page = () => {
     });
   };
 
+  const createButton = (
+    <Tooltip title={reason}>
+      <Button
+        disabled={!canManageCredentials}
+        icon={<Icon icon={Plus} />}
+        size={'large'}
+        onClick={handleCreate}
+      >
+        {t('creds.create')}
+      </Button>
+    </Tooltip>
+  );
+
   return (
     <>
-      <SettingHeader
-        title={t('tab.creds')}
-        extra={
-          <Tooltip title={reason}>
-            <Button
-              disabled={!canManageCredentials}
-              icon={<Icon icon={Plus} />}
-              size={'large'}
-              onClick={handleCreate}
-            >
-              {t('creds.create')}
-            </Button>
-          </Tooltip>
-        }
-      />
+      {showSettingHeader ? (
+        <SettingHeader extra={createButton} title={t('tab.creds')} />
+      ) : (
+        // Admin shell owns the page title; keep the create CTA visible.
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16 }}>
+          {createButton}
+        </div>
+      )}
       <CredsList key={refreshKey} />
     </>
   );

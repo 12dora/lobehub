@@ -12,6 +12,11 @@ import { useTranslation } from 'react-i18next';
 import { usePermission } from '@/hooks/usePermission';
 
 import { type CredsApi } from '../useCredsApi';
+import {
+  buildKvUpdateValues,
+  marketPrefillKvPairs,
+  platformPrefillKvPairs,
+} from './editKvFormUtils';
 
 const styles = createStaticStyles(({ css }) => ({
   footer: css`
@@ -45,8 +50,9 @@ const EditKVForm: FC<EditKVFormProps> = ({ cred, credsApi, onCancel, onSuccess }
   const { allowed: canManageCredentials } = usePermission('manage_provider_key');
   const [form] = Form.useForm<FormValues>();
   const [isLoading, setIsLoading] = useState(true);
+  const isPlatformMode = credsApi.mode === 'platform';
 
-  // Fetch decrypted values on mount
+  // Fetch values on mount — platform mode never pre-fills secret material.
   useEffect(() => {
     const fetchDecryptedValues = async () => {
       if (!canManageCredentials) {
@@ -55,25 +61,36 @@ const EditKVForm: FC<EditKVFormProps> = ({ cred, credsApi, onCancel, onSuccess }
       }
 
       try {
-        const result = await credsApi.client.get.query({
-          decrypt: true,
-          id: cred.id,
-        });
-
-        // Convert values object to array of key-value pairs
-        const values = (result as any).plaintext || {};
-        const kvPairs = Object.entries(values).map(([key, value]) => ({
-          key,
-          value: value as string,
-        }));
-
-        form.setFieldsValue({
-          description: cred.description,
-          kvPairs: kvPairs.length > 0 ? kvPairs : [{ key: '', value: '' }],
-          name: cred.name,
-        });
+        if (isPlatformMode) {
+          // Prefer valueKeys from list summary; fall back to get() key names only.
+          let valueKeys = (cred as { valueKeys?: string[] }).valueKeys;
+          if (!valueKeys?.length) {
+            const result = await credsApi.client.get.query({
+              decrypt: true,
+              id: cred.id,
+            });
+            valueKeys = Object.keys(
+              (result as { plaintext?: Record<string, string> })?.plaintext ?? {},
+            );
+          }
+          form.setFieldsValue({
+            description: cred.description,
+            kvPairs: platformPrefillKvPairs(valueKeys),
+            name: cred.name,
+          });
+        } else {
+          const result = await credsApi.client.get.query({
+            decrypt: true,
+            id: cred.id,
+          });
+          const values = (result as { plaintext?: Record<string, string> }).plaintext || {};
+          form.setFieldsValue({
+            description: cred.description,
+            kvPairs: marketPrefillKvPairs(values),
+            name: cred.name,
+          });
+        }
       } catch {
-        // If decryption fails, just show empty values
         form.setFieldsValue({
           description: cred.description,
           kvPairs: [{ key: '', value: '' }],
@@ -85,28 +102,20 @@ const EditKVForm: FC<EditKVFormProps> = ({ cred, credsApi, onCancel, onSuccess }
     };
 
     fetchDecryptedValues();
-  }, [canManageCredentials, cred.id, cred.name, cred.description, credsApi, form]);
+  }, [canManageCredentials, cred, credsApi, form, isPlatformMode]);
 
   const updateMutation = useMutation({
     mutationFn: async (values: FormValues) => {
       if (!canManageCredentials) return;
 
-      const kvPairs = values.kvPairs || [];
-      const valuesObj = kvPairs.reduce(
-        (acc, pair) => {
-          if (pair.key && pair.value) {
-            acc[pair.key] = pair.value;
-          }
-          return acc;
-        },
-        {} as Record<string, string>,
-      );
+      const valuesObj = buildKvUpdateValues(values.kvPairs);
 
       await credsApi.client.update.mutate({
         description: values.description,
         id: cred.id,
         name: values.name,
-        values: valuesObj,
+        // Omit values when empty → metadata-only update (server keeps secret).
+        ...(valuesObj ? { values: valuesObj } : {}),
       });
     },
     onSuccess: () => {
@@ -127,6 +136,10 @@ const EditKVForm: FC<EditKVFormProps> = ({ cred, credsApi, onCancel, onSuccess }
       </Flexbox>
     );
   }
+
+  const valuePlaceholder = isPlatformMode
+    ? t('creds.form.valueKeepPlaceholder')
+    : t('creds.form.valuePlaceholder');
 
   return (
     <Form<FormValues> form={form} layout="vertical" onFinish={handleSubmit}>
@@ -162,7 +175,7 @@ const EditKVForm: FC<EditKVFormProps> = ({ cred, credsApi, onCancel, onSuccess }
                     <Input.Password
                       autoComplete="new-password"
                       disabled={!canManageCredentials}
-                      placeholder={t('creds.form.valuePlaceholder')}
+                      placeholder={valuePlaceholder}
                     />
                   </Form.Item>
                   {fields.length > 1 && (

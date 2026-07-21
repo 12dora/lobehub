@@ -202,4 +202,71 @@ describe('PlatformGlobalCredentialModel', () => {
     expect(consumed?.ciphertext).toBe('aihub.secret.v1.test.upload-body');
     await expect(model.consumeUpload(hash)).resolves.toBeNull();
   });
+
+  it('createFromStagedUpload keeps staging on key conflict and succeeds on retry', async () => {
+    const model = new PlatformGlobalCredentialModel(db);
+    await model.create({
+      envelope: fakeEnvelope('existing'),
+      key: 'dup-file-key',
+      name: 'Existing',
+      type: 'kv-env',
+    });
+
+    const hash = 'c'.repeat(64);
+    await model.stageUpload({
+      envelope: fakeEnvelope('staged-file'),
+      expiresAt: new Date(Date.now() + 60_000),
+      fileHashId: hash,
+      fileName: 'retry.json',
+      fileSize: 16,
+      fileType: 'application/json',
+    });
+
+    await expect(
+      model.createFromStagedUpload({
+        fileHashId: hash,
+        key: 'dup-file-key',
+        name: 'Conflict',
+      }),
+    ).rejects.toBeInstanceOf(PlatformGlobalCredentialConflictError);
+
+    // Staging must survive the conflict so the admin can retry with a new key.
+    await expect(model.getStagedUpload(hash)).resolves.toMatchObject({
+      fileName: 'retry.json',
+    });
+
+    const created = await model.createFromStagedUpload({
+      fileHashId: hash,
+      key: 'unique-file-key',
+      name: 'Retry ok',
+    });
+    expect(created.key).toBe('unique-file-key');
+    expect(created.fileName).toBe('retry.json');
+    await expect(model.getStagedUpload(hash)).resolves.toBeNull();
+  });
+
+  it('stageUpload GCs expired staging rows', async () => {
+    const model = new PlatformGlobalCredentialModel(db);
+    const expired = 'd'.repeat(64);
+    const fresh = 'e'.repeat(64);
+    await model.stageUpload({
+      envelope: fakeEnvelope('expired'),
+      expiresAt: new Date(Date.now() - 1000),
+      fileHashId: expired,
+      fileName: 'old.bin',
+      fileSize: 8,
+      fileType: 'application/octet-stream',
+    });
+    // Expired rows are not returned by getStagedUpload (expiresAt filter),
+    // but they still exist until the next stageUpload GCs them.
+    await model.stageUpload({
+      envelope: fakeEnvelope('fresh'),
+      expiresAt: new Date(Date.now() + 60_000),
+      fileHashId: fresh,
+      fileName: 'new.bin',
+      fileSize: 8,
+      fileType: 'application/octet-stream',
+    });
+    await expect(model.getStagedUpload(fresh)).resolves.toMatchObject({ fileName: 'new.bin' });
+  });
 });

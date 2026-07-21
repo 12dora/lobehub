@@ -145,7 +145,10 @@ const ViewCredModalContent: FC<ViewCredModalContentProps> = ({ cred, credsApi })
         decrypt: true,
         id: cred.id,
       }),
-    queryKey: ['cred-plaintext', cred.id, isPlatformMode ? 'platform' : 'market'],
+    // Market path keeps the original key; platform appends a scope element only.
+    queryKey: isPlatformMode
+      ? (['cred-plaintext', cred.id, 'platform'] as const)
+      : (['cred-plaintext', cred.id] as const),
   });
 
   const values = (data as any)?.plaintext || {};
@@ -171,16 +174,9 @@ const ViewCredModalContent: FC<ViewCredModalContentProps> = ({ cred, credsApi })
     <>
       <Alert
         showIcon
+        message={isPlatformMode ? t('creds.view.platformNoPlaintext') : t('creds.view.warning')}
         style={{ marginBottom: 16 }}
         type={isPlatformMode ? 'info' : 'warning'}
-        message={
-          isPlatformMode
-            ? t('creds.view.platformNoPlaintext' as any, {
-                defaultValue:
-                  'Platform credentials never reveal secret values. Only configuration status is shown.',
-              })
-            : t('creds.view.warning')
-        }
       />
       <Descriptions bordered column={1} size={'small'}>
         <Descriptions.Item label={t('creds.table.name')}>{cred.name}</Descriptions.Item>
@@ -191,12 +187,8 @@ const ViewCredModalContent: FC<ViewCredModalContentProps> = ({ cred, credsApi })
           {cred.type ? t(`creds.types.${cred.type}` as any) : '-'}
         </Descriptions.Item>
         {isPlatformMode && (
-          <Descriptions.Item
-            label={t('creds.view.configured' as any, { defaultValue: 'Configured' })}
-          >
-            {configured
-              ? t('creds.view.configuredYes' as any, { defaultValue: 'Yes' })
-              : t('creds.view.configuredNo' as any, { defaultValue: 'No' })}
+          <Descriptions.Item label={t('creds.view.configured')}>
+            {configured ? t('creds.view.configuredYes') : t('creds.view.configuredNo')}
           </Descriptions.Item>
         )}
       </Descriptions>
