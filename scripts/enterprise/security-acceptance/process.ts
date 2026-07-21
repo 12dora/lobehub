@@ -7,10 +7,12 @@
  * 3. After grace, SIGKILL remaining; rescan until empty or hard cleanup deadline.
  * 4. Resolve only after descendants are confirmed gone (or cleanupFailed).
  *
+ * Discovery/permission uncertainty is fail-closed: never treat a failed snapshot
+ * or EPERM existence probe as “nothing remains.”
+ *
  * Parent process `close` does not cancel escalation — cleanup runs to completion.
  */
-import { type ChildProcessByStdio, spawn } from 'node:child_process';
-import { execFile } from 'node:child_process';
+import { type ChildProcessByStdio, execFile, spawn } from 'node:child_process';
 import type { Readable } from 'node:stream';
 import { promisify } from 'node:util';
 
@@ -35,8 +37,18 @@ export interface ProcessResult {
 
 export type ProcessRunner = (
   argv: readonly string[],
-  options: { cwd: string; env?: NodeJS.ProcessEnv; timeoutMs?: number },
+  options: RunProcessOptions,
 ) => Promise<ProcessResult>;
+
+export interface RunProcessOptions {
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+  /** Injectable existence probe (tests). */
+  probeExistence?: PidExistenceProbe;
+  /** Injectable PID table snapshot (tests). */
+  snapshotPidTable?: PidTableSnapshotter;
+  timeoutMs?: number;
+}
 
 /** Grace after SIGTERM before SIGKILL (ms). */
 export const PROCESS_KILL_GRACE_MS = 1_000;
@@ -47,6 +59,16 @@ export const PROCESS_CLEANUP_POLL_MS = 50;
 
 /** Child with stdin ignored and stdout/stderr piped. */
 type PipedChild = ChildProcessByStdio<null, Readable, Readable>;
+
+/** Existence semantics: only `absent` is proven nonexistence (ESRCH). */
+export type PidExistence = 'alive' | 'absent' | 'unconfirmed';
+
+export type PidExistenceProbe = (pid: number) => PidExistence;
+
+export type PidTableSnapshot =
+  { map: Map<number, number>; ok: true } | { ok: false; reason: string };
+
+export type PidTableSnapshotter = () => Promise<PidTableSnapshot>;
 
 const collectBounded = (
   stream: Readable,
@@ -72,45 +94,75 @@ const collectBounded = (
 const isProtectedPid = (pid: number): boolean =>
   !Number.isInteger(pid) || pid <= 1 || pid === process.pid;
 
-/** True when process.kill(pid, 0) succeeds (process exists and is signalable). */
-export const processExists = (pid: number): boolean => {
-  if (isProtectedPid(pid)) return false;
+/**
+ * Probe whether a PID exists.
+ * - alive: kill(pid,0) succeeded
+ * - absent: ESRCH only
+ * - unconfirmed: EPERM and all other errors (fail-closed: treat as still present)
+ */
+export const probePidExistence: PidExistenceProbe = (pid) => {
+  if (isProtectedPid(pid)) return 'absent';
   try {
     process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
+    return 'alive';
+  } catch (error) {
+    const code =
+      error && typeof error === 'object' && 'code' in error
+        ? String((error as { code?: unknown }).code)
+        : '';
+    if (code === 'ESRCH') return 'absent';
+    return 'unconfirmed';
   }
 };
 
+/** True when process is not proven absent (alive or unconfirmed). */
+export const processExists = (pid: number): boolean => probePidExistence(pid) !== 'absent';
+
+/** True only when ESRCH proves the process is gone. */
+export const isProcessAbsent = (pid: number): boolean => probePidExistence(pid) === 'absent';
+
 /**
- * Snapshot PID → PPID map via `ps` (POSIX). Empty map on failure.
- * Cross-platform fallback: empty (Windows uses taskkill /T).
+ * Build a PID table snapshotter. Optional `env` supports PATH=/definitely-not-real
+ * style discovery-unavailable regressions without privileged execution.
+ * Failures and empty/malformed tables are explicit `ok: false` — never empty-success.
  */
-export const snapshotPidPpid = async (): Promise<Map<number, number>> => {
-  const map = new Map<number, number>();
-  if (process.platform === 'win32') return map;
-  try {
-    const { stdout } = await execFileAsync('ps', ['-axo', 'pid=,ppid='], {
-      encoding: 'utf8',
-      maxBuffer: 8 * 1024 * 1024,
-      timeout: 5_000,
-    });
-    for (const line of stdout.split('\n')) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      const parts = trimmed.split(/\s+/u);
-      if (parts.length < 2) continue;
-      const pid = Number(parts[0]);
-      const ppid = Number(parts[1]);
-      if (!Number.isInteger(pid) || !Number.isInteger(ppid) || pid <= 0) continue;
-      map.set(pid, ppid);
+export const makeSnapshotPidPpid =
+  (env?: NodeJS.ProcessEnv): PidTableSnapshotter =>
+  async () => {
+    if (process.platform === 'win32') {
+      // Windows path uses taskkill; table discovery is not used for confirmation.
+      return { map: new Map(), ok: true };
     }
-  } catch {
-    // leave empty
-  }
-  return map;
-};
+    try {
+      const { stdout } = await execFileAsync('ps', ['-axo', 'pid=,ppid='], {
+        encoding: 'utf8',
+        env: env ?? process.env,
+        maxBuffer: 8 * 1024 * 1024,
+        timeout: 5_000,
+      });
+      const map = new Map<number, number>();
+      for (const line of stdout.split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        const parts = trimmed.split(/\s+/u);
+        if (parts.length < 2) continue;
+        const pid = Number(parts[0]);
+        const ppid = Number(parts[1]);
+        if (!Number.isInteger(pid) || !Number.isInteger(ppid) || pid <= 0) continue;
+        map.set(pid, ppid);
+      }
+      // A healthy host always has multiple processes; empty is treated as malformed.
+      if (map.size === 0) {
+        return { ok: false, reason: 'empty-snapshot' };
+      }
+      return { map, ok: true };
+    } catch {
+      return { ok: false, reason: 'snapshot-unavailable' };
+    }
+  };
+
+/** Default snapshotter using the current process environment. */
+export const snapshotPidPpid: PidTableSnapshotter = makeSnapshotPidPpid();
 
 /**
  * Collect all descendants of rootPid (not including root) via BFS on PPID edges.
@@ -147,7 +199,7 @@ const signalPid = (pid: number, signal: NodeJS.Signals): void => {
   try {
     process.kill(pid, signal);
   } catch {
-    // gone or not permitted
+    // gone or not permitted — still tracked via existence probe
   }
 };
 
@@ -160,39 +212,54 @@ const signalProcessGroup = (pgid: number, signal: NodeJS.Signals): void => {
   }
 };
 
+export interface TerminateProcessTreeOptions {
+  deadlineMs?: number;
+  graceMs?: number;
+  probeExistence?: PidExistenceProbe;
+  snapshotPidTable?: PidTableSnapshotter;
+}
+
 /**
  * Terminate root + full descendant tree. Rescans until empty or deadline.
- * Tracks known PIDs across waves so reparented (init/PPID=1) grandchildren
- * remain kill targets after the intermediate parent dies.
- * Never signals PID 0/1 or the current process.
+ * Tracks known PIDs across waves so reparented grandchildren remain kill targets.
+ * Discovery/permission uncertainty → cleanupFailed: true.
  */
 export const terminateProcessTree = async (
   rootPid: number,
-  options?: { deadlineMs?: number; graceMs?: number },
+  options?: TerminateProcessTreeOptions,
 ): Promise<{ cleanupFailed: boolean; remaining: number[] }> => {
   const deadlineMs = options?.deadlineMs ?? PROCESS_CLEANUP_DEADLINE_MS;
   const graceMs = options?.graceMs ?? PROCESS_KILL_GRACE_MS;
+  const probe = options?.probeExistence ?? probePidExistence;
+  const snapshot = options?.snapshotPidTable ?? snapshotPidPpid;
   const started = Date.now();
 
   if (isProtectedPid(rootPid)) {
     return { cleanupFailed: true, remaining: [] };
   }
 
-  // Cumulative set of owned PIDs discovered at any scan (survives reparenting).
   const known = new Set<number>([rootPid]);
+  let discoveryFailed = false;
+
+  const stillPresent = (pid: number): boolean => {
+    const state = probe(pid);
+    return state === 'alive' || state === 'unconfirmed';
+  };
 
   const refreshKnown = async (): Promise<void> => {
-    const table = await snapshotPidPpid();
-    // Expand from every known PID still present, and from original root if alive.
-    const seeds = [...known].filter((pid) => processExists(pid));
-    if (processExists(rootPid) && !seeds.includes(rootPid)) seeds.push(rootPid);
+    const table = await snapshot();
+    if (!table.ok) {
+      discoveryFailed = true;
+      return;
+    }
+    const seeds = [...known].filter((pid) => stillPresent(pid));
+    if (stillPresent(rootPid) && !seeds.includes(rootPid)) seeds.push(rootPid);
     for (const seed of seeds.length > 0 ? seeds : [rootPid]) {
-      for (const pid of collectDescendantPids(seed, table)) {
+      for (const pid of collectDescendantPids(seed, table.map)) {
         if (!isProtectedPid(pid)) known.add(pid);
       }
     }
-    // Also attach any process whose PPID is a known owned PID.
-    for (const [pid, ppid] of table) {
+    for (const [pid, ppid] of table.map) {
       if (!isProtectedPid(pid) && known.has(ppid)) known.add(pid);
     }
   };
@@ -205,32 +272,59 @@ export const terminateProcessTree = async (
     }
   };
 
-  const aliveKnown = (): number[] =>
-    [...known].filter((pid) => !isProtectedPid(pid) && processExists(pid));
+  const presentKnown = (): number[] =>
+    [...known].filter((pid) => !isProtectedPid(pid) && stillPresent(pid));
 
   // Initial snapshot while the tree is still intact when possible.
   await refreshKnown();
+  // Even if discovery failed, still attempt to signal the root and its group.
   signalKnown('SIGTERM');
+
+  if (discoveryFailed) {
+    // Fail closed after bounded TERM/KILL attempts on known set (at least root).
+    const graceDeadline = Date.now() + graceMs;
+    while (Date.now() < graceDeadline && Date.now() - started < deadlineMs) {
+      signalKnown('SIGTERM');
+      await new Promise((resolve) => setTimeout(resolve, PROCESS_CLEANUP_POLL_MS));
+    }
+    while (Date.now() - started < deadlineMs) {
+      signalKnown('SIGKILL');
+      await new Promise((resolve) => setTimeout(resolve, PROCESS_CLEANUP_POLL_MS));
+      if (presentKnown().length === 0) break;
+    }
+    return { cleanupFailed: true, remaining: presentKnown() };
+  }
 
   const graceDeadline = Date.now() + graceMs;
   while (Date.now() < graceDeadline && Date.now() - started < deadlineMs) {
     await refreshKnown();
-    if (aliveKnown().length === 0) return { cleanupFailed: false, remaining: [] };
+    if (discoveryFailed) {
+      signalKnown('SIGKILL');
+      return { cleanupFailed: true, remaining: presentKnown() };
+    }
+    if (presentKnown().length === 0) return { cleanupFailed: false, remaining: [] };
     signalKnown('SIGTERM');
     await new Promise((resolve) => setTimeout(resolve, PROCESS_CLEANUP_POLL_MS));
   }
 
   while (Date.now() - started < deadlineMs) {
     await refreshKnown();
-    const alive = aliveKnown();
-    if (alive.length === 0) return { cleanupFailed: false, remaining: [] };
+    if (discoveryFailed) {
+      signalKnown('SIGKILL');
+      return { cleanupFailed: true, remaining: presentKnown() };
+    }
+    const present = presentKnown();
+    if (present.length === 0) return { cleanupFailed: false, remaining: [] };
     signalKnown('SIGKILL');
     await new Promise((resolve) => setTimeout(resolve, PROCESS_CLEANUP_POLL_MS));
   }
 
   await refreshKnown();
-  const remaining = aliveKnown();
-  return { cleanupFailed: remaining.length > 0, remaining };
+  const remaining = presentKnown();
+  return {
+    cleanupFailed: discoveryFailed || remaining.length > 0,
+    remaining,
+  };
 };
 
 const terminateWindowsTree = (pid: number): void => {
@@ -277,6 +371,8 @@ export const runProcess: ProcessRunner = (argv, options) =>
     let cleanupPromise: Promise<void> | undefined;
     const timeoutMs = options.timeoutMs ?? DEFAULT_PROCESS_TIMEOUT_MS;
     const rootPid = child.pid;
+    const probe = options.probeExistence ?? probePidExistence;
+    const snapshot = options.snapshotPidTable ?? snapshotPidPpid;
 
     const finish = (code: number) => {
       if (settled) return;
@@ -305,25 +401,26 @@ export const runProcess: ProcessRunner = (argv, options) =>
       }
       if (process.platform === 'win32') {
         terminateWindowsTree(rootPid);
-        // Brief wait then check root only (no portable descendant snapshot).
         await new Promise((r) => setTimeout(r, PROCESS_KILL_GRACE_MS));
-        if (processExists(rootPid)) {
+        if (probe(rootPid) !== 'absent') {
           terminateWindowsTree(rootPid);
           await new Promise((r) => setTimeout(r, PROCESS_KILL_GRACE_MS));
         }
-        cleanupFailed = processExists(rootPid);
+        // Only ESRCH-equivalent (absent) is clean; unconfirmed → cleanupFailed.
+        cleanupFailed = probe(rootPid) !== 'absent';
         return;
       }
-      const result = await terminateProcessTree(rootPid);
+      const result = await terminateProcessTree(rootPid, {
+        probeExistence: probe,
+        snapshotPidTable: snapshot,
+      });
       cleanupFailed = result.cleanupFailed;
     };
 
     const timer = setTimeout(() => {
       timedOut = true;
-      // Start cleanup immediately; do not cancel escalation when parent closes early.
       cleanupPromise = runCleanup();
       void cleanupPromise.then(() => {
-        // Always settle after cleanup — even if parent handle is stuck.
         finish(codeFromChild(child) ?? 1);
       });
     }, timeoutMs);
@@ -338,7 +435,6 @@ export const runProcess: ProcessRunner = (argv, options) =>
     child.once('close', (code) => {
       clearTimeout(timer);
       if (timedOut) {
-        // Parent closed — still wait for full tree cleanup before resolving.
         const pending = cleanupPromise ?? runCleanup();
         void pending.then(() => {
           finish(code ?? 1);

@@ -30,12 +30,18 @@ import { PEN_REGRESSION_MANIFEST } from './penManifest';
 import { runPenRegression } from './penRegression';
 import { digestLine, scanForForbiddenReportContent } from './privacy';
 import {
+  isProcessAbsent,
+  makeSnapshotPidPpid,
+  type PidExistenceProbe,
+  type PidTableSnapshotter,
+  probePidExistence,
   PROCESS_CLEANUP_DEADLINE_MS,
   PROCESS_KILL_GRACE_MS,
   processExists,
   type ProcessResult,
   type ProcessRunner,
   runProcess,
+  terminateProcessTree,
 } from './process';
 import { validateRepoRelativeRoot } from './repoPaths';
 import { evaluateFromChecksDir } from './runner';
@@ -1075,7 +1081,7 @@ describe('process-tree timeout', () => {
     const timeoutMs = 150;
     const result = await runProcess(
       [
-        'node',
+        process.execPath,
         '-e',
         `
           const {spawn} = require('child_process');
@@ -1105,7 +1111,7 @@ describe('process-tree timeout', () => {
       const started = Date.now();
       const result = await runProcess(
         [
-          'node',
+          process.execPath,
           '-e',
           `
             const {spawn} = require('child_process');
@@ -1131,7 +1137,7 @@ describe('process-tree timeout', () => {
       const raw = await readFile(pidFile, 'utf8').catch(() => '');
       grandchildPid = Number(raw.trim());
       expect(Number.isInteger(grandchildPid) && (grandchildPid as number) > 1).toBe(true);
-      expect(processExists(grandchildPid as number)).toBe(false);
+      expect(isProcessAbsent(grandchildPid as number)).toBe(true);
       expect(result.cleanupFailed).toBe(false);
     } finally {
       if (grandchildPid && processExists(grandchildPid)) {
@@ -1144,6 +1150,110 @@ describe('process-tree timeout', () => {
       await rm(pidFile, { force: true }).catch(() => undefined);
     }
   }, 25_000);
+
+  it('unavailable PID discovery fails closed with detached TERM-ignoring grandchild', async () => {
+    if (process.platform === 'win32') return;
+    const pidFile = path.join(tmpdir(), `m13-s05-ps-${process.pid}-${Date.now()}.pid`);
+    const timeoutMs = 200;
+    let grandchildPid: number | undefined;
+    try {
+      // Simulate PATH=/definitely-not-real style discovery failure via injectable snapshot.
+      // Parent still starts a real detached grandchild that ignores SIGTERM.
+      const snapshotPidTable: PidTableSnapshotter = async () => ({
+        ok: false,
+        reason: 'snapshot-unavailable',
+      });
+      const result = await runProcess(
+        [
+          process.execPath,
+          '-e',
+          `
+            const {spawn} = require('child_process');
+            const fs = require('fs');
+            const pidFile = process.argv[1];
+            const g = spawn(process.execPath, ['-e',
+              "process.on('SIGTERM',()=>{}); setInterval(()=>{}, 1000);"], {
+              detached: true,
+              stdio: 'ignore',
+            });
+            fs.writeFileSync(pidFile, String(g.pid));
+            g.unref();
+            setInterval(() => {}, 1000);
+            `,
+          pidFile,
+        ],
+        {
+          cwd: process.cwd(),
+          snapshotPidTable,
+          timeoutMs,
+        },
+      );
+      expect(result.timedOut).toBe(true);
+      // Must not claim successful cleanup when discovery is unavailable.
+      expect(result.cleanupFailed).toBe(true);
+
+      const raw = await readFile(pidFile, 'utf8').catch(() => '');
+      grandchildPid = Number(raw.trim());
+      expect(Number.isInteger(grandchildPid) && (grandchildPid as number) > 1).toBe(true);
+      // Grandchild typically still alive because it was never discovered — residue cleaned in finally.
+      expect(processExists(grandchildPid as number)).toBe(true);
+    } finally {
+      if (grandchildPid && processExists(grandchildPid)) {
+        try {
+          process.kill(grandchildPid, 'SIGKILL');
+        } catch {
+          // cleanup best effort
+        }
+      }
+      await rm(pidFile, { force: true }).catch(() => undefined);
+    }
+  }, 25_000);
+
+  it('injected discovery failure fails closed without empty-success', async () => {
+    const snapshotPidTable: PidTableSnapshotter = async () => ({
+      ok: false,
+      reason: 'snapshot-unavailable',
+    });
+    const probeExistence: PidExistenceProbe = (pid) =>
+      pid === 424_242 ? 'alive' : probePidExistence(pid);
+    const result = await terminateProcessTree(424_242, {
+      deadlineMs: 150,
+      graceMs: 40,
+      probeExistence,
+      snapshotPidTable,
+    });
+    expect(result.cleanupFailed).toBe(true);
+  });
+
+  it('PATH=/definitely-not-real makes ps snapshot unavailable (not empty-success)', async () => {
+    if (process.platform === 'win32') return;
+    const snap = await makeSnapshotPidPpid({ ...process.env, PATH: '/definitely-not-real' })();
+    expect(snap.ok).toBe(false);
+    if (!snap.ok) expect(snap.reason).toBe('snapshot-unavailable');
+  });
+
+  it('EPERM/unconfirmed existence never counts as absent', async () => {
+    // Simulated tree: root 900001 → child 900002; both always unconfirmed (EPERM-like).
+    const snapshotPidTable: PidTableSnapshotter = async () => ({
+      map: new Map([
+        [900_001, 1],
+        [900_002, 900_001],
+      ]),
+      ok: true,
+    });
+    const probeExistence: PidExistenceProbe = (pid) => {
+      if (pid === 900_001 || pid === 900_002) return 'unconfirmed';
+      return 'absent';
+    };
+    const result = await terminateProcessTree(900_001, {
+      deadlineMs: 200,
+      graceMs: 50,
+      probeExistence,
+      snapshotPidTable,
+    });
+    expect(result.cleanupFailed).toBe(true);
+    expect(result.remaining.sort((a, b) => a - b)).toEqual([900_001, 900_002]);
+  });
 });
 
 describe('skip multiset enforcement', () => {
