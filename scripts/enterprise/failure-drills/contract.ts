@@ -65,6 +65,8 @@ const evidenceCoreSchema = z
     cleanupResult: z.enum(['failed', 'passed']),
     dependencies: failureDrillDependenciesSchema,
     elapsed: z.object({ milliseconds: z.number().finite().nonnegative() }).strict(),
+    /** Immutable wall-clock of evidence seal (ISO). */
+    generatedAt: z.string().datetime({ offset: true }).or(z.string().datetime()).optional(),
     gitSha: z.string().regex(/^[a-f\d]{40}$/u, 'must be a lowercase full Git SHA'),
     injection: injectionClassificationSchema,
     lane: z.literal(FAILURE_DRILL_LANE),
