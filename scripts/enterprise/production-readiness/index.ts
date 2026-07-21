@@ -1,3 +1,4 @@
+export * from './adapters';
 export {
   ALLOWLISTED_COMMANDS,
   buildDefaultReleasePlan,
@@ -40,7 +41,7 @@ export {
   type EvaluatePreflightInput,
   type EvaluatePreflightResult,
   evaluateProductionReadiness,
-  loadAndParseEvidenceList,
+  type GateEvidenceInput,
 } from './evaluate';
 export {
   assessEvidenceFreshness,
@@ -51,10 +52,19 @@ export {
 } from './freshness';
 export {
   buildToolTempDir,
+  type CleanupProof,
   cleanupToolOwnedPath,
+  createToolOwnedTempDir,
   isToolOwnedTempPath,
+  type ToolOwnedTempHandle,
   writeJsonAtomic,
 } from './fsUtils';
+export {
+  assertInventoryMatchesSchemas,
+  discoverPlatformTableNamesFromSchemas,
+  RECOVERY_ENTERPRISE_TABLES,
+  SECRET_DOMAIN_TABLES,
+} from './inventory';
 export {
   countForbiddenValues,
   isFullGitSha,
@@ -64,7 +74,7 @@ export {
 export * from './recovery';
 export {
   loadEvidenceDirectory,
-  loadEvidenceFile,
+  loadGateEvidenceFile,
   loadReleaseCandidateFile,
   loadReleasePlanFile,
   runDispatchCommand,
@@ -95,3 +105,4 @@ export {
   sortWindowsDeterministic,
   upstreamRebaseEvidenceSchema,
 } from './schemas';
+export * from './trust';
