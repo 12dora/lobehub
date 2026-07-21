@@ -1,0 +1,1495 @@
+{
+  "entries": [
+    {
+      "category": "connection-string",
+      "lineDigest": "8bf9f10a4e8d34af95c081d1eec59d523a6d070e19fa587e5808c02abca0aad3",
+      "path": ".github/workflows/claude-auto-e2e-testing.yml"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "eeaa1c4a1672917494c7707dce7356f04755f5787b38092f88deb14746488ca0",
+      "path": ".github/workflows/claude-auto-e2e-testing.yml"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "eeaa1c4a1672917494c7707dce7356f04755f5787b38092f88deb14746488ca0",
+      "path": ".github/workflows/claude-auto-testing.yml"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "eeaa1c4a1672917494c7707dce7356f04755f5787b38092f88deb14746488ca0",
+      "path": ".github/workflows/claude-translate-comments.yml"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "eeaa1c4a1672917494c7707dce7356f04755f5787b38092f88deb14746488ca0",
+      "path": ".github/workflows/claude-translator.yml"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "eeaa1c4a1672917494c7707dce7356f04755f5787b38092f88deb14746488ca0",
+      "path": ".github/workflows/claude.yml"
+    },
+    {
+      "category": "connection-string",
+      "lineDigest": "8bf9f10a4e8d34af95c081d1eec59d523a6d070e19fa587e5808c02abca0aad3",
+      "path": ".github/workflows/e2e.yml"
+    },
+    {
+      "category": "connection-string",
+      "lineDigest": "a12636eb1866948f33ec4820edc917beb399c0bc464a93c63cf3337be3eddb7d",
+      "path": ".github/workflows/enterprise-failure-drills.yml"
+    },
+    {
+      "category": "connection-string",
+      "lineDigest": "19ceddd97278e66b10bce79a1f3310362b822b6db845eb44d448227d23896a5a",
+      "path": ".github/workflows/manual-build-desktop.yml"
+    },
+    {
+      "category": "connection-string",
+      "lineDigest": "19ceddd97278e66b10bce79a1f3310362b822b6db845eb44d448227d23896a5a",
+      "path": ".github/workflows/pr-build-desktop.yml"
+    },
+    {
+      "category": "connection-string",
+      "lineDigest": "a2f462f5f3bbdb1cb3bdfac3f49a194f917d7521d8ac98c73679881595e52586",
+      "path": ".github/workflows/release-desktop-aihub.yml"
+    },
+    {
+      "category": "connection-string",
+      "lineDigest": "19ceddd97278e66b10bce79a1f3310362b822b6db845eb44d448227d23896a5a",
+      "path": ".github/workflows/release-desktop-beta.yml"
+    },
+    {
+      "category": "connection-string",
+      "lineDigest": "19ceddd97278e66b10bce79a1f3310362b822b6db845eb44d448227d23896a5a",
+      "path": ".github/workflows/release-desktop-canary.yml"
+    },
+    {
+      "category": "connection-string",
+      "lineDigest": "19ceddd97278e66b10bce79a1f3310362b822b6db845eb44d448227d23896a5a",
+      "path": ".github/workflows/release-desktop-stable.yml"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "0c8dfe18bf3a12ad3e3e5af64556be9df36b6512244d169f473532264f9f013b",
+      "path": ".github/workflows/release-model-bank.yml"
+    },
+    {
+      "category": "connection-string",
+      "lineDigest": "95af6cb2843deb8d97246c3b45fb9801cc4d50f3bf75c4458afff57d77d40165",
+      "path": ".github/workflows/release.yml"
+    },
+    {
+      "category": "connection-string",
+      "lineDigest": "95af6cb2843deb8d97246c3b45fb9801cc4d50f3bf75c4458afff57d77d40165",
+      "path": ".github/workflows/test.yml"
+    },
+    {
+      "category": "token-or-api-key",
+      "lineDigest": "adcec750444d45ebee476cd36c57b4d86839cb61c2b4411b8184e118004949d9",
+      "path": "apps/server/src/enterprise/contracts/adminSecretRotation.test.ts"
+    },
+    {
+      "category": "token-or-api-key",
+      "lineDigest": "1cb479dcdcdd9454acb243284c0ba38dc08f81637ca1f6a2b1655f5fe6f11673",
+      "path": "apps/server/src/enterprise/contracts/adminSettings.test.ts"
+    },
+    {
+      "category": "token-or-api-key",
+      "lineDigest": "838613560ecffa87b264d4b1ba04b7f03cab7b542b80ea686827de1a497fb504",
+      "path": "apps/server/src/enterprise/contracts/adminSystem.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "2dbd38951ab5d1f784eedca1ad7fe86312b738fbc11f59a0d8701bb2482be740",
+      "path": "apps/server/src/enterprise/contracts/adminUsers.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "3eb0afbe2310cf7892325e038a150c780ef0f7a5412ff23341d2ef1c2be4e7f7",
+      "path": "apps/server/src/enterprise/contracts/adminUsers.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "dd3e1e67d10883cda4827d09447bd7dfed38bb12184e32584b509bf7945a5ea4",
+      "path": "apps/server/src/enterprise/contracts/adminUsers.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "316733c4797644e0cda9d23c8eb3de8b07260ed270881b25d0e11affde6e5cea",
+      "path": "apps/server/src/enterprise/contracts/aiCatalog.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "1fe3c316d608c8f274b465b3b3f82d0d5723377b0fe41f1cc8c5c0c4f228f4a4",
+      "path": "apps/server/src/enterprise/contracts/aiCatalog.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "7dee939b95813644534ce73eff1ba763263e18b700aa1eb5494a7352226a3efc",
+      "path": "apps/server/src/enterprise/contracts/aiCatalog.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "ffabd2a05f74357ff04df0307699cfcf205a480fbcfceda95aacce646dd985b9",
+      "path": "apps/server/src/enterprise/contracts/aiCatalog.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "df7afddba88cc0adde954dc4919ed5fd2229d79a6775eaad29f5d5ec5192e406",
+      "path": "apps/server/src/enterprise/contracts/platformAgents.test.ts"
+    },
+    {
+      "category": "token-or-api-key",
+      "lineDigest": "5e605b0a702204042f331cc7eafddbf5b6b689b1913360a41c9067202d936697",
+      "path": "apps/server/src/enterprise/contracts/platformAgents.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "03a9a463093fc817afb319e97e08f10ed19131a8ee0e3fc3129a2240fea87b7f",
+      "path": "apps/server/src/enterprise/contracts/platformConnectors.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "707f24743e2bb940a079745a3b81e49e2b5aa9911fc79a1901b200fbccd8ee43",
+      "path": "apps/server/src/enterprise/contracts/platformConnectors.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "9b7ff78e3f64ea914d378646cba21f24ce46245adbd01b72ea02beda36996e73",
+      "path": "apps/server/src/enterprise/contracts/platformConnectors.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "9db3c5f2110fab6957d9e46e6647a5cc9e03409ec129f6346ec4de164f1cda90",
+      "path": "apps/server/src/enterprise/contracts/platformConnectors.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "ae7296d84e1441725a02e3d42f0fb1dda7b385a72b508ed0c6e57c7d3a4db85c",
+      "path": "apps/server/src/enterprise/contracts/platformConnectors.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "d3edddde25509f7032f261cf054e7b0ab6c73dd80e4017f9e31ff113f1483d21",
+      "path": "apps/server/src/enterprise/contracts/platformConnectors.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "ffb05d2581869912a6fca8985cbfcfb575a30b5f43aea4ba5d9bf7b0257175f9",
+      "path": "apps/server/src/enterprise/contracts/platformConnectors.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "039bfc66e7a25654af5167a5df72918a562696b715a46241c6c43f2a6bf937f5",
+      "path": "apps/server/src/enterprise/contracts/platformConnectors.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "34866215d6804b9e9320e8ec711c1406c8c343a16b6a258a10f4a1852a78a3a4",
+      "path": "apps/server/src/enterprise/contracts/platformConnectors.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "dad9b60c80b36ef17903952f2ee55a1048faa7299a6a05fbe0e03b11ab6db4e9",
+      "path": "apps/server/src/enterprise/contracts/platformConnectors.test.ts"
+    },
+    {
+      "category": "token-or-api-key",
+      "lineDigest": "3347699fdb69edcb8a972bfb3321231b0d5dd70dd13c4d51c89a88ac1bde93ad",
+      "path": "apps/server/src/enterprise/contracts/platformConnectors.test.ts"
+    },
+    {
+      "category": "connection-string",
+      "lineDigest": "ef96744226128d528188a198c9eed145fdb181b1b9e5ff4c8d58d853c2c743eb",
+      "path": "apps/server/src/enterprise/contracts/platformInstanceStatus.test.ts"
+    },
+    {
+      "category": "aws-access-key",
+      "lineDigest": "3319c8b7ccda0a37a88716aaa323c9ec59c008f84043494dd59cff71f46915e9",
+      "path": "apps/server/src/enterprise/contracts/skillCatalog.test.ts"
+    },
+    {
+      "category": "connection-string",
+      "lineDigest": "2702349eb9981fae5197eb6b078198bea1b1e6c59adb168bc1b2f19834ee52de",
+      "path": "apps/server/src/enterprise/contracts/skillCatalog.test.ts"
+    },
+    {
+      "category": "connection-string",
+      "lineDigest": "3ee660fed1970c33bcb785d03318766000f846651713f7362d75ceb01657a8a9",
+      "path": "apps/server/src/enterprise/contracts/skillCatalog.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "24c0a6733c6d88b50af124290845c1049928e000c4684bc33096f7b413b89952",
+      "path": "apps/server/src/enterprise/contracts/skillCatalog.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "3c65c09d61fe71affe1686b1e3e69f48d7a44597f17173923105aced2ab750bc",
+      "path": "apps/server/src/enterprise/contracts/skillCatalog.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "456e348b2de54e2fcd32d5b71137f4a46286f62e4a94bd341b18e38e45d41ca4",
+      "path": "apps/server/src/enterprise/contracts/skillCatalog.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "fcc9f71ebd41512a6deed468bda64e83d3bac55f6b3ec232cfd28b4d48756e8f",
+      "path": "apps/server/src/enterprise/contracts/skillCatalog.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "ff7f54e8ff963720f1235ef14224db7c5266faf809f0d179757f14330fb8d5d8",
+      "path": "apps/server/src/enterprise/contracts/skillCatalog.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "208e876eee965ceff445af0062ae4e0683251e1e9b659da46c908c0b4e88c00f",
+      "path": "apps/server/src/enterprise/contracts/skillCatalog.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "38bf64d356a5fc5cac7bdbbcc11ee8fe473ed67f3a2e32926709c302022fa9fe",
+      "path": "apps/server/src/enterprise/contracts/skillCatalog.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "43b6c38bc32f3e3e5093f3d0399602026b356ff7afb52fe648ffa18b243c9d04",
+      "path": "apps/server/src/enterprise/contracts/skillCatalog.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "49f130667c806a2c29e5994a728ac831584d108b70dbce9556e30ee7e4b3088d",
+      "path": "apps/server/src/enterprise/contracts/skillCatalog.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "52ea7171243f463a3fbacda4d6c7f7491dd1b0ee2226f2527aa7e46461064446",
+      "path": "apps/server/src/enterprise/contracts/skillCatalog.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "b863989811c988ef430dd98c0e28315981cd2a7cc9c70ee7216362a304778fee",
+      "path": "apps/server/src/enterprise/contracts/skillCatalog.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "c713ab1e38cc1e71fff28ac0e0b38e8d2506de1d6f97a775c5c70eceb0be85a1",
+      "path": "apps/server/src/enterprise/contracts/skillCatalog.test.ts"
+    },
+    {
+      "category": "pem-private-key",
+      "lineDigest": "08f42f94086fae9c641bb799a136e29fa6ce76f0b68d5e4423176e40b2f8ad06",
+      "path": "apps/server/src/enterprise/contracts/skillCatalog.test.ts"
+    },
+    {
+      "category": "token-or-api-key",
+      "lineDigest": "24131d605c8bc60aa0d6ef749b890fc9ae9ff09ef303b08630a281f06736f93a",
+      "path": "apps/server/src/enterprise/contracts/skillCatalog.test.ts"
+    },
+    {
+      "category": "token-or-api-key",
+      "lineDigest": "531afc30158518490a05089b85fb237c2714b10892e1a054a0c9310b187fee57",
+      "path": "apps/server/src/enterprise/contracts/skillCatalog.test.ts"
+    },
+    {
+      "category": "token-or-api-key",
+      "lineDigest": "96703dbb46b14d89a8a4aa9dbfbbb6e2bbaf300c8793cb25f87965c6ade5f423",
+      "path": "apps/server/src/enterprise/contracts/skillCatalog.test.ts"
+    },
+    {
+      "category": "token-or-api-key",
+      "lineDigest": "dee19c0b6ee82b50d95878870d814fa9d97b79558cb5a7334d132ea40ebb7cb2",
+      "path": "apps/server/src/enterprise/contracts/skillCatalog.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "1efc4ff62d9fd070346d1b361ad2271e54577df345bfbd7c8e64778894f2ce48",
+      "path": "apps/server/src/enterprise/guards/managedResource.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "f1d36af35ef6f7b8c2d783042fe54be0186c31e7bca08ce262db52948358c3e2",
+      "path": "apps/server/src/enterprise/guards/managedResource.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "53a2f3c018aa93f3d35612454a968747fa5ba444000f09ad5a674c3b900c5649",
+      "path": "apps/server/src/enterprise/guards/managedResourceRealRouters.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "0066fb7dee375a95acd27074ba2834cb627c465d669a610e6bb8556b27d0f74b",
+      "path": "apps/server/src/enterprise/routers/admin/aiCatalog.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "2383c77dac4f5c31af63cb82bf631013a069b09ac64a7eca0f2c47ed1a68484f",
+      "path": "apps/server/src/enterprise/routers/admin/aiCatalog.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "017e1f519619a441cc8d32d94b7814b90d3c5d226139fe9ec2bb88d834d8bf67",
+      "path": "apps/server/src/enterprise/routers/admin/connectors.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "83279f626144c148e1a2ff29dfd65cd5521e9694b642b41514c5221fb2226b84",
+      "path": "apps/server/src/enterprise/routers/admin/connectors.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "8ced62fdf1d99164b61c9e2fc96e11b0e98803b7d6f9edc6b411918dcedea660",
+      "path": "apps/server/src/enterprise/routers/admin/connectors.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "d1536fada7f74a3d4b39e04baae908d569fca8b0903b911dc62ba3ea0dae5f23",
+      "path": "apps/server/src/enterprise/routers/admin/connectors.test.ts"
+    },
+    {
+      "category": "token-or-api-key",
+      "lineDigest": "2dc51634cead2421c1fb573ed30d6d7072eb42fbd70e421df376fd454347a4fd",
+      "path": "apps/server/src/enterprise/routers/admin/easyauth.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "208a3d378c1ddabb67610462fefc7f55e56480e4f2e47b0fb604f05a58903ece",
+      "path": "apps/server/src/enterprise/routers/admin/users.adversarial.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "5b93519dbdd18674a27df6870fb1f5ea15ec8e23f7351113e092490c98237d02",
+      "path": "apps/server/src/enterprise/routers/admin/users.adversarial.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "8df19573c9bafe7456a296e9adf2279ff2cf624b21b1a8dd922083379ae65fb6",
+      "path": "apps/server/src/enterprise/routers/admin/users.adversarial.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "b7973a115951a7e12cfa2677f164e479bee6fcd4c6c23ab5db17ff180d9faf6a",
+      "path": "apps/server/src/enterprise/routers/admin/users.adversarial.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "02621193fc4ee61d489632678d4ad67515fdb8bca0c4c5084a64cf88eeacae29",
+      "path": "apps/server/src/enterprise/routers/admin/users.r2.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "0ff510ffd25302a137a0be7365abadf4ad80d5a1543b34000092d80b4f5cb066",
+      "path": "apps/server/src/enterprise/routers/admin/users.r2.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "4df0736106d391b7906bfe0bcda1b46c93cdbf248bcb78058088b64184bff96e",
+      "path": "apps/server/src/enterprise/routers/admin/users.r2.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "5426f8506f04e7977f70255482bc4f340c3c2b4bbb4b7fbb3a5986e3f66b5236",
+      "path": "apps/server/src/enterprise/routers/admin/users.r2.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "79040e22ab5e2c4eaec802610d5899f78d9223e2b1ee95b0b84a01d36c1b3e16",
+      "path": "apps/server/src/enterprise/routers/admin/users.r2.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "9970e5db5c619572978c5939c386782154156f8ed982c880abe65127471106df",
+      "path": "apps/server/src/enterprise/routers/admin/users.r2.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "bfce6ad57a87aed84b90e4760d4c8d8ae3489ac555ec49b8abcfc1e297bcd752",
+      "path": "apps/server/src/enterprise/routers/admin/users.r2.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "e42ceb7489619d5d273dae485afb7894ff82397b886b1b00d56e9533cdd83923",
+      "path": "apps/server/src/enterprise/routers/admin/users.r2.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "09ec2511fd8f1dc0e35d9407345b57d9a748d4d5b09b9318583fb622689f49ab",
+      "path": "apps/server/src/enterprise/routers/admin/users.rework.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "12f62c7ac1d18fdca4f09a46989db6b888412176f500d513f51ae98ce36932da",
+      "path": "apps/server/src/enterprise/routers/admin/users.rework.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "3eb0afbe2310cf7892325e038a150c780ef0f7a5412ff23341d2ef1c2be4e7f7",
+      "path": "apps/server/src/enterprise/routers/admin/users.rework.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "9655bdf286645b9408921827d605d2944d94851ee6f2f77741340516e6edb15b",
+      "path": "apps/server/src/enterprise/routers/admin/users.rework.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "7d1277398f0b2652cbee7072fdc81fe3dfd4b11e3b4095799c990085ca11ca75",
+      "path": "apps/server/src/enterprise/security/outboundHttp/observability.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "0fc82d8cc6cf891a681c7702a6a8364eabe03c5a71d6f064dfc4823b0ba6e58f",
+      "path": "apps/server/src/enterprise/security/outboundHttp/safeOutboundHttpClient.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "5fd499cd7f73b6deb2e6852e73863fd0fff0f36aee6a7cb7c477aa5a0af2db0c",
+      "path": "apps/server/src/enterprise/security/outboundHttp/safeOutboundHttpClient.test.ts"
+    },
+    {
+      "category": "token-or-api-key",
+      "lineDigest": "3ad421e55930ece9cf4345e9b54db38ca89b0c17d658803778681660e785a9d8",
+      "path": "apps/server/src/enterprise/security/outboundHttp/safeOutboundHttpClient.test.ts"
+    },
+    {
+      "category": "token-or-api-key",
+      "lineDigest": "3dbbf5921067f6f5c943f4535c4c58d560d9570b33845c3b47ce921c011ba79f",
+      "path": "apps/server/src/enterprise/security/outboundHttp/safeOutboundHttpClient.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "793b1b4e9f0bdd8ae06fb26354e08605075a209eb5979b81ca074b6299c022a9",
+      "path": "apps/server/src/enterprise/security/policy/adminProcedureAuthorizationRegistry.ts"
+    },
+    {
+      "category": "aws-access-key",
+      "lineDigest": "5abf0c02f24d3f701f284dd1f7a2d6af27ab26f727591bb14c4f52f22ad61178",
+      "path": "apps/server/src/enterprise/security/redaction/detectSecretMaterial.test.ts"
+    },
+    {
+      "category": "connection-string",
+      "lineDigest": "43af3881917a26fe1cc6c7dce78ae4b1a3e3c5d35e4548c73c3401df681fce27",
+      "path": "apps/server/src/enterprise/security/redaction/detectSecretMaterial.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "266f14310f0eaf9e815d45721382f3451034c43ce8d5a7f9130129aacfd652c0",
+      "path": "apps/server/src/enterprise/security/redaction/detectSecretMaterial.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "4cfb7a8f34e8a488ea68c3545c4f6868c4a21f49c2b98d955ce06ab588036c0b",
+      "path": "apps/server/src/enterprise/security/redaction/detectSecretMaterial.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "d853c4f92d1e99e112c3b12e5c3b1caa21502a53d52b6de53823115eae9b91f9",
+      "path": "apps/server/src/enterprise/security/redaction/detectSecretMaterial.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "e447b31c04f830f7f040a07ed55eb03cbb62847eeb1021b03971a6f2b2c228c0",
+      "path": "apps/server/src/enterprise/security/redaction/detectSecretMaterial.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "e951a2e0bb505b3a80437106d4fa05c94e28bf7c5798fa6c3ec224969dc5ddba",
+      "path": "apps/server/src/enterprise/security/redaction/detectSecretMaterial.test.ts"
+    },
+    {
+      "category": "pem-private-key",
+      "lineDigest": "aa559ba253d75fc5393495cfc2b4d16c6d07bf5deff4dfc8f9260b3088a86ca8",
+      "path": "apps/server/src/enterprise/security/redaction/detectSecretMaterial.test.ts"
+    },
+    {
+      "category": "token-or-api-key",
+      "lineDigest": "3a048dad3ff992ceaa88ef95c39f89b7369498f796046eacdba6107ee66ced2f",
+      "path": "apps/server/src/enterprise/security/redaction/detectSecretMaterial.test.ts"
+    },
+    {
+      "category": "token-or-api-key",
+      "lineDigest": "6ff17499feb474f5a9741c6fdf7f773a512c747230c53f57c852eb8c9c14a5f2",
+      "path": "apps/server/src/enterprise/security/redaction/detectSecretMaterial.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "3ee0631afee8b49b630192ee0bc3379f4634a6089d1f726d3d56067876c007e9",
+      "path": "apps/server/src/enterprise/security/redaction/redact.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "c64c5319335e696a576c821a6aac5c48098aebe49fa8ce55ae989b855cd665dd",
+      "path": "apps/server/src/enterprise/security/redaction/redact.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "ce018329a3705114f74ba5a546c65bf6b2fc0075db2a76faf213a093a1677184",
+      "path": "apps/server/src/enterprise/security/redaction/redact.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "df67b0a4d62281585c26b8b4fa8f5a57205b0ee328aa7c74d7f72c9e641fff2f",
+      "path": "apps/server/src/enterprise/security/redaction/redact.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "cbb000be1bf42af5030ddf58a940132554f5cec3835e7032f335e2f54e0f3d2a",
+      "path": "apps/server/src/enterprise/security/redaction/redact.test.ts"
+    },
+    {
+      "category": "token-or-api-key",
+      "lineDigest": "17676266efbbd88fe21aafd865670953db905ee518a55ee5714fe052a9835e50",
+      "path": "apps/server/src/enterprise/security/redaction/redact.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "721934d27836aaadee5aa44ea75cc268ad770e8fd76ac95c6790afac1a7d296c",
+      "path": "apps/server/src/enterprise/security/secret/keyProviders/vaultKeyProvider.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "ab3296646b49b58050e6d23db213a9bdad5fd28b4a404676524a253cdd2106b2",
+      "path": "apps/server/src/enterprise/security/secret/keyProviders/vaultKeyProvider.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "cbc4c32c16b0c3f436e4a9fdbde48e6e943e40c8146cd7fe48ec4945a54b1f80",
+      "path": "apps/server/src/enterprise/security/secret/keyProviders/vaultKeyProvider.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "38129a7f2cb5afde5e41272756477943348df51f8910484ebd12670ea8838519",
+      "path": "apps/server/src/enterprise/security/secret/keyProviders/vaultKeyProvider.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "3eb921ada5583cdfda19f84706c4431e39b3fcfaf4f6f6b3d6867b1535c1b829",
+      "path": "apps/server/src/enterprise/security/secret/keyProviders/vaultKeyProvider.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "5554516f4e8beaca3a1e35be4602a66d20d33ab39a2503f585eea48e0cd3a9b4",
+      "path": "apps/server/src/enterprise/security/secret/keyProviders/vaultKeyProvider.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "b5f1140e9830d4571a9c2c213f2df498b7a054a10c3974b6174cc5b44d349e00",
+      "path": "apps/server/src/enterprise/security/secret/keyProviders/vaultKeyProvider.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "c77b58b3f208e9cb9b9159e73f8e0a30644c51e742b5757d086e7bd046de06ed",
+      "path": "apps/server/src/enterprise/security/secret/keyProviders/vaultKeyProvider.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "32a165022ec3876e5427531c788060a857f1ddcc207e7bd21e8e4d0dee564ab4",
+      "path": "apps/server/src/enterprise/services/__tests__/platformAudit.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "3bac054aff7ab97684f40c203c7c3de798129dfa8f38358734ba8753f5790d81",
+      "path": "apps/server/src/enterprise/services/aiCatalog/adminService.draft.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "66bc4deb9631cdd114485af04ce36e00a8f78f0fccf4a75a54a3c035e3fae9e2",
+      "path": "apps/server/src/enterprise/services/aiCatalog/adminService.draft.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "14becd238fc301d50baa3c93ab5a9936e241d5a147c5028d9570b1705b2d6a7d",
+      "path": "apps/server/src/enterprise/services/aiCatalog/adminService.draft.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "500e5cb93cb2dc00e432e1b78a1bd2a8d07868b69cdd2d39585438d877bf99fe",
+      "path": "apps/server/src/enterprise/services/aiCatalog/adminService.draft.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "563a5996c6b3d4eef98f8dcf13ffba3c1052392331a8bf3c06718e18a6afca0d",
+      "path": "apps/server/src/enterprise/services/aiCatalog/adminService.draft.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "9d7360de7aa9b790b8b69355d42fd537383391c664e555eb244f22ec67471c79",
+      "path": "apps/server/src/enterprise/services/aiCatalog/adminService.draft.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "f61ca68ea96c6076593f7d4b58603f7233b5e3d35c77ec7ee3d6ddc91ab3a0b8",
+      "path": "apps/server/src/enterprise/services/aiCatalog/adminService.draft.test.ts"
+    },
+    {
+      "category": "token-or-api-key",
+      "lineDigest": "385412fe02c020f14e932f9dd26437d3a10656bdeded1fe9b2171111aba194a2",
+      "path": "apps/server/src/enterprise/services/aiCatalog/adminService.draft.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "66bc4deb9631cdd114485af04ce36e00a8f78f0fccf4a75a54a3c035e3fae9e2",
+      "path": "apps/server/src/enterprise/services/aiCatalog/adminService.models.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "332dc8c6617ea951d7eee2d3d42b02da46185712f800b12cf9aa533419b768d7",
+      "path": "apps/server/src/enterprise/services/aiCatalog/adminService.models.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "86821c028c1c752417a4e066ce07f0a19078d56b4cf31099aaecdc34dd74b95e",
+      "path": "apps/server/src/enterprise/services/aiCatalog/adminService.models.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "12096612fa8f6dae4332a9aa43b62c0d18257a51862f5a5287bfa5ca3eabdcb4",
+      "path": "apps/server/src/enterprise/services/aiCatalog/adminService.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "40522f83f66f8485d750a059f87e341dba4e090db31fd03e76fca32e6ce4fc4b",
+      "path": "apps/server/src/enterprise/services/aiCatalog/adminService.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "ef60ec0b0e168794e562fc025626b386e70caf1102a81a4fee1c93c827cfc044",
+      "path": "apps/server/src/enterprise/services/aiCatalog/catalogReadService.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "2277cb6c78e57b1c7a14bac95a1df3356e5e6de043ff95ad948a709042151e22",
+      "path": "apps/server/src/enterprise/services/aiCatalog/connectionTestService.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "c7352403ac5f3a82572ada03f2c80bb4c9801c54045c199233117a63dbbfcd14",
+      "path": "apps/server/src/enterprise/services/aiCatalog/connectionTestService.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "0a9dd50244274ae5e470a9aa4eb0b20ec5f22272e0587018f86ca117c5be42b2",
+      "path": "apps/server/src/enterprise/services/aiCatalog/connectionTestService.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "d27ca8d8d0fda65ad084ec6720964356f559b77e1024b60cf7743b482820c778",
+      "path": "apps/server/src/enterprise/services/aiCatalog/connectionTestService.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "64e09cbd0a42c3581291c2e3020d580765621808d75743ecd8dd0a13d7ae1e51",
+      "path": "apps/server/src/enterprise/services/aiCatalog/credentialAdapter.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "70615d87eba38107ff30ecfd286a7876382cf4c369997ccfe406c0b9d8bd93bf",
+      "path": "apps/server/src/enterprise/services/aiCatalog/credentialAdapter.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "8ad77167004911d362037836b5024e1f0d045ecf6873504fab252b386e12e3b3",
+      "path": "apps/server/src/enterprise/services/aiCatalog/credentialAdapter.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "e3423fb8d9d995264cabdcdf7588a68824cfc7f77009bf119f3541241656d043",
+      "path": "apps/server/src/enterprise/services/aiCatalog/credentialAdapter.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "ee36bb78ef7dc20bca0cf8352dd4126be294b36a782819a9a6a4a6af00924b69",
+      "path": "apps/server/src/enterprise/services/aiCatalog/credentialAdapter.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "e72de062d712c8d6e8832a36aebd002674f801fb87d7e22bbb9674fd8c587c10",
+      "path": "apps/server/src/enterprise/services/aiCatalog/credentialAdapter.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "7d09f8ffbd722f511928663c91853382a553222f52acd98d70e215636f6d5a1b",
+      "path": "apps/server/src/enterprise/services/aiCatalog/credentialAdapter.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "05e1370f691262c17c95a42256b645442fbd24ec1c671ad97a16b18314363e20",
+      "path": "apps/server/src/enterprise/services/aiCatalog/publication.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "09e7ff8f8525367041d98d111d6e67d504ec85a6d0120fe141d05eac79d1ded1",
+      "path": "apps/server/src/enterprise/services/aiCatalog/publication.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "1da00a921288c194d1383328925a0d66b7d31669c085e0b220a3d8e568fc9fb0",
+      "path": "apps/server/src/enterprise/services/aiCatalog/publication.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "cf5485216b96fc47b25faf34c64b576601bb83f16284067f84e201b7a5fa83f0",
+      "path": "apps/server/src/enterprise/services/aiCatalog/publication.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "d0f084e532601c4220d11bb170a2e45c9cd243ae722af8c70bc4ed77d59d9ae7",
+      "path": "apps/server/src/enterprise/services/aiCatalog/publication.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "1084c0dfb0ee28ea52c6ff8db486b0a908a5cd360cba0acca7f6ae2a476d5ba0",
+      "path": "apps/server/src/enterprise/services/aiCatalog/runtimeAdapter.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "71276e923597b446c3e7611dc0a2a6b1e6b3418a86f908c11206ecb59a8c4de0",
+      "path": "apps/server/src/enterprise/services/aiCatalog/runtimeAdapter.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "d5b52767e31465fa86e73ae54501ca7a401bb3ee31a254a18a3b1d5a595d8362",
+      "path": "apps/server/src/enterprise/services/aiCatalog/runtimeAdapter.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "01e84b9c99bf90e9cd55280d4d404e22fefc217d709eff0fd8bc4e022db66b88",
+      "path": "apps/server/src/enterprise/services/aiCatalog/secretManager.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "eb7aa3aff257571b41839aca0f79395af1edd40ef56b91bc60cc8c5c0a5dc9ba",
+      "path": "apps/server/src/enterprise/services/aiCatalog/secretManager.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "2908ebd8bb0bb931af19fbc2b5c1a60a9543a472587d2e7d18c7165caa584abb",
+      "path": "apps/server/src/enterprise/services/branding/adminBrandingService.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "b85524a4918a080be0cf1d1b62692a29f5fbf8493bc2e337f42dfda81232bda8",
+      "path": "apps/server/src/enterprise/services/branding/adminBrandingService.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "7cdb42c867ec958b58ce204d3c00d8befe8b0794dee615f467a89c7c29581385",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/discoveryService.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "42128d9be0f250ef6b23f54f7bf71bd785a8c2380dd1354146ed5a473a9284c7",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/draftService.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "5384922a202a5f68c762a635a28b9418440d0a08cb670358c445a0bee9cb5076",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/draftService.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "a1860f6c92d799054549ff25cedf1f483547c7c25ec21bf9f9c9b0bda4bb23a1",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/draftService.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "b61d5b88119a47eeedeaf8c2a31a11cd099c68d240bb079ea824b367b9996fa8",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/draftService.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "cf607ab12feebf433f9e27385388737d0bae6645d8f84d0eba773c70da0039e1",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/draftService.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "38627d32246d5c34baad51a1fe9bcaf9ccc679992319d7b8334386b9aee8a59d",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/oauthOutboundAdapter.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "898d906672531ccf07f8654ea41e2a369cd2d931410bf8eb50f39d60d023685d",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/oauthOutboundAdapter.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "1c0e8ac97b3d718b67ce0c0b9cc0c577c10806cd1b4ca4738ae32b8e2a10d225",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/oauthOutboundAdapter.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "1e31dfb0d059bdafef677037ff5606ede5226367ab9d8653022a1ead79d94687",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/oauthOutboundAdapter.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "21c6db1bad854bdc95720e108c0151c878f8c7116bf87cda1976950bff9eb713",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/oauthOutboundAdapter.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "c32f25c15d3779a947537cc7f8e36eaa24b4fdaa459beeb897b01660144b3f42",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/oauthOutboundAdapter.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "1cb687a836ce86befc0606ebbe7051ec2e97e1bca92daffc3a7aab0b9aebad3a",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/platformConnectorSecretStore.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "252c7b07893db50d8f41b0d7d29e17fe18c1b00425b4bc593b7b1d3c57d96cc9",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/platformConnectorSecretStore.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "4160f955448735215481445965b235fedb06e1e7d7ed77eff37b26274987ad4a",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/platformConnectorSecretStore.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "f6048a57c8033283683753ec2f807784a6fd7887879e0bf171df945d9b238df9",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/platformConnectorSecretStore.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "0f716ead84e621f92436df298d2e2e5eb843e73227e30d5bfe2403d234d258e7",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/publicationService.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "5384922a202a5f68c762a635a28b9418440d0a08cb670358c445a0bee9cb5076",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/publicationService.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "63f17d5ca620809c99636dbd8d345355d37120f6ae7b7360d78e39096d9a91b6",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/publicationService.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "7b3b0d41faa9966e19e6add2e500a465bb934a2e002779de1a1aa1acf15142e5",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/publicationService.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "828fde1f51cfec4e44f6192df590e78500ab4ab94aa08427265c7a2e99d53c02",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/publicationService.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "a7b0eefaf642002705eeebcfce92df48ac43d80b094e8b15eae85467547f0df1",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/publicationService.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "1265890a63e0e75595c39de052f9be375fbe45d134caf70feff3d63131012f58",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/runtimeAdapter.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "7f28c44609eb368a5cee15d7f49cf33656969b7c54f1b5cb384dd0a00bb51854",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/runtimeAdapter.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "c2c33f9d6834fa242ddf21f5f92986b1061bc957cd11618b876efd1f6151458a",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/runtimeAdapter.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "2d2a9f4e9d036ca122819f1220022c23d75d67470da8de15036d7ec639cb9ced",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/runtimeAdapter.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "2332e93fad3a0e619e5121ab3825776a8908d21f98eeae389a93872d76e74c34",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/runtimeEffectiveState.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "4a5bdd8248b5106d0cba8a5edc4c61a87b80244d9ee80a02eecbc9f1f3365eca",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/runtimeEffectiveState.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "38129a7f2cb5afde5e41272756477943348df51f8910484ebd12670ea8838519",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/runtimeEffectiveState.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "979857648451753264382bb7a1fb792e57a43caec624fee640c9ce586e46b92e",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/runtimeEffectiveState.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "064b153a2cf88f01aab97724f773ec1c784c8057588c29a8bb4f89d42a9119bc",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/runtimeExecutionJournal.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "2d2a9f4e9d036ca122819f1220022c23d75d67470da8de15036d7ec639cb9ced",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/runtimeExecutionJournal.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "ffc672233d89d510230b9fd86764afb77e74cb3af92644ee4246a6bb6f214f05",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/runtimeExecutionJournal.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "98485e5dcb6b419fb1719c0d6a5f5bdd2c426753bcdd320cbb03802f6ec757fb",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/runtimeReadiness.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "ca409749c2f1d1eba9ed8645fca012b30ee68604a06b133741ba07547e2fb021",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/runtimeReadiness.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "ec6596751416963aa9fdc37663e69906dbbdb57b13ceef6f43fcd002d2f995f3",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/runtimeResolver.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "4691124b8b0e997d8b711fa2fd614e0fe8bead9cacd482c617c584481bf2ade6",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/secretBoundary.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "b3ab421fc20a13c3a55bf51aa03485a2e2c24d33d8e84a578f46f0a6b353bcd8",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/secretBoundary.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "da168a444332ccd76c4736fedd1c10a952dcc015f35d7c373f65e7a9986cdeae",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/secretBoundary.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "3d16b060a533cb1820ca3339068e85e6412d1b3048617ed6dc1f7e1cb2b3bf7e",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/secretBoundary.test.ts"
+    },
+    {
+      "category": "token-or-api-key",
+      "lineDigest": "061497edd52cc49bcb4169fb9b5d69a76a68276e8dfe709d234fa982a91a1680",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/secretBoundary.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "560a30c6e09eb154af7e38dddd4e6d73f4e31fa47dc23919f7ce941f25c839df",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/toolDefinitionValidator.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "948b8bfa21c58abb5b3cb1e9c20035cd76dfd7d52d91836f34290ce4d6468308",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/toolDefinitionValidator.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "a8b692e38055b53fe7e66890f8ebc63494d28e580f449238c79b617b41f6e6c1",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/toolDefinitionValidator.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "9fcaf250dbafca007ab28f53e51900dc1591f25057d76f2bbf66c18986282f40",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/toolDefinitionValidator.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "09055095957bd6a4719a5bc032fff2779553358d7d0c4ad2cfcd2e9e4583e531",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/userOAuthService.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "1298f28a592f9054b6ff1389a8a52e28b3dca5cee948d3432e3fbd20fd3757d5",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/userOAuthService.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "1a3e96c0c040874ab64d182b29ae85a1bca4a1663c5b8f83d7ac223645fc72d7",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/userOAuthService.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "20cb0968be20b711bc880eaad94035a63136a996fcac3624515cc51b61289c95",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/userOAuthService.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "2abbfe68fef4cce911b1f249924b09a229261396790a060b7c0f3f99f22995ae",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/userOAuthService.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "2c09dc71e277a67befa060a37450d38f181d804c7606ae9b0e44bfdcd62e1db6",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/userOAuthService.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "345aca255a4bb92cc3a845990a5b5af9158388319ed92c94f8b96beb35fc51f1",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/userOAuthService.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "3f88e8eabb25779a430eaea355ccad4e1ed8c0c6b68e10d078d96fb311aa48d6",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/userOAuthService.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "42ccc55a74e422f9d4dde6e0d8727f1b62eb18f6b54e172d46eab2d180299bb7",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/userOAuthService.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "45476f243099a76b0d0d163ce4a974d5e666f53a200b91bb47021fecf59ed4e6",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/userOAuthService.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "476a9e010b31046f0237f652426eedd0d23ccbd2f46a062226a50b9f3ad19666",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/userOAuthService.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "72475ccd53bdfa725286fedfb8da2ed74cf9b4f1dffd0a93b27d34788ee99590",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/userOAuthService.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "9d40a730503279442fa06ded3681c57ce365216751a248b471a771f8869f104d",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/userOAuthService.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "acc86e32ae312529cb685c01e226a4305a6bc2b2f786fd44d9e4b8f4d14ce222",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/userOAuthService.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "c8df6c32c91d35c1060b02bbae10b53989b441ffee9161a8ad38461d98f8d030",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/userOAuthService.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "d9864178e3e375e7ce36acb7f616da5a3de85d276db904812b2bc51f33bb8f3b",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/userOAuthService.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "ec21c64797dcd706d54df3a8ccab19840dbcd067d658da5a38745a7d58488d22",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/userOAuthService.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "f91b928cd85002d12d8e0dad41017b80781817ea63b817341d5860937740ada2",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/userOAuthService.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "feefc3be5efa7457c0eccb601081b995c021e826a88ad7f7dd52c243435adf2d",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/userOAuthService.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "6534bcf7327be8de002c61fb79fd22e58aa4eddcebcf06616cf2599351f6d061",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/userOAuthService.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "bf7acfdff05c9a0d2e0a29644f0a5b68b07bdf7759de465fb40b94eb85c432b4",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/userOAuthService.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "ce04a4105c0dcc905b93081b90f4c2529883f1633ad104c6a6addfdf03383fbc",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/userOAuthService.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "208d3d49ca8820cb82b5d9401397ecd29b9ee414e73985425b1fc2a5797ed668",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/userOAuthService.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "4593fddcf5bb49d72990fbf5068ca311531847d1f2e86ad8c63eb04b9932e091",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/userOAuthService.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "8a1d52629dc2e781750df3b12ce7141c2638adeae64d958623019d4f98ad9c8e",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/userOAuthService.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "bd32e7405ad66a4485529f69b6314af8981e1fd47745cd4d97fb1b1bbdef1579",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/userOAuthService.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "d20587757fd8a083724c05ad36003a3510a9c4b06fc5733a2117b90b28e65ad1",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/userOAuthService.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "db51ef3bb9fe1e577dc23e83999eb81c9366b1e521976eef43549b2a39945e1c",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/userOAuthService.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "e6631d97046eaec7d97e9b4c2e30bd110604f8873301dbf99bcf860239dfe9c1",
+      "path": "apps/server/src/enterprise/services/connectorCatalog/userOAuthService.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "6bad3929334bbef05b220b9c87ec4566d590f76e21d97e129045eb442b58a87b",
+      "path": "apps/server/src/enterprise/services/easyauthSync.test.ts"
+    },
+    {
+      "category": "pem-private-key",
+      "lineDigest": "99e2fba732445de4ad6660e278f1d1fb53b4a417c1a5402fc6aad3cb5fbe1abb",
+      "path": "apps/server/src/enterprise/services/easyauthSync.test.ts"
+    },
+    {
+      "category": "token-or-api-key",
+      "lineDigest": "32488e3fd0b8ef34af276d042a7049f19b6d708e9dfdde52d7155e4edfc75943",
+      "path": "apps/server/src/enterprise/services/easyauthSync.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "4482a273627bfec5e1c7c52a3c428a53a501544b2d4496e9514c3548c7a4937e",
+      "path": "apps/server/src/enterprise/services/identityProvider/discoveryValidator.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "79f905c354bb564d4df958d698f4b7b698eb66d3dfb2ed9041dd9934d53b6aa3",
+      "path": "apps/server/src/enterprise/services/identityProvider/idTokenVerifier.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "7692e3fc81fc45682acb632417faf2087576718dd1a0f5d8e389018bbce5c479",
+      "path": "apps/server/src/enterprise/services/identityProvider/startupArtifact.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "834e532db02c4f4f52926e12f40cb47880dddd9aa2bac22c10d0146f2fa18ccd",
+      "path": "apps/server/src/enterprise/services/identityProvider/startupSnapshot.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "3a8bf2f4c19ac7ba847544eb15525d3d6b3c05e03216a90431db80ff1449ca2f",
+      "path": "apps/server/src/enterprise/services/identityProvider/testFlowService.audit.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "8869575ca92a6bdefc652cc14f88d329a8aa71fac810d1c2a76743ef1f4053d7",
+      "path": "apps/server/src/enterprise/services/identityProvider/testFlowService.audit.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "164c15b99af421407c35362661522473d7ecc4ff5bf2e79f139a3dc985b05f6c",
+      "path": "apps/server/src/enterprise/services/identityProvider/testFlowService.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "4b96cf4550e29e03b891940996f7f4fc393a1c45c3faf8f68ca5a90bcfa0ae93",
+      "path": "apps/server/src/enterprise/services/identityProvider/testFlowService.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "637075701b709b495d9196a256068b8bfe4e7e29fa8282a7c1db46e095323d99",
+      "path": "apps/server/src/enterprise/services/identityProvider/testFlowService.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "921f9901b3593d4274c55a68d2507070735b94125434e76420f1db52150a41a1",
+      "path": "apps/server/src/enterprise/services/identityProvider/testFlowService.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "cc123e9f7fcb3e254f34e56c200908e2e7e7fb7425591b9588b58314b30eadad",
+      "path": "apps/server/src/enterprise/services/identityProvider/testFlowService.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "f677c5fc3328d309e3bdae972b04d3dcfd8d9375f01eed6e199490f153f9f8f4",
+      "path": "apps/server/src/enterprise/services/identityProvider/testFlowService.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "01325e4c422c01210eb6039a0538eb33f17b3d043d5eaf1ca51d3c5d683b3189",
+      "path": "apps/server/src/enterprise/services/identityProvider/testFlowService.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "1d363fda266269f767f95f8973542efb87c0ee0ea595ce53ec1278d9bcf41bd1",
+      "path": "apps/server/src/enterprise/services/identityProvider/testFlowService.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "36a7469d93801238f7427497fe7da5161d201e913f0a576a8725b7d7b72ad260",
+      "path": "apps/server/src/enterprise/services/identityProvider/testFlowService.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "5c2a83421c1ad342b2801ae2313618c0104234076848f5e9a0ca9dce6b8f96a3",
+      "path": "apps/server/src/enterprise/services/identityProvider/testFlowService.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "79f905c354bb564d4df958d698f4b7b698eb66d3dfb2ed9041dd9934d53b6aa3",
+      "path": "apps/server/src/enterprise/services/identityProvider/testFlowService.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "d68187cd580c7a692928cbfd1902dd7bba2e8be712462a73871a10b50a01cb5e",
+      "path": "apps/server/src/enterprise/services/identityProvider/testFlowService.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "1a1bb652904d4012e6bae55754b1ec6b6f800fe263807b0dd65bd11e48efa6a1",
+      "path": "apps/server/src/enterprise/services/identityProvider/tokenExchange.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "4bed2514ef883157b17fd27614757c9b1756f9146713aaf5d4f4918e19009e2d",
+      "path": "apps/server/src/enterprise/services/identityProvider/tokenExchange.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "b0a0e31df33be7d54b22cfbc1d36fe8965469a94bfbd47c9a6c42f31a606c91f",
+      "path": "apps/server/src/enterprise/services/identityProvider/tokenExchange.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "cfedc337b9b450fa94e3e3fa7715600a62890124d9c4d75bd3910673ce88540c",
+      "path": "apps/server/src/enterprise/services/identityProvider/tokenExchange.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "d7f20fb4c10e53369742c6bd4b29fd25dc713282bafcd6925bb8486d32bd9e2a",
+      "path": "apps/server/src/enterprise/services/identityProvider/tokenExchange.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "ef2b780a1b134544c8bffc05dd46beea87e8ab794ee2fca2cbb5b606b7b10b62",
+      "path": "apps/server/src/enterprise/services/identityProvider/tokenExchange.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "8ed5be4d3b502a55713bb6a799d2e2f47faef9315e167bff4f686136888aabae",
+      "path": "apps/server/src/enterprise/services/identityProvider/tokenExchange.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "b6125b664f2397fa509f45fc067a5f45a32f95949d2227bd0f0daea52dc9b158",
+      "path": "apps/server/src/enterprise/services/platformInstance/domainTargets.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "c7c95ce2732360e5f316b5ec4964325be0391f67b128444ba97c9538f79ac48a",
+      "path": "apps/server/src/enterprise/services/platformInstance/domainTargets.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "aa8ef3542dd73c9feab29cf287f1e52968edbbe43f7eab439356fc077c0c0091",
+      "path": "apps/server/src/enterprise/services/platformInstance/statusService.ts"
+    },
+    {
+      "category": "connection-string",
+      "lineDigest": "3c7cbf0d139e371856795c45bbab0671bda4c2403b0f93484c0a9d9e0cd365d0",
+      "path": "apps/server/src/enterprise/services/platformSystem/adminService.test.ts"
+    },
+    {
+      "category": "connection-string",
+      "lineDigest": "7239b9c75527900e92c52128206bc0ede0d04ededf5a2b10d1b6207a2744b260",
+      "path": "apps/server/src/enterprise/services/platformSystem/adminService.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "2b1b34a25ecefb7afc813842abed0f99a846c9e344a7fac2bb981b098700df41",
+      "path": "apps/server/src/enterprise/services/platformSystem/adminService.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "baa984edffe487202cab0a4a4fd9d4f6f3d900c7be5c2327089e739bae3ac74e",
+      "path": "apps/server/src/enterprise/services/platformSystem/adminService.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "d7078bba0bcce0cd7e016084120e884d4e6df039f6cc83af46fa79ac578e62d6",
+      "path": "apps/server/src/enterprise/services/platformSystem/adminService.test.ts"
+    },
+    {
+      "category": "token-or-api-key",
+      "lineDigest": "dd3989dafc863f6a25ce1674e6929f4de47ee5fb37f65c0851a6edc51c1b3cb7",
+      "path": "apps/server/src/enterprise/services/secretRewrap/adminService.test.ts"
+    },
+    {
+      "category": "token-or-api-key",
+      "lineDigest": "3e7ccd94b8f80db7b6049486758bc9c39604719e48529b6bed392f2370dcbb9d",
+      "path": "apps/server/src/enterprise/services/secretRewrap/contracts.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "bff9954658fee4bd92bf71a01c46c974da8b2cf6fa89690869b5548f29ef176e",
+      "path": "apps/server/src/enterprise/services/settings/adminSettingsService.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "291da7856bcfdd17abbd117c83afc22858e4b69fd2cc17224754a0b852f2f66d",
+      "path": "apps/server/src/enterprise/services/settings/effectiveResolver.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "2638ee5234e87d4032d3bd4355e6058a00c2f64161ec0d2591019dd6465cb58f",
+      "path": "apps/server/src/enterprise/services/settings/effectiveSettingsService.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "1070bd6a3c7749b305287edc802f9ad0580f0566855f335852993168bf4d0aab",
+      "path": "apps/server/src/enterprise/services/settings/legacySettingsCatalog.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "116653224d7639955e12a4aac9190f3c782b4220f323e51518ac8a6c9c83c9e2",
+      "path": "apps/server/src/enterprise/services/settings/runtimeSettingsAdapter.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "75b987e942875cfaf42f8a97b77638eb617d1308d3c8c42879bca2aa72da33e6",
+      "path": "apps/server/src/enterprise/services/settings/transactionFaults.test.ts"
+    },
+    {
+      "category": "aws-access-key",
+      "lineDigest": "5abf0c02f24d3f701f284dd1f7a2d6af27ab26f727591bb14c4f52f22ad61178",
+      "path": "apps/server/src/enterprise/services/skillCatalog/validator.test.ts"
+    },
+    {
+      "category": "connection-string",
+      "lineDigest": "43af3881917a26fe1cc6c7dce78ae4b1a3e3c5d35e4548c73c3401df681fce27",
+      "path": "apps/server/src/enterprise/services/skillCatalog/validator.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "d853c4f92d1e99e112c3b12e5c3b1caa21502a53d52b6de53823115eae9b91f9",
+      "path": "apps/server/src/enterprise/services/skillCatalog/validator.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "e447b31c04f830f7f040a07ed55eb03cbb62847eeb1021b03971a6f2b2c228c0",
+      "path": "apps/server/src/enterprise/services/skillCatalog/validator.test.ts"
+    },
+    {
+      "category": "generic-secret-material",
+      "lineDigest": "e951a2e0bb505b3a80437106d4fa05c94e28bf7c5798fa6c3ec224969dc5ddba",
+      "path": "apps/server/src/enterprise/services/skillCatalog/validator.test.ts"
+    },
+    {
+      "category": "pem-private-key",
+      "lineDigest": "99e2fba732445de4ad6660e278f1d1fb53b4a417c1a5402fc6aad3cb5fbe1abb",
+      "path": "apps/server/src/enterprise/services/skillCatalog/validator.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "95cd67df038064b904dd1235d19154b937d0142f4c13422fb4c8b75cb6d2fb37",
+      "path": "apps/server/src/enterprise/testing/adminAuthorizationFixture.ts"
+    },
+    {
+      "category": "connection-string",
+      "lineDigest": "1810b8738ccd8a89037799eaf1178dbafa9aaa135f79bea38334a3c1ea6fc811",
+      "path": "scripts/enterprise/failure-drills/cluster/processHarness.test.ts"
+    },
+    {
+      "category": "connection-string",
+      "lineDigest": "11f55219e840f3913b21fd59c072633f45c8765f93fc8f6c2fa5d8dfd4361a46",
+      "path": "scripts/enterprise/production-readiness/preflight.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "4fc21d153c21d454b83cd1d26b94c1241108766404df32e2d8d849361fdfe826",
+      "path": "scripts/enterprise/rebase-report.test.ts"
+    },
+    {
+      "category": "connection-string",
+      "lineDigest": "85341283a0b85896bf0fcecc89486258d55944bd9407db2de753a39d5e636610",
+      "path": "scripts/enterprise/security-acceptance/leakageAllowlist.ts"
+    },
+    {
+      "category": "pem-private-key",
+      "lineDigest": "bcab5abdb752a4c798cc37208d9a7fa4a77b2adad17b5b372f251bd26d6169ec",
+      "path": "scripts/enterprise/security-acceptance/leakageAllowlist.ts"
+    },
+    {
+      "category": "token-or-api-key",
+      "lineDigest": "a37586f0344e900b068c2cfd547ada5f3b19bb9158104c5960dd403206dfd30c",
+      "path": "scripts/enterprise/security-acceptance/leakageAllowlist.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "75502e299e46b4df4cfe0590e01bc7b2f1f92b689facdb05c49af634d7964544",
+      "path": "scripts/enterprise/security-acceptance/security-acceptance.test.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "e5cdcbff2723b0b47f351307b9a6e0412bbc3f322ff9952768680d9ac26a5621",
+      "path": "scripts/enterprise/security-acceptance/security-acceptance.test.ts"
+    },
+    {
+      "category": "aws-access-key",
+      "lineDigest": "7d61ad4fc7feee66fb4ee38b9f959d89607c4abfcf3862b5bc2dce2620096614",
+      "path": "scripts/enterprise/upstream-rebase-ci/secretScan.ts"
+    },
+    {
+      "category": "connection-string",
+      "lineDigest": "05d30d014428001d6f859c382017389cf190b2de02ebcfe29303ed1ce9e0d97e",
+      "path": "scripts/enterprise/upstream-rebase-ci/secretScan.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "62922073756bc038b132532ba43671ea2c1c987a87eeb42466ee25c23a55579b",
+      "path": "scripts/enterprise/upstream-rebase-ci/secretScan.ts"
+    },
+    {
+      "category": "credential-assignment",
+      "lineDigest": "d13db7ef4178359285ccf5d590f7ce9ce944f5b2ab5756f8fe96976bf0191852",
+      "path": "scripts/enterprise/upstream-rebase-ci/secretScan.ts"
+    },
+    {
+      "category": "pem-private-key",
+      "lineDigest": "8c28b281adb21b2dc72f2f4315a18c265626922e4e9e24881161b0773eb40c00",
+      "path": "scripts/enterprise/upstream-rebase-ci/secretScan.ts"
+    },
+    {
+      "category": "token-or-api-key",
+      "lineDigest": "7b5bbc8f0fdecc28276e152248d1c716b04cc60ec0093c1a0a2ce4f4351b7b98",
+      "path": "scripts/enterprise/upstream-rebase-ci/secretScan.ts"
+    },
+    {
+      "category": "token-or-api-key",
+      "lineDigest": "b62fd55e0cbdb736eac2dfa5796eb1ae23799bb61bb481c0887f531b6f8aaab7",
+      "path": "scripts/enterprise/upstream-rebase-ci/secretScan.ts"
+    },
+    {
+      "category": "connection-string",
+      "lineDigest": "523999fd650e23a6ee419be07df172f3048b4b116c3a3c77db6f4860f89b0c92",
+      "path": "scripts/enterprise/verify-migration.test.ts"
+    },
+    {
+      "category": "connection-string",
+      "lineDigest": "afff16b3005c3b2650049e1c6017fd8f037bf4a8d57c697315bd48289902d393",
+      "path": "scripts/enterprise/verify-migration.test.ts"
+    },
+    {
+      "category": "pem-private-key",
+      "lineDigest": "fa2980d50747e467bc8e2e76808a0b40ecd3b415c43c5bbcecef9aef414f1ce0",
+      "path": "scripts/enterprise/verify-migration.test.ts"
+    }
+  ],
+  "schemaVersion": 1
+}

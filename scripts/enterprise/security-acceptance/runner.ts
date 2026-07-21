@@ -7,7 +7,8 @@ import path from 'node:path';
 import { serializePretty } from './canonical';
 import { runDependencyScan } from './dependencyScan';
 import { evaluateSecurityAcceptance, verifySecurityAcceptanceReport } from './evaluate';
-import { runLeakageScan } from './leakageScan';
+import { buildBaselineDocument, LEAKAGE_BASELINE_RELATIVE_PATH } from './leakageBaseline';
+import { collectLeakageFingerprints, runLeakageScan } from './leakageScan';
 import type { PenAdapterDefinition } from './penManifest';
 import { runPenRegression } from './penRegression';
 import { sha256Hex } from './privacy';
@@ -23,17 +24,10 @@ export interface RunSecurityAcceptanceOptions {
   allowGenerateLockfile?: boolean;
   cwd: string;
   gitSha: string;
-  /** Fixed ISO timestamp for deterministic tests. */
   nowIso?: string;
   outputDir: string;
-  /** Inject pen manifest (tests). */
   penManifest?: readonly PenAdapterDefinition[];
-  /** Inject process runner (tests). */
   runProcess?: ProcessRunner;
-  /** Skip real dependency network scan (tests must still inject artifacts via evaluate). */
-  skipDependencyScan?: boolean;
-  skipLeakageScan?: boolean;
-  skipPenRegression?: boolean;
 }
 
 export interface RunSecurityAcceptanceResult {
@@ -50,45 +44,27 @@ const writeJson = async (filePath: string, value: unknown): Promise<string> => {
   return sha256Hex(serialized);
 };
 
-/**
- * Full security acceptance run. Fail-closed: unavailable checks never become passes.
- */
 export const runSecurityAcceptance = async (
   options: RunSecurityAcceptanceOptions,
 ): Promise<RunSecurityAcceptanceResult> => {
   const checksDir = path.join(options.outputDir, 'checks');
   await mkdir(checksDir, { recursive: true });
 
-  let dependency: DependencyScanArtifact;
-  if (options.skipDependencyScan) {
-    throw new Error('skipDependencyScan is not a pass path; use evaluate with explicit artifacts');
-  } else {
-    dependency = await runDependencyScan({
-      allowGenerateLockfile: options.allowGenerateLockfile,
-      cwd: options.cwd,
-      runProcess: options.runProcess,
-    });
-  }
+  const dependency = await runDependencyScan({
+    allowGenerateLockfile: options.allowGenerateLockfile,
+    cwd: options.cwd,
+    runProcess: options.runProcess,
+  });
   await writeJson(path.join(checksDir, 'dependency-scan.json'), dependency);
 
-  let leakage: LeakageScanArtifact;
-  if (options.skipLeakageScan) {
-    throw new Error('skipLeakageScan is not a pass path; use evaluate with explicit artifacts');
-  } else {
-    leakage = await runLeakageScan({ cwd: options.cwd });
-  }
+  const leakage = await runLeakageScan({ cwd: options.cwd });
   await writeJson(path.join(checksDir, 'leakage-scan.json'), leakage);
 
-  let pen: PenRegressionArtifact;
-  if (options.skipPenRegression) {
-    throw new Error('skipPenRegression is not a pass path; use evaluate with explicit artifacts');
-  } else {
-    pen = await runPenRegression({
-      cwd: options.cwd,
-      manifest: options.penManifest,
-      runProcess: options.runProcess,
-    });
-  }
+  const pen = await runPenRegression({
+    cwd: options.cwd,
+    manifest: options.penManifest,
+    runProcess: options.runProcess,
+  });
   await writeJson(path.join(checksDir, 'pen-regression.json'), pen);
 
   const { exitCode, report } = evaluateSecurityAcceptance({
@@ -97,6 +73,7 @@ export const runSecurityAcceptance = async (
     leakage,
     nowIso: options.nowIso,
     pen,
+    penManifest: options.penManifest,
   });
 
   const reportPath = path.join(options.outputDir, 'security-acceptance.report.json');
@@ -107,7 +84,6 @@ export const runSecurityAcceptance = async (
     sha256: reportSha256,
   });
 
-  // Classification sidecar: never claims production pen-test.
   await writeJson(path.join(options.outputDir, 'classification.json'), {
     evidenceClass: report.evidenceClass,
     externalPenetrationTest: report.externalPenetrationTest,
@@ -119,14 +95,12 @@ export const runSecurityAcceptance = async (
   return { exitCode, report, reportPath, reportSha256 };
 };
 
-/**
- * Evaluate pre-collected check artifacts from a directory.
- */
 export const evaluateFromChecksDir = async (options: {
   checksDir: string;
   gitSha: string;
   nowIso?: string;
   outputDir: string;
+  penManifest?: readonly PenAdapterDefinition[];
 }): Promise<RunSecurityAcceptanceResult> => {
   const load = async (name: string): Promise<unknown> => {
     const raw = await readFile(path.join(options.checksDir, name), 'utf8');
@@ -143,6 +117,7 @@ export const evaluateFromChecksDir = async (options: {
     leakage,
     nowIso: options.nowIso,
     pen,
+    penManifest: options.penManifest,
   });
 
   await mkdir(options.outputDir, { recursive: true });
@@ -167,4 +142,22 @@ export const verifyReportFile = async (
     return { ok: false, reason: 'malformed-report-json' };
   }
   return verifySecurityAcceptanceReport(value);
+};
+
+/**
+ * Generate reviewed leakage baseline from current repo fingerprints.
+ * Excludes exact fixture allowlist entries (they stay on the allowlist).
+ * Does not write secret text — only path/category/lineDigest.
+ */
+export const generateLeakageBaselineFile = async (options: {
+  cwd: string;
+  outputPath?: string;
+}): Promise<{ count: number; path: string }> => {
+  const { isExactAllowlistedFinding } = await import('./leakageAllowlist');
+  const fingerprints = await collectLeakageFingerprints({ cwd: options.cwd });
+  const baselinable = fingerprints.filter((entry) => !isExactAllowlistedFinding(entry));
+  const document = buildBaselineDocument(baselinable);
+  const outputPath = options.outputPath ?? path.join(options.cwd, LEAKAGE_BASELINE_RELATIVE_PATH);
+  await writeJson(outputPath, document);
+  return { count: document.entries.length, path: outputPath };
 };

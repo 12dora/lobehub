@@ -12,7 +12,7 @@ import { PEN_REGRESSION_MANIFEST, type PenAdapterDefinition } from './penManifes
 import { type ProcessRunner, runProcess } from './process';
 import type { PenRegressionArtifact } from './schemas';
 
-const vitestJsonSummarySchema = z
+const vitestJsonReportSchema = z
   .object({
     numFailedTests: z.number().int().nonnegative(),
     numPassedTests: z.number().int().nonnegative(),
@@ -20,6 +20,24 @@ const vitestJsonSummarySchema = z
     numTodoTests: z.number().int().nonnegative().optional(),
     numTotalTests: z.number().int().nonnegative(),
     success: z.boolean().optional(),
+    testResults: z
+      .array(
+        z
+          .object({
+            assertionResults: z
+              .array(
+                z
+                  .object({
+                    status: z.enum(['failed', 'passed', 'pending', 'skipped', 'todo']),
+                    title: z.string(),
+                  })
+                  .passthrough(),
+              )
+              .optional(),
+          })
+          .passthrough(),
+      )
+      .optional(),
   })
   .passthrough();
 
@@ -42,12 +60,10 @@ const fileExists = async (filePath: string): Promise<boolean> => {
 
 const extractVitestJson = (stdout: string, stderr: string): unknown => {
   const combined = `${stdout}\n${stderr}`;
-  // Prefer last JSON object (vitest json reporter may mix with logs).
   const matches = combined.match(/\{[\s\S]*\}/gu);
   if (!matches || matches.length === 0) {
     throw new Error('no-vitest-json');
   }
-  // Try from the end for the report object.
   for (let i = matches.length - 1; i >= 0; i -= 1) {
     try {
       return JSON.parse(matches[i]!) as unknown;
@@ -72,6 +88,23 @@ const resolveTargets = async (
   return { missing, present };
 };
 
+const collectSkippedTitles = (report: z.infer<typeof vitestJsonReportSchema>): string[] => {
+  const titles: string[] = [];
+  for (const suite of report.testResults ?? []) {
+    for (const assertion of suite.assertionResults ?? []) {
+      if (
+        assertion.status === 'skipped' ||
+        assertion.status === 'pending' ||
+        assertion.status === 'todo'
+      ) {
+        titles.push(assertion.title);
+      }
+    }
+  }
+  titles.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  return titles;
+};
+
 const runOneAdapter = async (
   adapter: PenAdapterDefinition,
   options: {
@@ -82,13 +115,16 @@ const runOneAdapter = async (
 ): Promise<PenRegressionArtifact['adapters'][number]> => {
   const { missing, present } = await resolveTargets(adapter, options.cwd);
 
+  // Always report exact manifest targets (not only present files).
+  const targets = [...adapter.testFiles];
+
   if (missing.length > 0) {
     return {
       adapterId: adapter.id,
       category: adapter.category,
       reason: 'missing-test-target',
       status: 'not-executed',
-      targets: [...adapter.testFiles],
+      targets,
     };
   }
 
@@ -96,7 +132,6 @@ const runOneAdapter = async (
     ? path.join(options.cwd, adapter.workingDirectory)
     : options.cwd;
   const configRel = adapter.vitestConfig ?? 'vitest.config.mts';
-  // When workingDirectory is a package, test paths are relative to that package.
   const testArgs = adapter.workingDirectory
     ? present.map((file) => path.relative(adapter.workingDirectory!, file) || path.basename(file))
     : [...present];
@@ -124,7 +159,7 @@ const runOneAdapter = async (
       category: adapter.category,
       reason: 'adapter-spawn-failed',
       status: 'unavailable',
-      targets: [...present],
+      targets,
     };
   }
 
@@ -135,7 +170,7 @@ const runOneAdapter = async (
       exitCode: result.code,
       reason: 'adapter-timeout',
       status: 'unavailable',
-      targets: [...present],
+      targets,
     };
   }
 
@@ -146,7 +181,7 @@ const runOneAdapter = async (
       exitCode: result.code,
       reason: 'adapter-output-truncated',
       status: 'unavailable',
-      targets: [...present],
+      targets,
     };
   }
 
@@ -158,10 +193,11 @@ const runOneAdapter = async (
         total: number;
       }
     | undefined;
+  let skippedTitles: string[] | undefined;
 
   try {
     const json = extractVitestJson(result.stdout, result.stderr);
-    const summary = vitestJsonSummarySchema.parse(json);
+    const summary = vitestJsonReportSchema.parse(json);
     const skipped = summary.numPendingTests + (summary.numTodoTests ?? 0);
     assertions = {
       failed: summary.numFailedTests,
@@ -169,6 +205,7 @@ const runOneAdapter = async (
       skipped,
       total: summary.numTotalTests,
     };
+    skippedTitles = collectSkippedTitles(summary);
     if (assertions.passed + assertions.failed + assertions.skipped !== assertions.total) {
       return {
         adapterId: adapter.id,
@@ -176,12 +213,13 @@ const runOneAdapter = async (
         assertions,
         exitCode: result.code,
         reason: 'malformed-assertion-counts',
+        skippedTitles,
         status: 'failed',
-        targets: [...present],
+        targets,
       };
     }
   } catch {
-    // Fall through: still use exit code as fail-closed signal.
+    // Fall through using exit code.
   }
 
   if (
@@ -189,28 +227,59 @@ const runOneAdapter = async (
     assertions &&
     assertions.total > 0 &&
     assertions.failed === 0 &&
-    assertions.skipped === 0 &&
-    assertions.passed === assertions.total
+    assertions.passed + assertions.skipped === assertions.total
   ) {
+    // Allowed skips only (reviewed titles).
+    if (assertions.skipped > 0) {
+      const expected = adapter.expectedSkips ?? [];
+      const titles = skippedTitles ?? [];
+      if (titles.length !== assertions.skipped) {
+        return {
+          adapterId: adapter.id,
+          category: adapter.category,
+          assertions,
+          exitCode: 0,
+          reason: 'skipped-titles-incomplete',
+          skippedTitles: titles,
+          status: 'failed',
+          targets,
+        };
+      }
+      for (const title of titles) {
+        if (!expected.some((skip) => skip.title === title)) {
+          return {
+            adapterId: adapter.id,
+            category: adapter.category,
+            assertions,
+            exitCode: 0,
+            reason: 'unexpected-skip',
+            skippedTitles: titles,
+            status: 'failed',
+            targets,
+          };
+        }
+      }
+    }
+
     return {
       adapterId: adapter.id,
       category: adapter.category,
       assertions,
       exitCode: 0,
+      skippedTitles: assertions.skipped > 0 ? skippedTitles : undefined,
       status: 'passed',
-      targets: [...present],
+      targets,
     };
   }
 
   if (result.code === 0 && !assertions) {
-    // Zero exit without parseable assertions is not a trustworthy pass.
     return {
       adapterId: adapter.id,
       category: adapter.category,
       exitCode: 0,
       reason: 'missing-assertions',
       status: 'failed',
-      targets: [...present],
+      targets,
     };
   }
 
@@ -220,13 +289,15 @@ const runOneAdapter = async (
     assertions,
     exitCode: result.code,
     reason: result.code === 0 ? 'incomplete-pass-criteria' : 'adapter-failed',
+    skippedTitles,
     status: 'failed',
-    targets: [...present],
+    targets,
   };
 };
 
 /**
  * Run all pen-regression adapters from the manifest.
+ * Adapter order matches the manifest exactly for deterministic digests.
  */
 export const runPenRegression = async (
   options: PenRegressionOptions,

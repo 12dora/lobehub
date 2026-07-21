@@ -272,39 +272,89 @@ export const runDependencyScan = async (
     };
   }
 
+  const target = {
+    kind: 'pnpm-lock' as const,
+    lockfileSha256: lockfile.sha256,
+    packageJsonSha256,
+    path: lockfile.path,
+  };
+
   try {
     const { policyHits, severityCounts } = parsePnpmAuditJson(parsed);
-    const status = policyHits > 0 ? ('failed' as const) : ('passed' as const);
+    const exitCode = processResult.code;
+
+    // Exit matrix (fail-closed):
+    // - 0 + zero high/critical → passed
+    // - 1 + high/critical hits → failed (policy)
+    // - 1 + zero hits → unavailable (unexpected advisory exit)
+    // - any other nonzero (e.g. 99) even with parseable zero metadata → unavailable
+    // - 0 + nonzero hits → failed (trust counts over exit)
+    if (exitCode !== 0 && exitCode !== 1) {
+      return {
+        checkId: 'dependency-scan',
+        exitCode,
+        failSeverities: [...DEPENDENCY_FAIL_SEVERITIES],
+        policyHits,
+        reason: 'unexpected-scanner-exit',
+        schemaVersion: SECURITY_ACCEPTANCE_SCHEMA_VERSION,
+        severityCounts,
+        status: 'unavailable',
+        target,
+        tool: { id: DEPENDENCY_SCANNER_ID, version: toolVersion },
+      };
+    }
+
+    if (policyHits > 0) {
+      return {
+        checkId: 'dependency-scan',
+        exitCode,
+        failSeverities: [...DEPENDENCY_FAIL_SEVERITIES],
+        policyHits,
+        reason: 'policy-severity-hits',
+        schemaVersion: SECURITY_ACCEPTANCE_SCHEMA_VERSION,
+        severityCounts,
+        status: 'failed',
+        target,
+        tool: { id: DEPENDENCY_SCANNER_ID, version: toolVersion },
+      };
+    }
+
+    if (exitCode === 1) {
+      return {
+        checkId: 'dependency-scan',
+        exitCode,
+        failSeverities: [...DEPENDENCY_FAIL_SEVERITIES],
+        policyHits: 0,
+        reason: 'unexpected-advisory-exit',
+        schemaVersion: SECURITY_ACCEPTANCE_SCHEMA_VERSION,
+        severityCounts,
+        status: 'unavailable',
+        target,
+        tool: { id: DEPENDENCY_SCANNER_ID, version: toolVersion },
+      };
+    }
+
     return {
       checkId: 'dependency-scan',
+      exitCode: 0,
       failSeverities: [...DEPENDENCY_FAIL_SEVERITIES],
-      policyHits,
-      reason: status === 'failed' ? 'policy-severity-hits' : undefined,
+      policyHits: 0,
       schemaVersion: SECURITY_ACCEPTANCE_SCHEMA_VERSION,
       severityCounts,
-      status,
-      target: {
-        kind: 'pnpm-lock',
-        lockfileSha256: lockfile.sha256,
-        packageJsonSha256,
-        path: lockfile.path,
-      },
+      status: 'passed',
+      target,
       tool: { id: DEPENDENCY_SCANNER_ID, version: toolVersion },
     };
   } catch {
     return {
       checkId: 'dependency-scan',
+      exitCode: processResult.code,
       failSeverities: [...DEPENDENCY_FAIL_SEVERITIES],
       policyHits: 0,
       reason: 'malformed-audit-output',
       schemaVersion: SECURITY_ACCEPTANCE_SCHEMA_VERSION,
       status: 'unavailable',
-      target: {
-        kind: 'pnpm-lock',
-        lockfileSha256: lockfile.sha256,
-        packageJsonSha256,
-        path: lockfile.path,
-      },
+      target,
       tool: { id: DEPENDENCY_SCANNER_ID, version: toolVersion },
     };
   }
