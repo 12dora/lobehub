@@ -47,9 +47,19 @@ const persistLocaleCookie = (
 
 export function defineConfig() {
   // `/oauth/connector` is a backend route handler (custom connector OAuth callback);
-  // the rest of `/oauth/*` (e.g. /oauth/callback/success) are SPA pages, so scope
-  // the passthrough to the connector subtree only.
-  const backendApiEndpoints = ['/api', '/trpc', '/webapi', '/oidc', '/oauth/connector'];
+  // `/oauth/identity-provider` is the M11 admin test-login callback route handler
+  // (state-bound capability, validates the attempt itself — must not be swallowed
+  // by the SPA shell or auth-redirected); the rest of `/oauth/*`
+  // (e.g. /oauth/callback/success) are SPA pages, so scope the passthrough
+  // to those backend subtrees only.
+  const backendApiEndpoints = [
+    '/api',
+    '/trpc',
+    '/webapi',
+    '/oidc',
+    '/oauth/connector',
+    '/oauth/identity-provider',
+  ];
 
   const defaultMiddleware = (request: NextRequest) => {
     const url = new URL(request.url);
