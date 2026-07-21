@@ -13,7 +13,7 @@ import {
   MicIcon,
   VideoIcon,
 } from 'lucide-react';
-import { memo, Suspense, useMemo, useState } from 'react';
+import { memo, Suspense, use, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import AsyncError from '@/components/AsyncError';
@@ -162,11 +162,19 @@ interface ModelListProps extends ProviderSettingsContextValue {
 const ModelList = memo<ModelListProps>(
   ({ id, showModelFetcher, sdkType, showAddNewModel, showDeployName, modelEditable = true }) => {
     const mobile = useIsMobile();
+    // Merge outer context (admin hideFetchOnClient / showModelFetcher) with local fields.
+    const outer = use(ProviderSettingsContext);
+    const merged: ProviderSettingsContextValue = {
+      ...outer,
+      modelEditable: modelEditable ?? outer.modelEditable,
+      sdkType: sdkType ?? outer.sdkType,
+      showAddNewModel: showAddNewModel ?? outer.showAddNewModel,
+      showDeployName: showDeployName ?? outer.showDeployName,
+      showModelFetcher: showModelFetcher ?? outer.showModelFetcher,
+    };
 
     return (
-      <ProviderSettingsContext
-        value={{ modelEditable, sdkType, showAddNewModel, showDeployName, showModelFetcher }}
-      >
+      <ProviderSettingsContext value={merged}>
         <Flexbox
           gap={16}
           paddingInline={mobile ? 12 : 0}
@@ -178,8 +186,8 @@ const ModelList = memo<ModelListProps>(
         >
           <ModelTitle
             provider={id}
-            showAddNewModel={showAddNewModel}
-            showModelFetcher={showModelFetcher}
+            showAddNewModel={merged.showAddNewModel}
+            showModelFetcher={merged.showModelFetcher}
           />
           <Suspense fallback={<SkeletonList />}>
             <Content id={id} />

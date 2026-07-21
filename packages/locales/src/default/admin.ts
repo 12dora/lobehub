@@ -517,10 +517,14 @@ export default {
   'nav.aiCatalogModels': 'Catalog models',
   'nav.aiCatalogProviderDetail': 'Catalog provider detail',
   'nav.aiCatalogProviders': 'Catalog providers',
-  'nav.aiModels': 'Models',
+
   'nav.aiProviderDetail': 'Provider detail',
   'nav.aiProviders': 'Providers',
   'aiProviderSettings.advancedCatalog': 'Advanced catalog management',
+  'aiProviderSettings.draftBanner.desc':
+    'Publish requires credentials, at least one enabled model, and a successful connection test.',
+  'aiProviderSettings.draftBanner.retry': 'Retry publish',
+  'aiProviderSettings.draftBanner.title': 'Changes saved as draft — not live yet',
   'aiProviderSettings.description':
     'Manage global platform AI providers. Changes publish immediately.',
   'nav.aria': 'Admin navigation',
