@@ -21,8 +21,9 @@ read-only `./prometheus/rules` mount). Validation is authoritative via:
 Unit tests reconcile intent keys, metrics, rule identities, collector pipeline, and exact selectors
 so metadata cannot drift from YAML; they do **not** replace promtool or the OTLP probe.
 
-`EnterpriseOperationalCollectionStale` fires on **ready == 0** (never first success; age gauge
-absent) **or** snapshot age above the reference window.
+`EnterpriseOperationalCollectionStale` preserves **per-collector** identity (`job_backlog`,
+`revision_lag`): ready==0, `absent(...)`, or age>180 after max-by-replica — a healthy collector
+cannot mask another. Semantic fixtures live in `promtool test rules`.
 
 **Notification receivers and production routing are not configured in this repository.** A firing
 rule without a receiver is still observable in the Prometheus UI. Deployments must own Alertmanager

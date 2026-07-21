@@ -95,18 +95,23 @@ describe('enterprise alert intents', () => {
     expect(jobBacklog?.expr).toMatch(/\bmax\s*\(/);
     expect(jobBacklog?.expr).not.toMatch(/sum\s*\(\s*enterprise_platform_job_backlog_oldest/);
     expect(revisionLag?.expr).toMatch(/\bmax\s+by\s*\(/);
-    expect(operational?.expr).toMatch(/\bmax\s*\(/);
+    expect(operational?.expr).toMatch(/\bmax\s+by\s*\(\s*enterprise_collector\s*\)/);
   });
 
-  it('EnterpriseOperationalCollectionStale covers never-initialized (ready=0) and age stale', () => {
+  it('EnterpriseOperationalCollectionStale preserves collector identity and absence', () => {
     const rules = parsePrometheusAlertRulesFile(rulesPath);
     const operational = rules.find((rule) => rule.alert === 'EnterpriseOperationalCollectionStale');
     expect(operational).toBeDefined();
-    // Age gauge is absent until first success; ready emits 0 — both branches required.
     expect(operational!.expr).toContain('enterprise_platform_operational_snapshot_age_seconds');
     expect(operational!.expr).toContain('enterprise_platform_operational_snapshot_ready');
-    expect(operational!.expr).toMatch(/==\s*0/);
-    expect(operational!.expr.toLowerCase()).toContain('or');
+    expect(operational!.expr).toContain('enterprise_collector="job_backlog"');
+    expect(operational!.expr).toContain('enterprise_collector="revision_lag"');
+    expect(operational!.expr).toMatch(/absent\s*\(/);
+    expect(operational!.expr).toMatch(/max\s+by\s*\(\s*enterprise_collector\s*\)/);
+    // Must not collapse collectors with bare max(ready)==0.
+    expect(operational!.expr).not.toMatch(
+      /max\s*\(\s*enterprise_platform_operational_snapshot_ready\s*\)\s*==\s*0/,
+    );
     expect(operational!.expr).not.toContain('enterprise.');
   });
 

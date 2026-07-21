@@ -28,9 +28,9 @@ Intent metadata is **1:1** with YAML `alert:` names. Unit tests reconcile keys, 
 
 ```bash
 # Fail closed if Docker or validation is unavailable, or if YAML/PromQL/config is invalid.
-bun run enterprise:check-prometheus-rules
+bun run enterprise:check-prometheus-rules # promtool check rules + promtool test rules
 bun run enterprise:check-otel-collector
-bun run enterprise:probe-otlp-prometheus
+bun run enterprise:probe-otlp-prometheus # production-rule selectors + real attribute builders
 
 # Compose structure (does not start the stack)
 docker compose -f docker-compose/production/grafana/docker-compose.yml --env-file docker-compose/production/grafana/.env.example config --quiet
@@ -54,20 +54,20 @@ All windows, thresholds, and `for` durations in the YAML are **reference default
 4. For **cluster snapshot gauges** (`job_backlog_oldest_age_seconds`, `revision_lag_instances`, `operational_snapshot_age_seconds`), aggregate with **`max`** (or `max by (...)` then `sum` for multi-reason lag). **Never `sum` across replicas** — every process may publish the same cluster snapshot.
 5. Do **not** add high-cardinality labels (user, tenant, instance id, URL, raw error).
 
-| Alert                                       | Intent key                     | Default signal (customize)               | Default `for` |
-| ------------------------------------------- | ------------------------------ | ---------------------------------------- | ------------- |
-| `EnterpriseConfigPublishFailureRatio`       | `publish_failure_ratio`        | failure ratio > 10% / 15m                | 10m           |
-| `EnterpriseConfigPublishConflictRatio`      | `publish_conflict_ratio`       | conflict ratio > 20% / 15m               | 15m           |
-| `EnterpriseInvalidationDegraded`            | `invalidation_degraded`        | any degraded invalidation rate > 0 / 10m | 10m           |
-| `EnterpriseCacheFailureRate`                | `cache_failure_rate`           | load\_failure ratio > 10% / 10m          | 10m           |
-| `EnterpriseGuardDenialSpike`                | `guard_denial_spike`           | denied rate > 1/s / 5m                   | 10m           |
-| `EnterpriseHeartbeatFailure`                | `heartbeat_failure`            | failure rate > 0 / 5m                    | 5m            |
-| `EnterpriseSsrfDenialSpike`                 | `ssrf_denial_spike`            | denial rate > 2/s / 5m                   | 10m           |
-| `EnterpriseOidcLoginFailureRatio`           | `oidc_login_failure_ratio`     | failure ratio > 20% / 15m                | 10m           |
-| `EnterpriseAgentMaterializationFailureRate` | `materialization_failure_rate` | failure ratio > 10% / 15m                | 10m           |
-| `EnterpriseJobBacklogStalled`               | `job_backlog_stalled`          | max oldest age > 1800s                   | 15m           |
-| `EnterpriseRevisionLag`                     | `revision_lag`                 | max-by-reason sum lag instances > 0      | 15m           |
-| `EnterpriseOperationalCollectionStale`      | `operational_collection_stale` | max age > 180s **or** max ready == 0     | 5m            |
+| Alert                                       | Intent key                     | Default signal (customize)                | Default `for` |
+| ------------------------------------------- | ------------------------------ | ----------------------------------------- | ------------- |
+| `EnterpriseConfigPublishFailureRatio`       | `publish_failure_ratio`        | failure ratio > 10% / 15m                 | 10m           |
+| `EnterpriseConfigPublishConflictRatio`      | `publish_conflict_ratio`       | conflict ratio > 20% / 15m                | 15m           |
+| `EnterpriseInvalidationDegraded`            | `invalidation_degraded`        | any degraded invalidation rate > 0 / 10m  | 10m           |
+| `EnterpriseCacheFailureRate`                | `cache_failure_rate`           | load\_failure ratio > 10% / 10m           | 10m           |
+| `EnterpriseGuardDenialSpike`                | `guard_denial_spike`           | denied rate > 1/s / 5m                    | 10m           |
+| `EnterpriseHeartbeatFailure`                | `heartbeat_failure`            | failure rate > 0 / 5m                     | 5m            |
+| `EnterpriseSsrfDenialSpike`                 | `ssrf_denial_spike`            | denial rate > 2/s / 5m                    | 10m           |
+| `EnterpriseOidcLoginFailureRatio`           | `oidc_login_failure_ratio`     | failure ratio > 20% / 15m                 | 10m           |
+| `EnterpriseAgentMaterializationFailureRate` | `materialization_failure_rate` | failure ratio > 10% / 15m                 | 10m           |
+| `EnterpriseJobBacklogStalled`               | `job_backlog_stalled`          | max oldest age > 1800s                    | 15m           |
+| `EnterpriseRevisionLag`                     | `revision_lag`                 | max-by-reason sum lag instances > 0       | 15m           |
+| `EnterpriseOperationalCollectionStale`      | `operational_collection_stale` | per-collector ready==0 / absent / age>180 | 5m            |
 
 Severity labels (`critical` / `warning`) and `component` are stable defaults for routing keys — remap in the deployment overlay if your severity taxonomy differs.
 
@@ -158,12 +158,15 @@ Identity domain lag after the rollout window. `max by (enterprise_domain, enterp
 
 ### EnterpriseOperationalCollectionStale
 
-Fires when **either**:
+Required collectors (closed vocab): `job_backlog`, `revision_lag`.
 
-1. `max(enterprise_platform_operational_snapshot_ready) == 0` — active collectors never produced a first successful snapshot (the **age gauge is absent** until first success; ready still emits 0), or
-2. `max(enterprise_platform_operational_snapshot_age_seconds) > 180` — a snapshot existed but became stale.
+Fires when **any** of the following holds for 5m (reference defaults):
 
-Aggregate replicas with **max**, never sum. Job backlog and revision-lag gauges stop reflecting production if collection stalls.
+1. **Per-collector never-initialized:** `max by (enterprise_collector) (ready{enterprise_collector="<name>"}) == 0` — ready emits 0 before first success; age is absent until then.
+2. **Per-collector absence:** `absent(ready{enterprise_collector="<name>"})` — total absence (no series) is not empty-max; each required collector is checked explicitly so one healthy collector cannot mask another.
+3. **Stale age after success:** `max by (enterprise_collector) (age) > 180`.
+
+**Replica policy:** cluster snapshot gauges use **max by (enterprise\_collector)** across replicas (any healthy replica is enough). **Never sum** replicas. Semantic coverage is enforced by `promtool test rules` (`enterprise-platform-alerts.test.yml`).
 
 ## Related
 
