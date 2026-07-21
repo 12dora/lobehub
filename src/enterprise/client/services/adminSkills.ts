@@ -2,6 +2,8 @@ import { withAdminReauthRetry } from '@/enterprise/client/features/admin/reauth/
 import { lambdaClient } from '@/libs/trpc/client';
 
 import type {
+  AdminSkillApplyImmediateInput,
+  AdminSkillApplyImmediateOutput,
   AdminSkillArchiveInput,
   AdminSkillCreateInput,
   AdminSkillCreateVersionInput,
@@ -19,6 +21,7 @@ import type {
   AdminSkillMutationOutput,
   AdminSkillPublicationOutput,
   AdminSkillPublishInput,
+  AdminSkillPublishNowInput,
   AdminSkillRollbackInput,
   AdminSkillUpdateDraftInput,
   AdminSkillValidateInput,
@@ -95,9 +98,11 @@ class AdminSkillsService {
    * Draft mutation + immediate publish (admin settings UI parity).
    * Soft-fail leaves draft + banner; hard failures toast via wrapper.
    */
-  applyImmediate = async (input: Record<string, unknown> & { mode: string; reason: string }) =>
+  applyImmediate = async (
+    input: AdminSkillApplyImmediateInput,
+  ): Promise<AdminSkillApplyImmediateOutput> =>
     withToastAndReauth(async () => {
-      const result = await lambdaClient.admin.skills.applyImmediate.mutate(input as never);
+      const result = await lambdaClient.admin.skills.applyImmediate.mutate(input);
       setLastAdminSkillPublishOutcome({
         published: result.published,
         publishError: result.publishError,
@@ -106,7 +111,7 @@ class AdminSkillsService {
       return result;
     });
 
-  publishNow = async (input: { id: string; reason: string; versionId?: string }) =>
+  publishNow = async (input: AdminSkillPublishNowInput): Promise<AdminSkillApplyImmediateOutput> =>
     withToastAndReauth(async () => {
       const result = await lambdaClient.admin.skills.publishNow.mutate(input);
       setLastAdminSkillPublishOutcome({

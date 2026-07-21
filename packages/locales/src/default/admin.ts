@@ -538,6 +538,7 @@ export default {
   'aiSkillSettings.draftBanner.title': 'Changes saved as draft — not live yet',
   'aiSkillSettings.description':
     'Manage the global platform skill catalog. Listing publishes for all users.',
+  'aiSkillSettings.actions.addVersion': 'Add / update version',
   'aiSkillSettings.actions.archive': 'Unlist',
   'aiSkillSettings.actions.archiveConfirmDesc':
     'Archive removes this skill from the live catalog for all users.',
@@ -549,15 +550,30 @@ export default {
   'aiSkillSettings.actions.publish': 'List (publish)',
   'aiSkillSettings.actions.published': 'Skill listed for all users',
   'aiSkillSettings.actions.republish': 'Apply changes',
+  'aiSkillSettings.create.content': 'Skill content (markdown)',
+  'aiSkillSettings.create.version': 'Version',
+  'aiSkillSettings.create.versionRequired':
+    'Version and skill content are required to list a skill.',
   'aiSkillSettings.detail.noDescription': 'No description',
+  'aiSkillSettings.detail.notFound': 'Skill not found',
   'aiSkillSettings.detail.noVersion': 'No version yet',
+  'aiSkillSettings.detail.version': 'Version',
   'aiSkillSettings.empty.desc': 'No platform skills yet. List one to make it available to users.',
   'aiSkillSettings.empty.title': 'No skills',
+  'aiSkillSettings.import.content': 'Skill content',
+  'aiSkillSettings.import.desc':
+    'Import skill markdown from a public URL or paste content. Lists the skill for all users when valid.',
+  'aiSkillSettings.import.fetch': 'Fetch content',
+  'aiSkillSettings.import.fetchFailed': 'Failed to fetch URL',
+  'aiSkillSettings.import.required': 'Content, key, display name, and reason are required.',
+  'aiSkillSettings.import.title': 'Import skill from URL',
+  'aiSkillSettings.import.url': 'URL',
+  'aiSkillSettings.import.urlRequired': 'Enter a URL.',
   'aiSkillSettings.select.desc': 'Select a skill from the list, or list a new one.',
   'aiSkillSettings.select.title': 'Select a skill',
   'aiConnectorSettings.advancedCatalog': 'Advanced catalog management',
   'aiConnectorSettings.draftBanner.desc':
-    'Publish requires an enabled connector with at least one enabled tool and a valid endpoint.',
+    'Publish requires enabled tools. Run Discover tools, enable at least one tool, then retry.',
   'aiConnectorSettings.draftBanner.retry': 'Retry publish',
   'aiConnectorSettings.draftBanner.title': 'Changes saved as draft — not live yet',
   'aiConnectorSettings.description':
@@ -568,7 +584,11 @@ export default {
   'aiConnectorSettings.actions.archiveConfirmTitle': 'Unlist connector?',
   'aiConnectorSettings.actions.archived': 'Connector unlisted',
   'aiConnectorSettings.actions.create': 'List connector',
-  'aiConnectorSettings.actions.draftSaved': 'Connector saved as draft — complete config to list it',
+  'aiConnectorSettings.actions.discover': 'Discover tools',
+  'aiConnectorSettings.actions.discoverOk':
+    'Tools discovered — first tool enabled; retry list if still draft',
+  'aiConnectorSettings.actions.draftSaved':
+    'Connector saved as draft — run Discover tools, enable a tool, then retry publish',
   'aiConnectorSettings.actions.editAdvanced': 'Edit in advanced catalog',
   'aiConnectorSettings.actions.publish': 'List (publish)',
   'aiConnectorSettings.actions.published': 'Connector listed for all users',
@@ -577,8 +597,12 @@ export default {
   'aiConnectorSettings.actions.testFail': 'Connection test failed',
   'aiConnectorSettings.actions.testOk': 'Connection OK',
   'aiConnectorSettings.detail.noDescription': 'No description',
+  'aiConnectorSettings.detail.notFound': 'Connector not found',
   'aiConnectorSettings.detail.publishedRevision': 'Published revision',
   'aiConnectorSettings.detail.tools': 'Tools',
+  'aiConnectorSettings.detail.toolsEmpty':
+    'No tools yet. Run Discover tools to load remote tool definitions.',
+  'aiConnectorSettings.detail.transport': 'Transport',
   'aiConnectorSettings.empty.desc':
     'No platform connectors yet. List one to make it available to users.',
   'aiConnectorSettings.empty.title': 'No connectors',
