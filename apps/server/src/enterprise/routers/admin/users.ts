@@ -25,6 +25,7 @@ import {
   adminUsersUnbanOutputSchema,
 } from '../../contracts/adminUsers';
 import { withActiveUser } from '../../guards/activeUser';
+import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
 import { throwEnterpriseError } from '../../guards/enterpriseErrors';
 import { withPlatformPermission } from '../../guards/platformPermission';
 import { assertRecentReauth } from '../../guards/reauth';
@@ -36,7 +37,10 @@ import {
 } from '../../services/adminUserService';
 import { LastSuperAdminError } from '../../services/platformRbac';
 
-const adminBase = authedProcedure.use(serverDatabase).use(withActiveUser());
+const adminBase = authedProcedure
+  .use(serverDatabase)
+  .use(withActiveUser())
+  .use(withAdminMutationRateLimit());
 
 const mapServiceError = (error: unknown): never => {
   if (error instanceof AdminUserNotFoundError) {

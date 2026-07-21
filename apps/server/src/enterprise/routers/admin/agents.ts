@@ -54,6 +54,7 @@ import {
   adminPlatformAgentVersionsListOutputSchema,
 } from '../../contracts/platformAgents';
 import { withActiveUser } from '../../guards/activeUser';
+import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
 import { withPlatformPermission } from '../../guards/platformPermission';
 import {
   PlatformAgentAdminService,
@@ -61,13 +62,17 @@ import {
   PlatformAgentRolloutService,
   validateExactPlatformAgentDependencies,
 } from '../../services/agentCatalog';
+import { PlatformAuditService } from '../../services/platformAudit';
 import {
   assertAgentDangerousReauth,
   assertAgentFeatureEnabled,
   mapAgentServiceError,
 } from './agentsSupport';
 
-const adminBase = authedProcedure.use(serverDatabase).use(withActiveUser());
+const adminBase = authedProcedure
+  .use(serverDatabase)
+  .use(withActiveUser())
+  .use(withAdminMutationRateLimit());
 const rolloutBase = preAccessAuthedProcedure
   .use(({ next }) => {
     // This synchronous env-only gate MUST precede serverDatabase, active-user and RBAC. With
@@ -77,7 +82,8 @@ const rolloutBase = preAccessAuthedProcedure
   })
   .use(enterpriseAccessGate)
   .use(serverDatabase)
-  .use(withActiveUser());
+  .use(withActiveUser())
+  .use(withAdminMutationRateLimit());
 
 const assignmentsRouter = router({
   list: adminBase
@@ -486,8 +492,39 @@ export const adminAgentsRouter = router({
     .mutation(async ({ ctx, input }) => {
       assertAgentFeatureEnabled();
       try {
-        return await validateExactPlatformAgentDependencies(ctx.serverDB, input.dependencySnapshot);
+        const result = await validateExactPlatformAgentDependencies(
+          ctx.serverDB,
+          input.dependencySnapshot,
+        );
+        try {
+          await new PlatformAuditService(ctx.serverDB).append({
+            action: 'admin.agents.validateDependencies',
+            actorUserId: ctx.userId!,
+            afterDiff: { valid: result.valid === true },
+            result: 'success',
+            targetType: 'agent_dependency_validation',
+          });
+        } catch (auditError) {
+          console.error('[admin.agents] validateDependencies audit unavailable', {
+            errorClass: auditError instanceof Error ? auditError.name : 'UnknownError',
+          });
+          // Validation already completed; do not reclassify as business failure.
+        }
+        return result;
       } catch (error) {
+        try {
+          await new PlatformAuditService(ctx.serverDB).append({
+            action: 'admin.agents.validateDependencies',
+            actorUserId: ctx.userId!,
+            afterDiff: { error: 'validation_failed' },
+            result: 'failure',
+            targetType: 'agent_dependency_validation',
+          });
+        } catch (auditError) {
+          console.error('[admin.agents] validateDependencies failure audit unavailable', {
+            errorClass: auditError instanceof Error ? auditError.name : 'UnknownError',
+          });
+        }
         return mapAgentServiceError(error);
       }
     }),

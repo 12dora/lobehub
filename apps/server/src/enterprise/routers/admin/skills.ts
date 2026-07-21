@@ -26,6 +26,7 @@ import {
   adminSkillValidateOutputSchema,
 } from '../../contracts/skillCatalog';
 import { withActiveUser } from '../../guards/activeUser';
+import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
 import { withPlatformPermission } from '../../guards/platformPermission';
 import {
   assertSkillDangerousReauth,
@@ -34,7 +35,10 @@ import {
   mapSkillServiceError,
 } from './skillsSupport';
 
-const adminBase = authedProcedure.use(serverDatabase).use(withActiveUser());
+const adminBase = authedProcedure
+  .use(serverDatabase)
+  .use(withActiveUser())
+  .use(withAdminMutationRateLimit());
 
 export const adminSkillsRouter = router({
   archive: adminBase

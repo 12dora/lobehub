@@ -8,6 +8,10 @@ import { lambdaRouter } from '@/server/routers/lambda';
 
 import { withActiveUser } from '../../guards/activeUser';
 import {
+  getAdminMutationRateLimitMetadata,
+  withAdminMutationRateLimit,
+} from '../../guards/adminMutationRateLimit';
+import {
   getPlatformPermissionMetadata,
   withPlatformPermission,
 } from '../../guards/platformPermission';
@@ -226,5 +230,52 @@ describe('admin procedure authorization registry', () => {
       (entry) => !entry.dangerous && entry.controls.reauth.status === 'gap',
     );
     expect(regularReauthGaps.map(({ procedure }) => procedure).sort()).toEqual([]);
+  });
+
+  it('attaches private rate-limit middleware metadata to all 71 live mutations', () => {
+    const missing: string[] = [];
+    for (const path of mutationPaths) {
+      const relative = path.slice('admin.'.length);
+      const procedure = adminProcedures[relative] as ProcedureUnderTest | undefined;
+      const metadata = getAdminMutationRateLimitMetadata(procedure);
+      if (metadata.length !== 1 || metadata[0]?.kind !== 'admin-mutation-rate-limit') {
+        missing.push(path);
+      }
+    }
+    expect(missing).toEqual([]);
+
+    const sample = adminProcedures['aiProviders.test'] as ProcedureUnderTest;
+    const rateMiddleware = sample._def.middlewares.find((middleware) => {
+      const carrier = Object.assign(() => undefined, { _def: { middlewares: [middleware] } });
+      return getAdminMutationRateLimitMetadata(carrier).length === 1;
+    });
+    expect(rateMiddleware).toBeTypeOf('function');
+    const [metadataSymbol] = Object.getOwnPropertySymbols(rateMiddleware!);
+    expect(Object.getOwnPropertyDescriptor(rateMiddleware!, metadataSymbol!)?.enumerable).toBe(
+      false,
+    );
+    expect(JSON.stringify({ middleware: rateMiddleware })).toBe('{}');
+
+    // Queries may share a base that hosts the type-gated middleware; mutations must have it.
+    const query = adminProcedures['auth.getMyAccess'] as ProcedureUnderTest;
+    expect(query._def.type).toBe('query');
+  });
+
+  it('does not invent rate-limit coverage without the middleware helper', () => {
+    const bare = authedProcedure
+      .use(serverDatabase)
+      .use(withActiveUser())
+      .use(withPlatformPermission(PLATFORM_PERMISSIONS.AUDIT_READ))
+      .mutation(() => null);
+    expect(getAdminMutationRateLimitMetadata(bare)).toEqual([]);
+    const withLimit = authedProcedure
+      .use(serverDatabase)
+      .use(withActiveUser())
+      .use(withAdminMutationRateLimit())
+      .use(withPlatformPermission(PLATFORM_PERMISSIONS.AUDIT_READ))
+      .mutation(() => null);
+    expect(getAdminMutationRateLimitMetadata(withLimit)).toEqual([
+      { enforced: true, kind: 'admin-mutation-rate-limit' },
+    ]);
   });
 });

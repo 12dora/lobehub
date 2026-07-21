@@ -33,8 +33,10 @@ import type {
   GenerateObjectPayload,
 } from '../../types';
 import { AgentRuntimeErrorType } from '../../types/error';
+import type { FetchLike } from '../../utils/boundFetch';
 import { AgentRuntimeError } from '../../utils/createError';
 import { debugStream } from '../../utils/debugStream';
+import { createFetchRequestHandler } from '../../utils/fetchRequestHandler';
 import { getModelPricing } from '../../utils/getModelPricing';
 import { StreamingResponse } from '../../utils/response';
 import { shouldDropUnsupportedClaudeAssistantPrefill } from '../anthropic/claudeModelId';
@@ -76,9 +78,16 @@ export interface LobeBedrockAIParams {
   accessKeyId?: string;
   accessKeySecret?: string;
   apiKey?: string;
+  /**
+   * Custom fetch used to build a Smithy requestHandler so Bedrock never uses the
+   * default Node HTTP stack during enterprise outbound-bound connection tests.
+   */
+  fetch?: FetchLike;
   id?: string;
   modelIdMapping?: Record<string, string>;
   region?: string;
+  /** Optional pre-built AWS requestHandler (takes precedence over `fetch`). */
+  requestHandler?: ReturnType<typeof createFetchRequestHandler>;
   sessionToken?: string;
 }
 
@@ -98,16 +107,22 @@ export class LobeBedrockAI implements LobeRuntimeAI {
       accessKeySecret,
       apiKey,
       sessionToken,
+      fetch: customFetch,
+      requestHandler,
     } = options;
 
     this.region = region ?? 'us-east-1';
     this.id = id ?? ModelProvider.Bedrock;
     this.modelIdMapping = modelIdMapping;
 
+    const transport =
+      requestHandler ?? (customFetch ? createFetchRequestHandler(customFetch) : undefined);
+
     if (apiKey) {
       this.client = new BedrockRuntimeClient({
         authSchemePreference: ['httpBearerAuth'],
         region: this.region,
+        ...(transport ? { requestHandler: transport as never } : {}),
         token: { token: apiKey },
       });
       return;
@@ -123,6 +138,7 @@ export class LobeBedrockAI implements LobeRuntimeAI {
         sessionToken,
       },
       region: this.region,
+      ...(transport ? { requestHandler: transport as never } : {}),
     });
   }
 
@@ -423,8 +439,8 @@ export class LobeBedrockAI implements LobeRuntimeAI {
     });
 
     try {
-      // Ask Claude for a streaming chat completion given the prompt
-      const res = await this.client.send(command);
+      // Ask Meta/Llama for a streaming chat completion given the prompt
+      const res = await this.client.send(command, { abortSignal: options?.signal });
 
       const stream = createBedrockStream(res);
 

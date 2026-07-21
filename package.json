@@ -89,6 +89,7 @@
     "enterprise:preflight": "bun run scripts/enterprise/preflight.ts",
     "enterprise:probe-otlp-prometheus": "bun run scripts/enterprise/prometheus-alerts/otlpPrometheusProbe.ts",
     "enterprise:recovery-drill": "bun run scripts/enterprise/recovery-drill.ts",
+    "enterprise:security-acceptance": "bun run scripts/enterprise/security-acceptance/index.ts",
     "enterprise:verify-migration": "bun run scripts/enterprise/verify-migration.ts",
     "hotfix:branch": "tsx ./scripts/hotfixWorkflow/index.ts",
     "i18n": "npm run workflow:i18n && lobe-i18n && prettier -c --write \"locales/**\"",
