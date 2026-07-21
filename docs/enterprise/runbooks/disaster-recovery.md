@@ -1,6 +1,6 @@
 # Runbook: Disaster recovery (backup selection → isolated restore → decision)
 
-**Owner role:** `platform-sre` (+ `security-admin` for secret-reference review)  
+**Owner role:** `platform-sre` (+ `security-admin` for secret-reference review)\
 **Package commands:** `bun run enterprise:recovery-drill`
 
 ## Prerequisites

@@ -1,6 +1,6 @@
 # Runbook: Production release preflight and Milestone A–F rollout
 
-**Owner role:** `release-manager` (activation), `platform-sre` (monitoring)  
+**Owner role:** `release-manager` (activation), `platform-sre` (monitoring)\
 **Package commands:** `bun run enterprise:preflight`, `bun run enterprise:recovery-drill`
 
 ## Prerequisites
