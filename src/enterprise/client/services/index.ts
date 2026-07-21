@@ -9,6 +9,7 @@ export { adminBrandingService } from './adminBranding';
 export { adminManagedResourcesService } from './adminManagedResources';
 export { adminSettingsService } from './adminSettings';
 export { adminSkillsService } from './adminSkills';
+export { adminStatsService } from './adminStats';
 export {
   type AdminUsersBanInput,
   type AdminUsersGetOutput,
