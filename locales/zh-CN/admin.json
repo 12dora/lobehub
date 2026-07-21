@@ -741,7 +741,7 @@
   "identityProviders.fields.type": "提供商类型",
   "identityProviders.fields.typeLocked": "类型由你选择的模板决定。若要更换类型，请新建草稿。",
   "identityProviders.list.activationRevision": "激活修订 {{revision}}",
-  "identityProviders.list.currentRevision": "当前修订 {{revision}}",
+  "identityProviders.list.currentRevision": "草稿修订 {{revision}}",
   "identityProviders.loading": "正在加载身份提供商…",
   "identityProviders.newProvider": "新身份提供商",
   "identityProviders.publish.description": "发布已测试的草稿；激活可能需要受控重启。",
