@@ -158,6 +158,25 @@ export const releasePlanSchema = z
       }
     }
 
+    const highRiskEnableCommands = new Set([
+      'flag-enable-oidc',
+      'flag-enable-connector-shared-credentials',
+      'flag-enable-default-inbox',
+      'flag-enable-branding-cutover',
+    ]);
+    const enableForCapability: Record<string, string> = {
+      'branding-cutover': 'flag-enable-branding-cutover',
+      'connector-shared-credentials': 'flag-enable-connector-shared-credentials',
+      'default-inbox': 'flag-enable-default-inbox',
+      'oidc': 'flag-enable-oidc',
+    };
+    const disableForCapability: Record<string, string> = {
+      'branding-cutover': 'flag-disable-branding-cutover',
+      'connector-shared-credentials': 'flag-disable-connector-shared-credentials',
+      'default-inbox': 'flag-disable-default-inbox',
+      'oidc': 'flag-disable-oidc',
+    };
+
     for (const [index, window] of plan.windows.entries()) {
       const commandSets = [
         window.forwardCommandIds,
@@ -187,6 +206,47 @@ export const releasePlanSchema = z
             code: z.ZodIssueCode.custom,
             message: `stop condition metric ${condition.metricId} not listed in metricIds`,
             path: ['windows', index, 'stopConditions'],
+          });
+        }
+      }
+
+      const enableCommands = window.forwardCommandIds.filter((id) =>
+        highRiskEnableCommands.has(id),
+      );
+      if (window.firstEnableCapability === 'none') {
+        if (enableCommands.length > 0) {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: 'none first-enable window cannot include high-risk enable commands',
+            path: ['windows', index, 'forwardCommandIds'],
+          });
+        }
+      } else {
+        if (enableCommands.length !== 1) {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: 'high-risk first-enable window requires exactly one enable command',
+            path: ['windows', index, 'forwardCommandIds'],
+          });
+        } else {
+          const expected = enableForCapability[window.firstEnableCapability];
+          if (enableCommands[0] !== expected) {
+            context.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: `enable command must match firstEnableCapability (${expected})`,
+              path: ['windows', index, 'forwardCommandIds'],
+            });
+          }
+        }
+        const expectedDisable = disableForCapability[window.firstEnableCapability];
+        if (
+          window.rollbackCommandIds.length !== 1 ||
+          window.rollbackCommandIds[0] !== expectedDisable
+        ) {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `rollback must be exactly ${expectedDisable}`,
+            path: ['windows', index, 'rollbackCommandIds'],
           });
         }
       }

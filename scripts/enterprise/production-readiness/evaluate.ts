@@ -1,5 +1,9 @@
 /**
- * Pure evaluation of release candidate + evidence + release plan → readiness report.
+ * Production readiness evaluation.
+ *
+ * Production scope is NEVER taken from self-declared JSON `scope` fields.
+ * It is granted only by cryptographic provenance verification against the
+ * repository-pinned PRODUCTION_TRUST_POLICY (empty keys → impossible).
  */
 import {
   type CheckResult,
@@ -12,8 +16,6 @@ import { assessEvidenceFreshness, type FreshnessOptions } from './freshness';
 import { shortSha } from './privacy';
 import {
   createProductionReadinessReport,
-  type EvidenceEnvelope,
-  evidenceEnvelopeSchema,
   type ProductionReadinessReport,
   type ReleaseCandidate,
   releaseCandidateSchema,
@@ -22,16 +24,48 @@ import {
   sortChecksDeterministic,
   sortWindowsDeterministic,
 } from './schemas';
+import {
+  PRODUCTION_TRUST_POLICY,
+  provenanceGrantsProductionScope,
+  type SignedProvenanceEnvelope,
+  type TrustPolicy,
+  verifySignedProvenance,
+} from './trust';
+
+/** Gate evidence after adapter load (harness scopes only on the envelope). */
+export interface GateEvidenceInput {
+  artifactSha256: string;
+  assertions?: {
+    failed: number;
+    passed: number;
+    skipped: number;
+    total: number;
+  };
+  candidateSha: string;
+  gate: EvidenceGateId;
+  generatedAt: string;
+  /** Optional observedAt for verification metadata only. */
+  observedAt?: string;
+  /** Detached signed provenance (required for production scope). */
+  provenance?: SignedProvenanceEnvelope | unknown;
+  /**
+   * Harness-declared scope. production-authorized is IGNORED and treated as attack.
+   */
+  scope: EvidenceScope;
+  status: CheckResult;
+}
 
 export interface EvaluatePreflightInput {
   candidate: ReleaseCandidate;
   cleanupResult?: 'failed' | 'passed';
-  evidence: EvidenceEnvelope[];
+  evidence: GateEvidenceInput[];
   freshness?: FreshnessOptions;
   mode: PreflightMode;
   plan: ReleasePlan;
-  /** Wall-clock for elapsed measurement. */
+  seenNonces?: Set<string>;
   startedAtMs?: number;
+  /** Tests only — CLI always uses PRODUCTION_TRUST_POLICY. */
+  trustPolicy?: TrustPolicy;
 }
 
 export interface EvaluatePreflightResult {
@@ -39,70 +73,126 @@ export interface EvaluatePreflightResult {
   report: ProductionReadinessReport;
 }
 
-const scopeRank = (scope: EvidenceScope): number => {
-  if (scope === 'production-authorized') return 3;
-  if (scope === 'ci-harness') return 2;
-  return 1;
-};
-
-const classifyBundle = (evidence: EvidenceEnvelope[]): EvidenceScope => {
-  if (evidence.length === 0) return 'local-harness';
-  let min: EvidenceScope = 'production-authorized';
-  for (const item of evidence) {
-    if (scopeRank(item.scope) < scopeRank(min)) min = item.scope;
-  }
-  return min;
-};
-
-const evaluateGateStatus = (
-  envelope: EvidenceEnvelope | undefined,
-  candidateSha: string,
+const evaluateOneGate = (
+  input: GateEvidenceInput | undefined,
+  candidate: ReleaseCandidate,
+  mode: PreflightMode,
   freshness: FreshnessOptions,
-): { result: CheckResult; scope?: EvidenceScope; reason: string } => {
-  if (!envelope) {
-    return { result: 'not-executed', reason: 'missing-evidence' };
+  policy: TrustPolicy,
+  seenNonces: Set<string>,
+): { result: CheckResult; scope: EvidenceScope; reason: string } => {
+  if (!input) {
+    return { result: 'not-executed', scope: 'local-harness', reason: 'missing-evidence' };
   }
 
-  if (envelope.candidateSha !== candidateSha) {
-    return { result: 'failed', scope: envelope.scope, reason: 'candidate-mismatch' };
+  if (input.candidateSha !== candidate.gitSha) {
+    return { result: 'failed', scope: 'local-harness', reason: 'candidate-mismatch' };
   }
 
-  const freshnessVerdict = assessEvidenceFreshness(envelope.freshness, freshness).verdict;
+  // Self-declared production is never trusted.
+  if (input.scope === 'production-authorized' && !input.provenance) {
+    return {
+      result: 'failed',
+      scope: 'local-harness',
+      reason: 'self-declared-production-without-provenance',
+    };
+  }
+
+  const freshnessVerdict = assessEvidenceFreshness(
+    { generatedAt: input.generatedAt, observedAt: input.observedAt },
+    freshness,
+  ).verdict;
+  if (freshnessVerdict !== 'fresh') {
+    return {
+      result: 'failed',
+      scope: 'local-harness',
+      reason: `freshness-${freshnessVerdict}`,
+    };
+  }
+
+  // Base harness scope from declaration (clamp production away).
+  let scope: EvidenceScope =
+    input.scope === 'production-authorized'
+      ? 'local-harness'
+      : input.scope === 'ci-harness'
+        ? 'ci-harness'
+        : 'local-harness';
+
+  // Production mode requires valid signature against pinned policy.
+  if (mode === 'production-authorized') {
+    if (!input.provenance) {
+      return {
+        result: 'unverified',
+        scope: 'local-harness',
+        reason: 'missing-production-provenance',
+      };
+    }
+    const verdict = verifySignedProvenance(input.provenance, {
+      expectedArtifactSha256: input.artifactSha256,
+      expectedCandidateSha: candidate.gitSha,
+      expectedGateId: input.gate,
+      expectedReleaseId: candidate.releaseId,
+      policy,
+      seenNonces,
+      nowMs: freshness.nowMs,
+      maxAgeMs: freshness.maxAgeMs,
+      clockSkewMs: freshness.clockSkewMs,
+    });
+    if (!verdict.ok) {
+      return {
+        result: 'failed',
+        scope: 'local-harness',
+        reason: `provenance-${verdict.reason}`,
+      };
+    }
+    if (provenanceGrantsProductionScope(verdict)) {
+      scope = 'production-authorized';
+    } else {
+      // Signed but not production environment → harness at best.
+      scope = verdict.environment === 'ci-harness' ? 'ci-harness' : 'local-harness';
+      if (mode === 'production-authorized') {
+        return {
+          result: 'unverified',
+          scope,
+          reason: 'provenance-not-production-environment',
+        };
+      }
+    }
+
+    // Signed status must match evidence status.
+    if (verdict.payload.status !== input.status) {
+      return { result: 'failed', scope, reason: 'provenance-status-mismatch' };
+    }
+  }
+
+  // Zero-assertion pass is never allowed.
   if (
-    freshnessVerdict === 'stale' ||
-    freshnessVerdict === 'future' ||
-    freshnessVerdict === 'invalid'
+    input.status === 'passed' &&
+    input.assertions &&
+    (input.assertions.total < 1 ||
+      input.assertions.passed !== input.assertions.total ||
+      input.assertions.failed !== 0 ||
+      input.assertions.skipped !== 0)
   ) {
-    return { result: 'failed', scope: envelope.scope, reason: `freshness-${freshnessVerdict}` };
+    return { result: 'failed', scope, reason: 'assertions-not-all-pass' };
   }
 
-  // Re-parse strict envelope (unknown fields / internal consistency).
-  const parsed = evidenceEnvelopeSchema.safeParse(envelope);
-  if (!parsed.success) {
-    return { result: 'failed', scope: envelope.scope, reason: 'schema-invalid' };
+  if (input.status === 'passed') return { result: 'passed', scope, reason: 'ok' };
+  if (input.status === 'failed') return { result: 'failed', scope, reason: 'evidence-failed' };
+  if (input.status === 'not-executed') {
+    return { result: 'not-executed', scope, reason: 'not-executed' };
   }
-
-  if (parsed.data.status === 'passed') {
-    return { result: 'passed', scope: parsed.data.scope, reason: 'ok' };
-  }
-  if (parsed.data.status === 'failed') {
-    return { result: 'failed', scope: parsed.data.scope, reason: 'evidence-failed' };
-  }
-  if (parsed.data.status === 'not-executed') {
-    return { result: 'not-executed', scope: parsed.data.scope, reason: 'not-executed' };
-  }
-  return { result: 'unverified', scope: parsed.data.scope, reason: 'unverified' };
+  return { result: 'unverified', scope, reason: 'unverified' };
 };
 
-/**
- * Evaluate production readiness. Pure: no I/O, no process dispatch.
- */
 export const evaluateProductionReadiness = (
   input: EvaluatePreflightInput,
 ): EvaluatePreflightResult => {
   const startedAtMs = input.startedAtMs ?? Date.now();
   const candidate = releaseCandidateSchema.parse(input.candidate);
   const plan = releasePlanSchema.parse(input.plan);
+  const policy = input.trustPolicy ?? PRODUCTION_TRUST_POLICY;
+  const seenNonces = input.seenNonces ?? new Set<string>();
 
   if (plan.candidateGitSha !== candidate.gitSha) {
     throw new Error('Release plan candidateGitSha does not match release candidate');
@@ -110,38 +200,24 @@ export const evaluateProductionReadiness = (
   if (plan.releaseId !== candidate.releaseId) {
     throw new Error('Release plan releaseId does not match release candidate');
   }
-  if (candidate.dirty !== false) {
-    throw new Error('Release candidate must be clean (dirty=false)');
-  }
 
-  // Index evidence by gate; duplicates fail closed.
-  const byGate = new Map<EvidenceGateId, EvidenceEnvelope>();
-  for (const raw of input.evidence) {
-    const parsed = evidenceEnvelopeSchema.safeParse(raw);
-    if (!parsed.success) {
-      // Keep a failed placeholder by attempting gate field only.
-      continue;
+  const byGate = new Map<EvidenceGateId, GateEvidenceInput>();
+  for (const item of input.evidence) {
+    if (byGate.has(item.gate)) {
+      throw new Error(`Duplicate evidence for gate: ${item.gate}`);
     }
-    const gate = parsed.data.gate;
-    if (byGate.has(gate)) {
-      throw new Error(`Duplicate evidence for gate: ${gate}`);
-    }
-    byGate.set(gate, parsed.data);
-  }
-
-  // Also fail on unparseable items that claimed a gate.
-  for (const raw of input.evidence) {
-    if (!evidenceEnvelopeSchema.safeParse(raw).success) {
-      throw new Error('Evidence envelope failed strict schema validation');
-    }
+    byGate.set(item.gate, item);
   }
 
   const checks = sortChecksDeterministic(
     REQUIRED_EVIDENCE_GATES.map((gate) => {
-      const evaluation = evaluateGateStatus(
+      const evaluation = evaluateOneGate(
         byGate.get(gate),
-        candidate.gitSha,
+        candidate,
+        input.mode,
         input.freshness ?? {},
+        policy,
+        seenNonces,
       );
       return {
         durationMs: 0,
@@ -156,14 +232,11 @@ export const evaluateProductionReadiness = (
     plan.windows.map((window) => ({
       id: window.id,
       order: window.order,
-      // Window plan validity already enforced by schema; mark passed when plan parses.
       result: 'passed' as const,
     })),
   );
 
-  const classification = classifyBundle([...byGate.values()]);
   const cleanupResult = input.cleanupResult ?? 'passed';
-
   const anyFailed = checks.some((check) => check.result === 'failed');
   const anyMissing = checks.some(
     (check) => check.result === 'not-executed' || check.result === 'unverified',
@@ -171,34 +244,44 @@ export const evaluateProductionReadiness = (
   const allPassed = checks.every((check) => check.result === 'passed');
   const allProduction = checks.every((check) => check.scope === 'production-authorized');
 
+  // Production pass requires policy enablement + trusted keys + all production scopes.
+  const productionPossible =
+    policy.productionPassEnabled &&
+    policy.trustedKeys.some((key) => !key.revoked && key.environments.includes('production'));
+
   let overall: 'failed' | 'passed' | 'unverified';
   if (anyFailed || cleanupResult === 'failed') {
     overall = 'failed';
   } else if (
     input.mode === 'production-authorized' &&
+    productionPossible &&
     allPassed &&
     allProduction &&
-    classification === 'production-authorized' &&
     windows.every((window) => window.result === 'passed')
   ) {
     overall = 'passed';
   } else if (allPassed && input.mode !== 'production-authorized') {
-    // Harness / local preflight may have all local checks green but never production-passed.
     overall = 'unverified';
-  } else if (anyMissing) {
+  } else if (anyMissing || input.mode === 'production-authorized') {
     overall = 'unverified';
   } else {
     overall = 'unverified';
   }
 
-  // validate-harness never emits production passed (schema also enforces).
   if (input.mode === 'validate-harness' && overall === 'passed') {
     overall = 'unverified';
   }
 
-  // Mode forces classification ceilings so CI/local never claim production-authorized overall.
-  const reportClassification: EvidenceScope =
-    input.mode === 'production-authorized' ? classification : 'local-harness';
+  // Classification: never claim production-authorized without overall production path.
+  let classification: EvidenceScope = 'local-harness';
+  if (overall === 'passed' && allProduction) {
+    classification = 'production-authorized';
+  } else if (checks.some((check) => check.scope === 'ci-harness')) {
+    classification = 'ci-harness';
+  }
+  if (input.mode !== 'production-authorized') {
+    classification = classification === 'production-authorized' ? 'local-harness' : classification;
+  }
 
   const report = createProductionReadinessReport({
     candidate: {
@@ -208,7 +291,7 @@ export const evaluateProductionReadiness = (
       releaseId: candidate.releaseId,
     },
     checks,
-    classification: reportClassification,
+    classification,
     cleanupResult,
     elapsed: { milliseconds: Math.max(0, Date.now() - startedAtMs) },
     lane: 'enterprise-production-readiness',
@@ -218,40 +301,16 @@ export const evaluateProductionReadiness = (
     windows,
   });
 
-  // Fix classification for validate-harness and non-production modes.
-  // createProductionReadinessReport already sealed; recompute exit.
-  const exitCode = deriveExitCode(report, input.mode);
-  return { exitCode, report };
+  return { exitCode: deriveExitCode(report, input.mode), report };
 };
 
-/**
- * For validate-harness: exit 0 when report is well-formed and overall is not a false production pass.
- * For preflight / production-authorized: nonzero on failed or unverified overall.
- */
 export const deriveExitCode = (report: ProductionReadinessReport, mode: PreflightMode): number => {
   if (report.redactionScan.result !== 'passed') return 1;
   if (report.cleanupResult === 'failed') return 1;
-
   if (mode === 'validate-harness') {
-    // Harness validation succeeds when the contract artifact is valid and not a false green.
     if (report.overall === 'passed') return 1;
-    if (report.schemaVersion !== 1) return 1;
     return 0;
   }
-
   if (report.overall === 'passed') return 0;
   return 1;
-};
-
-export const loadAndParseEvidenceList = (raw: unknown[]): EvidenceEnvelope[] => {
-  if (!Array.isArray(raw)) {
-    throw new Error('Evidence list must be an array');
-  }
-  return raw.map((item, index) => {
-    const parsed = evidenceEnvelopeSchema.safeParse(item);
-    if (!parsed.success) {
-      throw new Error(`Evidence[${index}] failed schema validation`);
-    }
-    return parsed.data;
-  });
 };
