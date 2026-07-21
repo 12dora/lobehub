@@ -145,7 +145,9 @@ const ProviderDetailContent = memo<ProviderDetailContentProps>(
           <>
             <Button
               onClick={() =>
-                navigate(`/admin/ai/models?provider=${encodeURIComponent(data.draft.providerKey)}`)
+                navigate(
+                  `/admin/ai/catalog/models?provider=${encodeURIComponent(data.draft.providerKey)}`,
+                )
               }
             >
               {t('aiCatalog.providers.actions.viewModels')}
