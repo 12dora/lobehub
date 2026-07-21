@@ -11,14 +11,14 @@
 
 ## Procedure
 
-| Step | Action | Command | Success | Stop |
-| ---- | ------ | ------- | ------- | ---- |
-| 1 | Select backup | `bun run enterprise:recovery-drill select-backup --scope production-authorized` | operator provides authorized backup evidence (tool exits not-executed until provided) | missing authorization → stop |
-| 2 | Isolated restore drill | `bun run enterprise:recovery-drill backup-restore --candidate-sha <sha> --schema-tag <tag> --scope production-authorized --production-ack --output <evidence.json>` | `status=passed`, invariants all passed, `sourcePreserved=true` | any invariant fail → fail closed |
-| 3 | Verify invariants | covered by step 2 evidence (`resource-revisions`, `audit-logs`, `secret-references`, tables, publication pointers) | assertion totals > 0, zero skipped/failed | drift/dangling refs → stop traffic decision |
-| 4 | Traffic decision | human gate after evidence | only after production-authorized pass | keep traffic on healthy region |
-| 5 | Credential / secret-ref validation | evidence digests only | reference cardinalities + fingerprint digests match | ciphertext/history swap → security-admin |
-| 6 | Roll-forward or app rollback | `app-rollback` drill + release runbook | chosen path evidence recorded | escalate |
+| Step | Action                             | Command                                                                                                                                                             | Success                                                                               | Stop                                        |
+| ---- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- | ------------------------------------------- |
+| 1    | Select backup                      | `bun run enterprise:recovery-drill select-backup --scope production-authorized`                                                                                     | operator provides authorized backup evidence (tool exits not-executed until provided) | missing authorization → stop                |
+| 2    | Isolated restore drill             | `bun run enterprise:recovery-drill backup-restore --candidate-sha <sha> --schema-tag <tag> --scope production-authorized --production-ack --output <evidence.json>` | `status=passed`, invariants all passed, `sourcePreserved=true`                        | any invariant fail → fail closed            |
+| 3    | Verify invariants                  | covered by step 2 evidence (`resource-revisions`, `audit-logs`, `secret-references`, tables, publication pointers)                                                  | assertion totals > 0, zero skipped/failed                                             | drift/dangling refs → stop traffic decision |
+| 4    | Traffic decision                   | human gate after evidence                                                                                                                                           | only after production-authorized pass                                                 | keep traffic on healthy region              |
+| 5    | Credential / secret-ref validation | evidence digests only                                                                                                                                               | reference cardinalities + fingerprint digests match                                   | ciphertext/history swap → security-admin    |
+| 6    | Roll-forward or app rollback       | `app-rollback` drill + release runbook                                                                                                                              | chosen path evidence recorded                                                         | escalate                                    |
 
 ## Success criteria
 
