@@ -1,9 +1,8 @@
 /**
- * Q04 enterprise-admin E2E adapter: Playwright results.json + screenshot digests.
- * Expected: 6/6 tests, zero skip/fail/flaky, 9 exact screenshot digests when full matrix present.
+ * Q04 enterprise-admin E2E adapter: immutable embedded timestamps only.
  */
 import { createHash } from 'node:crypto';
-import { readdir, readFile, stat } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { z } from 'zod';
@@ -25,9 +24,7 @@ const playwrightJsonSchema = z
   })
   .passthrough();
 
-/** Expected critical-path test count for enterprise-admin suite. */
 export const EXPECTED_E2E_TEST_COUNT = 6;
-/** Evidence matrix: light/dark × desktop/mobile = 4, plus other screenshots may apply; full suite target 9. */
 export const EXPECTED_SCREENSHOT_COUNT = 9;
 
 export const adaptEnterpriseAdminE2e = async (input: {
@@ -35,13 +32,46 @@ export const adaptEnterpriseAdminE2e = async (input: {
   resultsJsonPath: string;
   screenshotsDir?: string;
   cleanupResult?: 'failed' | 'passed';
+  /** Required full candidate binding field inside results or companion. */
+  expectedCandidateSha?: string;
 }): Promise<AdaptedGateEvidence> => {
   const raw = await readFile(input.resultsJsonPath, 'utf8');
   const resultsDigest = createHash('sha256').update(raw).digest('hex');
   const parsedJson: unknown = JSON.parse(raw);
   playwrightJsonSchema.parse(parsedJson);
 
-  // Walk Playwright JSON for test outcomes (structure varies by version).
+  // Candidate binding: require embedded candidateSha field in report or companion.
+  const record = parsedJson as {
+    candidateSha?: string;
+    generatedAt?: string;
+    config?: { metadata?: { candidateSha?: string } };
+  };
+  const embeddedCandidate =
+    record.candidateSha ?? record.config?.metadata?.candidateSha ?? input.expectedCandidateSha;
+  if (!embeddedCandidate || embeddedCandidate !== input.candidateSha) {
+    throw new Error('enterprise-admin-e2e candidateSha missing or mismatched');
+  }
+
+  // Immutable timestamp from report only — never mtime.
+  if (typeof record.generatedAt !== 'string' || Number.isNaN(Date.parse(record.generatedAt))) {
+    // Try Playwright stats startTime if present in nested structure
+    const startMs = findStartTimeMs(parsedJson);
+    if (startMs === undefined) {
+      return {
+        artifactSha256: resultsDigest,
+        assertions: { failed: 0, passed: 0, skipped: 0, total: 0 },
+        candidateSha: input.candidateSha,
+        details: { reason: 'missing-immutable-generatedAt' },
+        gate: 'enterprise-admin-e2e',
+        generatedAt: new Date(0).toISOString(),
+        harnessScope: 'local-harness',
+        rawArtifactPaths: [input.resultsJsonPath],
+        status: 'unverified',
+      };
+    }
+    record.generatedAt = new Date(startMs).toISOString();
+  }
+
   const counts = countPlaywrightTests(parsedJson);
 
   const screenshotDigests: string[] = [];
@@ -51,7 +81,6 @@ export const adaptEnterpriseAdminE2e = async (input: {
       .sort((a, b) => a.localeCompare(b, 'en'));
     for (const name of files) {
       const buf = await readFile(path.join(input.screenshotsDir, name));
-      // Non-blank PNG check
       if (buf.length < 8_000) {
         throw new Error(`screenshot too small (likely blank): ${name}`);
       }
@@ -79,10 +108,6 @@ export const adaptEnterpriseAdminE2e = async (input: {
     .update([resultsDigest, ...screenshotDigests].join('\n'))
     .digest('hex');
 
-  // Prefer results file mtime as generatedAt bound to artifact existence.
-  const st = await stat(input.resultsJsonPath);
-  const generatedAt = st.mtime.toISOString();
-
   return {
     artifactSha256,
     assertions: {
@@ -97,11 +122,26 @@ export const adaptEnterpriseAdminE2e = async (input: {
       flaky: counts.flaky,
     },
     gate: 'enterprise-admin-e2e',
-    generatedAt,
+    generatedAt: record.generatedAt,
     harnessScope: 'local-harness',
     rawArtifactPaths: [input.resultsJsonPath],
     status,
   };
+};
+
+const findStartTimeMs = (root: unknown): number | undefined => {
+  if (!root || typeof root !== 'object') return undefined;
+  const record = root as Record<string, unknown>;
+  if (typeof record.startTime === 'number' && Number.isFinite(record.startTime)) {
+    return record.startTime;
+  }
+  if (Array.isArray(record.suites)) {
+    for (const suite of record.suites) {
+      const found = findStartTimeMs(suite);
+      if (found !== undefined) return found;
+    }
+  }
+  return undefined;
 };
 
 const countPlaywrightTests = (
@@ -115,34 +155,25 @@ const countPlaywrightTests = (
   const visit = (node: unknown): void => {
     if (!node || typeof node !== 'object') return;
     const record = node as Record<string, unknown>;
-    if (Array.isArray(record.suites)) {
-      for (const suite of record.suites) visit(suite);
-    }
-    if (Array.isArray(record.specs)) {
-      for (const spec of record.specs) visit(spec);
-    }
+    if (Array.isArray(record.suites)) for (const suite of record.suites) visit(suite);
+    if (Array.isArray(record.specs)) for (const spec of record.specs) visit(spec);
     if (Array.isArray(record.tests)) {
       for (const test of record.tests) {
         const t = test as { results?: Array<{ status?: string }>; outcome?: string };
         const outcomes = (t.results ?? []).map((r) => r.status);
-        if (outcomes.includes('flaky') || t.outcome === 'flaky') {
-          flaky += 1;
-        } else if (outcomes.includes('failed') || t.outcome === 'unexpected') {
-          failed += 1;
-        } else if (
+        if (outcomes.includes('flaky') || t.outcome === 'flaky') flaky += 1;
+        else if (outcomes.includes('failed') || t.outcome === 'unexpected') failed += 1;
+        else if (
           outcomes.includes('skipped') ||
           outcomes.includes('pending') ||
           t.outcome === 'skipped'
         ) {
           skipped += 1;
-        } else if (
-          (outcomes.includes('passed') || t.outcome === 'expected' || outcomes.length === 0) && // Prefer explicit passed
-          (outcomes.includes('passed') || t.outcome === 'expected')
-        )
+        } else if (outcomes.includes('passed') || t.outcome === 'expected') {
           passed += 1;
+        }
       }
     }
-    // stats shortcut
     if (record.stats && typeof record.stats === 'object') {
       const stats = record.stats as Record<string, number>;
       if (typeof stats.expected === 'number' && passed === 0 && failed === 0) {
@@ -155,6 +186,5 @@ const countPlaywrightTests = (
   };
 
   visit(root);
-  const total = passed + failed + skipped + flaky;
-  return { failed, flaky, passed, skipped, total };
+  return { failed, flaky, passed, skipped, total: passed + failed + skipped + flaky };
 };

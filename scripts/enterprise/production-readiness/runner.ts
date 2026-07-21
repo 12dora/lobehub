@@ -92,15 +92,20 @@ export const loadReleasePlanFile = async (filePath: string): Promise<ReleasePlan
   releasePlanSchema.parse(await loadJsonFile(filePath));
 
 /**
- * Load gate evidence envelopes. Self-declared production-authorized without
- * provenance is accepted as raw input but evaluate will fail it closed.
+ * Load gate evidence envelopes. Supports official recovery CLI envelopes
+ * (top-level artifactSha256 + generatedAt). Self-declared production is fail-closed later.
  */
 export const loadGateEvidenceFile = async (filePath: string): Promise<GateEvidenceInput> => {
-  const raw = (await loadJsonFile(filePath)) as GateEvidenceInput;
-  if (!raw.gate || !raw.candidateSha || !raw.artifactSha256 || !raw.generatedAt) {
-    throw new Error(`Evidence file missing required fields: ${path.basename(filePath)}`);
+  const { assertGateEvidenceShape } = await import('./recovery/evidenceEnvelope');
+  const parsed = await loadJsonFile(filePath);
+  try {
+    return assertGateEvidenceShape(parsed);
+  } catch {
+    // Legacy nested freshness shape is not accepted — fail closed with clear error.
+    throw new Error(
+      `Evidence file missing required fields (need gate,candidateSha,artifactSha256,generatedAt,status): ${path.basename(filePath)}`,
+    );
   }
-  return raw;
 };
 
 export const loadEvidenceDirectory = async (

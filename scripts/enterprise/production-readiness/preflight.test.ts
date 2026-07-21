@@ -325,10 +325,33 @@ describe('command allowlist — no recursive dry-run success', () => {
     expect(result.mode).toBe('executed');
     expect(result.exitCode).toBe(0);
     expect(result.postcondition).toContain('windowActive=milestone-a');
+    expect(result.beforeDigest).not.toBe(result.afterDigest);
     const state = JSON.parse(
       await readFile(path.join(dir, 'readiness-command-state.json'), 'utf8'),
     );
     expect(state.windowActive).toBe('milestone-a');
+
+    const again = await dispatchAllowlistedCommand({
+      commandId: 'release-window-activate',
+      confirmExecute: true,
+      execute: true,
+      stateDir: dir,
+      windowId: 'milestone-a',
+    });
+    expect(again.mode).toBe('already-satisfied');
+    expect(again.beforeDigest).toBe(again.afterDigest);
+  });
+
+  it('monitor reports observed not executed', async () => {
+    const dir = await makeTempDir();
+    const result = await dispatchAllowlistedCommand({
+      commandId: 'monitor-release-window',
+      confirmExecute: false,
+      execute: true,
+      stateDir: dir,
+    });
+    expect(result.mode).toBe('observed');
+    expect(result.mutates).toBe(false);
   });
 
   it('production-authorized drill commands are unavailable (not fake success)', async () => {
