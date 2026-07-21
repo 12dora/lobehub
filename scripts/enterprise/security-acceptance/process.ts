@@ -1,12 +1,29 @@
 /**
- * Bounded, shell-free subprocess runner with process-group timeout kill.
- * On timeout: SIGTERM the process group, then SIGKILL after grace, then hard settlement.
+ * Bounded, shell-free subprocess runner with process-tree timeout kill.
+ *
+ * On timeout (POSIX):
+ * 1. Snapshot PID/PPID table and collect all descendants of the spawned root.
+ * 2. SIGTERM every owned PID and their process groups (never 0/1/self).
+ * 3. After grace, SIGKILL remaining; rescan until empty or hard cleanup deadline.
+ * 4. Resolve only after descendants are confirmed gone (or cleanupFailed).
+ *
+ * Parent process `close` does not cancel escalation — cleanup runs to completion.
  */
-import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
+import { type ChildProcessByStdio, spawn } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import type { Readable } from 'node:stream';
+import { promisify } from 'node:util';
 
 import { DEFAULT_PROCESS_TIMEOUT_MS, MAX_PROCESS_OUTPUT_BYTES } from './constants';
 
+const execFileAsync = promisify(execFile);
+
 export interface ProcessResult {
+  /**
+   * True when a timeout path could not confirm all owned descendants exited.
+   * Callers must treat this as unavailable / fail-closed, not a clean timeout.
+   */
+  cleanupFailed: boolean;
   code: number;
   /** True when stdout/stderr capture hit the byte budget. */
   outputTruncated: boolean;
@@ -23,11 +40,16 @@ export type ProcessRunner = (
 
 /** Grace after SIGTERM before SIGKILL (ms). */
 export const PROCESS_KILL_GRACE_MS = 1_000;
-/** Hard settlement after timeout even if stdio/children hang (ms). */
-export const PROCESS_SETTLEMENT_MS = 2_000;
+/** Max time after timeout for recursive cleanup before cleanupFailed (ms). */
+export const PROCESS_CLEANUP_DEADLINE_MS = 4_000;
+/** Poll interval while waiting for descendants to exit (ms). */
+export const PROCESS_CLEANUP_POLL_MS = 50;
+
+/** Child with stdin ignored and stdout/stderr piped. */
+type PipedChild = ChildProcessByStdio<null, Readable, Readable>;
 
 const collectBounded = (
-  stream: NodeJS.ReadableStream,
+  stream: Readable,
   budget: { remaining: number; truncated: boolean },
   chunks: Buffer[],
 ) => {
@@ -47,42 +69,184 @@ const collectBounded = (
   });
 };
 
-const killProcessTree = (child: ChildProcessWithoutNullStreams, signal: NodeJS.Signals): void => {
-  const pid = child.pid;
-  if (pid === undefined) return;
+const isProtectedPid = (pid: number): boolean =>
+  !Number.isInteger(pid) || pid <= 1 || pid === process.pid;
 
-  // POSIX: negative PID signals the process group when child was detached/group leader.
-  if (process.platform !== 'win32') {
-    try {
-      process.kill(-pid, signal);
-      return;
-    } catch {
-      // fall through to direct kill
-    }
-  }
-
+/** True when process.kill(pid, 0) succeeds (process exists and is signalable). */
+export const processExists = (pid: number): boolean => {
+  if (isProtectedPid(pid)) return false;
   try {
-    child.kill(signal);
+    process.kill(pid, 0);
+    return true;
   } catch {
-    // already gone
+    return false;
+  }
+};
+
+/**
+ * Snapshot PID → PPID map via `ps` (POSIX). Empty map on failure.
+ * Cross-platform fallback: empty (Windows uses taskkill /T).
+ */
+export const snapshotPidPpid = async (): Promise<Map<number, number>> => {
+  const map = new Map<number, number>();
+  if (process.platform === 'win32') return map;
+  try {
+    const { stdout } = await execFileAsync('ps', ['-axo', 'pid=,ppid='], {
+      encoding: 'utf8',
+      maxBuffer: 8 * 1024 * 1024,
+      timeout: 5_000,
+    });
+    for (const line of stdout.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const parts = trimmed.split(/\s+/u);
+      if (parts.length < 2) continue;
+      const pid = Number(parts[0]);
+      const ppid = Number(parts[1]);
+      if (!Number.isInteger(pid) || !Number.isInteger(ppid) || pid <= 0) continue;
+      map.set(pid, ppid);
+    }
+  } catch {
+    // leave empty
+  }
+  return map;
+};
+
+/**
+ * Collect all descendants of rootPid (not including root) via BFS on PPID edges.
+ */
+export const collectDescendantPids = (
+  rootPid: number,
+  pidToPpid: Map<number, number>,
+): number[] => {
+  if (isProtectedPid(rootPid)) return [];
+  const childrenByParent = new Map<number, number[]>();
+  for (const [pid, ppid] of pidToPpid) {
+    if (isProtectedPid(pid)) continue;
+    const list = childrenByParent.get(ppid) ?? [];
+    list.push(pid);
+    childrenByParent.set(ppid, list);
+  }
+  const out: number[] = [];
+  const queue = [rootPid];
+  const seen = new Set<number>([rootPid]);
+  while (queue.length > 0) {
+    const parent = queue.shift()!;
+    for (const child of childrenByParent.get(parent) ?? []) {
+      if (seen.has(child) || isProtectedPid(child)) continue;
+      seen.add(child);
+      out.push(child);
+      queue.push(child);
+    }
+  }
+  return out;
+};
+
+const signalPid = (pid: number, signal: NodeJS.Signals): void => {
+  if (isProtectedPid(pid)) return;
+  try {
+    process.kill(pid, signal);
+  } catch {
+    // gone or not permitted
+  }
+};
+
+const signalProcessGroup = (pgid: number, signal: NodeJS.Signals): void => {
+  if (isProtectedPid(pgid)) return;
+  try {
+    process.kill(-pgid, signal);
+  } catch {
+    // group may not exist
+  }
+};
+
+/**
+ * Terminate root + full descendant tree. Rescans until empty or deadline.
+ * Tracks known PIDs across waves so reparented (init/PPID=1) grandchildren
+ * remain kill targets after the intermediate parent dies.
+ * Never signals PID 0/1 or the current process.
+ */
+export const terminateProcessTree = async (
+  rootPid: number,
+  options?: { deadlineMs?: number; graceMs?: number },
+): Promise<{ cleanupFailed: boolean; remaining: number[] }> => {
+  const deadlineMs = options?.deadlineMs ?? PROCESS_CLEANUP_DEADLINE_MS;
+  const graceMs = options?.graceMs ?? PROCESS_KILL_GRACE_MS;
+  const started = Date.now();
+
+  if (isProtectedPid(rootPid)) {
+    return { cleanupFailed: true, remaining: [] };
   }
 
-  // Windows fallback: taskkill tree
-  if (process.platform === 'win32') {
-    try {
-      spawn('taskkill', ['/PID', String(pid), '/T', '/F'], {
-        shell: false,
-        stdio: 'ignore',
-      });
-    } catch {
-      // best effort
+  // Cumulative set of owned PIDs discovered at any scan (survives reparenting).
+  const known = new Set<number>([rootPid]);
+
+  const refreshKnown = async (): Promise<void> => {
+    const table = await snapshotPidPpid();
+    // Expand from every known PID still present, and from original root if alive.
+    const seeds = [...known].filter((pid) => processExists(pid));
+    if (processExists(rootPid) && !seeds.includes(rootPid)) seeds.push(rootPid);
+    for (const seed of seeds.length > 0 ? seeds : [rootPid]) {
+      for (const pid of collectDescendantPids(seed, table)) {
+        if (!isProtectedPid(pid)) known.add(pid);
+      }
     }
+    // Also attach any process whose PPID is a known owned PID.
+    for (const [pid, ppid] of table) {
+      if (!isProtectedPid(pid) && known.has(ppid)) known.add(pid);
+    }
+  };
+
+  const signalKnown = (signal: NodeJS.Signals): void => {
+    for (const pid of known) {
+      if (isProtectedPid(pid)) continue;
+      signalPid(pid, signal);
+      signalProcessGroup(pid, signal);
+    }
+  };
+
+  const aliveKnown = (): number[] =>
+    [...known].filter((pid) => !isProtectedPid(pid) && processExists(pid));
+
+  // Initial snapshot while the tree is still intact when possible.
+  await refreshKnown();
+  signalKnown('SIGTERM');
+
+  const graceDeadline = Date.now() + graceMs;
+  while (Date.now() < graceDeadline && Date.now() - started < deadlineMs) {
+    await refreshKnown();
+    if (aliveKnown().length === 0) return { cleanupFailed: false, remaining: [] };
+    signalKnown('SIGTERM');
+    await new Promise((resolve) => setTimeout(resolve, PROCESS_CLEANUP_POLL_MS));
+  }
+
+  while (Date.now() - started < deadlineMs) {
+    await refreshKnown();
+    const alive = aliveKnown();
+    if (alive.length === 0) return { cleanupFailed: false, remaining: [] };
+    signalKnown('SIGKILL');
+    await new Promise((resolve) => setTimeout(resolve, PROCESS_CLEANUP_POLL_MS));
+  }
+
+  await refreshKnown();
+  const remaining = aliveKnown();
+  return { cleanupFailed: remaining.length > 0, remaining };
+};
+
+const terminateWindowsTree = (pid: number): void => {
+  if (isProtectedPid(pid)) return;
+  try {
+    spawn('taskkill', ['/PID', String(pid), '/T', '/F'], {
+      shell: false,
+      stdio: 'ignore',
+    });
+  } catch {
+    // best effort
   }
 };
 
 /**
  * Spawn without shell. Captures stdout/stderr up to MAX_PROCESS_OUTPUT_BYTES total.
- * Uses a detached process group on POSIX so timeout can kill the full tree.
  */
 export const runProcess: ProcessRunner = (argv, options) =>
   new Promise((resolve, reject) => {
@@ -93,39 +257,39 @@ export const runProcess: ProcessRunner = (argv, options) =>
     }
 
     const useProcessGroup = process.platform !== 'win32';
-    const child = spawn(command, args, {
+    const child: PipedChild = spawn(command, args, {
       cwd: options.cwd,
-      // Detached + unref not for backgrounding — for process-group leadership on timeout kill.
       detached: useProcessGroup,
       env: options.env ?? { ...process.env },
       shell: false,
       stdio: ['ignore', 'pipe', 'pipe'],
-    }) as ChildProcessWithoutNullStreams;
+    });
 
     const budget = { remaining: MAX_PROCESS_OUTPUT_BYTES, truncated: false };
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
-    if (child.stdout) collectBounded(child.stdout, budget, stdoutChunks);
-    if (child.stderr) collectBounded(child.stderr, budget, stderrChunks);
+    collectBounded(child.stdout, budget, stdoutChunks);
+    collectBounded(child.stderr, budget, stderrChunks);
 
     let timedOut = false;
     let settled = false;
+    let cleanupFailed = false;
+    let cleanupPromise: Promise<void> | undefined;
     const timeoutMs = options.timeoutMs ?? DEFAULT_PROCESS_TIMEOUT_MS;
+    const rootPid = child.pid;
 
     const finish = (code: number) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      clearTimeout(killTimer);
-      clearTimeout(settleTimer);
-      // Destroy pipes so we do not hang on retained grandchildren stdio.
       try {
-        child.stdout?.destroy();
-        child.stderr?.destroy();
+        child.stdout.destroy();
+        child.stderr.destroy();
       } catch {
         // ignore
       }
       resolve({
+        cleanupFailed,
         code,
         outputTruncated: budget.truncated,
         stderr: Buffer.concat(stderrChunks).toString('utf8'),
@@ -134,38 +298,58 @@ export const runProcess: ProcessRunner = (argv, options) =>
       });
     };
 
-    let killTimer: ReturnType<typeof setTimeout>;
-    let settleTimer: ReturnType<typeof setTimeout>;
+    const runCleanup = async (): Promise<void> => {
+      if (rootPid === undefined || isProtectedPid(rootPid)) {
+        cleanupFailed = true;
+        return;
+      }
+      if (process.platform === 'win32') {
+        terminateWindowsTree(rootPid);
+        // Brief wait then check root only (no portable descendant snapshot).
+        await new Promise((r) => setTimeout(r, PROCESS_KILL_GRACE_MS));
+        if (processExists(rootPid)) {
+          terminateWindowsTree(rootPid);
+          await new Promise((r) => setTimeout(r, PROCESS_KILL_GRACE_MS));
+        }
+        cleanupFailed = processExists(rootPid);
+        return;
+      }
+      const result = await terminateProcessTree(rootPid);
+      cleanupFailed = result.cleanupFailed;
+    };
 
     const timer = setTimeout(() => {
       timedOut = true;
-      killProcessTree(child, 'SIGTERM');
-      killTimer = setTimeout(() => {
-        killProcessTree(child, 'SIGKILL');
-      }, PROCESS_KILL_GRACE_MS);
-      killTimer.unref?.();
-      // Hard settlement: do not wait forever for close if descendants retain pipes.
-      settleTimer = setTimeout(() => {
+      // Start cleanup immediately; do not cancel escalation when parent closes early.
+      cleanupPromise = runCleanup();
+      void cleanupPromise.then(() => {
+        // Always settle after cleanup — even if parent handle is stuck.
         finish(codeFromChild(child) ?? 1);
-      }, PROCESS_KILL_GRACE_MS + PROCESS_SETTLEMENT_MS);
-      settleTimer.unref?.();
+      });
     }, timeoutMs);
 
     child.once('error', (error) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      clearTimeout(killTimer!);
-      clearTimeout(settleTimer!);
       reject(error);
     });
 
     child.once('close', (code) => {
+      clearTimeout(timer);
+      if (timedOut) {
+        // Parent closed — still wait for full tree cleanup before resolving.
+        const pending = cleanupPromise ?? runCleanup();
+        void pending.then(() => {
+          finish(code ?? 1);
+        });
+        return;
+      }
       finish(code ?? 1);
     });
   });
 
-const codeFromChild = (child: ChildProcessWithoutNullStreams): number | null => {
+const codeFromChild = (child: PipedChild): number | null => {
   if (typeof child.exitCode === 'number') return child.exitCode;
   if (child.signalCode) return 1;
   return null;

@@ -35,6 +35,7 @@ export * from './repoPaths';
 export * from './runner';
 export * from './schemas';
 export * from './semantics';
+export * from './skipMultiset';
 export * from './workflowShell';
 
 const usage = () => {
