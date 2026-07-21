@@ -138,16 +138,19 @@ const styles = createStaticStyles(({ css }) => ({
 
 const MODE_VALUES = ['user', 'default', 'locked'] as const;
 
-const GROUPS = [
-  'general',
-  'memory',
-  'tool',
-  'image',
-  'tts',
-  'notification',
-  'defaultAgent',
-  'systemAgent',
-] as const;
+// The admin "Service model" page (/admin/ai/service-model) already owns model/service
+// assignments. These groups/paths are hidden here to avoid a duplicate editing surface
+// that could publish conflicting policy. Everything else in each group stays editable.
+const SERVICE_MODEL_MANAGED_GROUPS = new Set(['image', 'systemAgent']);
+const SERVICE_MODEL_MANAGED_PATHS = new Set([
+  'defaultAgent.config.model',
+  'defaultAgent.config.provider',
+  'tts.openAI.ttsModel',
+]);
+const isServiceModelManaged = (entry: { group: string; path: string }): boolean =>
+  SERVICE_MODEL_MANAGED_GROUPS.has(entry.group) || SERVICE_MODEL_MANAGED_PATHS.has(entry.path);
+
+const GROUPS = ['general', 'memory', 'tool', 'tts', 'notification', 'defaultAgent'] as const;
 
 const SettingsPolicyPage = memo(() => {
   const { t } = useTranslation('admin');
@@ -298,6 +301,7 @@ const SettingsPolicyPage = memo(() => {
   const filteredEntries = useMemo(() => {
     const q = search.trim().toLowerCase();
     return (data?.registry ?? []).filter((entry) => {
+      if (isServiceModelManaged(entry)) return false;
       if (!q) return true;
       return (
         entry.path.toLowerCase().includes(q) ||
@@ -736,7 +740,7 @@ const SettingsPolicyPage = memo(() => {
   const preview = buildChangePreview({
     draft,
     published: data.publishedPolicies,
-    registryPaths: data.registry.map((r) => r.path),
+    registryPaths: data.registry.filter((r) => !isServiceModelManaged(r)).map((r) => r.path),
   });
 
   // Exactly one primary action — sticky footer only (U5)
