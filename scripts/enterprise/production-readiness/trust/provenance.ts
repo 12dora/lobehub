@@ -206,6 +206,11 @@ export interface VerifyProvenanceOptions {
   expectedBackupBinding?: ExpectedBackupBinding;
   expectedCandidateSha: string;
   expectedGateId: EvidenceGateId;
+  /**
+   * Exact ISO generatedAt string from the gate envelope (and raw report).
+   * Must match payload.generatedAt byte-for-byte — not merely "both fresh".
+   */
+  expectedGeneratedAt?: string;
   /** Required when verifying recovery-result (must match signed input envelope digest). */
   expectedInputAttestationSha256?: string;
   expectedReleaseId?: string;
@@ -284,6 +289,12 @@ export const verifySignedProvenance = (
   }
   if (payload.artifactSha256 !== options.expectedArtifactSha256) {
     return { ok: false, reason: 'artifact-digest-mismatch' };
+  }
+  if (
+    options.expectedGeneratedAt !== undefined &&
+    payload.generatedAt !== options.expectedGeneratedAt
+  ) {
+    return { ok: false, reason: 'generated-at-mismatch' };
   }
 
   const role = resolveAttestationRole(payload);

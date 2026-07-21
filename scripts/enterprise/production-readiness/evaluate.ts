@@ -166,6 +166,8 @@ const evaluateOneGate = (
       expectedAttestationRole: input.gate === 'backup-restore' ? 'recovery-result' : undefined,
       expectedCandidateSha: candidate.gitSha,
       expectedGateId: input.gate,
+      // Exact ISO string equality with envelope (and verified raw for backup-restore).
+      expectedGeneratedAt: input.generatedAt,
       expectedInputAttestationSha256,
       expectedReleaseId: candidate.releaseId,
       policy,
@@ -193,6 +195,15 @@ const evaluateOneGate = (
         result: 'failed',
         scope: 'local-harness',
         reason: 'input-attestation-payload-mismatch',
+      };
+    }
+
+    // Defense-in-depth: signed generatedAt must equal envelope after verification.
+    if (verdict.payload.generatedAt !== input.generatedAt) {
+      return {
+        result: 'failed',
+        scope: 'local-harness',
+        reason: 'provenance-generatedAt-mismatch',
       };
     }
 
