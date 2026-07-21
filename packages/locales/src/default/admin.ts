@@ -1518,7 +1518,7 @@ export default {
     'Branding asset storage is unavailable. Ask an operator to configure object storage.',
   'enterprise.error.PLATFORM_IDEMPOTENCY_CONFLICT':
     'This request ID was already used for different changes. Retry as a new action.',
-  'identityProviders.actions.create': 'New provider',
+  'identityProviders.actions.create': 'New',
   'identityProviders.actions.discover': 'Discover and validate network',
   'identityProviders.actions.next': 'Next',
   'identityProviders.actions.previous': 'Previous',
@@ -1528,6 +1528,9 @@ export default {
   'identityProviders.actions.rollback': 'Rollback',
   'identityProviders.actions.save': 'Save draft',
   'identityProviders.actions.startTest': 'Start safe login test',
+  'identityProviders.callback.copy': 'Copy',
+  'identityProviders.callback.copied': 'Callback URL copied.',
+  'identityProviders.callback.copyFailed': 'Could not copy the callback URL.',
   'identityProviders.callback.production': 'Production callback URL (read-only)',
   'identityProviders.callback.test': 'Test callback URL (read-only)',
   'identityProviders.callback.loadError': 'Callback URLs could not be loaded.',
@@ -1541,8 +1544,34 @@ export default {
     'The latest server revision could not be loaded. Your local draft is still preserved; retry refresh before saving.',
   'identityProviders.description':
     'Configure, test, publish, and activate controlled work-account sign-in.',
+  'identityProviders.discovery.authorization': 'Authorization',
+  'identityProviders.discovery.endpoints': 'Discovered endpoints',
+  'identityProviders.discovery.jwks': 'JWKS',
+  'identityProviders.discovery.token': 'Token',
   'identityProviders.discovery.valid': 'Discovery metadata and outbound network policy are valid.',
+  'identityProviders.easyauth.accessGranted': '{{count}} with access',
+  'identityProviders.easyauth.appKey': 'App key: {{key}}',
+  'identityProviders.easyauth.baseUrl': 'Service URL: {{url}}',
+  'identityProviders.easyauth.degraded': '{{count}} degraded',
+  'identityProviders.easyauth.degradedWarning':
+    '{{count}} grant snapshot(s) are degraded. Users may see stale access until the next successful sync.',
+  'identityProviders.easyauth.description':
+    'After work-account sign-in, EasyAuth grants platform access and roles.',
+  'identityProviders.easyauth.latestFetchedAt': 'Latest snapshot: {{time}}',
+  'identityProviders.easyauth.loadError':
+    'Authorization service status could not be loaded. Identity provider editing is unaffected.',
+  'identityProviders.easyauth.loading': 'Loading authorization service status…',
+  'identityProviders.easyauth.noSnapshots': 'No grant snapshots have been stored yet.',
+  'identityProviders.easyauth.portalUrl': 'Portal: {{url}}',
+  'identityProviders.easyauth.title': 'Authorization service (EasyAuth)',
+  'identityProviders.easyauth.tokenConfigured': 'Token configured',
+  'identityProviders.easyauth.tokenHint':
+    'Set EASYAUTH_APP_TOKEN (or EASYAUTH_APP_TOKEN_FILE) in the deployment environment, then restart the service.',
+  'identityProviders.easyauth.tokenMissing': 'Token not configured',
+  'identityProviders.easyauth.totalSnapshots': '{{count}} snapshots',
   'identityProviders.empty': 'No identity providers yet. Create a draft to begin.',
+  'identityProviders.emptyHint':
+    'Choose Authentik or a generic OIDC provider to configure work-account sign-in.',
   'identityProviders.errors.forbidden': 'You do not have permission to view identity providers.',
   'identityProviders.errors.generic':
     'The identity provider operation could not be completed. Review the current state and retry.',
@@ -1562,6 +1591,10 @@ export default {
   'identityProviders.fields.issuer': 'Canonical HTTPS issuer',
   'identityProviders.fields.providerKey': 'Provider key',
   'identityProviders.fields.type': 'Provider type',
+  'identityProviders.fields.typeLocked':
+    'Type is set by the template you chose. Create a new draft to switch types.',
+  'identityProviders.list.activationRevision': 'Active rev {{revision}}',
+  'identityProviders.list.currentRevision': 'Draft rev {{revision}}',
   'identityProviders.loading': 'Loading identity providers…',
   'identityProviders.newProvider': 'New provider',
   'identityProviders.publish.description':
@@ -1602,7 +1635,9 @@ export default {
   'identityProviders.runtime.environmentShadowed':
     'Database provider {{provider}} is blocked by the authoritative environment provider ({{categoryLabel}}). Restarting cannot activate this database revision.',
   'identityProviders.runtime.fresh': 'Fresh',
+  'identityProviders.runtime.healthSummary': 'Runtime health: {{health}}',
   'identityProviders.runtime.loadError': 'Runtime activation status could not be loaded.',
+  'identityProviders.runtime.noInstances': 'No instance heartbeats are available yet.',
   'identityProviders.runtime.partial':
     'Only some fresh instances have activated the target revision.',
   'identityProviders.runtime.pending': '{{count}} published provider revision(s) await activation.',
@@ -1611,6 +1646,23 @@ export default {
   'identityProviders.runtime.stale': 'Stale',
   'identityProviders.runtime.targetRevision': 'Target published revision: {{revision}}',
   'identityProviders.runtime.title': 'Runtime activation',
+  'identityProviders.setup.appUrl':
+    'public application URL used to build callback addresses (for example https://app.example.com)',
+  'identityProviders.setup.description':
+    'Database OIDC identity providers need a few deployment settings before this page can manage them. Configure the environment, then restart the service.',
+  'identityProviders.setup.flag': 'enable the Database OIDC feature',
+  'identityProviders.setup.masterKey': 'platform secret master key for encrypting client secrets',
+  'identityProviders.setup.masterKeyHint': 'Generate with',
+  'identityProviders.setup.restart': 'Restart the server after changing these values.',
+  'identityProviders.setup.title': 'Enable identity providers',
+  'identityProviders.templates.authentik.description':
+    'Enterprise unified authentication with DingTalk scopes and claim mapping prefilled.',
+  'identityProviders.templates.description':
+    'Start from a template. You can edit every field after the draft is created.',
+  'identityProviders.templates.genericOidc.description':
+    'Any standards-compliant OpenID Connect provider.',
+  'identityProviders.templates.genericOidc.label': 'Generic OIDC',
+  'identityProviders.templates.title': 'Choose a provider type',
   'identityProviders.save.description':
     'Save this server-side draft. The active login configuration does not change.',
   'identityProviders.save.success': 'Identity provider draft saved.',

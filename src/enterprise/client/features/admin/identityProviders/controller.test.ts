@@ -1,14 +1,20 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
+
 import {
   acceptIdentityProviderRestart,
+  AUTHENTIK_ISSUER_PLACEHOLDER,
+  createIdentityProviderDraftFromTemplate,
   IDENTITY_PROVIDER_RESTART_TIMEOUT_MS,
   IdentityProviderTestPopupBlockedError,
+  isIdentityProviderSetupGuidanceError,
   isIdentityProviderTestTerminal,
   openIdentityProviderTestPopup,
   parseIdentityProviderJsonObject,
   resolveIdentityProviderRestartPhase,
   resolveIdentityProviderRevisionRefresh,
+  toIdentityProviderStatusBadge,
 } from './controller';
 
 describe('identity provider editor controller', () => {
@@ -17,6 +23,73 @@ describe('identity provider editor controller', () => {
     expect(isIdentityProviderTestTerminal('processing')).toBe(false);
     expect(isIdentityProviderTestTerminal('succeeded')).toBe(true);
     expect(isIdentityProviderTestTerminal('failed')).toBe(true);
+  });
+
+  it('classifies deploy-time feature/config gaps as setup guidance', () => {
+    expect(
+      isIdentityProviderSetupGuidanceError({
+        data: {
+          errorData: { code: PLATFORM_ERROR_CODES.PLATFORM_FEATURE_DISABLED },
+        },
+      }),
+    ).toBe(true);
+    expect(
+      isIdentityProviderSetupGuidanceError({
+        data: {
+          errorData: { code: PLATFORM_ERROR_CODES.PLATFORM_SECRET_REQUIRED },
+        },
+      }),
+    ).toBe(true);
+    expect(
+      isIdentityProviderSetupGuidanceError({
+        message: 'PLATFORM_APP_URL_INVALID',
+      }),
+    ).toBe(true);
+    expect(
+      isIdentityProviderSetupGuidanceError({
+        data: {
+          errorData: {
+            code: PLATFORM_ERROR_CODES.PLATFORM_CONFIG_VALIDATION_FAILED,
+            message: 'PLATFORM_APP_URL_INVALID',
+          },
+        },
+        message: 'PLATFORM_APP_URL_INVALID',
+      }),
+    ).toBe(true);
+    // Generic validation / network failures must keep the normal retry + create path.
+    expect(
+      isIdentityProviderSetupGuidanceError({
+        data: {
+          errorData: { code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT },
+        },
+      }),
+    ).toBe(false);
+    expect(isIdentityProviderSetupGuidanceError(new Error('network failed'))).toBe(false);
+    expect(isIdentityProviderSetupGuidanceError(null)).toBe(false);
+  });
+
+  it('maps provider lifecycle statuses onto StatusBadge semantics', () => {
+    expect(toIdentityProviderStatusBadge('draft')).toBe('draft');
+    expect(toIdentityProviderStatusBadge('published')).toBe('published');
+    expect(toIdentityProviderStatusBadge('pending_restart')).toBe('pending');
+    expect(toIdentityProviderStatusBadge('active')).toBe('active');
+    expect(toIdentityProviderStatusBadge('error')).toBe('error');
+    expect(toIdentityProviderStatusBadge('disabled')).toBe('disabled');
+    expect(toIdentityProviderStatusBadge('archived')).toBe('archived');
+    expect(toIdentityProviderStatusBadge('weird')).toBe('unknown');
+  });
+
+  it('seeds create drafts from Authentik and generic OIDC templates', () => {
+    const authentik = createIdentityProviderDraftFromTemplate('authentik');
+    expect(authentik.type).toBe('authentik');
+    expect(authentik.scopes).toContain('dingtalk');
+    expect(authentik.claimMapping.dingtalkUserId).toEqual(['dingtalk_user_id']);
+    expect(authentik.buttonLabel).toBe('使用工作账号登录');
+
+    const generic = createIdentityProviderDraftFromTemplate('generic_oidc');
+    expect(generic.type).toBe('generic_oidc');
+    expect(generic.scopes).not.toContain('dingtalk');
+    expect(AUTHENTIK_ISSUER_PLACEHOLDER).toContain('auth.jiefakj.com');
   });
 
   it('keeps invalid intermediate JSON outside the canonical draft', () => {

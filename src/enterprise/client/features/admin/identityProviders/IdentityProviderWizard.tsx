@@ -1,12 +1,8 @@
 'use client';
 
-import {
-  GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE,
-  type PlatformIdentityProviderDraft,
-} from '@lobechat/types';
-import { Alert, Flexbox, Input, Tag, Text, TextArea } from '@lobehub/ui';
+import { type PlatformIdentityProviderDraft } from '@lobechat/types';
+import { Alert, copyToClipboard, Flexbox, Input, Tag, Text, TextArea } from '@lobehub/ui';
 import { Button, Checkbox, Select, toast } from '@lobehub/ui/base-ui';
-import { createStaticStyles, cssVar } from 'antd-style';
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -16,6 +12,8 @@ import { adminIdentityProvidersService } from '@/enterprise/client/services/admi
 
 import { openReasonModal } from '../users/modals/openReasonModal';
 import {
+  AUTHENTIK_ISSUER_PLACEHOLDER,
+  type IdentityProviderCreateDraftSeed,
   IdentityProviderTestPopupBlockedError,
   openIdentityProviderTestPopup,
   parseIdentityProviderJsonObject,
@@ -25,55 +23,15 @@ import { IdentityProviderConflictAlert } from './IdentityProviderConflictAlert';
 import {
   IDENTITY_PROVIDER_STEPS,
   type IdentityProviderStep,
+  type IdentityProviderStepState,
   IdentityProviderWizardNavigation,
 } from './IdentityProviderWizardNavigation';
+import { identityProviderStyles as styles } from './styles';
 import {
   useIdentityProviderRevisionHistory,
   useIdentityProviderTestResult,
 } from './useIdentityProviders';
 import { useUnsavedIdentityProviderGuard } from './useUnsavedIdentityProviderGuard';
-
-const styles = createStaticStyles(({ css }) => ({
-  callback: css`
-    padding-block: 10px;
-    padding-inline: 12px;
-    border: 1px solid ${cssVar.colorBorderSecondary};
-    border-radius: ${cssVar.borderRadius};
-
-    font-family: ${cssVar.fontFamilyCode};
-    overflow-wrap: anywhere;
-
-    background: ${cssVar.colorFillQuaternary};
-  `,
-  field: css`
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  `,
-  form: css`
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 14px;
-
-    @media (width <= 760px) {
-      grid-template-columns: 1fr;
-    }
-  `,
-  full: css`
-    grid-column: 1 / -1;
-  `,
-  panel: css`
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-
-    padding: 18px;
-    border: 1px solid ${cssVar.colorBorderSecondary};
-    border-radius: ${cssVar.borderRadiusLG};
-
-    background: ${cssVar.colorBgContainer};
-  `,
-}));
 
 type EditableDraft = {
   autoProvision: boolean;
@@ -91,10 +49,10 @@ type EditableDraft = {
   usePkce: true;
 };
 
-const createEmptyDraft = (): EditableDraft => ({
+const fromSeed = (seed: IdentityProviderCreateDraftSeed): EditableDraft => ({
   autoProvision: true,
-  buttonLabel: GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE.buttonLabel,
-  claimMapping: structuredClone(GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE.claimMapping),
+  buttonLabel: seed.buttonLabel,
+  claimMapping: structuredClone(seed.claimMapping),
   clientId: '',
   displayName: '',
   domainAllowlist: [],
@@ -102,8 +60,8 @@ const createEmptyDraft = (): EditableDraft => ({
   icon: null,
   issuer: '',
   providerKey: '',
-  scopes: [...GENERIC_OIDC_IDENTITY_PROVIDER_TEMPLATE.scopes],
-  type: 'generic_oidc',
+  scopes: [...seed.scopes],
+  type: seed.type,
   usePkce: true,
 });
 
@@ -130,6 +88,8 @@ interface IdentityProviderWizardProps {
   canPublish: boolean;
   canTest: boolean;
   canUpdate: boolean;
+  /** Prefill when creating from a type template. */
+  createSeed?: IdentityProviderCreateDraftSeed;
   onDirtyChange: (dirty: boolean) => void;
   onDiscard: () => void;
   onRefresh: () => Promise<unknown>;
@@ -145,6 +105,7 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
     canPublish,
     canTest,
     canUpdate,
+    createSeed,
     provider,
     onDirtyChange,
     onDiscard,
@@ -154,7 +115,24 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
     const { t } = useTranslation('admin');
     const [step, setStep] = useState<IdentityProviderStep>('basic');
     const [draft, setDraft] = useState<EditableDraft>(() =>
-      provider ? fromProvider(provider) : createEmptyDraft(),
+      provider
+        ? fromProvider(provider)
+        : createSeed
+          ? fromSeed(createSeed)
+          : fromSeed({
+              buttonLabel: '使用工作账号登录',
+              claimMapping: {
+                dingtalkTitle: [],
+                dingtalkUserId: [],
+                email: ['email'],
+                name: ['name', 'preferred_username'],
+                picture: ['picture'],
+                subject: ['sub'],
+              },
+              scopes: ['openid', 'profile', 'email'],
+              type: 'generic_oidc',
+              usePkce: true,
+            }),
     );
     const [claimJson, setClaimJson] = useState(() => JSON.stringify(draft.claimMapping, null, 2));
     const [groupRoleJson, setGroupRoleJson] = useState(() =>
@@ -184,8 +162,12 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
     const lastProviderRevisionRef = useRef(provider?.revision);
     const preserveDraftOnRefreshRef = useRef(false);
     const baseline = useMemo(
-      () => JSON.stringify(provider ? fromProvider(provider) : createEmptyDraft()),
-      [provider],
+      () =>
+        JSON.stringify(
+          provider ? fromProvider(provider) : createSeed ? fromSeed(createSeed) : draft,
+        ),
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- baseline is fixed at mount via key remount
+      [provider, createSeed],
     );
     const invalidJson = jsonErrors.claims || jsonErrors.groups;
     const dirty = JSON.stringify(draft) !== baseline || Boolean(secret) || clearSecret;
@@ -260,6 +242,16 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
         if (propagate) throw cause;
       } finally {
         setBusy(null);
+      }
+    };
+
+    const copyUrl = async (url: string) => {
+      if (!url) return;
+      try {
+        await copyToClipboard(url);
+        toast.success(t('identityProviders.callback.copied'));
+      } catch {
+        toast.error(t('identityProviders.callback.copyFailed'));
       }
     };
 
@@ -405,6 +397,49 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
       setStep(IDENTITY_PROVIDER_STEPS[nextIndex]);
     };
 
+    const stepStates = useMemo((): Partial<
+      Record<IdentityProviderStep, IdentityProviderStepState>
+    > => {
+      const basicComplete = Boolean(draft.displayName.trim() && draft.providerKey.trim());
+      const discoveryComplete = Boolean(draft.issuer && networkValid && discovery);
+      const clientComplete = Boolean(draft.clientId && (secret || provider?.secret.configured));
+      const claimsComplete = !jsonErrors.claims;
+      const policyComplete = !jsonErrors.groups;
+      const testComplete =
+        testResult.data?.status === 'succeeded' && Boolean(testResult.data.result?.valid);
+      return {
+        basic: basicComplete ? 'complete' : 'pending',
+        claims: jsonErrors.claims ? 'error' : claimsComplete ? 'complete' : 'pending',
+        client: clientComplete ? 'complete' : 'pending',
+        discovery: discoveryComplete ? 'complete' : draft.issuer ? 'pending' : 'pending',
+        policy: jsonErrors.groups ? 'error' : policyComplete ? 'complete' : 'pending',
+        publish:
+          provider?.status === 'published' ||
+          provider?.status === 'active' ||
+          provider?.status === 'pending_restart'
+            ? 'complete'
+            : 'pending',
+        test: testComplete
+          ? 'complete'
+          : testResult.data?.status === 'failed'
+            ? 'error'
+            : 'pending',
+      };
+    }, [
+      discovery,
+      draft.clientId,
+      draft.displayName,
+      draft.issuer,
+      draft.providerKey,
+      jsonErrors.claims,
+      jsonErrors.groups,
+      networkValid,
+      provider?.secret.configured,
+      provider?.status,
+      secret,
+      testResult.data,
+    ]);
+
     const renderStep = () => {
       switch (step) {
         case 'basic': {
@@ -443,18 +478,12 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
               <div className={`${styles.field} ${styles.full}`}>
                 <Text>{t('identityProviders.fields.type')}</Text>
                 <Flexbox horizontal gap={8}>
-                  <Button
-                    type={draft.type === 'generic_oidc' ? 'primary' : 'default'}
-                    onClick={() => patch('type', 'generic_oidc')}
-                  >
-                    OIDC
-                  </Button>
-                  <Button
-                    type={draft.type === 'authentik' ? 'primary' : 'default'}
-                    onClick={() => patch('type', 'authentik')}
-                  >
-                    Authentik
-                  </Button>
+                  <Tag color={draft.type === 'authentik' ? 'blue' : 'default'}>
+                    {draft.type === 'authentik'
+                      ? 'Authentik'
+                      : t('identityProviders.templates.genericOidc.label')}
+                  </Tag>
+                  <Text type="secondary">{t('identityProviders.fields.typeLocked')}</Text>
                 </Flexbox>
               </div>
             </div>
@@ -466,8 +495,12 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
               <label className={styles.field}>
                 <Text>{t('identityProviders.fields.issuer')}</Text>
                 <Input
-                  placeholder="https://id.example.com/application/o/app/"
                   value={draft.issuer}
+                  placeholder={
+                    draft.type === 'authentik'
+                      ? AUTHENTIK_ISSUER_PLACEHOLDER
+                      : 'https://id.example.com/application/o/app/'
+                  }
                   onChange={(e) => {
                     patch('issuer', e.target.value);
                     setNetworkValid(false);
@@ -490,12 +523,22 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
                 />
               ) : null}
               {discovery ? (
-                <div className={styles.callback}>
-                  {discovery.authorizationEndpoint}
-                  <br />
-                  {discovery.tokenEndpoint}
-                  <br />
-                  {discovery.jwksUri}
+                <div className={styles.discoveryGrid}>
+                  <Text strong>{t('identityProviders.discovery.endpoints')}</Text>
+                  {(
+                    [
+                      ['authorization', discovery.authorizationEndpoint],
+                      ['token', discovery.tokenEndpoint],
+                      ['jwks', discovery.jwksUri],
+                    ] as const
+                  ).map(([key, value]) => (
+                    <div className={styles.discoveryRow} key={key}>
+                      <Text type="secondary">
+                        {t(`identityProviders.discovery.${key}` as never)}
+                      </Text>
+                      <Text className={styles.endpointValue}>{value}</Text>
+                    </div>
+                  ))}
                 </div>
               ) : null}
             </Flexbox>
@@ -541,9 +584,23 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
                 {t('identityProviders.secret.clear')}
               </label>
               <Text>{t('identityProviders.callback.production')}</Text>
-              <div className={styles.callback}>{callbacks?.production ?? '—'}</div>
+              <div className={styles.callback}>
+                <span className={styles.callbackUrl}>{callbacks?.production ?? '—'}</span>
+                {callbacks?.production ? (
+                  <Button size="small" onClick={() => void copyUrl(callbacks.production)}>
+                    {t('identityProviders.callback.copy')}
+                  </Button>
+                ) : null}
+              </div>
               <Text>{t('identityProviders.callback.test')}</Text>
-              <div className={styles.callback}>{callbacks?.test ?? '—'}</div>
+              <div className={styles.callback}>
+                <span className={styles.callbackUrl}>{callbacks?.test ?? '—'}</span>
+                {callbacks?.test ? (
+                  <Button size="small" onClick={() => void copyUrl(callbacks.test)}>
+                    {t('identityProviders.callback.copy')}
+                  </Button>
+                ) : null}
+              </div>
               <Text type="secondary">PKCE S256 · {draft.scopes.join(' ')}</Text>
             </Flexbox>
           );
@@ -732,7 +789,7 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
 
     return (
       <div className={styles.panel} data-testid="identity-provider-wizard">
-        <IdentityProviderWizardNavigation value={step} onChange={setStep} />
+        <IdentityProviderWizardNavigation stepStates={stepStates} value={step} onChange={setStep} />
         {provider ? (
           <Flexbox horizontal gap={8}>
             <Tag>{t(`identityProviders.values.providerStatus.${provider.status}` as never)}</Tag>
@@ -741,7 +798,14 @@ const IdentityProviderWizard = memo<IdentityProviderWizardProps>(
               {dirty ? ` · ${t('identityProviders.unsaved')}` : ''}
             </Text>
           </Flexbox>
-        ) : null}
+        ) : (
+          <Text type="secondary">
+            {t('identityProviders.newProvider')} ·{' '}
+            {draft.type === 'authentik'
+              ? 'Authentik'
+              : t('identityProviders.templates.genericOidc.label')}
+          </Text>
+        )}
         {error ? <Alert showIcon description={error} type="error" /> : null}
         {conflict ? (
           <IdentityProviderConflictAlert
