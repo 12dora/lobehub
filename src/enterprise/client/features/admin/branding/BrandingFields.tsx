@@ -3,7 +3,7 @@
 import { Input, Text } from '@lobehub/ui';
 import { Button } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
-import { type ChangeEvent, memo, useRef } from 'react';
+import { type ChangeEvent, memo, useEffect, useRef, useState } from 'react';
 
 import type {
   AdminBrandingDraft,
@@ -43,6 +43,17 @@ const styles = createStaticStyles(({ css }) => ({
   meta: css`
     font-size: 12px;
     color: ${cssVar.colorTextSecondary};
+  `,
+  thumbnail: css`
+    flex-shrink: 0;
+
+    width: 44px;
+    height: 44px;
+    border: 1px solid ${cssVar.colorBorderSecondary};
+    border-radius: ${cssVar.borderRadiusLG};
+
+    object-fit: contain;
+    background: ${cssVar.colorBgLayout};
   `,
   upload: css`
     display: flex;
@@ -91,6 +102,10 @@ interface AssetFieldProps extends Omit<TextFieldProps, 'onChange' | 'type'> {
 
 const AssetField = memo<AssetFieldProps>((props) => {
   const inputRef = useRef<HTMLInputElement>(null);
+  const [previewFailed, setPreviewFailed] = useState(false);
+  useEffect(() => {
+    setPreviewFailed(false);
+  }, [props.value]);
   const handleFile = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     event.target.value = '';
@@ -100,6 +115,14 @@ const AssetField = memo<AssetFieldProps>((props) => {
     <div className={styles.field}>
       <TextField {...props} />
       <div className={styles.upload}>
+        {props.value && !previewFailed ? (
+          <img
+            alt=""
+            className={styles.thumbnail}
+            src={props.value}
+            onError={() => setPreviewFailed(true)}
+          />
+        ) : null}
         <Button
           disabled={props.disabled || !props.storageConfigured}
           onClick={() => inputRef.current?.click()}
@@ -164,12 +187,6 @@ export const BrandingFields = memo<BrandingFieldsProps>(
             {field('legalName')}
             {field('defaultAgentDisplayName')}
             {field('pageTitleTemplate')}
-            <TextField
-              disabled={disabled}
-              label={labels.primaryColor}
-              value={draft.themeDefaults.primaryColor}
-              onChange={(primaryColor) => onPatch({ themeDefaults: { primaryColor } })}
-            />
           </div>
         </section>
         <section className={styles.group}>
@@ -195,30 +212,6 @@ export const BrandingFields = memo<BrandingFieldsProps>(
           <div className={styles.grid}>
             {field('emailSenderName')}
             {field('emailFrom', 'email')}
-          </div>
-        </section>
-        <section className={styles.group}>
-          <Text as="h2">{labels.desktop}</Text>
-          <Text className={styles.meta}>{labels.rebuildRequired}</Text>
-          <div className={styles.grid}>
-            <TextField
-              disabled={disabled}
-              label={labels.desktopProductName}
-              meta={labels.rebuildRequired}
-              value={draft.desktop.productName}
-              onChange={(productName) => onPatch({ desktop: { ...draft.desktop, productName } })}
-            />
-            <AssetField
-              disabled={disabled}
-              kind="desktopIcon"
-              label={labels.desktopIcon}
-              meta={labels.rebuildRequired}
-              storageConfigured={storageConfigured}
-              uploadLabel={labels.upload}
-              value={draft.desktop.iconUrl}
-              onChange={(iconUrl) => onPatch({ desktop: { ...draft.desktop, iconUrl } })}
-              onUpload={onUpload}
-            />
           </div>
         </section>
       </>

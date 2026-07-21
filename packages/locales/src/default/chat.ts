@@ -56,6 +56,7 @@ export default {
   'agentSignal.receipts.skill.detail': 'Self-refined how this agent handles similar requests',
   'agentSignal.receipts.skill.title': 'Auto-learned a new skill',
   'agents': 'Agents',
+  'agents.managedTag': 'Built-in',
   'artifact.generating': 'Generating',
   'artifact.inThread':
     'Cannot view in subtopic, please switch to the main conversation area to open',
