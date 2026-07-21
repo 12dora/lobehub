@@ -12,8 +12,13 @@ export type PenAdapterCategory =
   'admin-rate-limit' | 'auth-rbac-idor' | 'reauth' | 'replay-cas' | 'ssrf';
 
 export interface ExpectedSkip {
-  /** Stable vitest test title (assertion title, not fullName). */
   reason: string;
+  /**
+   * When false, the skip may be absent (e.g. GC-only test that runs when gc is exposed).
+   * Presence is still capped at the multiset count of this title. Default true.
+   */
+  required?: boolean;
+  /** Stable vitest test title (assertion title, not fullName). */
   title: string;
 }
 
@@ -21,8 +26,9 @@ export interface PenAdapterDefinition {
   category: PenAdapterCategory;
   description: string;
   /**
-   * Reviewed intentional skips. Unexpected skips fail closed.
-   * Zero skips is always allowed.
+   * Reviewed intentional skip multiset (each entry = one allowed occurrence).
+   * Required entries must appear exactly that many times; optional may be 0..count.
+   * Unexpected titles or excess duplicates fail closed.
    */
   expectedSkips?: readonly ExpectedSkip[];
   /** Stable kebab id. */
@@ -55,6 +61,8 @@ export const PEN_REGRESSION_MANIFEST: readonly PenAdapterDefinition[] = [
     description: 'Package-level SSRF-safe fetch regression suite',
     expectedSkips: [
       {
+        // Optional: suite runs the assertion when global.gc is exposed.
+        required: false,
         reason: 'gc-not-exposed',
         title: 'heap delta stays bounded when a 50 MB body is fetched with a 1 MB cap',
       },

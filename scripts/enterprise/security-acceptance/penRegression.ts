@@ -13,6 +13,7 @@ import { omitUndefinedDeep } from './omitUndefined';
 import { PEN_REGRESSION_MANIFEST, type PenAdapterDefinition } from './penManifest';
 import { type ProcessRunner, runProcess } from './process';
 import type { PenRegressionArtifact } from './schemas';
+import { validateSkipMultiset } from './skipMultiset';
 
 const vitestJsonReportSchema = z
   .object({
@@ -171,7 +172,7 @@ const runOneAdapter = async (
       adapterId: adapter.id,
       category: adapter.category,
       exitCode: result.code,
-      reason: 'adapter-timeout',
+      reason: result.cleanupFailed ? 'adapter-timeout-cleanup-failed' : 'adapter-timeout',
       status: 'unavailable',
       targets,
     });
@@ -232,42 +233,30 @@ const runOneAdapter = async (
     assertions.failed === 0 &&
     assertions.passed + assertions.skipped === assertions.total
   ) {
-    if (assertions.skipped > 0) {
-      const expected = adapter.expectedSkips ?? [];
-      const titles = skippedTitles ?? [];
-      if (titles.length !== assertions.skipped) {
-        return adapterResult({
-          adapterId: adapter.id,
-          category: adapter.category,
-          assertions,
-          exitCode: 0,
-          reason: 'skipped-titles-incomplete',
-          ...(titles.length > 0 ? { skippedTitles: titles } : {}),
-          status: 'failed',
-          targets,
-        });
-      }
-      for (const title of titles) {
-        if (!expected.some((skip) => skip.title === title)) {
-          return adapterResult({
-            adapterId: adapter.id,
-            category: adapter.category,
-            assertions,
-            exitCode: 0,
-            reason: 'unexpected-skip',
-            skippedTitles: titles,
-            status: 'failed',
-            targets,
-          });
-        }
-      }
+    const titles = skippedTitles ?? [];
+    if (titles.length !== assertions.skipped) {
       return adapterResult({
         adapterId: adapter.id,
         category: adapter.category,
         assertions,
         exitCode: 0,
-        skippedTitles: titles,
-        status: 'passed',
+        reason: 'skipped-titles-incomplete',
+        ...(titles.length > 0 ? { skippedTitles: titles } : {}),
+        status: 'failed',
+        targets,
+      });
+    }
+
+    const skipVerdict = validateSkipMultiset(titles, adapter.expectedSkips ?? []);
+    if (!skipVerdict.ok) {
+      return adapterResult({
+        adapterId: adapter.id,
+        category: adapter.category,
+        assertions,
+        exitCode: 0,
+        reason: skipVerdict.reason,
+        ...(titles.length > 0 ? { skippedTitles: titles } : {}),
+        status: 'failed',
         targets,
       });
     }
@@ -277,6 +266,7 @@ const runOneAdapter = async (
       category: adapter.category,
       assertions,
       exitCode: 0,
+      ...(titles.length > 0 ? { skippedTitles: titles } : {}),
       status: 'passed',
       targets,
     });

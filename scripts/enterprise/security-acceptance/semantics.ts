@@ -9,6 +9,7 @@ import {
   REQUIRED_PEN_ADAPTER_IDS,
 } from './penManifest';
 import type { DependencyScanArtifact, LeakageScanArtifact, PenRegressionArtifact } from './schemas';
+import { validateSkipMultiset } from './skipMultiset';
 
 export interface DerivedCheck {
   checkId: 'dependency-scan' | 'leakage-scan' | 'pen-regression';
@@ -138,16 +139,11 @@ export const validatePenAdapterAgainstManifest = (
     if (total <= 0) return 'pen-passed-zero-total';
     if (passed + skipped + failed !== total) return 'pen-assertion-sum';
     if (adapter.exitCode !== 0) return 'pen-passed-nonzero-exit';
-    if (skipped > 0) {
-      const expected = definition.expectedSkips ?? [];
-      const titles = adapter.skippedTitles ?? [];
-      if (titles.length !== skipped) return 'pen-skipped-titles-count';
-      for (const title of titles) {
-        if (!expected.some((skip) => skip.title === title)) return 'pen-unexpected-skip';
-      }
-    } else if ((adapter.skippedTitles?.length ?? 0) > 0) {
-      return 'pen-skipped-titles-without-count';
-    }
+    const titles = adapter.skippedTitles ?? [];
+    if (titles.length !== skipped) return 'pen-skipped-titles-count';
+    // Detect duplicate listing inconsistency is handled by multiset vs assertion count.
+    const skipVerdict = validateSkipMultiset(titles, definition.expectedSkips ?? []);
+    if (!skipVerdict.ok) return `pen-${skipVerdict.reason}`;
     return undefined;
   }
 

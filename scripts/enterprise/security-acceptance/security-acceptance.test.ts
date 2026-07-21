@@ -30,8 +30,9 @@ import { PEN_REGRESSION_MANIFEST } from './penManifest';
 import { runPenRegression } from './penRegression';
 import { digestLine, scanForForbiddenReportContent } from './privacy';
 import {
+  PROCESS_CLEANUP_DEADLINE_MS,
   PROCESS_KILL_GRACE_MS,
-  PROCESS_SETTLEMENT_MS,
+  processExists,
   type ProcessResult,
   type ProcessRunner,
   runProcess,
@@ -71,6 +72,7 @@ const mockRunner =
     handler(argv);
 
 const okProcess = (stdout: string, code = 0): ProcessResult => ({
+  cleanupFailed: false,
   code,
   outputTruncated: false,
   stderr: '',
@@ -1090,10 +1092,202 @@ describe('process-tree timeout', () => {
     );
     const elapsed = Date.now() - started;
     expect(result.timedOut).toBe(true);
-    // Must settle well under pathological multi-minute hangs.
-    const budget = timeoutMs + PROCESS_KILL_GRACE_MS + PROCESS_SETTLEMENT_MS + 3_000;
+    expect(result.cleanupFailed).toBe(false);
+    const budget = timeoutMs + PROCESS_KILL_GRACE_MS + PROCESS_CLEANUP_DEADLINE_MS + 3_000;
     expect(elapsed).toBeLessThan(budget);
   }, 20_000);
+
+  it('terminates detached grandchild that ignores SIGTERM (existence probe)', async () => {
+    const pidFile = path.join(tmpdir(), `m13-s05-gc-${process.pid}-${Date.now()}.pid`);
+    const timeoutMs = 200;
+    let grandchildPid: number | undefined;
+    try {
+      const started = Date.now();
+      const result = await runProcess(
+        [
+          'node',
+          '-e',
+          `
+            const {spawn} = require('child_process');
+            const fs = require('fs');
+            const pidFile = process.argv[1];
+            const g = spawn(process.execPath, ['-e',
+              "process.on('SIGTERM',()=>{}); setInterval(()=>{}, 1000);"], {
+              detached: true,
+              stdio: 'ignore',
+            });
+            fs.writeFileSync(pidFile, String(g.pid));
+            g.unref();
+            setInterval(() => {}, 1000);
+            `,
+          pidFile,
+        ],
+        { cwd: process.cwd(), timeoutMs },
+      );
+      const elapsed = Date.now() - started;
+      expect(result.timedOut).toBe(true);
+      expect(elapsed).toBeLessThan(timeoutMs + PROCESS_CLEANUP_DEADLINE_MS + 3_000);
+
+      const raw = await readFile(pidFile, 'utf8').catch(() => '');
+      grandchildPid = Number(raw.trim());
+      expect(Number.isInteger(grandchildPid) && (grandchildPid as number) > 1).toBe(true);
+      expect(processExists(grandchildPid as number)).toBe(false);
+      expect(result.cleanupFailed).toBe(false);
+    } finally {
+      if (grandchildPid && processExists(grandchildPid)) {
+        try {
+          process.kill(grandchildPid, 'SIGKILL');
+        } catch {
+          // cleanup best effort
+        }
+      }
+      await rm(pidFile, { force: true }).catch(() => undefined);
+    }
+  }, 25_000);
+});
+
+describe('skip multiset enforcement', () => {
+  it('validateSkipMultiset: exact-one required passes; duplicate and missing fail', async () => {
+    const { validateSkipMultiset } = await import('./skipMultiset');
+    const expected = [{ reason: 'gc', required: true as const, title: 'heap delta stays bounded' }];
+    expect(validateSkipMultiset(['heap delta stays bounded'], expected).ok).toBe(true);
+    expect(
+      validateSkipMultiset(['heap delta stays bounded', 'heap delta stays bounded'], expected).ok,
+    ).toBe(false);
+    const missing = validateSkipMultiset([], expected);
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) expect(missing.reason).toBe('missing-approved-skip');
+    expect(validateSkipMultiset(['other'], expected).ok).toBe(false);
+  });
+
+  it('runner fails on duplicate approved skip title beyond multiset count', async () => {
+    const dir = await makeTempDir();
+    const testRel = 'packages/ssrf-safe-fetch/index.test.ts';
+    await mkdir(path.dirname(path.join(dir, testRel)), { recursive: true });
+    await writeFile(path.join(dir, testRel), '// stub\n', 'utf8');
+    const title = 'heap delta stays bounded when a 50 MB body is fetched with a 1 MB cap';
+    const manifest: PenAdapterDefinition[] = [
+      {
+        id: 'ssrf-safe-fetch',
+        category: 'ssrf',
+        description: 'ssrf',
+        expectedSkips: [{ reason: 'gc-not-exposed', required: false, title }],
+        required: true,
+        testFiles: [testRel],
+        workingDirectory: 'packages/ssrf-safe-fetch',
+      },
+    ];
+    const artifact = await runPenRegression({
+      cwd: dir,
+      manifest,
+      runProcess: mockRunner(async () =>
+        okProcess(
+          JSON.stringify({
+            numFailedTests: 0,
+            numPassedTests: 31,
+            numPendingTests: 2,
+            numTodoTests: 0,
+            numTotalTests: 33,
+            success: true,
+            testResults: [
+              {
+                assertionResults: [
+                  { status: 'skipped', title },
+                  { status: 'skipped', title },
+                ],
+              },
+            ],
+          }),
+          0,
+        ),
+      ),
+    });
+    expect(artifact.status).toBe('failed');
+    expect(artifact.adapters[0]?.reason).toBe('skip-multiplicity');
+  });
+
+  it('runner fails when required approved skip is missing', async () => {
+    const dir = await makeTempDir();
+    const testRel = 'apps/server/src/enterprise/guards/reauth.test.ts';
+    await mkdir(path.dirname(path.join(dir, testRel)), { recursive: true });
+    await writeFile(path.join(dir, testRel), '// stub\n', 'utf8');
+    const manifest: PenAdapterDefinition[] = [
+      {
+        id: 'reauth-guard',
+        category: 'reauth',
+        description: 'reauth',
+        expectedSkips: [{ reason: 'must-skip', required: true, title: 'required skip title' }],
+        required: true,
+        testFiles: [testRel],
+      },
+    ];
+    const artifact = await runPenRegression({
+      cwd: dir,
+      manifest,
+      runProcess: mockRunner(async () =>
+        okProcess(
+          JSON.stringify({
+            numFailedTests: 0,
+            numPassedTests: 2,
+            numPendingTests: 0,
+            numTodoTests: 0,
+            numTotalTests: 2,
+            success: true,
+            testResults: [{ assertionResults: [{ status: 'passed', title: 'a' }] }],
+          }),
+          0,
+        ),
+      ),
+    });
+    expect(artifact.status).toBe('failed');
+    expect(artifact.adapters[0]?.reason).toBe('missing-approved-skip');
+  });
+
+  it('verifier rejects planted pass with duplicate skip titles', () => {
+    const title = 'heap delta stays bounded when a 50 MB body is fetched with a 1 MB cap';
+    const pen: PenRegressionArtifact = {
+      adapters: PEN_REGRESSION_MANIFEST.map((definition) => {
+        if (definition.id === 'ssrf-safe-fetch') {
+          return {
+            adapterId: definition.id,
+            assertions: { failed: 0, passed: 31, skipped: 2, total: 33 },
+            category: definition.category,
+            exitCode: 0,
+            skippedTitles: [title, title],
+            status: 'passed' as const,
+            targets: [...definition.testFiles],
+          };
+        }
+        return {
+          adapterId: definition.id,
+          assertions: { failed: 0, passed: 3, skipped: 0, total: 3 },
+          category: definition.category,
+          exitCode: 0,
+          status: 'passed' as const,
+          targets: [...definition.testFiles],
+        };
+      }),
+      checkId: 'pen-regression',
+      schemaVersion: SECURITY_ACCEPTANCE_SCHEMA_VERSION,
+      status: 'passed',
+    };
+    const { report } = evaluateSecurityAcceptance({
+      dependency: baseDependency(),
+      gitSha: FIXTURE_SHA,
+      leakage: baseLeakage(),
+      nowIso: FIXED_ISO,
+      pen,
+    });
+    expect(report.overall === 'unavailable' || report.overall === 'failed').toBe(true);
+    const forged = structuredClone(report);
+    forged.overall = 'passed';
+    forged.checks = forged.checks.map((c) =>
+      c.checkId === 'pen-regression' ? { checkId: 'pen-regression', status: 'passed' as const } : c,
+    );
+    forged.artifacts['pen-regression'] = pen;
+    expect(verifySecurityAcceptanceReport(forged).ok).toBe(false);
+    expect(isSecurityAcceptancePassed(forged)).toBe(false);
+  });
 });
 
 describe('real runner omitUndefined end-to-end smoke', () => {
