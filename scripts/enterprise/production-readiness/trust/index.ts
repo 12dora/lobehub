@@ -1,4 +1,9 @@
-export { canonicalize, type JsonValue, sha256HexOfCanonicalSync } from './canonical';
+export {
+  canonicalize,
+  compareCodeUnits,
+  type JsonValue,
+  sha256HexOfCanonicalSync,
+} from './canonical';
 export {
   type Ed25519KeyPair,
   fingerprintPublicKeyBase64,
