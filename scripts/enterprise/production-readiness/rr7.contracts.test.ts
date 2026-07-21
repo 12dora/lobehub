@@ -85,7 +85,7 @@ describe('RR7: canonical JSON preserves own keys and code-unit sort', () => {
 
   it('deep arrays/null/unicode stable; provenance still verifies', () => {
     const deep = { a: [1, { b: null, c: 'café' }, [true, false]] };
-    expect(canonicalize(deep)).toBe(canonicalize(JSON.parse(JSON.stringify(deep))));
+    expect(canonicalize(deep)).toBe(canonicalize(structuredClone(deep)));
 
     const bundle = createTestTrustBundle(['production']);
     const payload = {
