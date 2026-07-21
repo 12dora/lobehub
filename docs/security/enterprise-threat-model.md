@@ -172,17 +172,41 @@ rotation, alerting, and disaster-recovery evidence remain required.
 ## Verification and release evidence
 
 Repository verification for this baseline consists of the registry reconciliation test, rate-limit
-middleware presence on all live mutations, focused router/service security tests, TypeScript
+middleware presence on all live admin mutations, focused router/service security tests, TypeScript
 checking, linting, and diff checks. The Vault fake suite's default run recorded
 `61 passed / 1 real gate skipped`; an independent gate against an ephemeral Vault recorded
 `1 passed`. That gate used root only to bootstrap temporary resources and used the temporary AppRole
 for application reads. It verifies the integration path, but does not constitute production Vault or
-actual release acceptance. Subsequent acceptance must still add full-domain re-wrap/job evidence,
-production Vault credential rotation/alerting/disaster-recovery drills, real PostgreSQL
-migration/rollback evidence, multi-instance cache and failure drills, dependency/penetration
-scanning, and enterprise browser E2E evidence. External identity tenants and signed production
-release/rollback drills must be reported as unexecuted unless real credentials and release authority
-were used.
+actual release acceptance.
+
+**M13 S06 runtime controls (code at this revision).** Shared multi-instance admin mutation rate
+limiting is implemented with PostgreSQL-authoritative windows and persisted `window_ms`, complete
+registry wiring (no live `gap`/`planned` rate-limit entries), SafeOutbound for EasyAuth sync and real
+AI provider transports, prepareRestart success/failure audit, and Bedrock abort propagation. These
+are repository runtime controls, not production enablement evidence.
+
+**M13 PR-S05 / S07 repository security acceptance (automation only).** The harness under
+`scripts/enterprise/security-acceptance/` produces a versioned, fail-closed report for production
+dependency advisory scanning (`pnpm audit` with an explicit exit matrix), enterprise leakage
+regression scanning (secret-shaped material on required roots; exact path+category+lineDigest
+baseline; no secret text in reports; symlink/oversized/missing-root fail closed), and automated
+adversarial regression orchestration (SSRF with reviewed GC-skip allowlist, auth/RBAC/IDOR, reauth,
+replay/CAS, and required admin rate-limit service + guard test targets). Integrity digests bind full
+check artifacts; verification recomputes overall/check semantics and rejects forgeries. Process-tree
+timeout cleanup is fail-closed under discovery/permission uncertainty. Reports are classified
+`evidenceClass: repository-automation` and always record
+`externalPenetrationTest.status: not-executed`. A green unit-test or CI artifact from this harness is
+**not** an external human production penetration test and must not be re-labeled as one. See
+`docs/enterprise/runbooks/security-acceptance.md` and
+`.github/workflows/enterprise-security-acceptance.yml`.
+
+Subsequent acceptance must still add full-domain re-wrap/job evidence, production Vault credential
+rotation/alerting/disaster-recovery drills, real PostgreSQL migration/rollback evidence, multi-instance
+cache and failure drills, residual **external** human penetration testing against a production-like
+deployment (deployment-external; not claimed by repository automation), and enterprise browser E2E
+evidence. External identity tenants and signed production release/rollback drills must be reported as
+unexecuted unless real credentials and release authority were used. This document does not claim
+production credentials, production enablement, or external engagement evidence.
 
 ## Review triggers
 
