@@ -132,8 +132,10 @@ export const signGateEvidence = (
     runId: 'run-test-1',
     schemaVersion: 1,
     status: evidence.status,
+    // Gate envelopes for backup-restore carry recovery-result (raw report digest), not dump input.
     ...(evidence.gate === 'backup-restore'
       ? {
+          attestationRole: 'recovery-result' as const,
           backupBinding: {
             inventoryVersion: 1 as const,
             manifestSchemaVersion: 1 as const,
@@ -141,6 +143,7 @@ export const signGateEvidence = (
             sourceManifestSha256: sha256Of(`manifest-${evidence.artifactSha256}`),
             sourceSchemaTag: FIXTURE_MIGRATION_TAG,
           },
+          inputAttestationSha256: sha256Of(`input-attestation-${evidence.artifactSha256}`),
           sourceManifestSha256: sha256Of(`manifest-${evidence.artifactSha256}`),
         }
       : {}),

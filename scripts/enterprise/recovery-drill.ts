@@ -1,19 +1,30 @@
 #!/usr/bin/env bun
 /**
  * M15 Q06 recovery drill entrypoint.
+ *
+ * Production backup-restore is two-step:
+ * 1) --provenance = signed source-backup (dump + manifest) → restore writes unsigned
+ *    gate envelope + raw report with inputAttestation ref (local/unverified for production pass).
+ * 2) finalize-result --result-provenance = externally signed recovery-result over raw report digest.
+ * Runtime never holds a production private key and never reuses input as gate provenance.
  */
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 
 import {
   type EvidenceScope,
+  finalizeBackupRestoreResultProvenance,
   runAppRollbackDrill,
   runBackupRestoreDrill,
 } from './production-readiness';
 
 const usage = () => {
   console.error(`Usage:
-  bun run scripts/enterprise/recovery-drill.ts backup-restore --candidate-sha <sha> --schema-tag <tag> --scope <scope> --output <json> [--backup-file <path>]
+  bun run scripts/enterprise/recovery-drill.ts backup-restore --candidate-sha <sha> --schema-tag <tag> --scope <scope> --output <json>
+    [--backup-file <path>] [--source-manifest <path>] [--provenance <source-backup.json>]
+    [--result-provenance <recovery-result.json>] [--release-id <id>]
+  bun run scripts/enterprise/recovery-drill.ts finalize-result --raw-report <path> --envelope <path>
+    --result-provenance <path> --candidate-sha <sha> [--release-id <id>]
   bun run scripts/enterprise/recovery-drill.ts app-rollback --candidate-sha <sha> --scope <scope> --output <json> [--repo-root <dir>]
   bun run scripts/enterprise/recovery-drill.ts select-backup --scope production-authorized
   bun run scripts/enterprise/recovery-drill.ts verify-invariants --scope production-authorized`);
@@ -59,6 +70,34 @@ const main = async () => {
     return;
   }
 
+  if (command === 'finalize-result') {
+    const { values } = parseArgs({
+      args: rest,
+      options: {
+        'raw-report': { type: 'string' },
+        'envelope': { type: 'string' },
+        'result-provenance': { type: 'string' },
+        'candidate-sha': { type: 'string' },
+        'release-id': { type: 'string' },
+      },
+      strict: true,
+    });
+    const { readFile } = await import('node:fs/promises');
+    const resultProvenance = JSON.parse(
+      await readFile(requireString(values['result-provenance'], 'result-provenance'), 'utf8'),
+    );
+    const out = await finalizeBackupRestoreResultProvenance({
+      candidateSha: requireString(values['candidate-sha'], 'candidate-sha'),
+      envelopePath: path.resolve(requireString(values.envelope, 'envelope')),
+      rawReportPath: path.resolve(requireString(values['raw-report'], 'raw-report')),
+      releaseId: values['release-id'],
+      resultProvenance,
+    });
+    console.log(JSON.stringify(out, null, 2));
+    process.exitCode = out.ok ? 0 : 1;
+    return;
+  }
+
   if (command === 'backup-restore') {
     const { values } = parseArgs({
       args: rest,
@@ -66,6 +105,7 @@ const main = async () => {
         'backup-file': { type: 'string' },
         'source-manifest': { type: 'string' },
         'provenance': { type: 'string' },
+        'result-provenance': { type: 'string' },
         'release-id': { type: 'string' },
         'candidate-sha': { type: 'string' },
         'output': { type: 'string' },
@@ -74,15 +114,20 @@ const main = async () => {
       },
       strict: true,
     });
+    const { readFile } = await import('node:fs/promises');
     let backupProvenance: unknown;
     if (values.provenance) {
-      const { readFile } = await import('node:fs/promises');
       backupProvenance = JSON.parse(await readFile(values.provenance, 'utf8'));
+    }
+    let resultProvenance: unknown;
+    if (values['result-provenance']) {
+      resultProvenance = JSON.parse(await readFile(values['result-provenance']!, 'utf8'));
     }
     const result = await runBackupRestoreDrill({
       backupProvenance,
       backupFile: values['backup-file'],
       sourceManifestPath: values['source-manifest'],
+      resultProvenance,
       releaseId: values['release-id'],
       candidateSha: requireString(values['candidate-sha'], 'candidate-sha'),
       dbSchemaVersionTag: requireString(values['schema-tag'], 'schema-tag'),
@@ -96,6 +141,8 @@ const main = async () => {
         `scope=${result.evidence.scope}`,
         `cleanup=${result.evidence.cleanupResult}`,
         `assertions=${result.evidence.assertions.passed}/${result.evidence.assertions.total}`,
+        `raw=${result.rawReportSha256 ?? 'n/a'}`,
+        `gateProvenance=${result.gateEvidence.provenance ? 'present' : 'absent'}`,
       ].join(' '),
     );
     process.exitCode = result.exitCode;

@@ -127,8 +127,11 @@ const evaluateOneGate = (
         reason: 'missing-production-provenance',
       };
     }
+    // Gate preflight only accepts recovery-result (or non-backup gate) provenance
+    // whose artifactSha256 equals the envelope/raw-report digest — never source-backup dump digests.
     const verdict = verifySignedProvenance(input.provenance, {
       expectedArtifactSha256: input.artifactSha256,
+      expectedAttestationRole: input.gate === 'backup-restore' ? 'recovery-result' : undefined,
       expectedCandidateSha: candidate.gitSha,
       expectedGateId: input.gate,
       expectedReleaseId: candidate.releaseId,

@@ -12,6 +12,8 @@ export {
   type BackupRestoreDrillOptions,
   type BackupRestoreDrillResult,
   buildSourceManifestCore,
+  finalizeBackupRestoreResultProvenance,
+  type InputAttestationRef,
   isCorruptedDump,
   isUnsafeBackupPath,
   rejectIdenticalSourceTarget,
@@ -26,11 +28,13 @@ export {
 } from './baselineMaterialize';
 export { assertGateEvidenceShape, toPreflightGateEvidence } from './evidenceEnvelope';
 export {
+  canonicalizeTableRow,
   compareDigests,
   compareTableDigests,
   digestAllRequiredTables,
   digestAuditLogs,
   digestResourceRevisions,
+  TABLE_DIGEST_ENCODING_VERSION,
   verifyPublicationPointers,
   verifyRequiredTablesPresent,
   verifySecretReferenceDomains,
