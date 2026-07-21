@@ -13,7 +13,9 @@ export type AdminNavLabelKey =
   | 'nav.ai'
   | 'nav.aiProviders'
   | 'nav.aiProviderDetail'
-  | 'nav.aiModels'
+  | 'nav.aiCatalogProviders'
+  | 'nav.aiCatalogProviderDetail'
+  | 'nav.aiCatalogModels'
   | 'nav.skills'
   | 'nav.skillDetail'
   | 'nav.connectors'
@@ -121,10 +123,28 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
         placeholder: false,
         requiredPermissions: [PLATFORM_PERMISSIONS.AI_PROVIDER_READ],
       },
+      // Advanced draft/publish/revision catalog (former self-built pages) — hidden from nav
       {
-        id: 'ai-models',
-        labelKey: 'nav.aiModels',
-        path: '/admin/ai/models',
+        hideFromNav: true,
+        id: 'ai-catalog-providers',
+        labelKey: 'nav.aiCatalogProviders',
+        path: '/admin/ai/catalog/providers',
+        placeholder: false,
+        requiredPermissions: [PLATFORM_PERMISSIONS.AI_PROVIDER_READ],
+      },
+      {
+        hideFromNav: true,
+        id: 'ai-catalog-provider-detail',
+        labelKey: 'nav.aiCatalogProviderDetail',
+        path: '/admin/ai/catalog/providers/:id',
+        placeholder: false,
+        requiredPermissions: [PLATFORM_PERMISSIONS.AI_PROVIDER_READ],
+      },
+      {
+        hideFromNav: true,
+        id: 'ai-catalog-models',
+        labelKey: 'nav.aiCatalogModels',
+        path: '/admin/ai/catalog/models',
         placeholder: false,
         requiredPermissions: [PLATFORM_PERMISSIONS.AI_MODEL_READ],
       },
