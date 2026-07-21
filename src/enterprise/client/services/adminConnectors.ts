@@ -42,6 +42,10 @@ class AdminConnectorsService implements AdminConnectorCatalogClient {
   archive = async (input: AdminConnectorArchiveInput) =>
     lambdaClient.admin.connectors.archive.mutate(input);
 
+  /** Settings-page archive with reauth + toast (advanced catalog keeps bare archive). */
+  archiveImmediate = async (input: AdminConnectorArchiveInput) =>
+    withToastAndReauth(() => lambdaClient.admin.connectors.archive.mutate(input));
+
   createDraft = async (input: AdminConnectorCreateDraftInput) =>
     lambdaClient.admin.connectors.createDraft.mutate(input);
 

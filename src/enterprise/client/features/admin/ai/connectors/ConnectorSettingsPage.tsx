@@ -146,18 +146,26 @@ const ConnectorDetailPanel = memo<{
     if (!data) return;
     setBusy(true);
     try {
-      await adminConnectorsService.applyImmediate({
+      const result = await adminConnectorsService.applyImmediate({
         expectedDraftToken: data.draftToken,
         expectedRevision: data.baseRevision,
         id: data.draft.id,
         mode: 'update',
         reason: 'Publish platform connector from admin settings',
       });
-      toast.success(
-        t('aiConnectorSettings.actions.published', {
-          defaultValue: 'Connector listed for all users',
-        }),
-      );
+      if (result.published) {
+        toast.success(
+          t('aiConnectorSettings.actions.published', {
+            defaultValue: 'Connector listed for all users',
+          }),
+        );
+      } else {
+        toast.success(
+          t('aiConnectorSettings.actions.draftSaved', {
+            defaultValue: 'Connector saved as draft — complete config to list it',
+          }),
+        );
+      }
       await Promise.all([mutate(), refreshAdminConnectorLists()]);
       onPublished();
     } catch {
@@ -207,7 +215,7 @@ const ConnectorDetailPanel = memo<{
       onOk: async () => {
         setBusy(true);
         try {
-          await adminConnectorsService.archive({
+          await adminConnectorsService.archiveImmediate({
             expectedDraftToken: data.draftToken,
             expectedRevision: data.baseRevision,
             id: data.draft.id,
@@ -218,8 +226,8 @@ const ConnectorDetailPanel = memo<{
           );
           await Promise.all([mutate(), refreshAdminConnectorLists()]);
           onArchived();
-        } catch (cause) {
-          toast.error(cause instanceof Error ? cause.message : 'Archive failed');
+        } catch {
+          // toast already shown by service wrapper
         } finally {
           setBusy(false);
         }
@@ -346,7 +354,7 @@ const ConnectorSettingsPage = memo(() => {
   const navigate = useNavigate();
   const params = useParams<{ id?: string }>();
   const { authMethod, permissions } = useAdminAccess();
-  const { canCreate, canRead } = deriveAdminConnectorPermissions(permissions);
+  const { canCreate, canPublish, canRead } = deriveAdminConnectorPermissions(permissions);
   const [query, setQuery] = useState('');
   const listInput = useMemo(
     () => ({
@@ -417,7 +425,7 @@ const ConnectorSettingsPage = memo(() => {
             <Text strong style={{ fontSize: 14 }}>
               {t('nav.aiConnectors', { defaultValue: 'Connectors' })}
             </Text>
-            {canCreate ? (
+            {canCreate && canPublish ? (
               <Button size="small" type="primary" onClick={onCreate}>
                 {t('aiConnectorSettings.actions.create', { defaultValue: 'List connector' })}
               </Button>
