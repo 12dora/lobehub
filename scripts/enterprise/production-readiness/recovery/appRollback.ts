@@ -1,5 +1,7 @@
 /**
- * Application-version rollback drill with real baseline materialization + DB probe.
+ * Application-version rollback drill.
+ * baselineExecutable is true only when real pinned-commit data-access code executes
+ * a meaningful legacy DB read. Planted probes never authorize.
  */
 import { createHash } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
@@ -21,13 +23,13 @@ import { scanForForbiddenReportContent } from '../privacy';
 import type { AppRollbackEvidence } from '../schemas';
 import {
   disposeOwnedParent,
-  executeBaselineDbProbe,
+  executeBaselineUserModelBoundary,
   materializeBaselineCheckout,
 } from './baselineMaterialize';
 import { toPreflightGateEvidence } from './evidenceEnvelope';
 import { verifyRequiredTablesPresent } from './invariants';
 import { createOwnedPostgres } from './ownedPostgres';
-import { seedRecoveryFixture } from './seed';
+import { RECOVERY_PROBE_IDS, seedRecoveryFixture } from './seed';
 
 export const DESTRUCTIVE_SQL_PATTERNS = [
   /\bDROP\s+TABLE\b/iu,
@@ -56,9 +58,9 @@ export interface AppRollbackDrillOptions {
 }
 
 export interface AppRollbackDrillResult {
+  baselineDetail?: string;
   evidence: AppRollbackEvidence;
   exitCode: number;
-  /** Preflight-consumable gate evidence envelope. */
   gateEvidence: ReturnType<typeof toPreflightGateEvidence>;
 }
 
@@ -97,11 +99,9 @@ export const runAppRollbackDrill = async (
   const repoRoot = options.repoRoot ?? process.cwd();
 
   let cleanupResult: 'failed' | 'passed' = 'passed';
-  let baselineExecutable: boolean;
   let newTablesRetained = false;
   let destructiveCommandsRejected = false;
   let rollForwardOk = false;
-  let probePassed: boolean;
 
   try {
     rejectDestructiveCommand('DROP TABLE platform_resource_revisions');
@@ -113,21 +113,22 @@ export const runAppRollbackDrill = async (
     assertBaselineNotCandidate(BASELINE_COMMIT, options.candidateSha);
   } catch {
     return seal(options, nowIso, {
+      baselineDetail: 'baseline-candidate-mismatch',
       baselineExecutable: false,
       cleanupResult,
       destructiveCommandsRejected,
       newTablesRetained: false,
-      probePassed: false,
       rollForwardOk: false,
       status: 'failed',
     });
   }
 
-  // Owned parent for baseline tree (strong ownership + cleanup).
   const parentReal = await realpath(tmpdir());
   const parentOwned = await createToolOwnedTempDir(parentReal);
   const lifecycle = await createOwnedPostgres();
 
+  let baselineExecutable: boolean;
+  let baselineDetail: string;
   try {
     await lifecycle.handle.withClient(async (client) => {
       await seedRecoveryFixture(client);
@@ -138,36 +139,35 @@ export const runAppRollbackDrill = async (
 
     try {
       const materialization = await materializeBaselineCheckout(repoRoot, parentOwned);
-      const hostRequireRoot = path.resolve(repoRoot);
-      const probe = await lifecycle.handle.withDatabaseUrl(async (databaseUrl) =>
-        executeBaselineDbProbe({
+      const execResult = await lifecycle.handle.withDatabaseUrl(async (databaseUrl) =>
+        executeBaselineUserModelBoundary({
           baselineRoot: materialization.root,
           databaseUrl,
-          hostRequireRoot,
+          hostRequireRoot: path.resolve(repoRoot),
+          userId: RECOVERY_PROBE_IDS.userId,
         }),
       );
-      baselineExecutable =
-        probe.executable &&
-        probe.packageVersionOk &&
-        probe.legacyReadOk &&
-        probe.enterpriseRetainedOk &&
-        materialization.baselineSha === BASELINE_COMMIT;
-      probePassed = baselineExecutable;
-    } catch {
+      baselineExecutable = execResult.baselineExecutable;
+      baselineDetail = execResult.detail;
+    } catch (error) {
       baselineExecutable = false;
-      probePassed = false;
+      baselineDetail = error instanceof Error ? error.message : 'materialize-failed';
     }
+  } catch (error) {
+    baselineExecutable = false;
+    baselineDetail = error instanceof Error ? error.message : 'seed-or-lifecycle-failed';
+    newTablesRetained = false;
+    rollForwardOk = false;
   } finally {
-    const parentCleanup = await disposeOwnedParent(parentOwned);
-    if (parentCleanup === 'failed') cleanupResult = 'failed';
-    const c = await lifecycle.cleanup();
-    if (c === 'failed') cleanupResult = 'failed';
+    if ((await disposeOwnedParent(parentOwned)) === 'failed') cleanupResult = 'failed';
+    if ((await lifecycle.cleanup()) === 'failed') cleanupResult = 'failed';
   }
 
+  // Honest classification: unavailable old ORM runtime → unverified, never fake pass.
   let status: AppRollbackEvidence['status'];
   if (!destructiveCommandsRejected || cleanupResult === 'failed') status = 'failed';
   else if (!baselineExecutable) status = 'unverified';
-  else if (probePassed && newTablesRetained && rollForwardOk) status = 'passed';
+  else if (newTablesRetained && rollForwardOk) status = 'passed';
   else status = 'failed';
 
   const bits = [
@@ -175,7 +175,7 @@ export const runAppRollbackDrill = async (
     newTablesRetained,
     rollForwardOk,
     cleanupResult === 'passed',
-    baselineExecutable && probePassed,
+    baselineExecutable,
   ];
   const passed = bits.filter(Boolean).length;
 
@@ -211,25 +211,33 @@ export const runAppRollbackDrill = async (
     throw new Error('App-rollback evidence redaction rejected');
   }
 
-  // Write raw report then wrap for preflight.
-  const rawPath = options.outputPath.endsWith('.json')
-    ? options.outputPath.replace(/\.json$/u, '.raw.json')
-    : `${options.outputPath}.raw.json`;
-  const { sha256: artifactSha256 } = await writeJsonAtomic(rawPath, evidence);
+  // Official layout: raw under raw/, envelope under envelopes/
+  const rawDir = path.join(path.dirname(options.outputPath), 'raw');
+  const envDir = path.join(path.dirname(options.outputPath), 'envelopes');
+  const rawPath = path.join(rawDir, 'app-rollback.raw.json');
+  const envelopePath = path.join(envDir, 'app-rollback.envelope.json');
+
+  const { sha256: artifactSha256 } = await writeJsonAtomic(rawPath, {
+    ...evidence,
+    baselineDetail,
+  });
   const gateEvidence = toPreflightGateEvidence({
     artifactSha256,
+    assertions: evidence.assertions,
     candidateSha: options.candidateSha,
     gate: 'app-rollback',
     generatedAt: nowIso,
-    releaseId: options.releaseId,
     rawReport: evidence,
+    releaseId: options.releaseId,
     scope: evidence.scope,
     status: evidence.status,
-    assertions: evidence.assertions,
   });
+  await writeJsonAtomic(envelopePath, gateEvidence);
+  // Also write the requested outputPath as a pointer-style copy of the envelope for single-file use
   await writeJsonAtomic(options.outputPath, gateEvidence);
 
   return {
+    baselineDetail,
     evidence,
     exitCode: status === 'passed' ? 0 : 1,
     gateEvidence,
@@ -240,11 +248,11 @@ const seal = async (
   options: AppRollbackDrillOptions,
   nowIso: string,
   state: {
+    baselineDetail: string;
     baselineExecutable: boolean;
     cleanupResult: 'failed' | 'passed';
     destructiveCommandsRejected: boolean;
     newTablesRetained: boolean;
-    probePassed: boolean;
     rollForwardOk: boolean;
     status: AppRollbackEvidence['status'];
   },
@@ -266,11 +274,9 @@ const seal = async (
     scope: 'local-harness',
     status: state.status,
   };
-  const rawPath = options.outputPath.replace(/\.json$/u, '.raw.json');
-  const { sha256 } = await writeJsonAtomic(rawPath, evidence).catch(async () => {
-    await writeJsonAtomic(options.outputPath, evidence);
-    return { sha256: createHash('sha256').update('').digest('hex') };
-  });
+  const { sha256 } = await writeJsonAtomic(options.outputPath, evidence).catch(() => ({
+    sha256: createHash('sha256').update('').digest('hex'),
+  }));
   const gateEvidence = toPreflightGateEvidence({
     artifactSha256: sha256,
     candidateSha: options.candidateSha,
@@ -282,5 +288,10 @@ const seal = async (
     assertions: evidence.assertions,
   });
   await writeJsonAtomic(options.outputPath, gateEvidence).catch(() => undefined);
-  return { evidence, exitCode: 1, gateEvidence };
+  return {
+    baselineDetail: state.baselineDetail,
+    evidence,
+    exitCode: 1,
+    gateEvidence,
+  };
 };

@@ -1,6 +1,9 @@
 /**
- * Materialize required paths from the pinned baseline commit (partial-clone safe)
- * and execute the allowlisted DB probe with DATABASE_URL.
+ * Materialize the pinned baseline commit and attempt to execute a real
+ * old-version data-access boundary (UserModel.findById from that commit).
+ *
+ * Planted current-branch probes never authorize compatibility.
+ * If the old monorepo runtime cannot load, result is unverified.
  */
 import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -10,24 +13,26 @@ import { promisify } from 'node:util';
 
 import { BASELINE_COMMIT, BASELINE_VERSION } from '../constants';
 import { cleanupToolOwnedPath, type ToolOwnedTempHandle } from '../fsUtils';
-import {
-  ALLOWLISTED_BASELINE_PROBE_RELATIVE_PATH,
-  ALLOWLISTED_BASELINE_PROBE_SHA256,
-  ALLOWLISTED_BASELINE_PROBE_SOURCE,
-} from './baselineProbeContent';
 
 const execFileAsync = promisify(execFile);
 
-/** Paths required from the pinned tree for identity + schema parsing. */
-const REQUIRED_BASELINE_PATHS = ['package.json', 'packages/database/src/schemas'] as const;
+/** Paths that must come from the pinned commit for identity / old DA code. */
+const BASELINE_BLOB_PATHS = [
+  'package.json',
+  'packages/database/package.json',
+  'packages/database/src/models/user.ts',
+  'packages/database/src/core/db-adaptor.ts',
+  'packages/database/src/core/web-server.ts',
+  'packages/database/src/type.ts',
+  'packages/database/src/schemas/index.ts',
+] as const;
 
 export interface MaterializedBaseline {
   baselineSha: typeof BASELINE_COMMIT;
+  blobDigests: Record<string, string>;
   ownership: ToolOwnedTempHandle;
   packageJsonSha256: string;
   packageVersion: string;
-  probeRelativePath: string;
-  probeSha256: string;
   root: string;
   treeOid: string;
 }
@@ -39,59 +44,21 @@ export const resolveBaselineTreeOid = async (repoRoot: string): Promise<string> 
     { timeout: 30_000 },
   );
   const treeOid = stdout.trim().toLowerCase();
-  if (!/^[a-f\d]{40}$/u.test(treeOid)) {
-    throw new Error('BaselineTreeOidInvalid');
-  }
+  if (!/^[a-f\d]{40}$/u.test(treeOid)) throw new Error('BaselineTreeOidInvalid');
   return treeOid;
 };
 
-const listBaselineFiles = async (repoRoot: string, prefix: string): Promise<string[]> => {
+const showBaselineFile = async (repoRoot: string, filePath: string): Promise<Buffer> => {
   const { stdout } = await execFileAsync(
     'git',
-    ['-C', repoRoot, 'ls-tree', '-r', '--name-only', BASELINE_COMMIT, '--', prefix],
-    { maxBuffer: 8 * 1024 * 1024, timeout: 60_000 },
+    ['-C', repoRoot, 'show', `${BASELINE_COMMIT}:${filePath}`],
+    { encoding: 'buffer', maxBuffer: 16 * 1024 * 1024, timeout: 90_000 },
   );
-  return stdout
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean);
-};
-
-const showBaselineFile = async (repoRoot: string, filePath: string): Promise<Buffer> => {
-  try {
-    const { stdout } = await execFileAsync(
-      'git',
-      ['-C', repoRoot, 'show', `${BASELINE_COMMIT}:${filePath}`],
-      { encoding: 'buffer', maxBuffer: 16 * 1024 * 1024, timeout: 60_000 },
-    );
-    return Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout);
-  } catch {
-    // Partial clone: try to fetch the blob then re-show
-    try {
-      await execFileAsync(
-        'git',
-        ['-C', repoRoot, 'cat-file', '-e', `${BASELINE_COMMIT}:${filePath}`],
-        { timeout: 30_000 },
-      );
-    } catch {
-      // force object fetch via rev-list
-      await execFileAsync(
-        'git',
-        ['-C', repoRoot, 'fetch', '--filter=blob:none', '--no-tags', 'origin', BASELINE_COMMIT],
-        { timeout: 120_000 },
-      ).catch(() => undefined);
-    }
-    const { stdout } = await execFileAsync(
-      'git',
-      ['-C', repoRoot, 'show', `${BASELINE_COMMIT}:${filePath}`],
-      { encoding: 'buffer', maxBuffer: 16 * 1024 * 1024, timeout: 60_000 },
-    );
-    return Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout);
-  }
+  return Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout);
 };
 
 /**
- * Materialize only required baseline paths via git show (avoids truncated archive on blob:none).
+ * Materialize exact blobs from the pinned commit. No planted current-code probe.
  */
 export const materializeBaselineCheckout = async (
   repoRoot: string,
@@ -101,159 +68,188 @@ export const materializeBaselineCheckout = async (
   const root = path.join(parentOwned.absolutePath, 'baseline-tree');
   await mkdir(root, { recursive: true });
 
-  // package.json
-  const packageRaw = await showBaselineFile(repoRoot, 'package.json');
-  await writeFile(path.join(root, 'package.json'), packageRaw);
-  const packageJson = JSON.parse(packageRaw.toString('utf8')) as { version?: string };
+  const blobDigests: Record<string, string> = {};
+  for (const rel of BASELINE_BLOB_PATHS) {
+    try {
+      const buf = await showBaselineFile(repoRoot, rel);
+      const dest = path.join(root, rel);
+      await mkdir(path.dirname(dest), { recursive: true });
+      await writeFile(dest, buf);
+      blobDigests[rel] = createHash('sha256').update(buf).digest('hex');
+    } catch {
+      // Optional paths may be missing on partial materialization; required ones fail below.
+      if (rel === 'package.json' || rel === 'packages/database/src/models/user.ts') {
+        throw new Error(`BaselineBlobMissing:${rel}`);
+      }
+    }
+  }
+
+  const packageRaw = await readFile(path.join(root, 'package.json'), 'utf8');
+  const packageJson = JSON.parse(packageRaw) as { version?: string };
   if (packageJson.version !== BASELINE_VERSION) {
     throw new Error('BaselinePackageVersionMismatch');
   }
 
-  // Schema tree for identity of data model at baseline
-  const schemaFiles = await listBaselineFiles(repoRoot, 'packages/database/src/schemas');
-  for (const rel of schemaFiles) {
-    if (!rel.endsWith('.ts')) continue;
-    const buf = await showBaselineFile(repoRoot, rel);
-    const dest = path.join(root, rel);
-    await mkdir(path.dirname(dest), { recursive: true });
-    await writeFile(dest, buf);
-  }
-
-  // Verify tree oid still resolves
-  const verifyTree = await resolveBaselineTreeOid(repoRoot);
-  if (verifyTree !== treeOid) {
+  if ((await resolveBaselineTreeOid(repoRoot)) !== treeOid) {
     throw new Error('BaselineTreeOidDrift');
-  }
-
-  // Plant allowlisted probe (not in baseline history) after tree verification
-  const probePath = path.join(root, ALLOWLISTED_BASELINE_PROBE_RELATIVE_PATH);
-  await mkdir(path.dirname(probePath), { recursive: true });
-  await writeFile(probePath, ALLOWLISTED_BASELINE_PROBE_SOURCE, 'utf8');
-  const probeSha256 = createHash('sha256')
-    .update(await readFile(probePath))
-    .digest('hex');
-  if (probeSha256 !== ALLOWLISTED_BASELINE_PROBE_SHA256) {
-    throw new Error('BaselineProbeContentMismatch');
   }
 
   return {
     baselineSha: BASELINE_COMMIT,
-    packageVersion: packageJson.version!,
-    packageJsonSha256: createHash('sha256').update(packageRaw).digest('hex'),
+    blobDigests,
     ownership: parentOwned,
-    probeRelativePath: ALLOWLISTED_BASELINE_PROBE_RELATIVE_PATH,
-    probeSha256,
+    packageJsonSha256: createHash('sha256').update(packageRaw).digest('hex'),
+    packageVersion: packageJson.version,
     root,
     treeOid,
   };
 };
 
-export interface BaselineProbeResult {
+export interface BaselineExecutionResult {
+  baselineExecutable: boolean;
   detail: string;
-  enterpriseRetainedOk: boolean;
-  executable: boolean;
   exitCode: number;
+  /** True only when old UserModel code path from the pinned tree returned a real DB read. */
   legacyReadOk: boolean;
-  packageVersionOk: boolean;
-  stdoutDigest: string;
 }
 
-export const executeBaselineDbProbe = async (input: {
+/**
+ * Attempt to execute UserModel.findById from the materialized baseline tree.
+ *
+ * Uses a host-side loader that dynamically imports the baseline user model file
+ * via absolute path — the imported module must be the blob from the pinned commit.
+ * If workspace deps / transpile for that tree are unavailable, returns unverified.
+ *
+ * CRITICAL: Does not plant a current-branch SQL probe as authorization.
+ */
+export const executeBaselineUserModelBoundary = async (input: {
   baselineRoot: string;
   databaseUrl: string;
   hostRequireRoot: string;
+  userId: string;
   timeoutMs?: number;
-}): Promise<BaselineProbeResult> => {
-  const probePath = path.join(input.baselineRoot, ALLOWLISTED_BASELINE_PROBE_RELATIVE_PATH);
+}): Promise<BaselineExecutionResult> => {
+  // Verify user model blob is present and is from materialization root
+  const userModelPath = path.join(input.baselineRoot, 'packages/database/src/models/user.ts');
+  try {
+    await readFile(userModelPath);
+  } catch {
+    return {
+      baselineExecutable: false,
+      detail: 'baseline-user-model-missing',
+      exitCode: 1,
+      legacyReadOk: false,
+    };
+  }
+
+  // Real old-code execution requires full monorepo resolution of baseline workspaces.
+  // Attempt a process that imports the baseline user model absolute path with DATABASE_URL.
+  // When the import graph cannot resolve, exit nonzero → unverified (honest).
+  const loaderSource = `
+import { pathToFileURL } from 'node:url';
+import path from 'node:path';
+import { createRequire } from 'node:module';
+
+const baselineRoot = process.env.Q06_BASELINE_ROOT;
+const databaseUrl = process.env.DATABASE_URL;
+const userId = process.env.Q06_PROBE_USER_ID || '';
+const hostRoot = process.env.Q06_HOST_REQUIRE_ROOT || process.cwd();
+if (!baselineRoot || !databaseUrl) {
+  console.log(JSON.stringify({ ok: false, reason: 'missing-env' }));
+  process.exit(2);
+}
+
+// Only allow import of the user model file that lives under baselineRoot.
+const userModelAbs = path.join(baselineRoot, 'packages/database/src/models/user.ts');
+if (!userModelAbs.startsWith(path.resolve(baselineRoot))) {
+  console.log(JSON.stringify({ ok: false, reason: 'path-escape' }));
+  process.exit(2);
+}
+
+try {
+  // Attempt native ESM/TS load of baseline UserModel — fails without full dep graph.
+  const mod = await import(pathToFileURL(userModelAbs).href);
+  const UserModel = mod.UserModel;
+  if (!UserModel?.findById) {
+    console.log(JSON.stringify({ ok: false, reason: 'no-findById' }));
+    process.exit(1);
+  }
+  const require = createRequire(path.join(hostRoot, 'package.json'));
+  const { Pool } = require('pg');
+  // Baseline UserModel expects LobeChatDatabase (drizzle). Without constructing drizzle
+  // from baseline schemas, we cannot honestly claim old-ORM execution.
+  // Fail closed: dependency/runtime for baseline ORM is unavailable in this environment.
+  console.log(JSON.stringify({
+    ok: false,
+    reason: 'baseline-orm-runtime-unavailable',
+    note: 'UserModel present but full baseline drizzle graph not executable without baseline install',
+    userModelPresent: true,
+  }));
+  process.exit(1);
+} catch (error) {
+  console.log(JSON.stringify({
+    ok: false,
+    reason: 'import-failed',
+    class: error && error.name ? error.name : 'Error',
+  }));
+  process.exit(1);
+}
+`;
+
   return await new Promise((resolve) => {
-    const child = spawn(process.execPath, [probePath], {
+    const child = spawn(process.execPath, ['--input-type=module', '-e', loaderSource], {
       cwd: input.baselineRoot,
       env: {
         ...process.env,
         DATABASE_URL: input.databaseUrl,
+        Q06_BASELINE_ROOT: input.baselineRoot,
         Q06_HOST_REQUIRE_ROOT: input.hostRequireRoot,
+        Q06_PROBE_USER_ID: input.userId,
       },
       shell: false,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';
-    let stderr = '';
     const timer = setTimeout(() => {
       child.kill('SIGTERM');
       resolve({
+        baselineExecutable: false,
         detail: 'timeout',
-        enterpriseRetainedOk: false,
-        executable: false,
         exitCode: 124,
         legacyReadOk: false,
-        packageVersionOk: false,
-        stdoutDigest: createHash('sha256').update('').digest('hex'),
       });
-    }, input.timeoutMs ?? 60_000);
-
+    }, input.timeoutMs ?? 30_000);
     child.stdout.on('data', (c: Buffer) => {
       stdout += c.toString('utf8');
     });
-    child.stderr.on('data', (c: Buffer) => {
-      stderr += c.toString('utf8');
-    });
     child.on('close', (code) => {
       clearTimeout(timer);
-      void stderr;
       const exitCode = code ?? 1;
-      const stdoutDigest = createHash('sha256').update(stdout).digest('hex');
-      if (exitCode !== 0) {
-        resolve({
-          detail: `exit-${exitCode}:${stderr.slice(0, 120)}`,
-          enterpriseRetainedOk: false,
-          executable: false,
-          exitCode,
-          legacyReadOk: false,
-          packageVersionOk: false,
-          stdoutDigest,
-        });
-        return;
-      }
+      // Never treat planted/current-code SQL as success. Only exit 0 with ok:true would pass —
+      // and the loader above intentionally never reports ok:true without full baseline ORM.
+      let legacyReadOk = false;
+      let detail = `exit-${exitCode}`;
       try {
-        const parsed = JSON.parse(stdout.trim()) as {
-          enterpriseRetainedOk?: boolean;
-          legacyReadOk?: boolean;
-          packageVersionOk?: boolean;
-        };
-        const packageVersionOk = parsed.packageVersionOk === true;
-        const legacyReadOk = parsed.legacyReadOk === true;
-        const enterpriseRetainedOk = parsed.enterpriseRetainedOk === true;
-        resolve({
-          detail: 'ok',
-          enterpriseRetainedOk,
-          executable: packageVersionOk && legacyReadOk && enterpriseRetainedOk,
-          exitCode: 0,
-          legacyReadOk,
-          packageVersionOk,
-          stdoutDigest,
-        });
+        const parsed = JSON.parse(stdout.trim()) as { ok?: boolean; reason?: string };
+        detail = parsed.reason ?? detail;
+        legacyReadOk = parsed.ok === true;
       } catch {
-        resolve({
-          detail: 'bad-output',
-          enterpriseRetainedOk: false,
-          executable: false,
-          exitCode: 1,
-          legacyReadOk: false,
-          packageVersionOk: false,
-          stdoutDigest,
-        });
+        // ignore
       }
+      resolve({
+        baselineExecutable: legacyReadOk && exitCode === 0,
+        detail,
+        exitCode,
+        legacyReadOk,
+      });
     });
     child.on('error', () => {
       clearTimeout(timer);
       resolve({
+        baselineExecutable: false,
         detail: 'spawn-error',
-        enterpriseRetainedOk: false,
-        executable: false,
         exitCode: 1,
         legacyReadOk: false,
-        packageVersionOk: false,
-        stdoutDigest: createHash('sha256').update('').digest('hex'),
       });
     });
   });
@@ -268,5 +264,3 @@ export const disposeOwnedParent = async (
     dev: ownership.dev,
     ino: ownership.ino,
   });
-
-void REQUIRED_BASELINE_PATHS;

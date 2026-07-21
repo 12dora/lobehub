@@ -19,16 +19,11 @@ export {
 } from './backupRestore';
 export {
   disposeOwnedParent,
-  executeBaselineDbProbe,
+  executeBaselineUserModelBoundary,
   materializeBaselineCheckout,
   type MaterializedBaseline,
   resolveBaselineTreeOid,
 } from './baselineMaterialize';
-export {
-  ALLOWLISTED_BASELINE_PROBE_RELATIVE_PATH,
-  ALLOWLISTED_BASELINE_PROBE_SHA256,
-  ALLOWLISTED_BASELINE_PROBE_SOURCE,
-} from './baselineProbeContent';
 export { assertGateEvidenceShape, toPreflightGateEvidence } from './evidenceEnvelope';
 export {
   compareDigests,
