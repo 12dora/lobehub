@@ -120,6 +120,7 @@ export const buildMinimalDrillSchemaStatements = (): string[] => {
        shared_secret_fingerprint text,
        oauth_client_secret_ref text,
        oauth_client_secret_fingerprint text,
+       published_resource_type text NOT NULL DEFAULT 'connector',
        published_revision integer,
        published_checksum text,
        status text DEFAULT 'draft')`,
@@ -151,6 +152,7 @@ export const buildMinimalDrillSchemaStatements = (): string[] => {
        id text PRIMARY KEY,
        connector_id text,
        user_id text,
+       revision_resource_type text NOT NULL DEFAULT 'connector',
        published_revision integer)`,
     `CREATE TABLE IF NOT EXISTS platform_agent_assignments (
        id text PRIMARY KEY, agent_id text)`,
@@ -234,12 +236,12 @@ export const buildRecoverySeedStatements = (): string[] => {
     `INSERT INTO platform_connectors
        (id, connector_key, shared_secret_ref, shared_secret_fingerprint,
         oauth_client_secret_ref, oauth_client_secret_fingerprint,
-        published_revision, published_checksum, status)
+        published_resource_type, published_revision, published_checksum, status)
      VALUES
        ('${ids.connectorId}', 'm15q06-connector',
         '${REF_CONN_SHARED}', '${fp}',
         '${REF_CONN_OAUTH}', '${fp}',
-        2, '${PROBE_PAYLOAD_CHECKSUM_V2}', 'published')
+        'connector', 2, '${PROBE_PAYLOAD_CHECKSUM_V2}', 'published')
      ON CONFLICT (id) DO NOTHING`,
     `INSERT INTO platform_connector_secrets (id, connector_id, fingerprint, ciphertext, key_id)
      VALUES ('${ids.connectorSecretId}', '${ids.connectorId}', '${fp}',
@@ -257,8 +259,9 @@ export const buildRecoverySeedStatements = (): string[] => {
     `INSERT INTO platform_agents (id, status, current_version_id)
      VALUES ('${ids.agentId}', 'published', '${ids.agentVersionId}')
      ON CONFLICT (id) DO NOTHING`,
-    `INSERT INTO platform_user_connector_bindings (id, connector_id, user_id, published_revision)
-     VALUES ('pcub_m15q06_probe_01', '${ids.connectorId}', '${ids.userId}', 2)
+    `INSERT INTO platform_user_connector_bindings
+       (id, connector_id, user_id, revision_resource_type, published_revision)
+     VALUES ('pcub_m15q06_probe_01', '${ids.connectorId}', '${ids.userId}', 'connector', 2)
      ON CONFLICT (id) DO NOTHING`,
   ];
 };
