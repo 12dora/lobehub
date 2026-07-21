@@ -62,7 +62,6 @@ services:
         wait \$MINIO_PID
       "
 
-
   # version lock ref: https://github.com/lobehub/lobe-chat/pull/7331
   casdoor:
     image: casbin/casdoor:v2.13.0
@@ -123,26 +122,29 @@ services:
     command: ['-config.file=/etc/tempo.yaml']
 
   prometheus:
-    image: prom/prometheus
+    # Pinned so local/CI `promtool check rules` and this compose example share one version.
+    # Do NOT pass --web.enable-otlp-receiver: unsupported on v2.55.1 (collector remote-writes instead).
+    image: prom/prometheus:v2.55.1
     container_name: lobe-prometheus
     network_mode: 'service:network-service'
     restart: always
     volumes:
-      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules:/etc/prometheus/rules:ro
       - prometheus_data:/prometheus
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--web.enable-otlp-receiver'
       - '--web.enable-remote-write-receiver'
       - '--enable-feature=exemplar-storage'
 
   otel-collector:
-    image: otel/opentelemetry-collector
+    # Contrib distro required for prometheusremotewrite exporter; pin exact version for validation.
+    image: otel/opentelemetry-collector-contrib:0.120.0
     container_name: lobe-otel-collector
     network_mode: 'service:network-service'
     restart: always
     volumes:
-      - ./otel-collector/collector-config.yaml:/etc/otelcol/config.yaml
+      - ./otel-collector/collector-config.yaml:/etc/otelcol/config.yaml:ro
     command: ['--config', '/etc/otelcol/config.yaml']
     depends_on:
       - tempo
@@ -232,7 +234,6 @@ services:
         fi
         wait \$LOBE_PID
       "
-
 
 volumes:
   data:

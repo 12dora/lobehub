@@ -99,6 +99,7 @@ describe('enterprise platform OpenTelemetry instruments', () => {
       'enterprise_platform_revision_fresh_instances',
       'enterprise_platform_operational_snapshot_ready',
       'enterprise_platform_operational_snapshot_age_seconds',
+      'enterprise_platform_operational_collector_enabled',
     ]);
   });
 
@@ -201,6 +202,31 @@ describe('enterprise platform OpenTelemetry instruments', () => {
       'enterprise.collector': 'job_backlog',
       'enterprise.scope': 'cluster',
     });
+  });
+
+  it('emits enabled 0/1 for every known collector after activate, including disabled ones', () => {
+    activateEnterpriseOperationalCollectors(['job_backlog']);
+    const observe = vi.fn();
+    mocks.observableCallbacks.get('enterprise_platform_operational_collector_enabled')?.({
+      observe,
+    });
+
+    expect(observe).toHaveBeenCalledWith(1, {
+      'enterprise.collector': 'job_backlog',
+      'enterprise.scope': 'cluster',
+    });
+    expect(observe).toHaveBeenCalledWith(0, {
+      'enterprise.collector': 'revision_lag',
+      'enterprise.scope': 'cluster',
+    });
+  });
+
+  it('does not emit collector enabled until activate configures the runtime', () => {
+    const observe = vi.fn();
+    mocks.observableCallbacks.get('enterprise_platform_operational_collector_enabled')?.({
+      observe,
+    });
+    expect(observe).not.toHaveBeenCalled();
   });
 
   it('builds closed low-cardinality labels and drops arbitrary identifiers', () => {

@@ -1,3 +1,6 @@
+# Pinned runtime: otel/opentelemetry-collector-contrib:0.120.0
+# Component IDs use canonical type names for that distribution
+# (otlp, prometheus, prometheusremotewrite, debug, health_check — not deprecated aliases).
 extensions:
   health_check:
     endpoint: 127.0.0.1:13133
@@ -19,6 +22,7 @@ receivers:
         endpoint: 0.0.0.0:4318
 
 exporters:
+  # Enterprise app metrics (OTLP) and collector self-scrapes land in Prometheus via remote-write.
   prometheusremotewrite:
     endpoint: http://127.0.0.1:9090/api/v1/write
     tls:
@@ -29,13 +33,16 @@ exporters:
     tls:
       insecure: true
 
+  # Canonical id is `debug` (not the deprecated `logging` exporter).
   debug:
-    verbosity: detailed
+    verbosity: basic
 
 service:
+  extensions: [health_check]
   pipelines:
+    # OTLP must be on the metrics pipeline or enterprise platform metrics never reach Prometheus.
     metrics:
-      receivers: [prometheus]
+      receivers: [otlp, prometheus]
       exporters: [prometheusremotewrite]
     traces:
       receivers: [otlp]

@@ -1,0 +1,243 @@
+# Semantic unit tests for EnterpriseOperationalCollectionStale (promtool test rules).
+# Covers enabled-gating and no-data (required enabled signal not reaching Prometheus).
+rule_files:
+  - enterprise-platform-alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  - name: both collectors enabled and healthy
+    interval: 1m
+    input_series:
+      - series: 'enterprise_platform_operational_collector_enabled{enterprise_collector="job_backlog",enterprise_scope="cluster",instance="r1"}'
+        values: '1x20'
+      - series: 'enterprise_platform_operational_collector_enabled{enterprise_collector="revision_lag",enterprise_scope="cluster",instance="r1"}'
+        values: '1x20'
+      - series: 'enterprise_platform_operational_snapshot_ready{enterprise_collector="job_backlog",enterprise_scope="cluster",instance="r1"}'
+        values: '1x20'
+      - series: 'enterprise_platform_operational_snapshot_ready{enterprise_collector="revision_lag",enterprise_scope="cluster",instance="r1"}'
+        values: '1x20'
+      - series: 'enterprise_platform_operational_snapshot_age_seconds{enterprise_collector="job_backlog",enterprise_scope="cluster",instance="r1"}'
+        values: '30x20'
+      - series: 'enterprise_platform_operational_snapshot_age_seconds{enterprise_collector="revision_lag",enterprise_scope="cluster",instance="r1"}'
+        values: '30x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: EnterpriseOperationalCollectionStale
+        exp_alerts: []
+
+  - name: revision disabled backlog healthy no revision series
+    interval: 1m
+    input_series:
+      - series: 'enterprise_platform_operational_collector_enabled{enterprise_collector="job_backlog",enterprise_scope="cluster",instance="r1"}'
+        values: '1x20'
+      - series: 'enterprise_platform_operational_collector_enabled{enterprise_collector="revision_lag",enterprise_scope="cluster",instance="r1"}'
+        values: '0x20'
+      - series: 'enterprise_platform_operational_snapshot_ready{enterprise_collector="job_backlog",enterprise_scope="cluster",instance="r1"}'
+        values: '1x20'
+      - series: 'enterprise_platform_operational_snapshot_age_seconds{enterprise_collector="job_backlog",enterprise_scope="cluster",instance="r1"}'
+        values: '20x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: EnterpriseOperationalCollectionStale
+        exp_alerts: []
+
+  - name: revision disabled with ready zero ignored
+    interval: 1m
+    input_series:
+      - series: 'enterprise_platform_operational_collector_enabled{enterprise_collector="job_backlog",enterprise_scope="cluster",instance="r1"}'
+        values: '1x20'
+      - series: 'enterprise_platform_operational_collector_enabled{enterprise_collector="revision_lag",enterprise_scope="cluster",instance="r1"}'
+        values: '0x20'
+      - series: 'enterprise_platform_operational_snapshot_ready{enterprise_collector="job_backlog",enterprise_scope="cluster",instance="r1"}'
+        values: '1x20'
+      - series: 'enterprise_platform_operational_snapshot_ready{enterprise_collector="revision_lag",enterprise_scope="cluster",instance="r1"}'
+        values: '0x20'
+      - series: 'enterprise_platform_operational_snapshot_age_seconds{enterprise_collector="job_backlog",enterprise_scope="cluster",instance="r1"}'
+        values: '10x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: EnterpriseOperationalCollectionStale
+        exp_alerts: []
+
+  - name: enabled never initialized ready zero
+    interval: 1m
+    input_series:
+      - series: 'enterprise_platform_operational_collector_enabled{enterprise_collector="job_backlog",enterprise_scope="cluster",instance="r1"}'
+        values: '1x20'
+      - series: 'enterprise_platform_operational_collector_enabled{enterprise_collector="revision_lag",enterprise_scope="cluster",instance="r1"}'
+        values: '0x20'
+      - series: 'enterprise_platform_operational_snapshot_ready{enterprise_collector="job_backlog",enterprise_scope="cluster",instance="r1"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: EnterpriseOperationalCollectionStale
+        exp_alerts:
+          - exp_labels:
+              alertname: EnterpriseOperationalCollectionStale
+              severity: warning
+              component: enterprise-operational-collector
+              enterprise_collector: job_backlog
+            exp_annotations:
+              summary: Enterprise operational metric collection is stale or never initialized
+              description: 'Fires for 5m when the required job_backlog collector-enabled signal is not reaching Prometheus (no-data), or when any enabled collector (enabled==1) has ready==0, absent ready, or age>180s after max-by-replica (reference default). No-data does not identify which hop failed: app/runtime not running, activation never reached, OTel exporter/collector failure, remote-write/scrape/ingestion loss, or configuration omission are all plausible. Disabled collectors (enabled=0, e.g. revision_lag without DB OIDC) do not alert. Per-collector identity prevents masking; never sum replicas.'
+              runbook: docs/enterprise/runbooks/enterprise-prometheus-alerts.md#enterpriseoperationalcollectionstale
+
+  - name: enabled job_backlog ready series absent
+    interval: 1m
+    input_series:
+      - series: 'enterprise_platform_operational_collector_enabled{enterprise_collector="job_backlog",enterprise_scope="cluster",instance="r1"}'
+        values: '1x20'
+      - series: 'enterprise_platform_operational_collector_enabled{enterprise_collector="revision_lag",enterprise_scope="cluster",instance="r1"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: EnterpriseOperationalCollectionStale
+        exp_alerts:
+          - exp_labels:
+              alertname: EnterpriseOperationalCollectionStale
+              severity: warning
+              component: enterprise-operational-collector
+              enterprise_collector: job_backlog
+            exp_annotations:
+              summary: Enterprise operational metric collection is stale or never initialized
+              description: 'Fires for 5m when the required job_backlog collector-enabled signal is not reaching Prometheus (no-data), or when any enabled collector (enabled==1) has ready==0, absent ready, or age>180s after max-by-replica (reference default). No-data does not identify which hop failed: app/runtime not running, activation never reached, OTel exporter/collector failure, remote-write/scrape/ingestion loss, or configuration omission are all plausible. Disabled collectors (enabled=0, e.g. revision_lag without DB OIDC) do not alert. Per-collector identity prevents masking; never sum replicas.'
+              runbook: docs/enterprise/runbooks/enterprise-prometheus-alerts.md#enterpriseoperationalcollectionstale
+
+  - name: enabled revision_lag ready series absent
+    interval: 1m
+    input_series:
+      - series: 'enterprise_platform_operational_collector_enabled{enterprise_collector="job_backlog",enterprise_scope="cluster",instance="r1"}'
+        values: '1x20'
+      - series: 'enterprise_platform_operational_collector_enabled{enterprise_collector="revision_lag",enterprise_scope="cluster",instance="r1"}'
+        values: '1x20'
+      - series: 'enterprise_platform_operational_snapshot_ready{enterprise_collector="job_backlog",enterprise_scope="cluster",instance="r1"}'
+        values: '1x20'
+      - series: 'enterprise_platform_operational_snapshot_age_seconds{enterprise_collector="job_backlog",enterprise_scope="cluster",instance="r1"}'
+        values: '20x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: EnterpriseOperationalCollectionStale
+        exp_alerts:
+          - exp_labels:
+              alertname: EnterpriseOperationalCollectionStale
+              severity: warning
+              component: enterprise-operational-collector
+              enterprise_collector: revision_lag
+            exp_annotations:
+              summary: Enterprise operational metric collection is stale or never initialized
+              description: 'Fires for 5m when the required job_backlog collector-enabled signal is not reaching Prometheus (no-data), or when any enabled collector (enabled==1) has ready==0, absent ready, or age>180s after max-by-replica (reference default). No-data does not identify which hop failed: app/runtime not running, activation never reached, OTel exporter/collector failure, remote-write/scrape/ingestion loss, or configuration omission are all plausible. Disabled collectors (enabled=0, e.g. revision_lag without DB OIDC) do not alert. Per-collector identity prevents masking; never sum replicas.'
+              runbook: docs/enterprise/runbooks/enterprise-prometheus-alerts.md#enterpriseoperationalcollectionstale
+
+  - name: enabled stale age after success
+    interval: 1m
+    input_series:
+      - series: 'enterprise_platform_operational_collector_enabled{enterprise_collector="job_backlog",enterprise_scope="cluster",instance="r1"}'
+        values: '1x20'
+      - series: 'enterprise_platform_operational_collector_enabled{enterprise_collector="revision_lag",enterprise_scope="cluster",instance="r1"}'
+        values: '1x20'
+      - series: 'enterprise_platform_operational_snapshot_ready{enterprise_collector="job_backlog",enterprise_scope="cluster",instance="r1"}'
+        values: '1x20'
+      - series: 'enterprise_platform_operational_snapshot_ready{enterprise_collector="revision_lag",enterprise_scope="cluster",instance="r1"}'
+        values: '1x20'
+      - series: 'enterprise_platform_operational_snapshot_age_seconds{enterprise_collector="job_backlog",enterprise_scope="cluster",instance="r1"}'
+        values: '200x20'
+      - series: 'enterprise_platform_operational_snapshot_age_seconds{enterprise_collector="revision_lag",enterprise_scope="cluster",instance="r1"}'
+        values: '50x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: EnterpriseOperationalCollectionStale
+        exp_alerts:
+          - exp_labels:
+              alertname: EnterpriseOperationalCollectionStale
+              severity: warning
+              component: enterprise-operational-collector
+              enterprise_collector: job_backlog
+            exp_annotations:
+              summary: Enterprise operational metric collection is stale or never initialized
+              description: 'Fires for 5m when the required job_backlog collector-enabled signal is not reaching Prometheus (no-data), or when any enabled collector (enabled==1) has ready==0, absent ready, or age>180s after max-by-replica (reference default). No-data does not identify which hop failed: app/runtime not running, activation never reached, OTel exporter/collector failure, remote-write/scrape/ingestion loss, or configuration omission are all plausible. Disabled collectors (enabled=0, e.g. revision_lag without DB OIDC) do not alert. Per-collector identity prevents masking; never sum replicas.'
+              runbook: docs/enterprise/runbooks/enterprise-prometheus-alerts.md#enterpriseoperationalcollectionstale
+
+  - name: enabled fresh age both ready
+    interval: 1m
+    input_series:
+      - series: 'enterprise_platform_operational_collector_enabled{enterprise_collector="job_backlog",enterprise_scope="cluster",instance="r1"}'
+        values: '1x20'
+      - series: 'enterprise_platform_operational_collector_enabled{enterprise_collector="revision_lag",enterprise_scope="cluster",instance="r1"}'
+        values: '1x20'
+      - series: 'enterprise_platform_operational_snapshot_ready{enterprise_collector="job_backlog",enterprise_scope="cluster",instance="r1"}'
+        values: '1x20'
+      - series: 'enterprise_platform_operational_snapshot_ready{enterprise_collector="revision_lag",enterprise_scope="cluster",instance="r1"}'
+        values: '1x20'
+      - series: 'enterprise_platform_operational_snapshot_age_seconds{enterprise_collector="job_backlog",enterprise_scope="cluster",instance="r1"}'
+        values: '5x20'
+      - series: 'enterprise_platform_operational_snapshot_age_seconds{enterprise_collector="revision_lag",enterprise_scope="cluster",instance="r1"}'
+        values: '5x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: EnterpriseOperationalCollectionStale
+        exp_alerts: []
+
+  - name: mixed replicas max keeps healthy
+    interval: 1m
+    input_series:
+      - series: 'enterprise_platform_operational_collector_enabled{enterprise_collector="job_backlog",enterprise_scope="cluster",instance="r1"}'
+        values: '1x20'
+      - series: 'enterprise_platform_operational_collector_enabled{enterprise_collector="job_backlog",enterprise_scope="cluster",instance="r2"}'
+        values: '1x20'
+      - series: 'enterprise_platform_operational_collector_enabled{enterprise_collector="revision_lag",enterprise_scope="cluster",instance="r1"}'
+        values: '0x20'
+      - series: 'enterprise_platform_operational_snapshot_ready{enterprise_collector="job_backlog",enterprise_scope="cluster",instance="r1"}'
+        values: '1x20'
+      - series: 'enterprise_platform_operational_snapshot_ready{enterprise_collector="job_backlog",enterprise_scope="cluster",instance="r2"}'
+        values: '0x20'
+      - series: 'enterprise_platform_operational_snapshot_age_seconds{enterprise_collector="job_backlog",enterprise_scope="cluster",instance="r1"}'
+        values: '15x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: EnterpriseOperationalCollectionStale
+        exp_alerts: []
+
+  - name: revision enabled never initialized not masked by backlog
+    interval: 1m
+    input_series:
+      - series: 'enterprise_platform_operational_collector_enabled{enterprise_collector="job_backlog",enterprise_scope="cluster",instance="r1"}'
+        values: '1x20'
+      - series: 'enterprise_platform_operational_collector_enabled{enterprise_collector="revision_lag",enterprise_scope="cluster",instance="r1"}'
+        values: '1x20'
+      - series: 'enterprise_platform_operational_snapshot_ready{enterprise_collector="job_backlog",enterprise_scope="cluster",instance="r1"}'
+        values: '1x20'
+      - series: 'enterprise_platform_operational_snapshot_ready{enterprise_collector="revision_lag",enterprise_scope="cluster",instance="r1"}'
+        values: '0x20'
+      - series: 'enterprise_platform_operational_snapshot_age_seconds{enterprise_collector="job_backlog",enterprise_scope="cluster",instance="r1"}'
+        values: '10x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: EnterpriseOperationalCollectionStale
+        exp_alerts:
+          - exp_labels:
+              alertname: EnterpriseOperationalCollectionStale
+              severity: warning
+              component: enterprise-operational-collector
+              enterprise_collector: revision_lag
+            exp_annotations:
+              summary: Enterprise operational metric collection is stale or never initialized
+              description: 'Fires for 5m when the required job_backlog collector-enabled signal is not reaching Prometheus (no-data), or when any enabled collector (enabled==1) has ready==0, absent ready, or age>180s after max-by-replica (reference default). No-data does not identify which hop failed: app/runtime not running, activation never reached, OTel exporter/collector failure, remote-write/scrape/ingestion loss, or configuration omission are all plausible. Disabled collectors (enabled=0, e.g. revision_lag without DB OIDC) do not alert. Per-collector identity prevents masking; never sum replicas.'
+              runbook: docs/enterprise/runbooks/enterprise-prometheus-alerts.md#enterpriseoperationalcollectionstale
+
+  - name: both enabled signals absent telemetry no data
+    interval: 1m
+    input_series: []
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: EnterpriseOperationalCollectionStale
+        exp_alerts:
+          - exp_labels:
+              alertname: EnterpriseOperationalCollectionStale
+              severity: warning
+              component: enterprise-operational-collector
+              enterprise_collector: job_backlog
+            exp_annotations:
+              summary: Enterprise operational metric collection is stale or never initialized
+              description: 'Fires for 5m when the required job_backlog collector-enabled signal is not reaching Prometheus (no-data), or when any enabled collector (enabled==1) has ready==0, absent ready, or age>180s after max-by-replica (reference default). No-data does not identify which hop failed: app/runtime not running, activation never reached, OTel exporter/collector failure, remote-write/scrape/ingestion loss, or configuration omission are all plausible. Disabled collectors (enabled=0, e.g. revision_lag without DB OIDC) do not alert. Per-collector identity prevents masking; never sum replicas.'
+              runbook: docs/enterprise/runbooks/enterprise-prometheus-alerts.md#enterpriseoperationalcollectionstale
