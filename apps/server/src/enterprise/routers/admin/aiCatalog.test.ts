@@ -463,4 +463,95 @@ describe('admin AI catalog permission and reauth gates', () => {
     expect(JSON.stringify([first, second])).not.toContain('ciphertext');
     expect(Object.keys(first.items[0]).sort()).toEqual(['displayName', 'id', 'providerKey']);
   });
+
+  /** Seed a first-publishable provider: enabled + model + fresh connection test row. */
+  const seedPublishableProvider = async (providerKey: string) => {
+    const caller = await callerFor(ids.aiAdmin);
+    const credential = `seed-credential-${providerKey}`;
+    const provider = await caller.aiProviders.createDraft({
+      checkModel: 'chat',
+      displayName: providerKey,
+      enabled: true,
+      providerKey,
+      reason: 'seed draft',
+      secret: { operation: 'replace', value: credential },
+      settings: { sdkType: 'openai' },
+    });
+    let detail = await caller.aiProviders.get({ id: provider.id });
+    await caller.aiModels.create({
+      enabled: true,
+      expectedDraftToken: detail.draftToken,
+      modelKey: 'chat',
+      providerId: provider.id,
+      reason: 'seed model',
+      type: 'chat',
+    });
+    detail = await caller.aiProviders.get({ id: provider.id });
+    // Mark connection test success bound to the current draft (no live network in unit tests).
+    await db
+      .update(platformAiProviders)
+      .set({
+        connectionTestErrorCategory: null,
+        connectionTestLatencyMs: 12,
+        connectionTestSanitizedMessage: 'ok',
+        connectionTestStatus: 'success',
+        connectionTestedAt: new Date(),
+        connectionTestedDraftToken: detail.draftToken,
+        connectionTestedRevision: detail.baseRevision,
+      })
+      .where(eq(platformAiProviders.id, provider.id));
+    detail = await caller.aiProviders.get({ id: provider.id });
+    const published = await caller.aiProviders.publish({
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.baseRevision,
+      id: provider.id,
+      reason: 'seed publish',
+    });
+    return { caller, credential, providerId: provider.id, published };
+  };
+
+  it('applyImmediate update republishes an already-published provider', async () => {
+    const { caller, credential, providerId } = await seedPublishableProvider('immediate-p');
+    const detail = await caller.aiProviders.get({ id: providerId });
+    const updated = await caller.aiProviders.applyImmediate({
+      displayName: 'Immediate Renamed',
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.baseRevision,
+      id: providerId,
+      mode: 'update',
+      reason: 'rename immediately',
+    });
+    expect(updated.draft.displayName).toBe('Immediate Renamed');
+    expect(updated.revision).toBeGreaterThan(0);
+    expect(JSON.stringify(updated)).not.toContain(credential);
+  });
+
+  it('applyImmediate denies callers without publish permission', async () => {
+    const caller = await callerFor(ids.modelEditor);
+    await expect(
+      caller.aiProviders.applyImmediate({
+        displayName: 'Nope',
+        mode: 'create',
+        providerKey: 'nope',
+        reason: 'denied',
+      }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  });
+
+  it('applyImmediate rejects stale reauth before mutating', async () => {
+    const { providerId } = await seedPublishableProvider('reauth-gate');
+    const fresh = await callerFor(ids.aiAdmin);
+    const detail = await fresh.aiProviders.get({ id: providerId });
+    const stale = await callerFor(ids.aiAdmin, new Date(Date.now() - 60 * 60 * 1000));
+    await expect(
+      stale.aiProviders.applyImmediate({
+        displayName: 'Blocked',
+        expectedDraftToken: detail.draftToken,
+        expectedRevision: detail.baseRevision,
+        id: providerId,
+        mode: 'update',
+        reason: 'stale reauth blocked',
+      }),
+    ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+  });
 });
