@@ -571,4 +571,91 @@ describe('admin AI catalog permission and reauth gates', () => {
       }),
     ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
   });
+
+  it('aiModels.applyImmediate create/update/delete/reorder/batch on published provider', async () => {
+    const { caller, providerId } = await seedPublishableProvider('models-ops');
+    let detail = await caller.aiProviders.get({ id: providerId });
+
+    const created = await caller.aiModels.applyImmediate({
+      enabled: true,
+      expectedDraftToken: detail.draftToken,
+      modelKey: 'extra',
+      operation: 'create',
+      providerId,
+      reason: 'create model',
+      type: 'chat',
+    });
+    expect(created.published).toBe(true);
+    detail = await caller.aiProviders.get({ id: providerId });
+    const extra = detail.draft.models.find((m) => m.modelKey === 'extra');
+    expect(extra).toBeTruthy();
+
+    const updated = await caller.aiModels.applyImmediate({
+      displayName: 'Extra Renamed',
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: extra!.revision,
+      id: extra!.id,
+      operation: 'update',
+      providerId,
+      reason: 'rename model',
+    });
+    expect(updated.published).toBe(true);
+
+    detail = await caller.aiProviders.get({ id: providerId });
+    const toggled = await caller.aiModels.applyImmediate({
+      enabled: false,
+      expectedDraftToken: detail.draftToken,
+      modelIds: [extra!.id],
+      operation: 'batchToggle',
+      providerId,
+      reason: 'batch toggle',
+    });
+    expect(toggled.published).toBe(true);
+
+    detail = await caller.aiProviders.get({ id: providerId });
+    const reorderItems = detail.draft.models.map((m, sort) => ({ id: m.id, sort }));
+    const reordered = await caller.aiModels.applyImmediate({
+      expectedDraftToken: detail.draftToken,
+      items: reorderItems,
+      operation: 'reorder',
+      providerId,
+      reason: 'reorder',
+    });
+    expect(reordered.published).toBe(true);
+
+    detail = await caller.aiProviders.get({ id: providerId });
+    const deleted = await caller.aiModels.applyImmediate({
+      expectedDraftToken: detail.draftToken,
+      id: extra!.id,
+      operation: 'delete',
+      providerId,
+      reason: 'delete model',
+    });
+    expect(deleted.published).toBe(true);
+  });
+
+  it('aiModels.applyImmediate denies model editor without publish permission', async () => {
+    const { providerId } = await seedPublishableProvider('models-deny');
+    const detail = await (await callerFor(ids.aiAdmin)).aiProviders.get({ id: providerId });
+    const modelEditor = await callerFor(ids.modelEditor);
+    await expect(
+      modelEditor.aiModels.applyImmediate({
+        enabled: true,
+        expectedDraftToken: detail.draftToken,
+        modelKey: 'nope',
+        operation: 'create',
+        providerId,
+        reason: 'denied',
+        type: 'chat',
+      }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  });
+
+  it('publishNow requires reauth like other publish mutations', async () => {
+    const { providerId } = await seedPublishableProvider('publish-now-reauth');
+    const stale = await callerFor(ids.aiAdmin, new Date(Date.now() - 60 * 60 * 1000));
+    await expect(
+      stale.aiProviders.publishNow({ id: providerId, reason: 'stale' }),
+    ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+  });
 });

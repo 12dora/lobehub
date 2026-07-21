@@ -22,7 +22,9 @@ import {
 import { PlatformAuditService } from '../../services/platformAudit';
 
 export const aiSecretMutationRequiresReauth = (mutation?: AiSecretMutation): boolean =>
-  mutation?.operation === 'replace' || mutation?.operation === 'clear';
+  mutation?.operation === 'replace' ||
+  mutation?.operation === 'merge' ||
+  mutation?.operation === 'clear';
 
 const safeDeniedReason = async (params: {
   existingSecretTargetId?: string | null;
