@@ -51,6 +51,9 @@ const IdentityProviderPage = lazy(
   () => import('@/enterprise/client/features/admin/identityProviders/IdentityProviderPage'),
 );
 const SystemPage = lazy(() => import('@/enterprise/client/features/admin/system'));
+const GlobalStatsPage = lazy(
+  () => import('@/enterprise/client/features/admin/stats/GlobalStatsPage'),
+);
 
 /** Honest localized loading surface for lazy admin pages (no blank frame). */
 const AdminLazyFallback = () => {
@@ -117,6 +120,9 @@ const resolveAdminLeafElement = (id: string): ReactNode => {
     }
     case 'system': {
       return withLazy(<SystemPage />);
+    }
+    case 'stats': {
+      return withLazy(<GlobalStatsPage />);
     }
     default: {
       return <PlaceholderPage />;
