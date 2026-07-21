@@ -19,8 +19,16 @@ const vercelConfig = {
     ],
   },
 };
+// defineConfig only accepts a narrow CustomNextConfig and does not forward distDir.
+// Apply the E2E-owned distDir on the final NextConfig object so suite builds never
+// write into the main `.next` tree (root type-check stays valid after E2E).
 const nextConfig = defineConfig({
   ...(isVercel ? vercelConfig : {}),
 });
 
-export default nextConfig;
+export default {
+  ...nextConfig,
+  ...(process.env.E2E_ENTERPRISE_ADMIN_NEXT_DIST_DIR
+    ? { distDir: process.env.E2E_ENTERPRISE_ADMIN_NEXT_DIST_DIR }
+    : {}),
+};

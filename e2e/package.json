@@ -8,12 +8,17 @@
     "test": "cucumber-js --config cucumber.config.js",
     "test:ci": "bun run build && bun run test",
     "test:community": "cucumber-js --config cucumber.config.js src/features/community/",
+    "test:enterprise-admin": "bun enterprise-admin/scripts/preflight.ts && playwright test --config enterprise-admin/playwright.config.ts",
+    "test:enterprise-admin:external": "cross-env E2E_ENTERPRISE_ADMIN_EXTERNAL=1 E2E_ENTERPRISE_ADMIN_DISPOSABLE_DB=1 bun enterprise-admin/scripts/preflight.ts && cross-env E2E_ENTERPRISE_ADMIN_EXTERNAL=1 E2E_ENTERPRISE_ADMIN_DISPOSABLE_DB=1 playwright test --config enterprise-admin/playwright.config.ts",
+    "test:enterprise-admin:headed": "cross-env HEADLESS=false bun run test:enterprise-admin",
+    "test:enterprise-admin:unit": "vitest run --config enterprise-admin/vitest.config.ts --silent='passed-only'",
     "test:headed": "cross-env HEADLESS=false cucumber-js --config cucumber.config.js",
     "test:identity-provider": "playwright test --config playwright.identity-provider.config.ts",
     "test:identity-provider:unit": "vitest run --config vitest.identity-provider.config.ts --silent='passed-only'",
     "test:routes": "cucumber-js --config cucumber.config.js --tags '@routes'",
     "test:routes:ci": "cucumber-js --config cucumber.config.js --tags '@routes and not @ci-skip'",
     "test:smoke": "cucumber-js --config cucumber.config.js --tags '@smoke'",
+    "type:enterprise-admin": "tsc --noEmit -p enterprise-admin/tsconfig.json",
     "type:identity-provider": "tsc --noEmit -p tsconfig.identity-provider.json"
   },
   "dependencies": {
