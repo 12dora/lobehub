@@ -434,17 +434,29 @@ const buildVertexOptions = (
  * @param params
  * @returns A promise that resolves when the agent runtime is initialized.
  */
+export type ModelRuntimeInitParams = {
+  fetch?: typeof fetch;
+  requestHandler?: unknown;
+  userId?: string;
+  // Allow provider-specific construction fields without losing transport options.
+  [key: string]: unknown;
+};
+
 export const initModelRuntimeWithUserPayload = (
   provider: string,
   payload: ClientSecretPayload,
-  params: any = {},
+  params: ModelRuntimeInitParams = {},
   hooks?: ModelRuntimeHooks,
 ) => {
   const runtimeProvider = payload.runtimeProvider ?? provider;
+  const { fetch: customFetch, requestHandler, ...restParams } = params;
 
   if (runtimeProvider === ModelProvider.VertexAI) {
-    const vertexOptions = buildVertexOptions(payload, params);
-    const runtime = LobeVertexAI.initFromVertexAI(vertexOptions);
+    const vertexOptions = buildVertexOptions(payload, restParams as never);
+    const runtime = LobeVertexAI.initFromVertexAI({
+      ...vertexOptions,
+      ...(customFetch ? { fetch: customFetch } : {}),
+    });
 
     return new ModelRuntime(runtime, hooks);
   }
@@ -453,8 +465,10 @@ export const initModelRuntimeWithUserPayload = (
     runtimeProvider,
     {
       ...getParamsFromPayload(runtimeProvider, payload),
-      ...params,
-    },
+      ...restParams,
+      ...(customFetch ? { fetch: customFetch } : {}),
+      ...(requestHandler ? { requestHandler: requestHandler as never } : {}),
+    } as never,
     hooks,
   );
 };

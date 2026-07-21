@@ -1,8 +1,10 @@
 /**
  * tRPC middleware: multi-instance administrative mutation rate limit.
  * Queries skip enforcement (and must not consume quota).
+ * Production limiter uses Redis then PostgreSQL (serverDB required for fallback).
  */
 import { ADMIN_ERROR_CODES } from '@/const/platform/errorCodes';
+import type { LobeChatDatabase } from '@/database/type';
 import { trpc } from '@/libs/trpc/lambda/init';
 
 import {
@@ -105,7 +107,12 @@ export const withAdminMutationRateLimit = (options?: {
       return denyRateLimited();
     }
 
-    const decision = await getLimiter().consume({ actorId, procedure });
+    const db = (ctx as { serverDB?: LobeChatDatabase }).serverDB;
+    const decision = await getLimiter().consume({
+      actorId,
+      db,
+      procedure,
+    });
     if (decision !== 'allowed') {
       return denyRateLimited();
     }

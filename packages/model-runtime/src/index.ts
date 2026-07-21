@@ -77,10 +77,14 @@ export { LobeXiaomiMiMoAI } from './providers/xiaomimimo';
 export { LobeZenMuxAI } from './providers/zenmux';
 export { LobeZeroOneAI } from './providers/zeroone';
 export { LobeZhipuAI } from './providers/zhipu';
+export { providerRuntimeMap } from './runtimeMap';
 export * from './types';
 export * from './types/error';
+export type { FetchLike } from './utils/boundFetch';
+export { getBoundFetch, resetBoundFetchPatchForTests, runWithBoundFetch } from './utils/boundFetch';
 export { consumeStreamUntilDone } from './utils/consumeStream';
 export { AgentRuntimeError } from './utils/createError';
+export { createFetchRequestHandler } from './utils/fetchRequestHandler';
 export { getModelPropertyWithFallback } from './utils/getFallbackModelProperty';
 export { getModelPricing } from './utils/getModelPricing';
 export {
