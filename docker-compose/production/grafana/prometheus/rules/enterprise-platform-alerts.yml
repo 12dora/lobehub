@@ -11,10 +11,11 @@
 #
 # Metric names and closed label vocabularies match
 # packages/observability-otel/src/modules/enterprise-platform.
-# OTel attribute keys (enterprise.*) are Prometheus labels with underscores
-# (enterprise_*) after standard Prometheus remote-write translation.
+# OTel attribute keys (enterprise.*) translate to Prometheus labels with
+# underscores (enterprise_outcome, enterprise_scope, …) via the pinned
+# collector prometheusremotewrite path — proven by the disposable OTLP probe.
 #
-# Cluster snapshot gauges (job backlog, revision lag, operational age) are
+# Cluster snapshot gauges (job backlog, revision lag, operational age/ready) are
 # published by every replica with enterprise_scope=cluster. Aggregate with max
 # (or max-by-dimension then sum), never sum across replicas.
 
@@ -40,9 +41,7 @@ groups:
         annotations:
           summary: Enterprise configuration publish failure ratio is elevated
           description: >-
-            More than 10% of enterprise_platform_config_publish_total samples in the last 15m
-            report enterprise_outcome=failure (reference default). Customize the ratio window
-            and threshold per deployment traffic.
+            More than 10% of enterprise_platform_config_publish_total samples in the last 15m report enterprise_outcome=failure (reference default). Customize the ratio window and threshold per deployment traffic.
           runbook: docs/enterprise/runbooks/enterprise-prometheus-alerts.md#enterpriseconfigpublishfailureratio
 
       # --- publish_conflict_ratio ---
@@ -63,9 +62,7 @@ groups:
         annotations:
           summary: Enterprise configuration publish conflict ratio is elevated
           description: >-
-            More than 20% of enterprise_platform_config_publish_total samples in the last 15m
-            report enterprise_outcome=conflict (reference default). High conflict ratios often
-            indicate concurrent publishers or stale clients.
+            More than 20% of enterprise_platform_config_publish_total samples in the last 15m report enterprise_outcome=conflict (reference default). High conflict ratios often indicate concurrent publishers or stale clients.
           runbook: docs/enterprise/runbooks/enterprise-prometheus-alerts.md#enterpriseconfigpublishconflictratio
 
       # --- invalidation_degraded ---
@@ -86,9 +83,7 @@ groups:
         annotations:
           summary: Enterprise configuration invalidation is degraded
           description: >-
-            enterprise_platform_invalidation_total is recording disabled, unavailable,
-            partial_failure, or error outcomes (reference default). Redis backend outages and
-            partial fan-out both count as degraded.
+            enterprise_platform_invalidation_total is recording disabled, unavailable, partial_failure, or error outcomes (reference default). Redis backend outages and partial fan-out both count as degraded.
           runbook: docs/enterprise/runbooks/enterprise-prometheus-alerts.md#enterpriseinvalidationdegraded
 
       # --- cache_failure_rate ---
@@ -109,8 +104,7 @@ groups:
         annotations:
           summary: Enterprise domain cache load failure rate is elevated
           description: >-
-            More than 10% of enterprise_platform_cache_load_total samples in the last 10m
-            report enterprise_outcome=load_failure (reference default).
+            More than 10% of enterprise_platform_cache_load_total samples in the last 10m report enterprise_outcome=load_failure (reference default).
           runbook: docs/enterprise/runbooks/enterprise-prometheus-alerts.md#enterprisecachefailurerate
 
       # --- guard_denial_spike ---
@@ -130,9 +124,7 @@ groups:
         annotations:
           summary: Enterprise managed-resource guard denials are spiking
           description: >-
-            enterprise_platform_guard_decision_total with enterprise_outcome=denied exceeds
-            1 event/s over 5m (reference default). Raise or lower the absolute rate to match
-            expected denial traffic; do not attach high-cardinality resource identifiers.
+            enterprise_platform_guard_decision_total with enterprise_outcome=denied exceeds 1 event/s over 5m (reference default). Raise or lower the absolute rate to match expected denial traffic; do not attach high-cardinality resource identifiers.
           runbook: docs/enterprise/runbooks/enterprise-prometheus-alerts.md#enterpriseguarddenialspike
 
       # --- heartbeat_failure ---
@@ -151,9 +143,7 @@ groups:
         annotations:
           summary: Enterprise instance heartbeat or registration is failing
           description: >-
-            enterprise_platform_instance_heartbeat_total reports enterprise_outcome=failure
-            for register or tick operations (reference default). Multi-instance convergence
-            and operational gauges depend on healthy heartbeats.
+            enterprise_platform_instance_heartbeat_total reports enterprise_outcome=failure for register or tick operations (reference default). Multi-instance convergence and operational gauges depend on healthy heartbeats.
           runbook: docs/enterprise/runbooks/enterprise-prometheus-alerts.md#enterpriseheartbeatfailure
 
       # --- ssrf_denial_spike ---
@@ -168,9 +158,7 @@ groups:
         annotations:
           summary: Enterprise outbound SSRF denials are spiking
           description: >-
-            enterprise_platform_ssrf_denial_total exceeds 2 events/s over 5m (reference
-            default). Investigate allowlist drift, scanner traffic, or policy regressions;
-            labels are limited to closed enterprise_category values.
+            enterprise_platform_ssrf_denial_total exceeds 2 events/s over 5m (reference default). Investigate allowlist drift, scanner traffic, or policy regressions; labels are limited to closed enterprise_category values.
           runbook: docs/enterprise/runbooks/enterprise-prometheus-alerts.md#enterprisessrfdenialspike
 
       # --- oidc_login_failure_ratio ---
@@ -191,9 +179,7 @@ groups:
         annotations:
           summary: Enterprise OIDC login failure ratio is elevated
           description: >-
-            More than 20% of enterprise_platform_oidc_login_total samples in the last 15m
-            report enterprise_outcome=failure (reference default). Only closed
-            enterprise_stage / enterprise_failure_category labels are emitted.
+            More than 20% of enterprise_platform_oidc_login_total samples in the last 15m report enterprise_outcome=failure (reference default). Only closed enterprise_stage / enterprise_failure_category labels are emitted.
           runbook: docs/enterprise/runbooks/enterprise-prometheus-alerts.md#enterpriseoidcloginfailureratio
 
       # --- materialization_failure_rate ---
@@ -218,8 +204,7 @@ groups:
         annotations:
           summary: Enterprise agent materialization failure rate is elevated
           description: >-
-            More than 10% of enterprise_platform_agent_materialization_total samples in the
-            last 15m report enterprise_outcome=failure (reference default).
+            More than 10% of enterprise_platform_agent_materialization_total samples in the last 15m report enterprise_outcome=failure (reference default).
           runbook: docs/enterprise/runbooks/enterprise-prometheus-alerts.md#enterpriseagentmaterializationfailurerate
 
       # --- job_backlog_stalled ---
@@ -235,9 +220,7 @@ groups:
         annotations:
           summary: Enterprise platform job backlog oldest age exceeds the service window
           description: >-
-            max(enterprise_platform_job_backlog_oldest_age_seconds) is above 1800s for 15m
-            (reference default). Never sum this gauge across replicas; every process may
-            publish the same cluster snapshot.
+            max(enterprise_platform_job_backlog_oldest_age_seconds) is above 1800s for 15m (reference default). Never sum this gauge across replicas; every process may publish the same cluster snapshot.
           runbook: docs/enterprise/runbooks/enterprise-prometheus-alerts.md#enterprisejobbacklogstalled
 
       # --- revision_lag ---
@@ -257,24 +240,24 @@ groups:
         annotations:
           summary: Enterprise identity revision lag remains after the rollout window
           description: >-
-            Cluster identity revision lag instance count remains above zero for 15m
-            (reference default). Aggregate with max-by-dimension then sum; never sum raw
-            series across replicas.
+            Cluster identity revision lag instance count remains above zero for 15m (reference default). Aggregate with max-by-dimension then sum; never sum raw series across replicas.
           runbook: docs/enterprise/runbooks/enterprise-prometheus-alerts.md#enterpriserevisionlag
 
       # --- operational_collection_stale ---
-      # Default: snapshot age > 180s (collector period is ~60s), sustained 5m.
+      # Default (5m): age > 180s OR ready == 0.
+      # Age series is absent until the first successful snapshot; ready emits 0 for
+      # active collectors with no success yet — both cases must fire. Aggregate with max.
       - alert: EnterpriseOperationalCollectionStale
         expr: |
           max(enterprise_platform_operational_snapshot_age_seconds) > 180
+          or
+          max(enterprise_platform_operational_snapshot_ready) == 0
         for: 5m
         labels:
           severity: warning
           component: enterprise-operational-collector
         annotations:
-          summary: Enterprise operational metric collection snapshot is stale
+          summary: Enterprise operational metric collection is stale or never initialized
           description: >-
-            max(enterprise_platform_operational_snapshot_age_seconds) exceeds 180s for 5m
-            (reference default). Job backlog and revision-lag gauges stop reflecting
-            production if the collector stalls. Aggregate replicas with max, never sum.
+            Fires when max(enterprise_platform_operational_snapshot_age_seconds) exceeds 180s or max(enterprise_platform_operational_snapshot_ready) is 0 for 5m (reference default). Ready=0 covers collectors that never produced a first successful snapshot (age gauge absent). Later stalls surface via age. Aggregate replicas with max, never sum.
           runbook: docs/enterprise/runbooks/enterprise-prometheus-alerts.md#enterpriseoperationalcollectionstale

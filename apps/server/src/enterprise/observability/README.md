@@ -12,10 +12,17 @@ credentials; without an installed OpenTelemetry provider the API is naturally a 
 `docker-compose/production/grafana/prometheus/rules/enterprise-platform-alerts.yml`
 
 Those rules are loaded by the production Grafana/Prometheus compose example (`rule_files` +
-read-only `./prometheus/rules` mount). Validation is authoritative via
-`bun run enterprise:check-prometheus-rules` (`promtool check rules` in pinned
-`prom/prometheus:v2.55.1`). Unit tests reconcile intent keys, metrics, and rule identities so
-metadata cannot drift from YAML; they do **not** replace promtool.
+read-only `./prometheus/rules` mount). Validation is authoritative via:
+
+- `bun run enterprise:check-prometheus-rules` — `promtool check rules` in pinned `prom/prometheus:v2.55.1`
+- `bun run enterprise:check-otel-collector` — pinned `otel/opentelemetry-collector-contrib:0.120.0 validate`
+- `bun run enterprise:probe-otlp-prometheus` — disposable OTLP→remote-write→PromQL label proof
+
+Unit tests reconcile intent keys, metrics, rule identities, collector pipeline, and exact selectors
+so metadata cannot drift from YAML; they do **not** replace promtool or the OTLP probe.
+
+`EnterpriseOperationalCollectionStale` fires on **ready == 0** (never first success; age gauge
+absent) **or** snapshot age above the reference window.
 
 **Notification receivers and production routing are not configured in this repository.** A firing
 rule without a receiver is still observable in the Prometheus UI. Deployments must own Alertmanager
