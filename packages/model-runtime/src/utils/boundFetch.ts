@@ -6,8 +6,13 @@
  * graph that loads this file shares one store (avoids dual-package ALS splits).
  *
  * The global is patched once; when no binding is active the original fetch runs.
+ *
+ * `node:async_hooks` is loaded only when a bound fetch is actually used (server
+ * enterprise connection-test / custom transport paths). Top-level stays free of
+ * Node builtins so SPA production bundlers do not hard-fail or inject a dead
+ * externalized import that would throw if the chunk ever executed in-browser.
  */
-import { AsyncLocalStorage } from 'node:async_hooks';
+import type { AsyncLocalStorage } from 'node:async_hooks';
 
 export type FetchLike = typeof fetch;
 
@@ -21,11 +26,15 @@ type GlobalBinding = typeof globalThis & {
   [STORE_KEY]?: AsyncLocalStorage<FetchLike>;
 };
 
-const getStore = (): AsyncLocalStorage<FetchLike> => {
+const getStoreIfPresent = (): AsyncLocalStorage<FetchLike> | undefined => {
+  return (globalThis as GlobalBinding)[STORE_KEY];
+};
+
+const getOrCreateStore = async (): Promise<AsyncLocalStorage<FetchLike>> => {
   const g = globalThis as GlobalBinding;
-  if (!g[STORE_KEY]) {
-    g[STORE_KEY] = new AsyncLocalStorage<FetchLike>();
-  }
+  if (g[STORE_KEY]) return g[STORE_KEY];
+  const { AsyncLocalStorage } = await import('node:async_hooks');
+  g[STORE_KEY] = new AsyncLocalStorage<FetchLike>();
   return g[STORE_KEY];
 };
 
@@ -38,7 +47,7 @@ const ensureGlobalFetchPatch = (): void => {
   g[PATCHED_KEY] = true;
 
   globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
-    const bound = getStore().getStore();
+    const bound = getStoreIfPresent()?.getStore();
     const impl = bound ?? g[ORIGINAL_KEY];
     if (!impl) {
       throw new TypeError('fetch is not available');
@@ -57,11 +66,12 @@ export const runWithBoundFetch = async <T>(
   fn: () => Promise<T>,
 ): Promise<T> => {
   ensureGlobalFetchPatch();
-  return getStore().run(fetchImpl, fn);
+  const store = await getOrCreateStore();
+  return store.run(fetchImpl, fn);
 };
 
 /** Read the currently bound fetch, if any (tests / diagnostics). */
-export const getBoundFetch = (): FetchLike | undefined => getStore().getStore();
+export const getBoundFetch = (): FetchLike | undefined => getStoreIfPresent()?.getStore();
 
 /**
  * Test helper: restore the pre-patch global fetch so suites can install adversarial traps.
@@ -74,4 +84,6 @@ export const resetBoundFetchPatchForTests = (): void => {
   }
   delete g[PATCHED_KEY];
   delete g[ORIGINAL_KEY];
+  // Keep STORE_KEY so concurrent tests that already entered runWithBoundFetch
+  // still see a coherent ALS; callers that need a clean ALS can re-import.
 };

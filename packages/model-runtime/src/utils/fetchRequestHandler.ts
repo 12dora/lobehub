@@ -1,8 +1,11 @@
 /**
  * AWS SDK / Smithy requestHandler that routes every hop through a WHATWG fetch
  * implementation (e.g. SafeOutbound-backed). Used by Bedrock connection tests.
+ *
+ * Node stream is loaded dynamically so the module top-level stays browser-safe
+ * for SPA bundles that re-export @lobechat/model-runtime (server-only at runtime).
  */
-import { Readable } from 'node:stream';
+import type { Readable } from 'node:stream';
 
 import type { FetchLike } from './boundFetch';
 
@@ -111,6 +114,9 @@ export const createFetchRequestHandler = (fetchImpl: FetchLike) => {
         response.headers.forEach((value, key) => {
           responseHeaders[key] = value;
         });
+        // Dynamic import: static `import { Readable } from 'node:stream'` fails SPA
+        // production builds (rolldown node-stub has no Readable named export).
+        const { Readable } = await import('node:stream');
         return {
           response: {
             body: Readable.from([Buffer.from(arrayBuffer)]),
