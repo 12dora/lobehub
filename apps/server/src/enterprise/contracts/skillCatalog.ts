@@ -384,6 +384,65 @@ export const adminSkillPublicationOutputSchema = z
   })
   .strict();
 
+/** Draft mutation + immediate publish (admin UI parity; single rate-limit unit). */
+export const adminSkillApplyImmediateOutputSchema = z
+  .object({
+    auditId: z.string().min(1).nullable(),
+    draft: skillIdentityDraftSchema,
+    draftToken: draftTokenSchema,
+    /**
+     * false when draft was written but publish validation blocked first publish
+     * (e.g. create without version / invalid version). Client must not treat as silent live success.
+     */
+    published: z.boolean(),
+    /** Structured human-safe reason when published is false (never secrets). */
+    publishError: z.string().max(500).nullable().optional(),
+    revision: z.number().int().nonnegative(),
+    versionId: z.string().min(1).nullable().optional(),
+  })
+  .strict();
+
+export const adminSkillPublishNowInputSchema = z
+  .object({
+    id: z.string().min(1),
+    reason: reasonSchema,
+    /** When omitted, uses latestVersion or currentVersionId. */
+    versionId: z.string().min(1).optional(),
+  })
+  .strict();
+
+const skillApplyVersionPayloadSchema = z
+  .object({
+    content: z.string().min(1).max(1_048_576),
+    contentRef: skillContentRefSchema.nullable().default(null),
+    manifest: skillManifestSchema,
+    resources: skillResourcesSchema.default([]),
+    version: skillVersionSchema,
+  })
+  .strict();
+
+export const adminSkillApplyImmediateInputSchema = z.discriminatedUnion('mode', [
+  adminSkillCreateInputSchema
+    .extend({
+      mode: z.literal('create'),
+      /** Optional version payload so import can create + publish in one shot. */
+      version: skillApplyVersionPayloadSchema.optional(),
+    })
+    .strict(),
+  adminSkillUpdateDraftInputSchema
+    .extend({
+      mode: z.literal('update'),
+      /** Version to publish after identity update; defaults to latest / current. */
+      versionId: z.string().min(1).optional(),
+    })
+    .strict(),
+  adminSkillCreateVersionInputSchema
+    .extend({
+      mode: z.literal('createVersion'),
+    })
+    .strict(),
+]);
+
 export const publishedSkillSchema = z
   .object({
     checksum: checksumSchema,
@@ -449,8 +508,11 @@ export const serverResolvedSkillSchema = publishedSkillSchema
   })
   .strict();
 
+export type AdminSkillApplyImmediateInput = z.infer<typeof adminSkillApplyImmediateInputSchema>;
+export type AdminSkillApplyImmediateOutput = z.infer<typeof adminSkillApplyImmediateOutputSchema>;
 export type AdminSkillCreateInput = z.infer<typeof adminSkillCreateInputSchema>;
 export type AdminSkillCreateVersionInput = z.infer<typeof adminSkillCreateVersionInputSchema>;
+export type AdminSkillPublishNowInput = z.infer<typeof adminSkillPublishNowInputSchema>;
 export type AdminSkillUpdateDraftInput = z.infer<typeof adminSkillUpdateDraftInputSchema>;
 export type ImmutableSkillVersion = z.infer<typeof immutableSkillVersionSchema>;
 export type PlatformSkillPinnedRef = z.infer<typeof platformSkillPinnedRefSchema>;

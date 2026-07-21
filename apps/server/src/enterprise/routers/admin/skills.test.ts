@@ -426,3 +426,127 @@ describe('adminSkillsRouter reauthentication', () => {
     ).rejects.toMatchObject({ code: 'BAD_REQUEST' });
   });
 });
+
+describe('admin.skills.applyImmediate', () => {
+  it('create without version keeps draft unpublished (soft fail)', async () => {
+    const caller = await callerFor({ authenticatedAt: new Date(), userId: ids.superAdmin });
+    const result = await caller.applyImmediate({
+      displayName: 'Draft Only Skill',
+      distribution: 'default',
+      enabled: true,
+      mode: 'create',
+      reason: 'create without version',
+      skillKey: `draft.only.${Date.now()}`,
+    });
+    expect(result.published).toBe(false);
+    expect(result.revision).toBe(0);
+    expect(result.publishError).toMatch(/version/i);
+    expect(result.draft.displayName).toBe('Draft Only Skill');
+  });
+
+  it('create with version publishes immediately', async () => {
+    const caller = await callerFor({ authenticatedAt: new Date(), userId: ids.superAdmin });
+    const result = await caller.applyImmediate({
+      displayName: 'Immediate Skill',
+      distribution: 'default',
+      enabled: true,
+      mode: 'create',
+      reason: 'create and publish',
+      skillKey: `immediate.skill.${Date.now()}`,
+      version: {
+        content: '# immediate skill',
+        contentRef: null,
+        manifest,
+        resources: [],
+        version: '1.0.0',
+      },
+    });
+    expect(result.published).toBe(true);
+    expect(result.revision).toBeGreaterThan(0);
+    expect(result.versionId).toBeTruthy();
+  });
+
+  it('update republishes an already-published skill', async () => {
+    const caller = await callerFor({ authenticatedAt: new Date(), userId: ids.superAdmin });
+    const created = await caller.applyImmediate({
+      displayName: 'Rename Target',
+      distribution: 'default',
+      enabled: true,
+      mode: 'create',
+      reason: 'seed',
+      skillKey: `rename.target.${Date.now()}`,
+      version: {
+        content: '# rename target',
+        contentRef: null,
+        manifest,
+        resources: [],
+        version: '1.0.0',
+      },
+    });
+    expect(created.published).toBe(true);
+    const detail = await caller.get({ id: created.draft.id });
+    const updated = await caller.applyImmediate({
+      displayName: 'Renamed Immediate',
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.baseRevision,
+      id: created.draft.id,
+      mode: 'update',
+      reason: 'rename immediately',
+    });
+    expect(updated.published).toBe(true);
+    expect(updated.draft.displayName).toBe('Renamed Immediate');
+  });
+
+  it('denies callers without publish permission', async () => {
+    const caller = await callerFor({ authenticatedAt: new Date(), userId: ids.creator });
+    await expect(
+      caller.applyImmediate({
+        displayName: 'Nope',
+        mode: 'create',
+        reason: 'denied',
+        skillKey: `nope.${Date.now()}`,
+      }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  });
+
+  it('denies publish-only callers without create permission', async () => {
+    const caller = await callerFor({ authenticatedAt: new Date(), userId: ids.publisher });
+    await expect(
+      caller.applyImmediate({
+        displayName: 'Nope',
+        mode: 'create',
+        reason: 'denied create',
+        skillKey: `nope.create.${Date.now()}`,
+      }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  });
+
+  it('rejects stale reauth before mutating', async () => {
+    const draft = await createDraft();
+    const version = await createVersion(draft);
+    const detail = await createVersionDetail(draft.draft.id);
+    const fresh = await callerFor({ authenticatedAt: new Date(), userId: ids.superAdmin });
+    await fresh.publish({
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.baseRevision,
+      id: draft.draft.id,
+      reason: 'seed publish',
+      versionId: version.id,
+    });
+    const ready = await createVersionDetail(draft.draft.id);
+    const stale = await callerFor({
+      authenticatedAt: new Date(Date.now() - 60 * 60 * 1000),
+      userId: ids.superAdmin,
+    });
+    await expect(
+      stale.applyImmediate({
+        displayName: 'Blocked',
+        expectedDraftToken: ready.draftToken,
+        expectedRevision: ready.baseRevision,
+        id: draft.draft.id,
+        mode: 'update',
+        reason: 'stale reauth blocked',
+      }),
+    ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+  });
+});

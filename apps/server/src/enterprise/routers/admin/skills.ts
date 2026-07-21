@@ -1,8 +1,11 @@
+import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { authedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 
 import {
+  adminSkillApplyImmediateInputSchema,
+  adminSkillApplyImmediateOutputSchema,
   adminSkillArchiveInputSchema,
   adminSkillCreateInputSchema,
   adminSkillCreateVersionInputSchema,
@@ -20,6 +23,7 @@ import {
   adminSkillMutationOutputSchema,
   adminSkillPublicationOutputSchema,
   adminSkillPublishInputSchema,
+  adminSkillPublishNowInputSchema,
   adminSkillRollbackInputSchema,
   adminSkillUpdateDraftInputSchema,
   adminSkillValidateInputSchema,
@@ -27,6 +31,7 @@ import {
 } from '../../contracts/skillCatalog';
 import { withActiveUser } from '../../guards/activeUser';
 import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
+import { throwEnterpriseError } from '../../guards/enterpriseErrors';
 import { withPlatformPermission } from '../../guards/platformPermission';
 import {
   assertSkillDangerousReauth,
@@ -41,6 +46,76 @@ const adminBase = authedProcedure
   .use(withAdminMutationRateLimit());
 
 export const adminSkillsRouter = router({
+  /**
+   * Create/update/createVersion then publish in one procedure (admin settings UI parity).
+   * Requires UPDATE+PUBLISH (or CREATE+PUBLISH / UPDATE+PUBLISH for createVersion). Rate-limit: 1 unit.
+   */
+  applyImmediate: adminBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.SKILL_PUBLISH))
+    .input(adminSkillApplyImmediateInputSchema)
+    .output(adminSkillApplyImmediateOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      assertSkillFeatureEnabled();
+      const required =
+        input.mode === 'create'
+          ? PLATFORM_PERMISSIONS.SKILL_CREATE
+          : PLATFORM_PERMISSIONS.SKILL_UPDATE;
+      const perms = (ctx as { platformAuth?: { permissions: string[] } }).platformAuth?.permissions;
+      if (!perms?.includes(required)) {
+        return throwEnterpriseError({
+          code: PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED,
+          details: { permission: required },
+          httpCode: 'FORBIDDEN',
+          message: PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED,
+        });
+      }
+      await assertSkillDangerousReauth({
+        action: 'admin.skills.applyImmediate',
+        actorUserId: ctx.userId!,
+        authenticatedAt: ctx.authenticatedAt,
+        authMethod: ctx.authMethod,
+        reason: input.reason,
+        serverDB: ctx.serverDB,
+        targetId:
+          input.mode === 'create'
+            ? input.skillKey
+            : input.mode === 'createVersion'
+              ? input.skillId
+              : input.id,
+      });
+      try {
+        return await createSkillService(ctx.serverDB).applyImmediate(ctx.userId!, input);
+      } catch (error) {
+        return mapSkillServiceError(error);
+      }
+    }),
+
+  /**
+   * Banner "retry publish": re-publish latest/specified version.
+   * Same guard combo as applyImmediate (PUBLISH + reauth + rate-limit).
+   */
+  publishNow: adminBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.SKILL_PUBLISH))
+    .input(adminSkillPublishNowInputSchema)
+    .output(adminSkillApplyImmediateOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      assertSkillFeatureEnabled();
+      await assertSkillDangerousReauth({
+        action: 'admin.skills.publishNow',
+        actorUserId: ctx.userId!,
+        authenticatedAt: ctx.authenticatedAt,
+        authMethod: ctx.authMethod,
+        reason: input.reason,
+        serverDB: ctx.serverDB,
+        targetId: input.id,
+      });
+      try {
+        return await createSkillService(ctx.serverDB).publishNow(ctx.userId!, input);
+      } catch (error) {
+        return mapSkillServiceError(error);
+      }
+    }),
+
   archive: adminBase
     .use(withPlatformPermission(PLATFORM_PERMISSIONS.SKILL_DELETE))
     .input(adminSkillArchiveInputSchema)
