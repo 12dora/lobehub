@@ -693,6 +693,210 @@ export class AiCatalogAdminService {
 
   rollbackProvider: AiCatalogPublicationService['rollbackProvider'] = (actorUserId, input) =>
     this.publication.rollbackProvider(actorUserId, input);
+
+  /**
+   * Apply a provider draft mutation then publish immediately.
+   * Sequential (draft then publish); publish failure leaves a visible draft (no silent half-state).
+   */
+  applyProviderImmediate = async (
+    actorUserId: string,
+    input: (CreateProviderInput & { mode: 'create' }) | (UpdateProviderInput & { mode: 'update' }),
+  ) => {
+    let providerId: string;
+    if (input.mode === 'create') {
+      const { mode: _mode, ...createInput } = input;
+      const draft = await this.createProviderDraft(actorUserId, createInput);
+      providerId = draft.id;
+    } else {
+      const { mode: _mode, ...updateInput } = input;
+      await this.updateProviderDraft(actorUserId, updateInput);
+      providerId = input.id;
+    }
+
+    const detail = await this.getDetail(providerId);
+    const published = await this.publishProvider(actorUserId, {
+      // First publish still requires a fresh connection test; subsequent admin UI
+      // auto-publish may use a stale test when only non-secret fields changed.
+      allowStaleConnectionTest: detail.baseRevision > 0,
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.baseRevision,
+      id: providerId,
+      reason: input.reason,
+    });
+    const after = await this.getDetail(providerId);
+    return {
+      auditId: published.auditId,
+      draft: after.draft,
+      revision: published.revision,
+    };
+  };
+
+  /**
+   * Apply a model draft mutation (or batch) then publish the parent provider immediately.
+   * One rate-limit unit; publish failure is visible (draft retained).
+   */
+  applyModelImmediate = async (
+    actorUserId: string,
+    input: {
+      enabled?: boolean;
+      expectedDraftToken: string;
+      expectedRevision?: number;
+      id?: string;
+      items?: Array<{ id: string; sort: number }>;
+      modelIds?: string[];
+      modelKey?: string;
+      models?: Array<Record<string, unknown> & { id: string }>;
+      operation:
+        'batchToggle' | 'batchUpdate' | 'clear' | 'create' | 'delete' | 'reorder' | 'update';
+      providerId: string;
+      reason: string;
+      [key: string]: unknown;
+    },
+  ) => {
+    const { operation, providerId, reason, expectedDraftToken } = input;
+    let token = expectedDraftToken;
+
+    switch (operation) {
+      case 'create': {
+        const { operation: _o, ...rest } = input;
+        await this.createModel(actorUserId, {
+          ...(rest as CreateModelInput),
+          expectedDraftToken: token,
+          modelKey: input.modelKey!,
+          providerId,
+          reason,
+        });
+        break;
+      }
+      case 'update': {
+        const { operation: _o, ...rest } = input;
+        await this.updateModel(actorUserId, {
+          ...(rest as UpdateModelInput),
+          expectedDraftToken: token,
+          expectedRevision: input.expectedRevision!,
+          id: input.id!,
+          providerId,
+          reason,
+        });
+        break;
+      }
+      case 'delete': {
+        await this.deleteModel(actorUserId, {
+          expectedDraftToken: token,
+          id: input.id!,
+          providerId,
+          reason,
+        });
+        break;
+      }
+      case 'reorder': {
+        await this.reorderModels(actorUserId, {
+          expectedDraftToken: token,
+          items: input.items!,
+          providerId,
+          reason,
+        });
+        break;
+      }
+      case 'batchToggle': {
+        for (const modelId of input.modelIds ?? []) {
+          const ctx = await this.getModelDraftContext(providerId);
+          const model = (await this.getDetail(providerId)).draft.models.find(
+            (m) => m.id === modelId,
+          );
+          if (!model) throw new AiCatalogNotFoundError();
+          await this.updateModel(actorUserId, {
+            enabled: input.enabled!,
+            expectedDraftToken: ctx.draftToken,
+            expectedRevision: model.revision,
+            id: modelId,
+            providerId,
+            reason,
+          });
+        }
+        break;
+      }
+      case 'batchUpdate': {
+        for (const item of input.models ?? []) {
+          const ctx = await this.getModelDraftContext(providerId);
+          token = ctx.draftToken;
+          const current = (await this.getDetail(providerId)).draft.models.find(
+            (m) => m.id === item.id,
+          );
+          if (!current) {
+            // Create when missing (remote model import path)
+            await this.createModel(actorUserId, {
+              abilities: item.abilities as CreateModelInput['abilities'],
+              config: item.config as CreateModelInput['config'],
+              contextWindowTokens:
+                item.contextWindowTokens as CreateModelInput['contextWindowTokens'],
+              description: item.description as CreateModelInput['description'],
+              displayName: item.displayName as CreateModelInput['displayName'],
+              enabled: item.enabled as CreateModelInput['enabled'],
+              expectedDraftToken: token,
+              modelKey: item.id,
+              parameters: item.parameters as CreateModelInput['parameters'],
+              pricing: item.pricing as CreateModelInput['pricing'],
+              providerId,
+              reason,
+              settings: item.settings as CreateModelInput['settings'],
+              type: item.type as CreateModelInput['type'],
+            });
+            continue;
+          }
+          await this.updateModel(actorUserId, {
+            abilities: item.abilities as UpdateModelInput['abilities'],
+            config: item.config as UpdateModelInput['config'],
+            contextWindowTokens:
+              item.contextWindowTokens as UpdateModelInput['contextWindowTokens'],
+            description: item.description as UpdateModelInput['description'],
+            displayName: item.displayName as UpdateModelInput['displayName'],
+            enabled: item.enabled as UpdateModelInput['enabled'],
+            expectedDraftToken: token,
+            expectedRevision: current.revision,
+            id: item.id,
+            parameters: item.parameters as UpdateModelInput['parameters'],
+            pricing: item.pricing as UpdateModelInput['pricing'],
+            providerId,
+            reason,
+            settings: item.settings as UpdateModelInput['settings'],
+            type: item.type as UpdateModelInput['type'],
+          });
+        }
+        break;
+      }
+      case 'clear': {
+        const detail = await this.getDetail(providerId);
+        for (const model of detail.draft.models) {
+          const ctx = await this.getModelDraftContext(providerId);
+          await this.deleteModel(actorUserId, {
+            expectedDraftToken: ctx.draftToken,
+            id: model.id,
+            providerId,
+            reason,
+          });
+        }
+        break;
+      }
+      default: {
+        throw new AiCatalogValidationError([`Unsupported model apply operation: ${operation}`]);
+      }
+    }
+
+    const detail = await this.getDetail(providerId);
+    const published = await this.publishProvider(actorUserId, {
+      allowStaleConnectionTest: detail.baseRevision > 0,
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.baseRevision,
+      id: providerId,
+      reason,
+    });
+    return {
+      auditId: published.auditId,
+      draftToken: (await this.getDetail(providerId)).draftToken,
+      revision: published.revision,
+    };
+  };
 }
 
 export {
