@@ -2,6 +2,8 @@ import { withAdminReauthRetry } from '@/enterprise/client/features/admin/reauth/
 import { lambdaClient } from '@/libs/trpc/client';
 
 import type {
+  AdminConnectorApplyImmediateInput,
+  AdminConnectorApplyImmediateOutput,
   AdminConnectorArchiveInput,
   AdminConnectorCatalogClient,
   AdminConnectorCreateDraftInput,
@@ -9,6 +11,7 @@ import type {
   AdminConnectorDiscoverInput,
   AdminConnectorListInput,
   AdminConnectorPublishInput,
+  AdminConnectorPublishNowInput,
   AdminConnectorRevokeAllBindingsInput,
   AdminConnectorRollbackInput,
   AdminConnectorTestInput,
@@ -80,9 +83,11 @@ class AdminConnectorsService implements AdminConnectorCatalogClient {
    * Draft mutation + immediate publish (admin settings UI parity).
    * Soft-fail leaves draft + banner; hard failures toast via wrapper.
    */
-  applyImmediate = async (input: Record<string, unknown> & { mode: string; reason: string }) =>
+  applyImmediate = async (
+    input: AdminConnectorApplyImmediateInput,
+  ): Promise<AdminConnectorApplyImmediateOutput> =>
     withToastAndReauth(async () => {
-      const result = await lambdaClient.admin.connectors.applyImmediate.mutate(input as never);
+      const result = await lambdaClient.admin.connectors.applyImmediate.mutate(input);
       setLastAdminConnectorPublishOutcome({
         connectorId: result.draft.id,
         published: result.published,
@@ -91,7 +96,9 @@ class AdminConnectorsService implements AdminConnectorCatalogClient {
       return result;
     });
 
-  publishNow = async (input: { id: string; reason: string }) =>
+  publishNow = async (
+    input: AdminConnectorPublishNowInput,
+  ): Promise<AdminConnectorApplyImmediateOutput> =>
     withToastAndReauth(async () => {
       const result = await lambdaClient.admin.connectors.publishNow.mutate(input);
       setLastAdminConnectorPublishOutcome({

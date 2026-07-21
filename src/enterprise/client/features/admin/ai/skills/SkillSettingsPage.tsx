@@ -1,9 +1,10 @@
 'use client';
 
-import { Center, Empty, Flexbox, Icon, SearchBar, Tag, Text } from '@lobehub/ui';
+import { Center, Empty, Flexbox, SearchBar, Tag, Text } from '@lobehub/ui';
 import { Button, confirmModal, toast } from '@lobehub/ui/base-ui';
 import { SkillsIcon } from '@lobehub/ui/icons';
 import { createStaticStyles, cssVar } from 'antd-style';
+import { Link as LinkIcon } from 'lucide-react';
 import { memo, useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useNavigate, useParams } from 'react-router';
@@ -12,17 +13,20 @@ import AsyncError from '@/components/AsyncError';
 import Loading from '@/components/Loading/BrandTextLoading';
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
 import { adminSkillsService } from '@/enterprise/client/services/adminSkills';
-import NavItem from '@/features/NavPanel/components/NavItem';
+import PlatformSkillItem from '@/routes/(main)/settings/skill/features/PlatformSkillItem';
 
-import { deriveSkillPermissions } from '../../skills/controller';
+import { deriveSkillPermissions, emptyEditableSkillVersionDraft } from '../../skills/controller';
 import {
   refreshAdminSkillLists,
   useFetchAdminSkill,
   useFetchAdminSkills,
 } from '../../skills/hooks/useAdminSkills';
 import { openCreateSkillModal } from '../../skills/openCreateSkillModal';
+import { openVersionEditorModal } from '../../skills/openVersionEditorModal';
 import type { AdminSkillListItem } from '../../skills/types';
+import { freezeSkillWriteSnapshot } from '../../skills/writeOperation';
 import DraftPublishBanner from './DraftPublishBanner';
+import { openAdminImportSkillModal } from './openAdminImportSkillModal';
 
 const styles = createStaticStyles(({ css }) => ({
   advancedLink: css`
@@ -133,26 +137,19 @@ const SkillListItem = memo<{
   isSelected: boolean;
   onSelect: () => void;
   skill: AdminSkillListItem;
-}>(({ isSelected, onSelect, skill }) => {
-  const { t } = useTranslation('admin');
-  return (
-    <Flexbox gap={2}>
-      <NavItem
-        active={isSelected}
-        icon={() => <Icon icon={SkillsIcon} size={18} />}
-        title={skill.displayName}
-        onClick={onSelect}
-      />
-      <div className={styles.badges}>
-        <span className={styles.badge}>{skill.source}</span>
-        <span className={styles.badge}>
-          {t(`skillCatalog.distribution.${skill.distribution}` as never)}
-        </span>
-        <span className={styles.badge}>{skill.status}</span>
-      </div>
-    </Flexbox>
-  );
-});
+}>(({ isSelected, onSelect, skill }) => (
+  <PlatformSkillItem
+    extraBadges={[skill.status]}
+    isSelected={isSelected}
+    translateBadges={false}
+    skill={{
+      displayName: skill.displayName,
+      distribution: skill.distribution,
+      source: skill.source,
+    }}
+    onSelect={onSelect}
+  />
+));
 
 const SkillDetailPanel = memo<{
   onArchived: () => void;
@@ -184,9 +181,10 @@ const SkillDetailPanel = memo<{
         );
       } else {
         toast.success(
-          t('aiSkillSettings.actions.draftSaved', {
-            defaultValue: 'Skill saved as draft — add a version to list it',
-          }),
+          result.publishError ||
+            t('aiSkillSettings.actions.draftSaved', {
+              defaultValue: 'Skill saved as draft — add a version to list it',
+            }),
         );
       }
       await Promise.all([mutate(), refreshAdminSkillLists()]);
@@ -196,6 +194,63 @@ const SkillDetailPanel = memo<{
     } finally {
       setBusy(false);
     }
+  }, [data, mutate, onPublished, t]);
+
+  const onAddVersion = useCallback(() => {
+    if (!data) return;
+    const initialDraft = emptyEditableSkillVersionDraft({
+      content: `# ${data.draft.displayName}\n`,
+      manifestText: JSON.stringify(
+        {
+          description: data.draft.description || data.draft.displayName,
+          displayName: data.draft.displayName,
+          localizedDescriptions: {},
+          localizedDisplayNames: {},
+          permissions: {
+            filesystem: 'none',
+            network: { allowedHosts: [], enabled: false },
+            tools: { allow: [] },
+          },
+          skillDependencies: [],
+          toolDependencies: [],
+        },
+        null,
+        2,
+      ),
+    });
+    openVersionEditorModal({
+      initialDraft,
+      onDraftChange: () => {},
+      snapshot: freezeSkillWriteSnapshot(data),
+      onSubmit: async (versionInput) => {
+        const result = await adminSkillsService.applyImmediate({
+          content: versionInput.content,
+          contentRef: versionInput.contentRef,
+          expectedDraftToken: versionInput.expectedDraftToken,
+          expectedRevision: versionInput.expectedRevision,
+          manifest: versionInput.manifest,
+          mode: 'createVersion',
+          reason: versionInput.reason,
+          resources: versionInput.resources,
+          skillId: versionInput.skillId,
+          version: versionInput.version,
+        });
+        if (result.published) {
+          toast.success(
+            t('aiSkillSettings.actions.published', { defaultValue: 'Skill listed for all users' }),
+          );
+        } else {
+          toast.success(
+            result.publishError ||
+              t('aiSkillSettings.actions.draftSaved', {
+                defaultValue: 'Version saved as draft — fix validation then retry',
+              }),
+          );
+        }
+        await Promise.all([mutate(), refreshAdminSkillLists()]);
+        onPublished();
+      },
+    });
   }, [data, mutate, onPublished, t]);
 
   const onArchive = useCallback(() => {
@@ -287,7 +342,14 @@ const SkillDetailPanel = memo<{
           </Text>
         </section>
 
-        <Flexbox horizontal gap={8}>
+        <Flexbox horizontal gap={8} style={{ flexWrap: 'wrap' }}>
+          {canUpdate ? (
+            <Button disabled={busy} onClick={onAddVersion}>
+              {t('aiSkillSettings.actions.addVersion', {
+                defaultValue: 'Add / update version',
+              })}
+            </Button>
+          ) : null}
           {canApply && !isLive ? (
             <Button
               disabled={!hasVersion || busy}
@@ -346,28 +408,45 @@ const SkillSettingsPage = memo(() => {
     navigate(`/admin/ai/skills/${encodeURIComponent(id)}`);
   };
 
+  const submitCreate = async (input: Parameters<typeof adminSkillsService.applyImmediate>[0]) => {
+    const result = await adminSkillsService.applyImmediate(input);
+    await refreshAdminSkillLists();
+    await mutate();
+    if (result.published) {
+      toast.success(
+        t('aiSkillSettings.actions.published', { defaultValue: 'Skill listed for all users' }),
+      );
+    } else {
+      toast.success(
+        result.publishError ||
+          t('aiSkillSettings.actions.draftSaved', {
+            defaultValue: 'Skill saved as draft — add a version to list it',
+          }),
+      );
+    }
+    navigate(`/admin/ai/skills/${encodeURIComponent(result.draft.id)}`);
+  };
+
   const onCreate = () => {
     openCreateSkillModal({
       authMethod,
+      withVersionPayload: true,
       onSubmit: async (input) => {
-        const result = await adminSkillsService.applyImmediate({
+        await submitCreate({
           ...input,
           mode: 'create',
         });
-        await refreshAdminSkillLists();
-        await mutate();
-        if (result.published) {
-          toast.success(
-            t('aiSkillSettings.actions.published', { defaultValue: 'Skill listed for all users' }),
-          );
-        } else {
-          toast.success(
-            t('aiSkillSettings.actions.draftSaved', {
-              defaultValue: 'Skill saved as draft — add a version to list it',
-            }),
-          );
-        }
-        navigate(`/admin/ai/skills/${encodeURIComponent(result.draft.id)}`);
+      },
+    });
+  };
+
+  const onImport = () => {
+    openAdminImportSkillModal({
+      onSubmit: async (input) => {
+        await submitCreate({
+          ...input,
+          mode: 'create',
+        });
       },
     });
   };
@@ -399,9 +478,12 @@ const SkillSettingsPage = memo(() => {
               {t('nav.aiSkills', { defaultValue: 'Skills' })}
             </Text>
             {canCreate && canPublish ? (
-              <Button size="small" type="primary" onClick={onCreate}>
-                {t('aiSkillSettings.actions.create', { defaultValue: 'List skill' })}
-              </Button>
+              <Flexbox horizontal gap={6}>
+                <Button icon={LinkIcon} size="small" title="Import from URL" onClick={onImport} />
+                <Button size="small" type="primary" onClick={onCreate}>
+                  {t('aiSkillSettings.actions.create', { defaultValue: 'List skill' })}
+                </Button>
+              </Flexbox>
             ) : null}
           </div>
           <div style={{ padding: '8px 12px' }}>

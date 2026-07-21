@@ -1,7 +1,7 @@
 'use client';
 
 import { Center, Empty, Flexbox, SearchBar, Tag, Text } from '@lobehub/ui';
-import { Button, confirmModal, toast } from '@lobehub/ui/base-ui';
+import { Button, confirmModal, Switch, toast } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
 import { Plug } from 'lucide-react';
 import { memo, useCallback, useMemo, useState } from 'react';
@@ -11,6 +11,7 @@ import { Link, useNavigate, useParams } from 'react-router';
 import AsyncError from '@/components/AsyncError';
 import Loading from '@/components/Loading/BrandTextLoading';
 import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvider';
+import { withAdminAiInfraErrorToast } from '@/enterprise/client/services/adminAiInfraAdapter/errors';
 import { adminConnectorsService } from '@/enterprise/client/services/adminConnectors';
 import NavItem from '@/features/NavPanel/components/NavItem';
 
@@ -22,6 +23,7 @@ import {
   useFetchAdminConnector,
   useFetchAdminConnectors,
 } from '../../connectors/useMockableAdminConnectorCatalog';
+import { withAdminReauthRetry } from '../../reauth/requestAdminReauth';
 import DraftPublishBanner from './DraftPublishBanner';
 
 const styles = createStaticStyles(({ css }) => ({
@@ -132,7 +134,7 @@ const ConnectorDetailPanel = memo<{
 }>(({ connectorId, onArchived, onPublished }) => {
   const { t } = useTranslation('admin');
   const { permissions } = useAdminAccess();
-  const { canArchive, canPublish, canTest, canUpdate } =
+  const { canArchive, canDiscover, canPublish, canTest, canUpdate } =
     deriveAdminConnectorPermissions(permissions);
   const { data, error, isLoading, mutate } = useFetchAdminConnector(connectorId, true);
   const [busy, setBusy] = useState(false);
@@ -161,9 +163,11 @@ const ConnectorDetailPanel = memo<{
         );
       } else {
         toast.success(
-          t('aiConnectorSettings.actions.draftSaved', {
-            defaultValue: 'Connector saved as draft — complete config to list it',
-          }),
+          result.publishError ||
+            t('aiConnectorSettings.actions.draftSaved', {
+              defaultValue:
+                'Connector saved as draft — run Discover tools, enable a tool, then retry publish',
+            }),
         );
       }
       await Promise.all([mutate(), refreshAdminConnectorLists()]);
@@ -174,6 +178,91 @@ const ConnectorDetailPanel = memo<{
       setBusy(false);
     }
   }, [data, mutate, onPublished, t]);
+
+  const onDiscover = useCallback(async () => {
+    if (!data) return;
+    setBusy(true);
+    try {
+      await withAdminAiInfraErrorToast(() =>
+        withAdminReauthRetry(async () => {
+          const discovered = await adminConnectorsService.discover({
+            id: data.draft.id,
+            reason: 'Discover tools from admin settings',
+          });
+          // Persist discovered tools (server discover is probe-only); enable first tool for publish path.
+          const tools = discovered.tools.map((tool, index) => ({
+            description: tool.description,
+            displayName: tool.displayName,
+            enabled: index === 0 ? true : tool.enabled,
+            id: crypto.randomUUID(),
+            inputSchema: tool.inputSchema,
+            outputSchema: tool.outputSchema ?? {},
+            platformPolicy: tool.platformPolicy,
+            requiresConfirmation: tool.requiresConfirmation,
+            riskLevel: tool.riskLevel,
+            sort: tool.sort,
+            toolKey: tool.toolKey,
+          }));
+          await adminConnectorsService.applyImmediate({
+            enabled: true,
+            expectedDraftToken: data.draftToken,
+            expectedRevision: data.baseRevision,
+            id: data.draft.id,
+            mode: 'update',
+            reason: 'Apply discovered tools from admin settings',
+            tools,
+          });
+        }),
+      );
+      toast.success(
+        t('aiConnectorSettings.actions.discoverOk', {
+          defaultValue: 'Tools discovered — first tool enabled; retry list if still draft',
+        }),
+      );
+      await Promise.all([mutate(), refreshAdminConnectorLists()]);
+      onPublished();
+    } catch {
+      // toast via wrapper
+    } finally {
+      setBusy(false);
+    }
+  }, [data, mutate, onPublished, t]);
+
+  const onToggleTool = useCallback(
+    async (toolKey: string, enabled: boolean) => {
+      if (!data) return;
+      setBusy(true);
+      try {
+        const tools = data.draft.tools.map((tool) =>
+          tool.toolKey === toolKey ? { ...tool, enabled } : tool,
+        );
+        const result = await adminConnectorsService.applyImmediate({
+          expectedDraftToken: data.draftToken,
+          expectedRevision: data.baseRevision,
+          id: data.draft.id,
+          mode: 'update',
+          reason: enabled ? 'Enable connector tool' : 'Disable connector tool',
+          tools,
+        });
+        if (result.published) {
+          toast.success(
+            t('aiConnectorSettings.actions.published', {
+              defaultValue: 'Connector listed for all users',
+            }),
+          );
+        } else if (result.publishError) {
+          toast.success(result.publishError);
+        }
+        await Promise.all([mutate(), refreshAdminConnectorLists()]);
+        onPublished();
+      } catch {
+        // toast via wrapper
+      } finally {
+        setBusy(false);
+      }
+    },
+    [data, mutate, onPublished, t],
+  );
 
   const onTest = useCallback(async () => {
     if (!data) return;
@@ -297,6 +386,13 @@ const ConnectorDetailPanel = memo<{
             {t('aiConnectorSettings.detail.tools', { defaultValue: 'Tools' })} ({draft.tools.length}
             )
           </Text>
+          {draft.tools.length === 0 ? (
+            <Text type="secondary">
+              {t('aiConnectorSettings.detail.toolsEmpty', {
+                defaultValue: 'No tools yet. Run Discover tools to load remote tool definitions.',
+              })}
+            </Text>
+          ) : null}
           <Flexbox className={styles.tools} gap={8} role="list">
             {draft.tools.map((tool) => (
               <Flexbox
@@ -307,15 +403,28 @@ const ConnectorDetailPanel = memo<{
                 role="listitem"
               >
                 <Text ellipsis>{tool.displayName}</Text>
-                <Tag color={tool.enabled ? 'success' : 'default'}>
-                  {tool.enabled ? 'enabled' : 'disabled'}
-                </Tag>
+                {canUpdate ? (
+                  <Switch
+                    checked={tool.enabled}
+                    disabled={busy}
+                    onChange={(checked) => void onToggleTool(tool.toolKey, checked)}
+                  />
+                ) : (
+                  <Tag color={tool.enabled ? 'success' : 'default'}>
+                    {tool.enabled ? 'enabled' : 'disabled'}
+                  </Tag>
+                )}
               </Flexbox>
             ))}
           </Flexbox>
         </Flexbox>
 
-        <Flexbox horizontal gap={8}>
+        <Flexbox horizontal gap={8} style={{ flexWrap: 'wrap' }}>
+          {canDiscover ? (
+            <Button disabled={busy} loading={busy} onClick={onDiscover}>
+              {t('aiConnectorSettings.actions.discover', { defaultValue: 'Discover tools' })}
+            </Button>
+          ) : null}
           {canApply ? (
             <Button disabled={busy} loading={busy} type="primary" onClick={onPublish}>
               {isLive
