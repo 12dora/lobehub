@@ -1,0 +1,117 @@
+# 阶段 0 开发基础设施(2026-07-16)
+#
+# 为什么不用同目录的 docker-compose.yml(bun run dev:docker):
+# 本机同时运行着生产栈(/Users/konata/code/lobehub-db,容器名 lobe-postgres/lobe-redis/
+# lobe-searxng/lobehub)和 easytrade-postgres(占用宿主 5432)、生产 rustfs(占用 9000)。
+# 上游 dev compose 的容器名与端口和它们完全冲突,无法共存。
+# 本文件使用独立容器名(aihub-dev-*)与独立端口(5433/6380/9010/9011/8180),
+# 与 .env.development 中的连接串一一对应。
+#
+# 启动:docker compose -f docker-compose/dev/docker-compose.phase0.yml -p aihub-dev up -d --wait
+# 迁移:bun run db:migrate(读取 .env.development 的 DATABASE_URL)
+
+name: aihub-dev
+
+services:
+  postgresql:
+    image: paradedb/paradedb:latest-pg17
+    container_name: aihub-dev-postgres
+    ports:
+      - '127.0.0.1:5433:5432'
+    volumes:
+      - 'pg_data:/var/lib/postgresql/data'
+    command: ['postgres', '-c', 'shared_preload_libraries=pg_search']
+    environment:
+      - 'POSTGRES_DB=lobechat'
+      - 'POSTGRES_PASSWORD=change_this_password_on_production'
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres']
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - aihub-dev
+
+  redis:
+    image: redis:7-alpine
+    container_name: aihub-dev-redis
+    ports:
+      - '127.0.0.1:6380:6379'
+    command: redis-server --save 60 1000 --appendonly yes
+    volumes:
+      - 'redis_data:/data'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - aihub-dev
+
+  rustfs:
+    image: rustfs/rustfs:latest
+    container_name: aihub-dev-rustfs
+    ports:
+      - '127.0.0.1:9010:9000'
+      - '127.0.0.1:9011:9001'
+    environment:
+      - RUSTFS_CONSOLE_ENABLE=true
+      - RUSTFS_ACCESS_KEY=admin
+      - RUSTFS_SECRET_KEY=change_this_password_on_production
+    volumes:
+      - rustfs_data:/data
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://localhost:9000/health >/dev/null 2>&1 || exit 1']
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    command:
+      ['--access-key', 'admin', '--secret-key', 'change_this_password_on_production', '/data']
+    restart: unless-stopped
+    networks:
+      - aihub-dev
+
+  rustfs-init:
+    image: minio/mc:latest
+    container_name: aihub-dev-rustfs-init
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    volumes:
+      # bucket.config.phase0.json 是 bucket.config.json 的修正副本("ID"→"Id",
+      # 上游文件字段名与 rustfs 策略解析器不兼容;生产侧 lobehub-db 早已同样修正)
+      - ./bucket.config.phase0.json:/bucket.config.json:ro
+    entrypoint: /bin/sh
+    command: -c '
+        set -eux;
+        mc alias set rustfs "http://rustfs:9000" "admin" "change_this_password_on_production";
+        mc mb "rustfs/lobe" --ignore-existing;
+        mc anonymous set-json "/bucket.config.json" "rustfs/lobe";
+      '
+    restart: 'no'
+    networks:
+      - aihub-dev
+
+  searxng:
+    image: searxng/searxng
+    container_name: aihub-dev-searxng
+    ports:
+      - '127.0.0.1:8180:8080'
+    volumes:
+      - './searxng-settings.yml:/etc/searxng/settings.yml'
+    environment:
+      - 'SEARXNG_SETTINGS_FILE=/etc/searxng/settings.yml'
+    restart: unless-stopped
+    networks:
+      - aihub-dev
+
+volumes:
+  pg_data:
+  redis_data:
+  rustfs_data:
+
+networks:
+  aihub-dev:
+    driver: bridge
