@@ -31,6 +31,8 @@ describe('createAdminRouteTree', () => {
     expect(paths).toContain('/admin/managed-resources');
     expect(paths).toContain('/admin/ai/providers');
     expect(paths).toContain('/admin/ai/providers/:id');
+    expect(paths).toContain('/admin/ai/service-model');
+    expect(paths).toContain('/admin/ai/memory');
     expect(paths).toContain('/admin/ai/catalog/providers');
     expect(paths).toContain('/admin/ai/catalog/providers/:id');
     expect(paths).toContain('/admin/ai/catalog/models');
@@ -159,6 +161,8 @@ describe('createAdminRouteTree', () => {
           i.id !== 'managed-resources' &&
           i.id !== 'ai-providers' &&
           i.id !== 'ai-provider-detail' &&
+          i.id !== 'ai-service-model' &&
+          i.id !== 'ai-memory' &&
           i.id !== 'ai-catalog-providers' &&
           i.id !== 'ai-catalog-provider-detail' &&
           i.id !== 'ai-catalog-models' &&
