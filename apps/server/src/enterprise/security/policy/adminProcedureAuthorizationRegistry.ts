@@ -333,6 +333,66 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY = [
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.CONNECTOR_UPDATE] },
   },
   {
+    kind: 'mutation',
+    path: 'admin.creds.createFile',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.CRED_CREATE] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.creds.createKV',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.CRED_CREATE] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.creds.createOAuth',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.CRED_CREATE] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.creds.delete',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.CRED_DELETE] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.creds.deleteByKey',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.CRED_DELETE] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.creds.get',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.CRED_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.creds.getByKey',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.CRED_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.creds.getSkillCredStatus',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.CRED_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.creds.list',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.CRED_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.creds.listOAuthConnections',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.CRED_READ] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.creds.update',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.CRED_UPDATE] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.creds.uploadFile',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.CRED_CREATE] },
+  },
+  {
     kind: 'query',
     path: 'admin.easyauth.getSyncStatus',
     permission: {
@@ -549,6 +609,66 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY = [
     kind: 'mutation',
     path: 'admin.skills.validate',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SKILL_UPDATE] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.stats.countAgents',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.STATS_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.stats.countMessages',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.STATS_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.stats.countTopics',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.STATS_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.stats.getHeatmaps',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.STATS_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.stats.getMaxTaskDuration',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.STATS_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.stats.getTokenHeatmaps',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.STATS_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.stats.rankAgents',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.STATS_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.stats.rankModels',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.STATS_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.stats.rankTopics',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.STATS_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.stats.totals',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.STATS_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.stats.usageFindAndGroupByDay',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.STATS_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.stats.usageFindByMonth',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.STATS_READ] },
   },
   {
     kind: 'mutation',

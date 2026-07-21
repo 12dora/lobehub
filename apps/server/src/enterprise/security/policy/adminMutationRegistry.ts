@@ -378,6 +378,83 @@ export const ADMIN_MUTATION_REGISTRY = {
     'Change a connector draft.',
     { reauth: conditionalReauth },
   ),
+  'admin.creds.createFile': dangerousMutation(
+    'admin.creds.createFile',
+    'high',
+    'Create a platform global file entry from a staged upload.',
+    {
+      reason: enforced(
+        'Router records a fixed audit reason for CredsApi-compatible mutations (no free-form reason field).',
+      ),
+      reauth: recentReauth,
+    },
+  ),
+  'admin.creds.createKV': dangerousMutation(
+    'admin.creds.createKV',
+    'high',
+    'Create a platform global KV entry with envelope-encrypted values.',
+    {
+      reason: enforced(
+        'Router records a fixed audit reason for CredsApi-compatible mutations (no free-form reason field).',
+      ),
+      reauth: recentReauth,
+    },
+  ),
+  'admin.creds.createOAuth': dangerousMutation(
+    'admin.creds.createOAuth',
+    'high',
+    'Rejected OAuth create path for platform global entries (unsupported).',
+    {
+      reason: enforced(
+        'Router records a fixed audit reason for CredsApi-compatible mutations (no free-form reason field).',
+      ),
+      reauth: recentReauth,
+    },
+  ),
+  'admin.creds.delete': dangerousMutation(
+    'admin.creds.delete',
+    'high',
+    'Delete a platform global entry by id.',
+    {
+      reason: enforced(
+        'Router records a fixed audit reason for CredsApi-compatible mutations (no free-form reason field).',
+      ),
+      reauth: recentReauth,
+    },
+  ),
+  'admin.creds.deleteByKey': dangerousMutation(
+    'admin.creds.deleteByKey',
+    'high',
+    'Delete a platform global entry by stable key.',
+    {
+      reason: enforced(
+        'Router records a fixed audit reason for CredsApi-compatible mutations (no free-form reason field).',
+      ),
+      reauth: recentReauth,
+    },
+  ),
+  'admin.creds.update': dangerousMutation(
+    'admin.creds.update',
+    'high',
+    'Update platform global entry metadata and/or rotate KV values.',
+    {
+      reason: enforced(
+        'Router records a fixed audit reason for CredsApi-compatible mutations (no free-form reason field).',
+      ),
+      reauth: recentReauth,
+    },
+  ),
+  'admin.creds.uploadFile': dangerousMutation(
+    'admin.creds.uploadFile',
+    'high',
+    'Stage an envelope-encrypted file for a platform global entry.',
+    {
+      reason: enforced(
+        'Router records a fixed audit reason for CredsApi-compatible mutations (no free-form reason field).',
+      ),
+      reauth: recentReauth,
+    },
+  ),
   'admin.easyauth.triggerSync': dangerousMutation(
     'admin.easyauth.triggerSync',
     'high',
