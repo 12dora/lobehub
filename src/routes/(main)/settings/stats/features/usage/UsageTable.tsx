@@ -9,16 +9,18 @@ import InlineTable from '@/components/InlineTable';
 import { parseAsInteger, useQueryParam } from '@/hooks/useQueryParam';
 import { useClientDataSWR } from '@/libs/swr';
 import { statsKeys } from '@/libs/swr/keys';
-import { usageService } from '@/services/usage';
 import { formatDate, formatNumber } from '@/utils/format';
 
 import { type UsageChartProps } from '../../types';
+import { scopeStatsKey, useStatsDataSource } from '../StatsDataSource';
 
 const UsageTable = memo<UsageChartProps>(({ dateStrings }) => {
   const { t } = useTranslation('auth');
+  const { findByMonth, scopeKey } = useStatsDataSource();
 
-  const { data, isLoading, mutate } = useClientDataSWR(statsKeys.usageLogs(), async () =>
-    usageService.findByMonth(dateStrings),
+  const { data, isLoading, mutate } = useClientDataSWR(
+    scopeStatsKey(statsKeys.usageLogs(), scopeKey),
+    async () => findByMonth(dateStrings),
   );
 
   const [currentPage, setCurrentPage] = useQueryParam('current', parseAsInteger.withDefault(1), {

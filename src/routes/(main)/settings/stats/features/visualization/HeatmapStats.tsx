@@ -6,11 +6,10 @@ import { useTranslation } from 'react-i18next';
 
 import { useClientDataSWR } from '@/libs/swr';
 import { statsKeys } from '@/libs/swr/keys';
-import { messageService } from '@/services/message';
-import { topicService } from '@/services/topic';
 import { formatShortenNumber } from '@/utils/format';
 
 import { HeatmapType } from '../../types';
+import { scopeStatsKey, useStatsDataSource } from '../StatsDataSource';
 
 /**
  * Render a wall-clock duration in seconds as a compact "1h 15m" / "15m 20s" /
@@ -35,14 +34,17 @@ const formatDuration = (seconds?: number) => {
  */
 const HeatmapStats = memo(() => {
   const { t } = useTranslation('auth');
+  const { getMaxTaskDuration, getTokenHeatmaps, scopeKey } = useStatsDataSource();
 
-  const { data, isLoading } = useClientDataSWR(statsKeys.heatmaps(HeatmapType.Tokens), () =>
-    messageService.getTokenHeatmaps(),
+  const { data, isLoading } = useClientDataSWR(
+    scopeStatsKey(statsKeys.heatmaps(HeatmapType.Tokens), scopeKey),
+    () => getTokenHeatmaps(),
   );
   const loading = isLoading || !data;
 
-  const { data: maxTaskDuration } = useClientDataSWR(statsKeys.maxTaskDuration(), () =>
-    topicService.getMaxTaskDuration(),
+  const { data: maxTaskDuration } = useClientDataSWR(
+    scopeStatsKey(statsKeys.maxTaskDuration(), scopeKey),
+    () => getMaxTaskDuration(),
   );
 
   const stats = useMemo(() => {

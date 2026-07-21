@@ -7,18 +7,22 @@ import StatisticCard from '@/components/StatisticCard';
 import TitleWithPercentage from '@/components/StatisticCard/TitleWithPercentage';
 import { useClientDataSWR } from '@/libs/swr';
 import { statsKeys } from '@/libs/swr/keys';
-import { messageService } from '@/services/message';
 import { formatIntergerNumber } from '@/utils/format';
 import { lastMonth } from '@/utils/time';
 
+import { scopeStatsKey, useStatsDataSource } from '../StatsDataSource';
 import TotalCard from './ShareButton/TotalCard';
 
 const TotalMessages = memo<{ inShare?: boolean; mobile?: boolean }>(({ inShare }) => {
   const { t } = useTranslation('auth');
-  const { data, isLoading, error, mutate } = useClientDataSWR(statsKeys.messages(), async () => ({
-    count: await messageService.countMessages(),
-    prevCount: await messageService.countMessages({ endDate: lastMonth().format('YYYY-MM-DD') }),
-  }));
+  const { countMessages, scopeKey } = useStatsDataSource();
+  const { data, isLoading, error, mutate } = useClientDataSWR(
+    scopeStatsKey(statsKeys.messages(), scopeKey),
+    async () => ({
+      count: await countMessages(),
+      prevCount: await countMessages({ endDate: lastMonth().format('YYYY-MM-DD') }),
+    }),
+  );
 
   if (inShare)
     return (
