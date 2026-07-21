@@ -2,6 +2,12 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
+# Enterprise platform reference rules (M14 / W9 O06).
+# Notification receivers are deployment-owned and intentionally unconfigured here.
+# Firing rules remain visible in the Prometheus UI without Alertmanager.
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
 scrape_configs:
   - job_name: 'prometheus'
     static_configs:

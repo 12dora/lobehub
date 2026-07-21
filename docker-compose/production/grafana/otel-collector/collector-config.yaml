@@ -34,8 +34,11 @@ exporters:
 
 service:
   pipelines:
+    # Include OTLP so LobeHub enterprise platform metrics (and other app OTLP metrics)
+    # reach Prometheus remote-write alongside collector self-scrapes. Alert rules load
+    # in Prometheus regardless; without OTLP here app metrics never arrive in this example.
     metrics:
-      receivers: [prometheus]
+      receivers: [otlp, prometheus]
       exporters: [prometheusremotewrite]
     traces:
       receivers: [otlp]

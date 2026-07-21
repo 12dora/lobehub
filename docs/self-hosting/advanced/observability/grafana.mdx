@@ -57,11 +57,31 @@ mv .env.example .env
 
 Click on "Explore" in the left sidebar to access the query editor to run ad-hoc queries against your Prometheus and Tempo data sources.
 
+## 3.1 Enterprise platform reference alerts
+
+The compose stack loads checked-in Prometheus **reference** alert rules for enterprise platform
+metrics from `prometheus/rules/enterprise-platform-alerts.yml` (mounted read-only). Rules are
+visible under Prometheus **Alerts** / **Rules**.
+
+**Notification receivers are not configured** in this example. A firing rule is still observable in
+Prometheus without Alertmanager. Production routing, thresholds, and on-call ownership are
+deployment-owned — see
+[enterprise Prometheus alerts runbook](https://github.com/lobehub/lobehub/blob/canary/docs/enterprise/runbooks/enterprise-prometheus-alerts.md)
+(or the same path in your checkout). Validate rules with:
+
+```sh
+bun run enterprise:check-prometheus-rules
+```
+
+This runs `promtool check rules` in the pinned `prom/prometheus` image and fails if Docker or
+validation is unavailable.
+
 ## 4. Troubleshooting
 
 - Ensure all containers are running: `docker compose ps`
 - Check logs for any service: `docker compose logs <service-name>`
 - Verify Prometheus and Tempo are scraping and receiving data from LobeHub and otel-collector.
+- Confirm enterprise rules loaded: open Prometheus `/rules` and look for group `enterprise-platform`.
 
 ## See Also
 

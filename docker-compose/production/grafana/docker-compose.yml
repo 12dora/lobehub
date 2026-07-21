@@ -123,12 +123,14 @@ services:
     command: ['-config.file=/etc/tempo.yaml']
 
   prometheus:
-    image: prom/prometheus
+    # Pinned so local/CI `promtool check rules` and this compose example share one version.
+    image: prom/prometheus:v2.55.1
     container_name: lobe-prometheus
     network_mode: 'service:network-service'
     restart: always
     volumes:
-      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules:/etc/prometheus/rules:ro
       - prometheus_data:/prometheus
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
