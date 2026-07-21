@@ -517,7 +517,7 @@ export default {
   'nav.aiCatalogModels': 'Catalog models',
   'nav.aiCatalogProviderDetail': 'Catalog provider detail',
   'nav.aiCatalogProviders': 'Catalog providers',
-
+  'nav.aiCreds': 'Credentials',
   'nav.aiProviderDetail': 'Provider detail',
   'nav.aiProviders': 'Providers',
   'aiProviderSettings.advancedCatalog': 'Advanced catalog management',
@@ -545,6 +545,10 @@ export default {
   'stats.banner.usersTotal': 'Total users',
   'stats.banner.usersActive': 'Active users (30d)',
   'stats.banner.scopeNote': 'All metrics cover every user and workspace.',
+
+  'creds.page.title': 'Credentials',
+  'creds.page.desc':
+    'Platform-owned global credentials shared by all users. Secrets are envelope-encrypted and never revealed after save.',
 
   'nav.userDetail': 'User detail',
   'nav.users': 'Users',

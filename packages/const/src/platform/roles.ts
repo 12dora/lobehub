@@ -44,7 +44,7 @@ export const PLATFORM_ROLE_DESCRIPTIONS: Record<PlatformSystemRoleName, string> 
   [PLATFORM_SYSTEM_ROLES.USER_ADMIN]:
     'Manage users, sessions, and global role packages (except super_admin).',
   [PLATFORM_SYSTEM_ROLES.AI_ADMIN]:
-    'Manage AI providers/models, skills, connectors, and platform agents. Settings read-only.',
+    'Manage AI providers/models, skills, connectors, platform agents, and global credentials. Settings read-only.',
   [PLATFORM_SYSTEM_ROLES.IDENTITY_ADMIN]:
     'Manage OIDC identity providers, branding, and related audit views.',
   [PLATFORM_SYSTEM_ROLES.AUDITOR]: 'Read-only access to all admin resources and audit export.',
@@ -118,6 +118,10 @@ export const PLATFORM_ROLE_PERMISSIONS: Record<
     PLATFORM_PERMISSIONS.AGENT_DELETE,
     PLATFORM_PERMISSIONS.AGENT_PUBLISH,
     PLATFORM_PERMISSIONS.AGENT_ASSIGN,
+    PLATFORM_PERMISSIONS.CRED_READ,
+    PLATFORM_PERMISSIONS.CRED_CREATE,
+    PLATFORM_PERMISSIONS.CRED_UPDATE,
+    PLATFORM_PERMISSIONS.CRED_DELETE,
     PLATFORM_PERMISSIONS.AUDIT_READ,
   ],
 

@@ -35,6 +35,9 @@ const AiCatalogProviderDetailPage = lazy(
 const AiCatalogModelListPage = lazy(
   () => import('@/enterprise/client/features/admin/ai/models/ModelListPage'),
 );
+const GlobalCredsPage = lazy(
+  () => import('@/enterprise/client/features/admin/creds/GlobalCredsPage'),
+);
 const SkillListPage = lazy(() => import('@/enterprise/client/features/admin/skills/SkillListPage'));
 const SkillDetailPage = lazy(
   () => import('@/enterprise/client/features/admin/skills/SkillDetailPage'),
@@ -100,6 +103,9 @@ const resolveAdminLeafElement = (id: string): ReactNode => {
     }
     case 'ai-catalog-models': {
       return withLazy(<AiCatalogModelListPage />);
+    }
+    case 'ai-creds': {
+      return withLazy(<GlobalCredsPage />);
     }
     case 'skills': {
       return withLazy(<SkillListPage />);

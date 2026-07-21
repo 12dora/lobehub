@@ -26,6 +26,7 @@ import { adminAgentsRouter } from './admin/agents';
 import { adminAiModelsRouter, adminAiProvidersRouter } from './admin/aiCatalog';
 import { adminBrandingRouter } from './admin/branding';
 import { adminConnectorsRouter } from './admin/connectors';
+import { adminCredsRouter } from './admin/creds';
 import { adminIdentityProvidersRouter } from './admin/identityProviders';
 import { adminManagedResourcesRouter } from './admin/managedResources';
 import { adminSecurityRouter } from './admin/security';
@@ -293,6 +294,7 @@ export const adminRouter = router({
   auth: adminAuthRouter,
   branding: adminBrandingRouter,
   connectors: adminConnectorsRouter,
+  creds: adminCredsRouter,
   easyauth: adminEasyauthRouter,
   identityProviders: adminIdentityProvidersRouter,
   managedResources: adminManagedResourcesRouter,

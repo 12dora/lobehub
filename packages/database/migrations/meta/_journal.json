@@ -966,6 +966,13 @@
       "when": 1784615965548,
       "tag": "0137_m13_admin_mutation_rate_windows",
       "breakpoints": true
+    },
+    {
+      "idx": 138,
+      "version": "7",
+      "when": 1784634964526,
+      "tag": "0138_w10_platform_global_credentials",
+      "breakpoints": true
     }
   ],
   "version": "6"
