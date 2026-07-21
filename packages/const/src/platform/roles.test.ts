@@ -34,6 +34,10 @@ describe('platform system roles', () => {
     expect(codes).toContain(PLATFORM_PERMISSIONS.POLICY_READ);
     expect(codes).toContain(PLATFORM_PERMISSIONS.POLICY_UPDATE);
     expect(codes).toContain(PLATFORM_PERMISSIONS.POLICY_PUBLISH);
+    expect(codes).toContain(PLATFORM_PERMISSIONS.CRED_READ);
+    expect(codes).toContain(PLATFORM_PERMISSIONS.CRED_CREATE);
+    expect(codes).toContain(PLATFORM_PERMISSIONS.CRED_UPDATE);
+    expect(codes).toContain(PLATFORM_PERMISSIONS.CRED_DELETE);
     expect(codes).not.toContain(PLATFORM_PERMISSIONS.USER_BAN);
   });
 
