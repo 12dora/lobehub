@@ -15,11 +15,17 @@ import type {
 } from '@/types/aiProvider';
 import { AiProviderSourceEnum } from '@/types/aiProvider';
 
-/** Map platform list row → user-facing provider list item (id = providerKey). */
+/**
+ * Map platform list row → user-facing provider list item (id = providerKey).
+ *
+ * `enabled` is taken from the **draft** row (list endpoint returns draft views).
+ * After auto-publish the draft mirrors the live catalog; using draft keeps the
+ * admin parity switch in sync with the form the admin is editing without a
+ * second published-state round trip. When draft diverges (publish soft-fail),
+ * the draft banner surfaces that the live catalog may lag.
+ */
 export const mapProviderListItem = (item: AdminAiProviderListItem): AiProviderListItem => ({
   description: item.description ?? undefined,
-  // Prefer published enabled for list toggles when draft diverges — admin UI shows draft,
-  // but "enabled" switch should reflect the live/published intent after auto-publish.
   enabled: item.enabled,
   id: item.providerKey,
   logo: item.logo ?? undefined,
@@ -28,27 +34,60 @@ export const mapProviderListItem = (item: AdminAiProviderListItem): AiProviderLi
   source: item.source === 'builtin' ? AiProviderSourceEnum.Builtin : AiProviderSourceEnum.Custom,
 });
 
-/** Map platform get → user-facing detail. Never embeds secret plaintext. */
+/**
+ * Map platform get → user-facing detail.
+ * - Secrets never leave the server (no plaintext keyVaults).
+ * - Public endpoint is `config.endpoint` → form `keyVaults.baseURL` for display/edit.
+ */
 export const mapProviderDetail = (
   output: AdminAiProviderGetOutput,
 ): AiProviderDetailItem & { secretConfigured?: boolean } => {
   const draft = output.draft;
   const secretConfigured = draft.secret.configured;
+  const endpoint =
+    typeof draft.config?.endpoint === 'string' ? (draft.config.endpoint as string) : undefined;
   return {
     checkModel: draft.checkModel ?? undefined,
     description: draft.description ?? undefined,
     enabled: draft.enabled,
-    // Platform runtime always executes server-side; never surface client-fetch as active.
     fetchOnClient: false,
     id: draft.providerKey,
-    // Empty vaults — secretConfigured drives the "Configured" placeholder in ProviderConfig.
-    keyVaults: {},
+    // baseURL is public (config.endpoint); true credentials stay empty + secretConfigured.
+    keyVaults: endpoint ? { baseURL: endpoint } : {},
     logo: draft.logo ?? undefined,
     name: draft.displayName,
     secretConfigured,
     settings: (draft.settings ?? {}) as AiProviderDetailItem['settings'],
     source: draft.source === 'builtin' ? AiProviderSourceEnum.Builtin : AiProviderSourceEnum.Custom,
   };
+};
+
+/** Split form keyVaults: baseURL/endpoint → public config; remaining non-empty → secret merge. */
+export const splitFormKeyVaults = (keyVaults?: Record<string, unknown> | null) => {
+  const raw = keyVaults ?? {};
+  const endpointRaw = raw.baseURL ?? raw.endpoint;
+  const endpoint =
+    typeof endpointRaw === 'string' && endpointRaw.trim().length > 0
+      ? endpointRaw.trim()
+      : undefined;
+
+  const secretParts: Record<string, string | Record<string, string>> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (key === 'baseURL' || key === 'endpoint') continue;
+    if (typeof value === 'string' && value.length > 0) {
+      secretParts[key] = value;
+      continue;
+    }
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      const nested = Object.fromEntries(
+        Object.entries(value as Record<string, unknown>).filter(
+          (entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1].length > 0,
+        ),
+      );
+      if (Object.keys(nested).length > 0) secretParts[key] = nested;
+    }
+  }
+  return { endpoint, secretParts };
 };
 
 export const mapModelListItem = (
