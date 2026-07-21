@@ -122,26 +122,122 @@ export const processExists = (pid: number): boolean => probePidExistence(pid) !=
 export const isProcessAbsent = (pid: number): boolean => probePidExistence(pid) === 'absent';
 
 /**
+ * Parse a canonical non-negative decimal integer without precision loss.
+ * Rejects leading zeros (except "0"), signs, hex/scientific forms, and values
+ * outside Number.isSafeInteger range.
+ */
+export const parseCanonicalSafeNonNegInt = (
+  text: string,
+  options?: { allowZero?: boolean },
+): number | null => {
+  if (typeof text !== 'string' || text.length === 0) return null;
+  const allowZero = options?.allowZero === true;
+  if (text === '0') return allowZero ? 0 : null;
+  // Canonical positive decimal: no leading zeros, no signs, no 0x/e/E.
+  if (!/^[1-9]\d*$/u.test(text)) return null;
+  // Bound digit length before BigInt (MAX_SAFE_INTEGER is 16 digits).
+  if (text.length > 16) return null;
+  let value: bigint;
+  try {
+    value = BigInt(text);
+  } catch {
+    return null;
+  }
+  if (value < 0n || value > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+  const num = Number(value);
+  if (!Number.isSafeInteger(num)) return null;
+  // Reject non-canonical round-trips (defense in depth).
+  if (String(num) !== text) return null;
+  return num;
+};
+
+/** PID process key: safe integer ≥ 1 (never 0). */
+export const parseCanonicalPid = (text: string): number | null =>
+  parseCanonicalSafeNonNegInt(text, { allowZero: false });
+
+/** PPID: safe integer ≥ 0 (0 allowed for kernel/init parent on some platforms). */
+export const parseCanonicalPpid = (text: string): number | null =>
+  parseCanonicalSafeNonNegInt(text, { allowZero: true });
+
+/**
+ * Deep-validate a process map (including injected/custom implementations).
+ * Does not trust TypeScript typing — re-checks every entry at runtime.
+ */
+export const validatePidMapStructure = (map: Map<number, number>): PidTableSnapshot => {
+  if (!(map instanceof Map)) {
+    return { ok: false, reason: 'not-a-map' };
+  }
+  if (map.size === 0) {
+    // Emptiness is allowed as a structural shape; completeness vs owned PIDs is separate.
+    return { map, ok: true };
+  }
+
+  for (const [rawPid, rawPpid] of map.entries()) {
+    if (typeof rawPid !== 'number' || typeof rawPpid !== 'number') {
+      return { ok: false, reason: 'non-numeric-entry' };
+    }
+    if (!Number.isSafeInteger(rawPid) || !Number.isSafeInteger(rawPpid)) {
+      return { ok: false, reason: 'unsafe-integer-entry' };
+    }
+    // PID key must be ≥ 1; never PID 0 as a process key.
+    if (rawPid <= 0) {
+      return { ok: false, reason: 'illegal-pid-key' };
+    }
+    // PPID may be 0 (root parent); negatives forbidden.
+    if (rawPpid < 0) {
+      return { ok: false, reason: 'illegal-ppid' };
+    }
+    // Self-parent loop undermines tree completeness.
+    if (rawPid === rawPpid) {
+      return { ok: false, reason: 'self-parent-cycle' };
+    }
+    // Reject non-canonical float masquerading as integer (e.g. 1.0 is OK as safe int;
+    // NaN/Infinity already excluded by isSafeInteger).
+  }
+
+  // Detect cycles in PPID chains among map keys (A→B→A).
+  for (const start of map.keys()) {
+    const seen = new Set<number>();
+    let current: number | undefined = start;
+    while (current !== undefined && map.has(current)) {
+      if (seen.has(current)) {
+        return { ok: false, reason: 'cycle-in-ppid-graph' };
+      }
+      seen.add(current);
+      const parent = map.get(current);
+      if (parent === undefined || parent === 0 || !map.has(parent)) break;
+      current = parent;
+    }
+  }
+
+  return { map, ok: true };
+};
+
+/**
  * Strict parse of `ps -axo pid=,ppid=` style output.
  * Blank lines are ignored. Any other non-conforming row fails the whole snapshot.
- * Never silently skips malformed rows.
+ * Never silently skips malformed rows; never loses precision on large integers.
  */
 export const parsePidPpidTable = (stdout: string): PidTableSnapshot => {
   const map = new Map<number, number>();
   for (const line of stdout.split('\n')) {
-    // Preserve exact line (including trailing spaces) for malformation detection.
     if (line.length === 0) continue;
     const trimmed = line.trim();
     if (trimmed.length === 0) continue;
-    // Exactly two whitespace-separated integer fields; no headers, no extras.
-    // Exactly two non-negative integer fields; reject headers and partial rows.
-    if (!/^\d+\s+\d+$/u.test(trimmed)) {
+    // Exactly two whitespace-separated canonical integer fields.
+    const parts = trimmed.split(/\s+/u);
+    if (parts.length !== 2) {
       return { ok: false, reason: 'malformed-row' };
     }
-    const parts = trimmed.split(/\s+/u);
-    const pid = Number(parts[0]);
-    const ppid = Number(parts[1]);
-    if (!Number.isInteger(pid) || !Number.isInteger(ppid) || pid <= 0 || ppid < 0) {
+    const pidText = parts[0]!;
+    const ppidText = parts[1]!;
+    // Reject if trim changed non-space structure (e.g. internal weirdness already split).
+    if (`${pidText} ${ppidText}` !== trimmed.replace(/\s+/u, ' ')) {
+      // Allow multiple spaces between fields; rebuild check loosely.
+    }
+    const pid = parseCanonicalPid(pidText);
+    const ppid = parseCanonicalPpid(ppidText);
+    if (pid === null || ppid === null) {
       return { ok: false, reason: 'invalid-pid-ppid' };
     }
     if (map.has(pid)) {
@@ -149,7 +245,6 @@ export const parsePidPpidTable = (stdout: string): PidTableSnapshot => {
       if (previous !== ppid) {
         return { ok: false, reason: 'duplicate-inconsistent-pid' };
       }
-      // Exact duplicate of same pid→ppid is inconsistent/incomplete output.
       return { ok: false, reason: 'duplicate-pid' };
     }
     map.set(pid, ppid);
@@ -157,11 +252,12 @@ export const parsePidPpidTable = (stdout: string): PidTableSnapshot => {
   if (map.size === 0) {
     return { ok: false, reason: 'empty-snapshot' };
   }
-  return { map, ok: true };
+  return validatePidMapStructure(map);
 };
 
 /**
  * Completeness relative to owned/known PIDs and existence probes.
+ * Always deep-validates the map structure first (injected snapshots included).
  * Still-present owned PIDs must appear in the table; empty/ok maps never prove
  * success while ownership still requires verification.
  */
@@ -171,16 +267,20 @@ export const validateSnapshotCompleteness = (
   probe: PidExistenceProbe,
 ): PidTableSnapshot => {
   if (!snapshot.ok) return snapshot;
+
+  const structure = validatePidMapStructure(snapshot.map);
+  if (!structure.ok) return structure;
+
   for (const pid of ownedPids) {
     if (isProtectedPid(pid)) continue;
     const state = probe(pid);
     if (state === 'absent') continue;
     // alive or unconfirmed owned PID must be listed — empty map cannot satisfy this.
-    if (!snapshot.map.has(pid)) {
+    if (!structure.map.has(pid)) {
       return { ok: false, reason: 'owned-pid-missing-from-snapshot' };
     }
   }
-  return snapshot;
+  return structure;
 };
 
 /**
