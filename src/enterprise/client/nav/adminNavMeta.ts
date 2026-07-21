@@ -15,6 +15,7 @@ export type AdminNavLabelKey =
   | 'nav.aiProviders'
   | 'nav.aiProviderDetail'
   | 'nav.aiModels'
+  | 'nav.aiCreds'
   | 'nav.skills'
   | 'nav.skillDetail'
   | 'nav.connectors'
