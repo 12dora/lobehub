@@ -1,11 +1,9 @@
 /**
- * Backup/restore drills:
- * - local/ci harness: owned PG only; never production-authorized
- * - production path: requires external backup file + signed provenance; never seeds source
+ * Backup/restore drills with harness vs production split.
+ * Production never seeds domain fixture into the restore target.
  */
 import { createHash } from 'node:crypto';
 import { lstat, readFile, realpath } from 'node:fs/promises';
-import path from 'node:path';
 
 import type { EvidenceScope } from '../constants';
 import {
@@ -14,7 +12,6 @@ import {
   PRODUCTION_READINESS_SCHEMA_VERSION,
 } from '../constants';
 import { writeJsonAtomic } from '../fsUtils';
-import { RECOVERY_ENTERPRISE_TABLES } from '../inventory';
 import { scanForForbiddenReportContent } from '../privacy';
 import type { BackupRestoreEvidence } from '../schemas';
 import {
@@ -23,43 +20,39 @@ import {
   type TrustPolicy,
   verifySignedProvenance,
 } from '../trust';
+import { toPreflightGateEvidence } from './evidenceEnvelope';
 import {
+  buildSourceManifestCore,
   compareDigests,
+  compareTableDigests,
   digestAuditLogs,
   digestResourceRevisions,
   verifyPublicationPointers,
   verifyRequiredTablesPresent,
   verifySecretReferenceDomains,
 } from './invariants';
-import {
-  assertDistinctIdentities,
-  createOwnedPostgres,
-  type OwnedPostgresHandle,
-} from './ownedPostgres';
+import { assertDistinctIdentities, createOwnedPostgres } from './ownedPostgres';
 import { seedRecoveryFixture } from './seed';
 
 export interface BackupRestoreDrillOptions {
-  /** Production only: path to external backup artifact (custom format). */
   backupFile?: string;
-  /** Production only: signed provenance over backup digest. */
+  /** Signed provenance over archive digest; may embed sourceManifest in payload extensions via artifact. */
   backupProvenance?: SignedProvenanceEnvelope | unknown;
   candidateSha: string;
   dbSchemaVersionTag: string;
-  inject?: {
-    source: OwnedPostgresHandle;
-    target: OwnedPostgresHandle;
-    cleanup: () => Promise<'failed' | 'passed'>;
-  };
   nowIso?: string;
   outputPath: string;
   releaseId?: string;
   scope: 'ci-harness' | 'local-harness' | 'production-authorized';
+  /** Source manifest JSON path (canonical before-state). Required for production. */
+  sourceManifestPath?: string;
   trustPolicy?: TrustPolicy;
 }
 
 export interface BackupRestoreDrillResult {
   evidence: BackupRestoreEvidence;
   exitCode: number;
+  gateEvidence: ReturnType<typeof toPreflightGateEvidence>;
 }
 
 const buildEvidence = (input: {
@@ -89,141 +82,135 @@ const buildEvidence = (input: {
     sourcePreserved: true,
     status: input.status,
   };
-  const scan = scanForForbiddenReportContent(evidence);
-  if (scan.result === 'failed') {
-    throw new Error(`Backup-restore evidence redaction rejected ${scan.violations} field(s)`);
+  if (scanForForbiddenReportContent(evidence).result === 'failed') {
+    throw new Error('Backup-restore evidence redaction rejected');
   }
   return evidence;
 };
 
-const runInvariants = async (
-  source: OwnedPostgresHandle | undefined,
-  target: OwnedPostgresHandle,
-  before: {
-    revisions: Awaited<ReturnType<typeof digestResourceRevisions>>;
-    audit: Awaited<ReturnType<typeof digestAuditLogs>>;
-    secrets: Awaited<ReturnType<typeof verifySecretReferenceDomains>>;
-    publishedCount: number;
-  },
-) => {
-  const afterRevisions = await target.withClient(digestResourceRevisions);
-  const afterAudit = await target.withClient(digestAuditLogs);
-  const afterSecrets = await target.withClient(verifySecretReferenceDomains);
-  const tables = await target.withClient((client) =>
-    verifyRequiredTablesPresent(client, RECOVERY_ENTERPRISE_TABLES),
-  );
-  const publications = await target.withClient((client) =>
-    verifyPublicationPointers(client, {
-      priorPublishedCount: before.publishedCount,
-    }),
-  );
-
-  let sourcePreserved = true;
-  if (source) {
-    const sourceAfter = await source.withClient(digestResourceRevisions);
-    sourcePreserved = compareDigests(before.revisions, sourceAfter);
-  }
-
-  const revisionMatch = compareDigests(before.revisions, afterRevisions);
-  const auditMatch = compareDigests(before.audit, afterAudit);
-  const secretMatch =
-    before.secrets.aggregateDigest === afterSecrets.aggregateDigest && afterSecrets.match;
-
-  return [
-    { id: 'resource-revisions', result: revisionMatch ? ('passed' as const) : ('failed' as const) },
-    { id: 'audit-logs', result: auditMatch ? ('passed' as const) : ('failed' as const) },
-    { id: 'secret-references', result: secretMatch ? ('passed' as const) : ('failed' as const) },
-    { id: 'required-tables', result: tables.match ? ('passed' as const) : ('failed' as const) },
-    {
-      id: 'publication-pointers',
-      result: publications.match ? ('passed' as const) : ('failed' as const),
-    },
-    {
-      id: 'source-preserved',
-      result: sourcePreserved ? ('passed' as const) : ('failed' as const),
-    },
-  ].sort((a, b) => a.id.localeCompare(b.id, 'en'));
+const writeResult = async (
+  options: BackupRestoreDrillOptions,
+  evidence: BackupRestoreEvidence,
+  exitCode: number,
+): Promise<BackupRestoreDrillResult> => {
+  const rawPath = options.outputPath.replace(/\.json$/u, '.raw.json');
+  const { sha256 } = await writeJsonAtomic(rawPath, evidence);
+  const gateEvidence = toPreflightGateEvidence({
+    artifactSha256: sha256,
+    assertions: evidence.assertions,
+    candidateSha: evidence.candidateSha,
+    gate: 'backup-restore',
+    generatedAt: evidence.freshness.generatedAt,
+    rawReport: evidence,
+    releaseId: options.releaseId,
+    scope: evidence.scope,
+    status: evidence.status,
+  });
+  await writeJsonAtomic(options.outputPath, gateEvidence);
+  return { evidence, exitCode, gateEvidence };
 };
 
-/**
- * Harness path: always local-harness or ci-harness scope. Never production-authorized.
- */
 export const runBackupRestoreDrill = async (
   options: BackupRestoreDrillOptions,
 ): Promise<BackupRestoreDrillResult> => {
   const nowIso = options.nowIso ?? new Date().toISOString();
-
-  // Any attempt to label harness production is forced down.
   if (options.scope === 'production-authorized') {
     return runProductionBackupRestore(options, nowIso);
   }
+  return runHarnessBackupRestore(options, nowIso);
+};
 
+const runHarnessBackupRestore = async (
+  options: BackupRestoreDrillOptions,
+  nowIso: string,
+): Promise<BackupRestoreDrillResult> => {
   const harnessScope: 'ci-harness' | 'local-harness' =
     options.scope === 'ci-harness' ? 'ci-harness' : 'local-harness';
-
   let cleanupResult: 'failed' | 'passed' = 'passed';
   let sourceBackupDigest = createHash('sha256').update('empty').digest('hex');
   let sourceLifecycle: Awaited<ReturnType<typeof createOwnedPostgres>> | undefined;
   let targetLifecycle: Awaited<ReturnType<typeof createOwnedPostgres>> | undefined;
 
   try {
-    let source: OwnedPostgresHandle;
-    let target: OwnedPostgresHandle;
-    let cleanup: () => Promise<'failed' | 'passed'>;
-
-    if (options.inject) {
-      source = options.inject.source;
-      target = options.inject.target;
-      cleanup = options.inject.cleanup;
-    } else {
-      sourceLifecycle = await createOwnedPostgres();
-      targetLifecycle = await createOwnedPostgres();
-      source = sourceLifecycle.handle;
-      target = targetLifecycle.handle;
-      cleanup = async () => {
-        const results = await Promise.all([sourceLifecycle!.cleanup(), targetLifecycle!.cleanup()]);
-        return results.every((r) => r === 'passed') ? 'passed' : 'failed';
-      };
-    }
-
+    sourceLifecycle = await createOwnedPostgres();
+    targetLifecycle = await createOwnedPostgres();
+    const source = sourceLifecycle.handle;
+    const target = targetLifecycle.handle;
     assertDistinctIdentities(source.identityDigest, target.identityDigest);
 
     await source.withClient(async (client) => {
       await seedRecoveryFixture(client);
     });
 
-    const beforeRevisions = await source.withClient(digestResourceRevisions);
-    const beforeAudit = await source.withClient(digestAuditLogs);
-    const beforeSecrets = await source.withClient(verifySecretReferenceDomains);
-    const published = await source.withClient(async (client) => {
-      const r = await client.query<{ count: string }>(
-        `SELECT COUNT(*)::text AS count FROM platform_resource_revisions WHERE status = 'published'`,
-      );
-      return Number(r.rows[0]?.count ?? 0);
-    });
-
+    const before = await source.withClient(async (client) => buildSourceManifestCore(client));
     const dump = await source.pgDumpCustom();
     sourceBackupDigest = createHash('sha256').update(dump).digest('hex');
     await target.pgRestoreCustom(dump);
 
-    const invariants = await runInvariants(source, target, {
-      audit: beforeAudit,
-      publishedCount: published,
-      revisions: beforeRevisions,
-      secrets: beforeSecrets,
-    });
+    const after = await target.withClient(async (client) => buildSourceManifestCore(client));
+    const sourceAfter = await source.withClient(async (client) => buildSourceManifestCore(client));
 
-    cleanupResult = await cleanup();
+    const invariants = [
+      {
+        id: 'resource-revisions',
+        result:
+          before.revisions.digest === after.revisions.digest &&
+          before.revisions.rowCount === after.revisions.rowCount
+            ? ('passed' as const)
+            : ('failed' as const),
+      },
+      {
+        id: 'audit-logs',
+        result:
+          before.audits.digest === after.audits.digest &&
+          before.audits.rowCount === after.audits.rowCount
+            ? ('passed' as const)
+            : ('failed' as const),
+      },
+      {
+        id: 'secret-references',
+        result:
+          before.secrets.aggregateDigest === after.secrets.aggregateDigest && after.secrets.match
+            ? ('passed' as const)
+            : ('failed' as const),
+      },
+      {
+        id: 'required-tables',
+        result: compareTableDigests(before.tables, after.tables)
+          ? ('passed' as const)
+          : ('failed' as const),
+      },
+      {
+        id: 'publication-pointers',
+        result:
+          before.pointerDigest === after.pointerDigest &&
+          before.publishedCount === after.publishedCount
+            ? ('passed' as const)
+            : ('failed' as const),
+      },
+      {
+        id: 'source-preserved',
+        result:
+          before.revisions.digest === sourceAfter.revisions.digest
+            ? ('passed' as const)
+            : ('failed' as const),
+      },
+    ].sort((a, b) => a.id.localeCompare(b.id, 'en'));
+
+    cleanupResult = (
+      await Promise.all([sourceLifecycle.cleanup(), targetLifecycle.cleanup()])
+    ).every((r) => r === 'passed')
+      ? 'passed'
+      : 'failed';
+
     const failedCount = invariants.filter((i) => i.result === 'failed').length;
-    const passedCount = invariants.filter((i) => i.result === 'passed').length;
     const allPassed = failedCount === 0 && cleanupResult === 'passed';
-
     const evidence = buildEvidence({
       assertions: allPassed
         ? { failed: 0, passed: invariants.length, skipped: 0, total: invariants.length }
         : {
             failed: failedCount + (cleanupResult === 'failed' ? 1 : 0),
-            passed: passedCount,
+            passed: invariants.length - failedCount,
             skipped: 0,
             total: invariants.length + (cleanupResult === 'failed' ? 1 : 0),
           },
@@ -236,9 +223,7 @@ export const runBackupRestoreDrill = async (
       sourceBackupDigest,
       status: allPassed ? 'passed' : 'failed',
     });
-
-    await writeJsonAtomic(options.outputPath, evidence);
-    return { evidence, exitCode: evidence.status === 'passed' ? 0 : 1 };
+    return writeResult(options, evidence, allPassed ? 0 : 1);
   } catch {
     if (sourceLifecycle || targetLifecycle) {
       const results = await Promise.all([
@@ -258,14 +243,13 @@ export const runBackupRestoreDrill = async (
       sourceBackupDigest,
       status: 'failed',
     });
-    await writeJsonAtomic(options.outputPath, evidence).catch(() => undefined);
-    return { evidence, exitCode: 1 };
+    return writeResult(options, evidence, 1);
   }
 };
 
 /**
- * Production path: external backup + signed provenance. Never creates/seeds source.
- * Restores only into owned isolated target.
+ * Production: empty owned target, external archive + signed provenance + source manifest.
+ * Never seeds domain fixture into the restore target.
  */
 const runProductionBackupRestore = async (
   options: BackupRestoreDrillOptions,
@@ -274,7 +258,7 @@ const runProductionBackupRestore = async (
   const policy = options.trustPolicy ?? PRODUCTION_TRUST_POLICY;
   const emptyDigest = createHash('sha256').update('empty').digest('hex');
 
-  if (!options.backupFile || !options.backupProvenance) {
+  if (!options.backupFile || !options.backupProvenance || !options.sourceManifestPath) {
     const evidence = buildEvidence({
       assertions: { failed: 0, passed: 0, skipped: 1, total: 1 },
       candidateSha: options.candidateSha,
@@ -282,22 +266,17 @@ const runProductionBackupRestore = async (
       dbSchemaVersionTag: options.dbSchemaVersionTag,
       invariants: [{ id: 'restore-integrity', result: 'failed' }],
       nowIso,
-      // Never claim production-authorized without verification — use local for artifact shape.
       scope: 'local-harness',
       sourceBackupDigest: emptyDigest,
       status: 'unverified',
     });
-    await writeJsonAtomic(options.outputPath, evidence);
-    return { evidence, exitCode: 1 };
+    return writeResult(options, evidence, 1);
   }
 
-  // Refuse special files / symlinks
   let backupAbs: string;
   try {
     const st = await lstat(options.backupFile);
-    if (st.isSymbolicLink() || !st.isFile()) {
-      throw new Error('backup-not-regular-file');
-    }
+    if (st.isSymbolicLink() || !st.isFile()) throw new Error('backup-not-regular-file');
     backupAbs = await realpath(options.backupFile);
   } catch {
     const evidence = buildEvidence({
@@ -311,12 +290,20 @@ const runProductionBackupRestore = async (
       sourceBackupDigest: emptyDigest,
       status: 'failed',
     });
-    await writeJsonAtomic(options.outputPath, evidence);
-    return { evidence, exitCode: 1 };
+    return writeResult(options, evidence, 1);
   }
 
   const dump = await readFile(backupAbs);
   const sourceBackupDigest = createHash('sha256').update(dump).digest('hex');
+  const manifestRaw = await readFile(options.sourceManifestPath, 'utf8');
+  const manifest = JSON.parse(manifestRaw) as {
+    audits: { digest: string; rowCount: number };
+    pointerDigest: string;
+    publishedCount: number;
+    revisions: { digest: string; rowCount: number };
+    secrets: { aggregateDigest: string };
+    tables: Array<{ digest: string; name: string; rowCount: number }>;
+  };
 
   const verdict = verifySignedProvenance(options.backupProvenance, {
     expectedArtifactSha256: sourceBackupDigest,
@@ -325,7 +312,6 @@ const runProductionBackupRestore = async (
     expectedReleaseId: options.releaseId,
     policy,
   });
-
   if (!verdict.ok || verdict.environment !== 'production') {
     const evidence = buildEvidence({
       assertions: { failed: 0, passed: 0, skipped: 1, total: 1 },
@@ -338,48 +324,57 @@ const runProductionBackupRestore = async (
       sourceBackupDigest,
       status: 'unverified',
     });
-    await writeJsonAtomic(options.outputPath, evidence);
-    return { evidence, exitCode: 1 };
+    return writeResult(options, evidence, 1);
   }
 
-  // Only restore into owned target — never connect to production source.
+  // Empty owned target — NO seedRecoveryFixture.
   let targetLifecycle: Awaited<ReturnType<typeof createOwnedPostgres>> | undefined;
   let cleanupResult: 'failed' | 'passed' = 'passed';
   try {
     targetLifecycle = await createOwnedPostgres();
     const target = targetLifecycle.handle;
-    // Seed empty schema shell on target so pg_restore has a database; dump should create objects.
-    await target.withClient(async (client) => {
-      await seedRecoveryFixture(client);
-    });
-    // Capture "before" from dump provenance isn't available; verify post-restore internal consistency.
+    // Empty database: only public schema from postgres image.
     await target.pgRestoreCustom(dump);
 
-    const afterRevisions = await target.withClient(digestResourceRevisions);
-    const afterAudit = await target.withClient(digestAuditLogs);
-    const afterSecrets = await target.withClient(verifySecretReferenceDomains);
-    const tables = await target.withClient((client) =>
-      verifyRequiredTablesPresent(client, RECOVERY_ENTERPRISE_TABLES),
-    );
-    const publications = await target.withClient((client) => verifyPublicationPointers(client));
+    const after = await target.withClient(async (client) => buildSourceManifestCore(client));
 
     const invariants = [
       {
         id: 'resource-revisions',
-        result: afterRevisions.rowCount > 0 ? ('passed' as const) : ('failed' as const),
+        result:
+          after.revisions.digest === manifest.revisions.digest &&
+          after.revisions.rowCount === manifest.revisions.rowCount
+            ? ('passed' as const)
+            : ('failed' as const),
       },
       {
         id: 'audit-logs',
-        result: afterAudit.rowCount > 0 ? ('passed' as const) : ('failed' as const),
+        result:
+          after.audits.digest === manifest.audits.digest &&
+          after.audits.rowCount === manifest.audits.rowCount
+            ? ('passed' as const)
+            : ('failed' as const),
       },
       {
         id: 'secret-references',
-        result: afterSecrets.match ? ('passed' as const) : ('failed' as const),
+        result:
+          after.secrets.aggregateDigest === manifest.secrets.aggregateDigest && after.secrets.match
+            ? ('passed' as const)
+            : ('failed' as const),
       },
-      { id: 'required-tables', result: tables.match ? ('passed' as const) : ('failed' as const) },
+      {
+        id: 'required-tables',
+        result: compareTableDigests(manifest.tables, after.tables)
+          ? ('passed' as const)
+          : ('failed' as const),
+      },
       {
         id: 'publication-pointers',
-        result: publications.match ? ('passed' as const) : ('failed' as const),
+        result:
+          after.pointerDigest === manifest.pointerDigest &&
+          after.publishedCount === manifest.publishedCount
+            ? ('passed' as const)
+            : ('failed' as const),
       },
       { id: 'source-preserved', result: 'passed' as const },
     ].sort((a, b) => a.id.localeCompare(b.id, 'en'));
@@ -387,10 +382,6 @@ const runProductionBackupRestore = async (
     cleanupResult = await targetLifecycle.cleanup();
     const failed = invariants.filter((i) => i.result === 'failed').length;
     const allPassed = failed === 0 && cleanupResult === 'passed';
-
-    // Even with valid production provenance, scope on evidence remains local until preflight
-    // re-derives production from the same provenance. Evidence file uses local-harness to
-    // avoid self-declared production; preflight uses detached provenance.
     const evidence = buildEvidence({
       assertions: allPassed
         ? { failed: 0, passed: invariants.length, skipped: 0, total: invariants.length }
@@ -409,8 +400,7 @@ const runProductionBackupRestore = async (
       sourceBackupDigest,
       status: allPassed ? 'passed' : 'failed',
     });
-    await writeJsonAtomic(options.outputPath, evidence);
-    return { evidence, exitCode: allPassed ? 0 : 1 };
+    return writeResult(options, evidence, allPassed ? 0 : 1);
   } catch {
     if (targetLifecycle) cleanupResult = await targetLifecycle.cleanup();
     const evidence = buildEvidence({
@@ -424,13 +414,12 @@ const runProductionBackupRestore = async (
       sourceBackupDigest,
       status: 'failed',
     });
-    await writeJsonAtomic(options.outputPath, evidence).catch(() => undefined);
-    return { evidence, exitCode: 1 };
+    return writeResult(options, evidence, 1);
   }
 };
 
-export const rejectIdenticalSourceTarget = (sourceId: string, targetId: string): void => {
-  assertDistinctIdentities(sourceId, targetId);
+export const rejectIdenticalSourceTarget = (a: string, b: string): void => {
+  assertDistinctIdentities(a, b);
 };
 
 export const isCorruptedDump = (buffer: Buffer): boolean =>
@@ -445,4 +434,12 @@ export const isUnsafeBackupPath = async (filePath: string): Promise<boolean> => 
   }
 };
 
-void path;
+export {
+  buildSourceManifestCore,
+  compareDigests,
+  digestAuditLogs,
+  digestResourceRevisions,
+  verifyPublicationPointers,
+  verifyRequiredTablesPresent,
+  verifySecretReferenceDomains,
+};

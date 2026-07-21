@@ -55,13 +55,11 @@ export const SECRET_DOMAIN_TABLES = {
   identitySecrets: 'platform_identity_provider_secrets',
 } as const;
 
-/** Tables that carry publication / draft pointers into revisions. */
+/**
+ * Tables/columns that carry publication or activation pointers.
+ * Must stay in sync with platform schemas (drift test asserts coverage).
+ */
 export const PUBLICATION_POINTER_SOURCES = [
-  {
-    idColumn: 'id',
-    pointerColumn: 'published_revision',
-    table: 'platform_branding',
-  },
   {
     idColumn: 'id',
     pointerColumn: 'published_revision',
@@ -70,22 +68,27 @@ export const PUBLICATION_POINTER_SOURCES = [
   {
     idColumn: 'id',
     pointerColumn: 'published_revision',
-    table: 'platform_skills',
-  },
-  {
-    idColumn: 'id',
-    pointerColumn: 'published_revision',
-    table: 'platform_agents',
-  },
-  {
-    idColumn: 'id',
-    pointerColumn: 'published_revision',
-    table: 'platform_ai_providers',
+    table: 'platform_user_connector_bindings',
   },
   {
     idColumn: 'id',
     pointerColumn: 'activation_revision',
     table: 'platform_identity_providers',
+  },
+  {
+    idColumn: 'id',
+    pointerColumn: 'first_published_revision',
+    table: 'platform_branding_assets',
+  },
+  {
+    idColumn: 'id',
+    pointerColumn: 'current_version_id',
+    table: 'platform_skills',
+  },
+  {
+    idColumn: 'id',
+    pointerColumn: 'current_version_id',
+    table: 'platform_agents',
   },
 ] as const;
 

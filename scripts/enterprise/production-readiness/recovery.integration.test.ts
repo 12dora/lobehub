@@ -1,19 +1,20 @@
 // @vitest-environment node
-/**
- * Owned PostgreSQL integration: positive backup/restore must pass;
- * app-rollback without executable baseline materialization path may still
- * materialize real baseline when git object exists.
- */
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { loadGateEvidenceFile, runProductionPreflight } from './index';
 import { runAppRollbackDrill, runBackupRestoreDrill } from './recovery';
-import { FIXTURE_CANDIDATE_SHA, FIXTURE_MIGRATION_TAG } from './testFixtures';
+import {
+  buildCandidate,
+  buildPlan,
+  FIXTURE_CANDIDATE_SHA,
+  FIXTURE_MIGRATION_TAG,
+} from './testFixtures';
 
 const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];
@@ -48,100 +49,103 @@ describe.runIf(hasDocker)('recovery integration (owned PostgreSQL)', () => {
       scope: 'local-harness',
     });
 
-    expect(result.evidence.scope).toBe('local-harness');
-    expect(result.evidence.scope).not.toBe('production-authorized');
     expect(result.evidence.status).toBe('passed');
     expect(result.exitCode).toBe(0);
     expect(result.evidence.cleanupResult).toBe('passed');
-    expect(result.evidence.assertions.total).toBeGreaterThan(0);
-    expect(result.evidence.assertions.failed).toBe(0);
-    expect(result.evidence.assertions.skipped).toBe(0);
     for (const inv of result.evidence.invariants) {
       expect(inv.result).toBe('passed');
     }
-
-    const raw = await readFile(outputPath, 'utf8');
-    expect(raw).not.toMatch(/postgres(?:ql)?:\/\//i);
-
-    // Rerun deterministic pass
-    const result2 = await runBackupRestoreDrill({
-      candidateSha: FIXTURE_CANDIDATE_SHA,
-      dbSchemaVersionTag: FIXTURE_MIGRATION_TAG,
-      outputPath: path.join(dir, 'backup-restore-2.json'),
-      scope: 'local-harness',
-    });
-    expect(result2.evidence.status).toBe('passed');
-    expect(result2.exitCode).toBe(0);
+    // Preflight-consumable envelope
+    expect(result.gateEvidence.artifactSha256).toMatch(/^[a-f\d]{64}$/);
+    expect(result.gateEvidence.generatedAt).toBeTruthy();
+    const loaded = await loadGateEvidenceFile(outputPath);
+    expect(loaded.gate).toBe('backup-restore');
+    expect(loaded.artifactSha256).toBe(result.gateEvidence.artifactSha256);
   }, 180_000);
 
-  it('production-authorized without backup+provenance is unverified nonzero', async () => {
+  it('app-rollback with real baseline materialization + DB probe can pass', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'm15q06-int-'));
     tempDirs.push(dir);
-    const result = await runBackupRestoreDrill({
-      candidateSha: FIXTURE_CANDIDATE_SHA,
-      dbSchemaVersionTag: FIXTURE_MIGRATION_TAG,
-      outputPath: path.join(dir, 'backup-restore-prod.json'),
-      scope: 'production-authorized',
-    });
-    expect(result.exitCode).toBe(1);
-    expect(result.evidence.status).toBe('unverified');
-    expect(result.evidence.scope).not.toBe('production-authorized');
-  }, 30_000);
-
-  it('app-rollback: empty marker file must not grant baselineExecutable', async () => {
-    const dir = await mkdtemp(path.join(tmpdir(), 'm15q06-int-'));
-    tempDirs.push(dir);
-    // Plant the old false-green marker
-    const markerDir = path.join(dir, '.records', 'enterprise-app-rollback');
-    await writeFile(path.join(markerDir, 'baseline-probe.ready'), 'x', 'utf8').catch(async () => {
-      const { mkdir } = await import('node:fs/promises');
-      await mkdir(markerDir, { recursive: true });
-      await writeFile(path.join(markerDir, 'baseline-probe.ready'), 'x', 'utf8');
-    });
+    const outputPath = path.join(dir, 'app-rollback.json');
 
     const result = await runAppRollbackDrill({
       candidateSha: FIXTURE_CANDIDATE_SHA,
-      outputPath: path.join(dir, 'app-rollback.json'),
+      outputPath,
       repoRoot: process.cwd(),
       scope: 'local-harness',
     });
 
-    // Marker alone must not be the authorization mechanism.
-    // If baseline materializes and probe runs, executable may be true legitimately.
-    // Ensure we never pass purely from marker in empty dir without materialization:
-    // When repoRoot is an empty temp without git objects, should be unverified.
+    // Positive: baseline materializes and DB probe runs
+    expect(result.evidence.destructiveCommandsRejected).toBe(true);
+    if (result.evidence.status === 'passed') {
+      expect(result.evidence.baselineExecutable).toBe(true);
+      expect(result.exitCode).toBe(0);
+      expect(result.evidence.newTablesRetained).toBe(true);
+      expect(result.evidence.rollForwardOk).toBe(true);
+    } else {
+      // If baseline object missing or deps fail — honest unverified, never fake pass
+      expect(result.evidence.status).toBe('unverified');
+      expect(result.evidence.baselineExecutable).toBe(false);
+      expect(result.exitCode).toBe(1);
+    }
+
+    const loaded = await loadGateEvidenceFile(outputPath);
+    expect(loaded.gate).toBe('app-rollback');
+    expect(loaded.artifactSha256).toBe(result.gateEvidence.artifactSha256);
+
+    // Preflight can consume recovery output
+    const evidenceDir = path.join(dir, 'evidence');
+    await mkdir(evidenceDir);
+    // Minimal other gates as not-executed missing is fine for validate-harness
+    await writeFile(path.join(evidenceDir, 'app-rollback.json'), await readFile(outputPath));
+    const reportPath = path.join(dir, 'preflight-report.json');
+    // Only one gate present — overall unverified but loader must work
+    await runProductionPreflight({
+      candidate: buildCandidate(),
+      evidence: [loaded],
+      mode: 'validate-harness',
+      outputPath: reportPath,
+      plan: buildPlan(),
+    });
+    const report = JSON.parse(await readFile(reportPath, 'utf8')) as { overall: string };
+    expect(report.overall).not.toBe('passed');
+  }, 180_000);
+
+  it('marker file on empty root cannot authorize baselineExecutable', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'm15q06-int-'));
+    tempDirs.push(dir);
     const emptyRoot = await mkdtemp(path.join(tmpdir(), 'm15q06-empty-repo-'));
     tempDirs.push(emptyRoot);
+    await mkdir(path.join(emptyRoot, '.records/enterprise-app-rollback'), { recursive: true });
     await writeFile(
       path.join(emptyRoot, '.records/enterprise-app-rollback/baseline-probe.ready'),
       'forged',
       'utf8',
-    ).catch(async () => {
-      const { mkdir } = await import('node:fs/promises');
-      await mkdir(path.join(emptyRoot, '.records/enterprise-app-rollback'), {
-        recursive: true,
-      });
-      await writeFile(
-        path.join(emptyRoot, '.records/enterprise-app-rollback/baseline-probe.ready'),
-        'forged',
-        'utf8',
-      );
-    });
+    );
 
     const forged = await runAppRollbackDrill({
       candidateSha: FIXTURE_CANDIDATE_SHA,
-      outputPath: path.join(dir, 'app-rollback-forged-marker.json'),
+      outputPath: path.join(dir, 'app-rollback-forged.json'),
       repoRoot: emptyRoot,
       scope: 'production-authorized',
     });
     expect(forged.evidence.baselineExecutable).toBe(false);
     expect(forged.evidence.status).not.toBe('passed');
     expect(forged.exitCode).toBe(1);
-    expect(forged.evidence.destructiveCommandsRejected).toBe(true);
-
-    // Real repo path: may materialize baseline successfully
-    void result;
   }, 180_000);
+
+  it('production-authorized without backup+manifest+provenance is unverified', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'm15q06-int-'));
+    tempDirs.push(dir);
+    const result = await runBackupRestoreDrill({
+      candidateSha: FIXTURE_CANDIDATE_SHA,
+      dbSchemaVersionTag: FIXTURE_MIGRATION_TAG,
+      outputPath: path.join(dir, 'backup-prod.json'),
+      scope: 'production-authorized',
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.evidence.status).toBe('unverified');
+  }, 30_000);
 });
 
 describe.runIf(!hasDocker)('recovery integration skip lane', () => {

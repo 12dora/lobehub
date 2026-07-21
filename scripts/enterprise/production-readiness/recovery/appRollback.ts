@@ -1,8 +1,8 @@
 /**
- * Application-version rollback compatibility drill.
- * Materializes exact baseline commit; never uses marker files for executability.
+ * Application-version rollback drill with real baseline materialization + DB probe.
  */
-import { mkdtemp } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -15,15 +15,16 @@ import {
   type EvidenceScope,
   PRODUCTION_READINESS_SCHEMA_VERSION,
 } from '../constants';
-import { writeJsonAtomic } from '../fsUtils';
+import { createToolOwnedTempDir, writeJsonAtomic } from '../fsUtils';
 import { RECOVERY_ENTERPRISE_TABLES } from '../inventory';
 import { scanForForbiddenReportContent } from '../privacy';
 import type { AppRollbackEvidence } from '../schemas';
 import {
-  disposeMaterializedBaseline,
-  executeBaselinePackageBoundary,
+  disposeOwnedParent,
+  executeBaselineDbProbe,
   materializeBaselineCheckout,
 } from './baselineMaterialize';
+import { toPreflightGateEvidence } from './evidenceEnvelope';
 import { verifyRequiredTablesPresent } from './invariants';
 import { createOwnedPostgres } from './ownedPostgres';
 import { seedRecoveryFixture } from './seed';
@@ -35,21 +36,21 @@ export const DESTRUCTIVE_SQL_PATTERNS = [
   /\bALTER\s+TABLE\b[\s\S]+\bDROP\b/iu,
 ] as const;
 
-export const BASELINE_REQUIRED_TABLES = ['users'] as const;
+export const BASELINE_REQUIRED_TABLES = [
+  'users',
+  'sessions',
+  'agents',
+  'topics',
+  'messages',
+  'user_settings',
+  'api_keys',
+] as const;
 
 export interface AppRollbackDrillOptions {
   candidateSha: string;
-  /** Additional SQL-only contract (never sufficient alone for pass). */
-  includeSqlContract?: boolean;
-  inject?: {
-    baselineExecutable: boolean;
-    runBaselineProbe: (client: PoolClient) => Promise<'failed' | 'passed'>;
-    runCandidateProbe: (client: PoolClient) => Promise<'failed' | 'passed'>;
-    seed: (client: PoolClient) => Promise<void>;
-    cleanup: () => Promise<'failed' | 'passed'>;
-  };
   nowIso?: string;
   outputPath: string;
+  releaseId?: string;
   repoRoot?: string;
   scope: EvidenceScope;
 }
@@ -57,14 +58,14 @@ export interface AppRollbackDrillOptions {
 export interface AppRollbackDrillResult {
   evidence: AppRollbackEvidence;
   exitCode: number;
+  /** Preflight-consumable gate evidence envelope. */
+  gateEvidence: ReturnType<typeof toPreflightGateEvidence>;
 }
 
 export const rejectDestructiveCommand = (sql: string): void => {
   for (const pattern of DESTRUCTIVE_SQL_PATTERNS) {
     pattern.lastIndex = 0;
-    if (pattern.test(sql)) {
-      throw new Error('Destructive rollback SQL rejected');
-    }
+    if (pattern.test(sql)) throw new Error('Destructive rollback SQL rejected');
   }
 };
 
@@ -82,25 +83,8 @@ export const executeCandidateReadContract = async (
   }
 };
 
-/** SQL-only additional contract — labeled insufficient for production. */
-export const executeSyntheticSqlContract = async (
-  client: PoolClient,
-): Promise<'failed' | 'passed'> => {
-  try {
-    for (const table of BASELINE_REQUIRED_TABLES) {
-      await client.query(`SELECT 1 FROM "${table}" LIMIT 1`);
-    }
-    const retained = await verifyRequiredTablesPresent(client, RECOVERY_ENTERPRISE_TABLES);
-    return retained.match ? 'passed' : 'failed';
-  } catch {
-    return 'failed';
-  }
-};
-
 export const assertBaselineNotCandidate = (baselineSha: string, candidateSha: string): void => {
-  if (baselineSha === candidateSha) {
-    throw new Error('Baseline SHA must not equal candidate SHA');
-  }
+  if (baselineSha === candidateSha) throw new Error('Baseline SHA must not equal candidate SHA');
   if (baselineSha !== BASELINE_COMMIT) {
     throw new Error('Baseline SHA does not match declared compatibility baseline');
   }
@@ -117,7 +101,7 @@ export const runAppRollbackDrill = async (
   let newTablesRetained = false;
   let destructiveCommandsRejected = false;
   let rollForwardOk = false;
-  let probePassed = false;
+  let probePassed: boolean;
 
   try {
     rejectDestructiveCommand('DROP TABLE platform_resource_revisions');
@@ -128,92 +112,63 @@ export const runAppRollbackDrill = async (
   try {
     assertBaselineNotCandidate(BASELINE_COMMIT, options.candidateSha);
   } catch {
-    const evidence = await sealFailed(options, nowIso, cleanupResult, destructiveCommandsRejected);
-    return evidence;
+    return seal(options, nowIso, {
+      baselineExecutable: false,
+      cleanupResult,
+      destructiveCommandsRejected,
+      newTablesRetained: false,
+      probePassed: false,
+      rollForwardOk: false,
+      status: 'failed',
+    });
   }
 
-  // Marker path must never authorize executability — explicitly ignore if present.
-  // (Previous false-green used .records/.../baseline-probe.ready)
+  // Owned parent for baseline tree (strong ownership + cleanup).
+  const parentReal = await realpath(tmpdir());
+  const parentOwned = await createToolOwnedTempDir(parentReal);
+  const lifecycle = await createOwnedPostgres();
 
-  if (options.inject) {
-    baselineExecutable = options.inject.baselineExecutable;
-    const lifecycle = await createOwnedPostgres().catch(() => undefined);
-    if (lifecycle) {
-      try {
-        await lifecycle.handle.withClient(async (client) => {
-          await options.inject!.seed(client);
-          const retained = await verifyRequiredTablesPresent(client, RECOVERY_ENTERPRISE_TABLES);
-          newTablesRetained = retained.match;
-          probePassed = (await options.inject!.runBaselineProbe(client)) === 'passed';
-          rollForwardOk = (await options.inject!.runCandidateProbe(client)) === 'passed';
-        });
-      } finally {
-        cleanupResult = await lifecycle.cleanup();
-        if ((await options.inject.cleanup()) === 'failed') cleanupResult = 'failed';
-      }
-    } else {
-      newTablesRetained = true;
-      rollForwardOk = true;
-      probePassed = options.inject.baselineExecutable;
-      cleanupResult = await options.inject.cleanup();
-    }
-  } else {
-    const parent = await mkdtemp(path.join(tmpdir(), 'm15q06-baseline-parent-'));
-    let materialization: Awaited<ReturnType<typeof materializeBaselineCheckout>> | undefined;
-    const lifecycle = await createOwnedPostgres();
+  try {
+    await lifecycle.handle.withClient(async (client) => {
+      await seedRecoveryFixture(client);
+      const retained = await verifyRequiredTablesPresent(client, RECOVERY_ENTERPRISE_TABLES);
+      newTablesRetained = retained.match;
+      rollForwardOk = (await executeCandidateReadContract(client)) === 'passed';
+    });
+
     try {
-      await lifecycle.handle.withClient(async (client) => {
-        await seedRecoveryFixture(client);
-        const retained = await verifyRequiredTablesPresent(client, RECOVERY_ENTERPRISE_TABLES);
-        newTablesRetained = retained.match;
-        rollForwardOk = (await executeCandidateReadContract(client)) === 'passed';
-
-        // SQL-only additional (insufficient alone)
-        if (options.includeSqlContract !== false) {
-          await executeSyntheticSqlContract(client);
-        }
-      });
-
-      try {
-        materialization = await materializeBaselineCheckout(repoRoot, parent);
-        // Connection string never leaves ownedPostgres; for probe we cannot pass URL.
-        // Package boundary without DB still proves executable baseline tree.
-        const boundary = await executeBaselinePackageBoundary({
+      const materialization = await materializeBaselineCheckout(repoRoot, parentOwned);
+      const hostRequireRoot = path.resolve(repoRoot);
+      const probe = await lifecycle.handle.withDatabaseUrl(async (databaseUrl) =>
+        executeBaselineDbProbe({
           baselineRoot: materialization.root,
-        });
-        baselineExecutable =
-          boundary.executable &&
-          boundary.packageVersionOk &&
-          materialization.baselineSha === BASELINE_COMMIT;
-        probePassed = baselineExecutable && boundary.packageVersionOk;
-      } catch {
-        baselineExecutable = false;
-        probePassed = false;
-      }
-    } finally {
-      if (materialization) {
-        const d = await disposeMaterializedBaseline(materialization);
-        if (d === 'failed') cleanupResult = 'failed';
-      }
-      const c = await lifecycle.cleanup();
-      if (c === 'failed') cleanupResult = 'failed';
+          databaseUrl,
+          hostRequireRoot,
+        }),
+      );
+      baselineExecutable =
+        probe.executable &&
+        probe.packageVersionOk &&
+        probe.legacyReadOk &&
+        probe.enterpriseRetainedOk &&
+        materialization.baselineSha === BASELINE_COMMIT;
+      probePassed = baselineExecutable;
+    } catch {
+      baselineExecutable = false;
+      probePassed = false;
     }
+  } finally {
+    const parentCleanup = await disposeOwnedParent(parentOwned);
+    if (parentCleanup === 'failed') cleanupResult = 'failed';
+    const c = await lifecycle.cleanup();
+    if (c === 'failed') cleanupResult = 'failed';
   }
 
-  // Production scope self-declaration cannot force pass without executable baseline.
   let status: AppRollbackEvidence['status'];
-  if (!destructiveCommandsRejected || cleanupResult === 'failed') {
-    status = 'failed';
-  } else if (!baselineExecutable) {
-    status = 'unverified';
-  } else if (baselineExecutable && probePassed && newTablesRetained && rollForwardOk) {
-    status = 'passed';
-  } else {
-    status = 'failed';
-  }
-
-  // Production-authorized label on options.scope is ignored for status elevation.
-  // Harness may pass only as harness evidence when baseline truly executed.
+  if (!destructiveCommandsRejected || cleanupResult === 'failed') status = 'failed';
+  else if (!baselineExecutable) status = 'unverified';
+  else if (probePassed && newTablesRetained && rollForwardOk) status = 'passed';
+  else status = 'failed';
 
   const bits = [
     destructiveCommandsRejected,
@@ -223,21 +178,15 @@ export const runAppRollbackDrill = async (
     baselineExecutable && probePassed,
   ];
   const passed = bits.filter(Boolean).length;
-  const failed = bits.length - passed;
 
   const evidence: AppRollbackEvidence = {
     assertions:
       status === 'passed'
         ? { failed: 0, passed: bits.length, skipped: 0, total: bits.length }
         : status === 'unverified'
-          ? {
-              failed: 0,
-              passed: Math.max(0, passed - 1),
-              skipped: 1,
-              total: bits.length,
-            }
+          ? { failed: 0, passed: Math.max(0, passed - 1), skipped: 1, total: bits.length }
           : {
-              failed: Math.max(1, failed),
+              failed: Math.max(1, bits.length - passed),
               passed,
               skipped: 0,
               total: bits.length,
@@ -254,43 +203,84 @@ export const runAppRollbackDrill = async (
     reportSchemaVersion: APP_ROLLBACK_SCHEMA_VERSION,
     rollForwardOk,
     schemaVersion: PRODUCTION_READINESS_SCHEMA_VERSION,
-    // Never self-declare production-authorized.
     scope: options.scope === 'ci-harness' ? 'ci-harness' : 'local-harness',
     status,
   };
 
-  const scan = scanForForbiddenReportContent(evidence);
-  if (scan.result === 'failed') {
-    throw new Error(`App-rollback evidence redaction rejected ${scan.violations}`);
+  if (scanForForbiddenReportContent(evidence).result === 'failed') {
+    throw new Error('App-rollback evidence redaction rejected');
   }
 
-  await writeJsonAtomic(options.outputPath, evidence);
-  return { evidence, exitCode: status === 'passed' ? 0 : 1 };
+  // Write raw report then wrap for preflight.
+  const rawPath = options.outputPath.endsWith('.json')
+    ? options.outputPath.replace(/\.json$/u, '.raw.json')
+    : `${options.outputPath}.raw.json`;
+  const { sha256: artifactSha256 } = await writeJsonAtomic(rawPath, evidence);
+  const gateEvidence = toPreflightGateEvidence({
+    artifactSha256,
+    candidateSha: options.candidateSha,
+    gate: 'app-rollback',
+    generatedAt: nowIso,
+    releaseId: options.releaseId,
+    rawReport: evidence,
+    scope: evidence.scope,
+    status: evidence.status,
+    assertions: evidence.assertions,
+  });
+  await writeJsonAtomic(options.outputPath, gateEvidence);
+
+  return {
+    evidence,
+    exitCode: status === 'passed' ? 0 : 1,
+    gateEvidence,
+  };
 };
 
-const sealFailed = async (
+const seal = async (
   options: AppRollbackDrillOptions,
   nowIso: string,
-  cleanupResult: 'failed' | 'passed',
-  destructiveCommandsRejected: boolean,
+  state: {
+    baselineExecutable: boolean;
+    cleanupResult: 'failed' | 'passed';
+    destructiveCommandsRejected: boolean;
+    newTablesRetained: boolean;
+    probePassed: boolean;
+    rollForwardOk: boolean;
+    status: AppRollbackEvidence['status'];
+  },
 ): Promise<AppRollbackDrillResult> => {
   const evidence: AppRollbackEvidence = {
     assertions: { failed: 1, passed: 0, skipped: 0, total: 1 },
-    baselineExecutable: false,
+    baselineExecutable: state.baselineExecutable,
     baselineSha: BASELINE_COMMIT,
     candidateSha: options.candidateSha,
-    cleanupResult,
-    destructiveCommandsRejected,
+    cleanupResult: state.cleanupResult,
+    destructiveCommandsRejected: state.destructiveCommandsRejected,
     freshness: { generatedAt: nowIso },
     gate: 'app-rollback',
     lane: APP_ROLLBACK_LANE,
-    newTablesRetained: false,
+    newTablesRetained: state.newTablesRetained,
     reportSchemaVersion: APP_ROLLBACK_SCHEMA_VERSION,
-    rollForwardOk: false,
+    rollForwardOk: state.rollForwardOk,
     schemaVersion: PRODUCTION_READINESS_SCHEMA_VERSION,
     scope: 'local-harness',
-    status: 'failed',
+    status: state.status,
   };
-  await writeJsonAtomic(options.outputPath, evidence).catch(() => undefined);
-  return { evidence, exitCode: 1 };
+  const rawPath = options.outputPath.replace(/\.json$/u, '.raw.json');
+  const { sha256 } = await writeJsonAtomic(rawPath, evidence).catch(async () => {
+    await writeJsonAtomic(options.outputPath, evidence);
+    return { sha256: createHash('sha256').update('').digest('hex') };
+  });
+  const gateEvidence = toPreflightGateEvidence({
+    artifactSha256: sha256,
+    candidateSha: options.candidateSha,
+    gate: 'app-rollback',
+    generatedAt: nowIso,
+    rawReport: evidence,
+    scope: 'local-harness',
+    status: state.status,
+    assertions: evidence.assertions,
+  });
+  await writeJsonAtomic(options.outputPath, gateEvidence).catch(() => undefined);
+  return { evidence, exitCode: 1, gateEvidence };
 };
