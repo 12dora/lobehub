@@ -36,8 +36,11 @@ const CreateCredModalContent: FC<CreateCredModalContentProps> = ({ credsApi, onS
   const { close } = useModalContext();
   const [step, setStep] = useState(0);
   const [credType, setCredType] = useState<CredType | null>(null);
+  const isPlatformMode = credsApi.mode === 'platform';
 
   const handleTypeSelect = (type: CredType) => {
+    // Platform global credentials do not support OAuth.
+    if (isPlatformMode && type === 'oauth') return;
     setCredType(type);
     setStep(1);
   };
@@ -89,7 +92,14 @@ const CreateCredModalContent: FC<CreateCredModalContentProps> = ({ credsApi, onS
         ]}
       />
 
-      {step === 0 ? <CredTypeSelector onSelect={handleTypeSelect} /> : renderForm()}
+      {step === 0 ? (
+        <CredTypeSelector
+          disabledTypes={isPlatformMode ? ['oauth'] : undefined}
+          onSelect={handleTypeSelect}
+        />
+      ) : (
+        renderForm()
+      )}
     </>
   );
 };

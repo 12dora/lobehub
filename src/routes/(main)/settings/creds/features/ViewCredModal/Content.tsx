@@ -137,6 +137,7 @@ export interface ViewCredModalContentProps {
 
 const ViewCredModalContent: FC<ViewCredModalContentProps> = ({ cred, credsApi }) => {
   const { t } = useTranslation('setting');
+  const isPlatformMode = credsApi.mode === 'platform';
 
   const { data, isLoading, error } = useQuery({
     queryFn: () =>
@@ -144,11 +145,12 @@ const ViewCredModalContent: FC<ViewCredModalContentProps> = ({ cred, credsApi })
         decrypt: true,
         id: cred.id,
       }),
-    queryKey: ['cred-plaintext', cred.id],
+    queryKey: ['cred-plaintext', cred.id, isPlatformMode ? 'platform' : 'market'],
   });
 
   const values = (data as any)?.plaintext || {};
   const valueEntries = Object.entries(values);
+  const configured = (data as any)?.configured === true || valueEntries.length > 0;
 
   if (isLoading) {
     return <Skeleton active paragraph={{ rows: 3 }} />;
@@ -169,9 +171,16 @@ const ViewCredModalContent: FC<ViewCredModalContentProps> = ({ cred, credsApi })
     <>
       <Alert
         showIcon
-        message={t('creds.view.warning')}
         style={{ marginBottom: 16 }}
-        type={'warning'}
+        type={isPlatformMode ? 'info' : 'warning'}
+        message={
+          isPlatformMode
+            ? t('creds.view.platformNoPlaintext' as any, {
+                defaultValue:
+                  'Platform credentials never reveal secret values. Only configuration status is shown.',
+              })
+            : t('creds.view.warning')
+        }
       />
       <Descriptions bordered column={1} size={'small'}>
         <Descriptions.Item label={t('creds.table.name')}>{cred.name}</Descriptions.Item>
@@ -181,14 +190,34 @@ const ViewCredModalContent: FC<ViewCredModalContentProps> = ({ cred, credsApi })
         <Descriptions.Item label={t('creds.table.type')}>
           {cred.type ? t(`creds.types.${cred.type}` as any) : '-'}
         </Descriptions.Item>
+        {isPlatformMode && (
+          <Descriptions.Item
+            label={t('creds.view.configured' as any, { defaultValue: 'Configured' })}
+          >
+            {configured
+              ? t('creds.view.configuredYes' as any, { defaultValue: 'Yes' })
+              : t('creds.view.configuredNo' as any, { defaultValue: 'No' })}
+          </Descriptions.Item>
+        )}
       </Descriptions>
 
       {valueEntries.length > 0 && (
         <div className={styles.valuesSection}>
           <div className={styles.valuesTitle}>{t('creds.view.values')}</div>
-          {valueEntries.map(([key, value]) => (
-            <KVRow key={key} keyName={key} value={String(value)} />
-          ))}
+          {valueEntries.map(([key, value]) =>
+            isPlatformMode ? (
+              <div className={styles.kvRow} key={key}>
+                <div className={styles.kvKey}>{key}</div>
+                <div className={styles.kvValue}>
+                  <Text className={styles.maskedValue} style={{ flex: 1, fontSize: 13 }}>
+                    {String(value)}
+                  </Text>
+                </div>
+              </div>
+            ) : (
+              <KVRow key={key} keyName={key} value={String(value)} />
+            ),
+          )}
         </div>
       )}
 
