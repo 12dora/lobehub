@@ -11,6 +11,7 @@ import {
   adminUsersReplaceGlobalRolesOutputSchema,
 } from '../contracts/adminUsers';
 import { withActiveUser } from '../guards/activeUser';
+import { withAdminMutationRateLimit } from '../guards/adminMutationRateLimit';
 import { throwEnterpriseError } from '../guards/enterpriseErrors';
 import { withAnyPlatformPermission, withPlatformPermission } from '../guards/platformPermission';
 import { assertRecentReauth } from '../guards/reauth';
@@ -33,7 +34,10 @@ import { adminSkillsRouter } from './admin/skills';
 import { adminSystemRouter } from './admin/system';
 import { adminUsersRouter } from './admin/users';
 
-const adminBase = authedProcedure.use(serverDatabase).use(withActiveUser());
+const adminBase = authedProcedure
+  .use(serverDatabase)
+  .use(withActiveUser())
+  .use(withAdminMutationRateLimit());
 
 ensureAiCatalogReadinessRegistered();
 ensureConnectorCatalogReadinessRegistered();

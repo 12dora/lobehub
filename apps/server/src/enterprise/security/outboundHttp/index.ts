@@ -26,6 +26,10 @@ export {
   outboundPolicySnapshotSchema,
 } from './policy';
 export {
+  createSafeOutboundFetchAdapter,
+  type SafeOutboundFetchAdapterOptions,
+} from './safeOutboundFetchAdapter';
+export {
   createSafeOutboundHttpClient,
   isSameOrigin,
   SafeOutboundHttpClient,

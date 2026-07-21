@@ -15,6 +15,19 @@ import discover from '@/locales/default/discover';
 import home from '@/locales/default/home';
 import oauth from '@/locales/default/oauth';
 
+import {
+  InMemoryAdminMutationRateLimiter,
+  setSharedAdminMutationRateLimiter,
+} from '../apps/server/src/enterprise/security/rateLimit/adminMutationRateLimiter';
+
+// Process-local test double only. Production always uses Redis-backed SharedAdminMutationRateLimiter.
+// High limit so ordinary router/service suites exercise business logic without a Redis authority.
+setSharedAdminMutationRateLimiter(
+  new InMemoryAdminMutationRateLimiter({
+    config: { limit: 10_000, windowMs: 60_000 },
+  }),
+);
+
 class TestMemoryStorage implements Storage {
   private readonly store = new Map<string, string>();
 
