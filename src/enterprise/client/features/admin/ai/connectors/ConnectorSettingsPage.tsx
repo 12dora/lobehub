@@ -1,6 +1,6 @@
 'use client';
 
-import { Center, Empty, Flexbox, SearchBar, Tag, Text } from '@lobehub/ui';
+import { Alert, Center, Empty, Flexbox, SearchBar, Tag, Text } from '@lobehub/ui';
 import { Button, confirmModal, Switch, toast } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
 import { Plug } from 'lucide-react';
@@ -616,31 +616,52 @@ const ConnectorSettingsPage = memo(() => {
             />
           </div>
           <div className={styles.leftBody}>
-            {error && !data ? (
-              <AsyncError error={error} variant="block" onRetry={() => void mutate()} />
-            ) : isLoading && !data ? (
+            {isLoading && !data ? (
               <Loading debugId="Admin > Connectors > List" />
             ) : items.length === 0 ? (
-              <Center paddingBlock={32}>
-                <Empty
-                  icon={Plug}
-                  title={t('aiConnectorSettings.empty.title', { defaultValue: 'No connectors' })}
-                  description={t('aiConnectorSettings.empty.desc', {
-                    defaultValue:
-                      'No platform connectors yet. List one to make it available to users.',
-                  })}
-                />
-              </Center>
-            ) : (
-              <Flexbox gap={4}>
-                {items.map((connector) => (
-                  <ConnectorListItem
-                    connector={connector}
-                    isSelected={selectedId === connector.id}
-                    key={connector.id}
-                    onSelect={() => onSelect(connector.id)}
+              // Only fall back to the full-block error when there is genuinely nothing to render
+              // (no built-in defaults and no DB rows); otherwise degrade to an inline notice below.
+              error ? (
+                <AsyncError error={error} variant="block" onRetry={() => void mutate()} />
+              ) : (
+                <Center paddingBlock={32}>
+                  <Empty
+                    icon={Plug}
+                    title={t('aiConnectorSettings.empty.title', { defaultValue: 'No connectors' })}
+                    description={t('aiConnectorSettings.empty.desc', {
+                      defaultValue:
+                        'No platform connectors yet. List one to make it available to users.',
+                    })}
                   />
-                ))}
+                </Center>
+              )
+            ) : (
+              <Flexbox gap={8}>
+                {error ? (
+                  <Alert
+                    showIcon
+                    type="warning"
+                    action={
+                      <Button size="small" onClick={() => void mutate()}>
+                        {t('access.error.retry', { defaultValue: 'Retry' })}
+                      </Button>
+                    }
+                    message={t('aiConnectorSettings.list.loadError', {
+                      defaultValue:
+                        'Could not load the org connector catalog. Showing built-in defaults; retry to load published connectors.',
+                    })}
+                  />
+                ) : null}
+                <Flexbox gap={4}>
+                  {items.map((connector) => (
+                    <ConnectorListItem
+                      connector={connector}
+                      isSelected={selectedId === connector.id}
+                      key={connector.id}
+                      onSelect={() => onSelect(connector.id)}
+                    />
+                  ))}
+                </Flexbox>
               </Flexbox>
             )}
           </div>

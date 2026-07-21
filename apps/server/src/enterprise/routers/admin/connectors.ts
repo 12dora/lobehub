@@ -37,6 +37,7 @@ import {
   assertAdminConnectorRuntimeDependency,
   assertConnectorDangerousReauth,
   connectorSecretMutationRequiresReauth,
+  createAdminConnectorReadRuntime,
   createAdminConnectorRuntime,
   executeAdminConnectorOperation,
   resolveAdminConnectorMutationRuntime,
@@ -49,6 +50,8 @@ const adminConnectorProcedure = authedProcedure
   .use(async ({ ctx, next }) =>
     next({
       ctx: {
+        // Secret-free path for pure reads (list/get/getPublishedBatch); does not require a master key.
+        getAdminConnectorReadService: () => createAdminConnectorReadRuntime(ctx.serverDB).service,
         getAdminConnectorRuntime: () => createAdminConnectorRuntime(ctx.serverDB),
       },
     }),
@@ -312,7 +315,7 @@ export const adminConnectorsRouter = router({
     .output(adminConnectorGetOutputSchema)
     .query(async ({ ctx, input }) =>
       executeAdminConnectorOperation('admin.connectors.get', () =>
-        ctx.getAdminConnectorRuntime().service.getDraft(input.id),
+        ctx.getAdminConnectorReadService().getDraft(input.id),
       ),
     ),
 
@@ -322,7 +325,7 @@ export const adminConnectorsRouter = router({
     .output(adminConnectorGetPublishedBatchOutputSchema)
     .query(async ({ ctx, input }) =>
       executeAdminConnectorOperation('admin.connectors.getPublishedBatch', () =>
-        ctx.getAdminConnectorRuntime().service.getPublishedBatch(input.ids),
+        ctx.getAdminConnectorReadService().getPublishedBatch(input.ids),
       ),
     ),
 
@@ -332,7 +335,7 @@ export const adminConnectorsRouter = router({
     .output(adminConnectorListOutputSchema)
     .query(async ({ ctx, input }) =>
       executeAdminConnectorOperation('admin.connectors.list', () =>
-        ctx.getAdminConnectorRuntime().service.listDrafts(input),
+        ctx.getAdminConnectorReadService().listDrafts(input),
       ),
     ),
 

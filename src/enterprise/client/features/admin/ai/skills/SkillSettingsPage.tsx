@@ -1,12 +1,11 @@
 'use client';
 
-import { builtinSkills as bundledBuiltinSkills } from '@lobechat/builtin-skills';
-import { Center, Empty, Flexbox, SearchBar, Tag, Text } from '@lobehub/ui';
-import { Button, confirmModal, toast } from '@lobehub/ui/base-ui';
+import { Center, Empty, Flexbox, SearchBar, Text } from '@lobehub/ui';
+import { Button, toast } from '@lobehub/ui/base-ui';
 import { SkillsIcon } from '@lobehub/ui/icons';
 import { createStaticStyles, cssVar } from 'antd-style';
 import { Link as LinkIcon } from 'lucide-react';
-import { memo, useCallback, useMemo, useState } from 'react';
+import { memo, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Link, useNavigate, useParams } from 'react-router';
 
@@ -16,16 +15,16 @@ import { useAdminAccess } from '@/enterprise/client/providers/AdminAccessProvide
 import { adminSkillsService } from '@/enterprise/client/services/adminSkills';
 import PlatformSkillItem from '@/routes/(main)/settings/skill/features/PlatformSkillItem';
 
-import { deriveSkillPermissions, emptyEditableSkillVersionDraft } from '../../skills/controller';
-import {
-  refreshAdminSkillLists,
-  useFetchAdminSkill,
-  useFetchAdminSkills,
-} from '../../skills/hooks/useAdminSkills';
+import { deriveSkillPermissions } from '../../skills/controller';
+import { refreshAdminSkillLists, useFetchAdminSkills } from '../../skills/hooks/useAdminSkills';
 import { openCreateSkillModal } from '../../skills/openCreateSkillModal';
-import { openVersionEditorModal } from '../../skills/openVersionEditorModal';
 import type { AdminSkillListItem } from '../../skills/types';
-import { freezeSkillWriteSnapshot } from '../../skills/writeOperation';
+import {
+  AdminSkillDetailPanel,
+  buildBuiltinSkillRows,
+  BuiltinSkillDetailPanel,
+  isBuiltinSkillId,
+} from './AdminSkillDetailPanel';
 import DraftPublishBanner from './DraftPublishBanner';
 import { openAdminImportSkillModal } from './openAdminImportSkillModal';
 
@@ -39,56 +38,16 @@ const styles = createStaticStyles(({ css }) => ({
       color: ${cssVar.colorTextSecondary};
     }
   `,
-  badges: css`
-    display: flex;
-    flex-shrink: 0;
-    gap: 4px;
-    padding-inline: 12px 8px;
-  `,
-  badge: css`
-    padding-block: 1px;
-    padding-inline: 5px;
-    border: 1px solid ${cssVar.colorBorderSecondary};
-    border-radius: 999px;
-
-    font-size: 10px;
-    line-height: 16px;
-    color: ${cssVar.colorTextSecondary};
-  `,
   body: css`
     overflow: hidden;
     display: flex;
     flex: 1;
     min-height: 0;
   `,
-  card: css`
-    display: grid;
-    grid-template-columns: minmax(120px, 180px) minmax(0, 1fr);
-    gap: 10px 16px;
-
-    padding: 16px;
-    border: 1px solid ${cssVar.colorBorderSecondary};
-    border-radius: ${cssVar.borderRadiusLG};
-  `,
   content: css`
     overflow: auto;
     flex: 1;
     min-width: 0;
-  `,
-  detailBody: css`
-    display: flex;
-    flex-direction: column;
-    gap: 20px;
-    padding: 24px;
-  `,
-  detailHeader: css`
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-
-    padding-block: 20px 16px;
-    padding-inline: 24px;
-    border-block-end: 1px solid ${cssVar.colorBorderSecondary};
   `,
   left: css`
     overflow: hidden;
@@ -134,35 +93,6 @@ const styles = createStaticStyles(({ css }) => ({
   `,
 }));
 
-/** Synthetic id prefix for code-bundled built-in skills (no platform DB row). */
-const BUILTIN_ID_PREFIX = 'builtin:';
-
-/**
- * Build read-only list rows for the code-bundled built-in skills so the admin
- * catalog shows the same built-ins the user Settings > Skill page does. These
- * are always live in the runtime; a real DB draft/override shadows them (see the
- * dedupe by skillKey in the page). Uses the full bundled set to match the
- * server's unfiltered built-in catalog.
- */
-const buildBuiltinSkillRows = (): AdminSkillListItem[] =>
-  bundledBuiltinSkills.map((skill) => ({
-    allowBuiltinOverride: false,
-    currentVersionId: null,
-    description: skill.description ?? null,
-    displayName: skill.name,
-    distribution: 'default',
-    draftSequence: 0,
-    enabled: true,
-    id: `${BUILTIN_ID_PREFIX}${skill.identifier}`,
-    revision: 0,
-    skillKey: skill.identifier,
-    source: 'builtin',
-    status: 'published',
-  }));
-
-const isBuiltinSkillId = (id: string | undefined): id is string =>
-  Boolean(id?.startsWith(BUILTIN_ID_PREFIX));
-
 const SkillListItem = memo<{
   isSelected: boolean;
   onSelect: () => void;
@@ -180,283 +110,6 @@ const SkillListItem = memo<{
     onSelect={onSelect}
   />
 ));
-
-/** Read-only detail for a code-bundled built-in skill (never has a DB draft). */
-const BuiltinSkillDetailPanel = memo<{ skillId: string }>(({ skillId }) => {
-  const { t } = useTranslation('admin');
-  const skill = bundledBuiltinSkills.find((s) => `${BUILTIN_ID_PREFIX}${s.identifier}` === skillId);
-
-  if (!skill) {
-    return (
-      <div className={styles.detailBody}>
-        {t('aiSkillSettings.detail.notFound', { defaultValue: 'Skill not found' })}
-      </div>
-    );
-  }
-
-  return (
-    <>
-      <header className={styles.detailHeader}>
-        <Flexbox horizontal align="center" gap={8} justify="space-between">
-          <Text strong as="h2">
-            {skill.name}
-          </Text>
-          <Tag color="processing">
-            {t('aiSkillSettings.builtin.tag', { defaultValue: 'Built-in' })}
-          </Tag>
-        </Flexbox>
-        <Text type="secondary">
-          {skill.description ||
-            t('aiSkillSettings.detail.noDescription', { defaultValue: 'No description' })}
-        </Text>
-      </header>
-      <main className={styles.detailBody}>
-        <section className={styles.card}>
-          <Text type="secondary">{t('skillCatalog.detail.identity.key')}</Text>
-          <Text code>{skill.identifier}</Text>
-          <Text type="secondary">{t('skillCatalog.detail.identity.source')}</Text>
-          <Text>{skill.source}</Text>
-        </section>
-        <Text type="secondary">
-          {t('aiSkillSettings.builtin.note', {
-            defaultValue:
-              'Built-in skills are provided by the platform and available to all users by default — no listing needed.',
-          })}
-        </Text>
-      </main>
-    </>
-  );
-});
-
-const SkillDetailPanel = memo<{
-  onArchived: () => void;
-  onPublished: () => void;
-  skillId: string;
-}>(({ onArchived, onPublished, skillId }) => {
-  const { t } = useTranslation('admin');
-  const { permissions } = useAdminAccess();
-  const { canArchive, canPublish, canUpdate } = deriveSkillPermissions(permissions);
-  const { data, error, isLoading, mutate } = useFetchAdminSkill(skillId, true);
-  const [busy, setBusy] = useState(false);
-
-  const canApply = canPublish && canUpdate;
-
-  const onPublish = useCallback(async () => {
-    if (!data) return;
-    setBusy(true);
-    try {
-      const result = await adminSkillsService.applyImmediate({
-        expectedDraftToken: data.draftToken,
-        expectedRevision: data.baseRevision,
-        id: data.draft.id,
-        mode: 'update',
-        reason: 'Publish platform skill from admin settings',
-      });
-      if (result.published) {
-        toast.success(
-          t('aiSkillSettings.actions.published', { defaultValue: 'Skill listed for all users' }),
-        );
-      } else {
-        toast.success(
-          result.publishError ||
-            t('aiSkillSettings.actions.draftSaved', {
-              defaultValue: 'Skill saved as draft — add a version to list it',
-            }),
-        );
-      }
-      await Promise.all([mutate(), refreshAdminSkillLists()]);
-      onPublished();
-    } catch {
-      // toast already shown by service wrapper
-    } finally {
-      setBusy(false);
-    }
-  }, [data, mutate, onPublished, t]);
-
-  const onAddVersion = useCallback(() => {
-    if (!data) return;
-    const initialDraft = emptyEditableSkillVersionDraft({
-      content: `# ${data.draft.displayName}\n`,
-      manifestText: JSON.stringify(
-        {
-          description: data.draft.description || data.draft.displayName,
-          displayName: data.draft.displayName,
-          localizedDescriptions: {},
-          localizedDisplayNames: {},
-          permissions: {
-            filesystem: 'none',
-            network: { allowedHosts: [], enabled: false },
-            tools: { allow: [] },
-          },
-          skillDependencies: [],
-          toolDependencies: [],
-        },
-        null,
-        2,
-      ),
-    });
-    openVersionEditorModal({
-      initialDraft,
-      onDraftChange: () => {},
-      snapshot: freezeSkillWriteSnapshot(data),
-      onSubmit: async (versionInput) => {
-        const result = await adminSkillsService.applyImmediate({
-          content: versionInput.content,
-          contentRef: versionInput.contentRef,
-          expectedDraftToken: versionInput.expectedDraftToken,
-          expectedRevision: versionInput.expectedRevision,
-          manifest: versionInput.manifest,
-          mode: 'createVersion',
-          reason: versionInput.reason,
-          resources: versionInput.resources,
-          skillId: versionInput.skillId,
-          version: versionInput.version,
-        });
-        if (result.published) {
-          toast.success(
-            t('aiSkillSettings.actions.published', { defaultValue: 'Skill listed for all users' }),
-          );
-        } else {
-          toast.success(
-            result.publishError ||
-              t('aiSkillSettings.actions.draftSaved', {
-                defaultValue: 'Version saved as draft — fix validation then retry',
-              }),
-          );
-        }
-        await Promise.all([mutate(), refreshAdminSkillLists()]);
-        onPublished();
-      },
-    });
-  }, [data, mutate, onPublished, t]);
-
-  const onArchive = useCallback(() => {
-    if (!data) return;
-    confirmModal({
-      cancelText: t('users.modals.cancel'),
-      content: t('aiSkillSettings.actions.archiveConfirmDesc', {
-        defaultValue: 'Archive removes this skill from the live catalog for all users.',
-        name: data.draft.displayName,
-      }),
-      okButtonProps: { danger: true },
-      okText: t('aiSkillSettings.actions.archive', { defaultValue: 'Unlist' }),
-      title: t('aiSkillSettings.actions.archiveConfirmTitle', {
-        defaultValue: 'Unlist skill?',
-      }),
-      onOk: async () => {
-        setBusy(true);
-        try {
-          await adminSkillsService.archiveImmediate({
-            expectedDraftToken: data.draftToken,
-            expectedRevision: data.baseRevision,
-            id: data.draft.id,
-            reason: 'Archive platform skill from admin settings',
-          });
-          toast.success(t('aiSkillSettings.actions.archived', { defaultValue: 'Skill unlisted' }));
-          await Promise.all([mutate(), refreshAdminSkillLists()]);
-          onArchived();
-        } catch {
-          // toast already shown by service wrapper
-        } finally {
-          setBusy(false);
-        }
-      },
-    });
-  }, [data, mutate, onArchived, t]);
-
-  if (error && !data) {
-    return <AsyncError error={error} variant="page" onRetry={() => void mutate()} />;
-  }
-  if (isLoading && !data) {
-    return <Loading debugId="Admin > Skills > Detail" />;
-  }
-  if (!data) {
-    return (
-      <div className={styles.detailBody}>
-        {t('aiSkillSettings.detail.notFound', { defaultValue: 'Skill not found' })}
-      </div>
-    );
-  }
-
-  const isLive = data.draft.status === 'published';
-  const hasVersion = Boolean(data.latestVersion || data.publishedVersion);
-
-  return (
-    <>
-      <header className={styles.detailHeader}>
-        <Flexbox horizontal align="center" gap={8} justify="space-between">
-          <Text strong as="h2">
-            {data.draft.displayName}
-          </Text>
-          <Tag
-            color={isLive ? 'success' : data.draft.status === 'archived' ? 'default' : 'warning'}
-          >
-            {data.draft.status}
-          </Tag>
-        </Flexbox>
-        <Text type="secondary">
-          {data.draft.description ||
-            t('aiSkillSettings.detail.noDescription', { defaultValue: 'No description' })}
-        </Text>
-      </header>
-      <main className={styles.detailBody}>
-        <section className={styles.card}>
-          <Text type="secondary">{t('skillCatalog.detail.identity.key')}</Text>
-          <Text code>{data.draft.skillKey}</Text>
-          <Text type="secondary">{t('skillCatalog.detail.identity.distribution')}</Text>
-          <Text>{t(`skillCatalog.distribution.${data.draft.distribution}` as never)}</Text>
-          <Text type="secondary">{t('skillCatalog.detail.identity.source')}</Text>
-          <Text>{data.draft.source}</Text>
-          <Text type="secondary">{t('skillCatalog.detail.identity.enabled')}</Text>
-          <Text>{data.draft.enabled ? 'Yes' : 'No'}</Text>
-          <Text type="secondary">
-            {t('aiSkillSettings.detail.version', { defaultValue: 'Version' })}
-          </Text>
-          <Text>
-            {data.publishedVersion?.version ??
-              data.latestVersion?.version ??
-              t('aiSkillSettings.detail.noVersion', { defaultValue: 'No version yet' })}
-          </Text>
-        </section>
-
-        <Flexbox horizontal gap={8} style={{ flexWrap: 'wrap' }}>
-          {canUpdate ? (
-            <Button disabled={busy} onClick={onAddVersion}>
-              {t('aiSkillSettings.actions.addVersion', {
-                defaultValue: 'Add / update version',
-              })}
-            </Button>
-          ) : null}
-          {canApply && !isLive ? (
-            <Button
-              disabled={!hasVersion || busy}
-              loading={busy}
-              type="primary"
-              onClick={onPublish}
-            >
-              {t('aiSkillSettings.actions.publish', { defaultValue: 'List (publish)' })}
-            </Button>
-          ) : null}
-          {canApply && isLive ? (
-            <Button disabled={busy} loading={busy} type="primary" onClick={onPublish}>
-              {t('aiSkillSettings.actions.republish', { defaultValue: 'Apply changes' })}
-            </Button>
-          ) : null}
-          {canArchive && data.draft.status !== 'archived' ? (
-            <Button danger disabled={busy} onClick={onArchive}>
-              {t('aiSkillSettings.actions.archive', { defaultValue: 'Unlist' })}
-            </Button>
-          ) : null}
-          <Link className={styles.advancedLink} to={`/admin/skills/${data.draft.id}`}>
-            {t('aiSkillSettings.actions.editAdvanced', {
-              defaultValue: 'Edit in advanced catalog',
-            })}
-          </Link>
-        </Flexbox>
-      </main>
-    </>
-  );
-});
 
 /**
  * Admin parity page for `/admin/ai/skills` (+ `/:id`).
@@ -636,15 +289,14 @@ const SkillSettingsPage = memo(() => {
           </div>
           {selectedId ? (
             isBuiltinSkillId(selectedId) ? (
-              <BuiltinSkillDetailPanel skillId={selectedId} />
+              <BuiltinSkillDetailPanel key={selectedId} skillId={selectedId} />
             ) : (
-              <SkillDetailPanel
+              // Key by skill id so switching skills remounts the panel — otherwise its local
+              // busy/pending/saveError state (and a stale Retry) leaks onto the next skill.
+              <AdminSkillDetailPanel
+                key={selectedId}
                 skillId={selectedId}
-                onArchived={() => {
-                  void mutate();
-                  navigate('/admin/ai/skills');
-                }}
-                onPublished={() => {
+                onChanged={() => {
                   void mutate();
                 }}
               />

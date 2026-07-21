@@ -1,6 +1,6 @@
 import { BUILTIN_AGENT_SLUGS } from '@lobechat/builtin-agents';
 import { DEFAULT_AGENT_CONFIG, INBOX_SESSION_ID } from '@lobechat/const';
-import { CreateAgentSchema, type KnowledgeItem } from '@lobechat/types';
+import { CreateAgentSchema, decodePlatformAgentListId, type KnowledgeItem } from '@lobechat/types';
 import { KnowledgeType } from '@lobechat/types';
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
@@ -491,6 +491,15 @@ export const agentRouter = router({
     .use(withManagedLocalAgentGuard(pickAgentId))
     .input(z.object({ agentId: z.string() }))
     .mutation(async ({ input, ctx }) => {
+      // A synthetic platform list id (`platform-agent:<uuid>`) can never match a local agent row,
+      // so `delete` would silently affect 0 rows and the client would show a false success. Reject
+      // it explicitly so any managed-item delete surfaces as an error instead of a phantom success.
+      if (decodePlatformAgentListId(input.agentId)) {
+        throw new TRPCError({
+          code: 'FORBIDDEN',
+          message: 'Platform-managed agents cannot be deleted.',
+        });
+      }
       return ctx.agentModel.delete(input.agentId);
     }),
 

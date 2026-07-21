@@ -11,6 +11,7 @@ export type AdminNavLabelKey =
   | 'nav.reauthComplete'
   | 'nav.settings'
   | 'nav.managedResources'
+  | 'nav.unifiedManagement'
   | 'nav.ai'
   | 'nav.aiProviders'
   | 'nav.aiProviderDetail'
@@ -106,14 +107,27 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
     requiredPermissions: [],
   },
   {
+    // Merged surface hosting both the settings-policy and managed-resources tabs.
+    // Shell-only gate here; each in-page tab self-gates on SETTINGS_READ / POLICY_READ.
+    id: 'unified-management',
+    labelKey: 'nav.unifiedManagement',
+    path: '/admin/unified',
+    placeholder: false,
+    requiredPermissions: [],
+  },
+  {
+    // Kept registered (hidden) for deep-link back-compat; the visible surface is `unified-management`.
+    hideFromNav: true,
     id: 'settings',
     labelKey: 'nav.settings',
-    path: '/admin/settings',
     // M05: production settings policy page
+    path: '/admin/settings',
     placeholder: false,
     requiredPermissions: [PLATFORM_PERMISSIONS.SETTINGS_READ],
   },
   {
+    // Kept registered (hidden) for deep-link back-compat; the visible surface is `unified-management`.
+    hideFromNav: true,
     id: 'managed-resources',
     labelKey: 'nav.managedResources',
     path: '/admin/managed-resources',

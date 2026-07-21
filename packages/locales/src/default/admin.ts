@@ -457,7 +457,8 @@ export default {
   'mobile.unsupported.title': 'Desktop required',
   'managedResources.actions.publish': 'Publish policy',
   'managedResources.actions.retrySave': 'Retry save',
-  'managedResources.actions.save': 'Save draft',
+  'managedResources.actions.save': 'Save',
+  'managedResources.saveReason': 'Updated via unified management',
   'managedResources.boolean.false': 'Off',
   'managedResources.boolean.true': 'On',
   'managedResources.conflict.desc':
@@ -506,7 +507,7 @@ export default {
   'managedResources.saveState.dirty': 'Unsaved changes',
   'managedResources.saveState.failed': 'Save failed',
   'managedResources.saveState.idle': 'No unsaved changes',
-  'managedResources.saveState.saved': 'Draft saved',
+  'managedResources.saveState.saved': 'Saved',
   'managedResources.saveState.saving': 'Saving…',
   'managedResources.title': 'Managed resources',
   'managedResources.unsavedLeave': 'You have unsaved managed resource changes. Leave anyway?',
@@ -551,6 +552,13 @@ export default {
   'aiProviderSettings.description':
     'Manage global platform AI providers. Changes publish immediately.',
   'aiSkillSettings.advancedCatalog': 'Advanced catalog management',
+  'aiSkillSettings.orgDefault.label': 'Enabled by default',
+  'aiSkillSettings.orgDefault.mandatoryHint':
+    'Mandatory — always on for every user and cannot be turned off. Change the policy to relax.',
+  'aiSkillSettings.orgDefault.policy': 'Availability policy',
+  'aiSkillSettings.orgDefault.saved': 'Organization default updated',
+  'aiSkillSettings.orgDefault.useHint':
+    'On by default for all users. Users can still turn it off unless the policy is mandatory.',
   'aiSkillSettings.builtin.note':
     'Built-in skills are provided by the platform and available to all users by default — no listing needed.',
   'aiSkillSettings.builtin.tag': 'Built-in',
@@ -594,6 +602,8 @@ export default {
   'aiSkillSettings.select.desc': 'Select a skill from the list, or list a new one.',
   'aiSkillSettings.select.title': 'Select a skill',
   'aiConnectorSettings.advancedCatalog': 'Advanced catalog management',
+  'aiConnectorSettings.list.loadError':
+    'Could not load the org connector catalog. Showing built-in defaults; retry to load published connectors.',
   'aiConnectorSettings.builtin.note':
     'Built-in connectors are provided by the platform and available to all users by default — no listing needed.',
   'aiConnectorSettings.builtin.tag': 'Built-in',
@@ -646,6 +656,7 @@ export default {
   'nav.skills': 'Skills',
   'nav.skillDetail': 'Skill detail',
   'nav.system': 'System',
+  'nav.unifiedManagement': 'Unified management',
   'stats.page.title': 'Data statistics',
   'stats.page.desc': 'Platform-wide usage across all users.',
   'stats.banner.usersTotal': 'Total users',

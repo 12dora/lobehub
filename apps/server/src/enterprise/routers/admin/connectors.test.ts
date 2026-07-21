@@ -278,7 +278,7 @@ describe('admin.connectors RBAC and contract', () => {
     ).rejects.toMatchObject({ code: 'NOT_FOUND' });
   });
 
-  it('fails closed when the Connector flag or Secret key is unavailable', async () => {
+  it('fails closed on the Connector flag but reads the catalog without a Secret key', async () => {
     const caller = await callerFor({ authenticatedAt: new Date(), userId: ids.aiAdmin });
     vi.stubEnv('ENABLE_PLATFORM_MANAGED_CONNECTORS', '0');
     await expect(caller.list({ limit: 10 })).rejects.toMatchObject({
@@ -287,7 +287,21 @@ describe('admin.connectors RBAC and contract', () => {
     });
     vi.stubEnv('ENABLE_PLATFORM_MANAGED_CONNECTORS', '1');
     vi.stubEnv('PLATFORM_MASTER_KEY', '');
-    await expect(caller.list({ limit: 10 })).rejects.toMatchObject({
+    // Reads (list/get/getPublishedBatch) are pure DB projections and must not require the master key.
+    await expect(caller.list({ limit: 10 })).resolves.toEqual({ items: [], nextCursor: null });
+    await expect(caller.getPublishedBatch({ ids: ['missing'] })).resolves.toEqual({
+      items: [{ connectorId: 'missing', published: null }],
+    });
+    // Secret-touching mutations still fail closed without the master key.
+    await expect(
+      caller.createDraft({
+        credentialMode: 'none',
+        displayName: 'Secret Required',
+        endpoint: 'https://connector.example.test/mcp',
+        key: `secret-required-${Date.now()}`,
+        reason: 'mutation still needs the secret runtime',
+      }),
+    ).rejects.toMatchObject({
       code: 'PRECONDITION_FAILED',
       message: 'PLATFORM_SECRET_REQUIRED',
     });
