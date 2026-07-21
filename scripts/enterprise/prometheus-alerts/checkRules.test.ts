@@ -199,6 +199,15 @@ describe('enterprise prometheus — production selector parsing + emission', () 
         'enterprise.outcome'
       ] as (typeof ENTERPRISE_AGENT_MATERIALIZATION_OUTCOMES)[number],
     );
+    // No hand-copied materialization outcome union in the emission contract path.
+    const contractSource = readFileSync(
+      path.join(repositoryRoot, 'scripts/enterprise/prometheus-alerts/emissionContract.ts'),
+      'utf8',
+    );
+    expect(contractSource).not.toMatch(
+      /'created'\s*\|\s*'reused'\s*\|\s*'race_reused'\s*\|\s*'archived'\s*\|\s*'failure'/,
+    );
+    expect(contractSource).toMatch(/typeof ENTERPRISE_AGENT_MATERIALIZATION_OUTCOMES\)\[number\]/);
   });
 });
 

@@ -242,8 +242,8 @@ export const buildUnalteredAttributesForSelector = (
       );
     }
     case 'enterprise_platform_agent_materialization_total': {
-      const outcome = (forced('enterprise_outcome') ?? 'failure') as
-        'created' | 'reused' | 'race_reused' | 'archived' | 'failure';
+      const outcome = (forced('enterprise_outcome') ??
+        'failure') as (typeof ENTERPRISE_AGENT_MATERIALIZATION_OUTCOMES)[number];
       return asStringRecord(
         buildAgentMaterializationAttributes({ outcome }) as Record<string, unknown>,
       );
