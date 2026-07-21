@@ -1,6 +1,6 @@
 # Runbook: Application rollback (expand-only DB compatibility)
 
-**Owner role:** `platform-sre`  
+**Owner role:** `platform-sre`\
 **Package command:** `bun run enterprise:recovery-drill app-rollback`
 
 ## Principles
