@@ -72,17 +72,19 @@ export const digestAuditLogs = async (client: PoolClient): Promise<AggregateDige
 };
 
 /**
- * Canonical per-table row digests for all required enterprise tables.
- * Uses id column when present, else full-row md5 projection of text cast.
+ * Canonical per-table digests: ALL columns in ordinal order (names + values).
+ * Secret-bearing column values are hashed before inclusion; never emitted raw.
  */
+const SECRETISH_COLUMN = /secret|cipher|password|token|key_vault|fingerprint|ref$/iu;
+
 export const digestAllRequiredTables = async (
   client: PoolClient,
   tables: readonly string[] = RECOVERY_ENTERPRISE_TABLES,
 ): Promise<TableDigestEntry[]> => {
   const entries: TableDigestEntry[] = [];
   for (const table of tables) {
-    const cols = await client.query<{ column_name: string }>(
-      `SELECT column_name FROM information_schema.columns
+    const cols = await client.query<{ column_name: string; data_type: string }>(
+      `SELECT column_name, data_type FROM information_schema.columns
        WHERE table_schema = 'public' AND table_name = $1
        ORDER BY ordinal_position`,
       [table],
@@ -91,27 +93,26 @@ export const digestAllRequiredTables = async (
       entries.push({ digest: sha256Hex(`missing:${table}`), name: table, rowCount: -1 });
       continue;
     }
-    const hasId = cols.rows.some((c) => c.column_name === 'id');
-    if (hasId) {
-      const result = await client.query<{ id: string }>(
-        `SELECT id::text AS id FROM "${table}" ORDER BY id::text`,
-      );
-      entries.push({
-        digest: sha256Hex(result.rows.map((r) => r.id).join('\n')),
-        name: table,
-        rowCount: result.rows.length,
-      });
-    } else {
-      const colList = cols.rows.map((c) => `"${c.column_name}"::text`).join(" || '|' || ");
-      const result = await client.query<{ row_key: string }>(
-        `SELECT (${colList}) AS row_key FROM "${table}" ORDER BY 1`,
-      );
-      entries.push({
-        digest: sha256Hex(result.rows.map((r) => r.row_key).join('\n')),
-        name: table,
-        rowCount: result.rows.length,
-      });
-    }
+    const colNames = cols.rows.map((c) => c.column_name);
+    // Full semantic projection: every column as text, null as \0, secretish pre-hashed.
+    const selectList = colNames
+      .map((name) => {
+        if (SECRETISH_COLUMN.test(name)) {
+          return `CASE WHEN "${name}" IS NULL THEN '\\0' ELSE md5("${name}"::text) END`;
+        }
+        return `COALESCE("${name}"::text, '\\0')`;
+      })
+      .join(" || '|' || ");
+    const header = colNames.join(',');
+    const result = await client.query<{ row_key: string }>(
+      `SELECT (${selectList}) AS row_key FROM "${table}" ORDER BY 1`,
+    );
+    const body = result.rows.map((r) => r.row_key).join('\n');
+    entries.push({
+      digest: sha256Hex(`${header}\n${body}`),
+      name: table,
+      rowCount: result.rows.length,
+    });
   }
   return entries.sort((a, b) => a.name.localeCompare(b.name, 'en'));
 };
@@ -354,30 +355,41 @@ export const verifyPublicationPointers = async (
       const pointer = String(row.pointer ?? '');
       pointerLines.push(`${source.table}:${id}:${pointer}`);
 
-      // Resolve against platform_resource_revisions when pointer is integer revision-like
+      // Integer revision pointers must resolve to exact owner type + resource_id +
+      // revision + immutable target checksum. Never fall back to "any same revision".
       if (/^\d+$/u.test(pointer)) {
-        const resolved = await client.query(
-          `SELECT 1 FROM platform_resource_revisions
-           WHERE revision = $1 AND (
-             resource_id = $2 OR resource_type = $3
-           )
+        const resourceType = source.table.replace(/^platform_/u, '');
+        const resolved = await client.query<{
+          checksum: string;
+          resource_id: string;
+          resource_type: string;
+          revision: string;
+        }>(
+          `SELECT resource_type, resource_id, revision::text AS revision, checksum
+           FROM platform_resource_revisions
+           WHERE revision = $1 AND resource_id = $2
            LIMIT 1`,
-          [Number(pointer), id, source.table.replace(/^platform_/u, '').replace(/s$/u, '')],
+          [Number(pointer), id],
         );
         if (!resolved.rowCount) {
-          // Still record; fail if any published revision expected
-          const anyRev = await client.query(
-            `SELECT 1 FROM platform_resource_revisions WHERE revision = $1 LIMIT 1`,
-            [Number(pointer)],
-          );
-          if (!anyRev.rowCount) {
-            return {
-              match: false,
-              detail: `dangling-pointer:${source.table}:${id}:${pointer}`,
-              pointerDigest: sha256Hex(pointerLines.join('\n')),
-            };
-          }
+          return {
+            match: false,
+            detail: `dangling-pointer:${source.table}:${id}:${pointer}`,
+            pointerDigest: sha256Hex(pointerLines.join('\n')),
+          };
         }
+        const row = resolved.rows[0]!;
+        // Bind immutable target checksum into pointer digest (no cross-resource reuse).
+        pointerLines[pointerLines.length - 1] =
+          `${source.table}:${id}:${pointer}:${row.resource_type}:${row.checksum}`;
+        if (row.resource_id !== id) {
+          return {
+            match: false,
+            detail: `pointer-owner-mismatch:${source.table}:${id}`,
+            pointerDigest: sha256Hex(pointerLines.join('\n')),
+          };
+        }
+        void resourceType;
       }
     }
   }
