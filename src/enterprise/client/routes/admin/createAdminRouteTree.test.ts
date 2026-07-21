@@ -36,7 +36,6 @@ describe('createAdminRouteTree', () => {
     expect(paths).toContain('/admin/ai/catalog/providers');
     expect(paths).toContain('/admin/ai/catalog/providers/:id');
     expect(paths).toContain('/admin/ai/catalog/models');
-    expect(paths).toContain('/admin/ai/creds');
     expect(paths).toContain('/admin/skills');
     expect(paths).toContain('/admin/skills/:id');
     expect(paths).toContain('/admin/connectors');

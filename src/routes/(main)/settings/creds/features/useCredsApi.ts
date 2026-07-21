@@ -12,13 +12,13 @@ import { lambdaClient, lambdaQuery } from '@/libs/trpc/client';
  * different tRPC routers — `market.creds` (Market user account) versus
  * `workspaceCreds` (Market organization mirroring the cloud workspace).
  *
- * Admin platform credentials (`/admin/ai/creds`) rebind the same UI to
- * `admin.creds` with {@link CredsApi.mode} = `'platform'` so Market auth and
- * OAuth creation are skipped, and view never reveals plaintext.
+ * The `'platform'` {@link CredsApi.mode} rebinds the same UI to admin-owned
+ * global credentials (`admin.creds`) so Market auth and OAuth creation are
+ * skipped and the view never reveals plaintext.
  *
- * The workspace/admin shell wraps the page in {@link CredsApiProvider}.
- * Forms/modals read whichever client/query namespace is active via
- * {@link useCredsApi} and otherwise behave identically.
+ * The workspace shell wraps the page in {@link CredsApiProvider}. Forms/modals
+ * read whichever client/query namespace is active via {@link useCredsApi} and
+ * otherwise behave identically.
  */
 export type CredsApiMode = 'market' | 'platform';
 
