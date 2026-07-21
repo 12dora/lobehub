@@ -55,11 +55,27 @@ mv .env.example .env
 
 点击左侧边栏的 “Explore” 进入查询编辑器，可对 Prometheus 和 Tempo 数据源进行即席查询。
 
+## 3.1 企业平台参考告警规则
+
+Compose 示例会从只读挂载的 `prometheus/rules/enterprise-platform-alerts.yml` 加载企业平台指标的
+Prometheus **参考**告警规则。可在 Prometheus 的 **Alerts** / **Rules** 中查看。
+
+**本示例不配置通知接收端。** 无 Alertmanager 时，触发中的规则仍可在 Prometheus UI 观察。生产环境的
+路由、阈值与值班归属由部署方配置，见仓库内
+`docs/enterprise/runbooks/enterprise-prometheus-alerts.md`。校验规则：
+
+```sh
+bun run enterprise:check-prometheus-rules
+```
+
+该命令在固定版本的 `prom/prometheus` 镜像中执行 `promtool check rules`；Docker 或校验不可用时失败（fail closed）。
+
 ## 4. 故障排查
 
 - 确认所有容器已运行：`docker compose ps`
 - 查看服务日志：`docker compose logs <服务名>`
 - 检查 Prometheus 和 Tempo 是否正常采集 LobeHub 及 otel-collector 的数据。
+- 确认企业规则已加载：打开 Prometheus `/rules`，查找 group `enterprise-platform`。
 
 ## 相关链接
 

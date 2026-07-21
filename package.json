@@ -84,6 +84,7 @@
     "e2e:ui": "playwright test --ui",
     "enterprise:check-branding": "bun run scripts/enterprise/scan-branding-literals.ts",
     "enterprise:check-paths": "bun run scripts/enterprise/check-path-boundaries.ts",
+    "enterprise:check-prometheus-rules": "bun run scripts/enterprise/prometheus-alerts/checkRules.ts",
     "enterprise:preflight": "bun run scripts/enterprise/preflight.ts",
     "enterprise:recovery-drill": "bun run scripts/enterprise/recovery-drill.ts",
     "enterprise:verify-migration": "bun run scripts/enterprise/verify-migration.ts",
