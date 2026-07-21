@@ -6,7 +6,7 @@ import type { FormInstance } from 'antd';
 import { memo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { useAiInfraStore } from '@/store/aiInfra';
+import { useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
 
 interface CreateNewModelFooterProps {
   formRef: { current?: FormInstance };

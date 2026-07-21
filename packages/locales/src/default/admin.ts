@@ -514,9 +514,19 @@ export default {
   'nav.agents': 'Agents',
   'nav.agentDetail': 'Agent details',
   'nav.ai': 'AI infrastructure',
-  'nav.aiModels': 'Models',
+  'nav.aiCatalogModels': 'Catalog models',
+  'nav.aiCatalogProviderDetail': 'Catalog provider detail',
+  'nav.aiCatalogProviders': 'Catalog providers',
+
   'nav.aiProviderDetail': 'Provider detail',
   'nav.aiProviders': 'Providers',
+  'aiProviderSettings.advancedCatalog': 'Advanced catalog management',
+  'aiProviderSettings.draftBanner.desc':
+    'Publish requires credentials, at least one enabled model, and a successful connection test.',
+  'aiProviderSettings.draftBanner.retry': 'Retry publish',
+  'aiProviderSettings.draftBanner.title': 'Changes saved as draft — not live yet',
+  'aiProviderSettings.description':
+    'Manage global platform AI providers. Changes publish immediately.',
   'nav.aria': 'Admin navigation',
   'nav.audit': 'Audit',
   'nav.branding': 'Branding',

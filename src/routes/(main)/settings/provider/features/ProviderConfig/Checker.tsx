@@ -9,14 +9,17 @@ import { Select } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar, cx } from 'antd-style';
 import { Loader2Icon } from 'lucide-react';
 import { type ReactNode } from 'react';
-import { memo, useEffect, useMemo, useState } from 'react';
+import { memo, use, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { usePermission } from '@/hooks/usePermission';
 import { useProviderName } from '@/hooks/useProviderName';
+import { lambdaClient } from '@/libs/trpc/client';
 import { chatService } from '@/services/chat';
-import { aiProviderSelectors, useAiInfraStore } from '@/store/aiInfra';
+import { aiProviderSelectors, useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
 import { getRuntimeErrorMessage } from '@/utils/locale/runtimeErrorMessage';
+
+import { ProviderSettingsContext } from '../ModelList/ProviderSettingsContext';
 
 const styles = createStaticStyles(({ css }) => ({
   popup: css`
@@ -68,6 +71,8 @@ const Checker = memo<ConnectionCheckerProps>(
   ({ model, provider, checkErrorRender: CheckErrorRender, onBeforeCheck, onAfterCheck }) => {
     const { t } = useTranslation('setting');
     const { allowed: canManageProvider } = usePermission('manage_provider_key');
+    // Admin parity page sets hideFetchOnClient; use platform catalog test API there.
+    const { hideFetchOnClient: isAdminPlatformCatalog } = use(ProviderSettingsContext);
 
     const [isProviderConfigUpdating, updateAiProviderConfig] = useAiInfraStore((s) => [
       aiProviderSelectors.isProviderConfigUpdating(provider)(s),
@@ -119,6 +124,61 @@ const Checker = memo<ConnectionCheckerProps>(
       // Clear previous check results immediately
       setPass(false);
       setError(undefined);
+
+      if (isAdminPlatformCatalog) {
+        // Platform catalog: admin.aiProviders.test updates draft connectionTest for publish gates.
+        setLoading(true);
+        try {
+          // Resolve platform UUID via list/get through admin API (provider key is public id).
+          let cursor: string | undefined;
+          let platformId: string | undefined;
+          for (let page = 0; page < 20 && !platformId; page += 1) {
+            const pageResult = await lambdaClient.admin.aiProviders.list.query({
+              cursor,
+              limit: 100,
+            });
+            const hit = pageResult.items.find(
+              (item) => item.providerKey === provider || item.id === provider,
+            );
+            if (hit) platformId = hit.id;
+            if (!pageResult.nextCursor) break;
+            cursor = pageResult.nextCursor;
+          }
+          if (!platformId) {
+            throw new Error(`Platform provider not found: ${provider}`);
+          }
+          const result = await lambdaClient.admin.aiProviders.test.mutate({
+            id: platformId,
+            reason: 'admin provider settings connectivity check',
+          });
+          if (result.status === 'success') {
+            setPass(true);
+            setError(undefined);
+          } else {
+            setPass(false);
+            setError({
+              body: {
+                errorCategory: result.errorCategory,
+                latencyMs: result.latencyMs,
+                sanitizedMessage: result.sanitizedMessage,
+              },
+              message:
+                result.sanitizedMessage || getRuntimeErrorMessage(t, 'ConnectionCheckFailed'),
+              type: 'ConnectionCheckFailed',
+            });
+          }
+        } catch (cause) {
+          setPass(false);
+          setError({
+            body: cause,
+            message: getRuntimeErrorMessage(t, 'ConnectionCheckFailed'),
+            type: 'ConnectionCheckFailed',
+          });
+        } finally {
+          setLoading(false);
+        }
+        return;
+      }
 
       let isError = false;
 

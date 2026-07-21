@@ -14,8 +14,7 @@ import { ArrowDownUpIcon } from 'lucide-react';
 import { useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { aiProviderSelectors } from '@/store/aiInfra';
-import { useAiInfraStore } from '@/store/aiInfra/store';
+import { aiProviderSelectors, useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
 import { useGlobalStore } from '@/store/global';
 import { systemStatusSelectors } from '@/store/global/selectors';
 

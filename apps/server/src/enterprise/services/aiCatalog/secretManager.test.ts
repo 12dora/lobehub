@@ -41,4 +41,44 @@ describe('AiCatalogSecretManager', () => {
     const ciphertext = await new PlatformSecretService({ keyProvider }).encrypt('[]');
     await expect(manager.decrypt(ciphertext)).rejects.toThrow('PLATFORM_SECRET_NOT_READABLE');
   });
+
+  it('merge overlays non-empty fields and retains unsubmitted vault keys', async () => {
+    const seed = await manager.applyMutation(null, {
+      operation: 'replace',
+      value: { apiKey: 'seed-api-key', region: 'us-east-1' },
+    });
+    const merged = await manager.applyMutation(seed, {
+      operation: 'merge',
+      value: { apiKey: 'rotated-api-key' },
+    });
+    expect(JSON.stringify(merged)).not.toContain('seed-api-key');
+    expect(JSON.stringify(merged)).not.toContain('rotated-api-key');
+    expect(await manager.decrypt(merged.encryptedKeyVaults!)).toEqual({
+      apiKey: 'rotated-api-key',
+      region: 'us-east-1',
+    });
+  });
+
+  it('merge ignores empty-string fields so accidental blanks do not wipe secrets', async () => {
+    const seed = await manager.applyMutation(null, {
+      operation: 'replace',
+      value: { apiKey: 'keep-me', region: 'ap-east-1' },
+    });
+    const merged = await manager.applyMutation(seed, {
+      operation: 'merge',
+      value: { apiKey: '', region: 'eu-west-1' },
+    });
+    expect(await manager.decrypt(merged.encryptedKeyVaults!)).toEqual({
+      apiKey: 'keep-me',
+      region: 'eu-west-1',
+    });
+  });
+
+  it('merge onto empty vault acts like replace for non-empty fields only', async () => {
+    const merged = await manager.applyMutation(null, {
+      operation: 'merge',
+      value: { apiKey: 'first-key', baseURL: '' },
+    });
+    expect(await manager.decrypt(merged.encryptedKeyVaults!)).toEqual({ apiKey: 'first-key' });
+  });
 });

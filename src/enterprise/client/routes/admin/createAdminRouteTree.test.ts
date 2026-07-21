@@ -31,6 +31,9 @@ describe('createAdminRouteTree', () => {
     expect(paths).toContain('/admin/managed-resources');
     expect(paths).toContain('/admin/ai/providers');
     expect(paths).toContain('/admin/ai/providers/:id');
+    expect(paths).toContain('/admin/ai/catalog/providers');
+    expect(paths).toContain('/admin/ai/catalog/providers/:id');
+    expect(paths).toContain('/admin/ai/catalog/models');
     expect(paths).toContain('/admin/skills');
     expect(paths).toContain('/admin/skills/:id');
     expect(paths).toContain('/admin/connectors');
@@ -79,7 +82,8 @@ describe('createAdminRouteTree', () => {
     const managedResources = children.find((c) => c.path === 'managed-resources');
     const aiProviders = children.find((c) => c.path === 'ai/providers');
     const aiProviderDetail = children.find((c) => c.path === 'ai/providers/:id');
-    const aiModels = children.find((c) => c.path === 'ai/models');
+    const aiCatalogProviders = children.find((c) => c.path === 'ai/catalog/providers');
+    const aiCatalogModels = children.find((c) => c.path === 'ai/catalog/models');
     const skills = children.find((c) => c.path === 'skills');
     const skillDetail = children.find((c) => c.path === 'skills/:id');
     const connectors = children.find((c) => c.path === 'connectors');
@@ -105,9 +109,12 @@ describe('createAdminRouteTree', () => {
     expect((aiProviders?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder).toBe(
       false,
     );
-    expect((aiModels?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder).toBe(
-      false,
-    );
+    expect(
+      (aiCatalogProviders?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder,
+    ).toBe(false);
+    expect(
+      (aiCatalogModels?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder,
+    ).toBe(false);
     expect(
       (aiProviderDetail?.handle as { admin?: { placeholder?: boolean } })?.admin?.placeholder,
     ).toBe(false);
@@ -152,7 +159,9 @@ describe('createAdminRouteTree', () => {
           i.id !== 'managed-resources' &&
           i.id !== 'ai-providers' &&
           i.id !== 'ai-provider-detail' &&
-          i.id !== 'ai-models' &&
+          i.id !== 'ai-catalog-providers' &&
+          i.id !== 'ai-catalog-provider-detail' &&
+          i.id !== 'ai-catalog-models' &&
           i.id !== 'skills' &&
           i.id !== 'skills-detail' &&
           i.id !== 'connectors' &&

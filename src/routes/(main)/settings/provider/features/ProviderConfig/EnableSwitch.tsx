@@ -4,7 +4,7 @@ import { type FC } from 'react';
 
 import InstantSwitch from '@/components/InstantSwitch';
 import { usePermission } from '@/hooks/usePermission';
-import { aiProviderSelectors, useAiInfraStore } from '@/store/aiInfra';
+import { aiProviderSelectors, useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
 
 const styles = createStaticStyles(({ css }) => ({
   switchLoading: css`

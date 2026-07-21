@@ -7,7 +7,7 @@ import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { usePermission } from '@/hooks/usePermission';
-import { aiProviderSelectors, useAiInfraStore } from '@/store/aiInfra';
+import { aiProviderSelectors, useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
 
 import { createSettingModal } from './SettingModal';
 

@@ -4,7 +4,7 @@ import { type FormInstance } from 'antd';
 import isEqual from 'fast-deep-equal';
 import { memo } from 'react';
 
-import { aiModelSelectors, useAiInfraStore } from '@/store/aiInfra';
+import { aiModelSelectors, useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
 
 import ModelConfigForm from '../CreateNewModelModal/Form';
 

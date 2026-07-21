@@ -36,7 +36,31 @@ export const toDefinedPlatformKeyVaults = (
 const fingerprintSecret = (plaintext: string): string =>
   `sha256:${createHash('sha256').update(plaintext).digest('hex').slice(0, 16)}`;
 
-/** Applies keep/replace/clear without ever returning plaintext or logging it. */
+/** Drop empty-string leaves; keep nested objects (e.g. customHeaders) as-is when non-empty. */
+export const filterNonEmptySecretFields = (
+  value: PlatformProviderKeyVaults | string,
+): PlatformProviderKeyVaults => {
+  const raw = typeof value === 'string' ? { apiKey: value } : value;
+  const result: PlatformProviderKeyVaults = {};
+  for (const [key, entry] of Object.entries(raw)) {
+    if (typeof entry === 'string') {
+      if (entry.length > 0) result[key] = entry;
+      continue;
+    }
+    if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
+      const nested = Object.fromEntries(
+        Object.entries(entry).filter(([, v]) => typeof v === 'string' && v.length > 0),
+      );
+      if (Object.keys(nested).length > 0) result[key] = nested;
+    }
+  }
+  return result;
+};
+
+const toVaultObject = (value: string | PlatformProviderKeyVaults): PlatformProviderKeyVaults =>
+  typeof value === 'string' ? { apiKey: value } : value;
+
+/** Applies keep/replace/merge/clear without ever returning plaintext or logging it. */
 export class AiCatalogSecretManager {
   private readonly secrets: PlatformSecretService;
 
@@ -50,6 +74,13 @@ export class AiCatalogSecretManager {
   ): Promise<PlatformProviderKeyVaults> => {
     if (mutation?.operation === 'replace') {
       return typeof mutation.value === 'string' ? { apiKey: mutation.value } : mutation.value;
+    }
+    if (mutation?.operation === 'merge') {
+      const existing = current?.encryptedKeyVaults
+        ? await this.decrypt(current.encryptedKeyVaults)
+        : {};
+      const incoming = filterNonEmptySecretFields(mutation.value);
+      return { ...existing, ...incoming };
     }
     if (mutation?.operation === 'clear') return {};
     return current?.encryptedKeyVaults ? this.decrypt(current.encryptedKeyVaults) : {};
@@ -87,8 +118,18 @@ export class AiCatalogSecretManager {
       };
     }
 
-    const keyVaults =
-      typeof mutation.value === 'string' ? { apiKey: mutation.value } : mutation.value;
+    let keyVaults: PlatformProviderKeyVaults;
+    if (mutation.operation === 'merge') {
+      const existing = current?.encryptedKeyVaults
+        ? await this.decrypt(current.encryptedKeyVaults)
+        : {};
+      const incoming = filterNonEmptySecretFields(mutation.value);
+      keyVaults = { ...existing, ...incoming };
+    } else {
+      // replace
+      keyVaults = toVaultObject(mutation.value);
+    }
+
     const serialized = JSON.stringify(keyVaults);
     const encryptedKeyVaults = await this.secrets.encrypt(serialized);
     return {

@@ -2,7 +2,7 @@ import { type FC } from 'react';
 
 import InstantSwitch from '@/components/InstantSwitch';
 import { usePermission } from '@/hooks/usePermission';
-import { useAiInfraStore } from '@/store/aiInfra';
+import { useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
 
 interface SwitchProps {
   Component?: FC<{ enabled: boolean; id: string }>;

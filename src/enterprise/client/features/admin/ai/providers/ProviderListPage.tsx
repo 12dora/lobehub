@@ -167,7 +167,7 @@ const ProviderListPage = memo(() => {
       const id = committedProviderId;
       setCommittedProviderId(null);
       setCommittedRefreshFailed(false);
-      navigate(`/admin/ai/providers/${encodeURIComponent(id)}`);
+      navigate(`/admin/ai/catalog/providers/${encodeURIComponent(id)}`);
     } catch {
       setCommittedRefreshFailed(true);
     } finally {
@@ -199,7 +199,7 @@ const ProviderListPage = memo(() => {
                     },
                     onRefreshed: () => {
                       setCommittedProviderId(null);
-                      navigate(`/admin/ai/providers/${encodeURIComponent(providerId)}`);
+                      navigate(`/admin/ai/catalog/providers/${encodeURIComponent(providerId)}`);
                     },
                     onRefreshFailed: () => setCommittedRefreshFailed(true),
                   });
@@ -292,7 +292,7 @@ const ProviderListPage = memo(() => {
         onRetry={() => void mutate()}
         onRowActivate={
           canReadProviders
-            ? (item) => navigate(`/admin/ai/providers/${encodeURIComponent(item.id)}`)
+            ? (item) => navigate(`/admin/ai/catalog/providers/${encodeURIComponent(item.id)}`)
             : undefined
         }
       />
