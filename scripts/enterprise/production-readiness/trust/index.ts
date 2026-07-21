@@ -16,12 +16,15 @@ export {
   type TrustPolicy,
 } from './policy';
 export {
+  backupRestoreBindingSchema,
   createSignedProvenance,
   digestArtifactBytes,
+  type ExpectedBackupBinding,
   isProductionEnvironment,
   newNonce,
   provenanceGrantsProductionScope,
   type ProvenanceVerdict,
+  resolveProvenanceManifestSha256,
   type SignedProvenanceEnvelope,
   signedProvenanceEnvelopeSchema,
   type SignedProvenancePayload,

@@ -4,6 +4,7 @@
  */
 import { createHash } from 'node:crypto';
 import { lstat, readFile, realpath } from 'node:fs/promises';
+import path from 'node:path';
 
 import type { EvidenceScope } from '../constants';
 import {
@@ -92,8 +93,12 @@ const writeResult = async (
   options: BackupRestoreDrillOptions,
   evidence: BackupRestoreEvidence,
   exitCode: number,
+  provenance?: unknown,
 ): Promise<BackupRestoreDrillResult> => {
-  const rawPath = options.outputPath.replace(/\.json$/u, '.raw.json');
+  const dir = path.dirname(options.outputPath);
+  const base = path.basename(options.outputPath).replace(/\.json$/u, '');
+  const rawPath = path.join(dir, 'raw', `${base}.raw.json`);
+  const envelopePath = path.join(dir, 'envelopes', `backup-restore.envelope.json`);
   const { sha256 } = await writeJsonAtomic(rawPath, evidence);
   const gateEvidence = toPreflightGateEvidence({
     artifactSha256: sha256,
@@ -101,11 +106,13 @@ const writeResult = async (
     candidateSha: evidence.candidateSha,
     gate: 'backup-restore',
     generatedAt: evidence.freshness.generatedAt,
+    provenance,
     rawReport: evidence,
     releaseId: options.releaseId,
     scope: evidence.scope,
     status: evidence.status,
   });
+  await writeJsonAtomic(envelopePath, gateEvidence);
   await writeJsonAtomic(options.outputPath, gateEvidence);
   return { evidence, exitCode, gateEvidence };
 };
@@ -295,21 +302,95 @@ const runProductionBackupRestore = async (
 
   const dump = await readFile(backupAbs);
   const sourceBackupDigest = createHash('sha256').update(dump).digest('hex');
-  const manifestRaw = await readFile(options.sourceManifestPath, 'utf8');
-  const manifest = JSON.parse(manifestRaw) as {
+
+  // Manifest must be a regular file (reject symlink/path swaps as far as ownership allows).
+  let manifestAbs: string;
+  try {
+    const mst = await lstat(options.sourceManifestPath);
+    if (mst.isSymbolicLink() || !mst.isFile()) throw new Error('manifest-not-regular-file');
+    manifestAbs = await realpath(options.sourceManifestPath);
+  } catch {
+    const evidence = buildEvidence({
+      assertions: { failed: 1, passed: 0, skipped: 0, total: 1 },
+      candidateSha: options.candidateSha,
+      cleanupResult: 'passed',
+      dbSchemaVersionTag: options.dbSchemaVersionTag,
+      invariants: [{ id: 'restore-integrity', result: 'failed' }],
+      nowIso,
+      scope: 'local-harness',
+      sourceBackupDigest,
+      status: 'failed',
+    });
+    return writeResult(options, evidence, 1);
+  }
+
+  const manifestRaw = await readFile(manifestAbs, 'utf8');
+  const sourceManifestSha256 = createHash('sha256').update(manifestRaw).digest('hex');
+  let manifest: {
     audits: { digest: string; rowCount: number };
+    inventoryVersion?: number;
+    manifestSchemaVersion?: number;
     pointerDigest: string;
     publishedCount: number;
     revisions: { digest: string; rowCount: number };
     secrets: { aggregateDigest: string };
     tables: Array<{ digest: string; name: string; rowCount: number }>;
   };
+  try {
+    manifest = JSON.parse(manifestRaw) as typeof manifest;
+    if (
+      typeof manifest.revisions?.digest !== 'string' ||
+      typeof manifest.audits?.digest !== 'string' ||
+      !Array.isArray(manifest.tables)
+    ) {
+      throw new Error('manifest-shape-invalid');
+    }
+  } catch {
+    const evidence = buildEvidence({
+      assertions: { failed: 1, passed: 0, skipped: 0, total: 1 },
+      candidateSha: options.candidateSha,
+      cleanupResult: 'passed',
+      dbSchemaVersionTag: options.dbSchemaVersionTag,
+      invariants: [{ id: 'restore-integrity', result: 'failed' }],
+      nowIso,
+      scope: 'local-harness',
+      sourceBackupDigest,
+      status: 'failed',
+    });
+    return writeResult(options, evidence, 1);
+  }
+
+  // Re-read dump after manifest to reduce TOCTOU window; digests must still match.
+  const dumpAgain = await readFile(backupAbs);
+  const dumpDigestAgain = createHash('sha256').update(dumpAgain).digest('hex');
+  if (dumpDigestAgain !== sourceBackupDigest) {
+    const evidence = buildEvidence({
+      assertions: { failed: 1, passed: 0, skipped: 0, total: 1 },
+      candidateSha: options.candidateSha,
+      cleanupResult: 'passed',
+      dbSchemaVersionTag: options.dbSchemaVersionTag,
+      invariants: [{ id: 'restore-integrity', result: 'failed' }],
+      nowIso,
+      scope: 'local-harness',
+      sourceBackupDigest,
+      status: 'failed',
+    });
+    return writeResult(options, evidence, 1);
+  }
 
   const verdict = verifySignedProvenance(options.backupProvenance, {
     expectedArtifactSha256: sourceBackupDigest,
+    expectedBackupBinding: {
+      inventoryVersion: 1,
+      manifestSchemaVersion: 1,
+      sourceDbToolVersion: 'pg_dump-16',
+      sourceManifestSha256,
+      sourceSchemaTag: options.dbSchemaVersionTag,
+    },
     expectedCandidateSha: options.candidateSha,
     expectedGateId: 'backup-restore',
     expectedReleaseId: options.releaseId,
+    expectedSourceManifestSha256: sourceManifestSha256,
     policy,
   });
   if (!verdict.ok || verdict.environment !== 'production') {
@@ -396,11 +477,13 @@ const runProductionBackupRestore = async (
       dbSchemaVersionTag: options.dbSchemaVersionTag,
       invariants,
       nowIso,
+      // Provenance verified above; envelope keeps signed dump+manifest relationship.
+      // Scope remains local-harness until repository production keys authorize pass.
       scope: 'local-harness',
       sourceBackupDigest,
       status: allPassed ? 'passed' : 'failed',
     });
-    return writeResult(options, evidence, allPassed ? 0 : 1);
+    return writeResult(options, evidence, allPassed ? 0 : 1, options.backupProvenance);
   } catch {
     if (targetLifecycle) cleanupResult = await targetLifecycle.cleanup();
     const evidence = buildEvidence({
@@ -414,7 +497,7 @@ const runProductionBackupRestore = async (
       sourceBackupDigest,
       status: 'failed',
     });
-    return writeResult(options, evidence, 1);
+    return writeResult(options, evidence, 1, options.backupProvenance);
   }
 };
 

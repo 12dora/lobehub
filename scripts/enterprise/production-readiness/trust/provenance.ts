@@ -43,11 +43,40 @@ const assertionSummarySchema = z
     }
   });
 
+/**
+ * Backup-restore only: binds dump + canonical source-manifest as one signed pair.
+ * Required whenever gateId === 'backup-restore'.
+ */
+export const backupRestoreBindingSchema = z
+  .object({
+    /** Algorithm id for the source-manifest canonicalization. */
+    inventoryVersion: z.literal(1),
+    /** Manifest schema version embedded in the signed relationship. */
+    manifestSchemaVersion: z.literal(1),
+    /** Source DB/server/tool/schema identity digests (never raw connection strings). */
+    sourceDbToolVersion: z
+      .string()
+      .min(1)
+      .max(64)
+      .regex(/^[a-z0-9][\w.+-]*$/iu),
+    sourceSchemaTag: z
+      .string()
+      .min(1)
+      .max(128)
+      .regex(/^[a-z0-9][\w.-]*$/iu),
+    /** Exact canonical bytes SHA-256 of the source-manifest JSON. */
+    sourceManifestSha256: sha256Schema,
+  })
+  .strict();
+
 /** Signed payload — unknown fields fail via .strict(). */
 export const signedProvenancePayloadSchema = z
   .object({
+    /** Primary artifact (e.g. dump) SHA-256. */
     artifactSha256: sha256Schema,
     assertions: assertionSummarySchema.optional(),
+    /** Optional backup-restore pair binding (required for backup-restore gate). */
+    backupBinding: backupRestoreBindingSchema.optional(),
     candidateSha: fullShaSchema,
     environment: z.enum(['ci-harness', 'local-harness', 'production', 'staging']),
     gateId: z.enum(REQUIRED_EVIDENCE_GATES),
@@ -62,6 +91,11 @@ export const signedProvenancePayloadSchema = z
       .min(1)
       .max(64)
       .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/u),
+    /**
+     * @deprecated Prefer backupBinding.sourceManifestSha256. Kept for one-hop
+     * compatibility with RR2 fixtures; backup-restore still requires one of them.
+     */
+    sourceManifestSha256: sha256Schema.optional(),
     nonce: nonceSchema,
     releaseId: z
       .string()
@@ -76,7 +110,29 @@ export const signedProvenancePayloadSchema = z
     schemaVersion: z.literal(1),
     status: z.enum(CHECK_RESULTS),
   })
-  .strict();
+  .strict()
+  .superRefine((value, context) => {
+    if (value.gateId !== 'backup-restore') return;
+    const manifestSha = value.backupBinding?.sourceManifestSha256 ?? value.sourceManifestSha256;
+    if (!manifestSha) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'backup-restore provenance requires backupBinding or sourceManifestSha256',
+        path: ['backupBinding'],
+      });
+    }
+    if (
+      value.backupBinding &&
+      value.sourceManifestSha256 &&
+      value.backupBinding.sourceManifestSha256 !== value.sourceManifestSha256
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'backupBinding.sourceManifestSha256 must match sourceManifestSha256',
+        path: ['sourceManifestSha256'],
+      });
+    }
+  });
 
 export type SignedProvenancePayload = z.infer<typeof signedProvenancePayloadSchema>;
 
@@ -91,12 +147,24 @@ export const signedProvenanceEnvelopeSchema = z
 
 export type SignedProvenanceEnvelope = z.infer<typeof signedProvenanceEnvelopeSchema>;
 
+export interface ExpectedBackupBinding {
+  inventoryVersion?: 1;
+  manifestSchemaVersion?: 1;
+  sourceDbToolVersion?: string;
+  sourceManifestSha256: string;
+  sourceSchemaTag?: string;
+}
+
 export interface VerifyProvenanceOptions {
   clockSkewMs?: number;
   expectedArtifactSha256: string;
+  /** Required when verifying backup-restore provenance. */
+  expectedBackupBinding?: ExpectedBackupBinding;
   expectedCandidateSha: string;
   expectedGateId: EvidenceGateId;
   expectedReleaseId?: string;
+  /** @deprecated Use expectedBackupBinding.sourceManifestSha256. */
+  expectedSourceManifestSha256?: string;
   maxAgeMs?: number;
   nowMs?: number;
   /** Injected only in tests — CLI always uses PRODUCTION_TRUST_POLICY. */
@@ -104,6 +172,11 @@ export interface VerifyProvenanceOptions {
   /** Session nonce set for replay protection (mutated on success). */
   seenNonces?: Set<string>;
 }
+
+export const resolveProvenanceManifestSha256 = (
+  payload: SignedProvenancePayload,
+): string | undefined =>
+  payload.backupBinding?.sourceManifestSha256 ?? payload.sourceManifestSha256;
 
 export type ProvenanceVerdict =
   | { ok: true; environment: TrustEnvironment; payload: SignedProvenancePayload }
@@ -152,6 +225,50 @@ export const verifySignedProvenance = (
   if (payload.artifactSha256 !== options.expectedArtifactSha256) {
     return { ok: false, reason: 'artifact-digest-mismatch' };
   }
+
+  const expectedManifestSha =
+    options.expectedBackupBinding?.sourceManifestSha256 ?? options.expectedSourceManifestSha256;
+  const payloadManifestSha = resolveProvenanceManifestSha256(payload);
+
+  if (payload.gateId === 'backup-restore') {
+    if (!payloadManifestSha) {
+      return { ok: false, reason: 'source-manifest-digest-missing' };
+    }
+    if (expectedManifestSha && payloadManifestSha !== expectedManifestSha) {
+      return { ok: false, reason: 'source-manifest-digest-mismatch' };
+    }
+    if (options.expectedBackupBinding && payload.backupBinding) {
+      const expected = options.expectedBackupBinding;
+      const binding = payload.backupBinding;
+      if (
+        expected.manifestSchemaVersion !== undefined &&
+        binding.manifestSchemaVersion !== expected.manifestSchemaVersion
+      ) {
+        return { ok: false, reason: 'manifest-schema-version-mismatch' };
+      }
+      if (
+        expected.inventoryVersion !== undefined &&
+        binding.inventoryVersion !== expected.inventoryVersion
+      ) {
+        return { ok: false, reason: 'inventory-version-mismatch' };
+      }
+      if (
+        expected.sourceSchemaTag !== undefined &&
+        binding.sourceSchemaTag !== expected.sourceSchemaTag
+      ) {
+        return { ok: false, reason: 'source-schema-tag-mismatch' };
+      }
+      if (
+        expected.sourceDbToolVersion !== undefined &&
+        binding.sourceDbToolVersion !== expected.sourceDbToolVersion
+      ) {
+        return { ok: false, reason: 'source-db-tool-version-mismatch' };
+      }
+    }
+  } else if (expectedManifestSha && payloadManifestSha !== expectedManifestSha) {
+    return { ok: false, reason: 'source-manifest-digest-mismatch' };
+  }
+
   if (options.expectedReleaseId && payload.releaseId !== options.expectedReleaseId) {
     return { ok: false, reason: 'release-id-mismatch' };
   }
