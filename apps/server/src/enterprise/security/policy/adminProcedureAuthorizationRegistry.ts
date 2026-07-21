@@ -291,6 +291,11 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY = [
   },
   {
     kind: 'mutation',
+    path: 'admin.connectors.applyImmediate',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.CONNECTOR_PUBLISH] },
+  },
+  {
+    kind: 'mutation',
     path: 'admin.connectors.archive',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.CONNECTOR_DELETE] },
   },
@@ -327,6 +332,11 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY = [
   {
     kind: 'mutation',
     path: 'admin.connectors.publish',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.CONNECTOR_PUBLISH] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.connectors.publishNow',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.CONNECTOR_PUBLISH] },
   },
   {
@@ -575,6 +585,11 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY = [
   },
   {
     kind: 'mutation',
+    path: 'admin.skills.applyImmediate',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SKILL_PUBLISH] },
+  },
+  {
+    kind: 'mutation',
     path: 'admin.skills.archive',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SKILL_DELETE] },
   },
@@ -616,6 +631,11 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY = [
   {
     kind: 'mutation',
     path: 'admin.skills.publish',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SKILL_PUBLISH] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.skills.publishNow',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SKILL_PUBLISH] },
   },
   {

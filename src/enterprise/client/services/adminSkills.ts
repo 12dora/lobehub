@@ -1,6 +1,9 @@
+import { withAdminReauthRetry } from '@/enterprise/client/features/admin/reauth/requestAdminReauth';
 import { lambdaClient } from '@/libs/trpc/client';
 
 import type {
+  AdminSkillApplyImmediateInput,
+  AdminSkillApplyImmediateOutput,
   AdminSkillArchiveInput,
   AdminSkillCreateInput,
   AdminSkillCreateVersionInput,
@@ -18,15 +21,41 @@ import type {
   AdminSkillMutationOutput,
   AdminSkillPublicationOutput,
   AdminSkillPublishInput,
+  AdminSkillPublishNowInput,
   AdminSkillRollbackInput,
   AdminSkillUpdateDraftInput,
   AdminSkillValidateInput,
   AdminSkillValidateOutput,
 } from '../features/admin/skills/types';
+import { withAdminAiInfraErrorToast } from './adminAiInfraAdapter/errors';
+
+/** Last applyImmediate/publishNow outcome for draft banner (module-level; admin page only). */
+export type AdminSkillPublishOutcome = {
+  published: boolean;
+  publishError?: string | null;
+  skillId: string;
+};
+
+let lastSkillPublishOutcome: AdminSkillPublishOutcome | null = null;
+
+export const getLastAdminSkillPublishOutcome = () => lastSkillPublishOutcome;
+export const clearLastAdminSkillPublishOutcome = () => {
+  lastSkillPublishOutcome = null;
+};
+export const setLastAdminSkillPublishOutcome = (outcome: AdminSkillPublishOutcome | null) => {
+  lastSkillPublishOutcome = outcome;
+};
+
+const withToastAndReauth = <T>(fn: () => Promise<T>): Promise<T> =>
+  withAdminAiInfraErrorToast(() => withAdminReauthRetry(fn));
 
 class AdminSkillsService {
   archive = async (input: AdminSkillArchiveInput): Promise<AdminSkillPublicationOutput> =>
     lambdaClient.admin.skills.archive.mutate(input);
+
+  /** Settings-page archive with reauth + toast (advanced catalog keeps bare archive). */
+  archiveImmediate = async (input: AdminSkillArchiveInput): Promise<AdminSkillPublicationOutput> =>
+    withToastAndReauth(() => lambdaClient.admin.skills.archive.mutate(input));
 
   create = async (input: AdminSkillCreateInput): Promise<AdminSkillMutationOutput> =>
     lambdaClient.admin.skills.create.mutate(input);
@@ -64,6 +93,34 @@ class AdminSkillsService {
 
   validate = async (input: AdminSkillValidateInput): Promise<AdminSkillValidateOutput> =>
     lambdaClient.admin.skills.validate.mutate(input);
+
+  /**
+   * Draft mutation + immediate publish (admin settings UI parity).
+   * Soft-fail leaves draft + banner; hard failures toast via wrapper.
+   */
+  applyImmediate = async (
+    input: AdminSkillApplyImmediateInput,
+  ): Promise<AdminSkillApplyImmediateOutput> =>
+    withToastAndReauth(async () => {
+      const result = await lambdaClient.admin.skills.applyImmediate.mutate(input);
+      setLastAdminSkillPublishOutcome({
+        published: result.published,
+        publishError: result.publishError,
+        skillId: result.draft.id,
+      });
+      return result;
+    });
+
+  publishNow = async (input: AdminSkillPublishNowInput): Promise<AdminSkillApplyImmediateOutput> =>
+    withToastAndReauth(async () => {
+      const result = await lambdaClient.admin.skills.publishNow.mutate(input);
+      setLastAdminSkillPublishOutcome({
+        published: result.published,
+        publishError: result.publishError,
+        skillId: result.draft.id,
+      });
+      return result;
+    });
 }
 
 export const adminSkillsService = new AdminSkillsService();

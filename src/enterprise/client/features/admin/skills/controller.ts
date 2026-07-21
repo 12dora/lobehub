@@ -205,6 +205,82 @@ export const buildSkillVersionPayload = (params: {
   };
 };
 
+/** Minimal valid platform skill manifest for applyImmediate create/import. */
+export const buildMinimalSkillManifest = (params: {
+  description?: string | null;
+  displayName: string;
+}): SkillManifest => ({
+  description: params.description?.trim() || params.displayName,
+  displayName: params.displayName,
+  localizedDescriptions: {},
+  localizedDisplayNames: {},
+  permissions: {
+    filesystem: 'none',
+    network: { allowedHosts: [], enabled: false },
+    tools: { allow: [] },
+  },
+  skillDependencies: [],
+  toolDependencies: [],
+});
+
+export const emptyEditableSkillVersionDraft = (
+  overrides: Partial<EditableSkillVersionDraft> = {},
+): EditableSkillVersionDraft => ({
+  content: '# Platform skill\n',
+  contentRef: '',
+  manifestText: JSON.stringify(buildMinimalSkillManifest({ displayName: 'Skill' }), null, 2),
+  resourcesText: '[]',
+  version: '1.0.0',
+  ...overrides,
+});
+
+/** Version fields embedded in applyImmediate(mode:'create') without CAS tokens. */
+export const buildApplyImmediateVersionPayload = (params: {
+  content: string;
+  contentRef?: string | null;
+  description?: string | null;
+  displayName: string;
+  manifestText?: string;
+  resourcesText?: string;
+  version: string;
+}): {
+  content: string;
+  contentRef: string | null;
+  manifest: SkillManifest;
+  resources: SkillResource[];
+  version: string;
+} | null => {
+  const content = params.content.trim();
+  const version = params.version.trim();
+  if (!content || !version) return null;
+  let manifest: SkillManifest;
+  try {
+    manifest = params.manifestText
+      ? skillManifestSchema.parse(JSON.parse(params.manifestText))
+      : buildMinimalSkillManifest({
+          description: params.description,
+          displayName: params.displayName,
+        });
+  } catch {
+    return null;
+  }
+  let resources: SkillResource[] = [];
+  if (params.resourcesText) {
+    try {
+      resources = skillResourceSchema.array().max(100).parse(JSON.parse(params.resourcesText));
+    } catch {
+      return null;
+    }
+  }
+  return {
+    content,
+    contentRef: params.contentRef?.trim() || null,
+    manifest,
+    resources,
+    version,
+  };
+};
+
 const EDITABLE_IDENTITY_FIELDS = [
   'description',
   'displayName',

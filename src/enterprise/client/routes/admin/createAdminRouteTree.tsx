@@ -32,6 +32,12 @@ const AiServiceModelSettingsPage = lazy(
 const AiMemorySettingsPage = lazy(
   () => import('@/enterprise/client/features/admin/ai/settingsForms/MemorySettingsPage'),
 );
+const AiSkillSettingsPage = lazy(
+  () => import('@/enterprise/client/features/admin/ai/skills/SkillSettingsPage'),
+);
+const AiConnectorSettingsPage = lazy(
+  () => import('@/enterprise/client/features/admin/ai/connectors/ConnectorSettingsPage'),
+);
 const AiCatalogProviderListPage = lazy(
   () => import('@/enterprise/client/features/admin/ai/providers/ProviderListPage'),
 );
@@ -106,6 +112,14 @@ const resolveAdminLeafElement = (id: string): ReactNode => {
     }
     case 'ai-memory': {
       return withLazy(<AiMemorySettingsPage />);
+    }
+    case 'ai-skills':
+    case 'ai-skill-detail': {
+      return withLazy(<AiSkillSettingsPage />);
+    }
+    case 'ai-connectors':
+    case 'ai-connector-detail': {
+      return withLazy(<AiConnectorSettingsPage />);
     }
     case 'ai-catalog-providers': {
       return withLazy(<AiCatalogProviderListPage />);

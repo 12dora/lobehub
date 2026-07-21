@@ -1,6 +1,8 @@
 import type { z } from 'zod';
 
 import type {
+  adminSkillApplyImmediateInputSchema,
+  adminSkillApplyImmediateOutputSchema,
   adminSkillArchiveInputSchema,
   adminSkillCreateInputSchema,
   adminSkillCreateVersionInputSchema,
@@ -18,6 +20,7 @@ import type {
   adminSkillMutationOutputSchema,
   adminSkillPublicationOutputSchema,
   adminSkillPublishInputSchema,
+  adminSkillPublishNowInputSchema,
   adminSkillRollbackInputSchema,
   adminSkillUpdateDraftInputSchema,
   adminSkillValidateInputSchema,
@@ -25,6 +28,8 @@ import type {
   publishedSkillCatalogSchema,
 } from '@/server/enterprise/contracts/skillCatalog';
 
+export type AdminSkillApplyImmediateInput = z.input<typeof adminSkillApplyImmediateInputSchema>;
+export type AdminSkillApplyImmediateOutput = z.infer<typeof adminSkillApplyImmediateOutputSchema>;
 export type AdminSkillArchiveInput = z.infer<typeof adminSkillArchiveInputSchema>;
 export type AdminSkillCreateInput = z.infer<typeof adminSkillCreateInputSchema>;
 export type AdminSkillCreateVersionInput = z.infer<typeof adminSkillCreateVersionInputSchema>;
@@ -42,6 +47,7 @@ export type AdminSkillListVersionsOutput = z.infer<typeof adminSkillListVersions
 export type AdminSkillMutationOutput = z.infer<typeof adminSkillMutationOutputSchema>;
 export type AdminSkillPublicationOutput = z.infer<typeof adminSkillPublicationOutputSchema>;
 export type AdminSkillPublishInput = z.infer<typeof adminSkillPublishInputSchema>;
+export type AdminSkillPublishNowInput = z.infer<typeof adminSkillPublishNowInputSchema>;
 export type AdminSkillRollbackInput = z.infer<typeof adminSkillRollbackInputSchema>;
 export type AdminSkillUpdateDraftInput = z.infer<typeof adminSkillUpdateDraftInputSchema>;
 export type AdminSkillValidateInput = z.infer<typeof adminSkillValidateInputSchema>;
