@@ -131,8 +131,6 @@ export const buildMinimalDrillSchemaStatements = (): string[] => {
        key_id text NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS platform_connector_tools (
        id text PRIMARY KEY, connector_id text)`,
-    `CREATE TABLE IF NOT EXISTS platform_user_connector_bindings (
-       id text PRIMARY KEY, connector_id text, user_id text, published_revision integer)`,
     `CREATE TABLE IF NOT EXISTS platform_connector_oauth_states (
        id text PRIMARY KEY, connector_id text)`,
     `CREATE TABLE IF NOT EXISTS platform_branding (
@@ -144,11 +142,16 @@ export const buildMinimalDrillSchemaStatements = (): string[] => {
     `CREATE TABLE IF NOT EXISTS platform_skills (
        id text PRIMARY KEY, status text, current_version_id text)`,
     `CREATE TABLE IF NOT EXISTS platform_skill_versions (
-       id text PRIMARY KEY, skill_id text NOT NULL, content_digest text)`,
+       id text PRIMARY KEY, skill_id text NOT NULL, version text, checksum text NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS platform_agents (
        id text PRIMARY KEY, status text, current_version_id text, published_at timestamptz)`,
     `CREATE TABLE IF NOT EXISTS platform_agent_versions (
-       id text PRIMARY KEY, agent_id text NOT NULL, content_digest text)`,
+       id text PRIMARY KEY, agent_id text NOT NULL, version text, checksum text)`,
+    `CREATE TABLE IF NOT EXISTS platform_user_connector_bindings (
+       id text PRIMARY KEY,
+       connector_id text,
+       user_id text,
+       published_revision integer)`,
     `CREATE TABLE IF NOT EXISTS platform_agent_assignments (
        id text PRIMARY KEY, agent_id text)`,
     `CREATE TABLE IF NOT EXISTS platform_user_agent_materializations (
@@ -242,17 +245,20 @@ export const buildRecoverySeedStatements = (): string[] => {
      VALUES ('${ids.connectorSecretId}', '${ids.connectorId}', '${fp}',
              '${PROBE_ENVELOPE_PLACEHOLDER}', 'probe-key-id')
      ON CONFLICT (id) DO NOTHING`,
-    `INSERT INTO platform_skill_versions (id, skill_id, content_digest)
-     VALUES ('${ids.skillVersionId}', '${ids.skillId}', '${PROBE_PAYLOAD_CHECKSUM}')
+    `INSERT INTO platform_skill_versions (id, skill_id, version, checksum)
+     VALUES ('${ids.skillVersionId}', '${ids.skillId}', '1.0.0', '${PROBE_PAYLOAD_CHECKSUM}')
      ON CONFLICT (id) DO NOTHING`,
     `INSERT INTO platform_skills (id, status, current_version_id)
      VALUES ('${ids.skillId}', 'published', '${ids.skillVersionId}')
      ON CONFLICT (id) DO NOTHING`,
-    `INSERT INTO platform_agent_versions (id, agent_id, content_digest)
-     VALUES ('${ids.agentVersionId}', '${ids.agentId}', '${PROBE_PAYLOAD_CHECKSUM_V2}')
+    `INSERT INTO platform_agent_versions (id, agent_id, version, checksum)
+     VALUES ('${ids.agentVersionId}', '${ids.agentId}', '1.0.0', '${PROBE_PAYLOAD_CHECKSUM_V2}')
      ON CONFLICT (id) DO NOTHING`,
     `INSERT INTO platform_agents (id, status, current_version_id)
      VALUES ('${ids.agentId}', 'published', '${ids.agentVersionId}')
+     ON CONFLICT (id) DO NOTHING`,
+    `INSERT INTO platform_user_connector_bindings (id, connector_id, user_id, published_revision)
+     VALUES ('pcub_m15q06_probe_01', '${ids.connectorId}', '${ids.userId}', 2)
      ON CONFLICT (id) DO NOTHING`,
   ];
 };

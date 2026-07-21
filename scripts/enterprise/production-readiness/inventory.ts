@@ -56,52 +56,59 @@ export const SECRET_DOMAIN_TABLES = {
 } as const;
 
 /**
- * Tables/columns that carry publication or activation pointers.
- * Must stay in sync with platform schemas (drift test asserts coverage).
- */
-/**
- * Pointer domains: integer revision → platform_resource_revisions with exact resourceType;
- * version-id → dedicated version table with owner FK.
+ * Pointer domains must match real platform schemas:
+ * - resource-revision: FK into platform_resource_revisions (type + owner resource id + revision)
+ * - domain-version: FK into agent/skill version tables (owner column + checksum column)
+ *
+ * For user connector bindings, holder id is binding.id but revision owner is connector_id.
  */
 export const PUBLICATION_POINTER_SOURCES = [
   {
-    idColumn: 'id',
+    holderIdColumn: 'id',
     kind: 'resource-revision' as const,
     pointerColumn: 'published_revision',
+    /** resource_id in platform_resource_revisions */
+    resourceOwnerColumn: 'id',
     resourceType: 'connector',
     table: 'platform_connectors',
   },
   {
-    idColumn: 'id',
+    holderIdColumn: 'id',
     kind: 'resource-revision' as const,
     pointerColumn: 'published_revision',
+    resourceOwnerColumn: 'connector_id',
     resourceType: 'connector',
     table: 'platform_user_connector_bindings',
   },
   {
-    idColumn: 'id',
+    holderIdColumn: 'id',
     kind: 'resource-revision' as const,
     pointerColumn: 'activation_revision',
+    resourceOwnerColumn: 'id',
     resourceType: 'identity_provider',
     table: 'platform_identity_providers',
   },
   {
-    idColumn: 'id',
+    holderIdColumn: 'id',
     kind: 'resource-revision' as const,
     pointerColumn: 'first_published_revision',
+    resourceOwnerColumn: 'id',
     resourceType: 'branding',
     table: 'platform_branding_assets',
   },
   {
-    idColumn: 'id',
+    checksumColumn: 'checksum',
+    holderIdColumn: 'id',
     kind: 'domain-version' as const,
+    /** Owner FK column on the version table */
     ownerColumn: 'skill_id',
     pointerColumn: 'current_version_id',
     table: 'platform_skills',
     versionTable: 'platform_skill_versions',
   },
   {
-    idColumn: 'id',
+    checksumColumn: 'checksum',
+    holderIdColumn: 'id',
     kind: 'domain-version' as const,
     ownerColumn: 'agent_id',
     pointerColumn: 'current_version_id',

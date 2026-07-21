@@ -26,6 +26,31 @@ export interface TableDigestEntry {
 
 const sha256Hex = (value: string): string => createHash('sha256').update(value).digest('hex');
 
+export const TABLE_DIGEST_ENCODING_VERSION = 1 as const;
+
+/** Shared versioned encoder for every recovery authorization digest (no delimiter concat). */
+export const digestCanonicalRecords = (
+  kind: string,
+  records: ReadonlyArray<Record<string, unknown>>,
+): string => {
+  const serialized = records
+    .map((record) =>
+      JSON.stringify(
+        record,
+        Object.keys(record).sort((a, b) => a.localeCompare(b, 'en')),
+      ),
+    )
+    .sort((a, b) => a.localeCompare(b, 'en'));
+  return sha256Hex(
+    JSON.stringify({
+      encodingVersion: TABLE_DIGEST_ENCODING_VERSION,
+      kind,
+      recordCount: serialized.length,
+      records: serialized,
+    }),
+  );
+};
+
 export const digestResourceRevisions = async (
   client: PoolClient,
 ): Promise<AggregateDigestResult> => {
@@ -38,21 +63,28 @@ export const digestResourceRevisions = async (
     status: string;
   }>(
     `SELECT id, resource_type, resource_id, revision::text AS revision, status, checksum
-     FROM platform_resource_revisions
-     ORDER BY resource_type, resource_id, revision, id`,
+     FROM platform_resource_revisions`,
   );
-  const lines = result.rows.map(
-    (row) =>
-      `${row.id}|${row.resource_type}|${row.resource_id}|${row.revision}|${row.status}|${row.checksum}`,
-  );
-  return { digest: sha256Hex(lines.join('\n')), match: true, rowCount: result.rows.length };
+  const records = result.rows.map((row) => ({
+    checksum: row.checksum,
+    id: row.id,
+    resource_id: row.resource_id,
+    resource_type: row.resource_type,
+    revision: row.revision,
+    status: row.status,
+  }));
+  return {
+    digest: digestCanonicalRecords('resource-revisions', records),
+    match: true,
+    rowCount: result.rows.length,
+  };
 };
 
 export const digestAuditLogs = async (client: PoolClient): Promise<AggregateDigestResult> => {
   const result = await client.query<{
     action: string;
+    after_diff: unknown;
     config_revision: string | null;
-    diff_digest: string | null;
     id: string;
     result: string;
     target_id: string | null;
@@ -60,15 +92,37 @@ export const digestAuditLogs = async (client: PoolClient): Promise<AggregateDige
   }>(
     `SELECT id, action, result, target_type, target_id,
             config_revision::text AS config_revision,
-            CASE WHEN after_diff IS NULL THEN NULL ELSE md5(after_diff::text) END AS diff_digest
-     FROM platform_audit_logs
-     ORDER BY id`,
+            after_diff
+     FROM platform_audit_logs`,
   );
-  const lines = result.rows.map(
-    (row) =>
-      `${row.id}|${row.action}|${row.result}|${row.target_type ?? ''}|${row.target_id ?? ''}|${row.config_revision ?? ''}|${row.diff_digest ?? ''}`,
-  );
-  return { digest: sha256Hex(lines.join('\n')), match: true, rowCount: result.rows.length };
+  const records = result.rows.map((row) => {
+    let diffDigest: string | null = null;
+    if (row.after_diff !== null && row.after_diff !== undefined) {
+      // SHA-256 over stable JSON of after_diff (never md5, never raw in digest package).
+      const stable =
+        typeof row.after_diff === 'string'
+          ? row.after_diff
+          : JSON.stringify(
+              row.after_diff,
+              Object.keys(row.after_diff as object).sort((a, b) => a.localeCompare(b, 'en')),
+            );
+      diffDigest = sha256Hex(stable);
+    }
+    return {
+      action: row.action,
+      config_revision: row.config_revision,
+      diff_digest: diffDigest,
+      id: row.id,
+      result: row.result,
+      target_id: row.target_id,
+      target_type: row.target_type,
+    };
+  });
+  return {
+    digest: digestCanonicalRecords('audit-logs', records),
+    match: true,
+    rowCount: result.rows.length,
+  };
 };
 
 /**
@@ -77,7 +131,6 @@ export const digestAuditLogs = async (client: PoolClient): Promise<AggregateDige
  * Secret-bearing values are pre-hashed; never emitted raw.
  */
 const SECRETISH_COLUMN = /secret|cipher|password|token|key_vault|fingerprint|ref$/iu;
-export const TABLE_DIGEST_ENCODING_VERSION = 1 as const;
 
 const normalizeCell = (value: unknown): string | number | boolean | null => {
   if (value === null || value === undefined) return null;
@@ -194,7 +247,7 @@ export const verifySecretReferenceDomains = async (
   match: boolean;
   domains: Record<string, { historyCount: number; referenceCount: number; match: boolean }>;
 }> => {
-  const digestParts: string[] = [];
+  const secretRecords: Record<string, unknown>[] = [];
   let dangling = false;
   let match = true;
   const domains: Record<string, { historyCount: number; referenceCount: number; match: boolean }> =
@@ -225,17 +278,27 @@ export const verifySecretReferenceDomains = async (
   }
   let identityMatch = !dangling;
   for (const provider of idp.rows) {
-    const refDigest = provider.ref ? sha256Hex(provider.ref) : '';
-    digestParts.push(`idp:${provider.id}:${refDigest}:${provider.fingerprint ?? ''}`);
+    secretRecords.push({
+      domain: 'idp',
+      fingerprint: provider.fingerprint,
+      id: provider.id,
+      ref_digest: provider.ref ? sha256Hex(provider.ref) : null,
+    });
     if (provider.ref || provider.fingerprint) {
       const history = idph.rows.filter((row) => row.provider_id === provider.id);
       if (history.length < 1) identityMatch = false;
       for (const h of history) {
         if (provider.fingerprint && h.fingerprint !== provider.fingerprint) identityMatch = false;
         if (provider.ref && h.ref !== provider.ref) identityMatch = false;
-        digestParts.push(
-          `idph:${h.id}:${h.provider_id}:${h.fingerprint}:${sha256Hex(h.ref)}:${sha256Hex(h.ciphertext)}:${sha256Hex(h.key_id)}`,
-        );
+        secretRecords.push({
+          ciphertext_digest: sha256Hex(h.ciphertext),
+          domain: 'idph',
+          fingerprint: h.fingerprint,
+          id: h.id,
+          key_id_digest: sha256Hex(h.key_id),
+          provider_id: h.provider_id,
+          ref_digest: sha256Hex(h.ref),
+        });
       }
     }
   }
@@ -270,17 +333,25 @@ export const verifySecretReferenceDomains = async (
   }
   let aiMatch = !dangling;
   for (const provider of aip.rows) {
-    digestParts.push(
-      `ai:${provider.id}:${provider.fingerprint ?? ''}:${provider.key_id ? sha256Hex(provider.key_id) : ''}`,
-    );
+    secretRecords.push({
+      domain: 'ai',
+      fingerprint: provider.fingerprint,
+      id: provider.id,
+      key_id_digest: provider.key_id ? sha256Hex(provider.key_id) : null,
+    });
     if (provider.fingerprint) {
       const history = aih.rows.filter((row) => row.provider_id === provider.id);
       if (history.length < 1) aiMatch = false;
       for (const h of history) {
         if (h.fingerprint !== provider.fingerprint) aiMatch = false;
-        digestParts.push(
-          `aih:${h.id}:${h.provider_id}:${h.fingerprint}:${sha256Hex(h.ciphertext)}:${sha256Hex(h.key_id)}`,
-        );
+        secretRecords.push({
+          ciphertext_digest: sha256Hex(h.ciphertext),
+          domain: 'aih',
+          fingerprint: h.fingerprint,
+          id: h.id,
+          key_id_digest: sha256Hex(h.key_id),
+          provider_id: h.provider_id,
+        });
       }
     }
   }
@@ -317,18 +388,28 @@ export const verifySecretReferenceDomains = async (
   );
   let connectorMatch = true;
   for (const c of conn.rows) {
-    digestParts.push(
-      `c:${c.id}:${c.shared_ref ? sha256Hex(c.shared_ref) : ''}:${c.shared_fp ?? ''}:${c.oauth_ref ? sha256Hex(c.oauth_ref) : ''}:${c.oauth_fp ?? ''}`,
-    );
+    secretRecords.push({
+      domain: 'connector',
+      id: c.id,
+      oauth_fp: c.oauth_fp,
+      oauth_ref_digest: c.oauth_ref ? sha256Hex(c.oauth_ref) : null,
+      shared_fp: c.shared_fp,
+      shared_ref_digest: c.shared_ref ? sha256Hex(c.shared_ref) : null,
+    });
     const fps = [c.shared_fp, c.oauth_fp].filter(Boolean) as string[];
     if (fps.length > 0) {
       const history = conh.rows.filter((row) => row.connector_id === c.id);
       if (history.length < 1) connectorMatch = false;
       for (const h of history) {
         if (!fps.includes(h.fingerprint)) connectorMatch = false;
-        digestParts.push(
-          `ch:${h.id}:${h.connector_id ?? ''}:${h.fingerprint}:${sha256Hex(h.ciphertext)}:${sha256Hex(h.key_id)}`,
-        );
+        secretRecords.push({
+          ciphertext_digest: sha256Hex(h.ciphertext),
+          connector_id: h.connector_id,
+          domain: 'connector-history',
+          fingerprint: h.fingerprint,
+          id: h.id,
+          key_id_digest: sha256Hex(h.key_id),
+        });
       }
     }
   }
@@ -351,7 +432,7 @@ export const verifySecretReferenceDomains = async (
   if (!connectorMatch) match = false;
 
   return {
-    aggregateDigest: sha256Hex(digestParts.join('\n')),
+    aggregateDigest: digestCanonicalRecords('secret-domains', secretRecords),
     dangling,
     domains,
     match: match && !dangling,
@@ -360,13 +441,14 @@ export const verifySecretReferenceDomains = async (
 
 /**
  * Publication pointers for every declared source domain.
- * Binds exact resource_type (or domain version owner FK) + id + revision/version + checksum.
+ * Binds domain + holder id + resource owner id + type + revision/version + checksum
+ * + canonical target digest. No delimiter concatenation.
  */
 export const verifyPublicationPointers = async (
   client: PoolClient,
   options?: { priorPublishedCount?: number; priorPointerDigest?: string },
 ): Promise<BooleanInvariant & { pointerDigest: string }> => {
-  const pointerLines: string[] = [];
+  const pointerRecords: Record<string, unknown>[] = [];
 
   for (const source of PUBLICATION_POINTER_SOURCES) {
     const exists = await client.query<{ exists: boolean }>(
@@ -391,103 +473,168 @@ export const verifyPublicationPointers = async (
       [source.table, source.pointerColumn],
     );
     if (!colExists.rows[0]?.exists) {
-      pointerLines.push(`${source.table}:${source.pointerColumn}:absent`);
+      pointerRecords.push({
+        kind: 'absent-column',
+        pointerColumn: source.pointerColumn,
+        table: source.table,
+      });
       continue;
     }
 
-    const rows = await client.query<Record<string, unknown>>(
-      `SELECT "${source.idColumn}"::text AS id, "${source.pointerColumn}"::text AS pointer
-       FROM "${source.table}"
-       WHERE "${source.pointerColumn}" IS NOT NULL
-       ORDER BY "${source.idColumn}"::text`,
-    );
-    for (const row of rows.rows) {
-      const id = String(row.id ?? '');
-      const pointer = String(row.pointer ?? '');
-
-      if (source.kind === 'resource-revision') {
+    if (source.kind === 'resource-revision') {
+      const ownerCol = source.resourceOwnerColumn;
+      const rows = await client.query<{
+        holder_id: string;
+        pointer: string;
+        resource_owner_id: string;
+      }>(
+        `SELECT "${source.holderIdColumn}"::text AS holder_id,
+                "${ownerCol}"::text AS resource_owner_id,
+                "${source.pointerColumn}"::text AS pointer
+         FROM "${source.table}"
+         WHERE "${source.pointerColumn}" IS NOT NULL
+         ORDER BY "${source.holderIdColumn}"::text`,
+      );
+      for (const row of rows.rows) {
+        const pointer = String(row.pointer ?? '');
         if (!/^\d+$/u.test(pointer)) {
           return {
             match: false,
-            detail: `non-integer-revision-pointer:${source.table}:${id}:${pointer}`,
-            pointerDigest: sha256Hex(pointerLines.join('\n')),
+            detail: `non-integer-revision-pointer:${source.table}:${row.holder_id}:${pointer}`,
+            pointerDigest: digestCanonicalRecords('publication-pointers', pointerRecords),
           };
         }
-        // Exact type + owner + revision + checksum; no cross-type same-number fallback.
-        const resolved = await client.query<{
+        const expectedType: string = source.resourceType;
+        type RevRow = {
           checksum: string;
           resource_id: string;
           resource_type: string;
           revision: string;
-        }>(
+        };
+        const resolvedQuery = await client.query<RevRow>(
           `SELECT resource_type, resource_id, revision::text AS revision, checksum
            FROM platform_resource_revisions
            WHERE revision = $1 AND resource_id = $2 AND resource_type = $3`,
-          [Number(pointer), id, source.resourceType],
+          [Number(pointer), row.resource_owner_id, expectedType],
         );
-        const resolvedCount = resolved.rowCount ?? 0;
+        const resolvedCount = resolvedQuery.rowCount ?? 0;
         if (resolvedCount === 0) {
           return {
             match: false,
-            detail: `dangling-pointer:${source.table}:${id}:${pointer}:${source.resourceType}`,
-            pointerDigest: sha256Hex(pointerLines.join('\n')),
+            detail: `dangling-pointer:${source.table}:${row.holder_id}:${pointer}:${expectedType}:owner=${row.resource_owner_id}`,
+            pointerDigest: digestCanonicalRecords('publication-pointers', pointerRecords),
           };
         }
         if (resolvedCount > 1) {
           return {
             match: false,
-            detail: `ambiguous-pointer:${source.table}:${id}:${pointer}`,
-            pointerDigest: sha256Hex(pointerLines.join('\n')),
+            detail: `ambiguous-pointer:${source.table}:${row.holder_id}:${pointer}`,
+            pointerDigest: digestCanonicalRecords('publication-pointers', pointerRecords),
           };
         }
-        const target = resolved.rows[0]!;
-        if (target.resource_id !== id || target.resource_type !== source.resourceType) {
+        const targetRow: RevRow = resolvedQuery.rows[0]!;
+        if (
+          targetRow.resource_id !== row.resource_owner_id ||
+          targetRow.resource_type !== expectedType
+        ) {
           return {
             match: false,
-            detail: `pointer-owner-or-type-mismatch:${source.table}:${id}`,
-            pointerDigest: sha256Hex(pointerLines.join('\n')),
+            detail: `pointer-owner-or-type-mismatch:${source.table}:${row.holder_id}`,
+            pointerDigest: digestCanonicalRecords('publication-pointers', pointerRecords),
           };
         }
-        pointerLines.push(
-          `${source.table}:${id}:${pointer}:${target.resource_type}:${target.checksum}`,
-        );
-        continue;
+        const targetDigest = digestCanonicalRecords('resource-revision-target', [
+          {
+            checksum: targetRow.checksum,
+            resource_id: targetRow.resource_id,
+            resource_type: targetRow.resource_type,
+            revision: targetRow.revision,
+          },
+        ]);
+        pointerRecords.push({
+          holder_id: row.holder_id,
+          kind: 'resource-revision',
+          pointer,
+          resource_owner_id: row.resource_owner_id,
+          resource_type: expectedType,
+          table: source.table,
+          target_checksum: targetRow.checksum,
+          target_digest: targetDigest,
+        });
       }
+      continue;
+    }
 
-      // domain-version: join exact version table; target must belong to owner.
-      const versionExists = await client.query<{ exists: boolean }>(
-        `SELECT EXISTS (
-           SELECT 1 FROM information_schema.tables
-           WHERE table_schema = 'public' AND table_name = $1
-         ) AS exists`,
-        [source.versionTable],
-      );
-      if (!versionExists.rows[0]?.exists) {
-        return {
-          match: false,
-          detail: `missing-version-table:${source.versionTable}`,
-          pointerDigest: sha256Hex(pointerLines.join('\n')),
-        };
-      }
-      // Prefer content_digest when present (immutable target payload).
-      const hasContent = await client.query<{ exists: boolean }>(
+    // domain-version: real schema uses checksum (not content_digest).
+    const versionExists = await client.query<{ exists: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM information_schema.tables
+         WHERE table_schema = 'public' AND table_name = $1
+       ) AS exists`,
+      [source.versionTable],
+    );
+    if (!versionExists.rows[0]?.exists) {
+      return {
+        match: false,
+        detail: `missing-version-table:${source.versionTable}`,
+        pointerDigest: digestCanonicalRecords('publication-pointers', pointerRecords),
+      };
+    }
+    const hasChecksum = await client.query<{ exists: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM information_schema.columns
+         WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2
+       ) AS exists`,
+      [source.versionTable, source.checksumColumn],
+    );
+    if (!hasChecksum.rows[0]?.exists) {
+      return {
+        match: false,
+        detail: `missing-checksum-column:${source.versionTable}:${source.checksumColumn}`,
+        pointerDigest: digestCanonicalRecords('publication-pointers', pointerRecords),
+      };
+    }
+
+    const rows = await client.query<{ holder_id: string; pointer: string }>(
+      `SELECT "${source.holderIdColumn}"::text AS holder_id,
+              "${source.pointerColumn}"::text AS pointer
+       FROM "${source.table}"
+       WHERE "${source.pointerColumn}" IS NOT NULL
+       ORDER BY "${source.holderIdColumn}"::text`,
+    );
+    for (const row of rows.rows) {
+      const pointer = String(row.pointer ?? '');
+      // Select stable target projection: id, owner, checksum (+ version when present).
+      const hasVersion = await client.query<{ exists: boolean }>(
         `SELECT EXISTS (
            SELECT 1 FROM information_schema.columns
-           WHERE table_schema = 'public' AND table_name = $1 AND column_name = 'content_digest'
+           WHERE table_schema = 'public' AND table_name = $1 AND column_name = 'version'
          ) AS exists`,
         [source.versionTable],
       );
-      const versionRows = hasContent.rows[0]?.exists
-        ? await client.query<{ content_digest: string | null; id: string; owner_id: string }>(
+      const versionRows = hasVersion.rows[0]?.exists
+        ? await client.query<{
+            checksum: string | null;
+            id: string;
+            owner_id: string;
+            version: string | null;
+          }>(
             `SELECT id::text AS id, "${source.ownerColumn}"::text AS owner_id,
-                    content_digest::text AS content_digest
+                    "${source.checksumColumn}"::text AS checksum,
+                    version::text AS version
              FROM "${source.versionTable}"
              WHERE id::text = $1`,
             [pointer],
           )
-        : await client.query<{ content_digest: string | null; id: string; owner_id: string }>(
+        : await client.query<{
+            checksum: string | null;
+            id: string;
+            owner_id: string;
+            version: string | null;
+          }>(
             `SELECT id::text AS id, "${source.ownerColumn}"::text AS owner_id,
-                    NULL::text AS content_digest
+                    "${source.checksumColumn}"::text AS checksum,
+                    NULL::text AS version
              FROM "${source.versionTable}"
              WHERE id::text = $1`,
             [pointer],
@@ -496,33 +643,51 @@ export const verifyPublicationPointers = async (
       if (versionCount === 0) {
         return {
           match: false,
-          detail: `dangling-version-pointer:${source.table}:${id}:${pointer}`,
-          pointerDigest: sha256Hex(pointerLines.join('\n')),
+          detail: `dangling-version-pointer:${source.table}:${row.holder_id}:${pointer}`,
+          pointerDigest: digestCanonicalRecords('publication-pointers', pointerRecords),
         };
       }
       if (versionCount > 1) {
         return {
           match: false,
-          detail: `ambiguous-version-pointer:${source.table}:${id}:${pointer}`,
-          pointerDigest: sha256Hex(pointerLines.join('\n')),
+          detail: `ambiguous-version-pointer:${source.table}:${row.holder_id}:${pointer}`,
+          pointerDigest: digestCanonicalRecords('publication-pointers', pointerRecords),
         };
       }
       const version = versionRows.rows[0]!;
-      if (version.owner_id !== id) {
+      if (version.owner_id !== row.holder_id) {
         return {
           match: false,
-          detail: `version-owner-mismatch:${source.table}:${id}:${pointer}:owner=${version.owner_id}`,
-          pointerDigest: sha256Hex(pointerLines.join('\n')),
+          detail: `version-owner-mismatch:${source.table}:${row.holder_id}:${pointer}:owner=${version.owner_id}`,
+          pointerDigest: digestCanonicalRecords('publication-pointers', pointerRecords),
         };
       }
-      const targetDigest = sha256Hex(
-        `${source.versionTable}|${version.id}|${version.owner_id}|${version.content_digest ?? ''}`,
-      );
-      pointerLines.push(`${source.table}:${id}:${pointer}:${source.versionTable}:${targetDigest}`);
+      // Bind complete stable row projection (checksum may be null on legacy agent rows only
+      // when paired with null dependency snapshot; still include full projection).
+      const targetDigest = digestCanonicalRecords('domain-version-target', [
+        {
+          checksum: version.checksum,
+          id: version.id,
+          owner_id: version.owner_id,
+          version: version.version,
+          version_table: source.versionTable,
+        },
+      ]);
+      pointerRecords.push({
+        holder_id: row.holder_id,
+        kind: 'domain-version',
+        pointer,
+        resource_owner_id: version.owner_id,
+        table: source.table,
+        target_checksum: version.checksum,
+        target_digest: targetDigest,
+        target_id: version.id,
+        version_table: source.versionTable,
+      });
     }
   }
 
-  const pointerDigest = sha256Hex(pointerLines.join('\n'));
+  const pointerDigest = digestCanonicalRecords('publication-pointers', pointerRecords);
   if (options?.priorPointerDigest && options.priorPointerDigest !== pointerDigest) {
     return { match: false, detail: 'pointer-digest-drift', pointerDigest };
   }
