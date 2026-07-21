@@ -5,13 +5,15 @@
 
 ## What shipped in-repo
 
-| Artifact                         | Path                                                                                                   |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| Reference rules                  | `docker-compose/production/grafana/prometheus/rules/enterprise-platform-alerts.yml`                    |
-| Prometheus config (`rule_files`) | `docker-compose/production/grafana/prometheus/prometheus.yml`                                          |
-| Compose mount (read-only)        | `docker-compose/production/grafana/docker-compose.yml` → `./prometheus/rules:/etc/prometheus/rules:ro` |
-| Intent ↔ rule metadata           | `apps/server/src/enterprise/observability/alertIntents.ts` (`status: reference-rule`)                  |
-| Authoritative validator          | `bun run enterprise:check-prometheus-rules` → `promtool check rules` in `prom/prometheus:v2.55.1`      |
+| Artifact                          | Path                                                                                                   |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Reference rules                   | `docker-compose/production/grafana/prometheus/rules/enterprise-platform-alerts.yml`                    |
+| Prometheus config (`rule_files`)  | `docker-compose/production/grafana/prometheus/prometheus.yml`                                          |
+| Compose mount (read-only)         | `docker-compose/production/grafana/docker-compose.yml` → `./prometheus/rules:/etc/prometheus/rules:ro` |
+| Intent ↔ rule metadata            | `apps/server/src/enterprise/observability/alertIntents.ts` (`status: reference-rule`)                  |
+| Authoritative rule validator      | `bun run enterprise:check-prometheus-rules` → `promtool check rules` in `prom/prometheus:v2.55.1`      |
+| Collector config validator        | `bun run enterprise:check-otel-collector` → pinned `otel/opentelemetry-collector-contrib:0.120.0`      |
+| OTLP→Prometheus translation probe | `bun run enterprise:probe-otlp-prometheus` (disposable Docker; fail closed; no residue)                |
 
 Intent metadata is **1:1** with YAML `alert:` names. Unit tests reconcile keys, metrics, and identities; they do **not** replace `promtool`.
 
@@ -25,14 +27,16 @@ Intent metadata is **1:1** with YAML `alert:` names. Unit tests reconcile keys, 
 ## Validate rules (local / CI)
 
 ```bash
-# Fail closed if Docker or promtool is unavailable, or if YAML/PromQL is invalid.
+# Fail closed if Docker or validation is unavailable, or if YAML/PromQL/config is invalid.
 bun run enterprise:check-prometheus-rules
+bun run enterprise:check-otel-collector
+bun run enterprise:probe-otlp-prometheus
 
 # Compose structure (does not start the stack)
-docker compose -f docker-compose/production/grafana/docker-compose.yml config --quiet
+docker compose -f docker-compose/production/grafana/docker-compose.yml --env-file docker-compose/production/grafana/.env.example config --quiet
 ```
 
-Focused tests (reconciliation + promtool + mount wiring):
+Focused tests (reconciliation + promtool + runtime + OTLP probe):
 
 ```bash
 bunx vitest run --silent='passed-only' \
@@ -63,7 +67,7 @@ All windows, thresholds, and `for` durations in the YAML are **reference default
 | `EnterpriseAgentMaterializationFailureRate` | `materialization_failure_rate` | failure ratio > 10% / 15m                | 10m           |
 | `EnterpriseJobBacklogStalled`               | `job_backlog_stalled`          | max oldest age > 1800s                   | 15m           |
 | `EnterpriseRevisionLag`                     | `revision_lag`                 | max-by-reason sum lag instances > 0      | 15m           |
-| `EnterpriseOperationalCollectionStale`      | `operational_collection_stale` | max snapshot age > 180s                  | 5m            |
+| `EnterpriseOperationalCollectionStale`      | `operational_collection_stale` | max age > 180s **or** max ready == 0     | 5m            |
 
 Severity labels (`critical` / `warning`) and `component` are stable defaults for routing keys — remap in the deployment overlay if your severity taxonomy differs.
 
@@ -154,7 +158,12 @@ Identity domain lag after the rollout window. `max by (enterprise_domain, enterp
 
 ### EnterpriseOperationalCollectionStale
 
-`max(enterprise_platform_operational_snapshot_age_seconds)`. Collector loop stalled or snapshot never refreshed; job/revision gauges go stale.
+Fires when **either**:
+
+1. `max(enterprise_platform_operational_snapshot_ready) == 0` — active collectors never produced a first successful snapshot (the **age gauge is absent** until first success; ready still emits 0), or
+2. `max(enterprise_platform_operational_snapshot_age_seconds) > 180` — a snapshot existed but became stale.
+
+Aggregate replicas with **max**, never sum. Job backlog and revision-lag gauges stop reflecting production if collection stalls.
 
 ## Related
 

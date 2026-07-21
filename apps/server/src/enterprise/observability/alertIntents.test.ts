@@ -98,6 +98,18 @@ describe('enterprise alert intents', () => {
     expect(operational?.expr).toMatch(/\bmax\s*\(/);
   });
 
+  it('EnterpriseOperationalCollectionStale covers never-initialized (ready=0) and age stale', () => {
+    const rules = parsePrometheusAlertRulesFile(rulesPath);
+    const operational = rules.find((rule) => rule.alert === 'EnterpriseOperationalCollectionStale');
+    expect(operational).toBeDefined();
+    // Age gauge is absent until first success; ready emits 0 — both branches required.
+    expect(operational!.expr).toContain('enterprise_platform_operational_snapshot_age_seconds');
+    expect(operational!.expr).toContain('enterprise_platform_operational_snapshot_ready');
+    expect(operational!.expr).toMatch(/==\s*0/);
+    expect(operational!.expr.toLowerCase()).toContain('or');
+    expect(operational!.expr).not.toContain('enterprise.');
+  });
+
   it('guards ratio alerts against zero-traffic denominators', () => {
     const rules = parsePrometheusAlertRulesFile(rulesPath);
     const ratioRules = [

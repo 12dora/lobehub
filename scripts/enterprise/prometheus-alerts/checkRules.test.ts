@@ -6,13 +6,25 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { checkEnterprisePrometheusRules } from './checkRules';
+import { validateEnterpriseCollectorConfig } from './collectorValidate';
 import { assertEnterprisePrometheusComposeWiring } from './composeWiring';
 import {
+  ENTERPRISE_OTEL_COLLECTOR_IMAGE,
   ENTERPRISE_PROMETHEUS_IMAGE,
   resolveAlertRulesPath,
   resolveRepositoryRoot,
 } from './constants';
+import {
+  assertRuleExprUsesPrometheusLabels,
+  ENTERPRISE_ALERT_SELECTOR_FAMILIES,
+  OTEL_TO_PROMETHEUS_LABEL,
+} from './metricTranslation';
+import { runOtlpPrometheusTranslationProbe } from './otlpPrometheusProbe';
 import { parsePrometheusAlertRulesFile } from './parseRules';
+import {
+  assertForbiddenPrometheusFlagsRejected,
+  validateEnterprisePrometheusRuntime,
+} from './prometheusRuntime';
 
 const tempDirs: string[] = [];
 
@@ -67,11 +79,17 @@ groups:
   });
 });
 
-describe('enterprise prometheus rules — compose wiring', () => {
-  it('loads rules via read-only mounts and rule_files without Alertmanager receivers', () => {
+describe('enterprise prometheus rules — compose + collector wiring', () => {
+  it('loads rules via read-only mounts, pins images, and wires OTLP→prometheusremotewrite', () => {
     const report = assertEnterprisePrometheusComposeWiring();
     expect(report.ruleFilesGlob).toBe('/etc/prometheus/rules/*.yml');
     expect(report.rulesHostPathFragment).toBe('./prometheus/rules');
+    expect(report.prometheusImage).toBe(ENTERPRISE_PROMETHEUS_IMAGE);
+    expect(report.collectorImage).toBe(ENTERPRISE_OTEL_COLLECTOR_IMAGE);
+    expect(report.metricsPipeline.receivers).toContain('otlp');
+    expect(report.metricsPipeline.exporters).toContain('prometheusremotewrite');
+    expect(report.prometheusCommand).not.toContain('--web.enable-otlp-receiver');
+    expect(report.prometheusCommand).toContain('--web.enable-remote-write-receiver');
   });
 
   it('fails when compose loses the read-only rules mount', () => {
@@ -79,14 +97,22 @@ describe('enterprise prometheus rules — compose wiring', () => {
     tempDirs.push(root);
     const grafana = path.join(root, 'docker-compose/production/grafana');
     mkdirSync(path.join(grafana, 'prometheus/rules'), { recursive: true });
+    mkdirSync(path.join(grafana, 'otel-collector'), { recursive: true });
     writeFileSync(
       path.join(grafana, 'docker-compose.yml'),
       `
 services:
   prometheus:
-    image: prom/prometheus:v2.55.1
+    image: ${ENTERPRISE_PROMETHEUS_IMAGE}
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--web.enable-remote-write-receiver'
+  otel-collector:
+    image: ${ENTERPRISE_OTEL_COLLECTOR_IMAGE}
+    volumes:
+      - ./otel-collector/collector-config.yaml:/etc/otelcol/config.yaml:ro
 `,
       'utf8',
     );
@@ -100,7 +126,82 @@ rule_files:
 `,
       'utf8',
     );
+    writeFileSync(
+      path.join(grafana, 'otel-collector/collector-config.yaml'),
+      `
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+exporters:
+  prometheusremotewrite:
+    endpoint: http://127.0.0.1:9090/api/v1/write
+  debug:
+    verbosity: basic
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      exporters: [prometheusremotewrite]
+`,
+      'utf8',
+    );
     expect(() => assertEnterprisePrometheusComposeWiring(root)).toThrow(/read-only/i);
+  });
+
+  it('fails when collector metrics pipeline drops otlp', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'enterprise-compose-no-otlp-'));
+    tempDirs.push(root);
+    const grafana = path.join(root, 'docker-compose/production/grafana');
+    mkdirSync(path.join(grafana, 'prometheus/rules'), { recursive: true });
+    mkdirSync(path.join(grafana, 'otel-collector'), { recursive: true });
+    writeFileSync(
+      path.join(grafana, 'docker-compose.yml'),
+      `
+services:
+  prometheus:
+    image: ${ENTERPRISE_PROMETHEUS_IMAGE}
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules:/etc/prometheus/rules:ro
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--web.enable-remote-write-receiver'
+      - '--enable-feature=exemplar-storage'
+  otel-collector:
+    image: ${ENTERPRISE_OTEL_COLLECTOR_IMAGE}
+    volumes:
+      - ./otel-collector/collector-config.yaml:/etc/otelcol/config.yaml:ro
+`,
+      'utf8',
+    );
+    writeFileSync(
+      path.join(grafana, 'prometheus/prometheus.yml'),
+      `rule_files:\n  - /etc/prometheus/rules/*.yml\n`,
+      'utf8',
+    );
+    writeFileSync(
+      path.join(grafana, 'otel-collector/collector-config.yaml'),
+      `
+receivers:
+  prometheus:
+    config:
+      scrape_configs: []
+exporters:
+  prometheusremotewrite:
+    endpoint: http://127.0.0.1:9090/api/v1/write
+  debug:
+    verbosity: basic
+service:
+  pipelines:
+    metrics:
+      receivers: [prometheus]
+      exporters: [prometheusremotewrite]
+`,
+      'utf8',
+    );
+    expect(() => assertEnterprisePrometheusComposeWiring(root)).toThrow(/otlp receiver/i);
   });
 });
 
@@ -109,6 +210,41 @@ describe('enterprise prometheus rules — structural drift guards', () => {
     const rules = parsePrometheusAlertRulesFile(resolveAlertRulesPath(resolveRepositoryRoot()));
     expect(rules).toHaveLength(12);
     expect(new Set(rules.map((rule) => rule.alert)).size).toBe(12);
+  });
+
+  it('uses proven Prometheus underscore labels in every rule expr', () => {
+    const rules = parsePrometheusAlertRulesFile(resolveAlertRulesPath(resolveRepositoryRoot()));
+    for (const rule of rules) {
+      expect(() => assertRuleExprUsesPrometheusLabels(rule.expr)).not.toThrow();
+      expect(rule.expr).not.toContain('enterprise.');
+    }
+  });
+
+  it('encodes exact selector families used by reference rules', () => {
+    const rules = parsePrometheusAlertRulesFile(resolveAlertRulesPath(resolveRepositoryRoot()));
+    const blob = rules.map((rule) => rule.expr).join('\n');
+    for (const family of ENTERPRISE_ALERT_SELECTOR_FAMILIES) {
+      expect(blob, family.family).toContain(family.metric);
+    }
+    // Counter outcome selector must use translated label key.
+    expect(blob).toContain('enterprise_outcome=');
+    expect(blob).not.toContain('enterprise.outcome');
+    expect(OTEL_TO_PROMETHEUS_LABEL['enterprise.outcome']).toBe('enterprise_outcome');
+    expect(OTEL_TO_PROMETHEUS_LABEL['enterprise.scope']).toBe('enterprise_scope');
+  });
+
+  it('EnterpriseOperationalCollectionStale covers ready=0 and age stale', () => {
+    const rules = parsePrometheusAlertRulesFile(resolveAlertRulesPath(resolveRepositoryRoot()));
+    const operational = rules.find((rule) => rule.alert === 'EnterpriseOperationalCollectionStale');
+    expect(operational).toBeDefined();
+    expect(operational!.expr).toMatch(/operational_snapshot_age_seconds/);
+    expect(operational!.expr).toMatch(/operational_snapshot_ready/);
+    expect(operational!.expr).toMatch(/==\s*0/);
+    expect(operational!.expr.toLowerCase()).toContain('or');
+    expect(operational!.expr).toMatch(/\bmax\s*\(\s*enterprise_platform_operational_snapshot_age/);
+    expect(operational!.expr).toMatch(
+      /\bmax\s*\(\s*enterprise_platform_operational_snapshot_ready/,
+    );
   });
 
   it('detects duplicate alert names as drift', () => {
@@ -137,4 +273,36 @@ groups:
     const names = rules.map((rule) => rule.alert);
     expect(new Set(names).size).toBeLessThan(names.length);
   });
+});
+
+describe('enterprise prometheus — runtime and collector validation', () => {
+  it('rejects forbidden flags on the pinned Prometheus image', () => {
+    expect(() => assertForbiddenPrometheusFlagsRejected()).not.toThrow();
+  });
+
+  it('starts pinned Prometheus with compose flags and loads enterprise rules', () => {
+    const result = validateEnterprisePrometheusRuntime();
+    expect(result.image).toBe(ENTERPRISE_PROMETHEUS_IMAGE);
+    expect(result.readyHttpStatus).toBe(200);
+    expect(result.started).toBe(true);
+    expect(result.flags).not.toContain('--web.enable-otlp-receiver');
+  });
+
+  it('validates collector config with the pinned contrib image', () => {
+    const result = validateEnterpriseCollectorConfig();
+    expect(result.image).toBe(ENTERPRISE_OTEL_COLLECTOR_IMAGE);
+    expect(result.validated).toBe(true);
+  });
+});
+
+describe('enterprise prometheus — OTLP translation probe', () => {
+  it('proves metric names and translated labels for every selector family (fail closed)', () => {
+    const result = runOtlpPrometheusTranslationProbe();
+    expect(result.familiesProven).toHaveLength(ENTERPRISE_ALERT_SELECTOR_FAMILIES.length);
+    expect(result.metricsSeen).toEqual(
+      expect.arrayContaining(ENTERPRISE_ALERT_SELECTOR_FAMILIES.map((f) => f.metric)),
+    );
+    expect(result.labelTranslation['enterprise.outcome']).toBe('enterprise_outcome');
+    expect(result.labelTranslation['enterprise.scope']).toBe('enterprise_scope');
+  }, 180_000);
 });
