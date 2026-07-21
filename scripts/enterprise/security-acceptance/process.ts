@@ -122,6 +122,68 @@ export const processExists = (pid: number): boolean => probePidExistence(pid) !=
 export const isProcessAbsent = (pid: number): boolean => probePidExistence(pid) === 'absent';
 
 /**
+ * Strict parse of `ps -axo pid=,ppid=` style output.
+ * Blank lines are ignored. Any other non-conforming row fails the whole snapshot.
+ * Never silently skips malformed rows.
+ */
+export const parsePidPpidTable = (stdout: string): PidTableSnapshot => {
+  const map = new Map<number, number>();
+  for (const line of stdout.split('\n')) {
+    // Preserve exact line (including trailing spaces) for malformation detection.
+    if (line.length === 0) continue;
+    const trimmed = line.trim();
+    if (trimmed.length === 0) continue;
+    // Exactly two whitespace-separated integer fields; no headers, no extras.
+    // Exactly two non-negative integer fields; reject headers and partial rows.
+    if (!/^\d+\s+\d+$/u.test(trimmed)) {
+      return { ok: false, reason: 'malformed-row' };
+    }
+    const parts = trimmed.split(/\s+/u);
+    const pid = Number(parts[0]);
+    const ppid = Number(parts[1]);
+    if (!Number.isInteger(pid) || !Number.isInteger(ppid) || pid <= 0 || ppid < 0) {
+      return { ok: false, reason: 'invalid-pid-ppid' };
+    }
+    if (map.has(pid)) {
+      const previous = map.get(pid)!;
+      if (previous !== ppid) {
+        return { ok: false, reason: 'duplicate-inconsistent-pid' };
+      }
+      // Exact duplicate of same pid→ppid is inconsistent/incomplete output.
+      return { ok: false, reason: 'duplicate-pid' };
+    }
+    map.set(pid, ppid);
+  }
+  if (map.size === 0) {
+    return { ok: false, reason: 'empty-snapshot' };
+  }
+  return { map, ok: true };
+};
+
+/**
+ * Completeness relative to owned/known PIDs and existence probes.
+ * Still-present owned PIDs must appear in the table; empty/ok maps never prove
+ * success while ownership still requires verification.
+ */
+export const validateSnapshotCompleteness = (
+  snapshot: PidTableSnapshot,
+  ownedPids: ReadonlySet<number>,
+  probe: PidExistenceProbe,
+): PidTableSnapshot => {
+  if (!snapshot.ok) return snapshot;
+  for (const pid of ownedPids) {
+    if (isProtectedPid(pid)) continue;
+    const state = probe(pid);
+    if (state === 'absent') continue;
+    // alive or unconfirmed owned PID must be listed — empty map cannot satisfy this.
+    if (!snapshot.map.has(pid)) {
+      return { ok: false, reason: 'owned-pid-missing-from-snapshot' };
+    }
+  }
+  return snapshot;
+};
+
+/**
  * Build a PID table snapshotter. Optional `env` supports PATH=/definitely-not-real
  * style discovery-unavailable regressions without privileged execution.
  * Failures and empty/malformed tables are explicit `ok: false` — never empty-success.
@@ -131,6 +193,7 @@ export const makeSnapshotPidPpid =
   async () => {
     if (process.platform === 'win32') {
       // Windows path uses taskkill; table discovery is not used for confirmation.
+      // Empty ok:true is only for the unused win32 table path; termination validates probes.
       return { map: new Map(), ok: true };
     }
     try {
@@ -140,22 +203,7 @@ export const makeSnapshotPidPpid =
         maxBuffer: 8 * 1024 * 1024,
         timeout: 5_000,
       });
-      const map = new Map<number, number>();
-      for (const line of stdout.split('\n')) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        const parts = trimmed.split(/\s+/u);
-        if (parts.length < 2) continue;
-        const pid = Number(parts[0]);
-        const ppid = Number(parts[1]);
-        if (!Number.isInteger(pid) || !Number.isInteger(ppid) || pid <= 0) continue;
-        map.set(pid, ppid);
-      }
-      // A healthy host always has multiple processes; empty is treated as malformed.
-      if (map.size === 0) {
-        return { ok: false, reason: 'empty-snapshot' };
-      }
-      return { map, ok: true };
+      return parsePidPpidTable(stdout);
     } catch {
       return { ok: false, reason: 'snapshot-unavailable' };
     }
@@ -240,6 +288,8 @@ export const terminateProcessTree = async (
 
   const known = new Set<number>([rootPid]);
   let discoveryFailed = false;
+  /** At least one complete snapshot accepted while ownership was still under verification. */
+  let hadCompleteSnapshot = false;
 
   const stillPresent = (pid: number): boolean => {
     const state = probe(pid);
@@ -247,11 +297,14 @@ export const terminateProcessTree = async (
   };
 
   const refreshKnown = async (): Promise<void> => {
-    const table = await snapshot();
+    const raw = await snapshot();
+    // Re-validate at the termination boundary (covers injected/custom snapshotters).
+    const table = validateSnapshotCompleteness(raw, known, probe);
     if (!table.ok) {
       discoveryFailed = true;
       return;
     }
+    hadCompleteSnapshot = true;
     const seeds = [...known].filter((pid) => stillPresent(pid));
     if (stillPresent(rootPid) && !seeds.includes(rootPid)) seeds.push(rootPid);
     for (const seed of seeds.length > 0 ? seeds : [rootPid]) {
@@ -262,8 +315,17 @@ export const terminateProcessTree = async (
     for (const [pid, ppid] of table.map) {
       if (!isProtectedPid(pid) && known.has(ppid)) known.add(pid);
     }
+    // After expansion, re-check completeness against the enlarged owned set.
+    const complete = validateSnapshotCompleteness(table, known, probe);
+    if (!complete.ok) {
+      discoveryFailed = true;
+    }
   };
 
+  /**
+   * Cleanup success requires: every owned PID proven absent via ESRCH-class probe,
+   * and at least one complete trusted snapshot was observed (never empty-map success alone).
+   */
   const signalKnown = (signal: NodeJS.Signals): void => {
     for (const pid of known) {
       if (isProtectedPid(pid)) continue;
@@ -274,6 +336,11 @@ export const terminateProcessTree = async (
 
   const presentKnown = (): number[] =>
     [...known].filter((pid) => !isProtectedPid(pid) && stillPresent(pid));
+
+  const canDeclareCleanupSuccess = (): boolean => {
+    if (discoveryFailed || !hadCompleteSnapshot) return false;
+    return presentKnown().length === 0;
+  };
 
   // Initial snapshot while the tree is still intact when possible.
   await refreshKnown();
@@ -302,7 +369,7 @@ export const terminateProcessTree = async (
       signalKnown('SIGKILL');
       return { cleanupFailed: true, remaining: presentKnown() };
     }
-    if (presentKnown().length === 0) return { cleanupFailed: false, remaining: [] };
+    if (canDeclareCleanupSuccess()) return { cleanupFailed: false, remaining: [] };
     signalKnown('SIGTERM');
     await new Promise((resolve) => setTimeout(resolve, PROCESS_CLEANUP_POLL_MS));
   }
@@ -313,8 +380,7 @@ export const terminateProcessTree = async (
       signalKnown('SIGKILL');
       return { cleanupFailed: true, remaining: presentKnown() };
     }
-    const present = presentKnown();
-    if (present.length === 0) return { cleanupFailed: false, remaining: [] };
+    if (canDeclareCleanupSuccess()) return { cleanupFailed: false, remaining: [] };
     signalKnown('SIGKILL');
     await new Promise((resolve) => setTimeout(resolve, PROCESS_CLEANUP_POLL_MS));
   }
@@ -322,7 +388,7 @@ export const terminateProcessTree = async (
   await refreshKnown();
   const remaining = presentKnown();
   return {
-    cleanupFailed: discoveryFailed || remaining.length > 0,
+    cleanupFailed: !canDeclareCleanupSuccess() || remaining.length > 0,
     remaining,
   };
 };
