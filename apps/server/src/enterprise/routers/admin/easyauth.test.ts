@@ -21,6 +21,8 @@ import { adminEasyauthRouter } from '../admin';
 
 const db: LobeChatDatabase = await getTestDB();
 const actorUserId = 'easyauth-reauth-admin';
+const readerUserId = 'easyauth-status-reader';
+const deniedUserId = 'easyauth-status-denied';
 
 vi.mock('@/database/core/db-adaptor', () => ({
   getServerDB: vi.fn(async () => db),
@@ -39,7 +41,7 @@ const cleanup = async () => {
 beforeEach(async () => {
   vi.stubEnv('ENABLE_PLATFORM_ADMIN', '1');
   await cleanup();
-  await db.insert(users).values({ id: actorUserId });
+  await db.insert(users).values([{ id: actorUserId }, { id: readerUserId }, { id: deniedUserId }]);
   await seedPlatformRoles(db);
   const superAdmin = await db.query.roles.findFirst({
     where: (table, { and, eq, isNull }) =>
@@ -61,12 +63,13 @@ afterEach(async () => {
 const caller = async (auth: {
   authenticatedAt?: Date | null;
   authMethod?: 'api-key' | 'better-auth';
+  userId?: string;
 }) =>
   adminEasyauthRouter.createCaller({
     ...(await createContextInner({
       authenticatedAt: auth.authenticatedAt,
       authMethod: auth.authMethod ?? 'better-auth',
-      userId: actorUserId,
+      userId: auth.userId ?? actorUserId,
     })),
     serverDB: db,
   } as never);
@@ -160,5 +163,104 @@ describe('admin.easyauth.triggerSync recent reauth', () => {
     expect(await db.select().from(platformAuditLogs)).toContainEqual(
       expect.objectContaining({ action: 'platform.easyauth.sync', result: 'success' }),
     );
+  });
+});
+
+describe('admin.easyauth.getStatus', () => {
+  it('requires IDENTITY_READ and never returns token material', async () => {
+    const secretToken = 'eat_test_only_do_not_leak';
+    vi.stubEnv('EASYAUTH_APP_TOKEN', secretToken);
+    vi.stubEnv('EASYAUTH_BASE_URL', 'https://easyauth.example');
+    vi.stubEnv('EASYAUTH_APP_KEY', 'aihub');
+    vi.stubEnv('EASYAUTH_PORTAL_URL', 'https://portal.example');
+
+    await expect((await caller({ userId: deniedUserId })).getStatus()).rejects.toMatchObject({
+      code: 'FORBIDDEN',
+    });
+
+    const status = await (await caller({ userId: actorUserId })).getStatus();
+    expect(status).toMatchObject({
+      config: {
+        appKey: 'aihub',
+        baseUrl: 'https://easyauth.example',
+        portalUrl: 'https://portal.example',
+        tokenConfigured: true,
+      },
+      sync: {
+        accessGrantedCount: 0,
+        degradedCount: 0,
+        latestFetchedAt: null,
+        totalCount: 0,
+      },
+    });
+    expect(JSON.stringify(status)).not.toContain(secretToken);
+    expect(status).not.toHaveProperty('appToken');
+    expect(status.config).not.toHaveProperty('appToken');
+  });
+
+  it('aggregates grant snapshot totals without secrets', async () => {
+    const secretToken = 'eat_aggregate_must_stay_out';
+    vi.stubEnv('EASYAUTH_APP_TOKEN', secretToken);
+    vi.stubEnv('EASYAUTH_APP_KEY', 'aihub');
+    const fetchedAt = new Date('2026-03-01T12:00:00.000Z');
+    await db.insert(platformEasyauthGrantSnapshots).values([
+      {
+        accessGranted: true,
+        appKey: 'aihub',
+        catalogVersion: 1,
+        degraded: false,
+        externalUserId: 'ext-1',
+        fetchedAt,
+        grantVersion: 1,
+        grants: [],
+        groups: [],
+        snapshotVersion: '1',
+        userId: actorUserId,
+      },
+      {
+        accessGranted: false,
+        appKey: 'aihub',
+        catalogVersion: 1,
+        degraded: true,
+        externalUserId: 'ext-2',
+        fetchedAt: new Date('2026-02-01T00:00:00.000Z'),
+        grantVersion: 1,
+        grants: [],
+        groups: [],
+        lastError: 'upstream timeout',
+        snapshotVersion: '1',
+        userId: readerUserId,
+      },
+      {
+        accessGranted: true,
+        appKey: 'other-app',
+        catalogVersion: 1,
+        degraded: true,
+        externalUserId: 'ext-3',
+        fetchedAt: new Date('2026-04-01T00:00:00.000Z'),
+        grantVersion: 1,
+        grants: [],
+        groups: [],
+        snapshotVersion: '1',
+        userId: deniedUserId,
+      },
+    ]);
+
+    const status = await (await caller({ userId: actorUserId })).getStatus();
+    expect(status.sync).toEqual({
+      accessGrantedCount: 1,
+      degradedCount: 1,
+      latestFetchedAt: fetchedAt,
+      totalCount: 2,
+    });
+    expect(JSON.stringify(status)).not.toContain(secretToken);
+    expect(JSON.stringify(status)).not.toContain('upstream timeout');
+  });
+
+  it('reports tokenConfigured=false when no token is available', async () => {
+    vi.stubEnv('EASYAUTH_APP_TOKEN', '');
+    vi.stubEnv('EASYAUTH_APP_TOKEN_FILE', '/nonexistent/easyauth-token-file');
+    const status = await (await caller({ userId: actorUserId })).getStatus();
+    expect(status.config.tokenConfigured).toBe(false);
   });
 });
