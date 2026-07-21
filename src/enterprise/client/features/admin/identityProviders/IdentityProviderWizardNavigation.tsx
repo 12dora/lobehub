@@ -2,6 +2,7 @@
 
 import { Button } from '@lobehub/ui/base-ui';
 import { createStaticStyles, cssVar } from 'antd-style';
+import { AlertCircle, Check } from 'lucide-react';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -28,26 +29,34 @@ export const IDENTITY_PROVIDER_STEPS = [
 
 export type IdentityProviderStep = (typeof IDENTITY_PROVIDER_STEPS)[number];
 
+export type IdentityProviderStepState = 'complete' | 'current' | 'error' | 'pending';
+
 interface IdentityProviderWizardNavigationProps {
   onChange: (step: IdentityProviderStep) => void;
+  stepStates: Partial<Record<IdentityProviderStep, IdentityProviderStepState>>;
   value: IdentityProviderStep;
 }
 
 export const IdentityProviderWizardNavigation = memo<IdentityProviderWizardNavigationProps>(
-  ({ onChange, value }) => {
+  ({ onChange, stepStates, value }) => {
     const { t } = useTranslation('admin');
 
     return (
-      <div className={styles.navigation}>
-        {IDENTITY_PROVIDER_STEPS.map((item, index) => (
-          <Button
-            key={item}
-            type={item === value ? 'primary' : 'default'}
-            onClick={() => onChange(item)}
-          >
-            {index + 1}. {t(`identityProviders.steps.${item}` as never)}
-          </Button>
-        ))}
+      <div className={styles.navigation} role="tablist">
+        {IDENTITY_PROVIDER_STEPS.map((item, index) => {
+          const state = item === value ? 'current' : (stepStates[item] ?? 'pending');
+          return (
+            <Button
+              aria-current={item === value ? 'step' : undefined}
+              key={item}
+              type={state === 'current' ? 'primary' : 'default'}
+              icon={state === 'complete' ? Check : state === 'error' ? AlertCircle : undefined}
+              onClick={() => onChange(item)}
+            >
+              {index + 1}. {t(`identityProviders.steps.${item}` as never)}
+            </Button>
+          );
+        })}
       </div>
     );
   },

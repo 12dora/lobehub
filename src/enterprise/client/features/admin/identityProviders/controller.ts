@@ -1,3 +1,14 @@
+import {
+  PLATFORM_IDENTITY_PROVIDER_TEMPLATES,
+  type PlatformIdentityProviderTemplate,
+  type PlatformIdentityProviderType,
+} from '@lobechat/types';
+
+import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
+import { mapEnterpriseError } from '@/enterprise/client/errors/mapEnterpriseError';
+
+import type { AdminResourceStatus } from '../primitives/statusBadge.utils';
+
 export const isIdentityProviderTestTerminal = (status: string): boolean =>
   status !== 'pending' && status !== 'processing';
 
@@ -12,6 +23,104 @@ export const parseIdentityProviderJsonObject = (
     return { valid: false };
   }
 };
+
+/** Deploy-time codes that should surface as a single setup guidance empty state. */
+const SETUP_GUIDANCE_CODES = new Set<string>([
+  PLATFORM_ERROR_CODES.PLATFORM_FEATURE_DISABLED,
+  PLATFORM_ERROR_CODES.PLATFORM_SECRET_REQUIRED,
+]);
+
+const SETUP_GUIDANCE_MESSAGE_MARKERS = [
+  'PLATFORM_FEATURE_DISABLED',
+  'PLATFORM_SECRET_REQUIRED',
+  'PLATFORM_APP_URL_INVALID',
+] as const;
+
+const extractErrorMessage = (error: unknown): string => {
+  if (typeof error === 'string') return error;
+  if (!error || typeof error !== 'object') return '';
+  const parts: string[] = [];
+  if ('message' in error && typeof (error as { message?: unknown }).message === 'string') {
+    parts.push((error as { message: string }).message);
+  }
+  const data = (error as { data?: { errorData?: { message?: unknown } } }).data;
+  if (typeof data?.errorData?.message === 'string') parts.push(data.errorData.message);
+  const cause = (error as { cause?: { data?: { message?: unknown } } }).cause;
+  if (typeof cause?.data?.message === 'string') parts.push(cause.data.message);
+  return parts.join(' ');
+};
+
+/**
+ * True when list/load failed because Database OIDC is disabled or deploy config is incomplete.
+ * Does not treat PLATFORM_INVALID_INPUT (generic validation) as setup guidance.
+ */
+export const isIdentityProviderSetupGuidanceError = (error: unknown): boolean => {
+  if (!error) return false;
+  const mapped = mapEnterpriseError(error);
+  if (mapped && SETUP_GUIDANCE_CODES.has(mapped.code)) return true;
+  // Never promote generic invalid-input to the deploy guidance empty state.
+  if (mapped?.code === PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT) return false;
+  const message = extractErrorMessage(error);
+  return SETUP_GUIDANCE_MESSAGE_MARKERS.some((marker) => message.includes(marker));
+};
+
+/** Map provider lifecycle status onto StatusBadge semantic tokens. */
+export const toIdentityProviderStatusBadge = (
+  status: string | null | undefined,
+): AdminResourceStatus => {
+  switch (status) {
+    case 'draft': {
+      return 'draft';
+    }
+    case 'published': {
+      return 'published';
+    }
+    case 'pending_restart': {
+      return 'pending';
+    }
+    case 'active': {
+      return 'active';
+    }
+    case 'error': {
+      return 'error';
+    }
+    case 'disabled': {
+      return 'disabled';
+    }
+    case 'archived': {
+      return 'archived';
+    }
+    default: {
+      return 'unknown';
+    }
+  }
+};
+
+export type IdentityProviderCreateTemplateId = PlatformIdentityProviderType;
+
+export interface IdentityProviderCreateDraftSeed {
+  buttonLabel: string;
+  claimMapping: PlatformIdentityProviderTemplate['claimMapping'];
+  scopes: string[];
+  type: PlatformIdentityProviderType;
+  usePkce: true;
+}
+
+export const createIdentityProviderDraftFromTemplate = (
+  type: IdentityProviderCreateTemplateId,
+): IdentityProviderCreateDraftSeed => {
+  const template = PLATFORM_IDENTITY_PROVIDER_TEMPLATES[type];
+  return {
+    buttonLabel: template.buttonLabel,
+    claimMapping: structuredClone(template.claimMapping),
+    scopes: [...template.scopes],
+    type: template.type,
+    usePkce: true,
+  };
+};
+
+/** Authentik issuer field placeholder used in the discovery step. */
+export const AUTHENTIK_ISSUER_PLACEHOLDER = 'https://auth.jiefakj.com/application/o/<slug>/';
 
 export class IdentityProviderTestPopupBlockedError extends Error {
   constructor() {
