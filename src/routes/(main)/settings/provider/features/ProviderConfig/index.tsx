@@ -19,7 +19,7 @@ import { Form as AntdForm, Switch } from 'antd';
 import { createStaticStyles, cssVar, cx, responsive } from 'antd-style';
 import { Loader2Icon, LockIcon } from 'lucide-react';
 import { type ReactNode } from 'react';
-import { memo, useCallback, useLayoutEffect, useRef } from 'react';
+import { memo, use, useCallback, useLayoutEffect, useRef } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
 import urlJoin from 'url-join';
 import { z } from 'zod';
@@ -28,7 +28,11 @@ import { FormInput, FormPassword } from '@/components/FormInput';
 import { SkeletonInput, SkeletonSwitch } from '@/components/Skeleton';
 import { usePermission } from '@/hooks/usePermission';
 import { lambdaQuery } from '@/libs/trpc/client';
-import { aiProviderSelectors, useAiInfraStore } from '@/store/aiInfra';
+import {
+  aiProviderSelectors,
+  useAiInfraStoreApi,
+  useScopedAiInfraStore as useAiInfraStore,
+} from '@/store/aiInfra';
 import { serverConfigSelectors, useServerConfigStore } from '@/store/serverConfig';
 import {
   type AiProviderDetailItem,
@@ -38,6 +42,7 @@ import {
 import { AiProviderSourceEnum } from '@/types/aiProvider';
 
 import { KeyVaultsConfigKey, LLMProviderApiTokenKey, LLMProviderBaseUrlKey } from '../../const';
+import { ProviderSettingsContext } from '../ModelList/ProviderSettingsContext';
 import { isResponsesApiSupportedSdkType } from '../providerSettings';
 import { type CheckErrorRender } from './Checker';
 import Checker from './Checker';
@@ -154,6 +159,7 @@ const ProviderConfig = memo<ProviderConfigProps>(
     const { t } = useTranslation('modelProvider');
     const [form] = Form.useForm();
     const { allowed: canManageProvider } = usePermission('manage_provider_key');
+    const { hideFetchOnClient, secretConfigured } = use(ProviderSettingsContext);
 
     const isOAuthProvider = authType === 'oauthDeviceFlow';
 
@@ -164,6 +170,7 @@ const ProviderConfig = memo<ProviderConfigProps>(
     );
     const isOAuthAuthenticated = oauthStatus?.status === 'ACTIVE';
 
+    const aiInfraStoreApi = useAiInfraStoreApi();
     const [
       data,
       updateAiProviderConfig,
@@ -271,9 +278,9 @@ const ProviderConfig = memo<ProviderConfigProps>(
     const handleOAuthChange = useCallback(async () => {
       // Only refresh provider data, don't update with form values
       // OAuth tokens are saved directly to DB by the tRPC endpoint
-      await useAiInfraStore.getState().refreshAiProviderDetail();
-      await useAiInfraStore.getState().refreshAiProviderRuntimeState();
-    }, []);
+      await aiInfraStoreApi.getState().refreshAiProviderDetail();
+      await aiInfraStoreApi.getState().refreshAiProviderRuntimeState();
+    }, [aiInfraStoreApi]);
 
     const apiKeyItem: FormItemProps[] =
       !showApiKey || isOAuthProvider
@@ -285,7 +292,14 @@ const ProviderConfig = memo<ProviderConfigProps>(
               ) : (
                 <FormPassword
                   autoComplete={'new-password'}
-                  placeholder={t('providerModels.config.apiKey.placeholder', { name })}
+                  placeholder={
+                    secretConfigured
+                      ? t('providerModels.config.apiKey.configuredPlaceholder', {
+                          defaultValue: 'Configured — enter a new value to replace',
+                          name,
+                        })
+                      : t('providerModels.config.apiKey.placeholder', { name })
+                  }
                   suffix={
                     configUpdating && (
                       <Icon spin icon={Loader2Icon} style={{ color: cssVar.colorTextTertiary }} />
@@ -382,6 +396,7 @@ const ProviderConfig = memo<ProviderConfigProps>(
      * 4. There is an apikey provided by user
      */
     const showClientFetch =
+      !hideFetchOnClient &&
       !disableBrowserRequest &&
       (defaultShowBrowserRequest ||
         (showEndpoint && isProviderEndpointNotEmpty) ||

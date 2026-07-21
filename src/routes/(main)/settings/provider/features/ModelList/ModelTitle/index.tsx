@@ -8,7 +8,7 @@ import { useTranslation } from 'react-i18next';
 
 import { useIsMobile } from '@/hooks/useIsMobile';
 import { usePermission } from '@/hooks/usePermission';
-import { useAiInfraStore } from '@/store/aiInfra';
+import { useAiInfraStoreApi, useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
 import { aiModelSelectors } from '@/store/aiInfra/selectors';
 
 import { createCreateNewModelModal } from '../CreateNewModelModal';
@@ -26,6 +26,7 @@ const ModelTitle = memo<ModelFetcherProps>(
     const { t } = useTranslation('modelProvider');
     const { message } = App.useApp();
     const { allowed: canManageProvider, reason } = usePermission('manage_provider_key');
+    const aiInfraStoreApi = useAiInfraStoreApi();
     const [
       searchKeyword,
       totalModels,
@@ -55,8 +56,8 @@ const ModelTitle = memo<ModelFetcherProps>(
     const mobile = useIsMobile();
 
     useEffect(() => {
-      useAiInfraStore.setState({ modelSearchKeyword: '' });
-    }, [provider]);
+      aiInfraStoreApi.setState({ modelSearchKeyword: '' });
+    }, [provider, aiInfraStoreApi]);
 
     return (
       <Flexbox
@@ -110,7 +111,7 @@ const ModelTitle = memo<ModelFetcherProps>(
                 <Search
                   value={searchKeyword}
                   onChange={(value) => {
-                    useAiInfraStore.setState({ modelSearchKeyword: value });
+                    aiInfraStoreApi.setState({ modelSearchKeyword: value });
                   }}
                 />
               )}
@@ -160,7 +161,7 @@ const ModelTitle = memo<ModelFetcherProps>(
                       onClick={() => {
                         if (!canManageProvider) return;
                         createCreateNewModelModal({
-                          existingModelIds: useAiInfraStore
+                          existingModelIds: aiInfraStoreApi
                             .getState()
                             .aiProviderModelList.map((model) => model.id),
                           showDeployName,
@@ -201,7 +202,7 @@ const ModelTitle = memo<ModelFetcherProps>(
             value={searchKeyword}
             variant={'filled'}
             onChange={(value) => {
-              useAiInfraStore.setState({ modelSearchKeyword: value });
+              aiInfraStoreApi.setState({ modelSearchKeyword: value });
             }}
           />
         )}

@@ -26,7 +26,7 @@ vi.mock('@/store/aiInfra', () => ({
   aiModelSelectors: {
     filteredAiProviderModelList: (s: any) => s.filteredModels,
   },
-  useAiInfraStore: (selector: (s: any) => unknown) =>
+  useScopedAiInfraStore: (selector: (s: any) => unknown) =>
     selector({
       batchToggleAiModels: mocks.batchToggleAiModels,
       filteredModels: [

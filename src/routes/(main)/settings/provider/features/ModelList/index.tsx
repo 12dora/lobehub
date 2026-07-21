@@ -18,7 +18,7 @@ import { useTranslation } from 'react-i18next';
 
 import AsyncError from '@/components/AsyncError';
 import { useIsMobile } from '@/hooks/useIsMobile';
-import { aiModelSelectors, useAiInfraStore } from '@/store/aiInfra';
+import { aiModelSelectors, useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
 
 import DisabledModels from './DisabledModels';
 import EmptyModels from './EmptyModels';

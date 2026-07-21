@@ -7,7 +7,7 @@ import Loading from '@/components/Loading/BrandTextLoading';
 import { useClientDataSWR } from '@/libs/swr';
 import { providerKeys } from '@/libs/swr/keys';
 import { aiProviderService } from '@/services/aiProvider';
-import { useAiInfraStore } from '@/store/aiInfra';
+import { useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
 
 import ModelList from '../../features/ModelList';
 import ProviderConfig from '../../features/ProviderConfig';
