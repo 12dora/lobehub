@@ -23,13 +23,16 @@ const SettingsPolicyPage = lazy(
 const ManagedResourcesPolicyPage = lazy(
   () => import('@/enterprise/client/features/admin/managedResources/ManagedResourcesPolicyPage'),
 );
-const AiProviderListPage = lazy(
+const AiProviderSettingsPage = lazy(
+  () => import('@/enterprise/client/features/admin/ai/providerSettings/ProviderSettingsPage'),
+);
+const AiCatalogProviderListPage = lazy(
   () => import('@/enterprise/client/features/admin/ai/providers/ProviderListPage'),
 );
-const AiProviderDetailPage = lazy(
+const AiCatalogProviderDetailPage = lazy(
   () => import('@/enterprise/client/features/admin/ai/providers/ProviderDetailPage'),
 );
-const AiModelListPage = lazy(
+const AiCatalogModelListPage = lazy(
   () => import('@/enterprise/client/features/admin/ai/models/ModelListPage'),
 );
 const SkillListPage = lazy(() => import('@/enterprise/client/features/admin/skills/SkillListPage'));
@@ -82,14 +85,18 @@ const resolveAdminLeafElement = (id: string): ReactNode => {
     case 'managed-resources': {
       return withLazy(<ManagedResourcesPolicyPage />);
     }
-    case 'ai-providers': {
-      return withLazy(<AiProviderListPage />);
-    }
+    case 'ai-providers':
     case 'ai-provider-detail': {
-      return withLazy(<AiProviderDetailPage />);
+      return withLazy(<AiProviderSettingsPage />);
     }
-    case 'ai-models': {
-      return withLazy(<AiModelListPage />);
+    case 'ai-catalog-providers': {
+      return withLazy(<AiCatalogProviderListPage />);
+    }
+    case 'ai-catalog-provider-detail': {
+      return withLazy(<AiCatalogProviderDetailPage />);
+    }
+    case 'ai-catalog-models': {
+      return withLazy(<AiCatalogModelListPage />);
     }
     case 'skills': {
       return withLazy(<SkillListPage />);
