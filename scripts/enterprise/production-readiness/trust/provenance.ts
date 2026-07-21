@@ -69,18 +69,37 @@ export const backupRestoreBindingSchema = z
   })
   .strict();
 
+/**
+ * Provenance attestation roles (RR4):
+ * - source-backup: signed before restore; artifactSha256 = dump digest
+ * - recovery-result: signed after raw report exists; artifactSha256 = raw report digest
+ * Never reuse input as gate/result provenance.
+ */
+export const ATTESTATION_ROLES = ['source-backup', 'recovery-result'] as const;
+export type AttestationRole = (typeof ATTESTATION_ROLES)[number];
+
 /** Signed payload — unknown fields fail via .strict(). */
 export const signedProvenancePayloadSchema = z
   .object({
-    /** Primary artifact (e.g. dump) SHA-256. */
+    /**
+     * Role of this attestation. Required for backup-restore.
+     * Other gates omit role (implicit gate-result over artifact).
+     */
+    attestationRole: z.enum(ATTESTATION_ROLES).optional(),
+    /** Primary artifact SHA-256 (dump for source-backup; raw report for recovery-result/gate). */
     artifactSha256: sha256Schema,
     assertions: assertionSummarySchema.optional(),
-    /** Optional backup-restore pair binding (required for backup-restore gate). */
+    /** Dump+manifest pair binding (source-backup and recovery-result both carry it). */
     backupBinding: backupRestoreBindingSchema.optional(),
     candidateSha: fullShaSchema,
     environment: z.enum(['ci-harness', 'local-harness', 'production', 'staging']),
     gateId: z.enum(REQUIRED_EVIDENCE_GATES),
     generatedAt: isoSchema,
+    /**
+     * SHA-256 of the canonical signed source-backup envelope.
+     * Required when attestationRole === 'recovery-result'.
+     */
+    inputAttestationSha256: sha256Schema.optional(),
     issuer: z
       .string()
       .min(1)
@@ -92,8 +111,7 @@ export const signedProvenancePayloadSchema = z
       .max(64)
       .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/u),
     /**
-     * @deprecated Prefer backupBinding.sourceManifestSha256. Kept for one-hop
-     * compatibility with RR2 fixtures; backup-restore still requires one of them.
+     * @deprecated Prefer backupBinding.sourceManifestSha256.
      */
     sourceManifestSha256: sha256Schema.optional(),
     nonce: nonceSchema,
@@ -112,7 +130,17 @@ export const signedProvenancePayloadSchema = z
   })
   .strict()
   .superRefine((value, context) => {
-    if (value.gateId !== 'backup-restore') return;
+    if (value.gateId !== 'backup-restore') {
+      if (value.attestationRole === 'source-backup') {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'source-backup role only valid for backup-restore gate',
+          path: ['attestationRole'],
+        });
+      }
+      return;
+    }
+    const role = value.attestationRole ?? 'source-backup';
     const manifestSha = value.backupBinding?.sourceManifestSha256 ?? value.sourceManifestSha256;
     if (!manifestSha) {
       context.addIssue({
@@ -130,6 +158,20 @@ export const signedProvenancePayloadSchema = z
         code: z.ZodIssueCode.custom,
         message: 'backupBinding.sourceManifestSha256 must match sourceManifestSha256',
         path: ['sourceManifestSha256'],
+      });
+    }
+    if (role === 'recovery-result' && !value.inputAttestationSha256) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'recovery-result requires inputAttestationSha256',
+        path: ['inputAttestationSha256'],
+      });
+    }
+    if (role === 'source-backup' && value.inputAttestationSha256) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'source-backup must not carry inputAttestationSha256',
+        path: ['inputAttestationSha256'],
       });
     }
   });
@@ -158,10 +200,14 @@ export interface ExpectedBackupBinding {
 export interface VerifyProvenanceOptions {
   clockSkewMs?: number;
   expectedArtifactSha256: string;
+  /** Required role for backup-restore layers (source-backup vs recovery-result). */
+  expectedAttestationRole?: AttestationRole;
   /** Required when verifying backup-restore provenance. */
   expectedBackupBinding?: ExpectedBackupBinding;
   expectedCandidateSha: string;
   expectedGateId: EvidenceGateId;
+  /** Required when verifying recovery-result (must match signed input envelope digest). */
+  expectedInputAttestationSha256?: string;
   expectedReleaseId?: string;
   /** @deprecated Use expectedBackupBinding.sourceManifestSha256. */
   expectedSourceManifestSha256?: string;
@@ -177,6 +223,20 @@ export const resolveProvenanceManifestSha256 = (
   payload: SignedProvenancePayload,
 ): string | undefined =>
   payload.backupBinding?.sourceManifestSha256 ?? payload.sourceManifestSha256;
+
+export const resolveAttestationRole = (
+  payload: SignedProvenancePayload,
+): AttestationRole | undefined => {
+  if (payload.attestationRole) return payload.attestationRole;
+  if (payload.gateId !== 'backup-restore') return undefined;
+  // Legacy: input has backupBinding and no inputAttestationSha256.
+  if (payload.inputAttestationSha256) return 'recovery-result';
+  return 'source-backup';
+};
+
+/** Stable SHA-256 of a signed provenance envelope (for input→result binding). */
+export const digestSignedProvenanceEnvelope = (envelope: SignedProvenanceEnvelope): string =>
+  createHash('sha256').update(canonicalize(envelope)).digest('hex');
 
 export type ProvenanceVerdict =
   | { ok: true; environment: TrustEnvironment; payload: SignedProvenancePayload }
@@ -226,6 +286,11 @@ export const verifySignedProvenance = (
     return { ok: false, reason: 'artifact-digest-mismatch' };
   }
 
+  const role = resolveAttestationRole(payload);
+  if (options.expectedAttestationRole && role !== options.expectedAttestationRole) {
+    return { ok: false, reason: 'attestation-role-mismatch' };
+  }
+
   const expectedManifestSha =
     options.expectedBackupBinding?.sourceManifestSha256 ?? options.expectedSourceManifestSha256;
   const payloadManifestSha = resolveProvenanceManifestSha256(payload);
@@ -236,6 +301,20 @@ export const verifySignedProvenance = (
     }
     if (expectedManifestSha && payloadManifestSha !== expectedManifestSha) {
       return { ok: false, reason: 'source-manifest-digest-mismatch' };
+    }
+    if (role === 'recovery-result') {
+      if (!payload.inputAttestationSha256) {
+        return { ok: false, reason: 'input-attestation-missing' };
+      }
+      if (
+        options.expectedInputAttestationSha256 &&
+        payload.inputAttestationSha256 !== options.expectedInputAttestationSha256
+      ) {
+        return { ok: false, reason: 'input-attestation-mismatch' };
+      }
+    }
+    if (role === 'source-backup' && payload.inputAttestationSha256) {
+      return { ok: false, reason: 'source-backup-must-not-reference-input' };
     }
     if (options.expectedBackupBinding && payload.backupBinding) {
       const expected = options.expectedBackupBinding;

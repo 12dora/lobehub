@@ -1,6 +1,11 @@
 /**
  * Backup/restore drills with harness vs production split.
  * Production never seeds domain fixture into the restore target.
+ *
+ * Provenance roles (RR4):
+ * - source-backup: signed over dump+manifest BEFORE restore (input)
+ * - recovery-result: signed over raw report AFTER restore (gate envelope only)
+ * Never attach input provenance as gate envelope provenance.
  */
 import { createHash } from 'node:crypto';
 import { lstat, readFile, realpath } from 'node:fs/promises';
@@ -16,7 +21,9 @@ import { writeJsonAtomic } from '../fsUtils';
 import { scanForForbiddenReportContent } from '../privacy';
 import type { BackupRestoreEvidence } from '../schemas';
 import {
+  digestSignedProvenanceEnvelope,
   PRODUCTION_TRUST_POLICY,
+  resolveAttestationRole,
   type SignedProvenanceEnvelope,
   type TrustPolicy,
   verifySignedProvenance,
@@ -35,15 +42,29 @@ import {
 import { assertDistinctIdentities, createOwnedPostgres } from './ownedPostgres';
 import { seedRecoveryFixture } from './seed';
 
+/** Non-secret classification of verified input attestation carried in raw report. */
+export interface InputAttestationRef {
+  dumpDigest: string;
+  inputAttestationSha256: string;
+  role: 'source-backup';
+  sourceManifestSha256: string;
+  verified: true;
+}
+
 export interface BackupRestoreDrillOptions {
   backupFile?: string;
-  /** Signed provenance over archive digest; may embed sourceManifest in payload extensions via artifact. */
+  /** Signed source-backup provenance (dump digest). Never used as gate envelope provenance. */
   backupProvenance?: SignedProvenanceEnvelope | unknown;
   candidateSha: string;
   dbSchemaVersionTag: string;
   nowIso?: string;
   outputPath: string;
   releaseId?: string;
+  /**
+   * Optional recovery-result provenance signed over the raw report digest.
+   * Only this may appear on the gate envelope for production preflight.
+   */
+  resultProvenance?: SignedProvenanceEnvelope | unknown;
   scope: 'ci-harness' | 'local-harness' | 'production-authorized';
   /** Source manifest JSON path (canonical before-state). Required for production. */
   sourceManifestPath?: string;
@@ -51,9 +72,11 @@ export interface BackupRestoreDrillOptions {
 }
 
 export interface BackupRestoreDrillResult {
-  evidence: BackupRestoreEvidence;
+  evidence: BackupRestoreEvidence & { inputAttestation?: InputAttestationRef };
   exitCode: number;
   gateEvidence: ReturnType<typeof toPreflightGateEvidence>;
+  /** Digest of raw report (envelope artifactSha256). */
+  rawReportSha256?: string;
 }
 
 const buildEvidence = (input: {
@@ -61,19 +84,21 @@ const buildEvidence = (input: {
   candidateSha: string;
   cleanupResult: 'failed' | 'passed';
   dbSchemaVersionTag: string;
+  inputAttestation?: InputAttestationRef;
   invariants: BackupRestoreEvidence['invariants'];
   nowIso: string;
   scope: EvidenceScope;
   sourceBackupDigest: string;
   status: BackupRestoreEvidence['status'];
-}): BackupRestoreEvidence => {
-  const evidence: BackupRestoreEvidence = {
+}): BackupRestoreEvidence & { inputAttestation?: InputAttestationRef } => {
+  const evidence: BackupRestoreEvidence & { inputAttestation?: InputAttestationRef } = {
     assertions: input.assertions,
     candidateSha: input.candidateSha,
     cleanupResult: input.cleanupResult,
     dbSchemaVersionTag: input.dbSchemaVersionTag,
     freshness: { generatedAt: input.nowIso },
     gate: 'backup-restore',
+    ...(input.inputAttestation ? { inputAttestation: input.inputAttestation } : {}),
     invariants: input.invariants,
     lane: BACKUP_RESTORE_LANE,
     reportSchemaVersion: BACKUP_RESTORE_SCHEMA_VERSION,
@@ -91,22 +116,38 @@ const buildEvidence = (input: {
 
 const writeResult = async (
   options: BackupRestoreDrillOptions,
-  evidence: BackupRestoreEvidence,
+  evidence: BackupRestoreEvidence & { inputAttestation?: InputAttestationRef },
   exitCode: number,
-  provenance?: unknown,
+  /** Only recovery-result provenance may be attached to the gate envelope. */
+  resultProvenance?: unknown,
 ): Promise<BackupRestoreDrillResult> => {
   const dir = path.dirname(options.outputPath);
   const base = path.basename(options.outputPath).replace(/\.json$/u, '');
   const rawPath = path.join(dir, 'raw', `${base}.raw.json`);
   const envelopePath = path.join(dir, 'envelopes', `backup-restore.envelope.json`);
   const { sha256 } = await writeJsonAtomic(rawPath, evidence);
+
+  // Reject accidental attachment of source-backup provenance to the gate envelope.
+  let safeResultProvenance: unknown;
+  if (
+    resultProvenance &&
+    typeof resultProvenance === 'object' &&
+    resultProvenance !== null &&
+    'payload' in resultProvenance
+  ) {
+    const role = resolveAttestationRole((resultProvenance as SignedProvenanceEnvelope).payload);
+    if (role !== 'source-backup') {
+      safeResultProvenance = resultProvenance;
+    }
+  }
+
   const gateEvidence = toPreflightGateEvidence({
     artifactSha256: sha256,
     assertions: evidence.assertions,
     candidateSha: evidence.candidateSha,
     gate: 'backup-restore',
     generatedAt: evidence.freshness.generatedAt,
-    provenance,
+    provenance: safeResultProvenance,
     rawReport: evidence,
     releaseId: options.releaseId,
     scope: evidence.scope,
@@ -114,7 +155,47 @@ const writeResult = async (
   });
   await writeJsonAtomic(envelopePath, gateEvidence);
   await writeJsonAtomic(options.outputPath, gateEvidence);
-  return { evidence, exitCode, gateEvidence };
+  return { evidence, exitCode, gateEvidence, rawReportSha256: sha256 };
+};
+
+/**
+ * Attach an externally signed recovery-result provenance to an existing evidence dir.
+ * Verifies role + artifact match before writing. No private keys in production runtime.
+ */
+export const finalizeBackupRestoreResultProvenance = async (input: {
+  envelopePath: string;
+  rawReportPath: string;
+  resultProvenance: SignedProvenanceEnvelope | unknown;
+  trustPolicy?: TrustPolicy;
+  candidateSha: string;
+  releaseId?: string;
+}): Promise<{ ok: true; artifactSha256: string } | { ok: false; reason: string }> => {
+  const rawText = await readFile(input.rawReportPath, 'utf8');
+  const artifactSha256 = createHash('sha256').update(rawText).digest('hex');
+  const raw = JSON.parse(rawText) as {
+    inputAttestation?: InputAttestationRef;
+    status?: string;
+  };
+  const verdict = verifySignedProvenance(input.resultProvenance, {
+    expectedArtifactSha256: artifactSha256,
+    expectedAttestationRole: 'recovery-result',
+    expectedCandidateSha: input.candidateSha,
+    expectedGateId: 'backup-restore',
+    expectedInputAttestationSha256: raw.inputAttestation?.inputAttestationSha256,
+    expectedReleaseId: input.releaseId,
+    policy: input.trustPolicy ?? PRODUCTION_TRUST_POLICY,
+  });
+  if (!verdict.ok) return { ok: false, reason: verdict.reason };
+  const envelope = JSON.parse(await readFile(input.envelopePath, 'utf8')) as Record<
+    string,
+    unknown
+  >;
+  if (envelope.artifactSha256 !== artifactSha256) {
+    return { ok: false, reason: 'envelope-raw-digest-mismatch' };
+  }
+  envelope.provenance = input.resultProvenance;
+  await writeJsonAtomic(input.envelopePath, envelope);
+  return { ok: true, artifactSha256 };
 };
 
 export const runBackupRestoreDrill = async (
@@ -378,8 +459,9 @@ const runProductionBackupRestore = async (
     return writeResult(options, evidence, 1);
   }
 
-  const verdict = verifySignedProvenance(options.backupProvenance, {
+  const inputVerdict = verifySignedProvenance(options.backupProvenance, {
     expectedArtifactSha256: sourceBackupDigest,
+    expectedAttestationRole: 'source-backup',
     expectedBackupBinding: {
       inventoryVersion: 1,
       manifestSchemaVersion: 1,
@@ -393,7 +475,7 @@ const runProductionBackupRestore = async (
     expectedSourceManifestSha256: sourceManifestSha256,
     policy,
   });
-  if (!verdict.ok || verdict.environment !== 'production') {
+  if (!inputVerdict.ok || inputVerdict.environment !== 'production') {
     const evidence = buildEvidence({
       assertions: { failed: 0, passed: 0, skipped: 1, total: 1 },
       candidateSha: options.candidateSha,
@@ -405,8 +487,19 @@ const runProductionBackupRestore = async (
       sourceBackupDigest,
       status: 'unverified',
     });
+    // Never attach input provenance to gate envelope.
     return writeResult(options, evidence, 1);
   }
+
+  const inputAttestation: InputAttestationRef = {
+    dumpDigest: sourceBackupDigest,
+    inputAttestationSha256: digestSignedProvenanceEnvelope(
+      options.backupProvenance as SignedProvenanceEnvelope,
+    ),
+    role: 'source-backup',
+    sourceManifestSha256,
+    verified: true,
+  };
 
   // Empty owned target — NO seedRecoveryFixture.
   let targetLifecycle: Awaited<ReturnType<typeof createOwnedPostgres>> | undefined;
@@ -475,15 +568,16 @@ const runProductionBackupRestore = async (
       candidateSha: options.candidateSha,
       cleanupResult,
       dbSchemaVersionTag: options.dbSchemaVersionTag,
+      inputAttestation,
       invariants,
       nowIso,
-      // Provenance verified above; envelope keeps signed dump+manifest relationship.
-      // Scope remains local-harness until repository production keys authorize pass.
+      // Input verified; without recovery-result signature, envelope stays local/unverified for production pass.
       scope: 'local-harness',
       sourceBackupDigest,
       status: allPassed ? 'passed' : 'failed',
     });
-    return writeResult(options, evidence, allPassed ? 0 : 1, options.backupProvenance);
+    // Only optional recovery-result provenance goes on the envelope — never source-backup.
+    return writeResult(options, evidence, allPassed ? 0 : 1, options.resultProvenance);
   } catch {
     if (targetLifecycle) cleanupResult = await targetLifecycle.cleanup();
     const evidence = buildEvidence({
@@ -491,13 +585,14 @@ const runProductionBackupRestore = async (
       candidateSha: options.candidateSha,
       cleanupResult,
       dbSchemaVersionTag: options.dbSchemaVersionTag,
+      inputAttestation,
       invariants: [{ id: 'restore-integrity', result: 'failed' }],
       nowIso,
       scope: 'local-harness',
       sourceBackupDigest,
       status: 'failed',
     });
-    return writeResult(options, evidence, 1, options.backupProvenance);
+    return writeResult(options, evidence, 1);
   }
 };
 
