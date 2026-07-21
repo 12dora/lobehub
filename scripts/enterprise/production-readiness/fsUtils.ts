@@ -155,6 +155,16 @@ export const cleanupToolOwnedPath = async (
   }
 };
 
+/**
+ * Deterministic pretty-JSON serialization used for recovery raw reports and envelope digests.
+ * Must stay in lockstep with writeJsonAtomic so embedded rawReport digests recompute.
+ */
+export const serializeArtifactJson = (value: unknown): string =>
+  `${JSON.stringify(value, null, 2)}\n`;
+
+export const digestArtifactJson = (value: unknown): string =>
+  createHash('sha256').update(serializeArtifactJson(value)).digest('hex');
+
 export const writeJsonAtomic = async (
   filePath: string,
   value: unknown,
@@ -163,7 +173,7 @@ export const writeJsonAtomic = async (
   const directory = path.dirname(absolute);
   await mkdir(directory, { recursive: true });
 
-  const serialized = `${JSON.stringify(value, null, 2)}\n`;
+  const serialized = serializeArtifactJson(value);
   const sha256 = createHash('sha256').update(serialized).digest('hex');
   const tempPath = path.join(
     directory,

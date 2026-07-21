@@ -100,10 +100,19 @@ export const loadGateEvidenceFile = async (filePath: string): Promise<GateEviden
   const parsed = await loadJsonFile(filePath);
   try {
     return assertGateEvidenceShape(parsed);
-  } catch {
-    // Legacy nested freshness shape is not accepted — fail closed with clear error.
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : 'invalid-evidence';
+    // Preserve specific integrity failures (raw digest, etc.); genericize only bare shape errors.
+    if (
+      detail.includes('digest') ||
+      detail.includes('rawReport') ||
+      detail.includes('inputAttestation')
+    ) {
+      throw new Error(`${detail}: ${path.basename(filePath)}`, { cause: error });
+    }
     throw new Error(
-      `Evidence file missing required fields (need gate,candidateSha,artifactSha256,generatedAt,status): ${path.basename(filePath)}`,
+      `Evidence file missing required fields (need gate,candidateSha,artifactSha256,generatedAt,status): ${path.basename(filePath)} (${detail})`,
+      { cause: error },
     );
   }
 };

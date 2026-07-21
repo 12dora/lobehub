@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { buildDefaultReleasePlan } from './commands';
 import { BASELINE_COMMIT, type EvidenceGateId, REQUIRED_EVIDENCE_GATES } from './constants';
 import type { GateEvidenceInput } from './evaluate';
+import { digestArtifactJson } from './fsUtils';
 import type { ReleaseCandidate } from './schemas';
 import {
   createSignedProvenance,
@@ -118,8 +119,51 @@ export const signGateEvidence = (
   environment: 'ci-harness' | 'local-harness' | 'production' | 'staging' = 'production',
   releaseId = FIXTURE_RELEASE_ID,
 ): GateEvidenceInput => {
+  // backup-restore: build embedded raw report first so artifact digest and inputAttestation chain.
+  let artifactSha256 = evidence.artifactSha256;
+  let rawReport = evidence.rawReport;
+  let inputAttestationSha256: string | undefined;
+  let sourceManifestSha256: string | undefined;
+
+  if (evidence.gate === 'backup-restore') {
+    inputAttestationSha256 = sha256Of(`input-attestation-${evidence.candidateSha}-${releaseId}`);
+    sourceManifestSha256 = sha256Of(`manifest-${evidence.candidateSha}`);
+    const dumpDigest = sha256Of(`dump-${evidence.candidateSha}`);
+    rawReport = {
+      assertions: evidence.assertions ?? { failed: 0, passed: 6, skipped: 0, total: 6 },
+      candidateSha: evidence.candidateSha,
+      cleanupResult: 'passed',
+      dbSchemaVersionTag: FIXTURE_MIGRATION_TAG,
+      freshness: { generatedAt: evidence.generatedAt },
+      gate: 'backup-restore',
+      inputAttestation: {
+        dumpDigest,
+        inputAttestationSha256,
+        role: 'source-backup',
+        sourceManifestSha256,
+        verified: true,
+      },
+      invariants: [
+        { id: 'audit-logs', result: 'passed' },
+        { id: 'publication-pointers', result: 'passed' },
+        { id: 'required-tables', result: 'passed' },
+        { id: 'resource-revisions', result: 'passed' },
+        { id: 'secret-references', result: 'passed' },
+        { id: 'source-preserved', result: 'passed' },
+      ],
+      lane: 'enterprise-backup-restore-drill',
+      reportSchemaVersion: 1,
+      schemaVersion: 1,
+      scope: 'local-harness',
+      sourceBackupDigest: dumpDigest,
+      sourcePreserved: true,
+      status: evidence.status,
+    };
+    artifactSha256 = digestArtifactJson(rawReport);
+  }
+
   const payload: SignedProvenancePayload = {
-    artifactSha256: evidence.artifactSha256,
+    artifactSha256,
     assertions: evidence.assertions,
     candidateSha: evidence.candidateSha,
     environment,
@@ -132,7 +176,6 @@ export const signGateEvidence = (
     runId: 'run-test-1',
     schemaVersion: 1,
     status: evidence.status,
-    // Gate envelopes for backup-restore carry recovery-result (raw report digest), not dump input.
     ...(evidence.gate === 'backup-restore'
       ? {
           attestationRole: 'recovery-result' as const,
@@ -140,11 +183,11 @@ export const signGateEvidence = (
             inventoryVersion: 1 as const,
             manifestSchemaVersion: 1 as const,
             sourceDbToolVersion: 'pg_dump-16',
-            sourceManifestSha256: sha256Of(`manifest-${evidence.artifactSha256}`),
+            sourceManifestSha256: sourceManifestSha256!,
             sourceSchemaTag: FIXTURE_MIGRATION_TAG,
           },
-          inputAttestationSha256: sha256Of(`input-attestation-${evidence.artifactSha256}`),
-          sourceManifestSha256: sha256Of(`manifest-${evidence.artifactSha256}`),
+          inputAttestationSha256: inputAttestationSha256!,
+          sourceManifestSha256: sourceManifestSha256!,
         }
       : {}),
   };
@@ -155,7 +198,9 @@ export const signGateEvidence = (
   });
   return {
     ...evidence,
+    artifactSha256,
     provenance,
+    ...(rawReport !== undefined ? { rawReport } : {}),
     // scope self-declaration is irrelevant when provenance is present
     scope: 'local-harness',
   };
