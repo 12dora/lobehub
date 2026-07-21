@@ -76,6 +76,12 @@ export const PLATFORM_PERMISSIONS = {
   /** Global platform data statistics (admin stats dashboard). */
   STATS_READ: 'platform_stats:read:all',
 
+  /** Platform-owned global credentials (admin AI infrastructure). */
+  CRED_READ: 'platform_credential:read:all',
+  CRED_CREATE: 'platform_credential:create:all',
+  CRED_UPDATE: 'platform_credential:update:all',
+  CRED_DELETE: 'platform_credential:delete:all',
+
   /** Role assignment / EasyAuth sync status (admin.roles / admin.easyauth). */
   ROLE_READ: 'platform_role:read:all',
   ROLE_UPDATE: 'platform_role:update:all',
