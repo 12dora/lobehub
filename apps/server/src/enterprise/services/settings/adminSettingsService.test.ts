@@ -19,9 +19,28 @@ import { PlatformDependencyTargetNotPublishedError } from '../platformDependency
 import {
   AdminSettingsService,
   PlatformRevisionConflictError,
+  SettingsDirtyDraftError,
   SettingsDraftValidationError,
 } from './adminSettingsService';
+import {
+  EffectiveSettingsService,
+  resetEffectiveSettingsCacheForTest,
+} from './effectiveSettingsService';
 import { settingsRegistry } from './registry';
+
+vi.mock('../../featureFlags', async (importOriginal) => {
+  const actual = (await importOriginal()) as {
+    getDefaultEnterpriseFeatureFlags: () => Record<string, boolean>;
+    getEnterpriseFeatureFlags: () => Record<string, boolean>;
+  };
+  return {
+    ...actual,
+    getEnterpriseFeatureFlags: () => ({
+      ...actual.getDefaultEnterpriseFeatureFlags(),
+      ENABLE_PLATFORM_SETTINGS_POLICY: true,
+    }),
+  };
+});
 
 const serverDB: LobeChatDatabase = await getTestDB();
 const service = new AdminSettingsService(serverDB);
@@ -474,5 +493,193 @@ describe('AdminSettingsService', () => {
       { actorUserId: 'admin-1', result: 'success' },
       { actorUserId: 'admin-2', result: 'failure' },
     ]);
+  });
+});
+
+describe('AdminSettingsService.applyImmediate', () => {
+  beforeEach(() => {
+    resetEffectiveSettingsCacheForTest();
+  });
+
+  it('publishes patch paths and is readable via EffectiveSettingsService', async () => {
+    const result = await service.applyImmediate({
+      actorUserId: 'admin-1',
+      patch: {
+        'memory.enabled': false,
+        'memory.effort': 'high',
+      },
+      reason: 'set memory defaults',
+    });
+
+    expect(result.revision).toBe(1);
+    expect(result.paths).toEqual(['memory.effort', 'memory.enabled']);
+
+    const policies = await serverDB.select().from(platformSettingPolicies);
+    expect(policies).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          mode: 'default',
+          path: 'memory.enabled',
+          value: false,
+          visibility: 'visible',
+        }),
+        expect.objectContaining({
+          mode: 'default',
+          path: 'memory.effort',
+          value: 'high',
+        }),
+      ]),
+    );
+
+    const effective = new EffectiveSettingsService(serverDB);
+    const userState = await effective.getEffectiveSettings({ userId: 'user-1' });
+    expect(userState.effectiveValues['memory.enabled']).toBe(false);
+    expect(userState.effectiveValues['memory.effort']).toBe('high');
+
+    const audits = await serverDB.select().from(platformAuditLogs);
+    expect(
+      audits.some(
+        (row) => row.action === 'admin.settings.applyImmediate' && row.result === 'success',
+      ),
+    ).toBe(true);
+  });
+
+  it('rejects dirty draft outside the patch', async () => {
+    await saveCurrentDraft(service, {
+      actorUserId: 'admin-1',
+      draft: {
+        'general.fontSize': {
+          mode: 'default',
+          schemaVersion: 1,
+          value: 20,
+          visibility: 'visible',
+        },
+      },
+      reason: 'leave unpublished draft',
+    });
+
+    await expect(
+      service.applyImmediate({
+        actorUserId: 'admin-1',
+        patch: { 'memory.enabled': true },
+      }),
+    ).rejects.toBeInstanceOf(SettingsDirtyDraftError);
+
+    const policies = await serverDB.select().from(platformSettingPolicies);
+    expect(policies).toEqual([]);
+
+    const audits = await serverDB.select().from(platformAuditLogs);
+    expect(
+      audits.some(
+        (row) => row.action === 'admin.settings.applyImmediate' && row.result === 'failure',
+      ),
+    ).toBe(true);
+  });
+
+  it('promotes mode user→default and keeps locked', async () => {
+    await saveCurrentDraft(service, {
+      actorUserId: 'admin-1',
+      draft: {
+        'memory.enabled': {
+          mode: 'user',
+          schemaVersion: 1,
+          value: true,
+          visibility: 'visible',
+        },
+        'memory.effort': {
+          mode: 'locked',
+          schemaVersion: 1,
+          value: 'low',
+          visibility: 'hidden',
+        },
+      },
+      reason: 'seed modes',
+    });
+    await service.publish({
+      actorUserId: 'admin-1',
+      expectedDraftToken: (await service.getDraft()).draftToken,
+      expectedRevision: 0,
+      reason: 'publish seed',
+    });
+
+    await service.applyImmediate({
+      actorUserId: 'admin-1',
+      patch: {
+        'memory.enabled': false,
+        'memory.effort': 'high',
+      },
+    });
+
+    const policies = await serverDB.select().from(platformSettingPolicies);
+    expect(policies).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          mode: 'default',
+          path: 'memory.enabled',
+          value: false,
+          visibility: 'visible',
+        }),
+        expect.objectContaining({
+          mode: 'locked',
+          path: 'memory.effort',
+          value: 'high',
+          visibility: 'hidden',
+        }),
+      ]),
+    );
+  });
+
+  it('rejects unknown registry paths', async () => {
+    await expect(
+      service.applyImmediate({
+        actorUserId: 'admin-1',
+        patch: { 'not.a.real.path': 1 },
+      }),
+    ).rejects.toBeInstanceOf(SettingsDraftValidationError);
+  });
+
+  it('registers service-model paths used by the admin forms', () => {
+    const required = [
+      'defaultAgent.config.model',
+      'defaultAgent.config.provider',
+      'memory.enabled',
+      'memory.effort',
+      'image.defaultImageNum',
+      'tts.openAI.ttsModel',
+      'systemAgent.topic.model',
+      'systemAgent.topic.provider',
+      'systemAgent.generationTopic.model',
+      'systemAgent.generationTopic.provider',
+      'systemAgent.translation.model',
+      'systemAgent.translation.provider',
+      'systemAgent.historyCompress.model',
+      'systemAgent.historyCompress.provider',
+      'systemAgent.agentMeta.model',
+      'systemAgent.agentMeta.provider',
+      'systemAgent.followUpAction.model',
+      'systemAgent.followUpAction.provider',
+      'systemAgent.followUpAction.enabled',
+      'systemAgent.inputCompletion.model',
+      'systemAgent.inputCompletion.provider',
+      'systemAgent.inputCompletion.enabled',
+      'systemAgent.promptRewrite.model',
+      'systemAgent.promptRewrite.provider',
+      'systemAgent.promptRewrite.enabled',
+      'systemAgent.memoryAnalysisAgentConfig.model',
+      'systemAgent.memoryAnalysisAgentConfig.provider',
+      'systemAgent.memoryAnalysisAgentConfig.contextLimit',
+      'systemAgent.userMemoryPersonaWriter.model',
+      'systemAgent.userMemoryPersonaWriter.provider',
+      'systemAgent.userMemoryPersonaWriter.contextLimit',
+      'systemAgent.userMemoryEmbedding.model',
+      'systemAgent.userMemoryEmbedding.provider',
+      'systemAgent.userMemoryEmbedding.contextLimit',
+    ];
+    for (const path of required) {
+      expect(settingsRegistry.has(path), path).toBe(true);
+      expect(
+        settingsRegistry.assertPathWritable({ path, requirePlatformEligible: true }),
+      ).toBeNull();
+    }
   });
 });
