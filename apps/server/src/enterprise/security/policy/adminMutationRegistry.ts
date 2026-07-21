@@ -261,10 +261,22 @@ export const ADMIN_MUTATION_REGISTRY = {
     'medium',
     'Reorder models in a provider draft.',
   ),
+  'admin.aiModels.applyImmediate': dangerousMutation(
+    'admin.aiModels.applyImmediate',
+    'critical',
+    'Create or update a platform AI model draft and publish immediately.',
+    { reauth: recentReauth },
+  ),
   'admin.aiModels.update': regularMutation(
     'admin.aiModels.update',
     'medium',
     'Change a model in a provider draft.',
+  ),
+  'admin.aiProviders.applyImmediate': dangerousMutation(
+    'admin.aiProviders.applyImmediate',
+    'critical',
+    'Create or update a platform AI provider draft and publish immediately.',
+    { reauth: recentReauth },
   ),
   'admin.aiProviders.archive': dangerousMutation(
     'admin.aiProviders.archive',
@@ -282,6 +294,12 @@ export const ADMIN_MUTATION_REGISTRY = {
     'admin.aiProviders.publish',
     'high',
     'Publish AI provider configuration.',
+    { reauth: recentReauth },
+  ),
+  'admin.aiProviders.publishNow': dangerousMutation(
+    'admin.aiProviders.publishNow',
+    'critical',
+    'Retry publish for a platform AI provider draft after validation.',
     { reauth: recentReauth },
   ),
   'admin.aiProviders.rollback': dangerousMutation(
@@ -478,6 +496,12 @@ export const ADMIN_MUTATION_REGISTRY = {
       outbound: vaultKeyProviderBoundary,
       reauth: recentReauth,
     },
+  ),
+  'admin.settings.applyImmediate': dangerousMutation(
+    'admin.settings.applyImmediate',
+    'critical',
+    'Merge path values into global settings and publish immediately.',
+    { reauth: recentReauth },
   ),
   'admin.settings.publish': dangerousMutation(
     'admin.settings.publish',

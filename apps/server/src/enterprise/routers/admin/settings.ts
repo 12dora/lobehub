@@ -5,6 +5,8 @@ import { authedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
 
 import {
+  adminSettingsApplyImmediateInputSchema,
+  adminSettingsApplyImmediateOutputSchema,
   adminSettingsGetDraftOutputSchema,
   adminSettingsPublishInputSchema,
   adminSettingsPublishOutputSchema,
@@ -25,6 +27,7 @@ import { PlatformAuditService } from '../../services/platformAudit';
 import {
   AdminSettingsService,
   PlatformRevisionConflictError,
+  SettingsDirtyDraftError,
   SettingsDraftValidationError,
 } from '../../services/settings/adminSettingsService';
 
@@ -63,7 +66,7 @@ const assertSettingsFeature = async (params: {
 };
 
 const assertSettingsDangerousReauth = async (params: {
-  action: 'admin.settings.publish' | 'admin.settings.rollback';
+  action: 'admin.settings.applyImmediate' | 'admin.settings.publish' | 'admin.settings.rollback';
   actorUserId: string;
   authenticatedAt?: Date | null;
   authMethod?: Parameters<typeof assertRecentReauth>[0]['authMethod'];
@@ -112,6 +115,84 @@ export const adminSettingsRouter = router({
       });
       const service = new AdminSettingsService(ctx.serverDB);
       return service.getDraft();
+    }),
+
+  /**
+   * Merge path values into the platform settings draft and publish immediately.
+   * Requires SETTINGS_UPDATE (middleware) + SETTINGS_PUBLISH (secondary).
+   * Auto-publishes; rejects when draft has unpublished diffs outside the patch.
+   */
+  applyImmediate: adminBase
+    .use(withPlatformPermission(PLATFORM_PERMISSIONS.SETTINGS_UPDATE))
+    .input(adminSettingsApplyImmediateInputSchema)
+    .output(adminSettingsApplyImmediateOutputSchema)
+    .mutation(async ({ ctx, input }) => {
+      await assertSettingsFeature({
+        action: 'admin.settings.applyImmediate',
+        actorUserId: ctx.userId!,
+        serverDB: ctx.serverDB,
+      });
+
+      const perms = (ctx as { platformAuth?: { permissions: string[] } }).platformAuth?.permissions;
+      if (!perms?.includes(PLATFORM_PERMISSIONS.SETTINGS_PUBLISH)) {
+        throwEnterpriseError({
+          code: PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED,
+          details: { permission: PLATFORM_PERMISSIONS.SETTINGS_PUBLISH },
+          httpCode: 'FORBIDDEN',
+          message: PLATFORM_ERROR_CODES.PLATFORM_PERMISSION_DENIED,
+        });
+      }
+
+      const reason =
+        input.reason ??
+        `applyImmediate: ${Object.keys(input.patch).sort().slice(0, 12).join(', ')}`;
+
+      await assertSettingsDangerousReauth({
+        action: 'admin.settings.applyImmediate',
+        actorUserId: ctx.userId!,
+        authenticatedAt: ctx.authenticatedAt,
+        authMethod: ctx.authMethod,
+        reason,
+        serverDB: ctx.serverDB,
+      });
+
+      const service = new AdminSettingsService(ctx.serverDB);
+      try {
+        return await service.applyImmediate({
+          actorUserId: ctx.userId!,
+          patch: input.patch,
+          reason: input.reason,
+        });
+      } catch (error) {
+        if (error instanceof SettingsDirtyDraftError) {
+          throwEnterpriseError({
+            code: PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
+            details: {
+              dirtyPathCount: error.dirtyPaths.length,
+              reason: 'unpublished_draft_outside_patch',
+            },
+            httpCode: 'BAD_REQUEST',
+            message: error.message,
+          });
+        }
+        if (error instanceof SettingsDraftValidationError) {
+          throwEnterpriseError({
+            code: PLATFORM_ERROR_CODES.PLATFORM_CONFIG_VALIDATION_FAILED,
+            details: { issueCount: error.issues.length },
+            httpCode: 'BAD_REQUEST',
+            message:
+              error.issues[0]?.message ?? PLATFORM_ERROR_CODES.PLATFORM_CONFIG_VALIDATION_FAILED,
+          });
+        }
+        if (error instanceof PlatformRevisionConflictError) {
+          throwEnterpriseError({
+            code: PLATFORM_ERROR_CODES.PLATFORM_REVISION_CONFLICT,
+            details: error.details as Record<string, string | number | boolean | null> | undefined,
+            httpCode: 'CONFLICT',
+          });
+        }
+        throw error;
+      }
     }),
 
   saveDraft: adminBase

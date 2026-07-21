@@ -143,6 +143,12 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY = [
   },
   {
     kind: 'mutation',
+    path: 'admin.aiModels.applyImmediate',
+    // PUBLISH via middleware; CREATE/UPDATE re-checked inside the procedure (W10-P).
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AI_PROVIDER_PUBLISH] },
+  },
+  {
+    kind: 'mutation',
     path: 'admin.aiModels.create',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AI_MODEL_CREATE] },
   },
@@ -193,6 +199,12 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY = [
   },
   {
     kind: 'mutation',
+    path: 'admin.aiProviders.applyImmediate',
+    // PUBLISH via middleware; CREATE/UPDATE re-checked inside the procedure (W10-P).
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AI_PROVIDER_PUBLISH] },
+  },
+  {
+    kind: 'mutation',
     path: 'admin.aiProviders.archive',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AI_PROVIDER_DELETE] },
   },
@@ -219,6 +231,11 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY = [
   {
     kind: 'mutation',
     path: 'admin.aiProviders.publish',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AI_PROVIDER_PUBLISH] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.aiProviders.publishNow',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AI_PROVIDER_PUBLISH] },
   },
   {
@@ -466,6 +483,12 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY = [
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SYSTEM_OPERATE] },
   },
   {
+    kind: 'mutation',
+    path: 'admin.settings.applyImmediate',
+    // UPDATE via middleware; PUBLISH re-checked inside the procedure (W10-C).
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SETTINGS_UPDATE] },
+  },
+  {
     kind: 'query',
     path: 'admin.settings.getDraft',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SETTINGS_READ] },
@@ -489,6 +512,66 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY = [
     kind: 'mutation',
     path: 'admin.settings.validateDraft',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SETTINGS_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.stats.countAgents',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.STATS_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.stats.countMessages',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.STATS_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.stats.countTopics',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.STATS_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.stats.getHeatmaps',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.STATS_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.stats.getMaxTaskDuration',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.STATS_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.stats.getTokenHeatmaps',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.STATS_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.stats.rankAgents',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.STATS_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.stats.rankModels',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.STATS_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.stats.rankTopics',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.STATS_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.stats.totals',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.STATS_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.stats.usageFindAndGroupByDay',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.STATS_READ] },
+  },
+  {
+    kind: 'query',
+    path: 'admin.stats.usageFindByMonth',
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.STATS_READ] },
   },
   {
     kind: 'mutation',

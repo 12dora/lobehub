@@ -119,6 +119,26 @@ export const adminSettingsRollbackOutputSchema = z.object({
   revision: z.number().int().positive(),
 });
 
+/**
+ * Merge a path→value patch into the settings draft and publish immediately.
+ * Rejects when the draft has unpublished diffs outside the patch paths.
+ */
+export const adminSettingsApplyImmediateInputSchema = z
+  .object({
+    patch: z.record(z.unknown()).refine((value) => Object.keys(value).length > 0, {
+      message: 'patch must include at least one path',
+    }),
+    reason: settingsAuditReasonSchema.optional(),
+  })
+  .strict();
+
+export const adminSettingsApplyImmediateOutputSchema = z.object({
+  auditId: z.string(),
+  draftToken: z.string().length(64),
+  paths: z.array(z.string()),
+  revision: z.number().int().positive(),
+});
+
 export type AdminSettingsGetDraftOutput = z.infer<typeof adminSettingsGetDraftOutputSchema>;
 export type AdminSettingsSaveDraftInput = z.infer<typeof adminSettingsSaveDraftInputSchema>;
 export type AdminSettingsSaveDraftOutput = z.infer<typeof adminSettingsSaveDraftOutputSchema>;
@@ -130,3 +150,9 @@ export type AdminSettingsPublishInput = z.infer<typeof adminSettingsPublishInput
 export type AdminSettingsPublishOutput = z.infer<typeof adminSettingsPublishOutputSchema>;
 export type AdminSettingsRollbackInput = z.infer<typeof adminSettingsRollbackInputSchema>;
 export type AdminSettingsRollbackOutput = z.infer<typeof adminSettingsRollbackOutputSchema>;
+export type AdminSettingsApplyImmediateInput = z.infer<
+  typeof adminSettingsApplyImmediateInputSchema
+>;
+export type AdminSettingsApplyImmediateOutput = z.infer<
+  typeof adminSettingsApplyImmediateOutputSchema
+>;
