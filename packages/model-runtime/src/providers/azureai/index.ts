@@ -11,6 +11,8 @@ import { transformResponseToStream } from '../../core/openaiCompatibleFactory';
 import { createSSEDataExtractor, OpenAIStream } from '../../core/streams';
 import type { ChatMethodOptions, ChatStreamPayload } from '../../types';
 import { AgentRuntimeErrorType } from '../../types/error';
+import { createAzureFetchHttpClient } from '../../utils/azureFetchHttpClient';
+import type { FetchLike } from '../../utils/boundFetch';
 import { AgentRuntimeError } from '../../utils/createError';
 import { debugStream } from '../../utils/debugStream';
 import { StreamingResponse } from '../../utils/response';
@@ -21,6 +23,11 @@ interface AzureAIParams {
   apiKey?: string;
   apiVersion?: string;
   baseURL?: string;
+  /**
+   * Custom fetch for enterprise SafeOutbound. Wired as Azure pipeline httpClient
+   * so no hop uses the default Node HTTP stack.
+   */
+  fetch?: FetchLike;
 }
 
 export class LobeAzureAI implements LobeRuntimeAI {
@@ -30,9 +37,12 @@ export class LobeAzureAI implements LobeRuntimeAI {
     if (!params?.apiKey || !params?.baseURL)
       throw AgentRuntimeError.createError(AgentRuntimeErrorType.InvalidProviderAPIKey);
 
-    this.client = createClient(params?.baseURL, new AzureKeyCredential(params?.apiKey));
+    this.client = createClient(params.baseURL, new AzureKeyCredential(params.apiKey), {
+      ...(params.apiVersion ? { apiVersion: params.apiVersion } : {}),
+      ...(params.fetch ? { httpClient: createAzureFetchHttpClient(params.fetch) as never } : {}),
+    });
 
-    this.baseURL = params?.baseURL;
+    this.baseURL = params.baseURL;
   }
 
   baseURL: string;

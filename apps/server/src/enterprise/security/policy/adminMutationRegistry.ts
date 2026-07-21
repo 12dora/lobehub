@@ -54,8 +54,6 @@ const conditional = (evidence: string, limitation: string): ImplementedControl =
   limitation,
   status: 'conditional',
 });
-const gap = (detail: string): MissingControl => ({ gap: detail, status: 'gap' });
-const planned = (detail: string): MissingControl => ({ gap: detail, status: 'planned' });
 const notApplicable = (rationale: string): NotApplicableControl => ({
   rationale,
   status: 'not-applicable',
@@ -74,8 +72,8 @@ const conditionalReauth = conditional(
   'Router checks recent authentication for sensitive input variants.',
   'Ordinary draft variants do not require the check.',
 );
-const missingAdminRateLimit = planned(
-  'No shared administrative mutation limiter is wired; W8 must add one.',
+const sharedAdminRateLimit = enforced(
+  'Shared multi-instance admin mutation rate limiter is attached to the final tRPC mutation chain.',
 );
 const noRemoteRequest = notApplicable('The operation does not make a server-side remote request.');
 const databaseStateNoLkg = notApplicable(
@@ -91,14 +89,13 @@ const assetNoLkg = notApplicable(
   'Asset recovery uses object-storage operation records rather than an LKG file.',
 );
 const noReason = notApplicable('The validation operation does not persist business configuration.');
-const noAudit = gap('Successful execution has no dedicated platform audit outcome.');
+const validationAudit = enforced(
+  'Service or router persists a sanitized success or failure platform audit outcome.',
+);
+const prepareRestartAudit = enforced(
+  'Prepared restart intent and sanitized success audit share one transaction; failure and reauth denial audits are best effort after rollback.',
+);
 const safeOutbound = enforced('Remote requests use the enterprise outbound policy boundary.');
-const outboundGap = gap(
-  'Remote connection testing is not yet on the enterprise outbound boundary.',
-);
-const directFetchOutboundGap = gap(
-  'The integration performs a direct remote fetch outside the enterprise outbound boundary.',
-);
 const identityLkg = conditional(
   'Startup verifies signature, age, ownership, and permissions before reading a local LKG.',
   'A valid database candidate remains active when the local LKG write fails; startup reports degraded.',
@@ -124,7 +121,7 @@ const regularMutation = (
     audit: serviceAudit,
     lastKnownGood: databaseStateNoLkg,
     outbound: noRemoteRequest,
-    rateLimit: missingAdminRateLimit,
+    rateLimit: sharedAdminRateLimit,
     reason: reasonInput,
     reauth: notApplicable('The current policy does not classify this operation as dangerous.'),
     ...overrides,
@@ -151,7 +148,7 @@ const dangerousMutation = (
     audit: options.audit ?? serviceAudit,
     lastKnownGood: options.lastKnownGood ?? databaseStateNoLkg,
     outbound: options.outbound ?? noRemoteRequest,
-    rateLimit: missingAdminRateLimit,
+    rateLimit: sharedAdminRateLimit,
     reason: options.reason ?? reasonInput,
     reauth: options.reauth,
   },
@@ -167,7 +164,7 @@ const validationMutation = (
   overrides: Partial<AdminMutationControls> = {},
 ) =>
   regularMutation(procedure, 'low', summary, {
-    audit: noAudit,
+    audit: validationAudit,
     lastKnownGood: validationNoLkg,
     reason: noReason,
     ...overrides,
@@ -297,7 +294,7 @@ export const ADMIN_MUTATION_REGISTRY = {
     'admin.aiProviders.test',
     'medium',
     'Test an AI provider connection.',
-    { lastKnownGood: remoteProbeNoLkg, outbound: outboundGap },
+    { lastKnownGood: remoteProbeNoLkg, outbound: safeOutbound },
   ),
   'admin.aiProviders.updateDraft': regularMutation(
     'admin.aiProviders.updateDraft',
@@ -387,7 +384,7 @@ export const ADMIN_MUTATION_REGISTRY = {
     'Synchronize externally managed global role grants for a user.',
     {
       audit: atomicOutcomeAudit,
-      outbound: directFetchOutboundGap,
+      outbound: safeOutbound,
       reason: sensitiveSafeReason,
       reauth: recentReauth,
     },
@@ -552,7 +549,7 @@ export const ADMIN_MUTATION_REGISTRY = {
     'admin.system.prepareRestart',
     'critical',
     'Create a bounded restart intent for identity configuration.',
-    { audit: noAudit, lastKnownGood: identityLkg, reauth: recentReauth },
+    { audit: prepareRestartAudit, lastKnownGood: identityLkg, reauth: recentReauth },
   ),
   'admin.system.requestRestart': dangerousMutation(
     'admin.system.requestRestart',

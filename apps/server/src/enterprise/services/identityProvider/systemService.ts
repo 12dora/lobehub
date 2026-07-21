@@ -334,53 +334,107 @@ export class IdentityProviderSystemService {
   };
 
   prepareRestart = async (actorId: string, input: AdminSystemPrepareRestartInput) => {
-    const status = await this.getAuthSnapshotStatus();
-    if (!status.restart.supported) {
-      throw new IdentityProviderSystemError(
-        status.pendingRestart
-          ? 'PLATFORM_IDENTITY_RESTART_UNSUPPORTED'
-          : 'PLATFORM_IDENTITY_RESTART_NOT_PENDING',
-      );
-    }
-    if (!status.targetIdentityRevision) {
-      throw new IdentityProviderSystemError('PLATFORM_IDENTITY_RESTART_STATUS_UNAVAILABLE');
-    }
     const requestId = input.requestId.toLowerCase();
     const reason = normalizeReason(input.reason);
-    const intentToken = randomBytes(32).toString('hex');
-    const ownerFence = randomBytes(32).toString('hex');
-    const expiresAt = new Date(this.now().getTime() + RESTART_INTENT_TTL_MS);
-    const targetInstanceId = status.artifact.instanceId;
-    const payloadHash = restartPayloadHash({
-      actorId,
-      expectedIdentityRevision: status.targetIdentityRevision,
-      reason,
-      requestId,
-      targetInstanceId,
-    });
-    const [prepared] = await this.db
-      .insert(platformIdentityProviderRestartRequests)
-      .values({
+    try {
+      const status = await this.getAuthSnapshotStatus();
+      if (!status.restart.supported) {
+        throw new IdentityProviderSystemError(
+          status.pendingRestart
+            ? 'PLATFORM_IDENTITY_RESTART_UNSUPPORTED'
+            : 'PLATFORM_IDENTITY_RESTART_NOT_PENDING',
+        );
+      }
+      if (!status.targetIdentityRevision) {
+        throw new IdentityProviderSystemError('PLATFORM_IDENTITY_RESTART_STATUS_UNAVAILABLE');
+      }
+      const intentToken = randomBytes(32).toString('hex');
+      const ownerFence = randomBytes(32).toString('hex');
+      const expiresAt = new Date(this.now().getTime() + RESTART_INTENT_TTL_MS);
+      const targetInstanceId = status.artifact.instanceId;
+      const expectedIdentityRevision = status.targetIdentityRevision;
+      const payloadHash = restartPayloadHash({
         actorId,
-        expectedIdentityRevision: status.targetIdentityRevision,
-        expiresAt,
-        intentTokenHash: digest(intentToken),
-        ownerFence,
-        payloadHash,
+        expectedIdentityRevision,
+        reason,
         requestId,
         targetInstanceId,
-      })
-      .onConflictDoNothing({ target: platformIdentityProviderRestartRequests.requestId })
-      .returning({ requestId: platformIdentityProviderRestartRequests.requestId });
-    if (!prepared) {
-      throw new IdentityProviderSystemError('PLATFORM_IDENTITY_RESTART_CONFLICT');
+      });
+      // Intent row and success audit share one transaction so a failed audit cannot
+      // leave a durable prepared intent that looks successful without an audit trail.
+      const prepared = await this.db.transaction(async (tx) => {
+        const [row] = await tx
+          .insert(platformIdentityProviderRestartRequests)
+          .values({
+            actorId,
+            expectedIdentityRevision,
+            expiresAt,
+            intentTokenHash: digest(intentToken),
+            ownerFence,
+            payloadHash,
+            requestId,
+            targetInstanceId,
+          })
+          .onConflictDoNothing({ target: platformIdentityProviderRestartRequests.requestId })
+          .returning({ requestId: platformIdentityProviderRestartRequests.requestId });
+        if (!row) {
+          throw new IdentityProviderSystemError('PLATFORM_IDENTITY_RESTART_CONFLICT');
+        }
+        await tx.insert(platformAuditLogs).values({
+          action: 'admin.system.prepareRestart',
+          actorUserId: actorId,
+          afterDiff: {
+            expectedIdentityRevision,
+            outcome: 'prepared',
+          },
+          reason,
+          requestId,
+          result: 'success',
+          targetId: 'identity_provider_runtime',
+          targetType: 'system',
+        });
+        return row;
+      });
+      if (!prepared) {
+        throw new IdentityProviderSystemError('PLATFORM_IDENTITY_RESTART_CONFLICT');
+      }
+      return {
+        expectedIdentityRevision,
+        expiresAt,
+        intentToken,
+        requestId,
+      };
+    } catch (error) {
+      const category =
+        error instanceof IdentityProviderSystemError
+          ? error.code.toLowerCase()
+          : 'platform_identity_restart_unavailable';
+      await this.recordPrepareFailure(actorId, input, category);
+      throw error;
     }
-    return {
-      expectedIdentityRevision: status.targetIdentityRevision,
-      expiresAt,
-      intentToken,
-      requestId,
-    };
+  };
+
+  private recordPrepareFailure = async (
+    actorId: string,
+    input: AdminSystemPrepareRestartInput,
+    category: string,
+  ): Promise<void> => {
+    try {
+      await this.db.insert(platformAuditLogs).values({
+        action: 'admin.system.prepareRestart',
+        actorUserId: actorId,
+        afterDiff: { error: category },
+        reason: normalizeReason(input.reason),
+        requestId: input.requestId.toLowerCase(),
+        result: 'failure',
+        targetId: 'identity_provider_runtime',
+        targetType: 'system',
+      });
+    } catch (auditError) {
+      console.error('[admin.system] prepareRestart failure audit unavailable', {
+        errorClass: auditError instanceof Error ? auditError.name : 'UnknownError',
+      });
+    }
   };
 
   private recordFailure = async (

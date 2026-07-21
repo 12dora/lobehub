@@ -17,6 +17,7 @@ import {
 } from '../../contracts/adminManagedResources';
 import { parseEnterpriseFeatureFlags } from '../../featureFlags';
 import { withActiveUser } from '../../guards/activeUser';
+import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
 import { throwEnterpriseError } from '../../guards/enterpriseErrors';
 import { withPlatformPermission } from '../../guards/platformPermission';
 import { assertRecentReauth } from '../../guards/reauth';
@@ -33,7 +34,10 @@ import {
 } from '../../services/managedResourcePolicy';
 import { PlatformAuditService } from '../../services/platformAudit';
 
-const adminBase = authedProcedure.use(serverDatabase).use(withActiveUser());
+const adminBase = authedProcedure
+  .use(serverDatabase)
+  .use(withActiveUser())
+  .use(withAdminMutationRateLimit());
 
 const assertPublishReauth = async (params: {
   actorUserId: string;

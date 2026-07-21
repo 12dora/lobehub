@@ -937,6 +937,31 @@ describe('LobeBedrockAI', () => {
         expect(result).toBeInstanceOf(Response);
       });
 
+      it('passes AbortSignal to client.send on the real meta.llama2 path', async () => {
+        const mockStream = new ReadableStream({
+          start(controller) {
+            controller.enqueue('Hello, world!');
+            controller.close();
+          },
+        });
+        const sendSpy = vi.spyOn(instance['client'], 'send').mockResolvedValue(mockStream as never);
+        const abortController = new AbortController();
+
+        await instance.chat(
+          {
+            max_tokens: 50,
+            messages: [{ content: 'Hello', role: 'user' }],
+            model: 'meta.llama2-70b-chat-v1',
+            temperature: 0,
+          },
+          { signal: abortController.signal },
+        );
+
+        expect(sendSpy).toHaveBeenCalledWith(expect.any(InvokeModelWithResponseStreamCommand), {
+          abortSignal: abortController.signal,
+        });
+      });
+
       it('should handle errors and throw AgentRuntimeError', async () => {
         // Arrange
         const errorMessage = 'An error occurred';
