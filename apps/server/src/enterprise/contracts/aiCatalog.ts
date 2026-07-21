@@ -467,9 +467,14 @@ export const adminAiModelReorderOutputSchema = z
 /** Draft mutation + immediate publish (admin UI parity; single rate-limit unit). */
 export const adminAiProviderApplyImmediateOutputSchema = z
   .object({
-    auditId: z.string().min(1),
+    auditId: z.string().min(1).nullable(),
     draft: aiProviderDraftSchema,
-    revision: z.number().int().positive(),
+    /**
+     * false when draft was written but publish validation blocked first publish
+     * (e.g. create without models / connection test). Client must not treat as silent success for live catalog.
+     */
+    published: z.boolean(),
+    revision: z.number().int().nonnegative(),
   })
   .strict();
 

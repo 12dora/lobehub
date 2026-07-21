@@ -62,6 +62,10 @@ const withReauth = <T>(fn: () => Promise<T>): Promise<T> => withAdminReauthRetry
  */
 export class AdminAiProviderService {
   createAiProvider = async (params: CreateAiProviderParams) => {
+    const keyVaults = (params.keyVaults ?? {}) as Record<string, string>;
+    const hasVaults = Object.keys(keyVaults).length > 0;
+    // Structured secret keeps apiKey + baseURL (+ other provider fields) together —
+    // never drop baseURL when apiKey is present.
     return withReauth(() =>
       lambdaClient.admin.aiProviders.applyImmediate.mutate({
         config: (params.config ?? {}) as Record<string, unknown>,
@@ -71,16 +75,12 @@ export class AdminAiProviderService {
         mode: 'create',
         providerKey: params.id,
         reason: DEFAULT_REASON,
-        secret:
-          params.keyVaults && Object.keys(params.keyVaults).length > 0
-            ? {
-                operation: 'replace' as const,
-                value:
-                  typeof params.keyVaults.apiKey === 'string'
-                    ? params.keyVaults.apiKey
-                    : (params.keyVaults as Record<string, string>),
-              }
-            : { operation: 'keep' as const },
+        secret: hasVaults
+          ? {
+              operation: 'replace' as const,
+              value: keyVaults,
+            }
+          : { operation: 'keep' as const },
         settings: (params.settings ?? {}) as Record<string, unknown>,
         source: params.source === AiProviderSourceEnum.Builtin ? 'builtin' : 'custom',
       }),

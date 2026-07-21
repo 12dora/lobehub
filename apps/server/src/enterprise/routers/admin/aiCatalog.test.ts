@@ -522,8 +522,25 @@ describe('admin AI catalog permission and reauth gates', () => {
       reason: 'rename immediately',
     });
     expect(updated.draft.displayName).toBe('Immediate Renamed');
+    expect(updated.published).toBe(true);
     expect(updated.revision).toBeGreaterThan(0);
     expect(JSON.stringify(updated)).not.toContain(credential);
+  });
+
+  it('applyImmediate create keeps draft when first publish is not yet valid', async () => {
+    const caller = await callerFor(ids.aiAdmin);
+    const result = await caller.aiProviders.applyImmediate({
+      displayName: 'Draft Only',
+      mode: 'create',
+      providerKey: 'draft-only-p',
+      reason: 'create without models/test',
+      secret: { operation: 'replace', value: 'not-a-real-secret-value' },
+      settings: { sdkType: 'openai' },
+    });
+    expect(result.published).toBe(false);
+    expect(result.draft.providerKey).toBe('draft-only-p');
+    expect(result.revision).toBe(0);
+    expect(JSON.stringify(result)).not.toContain('not-a-real-secret-value');
   });
 
   it('applyImmediate denies callers without publish permission', async () => {

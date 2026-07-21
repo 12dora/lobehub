@@ -6,12 +6,14 @@ import { Select, useModalContext } from '@lobehub/ui/base-ui';
 import { App, Form } from 'antd';
 import { memo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useLocation } from 'react-router';
 
 import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwareNavigate';
 import { useAiInfraStoreApi, useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
 import { type CreateAiProviderParams } from '@/types/aiProvider';
 
 import { KeyVaultsConfigKey, LLMProviderApiTokenKey, LLMProviderBaseUrlKey } from '../../const';
+import { providerSettingsPath } from '../../providerRouteBase';
 import { CUSTOM_PROVIDER_SDK_OPTIONS } from '../customProviderSdkOptions';
 import { normalizeProviderSettings } from '../providerSettings';
 
@@ -29,6 +31,7 @@ const CreateNewProviderContent = memo(() => {
   const createNewAiProvider = useAiInfraStore((s) => s.createNewAiProvider);
   const { message } = App.useApp();
   const navigate = useWorkspaceAwareNavigate();
+  const location = useLocation();
   const { close } = useModalContext();
 
   const onFinish = async (values: CreateAiProviderParams) => {
@@ -45,7 +48,7 @@ const CreateNewProviderContent = memo(() => {
 
       await createNewAiProvider(finalValues);
       setLoading(false);
-      navigate(`/settings/provider/${values.id}`);
+      navigate(providerSettingsPath(location.pathname, values.id));
       message.success(t('createNewAiProvider.createSuccess'));
       close();
     } catch (e) {
