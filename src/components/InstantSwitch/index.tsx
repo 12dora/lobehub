@@ -18,11 +18,18 @@ const InstantSwitch = memo<InstantSwitchProps>(({ disabled, enabled, onChange, s
       loading={loading}
       size={size}
       value={value}
-      onChange={async (enabled) => {
+      onChange={async (next) => {
+        const previous = value;
         setLoading(true);
-        setValue(enabled);
-        await onChange(enabled);
-        setLoading(false);
+        setValue(next);
+        try {
+          await onChange(next);
+        } catch {
+          // Roll back optimistic UI when the write fails (admin/user switches).
+          setValue(previous);
+        } finally {
+          setLoading(false);
+        }
       }}
     />
   );
