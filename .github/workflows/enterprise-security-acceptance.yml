@@ -1,0 +1,159 @@
+name: Enterprise Security Acceptance
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/enterprise-security-acceptance.yml'
+      - 'scripts/enterprise/security-acceptance/**'
+      - 'apps/server/src/enterprise/security/**'
+      - 'apps/server/src/enterprise/guards/**'
+      - 'packages/ssrf-safe-fetch/**'
+      - 'packages/database/src/models/platform/redact.ts'
+      - 'docs/security/**'
+      - 'docs/enterprise/runbooks/security-acceptance.md'
+  push:
+    branches:
+      - canary
+    paths:
+      - '.github/workflows/enterprise-security-acceptance.yml'
+      - 'scripts/enterprise/security-acceptance/**'
+      - 'apps/server/src/enterprise/security/**'
+      - 'apps/server/src/enterprise/guards/**'
+      - 'packages/ssrf-safe-fetch/**'
+      - 'packages/database/src/models/platform/redact.ts'
+  schedule:
+    # Weekly dependency/leakage evidence refresh (UTC). Does not claim external pen-test.
+    - cron: '17 6 * * 1'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+
+jobs:
+  harness-contract:
+    name: Harness contract (falsifying unit tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-env
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Security acceptance unit contracts
+        run: |
+          bunx vitest run --config vitest.config.mts --silent='passed-only' \
+            scripts/enterprise/security-acceptance/security-acceptance.test.ts
+
+      - name: CLI help and verify reject missing report
+        run: |
+          set -euo pipefail
+          bun run scripts/enterprise/security-acceptance/index.ts --help || true
+          if bun run scripts/enterprise/security-acceptance/index.ts verify --report /tmp/missing-report.json; then
+            echo 'verify must fail closed on missing report' >&2
+            exit 1
+          fi
+
+  security-acceptance-evidence:
+    name: Security acceptance evidence (fail-closed)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: harness-contract
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-env
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Ensure lockfile for production audit target
+        run: |
+          set -euo pipefail
+          # Repo .npmrc uses lockfile=false; generate a local lockfile for pnpm audit only.
+          # Lockfile is gitignored — this job never commits or pushes.
+          if [ ! -f pnpm-lock.yaml ]; then
+            pnpm install --lockfile-only --config.lockfile=true
+          fi
+          test -f pnpm-lock.yaml
+
+      - name: Run security acceptance harness
+        id: acceptance
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          out="${GITHUB_WORKSPACE}/.records/enterprise-security-acceptance/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p "$out"
+          bun run scripts/enterprise/security-acceptance/index.ts run \
+            --output-dir "$out" \
+            --git-sha "$(git rev-parse HEAD)"
+          echo "OUTPUT_DIR=$out" >> "$GITHUB_ENV"
+
+      - name: Verify report integrity
+        if: always() && env.OUTPUT_DIR != ''
+        run: |
+          set -euo pipefail
+          report="$OUTPUT_DIR/security-acceptance.report.json"
+          test -f "$report"
+          # Integrity verify must succeed as a parse/digest check even when overall=failed.
+          # Overall pass is not required here — evidence is truthful and fail-closed.
+          bun -e '
+            const { verifySecurityAcceptanceReport } = await import("./scripts/enterprise/security-acceptance/evaluate.ts");
+            const report = JSON.parse(await Bun.file(process.env.REPORT).text());
+            const result = verifySecurityAcceptanceReport(report);
+            if (!result.ok) {
+              console.error("integrity verify failed:", result.reason);
+              process.exit(1);
+            }
+            if (result.report.evidenceClass !== "repository-automation") process.exit(2);
+            if (result.report.externalPenetrationTest.status !== "not-executed") process.exit(3);
+            console.log(JSON.stringify({
+              evidenceClass: result.report.evidenceClass,
+              externalPenetrationTest: result.report.externalPenetrationTest.status,
+              overall: result.report.overall,
+              reportCoreSha256: result.report.integrity.reportCoreSha256,
+            }, null, 2));
+          '
+        env:
+          REPORT: ${{ env.OUTPUT_DIR }}/security-acceptance.report.json
+
+      - name: Refuse secret-shaped evidence content
+        if: always() && env.OUTPUT_DIR != ''
+        run: |
+          set -euo pipefail
+          if rg -n -i \
+            'password\s*[:=]\s*\S+|-----BEGIN [A-Z ]*PRIVATE KEY-----|postgres(?:ql)?://[^[:space:]]+:[^[:space:]]+@' \
+            "$OUTPUT_DIR"; then
+            echo 'Forbidden secret-shaped content in security acceptance artifacts' >&2
+            exit 1
+          fi
+
+      - name: Upload security acceptance evidence
+        if: always() && env.OUTPUT_DIR != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: enterprise-security-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .records/enterprise-security-acceptance/${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Fail job when acceptance overall is not passed
+        if: always()
+        run: |
+          set -euo pipefail
+          # Truthful fail-closed gate: missing rate-limit coverage (pre-S06), high/critical
+          # advisories, or leakage violations keep overall != passed.
+          if [ "${{ steps.acceptance.outcome }}" != "success" ]; then
+            echo "Security acceptance run exited non-zero (expected until S06 + advisory remediation)" >&2
+            exit 1
+          fi

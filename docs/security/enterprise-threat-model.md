@@ -146,13 +146,26 @@ focused router/service security tests, TypeScript checking, linting, and diff ch
 suite's default run recorded `61 passed / 1 real gate skipped`; an independent gate against an
 ephemeral Vault recorded `1 passed`. That gate used root only to bootstrap temporary resources and
 used the temporary AppRole for application reads. It verifies the integration path, but does not
-constitute production Vault or actual release acceptance. Subsequent W8 acceptance must add shared
-admin rate-limit tests, complete reauth/audit coverage for registry gaps, full-domain re-wrap/job
-evidence, production Vault credential rotation/alerting/disaster-recovery drills, real PostgreSQL
-migration/rollback evidence, multi-instance cache and failure drills, dependency/penetration
-scanning, and enterprise browser E2E evidence. External identity tenants and signed production
-release/rollback drills must be reported as unexecuted unless real credentials and release authority
-were used.
+constitute production Vault or actual release acceptance.
+
+**M13 PR-S05 repository security acceptance (automation only).** The harness under
+`scripts/enterprise/security-acceptance/` produces a versioned, fail-closed report for production
+dependency advisory scanning (`pnpm audit`), enterprise leakage regression scanning (secret-shaped
+material in owned source/config/report surfaces without dumping match text), and automated
+adversarial regression orchestration (SSRF, auth/RBAC/IDOR, reauth, replay/CAS, and a required
+admin rate-limit adapter reserved for S06). Reports are classified
+`evidenceClass: repository-automation` and always record
+`externalPenetrationTest.status: not-executed`. A green unit-test or CI artifact from this harness
+is **not** an external human production penetration test and must not be re-labeled as one. See
+`docs/enterprise/runbooks/security-acceptance.md`.
+
+Subsequent acceptance must still complete shared admin rate-limit implementation and tests (S06),
+full reauth/audit coverage for registry gaps, full-domain re-wrap/job evidence, production Vault
+credential rotation/alerting/disaster-recovery drills, real PostgreSQL migration/rollback evidence,
+multi-instance cache and failure drills, residual **external** penetration testing against a
+production-like deployment, and enterprise browser E2E evidence. External identity tenants and signed
+production release/rollback drills must be reported as unexecuted unless real credentials and release
+authority were used.
 
 ## Review triggers
 
