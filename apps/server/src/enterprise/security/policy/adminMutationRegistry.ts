@@ -325,6 +325,12 @@ export const ADMIN_MUTATION_REGISTRY = {
     'Upload and validate a branding asset.',
     { lastKnownGood: assetNoLkg },
   ),
+  'admin.connectors.applyImmediate': dangerousMutation(
+    'admin.connectors.applyImmediate',
+    'high',
+    'Create or update a connector draft and publish immediately.',
+    { outbound: safeOutbound, reauth: recentReauth },
+  ),
   'admin.connectors.archive': dangerousMutation(
     'admin.connectors.archive',
     'high',
@@ -352,6 +358,12 @@ export const ADMIN_MUTATION_REGISTRY = {
     'admin.connectors.publish',
     'high',
     'Publish connector configuration for runtime use.',
+    { outbound: safeOutbound, reauth: recentReauth },
+  ),
+  'admin.connectors.publishNow': dangerousMutation(
+    'admin.connectors.publishNow',
+    'high',
+    'Retry publish for a connector draft (banner path).',
     { outbound: safeOutbound, reauth: recentReauth },
   ),
   'admin.connectors.revokeAllBindings': dangerousMutation(
@@ -500,6 +512,12 @@ export const ADMIN_MUTATION_REGISTRY = {
     'admin.settings.validateDraft',
     'Validate settings without publishing them.',
   ),
+  'admin.skills.applyImmediate': dangerousMutation(
+    'admin.skills.applyImmediate',
+    'high',
+    'Create or update a platform skill draft and publish immediately (no outbound).',
+    { reauth: recentReauth },
+  ),
   'admin.skills.archive': dangerousMutation(
     'admin.skills.archive',
     'high',
@@ -521,6 +539,12 @@ export const ADMIN_MUTATION_REGISTRY = {
     'admin.skills.publish',
     'high',
     'Publish a platform skill version.',
+    { reauth: recentReauth },
+  ),
+  'admin.skills.publishNow': dangerousMutation(
+    'admin.skills.publishNow',
+    'high',
+    'Retry publish for a platform skill draft (banner path, no outbound).',
     { reauth: recentReauth },
   ),
   'admin.skills.rollback': dangerousMutation(
