@@ -512,6 +512,16 @@ const invariantResultSchema = z
 /**
  * Batch B backup/restore drill evidence consumed by preflight.
  */
+export const backupRestoreInputAttestationSchema = z
+  .object({
+    dumpDigest: sha256Schema,
+    inputAttestationSha256: sha256Schema,
+    role: z.literal('source-backup'),
+    sourceManifestSha256: sha256Schema,
+    verified: z.literal(true),
+  })
+  .strict();
+
 export const backupRestoreEvidenceSchema = z
   .object({
     ...evidenceBaseFields,
@@ -523,6 +533,8 @@ export const backupRestoreEvidenceSchema = z
       .min(1)
       .max(128)
       .regex(/^[\w.-]+$/u),
+    /** Optional: present after production restore with verified source-backup. */
+    inputAttestation: backupRestoreInputAttestationSchema.optional(),
     invariants: z.array(invariantResultSchema).min(1),
     lane: z.literal(BACKUP_RESTORE_LANE),
     reportSchemaVersion: z.literal(BACKUP_RESTORE_SCHEMA_VERSION),

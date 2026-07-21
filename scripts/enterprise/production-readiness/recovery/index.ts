@@ -26,13 +26,20 @@ export {
   type MaterializedBaseline,
   resolveBaselineTreeOid,
 } from './baselineMaterialize';
-export { assertGateEvidenceShape, toPreflightGateEvidence } from './evidenceEnvelope';
+export {
+  assertGateEvidenceShape,
+  assertRawReportMatchesEnvelope,
+  extractInputAttestationFromRawReport,
+  inputAttestationRefSchema,
+  toPreflightGateEvidence,
+} from './evidenceEnvelope';
 export {
   canonicalizeTableRow,
   compareDigests,
   compareTableDigests,
   digestAllRequiredTables,
   digestAuditLogs,
+  digestCanonicalRecords,
   digestResourceRevisions,
   TABLE_DIGEST_ENCODING_VERSION,
   verifyPublicationPointers,

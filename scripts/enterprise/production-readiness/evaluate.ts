@@ -15,6 +15,10 @@ import {
 import { assessEvidenceFreshness, type FreshnessOptions } from './freshness';
 import { shortSha } from './privacy';
 import {
+  assertRawReportMatchesEnvelope,
+  extractInputAttestationFromRawReport,
+} from './recovery/evidenceEnvelope';
+import {
   createProductionReadinessReport,
   type ProductionReadinessReport,
   type ReleaseCandidate,
@@ -48,6 +52,11 @@ export interface GateEvidenceInput {
   observedAt?: string;
   /** Detached signed provenance (required for production scope). */
   provenance?: SignedProvenanceEnvelope | unknown;
+  /**
+   * Embedded sanitized raw recovery report. Required for backup-restore production
+   * chain so preflight can recompute artifact digest and extract inputAttestation.
+   */
+  rawReport?: unknown;
   /**
    * Harness-declared scope. production-authorized is IGNORED and treated as attack.
    */
@@ -127,6 +136,29 @@ const evaluateOneGate = (
         reason: 'missing-production-provenance',
       };
     }
+
+    // backup-restore: recompute raw digest + require exact inputAttestation chain.
+    let expectedInputAttestationSha256: string | undefined;
+    if (input.gate === 'backup-restore') {
+      const rawCheck = assertRawReportMatchesEnvelope(input);
+      if (!rawCheck.ok) {
+        return {
+          result: 'failed',
+          scope: 'local-harness',
+          reason: rawCheck.reason,
+        };
+      }
+      const inputAtt = extractInputAttestationFromRawReport(input.rawReport);
+      if (!inputAtt) {
+        return {
+          result: 'failed',
+          scope: 'local-harness',
+          reason: 'missing-or-invalid-input-attestation',
+        };
+      }
+      expectedInputAttestationSha256 = inputAtt.inputAttestationSha256;
+    }
+
     // Gate preflight only accepts recovery-result (or non-backup gate) provenance
     // whose artifactSha256 equals the envelope/raw-report digest — never source-backup dump digests.
     const verdict = verifySignedProvenance(input.provenance, {
@@ -134,6 +166,7 @@ const evaluateOneGate = (
       expectedAttestationRole: input.gate === 'backup-restore' ? 'recovery-result' : undefined,
       expectedCandidateSha: candidate.gitSha,
       expectedGateId: input.gate,
+      expectedInputAttestationSha256,
       expectedReleaseId: candidate.releaseId,
       policy,
       seenNonces,
@@ -148,6 +181,21 @@ const evaluateOneGate = (
         reason: `provenance-${verdict.reason}`,
       };
     }
+
+    // Recovery-result must reference the exact source-backup digest recorded in raw.
+    if (
+      input.gate === 'backup-restore' &&
+      verdict.payload.inputAttestationSha256 &&
+      expectedInputAttestationSha256 &&
+      verdict.payload.inputAttestationSha256 !== expectedInputAttestationSha256
+    ) {
+      return {
+        result: 'failed',
+        scope: 'local-harness',
+        reason: 'input-attestation-payload-mismatch',
+      };
+    }
+
     if (provenanceGrantsProductionScope(verdict)) {
       scope = 'production-authorized';
     } else {

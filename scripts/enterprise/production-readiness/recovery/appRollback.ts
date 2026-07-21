@@ -217,17 +217,19 @@ export const runAppRollbackDrill = async (
   const rawPath = path.join(rawDir, 'app-rollback.raw.json');
   const envelopePath = path.join(envDir, 'app-rollback.envelope.json');
 
-  const { sha256: artifactSha256 } = await writeJsonAtomic(rawPath, {
+  // Embedded rawReport must be byte-identical to the hashed raw file content.
+  const rawReport = {
     ...evidence,
     baselineDetail,
-  });
+  };
+  const { sha256: artifactSha256 } = await writeJsonAtomic(rawPath, rawReport);
   const gateEvidence = toPreflightGateEvidence({
     artifactSha256,
     assertions: evidence.assertions,
     candidateSha: options.candidateSha,
     gate: 'app-rollback',
     generatedAt: nowIso,
-    rawReport: evidence,
+    rawReport,
     releaseId: options.releaseId,
     scope: evidence.scope,
     status: evidence.status,

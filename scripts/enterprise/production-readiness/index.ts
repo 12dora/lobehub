@@ -67,7 +67,9 @@ export {
   type CleanupProof,
   cleanupToolOwnedPath,
   createToolOwnedTempDir,
+  digestArtifactJson,
   isToolOwnedTempPath,
+  serializeArtifactJson,
   type ToolOwnedTempHandle,
   writeJsonAtomic,
 } from './fsUtils';
