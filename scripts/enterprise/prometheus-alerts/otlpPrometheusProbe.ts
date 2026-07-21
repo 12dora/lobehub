@@ -1,19 +1,28 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { ENTERPRISE_OTEL_COLLECTOR_IMAGE, ENTERPRISE_PROMETHEUS_IMAGE } from './constants';
+import { assertCleanupClean, cleanupProbeResources, throwWithCleanup } from './cleanup';
 import {
-  ENTERPRISE_ALERT_SELECTOR_FAMILIES,
-  OTEL_TO_PROMETHEUS_LABEL,
-  promqlInstantSelector,
-} from './metricTranslation';
+  ENTERPRISE_OTEL_COLLECTOR_IMAGE,
+  ENTERPRISE_PROMETHEUS_IMAGE,
+  resolveAlertRulesPath,
+  resolveRepositoryRoot,
+} from './constants';
+import {
+  buildEmissionPointsFromSelectors,
+  type EmissionPoint,
+  otelKeyToPrometheusLabel,
+} from './emissionContract';
+import { parseProductionRuleSelectors } from './parseSelectors';
+import { sleepMs } from './sleep';
 
 export interface OtlpProbeResult {
-  familiesProven: string[];
-  labelTranslation: typeof OTEL_TO_PROMETHEUS_LABEL;
+  emissionPoints: number;
   metricsSeen: string[];
+  querySelectorsProven: string[];
+  rulesPath: string;
 }
 
 const PROBE_PREFIX = 'enterprise-o06-probe';
@@ -35,39 +44,6 @@ const dockerInfo = (): void => {
   }
 };
 
-const sleepMs = (ms: number): void => {
-  const waitUntil = Date.now() + ms;
-  while (Date.now() < waitUntil) {
-    /* bounded busy-wait for probe polling */
-  }
-};
-
-const dockerRmForce = (names: string[]): void => {
-  for (const name of names) {
-    try {
-      execFileSync('docker', ['rm', '-f', name], {
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-        timeout: 30_000,
-      });
-    } catch {
-      /* ignore */
-    }
-  }
-};
-
-const dockerNetworkRm = (name: string): void => {
-  try {
-    execFileSync('docker', ['network', 'rm', name], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 30_000,
-    });
-  } catch {
-    /* ignore */
-  }
-};
-
 const curlJson = (url: string, init?: { method?: string; body?: string; headers?: string[] }) => {
   const args = ['-sS', '--max-time', '15'];
   if (init?.method) args.push('-X', init.method);
@@ -81,39 +57,45 @@ const curlJson = (url: string, init?: { method?: string; body?: string; headers?
   return execFileSync('curl', args, { encoding: 'utf8', timeout: 20_000 });
 };
 
-const buildOtlpPayload = (nowNano: string): string => {
-  const metrics = ENTERPRISE_ALERT_SELECTOR_FAMILIES.map((family) => {
-    const attributes = Object.entries(family.otelAttributes).map(([key, value]) => ({
-      key,
-      value: { stringValue: value },
-    }));
-    const isCounter = family.metric.endsWith('_total');
+const buildOtlpPayload = (points: EmissionPoint[], nowNano: string): string => {
+  // Group data points by metric name for a compact OTLP payload.
+  const byMetric = new Map<string, EmissionPoint[]>();
+  for (const point of points) {
+    const list = byMetric.get(point.metric) ?? [];
+    list.push(point);
+    byMetric.set(point.metric, list);
+  }
+
+  const metrics = [...byMetric.entries()].map(([name, group]) => {
+    const isCounter = group[0]!.isCounter;
     if (isCounter) {
       return {
-        name: family.metric,
+        name,
         sum: {
           aggregationTemporality: 2,
           isMonotonic: true,
-          dataPoints: [
-            {
-              asInt: '5',
-              attributes,
-              timeUnixNano: nowNano,
-            },
-          ],
+          dataPoints: group.map((point) => ({
+            asInt: String(point.value),
+            attributes: Object.entries(point.attributes).map(([key, value]) => ({
+              key,
+              value: { stringValue: value },
+            })),
+            timeUnixNano: nowNano,
+          })),
         },
       };
     }
     return {
-      name: family.metric,
+      name,
       gauge: {
-        dataPoints: [
-          {
-            asDouble: family.metric.includes('ready') ? 0 : 42,
-            attributes,
-            timeUnixNano: nowNano,
-          },
-        ],
+        dataPoints: group.map((point) => ({
+          asDouble: point.value,
+          attributes: Object.entries(point.attributes).map(([key, value]) => ({
+            key,
+            value: { stringValue: value },
+          })),
+          timeUnixNano: nowNano,
+        })),
       },
     };
   });
@@ -124,23 +106,78 @@ const buildOtlpPayload = (nowNano: string): string => {
         resource: {
           attributes: [{ key: 'service.name', value: { stringValue: 'enterprise-o06-probe' } }],
         },
-        scopeMetrics: [
-          {
-            scope: { name: 'enterprise-o06-probe' },
-            metrics,
-          },
-        ],
+        scopeMetrics: [{ scope: { name: 'enterprise-o06-probe' }, metrics }],
       },
     ],
   });
 };
 
+export interface OtlpProbeOptions {
+  /** Test hook: inject cleanup failures. */
+  injectContainerRmError?: (name: string) => Error | null;
+  injectNetworkRmError?: (name: string) => Error | null;
+  repositoryRoot?: string;
+  rulesPath?: string;
+}
+
 /**
- * Disposable end-to-end probe: pinned collector + Prometheus, OTLP inject, PromQL proof.
- * Fail closed if Docker/images/config/translation are unavailable. Always cleans residue.
+ * Disposable E2E probe:
+ * 1. Parse production rule selectors (oracle source 1)
+ * 2. Build emission via real attribute builders + closed vocab (oracle source 2)
+ * 3. OTLP → pinned collector → Prometheus remote-write
+ * 4. Query production selectors and prove labels/metrics
+ * Cleanup is fail-closed (residue or rm errors fail the gate).
  */
-export const runOtlpPrometheusTranslationProbe = (): OtlpProbeResult => {
+export const runOtlpPrometheusTranslationProbe = async (
+  options: OtlpProbeOptions = {},
+): Promise<OtlpProbeResult> => {
   dockerInfo();
+
+  const repositoryRoot = options.repositoryRoot ?? resolveRepositoryRoot();
+  const rulesPath = options.rulesPath ?? resolveAlertRulesPath(repositoryRoot);
+  const selectors = parseProductionRuleSelectors(rulesPath);
+  if (selectors.length === 0) {
+    throw new Error('No selectors parsed from production rules (fail closed)');
+  }
+  const emissionPoints = buildEmissionPointsFromSelectors(selectors);
+  if (emissionPoints.length === 0) {
+    throw new Error('No emission points derived from production selectors (fail closed)');
+  }
+
+  // Require both publish failure and conflict when production rules include both.
+  const publishOutcomes = new Set(
+    emissionPoints
+      .filter((point) => point.metric === 'enterprise_platform_config_publish_total')
+      .map((point) => point.prometheusLabels.enterprise_outcome),
+  );
+  if (
+    selectors.some(
+      (selector) =>
+        selector.metric === 'enterprise_platform_config_publish_total' &&
+        selector.matchers.some(
+          (matcher) => matcher.name === 'enterprise_outcome' && matcher.value === 'conflict',
+        ),
+    ) &&
+    !publishOutcomes.has('conflict')
+  ) {
+    throw new Error(
+      'Emission contract missing publish conflict series required by production rules',
+    );
+  }
+  if (
+    selectors.some(
+      (selector) =>
+        selector.metric === 'enterprise_platform_config_publish_total' &&
+        selector.matchers.some(
+          (matcher) => matcher.name === 'enterprise_outcome' && matcher.value === 'failure',
+        ),
+    ) &&
+    !publishOutcomes.has('failure')
+  ) {
+    throw new Error(
+      'Emission contract missing publish failure series required by production rules',
+    );
+  }
 
   const id = `${Date.now()}`;
   const network = `${PROBE_PREFIX}-net-${id}`;
@@ -149,6 +186,9 @@ export const runOtlpPrometheusTranslationProbe = (): OtlpProbeResult => {
   const tempDir = mkdtempSync(path.join(tmpdir(), `${PROBE_PREFIX}-`));
   const promConfigPath = path.join(tempDir, 'prometheus.yml');
   const collectorConfigPath = path.join(tempDir, 'collector.yaml');
+  const containers = [promName, colName];
+  const networks = [network];
+  const tempDirs = [tempDir];
 
   writeFileSync(
     promConfigPath,
@@ -178,8 +218,8 @@ service:
 `,
   );
 
-  const metricsSeen: string[] = [];
-  const familiesProven: string[] = [];
+  let primaryError: unknown;
+  let result: OtlpProbeResult | undefined;
 
   try {
     execFileSync('docker', ['network', 'create', network], {
@@ -198,7 +238,7 @@ service:
         '--network',
         network,
         '-p',
-        '127.0.0.1::9090',
+        '127.0.0.1:0:9090',
         '-v',
         `${promConfigPath}:/etc/prometheus/prometheus.yml:ro`,
         ENTERPRISE_PROMETHEUS_IMAGE,
@@ -218,7 +258,7 @@ service:
         '--network',
         network,
         '-p',
-        '127.0.0.1::4318',
+        '127.0.0.1:0:4318',
         '-v',
         `${collectorConfigPath}:/etc/otelcol/config.yaml:ro`,
         ENTERPRISE_OTEL_COLLECTOR_IMAGE,
@@ -243,14 +283,9 @@ service:
       .pop();
     if (!promPort || !colPort) throw new Error('Failed to resolve probe published ports');
 
-    // Wait for ready endpoints.
     const readyDeadline = Date.now() + 40_000;
     while (Date.now() < readyDeadline) {
       try {
-        const ready = curlJson(`http://127.0.0.1:${promPort}/-/ready`);
-        if (ready.includes('Prometheus Server is Ready') || ready.trim() === '') {
-          // /-/ready returns empty body with 200; curlJson doesn't check status.
-        }
         const code = execFileSync(
           'curl',
           ['-sS', '-o', '/dev/null', '-w', '%{http_code}', `http://127.0.0.1:${promPort}/-/ready`],
@@ -260,11 +295,11 @@ service:
       } catch {
         /* retry */
       }
-      sleepMs(300);
+      await sleepMs(200);
     }
 
     const nowNano = `${BigInt(Date.now()) * 1_000_000n}`;
-    const payload = buildOtlpPayload(nowNano);
+    const payload = buildOtlpPayload(emissionPoints, nowNano);
     const otlpResponse = curlJson(`http://127.0.0.1:${colPort}/v1/metrics`, {
       method: 'POST',
       headers: ['Content-Type: application/json'],
@@ -274,17 +309,23 @@ service:
       throw new Error(`OTLP export failed: ${otlpResponse.slice(0, 500)}`);
     }
 
-    // Poll until all families are queryable.
+    const querySelectorsProven: string[] = [];
+    const metricsSeen: string[] = [];
     const queryDeadline = Date.now() + 45_000;
     let lastError = '';
+
     while (Date.now() < queryDeadline) {
       try {
-        familiesProven.length = 0;
+        querySelectorsProven.length = 0;
         metricsSeen.length = 0;
-        for (const family of ENTERPRISE_ALERT_SELECTOR_FAMILIES) {
-          const selector = promqlInstantSelector(family.metric, {
-            ...family.prometheusLabels,
-          });
+        for (const point of emissionPoints) {
+          // Query the exact emitted series (builder labels), not a bare metric that may
+          // return an arbitrary series when multiple collectors share a name.
+          const labelMatchers = Object.entries(point.prometheusLabels)
+            .map(([key, value]) => `${key}="${value}"`)
+            .join(',');
+          const selector =
+            labelMatchers.length > 0 ? `${point.metric}{${labelMatchers}}` : point.querySelector;
           const raw = curlJson(
             `http://127.0.0.1:${promPort}/api/v1/query?query=${encodeURIComponent(selector)}`,
           );
@@ -293,93 +334,117 @@ service:
             data?: { result?: Array<{ metric: Record<string, string>; value: [number, string] }> };
           };
           if (parsed.status !== 'success' || !parsed.data?.result?.length) {
-            throw new Error(`No series for ${selector}: ${raw.slice(0, 300)}`);
+            throw new Error(`No series for production selector ${selector}: ${raw.slice(0, 300)}`);
           }
           const sample = parsed.data.result[0]!;
-          if (sample.metric.__name__ !== family.metric) {
+          if (sample.metric.__name__ !== point.metric) {
             throw new Error(
-              `Metric name mismatch: expected ${family.metric}, got ${sample.metric.__name__}`,
+              `Metric name mismatch: expected ${point.metric}, got ${sample.metric.__name__}`,
             );
           }
-          for (const [promLabel, expected] of Object.entries(family.prometheusLabels)) {
+          for (const [promLabel, expected] of Object.entries(point.prometheusLabels)) {
             if (sample.metric[promLabel] !== expected) {
               throw new Error(
-                `Label ${promLabel} expected ${expected}, got ${sample.metric[promLabel]} on ${family.metric}; full=${JSON.stringify(sample.metric)}`,
+                `Label ${promLabel} expected ${expected}, got ${sample.metric[promLabel]} on ${point.metric}; full=${JSON.stringify(sample.metric)}`,
               );
             }
           }
-          // Ensure OTel dotted keys did not leak as Prometheus labels for this family.
-          for (const otelKey of Object.keys(family.otelAttributes)) {
+          for (const otelKey of Object.keys(point.attributes)) {
             if (otelKey in sample.metric) {
               throw new Error(`OTel dotted key leaked into Prometheus labels: ${otelKey}`);
             }
-            const expectedProm = OTEL_TO_PROMETHEUS_LABEL[otelKey];
-            if (expectedProm && !(expectedProm in sample.metric)) {
+            const promKey = otelKeyToPrometheusLabel(otelKey);
+            if (!(promKey in sample.metric)) {
               throw new Error(
-                `Missing translated label ${expectedProm} (from ${otelKey}) on ${family.metric}`,
+                `Missing translated label ${promKey} (from ${otelKey}) on ${point.metric}`,
               );
             }
           }
-          if (!metricsSeen.includes(family.metric)) metricsSeen.push(family.metric);
-          familiesProven.push(family.family);
+          if (!metricsSeen.includes(point.metric)) metricsSeen.push(point.metric);
+          querySelectorsProven.push(selector);
         }
+        // Additionally prove every production-rule selector (including failure and conflict)
+        // returns at least one series after translation.
+        for (const production of selectors) {
+          const raw = curlJson(
+            `http://127.0.0.1:${promPort}/api/v1/query?query=${encodeURIComponent(production.querySelector)}`,
+          );
+          const parsed = JSON.parse(raw) as {
+            status: string;
+            data?: { result?: unknown[] };
+          };
+          if (parsed.status !== 'success' || !parsed.data?.result?.length) {
+            throw new Error(
+              `Production rule selector empty after translation: ${production.querySelector} (alert ${production.alert})`,
+            );
+          }
+        }
+
         lastError = '';
         break;
       } catch (error) {
         lastError = error instanceof Error ? error.message : String(error);
-        sleepMs(500);
+        await sleepMs(250);
       }
     }
 
-    if (lastError || familiesProven.length !== ENTERPRISE_ALERT_SELECTOR_FAMILIES.length) {
+    if (lastError || querySelectorsProven.length !== emissionPoints.length) {
       throw new Error(
-        `OTLP→Prometheus translation probe failed (fail closed): ${lastError || 'incomplete families'}`,
+        `OTLP→Prometheus translation probe failed (fail closed): ${lastError || 'incomplete selectors'}`,
       );
     }
 
-    return {
-      familiesProven: [...familiesProven],
-      labelTranslation: OTEL_TO_PROMETHEUS_LABEL,
-      metricsSeen: [...metricsSeen],
+    result = {
+      emissionPoints: emissionPoints.length,
+      metricsSeen,
+      querySelectorsProven,
+      rulesPath,
     };
   } catch (error) {
-    throw new Error(
-      `OTLP→Prometheus probe failed (fail closed): ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-      { cause: error },
-    );
+    primaryError = error;
   } finally {
-    dockerRmForce([promName, colName]);
-    dockerNetworkRm(network);
-    rmSync(tempDir, { force: true, recursive: true });
+    const cleanup = cleanupProbeResources(
+      { containers, networks, tempDirs },
+      {
+        injectContainerRmError: options.injectContainerRmError,
+        injectNetworkRmError: options.injectNetworkRmError,
+      },
+    );
+    if (primaryError) {
+      throwWithCleanup(primaryError, cleanup);
+    }
+    assertCleanupClean(cleanup);
   }
+
+  if (!result) {
+    throw new Error('OTLP probe completed without result (fail closed)');
+  }
+  return result;
 };
 
-export const main = (argv: string[] = process.argv.slice(2)): number => {
+export const main = async (argv: string[] = process.argv.slice(2)): Promise<number> => {
   if (argv.includes('--help') || argv.includes('-h')) {
     console.log(
       [
         'Usage: bun run scripts/enterprise/prometheus-alerts/otlpPrometheusProbe.ts',
         '',
-        'Disposable probe: pinned collector + Prometheus, OTLP inject, PromQL proof of',
-        'metric names and translated labels for every reference selector family.',
+        'Parse production rules + real emission builders → OTLP → Prometheus label proof.',
       ].join('\n'),
     );
     return 0;
   }
-  const result = runOtlpPrometheusTranslationProbe();
+  const result = await runOtlpPrometheusTranslationProbe();
   console.log(
-    `✓ OTLP→Prometheus probe proved ${result.familiesProven.length} selector families (${result.metricsSeen.length} metrics)`,
+    `✓ OTLP→Prometheus probe proved ${result.querySelectorsProven.length} production selectors (${result.metricsSeen.length} metrics) from ${result.rulesPath}`,
   );
   return 0;
 };
 
 if (import.meta.main) {
-  try {
-    process.exit(main());
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : error);
-    process.exit(1);
-  }
+  main()
+    .then((code) => process.exit(code))
+    .catch((error) => {
+      console.error(error instanceof Error ? error.message : error);
+      process.exit(1);
+    });
 }

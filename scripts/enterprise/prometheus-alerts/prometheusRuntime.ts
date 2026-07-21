@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 
+import { assertCleanupClean, cleanupProbeResources, throwWithCleanup } from './cleanup';
 import { assertEnterprisePrometheusComposeWiring } from './composeWiring';
 import {
   ENTERPRISE_PROMETHEUS_FORBIDDEN_FLAGS,
@@ -11,6 +12,7 @@ import {
   resolvePrometheusConfigPath,
   resolveRepositoryRoot,
 } from './constants';
+import { sleepMs } from './sleep';
 
 const dockerInfo = (): void => {
   try {
@@ -64,13 +66,14 @@ export interface PrometheusRuntimeValidationResult {
 }
 
 /**
- * Validate that compose Prometheus flags are supported by the pinned image and that
- * a real process starts with the reference config + rules (not just `compose config`).
+ * Validate compose Prometheus flags against the pinned image and start a real process.
+ * Cleanup is fail-closed.
  */
-export const validateEnterprisePrometheusRuntime = (options?: {
+export const validateEnterprisePrometheusRuntime = async (options?: {
   image?: string;
   repositoryRoot?: string;
-}): PrometheusRuntimeValidationResult => {
+  injectContainerRmError?: (name: string) => Error | null;
+}): Promise<PrometheusRuntimeValidationResult> => {
   const repositoryRoot = options?.repositoryRoot ?? resolveRepositoryRoot();
   const image = options?.image ?? ENTERPRISE_PROMETHEUS_IMAGE;
   const wiring = assertEnterprisePrometheusComposeWiring(repositoryRoot);
@@ -106,6 +109,8 @@ export const validateEnterprisePrometheusRuntime = (options?: {
   const containerName = `enterprise-prom-runtime-${Date.now()}`;
   const rulesDir = path.dirname(rulesPath);
   let readyHttpStatus = 0;
+  let primaryError: unknown;
+  let result: PrometheusRuntimeValidationResult | undefined;
 
   try {
     execFileSync(
@@ -116,7 +121,7 @@ export const validateEnterprisePrometheusRuntime = (options?: {
         '--name',
         containerName,
         '-p',
-        '127.0.0.1::9090',
+        '127.0.0.1:0:9090',
         '-v',
         `${promConfig}:/etc/prometheus/prometheus.yml:ro`,
         '-v',
@@ -145,12 +150,9 @@ export const validateEnterprisePrometheusRuntime = (options?: {
         readyHttpStatus = Number(code);
         if (readyHttpStatus === 200) break;
       } catch {
-        // retry until deadline
+        // retry
       }
-      const waitUntil = Date.now() + 250;
-      while (Date.now() < waitUntil) {
-        /* bounded busy-wait between ready polls */
-      }
+      await sleepMs(200);
     }
 
     if (readyHttpStatus !== 200) {
@@ -161,7 +163,7 @@ export const validateEnterprisePrometheusRuntime = (options?: {
           timeout: 10_000,
         });
       } catch {
-        /* ignore */
+        /* ignore log fetch failures */
       }
       throw new Error(
         `Prometheus runtime did not become ready (http ${readyHttpStatus}). logs:\n${logs.slice(0, 2000)}`,
@@ -175,35 +177,33 @@ export const validateEnterprisePrometheusRuntime = (options?: {
     if (!rulesJson.includes('enterprise-platform')) {
       throw new Error('Prometheus started but enterprise-platform rule group is missing');
     }
+
+    result = {
+      flags,
+      helpChecked: true,
+      image,
+      readyHttpStatus,
+      started: true,
+    };
   } catch (error) {
-    throw new Error(
-      `Prometheus runtime validation failed (fail closed): ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-      { cause: error },
-    );
+    primaryError = error;
   } finally {
-    try {
-      execFileSync('docker', ['rm', '-f', containerName], {
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-        timeout: 30_000,
-      });
-    } catch {
-      /* best-effort cleanup */
+    const cleanup = cleanupProbeResources(
+      { containers: [containerName] },
+      { injectContainerRmError: options?.injectContainerRmError },
+    );
+    if (primaryError) {
+      throwWithCleanup(primaryError, cleanup);
     }
+    assertCleanupClean(cleanup);
   }
 
-  return {
-    flags,
-    helpChecked: true,
-    image,
-    readyHttpStatus,
-    started: true,
-  };
+  if (!result) {
+    throw new Error('Prometheus runtime validation completed without result (fail closed)');
+  }
+  return result;
 };
 
-/** Probe that forbidden flags actually prevent process start on the pinned image. */
 export const assertForbiddenPrometheusFlagsRejected = (
   image: string = ENTERPRISE_PROMETHEUS_IMAGE,
 ): void => {

@@ -92,12 +92,12 @@ export const assertEnterprisePrometheusComposeWiring = (
   }
 
   if (
-    !/rule_files:[\t\v\f\r \xA0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF]*\n\s*-\s*\/etc\/prometheus\/rules\/\*\.yml/.test(
+    !/rule_files:[\t\v\f\r \xA0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF]*\n\s*-\s*\/etc\/prometheus\/rules\/enterprise-platform-alerts\.yml/.test(
       prometheusConfig,
     )
   ) {
     throw new Error(
-      'prometheus.yml must declare rule_files: /etc/prometheus/rules/*.yml so compose loads enterprise rules',
+      'prometheus.yml must declare rule_files: /etc/prometheus/rules/enterprise-platform-alerts.yml (not a bare *.yml glob that would load *.test.yml fixtures)',
     );
   }
 
@@ -170,7 +170,7 @@ export const assertEnterprisePrometheusComposeWiring = (
     prometheusCommand,
     prometheusConfigPath,
     prometheusImage: ENTERPRISE_PROMETHEUS_IMAGE,
-    ruleFilesGlob: '/etc/prometheus/rules/*.yml',
+    ruleFilesGlob: '/etc/prometheus/rules/enterprise-platform-alerts.yml',
     rulesHostPathFragment: './prometheus/rules',
   };
 };

@@ -244,14 +244,37 @@ groups:
           runbook: docs/enterprise/runbooks/enterprise-prometheus-alerts.md#enterpriserevisionlag
 
       # --- operational_collection_stale ---
-      # Default (5m): age > 180s OR ready == 0.
-      # Age series is absent until the first successful snapshot; ready emits 0 for
-      # active collectors with no success yet — both cases must fire. Aggregate with max.
+      # Required collectors (closed vocab): job_backlog, revision_lag.
+      # Per-collector identity is preserved so a healthy job_backlog ready=1 cannot mask
+      # revision_lag ready=0 or absence. Replicas: max by enterprise_collector (cluster
+      # snapshot policy — any healthy replica is enough; never sum replicas).
+      # Absence: max(empty) is empty, so each required collector is checked with absent().
+      # Stale age after first success: max-by-collector age > 180s.
       - alert: EnterpriseOperationalCollectionStale
         expr: |
-          max(enterprise_platform_operational_snapshot_age_seconds) > 180
+          (
+            max by (enterprise_collector) (
+              enterprise_platform_operational_snapshot_ready{enterprise_collector="job_backlog"}
+            ) == 0
+            or
+            absent(
+              enterprise_platform_operational_snapshot_ready{enterprise_collector="job_backlog"}
+            )
+          )
           or
-          max(enterprise_platform_operational_snapshot_ready) == 0
+          (
+            max by (enterprise_collector) (
+              enterprise_platform_operational_snapshot_ready{enterprise_collector="revision_lag"}
+            ) == 0
+            or
+            absent(
+              enterprise_platform_operational_snapshot_ready{enterprise_collector="revision_lag"}
+            )
+          )
+          or
+          max by (enterprise_collector) (
+            enterprise_platform_operational_snapshot_age_seconds
+          ) > 180
         for: 5m
         labels:
           severity: warning
@@ -259,5 +282,5 @@ groups:
         annotations:
           summary: Enterprise operational metric collection is stale or never initialized
           description: >-
-            Fires when max(enterprise_platform_operational_snapshot_age_seconds) exceeds 180s or max(enterprise_platform_operational_snapshot_ready) is 0 for 5m (reference default). Ready=0 covers collectors that never produced a first successful snapshot (age gauge absent). Later stalls surface via age. Aggregate replicas with max, never sum.
+            Fires for 5m when any required operational collector (job_backlog, revision_lag) has ready==0 after max-by-replica, is entirely absent, or has snapshot age > 180s (reference default). Per-collector identity prevents one healthy collector from masking another. Cluster snapshot gauges use max across replicas, never sum.
           runbook: docs/enterprise/runbooks/enterprise-prometheus-alerts.md#enterpriseoperationalcollectionstale
