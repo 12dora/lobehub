@@ -29,6 +29,48 @@ export interface SystemAgentModelItem {
 type LoadingKey = 'defaultAgent' | UserServiceModelConfigKey;
 type SavingGroup = 'assignments' | 'memory' | 'optional';
 
+/**
+ * Local-edit InputNumber that commits on blur / Enter only (avoids per-keystroke publish).
+ * Clear (empty) commits `undefined` so callers can map to registry null.
+ */
+const ContextLimitInput = memo<{
+  canManage: boolean;
+  onCommit: (value: number | undefined) => void;
+  placeholder?: string;
+  value?: number;
+}>(({ canManage, onCommit, placeholder, value }) => {
+  const [draft, setDraft] = useState<number | null | undefined>(value);
+
+  useEffect(() => {
+    setDraft(value);
+  }, [value]);
+
+  const commit = () => {
+    if (!canManage) return;
+    const next = typeof draft === 'number' ? draft : undefined;
+    const prev = typeof value === 'number' ? value : undefined;
+    if (next === prev) return;
+    onCommit(next);
+  };
+
+  return (
+    <ConfigProvider theme={{ token: { controlHeight: 32 } }}>
+      <InputNumber
+        disabled={!canManage}
+        min={1}
+        placeholder={placeholder}
+        style={{ alignSelf: 'flex-end', width: 180 }}
+        value={draft as number | undefined}
+        onBlur={commit}
+        onChange={(next) => setDraft(typeof next === 'number' ? next : null)}
+        onPressEnter={commit}
+      />
+    </ConfigProvider>
+  );
+});
+
+ContextLimitInput.displayName = 'ContextLimitInput';
+
 export const SYSTEM_AGENT_MODEL_ITEMS: SystemAgentModelItem[] = [
   { key: 'topic' },
   { key: 'generationTopic' },
@@ -246,19 +288,12 @@ const ModelAssignmentsFormView = memo<ModelAssignmentsFormViewProps>(
                 onChange={(props) => updateSystemAgentModel(key, props)}
               />
               {contextLimit && (
-                <ConfigProvider theme={{ token: { controlHeight: 32 } }}>
-                  <InputNumber
-                    min={1}
-                    placeholder={t('serviceModel.contextLimit.placeholder')}
-                    style={{ alignSelf: 'flex-end', width: 180 }}
-                    value={value.contextLimit}
-                    onChange={(nextLimit) =>
-                      updateSystemAgentModel(key, {
-                        contextLimit: typeof nextLimit === 'number' ? nextLimit : undefined,
-                      })
-                    }
-                  />
-                </ConfigProvider>
+                <ContextLimitInput
+                  canManage={canManage}
+                  placeholder={t('serviceModel.contextLimit.placeholder')}
+                  value={value.contextLimit}
+                  onCommit={(nextLimit) => updateSystemAgentModel(key, { contextLimit: nextLimit })}
+                />
               )}
             </Flexbox>
           ),

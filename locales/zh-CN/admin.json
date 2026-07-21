@@ -399,6 +399,8 @@
   "aiServiceModel.noWritePermission": "需要设置更新与发布权限才能编辑平台默认值。",
   "aiServiceModel.page.desc": "新智能体与系统助手的平台默认模型。修改后立即发布。",
   "aiServiceModel.page.title": "服务模型",
+  "aiSettingsDefaults.dirtyDraft.desc": "「设置策略」页存在本次修改之外的未发布草稿。请先到 <settingsLink>设置策略</settingsLink> 页处理后再重试。",
+  "aiSettingsDefaults.dirtyDraft.title": "未发布的设置草稿阻止保存",
   "branding.actions.publish": "发布",
   "branding.actions.restoreDraft": "恢复到草稿",
   "branding.actions.retry": "重试",

@@ -535,6 +535,9 @@ export default {
     'Edits save and publish as platform defaults. Users inherit these values unless they override them.',
   'aiMemory.noWritePermission':
     'You need settings update and publish permissions to edit platform defaults.',
+  'aiSettingsDefaults.dirtyDraft.title': 'Unpublished settings draft blocks save',
+  'aiSettingsDefaults.dirtyDraft.desc':
+    'The Settings Policy page has an unpublished draft outside this change. Resolve it on the <settingsLink>Settings Policy</settingsLink> page first, then retry.',
   'aiProviderSettings.advancedCatalog': 'Advanced catalog management',
   'aiProviderSettings.draftBanner.desc':
     'Publish requires credentials, at least one enabled model, and a successful connection test.',

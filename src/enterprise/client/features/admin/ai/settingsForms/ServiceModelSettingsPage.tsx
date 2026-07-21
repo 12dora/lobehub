@@ -14,6 +14,7 @@ import OpenAIFormView from '@/routes/(main)/settings/tts/features/OpenAIFormView
 import { useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
 import { featureFlagsSelectors, useServerConfigStore } from '@/store/serverConfig';
 
+import DirtyDraftAlert from './DirtyDraftAlert';
 import { usePlatformSettingsDefaults } from './usePlatformSettingsDefaults';
 
 const styles = createStaticStyles(({ css }) => ({
@@ -44,7 +45,9 @@ const ServiceModelSettingsBody = memo(() => {
   const saveState = useSaveState();
   const {
     canWrite,
+    clearDirtyDraftBlocked,
     defaultAgent,
+    dirtyDraftBlocked,
     error,
     image,
     isInit,
@@ -66,6 +69,7 @@ const ServiceModelSettingsBody = memo(() => {
   return (
     <div className={styles.sections}>
       <Text className={styles.note}>{t('aiServiceModel.autoPublishNote')}</Text>
+      {dirtyDraftBlocked && <DirtyDraftAlert onDismiss={clearDirtyDraftBlocked} />}
       {mappedError && (
         <Alert
           showIcon

@@ -94,18 +94,68 @@ export const buildImageFromPolicies = (policies: PolicyMap): UserImageConfig => 
   ),
 });
 
-/** Flatten a system-agent partial update into registry path patches. */
+/**
+ * Flatten a system-agent partial update into registry path patches.
+ * Uses `'key' in value` so explicit clears (e.g. contextLimit: undefined) become null writes.
+ */
 export const systemAgentPatch = (
   key: UserServiceModelConfigKey,
   value: Partial<SystemAgentItem>,
 ): Record<string, unknown> => {
   const patch: Record<string, unknown> = {};
-  if (value.model !== undefined) patch[`systemAgent.${key}.model`] = value.model;
-  if (value.provider !== undefined) patch[`systemAgent.${key}.provider`] = value.provider;
-  if (value.enabled !== undefined) patch[`systemAgent.${key}.enabled`] = value.enabled;
-  if (value.contextLimit !== undefined) {
+  if ('model' in value && value.model !== undefined) {
+    patch[`systemAgent.${key}.model`] = value.model;
+  }
+  if ('provider' in value && value.provider !== undefined) {
+    patch[`systemAgent.${key}.provider`] = value.provider;
+  }
+  if ('enabled' in value && value.enabled !== undefined) {
+    patch[`systemAgent.${key}.enabled`] = value.enabled;
+  }
+  // Clear (undefined) → null for the nullable registry schema path.
+  if ('contextLimit' in value) {
     patch[`systemAgent.${key}.contextLimit`] =
       typeof value.contextLimit === 'number' ? value.contextLimit : null;
   }
   return patch;
+};
+
+/** True when an enterprise error is the applyImmediate dirty-draft rejection. */
+export const isUnpublishedSettingsDraftError = (error: unknown): boolean => {
+  if (!error || typeof error !== 'object') return false;
+
+  const digDetails = (body: unknown): unknown => {
+    if (!body || typeof body !== 'object') return undefined;
+    return (body as { details?: unknown }).details;
+  };
+
+  // Structured enterprise body (tRPC errorData / cause.data)
+  const data = (error as { data?: { errorData?: unknown } }).data?.errorData;
+  const causeData = (error as { cause?: { data?: unknown } }).cause?.data;
+  const candidates = [data, causeData, error];
+
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== 'object') continue;
+    const code = (candidate as { code?: unknown }).code;
+    const details = digDetails(candidate) as { reason?: unknown } | undefined;
+    if (
+      code === 'PLATFORM_INVALID_INPUT' &&
+      details &&
+      details.reason === 'unpublished_draft_outside_patch'
+    ) {
+      return true;
+    }
+  }
+
+  // Service-layer thrown error (direct tests / non-tRPC)
+  if (
+    (error as { name?: string }).name === 'SettingsDirtyDraftError' ||
+    String((error as { message?: unknown }).message ?? '').includes(
+      'Unpublished settings draft differs',
+    )
+  ) {
+    return true;
+  }
+
+  return false;
 };

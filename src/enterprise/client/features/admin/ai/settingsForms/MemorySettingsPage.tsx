@@ -9,6 +9,7 @@ import AdminPageTemplate from '@/enterprise/client/features/admin/primitives/Adm
 import { useSaveState } from '@/hooks/useSaveState';
 import MemoryFormView from '@/routes/(main)/settings/memory/features/MemoryFormView';
 
+import DirtyDraftAlert from './DirtyDraftAlert';
 import { usePlatformSettingsDefaults } from './usePlatformSettingsDefaults';
 
 const styles = createStaticStyles(({ css }) => ({
@@ -26,7 +27,15 @@ const styles = createStaticStyles(({ css }) => ({
 const MemorySettingsPage = memo(() => {
   const { t } = useTranslation('admin');
   const saveState = useSaveState();
-  const { canWrite, isInit, mappedError, memory, updateMemory } = usePlatformSettingsDefaults();
+  const {
+    canWrite,
+    clearDirtyDraftBlocked,
+    dirtyDraftBlocked,
+    isInit,
+    mappedError,
+    memory,
+    updateMemory,
+  } = usePlatformSettingsDefaults();
 
   const disabledReason = useMemo(() => {
     if (!canWrite) return t('aiMemory.noWritePermission');
@@ -36,6 +45,7 @@ const MemorySettingsPage = memo(() => {
   return (
     <AdminPageTemplate description={t('aiMemory.page.desc')} title={t('aiMemory.page.title')}>
       <Text className={styles.note}>{t('aiMemory.autoPublishNote')}</Text>
+      {dirtyDraftBlocked && <DirtyDraftAlert onDismiss={clearDirtyDraftBlocked} />}
       {mappedError && (
         <Alert
           showIcon
