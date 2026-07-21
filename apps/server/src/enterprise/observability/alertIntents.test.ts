@@ -98,20 +98,17 @@ describe('enterprise alert intents', () => {
     expect(operational?.expr).toMatch(/\bmax\s+by\s*\(\s*enterprise_collector\s*\)/);
   });
 
-  it('EnterpriseOperationalCollectionStale preserves collector identity and absence', () => {
+  it('EnterpriseOperationalCollectionStale gates on collector enabled 0/1 signal', () => {
     const rules = parsePrometheusAlertRulesFile(rulesPath);
     const operational = rules.find((rule) => rule.alert === 'EnterpriseOperationalCollectionStale');
     expect(operational).toBeDefined();
-    expect(operational!.expr).toContain('enterprise_platform_operational_snapshot_age_seconds');
+    expect(operational!.expr).toContain('enterprise_platform_operational_collector_enabled');
     expect(operational!.expr).toContain('enterprise_platform_operational_snapshot_ready');
+    expect(operational!.expr).toContain('enterprise_platform_operational_snapshot_age_seconds');
     expect(operational!.expr).toContain('enterprise_collector="job_backlog"');
     expect(operational!.expr).toContain('enterprise_collector="revision_lag"');
+    expect(operational!.expr).toMatch(/==\s*1/);
     expect(operational!.expr).toMatch(/absent\s*\(/);
-    expect(operational!.expr).toMatch(/max\s+by\s*\(\s*enterprise_collector\s*\)/);
-    // Must not collapse collectors with bare max(ready)==0.
-    expect(operational!.expr).not.toMatch(
-      /max\s*\(\s*enterprise_platform_operational_snapshot_ready\s*\)\s*==\s*0/,
-    );
     expect(operational!.expr).not.toContain('enterprise.');
   });
 

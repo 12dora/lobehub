@@ -128,6 +128,20 @@ export const operationalSnapshotAgeGauge = meter.createObservableGauge(
   'enterprise_platform_operational_snapshot_age_seconds',
   { description: 'Age of the last successful operational collector snapshot.', unit: 's' },
 );
+/**
+ * 0/1 expected/enabled state for each known operational collector.
+ * Emitted for every closed collector once the operational metrics runtime activates,
+ * including disabled collectors (value 0). Alert rules must gate ready/age/absence
+ * on enabled==1 so optional collectors (e.g. revision_lag without DB OIDC) do not
+ * permanently false-alert.
+ */
+export const operationalCollectorEnabledGauge = meter.createObservableGauge(
+  'enterprise_platform_operational_collector_enabled',
+  {
+    description:
+      'Whether an operational collector is enabled/expected on this process (1) or disabled (0).',
+  },
+);
 
 export interface EnterpriseJobBacklogMetricSnapshot {
   collectedAtMs: number;
@@ -146,6 +160,8 @@ export interface EnterpriseRevisionLagMetricSnapshot {
 }
 
 const activeOperationalCollectors = new Set<EnterpriseOperationalCollector>();
+/** True after activate() has been called (including activate([]) on stop). */
+let operationalCollectorsConfigured = false;
 let jobBacklogSnapshot: EnterpriseJobBacklogMetricSnapshot | null = null;
 let revisionLagSnapshot: EnterpriseRevisionLagMetricSnapshot | null = null;
 
@@ -157,6 +173,7 @@ const validCollectedAt = (collectedAtMs: number): boolean =>
 export const activateEnterpriseOperationalCollectors = (
   collectors: readonly EnterpriseOperationalCollector[],
 ): void => {
+  operationalCollectorsConfigured = true;
   activeOperationalCollectors.clear();
   for (const collector of collectors) {
     if (ENTERPRISE_OPERATIONAL_COLLECTORS.includes(collector)) {
@@ -255,6 +272,18 @@ operationalSnapshotAgeGauge.addCallback((result) => {
   }
 });
 
+operationalCollectorEnabledGauge.addCallback((result) => {
+  // Once the operational runtime has configured collectors, emit 0/1 for every known
+  // collector so disabled optional collectors are explicit (not absent).
+  if (!operationalCollectorsConfigured) return;
+  for (const collector of ENTERPRISE_OPERATIONAL_COLLECTORS) {
+    result.observe(
+      Number(activeOperationalCollectors.has(collector)),
+      buildOperationalCollectorAttributes({ collector }),
+    );
+  }
+});
+
 const boundedDuration = (durationMs: number): number =>
   Number.isFinite(durationMs) && durationMs >= 0 ? durationMs : 0;
 
@@ -326,6 +355,7 @@ export const recordOperationalCollectionMetric = (
 
 export const resetEnterpriseOperationalMetricsForTest = (): void => {
   activeOperationalCollectors.clear();
+  operationalCollectorsConfigured = false;
   jobBacklogSnapshot = null;
   revisionLagSnapshot = null;
 };
