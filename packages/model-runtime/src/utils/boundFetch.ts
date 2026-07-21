@@ -30,11 +30,20 @@ const getStoreIfPresent = (): AsyncLocalStorage<FetchLike> | undefined => {
   return (globalThis as GlobalBinding)[STORE_KEY];
 };
 
+/**
+ * Lazily create the shared ALS. After `await import(...)` re-check STORE_KEY so
+ * concurrent first callers share one instance (otherwise the later assignment
+ * would replace the ALS the earlier `store.run()` still holds, and the patched
+ * global fetch — which always reads STORE_KEY — would miss that binding and
+ * fall through to unrestricted original fetch).
+ */
 const getOrCreateStore = async (): Promise<AsyncLocalStorage<FetchLike>> => {
   const g = globalThis as GlobalBinding;
   if (g[STORE_KEY]) return g[STORE_KEY];
   const { AsyncLocalStorage } = await import('node:async_hooks');
-  g[STORE_KEY] = new AsyncLocalStorage<FetchLike>();
+  if (!g[STORE_KEY]) {
+    g[STORE_KEY] = new AsyncLocalStorage<FetchLike>();
+  }
   return g[STORE_KEY];
 };
 
@@ -74,7 +83,8 @@ export const runWithBoundFetch = async <T>(
 export const getBoundFetch = (): FetchLike | undefined => getStoreIfPresent()?.getStore();
 
 /**
- * Test helper: restore the pre-patch global fetch so suites can install adversarial traps.
+ * Test helper: restore the pre-patch global fetch and clear shared binding
+ * state so suites can re-run concurrent first-call scenarios.
  * Not used in production paths.
  */
 export const resetBoundFetchPatchForTests = (): void => {
@@ -84,6 +94,7 @@ export const resetBoundFetchPatchForTests = (): void => {
   }
   delete g[PATCHED_KEY];
   delete g[ORIGINAL_KEY];
-  // Keep STORE_KEY so concurrent tests that already entered runWithBoundFetch
-  // still see a coherent ALS; callers that need a clean ALS can re-import.
+  // STORE_KEY is on globalThis via Symbol.for — re-importing the module does
+  // not create a new ALS; only an explicit delete resets the shared instance.
+  delete g[STORE_KEY];
 };
