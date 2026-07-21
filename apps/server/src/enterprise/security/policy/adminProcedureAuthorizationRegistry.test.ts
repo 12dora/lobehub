@@ -63,15 +63,15 @@ describe('admin procedure authorization registry', () => {
     expect(() => reconcile()).not.toThrow();
 
     // Prior baseline 119 + W10-S stats (12 queries) + W10-E creds (5 queries + 7 mutations)
-    // + W10-P applyImmediate/publishNow (3 mutations) = 146
-    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(146);
+    // + W10-P applyImmediate/publishNow (3 mutations) + W10-C settings.applyImmediate (1 mutation) = 147
+    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(147);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'query'),
     ).toHaveLength(65);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'mutation'),
-    ).toHaveLength(81);
-    expect(mutationPaths).toHaveLength(81);
+    ).toHaveLength(82);
+    expect(mutationPaths).toHaveLength(82);
     expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter((entry) => 'selfAccess' in entry)).toEqual(
       [{ kind: 'query', path: 'admin.auth.getMyAccess', selfAccess: true }],
     );

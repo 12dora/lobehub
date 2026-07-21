@@ -14,6 +14,8 @@ export type AdminNavLabelKey =
   | 'nav.ai'
   | 'nav.aiProviders'
   | 'nav.aiProviderDetail'
+  | 'nav.aiServiceModel'
+  | 'nav.aiMemory'
   | 'nav.aiCatalogProviders'
   | 'nav.aiCatalogProviderDetail'
   | 'nav.aiCatalogModels'
@@ -131,6 +133,20 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
         path: '/admin/ai/providers/:id',
         placeholder: false,
         requiredPermissions: [PLATFORM_PERMISSIONS.AI_PROVIDER_READ],
+      },
+      {
+        id: 'ai-service-model',
+        labelKey: 'nav.aiServiceModel',
+        path: '/admin/ai/service-model',
+        placeholder: false,
+        requiredPermissions: [PLATFORM_PERMISSIONS.SETTINGS_READ],
+      },
+      {
+        id: 'ai-memory',
+        labelKey: 'nav.aiMemory',
+        path: '/admin/ai/memory',
+        placeholder: false,
+        requiredPermissions: [PLATFORM_PERMISSIONS.SETTINGS_READ],
       },
       // Advanced draft/publish/revision catalog (former self-built pages) — hidden from nav
       {

@@ -144,6 +144,7 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY = [
   {
     kind: 'mutation',
     path: 'admin.aiModels.applyImmediate',
+    // PUBLISH via middleware; CREATE/UPDATE re-checked inside the procedure (W10-P).
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AI_PROVIDER_PUBLISH] },
   },
   {
@@ -199,6 +200,7 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY = [
   {
     kind: 'mutation',
     path: 'admin.aiProviders.applyImmediate',
+    // PUBLISH via middleware; CREATE/UPDATE re-checked inside the procedure (W10-P).
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.AI_PROVIDER_PUBLISH] },
   },
   {
@@ -539,6 +541,12 @@ export const ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY = [
     kind: 'mutation',
     path: 'admin.security.secretRotation.start',
     permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SYSTEM_OPERATE] },
+  },
+  {
+    kind: 'mutation',
+    path: 'admin.settings.applyImmediate',
+    // UPDATE via middleware; PUBLISH re-checked inside the procedure (W10-C).
+    permission: { mode: 'all', permissions: [PLATFORM_PERMISSIONS.SETTINGS_UPDATE] },
   },
   {
     kind: 'query',

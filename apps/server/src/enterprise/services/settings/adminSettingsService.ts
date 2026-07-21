@@ -44,6 +44,34 @@ export class SettingsDraftValidationError extends Error {
   }
 }
 
+/**
+ * Draft has unpublished diffs on paths outside the applyImmediate patch.
+ * Callers should direct admins to the Settings Policy page.
+ */
+export class SettingsDirtyDraftError extends Error {
+  readonly dirtyPaths: string[];
+  constructor(dirtyPaths: string[]) {
+    super(
+      'Unpublished settings draft differs outside the applied patch. Resolve on the Settings Policy page first.',
+    );
+    this.name = 'SettingsDirtyDraftError';
+    this.dirtyPaths = dirtyPaths;
+  }
+}
+
+const policyFingerprint = (policy: {
+  mode: string;
+  schemaVersion: number;
+  value?: unknown;
+  visibility: string;
+}): string =>
+  JSON.stringify({
+    mode: policy.mode,
+    schemaVersion: policy.schemaVersion,
+    value: policy.value,
+    visibility: policy.visibility,
+  });
+
 /** Production-empty lifecycle seam for causal transaction fault tests. */
 export interface AdminSettingsMutationLifecycle {
   afterDraftLock?: () => Promise<void>;
@@ -341,6 +369,207 @@ export class AdminSettingsService {
       draftToken: this.draftToken(bundle),
       ok: true as const,
       registryVersion: settingsRegistry.version,
+    };
+  };
+
+  /**
+   * Merge path→value patch into draft and publish immediately (W10-C).
+   *
+   * Mode rules (basis = **published** policy, not draft):
+   * - published mode === 'locked' → stay 'locked'
+   * - published mode === 'user' / missing → 'default'
+   * - published mode === 'default' → stay 'default'
+   * Visibility comes from published (fallback draft/visible). schemaVersion from registry.
+   *
+   * Rejects when draft differs from published on any path outside the patch.
+   *
+   * On publish failure, restore uses `saved.draftToken` (not a fresh getDraft token)
+   * so concurrent drafts are not overwritten; token mismatch abandons restore.
+   */
+  applyImmediate = async (params: {
+    actorUserId: string;
+    patch: Record<string, unknown>;
+    reason?: string;
+  }) => {
+    const patchPaths = Object.keys(params.patch);
+    if (patchPaths.length === 0) {
+      throw new SettingsDraftValidationError([
+        {
+          code: 'MANAGED_SETTING_INVALID_VALUE',
+          message: 'patch must include at least one path',
+          path: '',
+        },
+      ]);
+    }
+
+    const sortedPaths = [...patchPaths].sort();
+    const reason =
+      params.reason?.trim() ||
+      `applyImmediate: ${sortedPaths.slice(0, 12).join(', ')}${sortedPaths.length > 12 ? ` (+${sortedPaths.length - 12})` : ''}`;
+
+    const snapshot = await this.getDraft();
+    const draft = { ...snapshot.draft } as SettingsDraftPolicyMap;
+    const published = { ...snapshot.publishedPolicies } as SettingsDraftPolicyMap;
+    const patchSet = new Set(patchPaths);
+
+    // Dirty-draft gate: non-patch paths must match published.
+    const dirtyPaths: string[] = [];
+    for (const path of new Set([...Object.keys(draft), ...Object.keys(published)])) {
+      if (patchSet.has(path)) continue;
+      const d = draft[path];
+      const p = published[path];
+      if (!d && !p) continue;
+      if (!d || !p || policyFingerprint(d) !== policyFingerprint(p)) {
+        dirtyPaths.push(path);
+      }
+    }
+    if (dirtyPaths.length > 0) {
+      await this.auditAppend(this.db, {
+        action: 'admin.settings.applyImmediate',
+        actorUserId: params.actorUserId,
+        afterDiff: { dirtyPathCount: dirtyPaths.length },
+        beforeDiff: null,
+        reason,
+        result: 'failure',
+        targetId: PLATFORM_SETTINGS_RESOURCE_ID,
+        targetType: PLATFORM_SETTINGS_RESOURCE_TYPE,
+      });
+      throw new SettingsDirtyDraftError(dirtyPaths.sort());
+    }
+
+    // Start from draft (equals published outside patch when clean). Ensure published
+    // paths remain present so publish does not wipe non-patched policies.
+    const nextDraft: SettingsDraftPolicyMap = { ...published, ...draft };
+
+    for (const path of patchPaths) {
+      const gate = settingsRegistry.assertPathWritable({
+        path,
+        requirePlatformEligible: true,
+      });
+      if (gate) {
+        throw new SettingsDraftValidationError([{ code: gate, message: gate, path }]);
+      }
+
+      const entry = settingsRegistry.get(path);
+      if (!entry) {
+        throw new SettingsDraftValidationError([
+          { code: 'MANAGED_SETTING_UNKNOWN_PATH', message: 'Unknown path', path },
+        ]);
+      }
+
+      const validated = settingsRegistry.validateValue(path, params.patch[path]);
+      if (!validated.ok) {
+        throw new SettingsDraftValidationError([
+          {
+            code: 'MANAGED_SETTING_INVALID_VALUE',
+            message: validated.message,
+            path,
+          },
+        ]);
+      }
+
+      // Mode / visibility basis = published policy (ignore unpublished draft mode edits).
+      const publishedPolicy = published[path];
+      const draftPolicy = draft[path];
+      const nextMode: SettingPolicyMode = publishedPolicy?.mode === 'locked' ? 'locked' : 'default';
+      const nextVisibility = (publishedPolicy?.visibility ??
+        draftPolicy?.visibility ??
+        'visible') as SettingPolicyVisibility;
+
+      nextDraft[path] = {
+        mode: nextMode,
+        schemaVersion: entry.schemaVersion,
+        value: validated.value,
+        visibility: nextVisibility,
+      };
+    }
+
+    const priorDraft = { ...draft } as SettingsDraftPolicyMap;
+
+    const saved = await this.saveDraft({
+      actorUserId: params.actorUserId,
+      draft: nextDraft,
+      expectedDraftToken: snapshot.draftToken,
+      reason,
+    });
+
+    let publishedResult: { auditId: string; revision: number };
+    try {
+      publishedResult = await this.publish({
+        actorUserId: params.actorUserId,
+        expectedDraftToken: saved.draftToken,
+        expectedRevision: saved.baseRevision,
+        reason,
+      });
+    } catch (error) {
+      // Best-effort restore: pin expectedDraftToken to *our* saveDraft result so a
+      // concurrent admin who saved during the publish-failure window is not overwritten.
+      try {
+        await this.saveDraft({
+          actorUserId: params.actorUserId,
+          draft: priorDraft,
+          expectedDraftToken: saved.draftToken,
+          reason: `${reason} (restore after publish failure)`,
+        });
+      } catch (restoreError) {
+        const abandoned =
+          restoreError instanceof PlatformRevisionConflictError
+            ? 'concurrent_draft_write'
+            : 'restore_failed';
+        try {
+          await this.auditAppend(this.db, {
+            action: 'admin.settings.applyImmediate',
+            actorUserId: params.actorUserId,
+            afterDiff: { abandonedRestore: abandoned },
+            beforeDiff: null,
+            reason: `${reason} (restore abandoned: ${abandoned})`,
+            result: 'failure',
+            targetId: PLATFORM_SETTINGS_RESOURCE_ID,
+            targetType: PLATFORM_SETTINGS_RESOURCE_TYPE,
+          });
+        } catch {
+          /* best-effort */
+        }
+      }
+      throw error;
+    }
+
+    // Dedicated success audit for the combined applyImmediate operation.
+    let applyAuditId = publishedResult.auditId;
+    try {
+      const audit = await this.auditAppend(this.db, {
+        action: 'admin.settings.applyImmediate',
+        actorUserId: params.actorUserId,
+        afterDiff: {
+          pathCount: sortedPaths.length,
+          paths: Object.fromEntries(
+            sortedPaths.map((path) => [
+              path,
+              {
+                mode: nextDraft[path]?.mode,
+                visibility: nextDraft[path]?.visibility,
+              },
+            ]),
+          ),
+          revision: publishedResult.revision,
+        },
+        beforeDiff: { revision: snapshot.baseRevision },
+        reason,
+        result: 'success',
+        targetId: PLATFORM_SETTINGS_RESOURCE_ID,
+        targetType: PLATFORM_SETTINGS_RESOURCE_TYPE,
+      });
+      applyAuditId = audit.id;
+    } catch {
+      /* best-effort; publish already audited */
+    }
+
+    const after = await this.getDraft();
+    return {
+      auditId: applyAuditId,
+      draftToken: after.draftToken,
+      paths: sortedPaths,
+      revision: publishedResult.revision,
     };
   };
 

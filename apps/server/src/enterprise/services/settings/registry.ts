@@ -508,74 +508,106 @@ const REGISTRY_ENTRIES: readonly Def[] = [
     titleKey: 'settingsPolicy.paths.defaultAgent.config.params.temperature.title',
   }),
 
-  // ── systemAgent (model/provider only — no secrets) ───────
-  def({
-    applicableClients: RUNTIME_CLIENTS,
-    builtInDefault: DEFAULT_SYSTEM_AGENT_CONFIG.topic.model,
-    control: 'text',
-    descriptionKey: 'settingsPolicy.paths.systemAgent.topic.model.desc',
-    group: 'systemAgent',
-    path: 'systemAgent.topic.model',
-    userControlSurface: {
-      kind: 'surface',
+  // ── systemAgent (model/provider/enabled/contextLimit — no secrets) ───────
+  // Service-model page keys: topic, generationTopic, translation, historyCompress,
+  // agentMeta, followUpAction, inputCompletion, promptRewrite,
+  // memoryAnalysisAgentConfig, userMemoryPersonaWriter, userMemoryEmbedding.
+  ...(
+    [
+      'topic',
+      'generationTopic',
+      'translation',
+      'historyCompress',
+      'agentMeta',
+      'followUpAction',
+      'inputCompletion',
+      'promptRewrite',
+      'memoryAnalysisAgentConfig',
+      'userMemoryPersonaWriter',
+      'userMemoryEmbedding',
+    ] as const
+  ).flatMap((key) => {
+    const item = DEFAULT_SYSTEM_AGENT_CONFIG[key];
+    const surface = {
+      kind: 'surface' as const,
       surfaceFile: 'src/features/ServiceModel/ModelAssignmentsForm.tsx',
-    },
-    platformPolicyEligible: true,
-    schema: z.string().min(1).max(128),
-    schemaVersion: 1,
-    sensitivity: 'public',
-    titleKey: 'settingsPolicy.paths.systemAgent.topic.model.title',
-  }),
-  def({
-    applicableClients: RUNTIME_CLIENTS,
-    builtInDefault: DEFAULT_SYSTEM_AGENT_CONFIG.topic.provider,
-    control: 'text',
-    descriptionKey: 'settingsPolicy.paths.systemAgent.topic.provider.desc',
-    group: 'systemAgent',
-    path: 'systemAgent.topic.provider',
-    userControlSurface: {
-      kind: 'surface',
-      surfaceFile: 'src/features/ServiceModel/ModelAssignmentsForm.tsx',
-    },
-    platformPolicyEligible: true,
-    schema: z.string().min(1).max(64),
-    schemaVersion: 1,
-    sensitivity: 'public',
-    titleKey: 'settingsPolicy.paths.systemAgent.topic.provider.title',
-  }),
-  def({
-    applicableClients: RUNTIME_CLIENTS,
-    builtInDefault: DEFAULT_SYSTEM_AGENT_CONFIG.translation.model,
-    control: 'text',
-    descriptionKey: 'settingsPolicy.paths.systemAgent.translation.model.desc',
-    group: 'systemAgent',
-    path: 'systemAgent.translation.model',
-    userControlSurface: {
-      kind: 'surface',
-      surfaceFile: 'src/features/ServiceModel/ModelAssignmentsForm.tsx',
-    },
-    platformPolicyEligible: true,
-    schema: z.string().min(1).max(128),
-    schemaVersion: 1,
-    sensitivity: 'public',
-    titleKey: 'settingsPolicy.paths.systemAgent.translation.model.title',
-  }),
-  def({
-    applicableClients: RUNTIME_CLIENTS,
-    builtInDefault: DEFAULT_SYSTEM_AGENT_CONFIG.historyCompress.model,
-    control: 'text',
-    descriptionKey: 'settingsPolicy.paths.systemAgent.historyCompress.model.desc',
-    group: 'systemAgent',
-    path: 'systemAgent.historyCompress.model',
-    userControlSurface: {
-      kind: 'surface',
-      surfaceFile: 'src/features/ServiceModel/ModelAssignmentsForm.tsx',
-    },
-    platformPolicyEligible: true,
-    schema: z.string().min(1).max(128),
-    schemaVersion: 1,
-    sensitivity: 'public',
-    titleKey: 'settingsPolicy.paths.systemAgent.historyCompress.model.title',
+    };
+    const entries: Def[] = [
+      def({
+        applicableClients: RUNTIME_CLIENTS,
+        builtInDefault: item.model,
+        control: 'text',
+        descriptionKey: `settingsPolicy.paths.systemAgent.${key}.model.desc`,
+        group: 'systemAgent',
+        path: `systemAgent.${key}.model`,
+        userControlSurface: surface,
+        platformPolicyEligible: true,
+        schema: z.string().min(1).max(128),
+        schemaVersion: 1,
+        sensitivity: 'public',
+        titleKey: `settingsPolicy.paths.systemAgent.${key}.model.title`,
+      }),
+      def({
+        applicableClients: RUNTIME_CLIENTS,
+        builtInDefault: item.provider,
+        control: 'text',
+        descriptionKey: `settingsPolicy.paths.systemAgent.${key}.provider.desc`,
+        group: 'systemAgent',
+        path: `systemAgent.${key}.provider`,
+        userControlSurface: surface,
+        platformPolicyEligible: true,
+        schema: z.string().min(1).max(64),
+        schemaVersion: 1,
+        sensitivity: 'public',
+        titleKey: `settingsPolicy.paths.systemAgent.${key}.provider.title`,
+      }),
+    ];
+
+    if (key === 'followUpAction' || key === 'inputCompletion' || key === 'promptRewrite') {
+      entries.push(
+        def({
+          applicableClients: RUNTIME_CLIENTS,
+          builtInDefault: item.enabled ?? false,
+          control: 'switch',
+          descriptionKey: `settingsPolicy.paths.systemAgent.${key}.enabled.desc`,
+          group: 'systemAgent',
+          path: `systemAgent.${key}.enabled`,
+          userControlSurface: surface,
+          platformPolicyEligible: true,
+          schema: z.boolean(),
+          schemaVersion: 1,
+          sensitivity: 'public',
+          titleKey: `settingsPolicy.paths.systemAgent.${key}.enabled.title`,
+        }),
+      );
+    }
+
+    if (
+      key === 'memoryAnalysisAgentConfig' ||
+      key === 'userMemoryPersonaWriter' ||
+      key === 'userMemoryEmbedding'
+    ) {
+      entries.push(
+        def({
+          applicableClients: RUNTIME_CLIENTS,
+          builtInDefault: null,
+          control: 'number',
+          descriptionKey: `settingsPolicy.paths.systemAgent.${key}.contextLimit.desc`,
+          group: 'systemAgent',
+          max: 2_000_000,
+          min: 1,
+          path: `systemAgent.${key}.contextLimit`,
+          userControlSurface: surface,
+          platformPolicyEligible: true,
+          schema: z.number().int().min(1).max(2_000_000).nullable(),
+          schemaVersion: 1,
+          sensitivity: 'public',
+          titleKey: `settingsPolicy.paths.systemAgent.${key}.contextLimit.title`,
+        }),
+      );
+    }
+
+    return entries;
   }),
 ];
 
