@@ -286,6 +286,13 @@ export const executeAdminConnectorOperation = async <T>(
     if (error instanceof PlatformConnectorContractError) {
       throw new TRPCError({ code: connectorErrorHttpCode(error.code), message: error.code });
     }
+    // applyImmediate hard-fail on published update: surface human-safe publishError (never secrets).
+    if (error instanceof Error && error.name === 'ConnectorPublishImmediateError') {
+      throw new TRPCError({
+        code: 'PRECONDITION_FAILED',
+        message: error.message.slice(0, 500),
+      });
+    }
     if (error instanceof ZodError) {
       throw new TRPCError({
         code: 'BAD_REQUEST',

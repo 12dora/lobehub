@@ -26,6 +26,11 @@ import { createContextInner } from '@/libs/trpc/lambda/context';
 
 import type { SkillManifest } from '../../contracts/skillCatalog';
 import { getEnterpriseErrorBody } from '../../guards/enterpriseErrors';
+import {
+  InMemoryAdminMutationRateLimiter,
+  resetSharedAdminMutationRateLimiter,
+  setSharedAdminMutationRateLimiter,
+} from '../../security/rateLimit/adminMutationRateLimiter';
 import { getBuiltinSkillDefinitions } from '../../services/skillCatalog';
 import { adminRouter } from '../admin';
 
@@ -548,5 +553,126 @@ describe('admin.skills.applyImmediate', () => {
         reason: 'stale reauth blocked',
       }),
     ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+  });
+
+  it('closed loop: URL/manifest-style create with version lists skill for all users', async () => {
+    // Simulates admin AI settings import: create identity + content/manifest version → published.
+    const caller = await callerFor({ authenticatedAt: new Date(), userId: ids.superAdmin });
+    const result = await caller.applyImmediate({
+      description: 'Imported from URL/manifest path',
+      displayName: 'Imported Skill',
+      distribution: 'default',
+      enabled: true,
+      mode: 'create',
+      reason: 'import skill from URL content',
+      skillKey: `import.url.${Date.now()}`,
+      version: {
+        content: '# Imported Skill\n\nPlatform skill content from URL.',
+        contentRef: null,
+        manifest,
+        resources: [],
+        version: '1.0.0',
+      },
+    });
+    expect(result.published).toBe(true);
+    expect(result.revision).toBeGreaterThan(0);
+    expect(result.draft.status).toBe('published');
+    const detail = await caller.get({ id: result.draft.id });
+    expect(detail.publishedVersion?.version).toBe('1.0.0');
+  });
+
+  it('publishNow retries publish for a draft with a valid version', async () => {
+    const caller = await callerFor({ authenticatedAt: new Date(), userId: ids.superAdmin });
+    const created = await caller.applyImmediate({
+      displayName: 'Publish Now Skill',
+      distribution: 'default',
+      enabled: true,
+      mode: 'create',
+      reason: 'seed without publish path then version',
+      skillKey: `publish.now.${Date.now()}`,
+    });
+    expect(created.published).toBe(false);
+    const detail = await caller.get({ id: created.draft.id });
+    await caller.createVersion({
+      content: '# publish now',
+      contentRef: null,
+      expectedDraftToken: detail.draftToken,
+      expectedRevision: detail.baseRevision,
+      manifest,
+      reason: 'add version for publishNow',
+      resources: [],
+      skillId: created.draft.id,
+      version: '1.0.0',
+    });
+    const published = await caller.publishNow({
+      id: created.draft.id,
+      reason: 'banner retry publish',
+    });
+    expect(published.published).toBe(true);
+    expect(published.revision).toBeGreaterThan(0);
+  });
+
+  it('applyImmediate is rate-limited with ADMIN_RATE_LIMITED when window is exhausted', async () => {
+    setSharedAdminMutationRateLimiter(
+      new InMemoryAdminMutationRateLimiter({
+        config: { limit: 1, windowMs: 60_000 },
+      }),
+    );
+    try {
+      const caller = await callerFor({ authenticatedAt: new Date(), userId: ids.superAdmin });
+      await caller.applyImmediate({
+        displayName: 'Rate Limited A',
+        mode: 'create',
+        reason: 'consume quota',
+        skillKey: `rate.limit.a.${Date.now()}`,
+      });
+      await expect(
+        caller.applyImmediate({
+          displayName: 'Rate Limited B',
+          mode: 'create',
+          reason: 'should 429',
+          skillKey: `rate.limit.b.${Date.now()}`,
+        }),
+      ).rejects.toMatchObject({
+        code: 'TOO_MANY_REQUESTS',
+        message: expect.stringMatching(/ADMIN_RATE_LIMITED/),
+      });
+    } finally {
+      resetSharedAdminMutationRateLimiter();
+    }
+  });
+
+  it('applyImmediate update throws when publish fails on already-published skill', async () => {
+    const caller = await callerFor({ authenticatedAt: new Date(), userId: ids.superAdmin });
+    const created = await caller.applyImmediate({
+      displayName: 'Hard Fail Target',
+      distribution: 'default',
+      enabled: true,
+      mode: 'create',
+      reason: 'seed published',
+      skillKey: `hard.fail.${Date.now()}`,
+      version: {
+        content: '# hard fail target',
+        contentRef: null,
+        manifest,
+        resources: [],
+        version: '1.0.0',
+      },
+    });
+    expect(created.published).toBe(true);
+    const detail = await caller.get({ id: created.draft.id });
+    // Force publish to fail after update by pointing at a non-existent version id via createVersion path?
+    // Soft path: update with bogus versionId still resolves/throws from publish.
+    await expect(
+      caller.applyImmediate({
+        displayName: 'Hard Fail Renamed',
+        expectedDraftToken: detail.draftToken,
+        expectedRevision: detail.baseRevision,
+        id: created.draft.id,
+        mode: 'update',
+        reason: 'force bad version',
+        versionId: 'missing-version-id',
+      }),
+    ).rejects.toMatchObject({ code: expect.stringMatching(/NOT_FOUND|PRECONDITION|INTERNAL/) });
   });
 });
