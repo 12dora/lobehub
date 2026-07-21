@@ -79,23 +79,39 @@ export class PlatformAdminMutationRateModel {
   };
 
   /**
-   * Best-effort retention: delete windows whose start is older than `maxAgeMs`.
-   * Bounded by `limit` to avoid long locks.
+   * Best-effort retention: delete windows older than `maxAgeMs`.
+   *
+   * Concurrency safety:
+   * - Candidate selection uses `FOR UPDATE SKIP LOCKED` so rows mid-consume are skipped
+   *   rather than blocked or deleted after a concurrent reset.
+   * - Final DELETE revalidates the sargable expiry predicate so a row that was
+   *   concurrently rolled into a fresh window is never deleted.
+   *
+   * Indexability:
+   * - Predicate is `window_start < now() - interval` (column on the left) so the
+   *   existing `window_start` btree index can be used; candidates are ordered by
+   *   `window_start` with a hard LIMIT.
+   *
+   * `maxAgeMs` is the sole retention threshold (configured window + retention).
+   * All scopes share one server-side limiter config, so a single threshold is exact.
    */
   cleanupExpired = async (params: { limit?: number; maxAgeMs: number }): Promise<number> => {
     const maxAgeMs = Math.max(1, Math.trunc(params.maxAgeMs));
     const limit = Math.min(10_000, Math.max(1, Math.trunc(params.limit ?? 1000)));
     const result = await this.db.execute(sql`
-      DELETE FROM platform_admin_mutation_rate_windows
-      WHERE scope_digest IN (
+      WITH candidates AS (
         SELECT scope_digest
         FROM platform_admin_mutation_rate_windows
-        WHERE window_start
-          + make_interval(secs => ${maxAgeMs}::double precision / 1000.0)
-          < now()
+        WHERE window_start < (now() - (${maxAgeMs}::bigint * interval '1 millisecond'))
+        ORDER BY window_start ASC
         LIMIT ${limit}
+        FOR UPDATE SKIP LOCKED
       )
-      RETURNING scope_digest
+      DELETE FROM platform_admin_mutation_rate_windows AS t
+      USING candidates AS c
+      WHERE t.scope_digest = c.scope_digest
+        AND t.window_start < (now() - (${maxAgeMs}::bigint * interval '1 millisecond'))
+      RETURNING t.scope_digest
     `);
     return asRows(result).length;
   };
