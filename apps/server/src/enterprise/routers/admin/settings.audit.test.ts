@@ -1,6 +1,8 @@
 // @vitest-environment node
+import { inArray } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { PLATFORM_SYSTEM_ROLES } from '@/const/platform/roles';
 import { getTestDB } from '@/database/core/getTestDB';
 import {
@@ -41,13 +43,28 @@ vi.mock('../../featureFlags', async (importOriginal) => {
   };
 });
 
-const ids = { allowed: 'settings-audit-allowed', denied: 'settings-audit-denied' } as const;
+const ids = {
+  allowed: 'settings-audit-allowed',
+  denied: 'settings-audit-denied',
+  updateOnly: 'settings-audit-update-only',
+} as const;
+const updateOnlyRoleName = 'settings_update_only_role';
 
 const cleanup = async () => {
   await serverDB.delete(platformAuditLogs);
   await serverDB.delete(platformResourceRevisions);
   await serverDB.delete(platformSettingPolicies);
   await serverDB.delete(platformSettingsBundle);
+  const owned = await serverDB
+    .select({ id: roles.id })
+    .from(roles)
+    .where(inArray(roles.name, [updateOnlyRoleName]));
+  if (owned.length > 0) {
+    const roleIds = owned.map((r) => r.id);
+    await serverDB.delete(userRoles).where(inArray(userRoles.roleId, roleIds));
+    await serverDB.delete(rolePermissions).where(inArray(rolePermissions.roleId, roleIds));
+    await serverDB.delete(roles).where(inArray(roles.id, roleIds));
+  }
   await serverDB.delete(userRoles);
   await serverDB.delete(rolePermissions);
   await serverDB.delete(roles);
@@ -59,7 +76,9 @@ beforeEach(async () => {
   vi.stubEnv('ENABLE_PLATFORM_ADMIN', '1');
   policyState.enabled = false;
   await cleanup();
-  await serverDB.insert(users).values([{ id: ids.allowed }, { id: ids.denied }]);
+  await serverDB
+    .insert(users)
+    .values([{ id: ids.allowed }, { id: ids.denied }, { id: ids.updateOnly }]);
   await seedPlatformRoles(serverDB);
   const superAdmin = await serverDB.query.roles.findFirst({
     where: (table, { and, eq, isNull }) =>
@@ -77,6 +96,29 @@ beforeEach(async () => {
   await serverDB.insert(userRoles).values({
     roleId: platformUser!.id,
     userId: ids.denied,
+    workspaceId: null,
+  });
+
+  // UPDATE without PUBLISH — applyImmediate secondary check must deny.
+  const [updateRole] = await serverDB
+    .insert(roles)
+    .values({ displayName: updateOnlyRoleName, name: updateOnlyRoleName })
+    .returning();
+  const updatePerms = await serverDB
+    .select({ id: permissions.id })
+    .from(permissions)
+    .where(
+      inArray(permissions.code, [
+        PLATFORM_PERMISSIONS.SETTINGS_READ,
+        PLATFORM_PERMISSIONS.SETTINGS_UPDATE,
+      ]),
+    );
+  await serverDB
+    .insert(rolePermissions)
+    .values(updatePerms.map(({ id }) => ({ permissionId: id, roleId: updateRole.id })));
+  await serverDB.insert(userRoles).values({
+    roleId: updateRole.id,
+    userId: ids.updateOnly,
     workspaceId: null,
   });
 });
@@ -104,6 +146,28 @@ const caller = async (
   } as never);
 
 describe('admin.settings denied audit outcomes', () => {
+  it('applyImmediate requires SETTINGS_PUBLISH in addition to SETTINGS_UPDATE', async () => {
+    policyState.enabled = true;
+    const updateOnly = await caller(ids.updateOnly);
+    await expect(
+      updateOnly.applyImmediate({
+        patch: { 'memory.enabled': true },
+        reason: 'must require publish',
+      }),
+    ).rejects.toMatchObject({ code: 'FORBIDDEN' });
+
+    expect(await serverDB.select().from(platformSettingPolicies)).toEqual([]);
+    // Feature was on and UPDATE passed middleware; denial is the secondary PUBLISH check.
+    // No success mutation audit should land.
+    const audits = await serverDB.select().from(platformAuditLogs);
+    expect(audits).not.toContainEqual(
+      expect.objectContaining({
+        action: 'admin.settings.applyImmediate',
+        result: 'success',
+      }),
+    );
+  });
+
   it('feature-disabled denial persists a sanitized audit and mutates no settings state', async () => {
     await expect((await caller(ids.allowed)).getDraft()).rejects.toMatchObject({
       code: 'FORBIDDEN',

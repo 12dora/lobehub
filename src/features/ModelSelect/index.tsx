@@ -5,7 +5,9 @@ import { type ReactNode } from 'react';
 import { memo, useMemo } from 'react';
 
 import { ModelItemRender, ProviderItemRender, TAG_CLASSNAME } from '@/components/ModelSelect';
-import { aiProviderSelectors, useAiInfraStore } from '@/store/aiInfra';
+// Scoped hook: defaults to the user singleton outside AdminProviderSettingsStoreProvider;
+// under admin platform pages it reads the published platform catalog.
+import { aiProviderSelectors, useScopedAiInfraStore as useAiInfraStore } from '@/store/aiInfra';
 import { type EnabledProviderWithModels } from '@/types/aiProvider';
 
 const prefixCls = 'ant';
