@@ -50,6 +50,10 @@ class AdminSkillsService {
   archive = async (input: AdminSkillArchiveInput): Promise<AdminSkillPublicationOutput> =>
     lambdaClient.admin.skills.archive.mutate(input);
 
+  /** Settings-page archive with reauth + toast (advanced catalog keeps bare archive). */
+  archiveImmediate = async (input: AdminSkillArchiveInput): Promise<AdminSkillPublicationOutput> =>
+    withToastAndReauth(() => lambdaClient.admin.skills.archive.mutate(input));
+
   create = async (input: AdminSkillCreateInput): Promise<AdminSkillMutationOutput> =>
     lambdaClient.admin.skills.create.mutate(input);
 

@@ -171,16 +171,24 @@ const SkillDetailPanel = memo<{
     if (!data) return;
     setBusy(true);
     try {
-      await adminSkillsService.applyImmediate({
+      const result = await adminSkillsService.applyImmediate({
         expectedDraftToken: data.draftToken,
         expectedRevision: data.baseRevision,
         id: data.draft.id,
         mode: 'update',
         reason: 'Publish platform skill from admin settings',
       });
-      toast.success(
-        t('aiSkillSettings.actions.published', { defaultValue: 'Skill listed for all users' }),
-      );
+      if (result.published) {
+        toast.success(
+          t('aiSkillSettings.actions.published', { defaultValue: 'Skill listed for all users' }),
+        );
+      } else {
+        toast.success(
+          t('aiSkillSettings.actions.draftSaved', {
+            defaultValue: 'Skill saved as draft — add a version to list it',
+          }),
+        );
+      }
       await Promise.all([mutate(), refreshAdminSkillLists()]);
       onPublished();
     } catch {
@@ -206,7 +214,7 @@ const SkillDetailPanel = memo<{
       onOk: async () => {
         setBusy(true);
         try {
-          await adminSkillsService.archive({
+          await adminSkillsService.archiveImmediate({
             expectedDraftToken: data.draftToken,
             expectedRevision: data.baseRevision,
             id: data.draft.id,
@@ -215,8 +223,8 @@ const SkillDetailPanel = memo<{
           toast.success(t('aiSkillSettings.actions.archived', { defaultValue: 'Skill unlisted' }));
           await Promise.all([mutate(), refreshAdminSkillLists()]);
           onArchived();
-        } catch (cause) {
-          toast.error(cause instanceof Error ? cause.message : 'Archive failed');
+        } catch {
+          // toast already shown by service wrapper
         } finally {
           setBusy(false);
         }
@@ -321,7 +329,7 @@ const SkillSettingsPage = memo(() => {
   const navigate = useNavigate();
   const params = useParams<{ id?: string }>();
   const { authMethod, permissions } = useAdminAccess();
-  const { canCreate, canRead } = deriveSkillPermissions(permissions);
+  const { canCreate, canPublish, canRead } = deriveSkillPermissions(permissions);
   const [query, setQuery] = useState('');
   const listInput = useMemo(
     () => ({
@@ -390,7 +398,7 @@ const SkillSettingsPage = memo(() => {
             <Text strong style={{ fontSize: 14 }}>
               {t('nav.aiSkills', { defaultValue: 'Skills' })}
             </Text>
-            {canCreate ? (
+            {canCreate && canPublish ? (
               <Button size="small" type="primary" onClick={onCreate}>
                 {t('aiSkillSettings.actions.create', { defaultValue: 'List skill' })}
               </Button>
