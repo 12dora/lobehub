@@ -135,7 +135,8 @@ export const buildMinimalDrillSchemaStatements = (): string[] => {
     `CREATE TABLE IF NOT EXISTS platform_connector_oauth_states (
        id text PRIMARY KEY, connector_id text)`,
     `CREATE TABLE IF NOT EXISTS platform_branding (
-       id text PRIMARY KEY, display_name text)`,
+       id text PRIMARY KEY, display_name text, status text NOT NULL DEFAULT 'draft',
+       revision integer NOT NULL DEFAULT 0)`,
     `CREATE TABLE IF NOT EXISTS platform_branding_assets (
        id text PRIMARY KEY, branding_id text, first_published_revision integer)`,
     `CREATE TABLE IF NOT EXISTS platform_branding_operations (
@@ -203,22 +204,27 @@ export const buildRecoverySeedStatements = (): string[] => {
     `INSERT INTO platform_resource_revisions
        (id, resource_type, resource_id, revision, status, payload, checksum, secret_fingerprint)
      VALUES
-       ('${ids.revisionId}', 'branding', '${ids.resourceId}', 1, 'draft',
+       ('${ids.revisionId}', 'branding', 'global', 7, 'published',
         '{"displayName":"Recovery Drill Probe"}'::jsonb, '${PROBE_PAYLOAD_CHECKSUM}', '${fp}'),
        ('${ids.revisionId2}', 'connector', '${ids.connectorId}', 2, 'published',
-        '{"displayName":"Recovery Drill Probe v2"}'::jsonb, '${PROBE_PAYLOAD_CHECKSUM_V2}', '${fp}')
+        '{"displayName":"Recovery Drill Probe v2"}'::jsonb, '${PROBE_PAYLOAD_CHECKSUM_V2}', '${fp}'),
+       ('prev_m15q06_oidc_01', 'oidc', '${ids.identityId}', 3, 'published',
+        '{"providerKey":"m15q06-probe-idp"}'::jsonb, '${PROBE_PAYLOAD_CHECKSUM}', '${fp}')
      ON CONFLICT (id) DO NOTHING`,
     `INSERT INTO platform_audit_logs
        (id, action, target_type, target_id, result, after_diff, config_revision)
      VALUES
-       ('${ids.auditId}', 'platform.recovery.drill.probe', 'branding', '${ids.resourceId}',
+       ('${ids.auditId}', 'platform.recovery.drill.probe', 'branding', 'global',
         'success', '{"revision":2,"redacted":true,"fields":["displayName"]}'::jsonb, 2)
      ON CONFLICT (id) DO NOTHING`,
     `INSERT INTO platform_identity_providers
        (id, provider_key, secret_ref, secret_fingerprint, secret_updated_at, activation_revision)
      VALUES
        ('${ids.identityId}', 'm15q06-probe-idp',
-        '${REF_IDP}', '${fp}', now(), NULL)
+        '${REF_IDP}', '${fp}', now(), 3)
+     ON CONFLICT (id) DO NOTHING`,
+    `INSERT INTO platform_branding (id, display_name, status, revision)
+     VALUES ('branding:published', 'Recovery Branding', 'published', 7)
      ON CONFLICT (id) DO NOTHING`,
     `INSERT INTO platform_identity_provider_secrets
        (id, provider_id, fingerprint, ref, ciphertext, key_id, revision)

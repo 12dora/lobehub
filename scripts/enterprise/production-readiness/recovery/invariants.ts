@@ -582,9 +582,23 @@ export const verifyPublicationPointers = async (
           resource_type: string;
           revision: string;
         };
-        // When holder has checksum, match composite FK including checksum.
+
+        // Inventory-declared holderChecksumColumn is mandatory: never weak-fallback.
+        if (
+          checksumCol !== null &&
+          (row.holder_checksum === null ||
+            row.holder_checksum === '' ||
+            !/^[a-f\d]{64}$/u.test(row.holder_checksum))
+        ) {
+          return {
+            match: false,
+            detail: `missing-or-invalid-holder-checksum:${source.table}:${row.holder_id}`,
+            pointerDigest: digestCanonicalRecords('publication-pointers', pointerRecords),
+          };
+        }
+
         const resolvedQuery =
-          hasChecksumCol && row.holder_checksum
+          checksumCol !== null
             ? await client.query<RevRow>(
                 `SELECT resource_type, resource_id, revision::text AS revision, checksum
                  FROM platform_resource_revisions
@@ -623,7 +637,7 @@ export const verifyPublicationPointers = async (
             pointerDigest: digestCanonicalRecords('publication-pointers', pointerRecords),
           };
         }
-        if (hasChecksumCol && row.holder_checksum && targetRow.checksum !== row.holder_checksum) {
+        if (checksumCol !== null && targetRow.checksum !== row.holder_checksum) {
           return {
             match: false,
             detail: `holder-checksum-mismatch:${source.table}:${row.holder_id}`,
@@ -651,6 +665,147 @@ export const verifyPublicationPointers = async (
           target_digest: targetDigest,
         });
       }
+      continue;
+    }
+
+    if (source.kind === 'fixed-holder-revision') {
+      // e.g. platform_branding id='branding:published' status='published' → branding/global
+      const statusCol = source.holderStatusColumn;
+      const hasStatus = (
+        await client.query<{ exists: boolean }>(
+          `SELECT EXISTS (
+             SELECT 1 FROM information_schema.columns
+             WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2
+           ) AS exists`,
+          [source.table, statusCol],
+        )
+      ).rows[0]?.exists;
+      if (!hasStatus) {
+        return {
+          match: false,
+          detail: `missing-holder-status-column:${source.table}:${statusCol}`,
+          pointerDigest: digestCanonicalRecords('publication-pointers', pointerRecords),
+        };
+      }
+
+      const holders = await client.query<{
+        holder_id: string;
+        pointer: string;
+        status: string;
+      }>(
+        `SELECT "${source.holderIdColumn}"::text AS holder_id,
+                "${source.pointerColumn}"::text AS pointer,
+                "${statusCol}"::text AS status
+         FROM "${source.table}"
+         WHERE "${source.holderIdColumn}"::text = $1`,
+        [source.holderIdValue],
+      );
+
+      const publishedHolders = holders.rows.filter(
+        (row) => row.status === source.holderStatusValue && row.pointer && Number(row.pointer) > 0,
+      );
+
+      if (publishedHolders.length === 0) {
+        // Legitimate pre-publish state: stable absence record for manifest comparison.
+        pointerRecords.push({
+          holder_id: source.holderIdValue,
+          kind: 'fixed-holder-revision',
+          publication: 'none',
+          resource_owner_id: source.resourceOwnerConstant,
+          resource_type: source.resourceType,
+          table: source.table,
+        });
+        continue;
+      }
+      if (publishedHolders.length > 1) {
+        return {
+          match: false,
+          detail: `duplicate-published-holder:${source.table}:${source.holderIdValue}`,
+          pointerDigest: digestCanonicalRecords('publication-pointers', pointerRecords),
+        };
+      }
+      if (holders.rows.length !== 1) {
+        return {
+          match: false,
+          detail: `ambiguous-fixed-holder-id:${source.table}:${source.holderIdValue}`,
+          pointerDigest: digestCanonicalRecords('publication-pointers', pointerRecords),
+        };
+      }
+
+      const holder = publishedHolders[0]!;
+      if (holder.status !== source.holderStatusValue) {
+        return {
+          match: false,
+          detail: `fixed-holder-status-mismatch:${source.table}:${holder.holder_id}:${holder.status}`,
+          pointerDigest: digestCanonicalRecords('publication-pointers', pointerRecords),
+        };
+      }
+      if (!/^\d+$/u.test(holder.pointer) || Number(holder.pointer) <= 0) {
+        return {
+          match: false,
+          detail: `invalid-fixed-holder-revision:${source.table}:${holder.holder_id}:${holder.pointer}`,
+          pointerDigest: digestCanonicalRecords('publication-pointers', pointerRecords),
+        };
+      }
+
+      type RevRow = {
+        checksum: string;
+        resource_id: string;
+        resource_type: string;
+        revision: string;
+      };
+      const resolvedQuery = await client.query<RevRow>(
+        `SELECT resource_type, resource_id, revision::text AS revision, checksum
+         FROM platform_resource_revisions
+         WHERE revision = $1 AND resource_id = $2 AND resource_type = $3`,
+        [Number(holder.pointer), source.resourceOwnerConstant, source.resourceType],
+      );
+      const resolvedCount = resolvedQuery.rowCount ?? 0;
+      if (resolvedCount === 0) {
+        return {
+          match: false,
+          detail: `dangling-fixed-pointer:${source.table}:${holder.holder_id}:${holder.pointer}`,
+          pointerDigest: digestCanonicalRecords('publication-pointers', pointerRecords),
+        };
+      }
+      if (resolvedCount > 1) {
+        return {
+          match: false,
+          detail: `ambiguous-fixed-pointer:${source.table}:${holder.holder_id}:${holder.pointer}`,
+          pointerDigest: digestCanonicalRecords('publication-pointers', pointerRecords),
+        };
+      }
+      const targetRow = resolvedQuery.rows[0]!;
+      if (
+        targetRow.resource_id !== source.resourceOwnerConstant ||
+        targetRow.resource_type !== source.resourceType
+      ) {
+        return {
+          match: false,
+          detail: `fixed-pointer-target-mismatch:${source.table}:${holder.holder_id}`,
+          pointerDigest: digestCanonicalRecords('publication-pointers', pointerRecords),
+        };
+      }
+      const targetDigest = digestCanonicalRecords('resource-revision-target', [
+        {
+          checksum: targetRow.checksum,
+          resource_id: targetRow.resource_id,
+          resource_type: targetRow.resource_type,
+          revision: targetRow.revision,
+        },
+      ]);
+      pointerRecords.push({
+        holder_id: holder.holder_id,
+        holder_status: holder.status,
+        kind: 'fixed-holder-revision',
+        pointer: holder.pointer,
+        publication: 'published',
+        resource_owner_id: source.resourceOwnerConstant,
+        resource_type: source.resourceType,
+        table: source.table,
+        target_checksum: targetRow.checksum,
+        target_digest: targetDigest,
+      });
       continue;
     }
 

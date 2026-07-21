@@ -56,27 +56,32 @@ export const SECRET_DOMAIN_TABLES = {
 } as const;
 
 /**
- * Pointer domains must match real platform schemas:
+ * Pointer domains must match real platform schemas / service write paths:
  *
  * platform_connectors FK:
  *   (published_resource_type, id, published_revision, published_checksum)
  *   → platform_resource_revisions(resource_type, resource_id, revision, checksum)
+ *   holderChecksumColumn is mandatory when present on the row (never weak fallback).
  *
  * platform_user_connector_bindings FK:
  *   (revision_resource_type, connector_id, published_revision)
- *   → platform_resource_revisions(resource_type, resource_id, revision)
- *   (no holder-side checksum column)
+ *   → no holder checksum column
  *
- * identity/branding: holder revision integer only; bind holder fields + full target row.
+ * identity: services write resource_type='oidc', resource_id=provider id,
+ *   holder activation_revision.
+ *
+ * branding current publication: fixed row id='branding:published' status='published',
+ *   revision → resource_type='branding', resource_id='global' (not asset first_published_revision).
  *
  * domain-version: agent/skill version tables with real `checksum` column.
  */
+export const BRANDING_PUBLISHED_ROW_ID = 'branding:published' as const;
+export const BRANDING_RESOURCE_OWNER = 'global' as const;
+
 export const PUBLICATION_POINTER_SOURCES = [
   {
-    /** Holder-side checksum column (composite FK). */
     holderChecksumColumn: 'published_checksum' as const,
     holderIdColumn: 'id' as const,
-    /** Holder-side resource type discriminator column. */
     holderResourceTypeColumn: 'published_resource_type' as const,
     kind: 'resource-revision' as const,
     pointerColumn: 'published_revision' as const,
@@ -90,7 +95,6 @@ export const PUBLICATION_POINTER_SOURCES = [
     holderResourceTypeColumn: 'revision_resource_type' as const,
     kind: 'resource-revision' as const,
     pointerColumn: 'published_revision' as const,
-    /** Target owner is connector_id, not binding id. */
     resourceOwnerColumn: 'connector_id' as const,
     resourceType: 'connector' as const,
     table: 'platform_user_connector_bindings' as const,
@@ -102,18 +106,21 @@ export const PUBLICATION_POINTER_SOURCES = [
     kind: 'resource-revision' as const,
     pointerColumn: 'activation_revision' as const,
     resourceOwnerColumn: 'id' as const,
-    resourceType: 'identity_provider' as const,
+    /** Actual service write path uses 'oidc', not 'identity_provider'. */
+    resourceType: 'oidc' as const,
     table: 'platform_identity_providers' as const,
   },
   {
-    holderChecksumColumn: null,
+    /** Fixed published config row (admin branding service). */
     holderIdColumn: 'id' as const,
-    holderResourceTypeColumn: null,
-    kind: 'resource-revision' as const,
-    pointerColumn: 'first_published_revision' as const,
-    resourceOwnerColumn: 'id' as const,
+    holderIdValue: BRANDING_PUBLISHED_ROW_ID,
+    holderStatusColumn: 'status' as const,
+    holderStatusValue: 'published' as const,
+    kind: 'fixed-holder-revision' as const,
+    pointerColumn: 'revision' as const,
+    resourceOwnerConstant: BRANDING_RESOURCE_OWNER,
     resourceType: 'branding' as const,
-    table: 'platform_branding_assets' as const,
+    table: 'platform_branding' as const,
   },
   {
     checksumColumn: 'checksum' as const,
