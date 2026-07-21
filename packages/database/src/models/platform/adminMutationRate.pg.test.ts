@@ -66,7 +66,7 @@ describe('PlatformAdminMutationRateModel (PostgreSQL)', () => {
     await expect(model.consume(scope)).resolves.toMatchObject({ allowed: true, count: 1 });
   });
 
-  it('never stores raw actor identifiers', async () => {
+  it('never stores raw actor identifiers and persists window_ms', async () => {
     const model = new PlatformAdminMutationRateModel(db);
     await model.consume({
       limit: 3,
@@ -76,7 +76,60 @@ describe('PlatformAdminMutationRateModel (PostgreSQL)', () => {
     const rows = await db.select().from(platformAdminMutationRateWindows);
     expect(rows).toHaveLength(1);
     expect(rows[0]!.scopeDigest).toBe('f'.repeat(64));
+    expect(rows[0]!.windowMs).toBe(60_000);
     expect(JSON.stringify(rows)).not.toMatch(/user-|admin\./);
+  });
+
+  it('ignores short-window replica config while a long persisted window is active', async () => {
+    const longReplica = new PlatformAdminMutationRateModel(db);
+    const shortReplica = new PlatformAdminMutationRateModel(db);
+    const digest = '7'.repeat(64);
+
+    await expect(
+      longReplica.consume({ limit: 5, scopeDigest: digest, windowMs: 60_000 }),
+    ).resolves.toMatchObject({ allowed: true, count: 1 });
+    await expect(
+      longReplica.consume({ limit: 5, scopeDigest: digest, windowMs: 60_000 }),
+    ).resolves.toMatchObject({ allowed: true, count: 2 });
+
+    // Short local config must not reset mid-window.
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    await expect(
+      shortReplica.consume({ limit: 5, scopeDigest: digest, windowMs: 50 }),
+    ).resolves.toMatchObject({ allowed: true, count: 3 });
+
+    const rows = await db.select().from(platformAdminMutationRateWindows);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.count).toBe(3);
+    expect(rows[0]!.windowMs).toBe(60_000);
+  });
+
+  it('adopts a new local window_ms only after the persisted window expires', async () => {
+    const model = new PlatformAdminMutationRateModel(db);
+    const digest = '8'.repeat(64);
+
+    await expect(
+      model.consume({ limit: 2, scopeDigest: digest, windowMs: 50 }),
+    ).resolves.toMatchObject({ allowed: true, count: 1 });
+    await expect(
+      model.consume({ limit: 2, scopeDigest: digest, windowMs: 50 }),
+    ).resolves.toMatchObject({ allowed: true, count: 2 });
+
+    // Mid-window longer config must not change duration or reset count.
+    await expect(
+      model.consume({ limit: 2, scopeDigest: digest, windowMs: 60_000 }),
+    ).resolves.toMatchObject({ allowed: false, count: 3 });
+    expect((await db.select().from(platformAdminMutationRateWindows))[0]!.windowMs).toBe(50);
+
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    // After expiry, new window adopts the caller's window_ms.
+    await expect(
+      model.consume({ limit: 2, scopeDigest: digest, windowMs: 60_000 }),
+    ).resolves.toMatchObject({ allowed: true, count: 1 });
+    const rows = await db.select().from(platformAdminMutationRateWindows);
+    expect(rows[0]!.count).toBe(1);
+    expect(rows[0]!.windowMs).toBe(60_000);
   });
 
   it('cleanupExpired deletes only stale windows in bounded batches without expanding live quota', async () => {
@@ -94,6 +147,7 @@ describe('PlatformAdminMutationRateModel (PostgreSQL)', () => {
         count: 1,
         scopeDigest: digest,
         updatedAt: staleStart,
+        windowMs: 60_000,
         windowStart: staleStart,
       });
     }
@@ -125,6 +179,7 @@ describe('PlatformAdminMutationRateModel (PostgreSQL)', () => {
       count: 9,
       scopeDigest: digest,
       updatedAt: staleStart,
+      windowMs: 60_000,
       windowStart: staleStart,
     });
 
@@ -156,7 +211,7 @@ describe('PlatformAdminMutationRateModel (PostgreSQL)', () => {
 });
 
 /**
- * Real PostgreSQL multi-connection race + plan checks.
+ * Real PostgreSQL multi-connection race, config-drift, and plan checks.
  * Self-contained DDL (no full migrate / pg_search) so a plain Postgres works.
  *
  * Run:
@@ -164,22 +219,31 @@ describe('PlatformAdminMutationRateModel (PostgreSQL)', () => {
  *     src/models/platform/adminMutationRate.pg.test.ts
  */
 describe.skipIf(!isRealPostgres)(
-  'PlatformAdminMutationRateModel cleanup concurrency (real PostgreSQL)',
+  'PlatformAdminMutationRateModel real PostgreSQL concurrency & plans',
   () => {
     const ensureRateTable = async (pool: Pool) => {
+      // Drop/recreate so local QA DBs always match the branch schema (window_ms).
+      await pool.query(`DROP TABLE IF EXISTS platform_admin_mutation_rate_windows`);
       await pool.query(`
-        CREATE TABLE IF NOT EXISTS platform_admin_mutation_rate_windows (
+        CREATE TABLE platform_admin_mutation_rate_windows (
           scope_digest text PRIMARY KEY NOT NULL,
           window_start timestamptz NOT NULL,
+          window_ms integer NOT NULL,
           count integer DEFAULT 0 NOT NULL,
           updated_at timestamptz DEFAULT now() NOT NULL
         )
       `);
       await pool.query(`
-        CREATE INDEX IF NOT EXISTS platform_admin_mutation_rate_windows_window_start_idx
+        CREATE INDEX platform_admin_mutation_rate_windows_window_start_idx
           ON platform_admin_mutation_rate_windows USING btree (window_start)
       `);
     };
+
+    const planLines = (planText: string) =>
+      planText
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean);
 
     it('does not delete a row reset under FOR UPDATE contention', async () => {
       const holderPool = new Pool({ connectionString: realPostgresUrl, max: 1 });
@@ -201,10 +265,10 @@ describe.skipIf(!isRealPostgres)(
           count: 5,
           scopeDigest: digest,
           updatedAt: staleStart,
+          windowMs: 60_000,
           windowStart: staleStart,
         });
 
-        // Connection A: lock the expired row as a concurrent consume would, then reset it.
         const holderClient = await holderPool.connect();
         try {
           await holderClient.query('BEGIN');
@@ -217,24 +281,20 @@ describe.skipIf(!isRealPostgres)(
           );
           expect(locked.rowCount).toBe(1);
 
-          // Connection B: cleanup while A holds the row lock — must SKIP LOCKED or wait + recheck.
           const cleanupModel = new PlatformAdminMutationRateModel(cleanupDb);
           const cleanupPromise = cleanupModel.cleanupExpired({ limit: 10, maxAgeMs });
 
-          // Give cleanup a moment to attempt candidate selection under the held lock.
           await new Promise((resolve) => setTimeout(resolve, 50));
 
-          // A resets the row to a fresh active window (mirrors consume rollover).
           await holderClient.query(
             `UPDATE platform_admin_mutation_rate_windows
-             SET count = 1, window_start = now(), updated_at = now()
+             SET count = 1, window_start = now(), window_ms = 60000, updated_at = now()
              WHERE scope_digest = $1`,
             [digest],
           );
           await holderClient.query('COMMIT');
 
           const deleted = await cleanupPromise;
-          // Either skipped while locked (deleted=0) or revalidated after unlock (still 0 for this row).
           expect(deleted).toBe(0);
 
           const rows = await cleanupDb.select().from(platformAdminMutationRateWindows);
@@ -242,7 +302,6 @@ describe.skipIf(!isRealPostgres)(
           expect(rows[0]!.scopeDigest).toBe(digest);
           expect(rows[0]!.count).toBe(1);
 
-          // Active quota not expanded/reset by cleanup.
           const model = new PlatformAdminMutationRateModel(cleanupDb);
           await expect(
             model.consume({ limit: 2, scopeDigest: digest, windowMs: 60_000 }),
@@ -264,7 +323,93 @@ describe.skipIf(!isRealPostgres)(
       }
     }, 20_000);
 
-    it('cleanup uses a sargable window_start range (index-friendly plan)', async () => {
+    it('long→short replica drift preserves active window and count', async () => {
+      const longPool = new Pool({ connectionString: realPostgresUrl, max: 1 });
+      const shortPool = new Pool({ connectionString: realPostgresUrl, max: 1 });
+      const longDb = drizzle(longPool, { schema }) as unknown as LobeChatDatabase;
+      const shortDb = drizzle(shortPool, { schema }) as unknown as LobeChatDatabase;
+      const digest = '4'.repeat(64);
+
+      try {
+        await ensureRateTable(longPool);
+        await longPool.query('DELETE FROM platform_admin_mutation_rate_windows');
+
+        const longModel = new PlatformAdminMutationRateModel(longDb);
+        const shortModel = new PlatformAdminMutationRateModel(shortDb);
+
+        await expect(
+          longModel.consume({ limit: 5, scopeDigest: digest, windowMs: 60_000 }),
+        ).resolves.toMatchObject({ allowed: true, count: 1 });
+        await expect(
+          longModel.consume({ limit: 5, scopeDigest: digest, windowMs: 60_000 }),
+        ).resolves.toMatchObject({ allowed: true, count: 2 });
+
+        await new Promise((resolve) => setTimeout(resolve, 1100));
+
+        // Short-config replica must continue the same 60s window (count=3), not reset.
+        await expect(
+          shortModel.consume({ limit: 5, scopeDigest: digest, windowMs: 1000 }),
+        ).resolves.toMatchObject({ allowed: true, count: 3 });
+
+        const rows = await longDb.select().from(platformAdminMutationRateWindows);
+        expect(rows).toHaveLength(1);
+        expect(rows[0]!.count).toBe(3);
+        expect(rows[0]!.windowMs).toBe(60_000);
+      } finally {
+        await longPool
+          .query('DELETE FROM platform_admin_mutation_rate_windows')
+          .catch(() => undefined);
+        await Promise.all([longPool.end(), shortPool.end()]);
+      }
+    }, 20_000);
+
+    it('short→long replica drift preserves active short window until boundary', async () => {
+      const shortPool = new Pool({ connectionString: realPostgresUrl, max: 1 });
+      const longPool = new Pool({ connectionString: realPostgresUrl, max: 1 });
+      const shortDb = drizzle(shortPool, { schema }) as unknown as LobeChatDatabase;
+      const longDb = drizzle(longPool, { schema }) as unknown as LobeChatDatabase;
+      const digest = '5'.repeat(64);
+
+      try {
+        await ensureRateTable(shortPool);
+        await shortPool.query('DELETE FROM platform_admin_mutation_rate_windows');
+
+        const shortModel = new PlatformAdminMutationRateModel(shortDb);
+        const longModel = new PlatformAdminMutationRateModel(longDb);
+
+        await expect(
+          shortModel.consume({ limit: 2, scopeDigest: digest, windowMs: 1000 }),
+        ).resolves.toMatchObject({ allowed: true, count: 1 });
+        await expect(
+          shortModel.consume({ limit: 2, scopeDigest: digest, windowMs: 1000 }),
+        ).resolves.toMatchObject({ allowed: true, count: 2 });
+
+        // Mid-window: long config must not reset or stretch the active short window.
+        await expect(
+          longModel.consume({ limit: 2, scopeDigest: digest, windowMs: 60_000 }),
+        ).resolves.toMatchObject({ allowed: false, count: 3 });
+        expect((await shortDb.select().from(platformAdminMutationRateWindows))[0]!.windowMs).toBe(
+          1000,
+        );
+
+        await new Promise((resolve) => setTimeout(resolve, 1100));
+
+        // New window boundary adopts the long replica's config.
+        await expect(
+          longModel.consume({ limit: 2, scopeDigest: digest, windowMs: 60_000 }),
+        ).resolves.toMatchObject({ allowed: true, count: 1 });
+        const rows = await shortDb.select().from(platformAdminMutationRateWindows);
+        expect(rows[0]!.count).toBe(1);
+        expect(rows[0]!.windowMs).toBe(60_000);
+      } finally {
+        await shortPool
+          .query('DELETE FROM platform_admin_mutation_rate_windows')
+          .catch(() => undefined);
+        await Promise.all([shortPool.end(), longPool.end()]);
+      }
+    }, 20_000);
+
+    it('cleanup plan uses window_start index for candidates and tid path for delete', async () => {
       const pool = new Pool({ connectionString: realPostgresUrl, max: 1 });
       const pgDb = drizzle(pool, { schema }) as unknown as LobeChatDatabase;
       const staleStart = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
@@ -272,11 +417,11 @@ describe.skipIf(!isRealPostgres)(
       try {
         await ensureRateTable(pool);
         await pool.query('DELETE FROM platform_admin_mutation_rate_windows');
-        // Enough rows that a non-sargable expression would prefer seq scan.
         const values = Array.from({ length: 2000 }, (_, i) => ({
           count: 1,
           scopeDigest: `plan${i.toString(16).padStart(60, '0')}`,
           updatedAt: staleStart,
+          windowMs: 60_000,
           windowStart: new Date(staleStart.getTime() + i * 1000),
         }));
         for (let i = 0; i < values.length; i += 200) {
@@ -284,10 +429,11 @@ describe.skipIf(!isRealPostgres)(
         }
         await pool.query('ANALYZE platform_admin_mutation_rate_windows');
 
+        // Match production cleanup SQL shape (ctid candidates + recheck).
         const planResult = await pool.query(`
           EXPLAIN (FORMAT TEXT)
           WITH candidates AS (
-            SELECT scope_digest
+            SELECT ctid AS row_ctid
             FROM platform_admin_mutation_rate_windows
             WHERE window_start < (now() - (86400000::bigint * interval '1 millisecond'))
             ORDER BY window_start ASC
@@ -295,19 +441,39 @@ describe.skipIf(!isRealPostgres)(
             FOR UPDATE SKIP LOCKED
           )
           DELETE FROM platform_admin_mutation_rate_windows AS t
-          USING candidates AS c
-          WHERE t.scope_digest = c.scope_digest
+          WHERE t.ctid IN (SELECT row_ctid FROM candidates)
             AND t.window_start < (now() - (86400000::bigint * interval '1 millisecond'))
           RETURNING t.scope_digest
         `);
         const planText = planResult.rows
           .map((r: { 'QUERY PLAN': string }) => r['QUERY PLAN'])
           .join('\n');
-        // Index-friendly candidate selection: Index/Bitmap path preferred over pure Seq Scan.
-        expect(planText).toMatch(/Index|Bitmap/i);
-        expect(planText).toMatch(
-          /platform_admin_mutation_rate_windows_window_start_idx|window_start/i,
+        const lines = planLines(planText);
+
+        // Candidate discovery must hit the window_start index (not merely any index elsewhere).
+        const candidateIndexLine = lines.find(
+          (line) =>
+            /platform_admin_mutation_rate_windows_window_start_idx/i.test(line) &&
+            /Index|Bitmap/i.test(line),
         );
+        if (!candidateIndexLine) {
+          throw new Error(`candidate discovery missing window_start index path:\n${planText}`);
+        }
+
+        // Hash Join + full Seq Scan of the target table is the unbounded-delete failure mode.
+        const badHashJoinSeq =
+          /Hash Join/i.test(planText) &&
+          /Seq Scan on platform_admin_mutation_rate_windows/i.test(planText);
+        if (badHashJoinSeq) {
+          throw new Error(`unexpected hash join + seq scan delete plan:\n${planText}`);
+        }
+
+        // Target delete must use physical identity (tid/ctid), not an unbounded heap scan alone.
+        const hasTidPath = /Tid Scan|tid |ctid/i.test(planText);
+        if (!hasTidPath) {
+          throw new Error(`delete path missing tid/ctid targeting:\n${planText}`);
+        }
+        expect(candidateIndexLine).toMatch(/window_start_idx/i);
 
         const model = new PlatformAdminMutationRateModel(pgDb);
         const deleted = await model.cleanupExpired({

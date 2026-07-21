@@ -7,7 +7,11 @@ export interface ConsumeAdminMutationRateWindowParams {
   limit: number;
   /** SHA-256 hex digest — never a raw actor id. */
   scopeDigest: string;
-  /** Fixed window length in milliseconds. */
+  /**
+   * Local fixed window length in milliseconds.
+   * Persisted on first insert / window rollover only; never shortens or lengthens
+   * an already-active window (replica config drift is deferred to the next window).
+   */
   windowMs: number;
 }
 
@@ -28,6 +32,8 @@ const asRows = <T>(result: unknown): T[] => {
 /**
  * Atomic multi-instance fixed-window counter using the database clock.
  * One statement: insert-or-increment with window rollover, no lock amplification.
+ *
+ * Expiry always uses the row's persisted `window_ms`, not the caller's local config.
  */
 export class PlatformAdminMutationRateModel {
   constructor(private readonly db: LobeChatDatabase | Transaction) {}
@@ -42,29 +48,45 @@ export class PlatformAdminMutationRateModel {
       INSERT INTO platform_admin_mutation_rate_windows (
         scope_digest,
         window_start,
+        window_ms,
         count,
         updated_at
       )
       VALUES (
         ${params.scopeDigest},
         now(),
+        ${windowMs},
         1,
         now()
       )
       ON CONFLICT (scope_digest) DO UPDATE SET
         count = CASE
           WHEN platform_admin_mutation_rate_windows.window_start
-            + make_interval(secs => ${windowMs}::double precision / 1000.0)
+            + make_interval(
+              secs => platform_admin_mutation_rate_windows.window_ms::double precision / 1000.0
+            )
             <= now()
           THEN 1
           ELSE platform_admin_mutation_rate_windows.count + 1
         END,
         window_start = CASE
           WHEN platform_admin_mutation_rate_windows.window_start
-            + make_interval(secs => ${windowMs}::double precision / 1000.0)
+            + make_interval(
+              secs => platform_admin_mutation_rate_windows.window_ms::double precision / 1000.0
+            )
             <= now()
           THEN now()
           ELSE platform_admin_mutation_rate_windows.window_start
+        END,
+        -- Adopt caller window_ms only when opening a new window (never mid-window).
+        window_ms = CASE
+          WHEN platform_admin_mutation_rate_windows.window_start
+            + make_interval(
+              secs => platform_admin_mutation_rate_windows.window_ms::double precision / 1000.0
+            )
+            <= now()
+          THEN EXCLUDED.window_ms
+          ELSE platform_admin_mutation_rate_windows.window_ms
         END,
         updated_at = now()
       RETURNING count
@@ -82,25 +104,22 @@ export class PlatformAdminMutationRateModel {
    * Best-effort retention: delete windows older than `maxAgeMs`.
    *
    * Concurrency safety:
-   * - Candidate selection uses `FOR UPDATE SKIP LOCKED` so rows mid-consume are skipped
-   *   rather than blocked or deleted after a concurrent reset.
+   * - Candidate selection uses `FOR UPDATE SKIP LOCKED` so rows mid-consume are skipped.
+   * - Candidates capture physical `ctid` under that lock so the DELETE targets only
+   *   those rows (no full-table hash join / seq scan of the target).
    * - Final DELETE revalidates the sargable expiry predicate so a row that was
    *   concurrently rolled into a fresh window is never deleted.
    *
    * Indexability:
-   * - Predicate is `window_start < now() - interval` (column on the left) so the
-   *   existing `window_start` btree index can be used; candidates are ordered by
-   *   `window_start` with a hard LIMIT.
-   *
-   * `maxAgeMs` is the sole retention threshold (configured window + retention).
-   * All scopes share one server-side limiter config, so a single threshold is exact.
+   * - Candidate discovery: `window_start < now() - interval` + ORDER BY + LIMIT.
+   * - Target delete: `ctid` equality (tid path), not an unbounded table scan.
    */
   cleanupExpired = async (params: { limit?: number; maxAgeMs: number }): Promise<number> => {
     const maxAgeMs = Math.max(1, Math.trunc(params.maxAgeMs));
     const limit = Math.min(10_000, Math.max(1, Math.trunc(params.limit ?? 1000)));
     const result = await this.db.execute(sql`
       WITH candidates AS (
-        SELECT scope_digest
+        SELECT ctid AS row_ctid
         FROM platform_admin_mutation_rate_windows
         WHERE window_start < (now() - (${maxAgeMs}::bigint * interval '1 millisecond'))
         ORDER BY window_start ASC
@@ -108,8 +127,7 @@ export class PlatformAdminMutationRateModel {
         FOR UPDATE SKIP LOCKED
       )
       DELETE FROM platform_admin_mutation_rate_windows AS t
-      USING candidates AS c
-      WHERE t.scope_digest = c.scope_digest
+      WHERE t.ctid IN (SELECT row_ctid FROM candidates)
         AND t.window_start < (now() - (${maxAgeMs}::bigint * interval '1 millisecond'))
       RETURNING t.scope_digest
     `);
