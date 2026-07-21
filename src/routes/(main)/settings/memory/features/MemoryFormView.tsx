@@ -121,7 +121,9 @@ const MemoryFormView = memo<MemoryFormViewProps>(
                           }}
                           onChange={(next) => {
                             if (disabled || !canManage) return;
-                            save(() => onChange({ effort: next }));
+                            save(async () => {
+                              await onChange({ effort: next });
+                            });
                           }}
                         />
                       )}
@@ -157,7 +159,9 @@ const MemoryFormView = memo<MemoryFormViewProps>(
           )
             return;
 
-          save(() => onChange(values));
+          save(async () => {
+            await onChange(values);
+          });
         }}
         {...FORM_STYLE}
       />

@@ -1,5 +1,6 @@
 'use client';
 
+import type { UserTTSConfig } from '@lobechat/types';
 import isEqual from 'fast-deep-equal';
 import { memo } from 'react';
 
@@ -23,7 +24,7 @@ const OpenAI = memo(() => {
       isInit={isUserStateInit}
       ttsModelMeta={ttsModelMeta}
       value={tts ?? {}}
-      onChange={(values) => setSettings({ tts: values })}
+      onChange={(values) => setSettings({ tts: values as UserTTSConfig })}
     />
   );
 });

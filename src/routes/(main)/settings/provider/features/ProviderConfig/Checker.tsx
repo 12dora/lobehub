@@ -145,7 +145,8 @@ const Checker = memo<ConnectionCheckerProps>(
             cursor = pageResult.nextCursor;
           }
           if (!platformId) {
-            throw new Error(`Platform provider not found: ${provider}`);
+            // `Error` is shadowed by the local alert component in this file.
+            throw new globalThis.Error(`Platform provider not found: ${provider}`);
           }
           const result = await lambdaClient.admin.aiProviders.test.mutate({
             id: platformId,

@@ -164,7 +164,9 @@ const ModelAssignmentsFormView = memo<ModelAssignmentsFormViewProps>(
       setSavingGroup('assignments');
       setLoadingKey('defaultAgent');
       try {
-        await save(() => onUpdateDefaultAgent({ model, provider }));
+        await save(async () => {
+          await onUpdateDefaultAgent({ model, provider });
+        });
       } finally {
         setLoadingKey(undefined);
       }
@@ -180,7 +182,9 @@ const ModelAssignmentsFormView = memo<ModelAssignmentsFormViewProps>(
       setSavingGroup(groupOfKey(key));
       setLoadingKey(key);
       try {
-        await save(() => onUpdateSystemAgent(key, value));
+        await save(async () => {
+          await onUpdateSystemAgent(key, value);
+        });
       } finally {
         setLoadingKey(undefined);
       }
