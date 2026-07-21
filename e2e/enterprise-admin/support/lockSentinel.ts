@@ -7,11 +7,12 @@
  * 2) create an exclusive private quarantine directory (mkdir fails if exists)
  * 3) hard-link owned path into that dir (link fails with EEXIST — never overwrites)
  * 4) prove quarantine path is the same inode as the owned fd + token
- * 5) return contained recovery-artifact state — never pathname-unlink lockPath
- *    or any other replaceable path (plain Node unlink after checks is prohibited)
+ * 5) return contained recovery-artifact state
  *
- * Outer exclusive owner of the disposable isolated project root (unique mkdtemp)
- * removes the whole root after the test lifecycle.
+ * Never pathname-unlink / rmdir / rm / rename-overwrite any replaceable path on
+ * failure or success. Plain Node unlink/rmdir after checks is prohibited.
+ * On mkdir/link/proof failure: throw fail-closed and leave all created paths
+ * for the exclusive outer mkdtemp root owner to remove.
  *
  * Global PROJECT_ROOT/.next/lock remains strictly read-only (this module only
  * operates under caller-provided isolated project roots).
@@ -29,7 +30,6 @@ import {
   openSync,
   readFileSync,
   readSync,
-  rmdirSync,
   type Stats,
   writeFileSync,
 } from 'node:fs';
@@ -169,6 +169,17 @@ export type ContainOwnedLockHooks = {
    */
   afterVerifyBeforeDestructive?: (ctx: ContainOwnedLockRaceContext) => void;
   /**
+   * Invoked after exclusive quarantine mkdir succeeds, immediately before linkSync.
+   * Production never sets this. Tests may force link failure while the exclusive dir is empty.
+   */
+  afterMkdirBeforeLink?: (ctx: ContainOwnedLockRaceContext) => void;
+  /**
+   * Invoked on linkSync failure at the former pathname rmdir(quarantineDir) site.
+   * Production never rmdirs. Tests may replace the empty exclusive dir with a foreign
+   * empty directory here to prove opportunistic cleanup cannot destroy it.
+   */
+  afterLinkFailureBeforePathnameCleanup?: (ctx: ContainOwnedLockRaceContext) => void;
+  /**
    * Invoked after the last successful identity observation of the quarantine artifact
    * (token proof via open fd), at the site of the former check-then-unlink of lockPath.
    * Production never unlinks lockPath. Tests inject foreign regular/symlink here to prove
@@ -218,7 +229,7 @@ const identityMatches = (a: Stats, b: { dev: number | bigint; ino: number | bigi
 /**
  * Race-safe containment of an owned sentinel.
  * Establishes a hardlinked recovery artifact in an exclusive private directory.
- * Never pathname-unlinks lockPath or any replaceable path (no check-then-unlink).
+ * Never pathname-unlinks/rmdirs/rms any replaceable path (no check-then-destroy).
  */
 export const containOwnedLockSentinelOrFail = (
   params: {
@@ -297,22 +308,21 @@ export const containOwnedLockSentinelOrFail = (
     );
   }
 
+  hooks?.afterMkdirBeforeLink?.(raceCtx);
+
   // No-replace hardlink into exclusive dir (link fails with EEXIST if path exists).
+  // On failure: fail-closed and leave quarantineDir for outer isolated-root cleanup.
+  // Never rmdir/unlink by pathname — the directory path can be replaced before destroy.
   try {
     linkSync(params.lockPath, quarantinePath);
   } catch (error) {
-    // Only remove the empty exclusive dir we just created (no file unlink).
-    try {
-      rmdirSync(quarantineDir);
-    } catch {
-      // leave for inspection
-    }
+    hooks?.afterLinkFailureBeforePathnameCleanup?.(raceCtx);
     const code =
       error && typeof error === 'object' && 'code' in error
         ? String((error as { code?: unknown }).code)
         : '';
     throw new Error(
-      `refusing contain: no-replace quarantine link failed (${code || String(error)}); foreign paths preserved`,
+      `refusing contain: no-replace quarantine link failed (${code || String(error)}); foreign paths preserved; quarantine dir left for outer root cleanup`,
       { cause: error },
     );
   }

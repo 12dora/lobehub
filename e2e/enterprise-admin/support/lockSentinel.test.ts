@@ -5,6 +5,8 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  renameSync,
+  rmdirSync,
   rmSync,
   symlinkSync,
   unlinkSync,
@@ -264,6 +266,48 @@ describe('safe lock sentinel ownership protocol', () => {
       // Symlink itself not removed
       expect(existsSync(owned.lockPath)).toBe(true);
       expect(readFileSync(result.quarantinePath, 'utf8')).toBe(owned.token);
+    } finally {
+      owned.closeFd();
+    }
+  });
+
+  it('link-failure boundary: foreign empty quarantine dir survives former rmdir site', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'e2e-lock-link-fail-rmdir-'));
+    temps.push(root);
+    const owned = createOwnedLockSentinel(root);
+    const foreignMarker = 'FOREIGN_EMPTY_QUARANTINE_DIR\n';
+    let foreignDir = '';
+    let markerPath = '';
+    try {
+      expect(() =>
+        containOwnedLockSentinelOrFail(owned, {
+          afterMkdirBeforeLink: (ctx) => {
+            // Keep quarantineDir empty; force linkSync to fail (ENOENT on source).
+            renameSync(owned.lockPath, `${owned.lockPath}.aside`);
+            void ctx;
+          },
+          afterLinkFailureBeforePathnameCleanup: (ctx) => {
+            // Exact former rmdir(quarantineDir) window: replace exclusive empty dir
+            // with a foreign empty directory. Production must not pathname-rmdir it.
+            foreignDir = ctx.quarantineDir;
+            markerPath = `${ctx.quarantineDir}.foreign-marker`;
+            rmdirSync(ctx.quarantineDir);
+            mkdirSync(ctx.quarantineDir, { recursive: false, mode: 0o755 });
+            writeFileSync(markerPath, foreignMarker, 'utf8');
+          },
+        }),
+      ).toThrow(/no-replace quarantine link failed|refusing contain|foreign paths preserved/i);
+
+      expect(foreignDir).toBeTruthy();
+      expect(existsSync(foreignDir)).toBe(true);
+      expect(lstatSync(foreignDir).isDirectory()).toBe(true);
+      // Foreign empty dir was not removed by opportunistic cleanup
+      expect(readdirSync(foreignDir)).toEqual([]);
+      expect(existsSync(markerPath)).toBe(true);
+      expect(readFileSync(markerPath, 'utf8')).toBe(foreignMarker);
+      // Honest non-destructive contract still applies to lock path
+      // (source was moved aside only by the test seam, not by production)
+      expect(existsSync(`${owned.lockPath}.aside`)).toBe(true);
     } finally {
       owned.closeFd();
     }
