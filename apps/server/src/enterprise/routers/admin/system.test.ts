@@ -136,7 +136,7 @@ describe('admin.system OIDC restart gate', () => {
     expect(await db.select().from(platformIdentityProviderRestartRequests)).toHaveLength(0);
     expect(await db.select().from(platformAuditLogs)).toContainEqual(
       expect.objectContaining({
-        action: 'admin.system.requestRestart',
+        action: 'admin.system.prepareRestart',
         result: 'denied',
       }),
     );

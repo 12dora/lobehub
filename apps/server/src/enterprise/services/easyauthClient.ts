@@ -1,9 +1,15 @@
 /**
  * EasyAuth permission snapshot HTTP client.
  * Static App Token only (eat_ prefix). Never logs the token.
+ * Remote traffic always traverses SafeOutboundHttpClient.
  */
 import type { EasyauthRuntimeConfig } from '../config/easyauth';
 import { parseEasyauthConfig } from '../config/easyauth';
+import {
+  createSafeOutboundHttpClient,
+  type SafeOutboundHttpClient,
+  SafeOutboundHttpError,
+} from '../security/outboundHttp';
 
 export interface EasyauthGrantItem {
   permission: string;
@@ -39,13 +45,30 @@ export class EasyauthClientError extends Error {
   }
 }
 
+/** Bound the permission snapshot body (grants/groups JSON). */
+const EASYAUTH_MAX_RESPONSE_BYTES = 256 * 1024;
+const EASYAUTH_MAX_REDIRECTS = 3;
+
 export class EasyauthPermissionClient {
   private readonly config: EasyauthRuntimeConfig;
-  private readonly fetchImpl: typeof fetch;
+  private readonly outbound: SafeOutboundHttpClient;
 
-  constructor(options?: { config?: EasyauthRuntimeConfig; fetchImpl?: typeof fetch }) {
+  constructor(options?: {
+    config?: EasyauthRuntimeConfig;
+    /**
+     * Policy-bound outbound client for deterministic tests.
+     * Production defaults to SafeOutboundHttpClient — raw fetch is not accepted.
+     */
+    outbound?: SafeOutboundHttpClient;
+  }) {
     this.config = options?.config ?? parseEasyauthConfig();
-    this.fetchImpl = options?.fetchImpl ?? fetch;
+    this.outbound =
+      options?.outbound ??
+      createSafeOutboundHttpClient({
+        maxRedirects: EASYAUTH_MAX_REDIRECTS,
+        maxResponseBytes: EASYAUTH_MAX_RESPONSE_BYTES,
+        timeoutMs: this.config.timeoutMs,
+      });
   }
 
   get appKey(): string {
@@ -66,20 +89,25 @@ export class EasyauthPermissionClient {
 
     const url = `${this.config.baseUrl}/api/v1/apps/${encodeURIComponent(this.config.appKey)}/users/${encodeURIComponent(externalUserId)}/permissions`;
 
-    let response: Response;
+    let response: Awaited<ReturnType<SafeOutboundHttpClient['fetch']>>;
     try {
-      response = await this.fetchImpl(url, {
+      response = await this.outbound.fetch(url, {
         headers: {
           Accept: 'application/json',
           Authorization: `Bearer ${this.config.appToken}`,
         },
+        maxRedirects: EASYAUTH_MAX_REDIRECTS,
+        maxResponseBytes: EASYAUTH_MAX_RESPONSE_BYTES,
         method: 'GET',
-        signal: AbortSignal.timeout(this.config.timeoutMs),
+        secretBearing: true,
+        timeoutMs: this.config.timeoutMs,
       });
     } catch (error) {
-      throw new EasyauthClientError(
-        `EasyAuth permission query failed: ${error instanceof Error ? error.message : 'network'}`,
-      );
+      if (error instanceof SafeOutboundHttpError) {
+        throw new EasyauthClientError('EasyAuth permission query failed: network policy');
+      }
+      // Never include raw error text that might echo Authorization material.
+      throw new EasyauthClientError('EasyAuth permission query failed: network');
     }
 
     if (response.status === 401) {
@@ -93,6 +121,9 @@ export class EasyauthPermissionClient {
     }
     if (response.status >= 400) {
       throw new EasyauthClientError(`EasyAuth permission query returned HTTP ${response.status}`);
+    }
+    if (response.truncated) {
+      throw new EasyauthClientError('EasyAuth permission response is malformed', 'malformed');
     }
 
     let body: unknown;

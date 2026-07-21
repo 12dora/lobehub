@@ -26,6 +26,7 @@ import {
   adminConnectorUpdateDraftInputSchema,
 } from '../../contracts/platformConnectors';
 import { withActiveUser } from '../../guards/activeUser';
+import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
 import { withPlatformPermission } from '../../guards/platformPermission';
 import {
   assertAdminConnectorRuntimeDependency,
@@ -39,6 +40,7 @@ import {
 const adminConnectorProcedure = authedProcedure
   .use(serverDatabase)
   .use(withActiveUser())
+  .use(withAdminMutationRateLimit())
   .use(async ({ ctx, next }) =>
     next({
       ctx: {
