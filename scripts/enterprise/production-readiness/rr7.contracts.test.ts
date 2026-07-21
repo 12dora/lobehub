@@ -219,19 +219,19 @@ describe('RR7: oidc identity and branding:published pointers', () => {
         expect(r.match).toBe(true);
         expect(r.pointerDigest).not.toBe(baseDigest);
 
-        // Wrong status on published row
+        // Wrong status on fixed published row is corrupt (not pre-publish).
         await client.query(
           `UPDATE platform_branding SET status = 'draft' WHERE id = 'branding:published'`,
         );
         r = await verifyPublicationPointers(client);
-        // status draft with revision > 0 treated as no published publication
-        expect(r.match).toBe(true);
-        expect(r.pointerDigest).not.toBe(baseDigest);
+        expect(r.match).toBe(false);
+        expect(r.detail).toMatch(/fixed-holder-status-mismatch/);
 
         await client.query(
           `UPDATE platform_branding SET status = 'published', revision = 7
            WHERE id = 'branding:published'`,
         );
+        expect((await verifyPublicationPointers(client)).match).toBe(true);
         // Asset first_published_revision change must not masquerade as global pointer
         const beforeAsset = (await verifyPublicationPointers(client)).pointerDigest;
         await client.query(

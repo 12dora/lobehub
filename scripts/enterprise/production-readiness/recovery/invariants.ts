@@ -669,7 +669,10 @@ export const verifyPublicationPointers = async (
     }
 
     if (source.kind === 'fixed-holder-revision') {
-      // e.g. platform_branding id='branding:published' status='published' → branding/global
+      // platform_branding fixed row branding:published → branding/global.
+      // Distinguish genuine pre-publish (no fixed row AND no published claim)
+      // from corrupt/lost publication (wrong status, rev 0, missing holder with
+      // published history, extra published rows, dangling target).
       const statusCol = source.holderStatusColumn;
       const hasStatus = (
         await client.query<{ exists: boolean }>(
@@ -688,6 +691,7 @@ export const verifyPublicationPointers = async (
         };
       }
 
+      // Fixed holder by exact id — do not filter on status/revision here.
       const holders = await client.query<{
         holder_id: string;
         pointer: string;
@@ -701,29 +705,59 @@ export const verifyPublicationPointers = async (
         [source.holderIdValue],
       );
 
-      const publishedHolders = holders.rows.filter(
-        (row) => row.status === source.holderStatusValue && row.pointer && Number(row.pointer) > 0,
+      // Legacy / extra published holder rows on the same table (wrong id).
+      const extraPublished = await client.query<{ holder_id: string }>(
+        `SELECT "${source.holderIdColumn}"::text AS holder_id
+         FROM "${source.table}"
+         WHERE "${statusCol}"::text = $1
+           AND "${source.holderIdColumn}"::text <> $2
+         ORDER BY 1`,
+        [source.holderStatusValue, source.holderIdValue],
       );
+      if (extraPublished.rows.length > 0) {
+        return {
+          match: false,
+          detail: `extra-published-holder:${source.table}:${extraPublished.rows
+            .map((r) => r.holder_id)
+            .join(',')}`,
+          pointerDigest: digestCanonicalRecords('publication-pointers', pointerRecords),
+        };
+      }
 
-      if (publishedHolders.length === 0) {
-        // Legitimate pre-publish state: stable absence record for manifest comparison.
+      // Published / current branding revision claims for the constant owner.
+      const publishedClaims = await client.query<{
+        revision: string;
+        status: string;
+      }>(
+        `SELECT revision::text AS revision, status
+         FROM platform_resource_revisions
+         WHERE resource_type = $1 AND resource_id = $2 AND status = 'published'
+         ORDER BY revision`,
+        [source.resourceType, source.resourceOwnerConstant],
+      );
+      const hasPublishedClaim = (publishedClaims.rowCount ?? 0) > 0;
+
+      if (holders.rows.length === 0) {
+        if (hasPublishedClaim) {
+          return {
+            match: false,
+            detail: `missing-fixed-holder-with-published-history:${source.table}:${source.holderIdValue}:${source.resourceType}/${source.resourceOwnerConstant}`,
+            pointerDigest: digestCanonicalRecords('publication-pointers', pointerRecords),
+          };
+        }
+        // Genuine pre-publish: no fixed published row and no published claim.
         pointerRecords.push({
           holder_id: source.holderIdValue,
           kind: 'fixed-holder-revision',
           publication: 'none',
           resource_owner_id: source.resourceOwnerConstant,
           resource_type: source.resourceType,
+          state: 'pre-publish',
           table: source.table,
         });
         continue;
       }
-      if (publishedHolders.length > 1) {
-        return {
-          match: false,
-          detail: `duplicate-published-holder:${source.table}:${source.holderIdValue}`,
-          pointerDigest: digestCanonicalRecords('publication-pointers', pointerRecords),
-        };
-      }
+
       if (holders.rows.length !== 1) {
         return {
           match: false,
@@ -732,7 +766,8 @@ export const verifyPublicationPointers = async (
         };
       }
 
-      const holder = publishedHolders[0]!;
+      const holder = holders.rows[0]!;
+      // Fixed row present: must be exactly published with positive revision.
       if (holder.status !== source.holderStatusValue) {
         return {
           match: false,
@@ -979,13 +1014,26 @@ export const compareDigests = (
 ): boolean =>
   before.digest === after.digest && before.rowCount === after.rowCount && before.rowCount >= 0;
 
-/** Build a source-manifest style digest package for backup attestation. */
+/**
+ * Build a source-manifest style digest package for backup attestation.
+ * Refuses to baseline corrupted publication pointers (fail closed).
+ */
 export const buildSourceManifestCore = async (client: PoolClient) => {
   const revisions = await digestResourceRevisions(client);
   const audits = await digestAuditLogs(client);
   const secrets = await verifySecretReferenceDomains(client);
   const tables = await digestAllRequiredTables(client);
   const publications = await verifyPublicationPointers(client);
+  if (!publications.match) {
+    throw new Error(
+      `source-manifest-refuses-invalid-publications:${publications.detail ?? 'unknown'}`,
+    );
+  }
+  if (!secrets.match) {
+    throw new Error(
+      `source-manifest-refuses-invalid-secrets:${secrets.detail ?? 'secret-domain-mismatch'}`,
+    );
+  }
   const published = await client.query<{ count: string }>(
     `SELECT COUNT(*)::text AS count FROM platform_resource_revisions WHERE status = 'published'`,
   );
