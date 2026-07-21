@@ -1,5 +1,5 @@
 /**
- * Q05 upstream-rebase adapter: strict evidence.json from upstream-rebase-ci collect.
+ * Q05 upstream-rebase adapter: mandatory candidate binding; immutable generatedAt required.
  */
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
@@ -22,8 +22,25 @@ export const adaptUpstreamRebaseEvidence = async (input: {
   if (evidence.commits.candidate !== short) {
     throw new Error('upstream-rebase candidate short does not match release candidate');
   }
-  if (evidence.upstream.freshness !== 'verified-by-ci-fetch') {
-    // Keep status from evidence but fail closed for production-style pass
+
+  const record = JSON.parse(raw) as { generatedAt?: string };
+  if (typeof record.generatedAt !== 'string' || Number.isNaN(Date.parse(record.generatedAt))) {
+    return {
+      artifactSha256,
+      assertions: {
+        failed: evidence.gates.filter((g) => g.outcome === 'failed').length,
+        passed: evidence.gates.filter((g) => g.outcome === 'passed').length,
+        skipped: 0,
+        total: evidence.gates.length,
+      },
+      candidateSha: input.candidateSha,
+      details: { reason: 'missing-immutable-generatedAt' },
+      gate: 'upstream-rebase',
+      generatedAt: new Date(0).toISOString(),
+      harnessScope: 'ci-harness',
+      rawArtifactPaths: [input.evidencePath],
+      status: 'unverified',
+    };
   }
 
   const pass = isPassingUpstreamRebaseEvidence(evidence);
@@ -49,7 +66,7 @@ export const adaptUpstreamRebaseEvidence = async (input: {
       upstreamFreshness: evidence.upstream.freshness,
     },
     gate: 'upstream-rebase',
-    generatedAt: new Date().toISOString(),
+    generatedAt: record.generatedAt,
     harnessScope: 'ci-harness',
     rawArtifactPaths: [input.evidencePath],
     status,

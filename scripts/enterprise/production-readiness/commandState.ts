@@ -1,7 +1,7 @@
 /**
  * Local harness state for allowlisted readiness commands.
- * Real postconditions are observable on this state file — not recursive dry-runs.
  */
+import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -11,6 +11,7 @@ const stateSchema = z
   .object({
     flags: z.record(z.string(), z.boolean()),
     metrics: z.record(z.string(), z.number()),
+    opSeq: z.number().int().nonnegative(),
     schemaVersion: z.literal(1),
     windowActive: z.string().nullable(),
   })
@@ -31,12 +32,16 @@ export const defaultCommandState = (): ReadinessCommandState => ({
     'job-failure-rate': 0,
     'p95-latency-ms': 0,
   },
+  opSeq: 0,
   schemaVersion: 1,
   windowActive: null,
 });
 
 export const resolveStatePath = (baseDir: string): string =>
   path.join(baseDir, 'readiness-command-state.json');
+
+export const digestCommandState = (state: ReadinessCommandState): string =>
+  createHash('sha256').update(JSON.stringify(state)).digest('hex');
 
 export const loadCommandState = async (baseDir: string): Promise<ReadinessCommandState> => {
   const filePath = resolveStatePath(baseDir);

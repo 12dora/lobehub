@@ -5,7 +5,12 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 
-import { HIGH_RISK_FLAG_BY_COMMAND, loadCommandState, saveCommandState } from './commandState';
+import {
+  digestCommandState,
+  HIGH_RISK_FLAG_BY_COMMAND,
+  loadCommandState,
+  saveCommandState,
+} from './commandState';
 import { ALLOWLISTED_COMMAND_IDS, type AllowlistedCommandId } from './constants';
 import { buildDefaultReleasePlan as buildPlanInternal } from './releasePlan';
 
@@ -172,10 +177,21 @@ export interface DispatchOptions {
   windowId?: string;
 }
 
+export type DispatchMode =
+  | 'already-satisfied'
+  | 'dry-run'
+  | 'executed'
+  | 'no-change'
+  | 'observed'
+  | 'unavailable'
+  | 'verified';
+
 export interface DispatchResult {
+  afterDigest?: string;
+  beforeDigest?: string;
   commandId: AllowlistedCommandId;
   exitCode: number | null;
-  mode: 'dry-run' | 'executed' | 'unavailable';
+  mode: DispatchMode;
   mutates: boolean;
   postcondition?: string;
 }
@@ -233,6 +249,7 @@ export const dispatchAllowlistedCommand = async (
   const stateDir =
     options.stateDir ?? path.join(process.cwd(), '.records/enterprise-production-readiness');
   const state = await loadCommandState(stateDir);
+  const beforeDigest = digestCommandState(state);
 
   if (definition.kind === 'flag-toggle') {
     const flag = HIGH_RISK_FLAG_BY_COMMAND[commandId];
@@ -240,11 +257,26 @@ export const dispatchAllowlistedCommand = async (
       return { commandId, exitCode: 1, mode: 'unavailable', mutates: true };
     }
     const enable = commandId.startsWith('flag-enable-');
+    if (state.flags[flag] === enable) {
+      return {
+        afterDigest: beforeDigest,
+        beforeDigest,
+        commandId,
+        exitCode: 0,
+        mode: 'already-satisfied',
+        mutates: true,
+        postcondition: `flag:${flag}=${enable}:no-change`,
+      };
+    }
     state.flags[flag] = enable;
+    state.opSeq += 1;
     await saveCommandState(stateDir, state);
     const reloaded = await loadCommandState(stateDir);
-    if (reloaded.flags[flag] !== enable) {
+    const afterDigest = digestCommandState(reloaded);
+    if (reloaded.flags[flag] !== enable || afterDigest === beforeDigest) {
       return {
+        afterDigest,
+        beforeDigest,
         commandId,
         exitCode: 1,
         mode: 'executed',
@@ -253,6 +285,8 @@ export const dispatchAllowlistedCommand = async (
       };
     }
     return {
+      afterDigest,
+      beforeDigest,
       commandId,
       exitCode: 0,
       mode: 'executed',
@@ -264,11 +298,26 @@ export const dispatchAllowlistedCommand = async (
   if (definition.kind === 'window-control') {
     if (commandId === 'release-window-activate') {
       const windowId = options.windowId ?? 'milestone-a';
+      if (state.windowActive === windowId) {
+        return {
+          afterDigest: beforeDigest,
+          beforeDigest,
+          commandId,
+          exitCode: 0,
+          mode: 'already-satisfied',
+          mutates: true,
+          postcondition: `windowActive=${windowId}:no-change`,
+        };
+      }
       state.windowActive = windowId;
+      state.opSeq += 1;
       await saveCommandState(stateDir, state);
       const reloaded = await loadCommandState(stateDir);
-      if (reloaded.windowActive !== windowId) {
+      const afterDigest = digestCommandState(reloaded);
+      if (reloaded.windowActive !== windowId || afterDigest === beforeDigest) {
         return {
+          afterDigest,
+          beforeDigest,
           commandId,
           exitCode: 1,
           mode: 'executed',
@@ -277,6 +326,8 @@ export const dispatchAllowlistedCommand = async (
         };
       }
       return {
+        afterDigest,
+        beforeDigest,
         commandId,
         exitCode: 0,
         mode: 'executed',
@@ -285,13 +336,27 @@ export const dispatchAllowlistedCommand = async (
       };
     }
     if (commandId === 'release-window-rollback') {
+      if (state.windowActive === null && Object.values(state.flags).every((v) => v === false)) {
+        return {
+          afterDigest: beforeDigest,
+          beforeDigest,
+          commandId,
+          exitCode: 0,
+          mode: 'already-satisfied',
+          mutates: true,
+          postcondition: 'windowActive=null:no-change',
+        };
+      }
       state.windowActive = null;
-      // Disable high-risk flags on rollback.
       for (const key of Object.keys(state.flags)) state.flags[key] = false;
+      state.opSeq += 1;
       await saveCommandState(stateDir, state);
       const reloaded = await loadCommandState(stateDir);
+      const afterDigest = digestCommandState(reloaded);
       if (reloaded.windowActive !== null) {
         return {
+          afterDigest,
+          beforeDigest,
           commandId,
           exitCode: 1,
           mode: 'executed',
@@ -300,6 +365,8 @@ export const dispatchAllowlistedCommand = async (
         };
       }
       return {
+        afterDigest,
+        beforeDigest,
         commandId,
         exitCode: 0,
         mode: 'executed',
@@ -307,13 +374,15 @@ export const dispatchAllowlistedCommand = async (
         postcondition: 'windowActive=null',
       };
     }
-    // verify-rollback
+    // verify-rollback — read-only
     const reloaded = await loadCommandState(stateDir);
     const ok = reloaded.windowActive === null;
     return {
+      afterDigest: digestCommandState(reloaded),
+      beforeDigest,
       commandId,
       exitCode: ok ? 0 : 1,
-      mode: 'executed',
+      mode: 'verified',
       mutates: false,
       postcondition: ok ? 'rollback-verified' : 'rollback-not-verified',
     };
@@ -329,18 +398,22 @@ export const dispatchAllowlistedCommand = async (
       const value = reloaded.metrics[metric] ?? 0;
       if (value > threshold) {
         return {
+          afterDigest: digestCommandState(reloaded),
+          beforeDigest,
           commandId,
           exitCode: 1,
-          mode: 'executed',
+          mode: 'observed',
           mutates: false,
           postcondition: `threshold-breached:${metric}`,
         };
       }
     }
     return {
+      afterDigest: digestCommandState(reloaded),
+      beforeDigest,
       commandId,
       exitCode: 0,
-      mode: 'executed',
+      mode: 'observed',
       mutates: false,
       postcondition: 'metrics-within-thresholds',
     };
