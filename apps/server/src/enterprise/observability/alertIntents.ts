@@ -120,7 +120,7 @@ export const ENTERPRISE_ALERT_INTENTS = [
   },
   {
     description:
-      'The max cluster operational snapshot age exceeds a deployment-defined collection window.',
+      'The required operational collector-enabled signal is not reaching Prometheus (no-data), or an enabled collector is uninitialized/stale after the deployment-defined window.',
     key: 'operational_collection_stale',
     metric: 'enterprise_platform_operational_snapshot_age_seconds',
     ruleName: 'EnterpriseOperationalCollectionStale',

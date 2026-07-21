@@ -247,9 +247,15 @@ groups:
       # Gated by enterprise_platform_operational_collector_enabled (0/1 for every known
       # collector after operational runtime activate). Disabled collectors (enabled=0)
       # must not false-alert — e.g. revision_lag when ENABLE_DATABASE_OIDC is off.
-      # job_backlog is always expected when the operational runtime runs; absent(enabled
-      # for job_backlog) means telemetry/app never configured the runtime (no-data branch).
-      # Per enabled collector: ready==0, absent(ready), or age>180 after max-by-replica.
+      #
+      # No-data branch: absent(enabled{job_backlog}) means the required collector-enabled
+      # signal is not reaching Prometheus. Plausible causes are indistinguishable here:
+      # app/runtime not running, activate never reached, OTel exporter/collector failure,
+      # remote-write/scrape/ingestion loss, or configuration omission. This branch does
+      # NOT uniquely diagnose "config omission" and does NOT stay inactive when signals
+      # are missing — it deliberately fires after `for`.
+      #
+      # Per enabled collector (enabled==1): ready==0, absent(ready), or age>180.
       - alert: EnterpriseOperationalCollectionStale
         expr: |
           absent(
@@ -302,5 +308,5 @@ groups:
         annotations:
           summary: Enterprise operational metric collection is stale or never initialized
           description: >-
-            Fires for 5m when operational telemetry is missing for expected job_backlog enabled, or any enabled collector (enabled==1) has ready==0, absent ready, or age>180s after max-by-replica (reference default). Disabled collectors (enabled=0, e.g. revision_lag without DB OIDC) do not alert. Per-collector identity prevents masking; never sum replicas.
+            Fires for 5m when the required job_backlog collector-enabled signal is not reaching Prometheus (no-data), or when any enabled collector (enabled==1) has ready==0, absent ready, or age>180s after max-by-replica (reference default). No-data does not identify which hop failed: app/runtime not running, activation never reached, OTel exporter/collector failure, remote-write/scrape/ingestion loss, or configuration omission are all plausible. Disabled collectors (enabled=0, e.g. revision_lag without DB OIDC) do not alert. Per-collector identity prevents masking; never sum replicas.
           runbook: docs/enterprise/runbooks/enterprise-prometheus-alerts.md#enterpriseoperationalcollectionstale

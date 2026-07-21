@@ -108,8 +108,21 @@ describe('enterprise alert intents', () => {
     expect(operational!.expr).toContain('enterprise_collector="job_backlog"');
     expect(operational!.expr).toContain('enterprise_collector="revision_lag"');
     expect(operational!.expr).toMatch(/==\s*1/);
-    expect(operational!.expr).toMatch(/absent\s*\(/);
+    expect(operational!.expr).toMatch(
+      /absent\(\s*enterprise_platform_operational_snapshot_ready\{enterprise_collector="job_backlog"\}\s*\)/,
+    );
+    expect(operational!.expr).toMatch(
+      /absent\(\s*enterprise_platform_operational_snapshot_ready\{enterprise_collector="revision_lag"\}\s*\)/,
+    );
     expect(operational!.expr).not.toContain('enterprise.');
+  });
+
+  it('documents operational no-data as required enabled signal not reaching Prometheus', () => {
+    const intent = ENTERPRISE_ALERT_INTENTS.find(
+      (entry) => entry.key === 'operational_collection_stale',
+    );
+    expect(intent?.description).toMatch(/not reaching Prometheus|no-data/i);
+    expect(intent?.description).not.toMatch(/only stale age|stale age exceeds only/i);
   });
 
   it('guards ratio alerts against zero-traffic denominators', () => {

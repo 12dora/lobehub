@@ -22,7 +22,7 @@ Intent metadata is **1:1** with YAML `alert:` names. Unit tests reconcile keys, 
 - **No Alertmanager (or other) receiver** is configured in the reference compose stack.
 - A **firing rule without a receiver is still observable** in the Prometheus UI (`/alerts`, `/rules`).
 - **Production notifications, routing trees, inhibition, and silences are deployment-owned.** Do not treat the reference defaults as production policy, and do not claim production deployment from this repository path alone.
-- Metrics emission (OTel) remains independent of alerting backends. Without a scrape/remote-write path, rules evaluate empty series and stay inactive.
+- Metrics emission (OTel) remains independent of alerting backends. Most ratio/rate rules need series to evaluate. The operational **no-data** branch is different: when the required `job_backlog` collector-enabled signal is not reaching Prometheus, `EnterpriseOperationalCollectionStale` **deliberately fires** after `for` (it does not stay inactive).
 
 ## Validate rules (local / CI)
 
@@ -162,10 +162,14 @@ Authoritative enablement: `enterprise_platform_operational_collector_enabled{ent
 
 Fires for 5m (reference defaults) when:
 
-1. **Telemetry no-data:** `absent(enabled{enterprise_collector="job_backlog"})` — the runtime always expects job\_backlog when it runs; complete absence of the enabled signal means operational telemetry is not configured (not “collector disabled”).
-2. **Enabled collector unhealthy:** `enabled==1` **and** (`ready==0` **or** `absent(ready)` **or** `age>180`) for that collector after **max by (enterprise\_collector)** across replicas.
+1. **No-data (required signal not reaching Prometheus):** `absent(enabled{enterprise_collector="job_backlog"})`. This means the required collector-enabled time series is not present in Prometheus. Plausible causes are **indistinguishable** at this layer and must not be over-diagnosed as “config omission only”:
+   - app/runtime not running, or collector activation never reached
+   - OTel exporter or collector pipeline failure
+   - remote-write, scrape, or query ingestion loss
+   - configuration omission
+2. **Enabled collector unhealthy:** `enabled==1` **and** (`ready==0` **or** `absent(ready)` **or** `age>180`) for that collector after **max by (enterprise\_collector)** across replicas — including when enabled=1 but the ready series is entirely absent.
 
-**Disabled collectors (enabled=0)** never contribute ready/age/absence firings. **Replica policy:** max-by-collector (never sum). Semantic coverage: `promtool test rules` (`enterprise-platform-alerts.test.yml`).
+**Non-goals / accurate behavior:** This alert does **not** stay inactive when the required enabled signal is missing; the no-data branch is intentional. It does **not** uniquely diagnose which hop failed. **Disabled collectors (enabled=0)** never contribute ready/age/absence firings. **Replica policy:** max-by-collector (never sum). Semantic coverage: `promtool test rules` (`enterprise-platform-alerts.test.yml`).
 
 ## Related
 

@@ -18,6 +18,7 @@ import {
   buildOperationalCollectorAttributes,
   buildRevisionLagAttributes,
   buildSsrfDenialAttributes,
+  ENTERPRISE_AGENT_MATERIALIZATION_OUTCOMES,
   ENTERPRISE_CACHE_DOMAINS,
   ENTERPRISE_CACHE_LOAD_OUTCOMES,
   ENTERPRISE_CONFIG_PUBLISH_OUTCOMES,
@@ -78,13 +79,9 @@ export const METRIC_ALLOWED_PROMETHEUS_LABELS: Readonly<Record<string, readonly 
 
 /** Closed values allowed per metric for enterprise_outcome (metric-local, not global). */
 const OUTCOME_BY_METRIC: Partial<Record<string, ReadonlySet<string>>> = {
-  enterprise_platform_agent_materialization_total: new Set([
-    'created',
-    'reused',
-    'race_reused',
-    'archived',
-    'failure',
-  ]),
+  enterprise_platform_agent_materialization_total: new Set(
+    ENTERPRISE_AGENT_MATERIALIZATION_OUTCOMES,
+  ),
   enterprise_platform_cache_load_total: new Set(ENTERPRISE_CACHE_LOAD_OUTCOMES),
   enterprise_platform_config_publish_total: new Set(ENTERPRISE_CONFIG_PUBLISH_OUTCOMES),
   enterprise_platform_guard_decision_total: new Set(ENTERPRISE_GUARD_OUTCOMES),

@@ -23,8 +23,12 @@ so metadata cannot drift from YAML; they do **not** replace promtool or the OTLP
 
 `EnterpriseOperationalCollectionStale` is gated by
 `enterprise_platform_operational_collector_enabled` (0/1 for every known collector after
-activate). Disabled collectors (enabled=0) do not false-alert; enabled collectors still fire on
-ready==0 / absent ready / age>180. Semantic fixtures live in `promtool test rules`.
+activate). Disabled collectors (enabled=0) do not false-alert. Enabled collectors fire on
+ready==0 / absent ready / age>180. **No-data:** `absent(enabled{job_backlog})` means the required
+collector-enabled signal is not reaching Prometheus — app/runtime down, activation never reached,
+exporter/collector failure, remote-write/scrape/ingestion loss, or config omission are all
+plausible and not distinguished. That branch deliberately fires after `for`; it does not stay
+inactive when signals are missing. Semantic fixtures live in `promtool test rules`.
 
 **Notification receivers and production routing are not configured in this repository.** A firing
 rule without a receiver is still observable in the Prometheus UI. Deployments must own Alertmanager

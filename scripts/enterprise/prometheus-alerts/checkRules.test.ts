@@ -125,7 +125,47 @@ describe('enterprise prometheus — production selector parsing + emission', () 
     expect(rule!.expr).toContain('enterprise_collector="job_backlog"');
     expect(rule!.expr).toContain('enterprise_collector="revision_lag"');
     expect(rule!.expr).toMatch(/==\s*1/);
-    expect(rule!.expr).toMatch(/absent\s*\(/);
+    // Explicit absent(ready) per enabled collector — removing either branch must fail this test.
+    const absentReadyJob =
+      /absent\(\s*enterprise_platform_operational_snapshot_ready\{enterprise_collector="job_backlog"\}\s*\)/;
+    const absentReadyRevision =
+      /absent\(\s*enterprise_platform_operational_snapshot_ready\{enterprise_collector="revision_lag"\}\s*\)/;
+    expect(rule!.expr).toMatch(absentReadyJob);
+    expect(rule!.expr).toMatch(absentReadyRevision);
+    expect(rule!.expr.match(absentReadyJob)).toHaveLength(1);
+    expect(rule!.expr.match(absentReadyRevision)).toHaveLength(1);
+    // No-data branch is absent(enabled{job_backlog}), not a claim that rules stay inactive.
+    expect(rule!.expr).toMatch(
+      /absent\(\s*enterprise_platform_operational_collector_enabled\{enterprise_collector="job_backlog"\}\s*\)/,
+    );
+  });
+
+  it('fails static reconcile when either absent(ready) branch is removed from production expr', () => {
+    const rule = parsePrometheusAlertRulesFile(rulesPath).find(
+      (entry) => entry.alert === 'EnterpriseOperationalCollectionStale',
+    );
+    expect(rule).toBeDefined();
+    const withoutJobReadyAbsent = rule!.expr.replace(
+      /absent\(\s*enterprise_platform_operational_snapshot_ready\{enterprise_collector="job_backlog"\}\s*\)/,
+      'vector(0)',
+    );
+    const withoutRevisionReadyAbsent = rule!.expr.replace(
+      /absent\(\s*enterprise_platform_operational_snapshot_ready\{enterprise_collector="revision_lag"\}\s*\)/,
+      'vector(0)',
+    );
+    expect(withoutJobReadyAbsent).not.toMatch(
+      /absent\(\s*enterprise_platform_operational_snapshot_ready\{enterprise_collector="job_backlog"\}\s*\)/,
+    );
+    expect(withoutRevisionReadyAbsent).not.toMatch(
+      /absent\(\s*enterprise_platform_operational_snapshot_ready\{enterprise_collector="revision_lag"\}\s*\)/,
+    );
+    // Production expr must still contain both (guards against silent removal).
+    expect(rule!.expr).toMatch(
+      /absent\(\s*enterprise_platform_operational_snapshot_ready\{enterprise_collector="job_backlog"\}\s*\)/,
+    );
+    expect(rule!.expr).toMatch(
+      /absent\(\s*enterprise_platform_operational_snapshot_ready\{enterprise_collector="revision_lag"\}\s*\)/,
+    );
   });
 
   it('never mutates unaltered builder output to satisfy matchers', () => {
@@ -139,6 +179,26 @@ describe('enterprise prometheus — production selector parsing + emission', () 
     const attributes = buildUnalteredAttributesForSelector(cache!);
     expect(attributes['enterprise.outcome']).toBe('load_failure');
     expect(attributes['enterprise.stage']).toBeUndefined();
+  });
+
+  it('uses authoritative agent materialization outcomes constant for reconcile + builder', async () => {
+    const { ENTERPRISE_AGENT_MATERIALIZATION_OUTCOMES } =
+      await import('@lobechat/observability-otel/modules/enterprise-platform');
+    expect(ENTERPRISE_AGENT_MATERIALIZATION_OUTCOMES).toContain('failure');
+    const selectors = parseProductionRuleSelectors(rulesPath);
+    const materialization = selectors.find(
+      (selector) =>
+        selector.metric === 'enterprise_platform_agent_materialization_total' &&
+        selector.matchers.some((matcher) => matcher.value === 'failure'),
+    );
+    expect(materialization).toBeDefined();
+    const attributes = buildUnalteredAttributesForSelector(materialization!);
+    expect(attributes['enterprise.outcome']).toBe('failure');
+    expect(ENTERPRISE_AGENT_MATERIALIZATION_OUTCOMES).toContain(
+      attributes[
+        'enterprise.outcome'
+      ] as (typeof ENTERPRISE_AGENT_MATERIALIZATION_OUTCOMES)[number],
+    );
   });
 });
 
