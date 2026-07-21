@@ -51,6 +51,8 @@ const styles = createStaticStyles(({ css, cssVar }) => ({
 
 interface CredTypeSelectorProps {
   disabled?: boolean;
+  /** Credential types that cannot be selected (e.g. OAuth on platform admin). */
+  disabledTypes?: CredType[];
   onSelect: (type: CredType) => void;
 }
 
@@ -81,28 +83,38 @@ const typeConfigs: Array<{
   },
 ];
 
-const CredTypeSelector: FC<CredTypeSelectorProps> = ({ disabled, onSelect }) => {
+const CredTypeSelector: FC<CredTypeSelectorProps> = ({ disabled, disabledTypes, onSelect }) => {
   const { t } = useTranslation('setting');
+  const disabledSet = new Set(disabledTypes ?? []);
 
   return (
     <div className={styles.grid}>
-      {typeConfigs.map(({ type, icon, description }) => (
-        <Card
-          className={`${styles.card} ${disabled ? styles.cardDisabled : ''}`}
-          key={type}
-          size="small"
-          onClick={() => {
-            if (disabled) return;
-            onSelect(type);
-          }}
-        >
-          <Flexbox align="center">
-            <div className={styles.icon}>{icon}</div>
-            <div className={styles.title}>{t(`creds.types.${type}`)}</div>
-            <div className={styles.description}>{t(description as any)}</div>
-          </Flexbox>
-        </Card>
-      ))}
+      {typeConfigs.map(({ type, icon, description }) => {
+        const typeDisabled = disabled || disabledSet.has(type);
+        return (
+          <Card
+            className={`${styles.card} ${typeDisabled ? styles.cardDisabled : ''}`}
+            key={type}
+            size="small"
+            onClick={() => {
+              if (typeDisabled) return;
+              onSelect(type);
+            }}
+          >
+            <Flexbox align="center">
+              <div className={styles.icon}>{icon}</div>
+              <div className={styles.title}>{t(`creds.types.${type}`)}</div>
+              <div className={styles.description}>
+                {typeDisabled && disabledSet.has(type)
+                  ? t('creds.platformOauthUnsupported' as any, {
+                      defaultValue: 'Not available for platform global credentials',
+                    })
+                  : t(description as any)}
+              </div>
+            </Flexbox>
+          </Card>
+        );
+      })}
     </div>
   );
 };

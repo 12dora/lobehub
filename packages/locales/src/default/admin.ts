@@ -514,6 +514,7 @@ export default {
   'nav.agents': 'Agents',
   'nav.agentDetail': 'Agent details',
   'nav.ai': 'AI infrastructure',
+  'nav.aiCreds': 'Credentials',
   'nav.aiModels': 'Models',
   'nav.aiProviderDetail': 'Provider detail',
   'nav.aiProviders': 'Providers',
@@ -535,6 +536,10 @@ export default {
   'stats.banner.usersTotal': 'Total users',
   'stats.banner.usersActive': 'Active users (30d)',
   'stats.banner.scopeNote': 'All metrics cover every user and workspace.',
+
+  'creds.page.title': 'Credentials',
+  'creds.page.desc':
+    'Platform-owned global credentials shared by all users. Secrets are envelope-encrypted and never revealed after save.',
 
   'nav.userDetail': 'User detail',
   'nav.users': 'Users',

@@ -136,6 +136,13 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
         placeholder: false,
         requiredPermissions: [PLATFORM_PERMISSIONS.AI_MODEL_READ],
       },
+      {
+        id: 'ai-creds',
+        labelKey: 'nav.aiCreds',
+        path: '/admin/ai/creds',
+        placeholder: false,
+        requiredPermissions: [PLATFORM_PERMISSIONS.CRED_READ],
+      },
     ],
     id: 'ai',
     labelKey: 'nav.ai',
