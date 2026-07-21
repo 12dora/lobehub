@@ -1,5 +1,5 @@
 /**
- * Q05 upstream-rebase adapter: mandatory candidate binding; immutable generatedAt required.
+ * Q05 adapter against actual upstreamRebaseEvidenceSchema.
  */
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
@@ -18,13 +18,15 @@ export const adaptUpstreamRebaseEvidence = async (input: {
   const artifactSha256 = createHash('sha256').update(raw).digest('hex');
   const evidence = upstreamRebaseEvidenceSchema.parse(JSON.parse(raw));
 
-  const short = input.candidateSha.slice(0, 12);
-  if (evidence.commits.candidate !== short) {
+  if (evidence.candidateSha) {
+    if (evidence.candidateSha !== input.candidateSha) {
+      throw new Error('upstream-rebase candidateSha mismatch');
+    }
+  } else if (evidence.commits.candidate !== input.candidateSha.slice(0, 12)) {
     throw new Error('upstream-rebase candidate short does not match release candidate');
   }
 
-  const record = JSON.parse(raw) as { generatedAt?: string };
-  if (typeof record.generatedAt !== 'string' || Number.isNaN(Date.parse(record.generatedAt))) {
+  if (!evidence.generatedAt) {
     return {
       artifactSha256,
       assertions: {
@@ -34,7 +36,7 @@ export const adaptUpstreamRebaseEvidence = async (input: {
         total: evidence.gates.length,
       },
       candidateSha: input.candidateSha,
-      details: { reason: 'missing-immutable-generatedAt' },
+      details: { reason: 'missing-generatedAt' },
       gate: 'upstream-rebase',
       generatedAt: new Date(0).toISOString(),
       harnessScope: 'ci-harness',
@@ -66,7 +68,7 @@ export const adaptUpstreamRebaseEvidence = async (input: {
       upstreamFreshness: evidence.upstream.freshness,
     },
     gate: 'upstream-rebase',
-    generatedAt: record.generatedAt,
+    generatedAt: evidence.generatedAt,
     harnessScope: 'ci-harness',
     rawArtifactPaths: [input.evidencePath],
     status,

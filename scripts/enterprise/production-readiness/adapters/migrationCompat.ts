@@ -1,5 +1,5 @@
 /**
- * Q03 migration-compat adapter: mandatory candidate binding; immutable generatedAt required.
+ * Q03 adapter against actual migrationCompatReportSchema fields.
  */
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
@@ -13,23 +13,21 @@ export const adaptMigrationCompatReport = async (input: {
 }): Promise<AdaptedGateEvidence> => {
   const rawText = await readFile(input.reportPath, 'utf8');
   const artifactSha256 = createHash('sha256').update(rawText).digest('hex');
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(rawText);
-  } catch {
-    throw new Error('migration-compat report is not valid JSON');
-  }
-
+  const parsed = JSON.parse(rawText) as unknown;
   const report = migrationCompatReportSchema.parse(parsed);
-  // Mandatory candidate binding: head short must be unambiguous prefix of full candidate SHA.
-  if (!input.candidateSha.startsWith(report.head.commitShort)) {
+
+  // Prefer full candidateSha when present; else short must be unambiguous prefix.
+  if (report.candidateSha) {
+    if (report.candidateSha !== input.candidateSha) {
+      throw new Error('migration-compat candidateSha mismatch');
+    }
+  } else if (!input.candidateSha.startsWith(report.head.commitShort)) {
     throw new Error('migration-compat head commit does not match candidate');
   }
 
   const foundationOk = gatePassed(report);
-  const record = parsed as { generatedAt?: string };
-  if (typeof record.generatedAt !== 'string' || Number.isNaN(Date.parse(record.generatedAt))) {
-    // Source format lacks immutable timestamp → unverified until collector upgraded.
+  const generatedAt = report.generatedAt;
+  if (!generatedAt) {
     return {
       artifactSha256,
       assertions: {
@@ -40,10 +38,7 @@ export const adaptMigrationCompatReport = async (input: {
         total: report.checks.length,
       },
       candidateSha: input.candidateSha,
-      details: {
-        foundationGatePassed: foundationOk,
-        reason: 'missing-immutable-generatedAt',
-      },
+      details: { foundationGatePassed: foundationOk, reason: 'missing-generatedAt' },
       gate: 'migration-compat',
       generatedAt: new Date(0).toISOString(),
       harnessScope: 'local-harness',
@@ -76,7 +71,7 @@ export const adaptMigrationCompatReport = async (input: {
       totalMigrationCount: report.head.totalMigrationCount,
     },
     gate: 'migration-compat',
-    generatedAt: record.generatedAt,
+    generatedAt,
     harnessScope: 'local-harness',
     rawArtifactPaths: [input.reportPath],
     status,

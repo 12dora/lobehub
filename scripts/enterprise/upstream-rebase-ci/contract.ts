@@ -288,6 +288,10 @@ const evidenceCoreObjectSchema = z
         upstream: shortShaSchema,
       })
       .strict(),
+    /** Full candidate SHA when available (Q06 binding). */
+    candidateSha: fullShaSchema.optional(),
+    /** Immutable seal time (ISO) for freshness (Q06). */
+    generatedAt: z.string().datetime({ offset: true }).or(z.string().datetime()).optional(),
     gates: z.array(evidenceGateResultSchema).max(32),
     lane: z.literal(UPSTREAM_REBASE_CI_LANE),
     reportStatus: z.enum(['clean', 'conflicts', 'drift']),
