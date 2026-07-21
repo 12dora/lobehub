@@ -1,4 +1,4 @@
-import { and, eq, sql } from 'drizzle-orm';
+import { and, count, eq, max, sql } from 'drizzle-orm';
 
 import {
   type NewPlatformEasyauthGrantSnapshot,
@@ -25,6 +25,13 @@ export interface UpsertEasyauthGrantSnapshotParams {
   userId: string;
 }
 
+export interface EasyauthGrantSnapshotAggregate {
+  accessGrantedCount: number;
+  degradedCount: number;
+  latestFetchedAt: Date | null;
+  totalCount: number;
+}
+
 export class EasyauthGrantSnapshotModel {
   private readonly db: LobeChatDatabase | Transaction;
 
@@ -42,6 +49,32 @@ export class EasyauthGrantSnapshotModel {
         eq(platformEasyauthGrantSnapshots.appKey, appKey),
       ),
     });
+  };
+
+  /**
+   * Aggregate snapshot health for admin status surfaces (secret-free counts only).
+   * Optional appKey scopes to a single EasyAuth application.
+   */
+  aggregateStatus = async (appKey?: string): Promise<EasyauthGrantSnapshotAggregate> => {
+    const base = this.db
+      .select({
+        accessGrantedCount: sql<number>`coalesce(sum(case when ${platformEasyauthGrantSnapshots.accessGranted} then 1 else 0 end), 0)`,
+        degradedCount: sql<number>`coalesce(sum(case when ${platformEasyauthGrantSnapshots.degraded} then 1 else 0 end), 0)`,
+        latestFetchedAt: max(platformEasyauthGrantSnapshots.fetchedAt),
+        totalCount: count(),
+      })
+      .from(platformEasyauthGrantSnapshots);
+
+    const [row] = appKey
+      ? await base.where(eq(platformEasyauthGrantSnapshots.appKey, appKey))
+      : await base;
+
+    return {
+      accessGrantedCount: Number(row?.accessGrantedCount ?? 0),
+      degradedCount: Number(row?.degradedCount ?? 0),
+      latestFetchedAt: row?.latestFetchedAt ?? null,
+      totalCount: Number(row?.totalCount ?? 0),
+    };
   };
 
   /**

@@ -2,6 +2,7 @@
 import { eq, inArray, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { PLATFORM_ERROR_CODES } from '@/const/platform/errorCodes';
 import { PLATFORM_PERMISSIONS } from '@/const/platform/permissions';
 import { getServerDB } from '@/database/core/db-adaptor';
 import { getTestDB } from '@/database/core/getTestDB';
@@ -20,6 +21,7 @@ import type { LobeChatDatabase } from '@/database/type';
 import { seedPlatformRoles } from '@/database/utils/seedPlatformRoles';
 import { createCallerFactory } from '@/libs/trpc/lambda';
 import { createContextInner } from '@/libs/trpc/lambda/context';
+import { getEnterpriseErrorBody } from '@/server/enterprise/guards/enterpriseErrors';
 import { PlatformSecretService } from '@/server/enterprise/security/secret';
 
 import { adminRouter } from '../admin';
@@ -425,6 +427,33 @@ describe('admin.identityProviders RBAC and feature gate', () => {
     expect(secretFactory).not.toHaveBeenCalled();
     select.mockRestore();
     secretFactory.mockRestore();
+  });
+
+  it('surfaces PLATFORM_SECRET_REQUIRED when Database OIDC is on but master key is missing', async () => {
+    // Real deploy path: flag on → secret factory throws PlatformSecretError with
+    // .code=PLATFORM_SECRET_REQUIRED and a prose message (not the code string).
+    vi.stubEnv('ENABLE_DATABASE_OIDC', '1');
+    vi.stubEnv('ENABLE_PLATFORM_ADMIN', '1');
+    vi.stubEnv('PLATFORM_MASTER_KEY', '');
+    vi.stubEnv('APP_URL', 'https://app.example.test');
+
+    const reader = await callerFor(ids.reader);
+    let thrown: unknown;
+    try {
+      await reader.list({ limit: 10 });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeDefined();
+    // Client-visible structured code used by isIdentityProviderSetupGuidanceError.
+    expect(getEnterpriseErrorBody(thrown)?.code).toBe(
+      PLATFORM_ERROR_CODES.PLATFORM_SECRET_REQUIRED,
+    );
+    expect(thrown).toMatchObject({ message: PLATFORM_ERROR_CODES.PLATFORM_SECRET_REQUIRED });
+    // Must not collapse into the generic invalid-input fallback.
+    expect(getEnterpriseErrorBody(thrown)?.code).not.toBe(
+      PLATFORM_ERROR_CODES.PLATFORM_INVALID_INPUT,
+    );
   });
 
   it('requires recent reauth before deleting a draft and remains denied if audit fails', async () => {
