@@ -11,9 +11,10 @@ describe('platform permissions catalog', () => {
     }
   });
 
-  it('includes admin access, audit, and role codes', () => {
+  it('includes admin access, audit, stats, and role codes', () => {
     expect(PLATFORM_PERMISSIONS.ADMIN_ACCESS).toBe('platform_admin:access:all');
     expect(PLATFORM_PERMISSIONS.AUDIT_READ).toBe('platform_audit:read:all');
+    expect(PLATFORM_PERMISSIONS.STATS_READ).toBe('platform_stats:read:all');
     expect(PLATFORM_PERMISSIONS.ROLE_READ).toBe('platform_role:read:all');
     expect(PLATFORM_PERMISSIONS.ROLE_UPDATE).toBe('platform_role:update:all');
   });

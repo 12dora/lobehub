@@ -13,20 +13,22 @@ import { useWorkspaceAwareNavigate } from '@/features/Workspace/useWorkspaceAwar
 import Link from '@/libs/router/Link';
 import { useClientDataSWR } from '@/libs/swr';
 import { statsKeys } from '@/libs/swr/keys';
-import { agentService } from '@/services/agent';
 import { useAgentStore } from '@/store/agent';
 import { builtinAgentSelectors } from '@/store/agent/selectors';
 import { type AgentRankItem } from '@/types/agent';
 
 import StatsFormGroup from '../components/StatsFormGroup';
+import { scopeStatsKey, useStatsDataSource } from '../StatsDataSource';
 
 export const AssistantsRank = memo<{ mobile?: boolean }>(({ mobile }) => {
   const [open, setOpen] = useState(false);
   const { t } = useTranslation(['auth', 'chat']);
   const navigate = useWorkspaceAwareNavigate();
   const inboxAgentId = useAgentStore(builtinAgentSelectors.inboxAgentId);
-  const { data, isLoading, error, mutate } = useClientDataSWR(statsKeys.rankAgents(), async () =>
-    agentService.rankAgents(),
+  const { rankAgents, scopeKey } = useStatsDataSource();
+  const { data, isLoading, error, mutate } = useClientDataSWR(
+    scopeStatsKey(statsKeys.rankAgents(), scopeKey),
+    async () => rankAgents(),
   );
 
   const showExtra = Boolean(data && data?.length > 5);

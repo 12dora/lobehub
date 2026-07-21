@@ -73,6 +73,9 @@ export const PLATFORM_PERMISSIONS = {
 
   OIDC_PUBLISH: 'platform_oidc:publish:all',
 
+  /** Global platform data statistics (admin stats dashboard). */
+  STATS_READ: 'platform_stats:read:all',
+
   /** Role assignment / EasyAuth sync status (admin.roles / admin.easyauth). */
   ROLE_READ: 'platform_role:read:all',
   ROLE_UPDATE: 'platform_role:update:all',
