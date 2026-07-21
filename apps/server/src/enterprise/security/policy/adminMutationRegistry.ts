@@ -267,12 +267,6 @@ export const ADMIN_MUTATION_REGISTRY = {
     'medium',
     'Reorder models in a provider draft.',
   ),
-  'admin.aiModels.applyImmediate': dangerousMutation(
-    'admin.aiModels.applyImmediate',
-    'critical',
-    'Create or update a platform AI model draft and publish immediately.',
-    { reauth: recentReauth },
-  ),
   'admin.aiModels.update': regularMutation(
     'admin.aiModels.update',
     'medium',
