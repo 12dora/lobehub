@@ -54,6 +54,11 @@ export const ADMIN_ERROR_CODES = {
   ADMIN_REAUTH_REQUIRED: 'ADMIN_REAUTH_REQUIRED',
   ADMIN_REASON_REQUIRED: 'ADMIN_REASON_REQUIRED',
   ADMIN_FEATURE_DISABLED: 'ADMIN_FEATURE_DISABLED',
+  /**
+   * Administrative mutation quota exhausted or the shared limiter authority is
+   * unavailable (fail closed). Maps to tRPC TOO_MANY_REQUESTS.
+   */
+  ADMIN_RATE_LIMITED: 'ADMIN_RATE_LIMITED',
 } as const;
 
 export type AdminErrorCode = (typeof ADMIN_ERROR_CODES)[keyof typeof ADMIN_ERROR_CODES];

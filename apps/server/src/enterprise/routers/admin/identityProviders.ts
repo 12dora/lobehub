@@ -29,6 +29,7 @@ import {
   adminIdentityProviderValidateNetworkOutputSchema,
 } from '../../contracts/identityProviders';
 import { withActiveUser } from '../../guards/activeUser';
+import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
 import { throwEnterpriseError } from '../../guards/enterpriseErrors';
 import { withPlatformPermission } from '../../guards/platformPermission';
 import { assertRecentReauth } from '../../guards/reauth';
@@ -159,6 +160,7 @@ const identityProviderProcedure = preAccessAuthedProcedure
   .use(enterpriseAccessGate)
   .use(serverDatabase)
   .use(withActiveUser())
+  .use(withAdminMutationRateLimit())
   .use(async ({ ctx, next }) =>
     next({
       ctx: {
@@ -216,7 +218,9 @@ export const adminIdentityProvidersRouter = router({
     .input(adminIdentityProviderDiscoverInputSchema)
     .output(adminIdentityProviderDiscoveryOutputSchema)
     .mutation(({ ctx, input }) =>
-      execute(() => ctx.getIdentityProviderRuntime().admin.discoverIssuer(input.issuer)),
+      execute(() =>
+        ctx.getIdentityProviderRuntime().admin.discoverIssuer(ctx.userId!, input.issuer),
+      ),
     ),
 
   get: identityProviderProcedure
@@ -345,6 +349,8 @@ export const adminIdentityProvidersRouter = router({
     .input(adminIdentityProviderDiscoverInputSchema)
     .output(adminIdentityProviderValidateNetworkOutputSchema)
     .mutation(({ ctx, input }) =>
-      execute(() => ctx.getIdentityProviderRuntime().admin.validateNetwork(input.issuer)),
+      execute(() =>
+        ctx.getIdentityProviderRuntime().admin.validateNetwork(ctx.userId!, input.issuer),
+      ),
     ),
 });

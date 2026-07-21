@@ -17,6 +17,7 @@ import {
 } from '../../contracts/adminSettings';
 import { getEnterpriseFeatureFlags } from '../../featureFlags';
 import { withActiveUser } from '../../guards/activeUser';
+import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
 import { throwEnterpriseError } from '../../guards/enterpriseErrors';
 import { withPlatformPermission } from '../../guards/platformPermission';
 import { assertRecentReauth } from '../../guards/reauth';
@@ -27,7 +28,10 @@ import {
   SettingsDraftValidationError,
 } from '../../services/settings/adminSettingsService';
 
-const adminBase = authedProcedure.use(serverDatabase).use(withActiveUser());
+const adminBase = authedProcedure
+  .use(serverDatabase)
+  .use(withActiveUser())
+  .use(withAdminMutationRateLimit());
 
 /** B9-R2: feature-disabled → denied audit, zero mutation. */
 const assertSettingsFeature = async (params: {
@@ -162,7 +166,24 @@ export const adminSettingsRouter = router({
       const draft =
         input.draft ??
         ((await service.getDraft()).draft as Parameters<typeof service.validateDraft>[0]);
-      return service.validateDraft(draft);
+      const result = await service.validateDraft(draft);
+      try {
+        await new PlatformAuditService(ctx.serverDB).append({
+          action: 'admin.settings.validateDraft',
+          actorUserId: ctx.userId!,
+          afterDiff: {
+            issueCount: result.issues.length,
+            ok: result.ok,
+          },
+          result: result.ok ? 'success' : 'failure',
+          targetType: 'settings_validation',
+        });
+      } catch (auditError) {
+        console.error('[admin.settings] validateDraft audit unavailable', {
+          errorClass: auditError instanceof Error ? auditError.name : 'UnknownError',
+        });
+      }
+      return result;
     }),
 
   publish: adminBase

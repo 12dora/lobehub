@@ -18,6 +18,7 @@ import {
 } from '../../contracts/adminBranding';
 import { parseEnterpriseFeatureFlags } from '../../featureFlags';
 import { withActiveUser } from '../../guards/activeUser';
+import { withAdminMutationRateLimit } from '../../guards/adminMutationRateLimit';
 import { throwEnterpriseError } from '../../guards/enterpriseErrors';
 import { withPlatformPermission } from '../../guards/platformPermission';
 import { assertRecentReauth } from '../../guards/reauth';
@@ -54,7 +55,8 @@ const brandingProcedure = preAccessAuthedProcedure
   })
   .use(enterpriseAccessGate)
   .use(serverDatabase)
-  .use(withActiveUser());
+  .use(withActiveUser())
+  .use(withAdminMutationRateLimit());
 
 const mapBrandingError = (error: unknown): never => {
   if (error instanceof BrandingIdempotencyConflictError) {
