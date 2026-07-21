@@ -7,6 +7,7 @@ export * from './checksum';
 export * from './easyauthGrantSnapshot';
 export * from './easyauthLoginSync';
 export * from './errors';
+export * from './globalCredential';
 export * from './globalStats';
 export * from './identityProvider';
 export * from './identityProviderPublishedRevisionLock';

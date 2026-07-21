@@ -45,9 +45,12 @@ const CredsList: FC = () => {
   const { isAuthenticated, isLoading: isAuthLoading, signIn } = useMarketAuth();
   const { allowed: canManageCredentials } = usePermission('manage_provider_key');
   const credsApi = useCredsApi();
+  // Platform (admin) credentials are not Market-scoped — skip Market auth gate.
+  const isPlatformMode = credsApi.mode === 'platform';
+  const listEnabled = isPlatformMode || isAuthenticated;
 
   const { data, error, isLoading, refetch } = credsApi.query.list.useQuery(undefined, {
-    enabled: isAuthenticated,
+    enabled: listEnabled,
   });
 
   const deleteMutation = useMutation({
@@ -74,7 +77,7 @@ const CredsList: FC = () => {
     createViewCredModal({ cred, credsApi });
   };
 
-  if (isAuthLoading) {
+  if (!isPlatformMode && isAuthLoading) {
     return (
       <Flexbox align={'center'} justify={'center'} style={{ padding: 48 }}>
         <Spin />
@@ -82,7 +85,7 @@ const CredsList: FC = () => {
     );
   }
 
-  if (!isAuthenticated) {
+  if (!isPlatformMode && !isAuthenticated) {
     return (
       <div className={styles.signInPrompt}>
         <Empty description={t('creds.signInRequired')} />
@@ -94,7 +97,13 @@ const CredsList: FC = () => {
   }
 
   // Org not created: guide users to complete Community Profile setup first.
-  if (!isLoading && error instanceof TRPCClientError && error.data?.code === 'NOT_FOUND') {
+  // Platform mode has no Market org dependency.
+  if (
+    !isPlatformMode &&
+    !isLoading &&
+    error instanceof TRPCClientError &&
+    error.data?.code === 'NOT_FOUND'
+  ) {
     return (
       <div className={styles.signInPrompt}>
         <Empty description={t('creds.orgSetupRequired')} />

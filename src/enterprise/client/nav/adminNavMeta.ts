@@ -17,6 +17,7 @@ export type AdminNavLabelKey =
   | 'nav.aiCatalogProviders'
   | 'nav.aiCatalogProviderDetail'
   | 'nav.aiCatalogModels'
+  | 'nav.aiCreds'
   | 'nav.skills'
   | 'nav.skillDetail'
   | 'nav.connectors'
@@ -155,6 +156,13 @@ export const ADMIN_NAV_ITEMS: readonly AdminNavItem[] = [
         path: '/admin/ai/catalog/models',
         placeholder: false,
         requiredPermissions: [PLATFORM_PERMISSIONS.AI_MODEL_READ],
+      },
+      {
+        id: 'ai-creds',
+        labelKey: 'nav.aiCreds',
+        path: '/admin/ai/creds',
+        placeholder: false,
+        requiredPermissions: [PLATFORM_PERMISSIONS.CRED_READ],
       },
     ],
     id: 'ai',

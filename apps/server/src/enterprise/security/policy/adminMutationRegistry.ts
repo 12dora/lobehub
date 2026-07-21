@@ -246,6 +246,12 @@ export const ADMIN_MUTATION_REGISTRY = {
     'admin.agents.validateDependencies',
     'Validate agent references without persisting them.',
   ),
+  'admin.aiModels.applyImmediate': dangerousMutation(
+    'admin.aiModels.applyImmediate',
+    'high',
+    'Apply model draft mutation(s) and publish the parent provider immediately.',
+    { outbound: safeOutbound, reauth: recentReauth },
+  ),
   'admin.aiModels.create': regularMutation(
     'admin.aiModels.create',
     'medium',
@@ -266,6 +272,12 @@ export const ADMIN_MUTATION_REGISTRY = {
     'medium',
     'Change a model in a provider draft.',
   ),
+  'admin.aiProviders.applyImmediate': dangerousMutation(
+    'admin.aiProviders.applyImmediate',
+    'high',
+    'Apply provider draft changes and publish immediately (auto connection test at first publish).',
+    { outbound: safeOutbound, reauth: recentReauth },
+  ),
   'admin.aiProviders.archive': dangerousMutation(
     'admin.aiProviders.archive',
     'high',
@@ -283,6 +295,12 @@ export const ADMIN_MUTATION_REGISTRY = {
     'high',
     'Publish AI provider configuration.',
     { reauth: recentReauth },
+  ),
+  'admin.aiProviders.publishNow': dangerousMutation(
+    'admin.aiProviders.publishNow',
+    'high',
+    'Re-run first-publish connection test when required, then publish immediately.',
+    { outbound: safeOutbound, reauth: recentReauth },
   ),
   'admin.aiProviders.rollback': dangerousMutation(
     'admin.aiProviders.rollback',
@@ -377,6 +395,83 @@ export const ADMIN_MUTATION_REGISTRY = {
     'medium',
     'Change a connector draft.',
     { reauth: conditionalReauth },
+  ),
+  'admin.creds.createFile': dangerousMutation(
+    'admin.creds.createFile',
+    'high',
+    'Create a platform global file entry from a staged upload.',
+    {
+      reason: enforced(
+        'Router records a fixed audit reason for CredsApi-compatible mutations (no free-form reason field).',
+      ),
+      reauth: recentReauth,
+    },
+  ),
+  'admin.creds.createKV': dangerousMutation(
+    'admin.creds.createKV',
+    'high',
+    'Create a platform global KV entry with envelope-encrypted values.',
+    {
+      reason: enforced(
+        'Router records a fixed audit reason for CredsApi-compatible mutations (no free-form reason field).',
+      ),
+      reauth: recentReauth,
+    },
+  ),
+  'admin.creds.createOAuth': dangerousMutation(
+    'admin.creds.createOAuth',
+    'high',
+    'Rejected OAuth create path for platform global entries (unsupported).',
+    {
+      reason: enforced(
+        'Router records a fixed audit reason for CredsApi-compatible mutations (no free-form reason field).',
+      ),
+      reauth: recentReauth,
+    },
+  ),
+  'admin.creds.delete': dangerousMutation(
+    'admin.creds.delete',
+    'high',
+    'Delete a platform global entry by id.',
+    {
+      reason: enforced(
+        'Router records a fixed audit reason for CredsApi-compatible mutations (no free-form reason field).',
+      ),
+      reauth: recentReauth,
+    },
+  ),
+  'admin.creds.deleteByKey': dangerousMutation(
+    'admin.creds.deleteByKey',
+    'high',
+    'Delete a platform global entry by stable key.',
+    {
+      reason: enforced(
+        'Router records a fixed audit reason for CredsApi-compatible mutations (no free-form reason field).',
+      ),
+      reauth: recentReauth,
+    },
+  ),
+  'admin.creds.update': dangerousMutation(
+    'admin.creds.update',
+    'high',
+    'Update platform global entry metadata and/or rotate KV values.',
+    {
+      reason: enforced(
+        'Router records a fixed audit reason for CredsApi-compatible mutations (no free-form reason field).',
+      ),
+      reauth: recentReauth,
+    },
+  ),
+  'admin.creds.uploadFile': dangerousMutation(
+    'admin.creds.uploadFile',
+    'high',
+    'Stage an envelope-encrypted file for a platform global entry.',
+    {
+      reason: enforced(
+        'Router records a fixed audit reason for CredsApi-compatible mutations (no free-form reason field).',
+      ),
+      reauth: recentReauth,
+    },
   ),
   'admin.easyauth.triggerSync': dangerousMutation(
     'admin.easyauth.triggerSync',

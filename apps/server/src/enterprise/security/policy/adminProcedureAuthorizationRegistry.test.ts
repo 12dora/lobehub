@@ -62,14 +62,16 @@ describe('admin procedure authorization registry', () => {
   it('reconciles all live procedures, middleware gates, root mounts, and mutation risks', () => {
     expect(() => reconcile()).not.toThrow();
 
-    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(119);
+    // Prior baseline 119 + W10-S stats (12 queries) + W10-E creds (5 queries + 7 mutations)
+    // + W10-P applyImmediate/publishNow (3 mutations) = 146
+    expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY).toHaveLength(146);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'query'),
-    ).toHaveLength(48);
+    ).toHaveLength(65);
     expect(
       ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter(({ kind }) => kind === 'mutation'),
-    ).toHaveLength(71);
-    expect(mutationPaths).toHaveLength(71);
+    ).toHaveLength(81);
+    expect(mutationPaths).toHaveLength(81);
     expect(ADMIN_PROCEDURE_AUTHORIZATION_REGISTRY.filter((entry) => 'selfAccess' in entry)).toEqual(
       [{ kind: 'query', path: 'admin.auth.getMyAccess', selfAccess: true }],
     );

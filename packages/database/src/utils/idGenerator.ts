@@ -42,6 +42,8 @@ const prefixes = {
   platformConnectorOAuthStates: 'pcos',
   platformConnectorSecrets: 'pcs',
   platformConnectorTools: 'pct',
+  platformGlobalCredentialSecrets: 'pgcs',
+
   platformEasyauthGrantSnapshots: 'peas',
   platformIdentityProviders: 'pidp',
   platformIdentityProviderSecrets: 'pids',
